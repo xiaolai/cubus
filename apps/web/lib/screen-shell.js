@@ -52,12 +52,26 @@ export const placePopoverV = (el, anchorRect) => {
   }
 };
 
+/** A popover's left edge inside the stage: the place asked for, held clear of both edges. The
+ *  same arithmetic for every popover — the camera menu is dropped under a button, the sticker
+ *  picker is centred on a cell, and both have to stay on the paper. The left margin is applied
+ *  LAST: applied first, a popover wider than the stage got a negative left — a 600px menu on a
+ *  400px stage drew at -208px (found by audit, 2026-09-13). */
+export const popoverLeft = (preferred, w, stageWidth, margin = 8) =>
+  Math.max(margin, Math.min(preferred, stageWidth - w - margin));
+
+/** How wide a popover may be: the stage, less both margins. */
+export const popoverWidthCap = (stageWidth, margin = 8) => Math.max(0, stageWidth - 2 * margin);
+
 /** Drop a `.menu` under a corner button, right-aligned to it and clamped inside the stage. */
 export const placeMenuUnder = (btn, menu) => {
   const r = btn.getBoundingClientRect();
   const s = stageRect();
+  // Capped before it is measured: a camera whose name runs long must not make the menu wider
+  // than the stage it has to sit inside.
+  menu.style.maxWidth = `${popoverWidthCap(s.width)}px`;
   const w = menu.offsetWidth;
-  menu.style.left = `${Math.min(Math.max(8, r.right - s.left - w), s.width - w - 8)}px`;
+  menu.style.left = `${popoverLeft(r.right - s.left - w, w, s.width)}px`;
   placePopoverV(menu, r);
 };
 
@@ -133,7 +147,9 @@ export function installSettingsShortcut() {
 
 export function installAdvancedShortcut() {
   document.addEventListener('keydown', (e) => {
-    if (e.code !== 'KeyD' || !e.ctrlKey || !e.altKey || !e.metaKey) return;
+    // `repeat` ignored, as the Settings shortcut does: a held chord opened the section and shut it
+    // again, rebuilding Settings each time (found by audit, 2026-09-13).
+    if (e.code !== 'KeyD' || e.repeat || !e.ctrlKey || !e.altKey || !e.metaKey) return;
     e.preventDefault();
     advancedOpen = !advancedOpen;
     // Turning it on somewhere else would be invisible, so go and show it. Turning it off only
@@ -187,20 +203,25 @@ export function refreshScreen() {
   // by it — and a rebuild from inside a retarget would pull the DOM out from under the caller.
   if (refreshing) return;
   refreshing = true;
+  // Read before the new subject goes in: taking it in place can remove the control focus is on
+  // (an answered question), and a node removed under focus drops it to the page.
+  const stage = $('#stage');
+  const was = focusInside(stage);
   let took = false;
   try { took = liveScreen?.update?.() === true; }
   catch (err) { console.error('screen could not take the new subject; rebuilding', err); }
   finally { refreshing = false; }
-  if (!took) renderScreen();
+  if (!took) { renderScreen(); return; }
+  if (was && stage.firstElementChild && !stage.contains(document.activeElement)) restoreFocus(stage.firstElementChild, was);
 }
 
-/** What the stage shows when a screen could not be built at all.
+/** What the stage shows when a screen could not be built, or its mount failed.
  *
  *  On the paper, in the app's own type, and with a way out — because the alternative this
  *  replaced was the previous screen's DOM sitting under the new screen's title, which is worse
  *  than an error: it is an app that quietly shows you the wrong thing. Deliberately a plain
- *  spec with a no-op mount, so nothing about the failing screen is re-entered here. */
-const brokenScreen = (id) => ({
+ *  spec with no mount, so nothing about the failing screen is re-entered here. */
+const brokenScreen = () => ({
   html: `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center">
     <div class="card" style="max-width:460px;text-align:center;padding:34px">
       <div class="eyebrow">${escHtml(t('THIS SCREEN DID NOT OPEN'))}</div>
@@ -208,8 +229,6 @@ const brokenScreen = (id) => ({
       <div class="sub" style="color:var(--ink-3);margin-top:8px;line-height:1.55">${escHtml(t('Nothing you did caused it, and nothing is lost. The other screens still work; reloading the app usually clears it.'))}</div>
       <button class="btn accent-outline block" data-go="home" style="margin-top:18px">${escHtml(t('Go to the cube'))}</button>
     </div></div>`,
-  mount() {},
-  broken: id,
 });
 
 /** The screen id focus was last moved for. A REPAINT of the screen you are on must not steal
@@ -217,7 +236,12 @@ const brokenScreen = (id) => ({
  *  each one would have taken the caret out of whatever was being typed. */
 let focusedScreen = null;
 
-export function renderScreen({ navigated = false } = {}) {
+/** The window title for the screen state says we are on. */
+const screenTitle = () => t(TITLES[state.screen] ?? 'Cubus');
+
+/** Everything the screen on the paper owns, released: its cleanup, a native proof it started, the
+ *  listeners it put on things that outlive it, and the hooks it installed. */
+function tearDownScreen() {
   // Logged, not swallowed. A teardown that throws half-way leaves the half after it undone — a
   // camera still open, a wake lock still held, a search still running — and an empty catch made
   // that indistinguishable from a clean teardown.
@@ -241,70 +265,152 @@ export function renderScreen({ navigated = false } = {}) {
   hooks.liveMove = null;
   hooks.liveGap = null;
   hooks.onTrustLost = null;
-  setTitle(t(TITLES[state.screen] ?? 'Cubus'));
+}
+
+/** The spec for the screen we are on, or the card that says it could not be built.
+ *
+ *  A builder that throws must not leave the PREVIOUS screen's DOM standing under the new title —
+ *  which is exactly what happened while this was an unguarded call: the title bar and the toolbar
+ *  said Trainer, the paper still showed Home, and nothing anywhere said why (an unknown stored
+ *  palette was one way in; found by audit, 2026-09-04). The screen is replaced either way, and
+ *  when there is nothing to put there the paper says so in words. Loud on the console too: a
+ *  message a user can act on is not a stack trace a developer can. */
+function buildScreen() {
   const build = SCREENS[state.screen] || SCREENS.home;
-  // A builder that throws must not leave the PREVIOUS screen's DOM standing under the new
-  // title — which is exactly what happened while this was an unguarded call: the title bar and
-  // the toolbar said Trainer, the paper still showed Home, and nothing anywhere said why (an
-  // unknown stored palette was one way in; found by audit, 2026-09-04). The screen is replaced
-  // either way, and when there is nothing to put there the paper says so in words. Loud on the
-  // console too: a message a user can act on is not a stack trace a developer can.
-  let spec;
   try {
-    spec = build();
+    return build();
   } catch (err) {
     console.error(`screen "${state.screen}" could not be built`, err);
-    spec = brokenScreen(state.screen);
+    return brokenScreen();
   }
+}
+
+/** Put a spec on the paper, and hand back its root.
+ *
+ *  The screen is a NAMED, FOCUSABLE region. Focus used to drop to <body> on every navigation: a
+ *  keyboard user tabbed from the toolbar into the top of the document again, and a screen reader
+ *  announced nothing at all — the title bar changed, the paper changed, and the only signal either
+ *  of them had was silence. `tabindex="-1"` makes it programmatically focusable without adding a
+ *  tab stop, which is the standard shape for a single-page app's route change. */
+function installScreen(spec, { navigated, typing = null }) {
   liveScreen = spec;
   screenGen += 1; // async mounts compare against this to detect that they are obsolete
-  parkCube(); // lift the renderer clear of the wipe on the next line
-  // The screen is a NAMED, FOCUSABLE region. Focus used to drop to <body> on every navigation:
-  // a keyboard user tabbed from the toolbar into the top of the document again, and a screen
-  // reader announced nothing at all — the title bar changed, the paper changed, and the only
-  // signal either of them had was silence. `tabindex="-1"` makes it programmatically focusable
-  // without adding a tab stop, which is the standard shape for a single-page app's route change.
-  const title = t(TITLES[state.screen] ?? 'Cubus');
   const stage = $('#stage');
-  stage.innerHTML = `<div class="screen active" tabindex="-1" role="region" aria-label="${escHtml(title)}">${spec.html}</div>`;
+  const moving = navigated || focusedScreen !== state.screen;
+  parkCube(); // lift the renderer clear of the wipe on the next line
+  stage.innerHTML = `<div class="screen active" tabindex="-1" role="region" aria-label="${escHtml(screenTitle())}">${spec.html}</div>`;
   const root = stage.firstElementChild;
   for (const b of root.querySelectorAll('[data-go]')) b.onclick = () => go(b.dataset.go);
   // Moved only when the SCREEN changed. `preventScroll`, because the stage is a fixed box under
   // the layout contract and nothing here should ever scroll the window.
-  if (navigated || focusedScreen !== state.screen) {
+  if (moving) {
     focusedScreen = state.screen;
     try { root.focus({ preventScroll: true }); } catch { root.focus?.(); }
+  } else if (typing) {
+    restoreFocus(root, typing);
   }
-  // Two failure modes, and try/catch only covers one: cubeScreen's mount is async, so anything it
-  // throws after its first await escapes as an unhandled rejection instead of reaching here.
+  return root;
+}
+
+/** Where focus is inside `stage`, as what it takes to put it back: the control's id — without one
+ *  there is no honest way to say which rebuilt control is "the same" one — the draft and caret of
+ *  a text control, and `landing`, the id of the nearest element around the control that can hold
+ *  focus. Null when focus is not inside the stage. */
+function focusInside(stage) {
+  const on = document.activeElement;
+  if (!on || !stage.contains(on)) return null;
+  // Only a TEXT control has a draft to lose. A button or a select holds a state, and the repaint
+  // that redrew it is the newer word on that state.
+  const text = typeof on.selectionStart === 'number';
+  const around = on.parentElement?.closest('[id][tabindex]');
+  const landing = around && stage.contains(around) ? around.id : null;
+  return { id: on.id || null, landing, text, value: on.value, markup: on.defaultValue, start: on.selectionStart, end: on.selectionEnd };
+}
+
+/** Focus, the draft and the selection, back in the rebuilt control with the same id — or, when no
+ *  rebuilt control has it, on the element that held it, and failing that on the screen.
+ *
+ *  A REPAINT of the screen you are on replaced the control being typed in and dropped focus to
+ *  <body> with the draft gone (found by audit, 2026-09-13) — and Settings repaints on a battery
+ *  reply, a trust change and every toggle. The draft goes back only while the control's markup is
+ *  unchanged: when the repaint was ABOUT this control (a rename landed, a cube was forgotten), the
+ *  new value is the newer fact, and a stale draft must not be written over it. A press that takes
+ *  its own control away (a question answered, a cube forgotten) leaves nothing with its id, and
+ *  focus fell to the page there too (verification, 2026-09-14). */
+function restoreFocus(root, was) {
+  const byId = (id) => (id ? [...root.querySelectorAll('[id]')].find((n) => n.id === id) : undefined);
+  const el = byId(was.id);
+  const to = el ?? byId(was.landing) ?? root;
+  try { to.focus({ preventScroll: true }); } catch { to.focus?.(); }
+  if (!el || !was.text || typeof el.setSelectionRange !== 'function') return;
+  if (el.defaultValue === was.markup && el.value !== was.value) el.value = was.value;
+  try { el.setSelectionRange(was.start, was.end); } catch { /* a type that takes no selection */ }
+}
+
+/** Start the mount, and own its failure: a throw and a rejection after an await both reach
+ *  mountFailed, with the generation this mount belongs to. */
+function mountScreen(spec, root) {
+  const gen = screenGen;
   try {
-    Promise.resolve(spec.mount?.(root)).catch((e) => console.error('screen mount failed', e));
-  } catch (e) { console.error('screen mount failed', e); }
+    Promise.resolve(spec.mount?.(root)).catch((err) => mountFailed(err, gen));
+  } catch (err) { mountFailed(err, gen); }
+}
+
+/** A mount that failed is not left half-done on the paper.
+ *
+ *  It used to be logged and nothing else (found by audit, 2026-09-13): the half-built screen
+ *  stayed up with controls that led nowhere, its listeners live and its cleanup never called. It
+ *  is torn down now like any screen being left, and the card that says so takes its place — but
+ *  only while it is still the screen on the paper. A failure that lands after the user moved on
+ *  belongs to a screen already torn down, and acting on it would cut the CURRENT screen's
+ *  listeners instead. */
+function mountFailed(err, gen) {
+  console.error('screen mount failed', err);
+  if (gen !== screenGen) return;
+  tearDownScreen();
+  installScreen(brokenScreen(), { navigated: true });
+}
+
+/** Leave the text control being typed in while the screen that drew it is still on the paper. A
+ *  rebuild removes it, and the engines differ on what removal means for an edited field: headless
+ *  Chromium sent `change` as it went, headless WebKit sent nothing, and the draft the rebuilt field
+ *  showed again was never saved (measured 2026-09-14). Leaving first is the path on which both
+ *  send it once, to the handler that drew the field. */
+function leaveTyping() {
+  const on = document.activeElement;
+  if (typeof on?.selectionStart === 'number' && $('#stage').contains(on)) on.blur();
+}
+
+export function renderScreen({ navigated = false } = {}) {
+  // Read BEFORE leaving, and left before anything is torn down or built: the commit reaches the
+  // screen that drew the field, and the new screen is built from what it committed.
+  const typing = navigated || focusedScreen !== state.screen ? null : focusInside($('#stage'));
+  leaveTyping();
+  tearDownScreen();
+  setTitle(screenTitle());
+  const spec = buildScreen();
+  mountScreen(spec, installScreen(spec, { navigated, typing }));
 }
 // Screens are addressable as #/<id>, so a reload or a shared link lands where it left off, and the
 // webview's Back/Forward walk the screens. SCREENS is the routable set — an unknown id resolves to
 // home rather than rendering nothing.
+// Solve guide and Playback were absorbed into the cube screen. Their links are already out in
+// bookmarks and in anything the app has ever put in an address bar, and an unknown id falls back to
+// home — which would send someone who saved a solve link somewhere unrelated. The router resolves
+// them, through the one parser every id goes through.
+// `viewer` joins them: the cube screen is Home now. `pair` too — smart-cube setup moved into
+// Settings, so #/pair lands where the controls actually are.
+const ALIAS = Object.freeze({ guide: 'home', playback: 'home', viewer: 'home', pair: 'settings' });
 export const router = makeRouter({
   screens: SCREENS,
   defaultScreen: 'home',
   location: window.location,
   history: window.history,
+  aliases: ALIAS,
 });
-// Solve guide and Playback were absorbed into the cube screen. Their links are already out in
-// bookmarks and in anything the app has ever put in an address bar, and an unknown id falls back to
-// home — which would send someone who saved a solve link somewhere unrelated. Rewritten silently,
-// before the router gets a chance to canonicalise them to home.
-// `viewer` joins them: the cube screen is Home now. `pair` too — smart-cube setup moved into
-// Settings, so #/pair lands where the controls actually are.
-const ALIAS = { guide: 'home', playback: 'home', viewer: 'home', pair: 'settings' };
-export function resolveAlias() {
-  const raw = String(window.location.hash || '').replace(/^#\/?/, '').trim();
-  const target = ALIAS[raw];
-  if (!target) return;
-  try { window.history.replaceState(null, '', `#/${target}`); }
-  catch { window.location.hash = `#/${target}`; }
-}
-export function applyRoute() { state.screen = router.current(); renderNav(); renderScreen({ navigated: true }); }
+// normalize(), not current(): the address bar names the screen actually shown. An alias or an
+// unknown id is rewritten in place, with no history entry, before anything renders.
+export function applyRoute() { state.screen = router.normalize(); renderNav(); renderScreen({ navigated: true }); }
 // A hash assignment only fires hashchange when the value actually differs, so navigating onto the
 // screen already showing would do nothing. go() renders directly in that case, preserving the
 // always-re-render behaviour the scan flow depends on (go('home') while on home).

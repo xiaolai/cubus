@@ -3,7 +3,7 @@
 //
 // Lifted out of app.js on 2026-09-13, when that file was split into modules.
 
-import { makeUpdater, progressLabel, selfUpdateSupported } from './app-update.js';
+import { launchCheckOutcome, makeUpdater, progressLabel, selfUpdateSupported } from './app-update.js';
 import { hostPlatform, isDesktopHost } from './host.js';
 import { t } from './i18n.js';
 import { VERSION } from './version.js';
@@ -50,8 +50,12 @@ export function appUpdater() {
           // Through t() like every other sentence. This dialog was written after i18n landed and
           // skipped it, so the one moment the app interrupts a user was the one it could not say
           // in their language.
-          confirm: (update) =>
-            window.__TAURI__?.dialog?.ask?.(
+          // No dialog is not the user saying "Not now": it throws, and makeUpdater answers
+          // `unasked` rather than `declined`.
+          confirm: (update) => {
+            const dialog = window.__TAURI__?.dialog;
+            if (typeof dialog?.ask !== 'function') throw new Error('app-update: there is no dialog to ask with');
+            return dialog.ask(
               t('Cubus %1 is available. You have %2.\n\nInstall it and restart?', update.version, VERSION),
               {
                 title: t('A newer Cubus'),
@@ -59,7 +63,8 @@ export function appUpdater() {
                 okLabel: t('Install and restart'),
                 cancelLabel: t('Not now'),
               },
-            ) ?? false,
+            );
+          },
           warn: (msg, err) => console.warn(msg, err ?? ''),
         })
       : null;
@@ -99,8 +104,8 @@ export const privacySentence = () => privacyLine(Boolean(appUpdater()));
  */
 let updateProgress = null; // the last report, or null when nothing is in flight
 let updateTicker = 0;
-export function showUpdateProgress(p) {
-  updateProgress = p;
+let noticeSerial = 0;
+function statusChip() {
   let chip = document.getElementById('updateStatus');
   if (!chip) {
     chip = document.createElement('div');
@@ -110,6 +115,12 @@ export function showUpdateProgress(p) {
     chip.setAttribute('aria-live', 'polite');
     document.body.appendChild(chip);
   }
+  return chip;
+}
+export function showUpdateProgress(p) {
+  updateProgress = p;
+  const chip = statusChip();
+  chip.dataset.kind = 'progress';
   const paint = () => { chip.textContent = progressLabel(updateProgress, Date.now(), t); };
   paint();
   if (!updateTicker) updateTicker = setInterval(paint, 1000);
@@ -117,17 +128,55 @@ export function showUpdateProgress(p) {
 export function hideUpdateProgress() {
   updateProgress = null;
   if (updateTicker) { clearInterval(updateTicker); updateTicker = 0; }
-  document.getElementById('updateStatus')?.remove();
+  const chip = document.getElementById('updateStatus');
+  // A notice is not progress: a press hides its progress while the answer is still showing.
+  if (chip?.dataset.kind !== 'notice') chip?.remove();
 }
 
-/** Say the outcome of a check the user ASKED for. A launch check stays silent unless it found one. */
+/** How long an answer stays in the chip when the native dialog could not show it. */
+export const NOTICE_MS = 12_000;
+/**
+ * An answer in the app's own chip, for NOTICE_MS: the fallback for a native dialog that is
+ * missing or refuses. An answer somebody waited for is not dropped because the OS would not
+ * draw it (found by audit, 2026-09-13).
+ */
+export function showUpdateNotice(message) {
+  hideUpdateProgress();
+  const chip = statusChip();
+  chip.dataset.kind = 'notice';
+  chip.textContent = message;
+  // Nothing to cancel: when this falls due, a notice that has been replaced, or a chip that has
+  // since become progress, leaves it with nothing to do.
+  const mine = ++noticeSerial;
+  setTimeout(() => {
+    if (mine === noticeSerial && chip.dataset.kind === 'notice') chip.remove();
+  }, NOTICE_MS);
+}
+
+/**
+ * Say how a check ended: every answer to a press, and on the launch path only what
+ * launchCheckOutcome picks.
+ *
+ * Never rejects. A dialog that is missing or refuses leaves the answer in the chip instead; a
+ * refusal used to reach the press, which said "could not reach the update server" through the
+ * same failing dialog (found by audit, 2026-09-13).
+ */
 export async function reportUpdateOutcome(result) {
-  const say = (message, kind = 'info') =>
-    window.__TAURI__?.dialog?.message?.(message, { title: 'Cubus', kind });
+  const say = async (message, kind = 'info') => {
+    const dialog = window.__TAURI__?.dialog;
+    try {
+      if (typeof dialog?.message !== 'function') throw new Error('there is no dialog to say it with');
+      await dialog.message(message, { title: 'Cubus', kind });
+    } catch (err) {
+      console.warn('app-update: the dialog could not show the answer', err);
+      showUpdateNotice(message);
+    }
+  };
   if (result.status === 'current') return say(t('Cubus %1 is the latest version.', VERSION));
   if (result.status === 'error') return say(t('Could not reach the update server. Check your connection and try again.'), 'warning');
   if (result.status === 'failed') return say(t('The update could not be installed. Try again, or download it from the website.'), 'error');
   if (result.status === 'installed-needs-restart') return say(t('The update is installed. Quit and reopen Cubus to use it.'));
+  if (result.status === 'unasked') return say(t('Cubus %1 is available, but this copy could not ask before installing it. Download it from the website.', result.version), 'warning');
   // 'unavailable' means the updater exists but cannot check here — no signature, no endpoint, a
   // build that was not packaged for updates. Silence was the old answer, and silence after a
   // press of "Check now" is indistinguishable from a button that does nothing.
@@ -139,4 +188,64 @@ export async function reportUpdateOutcome(result) {
     return say(t('The update check finished without a clear answer. Try again in a moment.'), 'warning');
   }
   return undefined;
+}
+
+/**
+ * The daily launch check, on a timer after boot (lib/app.js).
+ *
+ * A launch-path install can be confirmed from any screen, so its progress goes to the status
+ * chip — the same one the Settings press uses — rather than to a button that may not exist.
+ * What it then takes down and says is launchCheckOutcome's. Never rejects.
+ */
+export function runLaunchCheck(updater) {
+  return updater
+    .checkOnLaunch({ onProgress: showUpdateProgress })
+    .catch((err) => {
+      console.warn('app-update: launch check failed', err);
+      return { status: 'error', error: err };
+    })
+    .then(async (result) => {
+      const { hideProgress, report } = launchCheckOutcome(result);
+      if (hideProgress) hideUpdateProgress();
+      if (report) await reportUpdateOutcome(result);
+      return result;
+    });
+}
+
+/**
+ * A press of Settings' "Check now". The press ALWAYS checks (it ignores the daily throttle) and
+ * always answers, because somebody is waiting for one; the launch check is the quiet half.
+ * Disabled while in flight, since `check` joins one flight and a button that keeps accepting
+ * presses while nothing visibly happens reads as broken.
+ */
+export async function runUpdatePress(updater, button) {
+  const was = button.textContent;
+  button.disabled = true;
+  button.textContent = t('Checking…');
+  let result;
+  try {
+    result = await updater.checkNow({
+      onProgress: (p) => {
+        // The press has become a download: the button says so, and the status chip
+        // carries the numbers wherever the user looks next.
+        if (button.isConnected) button.textContent = t('Updating…');
+        showUpdateProgress(p);
+      },
+    });
+  } catch (err) {
+    // A press that throws used to leave the button spinning back to normal with nothing
+    // said — the check simply appeared not to happen.
+    console.error('app-update: the check failed', err);
+    result = { status: 'error' };
+  }
+  try {
+    // The flight is over, so its progress goes before the answer is shown; and the answer is said
+    // once, because saying it never rejects into a second attempt.
+    hideUpdateProgress();
+    await reportUpdateOutcome(result);
+  } finally {
+    // The button may have gone with a re-render, and an installed update never comes back
+    // here at all — the app relaunches out from under it.
+    if (button.isConnected) { button.disabled = false; button.textContent = was; }
+  }
 }

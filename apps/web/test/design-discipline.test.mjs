@@ -73,7 +73,6 @@ test('app.js carries no colour literals outside its two data tables', () => {
   // and the preview traffic lights are a portrait of macOS. Both stripped whole; anything left
   // holding a colour is a finding.
   const stripped = appJs
-    .replace(blockAt(appJs, 'const NET_COLORS ='), '')
     .replace(/^.*\['#E8695E', '#E0B341', '#5FB55F'\].*$/m, '');
   const leftovers = colourLiterals(stripped);
   assert.deepEqual(leftovers, [], `app.js colour literals outside the data tables: ${leftovers.join(', ')} — use a token`);

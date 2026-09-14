@@ -5,6 +5,7 @@
 
 import { STARTUP_DELAY_MS } from './app-update.js';
 import { initLocale } from './i18n.js';
+import { parseInsetOverride, readAndroidInsets } from './os-insets.js';
 
 import { $, state } from './app-state.js';
 import { settings } from './app-settings.js';
@@ -14,10 +15,9 @@ import { applyNetColors, applyTheme } from './cube-drawing.js';
 import { buildChrome, detectPlatform, isTauri } from './window-chrome.js';
 import { reparseRegistry } from './cube-memory.js';
 import { schedulePreroll } from './scramble-roll.js';
-import { appUpdater, hideUpdateProgress, showUpdateProgress } from './update-ui.js';
+import { appUpdater, runLaunchCheck } from './update-ui.js';
 import {
   applyRoute, go, installAdvancedShortcut, installExternalLinks, installSettingsShortcut,
-  resolveAlias, router,
 } from './screen-shell.js';
 
 // The screens register themselves in the screen registry as they load, so importing them is how
@@ -36,9 +36,6 @@ export { SCREENS } from './screen-shell.js';
 export { state } from './app-state.js';
 export { VERSION } from './version.js';
 
-window.addEventListener('hashchange', () => { resolveAlias(); applyRoute(); });
-window.cubusGo = go;
-
 /** The layout contract is built on container-query units (index.html: .stage, .screen). A webview
  *  without them would not fail — it would draw every screen at the wrong size and say nothing.
  *  Under Tauri that is a floor violation (macOS 13 / iOS 16 are declared) and the app stops here,
@@ -50,7 +47,8 @@ function assertStageSupport() {
   const msg = 'Cubus cannot lay itself out here: this webview has no container-query units (needs macOS 13 / iOS 16 or newer).';
   if (!isTauri) { console.error(msg); return; }
   $('#stage').textContent = msg;
-  throw new Error(msg);
+  // Marked, so boot's catch knows the stage already says why and leaves the sentence standing.
+  throw Object.assign(new Error(msg), { onStage: true });
 }
 
 /** Fixture insets for the harness: `?insets=59,0,34,0` (top, right, bottom, left; px) stands in
@@ -58,12 +56,10 @@ function assertStageSupport() {
  *  the same --inset-* properties .app reads from env(safe-area-inset-*); a real device never
  *  carries the parameter, and without it nothing happens. */
 function applyInsetOverride() {
-  const raw = new URLSearchParams(window.location.search).get('insets');
-  if (raw === null) return;
-  const px = raw.split(',').map((v) => Number.parseFloat(v));
-  if (px.length !== 4 || px.some((v) => !Number.isFinite(v) || v < 0)) throw new Error(`?insets= wants four non-negative numbers, got "${raw}"`);
+  const px = parseInsetOverride(new URLSearchParams(window.location.search).get('insets'));
+  if (!px) return;
   const app = $('.app');
-  ['t', 'r', 'b', 'l'].forEach((side, i) => app.style.setProperty(`--inset-${side}`, `${px[i]}px`));
+  for (const side of ['t', 'r', 'b', 'l']) app.style.setProperty(`--inset-${side}`, `${px[side]}px`);
 }
 
 /**
@@ -85,29 +81,24 @@ function applyInsetOverride() {
  * with no insets to write, env()'s fallback stands, which is exactly the pre-push behaviour.
  */
 function pullAndroidInsets() {
-  const bridge = globalThis.window?.cubusInsets;
-  if (typeof bridge?.get !== 'function') return;
-  let raw;
-  try { raw = bridge.get(); } catch (err) { console.warn('android insets: the bridge would not answer', err); return; }
-  if (typeof raw !== 'string' || raw === 'null') return;
-  let px;
-  try { px = JSON.parse(raw); } catch (err) { console.warn('android insets: unreadable payload', raw, err); return; }
-  // Zero trust at the boundary, even though the other side is ours: this crosses a JNI bridge as
-  // text, and a malformed number reaching setProperty is a silently broken layout rather than an
-  // error. Every side must be a finite, non-negative number or the whole answer is refused.
-  const sides = ['t', 'r', 'b', 'l'];
-  if (!px || typeof px !== 'object' || sides.some((k) => !Number.isFinite(px[k]) || px[k] < 0)) {
-    console.warn('android insets: not four non-negative numbers', raw);
-    return;
-  }
+  // What the bridge's answer means — "null" before the first dispatch, a refusal for anything
+  // but four finite non-negative numbers — is lib/os-insets.js's to decide; this writes it.
+  const px = readAndroidInsets(globalThis.window?.cubusInsets, (...args) => console.warn(...args));
+  if (!px) return;
   const app = $('.app');
   if (!app) return;
-  for (const k of sides) app.style.setProperty(`--os-inset-${k}`, `${px[k]}px`);
+  for (const k of ['t', 'r', 'b', 'l']) app.style.setProperty(`--os-inset-${k}`, `${px[k]}px`);
 }
 
 async function boot() {
   assertStageSupport();
   applyInsetOverride();
+  // Navigation is wired only once boot's prerequisites have passed. Installed when the module
+  // loaded, a hash change after the layout guard had stopped boot rendered a screen over the
+  // guard's sentence (found by audit, 2026-09-13): the stage had said why the app cannot run here,
+  // and the next click unsaid it.
+  window.addEventListener('hashchange', () => applyRoute());
+  window.cubusGo = go;
   const platform = detectPlatform();
   document.documentElement.dataset.host = isTauri ? 'tauri' : 'web';
   document.documentElement.dataset.platform = platform;
@@ -133,7 +124,7 @@ async function boot() {
   }
   // Resolve the deep link before the first paint, and canonicalise the URL so a bogus hash does
   // not sit in the address bar contradicting the screen on show.
-  applyTheme(); applyNetColors(); resolveAlias(); router.normalize(); applyRoute();
+  applyTheme(); applyNetColors(); applyRoute();
   // Load the solver in the background so Random / Solve / Timer are ready. 'scan' is deliberately
   // NOT in that list: nothing on it depends on the solver, and re-rendering it would tear down a
   // camera that just opened and open a second one.
@@ -154,16 +145,13 @@ async function boot() {
   // measures its own first paint closely enough that a DNS lookup inside that window would change
   // the numbers. It also stays quiet: `checkOnLaunch` throttles to once a day and only interrupts
   // when there is genuinely something to install.
-  if (appUpdater()) {
-    setTimeout(() => {
-      // A launch-path install can be confirmed from any screen, so its progress goes to the
-      // status chip — the same one the Settings press uses — rather than to a button that may
-      // not exist.
-      appUpdater()
-        .checkOnLaunch({ onProgress: showUpdateProgress })
-        .catch((e) => console.warn('app-update: launch check failed', e))
-        .finally(hideUpdateProgress);
-    }, STARTUP_DELAY_MS);
-  }
+  if (appUpdater()) setTimeout(() => runLaunchCheck(appUpdater()), STARTUP_DELAY_MS);
 }
-boot();
+// A boot that throws must not end as an unhandled rejection over a blank stage. The layout guard
+// has already put its own sentence there; anything else — a malformed ?insets=, a chrome build that
+// failed — gets a plain one, and the console keeps the error (found by audit, 2026-09-13).
+boot().catch((err) => {
+  console.error('cubus could not start', err);
+  const stage = $('#stage');
+  if (stage && !err?.onStage) stage.textContent = 'Cubus could not start here. Reloading the app usually fixes it.';
+});
