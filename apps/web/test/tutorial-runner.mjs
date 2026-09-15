@@ -20,6 +20,7 @@ import Cube from '../vendor/cubejs.js';
 import { SOLVED_FACELETS, applyMoves, faceletAt, held, identityOf, play } from './cube-oracle.mjs';
 import { STICKER_PALETTES } from '../lib/sticker-palettes.js';
 import { paletteFor } from '../lib/scheme.js';
+import * as CASE_TABLES from '../lib/data/case-tables.js';
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
@@ -208,7 +209,7 @@ export function scriptFor(sc, kit) {
     ? alg.trim().split(/\s+/).filter(Boolean).map((t) => t.replace(/^[URFDLB]/, (f) => kit.heldFace(f, hold.split(' ')))).join(' ')
     : alg);
   const algs = sc.algs ?? sc.walks ?? [sc.moves ?? sc.alg ?? sc.planned].filter(Boolean);
-  if (!algs.length && !sc.selector && !sc.ask && !sc.holds && !sc.start?.setup) return null;
+  if (!algs.length && !sc.selector && !sc.ask && !sc.holds && !sc.start?.setup && !sc.table) return null;
   const start = {};
   if (sc.start?.setup) start.scramble = sc.start.setup;
   const steps = [];
@@ -218,6 +219,11 @@ export function scriptFor(sc, kit) {
   // A lesson about the letters: the same cube held several ways, the letters on.
   for (const [k, h] of (sc.holds ?? []).entries()) steps.push({ hold: h, say: 'which face is on top?', ...(k === 0 ? { labels: 'position' } : {}) });
   if (sc.kind === 'arrow') steps.forEach((step) => { if (step.move) step.arrow = 'next'; });
+  // A gallery: a cut to each case's cube in turn — the position its algorithm solves, stated as a setup.
+  for (const { name, alg } of CASE_TABLES[sc.table] ?? []) {
+    const inverse = alg.trim().split(/\s+/).reverse().map((t) => (t.endsWith("'") ? t.slice(0, -1) : t.endsWith('2') ? t : `${t}'`)).join(' ');
+    steps.push({ setup: inverse, say: name });
+  }
   // A cube and nothing done to it — a sheet's picture: the page draws the view's cube flat.
   if (!steps.length) steps.push({ say: 'this is the cube' });
   return { schema: 2, start: { ...start, hold }, steps };
