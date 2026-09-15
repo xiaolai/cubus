@@ -18,6 +18,7 @@ import { BROWSER_PLAYER_KINDS, OPEN_ITEMS, startOf, strictKit, underGapRules } f
 import { readMatrices, readStickers, toWorld } from './drawn-cube.mjs';
 import { installPublicCube } from './public-cube.mjs';
 import { installSampler } from './sampling.mjs';
+import * as CASE_TABLES from '../../lib/data/case-tables.js';
 import { startBrowserFixture } from './harness.mjs';
 
 const require = createRequire(import.meta.url);
@@ -196,6 +197,31 @@ const FACELETS = (() => {
 
 /** The element half's runners for scenarios whose capability a plan item is still building. */
 const ELEMENT_RUNNERS = {
+  // Plan item 4.6: every case of a table on one page — past the live budget, so flat — with no WebGL context,
+  // and every diagram's lit wells the top stickers showing the top colour in the oracle's cube for that case.
+  async 'several-cubes'(sc) {
+    const cases = CASE_TABLES[sc.table];
+    assert.equal(kit.galleryKind(cases.length), 'flat', `${sc.id}: precondition — ${cases.length} cases do not fit the live budget`);
+    const gallery = kit.flatGallery(cases);
+    const drawn = await page.evaluate((items) => {
+      const host = document.createElement('div');
+      host.innerHTML = items.map((g) => `<figure data-case="${g.name}">${g.svg}</figure>`).join('');
+      document.body.appendChild(host);
+      const out = { canvases: host.querySelectorAll('canvas').length, lit: {} };
+      for (const f of host.querySelectorAll('figure')) {
+        out.lit[f.dataset.case] = [...f.querySelectorAll('rect')].filter((r) => !r.hasAttribute('fill-opacity')).map((r) => Number(r.dataset.facelet)).sort((a, b) => a - b);
+      }
+      host.remove();
+      return out;
+    }, gallery);
+    assert.equal(drawn.canvases, 0, `${sc.id}: a gallery past the budget made WebGL contexts`);
+    const invertAlg = (alg) => alg.trim().split(/\s+/).reverse().map((t) => (t.endsWith("'") ? t.slice(0, -1) : t.endsWith('2') ? t : `${t}'`)).join(' ');
+    for (const { name, alg } of cases) {
+      const world = applyMoves(SOLVED_FACELETS, invertAlg(alg));
+      const expected = [...Array(9).keys()].filter((i) => world[i] === world[4]);
+      assert.deepEqual(drawn.lit[name], expected, `${sc.id}: ${name} lit the wrong wells`);
+    }
+  },
   // Plan item 4.4: a trail for each piece a PLL cycles starts at the piece's home and ends in the slot whose
   // stickers show that piece's colours in the oracle's cube after the sequence.
   async trail(sc) {
