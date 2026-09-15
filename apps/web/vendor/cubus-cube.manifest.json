@@ -1,8 +1,8 @@
 {
-  "schema": 1,
+  "schema": 2,
   "tag": "cubus-cube",
   "bundle": "cubus-cube.js",
-  "digest": "sha256:ddbdea5c96d0ca8a0f8fce4d07bcbc5153514f11ab6e56c9c9c1a140db8d2c11",
+  "digest": "sha256:166e67d42d84be66bffa3b247007e5c4d4d35385cc7a03b7ddc5614e845ba16c",
   "attributes": [
     "alg",
     "autorotate",
@@ -45,5 +45,141 @@
     "stepBackStop",
     "stepStop",
     "turnTo"
-  ]
+  ],
+  "properties": [
+    {
+      "name": "alg",
+      "read": false,
+      "write": true
+    },
+    {
+      "name": "animating",
+      "read": true,
+      "write": false
+    },
+    {
+      "name": "backView",
+      "read": false,
+      "write": true
+    },
+    {
+      "name": "cameraLatitude",
+      "read": false,
+      "write": true
+    },
+    {
+      "name": "cameraLongitude",
+      "read": false,
+      "write": true
+    },
+    {
+      "name": "cameraUp",
+      "read": false,
+      "write": true
+    },
+    {
+      "name": "faceletScale",
+      "read": false,
+      "write": true
+    },
+    {
+      "name": "facelets",
+      "read": true,
+      "write": true
+    },
+    {
+      "name": "ghostElevation",
+      "read": false,
+      "write": true
+    },
+    {
+      "name": "ghosts",
+      "read": false,
+      "write": true
+    },
+    {
+      "name": "highlight",
+      "read": true,
+      "write": true
+    },
+    {
+      "name": "orientation",
+      "read": true,
+      "write": true
+    },
+    {
+      "name": "palette",
+      "read": false,
+      "write": true
+    },
+    {
+      "name": "scheme",
+      "read": false,
+      "write": true
+    },
+    {
+      "name": "scramble",
+      "read": false,
+      "write": true
+    },
+    {
+      "name": "stops",
+      "read": true,
+      "write": false
+    },
+    {
+      "name": "tempoScale",
+      "read": false,
+      "write": true
+    }
+  ],
+  "events": [
+    "cubus-step"
+  ],
+  "operations": {
+    "addEventListener": {
+      "args": [
+        "event",
+        "listener",
+        "options"
+      ]
+    },
+    "getAttribute": {
+      "args": [
+        "attribute"
+      ]
+    },
+    "hasAttribute": {
+      "args": [
+        "attribute"
+      ]
+    },
+    "isConnected": {
+      "read": true
+    },
+    "remove": {
+      "args": []
+    },
+    "removeAttribute": {
+      "args": [
+        "attribute"
+      ]
+    },
+    "removeEventListener": {
+      "args": [
+        "event",
+        "listener",
+        "options"
+      ]
+    },
+    "setAttribute": {
+      "args": [
+        "attribute",
+        "value"
+      ]
+    },
+    "style": {
+      "read": true
+    }
+  }
 }
