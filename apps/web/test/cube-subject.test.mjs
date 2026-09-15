@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs';
 
 import { Window } from 'happy-dom';
 import Cube from '../vendor/cubejs.js';
+import { lcg, randomAlg } from './fixtures/seeded-scrambles.mjs';
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -190,4 +191,36 @@ test('a regrip on a walk is a position whose cube is the one before it', async (
   const { subject } = await app();
   const after = move(SOLVED, 'R');
   assert.deepEqual(subject.stepStates(SOLVED, ['R', '', "R'"]), [SOLVED, after, after, SOLVED]);
+});
+
+test('a lesson step made after a regrip lights the edge it sends home, on the cube as scanned', async () => {
+  // Plan items 6.1 and 6.2: after a regrip a step names its pieces as the child then sees the cube, so the
+  // lesson reads its cues in that hold before renaming them into the scan frame. Checked on the stickers,
+  // never with the renaming itself: the edge a middle-layer insert lights must be home once its moves are
+  // made, and must not have been before.
+  const { subject } = await app();
+  /** Each middle-layer slot's two stickers on the published layout, as the scan frame writes them. */
+  const HOME = { FR: [[23, 'F'], [12, 'R']], FL: [[21, 'F'], [41, 'L']], BR: [[48, 'B'], [14, 'R']], BL: [[50, 'B'], [39, 'L']] };
+  const sorted = (letters) => [...letters].sort().join('');
+  let checked = 0;
+  for (let seed = 1; seed < 60 && checked < 4; seed += 1) {
+    const lesson = subject.lessonFor({ facelets: move(SOLVED, randomAlg(lcg(seed), 25)), lesson: null });
+    assert.ok(lesson, `seed ${seed}: the method solved the cube`);
+    let at = 0;
+    for (const step of lesson.steps) {
+      const n = step.alg.split(' ').filter(Boolean).length;
+      if (step.why.key === 'middleLayer.insert' && step.hold.join(' ') !== 'D B') {
+        const pieces = step.highlight.split(',').filter((t) => t.startsWith('piece:')).map((t) => t.slice('piece:'.length));
+        assert.equal(pieces.length, 1, `seed ${seed}: an insert lights one edge — "${step.highlight}"`);
+        const slot = Object.keys(HOME).find((name) => sorted(name) === sorted(pieces[0]));
+        assert.ok(slot, `seed ${seed}: ${pieces[0]} is not a middle-layer edge`);
+        const home = (facelets) => HOME[slot].every(([i, face]) => facelets[i] === face);
+        assert.ok(!home(lesson.stepFacelets[at]), `seed ${seed}: the lit edge ${pieces[0]} was already home`);
+        assert.ok(home(lesson.stepFacelets[at + n]), `seed ${seed}: the lit edge ${pieces[0]} is not the one the step sends home`);
+        checked += 1;
+      }
+      at += n;
+    }
+  }
+  assert.ok(checked >= 4, `precondition: ${checked} middle-layer inserts made after a regrip were checked`);
 });
