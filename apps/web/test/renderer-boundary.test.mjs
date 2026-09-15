@@ -38,6 +38,7 @@ export const RENDERER = Object.freeze([
   'apps/web/lib/script-drive.js',
   'apps/web/lib/script-rounds.js',
   'apps/web/lib/script-player.js',
+  'apps/web/lib/cube-flat.js',
   'apps/web/lib/lesson-schedule.js',
   'apps/web/lib/lesson-player.js',
   'packages/cubus-cube/src/cubus-cube.js',
@@ -52,6 +53,8 @@ export const DOMAIN = Object.freeze([
   'apps/web/lib/cube-frame.js',
   'apps/web/lib/cube-view.js',
   'apps/web/lib/sticker-palettes.js',
+  // The colour scheme's arithmetic, which the flat views paint with (plan item 4.5). It imports nothing.
+  'apps/web/lib/scheme.js',
 ]);
 
 /** Question modules, and the names each may import from where (ADR 0005 decision 2). */

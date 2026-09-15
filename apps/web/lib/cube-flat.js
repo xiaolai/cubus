@@ -1,0 +1,133 @@
+// Flat views of a cube, drawn from the same model the renderer draws: the net, and the top-face case
+// diagram — as SVG text, with no DOM, no WebGL and no clock.
+//
+// dev-docs/tutorial-capability-plan.md item 4.5. The app's net was drawn by the screens outside the renderer
+// (`buildNet` in lib/cube-drawing.js) and the Trainer's case wells were hand-built DOM; cubus-im's charts and
+// galleries need the same pictures by the dozen, where a WebGL context per case is not an option (item 4.6).
+// So the pictures are a function of the cube: a piece state or a painted picture of 54 facelets, the palette
+// and the scheme — the renderer's own table (`lib/sticker-palettes.js`) remapped by `lib/scheme.js`, so a
+// flat view and the 3D cube cannot come to disagree about a colour.
+//
+// THE LOOKS ARE THE APP'S, not new ones. The net's proportions are the `.net` rules in index.html — a 12 by 9
+// grid, 3px between faces and 2px between stickers at the 320px reference, stickers with a 3px radius and a
+// hairline edge, and a sticker a picture does not fix drawn as an empty well at 35% — and the top face is the
+// Trainer's wells: 3 by 3, 4px apart at 76px. The one thing added is the ring of side stickers a PLL diagram
+// needs, which the wells never had.
+//
+// A `?` is an empty well, never a colour: the one thing it must never do is look like a seventh one.
+import { toFacelets } from './cube-pieces.js';
+import { STICKER_PALETTES } from './sticker-palettes.js';
+import { isScheme, paletteFor } from './scheme.js';
+
+/** The empty well a sticker nobody claims is drawn as — `--facelet-off` in the light theme. */
+export const FREE = '#3A332A';
+/** A sticker's hairline edge — `--sticker-edge`. */
+export const EDGE = 'rgba(0,0,0,.28)';
+
+/** Where each face sits in the net, as [row, column] of its top-left cell on the 12 by 9 grid. */
+const NET_AT = Object.freeze({ U: [0, 3], L: [3, 0], F: [3, 3], R: [3, 6], B: [3, 9], D: [6, 3] });
+const FACE_ORDER = 'URFDLB';
+
+/**
+ * The side stickers of the top layer, in the order a diagram viewed from above draws them — each face's top
+ * row, read the way it passes round the top face. Facelet indices on the URFDLB layout; `test/cube-flat.test.mjs`
+ * checks every one against `test/cube-oracle.mjs`'s layout rather than trusting a table typed out once.
+ */
+export const TOP_RING = Object.freeze({
+  back: Object.freeze([47, 46, 45]),   // left to right along the top edge: B3 B2 B1
+  left: Object.freeze([36, 37, 38]),   // top to bottom along the left edge: L1 L2 L3
+  right: Object.freeze([11, 10, 9]),   // top to bottom along the right edge: R3 R2 R1
+  front: Object.freeze([18, 19, 20]),  // left to right along the bottom edge: F1 F2 F3
+});
+
+const escapeXml = (text) => String(text).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
+
+/** A cube as 54 facelets: a piece state is written out, a picture is taken as it is. Refuses anything else. */
+export function faceletsOf(cube) {
+  const facelets = typeof cube === 'string' ? cube : cube && Array.isArray(cube.cp) ? toFacelets(cube) : null;
+  if (facelets === null || !/^[URFDLB?]{54}$/.test(facelets)) {
+    throw new Error('cube-flat: expected a piece state or 54 facelets of URFDLB and ?');
+  }
+  return facelets;
+}
+
+/** The colours a view is painted in: a palette by name, remapped for the scheme. */
+function coloursFor({ palette = 'muted', scheme = 'western' } = {}) {
+  if (!Object.hasOwn(STICKER_PALETTES, palette)) throw new Error(`cube-flat: no palette "${palette}"`);
+  if (!isScheme(scheme)) throw new Error(`cube-flat: no scheme "${scheme}"`);
+  return paletteFor(STICKER_PALETTES[palette], scheme);
+}
+
+const rect = ({ x, y, w, h, r, fill, facelet, free }) => `<rect data-facelet="${facelet}" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${w.toFixed(2)}" height="${h.toFixed(2)}" rx="${r.toFixed(2)}" fill="${fill}"${free ? ' fill-opacity="0.35"' : ''} stroke="${EDGE}" stroke-width="1"/>`;
+
+/**
+ * The net: every sticker of the cube unfolded, U above F, L F R B across, D below — the app's net, as SVG.
+ *
+ * `width` is the drawing's width in pixels (320, the app's reference, by default); every gap and radius scales
+ * with it, so a thumbnail and the reference are the same picture.
+ */
+export function netSvg(cube, { palette, scheme, width = 320, title = 'The cube, unfolded' } = {}) {
+  const facelets = faceletsOf(cube);
+  const colours = coloursFor({ palette, scheme });
+  const k = width / 320;
+  const faceGap = 3 * k; const stickerGap = 2 * k;
+  // Twelve columns with three gaps between the four faces across, nine rows with two between three down.
+  const cell = (width - 3 * faceGap) / 12;
+  const height = cell * 9 + 2 * faceGap;
+  const size = (cell * 3 - 2 * stickerGap) / 3;
+  const parts = [];
+  for (const [f, face] of [...FACE_ORDER].entries()) {
+    const [row, col] = NET_AT[face];
+    const ox = col * cell + (col / 3) * faceGap; const oy = row * cell + (row / 3) * faceGap;
+    for (let i = 0; i < 9; i++) {
+      const index = f * 9 + i;
+      const letter = facelets[index];
+      parts.push(rect({
+        x: ox + (i % 3) * (size + stickerGap), y: oy + Math.floor(i / 3) * (size + stickerGap), w: size, h: size, r: 3 * k,
+        fill: letter === '?' ? FREE : colours[letter], facelet: index, free: letter === '?',
+      }));
+    }
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width.toFixed(2)} ${height.toFixed(2)}" width="${width.toFixed(2)}" height="${height.toFixed(2)}" role="img" aria-label="${escapeXml(title)}">${parts.join('')}</svg>`;
+}
+
+/**
+ * The top face as a case diagram: the Trainer's nine wells, and with `ring` the side stickers a PLL case is
+ * read by. `mode: 'orientation'` lights a sticker in the top colour when it shows the colour of the top centre
+ * and leaves the rest empty — an OLL case; `mode: 'colours'` paints every sticker its own colour — a PLL case.
+ *
+ * The cube is taken AS VIEWED: facelets 0-8 are the face on top. A lesson that shows a yellow-top case hands
+ * over the cube held that way (`held` in the tests' oracle; a script's picture), not the scan frame.
+ */
+export function topFaceSvg(cube, { palette, scheme, width = 76, mode = 'colours', ring = false, title = 'The top face' } = {}) {
+  const facelets = faceletsOf(cube);
+  if (mode !== 'colours' && mode !== 'orientation') throw new Error(`cube-flat: mode is colours or orientation, not "${mode}"`);
+  const colours = coloursFor({ palette, scheme });
+  const k = width / 76;
+  const gap = 4 * k;
+  // With a ring, the face shrinks inside a band a third of a sticker deep on every side.
+  const band = ring ? (width - 2 * gap) / 3 / 3 : 0;
+  const inner = width - 2 * (ring ? band + gap : 0);
+  const size = (inner - 2 * gap) / 3;
+  const origin = ring ? band + gap : 0;
+  const top = facelets[4];
+  const fillOf = (index) => {
+    const letter = facelets[index];
+    if (letter === '?') return { fill: FREE, free: true };
+    if (mode === 'orientation') return letter === top && top !== '?' ? { fill: colours[letter], free: false } : { fill: FREE, free: true };
+    return { fill: colours[letter], free: false };
+  };
+  const parts = [];
+  for (let i = 0; i < 9; i++) {
+    parts.push(rect({ x: origin + (i % 3) * (size + gap), y: origin + Math.floor(i / 3) * (size + gap), w: size, h: size, r: 3 * k, facelet: i, ...fillOf(i) }));
+  }
+  if (ring) {
+    const along = (j) => origin + j * (size + gap);
+    const far = origin + inner + gap;
+    TOP_RING.back.forEach((index, j) => parts.push(rect({ x: along(j), y: 0, w: size, h: band, r: 2 * k, facelet: index, ...fillOf(index) })));
+    TOP_RING.front.forEach((index, j) => parts.push(rect({ x: along(j), y: far, w: size, h: band, r: 2 * k, facelet: index, ...fillOf(index) })));
+    TOP_RING.left.forEach((index, j) => parts.push(rect({ x: 0, y: along(j), w: band, h: size, r: 2 * k, facelet: index, ...fillOf(index) })));
+    TOP_RING.right.forEach((index, j) => parts.push(rect({ x: far, y: along(j), w: band, h: size, r: 2 * k, facelet: index, ...fillOf(index) })));
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width.toFixed(2)} ${width.toFixed(2)}" width="${width.toFixed(2)}" height="${width.toFixed(2)}" role="img" aria-label="${escapeXml(title)}">${parts.join('')}</svg>`;
+}
