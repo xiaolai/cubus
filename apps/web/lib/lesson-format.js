@@ -225,6 +225,8 @@ export const STEP_KINDS = Object.freeze(['move', 'setup', 'cube', 'paint', 'hold
 export const STEP_CUES = Object.freeze([
   'say', 'section', 'hl', 'focus', 'ask', 'ghosts', 'ghostElevation', 'cam', 'camUp',
   'number', 'counting', 'at', 'secs',
+  // Phase 4's annotations, as they land (plan item 3.1): a turn arrow and the face letters.
+  'arrow', 'labels',
 ]);
 
 const STEP_KEYS = new Set([...STEP_KINDS, ...STEP_CUES]);
@@ -373,6 +375,16 @@ function checkSteps(steps, where, { rounds = true } = {}) {
       if (typeof step.ask !== 'string') where(i, '`ask` must be a string');
       const { why } = readAsk(step.ask);
       if (why) where(i, `\`ask\`: ${why}`);
+    }
+    if (step.arrow !== undefined && step.arrow !== null && step.arrow !== 'next') {
+      // One move, in the child's letters like every move a script writes — or `next`, the move about to be made.
+      const tokens = String(step.arrow).trim().split(/\s+/);
+      if (tokens.length !== 1) where(i, `\`arrow\` is one move or "next", not "${step.arrow}"`);
+      const bad = badMoves(step.arrow);
+      if (bad) where(i, `\`arrow\` ${bad}`);
+    }
+    if (step.labels !== undefined && step.labels !== null && !['none', 'position', 'face'].includes(step.labels)) {
+      where(i, `\`labels\` is none, position or face, not "${step.labels}"`);
     }
     if (step.ghosts !== undefined && step.ghosts !== null && typeof step.ghosts !== 'boolean') {
       where(i, '`ghosts` must be true or false — a string is always truthy');

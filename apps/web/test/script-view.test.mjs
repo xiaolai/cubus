@@ -175,3 +175,15 @@ test('a sticker focus is bound to that sticker by colour, and a set to what is l
   const held = buildScript(script([{ move: 'U', hl: 'slot:UF/U' }], { hold: 'D B' }));
   assert.equal(viewAtPosition(held, 1).cues.hl, 'slot:DB/D');
 });
+
+test('an arrow cue is handed over as the cube\'s own token, read in the hold where it was written', () => {
+  // Held D B — an x2 from the reference, which leaves R where it was — the child's R is the cube's R, turning
+  // R's way: a rotation is not a reflection.
+  const built = buildScript(script([{ move: 'U', arrow: 'R' }], { hold: 'D B' }));
+  assert.equal(viewAtPosition(built, 1).cues.arrow, 'R');
+  // Written after a `y`, the child's right face is the cube's B. The cue is read where it is written, which is
+  // the step that makes the `y`, so it is the hold that step leaves.
+  const turned = buildScript(script([{ move: 'y' }, { move: 'U', arrow: 'R' }]));
+  assert.equal(viewAtPosition(turned, 2).cues.arrow, 'B', 'after y the child\'s right face is the cube\'s B');
+  assert.equal(viewAtPosition(buildScript(script([{ move: 'R', arrow: 'next' }])), 1).cues.arrow, 'next');
+});

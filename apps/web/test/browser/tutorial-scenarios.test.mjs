@@ -196,6 +196,24 @@ const FACELETS = (() => {
 
 /** The element half's runners for scenarios whose capability a plan item is still building. */
 const ELEMENT_RUNNERS = {
+  // Plan item 4.3: held any of several ways, the `position` letter on top is U, and the `face` letter on top
+  // is the face whose centre the oracle puts there.
+  async label(sc) {
+    const onTop = (mode) => page.evaluate((m) => {
+      const el = window.__cube;
+      window.__publicCube(el).setAttribute('labels', m);
+      el.scene.updateMatrixWorld(true);
+      const V = el.camera.position.constructor;
+      const top = (el._labelMeshes ?? []).find((mesh) => mesh.getWorldPosition(new V()).y > 1);
+      return top?.userData.label ?? null;
+    }, mode);
+    for (const hold of sc.holds) {
+      await build({ orientation: hold });
+      assert.equal(await onTop('position'), 'U', `${sc.id}: held ${hold}, the place on top is not called U`);
+      const centreOnTop = held(SOLVED_FACELETS, hold)[4];
+      assert.equal(await onTop('face'), centreOnTop, `${sc.id}: held ${hold}, the letter on top is not the face the oracle puts there`);
+    }
+  },
   // Plan item 4.2: `arrow="next"` shows the move about to be made at every position of a sequence — on that
   // move's layers, turning its way — and nothing once it is done; and the cube under it is the oracle's. The
   // sequence is written in the child's letters and handed to the element as the interpreter draws it, as R1 is.

@@ -2,7 +2,7 @@
   "schema": 2,
   "tag": "cubus-cube",
   "bundle": "cubus-cube.js",
-  "digest": "sha256:a7cc9dd0f3e63d66a00fd8e3fc1adcfbecaa24a47901c31d81e28e45f76dbc55",
+  "digest": "sha256:1cde927ae92b0a529f0ad752ef9b3382b4fc4281c576ba394e4a677c8b722f6a",
   "attributes": [
     "alg",
     "arrow",
@@ -25,6 +25,7 @@
     "ghostelevation",
     "ghosts",
     "highlight",
+    "labels",
     "orbit",
     "orientation",
     "palette",
