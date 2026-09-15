@@ -309,15 +309,22 @@ test('a lesson walk is the scan-frame moves, every chip named for the hold its m
     scan.move(randomAlg(lcg(n + 7), 25));
     const { steps, alg } = solveByMethod(cubie(toMethodFrame(scan.asString())), methodFor(rungs));
     const walk = scanFrameWalk(steps);
-    assert.equal(walk.moves.join(' '), renameAlg(alg, METHOD_TO_SCAN), `rungs ${JSON.stringify(rungs)}`);
+    const where = `rungs ${JSON.stringify(rungs)}`;
+    assert.equal(faceTurnsAlg(walk.moves), renameAlg(alg, METHOD_TO_SCAN), `${where}: the walk turns the faces the method's alg does`);
     assert.equal(walk.holds.length, walk.moves.length + 1, 'one hold more than moves: the hold after the last');
     let k = 0;
-    for (const [i, step] of steps.entries()) {
-      assert.deepEqual([...walk.stepHolds[i]], [...holdForStage(step.stage)]);
-      for (const _ of walk.algs[i].split(' ').filter(Boolean)) {
-        assert.deepEqual([...walk.holds[k]], [...holdForStage(step.stage)], `move ${k}`);
-        k += 1;
+    for (const step of steps) {
+      const tokens = walk.algs[steps.indexOf(step)].split(' ').filter(Boolean);
+      if (holdForStage(step.stage)[0] === 'U') {
+        // White up, and no regrip there: every move held as scanned.
+        tokens.forEach((_, j) => assert.deepEqual([...walk.holds[k + j]], [...SCAN_HOLD], `${where}: move ${k + j}`));
+      } else {
+        // Tumbled, the child's hands and the method's frame agree — through every regrip — so each chip is
+        // the method's own letter.
+        assert.deepEqual(tokens.map((m, j) => renameAlg(m, walk.holds[k + j])), step.alg.split(' '), `${where}: ${step.stage}`);
+        tokens.forEach((_, j) => assert.equal(walk.holds[k + j][0], 'D', `${where}: white underneath at move ${k + j}`));
       }
+      k += tokens.length;
     }
   }
 

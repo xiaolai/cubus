@@ -14,6 +14,7 @@ import { Window } from 'happy-dom';
 
 import Cube from '../vendor/cubejs.js';
 import { fromCube, invert } from '../lib/cube-pieces.js';
+import { faceTurnsAlg } from '../lib/cube-moves.js';
 import { registerLocale, setLocale } from '../lib/i18n.js';
 import { FOLLOWS_TO_OFFER, NO_PROGRESS, recordCleanFollow, repairProgress } from '../lib/method-ladder.js';
 import { lessonSections, moveStepIndex } from '../lib/method-lesson.js';
@@ -1387,7 +1388,8 @@ function scanFrameLesson(facelets) {
   const alg = moves.join(' ');
   const stepFacelets = [facelets];
   const c = Cube.fromString(facelets);
-  for (const m of moves) { c.move(m); stepFacelets.push(c.asString()); }
+  // As face turns, the way `lessonFor` builds them: a regrip moves no piece, and cubejs reads no rotation.
+  for (const m of moves) { c.move(faceTurnsAlg(m)); stepFacelets.push(c.asString()); }
   return { facelets, steps, sections: lessonSections(steps), moveStep: moveStepIndex(steps), alg, moves, moveHolds: walk.holds, stepFacelets, summary: '' };
 }
 
