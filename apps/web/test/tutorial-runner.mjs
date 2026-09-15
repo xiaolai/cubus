@@ -133,6 +133,32 @@ function stickerOn(face, where) {
   return i;
 }
 
+/**
+ * A scenario as a SCRIPT (plan item 3.1): the same tutorial, written in the format both drivers read.
+ *
+ * This is what "every scenario is expressible" means, and it is a conversion rather than a
+ * transcription: a script's moves are the CHILD's letters, so the scenarios written the way
+ * `<cubus-cube>`'s `alg` reads them — the cube's own frame, whatever the hold — are relabelled
+ * through the interpreter on the way in. A scenario nothing can express comes back null, and the
+ * corpus says which ones those are rather than skipping them quietly.
+ */
+export function scriptFor(sc, kit) {
+  const hold = sc.start?.hold ?? sc.orientation ?? sc.hold ?? 'U F';
+  const identityFramed = sc.kind === 'identity' || sc.kind === 'identity-all-holds';
+  const held = (alg) => (identityFramed
+    ? alg.trim().split(/\s+/).filter(Boolean).map((t) => t.replace(/^[URFDLB]/, (f) => kit.heldFace(f, hold.split(' ')))).join(' ')
+    : alg);
+  const algs = sc.algs ?? sc.walks ?? [sc.moves ?? sc.alg ?? sc.planned].filter(Boolean);
+  if (!algs.length && !sc.selector && !sc.ask) return null;
+  const start = {};
+  if (sc.start?.setup) start.scramble = sc.start.setup;
+  const steps = [];
+  if (sc.selector) steps.push({ hl: sc.selector, say: 'the piece this lesson is about' });
+  for (const alg of algs) steps.push({ move: held(alg), say: 'watch this' });
+  if (sc.ask) steps.push({ ask: sc.ask, hl: `ask:${sc.ask}`, say: 'which ones are these?' });
+  return { schema: 2, start: { ...start, hold }, steps };
+}
+
 /** A `covered` scenario's test must exist where it says, by its exact name. */
 export function assertCovered(sc) {
   const [file, name] = sc.coveredBy;
