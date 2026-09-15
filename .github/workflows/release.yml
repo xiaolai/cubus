@@ -538,7 +538,13 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      # `packages` named explicitly: the action's default is `tools platform-tools`, and the SDK
+      # repository no longer carries `tools` — sdkmanager answers "Failed to find package 'tools'"
+      # and exits 1, which failed this step on 2026-09-15 before any of our code ran. sdkmanager
+      # itself comes from cmdline-tools, which the action installs regardless.
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
+        with:
+          packages: platform-tools
 
       - name: NDK
         run: |
