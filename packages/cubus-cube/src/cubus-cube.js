@@ -10,7 +10,8 @@ import { eyeDirection, fitDistance, fitDistanceStable, silhouette } from '../../
 import { isFace, orientationMatrix, sameAxis } from '../../../apps/web/lib/cube-orientation.js';
 import { parseHighlight, pieceKey, resolveHighlight, slotVector } from '../../../apps/web/lib/cube-highlight.js';
 import { STICKER_PALETTES } from '../../../apps/web/lib/sticker-palettes.js';
-import { HOME, MOVE_DESCRIPTORS, after, poseAll } from './pose.js';
+import { HOME, after, poseAll } from './pose.js';
+import { readToken } from '../../../apps/web/lib/cube-notation.js';
 
 // The six sticker colours of each set, by position on a Western cube: the one table, shared with
 // the app's flat nets (lib/sticker-palettes.js). The `scheme` attribute remaps it (ADR 0001).
@@ -81,6 +82,8 @@ const SPIN_PER_MS = 0.0035 * 60 / 1000;
  *  on the root group, which also carries the autorotate spin and interpolates `turnTo`. The pose
  *  module's own frame argument is for a caller that has no scene graph to put it on. */
 const UPRIGHT = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+/** Is a frame the identity — the cube held as `orientation` says, with no turn of the sequence on top? */
+const isUpright = (m) => m.every((row, i) => row.every((v, j) => v === (i === j ? 1 : 0)));
 /** A solved cube, as the pose module wants it: pieces, and the twist of each centre. */
 const SOLVED_STATE = Object.freeze({
   cp: [0, 1, 2, 3, 4, 5, 6, 7], co: [0, 0, 0, 0, 0, 0, 0, 0],
@@ -342,6 +345,8 @@ class CubusCube extends HTMLElement {
     this._queue = [];
     this._writePose();
     this._sol = this._parse(this._attrs.alg || '');
+    this._solMovesCentres = this._sol.some((m) => m.layers.includes(0));
+    this._refitIfTurned();
     this._cursor = 0; this._applied = 0; this._playing = false;
     this._dirty = true;
   }
@@ -512,6 +517,7 @@ class CubusCube extends HTMLElement {
     this._playing = false; // play() intent — lets pause() stop cleanly between moves
     this._applied = 0; // solution moves animated since the last reset (drives 'cubus-step')
     this._sol = this._parse(this._attrs.alg || '');
+    this._solMovesCentres = this._sol.some((m) => m.layers.includes(0));
     // _set() returns early until the meshes exist, so an attribute present at parse time has not
     // been read yet. reset() below paints, and painting re-resolves the highlight.
     this._hlSet = null;
@@ -886,11 +892,7 @@ class CubusCube extends HTMLElement {
     // re-asked when that boolean flips, not on every pose write: `_applyCamera` rebuilds the
     // silhouette and refits, and calling it once per frame of a turn spent that work sixty times a
     // second to arrive at the same distance.
-    const turned = this._turned();
-    if (turned !== this._fitTurned) {
-      this._fitTurned = turned;
-      this._applyCamera();
-    }
+    this._refitIfTurned();
     return true;
   }
 
@@ -974,10 +976,25 @@ class CubusCube extends HTMLElement {
    * the frame edge.
    */
   _turned() {
+    // A sequence with a whole-cube turn, a slice or a wide move in it turns the cube as it plays, so the
+    // silhouette's upright assumption never holds for it: stable from the moment it loads, rather than a
+    // fit that jumps when the first such move lands.
+    // And a frame left turned by an earlier sequence counts until something puts it back: a new `alg`
+    // keeps the cube where its last finished move left it, frame included.
+    if (this._solMovesCentres || !isUpright(this._seq ?? UPRIGHT)) return true;
     const { from, to, phase } = this._turn;
     if (from === to || phase >= 1) return to !== 'U F';
     if (phase <= 0) return from !== 'U F';
     return true;
+  }
+
+  /** Re-ask for the camera fit when whether the cube counts as turned has changed. */
+  _refitIfTurned() {
+    const turned = this._turned();
+    if (turned !== this._fitTurned) {
+      this._fitTurned = turned;
+      this._applyCamera();
+    }
   }
 
   _applyOrbit() {
@@ -1197,12 +1214,15 @@ class CubusCube extends HTMLElement {
       // gets back (see stepBack) and the descriptors are frozen.
       // hasOwn as well as a table with no prototype: either alone is one refactor from the
       // `alg="toString"` crash, and a parser is where an author's arbitrary text first arrives.
-      const d = Object.hasOwn(MOVE_DESCRIPTORS, tok) ? MOVE_DESCRIPTORS[tok] : null;
-      if (!d) {
-        console.warn(`<cubus-cube> refusing alg — invalid move token "${tok}"`);
+      // The notation module reads every spelling a tutorial writes — face turns, outer blocks, slices,
+      // rotations — in the identity frame, and refuses the rest with a reason
+      // (dev-docs/adr/0004-orientation-notation-and-colour-are-three-things.md, decision 4).
+      const { move, why } = readToken(tok);
+      if (!move) {
+        console.warn(`<cubus-cube> refusing alg — invalid move token "${tok}" (${why})`);
         return [];
       }
-      out.push({ ...d });
+      out.push({ axis: move.axis, layers: [...move.layers], angle: move.angle, turns: move.turns });
     }
     return out;
   }
@@ -1426,11 +1446,12 @@ class CubusCube extends HTMLElement {
    *  carries delta -1: it undoes a solution move, so the step index counts down; anything else
    *  counts up. Host apps sync a move list / 2D net / scrubber to the event. */
   _completeMove(a) {
-    // The state moves; the geometry follows from it. `after()` hands back the frame too — nothing
-    // this parser emits turns the whole cube, so it is the frame that came in, and taking it
-    // rather than assuming it is what will make `x y z` work the day the parser can say one.
-    const landed = after(UPRIGHT, this._state, a.m);
+    // The state moves; the geometry follows from it. `after()` hands back the frame too: a rotation,
+    // a slice or a wide move turns the whole cube, and the frame is where that turn is kept — the
+    // pieces are always relative to the centres, so they cannot carry it.
+    const landed = after(this._seq ?? UPRIGHT, this._state, a.m);
     this._state = landed.state;
+    this._seq = landed.frame;
     this._writePose();
     // Positions have just changed, so a positional selector (`layer:`, `slot:`) now names a
     // different set. Re-resolved here rather than only on repaint, because a move repaints nothing.
@@ -1452,7 +1473,7 @@ class CubusCube extends HTMLElement {
    * it the same picture by construction rather than by care (lib pose.js, A1 of the plan).
    */
   _writePose(move = null, phase = 0) {
-    const poses = poseAll(UPRIGHT, this._state, move, phase);
+    const poses = poseAll(this._seq ?? UPRIGHT, this._state, move, phase);
     for (let i = 0; i < this.cubies.length; i++) {
       const { pos, m } = poses[POSE_OF[i]];
       const c = this.cubies[i];
@@ -1491,6 +1512,12 @@ class CubusCube extends HTMLElement {
     // left the empty carrier in the scene forever.
     this._queue = []; this._anim = null; this._cursor = 0; this._playing = false; this._applied = 0;
     this._state = SOLVED_STATE;
+    // Position 0's frame is the identity: the hold at position 0 is `orientation`, on the root, and a
+    // whole-cube turn inside the sequence composes onto this frame as it is made. A scramble describes
+    // PIECES only — its moves' frame changes are dropped below — so the cube a scramble loads is held
+    // however `orientation` says (dev-docs/adr/0004-orientation-notation-and-colour-are-three-things.md,
+    // decisions 7 and 8).
+    this._seq = UPRIGHT;
     // Resolved ONCE for both jobs — painting and the scramble decision — so an invalid string
     // warns once, not twice. A VALID facelet string already encodes the scramble; only apply
     // moves when there isn't one, and an invalid string does not count.
@@ -1507,6 +1534,7 @@ class CubusCube extends HTMLElement {
       for (const m of this._parse(this._attrs.scramble || '')) this._state = after(UPRIGHT, this._state, m).state;
     }
     this._writePose();
+    this._refitIfTurned();
     // AFTER the scramble, not only inside _paint(). _paint() resolves the highlight while every
     // cubie is still at home, and the loop above then moves them — so a positional selector set
     // before reset() named the pre-scramble occupant of the slot. Unconditional rather than tucked
@@ -1543,7 +1571,11 @@ class CubusCube extends HTMLElement {
     // on each jump.
     this._quiet = true;
     try { this.reset(); } finally { this._quiet = false; }
-    for (let i = 0; i < target; i++) this._state = after(UPRIGHT, this._state, this._sol[i]).state;
+    for (let i = 0; i < target; i++) {
+      const landed = after(this._seq, this._state, this._sol[i]);
+      this._state = landed.state;
+      this._seq = landed.frame;
+    }
     this._writePose();
     // Same reason as reset(): the moves above land after reset() painted, so a highlight set
     // before the seek would still be pointing at wherever those pieces used to be.

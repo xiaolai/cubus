@@ -26,6 +26,7 @@
 // they cannot come to disagree.
 
 import { CORNERS, EDGES, MOVES, applyMove } from '../../../apps/web/lib/cube-pieces.js';
+import { faceTurnsOf, turnPieces } from '../../../apps/web/lib/cube-moves.js';
 
 /** Face letter -> outward normal, the renderer's own axes (R=+x, U=+y, F=+z). */
 const NORMAL = { R: [1, 0, 0], L: [-1, 0, 0], U: [0, 1, 0], D: [0, -1, 0], F: [0, 0, 1], B: [0, 0, -1] };
@@ -217,21 +218,6 @@ export function poseAll(frame, state, move = null, phase = 1) {
   });
 }
 
-/** The face whose outward normal is `sign` along `axis`. */
-const faceAt = (axis, sign) => Object.keys(NORMAL).find(
-  (f) => NORMAL[f][AXIS_OF[axis]] === sign,
-);
-
-/** cube-pieces' name for a quarter/half turn of one outer layer, in this module's angle sign. */
-function nameOf(axis, sign, angle) {
-  const quarters = Math.round(angle / (Math.PI / 2));
-  const face = faceAt(axis, sign);
-  // The angle's sign is the geometry's; the letter's is the cube's. A face on the negative side of
-  // its axis turns the other way round for the same picture, which is why `sign` is in here.
-  const k = ((-sign * quarters) % 4 + 4) % 4;
-  return [null, face, `${face}2`, `${face}'`][k];
-}
-
 /**
  * What a move leaves behind: the pieces, and the frame they are now held in.
  *
@@ -246,24 +232,21 @@ function nameOf(axis, sign, angle) {
  */
 export function after(frame, state, move) {
   if (!move) return { frame, state };
-  const { axis, layers, angle } = move;
+  const { axis, angle } = move;
   const quarters = Math.round(angle / (Math.PI / 2));
-  const whole = layers.includes(0);
-  const outers = whole ? [1, -1].filter((s) => !layers.includes(s)) : layers.filter((s) => s !== 0);
-  let next = state;
+  // WHICH faces turn, and the pieces they leave, are the interpreter's arithmetic
+  // (`faceTurnsOf`/`turnPieces` in apps/web/lib/cube-moves.js), so the renderer draws with the rule the
+  // model is tested against rather than a copy of it. What stays here is what only a picture needs:
+  // each turned face's centre spins with it, in the geometry's direction.
+  const { whole, turns } = faceTurnsOf(move);
   const ct = [...(state.ct ?? [0, 0, 0, 0, 0, 0])];
   const spin = whole ? -quarters : quarters;
-  for (const sign of outers) {
-    const face = faceAt(axis, sign);
-    const name = nameOf(axis, sign, whole ? -angle : angle);
-    if (name) next = applyMove(next, name);
-    // The face's own centre goes round with it, in the geometry's direction rather than the
-    // letter's: the angle is what the picture does, and `nameOf` is only how the pieces say it.
+  for (const { face } of turns) {
     ct[CENTRES.indexOf(face)] = (((ct[CENTRES.indexOf(face)] + spin) % 4) + 4) % 4;
   }
   return {
     frame: whole ? mul(frame, rotation(axis, quarters * (Math.PI / 2))) : frame,
-    state: { ...next, ct },
+    state: { ...turnPieces(move, state), ct },
   };
 }
 
