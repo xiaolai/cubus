@@ -1,0 +1,84 @@
+// Following a cube along a walk by its arrangement — plan item 3.3 of dev-docs/tutorial-capability-plan.md.
+//
+// Every case drives the matcher with ARRANGEMENTS a real cube would report after each quarter turn, and
+// asserts both where it lands and that it never calls a legal path "off plan". The arrangements are
+// computed by cubejs, which shares no code with the piece model the track is built from.
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import test from 'node:test';
+
+import { locate, trackFor, trackOf } from '../lib/script-track.js';
+import { buildScript } from '../lib/script-view.js';
+import { parse } from '../lib/cube-notation.js';
+
+const require = createRequire(import.meta.url);
+const Cube = require('cubejs');
+
+const script = (steps, start = {}) => buildScript({ schema: 2, start, steps });
+/** Follow `reports` (quarter turns, in the cube's own frame) from position 0, recording each reading. */
+function follow(track, reports) {
+  const cube = new Cube();
+  let at = 0;
+  return reports.split(' ').map((turn) => {
+    cube.move(turn);
+    const loc = locate(track, cube.asString(), at);
+    if (loc.kind === 'step') at = loc.idx;
+    return { turn, ...loc, at };
+  });
+}
+
+// R5 of dev-docs/adr/0004-orientation-notation-and-colour-are-three-things.md. A planned `M` is reported
+// by a smart cube as `R` and `L'`, in either order, and both arrangements between are part of the plan.
+test('a slice reported as two face turns, in either order, is followed with nothing off plan', () => {
+  const track = trackFor(script([{ move: "M M'" }]));
+  for (const reports of ["R L' L R'", "L' R R' L"]) {
+    const read = follow(track, reports);
+    assert.deepEqual(read.filter((r) => r.kind === 'off'), [], `"${reports}" was called off plan at ${read.find((r) => r.kind === 'off')?.turn}`);
+    assert.deepEqual(read.map((r) => r.kind), ['mid', 'step', 'mid', 'step'], `"${reports}" read as ${read.map((r) => r.kind).join(' ')}`);
+    assert.equal(read.at(-1).at, 2, `"${reports}" did not finish the walk`);
+  }
+});
+
+test('a half turn is two quarter turns either way round, and its midpoint counts only beside it', () => {
+  const track = trackFor(script([{ move: 'R2 U' }]));
+  assert.deepEqual(follow(track, 'R R U').map((r) => r.kind), ['mid', 'step', 'step']);
+  assert.deepEqual(follow(track, "R' R' U").map((r) => r.kind), ['mid', 'step', 'step']);
+  // The same arrangement far from its own half turn is a wrong move, not quiet progress.
+  const far = trackFor(script([{ move: "U F D B R2" }]));
+  assert.equal(follow(far, 'R')[0].kind, 'off', 'a midpoint four positions away was accepted as progress');
+});
+
+// R6: a walk that passes through one arrangement twice. The turn that reached it is progress.
+test('a turn that returns to an arrangement the walk passes through twice is progress, not an undo', () => {
+  const track = trackFor(script([{ move: "R R' U" }]));
+  const read = follow(track, "R R'");
+  assert.deepEqual(read.map((r) => r.at), [1, 2], 'checking behind first drew an undo nobody made');
+});
+
+// ADR 0004 decision 9 and R7: a regrip changes no arrangement, so nothing will ever report it.
+test('a regrip is passed through when the turn before it lands, and never on its own', () => {
+  const track = trackFor(script([{ move: 'R x2' }]));
+  assert.deepEqual(track.observable, [true, true, false]);
+  assert.deepEqual(follow(track, 'R').map((r) => r.at), [2], 'the walk waited at a trailing regrip for a report that never comes');
+  // Standing on a position does not skip ahead: a snapshot of the start is still the start.
+  assert.deepEqual(locate(track, new Cube().asString(), 0), { kind: 'step', idx: 0 });
+  // And a regrip leading into a turn is the same group as that turn, so there is no position to pass.
+  const leading = trackFor(script([{ move: 'y R' }]));
+  assert.equal(leading.states.length, 2);
+  const cube = new Cube(); cube.move('B');
+  assert.deepEqual(locate(leading, cube.asString(), 0), { kind: 'step', idx: 1 }, '`y R` is `B` to the cube');
+});
+
+test('a painted picture is on the track and cannot be matched', () => {
+  const track = trackFor(script([{ move: 'R' }, { paint: 'U'.repeat(9) + '?'.repeat(45) }, { cube: new Cube().asString() }]));
+  assert.equal(track.states[2], null);
+  assert.equal(locate(track, new Cube().asString(), 1).kind, 'step', 'the cube after the picture is still a position');
+});
+
+test('the track refuses a shape that cannot be a walk', () => {
+  assert.throws(() => trackOf(['x', 'y'], []), /2 positions need 1 transitions, not 0/);
+  assert.equal(trackOf([new Cube().asString()], []).states.length, 1);
+  // A walk that does not exist yet — one being searched for — is followed by nothing, without throwing.
+  assert.deepEqual(locate(trackOf([], []), new Cube().asString(), 0), { kind: 'off' });
+  assert.equal(parse('R').length, 1);
+});

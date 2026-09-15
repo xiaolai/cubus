@@ -107,8 +107,40 @@ test('a cue in force says where it took effect, and a question in one is answere
   assert.equal(viewAtPosition(built, 0).cues.hl, undefined, 'a cue took effect before the step that gives it');
   // Clearing is a value of its own.
   const cleared = buildScript(script([{ move: 'R', focus: 'slot:UR' }, { move: 'U', focus: null }]));
-  assert.equal(viewAtPosition(cleared, 1).cues.focus, 'slot:UR');
+  assert.equal(viewAtPosition(cleared, 1).cues.focus, 'piece:FR');
   assert.equal(viewAtPosition(cleared, 2).cues.focus, undefined);
+});
+
+// ADR 0004 decision 10 and R10: focus LATCHES onto the pieces it named. A driver seeks and lands cold,
+// so the binding is done from the script — the element is handed pieces, and where the cube is when
+// they arrive cannot change which.
+test('a focus is handed to the element as the pieces it named where it took effect', () => {
+  const built = buildScript(script([
+    { move: 'R', focus: 'slot:UR' },       // after R, the FR edge sits in UR
+    { move: 'U' },
+    { move: "U' R'" },
+  ]));
+  const focus = built.positions.map((p) => viewAtPosition(built, p.index).cues.focus ?? null);
+  assert.deepEqual(focus, [null, 'piece:FR', 'piece:FR', 'piece:FR', 'piece:FR'],
+    'the focus followed the slot instead of staying on the piece it named');
+  // A layer names every piece in it, and centres are pieces too.
+  const layer = buildScript(script([{ move: 'R', focus: 'layer:U' }]));
+  const pieces = viewAtPosition(layer, 1).cues.focus.split(',');
+  assert.equal(pieces.length, 9, 'a layer is nine cubies');
+  assert.ok(pieces.includes('piece:U'), 'the centre of the layer was left out');
+  // Highlight stays positional: it names a place, and the element re-reads it after every turn.
+  const hl = buildScript(script([{ move: 'R', hl: 'slot:UR' }, { move: 'U' }]));
+  assert.equal(viewAtPosition(hl, 2).cues.hl, 'slot:UR');
+});
+
+// Decision 6: letters name positions in the hold in force WHEN THE CUE IS GIVEN. Tumbled — an x2 from the
+// reference, which leaves R where it was — the child's "upper right" is the cube's D and R faces.
+test('a cue\'s letters are read in the hold where it was written, and handed to the element in the cube\'s own', () => {
+  const built = buildScript(script([{ move: 'R', hl: 'slot:UR' }, { move: 'y' }], { hold: 'D B' }));
+  assert.equal(viewAtPosition(built, 1).cues.hl, 'slot:DR', 'held D B, the child\'s UR is the cube\'s DR');
+  assert.equal(viewAtPosition(built, 2).cues.hl, 'slot:DR', 'a regrip after the cue moved the slot it names');
+  const asked = buildScript(script([{ move: 'U', hl: 'ask:whereIs:UR' }], { hold: 'D B' }));
+  assert.equal(viewAtPosition(asked, 1).cues.hl, 'piece:DR', 'a question answered in the child\'s letters was handed over untranslated');
 });
 
 test('a question with no answer lights nothing rather than leaving the last one glowing', () => {

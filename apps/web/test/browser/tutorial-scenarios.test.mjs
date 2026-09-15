@@ -8,15 +8,18 @@
 // table, a hold drawn the wrong way round or a turn applied to the wrong layer shows up as a letter in
 // the wrong place — never as two copies of one mistake agreeing with each other.
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import { after, before, test } from 'node:test';
 
 import { ROTATIONS, SOLVED_FACELETS, applyMoves, held, play } from '../cube-oracle.mjs';
 import { SCENARIOS } from '../fixtures/tutorial-scenarios.mjs';
 import * as cubeKit from '../../lib/cube-kit.js';
-import { OPEN_ITEMS, strictKit, underGapRules } from '../tutorial-runner.mjs';
+import { BROWSER_PLAYER_KINDS, OPEN_ITEMS, startOf, strictKit, underGapRules } from '../tutorial-runner.mjs';
 import { readMatrices, readStickers, toWorld } from './drawn-cube.mjs';
 import { installPublicCube } from './public-cube.mjs';
 import { startBrowserFixture } from './harness.mjs';
+
+const require = createRequire(import.meta.url);
 
 /** What a scenario may use of the model: cube-kit, strictly. */
 const kit = strictKit(cubeKit);
@@ -31,6 +34,17 @@ before(async () => {
   // The public cube a scenario is WRITTEN against: the manifest's attributes, methods, properties,
   // events and DOM operations, and nothing else (test/browser/public-cube.mjs).
   await installPublicCube(page);
+  // The script runtime, loaded IN the page as the app would load it — so the drivers write onto the
+  // element through the same public cube a scenario is held to, and nothing is reimplemented here.
+  await page.addScriptTag({
+    type: 'module',
+    content: `
+      import { buildScript } from '/lib/script-view.js';
+      import { createClockDriver, createStopDriver } from '/lib/script-drive.js';
+      window.__script = { buildScript, createClockDriver, createStopDriver };
+    `,
+  });
+  await page.waitForFunction(() => !!window.__script);
 });
 
 after(async () => { await fixture?.close(); });
@@ -190,6 +204,121 @@ const ELEMENT_RUNNERS = {
     assert.deepEqual(await at(tokens(sc.alg).length), bound, `${sc.id}: seeking back re-bound "${sc.selector}"`);
   },
 };
+
+/**
+ * Let every turn the element was handed land: advance its pinned clock a frame at a time until nothing
+ * is animating. A stop group feeds one token at a time, so this takes as many frames as the group has.
+ */
+const settle = () => page.evaluate(async () => {
+  const el = window.__cube;
+  const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+  for (let i = 0; i < 60; i++) {
+    el.clock = el._now() + 500;
+    await frame();
+    if (!window.__publicCube(el).animating) { await frame(); if (!window.__publicCube(el).animating) return; }
+  }
+  throw new Error('the element was still animating after 60 frames');
+});
+
+/** A driver over the element in the page, through the public cube. `kind` is `clock` or `stop`. */
+const drive = (kind, doc) => page.evaluate(([k, d]) => {
+  const built = window.__script.buildScript(d);
+  const cube = window.__publicCube(window.__cube);
+  window.__driver = k === 'clock'
+    ? window.__script.createClockDriver(built, { cube })
+    : window.__script.createStopDriver(built, { cube });
+}, [kind, doc]);
+const call = (method, ...args) => page.evaluate(([m, a]) => {
+  const out = window.__driver[m](...a);
+  return out && { position: out.position, moves: out.moves, hold: out.hold, kind: out.kind };
+}, [method, args]);
+const attribute = (name) => page.evaluate((n) => window.__publicCube(window.__cube).getAttribute(n), name);
+
+/** The player half's runners that need a drawing: each drives the REAL element and reads it back. */
+const PLAYER_RUNNERS = {
+  // R2: the hold is written once, when the sequence loads, and the sequence turns the cube. A player that
+  // wrote the current hold on every paint would draw `y` twice — the element's frame and the attribute.
+  async 'episode-hold-timeline'(sc) {
+    await build({});
+    await drive('clock', { schema: 2, start: { hold: 'U F' }, steps: [{ say: 'watch', at: 0 }, { move: sc.moves, at: 1 }] });
+    const oracle = play(SOLVED_FACELETS, 'U F', sc.moves);
+    const times = [0, ...tokens(sc.moves).map((_, j) => 1 + j * 0.55 + 0.01)];
+    for (const [k, t] of times.entries()) {
+      await call('paint', t);
+      await settle();
+      assert.equal(await attribute('orientation'), 'U F', `${sc.id}: the hold was written again at ${t}s`);
+      assert.equal(toWorld(await readStickers(page)), oracle.worlds[k], `${sc.id}: at ${t}s (${k} of the child's moves)`);
+    }
+  },
+
+  // R7 and cubus-im lesson 10 §4: a trailing whole-cube turn is turned when the schedule says, never
+  // when its segment is loaded — the flip comes after the sentence that announces it.
+  async 'timed-trailing-rotation'(sc) {
+    await build({});
+    const identity = startOf(sc);
+    await drive('clock', {
+      schema: 2,
+      start: { hold: sc.start.hold, scramble: sc.start.setup },
+      steps: [{ say: 'the first layer is done', at: 0 }, { say: 'now turn it over', at: 2 }, { move: sc.moves, at: 4 }],
+    });
+    const oracle = play(identity, sc.start.hold, sc.moves);
+    for (const t of [0, 2, 3.99]) {
+      await call('paint', t);
+      await settle();
+      assert.equal(toWorld(await readStickers(page)), oracle.worlds[0], `${sc.id}: turned over at ${t}s, before its time`);
+    }
+    await call('paint', 4.01);
+    await settle();
+    assert.equal(toWorld(await readStickers(page)), oracle.worlds.at(-1), `${sc.id}: not turned over at its time`);
+  },
+
+  // R3: a walk moves by stops. `y R` is one press, played as a group, and back undoes the whole group.
+  async 'walk-stops'(sc) {
+    for (const walk of sc.walks) {
+      await build({});
+      await drive('stop', { schema: 2, start: { hold: 'U F' }, steps: [{ move: walk }] });
+      const oracle = play(SOLVED_FACELETS, 'U F', walk);
+      assert.equal((await call('next')).position, 1, `${sc.id}: "${walk}" is one stop`);
+      await settle();
+      assert.equal(toWorld(await readStickers(page)), oracle.worlds.at(-1), `${sc.id}: "${walk}" after one press`);
+      assert.equal((await call('back')).position, 0);
+      await settle();
+      assert.equal(toWorld(await readStickers(page)), oracle.worlds[0], `${sc.id}: back did not undo "${walk}" whole`);
+    }
+  },
+
+  // R5: a planned slice, reported by a smart cube as two face turns in either order, is followed with no
+  // off-plan note — and the drawing ends where the walk does.
+  async 'walk-reports'(sc) {
+    const Cube = require('cubejs');
+    for (const reports of sc.reports) {
+      await build({});
+      await drive('stop', { schema: 2, start: { hold: 'U F' }, steps: [{ move: sc.planned }] });
+      const cube = new Cube();
+      const read = [];
+      for (const turn of reports.split(' ')) {
+        cube.move(turn);
+        read.push(await page.evaluate((f) => window.__driver.observe(f), cube.asString()));
+        await settle();
+      }
+      assert.deepEqual(read.filter((r) => r.kind === 'off'), [], `${sc.id}: "${reports}" was called off plan`);
+      assert.equal(read.at(-1).position, tokens(sc.planned).length, `${sc.id}: "${reports}" did not finish the walk`);
+      assert.equal(toWorld(await readStickers(page)), play(SOLVED_FACELETS, 'U F', sc.planned).worlds.at(-1),
+        `${sc.id}: the drawing did not end where "${reports}" left the cube`);
+    }
+  },
+};
+
+for (const sc of SCENARIOS.filter((s) => s.half === 'player' && BROWSER_PLAYER_KINDS.includes(s.kind))) {
+  const open = OPEN_ITEMS.includes(sc.closedBy);
+  test(`${sc.id} (${sc.source})`, async (t) => {
+    await underGapRules(t, sc, open, () => {
+      const runner = PLAYER_RUNNERS[sc.kind];
+      if (!runner) throw new Error(`no runner for "${sc.kind}" yet — it arrives with plan item ${sc.closedBy}`);
+      return runner(sc);
+    });
+  });
+}
 
 for (const sc of SCENARIOS.filter((s) => s.half === 'element' && s.closedBy)) {
   const open = OPEN_ITEMS.includes(sc.closedBy);
