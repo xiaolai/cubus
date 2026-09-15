@@ -36,8 +36,8 @@ const PROMISED = [
   'sameAxis', 'selects', 'silhouette', 'slotVector', 'turnFacelets',
   // Notation (plan item 1.1).
   'formatMoves', 'parse',
-  // The interpreter (plan item 1.2).
-  'run',
+  // The interpreter (plan items 1.2 and 1.3).
+  'convertSelectors', 'run',
   // The episode runtime.
   'CAM_DEFAULT', 'CAM_EASE', 'GHOST_ELEV', 'GHOST_REVEAL', 'MIN_PER_MOVE', 'QUARTER_GAP',
   'SPAN_LEAD', 'buildSchedule', 'cameraAt', 'checkEpisode', 'createLessonPlayer', 'lineAt',
