@@ -119,6 +119,27 @@ export function rungDelta(states, { dial, from, to, axis }) {
   return { moved, compared, sd };
 }
 
+/**
+ * Whether a rung earns its place: what it moves, against its floor, on a sample able to fail it.
+ *
+ * A result at or above the floor passes on the states given. One BELOW it by less than two standard
+ * errors is not failed on that sample: it is measured again on `wider` states (a list, or a function
+ * that makes one), and only that measurement is judged — dev-docs/method-solver-return-plan.md §10,
+ * 2026-09-16, when the pairs rung measured 1.875 on 120 cubes and 1.905 on 1,000 against a floor of
+ * 1.75. `measure` is `rungDelta`, and is a parameter so the rule itself can be tested without a solve.
+ */
+export function judgeRung(states, criterion, { wider = null, measure = rungDelta } = {}) {
+  let result = measure(states, criterion);
+  let remeasured = false;
+  const withinNoise = result.moved < criterion.floor
+    && criterion.floor - result.moved < (2 * result.sd) / Math.sqrt(result.compared);
+  if (wider && withinNoise) {
+    result = measure(typeof wider === 'function' ? wider() : wider, criterion);
+    remeasured = true;
+  }
+  return { ...result, remeasured, earns: result.moved >= criterion.floor };
+}
+
 // ---- the command line -------------------------------------------------------------------------
 
 const COMMANDS = ['profile', 'ladder', 'exhaustive', 'all'];
