@@ -78,6 +78,10 @@ export {
 // and no colour (dev-docs/adr/0004-orientation-notation-and-colour-are-three-things.md, decision 4).
 export { formatMoves, parse } from './cube-notation.js';
 
+// The interpreter: the child's moves, read in the hold in force as each is made, applied to a cube —
+// the pieces, the hold after, and the identity-frame tokens that draw it (ADR 0004 decision 5).
+export { run } from './cube-moves.js';
+
 // The view the app draws its own cubes at, so a consumer's cubes can look like the app's without
 // keeping a hand-copied set of numbers that goes stale in silence.
 export { CUBE_VIEW, CUBE_VIEW_ATTRS } from './cube-view.js';

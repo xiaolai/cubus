@@ -161,14 +161,14 @@ export const SCENARIOS = Object.freeze([
     id: 'red-green-edge-into-FR', stage: 'middle layer', half: 'model', kind: 'moves', closedBy: '1.2',
     source: "the owner, 2026-09-15: tumbled, turn red to the front, insert the red-green edge",
     needs: ['held-letters', 'rotation-token', 'hold-change-in-sequence'],
-    start: { hold: 'D B', setup: "y U' F' U F U R U' R' y'" }, moves: "y U R U' R' U' F' U F",
+    start: { hold: 'D B', setup: "y F' U' F U R U R' U' y'" }, moves: "y U R U' R' U' F' U F",
     expect: { holdAfter: { 1: 'D R' }, solvedAtEnd: true },
   },
   {
     id: 'red-green-edge-question', stage: 'middle layer', half: 'model', kind: 'question', closedBy: '1.4',
     source: "the owner, 2026-09-15: find the top edges with none of the top colour",
     needs: ['question'],
-    start: { hold: 'D B', setup: "y U' F' U F U R U' R' y'" }, moves: 'y', ask: 'topEdgesWithoutTopColour',
+    start: { hold: 'D B', setup: "y F' U' F U R U R' U' y'" }, moves: 'y', ask: 'topEdgesWithoutTopColour',
   },
   {
     id: 'lesson-12-piece-under-grip-and-hold', stage: 'middle layer', half: 'model', kind: 'selectors', closedBy: '1.3',
