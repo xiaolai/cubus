@@ -98,12 +98,6 @@ SCREENS.timer = () => {
         promising = true;
       };
 
-      // A lost turn means the span cannot be vouched for, and this is the only path that says so
-      // on a cube that does not number its moves — which is three of the brands the app speaks to.
-      // The clock keeps running: a solve in progress is still a solve. It is the RESULT that is
-      // refused, and solve-timer already owns those words.
-      hooks.liveGap = () => auto.interrupted();
-
       warmSolver();      // New scramble is one press away here; see cubeScreen's mount
       schedulePreroll(); // and it should never be the press that waits for a search
       /** Whether the scramble line shows a scramble this screen put in play, rather than a sentence. */
@@ -372,6 +366,12 @@ SCREENS.timer = () => {
       // — so it says how to stop it by hand instead (found by audit, 2026-09-13). And a clock that
       // is not running can no longer be STARTED by it: a line promising that was left standing for
       // the rest of the visit (found by audit, 2026-09-15).
+      //
+      // A turn the cube lost arrives HERE, and this screen installs no `liveGap`: onMovesLost marks
+      // the chain stale before it calls that hook, so the cube timer is already reset and there is
+      // no cube-timed solve left for a "moves were dropped" refusal to be about. The hook this
+      // screen had called a refusal on an idle timer every time (audit, 2026-09-15). On an already
+      // stale chain nothing lapses, and nothing needs to: the cube timer arms only while trusted.
       hooks.onTrustLost = () => {
         auto.reset();
         if (!running) {

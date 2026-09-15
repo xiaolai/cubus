@@ -2375,16 +2375,52 @@ test('phase 4: the Timer arms on the scramble, starts on a turn, and stops on so
 
 test('phase 4: the Timer releases the cube stream when the screen goes away', async () => {
   // A torn-down closure that keeps timing is the bug the cleanup exists to prevent — and the same
-  // class of leak that phase 4 fixed for the animation frame.
-  win.cubusGo('timer');
-  await tick();
-  win.cubusGo('home');
-  await tick();
-  // Feeding after teardown must not throw: the screen's handlers are detached, not dangling.
-  assert.doesNotThrow(() => {
-    win.cubusFeed.move({ notation: 'R', serial: 1, cubeTimestamp: 1000, timestamp: Date.now() });
-    win.cubusFeed.facelets(SOLVED_FACELETS, 1);
-  });
+  // class of leak that phase 4 fixed for the animation frame. This used to assert only that feeding
+  // after teardown did not throw, which it passed with the Timer's cleanup deleted: the shell clears
+  // the stream hooks itself, and a frame loop left running throws nothing (audit, 2026-09-15). So it
+  // leaves in the middle of a solve the cube started — the one state in which there is a loop to
+  // stop and a stream that could still finish the solve — and asserts both came to an end.
+  const { state } = await import('../lib/app.js');
+  const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url).href)).default;
+  const solves = () => JSON.parse(win.localStorage.getItem('cubusSolves') || '{"list":[]}').list.length;
+  resetCubeModel(state);
+  try {
+    state.connected = true;
+    state.cubeName = 'GAN-test';
+    state.cube.trusted = true;
+    state.cube.source = 'cube';
+    state.cube.staleWhy = '';
+    win.cubusGo('timer');
+    await tick();
+    const clock = win.document.querySelector('#clock');
+    const scrEl = win.document.querySelector('#scr');
+    const t0 = Date.now();
+    while (Date.now() - t0 < 30000 && !/^[URFDLB]/.test(scrEl.textContent || '')) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.match(scrEl.textContent || '', /^[URFDLB]/, 'precondition: a scramble was generated');
+    const c = Cube.fromString(SOLVED_FACELETS);
+    for (const m of scrEl.textContent.trim().split(/\s+/)) c.move(m);
+    win.cubusFeed.facelets(c.asString(), 2);
+    await tick();
+    win.cubusFeed.move({ notation: 'R', serial: 3, cubeTimestamp: 1000, timestamp: Date.now() });
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(clock.getAttribute('aria-label'), 'Stop the timer', 'precondition: the cube started the clock');
+    const before = solves();
+
+    win.cubusGo('home');
+    await tick();
+    // The loop: a clock that keeps writing its figure onto a screen nobody can see.
+    const left = clock.textContent;
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(clock.textContent, left, 'the Timer\'s frame loop outlived its screen — the clock is still counting');
+    // The stream: the turn and the snapshot that would have finished the solve reach nothing.
+    win.cubusFeed.move({ notation: "R'", serial: 4, cubeTimestamp: 4200, timestamp: Date.now() });
+    win.cubusFeed.facelets(SOLVED_FACELETS, 4);
+    await tick();
+    assert.equal(solves(), before, 'a torn-down Timer recorded a solve from the cube stream');
+    assert.notEqual(clock.textContent, '3.20', 'a torn-down Timer stopped its clock on the cube\'s word');
+  } finally { resetCubeModel(state); }
 });
 
 

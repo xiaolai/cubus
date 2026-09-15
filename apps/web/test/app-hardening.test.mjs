@@ -502,6 +502,42 @@ test('a cube whose trust lapses mid-solve stops promising that it will stop the 
   });
 });
 
+// A turn the cube lost reaches the Timer as trust lapsing, and only as that: onMovesLost marks the
+// chain stale before anything else, so the clock the cube started is handed to the hand at once and
+// the cube can neither stop it nor have a time recorded for it. There is no cube-timed result left
+// for a "moves were dropped" refusal to be about (audit, 2026-09-15).
+test('a turn lost under a cube-started solve hands the clock to the hand, and the cube cannot stop it', async () => {
+  const { recentSolves, dropLastSolve } = await import('../lib/scramble-roll.js');
+  const newest = () => recentSolves().find((s) => s.time)?.n;
+  const before = newest();
+  try {
+    await onTrustedTimer(async (target) => {
+      win.cubusFeed.facelets(target, 2);
+      await tick();
+      win.cubusFeed.move({ notation: 'R', serial: 3, cubeTimestamp: 1000, timestamp: Date.now() });
+      await tick();
+      assert.match($('#timerHint').textContent, /cube stops the clock/, 'precondition: the cube started it');
+      const { hooks } = await import('../lib/screen-slots.js');
+      assert.equal(hooks.liveGap, null,
+        'the Timer installs a lost-turn hook again — onMovesLost can only ever hand it a timer trust has already reset');
+
+      win.cubusFeed.movesLost();
+      await tick();
+      assert.match($('#timerHint').textContent, /will not stop this clock/,
+        'a lost turn left the line promising that the cube would stop the clock');
+      assert.equal($('#clock').getAttribute('aria-label'), 'Stop the timer', 'a solve in progress is still a solve');
+
+      win.cubusFeed.move({ notation: "R'", serial: 4, cubeTimestamp: 4200, timestamp: Date.now() });
+      win.cubusFeed.facelets(SOLVED_FACELETS, 4);
+      await tick();
+      assert.equal($('#clock').getAttribute('aria-label'), 'Stop the timer', 'the cube stopped a clock after a turn went missing');
+      assert.equal(newest(), before, 'a solve was recorded from the cube across a lost turn');
+    });
+  } finally {
+    while (newest() !== before && dropLastSolve()); // the hand stop in onTrustedTimer records one
+  }
+});
+
 test('a cube reaching the scramble under a hand-started clock does not say the clock is ready', async () => {
   await onTrustedTimer(async (target) => {
     $('#clock').click(); // started by hand
