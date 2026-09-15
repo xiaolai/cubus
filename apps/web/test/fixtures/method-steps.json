@@ -27,8 +27,8 @@
       "scramble": "F2 U2 B2 D R' U R2 B F' L U' R L B2 U' F L' D' L F B' U2 L' F L2 D' B' F2 R B2",
       "methods": {
         "beginner": {
-          "alg": "B2 U2 F2 L U B' R B U2 L' B L R' U R U L2 L U L' U R U2 R' U' R U R' F U F' U R' U' R U L U2 L' U' L U L' U F U F' U' F' U F U R U' R' U F U' F' U' L' U L U B U' B' U' R' U R B' U B U L U' L' U' L' U L U F U' F' F U F' U F U2 F' R2 B2 R F R' B2 R F' R B U' B U B U B U' B' U' B2 F2 U F U F' U' F' U' F' U F'",
-          "moveCount": 124,
+          "alg": "B2 U2 F2 L U B' R B U2 L' B L R' U R U L2 L U L' U R U2 R' U' R U R' F U F' U R' U' R U L U2 L' U' L U L' U F U F' U' F' U F U R U' R' B' U B U L U' L' U F U' F' U' L' U L U B U' B' U' R' U R U F U' F' U' L' U L R U R' U R U2 R' F' L F' R2 F L' F' R2 F2 L U' L U L U L U' L' U' L2",
+          "moveCount": 113,
           "steps": [
             {
               "stage": "cross",
@@ -172,62 +172,79 @@
               "stage": "middle-layer",
               "kind": "case",
               "target": "8",
-              "alg": "U' F' U F U R U' R'",
+              "alg": "y U' L' U L U F U' F'",
               "caseName": "insert-left",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 8
+                "edge": 8,
+                "turn": true,
+                "look": [
+                  8,
+                  10
+                ]
               }
             },
             {
               "stage": "middle-layer",
               "kind": "case",
               "target": "11",
-              "alg": "U F U' F' U' L' U L",
-              "caseName": "insert-right",
-              "why": {
-                "key": "middleLayer.eject",
-                "edge": 11
-              }
-            },
-            {
-              "stage": "middle-layer",
-              "kind": "case",
-              "target": "11",
-              "alg": "U B U' B' U' R' U R",
-              "caseName": "insert-right",
+              "alg": "y2 L' U L U F U' F'",
+              "caseName": "insert-left",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 11
+                "edge": 11,
+                "turn": true,
+                "look": [
+                  11
+                ]
               }
             },
             {
               "stage": "middle-layer",
               "kind": "case",
               "target": "10",
-              "alg": "B' U B U L U' L'",
-              "caseName": "insert-left",
+              "alg": "U R U' R' U' F' U F",
+              "caseName": "insert-right",
               "why": {
-                "key": "middleLayer.insert",
+                "key": "middleLayer.eject",
                 "edge": 10
               }
             },
             {
               "stage": "middle-layer",
               "kind": "case",
-              "target": "9",
-              "alg": "U' L' U L U F U' F'",
-              "caseName": "insert-left",
+              "target": "10",
+              "alg": "y2 U R U' R' U' F' U F",
+              "caseName": "insert-right",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 9
+                "edge": 10,
+                "turn": true,
+                "look": [
+                  10
+                ]
+              }
+            },
+            {
+              "stage": "middle-layer",
+              "kind": "case",
+              "target": "10",
+              "alg": "y2 U R U' R' U' F' U F",
+              "caseName": "insert-right",
+              "why": {
+                "key": "middleLayer.insert",
+                "edge": 10,
+                "turn": true,
+                "look": [
+                  10
+                ]
               }
             },
             {
               "stage": "top-face",
               "kind": "case",
               "target": "corners",
-              "alg": "F U F' U F U2 F'",
+              "alg": "B U B' U B U2 B'",
               "caseName": "sune",
               "why": {
                 "key": "topFace.orient",
@@ -242,14 +259,14 @@
               "stage": "top-corners",
               "kind": "case",
               "target": "permute",
-              "alg": "R2 B2 R F R' B2 R F' R",
-              "caseName": "corner-cycle-back",
+              "alg": "R' F R' B2 R F' R' B2 R2",
+              "caseName": "corner-cycle",
               "why": {
                 "key": "topCorners.permute",
                 "corners": [
+                  2,
                   3,
-                  0,
-                  2
+                  0
                 ]
               }
             },
@@ -257,38 +274,22 @@
               "stage": "top-edges",
               "kind": "case",
               "target": "permute",
-              "alg": "B U' B U B U B U' B' U' B2",
+              "alg": "F U' F U F U F U' F' U' F2",
               "caseName": "u-perm-a",
-              "why": {
-                "key": "topEdges.permute.step",
-                "edges": [
-                  1,
-                  0,
-                  3,
-                  2
-                ]
-              }
-            },
-            {
-              "stage": "top-edges",
-              "kind": "case",
-              "target": "permute",
-              "alg": "F2 U F U F' U' F' U' F' U F'",
-              "caseName": "u-perm-b",
               "why": {
                 "key": "topEdges.permute",
                 "edges": [
-                  2,
                   3,
-                  1
+                  1,
+                  2
                 ]
               }
             }
           ]
         },
         "intermediate": {
-          "alg": "U2 F' D' B' D' L U L U' L' U' B' U B U2 F' U F U R U' R' F U F' U R' U' R U' B' U B U L U' L' U B U' B' U' R' U R U2 B' U B U' B' U' B U2 F U F' L' U2 L F U F' L F U F' U' L' F U F' U F U2 F' B U2 B' U' B U' B' F' L F' R2 F L' F' R2 F2 U' R2 U R U R' U' R' U' R' U R'",
-          "moveCount": 104,
+          "alg": "U2 F' D' B' D' L U' B' U B U L U' L' U2 R U' R' U' F' U F F U F' U R' U' R U R' U R U B U' B' L' U L U L U2 L' U' L U L' U2 B' U B U L U' L' U2 F U2 F' L' U2 L R B U B' U' R' R B U B' U' R' B L U L' U' B' R U2 R' U' R U' R' B L U' L' U' L U L' B' L U L' U' L' B L B' R U' R U R U R U' R' U' R2 B U' B U B U B U' B' U' B2",
+          "moveCount": 127,
           "steps": [
             {
               "stage": "cross",
@@ -304,117 +305,143 @@
               "stage": "f2l",
               "kind": "case",
               "target": "8",
-              "alg": "U L U' L' U' B' U B",
-              "caseName": "insert-right",
+              "alg": "y' U' L' U L U F U' F'",
+              "caseName": "insert-left",
               "why": {
                 "key": "middleLayer.eject",
-                "edge": 8
+                "edge": 8,
+                "turn": true
               }
             },
             {
               "stage": "f2l",
               "kind": "case",
-              "target": "8",
-              "alg": "U2 F' U F U R U' R'",
-              "caseName": "insert-left",
+              "target": "11",
+              "alg": "y U2 R U' R' U' F' U F",
+              "caseName": "insert-right",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 8
+                "edge": 11,
+                "turn": true
               }
             },
             {
               "stage": "f2l",
               "kind": "goal",
               "target": "7",
-              "alg": "F U F'",
+              "alg": "y L U L'",
               "why": {
                 "key": "firstLayer.lift",
-                "corner": 7
+                "corner": 7,
+                "turn": true
               }
             },
             {
               "stage": "f2l",
               "kind": "case",
-              "target": "7",
-              "alg": "U R' U' R",
+              "target": "4",
+              "alg": "U F' U' F",
               "caseName": "left-hand",
               "why": {
                 "key": "firstLayer.insert",
-                "corner": 7
+                "corner": 4
               }
             },
             {
               "stage": "f2l",
               "kind": "case",
-              "target": "11",
-              "alg": "U' B' U B U L U' L'",
+              "target": "8",
+              "alg": "y U L' U L U F U' F'",
               "caseName": "insert-left",
               "why": {
-                "key": "middleLayer.eject",
-                "edge": 11
+                "key": "middleLayer.insert",
+                "edge": 8,
+                "turn": true
+              }
+            },
+            {
+              "stage": "f2l",
+              "kind": "goal",
+              "target": "4",
+              "alg": "R' U R",
+              "why": {
+                "key": "firstLayer.lift",
+                "corner": 4
               }
             },
             {
               "stage": "f2l",
               "kind": "case",
-              "target": "11",
-              "alg": "U B U' B' U' R' U R",
-              "caseName": "insert-right",
+              "target": "4",
+              "alg": "U R U2 R' U' R U R'",
+              "caseName": "facing-up",
+              "why": {
+                "key": "firstLayer.insert",
+                "corner": 4
+              }
+            },
+            {
+              "stage": "f2l",
+              "kind": "case",
+              "target": "8",
+              "alg": "y U2 L' U L U F U' F'",
+              "caseName": "insert-left",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 11
+                "edge": 8,
+                "turn": true
               }
             },
             {
               "stage": "f2l",
               "kind": "case",
-              "target": "6",
-              "alg": "U2 B' U B U' B' U' B",
-              "caseName": "UBR2/UR1",
+              "target": "4",
+              "alg": "U2 R U2 R' F' U2 F",
+              "caseName": "DFR2/UB1",
               "parts": [
                 {
-                  "name": "left-back",
-                  "alg": "U2 B' U B"
-                },
-                {
-                  "name": "left",
-                  "alg": "U' B' U' B"
-                }
-              ],
-              "why": {
-                "key": "f2l.pair",
-                "corner": 6,
-                "edge": 10
-              }
-            },
-            {
-              "stage": "f2l",
-              "kind": "case",
-              "target": "5",
-              "alg": "U2 F U F' L' U2 L F U F'",
-              "caseName": "UBR0/UB1",
-              "parts": [
-                {
-                  "name": "align",
-                  "alg": "U2"
-                },
-                {
-                  "name": "right",
-                  "alg": "F U F'"
+                  "name": "right-half",
+                  "alg": "U2 R U2 R'"
                 },
                 {
                   "name": "left-half",
-                  "alg": "L' U2 L"
-                },
-                {
-                  "name": "right",
-                  "alg": "F U F'"
+                  "alg": "F' U2 F"
                 }
               ],
               "why": {
                 "key": "f2l.pair",
-                "corner": 5,
-                "edge": 9
+                "corner": 4,
+                "edge": 8
+              }
+            },
+            {
+              "stage": "top-cross",
+              "kind": "case",
+              "target": "edges",
+              "alg": "B L U L' U' B'",
+              "caseName": "edge-orient",
+              "why": {
+                "key": "topCross.orient.step",
+                "edges": [
+                  2,
+                  0,
+                  3,
+                  1
+                ]
+              }
+            },
+            {
+              "stage": "top-cross",
+              "kind": "case",
+              "target": "edges",
+              "alg": "B L U L' U' B'",
+              "caseName": "edge-orient",
+              "why": {
+                "key": "topCross.orient.step",
+                "edges": [
+                  2,
+                  3
+                ]
               }
             },
             {
@@ -426,22 +453,8 @@
               "why": {
                 "key": "topCross.orient",
                 "edges": [
-                  0,
-                  3
-                ]
-              }
-            },
-            {
-              "stage": "top-face",
-              "kind": "case",
-              "target": "corners",
-              "alg": "F U F' U F U2 F'",
-              "caseName": "sune",
-              "why": {
-                "key": "topFace.orient.step",
-                "corners": [
-                  0,
-                  1
+                  2,
+                  0
                 ]
               }
             },
@@ -454,9 +467,9 @@
               "why": {
                 "key": "topFace.orient",
                 "corners": [
+                  2,
                   1,
-                  3,
-                  2
+                  3
                 ]
               }
             },
@@ -464,12 +477,12 @@
               "stage": "top-corners",
               "kind": "case",
               "target": "permute",
-              "alg": "F' L F' R2 F L' F' R2 F2 U'",
-              "caseName": "corner-cycle",
+              "alg": "L F U' F' U' F U F' L' F U F' U' F' L F L'",
+              "caseName": "diagonal",
               "why": {
                 "key": "topCorners.permute",
                 "corners": [
-                  2,
+                  3,
                   1
                 ]
               }
@@ -478,14 +491,30 @@
               "stage": "top-edges",
               "kind": "case",
               "target": "permute",
-              "alg": "R2 U R U R' U' R' U' R' U R'",
-              "caseName": "u-perm-b",
+              "alg": "B U' B U B U B U' B' U' B2",
+              "caseName": "u-perm-a",
+              "why": {
+                "key": "topEdges.permute.step",
+                "edges": [
+                  2,
+                  3,
+                  0,
+                  1
+                ]
+              }
+            },
+            {
+              "stage": "top-edges",
+              "kind": "case",
+              "target": "permute",
+              "alg": "L U' L U L U L U' L' U' L2",
+              "caseName": "u-perm-a",
               "why": {
                 "key": "topEdges.permute",
                 "edges": [
-                  1,
-                  2,
-                  0
+                  3,
+                  0,
+                  2
                 ]
               }
             }
@@ -497,8 +526,8 @@
       "scramble": "R U2 D' U2 L B' U2 F' R L' B2 R2 B D' U2 R2 D' F' U F R' B2 D L' U2 B U' B2 F' B'",
       "methods": {
         "beginner": {
-          "alg": "R2 U F2 U2 R2 B2 U' L' B L L2 U' F' L F F U F' U2 R U R' F U F' U B U B' U' L U L' U' F U F' U F' U F U R U' R' U B U' B' U' R' U R U' B U' B' U' R' U R U2 L U' L' U' B' U B U F U' F' U' L' U L L2 D L' U2 L D' L' U2 L' F2 R2 F L F' R2 F L' F U",
-          "moveCount": 96,
+          "alg": "R2 U F2 U2 R2 B2 U' L' B L L2 U' F' L F F U F' U2 R U R' F U F' U B U B' U' L U L' U' F U F' B' U B U L U' L' U R U' R' U' F' U F U L' U L U F U' F' U B U' B' U' R' U R U' B U' B' U' R' U R F R U R' U' F' R U R' U R U2 R' L2 F2 L B L' F2 L B' L U' F U' F U F U F U' F' U' F2",
+          "moveCount": 110,
           "steps": [
             {
               "stage": "cross",
@@ -641,69 +670,100 @@
             {
               "stage": "middle-layer",
               "kind": "case",
-              "target": "8",
-              "alg": "U F' U F U R U' R'",
+              "target": "10",
+              "alg": "y' L' U L U F U' F'",
               "caseName": "insert-left",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 8
+                "edge": 10,
+                "turn": true,
+                "look": [
+                  10,
+                  8
+                ]
               }
             },
             {
               "stage": "middle-layer",
               "kind": "case",
               "target": "11",
-              "alg": "U B U' B' U' R' U R",
-              "caseName": "insert-right",
-              "why": {
-                "key": "middleLayer.eject",
-                "edge": 11
-              }
-            },
-            {
-              "stage": "middle-layer",
-              "kind": "case",
-              "target": "11",
-              "alg": "U' B U' B' U' R' U R",
+              "alg": "y U R U' R' U' F' U F",
               "caseName": "insert-right",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 11
-              }
-            },
-            {
-              "stage": "middle-layer",
-              "kind": "case",
-              "target": "10",
-              "alg": "U2 L U' L' U' B' U B",
-              "caseName": "insert-right",
-              "why": {
-                "key": "middleLayer.insert",
-                "edge": 10
+                "edge": 11,
+                "turn": true,
+                "look": [
+                  11
+                ]
               }
             },
             {
               "stage": "middle-layer",
               "kind": "case",
               "target": "9",
-              "alg": "U F U' F' U' L' U L",
+              "alg": "U L' U L U F U' F'",
+              "caseName": "insert-left",
+              "why": {
+                "key": "middleLayer.insert",
+                "edge": 9,
+                "look": [
+                  9
+                ]
+              }
+            },
+            {
+              "stage": "middle-layer",
+              "kind": "case",
+              "target": "11",
+              "alg": "y U R U' R' U' F' U F",
+              "caseName": "insert-right",
+              "why": {
+                "key": "middleLayer.eject",
+                "edge": 11,
+                "turn": true
+              }
+            },
+            {
+              "stage": "middle-layer",
+              "kind": "case",
+              "target": "8",
+              "alg": "U' R U' R' U' F' U F",
               "caseName": "insert-right",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 9
+                "edge": 8,
+                "look": [
+                  8
+                ]
+              }
+            },
+            {
+              "stage": "top-cross",
+              "kind": "case",
+              "target": "edges",
+              "alg": "L F U F' U' L'",
+              "caseName": "edge-orient",
+              "why": {
+                "key": "topCross.orient",
+                "edges": [
+                  1,
+                  2
+                ]
               }
             },
             {
               "stage": "top-face",
               "kind": "case",
               "target": "corners",
-              "alg": "L2 D L' U2 L D' L' U2 L'",
-              "caseName": "headlights",
+              "alg": "F U F' U F U2 F'",
+              "caseName": "sune",
               "why": {
                 "key": "topFace.orient",
                 "corners": [
-                  2,
-                  1
+                  0,
+                  1,
+                  2
                 ]
               }
             },
@@ -711,12 +771,29 @@
               "stage": "top-corners",
               "kind": "case",
               "target": "permute",
-              "alg": "F2 R2 F L F' R2 F L' F U",
+              "alg": "B2 L2 B R B' L2 B R' B U'",
               "caseName": "corner-cycle-back",
               "why": {
                 "key": "topCorners.permute",
                 "corners": [
                   3,
+                  2,
+                  0,
+                  1
+                ]
+              }
+            },
+            {
+              "stage": "top-edges",
+              "kind": "case",
+              "target": "permute",
+              "alg": "L U' L U L U L U' L' U' L2",
+              "caseName": "u-perm-a",
+              "why": {
+                "key": "topEdges.permute",
+                "edges": [
+                  3,
+                  0,
                   2
                 ]
               }
@@ -724,8 +801,8 @@
           ]
         },
         "intermediate": {
-          "alg": "U2 B' L' F' B' D' R' U R U R U R' U2 R U' R' U' F' U F F U F' U R' U' R U B U' B' U' R' U R U' B U' B' U' R' U R U2 B' U2 B L U2 L' U' F U2 F' U' F U F' L F U F' U' L' B L U L' U' B' B2 D B' U2 B D' B' U2 B' F' L F' R2 F L' F' R2 F2 U' B U' B U B U B U' B' U' B2 F2 U F U F' U' F' U' F' U F'",
-          "moveCount": 112,
+          "alg": "U2 B' L' F' B' D' R' U R U R U R' U2 R U' R' U' F' U F F U F' U R' U' R U B U' B' U' R' U R U' B U' B' U' R' U R U2 B' U2 B L U2 L' U' F U2 F' U' F U F' R B U B' U' R' R B U B' U' R' R U R' U R U2 R' F U2 F' U' F U' F' U' B2 U B U B' U' B' U' B' U B'",
+          "moveCount": 97,
           "steps": [
             {
               "stage": "cross",
@@ -773,107 +850,118 @@
               "stage": "f2l",
               "kind": "goal",
               "target": "7",
-              "alg": "F U F'",
+              "alg": "y L U L'",
               "why": {
                 "key": "firstLayer.lift",
-                "corner": 7
+                "corner": 7,
+                "turn": true
+              }
+            },
+            {
+              "stage": "f2l",
+              "kind": "case",
+              "target": "4",
+              "alg": "U F' U' F",
+              "caseName": "left-hand",
+              "why": {
+                "key": "firstLayer.insert",
+                "corner": 4
+              }
+            },
+            {
+              "stage": "f2l",
+              "kind": "case",
+              "target": "8",
+              "alg": "U R U' R' U' F' U F",
+              "caseName": "insert-right",
+              "why": {
+                "key": "middleLayer.eject",
+                "edge": 8
+              }
+            },
+            {
+              "stage": "f2l",
+              "kind": "case",
+              "target": "8",
+              "alg": "U' R U' R' U' F' U F",
+              "caseName": "insert-right",
+              "why": {
+                "key": "middleLayer.insert",
+                "edge": 8
               }
             },
             {
               "stage": "f2l",
               "kind": "case",
               "target": "7",
-              "alg": "U R' U' R",
-              "caseName": "left-hand",
-              "why": {
-                "key": "firstLayer.insert",
-                "corner": 7
-              }
-            },
-            {
-              "stage": "f2l",
-              "kind": "case",
-              "target": "11",
-              "alg": "U B U' B' U' R' U R",
-              "caseName": "insert-right",
-              "why": {
-                "key": "middleLayer.eject",
-                "edge": 11
-              }
-            },
-            {
-              "stage": "f2l",
-              "kind": "case",
-              "target": "11",
-              "alg": "U' B U' B' U' R' U R",
-              "caseName": "insert-right",
-              "why": {
-                "key": "middleLayer.insert",
-                "edge": 11
-              }
-            },
-            {
-              "stage": "f2l",
-              "kind": "case",
-              "target": "6",
-              "alg": "U2 B' U2 B L U2 L'",
+              "alg": "y U2 F' U2 F R U2 R'",
               "caseName": "DFR1/UB0",
               "parts": [
+                {
+                  "name": "turn",
+                  "alg": "y"
+                },
                 {
                   "name": "align",
                   "alg": "U"
                 },
                 {
                   "name": "left-half",
-                  "alg": "U B' U2 B"
+                  "alg": "U F' U2 F"
                 },
                 {
                   "name": "right-half",
-                  "alg": "L U2 L'"
+                  "alg": "R U2 R'"
                 }
               ],
               "why": {
                 "key": "f2l.pair",
-                "corner": 6,
-                "edge": 10
+                "corner": 7,
+                "edge": 11,
+                "turn": true
               }
             },
             {
               "stage": "f2l",
               "kind": "case",
-              "target": "5",
-              "alg": "U' F U2 F' U' F U F'",
+              "target": "7",
+              "alg": "y U' R U2 R' U' R U R'",
               "caseName": "UBR0/UB0",
               "parts": [
+                {
+                  "name": "turn",
+                  "alg": "y"
+                },
                 {
                   "name": "align",
                   "alg": "U2"
                 },
                 {
                   "name": "right-half",
-                  "alg": "U F U2 F'"
+                  "alg": "U R U2 R'"
                 },
                 {
                   "name": "right",
-                  "alg": "U' F U F'"
+                  "alg": "U' R U R'"
                 }
               ],
               "why": {
                 "key": "f2l.pair",
-                "corner": 5,
-                "edge": 9
+                "corner": 7,
+                "edge": 11,
+                "turn": true
               }
             },
             {
               "stage": "top-cross",
               "kind": "case",
               "target": "edges",
-              "alg": "L F U F' U' L'",
+              "alg": "B L U L' U' B'",
               "caseName": "edge-orient",
               "why": {
                 "key": "topCross.orient.step",
                 "edges": [
-                  1,
+                  3,
                   0
                 ]
               }
@@ -888,6 +976,20 @@
                 "key": "topCross.orient",
                 "edges": [
                   3,
+                  2
+                ]
+              }
+            },
+            {
+              "stage": "top-face",
+              "kind": "case",
+              "target": "corners",
+              "alg": "B U B' U B U2 B'",
+              "caseName": "sune",
+              "why": {
+                "key": "topFace.orient.step",
+                "corners": [
+                  3,
                   0
                 ]
               }
@@ -896,13 +998,14 @@
               "stage": "top-face",
               "kind": "case",
               "target": "corners",
-              "alg": "B2 D B' U2 B D' B' U2 B'",
-              "caseName": "headlights",
+              "alg": "R U2 R' U' R U' R'",
+              "caseName": "antisune",
               "why": {
                 "key": "topFace.orient",
                 "corners": [
                   1,
-                  0
+                  2,
+                  3
                 ]
               }
             },
@@ -910,28 +1013,14 @@
               "stage": "top-corners",
               "kind": "case",
               "target": "permute",
-              "alg": "F' L F' R2 F L' F' R2 F2 U'",
-              "caseName": "corner-cycle",
+              "alg": "U'",
+              "caseName": "align",
               "why": {
-                "key": "topCorners.permute",
+                "key": "lastLayer.align",
                 "corners": [
-                  2,
-                  1
-                ]
-              }
-            },
-            {
-              "stage": "top-edges",
-              "kind": "case",
-              "target": "permute",
-              "alg": "B U' B U B U B U' B' U' B2",
-              "caseName": "u-perm-a",
-              "why": {
-                "key": "topEdges.permute.step",
-                "edges": [
-                  1,
-                  0,
                   3,
+                  0,
+                  1,
                   2
                 ]
               }
@@ -940,14 +1029,14 @@
               "stage": "top-edges",
               "kind": "case",
               "target": "permute",
-              "alg": "F2 U F U F' U' F' U' F' U F'",
+              "alg": "L2 U L U L' U' L' U' L' U L'",
               "caseName": "u-perm-b",
               "why": {
                 "key": "topEdges.permute",
                 "edges": [
                   2,
                   3,
-                  1
+                  0
                 ]
               }
             }
@@ -959,8 +1048,8 @@
       "scramble": "U2 L F2 D2 R' L2 U D' R B2 L' F2 L2 B' D R2 B2 L' D L D' U' F2 B' D2 R2 D' B' D R'",
       "methods": {
         "beginner": {
-          "alg": "L2 U2 R' F R L' U B' R B U' B2 U' F' L F R' U R U F' U' F R' U R B U2 B' U' B U B' U' F' U F U R U' R' B U' B' U' R' U R U L U' L' U' B' U B U' L U' L' U' B' U B B L U L' U' B' B L U L' U' B' L F U F' U' L' F U2 F' U' F U' F' B U' B U B U B U' B' U' B2 R U' R U R U R U' R' U' R2",
-          "moveCount": 111,
+          "alg": "L2 U2 R' F R L' U B' R B U' B2 U' F' L F R' U R U F' U' F R' U R B U2 B' U' B U B' U' F' U F U R U' R' B U' B' U' R' U R U L U' L' U' B' U B U' L U' L' U' B' U B F R U R' U' F' F R U R' U' F' R B U B' U' R' F U F' U F U' F' U F U2 F' U2",
+          "moveCount": 94,
           "steps": [
             {
               "stage": "cross",
@@ -1072,44 +1161,56 @@
               "stage": "middle-layer",
               "kind": "case",
               "target": "8",
-              "alg": "U' F' U F U R U' R'",
+              "alg": "y U' L' U L U F U' F'",
               "caseName": "insert-left",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 8
+                "edge": 8,
+                "turn": true,
+                "look": [
+                  8,
+                  11
+                ]
+              }
+            },
+            {
+              "stage": "middle-layer",
+              "kind": "case",
+              "target": "8",
+              "alg": "R U' R' U' F' U F",
+              "caseName": "insert-right",
+              "why": {
+                "key": "middleLayer.insert",
+                "edge": 8,
+                "look": [
+                  8
+                ]
               }
             },
             {
               "stage": "middle-layer",
               "kind": "case",
               "target": "11",
-              "alg": "B U' B' U' R' U R",
-              "caseName": "insert-right",
-              "why": {
-                "key": "middleLayer.insert",
-                "edge": 11
-              }
-            },
-            {
-              "stage": "middle-layer",
-              "kind": "case",
-              "target": "10",
-              "alg": "U L U' L' U' B' U B",
+              "alg": "y U R U' R' U' F' U F",
               "caseName": "insert-right",
               "why": {
                 "key": "middleLayer.eject",
-                "edge": 10
+                "edge": 11,
+                "turn": true
               }
             },
             {
               "stage": "middle-layer",
               "kind": "case",
-              "target": "10",
-              "alg": "U' L U' L' U' B' U B",
+              "target": "8",
+              "alg": "U' R U' R' U' F' U F",
               "caseName": "insert-right",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 10
+                "edge": 8,
+                "look": [
+                  8
+                ]
               }
             },
             {
@@ -1160,11 +1261,12 @@
               "stage": "top-face",
               "kind": "case",
               "target": "corners",
-              "alg": "F U2 F' U' F U' F'",
-              "caseName": "antisune",
+              "alg": "B U B' U B U' B' U B U2 B'",
+              "caseName": "double-sune",
               "why": {
                 "key": "topFace.orient",
                 "corners": [
+                  2,
                   3,
                   0,
                   1
@@ -1172,31 +1274,16 @@
               }
             },
             {
-              "stage": "top-edges",
+              "stage": "top-corners",
               "kind": "case",
               "target": "permute",
-              "alg": "B U' B U B U B U' B' U' B2",
-              "caseName": "u-perm-a",
+              "alg": "U2",
+              "caseName": "align",
               "why": {
-                "key": "topEdges.permute.step",
-                "edges": [
+                "key": "lastLayer.align",
+                "corners": [
+                  2,
                   3,
-                  2,
-                  1,
-                  0
-                ]
-              }
-            },
-            {
-              "stage": "top-edges",
-              "kind": "case",
-              "target": "permute",
-              "alg": "R U' R U R U R U' R' U' R2",
-              "caseName": "u-perm-a",
-              "why": {
-                "key": "topEdges.permute",
-                "edges": [
-                  2,
                   0,
                   1
                 ]
@@ -1205,8 +1292,8 @@
           ]
         },
         "intermediate": {
-          "alg": "U R' L' D F' L' U' R U2 R' U' R U R' F U F' U B U B' U B U' B' U' R' U R F U F' L U2 L' U' L U L' L U' L' U' B' U B L' U' L B L U L' U' B' L U L' U L U' L' U L U2 L' B L U' L' U' L U L' B' L U L' U' L' B L B' F U' F U F U F U' F' U' F2",
-          "moveCount": 94,
+          "alg": "U R' L' D F' L' U' R U2 R' U' R U R' F U F' U B U B' U B U' B' U' R' U R L' U L U L U2 L' U' L U L' L U' L' U' B' U B L' U' L L U L' U L U2 L' R B U' B' U' B U B' R' B U B' U' B' R B R' U",
+          "moveCount": 75,
           "steps": [
             {
               "stage": "cross",
@@ -1248,115 +1335,107 @@
               "stage": "f2l",
               "kind": "goal",
               "target": "7",
-              "alg": "F U F'",
+              "alg": "y L U L'",
               "why": {
                 "key": "firstLayer.lift",
-                "corner": 7
+                "corner": 7,
+                "turn": true
+              }
+            },
+            {
+              "stage": "f2l",
+              "kind": "case",
+              "target": "4",
+              "alg": "U R U R'",
+              "caseName": "right-hand",
+              "why": {
+                "key": "firstLayer.insert",
+                "corner": 4
+              }
+            },
+            {
+              "stage": "f2l",
+              "kind": "case",
+              "target": "8",
+              "alg": "U R U' R' U' F' U F",
+              "caseName": "insert-right",
+              "why": {
+                "key": "middleLayer.insert",
+                "edge": 8
+              }
+            },
+            {
+              "stage": "f2l",
+              "kind": "goal",
+              "target": "7",
+              "alg": "y R' U R",
+              "why": {
+                "key": "firstLayer.lift",
+                "corner": 7,
+                "turn": true
+              }
+            },
+            {
+              "stage": "f2l",
+              "kind": "case",
+              "target": "4",
+              "alg": "U R U2 R' U' R U R'",
+              "caseName": "facing-up",
+              "why": {
+                "key": "firstLayer.insert",
+                "corner": 4
+              }
+            },
+            {
+              "stage": "f2l",
+              "kind": "case",
+              "target": "8",
+              "alg": "R U' R' U' F' U F",
+              "caseName": "insert-right",
+              "why": {
+                "key": "middleLayer.insert",
+                "edge": 8
               }
             },
             {
               "stage": "f2l",
               "kind": "case",
               "target": "7",
-              "alg": "U B U B'",
-              "caseName": "right-hand",
-              "why": {
-                "key": "firstLayer.insert",
-                "corner": 7
-              }
-            },
-            {
-              "stage": "f2l",
-              "kind": "case",
-              "target": "11",
-              "alg": "U B U' B' U' R' U R",
-              "caseName": "insert-right",
-              "why": {
-                "key": "middleLayer.insert",
-                "edge": 11
-              }
-            },
-            {
-              "stage": "f2l",
-              "kind": "goal",
-              "target": "6",
-              "alg": "F U F'",
-              "why": {
-                "key": "firstLayer.lift",
-                "corner": 6
-              }
-            },
-            {
-              "stage": "f2l",
-              "kind": "case",
-              "target": "6",
-              "alg": "L U2 L' U' L U L'",
-              "caseName": "facing-up",
-              "why": {
-                "key": "firstLayer.insert",
-                "corner": 6
-              }
-            },
-            {
-              "stage": "f2l",
-              "kind": "case",
-              "target": "10",
-              "alg": "L U' L' U' B' U B",
-              "caseName": "insert-right",
-              "why": {
-                "key": "middleLayer.insert",
-                "edge": 10
-              }
-            },
-            {
-              "stage": "f2l",
-              "kind": "case",
-              "target": "5",
-              "alg": "L' U' L",
+              "alg": "y F' U' F",
               "caseName": "UBR2/UF1",
               "parts": [
+                {
+                  "name": "turn",
+                  "alg": "y"
+                },
                 {
                   "name": "align",
                   "alg": "U'"
                 },
                 {
                   "name": "left",
-                  "alg": "U L' U' L"
+                  "alg": "U F' U' F"
                 }
               ],
               "why": {
                 "key": "f2l.pair",
-                "corner": 5,
-                "edge": 9
-              }
-            },
-            {
-              "stage": "top-cross",
-              "kind": "case",
-              "target": "edges",
-              "alg": "B L U L' U' B'",
-              "caseName": "edge-orient",
-              "why": {
-                "key": "topCross.orient",
-                "edges": [
-                  2,
-                  3
-                ]
+                "corner": 7,
+                "edge": 11,
+                "turn": true
               }
             },
             {
               "stage": "top-face",
               "kind": "case",
               "target": "corners",
-              "alg": "L U L' U L U' L' U L U2 L'",
-              "caseName": "double-sune",
+              "alg": "F U F' U F U2 F'",
+              "caseName": "sune",
               "why": {
                 "key": "topFace.orient",
                 "corners": [
-                  2,
                   1,
                   0,
-                  3
+                  2
                 ]
               }
             },
@@ -1364,28 +1443,15 @@
               "stage": "top-corners",
               "kind": "case",
               "target": "permute",
-              "alg": "B L U' L' U' L U L' B' L U L' U' L' B L B'",
+              "alg": "B L U' L' U' L U L' B' L U L' U' L' B L B' U",
               "caseName": "diagonal",
               "why": {
                 "key": "topCorners.permute",
                 "corners": [
-                  2,
-                  0
-                ]
-              }
-            },
-            {
-              "stage": "top-edges",
-              "kind": "case",
-              "target": "permute",
-              "alg": "F U' F U F U F U' F' U' F2",
-              "caseName": "u-perm-a",
-              "why": {
-                "key": "topEdges.permute",
-                "edges": [
                   3,
+                  2,
                   1,
-                  2
+                  0
                 ]
               }
             }
@@ -1397,7 +1463,7 @@
       "scramble": "B' D R' U R' F2 L2 R' U2 D' R' B2 R2 F2 L R' F R B2 R2 D' U R2 U2 F2 L R2 D' F' D'",
       "methods": {
         "beginner": {
-          "alg": "L U2 R' F R B2 U R2 U2 L' B L U L2 R U R' F U F' U B U2 B' U' B U B' B' U' B U L' U' L U2 F' U F U R U' R' U' R' U R U B U' B' U' L' U L U F U' F' U L U' L' U' B' U B U' L' U L U F U' F' F U2 F' U' F U' F' R2 B2 R F R' B2 R F' R L2 U L U L' U' L' U' L' U L'",
+          "alg": "L U2 R' F R B2 U R2 U2 L' B L U L2 R U R' F U F' U B U2 B' U' B U B' B' U' B U L' U' L U2 F' U F U R U' R' U' R' U R U B U' B' U L U' L' U' B' U B U' L' U L U F U' F' U L U' L' U' B' U B F U2 F' U' F U' F' R2 B2 R F R' B2 R F' R L2 U L U L' U' L' U' L' U L'",
           "moveCount": 102,
           "steps": [
             {
@@ -1522,69 +1588,86 @@
               "stage": "middle-layer",
               "kind": "case",
               "target": "8",
-              "alg": "U2 F' U F U R U' R'",
+              "alg": "y U2 L' U L U F U' F'",
               "caseName": "insert-left",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 8
+                "edge": 8,
+                "turn": true,
+                "look": [
+                  8,
+                  11
+                ]
+              }
+            },
+            {
+              "stage": "middle-layer",
+              "kind": "case",
+              "target": "8",
+              "alg": "y U' L' U L U F U' F'",
+              "caseName": "insert-left",
+              "why": {
+                "key": "middleLayer.insert",
+                "edge": 8,
+                "turn": true,
+                "look": [
+                  8
+                ]
               }
             },
             {
               "stage": "middle-layer",
               "kind": "case",
               "target": "11",
-              "alg": "U' R' U R U B U' B'",
-              "caseName": "insert-left",
+              "alg": "U R U' R' U' F' U F",
+              "caseName": "insert-right",
               "why": {
-                "key": "middleLayer.insert",
+                "key": "middleLayer.eject",
                 "edge": 11
               }
             },
             {
               "stage": "middle-layer",
               "kind": "case",
-              "target": "10",
-              "alg": "U' L' U L U F U' F'",
+              "target": "11",
+              "alg": "y2 U' L' U L U F U' F'",
               "caseName": "insert-left",
               "why": {
-                "key": "middleLayer.eject",
-                "edge": 10
+                "key": "middleLayer.insert",
+                "edge": 11,
+                "turn": true,
+                "look": [
+                  11
+                ]
               }
             },
             {
               "stage": "middle-layer",
               "kind": "case",
               "target": "10",
-              "alg": "U L U' L' U' B' U B",
+              "alg": "y2 U R U' R' U' F' U F",
               "caseName": "insert-right",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 10
-              }
-            },
-            {
-              "stage": "middle-layer",
-              "kind": "case",
-              "target": "9",
-              "alg": "U' L' U L U F U' F'",
-              "caseName": "insert-left",
-              "why": {
-                "key": "middleLayer.insert",
-                "edge": 9
+                "edge": 10,
+                "turn": true,
+                "look": [
+                  10
+                ]
               }
             },
             {
               "stage": "top-face",
               "kind": "case",
               "target": "corners",
-              "alg": "F U2 F' U' F U' F'",
+              "alg": "B U2 B' U' B U' B'",
               "caseName": "antisune",
               "why": {
                 "key": "topFace.orient",
                 "corners": [
-                  2,
+                  1,
                   3,
-                  1
+                  0
                 ]
               }
             },
@@ -1592,14 +1675,14 @@
               "stage": "top-corners",
               "kind": "case",
               "target": "permute",
-              "alg": "R2 B2 R F R' B2 R F' R",
+              "alg": "L2 F2 L B L' F2 L B' L",
               "caseName": "corner-cycle-back",
               "why": {
                 "key": "topCorners.permute",
                 "corners": [
-                  3,
+                  2,
                   0,
-                  2
+                  1
                 ]
               }
             },
@@ -1607,13 +1690,13 @@
               "stage": "top-edges",
               "kind": "case",
               "target": "permute",
-              "alg": "L2 U L U L' U' L' U' L' U L'",
+              "alg": "R2 U R U R' U' R' U' R' U R'",
               "caseName": "u-perm-b",
               "why": {
                 "key": "topEdges.permute",
                 "edges": [
+                  1,
                   2,
-                  3,
                   0
                 ]
               }
@@ -1621,7 +1704,7 @@
           ]
         },
         "intermediate": {
-          "alg": "U2 R' D' L2 F' B' F U F' U2 R U R' U R U' R' U' F' U F U' R' U' R U R' U2 R U2 L U L' B' U2 B L U L' U2 F U' F' U F U F' B L U L' U' B' L F U F' U' L' L U2 L' U' L U' L' F' L F' R2 F L' F' R2 F2 L U' L U L U L U' L' U' L2",
+          "alg": "U2 R' D' L2 F' B' F U F' U2 R U R' U R U' R' U' F' U F U' R' U' R U R' U2 R U2 L U L' B' U2 B L U L' U2 F U' F' U F U F' B L U L' U' B' R B U B' U' R' F U F' U F U2 F' F' L F' R2 F L' F' R2 F2 B2 U B U B' U' B' U' B' U B'",
           "moveCount": 86,
           "steps": [
             {
@@ -1670,96 +1753,97 @@
               "stage": "f2l",
               "kind": "case",
               "target": "7",
-              "alg": "U' R' U' R U R' U2 R",
+              "alg": "y U' F' U' F U F' U2 F",
               "caseName": "UBR1/UF1",
               "parts": [
+                {
+                  "name": "turn",
+                  "alg": "y"
+                },
                 {
                   "name": "align",
                   "alg": "U"
                 },
                 {
                   "name": "left",
-                  "alg": "U2 R' U' R"
+                  "alg": "U2 F' U' F"
                 },
                 {
                   "name": "left-half",
-                  "alg": "U R' U2 R"
+                  "alg": "U F' U2 F"
                 }
               ],
               "why": {
                 "key": "f2l.pair",
                 "corner": 7,
-                "edge": 11
+                "edge": 11,
+                "turn": true
               }
             },
             {
               "stage": "f2l",
               "kind": "case",
-              "target": "6",
-              "alg": "U2 L U L' B' U2 B L U L'",
+              "target": "7",
+              "alg": "y U2 R U R' F' U2 F R U R'",
               "caseName": "UBR0/UB1",
               "parts": [
+                {
+                  "name": "turn",
+                  "alg": "y"
+                },
                 {
                   "name": "align",
                   "alg": "U2"
                 },
                 {
                   "name": "right",
-                  "alg": "L U L'"
+                  "alg": "R U R'"
                 },
                 {
                   "name": "left-half",
-                  "alg": "B' U2 B"
+                  "alg": "F' U2 F"
                 },
                 {
                   "name": "right",
-                  "alg": "L U L'"
+                  "alg": "R U R'"
                 }
               ],
               "why": {
                 "key": "f2l.pair",
-                "corner": 6,
-                "edge": 10
+                "corner": 7,
+                "edge": 11,
+                "turn": true
               }
             },
             {
               "stage": "f2l",
               "kind": "case",
-              "target": "5",
-              "alg": "U2 F U' F' U F U F'",
+              "target": "7",
+              "alg": "y U2 R U' R' U R U R'",
               "caseName": "UBR1/UB0",
               "parts": [
+                {
+                  "name": "turn",
+                  "alg": "y"
+                },
                 {
                   "name": "align",
                   "alg": "U2"
                 },
                 {
                   "name": "right-back",
-                  "alg": "F U' F'"
+                  "alg": "R U' R'"
                 },
                 {
                   "name": "right",
-                  "alg": "U F U F'"
+                  "alg": "U R U R'"
                 }
               ],
               "why": {
                 "key": "f2l.pair",
-                "corner": 5,
-                "edge": 9
-              }
-            },
-            {
-              "stage": "top-cross",
-              "kind": "case",
-              "target": "edges",
-              "alg": "B L U L' U' B'",
-              "caseName": "edge-orient",
-              "why": {
-                "key": "topCross.orient.step",
-                "edges": [
-                  3,
-                  2
-                ]
+                "corner": 7,
+                "edge": 11,
+                "turn": true
               }
             },
             {
@@ -1769,10 +1853,24 @@
               "alg": "L F U F' U' L'",
               "caseName": "edge-orient",
               "why": {
+                "key": "topCross.orient.step",
+                "edges": [
+                  1,
+                  2
+                ]
+              }
+            },
+            {
+              "stage": "top-cross",
+              "kind": "case",
+              "target": "edges",
+              "alg": "B L U L' U' B'",
+              "caseName": "edge-orient",
+              "why": {
                 "key": "topCross.orient",
                 "edges": [
                   3,
-                  0
+                  2
                 ]
               }
             },
@@ -1780,14 +1878,14 @@
               "stage": "top-face",
               "kind": "case",
               "target": "corners",
-              "alg": "L U2 L' U' L U' L'",
-              "caseName": "antisune",
+              "alg": "R U R' U R U2 R'",
+              "caseName": "sune",
               "why": {
                 "key": "topFace.orient",
                 "corners": [
+                  3,
                   2,
-                  1,
-                  3
+                  1
                 ]
               }
             },
@@ -1795,12 +1893,12 @@
               "stage": "top-corners",
               "kind": "case",
               "target": "permute",
-              "alg": "F' L F' R2 F L' F' R2 F2",
+              "alg": "R' F R' B2 R F' R' B2 R2",
               "caseName": "corner-cycle",
               "why": {
                 "key": "topCorners.permute",
                 "corners": [
-                  1,
+                  2,
                   3,
                   0
                 ]
@@ -1810,14 +1908,14 @@
               "stage": "top-edges",
               "kind": "case",
               "target": "permute",
-              "alg": "L U' L U L U L U' L' U' L2",
-              "caseName": "u-perm-a",
+              "alg": "L2 U L U L' U' L' U' L' U L'",
+              "caseName": "u-perm-b",
               "why": {
                 "key": "topEdges.permute",
                 "edges": [
+                  2,
                   3,
-                  0,
-                  2
+                  0
                 ]
               }
             }
@@ -1829,8 +1927,8 @@
       "scramble": "U2 F B F' D2 R2 D B F' L U' D2 B' L U B' U F2 L B D B' F' L' R2 F D R' B R'",
       "methods": {
         "beginner": {
-          "alg": "R2 R' F R R' R2 U L' B L R' U R U R U R' U' B U B' U' B' U' B U F U2 F' U' F U F' U R U' R' U' F' U F U' R U' R' U' F' U F U B U' B' U' R' U R L F U F' U' L' L F U F' U' L' B U B' U B U2 B' R U2 R' U' R U' R' U2 L2 U L U L' U' L' U' L' U L'",
-          "moveCount": 95,
+          "alg": "R2 R' F R R' R2 U L' B L R' U R U R U R' U' B U B' U' B' U' B U F U2 F' U' F U F' U' B U' B' U' R' U R U' F' U F U R U' R' U F' U F U R U' R' L F U F' U' L' F U2 F2 U' F2 U' F2 U2 F F' L F' R2 F L' F' R2 F2 L U' L U L U L U' L' U' L2 F U' F U F U F U' F' U' F2",
+          "moveCount": 103,
           "steps": [
             {
               "stage": "cross",
@@ -1942,47 +2040,40 @@
             {
               "stage": "middle-layer",
               "kind": "case",
-              "target": "8",
-              "alg": "U R U' R' U' F' U F",
+              "target": "11",
+              "alg": "y U' R U' R' U' F' U F",
               "caseName": "insert-right",
+              "why": {
+                "key": "middleLayer.insert",
+                "edge": 11,
+                "turn": true,
+                "look": [
+                  11
+                ]
+              }
+            },
+            {
+              "stage": "middle-layer",
+              "kind": "case",
+              "target": "9",
+              "alg": "U' L' U L U F U' F'",
+              "caseName": "insert-left",
               "why": {
                 "key": "middleLayer.eject",
-                "edge": 8
+                "edge": 9
               }
             },
             {
               "stage": "middle-layer",
               "kind": "case",
-              "target": "8",
-              "alg": "U' R U' R' U' F' U F",
-              "caseName": "insert-right",
+              "target": "9",
+              "alg": "U L' U L U F U' F'",
+              "caseName": "insert-left",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 8
-              }
-            },
-            {
-              "stage": "middle-layer",
-              "kind": "case",
-              "target": "11",
-              "alg": "U B U' B' U' R' U R",
-              "caseName": "insert-right",
-              "why": {
-                "key": "middleLayer.insert",
-                "edge": 11
-              }
-            },
-            {
-              "stage": "top-cross",
-              "kind": "case",
-              "target": "edges",
-              "alg": "L F U F' U' L'",
-              "caseName": "edge-orient",
-              "why": {
-                "key": "topCross.orient.step",
-                "edges": [
-                  0,
-                  2
+                "edge": 9,
+                "look": [
+                  9
                 ]
               }
             },
@@ -1990,13 +2081,13 @@
               "stage": "top-cross",
               "kind": "case",
               "target": "edges",
-              "alg": "L F U F' U' L'",
+              "alg": "B L U L' U' B'",
               "caseName": "edge-orient",
               "why": {
                 "key": "topCross.orient",
                 "edges": [
-                  0,
-                  3
+                  3,
+                  0
                 ]
               }
             },
@@ -2004,26 +2095,13 @@
               "stage": "top-face",
               "kind": "case",
               "target": "corners",
-              "alg": "B U B' U B U2 B'",
-              "caseName": "sune",
-              "why": {
-                "key": "topFace.orient.step",
-                "corners": [
-                  2,
-                  3
-                ]
-              }
-            },
-            {
-              "stage": "top-face",
-              "kind": "case",
-              "target": "corners",
-              "alg": "R U2 R' U' R U' R'",
-              "caseName": "antisune",
+              "alg": "L U2 L2 U' L2 U' L2 U2 L",
+              "caseName": "pi",
               "why": {
                 "key": "topFace.orient",
                 "corners": [
                   0,
+                  3,
                   1,
                   2
                 ]
@@ -2033,11 +2111,26 @@
               "stage": "top-corners",
               "kind": "case",
               "target": "permute",
-              "alg": "U2",
-              "caseName": "align",
+              "alg": "L' B L' F2 L B' L' F2 L2",
+              "caseName": "corner-cycle",
               "why": {
-                "key": "lastLayer.align",
+                "key": "topCorners.permute",
                 "corners": [
+                  1,
+                  2,
+                  0
+                ]
+              }
+            },
+            {
+              "stage": "top-edges",
+              "kind": "case",
+              "target": "permute",
+              "alg": "B U' B U B U B U' B' U' B2",
+              "caseName": "u-perm-a",
+              "why": {
+                "key": "topEdges.permute.step",
+                "edges": [
                   2,
                   3,
                   0,
@@ -2049,21 +2142,21 @@
               "stage": "top-edges",
               "kind": "case",
               "target": "permute",
-              "alg": "L2 U L U L' U' L' U' L' U L'",
-              "caseName": "u-perm-b",
+              "alg": "L U' L U L U L U' L' U' L2",
+              "caseName": "u-perm-a",
               "why": {
                 "key": "topEdges.permute",
                 "edges": [
-                  2,
                   3,
-                  0
+                  0,
+                  2
                 ]
               }
             }
           ]
         },
         "intermediate": {
-          "alg": "R F R U' R B' R' U R U R U R' R U' R' U' F' U F U R' U R U' B U2 B' R' U2 R U' L U2 L' U2 B' U' B U' L' U' L B L U L' U' B' R U R' U R U2 R' L U2 L' U' L U' L' B2 L2 B R B' L2 B R' B U B2 U B U B' U' B' U' B' U B'",
+          "alg": "R F R U' R B' R' U R U R U R' R U' R' U' F' U F U R' U R U' B U2 B' R' U2 R U' L U2 L' U2 B' U' B U' L' U' L B L U L' U' B' R U R' U R U2 R' L U2 L' U' L U' L' R' F R' B2 R F' R' B2 R2 U' R U' R U R U R U' R' U' R2",
           "moveCount": 84,
           "steps": [
             {
@@ -2112,89 +2205,118 @@
               "stage": "f2l",
               "kind": "case",
               "target": "7",
-              "alg": "U R' U R U' B U2 B' R' U2 R",
+              "alg": "y U F' U F U' R U2 R' F' U2 F",
               "caseName": "UBR0/FR0",
               "parts": [
+                {
+                  "name": "turn",
+                  "alg": "y"
+                },
                 {
                   "name": "align",
                   "alg": "U"
                 },
                 {
                   "name": "left-back",
-                  "alg": "R' U R"
+                  "alg": "F' U F"
                 },
                 {
                   "name": "right-half",
-                  "alg": "U' B U2 B'"
+                  "alg": "U' R U2 R'"
                 },
                 {
                   "name": "left-half",
-                  "alg": "R' U2 R"
+                  "alg": "F' U2 F"
                 }
               ],
               "why": {
                 "key": "f2l.pair",
                 "corner": 7,
-                "edge": 11
+                "edge": 11,
+                "turn": true
               }
             },
             {
               "stage": "f2l",
               "kind": "case",
-              "target": "6",
-              "alg": "U' L U2 L' U2 B' U' B",
+              "target": "7",
+              "alg": "y U' R U2 R' U2 F' U' F",
               "caseName": "DFR0/UB1",
               "parts": [
+                {
+                  "name": "turn",
+                  "alg": "y"
+                },
                 {
                   "name": "align",
                   "alg": "U2"
                 },
                 {
                   "name": "right-half",
-                  "alg": "U L U2 L'"
+                  "alg": "U R U2 R'"
                 },
                 {
                   "name": "left",
-                  "alg": "U2 B' U' B"
+                  "alg": "U2 F' U' F"
                 }
               ],
               "why": {
                 "key": "f2l.pair",
-                "corner": 6,
-                "edge": 10
+                "corner": 7,
+                "edge": 11,
+                "turn": true
               }
             },
             {
               "stage": "f2l",
               "kind": "case",
-              "target": "5",
-              "alg": "U' L' U' L",
+              "target": "7",
+              "alg": "y U' F' U' F",
               "caseName": "UBR2/UF1",
               "parts": [
+                {
+                  "name": "turn",
+                  "alg": "y"
+                },
                 {
                   "name": "align",
                   "alg": "U2"
                 },
                 {
                   "name": "left",
-                  "alg": "U L' U' L"
+                  "alg": "U F' U' F"
                 }
               ],
               "why": {
                 "key": "f2l.pair",
-                "corner": 5,
-                "edge": 9
+                "corner": 7,
+                "edge": 11,
+                "turn": true
               }
             },
             {
               "stage": "top-cross",
               "kind": "case",
               "target": "edges",
-              "alg": "B L U L' U' B'",
+              "alg": "L F U F' U' L'",
               "caseName": "edge-orient",
               "why": {
                 "key": "topCross.orient",
                 "edges": [
+                  2,
+                  1
+                ]
+              }
+            },
+            {
+              "stage": "top-face",
+              "kind": "case",
+              "target": "corners",
+              "alg": "B U B' U B U2 B'",
+              "caseName": "sune",
+              "why": {
+                "key": "topFace.orient.step",
+                "corners": [
                   3,
                   2
                 ]
@@ -2204,28 +2326,14 @@
               "stage": "top-face",
               "kind": "case",
               "target": "corners",
-              "alg": "R U R' U R U2 R'",
-              "caseName": "sune",
-              "why": {
-                "key": "topFace.orient.step",
-                "corners": [
-                  0,
-                  3
-                ]
-              }
-            },
-            {
-              "stage": "top-face",
-              "kind": "case",
-              "target": "corners",
-              "alg": "L U2 L' U' L U' L'",
+              "alg": "F U2 F' U' F U' F'",
               "caseName": "antisune",
               "why": {
                 "key": "topFace.orient",
                 "corners": [
-                  2,
-                  1,
-                  0
+                  0,
+                  3,
+                  1
                 ]
               }
             },
@@ -2233,12 +2341,12 @@
               "stage": "top-corners",
               "kind": "case",
               "target": "permute",
-              "alg": "B2 L2 B R B' L2 B R' B U",
-              "caseName": "corner-cycle-back",
+              "alg": "B' R B' L2 B R' B' L2 B2 U'",
+              "caseName": "corner-cycle",
               "why": {
                 "key": "topCorners.permute",
                 "corners": [
-                  1,
+                  3,
                   0
                 ]
               }
@@ -2247,14 +2355,14 @@
               "stage": "top-edges",
               "kind": "case",
               "target": "permute",
-              "alg": "B2 U B U B' U' B' U' B' U B'",
-              "caseName": "u-perm-b",
+              "alg": "B U' B U B U B U' B' U' B2",
+              "caseName": "u-perm-a",
               "why": {
                 "key": "topEdges.permute",
                 "edges": [
-                  1,
                   3,
-                  0
+                  0,
+                  1
                 ]
               }
             }
@@ -2266,8 +2374,8 @@
       "scramble": "D R L' D2 R D2 F' R' U F' U D' L R2 D2 R' F' R' U2 F B D L' U' B F2 U B2 L2 U",
       "methods": {
         "beginner": {
-          "alg": "F2 U' R' F R U2 R2 U2 L' B L L' L2 U F' U' F F U F' L U2 L' U' L U L' U2 L' U' L U L U' L' U' B' U B U2 F' U F U R U' R' U F U' F' U' L' U L L U' L' U' B' U B U L' U L U F U' F' L U2 L2 U' L2 U' L2 U2 L R' F R' B2 R F' R' B2 R2 L2 U L U L' U' L' U' L' U L'",
-          "moveCount": 99,
+          "alg": "F2 U' R' F R U2 R2 U2 L' B L L' L2 U F' U' F F U F' L U2 L' U' L U L' U2 L' U' L U F U' F' U' L' U L L U' L' U' B' U B U2 F' U F U R U' R' F R U R' U' F' F R U R' U' F' R U2 R2 U' R2 U' R2 U2 R F' L F' R2 F L' F' R2 F2 L U' L U L U L U' L' U' L2",
+          "moveCount": 95,
           "steps": [
             {
               "stage": "cross",
@@ -2379,71 +2487,89 @@
             {
               "stage": "middle-layer",
               "kind": "case",
-              "target": "8",
-              "alg": "U L U' L' U' B' U B",
-              "caseName": "insert-right",
-              "why": {
-                "key": "middleLayer.eject",
-                "edge": 8
-              }
-            },
-            {
-              "stage": "middle-layer",
-              "kind": "case",
-              "target": "8",
-              "alg": "U2 F' U F U R U' R'",
-              "caseName": "insert-left",
-              "why": {
-                "key": "middleLayer.insert",
-                "edge": 8
-              }
-            },
-            {
-              "stage": "middle-layer",
-              "kind": "case",
-              "target": "10",
-              "alg": "U F U' F' U' L' U L",
-              "caseName": "insert-right",
-              "why": {
-                "key": "middleLayer.eject",
-                "edge": 10
-              }
-            },
-            {
-              "stage": "middle-layer",
-              "kind": "case",
-              "target": "10",
-              "alg": "L U' L' U' B' U B",
+              "target": "9",
+              "alg": "y' U R U' R' U' F' U F",
               "caseName": "insert-right",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 10
+                "edge": 9,
+                "turn": true,
+                "look": [
+                  9
+                ]
               }
             },
             {
               "stage": "middle-layer",
               "kind": "case",
               "target": "9",
-              "alg": "U L' U L U F U' F'",
+              "alg": "y' R U' R' U' F' U F",
+              "caseName": "insert-right",
+              "why": {
+                "key": "middleLayer.insert",
+                "edge": 9,
+                "turn": true,
+                "look": [
+                  9
+                ]
+              }
+            },
+            {
+              "stage": "middle-layer",
+              "kind": "case",
+              "target": "10",
+              "alg": "y' U2 L' U L U F U' F'",
               "caseName": "insert-left",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 9
+                "edge": 10,
+                "turn": true,
+                "look": [
+                  10
+                ]
+              }
+            },
+            {
+              "stage": "top-cross",
+              "kind": "case",
+              "target": "edges",
+              "alg": "L F U F' U' L'",
+              "caseName": "edge-orient",
+              "why": {
+                "key": "topCross.orient.step",
+                "edges": [
+                  3,
+                  1
+                ]
+              }
+            },
+            {
+              "stage": "top-cross",
+              "kind": "case",
+              "target": "edges",
+              "alg": "L F U F' U' L'",
+              "caseName": "edge-orient",
+              "why": {
+                "key": "topCross.orient",
+                "edges": [
+                  3,
+                  0
+                ]
               }
             },
             {
               "stage": "top-face",
               "kind": "case",
               "target": "corners",
-              "alg": "L U2 L2 U' L2 U' L2 U2 L",
+              "alg": "F U2 F2 U' F2 U' F2 U2 F",
               "caseName": "pi",
               "why": {
                 "key": "topFace.orient",
                 "corners": [
-                  3,
                   0,
-                  2,
-                  1
+                  3,
+                  1,
+                  2
                 ]
               }
             },
@@ -2451,13 +2577,13 @@
               "stage": "top-corners",
               "kind": "case",
               "target": "permute",
-              "alg": "R' F R' B2 R F' R' B2 R2",
+              "alg": "L' B L' F2 L B' L' F2 L2",
               "caseName": "corner-cycle",
               "why": {
                 "key": "topCorners.permute",
                 "corners": [
+                  1,
                   2,
-                  3,
                   0
                 ]
               }
@@ -2466,22 +2592,22 @@
               "stage": "top-edges",
               "kind": "case",
               "target": "permute",
-              "alg": "L2 U L U L' U' L' U' L' U L'",
-              "caseName": "u-perm-b",
+              "alg": "B U' B U B U B U' B' U' B2",
+              "caseName": "u-perm-a",
               "why": {
                 "key": "topEdges.permute",
                 "edges": [
-                  2,
                   3,
-                  0
+                  0,
+                  1
                 ]
               }
             }
           ]
         },
         "intermediate": {
-          "alg": "F' R' B2 D' B L U' F' U' F U2 F' U' F U2 R' U2 R U' R' U R U B' U2 B U B' U2 B U2 F U F' L F U F' U' L' L F U F' U' L' B U2 B' U' B U' B' L U L' U L U2 L' U' B2 U B U B' U' B' U' B' U B'",
-          "moveCount": 72,
+          "alg": "F' R' B2 D' B L U' F' U' F U2 F' U' F U2 R' U2 R U' R' U R U B' U2 B U B' U2 B U2 F U F' R B U B' U' R' B L U L' U' B' B2 D B' U2 B D' B' U2 B' R2 B2 R F R' B2 R F' R U R U' R U R U R U' R' U' R2 B U' B U B U B U' B' U' B2",
+          "moveCount": 87,
           "steps": [
             {
               "stage": "cross",
@@ -2523,87 +2649,102 @@
               "stage": "f2l",
               "kind": "case",
               "target": "7",
-              "alg": "U2 R' U2 R U' R' U R",
+              "alg": "y U2 F' U2 F U' F' U F",
               "caseName": "UBR0/UF1",
               "parts": [
+                {
+                  "name": "turn",
+                  "alg": "y"
+                },
                 {
                   "name": "align",
                   "alg": "U2"
                 },
                 {
                   "name": "left-half",
-                  "alg": "R' U2 R"
+                  "alg": "F' U2 F"
                 },
                 {
                   "name": "left-back",
-                  "alg": "U' R' U R"
+                  "alg": "U' F' U F"
                 }
               ],
               "why": {
                 "key": "f2l.pair",
                 "corner": 7,
-                "edge": 11
+                "edge": 11,
+                "turn": true
               }
             },
             {
               "stage": "f2l",
               "kind": "case",
-              "target": "6",
-              "alg": "U B' U2 B U B' U2 B",
+              "target": "7",
+              "alg": "y U F' U2 F U F' U2 F",
               "caseName": "UBR1/UL1",
               "parts": [
+                {
+                  "name": "turn",
+                  "alg": "y"
+                },
                 {
                   "name": "align",
                   "alg": "U'"
                 },
                 {
                   "name": "left-half",
-                  "alg": "U2 B' U2 B"
+                  "alg": "U2 F' U2 F"
                 },
                 {
                   "name": "left-half",
-                  "alg": "U B' U2 B"
+                  "alg": "U F' U2 F"
                 }
               ],
               "why": {
                 "key": "f2l.pair",
-                "corner": 6,
-                "edge": 10
+                "corner": 7,
+                "edge": 11,
+                "turn": true
               }
             },
             {
               "stage": "f2l",
               "kind": "case",
-              "target": "5",
-              "alg": "U2 F U F'",
+              "target": "7",
+              "alg": "y U2 R U R'",
               "caseName": "UBR1/UL0",
               "parts": [
+                {
+                  "name": "turn",
+                  "alg": "y"
+                },
                 {
                   "name": "align",
                   "alg": "U"
                 },
                 {
                   "name": "right",
-                  "alg": "U F U F'"
+                  "alg": "U R U R'"
                 }
               ],
               "why": {
                 "key": "f2l.pair",
-                "corner": 5,
-                "edge": 9
+                "corner": 7,
+                "edge": 11,
+                "turn": true
               }
             },
             {
               "stage": "top-cross",
               "kind": "case",
               "target": "edges",
-              "alg": "L F U F' U' L'",
+              "alg": "B L U L' U' B'",
               "caseName": "edge-orient",
               "why": {
                 "key": "topCross.orient.step",
                 "edges": [
-                  2,
-                  3
+                  1,
+                  2
                 ]
               }
             },
@@ -2616,8 +2757,8 @@
               "why": {
                 "key": "topCross.orient",
                 "edges": [
-                  2,
-                  1
+                  1,
+                  0
                 ]
               }
             },
@@ -2625,28 +2766,13 @@
               "stage": "top-face",
               "kind": "case",
               "target": "corners",
-              "alg": "B U2 B' U' B U' B'",
-              "caseName": "antisune",
-              "why": {
-                "key": "topFace.orient.step",
-                "corners": [
-                  0,
-                  1
-                ]
-              }
-            },
-            {
-              "stage": "top-face",
-              "kind": "case",
-              "target": "corners",
-              "alg": "L U L' U L U2 L'",
-              "caseName": "sune",
+              "alg": "L2 D L' U2 L D' L' U2 L'",
+              "caseName": "headlights",
               "why": {
                 "key": "topFace.orient",
                 "corners": [
-                  1,
-                  2,
-                  3
+                  3,
+                  0
                 ]
               }
             },
@@ -2654,15 +2780,13 @@
               "stage": "top-corners",
               "kind": "case",
               "target": "permute",
-              "alg": "U'",
-              "caseName": "align",
+              "alg": "B2 L2 B R B' L2 B R' B U",
+              "caseName": "corner-cycle-back",
               "why": {
-                "key": "lastLayer.align",
+                "key": "topCorners.permute",
                 "corners": [
-                  3,
-                  0,
                   1,
-                  2
+                  0
                 ]
               }
             },
@@ -2670,14 +2794,30 @@
               "stage": "top-edges",
               "kind": "case",
               "target": "permute",
-              "alg": "B2 U B U B' U' B' U' B' U B'",
-              "caseName": "u-perm-b",
+              "alg": "B U' B U B U B U' B' U' B2",
+              "caseName": "u-perm-a",
+              "why": {
+                "key": "topEdges.permute.step",
+                "edges": [
+                  2,
+                  3,
+                  0,
+                  1
+                ]
+              }
+            },
+            {
+              "stage": "top-edges",
+              "kind": "case",
+              "target": "permute",
+              "alg": "L U' L U L U L U' L' U' L2",
+              "caseName": "u-perm-a",
               "why": {
                 "key": "topEdges.permute",
                 "edges": [
-                  1,
                   3,
-                  0
+                  0,
+                  2
                 ]
               }
             }
@@ -2689,8 +2829,8 @@
       "scramble": "U' R U2 L2 D U' B D' B2 D2 R2 L2 D U' L' B2 D2 U B D L F B2 F2 D2 L' R' D2 F U",
       "methods": {
         "beginner": {
-          "alg": "R' U F2 U B' R B B2 U' L' B L U F' L F L U L' U F' U' F U B U2 B' U' B U B' U2 L U L' F U2 F' U' F U F' U2 F' U F U R U' R' R' U R U B U' B' U L U' L' U' B' U B U2 F U' F' U' L' U L B U2 B' U' B U' B' B2 L2 B R B' L2 B R' B B U' B U B U B U' B' U' B2 F2 U F U F' U' F' U' F' U F'",
-          "moveCount": 111,
+          "alg": "R' U F2 U B' R B B2 U' L' B L U F' L F L U L' U F' U' F U B U2 B' U' B U B' U2 L U L' F U2 F' U' F U F' U2 F' U F U R U' R' U' L U' L' U' B' U B U' R' U R U B U' B' U' F U' F' U' L' U L L2 D L' U2 L D' L' U2 L' R B U' B' U' B U B' R' B U B' U' B' R B R' U' R U' R U R U R U' R' U' R2 B U' B U B U B U' B' U' B2",
+          "moveCount": 123,
           "steps": [
             {
               "stage": "cross",
@@ -2814,58 +2954,75 @@
               "stage": "middle-layer",
               "kind": "case",
               "target": "8",
-              "alg": "U2 F' U F U R U' R'",
+              "alg": "y U2 L' U L U F U' F'",
               "caseName": "insert-left",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 8
+                "edge": 8,
+                "turn": true,
+                "look": [
+                  8,
+                  10
+                ]
               }
             },
             {
               "stage": "middle-layer",
               "kind": "case",
               "target": "11",
-              "alg": "R' U R U B U' B'",
-              "caseName": "insert-left",
-              "why": {
-                "key": "middleLayer.insert",
-                "edge": 11
-              }
-            },
-            {
-              "stage": "middle-layer",
-              "kind": "case",
-              "target": "10",
-              "alg": "U L U' L' U' B' U B",
+              "alg": "y U' R U' R' U' F' U F",
               "caseName": "insert-right",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 10
+                "edge": 11,
+                "turn": true,
+                "look": [
+                  11,
+                  8
+                ]
               }
             },
             {
               "stage": "middle-layer",
               "kind": "case",
               "target": "9",
-              "alg": "U2 F U' F' U' L' U L",
+              "alg": "U' L' U L U F U' F'",
+              "caseName": "insert-left",
+              "why": {
+                "key": "middleLayer.insert",
+                "edge": 9,
+                "look": [
+                  9,
+                  11
+                ]
+              }
+            },
+            {
+              "stage": "middle-layer",
+              "kind": "case",
+              "target": "11",
+              "alg": "y U' R U' R' U' F' U F",
               "caseName": "insert-right",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 9
+                "edge": 11,
+                "turn": true,
+                "look": [
+                  11
+                ]
               }
             },
             {
               "stage": "top-face",
               "kind": "case",
               "target": "corners",
-              "alg": "B U2 B' U' B U' B'",
-              "caseName": "antisune",
+              "alg": "F2 D F' U2 F D' F' U2 F'",
+              "caseName": "headlights",
               "why": {
                 "key": "topFace.orient",
                 "corners": [
-                  1,
-                  2,
-                  3
+                  3,
+                  1
                 ]
               }
             },
@@ -2873,13 +3030,14 @@
               "stage": "top-corners",
               "kind": "case",
               "target": "permute",
-              "alg": "B2 L2 B R B' L2 B R' B",
-              "caseName": "corner-cycle-back",
+              "alg": "B L U' L' U' L U L' B' L U L' U' L' B L B' U'",
+              "caseName": "diagonal",
               "why": {
                 "key": "topCorners.permute",
                 "corners": [
-                  3,
                   1,
+                  0,
+                  3,
                   2
                 ]
               }
@@ -2893,10 +3051,10 @@
               "why": {
                 "key": "topEdges.permute.step",
                 "edges": [
-                  1,
-                  0,
+                  2,
                   3,
-                  2
+                  0,
+                  1
                 ]
               }
             },
@@ -2904,22 +3062,22 @@
               "stage": "top-edges",
               "kind": "case",
               "target": "permute",
-              "alg": "F2 U F U F' U' F' U' F' U F'",
-              "caseName": "u-perm-b",
+              "alg": "L U' L U L U L U' L' U' L2",
+              "caseName": "u-perm-a",
               "why": {
                 "key": "topEdges.permute",
                 "edges": [
-                  2,
                   3,
-                  1
+                  0,
+                  2
                 ]
               }
             }
           ]
         },
         "intermediate": {
-          "alg": "U' R L F' B' L' D' R' U R U R U2 R' U' R U R' U' B U B' U L U' L' U' B' U B B U' B' U' R' U R F U F' B' U' B U F U' F' U' L' U L L U' L' U' B' U B F U' F' L' U' L L F U F' U' L' B L U L' U' B' B U2 B2 U' B2 U' B2 U2 B B' R B' L2 B R' B' L2 B2 U' B U' B U B U B U' B' U' B2 L U' L U L U L U' L' U' L2",
-          "moveCount": 117,
+          "alg": "U' R L F' B' L' D' R' U R U R U2 R' U' R U R' U' B U B' U L U' L' U' B' U B B U' B' U' R' U R L' U L U B' U' B U' L U' L' U' B' U B U' F U2 F' U L' U' L B L U L' U' B' B L U L' U' B' R U R' U R U2 R' F U2 F' U' F U' F' L' B L' F2 L B' L' F2 L2 L2 U L U L' U' L' U' L' U L'",
+          "moveCount": 106,
           "steps": [
             {
               "stage": "cross",
@@ -2956,98 +3114,100 @@
               "stage": "f2l",
               "kind": "case",
               "target": "7",
-              "alg": "U' B U B'",
+              "alg": "y U' R U R'",
               "caseName": "right-hand",
               "why": {
                 "key": "firstLayer.insert",
-                "corner": 7
+                "corner": 7,
+                "turn": true
               }
             },
             {
               "stage": "f2l",
               "kind": "case",
-              "target": "11",
-              "alg": "U L U' L' U' B' U B",
+              "target": "8",
+              "alg": "y U R U' R' U' F' U F",
               "caseName": "insert-right",
               "why": {
                 "key": "middleLayer.eject",
-                "edge": 11
+                "edge": 8,
+                "turn": true
               }
             },
             {
               "stage": "f2l",
               "kind": "case",
-              "target": "11",
-              "alg": "B U' B' U' R' U R",
+              "target": "9",
+              "alg": "y' R U' R' U' F' U F",
               "caseName": "insert-right",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 11
+                "edge": 9,
+                "turn": true
               }
             },
             {
               "stage": "f2l",
               "kind": "goal",
-              "target": "6",
-              "alg": "F U F'",
+              "target": "7",
+              "alg": "y R' U R",
               "why": {
                 "key": "firstLayer.lift",
-                "corner": 6
+                "corner": 7,
+                "turn": true
               }
             },
             {
               "stage": "f2l",
               "kind": "case",
-              "target": "6",
-              "alg": "B' U' B",
+              "target": "4",
+              "alg": "U F' U' F",
               "caseName": "left-hand",
               "why": {
                 "key": "firstLayer.insert",
-                "corner": 6
+                "corner": 4
               }
             },
             {
               "stage": "f2l",
               "kind": "case",
-              "target": "10",
-              "alg": "U F U' F' U' L' U L",
-              "caseName": "insert-right",
-              "why": {
-                "key": "middleLayer.eject",
-                "edge": 10
-              }
-            },
-            {
-              "stage": "f2l",
-              "kind": "case",
-              "target": "10",
-              "alg": "L U' L' U' B' U B",
+              "target": "8",
+              "alg": "U' R U' R' U' F' U F",
               "caseName": "insert-right",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 10
+                "edge": 8
               }
             },
             {
               "stage": "f2l",
               "kind": "case",
-              "target": "5",
-              "alg": "F U' F' L' U' L",
-              "caseName": "DFR1/UB1",
+              "target": "7",
+              "alg": "y U' R U2 R' U F' U' F",
+              "caseName": "UBR2/UB1",
               "parts": [
                 {
-                  "name": "right-back",
-                  "alg": "F U' F'"
+                  "name": "turn",
+                  "alg": "y"
+                },
+                {
+                  "name": "align",
+                  "alg": "U'"
+                },
+                {
+                  "name": "right-half",
+                  "alg": "R U2 R'"
                 },
                 {
                   "name": "left",
-                  "alg": "L' U' L"
+                  "alg": "U F' U' F"
                 }
               ],
               "why": {
                 "key": "f2l.pair",
-                "corner": 5,
-                "edge": 9
+                "corner": 7,
+                "edge": 11,
+                "turn": true
               }
             },
             {
@@ -3059,8 +3219,8 @@
               "why": {
                 "key": "topCross.orient.step",
                 "edges": [
-                  1,
-                  2
+                  2,
+                  3
                 ]
               }
             },
@@ -3068,13 +3228,13 @@
               "stage": "top-cross",
               "kind": "case",
               "target": "edges",
-              "alg": "B L U L' U' B'",
+              "alg": "L F U F' U' L'",
               "caseName": "edge-orient",
               "why": {
                 "key": "topCross.orient",
                 "edges": [
-                  0,
-                  2
+                  2,
+                  0
                 ]
               }
             },
@@ -3082,14 +3242,27 @@
               "stage": "top-face",
               "kind": "case",
               "target": "corners",
-              "alg": "B U2 B2 U' B2 U' B2 U2 B",
-              "caseName": "pi",
+              "alg": "B U B' U B U2 B'",
+              "caseName": "sune",
+              "why": {
+                "key": "topFace.orient.step",
+                "corners": [
+                  1,
+                  3
+                ]
+              }
+            },
+            {
+              "stage": "top-face",
+              "kind": "case",
+              "target": "corners",
+              "alg": "R U2 R' U' R U' R'",
+              "caseName": "antisune",
               "why": {
                 "key": "topFace.orient",
                 "corners": [
                   2,
                   0,
-                  3,
                   1
                 ]
               }
@@ -3098,11 +3271,12 @@
               "stage": "top-corners",
               "kind": "case",
               "target": "permute",
-              "alg": "B' R B' L2 B R' B' L2 B2 U'",
+              "alg": "F' L F' R2 F L' F' R2 F2",
               "caseName": "corner-cycle",
               "why": {
                 "key": "topCorners.permute",
                 "corners": [
+                  1,
                   3,
                   0
                 ]
@@ -3112,30 +3286,14 @@
               "stage": "top-edges",
               "kind": "case",
               "target": "permute",
-              "alg": "B U' B U B U B U' B' U' B2",
-              "caseName": "u-perm-a",
-              "why": {
-                "key": "topEdges.permute.step",
-                "edges": [
-                  2,
-                  3,
-                  0,
-                  1
-                ]
-              }
-            },
-            {
-              "stage": "top-edges",
-              "kind": "case",
-              "target": "permute",
-              "alg": "L U' L U L U L U' L' U' L2",
-              "caseName": "u-perm-a",
+              "alg": "F2 U F U F' U' F' U' F' U F'",
+              "caseName": "u-perm-b",
               "why": {
                 "key": "topEdges.permute",
                 "edges": [
+                  2,
                   3,
-                  0,
-                  2
+                  1
                 ]
               }
             }
@@ -3147,8 +3305,8 @@
       "scramble": "F B2 R B' L2 U F2 L2 B F' L B' R' L' D' R' D U2 R D U' R' B' R' D' F B U F' U'",
       "methods": {
         "beginner": {
-          "alg": "R2 R' F R L2 U2 R2 B2 L' U' F' L F F U F' U2 F' U' F F U F' U B U2 B' U' B U B' F U F' B' U' B F U F' U' F U F' U L U' L' U' B' U B U R U' R' U' F' U F U L U' L' U' B' U B B U' B' U' R' U R U2 F U' F' U' L' U L L F U F' U' L' B U2 B' U' B U' B' B L U' L' U' L U L' B' L U L' U' L' B L B' U B U' B U B U B U' B' U' B2 L U' L U L U L U' L' U' L2",
-          "moveCount": 136,
+          "alg": "R2 R' F R L2 U2 R2 B2 L' U' F' L F F U F' U2 F' U' F F U F' U B U2 B' U' B U B' F U F' B' U' B F U F' U' F U F' U F U' F' U' L' U L R' U R U B U' B' U L U' L' U' B' U B U R U' R' U' F' U F U L U' L' U' B' U B F R U R' U' F' F' L F' R2 F L' F' R2 F2 U B U' B U B U B U' B' U' B2",
+          "moveCount": 110,
           "steps": [
             {
               "stage": "cross",
@@ -3311,82 +3469,84 @@
             {
               "stage": "middle-layer",
               "kind": "case",
-              "target": "8",
-              "alg": "U L U' L' U' B' U B",
+              "target": "9",
+              "alg": "y' U R U' R' U' F' U F",
               "caseName": "insert-right",
               "why": {
-                "key": "middleLayer.eject",
-                "edge": 8
+                "key": "middleLayer.insert",
+                "edge": 9,
+                "turn": true,
+                "look": [
+                  9,
+                  11
+                ]
               }
             },
             {
               "stage": "middle-layer",
               "kind": "case",
-              "target": "8",
+              "target": "10",
+              "alg": "y' L' U L U F U' F'",
+              "caseName": "insert-left",
+              "why": {
+                "key": "middleLayer.insert",
+                "edge": 10,
+                "turn": true,
+                "look": [
+                  10
+                ]
+              }
+            },
+            {
+              "stage": "middle-layer",
+              "kind": "case",
+              "target": "10",
               "alg": "U R U' R' U' F' U F",
               "caseName": "insert-right",
               "why": {
-                "key": "middleLayer.insert",
-                "edge": 8
-              }
-            },
-            {
-              "stage": "middle-layer",
-              "kind": "case",
-              "target": "11",
-              "alg": "U L U' L' U' B' U B",
-              "caseName": "insert-right",
-              "why": {
                 "key": "middleLayer.eject",
-                "edge": 11
+                "edge": 10
               }
             },
             {
               "stage": "middle-layer",
               "kind": "case",
-              "target": "11",
-              "alg": "B U' B' U' R' U R",
+              "target": "10",
+              "alg": "y2 U R U' R' U' F' U F",
               "caseName": "insert-right",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 11
+                "edge": 10,
+                "turn": true,
+                "look": [
+                  10
+                ]
               }
             },
             {
               "stage": "middle-layer",
               "kind": "case",
-              "target": "9",
-              "alg": "U2 F U' F' U' L' U L",
+              "target": "10",
+              "alg": "y2 U R U' R' U' F' U F",
               "caseName": "insert-right",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 9
+                "edge": 10,
+                "turn": true,
+                "look": [
+                  10
+                ]
               }
             },
             {
               "stage": "top-cross",
               "kind": "case",
               "target": "edges",
-              "alg": "L F U F' U' L'",
+              "alg": "B L U L' U' B'",
               "caseName": "edge-orient",
               "why": {
                 "key": "topCross.orient",
                 "edges": [
-                  2,
-                  1
-                ]
-              }
-            },
-            {
-              "stage": "top-face",
-              "kind": "case",
-              "target": "corners",
-              "alg": "B U2 B' U' B U' B'",
-              "caseName": "antisune",
-              "why": {
-                "key": "topFace.orient",
-                "corners": [
-                  1,
                   0,
                   2
                 ]
@@ -3396,31 +3556,15 @@
               "stage": "top-corners",
               "kind": "case",
               "target": "permute",
-              "alg": "B L U' L' U' L U L' B' L U L' U' L' B L B' U",
-              "caseName": "diagonal",
+              "alg": "B' R B' L2 B R' B' L2 B2 U",
+              "caseName": "corner-cycle",
               "why": {
                 "key": "topCorners.permute",
                 "corners": [
-                  3,
-                  2,
                   1,
-                  0
-                ]
-              }
-            },
-            {
-              "stage": "top-edges",
-              "kind": "case",
-              "target": "permute",
-              "alg": "B U' B U B U B U' B' U' B2",
-              "caseName": "u-perm-a",
-              "why": {
-                "key": "topEdges.permute.step",
-                "edges": [
-                  2,
                   3,
                   0,
-                  1
+                  2
                 ]
               }
             },
@@ -3428,13 +3572,13 @@
               "stage": "top-edges",
               "kind": "case",
               "target": "permute",
-              "alg": "L U' L U L U L U' L' U' L2",
+              "alg": "F U' F U F U F U' F' U' F2",
               "caseName": "u-perm-a",
               "why": {
                 "key": "topEdges.permute",
                 "edges": [
                   3,
-                  0,
+                  1,
                   2
                 ]
               }
@@ -3442,8 +3586,8 @@
           ]
         },
         "intermediate": {
-          "alg": "R F' D B D F2 L U L' U R U2 R' U' R U R' U F' U F U R U' R' R' U R U B U B' F U F' L U2 L' U' L U L' U F U' F' U' L' U L L U' L' U' B' U B U F U F' L' U' L L2 D L' U2 L D' L' U2 L' B L U' L' U' L U L' B' L U L' U' L' B L B' U B U' B U B U B U' B' U' B2",
-          "moveCount": 102,
+          "alg": "R F' D B D F2 L U L' U R U2 R' U' R U R' U F' U F U R U' R' R' U R U B U B' L' U L U L U2 L' U' L U L' U L U' L' U' B' U B U' L U' L' U' B' U B U' F U2 F' U L' U' L R B U B' U' R' B L U L' U' B' R U R' U R U2 R' F U2 F' U' F U' F' F' L F' R2 F L' F' R2 F2 F2 U F U F' U' F' U' F' U F'",
+          "moveCount": 113,
           "steps": [
             {
               "stage": "cross",
@@ -3480,8 +3624,79 @@
               "stage": "f2l",
               "kind": "case",
               "target": "8",
-              "alg": "U F' U F U R U' R'",
+              "alg": "y U L' U L U F U' F'",
               "caseName": "insert-left",
+              "why": {
+                "key": "middleLayer.insert",
+                "edge": 8,
+                "turn": true
+              }
+            },
+            {
+              "stage": "f2l",
+              "kind": "case",
+              "target": "4",
+              "alg": "F' U F U R U R'",
+              "caseName": "UBR1/FR1",
+              "parts": [
+                {
+                  "name": "align",
+                  "alg": "U"
+                },
+                {
+                  "name": "left-back",
+                  "alg": "U' F' U F"
+                },
+                {
+                  "name": "right",
+                  "alg": "U R U R'"
+                }
+              ],
+              "why": {
+                "key": "f2l.pair",
+                "corner": 4,
+                "edge": 8
+              }
+            },
+            {
+              "stage": "f2l",
+              "kind": "goal",
+              "target": "7",
+              "alg": "y R' U R",
+              "why": {
+                "key": "firstLayer.lift",
+                "corner": 7,
+                "turn": true
+              }
+            },
+            {
+              "stage": "f2l",
+              "kind": "case",
+              "target": "4",
+              "alg": "U R U2 R' U' R U R'",
+              "caseName": "facing-up",
+              "why": {
+                "key": "firstLayer.insert",
+                "corner": 4
+              }
+            },
+            {
+              "stage": "f2l",
+              "kind": "case",
+              "target": "8",
+              "alg": "U R U' R' U' F' U F",
+              "caseName": "insert-right",
+              "why": {
+                "key": "middleLayer.eject",
+                "edge": 8
+              }
+            },
+            {
+              "stage": "f2l",
+              "kind": "case",
+              "target": "8",
+              "alg": "U' R U' R' U' F' U F",
+              "caseName": "insert-right",
               "why": {
                 "key": "middleLayer.insert",
                 "edge": 8
@@ -3491,106 +3706,85 @@
               "stage": "f2l",
               "kind": "case",
               "target": "7",
-              "alg": "R' U R U B U B'",
-              "caseName": "UBR1/FR1",
+              "alg": "y U' R U2 R' U F' U' F",
+              "caseName": "UBR2/UB1",
               "parts": [
                 {
+                  "name": "turn",
+                  "alg": "y"
+                },
+                {
                   "name": "align",
-                  "alg": "U"
+                  "alg": "U'"
                 },
                 {
-                  "name": "left-back",
-                  "alg": "U' R' U R"
+                  "name": "right-half",
+                  "alg": "R U2 R'"
                 },
                 {
-                  "name": "right",
-                  "alg": "U B U B'"
+                  "name": "left",
+                  "alg": "U F' U' F"
                 }
               ],
               "why": {
                 "key": "f2l.pair",
                 "corner": 7,
-                "edge": 11
+                "edge": 11,
+                "turn": true
               }
             },
             {
-              "stage": "f2l",
-              "kind": "goal",
-              "target": "6",
-              "alg": "F U F'",
-              "why": {
-                "key": "firstLayer.lift",
-                "corner": 6
-              }
-            },
-            {
-              "stage": "f2l",
+              "stage": "top-cross",
               "kind": "case",
-              "target": "6",
-              "alg": "L U2 L' U' L U L'",
-              "caseName": "facing-up",
+              "target": "edges",
+              "alg": "B L U L' U' B'",
+              "caseName": "edge-orient",
               "why": {
-                "key": "firstLayer.insert",
-                "corner": 6
+                "key": "topCross.orient.step",
+                "edges": [
+                  2,
+                  3
+                ]
               }
             },
             {
-              "stage": "f2l",
+              "stage": "top-cross",
               "kind": "case",
-              "target": "10",
-              "alg": "U F U' F' U' L' U L",
-              "caseName": "insert-right",
+              "target": "edges",
+              "alg": "L F U F' U' L'",
+              "caseName": "edge-orient",
               "why": {
-                "key": "middleLayer.eject",
-                "edge": 10
-              }
-            },
-            {
-              "stage": "f2l",
-              "kind": "case",
-              "target": "10",
-              "alg": "L U' L' U' B' U B",
-              "caseName": "insert-right",
-              "why": {
-                "key": "middleLayer.insert",
-                "edge": 10
-              }
-            },
-            {
-              "stage": "f2l",
-              "kind": "case",
-              "target": "5",
-              "alg": "U F U F' L' U' L",
-              "caseName": "UBR0/UL1",
-              "parts": [
-                {
-                  "name": "align",
-                  "alg": "U2"
-                },
-                {
-                  "name": "right",
-                  "alg": "U' F U F'"
-                },
-                {
-                  "name": "left",
-                  "alg": "L' U' L"
-                }
-              ],
-              "why": {
-                "key": "f2l.pair",
-                "corner": 5,
-                "edge": 9
+                "key": "topCross.orient",
+                "edges": [
+                  2,
+                  1
+                ]
               }
             },
             {
               "stage": "top-face",
               "kind": "case",
               "target": "corners",
-              "alg": "L2 D L' U2 L D' L' U2 L'",
-              "caseName": "headlights",
+              "alg": "B U B' U B U2 B'",
+              "caseName": "sune",
+              "why": {
+                "key": "topFace.orient.step",
+                "corners": [
+                  2,
+                  1
+                ]
+              }
+            },
+            {
+              "stage": "top-face",
+              "kind": "case",
+              "target": "corners",
+              "alg": "R U2 R' U' R U' R'",
+              "caseName": "antisune",
               "why": {
                 "key": "topFace.orient",
                 "corners": [
+                  3,
                   0,
                   2
                 ]
@@ -3600,14 +3794,13 @@
               "stage": "top-corners",
               "kind": "case",
               "target": "permute",
-              "alg": "B L U' L' U' L U L' B' L U L' U' L' B L B' U",
-              "caseName": "diagonal",
+              "alg": "R' F R' B2 R F' R' B2 R2",
+              "caseName": "corner-cycle",
               "why": {
                 "key": "topCorners.permute",
                 "corners": [
-                  3,
                   2,
-                  1,
+                  3,
                   0
                 ]
               }
@@ -3616,14 +3809,14 @@
               "stage": "top-edges",
               "kind": "case",
               "target": "permute",
-              "alg": "B U' B U B U B U' B' U' B2",
-              "caseName": "u-perm-a",
+              "alg": "R2 U R U R' U' R' U' R' U R'",
+              "caseName": "u-perm-b",
               "why": {
                 "key": "topEdges.permute",
                 "edges": [
-                  3,
-                  0,
-                  1
+                  1,
+                  2,
+                  0
                 ]
               }
             }
@@ -3635,8 +3828,8 @@
       "scramble": "L D' F2 D L2 B2 R B' U2 D F U2 F' L2 D' B L2 U2 R U F2 D2 L U2 F2 D2 R U B' U",
       "methods": {
         "beginner": {
-          "alg": "F2 U R2 B2 L L2 U' F' U' F U R' U' R U B' U' B U F U F' F' U F U R U' R' U B U' B' U' R' U R U' B U' B' U' R' U R U' L' U L U F U' F' U L U' L' U' B' U B L' U L U F U' F' L F U F' U' L' B L U L' U' B' L U2 L' U' L U' L' U L U' L U L U L U' L' U' L2",
-          "moveCount": 99,
+          "alg": "F2 U R2 B2 L L2 U' F' U' F U R' U' R U B' U' B U F U F' U2 F U' F' U' L' U L U B' U B U L U' L' U R U' R' U' F' U F U B U' B' U' R' U R U' B U' B' U' R' U R L F U F' U' L' L F U F' U' L' R U R' U R U2 R' L2 F2 L B L' F2 L B' L L U' L U L U L U' L' U' L2 R2 U R U R' U' R' U' R' U R'",
+          "moveCount": 112,
           "steps": [
             {
               "stage": "cross",
@@ -3739,79 +3932,85 @@
             {
               "stage": "middle-layer",
               "kind": "case",
-              "target": "8",
-              "alg": "F' U F U R U' R'",
-              "caseName": "insert-left",
-              "why": {
-                "key": "middleLayer.insert",
-                "edge": 8
-              }
-            },
-            {
-              "stage": "middle-layer",
-              "kind": "case",
-              "target": "11",
-              "alg": "U B U' B' U' R' U R",
-              "caseName": "insert-right",
-              "why": {
-                "key": "middleLayer.eject",
-                "edge": 11
-              }
-            },
-            {
-              "stage": "middle-layer",
-              "kind": "case",
-              "target": "11",
-              "alg": "U' B U' B' U' R' U R",
+              "target": "9",
+              "alg": "y' U2 R U' R' U' F' U F",
               "caseName": "insert-right",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 11
-              }
-            },
-            {
-              "stage": "middle-layer",
-              "kind": "case",
-              "target": "10",
-              "alg": "U' L' U L U F U' F'",
-              "caseName": "insert-left",
-              "why": {
-                "key": "middleLayer.eject",
-                "edge": 10
-              }
-            },
-            {
-              "stage": "middle-layer",
-              "kind": "case",
-              "target": "10",
-              "alg": "U L U' L' U' B' U B",
-              "caseName": "insert-right",
-              "why": {
-                "key": "middleLayer.insert",
-                "edge": 10
+                "edge": 9,
+                "turn": true,
+                "look": [
+                  9,
+                  8
+                ]
               }
             },
             {
               "stage": "middle-layer",
               "kind": "case",
               "target": "9",
-              "alg": "L' U L U F U' F'",
+              "alg": "U L' U L U F U' F'",
               "caseName": "insert-left",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 9
+                "edge": 9,
+                "look": [
+                  11,
+                  9
+                ]
+              }
+            },
+            {
+              "stage": "middle-layer",
+              "kind": "case",
+              "target": "11",
+              "alg": "y U R U' R' U' F' U F",
+              "caseName": "insert-right",
+              "why": {
+                "key": "middleLayer.insert",
+                "edge": 11,
+                "turn": true,
+                "look": [
+                  11
+                ]
+              }
+            },
+            {
+              "stage": "middle-layer",
+              "kind": "case",
+              "target": "11",
+              "alg": "y U R U' R' U' F' U F",
+              "caseName": "insert-right",
+              "why": {
+                "key": "middleLayer.eject",
+                "edge": 11,
+                "turn": true
+              }
+            },
+            {
+              "stage": "middle-layer",
+              "kind": "case",
+              "target": "8",
+              "alg": "U' R U' R' U' F' U F",
+              "caseName": "insert-right",
+              "why": {
+                "key": "middleLayer.insert",
+                "edge": 8,
+                "look": [
+                  8
+                ]
               }
             },
             {
               "stage": "top-cross",
               "kind": "case",
               "target": "edges",
-              "alg": "L F U F' U' L'",
+              "alg": "B L U L' U' B'",
               "caseName": "edge-orient",
               "why": {
                 "key": "topCross.orient.step",
                 "edges": [
-                  2,
+                  0,
                   1
                 ]
               }
@@ -3825,8 +4024,8 @@
               "why": {
                 "key": "topCross.orient",
                 "edges": [
-                  3,
-                  1
+                  0,
+                  3
                 ]
               }
             },
@@ -3834,14 +4033,14 @@
               "stage": "top-face",
               "kind": "case",
               "target": "corners",
-              "alg": "L U2 L' U' L U' L'",
-              "caseName": "antisune",
+              "alg": "F U F' U F U2 F'",
+              "caseName": "sune",
               "why": {
                 "key": "topFace.orient",
                 "corners": [
-                  3,
                   1,
-                  2
+                  2,
+                  3
                 ]
               }
             },
@@ -3849,15 +4048,14 @@
               "stage": "top-corners",
               "kind": "case",
               "target": "permute",
-              "alg": "U",
-              "caseName": "align",
+              "alg": "B2 L2 B R B' L2 B R' B",
+              "caseName": "corner-cycle-back",
               "why": {
-                "key": "lastLayer.align",
+                "key": "topCorners.permute",
                 "corners": [
-                  1,
-                  2,
                   3,
-                  0
+                  1,
+                  2
                 ]
               }
             },
@@ -3865,21 +4063,37 @@
               "stage": "top-edges",
               "kind": "case",
               "target": "permute",
-              "alg": "L U' L U L U L U' L' U' L2",
+              "alg": "B U' B U B U B U' B' U' B2",
               "caseName": "u-perm-a",
+              "why": {
+                "key": "topEdges.permute.step",
+                "edges": [
+                  1,
+                  0,
+                  3,
+                  2
+                ]
+              }
+            },
+            {
+              "stage": "top-edges",
+              "kind": "case",
+              "target": "permute",
+              "alg": "F2 U F U F' U' F' U' F' U F'",
+              "caseName": "u-perm-b",
               "why": {
                 "key": "topEdges.permute",
                 "edges": [
+                  2,
                   3,
-                  0,
-                  2
+                  1
                 ]
               }
             }
           ]
         },
         "intermediate": {
-          "alg": "F2 U R2 B2 L' U' F' U F U2 R U R' U' B U2 B' U B U' B' U2 L U2 L' U L U' L' U2 F U2 F' U' F U F' F U2 F2 U' F2 U' F2 U2 F B2 L2 B R B' L2 B R' B U' R U' R U R U R U' R' U' R2",
+          "alg": "F2 U R2 B2 L' U' F' U F U2 R U R' U' B U2 B' U B U' B' U2 L U2 L' U L U' L' U2 F U2 F' U' F U F' F U2 F2 U' F2 U' F2 U2 F R' F R' B2 R F' R' B2 R2 U B2 U B U B' U' B' U' B' U B'",
           "moveCount": 67,
           "steps": [
             {
@@ -3922,89 +4136,104 @@
               "stage": "f2l",
               "kind": "case",
               "target": "7",
-              "alg": "U' B U2 B' U B U' B'",
+              "alg": "y U' R U2 R' U R U' R'",
               "caseName": "UBR0/UL0",
               "parts": [
+                {
+                  "name": "turn",
+                  "alg": "y"
+                },
                 {
                   "name": "align",
                   "alg": "U"
                 },
                 {
                   "name": "right-half",
-                  "alg": "U2 B U2 B'"
+                  "alg": "U2 R U2 R'"
                 },
                 {
                   "name": "right-back",
-                  "alg": "U B U' B'"
+                  "alg": "U R U' R'"
                 }
               ],
               "why": {
                 "key": "f2l.pair",
                 "corner": 7,
-                "edge": 11
+                "edge": 11,
+                "turn": true
               }
             },
             {
               "stage": "f2l",
               "kind": "case",
-              "target": "6",
-              "alg": "U2 L U2 L' U L U' L'",
+              "target": "7",
+              "alg": "y U2 R U2 R' U R U' R'",
               "caseName": "UBR0/UL0",
               "parts": [
                 {
+                  "name": "turn",
+                  "alg": "y"
+                },
+                {
                   "name": "right-half",
-                  "alg": "U2 L U2 L'"
+                  "alg": "U2 R U2 R'"
                 },
                 {
                   "name": "right-back",
-                  "alg": "U L U' L'"
+                  "alg": "U R U' R'"
                 }
               ],
               "why": {
                 "key": "f2l.pair",
-                "corner": 6,
-                "edge": 10
+                "corner": 7,
+                "edge": 11,
+                "turn": true
               }
             },
             {
               "stage": "f2l",
               "kind": "case",
-              "target": "5",
-              "alg": "U2 F U2 F' U' F U F'",
+              "target": "7",
+              "alg": "y U2 R U2 R' U' R U R'",
               "caseName": "UBR0/UB0",
               "parts": [
+                {
+                  "name": "turn",
+                  "alg": "y"
+                },
                 {
                   "name": "align",
                   "alg": "U"
                 },
                 {
                   "name": "right-half",
-                  "alg": "U F U2 F'"
+                  "alg": "U R U2 R'"
                 },
                 {
                   "name": "right",
-                  "alg": "U' F U F'"
+                  "alg": "U' R U R'"
                 }
               ],
               "why": {
                 "key": "f2l.pair",
-                "corner": 5,
-                "edge": 9
+                "corner": 7,
+                "edge": 11,
+                "turn": true
               }
             },
             {
               "stage": "top-face",
               "kind": "case",
               "target": "corners",
-              "alg": "F U2 F2 U' F2 U' F2 U2 F",
+              "alg": "R U2 R2 U' R2 U' R2 U2 R",
               "caseName": "pi",
               "why": {
                 "key": "topFace.orient",
                 "corners": [
                   0,
+                  2,
                   1,
-                  3,
-                  2
+                  3
                 ]
               }
             },
@@ -4012,15 +4241,15 @@
               "stage": "top-corners",
               "kind": "case",
               "target": "permute",
-              "alg": "B2 L2 B R B' L2 B R' B U'",
-              "caseName": "corner-cycle-back",
+              "alg": "B' R B' L2 B R' B' L2 B2 U",
+              "caseName": "corner-cycle",
               "why": {
                 "key": "topCorners.permute",
                 "corners": [
+                  1,
                   3,
-                  2,
                   0,
-                  1
+                  2
                 ]
               }
             },
@@ -4028,14 +4257,14 @@
               "stage": "top-edges",
               "kind": "case",
               "target": "permute",
-              "alg": "R U' R U R U R U' R' U' R2",
-              "caseName": "u-perm-a",
+              "alg": "L2 U L U L' U' L' U' L' U L'",
+              "caseName": "u-perm-b",
               "why": {
                 "key": "topEdges.permute",
                 "edges": [
                   2,
-                  0,
-                  1
+                  3,
+                  0
                 ]
               }
             }
@@ -4047,8 +4276,8 @@
       "scramble": "R2 D2 L2 U L2 U' L' F' D' R2 F U2 R2 D F2 R2 D2 U' R L2 F2 R' D2 R2 U' B' R' L' B' D",
       "methods": {
         "beginner": {
-          "alg": "F2 U' R' F R L' U B' R B B B2 L L2 R' U R U F' U' F R' U R B U B' F U F' L U2 L' U' L U L' U R U' R' U' F' U F U' B' U B U L U' L' U B U' B' U' R' U R B' U B U L U' L' L' U L U F U' F' L F U F' U' L' L F U F' U' L' F U F' U F U2 F' L U2 L' U' L U' L' B2 L2 B R B' L2 B R' B U B U' B U B U B U' B' U' B2 L U' L U L U L U' L' U' L2",
-          "moveCount": 133,
+          "alg": "F2 U' R' F R L' U B' R B B B2 L L2 R' U R U F' U' F R' U R B U B' F U F' L U2 L' U' L U L' U R U' R' U' F' U F U F U' F' U' L' U L U' L U' L' U' B' U B U R' U R U B U' B' R B U B' U' R' F R U R' U' F' L U2 L' U' L U' L' F' L F' R2 F L' F' R2 F2 U' F2 U F U F' U' F' U' F' U F'",
+          "moveCount": 109,
           "steps": [
             {
               "stage": "cross",
@@ -4205,51 +4434,57 @@
               "caseName": "insert-right",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 8
-              }
-            },
-            {
-              "stage": "middle-layer",
-              "kind": "case",
-              "target": "11",
-              "alg": "U' B' U B U L U' L'",
-              "caseName": "insert-left",
-              "why": {
-                "key": "middleLayer.eject",
-                "edge": 11
-              }
-            },
-            {
-              "stage": "middle-layer",
-              "kind": "case",
-              "target": "11",
-              "alg": "U B U' B' U' R' U R",
-              "caseName": "insert-right",
-              "why": {
-                "key": "middleLayer.insert",
-                "edge": 11
-              }
-            },
-            {
-              "stage": "middle-layer",
-              "kind": "case",
-              "target": "10",
-              "alg": "B' U B U L U' L'",
-              "caseName": "insert-left",
-              "why": {
-                "key": "middleLayer.insert",
-                "edge": 10
+                "edge": 8,
+                "look": [
+                  9,
+                  8,
+                  10
+                ]
               }
             },
             {
               "stage": "middle-layer",
               "kind": "case",
               "target": "9",
-              "alg": "L' U L U F U' F'",
+              "alg": "y' U R U' R' U' F' U F",
+              "caseName": "insert-right",
+              "why": {
+                "key": "middleLayer.insert",
+                "edge": 9,
+                "turn": true,
+                "look": [
+                  10,
+                  9
+                ]
+              }
+            },
+            {
+              "stage": "middle-layer",
+              "kind": "case",
+              "target": "9",
+              "alg": "y' U' R U' R' U' F' U F",
+              "caseName": "insert-right",
+              "why": {
+                "key": "middleLayer.insert",
+                "edge": 9,
+                "turn": true,
+                "look": [
+                  9
+                ]
+              }
+            },
+            {
+              "stage": "middle-layer",
+              "kind": "case",
+              "target": "9",
+              "alg": "U L' U L U F U' F'",
               "caseName": "insert-left",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 9
+                "edge": 9,
+                "look": [
+                  9
+                ]
               }
             },
             {
@@ -4261,7 +4496,7 @@
               "why": {
                 "key": "topCross.orient.step",
                 "edges": [
-                  3,
+                  1,
                   2
                 ]
               }
@@ -4270,13 +4505,13 @@
               "stage": "top-cross",
               "kind": "case",
               "target": "edges",
-              "alg": "L F U F' U' L'",
+              "alg": "B L U L' U' B'",
               "caseName": "edge-orient",
               "why": {
                 "key": "topCross.orient",
                 "edges": [
-                  3,
-                  0
+                  0,
+                  2
                 ]
               }
             },
@@ -4284,28 +4519,14 @@
               "stage": "top-face",
               "kind": "case",
               "target": "corners",
-              "alg": "F U F' U F U2 F'",
-              "caseName": "sune",
-              "why": {
-                "key": "topFace.orient.step",
-                "corners": [
-                  2,
-                  3
-                ]
-              }
-            },
-            {
-              "stage": "top-face",
-              "kind": "case",
-              "target": "corners",
-              "alg": "L U2 L' U' L U' L'",
+              "alg": "R U2 R' U' R U' R'",
               "caseName": "antisune",
               "why": {
                 "key": "topFace.orient",
                 "corners": [
                   2,
-                  1,
-                  0
+                  0,
+                  3
                 ]
               }
             },
@@ -4313,12 +4534,12 @@
               "stage": "top-corners",
               "kind": "case",
               "target": "permute",
-              "alg": "B2 L2 B R B' L2 B R' B U",
-              "caseName": "corner-cycle-back",
+              "alg": "B' R B' L2 B R' B' L2 B2 U'",
+              "caseName": "corner-cycle",
               "why": {
                 "key": "topCorners.permute",
                 "corners": [
-                  1,
+                  3,
                   0
                 ]
               }
@@ -4327,38 +4548,22 @@
               "stage": "top-edges",
               "kind": "case",
               "target": "permute",
-              "alg": "B U' B U B U B U' B' U' B2",
-              "caseName": "u-perm-a",
-              "why": {
-                "key": "topEdges.permute.step",
-                "edges": [
-                  2,
-                  3,
-                  0,
-                  1
-                ]
-              }
-            },
-            {
-              "stage": "top-edges",
-              "kind": "case",
-              "target": "permute",
-              "alg": "L U' L U L U L U' L' U' L2",
-              "caseName": "u-perm-a",
+              "alg": "B2 U B U B' U' B' U' B' U B'",
+              "caseName": "u-perm-b",
               "why": {
                 "key": "topEdges.permute",
                 "edges": [
+                  1,
                   3,
-                  0,
-                  2
+                  0
                 ]
               }
             }
           ]
         },
         "intermediate": {
-          "alg": "U2 B2 D' B L' F' F U F' U2 R U2 R' U' R U R' U B U2 B' U2 B U B' L U2 L' U' L U L' U' L' U L U F U' F' U L U' L' U' B' U B U2 F U2 F' L' U2 L B L U L' U' B' B L U L' U' B' F U F' U F U2 F' B U2 B' U' B U' B' F' L F' R2 F L' F' R2 F2 U B U' B U B U B U' B' U' B2 F2 U F U F' U' F' U' F' U F'",
-          "moveCount": 113,
+          "alg": "U2 B2 D' B L' F' F U F' U2 R U2 R' U' R U R' U B U2 B' U2 B U B' L U2 L' U' L U L' U F U' F' U' L' U L U B' U B U L U' L' U F U2 F' U2 F U F' R B U B' U' R' B L U L' U' B' F2 D F' U2 F D' F' U2 F' R' F R' B2 R F' R' B2 R2 U' R U' R U R U R U' R' U' R2 B U' B U B U B U' B' U' B2",
+          "moveCount": 109,
           "steps": [
             {
               "stage": "cross",
@@ -4395,7 +4600,73 @@
               "stage": "f2l",
               "kind": "case",
               "target": "7",
-              "alg": "U B U2 B' U2 B U B'",
+              "alg": "y U R U2 R' U2 R U R'",
+              "caseName": "DFR2/UB0",
+              "parts": [
+                {
+                  "name": "turn",
+                  "alg": "y"
+                },
+                {
+                  "name": "align",
+                  "alg": "U"
+                },
+                {
+                  "name": "right-half",
+                  "alg": "R U2 R'"
+                },
+                {
+                  "name": "right",
+                  "alg": "U2 R U R'"
+                }
+              ],
+              "why": {
+                "key": "f2l.pair",
+                "corner": 7,
+                "edge": 11,
+                "turn": true
+              }
+            },
+            {
+              "stage": "f2l",
+              "kind": "case",
+              "target": "7",
+              "alg": "y R U2 R' U' R U R'",
+              "caseName": "facing-up",
+              "why": {
+                "key": "firstLayer.insert",
+                "corner": 7,
+                "turn": true
+              }
+            },
+            {
+              "stage": "f2l",
+              "kind": "case",
+              "target": "8",
+              "alg": "y U R U' R' U' F' U F",
+              "caseName": "insert-right",
+              "why": {
+                "key": "middleLayer.eject",
+                "edge": 8,
+                "turn": true
+              }
+            },
+            {
+              "stage": "f2l",
+              "kind": "case",
+              "target": "9",
+              "alg": "U L' U L U F U' F'",
+              "caseName": "insert-left",
+              "why": {
+                "key": "middleLayer.insert",
+                "edge": 9
+              }
+            },
+            {
+              "stage": "f2l",
+              "kind": "case",
+              "target": "4",
+              "alg": "U R U2 R' U2 R U R'",
               "caseName": "DFR2/UB0",
               "parts": [
                 {
@@ -4404,72 +4675,17 @@
                 },
                 {
                   "name": "right-half",
-                  "alg": "B U2 B'"
+                  "alg": "R U2 R'"
                 },
                 {
                   "name": "right",
-                  "alg": "U2 B U B'"
+                  "alg": "U2 R U R'"
                 }
               ],
               "why": {
                 "key": "f2l.pair",
-                "corner": 7,
-                "edge": 11
-              }
-            },
-            {
-              "stage": "f2l",
-              "kind": "case",
-              "target": "6",
-              "alg": "L U2 L' U' L U L'",
-              "caseName": "facing-up",
-              "why": {
-                "key": "firstLayer.insert",
-                "corner": 6
-              }
-            },
-            {
-              "stage": "f2l",
-              "kind": "case",
-              "target": "10",
-              "alg": "U' L' U L U F U' F'",
-              "caseName": "insert-left",
-              "why": {
-                "key": "middleLayer.eject",
-                "edge": 10
-              }
-            },
-            {
-              "stage": "f2l",
-              "kind": "case",
-              "target": "10",
-              "alg": "U L U' L' U' B' U B",
-              "caseName": "insert-right",
-              "why": {
-                "key": "middleLayer.insert",
-                "edge": 10
-              }
-            },
-            {
-              "stage": "f2l",
-              "kind": "case",
-              "target": "5",
-              "alg": "U2 F U2 F' L' U2 L",
-              "caseName": "DFR2/UB1",
-              "parts": [
-                {
-                  "name": "right-half",
-                  "alg": "U2 F U2 F'"
-                },
-                {
-                  "name": "left-half",
-                  "alg": "L' U2 L"
-                }
-              ],
-              "why": {
-                "key": "f2l.pair",
-                "corner": 5,
-                "edge": 9
+                "corner": 4,
+                "edge": 8
               }
             },
             {
@@ -4481,7 +4697,7 @@
               "why": {
                 "key": "topCross.orient.step",
                 "edges": [
-                  2,
+                  3,
                   0
                 ]
               }
@@ -4490,13 +4706,13 @@
               "stage": "top-cross",
               "kind": "case",
               "target": "edges",
-              "alg": "B L U L' U' B'",
+              "alg": "L F U F' U' L'",
               "caseName": "edge-orient",
               "why": {
                 "key": "topCross.orient",
                 "edges": [
-                  2,
-                  1
+                  3,
+                  2
                 ]
               }
             },
@@ -4504,26 +4720,11 @@
               "stage": "top-face",
               "kind": "case",
               "target": "corners",
-              "alg": "F U F' U F U2 F'",
-              "caseName": "sune",
-              "why": {
-                "key": "topFace.orient.step",
-                "corners": [
-                  2,
-                  3
-                ]
-              }
-            },
-            {
-              "stage": "top-face",
-              "kind": "case",
-              "target": "corners",
-              "alg": "B U2 B' U' B U' B'",
-              "caseName": "antisune",
+              "alg": "R2 D R' U2 R D' R' U2 R'",
+              "caseName": "headlights",
               "why": {
                 "key": "topFace.orient",
                 "corners": [
-                  3,
                   1,
                   0
                 ]
@@ -4533,15 +4734,13 @@
               "stage": "top-corners",
               "kind": "case",
               "target": "permute",
-              "alg": "F' L F' R2 F L' F' R2 F2 U",
+              "alg": "B' R B' L2 B R' B' L2 B2 U'",
               "caseName": "corner-cycle",
               "why": {
                 "key": "topCorners.permute",
                 "corners": [
-                  2,
-                  0,
                   3,
-                  1
+                  0
                 ]
               }
             },
@@ -4554,10 +4753,10 @@
               "why": {
                 "key": "topEdges.permute.step",
                 "edges": [
-                  1,
-                  0,
+                  2,
                   3,
-                  2
+                  0,
+                  1
                 ]
               }
             },
@@ -4565,14 +4764,14 @@
               "stage": "top-edges",
               "kind": "case",
               "target": "permute",
-              "alg": "F2 U F U F' U' F' U' F' U F'",
-              "caseName": "u-perm-b",
+              "alg": "L U' L U L U L U' L' U' L2",
+              "caseName": "u-perm-a",
               "why": {
                 "key": "topEdges.permute",
                 "edges": [
-                  2,
                   3,
-                  1
+                  0,
+                  2
                 ]
               }
             }
@@ -4584,8 +4783,8 @@
       "scramble": "R2 U2 R' D2 L' U' D F2 R' B R F R' U2 B2 L2 R2 D2 R2 U2 B2 U R2 D2 L' B U2 F' D' F2",
       "methods": {
         "beginner": {
-          "alg": "U2 F2 R U R' U2 B2 F' L F L U L' U R U2 R' U' R U R' F U F' U B U B' L U2 L' U' L U L' L' U' L U L U' L' U' B' U B U R U' R' U' F' U F U2 B U' B' U' R' U R U L U' L' U' B' U B U' L U' L' U' B' U B U' F U' F' U' L' U L B L U L' U' B' L F U F' U' L' F U2 F' U' F U' F' L F U' F' U' F U F' L' F U F' U' F' L F L' R2 U R U R' U' R' U' R' U R'",
-          "moveCount": 133,
+          "alg": "U2 F2 R U R' U2 B2 F' L F L U L' U R U2 R' U' R U R' F U F' U B U B' L U2 L' U' L U L' L' U' L U2 B' U B U L U' L' U' F' U F U R U' R' R' U R U B U' B' U' L' U L U F U' F' B L U L' U' B' L F U F' U' L' B U2 B' U' B U' B' L2 F2 L B L' F2 L B' L R2 U R U R' U' R' U' R' U R'",
+          "moveCount": 108,
           "steps": [
             {
               "stage": "cross",
@@ -4697,67 +4896,61 @@
             {
               "stage": "middle-layer",
               "kind": "case",
-              "target": "8",
-              "alg": "U L U' L' U' B' U B",
-              "caseName": "insert-right",
-              "why": {
-                "key": "middleLayer.eject",
-                "edge": 8
-              }
-            },
-            {
-              "stage": "middle-layer",
-              "kind": "case",
-              "target": "8",
-              "alg": "U R U' R' U' F' U F",
-              "caseName": "insert-right",
+              "target": "10",
+              "alg": "y' U2 L' U L U F U' F'",
+              "caseName": "insert-left",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 8
+                "edge": 10,
+                "turn": true,
+                "look": [
+                  10
+                ]
               }
             },
             {
               "stage": "middle-layer",
               "kind": "case",
               "target": "11",
-              "alg": "U2 B U' B' U' R' U R",
-              "caseName": "insert-right",
+              "alg": "y2 U' L' U L U F U' F'",
+              "caseName": "insert-left",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 11
+                "edge": 11,
+                "turn": true,
+                "look": [
+                  11
+                ]
               }
             },
             {
               "stage": "middle-layer",
               "kind": "case",
-              "target": "10",
-              "alg": "U L U' L' U' B' U B",
-              "caseName": "insert-right",
+              "target": "8",
+              "alg": "y L' U L U F U' F'",
+              "caseName": "insert-left",
               "why": {
-                "key": "middleLayer.eject",
-                "edge": 10
+                "key": "middleLayer.insert",
+                "edge": 8,
+                "turn": true,
+                "look": [
+                  8
+                ]
               }
             },
             {
               "stage": "middle-layer",
               "kind": "case",
-              "target": "10",
-              "alg": "U' L U' L' U' B' U B",
-              "caseName": "insert-right",
+              "target": "11",
+              "alg": "y2 U' L' U L U F U' F'",
+              "caseName": "insert-left",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 10
-              }
-            },
-            {
-              "stage": "middle-layer",
-              "kind": "case",
-              "target": "9",
-              "alg": "U' F U' F' U' L' U L",
-              "caseName": "insert-right",
-              "why": {
-                "key": "middleLayer.insert",
-                "edge": 9
+                "edge": 11,
+                "turn": true,
+                "look": [
+                  11
+                ]
               }
             },
             {
@@ -4769,8 +4962,8 @@
               "why": {
                 "key": "topCross.orient.step",
                 "edges": [
-                  0,
-                  3
+                  3,
+                  2
                 ]
               }
             },
@@ -4783,8 +4976,8 @@
               "why": {
                 "key": "topCross.orient",
                 "edges": [
-                  0,
-                  1
+                  3,
+                  0
                 ]
               }
             },
@@ -4792,14 +4985,14 @@
               "stage": "top-face",
               "kind": "case",
               "target": "corners",
-              "alg": "F U2 F' U' F U' F'",
+              "alg": "B U2 B' U' B U' B'",
               "caseName": "antisune",
               "why": {
                 "key": "topFace.orient",
                 "corners": [
                   1,
-                  0,
-                  3
+                  3,
+                  0
                 ]
               }
             },
@@ -4807,12 +5000,13 @@
               "stage": "top-corners",
               "kind": "case",
               "target": "permute",
-              "alg": "L F U' F' U' F U F' L' F U F' U' F' L F L'",
-              "caseName": "diagonal",
+              "alg": "L2 F2 L B L' F2 L B' L",
+              "caseName": "corner-cycle-back",
               "why": {
                 "key": "topCorners.permute",
                 "corners": [
-                  3,
+                  2,
+                  0,
                   1
                 ]
               }
@@ -4835,8 +5029,8 @@
           ]
         },
         "intermediate": {
-          "alg": "U2 D L F' D' F' U F' U' F U L U' L' U' B' U B U R U' R' U' F' U F F U F' U B U B' R' U R U B U' B' U2 B' U B U2 L U L' U L' U2 L F U F' B L U L' U' B' B L U L' U' B' F U F' U F U2 F' L U2 L' U' L U' L' F' L F' R2 F L' F' R2 F2 U' F2 U F U F' U' F' U' F' U F'",
-          "moveCount": 102,
+          "alg": "U2 D L F' D' F' U F' U' F U' B' U B U L U' L' U' F' U F U R U' R' F U F' U B U B' B U' B' U' R' U R U2 L U' L' U B' U' B F U' F' L' U L U2 L' U' L R B U B' U' R' B L U L' U' B' R U2 R' U' R U' R' R2 B2 R F R' B2 R F' R U' B2 U B U B' U' B' U' B' U B'",
+          "moveCount": 98,
           "steps": [
             {
               "stage": "cross",
@@ -4863,106 +5057,118 @@
               "stage": "f2l",
               "kind": "case",
               "target": "8",
-              "alg": "U L U' L' U' B' U B",
-              "caseName": "insert-right",
+              "alg": "y' U' L' U L U F U' F'",
+              "caseName": "insert-left",
               "why": {
                 "key": "middleLayer.eject",
-                "edge": 8
-              }
-            },
-            {
-              "stage": "f2l",
-              "kind": "case",
-              "target": "8",
-              "alg": "U R U' R' U' F' U F",
-              "caseName": "insert-right",
-              "why": {
-                "key": "middleLayer.insert",
-                "edge": 8
-              }
-            },
-            {
-              "stage": "f2l",
-              "kind": "goal",
-              "target": "7",
-              "alg": "F U F'",
-              "why": {
-                "key": "firstLayer.lift",
-                "corner": 7
-              }
-            },
-            {
-              "stage": "f2l",
-              "kind": "case",
-              "target": "7",
-              "alg": "U B U B'",
-              "caseName": "right-hand",
-              "why": {
-                "key": "firstLayer.insert",
-                "corner": 7
+                "edge": 8,
+                "turn": true
               }
             },
             {
               "stage": "f2l",
               "kind": "case",
               "target": "11",
-              "alg": "R' U R U B U' B'",
+              "alg": "y2 U' L' U L U F U' F'",
               "caseName": "insert-left",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 11
+                "edge": 11,
+                "turn": true
+              }
+            },
+            {
+              "stage": "f2l",
+              "kind": "goal",
+              "target": "4",
+              "alg": "L U L'",
+              "why": {
+                "key": "firstLayer.lift",
+                "corner": 4
               }
             },
             {
               "stage": "f2l",
               "kind": "case",
-              "target": "6",
-              "alg": "U2 B' U B U2 L U L'",
-              "caseName": "UBR2/UR0",
+              "target": "4",
+              "alg": "U R U R'",
+              "caseName": "right-hand",
+              "why": {
+                "key": "firstLayer.insert",
+                "corner": 4
+              }
+            },
+            {
+              "stage": "f2l",
+              "kind": "case",
+              "target": "8",
+              "alg": "R U' R' U' F' U F",
+              "caseName": "insert-right",
+              "why": {
+                "key": "middleLayer.insert",
+                "edge": 8
+              }
+            },
+            {
+              "stage": "f2l",
+              "kind": "case",
+              "target": "7",
+              "alg": "y U2 R U' R' U F' U' F",
+              "caseName": "UBR2/UL1",
               "parts": [
                 {
+                  "name": "turn",
+                  "alg": "y"
+                },
+                {
                   "name": "align",
-                  "alg": "U"
+                  "alg": "U2"
+                },
+                {
+                  "name": "right-back",
+                  "alg": "R U' R'"
+                },
+                {
+                  "name": "left",
+                  "alg": "U F' U' F"
+                }
+              ],
+              "why": {
+                "key": "f2l.pair",
+                "corner": 7,
+                "edge": 11,
+                "turn": true
+              }
+            },
+            {
+              "stage": "f2l",
+              "kind": "case",
+              "target": "7",
+              "alg": "y R U' R' F' U F U2 F' U' F",
+              "caseName": "DFR2/FR1",
+              "parts": [
+                {
+                  "name": "turn",
+                  "alg": "y"
+                },
+                {
+                  "name": "right-back",
+                  "alg": "R U' R'"
                 },
                 {
                   "name": "left-back",
-                  "alg": "U B' U B"
+                  "alg": "F' U F"
                 },
                 {
-                  "name": "right",
-                  "alg": "U2 L U L'"
+                  "name": "left",
+                  "alg": "U2 F' U' F"
                 }
               ],
               "why": {
                 "key": "f2l.pair",
-                "corner": 6,
-                "edge": 10
-              }
-            },
-            {
-              "stage": "f2l",
-              "kind": "case",
-              "target": "5",
-              "alg": "U L' U2 L F U F'",
-              "caseName": "UBR0/FR1",
-              "parts": [
-                {
-                  "name": "align",
-                  "alg": "U"
-                },
-                {
-                  "name": "left-half",
-                  "alg": "L' U2 L"
-                },
-                {
-                  "name": "right",
-                  "alg": "F U F'"
-                }
-              ],
-              "why": {
-                "key": "f2l.pair",
-                "corner": 5,
-                "edge": 9
+                "corner": 7,
+                "edge": 11,
+                "turn": true
               }
             },
             {
@@ -4974,8 +5180,8 @@
               "why": {
                 "key": "topCross.orient.step",
                 "edges": [
-                  2,
-                  0
+                  3,
+                  2
                 ]
               }
             },
@@ -4983,12 +5189,12 @@
               "stage": "top-cross",
               "kind": "case",
               "target": "edges",
-              "alg": "B L U L' U' B'",
+              "alg": "L F U F' U' L'",
               "caseName": "edge-orient",
               "why": {
                 "key": "topCross.orient",
                 "edges": [
-                  2,
+                  3,
                   1
                 ]
               }
@@ -4997,27 +5203,13 @@
               "stage": "top-face",
               "kind": "case",
               "target": "corners",
-              "alg": "F U F' U F U2 F'",
-              "caseName": "sune",
-              "why": {
-                "key": "topFace.orient.step",
-                "corners": [
-                  1,
-                  3
-                ]
-              }
-            },
-            {
-              "stage": "top-face",
-              "kind": "case",
-              "target": "corners",
-              "alg": "L U2 L' U' L U' L'",
+              "alg": "B U2 B' U' B U' B'",
               "caseName": "antisune",
               "why": {
                 "key": "topFace.orient",
                 "corners": [
-                  1,
                   0,
+                  1,
                   2
                 ]
               }
@@ -5026,12 +5218,14 @@
               "stage": "top-corners",
               "kind": "case",
               "target": "permute",
-              "alg": "F' L F' R2 F L' F' R2 F2 U'",
-              "caseName": "corner-cycle",
+              "alg": "B2 L2 B R B' L2 B R' B U'",
+              "caseName": "corner-cycle-back",
               "why": {
                 "key": "topCorners.permute",
                 "corners": [
+                  3,
                   2,
+                  0,
                   1
                 ]
               }
@@ -5040,14 +5234,14 @@
               "stage": "top-edges",
               "kind": "case",
               "target": "permute",
-              "alg": "F2 U F U F' U' F' U' F' U F'",
+              "alg": "L2 U L U L' U' L' U' L' U L'",
               "caseName": "u-perm-b",
               "why": {
                 "key": "topEdges.permute",
                 "edges": [
                   2,
                   3,
-                  1
+                  0
                 ]
               }
             }
@@ -5059,8 +5253,8 @@
       "scramble": "B2 U' L2 R' F' D2 U' D L' R D' B' L F' D2 B U L' D' F' U L' F2 B2 U' D' U R2 B' D2",
       "methods": {
         "beginner": {
-          "alg": "U' F2 L' U2 R2 L' B L F' L F U2 R U2 R' U' R U R' U B U B' U2 L U L' U2 F U2 F' U' F U F' U R U' R' U' F' U F U' B U' B' U' R' U R U' B' U B U L U' L' U' L' U L U F U' F' L F U F' U' L' B L U L' U' B' F2 D F' U2 F D' F' U2 F' F' L F' R2 F L' F' R2 F2 U' B2 U B U B' U' B' U' B' U B'",
-          "moveCount": 109,
+          "alg": "U' F2 L' U2 R2 L' B L F' L F U2 R U2 R' U' R U R' U B U B' U2 L U L' U2 F U2 F' U' F U F' U R U' R' U' F' U F U' F U' F' U' L' U L B U' B' U' R' U R U' B' U B U L U' L' B L U L' U' B' B L U L' U' B' B U B' U B U2 B' L' B L' F2 L B' L' F2 L2 F2 U F U F' U' F' U' F' U F'",
+          "moveCount": 105,
           "steps": [
             {
               "stage": "cross",
@@ -5168,40 +5362,58 @@
               "caseName": "insert-right",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 8
-              }
-            },
-            {
-              "stage": "middle-layer",
-              "kind": "case",
-              "target": "11",
-              "alg": "U' B U' B' U' R' U R",
-              "caseName": "insert-right",
-              "why": {
-                "key": "middleLayer.insert",
-                "edge": 11
-              }
-            },
-            {
-              "stage": "middle-layer",
-              "kind": "case",
-              "target": "10",
-              "alg": "U' B' U B U L U' L'",
-              "caseName": "insert-left",
-              "why": {
-                "key": "middleLayer.insert",
-                "edge": 10
+                "edge": 8,
+                "look": [
+                  11,
+                  8,
+                  9
+                ]
               }
             },
             {
               "stage": "middle-layer",
               "kind": "case",
               "target": "9",
-              "alg": "U' L' U L U F U' F'",
+              "alg": "y' U' R U' R' U' F' U F",
+              "caseName": "insert-right",
+              "why": {
+                "key": "middleLayer.insert",
+                "edge": 9,
+                "turn": true,
+                "look": [
+                  9,
+                  11
+                ]
+              }
+            },
+            {
+              "stage": "middle-layer",
+              "kind": "case",
+              "target": "10",
+              "alg": "y2 R U' R' U' F' U F",
+              "caseName": "insert-right",
+              "why": {
+                "key": "middleLayer.insert",
+                "edge": 10,
+                "turn": true,
+                "look": [
+                  10
+                ]
+              }
+            },
+            {
+              "stage": "middle-layer",
+              "kind": "case",
+              "target": "11",
+              "alg": "y2 U' L' U L U F U' F'",
               "caseName": "insert-left",
               "why": {
                 "key": "middleLayer.insert",
-                "edge": 9
+                "edge": 11,
+                "turn": true,
+                "look": [
+                  11
+                ]
               }
             },
             {
@@ -5213,8 +5425,8 @@
               "why": {
                 "key": "topCross.orient.step",
                 "edges": [
-                  1,
-                  3
+                  2,
+                  0
                 ]
               }
             },
@@ -5222,13 +5434,13 @@
               "stage": "top-cross",
               "kind": "case",
               "target": "edges",
-              "alg": "B L U L' U' B'",
+              "alg": "L F U F' U' L'",
               "caseName": "edge-orient",
               "why": {
                 "key": "topCross.orient",
                 "edges": [
                   2,
-                  3
+                  1
                 ]
               }
             },
@@ -5236,13 +5448,14 @@
               "stage": "top-face",
               "kind": "case",
               "target": "corners",
-              "alg": "F2 D F' U2 F D' F' U2 F'",
-              "caseName": "headlights",
+              "alg": "L U L' U L U2 L'",
+              "caseName": "sune",
               "why": {
                 "key": "topFace.orient",
                 "corners": [
-                  1,
-                  0
+                  2,
+                  0,
+                  1
                 ]
               }
             },
@@ -5250,13 +5463,14 @@
               "stage": "top-corners",
               "kind": "case",
               "target": "permute",
-              "alg": "F' L F' R2 F L' F' R2 F2 U'",
+              "alg": "F' L F' R2 F L' F' R2 F2",
               "caseName": "corner-cycle",
               "why": {
                 "key": "topCorners.permute",
                 "corners": [
-                  2,
-                  1
+                  1,
+                  3,
+                  0
                 ]
               }
             },
@@ -5264,13 +5478,13 @@
               "stage": "top-edges",
               "kind": "case",
               "target": "permute",
-              "alg": "B2 U B U B' U' B' U' B' U B'",
+              "alg": "R2 U R U R' U' R' U' R' U R'",
               "caseName": "u-perm-b",
               "why": {
                 "key": "topEdges.permute",
                 "edges": [
                   1,
-                  3,
+                  2,
                   0
                 ]
               }
@@ -5278,8 +5492,8 @@
           ]
         },
         "intermediate": {
-          "alg": "U' R B' R2 F2 L F U F' U2 R U2 R' U' R U R' F' U F U R U' R' L U L' B U2 B' U' B U B' U B U' B' U' R' U R L U' L' U B' U' B U2 F U2 F' U' F U F' B L U L' U' B' B L U L' U' B' L F U F' U' L' F U F' U F U2 F' B' R B' L2 B R' B' L2 B2 B2 U B U B' U' B' U' B' U B'",
-          "moveCount": 102,
+          "alg": "U' R B' R2 F2 L F U F' U2 R U2 R' U' R U R' F' U F U R U' R' B' U B U B U2 B' U' B U B' U2 B U' B' U' R' U R L U2 L' B' U2 B L' U' L F U F' R B U B' U' R' R B U B' U' R' R2 D R' U2 R D' R' U2 R' L2 F2 L B L' F2 L B' L U' F U' F U F U F U' F' U' F2",
+          "moveCount": 97,
           "steps": [
             {
               "stage": "cross",
@@ -5316,8 +5530,41 @@
               "stage": "f2l",
               "kind": "case",
               "target": "8",
-              "alg": "F' U F U R U' R'",
+              "alg": "y L' U L U F U' F'",
               "caseName": "insert-left",
+              "why": {
+                "key": "middleLayer.insert",
+                "edge": 8,
+                "turn": true
+              }
+            },
+            {
+              "stage": "f2l",
+              "kind": "goal",
+              "target": "4",
+              "alg": "R' U R",
+              "why": {
+                "key": "firstLayer.lift",
+                "corner": 4
+              }
+            },
+            {
+              "stage": "f2l",
+              "kind": "case",
+              "target": "4",
+              "alg": "U R U2 R' U' R U R'",
+              "caseName": "facing-up",
+              "why": {
+                "key": "firstLayer.insert",
+                "corner": 4
+              }
+            },
+            {
+              "stage": "f2l",
+              "kind": "case",
+              "target": "8",
+              "alg": "U2 R U' R' U' F' U F",
+              "caseName": "insert-right",
               "why": {
                 "key": "middleLayer.insert",
                 "edge": 8
@@ -5325,82 +5572,64 @@
             },
             {
               "stage": "f2l",
-              "kind": "goal",
-              "target": "7",
-              "alg": "L U L'",
-              "why": {
-                "key": "firstLayer.lift",
-                "corner": 7
-              }
-            },
-            {
-              "stage": "f2l",
               "kind": "case",
               "target": "7",
-              "alg": "B U2 B' U' B U B'",
-              "caseName": "facing-up",
-              "why": {
-                "key": "firstLayer.insert",
-                "corner": 7
-              }
-            },
-            {
-              "stage": "f2l",
-              "kind": "case",
-              "target": "11",
-              "alg": "U B U' B' U' R' U R",
-              "caseName": "insert-right",
-              "why": {
-                "key": "middleLayer.insert",
-                "edge": 11
-              }
-            },
-            {
-              "stage": "f2l",
-              "kind": "case",
-              "target": "6",
-              "alg": "L U' L' U B' U' B",
-              "caseName": "UBR2/UL1",
+              "alg": "y R U2 R' F' U2 F",
+              "caseName": "DFR2/UB1",
               "parts": [
                 {
-                  "name": "right-back",
-                  "alg": "L U' L'"
+                  "name": "turn",
+                  "alg": "y"
                 },
                 {
-                  "name": "left",
-                  "alg": "U B' U' B"
+                  "name": "align",
+                  "alg": "U2"
+                },
+                {
+                  "name": "right-half",
+                  "alg": "U2 R U2 R'"
+                },
+                {
+                  "name": "left-half",
+                  "alg": "F' U2 F"
                 }
               ],
               "why": {
                 "key": "f2l.pair",
-                "corner": 6,
-                "edge": 10
+                "corner": 7,
+                "edge": 11,
+                "turn": true
               }
             },
             {
               "stage": "f2l",
               "kind": "case",
-              "target": "5",
-              "alg": "U2 F U2 F' U' F U F'",
-              "caseName": "UBR0/UB0",
+              "target": "7",
+              "alg": "y F' U' F R U R'",
+              "caseName": "UBR0/UF0",
               "parts": [
+                {
+                  "name": "turn",
+                  "alg": "y"
+                },
                 {
                   "name": "align",
                   "alg": "U"
                 },
                 {
-                  "name": "right-half",
-                  "alg": "U F U2 F'"
+                  "name": "left",
+                  "alg": "U' F' U' F"
                 },
                 {
                   "name": "right",
-                  "alg": "U' F U F'"
+                  "alg": "R U R'"
                 }
               ],
               "why": {
                 "key": "f2l.pair",
-                "corner": 5,
-                "edge": 9
+                "corner": 7,
+                "edge": 11,
+                "turn": true
               }
             },
             {
@@ -5412,10 +5641,8 @@
               "why": {
                 "key": "topCross.orient.step",
                 "edges": [
-                  2,
                   1,
-                  3,
-                  0
+                  2
                 ]
               }
             },
@@ -5424,26 +5651,12 @@
               "kind": "case",
               "target": "edges",
               "alg": "B L U L' U' B'",
-              "caseName": "edge-orient",
-              "why": {
-                "key": "topCross.orient.step",
-                "edges": [
-                  2,
-                  3
-                ]
-              }
-            },
-            {
-              "stage": "top-cross",
-              "kind": "case",
-              "target": "edges",
-              "alg": "L F U F' U' L'",
               "caseName": "edge-orient",
               "why": {
                 "key": "topCross.orient",
                 "edges": [
-                  2,
-                  1
+                  1,
+                  0
                 ]
               }
             },
@@ -5451,12 +5664,11 @@
               "stage": "top-face",
               "kind": "case",
               "target": "corners",
-              "alg": "F U F' U F U2 F'",
-              "caseName": "sune",
+              "alg": "B2 D B' U2 B D' B' U2 B'",
+              "caseName": "headlights",
               "why": {
                 "key": "topFace.orient",
                 "corners": [
-                  3,
                   1,
                   2
                 ]
@@ -5466,14 +5678,15 @@
               "stage": "top-corners",
               "kind": "case",
               "target": "permute",
-              "alg": "B' R B' L2 B R' B' L2 B2",
-              "caseName": "corner-cycle",
+              "alg": "F2 R2 F L F' R2 F L' F U'",
+              "caseName": "corner-cycle-back",
               "why": {
                 "key": "topCorners.permute",
                 "corners": [
                   2,
                   3,
-                  1
+                  1,
+                  0
                 ]
               }
             },
@@ -5481,14 +5694,14 @@
               "stage": "top-edges",
               "kind": "case",
               "target": "permute",
-              "alg": "B2 U B U B' U' B' U' B' U B'",
-              "caseName": "u-perm-b",
+              "alg": "R U' R U R U R U' R' U' R2",
+              "caseName": "u-perm-a",
               "why": {
                 "key": "topEdges.permute",
                 "edges": [
-                  1,
-                  3,
-                  0
+                  2,
+                  0,
+                  1
                 ]
               }
             }

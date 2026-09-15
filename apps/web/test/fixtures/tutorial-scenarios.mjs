@@ -173,6 +173,13 @@ export const SCENARIOS = Object.freeze([
     start: { hold: 'D B', setup: "y F' U' F U R U R' U' y'" }, moves: 'y', ask: 'topEdgesWithoutTopColour',
   },
   {
+    id: 'red-green-edge-lesson', stage: 'middle layer', half: 'element', kind: 'method-lesson', closedBy: '6.2',
+    source: "the owner, 2026-09-15: the app's own lesson for that cube reads as the course's moves, and is drawn so",
+    needs: ['held-letters', 'rotation-token', 'hold-change-in-sequence', 'question'],
+    start: { hold: 'D B', setup: "y F' U' F U R U R' U' y'" }, moves: "y U R U' R' U' F' U F",
+    expect: { holdAfter: { 1: 'D R' } },
+  },
+  {
     id: 'lesson-12-piece-under-grip-and-hold', stage: 'middle layer', half: 'model', kind: 'selectors', closedBy: '1.3',
     source: 'cubus-im lesson 12 section 2: # grip: x2, @ hold y2, @ show piece:FL',
     needs: ['held-letters', 'highlight-piece'],

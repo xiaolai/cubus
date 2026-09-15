@@ -24,7 +24,7 @@
 // slot" and "the cubie that belongs there".
 
 import {
-  CORNER, EDGE, MOVE_NAMES, SOLVED, allSolved, applyAlg, applyMove, moveCount, rotateAlg,
+  CORNER, CORNERS, EDGE, EDGES, MOVE_NAMES, SOLVED, allSolved, applyAlg, applyMove, moveCount, rotateAlg,
 } from '../cube-pieces.js';
 
 /** U-layer slots. "In the top layer" is the staging area every stage lifts pieces into. */
@@ -68,6 +68,33 @@ export const SOLVED_STATE = Object.freeze({
 });
 
 export const joinAlg = (...parts) => parts.filter(Boolean).join(' ').trim();
+
+/**
+ * The regrips a stage may make — the whole cube turned about its vertical axis, so the cross stays
+ * underneath — smallest first, each with the quarter turns it makes of the cube as held, as
+ * `rotateState` counts them (plan item 6.2).
+ *
+ * A stage is handed the cube as it is held (`solveByMethod`), and after a regrip it goes on with the
+ * cube as held after it: `rotateState(view, turns)`, and every piece it names renamed by `turnedEdge` /
+ * `turnedCorner`. The pairing of each token with its count is the interpreter's, and
+ * `method-solver.test.mjs` holds it there rather than trusting this table.
+ */
+export const REGRIPS = Object.freeze([
+  Object.freeze({ token: '', turns: 0, cost: 0 }),
+  Object.freeze({ token: 'y', turns: 3, cost: 1 }),
+  Object.freeze({ token: "y'", turns: 1, cost: 1 }),
+  Object.freeze({ token: 'y2', turns: 2, cost: 2 }),
+]);
+
+const lettersKey = (name) => [...name].sort().join('');
+const EDGE_BY_LETTERS = new Map(EDGES.map((name, i) => [lettersKey(name), i]));
+const CORNER_BY_LETTERS = new Map(CORNERS.map((name, i) => [lettersKey(name), i]));
+
+/** An edge — a cubie or a slot — as it is named once the cube is turned `turns` quarter turns about U,
+ *  as `rotateState` counts: the letters `rotateAlg` gives it, found in the table's own order. */
+export const turnedEdge = (edge, turns) => EDGE_BY_LETTERS.get(lettersKey(rotateAlg(EDGES[edge], turns)));
+/** The same for a corner. */
+export const turnedCorner = (corner, turns) => CORNER_BY_LETTERS.get(lettersKey(rotateAlg(CORNERS[corner], turns)));
 /** How many moves an algorithm is — `cube-pieces.js`'s tokenizer, not a fourth copy of it. */
 export const algLength = moveCount;
 

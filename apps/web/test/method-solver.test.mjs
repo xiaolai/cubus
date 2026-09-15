@@ -11,9 +11,9 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import {
-  CORNER, EDGE, MOVE_NAMES, SOLVED, applyAlg, cornerSolved, edgeSolved, fromCube, rotateState,
+  CORNER, CORNERS, EDGE, EDGES, MOVE_NAMES, SOLVED, applyAlg, cornerSolved, edgeSolved, fromCube, rotateState, toFacelets,
 } from '../lib/cube-pieces.js';
-import { faceTurnsAlg, run } from '../lib/cube-moves.js';
+import { faceTurnsAlg, heldFace, identityFace, run } from '../lib/cube-moves.js';
 import {
   CASE_NAMES, LADDER, MethodSolverError, STAGE_IDS, TOP_RUNG, __testing, allRungCombinations,
   methodFor, rungKey, solveByMethod,
@@ -277,10 +277,25 @@ test('every rung moves the axis it is judged on, and no rung is invention', () =
   // file GATES on are the same computation over the same cubes. They were two, and they disagreed:
   // the bench measured whole-solve step counts, which include cubes whose last layer was already
   // oriented, so it printed "not a lesson" about full OLL while this test was content.
+  //
+  // **Judged on a sample large enough to judge it.** 120 cubes settle a rung that clears its floor by a
+  // distance, and every rung did when this was written. They do not settle one within two standard
+  // errors of it: plan items 6.2 and 6.3 made the bottom pairs rung shorter, and the pairs rung then
+  // measured 1.875 steps on these 120 and 2.19 on 1,000 (95% interval 2.08 to 2.30). So a result that
+  // close is measured again on 1,000 before it is judged — and one still too close to call there fails as
+  // exactly that, because a rung sitting on its floor is the owner's to judge, not the sample's.
   const states = seededStates(120, 20260909);
+  let wider = null;
   for (const criterion of RUNGS_EARN_THEIR_PLACE) {
     const { dial, from, to, axis, floor } = criterion;
-    const { moved, compared } = rungDelta(states, criterion);
+    let { moved, compared, sd } = rungDelta(states, criterion);
+    const tooClose = () => Math.abs(moved - floor) < (2 * sd) / Math.sqrt(compared);
+    if (tooClose()) {
+      wider ??= seededStates(1000, 20260909);
+      ({ moved, compared, sd } = rungDelta(wider, criterion));
+      assert.ok(!tooClose(), `${dial} ${from}->${to}: ${moved.toFixed(3)} ${axis} over ${compared} cubes is within `
+        + `two standard errors of its floor of ${floor} — too close to call, and the owner's to judge`);
+    }
     assert.ok(compared > 100, `${dial} ${from}->${to}: only ${compared} comparable cubes`);
     assert.ok(moved >= floor,
       `${dial} rung ${to} moves ${moved.toFixed(4)} ${axis} against a floor of ${floor} — `
@@ -300,7 +315,9 @@ test('the F2L rung is one recalled case, never a chain — which is what it is F
     const sizes = [];
     for (const state of states) {
       for (const s of solveByMethod(state, method).steps) {
-        if (s.stage === 'f2l' && s.parts) sizes.push(s.parts.length);
+        // The turn that brings the slot to the front (plan item 6.3) is a part, like the alignment, and
+        // is not a trigger: a chain is counted in what the learner assembles once the pair is in front.
+        if (s.stage === 'f2l' && s.parts) sizes.push(s.parts.filter((p) => p.name !== 'turn').length);
       }
     }
     return sizes;
@@ -333,7 +350,7 @@ test('a solve builds no repertoires — they are built once, when the module loa
     for (const state of seededStates(2, 5150)) solveByMethod(state, method);
   }
   assert.equal(__testing.repertoiresBuilt(), before,
-    'a solve built a repertoire — hoist it to module scope, as `look` and SLOT_REPERTOIRE do');
+    'a solve built a repertoire — hoist it to module scope, as `look` and FRONT_RIGHT_TRIGGERS do');
 });
 
 test('every named method solves, and cubejs agrees on all of them', () => {
@@ -414,16 +431,16 @@ test('a pair case gets ONE algorithm, whichever slot it turns up in', () => {
   //
   // Compared in one frame, with the alignment turn removed: "turn the top until it matches" is
   // what you do BEFORE the case, and how far you turn depends on where you started.
-  const SLOT_OF = { [CORNER.DFR]: 0, [CORNER.DRB]: 1, [CORNER.DBL]: 2, [CORNER.DLF]: 3 };
   const algsByCase = new Map();
 
   for (const state of seededStates(40, 8675309)) {
     for (const step of solveByMethod(state, INTERMEDIATE).steps) {
       if (step.stage !== 'f2l' || !step.parts) continue; // a fallback pair is the rung below
-      const slot = SLOT_OF[step.target];
-      const body = __testing.rotateAlg(step.alg, (4 - slot) % 4).replace(/^U['2]? /, '');
+      // Every pair is worked at the front right, the cube turned to bring its slot there (plan item
+      // 6.3), so the body is the step with that turn and the alignment taken off.
+      const body = step.alg.replace(/^y['2]? /, '').replace(/^U['2]? /, '');
       if (!algsByCase.has(step.caseName)) algsByCase.set(step.caseName, new Map());
-      algsByCase.get(step.caseName).set(body, slot);
+      algsByCase.get(step.caseName).set(body, step.target);
     }
   }
 
@@ -538,8 +555,17 @@ test('every change since the split is a declared kind, and the ladder did not go
       //
       // What must hold is the aggregate, which is where the ladder is measured (§8): 249 steps to
       // 247 for the beginner, 165 to 161 for the intermediate, on this sample.
-      assert.ok(b.steps.length <= a.steps.length + 1,
-        `case ${i} (${was.scramble}): ${name} lurched from ${a.steps.length} to ${b.steps.length} steps`);
+      //
+      // **And per cube it bounds the first two layers, not the last** (since plan item 6.2). Any change
+      // to how the first two layers are made leaves every cube a DIFFERENT last layer, and a two-look
+      // last layer takes as many steps as its case needs — the change did not choose them. Measured
+      // when the middle layer began turning the gap to the front, over 300 cubes: the per-cube
+      // difference in last-layer steps ran from -4 to +5 while the mean moved from 4.99 to 4.96. So a
+      // cube's first two layers may not lurch, and the last layer is held by the aggregate below,
+      // which still counts every step and every move.
+      const firstTwoLayers = (m) => m.steps.filter((s) => !s.stage.startsWith('top')).length;
+      assert.ok(firstTwoLayers(b) <= firstTwoLayers(a) + 1,
+        `case ${i} (${was.scramble}): ${name}'s first two layers lurched from ${firstTwoLayers(a)} to ${firstTwoLayers(b)} steps`);
       stepsBefore += a.steps.length;
       stepsAfter += b.steps.length;
       movesBefore += a.moveCount;
@@ -654,13 +680,15 @@ test('the split keys say what the step actually did, checked against the cube', 
         cube = applyAlg(cube, turnsOf(step));
         const key = step.why.key;
         seen.add(key);
+        // A step names its pieces as seen in the hold it is made in, which a regrip before it has turned.
+        const held = (s) => __testing.asHeld(s, step.hold);
         if (key === 'middleLayer.insert') {
-          assert.ok(edgeSolved(cube, step.why.edge),
+          assert.ok(edgeSolved(held(cube), step.why.edge),
             'a step captioned "send this edge down" must leave the edge in its slot');
         } else if (key === 'middleLayer.eject') {
-          assert.ok(!edgeSolved(cube, step.why.edge),
+          assert.ok(!edgeSolved(held(cube), step.why.edge),
             'a step captioned as an ejection must NOT leave the edge in its slot');
-          assert.ok(!edgeSolved(before, step.why.edge),
+          assert.ok(!edgeSolved(held(before), step.why.edge),
             'and it must not have been home to begin with');
         } else if (key.endsWith('.step')) {
           assert.ok(!reachedLook(cube, key.slice(0, -'.step'.length)),
@@ -779,11 +807,13 @@ test('the pairing fallback places only what is out of place', () => {
       cube = applyAlg(cube, turnsOf(step));
       if (step.stage !== 'f2l' || step.parts) continue;
       fallbacks += 1;
+      // Named as seen in the hold the step is made in, which a turn before it may have changed.
+      const held = __testing.asHeld(before, step.hold);
       if (step.why.key.startsWith('firstLayer.')) {
-        assert.ok(!cornerSolved(before, step.why.corner),
+        assert.ok(!cornerSolved(held, step.why.corner),
           `a fallback moved corner ${step.why.corner}, which was already home`);
       } else {
-        assert.ok(!edgeSolved(before, step.why.edge),
+        assert.ok(!edgeSolved(held, step.why.edge),
           `a fallback moved edge ${step.why.edge}, which was already home`);
       }
     }
@@ -987,4 +1017,110 @@ test('simplifying a step merges turns of one face, and never across a regrip', (
   assert.equal(simplify('R y R'), 'R y R', 'after the regrip, R is another face of the cube');
   assert.equal(simplify("R Rw'"), "R Rw'", 'a wide move is not a turn of the face it is named after');
   assert.equal(simplify("R R y U U'"), 'R2 y');
+});
+
+test('the middle layer is made with the gap in front, the course\'s way: no B or D turn, and a top edge with none of the top colour', () => {
+  // Plan item 6.2's acceptance, over all 24 rung combinations × a frozen corpus — checked by the course's
+  // own rule, with the interpreter's reading of a hold (held to an oracle in test/cube-moves.test.mjs) and
+  // the facelet layout, never with the renaming the stage uses.
+  //
+  //   insert  line the edge up with the centre matching its side sticker, and turn that centre to the
+  //           front: the side colour decides the regrip, and its top colour decides right or left;
+  //   eject   only when no top edge carries none of the top colour, and by the smallest turn that brings
+  //           the stuck edge's slot to the front.
+  const COST = { '': 0, y: 1, "y'": 1, y2: 2 };
+  const MIDDLE_CUBIES = [EDGE.FR, EDGE.BR, EDGE.BL, EDGE.FL];
+  const TOP_SLOTS = [EDGE.UR, EDGE.UF, EDGE.UL, EDGE.UB];
+  /** A top slot's side sticker, on the published facelet layout: R1, F1, L1, B1. */
+  const SIDE_FACELET = { [EDGE.UR]: 10, [EDGE.UF]: 19, [EDGE.UL]: 37, [EDGE.UB]: 46 };
+  const front = (letters, hold) => [...letters].map((c) => heldFace(c, hold)).sort().join('');
+  let middle = 0;
+  let turned = 0;
+  let ejected = 0;
+  for (const rungs of allRungCombinations()) {
+    for (const state of seededStates(6, 20260915)) {
+      let cube = state;
+      for (const step of solveByMethod(state, methodFor(rungs)).steps) {
+        const before = cube;
+        cube = applyAlg(cube, turnsOf(step));
+        if (step.stage !== 'middle-layer') continue;
+        middle += 1;
+        const where = `${rungKey(rungs)}: "${step.alg}"`;
+        const tokens = step.alg.split(' ');
+        assert.ok(!tokens.some((t) => /^[BD]/.test(t)), `${where} turns B or D`);
+        const regrip = /^y/.test(tokens[0]) ? tokens[0] : '';
+        if (regrip) turned += 1;
+        assert.equal(Boolean(step.why.turn), Boolean(regrip), `${where}: the reason says it turns the cube exactly when it does`);
+        const after = run(regrip, step.hold, SOLVED).hold;
+        // The pieces a step names are named as seen in its hold; so is the cube it is asked of.
+        const view = __testing.asHeld(before, step.hold);
+        const identity = (letter) => identityFace(letter, step.hold);
+        const topEdgesWithout = MIDDLE_CUBIES.filter((c) => TOP_SLOTS.includes(view.ep.indexOf(c))).sort();
+        if (step.why.key === 'middleLayer.eject') {
+          ejected += 1;
+          assert.deepEqual(topEdgesWithout, [], `${where}: an edge was lifted out while a top edge could have gone in`);
+          const slot = [...EDGES[view.ep.indexOf(step.why.edge)]].map(identity).join('');
+          assert.ok(['FL', 'FR'].includes(front(slot, after)), `${where}: the stuck edge's slot is not in front after the regrip`);
+          for (const other of Object.keys(COST).filter((r) => COST[r] < COST[regrip])) {
+            assert.ok(!['FL', 'FR'].includes(front(slot, run(other, step.hold, SOLVED).hold)), `${where}: "${other}" already had the slot in front`);
+          }
+          continue;
+        }
+        assert.deepEqual([...step.why.look].sort(), topEdgesWithout, `${where}: the recognition is not the top edges with none of the top colour`);
+        assert.ok(step.why.look.includes(step.why.edge), `${where}: the edge sent down is not one the child was told to look for`);
+        const side = toFacelets(view)[SIDE_FACELET[view.ep.indexOf(step.why.edge)]];
+        const top = [...EDGES[step.why.edge]].find((c) => c !== side);
+        assert.equal(heldFace(identity(side), after), 'F', `${where}: the centre matching the side sticker is not turned to the front`);
+        assert.equal(heldFace(identity(top), after), step.caseName === 'insert-right' ? 'R' : 'L',
+          `${where}: the top colour's centre is not on the side the edge goes down to`);
+      }
+    }
+  }
+  assert.ok(middle > 50 && turned > 10 && ejected > 0, `precondition: a corpus that exercises the rule (${middle} steps, ${turned} regrips, ${ejected} ejections)`);
+});
+
+test('every pair goes in with its slot turned to the front right, and at rung 1 turns no B or D', () => {
+  // Plan item 6.3, the joined-pairs rungs under decision D3: the same rule as the middle layer. Checked with
+  // the interpreter's reading of a hold, not the renaming the stage uses.
+  let pairs = 0;
+  let turned = 0;
+  for (const rungs of allRungCombinations().filter((r) => r.pairs > 0)) {
+    for (const state of seededStates(4, 20260916)) {
+      for (const step of solveByMethod(state, methodFor(rungs)).steps) {
+        if (step.stage !== 'f2l') continue;
+        const where = `${rungKey(rungs)}: "${step.alg}"`;
+        const tokens = step.alg.split(' ');
+        const regrip = /^y/.test(tokens[0]) ? tokens[0] : '';
+        assert.equal(Boolean(step.why.turn), Boolean(regrip), `${where}: the reason says it turns the cube exactly when it does`);
+        if (!step.parts) continue;
+        pairs += 1;
+        if (regrip) turned += 1;
+        const after = run(regrip, step.hold, SOLVED).hold;
+        const slot = [...CORNERS[step.why.corner]].map((c) => heldFace(identityFace(c, step.hold), after)).sort().join('');
+        assert.equal(slot, 'DFR', `${where}: the pair's slot is not at the front right once the cube is turned`);
+        // The six triggers turn R, U and F only, so at rung 1 nothing turns B or D. Rung 2's generated
+        // cases are the shortest maneuvers there are for each position and may turn any face.
+        if (rungs.pairs === 1) {
+          for (const part of step.parts.filter((p) => p.name !== 'turn')) {
+            assert.ok(!part.alg.split(' ').some((t) => /^[BD]/.test(t)), `${where}: part "${part.alg}" turns B or D`);
+          }
+        }
+        assert.equal(step.parts[0].name === 'turn', Boolean(regrip), `${where}: the turn is the step's first part exactly when it turns`);
+      }
+    }
+  }
+  assert.ok(pairs > 100 && turned > 50, `precondition: a corpus that exercises the rule (${pairs} pair steps, ${turned} turned)`);
+});
+
+test('four middle edges flipped in their own slots take the most the middle layer can: four out, four in', () => {
+  // The middle layer's worst case, and the cube that found its guard wrong: a loop bounded at eight steps
+  // threw on the eighth, which is the one that finishes this cube. Legal — four flips — and the cross and
+  // first layer are already home, so every step is the middle layer's.
+  const flipped = { ...SOLVED, eo: SOLVED.eo.map((o, i) => ([EDGE.FR, EDGE.FL, EDGE.BL, EDGE.BR].includes(i) ? 1 : o)) };
+  const { steps, alg } = solveByMethod(flipped);
+  const middle = steps.filter((s) => s.stage === 'middle-layer');
+  assert.deepEqual(middle.map((s) => s.why.key), Array.from({ length: 4 }, () => ['middleLayer.eject', 'middleLayer.insert']).flat());
+  const scrambled = Cube.fromString(toFacelets(flipped));
+  scrambled.move(alg);
+  assert.ok(scrambled.isSolved(), 'cubejs does not agree the lesson solves it');
 });

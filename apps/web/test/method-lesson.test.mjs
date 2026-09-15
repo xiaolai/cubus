@@ -145,7 +145,10 @@ test('focus keeps the centres, highlight does not', () => {
     const { focus, highlight } = lessonCues(step);
     assert.ok(focus.startsWith('centers,'), `${step.why.key}: focus drops the centres`);
     assert.ok(!highlight.includes('centers'), `${step.why.key}: the pulse should not be on the centres`);
-    assert.equal(focus, `centers,${highlight}`, 'focus is the highlight set plus context, nothing else');
+    // Plus what the child looks for before the move, where a step names it (plan item 6.2) — the top
+    // edges with none of the top colour — and nothing else.
+    const looked = (step.why.look ?? []).map((i) => `piece:${EDGES[i]}`).filter((p) => !highlight.split(',').includes(p));
+    assert.equal(focus, ['centers', highlight, ...looked].join(','), 'focus is the highlight set plus context, nothing else');
     assert.equal(parseHighlight(focus).invalid, null);
     assert.equal(parseHighlight(highlight).invalid, null);
   }
@@ -252,9 +255,11 @@ const dialsSeen = new Set();
 test('a stage with no heading is a stage with no work, and the cube is still solved', () => {
   // The other side of the allowance above, and what keeps it from being a hole. A missing heading
   // has to mean the stage had nothing to do — never that a section went missing from a solve that
-  // needed it. The cube below is the one that produces it: its last layer comes out already
-  // permuted after OLL, so PLL contributes no steps at every rung combination there is.
-  const [state] = seededStates(60, 31337).slice(56);
+  // needed it. The cube below is one that produces it: at the rung combinations where its first two
+  // layers leave a last layer already permuted after OLL, PLL contributes no steps. (It was the 57th
+  // of this draw until the middle layer and the joined pairs began turning the slot to the front —
+  // plan items 6.2 and 6.3 — which leaves every cube a different last layer.)
+  const [state] = seededStates(60, 31337).slice(28);
   let sawShort = 0;
   for (const rungs of allRungCombinations()) {
     const { steps, alg } = solveByMethod(state, methodFor(rungs));
@@ -293,9 +298,10 @@ test('an unknown stage is refused rather than silently folded into the previous 
 
 test('every move knows which step it belongs to', () => {
   for (const state of seededStates(5, 88)) {
-    const { steps, moveCount } = solveByMethod(state);
+    const { steps } = solveByMethod(state);
     const map = moveStepIndex(steps);
-    assert.equal(map.length, moveCount, 'the map must cover every move and no more');
+    const positions = steps.reduce((n, s) => n + s.alg.trim().split(/\s+/).filter(Boolean).length, 0);
+    assert.equal(map.length, positions, 'the map must cover every position of the walk — a regrip is one — and no more');
     // Monotonic: a move cannot belong to an earlier step than the move before it.
     for (let i = 1; i < map.length; i++) assert.ok(map[i] >= map[i - 1]);
     assert.equal(map[0], 0);

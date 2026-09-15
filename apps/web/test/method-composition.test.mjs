@@ -15,7 +15,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { CORNER, EDGE, SOLVED, allSolved, applyAlg, cornerSolved, edgeSolved } from '../lib/cube-pieces.js';
+import { CORNER, CORNERS, EDGE, EDGES, SOLVED, allSolved, applyAlg, cornerSolved, edgeSolved } from '../lib/cube-pieces.js';
+import { identityFace } from '../lib/cube-moves.js';
 import {
   LADDER, MethodSolverError, STAGE_IDS, allRungCombinations, methodFor, rungKey, solveByMethod,
 } from '../lib/method-solver.js';
@@ -161,6 +162,14 @@ function walkContracts(start, steps, where) {
   return null;
 }
 
+/** A piece a step names as seen in the hold it is made in, as the cube's own piece — a pair's turn to the
+ *  front renames every piece after it (plan item 6.3). */
+const lettersOf = (names) => new Map(names.map((n, i) => [[...n].sort().join(''), i]));
+const CORNER_OF = lettersOf(CORNERS);
+const EDGE_OF = lettersOf(EDGES);
+const ownCorner = (i, hold) => CORNER_OF.get([...CORNERS[Number(i)]].map((c) => identityFace(c, hold)).sort().join(''));
+const ownEdge = (i, hold) => EDGE_OF.get([...EDGES[Number(i)]].map((c) => identityFace(c, hold)).sort().join(''));
+
 /**
  * Every one of the four slots is placed, and by a route the step stream names.
  *
@@ -182,19 +191,19 @@ function accountForPairs(start, steps, where) {
   for (const step of pairSteps) {
     if (step.parts) {
       paired++;
-      covered.add(Number(step.target));
+      covered.add(ownCorner(step.target, step.hold));
       continue;
     }
     fallbacks++;
     // A fallback step names either the corner (a lift or an insert) or the edge.
     if (step.why?.key === 'firstLayer.lift' || step.why?.key === 'firstLayer.insert') {
-      covered.add(Number(step.why.corner));
+      covered.add(ownCorner(step.why.corner, step.hold));
     } else if (step.why?.key === 'middleLayer.insert' || step.why?.key === 'middleLayer.eject') {
       // Both halves of the middle-layer algorithm belong to the same pair: it EJECTS a wrong edge
       // and INSERTS the right one, and the two carry different reasons so their captions can say
       // which is happening. Accounting for only one of them read the other as an unclaimed step.
       // The edge's slot, mapped back to the corner its pair is named after.
-      const slot = MIDDLE.indexOf(Number(step.why.edge));
+      const slot = MIDDLE.indexOf(ownEdge(step.why.edge, step.hold));
       if (slot < 0) return { problem: `${where}: a fallback named edge ${step.why.edge}, which is in no pair` };
       covered.add(PAIR_CORNERS[slot]);
     } else {
