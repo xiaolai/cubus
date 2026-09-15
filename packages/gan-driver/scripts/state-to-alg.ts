@@ -1,7 +1,8 @@
 // Turn a Kociemba facelet string into a "setup algorithm": a move sequence that,
-// applied to a solved cube, reproduces that state. cubing.js twisty-player takes
-// an alg, not a raw facelet string, so this bridges our decoded state to the
-// renderer. Uses the cubejs oracle (solve, then invert the solution).
+// applied to a solved cube, reproduces that state. Written when the app drew with
+// cubing.js's twisty-player, which took an alg and not a raw facelet string; its
+// replacement, <cubus-cube>, takes a `facelets` attribute directly, so the app no
+// longer needs this bridge. Uses the cubejs oracle (solve, then invert the solution).
 //
 // Usage: tsx scripts/state-to-alg.ts <54-char facelets>
 import Cube from 'cubejs';

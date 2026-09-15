@@ -48,6 +48,10 @@ test('dist never carries the MCP guest or the min2phase provenance note, and doe
     const notices = join(dist, 'THIRD_PARTY_NOTICES.md');
     assert.ok(existsSync(notices), 'THIRD_PARTY_NOTICES.md did not reach dist/');
     assert.match(readFileSync(notices, 'utf8'), /^# Third-party notices/m);
+    // And every notices file it links: ONNX Runtime's own, for the releases that ship.
+    const linked = [...readFileSync(notices, 'utf8').matchAll(/\]\((notices\/[^)]+)\)/g)].map((m) => m[1]);
+    assert.ok(linked.length >= 2, `precondition: the notices link ONNX Runtime's notices (${linked})`);
+    for (const f of linked) assert.ok(existsSync(join(dist, f)), `${f} is linked from the notices and did not reach dist/`);
   } finally {
     rmSync(dist, { recursive: true, force: true });
   }
@@ -86,6 +90,7 @@ function makeRoot(parent = tmpdir()) {
   put('tokens.css', ':root{}');
   put('manifest.webmanifest', JSON.stringify({ icons: [{ src: './icons/icon.png' }] }));
   put('THIRD_PARTY_NOTICES.md', '# Third-party notices\n');
+  put('notices/onnxruntime-0.0.0-ThirdPartyNotices.txt', 'THIRD PARTY SOFTWARE NOTICES AND INFORMATION\n');
   put('icons/icon.png', 'png');
   put('lib/app.js', 'export {};');
   for (const f of ['two-phase', 'solver-engine', 'solve-worker', 'solve-client', 'cube-pieces']) put(`lib/${f}.js`, 'export {};');
@@ -111,27 +116,28 @@ function makeRoot(parent = tmpdir()) {
 function withRoot(fn) {
   const root = makeRoot();
   const dist = mkdtempSync(join(tmpdir(), 'cubus-dist-'));
-  try { return fn({ root, dist, build: (o = {}) => assembleDist({ root, dist, ...o }) }); }
+  // `cubeEntry`: the renderer is its own package now, so its real entry is outside any root
+  // this test can assemble. The check under test is the timestamp comparison, not the path.
+  const cubeEntry = join(root, 'lib', 'cubus-cube.js');
+  try { return fn({ root, dist, build: (o = {}) => assembleDist({ root, dist, cubeEntry, ...o }) }); }
   finally { rmSync(root, { recursive: true, force: true }); rmSync(dist, { recursive: true, force: true }); }
 }
 
-// The grammar for the runtime's assets is written in two files — copy-ort.mjs owns the COPY,
+// The grammar for the runtime's assets is used in two files — copy-ort.mjs owns the COPY,
 // build.mjs owns the CHECK — and copy-ort's own comment records what happens when two spellings
 // of one rule are kept in step by hand: a rename inside the ort-wasm family stranded a
-// multi-megabyte .wasm in vendor/, and vendor/ ships. Neither file can import the other's private
-// constant, so this is the thing that keeps them one rule.
-test('the copy and the check share one grammar for the runtime\'s assets', () => {
-  const patternIn = (file, name) => {
-    const src = readFileSync(new URL(file, WEB), 'utf8');
-    const m = new RegExp(`const ${name} = '([^']+)';`).exec(src);
-    assert.ok(m, `${file} no longer declares ${name} — the two files must still share one pattern`);
-    return m[1];
-  };
-  assert.equal(
-    patternIn('build.mjs', 'ORT_ASSET'),
-    patternIn('copy-ort.mjs', 'OWNED_ASSET'),
-    'build.mjs checks for a different set of files than copy-ort.mjs publishes',
-  );
+// multi-megabyte .wasm in vendor/, and vendor/ ships. So there is one spelling: copy-ort exports
+// its predicates and build.mjs imports them. Until 2026-09-14 each file had its own copy and this
+// test compared the two strings — which is the hand-kept agreement, moved into a test.
+test('the check imports the copy\'s grammar for the runtime\'s assets, and spells none of its own', () => {
+  const code = readFileSync(new URL('build.mjs', WEB), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:'"`])\/\/.*$/gm, '$1');
+  assert.match(code, /^import \{ isOwnedAsset, ownedAssetsIn \} from '\.\/copy-ort\.mjs';$/m,
+    'build.mjs no longer takes its asset grammar from copy-ort.mjs');
+  for (const spelling of [/ort-wasm\[/, /ort-wasm-simd/]) {
+    assert.doesNotMatch(code, spelling, `build.mjs spells an asset pattern of its own (${spelling})`);
+  }
 });
 
 // The positive control. Without it every assertion below could be passing because the synthetic
@@ -371,14 +377,14 @@ test('an assembly into a macOS firmlink twin of the source tree is refused', (t)
 // it reached esbuild as `absWorkingDir` — which refuses anything relative, so this threw before
 // it could look at one import (found by audit, 2026-09-05).
 test('a relative entry is scanned for its imports, not refused for being relative', () => {
-  const rel = relative(process.cwd(), fileURLToPath(new URL('lib/cubus-cube.js', WEB)));
+  const rel = relative(process.cwd(), fileURLToPath(new URL('../../packages/cubus-cube/src/cubus-cube.js', WEB)));
   assert.ok(!rel.startsWith('/'), 'precondition: the entry under test is a relative path');
   const inputs = bundleInputs(rel);
   assert.ok(inputs.length > 1, 'a relative entry yielded no module graph');
   assert.ok(inputs.every((f) => f.startsWith('/')), 'inputs must come back absolute, whatever went in');
   assert.deepEqual(
     new Set(inputs),
-    new Set(bundleInputs(fileURLToPath(new URL('lib/cubus-cube.js', WEB)))),
+    new Set(bundleInputs(fileURLToPath(new URL('../../packages/cubus-cube/src/cubus-cube.js', WEB)))),
     'the same entry named two ways must yield the same inputs',
   );
 });
@@ -390,7 +396,7 @@ test('a relative root reaches the freshness check the same way an absolute one d
     const rel = relative(process.cwd(), root);
     const soon = Date.now() / 1000 + 600;
     utimesSync(join(root, 'lib', 'cube-frame.js'), soon, soon);
-    assert.throws(() => assembleDist({ root: rel, dist, freshness: true }),
+    assert.throws(() => assembleDist({ root: rel, dist, freshness: true, cubeEntry: join(root, 'lib', 'cubus-cube.js') }),
       (err) => err.message.includes('cube-frame.js'),
       'the freshness check must fail over the STALE BUNDLE, not over how its root was spelled');
   });
@@ -402,4 +408,80 @@ test('app.js tolerates the guest\'s absence — the import is caught, not awaite
   assert.notEqual(site, -1, 'the guest import moved or was removed — update this test and NEVER_SHIPPED together');
   const after = app.slice(site, site + 400);
   assert.match(after, /\.catch\(/, 'the guest import is not caught: a dist without the guest would fail to boot');
+});
+
+// The renderer left this package on 2026-09-14, and every guard above asks whether the destination
+// is this app or something this app copies FROM. The renderer's source is neither, so a destination
+// pointed at it reached the recursive delete with nothing in the way (found by audit, 2026-09-14).
+test('assembling into the renderer package is refused, not carried out', () => {
+  const renderer = fileURLToPath(new URL('../../packages/cubus-cube', WEB));
+  assert.throws(() => assembleDist({ dist: renderer, freshness: false }),
+    (err) => /refusing to assemble into .*cubus-cube/.test(err.message),
+    'a build aimed at the renderer package would have deleted it');
+  // And the other way round: a destination that CONTAINS the renderer is the same delete.
+  assert.throws(() => assembleDist({ dist: fileURLToPath(new URL('../../packages', WEB)), freshness: false }),
+    (err) => /refusing to assemble into/.test(err.message),
+    'a build aimed at packages/ would have taken the renderer with it');
+});
+
+// The guard and the freshness check once resolved the renderer's entry separately: the guard from
+// the default, the freshness check from a caller's `cubeEntry`. So a caller that supplied its own
+// entry had that renderer checked for freshness while the DEFAULT was the one protected from the
+// delete (found by audit, 2026-09-14).
+test('the renderer a caller names is the renderer the deletion guard protects', () => {
+  withRoot(({ root }) => {
+    // A renderer outside the synthetic root, named through `cubeEntry` — and the destination aimed
+    // straight at the package that holds it.
+    const outside = mkdtempSync(join(tmpdir(), 'cubus-renderer-'));
+    try {
+      mkdirSync(join(outside, 'src'), { recursive: true });
+      writeFileSync(join(outside, 'src', 'cubus-cube.js'), 'export {};');
+      assert.throws(
+        () => assembleDist({ root, dist: outside, freshness: false, cubeEntry: join(outside, 'src', 'cubus-cube.js') }),
+        (err) => /refusing to assemble into/.test(err.message),
+        'a build aimed at the renderer the caller named would have deleted it');
+      assert.ok(existsSync(join(outside, 'src', 'cubus-cube.js')), 'and the renderer it named is gone');
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+// A SYMLINK INTO A NESTED SOURCE DIRECTORY. The guard's ancestry walked `dirname()` as TEXT while
+// `statSync` followed the link: through `alias -> <root>/lib/screens`, the walk visited `screens`
+// and then stepped to the alias's own lexical parent, never reaching `lib` or the root — so a
+// destination of `alias/cube` passed every check and reached the recursive delete of a real
+// source directory (found by audit, 2026-09-14). Aimed at a SYNTHETIC tree on purpose: when this
+// guard fails, the delete runs.
+test('a destination reached through a symlink into the source is refused, however deep the link', () => {
+  withRoot(({ root }) => {
+    const nested = join(root, 'lib', 'screens', 'cube');
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(nested, 'keep.js'), 'export {};');
+    const links = mkdtempSync(join(tmpdir(), 'cubus-alias-'));
+    try {
+      symlinkSync(join(root, 'lib', 'screens'), join(links, 'alias'));
+      assert.throws(() => assembleDist({ root, dist: join(links, 'alias', 'cube'), freshness: false }),
+        (err) => /refusing to assemble into/.test(err.message),
+        'a destination reached through a symlink into lib/ passed the guard');
+      assert.ok(existsSync(join(nested, 'keep.js')), 'and the source directory it pointed at is gone');
+
+      // The renderer's package, reached the same way.
+      const renderer = mkdtempSync(join(tmpdir(), 'cubus-renderer-alias-'));
+      try {
+        mkdirSync(join(renderer, 'src'), { recursive: true });
+        writeFileSync(join(renderer, 'src', 'cubus-cube.js'), 'export {};');
+        symlinkSync(join(renderer, 'src'), join(links, 'renderer-src'));
+        assert.throws(
+          () => assembleDist({ root, dist: join(links, 'renderer-src'), freshness: false, cubeEntry: join(renderer, 'src', 'cubus-cube.js') }),
+          (err) => /refusing to assemble into/.test(err.message),
+          'a destination reached through a symlink into the renderer passed the guard');
+        assert.ok(existsSync(join(renderer, 'src', 'cubus-cube.js')), 'and the renderer source is gone');
+      } finally {
+        rmSync(renderer, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(links, { recursive: true, force: true });
+    }
+  });
 });

@@ -563,6 +563,23 @@ jobs:
         working-directory: apps/desktop/src-tauri/gen/android
         run: ./gradlew testArm64DebugUnitTest
 
+      # The third-party notices list the release classpath from app/gradle.lockfile, and
+      # app/build.gradle.kts locks every release build to it, so what ships is what the lockfile
+      # says. What that cannot catch is a dependency change nobody relocked — the lockfile would go
+      # on forcing the old versions, and fail only when a module it has never seen arrives. So the
+      # lockfile must be what Gradle resolves now: relock, and refuse a difference, the vendored
+      # bundles' drift check in Gradle's terms. (The `dependencies` report is not a gate on its own:
+      # it prints FAILED for a module the lock does not list and exits 0 — measured 2026-09-14.)
+      - name: The Android lockfile is what Gradle resolves
+        working-directory: apps/desktop/src-tauri/gen/android
+        run: |
+          ./gradlew :app:dependencies --write-locks > /dev/null
+          if [ -n "$(git status --porcelain -- app/gradle.lockfile)" ]; then
+            git diff -- app/gradle.lockfile
+            echo "::error::gen/android/app/gradle.lockfile is not what Gradle resolves: relock, run node scripts/android-licences.mjs and pnpm notices, and commit all three"
+            exit 1
+          fi
+
   # The golden-frame parity gate (dev-docs/native-capture-and-inference-plan.md, Phase 4). Every
   # runtime must read the 20 committed fixtures exactly as ml/golden/expected.json pins it, or a
   # model/runtime has drifted from the one checkpoint. Split by platform: the runtimes that run on

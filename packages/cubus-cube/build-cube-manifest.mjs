@@ -27,7 +27,7 @@ import { fileURLToPath } from 'node:url';
 
 import { readElement } from './read-element.mjs';
 
-const OUT = new URL('./vendor/cubus-cube.manifest.json', import.meta.url);
+const OUT = new URL('../../apps/web/vendor/cubus-cube.manifest.json', import.meta.url);
 
 const element = await readElement();
 const manifest = {

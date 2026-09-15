@@ -161,6 +161,15 @@ test('serves .mjs with a JavaScript MIME type', async () => {
   await res.text();
 });
 
+// THIRD_PARTY_NOTICES.md links ONNX Runtime's notices as plain-text files; served as
+// application/octet-stream they download instead of opening.
+test('serves the notices .txt files as plain text', async () => {
+  const res = await fetch(`${BASE}/notices/onnxruntime-1.29.0-ThirdPartyNotices.txt`);
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type') ?? '', /^text\/plain/);
+  await res.text();
+});
+
 test('SSE endpoint uses text/event-stream', async () => {
   const ctrl = new AbortController();
   const res = await fetch(`${BASE}/__livereload`, { signal: ctrl.signal });
