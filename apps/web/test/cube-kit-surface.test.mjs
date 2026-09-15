@@ -31,6 +31,7 @@ import * as scriptView from '../lib/script-view.js';
 import * as scriptDrive from '../lib/script-drive.js';
 import * as scriptTrack from '../lib/script-track.js';
 import * as scriptRounds from '../lib/script-rounds.js';
+import * as scriptPlayer from '../lib/script-player.js';
 import * as view from '../lib/cube-view.js';
 import { CUBE_VIEW, CUBE_VIEW_ATTRS } from '../lib/cube-view.js';
 
@@ -59,11 +60,11 @@ const PROMISED = [
   'QUESTIONS', 'TAKES_ARGUMENT', 'ask', 'readAsk',
   'askAt', 'buildScript', 'groupsOf', 'stateFrom', 'viewAtPosition',
   'createClockDriver', 'createElementWriter', 'createStopDriver', 'timelineOf', 'locate', 'trackFor', 'trackOf',
-  'answerAt', 'createEventDriver', 'createRound', 'revealScript', 'ROUND_QUESTIONS',
+  'answerAt', 'createEventDriver', 'createRound', 'revealScript', 'ROUND_QUESTIONS', 'createScriptPlayer',
 ];
 
 /** The modules whose names the kit re-exports. A new owning module is added here with its first name. */
-const SOURCES = [pieces, frame, highlight, moves, notation, questions, orientation, view, format, schedule, player, scriptQuestions, scriptView, scriptDrive, scriptTrack, scriptRounds];
+const SOURCES = [pieces, frame, highlight, moves, notation, questions, orientation, view, format, schedule, player, scriptQuestions, scriptView, scriptDrive, scriptTrack, scriptRounds, scriptPlayer];
 
 /** Promised names the kit does not export. */
 export const missingFrom = (exports, promised) => promised.filter((n) => !Object.hasOwn(exports, n)).sort();

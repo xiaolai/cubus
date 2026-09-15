@@ -130,6 +130,10 @@ export { locate, trackFor, trackOf } from './script-track.js';
 // as a script segment (plan item 3.4). The page keeps its controls; a round never reads the DOM.
 export { answerAt, createEventDriver, createRound, revealScript } from './script-rounds.js';
 export { ROUND_QUESTIONS } from './lesson-format.js';
+
+// The load contract: one route at a time, nothing from a superseded one applied, and the connection's
+// live model kept across loads and located on each (plan item 3.5).
+export { createScriptPlayer } from './script-player.js';
 export {
   CAM_DEFAULT,
   CAM_EASE,
