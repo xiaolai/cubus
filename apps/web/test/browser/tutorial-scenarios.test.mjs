@@ -196,6 +196,27 @@ const FACELETS = (() => {
 
 /** The element half's runners for scenarios whose capability a plan item is still building. */
 const ELEMENT_RUNNERS = {
+  // Plan item 4.4: a trail for each piece a PLL cycles starts at the piece's home and ends in the slot whose
+  // stickers show that piece's colours in the oracle's cube after the sequence.
+  async trail(sc) {
+    const world = applyMoves(SOLVED_FACELETS, sc.alg);
+    const endOf = (piece) => {
+      const positions = [...new Set(FACELETS.filter((f) => f.pos.filter(Boolean).length === piece.length).map((f) => f.pos.join()))];
+      const found = positions.filter((key) => FACELETS.filter((f) => f.pos.join() === key).map((f) => world[f.index]).sort().join('') === [...piece].sort().join(''));
+      assert.equal(found.length, 1, `${sc.id}: precondition — the oracle's cube shows ${piece}'s colours in one place`);
+      return found[0].split(',').map(Number);
+    };
+    await build({ alg: sc.alg });
+    for (const piece of sc.pieces) {
+      await page.evaluate((spec) => window.__publicCube(window.__cube).setAttribute('trail', spec), `piece:${piece}`);
+      const drawn = await page.evaluate(() => (window.__cube._trailMeshes ?? []).find((m) => m.userData.trail)?.userData.stops ?? null);
+      assert.ok(drawn, `${sc.id}: no trail for ${piece}, which the sequence moves`);
+      const home = FACELETS.filter((f) => f.pos.filter(Boolean).length === piece.length)
+        .map((f) => f.pos).find((pos) => FACELETS.filter((f) => f.pos.join() === pos.join()).map((f) => SOLVED_FACELETS[f.index]).sort().join('') === [...piece].sort().join(''));
+      assert.deepEqual(drawn[0], home, `${sc.id}: ${piece}'s trail does not start at its home`);
+      assert.deepEqual(drawn.at(-1), endOf(piece), `${sc.id}: ${piece}'s trail does not end where the oracle puts it`);
+    }
+  },
   // Plan item 4.3: held any of several ways, the `position` letter on top is U, and the `face` letter on top
   // is the face whose centre the oracle puts there.
   async label(sc) {

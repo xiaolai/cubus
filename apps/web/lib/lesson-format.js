@@ -225,8 +225,8 @@ export const STEP_KINDS = Object.freeze(['move', 'setup', 'cube', 'paint', 'hold
 export const STEP_CUES = Object.freeze([
   'say', 'section', 'hl', 'focus', 'ask', 'ghosts', 'ghostElevation', 'cam', 'camUp',
   'number', 'counting', 'at', 'secs',
-  // Phase 4's annotations, as they land (plan item 3.1): a turn arrow and the face letters.
-  'arrow', 'labels',
+  // Phase 4's annotations, as they land (plan item 3.1): a turn arrow, the face letters, a piece's trail.
+  'arrow', 'labels', 'trail',
 ]);
 
 const STEP_KEYS = new Set([...STEP_KINDS, ...STEP_CUES]);
@@ -382,6 +382,10 @@ function checkSteps(steps, where, { rounds = true } = {}) {
       if (tokens.length !== 1) where(i, `\`arrow\` is one move or "next", not "${step.arrow}"`);
       const bad = badMoves(step.arrow);
       if (bad) where(i, `\`arrow\` ${bad}`);
+    }
+    if (step.trail !== undefined && step.trail !== null && step.trail !== 'none') {
+      const bad = String(step.trail).split(',').map((t) => t.trim()).find((t) => !/^(piece|slot):[URFDLB]{2,3}$/i.test(t) || parseHighlight(t).invalid !== null);
+      if (bad !== undefined) where(i, `\`trail\` names pieces — piece:UF or slot:UF — and "${bad}" is not one`);
     }
     if (step.labels !== undefined && step.labels !== null && !['none', 'position', 'face'].includes(step.labels)) {
       where(i, `\`labels\` is none, position or face, not "${step.labels}"`);
