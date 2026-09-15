@@ -12,6 +12,7 @@ import { parseHighlight, pieceKey, resolveHighlight, slotVector } from '../../..
 import { STICKER_PALETTES } from '../../../apps/web/lib/sticker-palettes.js';
 import { HOME, after, poseAll } from './pose.js';
 import { readToken } from '../../../apps/web/lib/cube-notation.js';
+import { faceTurnsOf } from '../../../apps/web/lib/cube-moves.js';
 
 // The six sticker colours of each set, by position on a Western cube: the one table, shared with
 // the app's flat nets (lib/sticker-palettes.js). The `scheme` attribute remaps it (ADR 0001).
@@ -82,6 +83,24 @@ const SPIN_PER_MS = 0.0035 * 60 / 1000;
  *  on the root group, which also carries the autorotate spin and interpolates `turnTo`. The pose
  *  module's own frame argument is for a caller that has no scene graph to put it on. */
 const UPRIGHT = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+/**
+ * The positions a sequence stops at: 0, the position after every move that changes the pieces
+ * relative to the centres, and the end.
+ *
+ * A whole-cube turn is a REGRIP, not a step: nothing about the cube's arrangement changed, so a walk a
+ * child follows cannot observe it and must not wait at it. It belongs to the group of the move it leads
+ * into — `x y R` is one stop, not three — and a sequence that ENDS on one still stops there, because a
+ * hold the lesson asked for is where the sequence leaves the cube
+ * (dev-docs/adr/0004-orientation-notation-and-colour-are-three-things.md, decision 9). With no
+ * whole-cube turn, stops and tokens coincide and every host behaves as it did.
+ */
+const stopsOf = (sol) => {
+  const stops = [0];
+  sol.forEach((m, i) => { if (faceTurnsOf(m).turns.some((t) => t.name)) stops.push(i + 1); });
+  if (stops[stops.length - 1] !== sol.length) stops.push(sol.length);
+  return Object.freeze(stops);
+};
+
 /** Is a frame the identity — the cube held as `orientation` says, with no turn of the sequence on top? */
 const isUpright = (m) => m.every((row, i) => row.every((v, j) => v === (i === j ? 1 : 0)));
 /** A solved cube, as the pose module wants it: pieces, and the twist of each centre. */
@@ -199,6 +218,14 @@ class CubusCube extends HTMLElement {
   set backView(v) { this._set('back-view', v); }
   set highlight(v) { this._set('highlight', v); }
   get highlight() { return this._attrs.highlight; }
+
+  /**
+   * Where `alg` stops, as token positions — `seek(el.stops[k])` is the cube at stop `k`.
+   *
+   * A walk's step `k` is stop `k` (ADR 0004 decision 9), so a host that drives by stops never has to
+   * know which tokens are regrips. A frozen copy: the element's own list is not a host's to edit.
+   */
+  get stops() { return Object.freeze([...(this._stops ?? [0])]); }
 
   /**
    * A pinned clock, in milliseconds, or null to run on the real one.
@@ -344,11 +371,18 @@ class CubusCube extends HTMLElement {
     this._anim = null;
     this._queue = [];
     this._writePose();
-    this._sol = this._parse(this._attrs.alg || '');
-    this._solMovesCentres = this._sol.some((m) => m.layers.includes(0));
+    this._readSol();
     this._refitIfTurned();
     this._cursor = 0; this._applied = 0; this._playing = false;
     this._dirty = true;
+  }
+
+  /** `alg` as moves, with what follows from it: whether it turns the cube, and where it stops. */
+  _readSol() {
+    this._sol = this._parse(this._attrs.alg || '');
+    this._solMovesCentres = this._sol.some((m) => m.layers.includes(0));
+    this._stops = stopsOf(this._sol);
+    this._group = null;
   }
 
   connectedCallback() {
@@ -516,8 +550,7 @@ class CubusCube extends HTMLElement {
     this._cursor = 0;
     this._playing = false; // play() intent — lets pause() stop cleanly between moves
     this._applied = 0; // solution moves animated since the last reset (drives 'cubus-step')
-    this._sol = this._parse(this._attrs.alg || '');
-    this._solMovesCentres = this._sol.some((m) => m.layers.includes(0));
+    this._readSol();
     // _set() returns early until the meshes exist, so an attribute present at parse time has not
     // been read yet. reset() below paints, and painting re-resolves the highlight.
     this._hlSet = null;
@@ -1458,8 +1491,18 @@ class CubusCube extends HTMLElement {
     this._syncHighlight();
     this._anim = null;
     this._applied += a.m.delta ?? 1;
-    this.dispatchEvent(new CustomEvent('cubus-step', { detail: { index: this._applied, total: this._sol.length } }));
+    this._report();
     this._dirty = true;
+    // After the report, so a host that reads the element inside the event sees the position that just
+    // landed rather than the next token already queued behind it.
+    this._advanceGroup();
+  }
+
+  /** Say where the cube now is: the token position, and the stop it belongs to (ADR 0004 decision 9). */
+  _report() {
+    this.dispatchEvent(new CustomEvent('cubus-step', {
+      detail: { index: this._applied, total: this._sol.length, stop: this._stopAt(this._applied), stops: this._stops.length - 1 },
+    }));
   }
 
   /**
@@ -1511,6 +1554,7 @@ class CubusCube extends HTMLElement {
     // dropping it is enough. It used to be a group of re-parented meshes, and a reset mid-turn
     // left the empty carrier in the scene forever.
     this._queue = []; this._anim = null; this._cursor = 0; this._playing = false; this._applied = 0;
+    this._group = null;
     this._state = SOLVED_STATE;
     // Position 0's frame is the identity: the hold at position 0 is `orientation`, on the root, and a
     // whole-cube turn inside the sequence composes onto this frame as it is made. A scramble describes
@@ -1542,9 +1586,7 @@ class CubusCube extends HTMLElement {
     // positions", and stating it here survives someone adding a second transform later.
     this._syncHighlight();
     this._dirty = true;
-    if (!this._quiet) {
-      this.dispatchEvent(new CustomEvent('cubus-step', { detail: { index: 0, total: this._sol.length } }));
-    }
+    if (!this._quiet) this._report();
   }
 
   play() { this._playing = true; this._next(); }
@@ -1558,6 +1600,64 @@ class CubusCube extends HTMLElement {
     this._queue.push({ ...m, angle: -m.angle, delta: -1 });
     this._next();
   }
+  /**
+   * Play forward to the next stop — the transport a walk a child follows is driven by.
+   *
+   * ONE TOKEN AT A TIME. Queueing a group's tokens together hands them to `_drainBacklog`, whose rule is
+   * that more than two pending animations means the oldest completes at once — so `x y R` pressed as one
+   * step would have snapped the regrip the child is being asked to make (ADR 0004 R4). Each token is
+   * queued as the one before it completes, so nothing is ever more than one deep.
+   *
+   * A stop command arriving mid-group SETTLES that group first: the child asked for the next stop, so the
+   * turns still in flight land at once and the new group animates, rather than the press being dropped or
+   * queued behind an animation nobody is watching any more.
+   */
+  stepStop() {
+    this._settleGroup();
+    const to = this._stops.find((p) => p > this._cursor);
+    if (to === undefined) return;
+    this._group = { to, delta: 1 };
+    this.step();
+  }
+
+  /** Undo back to the previous stop — the whole group, one token at a time, the same way round. */
+  stepBackStop() {
+    this._settleGroup();
+    const to = [...this._stops].reverse().find((p) => p < this._cursor);
+    if (to === undefined) return;
+    this._group = { to, delta: -1 };
+    this.stepBack();
+  }
+
+  /** Land a group in flight where it was going, at once: the in-flight turn, the queue, then the rest. */
+  _settleGroup() {
+    const g = this._group;
+    if (!g) return;
+    // Cleared FIRST: `_completeMove` advances the group, and a settle is the one path that must not.
+    this._group = null;
+    if (this._anim) this._completeMove(this._anim);
+    while (this._queue.length) this._completeMove({ m: this._queue.shift() });
+    while (this._cursor !== g.to) {
+      if (g.delta > 0) this._completeMove({ m: this._sol[this._cursor++] });
+      else { const m = this._sol[--this._cursor]; this._completeMove({ m: { ...m, angle: -m.angle, delta: -1 } }); }
+    }
+  }
+
+  /** The next token of the group in flight, queued now that the one before it has landed. */
+  _advanceGroup() {
+    const g = this._group;
+    if (!g) return;
+    if (this._cursor === g.to) { this._group = null; return; }
+    if (g.delta > 0) this.step(); else this.stepBack();
+  }
+
+  /** Which stop a token position is at, or the one behind it while a group is part way through. */
+  _stopAt(position) {
+    let k = 0;
+    for (let i = 0; i < this._stops.length; i++) if (this._stops[i] <= position) k = i;
+    return k;
+  }
+
   // Instant seek to solution move k, no animation. The app walks the solution with step()/
   // stepBack() and no longer calls this; it stays as renderer API for jumping to a position
   // (a scrubber, a deep link into a solve) where animating every move in between is wrong.
@@ -1582,7 +1682,7 @@ class CubusCube extends HTMLElement {
     this._syncHighlight();
     this._cursor = target; this._applied = target;
     this._dirty = true;
-    this.dispatchEvent(new CustomEvent('cubus-step', { detail: { index: target, total: this._sol.length } }));
+    this._report();
   }
 }
 for (const name of Object.keys(REACTIONS)) {

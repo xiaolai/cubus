@@ -2,7 +2,7 @@
   "schema": 1,
   "tag": "cubus-cube",
   "bundle": "cubus-cube.js",
-  "digest": "sha256:4447ad0c5bd75cd1e672b8faedb4da736a5b6c376d7af6b8039f9b2873d0c09e",
+  "digest": "sha256:3949a542f47ed6041e692c3cae45967a8d027e867968a7db79dfe9b3fd3184f9",
   "attributes": [
     "alg",
     "autorotate",
@@ -42,6 +42,8 @@
     "showTurn",
     "step",
     "stepBack",
+    "stepBackStop",
+    "stepStop",
     "turnTo"
   ]
 }
