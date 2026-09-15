@@ -20,7 +20,7 @@ import {
 } from '../lib/method-solver.js';
 import { OLL_ALGS, PLL_ALGS } from '../lib/methods/last-layer.js';
 import { BASELINES, capture } from './fixtures/regen-method-steps.mjs';
-import { RUNG_CRITERIA, UsageError, parseArgs, rungDelta } from '../bench/method-solver-profile.mjs';
+import { RUNG_CRITERIA, UsageError, judgeRung, parseArgs } from '../bench/method-solver-profile.mjs';
 import { seededPairs, seededScrambles, seededStates } from './fixtures/seeded-scrambles.mjs';
 import { turnsOf } from './fixtures/method-replay.mjs';
 
@@ -278,24 +278,19 @@ test('every rung moves the axis it is judged on, and no rung is invention', () =
   // the bench measured whole-solve step counts, which include cubes whose last layer was already
   // oriented, so it printed "not a lesson" about full OLL while this test was content.
   //
-  // **Judged on a sample large enough to judge it.** 120 cubes settle a rung that clears its floor by a
-  // distance, and every rung did when this was written. They do not settle one within two standard
-  // errors of it: plan items 6.2 and 6.3 made the bottom pairs rung shorter, and the pairs rung then
-  // measured 1.875 steps on these 120 and 2.19 on 1,000 (95% interval 2.08 to 2.30). So a result that
-  // close is measured again on 1,000 before it is judged — and one still too close to call there fails as
-  // exactly that, because a rung sitting on its floor is the owner's to judge, not the sample's.
+  // **A rung is not failed by its sample.** 120 cubes settle a rung that clears its floor, and one that
+  // misses it by a distance. They do not settle one that lands just under it: plan items 6.2 and 6.3 made
+  // the bottom pairs rung shorter, and the pairs rung then measured 1.875 steps on these 120, 1.795 on the
+  // first 400 and 1.905 on 1,000 (2.19 and 2.026 on two other 1,000-cube draws). So a result below its floor
+  // by less than two standard errors is measured again on 1,000 cubes before it fails, and only that
+  // measurement is judged. A result at or above its floor passes on 120, as this test always passed it: the
+  // owner judged the pairs rung's floor on the 1,000-cube numbers (restated to 1.75, 2026-09-16), and making
+  // every run pay for 1,000 cubes to re-ask a settled question cost the fast tier three minutes a run.
   const states = seededStates(120, 20260909);
   let wider = null;
   for (const criterion of RUNGS_EARN_THEIR_PLACE) {
     const { dial, from, to, axis, floor } = criterion;
-    let { moved, compared, sd } = rungDelta(states, criterion);
-    const tooClose = () => Math.abs(moved - floor) < (2 * sd) / Math.sqrt(compared);
-    if (tooClose()) {
-      wider ??= seededStates(1000, 20260909);
-      ({ moved, compared, sd } = rungDelta(wider, criterion));
-      assert.ok(!tooClose(), `${dial} ${from}->${to}: ${moved.toFixed(3)} ${axis} over ${compared} cubes is within `
-        + `two standard errors of its floor of ${floor} — too close to call, and the owner's to judge`);
-    }
+    const { moved, compared } = judgeRung(states, criterion, { wider: () => (wider ??= seededStates(1000, 20260909)) });
     assert.ok(compared > 100, `${dial} ${from}->${to}: only ${compared} comparable cubes`);
     assert.ok(moved >= floor,
       `${dial} rung ${to} moves ${moved.toFixed(4)} ${axis} against a floor of ${floor} — `
@@ -1123,4 +1118,32 @@ test('four middle edges flipped in their own slots take the most the middle laye
   const scrambled = Cube.fromString(toFacelets(flipped));
   scrambled.move(alg);
   assert.ok(scrambled.isSolved(), 'cubejs does not agree the lesson solves it');
+});
+
+test('a rung just under its floor is measured again before it fails, and only then', () => {
+  // The rule `judgeRung` keeps, held without a solve: every real rung clears its floor on the 120 cubes the
+  // gate draws, so without this nothing would exercise the branch that stops a sample from failing one.
+  const criterion = { dial: 'pairs', from: 0, to: 1, axis: 'steps', floor: 2 };
+  const scripted = (...answers) => {
+    const asked = [];
+    return { asked, measure: (states) => { asked.push(states); return answers[asked.length - 1]; } };
+  };
+  const above = scripted({ moved: 2.1, compared: 120, sd: 1.8 });
+  assert.deepEqual(
+    { ...judgeRung('small', criterion, { wider: 'large', measure: above.measure }), asked: above.asked },
+    { moved: 2.1, compared: 120, sd: 1.8, remeasured: false, earns: true, asked: ['small'] },
+    'at or above its floor, a rung passes on the sample it was given',
+  );
+  const close = scripted({ moved: 1.9, compared: 120, sd: 1.8 }, { moved: 2.05, compared: 1000, sd: 1.8 });
+  const judged = judgeRung('small', criterion, { wider: () => 'large', measure: close.measure });
+  assert.deepEqual(close.asked, ['small', 'large'], 'just under its floor, within noise, it is measured again');
+  assert.equal(judged.earns, true, 'and only the wider measurement is judged');
+  assert.equal(judged.remeasured, true);
+  const far = scripted({ moved: 1.2, compared: 120, sd: 1.8 });
+  assert.equal(judgeRung('small', criterion, { wider: 'large', measure: far.measure }).earns, false,
+    'well under its floor, it fails on the sample');
+  assert.deepEqual(far.asked, ['small'], 'with nothing measured again');
+  const stillUnder = scripted({ moved: 1.9, compared: 120, sd: 1.8 }, { moved: 1.93, compared: 1000, sd: 1.8 });
+  assert.equal(judgeRung('small', criterion, { wider: 'large', measure: stillUnder.measure }).earns, false,
+    'and a rung still under its floor on the wider sample fails there');
 });
