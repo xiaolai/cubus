@@ -135,6 +135,12 @@ const HL_PEAK = 0.38;        // emissiveIntensity at the top of the breath
 const FOCUS_FLATTEN = 0.62;  // how far an out-of-focus sticker is pulled toward FOCUS_MID
 const FOCUS_MID = 0.44;
 const HL_PERIOD = 1200;      // ms for one full breath
+// The turn arrow (plan item 4.2): a warm near-black ink, a little translucent so the stickers under it still
+// read. A first look, and the owner's to approve before any golden holds it.
+const ARROW_COLOUR = 0x2b2118;
+const ARROW_OPACITY = 0.9;
+/** A move's axis letter as the unit vector the renderer turns about. */
+const AXIS_VECTOR = Object.freeze({ x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] });
 const GHOST_OPACITY = 0.45;  // a ghost at rest — single-sourced with its construction below
 const GHOST_HL_PEAK = 0.80;  // ghosts are unlit and have no emissive, so they breathe in opacity
 
@@ -174,6 +180,7 @@ const REACTIONS = Object.freeze({
   highlight: (el) => { el._readHighlight(); el._syncHighlight(); },
   // focus repaints rather than syncing: it changes sticker COLOUR, which only _paint() writes.
   focus: (el) => { el._readFocus(); el._paint(); },
+  arrow: (el) => el._placeArrow(),
 });
 
 class CubusCube extends HTMLElement {
@@ -191,6 +198,7 @@ class CubusCube extends HTMLElement {
     'tempo-scale', 'temposcale',
     'back-view', 'backview',
     'orbit',
+    'arrow',
   ];
 
   /**
@@ -359,6 +367,9 @@ class CubusCube extends HTMLElement {
   }
   /** Attribute defaults. Also what a REMOVED attribute falls back to — see _set(). */
   static DEFAULTS = {
+    // No arrow. A move token (`R'`, `M`, `Rw2`, `y`) draws one for that turn; `next` draws the move of
+    // `alg` the cube is about to make, and follows the cursor (plan item 4.2).
+    arrow: 'none',
     palette: 'muted',
     // Western unless a host says otherwise: the arrangement PALETTES is written in, and the
     // one the app assumes until a scan proves the cube is the other kind.
@@ -433,6 +444,7 @@ class CubusCube extends HTMLElement {
     this._readSol();
     this._refitIfTurned();
     this._cursor = 0; this._applied = 0; this._playing = false;
+    this._placeArrow();
     this._dirty = true;
   }
 
@@ -604,6 +616,80 @@ class CubusCube extends HTMLElement {
       root.add(c);
       this.cubies.push(c);
     }
+    // The turn arrow's carrier, empty until an arrow is asked for (plan item 4.2). Under `root`, so it is
+    // held however the cube is; its own quaternion carries the sequence's frame.
+    this._arrow = new THREE.Group();
+    this._arrow.visible = false;
+    this._arrowMat = new THREE.MeshBasicMaterial({ color: ARROW_COLOUR, transparent: true, opacity: ARROW_OPACITY, depthWrite: false, side: THREE.DoubleSide });
+    root.add(this._arrow);
+  }
+
+  /**
+   * Draw the turn arrow `arrow` asks for, or none.
+   *
+   * WHICH LAYER AND WHICH WAY is the whole content of an arrow, so the geometry is computed from the move's
+   * own descriptor — the axis, the layers, the signed angle — rather than from a table of pictures: an arc
+   * about the move's axis, on its layer, sweeping the way the layer turns, with the head at the end. A face
+   * turn's arc sits on the face; a slice, a wide move or a rotation has no one face to sit on, so its arc
+   * rings the layer just outside the cube. The arc is centred toward the default eye, so the default view
+   * shows all of it. Its start, end and axis are kept on the group (`userData`), in the cube's own frame, so
+   * a test can check the direction without judging the look.
+   */
+  _placeArrow() {
+    if (!this._arrow) return;
+    for (const child of [...this._arrow.children]) { child.geometry.dispose(); this._arrow.remove(child); }
+    const spec = String(this._attrs.arrow ?? 'none').trim();
+    let move = null;
+    // The move about to be made from where the cube has SETTLED — `_applied`, not the cursor, which runs
+    // ahead of the animation when turns are queued. A turn in flight keeps its arrow until it lands.
+    if (spec === 'next') move = this._sol?.[this._applied] ?? null;
+    else if (spec && spec !== 'none') {
+      const read = readToken(spec);
+      if (!read.move) console.warn(`<cubus-cube> refusing arrow — "${spec}" is ${read.why}`);
+      else move = read.move;
+    }
+    this._arrow.visible = move !== null;
+    this._arrow.userData = {};
+    this._dirty = true;
+    if (!move) return;
+
+    const axis = new THREE.Vector3(...AXIS_VECTOR[move.axis]);
+    const layers = move.layers;
+    const face = layers.length === 1 && layers[0] !== 0;
+    // On the face for a face turn; ringing the layer outside the cube for everything else.
+    const offset = face ? layers[0] * 1.53 : layers.reduce((a, b) => a + b, 0) / layers.length;
+    const radius = face ? 0.92 : 1.62;
+    const quarters = Math.min(2, Math.abs(Math.round(move.angle / (Math.PI / 2))));
+    const sweep = quarters * (Math.PI / 2) * 0.78;
+    const sign = Math.sign(move.angle);
+    // A right-handed basis (u, v, axis): a positive angle turns u toward v. u points at the default eye,
+    // less its component along the axis, so the arc's middle faces the viewer.
+    const eye = new THREE.Vector3(1, 1, 1);
+    const u = eye.clone().sub(axis.clone().multiplyScalar(eye.dot(axis))).normalize();
+    const v = axis.clone().cross(u);
+    const centre = axis.clone().multiplyScalar(offset);
+    const at = (theta) => centre.clone().add(u.clone().multiplyScalar(Math.cos(theta) * radius)).add(v.clone().multiplyScalar(Math.sin(theta) * radius));
+    const points = [];
+    for (let i = 0; i <= 32; i++) points.push(at(sign * (-sweep / 2 + (i / 32) * sweep)));
+    const tube = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(points), 48, 0.055, 8, false), this._arrowMat);
+    const end = points[points.length - 1];
+    const tangent = end.clone().sub(points[points.length - 2]).normalize();
+    const head = new THREE.Mesh(new THREE.ConeGeometry(0.15, 0.34, 20), this._arrowMat);
+    head.position.copy(end.clone().add(tangent.clone().multiplyScalar(0.12)));
+    head.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), tangent);
+    tube.renderOrder = 3; head.renderOrder = 3;
+    this._arrow.add(tube, head);
+    this._arrow.userData = { axis: axis.toArray(), start: points[0].toArray(), end: end.toArray(), angle: move.angle, layers: [...layers] };
+    this._placeArrowFrame();
+  }
+
+  /** Hold the arrow in the sequence's frame, so the next move is drawn about the axis it will turn. */
+  _placeArrowFrame() {
+    if (!this._arrow) return;
+    const m = this._seq ?? UPRIGHT;
+    this._m4a ||= new THREE.Matrix4();
+    this._m4a.set(m[0][0], m[0][1], m[0][2], 0, m[1][0], m[1][1], m[1][2], 0, m[2][0], m[2][1], m[2][2], 0, 0, 0, 0, 1);
+    this._arrow.quaternion.setFromRotationMatrix(this._m4a);
   }
 
   /** The walk's starting state, with every attribute read in: `_set()` skips an unbuilt cube. */
@@ -1585,6 +1671,7 @@ class CubusCube extends HTMLElement {
     this._syncHighlight();
     this._anim = null;
     this._applied += a.m.delta ?? 1;
+    if (this._attrs.arrow === 'next') this._placeArrow(); else this._placeArrowFrame();
     this._report();
     this._dirty = true;
     // After the report, so a host that reads the element inside the event sees the position that just
@@ -1673,6 +1760,7 @@ class CubusCube extends HTMLElement {
     }
     this._writePose();
     this._refitIfTurned();
+    this._placeArrow();
     // AFTER the scramble, not only inside _paint(). _paint() resolves the highlight while every
     // cubie is still at home, and the loop above then moves them — so a positional selector set
     // before reset() named the pre-scramble occupant of the slot. Unconditional rather than tucked
@@ -1775,6 +1863,7 @@ class CubusCube extends HTMLElement {
     // before the seek would still be pointing at wherever those pieces used to be.
     this._syncHighlight();
     this._cursor = target; this._applied = target;
+    this._placeArrow();
     this._dirty = true;
     this._report();
   }

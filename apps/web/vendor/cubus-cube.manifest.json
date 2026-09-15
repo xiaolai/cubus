@@ -2,9 +2,10 @@
   "schema": 2,
   "tag": "cubus-cube",
   "bundle": "cubus-cube.js",
-  "digest": "sha256:6e4a1f84971fb9517cd3e6f0fe799782c61e5552add450732725b067a0652967",
+  "digest": "sha256:a7cc9dd0f3e63d66a00fd8e3fc1adcfbecaa24a47901c31d81e28e45f76dbc55",
   "attributes": [
     "alg",
+    "arrow",
     "autorotate",
     "back-view",
     "backview",

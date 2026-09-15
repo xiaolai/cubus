@@ -31,7 +31,7 @@ export const CAPABILITIES = Object.freeze({
   focus: { what: 'grey everything a cue does not name', status: 'works' },
   ghosts: { what: 'see the hidden faces: floating ghosts, back view', status: 'works' },
   camera: { what: 'place the eye: latitude, longitude, a tour', status: 'works' },
-  arrow: { what: 'a turn arrow on the face about to move', status: 'gap', item: '4.2' },
+  arrow: { what: 'a turn arrow on the face about to move', status: 'works' },
   label: { what: 'face letters on the cube', status: 'gap', item: '4.3' },
   trail: { what: 'the path a piece takes over a sequence', status: 'gap', item: '4.4' },
   'flat-view': { what: 'a net or a top-face case diagram drawn from the same model', status: 'gap', item: '4.5' },
@@ -110,19 +110,19 @@ export const TARGET_IDS = Object.freeze({
  * work (plan Phase 6), and moving a row from `ready` to `uses` is the record that it happened.
  */
 export const SOURCES = Object.freeze([
-  { stage: 'concepts', where: 'cubus-im lessons 1-6', uses: ['face-turns', 'highlight-piece', 'highlight-position', 'focus', 'camera', 'ghosts', 'page-overlay', 'clock-playback'], wants: ['label', 'arrow'] },
+  { stage: 'concepts', where: 'cubus-im lessons 1-6', uses: ['face-turns', 'highlight-piece', 'highlight-position', 'focus', 'camera', 'ghosts', 'page-overlay', 'clock-playback'], wants: ['label'], ready: ['arrow'] },
   { stage: 'concepts', where: 'cubus-im playground (three modes)', uses: ['face-turns', 'highlight-piece', 'piece-state'], wants: ['trail'] },
   { stage: 'cross', where: 'cubus-im lessons 7-8; app cross rungs', uses: ['face-turns', 'highlight-piece', 'highlight-position', 'focus', 'ghosts', 'hold-set', 'clock-playback', 'stop-playback'], wants: [] },
   { stage: 'first layer', where: 'cubus-im lessons 9-10; app first-layer rung', uses: ['face-turns', 'highlight-piece', 'highlight-position', 'focus', 'hold-set', 'clock-playback', 'stop-playback'], wants: [], ready: ['hold-change-in-sequence', 'question'] },
   { stage: 'middle layer', where: 'cubus-im lessons 11-12; app middle-layer rung', uses: ['face-turns', 'highlight-piece', 'highlight-position', 'focus', 'hold-set', 'clock-playback', 'stop-playback'], wants: [], ready: ['hold-change-in-sequence', 'rotation-token', 'held-letters', 'question'] },
-  { stage: 'last layer', where: 'cubus-im lessons 13-16; app OLL and PLL rungs', uses: ['face-turns', 'highlight-position', 'highlight-piece', 'focus', 'clock-playback', 'stop-playback'], wants: ['trail', 'arrow'], ready: ['highlight-sticker'] },
+  { stage: 'last layer', where: 'cubus-im lessons 13-16; app OLL and PLL rungs', uses: ['face-turns', 'highlight-position', 'highlight-piece', 'focus', 'clock-playback', 'stop-playback'], wants: ['trail'], ready: ['arrow', 'highlight-sticker'] },
   { stage: 'whole solve', where: 'cubus-im lesson 17; app Solution walk', uses: ['face-turns', 'highlight-piece', 'hold-set', 'clock-playback', 'stop-playback'], wants: [], ready: ['hold-change-in-sequence'] },
   { stage: 'F2L', where: 'not taught; app joined-pairs rung and the 41 cases in lib/data/case-tables.js', uses: ['face-turns', 'highlight-piece', 'stop-playback'], wants: ['flat-view', 'several-cubes'], ready: ['hold-change-in-sequence', 'question'] },
   { stage: 'OLL and PLL', where: 'app Trainer and Drill previews; the 57 and 21 cases', uses: ['page-overlay'], wants: ['flat-view', 'several-cubes', 'trail'], ready: ['wide-move', 'rotation-token', 'highlight-sticker', 'drill-round'] },
   { stage: 'other methods', where: 'cubus-im method pages: Roux, ZZ, Petrus, Mehta, 3-style', uses: ['painted-picture', 'focus', 'several-cubes'], wants: ['trail'], ready: ['slice-move', 'wide-move', 'selector-sets'] },
   { stage: 'drills', where: 'cubus-im recognition and prediction drills', uses: ['highlight-piece', 'highlight-position', 'drawn-colours', 'drill-round', 'camera'], wants: [] },
   { stage: 'practice cards', where: 'cubus-im practice cards', uses: ['painted-picture', 'hold-set', 'several-cubes'], wants: [] },
-  { stage: 'sheets', where: 'cubus-im cheatsheets, flowchart and charts', uses: ['face-turns', 'focus', 'ghosts', 'hold-set', 'several-cubes', 'painted-picture'], wants: ['flat-view', 'arrow'] },
+  { stage: 'sheets', where: 'cubus-im cheatsheets, flowchart and charts', uses: ['face-turns', 'focus', 'ghosts', 'hold-set', 'several-cubes', 'painted-picture'], wants: ['flat-view'], ready: ['arrow'] },
   { stage: 'scan', where: 'app scan screen: the half-read cube', uses: ['painted-picture'], wants: [] },
   { stage: 'companion', where: 'cubus-im lesson companion', uses: ['drawn-colours'], wants: [] },
 ]);
@@ -252,6 +252,11 @@ export const SCENARIOS = Object.freeze([
     id: 'top-layer-without-its-corners', stage: 'other methods', half: 'element', kind: 'selector-sets', closedBy: '4.1',
     source: "Roux's last six edges: the top layer's edges and centre, and not its corners",
     needs: ['selector-sets'], alg: '', selector: 'layer:U - corners',
+  },
+  {
+    id: 'arrow-on-the-move-about-to-happen', stage: 'concepts', half: 'element', kind: 'arrow', closedBy: '4.2',
+    source: 'cubus-im lessons 1-6 and the sheets: which face turns next, and which way', needs: ['arrow'],
+    alg: "R U' M y F2",
   },
   {
     id: 'R11-focus-and-highlight-keep-their-split', stage: 'every stage', half: 'element', kind: 'covered',
