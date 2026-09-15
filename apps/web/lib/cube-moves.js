@@ -83,21 +83,43 @@ const holdOfRows = (rows) => [faceOf(rows[1]), faceOf(rows[2])];
  */
 export function applyIdentity(move, hold, state) {
   const rows = checkHold(hold);
+  const { whole } = faceTurnsOf(move);
+  const next = turnPieces(move, state);
+  if (!whole) return { state: next, hold: [...hold] };
+  // The cube turned by `angle` about its own `axis`: each world axis's identity vector turns the other
+  // way (rows of frame · Q are rows of frame turned by Q⁻¹).
+  const q = quartersOf(move.angle);
+  const turned = rows.map((r) => turnVector([...r], move.axis, -q));
+  return { state: next, hold: holdOfRows(turned) };
+}
+
+/**
+ * The outer faces an identity-frame layer move turns, relative to the centres, and whether it turns the
+ * whole cube: `{ whole, turns: [{ face, sign, name, angle }] }`, `name` the piece-model move (`R`, `L'`)
+ * or null for no net turn, `angle` the geometry's.
+ *
+ * The rule, uniform over every mask: a mask that includes the middle layer turns the WHOLE CUBE and turns
+ * the layers outside the mask back. So a face turn is the plain case, a wide move the whole cube with one
+ * face turned back, a slice the whole cube with both faces turned back, a rotation nothing turned back.
+ * Exported for the renderer's pose module, which moves centres' stickers by the same faces.
+ */
+export function faceTurnsOf(move) {
   const { axis, layers, angle } = move;
   if (!AXES.includes(axis)) throw new Error(`cube-moves: no axis "${axis}"`);
   const whole = layers.includes(0);
   const outers = whole ? [1, -1].filter((s) => !layers.includes(s)) : layers.filter((s) => s !== 0);
+  const turned = whole ? -angle : angle;
+  return {
+    whole,
+    turns: outers.map((sign) => ({ face: faceAt(axis, sign), sign, angle: turned, name: faceTurnName(axis, sign, turned) })),
+  };
+}
+
+/** The pieces an identity-frame layer move leaves, relative to the centres. */
+export function turnPieces(move, state) {
   let next = state;
-  for (const sign of outers) {
-    const name = faceTurnName(axis, sign, whole ? -angle : angle);
-    if (name) next = applyMove(next, name);
-  }
-  if (!whole) return { state: next, hold: [...hold] };
-  // The cube turned by `angle` about its own `axis`: each world axis's identity vector turns the other
-  // way (rows of frame · Q are rows of frame turned by Q⁻¹).
-  const q = quartersOf(angle);
-  const turned = rows.map((r) => turnVector([...r], axis, -q));
-  return { state: next, hold: holdOfRows(turned) };
+  for (const { name } of faceTurnsOf(move).turns) if (name) next = applyMove(next, name);
+  return next;
 }
 
 /** A held move, as the identity-frame move it is on a cube held `hold`. */

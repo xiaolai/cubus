@@ -11,10 +11,15 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { after, before, test } from 'node:test';
 
-import { ROTATIONS, SOLVED_FACELETS, applyMoves, faceletAt, held, play } from '../cube-oracle.mjs';
+import { ROTATIONS, SOLVED_FACELETS, applyMoves, held, play } from '../cube-oracle.mjs';
 import { SCENARIOS } from '../fixtures/tutorial-scenarios.mjs';
-import { OPEN_ITEMS, underGapRules } from '../tutorial-runner.mjs';
+import * as cubeKit from '../../lib/cube-kit.js';
+import { OPEN_ITEMS, strictKit, underGapRules } from '../tutorial-runner.mjs';
+import { readStickers, toWorld } from './drawn-cube.mjs';
 import { startBrowserFixture } from './harness.mjs';
+
+/** What a scenario may use of the model: cube-kit, strictly. */
+const kit = strictKit(cubeKit);
 
 /** What a consumer may touch, as the element itself declares it (plan item 2.5 widens this). */
 const MANIFEST = JSON.parse(readFileSync(new URL('../../vendor/cubus-cube.manifest.json', import.meta.url), 'utf8'));
@@ -63,38 +68,11 @@ const build = (attrs) => page.evaluate(async (a) => {
   el.clock = 4_000_000;
 }, attrs);
 
-/**
- * Every sticker of the drawn cube: its home face (the colour it was painted, for a cube built from
- * moves rather than a facelet string), the world position of its cubie and its world offset from that
- * cubie. `seek` goes through the public cube; the reading is a check, and reads the scene directly.
- */
-const drawn = (k) => page.evaluate((to) => {
-  const el = window.__cube;
-  if (to !== null) window.__publicCube(el).seek(to);
-  el.root.updateMatrixWorld(true);
-  const V = el.stickers[0].position.constructor;
-  return el.stickers.map((m) => {
-    const s = m.getWorldPosition(new V());
-    const c = m.parent.getWorldPosition(new V());
-    return { face: m.userData.face, cubie: [c.x, c.y, c.z], offset: [s.x - c.x, s.y - c.y, s.z - c.z] };
-  });
-}, k);
-
-/** The drawn stickers as world facelets, on the oracle's layout. Throws on a sticker that lands nowhere. */
-export function toWorld(stickers) {
-  const scale = Math.max(...stickers.flatMap((s) => s.cubie.map(Math.abs)));
-  const out = new Array(54).fill('?');
-  for (const s of stickers) {
-    const pos = s.cubie.map((v) => Math.round(v / scale) + 0);
-    const len = Math.hypot(...s.offset);
-    const n = s.offset.map((v) => Math.round(v / len) + 0);
-    const i = faceletAt(pos, n);
-    if (i < 0) throw new Error(`a sticker at ${pos} facing ${n} is on no facelet`);
-    if (out[i] !== '?') throw new Error(`two stickers drawn on facelet ${i}`);
-    out[i] = s.face;
-  }
-  return out.join('');
-}
+/** Seek through the public cube, then read the drawing back — the reading is a check and reads the scene. */
+const drawn = async (k) => {
+  if (k !== null) await page.evaluate((to) => window.__publicCube(window.__cube).seek(to), k);
+  return readStickers(page);
+};
 
 const tokens = (alg) => alg.trim().split(/\s+/).filter(Boolean);
 
@@ -147,13 +125,18 @@ test('the public cube refuses what the manifest does not list, and allows what i
 
 /** The element half's runners for scenarios whose capability a plan item is still building. */
 const ELEMENT_RUNNERS = {
-  // Centre-moving tokens in `alg`: drawn at every position as the oracle plays them.
+  // The child's moves — centre-moving ones among them — read by the interpreter into the identity-frame
+  // tokens the element's `alg` takes (ADR 0004 decision 7), and drawn at every position as the oracle
+  // plays the child's letters. At the reference hold a single token reads the same both ways; after a
+  // slice or a rotation the letters that follow do not, which is the whole reason for the interpreter.
   async 'element-tokens'(sc) {
+    const [up, front] = sc.orientation.split(' ');
     for (const alg of sc.algs) {
-      await build({ orientation: sc.orientation, alg });
+      const { drawn: tokens } = kit.run(kit.parse(alg), [up, front], kit.SOLVED);
+      await build({ orientation: sc.orientation, alg: tokens.join(' ') });
       const oracle = play(SOLVED_FACELETS, sc.orientation, alg);
       for (let k = 0; k < oracle.worlds.length; k++) {
-        assert.equal(toWorld(await drawn(k)), oracle.worlds[k], `${sc.id}: "${alg}" after ${k} moves`);
+        assert.equal(toWorld(await drawn(k)), oracle.worlds[k], `${sc.id}: "${alg}" (drawn "${tokens.join(' ')}") after ${k} moves`);
       }
     }
   },
