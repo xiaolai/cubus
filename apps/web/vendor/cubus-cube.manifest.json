@@ -2,7 +2,7 @@
   "schema": 2,
   "tag": "cubus-cube",
   "bundle": "cubus-cube.js",
-  "digest": "sha256:6528647669d7471a8d8c6c12f3867e5bcd6e3bb1869feeefd4762566c1dae2ab",
+  "digest": "sha256:1eed3a3996ffe2c3e82a71c5268fae301b237b898abaf19ed49f640789efd358",
   "attributes": [
     "alg",
     "arrow",
@@ -37,6 +37,7 @@
   ],
   "methods": [
     "dispose",
+    "drawnColours",
     "pause",
     "play",
     "recycle",

@@ -197,6 +197,28 @@ const FACELETS = (() => {
 
 /** The element half's runners for scenarios whose capability a plan item is still building. */
 const ELEMENT_RUNNERS = {
+  // Plan item 5.1: through the public cube, `drawnColours()` gives the six colours the scene walk a drill page
+  // used to make finds on the centres — under each palette and scheme.
+  async 'drawn-colours'(sc) {
+    for (const palette of sc.palettes) {
+      for (const scheme of sc.schemes) {
+        await build({ palette, scheme });
+        const ported = await page.evaluate(() => ({ ...window.__publicCube(window.__cube).drawnColours() }));
+        const walked = await page.evaluate(() => {
+          const out = {};
+          for (const c of window.__cube.cubies) {
+            const p = [c.position.x, c.position.y, c.position.z].map(Math.round);
+            if (p.filter(Boolean).length !== 1) continue;
+            const mesh = c.children.find((m) => m.userData?.face);
+            if (mesh) out[mesh.userData.face] = `#${mesh.material.color.getHexString()}`;
+          }
+          return out;
+        });
+        assert.deepEqual(ported, walked, `${sc.id}: ${palette}, ${scheme}`);
+        assert.equal(new Set(Object.values(ported)).size, 6, `${sc.id}: two faces drawn one colour`);
+      }
+    }
+  },
   // Plan item 4.6: every case of a table on one page — past the live budget, so flat — with no WebGL context,
   // and every diagram's lit wells the top stickers showing the top colour in the oracle's cube for that case.
   async 'several-cubes'(sc) {

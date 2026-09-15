@@ -148,6 +148,8 @@ const NOT_REPO_FILES = new Set([
   // rounds they freeze (apps/web/test/fixtures/cubus-im-drills.mjs). The lesson course's files, in its
   // own repository.
   'drill-rounds.mjs', 'predict-rounds.mjs', 'verify-drill.mjs', 'verify-predict.mjs',
+  // cubus-im's lesson companion, whose centre-colour walk the port of plan item 5.1 replaces.
+  'cube-avatar.js',
 ]);
 
 function extractCandidates(text) {

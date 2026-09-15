@@ -129,6 +129,22 @@ export const MODEL_RUNNERS = Object.freeze({
     }
   },
 
+  // Plan item 5.2: a page's count of pieces away from home comes from the model — the child's moves through the
+  // interpreter and `piecesAway` — and counts lesson 2's rule: out of the slot, or in it the wrong way round.
+  // cubejs, which shares no code with either, decides the number at every position.
+  'piece-state'(sc, kit) {
+    const moves = kit.parse(sc.moves);
+    const cube = new Cube();
+    for (let k = 0; k <= moves.length; k++) {
+      if (k > 0) cube.move(sc.moves.split(' ')[k - 1]);
+      let away = 0;
+      for (let i = 0; i < 8; i++) if (cube.cp[i] !== i || cube.co[i] !== 0) away++;
+      for (let i = 0; i < 12; i++) if (cube.ep[i] !== i || cube.eo[i] !== 0) away++;
+      const state = kit.run(moves.slice(0, k), ['U', 'F'], kit.SOLVED).state;
+      assert.equal(kit.piecesAway(state).pieces.length, away, `${sc.id}: pieces away after ${k} moves`);
+    }
+  },
+
   // A selector written in the child's frame, converted to the identity frame.
   selectors(sc, kit) {
     const [kind, where] = sc.selector.split(':');
@@ -209,7 +225,7 @@ export function scriptFor(sc, kit) {
     ? alg.trim().split(/\s+/).filter(Boolean).map((t) => t.replace(/^[URFDLB]/, (f) => kit.heldFace(f, hold.split(' ')))).join(' ')
     : alg);
   const algs = sc.algs ?? sc.walks ?? [sc.moves ?? sc.alg ?? sc.planned].filter(Boolean);
-  if (!algs.length && !sc.selector && !sc.ask && !sc.holds && !sc.start?.setup && !sc.table) return null;
+  if (!algs.length && !sc.selector && !sc.ask && !sc.holds && !sc.start?.setup && !sc.table && !sc.palettes) return null;
   const start = {};
   if (sc.start?.setup) start.scramble = sc.start.setup;
   const steps = [];
