@@ -137,6 +137,9 @@ export { createScriptPlayer } from './script-player.js';
 
 // Flat views from the same model: the net and the top-face case diagram, as SVG text (plan item 4.5).
 export { TOP_RING, faceletsOf, netSvg, topFaceSvg } from './cube-flat.js';
+
+// Many cubes on one page: live cubes while the browser can hold them, flat diagrams past that (plan item 4.6).
+export { CONTEXT_CAP, LIVE_BUDGET, flatGallery, galleryKind } from './cube-gallery.js';
 export {
   CAM_DEFAULT,
   CAM_EASE,
