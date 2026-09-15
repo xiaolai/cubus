@@ -18,6 +18,8 @@ import { fileURLToPath } from 'node:url';
 
 import Cube from '../vendor/cubejs.js';
 import { SOLVED_FACELETS, applyMoves, faceletAt, held, identityOf, play } from './cube-oracle.mjs';
+import { STICKER_PALETTES } from '../lib/sticker-palettes.js';
+import { paletteFor } from '../lib/scheme.js';
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
@@ -109,6 +111,23 @@ export const MODEL_RUNNERS = Object.freeze({
     assert.deepEqual(answer.pieces.map(pieceName).sort(), expected, `${sc.id}: top edges carrying none of the top colour`);
   },
 
+  // Plan item 4.5: the flat views of a cube paint every sticker the colour the oracle's cube has there, under
+  // each scheme — the net all 54, the ringed case diagram the top face and the top layer's sides.
+  'flat-view'(sc, kit) {
+    const identity = startOf(sc);
+    const state = stateOf(kit, identity);
+    const fills = (svg) => new Map([...svg.matchAll(/data-facelet="(\d+)"[^>]*fill="([^"]+)"/g)].map(([, i, fill]) => [Number(i), fill]));
+    for (const scheme of sc.schemes) {
+      const colours = paletteFor(STICKER_PALETTES.muted, scheme);
+      const net = fills(kit.netSvg(state, { scheme }));
+      assert.equal(net.size, 54, `${sc.id}: the net drew ${net.size} stickers`);
+      for (const [i, fill] of net) assert.equal(fill, colours[identity[i]], `${sc.id} ${scheme}: net sticker ${i}`);
+      const top = fills(kit.topFaceSvg(state, { scheme, ring: true }));
+      assert.equal(top.size, 21, `${sc.id}: the case diagram drew ${top.size} stickers`);
+      for (const [i, fill] of top) assert.equal(fill, colours[identity[i]], `${sc.id} ${scheme}: diagram sticker ${i}`);
+    }
+  },
+
   // A selector written in the child's frame, converted to the identity frame.
   selectors(sc, kit) {
     const [kind, where] = sc.selector.split(':');
@@ -189,7 +208,7 @@ export function scriptFor(sc, kit) {
     ? alg.trim().split(/\s+/).filter(Boolean).map((t) => t.replace(/^[URFDLB]/, (f) => kit.heldFace(f, hold.split(' ')))).join(' ')
     : alg);
   const algs = sc.algs ?? sc.walks ?? [sc.moves ?? sc.alg ?? sc.planned].filter(Boolean);
-  if (!algs.length && !sc.selector && !sc.ask && !sc.holds) return null;
+  if (!algs.length && !sc.selector && !sc.ask && !sc.holds && !sc.start?.setup) return null;
   const start = {};
   if (sc.start?.setup) start.scramble = sc.start.setup;
   const steps = [];
@@ -199,6 +218,8 @@ export function scriptFor(sc, kit) {
   // A lesson about the letters: the same cube held several ways, the letters on.
   for (const [k, h] of (sc.holds ?? []).entries()) steps.push({ hold: h, say: 'which face is on top?', ...(k === 0 ? { labels: 'position' } : {}) });
   if (sc.kind === 'arrow') steps.forEach((step) => { if (step.move) step.arrow = 'next'; });
+  // A cube and nothing done to it — a sheet's picture: the page draws the view's cube flat.
+  if (!steps.length) steps.push({ say: 'this is the cube' });
   return { schema: 2, start: { ...start, hold }, steps };
 }
 
