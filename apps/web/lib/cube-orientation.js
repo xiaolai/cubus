@@ -22,6 +22,10 @@
 // The relabelling is derived the same way `two-phase.js` derives its own: from where the rotation
 // puts the six CENTRES, and asserted to be a bijection. Never typed.
 
+// Which facelet is each face's centre: the layout's one table, not a copy of it. This module kept its
+// own until plan item 3.2, when the bundle's guard could not tell the two apart by name.
+import { CENTERS } from './cube-layout.js';
+
 export const FACE_LETTERS = 'URFDLB';
 
 /** Outward normal of each face, in the renderer's fixed frame. */
@@ -52,8 +56,6 @@ function normalOf(letter) {
   return isFace(letter) ? NORMAL[letter] : null;
 }
 
-/** Facelet index of each face's centre, in URFDLB order. */
-const CENTERS = [4, 13, 22, 31, 40, 49];
 
 /**
  * How each face is READ: the in-plane direction of increasing column ("right" in the view) and of

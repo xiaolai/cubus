@@ -117,6 +117,9 @@ export { STEP_CUES, STEP_KINDS, checkLesson, checkScript } from './lesson-format
 // none of the top colour" the way the child holds the cube, and this is where that becomes a question
 // `lib/cube-questions.js` can answer.
 export { QUESTIONS, TAKES_ARGUMENT, ask, readAsk } from './script-questions.js';
+
+// A script's cube at every position — the pure half every driver stands on (plan item 3.2).
+export { askAt, buildScript, groupsOf, stateFrom, viewAtPosition } from './script-view.js';
 export {
   CAM_DEFAULT,
   CAM_EASE,

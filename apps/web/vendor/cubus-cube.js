@@ -28752,8 +28752,42 @@ function fitDistanceStable({ points, vfovDeg, aspect: aspect2, margin = 0.06 }) 
   return r * Math.max(Math.sqrt(1 + 1 / (tanV * tanV)), Math.sqrt(1 + 1 / (tanH * tanH)));
 }
 
-// ../../apps/web/lib/cube-orientation.js
+// ../../apps/web/lib/cube-layout.js
+var CORNER_FACELETS = Object.freeze([
+  [8, 9, 20],
+  [6, 18, 38],
+  [0, 36, 47],
+  [2, 45, 11],
+  [29, 26, 15],
+  [27, 44, 24],
+  [33, 53, 42],
+  [35, 17, 51]
+].map((f) => Object.freeze(f)));
+var EDGE_FACELETS = Object.freeze([
+  [5, 10],
+  [7, 19],
+  [3, 37],
+  [1, 46],
+  [32, 16],
+  [28, 25],
+  [30, 43],
+  [34, 52],
+  [23, 12],
+  [21, 41],
+  [50, 39],
+  [48, 14]
+].map((f) => Object.freeze(f)));
+var CENTERS = Object.freeze([4, 13, 22, 31, 40, 49]);
 var FACE_LETTERS = "URFDLB";
+var SLOT_FACELETS = Object.freeze({
+  corners: CORNER_FACELETS,
+  edges: EDGE_FACELETS,
+  centers: CENTERS,
+  faces: FACE_LETTERS
+});
+
+// ../../apps/web/lib/cube-orientation.js
+var FACE_LETTERS2 = "URFDLB";
 var NORMAL = Object.freeze({
   U: Object.freeze([0, 1, 0]),
   R: Object.freeze([1, 0, 0]),
@@ -28763,7 +28797,7 @@ var NORMAL = Object.freeze({
   B: Object.freeze([0, 0, -1])
 });
 function isFace(letter) {
-  return typeof letter === "string" && letter.length === 1 && FACE_LETTERS.includes(letter);
+  return typeof letter === "string" && letter.length === 1 && FACE_LETTERS2.includes(letter);
 }
 function normalOf(letter) {
   return isFace(letter) ? NORMAL[letter] : null;
@@ -28785,7 +28819,7 @@ var key = (v) => v.map((n) => Math.round(n)).join(",");
 var STICKERS = (() => {
   const out = new Array(54);
   for (let f = 0; f < 6; f++) {
-    const letter = FACE_LETTERS[f];
+    const letter = FACE_LETTERS2[f];
     const n = normalOf(letter);
     const { right, up } = READ[letter];
     for (let row = 0; row < 3; row++) {
@@ -28807,8 +28841,8 @@ var STICKERS = (() => {
 })();
 var INDEX_OF = new Map(STICKERS.map((s, i) => [`${key(s.pos)}|${key(s.normal)}`, i]));
 var ORIENTATIONS = Object.freeze(
-  [...FACE_LETTERS].flatMap(
-    (up) => [...FACE_LETTERS].filter((front) => !sameAxis(up, front)).map((front) => Object.freeze([up, front]))
+  [...FACE_LETTERS2].flatMap(
+    (up) => [...FACE_LETTERS2].filter((front) => !sameAxis(up, front)).map((front) => Object.freeze([up, front]))
   )
 );
 function sameAxis(a, b) {
@@ -29080,7 +29114,7 @@ var NORMAL2 = Object.freeze({
   F: [0, 0, 1],
   B: [0, 0, -1]
 });
-var faceOf = (v) => FACE_LETTERS.split("").find((f) => NORMAL2[f].every((c, i) => c === v[i]));
+var faceOf = (v) => FACE_LETTERS2.split("").find((f) => NORMAL2[f].every((c, i) => c === v[i]));
 var faceAt = (axis, sign) => faceOf(AXES.map((a) => a === axis ? sign : 0));
 var quartersOf = (angle) => Math.round(angle / QUARTER3);
 function faceTurnName(axis, sign, angle) {

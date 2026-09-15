@@ -47,6 +47,8 @@ const BUNDLES = [
       // runs (dev-docs/tutorial-capability-plan.md items 2.1 and 2.2): the model the tutorials are
       // tested against is the one the element draws with.
       '../lib/cube-notation.js', '../lib/cube-moves.js',
+      // The facelet layout, which the piece model reads to write a state as stickers (`toFacelets`).
+      '../lib/cube-layout.js',
     ],
     // The renderer imports three of cube-orientation.js's exports (isFace, orientationMatrix,
     // sameAxis); esbuild drops the rest, and the messages inside them. Same delete-when-used
@@ -57,7 +59,7 @@ const BUNDLES = [
     // renderer takes the model's move tables and none of its searching, and an entry that stops
     // being tree-shaken means the bundle just grew a dependency nobody asked for.
     treeShaken: [
-      'CENTERS', 'orientationPerm', 'orientationRelabel', 'permCache', 'turnFacelets',
+      'orientationPerm', 'orientationRelabel', 'permCache', 'turnFacelets',
       'Y_FACES', 'allSolved', 'applyAlg', 'cornerSlot', 'cornerSolved', 'edgeSlot', 'edgeSolved',
       'fromCube', 'moveCount', 'movesOf', 'rotateAlg', 'rotateState',
       // From the interpreter the element takes the face-turn arithmetic of an identity-frame move
@@ -66,6 +68,11 @@ const BUNDLES = [
       // takes `readToken` and not the formatter.
       'SELECTOR', 'applyIdentity', 'checkHold', 'convertSelectors', 'heldFace', 'holdOfRows',
       'identityFace', 'toIdentity', 'tokenOf', 'turnVector', 'formatMoves',
+      // Writing a state back out as 54 stickers is the app's and the script player's question; the
+      // renderer is handed the string it paints, so `toFacelets` goes. The layout TABLES it reads stay in
+      // the bundle — esbuild cannot prove a frozen, mapped array free of side effects — and are guarded
+      // as the declarations they are.
+      'toFacelets',
     ],
     treeShakenMessages: [
       'cube-orientation: sticker', 'cube-orientation: rotation is not a bijection',
@@ -268,6 +275,19 @@ for (const b of BUNDLES) {
       }
     }
     assert.deepEqual(missing.sort(), [], `source is ahead of the bundle — run \`${b.build}\``);
+  });
+
+  // The other half of "delete it here when it is used", which was a comment until plan item 3.2 found a
+  // list naming three layout tables the bundle does carry: an entry that is not really dropped exempts a
+  // live declaration from the check above, silently. So a name listed as tree-shaken must be ABSENT.
+  test(`${b.name}: every name listed as tree-shaken really is absent from the bundle`, (t) => {
+    if (b.optional && !existsSync(new URL(b.bundle, import.meta.url))) {
+      t.skip(`${b.bundle} not built yet — run \`${b.build}\``);
+      return;
+    }
+    const bundle = read(b.bundle);
+    const kept = (b.treeShaken ?? []).filter((n) => new RegExp(`(?<![\\w$])${n}(?![\\w$])`).test(bundle));
+    assert.deepEqual(kept, [], 'listed as tree-shaken and still in the bundle — remove it from the list so the guard covers it');
   });
 
   // Names are not enough, and this is the fourth time that has mattered.
