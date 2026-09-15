@@ -85,9 +85,9 @@ export function toWorld(stickers) {
   const scale = Math.max(...stickers.flatMap((s) => s.cubie.map(Math.abs)));
   const out = new Array(54).fill('?');
   for (const s of stickers) {
-    const pos = s.cubie.map((v) => Math.round(v / scale));
+    const pos = s.cubie.map((v) => Math.round(v / scale) + 0);
     const len = Math.hypot(...s.offset);
-    const n = s.offset.map((v) => Math.round(v / len));
+    const n = s.offset.map((v) => Math.round(v / len) + 0);
     const i = faceletAt(pos, n);
     if (i < 0) throw new Error(`a sticker at ${pos} facing ${n} is on no facelet`);
     if (out[i] !== '?') throw new Error(`two stickers drawn on facelet ${i}`);
