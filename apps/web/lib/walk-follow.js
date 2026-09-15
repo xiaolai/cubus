@@ -18,13 +18,13 @@ import { showMove } from './solving-hold.js';
  * The follow tracker of one mounted cube screen, its buttons wired.
  *
  * @param {object} deps `root`; the renderer `cube`; shared `state`; `cubejs()`; the speed menu's
- *   `applyTempo()`; the transport's `setPlaying(on)`; `holdAt(k)`, how move `k` is held;
+ *   `applyTempo()`; the transport's `setPlaying(on)`; `moveHoldAt(k)`, the hold move `k` is made in;
  *   `markStale`; `adoptCube`; `go`; `scrambling`; the live distance's `refreshLiveDistance` and
  *   `dropLiveDistance`; `chainTrusted()`, the one predicate for trust in the live chain; and
  *   `walkNow()`, the walk on screen as `{ moves, steps }`.
  */
 export function createFollowTracker({
-  root, cube, state, cubejs, applyTempo, setPlaying, holdAt, markStale, adoptCube, go, scrambling,
+  root, cube, state, cubejs, applyTempo, setPlaying, moveHoldAt, markStale, adoptCube, go, scrambling,
   refreshLiveDistance, dropLiveDistance, chainTrusted, walkNow,
 }) {
   const $ = (sel, from) => from.querySelector(sel);
@@ -249,7 +249,7 @@ export function createFollowTracker({
     liveMoved = true;
     // Both moves named for the hold the walk is in: the cube reports in its own colour frame,
     // which is the scan frame, and the child is holding it the way the chips say.
-    const heldNow = holdAt(cubePosNow());
+    const heldNow = moveHoldAt(cubePosNow());
     const { moves } = walkNow();
     act(locate(liveModel.asString()), t('That was %1 — the next move is %2.',
       showMove(m.notation, heldNow), cubePosNow() < moves.length ? showMove(moves[cubePosNow()], heldNow) : '—'));

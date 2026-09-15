@@ -19,13 +19,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { CORNER, EDGE, applyAlg } from '../lib/cube-pieces.js';
+import { CORNER, EDGE } from '../lib/cube-pieces.js';
 import {
   EVERY_CONFIGURATION, PAIR, PROTECTED_CORNERS, PROTECTED_EDGES, configuration,
 } from './fixtures/f2l-positions.mjs';
 import { CROSS, F1L, F2L_PAIRS, MIDDLE } from '../lib/methods/engine.js';
 import { PAIRS_ALGS, PAIRS_RUNGS } from '../lib/methods/pairs.js';
 import { __testing } from '../lib/method-solver.js';
+import { replayStage } from './fixtures/method-replay.mjs';
 
 const { repertoire, slotSafe, f2lCaseName } = __testing;
 
@@ -128,7 +129,7 @@ test('a fallback pair is still placed, and the cube is still legal afterwards', 
       `corner ${config.cornerAt}.${config.twist} edge ${config.edgeAt}.${config.flip}: `
       + 'the stage did not reach its own contract');
     // The steps replay to the state the stage returned — the same check the driver makes.
-    const replayed = steps.reduce((cube, step) => applyAlg(cube, step.alg), state);
+    const replayed = { ...replayStage(state, steps).state };
     assert.deepEqual(replayed, after, 'the steps do not add up to the cube the stage returned');
   }
 });

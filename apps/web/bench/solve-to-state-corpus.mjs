@@ -33,6 +33,7 @@
 
 import { SOLVED, applyAlg, invert, moveCount } from '../lib/cube-pieces.js';
 import { solveByMethod } from '../lib/method-solver.js';
+import { turnsOf } from '../test/fixtures/method-replay.mjs';
 import { OLL_ALGS, PLL_ALGS } from '../lib/methods/last-layer.js';
 import { F2L_CASES } from '../lib/data/case-tables.js';
 import { INDEPENDENT_PREDICATE } from '../test/fixtures/independent-predicates.mjs';
@@ -93,7 +94,8 @@ function methodRoute(scramble) {
   const states = [start];
   let s = start;
   for (const step of lesson.steps) {
-    s = applyAlg(s, step.alg);
+    // Played in the step's hold, as the face turns it makes: a step may regrip (plan item 6.1).
+    s = applyAlg(s, turnsOf(step));
     states.push(s);
   }
   return { start, steps: lesson.steps, states };
@@ -114,7 +116,7 @@ function geometry(route, targetId) {
   // How many moves from states[i] to states[reachedAt], along the route.
   const suffix = route.states.map((_, i) => (i >= reachedAt
     ? 0
-    : route.steps.slice(i, reachedAt).reduce((n, step) => n + moveCount(step.alg), 0)));
+    : route.steps.slice(i, reachedAt).reduce((n, step) => n + moveCount(turnsOf(step)), 0)));
   // Part way: at least one step of this target done, and the target not yet reached.
   const partWay = [];
   for (let i = 1; i < reachedAt; i++) {
@@ -179,7 +181,7 @@ export function buildCorpus({ seed = CORPUS_SEED, seeds = 24, randomCases = 12 }
 
       // --- slip: part way, and the next step goes wrong by one turn.
       const i = pick(rnd, g.partWay);
-      const damaged = slip(rnd, route.steps[i].alg);
+      const damaged = slip(rnd, turnsOf(route.steps[i]));
       if (damaged) {
         cases.push({
           target: targetId, kind: 'slip', errorKind: damaged.how,

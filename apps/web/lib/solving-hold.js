@@ -29,9 +29,10 @@
 // Pure: no DOM, no renderer, no solver. `test/solving-hold.test.mjs` holds every renaming to the
 // identity that defines it, over every one of the 24 holds.
 
-import { heldFace } from './cube-moves.js';
+import { applyIdentity, heldFace, heldToken, run } from './cube-moves.js';
+import { readToken } from './cube-notation.js';
 import { ORIENTATIONS, orientationPerm, orientationRelabel, turnFacelets } from './cube-orientation.js';
-import { movesOf } from './cube-pieces.js';
+import { SOLVED, movesOf } from './cube-pieces.js';
 import { t } from './i18n.js';
 
 /** A hold is `[up, front]`: which SCAN-frame face points up, and which faces the child. */
@@ -85,38 +86,32 @@ export const toMethodFrame = (facelets) => turnFacelets(facelets, ...METHOD_FRAM
 /** Method-frame facelets back in the scan frame. */
 export const fromMethodFrame = (facelets) => turnFacelets(facelets, ...METHOD_TO_SCAN);
 
-const FACE_TURN = /^([URFDLB])(2|'|)$/;
-
 /**
  * `alg`, named for a cube turned to `h`: the same physical turns, each named by where its face now
- * sits.
+ * sits — and a regrip, a wide move or a slice by the axis it now turns about.
  *
  * The identity that defines it, and the test's first case: turning a cube and then making the
  * renamed moves lands on exactly the cube that making the original moves and then turning would.
  * A turn keeps its direction because a rotation is not a reflection — clockwise seen from outside a
  * face is clockwise from outside it wherever that face has gone.
  *
- * LOUD on anything that is not a face turn. A wide move or a cube rotation cannot be renamed by its
- * letter alone, and none of this app's sources produce one; one arriving is a defect upstream, and
- * renaming its first letter would hand a child a move that is not the one on screen.
+ * Every move, since a method step may regrip (plan item 6.1). This used to refuse anything but a face
+ * turn, because a rotation cannot be renamed by its letter alone and renaming its first letter would
+ * have handed a child a move that is not the one on screen; the interpreter renames it by its axis
+ * (`heldToken`), held to an oracle over every hold in `test/cube-moves.test.mjs`. Still LOUD on a
+ * token that is not a move at all.
  *
- * The renaming itself is the interpreter's (`heldFace` in `lib/cube-moves.js`), the other direction of
- * the same rule it reads a child's letters by — one relabelling, not two (ADR 0004 decision 5).
+ * The renaming itself is the interpreter's (`lib/cube-moves.js`), the other direction of the same rule
+ * it reads a child's letters by — one relabelling, not two (ADR 0004 decision 5).
  */
 export function renameAlg(alg, hold) {
-  return movesOf(alg)
-    .map((move) => {
-      const hit = FACE_TURN.exec(move);
-      if (!hit) throw new Error(`solving-hold: "${move}" is not a face turn, so it cannot be renamed for a hold`);
-      return heldFace(hit[1], hold) + hit[2];
-    })
-    .join(' ');
+  return movesOf(alg).map((move) => heldToken(move, hold)).join(' ');
 }
 
-/** One move for SHOWING, where a live report may carry a spelling `renameAlg` refuses: unrenamed
- *  then, because a line of prose is not the place to throw. Never used for anything that is replayed. */
+/** One move for SHOWING, where a live report may carry a spelling nobody can read: unrenamed then,
+ *  because a line of prose is not the place to throw. Never used for anything that is replayed. */
 export function showMove(move, h) {
-  return FACE_TURN.test(String(move)) ? renameAlg(move, h) : String(move);
+  return readToken(String(move)).move ? renameAlg(move, h) : String(move);
 }
 
 const SELECTOR = /\b(layer|slot|piece):([URFDLB]{1,3})\b/gi;
@@ -211,6 +206,61 @@ export function holdForStage(stage) {
     throw new Error(`solving-hold: no hold for lesson stage "${stage}"`);
   }
   return STAGE_HOLD[stage];
+}
+
+/** The hold the method solver begins in and writes every stage for: its own frame, upright. */
+const METHOD_UPRIGHT = hold('U', 'F');
+
+/**
+ * A method's steps as the walk a screen shows: every move in the SCAN frame, and how the child is
+ * holding the cube when they make it.
+ *
+ * `steps` are `solveByMethod`'s — each in the child's letters for the method-frame hold it records,
+ * and free to regrip. Returns, all frozen:
+ *
+ *   `moves`       every move as a scan-frame token, a regrip included: the renderer's `alg`, which
+ *                 turns the drawing with the child;
+ *   `algs`        the same moves, one string per step;
+ *   `holds`       the hold, in scan-frame letters, when `k` moves have been made — one more than there
+ *                 are moves, so the hold after the last one is there too. What a chip is named for;
+ *   `stepHolds`   the hold each step begins in.
+ *
+ * The hold is the STAGE's where the stage's hold changes — the tumble, which the screen tells the child
+ * to make in a sentence — and from there it turns with every regrip. Those two agree only when the
+ * method is holding the cube upright where the hold changes, so anything else THROWS: a regrip carried
+ * across the tumble would name every later chip for a cube the child has just been told to hold another
+ * way. Nothing produces that today; this is where it would surface.
+ */
+export function scanFrameWalk(steps) {
+  const moves = [];
+  const algs = [];
+  const holds = [];
+  const stepHolds = [];
+  let stageHold = null;
+  let shown = SCAN_HOLD;
+  for (const step of steps) {
+    const held = holdForStage(step.stage);
+    if (!stageHold || !sameHold(held, stageHold)) {
+      if (!Array.isArray(step.hold) || !sameHold(step.hold, METHOD_UPRIGHT)) {
+        throw new Error(`solving-hold: the ${step.stage} stage begins a new hold while the method holds the cube "${step.hold}", not upright`);
+      }
+      stageHold = held;
+      shown = held;
+    }
+    stepHolds.push(shown);
+    const tokens = run(step.alg, step.hold, SOLVED).drawn.map((token) => heldToken(token, METHOD_TO_SCAN));
+    for (const token of tokens) {
+      holds.push(shown);
+      moves.push(token);
+      const after = applyIdentity(readToken(token).move, shown, SOLVED).hold;
+      shown = sameHold(after, shown) ? shown : hold(after[0], after[1]);
+    }
+    algs.push(tokens.join(' '));
+  }
+  holds.push(shown);
+  return Object.freeze({
+    moves: Object.freeze(moves), algs: Object.freeze(algs), holds: Object.freeze(holds), stepHolds: Object.freeze(stepHolds),
+  });
 }
 
 /** Where a SCAN-frame face ends up under hold `h`: `U` is on top, `F` facing you, and so on. */

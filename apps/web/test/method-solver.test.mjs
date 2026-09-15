@@ -10,7 +10,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
-import { CORNER, EDGE, SOLVED, applyAlg, cornerSolved, edgeSolved, fromCube } from '../lib/cube-pieces.js';
+import {
+  CORNER, EDGE, MOVE_NAMES, SOLVED, applyAlg, cornerSolved, edgeSolved, fromCube, rotateState,
+} from '../lib/cube-pieces.js';
+import { faceTurnsAlg, run } from '../lib/cube-moves.js';
 import {
   CASE_NAMES, LADDER, MethodSolverError, STAGE_IDS, TOP_RUNG, __testing, allRungCombinations,
   methodFor, rungKey, solveByMethod,
@@ -19,6 +22,7 @@ import { OLL_ALGS, PLL_ALGS } from '../lib/methods/last-layer.js';
 import { BASELINES, capture } from './fixtures/regen-method-steps.mjs';
 import { RUNG_CRITERIA, UsageError, parseArgs, rungDelta } from '../bench/method-solver-profile.mjs';
 import { seededPairs, seededScrambles, seededStates } from './fixtures/seeded-scrambles.mjs';
+import { turnsOf } from './fixtures/method-replay.mjs';
 
 const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url))).default;
 Cube.initSolver();
@@ -57,6 +61,7 @@ function assertStepsAreHonest(start, steps, label) {
   let state = start;
   let finished = { edges: [], corners: [] };
   let previousStage = null;
+  let hold = ['U', 'F'];
 
   for (const [i, step] of steps.entries()) {
     assert.ok(step.stage && step.alg !== undefined && step.why?.key,
@@ -85,7 +90,9 @@ function assertStepsAreHonest(start, steps, label) {
     }
     previousStage = step.stage;
 
-    state = applyAlg(state, step.alg);
+    // Played in the hold the step records — which must be the one the step before it left.
+    assert.deepEqual([...step.hold], [...hold], `${label}: step ${i} records a hold the step before it did not leave`);
+    ({ state, hold } = run(step.alg, step.hold, state));
 
     // The load-bearing check: nothing a later step does may undo an earlier stage.
     for (const e of finished.edges) {
@@ -138,8 +145,8 @@ test('random states solve, and cubejs agrees the alg solves them', () => {
     assert.ok(oracle.isSolved(), `${facelets}: cubejs does not agree this alg solves the cube`);
 
     assert.equal(moveCount, alg.trim().split(/\s+/).length);
-    assert.equal(alg, steps.map((s) => s.alg).join(' ').trim(),
-      'the whole alg must be exactly the steps, or the move list and the animation disagree');
+    assert.equal(alg, steps.map(turnsOf).filter(Boolean).join(' '),
+      'the whole alg must be exactly the steps played in their holds, or the move list and the animation disagree');
   }
 });
 
@@ -180,17 +187,25 @@ test('a twisted corner alone is refused too', () => {
   assert.throws(() => solveByMethod(broken), MethodSolverError);
 });
 
-test('every step is an algorithm a learner could be shown', () => {
-  // No wide turns, no slice moves, no rotations: the move list, the 2D net and <cubus-cube>
-  // all speak face turns only, and a step they cannot render is a step nobody can follow.
-  const legal = /^[UDLRFB](['2])?$/;
+test('every step parses, plays and replays through the interpreter, and the count is its face turns', () => {
+  // A step is a script (plan item 6.1): the child's letters for the hold it records, free to turn the
+  // whole cube. What must hold of every one is that the interpreter reads it, that its hold is the one
+  // the step before it left, that the cross stays underneath, and that what the steps reach is what the
+  // whole alg reaches — counted in face turns, a regrip none.
   for (let i = 0; i < 20; i++) {
-    const { steps } = solveByMethod(fromCube(Cube.random()));
+    const start = fromCube(Cube.random());
+    const { steps, alg, moveCount } = solveByMethod(start);
+    let state = start;
+    let hold = ['U', 'F'];
     for (const step of steps) {
-      for (const move of step.alg.trim().split(/\s+/)) {
-        assert.match(move, legal, `${step.stage}/${step.caseName ?? 'goal'} emitted "${move}"`);
-      }
+      const where = `${step.stage}/${step.caseName ?? 'goal'}`;
+      assert.deepEqual([...step.hold], [...hold], `${where} records a hold it is not made in`);
+      const played = run(step.alg, step.hold, state); // throws, naming it, on a move nobody can read
+      assert.equal(played.hold[0], 'U', `${where} tipped the cross off the bottom`);
+      ({ state, hold } = played);
     }
+    assert.deepEqual(applyAlg(start, alg), state, 'the whole alg reaches the cube the steps do');
+    assert.equal(moveCount, faceTurnsAlg(alg).split(' ').filter(Boolean).length);
   }
 });
 
@@ -330,7 +345,7 @@ test('every named method solves, and cubejs agrees on all of them', () => {
       assert.deepEqual(end.co, SOLVED.co, `${name}: corners twisted`);
       assert.deepEqual(end.ep, SOLVED.ep, `${name}: edges not home`);
       assert.deepEqual(end.eo, SOLVED.eo, `${name}: edges flipped`);
-      assert.equal(alg, steps.map((s) => s.alg).join(' ').trim());
+      assert.equal(alg, steps.map(turnsOf).filter(Boolean).join(' '));
     }
   }
 });
@@ -636,7 +651,7 @@ test('the split keys say what the step actually did, checked against the cube', 
       let cube = state;
       for (const step of steps) {
         const before = cube;
-        cube = applyAlg(cube, step.alg);
+        cube = applyAlg(cube, turnsOf(step));
         const key = step.why.key;
         seen.add(key);
         if (key === 'middleLayer.insert') {
@@ -742,7 +757,7 @@ test('a pair step\'s parts reconstruct the step\'s own algorithm', () => {
       if (!step.parts) continue;
       checked += 1;
       const joined = step.parts.map((p) => p.alg).join(' ');
-      assert.deepEqual(applyAlg(SOLVED, joined), applyAlg(SOLVED, step.alg),
+      assert.deepEqual(applyAlg(SOLVED, turnsOf({ alg: joined, hold: step.hold })), applyAlg(SOLVED, turnsOf(step)),
         `a pair step's parts do not make its algorithm: "${step.alg}" against "${joined}"`);
       for (const part of step.parts) {
         assert.ok(CASE_NAMES.includes(part.name), `a part named "${part.name}" is in no table`);
@@ -761,7 +776,7 @@ test('the pairing fallback places only what is out of place', () => {
     let cube = state;
     for (const step of solveByMethod(state, INTERMEDIATE).steps) {
       const before = cube;
-      cube = applyAlg(cube, step.alg);
+      cube = applyAlg(cube, turnsOf(step));
       if (step.stage !== 'f2l' || step.parts) continue;
       fallbacks += 1;
       if (step.why.key.startsWith('firstLayer.')) {
@@ -846,8 +861,11 @@ test('a step that is not a step is refused by name, not by TypeError', () => {
   const cases = [
     [(steps) => steps.push(null), /step 0: is null/],
     [(steps) => steps.push({ stage: 'only' }), /step 0: carries no algorithm/],
-    [(steps) => steps.push({ stage: 'only', alg: "R x U" }), /step 0: carries "x"/],
-    [(steps) => steps.push({ stage: 'only', alg: "M2" }), /step 0: carries "M2"/],
+    [(steps) => steps.push({ stage: 'only', alg: 'R Q U' }), /step 0: .*"Q" at move 2/],
+    // A regrip is a move. One that tips the cross off the bottom is not one a method makes.
+    [(steps) => steps.push({ stage: 'only', alg: 'R x U' }), /step 0: leaves F on top/],
+    [(steps) => steps.push({ stage: 'only', alg: 'M2' }), /step 0: leaves D on top/],
+    [(steps) => steps.push({ stage: 'only', alg: 'R', hold: ['U', 'F'] }), /step 0: carries a hold of its own/],
     [(steps) => steps.push({ alg: 'R' }), /step 0: names no stage/],
   ];
   for (const [emit, message] of cases) {
@@ -912,4 +930,61 @@ test('the bench refuses a command line it cannot mean, rather than doing somethi
   for (const argv of refused) {
     assert.throws(() => parseArgs(argv), (e) => e instanceof UsageError, argv.join(' '));
   }
+});
+
+test('a regrip is a step: the stage after it is handed the cube as held, and writes the letters it is taught in', () => {
+  // A method made for the test, because no rung regrips yet — plan items 6.2 and 6.3 are where one does.
+  // The first stage turns the cube so R is in front. The second knows nothing about holds: it twists the
+  // front-right corner home with R U R' U', which is right only if it is handed the cube as it is now
+  // held — and whose letters then mean the cube's own B U B' U'.
+  const start = applyAlg(SOLVED, "U B U' B'");
+  const isSolved = (s) => ['cp', 'co', 'ep', 'eo'].every((k) => s[k].every((v, i) => v === SOLVED[k][i]));
+  const regrip = {
+    id: 'regrip', keep: () => true, contract: () => true,
+    run: (cube, steps) => {
+      steps.push({ stage: 'middle-layer', kind: 'goal', target: 'x', alg: 'y', why: { key: 'k' } });
+      // The cube as held with R in front: three quarter turns about U, as `rotateAlg` counts them.
+      return rotateState(cube, 3);
+    },
+  };
+  const twist = (alg) => ({
+    id: 'twist', keep: () => true, contract: isSolved,
+    run: (cube, steps) => {
+      steps.push({ stage: 'top-cross', kind: 'case', caseName: 'twist', target: 'x', alg, why: { key: 'k' } });
+      return applyAlg(cube, alg);
+    },
+  });
+  const result = solveByMethod(start, { id: 'test', rungs: {}, stages: [regrip, twist("R U R' U'")] });
+  assert.deepEqual(result.steps.map((s) => [s.alg, s.hold.join(' ')]), [['y', 'U F'], ["R U R' U'", 'U R']],
+    'each step keeps the letters it was written in, and records the hold they are read in');
+  assert.equal(result.alg, "B U B' U'", 'the whole alg is the face turns the steps make, the regrip expanded away');
+  assert.equal(result.moveCount, 4, 'a regrip is not a move the lesson costs');
+  const oracle = new Cube();
+  oracle.move("U B U' B'");
+  oracle.move(result.alg);
+  assert.ok(oracle.isSolved(), 'cubejs agrees the whole alg solves the cube');
+  // A stage that ignored the regrip and wrote the cube's own letters has turned the wrong faces.
+  assert.throws(() => solveByMethod(start, { id: 'test', rungs: {}, stages: [regrip, twist("B U B' U'")] }),
+    (e) => e.name === 'MethodSolverError' && e.stage === 'twist');
+});
+
+test('the cube as held is the cube the interpreter reads a child\'s letters on, in every upright hold', () => {
+  const { asHeld } = __testing;
+  const scrambled = applyAlg(SOLVED, "R U2 F' L D B2 R' U F2 D' L2 B");
+  for (const front of ['F', 'R', 'B', 'L']) {
+    const hold = ['U', front];
+    for (const move of MOVE_NAMES) {
+      assert.deepEqual(asHeld(run(move, hold, scrambled).state, hold), applyAlg(asHeld(scrambled, hold), move), `${move} held U ${front}`);
+    }
+  }
+  assert.deepEqual(asHeld(scrambled, ['U', 'F']), scrambled, 'upright and facing F is the cube as it is');
+  assert.throws(() => asHeld(scrambled, ['F', 'U']), /cross underneath/);
+});
+
+test('simplifying a step merges turns of one face, and never across a regrip', () => {
+  const { simplify } = __testing;
+  assert.equal(simplify("R R U U'"), 'R2');
+  assert.equal(simplify('R y R'), 'R y R', 'after the regrip, R is another face of the cube');
+  assert.equal(simplify("R Rw'"), "R Rw'", 'a wide move is not a turn of the face it is named after');
+  assert.equal(simplify("R R y U U'"), 'R2 y');
 });

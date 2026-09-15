@@ -24,6 +24,7 @@ import { lessonCues, namedPieces } from '../../lib/method-lesson.js';
 import { methodFor, solveByMethod } from '../../lib/method-solver.js';
 import { freePort } from '../free-port.mjs';
 import { lcg, randomAlg } from '../fixtures/seeded-scrambles.mjs';
+import { drawnOf, turnsOf } from '../fixtures/method-replay.mjs';
 
 const SERVE = fileURLToPath(new URL('../../serve.mjs', import.meta.url));
 const Cube = (await import(new URL('../../vendor/cubejs.js', import.meta.url))).default;
@@ -65,7 +66,7 @@ function findSample() {
     const oracle = Cube.fromString(SOLVED);
     oracle.move(scramble);
     const startOf = [];
-    for (const step of lesson.steps) { startOf.push(oracle.asString()); oracle.move(step.alg); }
+    for (const step of lesson.steps) { startOf.push(oracle.asString()); oracle.move(turnsOf(step)); }
     return { scramble, lesson, divide, lift, startOf };
   }
   return null;
@@ -227,11 +228,11 @@ test('the highlight travels with the piece through the step it describes', async
     window.__cube.setAttribute('alg', alg);
     window.__cube.setAttribute('highlight', h);
     window.__cube.seek(0);
-  }, { fl: SAMPLE.startOf[at], alg: step.alg, h: highlight });
+  }, { fl: SAMPLE.startOf[at], alg: drawnOf(step), h: highlight });
   const before = await litPositions();
   assert.ok(before.length > 0, 'the lift step lit nothing to begin with');
 
-  await page.evaluate((n) => window.__cube.seek(n), step.alg.trim().split(/\s+/).length);
+  await page.evaluate((n) => window.__cube.seek(n), drawnOf(step).split(' ').length);
   const after = await litPositions();
 
   assert.equal(after.length, before.length, 'the same number of pieces stays lit across the step');

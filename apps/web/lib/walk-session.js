@@ -124,7 +124,7 @@ export function createWalkSession(screen, app) {
   // reads the walk when it paints, and reaches the follow tracker and the rung offer only once both
   // exist.
   const {
-    holdAt, holdCube, pointAtStep, sync, setPlaying, clearChips, takeChips, resetHead,
+    holdAt, moveHoldAt, holdCube, pointAtStep, sync, setPlaying, clearChips, takeChips, resetHead,
   } = createWalkPresenter({
     root, cube, state, signal, scrambling, stale, solList, icon, adoptCube, go,
     walkNow: () => ({ total, target, alg, lesson, walkHold, walkGen, walkLoaded }),
@@ -193,7 +193,7 @@ export function createWalkSession(screen, app) {
   // the drawing that mirrors turns, and the button that lets the cube lead — is its own unit
   // (lib/walk-follow.js). It reads the walk when it acts.
   const follow = createFollowTracker({
-    root, cube, state, cubejs, applyTempo, setPlaying, holdAt, markStale, adoptCube, go, scrambling,
+    root, cube, state, cubejs, applyTempo, setPlaying, moveHoldAt, markStale, adoptCube, go, scrambling,
     refreshLiveDistance, dropLiveDistance, chainTrusted, walkNow: () => ({ moves, steps }),
   });
 
@@ -503,8 +503,9 @@ export function createWalkSession(screen, app) {
     const chipsFor = (from, to) => moves.slice(from, to)
       // NAMED FOR THE HOLD the move is made in (ADR 0003): the walk is stored in the scan frame,
       // and a child holding the cube tumbled turns the face at the bottom when the cube's own
-      // white face is meant — which, held that way, is called D.
-      .map((m, k) => `<button class="chip-m" data-i="${from + k}" title="${escHtml(t('Jump to this move'))}">${escHtml(renameAlg(m, holdAt(from + k)))}</button>`)
+      // white face is meant — which, held that way, is called D. After a regrip, the face on the
+      // child's right is another of the cube's faces again, so that hold is per move (plan item 6.1).
+      .map((m, k) => `<button class="chip-m" data-i="${from + k}" title="${escHtml(t('Jump to this move'))}">${escHtml(renameAlg(m, moveHoldAt(from + k)))}</button>`)
       .join('');
     solList.innerHTML = route && route.moves === 0
       // AN EMPTY ROUTE MUST NEVER RENDER AS A WALK (§9a). With no moves the grid below draws

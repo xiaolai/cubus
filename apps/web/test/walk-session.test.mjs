@@ -13,13 +13,13 @@ import { after, test } from 'node:test';
 import { Window } from 'happy-dom';
 
 import Cube from '../vendor/cubejs.js';
-import { fromCube, invert, movesOf } from '../lib/cube-pieces.js';
+import { fromCube, invert } from '../lib/cube-pieces.js';
 import { registerLocale, setLocale } from '../lib/i18n.js';
 import { FOLLOWS_TO_OFFER, NO_PROGRESS, recordCleanFollow, repairProgress } from '../lib/method-ladder.js';
 import { lessonSections, moveStepIndex } from '../lib/method-lesson.js';
 import { methodFor, solveByMethod } from '../lib/method-solver.js';
 import {
-  METHOD_TO_SCAN, SCAN_HOLD, TUMBLED, holdSentence, renameAlg, toMethodFrame,
+  SCAN_HOLD, TUMBLED, holdSentence, scanFrameWalk, toMethodFrame,
 } from '../lib/solving-hold.js';
 import { createFollowTracker } from '../lib/walk-follow.js';
 import { createWalkPresenter } from '../lib/walk-presenter.js';
@@ -840,7 +840,7 @@ function followRig() {
   const walk = { moves: ["R'"], steps: [R, SOLVED] };
   const follow = createFollowTracker({
     root, cube: { seek: () => {}, step: () => {}, stepBack: () => {} }, state, cubejs: () => Cube,
-    applyTempo: () => {}, setPlaying: () => {}, holdAt: () => SCAN_HOLD, markStale: () => {},
+    applyTempo: () => {}, setPlaying: () => {}, moveHoldAt: () => SCAN_HOLD, markStale: () => {},
     adoptCube: () => {}, go: () => {}, scrambling: false,
     refreshLiveDistance: async () => {}, dropLiveDistance: () => { drops.count += 1; },
     chainTrusted: () => state.cube.trusted && state.cube.source === 'cube',
@@ -885,7 +885,7 @@ test('a turn that cancels the one before it is the walk\'s next move, not an und
     root,
     cube: { seek: () => {}, step: () => calls.push('step'), stepBack: () => calls.push('stepBack') },
     state, cubejs: () => Cube,
-    applyTempo: () => {}, setPlaying: () => {}, holdAt: () => SCAN_HOLD, markStale: () => {},
+    applyTempo: () => {}, setPlaying: () => {}, moveHoldAt: () => SCAN_HOLD, markStale: () => {},
     adoptCube: () => {}, go: () => {}, scrambling: false,
     refreshLiveDistance: async () => {}, dropLiveDistance: () => {},
     chainTrusted: () => state.cube.trusted && state.cube.source === 'cube',
@@ -1252,7 +1252,7 @@ async function lessonWalk(over = {}) {
       const moves = ["R'", "U'"];
       const stepFacelets = [cube.facelets, turned("R'", cube.facelets), turned("R' U'", cube.facelets)];
       return {
-        alg: moves.join(' '), moves, stepFacelets, summary: 'Cross', steps: [], moveStep: [],
+        alg: moves.join(' '), moves, moveHolds: [SCAN_HOLD, SCAN_HOLD, SCAN_HOLD], stepFacelets, summary: 'Cross', steps: [], moveStep: [],
         sections: [{ id: 'cross', name: 'Cross', steps: 1, moves: 2, from: 0, to: 2 }],
       };
     },
@@ -1381,13 +1381,14 @@ test('why trust lapsed is said in the catalog\'s words, inside the sentence that
  *  scan's. */
 function scanFrameLesson(facelets) {
   const result = solveByMethod(fromCube(Cube.fromString(toMethodFrame(facelets))), methodFor());
-  const steps = result.steps.map((s) => ({ ...s, alg: renameAlg(s.alg, METHOD_TO_SCAN), focus: '', highlight: '' }));
-  const alg = renameAlg(result.alg, METHOD_TO_SCAN);
-  const moves = movesOf(alg);
+  const walk = scanFrameWalk(result.steps);
+  const steps = result.steps.map((s, i) => ({ ...s, alg: walk.algs[i], hold: walk.stepHolds[i], focus: '', highlight: '' }));
+  const moves = [...walk.moves];
+  const alg = moves.join(' ');
   const stepFacelets = [facelets];
   const c = Cube.fromString(facelets);
   for (const m of moves) { c.move(m); stepFacelets.push(c.asString()); }
-  return { facelets, steps, sections: lessonSections(steps), moveStep: moveStepIndex(steps), alg, moves, stepFacelets, summary: '' };
+  return { facelets, steps, sections: lessonSections(steps), moveStep: moveStepIndex(steps), alg, moves, moveHolds: walk.holds, stepFacelets, summary: '' };
 }
 
 /** A walking screen on the Lesson for `scramble`, loaded and switched to. */

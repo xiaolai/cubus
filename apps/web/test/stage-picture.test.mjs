@@ -25,6 +25,7 @@ import { TARGETS, targetById } from '../lib/stage-targets.js';
 import { UNKNOWN, pinnedCount, targetPicture } from '../lib/stage-picture.js';
 import { solveByMethod } from '../lib/method-solver.js';
 import { seededScrambles } from './fixtures/seeded-scrambles.mjs';
+import { turnsOf } from './fixtures/method-replay.mjs';
 
 /**
  * Real states inside `target`, produced without reference to the picture.
@@ -64,7 +65,7 @@ const ROUTE = (() => {
     let lesson;
     try { lesson = solveByMethod(s); } catch { continue; }
     for (const step of lesson.steps) {
-      s = applyAlg(s, step.alg);
+      s = applyAlg(s, turnsOf(step));
       out.push(s);
     }
   }

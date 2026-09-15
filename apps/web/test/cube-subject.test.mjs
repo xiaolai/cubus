@@ -182,3 +182,12 @@ test('an oracle that could not run accepts the answer unverified, and the next s
     });
   } finally { svc.Cube.fromString = real; }
 });
+
+test('a regrip on a walk is a position whose cube is the one before it', async () => {
+  // Plan item 6.1: a lesson's moves may turn the whole cube, which moves no piece. The walk's states are
+  // about the pieces — what a smart cube reports and `follow` compares — so a regrip, handed over as the
+  // no face turns it is, repeats the state rather than failing the replay or skipping a position.
+  const { subject } = await app();
+  const after = move(SOLVED, 'R');
+  assert.deepEqual(subject.stepStates(SOLVED, ['R', '', "R'"]), [SOLVED, after, after, SOLVED]);
+});

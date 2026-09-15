@@ -10,7 +10,7 @@
 // scramble-handoff.test.mjs.
 
 import { t } from './i18n.js';
-import { createHoldCube, holdAtMove, holdChangeAt } from './hold-presenter.js';
+import { createHoldCube, holdAtMove, holdChangeAt, moveHold } from './hold-presenter.js';
 import { stepAtMove, whyText } from './method-lesson.js';
 import { SCAN_HOLD } from './solving-hold.js';
 
@@ -70,6 +70,13 @@ export function createWalkPresenter({
   const holdAt = (k) => {
     const { lesson, walkHold } = walkNow();
     return holdAtMove(lesson, walkHold, k);
+  };
+
+  /** The hold move `k` is MADE in — a lesson's regrips included — which is what a chip is named for.
+   *  The renderer is never turned to it: the drawing turns with the regrip itself. */
+  const moveHoldAt = (k) => {
+    const { lesson, walkHold } = walkNow();
+    return moveHold(lesson, walkHold, k);
   };
 
   /** Turns this screen's cube to a hold — the object, never the camera — waiting for the renderer
@@ -241,7 +248,7 @@ export function createWalkPresenter({
   });
 
   return Object.freeze({
-    holdAt, holdCube: turnTo, pointAtStep, sync, setPlaying,
+    holdAt, moveHoldAt, holdCube: turnTo, pointAtStep, sync, setPlaying,
     /** A new subject: the previous walk's chips describe a cube that is no longer there. */
     clearChips: () => { chips = []; },
     /** The chips the walk just committed painted into the move list. */

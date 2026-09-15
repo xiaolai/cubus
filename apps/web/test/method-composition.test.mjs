@@ -20,6 +20,7 @@ import {
   LADDER, MethodSolverError, STAGE_IDS, allRungCombinations, methodFor, rungKey, solveByMethod,
 } from '../lib/method-solver.js';
 import { seededScrambles } from './fixtures/seeded-scrambles.mjs';
+import { turnsOf } from './fixtures/method-replay.mjs';
 
 const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url))).default;
 
@@ -151,7 +152,7 @@ function walkContracts(start, steps, where) {
       held.push(current);
       current = dial;
     }
-    state = applyAlg(state, step.alg);
+    state = applyAlg(state, turnsOf(step));
     for (const done of held) {
       if (!CONTRACT[done](state)) return `${where}: step ${i} (${step.stage}) broke the ${done} contract`;
     }
@@ -171,7 +172,7 @@ function accountForPairs(start, steps, where) {
   const pairSteps = steps.filter((s) => s.stage === 'f2l');
   if (pairSteps.length === 0) {
     // The rung below (`first-layer` / `middle-layer`) placed them, or they were already home.
-    const end = steps.reduce((s, step) => applyAlg(s, step.alg), start);
+    const end = steps.reduce((s, step) => applyAlg(s, turnsOf(step)), start);
     if (!CONTRACT.pairs(end)) return { problem: `${where}: no pair steps and the first two layers are not solved` };
     return { problem: null, fallbacks: 0, paired: 0 };
   }
@@ -201,7 +202,7 @@ function accountForPairs(start, steps, where) {
     }
   }
   const missing = PAIR_CORNERS.filter((c) => !covered.has(c));
-  const end = steps.reduce((s, step) => applyAlg(s, step.alg), start);
+  const end = steps.reduce((s, step) => applyAlg(s, turnsOf(step)), start);
   // A slot already solved by the cross rung's leftovers needs no step; that is the only way a
   // slot may be missing, and it must be solved for that excuse to hold.
   for (const corner of missing) {
