@@ -478,6 +478,13 @@ const onTrustedTimer = async (fn) => {
     await go('home');
   }
 };
+const waitForScramble = async () => {
+  for (let i = 0; i < 200 && !/^[URFDLB]/.test($('#scr').textContent || ''); i++) await settle(50);
+  assert.match($('#scr').textContent, /^[URFDLB]/, 'precondition: a scramble is on screen');
+};
+const stopClockIfRunning = async () => {
+  if ($('#clock')?.getAttribute('aria-label') === 'Stop the timer') { $('#clock').click(); await tick(); }
+};
 
 test('a cube whose trust lapses mid-solve stops promising that it will stop the clock', async () => {
   await onTrustedTimer(async (target) => {
@@ -515,6 +522,94 @@ test('Space on New scramble presses New scramble, and leaves the clock alone', a
   await tick();
   assert.equal($('#clock').getAttribute('aria-label'), 'Start the timer', 'Space on a button started the clock instead');
   assert.equal(ev.defaultPrevented, false, "the button's own activation was cancelled");
+});
+
+// Chromium and WebView2 FOCUS a button on a mouse click (WebKit does not), so the button a person
+// just clicked is the focused element when they next press Space — and the keyboard rule above,
+// which hands Space to a focused control, handed it to that button: after clicking New scramble,
+// Space rolled another scramble instead of starting the clock, and after one click of Undo (which
+// arms it in place, on the same element) Space confirmed the removal and deleted a solve.
+//
+// The two helpers are the platform, modelled: happy-dom neither focuses on a click nor activates a
+// button on Space, and a test that skipped either half would pass against the defect.
+/** A mouse click as Chromium delivers it: focus first (on mousedown), then a click whose `detail`
+ *  is the click count — never 0, which is what a click made by a key carries. */
+const mouseClick = (el) => {
+  el.focus();
+  el.dispatchEvent(new win.MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+};
+/** Space on whatever has focus, as a browser handles it: the keydown, and then — unless that was
+ *  cancelled — a focused button's own activation, which is a click with `detail` 0. */
+const pressSpace = () => {
+  const on = win.document.activeElement;
+  const ev = new win.KeyboardEvent('keydown', { code: 'Space', key: ' ', bubbles: true, cancelable: true });
+  on.dispatchEvent(ev);
+  if (!ev.defaultPrevented && on.tagName === 'BUTTON') on.click();
+  return ev;
+};
+
+test('Space after a mouse click on New scramble runs the clock, and does not press the button again', async () => {
+  await go('timer');
+  try {
+    await waitForScramble();
+    const shown = $('#scr').textContent;
+    mouseClick($('#newScr'));
+    const ev = pressSpace();
+    await settle(300);
+    assert.equal($('#clock').getAttribute('aria-label'), 'Stop the timer',
+      'Space after clicking New scramble did not start the clock');
+    assert.equal(ev.defaultPrevented, true, 'the clicked button was left to take the Space as a second press');
+    assert.equal($('#scr').textContent, shown, 'a scramble replaced the one the running solve is timed against');
+  } finally { await stopClockIfRunning(); }
+});
+
+test('Space after a mouse click on Undo does not confirm the removal', async () => {
+  const { recentSolves, dropLastSolve } = await import('../lib/scramble-roll.js');
+  await go('timer');
+  const newest = () => recentSolves().find((s) => s.time)?.n;
+  const before = newest();
+  try {
+    $('#clock').click();
+    await tick();
+    $('#clock').click(); // a solve to undo
+    await tick();
+    const top = newest();
+    assert.notEqual(top, before, 'precondition: a solve was recorded');
+    mouseClick($('#undoLast'));
+    await tick();
+    assert.equal($('#undoLast').textContent, 'Remove it?', 'precondition: one click asked to confirm');
+
+    pressSpace();
+    await tick();
+    assert.equal(newest(), top, 'Space after one click of Undo confirmed it, and a solve was deleted');
+    assert.equal($('#clock').getAttribute('aria-label'), 'Stop the timer', 'and the clock did not start');
+  } finally {
+    await stopClockIfRunning();
+    while (newest() !== before && dropLastSolve()); // leave the history as it was found
+  }
+});
+
+test('a button the keyboard reached or pressed after a mouse click still takes its own Space', async () => {
+  await go('timer');
+  const button = $('#newScr');
+  try {
+    // Tabbed away and back: focus the keyboard put there, whoever clicked it before.
+    mouseClick(button);
+    $('#clock').focus();
+    button.focus();
+    let ev = pressSpace();
+    await tick();
+    assert.equal(ev.defaultPrevented, false, 'a button the keyboard focused lost its own Space');
+    assert.equal($('#clock').getAttribute('aria-label'), 'Start the timer', 'and Space ran the clock instead');
+
+    // Pressed from the keyboard since the click: the last thing done to it was a key.
+    mouseClick(button);
+    button.click();
+    ev = pressSpace();
+    await tick();
+    assert.equal(ev.defaultPrevented, false, 'a button last pressed from the keyboard lost its own Space');
+    assert.equal($('#clock').getAttribute('aria-label'), 'Start the timer', 'and Space ran the clock instead');
+  } finally { await stopClockIfRunning(); }
 });
 
 test('Space on the Timer itself still runs the clock', async () => {

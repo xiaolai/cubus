@@ -250,6 +250,20 @@ SCREENS.timer = () => {
           };
         }
       };
+      // The button a MOUSE CLICK left focused, until focus moves or the keyboard presses it.
+      // Chromium and WebView2 focus a button on a click (WebKit does not), so a keyboard rule that
+      // hands Space to the focused control handed it to the button just clicked: after New scramble,
+      // Space rolled another scramble instead of starting the clock, and after one click of Undo,
+      // which arms in place, Space confirmed it and deleted a solve (found by audit, 2026-09-15).
+      // A click made by a pointer carries its click count in `detail`; one made by a key carries 0,
+      // and every keyboard move of focus fires focusin — so a button the keyboard reached, or last
+      // pressed, is never this one, and keeps Space as its own activation key.
+      let clicked = null;
+      const listen = { capture: true, signal: screenAbort?.signal };
+      document.addEventListener('click', (e) => {
+        clicked = e.detail > 0 ? e.target.closest?.('button') ?? null : null;
+      }, listen);
+      document.addEventListener('focusin', () => { clicked = null; }, listen);
       // e.repeat: holding the key down fires keydown continuously, which start/stopped the clock
       // dozens of times a second and wrote a run of nonsense times into the solve history.
       const onKey = (e) => {
@@ -258,10 +272,12 @@ SCREENS.timer = () => {
         // Space is every control's own activation key, and this handler cancels the keydown. A
         // focused New scramble, Undo or toolbar button was silenced and the clock toggled in its
         // place (found by audit, 2026-09-13); on the clock itself, the press arrived twice and
-        // started and stopped it in one instant. A control owns its own press; only a Space on
-        // the screen itself runs the clock from here.
+        // started and stopped it in one instant. A control the keyboard is on owns its own press;
+        // only a Space on the screen itself, or on a button a mouse click left focused, runs the
+        // clock from here — cancelled, so that button is not pressed a second time.
         const on = document.activeElement;
-        if (on && on !== document.body && on.closest?.('button, a, input, select, textarea, [contenteditable]')) return;
+        const control = on && on !== document.body && on.closest?.('button, a, input, select, textarea, [contenteditable]');
+        if (control && control !== clicked) return;
         e.preventDefault();
         toggle();
       };
