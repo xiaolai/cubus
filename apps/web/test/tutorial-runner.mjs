@@ -22,7 +22,7 @@ import { SOLVED_FACELETS, applyMoves, faceletAt, held, identityOf, play } from '
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
 /** The plan items whose scenarios are gaps today. An item leaves this list in the change that closes it. */
-export const OPEN_ITEMS = Object.freeze(['2.4', '3.1', '3.3']);
+export const OPEN_ITEMS = Object.freeze(['3.1', '3.3']);
 
 /** `cube-kit`, as a scenario may see it: a name that is not exported throws, naming itself. */
 export function strictKit(kit) {

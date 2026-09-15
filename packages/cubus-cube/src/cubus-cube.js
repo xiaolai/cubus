@@ -164,8 +164,9 @@ const REACTIONS = Object.freeze({
   // Splitting the view halves the aspect the fit is for.
   'back-view': (el) => el._applyCamera(),
   orbit: (el) => el._applyOrbit(),
-  facelets: (el) => el.reset(),
-  scramble: (el) => el.reset(),
+  // A new cube is a new subject, so a focus bound to pieces is re-bound to the cube in front of you.
+  facelets: (el) => { el._rebindFocus(); el.reset(); },
+  scramble: (el) => { el._rebindFocus(); el.reset(); },
   alg: (el) => el._replaceAlg(),
   highlight: (el) => { el._readHighlight(); el._syncHighlight(); },
   // focus repaints rather than syncing: it changes sticker COLOUR, which only _paint() writes.
@@ -1332,7 +1333,11 @@ class CubusCube extends HTMLElement {
     const { selectors, invalid } = parseHighlight(this._attrs.focus);
     if (invalid !== null) console.warn(`<cubus-cube> refusing focus — invalid selector "${invalid}"`);
     this._fcSels = selectors;
+    this._rebindFocus();
   }
+
+  /** Forget which pieces the focus named, so the next paint reads its selectors again. */
+  _rebindFocus() { this._fcSet = null; }
 
   /**
    * What a selector reads off each cubie: the slot it is in and the piece it carries.
@@ -1363,8 +1368,13 @@ class CubusCube extends HTMLElement {
   _applyFocus() {
     const sels = this._fcSels || [];
     if (!sels.length) return;
-    const { indices } = resolveHighlight(sels, this._selectable());
-    const keep = new Set(indices);
+    // BOUND ONCE, WHERE IT WAS WRITTEN. Focus latches (ADR 0004 decision 10): `slot:UR` names the piece
+    // that was in UR when the cue was given, and keeps naming it through the turns that follow. Resolving
+    // on every paint quietly broke that for `seek`, which resets and repaints — so a lesson that says
+    // "watch this piece" and is then scrubbed lit a different piece at every position (R10). The binding
+    // is dropped by a new `focus` and by a new cube, and by nothing else.
+    this._fcSet ??= new Set(resolveHighlight(sels, this._selectable()).indices);
+    const keep = this._fcSet;
     for (const [i, c] of this.cubies.entries()) {
       if (keep.has(i)) continue;
       for (const m of c.children) {
