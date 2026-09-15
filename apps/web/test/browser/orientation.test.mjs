@@ -102,7 +102,7 @@ const picture = async () => {
     // `-0` and `0` are the same place and format differently ("-0.000" against "0.000"), and a
     // quarter turn produces one wherever it negates a zero component — so half the orientations
     // compared unequal to themselves until this was here.
-    const r3 = (v) => { const n = +v.toFixed(3); return n === 0 ? 0 : n; };
+    const r3 = (v) => +v.toFixed(3) + 0;
     return el.stickers.map((m) => {
       const p = m.getWorldPosition(new (Object.getPrototypeOf(el.camera.position).constructor)());
       return `${r3(p.x)},${r3(p.y)},${r3(p.z)}=${m.material.color.getHexString()}`;
@@ -118,15 +118,15 @@ const picture = async () => {
 
 const rootQuat = () => page.evaluate(() => {
   const q = window.__cube.root.quaternion;
-  return [q.x, q.y, q.z, q.w].map((n) => +n.toFixed(6));
+  return [q.x, q.y, q.z, q.w].map((n) => +n.toFixed(6) + 0);
 });
 
 const lights = () => page.evaluate(() => window.__cube._lights.map(([l]) =>
-  [l.position.x, l.position.y, l.position.z].map((n) => +n.toFixed(4))));
+  [l.position.x, l.position.y, l.position.z].map((n) => +n.toFixed(4) + 0)));
 
 const camera = () => page.evaluate(() => {
   const c = window.__cube.camera;
-  return [c.position.x, c.position.y, c.position.z].map((n) => +n.toFixed(4));
+  return [c.position.x, c.position.y, c.position.z].map((n) => +n.toFixed(4) + 0);
 });
 
 /** Run `body` in the page with console.warn captured. The body is a literal in this file and the
@@ -171,7 +171,7 @@ test('all 24 orientations put the named faces where their names say', async () =
     for (const [up, front] of specs) {
       el.setAttribute('orientation', `${up} ${front}`);
       const q = el.root.quaternion;
-      const at = (letter) => new V(...normals[letter]).applyQuaternion(q).toArray().map((n) => Math.round(n));
+      const at = (letter) => new V(...normals[letter]).applyQuaternion(q).toArray().map((n) => Math.round(n) + 0);
       const upAt = at(up);
       const frontAt = at(front);
       if (upAt.join() !== '0,1,0' || frontAt.join() !== '0,0,1') {
@@ -267,7 +267,7 @@ test('a phase is a pure function of its arguments, however it was reached', asyn
   const poseAt = (p) => page.evaluate((phase) => {
     window.__cube.showTurn('U F', 'D B', phase);
     const q = window.__cube.root.quaternion;
-    return [q.x, q.y, q.z, q.w].map((n) => +n.toFixed(6));
+    return [q.x, q.y, q.z, q.w].map((n) => +n.toFixed(6) + 0);
   }, p);
 
   const direct = await poseAt(0.37);
@@ -304,7 +304,7 @@ test('a phase outside [0,1] is clamped rather than extrapolated', async () => {
   const pose = (p) => page.evaluate((x) => {
     window.__cube.showTurn('U F', 'D B', x);
     const q = window.__cube.root.quaternion;
-    return [q.x, q.y, q.z, q.w].map((n) => +n.toFixed(6));
+    return [q.x, q.y, q.z, q.w].map((n) => +n.toFixed(6) + 0);
   }, p);
   assert.notDeepEqual(await pose(0), await pose(1), 'the two ends are the same pose');
   assert.deepEqual(await pose(-5), await pose(0));
@@ -530,7 +530,7 @@ test('a cube mid-turn stays inside the frame even under the default fit', async 
 // not obvious and that the framing case above caught.
 test('the tight fit comes back when the cube is upright again, and not before', async () => {
   await cube({ attrs: { facelets: SOLVED, ghosts: 'on' } });
-  const dist = () => page.evaluate(() => +window.__cube.camera.position.length().toFixed(6));
+  const dist = () => page.evaluate(() => +window.__cube.camera.position.length().toFixed(6) + 0);
   const pose = (from, to, phase) => page.evaluate(
     ([f, o, p]) => window.__cube.showTurn(f, o, p), [from, to, phase],
   );
@@ -593,7 +593,7 @@ test('camera-up is read in the fixed frame, so turning the cube does not move th
   await cube({ attrs: { facelets: SOLVED, 'camera-up': 'D', 'camera-fit': 'stable' } });
   const up = () => page.evaluate(() => {
     const u = window.__cube.camera.up;
-    return [u.x, u.y, u.z].map((n) => Math.round(n));
+    return [u.x, u.y, u.z].map((n) => Math.round(n) + 0);
   });
   const before = await up();
   assert.deepEqual(before, [0, -1, 0], 'camera-up="D" should put world -Y at the top of the frame');
@@ -607,7 +607,7 @@ test('and the orientation is unaffected by where the observer is standing', asyn
   await cube({ attrs: { facelets: SOLVED, orientation: 'D B', 'camera-fit': 'stable' } });
   const faceUp = () => page.evaluate(() => {
     const V = Object.getPrototypeOf(window.__cube.camera.position).constructor;
-    return new V(0, -1, 0).applyQuaternion(window.__cube.root.quaternion).toArray().map((n) => Math.round(n));
+    return new V(0, -1, 0).applyQuaternion(window.__cube.root.quaternion).toArray().map((n) => Math.round(n) + 0);
   });
   assert.deepEqual(await faceUp(), [0, 1, 0], 'the D face should be pointing up');
   for (const letter of ['D', 'R', 'B']) {

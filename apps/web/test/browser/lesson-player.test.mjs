@@ -77,7 +77,7 @@ const picture = async () => {
   const pic = await page.evaluate(() => {
     const el = window.__cube;
     el.scene.updateMatrixWorld(true);
-    const r3 = (v) => { const n = +v.toFixed(3); return n === 0 ? 0 : n; };
+    const r3 = (v) => +v.toFixed(3) + 0;
     return el.stickers.map((m) => {
       const p = m.getWorldPosition(new (Object.getPrototypeOf(el.camera.position).constructor)());
       return `${r3(p.x)},${r3(p.y)},${r3(p.z)}=${m.material.color.getHexString()}`;
@@ -212,7 +212,7 @@ test('the roll reaches the renderer, so the finished layer is not drawn upside d
   await seek(rolled.at + 0.1);
   const up = await page.evaluate(() => {
     const u = window.__cube.camera.up;
-    return [u.x, u.y, u.z].map((n) => Math.round(n));
+    return [u.x, u.y, u.z].map((n) => Math.round(n) + 0);
   });
   assert.deepEqual(up, [0, -1, 0], 'camera-up never reached the camera');
 });

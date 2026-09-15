@@ -3152,9 +3152,9 @@ var Matrix3 = class _Matrix3 {
    * @param {number} cy - Center y of rotation
    * @return {Matrix3} A reference to this matrix.
    */
-  setUvTransform(tx, ty, sx, sy, rotation, cx, cy) {
-    const c = Math.cos(rotation);
-    const s = Math.sin(rotation);
+  setUvTransform(tx, ty, sx, sy, rotation2, cx, cy) {
+    const c = Math.cos(rotation2);
+    const s = Math.sin(rotation2);
     this.set(
       sx * c,
       sx * s,
@@ -6511,16 +6511,16 @@ var Object3D = class _Object3D extends EventDispatcher {
     this.children = [];
     this.up = _Object3D.DEFAULT_UP.clone();
     const position = new Vector3();
-    const rotation = new Euler();
+    const rotation2 = new Euler();
     const quaternion = new Quaternion();
     const scale = new Vector3(1, 1, 1);
     function onRotationChange() {
-      quaternion.setFromEuler(rotation, false);
+      quaternion.setFromEuler(rotation2, false);
     }
     function onQuaternionChange() {
-      rotation.setFromQuaternion(quaternion, void 0, false);
+      rotation2.setFromQuaternion(quaternion, void 0, false);
     }
-    rotation._onChange(onRotationChange);
+    rotation2._onChange(onRotationChange);
     quaternion._onChange(onQuaternionChange);
     Object.defineProperties(this, {
       /**
@@ -6545,7 +6545,7 @@ var Object3D = class _Object3D extends EventDispatcher {
       rotation: {
         configurable: true,
         enumerable: true,
-        value: rotation
+        value: rotation2
       },
       /**
        * Represents the object's local rotation as Quaternions.
@@ -28682,7 +28682,7 @@ var RoundedBoxGeometry = class _RoundedBoxGeometry extends BoxGeometry {
   }
 };
 
-// lib/cube-frame.js
+// ../../apps/web/lib/cube-frame.js
 var NORMALS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
 var CUBE_HALF = 1.51;
 var GHOST_HALF = 0.39;
@@ -28752,7 +28752,7 @@ function fitDistanceStable({ points, vfovDeg, aspect: aspect2, margin = 0.06 }) 
   return r * Math.max(Math.sqrt(1 + 1 / (tanV * tanV)), Math.sqrt(1 + 1 / (tanH * tanH)));
 }
 
-// lib/cube-orientation.js
+// ../../apps/web/lib/cube-orientation.js
 var FACE_LETTERS = "URFDLB";
 var NORMAL = Object.freeze({
   U: Object.freeze([0, 1, 0]),
@@ -28834,7 +28834,7 @@ function orientationMatrix(up, front) {
   return Object.freeze([cross2(u, f), Object.freeze([...u]), Object.freeze([...f])]);
 }
 
-// lib/cube-highlight.js
+// ../../apps/web/lib/cube-highlight.js
 var FACE_AXIS = { R: [0, 1], L: [0, -1], U: [1, 1], D: [1, -1], F: [2, 1], B: [2, -1] };
 var KIND = Object.freeze({ centers: 1, edges: 2, corners: 3 });
 function slotVector(letters) {
@@ -28906,18 +28906,262 @@ function resolveHighlight(selectors, cubies) {
   return { indices, empty };
 }
 
-// lib/sticker-palettes.js
+// ../../apps/web/lib/sticker-palettes.js
 var STICKER_PALETTES = Object.freeze({
   muted: Object.freeze({ U: "#E8E3D6", D: "#D8B84A", F: "#4E8C6A", B: "#3C6E9E", R: "#B8503F", L: "#C87A3C" }),
   classic: Object.freeze({ U: "#F4F2EC", D: "#F0C000", F: "#00A651", B: "#0051BA", R: "#C41E3A", L: "#FF6C00" }),
   colorsafe: Object.freeze({ U: "#EFEAE0", D: "#E9C46A", F: "#6A9FB5", B: "#20405C", R: "#D1495B", L: "#8C5E8A" })
 });
 
-// lib/cubus-cube.js
+// ../../apps/web/lib/cube-pieces.js
+var CORNERS = ["URF", "UFL", "ULB", "UBR", "DFR", "DLF", "DBL", "DRB"];
+var EDGES = ["UR", "UF", "UL", "UB", "DR", "DF", "DL", "DB", "FR", "FL", "BL", "BR"];
+var CORNER = Object.fromEntries(CORNERS.map((n, i) => [n, i]));
+var EDGE = Object.fromEntries(EDGES.map((n, i) => [n, i]));
+var QUARTER = {
+  U: {
+    cp: [3, 0, 1, 2, 4, 5, 6, 7],
+    co: [0, 0, 0, 0, 0, 0, 0, 0],
+    ep: [3, 0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11],
+    eo: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  },
+  R: {
+    cp: [4, 1, 2, 0, 7, 5, 6, 3],
+    co: [2, 0, 0, 1, 1, 0, 0, 2],
+    ep: [8, 1, 2, 3, 11, 5, 6, 7, 4, 9, 10, 0],
+    eo: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  },
+  F: {
+    cp: [1, 5, 2, 3, 0, 4, 6, 7],
+    co: [1, 2, 0, 0, 2, 1, 0, 0],
+    ep: [0, 9, 2, 3, 4, 8, 6, 7, 1, 5, 10, 11],
+    eo: [0, 1, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0]
+  },
+  D: {
+    cp: [0, 1, 2, 3, 5, 6, 7, 4],
+    co: [0, 0, 0, 0, 0, 0, 0, 0],
+    ep: [0, 1, 2, 3, 5, 6, 7, 4, 8, 9, 10, 11],
+    eo: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  },
+  L: {
+    cp: [0, 2, 6, 3, 4, 1, 5, 7],
+    co: [0, 1, 2, 0, 0, 2, 1, 0],
+    ep: [0, 1, 10, 3, 4, 5, 9, 7, 8, 2, 6, 11],
+    eo: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  },
+  B: {
+    cp: [0, 1, 3, 7, 4, 5, 2, 6],
+    co: [0, 0, 1, 2, 0, 0, 2, 1],
+    ep: [0, 1, 2, 11, 4, 5, 6, 10, 8, 9, 3, 7],
+    eo: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 1]
+  }
+};
+var SOLVED = Object.freeze({
+  cp: [0, 1, 2, 3, 4, 5, 6, 7],
+  co: [0, 0, 0, 0, 0, 0, 0, 0],
+  ep: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+  eo: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+});
+function compose(a, b) {
+  const cp = new Array(8);
+  const co = new Array(8);
+  for (let i = 0; i < 8; i++) {
+    cp[i] = a.cp[b.cp[i]];
+    co[i] = (a.co[b.cp[i]] + b.co[i]) % 3;
+  }
+  const ep = new Array(12);
+  const eo = new Array(12);
+  for (let i = 0; i < 12; i++) {
+    ep[i] = a.ep[b.ep[i]];
+    eo[i] = (a.eo[b.ep[i]] + b.eo[i]) % 2;
+  }
+  return { cp, co, ep, eo };
+}
+var MOVES = (() => {
+  const all = {};
+  for (const [face, q] of Object.entries(QUARTER)) {
+    const twice = compose(q, q);
+    all[face] = q;
+    all[`${face}2`] = twice;
+    all[`${face}'`] = compose(twice, q);
+  }
+  return Object.freeze(all);
+})();
+var MOVE_NAMES = Object.freeze(Object.keys(MOVES));
+function applyMove(state, move) {
+  const m = MOVES[move];
+  if (!m) throw new Error(`unknown move: ${move}`);
+  return compose(state, m);
+}
+var Y_STATE = Object.freeze({
+  cp: [1, 2, 3, 0, 5, 6, 7, 4],
+  co: [0, 0, 0, 0, 0, 0, 0, 0],
+  ep: [1, 2, 3, 0, 5, 6, 7, 4, 9, 10, 11, 8],
+  eo: [1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0]
+});
+function inverseOf(state) {
+  const cp = new Array(8);
+  const co = new Array(8);
+  for (let i = 0; i < 8; i++) {
+    cp[state.cp[i]] = i;
+    co[state.cp[i]] = (3 - state.co[i]) % 3;
+  }
+  const ep = new Array(12);
+  const eo = new Array(12);
+  for (let i = 0; i < 12; i++) {
+    ep[state.ep[i]] = i;
+    eo[state.ep[i]] = state.eo[i];
+  }
+  return { cp, co, ep, eo };
+}
+var Y_INVERSE = inverseOf(Y_STATE);
+
+// src/pose.js
+var NORMAL2 = { R: [1, 0, 0], L: [-1, 0, 0], U: [0, 1, 0], D: [0, -1, 0], F: [0, 0, 1], B: [0, 0, -1] };
+var CENTRES = ["U", "R", "F", "D", "L", "B"];
+var AXIS_OF = { x: 0, y: 1, z: 2 };
+var axisOf = (face) => {
+  const n = NORMAL2[face];
+  const axis = n[0] ? "x" : n[1] ? "y" : "z";
+  return { axis, sign: n[AXIS_OF[axis]] };
+};
+var posOf = (name) => [...name].reduce(
+  (p, letter) => p.map((v, i) => v + NORMAL2[letter][i]),
+  [0, 0, 0]
+);
+var CUBIES = Object.freeze([
+  ...CORNERS.map((name, index) => Object.freeze({ kind: "corner", index, name })),
+  ...EDGES.map((name, index) => Object.freeze({ kind: "edge", index, name })),
+  ...CENTRES.map((name, index) => Object.freeze({ kind: "centre", index, name }))
+]);
+var HOME = Object.freeze(CUBIES.map((c) => Object.freeze(posOf(c.name))));
+var CORNER_POS = CORNERS.map(posOf);
+var EDGE_POS = EDGES.map(posOf);
+var mul = (A, B) => [0, 1, 2].map((i) => [0, 1, 2].map(
+  (j) => A[i][0] * B[0][j] + A[i][1] * B[1][j] + A[i][2] * B[2][j]
+));
+var applyTo = (M, v) => [0, 1, 2].map((i) => M[i][0] * v[0] + M[i][1] * v[1] + M[i][2] * v[2]);
+var I3 = Object.freeze([Object.freeze([1, 0, 0]), Object.freeze([0, 1, 0]), Object.freeze([0, 0, 1])]);
+function rotation(axis, angle) {
+  const quarters = angle / (Math.PI / 2);
+  const exact = Number.isInteger(quarters);
+  const c = exact ? [1, 0, -1, 0][(quarters % 4 + 4) % 4] : Math.cos(angle);
+  const s = exact ? [0, 1, 0, -1][(quarters % 4 + 4) % 4] : Math.sin(angle);
+  if (axis === "x") return [[1, 0, 0], [0, c, -s], [0, s, c]];
+  if (axis === "y") return [[c, 0, s], [0, 1, 0], [-s, 0, c]];
+  if (axis === "z") return [[c, -s, 0], [s, c, 0], [0, 0, 1]];
+  throw new Error(`pose: unknown axis "${axis}" \u2014 one of x, y, z`);
+}
+var tableKey = (kind, home, slot, twist) => `${kind}${home},${slot},${twist}`;
+var turnGeometry = (geo, face) => {
+  const { axis, sign } = axisOf(face);
+  const M = rotation(axis, -sign * (Math.PI / 2));
+  return geo.map((c) => c.pos[AXIS_OF[axis]] * sign === 1 ? { ...c, pos: applyTo(M, c.pos), m: mul(M, c.m) } : c);
+};
+var TURNED = (() => {
+  const table = /* @__PURE__ */ new Map();
+  const solved = [
+    ...CORNER_POS.map((pos) => ({ kind: "c", pos, m: I3 })),
+    ...EDGE_POS.map((pos) => ({ kind: "e", pos, m: I3 }))
+  ];
+  const at = (geo, kind, pos) => geo.find(
+    (c) => c.kind === kind && c.pos[0] === pos[0] && c.pos[1] === pos[1] && c.pos[2] === pos[2]
+  );
+  const note = (geo, state) => {
+    for (let slot = 0; slot < 8; slot++) table.set(tableKey("c", state.cp[slot], slot, state.co[slot]), at(geo, "c", CORNER_POS[slot]).m);
+    for (let slot = 0; slot < 12; slot++) table.set(tableKey("e", state.ep[slot], slot, state.eo[slot]), at(geo, "e", EDGE_POS[slot]).m);
+  };
+  let frontier = [{
+    state: { cp: [...Array(8).keys()], co: Array(8).fill(0), ep: [...Array(12).keys()], eo: Array(12).fill(0) },
+    geo: solved
+  }];
+  note(solved, frontier[0].state);
+  const faces = Object.keys(NORMAL2);
+  for (let depth = 0; depth < 12 && table.size < 480; depth++) {
+    const next = [];
+    for (const { state, geo } of frontier) {
+      for (const face of faces) {
+        const moved = turnGeometry(geo, face);
+        const before = table.size;
+        const landed = applyMove(state, face);
+        note(moved, landed);
+        if (table.size > before) next.push({ state: landed, geo: moved });
+      }
+    }
+    frontier = next;
+  }
+  if (table.size !== 480) throw new Error(`pose: the rotation table closed at ${table.size} of 480 entries`);
+  return table;
+})();
+var CENTRE_AXIS = CENTRES.map((f) => axisOf(f).axis);
+function settled(state, i) {
+  const c = CUBIES[i];
+  if (c.kind === "centre") {
+    const twist = state.ct?.[c.index] ?? 0;
+    return { pos: HOME[i], m: twist ? rotation(CENTRE_AXIS[c.index], twist * (Math.PI / 2)) : I3 };
+  }
+  const kind = c.kind === "corner" ? "c" : "e";
+  const [perm, orient, slots] = kind === "c" ? [state.cp, state.co, CORNER_POS] : [state.ep, state.eo, EDGE_POS];
+  const slot = perm.indexOf(c.index);
+  if (slot < 0) throw new Error(`pose: no slot holds ${c.name} \u2014 the state is not a permutation`);
+  const m = TURNED.get(tableKey(kind, c.index, slot, orient[slot]));
+  if (!m) throw new Error(`pose: no rotation for ${c.name} in slot ${slot} twisted ${orient[slot]}`);
+  return { pos: slots[slot], m };
+}
+var inMove = (move, pos) => move.layers.includes(pos[AXIS_OF[move.axis]]);
+function poseAll(frame, state, move = null, phase = 1) {
+  const turning = move ? rotation(move.axis, move.angle * phase) : null;
+  return CUBIES.map((_, i) => {
+    const base = settled(state, i);
+    const inFlight = turning && inMove(move, base.pos);
+    const pos = inFlight ? applyTo(turning, base.pos) : base.pos;
+    const m = inFlight ? mul(turning, base.m) : base.m;
+    return { pos: applyTo(frame, pos), m: mul(frame, m) };
+  });
+}
+var faceAt = (axis, sign) => Object.keys(NORMAL2).find(
+  (f) => NORMAL2[f][AXIS_OF[axis]] === sign
+);
+function nameOf(axis, sign, angle) {
+  const quarters = Math.round(angle / (Math.PI / 2));
+  const face = faceAt(axis, sign);
+  const k = (-sign * quarters % 4 + 4) % 4;
+  return [null, face, `${face}2`, `${face}'`][k];
+}
+function after(frame, state, move) {
+  if (!move) return { frame, state };
+  const { axis, layers, angle } = move;
+  const quarters = Math.round(angle / (Math.PI / 2));
+  const whole = layers.includes(0);
+  const outers = whole ? [1, -1].filter((s) => !layers.includes(s)) : layers.filter((s) => s !== 0);
+  let next = state;
+  const ct = [...state.ct ?? [0, 0, 0, 0, 0, 0]];
+  const spin = whole ? -quarters : quarters;
+  for (const sign of outers) {
+    const face = faceAt(axis, sign);
+    const name = nameOf(axis, sign, whole ? -angle : angle);
+    if (name) next = applyMove(next, name);
+    ct[CENTRES.indexOf(face)] = ((ct[CENTRES.indexOf(face)] + spin) % 4 + 4) % 4;
+  }
+  return {
+    frame: whole ? mul(frame, rotation(axis, quarters * (Math.PI / 2))) : frame,
+    state: { ...next, ct }
+  };
+}
+var MOVE_DESCRIPTORS = Object.freeze(Object.assign(/* @__PURE__ */ Object.create(null), Object.fromEntries(
+  Object.keys(MOVES).map((name) => {
+    const { axis, sign } = axisOf(name[0]);
+    const turns = name.endsWith("2") ? 2 : 1;
+    const dir = name.endsWith("'") ? -1 : 1;
+    return [name, Object.freeze({ axis, layers: Object.freeze([sign]), turns, angle: -dir * sign * turns * (Math.PI / 2) })];
+  })
+)));
+
+// src/cubus-cube.js
 var PALETTES = STICKER_PALETTES;
 var SWAPPED = { U: "U", R: "R", F: "F", L: "L", D: "B", B: "D" };
 function paletteFor(name, scheme) {
-  const base = PALETTES[name] || PALETTES.muted;
+  const base = Object.hasOwn(PALETTES, name) ? PALETTES[name] : PALETTES.muted;
   if (scheme !== "japanese") return base;
   const out = {};
   for (const position of Object.keys(base)) out[position] = base[SWAPPED[position]];
@@ -28925,12 +29169,12 @@ function paletteFor(name, scheme) {
 }
 var UNKNOWN_STICKER = "#C4BFB4";
 var FACES = [
-  { key: "R", axis: "x", sign: 1, n: [1, 0, 0] },
-  { key: "L", axis: "x", sign: -1, n: [-1, 0, 0] },
-  { key: "U", axis: "y", sign: 1, n: [0, 1, 0] },
-  { key: "D", axis: "y", sign: -1, n: [0, -1, 0] },
-  { key: "F", axis: "z", sign: 1, n: [0, 0, 1] },
-  { key: "B", axis: "z", sign: -1, n: [0, 0, -1] }
+  { key: "R", n: [1, 0, 0] },
+  { key: "L", n: [-1, 0, 0] },
+  { key: "U", n: [0, 1, 0] },
+  { key: "D", n: [0, -1, 0] },
+  { key: "F", n: [0, 0, 1] },
+  { key: "B", n: [0, 0, -1] }
 ];
 var FACELET_INDEX = {
   U: (x, y, z) => 0 + (z + 1) * 3 + (x + 1),
@@ -28941,7 +29185,26 @@ var FACELET_INDEX = {
   B: (x, y, z) => 45 + (1 - y) * 3 + (1 - x)
 };
 var EASE = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-var AXES = { x: new Vector3(1, 0, 0), y: new Vector3(0, 1, 0), z: new Vector3(0, 0, 1) };
+var Y_AXIS = new Vector3(0, 1, 0);
+var SPIN_PER_MS = 35e-4 * 60 / 1e3;
+var UPRIGHT = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+var SOLVED_STATE = Object.freeze({
+  cp: [0, 1, 2, 3, 4, 5, 6, 7],
+  co: [0, 0, 0, 0, 0, 0, 0, 0],
+  ep: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+  eo: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  ct: [0, 0, 0, 0, 0, 0]
+});
+var POSE_OF = (() => {
+  const out = [];
+  for (let x = -1; x <= 1; x++) for (let y = -1; y <= 1; y++) for (let z = -1; z <= 1; z++) {
+    if (!x && !y && !z) continue;
+    const at = HOME.findIndex((h) => h[0] === x && h[1] === y && h[2] === z);
+    if (at < 0) throw new Error(`<cubus-cube> no cubie of pose.js sits at ${x},${y},${z}`);
+    out.push(at);
+  }
+  return out;
+})();
 var HL_PEAK = 0.38;
 var FOCUS_FLATTEN = 0.62;
 var FOCUS_MID = 0.44;
@@ -28949,6 +29212,47 @@ var HL_PERIOD = 1200;
 var GHOST_OPACITY = 0.45;
 var GHOST_HL_PEAK = 0.8;
 var reducedMotion = () => globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+var REACTIONS = Object.freeze({
+  __proto__: null,
+  palette: (el) => el._paint(),
+  scheme: (el) => el._paint(),
+  ghosts: (el) => {
+    el._ghostVisible();
+    el._paint();
+    el._applyCamera();
+  },
+  "ghost-elevation": (el) => {
+    el._ghostPlace();
+    el._applyCamera();
+  },
+  // The scale is part of the silhouette the camera fits.
+  "facelet-scale": (el) => {
+    el._applyScale();
+    el._applyCamera();
+  },
+  "camera-latitude": (el) => el._applyCamera(),
+  "camera-longitude": (el) => el._applyCamera(),
+  "camera-fit": (el) => el._applyCamera(),
+  "camera-up": (el) => el._applyCamera(),
+  // Writing the attribute is a CUT, not a turn: it states where the cube is, and a state that
+  // takes 400ms to become true cannot be read back or asserted. `turnTo()` is the animation.
+  orientation: (el) => el.showTurn(el._attrs.orientation, el._attrs.orientation, 1),
+  // Splitting the view halves the aspect the fit is for.
+  "back-view": (el) => el._applyCamera(),
+  orbit: (el) => el._applyOrbit(),
+  facelets: (el) => el.reset(),
+  scramble: (el) => el.reset(),
+  alg: (el) => el._replaceAlg(),
+  highlight: (el) => {
+    el._readHighlight();
+    el._syncHighlight();
+  },
+  // focus repaints rather than syncing: it changes sticker COLOUR, which only _paint() writes.
+  focus: (el) => {
+    el._readFocus();
+    el._paint();
+  }
+});
 var CubusCube = class _CubusCube extends HTMLElement {
   // Kebab is canonical, but a host that writes camelCase props as attributes lands
   // on the DOM-lowercased spelling, so both are observed and normalized in _set().
@@ -29045,6 +29349,57 @@ var CubusCube = class _CubusCube extends HTMLElement {
   get highlight() {
     return this._attrs.highlight;
   }
+  /**
+   * A pinned clock, in milliseconds, or null to run on the real one.
+   *
+   * WHY IT IS A PROPERTY AND NOT AN ATTRIBUTE: the manifest is built from `observedAttributes`,
+   * so an attribute here would be advertised to consumers as a capability. This is a test seam —
+   * it exists so a mid-turn frame and a highlight at a chosen point in its breath are
+   * reproducible, which is what lets one render be compared with another.
+   *
+   * `v == null` is tested FIRST, before `Number()`: `Number(null)` is 0, so a setter written
+   * `Number.isFinite(Number(v)) ? Number(v) : null` freezes time at zero when asked to let it go
+   * again — the opposite of what `clock = null` says.
+   */
+  set clock(v) {
+    const next = v == null || !Number.isFinite(Number(v)) ? null : Number(v);
+    if ((this._clock ?? null) === null !== (next === null)) this._changeTimeline(next);
+    this._clock = next;
+    this._dirty = true;
+  }
+  /**
+   * Carry every stored instant from the timeline in use onto the one `next` selects: a pinned
+   * clock when `next` is a number, the real one when it is null. Stepping a pinned clock is not a
+   * change of timeline and moves time instead.
+   *
+   * Four instants are kept — a move's start, a turnTo()'s start, the highlight's breath origin and
+   * autorotate's last reading — and each was taken on whichever timeline was running then. Left
+   * alone, releasing a clock pinned at 1,000,000 mid-turn measured elapsed time against
+   * `performance.now()`, a large negative number, and the turn did not finish. So a move and a
+   * turn keep their elapsed time across the change, and autorotate's reading is simply dropped.
+   *
+   * The breath does NOT keep its elapsed time onto a pinned clock: it restarts at the top at the
+   * pinned instant, as a highlight set at that instant would. Kept, the phase at a pinned instant
+   * depended on how long the cube had run in real time before it was pinned, so the same pinned
+   * clock drew a different highlight on every launch — the golden-image run found it, a fixture
+   * that differed on every launch of the same browser (2026-09-15). A breath is decoration with no
+   * state behind it; restarting it is what makes it reproducible, which is the seam's purpose.
+   */
+  _changeTimeline(next) {
+    const to = next ?? performance.now();
+    const shift = to - this._now();
+    if (this._anim?.t0 != null) this._anim.t0 += shift;
+    if (this._turning) this._turning.t0 += shift;
+    if (this._hlT0 != null) this._hlT0 = next === null ? this._hlT0 + shift : next - HL_PERIOD / 2;
+    this._spinAt = null;
+  }
+  get clock() {
+    return this._clock ?? null;
+  }
+  /** The clock everything timed reads: the pinned one when there is one, the real one otherwise. */
+  _now() {
+    return this._clock ?? performance.now();
+  }
   constructor() {
     super();
     this._attrs = { ..._CubusCube.DEFAULTS };
@@ -29099,6 +29454,12 @@ var CubusCube = class _CubusCube extends HTMLElement {
   }
   _set(name, val) {
     name = _CubusCube.ALIAS[String(name).toLowerCase()] || name;
+    this._store(name, val);
+    if (!this._ghostMeshes) return;
+    if (Object.hasOwn(REACTIONS, name)) REACTIONS[name](this);
+  }
+  /** Record an attribute's value in `_attrs`, the one place the element reads attributes from. */
+  _store(name, val) {
     if (val == null) {
       const spellings = [name, ...Object.keys(_CubusCube.ALIAS).filter((a) => _CubusCube.ALIAS[a] === name)];
       const alive = spellings.map((s) => this.getAttribute?.(s)).find((v) => v != null);
@@ -29106,35 +29467,23 @@ var CubusCube = class _CubusCube extends HTMLElement {
     } else {
       this._attrs[name] = val;
     }
-    if (!this._ghostMeshes) return;
-    if (name === "palette" || name === "scheme") this._paint();
-    else if (name === "ghosts") {
-      this._ghostVisible();
-      this._paint();
-      this._applyCamera();
-    } else if (name === "ghost-elevation") {
-      this._ghostPlace();
-      this._applyCamera();
-    } else if (name === "facelet-scale") {
-      this._applyScale();
-      this._applyCamera();
-    } else if (name === "camera-latitude" || name === "camera-longitude" || name === "camera-fit" || name === "camera-up") this._applyCamera();
-    else if (name === "orientation") this.showTurn(this._attrs.orientation, this._attrs.orientation, 1);
-    else if (name === "back-view") this._dirty = true;
-    else if (name === "orbit") this._applyOrbit();
-    else if (name === "facelets" || name === "scramble") this.reset();
-    else if (name === "alg") {
-      this._sol = this._parse(this._attrs.alg || "");
-      this._cursor = 0;
-      this._applied = 0;
-      this._playing = false;
-    } else if (name === "highlight") {
-      this._readHighlight();
-      this._syncHighlight();
-    } else if (name === "focus") {
-      this._readFocus();
-      this._paint();
-    }
+  }
+  /**
+   * A new walk calls off the old one's moves, the one in flight AND the ones queued behind it —
+   * exactly what `reset()` does for a new cube. Resetting only the counters left R and U of the
+   * old alg playing on and reporting themselves as steps of the new one (found by audit,
+   * 2026-09-14). The state only advances when a move COMPLETES, so dropping the move in flight
+   * and writing the pose puts the cube back where its last finished move left it.
+   */
+  _replaceAlg() {
+    this._anim = null;
+    this._queue = [];
+    this._writePose();
+    this._sol = this._parse(this._attrs.alg || "");
+    this._cursor = 0;
+    this._applied = 0;
+    this._playing = false;
+    this._dirty = true;
   }
   connectedCallback() {
     clearTimeout(this._release);
@@ -29143,7 +29492,27 @@ var CubusCube = class _CubusCube extends HTMLElement {
       return;
     }
     this.style.cssText = "display:block;width:100%;height:100%;" + (this.style.cssText || "");
-    const scene = this.scene = new Scene();
+    try {
+      this._build();
+    } catch (err) {
+      this.dispose();
+      throw err;
+    }
+    this._start();
+  }
+  /** Everything a first connect creates: the scene, the renderer, the meshes, the observers and the
+   *  frame loop. `this.scene` is published at the very end, as the mark that all of it exists. */
+  _build() {
+    const scene = new Scene();
+    this._buildView();
+    this._buildLights(scene);
+    this._buildCubies(scene);
+    this._initWalk();
+    this._buildLoop();
+    this.scene = scene;
+  }
+  /** The camera, the WebGL renderer and its canvas, and the orbit controls. */
+  _buildView() {
     const camera = this.camera = new PerspectiveCamera(30, 1, 0.1, 100);
     const renderer = this.renderer = new WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -29159,17 +29528,28 @@ var CubusCube = class _CubusCube extends HTMLElement {
     controls.rotateSpeed = 0.75;
     this._applyCamera();
     this._applyOrbit();
+  }
+  /** The light rig, added to `scene`, with each light's direction fixed relative to the eye. */
+  _buildLights(scene) {
     const hemi = new HemisphereLight(16775920, 4866096, 1);
     const key2 = new DirectionalLight(16777215, 0.95);
     const fill = new DirectionalLight(14673663, 0.45);
     scene.add(hemi, key2, fill);
-    const inv = camera.quaternion.clone().invert();
+    const reference = new PerspectiveCamera();
+    const tuned = eyeDirection(Number(_CubusCube.DEFAULTS["camera-latitude"]), Number(_CubusCube.DEFAULTS["camera-longitude"]));
+    reference.position.set(tuned[0], tuned[1], tuned[2]);
+    reference.up.set(0, 1, 0);
+    reference.lookAt(0, 0, 0);
+    const inv = reference.quaternion.clone().invert();
     this._lights = [
       [hemi, new Vector3(0, 1, 0).applyQuaternion(inv)],
       [key2, new Vector3(5, 8, 6).applyQuaternion(inv)],
       [fill, new Vector3(-6, 2, -4).applyQuaternion(inv)]
     ];
     this._placeLights();
+  }
+  /** The 26 cubies, each with its body, its stickers and a ghost per sticker, under `root`. */
+  _buildCubies(scene) {
     const root = this.root = new Group();
     scene.add(root);
     const bodyGeo = new RoundedBoxGeometry(0.94, 0.94, 0.94, 4, 0.1);
@@ -29220,6 +29600,9 @@ var CubusCube = class _CubusCube extends HTMLElement {
       root.add(c);
       this.cubies.push(c);
     }
+  }
+  /** The walk's starting state, with every attribute read in: `_set()` skips an unbuilt cube. */
+  _initWalk() {
     this._anim = null;
     this._queue = [];
     this._cursor = 0;
@@ -29232,11 +29615,14 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._ghostVisible();
     this.showTurn(this._attrs.orientation, this._attrs.orientation, 1);
     this.reset();
+  }
+  /** The resize and visibility observers, and the frame loop itself. */
+  _buildLoop() {
     this._resize = () => {
       const w = this.clientWidth || 1, h = this.clientHeight || 1;
-      renderer.setSize(w, h, false);
-      camera.aspect = w / h;
-      camera.updateProjectionMatrix();
+      this.renderer.setSize(w, h, false);
+      this.camera.aspect = w / h;
+      this.camera.updateProjectionMatrix();
       this._applyCamera();
     };
     this._ro = new ResizeObserver(this._resize);
@@ -29245,57 +29631,87 @@ var CubusCube = class _CubusCube extends HTMLElement {
     }, { threshold: 0 });
     this._tick = () => {
       this._raf = requestAnimationFrame(this._tick);
-      while (this._queue.length + (this._anim ? 1 : 0) > 2 || !this._visible && (this._anim || this._queue.length)) {
-        let a = this._anim;
-        if (!a) {
-          const m = this._queue.shift();
-          a = { temp: this._grab(m), m };
-        }
-        a.temp.setRotationFromAxisAngle(AXES[a.m.axis], a.m.angle);
-        this._completeMove(a);
-      }
-      if (!this._visible) return;
-      if (!this._anim && (this._queue.length || this._playing)) this._next();
-      if (this._anim) {
-        const a = this._anim;
-        const k = Math.min(1, (performance.now() - a.t0) / a.dur);
-        a.temp.setRotationFromAxisAngle(AXES[a.m.axis], a.m.angle * EASE(k));
-        if (k >= 1) {
-          this._completeMove(a);
-          this._next();
-        }
-        this._dirty = true;
-      }
-      if (this._hlSet?.size) {
-        const k = this._hlPhase();
-        if (k !== this._hlK) {
-          this._applyHighlight(k);
-          this._hlK = k;
-          this._dirty = true;
-        }
-      }
-      if (this._turning) {
-        const t = this._turning;
-        const k = Math.min(1, (performance.now() - t.t0) / t.ms);
-        this._setTurn(t.from, t.to, EASE(k));
-        if (k >= 1) {
-          this._setTurn(t.to, t.to, 1);
-          this._settleTurn(true);
-        }
-        this._dirty = true;
-      }
-      if (this._attrs.autorotate != null) {
-        this._spin += 35e-4;
-        this._applyRoot();
-      }
-      const moving = this.controls.update();
-      if (moving) this._placeLights();
-      if (moving || this._dirty) {
-        this._draw();
-        this._dirty = false;
-      }
+      this._frame();
     };
-    this._start();
+  }
+  /** One frame of the loop: settle any backlog, advance whatever is timed, and draw if needed. */
+  _frame() {
+    if (!this._drainBacklog()) return;
+    if (!this._visible) {
+      this._spinAt = null;
+      return;
+    }
+    if (!this._anim && (this._queue.length || this._playing)) this._next();
+    if (!this._advanceMove()) return;
+    this._breathe();
+    this._advanceTurn();
+    this._advanceSpin();
+    const moving = this.controls.update();
+    if (moving) this._placeLights();
+    if (moving || this._dirty) {
+      this._draw();
+      this._dirty = false;
+    }
+  }
+  /** Complete every move past the backlog limit. False when a completion stopped the loop. */
+  _drainBacklog() {
+    while (this._queue.length + (this._anim ? 1 : 0) > 2 || !this._visible && (this._anim || this._queue.length)) {
+      let a = this._anim;
+      if (!a) a = { m: this._queue.shift() };
+      this._completeMove(a);
+      if (!this._running) return false;
+    }
+    return true;
+  }
+  /** Pose the move in flight now, completing it at its end. False when that stopped the loop. */
+  _advanceMove() {
+    if (this._anim) {
+      const a = this._anim;
+      const k = Math.min(1, (this._now() - a.t0) / a.dur);
+      this._writePose(a.m, EASE(k));
+      if (k >= 1) {
+        this._completeMove(a);
+        if (!this._running) return false;
+        this._next();
+      }
+      this._dirty = true;
+    }
+    return true;
+  }
+  /** The highlight's breath, written only when its phase changed. */
+  _breathe() {
+    if (this._hlSet?.size) {
+      const k = this._hlPhase();
+      if (k !== this._hlK) {
+        this._applyHighlight(k);
+        this._hlK = k;
+        this._dirty = true;
+      }
+    }
+  }
+  /** An in-flight turnTo(), posed at this instant and settled at its end. */
+  _advanceTurn() {
+    if (this._turning) {
+      const t = this._turning;
+      const k = Math.min(1, (this._now() - t.t0) / t.ms);
+      this._setTurn(t.from, t.to, EASE(k));
+      if (k >= 1) {
+        this._setTurn(t.to, t.to, 1);
+        this._settleTurn(true);
+      }
+      this._dirty = true;
+    }
+  }
+  /** Autorotate, by the time elapsed since its last reading. */
+  _advanceSpin() {
+    if (this._attrs.autorotate != null) {
+      const now = this._now();
+      if (this._spinAt != null) this._spin += (now - this._spinAt) * SPIN_PER_MS;
+      this._spinAt = now;
+      this._applyRoot();
+    } else {
+      this._spinAt = null;
+    }
   }
   /** Begin drawing into whatever slot this is in now. Idempotent. */
   _start() {
@@ -29311,6 +29727,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
   /** Stop drawing, keeping everything needed to start again. */
   _stop() {
     this._running = false;
+    this._spinAt = null;
     cancelAnimationFrame(this._raf);
     this._ro?.disconnect();
     this._io?.disconnect();
@@ -29341,10 +29758,17 @@ var CubusCube = class _CubusCube extends HTMLElement {
       canvas.remove();
       canvas.style.display = wasDisplay;
     }
+    const owned = /* @__PURE__ */ new Set();
+    this.scene?.traverse((o) => {
+      if (o.geometry) owned.add(o.geometry);
+      for (const m of [o.material].flat()) if (m) owned.add(m);
+    });
+    for (const r of owned) r.dispose();
     this.renderer?.dispose();
     this.renderer?.domElement?.remove();
     this.scene = this.renderer = this.camera = this.controls = this._controlsRoot = null;
-    this._ghostMeshes = null;
+    this.root = this.cubies = this.stickers = this._ghostMeshes = null;
+    this._tick = this._resize = this._ro = this._io = null;
   }
   /**
    * Hand this element back for a different screen to use: every observed attribute to its
@@ -29358,6 +29782,10 @@ var CubusCube = class _CubusCube extends HTMLElement {
    */
   recycle() {
     for (const name of _CubusCube.observedAttributes) this.removeAttribute(name);
+    for (const name of _CubusCube.observedAttributes) {
+      if (Object.hasOwn(_CubusCube.ALIAS, name)) continue;
+      if (this._attrs[name] !== _CubusCube.DEFAULTS[name]) this._set(name, null);
+    }
     this._settleTurn(false);
     this._spin = 0;
     this._turn = { from: "U F", to: "U F", phase: 1 };
@@ -29484,7 +29912,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
       return Promise.resolve(true);
     }
     return new Promise((resolve) => {
-      this._turning = { from, to, t0: performance.now(), ms, settle: resolve };
+      this._turning = { from, to, t0: this._now(), ms, settle: resolve };
       this._setTurn(from, to, 0);
       this._dirty = true;
     });
@@ -29508,7 +29936,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     else q.copy(a).slerp(b, this._turn.phase);
     if (this._spin) {
       const s = this._qs ||= new Quaternion();
-      s.setFromAxisAngle(AXES.y, this._spin);
+      s.setFromAxisAngle(Y_AXIS, this._spin);
       q.premultiply(s);
     }
     this.root.quaternion.copy(q);
@@ -29550,7 +29978,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
       scale: this._num("facelet-scale", 0.9),
       cull: !stable
     });
-    const geom = { points, vfovDeg: this.camera.fov, aspect: this.camera.aspect || 1, eye, worldUp };
+    const geom = { points, vfovDeg: this.camera.fov, aspect: this._drawAspect(), eye, worldUp };
     const d = stable ? fitDistanceStable(geom) : fitDistance(geom);
     if (this.controls) {
       this.controls.minDistance = d * 0.5;
@@ -29583,6 +30011,24 @@ var CubusCube = class _CubusCube extends HTMLElement {
     }
     return v;
   }
+  /**
+   * The aspect ratio the cube is actually drawn at: half the width when `back-view` splits the
+   * element, the whole of it otherwise. The top-right inset keeps the element's own shape, so it
+   * needs nothing of its own.
+   *
+   * ONE definition, for the fit and for `_draw()`. The fit used to read `camera.aspect`, which
+   * `_resize()` sets to the WHOLE element — so a side-by-side pane half as wide was framed for
+   * twice its width, and at 320x240 the cube ran off both edges of both panes (found by audit,
+   * 2026-09-14).
+   */
+  _drawAspect() {
+    const w = this.clientWidth || 1, h = this.clientHeight || 1;
+    return this._split(w) ? Math.floor(w / 2) / h : w / h;
+  }
+  /** Is this element drawn as two panes? Below 4px there is no meaningful split. */
+  _split(w = this.clientWidth || 1) {
+    return (this._attrs["back-view"] || "none") === "side-by-side" && w >= 4;
+  }
   /** Turn the light rig with the given camera (the main one by default). */
   _placeLights(cam = this.camera) {
     if (!this._lights || !cam) return;
@@ -29607,9 +30053,9 @@ var CubusCube = class _CubusCube extends HTMLElement {
     const r = this.renderer, w = this.clientWidth || 1, h = this.clientHeight || 1;
     this._cullGhosts();
     const bv = this._attrs["back-view"] || "none";
-    if (bv === "side-by-side" && w >= 4) {
+    if (this._split(w)) {
       const left = Math.floor(w / 2), right = w - left;
-      this.camera.aspect = left / h;
+      this.camera.aspect = this._drawAspect();
       this.camera.updateProjectionMatrix();
       r.setScissorTest(true);
       try {
@@ -29628,11 +30074,16 @@ var CubusCube = class _CubusCube extends HTMLElement {
     r.render(this.scene, this.camera);
     if (bv === "top-right" && Math.floor(w * 0.32) > 0 && Math.floor(h * 0.32) > 0) {
       const iw = Math.floor(w * 0.32), ih = Math.floor(h * 0.32);
+      const [x, y] = [w - iw - 10, h - ih - 10];
+      const autoClear = r.autoClear;
       r.setScissorTest(true);
       try {
+        r.setScissor(x, y, iw, ih);
         r.clearDepth();
-        this._renderOpposite(w - iw - 10, h - ih - 10, iw, ih);
+        r.autoClear = false;
+        this._renderOpposite(x, y, iw, ih);
       } finally {
+        r.autoClear = autoClear;
         r.setScissorTest(false);
       }
     }
@@ -29675,15 +30126,12 @@ var CubusCube = class _CubusCube extends HTMLElement {
   _parse(alg) {
     const out = [];
     for (const tok of String(alg).trim().split(/\s+/).filter(Boolean)) {
-      const m = /^([URFDLB])(2|')?$/.exec(tok);
-      const f = m && FACES.find((x) => x.key === m[1]);
-      if (!f) {
+      const d = Object.hasOwn(MOVE_DESCRIPTORS, tok) ? MOVE_DESCRIPTORS[tok] : null;
+      if (!d) {
         console.warn(`<cubus-cube> refusing alg \u2014 invalid move token "${tok}"`);
         return [];
       }
-      const turns = m[2] === "2" ? 2 : 1;
-      const dir = m[2] === "'" ? -1 : 1;
-      out.push({ axis: f.axis, layer: f.sign, angle: -dir * f.sign * turns * Math.PI / 2, turns });
+      out.push({ ...d });
     }
     return out;
   }
@@ -29722,10 +30170,11 @@ var CubusCube = class _CubusCube extends HTMLElement {
    * Record which piece each cubie carries, while the cube is still at home.
    *
    * This is the ONE moment the answer is readable: reset() paints BEFORE it applies `scramble`, so
-   * at this instant a cubie's letters are exactly its facelet letters. Afterwards the group travels
-   * — _bake() moves it — and the stamp travels with it. That is what makes `piece:UF` mean "the UF
-   * piece, wherever it went" rather than "whatever is in the UF slot", which is a different
-   * sentence and the one a scrambled cube gets wrong.
+   * at this instant a cubie's letters are exactly its facelet letters. Afterwards the cubie moves
+   * — `_writePose` puts it where the state says — and the stamp stays on it, because the group is
+   * the cubie and nothing re-parents it. That is what makes `piece:UF` mean "the UF piece, wherever
+   * it went" rather than "whatever is in the UF slot", which is a different sentence and the one a
+   * scrambled cube gets wrong.
    */
   _stampPieces(letterOf) {
     const carried = /* @__PURE__ */ new Map();
@@ -29736,7 +30185,6 @@ var CubusCube = class _CubusCube extends HTMLElement {
     }
     for (const [c, letters] of carried) c.userData.piece = letters === null ? null : pieceKey(letters);
   }
-  /** Re-read the highlight attribute into selectors, naming a bad token rather than dropping it. */
   /** Which pieces still matter. Same grammar as `highlight`, opposite job: highlight says "look at
    *  this one", focus says "none of the others exist". For a whole stage the second is far stronger
    *  — you cannot glow four pieces and expect the eye to ignore twenty-two.
@@ -29749,17 +30197,29 @@ var CubusCube = class _CubusCube extends HTMLElement {
     if (invalid !== null) console.warn(`<cubus-cube> refusing focus \u2014 invalid selector "${invalid}"`);
     this._fcSels = selectors;
   }
+  /**
+   * What a selector reads off each cubie: the slot it is in and the piece it carries.
+   *
+   * ONE reading for `focus` and `highlight`. They share a grammar, so `slot:UR` must name the same
+   * cubie for both; each used to build this list itself, and two copies of it are two chances to
+   * disagree about which cubie that is.
+   */
+  _selectable() {
+    return this.cubies.map((c) => ({
+      // Rounded because a selector names SLOTS, and mid-turn a cubie is between two of them: it
+      // answers for the one it is nearer rather than for a fractional position nobody can name. At
+      // rest the rounding changes nothing — `_writePose` puts a settled cubie on exact integers.
+      pos: [Math.round(c.position.x), Math.round(c.position.y), Math.round(c.position.z)],
+      piece: c.userData.piece ?? null
+    }));
+  }
   /** Grey every sticker and ghost NOT named by `focus`. Called from _paint(), after the colour
    *  loop has written each sticker's true colour — so this is always applied to fresh colours and
    *  never compounds on itself. */
   _applyFocus() {
     const sels = this._fcSels || [];
     if (!sels.length) return;
-    const cubies = this.cubies.map((c) => ({
-      pos: [Math.round(c.position.x), Math.round(c.position.y), Math.round(c.position.z)],
-      piece: c.userData.piece ?? null
-    }));
-    const { indices } = resolveHighlight(sels, cubies);
+    const { indices } = resolveHighlight(sels, this._selectable());
     const keep = new Set(indices);
     for (const [i, c] of this.cubies.entries()) {
       if (keep.has(i)) continue;
@@ -29772,16 +30232,17 @@ var CubusCube = class _CubusCube extends HTMLElement {
       }
     }
   }
+  /** Re-read the highlight attribute into selectors, naming a bad token rather than dropping it. */
   _readHighlight() {
     const { selectors, invalid } = parseHighlight(this._attrs.highlight);
     if (invalid !== null) console.warn(`<cubus-cube> refusing highlight \u2014 invalid selector "${invalid}"`);
     this._hlSels = selectors;
-    this._hlT0 = performance.now() - HL_PERIOD / 2;
+    this._hlT0 = this._now() - HL_PERIOD / 2;
   }
   /** Where in the breath we are, 0..1. One expression, so the tick and the first paint agree. */
   _hlPhase() {
     if (reducedMotion()) return 1;
-    return 0.5 - 0.5 * Math.cos((performance.now() - this._hlT0) / HL_PERIOD * 2 * Math.PI);
+    return 0.5 - 0.5 * Math.cos((this._now() - this._hlT0) / HL_PERIOD * 2 * Math.PI);
   }
   /** Re-resolve the highlight against the cube as it stands now, and paint one frame of it. */
   _syncHighlight() {
@@ -29794,14 +30255,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
       this._dirty = true;
       return;
     }
-    const cubies = this.cubies.map((c) => ({
-      // Rounded because that is what a baked position IS: _bake() writes integers, so the parity
-      // test needs no epsilon, and a cubie riding a temp group mid-turn still answers for the slot
-      // it is travelling between rather than for a fractional position nobody can name.
-      pos: [Math.round(c.position.x), Math.round(c.position.y), Math.round(c.position.z)],
-      piece: c.userData.piece ?? null
-    }));
-    const { indices, empty } = resolveHighlight(sels, cubies);
+    const { indices, empty } = resolveHighlight(sels, this._selectable());
     if (empty.length) {
       console.warn(`<cubus-cube> highlight matched nothing for ${empty.join(", ")} \u2014 this cube has no known identity for it (unread stickers?)`);
     }
@@ -29828,8 +30282,8 @@ var CubusCube = class _CubusCube extends HTMLElement {
    * reads as "this one" and a white centre stays white.
    *
    * It lives on the cubie's materials, not on an overlay mesh, and that is what makes it survive a
-   * turn: _grab() re-parents cubies into a temporary group on every move, so anything positioned in
-   * world space would tear loose the moment the layer rotated.
+   * turn: the cubie is what moves, so anything positioned in world space would tear loose the
+   * moment the layer rotated.
    */
   _applyHighlight(k) {
     if (!this._hlSet?.size) return;
@@ -29867,27 +30321,35 @@ var CubusCube = class _CubusCube extends HTMLElement {
    *  carries delta -1: it undoes a solution move, so the step index counts down; anything else
    *  counts up. Host apps sync a move list / 2D net / scrubber to the event. */
   _completeMove(a) {
-    this._bake(a.temp);
+    const landed = after(UPRIGHT, this._state, a.m);
+    this._state = landed.state;
+    this._writePose();
     this._syncHighlight();
     this._anim = null;
     this._applied += a.m.delta ?? 1;
     this.dispatchEvent(new CustomEvent("cubus-step", { detail: { index: this._applied, total: this._sol.length } }));
     this._dirty = true;
   }
-  _bake(temp) {
-    temp.updateMatrix();
-    for (const c of [...temp.children]) {
-      c.applyMatrix4(temp.matrix);
-      c.position.set(Math.round(c.position.x), Math.round(c.position.y), Math.round(c.position.z));
-      this.root.add(c);
+  /**
+   * Put every cubie where the cube's STATE says it is — the one place geometry is written.
+   *
+   * What this replaces: `_grab` re-parented a layer's cubies into a temporary group, `_tick`
+   * rotated that group, and `_bake` multiplied the result back into each cubie and rounded its
+   * position to the nearest integer. So where a cubie sat was the accumulated residue of every
+   * turn it had been in, and the rounding was there because that residue drifts. A pose derived
+   * from the state cannot drift, needs no rounding, and makes seeking to a move and playing into
+   * it the same picture by construction rather than by care (lib pose.js, A1 of the plan).
+   */
+  _writePose(move = null, phase = 0) {
+    const poses = poseAll(UPRIGHT, this._state, move, phase);
+    for (let i = 0; i < this.cubies.length; i++) {
+      const { pos, m } = poses[POSE_OF[i]];
+      const c = this.cubies[i];
+      c.position.set(pos[0], pos[1], pos[2]);
+      this._m4 ||= new Matrix4();
+      this._m4.set(m[0][0], m[0][1], m[0][2], 0, m[1][0], m[1][1], m[1][2], 0, m[2][0], m[2][1], m[2][2], 0, 0, 0, 0, 1);
+      c.quaternion.setFromRotationMatrix(this._m4);
     }
-    this.root.remove(temp);
-  }
-  _grab(m) {
-    const temp = new Group();
-    this.root.add(temp);
-    for (const c of this.cubies) if (Math.round(c.position[m.axis]) === m.layer) temp.add(c);
-    return temp;
   }
   _next() {
     if (this._anim) return;
@@ -29900,32 +30362,22 @@ var CubusCube = class _CubusCube extends HTMLElement {
     const tempo = Math.max(0.05, this._num("tempo-scale", 1));
     const reduced = reducedMotion();
     const dur = 190 / tempo * m.turns;
-    this._anim = { temp: this._grab(m), m, t0: performance.now(), dur: reduced ? Math.min(dur, 120 * m.turns) : dur };
+    this._anim = { m, t0: this._now(), dur: reduced ? Math.min(dur, 120 * m.turns) : dur };
   }
   reset() {
-    if (this._anim) this.root.remove(this._anim.temp);
     this._queue = [];
     this._anim = null;
     this._cursor = 0;
     this._playing = false;
     this._applied = 0;
-    let i = 0;
-    for (let x = -1; x <= 1; x++) for (let y = -1; y <= 1; y++) for (let z = -1; z <= 1; z++) {
-      if (!x && !y && !z) continue;
-      const c = this.cubies[i++];
-      c.position.set(x, y, z);
-      c.quaternion.identity();
-      this.root.add(c);
-    }
+    this._state = SOLVED_STATE;
+    this._writePose();
     const fl = this._facelets();
     this._paint(fl);
     if (!fl) {
-      for (const m of this._parse(this._attrs.scramble || "")) {
-        const t = this._grab(m);
-        t.rotateOnAxis(AXES[m.axis], m.angle);
-        this._bake(t);
-      }
+      for (const m of this._parse(this._attrs.scramble || "")) this._state = after(UPRIGHT, this._state, m).state;
     }
+    this._writePose();
     this._syncHighlight();
     this._dirty = true;
     if (!this._quiet) {
@@ -29966,12 +30418,8 @@ var CubusCube = class _CubusCube extends HTMLElement {
     } finally {
       this._quiet = false;
     }
-    for (let i = 0; i < target; i++) {
-      const m = this._sol[i];
-      const t = this._grab(m);
-      t.rotateOnAxis(AXES[m.axis], m.angle);
-      this._bake(t);
-    }
+    for (let i = 0; i < target; i++) this._state = after(UPRIGHT, this._state, this._sol[i]).state;
+    this._writePose();
     this._syncHighlight();
     this._cursor = target;
     this._applied = target;
@@ -29979,6 +30427,9 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this.dispatchEvent(new CustomEvent("cubus-step", { detail: { index: target, total: this._sol.length } }));
   }
 };
+for (const name of Object.keys(REACTIONS)) {
+  if (!CubusCube.observedAttributes.includes(name)) throw new Error(`<cubus-cube> reacts to "${name}", which it does not observe`);
+}
 customElements.define("cubus-cube", CubusCube);
 /*! Bundled license information:
 

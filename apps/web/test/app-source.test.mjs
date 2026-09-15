@@ -135,3 +135,37 @@ test('no test reads a block with a lazy regex — blockAt reads it, and refuses 
     .flatMap((f) => read(`test/${f}`).split('\n').flatMap((line, i) => (standIn.test(line) ? [`test/${f}:${i + 1}`] : [])));
   assert.deepEqual(found, [], `a lazy regex stands in for brace matching — read the block with blockAt: ${found.join(', ')}`);
 });
+
+test('a number rounded to be compared never keeps the sign of a zero', () => {
+  // `+(-1e-17).toFixed(4)` is -0, and deepStrictEqual holds -0 and 0 to be different values. A
+  // rounding that leaves one therefore passes only while every float residue keeps its sign: on
+  // 2026-09-14 a light-rig case went red because a refit moved the camera's quaternion by one ULP
+  // (the largest light coordinate changed by 1.8e-15), and six more read the same way. `+ 0` turns
+  // -0 into 0 and nothing else. Line-based, and the patterns are built from pieces, as above.
+  const call = '(?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*';
+  const kept = '(?!\\s*\\+\\s*0\\b)';
+  const unary = '(?<![\\w$)\\]\'"`]\\s*)\\+\\s*';
+  const fixed = `\\.to${'Fixed'}\\(\\d+\\)`;
+  const rounded = [
+    new RegExp(`${unary}[\\w$]+(?:\\.[\\w$]+|\\(${call}\\))*${fixed}${kept}`),
+    new RegExp(`${unary}\\(${call}\\)${fixed}${kept}`),
+    new RegExp(`Number\\(${call}${fixed}\\)${kept}`),
+    new RegExp(`\\.map\\(\\(?[\\w$]+\\)? => Math\\.${'round'}\\(${call}\\)(?:\\s*\\/\\s*[\\d.e]+)?\\)`),
+  ];
+  const flags = (line) => rounded.some((p) => p.test(line));
+  const tf = `to${'Fixed'}`, mr = `Math.${'round'}`;
+  for (const bad of [`[x].map((n) => +n.${tf}(4))`, `{ t: +(a - b).${tf}(1) }`, `(v) => Number(v.${tf}(3))`,
+    `f(() => +el.camera.position.length().${tf}(6))`, `q.map((n) => ${mr}(n))`, `m.map((v) => ${mr}(v * 1e6) / 1e6)`]) {
+    assert.equal(flags(bad), true, `the guard misses a rounding that keeps -0: ${bad}`);
+  }
+  for (const good of [`[x].map((n) => +n.${tf}(4) + 0)`, `{ t: +(a - b).${tf}(1) + 0 }`, `\`\${n.${tf}(2)} ms\``,
+    `'x' + n.${tf}(2)`, `m.map((v) => ${mr}(v * 1e6) / 1e6 + 0)`, `q.map((n) => ${mr}(n) + 0)`]) {
+    assert.equal(flags(good), false, `the guard refuses a rounding that is fine: ${good}`);
+  }
+  const found = readdirSync(new URL('.', import.meta.url), { recursive: true })
+    .map(String)
+    .filter((f) => f.endsWith('.mjs'))
+    .sort()
+    .flatMap((f) => read(`test/${f}`).split('\n').flatMap((line, i) => (flags(line) ? [`test/${f}:${i + 1}`] : [])));
+  assert.deepEqual(found, [], `a rounding for comparison can keep -0 — add \`+ 0\`: ${found.join(', ')}`);
+});

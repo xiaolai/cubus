@@ -29,7 +29,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const SRC = join(here, '..', '..', 'packages', 'cube-scanner', 'node_modules', 'onnxruntime-web', 'dist');
+/** Where the runtime is copied FROM, and how the licence notices find the package it is. */
+export const ORT_SOURCE = join(here, '..', '..', 'packages', 'cube-scanner', 'node_modules', 'onnxruntime-web', 'dist');
 const DEST = join(here, 'vendor');
 
 // The ESM runtime the scanner loads, shipped as its OWN module rather than bundled into the panel.
@@ -80,7 +81,8 @@ const DEST = join(here, 'vendor');
 // makes ONE artifact enough for every target.
 export const ORT_ESM = 'ort.webgpu.bundle.min.mjs';
 
-// ONE grammar for what this script owns, used by discovery, by cleanup, and by nothing else.
+// ONE grammar for what this script owns, used by discovery, by cleanup, and — through the two
+// exported predicates below, never through a copy — by build.mjs's check that dist/ carries it.
 //
 // Written once as a source string because the two uses need different anchoring — a global scan of
 // the loader's text, and an exact test of a filename — and writing the pattern out twice is how the
@@ -107,9 +109,9 @@ const OWNED_ASSET = 'ort-wasm[a-z0-9.\\-]*\\.(?:wasm|mjs)';
  */
 export const ORT_PROXIED = 'ort.proxied.mjs';
 /** Every asset the loader names, anywhere in its text. */
-const ownedAssetsIn = (text) => [...new Set([...text.matchAll(new RegExp(OWNED_ASSET, 'g'))].map((m) => m[0]))];
+export const ownedAssetsIn = (text) => [...new Set([...text.matchAll(new RegExp(OWNED_ASSET, 'g'))].map((m) => m[0]))];
 /** Is this filename one of ours? Anchored, so it matches a whole name and not a substring. */
-const isOwnedAsset = (f) => new RegExp(`^${OWNED_ASSET}$`).test(f);
+export const isOwnedAsset = (f) => new RegExp(`^${OWNED_ASSET}$`).test(f);
 
 /**
  * Publish the runtime from `src` into `dest`, and return the asset names published.
@@ -121,7 +123,7 @@ const isOwnedAsset = (f) => new RegExp(`^${OWNED_ASSET}$`).test(f);
  * correct rewrite that spells them differently. It did: this refactor turned that assertion red
  * while the behaviour it was guarding got strictly safer.
  */
-export function publishRuntime({ src, dest, ortEsm = ORT_ESM } = { src: SRC, dest: DEST }) {
+export function publishRuntime({ src, dest, ortEsm = ORT_ESM } = { src: ORT_SOURCE, dest: DEST }) {
   if (!existsSync(src)) {
     throw new Error(`onnxruntime-web not found at:\n  ${src}\nRun \`pnpm install\` at the repo root first.`);
   }
@@ -199,7 +201,7 @@ export function publishRuntime({ src, dest, ortEsm = ORT_ESM } = { src: SRC, des
 // anything as a side effect of the import.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    const wanted = publishRuntime({ src: SRC, dest: DEST });
+    const wanted = publishRuntime({ src: ORT_SOURCE, dest: DEST });
     console.log(
       `copied ${wanted.length} onnxruntime-web runtime asset(s) (${wanted.join(', ')}) + ort.mjs + ${ORT_PROXIED} into web/vendor/`,
     );

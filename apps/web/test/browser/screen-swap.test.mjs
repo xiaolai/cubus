@@ -141,7 +141,7 @@ const SAMPLER = `(() => {
   const t0 = performance.now();
   const snap = () => {
     window.__frames.push({
-      t: +(performance.now() - t0).toFixed(1),
+      t: +(performance.now() - t0).toFixed(1) + 0,
       solutionCard: Boolean(document.querySelector('.solution-card')),
       chips: document.querySelectorAll('.chip-m').length,
       count: document.querySelector('#moveCount')?.textContent ?? null,
@@ -401,7 +401,7 @@ test('the renderer is never told to draw a SOLVED cube while the subject is a sc
       const snap = () => {
         const el = document.querySelector('#viewCube cubus-cube');
         window.__seen.push({
-          t: +(performance.now() - t0).toFixed(1),
+          t: +(performance.now() - t0).toFixed(1) + 0,
           subject: window.__state.cube.facelets,
           drawn: el ? el.getAttribute('facelets') : null,
           scramble: el ? el.getAttribute('scramble') : null,
