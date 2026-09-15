@@ -60,6 +60,10 @@ test('an arrow turns the way its move does, on its move\'s layer, for every kind
     if (layers.length === 1 && layers[0] !== 0) assert.ok(Math.sign(along) === layers[0] && Math.abs(along) > 1.4, `${token}: not on its face (${along})`);
     else assert.ok(Math.abs(along - layers.reduce((a, b) => a + b, 0) / layers.length) < 1e-6, `${token}: not on its layers (${along})`);
     assert.deepEqual(drawn.axis, [move.axis === 'x' ? 1 : 0, move.axis === 'y' ? 1 : 0, move.axis === 'z' ? 1 : 0]);
+    // And every point of it stands on or over a face's surface. A slice's arrow drawn as a ring about its layer
+    // passed through the cube at every corner and showed as fragments (found on the Phase 4 look sheet).
+    const inside = drawn.points.filter((q) => Math.max(...q.map(Math.abs)) < 1.52);
+    assert.deepEqual(inside, [], `${token}: part of the arrow is inside the cube, where nobody can see it`);
   }
 });
 

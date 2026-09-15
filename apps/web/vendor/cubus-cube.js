@@ -30737,8 +30737,9 @@ function letterTexture(letter) {
   texture.colorSpace = SRGBColorSpace;
   return texture;
 }
-var TRAIL_LIFT = 1.2;
+var TRAIL_SHELL = 1.64;
 var TRAIL_INKS = Object.freeze([2826520, 10173726, 2056058, 6109834]);
+var ARROW_FACE_PREFERENCE = Object.freeze(["F", "U", "R", "B", "D", "L"]);
 var AXIS_VECTOR = Object.freeze({ x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] });
 var GHOST_OPACITY = 0.45;
 var GHOST_HL_PEAK = 0.8;
@@ -31266,18 +31267,26 @@ var CubusCube = class _CubusCube extends HTMLElement {
     const axis = new Vector3(...AXIS_VECTOR[move.axis]);
     const layers = move.layers;
     const face = layers.length === 1 && layers[0] !== 0;
-    const offset = face ? layers[0] * 1.53 : layers.reduce((a, b) => a + b, 0) / layers.length;
-    const radius = face ? 0.92 : 1.62;
     const quarters = Math.min(2, Math.abs(Math.round(move.angle / (Math.PI / 2))));
-    const sweep = quarters * (Math.PI / 2) * 0.78;
     const sign = Math.sign(move.angle);
-    const eye = new Vector3(1, 1, 1);
-    const u = eye.clone().sub(axis.clone().multiplyScalar(eye.dot(axis))).normalize();
-    const v = axis.clone().cross(u);
-    const centre = axis.clone().multiplyScalar(offset);
-    const at = (theta) => centre.clone().add(u.clone().multiplyScalar(Math.cos(theta) * radius)).add(v.clone().multiplyScalar(Math.sin(theta) * radius));
     const points = [];
-    for (let i = 0; i <= 32; i++) points.push(at(sign * (-sweep / 2 + i / 32 * sweep)));
+    if (face) {
+      const sweep = quarters * (Math.PI / 2) * 0.78;
+      const eye = new Vector3(1, 1, 1);
+      const u = eye.clone().sub(axis.clone().multiplyScalar(eye.dot(axis))).normalize();
+      const v = axis.clone().cross(u);
+      const centre = axis.clone().multiplyScalar(layers[0] * 1.53);
+      const at = (theta) => centre.clone().add(u.clone().multiplyScalar(Math.cos(theta) * 0.92)).add(v.clone().multiplyScalar(Math.sin(theta) * 0.92));
+      for (let i = 0; i <= 32; i++) points.push(at(sign * (-sweep / 2 + i / 32 * sweep)));
+    } else {
+      const across = FACES.map((f) => new Vector3(...f.n)).filter((n2) => Math.abs(n2.dot(axis)) < 1e-9);
+      const n = ARROW_FACE_PREFERENCE.map((key2) => new Vector3(...FACES.find((f) => f.key === key2).n)).find((c) => across.some((a) => a.equals(c)));
+      const d = axis.clone().cross(n).multiplyScalar(sign);
+      const offset = layers.reduce((a, b) => a + b, 0) / layers.length;
+      const centre = n.clone().multiplyScalar(1.53).add(axis.clone().multiplyScalar(offset));
+      const half = quarters === 2 ? 1.05 : 0.8;
+      for (let i = 0; i <= 8; i++) points.push(centre.clone().add(d.clone().multiplyScalar(-half + i / 8 * 2 * half)));
+    }
     const tube = new Mesh(new TubeGeometry(new CatmullRomCurve3(points), 48, 0.055, 8, false), this._arrowMat);
     const end = points[points.length - 1];
     const tangent = end.clone().sub(points[points.length - 2]).normalize();
@@ -31287,7 +31296,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     tube.renderOrder = 3;
     head.renderOrder = 3;
     this._arrow.add(tube, head);
-    this._arrow.userData = { axis: axis.toArray(), start: points[0].toArray(), end: end.toArray(), angle: move.angle, layers: [...layers] };
+    this._arrow.userData = { axis: axis.toArray(), start: points[0].toArray(), end: end.toArray(), angle: move.angle, layers: [...layers], points: points.map((q) => q.toArray()) };
     this._placeArrowFrame();
   }
   /**
@@ -31357,7 +31366,10 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._trailMeshes = [];
     this._dirty = true;
     const spec = String(this._attrs.trail ?? "none").trim();
-    if (!spec || spec === "none") return;
+    if (!spec || spec === "none") {
+      this._applyCamera();
+      return;
+    }
     const tokens = spec.split(",").map((t) => t.trim()).filter(Boolean);
     const settled0 = poseAll(UPRIGHT, this._base ?? this._state);
     const named = [];
@@ -31399,7 +31411,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
         stops.push(to);
       }
       if (stops.length < 2) continue;
-      const lifted = curve.map((p) => p.clone().multiplyScalar(TRAIL_LIFT));
+      const lifted = curve.map((p) => p.clone().multiplyScalar(TRAIL_SHELL / Math.max(Math.abs(p.x), Math.abs(p.y), Math.abs(p.z))));
       const ink = TRAIL_INKS[n % TRAIL_INKS.length];
       const material = new MeshBasicMaterial({ color: ink, transparent: true, opacity: 0.88, depthWrite: false });
       const tube = new Mesh(new TubeGeometry(new CatmullRomCurve3(lifted), lifted.length * 3, 0.045, 8, false), material);
@@ -31410,10 +31422,11 @@ var CubusCube = class _CubusCube extends HTMLElement {
       head.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), tangent);
       tube.renderOrder = 3;
       head.renderOrder = 3;
-      tube.userData = { trail: token, stops, curve: curve.map((v) => v.toArray()) };
+      tube.userData = { trail: token, stops, curve: curve.map((v) => v.toArray()), lifted: lifted.map((v) => v.toArray()) };
       this.root.add(tube, head);
       this._trailMeshes.push(tube, head);
     }
+    this._applyCamera();
   }
   /** Hold the arrow in the sequence's frame, so the next move is drawn about the axis it will turn. */
   _placeArrowFrame() {
@@ -31809,6 +31822,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
       scale: this._num("facelet-scale", 0.9),
       cull: !stable
     });
+    for (const mesh of this._trailMeshes ?? []) for (const q of mesh.userData.lifted ?? []) points.push(q);
     const geom = { points, vfovDeg: this.camera.fov, aspect: this._drawAspect(), eye, worldUp };
     const d = stable ? fitDistanceStable(geom) : fitDistance(geom);
     if (this.controls) {
