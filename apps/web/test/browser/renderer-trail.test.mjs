@@ -79,6 +79,9 @@ test('between two stops the trail is the arc a turn moves the piece on, and land
     }
     const radius = Math.hypot(...stops[0]);
     for (const p of curve) assert.ok(Math.abs(Math.hypot(...p) - radius) < 1e-6, `${trail.trail}: a point of the curve left the sphere its cubie turns on`);
+    // Drawn outside the stickers, where it can be seen: a trail lifted by a plain scale of its cubie's centre kept
+    // a top-layer edge's path inside the cube, and a U permutation's whole trail drew hidden (found on the look sheet).
+    assert.deepEqual(trail.lifted.filter((q) => Math.max(...q.map(Math.abs)) < 1.55), [], `${trail.trail}: part of the trail is inside the cube`);
   }
 });
 
@@ -113,9 +116,29 @@ test('a trail is drawn: the canvas changes when one is asked for', async () => {
     gl.readPixels(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.RGBA, gl.UNSIGNED_BYTE, px);
     return Array.from(px);
   });
-  await build({ alg: "R U R' U'" });
+  // The U permutation's three edges: the case whose trail drew entirely hidden before its lift was fixed.
+  const uperm = "R U' R U R U R U' R' U' R2";
+  await build({ alg: uperm });
   const plain = await shoot();
-  await build({ alg: "R U R' U'", trail: 'piece:URF' });
+  await build({ alg: uperm, trail: 'piece:UF,piece:UL,piece:UR' });
   const traced = await shoot();
-  assert.ok(plain.filter((v, i) => Math.abs(v - traced[i]) > 8).length > 400, 'the trail is not being drawn');
+  const changed = plain.filter((v, i) => Math.abs(v - traced[i]) > 8).length;
+  assert.ok(changed > 3000, `a U permutation's trails changed only ${changed} channel values — they are not being seen`);
+});
+
+test('a trail is fitted into the frame: every point it draws lands inside the canvas', async () => {
+  // The commutator's corner loops below the cube; before the fit knew about trails it ran off the frame.
+  for (const [alg, trail] of [["R U R' U'", 'piece:URF'], ["R U' R U R U R U' R' U' R2", 'piece:UF,piece:UL,piece:UR']]) {
+    await build({ alg, trail });
+    const outside = await page.evaluate(() => {
+      const el = window.__cube;
+      el.root.updateMatrixWorld(true);
+      el.camera.updateMatrixWorld(true);
+      const V = el.camera.position.constructor;
+      return (el._trailMeshes ?? []).filter((m) => m.userData.lifted).flatMap((m) => m.userData.lifted)
+        .map((q) => new V(...q).applyMatrix4(el.root.matrixWorld).project(el.camera))
+        .filter((p) => Math.abs(p.x) > 1 || Math.abs(p.y) > 1).length;
+    });
+    assert.equal(outside, 0, `${trail} over "${alg}": ${outside} points of the trail are off the canvas`);
+  }
 });
