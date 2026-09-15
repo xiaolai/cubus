@@ -20,7 +20,7 @@ import { TARGETS } from '../lib/stage-targets.js';
 import {
   CAPABILITIES, CUE_VERBS, SCENARIOS, SOURCES, STEP_KINDS, TARGET_IDS, WHY_KEYS,
 } from './fixtures/tutorial-scenarios.mjs';
-import { MODEL_RUNNERS, OPEN_ITEMS, assertCovered, strictKit, underGapRules } from './tutorial-runner.mjs';
+import { MODEL_RUNNERS, OPEN_ITEMS, assertCovered, scriptFor, strictKit, underGapRules } from './tutorial-runner.mjs';
 
 /** The sibling lesson-course checkout, where its parser lives. Absent on a clone of this repo alone. */
 const CUBUS_IM = process.env.CUBUS_IM_REPO
@@ -53,6 +53,30 @@ test('every capability a row names exists, and every one not working says which 
     const works = s.wants.filter((w) => CAPABILITIES[w].status === 'works');
     assert.deepEqual(works, [], `${s.stage} (${s.where}) wants what already works: ${works.join(', ')}`);
   }
+});
+
+// Plan item 3.1's acceptance: the format is not a format until the tutorials that exist can be written
+// in it. Every scenario that names a cube and something happening to it is converted — the ones written
+// in the cube's own frame relabelled into the child's — and read back by the format's own checker.
+test('every scenario is expressible as a script', () => {
+  const expressed = [];
+  for (const sc of SCENARIOS) {
+    const doc = scriptFor(sc, kit);
+    if (doc === null) {
+      assert.equal(sc.kind, 'covered', `${sc.id}: nothing to express, and it is not a scenario pinned elsewhere`);
+      continue;
+    }
+    assert.equal(kit.checkScript(doc), doc, `${sc.id}: its script is refused`);
+    expressed.push(sc.id);
+  }
+  assert.ok(expressed.length >= SCENARIOS.length - 4, `only ${expressed.length} of ${SCENARIOS.length} scenarios are expressible`);
+  // And the conversion is real: a scenario written in the cube's own frame comes out in the child's.
+  const tumbled = SCENARIOS.find((s) => s.kind === 'identity' && s.orientation === 'D B');
+  const script = scriptFor(tumbled, kit);
+  assert.notEqual(script.steps.find((x) => x.move).move, tumbled.alg,
+    'a tumbled scenario was copied rather than relabelled — its letters mean different faces to the child');
+  assert.equal(kit.run(kit.parse(script.steps.find((x) => x.move).move), tumbled.orientation.split(' '), kit.SOLVED).drawn.join(' '),
+    tumbled.alg, 'the relabelled moves do not draw the scenario they came from');
 });
 
 test('every reason key the method solver can emit has a row, and no row is for a key it cannot', () => {

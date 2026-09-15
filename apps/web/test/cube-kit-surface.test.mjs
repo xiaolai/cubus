@@ -26,6 +26,7 @@ import * as pieces from '../lib/cube-pieces.js';
 import * as format from '../lib/lesson-format.js';
 import * as player from '../lib/lesson-player.js';
 import * as schedule from '../lib/lesson-schedule.js';
+import * as scriptQuestions from '../lib/script-questions.js';
 import * as view from '../lib/cube-view.js';
 import { CUBE_VIEW, CUBE_VIEW_ATTRS } from '../lib/cube-view.js';
 
@@ -49,10 +50,13 @@ const PROMISED = [
   'CAM_DEFAULT', 'CAM_EASE', 'GHOST_ELEV', 'GHOST_REVEAL', 'MIN_PER_MOVE', 'QUARTER_GAP',
   'SPAN_LEAD', 'buildSchedule', 'cameraAt', 'checkEpisode', 'createLessonPlayer', 'lineAt',
   'numberAt', 'resolveSpanning', 'segmentAt', 'viewAt',
+  // The script runtime (plan item 3.1): the format both drivers read, and the questions a cue names.
+  'STEP_CUES', 'STEP_KINDS', 'checkLesson', 'checkScript', 'heldFace', 'identityFace',
+  'QUESTIONS', 'TAKES_ARGUMENT', 'ask', 'readAsk',
 ];
 
 /** The modules whose names the kit re-exports. A new owning module is added here with its first name. */
-const SOURCES = [pieces, frame, highlight, moves, notation, questions, orientation, view, format, schedule, player];
+const SOURCES = [pieces, frame, highlight, moves, notation, questions, orientation, view, format, schedule, player, scriptQuestions];
 
 /** Promised names the kit does not export. */
 export const missingFrom = (exports, promised) => promised.filter((n) => !Object.hasOwn(exports, n)).sort();

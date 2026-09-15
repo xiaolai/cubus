@@ -80,7 +80,7 @@ export { formatMoves, parse } from './cube-notation.js';
 
 // The interpreter: the child's moves, read in the hold in force as each is made, applied to a cube —
 // the pieces, the hold after, and the identity-frame tokens that draw it (ADR 0004 decision 5).
-export { convertSelectors, run } from './cube-moves.js';
+export { convertSelectors, heldFace, identityFace, run } from './cube-moves.js';
 
 // Questions a tutorial asks of one cube — a piece state or a painted picture with unknown stickers.
 // They read and never move (dev-docs/adr/0005-the-renderer-plays-scripts-methods-choose.md, decision 2).
@@ -106,6 +106,17 @@ export { CUBE_VIEW, CUBE_VIEW_ATTRS } from './cube-view.js';
 // rather than part of a build script, because a schedule that resolves it differently is a
 // different schedule with nothing to say so.
 export { checkEpisode, MIN_PER_MOVE, resolveSpanning, SPAN_LEAD } from './lesson-format.js';
+
+// A SCRIPT is the same tutorial with no clock attached: steps in the child's frame, cues that take
+// effect where they are written, pictures that are not cubes, and drill rounds
+// (dev-docs/adr/0005-the-renderer-plays-scripts-methods-choose.md decision 3). `checkLesson` is the one
+// door that tells the two kinds apart.
+export { STEP_CUES, STEP_KINDS, checkLesson, checkScript } from './lesson-format.js';
+
+// The questions a script names, and the frame they are asked in: a script writes "the top edges with
+// none of the top colour" the way the child holds the cube, and this is where that becomes a question
+// `lib/cube-questions.js` can answer.
+export { QUESTIONS, TAKES_ARGUMENT, ask, readAsk } from './script-questions.js';
 export {
   CAM_DEFAULT,
   CAM_EASE,
