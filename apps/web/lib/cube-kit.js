@@ -134,6 +134,9 @@ export { ROUND_QUESTIONS } from './lesson-format.js';
 // The load contract: one route at a time, nothing from a superseded one applied, and the connection's
 // live model kept across loads and located on each (plan item 3.5).
 export { createScriptPlayer } from './script-player.js';
+
+// Flat views from the same model: the net and the top-face case diagram, as SVG text (plan item 4.5).
+export { TOP_RING, faceletsOf, netSvg, topFaceSvg } from './cube-flat.js';
 export {
   CAM_DEFAULT,
   CAM_EASE,
