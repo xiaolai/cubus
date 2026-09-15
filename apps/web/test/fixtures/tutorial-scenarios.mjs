@@ -32,7 +32,7 @@ export const CAPABILITIES = Object.freeze({
   ghosts: { what: 'see the hidden faces: floating ghosts, back view', status: 'works' },
   camera: { what: 'place the eye: latitude, longitude, a tour', status: 'works' },
   arrow: { what: 'a turn arrow on the face about to move', status: 'works' },
-  label: { what: 'face letters on the cube', status: 'gap', item: '4.3' },
+  label: { what: 'face letters on the cube', status: 'works' },
   trail: { what: 'the path a piece takes over a sequence', status: 'gap', item: '4.4' },
   'flat-view': { what: 'a net or a top-face case diagram drawn from the same model', status: 'gap', item: '4.5' },
   'several-cubes': { what: 'many cubes on one page', status: 'partial', item: '4.6' },
@@ -110,7 +110,7 @@ export const TARGET_IDS = Object.freeze({
  * work (plan Phase 6), and moving a row from `ready` to `uses` is the record that it happened.
  */
 export const SOURCES = Object.freeze([
-  { stage: 'concepts', where: 'cubus-im lessons 1-6', uses: ['face-turns', 'highlight-piece', 'highlight-position', 'focus', 'camera', 'ghosts', 'page-overlay', 'clock-playback'], wants: ['label'], ready: ['arrow'] },
+  { stage: 'concepts', where: 'cubus-im lessons 1-6', uses: ['face-turns', 'highlight-piece', 'highlight-position', 'focus', 'camera', 'ghosts', 'page-overlay', 'clock-playback'], wants: [], ready: ['label', 'arrow'] },
   { stage: 'concepts', where: 'cubus-im playground (three modes)', uses: ['face-turns', 'highlight-piece', 'piece-state'], wants: ['trail'] },
   { stage: 'cross', where: 'cubus-im lessons 7-8; app cross rungs', uses: ['face-turns', 'highlight-piece', 'highlight-position', 'focus', 'ghosts', 'hold-set', 'clock-playback', 'stop-playback'], wants: [] },
   { stage: 'first layer', where: 'cubus-im lessons 9-10; app first-layer rung', uses: ['face-turns', 'highlight-piece', 'highlight-position', 'focus', 'hold-set', 'clock-playback', 'stop-playback'], wants: [], ready: ['hold-change-in-sequence', 'question'] },
@@ -257,6 +257,11 @@ export const SCENARIOS = Object.freeze([
     id: 'arrow-on-the-move-about-to-happen', stage: 'concepts', half: 'element', kind: 'arrow', closedBy: '4.2',
     source: 'cubus-im lessons 1-6 and the sheets: which face turns next, and which way', needs: ['arrow'],
     alg: "R U' M y F2",
+  },
+  {
+    id: 'letters-name-places-and-faces', stage: 'concepts', half: 'element', kind: 'label', closedBy: '4.3',
+    source: 'cubus-im lessons 3-4: the face on top is U whichever colour it is — and the white face is still white',
+    needs: ['label'], holds: ['U F', 'D B', 'R F', 'F L'],
   },
   {
     id: 'R11-focus-and-highlight-keep-their-split', stage: 'every stage', half: 'element', kind: 'covered',

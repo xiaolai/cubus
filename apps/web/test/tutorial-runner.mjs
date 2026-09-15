@@ -189,13 +189,16 @@ export function scriptFor(sc, kit) {
     ? alg.trim().split(/\s+/).filter(Boolean).map((t) => t.replace(/^[URFDLB]/, (f) => kit.heldFace(f, hold.split(' ')))).join(' ')
     : alg);
   const algs = sc.algs ?? sc.walks ?? [sc.moves ?? sc.alg ?? sc.planned].filter(Boolean);
-  if (!algs.length && !sc.selector && !sc.ask) return null;
+  if (!algs.length && !sc.selector && !sc.ask && !sc.holds) return null;
   const start = {};
   if (sc.start?.setup) start.scramble = sc.start.setup;
   const steps = [];
   if (sc.selector) steps.push({ hl: sc.selector, say: 'the piece this lesson is about' });
   for (const alg of algs) steps.push({ move: held(alg), say: 'watch this' });
   if (sc.ask) steps.push({ ask: sc.ask, hl: `ask:${sc.ask}`, say: 'which ones are these?' });
+  // A lesson about the letters: the same cube held several ways, the letters on.
+  for (const [k, h] of (sc.holds ?? []).entries()) steps.push({ hold: h, say: 'which face is on top?', ...(k === 0 ? { labels: 'position' } : {}) });
+  if (sc.kind === 'arrow') steps.forEach((step) => { if (step.move) step.arrow = 'next'; });
   return { schema: 2, start: { ...start, hold }, steps };
 }
 

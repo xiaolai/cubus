@@ -151,3 +151,11 @@ test('a painted picture answers what it shows, and says what it cannot', () => {
   assert.equal(unknowable.slot, null, 'a target that claims nothing about the top edges answered anyway');
   assert.deepEqual([...unknowable.unknown], ['?']);
 });
+
+test('Phase 4\'s annotations are cues: an arrow is one move or next, and letters are a mode', () => {
+  assert.equal(refusal(script([{ move: 'R', arrow: "U'", labels: 'position' }])), null);
+  assert.equal(refusal(script([{ move: 'R', arrow: 'next', labels: 'face' }])), null);
+  assert.match(refusal(script([{ move: 'R', arrow: 'R U' }])), /`arrow` is one move or "next"/);
+  assert.match(refusal(script([{ move: 'R', arrow: 'Q' }])), /`arrow` "Q" is not a move/);
+  assert.match(refusal(script([{ move: 'R', labels: 'all' }])), /`labels` is none, position or face/);
+});
