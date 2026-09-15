@@ -11,7 +11,7 @@
     "build": "esbuild src/cubus-cube.js --bundle --format=esm --target=es2022 --legal-comments=eof --outfile=../../apps/web/vendor/cubus-cube.js && node build-cube-manifest.mjs"
   },
   "dependencies": {
-    "three": "^0.185.1"
+    "three": "^0.186.0"
   },
   "devDependencies": {
     "esbuild": "^0.28.2"
