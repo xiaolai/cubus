@@ -118,6 +118,40 @@ export function toIdentity(move, hold) {
   };
 }
 
+/** The identity face at the position `face` names — the face the child means — on a cube held `hold`. */
+export function identityFace(face, hold) {
+  const rows = checkHold(hold);
+  const world = NORMAL[face];
+  if (!world || !Object.hasOwn(NORMAL, face)) throw new Error(`cube-moves: "${face}" is not a face`);
+  // The identity vector lying along a world vector is the rows weighted by its components.
+  return faceOf([0, 1, 2].map((j) => rows.reduce((sum, row, i) => sum + world[i] * row[j], 0)));
+}
+
+/** The position identity face `face` is at — the letter the child reads it by — on a cube held `hold`. */
+export function heldFace(face, hold) {
+  const rows = checkHold(hold);
+  const identity = NORMAL[face];
+  if (!identity || !Object.hasOwn(NORMAL, face)) throw new Error(`cube-moves: "${face}" is not a face`);
+  return faceOf(rows.map((row) => row.reduce((sum, c, j) => sum + c * identity[j], 0)));
+}
+
+const SELECTOR = /\b(layer|slot|piece):([URFDLB]{1,3})\b/gi;
+
+/**
+ * A highlight or focus spec written the way the child holds the cube, in identity letters.
+ *
+ * Every letter of `slot:`, `layer:` and `piece:` names a position in the hold in force, as a move letter
+ * does (ADR 0004 decision 6); the bare kinds — `centers`, `edges`, `corners` — are the same set in
+ * every frame and pass through.
+ */
+export function convertSelectors(spec, hold) {
+  checkHold(hold);
+  return String(spec ?? '').replace(
+    SELECTOR,
+    (_, kind, letters) => `${kind}:${[...letters.toUpperCase()].map((c) => identityFace(c, hold)).join('')}`,
+  );
+}
+
 /** Identity layer masks -> the letter that names them, per axis. */
 const LETTER = Object.freeze({
   x: { '1': 'R', '-1': 'L', '0': 'M', '0,1': 'r', '-1,0': 'l', '-1,0,1': 'x' },
