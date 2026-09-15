@@ -72,15 +72,25 @@ async function readOnce(bundle) {
   }
   if (!captured) throw new Error(`${fileURLToPath(bundle)} defined no custom element`);
   const { name, cls } = captured;
+  const own = Object.getOwnPropertyNames(cls.prototype)
+    // Anything starting with `_` is ours to change without telling anyone; `constructor` and the
+    // lifecycle callbacks are the platform's, not a capability a consumer asks about.
+    .filter((k) => !k.startsWith('_') && k !== 'constructor' && !k.endsWith('Callback'));
+  const seams = new Set(cls.seams ?? []);
+  const descriptorOf = (k) => Object.getOwnPropertyDescriptor(cls.prototype, k);
   return {
     tag: name,
     attributes: [...(cls.observedAttributes ?? [])].sort(),
-    methods: Object.getOwnPropertyNames(cls.prototype)
-      // Anything starting with `_` is ours to change without telling anyone; `constructor` and the
-      // lifecycle callbacks are the platform's, not a capability a consumer asks about.
-      .filter((k) => !k.startsWith('_') && k !== 'constructor' && !k.endsWith('Callback'))
-      .filter((k) => typeof Object.getOwnPropertyDescriptor(cls.prototype, k)?.value === 'function')
-      .sort(),
+    methods: own.filter((k) => typeof descriptorOf(k)?.value === 'function').sort(),
+    // An accessor is a capability of a different shape: a value a consumer reads, writes, or both.
+    // Read mechanically like the methods; a member the class declares as a test seam is left out, so
+    // the pinned clock is not advertised as something a lesson may set (`static seams`).
+    properties: own
+      .filter((k) => !seams.has(k) && (descriptorOf(k)?.get || descriptorOf(k)?.set))
+      .sort()
+      .map((k) => ({ name: k, read: !!descriptorOf(k).get, write: !!descriptorOf(k).set })),
+    events: [...(cls.events ?? [])].sort(),
+    operations: Object.fromEntries(Object.entries(cls.operations ?? {}).sort(([a], [b]) => (a < b ? -1 : 1))),
     digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
   };
 }

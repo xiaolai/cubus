@@ -63,7 +63,7 @@ export function createLessonPlayer(cube, schedule, { reducedMotion = () => false
     // animation left the renderer mid-turn — the count was the same either side of the jump, so
     // nothing told the cube to stop, and it went on finishing a turn the listener had scrubbed away
     // from.
-    if (view.moves !== applied || (jumped && cube._anim)) {
+    if (view.moves !== applied || (jumped && cube.animating)) {
       const stepping = !jumped && applied >= 0 && view.moves - applied === ONE_BEHIND;
       if (stepping) {
         const m = schedule.segments[segment].moves[view.moves - 1];
