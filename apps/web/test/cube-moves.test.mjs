@@ -1,8 +1,10 @@
 // The interpreter's three rules, each held to something that shares no code with it (plan item 1.2 of
 // dev-docs/tutorial-capability-plan.md; ADR 0004 decision 5).
 //
-//   face letters   the inverse of `renameAlg`, over all 24 holds × 18 moves — two independent
-//                  derivations of one relabelling, one written for the display and one for the model;
+//   face letters   the inverse of `renameAlg`, over all 24 holds × 18 moves. Since plan item 1.3 the two
+//                  share `heldFace`, so this checks the two directions agree, not that either is right;
+//                  what makes the relabelling right is `solving-hold.test.mjs`, which holds `renameAlg`
+//                  to cubejs through `turnFacelets`, and the oracle cases below;
 //   rotations      `test/cube-oracle.mjs`, a sticker model checked against cubejs, over all 24 holds
 //                  × x y z × every amount;
 //   wide / slice   the same oracle, over every hold × every mask × every amount, from a scrambled cube,
@@ -15,10 +17,10 @@ import { test } from 'node:test';
 
 import Cube from '../vendor/cubejs.js';
 import { SOLVED, applyAlg, fromCube } from '../lib/cube-pieces.js';
-import { applyIdentity, run, tokenOf, toIdentity } from '../lib/cube-moves.js';
+import { applyIdentity, convertSelectors, heldFace, identityFace, run, tokenOf, toIdentity } from '../lib/cube-moves.js';
 import { parse } from '../lib/cube-notation.js';
 import { ORIENTATIONS } from '../lib/cube-orientation.js';
-import { renameAlg } from '../lib/solving-hold.js';
+import { METHOD_TO_SCAN, renameAlg, renameSelectors } from '../lib/solving-hold.js';
 import { SOLVED_FACELETS, applyToken, held, holdOf, play } from './cube-oracle.mjs';
 
 const stateOf = (facelets) => fromCube(Cube.fromString(facelets));
@@ -128,4 +130,20 @@ test('toIdentity refuses an axis that is not one, and a hold that is not one', (
   assert.throws(() => toIdentity({ axis: 'w', layers: [1], angle: 1, turns: 1 }, ['U', 'F']), /no axis/);
   assert.throws(() => run('R', ['U', 'D'], SOLVED), /perpendicular|one axis/);
   assert.throws(() => run('R', ['U'], SOLVED), /\[up, front\]/);
+});
+
+test('selectors: the child\'s letters read into identity letters are the inverse of the display\'s renaming', () => {
+  const spec = 'centers,edges,piece:DF,piece:URF,slot:BL,slot:UR,layer:R,layer:D';
+  for (const hold of ORIENTATIONS) {
+    assert.equal(renameSelectors(convertSelectors(spec, hold), hold), spec, `held ${holdText(hold)}`);
+    assert.equal(convertSelectors(renameSelectors(spec, hold), hold), spec, `held ${holdText(hold)}, other way`);
+    for (const face of FACES) assert.equal(heldFace(identityFace(face, hold), hold), face);
+  }
+  // The method frame's white cross is the scan frame's UB, UR, UF, UL (ADR 0003's door, unchanged).
+  assert.equal(renameSelectors('piece:DF,piece:DR,piece:DB,piece:DL', METHOD_TO_SCAN), 'piece:UB,piece:UR,piece:UF,piece:UL');
+  // cubus-im lesson 12: gripped x2, turned y2 — the piece on the child's front-left is identity FR.
+  const [kind, letters] = convertSelectors('piece:FL', ['D', 'F']).split(':');
+  assert.equal(`${kind}:${[...letters].sort().join('')}`, 'piece:FR');
+  assert.equal(convertSelectors('slot:UF', ['U', 'F']), 'slot:UF', 'the reference hold renames nothing');
+  assert.throws(() => identityFace('Q', ['U', 'F']), /not a face/);
 });

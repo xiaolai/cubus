@@ -29,6 +29,7 @@
 // Pure: no DOM, no renderer, no solver. `test/solving-hold.test.mjs` holds every renaming to the
 // identity that defines it, over every one of the 24 holds.
 
+import { heldFace } from './cube-moves.js';
 import { ORIENTATIONS, orientationPerm, orientationRelabel, turnFacelets } from './cube-orientation.js';
 import { movesOf } from './cube-pieces.js';
 import { t } from './i18n.js';
@@ -98,14 +99,16 @@ const FACE_TURN = /^([URFDLB])(2|'|)$/;
  * LOUD on anything that is not a face turn. A wide move or a cube rotation cannot be renamed by its
  * letter alone, and none of this app's sources produce one; one arriving is a defect upstream, and
  * renaming its first letter would hand a child a move that is not the one on screen.
+ *
+ * The renaming itself is the interpreter's (`heldFace` in `lib/cube-moves.js`), the other direction of
+ * the same rule it reads a child's letters by — one relabelling, not two (ADR 0004 decision 5).
  */
-export function renameAlg(alg, [up, front]) {
-  const relabel = orientationRelabel(up, front);
+export function renameAlg(alg, hold) {
   return movesOf(alg)
     .map((move) => {
       const hit = FACE_TURN.exec(move);
       if (!hit) throw new Error(`solving-hold: "${move}" is not a face turn, so it cannot be renamed for a hold`);
-      return relabel[hit[1]] + hit[2];
+      return heldFace(hit[1], hold) + hit[2];
     })
     .join(' ');
 }
@@ -124,13 +127,13 @@ const SELECTOR = /\b(layer|slot|piece):([URFDLB]{1,3})\b/gi;
  * `piece:DF` in the method frame is the white-blue edge, which the scan frame calls `UB`. Letter by
  * letter is enough: `cube-highlight.js` matches a piece by its SORTED letters, so the order a
  * renaming leaves them in does not matter. The bare kinds (`centers`, `edges`, `corners`) are the
- * same set in every frame and pass through.
+ * same set in every frame and pass through. The inverse — a spec the child's frame wrote, read into
+ * identity letters — is `convertSelectors` in `lib/cube-moves.js`.
  */
-export function renameSelectors(spec, [up, front]) {
-  const relabel = orientationRelabel(up, front);
+export function renameSelectors(spec, hold) {
   return String(spec ?? '').replace(
     SELECTOR,
-    (_, kind, letters) => `${kind}:${[...letters.toUpperCase()].map((c) => relabel[c]).join('')}`,
+    (_, kind, letters) => `${kind}:${[...letters.toUpperCase()].map((c) => heldFace(c, hold)).join('')}`,
   );
 }
 
