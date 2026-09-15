@@ -865,6 +865,40 @@ test('a lost turn forgets the model once, whichever of its two hooks hears of it
   }
 });
 
+// A walk may pass through one arrangement twice, two moves apart: a step that ends on `R` and a
+// step that begins with `R'` are not merged, because each step is a unit the learner is taught.
+// Measured 2026-09-15 over 150 scrambles × every rung combination: 1,661 of 3,600 method walks
+// revisit a state within two moves. At such a point the cube in hand matches the step behind AND
+// the step ahead, and the move that got it there is literally the walk's next move — so reading it
+// as an undo drew a turn backwards that nobody made, and the walk only caught up on a later jump.
+test('a turn that cancels the one before it is the walk\'s next move, not an undo', () => {
+  const win = new Window();
+  windows.push(win);
+  const root = win.document.createElement('div');
+  root.innerHTML = MARKUP;
+  win.document.body.appendChild(root);
+  const R = turned('R');
+  const state = { cube: { facelets: SOLVED, trusted: true, isPhysical: true, source: 'cube', staleWhy: '' }, live: SOLVED };
+  const calls = [];
+  const walk = { moves: ['R', "R'"], steps: [SOLVED, R, SOLVED] };
+  const follow = createFollowTracker({
+    root,
+    cube: { seek: () => {}, step: () => calls.push('step'), stepBack: () => calls.push('stepBack') },
+    state, cubejs: () => Cube,
+    applyTempo: () => {}, setPlaying: () => {}, holdAt: () => SCAN_HOLD, markStale: () => {},
+    adoptCube: () => {}, go: () => {}, scrambling: false,
+    refreshLiveDistance: async () => {}, dropLiveDistance: () => {},
+    chainTrusted: () => state.cube.trusted && state.cube.source === 'cube',
+    walkNow: () => walk,
+  });
+  follow.rebase(walk);
+  assert.equal(follow.following(), true, 'precondition: the walk starts where the cube is, so the cube leads');
+  follow.liveMove({ notation: 'R', serial: 1 });
+  follow.liveMove({ notation: "R'", serial: 2 });
+  assert.deepEqual(calls, ['step', 'step'],
+    'the second turn is the walk\'s own next move; drawing it as an undo sends the walk backwards');
+});
+
 test('leaving the screen calls off the live distance\'s exact search too', async () => {
   const R = turned('R');
   const routes = [];
