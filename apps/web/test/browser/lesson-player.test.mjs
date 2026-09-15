@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs';
 
 import { checkEpisode, resolveSpanning } from '../../lib/lesson-format.js';
 import { buildSchedule, viewAt } from '../../lib/lesson-schedule.js';
+import { MANIFEST, installPublicCube } from './public-cube.mjs';
 import { startBrowserFixture } from './harness.mjs';
 
 const raw = JSON.parse(
@@ -284,4 +285,72 @@ test('seeking during an animation does not leave a stale turn running', async ()
   }, m.at);
   assert.equal(stale.animating, true, 'the step never started, so this proves nothing');
   assert.equal(stale.stillAnimating, false, 'a turn went on running after the listener jumped away');
+});
+
+// THE CONTRACT, RUN RATHER THAN DECLARED (plan item 2.5). The player is a consumer of
+// `<cubus-cube>`, and until the manifest grew it could not paint a single frame without reaching
+// past it: `setAttribute` was not in the contract, and neither was "is a turn animating", which is
+// why it read the private `_anim`. Both cases are here because the refusal is what makes the claim
+// checkable — the proxy names what it refused.
+test('the player paints an episode through the public cube, touching nothing the manifest omits', async () => {
+  await installPublicCube(page);
+  await page.addScriptTag({
+    type: 'module',
+    content: `
+      import { createLessonPlayer } from '/lib/lesson-player.js';
+      window.__playerOn = (target) => createLessonPlayer(target, window.__schedule);
+    `,
+  });
+  await page.waitForFunction(() => typeof window.__playerOn === 'function');
+  await page.evaluate((episode) => window.__makePlayer(episode), EPISODE);
+  await page.evaluate(() => window.__cube.recycle());
+
+  const refused = await page.evaluate(async (probes) => {
+    const player = window.__playerOn(window.__publicCube(window.__cube));
+    const out = [];
+    for (const t of probes) {
+      try { player.seek(t); player.paint(t + 0.01); } catch (e) { out.push(`${t}: ${e.message}`); }
+      await new Promise((r) => requestAnimationFrame(r));
+    }
+    return out;
+  }, PROBES);
+  assert.deepEqual(refused, [], 'the player reached past the manifest');
+
+  // And the picture is the one the same episode draws through the element directly: a contract that
+  // is kept by drawing nothing would pass the case above.
+  const throughProxy = await picture();
+  await page.evaluate((episode) => window.__makePlayer(episode), EPISODE);
+  await page.evaluate(() => window.__cube.recycle());
+  await seek(PROBES.at(-1));
+  await page.evaluate((t) => { window.__player.paint(t + 0.01); }, PROBES.at(-1));
+  assert.equal(await picture(), throughProxy, 'the player drew a different cube through the proxy');
+});
+
+test('the contract is what makes that possible: without it the first attribute write is refused', async () => {
+  // The manifest as it was before item 2.5 — attributes and methods, no DOM operations — is what the
+  // player used to be held to, and it cannot write an attribute at all. Restored at the end, because
+  // every later case in this file drives the real one.
+  const asSchema1 = { ...MANIFEST, properties: [], events: [], operations: {} };
+  await installPublicCube(page, asSchema1);
+  try {
+    await page.evaluate((episode) => window.__makePlayer(episode), EPISODE);
+    await page.evaluate(() => window.__cube.recycle());
+    const first = await page.evaluate(() => {
+      const player = window.__playerOn(window.__publicCube(window.__cube));
+      try { player.seek(0); return null; } catch (e) { return e.message; }
+    });
+    assert.match(first ?? '', /no member "(setAttribute|removeAttribute)"/,
+      'a manifest without DOM operations should refuse the first attribute the player writes');
+  } finally {
+    await installPublicCube(page);
+  }
+});
+
+// The private read the public member replaced. A comment saying "use `animating`" is not a check;
+// this is, and it fails the day someone reaches for a private field again.
+test('the player reads no private member of the element', () => {
+  const src = readFileSync(new URL('../../lib/lesson-player.js', import.meta.url), 'utf8');
+  const privateReads = [...src.matchAll(/\bcube\._[A-Za-z]+/g)].map((m) => m[0]);
+  assert.deepEqual(privateReads, [], 'the player is reaching past the manifest into the element');
+  assert.ok(/cube\.animating/.test(src), 'precondition: the player asks whether a turn is animating');
 });

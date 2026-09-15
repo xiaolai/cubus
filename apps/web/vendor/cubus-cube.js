@@ -29381,6 +29381,47 @@ var CubusCube = class _CubusCube extends HTMLElement {
     "backview",
     "orbit"
   ];
+  /**
+   * The events this element dispatches — part of the contract, so part of the manifest.
+   *
+   * DECLARED, not discovered. `new CustomEvent('cubus-step', …)` is a string inside a function, and
+   * finding it in a bundle means grepping — the very instrument the manifest exists to replace
+   * (build-cube-manifest.mjs's header). So the class says what it dispatches and the build reads THAT
+   * out of the bundle; `apps/web/test/cube-manifest.test.mjs` checks the list against every
+   * `CustomEvent` this source constructs, so an event nobody declared fails there rather than shipping
+   * as an undocumented capability.
+   */
+  static events = Object.freeze(["cubus-step"]);
+  /**
+   * The platform members a consumer may use on the element, and what each argument must be.
+   *
+   * `attributes`, `methods` and `properties` describe what this element ADDS; a host also does
+   * ordinary DOM things to it, and those are a capability too — writing an attribute is how most of
+   * this element is driven. `{ args }` is callable, with one rule per argument: `attribute` and
+   * `event` must NAME one this manifest lists, `listener` is a handler, `value` and `options` are
+   * whatever the platform takes. `{ read: true }` is a member a consumer may read and not call.
+   * Anything absent is not part of the contract (ADR 0005 decision 4).
+   */
+  static operations = Object.freeze({
+    setAttribute: Object.freeze({ args: Object.freeze(["attribute", "value"]) }),
+    removeAttribute: Object.freeze({ args: Object.freeze(["attribute"]) }),
+    getAttribute: Object.freeze({ args: Object.freeze(["attribute"]) }),
+    hasAttribute: Object.freeze({ args: Object.freeze(["attribute"]) }),
+    addEventListener: Object.freeze({ args: Object.freeze(["event", "listener", "options"]) }),
+    removeEventListener: Object.freeze({ args: Object.freeze(["event", "listener", "options"]) }),
+    remove: Object.freeze({ args: Object.freeze([]) }),
+    style: Object.freeze({ read: true }),
+    isConnected: Object.freeze({ read: true })
+  });
+  /**
+   * Members that exist for TESTS and are not capabilities, kept out of the manifest by name.
+   *
+   * `clock` pins time so a mid-turn frame and a highlight at a chosen point in its breath are
+   * reproducible. A consumer that pinned it would stop the cube. Declared here, beside the seam, so
+   * leaving one out of the contract is a decision made in the open rather than a rule living in the
+   * generator; the generator drops these and lists every other accessor mechanically.
+   */
+  static seams = Object.freeze(["clock"]);
   static ALIAS = {
     ghostelevation: "ghost-elevation",
     cameralatitude: "camera-latitude",
@@ -29444,6 +29485,18 @@ var CubusCube = class _CubusCube extends HTMLElement {
   }
   get highlight() {
     return this._attrs.highlight;
+  }
+  /**
+   * Is a turn being animated right now?
+   *
+   * The one question a host asks that is about the element's own timing rather than about the cube:
+   * a scrubber that jumps while a turn is in flight has to say so, or the cube finishes a turn the
+   * listener has already scrubbed away from. `lesson-player.js` read `_anim` for this, which is a
+   * private field — a consumer reaching past the contract because the contract was missing a word
+   * (ADR 0005 decision 4).
+   */
+  get animating() {
+    return this._anim != null;
   }
   /**
    * Where `alg` stops, as token positions — `seek(el.stops[k])` is the cube at stop `k`.

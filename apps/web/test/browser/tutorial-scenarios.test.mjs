@@ -8,7 +8,6 @@
 // table, a hold drawn the wrong way round or a turn applied to the wrong layer shows up as a letter in
 // the wrong place — never as two copies of one mistake agreeing with each other.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { after, before, test } from 'node:test';
 
 import { ROTATIONS, SOLVED_FACELETS, applyMoves, held, play } from '../cube-oracle.mjs';
@@ -16,13 +15,11 @@ import { SCENARIOS } from '../fixtures/tutorial-scenarios.mjs';
 import * as cubeKit from '../../lib/cube-kit.js';
 import { OPEN_ITEMS, strictKit, underGapRules } from '../tutorial-runner.mjs';
 import { readMatrices, readStickers, toWorld } from './drawn-cube.mjs';
+import { installPublicCube } from './public-cube.mjs';
 import { startBrowserFixture } from './harness.mjs';
 
 /** What a scenario may use of the model: cube-kit, strictly. */
 const kit = strictKit(cubeKit);
-
-/** What a consumer may touch, as the element itself declares it (plan item 2.5 widens this). */
-const MANIFEST = JSON.parse(readFileSync(new URL('../../vendor/cubus-cube.manifest.json', import.meta.url), 'utf8'));
 
 let fixture; let page;
 
@@ -31,26 +28,9 @@ before(async () => {
   page = await fixture.browser.newPage();
   await page.goto(`${fixture.base}/index.html`);
   await page.waitForFunction(() => !!customElements.get('cubus-cube'));
-  // The public cube a scenario is WRITTEN against: the manifest's attributes through the DOM's own
-  // attribute calls, the manifest's methods, and nothing else. Anything more throws, naming itself.
-  await page.evaluate((manifest) => {
-    const attributes = new Set(manifest.attributes);
-    const methods = new Set(manifest.methods);
-    const attributeCalls = new Set(['setAttribute', 'removeAttribute', 'getAttribute']);
-    window.__publicCube = (el) => new Proxy(el, {
-      get(target, name) {
-        if (typeof name === 'symbol') throw new Error('a symbol read on the public cube');
-        if (attributeCalls.has(name)) {
-          return (attr, ...rest) => {
-            if (!attributes.has(attr)) throw new Error(`the manifest lists no attribute "${attr}"`);
-            return target[name](attr, ...rest);
-          };
-        }
-        if (methods.has(name)) return (...args) => target[name](...args);
-        throw new Error(`the manifest lists no member "${name}"`);
-      },
-    });
-  }, MANIFEST);
+  // The public cube a scenario is WRITTEN against: the manifest's attributes, methods, properties,
+  // events and DOM operations, and nothing else (test/browser/public-cube.mjs).
+  await installPublicCube(page);
 });
 
 after(async () => { await fixture?.close(); });
@@ -130,15 +110,28 @@ test('the public cube refuses what the manifest does not list, and allows what i
       stickers: attempt(() => cube.stickers),
       privateAnim: attempt(() => cube._anim),
       bogusAttribute: attempt(() => cube.setAttribute('not-an-attribute', '1')),
+      bogusEvent: attempt(() => cube.addEventListener('cubus-nothing', () => {})),
+      notAListener: attempt(() => cube.addEventListener('cubus-step', 'go')),
+      pinTheClock: attempt(() => { cube.clock = 1; }),
       seek: attempt(() => cube.seek(0)),
       alg: attempt(() => cube.setAttribute('alg', 'R')),
+      animating: attempt(() => cube.animating),
+      listen: attempt(() => cube.addEventListener('cubus-step', () => {})),
+      size: attempt(() => cube.style.width),
+      writeAlg: attempt(() => { cube.alg = 'R'; }),
     };
   });
   assert.match(refused.stickers ?? '', /no member "stickers"/);
   assert.match(refused.privateAnim ?? '', /no member "_anim"/);
   assert.match(refused.bogusAttribute ?? '', /no attribute "not-an-attribute"/);
-  assert.equal(refused.seek, null);
-  assert.equal(refused.alg, null);
+  assert.match(refused.bogusEvent ?? '', /no event "cubus-nothing"/);
+  assert.match(refused.notAListener ?? '', /a listener is a function/);
+  // The pinned clock is a test seam, declared as one on the element: a lesson that set it would stop
+  // the cube, so it is not part of the contract even though it is not private.
+  assert.match(refused.pinTheClock ?? '', /no writable property "clock"/);
+  for (const allowed of ['seek', 'alg', 'animating', 'listen', 'size', 'writeAlg']) {
+    assert.equal(refused[allowed], null, `${allowed} is part of the contract and was refused`);
+  }
 });
 
 /** The element half's runners for scenarios whose capability a plan item is still building. */
