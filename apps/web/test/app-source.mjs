@@ -60,7 +60,7 @@ export const APP_SOURCES = Object.freeze([
  *  refused, because that is app code filed where the scans cannot see it. */
 export const LIBRARY_SOURCES = Object.freeze([
   'lib/app-update.js', 'lib/ble-bridge.js', 'lib/ble-polyfill.js', 'lib/cube-frame.js',
-  'lib/cube-highlight.js', 'lib/cube-kit.js', 'lib/cube-orientation.js', 'lib/cube-pieces.js',
+  'lib/cube-highlight.js', 'lib/cube-kit.js', 'lib/cube-notation.js', 'lib/cube-orientation.js', 'lib/cube-pieces.js',
   'lib/cube-reconnect.js', 'lib/cube-registry.js', 'lib/cube-report.js', 'lib/cube-selfcheck.js',
   'lib/cube-session.js', 'lib/cube-trust.js', 'lib/cube-view.js', 'lib/cubejs-entry.js',
   'lib/data/case-tables.js', 'lib/host.js', 'lib/i18n.js', 'lib/lesson-format.js',
