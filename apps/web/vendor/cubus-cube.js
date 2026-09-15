@@ -30737,6 +30737,8 @@ function letterTexture(letter) {
   texture.colorSpace = SRGBColorSpace;
   return texture;
 }
+var TRAIL_LIFT = 1.2;
+var TRAIL_INKS = Object.freeze([2826520, 10173726, 2056058, 6109834]);
 var AXIS_VECTOR = Object.freeze({ x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] });
 var GHOST_OPACITY = 0.45;
 var GHOST_HL_PEAK = 0.8;
@@ -30789,7 +30791,8 @@ var REACTIONS = Object.freeze({
     el._paint();
   },
   arrow: (el) => el._placeArrow(),
-  labels: (el) => el._placeLabels()
+  labels: (el) => el._placeLabels(),
+  trail: (el) => el._placeTrails()
 });
 var CubusCube = class _CubusCube extends HTMLElement {
   // Kebab is canonical, but a host that writes camelCase props as attributes lands
@@ -30823,7 +30826,8 @@ var CubusCube = class _CubusCube extends HTMLElement {
     "backview",
     "orbit",
     "arrow",
-    "labels"
+    "labels",
+    "trail"
   ];
   /**
    * The events this element dispatches — part of the contract, so part of the manifest.
@@ -31018,6 +31022,10 @@ var CubusCube = class _CubusCube extends HTMLElement {
     // whichever colour it is, which is what a notation lesson teaches; `face` writes each face's own letter
     // on its centre, and the letter travels with the centre through regrips and slices (plan item 4.3).
     labels: "none",
+    // No trail. `piece:UF` (or `slot:UF`, the piece in UF where `alg` starts; comma-separated for several)
+    // draws where that piece goes over the whole of `alg` — the arc its cubie travels in each turn — for a
+    // PLL cycle or a commutator (plan item 4.4).
+    trail: "none",
     palette: "muted",
     // Western unless a host says otherwise: the arrangement PALETTES is written in, and the
     // one the app assumes until a scan proves the cube is the other kind.
@@ -31094,6 +31102,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._applied = 0;
     this._playing = false;
     this._placeArrow();
+    this._placeTrails();
     this._dirty = true;
   }
   /** `alg` as moves, with what follows from it: whether it turns the cube, and where it stops. */
@@ -31326,6 +31335,84 @@ var CubusCube = class _CubusCube extends HTMLElement {
         centre.add(mesh);
       }
       this._labelMeshes.push(mesh);
+    }
+  }
+  /**
+   * Draw the trails `trail` asks for: where each named piece goes over the whole of `alg`.
+   *
+   * THE PATH THE CUBIE REALLY TRAVELS. Its settled position at every position of the sequence comes from the
+   * same arithmetic the pose is written from (`poseAll`, `after`), from position 0; and between two positions
+   * it moves along an arc about the turn's axis, by the turn's angle — a chord would cut through the cube,
+   * and is not where the piece went. Every point is lifted a little off the surface, so the trail floats
+   * over the stickers it passes. A piece the sequence never moves has no trail. The settled points are kept
+   * on each trail's `userData`, in the cube's frame, so a test can check the route against an independent
+   * model without judging the look.
+   */
+  _placeTrails() {
+    if (!this.cubies) return;
+    for (const mesh of this._trailMeshes ?? []) {
+      mesh.parent?.remove(mesh);
+      mesh.geometry.dispose();
+    }
+    this._trailMeshes = [];
+    this._dirty = true;
+    const spec = String(this._attrs.trail ?? "none").trim();
+    if (!spec || spec === "none") return;
+    const tokens = spec.split(",").map((t) => t.trim()).filter(Boolean);
+    const settled0 = poseAll(UPRIGHT, this._base ?? this._state);
+    const named = [];
+    for (const token of tokens) {
+      const m = /^(piece|slot):([URFDLB]{2,3})$/i.exec(token);
+      const key2 = m && pieceKey(m[2]);
+      if (!key2) {
+        console.warn(`<cubus-cube> refusing trail \u2014 "${token}" is not piece:XX or slot:XX`);
+        return;
+      }
+      const index = m[1].toLowerCase() === "piece" ? this.cubies.findIndex((c) => c.userData.piece === key2) : this.cubies.findIndex((_, i) => {
+        const pos = settled0[POSE_OF[i]].pos;
+        const want = slotVector(m[2]);
+        return pos.every((v, k) => v === want[k]);
+      });
+      if (index < 0) {
+        console.warn(`<cubus-cube> trail matched nothing for ${token} \u2014 this cube has no known identity for it`);
+        continue;
+      }
+      named.push({ token, index });
+    }
+    for (const [n, { token, index }] of named.entries()) {
+      let frame = UPRIGHT;
+      let state = this._base ?? this._state;
+      const stops = [poseAll(frame, state)[POSE_OF[index]].pos];
+      const curve = [new Vector3(...stops[0])];
+      for (const move of this._sol ?? []) {
+        const from = new Vector3(...poseAll(frame, state)[POSE_OF[index]].pos);
+        const axisWorld = new Vector3(...AXIS_VECTOR[move.axis]).applyMatrix3(new Matrix3().set(...frame.flat()));
+        const landed = after(frame, state, move);
+        frame = landed.frame;
+        state = landed.state;
+        const to = poseAll(frame, state)[POSE_OF[index]].pos;
+        if (to.every((v, k) => v === stops[stops.length - 1][k])) continue;
+        const along = from.dot(axisWorld);
+        const moved = move.layers.some((l) => Math.abs(l - along) < 0.5) || move.layers.length === 3;
+        if (!moved) continue;
+        for (let i = 1; i <= 12; i++) curve.push(from.clone().applyAxisAngle(axisWorld, move.angle * (i / 12)));
+        stops.push(to);
+      }
+      if (stops.length < 2) continue;
+      const lifted = curve.map((p) => p.clone().multiplyScalar(TRAIL_LIFT));
+      const ink = TRAIL_INKS[n % TRAIL_INKS.length];
+      const material = new MeshBasicMaterial({ color: ink, transparent: true, opacity: 0.88, depthWrite: false });
+      const tube = new Mesh(new TubeGeometry(new CatmullRomCurve3(lifted), lifted.length * 3, 0.045, 8, false), material);
+      const end = lifted[lifted.length - 1];
+      const tangent = end.clone().sub(lifted[lifted.length - 2]).normalize();
+      const head = new Mesh(new ConeGeometry(0.12, 0.28, 16), material);
+      head.position.copy(end.clone().add(tangent.clone().multiplyScalar(0.1)));
+      head.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), tangent);
+      tube.renderOrder = 3;
+      head.renderOrder = 3;
+      tube.userData = { trail: token, stops, curve: curve.map((v) => v.toArray()) };
+      this.root.add(tube, head);
+      this._trailMeshes.push(tube, head);
     }
   }
   /** Hold the arrow in the sequence's frame, so the next move is drawn about the axis it will turn. */
@@ -32153,8 +32240,10 @@ var CubusCube = class _CubusCube extends HTMLElement {
       for (const m of this._parse(this._attrs.scramble || "")) this._state = after(UPRIGHT, this._state, m).state;
     }
     this._writePose();
+    this._base = this._state;
     this._refitIfTurned();
     this._placeArrow();
+    this._placeTrails();
     this._syncHighlight();
     this._dirty = true;
     if (!this._quiet) this._report();

@@ -159,3 +159,9 @@ test('Phase 4\'s annotations are cues: an arrow is one move or next, and letters
   assert.match(refusal(script([{ move: 'R', arrow: 'Q' }])), /`arrow` "Q" is not a move/);
   assert.match(refusal(script([{ move: 'R', labels: 'all' }])), /`labels` is none, position or face/);
 });
+
+test('a trail cue names pieces, and nothing else', () => {
+  assert.equal(refusal(script([{ move: "R U R'", trail: 'piece:UF,slot:URF' }])), null);
+  assert.match(refusal(script([{ move: 'R', trail: 'layer:U' }])), /`trail` names pieces .* "layer:U" is not one/);
+  assert.match(refusal(script([{ move: 'R', trail: 'piece:UD' }])), /"piece:UD" is not one/);
+});

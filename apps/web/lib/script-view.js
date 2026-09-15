@@ -201,6 +201,8 @@ export function viewAtPosition(built, position) {
     if (key === 'hl') cues[key] = elementSelector(built, cue);
     else if (key === 'focus') cues[key] = boundFocus(built, cue);
     else if (key === 'arrow') cues[key] = elementArrow(built, cue);
+    // A trail's letters name pieces the way the child holds the cube, read where the cue was written.
+    else if (key === 'trail') cues[key] = convertSelectors(String(cue.value), holdPair(built.positions[cue.at].hold));
     else cues[key] = cue.value;
   }
   return Object.freeze({
