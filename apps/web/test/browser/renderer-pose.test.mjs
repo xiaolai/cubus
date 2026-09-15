@@ -202,6 +202,75 @@ test('an undone half turn retraces the way it came, not the other way round', as
     'precondition: the sample was taken mid-turn, not at an endpoint');
 });
 
+/** Every cubie's stickers as one string, so a greyed cubie can be told from an untouched one. */
+const cubieColours = () => page.evaluate(() => window.__cube.cubies
+  .map((c) => c.children.filter((m) => m.userData?.face).map((m) => m.material.color.getHex()).join()));
+/** Which pieces are IN focus: the cubies still wearing their true colours. */
+const inFocus = async (trueColours) => {
+  const now = await cubieColours();
+  return page.evaluate(([base, colours]) => window.__cube.cubies
+    .filter((c, i) => colours[i] === base[i]).map((c) => c.userData.piece), [trueColours, now]);
+};
+const seek = (k) => page.evaluate(async (to) => {
+  window.__cube.seek(to);
+  await new Promise((r) => requestAnimationFrame(() => r()));
+}, k);
+const writeFocus = (v) => page.evaluate(async (sel) => {
+  window.__cube.setAttribute('focus', sel);
+  await new Promise((r) => requestAnimationFrame(() => r()));
+}, v);
+
+// R10 of dev-docs/adr/0004-orientation-notation-and-colour-are-three-things.md, and plan item 2.4 of
+// dev-docs/tutorial-capability-plan.md. Focus LATCHES (decision 10), and a seek must not quietly undo
+// that: `seek()` resets and repaints, so a focus bound after a turn used to be re-resolved at position 0
+// and again at the position it came back to — a lesson that says "watch this piece", then scrubs, lit a
+// different piece each time. The binding is to the pieces the selector named where it was written.
+test('focus bound after a turn names the same pieces after a seek away and back', async () => {
+  await build({ facelets: SOLVED, alg: 'R' });
+  const trueColours = await cubieColours();
+  await seek(1);
+  await writeFocus('slot:UR');
+  const bound = await inFocus(trueColours);
+  assert.equal(bound.length, 1, `precondition: one piece is in focus, not ${bound.join(', ')}`);
+
+  await seek(0);
+  const atHome = await inFocus(trueColours);
+  await seek(1);
+  const back = await inFocus(trueColours);
+  assert.deepEqual(atHome, bound, 'seeking away re-bound the focus to whatever was then in UR');
+  assert.deepEqual(back, bound, 'seeking back re-bound the focus');
+
+  // And the piece it stayed on is NOT the one a fresh reading at position 0 would name, or the case
+  // would pass on a renderer that re-binds at every paint.
+  await seek(0);
+  await writeFocus('none');
+  await writeFocus('slot:UR');
+  assert.notDeepEqual(await inFocus(trueColours), bound,
+    'precondition: at position 0 the UR slot holds a different piece, so a re-binding would be visible');
+});
+
+test('a new cube re-binds the focus; a new alg does not', async () => {
+  await build({ facelets: SOLVED, alg: 'R' });
+  const trueColours = await cubieColours();
+  await seek(1);
+  await writeFocus('slot:UR');
+  const bound = await inFocus(trueColours);
+
+  await page.evaluate(async () => {
+    window.__cube.setAttribute('alg', "U R U'");
+    await new Promise((r) => requestAnimationFrame(() => r()));
+  });
+  assert.deepEqual(await inFocus(trueColours), bound, 'a new sequence on the same cube re-bound the focus');
+
+  await page.evaluate(async () => {
+    window.__cube.setAttribute('scramble', "R U R'");
+    await new Promise((r) => requestAnimationFrame(() => r()));
+  });
+  const afterLoad = await inFocus(trueColours);
+  assert.equal(afterLoad.length, 1, `a loaded cube left ${afterLoad.length} pieces in focus`);
+  assert.deepEqual(afterLoad, ['RU'], 'a new cube did not re-bind the focus to the slot it names');
+});
+
 // The regression the round-1 audit reproduced: `reset()` wrote the geometry AFTER painting, so
 // `focus` — which resolves inside `_paint()` — answered for whatever the PREVIOUS cube had in the
 // slot. Set focus on UR, turn R, reset, and the FR piece stayed coloured on a solved cube.
