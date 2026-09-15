@@ -124,3 +124,125 @@ export const SOURCES = Object.freeze([
   { stage: 'scan', where: 'app scan screen: the half-read cube', uses: ['painted-picture'], wants: [] },
   { stage: 'companion', where: 'cubus-im lesson companion', uses: ['drawn-colours'], wants: [] },
 ]);
+
+/**
+ * The runnable corpus (plan item 0.2). Expected values are NOT written here: the runner asks
+ * `test/cube-oracle.mjs`, which shares no code with the renderer, at test time.
+ *
+ * Every scenario names the half that runs it — `model` (node: notation, interpreter, questions),
+ * `element` (a browser: what `<cubus-cube>` draws), `player` (the script player's drivers) — and the
+ * plan item that makes it runnable (`closedBy`), or, for behaviour already pinned elsewhere, the test
+ * that pins it (`coveredBy`: file and test name, both checked to exist).
+ *
+ * Moves are written in the CHILD's frame — letters name where a face is now — except in `identity`
+ * scenarios, which are written the way `<cubus-cube>`'s `alg` reads them today: the white-up,
+ * green-front frame, whatever the element's `orientation`.
+ */
+export const SCENARIOS = Object.freeze([
+  // ---- what the element does today --------------------------------------------------------------
+  {
+    id: 'face-turns-at-reference', stage: 'every stage', half: 'element', kind: 'identity',
+    source: 'the 18 face turns every tutorial is made of', needs: ['face-turns', 'hold-set'],
+    orientation: 'U F', alg: "R U R' U' F2 D L' B",
+  },
+  {
+    id: 'face-turns-tumbled', stage: 'middle and last layer', half: 'element', kind: 'identity',
+    source: 'ADR 0003: tumbled for the middle layer onwards, moves named in the fixed frame', needs: ['face-turns', 'hold-set'],
+    orientation: 'D B', alg: "R U R' U' F2 D L' B",
+  },
+  {
+    id: 'face-turns-every-hold', stage: 'every stage', half: 'element', kind: 'identity-all-holds',
+    source: 'a sequence drawn under each of the 24 holds', needs: ['face-turns', 'hold-set'],
+    alg: "R U2 F' L D B2",
+  },
+
+  // ---- the owner's scenario and the course's --------------------------------------------------------
+  {
+    id: 'red-green-edge-into-FR', stage: 'middle layer', half: 'model', kind: 'moves', closedBy: '1.2',
+    source: "the owner, 2026-09-15: tumbled, turn red to the front, insert the red-green edge",
+    needs: ['held-letters', 'rotation-token', 'hold-change-in-sequence'],
+    start: { hold: 'D B', setup: "y U' F' U F U R U' R' y'" }, moves: "y U R U' R' U' F' U F",
+    expect: { holdAfter: { 1: 'D R' }, solvedAtEnd: true },
+  },
+  {
+    id: 'red-green-edge-question', stage: 'middle layer', half: 'model', kind: 'question', closedBy: '1.4',
+    source: "the owner, 2026-09-15: find the top edges with none of the top colour",
+    needs: ['question'],
+    start: { hold: 'D B', setup: "y U' F' U F U R U' R' y'" }, moves: 'y', ask: 'topEdgesWithoutTopColour',
+  },
+  {
+    id: 'lesson-12-piece-under-grip-and-hold', stage: 'middle layer', half: 'model', kind: 'selectors', closedBy: '1.3',
+    source: 'cubus-im lesson 12 section 2: # grip: x2, @ hold y2, @ show piece:FL',
+    needs: ['held-letters', 'highlight-piece'],
+    hold: 'D F', selector: 'piece:FL',
+  },
+  {
+    id: 'lesson-10-closing-flip', stage: 'first layer', half: 'player', kind: 'timed-trailing-rotation', closedBy: '3.3',
+    source: 'cubus-im lesson 10 section 4: a scramble, narration, then @ hold x2 with no turn after it',
+    needs: ['hold-change-in-sequence', 'clock-playback'],
+    start: { hold: 'U F', setup: "D R2 U2 L D L U B2 U D2 R' D' R D" }, moves: 'x2',
+  },
+  {
+    id: 'oll-24-with-a-wide-move', stage: 'OLL', half: 'model', kind: 'moves', closedBy: '1.2',
+    source: "the Trainer preview's OLL 24", needs: ['wide-move', 'held-letters'],
+    start: { hold: 'U F', setup: "F R' F' r U R U' r'" }, moves: "r U R' U' r' F R F'",
+    expect: { solvedAtEnd: true },
+  },
+  {
+    id: 'roux-slices', stage: 'other methods', half: 'model', kind: 'moves', closedBy: '1.2',
+    source: 'Roux last six edges: M U2 M', needs: ['slice-move', 'held-letters'],
+    start: { hold: 'U F', setup: '' }, moves: "M' U2 M",
+  },
+
+  // ---- ADR 0004's requirements -------------------------------------------------------------------
+  {
+    id: 'R1-centre-moving-tokens', stage: 'every stage', half: 'element', kind: 'element-tokens', closedBy: '2.1',
+    source: 'ADR 0004 R1', needs: ['slice-move', 'wide-move', 'rotation-token'],
+    orientation: 'U F', algs: ['M', 'Rw', 'x', 'y', "M' U2 M", "r U R' U' r' F R F'"],
+  },
+  {
+    id: 'R2-episode-rotation-single-timeline', stage: 'every stage', half: 'player', kind: 'episode-hold-timeline', closedBy: '3.3',
+    source: 'ADR 0004 R2', needs: ['hold-change-in-sequence', 'clock-playback'], moves: 'y R',
+  },
+  {
+    id: 'R3-walk-draws-by-stop', stage: 'middle layer', half: 'player', kind: 'walk-stops', closedBy: '3.3',
+    source: 'ADR 0004 R3', needs: ['stop-playback', 'rotation-token'], walks: ['y R', 'y x R'],
+  },
+  {
+    id: 'R4-a-stop-animates-its-rotations', stage: 'every stage', half: 'element', kind: 'stop-animation', closedBy: '2.3',
+    source: 'ADR 0004 R4', needs: ['stop-playback', 'rotation-token'], alg: 'x y R',
+  },
+  {
+    id: 'R5-slice-reported-as-two-turns', stage: 'other methods', half: 'player', kind: 'walk-reports', closedBy: '3.3',
+    source: 'ADR 0004 R5', needs: ['stop-playback', 'slice-move'],
+    planned: "M M'", reports: ["R L' L R'", "L' R R' L"],
+  },
+  {
+    id: 'R6-revisited-arrangement', stage: 'every stage', half: 'player', kind: 'covered',
+    source: 'ADR 0004 R6, fixed in e64817e', needs: ['stop-playback'],
+    coveredBy: ['apps/web/test/walk-session.test.mjs', "a turn that cancels the one before it is the walk's next move, not an undo"],
+  },
+  {
+    id: 'R7-trailing-rotation-on-schedule', stage: 'first layer', half: 'player', kind: 'timed-trailing-rotation', closedBy: '3.3',
+    source: 'ADR 0004 R7', needs: ['hold-change-in-sequence', 'clock-playback'],
+    start: { hold: 'U F', setup: "D R2 U2 L D L U B2 U D2 R' D' R D" }, moves: 'x2',
+  },
+  {
+    id: 'R8-selector-written-mid-turn', stage: 'every stage', half: 'element', kind: 'covered',
+    source: 'ADR 0004 R8, fixed in 2ca615c', needs: ['highlight-position', 'focus'],
+    coveredBy: ['apps/web/test/browser/renderer-pose.test.mjs', 'a selector written mid-turn names the settled occupant, and each channel keeps its own rule after'],
+  },
+  {
+    id: 'R9-inherited-selector-binds-once', stage: 'every stage', half: 'player', kind: 'selector-provenance', closedBy: '3.1',
+    source: 'ADR 0004 R9', needs: ['highlight-position', 'clock-playback'], selector: 'slot:UR', moves: 'R',
+  },
+  {
+    id: 'R10-focus-survives-seek', stage: 'every stage', half: 'element', kind: 'focus-seek', closedBy: '2.4',
+    source: 'ADR 0004 R10', needs: ['focus'], selector: 'slot:UR', alg: 'R',
+  },
+  {
+    id: 'R11-focus-and-highlight-keep-their-split', stage: 'every stage', half: 'element', kind: 'covered',
+    source: 'ADR 0004 R11 and decision 10', needs: ['focus', 'highlight-position'],
+    coveredBy: ['apps/web/test/browser/renderer-pose.test.mjs', 'focus set before a turn and after it are different pictures, and still are'],
+  },
+]);
