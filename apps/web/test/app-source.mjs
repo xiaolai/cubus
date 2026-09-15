@@ -34,7 +34,7 @@ export const APP_SOURCES = Object.freeze([
   'lib/cube-connection.js', 'lib/scramble-roll.js', 'lib/prove-affordance.js', 'lib/update-ui.js',
   'lib/screen-shell.js',
   // the menu both screens' corner menus are built on, 2026-09-14
-  'lib/menu-popover.js',
+  'lib/menu-popover.js', 'lib/scroll-strip.js',
   'lib/screens/scan.js', 'lib/screens/cube.js', 'lib/screens/timer.js', 'lib/screens/settings.js',
   'lib/screens/stats.js', 'lib/screens/lessons.js',
   // the cube screen's own parts, 2026-09-14

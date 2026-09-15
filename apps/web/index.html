@@ -907,6 +907,19 @@
       .stage-chip.on { background: var(--invert-bg); border-color: var(--invert-bg); }
       .stage-chip.on .who, .stage-chip.on .howfar { color: var(--invert-fg); }
       .stage-row { display: flex; flex-wrap: wrap; gap: 6px; }
+      /* The cube screen's stage targets: ONE line that scrolls sideways (lib/scroll-strip.js says
+         why — wrapped, they took the moves' height on both desktop windows). The scrollbar is
+         hidden as every scroller's is (`:root` above), because the fade and the wheel do its job;
+         `flex: none` so no button is squeezed to fit instead of scrolled to. An edge with more
+         beyond it fades over 32px: the helper sets the class, the class sets that edge's width,
+         and one mask draws both. Unprefixed, on the same engine floors as `scrollbar-width`.
+         A scroller clips at its padding edge, so the padding holds a focused button's ring: WebKit
+         draws it 3px beyond the button, and 2px on top cut a flat line through it. */
+      .stage-row.one-line { flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-x: contain; padding: 3px 18px 5px; --fade-left: 0px; --fade-right: 0px; }
+      .stage-row.one-line > .pill { flex: none; white-space: nowrap; }
+      .stage-row.one-line.more-left { --fade-left: 32px; }
+      .stage-row.one-line.more-right { --fade-right: 32px; }
+      .stage-row.one-line:is(.more-left, .more-right) { mask-image: linear-gradient(to right, transparent, #000 var(--fade-left) calc(100% - var(--fade-right)), transparent); }
       .move-chips { display: grid; grid-template-columns: repeat(auto-fill, var(--chip)); justify-content: space-between; gap: 6px; }
       /* One shape for every move: a SQUARE, text centred both ways at body size. 36px with a
          mouse — the size that lets a whole solution sit on the sheet at the reference minimums
