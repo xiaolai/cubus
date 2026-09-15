@@ -16,6 +16,10 @@
 // still produces well-formed algs that simply do not solve, so the failure it guards against
 // is silent by construction.
 
+// The facelet layout — which sticker belongs to which slot — so a state can be written as the 54
+// characters every other part of the app speaks in. Tables only; the arithmetic is `toFacelets` below.
+import { CENTERS, CORNER_FACELETS, EDGE_FACELETS, FACE_LETTERS } from './cube-layout.js';
+
 /** Corner slots, in cubejs order. Index is the slot; the value stored there is the cubie. */
 export const CORNERS = ['URF', 'UFL', 'ULB', 'UBR', 'DFR', 'DLF', 'DBL', 'DRB'];
 /** Edge slots, in cubejs order. */
@@ -100,6 +104,28 @@ export function applyAlg(state, alg) {
 /** The state of a cubejs `Cube`, copied out. cubejs is the only parser we have for a facelet
  *  string, so this is the seam — and it reads cubejs's INTERNAL fields, which is exactly why
  *  the test pins their layout. */
+/**
+ * A state as its facelet string — the inverse of reading one.
+ *
+ * Here rather than in the solver, where it lived until plan item 3.2: it is a statement about the
+ * PIECE MODEL in the published facelet layout, and `lib/stage-picture.js` was importing the whole
+ * two-phase engine to get at it. `lib/two-phase.js` re-exports it, so every caller's import still
+ * reads the same.
+ */
+export function toFacelets(state) {
+  const out = new Array(54);
+  for (let i = 0; i < 6; i++) out[CENTERS[i]] = FACE_LETTERS[i];
+  for (let slot = 0; slot < 8; slot++) {
+    const name = CORNERS[state.cp[slot]];
+    for (let k = 0; k < 3; k++) out[CORNER_FACELETS[slot][(k + state.co[slot]) % 3]] = name[k];
+  }
+  for (let slot = 0; slot < 12; slot++) {
+    const name = EDGES[state.ep[slot]];
+    for (let k = 0; k < 2; k++) out[EDGE_FACELETS[slot][(k + state.eo[slot]) % 2]] = name[k];
+  }
+  return out.join('');
+}
+
 export function fromCube(cube) {
   return { cp: [...cube.cp], co: [...cube.co], ep: [...cube.ep], eo: [...cube.eo] };
 }

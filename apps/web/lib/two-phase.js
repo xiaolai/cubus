@@ -22,7 +22,12 @@
 // replays its phase-1 maneuver through preallocated per-depth buffers. That is what makes a
 // probe budget (~tens of thousands per tier) affordable — measured in solver-move-count.md.
 
-import { CORNERS, EDGES, MOVES, MOVE_NAMES, SOLVED, applyMove } from './cube-pieces.js';
+import { CORNERS, EDGES, MOVES, MOVE_NAMES, SOLVED, applyMove, toFacelets } from './cube-pieces.js';
+
+// Re-exported where it has always been read from: the writer itself moved to the piece model, which is
+// what it is a statement about, so a module that needs a state's stickers no longer imports the SOLVER
+// to get them (plan item 3.2 of dev-docs/tutorial-capability-plan.md).
+export { toFacelets };
 // One parity, not two. It was computed identically here and in random-state.js, and a cycle
 // decomposition that drifted in one copy would make a legal cube unparseable or an illegal one
 // parseable — silently, in the file that decides which states exist at all.
@@ -865,21 +870,6 @@ function parseEdgeSlots(facelets) {
     }
   }
   return { ep, eo };
-}
-
-/** The inverse of parseFacelets, for tests: a cubie state as its facelet string. */
-export function toFacelets(state) {
-  const out = new Array(54);
-  for (let i = 0; i < 6; i++) out[CENTERS[i]] = FACE_LETTERS[i];
-  for (let slot = 0; slot < 8; slot++) {
-    const name = CORNERS[state.cp[slot]];
-    for (let k = 0; k < 3; k++) out[CORNER_FACELETS[slot][(k + state.co[slot]) % 3]] = name[k];
-  }
-  for (let slot = 0; slot < 12; slot++) {
-    const name = EDGES[state.ep[slot]];
-    for (let k = 0; k < 2; k++) out[EDGE_FACELETS[slot][(k + state.eo[slot]) % 2]] = name[k];
-  }
-  return out.join('');
 }
 
 // ---- phase 2: inside G1 -----------------------------------------------------------------------
