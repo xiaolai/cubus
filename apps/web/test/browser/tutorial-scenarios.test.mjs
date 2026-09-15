@@ -76,6 +76,17 @@ const drawn = async (k) => {
 
 const tokens = (alg) => alg.trim().split(/\s+/).filter(Boolean);
 
+/** Every cubie's stickers as one string, so a greyed cubie can be told from an untouched one. */
+const cubieColours = () => page.evaluate(() => window.__cube.cubies
+  .map((c) => c.children.filter((m) => m.userData?.face).map((m) => m.material.color.getHex()).join()));
+
+/** Which pieces are in focus: the cubies still wearing the colours they were painted. */
+const inFocus = async (trueColours) => {
+  const now = await cubieColours();
+  return page.evaluate(([base, colours]) => window.__cube.cubies
+    .filter((c, i) => colours[i] === base[i]).map((c) => c.userData.piece), [trueColours, now]);
+};
+
 /** Advance the pinned clock by `ms` and let one frame run. */
 const tick = (ms) => page.evaluate(async (by) => {
   const el = window.__cube;
@@ -167,6 +178,23 @@ const ELEMENT_RUNNERS = {
       await tick(120);
     }
     assert.deepEqual(await readMatrices(page), ends[1], `${sc.id}: the group did not land on its stop`);
+  },
+  // A cue says "watch this piece" at the position it is written, and a scrubber must not change which
+  // piece that is: focus binds where it took effect and keeps naming those pieces through a seek
+  // (ADR 0004 decision 10 and R10).
+  async 'focus-seek'(sc) {
+    await build({ alg: sc.alg });
+    const trueColours = await cubieColours();
+    const at = async (k) => {
+      await page.evaluate((to) => window.__publicCube(window.__cube).seek(to), k);
+      return inFocus(trueColours);
+    };
+    await at(tokens(sc.alg).length);
+    await page.evaluate((sel) => window.__publicCube(window.__cube).setAttribute('focus', sel), sc.selector);
+    const bound = await inFocus(trueColours);
+    assert.equal(bound.length, 1, `${sc.id}: "${sc.selector}" should name one piece, not ${bound.join(', ') || 'none'}`);
+    assert.deepEqual(await at(0), bound, `${sc.id}: seeking away re-bound "${sc.selector}"`);
+    assert.deepEqual(await at(tokens(sc.alg).length), bound, `${sc.id}: seeking back re-bound "${sc.selector}"`);
   },
 };
 

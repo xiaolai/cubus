@@ -29329,8 +29329,15 @@ var REACTIONS = Object.freeze({
   // Splitting the view halves the aspect the fit is for.
   "back-view": (el) => el._applyCamera(),
   orbit: (el) => el._applyOrbit(),
-  facelets: (el) => el.reset(),
-  scramble: (el) => el.reset(),
+  // A new cube is a new subject, so a focus bound to pieces is re-bound to the cube in front of you.
+  facelets: (el) => {
+    el._rebindFocus();
+    el.reset();
+  },
+  scramble: (el) => {
+    el._rebindFocus();
+    el.reset();
+  },
   alg: (el) => el._replaceAlg(),
   highlight: (el) => {
     el._readHighlight();
@@ -30307,6 +30314,11 @@ var CubusCube = class _CubusCube extends HTMLElement {
     const { selectors, invalid } = parseHighlight(this._attrs.focus);
     if (invalid !== null) console.warn(`<cubus-cube> refusing focus \u2014 invalid selector "${invalid}"`);
     this._fcSels = selectors;
+    this._rebindFocus();
+  }
+  /** Forget which pieces the focus named, so the next paint reads its selectors again. */
+  _rebindFocus() {
+    this._fcSet = null;
   }
   /**
    * What a selector reads off each cubie: the slot it is in and the piece it carries.
@@ -30328,8 +30340,8 @@ var CubusCube = class _CubusCube extends HTMLElement {
   _applyFocus() {
     const sels = this._fcSels || [];
     if (!sels.length) return;
-    const { indices } = resolveHighlight(sels, this._selectable());
-    const keep = new Set(indices);
+    this._fcSet ??= new Set(resolveHighlight(sels, this._selectable()).indices);
+    const keep = this._fcSet;
     for (const [i, c] of this.cubies.entries()) {
       if (keep.has(i)) continue;
       for (const m of c.children) {
