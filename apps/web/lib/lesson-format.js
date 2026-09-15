@@ -355,6 +355,8 @@ function checkSteps(steps, where, { rounds = true } = {}) {
     if (kind === 'round') {
       if (!rounds) where(i, 'a round inside a reveal — a reveal shows an answer, it does not ask again');
       checkRound(step.round, (msg) => where(i, msg));
+      // A prediction imagines a turn of the cube, and a picture is not a cube.
+      if (painted && step.round.turn !== undefined) where(i, 'a round with a turn inside a picture segment — a picture cannot be turned, even in imagination');
     }
 
     // The cues, which any step may carry.
@@ -403,7 +405,10 @@ function checkSteps(steps, where, { rounds = true } = {}) {
   });
 }
 
-/** A drill round's shape (plan item 3.4 gives it its behaviour). */
+/** The questions a round may be answered by: each names one slot or one piece, so its answer is faces. */
+export const ROUND_QUESTIONS = Object.freeze(['whereIs', 'pieceIn']);
+
+/** A drill round's shape; `lib/script-rounds.js` gives it its behaviour (plan item 3.4). */
 function checkRound(round, where) {
   if (!round || typeof round !== 'object') where('`round` must be an object');
   const known = new Set(['say', 'turn', 'ask', 'choose', 'reveal']);
@@ -415,9 +420,13 @@ function checkRound(round, where) {
     if (bad) where(`round: \`turn\` ${bad}`);
   }
   if (typeof round.ask !== 'string') where('round: `ask` names the question the answer comes from');
-  const { why } = readAsk(round.ask);
+  const { why, name, of } = readAsk(round.ask);
   if (why) where(`round: \`ask\`: ${why}`);
+  // A round is answered by picking FACES — the centres a piece sits between — so its question must name
+  // one place: where a piece is (after the turn, for a prediction), or which piece is in a slot.
+  if (!ROUND_QUESTIONS.includes(name)) where(`round: \`ask\`: "${name}" is not answered by picking faces — a round asks ${ROUND_QUESTIONS.join(' or ')}`);
   if (!Number.isInteger(round.choose) || round.choose < 1) where('round: `choose` is how many answers, a whole number of them');
+  if (round.choose !== of.length) where(`round: \`choose\` is ${round.choose}, and "${of}" is answered by ${of.length} faces`);
   if (round.reveal !== undefined) {
     if (!Array.isArray(round.reveal)) where('round: `reveal` must be an array of steps');
     // A reveal is a script segment, so it is checked by the same rules — minus rounds, because a
