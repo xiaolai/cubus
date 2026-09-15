@@ -93,7 +93,9 @@ function makeRoot(parent = tmpdir()) {
   put('notices/onnxruntime-0.0.0-ThirdPartyNotices.txt', 'THIRD PARTY SOFTWARE NOTICES AND INFORMATION\n');
   put('icons/icon.png', 'png');
   put('lib/app.js', 'export {};');
-  for (const f of ['two-phase', 'solver-engine', 'solve-worker', 'solve-client', 'cube-pieces']) put(`lib/${f}.js`, 'export {};');
+  // The solving chain build.mjs asserts, file for file — `cube-layout` since the facelet layout left
+  // two-phase.js on 2026-09-15.
+  for (const f of ['two-phase', 'cube-layout', 'solver-engine', 'solve-worker', 'solve-client', 'cube-pieces']) put(`lib/${f}.js`, 'export {};');
   put('lib/cube-frame.js', 'export const fitDistance = () => 1;');
   put('lib/cubus-cube.js', "import { fitDistance } from './cube-frame.js';\nexport { fitDistance };\n");
   put('vendor/cubejs.js', 'export default {};');

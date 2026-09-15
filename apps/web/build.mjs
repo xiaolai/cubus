@@ -311,6 +311,7 @@ function assertSolverAssets(dist) {
   const SOLVER = [
     'vendor/cubejs.js',
     'lib/two-phase.js',
+    'lib/cube-layout.js',
     'lib/solver-engine.js',
     'lib/solve-worker.js',
     'lib/solve-client.js',
