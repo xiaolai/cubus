@@ -1,0 +1,19 @@
+{
+  "name": "cubus-cube",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "<cubus-cube> — the cubus 3x3x3 renderer. Draws only.",
+  "exports": {
+    ".": "./src/cubus-cube.js"
+  },
+  "scripts": {
+    "build": "esbuild src/cubus-cube.js --bundle --format=esm --target=es2022 --legal-comments=eof --outfile=../../apps/web/vendor/cubus-cube.js && node build-cube-manifest.mjs"
+  },
+  "dependencies": {
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

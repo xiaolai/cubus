@@ -6,10 +6,11 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { eyeDirection, fitDistance, fitDistanceStable, silhouette } from './cube-frame.js';
-import { isFace, orientationMatrix, sameAxis } from './cube-orientation.js';
-import { parseHighlight, pieceKey, resolveHighlight, slotVector } from './cube-highlight.js';
-import { STICKER_PALETTES } from './sticker-palettes.js';
+import { eyeDirection, fitDistance, fitDistanceStable, silhouette } from '../../../apps/web/lib/cube-frame.js';
+import { isFace, orientationMatrix, sameAxis } from '../../../apps/web/lib/cube-orientation.js';
+import { parseHighlight, pieceKey, resolveHighlight, slotVector } from '../../../apps/web/lib/cube-highlight.js';
+import { STICKER_PALETTES } from '../../../apps/web/lib/sticker-palettes.js';
+import { HOME, MOVE_DESCRIPTORS, after, poseAll } from './pose.js';
 
 // The six sticker colours of each set, by position on a Western cube: the one table, shared with
 // the app's flat nets (lib/sticker-palettes.js). The `scheme` attribute remaps it (ADR 0001).
@@ -31,7 +32,11 @@ const PALETTES = STICKER_PALETTES;
  */
 const SWAPPED = { U: 'U', R: 'R', F: 'F', L: 'L', D: 'B', B: 'D' };
 function paletteFor(name, scheme) {
-  const base = PALETTES[name] || PALETTES.muted;
+  // hasOwn: `palette` is whatever an author wrote, and `PALETTES.toString` is a function — which
+  // skipped the fallback and painted every sticker `undefined`, leaving the old colours standing
+  // (found by audit, 2026-09-14). The third time this class of lookup has turned up in this
+  // package's reach, after the move parser and lib/cube-highlight.js.
+  const base = Object.hasOwn(PALETTES, name) ? PALETTES[name] : PALETTES.muted;
   if (scheme !== 'japanese') return base;
   const out = {};
   for (const position of Object.keys(base)) out[position] = base[SWAPPED[position]];
@@ -48,13 +53,15 @@ function paletteFor(name, scheme) {
 // unread face still reads as absent rather than as another sticker colour.
 const UNKNOWN_STICKER = '#C4BFB4';
 
+// Each face's letter and outward normal — what the sticker meshes are built from. Axis and sign
+// used to sit here too, for the move parser; the parser takes its moves from pose.js now.
 const FACES = [
-  { key:'R', axis:'x', sign: 1, n:[ 1, 0, 0] },
-  { key:'L', axis:'x', sign:-1, n:[-1, 0, 0] },
-  { key:'U', axis:'y', sign: 1, n:[ 0, 1, 0] },
-  { key:'D', axis:'y', sign:-1, n:[ 0,-1, 0] },
-  { key:'F', axis:'z', sign: 1, n:[ 0, 0, 1] },
-  { key:'B', axis:'z', sign:-1, n:[ 0, 0,-1] },
+  { key:'R', n:[ 1, 0, 0] },
+  { key:'L', n:[-1, 0, 0] },
+  { key:'U', n:[ 0, 1, 0] },
+  { key:'D', n:[ 0,-1, 0] },
+  { key:'F', n:[ 0, 0, 1] },
+  { key:'B', n:[ 0, 0,-1] },
 ];
 // Facelet index for a sticker at cubie (x,y,z) on face `key`, in URFDLB order.
 const FACELET_INDEX = {
@@ -66,7 +73,32 @@ const FACELET_INDEX = {
   B: (x, y, z) => 45 + (1 - y) * 3 + (1 - x),
 };
 const EASE = (t) => (t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3)/2);
-const AXES = { x: new THREE.Vector3(1,0,0), y: new THREE.Vector3(0,1,0), z: new THREE.Vector3(0,0,1) };
+/** The autorotate axis — the one axis this file still turns anything about itself. */
+const Y_AXIS = new THREE.Vector3(0, 1, 0);
+/** Autorotate's rate: the 0.0035 rad a frame it used to add, at the 60 Hz it was tuned on. */
+const SPIN_PER_MS = 0.0035 * 60 / 1000;
+/** The identity frame handed to `poseAll`. How the cube is HELD stays where it has always been —
+ *  on the root group, which also carries the autorotate spin and interpolates `turnTo`. The pose
+ *  module's own frame argument is for a caller that has no scene graph to put it on. */
+const UPRIGHT = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+/** A solved cube, as the pose module wants it: pieces, and the twist of each centre. */
+const SOLVED_STATE = Object.freeze({
+  cp: [0, 1, 2, 3, 4, 5, 6, 7], co: [0, 0, 0, 0, 0, 0, 0, 0],
+  ep: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], eo: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  ct: [0, 0, 0, 0, 0, 0],
+});
+/** `this.cubies` is built in a plain x,y,z sweep; the pose module speaks in cube-pieces' order.
+ *  Resolved once, by home position, so neither list has to know the other's ordering. */
+const POSE_OF = (() => {
+  const out = [];
+  for (let x = -1; x <= 1; x++) for (let y = -1; y <= 1; y++) for (let z = -1; z <= 1; z++) {
+    if (!x && !y && !z) continue;
+    const at = HOME.findIndex((h) => h[0] === x && h[1] === y && h[2] === z);
+    if (at < 0) throw new Error(`<cubus-cube> no cubie of pose.js sits at ${x},${y},${z}`);
+    out.push(at);
+  }
+  return out;
+})();
 
 // The highlight pulse — the channel a lesson uses to say "these pieces" while it narrates.
 // Subtle by intent: it points, it does not shout, and it has to stay legible under a turn playing
@@ -85,6 +117,38 @@ const GHOST_HL_PEAK = 0.80;  // ghosts are unlit and have no emissive, so they b
 // _next() applies to the turn itself: the pulse is decoration, but the indicator carries meaning —
 // it is how the narration says which piece it means — and dropping it loses the sentence.
 const reducedMotion = () => globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+
+/**
+ * What changing each attribute does to an element that is already built, by canonical name. An
+ * attribute with no entry here is read where it is used, every frame (`autorotate`,
+ * `tempo-scale`), and needs no reaction. Checked against `observedAttributes` when the module
+ * loads, so a misspelt key throws there instead of being a reaction that never runs.
+ */
+const REACTIONS = Object.freeze({
+  __proto__: null,
+  palette: (el) => el._paint(),
+  scheme: (el) => el._paint(),
+  ghosts: (el) => { el._ghostVisible(); el._paint(); el._applyCamera(); },
+  'ghost-elevation': (el) => { el._ghostPlace(); el._applyCamera(); },
+  // The scale is part of the silhouette the camera fits.
+  'facelet-scale': (el) => { el._applyScale(); el._applyCamera(); },
+  'camera-latitude': (el) => el._applyCamera(),
+  'camera-longitude': (el) => el._applyCamera(),
+  'camera-fit': (el) => el._applyCamera(),
+  'camera-up': (el) => el._applyCamera(),
+  // Writing the attribute is a CUT, not a turn: it states where the cube is, and a state that
+  // takes 400ms to become true cannot be read back or asserted. `turnTo()` is the animation.
+  orientation: (el) => el.showTurn(el._attrs.orientation, el._attrs.orientation, 1),
+  // Splitting the view halves the aspect the fit is for.
+  'back-view': (el) => el._applyCamera(),
+  orbit: (el) => el._applyOrbit(),
+  facelets: (el) => el.reset(),
+  scramble: (el) => el.reset(),
+  alg: (el) => el._replaceAlg(),
+  highlight: (el) => { el._readHighlight(); el._syncHighlight(); },
+  // focus repaints rather than syncing: it changes sticker COLOUR, which only _paint() writes.
+  focus: (el) => { el._readFocus(); el._paint(); },
+});
 
 class CubusCube extends HTMLElement {
   // Kebab is canonical, but a host that writes camelCase props as attributes lands
@@ -132,6 +196,57 @@ class CubusCube extends HTMLElement {
   set backView(v) { this._set('back-view', v); }
   set highlight(v) { this._set('highlight', v); }
   get highlight() { return this._attrs.highlight; }
+
+  /**
+   * A pinned clock, in milliseconds, or null to run on the real one.
+   *
+   * WHY IT IS A PROPERTY AND NOT AN ATTRIBUTE: the manifest is built from `observedAttributes`,
+   * so an attribute here would be advertised to consumers as a capability. This is a test seam —
+   * it exists so a mid-turn frame and a highlight at a chosen point in its breath are
+   * reproducible, which is what lets one render be compared with another.
+   *
+   * `v == null` is tested FIRST, before `Number()`: `Number(null)` is 0, so a setter written
+   * `Number.isFinite(Number(v)) ? Number(v) : null` freezes time at zero when asked to let it go
+   * again — the opposite of what `clock = null` says.
+   */
+  set clock(v) {
+    const next = v == null || !Number.isFinite(Number(v)) ? null : Number(v);
+    if (((this._clock ?? null) === null) !== (next === null)) this._changeTimeline(next);
+    this._clock = next;
+    this._dirty = true;
+  }
+
+  /**
+   * Carry every stored instant from the timeline in use onto the one `next` selects: a pinned
+   * clock when `next` is a number, the real one when it is null. Stepping a pinned clock is not a
+   * change of timeline and moves time instead.
+   *
+   * Four instants are kept — a move's start, a turnTo()'s start, the highlight's breath origin and
+   * autorotate's last reading — and each was taken on whichever timeline was running then. Left
+   * alone, releasing a clock pinned at 1,000,000 mid-turn measured elapsed time against
+   * `performance.now()`, a large negative number, and the turn did not finish. So a move and a
+   * turn keep their elapsed time across the change, and autorotate's reading is simply dropped.
+   *
+   * The breath does NOT keep its elapsed time onto a pinned clock: it restarts at the top at the
+   * pinned instant, as a highlight set at that instant would. Kept, the phase at a pinned instant
+   * depended on how long the cube had run in real time before it was pinned, so the same pinned
+   * clock drew a different highlight on every launch — the golden-image run found it, a fixture
+   * that differed on every launch of the same browser (2026-09-15). A breath is decoration with no
+   * state behind it; restarting it is what makes it reproducible, which is the seam's purpose.
+   */
+  _changeTimeline(next) {
+    const to = next ?? performance.now();
+    const shift = to - this._now();
+    if (this._anim?.t0 != null) this._anim.t0 += shift;
+    if (this._turning) this._turning.t0 += shift;
+    if (this._hlT0 != null) this._hlT0 = next === null ? this._hlT0 + shift : next - HL_PERIOD / 2;
+    this._spinAt = null;
+  }
+
+  get clock() { return this._clock ?? null; }
+
+  /** The clock everything timed reads: the pinned one when there is one, the real one otherwise. */
+  _now() { return this._clock ?? performance.now(); }
 
   constructor() {
     super();
@@ -193,6 +308,14 @@ class CubusCube extends HTMLElement {
   attributeChangedCallback(name, _old, val) { this._set(name, val); }
   _set(name, val) {
     name = CubusCube.ALIAS[String(name).toLowerCase()] || name;
+    this._store(name, val);
+    // Before the build nothing exists to react; `_build()` reads every attribute itself.
+    if (!this._ghostMeshes) return;
+    if (Object.hasOwn(REACTIONS, name)) REACTIONS[name](this);
+  }
+
+  /** Record an attribute's value in `_attrs`, the one place the element reads attributes from. */
+  _store(name, val) {
     // removeAttribute() arrives here with val === null. Storing that raw meant `ghosts` read as
     // neither 'none' nor 'false' and so counted as ENABLED — removing the attribute turned ghosts
     // on rather than off. A removed attribute means "back to the default", not "null" — UNLESS
@@ -205,23 +328,22 @@ class CubusCube extends HTMLElement {
     } else {
       this._attrs[name] = val;
     }
-    if (!this._ghostMeshes) return;
-    if (name === 'palette' || name === 'scheme') this._paint();
-    else if (name === 'ghosts') { this._ghostVisible(); this._paint(); this._applyCamera(); }
-    else if (name === 'ghost-elevation') { this._ghostPlace(); this._applyCamera(); }
-    else if (name === 'facelet-scale') { this._applyScale(); this._applyCamera(); } // the scale is part of the silhouette
-    else if (name === 'camera-latitude' || name === 'camera-longitude' || name === 'camera-fit'
-             || name === 'camera-up') this._applyCamera();
-    // Writing the attribute is a CUT, not a turn: it states where the cube is, and a state that
-    // takes 400ms to become true cannot be read back or asserted. `turnTo()` is the animation.
-    else if (name === 'orientation') this.showTurn(this._attrs.orientation, this._attrs.orientation, 1);
-    else if (name === 'back-view') this._dirty = true;
-    else if (name === 'orbit') this._applyOrbit();
-    else if (name === 'facelets' || name === 'scramble') this.reset();
-    else if (name === 'alg') { this._sol = this._parse(this._attrs.alg || ''); this._cursor = 0; this._applied = 0; this._playing = false; }
-    else if (name === 'highlight') { this._readHighlight(); this._syncHighlight(); }
-    // focus repaints rather than syncing: it changes sticker COLOUR, which only _paint() writes.
-    else if (name === 'focus') { this._readFocus(); this._paint(); }
+  }
+
+  /**
+   * A new walk calls off the old one's moves, the one in flight AND the ones queued behind it —
+   * exactly what `reset()` does for a new cube. Resetting only the counters left R and U of the
+   * old alg playing on and reporting themselves as steps of the new one (found by audit,
+   * 2026-09-14). The state only advances when a move COMPLETES, so dropping the move in flight
+   * and writing the pose puts the cube back where its last finished move left it.
+   */
+  _replaceAlg() {
+    this._anim = null;
+    this._queue = [];
+    this._writePose();
+    this._sol = this._parse(this._attrs.alg || '');
+    this._cursor = 0; this._applied = 0; this._playing = false;
+    this._dirty = true;
   }
 
   connectedCallback() {
@@ -235,8 +357,35 @@ class CubusCube extends HTMLElement {
     clearTimeout(this._release);
     if (this.scene) { this._start(); return; }
     this.style.cssText = 'display:block;width:100%;height:100%;' + (this.style.cssText || '');
+    // TRANSACTIONAL. `this.scene` is what says "built", and it used to be published on the first
+    // line of the build — before the WebGL context existed. A page where the context could not be
+    // created was left with a half-built element, and the next connect took the "already built"
+    // branch above and threw on an observer that was never made (found by audit, 2026-09-14). Now
+    // `_build()` publishes it last, and a build that throws is unwound — context, canvas and
+    // listeners — before the error is let through. Loud, and nothing left half-held.
+    try {
+      this._build();
+    } catch (err) {
+      this.dispose();
+      throw err;
+    }
+    this._start();
+  }
 
-    const scene = this.scene = new THREE.Scene();
+  /** Everything a first connect creates: the scene, the renderer, the meshes, the observers and the
+   *  frame loop. `this.scene` is published at the very end, as the mark that all of it exists. */
+  _build() {
+    const scene = new THREE.Scene();
+    this._buildView();
+    this._buildLights(scene);
+    this._buildCubies(scene);
+    this._initWalk();
+    this._buildLoop();
+    this.scene = scene;
+  }
+
+  /** The camera, the WebGL renderer and its canvas, and the orbit controls. */
+  _buildView() {
     const camera = this.camera = new THREE.PerspectiveCamera(30, 1, 0.1, 100);
 
     const renderer = this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
@@ -261,7 +410,10 @@ class CubusCube extends HTMLElement {
     controls.rotateSpeed = 0.75;
     this._applyCamera();
     this._applyOrbit();
+  }
 
+  /** The light rig, added to `scene`, with each light's direction fixed relative to the eye. */
+  _buildLights(scene) {
     // Lights ride with the camera's ORIENTATION, not the world. Fixed in the world they lit the
     // cube for one angle, and the moment anyone orbited underneath, the underside was lit by the
     // hemisphere's ground colour alone — yellow stickers read as black. Each light keeps a
@@ -273,14 +425,27 @@ class CubusCube extends HTMLElement {
     const key = new THREE.DirectionalLight(0xffffff, 0.95);
     const fill = new THREE.DirectionalLight(0xdfe6ff, 0.45);
     scene.add(hemi, key, fill);
-    const inv = camera.quaternion.clone().invert();
+    // The DEFAULT view is the reference, never `camera` as it stands. By this point `_applyCamera()`
+    // has already posed the camera from whatever camera attributes were present at connect, so
+    // taking the inverse of THAT quaternion rotated the rig by the host's settings — and the same
+    // final attributes lit the cube two ways depending on whether they were written before
+    // connecting or after (found by audit, 2026-09-14). Built from DEFAULTS so the two cannot drift.
+    const reference = new THREE.PerspectiveCamera();
+    const tuned = eyeDirection(Number(CubusCube.DEFAULTS['camera-latitude']), Number(CubusCube.DEFAULTS['camera-longitude']));
+    reference.position.set(tuned[0], tuned[1], tuned[2]);
+    reference.up.set(0, 1, 0);
+    reference.lookAt(0, 0, 0);
+    const inv = reference.quaternion.clone().invert();
     this._lights = [
       [hemi, new THREE.Vector3(0, 1, 0).applyQuaternion(inv)],
       [key, new THREE.Vector3(5, 8, 6).applyQuaternion(inv)],
       [fill, new THREE.Vector3(-6, 2, -4).applyQuaternion(inv)],
     ];
     this._placeLights();
+  }
 
+  /** The 26 cubies, each with its body, its stickers and a ghost per sticker, under `root`. */
+  _buildCubies(scene) {
     const root = this.root = new THREE.Group();
     scene.add(root);
 
@@ -337,7 +502,10 @@ class CubusCube extends HTMLElement {
       root.add(c);
       this.cubies.push(c);
     }
+  }
 
+  /** The walk's starting state, with every attribute read in: `_set()` skips an unbuilt cube. */
+  _initWalk() {
     this._anim = null;
     this._queue = [];
     this._cursor = 0;
@@ -356,12 +524,15 @@ class CubusCube extends HTMLElement {
     // a mounted cube draw itself framed for a ghostless one.
     this.showTurn(this._attrs.orientation, this._attrs.orientation, 1);
     this.reset();
+  }
 
+  /** The resize and visibility observers, and the frame loop itself. */
+  _buildLoop() {
     this._resize = () => {
       const w = this.clientWidth || 1, h = this.clientHeight || 1;
-      renderer.setSize(w, h, false);
-      camera.aspect = w / h;
-      camera.updateProjectionMatrix();
+      this.renderer.setSize(w, h, false);
+      this.camera.aspect = w / h;
+      this.camera.updateProjectionMatrix();
       this._applyCamera(); // the distance depends on the aspect (see there); it sets _dirty
     };
     this._ro = new ResizeObserver(this._resize);
@@ -370,73 +541,125 @@ class CubusCube extends HTMLElement {
 
     this._tick = () => {
       this._raf = requestAnimationFrame(this._tick);
-      // The backlog rule, visible or not: at most two turns may exist as pending ANIMATION;
-      // everything older completes instantly. A deeper queue means the element was scrolled out
-      // (rAF runs, _visible false), the window was occluded (rAF pauses entirely, so this runs
-      // at the first frame back), or a burst outran the tempo — and in every one of those,
-      // replaying a stale film move by move helps nobody. Same policy the app's drawTo applies
-      // from its side. Off screen the drain is total: animating for nobody banks pure backlog.
-      // Only queued work drains — play() pulls from the solution one move at a time, and
-      // draining that would fast-forward a whole walk.
-      while (
-        this._queue.length + (this._anim ? 1 : 0) > 2 ||
-        (!this._visible && (this._anim || this._queue.length))
-      ) {
-        let a = this._anim;
-        if (!a) { const m = this._queue.shift(); a = { temp: this._grab(m), m }; }
-        a.temp.setRotationFromAxisAngle(AXES[a.m.axis], a.m.angle);
-        this._completeMove(a);
-      }
-      if (!this._visible) return;
-      // The drain above completes moves without calling _next(), which breaks the pull chain
-      // step() and the completion handler otherwise maintain: queued moves — and a playing
-      // walk — would sit forever with nothing in flight. Re-arm it.
-      if (!this._anim && (this._queue.length || this._playing)) this._next();
-      if (this._anim) {
-        const a = this._anim;
-        const k = Math.min(1, (performance.now() - a.t0) / a.dur);
-        a.temp.setRotationFromAxisAngle(AXES[a.m.axis], a.m.angle * EASE(k));
-        if (k >= 1) {
-          this._completeMove(a);
-          this._next();
-        }
-        this._dirty = true;
-      }
-      // The highlight breathes on its own clock, independent of the move animation: a piece can be
-      // named while the cube is still, and it must keep pulsing while a turn plays over it.
-      //
-      // The phase is evaluated every frame and never branched around, because the reduced-motion
-      // preference can flip WHILE a pulse is in flight. Skipping the update in that case froze the
-      // highlight at whatever intensity it happened to hold — and at the trough of the breath that
-      // is invisible, so the indicator silently vanished for exactly the users who asked for less
-      // motion. Writing only on change keeps the static case free: under reduced motion the phase
-      // is a constant, so this settles after one frame and stops marking the scene dirty.
-      if (this._hlSet?.size) {
-        const k = this._hlPhase();
-        if (k !== this._hlK) {
-          this._applyHighlight(k);
-          this._hlK = k;
-          this._dirty = true;
-        }
-      }
-      // An in-flight turnTo() is the only thing that WRITES the phase on a clock. Everything else
-      // — the attribute, a scrubber — sets it directly, which is why this is a caller of
-      // showTurn() rather than a second way to pose the cube.
-      if (this._turning) {
-        const t = this._turning;
-        const k = Math.min(1, (performance.now() - t.t0) / t.ms);
-        this._setTurn(t.from, t.to, EASE(k));
-        // Settle AFTER the last pose is written, and re-anchor on the destination so the next
-        // turn starts from a settled orientation rather than from a finished turn's `from`.
-        if (k >= 1) { this._setTurn(t.to, t.to, 1); this._settleTurn(true); }
-        this._dirty = true;
-      }
-      if (this._attrs.autorotate != null) { this._spin += 0.0035; this._applyRoot(); }
-      const moving = this.controls.update();
-      if (moving) this._placeLights();
-      if (moving || this._dirty) { this._draw(); this._dirty = false; }
+      this._frame();
     };
-    this._start();
+  }
+
+  /** One frame of the loop: settle any backlog, advance whatever is timed, and draw if needed. */
+  _frame() {
+    if (!this._drainBacklog()) return;
+    // Off screen the loop keeps running but draws nothing, so autorotate's reference time is let
+    // go HERE as well as when the loop stops: kept, the first frame back added the whole hidden
+    // stretch at once — a cube scrolled away for a minute leapt 12.6 rad on its return (found by
+    // verification, 2026-09-14).
+    if (!this._visible) { this._spinAt = null; return; }
+    // The drain above completes moves without calling _next(), which breaks the pull chain
+    // step() and the completion handler otherwise maintain: queued moves — and a playing
+    // walk — would sit forever with nothing in flight. Re-arm it.
+    if (!this._anim && (this._queue.length || this._playing)) this._next();
+    if (!this._advanceMove()) return;
+    this._breathe();
+    this._advanceTurn();
+    this._advanceSpin();
+    const moving = this.controls.update();
+    if (moving) this._placeLights();
+    if (moving || this._dirty) { this._draw(); this._dirty = false; }
+  }
+
+  /** Complete every move past the backlog limit. False when a completion stopped the loop. */
+  _drainBacklog() {
+    // The backlog rule, visible or not: at most two turns may exist as pending ANIMATION;
+    // everything older completes instantly. A deeper queue means the element was scrolled out
+    // (rAF runs, _visible false), the window was occluded (rAF pauses entirely, so this runs
+    // at the first frame back), or a burst outran the tempo — and in every one of those,
+    // replaying a stale film move by move helps nobody. Same policy the app's drawTo applies
+    // from its side. Off screen the drain is total: animating for nobody banks pure backlog.
+    // Only queued work drains — play() pulls from the solution one move at a time, and
+    // draining that would fast-forward a whole walk.
+    while (
+      this._queue.length + (this._anim ? 1 : 0) > 2 ||
+      (!this._visible && (this._anim || this._queue.length))
+    ) {
+      let a = this._anim;
+      if (!a) a = { m: this._queue.shift() };
+      this._completeMove(a);
+      if (!this._running) return false; // see `_advanceMove`
+    }
+    return true;
+  }
+
+  /** Pose the move in flight now, completing it at its end. False when that stopped the loop. */
+  _advanceMove() {
+    if (this._anim) {
+      const a = this._anim;
+      const k = Math.min(1, (this._now() - a.t0) / a.dur);
+      this._writePose(a.m, EASE(k));
+      if (k >= 1) {
+        this._completeMove(a);
+        // `_completeMove` dispatches `cubus-step`, and a listener is the host's code: a screen that
+        // leaves when its walk ends disposes the cube right there. The frame went on and read the
+        // controls it had just released (found by audit, 2026-09-14). Disposing or detaching
+        // stops the loop, so a stopped loop is the sign to stop using the element.
+        if (!this._running) return false;
+        this._next();
+      }
+      this._dirty = true;
+    }
+    return true;
+  }
+
+  /** The highlight's breath, written only when its phase changed. */
+  _breathe() {
+    // The highlight breathes on its own clock, independent of the move animation: a piece can be
+    // named while the cube is still, and it must keep pulsing while a turn plays over it.
+    //
+    // The phase is evaluated every frame and never branched around, because the reduced-motion
+    // preference can flip WHILE a pulse is in flight. Skipping the update in that case froze the
+    // highlight at whatever intensity it happened to hold — and at the trough of the breath that
+    // is invisible, so the indicator silently vanished for exactly the users who asked for less
+    // motion. Writing only on change keeps the static case free: under reduced motion the phase
+    // is a constant, so this settles after one frame and stops marking the scene dirty.
+    if (this._hlSet?.size) {
+      const k = this._hlPhase();
+      if (k !== this._hlK) {
+        this._applyHighlight(k);
+        this._hlK = k;
+        this._dirty = true;
+      }
+    }
+  }
+
+  /** An in-flight turnTo(), posed at this instant and settled at its end. */
+  _advanceTurn() {
+    // An in-flight turnTo() is the only thing that WRITES the phase on a clock. Everything else
+    // — the attribute, a scrubber — sets it directly, which is why this is a caller of
+    // showTurn() rather than a second way to pose the cube.
+    if (this._turning) {
+      const t = this._turning;
+      const k = Math.min(1, (this._now() - t.t0) / t.ms);
+      this._setTurn(t.from, t.to, EASE(k));
+      // Settle AFTER the last pose is written, and re-anchor on the destination so the next
+      // turn starts from a settled orientation rather than from a finished turn's `from`.
+      if (k >= 1) { this._setTurn(t.to, t.to, 1); this._settleTurn(true); }
+      this._dirty = true;
+    }
+  }
+
+  /** Autorotate, by the time elapsed since its last reading. */
+  _advanceSpin() {
+    // By ELAPSED TIME, on the element's own clock. A fixed step a frame turned the cube twice as
+    // fast on a 120 Hz display, and kept turning under a pinned clock — which is the one
+    // instrument meant to make a frame reproducible (found by audit, 2026-09-14). `_spinAt` is
+    // cleared whenever the loop stops, so resuming continues from where it was rather than
+    // leaping by however long the cube was off screen.
+    if (this._attrs.autorotate != null) {
+      const now = this._now();
+      if (this._spinAt != null) this._spin += (now - this._spinAt) * SPIN_PER_MS;
+      this._spinAt = now;
+      this._applyRoot();
+    } else {
+      this._spinAt = null;
+    }
   }
 
   /** Begin drawing into whatever slot this is in now. Idempotent. */
@@ -456,6 +679,7 @@ class CubusCube extends HTMLElement {
   /** Stop drawing, keeping everything needed to start again. */
   _stop() {
     this._running = false;
+    this._spinAt = null;
     cancelAnimationFrame(this._raf);
     this._ro?.disconnect();
     this._io?.disconnect();
@@ -502,10 +726,24 @@ class CubusCube extends HTMLElement {
     if (detached) { canvas.style.display = 'none'; host.appendChild(canvas); }
     this.controls?.dispose();
     if (detached) { canvas.remove(); canvas.style.display = wasDisplay; }
+    // What the scene owns is released too. `renderer.dispose()` frees the context and nothing the
+    // scene holds — four geometries and 110 materials went undisposed (found by audit, 2026-09-14).
+    // Collected into sets first because they are shared: every body is one geometry and one
+    // material, and disposing a shared one per mesh would dispose it 26 times.
+    const owned = new Set();
+    this.scene?.traverse((o) => {
+      if (o.geometry) owned.add(o.geometry);
+      for (const m of [o.material].flat()) if (m) owned.add(m);
+    });
+    for (const r of owned) r.dispose();
     this.renderer?.dispose();
     this.renderer?.domElement?.remove();
+    // And let go of it. `root`, `cubies` and `stickers` hold the meshes, and the frame loop and the
+    // resize observer are closures over the renderer and camera — kept, a disposed element went on
+    // holding the whole old scene alive.
     this.scene = this.renderer = this.camera = this.controls = this._controlsRoot = null;
-    this._ghostMeshes = null;
+    this.root = this.cubies = this.stickers = this._ghostMeshes = null;
+    this._tick = this._resize = this._ro = this._io = null;
   }
 
   /**
@@ -520,6 +758,14 @@ class CubusCube extends HTMLElement {
    */
   recycle() {
     for (const name of CubusCube.observedAttributes) this.removeAttribute(name);
+    // A value set through a PROPERTY never became an attribute, so removing attributes did not
+    // reach it: a recycled cube came back with the last screen's palette, alg and scramble (found
+    // by audit, 2026-09-14). Whatever is still not at its default is put back through `_set()`, the
+    // same door a removal uses, so its repaint and refit run exactly as they would have.
+    for (const name of CubusCube.observedAttributes) {
+      if (Object.hasOwn(CubusCube.ALIAS, name)) continue; // one slot per canonical name
+      if (this._attrs[name] !== CubusCube.DEFAULTS[name]) this._set(name, null);
+    }
     // A turn in flight belongs to the screen being torn down, and its caller is owed an answer
     // before the cube is handed to the next one. Settled first, so the pose reset below cannot be
     // undone by a frame of the old animation still running.
@@ -677,7 +923,7 @@ class CubusCube extends HTMLElement {
       return Promise.resolve(true);
     }
     return new Promise((resolve) => {
-      this._turning = { from, to, t0: performance.now(), ms, settle: resolve };
+      this._turning = { from, to, t0: this._now(), ms, settle: resolve };
       // `_setTurn`, not `showTurn`: the public one cancels an animation in flight, and the one in
       // flight is the one this line just created.
       this._setTurn(from, to, 0);
@@ -709,7 +955,7 @@ class CubusCube extends HTMLElement {
       // the other way it would spin about the cube's own axis, which for a cube held on its side
       // is a different motion entirely.
       const s = (this._qs ||= new THREE.Quaternion());
-      s.setFromAxisAngle(AXES.y, this._spin);
+      s.setFromAxisAngle(Y_AXIS, this._spin);
       q.premultiply(s);
     }
     this.root.quaternion.copy(q);
@@ -770,7 +1016,7 @@ class CubusCube extends HTMLElement {
       scale: this._num('facelet-scale', 0.9),
       cull: !stable,
     });
-    const geom = { points, vfovDeg: this.camera.fov, aspect: this.camera.aspect || 1, eye, worldUp };
+    const geom = { points, vfovDeg: this.camera.fov, aspect: this._drawAspect(), eye, worldUp };
     const d = stable ? fitDistanceStable(geom) : fitDistance(geom);
     // The controls clamp the distance on every update(), so their limits follow the fit: a user
     // may zoom in to look closer, never out past the frame — and a resize puts the fit back.
@@ -812,6 +1058,26 @@ class CubusCube extends HTMLElement {
     return v;
   }
 
+  /**
+   * The aspect ratio the cube is actually drawn at: half the width when `back-view` splits the
+   * element, the whole of it otherwise. The top-right inset keeps the element's own shape, so it
+   * needs nothing of its own.
+   *
+   * ONE definition, for the fit and for `_draw()`. The fit used to read `camera.aspect`, which
+   * `_resize()` sets to the WHOLE element — so a side-by-side pane half as wide was framed for
+   * twice its width, and at 320x240 the cube ran off both edges of both panes (found by audit,
+   * 2026-09-14).
+   */
+  _drawAspect() {
+    const w = this.clientWidth || 1, h = this.clientHeight || 1;
+    return this._split(w) ? Math.floor(w / 2) / h : w / h;
+  }
+
+  /** Is this element drawn as two panes? Below 4px there is no meaningful split. */
+  _split(w = this.clientWidth || 1) {
+    return (this._attrs['back-view'] || 'none') === 'side-by-side' && w >= 4;
+  }
+
   /** Turn the light rig with the given camera (the main one by default). */
   _placeLights(cam = this.camera) {
     if (!this._lights || !cam) return;
@@ -840,12 +1106,10 @@ class CubusCube extends HTMLElement {
     this._cullGhosts();
     const bv = this._attrs['back-view'] || 'none';
 
-    // Below 4px there is no meaningful split — fall through to the single view rather than
-    // build a zero-width projection.
-    if (bv === 'side-by-side' && w >= 4) {
+    if (this._split(w)) {
       // The right pane takes the remainder, so an odd width leaves no stale pixel column.
       const left = Math.floor(w / 2), right = w - left;
-      this.camera.aspect = left / h;
+      this.camera.aspect = this._drawAspect();
       this.camera.updateProjectionMatrix();
       // finally, because scissor state outlives this frame: a render throw would otherwise
       // leave every later full-frame draw clipped to the last scissor rectangle.
@@ -867,11 +1131,21 @@ class CubusCube extends HTMLElement {
     // the projection — below a few pixels the main view alone is the honest picture.
     if (bv === 'top-right' && Math.floor(w * 0.32) > 0 && Math.floor(h * 0.32) > 0) {
       const iw = Math.floor(w * 0.32), ih = Math.floor(h * 0.32);
+      const [x, y] = [w - iw - 10, h - ih - 10];
+      const autoClear = r.autoClear;
       r.setScissorTest(true);
       try {
+        // The inset is drawn OVER the main view, so only depth is cleared, and only inside it. The
+        // explicit clearDepth() always said so, but render() clears colour too while autoClear is
+        // on, and it cut a hard-edged transparent hole through the main cube's corner — every
+        // pixel of the inset's rectangle came back 0,0,0,0 (seen in the appearance golden,
+        // 2026-09-15). The scissor is set before the clear because a stale one, left by a
+        // side-by-side frame, would clear somewhere else.
+        r.setScissor(x, y, iw, ih);
         r.clearDepth();
-        this._renderOpposite(w - iw - 10, h - ih - 10, iw, ih);
-      } finally { r.setScissorTest(false); }
+        r.autoClear = false;
+        this._renderOpposite(x, y, iw, ih);
+      } finally { r.autoClear = autoClear; r.setScissorTest(false); }
     }
   }
 
@@ -916,15 +1190,19 @@ class CubusCube extends HTMLElement {
     // confidence — worse than drawing nothing and saying why.
     const out = [];
     for (const tok of String(alg).trim().split(/\s+/).filter(Boolean)) {
-      const m = /^([URFDLB])(2|')?$/.exec(tok);
-      const f = m && FACES.find((x) => x.key === m[1]);
-      if (!f) {
+      // What a token MEANS — which axis, which layers, which way and how far — belongs to the pose
+      // module, which is where the cube's move tables already are. Spelling that arithmetic here
+      // as well left two definitions of one thing, free to drift apart (found by audit,
+      // 2026-09-14). Copied rather than shared, because a caller may negate the angle of what it
+      // gets back (see stepBack) and the descriptors are frozen.
+      // hasOwn as well as a table with no prototype: either alone is one refactor from the
+      // `alg="toString"` crash, and a parser is where an author's arbitrary text first arrives.
+      const d = Object.hasOwn(MOVE_DESCRIPTORS, tok) ? MOVE_DESCRIPTORS[tok] : null;
+      if (!d) {
         console.warn(`<cubus-cube> refusing alg — invalid move token "${tok}"`);
         return [];
       }
-      const turns = m[2] === '2' ? 2 : 1;
-      const dir = m[2] === "'" ? -1 : 1;
-      out.push({ axis: f.axis, layer: f.sign, angle: -dir * f.sign * turns * Math.PI / 2, turns });
+      out.push({ ...d });
     }
     return out;
   }
@@ -972,10 +1250,11 @@ class CubusCube extends HTMLElement {
    * Record which piece each cubie carries, while the cube is still at home.
    *
    * This is the ONE moment the answer is readable: reset() paints BEFORE it applies `scramble`, so
-   * at this instant a cubie's letters are exactly its facelet letters. Afterwards the group travels
-   * — _bake() moves it — and the stamp travels with it. That is what makes `piece:UF` mean "the UF
-   * piece, wherever it went" rather than "whatever is in the UF slot", which is a different
-   * sentence and the one a scrambled cube gets wrong.
+   * at this instant a cubie's letters are exactly its facelet letters. Afterwards the cubie moves
+   * — `_writePose` puts it where the state says — and the stamp stays on it, because the group is
+   * the cubie and nothing re-parents it. That is what makes `piece:UF` mean "the UF piece, wherever
+   * it went" rather than "whatever is in the UF slot", which is a different sentence and the one a
+   * scrambled cube gets wrong.
    */
   _stampPieces(letterOf) {
     const carried = new Map();
@@ -989,7 +1268,6 @@ class CubusCube extends HTMLElement {
     for (const [c, letters] of carried) c.userData.piece = letters === null ? null : pieceKey(letters);
   }
 
-  /** Re-read the highlight attribute into selectors, naming a bad token rather than dropping it. */
   /** Which pieces still matter. Same grammar as `highlight`, opposite job: highlight says "look at
    *  this one", focus says "none of the others exist". For a whole stage the second is far stronger
    *  — you cannot glow four pieces and expect the eye to ignore twenty-two.
@@ -1003,17 +1281,30 @@ class CubusCube extends HTMLElement {
     this._fcSels = selectors;
   }
 
+  /**
+   * What a selector reads off each cubie: the slot it is in and the piece it carries.
+   *
+   * ONE reading for `focus` and `highlight`. They share a grammar, so `slot:UR` must name the same
+   * cubie for both; each used to build this list itself, and two copies of it are two chances to
+   * disagree about which cubie that is.
+   */
+  _selectable() {
+    return this.cubies.map((c) => ({
+      // Rounded because a selector names SLOTS, and mid-turn a cubie is between two of them: it
+      // answers for the one it is nearer rather than for a fractional position nobody can name. At
+      // rest the rounding changes nothing — `_writePose` puts a settled cubie on exact integers.
+      pos: [Math.round(c.position.x), Math.round(c.position.y), Math.round(c.position.z)],
+      piece: c.userData.piece ?? null,
+    }));
+  }
+
   /** Grey every sticker and ghost NOT named by `focus`. Called from _paint(), after the colour
    *  loop has written each sticker's true colour — so this is always applied to fresh colours and
    *  never compounds on itself. */
   _applyFocus() {
     const sels = this._fcSels || [];
     if (!sels.length) return;
-    const cubies = this.cubies.map((c) => ({
-      pos: [Math.round(c.position.x), Math.round(c.position.y), Math.round(c.position.z)],
-      piece: c.userData.piece ?? null,
-    }));
-    const { indices } = resolveHighlight(sels, cubies);
+    const { indices } = resolveHighlight(sels, this._selectable());
     const keep = new Set(indices);
     for (const [i, c] of this.cubies.entries()) {
       if (keep.has(i)) continue;
@@ -1027,19 +1318,20 @@ class CubusCube extends HTMLElement {
     }
   }
 
+  /** Re-read the highlight attribute into selectors, naming a bad token rather than dropping it. */
   _readHighlight() {
     const { selectors, invalid } = parseHighlight(this._attrs.highlight);
     if (invalid !== null) console.warn(`<cubus-cube> refusing highlight — invalid selector "${invalid}"`);
     this._hlSels = selectors;
     // Start at the top of the breath, so a highlight is visible the instant it is set rather than
     // fading in from nothing over half a period.
-    this._hlT0 = performance.now() - HL_PERIOD / 2;
+    this._hlT0 = this._now() - HL_PERIOD / 2;
   }
 
   /** Where in the breath we are, 0..1. One expression, so the tick and the first paint agree. */
   _hlPhase() {
     if (reducedMotion()) return 1;
-    return 0.5 - 0.5 * Math.cos(((performance.now() - this._hlT0) / HL_PERIOD) * 2 * Math.PI);
+    return 0.5 - 0.5 * Math.cos(((this._now() - this._hlT0) / HL_PERIOD) * 2 * Math.PI);
   }
 
   /** Re-resolve the highlight against the cube as it stands now, and paint one frame of it. */
@@ -1051,14 +1343,7 @@ class CubusCube extends HTMLElement {
     // stationary cube nothing else will ask for a redraw — so the glow this call removed would
     // stay on screen until the user happened to orbit.
     if (!sels.length) { this._hlSet = null; this._hlK = null; this._dirty = true; return; }
-    const cubies = this.cubies.map((c) => ({
-      // Rounded because that is what a baked position IS: _bake() writes integers, so the parity
-      // test needs no epsilon, and a cubie riding a temp group mid-turn still answers for the slot
-      // it is travelling between rather than for a fractional position nobody can name.
-      pos: [Math.round(c.position.x), Math.round(c.position.y), Math.round(c.position.z)],
-      piece: c.userData.piece ?? null,
-    }));
-    const { indices, empty } = resolveHighlight(sels, cubies);
+    const { indices, empty } = resolveHighlight(sels, this._selectable());
     if (empty.length) {
       console.warn(`<cubus-cube> highlight matched nothing for ${empty.join(', ')} — this cube has no known identity for it (unread stickers?)`);
     }
@@ -1087,8 +1372,8 @@ class CubusCube extends HTMLElement {
    * reads as "this one" and a white centre stays white.
    *
    * It lives on the cubie's materials, not on an overlay mesh, and that is what makes it survive a
-   * turn: _grab() re-parents cubies into a temporary group on every move, so anything positioned in
-   * world space would tear loose the moment the layer rotated.
+   * turn: the cubie is what moves, so anything positioned in world space would tear loose the
+   * moment the layer rotated.
    */
   _applyHighlight(k) {
     if (!this._hlSet?.size) return;
@@ -1135,7 +1420,12 @@ class CubusCube extends HTMLElement {
    *  carries delta -1: it undoes a solution move, so the step index counts down; anything else
    *  counts up. Host apps sync a move list / 2D net / scrubber to the event. */
   _completeMove(a) {
-    this._bake(a.temp);
+    // The state moves; the geometry follows from it. `after()` hands back the frame too — nothing
+    // this parser emits turns the whole cube, so it is the frame that came in, and taking it
+    // rather than assuming it is what will make `x y z` work the day the parser can say one.
+    const landed = after(UPRIGHT, this._state, a.m);
+    this._state = landed.state;
+    this._writePose();
     // Positions have just changed, so a positional selector (`layer:`, `slot:`) now names a
     // different set. Re-resolved here rather than only on repaint, because a move repaints nothing.
     this._syncHighlight();
@@ -1145,21 +1435,27 @@ class CubusCube extends HTMLElement {
     this._dirty = true;
   }
 
-  _bake(temp) {
-    temp.updateMatrix();
-    for (const c of [...temp.children]) {
-      c.applyMatrix4(temp.matrix);
-      c.position.set(Math.round(c.position.x), Math.round(c.position.y), Math.round(c.position.z));
-      this.root.add(c);
+  /**
+   * Put every cubie where the cube's STATE says it is — the one place geometry is written.
+   *
+   * What this replaces: `_grab` re-parented a layer's cubies into a temporary group, `_tick`
+   * rotated that group, and `_bake` multiplied the result back into each cubie and rounded its
+   * position to the nearest integer. So where a cubie sat was the accumulated residue of every
+   * turn it had been in, and the rounding was there because that residue drifts. A pose derived
+   * from the state cannot drift, needs no rounding, and makes seeking to a move and playing into
+   * it the same picture by construction rather than by care (lib pose.js, A1 of the plan).
+   */
+  _writePose(move = null, phase = 0) {
+    const poses = poseAll(UPRIGHT, this._state, move, phase);
+    for (let i = 0; i < this.cubies.length; i++) {
+      const { pos, m } = poses[POSE_OF[i]];
+      const c = this.cubies[i];
+      c.position.set(pos[0], pos[1], pos[2]);
+      // Row-major, which is the order Matrix4.set() reads and the order pose.js writes.
+      this._m4 ||= new THREE.Matrix4();
+      this._m4.set(m[0][0], m[0][1], m[0][2], 0, m[1][0], m[1][1], m[1][2], 0, m[2][0], m[2][1], m[2][2], 0, 0, 0, 0, 1);
+      c.quaternion.setFromRotationMatrix(this._m4);
     }
-    this.root.remove(temp);
-  }
-
-  _grab(m) {
-    const temp = new THREE.Group();
-    this.root.add(temp);
-    for (const c of this.cubies) if (Math.round(c.position[m.axis]) === m.layer) temp.add(c);
-    return temp;
   }
 
   _next() {
@@ -1180,34 +1476,31 @@ class CubusCube extends HTMLElement {
     // layer moved; at the Slow setting this is a 32x cut, which is the point.
     const reduced = reducedMotion();
     const dur = (190 / tempo) * m.turns;
-    this._anim = { temp: this._grab(m), m, t0: performance.now(), dur: reduced ? Math.min(dur, 120 * m.turns) : dur };
+    this._anim = { m, t0: this._now(), dur: reduced ? Math.min(dur, 120 * m.turns) : dur };
   }
 
   reset() {
-    // An interrupted animation's carrier group must leave the scene here: _bake() removes it on
-    // completion, but a reset mid-turn never reaches _bake, and the empty group stayed forever.
-    if (this._anim) this.root.remove(this._anim.temp);
+    // Nothing to unpick from the scene: a move in flight is a descriptor and a start time, so
+    // dropping it is enough. It used to be a group of re-parented meshes, and a reset mid-turn
+    // left the empty carrier in the scene forever.
     this._queue = []; this._anim = null; this._cursor = 0; this._playing = false; this._applied = 0;
-    let i = 0;
-    for (let x = -1; x <= 1; x++) for (let y = -1; y <= 1; y++) for (let z = -1; z <= 1; z++) {
-      if (!x && !y && !z) continue;
-      const c = this.cubies[i++];
-      c.position.set(x, y, z);
-      c.quaternion.identity();
-      this.root.add(c);
-    }
+    this._state = SOLVED_STATE;
     // Resolved ONCE for both jobs — painting and the scramble decision — so an invalid string
     // warns once, not twice. A VALID facelet string already encodes the scramble; only apply
     // moves when there isn't one, and an invalid string does not count.
+    // HOME BEFORE PAINT. `_paint()` resolves `focus` as it goes, and a positional selector answers
+    // for whatever is in the slot AT THAT MOMENT — so painting before the cubies are put back left
+    // focus naming the piece the previous cube had there (found by audit, 2026-09-14: set
+    // `focus="slot:UR"`, turn R, reset, and the FR piece stayed coloured). The version this
+    // replaced moved every cubie home first for exactly this reason; writing the pose is how that
+    // is said now.
+    this._writePose();
     const fl = this._facelets();
     this._paint(fl);
     if (!fl) {
-      for (const m of this._parse(this._attrs.scramble || '')) {
-        const t = this._grab(m);
-        t.rotateOnAxis(AXES[m.axis], m.angle);
-        this._bake(t);
-      }
+      for (const m of this._parse(this._attrs.scramble || '')) this._state = after(UPRIGHT, this._state, m).state;
     }
+    this._writePose();
     // AFTER the scramble, not only inside _paint(). _paint() resolves the highlight while every
     // cubie is still at home, and the loop above then moves them — so a positional selector set
     // before reset() named the pre-scramble occupant of the slot. Unconditional rather than tucked
@@ -1244,12 +1537,8 @@ class CubusCube extends HTMLElement {
     // on each jump.
     this._quiet = true;
     try { this.reset(); } finally { this._quiet = false; }
-    for (let i = 0; i < target; i++) {
-      const m = this._sol[i];
-      const t = this._grab(m);
-      t.rotateOnAxis(AXES[m.axis], m.angle);
-      this._bake(t);
-    }
+    for (let i = 0; i < target; i++) this._state = after(UPRIGHT, this._state, this._sol[i]).state;
+    this._writePose();
     // Same reason as reset(): the moves above land after reset() painted, so a highlight set
     // before the seek would still be pointing at wherever those pieces used to be.
     this._syncHighlight();
@@ -1257,5 +1546,8 @@ class CubusCube extends HTMLElement {
     this._dirty = true;
     this.dispatchEvent(new CustomEvent('cubus-step', { detail: { index: target, total: this._sol.length } }));
   }
+}
+for (const name of Object.keys(REACTIONS)) {
+  if (!CubusCube.observedAttributes.includes(name)) throw new Error(`<cubus-cube> reacts to "${name}", which it does not observe`);
 }
 customElements.define('cubus-cube', CubusCube);

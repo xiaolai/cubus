@@ -19,8 +19,8 @@
 // The assembly is a function so a test can run it into a throwaway directory
 // and look at what came out; `node build.mjs` runs it into dist/.
 
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
-import path, { join, dirname, relative, resolve, sep } from 'node:path';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
+import path, { basename, join, dirname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // The same bundler that BUILDS vendor/cubus-cube.js, asked which files went into it. It is
@@ -28,12 +28,15 @@ import { fileURLToPath } from 'node:url';
 // steps before this file, so a tree that can reach build.mjs can reach esbuild.
 import { buildSync } from 'esbuild';
 
+import { isOwnedAsset, ownedAssetsIn } from './copy-ort.mjs';
+
 const here = dirname(fileURLToPath(import.meta.url));
 
 // Whole directories, so a new import never silently misses the bundle. lib/ is
 // source (app.js and its siblings load as ES modules directly); vendor/ is
-// esbuild output plus the onnxruntime wasm and the YOLO model.
-export const DIRS = ['lib', 'vendor', 'icons'];
+// esbuild output plus the onnxruntime wasm and the YOLO model; notices/ is
+// ONNX Runtime's own third-party notices, which THIRD_PARTY_NOTICES.md links.
+export const DIRS = ['lib', 'vendor', 'icons', 'notices'];
 // THIRD_PARTY_NOTICES.md ships beside the app: the About card links it, and a
 // licence notice that is not in the bundle is a notice nobody received.
 export const FILES = ['index.html', 'tokens.css', 'manifest.webmanifest', 'THIRD_PARTY_NOTICES.md'];
@@ -52,19 +55,24 @@ export const FILES = ['index.html', 'tokens.css', 'manifest.webmanifest', 'THIRD
 //       REMOVED on 2026-08-29: a note about code that is not in the app.
 export const NEVER_SHIPPED = ['vendor/tauri-mcp-guest.js', 'vendor/min2phase.PROVENANCE.md'];
 
-// ONE grammar for the onnxruntime assets, written once as a source string and used for BOTH
-// directions of the scanner check below — what the shipped loader NAMES, and what vendor/ HOLDS.
-// It is copy-ort.mjs's `OWNED_ASSET` predicate, and that file records why it is one string: the
-// two uses need different anchoring (a global scan of a bundle's text, an exact test of a
-// filename), and writing the pattern out twice is how this contract broke before. It broke again
-// here, differently: this file spelled it `ort-wasm-simd-threaded.*.wasm` in two places, so the
-// `.mjs` glue the loader fetches beside the binary was never checked at all.
-const ORT_ASSET = 'ort-wasm[a-z0-9.\\-]*\\.(?:wasm|mjs)';
-/** Every runtime asset `text` names. A bundle cannot fetch a filename it does not contain, so
- *  what the loader names IS the complete set of what it can reach at runtime. */
-const ortAssetsNamedBy = (text) => [...new Set([...text.matchAll(new RegExp(ORT_ASSET, 'g'))].map((m) => m[0]))];
-/** Is this filename one of the runtime's own? Anchored, so it matches a whole name, not a part. */
-const isOrtAsset = (f) => new RegExp(`^${ORT_ASSET}$`).test(f);
+/**
+ * Where the renderer's source lives, named from this app's root.
+ *
+ * It is not under `lib/` any more — `<cubus-cube>` is `packages/cubus-cube/` since 2026-09-14 —
+ * and the bundle it produces still lands in this app's `vendor/`. A constant rather than an
+ * inline join, because the disposability guard and the freshness check both have to know, and a
+ * stale copy of this path would make it check nothing while staying green.
+ */
+const CUBE_ENTRY = '../../packages/cubus-cube/src/cubus-cube.js';
+
+
+// ONE grammar for the onnxruntime assets, used for BOTH directions of the scanner check below —
+// what the shipped loader NAMES (`ownedAssetsIn`), and what vendor/ HOLDS (`isOwnedAsset`). It is
+// copy-ort.mjs's own, IMPORTED: this file used to carry a second spelling of it that a test held
+// equal to the first by comparing their source text. That was the same rule written twice and
+// agreeing by hand, which is how it broke before — this file once spelled it
+// `ort-wasm-simd-threaded.*.wasm` in two places, so the `.mjs` glue the loader fetches beside the
+// binary was never checked at all.
 
 /**
  * The entry and every LOCAL module it pulls in, transitively — an esbuild bundle's own sources.
@@ -147,18 +155,48 @@ const identity = (p) => {
   }
 };
 
-/** Every directory that holds `p`, and `p` itself, as identities. A destination that does not
- *  exist yet contributes its nearest existing ancestor and everything above it — the parts that
- *  could already BE something; the missing leading components cannot be, and a delete does not
- *  touch them. */
-const ancestry = (p) => {
-  const ids = new Set();
-  for (let at = p; ; at = dirname(at)) {
+/** Add the identity of `start` and of every lexical parent above it to `ids`. */
+const walkUp = (start, ids) => {
+  for (let at = start; ; at = dirname(at)) {
     const id = identity(at);
     if (id) ids.add(id);
     if (dirname(at) === at) return ids;
   }
 };
+
+/**
+ * `p` with every symlink in it resolved: its nearest existing ancestor through `realpath`, and the
+ * components that do not exist yet appended as written.
+ *
+ * WHY BOTH WALKS. `identity()` stats through a symlink but `dirname()` steps up the path as TEXT,
+ * so the lexical walk alone went from the target of a link straight to the link's own parent:
+ * through `alias -> apps/web/lib/screens`, `alias/cube` visited `screens` and then `/tmp`, never
+ * `lib` or the app root, and reached the recursive delete of a real source directory (found by
+ * audit, 2026-09-14). The canonical walk closes that. The lexical one stays because realpath is not
+ * the whole answer either — it does not resolve a macOS firmlink, which is why this guard compares
+ * device and inode rather than strings at all. A destination is refused if EITHER walk reaches a
+ * protected tree.
+ */
+const canonical = (p) => {
+  const missing = [];
+  for (let at = resolve(p); ;) {
+    try {
+      return join(realpathSync(at), ...missing);
+    } catch (err) {
+      if (err.code !== 'ENOENT' && err.code !== 'ENOTDIR') throw err;
+      const up = dirname(at);
+      if (up === at) return resolve(p);
+      missing.unshift(basename(at));
+      at = up;
+    }
+  }
+};
+
+/** Every directory that holds `p`, and `p` itself, as identities. A destination that does not
+ *  exist yet contributes its nearest existing ancestor and everything above it — the parts that
+ *  could already BE something; the missing leading components cannot be, and a delete does not
+ *  touch them. */
+const ancestry = (p) => walkUp(canonical(p), walkUp(p, new Set()));
 
 /** Is `inner` the same directory as `outer`, or somewhere beneath it — however either is SPELLED?
  *  `outer` has to exist to be either: an identity is a thing that is there. A whole path component
@@ -185,7 +223,7 @@ const beneath = (inner, outer) => {
  * Named and thrown from here rather than inlined, because the order is the contract — this must
  * be the thing that happens before the delete, not beside it.
  */
-function assertDistIsDisposable(src, out) {
+function assertDistIsDisposable(src, out, entry) {
   if (beneath(src, out)) {
     throw new Error(
       `build: refusing to assemble into ${out} — it is the source tree ${src} (or holds it), and the first thing an assembly does is delete its destination`,
@@ -198,6 +236,23 @@ function assertDistIsDisposable(src, out) {
         `build: refusing to assemble into ${out} — it is ${posix(src, copied)}, which the assembly copies FROM, and the destination is deleted first`,
       );
     }
+  }
+  // AND THE RENDERER, which stopped being inside `src` when it became its own package
+  // (packages/cubus-cube, 2026-09-14). Everything above asks whether the destination is this app
+  // or something this app copies from; the renderer's SOURCE is neither, so `assembleDist({ dist:
+  // 'packages/cubus-cube' })` walked straight past every guard to the recursive delete, and the
+  // freshness check that would have noticed runs afterwards (found by audit, 2026-09-14).
+  //
+  // `entry` is the ONE resolved renderer entry this assembly uses, handed in by assembleDist. This
+  // guard used to name its own from CUBE_ENTRY while the freshness check honoured a caller's
+  // `cubeEntry`, so a caller that supplied one had its renderer checked for freshness and the
+  // default protected from deletion — two halves of one change describing different directories
+  // (found by audit, 2026-09-14).
+  const renderer = dirname(dirname(entry));
+  if (beneath(out, renderer) || beneath(renderer, out)) {
+    throw new Error(
+      `build: refusing to assemble into ${out} — it is the renderer package at ${renderer} (or holds it), whose source this build is built from, and the destination is deleted first`,
+    );
   }
 }
 
@@ -303,7 +358,7 @@ function assertScannerAssets(root, dist) {
   // start), and their expectation came from vendor/, so an unrelated variant sitting there passed
   // both while the loader asked for a file nobody had copied.
   if (!absentScanner.size) {
-    const named = ortAssetsNamedBy(readFileSync(join(dist, 'vendor', 'ort.mjs'), 'utf8'));
+    const named = ownedAssetsIn(readFileSync(join(dist, 'vendor', 'ort.mjs'), 'utf8'));
     // Loud rather than trivially green: a loader that names none of its assets means onnxruntime
     // has changed how it fetches them, and this check would otherwise silently verify nothing.
     if (!named.length) absentScanner.add('vendor/ort.mjs names no ort-wasm-* runtime asset (has onnxruntime-web changed?)');
@@ -311,7 +366,7 @@ function assertScannerAssets(root, dist) {
     // And the other direction, one grammar: everything copy-ort published into vendor/ must
     // survive the copy into dist/. The loader-derived set above cannot see a file the filter
     // dropped on the way in if the loader never names it, and vendor/ is what actually ships.
-    for (const f of readdirSync(join(root, 'vendor')).filter(isOrtAsset)) {
+    for (const f of readdirSync(join(root, 'vendor')).filter(isOwnedAsset)) {
       if (!existsSync(join(dist, 'vendor', f))) absentScanner.add(`vendor/${f}`);
     }
   }
@@ -324,7 +379,7 @@ function assertScannerAssets(root, dist) {
 }
 
 /** The bundle must be newer than every source that went into it. */
-function assertBundleFresh(root) {
+function assertBundleFresh(root, entry) {
   // The esbuild bundle must be newer than its source, or beforeBuildCommand ran
   // out of order and we would ship a stale renderer that still looks fine.
   //
@@ -337,8 +392,13 @@ function assertBundleFresh(root) {
   // is where the silhouette and the camera fit live — so editing it and shipping without a
   // rebuild passed this check while dist/ carried a renderer that behaves differently from its
   // source. That is the same defect the check exists for, one import away from where it looked.
+  // Loud when the entry is not there: the renderer moved out of this package once, and a check
+  // pointed at a file that no longer exists is a check that passes for the wrong reason.
+  if (!existsSync(entry)) {
+    throw new Error(`build: the renderer's entry is not at ${entry} — CUBE_ENTRY is out of date`);
+  }
   const built = statSync(join(root, 'vendor', 'cubus-cube.js')).mtimeMs;
-  const newer = bundleInputs(join(root, 'lib', 'cubus-cube.js'))
+  const newer = bundleInputs(entry)
     .filter((f) => statSync(f).mtimeMs > built)
     .map((f) => posix(root, f));
   if (newer.length) {
@@ -357,7 +417,9 @@ function assertBundleFresh(root) {
  * bundle. They ran here as one body, which made the order look like a detail rather than the
  * contract it is — nothing may be checked before the copy that produces it.
  *
- * @param {{ root?: string, dist?: string, freshness?: boolean }} [o]
+ * @param {{ root?: string, dist?: string, freshness?: boolean, cubeEntry?: string }} [o]
+ *   `cubeEntry` is the renderer's source entry, defaulting to the package beside this one. A
+ *   parameter because the dist tests assemble a synthetic root and need an entry inside it.
  *   `freshness` (default on) is the bundle-newer-than-source check at the end: the CLI's
  *   guarantee that beforeBuildCommand ran its steps in order. A test of what dist CONTAINS
  *   turns it off, because a working tree with an edited source and a not-yet-rebuilt bundle is
@@ -365,21 +427,23 @@ function assertBundleFresh(root) {
  *   comparing content — which is the better message for it.
  * @returns {{ dist: string, referenced: number }}
  */
-export function assembleDist({ root = here, dist = join(root, 'dist'), freshness = true } = {}) {
+export function assembleDist({ root = here, dist = join(root, 'dist'), freshness = true, cubeEntry } = {}) {
   // Absolute from here down, so "is the destination inside the source" is a question about
   // directories rather than about whoever's cwd this ran under — and so the walk up to the
   // filesystem root that answers it has a root to reach: `dirname` on a relative path stops at
   // '.', which would hide every real ancestor from the guard.
   const src = resolve(root);
   const out = resolve(dist);
-  assertDistIsDisposable(src, out);
+  // Resolved once, before anything is deleted, and handed to BOTH checks that need it.
+  const entry = cubeEntry ? resolve(cubeEntry) : resolve(src, CUBE_ENTRY);
+  assertDistIsDisposable(src, out, entry);
   rmSync(out, { recursive: true, force: true });
   mkdirSync(out, { recursive: true });
   copyWebAssets(src, out);
   const referenced = assertReferencedAssets(out);
   assertSolverAssets(out);
   assertScannerAssets(src, out);
-  if (freshness) assertBundleFresh(src);
+  if (freshness) assertBundleFresh(src, entry);
   return { dist: out, referenced };
 }
 

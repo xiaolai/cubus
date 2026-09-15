@@ -27,8 +27,9 @@ test('it names the element, its bundle, and a schema a reader can check', () => 
   assert.equal(manifest.tag, 'cubus-cube');
   assert.equal(manifest.bundle, 'cubus-cube.js');
   assert.equal(manifest.schema, 1);
-  // No release version, deliberately — see `build-cube-manifest.mjs`. A number to compare is an
-  // invitation to compare numbers instead of asking whether the capability is there.
+  // No release version, deliberately — see the renderer package's `build-cube-manifest.mjs`. A
+  // number to compare is an invitation to compare numbers instead of asking whether the
+  // capability is there.
   assert.equal('version' in manifest, false, 'a release version crept into the manifest');
 });
 
@@ -60,7 +61,7 @@ test('it lists the methods a lesson drives, and nothing private', () => {
 // `nonexistent-attribute`, `nonexistentMethod` and `constructor` into the manifest passed all five.
 // This reads the built bundle and demands exact equality, which is the claim the file is making.
 test('the manifest is exactly what the bundle registers, name for name', async () => {
-  const { readElement } = await import('../read-element.mjs');
+  const { readElement } = await import('../../../packages/cubus-cube/read-element.mjs');
   const live = await readElement();
   assert.equal(live.tag, manifest.tag);
   assert.deepEqual(manifest.attributes, live.attributes,
@@ -76,4 +77,104 @@ test('the manifest is a statement about what may be ASKED, not about what works'
   assert.equal(typeof manifest.attributes.includes, 'function');
   assert.ok(manifest.attributes.includes('orientation'));
   // The behaviour behind it is proved in test/browser/orientation.test.mjs, not here.
+});
+
+// Reading the bundle TWICE, which nothing did until an audit pointed it out (2026-09-14). Node
+// caches an ES module by URL, and a `data:` URL's identity is its content — so without the nonce
+// `read-element.mjs` appends, a second read returns the cached module, nothing calls
+// `customElements.define`, and the call fails with "defined no custom element". The safeguard was
+// there with its reasoning written down; what was missing was anything that would notice it going.
+test('the bundle can be read twice, and says the same thing both times', async () => {
+  const { readElement } = await import('../../../packages/cubus-cube/read-element.mjs');
+  const first = await readElement();
+  const second = await readElement();
+  assert.equal(second.tag, first.tag, 'a second read named a different element');
+  assert.deepEqual(second.attributes, first.attributes, 'a second read found different attributes');
+  assert.deepEqual(second.methods, first.methods, 'a second read found different methods');
+  assert.equal(second.digest, first.digest, 'a second read hashed different bytes');
+});
+
+// Overlapping reads, which the build never makes and a caller easily could (`Promise.all` over two
+// bundles). The stubs are process globals, and interleaved reads refused two of three and left the
+// process holding the stubs. Each read must get the element, and the globals must come back.
+test('overlapping reads each get the element, and leave the globals as they found them', async () => {
+  const { readElement } = await import('../../../packages/cubus-cube/read-element.mjs');
+  const realElement = class RealHTMLElement {};
+  const realRegistry = { real: true };
+  const [savedElement, savedRegistry] = [globalThis.HTMLElement, globalThis.customElements];
+  globalThis.HTMLElement = realElement;
+  globalThis.customElements = realRegistry;
+  try {
+    const settled = await Promise.allSettled([readElement(), readElement(), readElement()]);
+    assert.deepEqual(settled.map((s) => (s.status === 'fulfilled' ? s.value.tag : String(s.reason))),
+      ['cubus-cube', 'cubus-cube', 'cubus-cube'], 'an overlapping read lost its element to another');
+    assert.equal(globalThis.HTMLElement, realElement, 'HTMLElement was left as a stub');
+    assert.equal(globalThis.customElements, realRegistry, 'customElements was left as a stub');
+  } finally {
+    globalThis.HTMLElement = savedElement;
+    globalThis.customElements = savedRegistry;
+  }
+});
+
+test('a read that fails does not hold up the reads queued behind it', async () => {
+  const { readElement } = await import('../../../packages/cubus-cube/read-element.mjs');
+  const missing = new URL('./no-such-bundle.js', import.meta.url);
+  const [failed, next] = await Promise.allSettled([readElement(missing), readElement()]);
+  assert.equal(failed.status, 'rejected', 'precondition: a missing bundle is refused');
+  assert.equal(next.status, 'fulfilled', `the read after a failure never ran: ${next.reason}`);
+  assert.equal(next.value.tag, 'cubus-cube');
+});
+
+// The element reacts to attribute changes through a table keyed by attribute name, and a key that
+// names no observed attribute is a reaction that can never run — a typo that fails silently. The
+// bundle checks its table when it loads, so the typo throws there; this is that check going red.
+test('a reaction to an attribute the element does not observe stops the bundle loading', async () => {
+  const { mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const { readElement } = await import('../../../packages/cubus-cube/read-element.mjs');
+  const original = readFileSync(BUNDLE, 'utf8');
+  const anchor = '  scheme: (el) => el._paint(),\n';
+  assert.equal(original.split(anchor).length, 2, 'precondition: the bundle has one `scheme` reaction to misspell');
+  const dir = mkdtempSync(join(tmpdir(), 'cubus-reactions-'));
+  try {
+    const path = join(dir, 'cubus-cube.js');
+    writeFileSync(path, original.replace(anchor, '  schemes: (el) => el._paint(),\n'));
+    await assert.rejects(() => readElement(pathToFileURL(path)), /reacts to "schemes", which it does not observe/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// What `read-element.mjs` guarantees, tested where it could fail: the capabilities it reports and
+// the digest it reports describe the SAME bytes. It reads the bundle once and imports those exact
+// bytes as a `data:` URL; an implementation that hashed the file but imported it by path would
+// agree with itself right up until the bundle changed on disk — and then Node's module cache would
+// hand back the OLD element under the NEW digest. That is the rebuild race the snapshot exists to
+// close, and nothing noticed an in-memory mutation that reopened it (found by audit, 2026-09-14).
+test('a bundle that changes between two reads is described by its new bytes, not a cached element', async () => {
+  const { mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const { readElement } = await import('../../../packages/cubus-cube/read-element.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'cubus-read-element-'));
+  try {
+    const path = join(dir, 'cubus-cube.js');
+    const original = readFileSync(BUNDLE, 'utf8');
+    const anchor = '  static observedAttributes = [\n';
+    assert.equal(original.split(anchor).length, 2, 'precondition: the bundle has one attribute list to extend');
+    writeFileSync(path, original);
+    const before = await readElement(pathToFileURL(path));
+    // The same file, rebuilt with one more attribute: what a rebuild during a read would look like.
+    writeFileSync(path, original.replace(anchor, `${anchor}    "only-in-the-rebuild",\n`));
+    const after = await readElement(pathToFileURL(path));
+    assert.notEqual(after.digest, before.digest, 'precondition: the second read hashed different bytes');
+    assert.equal(before.attributes.includes('only-in-the-rebuild'), false, 'precondition: the first bytes do not have it');
+    assert.equal(after.attributes.includes('only-in-the-rebuild'), true,
+      'the digest describes the rebuilt bytes and the capabilities describe the old ones — a cached element under a new digest');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

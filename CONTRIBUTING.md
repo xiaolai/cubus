@@ -38,11 +38,13 @@ say so where the claim is made.
 ## Vendored bundles are committed, and rebuilt
 
 `apps/web/vendor/*.js` are esbuild outputs the app imports directly. An edit under
-`packages/cube-scanner`, to `apps/web/lib/cubus-cube.js`, or to a bundle entry is not finished
+`packages/cube-scanner` or `packages/cubus-cube`, or to a bundle entry, is not finished
 until the bundle is rebuilt and committed (`pnpm build:panel`, `pnpm --filter cubus-web
 build:cube`, `build:cubejs`, `build:smartcube`, `build:mcp-guest`); CI rebuilds them and fails on
 any diff. The licence notices, `apps/web/THIRD_PARTY_NOTICES.md`, are the same kind of artifact:
-`pnpm notices` regenerates them after a dependency change and CI refuses drift.
+`pnpm notices` regenerates them after a dependency change and CI refuses drift. An Android
+dependency change comes first through Gradle: `./gradlew :app:dependencies --write-locks` in
+`apps/desktop/src-tauri/gen/android`, then `node scripts/android-licences.mjs`, then `pnpm notices`.
 
 ## The version is one number in ten places
 

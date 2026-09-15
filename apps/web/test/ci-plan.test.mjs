@@ -89,6 +89,9 @@ test('a pull request runs a platform job when it touches that platform', () => {
     ['packages/gan-driver/package.json', only('deps')],
     ['pnpm-lock.yaml', only('deps')],
     ['apps/web/THIRD_PARTY_NOTICES.md', only('deps')],
+    ['apps/web/notices/onnxruntime-1.29.0-ThirdPartyNotices.txt', only('deps')],
+    ['apps/desktop/src-tauri/gen/android/app/gradle.lockfile', { ...only('rust'), android: true, deps: true }],
+    ['apps/desktop/src-tauri/gen/android/app/dependency-licences.json', { ...only('rust'), android: true, deps: true }],
   ];
   for (const [path, expected] of cases) {
     assert.deepEqual(plan({ event: 'pull_request', changed: [path] }), expected, path);

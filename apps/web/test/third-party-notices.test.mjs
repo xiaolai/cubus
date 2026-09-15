@@ -47,7 +47,13 @@ const prose = notices.replace(/\s+/g, ' ');
 // vendor-bundles.test.mjs uses, so an entry added there is covered here without being remembered.
 function bundleEntries() {
   const out = [];
-  for (const [pkgJson, base] of [['../package.json', '../'], ['../../../packages/cube-scanner/package.json', '../../../packages/cube-scanner/']]) {
+  for (const [pkgJson, base] of [
+    ['../package.json', '../'],
+    ['../../../packages/cube-scanner/package.json', '../../../packages/cube-scanner/'],
+    // The renderer builds from its own package since 2026-09-14, and three ships inside its
+    // bundle — a list that stopped at two packages stopped seeing three at all.
+    ['../../../packages/cubus-cube/package.json', '../../../packages/cubus-cube/'],
+  ]) {
     for (const cmd of Object.values(JSON.parse(read(pkgJson)).scripts ?? {})) {
       const m = /^esbuild (\S+) .*--outfile=\S*vendor\/([\w.-]+\.js)/.exec(String(cmd));
       if (m) out.push({ entry: `${base}${m[1]}`, bundle: m[2] });
@@ -115,10 +121,12 @@ test('the load-bearing native crates are listed at the versions Cargo.lock pins'
   assert.match(prose, /Rust standard library[^.]*MIT OR Apache-2\.0/);
 });
 
+// The Android libraries are held to the locked release classpath in notices-generator.test.mjs.
+// The `implementation(...)` lines this once read are what one file declares, not what the APK
+// carries: no Tauri module's libraries, nothing transitive, and declared rather than resolved
+// versions.
 test('the platform runtimes that are not crates are named: DirectML, the Swift runtime, TensorFlow Lite', () => {
   assert.match(prose, /DirectML\.dll[^.]*Microsoft Software License Terms/);
   assert.match(prose, /Swift standard libraries[^;]*?Apache License 2\.0 with the Runtime Library Exception/);
-  for (const coord of [...read('../../../apps/desktop/src-tauri/gen/android/app/build.gradle.kts').matchAll(/^\s*implementation\("([^"]+)"\)/gm)].map((m) => m[1])) {
-    assert.ok(notices.includes(`\`${coord}\``), `Android dependency ${coord} is not in the notices`);
-  }
+  assert.match(prose, /TensorFlow Lite \(LiteRT\) is the runtime for the `\.tflite` export/);
 });

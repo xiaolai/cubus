@@ -1,58 +1,46 @@
-// The highlight channel where it actually runs — real WebGL, real materials.
+// The highlight and focus channels where they actually run — real WebGL, read back off the canvas.
 //
 // cube-highlight.test.mjs proves WHICH pieces a selector names. Nothing there can prove what the
-// renderer then does to them, and that half has two traps a pure test cannot reach:
+// renderer then puts on screen, and that half has traps a pure test cannot reach:
 //
 //   - the rounded cubie body uses ONE material shared by all 26 cubies, so lighting a cubie by
 //     walking its children lights the whole cube unless the body is skipped by name;
-//   - the pulse is a function of wall-clock time, so a naive assertion on emissiveIntensity is
-//     a coin flip — at the trough of the breath a correctly highlighted piece reads as dark.
+//   - the pulse is a function of time, so a naive single reading is a coin flip — at the trough of
+//     the breath a correctly highlighted piece reads as dark.
 //
-// The second is handled by running the material assertions under `prefers-reduced-motion: reduce`,
+// EVERY ASSERTION HERE IS ON PIXELS (dev-docs/renderer-v2-plan.md §3c). This file used to read the
+// materials — `emissiveIntensity`, `color`, `opacity` — which say what the renderer MEANT to draw
+// and pass when the value is set and the pixels are wrong. Now a sticker is lit when it draws
+// brighter than it does with the highlight cleared, out of focus when focus changes its pixels,
+// and so on, each compared with another render on the same machine and view. sampling.mjs reads
+// the canvas; two opposite eyes between them show every sticker once.
+//
+// The second trap is handled by running most assertions under `prefers-reduced-motion: reduce`,
 // where the highlight is deliberately frozen at full strength, and by testing the motion itself
 // separately in a page that has it.
 
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { after, before, test } from 'node:test';
-import { fileURLToPath } from 'node:url';
-import { webkit } from 'playwright';
 
-import { freePort } from '../free-port.mjs';
+import { startBrowserFixture } from './harness.mjs';
+import { channelDelta, installSampler, luminance } from './sampling.mjs';
 
-const SERVE = fileURLToPath(new URL('../../serve.mjs', import.meta.url));
-let proc;
-let browser;
-let base;
+let fixture;
 /** One page per motion preference, shared by every test in this file. */
 const PAGES = {};
 
 /** Solved facelets, in URFDLB order — the string the renderer paints from. */
 const SOLVED = ['U', 'R', 'F', 'D', 'L', 'B'].map((c) => c.repeat(9)).join('');
 
+/** A sticker is LIT when it draws this much brighter than at rest. The highlight at full strength
+ *  adds 38% of the sticker's own colour; the darkest palette colour gains well over 20. */
+const LIT = 8;
+/** A sticker is CHANGED when any channel moved by more than this. Same machine, same view: an
+ *  unchanged sticker reads back identically, so this only has to clear rounding. */
+const CHANGED = 2;
+
 before(async () => {
-  const port = await freePort();
-  base = `http://127.0.0.1:${port}`;
-  proc = spawn(process.execPath, [SERVE], {
-    env: { ...process.env, PORT: String(port), CUBUS_LIVE_RELOAD: '0' },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  let said = '';
-  await new Promise((resolve, reject) => {
-    const timeout = setTimeout(
-      () => reject(new Error(`serve.mjs did not start within 20s. It said: ${said.trim() || '(nothing)'}`)),
-      20_000,
-    );
-    const note = (d) => { said += d.toString(); if (said.includes(`:${port}`)) { clearTimeout(timeout); resolve(); } };
-    proc.stdout.on('data', note);
-    proc.stderr.on('data', (d) => { said += d.toString(); });
-    proc.on('error', reject);
-  });
-  try {
-    browser = await webkit.launch();
-  } catch (cause) {
-    throw new Error('WebKit for Playwright is not installed — run: pnpm --filter cubus-web exec playwright install webkit', { cause });
-  }
+  fixture = await startBrowserFixture();
   // TWO pages for the whole file, one per motion preference — not one per test.
   //
   // Each page load is the entire SPA (onnxruntime and all), and ten of them made this file run
@@ -61,19 +49,17 @@ before(async () => {
   // own startup budgets: 14 failures, none of them assertions, none of them reproducible when the
   // suites were run alone. Raising their timeouts would have hidden the load rather than removed it.
   for (const motion of ['reduce', 'no-preference']) {
-    const page = await browser.newPage({ reducedMotion: motion });
+    const page = await fixture.browser.newPage({ reducedMotion: motion });
     const warnings = [];
     page.on('console', (m) => { if (m.type() === 'warning') warnings.push(m.text()); });
-    await page.goto(`${base}/index.html`);
+    await page.goto(`${fixture.base}/index.html`);
     await page.waitForFunction(() => !!customElements.get('cubus-cube'));
+    await page.evaluate(installSampler);
     PAGES[motion] = { page, warnings, motion };
   }
 });
 
-after(async () => {
-  await browser?.close();
-  proc?.kill('SIGTERM');
-});
+after(async () => { await fixture?.close(); });
 
 /**
  * A fresh <cubus-cube> on the shared page for `reducedMotion`, with the warning buffer cleared.
@@ -87,7 +73,7 @@ async function cubePage({ reducedMotion = 'reduce', ghosts = 'none', facelets = 
   // Reset any per-test emulateMedia override (the mid-pulse test flips this page's preference).
   await ctx.page.emulateMedia({ reducedMotion: ctx.motion });
   ctx.warnings.length = 0;
-  await ctx.page.evaluate(({ facelets: fl, ghosts: g }) => {
+  await ctx.page.evaluate(async ({ facelets: fl, ghosts: g }) => {
     if (window.__cube) { window.__cube.dispose?.(); window.__cube.remove(); }
     const el = document.createElement('cubus-cube');
     el.style.cssText = 'position:fixed;left:0;top:0;width:220px;height:220px;z-index:99999';
@@ -97,19 +83,42 @@ async function cubePage({ reducedMotion = 'reduce', ghosts = 'none', facelets = 
     el.setAttribute('ghosts', g);
     document.body.appendChild(el);
     window.__cube = el;
+    await new Promise((r) => requestAnimationFrame(() => r()));
   }, { facelets, ghosts });
   return { page: ctx.page, warnings: ctx.warnings };
 }
 
-/** Positions of the cubies carrying at least one lit sticker, sorted for comparison. */
-const litPositions = (page) => page.evaluate(() => window.__cube.cubies
-  .filter((c) => c.children.some((m) => m.userData?.face && m.material.emissiveIntensity > 0))
-  .map((c) => [c.position.x, c.position.y, c.position.z].map(Math.round).join(','))
-  .sort());
+/**
+ * Positions of the cubies with at least one sticker that draws brighter than it does with the
+ * highlight cleared, sorted for comparison. The highlight is put back exactly as it was: the
+ * attribute is restored, which re-reads and re-resolves it.
+ */
+const litPositions = (page) => page.evaluate(({ lit }) => {
+  const el = window.__cube;
+  const spec = el.getAttribute('highlight');
+  const shown = window.__appearance.stickers(el);
+  el.setAttribute('highlight', 'none');
+  const rest = window.__appearance.stickers(el);
+  if (spec === null) el.removeAttribute('highlight'); else el.setAttribute('highlight', spec);
+  const lum = ([r, g, b]) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const cubies = new Set(Object.keys(shown).filter((k) => lum(shown[k]) - lum(rest[k]) > lit).map((k) => Number(k.split(':')[0])));
+  return [...cubies].map((i) => {
+    const c = el.cubies[i];
+    return [c.position.x, c.position.y, c.position.z].map(Math.round).join(',');
+  }).sort();
+}, { lit: LIT });
 
 const setHighlight = (page, spec) => page.evaluate((s) => {
   window.__cube.setAttribute('highlight', s);
 }, spec);
+
+test('every sticker is sampled once, so a head count means the whole cube', async () => {
+  // The instrument's own precondition. Two opposite eyes are meant to show all 54 stickers; a view
+  // that missed some would make "lit on the real cube" silently mean "lit on the part in view".
+  const { page } = await cubePage();
+  const seen = await page.evaluate(() => Object.keys(window.__appearance.stickers()).length);
+  assert.equal(seen, 54, 'the two views do not show every sticker');
+});
 
 test('six centres, twelve edges, eight corners — lit on the real cube', async () => {
   const { page } = await cubePage();
@@ -127,40 +136,42 @@ const setFocus = (page, spec) => page.evaluate((v) => {
   else window.__cube.setAttribute('focus', v);
 }, spec);
 
-/** Each sticker's colour, tagged with whether it reads as grey and which face letter it carries.
- *  Ghost twins are excluded: every sticker has one, it also carries `userData.face`, and counting
- *  both is how a six-centre assertion turns into twelve. */
-const stickerColours = (page) => page.evaluate(() => window.__cube.cubies.flatMap((cu, i) =>
-  cu.children
-    .filter((m) => m.userData?.face && !m.userData.n)
-    .map((m) => {
-      const { r, g, b } = m.material.color;
-      return { cubie: i, face: m.userData.face, hex: m.material.color.getHex(),
-               grey: Math.abs(r - g) < 0.02 && Math.abs(g - b) < 0.02 };
-    })));
+/** Every sticker's drawn colour, keyed `cubie:face`. */
+const stickers = (page) => page.evaluate(() => window.__appearance.stickers());
+
+/** The keys whose drawn colour differs between two readings. */
+const changed = (a, b) => Object.keys(a).filter((k) => channelDelta(a[k], b[k]) > CHANGED);
 
 test('focus greys everything it does not name, and restores exactly', async () => {
   const { page } = await cubePage();
-  const before = await stickerColours(page);
-  assert.equal(before.length, 54, 'a cube has 54 stickers');
-  assert.ok(before.every((s) => !s.grey), 'nothing is grey before focus is set');
+  const before = await stickers(page);
+  assert.equal(Object.keys(before).length, 54, 'a cube has 54 stickers');
 
   await setFocus(page, 'centers');
-  const during = await stickerColours(page);
-  assert.equal(during.filter((s) => !s.grey).length, 6, 'only the six centres keep their colour');
+  const during = await stickers(page);
+  const greyed = changed(before, during);
+  assert.equal(greyed.length, 48, 'focus on the centres must change every sticker but the six centres');
+  const kept = Object.keys(before).filter((k) => !greyed.includes(k));
+  const centreCubies = await page.evaluate(() => window.__cube.cubies
+    .map((c, i) => (Math.abs(Math.round(c.position.x)) + Math.abs(Math.round(c.position.y)) + Math.abs(Math.round(c.position.z)) === 1 ? i : -1))
+    .filter((i) => i >= 0));
+  assert.deepEqual(kept.map((k) => Number(k.split(':')[0])).sort((x, y) => x - y), centreCubies.sort((x, y) => x - y),
+    'the stickers left as they were are exactly the centres');
+  // And greyed means drawn with less colour, not merely drawn differently.
+  const chroma = ([r, g, b]) => Math.max(r, g, b) - Math.min(r, g, b);
+  assert.ok(greyed.every((k) => chroma(during[k]) < chroma(before[k]) || chroma(before[k]) < 12),
+    'a sticker out of focus kept its colour');
 
-  // Restoring must return the ORIGINAL hexes, not merely un-grey them: focus writes colour, and
+  // Restoring must return the ORIGINAL pixels, not merely un-grey them: focus writes colour, and
   // _paint() rewrites the true colour first, so a second application must not compound.
   await setFocus(page, null);
-  const after = await stickerColours(page);
-  assert.deepEqual(after.map((s) => s.hex), before.map((s) => s.hex), 'removing focus restores every hex');
+  assert.deepEqual(changed(before, await stickers(page)), [], 'removing focus restores every sticker');
 
   await setFocus(page, 'centers');
-  const twice = await stickerColours(page);
+  const twice = await stickers(page);
   await setFocus(page, null);
   await setFocus(page, 'centers');
-  assert.deepEqual((await stickerColours(page)).map((s) => s.hex), twice.map((s) => s.hex),
-    'applying focus twice equals applying it once');
+  assert.deepEqual(changed(twice, await stickers(page)), [], 'applying focus twice equals applying it once');
 });
 
 test('focus is per-sticker: same colour, opposite treatment', async () => {
@@ -169,24 +180,25 @@ test('focus is per-sticker: same colour, opposite treatment', async () => {
   // (one material for all 26 cubie bodies) and caught the highlight channel once already.
   // Naming one U-layer piece puts U-face stickers on BOTH sides of the divide at the same time.
   const { page } = await cubePage();
+  const before = await stickers(page);
   await setFocus(page, 'piece:UF');
-  const u = (await stickerColours(page)).filter((s) => s.face === 'U');
-  const kept = u.filter((s) => !s.grey), greyed = u.filter((s) => s.grey);
-  assert.ok(kept.length > 0, 'the named piece keeps its U sticker');
-  assert.ok(greyed.length > 0, 'other U stickers are greyed');
-  assert.equal(kept.length + greyed.length, 9, 'all nine U-face stickers accounted for');
-  assert.equal(new Set(kept.map((s) => s.hex)).size, 1, 'the kept U sticker still holds the palette white');
-  assert.ok(!greyed.some((s) => kept.some((k) => k.hex === s.hex)),
-    'no greyed sticker shares a colour with a kept one — so no material is shared');
+  const during = await stickers(page);
+  const u = Object.keys(before).filter((k) => k.endsWith(':U'));
+  const greyed = changed(before, during).filter((k) => k.endsWith(':U'));
+  const kept = u.filter((k) => !greyed.includes(k));
+  assert.equal(u.length, 9, 'all nine U-face stickers sampled');
+  assert.equal(kept.length, 1, 'the named piece keeps its U sticker as it was');
+  assert.equal(greyed.length, 8, 'the other eight U stickers are greyed');
+  assert.ok(greyed.every((k) => channelDelta(during[k], during[kept[0]]) > CHANGED),
+    'no greyed sticker draws like the kept one — so no material is shared');
 });
 
 test('an invalid focus selector is refused whole, like an invalid highlight', async () => {
   const { page, warnings } = await cubePage();
-  const before = await stickerColours(page);
+  const before = await stickers(page);
   warnings.length = 0;
   await setFocus(page, 'centers,nonsense');
-  assert.deepEqual((await stickerColours(page)).map((s) => s.hex), before.map((s) => s.hex),
-    'a spec with one bad token changes nothing at all');
+  assert.deepEqual(changed(before, await stickers(page)), [], 'a spec with one bad token changes nothing at all');
   assert.ok(warnings.some((w) => /refusing focus/.test(w)), 'and says which selector it refused');
 });
 
@@ -210,27 +222,29 @@ test('layer:X lights that face\'s nine cubies and nothing else — all six faces
 test('the shared cubie body is never lit — only the stickers are', async () => {
   // bodyGeo/bodyMat are built ONCE and handed to all 26 cubies. Walking a highlighted cubie's
   // children and lighting anything with an `emissive` would light that one material, and every
-  // cubie on the cube with it. This is the assertion that says the body is skipped by name.
+  // cubie on the cube with it. Read where it would show: the body between neighbouring stickers,
+  // on every face, with the highlight on every corner and with it cleared.
+  // The resting reading is taken BEFORE any highlight is set. Clearing a highlight resets the
+  // stickers and ghosts it touched, never the body — so a lit body stays lit, and a baseline read
+  // after clearing is as lit as the render it is compared with. That baseline let a body lit by
+  // every highlight pass this test.
   const { page } = await cubePage();
-  await setHighlight(page, 'corners');
-  const body = await page.evaluate(() => {
-    const mats = window.__cube.cubies.map((c) => c.children.find((m) => !m.userData?.face && !m.userData?.n).material);
-    return {
-      count: mats.length,
-      distinct: new Set(mats).size,
-      emissive: [...new Set(mats.map((m) => m.emissive.getHex()))],
-      color: mats[0].color.getHex(),
-    };
+  const { lit, rest } = await page.evaluate(() => {
+    const el = window.__cube;
+    const untouched = window.__appearance.bodies(el);
+    el.setAttribute('highlight', 'corners');
+    return { lit: window.__appearance.bodies(el), rest: untouched };
   });
-  assert.equal(body.count, 26);
-  // The premise of the trap, asserted rather than assumed: ONE material for all 26 cubies.
-  assert.equal(body.distinct, 1, 'bodyMat is meant to be shared — if it stops being, this test stops meaning anything');
-  // Black emissive is what keeps it dark. emissiveIntensity is NOT the check: three.js defaults it
-  // to 1 on every MeshStandardMaterial, so the body reads as "intensity 1" while contributing
-  // nothing, and an assertion on intensity would fail on correct code. If _applyHighlight ever
-  // touched the body, this hex would become the body's own colour instead.
-  assert.deepEqual(body.emissive, [0x000000], 'a cubie body picked up emissive from the highlight');
-  assert.notEqual(body.color, 0x000000, 'so the assertion above can tell "untouched" from "copied"');
+  // Only between two stickers that are NOT lit: beside a lit sticker, where a face is foreshortened,
+  // its glow reaches the sample through the edge's antialiasing — measured at up to 7.9 — while a
+  // lit body would brighten every one of these places, not a few.
+  const corners = await page.evaluate(() => window.__cube.cubies
+    .map((c, i) => (Math.abs(Math.round(c.position.x)) + Math.abs(Math.round(c.position.y)) + Math.abs(Math.round(c.position.z)) === 3 ? i : -1))
+    .filter((i) => i >= 0));
+  const keys = Object.keys(rest).filter((k) => !k.split(':')[0].split('-').some((i) => corners.includes(Number(i))));
+  assert.ok(keys.length >= 24, `precondition: the body is sampled between unlit stickers on every face (${keys.length} places)`);
+  const brighter = keys.filter((k) => luminance(lit[k]) - luminance(rest[k]) > 1);
+  assert.deepEqual(brighter, [], 'a cubie body drew brighter under the highlight');
 });
 
 test('clearing the highlight returns every sticker to rest', async () => {
@@ -300,52 +314,79 @@ test('an invalid selector is refused loudly and highlights nothing', async () =>
   );
 });
 
-test('ghosts breathe in opacity, since an unlit material has no emissive to raise', async () => {
+test('ghosts breathe too, in how much of them is drawn rather than in glow', async () => {
+  // A ghost is unlit, so the highlight shows on it as opacity rather than glow. Read the ghosts the
+  // default view SHOWS, with the corners highlighted and without. Corners, not centres: from the
+  // default eye every centre's ghost sits behind the cube, where no pixel of it is drawn.
   const { page } = await cubePage({ ghosts: 'all' });
-  const restingOpacity = await page.evaluate(() => window.__cube._ghostMeshes[0].material.opacity);
-  await setHighlight(page, 'centers');
-  const lit = await page.evaluate(() => window.__cube.cubies
-    .filter((c) => c.children.some((m) => m.userData?.n && m.material.opacity > 0.45 + 1e-6)).length);
-  assert.equal(lit, 6, `ghosts on the highlighted centres should be raised above ${restingOpacity}`);
+  const { lit, rest, corners } = await page.evaluate(() => {
+    const el = window.__cube;
+    el.setAttribute('highlight', 'corners');
+    const shown = window.__appearance.ghosts(el);
+    el.setAttribute('highlight', 'none');
+    const cornerIndex = el.cubies
+      .map((c, i) => (Math.abs(Math.round(c.position.x)) + Math.abs(Math.round(c.position.y)) + Math.abs(Math.round(c.position.z)) === 3 ? i : -1))
+      .filter((i) => i >= 0);
+    return { lit: shown, rest: window.__appearance.ghosts(el), corners: cornerIndex };
+  });
+  const shown = Object.keys(rest).filter((k) => k in lit);
+  const moved = shown.filter((k) => channelDelta(lit[k], rest[k]) > CHANGED).sort();
+  const cornerGhosts = shown.filter((k) => corners.includes(Number(k.split(':')[0]))).sort();
+  assert.ok(cornerGhosts.length >= 3, `precondition: the view shows corner ghosts (${cornerGhosts.length})`);
+  assert.ok(shown.length > cornerGhosts.length, 'precondition: and ghosts of pieces that are not highlighted');
+  assert.deepEqual(moved, cornerGhosts, 'exactly the highlighted corners\' ghosts changed');
 });
+
+/** The URF corner's U sticker, as the frame on screen shows it — it faces the default eye. */
+const cornerLuminance = (page) => page.evaluate(() => {
+  const el = window.__cube;
+  const i = el.cubies.findIndex((c) => Math.round(c.position.x) === 1 && Math.round(c.position.y) === 1 && Math.round(c.position.z) === 1);
+  const rgb = window.__appearance.presented(i, 'U', el);
+  return rgb && (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]);
+});
+
+/** That corner's luminance on each of `frames` frames the element draws for itself. */
+const cornerOverFrames = (page, frames) => page.evaluate((n) => new Promise((done) => {
+  const el = window.__cube;
+  const i = el.cubies.findIndex((c) => Math.round(c.position.x) === 1 && Math.round(c.position.y) === 1 && Math.round(c.position.z) === 1);
+  const seen = [];
+  const tick = () => {
+    const rgb = window.__appearance.presented(i, 'U', el);
+    seen.push(0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]);
+    if (seen.length < n) requestAnimationFrame(tick); else done(seen);
+  };
+  requestAnimationFrame(tick);
+}), frames);
 
 test('the pulse actually moves, and stays inside its band', async () => {
   // The one assertion that needs motion, so it runs in a page that HAS it. Everything above is
   // deliberately frozen; without this test a highlight stuck at full strength would pass them all.
+  // The band is read off the screen too: no darker than the sticker at rest, no brighter than the
+  // same sticker held at full strength by reduced motion.
   const { page } = await cubePage({ reducedMotion: 'no-preference' });
+  const rest = await cornerLuminance(page);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   await setHighlight(page, 'corners');
-  const samples = await page.evaluate(() => new Promise((done) => {
-    const seen = [];
-    let n = 0;
-    const tick = () => {
-      const c = window.__cube.cubies.find((x) => Math.abs(x.position.x) + Math.abs(x.position.y) + Math.abs(x.position.z) === 3);
-      seen.push(c.children.find((m) => m.userData?.face).material.emissiveIntensity);
-      if (++n < 60) requestAnimationFrame(tick); else done(seen);
-    };
-    requestAnimationFrame(tick);
-  }));
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))));
+  const peak = await cornerLuminance(page);
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  const samples = await cornerOverFrames(page, 60);
   const min = Math.min(...samples);
   const max = Math.max(...samples);
-  assert.ok(max - min > 0.02, `expected the pulse to vary, saw ${min}..${max}`);
-  assert.ok(min >= 0 && max <= 0.38 + 1e-6, `pulse left its band: ${min}..${max}`);
+  assert.ok(peak - rest > LIT, `precondition: full strength is visibly brighter than rest (${rest} → ${peak})`);
+  assert.ok(max - min > 4, `expected the pulse to vary on screen, saw ${min}..${max}`);
+  assert.ok(min >= rest - 1 && max <= peak + 1, `the pulse left its band ${rest}..${peak}: ${min}..${max}`);
 });
 
 test('reduced motion freezes the highlight at full strength rather than removing it', async () => {
   // The indicator carries meaning — it is how the narration says which piece it means — so the
   // motion goes and the signal stays. Same stance _next() takes on the turn itself.
   const { page } = await cubePage({ reducedMotion: 'reduce' });
+  const rest = await cornerLuminance(page);
   await setHighlight(page, 'corners');
-  const samples = await page.evaluate(() => new Promise((done) => {
-    const seen = [];
-    let n = 0;
-    const tick = () => {
-      const c = window.__cube.cubies.find((x) => Math.abs(x.position.x) + Math.abs(x.position.y) + Math.abs(x.position.z) === 3);
-      seen.push(c.children.find((m) => m.userData?.face).material.emissiveIntensity);
-      if (++n < 30) requestAnimationFrame(tick); else done(seen);
-    };
-    requestAnimationFrame(tick);
-  }));
-  assert.deepEqual([...new Set(samples)], [0.38], 'reduced motion should hold the peak, not drop to zero');
+  const samples = await cornerOverFrames(page, 30);
+  assert.equal(new Set(samples).size, 1, `reduced motion should hold one strength, saw ${[...new Set(samples)].join(', ')}`);
+  assert.ok(samples[0] - rest > LIT, `and hold it at full strength, not at rest: ${rest} → ${samples[0]}`);
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -400,6 +441,8 @@ test('an animated turn re-resolves the highlight when the move completes', async
     el.setAttribute('alg', 'F');
     el.step();
   }));
+  // Read at full strength: a pulse caught near its trough is not an absent highlight.
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   assert.deepEqual(await litPositions(page), ['0,1,1'],
     '_completeMove must re-resolve after baking, or the glow leaves the slot with the piece');
 });
@@ -422,32 +465,32 @@ test('turning reduced motion on mid-pulse snaps the highlight to full strength',
   // the trough that is invisible, so the indicator vanished for the users who asked for less
   // motion. The phase is now evaluated every frame and written only when it changes.
   const { page } = await cubePage({ reducedMotion: 'no-preference' });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   await setHighlight(page, 'corners');
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))));
+  const peak = await cornerLuminance(page);
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
 
   // Wait for a frame that is demonstrably OFF peak before flipping the preference. A fixed sleep
   // could land on the peak by chance, and then the assertion below would hold whether or not the
   // fix was present — the test would pass for the wrong reason.
-  const before = await page.evaluate(() => new Promise((done, fail) => {
-    const read = () => {
-      const c = window.__cube.cubies.find((x) => Math.abs(x.position.x) + Math.abs(x.position.y) + Math.abs(x.position.z) === 3);
-      return c.children.find((m) => m.userData?.face).material.emissiveIntensity;
-    };
+  const before = await page.evaluate((top) => new Promise((done, fail) => {
+    const el = window.__cube;
+    const i = el.cubies.findIndex((c) => Math.round(c.position.x) === 1 && Math.round(c.position.y) === 1 && Math.round(c.position.z) === 1);
     let n = 0;
     const tick = () => {
-      const k = read();
-      if (k < 0.30) return done(k);
-      if (++n > 180) return fail(new Error(`never left the peak after ${n} frames (last ${k})`));
+      const rgb = window.__appearance.presented(i, 'U', el);
+      const k = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+      if (k < top - 8) return done(k);
+      if (++n > 180) return fail(new Error(`never left the peak after ${n} frames (last ${k}, peak ${top})`));
       requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
-  }));
-  assert.ok(before < 0.30, `expected an off-peak frame before flipping, got ${before}`);
+  }), peak);
+  assert.ok(before < peak - 8, `expected an off-peak frame before flipping, got ${before} against ${peak}`);
 
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await new Promise((r) => setTimeout(r, 350)); // a handful of frames
-  const k = await page.evaluate(() => {
-    const c = window.__cube.cubies.find((x) => Math.abs(x.position.x) + Math.abs(x.position.y) + Math.abs(x.position.z) === 3);
-    return c.children.find((m) => m.userData?.face).material.emissiveIntensity;
-  });
-  assert.equal(k, 0.38, `the highlight should jump to peak, not freeze at the ${before} it held`);
+  const k = await cornerLuminance(page);
+  assert.ok(Math.abs(k - peak) <= 1, `the highlight should jump to peak ${peak}, not freeze at the ${before} it held (${k})`);
 });
