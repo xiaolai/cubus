@@ -17,6 +17,7 @@ import * as frame from '../lib/cube-frame.js';
 import * as highlight from '../lib/cube-highlight.js';
 import * as moves from '../lib/cube-moves.js';
 import * as notation from '../lib/cube-notation.js';
+import * as questions from '../lib/cube-questions.js';
 import * as orientation from '../lib/cube-orientation.js';
 import * as pieces from '../lib/cube-pieces.js';
 import * as format from '../lib/lesson-format.js';
@@ -38,6 +39,9 @@ const PROMISED = [
   'formatMoves', 'parse',
   // The interpreter (plan items 1.2 and 1.3).
   'convertSelectors', 'run',
+  // Questions about one cube (plan item 1.4).
+  'edgesInLayerWithout', 'inLayerWithout', 'isHome', 'layerSlots', 'pairOf', 'pieceIn', 'piecesAway',
+  'readCube', 'whereIs',
   // The episode runtime.
   'CAM_DEFAULT', 'CAM_EASE', 'GHOST_ELEV', 'GHOST_REVEAL', 'MIN_PER_MOVE', 'QUARTER_GAP',
   'SPAN_LEAD', 'buildSchedule', 'cameraAt', 'checkEpisode', 'createLessonPlayer', 'lineAt',
@@ -60,7 +64,7 @@ test('the barrel re-exports the real thing, not a copy of it', () => {
   // EVERY promised name, not a hand-picked nine. The earlier version checked thirteen, so
   // substituting `{}` for `CUBE_VIEW_ATTRS` — a public export — passed the whole file, because the
   // assertions that used it read it from the source module directly.
-  const sources = [pieces, frame, highlight, moves, notation, orientation, view, format, schedule, player];
+  const sources = [pieces, frame, highlight, moves, notation, questions, orientation, view, format, schedule, player];
   const unchecked = [];
   for (const name of PROMISED) {
     const owner = sources.find((m) => name in m);

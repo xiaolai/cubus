@@ -18,7 +18,8 @@
 // asserts a colour that varies across them.
 
 import { SOLVED } from './cube-pieces.js';
-import { SLOT_FACELETS, toFacelets } from './two-phase.js';
+import { SLOT_FACELETS } from './cube-layout.js';
+import { toFacelets } from './two-phase.js';
 import { targetById } from './stage-targets.js';
 
 /** What the renderer draws as "not known". */
