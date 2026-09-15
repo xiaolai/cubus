@@ -125,6 +125,11 @@ export { askAt, buildScript, groupsOf, stateFrom, viewAtPosition } from './scrip
 // their views to — plus the matcher that finds a turned cube on a walk (plan item 3.3).
 export { createClockDriver, createElementWriter, createStopDriver, timelineOf } from './script-drive.js';
 export { locate, trackFor, trackOf } from './script-track.js';
+
+// The event driver: a drill round's answer worked out from the cube, its picks and verdict, and its reveal
+// as a script segment (plan item 3.4). The page keeps its controls; a round never reads the DOM.
+export { answerAt, createEventDriver, createRound, revealScript } from './script-rounds.js';
+export { ROUND_QUESTIONS } from './lesson-format.js';
 export {
   CAM_DEFAULT,
   CAM_EASE,

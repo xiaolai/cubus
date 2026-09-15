@@ -90,13 +90,19 @@ test('a cue is checked where it is written, selectors and questions included', (
 });
 
 test('a round says what it asks and how many answers it wants, and its reveal is a script segment', () => {
-  const round = { say: 'Where will it go?', turn: "U R U' R'", ask: 'whereIs:UR', choose: 1, reveal: [{ move: "U R U' R'" }] };
+  const round = { say: 'Where will it go?', turn: "U R U' R'", ask: 'whereIs:UR', choose: 2, reveal: [{ move: "U R U' R'" }] };
   assert.equal(refusal(script([{ round }])), null);
   assert.match(refusal(script([{ round: { ...round, choose: 0 } }])), /`choose` is how many answers/);
   assert.match(refusal(script([{ round: { ...round, ask: undefined } }])), /`ask` names the question/);
   assert.match(refusal(script([{ round: { ...round, prompt: 'hi' } }])), /round: unknown field "prompt"/);
   assert.match(refusal(script([{ round: { ...round, reveal: [{ round }] } }])), /a round inside a reveal/);
   assert.match(refusal(script([{ round: { ...round, reveal: [{ move: 'Q' }] } }])), /reveal step 0: `move` /);
+  // Answered by picking faces, so the question names one place, and `choose` is how many faces that is.
+  assert.match(refusal(script([{ round: { ...round, ask: 'piecesAway' } }])), /"piecesAway" is not answered by picking faces/);
+  assert.match(refusal(script([{ round: { ...round, ask: 'whereIs:URF', choose: 2 } }])), /`choose` is 2, and "URF" is answered by 3 faces/);
+  assert.match(refusal(script([{ paint: 'U'.repeat(54) }, { round }])), /step 1: a round with a turn inside a picture segment/);
+  assert.equal(refusal(script([{ paint: 'U'.repeat(54) }, { round: { ask: 'pieceIn:UR', choose: 2 } }])), null,
+    'a recognition round on a picture turns nothing, and is ordinary');
 });
 
 // R9 of dev-docs/adr/0004-orientation-notation-and-colour-are-three-things.md. cubus-im's builder copies
