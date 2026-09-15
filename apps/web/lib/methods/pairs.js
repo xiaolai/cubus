@@ -17,9 +17,11 @@ import {
   CORNERS, EDGES, CORNER, EDGE,
 } from '../cube-pieces.js';
 import { F2L_CASES } from '../data/case-tables.js';
+import { edgesInLayerWithout } from '../cube-questions.js';
 import {
-  AUF, CROSS, F1L, F2L_PAIRS, MIDDLE, MethodSolverError, U_CORNERS,
-  crossSolved, firstTwoLayers, fromRepertoire, keeping, repertoire, shortestTo, slotSafe,
+  AUF, CROSS, F1L, F2L_PAIRS, MIDDLE, MethodSolverError, REGRIPS, U_CORNERS, U_EDGES,
+  algLength, crossSolved, firstTwoLayers, fromRepertoire, joinAlg, keeping, repertoire, shortestTo, slotSafe,
+  turnedCorner, turnedEdge,
 } from './engine.js';
 
 /** Putting a first-layer corner from the top into DFR. The three orientations it can be in,
@@ -30,11 +32,16 @@ const F1L_INSERTS = [
   { name: 'facing-up', alg: "R U2 R' U' R U R'" },
 ];
 
-/** Middle-layer edges. The same pair of algs both inserts a correct edge and ejects a wrong
- *  one — which is exactly how it is taught, and why no separate "eject" table exists. */
+/** Middle-layer edges, as the course teaches them: the edge on top at the front goes down into the
+ *  front-right slot, or the front-left one. The same algorithm inserts a correct edge and ejects a
+ *  wrong one — which is exactly how it is taught, and why no separate "eject" table exists.
+ *
+ *  `insert-left` used to be `U' F' U F U R U' R'`, which goes into the front-RIGHT slot from the
+ *  other side: a second way into one slot, where the course has one way into each of two (plan
+ *  item 6.2). */
 const MIDDLE_INSERTS = [
   { name: 'insert-right', alg: "U R U' R' U' F' U F" },
-  { name: 'insert-left', alg: "U' F' U F U R U' R'" },
+  { name: 'insert-left', alg: "U' L' U L U F U' F'" },
 ];
 
 const F2L_TRIGGERS = [
@@ -48,10 +55,20 @@ const F2L_TRIGGERS = [
 
 export const PAIRS_ALGS = [...F1L_INSERTS, ...MIDDLE_INSERTS, ...F2L_TRIGGERS];
 
+/** A part a pairs step can name that is not an algorithm: the turn that brings a slot to the front (plan
+ *  item 6.3), named for the reason `align` is (lib/methods/last-layer.js) — a step's parts add up to its
+ *  algorithm, and the turn is in it. */
+export const PAIRS_EXTRAS = Object.freeze([Object.freeze({ name: 'turn', alg: '' })]);
+
 /** Built once, for the reason `last-layer.js` gives at `look`: `repertoire` rotates and prefixes
  *  every entry, so rebuilding it inside a solve pays that for each of the four slots, every time. */
 const F1L_REPERTOIRE = Object.freeze(repertoire(F1L_INSERTS));
-const MIDDLE_REPERTOIRE = Object.freeze(repertoire(MIDDLE_INSERTS));
+/** The middle-layer inserts into a FRONT slot only: no rotated copies, so no B and no D turn. The cube is
+ *  turned so the gap is in front instead (`frontInsert`, plan item 6.2). */
+const FRONT_REPERTOIRE = Object.freeze(repertoire(MIDDLE_INSERTS, { rotations: [0] }));
+/** The first-layer inserts into the front-right slot only, for the joined-pairs fallback, which turns the
+ *  slot there first (plan item 6.3). The layer-by-layer first layer, built white up, keeps every rotation. */
+const FRONT_F1L_REPERTOIRE = Object.freeze(repertoire(F1L_INSERTS, { rotations: [0] }));
 
 /** The pieces a pair's algorithm may not disturb: every OTHER first-layer corner and every cross
  *  and middle edge but its own. Whether they happen to be solved yet is deliberately not asked —
@@ -60,8 +77,9 @@ const protectedCorners = (pair) => F1L.filter((c) => c !== pair.corner);
 const protectedEdges = (pair) => [...CROSS, ...MIDDLE.filter((e) => e !== pair.edge)];
 
 /**
- * The six triggers turned into each slot's frame, with every AUF in front — the whole search
- * space of rung 1, built once instead of once per solve.
+ * The six triggers in the front-right slot's frame, with every AUF in front — the whole search space
+ * of rung 1, built once instead of once per solve. One slot's frame, because every pair is worked
+ * there: the cube is turned to bring its slot to the front right (plan item 6.3).
  *
  * **Slot-safety is checked HERE, and that is why the search does not check it.** It is a property
  * of an algorithm on a solved cube, so an algorithm that leaves the protected slots holding their
@@ -74,10 +92,10 @@ const protectedEdges = (pair) => [...CROSS, ...MIDDLE.filter((e) => e !== pair.e
  * this rung claims to teach, and the widening would only show up as an F2L case with two answers.
  * So it fails here, at load, naming the algorithm.
  */
-const SLOT_REPERTOIRE = Object.freeze(F2L_PAIRS.map((pair, slot) => rotatedInto(F2L_TRIGGERS, pair, slot)));
+const FRONT_RIGHT_TRIGGERS = rotatedInto(F2L_TRIGGERS, F2L_PAIRS[0], 0);
 
 /**
- * The 41 generated cases, rotated into each slot's frame — rung 2's whole repertoire.
+ * The 41 generated cases, in the front-right slot's frame — rung 2's whole repertoire.
  *
  * Checked for slot-safety exactly as the triggers are, and that check is not a formality here: the
  * table was searched in a projection that ignores the top layer, and "reaches the goal in that
@@ -85,7 +103,7 @@ const SLOT_REPERTOIRE = Object.freeze(F2L_PAIRS.map((pair, slot) => rotatedInto(
  * whole table rests on. It is proved in `f2l.rs`, asserted by the generator, replayed by
  * `f2l-table.test.mjs` — and asked once more here, on the algorithms this rung will actually run.
  */
-const SLOT_CASES = Object.freeze(F2L_PAIRS.map((pair, slot) => rotatedInto(F2L_CASES, pair, slot)));
+const FRONT_RIGHT_CASES = rotatedInto(F2L_CASES, F2L_PAIRS[0], 0);
 
 /** A table of algorithms in one slot's frame, refused if any of them disturbs a protected slot. */
 function rotatedInto(algs, pair, slot) {
@@ -100,42 +118,125 @@ function rotatedInto(algs, pair, slot) {
 // ---- the two shared journeys ------------------------------------------------------------------
 
 /** Lift a corner to the top and drop it into its slot: two steps, the beginner's way. Shared
- *  with the pairing rung, which falls back to it for a pair case it has no algorithm for. */
-export function placeCorner(state, corner, intact, steps, stage) {
+ *  with the pairing rung, which falls back to it for a pair case it has no algorithm for.
+ *
+ *  `inserts` is the repertoire it drops the corner in with; `lead`, a turn of the whole cube made just
+ *  before, folded into the first step emitted — `{ token, corner }`, the corner named as seen before the
+ *  turn, which is the hold that step is made in (plan item 6.3). */
+export function placeCorner(state, corner, intact, steps, stage, { inserts = F1L_REPERTOIRE, lead = null } = {}) {
+  let first = lead;
+  const push = (step) => {
+    if (!first) { steps.push(step); return; }
+    steps.push({ ...step, target: first.corner, alg: joinAlg(first.token, step.alg), why: { ...step.why, corner: first.corner, turn: true } });
+    first = null;
+  };
   const inTop = (s) => U_CORNERS.includes(cornerSlot(s, corner)) && intact(s);
   const lift = shortestTo(state, inTop, 4);
   if (lift === null) throw new MethodSolverError(stage, corner, state);
   if (lift) {
     state = applyAlg(state, lift);
-    steps.push({ stage, kind: 'goal', target: corner, alg: lift, why: { key: 'firstLayer.lift', corner } });
+    push({ stage, kind: 'goal', target: corner, alg: lift, why: { key: 'firstLayer.lift', corner } });
   }
   const home = (s) => cornerSolved(s, corner) && intact(s);
-  const found = fromRepertoire(state, F1L_REPERTOIRE, home);
+  const found = fromRepertoire(state, inserts, home);
   if (!found) throw new MethodSolverError(stage, corner, state);
-  steps.push({ stage, kind: 'case', target: corner, alg: found.alg,
+  push({ stage, kind: 'case', target: corner, alg: found.alg,
     caseName: found.used[0].name, why: { key: 'firstLayer.insert', corner } });
   return found.state;
 }
 
-/** Put a middle-layer edge in its slot. The same algorithm ejects a wrong edge and inserts the
- *  right one, which is why this may take two of them. */
-export function placeEdge(state, edge, intact, steps, stage) {
-  const home = (s) => edgeSolved(s, edge) && intact(s);
-  const found = fromRepertoire(state, MIDDLE_REPERTOIRE, home, 2);
-  if (!found) throw new MethodSolverError(stage, edge, state);
-  // The SAME algorithm ejects a wrong edge and inserts the right one, which is why this may take
-  // two of them — and why one caption cannot serve both. A step that lifts the edge OUT of the
-  // middle layer while the sentence says "send this edge down" is describing the opposite of what
-  // the learner is about to watch. Which one it is is read from the cube, not assumed: replay each
-  // application and see whether the edge ends up home.
-  let cursor = state;
-  for (const used of found.used) {
-    const after = applyAlg(cursor, used.alg);
-    steps.push({ stage, kind: 'case', target: edge, alg: used.alg, caseName: used.name,
-      why: { key: edgeSolved(after, edge) ? 'middleLayer.insert' : 'middleLayer.eject', edge } });
-    cursor = after;
+/**
+ * The smallest turn of the whole cube after which one front insert, lined up with the top, puts `edge`
+ * home — or, with `lift`, lifts it into the top — leaving `intactAt(turns)` true. `{ regrip, found }`, or
+ * null. `edge` is named in `view`, and `intactAt(turns)` asks about the cube turned `turns` from it.
+ */
+function frontInsert(view, edge, intactAt, lift) {
+  for (const regrip of REGRIPS) {
+    const e = turnedEdge(edge, regrip.turns);
+    const intact = intactAt(regrip.turns);
+    const goal = lift
+      ? (s) => U_EDGES.includes(edgeSlot(s, e)) && intact(s)
+      : (s) => edgeSolved(s, e) && intact(s);
+    const found = fromRepertoire(regrip.turns ? rotateState(view, regrip.turns) : view, FRONT_REPERTOIRE, goal);
+    if (found) return { regrip, found };
   }
-  return found.state;
+  return null;
+}
+
+/**
+ * One edge, the middle layer's way (the joined-pairs rung's fallback, plan item 6.3): turned in from the
+ * front, or lifted out and then turned in. `edge` is named in `view`; returns `{ state, turns }` as
+ * `middleLayerInFront` does.
+ */
+function edgeInFront(view, edge, intactAt, steps, stage) {
+  const push = (key, named, { regrip, found }) => steps.push({
+    stage, kind: 'case', target: named, alg: joinAlg(regrip.token, found.alg), caseName: found.used[0].name,
+    why: { key, edge: named, ...(regrip.token ? { turn: true } : {}) },
+  });
+  const direct = frontInsert(view, edge, intactAt, false);
+  if (direct) {
+    push('middleLayer.insert', edge, direct);
+    return { state: direct.found.state, turns: direct.regrip.turns };
+  }
+  const out = frontInsert(view, edge, intactAt, true);
+  const sofar = out ? out.regrip.turns : 0;
+  const back = out && frontInsert(out.found.state, turnedEdge(edge, sofar), (t) => intactAt((sofar + t) % 4), false);
+  if (!back) throw new MethodSolverError(stage, edge, view);
+  push('middleLayer.eject', edge, out);
+  push('middleLayer.insert', turnedEdge(edge, sofar), back);
+  return { state: back.found.state, turns: (sofar + back.regrip.turns) % 4 };
+}
+
+/**
+ * The middle layer THE WAY THE COURSE TEACHES IT (plan item 6.2). Look for a top edge carrying none of the
+ * top colour; turn the whole cube, by the smallest turn that brings its slot to the front; send it down to
+ * the right or the left. Only when no such edge is left is one stuck in the middle layer, and then the same
+ * turn and insert lifts it out.
+ *
+ * The recognition is the named question (`edgesInLayerWithout`), asked of the cube as it is held before
+ * each step, and it is what picks the edge — so `look`, the answer a step carries for its cue, is the set
+ * the step's edge was chosen from. Among those, the smallest regrip wins, then the shortest insert.
+ *
+ * A regrip is part of the step it is made for: the step's hold is the one before it, so the pieces its
+ * reason names are named in that hold, and `turn` says the step begins by turning the cube. `state` is the
+ * cube as held; the return is `{ state, turns }`, the cube as held after the steps and how far their
+ * regrips turned it, as `rotateState` counts.
+ */
+export function middleLayerInFront(state, steps, stage) {
+  let view = state;
+  let turns = 0;
+  for (let made = 0; ; made++) {
+    const home = MIDDLE.filter((e) => edgeSolved(view, e));
+    if (home.length === MIDDLE.length) return { state: view, turns };
+    // Every step either places an edge for good or lifts a stuck one into the top, where the next places
+    // it: eight is the most four edges can take — all four flipped in their own slots — and a ninth is a
+    // defect, said so. (Checked BEFORE a step, never after the loop: the eighth step can be the one that
+    // finishes, and a guard after the loop refused exactly that cube.)
+    if (made === 8) throw new MethodSolverError(stage, 'middle-layer', view);
+    const intactAt = (t) => keeping([...CROSS, ...home.map((e) => turnedEdge(e, t))], F1L);
+    const look = edgesInLayerWithout(view, 'U', 'U').pieces.map((name) => EDGE[name]);
+    const inserting = look.length > 0;
+    let best = null;
+    for (const edge of inserting ? look : MIDDLE.filter((e) => !home.includes(e))) {
+      const hit = frontInsert(view, edge, intactAt, !inserting);
+      if (hit && (!best || hit.regrip.cost < best.regrip.cost
+        || (hit.regrip.cost === best.regrip.cost && algLength(hit.found.alg) < algLength(best.found.alg)))) {
+        best = { edge, ...hit };
+      }
+    }
+    if (!best) throw new MethodSolverError(stage, 'middle-layer', view);
+    steps.push({
+      stage, kind: 'case', target: best.edge, alg: joinAlg(best.regrip.token, best.found.alg), caseName: best.found.used[0].name,
+      why: {
+        key: inserting ? 'middleLayer.insert' : 'middleLayer.eject',
+        edge: best.edge,
+        ...(best.regrip.token ? { turn: true } : {}),
+        ...(inserting ? { look } : {}),
+      },
+    });
+    view = best.found.state;
+    turns = (turns + best.regrip.turns) % 4;
+  }
 }
 
 // ---- rung 0: the corner, then its edge ---------------------------------------------------------
@@ -148,14 +249,9 @@ function cornerThenEdge(state, steps) {
     state = placeCorner(state, corner, intact, steps, 'first-layer');
     placedCorners.push(corner);
   }
-  const placedEdges = [];
-  for (const edge of MIDDLE) {
-    const intact = keeping([...CROSS, ...placedEdges], F1L);
-    if (edgeSolved(state, edge) && intact(state)) { placedEdges.push(edge); continue; }
-    state = placeEdge(state, edge, intact, steps, 'middle-layer');
-    placedEdges.push(edge);
-  }
-  return state;
+  // THE GAP IN FRONT (plan item 6.2). A regrip turns the cube in the child's hands and nothing turns it
+  // back, so what this stage returns is the cube as held after the last one.
+  return middleLayerInFront(state, steps, 'middle-layer').state;
 }
 
 // ---- rung 1: the pair, joined and inserted together --------------------------------------------
@@ -286,20 +382,24 @@ function searchPair(state, pair, slot, candidates, plies, done) {
  * solve the pair — and "open the step up to see how it is made" is the whole reason `parts`
  * exists. It is named for what it is rather than folded into the trigger beside it, because
  * turning the top until it matches is not one of the six triggers.
+ *
+ * The turn that brought the slot to the front right comes first, for the same reason (plan item 6.3).
+ * `named` is the corner and edge as seen in the hold the step is made in, which is before that turn.
  */
-function pairStep({ align, alg, used, caseName }, pair) {
+function pairStep({ align, alg, used, caseName }, regrip, named) {
+  const turning = regrip.token ? [{ name: 'turn', alg: regrip.token }] : [];
   const aligning = align ? [{ name: 'align', alg: align }] : [];
-  const parts = [...aligning, ...used].map((u) => ({ name: u.name, alg: u.alg }));
+  const parts = [...turning, ...aligning, ...used].map((u) => ({ name: u.name, alg: u.alg }));
   return {
     stage: 'f2l',
     kind: 'case',
-    target: pair.corner,
-    alg: [align, alg].filter(Boolean).join(' ').trim(),
+    target: named.corner,
+    alg: joinAlg(regrip.token, align, alg),
     caseName,
     // The triggers stay attached: the case is what you recognise, the parts are how you get out of
     // it, and a learner meeting the case for the first time needs both.
     parts,
-    why: { key: 'f2l.pair', corner: pair.corner, edge: pair.edge },
+    why: { key: 'f2l.pair', corner: named.corner, edge: named.edge, ...(regrip.token ? { turn: true } : {}) },
   };
 }
 
@@ -315,17 +415,28 @@ function pairStep({ align, alg, used, caseName }, pair) {
  * whose CORNER was already home cost two steps to put it back where it was — five steps where the
  * rung below took three, on a cube the rung above was supposed to be better at. Checked per piece,
  * in the order they are placed, because placing the corner can move the edge.
+ *
+ * And by the same rule as the pair (plan item 6.3): the corner goes in with its slot turned to the front
+ * right, the turn folded into its first step, and the edge by its own smallest turn, as the middle layer
+ * does. `view` is the cube as held, `turns` the stage's quarter turns so far, and `edgesAt(t)` /
+ * `cornersAt(t)` the placed pieces named `t` on. Returns `{ state, turns }`.
  */
-function placeSeparately(state, pair, steps, protectedEdges, placedCorners) {
-  const intact = keeping(protectedEdges, placedCorners);
-  if (!(cornerSolved(state, pair.corner) && intact(state))) {
-    state = placeCorner(state, pair.corner, intact, steps, 'f2l');
+function placeSeparately(view, pair, turns, regrip, named, steps, edgesAt, cornersAt) {
+  let t = turns;
+  if (!(cornerSolved(view, named.corner) && keeping(edgesAt(t), cornersAt(t))(view))) {
+    t = (turns + regrip.turns) % 4;
+    view = placeCorner(regrip.turns ? rotateState(view, regrip.turns) : view, F2L_PAIRS[0].corner,
+      keeping(edgesAt(t), cornersAt(t)), steps, 'f2l',
+      { inserts: FRONT_F1L_REPERTOIRE, lead: regrip.token ? { token: regrip.token, corner: named.corner } : null });
   }
-  const withCorner = keeping(protectedEdges, [...placedCorners, pair.corner]);
-  if (!(edgeSolved(state, pair.edge) && withCorner(state))) {
-    state = placeEdge(state, pair.edge, withCorner, steps, 'f2l');
+  const withCorner = (at) => keeping(edgesAt(at), [...cornersAt(at), turnedCorner(pair.corner, at)]);
+  const edge = turnedEdge(pair.edge, t);
+  if (!(edgeSolved(view, edge) && withCorner(t)(view))) {
+    const placed = edgeInFront(view, edge, (dt) => withCorner((t + dt) % 4), steps, 'f2l');
+    view = placed.state;
+    t = (t + placed.turns) % 4;
   }
-  return state;
+  return { state: view, turns: t };
 }
 
 /**
@@ -335,30 +446,43 @@ function placeSeparately(state, pair, steps, protectedEdges, placedCorners) {
  * arguments: rung 1 composes up to three triggers, rung 2 applies one generated algorithm. A
  * second copy of this loop would be two places for the fallback rule, the naming and the
  * slot-safety contract to drift apart.
+ *
+ * THE SLOT IN FRONT (plan item 6.3, decision D3). Every pair is worked at the front right: the cube is
+ * turned, by the one turn that brings the pair's slot there, and nothing turns it back — so from the
+ * first turn this is the cube as held after it, and every piece is named `turns` quarter turns on.
  */
-const pairsFrom = (repertoires, plies) => function placePairs(state, steps) {
+const pairsFrom = (repertoire, plies) => function placePairs(state, steps) {
+  const FRONT_RIGHT = F2L_PAIRS[0];
+  let view = state;
+  let turns = 0;
   const placedCorners = [];
   const placedEdges = [];
-  for (const [slot, pair] of F2L_PAIRS.entries()) {
-    const protectedEdges = [...CROSS, ...placedEdges];
-    // The pair is placed, and nothing else moved. The second half is not asked here: every route
-    // this search can build is slot-safe by construction, checked once on `SLOT_REPERTOIRE`.
-    const done = (s) => cornerSolved(s, pair.corner) && edgeSolved(s, pair.edge);
-    if (!done(state)) {
-      const found = buried(state, pair, placedCorners, protectedEdges)
+  const edgesAt = (t) => [...CROSS, ...placedEdges.map((e) => turnedEdge(e, t))];
+  const cornersAt = (t) => placedCorners.map((c) => turnedCorner(c, t));
+  for (const pair of F2L_PAIRS) {
+    const named = { corner: turnedCorner(pair.corner, turns), edge: turnedEdge(pair.edge, turns) };
+    if (!(cornerSolved(view, named.corner) && edgeSolved(view, named.edge))) {
+      const regrip = REGRIPS.find((r) => turnedCorner(pair.corner, turns + r.turns) === FRONT_RIGHT.corner);
+      const total = (turns + regrip.turns) % 4;
+      const inFront = regrip.turns ? rotateState(view, regrip.turns) : view;
+      // The pair is placed, and nothing else moved. The second half is not asked here: every route
+      // this search can build is slot-safe by construction, checked once on the front-right tables.
+      const done = (s) => cornerSolved(s, FRONT_RIGHT.corner) && edgeSolved(s, FRONT_RIGHT.edge);
+      const found = buried(inFront, FRONT_RIGHT, cornersAt(total), edgesAt(total))
         ? null
-        : searchPair(state, pair, slot, repertoires[slot], plies, done);
+        : searchPair(inFront, FRONT_RIGHT, 0, repertoire, plies, done);
       if (found) {
-        steps.push(pairStep(found, pair));
-        state = found.state;
+        steps.push(pairStep(found, regrip, named));
+        view = found.state;
+        turns = total;
       } else {
-        state = placeSeparately(state, pair, steps, protectedEdges, placedCorners);
+        ({ state: view, turns } = placeSeparately(view, pair, turns, regrip, named, steps, edgesAt, cornersAt));
       }
     }
     placedCorners.push(pair.corner);
     placedEdges.push(pair.edge);
   }
-  return state;
+  return view;
 };
 
 // ---- the rungs, as data ----------------------------------------------------------------------
@@ -385,7 +509,7 @@ export const PAIRS_RUNGS = Object.freeze([
     keep: crossSolved,
     contract: firstTwoLayers,
     why: 'stage.pairs',
-    run: pairsFrom(SLOT_REPERTOIRE, 3),
+    run: pairsFrom(FRONT_RIGHT_TRIGGERS, 3),
   }),
   Object.freeze({
     id: 'pairs',
@@ -396,6 +520,6 @@ export const PAIRS_RUNGS = Object.freeze([
     keep: crossSolved,
     contract: firstTwoLayers,
     why: 'stage.pairs',
-    run: pairsFrom(SLOT_CASES, 1),
+    run: pairsFrom(FRONT_RIGHT_CASES, 1),
   }),
 ]);

@@ -21,7 +21,7 @@
 import { F2L_CASES, FULL_OLL, FULL_PLL } from '../data/case-tables.js';
 import { CROSS_ALGS, CROSS_RUNGS } from './cross.js';
 import { LAST_LAYER_EXTRAS, OLL_ALGS, OLL_RUNGS, PLL_ALGS, PLL_RUNGS } from './last-layer.js';
-import { PAIRS_ALGS, PAIRS_RUNGS } from './pairs.js';
+import { PAIRS_ALGS, PAIRS_EXTRAS, PAIRS_RUNGS } from './pairs.js';
 
 /** The stages, in the order a solve walks them. The order IS the method — everything else is
  *  which rung of each. */
@@ -96,7 +96,7 @@ export const CASE_NAMES = Object.freeze(
   // accounted for, but they are never shown. `method-lesson.js` carries the distinction, and its
   // display table is held against exactly the non-generated part of this list.
   [
-    ...CROSS_ALGS, ...PAIRS_ALGS, ...OLL_ALGS, ...PLL_ALGS, ...LAST_LAYER_EXTRAS,
+    ...CROSS_ALGS, ...PAIRS_ALGS, ...PAIRS_EXTRAS, ...OLL_ALGS, ...PLL_ALGS, ...LAST_LAYER_EXTRAS,
     ...FULL_OLL, ...FULL_PLL, ...F2L_CASES,
   ].map((entry) => entry.name),
 );

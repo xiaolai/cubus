@@ -65,7 +65,9 @@ const NAMED = [
  */
 export const RUNG_CRITERIA = Object.freeze([
   Object.freeze({ dial: 'cross', from: 0, to: 1, axis: 'steps', floor: 4 }),
-  Object.freeze({ dial: 'pairs', from: 0, to: 1, axis: 'steps', floor: 2 }),
+  // Restated from 2 by the owner on 2026-09-16 (dev-docs/method-solver-return-plan.md §10): the course's
+  // middle layer made the rung below shorter, and joined pairs still saves about two steps a solve.
+  Object.freeze({ dial: 'pairs', from: 0, to: 1, axis: 'steps', floor: 1.75 }),
   Object.freeze({ dial: 'pairs', from: 1, to: 2, axis: 'parts', floor: 0.75 }),
   Object.freeze({ dial: 'oll', from: 0, to: 1, axis: 'steps', floor: 1.5 }),
   Object.freeze({ dial: 'pll', from: 0, to: 1, axis: 'steps', floor: 0.9 }),
@@ -98,19 +100,23 @@ export function rungDelta(states, { dial, from, to, axis }) {
     steps: steps.length,
     // Face turns, played in each step's hold: a regrip is not a move (plan item 6.1).
     moves: steps.reduce((n, s) => n + moveCount(turnsOf(s)), 0),
-    parts: steps.reduce((n, s) => n + (s.parts?.length ?? 0), 0)
+    // The turn that brings a slot to the front (plan item 6.3) is a part of the step but nothing the
+    // learner assembles, so the parts axis does not count it.
+    parts: steps.reduce((n, s) => n + (s.parts?.filter((p) => p.name !== 'turn').length ?? 0), 0)
       / Math.max(1, steps.filter((s) => s.parts).length),
   });
-  let compared = 0;
-  let delta = 0;
+  const deltas = [];
   for (const state of states) {
     const a = mine(below, state);
     const b = mine(above, state);
     if (!a.length || !b.length) continue;
-    compared += 1;
-    delta += measure(a)[axis] - measure(b)[axis];
+    deltas.push(measure(a)[axis] - measure(b)[axis]);
   }
-  return { moved: compared ? delta / compared : 0, compared };
+  const compared = deltas.length;
+  const moved = compared ? deltas.reduce((x, y) => x + y, 0) / compared : 0;
+  // The spread too, so a caller can tell a rung that clears its floor from one that lands on it by chance.
+  const sd = compared > 1 ? Math.sqrt(deltas.reduce((x, d) => x + (d - moved) ** 2, 0) / (compared - 1)) : 0;
+  return { moved, compared, sd };
 }
 
 // ---- the command line -------------------------------------------------------------------------

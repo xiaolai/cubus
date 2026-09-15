@@ -89,21 +89,36 @@ const WHY_TEXT = Object.freeze({
       other: 'Make the cross on the bottom — %1 moves, planned as one.',
     }),
   },
+  // Turned over, the joined-pairs rung's fallback may begin by turning the whole cube so the slot is in
+  // front (plan item 6.3). Those sentences were approved by the owner as D4, 2026-09-16.
   'firstLayer.lift': {
     up: () => t('Bring this corner down to the bottom, where you can work with it.'),
-    over: () => t('Bring this corner up to the top, where you can work with it.'),
+    over: ({ turn } = {}) => (turn
+      ? t('Turn the whole cube so the slot is in front of you, then bring this corner up to the top.')
+      : t('Bring this corner up to the top, where you can work with it.')),
   },
   'firstLayer.insert': {
     up: () => t('Turn the corner up into its slot above.'),
-    over: () => t('Drop the corner into its slot underneath.'),
+    over: ({ turn } = {}) => (turn
+      ? t('Turn the whole cube so the slot is in front of you, then drop the corner into it.')
+      : t('Drop the corner into its slot underneath.')),
   },
-  'middleLayer.insert': () => t('Send this edge down into the middle layer.'),
+  // A middle-layer step may begin by turning the whole cube so the gap is in front (plan item 6.2),
+  // and then says so. The two turning sentences were approved by the owner as D4 of
+  // dev-docs/tutorial-capability-plan.md, 2026-09-16.
+  'middleLayer.insert': ({ turn } = {}) => (turn
+    ? t('Turn the whole cube so the gap is in front of you, then send this edge down into it.')
+    : t('Send this edge down into the middle layer.')),
   // The same algorithm ejects a wrong edge and inserts the right one. Captioning an ejection
   // "send this edge down" describes the opposite of what is about to happen on screen.
-  'middleLayer.eject': () => t('Lift the wrong edge out of the slot first.'),
+  'middleLayer.eject': ({ turn } = {}) => (turn
+    ? t('Turn the whole cube so the wrong edge is in front of you, then lift it out.')
+    : t('Lift the wrong edge out of the slot first.')),
   // One sentence, not two. The second described an ejection first, and `pairs.js` proves that
   // branch of the search could never run — so the caption was for a step nothing could produce.
-  'f2l.pair': () => t('Join the corner to its edge, then put the pair in together.'),
+  'f2l.pair': ({ turn } = {}) => (turn
+    ? t('Turn the whole cube so the slot is in front of you, then join the corner to its edge and put the pair in.')
+    : t('Join the corner to its edge, then put the pair in together.')),
   // A look may take several applications, and only the last one reaches its goal. The `.step`
   // forms are what the ones before it say — the difference between describing a step and
   // describing the stage it belongs to.
@@ -168,6 +183,7 @@ const CASE_TEXT = Object.freeze({
   'u-perm-a': () => t('U perm a'),
   'u-perm-b': () => t('U perm b'),
   align: () => t('align'),
+  turn: () => t('turn the cube'),
 });
 
 /** A key from a generated table rather than a name — `oll:00120011`, `f2l:0c10`. Matched
@@ -272,7 +288,10 @@ export function namedPieces(step) {
 export function lessonCues(step) {
   const pieces = namedPieces(step);
   if (pieces.length === 0) return { highlight: '', focus: '' };
-  return { highlight: pieces.join(','), focus: ['centers', ...pieces].join(',') };
+  // What the child looks for before the move — the top edges with none of the top colour (plan item
+  // 6.2) — stays in colour beside the piece the step is about, and only that piece pulses.
+  const looked = asList(step.why?.look).map((i) => `piece:${edgeName(i)}`).filter((p) => !pieces.includes(p));
+  return { highlight: pieces.join(','), focus: ['centers', ...pieces, ...looked].join(',') };
 }
 
 /** How many moves are in an alg — the shared tokenizer, not a third spelling of it. A regrip is one:

@@ -20,6 +20,10 @@ import { installPublicCube } from './public-cube.mjs';
 import { installSampler } from './sampling.mjs';
 import * as CASE_TABLES from '../../lib/data/case-tables.js';
 import { startBrowserFixture } from './harness.mjs';
+import { SOLVED as SOLVED_PIECES, fromCube } from '../../lib/cube-pieces.js';
+import { faceTurnsAlg, run } from '../../lib/cube-moves.js';
+import { methodFor, solveByMethod } from '../../lib/method-solver.js';
+import { renameAlg, scanFrameWalk, toMethodFrame } from '../../lib/solving-hold.js';
 
 const require = createRequire(import.meta.url);
 
@@ -197,6 +201,31 @@ const FACELETS = (() => {
 
 /** The element half's runners for scenarios whose capability a plan item is still building. */
 const ELEMENT_RUNNERS = {
+  // Plan item 6.2: the owner's scenario as the app's method teaches it. The cube is handed over tumbled with
+  // the red-green edge on top; the lesson's one middle-layer step must read, chip by chip, as the course's
+  // moves — turn red to the front, insert right — and the element, drawing the walk's own moves under the
+  // stage's hold, must show at every position what the oracle's child sees.
+  async 'method-lesson'(sc) {
+    const identity = startOf(sc);
+    const Cube = require('cubejs');
+    const { steps } = solveByMethod(fromCube(Cube.fromString(toMethodFrame(identity))), methodFor());
+    assert.deepEqual(steps.map((s) => s.stage), ['middle-layer'], `${sc.id}: precondition — one middle-layer step and nothing else`);
+    const walk = scanFrameWalk(steps);
+    const chips = walk.moves.map((m, k) => renameAlg(m, walk.holds[k]));
+    assert.equal(chips.join(' '), sc.moves, `${sc.id}: the chips a child reads`);
+    for (const [k, hold] of Object.entries(sc.expect.holdAfter)) {
+      assert.equal(walk.holds[k].join(' '), hold, `${sc.id}: the hold after ${k} moves`);
+    }
+    const oracle = play(identity, sc.start.hold, sc.moves);
+    assert.equal(oracle.end.identity, SOLVED_FACELETS, `${sc.id}: the oracle's own end`);
+    // The start as a SCRAMBLE of face turns, not as painted facelets: the drawing is read back sticker by
+    // sticker from where each one sits, and a painted picture moves colours rather than stickers.
+    const scramble = faceTurnsAlg(run(sc.start.setup, sc.start.hold.split(' '), SOLVED_PIECES).drawn);
+    await build({ orientation: sc.start.hold, scramble, alg: walk.moves.join(' ') });
+    for (let k = 0; k <= walk.moves.length; k++) {
+      assert.equal(toWorld(await drawn(k)), oracle.worlds[k], `${sc.id}: drawn after ${k} of ${walk.moves.length} moves`);
+    }
+  },
   // Plan item 5.1: through the public cube, `drawnColours()` gives the six colours the scene walk a drill page
   // used to make finds on the centres — under each palette and scheme.
   async 'drawn-colours'(sc) {
