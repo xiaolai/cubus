@@ -109,6 +109,51 @@ test('focus set before a turn and after it are different pictures, and still are
     + 'accident (renderer-v2-plan.md §4 A1b).');
 });
 
+// A selector written while a turn is in flight names what was in its positions when the cube last
+// SETTLED — never what the moving geometry rounds to. Halfway through R the UR edge sits at
+// (1, 0.707, 0.707), which rounds to (1, 1, 1): a corner's coordinates, so `slot:UR` lit the URF
+// corner, a piece no edge slot can hold (found by review, 2026-09-15; requirement R8 of
+// dev-docs/adr/0004-orientation-notation-and-colour-are-three-things.md). The two channels then
+// keep today's split (that record's decision 10): when the turn completes, highlight moves to the
+// new occupant of UR and focus stays on the piece it named.
+test('a selector written mid-turn names the settled occupant, and each channel keeps its own rule after', async () => {
+  await build({ facelets: SOLVED });
+  const got = await page.evaluate(async () => {
+    const el = window.__cube;
+    const tick = () => new Promise((r) => requestAnimationFrame(() => r()));
+    const at = (x, y, z) => el.cubies.find((c) => c.position.x === x && c.position.y === y && c.position.z === z);
+    const pieceAtUR = () => at(1, 1, 0).userData.piece;
+    const colours = () => el.cubies.map((c) => c.children.filter((m) => m.userData?.face).map((m) => m.material.color.getHex()).join());
+    const lit = () => [...(el._hlSet ?? [])].map((c) => c.userData.piece);
+    const kept = (before) => { const now = colours(); return el.cubies.filter((c, i) => now[i] === before[i]).map((c) => c.userData.piece); };
+
+    const settledUR = pieceAtUR();
+    const trueColours = colours();
+    el.setAttribute('alg', 'R');
+    el.clock = 5_000_000;
+    el.step();
+    el.clock = 5_000_000 + 95;                          // halfway through a 190ms quarter turn
+    await tick();
+    const midTurn = el.cubies.some((c) => [c.position.x, c.position.y, c.position.z].some((v) => !Number.isInteger(v)));
+    el.setAttribute('highlight', 'slot:UR');
+    el.setAttribute('focus', 'slot:UR');
+    await tick();
+    const during = { highlight: lit(), focus: kept(trueColours) };
+    el.clock = 5_000_000 + 400;                         // past the end of the turn
+    await tick();
+    return { settledUR, midTurn, during, after: { highlight: lit(), occupantUR: pieceAtUR() } };
+  });
+
+  assert.ok(got.midTurn, 'precondition: the selectors were written while the turn was in flight');
+  assert.deepEqual(got.during.highlight, [got.settledUR],
+    `highlight written mid-turn lit ${got.during.highlight.join(', ')}, not the piece settled in UR`);
+  assert.ok(got.during.focus.includes(got.settledUR) && got.during.focus.length === 1,
+    `focus written mid-turn kept ${got.during.focus.join(', ')} in colour, not the piece settled in UR`);
+  assert.notEqual(got.after.occupantUR, got.settledUR, 'precondition: R moved a different piece into UR');
+  assert.deepEqual(got.after.highlight, [got.after.occupantUR],
+    'after the turn, highlight no longer follows its position to the new occupant');
+});
+
 test('every settled cubie sits on exact integers, with nothing rounded into place', async () => {
   await build({ facelets: SOLVED });
   await play("R U R' U' F2 D B L2");

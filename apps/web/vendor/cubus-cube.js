@@ -30205,11 +30205,9 @@ var CubusCube = class _CubusCube extends HTMLElement {
    * disagree about which cubie that is.
    */
   _selectable() {
-    return this.cubies.map((c) => ({
-      // Rounded because a selector names SLOTS, and mid-turn a cubie is between two of them: it
-      // answers for the one it is nearer rather than for a fractional position nobody can name. At
-      // rest the rounding changes nothing — `_writePose` puts a settled cubie on exact integers.
-      pos: [Math.round(c.position.x), Math.round(c.position.y), Math.round(c.position.z)],
+    const settled2 = poseAll(UPRIGHT, this._state);
+    return this.cubies.map((c, i) => ({
+      pos: settled2[POSE_OF[i]].pos,
       piece: c.userData.piece ?? null
     }));
   }

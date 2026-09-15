@@ -1289,11 +1289,17 @@ class CubusCube extends HTMLElement {
    * disagree about which cubie that is.
    */
   _selectable() {
-    return this.cubies.map((c) => ({
-      // Rounded because a selector names SLOTS, and mid-turn a cubie is between two of them: it
-      // answers for the one it is nearer rather than for a fractional position nobody can name. At
-      // rest the rounding changes nothing — `_writePose` puts a settled cubie on exact integers.
-      pos: [Math.round(c.position.x), Math.round(c.position.y), Math.round(c.position.z)],
+    // Where each cubie sits at the cube's last SETTLED position — the state before any turn still in
+    // flight — never where the moving geometry happens to be. A selector names SLOTS, and this used
+    // to round the animated position to the "nearer" one. There is no nearer one: halfway through R
+    // the UR edge is at (1, 0.707, 0.707), which rounds to (1, 1, 1), a CORNER's coordinates, so
+    // `slot:UR` lit the URF corner (found by review, 2026-09-15; requirement R8 of
+    // dev-docs/adr/0004-orientation-notation-and-colour-are-three-things.md). The settled state is
+    // also what the rounding answered for the first half of every turn, so this changes only the
+    // half that was wrong. At rest the two readings are identical.
+    const settled = poseAll(UPRIGHT, this._state);
+    return this.cubies.map((c, i) => ({
+      pos: settled[POSE_OF[i]].pos,
       piece: c.userData.piece ?? null,
     }));
   }
