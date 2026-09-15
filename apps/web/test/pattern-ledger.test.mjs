@@ -25,6 +25,7 @@ import { PREDICATE, fullCubeDistance, goalBall, meetInTheMiddle } from '../bench
 import { TARGETS } from '../lib/stage-targets.js';
 import { solveByMethod } from '../lib/method-solver.js';
 import { lcg, seededScrambles } from './fixtures/seeded-scrambles.mjs';
+import { turnsOf } from './fixtures/method-replay.mjs';
 
 test('the geometry the ledger rests on checks out against the cube model', () => {
   // 54 distinct sticker places, 24 rotations and 48 symmetries closing under composition, a solved
@@ -364,7 +365,7 @@ test('no phase picture over-claims against members from a source that shares non
     for (const scr of scrambles) {
       let s = applyAlg(SOLVED, scr);
       for (const step of solveByMethod(s).steps) {
-        s = applyAlg(s, step.alg);
+        s = applyAlg(s, turnsOf(step));
         if (pred(s)) break;
       }
       if (!pred(s)) continue;

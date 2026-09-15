@@ -17,7 +17,9 @@ import { test } from 'node:test';
 
 import Cube from '../vendor/cubejs.js';
 import { SOLVED, applyAlg, fromCube } from '../lib/cube-pieces.js';
-import { applyIdentity, convertSelectors, heldFace, identityFace, run, tokenOf, toIdentity } from '../lib/cube-moves.js';
+import {
+  applyIdentity, convertSelectors, faceTurnsAlg, heldFace, heldToken, identityFace, run, tokenOf, toIdentity,
+} from '../lib/cube-moves.js';
 import { parse } from '../lib/cube-notation.js';
 import { ORIENTATIONS } from '../lib/cube-orientation.js';
 import { METHOD_TO_SCAN, renameAlg, renameSelectors } from '../lib/solving-hold.js';
@@ -146,4 +148,32 @@ test('selectors: the child\'s letters read into identity letters are the inverse
   assert.equal(`${kind}:${[...letters].sort().join('')}`, 'piece:FR');
   assert.equal(convertSelectors('slot:UF', ['U', 'F']), 'slot:UF', 'the reference hold renames nothing');
   assert.throws(() => identityFace('Q', ['U', 'F']), /not a face/);
+});
+
+test('heldToken is the inverse of reading a child\'s move: every hold × every move the notation has', () => {
+  // What a chip needs once a walk may regrip (plan item 6.1): the identity move, named the way the child
+  // holding the cube reads it. Held to `run`, whose reading is held to the oracle above.
+  const letters = ['U', 'R', 'F', 'D', 'L', 'B', 'M', 'E', 'S', 'u', 'r', 'f', 'd', 'l', 'b', 'x', 'y', 'z'];
+  for (const hold of ORIENTATIONS) {
+    for (const token of letters.flatMap((l) => ['', "'", '2'].map((a) => `${l}${a}`))) {
+      const identity = run(token, ['U', 'F'], SOLVED).drawn[0];
+      const named = heldToken(identity, hold);
+      assert.equal(run(named, hold, SCRAMBLED).drawn[0], identity, `${identity} held ${holdText(hold)} was named ${named}`);
+    }
+  }
+  assert.throws(() => heldToken('Q', ['U', 'F']), /"Q" is not a move/);
+});
+
+test('identity moves as face turns: a regrip is none, a wide move one face, a slice two — reaching the interpreter\'s cube', () => {
+  assert.equal(faceTurnsAlg("y x2 z'"), '');
+  assert.equal(faceTurnsAlg("y R M Rw2"), "R R L' L2");
+  assert.equal(faceTurnsAlg(''), '');
+  const random = rng(20260915);
+  const tokens = ['U', 'R', 'F', 'D', 'L', 'B', 'M', 'E', 'S', 'Uw', 'Rw', 'Fw', 'x', 'y', 'z'];
+  for (let i = 0; i < 60; i++) {
+    const hold = ORIENTATIONS[Math.floor(random() * ORIENTATIONS.length)];
+    const seq = Array.from({ length: 12 }, () => tokens[Math.floor(random() * tokens.length)] + AMOUNTS[Math.floor(random() * 3)]).join(' ');
+    const played = run(seq, hold, SCRAMBLED);
+    assert.deepEqual(applyAlg(SCRAMBLED, faceTurnsAlg(played.drawn)), played.state, `${seq} held ${holdText(hold)}`);
+  }
 });

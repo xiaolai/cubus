@@ -10,13 +10,14 @@ import { provenAnswer } from './optimal-challenges.js';
 // short can this be" — so the two are two OBJECTS on this screen, never one standing where the
 // other was. That rule is what the first attempt broke; §3 of the plan is about it.
 import { fromCube, movesOf } from './cube-pieces.js';
+import { convertSelectors, faceTurnsAlg } from './cube-moves.js';
 import { methodFor, solveByMethod } from './method-solver.js';
 import { lessonCues, lessonSections, moveStepIndex, rungSummary } from './method-lesson.js';
 import { acceptOffer } from './method-ladder.js';
 import { isCubeState } from './cube-trust.js';
 // How the cube is held while it is solved, and the renamings between the scan frame, the method
 // frame and the hold (ADR 0003). Every crossing between those frames in this file goes through it.
-import { METHOD_TO_SCAN, renameAlg, renameSelectors, toMethodFrame } from './solving-hold.js';
+import { METHOD_TO_SCAN, renameSelectors, scanFrameWalk, toMethodFrame } from './solving-hold.js';
 
 import { SOLVED, state } from './app-state.js';
 import { save, settings } from './app-settings.js';
@@ -78,21 +79,25 @@ export function lessonFor(c = state.cube) {
   }
   // …and the walk lives in the scan frame, like every other walk: the renderer, `follow` and the
   // smart cube all compare against scan-frame states. SO DOES EVERY STEP, converted once, here: its
-  // moves renamed, and the pieces it points at worked out and renamed into `focus` and `highlight`,
-  // so nothing downstream has a frame to remember. What stays the solver's is `why`, whose key and
-  // wording are frame-free and whose piece indices have already become those two cues.
-  const lessonAlg = renameAlg(result.alg, METHOD_TO_SCAN);
-  const moves = movesOf(lessonAlg);
-  const steps = Object.freeze(result.steps.map((step) => {
+  // moves played in its hold and renamed, the hold each move is made in worked out beside them, and
+  // the pieces it points at renamed into `focus` and `highlight`, so nothing downstream has a frame to
+  // remember. What stays the solver's is `why`, whose key and wording are frame-free and whose piece
+  // indices have already become those two cues.
+  const walk = scanFrameWalk(result.steps);
+  const moves = walk.moves;
+  const steps = Object.freeze(result.steps.map((step, i) => {
     const cues = lessonCues(step);
+    // The solver names pieces as seen in the hold the step is made in, and in the METHOD frame; the
+    // renderer draws the scan frame, so the white-blue edge a step calls DF is UB on screen. Read into
+    // the method's own letters and then renamed — unrenamed, the pulse lands on the yellow-green edge,
+    // a real piece, pointed at with total confidence.
+    const cue = (spec) => renameSelectors(convertSelectors(spec, step.hold), METHOD_TO_SCAN);
     return Object.freeze({
       ...step,
-      alg: renameAlg(step.alg, METHOD_TO_SCAN),
-      // The solver names pieces in the METHOD frame and the renderer draws the scan frame, so the
-      // white-blue edge a step calls DF is UB on screen. Unrenamed, the pulse lands on the
-      // yellow-green edge — a real piece, pointed at with total confidence.
-      focus: renameSelectors(cues.focus, METHOD_TO_SCAN),
-      highlight: renameSelectors(cues.highlight, METHOD_TO_SCAN),
+      alg: walk.algs[i],
+      hold: walk.stepHolds[i],
+      focus: cue(cues.focus),
+      highlight: cue(cues.highlight),
     });
   }));
   c.lesson = {
@@ -104,9 +109,14 @@ export function lessonFor(c = state.cube) {
     sections: lessonSections(steps),
     // Which step each move belongs to, so the walk can point at what the move you are on is for.
     moveStep: moveStepIndex(steps),
-    alg: lessonAlg,
+    alg: moves.join(' '),
     moves,
-    stepFacelets: stepStates(c.facelets, moves),
+    // How each move is held: what its chip is named for. `moveHolds[k]` is the hold once `k` moves
+    // are made, so a regrip turns the names of the moves after it and not its own.
+    moveHolds: walk.holds,
+    // A regrip leaves the pieces where they were, so the cube after one is the cube before it: the
+    // walk's states are about the pieces, which is what a smart cube reports and `follow` compares.
+    stepFacelets: stepStates(c.facelets, moves.map(faceTurnsAlg)),
   };
   return c.lesson;
 }

@@ -18,6 +18,13 @@
 // is why `LEVELS` never grew past two. There is no `level` here, and there is no `rung` read
 // anywhere in this file: a method is DATA, and the engine is invariant under it.
 //
+// A STEP IS A SCRIPT, not a list of face turns (dev-docs/tutorial-capability-plan.md item 6.1). A child
+// solving the middle layer turns the whole cube so the gap is in front before inserting, and that turn is
+// part of what they are taught. So a step records the HOLD it is made in and may regrip; it is written in
+// the child's letters for that hold, replayed through the interpreter (`run` in `lib/cube-moves.js`), and
+// the hold it leaves is the next step's. The method frame is the solver's own: the cross on D, and every
+// regrip about the vertical axis, because every stage's questions are asked with the cross underneath.
+//
 // Two kinds of step, because there are two kinds of "why":
 //   'goal'  — an intuitive stage. The reason is what the move ACHIEVES: this brings the piece
 //             to the top without disturbing the cross. Found by a shallow search.
@@ -25,7 +32,9 @@
 //             algorithm does. Per-move reasons do not exist here and pretending otherwise
 //             would be inventing them.
 
-import { applyAlg, rotateAlg } from './cube-pieces.js';
+import { SOLVED, applyAlg, rotateAlg, rotateState } from './cube-pieces.js';
+import { faceTurnsAlg, run } from './cube-moves.js';
+import { parse } from './cube-notation.js';
 import {
   MethodSolverError, algLength, fromRepertoire, repertoire, repertoiresBuilt, shortestTo,
   simplify, slotSafe, wholeCubeSolved,
@@ -99,14 +108,16 @@ function checkedCopy(state) {
  *
  * Returns `{ steps, alg, moveCount, method, rungs }`:
  *
- * - `steps` — the lesson. Each is `{ stage, kind, target, alg, caseName?, parts?, why }`, where
+ * - `steps` — the lesson. Each is `{ stage, kind, target, alg, hold, caseName?, parts?, why }`, where
  *   `kind` is `'goal'` (an intuitive step, whose reason is what it achieves) or `'case'` (a named
  *   algorithm), and `why` is `{ key, … }` — a reason key plus the pieces it names, which is the
- *   focus/highlight payload `method-lesson.js` turns into cues.
- * - `alg` — the concatenation of the steps, and exactly that, so the move list and the animation
- *   cannot disagree.
- * - `moveCount` — HTM face turns. Every step's alg is `[URFDLB]['2]?` only: the renderer, the 2D
- *   net and the move list speak nothing else.
+ *   focus/highlight payload `method-lesson.js` turns into cues. `hold` is `[up, front]` in the method
+ *   frame when the step begins; `alg` is the child's letters for it and may turn the whole cube; and
+ *   the pieces `why` names are named as seen in that hold.
+ * - `alg` — the steps played through the interpreter, each in its hold, as the FACE TURNS they are
+ *   to the pieces: a regrip is none. What replays with face turns alone — cubejs, `applyAlg`, the
+ *   stage routes — takes this, and it cannot disagree with the steps because it is computed from them.
+ * - `moveCount` — HTM face turns of `alg`, so a regrip never makes a lesson look longer.
  *
  * Throws `MethodSolverError` rather than returning a partial solution: a stage that cannot be
  * reached means the repertoire is wrong, and half a solution is worse than none for someone
@@ -119,6 +130,9 @@ export function solveByMethod(state, method = methodFor()) {
   const steps = [];
   const start = checkedCopy(state);
   let s = clone(start);
+  // How the cube is held, carried from step to step and from stage to stage: a regrip is not undone at
+  // a stage boundary, because the child's hands do not undo it.
+  let hold = UPRIGHT;
 
   for (const stage of method.stages) {
     // The composition claim, made mechanical. §2 says every stage ends at a state predicate that
@@ -140,7 +154,11 @@ export function solveByMethod(state, method = methodFor()) {
     // cross contract false behind it. Each stage now appends to its own array.
     const before = clone(s);
     const mine = [];
-    const returned = stage.run(clone(s), mine);
+    // **A stage is handed the cube AS IT IS HELD**, and writes its letters for that. So a stage that
+    // knows nothing of holds — every top-layer stage — reads its case from the front the child is
+    // actually facing after a regrip, and its algorithm comes out in the letters it is taught in, not
+    // relabelled for a front nobody is looking at. What it returns is the cube as held when it is done.
+    const returned = stage.run(asHeld(before, hold), mine);
     // **The steps are ADOPTED: checked, deep-copied and frozen, before anything is replayed
     // through them.** Two reasons, and both were live.
     //
@@ -153,22 +171,24 @@ export function solveByMethod(state, method = methodFor()) {
     // renderer cannot animate surfaced as a `TypeError` from inside `applyAlg` — an incidental
     // error that throws away the stage name, the step index and the state the replay started
     // from, which are the three things anyone debugging it needs.
-    const adopted = adopt(mine, stage, before);
+    const played = adopt(mine, stage, before, hold);
     // **The contract is checked on the REPLAY, not on what the stage handed back.** Those are two
     // different claims, and only one of them is about the lesson: a stage could return a state its
     // own steps do not reach, and the assembly guard would not notice as long as a later stage's
     // moves happened to cancel the difference. Then the stage boundary the learner is shown — "the
     // cross is done here" — would be false while everything else passed. Replaying costs one pass
     // over the moves this stage just emitted.
-    s = adopted.reduce((cube, step) => applyAlg(cube, step.alg), before);
+    s = clone(played.state);
     // Shape-checked before it is compared. A stage that forgets to return, or returns something
     // that is not a cube, is a defect in the stage — and reporting it as an incidental TypeError
     // from inside `sameCube` throws away the stage name and the replay this driver exists to give.
-    if (!isCube(returned) || !sameCube(s, returned)) {
+    // Compared as HELD: the stage saw the cube in its hands, so that is how its answer is read.
+    if (!isCube(returned) || !sameCube(asHeld(s, played.hold), returned)) {
       throw new MethodSolverError(stage.id, 'replay', before);
     }
     if (!stage.contract(frozenCube(s))) throw new MethodSolverError(stage.id, 'contract', s);
-    steps.push(...adopted);
+    steps.push(...played.steps);
+    hold = played.hold;
   }
 
   // Per step, never across them: a step is a thing the learner performs as a unit, and merging
@@ -181,7 +201,9 @@ export function solveByMethod(state, method = methodFor()) {
     .map((step) => ({ ...step, alg: simplify(step.alg) }))
     .filter((step) => step.alg.length > 0);
 
-  const alg = simplified.map((step) => step.alg).filter(Boolean).join(' ').trim();
+  // Merging within a step never changes its hold — a turn of one face merged with the next turn of the
+  // same face, in the same hold — so each step's recorded hold still holds, and `alg` is played from it.
+  const alg = simplified.map((step) => faceTurnsAlg(run(step.alg, step.hold, SOLVED).drawn)).filter(Boolean).join(' ').trim();
   // The last guard: the concatenation must actually solve the cube we were given. Every stage
   // already checked its own goal, so this can only fail if a stage's invariant was too weak —
   // which is precisely the bug a per-stage check cannot see.
@@ -214,29 +236,58 @@ const snapshot = (value) => {
   return value;
 };
 
-/** The only tokens the renderer, the 2D net and the move list speak. */
-const FACE_TURN = /^[URFDLB][2']?$/;
+/** The hold a method begins in, and the one its stages were written for: its own frame, upright. */
+const UPRIGHT = Object.freeze(['U', 'F']);
 
 /**
- * Every step a stage emitted, checked and frozen — or a `MethodSolverError` naming which one.
+ * The cube as a child holding it `hold` sees it: the same pieces, each slot named by where it now is.
  *
- * The check is not defensive padding: a step with a token nobody can animate is a lesson that
- * shows a learner a move the cube will not make, and `applyAlg` reports it as a bare `TypeError`
- * with none of the context this driver exists to attach.
+ * Upright holds only — the cross underneath — so this is a quarter turn about U, and `rotateState`'s
+ * derived tables are the whole of it. The number of quarter turns is the one that brings the front
+ * face to the front, found by asking `rotateAlg` rather than written down.
  */
-function adopt(steps, stage, before) {
+function asHeld(state, [up, front]) {
+  if (up !== 'U') throw new Error(`solveByMethod: a method holds the cube with its cross underneath, not with ${up} on top`);
+  return rotateState(state, [0, 1, 2, 3].find((k) => rotateAlg(front, k) === 'F'));
+}
+
+/**
+ * Every step a stage emitted, checked, PLAYED in the hold it is made in, and frozen with that hold —
+ * or a `MethodSolverError` naming which one. Returns `{ steps, state, hold }`: the steps, and the cube
+ * and the hold they leave.
+ *
+ * The check is not defensive padding: a step with a token nobody can read is a lesson that shows a
+ * learner a move the cube will not make, and the interpreter reports it without the stage name, the
+ * step index and the state the replay started from, which are what anyone debugging it needs.
+ */
+function adopt(steps, stage, before, hold) {
   const refuse = (i, why) => {
     throw new MethodSolverError(stage.id, `step ${i}: ${why}`, before);
   };
-  return steps.map((step, i) => {
+  let state = before;
+  let held = hold;
+  const adopted = steps.map((step, i) => {
     if (!step || typeof step !== 'object') refuse(i, `is ${step === null ? 'null' : typeof step}, not a step`);
     if (typeof step.alg !== 'string') refuse(i, 'carries no algorithm');
     if (typeof step.stage !== 'string' || !step.stage) refuse(i, 'names no stage');
-    for (const move of step.alg.trim().split(/\s+/).filter(Boolean)) {
-      if (!FACE_TURN.test(move)) refuse(i, `carries "${move}", which is not a face turn`);
+    // The hold is the REPLAY's to record. One a stage wrote itself could disagree with the moves before
+    // it, and every chip after it would be named for a cube held some other way.
+    if (step.hold !== undefined) refuse(i, 'carries a hold of its own — the hold a step is made in is the replay\'s to record');
+    let played;
+    try {
+      played = run(parse(step.alg), held, state);
+    } catch (err) {
+      refuse(i, err.message);
     }
-    return snapshot(step);
+    if (played.hold[0] !== 'U') {
+      refuse(i, `leaves ${played.hold[0]} on top — a method turns the cube about its vertical axis only, so the cross stays underneath`);
+    }
+    const record = snapshot({ ...step, hold: [...held] });
+    state = played.state;
+    held = played.hold;
+    return record;
   });
+  return { steps: adopted, state, hold: Object.freeze([...held]) };
 }
 
 /** Does this look like a cube at all? Shape only; `checkedCopy` is the boundary that checks
@@ -252,5 +303,5 @@ const sameCube = (a, b) => ['cp', 'co', 'ep', 'eo'].every(
 
 export const __testing = {
   rotateAlg, shortestTo, fromRepertoire, repertoire, simplify, solveCrossWhole, crossTable,
-  f2lCaseName, slotSafe, repertoiresBuilt,
+  f2lCaseName, slotSafe, repertoiresBuilt, asHeld,
 };

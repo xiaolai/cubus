@@ -18,7 +18,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { ORIENTATIONS, orientationRelabel, turnFacelets } from '../lib/cube-orientation.js';
-import { fromCube } from '../lib/cube-pieces.js';
+import { faceTurnsAlg, run } from '../lib/cube-moves.js';
+import { SOLVED as SOLVED_PIECES, fromCube } from '../lib/cube-pieces.js';
 import { whyText } from '../lib/method-lesson.js';
 import { methodFor, solveByMethod } from '../lib/method-solver.js';
 import { allRungCombinations } from '../lib/methods/index.js';
@@ -36,6 +37,7 @@ import {
   holdSentence,
   renameAlg,
   renameSelectors,
+  scanFrameWalk,
   showMove,
   toMethodFrame,
   undoHold,
@@ -44,6 +46,7 @@ import { COLOUR_NAMES, SCHEMES, colourOf } from '../lib/scheme.js';
 import { TARGETS, targetById } from '../lib/stage-targets.js';
 import Cube from '../vendor/cubejs.js';
 import { lcg, randomAlg } from './fixtures/seeded-scrambles.mjs';
+import { turnsOf } from './fixtures/method-replay.mjs';
 
 const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
 const TURNS = ['U', 'U2', "U'", 'R', 'R2', "R'", 'F', 'F2', "F'", 'D', 'D2', "D'", 'L', 'L2', "L'", 'B', 'B2', "B'"];
@@ -184,7 +187,7 @@ test('every stage the method emits has a hold, only the cross and first layer ar
       // THE LESSON'S CROSS, made on the cube in the scan frame, is the white cross on top: every U
       // edge home. Read off the facelets directly — U edges at 1/3/5/7, their side stickers at
       // R1 (10), F1 (19), L1 (37), B1 (46) — rather than through any predicate in this repository.
-      const crossMoves = steps.filter((s) => s.stage === 'cross').map((s) => s.alg).join(' ');
+      const crossMoves = steps.filter((s) => s.stage === 'cross').map(turnsOf).join(' ');
       const after = apply(facelets, renameAlg(crossMoves, METHOD_TO_SCAN));
       for (const [at, face] of [[1, 'U'], [3, 'U'], [5, 'U'], [7, 'U'], [10, 'R'], [19, 'F'], [37, 'L'], [46, 'B']]) {
         assert.equal(after[at], face, `rungs ${JSON.stringify(rungs)}, seed ${seed}: sticker ${at} after the cross`);
@@ -192,7 +195,7 @@ test('every stage the method emits has a hold, only the cross and first layer ar
       // AND ITS FIRST LAYER, where the rung builds one on its own, is the white layer finished on
       // top before the cube is turned over: the whole U face and the top row of every side.
       if (steps.some((s) => s.stage === 'first-layer')) {
-        const layerMoves = steps.filter((s) => WHITE_UP_STAGES.has(s.stage)).map((s) => s.alg).join(' ');
+        const layerMoves = steps.filter((s) => WHITE_UP_STAGES.has(s.stage)).map(turnsOf).join(' ');
         const layer = apply(facelets, renameAlg(layerMoves, METHOD_TO_SCAN));
         assert.equal(layer.slice(0, 9), 'UUUUUUUUU', `rungs ${JSON.stringify(rungs)}, seed ${seed}: the white face`);
         for (const at of [9, 10, 11, 18, 19, 20, 36, 37, 38, 45, 46, 47]) {
@@ -218,12 +221,22 @@ test('a highlight names the same pieces in both frames', () => {
   }
 });
 
-test('only a face turn can be renamed, and a live line never throws for one that is not', () => {
-  assert.throws(() => renameAlg('Rw', TUMBLED), /"Rw" is not a face turn/);
-  assert.throws(() => renameAlg('x', TUMBLED), /"x" is not a face turn/);
+test('every move can be renamed for a hold — a regrip or a slice by its axis — and a live line never throws', () => {
+  // A method step may regrip (plan item 6.1), so what is renamed is any move the interpreter reads, and
+  // the identity that defines the renaming is the interpreter's: the renamed move, read in the hold, is
+  // the move that was renamed. (That the interpreter reads a hold right is test/cube-moves.test.mjs's,
+  // against an oracle.)
+  for (const hold of ORIENTATIONS) {
+    for (const move of ['R', "U'", 'F2', 'x', "y'", 'z2', 'Rw', "u'", 'M', 'E2', "S'"]) {
+      assert.deepEqual([...run(renameAlg(move, hold), hold, SOLVED_PIECES).drawn], [...run(move, ['U', 'F'], SOLVED_PIECES).drawn],
+        `${move} renamed for ${hold.join(' ')}`);
+    }
+  }
+  assert.throws(() => renameAlg('R Q', TUMBLED), /"Q" is not a move/);
   assert.equal(renameAlg('', TUMBLED), '');
   assert.equal(showMove("U'", TUMBLED), "D'");
-  assert.equal(showMove('Rw', TUMBLED), 'Rw');
+  assert.equal(showMove('y', TUMBLED), "y'", 'tumbled, the axis a regrip turns about points the other way');
+  assert.equal(showMove('?!', TUMBLED), '?!', 'a spelling nobody reads is shown as it came');
 });
 
 test('the lesson\'s cross and first-layer sentences describe a white-up hold, and the middle layer a tumbled one', () => {
@@ -286,4 +299,54 @@ test('a hold table refuses a name it does not hold, in either list', () => {
     /"sloved" is listed to keep the scan's hold, but it is not a name this table holds/,
     'a misspelled exception must throw, not be held turned over');
   assert.equal(holdTable(['cross', 'first-layer', 'solved'], ['solved']).solved.join(' '), 'U F');
+});
+
+test('a lesson walk is the scan-frame moves, every chip named for the hold its move is made in — a regrip too', () => {
+  // With face turns only — every rung today — the walk is exactly the renaming it replaced, and each move
+  // is held the way its stage is.
+  for (const [n, rungs] of allRungCombinations().entries()) {
+    const scan = Cube.fromString(SOLVED);
+    scan.move(randomAlg(lcg(n + 7), 25));
+    const { steps, alg } = solveByMethod(cubie(toMethodFrame(scan.asString())), methodFor(rungs));
+    const walk = scanFrameWalk(steps);
+    assert.equal(walk.moves.join(' '), renameAlg(alg, METHOD_TO_SCAN), `rungs ${JSON.stringify(rungs)}`);
+    assert.equal(walk.holds.length, walk.moves.length + 1, 'one hold more than moves: the hold after the last');
+    let k = 0;
+    for (const [i, step] of steps.entries()) {
+      assert.deepEqual([...walk.stepHolds[i]], [...holdForStage(step.stage)]);
+      for (const _ of walk.algs[i].split(' ').filter(Boolean)) {
+        assert.deepEqual([...walk.holds[k]], [...holdForStage(step.stage)], `move ${k}`);
+        k += 1;
+      }
+    }
+  }
+
+  // A regrip in the middle layer. The chips after it are the letters the method wrote — the child's
+  // hands and the method's frame agree once tumbled — and the drawing reaches the cube the steps do.
+  const regripped = [
+    { stage: 'cross', alg: 'D R', hold: ['U', 'F'] },
+    { stage: 'middle-layer', alg: 'y', hold: ['U', 'F'] },
+    { stage: 'middle-layer', alg: "U R U' R' U' F' U F", hold: ['U', 'R'] },
+    { stage: 'top-cross', alg: "F R U R' U' F'", hold: ['U', 'R'] },
+  ];
+  const walk = scanFrameWalk(regripped);
+  const chips = walk.moves.map((m, k) => renameAlg(m, walk.holds[k]));
+  assert.deepEqual(chips, ['U', 'R', 'y', 'U', 'R', "U'", "R'", "U'", "F'", 'U', 'F', 'F', 'R', 'U', "R'", "U'", "F'"],
+    'white up the cross is named for white up; tumbled, every chip is the method\'s own letter, before and after the regrip');
+  assert.deepEqual([...walk.holds[2]], [...TUMBLED], 'the regrip is made in the tumbled hold');
+  assert.equal(walk.holds[3][0], 'D', 'and leaves white underneath');
+  assert.notDeepEqual([...walk.holds[3]], [...TUMBLED], 'but turned');
+  assert.deepEqual([...walk.stepHolds[3]], [...walk.holds[3]], 'the regrip carries into the next stage');
+  assert.equal(
+    apply(SOLVED, faceTurnsAlg(walk.moves)),
+    apply(SOLVED, renameAlg(regripped.map(turnsOf).join(' '), METHOD_TO_SCAN)),
+    'the walk the renderer draws moves the pieces the steps do',
+  );
+
+  // A regrip carried across the tumble would name every later chip for a hold the child was just told to
+  // leave: refused where the walk is built.
+  assert.throws(() => scanFrameWalk([
+    { stage: 'cross', alg: 'y', hold: ['U', 'F'] },
+    { stage: 'middle-layer', alg: 'R', hold: ['U', 'R'] },
+  ]), /begins a new hold/);
 });

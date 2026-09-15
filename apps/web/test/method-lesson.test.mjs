@@ -16,7 +16,7 @@ import { CORNERS, EDGES, SOLVED, applyAlg } from '../lib/cube-pieces.js';
 import { registerLocale, setLocale } from '../lib/i18n.js';
 import { parseHighlight } from '../lib/cube-highlight.js';
 import {
-  CASE_TEXT_KEYS, WHY_KEYS, caseText, lessonCues, lessonSections, moveStepIndex, namedPieces,
+  CASE_TEXT_KEYS, WHY_KEYS, caseText, lessonCues, lessonSections, moveStepIndex, namedPieces, turnsIn,
   stepAtMove,
   rungSummary, whyText,
 } from '../lib/method-lesson.js';
@@ -221,10 +221,11 @@ const dialsSeen = new Set();
       // that drifted would put a chip under the wrong heading, which is the invented structure
       // this replaced.
       assert.equal(sections[0].from, 0);
-      assert.equal(sections[sections.length - 1].to, moveCount);
+      assert.equal(sections[sections.length - 1].to, steps.reduce((n, st) => n + st.alg.trim().split(/\s+/).filter(Boolean).length, 0));
+      assert.equal(sections.reduce((n, s) => n + s.moves, 0), moveCount, 'the headings count the lesson\'s face turns, no more and no fewer');
       for (const [i, s] of sections.entries()) {
         if (i > 0) assert.equal(s.from, sections[i - 1].to, 'a gap between sections');
-        assert.equal(s.to - s.from, s.moves);
+        assert.ok(s.to - s.from >= s.moves, 'a section holds fewer positions than it counts face turns');
         assert.ok(s.steps > 0 && s.name.length > 0);
       }
       assert.equal(sections.reduce((n, s) => n + s.steps, 0), steps.length);
@@ -347,4 +348,18 @@ test('the cue is about the move about to happen, not the one just made', () => {
   // And a lesson with no moves has no step to point at.
   assert.equal(stepAtMove([], 0), undefined);
   assert.equal(stepAtMove(undefined, 0), undefined);
+});
+
+test('a regrip is a position on the walk, but not a move the lesson costs', () => {
+  // Plan item 6.1: the chips and the playhead index positions, a regrip among them; the count a heading
+  // and the walk say is face turns in the half-turn metric.
+  const steps = [
+    { stage: 'middle-layer', alg: 'y', why: { key: 'x' } },
+    { stage: 'middle-layer', alg: "U R U' R' U' F' U F", why: { key: 'x' } },
+  ];
+  const [section] = lessonSections(steps);
+  assert.deepEqual({ from: section.from, to: section.to, moves: section.moves, steps: section.steps }, { from: 0, to: 9, moves: 8, steps: 2 });
+  assert.deepEqual(moveStepIndex(steps), [0, 1, 1, 1, 1, 1, 1, 1, 1]);
+  assert.equal(turnsIn("y R U R' U' M2"), 6, 'a regrip none, a slice two');
+  assert.equal(turnsIn(''), 0);
 });

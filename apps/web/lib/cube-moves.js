@@ -140,6 +140,49 @@ export function toIdentity(move, hold) {
   };
 }
 
+/**
+ * An identity-frame move, as the move the child makes on a cube held `hold` — the inverse of `toIdentity`.
+ *
+ * What a display needs: a walk is stored in the cube's own letters and shown in the child's (ADR 0003), and a
+ * regrip or a slice is a move like any other there. The identity axis lies along one world axis; the child's
+ * move is about that world axis, its layers and angle signed by which way round the identity axis lies along
+ * it — exactly `toIdentity`'s arithmetic read the other way.
+ */
+export function heldMove(move, hold) {
+  const rows = checkHold(hold);
+  const index = AXES.indexOf(move.axis);
+  if (index < 0) throw new Error(`cube-moves: no axis "${move.axis}"`);
+  const worldAxis = rows.findIndex((row) => row[index] !== 0);
+  const sign = rows[worldAxis][index];
+  return {
+    axis: AXES[worldAxis],
+    layers: [...move.layers].map((l) => l * sign).sort((a, b) => a - b),
+    angle: move.angle * sign,
+    turns: move.turns,
+  };
+}
+
+/** An identity-frame token, as the token the child reads on a cube held `hold`. */
+export const heldToken = (token, hold) => {
+  const { move, why } = readToken(token);
+  if (!move) throw new Error(`cube-moves: "${token}" is ${why}`);
+  return tokenOf(heldMove(move, hold));
+};
+
+/**
+ * Identity-frame tokens as the FACE TURNS they are to the pieces: a rotation is none, a wide move its one
+ * face, a slice its two. What a caller that replays with face turns only — cubejs, the piece model's
+ * `applyAlg`, a move count in the half-turn metric — can take.
+ */
+export function faceTurnsAlg(tokens) {
+  const list = typeof tokens === 'string' ? tokens.trim().split(/\s+/).filter(Boolean) : tokens;
+  return list.flatMap((token) => {
+    const { move, why } = readToken(token);
+    if (!move) throw new Error(`cube-moves: "${token}" is ${why}`);
+    return faceTurnsOf(move).turns.map((t) => t.name).filter(Boolean);
+  }).join(' ');
+}
+
 /** The identity face at the position `face` names — the face the child means — on a cube held `hold`. */
 export function identityFace(face, hold) {
   const rows = checkHold(hold);

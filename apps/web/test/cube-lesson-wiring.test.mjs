@@ -93,8 +93,10 @@ test('both objects are offered, and neither stands where the other was', () => {
   // 20 steps" cannot be mistaken for a solution length. Both numbers go through `plural`, because
   // both can be 1 — a one-move lesson read "1 moves · 1 steps".
   assert.match(code, /t\('%1 · %2',/, 'the lesson count must name both numbers');
-  assert.match(code, /plural\(total, \{ one: '%1 move', other: '%1 moves' \}\)/,
-    'the move count must be pluralised');
+  // A lesson's moves are its FACE TURNS (plan item 6.1): a regrip is a position on the walk, never a
+  // move it costs, so the count is not the walk's length.
+  assert.match(code, /plural\(turnsIn\(lesson\.alg\), \{ one: '%1 move', other: '%1 moves' \}\)/,
+    'the move count must be pluralised, and count face turns');
   assert.match(code, /plural\(lesson\.steps\.length, \{ one: '%1 step', other: '%1 steps' \}\)/,
     'the step count must be pluralised');
 });
