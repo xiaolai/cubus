@@ -132,7 +132,11 @@ export function createFollowTracker({
   const locate = (f) => {
     const { steps } = walkNow();
     for (let d = 0; d <= 2; d++) {
-      for (const idx of d === 0 ? [cubePos] : [cubePos - d, cubePos + d]) {
+      // AHEAD BEFORE BEHIND, at the same distance. A walk can pass through one arrangement twice —
+      // a step ending on `R` and the next beginning with `R'` are not merged — and there the cube
+      // matches both. The turn that reached it IS the walk's next move, so it is progress; checking
+      // behind first drew an undo nobody made. Where only one side matches, the order changes nothing.
+      for (const idx of d === 0 ? [cubePos] : [cubePos + d, cubePos - d]) {
         if (idx >= 0 && idx < steps.length && steps[idx] === f) return { kind: 'step', idx };
       }
     }
