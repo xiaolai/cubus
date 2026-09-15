@@ -73,6 +73,9 @@ const BUNDLES = [
       // the bundle — esbuild cannot prove a frozen, mapped array free of side effects — and are guarded
       // as the declarations they are.
       'toFacelets',
+      // The renderer resolves both channels to STICKERS (plan item 4.1), so the cubie-level resolver — kept
+      // for the script view and the kit — and its sticker test are not in the bundle.
+      'resolveHighlight', 'isSticker',
     ],
     treeShakenMessages: [
       'cube-orientation: sticker', 'cube-orientation: rotation is not a bijection',

@@ -18,16 +18,16 @@
 export const CAPABILITIES = Object.freeze({
   'face-turns': { what: 'the 18 face turns inside a sequence', status: 'works' },
   'hold-set': { what: 'turn the whole cube to one of 24 holds (orientation, turnTo)', status: 'works' },
-  'hold-change-in-sequence': { what: 'a whole-cube turn made between two moves of one sequence', status: 'gap', item: '2.2' },
-  'rotation-token': { what: 'x y z written inside a move sequence', status: 'gap', item: '2.1' },
-  'wide-move': { what: 'Rw, 2Rw, lowercase r', status: 'gap', item: '2.1' },
-  'slice-move': { what: 'M E S', status: 'gap', item: '2.1' },
-  'held-letters': { what: 'moves and selectors written the way the child holds the cube', status: 'partial', item: '1.2' },
-  question: { what: 'ask one cube a question: pieces home, where a piece is, edges carrying no colour of a face', status: 'gap', item: '1.4' },
+  'hold-change-in-sequence': { what: 'a whole-cube turn made between two moves of one sequence', status: 'works' },
+  'rotation-token': { what: 'x y z written inside a move sequence', status: 'works' },
+  'wide-move': { what: 'Rw, 2Rw, lowercase r', status: 'works' },
+  'slice-move': { what: 'M E S', status: 'works' },
+  'held-letters': { what: 'moves and selectors written the way the child holds the cube', status: 'works' },
+  question: { what: 'ask one cube a question: pieces home, where a piece is, edges carrying no colour of a face', status: 'works' },
   'highlight-piece': { what: 'light a piece by identity; the light travels with it', status: 'works' },
   'highlight-position': { what: 'light a slot, a layer or a kind of piece', status: 'works' },
-  'highlight-sticker': { what: 'light one sticker of a piece', status: 'gap', item: '4.1' },
-  'selector-sets': { what: 'combine selectors: A + B, A - B', status: 'gap', item: '4.1' },
+  'highlight-sticker': { what: 'light one sticker of a piece', status: 'works' },
+  'selector-sets': { what: 'combine selectors: A + B, A - B', status: 'works' },
   focus: { what: 'grey everything a cue does not name', status: 'works' },
   ghosts: { what: 'see the hidden faces: floating ghosts, back view', status: 'works' },
   camera: { what: 'place the eye: latitude, longitude, a tour', status: 'works' },
@@ -39,11 +39,11 @@ export const CAPABILITIES = Object.freeze({
   pick: { what: 'touch a piece, sticker or centre on the cube itself', status: 'gap', item: '5.3' },
   'drawn-colours': { what: 'the colours the cube is drawn in, under the palette and scheme in force', status: 'partial', item: '5.1' },
   'piece-state': { what: 'which piece is where and how it faces, for a page to count with', status: 'partial', item: '5.2' },
-  'painted-picture': { what: 'a picture with unknown stickers, no state behind it', status: 'partial', item: '3.1' },
+  'painted-picture': { what: 'a picture with unknown stickers, no state behind it', status: 'works' },
   'clock-playback': { what: 'a sequence timed to narration, seekable to any instant', status: 'works' },
-  'stop-playback': { what: 'a walk a smart cube follows, one observable step at a time', status: 'partial', item: '3.3' },
-  'drill-round': { what: 'prompt, pick, deselect, lock, mark, reveal, advance', status: 'partial', item: '3.4' },
-  'animating-state': { what: 'whether a move is still animating, as a public member', status: 'partial', item: '2.5' },
+  'stop-playback': { what: 'a walk a smart cube follows, one observable step at a time', status: 'works' },
+  'drill-round': { what: 'prompt, pick, deselect, lock, mark, reveal, advance', status: 'works' },
+  'animating-state': { what: 'whether a move is still animating, as a public member', status: 'works' },
   'page-overlay': { what: 'words and numbers the page draws beside the cube (the course number, the hold sentence)', status: 'works' },
 });
 
@@ -105,19 +105,21 @@ export const TARGET_IDS = Object.freeze({
 
 /**
  * Every place teaching happens today, and every stage still to be taught, by what it uses.
- * `uses` is what it does today; `wants` is what the stage calls for and cannot have yet.
+ * `uses` is what it does today; `wants` is what the stage calls for and cannot have yet; `ready` is what it
+ * called for that the surface can do now, and that the stage has not taken up — adopting it is content
+ * work (plan Phase 6), and moving a row from `ready` to `uses` is the record that it happened.
  */
 export const SOURCES = Object.freeze([
   { stage: 'concepts', where: 'cubus-im lessons 1-6', uses: ['face-turns', 'highlight-piece', 'highlight-position', 'focus', 'camera', 'ghosts', 'page-overlay', 'clock-playback'], wants: ['label', 'arrow'] },
   { stage: 'concepts', where: 'cubus-im playground (three modes)', uses: ['face-turns', 'highlight-piece', 'piece-state'], wants: ['trail'] },
   { stage: 'cross', where: 'cubus-im lessons 7-8; app cross rungs', uses: ['face-turns', 'highlight-piece', 'highlight-position', 'focus', 'ghosts', 'hold-set', 'clock-playback', 'stop-playback'], wants: [] },
-  { stage: 'first layer', where: 'cubus-im lessons 9-10; app first-layer rung', uses: ['face-turns', 'highlight-piece', 'highlight-position', 'focus', 'hold-set', 'clock-playback', 'stop-playback'], wants: ['hold-change-in-sequence', 'question'] },
-  { stage: 'middle layer', where: 'cubus-im lessons 11-12; app middle-layer rung', uses: ['face-turns', 'highlight-piece', 'highlight-position', 'focus', 'hold-set', 'clock-playback', 'stop-playback'], wants: ['hold-change-in-sequence', 'rotation-token', 'held-letters', 'question'] },
-  { stage: 'last layer', where: 'cubus-im lessons 13-16; app OLL and PLL rungs', uses: ['face-turns', 'highlight-position', 'highlight-piece', 'focus', 'clock-playback', 'stop-playback'], wants: ['highlight-sticker', 'trail', 'arrow'] },
-  { stage: 'whole solve', where: 'cubus-im lesson 17; app Solution walk', uses: ['face-turns', 'highlight-piece', 'hold-set', 'clock-playback', 'stop-playback'], wants: ['hold-change-in-sequence'] },
-  { stage: 'F2L', where: 'not taught; app joined-pairs rung and the 41 cases in lib/data/case-tables.js', uses: ['face-turns', 'highlight-piece', 'stop-playback'], wants: ['hold-change-in-sequence', 'question', 'flat-view', 'several-cubes'] },
-  { stage: 'OLL and PLL', where: 'app Trainer and Drill previews; the 57 and 21 cases', uses: ['page-overlay'], wants: ['wide-move', 'rotation-token', 'highlight-sticker', 'flat-view', 'several-cubes', 'trail', 'drill-round'] },
-  { stage: 'other methods', where: 'cubus-im method pages: Roux, ZZ, Petrus, Mehta, 3-style', uses: ['painted-picture', 'focus', 'several-cubes'], wants: ['slice-move', 'wide-move', 'selector-sets', 'trail'] },
+  { stage: 'first layer', where: 'cubus-im lessons 9-10; app first-layer rung', uses: ['face-turns', 'highlight-piece', 'highlight-position', 'focus', 'hold-set', 'clock-playback', 'stop-playback'], wants: [], ready: ['hold-change-in-sequence', 'question'] },
+  { stage: 'middle layer', where: 'cubus-im lessons 11-12; app middle-layer rung', uses: ['face-turns', 'highlight-piece', 'highlight-position', 'focus', 'hold-set', 'clock-playback', 'stop-playback'], wants: [], ready: ['hold-change-in-sequence', 'rotation-token', 'held-letters', 'question'] },
+  { stage: 'last layer', where: 'cubus-im lessons 13-16; app OLL and PLL rungs', uses: ['face-turns', 'highlight-position', 'highlight-piece', 'focus', 'clock-playback', 'stop-playback'], wants: ['trail', 'arrow'], ready: ['highlight-sticker'] },
+  { stage: 'whole solve', where: 'cubus-im lesson 17; app Solution walk', uses: ['face-turns', 'highlight-piece', 'hold-set', 'clock-playback', 'stop-playback'], wants: [], ready: ['hold-change-in-sequence'] },
+  { stage: 'F2L', where: 'not taught; app joined-pairs rung and the 41 cases in lib/data/case-tables.js', uses: ['face-turns', 'highlight-piece', 'stop-playback'], wants: ['flat-view', 'several-cubes'], ready: ['hold-change-in-sequence', 'question'] },
+  { stage: 'OLL and PLL', where: 'app Trainer and Drill previews; the 57 and 21 cases', uses: ['page-overlay'], wants: ['flat-view', 'several-cubes', 'trail'], ready: ['wide-move', 'rotation-token', 'highlight-sticker', 'drill-round'] },
+  { stage: 'other methods', where: 'cubus-im method pages: Roux, ZZ, Petrus, Mehta, 3-style', uses: ['painted-picture', 'focus', 'several-cubes'], wants: ['trail'], ready: ['slice-move', 'wide-move', 'selector-sets'] },
   { stage: 'drills', where: 'cubus-im recognition and prediction drills', uses: ['highlight-piece', 'highlight-position', 'drawn-colours', 'drill-round', 'camera'], wants: [] },
   { stage: 'practice cards', where: 'cubus-im practice cards', uses: ['painted-picture', 'hold-set', 'several-cubes'], wants: [] },
   { stage: 'sheets', where: 'cubus-im cheatsheets, flowchart and charts', uses: ['face-turns', 'focus', 'ghosts', 'hold-set', 'several-cubes', 'painted-picture'], wants: ['flat-view', 'arrow'] },
@@ -239,6 +241,17 @@ export const SCENARIOS = Object.freeze([
   {
     id: 'R10-focus-survives-seek', stage: 'every stage', half: 'element', kind: 'focus-seek', closedBy: '2.4',
     source: 'ADR 0004 R10', needs: ['focus'], selector: 'slot:UR', alg: 'R',
+  },
+  // ---- drawing (Phase 4) ------------------------------------------------------------------------
+  {
+    id: 'highlight-one-sticker', stage: 'last layer', half: 'element', kind: 'highlight-sticker', closedBy: '4.1',
+    source: 'OLL recognition: one sticker of a piece, named by where it faces and by the colour it is',
+    needs: ['highlight-sticker'], alg: "R U R'", selectors: ['slot:UF/U', 'piece:UF/F'],
+  },
+  {
+    id: 'top-layer-without-its-corners', stage: 'other methods', half: 'element', kind: 'selector-sets', closedBy: '4.1',
+    source: "Roux's last six edges: the top layer's edges and centre, and not its corners",
+    needs: ['selector-sets'], alg: '', selector: 'layer:U - corners',
   },
   {
     id: 'R11-focus-and-highlight-keep-their-split', stage: 'every stage', half: 'element', kind: 'covered',

@@ -11,12 +11,13 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { after, before, test } from 'node:test';
 
-import { ROTATIONS, SOLVED_FACELETS, applyMoves, held, play } from '../cube-oracle.mjs';
+import { ROTATIONS, SOLVED_FACELETS, applyMoves, faceletAt, held, play } from '../cube-oracle.mjs';
 import { SCENARIOS } from '../fixtures/tutorial-scenarios.mjs';
 import * as cubeKit from '../../lib/cube-kit.js';
 import { BROWSER_PLAYER_KINDS, OPEN_ITEMS, startOf, strictKit, underGapRules } from '../tutorial-runner.mjs';
 import { readMatrices, readStickers, toWorld } from './drawn-cube.mjs';
 import { installPublicCube } from './public-cube.mjs';
+import { installSampler } from './sampling.mjs';
 import { startBrowserFixture } from './harness.mjs';
 
 const require = createRequire(import.meta.url);
@@ -45,6 +46,7 @@ before(async () => {
     `,
   });
   await page.waitForFunction(() => !!window.__script);
+  await page.evaluate(installSampler);
 });
 
 after(async () => { await fixture?.close(); });
@@ -148,8 +150,80 @@ test('the public cube refuses what the manifest does not list, and allows what i
   }
 });
 
+/**
+ * The world facelets drawn brighter under `spec` than with no highlight, read off the CANVAS — the
+ * sampler reads pixels, never materials — and placed on the oracle's layout by where each lit sticker is.
+ */
+const litFacelets = async (spec) => {
+  const lit = await page.evaluate((s) => {
+    const el = window.__cube;
+    const cube = window.__publicCube(el);
+    cube.setAttribute('highlight', s);
+    const shown = window.__appearance.stickers(el);
+    cube.setAttribute('highlight', 'none');
+    const rest = window.__appearance.stickers(el);
+    const lum = ([r, g, b]) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    el.root.updateMatrixWorld(true);
+    const V = el.stickers[0].position.constructor;
+    return Object.keys(shown).filter((k) => lum(shown[k]) - lum(rest[k]) > 8).map((k) => {
+      const [i, face] = k.split(':');
+      const c = el.cubies[Number(i)];
+      const m = c.children.find((x) => x.userData?.face === face && !x.userData.n);
+      const at = m.getWorldPosition(new V()); const centre = c.getWorldPosition(new V());
+      return { cubie: [centre.x, centre.y, centre.z], offset: [at.x - centre.x, at.y - centre.y, at.z - centre.z] };
+    });
+  }, spec);
+  const scale = Math.max(1, ...lit.flatMap((s) => s.cubie.map(Math.abs)));
+  return lit.map((s) => {
+    const len = Math.hypot(...s.offset);
+    return faceletAt(s.cubie.map((v) => Math.round(v / scale) + 0), s.offset.map((v) => Math.round(v / len) + 0));
+  }).sort((a, b) => a - b);
+};
+
+/** Every facelet of the oracle's layout, with the cubie it is on and the way it faces. */
+const FACELETS = (() => {
+  const out = [];
+  for (let x = -1; x <= 1; x++) for (let y = -1; y <= 1; y++) for (let z = -1; z <= 1; z++) {
+    const pos = [x, y, z];
+    pos.forEach((v, axis) => {
+      if (!v) return;
+      const n = [0, 0, 0]; n[axis] = v;
+      out.push({ pos, n, index: faceletAt(pos, n) });
+    });
+  }
+  return out;
+})();
+
 /** The element half's runners for scenarios whose capability a plan item is still building. */
 const ELEMENT_RUNNERS = {
+  // Plan item 4.1: one sticker of a piece, lit alone — named by where it faces, and by its colour. The
+  // oracle says which facelet each names: the one at UF facing up, and the one showing F on the UF edge.
+  async 'highlight-sticker'(sc) {
+    await build({ alg: sc.alg });
+    await drawn(tokens(sc.alg).length);
+    const world = applyMoves(SOLVED_FACELETS, sc.alg);
+    const expected = {
+      'slot:UF/U': [faceletAt([0, 1, 1], [0, 1, 0])],
+      'piece:UF/F': FACELETS.filter((f) => {
+        if (f.pos.filter(Boolean).length !== 2 || world[f.index] !== 'F') return false;
+        const pair = FACELETS.filter((g) => g.pos.join() === f.pos.join()).map((g) => world[g.index]).sort().join('');
+        return pair === 'FU';
+      }).map((f) => f.index),
+    };
+    for (const spec of sc.selectors) {
+      assert.equal(expected[spec].length, 1, `${sc.id}: precondition — the oracle names one facelet for ${spec}`);
+      assert.deepEqual(await litFacelets(spec), expected[spec], `${sc.id}: "${spec}" lit the wrong stickers`);
+    }
+  },
+  // Plan item 4.1: a set with a minus. The oracle's layout says which facelets are the top layer's edges and
+  // centre — every facelet on a cubie with y = 1 that is not a corner.
+  async 'selector-sets'(sc) {
+    await build({ alg: sc.alg || 'U U\'' });
+    await drawn(0);
+    const expected = FACELETS.filter((f) => f.pos[1] === 1 && f.pos.filter(Boolean).length < 3).map((f) => f.index).sort((a, b) => a - b);
+    assert.equal(expected.length, 9, `${sc.id}: precondition — four edges of two stickers and a centre`);
+    assert.deepEqual(await litFacelets(sc.selector), expected, `${sc.id}: "${sc.selector}" lit the wrong stickers`);
+  },
   // The child's moves — centre-moving ones among them — read by the interpreter into the identity-frame
   // tokens the element's `alg` takes (ADR 0004 decision 7), and drawn at every position as the oracle
   // plays the child's letters. At the reference hold a single token reads the same both ways; after a

@@ -159,3 +159,19 @@ test('a position outside the script is clamped rather than answered with nothing
   assert.equal(viewAtPosition(built, 99).position, built.positions.length - 1);
   assert.equal(viewAtPosition(built, 'nonsense').position, 0);
 });
+
+// Plan item 4.1: a focus on ONE sticker is bound to that sticker, by its colour — so the lesson that says
+// "watch the sticker on top" keeps watching it after a turn puts it on the side.
+test('a sticker focus is bound to that sticker by colour, and a set to what is left of it', () => {
+  const built = buildScript(script([{ move: 'R', focus: 'slot:UR/U' }, { move: 'U' }]));
+  // After R, the UR slot holds the FR edge, and the sticker facing up is its F one.
+  assert.equal(viewAtPosition(built, 1).cues.focus, 'piece:FR/F');
+  assert.equal(viewAtPosition(built, 2).cues.focus, 'piece:FR/F', 'the sticker binding moved with the slot');
+  const set = buildScript(script([{ move: 'U', focus: 'layer:U - corners - slot:UF/U' }]));
+  const tokens = viewAtPosition(set, 1).cues.focus.split(',');
+  assert.equal(tokens.length, 5, `four edges and the centre: ${tokens.join(' ')}`);
+  assert.equal(tokens.filter((t) => t.includes('/')).length, 1, 'the edge with one sticker taken away is bound sticker by sticker');
+  // Held tumbled, the sticker's face letter is read in the hold too.
+  const held = buildScript(script([{ move: 'U', hl: 'slot:UF/U' }], { hold: 'D B' }));
+  assert.equal(viewAtPosition(held, 1).cues.hl, 'slot:DB/D');
+});
