@@ -23,6 +23,10 @@ const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
 let win;
+/** What the deep-linked Timer said at the instant it was on the paper, before any promise its mount
+ *  started could settle — and a solve was started right then, as a person reloading at #/timer can.
+ *  Read by the test straight after the boot test; null if the Timer never mounted at boot. */
+let timerAtBoot = null;
 
 before(async () => {
   win = new Window({
@@ -56,10 +60,24 @@ before(async () => {
     Object.defineProperty(globalThis, k, { value: win[k], writable: true, configurable: true });
   }
 
+  // A reload at #/timer mounts the Timer before the solver lands, and its first scramble lands
+  // later still — long before any test could click. So the click happens here, observed rather than
+  // raced: happy-dom tells a mutation observer about the mount before any promise it started settles.
+  const stage = win.document.querySelector('#stage');
+  const opening = new win.MutationObserver(() => {
+    const clock = stage.querySelector('#clock');
+    if (timerAtBoot || !clock) return;
+    timerAtBoot = { scr: stage.querySelector('#scr').textContent };
+    clock.click(); // a solve begins while the first scramble is still being worked out
+  });
+  opening.observe(stage, { childList: true, subtree: true });
+
   // Boots on import. loadSolver() reaches for an https: specifier, which Node refuses outright;
   // app.js already try/catches that, so the shell renders without a solver — exactly what an
   // offline launch does today.
-  await import('../lib/app.js');
+  try {
+    await import('../lib/app.js');
+  } finally { opening.disconnect(); }
   await tick();
 });
 
@@ -76,6 +94,29 @@ test('boot honours a deep link instead of falling back to home', () => {
   // is what says where you are. That a hidden screen still ROUTES is the property being checked.
   assert.equal(screenTitle(), 'Timer');
   assert.ok(win.document.querySelector('#stage .screen.active'), 'the deep-linked screen mounted');
+});
+
+// A reload at #/timer mounts the Timer before the solver lands, so it says it is working out a
+// scramble. A solve started before that scramble arrived left the sentence standing through the
+// solve and after it, with no search out (found by audit, 2026-09-15). This file boots on #/timer,
+// which makes it the one place that order happens: the solve was started in `before`, at the mount.
+test('a solve started before the first scramble lands does not leave "working out a scramble…" behind', async () => {
+  const WAITING = 'working out a scramble…';
+  const scr = win.document.querySelector('#scr');
+  const clock = win.document.querySelector('#clock');
+  const hint = win.document.querySelector('#timerHint');
+  assert.equal(timerAtBoot?.scr, WAITING, 'precondition: the Timer opened before its first scramble');
+  assert.equal(clock.getAttribute('aria-label'), 'Stop the timer', 'precondition: the solve started then is still running');
+
+  const t0 = Date.now();
+  while (Date.now() - t0 < 30000 && scr.textContent === WAITING) await new Promise((r) => setTimeout(r, 50));
+  assert.notEqual(scr.textContent, WAITING, 'the scramble line still says a search is out, under a running solve');
+  assert.doesNotMatch(scr.textContent, /^[URFDLB]/, 'a scramble was put on the line under a running solve');
+  assert.equal(hint.textContent, 'Running — click or press space to stop', 'and the status line stopped saying how to stop');
+
+  clock.click(); // the solve ends
+  await tick();
+  assert.notEqual(scr.textContent, WAITING, 'the scramble line says a search is out after the solve, with none running');
 });
 
 test('the stage actually rendered that screen', () => {

@@ -38,6 +38,7 @@ function world({ ready = true, loads = true } = {}) {
     onLoadFailed: () => { log.push(['load failed']); },
     onRolled: (rolled) => { log.push(['rolled', rolled.alg]); },
     onFailed: (err) => { log.push(['failed', err ? err.message : null]); },
+    onHeld: (err) => { log.push(['held', err ? err.message : null]); },
   });
   return {
     requests, out, log,
@@ -119,12 +120,18 @@ test('leaving the screen calls the roll off, and what it answers lands nowhere',
   }
 });
 
+// A press under a running solve shows nothing — but "nothing" used to be silent, and the screen was
+// left saying whatever it said when the press was made: "working out a scramble…" through and after
+// the solve with no search out, or a failure written over the line that says how to stop the clock
+// (found by audit, 2026-09-15). Every such end is `onHeld`, and never `onFailed`, which speaks on
+// the status line.
 test('a press while a solve is being timed rolls nothing, and a roll that lands on one is parked', async () => {
   const running = world();
   running.startClock();
   void running.requests.request();
   await settle();
   assert.equal(running.out.length, 0, 'a press rolled a scramble under a running solve');
+  assert.deepEqual(running.log, [['held', null]], 'a press refused under a running solve ended in silence');
 
   const w = world();
   void w.requests.request();
@@ -132,7 +139,40 @@ test('a press while a solve is being timed rolls nothing, and a roll that lands 
   w.startClock();
   w.out[0].resolve(cube('DURING'));
   await settle();
-  assert.deepEqual(w.log, [['parked', 'DURING']], 'a roll that landed under a running solve was shown');
+  assert.deepEqual(w.log, [['parked', 'DURING'], ['held', null]],
+    'a roll that landed under a running solve was shown, or its end went unsaid');
+});
+
+test('a roll that fails while a solve is being timed is held, never said over the solve', async () => {
+  for (const [how, answer] of [['threw', (r) => r.reject(new Error('gave up (test)'))], ['came back empty', (r) => r.resolve({ facelets: '', alg: '' })]]) {
+    const w = world();
+    void w.requests.request();
+    await settle();
+    w.startClock();
+    answer(w.out[0]);
+    await settle();
+    assert.equal(w.log.some(([what]) => what === 'failed'), false,
+      `a roll that ${how} under a running solve was said where the solve's own line is`);
+    assert.equal(w.log.filter(([what]) => what === 'held').length, 1, `a roll that ${how} under a running solve ended in silence`);
+  }
+  const threw = world();
+  void threw.requests.request();
+  await settle();
+  threw.startClock();
+  threw.out[0].reject(new Error('gave up (test)'));
+  await settle();
+  assert.deepEqual(threw.log, [['held', 'gave up (test)']], 'and what went wrong is handed on, to be logged');
+});
+
+test('a solver that lands while a solve is being timed ends the wait it announced', async () => {
+  const w = world({ ready: false });
+  void w.requests.request();
+  w.startClock();
+  await settle();
+  await settle();
+  assert.equal(w.out.length, 0, 'precondition: nothing was rolled under the solve');
+  assert.deepEqual(w.log, [['waiting'], ['held', null]],
+    'the screen was told a scramble was being worked out, and never told that it no longer was');
 });
 
 test('a solver still loading is waited for and then rolled from; one that never loads is said about the app', async () => {
@@ -167,6 +207,16 @@ test('the Timer rolls through these requests, and calls them off with the screen
   assert.match(built, /\bpark: parkRoll,/);
   assert.match(blockAt(built, 'onLoadFailed: () =>'), /solver did not load/,
     'a solver that never loads must be said about the app, not the cube');
+  // The two ends a solve can be running under that no case here can drive through the real app: a
+  // solver that fails to load, and a roll that fails. Neither may speak on the status line then — it
+  // is the one that says how to stop the clock (found by audit, 2026-09-15).
+  assert.match(blockAt(built, 'onLoadFailed: () =>'), /if \(!running\) say\(/,
+    'a solver that failed to load was said over the line a running solve owns');
+  assert.doesNotMatch(blockAt(built, 'onHeld: (err) =>'), /\bsay\(/,
+    'a press held under a running solve spoke on the line that says how to stop it');
+  // And a failed roll ends the "working out a scramble…" its wait put up, as a held one does.
+  assert.match(blockAt(built, 'onFailed: (err) =>'), /scrambleLineAtRest\(\)/,
+    'a failed roll left the scramble line saying a search was still out');
   assert.match(blockAt(timer, 'hooks.cleanup = () =>'), /requests\.dispose\(\)/,
     'leaving the Timer leaves its roll running');
 });

@@ -724,6 +724,43 @@ test('a finished solve is said on the status line, not only painted on the clock
   });
 });
 
+// A press of New scramble under a running solve rolls nothing — the scramble on screen is the one
+// the time is filed under — and it used to do exactly that in silence: no roll, no word, a button
+// that looked pressable and was not (found by audit, 2026-09-15).
+test('New scramble cannot be pressed while a solve is being timed, and can again once it stops', async () => {
+  await go('timer');
+  try {
+    assert.equal($('#newScr').disabled, false, 'precondition: New scramble is offered on an idle Timer');
+    $('#clock').click();
+    await tick();
+    assert.equal($('#newScr').disabled, true,
+      'New scramble was offered under a running solve, where a press does nothing and says nothing');
+    $('#clock').click();
+    await tick();
+    assert.equal($('#newScr').disabled, false, 'New scramble stayed unavailable after the solve stopped');
+  } finally { await stopClockIfRunning(); }
+});
+
+test('a cube-started solve takes New scramble away too, and Space still stops it from where the keyboard was', async () => {
+  await onTrustedTimer(async (target) => {
+    $('#newScr').focus(); // the keyboard was on New scramble when the cube started the clock
+    win.cubusFeed.facelets(target, 2);
+    await tick();
+    win.cubusFeed.move({ notation: 'R', serial: 3, cubeTimestamp: 1000, timestamp: Date.now() });
+    await tick();
+    assert.equal($('#clock').getAttribute('aria-label'), 'Stop the timer', 'precondition: the cube started the clock');
+    assert.equal($('#newScr').disabled, true, 'New scramble was offered under a solve the cube started');
+
+    win.cubusFeed.disconnect(); // trust lapses, and the line hands the stop to Space
+    await tick();
+    assert.match($('#timerHint').textContent, /press space to stop/, 'precondition: the line says Space stops it');
+    pressSpace();
+    await tick();
+    assert.equal($('#clock').getAttribute('aria-label'), 'Start the timer',
+      'the line says Space stops the clock, and Space went to a button that cannot be pressed');
+  });
+});
+
 test('two quick presses of New scramble put exactly one scramble in play', async () => {
   await go('timer');
   const scr = $('#scr');

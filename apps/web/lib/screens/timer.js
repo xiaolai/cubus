@@ -45,9 +45,16 @@ SCREENS.timer = () => {
        *  result, a warning or a running solve's line promises nothing, and is left standing. */
       let promising = false;
       const say = (text) => { if (hint) hint.textContent = text; promising = false; };
-      /** What pressing the clock will do next. Kept in step with `running` in one place, so the
-       *  name a screen reader announces cannot describe the opposite of what the press does. */
-      const nameClock = () => clock.setAttribute('aria-label', running ? t('Stop the timer') : t('Start the timer'));
+      const newScr = $('#newScr', root);
+      /** What pressing the clock will do next, and whether New scramble can be pressed at all. Kept
+       *  in step with `running` in one place, so the name a screen reader announces cannot describe
+       *  the opposite of what the press does. New scramble is unavailable during a solve because a
+       *  press there rolls nothing — the scramble on screen is the one the time is filed under — and
+       *  an enabled button that did nothing and said nothing was the lie (found by audit, 2026-09-15). */
+      const showRunning = () => {
+        clock.setAttribute('aria-label', running ? t('Stop the timer') : t('Start the timer'));
+        newScr.disabled = running;
+      };
 
       // ---- cube-driven timing (PRD phase 4) ------------------------------------------------
       // The arrangement the current scramble produces — what the auto timer arms on: the one
@@ -99,6 +106,14 @@ SCREENS.timer = () => {
 
       warmSolver();      // New scramble is one press away here; see cubeScreen's mount
       schedulePreroll(); // and it should never be the press that waits for a search
+      /** Whether the scramble line shows a scramble this screen put in play, rather than a sentence. */
+      let showingScramble = false;
+      /** The scramble line once no search is out for it: a scramble on it stays, and a line showing
+       *  none goes back to the prompt. "working out a scramble…" stood through and after a solve
+       *  with no search out, because nothing ever took it back (found by audit, 2026-09-15). */
+      const scrambleLineAtRest = () => {
+        if (!showingScramble) $('#scr', root).textContent = t('press New scramble');
+      };
       /** Put a roll in play. The CALLER puts it in play, so a roll that arrives at a bad moment
        *  changes nothing the solve history is recorded against. */
       const commitRoll = (rolled) => {
@@ -107,6 +122,7 @@ SCREENS.timer = () => {
         auto.reset();
         untimeable = false;
         $('#scr', root).textContent = rolled.alg;
+        showingScramble = true;
         // Said on EVERY roll that lands: the line described the attempt before this one, and a
         // failure sentence beside a fresh scramble is a lie (found by audit, 2026-09-13).
         sayIdle();
@@ -129,7 +145,10 @@ SCREENS.timer = () => {
         // audit, 2026-09-04).
         onLoadFailed: () => {
           $('#scr', root).textContent = t('the solver did not load — reload the app');
-          say(t('Scrambles need the solver, and it did not load. Reloading the app is the fix; the clock below still times by hand.'));
+          showingScramble = false;
+          // Not over a running solve: that line says how to stop the clock, and the scramble line
+          // above has already said what went wrong.
+          if (!running) say(t('Scrambles need the solver, and it did not load. Reloading the app is the fix; the clock below still times by hand.'));
         },
         onRolled: commitRoll,
         // A roll that THREW says what an empty one says: there is no scramble, and the button is
@@ -137,7 +156,15 @@ SCREENS.timer = () => {
         // record a solve against, and blanking it would lose that too.
         onFailed: (err) => {
           if (err) console.error('scramble could not be rolled', err);
+          scrambleLineAtRest();
           say(t('A scramble could not be worked out — press New scramble to try again.'));
+        },
+        // A solve is being timed, and the press shows nothing under it: refused, parked, or failed.
+        // The status line is the solve's, so nothing is said there; the scramble line stops saying
+        // that a search is out. A roll kept for the next press, or a retry, is what that press gets.
+        onHeld: (err) => {
+          if (err) console.error('scramble could not be rolled', err);
+          scrambleLineAtRest();
         },
       });
       /** Record a finished solve, and say so when the browser refused to keep it.
@@ -157,7 +184,7 @@ SCREENS.timer = () => {
         running = false;
         cancelAnimationFrame(raf);
         clock.style.color = 'var(--ink)';
-        nameClock();
+        showRunning();
         byCube = false;
       };
       /** A finished solve, said. The clock's own text is a button's content, which a screen reader
@@ -188,7 +215,7 @@ SCREENS.timer = () => {
         running = true;
         t0 = performance.now();
         clock.style.color = 'var(--accent)';
-        nameClock();
+        showRunning();
         say(message);
         tick();
       };
@@ -236,8 +263,8 @@ SCREENS.timer = () => {
         renderLast();
       };
       clock.onclick = toggle;
-      nameClock();
-      $('#newScr', root).onclick = () => requests.request();
+      showRunning();
+      newScr.onclick = () => requests.request();
       // escHtml: solve times come from localStorage, which is untrusted input, and they were
       // going into innerHTML raw — a stored-XSS hole reachable by anything that can write to the
       // origin's storage.
@@ -296,7 +323,9 @@ SCREENS.timer = () => {
         // clock from here — cancelled, so that button is not pressed a second time.
         const on = document.activeElement;
         const control = on && on !== document.body && on.closest?.('button, a, input, select, textarea, [contenteditable]');
-        if (control && control !== clicked) return;
+        // A DISABLED control has no press of its own to protect: New scramble is taken away when a
+        // solve starts, and a keyboard left on it would otherwise lose the Space that stops it.
+        if (control && control !== clicked && !control.disabled) return;
         e.preventDefault();
         toggle();
       };

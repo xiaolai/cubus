@@ -15,12 +15,13 @@
  *   nobody can use for the next press; `ready()`, whether the solver has loaded, and `load()`,
  *   which loads it and answers whether it did; `live()`, whether the screen that asked is still the
  *   one on show; `busy()`, whether a solve is being timed; and what the screen says —
- *   `onWaiting()`, `onLoadFailed()`, `onRolled(rolled)`, and `onFailed(err)`, with `err` null for
- *   a roll that came back empty.
+ *   `onWaiting()`, `onLoadFailed()`, `onRolled(rolled)`, `onFailed(err)`, with `err` null for
+ *   a roll that came back empty, and `onHeld(err)`, for a press that ends showing nothing because a
+ *   solve is being timed: refused at the door, its roll parked, or its roll failed (`err`, else null).
  * @returns {object} `request()`, a press; `dispose()`, which calls off the roll that is out.
  */
 export function createScrambleRequests({
-  roll, park, ready, load, live, busy, onWaiting, onLoadFailed, onRolled, onFailed,
+  roll, park, ready, load, live, busy, onWaiting, onLoadFailed, onRolled, onFailed, onHeld,
 }) {
   /** Which press the screen is still waiting for. */
   let seq = 0;
@@ -31,7 +32,13 @@ export function createScrambleRequests({
   async function request() {
     // The scramble on screen is the one a RUNNING solve is recorded against: rolling a new one
     // mid-solve would file the time under a scramble the solver never saw.
-    if (busy()) return;
+    //
+    // Every end a running solve causes is `onHeld`, never silence and never `onFailed`: silence left
+    // "working out a scramble…" standing through and after the solve with no search out, and
+    // `onFailed` speaks on the status line, over the words that say how to stop the clock (found by
+    // audit, 2026-09-15). The Timer offers no press during a solve, so this door is reached by the
+    // retry a solver makes when it lands under one.
+    if (busy()) { onHeld(null); return; }
     const mine = ++seq;
     // A newer press calls the older search off, rather than leave the pool working for nobody.
     callOff();
@@ -52,6 +59,7 @@ export function createScrambleRequests({
       rolled = await roll({ signal: controller.signal });
     } catch (err) {
       if (mine !== seq || !live()) return;
+      if (busy()) { onHeld(err); return; }
       onFailed(err);
       return;
     } finally {
@@ -59,7 +67,8 @@ export function createScrambleRequests({
     }
     // Re-checked after the await: seconds can pass inside a roll, long enough for a newer press, a
     // screen left or a solve started. A cube rolled anyway is parked for the next press.
-    if (mine !== seq || !live() || busy()) { park(rolled); return; }
+    if (mine !== seq || !live()) { park(rolled); return; }
+    if (busy()) { park(rolled); onHeld(null); return; }
     // An EMPTY roll says what a roll that threw says, and changes nothing: nothing is put in play
     // that the screen would not show.
     if (!rolled?.alg) { onFailed(null); return; }
