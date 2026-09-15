@@ -12851,6 +12851,26 @@ var CubeTexture = class extends Texture {
     this.image = value;
   }
 };
+var CanvasTexture = class extends Texture {
+  /**
+   * Constructs a new texture.
+   *
+   * @param {HTMLCanvasElement} [canvas] - The HTML canvas element.
+   * @param {number} [mapping=Texture.DEFAULT_MAPPING] - The texture mapping.
+   * @param {number} [wrapS=ClampToEdgeWrapping] - The wrapS value.
+   * @param {number} [wrapT=ClampToEdgeWrapping] - The wrapT value.
+   * @param {number} [magFilter=LinearFilter] - The mag filter value.
+   * @param {number} [minFilter=LinearMipmapLinearFilter] - The min filter value.
+   * @param {number} [format=RGBAFormat] - The texture format.
+   * @param {number} [type=UnsignedByteType] - The texture type.
+   * @param {number} [anisotropy=Texture.DEFAULT_ANISOTROPY] - The anisotropy value.
+   */
+  constructor(canvas, mapping, wrapS, wrapT, magFilter, minFilter, format, type, anisotropy) {
+    super(canvas, mapping, wrapS, wrapT, magFilter, minFilter, format, type, anisotropy);
+    this.isCanvasTexture = true;
+    this.needsUpdate = true;
+  }
+};
 var DepthTexture = class extends Texture {
   /**
    * Constructs a new depth texture.
@@ -30690,6 +30710,33 @@ var FOCUS_MID = 0.44;
 var HL_PERIOD = 1200;
 var ARROW_COLOUR = 2826520;
 var ARROW_OPACITY = 0.9;
+var LABEL_LIFT = 1.54;
+var LABEL_TURN = Object.freeze({
+  F: [0, 0, 0],
+  B: [0, Math.PI, 0],
+  R: [0, Math.PI / 2, 0],
+  L: [0, -Math.PI / 2, 0],
+  U: [-Math.PI / 2, 0, 0],
+  D: [Math.PI / 2, 0, 0]
+});
+function letterTexture(letter) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 128;
+  canvas.height = 128;
+  const g = canvas.getContext("2d");
+  g.font = '700 92px system-ui, -apple-system, "Segoe UI", sans-serif';
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  g.lineJoin = "round";
+  g.lineWidth = 14;
+  g.strokeStyle = "rgba(255,250,240,0.92)";
+  g.strokeText(letter, 64, 70);
+  g.fillStyle = "#2b2118";
+  g.fillText(letter, 64, 70);
+  const texture = new CanvasTexture(canvas);
+  texture.colorSpace = SRGBColorSpace;
+  return texture;
+}
 var AXIS_VECTOR = Object.freeze({ x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] });
 var GHOST_OPACITY = 0.45;
 var GHOST_HL_PEAK = 0.8;
@@ -30741,7 +30788,8 @@ var REACTIONS = Object.freeze({
     el._readFocus();
     el._paint();
   },
-  arrow: (el) => el._placeArrow()
+  arrow: (el) => el._placeArrow(),
+  labels: (el) => el._placeLabels()
 });
 var CubusCube = class _CubusCube extends HTMLElement {
   // Kebab is canonical, but a host that writes camelCase props as attributes lands
@@ -30774,7 +30822,8 @@ var CubusCube = class _CubusCube extends HTMLElement {
     "back-view",
     "backview",
     "orbit",
-    "arrow"
+    "arrow",
+    "labels"
   ];
   /**
    * The events this element dispatches — part of the contract, so part of the manifest.
@@ -30965,6 +31014,10 @@ var CubusCube = class _CubusCube extends HTMLElement {
     // No arrow. A move token (`R'`, `M`, `Rw2`, `y`) draws one for that turn; `next` draws the move of
     // `alg` the cube is about to make, and follows the cursor (plan item 4.2).
     arrow: "none",
+    // No letters. `position` writes U R F D L B on the six places a face can be — the face on top is U
+    // whichever colour it is, which is what a notation lesson teaches; `face` writes each face's own letter
+    // on its centre, and the letter travels with the centre through regrips and slices (plan item 4.3).
+    labels: "none",
     palette: "muted",
     // Western unless a host says otherwise: the arrangement PALETTES is written in, and the
     // one the app assumes until a scan proves the cube is the other kind.
@@ -31228,6 +31281,53 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._arrow.userData = { axis: axis.toArray(), start: points[0].toArray(), end: end.toArray(), angle: move.angle, layers: [...layers] };
     this._placeArrowFrame();
   }
+  /**
+   * Write the face letters `labels` asks for, or none.
+   *
+   * TWO SENTENCES, as with every other name on the cube. `position`: the letter of the PLACE — the six
+   * letters stay where they are in the child's view while the cube turns under them, so after a regrip the
+   * face on top is still called U. They hang off the scene, not the cube. `face`: the letter of the FACE — each
+   * centre carries its own, and the letter goes where the centre goes. They hang off the centre cubies.
+   *
+   * Drawn as flat letters just above the stickers, from a canvas: system fonts only, as the whole app is.
+   */
+  _placeLabels() {
+    if (!this.cubies) return;
+    for (const mesh of this._labelMeshes ?? []) {
+      mesh.parent?.remove(mesh);
+      mesh.geometry.dispose();
+      mesh.material.map?.dispose();
+      mesh.material.dispose();
+    }
+    this._labelMeshes = [];
+    const mode = String(this._attrs.labels ?? "none").trim();
+    this._dirty = true;
+    if (mode === "none" || mode === "") return;
+    if (mode !== "position" && mode !== "face") {
+      console.warn(`<cubus-cube> refusing labels \u2014 "${mode}" is not none, position or face`);
+      return;
+    }
+    const scene = this.root.parent;
+    for (const f of FACES) {
+      const mesh = new Mesh(new PlaneGeometry(0.6, 0.6), new MeshBasicMaterial({
+        map: letterTexture(f.key),
+        transparent: true,
+        depthWrite: false
+      }));
+      mesh.renderOrder = 4;
+      mesh.userData = { label: f.key, mode };
+      mesh.rotation.set(...LABEL_TURN[f.key]);
+      if (mode === "position") {
+        mesh.position.set(f.n[0] * LABEL_LIFT, f.n[1] * LABEL_LIFT, f.n[2] * LABEL_LIFT);
+        scene.add(mesh);
+      } else {
+        const centre = this.cubies.find((c) => c.children.some((m) => m.userData?.face === f.key && !m.userData.n && m.userData.home.every((v, i) => v === f.n[i])));
+        mesh.position.set(f.n[0] * (LABEL_LIFT - 1), f.n[1] * (LABEL_LIFT - 1), f.n[2] * (LABEL_LIFT - 1));
+        centre.add(mesh);
+      }
+      this._labelMeshes.push(mesh);
+    }
+  }
   /** Hold the arrow in the sequence's frame, so the next move is drawn about the axis it will turn. */
   _placeArrowFrame() {
     if (!this._arrow) return;
@@ -31250,6 +31350,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._ghostVisible();
     this.showTurn(this._attrs.orientation, this._attrs.orientation, 1);
     this.reset();
+    this._placeLabels();
   }
   /** The resize and visibility observers, and the frame loop itself. */
   _buildLoop() {
@@ -31396,7 +31497,10 @@ var CubusCube = class _CubusCube extends HTMLElement {
     const owned = /* @__PURE__ */ new Set();
     this.scene?.traverse((o) => {
       if (o.geometry) owned.add(o.geometry);
-      for (const m of [o.material].flat()) if (m) owned.add(m);
+      for (const m of [o.material].flat()) if (m) {
+        owned.add(m);
+        if (m.map) owned.add(m.map);
+      }
     });
     for (const r of owned) r.dispose();
     this.renderer?.dispose();

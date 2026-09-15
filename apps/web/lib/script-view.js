@@ -200,6 +200,7 @@ export function viewAtPosition(built, position) {
   for (const [key, cue] of Object.entries(at.cues)) {
     if (key === 'hl') cues[key] = elementSelector(built, cue);
     else if (key === 'focus') cues[key] = boundFocus(built, cue);
+    else if (key === 'arrow') cues[key] = elementArrow(built, cue);
     else cues[key] = cue.value;
   }
   return Object.freeze({
@@ -243,6 +244,16 @@ function elementSelector(built, cue) {
   // An answer nothing can be lit for is `none`, never an empty string: the element reads an empty
   // selector as "no change", so a cue whose answer is empty would leave the last one glowing.
   return named.length ? convertSelectors(named.join(','), hold) : 'none';
+}
+
+/**
+ * An `arrow` cue as the element reads one: the child's letter turned into the cube's own token, in the hold
+ * where the cue was written — the same reading every move of a script gets. `next` is the element's own.
+ */
+function elementArrow(built, cue) {
+  if (cue.value === 'next') return 'next';
+  const where = built.positions[cue.at];
+  return run(parse(cue.value), holdPair(where.hold), SOLVED).drawn[0];
 }
 
 /**
