@@ -426,18 +426,44 @@ for (const fixture of FIXTURES) {
         const $ = (s) => document.querySelector(s);
         const card = $('.state-card');
         const cols = $('.cols');
-        // Hit-tested at each control's centre WITHOUT scrolling anything. Scrolling a clipped stage
-        // to reach one control moves every other box, and the measurement stops meaning anything —
-        // an exploratory probe that scrolled reported controls covered by the stage itself.
+        // Hit-tested at each control's centre WITHOUT scrolling the page or the stage. Scrolling a
+        // clipped stage to reach one control moves every other box, and the measurement stops
+        // meaning anything — an exploratory probe that scrolled reported controls covered by the
+        // stage itself. The ONE scroll allowed is the target strip's own, sideways: that is how a
+        // strip is used, it moves nothing but its buttons, and the boxes around it are compared
+        // before and after to prove it.
+        const strip = $('#stageTargetRow');
+        const stageButtons = [...strip.querySelectorAll('[data-stage]')];
+        const chosen = strip.querySelector('.on');
+        const stripBox = strip.getBoundingClientRect();
+        const chosenBox = chosen.getBoundingClientRect();
+        const chosenInView = chosenBox.left >= stripBox.left - 1 && chosenBox.right <= stripBox.right + 1;
+        const oneLine = new Set(stageButtons.map((el) => Math.round(el.getBoundingClientRect().top) + 0)).size === 1;
+        const around = () => JSON.stringify([rect(card), rect($('.cols .sheet')), rect($('.cols > .primary'))]);
+        const aroundBefore = around();
+        const scrolledFrom = strip.scrollLeft;
         const covered = [...document.querySelectorAll('[data-stage], #prevBtn, #repeatBtn, #nextBtn, #playBtn, #stepLbl')]
           .filter((el) => el.getBoundingClientRect().width > 0)
           .map((el) => {
+            if (strip.contains(el)) {
+              const sb = strip.getBoundingClientRect();
+              const eb = el.getBoundingClientRect();
+              if (eb.left < sb.left) strip.scrollLeft -= sb.left - eb.left;
+              else if (eb.right > sb.right) strip.scrollLeft += eb.right - sb.right;
+            }
             const b = el.getBoundingClientRect();
             const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
             return hit && hit !== el && !el.contains(hit) ? (el.dataset.stage || el.id) + ' under ' + hit.className : null;
           })
           .filter(Boolean);
+        const aroundAfter = around();
+        strip.scrollLeft = scrolledFrom;
+        const list = $('#solList');
+        const chip = list.querySelector('.chip-m');
         return {
+          chosenInView, oneLine, stripMovedOthers: aroundBefore !== aroundAfter,
+          list: { client: list.clientHeight, scroll: list.scrollHeight, chip: chip ? chip.getBoundingClientRect().height : 0,
+            padding: parseFloat(getComputedStyle(list).paddingTop) + parseFloat(getComputedStyle(list).paddingBottom) },
           netHidden: $('#viewNet').hidden, aimShown: !$('#stageAim').hidden, heading: $('.state-h').textContent,
           state: rect(card), stateScroll: card.scrollHeight, stateClient: card.clientHeight,
           aimNet: rect($('#stageAimNet')), primary: rect($('.cols > .primary')), sheet: rect($('.cols .sheet')),
@@ -465,6 +491,18 @@ for (const fixture of FIXTURES) {
       // composition working (the iPhone SE's stage buttons, 2026-09-13). The card itself is held by
       // the two assertions above on every fixture.
       if (!m.asideBox) assert.deepEqual(m.covered, [], 'nothing is drawn over a stage button or the transport');
+      // THE MOVES GET ROOM (2026-09-15). The target buttons used to wrap into three rows and take
+      // the solution card's height: the move list — the task on this screen — was 15px of 192 on
+      // the desktop landscape window and 35px of 108 on the portrait one, and nothing here noticed,
+      // because nothing measured the list. One whole row of moves is the floor: below it the
+      // screen is not showing what it is for. And the target row is one line on every fixture,
+      // whatever the font, with the chosen target in view without anyone scrolling to it.
+      assert.ok(m.oneLine, 'the stage targets are one line');
+      assert.ok(m.chosenInView, 'the chosen target is in view without scrolling the strip');
+      assert.equal(m.stripMovedOthers, false, 'scrolling the target strip moved a box outside it');
+      assert.ok(m.list.chip > 0, 'precondition: the move list holds move chips');
+      const oneRow = Math.min(m.list.scroll, m.list.chip + m.list.padding);
+      assert.ok(m.list.client >= oneRow - 1, `the move list shows ${m.list.client}px — less than one row of moves (${oneRow}px)`);
     } finally {
       await context.close();
     }

@@ -6,6 +6,7 @@ import { CUBE_VIEW } from '../cube-view.js';
 import { solveByMethod } from '../method-solver.js';
 import { t } from '../i18n.js';
 import { OFFERED_TARGETS } from '../stage-targets.js';
+import { oneLineStrip } from '../scroll-strip.js';
 // Everything one cube screen's walk owns, from the load to the smart cube following it — the screen
 // keeps its composition and hands the walk the parts of it the walk writes to.
 import { createWalkSession } from '../walk-session.js';
@@ -253,7 +254,7 @@ const cubeScreen = (screenMode) => {
              (dev-docs/solve-to-state-plan.md §6). The default stays "solved", so nothing changes
              for somebody who only wants their cube solved. Changing it is a WALK REPLACEMENT and
              goes through retarget(), which is exactly what that path is for. -->
-        <div class="stage-row" id="stageTargetRow" role="group" aria-label="${escHtml(t('Where to take this cube'))}" style="padding:2px 18px 6px">
+        <div class="stage-row one-line" id="stageTargetRow" role="group" aria-label="${escHtml(t('Where to take this cube'))}">
           ${OFFERED_TARGETS.map((tg) => `<button class="pill${state.stageTarget === tg.id ? ' on' : ''}" data-stage="${escHtml(tg.id)}" aria-pressed="${state.stageTarget === tg.id}">${escHtml(tg.id === 'solved' ? t('Solved') : tg.name)}</button>`).join('')}
         </div>
         <div class="wrap-row" id="walkKindRow" role="group" aria-label="${escHtml(t('Solution'))} / ${escHtml(t('Lesson'))}" style="gap:6px;padding:2px 18px 6px">
@@ -381,6 +382,11 @@ const cubeScreen = (screenMode) => {
       };
 
       if (!walking) return;
+
+      // The target row is one sideways-scrolling line (lib/scroll-strip.js); it exists only on a
+      // walk, and not on the Scramble screen.
+      const targetRow = root.querySelector('#stageTargetRow');
+      if (targetRow) oneLineStrip(targetRow, { signal });
 
       // ---- the walk -----------------------------------------------------------------------------
       //
