@@ -7,8 +7,11 @@
 // names what to do about it — and it has been keeping that rule with the only instrument we ever
 // gave it, which is a grep over a bundle. This is our half.
 //
-// ADDING a name to `cube-kit.js` needs no change here. REMOVING or renaming one fails, which is
-// the whole point: the names are a promise, and this is where the promise is written down.
+// The names are a promise, and this is where the promise is written down. REMOVING or renaming one
+// fails. And since 2026-09-15 ADDING one fails too until it is written into `PROMISED` and its module
+// is registered below (dev-docs/adr/0005-the-renderer-plays-scripts-methods-choose.md, decision 4): the
+// rule used to be "adding is free", and measured, that left a new export a consumer could adopt with
+// nothing to stop it being removed again.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -48,30 +51,59 @@ const PROMISED = [
   'numberAt', 'resolveSpanning', 'segmentAt', 'viewAt',
 ];
 
+/** The modules whose names the kit re-exports. A new owning module is added here with its first name. */
+const SOURCES = [pieces, frame, highlight, moves, notation, questions, orientation, view, format, schedule, player];
+
+/** Promised names the kit does not export. */
+export const missingFrom = (exports, promised) => promised.filter((n) => !Object.hasOwn(exports, n)).sort();
+
+/** Exported names nobody promised. */
+export const unpromised = (exports, promised) => Object.keys(exports).filter((n) => !promised.includes(n)).sort();
+
+/** Promised names that belong to no registered module, and names re-exported as something other than the original. */
+export function unowned(exports, promised, sources) {
+  const noOwner = [];
+  const copies = [];
+  for (const name of promised) {
+    const owner = sources.find((m) => Object.hasOwn(m, name));
+    if (!owner) { noOwner.push(name); continue; }
+    if (exports[name] !== owner[name]) copies.push(name);
+  }
+  return { noOwner, copies };
+}
+
 test('every promised name is exported, and none has quietly gone', () => {
-  const actual = Object.keys(kit).sort();
-  const missing = PROMISED.filter((n) => !actual.includes(n));
-  assert.deepEqual(missing, [],
+  assert.deepEqual(missingFrom(kit, PROMISED), [],
     'these names are promised to cubus-im and are no longer exported — renaming one breaks its build');
-  // Not `deepEqual` against the whole list: adding an export is free and should not need a test
-  // edit. Only disappearance is a breaking change.
   for (const name of PROMISED) {
     assert.notEqual(kit[name], undefined, `${name} is exported as undefined`);
   }
+});
+
+test('every exported name is promised — a name cannot be adopted before it is protected', () => {
+  assert.deepEqual(unpromised(kit, PROMISED), [],
+    'these names are exported and not in PROMISED — add each one, and register its module below');
 });
 
 test('the barrel re-exports the real thing, not a copy of it', () => {
   // EVERY promised name, not a hand-picked nine. The earlier version checked thirteen, so
   // substituting `{}` for `CUBE_VIEW_ATTRS` — a public export — passed the whole file, because the
   // assertions that used it read it from the source module directly.
-  const sources = [pieces, frame, highlight, moves, notation, questions, orientation, view, format, schedule, player];
-  const unchecked = [];
-  for (const name of PROMISED) {
-    const owner = sources.find((m) => name in m);
-    if (!owner) { unchecked.push(name); continue; }
-    assert.equal(kit[name], owner[name], `cube-kit's ${name} is not the one lib/ exports`);
-  }
-  assert.deepEqual(unchecked, [], 'these promised names belong to no module this test imports');
+  const { noOwner, copies } = unowned(kit, PROMISED, SOURCES);
+  assert.deepEqual(noOwner, [], 'these promised names belong to no module this test imports');
+  assert.deepEqual(copies, [], 'cube-kit re-exports these as something other than what lib/ exports');
+});
+
+test('the three rules can fail: an unpromised export, a promise with no registered module, a copy', () => {
+  const surprise = { ...kit, surprise: () => 1 };
+  assert.deepEqual(unpromised(surprise, PROMISED), ['surprise'], 'an added, unpromised export passed');
+  const promised = [...PROMISED, 'surprise'];
+  assert.deepEqual(unpromised(surprise, promised), []);
+  assert.deepEqual(unowned(surprise, promised, SOURCES).noOwner, ['surprise'], 'a promise with no registered module passed');
+  const owner = { surprise: surprise.surprise };
+  assert.deepEqual(unowned(surprise, promised, [...SOURCES, owner]), { noOwner: [], copies: [] }, 'promised and registered, it passes');
+  assert.deepEqual(unowned({ ...surprise, applyAlg: () => 0 }, promised, [...SOURCES, owner]).copies, ['applyAlg']);
+  assert.deepEqual(missingFrom({}, ['applyAlg']), ['applyAlg']);
 });
 
 // The numbers cubus-im's `pipeline/paths.py::cube_preset()` reads. It used to scrape them out of
