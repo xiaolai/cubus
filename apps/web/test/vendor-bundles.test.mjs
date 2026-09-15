@@ -43,6 +43,10 @@ const BUNDLES = [
       // this repository publishes as its API is now IN the bundle it draws with, which is the
       // whole point of A1: one implementation, not two.
       '../../../packages/cubus-cube/src/pose.js', '../lib/cube-pieces.js',
+      // The notation it reads `alg` through, and the interpreter whose face-turn arithmetic the pose
+      // runs (dev-docs/tutorial-capability-plan.md items 2.1 and 2.2): the model the tutorials are
+      // tested against is the one the element draws with.
+      '../lib/cube-notation.js', '../lib/cube-moves.js',
     ],
     // The renderer imports three of cube-orientation.js's exports (isFace, orientationMatrix,
     // sameAxis); esbuild drops the rest, and the messages inside them. Same delete-when-used
@@ -56,10 +60,17 @@ const BUNDLES = [
       'CENTERS', 'orientationPerm', 'orientationRelabel', 'permCache', 'turnFacelets',
       'Y_FACES', 'allSolved', 'applyAlg', 'cornerSlot', 'cornerSolved', 'edgeSlot', 'edgeSolved',
       'fromCube', 'moveCount', 'movesOf', 'rotateAlg', 'rotateState',
+      // From the interpreter the element takes the face-turn arithmetic of an identity-frame move
+      // (`faceTurnsOf`, `turnPieces`) and none of the HOLD: reading a child's letters in a hold is the
+      // host's job, and the element is handed identity tokens (ADR 0004 decision 7). From the notation it
+      // takes `readToken` and not the formatter.
+      'SELECTOR', 'applyIdentity', 'checkHold', 'convertSelectors', 'heldFace', 'holdOfRows',
+      'identityFace', 'toIdentity', 'tokenOf', 'turnVector', 'formatMoves',
     ],
     treeShakenMessages: [
       'cube-orientation: sticker', 'cube-orientation: rotation is not a bijection',
       'relabelling is not a bijection', 'cube-orientation: expected 54 facelets, got',
+      'cube-moves: a hold is [up, front]', 'cube-moves: no token for axis', 'quarter turns is not an amount',
     ],
   },
   {
