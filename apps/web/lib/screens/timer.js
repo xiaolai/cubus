@@ -9,7 +9,7 @@ import { $, escHtml, state } from '../app-state.js';
 import { hooks } from '../screen-slots.js';
 import { loadSolver, solverReady, warmSolver } from '../solver-service.js';
 import { conn } from '../live-session.js';
-import { chainTrusted } from '../cube-trust-state.js';
+import { chainTrusted, cubeTracking } from '../cube-trust-state.js';
 import {
   dropLastSolve, parkRoll, pushSolve, putInPlay, randomScramble, recentSolves, schedulePreroll, takeOutOfPlay,
 } from '../scramble-roll.js';
@@ -40,7 +40,11 @@ SCREENS.timer = () => {
       const tick = () => { if (!running) return; clock.textContent = fmt(performance.now() - t0); raf = requestAnimationFrame(tick); };
       const hint = $('#timerHint', root);
       const MANUAL = t('Click or hold space to start');
-      const say = (text) => { if (hint) hint.textContent = text; };
+      /** Whether the line is promising something of the cube — that the clock starts itself, or
+       *  that a turn starts it now — which is taken back the moment the cube cannot keep it. A
+       *  result, a warning or a running solve's line promises nothing, and is left standing. */
+      let promising = false;
+      const say = (text) => { if (hint) hint.textContent = text; promising = false; };
       /** What pressing the clock will do next. Kept in step with `running` in one place, so the
        *  name a screen reader announces cannot describe the opposite of what the press does. */
       const nameClock = () => clock.setAttribute('aria-label', running ? t('Stop the timer') : t('Start the timer'));
@@ -71,6 +75,21 @@ SCREENS.timer = () => {
       // timing to decline — `conn` and `state.connected` move together — and refusing on a fact
       // nobody asserted would be inventing the answer rather than asking for it.
       const cubeCanTime = () => !conn || conn.numbersMoves();
+      /**
+       * What the line says of a clock that is not running: what the cube can do for it NOW. Armed,
+       * a turn starts it; a tracking cube with a scramble to reach starts it on reaching it;
+       * otherwise it is the hand's clock. Said wherever that can change — a roll landing, the cube
+       * arming, an arming lapsing — because the line used to be corrected only when trust lapsed
+       * under a RUNNING solve, and "Ready" or "the clock starts itself" stood over a cube that
+       * could no longer do either (found by audit, 2026-09-15). Tracking, not merely a trusted
+       * chain: a camera scan is trusted knowledge of a cube nobody may be connected to.
+       */
+      const sayIdle = () => {
+        if (auto.state === 'armed') say(t('Ready — turn to start'));
+        else if (scrTarget && !untimeable && cubeTracking()) say(t('Scramble your cube — the clock starts itself'));
+        else { say(MANUAL); return; }
+        promising = true;
+      };
 
       // A lost turn means the span cannot be vouched for, and this is the only path that says so
       // on a cube that does not number its moves — which is three of the brands the app speaks to.
@@ -90,7 +109,7 @@ SCREENS.timer = () => {
         $('#scr', root).textContent = rolled.alg;
         // Said on EVERY roll that lands: the line described the attempt before this one, and a
         // failure sentence beside a fresh scramble is a lie (found by audit, 2026-09-13).
-        say(scrTarget && chainTrusted() ? t('Scramble your cube — the clock starts itself') : MANUAL);
+        sayIdle();
       };
       // A press asks for a scramble, and the newest press is the one shown: an older or abandoned
       // search is called off, and a roll that lands on a running solve is parked for the next
@@ -290,7 +309,11 @@ SCREENS.timer = () => {
       hooks.liveMove = (m) => {
         if (untimeable) return;
         const before = auto.state;
-        if (auto.move(m) === 'running' && before === 'armed' && !running) startFromCube();
+        const now = auto.move(m);
+        if (now === 'running' && before === 'armed' && !running) startFromCube();
+        // An arming that lapsed on this very turn (solve-timer's READY_LAPSE_MS) started nothing,
+        // and "Ready" stood over the untimed solve that followed.
+        else if (before === 'armed' && now === 'idle' && !running) sayIdle();
       };
       hooks.liveUpdate = (f, serial) => {
         if (untimeable) return;
@@ -309,18 +332,24 @@ SCREENS.timer = () => {
             say(t('This cube does not number its turns, so cubus cannot tell a clean solve from one that dropped a turn — it will not time it. Use the clock or the space bar and time it by hand.'));
             return;
           }
-          say(t('Ready — turn to start'));
+          sayIdle();
         }
-        if (before === 'armed' && now === 'idle' && !running) say(t('Scramble your cube — the clock starts itself'));
+        if (before === 'armed' && now === 'idle' && !running) sayIdle();
         if (before === 'running' && now === 'stopped' && byCube) stopFromCube();
       };
 
       // Trust lapsing is not a stop: nothing measured the span, so nothing is recorded. But a clock
       // the cube started can no longer be stopped by it, and the line beside it said the cube would
-      // — so it says how to stop it by hand instead (found by audit, 2026-09-13).
+      // — so it says how to stop it by hand instead (found by audit, 2026-09-13). And a clock that
+      // is not running can no longer be STARTED by it: a line promising that was left standing for
+      // the rest of the visit (found by audit, 2026-09-15).
       hooks.onTrustLost = () => {
         auto.reset();
-        if (!running || !byCube) return;
+        if (!running) {
+          if (promising) say(t('The cube can no longer be vouched for, so it will not start the clock. Click or hold space to start.'));
+          return;
+        }
+        if (!byCube) return;
         byCube = false;
         say(t('The cube can no longer be vouched for, so it will not stop this clock. Click or press space to stop.'));
       };

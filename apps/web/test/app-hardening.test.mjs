@@ -513,6 +513,84 @@ test('a cube reaching the scramble under a hand-started clock does not say the c
   });
 });
 
+// The idle line makes two promises about the cube — "the clock starts itself" and "Ready — turn to
+// start" — and it was corrected only when trust lapsed under a RUNNING solve. Every other way the
+// cube stops being able to keep them left the promise standing (found by audit, 2026-09-15).
+const PROMISE = /starts itself|Ready — turn to start/;
+
+test('a cube whose trust lapses while armed stops saying Ready', async () => {
+  await onTrustedTimer(async (target) => {
+    win.cubusFeed.facelets(target, 2);
+    await tick();
+    assert.equal($('#timerHint').textContent, 'Ready — turn to start', 'precondition: the cube armed the clock');
+
+    win.cubusFeed.disconnect();
+    await tick();
+    assert.doesNotMatch($('#timerHint').textContent, PROMISE,
+      'the line still says a turn will start a clock the cube can no longer start');
+    win.cubusFeed.move({ notation: 'R', serial: 3, cubeTimestamp: 1000, timestamp: Date.now() });
+    await tick();
+    assert.equal($('#clock').getAttribute('aria-label'), 'Start the timer', 'precondition: and a turn does not start it');
+  });
+});
+
+test('a cube whose trust lapses before it is armed stops saying the clock starts itself', async () => {
+  await onTrustedTimer(async () => {
+    assert.match($('#timerHint').textContent, /the clock starts itself/, 'precondition: the rolled scramble promised it');
+
+    win.cubusFeed.disconnect();
+    await tick();
+    assert.doesNotMatch($('#timerHint').textContent, PROMISE,
+      'the line still promises the cube will start a clock it can no longer start, for the rest of the visit');
+  });
+});
+
+test('a turn that comes after the arming has lapsed does not leave Ready on the line', async () => {
+  await onTrustedTimer(async (target) => {
+    win.cubusFeed.facelets(target, 2);
+    await tick();
+    assert.equal($('#timerHint').textContent, 'Ready — turn to start', 'precondition: the cube armed the clock');
+
+    // Past solve-timer's READY_LAPSE_MS: the cube sat at the scramble long enough to be furniture.
+    const perf = globalThis.performance;
+    const own = Object.hasOwn(perf, 'now');
+    const real = perf.now;
+    perf.now = function now() { return real.call(perf) + 11 * 60 * 1000; };
+    try {
+      win.cubusFeed.move({ notation: 'R', serial: 3, cubeTimestamp: 1000, timestamp: Date.now() });
+      await tick();
+    } finally {
+      if (own) perf.now = real; else delete perf.now;
+    }
+    assert.equal($('#clock').getAttribute('aria-label'), 'Start the timer', 'precondition: the lapsed arming did not start the clock');
+    assert.doesNotMatch($('#timerHint').textContent, /Ready/, 'the line says Ready over a turn that started nothing');
+    assert.match($('#timerHint').textContent, /Scramble your cube/, 'and it does not say what would start it now');
+  });
+});
+
+test('with no cube connected, a trusted camera scan does not promise that the clock starts itself', async () => {
+  const { state } = await import('../lib/app.js');
+  const before = { connected: state.connected, trusted: state.cube.trusted, source: state.cube.source };
+  try {
+    // The camera is first-class and most people have no smart cube: a scan is trusted knowledge of
+    // the cube in the hand, and nothing at all is listening to that cube turn.
+    state.connected = false;
+    state.cube.trusted = true;
+    state.cube.source = 'camera';
+    state.cube.staleWhy = '';
+    await go('home');
+    await go('timer');
+    await waitForScramble();
+    assert.equal($('#timerHint').textContent, 'Click or hold space to start',
+      'the line promised a cube nobody is connected to would start the clock');
+  } finally {
+    state.connected = before.connected;
+    state.cube.trusted = before.trusted;
+    state.cube.source = before.source;
+    await go('home');
+  }
+});
+
 test('Space on New scramble presses New scramble, and leaves the clock alone', async () => {
   await go('timer');
   const button = $('#newScr');

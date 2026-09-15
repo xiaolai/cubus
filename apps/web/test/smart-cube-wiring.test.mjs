@@ -590,6 +590,35 @@ test('a cube that numbers no turns is not timed, and the screen says why', async
   state.cube.trusted = false; state.cube.source = 'none';
 });
 
+// A refused session's reports are dropped at the door (onFacelets), so it can never arm the clock —
+// and a camera scan after the refusal makes the chain trusted again without making that cube's
+// reports usable. The line must ask what the indicator asks, not only whether the chain is trusted.
+test('a refused cube does not promise that the clock starts itself, even under a trusted camera scan', async () => {
+  const state = await appState();
+  const conn = fakeConn();
+  feed().useConnection(conn, '11:22:33:44:55:77');
+  await tick();
+  conn.refuse();
+  state.cube.trusted = true;
+  state.cube.source = 'camera';
+  state.cube.staleWhy = '';
+  try {
+    await go('timer');
+    const scr = $('#scr');
+    for (let i = 0; i < 200 && !/^[URFDLB]/.test(scr.textContent || ''); i++) await settle(50);
+    assert.match(scr.textContent, /^[URFDLB]/, 'precondition: a scramble is on screen');
+    assert.doesNotMatch($('#timerHint').textContent, /starts itself/,
+      'the line promised that a cube whose reports are refused would start the clock');
+    feed().facelets(move(SOLVED, scr.textContent), 1);
+    await tick();
+    assert.doesNotMatch($('#timerHint').textContent, /Ready/, 'precondition: and it cannot arm it');
+  } finally {
+    feed().useConnection(null);
+    await tick();
+    state.cube.trusted = false; state.cube.source = 'none';
+  }
+});
+
 // ---- Forget ------------------------------------------------------------------------------------
 
 test('Forget also removes the address the protocol layer cached', async () => {

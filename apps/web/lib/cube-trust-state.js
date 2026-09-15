@@ -24,6 +24,14 @@ import { applyOffset, isIdentity } from './cube-trust.js';
 export const chainTrusted = () =>
   state.cube.trusted && (state.cube.source === 'cube' || state.cube.source === 'camera');
 
+/** Is a connected cube TRACKING: connected, its chain trusted, and its session not refused? What
+ *  the title-bar indicator calls "tracking", and the only state in which that cube's own reports
+ *  drive anything — with no connection nothing reports, and a refused session's reports and turns
+ *  are dropped at the door (cube-reports.js) — so it is what the Timer asks before promising that
+ *  the cube will start its clock. A trusted chain alone is not that: a camera scan is trusted
+ *  knowledge of a cube nobody may be connected to. */
+export const cubeTracking = () => state.connected && chainTrusted() && !cubeRefused();
+
 /** Throw the correction away. NOT called on `gap`: a serial skip means moves were missed, not
  *  that the reference moved — what was lost is the moves in between, not the relationship. */
 export function clearOffset() {
@@ -123,7 +131,7 @@ function paintTrust(el) {
   }
   // The CHAIN's trust, not the subject's: a generated scramble is perfectly known and says nothing
   // about where the connected cube is, and a refused cube is followed by nothing at all.
-  const ok = chainTrusted() && !cubeRefused();
+  const ok = cubeTracking();
   el.classList.toggle('stale', !ok);
   const who = liveCubeLabel();
   // The button's NAME says what it is and where it goes — it is a control, and its name has to
