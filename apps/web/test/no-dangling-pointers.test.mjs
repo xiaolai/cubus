@@ -185,6 +185,33 @@ function packageRootOf(file) {
 
 const ROOTED_SHAPE = /^(?:apps|crates|packages|scripts|ml|dev-docs)\//;
 
+/** Is `path` a repository file, or a directory holding one? Asked of git's list, like the rest. */
+const inRepo = (path) => REPO_FILES.includes(path) || REPO_FILES.some((f) => f.startsWith(`${path}/`));
+
+/**
+ * What a full-path pointer can be said to be: `exists`, `ignored` or `dangling`.
+ *
+ * Existence on the DISK was the test here, and a path under a gitignored directory made that a fact
+ * about the machine: `ml/venv/bin/python`, named in a scanner test's comment, exists wherever the
+ * venv was made and nowhere else, so this passed on the Mac and failed on CI (2026-09-15). A path
+ * git ignores is something a checkout makes, not something it has, so it is UNCHECKED — counted
+ * and reported, never passed and never failed, the stance dev-docs already takes.
+ */
+function rootedVerdict(file, path) {
+  const home = packageRootOf(file);
+  if (inRepo(path) || (home && inRepo(`${home}/${path}`))) return 'exists';
+  const ignored = (candidate) => {
+    try {
+      execFileSync('git', ['check-ignore', '--no-index', '-q', candidate], { cwd: ROOT, stdio: 'ignore' });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (ignored(path) || (home && ignored(`${home}/${path}`))) return 'ignored';
+  return 'dangling';
+}
+
 /**
  * A file that no longer exists may be named, PROVIDED the text says it is gone.
  *
@@ -226,6 +253,7 @@ const DEV_DOCS_PRESENT = existsSync(`${ROOT}dev-docs`);
 test('every repo path a living comment names actually exists', (t) => {
   const dangling = [];
   let unchecked = 0;
+  let ignored = 0;
   for (const file of LIVING.flatMap((d) => sources(d))) {
     const { rooted } = extractCandidates(readFileSync(ROOT + file, 'utf8'));
     for (const p of rooted) {
@@ -236,13 +264,21 @@ test('every repo path a living comment names actually exists', (t) => {
         unchecked += 1;
         continue;
       }
-      const home = packageRootOf(file);
-      if (existsSync(ROOT + clean) || (home && existsSync(`${ROOT}${home}/${clean}`))) continue;
-      dangling.push(`${file}: ${clean}`);
+      // dev-docs is gitignored too, but checked where it is present (see DEV_DOCS_PRESENT).
+      if (clean.startsWith('dev-docs/')) {
+        if (!existsSync(ROOT + clean)) dangling.push(`${file}: ${clean}`);
+        continue;
+      }
+      const verdict = rootedVerdict(file, clean);
+      if (verdict === 'ignored') ignored += 1;
+      else if (verdict === 'dangling') dangling.push(`${file}: ${clean}`);
     }
   }
   if (unchecked) {
     t.diagnostic(`${unchecked} dev-docs pointer(s) NOT CHECKED — dev-docs is gitignored and absent here`);
+  }
+  if (ignored) {
+    t.diagnostic(`${ignored} pointer(s) into gitignored paths NOT CHECKED — what a checkout makes, not what it has`);
   }
   assert.deepEqual(
     dangling.sort(),
@@ -303,6 +339,11 @@ test('the scan is looking at something, and would notice a break', () => {
   assert.ok(resolvesModule('lib/cube-session.js'), 'must resolve a real partial path');
   assert.equal(resolvesModule('nowhere/cube-session.js'), false, 'a real name under a wrong directory resolved');
   assert.ok(resolvesModule('../src/gen4/crypto.js'), 'must resolve a TypeScript import spelling');
+  // A full path is judged the same way on every machine: a gitignored one is unchecked wherever it
+  // happens to exist, a tracked one exists, and one that is neither dangles.
+  assert.equal(rootedVerdict('packages/cube-scanner/tests/x.test.ts', 'ml/venv/bin/python'), 'ignored');
+  assert.equal(rootedVerdict('apps/web/lib/app.js', 'apps/web/lib/cube-session.js'), 'exists');
+  assert.equal(rootedVerdict('apps/web/lib/app.js', 'apps/web/lib/definitely-not-here.js'), 'dangling');
   // And the files it resolves against are the repository's, not the disk's.
   const outputs = REPO_FILES.filter((f) => /(^|\/)(node_modules|dist|target)\//.test(f));
   assert.deepEqual(outputs, [], 'ignored build output is being counted as repository files');
