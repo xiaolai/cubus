@@ -494,3 +494,61 @@ test('turning reduced motion on mid-pulse snaps the highlight to full strength',
   const k = await cornerLuminance(page);
   assert.ok(Math.abs(k - peak) <= 1, `the highlight should jump to peak ${peak}, not freeze at the ${before} it held (${k})`);
 });
+
+// ---- one sticker, and sets (plan item 4.1 of dev-docs/tutorial-capability-plan.md) ------------------
+
+/**
+ * The stickers that draw brighter than they do with the highlight cleared, as `x,y,z:face` — where the
+ * cubie stands and which of its stickers — sorted. Read off the canvas, like `litPositions`.
+ */
+const litStickers = (page) => page.evaluate(({ lit }) => {
+  const el = window.__cube;
+  const spec = el.getAttribute('highlight');
+  const shown = window.__appearance.stickers(el);
+  el.setAttribute('highlight', 'none');
+  const rest = window.__appearance.stickers(el);
+  if (spec === null) el.removeAttribute('highlight'); else el.setAttribute('highlight', spec);
+  const lum = ([r, g, b]) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return Object.keys(shown).filter((k) => lum(shown[k]) - lum(rest[k]) > lit).map((k) => {
+    const [i, face] = k.split(':');
+    const c = el.cubies[Number(i)];
+    return `${[c.position.x, c.position.y, c.position.z].map(Math.round).join(',')}:${face}`;
+  }).sort();
+}, { lit: LIT });
+
+test('one sticker of a piece lights alone: by where it faces, and by the face it belongs to', async () => {
+  const { page } = await cubePage();
+  await setHighlight(page, 'slot:UF/U');
+  assert.deepEqual(await litStickers(page), ['0,1,1:U'], 'the sticker facing up was not the only one lit');
+  await setHighlight(page, 'piece:UF/F');
+  assert.deepEqual(await litStickers(page), ['0,1,1:F'], 'the F sticker of UF was not the only one lit');
+  // A whole piece is every sticker of it, as it always was.
+  await setHighlight(page, 'piece:UF');
+  assert.deepEqual(await litStickers(page), ['0,1,1:F', '0,1,1:U']);
+});
+
+test('a set with a minus lights what is left: the top layer without its corners', async () => {
+  const { page } = await cubePage();
+  await setHighlight(page, 'layer:U - corners');
+  const lit = await litStickers(page);
+  assert.equal(lit.length, 9, `four edges of two stickers and a centre: ${lit.join(' ')}`);
+  assert.ok(lit.every((k) => k.split(':')[0].split(',').map(Number).filter(Boolean).length <= 2), 'a corner stayed lit');
+  await setHighlight(page, 'layer:U - corners - slot:UF/U');
+  assert.deepEqual((await litStickers(page)).filter((k) => k.startsWith('0,1,1:')), ['0,1,1:F'],
+    'taking away one sticker took its whole piece, or left it lit');
+});
+
+test('focus on one sticker greys the rest of its own piece', async () => {
+  const { page } = await cubePage();
+  const rest = await stickers(page);
+  await setFocus(page, 'slot:UF/U');
+  const shown = await stickers(page);
+  const kept = Object.keys(rest).filter((k) => !changed({ [k]: rest[k] }, { [k]: shown[k] }).length);
+  const at = await page.evaluate((keys) => keys.map((k) => {
+    const [i, face] = k.split(':');
+    const c = window.__cube.cubies[Number(i)];
+    return `${[c.position.x, c.position.y, c.position.z].map(Math.round).join(',')}:${face}`;
+  }), kept);
+  assert.deepEqual(at, ['0,1,1:U'], `focus kept ${at.join(' ')} in colour`);
+  await setFocus(page, null);
+});

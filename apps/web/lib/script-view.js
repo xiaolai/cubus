@@ -20,8 +20,8 @@ import { CORNERS, EDGES, SOLVED, toFacelets } from './cube-pieces.js';
 import { parse } from './cube-notation.js';
 import { convertSelectors, faceTurnsOf, run } from './cube-moves.js';
 import { readCube } from './cube-questions.js';
-import { parseHighlight, pieceKey, resolveHighlight, slotVector } from './cube-highlight.js';
-import { CENTERS, FACE_LETTERS } from './cube-layout.js';
+import { parseHighlight, pieceKey, resolveStickers, slotVector } from './cube-highlight.js';
+import { CENTERS, CORNER_FACELETS, EDGE_FACELETS, FACE_LETTERS } from './cube-layout.js';
 import { ask } from './script-questions.js';
 
 const holdPair = (hold) => String(hold).split(' ');
@@ -245,16 +245,26 @@ function elementSelector(built, cue) {
   return named.length ? convertSelectors(named.join(','), hold) : 'none';
 }
 
-/** Every cubie of a cube as `resolveHighlight` reads one: where it is and which piece it carries. */
+/**
+ * Every cubie of a cube as the selector resolvers read one: where it is, which piece it carries, and its
+ * stickers — each one's colour (the face it belongs to) and the way it faces.
+ *
+ * Read off the STICKERS, which a state and a picture both have: the letter at a slot's k-th facelet is
+ * the colour of the sticker facing that slot's k-th face. A picture's `?` is a sticker nobody can name.
+ */
 function selectablesOf(cube) {
   const read = readCube(cube);
-  const picture = typeof cube === 'string';
-  const slots = [...read.corners, ...read.edges].map((r) => ({
-    slot: r.slot, pos: slotVector(r.slot), piece: r.piece === null ? null : pieceKey(r.piece),
+  const facelets = typeof cube === 'string' ? cube : toFacelets(cube);
+  const stickersAt = (slot, at) => at.map((f, k) => ({ face: facelets[f] === '?' ? null : facelets[f], dir: slot[k] }));
+  const slots = [
+    ...read.corners.map((r, i) => ({ r, at: CORNER_FACELETS[i] })),
+    ...read.edges.map((r, i) => ({ r, at: EDGE_FACELETS[i] })),
+  ].map(({ r, at }) => ({
+    slot: r.slot, pos: slotVector(r.slot), piece: r.piece === null ? null : pieceKey(r.piece), stickers: stickersAt(r.slot, at),
   }));
   const centres = [...FACE_LETTERS].map((face, i) => {
-    const letter = picture ? cube[CENTERS[i]] : face;
-    return { slot: face, pos: slotVector(face), piece: letter === '?' ? null : letter };
+    const letter = facelets[CENTERS[i]];
+    return { slot: face, pos: slotVector(face), piece: letter === '?' ? null : letter, stickers: [{ face: letter === '?' ? null : letter, dir: face }] };
   });
   return [...slots, ...centres];
 }
@@ -274,8 +284,21 @@ function boundFocus(built, cue) {
   if (!selectors.length) return spec;
   const cube = built.positions[cue.at].cube;
   const cubies = selectablesOf(cube);
-  const { indices } = resolveHighlight(selectors, cubies);
-  const tokens = indices.map((i) => (cubies[i].piece === null ? `slot:${cubies[i].slot}` : `piece:${cubies[i].piece}`));
+  const { stickers } = resolveStickers(selectors, cubies);
+  // Grouped by cubie: a cubie whose every sticker was named is bound as the whole PIECE, and one with
+  // only some named is bound sticker by sticker, by colour — `piece:UF/F` — so a sticker focus follows
+  // that sticker wherever its piece goes (plan item 4.1). A sticker or piece a picture cannot name stays
+  // a position, because there is nothing to bind.
+  const byCubie = new Map();
+  for (const [i, j] of stickers) byCubie.set(i, [...(byCubie.get(i) ?? []), j]);
+  const tokens = [...byCubie].flatMap(([i, js]) => {
+    const c = cubies[i];
+    if (js.length === c.stickers.length) return [c.piece === null ? `slot:${c.slot}` : `piece:${c.piece}`];
+    return js.map((j) => {
+      const st = c.stickers[j];
+      return c.piece === null || st.face === null ? `slot:${c.slot}/${st.dir}` : `piece:${c.piece}/${st.face}`;
+    });
+  });
   return tokens.length ? tokens.join(',') : 'none';
 }
 

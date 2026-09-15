@@ -13,6 +13,15 @@
 // A lesson needs both — "the top-front position" and "the white-green edge" are different
 // sentences — and conflating them is how a tutorial ends up pointing at the wrong cubie the
 // moment anyone scrambles.
+//
+// AND ONE STICKER OF A PIECE (plan item 4.1 of dev-docs/tutorial-capability-plan.md), in the same two
+// ways — "the sticker on top" and "the green sticker" are different sentences too:
+//
+//   slot:UF/U    the sticker in the UF position that faces U, whichever piece that is
+//   piece:UF/F   the UF piece's own F sticker, wherever it has gone and whichever way it faces
+//
+// And SETS, read left to right: `,` and `+` add, `-` takes away. `layer:U - corners` is the top layer's
+// edges and centre; `edges - layer:U + slot:UF` is every edge off the top layer, and UF put back.
 
 /** Face letter -> which coordinate it fixes, and to what. */
 const FACE_AXIS = { R: [0, 1], L: [0, -1], U: [1, 1], D: [1, -1], F: [2, 1], B: [2, -1] };
@@ -60,10 +69,22 @@ function parseToken(tok) {
   // hasOwn, never `tok in KIND`: the token is whatever an author typed, and 'constructor' would
   // otherwise resolve to a function and be treated as a piece kind.
   if (Object.hasOwn(KIND, tok)) return { kind: KIND[tok], token: tok };
-  const m = /^(layer|slot|piece):([URFDLB]{1,3})$/i.exec(tok);
+  const m = /^(layer|slot|piece):([URFDLB]{1,3})(?:\/([URFDLB]))?$/i.exec(tok);
   if (!m) return null;
   const what = m[1].toLowerCase();
   const arg = m[2].toUpperCase();
+  if (m[3] !== undefined) {
+    // A STICKER. Its face must be one of the piece's or the slot's own — `slot:UF/R` names a sticker no
+    // cubie has — and a layer has no one sticker to name.
+    const face = m[3].toUpperCase();
+    if (what === 'layer' || !arg.includes(face)) return null;
+    if (what === 'slot') {
+      const pos = slotVector(arg);
+      return pos && { slot: pos, facing: face, token: tok };
+    }
+    const key = pieceKey(arg);
+    return key && { piece: key, face, token: tok };
+  }
   if (what === 'layer') {
     if (arg.length !== 1) return null; // a layer is one face, not a piece name
     // Copied, never shared. FACE_AXIS is module state, so handing out the live array lets a
@@ -98,15 +119,30 @@ export function parseHighlight(spec) {
   const raw = String(spec ?? '').trim();
   if (!raw || raw === 'none') return { selectors: [], invalid: null };
   const selectors = [];
-  for (const tok of raw.split(',').map((t) => t.trim()).filter(Boolean)) {
-    const sel = parseToken(tok);
-    if (!sel) return { selectors: [], invalid: tok };
-    selectors.push(sel);
+  // Operators and tokens in the order written. Each selector carries the operator before it (`+` for the
+  // first), so a resolver applies them left to right and a caller that only reads the list still has them.
+  const parts = raw.split(/\s*([,+-])\s*/);
+  let op = '+';
+  for (const part of parts) {
+    if (part === ',' || part === '+') { op = '+'; continue; }
+    if (part === '-') { op = '-'; continue; }
+    if (!part) continue;
+    const sel = parseToken(part);
+    if (!sel) return { selectors: [], invalid: part };
+    // A set that begins by taking away has nothing to take from: `- corners` is a typo, not a selection.
+    if (!selectors.length && op === '-') return { selectors: [], invalid: raw };
+    selectors.push({ ...sel, op });
+    op = '+';
   }
   return { selectors, invalid: null };
 }
 
-/** Does `sel` name this cubie? `cubie` is `{ pos: [x, y, z], piece: key | null }`. */
+/**
+ * Does `sel` name this cubie? `cubie` is `{ pos: [x, y, z], piece: key | null }`.
+ *
+ * A sticker selector names the cubie its sticker is on: this is the cubie-level question, and
+ * `selectsSticker` is the finer one.
+ */
 export function selects(sel, cubie) {
   const [x, y, z] = cubie.pos;
   if (sel.kind !== undefined) return Math.abs(x) + Math.abs(y) + Math.abs(z) === sel.kind;
@@ -132,13 +168,50 @@ export function resolveHighlight(selectors, cubies) {
   for (let i = 0; i < cubies.length; i++) {
     let on = false;
     for (let s = 0; s < selectors.length; s++) {
-      if (selects(selectors[s], cubies[i])) {
-        on = true;
-        hit[s] = true;
-      }
+      const sel = selectors[s];
+      if (!selects(sel, cubies[i])) continue;
+      hit[s] = true;
+      // Taking away a sticker leaves the rest of its cubie lit, so only a whole-cubie selector takes a
+      // cubie away at this level; `resolveStickers` is where one sticker comes off.
+      if (sel.op === '-') { if (!isSticker(sel)) on = false; } else on = true;
     }
     if (on) indices.push(i);
   }
   const empty = selectors.filter((_, s) => !hit[s]).map((sel) => sel.token);
   return { indices, empty };
+}
+
+const isSticker = (sel) => sel.facing !== undefined || sel.face !== undefined;
+
+/**
+ * Does `sel` name this sticker of this cubie? `sticker` is `{ face, dir }`: the face it was painted for
+ * (its colour, on a cube built from moves) and the direction it faces now.
+ */
+export function selectsSticker(sel, cubie, sticker) {
+  if (!selects(sel, cubie)) return false;
+  if (sel.facing !== undefined) return sticker.dir === sel.facing;
+  if (sel.face !== undefined) return sticker.face === sel.face;
+  return true;
+}
+
+/**
+ * Resolve selectors to STICKERS, as `[cubieIndex, stickerIndex]` pairs, the operators applied left to
+ * right. `cubies[i].stickers` is the cubie's stickers as `selectsSticker` reads them.
+ */
+export function resolveStickers(selectors, cubies) {
+  const stickers = [];
+  const hit = new Array(selectors.length).fill(false);
+  cubies.forEach((cubie, i) => {
+    (cubie.stickers ?? []).forEach((sticker, j) => {
+      let on = false;
+      selectors.forEach((sel, s) => {
+        if (!selectsSticker(sel, cubie, sticker)) return;
+        hit[s] = true;
+        on = sel.op !== '-';
+      });
+      if (on) stickers.push([i, j]);
+    });
+  });
+  const empty = selectors.filter((_, s) => !hit[s]).map((sel) => sel.token);
+  return { stickers, empty };
 }

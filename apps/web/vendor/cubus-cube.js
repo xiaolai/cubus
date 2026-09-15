@@ -28890,10 +28890,20 @@ function pieceKey(letters) {
 }
 function parseToken(tok) {
   if (Object.hasOwn(KIND, tok)) return { kind: KIND[tok], token: tok };
-  const m = /^(layer|slot|piece):([URFDLB]{1,3})$/i.exec(tok);
+  const m = /^(layer|slot|piece):([URFDLB]{1,3})(?:\/([URFDLB]))?$/i.exec(tok);
   if (!m) return null;
   const what = m[1].toLowerCase();
   const arg = m[2].toUpperCase();
+  if (m[3] !== void 0) {
+    const face = m[3].toUpperCase();
+    if (what === "layer" || !arg.includes(face)) return null;
+    if (what === "slot") {
+      const pos = slotVector(arg);
+      return pos && { slot: pos, facing: face, token: tok };
+    }
+    const key3 = pieceKey(arg);
+    return key3 && { piece: key3, face, token: tok };
+  }
   if (what === "layer") {
     if (arg.length !== 1) return null;
     return { layer: [...FACE_AXIS[arg]], token: tok };
@@ -28909,10 +28919,23 @@ function parseHighlight(spec) {
   const raw = String(spec ?? "").trim();
   if (!raw || raw === "none") return { selectors: [], invalid: null };
   const selectors = [];
-  for (const tok of raw.split(",").map((t) => t.trim()).filter(Boolean)) {
-    const sel = parseToken(tok);
-    if (!sel) return { selectors: [], invalid: tok };
-    selectors.push(sel);
+  const parts = raw.split(/\s*([,+-])\s*/);
+  let op = "+";
+  for (const part of parts) {
+    if (part === "," || part === "+") {
+      op = "+";
+      continue;
+    }
+    if (part === "-") {
+      op = "-";
+      continue;
+    }
+    if (!part) continue;
+    const sel = parseToken(part);
+    if (!sel) return { selectors: [], invalid: part };
+    if (!selectors.length && op === "-") return { selectors: [], invalid: raw };
+    selectors.push({ ...sel, op });
+    op = "+";
   }
   return { selectors, invalid: null };
 }
@@ -28923,21 +28946,28 @@ function selects(sel, cubie) {
   if (sel.slot) return sel.slot[0] === x && sel.slot[1] === y && sel.slot[2] === z;
   return cubie.piece != null && cubie.piece === sel.piece;
 }
-function resolveHighlight(selectors, cubies) {
-  const indices = [];
+function selectsSticker(sel, cubie, sticker) {
+  if (!selects(sel, cubie)) return false;
+  if (sel.facing !== void 0) return sticker.dir === sel.facing;
+  if (sel.face !== void 0) return sticker.face === sel.face;
+  return true;
+}
+function resolveStickers(selectors, cubies) {
+  const stickers = [];
   const hit = new Array(selectors.length).fill(false);
-  for (let i = 0; i < cubies.length; i++) {
-    let on = false;
-    for (let s = 0; s < selectors.length; s++) {
-      if (selects(selectors[s], cubies[i])) {
-        on = true;
+  cubies.forEach((cubie, i) => {
+    (cubie.stickers ?? []).forEach((sticker, j) => {
+      let on = false;
+      selectors.forEach((sel, s) => {
+        if (!selectsSticker(sel, cubie, sticker)) return;
         hit[s] = true;
-      }
-    }
-    if (on) indices.push(i);
-  }
+        on = sel.op !== "-";
+      });
+      if (on) stickers.push([i, j]);
+    });
+  });
   const empty = selectors.filter((_, s) => !hit[s]).map((sel) => sel.token);
-  return { indices, empty };
+  return { stickers, empty };
 }
 
 // ../../apps/web/lib/sticker-palettes.js
@@ -29290,6 +29320,7 @@ var FACES = [
   { key: "F", n: [0, 0, 1] },
   { key: "B", n: [0, 0, -1] }
 ];
+var faceOfVector = (v) => FACES.find((f) => f.n.every((c, i) => Math.round(v[i]) === c))?.key ?? null;
 var FACELET_INDEX = {
   U: (x, y, z) => 0 + (z + 1) * 3 + (x + 1),
   R: (x, y, z) => 9 + (1 - y) * 3 + (1 - z),
@@ -29766,6 +29797,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this.cubies = [];
     this.stickers = [];
     this._ghostMeshes = [];
+    this._ghostTwin = /* @__PURE__ */ new Map();
     for (let x = -1; x <= 1; x++) for (let y = -1; y <= 1; y++) for (let z = -1; z <= 1; z++) {
       if (!x && !y && !z) continue;
       const c = new Group();
@@ -29789,6 +29821,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
           }));
           g.rotation.copy(m.rotation);
           g.userData = { face: f.key, home: [x, y, z], n };
+          this._ghostTwin.set(m, g);
           g.renderOrder = 1;
           const gEdge = new LineSegments(ghostEdgeGeo, ghostEdgeMat);
           gEdge.renderOrder = 2;
@@ -30416,10 +30449,29 @@ var CubusCube = class _CubusCube extends HTMLElement {
    */
   _selectable() {
     const settled2 = poseAll(UPRIGHT, this._state);
-    return this.cubies.map((c, i) => ({
-      pos: settled2[POSE_OF[i]].pos,
-      piece: c.userData.piece ?? null
-    }));
+    return this.cubies.map((c, i) => {
+      const { pos, m } = settled2[POSE_OF[i]];
+      const meshes = c.children.filter((x) => x.userData?.face && !x.userData.n);
+      const stickers = meshes.map((x) => {
+        const n = FACES.find((f) => f.key === x.userData.face).n;
+        const dir = [0, 1, 2].map((r) => m[r][0] * n[0] + m[r][1] * n[1] + m[r][2] * n[2]);
+        return { face: x.userData.face, dir: faceOfVector(dir), mesh: x };
+      });
+      return { pos, piece: c.userData.piece ?? null, stickers };
+    });
+  }
+  /** The sticker meshes selectors name, each with its ghost twin — what a channel lights or keeps. */
+  _stickersNamed(selectors) {
+    const cubies = this._selectable();
+    const { stickers, empty } = resolveStickers(selectors, cubies);
+    const meshes = /* @__PURE__ */ new Set();
+    for (const [i, j] of stickers) {
+      const mesh = cubies[i].stickers[j].mesh;
+      meshes.add(mesh);
+      const twin = this._ghostTwin.get(mesh);
+      if (twin) meshes.add(twin);
+    }
+    return { meshes, empty };
   }
   /** Grey every sticker and ghost NOT named by `focus`. Called from _paint(), after the colour
    *  loop has written each sticker's true colour — so this is always applied to fresh colours and
@@ -30427,12 +30479,11 @@ var CubusCube = class _CubusCube extends HTMLElement {
   _applyFocus() {
     const sels = this._fcSels || [];
     if (!sels.length) return;
-    this._fcSet ??= new Set(resolveHighlight(sels, this._selectable()).indices);
+    this._fcSet ??= this._stickersNamed(sels).meshes;
     const keep = this._fcSet;
-    for (const [i, c] of this.cubies.entries()) {
-      if (keep.has(i)) continue;
+    for (const c of this.cubies) {
       for (const m of c.children) {
-        if (!m.userData?.face) continue;
+        if (!m.userData?.face || keep.has(m)) continue;
         const col = m.material.color;
         const lum = 0.299 * col.r + 0.587 * col.g + 0.114 * col.b;
         const g = lum * (1 - FOCUS_FLATTEN) + FOCUS_MID * FOCUS_FLATTEN;
@@ -30463,11 +30514,11 @@ var CubusCube = class _CubusCube extends HTMLElement {
       this._dirty = true;
       return;
     }
-    const { indices, empty } = resolveHighlight(sels, this._selectable());
+    const { meshes, empty } = this._stickersNamed(sels);
     if (empty.length) {
       console.warn(`<cubus-cube> highlight matched nothing for ${empty.join(", ")} \u2014 this cube has no known identity for it (unread stickers?)`);
     }
-    this._hlSet = new Set(indices.map((i) => this.cubies[i]));
+    this._hlSet = meshes;
     this._hlK = this._hlPhase();
     this._applyHighlight(this._hlK);
     this._dirty = true;
@@ -30495,14 +30546,12 @@ var CubusCube = class _CubusCube extends HTMLElement {
    */
   _applyHighlight(k) {
     if (!this._hlSet?.size) return;
-    for (const c of this._hlSet) {
-      for (const m of c.children) {
-        if (m.userData?.n) {
-          m.material.opacity = GHOST_OPACITY + k * (GHOST_HL_PEAK - GHOST_OPACITY);
-        } else if (m.userData?.face) {
-          m.material.emissive.copy(m.material.color);
-          m.material.emissiveIntensity = k * HL_PEAK;
-        }
+    for (const m of this._hlSet) {
+      if (m.userData?.n) {
+        m.material.opacity = GHOST_OPACITY + k * (GHOST_HL_PEAK - GHOST_OPACITY);
+      } else if (m.userData?.face) {
+        m.material.emissive.copy(m.material.color);
+        m.material.emissiveIntensity = k * HL_PEAK;
       }
     }
   }

@@ -8,7 +8,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { eyeDirection, fitDistance, fitDistanceStable, silhouette } from '../../../apps/web/lib/cube-frame.js';
 import { isFace, orientationMatrix, sameAxis } from '../../../apps/web/lib/cube-orientation.js';
-import { parseHighlight, pieceKey, resolveHighlight, slotVector } from '../../../apps/web/lib/cube-highlight.js';
+import { parseHighlight, pieceKey, resolveStickers, slotVector } from '../../../apps/web/lib/cube-highlight.js';
 import { STICKER_PALETTES } from '../../../apps/web/lib/sticker-palettes.js';
 import { HOME, after, poseAll } from './pose.js';
 import { readToken } from '../../../apps/web/lib/cube-notation.js';
@@ -65,6 +65,9 @@ const FACES = [
   { key:'F', n:[ 0, 0, 1] },
   { key:'B', n:[ 0, 0,-1] },
 ];
+/** The face a unit vector points out of — the letter a sticker facing that way is on. */
+const faceOfVector = (v) => FACES.find((f) => f.n.every((c, i) => Math.round(v[i]) === c))?.key ?? null;
+
 // Facelet index for a sticker at cubie (x,y,z) on face `key`, in URFDLB order.
 const FACELET_INDEX = {
   U: (x, y, z) => 0  + (z + 1) * 3 + (x + 1),
@@ -563,6 +566,7 @@ class CubusCube extends HTMLElement {
     this.cubies = [];
     this.stickers = [];
     this._ghostMeshes = [];
+    this._ghostTwin = new Map();
     for (let x = -1; x <= 1; x++) for (let y = -1; y <= 1; y++) for (let z = -1; z <= 1; z++) {
       if (!x && !y && !z) continue;
       const c = new THREE.Group();
@@ -586,6 +590,9 @@ class CubusCube extends HTMLElement {
           }));
           g.rotation.copy(m.rotation); // carries the X-face quarter turn set on the sticker above
           g.userData = { face: f.key, home: [x, y, z], n };
+          // A sticker lights with its twin: named here, where the two are made, rather than looked up
+          // by matching positions later (plan item 4.1 lights one sticker, and so one ghost).
+          this._ghostTwin.set(m, g);
           g.renderOrder = 1;
           const gEdge = new THREE.LineSegments(ghostEdgeGeo, ghostEdgeMat);
           gEdge.renderOrder = 2; // above its own ghost, so the line is never eaten by the fill
@@ -1411,10 +1418,32 @@ class CubusCube extends HTMLElement {
     // also what the rounding answered for the first half of every turn, so this changes only the
     // half that was wrong. At rest the two readings are identical.
     const settled = poseAll(UPRIGHT, this._state);
-    return this.cubies.map((c, i) => ({
-      pos: settled[POSE_OF[i]].pos,
-      piece: c.userData.piece ?? null,
-    }));
+    return this.cubies.map((c, i) => {
+      const { pos, m } = settled[POSE_OF[i]];
+      // Each sticker as a selector reads one: the face it was painted for, and the way it faces at the
+      // settled position — its home normal turned by its cubie's settled rotation.
+      const meshes = c.children.filter((x) => x.userData?.face && !x.userData.n);
+      const stickers = meshes.map((x) => {
+        const n = FACES.find((f) => f.key === x.userData.face).n;
+        const dir = [0, 1, 2].map((r) => m[r][0] * n[0] + m[r][1] * n[1] + m[r][2] * n[2]);
+        return { face: x.userData.face, dir: faceOfVector(dir), mesh: x };
+      });
+      return { pos, piece: c.userData.piece ?? null, stickers };
+    });
+  }
+
+  /** The sticker meshes selectors name, each with its ghost twin — what a channel lights or keeps. */
+  _stickersNamed(selectors) {
+    const cubies = this._selectable();
+    const { stickers, empty } = resolveStickers(selectors, cubies);
+    const meshes = new Set();
+    for (const [i, j] of stickers) {
+      const mesh = cubies[i].stickers[j].mesh;
+      meshes.add(mesh);
+      const twin = this._ghostTwin.get(mesh);
+      if (twin) meshes.add(twin);
+    }
+    return { meshes, empty };
   }
 
   /** Grey every sticker and ghost NOT named by `focus`. Called from _paint(), after the colour
@@ -1428,12 +1457,12 @@ class CubusCube extends HTMLElement {
     // on every paint quietly broke that for `seek`, which resets and repaints — so a lesson that says
     // "watch this piece" and is then scrubbed lit a different piece at every position (R10). The binding
     // is dropped by a new `focus` and by a new cube, and by nothing else.
-    this._fcSet ??= new Set(resolveHighlight(sels, this._selectable()).indices);
+    // Bound to STICKERS, so a focus on one sticker greys the rest of its own piece too (plan item 4.1).
+    this._fcSet ??= this._stickersNamed(sels).meshes;
     const keep = this._fcSet;
-    for (const [i, c] of this.cubies.entries()) {
-      if (keep.has(i)) continue;
+    for (const c of this.cubies) {
       for (const m of c.children) {
-        if (!m.userData?.face) continue;          // never the shared body material
+        if (!m.userData?.face || keep.has(m)) continue;   // never the shared body material
         const col = m.material.color;
         const lum = 0.299 * col.r + 0.587 * col.g + 0.114 * col.b;
         const g = lum * (1 - FOCUS_FLATTEN) + FOCUS_MID * FOCUS_FLATTEN;
@@ -1467,11 +1496,13 @@ class CubusCube extends HTMLElement {
     // stationary cube nothing else will ask for a redraw — so the glow this call removed would
     // stay on screen until the user happened to orbit.
     if (!sels.length) { this._hlSet = null; this._hlK = null; this._dirty = true; return; }
-    const { indices, empty } = resolveHighlight(sels, this._selectable());
+    const { meshes, empty } = this._stickersNamed(sels);
     if (empty.length) {
       console.warn(`<cubus-cube> highlight matched nothing for ${empty.join(', ')} — this cube has no known identity for it (unread stickers?)`);
     }
-    this._hlSet = new Set(indices.map((i) => this.cubies[i]));
+    // STICKERS and their ghost twins, not cubies: a highlight can name one sticker of a piece (plan item
+    // 4.1). A whole-piece selector names every sticker of it, which is what lighting a cubie always meant.
+    this._hlSet = meshes;
     this._hlK = this._hlPhase();
     this._applyHighlight(this._hlK);
     this._dirty = true;
@@ -1501,20 +1532,18 @@ class CubusCube extends HTMLElement {
    */
   _applyHighlight(k) {
     if (!this._hlSet?.size) return;
-    for (const c of this._hlSet) {
-      for (const m of c.children) {
-        if (m.userData?.n) {
-          // A ghost. MeshBasicMaterial is unlit and has no emissive at all, so it breathes in
-          // opacity. Its outline is a CHILD carrying a material shared by all 54 ghosts and is
-          // deliberately left alone — a steady frame around a breathing fill is the better read,
-          // and touching it would light every ghost on the cube at once.
-          m.material.opacity = GHOST_OPACITY + k * (GHOST_HL_PEAK - GHOST_OPACITY);
-        } else if (m.userData?.face) {
-          m.material.emissive.copy(m.material.color);
-          m.material.emissiveIntensity = k * HL_PEAK;
-        }
-        // The rounded body is skipped on purpose: bodyMat is ONE material shared by all 26 cubies,
-        // so lighting it here would light the entire cube instead of the piece being named.
+    // The set holds sticker meshes and their ghost twins only — never a body, whose material is ONE shared
+    // by all 26 cubies, so lighting it would light the entire cube instead of what was named.
+    for (const m of this._hlSet) {
+      if (m.userData?.n) {
+        // A ghost. MeshBasicMaterial is unlit and has no emissive at all, so it breathes in
+        // opacity. Its outline is a CHILD carrying a material shared by all 54 ghosts and is
+        // deliberately left alone — a steady frame around a breathing fill is the better read,
+        // and touching it would light every ghost on the cube at once.
+        m.material.opacity = GHOST_OPACITY + k * (GHOST_HL_PEAK - GHOST_OPACITY);
+      } else if (m.userData?.face) {
+        m.material.emissive.copy(m.material.color);
+        m.material.emissiveIntensity = k * HL_PEAK;
       }
     }
   }
