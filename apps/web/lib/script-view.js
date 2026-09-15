@@ -18,8 +18,10 @@
 import { STEP_CUES, checkScript } from './lesson-format.js';
 import { CORNERS, EDGES, SOLVED, toFacelets } from './cube-pieces.js';
 import { parse } from './cube-notation.js';
-import { faceTurnsOf, run } from './cube-moves.js';
+import { convertSelectors, faceTurnsOf, run } from './cube-moves.js';
 import { readCube } from './cube-questions.js';
+import { parseHighlight, pieceKey, resolveHighlight, slotVector } from './cube-highlight.js';
+import { CENTERS, FACE_LETTERS } from './cube-layout.js';
 import { ask } from './script-questions.js';
 
 const holdPair = (hold) => String(hold).split(' ');
@@ -196,7 +198,9 @@ export function viewAtPosition(built, position) {
   const segment = built.segments[at.segment];
   const cues = {};
   for (const [key, cue] of Object.entries(at.cues)) {
-    cues[key] = key === 'hl' || key === 'focus' ? resolveSelector(built, cue) : cue.value;
+    if (key === 'hl') cues[key] = elementSelector(built, cue);
+    else if (key === 'focus') cues[key] = boundFocus(built, cue);
+    else cues[key] = cue.value;
   }
   return Object.freeze({
     position: k,
@@ -207,6 +211,10 @@ export function viewAtPosition(built, position) {
     cube: at.cube,
     isPicture: at.isPicture,
     segment: at.segment,
+    // The hold the element is LOADED with — its `orientation` — which is the hold at the start of the
+    // segment, not the hold now: a rotation inside the sequence turns the element's own frame, and
+    // writing the current hold on top of that turns the cube twice (ADR 0004 R2).
+    orientation: segment.hold,
     scramble: segment.scramble ?? null,
     facelets: segment.facelets ?? null,
     alg: segment.alg,
@@ -216,16 +224,59 @@ export function viewAtPosition(built, position) {
   });
 }
 
-/** A cue's selector, as the element's grammar — a question resolved where the cue took effect. */
-function resolveSelector(built, cue) {
-  const text = String(cue.value);
-  if (!text.startsWith('ask:')) return text;
+/**
+ * A cue's selector as `<cubus-cube>` reads one: in the cube's OWN letters, a question answered.
+ *
+ * Everything is read at the position the cue TOOK EFFECT (R9). A script writes letters the way the
+ * child holds the cube (ADR 0004 decision 6), and which faces those letters mean is fixed by the hold
+ * when the lesson said them — a regrip later does not quietly move "the slot at your upper right" to a
+ * different pair of faces. What stays positional stays positional: a `slot:` highlight names a place, and
+ * the element lights whatever occupies it after every turn (decision 10).
+ */
+function elementSelector(built, cue) {
   const where = built.positions[cue.at];
-  const answer = ask(text.slice(4), where.cube, holdPair(where.hold));
+  const hold = holdPair(where.hold);
+  const text = String(cue.value);
+  if (!text.startsWith('ask:')) return convertSelectors(text, hold);
+  const answer = ask(text.slice(4), where.cube, hold);
   const named = answer.pieces.length ? answer.pieces.map((p) => `piece:${p}`) : (answer.slots ?? []).map((s) => `slot:${s}`);
   // An answer nothing can be lit for is `none`, never an empty string: the element reads an empty
   // selector as "no change", so a cue whose answer is empty would leave the last one glowing.
-  return named.length ? named.join(',') : 'none';
+  return named.length ? convertSelectors(named.join(','), hold) : 'none';
+}
+
+/** Every cubie of a cube as `resolveHighlight` reads one: where it is and which piece it carries. */
+function selectablesOf(cube) {
+  const read = readCube(cube);
+  const picture = typeof cube === 'string';
+  const slots = [...read.corners, ...read.edges].map((r) => ({
+    slot: r.slot, pos: slotVector(r.slot), piece: r.piece === null ? null : pieceKey(r.piece),
+  }));
+  const centres = [...FACE_LETTERS].map((face, i) => {
+    const letter = picture ? cube[CENTERS[i]] : face;
+    return { slot: face, pos: slotVector(face), piece: letter === '?' ? null : letter };
+  });
+  return [...slots, ...centres];
+}
+
+/**
+ * A `focus` cue BOUND: the pieces its selector named at the position it took effect, as `piece:` tokens.
+ *
+ * Focus latches (ADR 0004 decision 10) — the element binds it where it is written and keeps naming those
+ * pieces. A driver cannot promise to write it at that position: it seeks, it jumps, it lands cold in the
+ * middle of a lesson. So the binding is done here, once, from the script, and what the element is handed
+ * no longer depends on where the cube happens to be when it arrives. A slot a picture cannot read stays
+ * a slot, because there is no piece to name.
+ */
+function boundFocus(built, cue) {
+  const spec = elementSelector(built, cue);
+  const { selectors } = parseHighlight(spec);
+  if (!selectors.length) return spec;
+  const cube = built.positions[cue.at].cube;
+  const cubies = selectablesOf(cube);
+  const { indices } = resolveHighlight(selectors, cubies);
+  const tokens = indices.map((i) => (cubies[i].piece === null ? `slot:${cubies[i].slot}` : `piece:${cubies[i].piece}`));
+  return tokens.length ? tokens.join(',') : 'none';
 }
 
 /** Ask a named question of the cube at `position`, in the hold in force there. */

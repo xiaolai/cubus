@@ -20,7 +20,9 @@ import { TARGETS } from '../lib/stage-targets.js';
 import {
   CAPABILITIES, CUE_VERBS, SCENARIOS, SOURCES, STEP_KINDS, TARGET_IDS, WHY_KEYS,
 } from './fixtures/tutorial-scenarios.mjs';
-import { MODEL_RUNNERS, OPEN_ITEMS, assertCovered, scriptFor, strictKit, underGapRules } from './tutorial-runner.mjs';
+import {
+  BROWSER_PLAYER_KINDS, MODEL_RUNNERS, OPEN_ITEMS, PLAYER_RUNNERS, assertCovered, scriptFor, strictKit, underGapRules,
+} from './tutorial-runner.mjs';
 
 /** The sibling lesson-course checkout, where its parser lives. Absent on a clone of this repo alone. */
 const CUBUS_IM = process.env.CUBUS_IM_REPO
@@ -176,12 +178,22 @@ for (const sc of SCENARIOS.filter((s) => s.half === 'model')) {
   });
 }
 
-for (const sc of SCENARIOS.filter((s) => s.half === 'player')) {
+test('every player scenario has exactly one home: node runs it, or the browser suite does', () => {
+  const kinds = new Set(SCENARIOS.filter((s) => s.half === 'player' && s.kind !== 'covered').map((s) => s.kind));
+  for (const kind of kinds) {
+    const homes = [Object.hasOwn(PLAYER_RUNNERS, kind), BROWSER_PLAYER_KINDS.includes(kind)].filter(Boolean).length;
+    assert.equal(homes, 1, `player kind "${kind}" is run by ${homes} suites`);
+  }
+  for (const kind of BROWSER_PLAYER_KINDS) assert.ok(kinds.has(kind), `the browser claims "${kind}", which no scenario is`);
+});
+
+for (const sc of SCENARIOS.filter((s) => s.half === 'player' && s.kind !== 'covered' && !BROWSER_PLAYER_KINDS.includes(s.kind))) {
   const open = OPEN_ITEMS.includes(sc.closedBy);
-  if (sc.kind === 'covered') continue;
   test(`${sc.id} (${sc.source})`, async (t) => {
     await underGapRules(t, sc, open, () => {
-      throw new Error(`no runner for "${sc.kind}" yet — it arrives with plan item ${sc.closedBy}`);
+      const runner = PLAYER_RUNNERS[sc.kind];
+      if (!runner) throw new Error(`no runner for "${sc.kind}" yet — it arrives with plan item ${sc.closedBy}`);
+      return runner(sc, strictKit(kit));
     });
   });
 }

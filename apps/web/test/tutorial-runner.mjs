@@ -22,7 +22,7 @@ import { SOLVED_FACELETS, applyMoves, faceletAt, held, identityOf, play } from '
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
 /** The plan items whose scenarios are gaps today. An item leaves this list in the change that closes it. */
-export const OPEN_ITEMS = Object.freeze(['3.1', '3.3']);
+export const OPEN_ITEMS = Object.freeze([]);
 
 /** `cube-kit`, as a scenario may see it: a name that is not exported throws, naming itself. */
 export function strictKit(kit) {
@@ -132,6 +132,46 @@ function stickerOn(face, where) {
   if (i < 0) throw new Error(`no sticker of ${face} on the cubie at ${where}`);
   return i;
 }
+
+/**
+ * The player half's kinds that need a drawing, and so run in `test/browser/tutorial-scenarios.test.mjs`.
+ * Every other player kind runs in node, from `PLAYER_RUNNERS`. The corpus checks that each kind has
+ * exactly one home, because a scenario neither suite claims is one nobody runs — and it would not say so.
+ */
+export const BROWSER_PLAYER_KINDS = Object.freeze(['episode-hold-timeline', 'walk-stops', 'walk-reports', 'timed-trailing-rotation']);
+
+/** The player half's runners that need no element. Written against `kit` alone, like the model's. */
+export const PLAYER_RUNNERS = Object.freeze({
+  // R9: a cue written once and inherited binds ONCE, where it was written. Three positions after the
+  // directive, the cue in force still names the pieces it named there — not whatever has moved into
+  // its slot since — and says so by the position it took effect at.
+  'selector-provenance'(sc, kit) {
+    const built = kit.buildScript({
+      schema: 2,
+      steps: [
+        { move: sc.moves, focus: sc.selector, hl: sc.selector, say: 'watch this piece' },
+        { move: 'U', say: 'keep watching' },
+        { move: "U'", say: 'still the same piece' },
+        { move: "R'", say: 'and back' },
+      ],
+    });
+    const bound = built.positions[1];
+    const views = built.positions.slice(1).map((p) => kit.viewAtPosition(built, p.index));
+    for (const view of views) {
+      assert.equal(view.bound.focus.at, bound.index, `${sc.id}: focus took effect at ${view.bound.focus.at}, not at its directive`);
+      assert.equal(view.cues.focus, views[0].cues.focus, `${sc.id}: the inherited focus was re-bound at position ${view.position}`);
+    }
+    // The piece it binds is the one in the slot WHEN IT WAS WRITTEN, which the oracle says independently.
+    const world = play(SOLVED_FACELETS, 'U F', sc.moves).worlds.at(-1);
+    const [, where] = sc.selector.split(':');
+    const letters = [...where].map((face) => world[stickerOn(face, where)]).join('');
+    assert.equal(views[0].cues.focus, `piece:${pieceName(letters)}`, `${sc.id}: bound to the wrong piece`);
+    // And a later position, where a different piece sits in that slot, still names the first one.
+    const later = play(SOLVED_FACELETS, 'U F', `${sc.moves} U`).worlds.at(-1);
+    const nowThere = [...where].map((face) => later[stickerOn(face, where)]).join('');
+    assert.notEqual(pieceName(nowThere), pieceName(letters), `${sc.id}: precondition — the slot's occupant changes`);
+  },
+});
 
 /**
  * A scenario as a SCRIPT (plan item 3.1): the same tutorial, written in the format both drivers read.
