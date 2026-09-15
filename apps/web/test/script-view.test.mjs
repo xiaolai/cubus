@@ -187,3 +187,8 @@ test('an arrow cue is handed over as the cube\'s own token, read in the hold whe
   assert.equal(viewAtPosition(turned, 2).cues.arrow, 'B', 'after y the child\'s right face is the cube\'s B');
   assert.equal(viewAtPosition(buildScript(script([{ move: 'R', arrow: 'next' }])), 1).cues.arrow, 'next');
 });
+
+test('a trail cue\'s piece letters are read in the hold where it was written', () => {
+  const built = buildScript(script([{ move: 'U', trail: 'piece:UF' }], { hold: 'D B' }));
+  assert.equal(viewAtPosition(built, 1).cues.trail, 'piece:DB', 'held D B, the child\'s UF piece is the cube\'s DB');
+});

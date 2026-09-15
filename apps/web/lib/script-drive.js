@@ -96,6 +96,7 @@ export function createElementWriter(cube) {
       write('camera-up', cues.camUp ?? 'U');
       write('arrow', cues.arrow ?? 'none');
       write('labels', cues.labels ?? 'none');
+      write('trail', cues.trail ?? 'none');
       return view;
     },
   });
