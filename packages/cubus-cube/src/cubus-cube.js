@@ -165,10 +165,14 @@ function letterTexture(letter) {
   return texture;
 }
 
-/** How far a trail floats off the cube: its points are the cubie's, scaled out from the centre. */
-const TRAIL_LIFT = 1.2;
+/** Where a trail floats: on the shell whose faces sit just outside the stickers' (at 1.5). */
+const TRAIL_SHELL = 1.64;
 /** The inks of several trails, in order — a first draft for the owner to look at, like the arrow's. */
 const TRAIL_INKS = Object.freeze([0x2b2118, 0x9b3d1e, 0x1f5f7a, 0x5d3a8a]);
+
+/** Which face a slice's, a wide move's or a regrip's arrow is drawn across, in order of preference: the first
+ *  its layer crosses. The front and the top are the faces the default eye sees squarely. */
+const ARROW_FACE_PREFERENCE = Object.freeze(['F', 'U', 'R', 'B', 'D', 'L']);
 
 /** A move's axis letter as the unit vector the renderer turns about. */
 const AXIS_VECTOR = Object.freeze({ x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] });
@@ -700,21 +704,33 @@ class CubusCube extends HTMLElement {
     const axis = new THREE.Vector3(...AXIS_VECTOR[move.axis]);
     const layers = move.layers;
     const face = layers.length === 1 && layers[0] !== 0;
-    // On the face for a face turn; ringing the layer outside the cube for everything else.
-    const offset = face ? layers[0] * 1.53 : layers.reduce((a, b) => a + b, 0) / layers.length;
-    const radius = face ? 0.92 : 1.62;
     const quarters = Math.min(2, Math.abs(Math.round(move.angle / (Math.PI / 2))));
-    const sweep = quarters * (Math.PI / 2) * 0.78;
     const sign = Math.sign(move.angle);
-    // A right-handed basis (u, v, axis): a positive angle turns u toward v. u points at the default eye,
-    // less its component along the axis, so the arc's middle faces the viewer.
-    const eye = new THREE.Vector3(1, 1, 1);
-    const u = eye.clone().sub(axis.clone().multiplyScalar(eye.dot(axis))).normalize();
-    const v = axis.clone().cross(u);
-    const centre = axis.clone().multiplyScalar(offset);
-    const at = (theta) => centre.clone().add(u.clone().multiplyScalar(Math.cos(theta) * radius)).add(v.clone().multiplyScalar(Math.sin(theta) * radius));
     const points = [];
-    for (let i = 0; i <= 32; i++) points.push(at(sign * (-sweep / 2 + (i / 32) * sweep)));
+    if (face) {
+      // A FACE TURN: an arc on the face, about its centre. A right-handed basis (u, v, axis) — a positive angle
+      // turns u toward v — with u toward the default eye less its part along the axis, so the arc's middle faces
+      // the viewer.
+      const sweep = quarters * (Math.PI / 2) * 0.78;
+      const eye = new THREE.Vector3(1, 1, 1);
+      const u = eye.clone().sub(axis.clone().multiplyScalar(eye.dot(axis))).normalize();
+      const v = axis.clone().cross(u);
+      const centre = axis.clone().multiplyScalar(layers[0] * 1.53);
+      const at = (theta) => centre.clone().add(u.clone().multiplyScalar(Math.cos(theta) * 0.92)).add(v.clone().multiplyScalar(Math.sin(theta) * 0.92));
+      for (let i = 0; i <= 32; i++) points.push(at(sign * (-sweep / 2 + (i / 32) * sweep)));
+    } else {
+      // A SLICE, A WIDE MOVE OR A REGRIP has no face of its own, and a ring round the layer passes through the
+      // cube at every corner — drawn that way it showed as fragments. So it is drawn across the face its layer
+      // crosses that the default eye sees best, straight, the way that face's stickers move: a point on a face
+      // with normal n travels along axis × n when the layer turns the positive way.
+      const across = FACES.map((f) => new THREE.Vector3(...f.n)).filter((n) => Math.abs(n.dot(axis)) < 1e-9);
+      const n = ARROW_FACE_PREFERENCE.map((key) => new THREE.Vector3(...FACES.find((f) => f.key === key).n)).find((c) => across.some((a) => a.equals(c)));
+      const d = axis.clone().cross(n).multiplyScalar(sign);
+      const offset = layers.reduce((a, b) => a + b, 0) / layers.length;
+      const centre = n.clone().multiplyScalar(1.53).add(axis.clone().multiplyScalar(offset));
+      const half = quarters === 2 ? 1.05 : 0.8;
+      for (let i = 0; i <= 8; i++) points.push(centre.clone().add(d.clone().multiplyScalar(-half + (i / 8) * 2 * half)));
+    }
     const tube = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(points), 48, 0.055, 8, false), this._arrowMat);
     const end = points[points.length - 1];
     const tangent = end.clone().sub(points[points.length - 2]).normalize();
@@ -723,7 +739,7 @@ class CubusCube extends HTMLElement {
     head.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), tangent);
     tube.renderOrder = 3; head.renderOrder = 3;
     this._arrow.add(tube, head);
-    this._arrow.userData = { axis: axis.toArray(), start: points[0].toArray(), end: end.toArray(), angle: move.angle, layers: [...layers] };
+    this._arrow.userData = { axis: axis.toArray(), start: points[0].toArray(), end: end.toArray(), angle: move.angle, layers: [...layers], points: points.map((q) => q.toArray()) };
     this._placeArrowFrame();
   }
 
@@ -790,7 +806,7 @@ class CubusCube extends HTMLElement {
     this._trailMeshes = [];
     this._dirty = true;
     const spec = String(this._attrs.trail ?? 'none').trim();
-    if (!spec || spec === 'none') return;
+    if (!spec || spec === 'none') { this._applyCamera(); return; }
     const tokens = spec.split(',').map((t) => t.trim()).filter(Boolean);
     const settled0 = poseAll(UPRIGHT, this._base ?? this._state);
     const named = [];
@@ -827,7 +843,10 @@ class CubusCube extends HTMLElement {
         stops.push(to);
       }
       if (stops.length < 2) continue;
-      const lifted = curve.map((p) => p.clone().multiplyScalar(TRAIL_LIFT));
+      // Lifted onto a shell just outside every face: scaled so its largest coordinate clears the stickers. A plain
+      // scale of the cubie's centre left a top-layer edge's path at 1.2, inside a cube whose faces are at 1.5 —
+      // a U permutation's whole trail drew hidden (found looking at the Phase 4 look sheet).
+      const lifted = curve.map((p) => p.clone().multiplyScalar(TRAIL_SHELL / Math.max(Math.abs(p.x), Math.abs(p.y), Math.abs(p.z))));
       const ink = TRAIL_INKS[n % TRAIL_INKS.length];
       const material = new THREE.MeshBasicMaterial({ color: ink, transparent: true, opacity: 0.88, depthWrite: false });
       const tube = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(lifted), lifted.length * 3, 0.045, 8, false), material);
@@ -837,10 +856,12 @@ class CubusCube extends HTMLElement {
       head.position.copy(end.clone().add(tangent.clone().multiplyScalar(0.1)));
       head.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), tangent);
       tube.renderOrder = 3; head.renderOrder = 3;
-      tube.userData = { trail: token, stops, curve: curve.map((v) => v.toArray()) };
+      tube.userData = { trail: token, stops, curve: curve.map((v) => v.toArray()), lifted: lifted.map((v) => v.toArray()) };
       this.root.add(tube, head);
       this._trailMeshes.push(tube, head);
     }
+    // The fit includes the trails, so a change to them is a change to what must fit.
+    this._applyCamera();
   }
 
   /** Hold the arrow in the sequence's frame, so the next move is drawn about the axis it will turn. */
@@ -1377,6 +1398,10 @@ class CubusCube extends HTMLElement {
       scale: this._num('facelet-scale', 0.9),
       cull: !stable,
     });
+    // A trail floats outside the cube and a loop of one can reach past every corner, so what it draws is part of
+    // what the view must fit: a commutator's corner looped off the bottom of the frame before this (plan item 4.4,
+    // found on the Phase 4 look sheet). In the cube's own frame, which is the silhouette's.
+    for (const mesh of this._trailMeshes ?? []) for (const q of mesh.userData.lifted ?? []) points.push(q);
     const geom = { points, vfovDeg: this.camera.fov, aspect: this._drawAspect(), eye, worldUp };
     const d = stable ? fitDistanceStable(geom) : fitDistance(geom);
     // The controls clamp the distance on every update(), so their limits follow the fit: a user
