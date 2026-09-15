@@ -32,6 +32,7 @@ export const RENDERER = Object.freeze([
   'apps/web/lib/cube-questions.js',
   'apps/web/lib/cube-layout.js',
   'apps/web/lib/lesson-format.js',
+  'apps/web/lib/script-questions.js',
   'apps/web/lib/lesson-schedule.js',
   'apps/web/lib/lesson-player.js',
   'packages/cubus-cube/src/cubus-cube.js',

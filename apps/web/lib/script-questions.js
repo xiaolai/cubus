@@ -1,0 +1,136 @@
+// The questions a script may ASK BY NAME, and the frame they are asked and answered in.
+//
+// dev-docs/adr/0005-the-renderer-plays-scripts-methods-choose.md decision 2; plan item 3.1 of
+// dev-docs/tutorial-capability-plan.md. `lib/cube-questions.js` answers in the identity frame and
+// knows nothing about how a cube is held. A script is written the way a child holds one — "the top
+// edges with none of the top colour" — so this is the door between the two: the letters a script
+// writes are turned into identity faces on the way in, and every slot the answer names is turned back
+// into the letter the child reads it by on the way out (ADR 0004 decision 6).
+//
+// A NAME, NOT A FUNCTION, because a script is data: a cue says `ask:topEdgesWithoutTopColour` and a
+// lesson is still a JSON file that no runtime has to be handed code to read. The registry is what
+// makes that checkable — a question a script names and this table does not have is refused when the
+// script is checked, not when a child reaches that line.
+//
+// A QUESTION STILL READS AND NEVER MOVES. Every answer here is a read of ONE cube — a state or a
+// painted picture — exactly as `cube-questions.js` is, and the only thing this module adds is
+// relabelling. A question that needed a move's result would be a script step, not a question.
+import {
+  edgesInLayerWithout,
+  inLayerWithout,
+  isHome,
+  pairOf,
+  pieceIn,
+  piecesAway,
+  whereIs,
+} from './cube-questions.js';
+import { heldFace, identityFace } from './cube-moves.js';
+
+/** A piece or slot's letters, as the cube's own faces, read from the letters the child used. */
+const toIdentity = (letters, hold) => [...String(letters).toUpperCase()].map((f) => identityFace(f, hold)).join('');
+/** The other way: the letters the child reads a piece or slot by, on a cube held `hold`. */
+const toHeld = (letters, hold) => (letters === null || letters === undefined
+  ? letters
+  : [...String(letters)].map((f) => heldFace(f, hold)).join(''));
+
+const heldList = (names, hold) => Object.freeze(names.map((n) => toHeld(n, hold)));
+
+/** Every answer has the same two fields, so a cue can light one without knowing which question it is. */
+const answer = (fields) => Object.freeze({ pieces: Object.freeze([]), unknown: Object.freeze([]), ...fields });
+
+/**
+ * The questions, by name. Each takes the cube, the hold in force and the script's argument (`of`),
+ * and answers in the child's letters.
+ *
+ * `pieces` is what a cue lights when it says "light the answer to this question"; `slots` is there for
+ * the questions whose answer is a PLACE rather than a piece, and a cue lights those as positions.
+ * `unknown` is never dropped: a painted picture that cannot say is a different answer from an empty
+ * one, and a lesson that treats them alike will one day point at a piece it cannot see.
+ */
+export const QUESTIONS = Object.freeze({
+  __proto__: null,
+
+  /** Every piece not in its own place, the right way round. */
+  piecesAway: (cube, hold) => {
+    const a = piecesAway(cube);
+    return answer({ pieces: heldList([...a.pieces], hold), unknown: heldList([...a.unknown], hold) });
+  },
+
+  /** The edges of the top layer carrying none of the top colour — the middle layer's recognition. */
+  topEdgesWithoutTopColour: (cube, hold) => {
+    const up = identityFace('U', hold);
+    const a = edgesInLayerWithout(cube, up, up);
+    return answer({ pieces: heldList([...a.pieces], hold), unknown: heldList([...a.unknown], hold) });
+  },
+
+  /** The same question of the corners — the first layer's, once the cube is tumbled. */
+  topCornersWithoutTopColour: (cube, hold) => {
+    const up = identityFace('U', hold);
+    const a = inLayerWithout(cube, up, up, 'corners');
+    return answer({ pieces: heldList([...a.pieces], hold), unknown: heldList([...a.unknown], hold) });
+  },
+
+  /** Where a piece is: the slot it sits in and how it is twisted, or unknown. */
+  whereIs: (cube, hold, of) => {
+    const at = whereIs(cube, toIdentity(of, hold));
+    if (at === null) return answer({ slot: null, twist: null, unknown: Object.freeze(['?']) });
+    return answer({ pieces: Object.freeze([String(of).toUpperCase()]), slot: toHeld(at.slot, hold), twist: at.twist });
+  },
+
+  /** What is in a slot: the piece and its twist, or unknown. */
+  pieceIn: (cube, hold, of) => {
+    const slot = String(of).toUpperCase();
+    const found = pieceIn(cube, toIdentity(slot, hold));
+    if (found === null) return answer({ piece: null, twist: null, slots: Object.freeze([slot]), unknown: Object.freeze([slot]) });
+    const piece = toHeld(found.piece, hold);
+    return answer({ pieces: Object.freeze([piece]), piece, twist: found.twist, slots: Object.freeze([slot]) });
+  },
+
+  /** Is a piece home, the right way round? `home` is null when a picture does not say. */
+  isHome: (cube, hold, of) => {
+    const piece = String(of).toUpperCase();
+    const home = isHome(cube, toIdentity(piece, hold));
+    return answer({ pieces: Object.freeze([piece]), home, unknown: home === null ? Object.freeze([piece]) : Object.freeze([]) });
+  },
+
+  /** A first-two-layers pair: the corner slot a script names and the middle-layer edge slot beside it. */
+  pairOf: (cube, hold, of) => {
+    const [corner, edge] = pairOf(toIdentity(of, hold));
+    return answer({ slots: heldList([corner, edge], hold) });
+  },
+});
+
+/** Which questions take an argument, and so must be written `name:ARG`. */
+export const TAKES_ARGUMENT = Object.freeze(['whereIs', 'pieceIn', 'isHome', 'pairOf']);
+
+/**
+ * Read `"name"` or `"name:ARG"` into `{ name, of }`, or `{ why }` saying what is wrong with it.
+ *
+ * A refusal rather than a throw, so the format check can name the step it came from and a cue can be
+ * validated without a cube in hand.
+ */
+export function readAsk(text) {
+  const [name, of, ...rest] = String(text ?? '').trim().split(':');
+  if (!Object.hasOwn(QUESTIONS, name)) return { why: `no question is named "${name}"` };
+  if (rest.length) return { why: `"${text}" has more than one argument` };
+  const wants = TAKES_ARGUMENT.includes(name);
+  if (wants && !of) return { why: `"${name}" needs a piece or a slot, as in "${name}:UR"` };
+  if (!wants && of !== undefined) return { why: `"${name}" takes no argument, and was given "${of}"` };
+  if (of !== undefined && !/^[URFDLB]{2,3}$/.test(of.toUpperCase())) {
+    return { why: `"${of}" is not a piece or a slot — two or three of URFDLB` };
+  }
+  return { name, of: of === undefined ? null : of.toUpperCase() };
+}
+
+/**
+ * Ask `text` of one cube held `hold`.
+ *
+ * `cube` is a piece state or a painted picture, and which one it is decides the answer: inside a
+ * picture segment a script's questions are answered from the picture, unknowns and all, rather than
+ * from the model the picture replaced (plan item 3.1).
+ */
+export function ask(text, cube, hold) {
+  const read = readAsk(text);
+  if (read.why) throw new Error(`script-questions: ${read.why}`);
+  return QUESTIONS[read.name](cube, hold, read.of);
+}
