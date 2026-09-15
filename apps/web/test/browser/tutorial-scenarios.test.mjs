@@ -15,7 +15,7 @@ import { ROTATIONS, SOLVED_FACELETS, applyMoves, held, play } from '../cube-orac
 import { SCENARIOS } from '../fixtures/tutorial-scenarios.mjs';
 import * as cubeKit from '../../lib/cube-kit.js';
 import { OPEN_ITEMS, strictKit, underGapRules } from '../tutorial-runner.mjs';
-import { readStickers, toWorld } from './drawn-cube.mjs';
+import { readMatrices, readStickers, toWorld } from './drawn-cube.mjs';
 import { startBrowserFixture } from './harness.mjs';
 
 /** What a scenario may use of the model: cube-kit, strictly. */
@@ -75,6 +75,13 @@ const drawn = async (k) => {
 };
 
 const tokens = (alg) => alg.trim().split(/\s+/).filter(Boolean);
+
+/** Advance the pinned clock by `ms` and let one frame run. */
+const tick = (ms) => page.evaluate(async (by) => {
+  const el = window.__cube;
+  el.clock = el._now() + by;
+  await new Promise((r) => requestAnimationFrame(() => r()));
+}, ms);
 
 test('the read-back is a reading: a solved cube at the reference hold reads as solved', async () => {
   await build({ orientation: 'U F' });
@@ -139,6 +146,27 @@ const ELEMENT_RUNNERS = {
         assert.equal(toWorld(await drawn(k)), oracle.worlds[k], `${sc.id}: "${alg}" (drawn "${tokens.join(' ')}") after ${k} moves`);
       }
     }
+  },
+  // A stop is where a walk waits, and a regrip is not one: `x y R` is one stop, so a child following on
+  // a real cube sees the whole-cube turn ANIMATE and then the turn, rather than a cube that jumped
+  // (ADR 0004 decision 9 and R4). Driven entirely through the public cube; read off the drawing.
+  async 'stop-animation'(sc) {
+    await build({ alg: sc.alg });
+    const ends = [];
+    for (const k of [0, tokens(sc.alg).length]) { await drawn(k); ends.push(await readMatrices(page)); }
+    await page.evaluate(() => window.__publicCube(window.__cube).seek(0));
+    await page.evaluate(() => window.__publicCube(window.__cube).stepStop());
+    for (const token of tokens(sc.alg)) {
+      // The clock is a test seam, not a consumer's to touch — so it is written on the element, while
+      // everything a host would do goes through the public cube.
+      await tick(95);
+      const mid = await readMatrices(page);
+      for (const [i, end] of ends.entries()) {
+        assert.notDeepEqual(mid, end, `${sc.id}: "${token}" was not drawn part way through (it reads as position ${i ? 'last' : '0'})`);
+      }
+      await tick(120);
+    }
+    assert.deepEqual(await readMatrices(page), ends[1], `${sc.id}: the group did not land on its stop`);
   },
 };
 

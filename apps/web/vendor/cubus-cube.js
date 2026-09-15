@@ -29268,6 +29268,14 @@ var EASE = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 var Y_AXIS = new Vector3(0, 1, 0);
 var SPIN_PER_MS = 35e-4 * 60 / 1e3;
 var UPRIGHT = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+var stopsOf = (sol) => {
+  const stops = [0];
+  sol.forEach((m, i) => {
+    if (faceTurnsOf(m).turns.some((t) => t.name)) stops.push(i + 1);
+  });
+  if (stops[stops.length - 1] !== sol.length) stops.push(sol.length);
+  return Object.freeze(stops);
+};
 var isUpright = (m) => m.every((row, i) => row.every((v, j) => v === (i === j ? 1 : 0)));
 var SOLVED_STATE = Object.freeze({
   cp: [0, 1, 2, 3, 4, 5, 6, 7],
@@ -29431,6 +29439,15 @@ var CubusCube = class _CubusCube extends HTMLElement {
     return this._attrs.highlight;
   }
   /**
+   * Where `alg` stops, as token positions — `seek(el.stops[k])` is the cube at stop `k`.
+   *
+   * A walk's step `k` is stop `k` (ADR 0004 decision 9), so a host that drives by stops never has to
+   * know which tokens are regrips. A frozen copy: the element's own list is not a host's to edit.
+   */
+  get stops() {
+    return Object.freeze([...this._stops ?? [0]]);
+  }
+  /**
    * A pinned clock, in milliseconds, or null to run on the real one.
    *
    * WHY IT IS A PROPERTY AND NOT AN ATTRIBUTE: the manifest is built from `observedAttributes`,
@@ -29560,13 +29577,19 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._anim = null;
     this._queue = [];
     this._writePose();
-    this._sol = this._parse(this._attrs.alg || "");
-    this._solMovesCentres = this._sol.some((m) => m.layers.includes(0));
+    this._readSol();
     this._refitIfTurned();
     this._cursor = 0;
     this._applied = 0;
     this._playing = false;
     this._dirty = true;
+  }
+  /** `alg` as moves, with what follows from it: whether it turns the cube, and where it stops. */
+  _readSol() {
+    this._sol = this._parse(this._attrs.alg || "");
+    this._solMovesCentres = this._sol.some((m) => m.layers.includes(0));
+    this._stops = stopsOf(this._sol);
+    this._group = null;
   }
   connectedCallback() {
     clearTimeout(this._release);
@@ -29691,8 +29714,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._cursor = 0;
     this._playing = false;
     this._applied = 0;
-    this._sol = this._parse(this._attrs.alg || "");
-    this._solMovesCentres = this._sol.some((m) => m.layers.includes(0));
+    this._readSol();
     this._hlSet = null;
     this._readHighlight();
     this._readFocus();
@@ -30415,8 +30437,15 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._syncHighlight();
     this._anim = null;
     this._applied += a.m.delta ?? 1;
-    this.dispatchEvent(new CustomEvent("cubus-step", { detail: { index: this._applied, total: this._sol.length } }));
+    this._report();
     this._dirty = true;
+    this._advanceGroup();
+  }
+  /** Say where the cube now is: the token position, and the stop it belongs to (ADR 0004 decision 9). */
+  _report() {
+    this.dispatchEvent(new CustomEvent("cubus-step", {
+      detail: { index: this._applied, total: this._sol.length, stop: this._stopAt(this._applied), stops: this._stops.length - 1 }
+    }));
   }
   /**
    * Put every cubie where the cube's STATE says it is — the one place geometry is written.
@@ -30458,6 +30487,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._cursor = 0;
     this._playing = false;
     this._applied = 0;
+    this._group = null;
     this._state = SOLVED_STATE;
     this._seq = UPRIGHT;
     this._writePose();
@@ -30470,9 +30500,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._refitIfTurned();
     this._syncHighlight();
     this._dirty = true;
-    if (!this._quiet) {
-      this.dispatchEvent(new CustomEvent("cubus-step", { detail: { index: 0, total: this._sol.length } }));
-    }
+    if (!this._quiet) this._report();
   }
   play() {
     this._playing = true;
@@ -30496,6 +30524,65 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._queue.push({ ...m, angle: -m.angle, delta: -1 });
     this._next();
   }
+  /**
+   * Play forward to the next stop — the transport a walk a child follows is driven by.
+   *
+   * ONE TOKEN AT A TIME. Queueing a group's tokens together hands them to `_drainBacklog`, whose rule is
+   * that more than two pending animations means the oldest completes at once — so `x y R` pressed as one
+   * step would have snapped the regrip the child is being asked to make (ADR 0004 R4). Each token is
+   * queued as the one before it completes, so nothing is ever more than one deep.
+   *
+   * A stop command arriving mid-group SETTLES that group first: the child asked for the next stop, so the
+   * turns still in flight land at once and the new group animates, rather than the press being dropped or
+   * queued behind an animation nobody is watching any more.
+   */
+  stepStop() {
+    this._settleGroup();
+    const to = this._stops.find((p) => p > this._cursor);
+    if (to === void 0) return;
+    this._group = { to, delta: 1 };
+    this.step();
+  }
+  /** Undo back to the previous stop — the whole group, one token at a time, the same way round. */
+  stepBackStop() {
+    this._settleGroup();
+    const to = [...this._stops].reverse().find((p) => p < this._cursor);
+    if (to === void 0) return;
+    this._group = { to, delta: -1 };
+    this.stepBack();
+  }
+  /** Land a group in flight where it was going, at once: the in-flight turn, the queue, then the rest. */
+  _settleGroup() {
+    const g = this._group;
+    if (!g) return;
+    this._group = null;
+    if (this._anim) this._completeMove(this._anim);
+    while (this._queue.length) this._completeMove({ m: this._queue.shift() });
+    while (this._cursor !== g.to) {
+      if (g.delta > 0) this._completeMove({ m: this._sol[this._cursor++] });
+      else {
+        const m = this._sol[--this._cursor];
+        this._completeMove({ m: { ...m, angle: -m.angle, delta: -1 } });
+      }
+    }
+  }
+  /** The next token of the group in flight, queued now that the one before it has landed. */
+  _advanceGroup() {
+    const g = this._group;
+    if (!g) return;
+    if (this._cursor === g.to) {
+      this._group = null;
+      return;
+    }
+    if (g.delta > 0) this.step();
+    else this.stepBack();
+  }
+  /** Which stop a token position is at, or the one behind it while a group is part way through. */
+  _stopAt(position) {
+    let k = 0;
+    for (let i = 0; i < this._stops.length; i++) if (this._stops[i] <= position) k = i;
+    return k;
+  }
   // Instant seek to solution move k, no animation. The app walks the solution with step()/
   // stepBack() and no longer calls this; it stays as renderer API for jumping to a position
   // (a scrubber, a deep link into a solve) where animating every move in between is wrong.
@@ -30518,7 +30605,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._cursor = target;
     this._applied = target;
     this._dirty = true;
-    this.dispatchEvent(new CustomEvent("cubus-step", { detail: { index: target, total: this._sol.length } }));
+    this._report();
   }
 };
 for (const name of Object.keys(REACTIONS)) {
