@@ -37,8 +37,8 @@ export const CAPABILITIES = Object.freeze({
   'flat-view': { what: 'a net or a top-face case diagram drawn from the same model', status: 'works' },
   'several-cubes': { what: 'many cubes on one page', status: 'works' },
   pick: { what: 'touch a piece, sticker or centre on the cube itself', status: 'gap', item: '5.3' },
-  'drawn-colours': { what: 'the colours the cube is drawn in, under the palette and scheme in force', status: 'partial', item: '5.1' },
-  'piece-state': { what: 'which piece is where and how it faces, for a page to count with', status: 'partial', item: '5.2' },
+  'drawn-colours': { what: 'the colours the cube is drawn in, under the palette and scheme in force', status: 'works' },
+  'piece-state': { what: 'which piece is where and how it faces, for a page to count with', status: 'works' },
   'painted-picture': { what: 'a picture with unknown stickers, no state behind it', status: 'works' },
   'clock-playback': { what: 'a sequence timed to narration, seekable to any instant', status: 'works' },
   'stop-playback': { what: 'a walk a smart cube follows, one observable step at a time', status: 'works' },
@@ -277,6 +277,17 @@ export const SCENARIOS = Object.freeze([
     id: 'the-oll-gallery-on-one-page', stage: 'OLL and PLL', half: 'element', kind: 'several-cubes', closedBy: '4.6',
     source: 'the Trainer and cubus-im charts: all 57 OLL cases at once, past the 16 live contexts a page keeps',
     needs: ['several-cubes', 'flat-view'], table: 'FULL_OLL',
+  },
+  // ---- the surface (Phase 5) --------------------------------------------------------------------
+  {
+    id: 'swatches-in-the-colours-drawn', stage: 'drills', half: 'element', kind: 'drawn-colours', closedBy: '5.1',
+    source: 'cubus-im drills and companion: six swatches the colours the cube is drawn in, under either scheme',
+    needs: ['drawn-colours'], palettes: ['muted', 'colorsafe'], schemes: ['western', 'japanese'],
+  },
+  {
+    id: 'the-playground-counter', stage: 'concepts', half: 'model', kind: 'piece-state', closedBy: '5.2',
+    source: "cubus-im playground: pieces away from home — out of their slot, or in it the wrong way round",
+    needs: ['piece-state'], start: { hold: 'U F', setup: '' }, moves: "R U R' U' R U R' U'",
   },
   {
     id: 'R11-focus-and-highlight-keep-their-split', stage: 'every stage', half: 'element', kind: 'covered',

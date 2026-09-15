@@ -16,6 +16,7 @@
 // colours — the second fails if any link in the chain moves, including ones nobody thought to
 // name here.
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import { after, before, test } from 'node:test';
 
 import { startBrowserFixture } from './harness.mjs';
@@ -134,31 +135,54 @@ test('the readings change when the cube turns, and change back', async () => {
 });
 
 // The "right slot, wrong way round" case the counter exists for: positions alone cannot see it.
-test('a piece turned in place changes facing while its position does not', async () => {
+// What the playground's reading can NOT see, pinned as the fact it is. This case used to claim "a piece turned
+// in place changes facing", keyed its snapshot by position and asserted the positions matched — which every
+// cube does, since all 26 positions are always occupied — and passed because six-turn commutators PERMUTE
+// pieces, not because anything saw a twist. Keyed by piece identity the truth shows: `facing` pairs each
+// sticker's build-time face letter with its colour, and neither changes when a piece twists in place. So the
+// playground counts a piece home but twisted as home, against its own rule; the port in
+// `test/browser/consumer-ports.test.mjs` (plan item 5.2) counts it, and cubus-im adopting that port is item 6.6.
+test('a piece twisted in place is invisible to the playground\'s reading — its facing does not change', async () => {
   const snapshot = () => page.evaluate(() => {
+    const sortLetters = (x) => String(x).split('').sort().join('');
     const out = {};
     for (const c of window.__cube.cubies) {
       if (!c.userData.piece) continue;
-      const at = [c.position.x, c.position.y, c.position.z].map(Math.round).join(',');
-      out[at] = c.children.filter((m) => m.userData?.face && !m.userData.n)
-        .map((m) => `${m.userData.face}:${m.material.color.getHexString()}`).sort().join('|');
+      out[sortLetters(c.userData.piece)] = {
+        at: [c.position.x, c.position.y, c.position.z].map(Math.round).join(','),
+        facing: c.children.filter((m) => m.userData?.face && !m.userData.n)
+          .map((m) => `${m.userData.face}:${m.material.color.getHexString()}`).sort().join('|'),
+      };
     }
     return out;
   });
-  // A corner twist in place: the sexy-move commutator repeated six times returns every piece to
-  // its slot, so anything that differs afterwards differs in FACING alone.
   await page.evaluate(() => { window.__cube.recycle(); window.__cube.setAttribute('ghosts', 'on'); });
   await page.evaluate(() => window.__cube.reset());
   const home = await snapshot();
+  // (R U R' U') twice leaves four pieces in their own slots the wrong way round (cubejs: 3 out of place, 4
+  // twisted home) — among them the corner URF and the edge UF's neighbours; which ones is read, not assumed.
   await page.evaluate(() => {
-    window.__cube.setAttribute('alg', "R U R' U' R U R' U' R U R' U'");
-    window.__cube.seek(12);
+    window.__cube.setAttribute('alg', "R U R' U' R U R' U'");
+    window.__cube.seek(8);
   });
-  const twisted = await snapshot();
-  assert.deepEqual(Object.keys(twisted).sort(), Object.keys(home).sort(),
-    'every piece should be back in its own slot');
-  assert.notDeepEqual(twisted, home,
-    'six sexy moves left the cube identical — the facing channel sees nothing');
+  const after = await snapshot();
+  // Which pieces are home but twisted, from cubejs — which shares no code with the renderer.
+  const Cube = createRequire(import.meta.url)('cubejs');
+  const cube = new Cube(); cube.move("R U R' U' R U R' U'");
+  const CORNERS = ['URF', 'UFL', 'ULB', 'UBR', 'DFR', 'DLF', 'DBL', 'DRB'];
+  const EDGES = ['UR', 'UF', 'UL', 'UB', 'DR', 'DF', 'DL', 'DB', 'FR', 'FL', 'BL', 'BR'];
+  const sortLetters = (x) => [...x].sort().join('');
+  const twisted = [
+    ...CORNERS.filter((_, i) => cube.cp[i] === i && cube.co[i] !== 0),
+    ...EDGES.filter((_, i) => cube.ep[i] === i && cube.eo[i] !== 0),
+  ].map(sortLetters);
+  assert.equal(twisted.length, 4, `precondition: cubejs says four pieces are home but twisted, not ${twisted.join(' ')}`);
+  const homeAgain = Object.keys(home).filter((piece) => after[piece].at === home[piece].at && piece.length > 1);
+  assert.deepEqual(twisted.filter((piece) => !homeAgain.includes(piece)), [], 'the drawing put a twisted-home piece somewhere else');
+  for (const piece of twisted) {
+    assert.equal(after[piece].facing, home[piece].facing,
+      `${piece} is in its slot and its facing changed — the reading sees twists now; the playground's blind spot is gone, so update this pin and item 5.2's note`);
+  }
 });
 
 // A ghost is told apart from a sticker by `userData.n` alone, on both sides of the test.
