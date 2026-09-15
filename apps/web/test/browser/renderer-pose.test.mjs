@@ -124,7 +124,8 @@ test('a selector written mid-turn names the settled occupant, and each channel k
     const at = (x, y, z) => el.cubies.find((c) => c.position.x === x && c.position.y === y && c.position.z === z);
     const pieceAtUR = () => at(1, 1, 0).userData.piece;
     const colours = () => el.cubies.map((c) => c.children.filter((m) => m.userData?.face).map((m) => m.material.color.getHex()).join());
-    const lit = () => [...(el._hlSet ?? [])].map((c) => c.userData.piece);
+    // The set holds stickers and their ghosts (plan item 4.1); a piece is lit when its stickers are.
+    const lit = () => [...new Set([...(el._hlSet ?? [])].map((m) => m.parent.userData.piece))];
     const kept = (before) => { const now = colours(); return el.cubies.filter((c, i) => now[i] === before[i]).map((c) => c.userData.piece); };
 
     const settledUR = pieceAtUR();
@@ -299,7 +300,7 @@ test('focus and highlight name the same cubies for the same selectors', async ()
     el.setAttribute('highlight', spec);
     el.setAttribute('focus', spec);
     await new Promise((r) => requestAnimationFrame(() => r()));
-    const lit = [...el._hlSet].map((c) => el.cubies.indexOf(c)).sort((a, b) => a - b);
+    const lit = [...new Set([...el._hlSet].map((m) => el.cubies.indexOf(m.parent)))].sort((a, b) => a - b);
     // Out of focus is exactly grey: every palette colour has a hue, so r = g = b only when greyed.
     const grey = (m) => Math.abs(m.material.color.r - m.material.color.g) < 1e-9
       && Math.abs(m.material.color.g - m.material.color.b) < 1e-9;

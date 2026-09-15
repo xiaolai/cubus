@@ -70,7 +70,7 @@ const picture = () => page.evaluate(() => {
 });
 
 /** Where each lit cubie stands, in the cube's own coordinates. A test seam: it reads the scene. */
-const lit = () => page.evaluate(() => [...(window.__cube._hlSet ?? [])]
+const lit = () => page.evaluate(() => [...new Set([...(window.__cube._hlSet ?? [])].map((m) => m.parent))]
   .map((c) => [c.position.x, c.position.y, c.position.z].map((v) => Math.round(v) + 0)));
 
 /** Load a round, answer it right, and play its reveal to the end. */

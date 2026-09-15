@@ -157,7 +157,7 @@ export function heldFace(face, hold) {
   return faceOf(rows.map((row) => row.reduce((sum, c, j) => sum + c * identity[j], 0)));
 }
 
-const SELECTOR = /\b(layer|slot|piece):([URFDLB]{1,3})\b/gi;
+const SELECTOR = /\b(layer|slot|piece):([URFDLB]{1,3})(?:\/([URFDLB]))?(?![\w/])/gi;
 
 /**
  * A highlight or focus spec written the way the child holds the cube, in identity letters.
@@ -168,9 +168,12 @@ const SELECTOR = /\b(layer|slot|piece):([URFDLB]{1,3})\b/gi;
  */
 export function convertSelectors(spec, hold) {
   checkHold(hold);
+  // A sticker's face letter is a position in the hold too — `slot:UF/U` is the sticker facing the child's
+  // top — so it is relabelled with the letters it belongs to (plan item 4.1).
+  const relabel = (letters) => [...letters.toUpperCase()].map((c) => identityFace(c, hold)).join('');
   return String(spec ?? '').replace(
     SELECTOR,
-    (_, kind, letters) => `${kind}:${[...letters.toUpperCase()].map((c) => identityFace(c, hold)).join('')}`,
+    (_, kind, letters, face) => `${kind}:${relabel(letters)}${face ? `/${relabel(face)}` : ''}`,
   );
 }
 

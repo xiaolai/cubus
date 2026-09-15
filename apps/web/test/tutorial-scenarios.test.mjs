@@ -43,7 +43,7 @@ test('the check can fail: a word with no row is reported, and a mapped one is no
 test('every capability a row names exists, and every one not working says which plan item closes it', () => {
   const named = [
     ...Object.values(CUE_VERBS), ...Object.values(STEP_KINDS), ...Object.values(WHY_KEYS),
-    ...Object.values(TARGET_IDS), ...SOURCES.flatMap((s) => [...s.uses, ...s.wants]),
+    ...Object.values(TARGET_IDS), ...SOURCES.flatMap((s) => [...s.uses, ...s.wants, ...(s.ready ?? [])]),
   ].flat();
   assert.deepEqual(unmapped(named, CAPABILITIES), [], 'a row names a capability the table does not define');
   for (const [id, c] of Object.entries(CAPABILITIES)) {
@@ -53,7 +53,10 @@ test('every capability a row names exists, and every one not working says which 
   }
   for (const s of SOURCES) {
     const works = s.wants.filter((w) => CAPABILITIES[w].status === 'works');
-    assert.deepEqual(works, [], `${s.stage} (${s.where}) wants what already works: ${works.join(', ')}`);
+    assert.deepEqual(works, [], `${s.stage} (${s.where}) wants what already works — move it to \`ready\`: ${works.join(', ')}`);
+    // And the other way: a capability a stage is said to be ready to adopt has to be one the surface has.
+    const notYet = (s.ready ?? []).filter((w) => CAPABILITIES[w].status !== 'works');
+    assert.deepEqual(notYet, [], `${s.stage} (${s.where}) is marked ready for what does not work yet: ${notYet.join(', ')}`);
   }
 });
 
