@@ -120,6 +120,11 @@ export { QUESTIONS, TAKES_ARGUMENT, ask, readAsk } from './script-questions.js';
 
 // A script's cube at every position — the pure half every driver stands on (plan item 3.2).
 export { askAt, buildScript, groupsOf, stateFrom, viewAtPosition } from './script-view.js';
+
+// The drivers: a clock (a narrated lesson), stops (a walk a cube follows), and the one writer both hand
+// their views to — plus the matcher that finds a turned cube on a walk (plan item 3.3).
+export { createClockDriver, createElementWriter, createStopDriver, timelineOf } from './script-drive.js';
+export { locate, trackFor, trackOf } from './script-track.js';
 export {
   CAM_DEFAULT,
   CAM_EASE,
