@@ -11,14 +11,16 @@ import { existsSync, readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import * as kit from '../lib/cube-kit.js';
 import { SOLVED, applyAlg } from '../lib/cube-pieces.js';
 import { WHY_KEYS as EMITTABLE_WHY_KEYS } from '../lib/method-lesson.js';
 import { solveByMethod } from '../lib/method-solver.js';
 import { allRungCombinations, methodFor } from '../lib/methods/index.js';
 import { TARGETS } from '../lib/stage-targets.js';
 import {
-  CAPABILITIES, CUE_VERBS, SOURCES, STEP_KINDS, TARGET_IDS, WHY_KEYS,
+  CAPABILITIES, CUE_VERBS, SCENARIOS, SOURCES, STEP_KINDS, TARGET_IDS, WHY_KEYS,
 } from './fixtures/tutorial-scenarios.mjs';
+import { MODEL_RUNNERS, OPEN_ITEMS, assertCovered, strictKit, underGapRules } from './tutorial-runner.mjs';
 
 /** The sibling lesson-course checkout, where its parser lives. Absent on a clone of this repo alone. */
 const CUBUS_IM = process.env.CUBUS_IM_REPO
@@ -98,3 +100,64 @@ test('every cue verb the lesson course parses has a row, and no row is for a ver
   assert.deepEqual(unmapped(verbs, CUE_VERBS), []);
   assert.deepEqual(unmapped(Object.keys(CUE_VERBS), Object.fromEntries(verbs.map((v) => [v, 1]))), []);
 });
+
+// ---- the corpus (plan items 0.2 and 0.3) --------------------------------------------------------------
+
+const HALVES = ['model', 'element', 'player'];
+
+test('every scenario says which half runs it, and every gap names an open plan item or a covering test', () => {
+  const ids = new Set();
+  for (const sc of SCENARIOS) {
+    assert.ok(!ids.has(sc.id), `two scenarios are called ${sc.id}`);
+    ids.add(sc.id);
+    assert.ok(HALVES.includes(sc.half), `${sc.id}: half "${sc.half}"`);
+    assert.deepEqual(unmapped(sc.needs, CAPABILITIES), [], `${sc.id} needs a capability the table does not define`);
+    if (sc.kind === 'covered') assert.equal(sc.closedBy, undefined, `${sc.id} is covered and still names a plan item`);
+  }
+  const used = new Set(SCENARIOS.map((s) => s.closedBy).filter(Boolean));
+  assert.deepEqual(OPEN_ITEMS.filter((item) => !used.has(item)), [], 'an open item has no scenario waiting on it');
+});
+
+test('the gap rules can fail in each direction they exist to catch', async () => {
+  const todos = [];
+  const t = { todo: (why) => todos.push(why) };
+  const sc = { id: 'probe', closedBy: '9.9' };
+  await underGapRules(t, sc, true, () => { throw new Error('not built'); });
+  assert.equal(todos.length, 1, 'an open gap that fails is a todo');
+  await assert.rejects(underGapRules(t, sc, true, () => {}), /still in OPEN_ITEMS/, 'an open gap that passes is a stale registry');
+  await assert.rejects(underGapRules(t, sc, false, () => { throw new Error('broken'); }), /broken/, 'a closed item that fails fails the run');
+  await underGapRules(t, sc, false, () => {});
+  assert.equal(todos.length, 1, 'a closed item that passes is not a todo');
+});
+
+test('a scenario sees cube-kit only as it is: a name it does not export throws, naming itself', () => {
+  const k = strictKit(kit);
+  assert.equal(typeof k.applyAlg, 'function');
+  assert.throws(() => k.noSuchExport, /exports no "noSuchExport"/);
+  assert.throws(() => k.constructor, /exports no "constructor"/);
+});
+
+for (const sc of SCENARIOS.filter((s) => s.kind === 'covered')) {
+  test(`${sc.id}: pinned by the test it names`, () => assertCovered(sc));
+}
+
+for (const sc of SCENARIOS.filter((s) => s.half === 'model')) {
+  const open = OPEN_ITEMS.includes(sc.closedBy);
+  test(`${sc.id} (${sc.source})`, async (t) => {
+    const runner = MODEL_RUNNERS[sc.kind];
+    await underGapRules(t, sc, open, () => {
+      if (!runner) throw new Error(`no runner for "${sc.kind}" yet — it arrives with plan item ${sc.closedBy}`);
+      return runner(sc, strictKit(kit));
+    });
+  });
+}
+
+for (const sc of SCENARIOS.filter((s) => s.half === 'player')) {
+  const open = OPEN_ITEMS.includes(sc.closedBy);
+  if (sc.kind === 'covered') continue;
+  test(`${sc.id} (${sc.source})`, async (t) => {
+    await underGapRules(t, sc, open, () => {
+      throw new Error(`no runner for "${sc.kind}" yet — it arrives with plan item ${sc.closedBy}`);
+    });
+  });
+}

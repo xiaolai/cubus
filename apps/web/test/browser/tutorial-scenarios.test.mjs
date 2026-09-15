@@ -8,11 +8,16 @@
 // table, a hold drawn the wrong way round or a turn applied to the wrong layer shows up as a letter in
 // the wrong place — never as two copies of one mistake agreeing with each other.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { after, before, test } from 'node:test';
 
-import { ROTATIONS, SOLVED_FACELETS, applyMoves, faceletAt, held } from '../cube-oracle.mjs';
+import { ROTATIONS, SOLVED_FACELETS, applyMoves, faceletAt, held, play } from '../cube-oracle.mjs';
 import { SCENARIOS } from '../fixtures/tutorial-scenarios.mjs';
+import { OPEN_ITEMS, underGapRules } from '../tutorial-runner.mjs';
 import { startBrowserFixture } from './harness.mjs';
+
+/** What a consumer may touch, as the element itself declares it (plan item 2.5 widens this). */
+const MANIFEST = JSON.parse(readFileSync(new URL('../../vendor/cubus-cube.manifest.json', import.meta.url), 'utf8'));
 
 let fixture; let page;
 
@@ -21,16 +26,37 @@ before(async () => {
   page = await fixture.browser.newPage();
   await page.goto(`${fixture.base}/index.html`);
   await page.waitForFunction(() => !!customElements.get('cubus-cube'));
+  // The public cube a scenario is WRITTEN against: the manifest's attributes through the DOM's own
+  // attribute calls, the manifest's methods, and nothing else. Anything more throws, naming itself.
+  await page.evaluate((manifest) => {
+    const attributes = new Set(manifest.attributes);
+    const methods = new Set(manifest.methods);
+    const attributeCalls = new Set(['setAttribute', 'removeAttribute', 'getAttribute']);
+    window.__publicCube = (el) => new Proxy(el, {
+      get(target, name) {
+        if (typeof name === 'symbol') throw new Error('a symbol read on the public cube');
+        if (attributeCalls.has(name)) {
+          return (attr, ...rest) => {
+            if (!attributes.has(attr)) throw new Error(`the manifest lists no attribute "${attr}"`);
+            return target[name](attr, ...rest);
+          };
+        }
+        if (methods.has(name)) return (...args) => target[name](...args);
+        throw new Error(`the manifest lists no member "${name}"`);
+      },
+    });
+  }, MANIFEST);
 });
 
 after(async () => { await fixture?.close(); });
 
-/** A fresh element with `attrs`, one frame in, on a pinned clock. */
+/** A fresh element with `attrs`, written through the public cube, one frame in, on a pinned clock. */
 const build = (attrs) => page.evaluate(async (a) => {
   if (window.__cube) { window.__cube.dispose?.(); window.__cube.remove?.(); }
   const el = document.createElement('cubus-cube');
   el.style.cssText = 'position:fixed;left:0;top:0;width:240px;height:240px;z-index:99999';
-  for (const [k, v] of Object.entries(a)) el.setAttribute(k, v);
+  const cube = window.__publicCube(el);
+  for (const [k, v] of Object.entries(a)) cube.setAttribute(k, v);
   document.body.appendChild(el);
   window.__cube = el;
   await new Promise((r) => requestAnimationFrame(() => r()));
@@ -40,11 +66,11 @@ const build = (attrs) => page.evaluate(async (a) => {
 /**
  * Every sticker of the drawn cube: its home face (the colour it was painted, for a cube built from
  * moves rather than a facelet string), the world position of its cubie and its world offset from that
- * cubie. Read after `seek`, so nothing is mid-turn.
+ * cubie. `seek` goes through the public cube; the reading is a check, and reads the scene directly.
  */
 const drawn = (k) => page.evaluate((to) => {
   const el = window.__cube;
-  if (to !== null) el.seek(to);
+  if (to !== null) window.__publicCube(el).seek(to);
   el.root.updateMatrixWorld(true);
   const V = el.stickers[0].position.constructor;
   return el.stickers.map((m) => {
@@ -96,5 +122,50 @@ for (const sc of SCENARIOS.filter((s) => s.half === 'element' && s.kind === 'ide
       await build({ orientation: hold, alg: sc.alg });
       assert.equal(toWorld(await drawn(n)), held(identity, hold), `${sc.id} held ${hold}`);
     }
+  });
+}
+
+test('the public cube refuses what the manifest does not list, and allows what it does', async () => {
+  await build({ orientation: 'U F' });
+  const refused = await page.evaluate(() => {
+    const cube = window.__publicCube(window.__cube);
+    const attempt = (f) => { try { f(); return null; } catch (e) { return e.message; } };
+    return {
+      stickers: attempt(() => cube.stickers),
+      privateAnim: attempt(() => cube._anim),
+      bogusAttribute: attempt(() => cube.setAttribute('not-an-attribute', '1')),
+      seek: attempt(() => cube.seek(0)),
+      alg: attempt(() => cube.setAttribute('alg', 'R')),
+    };
+  });
+  assert.match(refused.stickers ?? '', /no member "stickers"/);
+  assert.match(refused.privateAnim ?? '', /no member "_anim"/);
+  assert.match(refused.bogusAttribute ?? '', /no attribute "not-an-attribute"/);
+  assert.equal(refused.seek, null);
+  assert.equal(refused.alg, null);
+});
+
+/** The element half's runners for scenarios whose capability a plan item is still building. */
+const ELEMENT_RUNNERS = {
+  // Centre-moving tokens in `alg`: drawn at every position as the oracle plays them.
+  async 'element-tokens'(sc) {
+    for (const alg of sc.algs) {
+      await build({ orientation: sc.orientation, alg });
+      const oracle = play(SOLVED_FACELETS, sc.orientation, alg);
+      for (let k = 0; k < oracle.worlds.length; k++) {
+        assert.equal(toWorld(await drawn(k)), oracle.worlds[k], `${sc.id}: "${alg}" after ${k} moves`);
+      }
+    }
+  },
+};
+
+for (const sc of SCENARIOS.filter((s) => s.half === 'element' && s.closedBy)) {
+  const open = OPEN_ITEMS.includes(sc.closedBy);
+  test(`${sc.id} (${sc.source})`, async (t) => {
+    await underGapRules(t, sc, open, () => {
+      const runner = ELEMENT_RUNNERS[sc.kind];
+      if (!runner) throw new Error(`no runner for "${sc.kind}" yet — it arrives with plan item ${sc.closedBy}`);
+      return runner(sc);
+    });
   });
 }
