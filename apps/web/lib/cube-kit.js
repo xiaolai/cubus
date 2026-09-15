@@ -82,6 +82,20 @@ export { formatMoves, parse } from './cube-notation.js';
 // the pieces, the hold after, and the identity-frame tokens that draw it (ADR 0004 decision 5).
 export { convertSelectors, run } from './cube-moves.js';
 
+// Questions a tutorial asks of one cube — a piece state or a painted picture with unknown stickers.
+// They read and never move (dev-docs/adr/0005-the-renderer-plays-scripts-methods-choose.md, decision 2).
+export {
+  edgesInLayerWithout,
+  inLayerWithout,
+  isHome,
+  layerSlots,
+  pairOf,
+  pieceIn,
+  piecesAway,
+  readCube,
+  whereIs,
+} from './cube-questions.js';
+
 // The view the app draws its own cubes at, so a consumer's cubes can look like the app's without
 // keeping a hand-copied set of numbers that goes stale in silence.
 export { CUBE_VIEW, CUBE_VIEW_ATTRS } from './cube-view.js';

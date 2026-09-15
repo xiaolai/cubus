@@ -33,6 +33,7 @@ import { CORNERS, EDGES, MOVES, MOVE_NAMES, SOLVED, applyMove } from './cube-pie
 // — into the main bundle to read one function, which is the duplication solver-engine.js's
 // VIEW_COUNT comment already refuses for one integer.
 import { permutationParity } from './random-state.js';
+import { CENTERS, CORNER_FACELETS, EDGE_FACELETS, FACE_LETTERS } from './cube-layout.js';
 
 // ---- the move set -----------------------------------------------------------------------------
 
@@ -788,42 +789,9 @@ export function solveIntoG1(state, { maxDepth = 12 } = {}) {
 // U R F D L B, nine stickers each, row-major with the face held as the published convention
 // holds it. Colors are named by their home face's letter. cube-pieces' CORNERS/EDGES names
 // double as the color sequences — letter k of 'URF' is the color at the cubie's k-th sticker —
-// and the test suite pins this whole convention to cubejs by round-tripping random states.
-
-/** Facelet indices of each corner slot's three stickers, U/D sticker first. */
-const CORNER_FACELETS = [
-  [8, 9, 20], [6, 18, 38], [0, 36, 47], [2, 45, 11],
-  [29, 26, 15], [27, 44, 24], [33, 53, 42], [35, 17, 51],
-];
-
-/** Facelet indices of each edge slot's two stickers, the EDGES-name order first. */
-const EDGE_FACELETS = [
-  [5, 10], [7, 19], [3, 37], [1, 46], [32, 16], [28, 25], [30, 43], [34, 52],
-  [23, 12], [21, 41], [50, 39], [48, 14],
-];
-
-const CENTERS = [4, 13, 22, 31, 40, 49];
-const FACE_LETTERS = 'URFDLB';
-
-/**
- * Which facelet indices belong to which slot, and which letter each face's centre carries.
- *
- * Exported for `lib/stage-picture.js`, which draws a TARGET rather than a state: a target leaves
- * some pieces free, and the only honest way to draw one is to blank the stickers it does not
- * constrain. Doing that needs to know which stickers belong to which piece, and this module is
- * where that fact already lives — a second copy of these tables somewhere else would be a second
- * place for the facelet layout to be wrong, and the failure would be a picture that quietly points
- * at the wrong sticker.
- *
- * READ-ONLY BY CONSTRUCTION: the arrays inside are frozen too, because `Object.freeze` is shallow
- * and these are the tables every facelet string in the app is built from.
- */
-export const SLOT_FACELETS = Object.freeze({
-  corners: Object.freeze(CORNER_FACELETS.map((f) => Object.freeze([...f]))),
-  edges: Object.freeze(EDGE_FACELETS.map((f) => Object.freeze([...f]))),
-  centers: Object.freeze([...CENTERS]),
-  faces: FACE_LETTERS,
-});
+// and the test suite pins this whole convention to cubejs by round-tripping random states. The
+// layout tables themselves live in `lib/cube-layout.js` (lifted 2026-09-15), because the stage
+// pictures and the tutorial questions read them without needing a solver.
 
 /**
  * A facelet string as a cubie state, or null when it is not a solvable cube.
