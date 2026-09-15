@@ -35,7 +35,7 @@ import { turnFacelets } from '../../lib/cube-orientation.js';
 import { fromCube } from '../../lib/cube-pieces.js';
 import { moveStepIndex, stepAtMove } from '../../lib/method-lesson.js';
 import { methodFor, solveByMethod } from '../../lib/method-solver.js';
-import { TUMBLED, holdForStage, holdSpec, renameAlg, toMethodFrame } from '../../lib/solving-hold.js';
+import { TUMBLED, holdForStage, holdSpec, renameAlg, scanFrameWalk, toMethodFrame } from '../../lib/solving-hold.js';
 import Cube from '../../vendor/cubejs.js';
 import { pace } from '../browser-wait.mjs';
 import { freePort } from '../free-port.mjs';
@@ -645,7 +645,10 @@ test('a lesson builds its white cross and first layer white up, then turns the c
     const flipAt = heldAt.indexOf('D B');
     assert.ok(flipAt > crossCount, 'the cube is turned over after the first layer, not after the cross');
     assert.ok(heldAt.slice(flipAt).every((h) => h === 'D B'), 'and it is turned over once, never back');
-    assert.deepEqual(sections.flatMap((s) => s.chips), moves.map((m, k) => (heldAt[k] === 'D B' ? renameAlg(m, TUMBLED) : m)),
+    // A chip is named for the hold its own move is made in: the stage's, turned by every regrip before it
+    // in the middle layer (plan items 6.1 and 6.2) — the lesson's own record, worked out as the app works it.
+    const { holds } = scanFrameWalk(steps);
+    assert.deepEqual(sections.flatMap((s) => s.chips), moves.map((m, k) => renameAlg(m, holds[k])),
       'every chip is named for the hold its own move is made in');
 
     // Off the stickers: the white cross on top after the cross section, and the whole white layer on
