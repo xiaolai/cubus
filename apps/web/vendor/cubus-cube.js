@@ -32262,6 +32262,30 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._dirty = true;
     if (!this._quiet) this._report();
   }
+  /**
+   * The colour each face is drawn in: `{ U, R, F, D, L, B }` as `#rrggbb`, the colour of that face's centre
+   * under the palette and colour scheme in force — or null before the cube is built.
+   *
+   * THE PUBLIC ANSWER to a question consumers were answering by walking the scene (plan item 5.1): cubus-im's
+   * drill swatches and lesson companion find the centre cubies and read their first sticker's material colour,
+   * so a swatch matches the cube under either scheme without the page being told which. That walk breaks on
+   * any rename of `userData.face`, and reads grey under a focus. This gives the same six colours — through the
+   * same colour round trip the materials make, so the two agree to the hex — from the palette and the centres'
+   * letters, and a focus does not change it: a swatch is the colour, not the treatment. A centre a picture has
+   * not read is the unknown sticker's colour, as it is drawn.
+   */
+  drawnColours() {
+    if (!this.stickers) return null;
+    const pal = paletteFor(this._attrs.palette, this._attrs.scheme);
+    const fl = this._facelets();
+    const out = {};
+    for (const f of FACES) {
+      const letter = fl ? fl[FACELET_INDEX[f.key](f.n[0], f.n[1], f.n[2])] : f.key;
+      const hex = letter === "?" ? UNKNOWN_STICKER : pal[letter];
+      out[f.key] = `#${(this._colour ||= new Color()).set(hex).getHexString()}`;
+    }
+    return Object.freeze(out);
+  }
   play() {
     this._playing = true;
     this._next();
