@@ -9,6 +9,7 @@ import {
 } from './optimal.js';
 import { plural, t } from './i18n.js';
 import { routeSentence } from './stage-report.js';
+import { turnsIn } from './method-lesson.js';
 
 import { $, state } from './app-state.js';
 import { settings } from './app-settings.js';
@@ -279,8 +280,9 @@ export function sayWalkLength({ root, setStatus, scrambling, route, stageTargetN
     // Both counts through `plural`, because both can be 1. A one-move lesson read
     // "1 moves · 1 steps" — and this is the file whose i18n note says a hard-coded English
     // plural is both untranslatable and wrong for most languages.
+    // A lesson's count is its FACE TURNS: a regrip is a position on the walk, never a move it costs.
     : lesson ? t('%1 · %2',
-      plural(total, { one: '%1 move', other: '%1 moves' }),
+      plural(turnsIn(lesson.alg), { one: '%1 move', other: '%1 moves' }),
       plural(lesson.steps.length, { one: '%1 step', other: '%1 steps' }))
       : showingProof ? provenMinimumLabel(total)
         : verdict && verdict.key === 'solve.targetMissed' && verdict.stopped === 'exhausted'

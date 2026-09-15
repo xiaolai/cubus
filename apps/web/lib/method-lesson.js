@@ -19,6 +19,7 @@
 // mounting a screen.
 
 import { CORNERS, EDGES, moveCount } from './cube-pieces.js';
+import { faceTurnsAlg } from './cube-moves.js';
 import { plural, t } from './i18n.js';
 import { WHITE_UP_STAGES } from './solving-hold.js';
 
@@ -274,8 +275,16 @@ export function lessonCues(step) {
   return { highlight: pieces.join(','), focus: ['centers', ...pieces].join(',') };
 }
 
-/** How many moves are in an alg — the shared tokenizer, not a third spelling of it. */
+/** How many moves are in an alg — the shared tokenizer, not a third spelling of it. A regrip is one:
+ *  this counts POSITIONS in a walk, which is what a chip and the playhead are indexed by. */
 const movesIn = moveCount;
+
+/**
+ * How many face turns an alg is, in the half-turn metric — a regrip none, a slice two. What a lesson
+ * says it COSTS (plan item 6.1): turning the cube so the gap is in front is not a move a child is
+ * charged for, and a count that included it would make the method look longer for teaching it.
+ */
+export const turnsIn = (alg) => moveCount(faceTurnsAlg(String(alg ?? '')));
 
 /**
  * The move list, cut into the four stages — §5.1.
@@ -308,7 +317,7 @@ export function lessonSections(steps) {
     }
     const n = movesIn(s.alg);
     last.steps += 1;
-    last.moves += n;
+    last.moves += turnsIn(s.alg);
     move += n;
     last.to = move;
     step += 1;

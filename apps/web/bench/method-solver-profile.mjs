@@ -35,6 +35,7 @@ import { pathToFileURL } from 'node:url';
 import { SOLVED, applyAlg, moveCount } from '../lib/cube-pieces.js';
 import { LADDER, allRungCombinations, methodFor, rungKey, solveByMethod } from '../lib/method-solver.js';
 import { seededStates } from '../test/fixtures/seeded-scrambles.mjs';
+import { turnsOf } from '../test/fixtures/method-replay.mjs';
 
 const require = createRequire(import.meta.url);
 const Cube = require('cubejs');
@@ -95,7 +96,8 @@ export function rungDelta(states, { dial, from, to, axis }) {
   const mine = (m, state) => solveByMethod(state, m).steps.filter((s) => STAGES_OF[dial].includes(s.stage));
   const measure = (steps) => ({
     steps: steps.length,
-    moves: steps.reduce((n, s) => n + moveCount(s.alg), 0),
+    // Face turns, played in each step's hold: a regrip is not a move (plan item 6.1).
+    moves: steps.reduce((n, s) => n + moveCount(turnsOf(s)), 0),
     parts: steps.reduce((n, s) => n + (s.parts?.length ?? 0), 0)
       / Math.max(1, steps.filter((s) => s.parts).length),
   });
@@ -212,7 +214,7 @@ function profile(n, { name, rungs }) {
       tally(algorithms, algorithmsOf(step));
       if (step.caseName) tally(cases, [step.caseName]);
       stageSteps.set(step.stage, (stageSteps.get(step.stage) ?? 0) + 1);
-      stageMoves.set(step.stage, (stageMoves.get(step.stage) ?? 0) + moveCount(step.alg));
+      stageMoves.set(step.stage, (stageMoves.get(step.stage) ?? 0) + moveCount(turnsOf(step)));
     }
   }
 

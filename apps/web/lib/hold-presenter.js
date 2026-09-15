@@ -41,6 +41,24 @@ export function holdAtMove(lesson, walkHold, k) {
 }
 
 /**
+ * The hold move `k` is MADE in — what its chip is named for, and the smart cube's line.
+ *
+ * Not `holdAtMove`: that is the STAGE's hold, which the renderer is turned to and the hold sentence
+ * says, and it changes once, at the tumble. A lesson's regrips turn the child's hold within a stage,
+ * move by move (`lesson.moveHolds`, plan item 6.1), while the drawing turns with the regrip itself —
+ * so turning the renderer to this one as well would turn the cube twice. Any other walk is held
+ * `walkHold` throughout. `k` may equal the walk's length: the hold after the last move.
+ */
+export function moveHold(lesson, walkHold, k) {
+  if (!lesson) return walkHold;
+  const holds = lesson.moveHolds;
+  if (!Array.isArray(holds) || holds.length === 0) {
+    throw new Error('hold-presenter: a lesson carries the hold of every move (`moveHolds`)');
+  }
+  return holds[Math.min(Math.max(k, 0), holds.length - 1)];
+}
+
+/**
  * The hold of the move about to happen at head `i`, and the sentence that says so when it is not
  * `shown`, the hold the screen showed before this head. The drawing turns, but a child's own cube
  * does not, and every chip from here on is named for it. So the sentence follows what was SHOWN,

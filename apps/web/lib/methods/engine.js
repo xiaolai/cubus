@@ -86,6 +86,10 @@ export const algLength = moveCount;
 export function simplify(alg) {
   const runs = [];
   for (const move of String(alg).trim().split(/\s+/).filter(Boolean)) {
+    // Only a plain face turn merges. Anything else a step may carry since plan item 6.1 — a regrip, a slice, a
+    // wide move — is kept as written and breaks the run. Read by its first letter, `R Rw` became `R2`: a wide
+    // move is not a turn of the face it is named after.
+    if (!/^[URFDLB][2']?$/.test(move)) { runs.push({ token: move }); continue; }
     const face = move[0];
     const turns = move.endsWith('2') ? 2 : move.endsWith("'") ? 3 : 1;
     const last = runs[runs.length - 1];
@@ -96,7 +100,7 @@ export function simplify(alg) {
       runs.push({ face, turns });
     }
   }
-  return runs.map(({ face, turns }) => face + (turns === 1 ? '' : turns === 2 ? '2' : "'")).join(' ');
+  return runs.map((run) => run.token ?? run.face + (run.turns === 1 ? '' : run.turns === 2 ? '2' : "'")).join(' ');
 }
 
 /**
