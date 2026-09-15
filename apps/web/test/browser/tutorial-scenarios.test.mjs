@@ -196,6 +196,24 @@ const FACELETS = (() => {
 
 /** The element half's runners for scenarios whose capability a plan item is still building. */
 const ELEMENT_RUNNERS = {
+  // Plan item 4.2: `arrow="next"` shows the move about to be made at every position of a sequence — on that
+  // move's layers, turning its way — and nothing once it is done; and the cube under it is the oracle's. The
+  // sequence is written in the child's letters and handed to the element as the interpreter draws it, as R1 is.
+  async arrow(sc) {
+    const { drawn: identity } = kit.run(kit.parse(sc.alg), ['U', 'F'], kit.SOLVED);
+    await build({ alg: identity.join(' '), arrow: 'next' });
+    const oracle = play(SOLVED_FACELETS, 'U F', sc.alg);
+    for (let k = 0; k <= identity.length; k++) {
+      await page.evaluate((to) => window.__publicCube(window.__cube).seek(to), k);
+      assert.equal(toWorld(await readStickers(page)), oracle.worlds[k], `${sc.id}: the cube after ${k} moves`);
+      const shown = await page.evaluate(() => ({ visible: window.__cube._arrow.visible, ...window.__cube._arrow.userData }));
+      if (k === identity.length) { assert.equal(shown.visible, false, `${sc.id}: an arrow after the last move`); continue; }
+      const [move] = kit.parse(identity[k]);
+      assert.equal(shown.visible, true, `${sc.id}: no arrow before "${identity[k]}"`);
+      assert.deepEqual(shown.layers, [...move.layers], `${sc.id}: the arrow before "${identity[k]}" is on the wrong layers`);
+      assert.equal(Math.sign(shown.angle), Math.sign(move.angle), `${sc.id}: the arrow before "${identity[k]}" turns the other way`);
+    }
+  },
   // Plan item 4.1: one sticker of a piece, lit alone — named by where it faces, and by its colour. The
   // oracle says which facelet each names: the one at UF facing up, and the one showing F on the UF edge.
   async 'highlight-sticker'(sc) {
