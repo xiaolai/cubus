@@ -19,7 +19,7 @@
 // distrust themselves.
 import { toFacelets } from './cube-pieces.js';
 import { parse } from './cube-notation.js';
-import { heldFace, identityFace, relabelSelectors, run } from './cube-moves.js';
+import { heldFace, heldToken, identityFace, relabelSelectors, run } from './cube-moves.js';
 import { ask } from './script-questions.js';
 import { buildScript, viewAtPosition } from './script-view.js';
 import { createStopDriver, createElementWriter } from './script-drive.js';
@@ -27,10 +27,18 @@ import { createStopDriver, createElementWriter } from './script-drive.js';
 const holdPair = (hold) => String(hold).split(' ');
 const sortFaces = (letters) => [...letters].sort().join('');
 
-/** A question's argument, carried from the hold it was WRITTEN in to the hold `to`: the same piece. */
+/**
+ * A question's argument, carried from the hold it was WRITTEN in to the hold `to`: the same piece.
+ *
+ * Read exactly as `readAsk` reads one — trimmed, and the letters upper-cased — because this now stands
+ * between the script and the question: relabelling `uf` letter by letter threw where the question itself
+ * would have accepted it (found by the verify pass of 2026-09-16).
+ */
 const carry = (text, from, to) => {
-  const [name, of] = String(text).split(':');
-  return of ? `${name}:${[...of].map((c) => heldFace(identityFace(c, from), to)).join('')}` : text;
+  const [name, of] = String(text).trim().split(':');
+  if (!of) return String(text).trim();
+  const letters = [...of.trim().toUpperCase()].map((c) => heldFace(identityFace(c, from), to)).join('');
+  return `${name}:${letters}`;
 };
 
 /** The round at `position`, or null when the step there is not one. */
@@ -105,10 +113,19 @@ export function revealScript(built, position) {
   // `slot:` focus written before a turn lit whatever had arrived there (Codex audit, 2026-09-16). Renamed
   // back into the child's letters, because a script's cues are written the way the child holds the cube.
   const bound = viewAtPosition(built, position).cues;
-  const inForce = Object.fromEntries(Object.entries(at.cues).map(([key, cue]) => [
-    key,
-    key === 'hl' || key === 'focus' ? relabelSelectors(bound[key], (c) => heldFace(c, holdPair(at.hold))) : cue.value,
-  ]));
+  const hold = holdPair(at.hold);
+  // Every cue that names a PLACE is carried the same way: `hl`, `focus` and `trail` are selectors, and an
+  // `arrow` is a move. Written in the hold they took effect in, they say something else in the round's —
+  // an arrow drawn on another face, a trail following another piece (verify pass, 2026-09-16).
+  const inForce = Object.fromEntries(Object.entries(at.cues).map(([key, cue]) => {
+    if (key === 'hl' || key === 'focus' || key === 'trail') {
+      return [key, relabelSelectors(bound[key], (c) => heldFace(c, hold))];
+    }
+    if (key === 'arrow') {
+      return [key, !bound.arrow || bound.arrow === 'next' || bound.arrow === 'none' ? bound.arrow : heldToken(bound.arrow, hold)];
+    }
+    return [key, cue.value];
+  }));
   const first = at.isPicture
     ? { paint: at.cube, ...inForce }
     : { ...inForce };
