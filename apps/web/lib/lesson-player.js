@@ -58,6 +58,11 @@ export function createLessonPlayer(cube, schedule, { reducedMotion = () => false
       applied = -1;
       // Straight through `write`, so a repaint of an unchanged time touches nothing at all — and
       // `scramble` in particular costs a full rebuild and repaint of the cube.
+      // `facelets` first, and cleared: the renderer gives a valid facelet string precedence over a
+      // scramble, and this element is PARKED AND RE-USED between screens (app.js), so one left by
+      // whatever ran before would quietly outrank every segment of the episode (Codex audit,
+      // 2026-09-16). The script runtime's writer has always cleared it; this is the same rule.
+      write('facelets', null);
       write('scramble', view.scramble);
       write('alg', view.alg);
     }

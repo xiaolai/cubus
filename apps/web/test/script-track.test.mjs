@@ -102,3 +102,20 @@ test('an undo reads as a half-made turn even when the walk had passed a regrip',
   cube.move("R' U");
   assert.deepEqual(locate(track, cube.asString(), 2), { kind: 'off' });
 });
+
+// Found by a Codex audit, 2026-09-16. Reaching a position carries the cube through the regrips that
+// follow it — and "reached by no moves at all" read as a regrip, so a line of narration after a turn was
+// walked straight past. Nothing about the cube says a child has heard a line; that is why they move on
+// themselves, and it is what this file's own comment has always said.
+test('narration after a turn is a position the walk stops at, not one it passes through', () => {
+  const track = trackFor(script([{ move: 'R' }, { say: 'now look at the top' }, { move: 'U' }]));
+  assert.deepEqual(track.observable, [true, true, true, true], 'a line said over a still cube was skippable');
+  const cube = new Cube();
+  cube.move('R');
+  assert.deepEqual(locate(track, cube.asString(), 0), { kind: 'step', idx: 1 },
+    'the turn carried the walk past the line the child had not heard yet');
+  // And a trailing REGRIP is still passed through, which is the rule this one sits beside.
+  const regrip = trackFor(script([{ move: 'R x2' }]));
+  assert.deepEqual(regrip.observable, [true, true, false]);
+  assert.deepEqual(locate(regrip, cube.asString(), 0), { kind: 'step', idx: 2 });
+});

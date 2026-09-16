@@ -393,3 +393,19 @@ test('a positional focus names the pieces its own cue named, however the listene
   });
   assert.deepEqual(played, [null, 'piece:RU', 'piece:RU', 'piece:RU'], 'playing through gave a different answer from jumping');
 });
+
+// `<cubus-cube>` is parked and RE-USED between screens (app.js), and the renderer gives a valid
+// `facelets` precedence over a `scramble` — so an episode loaded onto an element whose last user left
+// facelets on it drew that user's cube, for every segment, with nothing saying so. The script runtime's
+// writer has always cleared it; this is the same rule (Codex audit, 2026-09-16).
+test('an episode clears a facelets left on a re-used cube, which would outrank its own scramble', async () => {
+  const cue = (start, end, extra = {}) => ({ say: `line ${start}`, ...extra, start, end });
+  const episode = { cues: [cue(0, 1, { setup: "R U R'", hl: 'none', ghosts: false, cam: [35, 45] })] };
+  const OTHER = 'DDDDUDDDDRRRRRRRRRFFFFFFFFFUUUUDUUUULLLLLLLLLBBBBBBBBB';
+  await page.evaluate((f) => { window.__cube.setAttribute('facelets', f); }, OTHER);
+  await page.evaluate((e) => window.__makePlayer(e), episode);
+  await page.evaluate(() => { window.__player.seek(0.5); });
+  assert.equal(await page.evaluate(() => window.__cube.getAttribute('facelets')), null,
+    "the episode's segment was drawn over a cube some other screen left behind");
+  assert.equal(await page.evaluate(() => window.__cube.getAttribute('scramble')), "R U R'");
+});
