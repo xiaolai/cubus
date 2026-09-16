@@ -1441,3 +1441,29 @@ test('a second paint at the same move keeps the hold instruction on screen', asy
   w.cube.dispatchEvent(new w.win.CustomEvent('cubus-step', { detail: { index: 0 } }));
   assert.ok(say().includes(holdSentence(TUMBLED)), `a repaint at the same move erased it: ${say()}`);
 });
+
+// Found by a Codex audit, 2026-09-16. `beginWalk` leaves the scramble cube alone on purpose — it always
+// starts from solved, and flashing it while a roll is searched for would be a picture of nothing — but a
+// roll that FAILS then left the previous scramble drawn and its net standing beside an empty move list
+// and a refusal: a picture of one cube over the words of another.
+test('a roll that fails puts the scramble cube back to solved rather than leaving the last one drawn', async () => {
+  let fail = false;
+  const nets = [];
+  const w = world({ screen: { scrambling: true, paintNet: (f) => nets.push(f) } }, () => ({
+    randomScramble: async () => {
+      if (fail) throw new Error('no scramble');
+      return { facelets: turned('F'), alg: 'F' };
+    },
+  }));
+  assert.equal(await w.session.load(), true);
+  // The Scramble side loads a solved cube and animates the roll as `alg`, which is what has to go.
+  assert.equal(w.cube.getAttribute('alg'), 'F', 'precondition: the first roll drew its scramble');
+  assert.deepEqual(w.chips(), ['F'], 'precondition: the first roll listed its move');
+
+  fail = true;
+  assert.equal(await within(w.session.load()), false, 'a failed roll was committed as a walk');
+  assert.equal(w.$('#moveCount').textContent, 'no scramble', 'the failure was not said');
+  assert.deepEqual(w.chips(), [], 'the old roll left moves on screen');
+  assert.equal(w.cube.getAttribute('alg'), null, 'the cube still held the old roll to animate');
+  assert.equal(nets.at(-1), SOLVED, 'the net still showed a cube that is no longer drawn');
+});

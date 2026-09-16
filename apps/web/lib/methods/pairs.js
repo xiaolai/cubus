@@ -340,6 +340,16 @@ export const f2lCaseName = (state, turns) => f2lAlignment(state, turns).name;
  * the 384 configurations, which `f2l-configurations.test.mjs` enumerates exhaustively and whose
  * line is exactly this predicate. Asking first is not an optimisation of the search; it is
  * declining to ask a question with a known answer.
+ *
+ * WHERE IT ACTUALLY FIRES, measured 2026-09-16 after a Codex audit said it never does: on the 384
+ * configurations, which is the domain above, and NEVER on a cube reached by solving — 475 checks and
+ * zero skips over 120 seeded cubes. That is not dead code and it is not a saving either: a protected
+ * slot holds its own piece by the time this runs (the cross and the earlier pairs are solved, which
+ * is the stage's precondition), so nothing else can be in one. The configurations that reach it are
+ * built by putting a piece in a protected slot and the resident elsewhere — a cube no solve produces
+ * and the exhaustive test needs, which is why the guard is kept rather than made an error. What holds
+ * the precondition is the stage-ownership case in `method-solver.test.mjs` — once a stage has placed a
+ * piece, nothing later disturbs it — not this predicate, which only declines to ask.
  */
 const buried = (state, pair, protectedCorners, protectedEdges) =>
   protectedCorners.includes(cornerSlot(state, pair.corner))

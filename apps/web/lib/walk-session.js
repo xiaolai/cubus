@@ -301,6 +301,18 @@ export function createWalkSession(screen, app) {
     // down again while the search ran. `hold-wiring.test.mjs` fails without this.
     walkHold = SCAN_HOLD;
     holdCube(SCAN_HOLD);
+    // AND ON THE SCRAMBLE SIDE, THE CUBE GOES BACK TO SOLVED. `beginWalk` leaves the scramble cube
+    // alone on purpose — it always starts from solved, and flashing it while a roll is searched for
+    // would be a picture of nothing — but a roll that FAILS then left the previous scramble drawn,
+    // and its target net standing, beside an empty move list and a refusal: a picture of one cube
+    // over the words of another, which is the shape of the 2026-08-29 defect (Codex audit,
+    // 2026-09-16). What is shown is what is known, which after a failed roll is a solved cube: the
+    // Scramble side always loads `scramble=""` and carries the roll in `alg`, so dropping the alg and
+    // repainting the net is the whole of putting it back.
+    if (scrambling) {
+      cube.removeAttribute('alg');
+      paintNet(SOLVED);
+    }
   }
 
   /** A cube the method cannot teach falls back to its solution, and the switch says so. The walk

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createClockDriver, createElementWriter, createStopDriver, timelineOf } from '../lib/script-drive.js';
-import { buildScript, groupsOf } from '../lib/script-view.js';
+import { buildScript, groupsOf, viewAtPosition } from '../lib/script-view.js';
 import { parse } from '../lib/cube-notation.js';
 import { toFacelets } from '../lib/cube-pieces.js';
 import { MANIFEST } from './browser/public-cube.mjs';
@@ -206,4 +206,42 @@ test('a step of three regrips is walked too, and a run of real turns is still a 
   two.next();
   assert.equal(transport(far).length, before + 1, 'the arrival was made of more than one call');
   assert.equal(transport(far).at(-1)[0], 'stepStop', 'a turn on one of the element\'s own stops is a group');
+});
+
+// Found by a Codex audit, 2026-09-16. Two halves of one rule: a position is a whole number, and the
+// clock's view is a STOP plus how far into it the element has got.
+test('a position is a whole number, and a paint says which stop plus how far into it', () => {
+  const built = script([{ move: 'y x R' }, { move: 'U' }]);
+  const walk = createStopDriver(built, { cube: recordingCube() });
+  walk.seek(0.6);
+  assert.equal(walk.position, 1, 'a fractional seek left the driver and the picture in different places');
+  assert.equal(walk.view.index ?? walk.position, 1);
+  assert.throws(() => walk.seek('the middle'), /is not a position/);
+  assert.throws(() => walk.seek(NaN), /is not a position/);
+  // And the clock's view while a group animates: the stop's cube and hold, the tokens actually started.
+  const clock = createClockDriver(built, { cube: recordingCube() });
+  const mid = clock.paint(0.1);
+  assert.equal(mid.moves, 1, 'only the first token of the group had started');
+  assert.equal(mid.hold, viewAtPosition(built, 1).hold,
+    "the stop's hold is in force from the moment its first token starts");
+  assert.deepEqual(mid.cube, viewAtPosition(built, 1).cube, 'the view is the stop being animated toward');
+});
+
+// Found by the verify pass over the overlap fix, 2026-09-16: the reason ordinary scripts overlapped at
+// all. A step with no `at` inherited the START of the step before it — right for narration, which is said
+// over what is happening, and wrong for a step that turns: two untimed move steps were scheduled to turn
+// at the same instant, and the last token of one and the first of the next went together.
+test('an untimed step turns after the step before it has finished turning, not while it does', () => {
+  const built = script([{ move: "R U" }, { move: 'F' }, { say: 'and there it is' }]);
+  const { tokenTimes } = timelineOf(built);
+  const times = tokenTimes[0];
+  assert.equal(times.length, 3);
+  assert.ok(times[2] > times[1], `F was scheduled at ${times[2]}, not after U at ${times[1]}`);
+  const clock = createClockDriver(built, { cube: recordingCube() });
+  assert.equal(clock.paint(times[1] + 0.01).moves, 2, 'the third token turned with the second');
+  assert.equal(clock.paint(times[2] + 0.01).moves, 3);
+  // A line said with no time of its own still belongs with what it is said over: it takes the time the
+  // moves before it end at, and says nothing about turning.
+  const said = timelineOf(script([{ move: 'R', at: 2, secs: 1 }, { say: 'like that' }]));
+  assert.equal(said.tokenTimes[0].length, 1);
 });

@@ -14,6 +14,7 @@
 // against a proxy that throws on anything else.
 import { CAM_DEFAULT, GHOST_ELEV, QUARTER_GAP } from './lesson-schedule.js';
 import { regripsOnly, viewAtPosition } from './script-view.js';
+import { parse } from './cube-notation.js';
 import { locate, trackFor } from './script-track.js';
 
 /**
@@ -134,7 +135,13 @@ export function createStopDriver(built, { cube = null } = {}) {
   const last = built.positions.length - 1;
   let position = 0;
   const go = (k, how) => {
-    position = Math.max(0, Math.min(k, last));
+    // A POSITION IS A WHOLE NUMBER. `viewAtPosition` rounds what it is asked for, so a fractional seek
+    // stored 0.6 here and showed position 1 — the driver and the picture disagreeing about where the
+    // child is (Codex audit, 2026-09-16). Rounded once, here, and a seek to something that is not a
+    // number at all is refused rather than clamped into one.
+    const to = Math.round(Number(k));
+    if (!Number.isFinite(to)) throw new Error(`script-drive: ${JSON.stringify(k)} is not a position`);
+    position = Math.max(0, Math.min(to, last));
     return writer ? writer.show(viewAtPosition(built, position), { how }) : viewAtPosition(built, position);
   };
   go(0, 'jump');
@@ -177,9 +184,23 @@ export function createStopDriver(built, { cube = null } = {}) {
  */
 export function timelineOf(built) {
   const { positions, segments, script } = built;
+  // A step with no `at` starts when the step before it has FINISHED TURNING — not when it started.
+  // Narration carries no time of its own and belongs with what it is said over, which is why an untimed
+  // step inherits a time at all; but a step that TURNS the cube, inheriting the start of a step that was
+  // also turning, was scheduled to turn at the same instant as it. Two untimed move steps played their
+  // last and first tokens together (Codex audit, 2026-09-16, and the verify pass that followed it).
   const stepTimes = [];
   let last = 0;
-  for (const step of script.steps) { last = step.at ?? last; stepTimes.push(last); }
+  script.steps.forEach((step, i) => {
+    const before = script.steps[i - 1];
+    if (step.at === undefined && before?.move !== undefined) {
+      const tokens = parse(before.move).length;
+      last += before.secs ?? tokens * QUARTER_GAP;
+    } else {
+      last = step.at ?? last;
+    }
+    stepTimes.push(last);
+  });
   const tokenTimes = segments.map(() => []);
   // Tokens applied before position `i`, within its segment. A move never opens a segment, so the position
   // before a move step's first stop is always in the same one.
@@ -226,6 +247,12 @@ export function createClockDriver(built, { cube = null } = {}) {
     const view = viewAtPosition(built, k);
     // The tokens STARTED by `t`, which is what the element should be animating toward: a trailing
     // regrip turns when its time comes, never when its segment loads (ADR 0004 R7).
+    //
+    // So the pair this returns is a STOP and how far into it the element has got — `cube`, `hold` and
+    // the cues are the stop's, in force from the moment its first token starts, and `moves` is what has
+    // actually been played. They are meant to differ while a group animates; a reader wanting the cube
+    // after `moves` tokens wants a different question (`viewAtPosition` at the position that ends
+    // there), and this is said out loud because the two look interchangeable (Codex audit, 2026-09-16).
     // The PREFIX whose times have come: tokens are turned in order, so token j cannot have started while
     // token j-1 has not. Read this way rather than counted, so it says the same thing as the timeline's
     // own rule (`timelineOf` refuses a token timed before the one in front of it) instead of quietly

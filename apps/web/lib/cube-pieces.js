@@ -83,11 +83,18 @@ function compose(a, b) {
  *  so a typo cannot introduce a move that is subtly not the move it is named after. */
 export const MOVES = (() => {
   const all = {};
+  // Frozen all the way down, like `SOLVED` above and for the same reason: this table is read by every
+  // move the app ever applies, and a shallow freeze leaves each permutation's arrays writable — one
+  // caller's `MOVES.R.ep[0] = 3` would redefine what R means for the life of the process.
+  const deep = (m) => Object.freeze({
+    cp: Object.freeze([...m.cp]), co: Object.freeze([...m.co]),
+    ep: Object.freeze([...m.ep]), eo: Object.freeze([...m.eo]),
+  });
   for (const [face, q] of Object.entries(QUARTER)) {
     const twice = compose(q, q);
-    all[face] = q;
-    all[`${face}2`] = twice;
-    all[`${face}'`] = compose(twice, q);
+    all[face] = deep(q);
+    all[`${face}2`] = deep(twice);
+    all[`${face}'`] = deep(compose(twice, q));
   }
   return Object.freeze(all);
 })();
