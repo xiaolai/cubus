@@ -1467,3 +1467,58 @@ test('a roll that fails puts the scramble cube back to solved rather than leavin
   assert.equal(w.cube.getAttribute('alg'), null, 'the cube still held the old roll to animate');
   assert.equal(nets.at(-1), SOLVED, 'the net still showed a cube that is no longer drawn');
 });
+
+// Found by a Codex audit, 2026-09-16. Only the SEARCH was inside a try, so a failure anywhere else in
+// the load — resetting the screen, drawing the walk — escaped `loadWalk`. Its callers are pill handlers
+// that discard the promise, so the failure became an unhandled rejection with nothing said on screen:
+// the one outcome a load must never have.
+test('a load that fails while resetting the screen says so, rather than throwing past the press', async () => {
+  const w = world({ subject: { facelets: turned('R U') } }, ({ state }) => ({
+    deriveCube: async () => { solvedBy(state, "U' R'"); },
+    lastRoute: async () => ({ kind: 'exact', alg: "U'", moves: 1, minimal: true, overshoot: false }),
+  }));
+  assert.equal(await w.session.load(), true, 'precondition: this subject loads');
+  w.cube.pause = () => { throw new Error('the cube is gone'); };
+  let threw = null;
+  const answered = await w.session.load().catch((err) => { threw = err; return 'threw'; });
+  assert.equal(threw, null, 'the failure escaped the load');
+  assert.equal(answered, false, 'a failed load reported that it drew a walk');
+  assert.equal(w.$('#moveCount').textContent, 'could not work it out', 'the failure was not said');
+});
+
+test('a load that fails after the search, while the walk is drawn, says so too', async () => {
+  const w = world({ subject: { facelets: turned('R U') } }, ({ state }) => ({
+    deriveCube: async () => { solvedBy(state, "U' R'"); },
+    lastRoute: async () => ({ kind: 'exact', alg: "U'", moves: 1, minimal: true, overshoot: false }),
+  }));
+  assert.equal(await w.session.load(), true, 'precondition: this subject loads');
+  // Writing the walk onto the cube is `drawWalk`, which runs after the search has answered — the reset
+  // before it only REMOVES `alg`, so this fails in the half that draws and not in the half that clears.
+  const write = w.cube.setAttribute.bind(w.cube);
+  w.cube.setAttribute = (name, value) => {
+    if (name === 'alg') throw new Error('the renderer will not take the walk');
+    return write(name, value);
+  };
+  let threw = null;
+  const answered = await w.session.load().catch((err) => { threw = err; return 'threw'; });
+  assert.equal(threw, null, 'a failure after the search escaped the load');
+  assert.equal(answered, false);
+  assert.equal(w.$('#moveCount').textContent, 'could not work it out');
+});
+
+// And the reporter itself is one of the things that can fail: it puts the cube down, and the renderer
+// may be exactly what threw. Reporting must not depend on it.
+test('a failure while the reporter puts the cube down is still a failure the screen says', async () => {
+  const w = world({ subject: { facelets: turned('R U') } }, () => ({
+    deriveCube: async () => { throw new Error('solver unavailable'); },
+    lastRoute: async () => null,
+  }));
+  // Only the cube: the load fails for its own reason, and the REPORTER must survive a renderer it
+  // cannot put down.
+  w.cube.turnTo = () => { throw new Error('the renderer is gone'); };
+  let threw = null;
+  const answered = await w.session.load().catch((err) => { threw = err; return 'threw'; });
+  assert.equal(threw, null, 'the reporter threw while reporting');
+  assert.equal(answered, false);
+  assert.equal(w.$('#moveCount').textContent, 'no solver', 'the reason was lost when the cube could not be put down');
+});

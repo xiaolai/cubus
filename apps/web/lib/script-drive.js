@@ -15,6 +15,7 @@
 import { CAM_DEFAULT, GHOST_ELEV, QUARTER_GAP } from './lesson-schedule.js';
 import { regripsOnly, viewAtPosition } from './script-view.js';
 import { parse } from './cube-notation.js';
+import { createAttributeWriter } from './element-writes.js';
 import { locate, trackFor } from './script-track.js';
 
 /**
@@ -27,16 +28,11 @@ import { locate, trackFor } from './script-track.js';
 const segmentTokens = (view) => String(view.alg ?? '').split(' ').filter(Boolean);
 
 export function createElementWriter(cube) {
-  const written = new Map();
+  // The cache is `lib/element-writes.js`'s, shared with the episode runtime's player: the rule "write only
+  // what changed" was written out in both, and they had drifted.
+  const write = createAttributeWriter(cube);
   let segment = -1;
   let applied = -1;
-
-  const write = (name, value, { force = false } = {}) => {
-    if (!force && written.has(name) && written.get(name) === value) return;
-    written.set(name, value);
-    if (value === null) cube.removeAttribute(name);
-    else cube.setAttribute(name, String(value));
-  };
 
   /** Load a segment: the hold, then the cube, then the sequence — each of which resets what follows it. */
   const load = (view) => {

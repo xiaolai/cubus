@@ -19,6 +19,7 @@ import { sameAxis } from './cube-orientation.js';
 import { parseHighlight } from './cube-highlight.js';
 import { readToken } from './cube-notation.js';
 import { readAsk } from './script-questions.js';
+import { QUARTER_GAP } from './lesson-schedule.js';
 import { faceletsError } from './cube-questions.js';
 
 /** Cue fields that may carry a selector, an alg or a label. Everything else is refused. */
@@ -80,36 +81,20 @@ export function checkEpisode(episode) {
       if (bad.length) where(i, `\`setup\` has moves the renderer cannot apply: ${bad.join(' ')}`);
     }
     if (c.secs !== undefined && (!isNum(c.secs) || c.secs <= 0)) where(i, '`secs` must be positive');
-    if (c.number !== undefined && !/^\d{1,3}(,\d{3})*$|^\d+$/.test(String(c.number))) {
-      where(i, `\`number\` must be digits, optionally grouped: "${c.number}"`);
-    }
-    if (c.ghosts !== undefined && typeof c.ghosts !== 'boolean') {
-      where(i, '`ghosts` must be true or false — a string is always truthy');
-    }
-    if (c.counting !== undefined && typeof c.counting !== 'boolean') where(i, '`counting` must be a boolean');
+    if (c.number !== undefined && badCount(c.number)) where(i, badCount(c.number));
+    if (c.ghosts !== undefined && badBoolean('ghosts', c.ghosts)) where(i, badBoolean('ghosts', c.ghosts));
+    if (c.counting !== undefined && badBoolean('counting', c.counting)) where(i, badBoolean('counting', c.counting));
     for (const k of ['hl', 'focus', 'move', 'section', 'say', 'hold']) {
       if (c[k] !== undefined && typeof c[k] !== 'string') where(i, `\`${k}\` must be a string`);
     }
     if (c.spanning !== undefined) {
       where(i, '`spanning` is unresolved — run resolveSpanning() before the episode is played');
     }
-    if (c.cam !== undefined && c.cam !== 'tour') {
-      if (!Array.isArray(c.cam) || c.cam.length !== 2 || !c.cam.every(isNum)) {
-        where(i, '`cam` must be [latitude, longitude] or "tour"');
-      }
+    if (c.cam !== undefined && badCamera(c.cam)) where(i, badCamera(c.cam));
+    if (c.orientation !== undefined && badPair(c.orientation)) {
+      where(i, `"${c.orientation}" is not an orientation — ${badPair(c.orientation)}`);
     }
-    if (c.orientation !== undefined) {
-      const [up, front] = String(c.orientation).split(' ');
-      // `sameAxis` rather than a second regex: "U D" passes every shape check anybody writes by
-      // hand and is not an orientation, and the renderer refuses it for the same reason. One
-      // definition of what a legal pair is, shared with the thing that will have to draw it.
-      if (!/^[URFDLB] [URFDLB]$/.test(c.orientation) || sameAxis(up, front)) {
-        where(i, `"${c.orientation}" is not an orientation — two perpendicular faces, as in "U F"`);
-      }
-    }
-    if (c.camUp !== undefined && !/^[URFDLB]$/.test(c.camUp)) {
-      where(i, `"${c.camUp}" is not a face letter`);
-    }
+    if (c.camUp !== undefined && badFaceLetter(c.camUp)) where(i, badFaceLetter(c.camUp));
   });
 
   // A cue's turns are scheduled from its own end, so two cues whose windows overlap interleave
@@ -124,7 +109,11 @@ export function checkEpisode(episode) {
     if (c.setup !== undefined) reach = -Infinity;
     const qs = c.quarters || [];
     if (!qs.length) return;
-    const step = c.secs ? c.secs / qs.length : 0.55;
+    // The SCHEDULER'S gap, imported rather than typed again: this file decides whether an episode is
+    // playable and `lesson-schedule.js` decides when its turns happen, so a default spelled out in both
+    // is validation and playback drifting apart by a number nobody would think to change twice
+    // (Codex audit, 2026-09-16).
+    const step = c.secs ? c.secs / qs.length : QUARTER_GAP;
     if (c.end < reach) {
       where(i, `its turns start at ${c.end} while the previous cue's are still landing at ${reach}`);
     }
@@ -242,14 +231,36 @@ const FACELETS = /^[URFDLB]{54}$/;
 const notText = (value) => (typeof value === 'string' ? null : `must be written as text, not ${Array.isArray(value) ? 'a list' : typeof value}`);
 const PICTURE = /^[URFDLB?]{54}$/;
 
+/**
+ * The value rules an episode and a script BOTH have, written once.
+ *
+ * The two checkers grew the same camera, number, boolean, face-letter and orientation rules side by side,
+ * and a change to one could leave validation disagreeing with playback (Codex audit, 2026-09-16). What
+ * stays per format is what genuinely differs: a script may write `null` to clear a cue and an episode may
+ * not, and their notation rules are their own. Each returns the reason, or null when there is none.
+ */
+const badCamera = (value) => (value === 'tour'
+  || (Array.isArray(value) && value.length === 2 && value.every(isNum))
+  ? null : '`cam` must be [latitude, longitude] or "tour"');
+const badCount = (value) => (/^\d{1,3}(,\d{3})*$|^\d+$/.test(String(value))
+  ? null : `\`number\` must be digits, optionally grouped: "${value}"`);
+const badBoolean = (name, value) => (typeof value === 'boolean'
+  ? null : `\`${name}\` must be true or false — a string is always truthy`);
+const badFaceLetter = (value) => (/^[URFDLB]$/.test(value) ? null : `"${value}" is not a face letter`);
+/** Two perpendicular faces — what a hold is, and what an orientation is. `sameAxis` rather than a second
+ *  regex: "U D" passes every shape check anybody writes by hand and is not one, and the renderer refuses
+ *  it for the same reason. */
+const badPair = (value) => {
+  if (notText(value)) return `${notText(value)}`;
+  const [up, front] = value.split(' ');
+  return /^[URFDLB] [URFDLB]$/.test(value) && !sameAxis(up, front)
+    ? null : 'two perpendicular faces, as in "U F"';
+};
+
 /** A hold, as `checkEpisode` reads an orientation: two perpendicular faces of URFDLB. */
 function badHold(value) {
-  if (notText(value)) return `a hold ${notText(value)}`;
-  const [up, front] = value.split(' ');
-  if (!/^[URFDLB] [URFDLB]$/.test(value) || sameAxis(up, front)) {
-    return `"${value}" is not a hold — two perpendicular faces, as in "U F"`;
-  }
-  return null;
+  const wrong = badPair(value);
+  return wrong === null ? null : `"${value}" is not a hold — ${wrong}`;
 }
 
 /**
@@ -410,25 +421,25 @@ function checkSteps(steps, where, { rounds = true, painted: startPainted = false
     if (step.labels !== undefined && step.labels !== null && !['none', 'position', 'face'].includes(step.labels)) {
       where(i, `\`labels\` is none, position or face, not "${step.labels}"`);
     }
-    if (step.ghosts !== undefined && step.ghosts !== null && typeof step.ghosts !== 'boolean') {
-      where(i, '`ghosts` must be true or false — a string is always truthy');
+    // The same rules the episode checker applies, with a script's own `null` rule in front of each: a
+    // script writes `null` to CLEAR a cue, and an episode has no such value.
+    if (step.ghosts !== undefined && step.ghosts !== null && badBoolean('ghosts', step.ghosts)) {
+      where(i, badBoolean('ghosts', step.ghosts));
     }
-    if (step.counting !== undefined && step.counting !== null && typeof step.counting !== 'boolean') {
-      where(i, '`counting` must be a boolean');
+    if (step.counting !== undefined && step.counting !== null && badBoolean('counting', step.counting)) {
+      where(i, badBoolean('counting', step.counting));
     }
     if (step.ghostElevation !== undefined && step.ghostElevation !== null && !isNum(step.ghostElevation)) {
       where(i, '`ghostElevation` must be a number');
     }
-    if (step.cam !== undefined && step.cam !== null && step.cam !== 'tour') {
-      if (!Array.isArray(step.cam) || step.cam.length !== 2 || !step.cam.every(isNum)) {
-        where(i, '`cam` must be [latitude, longitude] or "tour"');
-      }
+    if (step.cam !== undefined && step.cam !== null && badCamera(step.cam)) {
+      where(i, badCamera(step.cam));
     }
-    if (step.camUp !== undefined && step.camUp !== null && !/^[URFDLB]$/.test(step.camUp)) {
-      where(i, `"${step.camUp}" is not a face letter`);
+    if (step.camUp !== undefined && step.camUp !== null && badFaceLetter(step.camUp)) {
+      where(i, badFaceLetter(step.camUp));
     }
-    if (step.number !== undefined && step.number !== null && !/^\d{1,3}(,\d{3})*$|^\d+$/.test(String(step.number))) {
-      where(i, `\`number\` must be digits, optionally grouped: "${step.number}"`);
+    if (step.number !== undefined && step.number !== null && badCount(step.number)) {
+      where(i, badCount(step.number));
     }
     if (step.secs !== undefined && (!isNum(step.secs) || step.secs <= 0)) where(i, '`secs` must be positive');
     if (step.at !== undefined) {

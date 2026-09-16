@@ -232,3 +232,33 @@ test('a field written as something other than text, and a string that is not a c
   assert.equal(refusal(script([{ cube: SOLVED_FACELETS }])), null);
   assert.equal(refusal(script([{ paint: `${'U'.repeat(53)}?` }])), null);
 });
+
+// Found by a Codex audit, 2026-09-16. An episode and a script grew the same camera, number, boolean,
+// face-letter and orientation rules side by side, and the overlap check kept its own copy of the
+// scheduler's default gap. Two spellings of one rule is validation and playback drifting apart, so the
+// rules are one and the difference that is real — a script clears a cue with `null`, an episode has no
+// such value — is what stays per format.
+test('one rule, two formats: the shared value checks answer the same way on both sides', () => {
+  const cue = (extra) => ({ cues: [{ say: 'x', start: 0, end: 1, ...extra }] });
+  const both = (field, value) => [
+    refusal(script([{ say: 'x', [field]: value }])),
+    refusal(cue({ [field]: value }), checkEpisode),
+  ];
+  for (const [field, value, reason] of [
+    ['cam', [1], /\[latitude, longitude\] or "tour"/],
+    ['ghosts', 'false', /true or false — a string is always truthy/],
+    ['counting', 'yes', /true or false — a string is always truthy/],
+    ['camUp', 'X', /is not a face letter/],
+    ['number', 'six', /must be digits, optionally grouped/],
+  ]) {
+    const [inScript, inEpisode] = both(field, value);
+    assert.match(inScript, reason, `a script accepted ${field}: ${JSON.stringify(value)}`);
+    assert.match(inEpisode, reason, `an episode accepted ${field}: ${JSON.stringify(value)}`);
+  }
+  // And the difference that is real: `null` clears a cue in a script and is not a value in an episode.
+  assert.equal(refusal(script([{ say: 'x', cam: null, ghosts: null, camUp: null }])), null);
+  assert.match(refusal(cue({ ghosts: null }), checkEpisode), /true or false/);
+  // The orientation pair is one definition too, said with each format's own noun.
+  assert.match(refusal(script([{ hold: 'U D' }])), /is not a hold — two perpendicular faces/);
+  assert.match(refusal(cue({ orientation: 'U D' }), checkEpisode), /is not an orientation — two perpendicular faces/);
+});
