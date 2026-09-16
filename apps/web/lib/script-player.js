@@ -19,7 +19,7 @@
 // the player cannot be the thing that applies a stale answer.
 import { buildScript } from './script-view.js';
 import { createStopDriver } from './script-drive.js';
-import { locate, trackFor } from './script-track.js';
+import { locate } from './script-track.js';
 
 const thenable = (x) => typeof x?.then === 'function';
 
@@ -36,7 +36,10 @@ export function createScriptPlayer({ cube = null, trusted = () => true, onLoad =
 
   const apply = (mine, script) => {
     const built = buildScript(script);
-    route = { generation: mine, built, track: trackFor(built), driver: createStopDriver(built, { cube }) };
+    const driver = createStopDriver(built, { cube });
+    // The driver's own track, not a second one built here: they are the same conversion of the same
+    // script, and two of them are two answers about where the cube is (Codex audit, 2026-09-16).
+    route = { generation: mine, built, track: driver.track, driver };
     if (live !== null) route.driver.observe(live);
     onLoad(route.driver.view);
     return true;

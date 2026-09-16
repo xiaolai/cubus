@@ -127,6 +127,9 @@ export function createElementWriter(cube) {
  */
 export function createStopDriver(built, { cube = null } = {}) {
   const track = trackFor(built);
+  // Handed out rather than kept private: the player built a SECOND one for the same script — every
+  // state converted to facelets and every midpoint generated twice, and two objects that must agree
+  // about where the cube is (Codex audit, 2026-09-16).
   const writer = cube ? createElementWriter(cube) : null;
   const last = built.positions.length - 1;
   let position = 0;
@@ -138,6 +141,7 @@ export function createStopDriver(built, { cube = null } = {}) {
   return Object.freeze({
     get position() { return position; },
     get view() { return viewAtPosition(built, position); },
+    get track() { return track; },
     next: () => go(position + 1, 'stop'),
     back: () => go(position - 1, 'stop'),
     seek: (k) => go(k, 'jump'),
