@@ -351,7 +351,12 @@ test('every walk reload starts from the cube in hand — BEFORE anything is draw
   // whole-cube locals had already been read off `state.cube` — so a repair that then found nothing
   // committed the PREVIOUS cube's algorithm over the new subject. Reproduced by a verify pass:
   // subject `R U`, algorithm `R'`, steps starting at `R`.
-  const load = blockAt(code, 'async function loadWalk(');
+  // Read from the function that owns the ORDER. `loadWalk` is the reporting bracket around it since
+  // 2026-09-16 — every part of a load is inside one try now, not just the search — and a scan that kept
+  // reading the bracket would have passed over a `runLoad` that did these in any order at all.
+  assert.match(blockAt(code, 'async function loadWalk('), /await runLoad\(/,
+    'loadWalk must delegate to the function this case reads, or this scan reads nothing');
+  const load = blockAt(code, 'async function runLoad(');
   const adoptAt = load.indexOf('adoptTurnsAhead();');
   const beginAt = load.indexOf('beginWalk();');
   // The whole-cube answer is read inside the resolver (lib/walk-resolver.js), which loadWalk awaits here.
@@ -377,7 +382,7 @@ test('a cube that the adoption FINISHES gets a rebuild, not an error', () => {
   // reaching the child as "could not work it out" about a cube that is done. Reproduced by a
   // verify pass. A composition change is a rebuild, which is what the live-snapshot path in this
   // same file already does with one.
-  const load = blockAt(code, 'async function loadWalk(');
+  const load = blockAt(code, 'async function runLoad(');
   // UNCONDITIONAL. Nesting it inside the adoption was the bug: a snapshot that had already ingested
   // the solved cube made the adoption a no-op, so the check never ran and the defect came back by
   // another path — reproduced twice, which is what a guard placed inside a branch earns.

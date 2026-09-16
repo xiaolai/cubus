@@ -164,15 +164,58 @@ function frontInsert(view, edge, intactAt, lift) {
 }
 
 /**
+ * The cheapest way to work on one of `edges`: the smallest regrip first, then the shortest insert.
+ *
+ * SMALLEST REGRIP FIRST because the turn is what the child has to do with their hands before anything
+ * else happens, and a quarter turn of the whole cube is more to ask than two extra face turns. Named out
+ * of the loop it was written in (Codex audit, 2026-09-16) so that the loop reads as what it is —
+ * recognise, choose, push, advance — and this reads as the one ranking rule the course's middle layer has.
+ */
+function cheapestInsert(view, edges, intactAt, ejecting) {
+  let best = null;
+  for (const edge of edges) {
+    const hit = frontInsert(view, edge, intactAt, ejecting);
+    if (!hit) continue;
+    const better = !best || hit.regrip.cost < best.regrip.cost
+      || (hit.regrip.cost === best.regrip.cost && algLength(hit.found.alg) < algLength(best.found.alg));
+    if (better) best = { edge, ...hit };
+  }
+  return best;
+}
+
+/**
+ * A middle-layer edge step, as both places that teach one build it.
+ *
+ * The teaching contract of this step is five things — which edge, the algorithm with its regrip in front,
+ * the case name, the reason, and whether the step begins by turning the cube — and it was written out
+ * twice, once here for the joined-pairs fallback and once in `middleLayerInFront` (Codex audit,
+ * 2026-09-16). Two spellings of one contract is two places for a `turn` flag to go missing, and a missing
+ * one is a child told to insert an edge that is not in front of them.
+ *
+ * `look` is carried only where there is one: the recognition answer the edge was chosen from, which the
+ * ejection has no equivalent of.
+ */
+const edgeStep = ({ stage, key, edge, regrip, found, look }) => ({
+  stage,
+  kind: 'case',
+  target: edge,
+  alg: joinAlg(regrip.token, found.alg),
+  caseName: found.used[0].name,
+  why: {
+    key,
+    edge,
+    ...(regrip.token ? { turn: true } : {}),
+    ...(look ? { look } : {}),
+  },
+});
+
+/**
  * One edge, the middle layer's way (the joined-pairs rung's fallback, plan item 6.3): turned in from the
  * front, or lifted out and then turned in. `edge` is named in `view`; returns `{ state, turns }` as
  * `middleLayerInFront` does.
  */
 function edgeInFront(view, edge, intactAt, steps, stage) {
-  const push = (key, named, { regrip, found }) => steps.push({
-    stage, kind: 'case', target: named, alg: joinAlg(regrip.token, found.alg), caseName: found.used[0].name,
-    why: { key, edge: named, ...(regrip.token ? { turn: true } : {}) },
-  });
+  const push = (key, named, hit) => steps.push(edgeStep({ stage, key, edge: named, ...hit }));
   const direct = frontInsert(view, edge, intactAt, false);
   if (direct) {
     push('middleLayer.insert', edge, direct);
@@ -216,24 +259,16 @@ export function middleLayerInFront(state, steps, stage) {
     const intactAt = (t) => keeping([...CROSS, ...home.map((e) => turnedEdge(e, t))], F1L);
     const look = edgesInLayerWithout(view, 'U', 'U').pieces.map((name) => EDGE[name]);
     const inserting = look.length > 0;
-    let best = null;
-    for (const edge of inserting ? look : MIDDLE.filter((e) => !home.includes(e))) {
-      const hit = frontInsert(view, edge, intactAt, !inserting);
-      if (hit && (!best || hit.regrip.cost < best.regrip.cost
-        || (hit.regrip.cost === best.regrip.cost && algLength(hit.found.alg) < algLength(best.found.alg)))) {
-        best = { edge, ...hit };
-      }
-    }
+    const best = cheapestInsert(view, inserting ? look : MIDDLE.filter((e) => !home.includes(e)), intactAt, !inserting);
     if (!best) throw new MethodSolverError(stage, 'middle-layer', view);
-    steps.push({
-      stage, kind: 'case', target: best.edge, alg: joinAlg(best.regrip.token, best.found.alg), caseName: best.found.used[0].name,
-      why: {
-        key: inserting ? 'middleLayer.insert' : 'middleLayer.eject',
-        edge: best.edge,
-        ...(best.regrip.token ? { turn: true } : {}),
-        ...(inserting ? { look } : {}),
-      },
-    });
+    steps.push(edgeStep({
+      stage,
+      key: inserting ? 'middleLayer.insert' : 'middleLayer.eject',
+      edge: best.edge,
+      regrip: best.regrip,
+      found: best.found,
+      ...(inserting ? { look } : {}),
+    }));
     view = best.found.state;
     turns = (turns + best.regrip.turns) % 4;
   }

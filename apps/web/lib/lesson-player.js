@@ -7,6 +7,7 @@
 // A view is the truth; the element is where it is displayed.
 
 import { viewAt } from './lesson-schedule.js';
+import { createAttributeWriter } from './element-writes.js';
 import { bindSelectors } from './script-view.js';
 import { SOLVED, applyAlg } from './cube-pieces.js';
 
@@ -29,19 +30,13 @@ export function createLessonPlayer(cube, schedule, { reducedMotion = () => false
   // so every attribute was rewritten on every frame and the change detection did nothing at all.
   // Not read back off the element either: the element moves on by itself as an animation completes,
   // and comparing against it would rewrite everything every frame for a different reason.
-  const written = new Map();
+  // Write an attribute only if its value has changed since this player last wrote it —
+  // `lib/element-writes.js`, shared with the script runtime's writer.
+  const write = createAttributeWriter(cube);
   let shown = null;
   let warned = false;
   let segment = -1;
   let applied = -1;
-
-  /** Write an attribute only if its value has changed since this player last wrote it. */
-  const write = (name, value) => {
-    if (written.has(name) && written.get(name) === value) return;
-    written.set(name, value);
-    if (value === null) cube.removeAttribute(name);
-    else cube.setAttribute(name, String(value));
-  };
 
   /**
    * Put the cube's TRANSPORT where the view says: the right position, the right number of turns.
