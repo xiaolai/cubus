@@ -153,3 +153,27 @@ test('a picture is a legal facelet string the renderer can take', () => {
   }
   assert.equal(targetPicture('solved'), toFacelets(SOLVED), 'the solved picture is the solved cube');
 });
+
+// Found by a Codex audit, 2026-09-16. The flip pinning asked only that a flip projection EXISTED. A
+// target whose flip goal is anything other than "all of them the right way up" would then have had four
+// U stickers painted that its own goal contradicts — the over-claim this file exists to avoid. Every
+// shipped target uses the solved goal, which is why nothing showed it; the case is built by hand.
+test('a flip projection pins the top stickers only when its goal is the solved one', () => {
+  const real = targetById('top-cross');
+  const flip = real.projections.find((p) => p.kind === 'flip');
+  assert.ok(flip, 'precondition: this target reads flips');
+  const topUp = (picture) => [...'UUUU'].every((_, k) => picture[[1, 3, 5, 7][k]] === 'U');
+  assert.equal(topUp(targetPicture(real)), true, 'precondition: the real target pins the top stickers');
+
+  // The same target with the flip goal changed to one the solved cube does not meet.
+  const other = flip.codeOf(applyAlg(SOLVED, 'F'));   // F is what flips an edge in this encoding
+  assert.notEqual(other, flip.codeOf(SOLVED), 'precondition: this is a different goal');
+  const bent = {
+    ...real,
+    projections: real.projections.map((p) => (p === flip ? { ...p, goals: [other] } : p)),
+  };
+  assert.equal(topUp(targetPicture(bent)), false, 'a target that does not promise the flips still pinned them');
+  // And a goal that ADMITS the solved cube among others is not the solved goal either.
+  const loose = { ...real, projections: real.projections.map((p) => (p === flip ? { ...p, goals: [p.codeOf(SOLVED), other] } : p)) };
+  assert.equal(topUp(targetPicture(loose)), false, 'two goals were read as the one that promises the flips');
+});

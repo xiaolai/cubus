@@ -158,6 +158,50 @@ test('overlapping reads each get the element, and leave the globals as they foun
   }
 });
 
+// Found by a Codex audit, 2026-09-16, as two findings that turned out to be one design: the reader
+// stubbed `HTMLElement` and `customElements` on THIS process and put them back afterwards — which left
+// both names as own properties valued `undefined` on a process that never had them, so a
+// `'customElements' in globalThis` check answered differently after a read than before it — and each read
+// imported the bundle under a URL of its own, which Node caches forever (ten reads, 46.2 MiB retained).
+// A worker has its own globals and its own module cache, and the cache dies when it is terminated.
+test('a read borrows nothing from the process it runs in, and leaves no reader behind', async () => {
+  const { readElement } = await import('../../../packages/cubus-cube/read-element.mjs');
+  // Made bare first: the case above deliberately puts both globals on this process, and putting a
+  // value BACK is exactly what leaves the property behind — which is half of what this is about.
+  delete globalThis.HTMLElement;
+  delete globalThis.customElements;
+  assert.equal('HTMLElement' in globalThis, false, 'precondition: this process has neither global');
+  assert.equal('customElements' in globalThis, false, 'precondition: this process has neither global');
+  const reads = await Promise.all([readElement(), readElement(), readElement()]);
+  assert.deepEqual(reads.map((r) => r.tag), ['cubus-cube', 'cubus-cube', 'cubus-cube']);
+
+  // Not merely "the value is back": the PROPERTY must not exist, which is what a restore cannot do.
+  assert.equal('HTMLElement' in globalThis, false, 'the reader left HTMLElement on a process that had none');
+  assert.equal('customElements' in globalThis, false, 'the reader left customElements on a process that had none');
+  assert.equal(Object.hasOwn(globalThis, 'HTMLElement'), false);
+  assert.equal(Object.hasOwn(globalThis, 'customElements'), false);
+  // AND THE BUNDLE NEVER RAN HERE, which is what stops its copies accumulating in this process's module
+  // cache — the cache Node never frees, and the leak this replaced. Asked by giving a copy of the bundle
+  // a line that marks whatever global object it is loaded into: run in-process, the mark lands on ours.
+  const { mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const dir = mkdtempSync(join(tmpdir(), 'cubus-read-element-'));
+  try {
+    const path = join(dir, 'cubus-cube.js');
+    const marked = `globalThis.__readInThisProcess = (globalThis.__readInThisProcess ?? 0) + 1;\n${readFileSync(BUNDLE, 'utf8')}`;
+    writeFileSync(path, marked);
+    const read = await readElement(pathToFileURL(path));
+    assert.equal(read.tag, 'cubus-cube', 'precondition: the marked copy still reads');
+    assert.equal('__readInThisProcess' in globalThis, false,
+      'the bundle was imported into this process, so its module — and its copy of the bundle — is cached here forever');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    delete globalThis.__readInThisProcess;
+  }
+});
+
 test('a read that fails does not hold up the reads queued behind it', async () => {
   const { readElement } = await import('../../../packages/cubus-cube/read-element.mjs');
   const missing = new URL('./no-such-bundle.js', import.meta.url);

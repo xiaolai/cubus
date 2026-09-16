@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { MOVE_DESCRIPTORS } from '../../../packages/cubus-cube/src/pose.js';
+import { FACE_DESCRIPTORS } from './fixtures/face-descriptors.mjs';
 import { formatMoves, parse, readToken } from '../lib/cube-notation.js';
 
 const one = (token) => {
@@ -20,7 +20,7 @@ const one = (token) => {
 const shape = ({ axis, layers, angle, turns }) => ({ axis, layers: [...layers], angle, turns });
 
 test('the 18 face turns read as exactly the descriptors the renderer draws with', () => {
-  for (const [name, d] of Object.entries(MOVE_DESCRIPTORS)) {
+  for (const [name, d] of Object.entries(FACE_DESCRIPTORS)) {
     assert.deepEqual(shape(one(name)), shape(d), name);
     assert.equal(one(name).kind, 'face');
   }

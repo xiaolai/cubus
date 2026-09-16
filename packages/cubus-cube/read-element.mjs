@@ -13,34 +13,60 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { Worker } from 'node:worker_threads';
 
 const BUNDLE = new URL('../../apps/web/vendor/cubus-cube.js', import.meta.url);
 
-// The read in progress, if any. Every call waits for the one before it to settle.
-let turn = Promise.resolve();
-
 /**
- * Import the bundle in a bare Node process and report what it registered.
+ * Import the bundle in a THROWAWAY WORKER and report what it registered.
  *
- * Stubs globals for the length of the import, so it is for a process where nothing else reads
- * `globalThis.HTMLElement` or `customElements` meanwhile: the build script and the suite that
- * checks it.
- *
- * ONE READ AT A TIME, because the stubs are process-wide. Two overlapping reads interleaved their
- * save and restore: the second saved the first's stubs as the "real" globals and put them back
- * after the first had restored the real ones, and the first read's `define` landed in the
- * second's capture. Three overlapping reads measured two refused as "defined no custom element"
- * and a process left holding the stubs (found by audit, 2026-09-14). Queued, each read's bracket
- * closes before the next one opens. A read that fails does not hold up the ones behind it.
+ * IN A WORKER, for two reasons that were one design mistake. Node caches an ES module by URL forever, and
+ * each read imports the bundle under a URL of its own (see the nonce below) — so ten reads in one process
+ * retained 46.2 MiB after garbage collection, and a long-lived process reading repeatedly would keep
+ * every copy (Codex audit, 2026-09-16). And the import needs `HTMLElement` and `customElements` in scope,
+ * which used to mean stubbing them on THIS process's globals: a bracket that had to be queued because it
+ * was process-wide, and that left both names as own properties valued `undefined` on a process that never
+ * had them. A worker's globals are its own and its module cache dies with it, so both problems are gone
+ * rather than managed — no queue, no restore, nothing borrowed from the caller's process.
  */
 export function readElement(bundle = BUNDLE) {
-  const mine = turn.then(() => readOnce(bundle));
-  turn = mine.catch(() => {});
-  return mine;
+  return readOnce(bundle);
 }
 
+/** The reader, as the worker runs it: stub, import, describe, post back. Written here as source because
+ *  it has to be a module of its own and a file beside this one would be one more thing to keep in step. */
+const IN_WORKER = `
+import { parentPort, workerData } from 'node:worker_threads';
+
+let captured = null;
+globalThis.HTMLElement = class {};
+globalThis.customElements = {
+  define(name, cls) { captured = { name, cls }; },
+  get() { return captured?.cls; },
+};
+
+await import(workerData.snapshot);
+if (!captured) { parentPort.postMessage({ error: 'defined no custom element' }); } else {
+  const { name, cls } = captured;
+  const own = Object.getOwnPropertyNames(cls.prototype)
+    .filter((k) => !k.startsWith('_') && k !== 'constructor' && !k.endsWith('Callback'));
+  const seams = new Set(cls.seams ?? []);
+  const descriptorOf = (k) => Object.getOwnPropertyDescriptor(cls.prototype, k);
+  parentPort.postMessage({ read: {
+    tag: name,
+    attributes: [...(cls.observedAttributes ?? [])].sort(),
+    methods: own.filter((k) => typeof descriptorOf(k)?.value === 'function').sort(),
+    properties: own
+      .filter((k) => !seams.has(k) && (descriptorOf(k)?.get || descriptorOf(k)?.set))
+      .sort()
+      .map((k) => ({ name: k, read: !!descriptorOf(k).get, write: !!descriptorOf(k).set })),
+    events: [...(cls.events ?? [])].sort(),
+    operations: Object.fromEntries(Object.entries(cls.operations ?? {}).sort(([a], [b]) => (a < b ? -1 : 1))),
+  } });
+}
+`;
+
 async function readOnce(bundle) {
-  let captured = null;
   // Import a SNAPSHOT, and hash that same snapshot. Reading the file twice and comparing catches a
   // rebuild in the middle, but not an A→B→A replacement — and the whole point of the digest is
   // that the manifest describes the bytes it was generated from. Copying first removes the race
@@ -51,46 +77,30 @@ async function readOnce(bundle) {
   // into the temp directory, and BOTH made a read-only check fail with EPERM. Reading a manifest
   // should not require permission to write.
   //
-  // The trailing nonce is load-bearing: Node caches an ES module by URL, and a `data:` URL's
-  // identity IS its content, so a second call with identical bytes returned the cached module
-  // without re-running it — nothing called `customElements.define` and the call failed with
-  // "defined no custom element". A unique comment makes every call its own module.
+  // The trailing nonce is load-bearing even now that each read has a module cache of its own: a worker
+  // may read two DIFFERENT bundles, and a `data:` URL's identity IS its content, so identical bytes
+  // would return the cached module without re-running it — nothing would call `customElements.define`
+  // and the read would fail with "defined no custom element".
   const source = Buffer.concat([bytes, Buffer.from(`\n//${randomUUID()}\n`)]);
   const snapshot = `data:text/javascript;base64,${source.toString('base64')}`;
-  const priorElement = globalThis.HTMLElement;
-  const priorCustom = globalThis.customElements;
-  globalThis.HTMLElement = class {};
-  globalThis.customElements = {
-    define(name, cls) { captured = { name, cls }; },
-    get() { return captured?.cls; },
-  };
+  const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+  const worker = new Worker(new URL(`data:text/javascript;base64,${Buffer.from(IN_WORKER).toString('base64')}`), {
+    workerData: { snapshot },
+    // Nothing the bundle prints is this reader's answer, and a bundle that writes to stdout would
+    // otherwise land in the middle of the build script's own output.
+    stdout: true,
+    stderr: true,
+  });
   try {
-    await import(snapshot);
+    const read = await new Promise((resolve, reject) => {
+      worker.once('message', (msg) => (msg.error ? reject(new Error(`${fileURLToPath(bundle)} ${msg.error}`)) : resolve(msg.read)));
+      worker.once('error', reject);
+      worker.once('exit', (code) => reject(new Error(`read-element: the reader exited (${code}) before answering`)));
+    });
+    return { ...read, digest };
   } finally {
-    globalThis.HTMLElement = priorElement;
-    globalThis.customElements = priorCustom;
+    // ALWAYS, and awaited: the point of the worker is that it goes away, and an orphan holds its copy
+    // of the bundle for the life of the process — which is the leak this replaced.
+    await worker.terminate();
   }
-  if (!captured) throw new Error(`${fileURLToPath(bundle)} defined no custom element`);
-  const { name, cls } = captured;
-  const own = Object.getOwnPropertyNames(cls.prototype)
-    // Anything starting with `_` is ours to change without telling anyone; `constructor` and the
-    // lifecycle callbacks are the platform's, not a capability a consumer asks about.
-    .filter((k) => !k.startsWith('_') && k !== 'constructor' && !k.endsWith('Callback'));
-  const seams = new Set(cls.seams ?? []);
-  const descriptorOf = (k) => Object.getOwnPropertyDescriptor(cls.prototype, k);
-  return {
-    tag: name,
-    attributes: [...(cls.observedAttributes ?? [])].sort(),
-    methods: own.filter((k) => typeof descriptorOf(k)?.value === 'function').sort(),
-    // An accessor is a capability of a different shape: a value a consumer reads, writes, or both.
-    // Read mechanically like the methods; a member the class declares as a test seam is left out, so
-    // the pinned clock is not advertised as something a lesson may set (`static seams`).
-    properties: own
-      .filter((k) => !seams.has(k) && (descriptorOf(k)?.get || descriptorOf(k)?.set))
-      .sort()
-      .map((k) => ({ name: k, read: !!descriptorOf(k).get, write: !!descriptorOf(k).set })),
-    events: [...(cls.events ?? [])].sort(),
-    operations: Object.fromEntries(Object.entries(cls.operations ?? {}).sort(([a], [b]) => (a < b ? -1 : 1))),
-    digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
-  };
 }

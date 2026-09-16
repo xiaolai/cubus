@@ -175,7 +175,15 @@ export function fromRepertoire(state, candidates, goal, plies = 1, keyOf = state
   // stringified and zero-padded to three digits, so a 1,000-move route sorted ahead of a 104-move
   // one. Nothing here produces four-digit algorithms today, which is what made it a defect worth
   // fixing rather than a bug worth waiting for.
-  const precedes = (a, b) => (a.length !== b.length ? a.length < b.length : a.rank < b.rank);
+  // ...and then by the algorithm ITSELF, which is the only tie-break that cannot depend on the order the
+  // frontier was built in. Length and rank alone left equal routes in arrival order, so reversing the
+  // candidate list turned `U D R` into `D U R` — exactly the order-dependence the note below says this
+  // comparison exists to end (Codex audit, 2026-09-16).
+  const precedes = (a, b) => {
+    if (a.length !== b.length) return a.length < b.length;
+    if (a.rank !== b.rank) return a.rank < b.rank;
+    return a.alg < b.alg;
+  };
   // The comparison values are computed ONCE per route. They used to be recomputed inside a
   // comparator, so `rank` — which rotates a whole algorithm into a common frame — ran O(n log n)
   // times over a list from which exactly one element was ever read.
