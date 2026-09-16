@@ -174,3 +174,18 @@ test('a route superseded between two turns of a group is stopped too', async () 
   assert.ok(cube.calls.length > before, 'nothing was said to a cube that was between turns');
   assert.deepEqual(cube.calls.at(-1), ['seek', 1], 'the superseded group was left to finish itself');
 });
+
+// Found by a Codex audit, 2026-09-16. `load()` returns a promise either way, so a host writes
+// `player.load(script).catch(…)` — and a plain script that failed to check threw out of the call
+// instead, past the catch that was written for exactly that.
+test('a script that does not check is refused the same way, plain or promised', async () => {
+  const player = createScriptPlayer({ cube: recordingCube() });
+  const broken = { schema: 2, steps: [{ move: 'Q' }] };
+  await assert.rejects(() => player.load(broken), /is not a move/, 'a plain script threw instead of rejecting');
+  await assert.rejects(() => player.load(Promise.resolve(broken)), /is not a move/);
+  assert.equal(player.loaded, false, 'a refused script was loaded anyway');
+  // And a good one is still applied before `load()` returns: the position is readable on the next line.
+  const applied = player.load(walk('R U'));
+  assert.equal(player.position, 0, 'a plain script was not applied immediately');
+  assert.equal(await applied, true);
+});

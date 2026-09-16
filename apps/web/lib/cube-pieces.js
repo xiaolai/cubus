@@ -102,6 +102,30 @@ export const MOVES = (() => {
 /** Every move name, in a stable order — the move set a stage searches over. */
 export const MOVE_NAMES = Object.freeze(Object.keys(MOVES));
 
+/**
+ * What is wrong with `state` as a piece state, or null when nothing is.
+ *
+ * STRUCTURE, NOT LEGALITY. Four arrays of the right lengths, whole numbers in range, and each
+ * permutation naming every cubie once — the properties the move tables and every reader assume and
+ * none of them checked. `cube-flat.js` converted first and validated the STRING afterwards, so `co`
+ * filled with 3 or a `cp` naming one corner twice drew as a solved cube; `cube-questions.js` read
+ * lengths off `cp`/`ep` only, so `{...SOLVED, co: []}` answered `twist: undefined` and called a piece
+ * not-home (Codex audit, 2026-09-16). Whether a well-formed state is REACHABLE is a different
+ * question, asked by `isCubeState` in `lib/cube-trust.js` with the four classical conditions.
+ */
+export function pieceStateError(state) {
+  if (!state || typeof state !== 'object') return 'expected a piece state of {cp, co, ep, eo}';
+  for (const [key, n, max] of [['cp', 8, 7], ['co', 8, 2], ['ep', 12, 11], ['eo', 12, 1]]) {
+    const a = state[key];
+    if (!Array.isArray(a) || a.length !== n) return `${key} must be an array of ${n} numbers`;
+    if (!a.every((v) => Number.isInteger(v) && v >= 0 && v <= max)) return `${key} must be whole numbers 0 to ${max}`;
+  }
+  for (const key of ['cp', 'ep']) {
+    if (new Set(state[key]).size !== state[key].length) return `${key} names one cubie twice`;
+  }
+  return null;
+}
+
 /** State after applying one move. Never mutates its input. */
 export function applyMove(state, move) {
   const m = MOVES[move];
@@ -119,9 +143,6 @@ export function applyAlg(state, alg) {
   return s;
 }
 
-/** The state of a cubejs `Cube`, copied out. cubejs is the only parser we have for a facelet
- *  string, so this is the seam — and it reads cubejs's INTERNAL fields, which is exactly why
- *  the test pins their layout. */
 /**
  * A state as its facelet string — the inverse of reading one.
  *
@@ -144,6 +165,10 @@ export function toFacelets(state) {
   return out.join('');
 }
 
+/** The state of a cubejs `Cube`, copied out. cubejs is the only parser we have for a facelet
+ *  string, so this is the seam — and it reads cubejs's INTERNAL fields, which is exactly why
+ *  the test pins their layout. (It sat above `toFacelets` until 2026-09-16, describing the
+ *  serializer instead of the reader — a Codex audit found it.) */
 export function fromCube(cube) {
   return { cp: [...cube.cp], co: [...cube.co], ep: [...cube.ep], eo: [...cube.eo] };
 }
@@ -221,7 +246,14 @@ const Y_STATE = Object.freeze({
   eo: [1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0],
 });
 
-function inverseOf(state) {
+/**
+ * The state that undoes `state`: where each cubie came FROM, with its orientation taken back.
+ *
+ * Exported since 2026-09-16 because `two-phase.js` had a second copy of exactly this arithmetic, down to
+ * the `(3 - co) % 3` (Codex audit). Two spellings of an inverse is two chances to get a corner twist the
+ * wrong way round, and the wrong one would show up as a solver that answers a slightly different cube.
+ */
+export function inverseOf(state) {
   const cp = new Array(8);
   const co = new Array(8);
   for (let i = 0; i < 8; i++) { cp[state.cp[i]] = i; co[state.cp[i]] = (3 - state.co[i]) % 3; }

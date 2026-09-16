@@ -29,14 +29,14 @@
 import { applyMove } from './cube-pieces.js';
 import { parse, readToken } from './cube-notation.js';
 import { FACE_LETTERS, orientationMatrix } from './cube-orientation.js';
+import { FACE_NORMAL } from './cube-layout.js';
 
 const QUARTER = Math.PI / 2;
 const AXES = ['x', 'y', 'z'];
 
-/** Face letter -> outward normal, identity frame (R = +x, U = +y, F = +z). */
-const NORMAL = Object.freeze({
-  R: [1, 0, 0], L: [-1, 0, 0], U: [0, 1, 0], D: [0, -1, 0], F: [0, 0, 1], B: [0, 0, -1],
-});
+/** Face letter -> outward normal, identity frame — `cube-layout.js`'s table, which is the one place
+ *  this convention is written down. */
+const NORMAL = FACE_NORMAL;
 
 const faceOf = (v) => FACE_LETTERS.split('').find((f) => NORMAL[f].every((c, i) => c === v[i]));
 const faceAt = (axis, sign) => faceOf(AXES.map((a) => (a === axis ? sign : 0)));

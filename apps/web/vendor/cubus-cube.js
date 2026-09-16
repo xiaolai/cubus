@@ -30124,6 +30124,14 @@ var EDGE_FACELETS = Object.freeze([
 ].map((f) => Object.freeze(f)));
 var CENTERS = Object.freeze([4, 13, 22, 31, 40, 49]);
 var FACE_LETTERS = "URFDLB";
+var FACE_NORMAL = Object.freeze({
+  U: Object.freeze([0, 1, 0]),
+  R: Object.freeze([1, 0, 0]),
+  F: Object.freeze([0, 0, 1]),
+  D: Object.freeze([0, -1, 0]),
+  L: Object.freeze([-1, 0, 0]),
+  B: Object.freeze([0, 0, -1])
+});
 var SLOT_FACELETS = Object.freeze({
   corners: CORNER_FACELETS,
   edges: EDGE_FACELETS,
@@ -30132,17 +30140,9 @@ var SLOT_FACELETS = Object.freeze({
 });
 
 // ../../apps/web/lib/cube-orientation.js
-var FACE_LETTERS2 = "URFDLB";
-var NORMAL = Object.freeze({
-  U: Object.freeze([0, 1, 0]),
-  R: Object.freeze([1, 0, 0]),
-  F: Object.freeze([0, 0, 1]),
-  D: Object.freeze([0, -1, 0]),
-  L: Object.freeze([-1, 0, 0]),
-  B: Object.freeze([0, 0, -1])
-});
+var NORMAL = FACE_NORMAL;
 function isFace(letter) {
-  return typeof letter === "string" && letter.length === 1 && FACE_LETTERS2.includes(letter);
+  return typeof letter === "string" && letter.length === 1 && FACE_LETTERS.includes(letter);
 }
 function normalOf(letter) {
   return isFace(letter) ? NORMAL[letter] : null;
@@ -30164,7 +30164,7 @@ var key = (v) => v.map((n) => Math.round(n)).join(",");
 var STICKERS = (() => {
   const out = new Array(54);
   for (let f = 0; f < 6; f++) {
-    const letter = FACE_LETTERS2[f];
+    const letter = FACE_LETTERS[f];
     const n = normalOf(letter);
     const { right, up } = READ[letter];
     for (let row = 0; row < 3; row++) {
@@ -30186,8 +30186,8 @@ var STICKERS = (() => {
 })();
 var INDEX_OF = new Map(STICKERS.map((s, i) => [`${key(s.pos)}|${key(s.normal)}`, i]));
 var ORIENTATIONS = Object.freeze(
-  [...FACE_LETTERS2].flatMap(
-    (up) => [...FACE_LETTERS2].filter((front) => !sameAxis(up, front)).map((front) => Object.freeze([up, front]))
+  [...FACE_LETTERS].flatMap(
+    (up) => [...FACE_LETTERS].filter((front) => !sameAxis(up, front)).map((front) => Object.freeze([up, front]))
   )
 );
 function sameAxis(a, b) {
@@ -30266,13 +30266,12 @@ function parseHighlight(spec) {
   const selectors = [];
   const parts = raw.split(/\s*([,+-])\s*/);
   let op = "+";
+  let pending = false;
   for (const part of parts) {
-    if (part === "," || part === "+") {
-      op = "+";
-      continue;
-    }
-    if (part === "-") {
-      op = "-";
+    if (part === "," || part === "+" || part === "-") {
+      if (pending && op === "-") return { selectors: [], invalid: `- ${part}` };
+      if (part === "-") op = "-";
+      pending = true;
       continue;
     }
     if (!part) continue;
@@ -30281,7 +30280,9 @@ function parseHighlight(spec) {
     if (!selectors.length && op === "-") return { selectors: [], invalid: raw };
     selectors.push({ ...sel, op });
     op = "+";
+    pending = false;
   }
+  if (pending) return { selectors: [], invalid: raw };
   return { selectors, invalid: null };
 }
 function selects(sel, cubie) {
@@ -30388,11 +30389,17 @@ function compose(a, b) {
 }
 var MOVES = (() => {
   const all = {};
+  const deep = (m) => Object.freeze({
+    cp: Object.freeze([...m.cp]),
+    co: Object.freeze([...m.co]),
+    ep: Object.freeze([...m.ep]),
+    eo: Object.freeze([...m.eo])
+  });
   for (const [face, q] of Object.entries(QUARTER)) {
     const twice = compose(q, q);
-    all[face] = q;
-    all[`${face}2`] = twice;
-    all[`${face}'`] = compose(twice, q);
+    all[face] = deep(q);
+    all[`${face}2`] = deep(twice);
+    all[`${face}'`] = deep(compose(twice, q));
   }
   return Object.freeze(all);
 })();
@@ -30481,15 +30488,8 @@ function readToken(token) {
 // ../../apps/web/lib/cube-moves.js
 var QUARTER3 = Math.PI / 2;
 var AXES = ["x", "y", "z"];
-var NORMAL2 = Object.freeze({
-  R: [1, 0, 0],
-  L: [-1, 0, 0],
-  U: [0, 1, 0],
-  D: [0, -1, 0],
-  F: [0, 0, 1],
-  B: [0, 0, -1]
-});
-var faceOf = (v) => FACE_LETTERS2.split("").find((f) => NORMAL2[f].every((c, i) => c === v[i]));
+var NORMAL2 = FACE_NORMAL;
+var faceOf = (v) => FACE_LETTERS.split("").find((f) => NORMAL2[f].every((c, i) => c === v[i]));
 var faceAt = (axis, sign) => faceOf(AXES.map((a) => a === axis ? sign : 0));
 var quartersOf = (angle) => Math.round(angle / QUARTER3);
 function faceTurnName(axis, sign, angle) {
@@ -30520,7 +30520,7 @@ var LETTER = Object.freeze({
 });
 
 // src/pose.js
-var NORMAL3 = { R: [1, 0, 0], L: [-1, 0, 0], U: [0, 1, 0], D: [0, -1, 0], F: [0, 0, 1], B: [0, 0, -1] };
+var NORMAL3 = FACE_NORMAL;
 var CENTRES = ["U", "R", "F", "D", "L", "B"];
 var AXIS_OF = { x: 0, y: 1, z: 2 };
 var axisOf = (face) => {

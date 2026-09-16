@@ -142,3 +142,26 @@ test('layers, pairs, and refusals', () => {
   assert.throws(() => whereIs(SOLVED, 'QQ'), /not a piece/);
   assert.throws(() => layerSlots('Q'), /not a face/);
 });
+
+// Found by a Codex audit, 2026-09-16. A question that answers a malformed cube, or one asked with a
+// filter that is not a filter, is worse than one that refuses: it is a wrong answer wearing a right
+// one's shape, and nothing downstream can tell.
+test('a malformed state and a filter that is not one are refused, not answered', () => {
+  // All four arrays, not two of them: `co: []` answered `twist: undefined` and called URF not home.
+  assert.throws(() => readCube({ ...SOLVED, co: [] }), /co must be an array of 8/);
+  assert.throws(() => isHome({ ...SOLVED, co: [] }, 'URF'), /co must be an array of 8/);
+  assert.throws(() => readCube({ ...SOLVED, eo: [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] }), /eo must be whole numbers 0 to 1/);
+  assert.throws(() => readCube({ ...SOLVED, ep: [0, 0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] }), /ep names one cubie twice/);
+  // An out-of-range index used to crash a layer question a few frames after being accepted.
+  assert.throws(() => inLayerWithout({ ...SOLVED, ep: [99, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] }, 'U', 'U', 'edges'),
+    /ep must be whole numbers 0 to 11/);
+  // A kind that is not a kind answered with BOTH kinds; a `without` that is not a face matched nothing
+  // and so answered with the whole layer.
+  assert.throws(() => layerSlots('U', 'edge'), /is not a kind/);
+  assert.throws(() => layerSlots('U', 'corner'), /is not a kind/);
+  assert.throws(() => inLayerWithout(SOLVED, 'U', 'Q', 'edges'), /"Q" is not a face/);
+  // And the questions they were mistyped from still answer.
+  assert.deepEqual(layerSlots('U', 'edges'), ['UR', 'UF', 'UL', 'UB']);
+  assert.deepEqual(layerSlots('U', null).length, 8);
+  assert.deepEqual(inLayerWithout(SOLVED, 'U', 'U', 'edges').pieces, []);
+});
