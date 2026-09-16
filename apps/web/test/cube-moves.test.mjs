@@ -135,7 +135,8 @@ test('toIdentity refuses an axis that is not one, and a hold that is not one', (
 });
 
 test('selectors: the child\'s letters read into identity letters are the inverse of the display\'s renaming', () => {
-  const spec = 'centers,edges,piece:DF,piece:URF,slot:BL,slot:UR,layer:R,layer:D';
+  // Sticker suffixes included: they are face letters too, and the two directions had drifted over them.
+  const spec = 'centers,edges,piece:DF,piece:URF,slot:BL,slot:UR,layer:R,layer:D,slot:UF/U,piece:DF/F';
   for (const hold of ORIENTATIONS) {
     assert.equal(renameSelectors(convertSelectors(spec, hold), hold), spec, `held ${holdText(hold)}`);
     assert.equal(convertSelectors(renameSelectors(spec, hold), hold), spec, `held ${holdText(hold)}, other way`);

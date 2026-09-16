@@ -19,13 +19,19 @@
 // distrust themselves.
 import { toFacelets } from './cube-pieces.js';
 import { parse } from './cube-notation.js';
-import { run } from './cube-moves.js';
+import { heldFace, identityFace, relabelSelectors, run } from './cube-moves.js';
 import { ask } from './script-questions.js';
 import { buildScript, viewAtPosition } from './script-view.js';
 import { createStopDriver, createElementWriter } from './script-drive.js';
 
 const holdPair = (hold) => String(hold).split(' ');
 const sortFaces = (letters) => [...letters].sort().join('');
+
+/** A question's argument, carried from the hold it was WRITTEN in to the hold `to`: the same piece. */
+const carry = (text, from, to) => {
+  const [name, of] = String(text).split(':');
+  return of ? `${name}:${[...of].map((c) => heldFace(identityFace(c, from), to)).join('')}` : text;
+};
 
 /** The round at `position`, or null when the step there is not one. */
 function roundStep(built, position) {
@@ -47,7 +53,11 @@ export function answerAt(built, position) {
   // The hold the question is asked in is the one the turn LEAVES: a prediction's turn may include a regrip,
   // and "where will it be" is asked the way the child will then be holding the cube.
   const imagined = round.turn ? run(parse(round.turn), holdPair(at.hold), at.cube) : { state: at.cube, hold: holdPair(at.hold) };
-  const answer = ask(round.ask, imagined.state, [...imagined.hold]);
+  // THE PIECE IS NAMED WHEN THE ROUND IS ASKED. A prediction's turn may regrip, and the same letters then
+  // name a different piece: `whereIs:UF` after `y R` answered about the piece at the child's NEW UF, not
+  // the one they were shown (found by a Codex audit, 2026-09-16). So the argument is carried into the hold
+  // the turn leaves, and the answer comes back in that hold, which is how the child is holding it.
+  const answer = ask(carry(round.ask, holdPair(at.hold), [...imagined.hold]), imagined.state, [...imagined.hold]);
   const letters = answer.slot ?? answer.piece ?? null;
   return Object.freeze({ faces: letters === null ? null : sortFaces(letters), answer, choose: round.choose });
 }
@@ -89,7 +99,16 @@ export function revealScript(built, position) {
   const found = roundStep(built, position);
   if (!found) throw new Error(`script-rounds: position ${position} is not a round`);
   const { at, round } = found;
-  const inForce = Object.fromEntries(Object.entries(at.cues).map(([key, cue]) => [key, cue.value]));
+  // THE CUES AS THEY WERE BOUND, not as they were written. A cue takes effect where it appears (ADR 0004
+  // R9): the view carries `focus` already bound to the pieces it named there, and `hl`'s question already
+  // answered. Re-reading the raw selectors against the cube the reveal starts from re-bound them — a
+  // `slot:` focus written before a turn lit whatever had arrived there (Codex audit, 2026-09-16). Renamed
+  // back into the child's letters, because a script's cues are written the way the child holds the cube.
+  const bound = viewAtPosition(built, position).cues;
+  const inForce = Object.fromEntries(Object.entries(at.cues).map(([key, cue]) => [
+    key,
+    key === 'hl' || key === 'focus' ? relabelSelectors(bound[key], (c) => heldFace(c, holdPair(at.hold))) : cue.value,
+  ]));
   const first = at.isPicture
     ? { paint: at.cube, ...inForce }
     : { ...inForce };
@@ -110,7 +129,9 @@ export function createEventDriver(built, { cube = null } = {}) {
   let round = null;
   let reveal = null;
   const go = (k) => {
-    position = Math.max(0, Math.min(k, built.positions.length - 1));
+    // Rounded, as `viewAtPosition` rounds: a fractional seek showed the round at position 2 while the
+    // driver still held 1.5 and answered `round: null`, so answering it threw (Codex audit, 2026-09-16).
+    position = Math.max(0, Math.min(Math.round(Number(k) || 0), built.positions.length - 1));
     round = roundStep(built, position) ? createRound(built, position) : null;
     // A reveal loaded its own segment onto the element, so what this writer last wrote is no longer what
     // is there: the next position is a cold landing, and a fresh writer is how it is told so.

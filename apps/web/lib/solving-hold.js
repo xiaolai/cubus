@@ -29,7 +29,7 @@
 // Pure: no DOM, no renderer, no solver. `test/solving-hold.test.mjs` holds every renaming to the
 // identity that defines it, over every one of the 24 holds.
 
-import { applyIdentity, heldFace, heldToken, run } from './cube-moves.js';
+import { applyIdentity, heldFace, heldToken, relabelSelectors, run } from './cube-moves.js';
 import { readToken } from './cube-notation.js';
 import { ORIENTATIONS, orientationPerm, orientationRelabel, turnFacelets } from './cube-orientation.js';
 import { SOLVED, movesOf } from './cube-pieces.js';
@@ -114,22 +114,21 @@ export function showMove(move, h) {
   return readToken(String(move)).move ? renameAlg(move, h) : String(move);
 }
 
-const SELECTOR = /\b(layer|slot|piece):([URFDLB]{1,3})\b/gi;
-
 /**
  * A `<cubus-cube>` highlight or focus spec, named for a cube turned to `h`.
  *
  * `piece:DF` in the method frame is the white-blue edge, which the scan frame calls `UB`. Letter by
  * letter is enough: `cube-highlight.js` matches a piece by its SORTED letters, so the order a
  * renaming leaves them in does not matter. The bare kinds (`centers`, `edges`, `corners`) are the
- * same set in every frame and pass through. The inverse — a spec the child's frame wrote, read into
- * identity letters — is `convertSelectors` in `lib/cube-moves.js`.
+ * same set in every frame and pass through.
+ *
+ * THE SAME REWRITING as its inverse, `convertSelectors` — both call `relabelSelectors` in
+ * lib/cube-moves.js, which is where a sticker's `/F` suffix is relabelled too. This kept its own copy
+ * until a Codex audit of 2026-09-16 found the two had drifted: `slot:DF/D` came back as `slot:UB/D`,
+ * naming a sticker the piece does not carry.
  */
 export function renameSelectors(spec, hold) {
-  return String(spec ?? '').replace(
-    SELECTOR,
-    (_, kind, letters) => `${kind}:${[...letters.toUpperCase()].map((c) => heldFace(c, hold)).join('')}`,
-  );
+  return relabelSelectors(spec, (c) => heldFace(c, hold));
 }
 
 /**

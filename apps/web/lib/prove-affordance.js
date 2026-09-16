@@ -321,7 +321,10 @@ export function sayWalkLength({ root, setStatus, scrambling, route, stageTargetN
     // list under the button), and a re-solve replaces the walk through loadWalk, which
     // re-wires this handler with the new pair.
     const startFacelets = steps[0] ?? state.cube.facelets;
-    const shown = total;
+    // WHAT THE SCREEN SAYS THIS WALK COSTS. A lesson's is its face turns: a regrip is a position on the
+    // walk and not a move (plan item 6.1), so `total` would compare the cube's proved minimum against a
+    // count including turns of the whole cube — "3 shown — the minimum is 2" under a heading reading 2.
+    const shown = lesson ? turnsIn(lesson.alg) : total;
     const cancelBtn = $('#proveCancel', root);
     // The press hands off to the controller: the proof's lifecycle is its own, and a walk
     // load is not the place to keep one. What stays here is the pair being proved and the
@@ -349,7 +352,9 @@ export function sayWalkLength({ root, setStatus, scrambling, route, stageTargetN
       proveBtn, cancelBtn, startFacelets, shown, fresh, signal,
       sayProved: (proof) => {
         nativeProofs.set(startFacelets, proof);
-        sayProved(proof);
+        // Said only where the sentence belongs — the Solution — as the held-proof path above does. The
+        // proof is kept either way: it is a fact about the cube, and switching to Solution says it.
+        if (!lesson) sayProved(proof);
       },
     // The controller reports every failure a proof can have; this catches the one thing it
     // cannot — itself — rather than leaving a press to end in an unhandled rejection.

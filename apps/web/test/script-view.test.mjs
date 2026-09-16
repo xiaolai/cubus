@@ -192,3 +192,14 @@ test('a trail cue\'s piece letters are read in the hold where it was written', (
   const built = buildScript(script([{ move: 'U', trail: 'piece:UF' }], { hold: 'D B' }));
   assert.equal(viewAtPosition(built, 1).cues.trail, 'piece:DB', 'held D B, the child\'s UF piece is the cube\'s DB');
 });
+
+test('a cube is stated in its own frame: swapped centres are refused, not read as another cube', () => {
+  // Found by a Codex audit, 2026-09-16: the centres were dropped when the string was read into pieces, so
+  // a cube whose centres had been swapped read as SOLVED while the segment went on painting the string it
+  // was given — a picture and a model of two different cubes, with nothing saying so.
+  const swapped = [...SOLVED_FACELETS];
+  [swapped[13], swapped[22]] = [swapped[22], swapped[13]];
+  assert.throws(() => stateFrom(swapped.join('')), /centres read UFRDLB/);
+  assert.throws(() => buildScript(script([{ cube: swapped.join('') }])), /centres read UFRDLB/);
+  assert.deepEqual(stateFrom(SOLVED_FACELETS), SOLVED, 'and a cube in its own frame reads as the cube it is');
+});

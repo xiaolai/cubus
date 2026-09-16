@@ -165,3 +165,29 @@ test('a trail cue names pieces, and nothing else', () => {
   assert.match(refusal(script([{ move: 'R', trail: 'layer:U' }])), /`trail` names pieces .* "layer:U" is not one/);
   assert.match(refusal(script([{ move: 'R', trail: 'piece:UD' }])), /"piece:UD" is not one/);
 });
+
+test("a question's argument names a piece the cube has, and a pair is a corner", () => {
+  // Found by a Codex audit, 2026-09-16. `UU` and `UD` are two letters of URFDLB and neither is a piece:
+  // both passed this check, `checkScript` accepted the lesson, and the throw arrived when a child reached
+  // that line — the exact failure every refusal in this file exists to move forward to authoring time.
+  assert.match(refusal(script([{ move: 'R', hl: 'ask:whereIs:UU' }])), /"UU" is not a piece of a cube/);
+  assert.match(refusal(script([{ move: 'R', hl: 'ask:pieceIn:UD' }])), /"UD" is not a piece of a cube/);
+  assert.match(refusal(script([{ move: 'R', hl: 'ask:isHome:UUR' }])), /"UUR" is not a piece of a cube/);
+  // A pair is a corner and the edge beside it, so an edge cannot be asked for one.
+  assert.match(refusal(script([{ move: 'R', hl: 'ask:pairOf:UR' }])), /"UR" is an edge/);
+  assert.equal(refusal(script([{ move: 'R', hl: 'ask:pairOf:DFR' }])), null);
+  assert.equal(refusal(script([{ move: 'R', hl: 'ask:isHome:URF' }])), null);
+  // And what is accepted answers rather than throwing, which is what the refusals are protecting.
+  for (const text of ['whereIs:UR', 'pieceIn:UF', 'isHome:URF', 'pairOf:DFR']) {
+    assert.ok(ask(text, SOLVED, ['U', 'F']), text);
+  }
+});
+
+test('a pair is read in the hold the script wrote it in', () => {
+  // The middle layer is the one between the CHILD's top and bottom, so the pair of the corner they call
+  // DFR is the edge they call FR, whichever way the cube is held. Reading the cube's own U and D instead
+  // answered `FD` held `R F` — an edge of the layer the child is not looking at (Codex audit, 2026-09-16).
+  assert.deepEqual([...ask('pairOf:DFR', SOLVED, ['R', 'F']).slots], ['DFR', 'FR']);
+  assert.deepEqual([...ask('pairOf:DFR', SOLVED, ['U', 'F']).slots], ['DFR', 'FR']);
+  assert.deepEqual([...ask('pairOf:DBL', SOLVED, ['D', 'B']).slots], ['DBL', 'BL']);
+});
