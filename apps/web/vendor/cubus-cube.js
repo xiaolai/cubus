@@ -32371,6 +32371,30 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._group = { to, delta: 1 };
     this.step();
   }
+  /**
+   * Play to token `k`, one token at a time, the way a stop group plays.
+   *
+   * WHY A HOST NEEDS THIS. `stepStop` goes to the element's OWN next stop, and the element groups a
+   * sequence its own way: a regrip belongs to the turn it leads into, so `x y R` is one group. A script
+   * gives every STEP a position, and a step that only regrips therefore ends INSIDE one of those groups —
+   * a place the transport could reach only by `seek`, which snaps. That is the one turn D4's "turn the
+   * whole cube so the gap is in front of you" exists to show (Codex audit and the verify pass over the
+   * first fix, 2026-09-16; plan item 6.5 names the same gap from the screens' side).
+   *
+   * One token at a time, fed from each completion — never queued in a batch, which the backlog rule would
+   * snap. Out-of-range asks are clamped rather than refused: `k` comes from a host's own model of the
+   * sequence, and the worst answer to a disagreement about its length is a cube left part way.
+   */
+  playTo(k) {
+    const sol = this._sol;
+    this._settleGroup();
+    if (!this.stickers || this._sol !== sol) return;
+    const to = Math.max(0, Math.min(Math.round(Number(k)), this._sol.length));
+    if (!Number.isFinite(to) || to === this._cursor) return;
+    this._group = { to, delta: to > this._cursor ? 1 : -1 };
+    if (to > this._cursor) this.step();
+    else this.stepBack();
+  }
   /** Undo back to the previous stop — the whole group, one token at a time, the same way round. */
   stepBackStop() {
     const sol = this._sol;

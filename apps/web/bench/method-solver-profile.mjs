@@ -91,6 +91,16 @@ export const STAGES_OF = Object.freeze({
  * The other three dials are held at rung 0, so the number is about this dial and not about the
  * company it keeps.
  */
+/**
+ * How many parts a pair step is MADE OF — the axis the joined-pairs rung is judged on.
+ *
+ * Without the turn that brings a slot to the front (plan item 6.3): it is part of the step and nothing
+ * the learner assembles. Written once and exported because three places count it — the criterion below,
+ * the ladder table, and the suite's structural case — and two of them had said different numbers under
+ * one name (Codex audit, 2026-09-16: 4/3 against 3/2 on seed 20260908).
+ */
+export const partsOf = (step) => (step.parts ?? []).filter((part) => part.name !== 'turn').length;
+
 export function rungDelta(states, { dial, from, to, axis }) {
   const BOTTOM = { cross: 0, pairs: 0, oll: 0, pll: 0 };
   const below = methodFor({ ...BOTTOM, [dial]: from });
@@ -102,7 +112,7 @@ export function rungDelta(states, { dial, from, to, axis }) {
     moves: steps.reduce((n, s) => n + moveCount(turnsOf(s)), 0),
     // The turn that brings a slot to the front (plan item 6.3) is a part of the step but nothing the
     // learner assembles, so the parts axis does not count it.
-    parts: steps.reduce((n, s) => n + (s.parts?.filter((p) => p.name !== 'turn').length ?? 0), 0)
+    parts: steps.reduce((n, s) => n + (s.parts ? partsOf(s) : 0), 0)
       / Math.max(1, steps.filter((s) => s.parts).length),
   });
   const deltas = [];
@@ -292,11 +302,9 @@ function measureRungs(rungs, states) {
     // a number this bench must report rather than a defect to hide.
     for (const step of result.steps) {
       if (step.stage !== 'f2l') continue;
-      // Counted the way `rungDelta` counts it — without the turn that brings a slot to the front,
-      // which is part of the step but nothing the learner assembles (plan item 6.3). It was counted
-      // WITH it here, so this table and the criterion table below printed two different numbers under
-      // one name: 4/3 parts against 3/2 on seed 20260908 (Codex audit, 2026-09-16).
-      if (step.parts) { pairSteps++; parts += step.parts.filter((part) => part.name !== 'turn').length; } else fallbacks++;
+      // Through `partsOf`, the one definition — not a second copy of it, which is how this table and
+      // the criterion table came to print different numbers under one name.
+      if (step.parts) { pairSteps++; parts += partsOf(step); } else fallbacks++;
     }
   }
   return {

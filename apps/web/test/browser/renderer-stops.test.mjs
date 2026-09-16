@@ -177,3 +177,41 @@ test('a group in flight is dropped by a new alg, a reset and a seek', async () =
     assert.equal(await page.evaluate(() => window.__cube._applied), 0, 'a dropped group went on playing');
   }
 });
+
+// `stepStop` goes to the element's OWN next stop, and the element groups a sequence its own way: a regrip
+// belongs to the turn it leads into, so `x y R` is one group. A script gives every STEP a position, so a
+// step that only regrips ends INSIDE one of those groups — reachable only by `seek`, which snaps the very
+// turn D4's "turn the whole cube so the gap is in front of you" exists to show (Codex audit and its verify
+// pass, 2026-09-16). `playTo` is the element's answer: any token, walked the way a group plays.
+test('playTo walks to any token, one at a time, and lands exactly there', async () => {
+  await build({ alg: 'x y R U' });
+  const outcome = await page.evaluate(async () => {
+    const el = window.__cube;
+    const tick = () => new Promise((r) => requestAnimationFrame(() => r()));
+    const settle = async () => {
+      for (let i = 0; i < 40 && el.animating; i += 1) {
+        el.clock = el._now() + 500;
+        await tick();
+      }
+      await tick();
+    };
+    const steps = [];
+    el.addEventListener('cubus-step', (e) => steps.push(e.detail.index));
+    // Into the middle of the element's own group — token 2 of the group [x, y, R].
+    el.playTo(2);
+    await settle();
+    const forward = { cursor: el._cursor, steps: [...steps] };
+    // And back out of it, the same way.
+    el.playTo(0);
+    await settle();
+    const back = { cursor: el._cursor, steps: [...steps] };
+    // Out of range is clamped, not refused: a host's model of the length is not this element's.
+    el.playTo(99);
+    await settle();
+    return { forward, back, clamped: el._cursor, total: el._sol.length };
+  });
+  assert.equal(outcome.forward.cursor, 2, 'playTo did not land on the token it was asked for');
+  assert.ok(outcome.forward.steps.length >= 2, 'the tokens were not played one at a time');
+  assert.equal(outcome.back.cursor, 0, 'playTo could not walk backwards out of a group');
+  assert.equal(outcome.clamped, outcome.total, 'an out-of-range ask left the cube part way');
+});

@@ -281,6 +281,14 @@ export function createWalkSession(screen, app) {
       cube.setAttribute('facelets', state.cube.facelets);
       paintNet(state.cube.facelets);
       describeCube(cube, state.cube);
+    } else {
+      // THE ROLL BEING REPLACED IS NOT THE SUBJECT ANY MORE. The scramble cube itself always starts from
+      // solved, so it was left alone — but its `alg` and its target net were left standing too, and a
+      // search that takes a moment then showed the last roll's moves ready to animate beside an empty
+      // move list, over a net of a cube nobody is about to be given (Codex audit's verify pass,
+      // 2026-09-16). Put down together with the chips, so nothing on the screen is about the old roll.
+      cube.removeAttribute('alg');
+      paintNet(SOLVED);
     }
     sync(0);
     setStatus('working…');

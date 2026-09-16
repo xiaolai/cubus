@@ -13,7 +13,7 @@
 // `stepBackStop`/`seek`, and the `animating` and `stops` properties. The browser suite runs both drivers
 // against a proxy that throws on anything else.
 import { CAM_DEFAULT, GHOST_ELEV, QUARTER_GAP } from './lesson-schedule.js';
-import { regripsOnly, viewAtPosition } from './script-view.js';
+import { viewAtPosition } from './script-view.js';
 import { parse } from './cube-notation.js';
 import { createAttributeWriter } from './element-writes.js';
 import { locate, trackFor } from './script-track.js';
@@ -66,12 +66,11 @@ export function createElementWriter(cube) {
       const stops = cube.stops;
       const after = stops.find((p) => p > applied);
       const before = [...stops].reverse().find((p) => p < applied);
-      // The tokens this arrival crosses. A gap of one is the ordinary turn; a gap of regrips is the
-      // element's group being stopped part way through, which is the only other way a script position
-      // falls between the element's stops. Bounded by what it IS rather than by a count: a step of
-      // `x y z` is three tokens and still nothing a child sees move (found by the verify pass, 2026-09-16).
-      const crossed = tokens.slice(Math.min(applied, moves), Math.max(applied, moves));
-      const walkable = crossed.length === 1 || regripsOnly(crossed);
+      // A script position need not be one of the element's stops: the element groups the concatenated
+      // sequence — `x y R` is one group, because a regrip belongs to the turn it leads into — while a
+      // script gives every STEP a position, so a step that only regrips ends INSIDE a group. Those used
+      // to arrive by `seek`, which snaps the very turn D4's sentence is about.
+      void tokens;
       if (moves === after) cube.stepStop();
       else if (moves === before) cube.stepBackStop();
       // A SCRIPT POSITION NEED NOT BE ONE OF THE ELEMENT'S STOPS. The element groups the concatenated
@@ -80,9 +79,10 @@ export function createElementWriter(cube) {
       // element's group. Its arrival was a jump, which snapped the very turn D4's "turn the whole cube
       // so the gap is in front" exists to show (Codex audit, 2026-09-16). One or two tokens are walked
       // instead, animated, in the direction of travel; anything further is a scrub and stays a jump.
-      else if (walkable && moves > applied) for (let i = applied; i < moves; i += 1) cube.step();
-      else if (walkable) for (let i = applied; i > moves; i -= 1) cube.stepBack();
-      else cube.seek(moves);
+      // `playTo` is the element's own answer to that (plan item 2.3's stops, extended 2026-09-16): it
+      // walks to any token the way a group plays, one at a time, fed from each completion — which is
+      // what the driver could not do from outside without queueing a batch the backlog rule would snap.
+      else cube.playTo(moves);
     } else if (how === 'clock' && moves === applied + 1) {
       cube.step();
     } else if (how === 'halt' || moves !== applied || (how === 'jump' && cube.animating)) {
