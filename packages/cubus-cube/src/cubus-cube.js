@@ -487,13 +487,16 @@ class CubusCube extends HTMLElement {
   _replaceAlg() {
     this._anim = null;
     this._queue = [];
-    this._writePose();
     this._readSol();
-    this._refitIfTurned();
+    // AND A NEW SEQUENCE STARTS WHERE THE SEQUENCE STARTS. `seek(k)` replays k tokens from the cube the
+    // `facelets` or `scramble` describes, and a trail is drawn from that same origin — so playback of a
+    // replaced alg has to begin there too, or one position means two different cubes: after finishing `R`,
+    // replacing the alg with `U` played `R U` while `seek(1)` drew `U` (Codex audit, 2026-09-16). Quietly,
+    // because a replacement is not a step: the host moves its own head, and reporting one here is what the
+    // 2026-09-14 defect above looked like from the outside.
+    this._quiet = true;
+    try { this.reset(); } finally { this._quiet = false; }
     this._cursor = 0; this._applied = 0; this._playing = false;
-    this._placeArrow();
-    this._placeTrails();
-    this._dirty = true;
   }
 
   /** `alg` as moves, with what follows from it: whether it turns the cube, and where it stops. */
@@ -802,7 +805,13 @@ class CubusCube extends HTMLElement {
    */
   _placeTrails() {
     if (!this.cubies) return;
-    for (const mesh of this._trailMeshes ?? []) { mesh.parent?.remove(mesh); mesh.geometry.dispose(); }
+    // Geometry AND material: each trail is drawn in its own ink, so it carries its own material, and a
+    // material is not released with the geometry it was drawn with. This method re-runs at every seek —
+    // which is every position of a scrub — so the leak was one material per trail per scrub (Codex audit,
+    // 2026-09-16). Into a set first: a trail's tube and its head share one material.
+    const spent = new Set();
+    for (const mesh of this._trailMeshes ?? []) { mesh.parent?.remove(mesh); mesh.geometry.dispose(); spent.add(mesh.material); }
+    for (const m of spent) m.dispose();
     this._trailMeshes = [];
     this._dirty = true;
     const spec = String(this._attrs.trail ?? 'none').trim();
@@ -1100,7 +1109,10 @@ class CubusCube extends HTMLElement {
     // scene holds — four geometries and 110 materials went undisposed (found by audit, 2026-09-14).
     // Collected into sets first because they are shared: every body is one geometry and one
     // material, and disposing a shared one per mesh would dispose it 26 times.
-    const owned = new Set();
+    // The arrow's material starts in the set rather than being found in the scene: it is shared by the
+    // tube and the head, which exist only while an arrow is SHOWN, so a cube disposed with no arrow on it
+    // left that material undisposed. A set, so a shown arrow does not dispose it twice.
+    const owned = new Set(this._arrowMat ? [this._arrowMat] : []);
     this.scene?.traverse((o) => {
       if (o.geometry) owned.add(o.geometry);
       // A material's texture is not freed with it: the face letters' canvases are (plan item 4.3).
@@ -1115,6 +1127,13 @@ class CubusCube extends HTMLElement {
     this.scene = this.renderer = this.camera = this.controls = this._controlsRoot = null;
     this.root = this.cubies = this.stickers = this._ghostMeshes = null;
     this._tick = this._resize = this._ro = this._io = null;
+    // The annotations hold the scene too, and each was its own way to keep all of it alive: the arrow is
+    // a group whose parent chain runs back to the scene, and the labels and trails are meshes of it. The
+    // ghost twins are a 54-entry map of mesh to mesh — CLEARED rather than nulled, because `_stickersNamed`
+    // asks it for every selector and a null map would turn a late call into a crash where the release is
+    // the point (Codex audit, 2026-09-16).
+    this._arrow = this._arrowMat = this._labelMeshes = this._trailMeshes = null;
+    this._ghostTwin?.clear();
   }
 
   /**
@@ -1344,8 +1363,10 @@ class CubusCube extends HTMLElement {
     // A sequence with a whole-cube turn, a slice or a wide move in it turns the cube as it plays, so the
     // silhouette's upright assumption never holds for it: stable from the moment it loads, rather than a
     // fit that jumps when the first such move lands.
-    // And a frame left turned by an earlier sequence counts until something puts it back: a new `alg`
-    // keeps the cube where its last finished move left it, frame included.
+    // And the frame the sequence has reached counts while it is turned: a rotation part way through an
+    // alg leaves the cube on its side, and the fit has to hold it until a step, a seek or a reset puts
+    // it back. (A REPLACED `alg` is one of the things that puts it back — a new sequence starts where
+    // the sequence starts, `_replaceAlg`.)
     if (this._solMovesCentres || !isUpright(this._seq ?? UPRIGHT)) return true;
     const { from, to, phase } = this._turn;
     if (from === to || phase >= 1) return to !== 'U F';
@@ -1933,19 +1954,22 @@ class CubusCube extends HTMLElement {
     // Resolved ONCE for both jobs — painting and the scramble decision — so an invalid string
     // warns once, not twice. A VALID facelet string already encodes the scramble; only apply
     // moves when there isn't one, and an invalid string does not count.
-    // HOME BEFORE PAINT. `_paint()` resolves `focus` as it goes, and a positional selector answers
-    // for whatever is in the slot AT THAT MOMENT — so painting before the cubies are put back left
-    // focus naming the piece the previous cube had there (found by audit, 2026-09-14: set
-    // `focus="slot:UR"`, turn R, reset, and the FR piece stayed coloured). The version this
-    // replaced moved every cubie home first for exactly this reason; writing the pose is how that
-    // is said now.
-    this._writePose();
     const fl = this._facelets();
-    this._paint(fl);
-    if (!fl) {
-      for (const m of this._parse(this._attrs.scramble || '')) this._state = after(UPRIGHT, this._state, m).state;
-    }
+    // THE WHOLE OF POSITION 0 BEFORE THE FIRST PAINT — the scramble included. `_paint()` resolves an
+    // unbound `focus` as it goes, and a positional selector answers for whatever is in the slot AT THAT
+    // MOMENT, so the cube it sees has to be the cube that will be drawn. Painting before the cubies were
+    // put back left focus naming the piece the previous cube had there (audit, 2026-09-14: set
+    // `focus="slot:UR"`, turn R, reset, and the FR piece stayed coloured); painting before the SCRAMBLE
+    // was applied left it naming the piece that STARTS in the slot rather than the one the scramble put
+    // there — `scramble="R" focus="slot:UR"` lit the piece at UR of a solved cube (Codex audit,
+    // 2026-09-16). One paint, over a settled position 0, answers both.
+    //
+    // Not by re-binding after the scramble instead: `seek()` resets, and a bound focus is a PIECE that
+    // must keep naming the same pieces through a seek (ADR 0004 decision 10 and R10). Throwing the
+    // binding away here would re-read the selector at every scrub.
+    if (!fl) for (const m of this._parse(this._attrs.scramble || '')) this._state = after(UPRIGHT, this._state, m).state;
     this._writePose();
+    this._paint(fl);
     // Position 0, kept: a trail is drawn over the whole sequence from here, wherever the cursor is.
     this._base = this._state;
     this._refitIfTurned();
@@ -2011,6 +2035,8 @@ class CubusCube extends HTMLElement {
    */
   stepStop() {
     this._settleGroup();
+    // The settle above reports every token it lands, and a host may dispose this element from inside one.
+    if (!this.stickers) return;
     const to = this._stops.find((p) => p > this._cursor);
     if (to === undefined) return;
     this._group = { to, delta: 1 };
@@ -2020,6 +2046,7 @@ class CubusCube extends HTMLElement {
   /** Undo back to the previous stop — the whole group, one token at a time, the same way round. */
   stepBackStop() {
     this._settleGroup();
+    if (!this.stickers) return;
     const to = [...this._stops].reverse().find((p) => p < this._cursor);
     if (to === undefined) return;
     this._group = { to, delta: -1 };
@@ -2032,9 +2059,15 @@ class CubusCube extends HTMLElement {
     if (!g) return;
     // Cleared FIRST: `_completeMove` advances the group, and a settle is the one path that must not.
     this._group = null;
+    // EVERY COMPLETION IS A HOST EVENT. `_completeMove` reports a step synchronously, and a listener may
+    // dispose this element or write a new `alg` from inside that report — after which every later token of
+    // the group is about a cube that is gone, or one that is no longer walking this sequence (Codex audit,
+    // 2026-09-16: two `stepStop()` presses with a listener that disposes on the first).
+    const sol = this._sol;
+    const walking = () => Boolean(this.stickers) && this._sol === sol;
     if (this._anim) this._completeMove(this._anim);
-    while (this._queue.length) this._completeMove({ m: this._queue.shift() });
-    while (this._cursor !== g.to) {
+    while (walking() && this._queue.length) this._completeMove({ m: this._queue.shift() });
+    while (walking() && this._cursor !== g.to) {
       if (g.delta > 0) this._completeMove({ m: this._sol[this._cursor++] });
       else { const m = this._sol[--this._cursor]; this._completeMove({ m: { ...m, angle: -m.angle, delta: -1 } }); }
     }

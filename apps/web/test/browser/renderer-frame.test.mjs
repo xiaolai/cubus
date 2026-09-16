@@ -149,15 +149,23 @@ test('a reset puts the frame back at identity', async () => {
   assert.deepEqual(await readMatrices(page), upright, 'reset() kept the sequence\'s frame');
 });
 
-test('a new alg keeps the cube where its last move left it, and the fit still counts it as turned', async () => {
+// A new alg puts the frame back with the cube. This said the opposite until 2026-09-16 — a replacement
+// kept the pose the old sequence had reached — and that was the defect, not the rule: `seek(k)` replays
+// from the cube `scramble`/`facelets` describes, so a sequence that started anywhere else made one
+// position mean two cubes (Codex audit; the pieces are pinned in renderer-lifecycle.test.mjs). What is
+// unchanged is the other half: the FIT follows the cube, turned or upright, rather than assuming either.
+test('a new alg starts upright with its sequence, and the fit follows the cube', async () => {
   await build({ alg: 'x' });
+  const upright = await readMatrices(page);
   await call('seek', 1);
-  const turned = await readMatrices(page);
-  await setAttr('alg', 'R');
-  assert.deepEqual(await readMatrices(page), turned, 'replacing alg moved the cube');
+  assert.notDeepEqual(await readMatrices(page), upright, '"x" did not turn the cube');
   assert.equal(await page.evaluate(() => window.__cube._turned()), true, 'a cube on its side was fitted as upright');
-  await call('seek', 0);
+  await setAttr('alg', 'R');
+  assert.deepEqual(await readMatrices(page), upright, 'replacing alg kept the old sequence\'s frame');
   assert.equal(await page.evaluate(() => window.__cube._turned()), false, 'an upright cube with a face-turn alg was fitted as turned');
+  // And a sequence that turns the cube counts from the moment it loads, before any move has landed.
+  await setAttr('alg', 'x');
+  assert.equal(await page.evaluate(() => window.__cube._turned()), true, 'a sequence with a rotation in it was fitted as upright');
 });
 
 test('Chromium: after "x", ghosts, back views and lighting draw what orientation="F D" draws', async () => {
