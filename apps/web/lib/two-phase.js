@@ -22,7 +22,7 @@
 // replays its phase-1 maneuver through preallocated per-depth buffers. That is what makes a
 // probe budget (~tens of thousands per tier) affordable — measured in solver-move-count.md.
 
-import { CORNERS, EDGES, MOVES, MOVE_NAMES, SOLVED, applyMove, toFacelets } from './cube-pieces.js';
+import { CORNERS, EDGES, MOVES, MOVE_NAMES, SOLVED, applyMove, inverseOf, toFacelets } from './cube-pieces.js';
 
 // Re-exported where it has always been read from: the writer itself moved to the piece model, which is
 // what it is a statement about, so a module that needs a state's stickers no longer imports the SOLVER
@@ -914,21 +914,10 @@ export const ROTATION_PERMS = Object.freeze({
 /** The group inverse: where each piece CAME FROM, with the twist undone. Solving the inverse
  *  and inverting the answer is a fourth-through-sixth view of the same cube — the published
  *  companion to axis conjugation, and worth having for the same reason: independent luck. */
-function inverseState(state) {
-  const cp = new Array(8);
-  const co = new Array(8);
-  const ep = new Array(12);
-  const eo = new Array(12);
-  for (let i = 0; i < 8; i++) {
-    cp[state.cp[i]] = i;
-    co[state.cp[i]] = (3 - state.co[i]) % 3;
-  }
-  for (let i = 0; i < 12; i++) {
-    ep[state.ep[i]] = i;
-    eo[state.ep[i]] = state.eo[i];
-  }
-  return { cp, co, ep, eo };
-}
+// The piece model's own inverse, not a second copy of it: this file had one, identical down to the
+// `(3 - co) % 3` (Codex audit, 2026-09-16). cubejs stays the independent oracle; this is the app's one
+// model agreeing with itself.
+const inverseState = inverseOf;
 
 /** U <-> U', F2 <-> F2 — the inverse move at the index level. */
 const invMoveIdx = (m) => m - (m % 3) + (2 - (m % 3));

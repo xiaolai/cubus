@@ -293,6 +293,31 @@ test('an assembly into a directory the copy reads FROM is refused', () => {
   });
 });
 
+// Found by a Codex audit, 2026-09-16. The reference scan read ONE spelling — double quotes and a leading
+// `./` — so a file referenced with single quotes or a bare relative path was skipped in silence, and a
+// dist missing it passed the check written to catch exactly that. A check that quietly skips its subject
+// is the failure generator this repository keeps digging back out.
+test('every local reference is checked, however it is spelt — and remote ones are not', () => {
+  withRoot(({ root, build }) => {
+    writeFileSync(join(root, 'index.html'), [
+      '<!doctype html>',
+      '<link rel="stylesheet" href="./tokens.css">',
+      "<link rel=icon href='icons/icon.png'>",                        // single quotes, no ./
+      '<script type="module" src="lib/app.js"></script>',              // bare relative
+      '<script src="https://example.invalid/x.js"></script>',          // remote: not this build\'s file
+      '<img src="data:image/png;base64,AAAA">',                        // a data URI is not a file either
+      '<a href="#main">skip</a>',                                      // nor an in-page anchor
+    ].join(''));
+    const { referenced } = build({ freshness: false });
+    // Three distinct files: the stylesheet, the script and the icon — which the manifest names too, and
+    // one file referenced twice is one file.
+    assert.equal(referenced, 3, `checked ${referenced} assets, not the three local files`);
+    // And a missing one is now found whichever way it was written.
+    rmSync(join(root, 'icons', 'icon.png'));
+    assert.throws(() => build({ freshness: false }), /missing referenced assets/);
+  });
+});
+
 test('an assembly into a directory that HOLDS a copied tree is refused', () => {
   // The same delete from the other side. The guard asked whether the DESTINATION sits inside a copied
   // tree and not whether a copied tree sits inside the destination — and a symlink is how the second

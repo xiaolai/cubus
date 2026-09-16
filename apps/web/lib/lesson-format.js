@@ -19,6 +19,7 @@ import { sameAxis } from './cube-orientation.js';
 import { parseHighlight } from './cube-highlight.js';
 import { readToken } from './cube-notation.js';
 import { readAsk } from './script-questions.js';
+import { faceletsError } from './cube-questions.js';
 
 /** Cue fields that may carry a selector, an alg or a label. Everything else is refused. */
 const CUE_KEYS = new Set([
@@ -231,11 +232,20 @@ export const STEP_CUES = Object.freeze([
 
 const STEP_KEYS = new Set([...STEP_KINDS, ...STEP_CUES]);
 const FACELETS = /^[URFDLB]{54}$/;
+/**
+ * A field written as TEXT, or the reason it is not.
+ *
+ * `String(value)` validates what a value would look like rather than what it is, and hands the original
+ * on unchanged: `{cube: ['UUU…']}` stringifies to a perfectly good facelet string, passed every check,
+ * and crashed the cube reader a layer down (Codex audit, 2026-09-16). Asked before the contents are.
+ */
+const notText = (value) => (typeof value === 'string' ? null : `must be written as text, not ${Array.isArray(value) ? 'a list' : typeof value}`);
 const PICTURE = /^[URFDLB?]{54}$/;
 
 /** A hold, as `checkEpisode` reads an orientation: two perpendicular faces of URFDLB. */
 function badHold(value) {
-  const [up, front] = String(value).split(' ');
+  if (notText(value)) return `a hold ${notText(value)}`;
+  const [up, front] = value.split(' ');
   if (!/^[URFDLB] [URFDLB]$/.test(value) || sameAxis(up, front)) {
     return `"${value}" is not a hold — two perpendicular faces, as in "U F"`;
   }
@@ -252,7 +262,8 @@ function badHold(value) {
  * in it would refuse the way every author writes one.
  */
 function badMoves(text) {
-  const tokens = String(text).trim().split(/\s+/).filter(Boolean);
+  if (notText(text)) return notText(text);
+  const tokens = text.trim().split(/\s+/).filter(Boolean);
   if (!tokens.length) return 'names no moves';
   for (const token of tokens) {
     const { move, why } = readToken(token);
@@ -263,7 +274,8 @@ function badMoves(text) {
 
 /** A selector a cue may carry: the element's own grammar, or `ask:<question>` (plan item 3.1). */
 function badSelector(value) {
-  const text = String(value);
+  if (notText(value)) return `a selector ${notText(value)}`;
+  const text = value;
   if (text.startsWith('ask:')) {
     const { why } = readAsk(text.slice(4));
     return why ? `\`${text}\`: ${why}` : null;
@@ -290,7 +302,7 @@ export function checkScript(script) {
   for (const k of Object.keys(start)) {
     if (!['facelets', 'scramble', 'hold'].includes(k)) throw new Error(`script start: unknown field "${k}"`);
   }
-  if (start.facelets !== undefined && !FACELETS.test(String(start.facelets))) {
+  if (start.facelets !== undefined && faceletsError(start.facelets)) {
     throw new Error('script start: `facelets` must be 54 of URFDLB — a picture is a `paint` step');
   }
   if (start.scramble !== undefined) {
@@ -343,11 +355,15 @@ function checkSteps(steps, where, { rounds = true, painted: startPainted = false
       const bad = badMoves(step.setup);
       if (bad) where(i, `\`setup\` ${bad}`);
     }
-    if (kind === 'cube' && !FACELETS.test(String(step.cube))) {
-      where(i, '`cube` must be 54 of URFDLB — a picture with unknowns is a `paint` step');
+    if (kind === 'cube') {
+      // THE WHOLE CUBE, HERE. It was 54 letters of the right alphabet and nothing else, so `'U'.repeat(54)`
+      // passed and `buildScript` threw about a slot — in a place that no longer knew which step it came
+      // from (Codex audit, 2026-09-16). The same reader the builder uses says why, at the step that wrote it.
+      const wrong = faceletsError(step.cube);
+      if (wrong) where(i, `\`cube\` ${wrong} — a picture with unknowns is a \`paint\` step`);
     }
     if (kind === 'paint') {
-      if (!PICTURE.test(String(step.paint))) where(i, '`paint` must be 54 of URFDLB and `?`');
+      if (notText(step.paint) || !PICTURE.test(step.paint)) where(i, '`paint` must be 54 of URFDLB and `?`');
       painted = true;
     }
     if (kind === 'hold') {
@@ -380,13 +396,15 @@ function checkSteps(steps, where, { rounds = true, painted: startPainted = false
     }
     if (step.arrow !== undefined && step.arrow !== null && step.arrow !== 'next') {
       // One move, in the child's letters like every move a script writes — or `next`, the move about to be made.
-      const tokens = String(step.arrow).trim().split(/\s+/);
+      if (notText(step.arrow)) where(i, `\`arrow\` ${notText(step.arrow)}`);
+      const tokens = step.arrow.trim().split(/\s+/);
       if (tokens.length !== 1) where(i, `\`arrow\` is one move or "next", not "${step.arrow}"`);
       const bad = badMoves(step.arrow);
       if (bad) where(i, `\`arrow\` ${bad}`);
     }
     if (step.trail !== undefined && step.trail !== null && step.trail !== 'none') {
-      const bad = String(step.trail).split(',').map((t) => t.trim()).find((t) => !/^(piece|slot):[URFDLB]{2,3}$/i.test(t) || parseHighlight(t).invalid !== null);
+      if (notText(step.trail)) where(i, `\`trail\` ${notText(step.trail)}`);
+      const bad = step.trail.split(',').map((t) => t.trim()).find((t) => !/^(piece|slot):[URFDLB]{2,3}$/i.test(t) || parseHighlight(t).invalid !== null);
       if (bad !== undefined) where(i, `\`trail\` names pieces — piece:UF or slot:UF — and "${bad}" is not one`);
     }
     if (step.labels !== undefined && step.labels !== null && !['none', 'position', 'face'].includes(step.labels)) {

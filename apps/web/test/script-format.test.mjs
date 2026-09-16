@@ -56,7 +56,7 @@ test('a move is the child\'s letters, and a setup states a cube rather than a ho
   assert.equal(refusal(script([{ setup: "y F' U' F U R U R' U' y'" }])), null);
   assert.equal(checkScript(script([{ setup: "R U R'" }])).steps.length, 1);
   assert.match(refusal(script([{ setup: 'R Q' }])), /`setup` "Q" is not a move/);
-  assert.match(refusal(script([{ cube: 'UUU' }])), /`cube` must be 54 of URFDLB/);
+  assert.match(refusal(script([{ cube: 'UUU' }])), /`cube` expected 54 facelets of URFDLB/);
   assert.match(refusal(script([{ cube: SOLVED_FACELETS.replace('U', '?') }])), /a picture with unknowns is a `paint` step/);
 });
 
@@ -204,4 +204,31 @@ test('a pair is read in the hold the script wrote it in', () => {
   assert.deepEqual([...ask('pairOf:DFR', SOLVED, ['R', 'F']).slots], ['DFR', 'FR']);
   assert.deepEqual([...ask('pairOf:DFR', SOLVED, ['U', 'F']).slots], ['DFR', 'FR']);
   assert.deepEqual([...ask('pairOf:DBL', SOLVED, ['D', 'B']).slots], ['DBL', 'BL']);
+});
+
+// Found by a Codex audit, 2026-09-16. Two shapes of the same mistake: a field checked by what it would
+// LOOK like rather than what it is, and a cube checked by its alphabet rather than by being a cube.
+test('a field written as something other than text, and a string that is not a cube, are refused here', () => {
+  // `String(['UUU…'])` is a perfectly good facelet string. The step kept the array, and the reader a
+  // layer down threw about a slot, by which point nothing knew which step it came from.
+  assert.match(refusal(script([{ cube: [SOLVED_FACELETS] }])), /must be written as text, not a list/);
+  assert.match(refusal(script([{ paint: [SOLVED_FACELETS] }])), /`paint` must be 54/);
+  assert.match(refusal(script([{ move: ['R'] }])), /`move` must be a string/);
+  assert.match(refusal(script([{ hold: ['U F'] }])), /must be written as text/);
+  assert.match(refusal(script([{ say: 'x', hl: ['edges'] }])), /`hl` must be a string/);
+  assert.match(refusal(script([{ say: 'x', arrow: ['R'] }])), /must be written as text/);
+  assert.match(refusal(script([{ say: 'x', trail: ['piece:UF'] }])), /must be written as text/);
+  // And a cube is a cube: 54 letters of the alphabet is not enough, and this passed before. The centres
+  // are read first, because they are the frame the rest is stated in.
+  assert.match(refusal(script([{ cube: 'U'.repeat(54) }])), /centres read UUUUUU/);
+  assert.match(refusal(script([], { start: { facelets: 'U'.repeat(54) } })), /`facelets`/);
+  // Centres right, and a corner whose stickers spell no piece: two of one colour on one cubie.
+  const twoOfOne = `L${SOLVED_FACELETS.slice(1)}`;
+  assert.match(refusal(script([{ cube: twoOfOne }])), /do not spell a piece/);
+  const swapped = [...SOLVED_FACELETS];
+  [swapped[13], swapped[22]] = [swapped[22], swapped[13]];
+  assert.match(refusal(script([{ cube: swapped.join('') }])), /centres read UFRDLB/);
+  // The ordinary ones still pass.
+  assert.equal(refusal(script([{ cube: SOLVED_FACELETS }])), null);
+  assert.equal(refusal(script([{ paint: `${'U'.repeat(53)}?` }])), null);
 });

@@ -15,7 +15,7 @@
 // needs, which the wells never had.
 //
 // A `?` is an empty well, never a colour: the one thing it must never do is look like a seventh one.
-import { toFacelets } from './cube-pieces.js';
+import { pieceStateError, toFacelets } from './cube-pieces.js';
 import { STICKER_PALETTES } from './sticker-palettes.js';
 import { isScheme, paletteFor } from './scheme.js';
 
@@ -44,11 +44,27 @@ const escapeXml = (text) => String(text).replace(/[&<>"']/g, (c) => ({ '&': '&am
 
 /** A cube as 54 facelets: a piece state is written out, a picture is taken as it is. Refuses anything else. */
 export function faceletsOf(cube) {
-  const facelets = typeof cube === 'string' ? cube : cube && Array.isArray(cube.cp) ? toFacelets(cube) : null;
-  if (facelets === null || !/^[URFDLB?]{54}$/.test(facelets)) {
+  if (typeof cube !== 'string') {
+    // CHECKED BEFORE IT IS CONVERTED. `toFacelets` writes out whatever it is given, and the string it
+    // makes of a malformed state passes the test below: `co` filled with 3, or a `cp` naming one corner
+    // twice, drew as a perfectly ordinary cube (Codex audit, 2026-09-16).
+    const wrong = pieceStateError(cube);
+    if (wrong) throw new Error(`cube-flat: ${wrong}`);
+    return toFacelets(cube);
+  }
+  if (!/^[URFDLB?]{54}$/.test(cube)) {
     throw new Error('cube-flat: expected a piece state or 54 facelets of URFDLB and ?');
   }
-  return facelets;
+  return cube;
+}
+
+/** The drawing's width in pixels, or a refusal. A width that is not a positive finite number makes an
+ *  SVG with `NaN` geometry or nothing visible at all — drawn, accepted, and empty. */
+function widthOf(width) {
+  if (typeof width !== 'number' || !Number.isFinite(width) || width <= 0) {
+    throw new Error(`cube-flat: width must be a positive number of pixels, not ${JSON.stringify(width)}`);
+  }
+  return width;
 }
 
 /** The colours a view is painted in: a palette by name, remapped for the scheme. */
@@ -67,6 +83,7 @@ const rect = ({ x, y, w, h, r, fill, facelet, free }) => `<rect data-facelet="${
  * with it, so a thumbnail and the reference are the same picture.
  */
 export function netSvg(cube, { palette, scheme, width = 320, title = 'The cube, unfolded' } = {}) {
+  widthOf(width);
   const facelets = faceletsOf(cube);
   const colours = coloursFor({ palette, scheme });
   const k = width / 320;
@@ -100,6 +117,7 @@ export function netSvg(cube, { palette, scheme, width = 320, title = 'The cube, 
  * over the cube held that way (`held` in the tests' oracle; a script's picture), not the scan frame.
  */
 export function topFaceSvg(cube, { palette, scheme, width = 76, mode = 'colours', ring = false, title = 'The top face' } = {}) {
+  widthOf(width);
   const facelets = faceletsOf(cube);
   if (mode !== 'colours' && mode !== 'orientation') throw new Error(`cube-flat: mode is colours or orientation, not "${mode}"`);
   const colours = coloursFor({ palette, scheme });

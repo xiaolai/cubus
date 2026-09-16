@@ -79,11 +79,19 @@ const BUNDLES = [
       // The renderer resolves both channels to STICKERS (plan item 4.1), so the cubie-level resolver — kept
       // for the script view and the kit — and its sticker test are not in the bundle.
       'resolveHighlight', 'isSticker',
+      // Whether four arrays are a well-formed piece state is asked by the app's readers and validators
+      // (2026-09-16): the element is handed a state the host has already read, and reads no cube of its
+      // own. (`inverseOf` is NOT here — `rotateState` builds its `Y_INVERSE` from it at module scope, so
+      // it rides into the bundle as a declaration that survived.)
+      'pieceStateError',
     ],
     treeShakenMessages: [
       'cube-orientation: sticker', 'cube-orientation: rotation is not a bijection',
       'relabelling is not a bijection', 'cube-orientation: expected 54 facelets, got',
       'cube-moves: a hold is [up, front]', 'cube-moves: no token for axis', 'quarter turns is not an amount',
+      // The piece-state validator's refusals go with the validator.
+      'must be an array of', 'must be whole numbers 0 to', 'names one cubie twice',
+      'expected a piece state of',
     ],
   },
   {

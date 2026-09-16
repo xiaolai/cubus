@@ -243,3 +243,35 @@ test('sets read left to right: comma and plus add, minus takes away', () => {
   const cubies = resolveHighlight(selectors, solvedCubies()).indices;
   assert.equal(cubies.length, 5, 'four edges and the centre, the UF edge kept for its F sticker');
 });
+
+// Found by a Codex audit, 2026-09-16. Two ways a spec could say one thing and be read as another.
+test('an operator that was written is never thrown away, and a cancelled sticker unlights its cubie', () => {
+  // `-` followed by another operator used to be overwritten by it: a subtraction became a union.
+  assert.equal(parseHighlight('edges - + corners').invalid, '- +');
+  assert.equal(parseHighlight('edges - , corners').invalid, '- ,');
+  assert.deepEqual(parseHighlight('edges - + corners').selectors, []);
+  // A trailing operator, and an operator on its own, were dropped: both read as "nothing selected".
+  assert.equal(parseHighlight('edges -').invalid, 'edges -');
+  assert.equal(parseHighlight('-').invalid, '-');
+  assert.equal(parseHighlight('edges +').invalid, 'edges +');
+  // What still parses: a repeated comma (untidy, not wrong), and a subtraction written after one.
+  assert.equal(parseHighlight('edges,,corners').invalid, null);
+  assert.equal(parseHighlight('edges, - slot:UF').invalid, null);
+  assert.deepEqual(parseHighlight('edges, - slot:UF').selectors.map((s) => s.op), ['+', '-']);
+
+  // And the resolver: taking away the only sticker a cubie had lit leaves nothing to light it.
+  const cubies = [
+    { pos: [0, 1, 1], piece: 'FU', stickers: [{ face: 'U', dir: 'U' }, { face: 'F', dir: 'F' }] },
+    { pos: [1, 1, 0], piece: 'RU', stickers: [{ face: 'U', dir: 'U' }, { face: 'R', dir: 'R' }] },
+  ];
+  const of = (spec) => resolveHighlight(parseHighlight(spec).selectors, cubies).indices;
+  assert.deepEqual(of('slot:UF/U'), [0], 'precondition: one sticker lights its cubie');
+  assert.deepEqual(of('slot:UF/U - slot:UF/U'), [], 'a cubie stayed lit with no sticker of it selected');
+  assert.deepEqual(of('edges - slot:UF/U'), [0, 1], 'taking a sticker away must leave the rest of its cubie lit');
+  assert.deepEqual(of('edges - edges'), [], 'a whole-cubie subtraction still takes the cubie away');
+  assert.deepEqual(of('edges'), [0, 1]);
+  // The two exported answers about one spec agree now, which is the whole point.
+  const sticky = parseHighlight('slot:UF/U - slot:UF/U').selectors;
+  assert.deepEqual(resolveStickers(sticky, cubies).stickers, []);
+  assert.deepEqual(resolveHighlight(sticky, cubies).indices, []);
+});

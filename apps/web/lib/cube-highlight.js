@@ -123,9 +123,19 @@ export function parseHighlight(spec) {
   // first), so a resolver applies them left to right and a caller that only reads the list still has them.
   const parts = raw.split(/\s*([,+-])\s*/);
   let op = '+';
+  // An operator written but not yet spent on a token. Two in a row used to overwrite each other, so
+  // `edges - + corners` quietly became a union — the subtraction the author wrote was thrown away — and
+  // a trailing one was dropped, so `edges -` and even a bare `-` passed as valid (Codex audit,
+  // 2026-09-16). A repeated comma is still skipped: `edges,,corners` is untidy, not wrong, and the
+  // second comma changes nothing about what was asked for. A `-` replaced by anything does.
+  let pending = false;
   for (const part of parts) {
-    if (part === ',' || part === '+') { op = '+'; continue; }
-    if (part === '-') { op = '-'; continue; }
+    if (part === ',' || part === '+' || part === '-') {
+      if (pending && op === '-') return { selectors: [], invalid: `- ${part}` };
+      if (part === '-') op = '-';
+      pending = true;
+      continue;
+    }
     if (!part) continue;
     const sel = parseToken(part);
     if (!sel) return { selectors: [], invalid: part };
@@ -133,7 +143,9 @@ export function parseHighlight(spec) {
     if (!selectors.length && op === '-') return { selectors: [], invalid: raw };
     selectors.push({ ...sel, op });
     op = '+';
+    pending = false;
   }
+  if (pending) return { selectors: [], invalid: raw };
   return { selectors, invalid: null };
 }
 
@@ -163,6 +175,18 @@ export function selects(sel, cubie) {
  * exactly the quiet failure this codebase keeps having to dig back out.
  */
 export function resolveHighlight(selectors, cubies) {
+  // WHEN THE CUBIES CARRY THEIR STICKERS, a cubie is lit exactly when one of its stickers is — which is
+  // the arithmetic `resolveStickers` already does, and the only way a subtraction that removes a cubie's
+  // LAST lit sticker can turn the cubie off. It could not: `slot:UF/U - slot:UF/U` lit the UF cubie while
+  // the sticker resolver correctly returned nothing, so the two exported answers about one spec disagreed
+  // (Codex audit, 2026-09-16). Whole-cubie selectors are unchanged by this — `selectsSticker` matches
+  // every sticker of a cubie its selector names — and so is "taking a sticker away leaves the rest lit".
+  // Cubies given without stickers (a caller that only has positions and identities) keep the older pass.
+  if (cubies.length && cubies.every((c) => Array.isArray(c.stickers) && c.stickers.length)) {
+    const { stickers, empty } = resolveStickers(selectors, cubies);
+    const lit = new Set(stickers.map(([i]) => i));
+    return { indices: [...lit].sort((a, b) => a - b), empty };
+  }
   const indices = [];
   const hit = new Array(selectors.length).fill(false);
   for (let i = 0; i < cubies.length; i++) {

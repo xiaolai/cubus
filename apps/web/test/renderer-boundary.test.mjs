@@ -61,7 +61,10 @@ export const DOMAIN = Object.freeze([
 /** Question modules, and the names each may import from where (ADR 0005 decision 2). */
 export const QUESTION_MODULES = Object.freeze(['apps/web/lib/cube-questions.js']);
 export const QUESTION_ALLOW = Object.freeze({
-  'apps/web/lib/cube-pieces.js': ['CORNER', 'CORNERS', 'EDGE', 'EDGES', 'SOLVED', 'cornerSlot', 'edgeSlot', 'cornerSolved', 'edgeSolved', 'allSolved'],
+  // `pieceStateError` is a READING, like every other name here: it asks whether four arrays are the
+  // right lengths, ranges and permutations and applies nothing (added 2026-09-16, when a Codex audit
+  // found the questions checking two of the four arrays and answering `twist: undefined` off the rest).
+  'apps/web/lib/cube-pieces.js': ['CORNER', 'CORNERS', 'EDGE', 'EDGES', 'SOLVED', 'cornerSlot', 'edgeSlot', 'cornerSolved', 'edgeSolved', 'allSolved', 'pieceStateError'],
   'apps/web/lib/cube-orientation.js': ['FACE_LETTERS', 'ORIENTATIONS', 'orientationRelabel', 'sameAxis'],
   'apps/web/lib/cube-highlight.js': ['KIND', 'pieceKey', 'slotVector'],
   // The facelet layout: which sticker is which slot's. Tables, no arithmetic.

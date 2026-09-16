@@ -13,6 +13,7 @@
 // The expected pieces are the oracle's facelets read into the piece model through cubejs, so nothing
 // the interpreter computes is compared with itself.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import Cube from '../vendor/cubejs.js';
@@ -21,6 +22,7 @@ import {
   applyIdentity, convertSelectors, faceTurnsAlg, heldFace, heldToken, identityFace, run, tokenOf, toIdentity,
 } from '../lib/cube-moves.js';
 import { parse } from '../lib/cube-notation.js';
+import { FACE_NORMAL } from '../lib/cube-layout.js';
 import { ORIENTATIONS } from '../lib/cube-orientation.js';
 import { METHOD_TO_SCAN, renameAlg, renameSelectors } from '../lib/solving-hold.js';
 import { SOLVED_FACELETS, applyToken, held, holdOf, play } from './cube-oracle.mjs';
@@ -177,4 +179,26 @@ test('identity moves as face turns: a regrip is none, a wide move one face, a sl
     const played = run(seq, hold, SCRAMBLED);
     assert.deepEqual(applyAlg(SCRAMBLED, faceTurnsAlg(played.drawn)), played.state, `${seq} held ${holdText(hold)}`);
   }
+});
+
+// Found by a Codex audit, 2026-09-16. The convention "R = +x, U = +y, F = +z" was typed out in three
+// production modules, each maintaining it independently. One table now, in the module that owns the
+// cube's layout — and a sign the wrong way round in any consumer would be found by a drawing looking
+// odd, not by a test, which is why this one asks directly.
+test('one face-normal table, and every module that needs it reads that one', async () => {
+  const modules = [
+    '../lib/cube-orientation.js',
+    '../lib/cube-moves.js',
+    '../../../packages/cubus-cube/src/pose.js',
+  ];
+  for (const path of modules) {
+    const source = readFileSync(new URL(path, import.meta.url), 'utf8');
+    assert.match(source, /FACE_NORMAL/, `${path} does not read the shared table`);
+    assert.doesNotMatch(source, /R: \[1, 0, 0\], L: \[-1, 0, 0\]/, `${path} still types the table out`);
+  }
+  // And the table itself says what the whole app means by the fixed frame, frozen all the way down.
+  assert.deepEqual(FACE_NORMAL.U, [0, 1, 0]);
+  assert.deepEqual(FACE_NORMAL.R, [1, 0, 0]);
+  assert.deepEqual(FACE_NORMAL.F, [0, 0, 1]);
+  for (const face of 'URFDLB') assert.throws(() => { FACE_NORMAL[face][0] = 9; }, TypeError, `${face} was writable`);
 });
