@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { answerAt, createEventDriver, createRound, revealScript } from '../lib/script-rounds.js';
-import { buildScript } from '../lib/script-view.js';
+import { buildScript, viewAtPosition } from '../lib/script-view.js';
 import { checkScript } from '../lib/lesson-format.js';
 import { PREDICTION, RECOGNITION, predictionScript, recognitionScript } from './fixtures/cubus-im-drills.mjs';
 import { MANIFEST } from './browser/public-cube.mjs';
@@ -171,4 +171,34 @@ test('a fractional seek lands on the position it shows', () => {
   assert.ok(driver.round, 'the round the position shows is the round the driver has');
   driver.seek(Number.NaN);
   assert.equal(driver.position, 0, 'a seek to nothing lands at the start rather than stalling every step');
+});
+
+test("a question's argument is read as the question reads one, whatever case it is written in", () => {
+  // The verify pass of 2026-09-16 caught this as a regression of the fix above: carrying the argument into
+  // the hold the turn leaves put a relabelling in front of `readAsk`, which upper-cases and trims — so a
+  // lesson writing `whereIs:uf`, which the question itself accepts, threw.
+  const round = (ask) => ({ say: 'Where will it be?', turn: 'y R', ask, choose: 2, reveal: [] });
+  const asked = (ask) => answerAt(buildScript(checkScript({ schema: 2, start: { hold: 'U F' }, steps: [{ round: round(ask) }] })), 1);
+  assert.equal(asked('whereIs:uf').answer.slot, 'UL');
+  assert.equal(asked(' whereIs:UF ').answer.slot, 'UL');
+  assert.equal(asked('whereIs:UF').answer.slot, 'UL');
+});
+
+test('a reveal keeps an arrow on the face, and a trail on the piece, the cue was written about', () => {
+  // The other half of the reveal fix, from the same verify pass: `hl` and `focus` were carried into the
+  // round's hold and `arrow` and `trail` were not, so a regrip between the cue and the round drew the arrow
+  // on another face and followed another piece.
+  const steps = [
+    { move: 'U', arrow: 'R', trail: 'piece:UF' },
+    { move: 'y' },
+    { round: { say: 'Where does it live?', ask: 'whereIs:UF', choose: 2, reveal: [] } },
+  ];
+  const built = buildScript(checkScript({ schema: 2, start: { hold: 'U F' }, steps }));
+  const at = built.positions.length - 1;
+  const before = viewAtPosition(built, at).cues;
+  const reveal = buildScript(checkScript(revealScript(built, at)));
+  // Position 0 of a reveal is where it starts; its first step — the round as it was asked — is the next.
+  const after = viewAtPosition(reveal, 1).cues;
+  assert.equal(after.arrow, before.arrow, 'the arrow points at the face it pointed at');
+  assert.equal(after.trail, before.trail, 'the trail follows the piece it followed');
 });
