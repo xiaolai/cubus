@@ -113,12 +113,26 @@ export const MOVE_NAMES = Object.freeze(Object.keys(MOVES));
  * not-home (Codex audit, 2026-09-16). Whether a well-formed state is REACHABLE is a different
  * question, asked by `isCubeState` in `lib/cube-trust.js` with the four classical conditions.
  */
+/**
+ * Every INDEX of `a` satisfies `ok` — holes included.
+ *
+ * `Array.prototype.every` SKIPS holes, so `Array(8)` satisfies any predicate at all, including one that
+ * rejects `undefined`. A sparse array reached `pieceStateError` validated and came out of `toFacelets` as 30
+ * characters, which `netSvg` drew as 24 stickers filled `undefined` (audit, 2026-09-16). The same hole is in
+ * `forEach`, `map`, `filter` and `some`; anywhere a validator walks an array whose LENGTH it has already
+ * checked, it has to walk the indices and not the elements.
+ */
+const everyIndex = (a, ok) => {
+  for (let i = 0; i < a.length; i++) if (!ok(a[i])) return false;
+  return true;
+};
+
 export function pieceStateError(state) {
   if (!state || typeof state !== 'object') return 'expected a piece state of {cp, co, ep, eo}';
   for (const [key, n, max] of [['cp', 8, 7], ['co', 8, 2], ['ep', 12, 11], ['eo', 12, 1]]) {
     const a = state[key];
     if (!Array.isArray(a) || a.length !== n) return `${key} must be an array of ${n} numbers`;
-    if (!a.every((v) => Number.isInteger(v) && v >= 0 && v <= max)) return `${key} must be whole numbers 0 to ${max}`;
+    if (!everyIndex(a, (v) => Number.isInteger(v) && v >= 0 && v <= max)) return `${key} must be whole numbers 0 to ${max}`;
   }
   for (const key of ['cp', 'ep']) {
     if (new Set(state[key]).size !== state[key].length) return `${key} names one cubie twice`;

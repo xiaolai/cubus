@@ -33,6 +33,31 @@ const EPISODE = {
 
 const built = () => buildSchedule(checkEpisode(EPISODE));
 
+// A RULE THAT EXISTS IN ONE HALF OF A FILE AND NOT THE OTHER (audit, 2026-09-16). `lesson-format.js`
+// validates two formats, and the SCRIPT half checked `hl`/`focus` with `badSelector` from the beginning
+// while the EPISODE half only checked they were strings. So `slop:UR` and `piece:UD` validated, and the
+// ELEMENT refused them during playback — drawing nothing, saying so in a console the child is not reading,
+// at a moment that no longer knows which cue wrote it.
+//
+// This is the assertion that makes the gap loud if the two halves drift apart again: the episode format is
+// held to the same refusals the script format is, by construction rather than by two lists agreeing.
+test('an episode refuses a selector the element could not draw, not merely a non-string', () => {
+  const refusal = (extra) => {
+    try { checkEpisode({ cues: [cue(0, 1, extra)] }); return null; } catch (e) { return e.message; }
+  };
+  // Precondition: the ordinary forms an episode really uses still pass, including the empty clear.
+  for (const good of ['none', '', 'layer:U', 'piece:BL,slot:BL', 'edges - corners', 'ask:whereIs:UR']) {
+    assert.equal(refusal({ hl: good }), null, `a valid selector was refused: ${JSON.stringify(good)}`);
+  }
+  // And the ones that used to reach the renderer.
+  for (const bad of ['slop:UR', 'piece:UD', 'layer:Q', 'edges -', 'ask:nonsense']) {
+    const why = refusal({ hl: bad });
+    assert.ok(why, `\`hl: ${JSON.stringify(bad)}\` still validates; the element refuses it at playback`);
+    assert.match(why, /`hl`/, `the refusal for ${JSON.stringify(bad)} does not name the field`);
+  }
+  assert.ok(refusal({ focus: 'slop:UR' }), '`focus` is not held to the same rule as `hl`');
+});
+
 test('segments start at a setup and carry only their own turns', () => {
   const s = built();
   assert.equal(s.segments.length, 2, 'two positions, so two segments');

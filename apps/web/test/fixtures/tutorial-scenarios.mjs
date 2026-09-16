@@ -266,8 +266,8 @@ export const SCENARIOS = Object.freeze([
     alg: "R U' M y F2",
   },
   {
-    id: 'letters-name-places-and-faces', stage: 'concepts', half: 'element', kind: 'label', closedBy: '4.3',
-    source: 'cubus-im lessons 3-4: the face on top is U whichever colour it is — and the white face is still white',
+    id: 'letters-name-places', stage: 'concepts', half: 'element', kind: 'label', closedBy: '4.3',
+    source: 'cubus-im lessons 3-4: the face on top is U whichever colour it is, however the cube is turned',
     needs: ['label'], holds: ['U F', 'D B', 'R F', 'F L'],
   },
   {

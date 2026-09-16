@@ -145,21 +145,55 @@ test('dispose releases every geometry and material once, and lets go of the old 
 // A trail is drawn in its own ink, so it owns its material — and clearing one disposed the geometry and
 // left the material behind. `_placeTrails()` re-runs at every seek, so a scrub leaked one per trail per
 // position; a disposed element never released them either, because the meshes had left the scene.
+//
+// The COUNT is a rule and not a number (2026-09-16, when the rim and then the numerals arrived): each trail
+// owns ONE ink; all of them share ONE rim, because the rim is not a choice — it is the same light edge
+// whatever the body is; and each NUMERAL owns one, because each carries its own canvas texture. Asserted as
+// that sum rather than as a total, so the day a trail starts owning a material nobody accounted for, this
+// fails and says which, instead of being edited to whatever the new number happens to be.
 test('clearing a trail releases its material, not only its geometry', async () => {
   await build({ facelets: SOLVED, alg: "R U R' U'", trail: 'piece:UF, piece:UR' });
   const outcome = await page.evaluate(() => {
     const el = window.__cube;
-    const seen = (window.__cube._trailMeshes ?? []).map((m) => m.material);
-    const materials = [...new Set(seen)];
+    const meshes = window.__cube._trailMeshes ?? [];
+    const materials = [...new Set(meshes.map((m) => m.material))];
     const gone = new Set();
     for (const m of materials) { const real = m.dispose.bind(m); m.dispose = () => { gone.add(m.uuid); real(); }; }
     el.setAttribute('trail', 'none');
     const afterClear = [...gone].length;
-    return { materials: materials.length, afterClear, left: el._trailMeshes.length };
+    return {
+      materials: materials.length, afterClear, left: el._trailMeshes.length,
+      trails: meshes.filter((m) => m.userData.trail).length,
+      numerals: meshes.filter((m) => m.userData.billboard).length,
+    };
   });
-  assert.equal(outcome.materials, 2, `two trails should own two materials, not ${outcome.materials}`);
+  assert.equal(outcome.trails, 2, `precondition: two trails should be drawn, not ${outcome.trails}`);
+  assert.ok(outcome.numerals > 0, 'precondition: a trail should be numbered');
+  const owed = outcome.trails + 1 + outcome.numerals;
+  assert.equal(outcome.materials, owed,
+    `${outcome.trails} trails (an ink each) + 1 shared rim + ${outcome.numerals} numerals = ${owed} materials, not ${outcome.materials}`);
   assert.equal(outcome.left, 0, 'clearing the trail left meshes in the scene');
   assert.equal(outcome.afterClear, outcome.materials, 'a cleared trail left its material undisposed');
+});
+
+// The rim is made before the loop that draws the trails, so a spec that names a piece nothing moves — every
+// selector can miss — would build one and attach it to nothing, and nothing would ever dispose it: the
+// release path walks `_trailMeshes`, which an unused material never reaches. The ordinary path, not an
+// unlucky one, and invisible from outside except as memory.
+test('a trail spec that draws nothing leaves no material behind either', async () => {
+  await build({ facelets: SOLVED, alg: 'R', trail: 'piece:UF' }); // R does not move UF
+  const outcome = await page.evaluate(() => {
+    const el = window.__cube;
+    let live = 0;
+    el.scene.traverse((o) => { for (const m of [o.material].flat()) if (m) live++; });
+    return { meshes: el._trailMeshes.length, live };
+  });
+  assert.equal(outcome.meshes, 0, 'precondition: R does not move UF, so no trail should be drawn');
+  // Drawn or not, nothing of the trail is in the scene; the guard is that the material was disposed rather
+  // than merely unreferenced, which `renderer-lifecycle`'s disposal case above cannot see for an orphan.
+  await page.evaluate(() => { window.__cube.setAttribute('trail', 'piece:UF,piece:UR'); });
+  const after = await page.evaluate(() => window.__cube._trailMeshes.filter((m) => m.userData.trail).length);
+  assert.equal(after, 1, 'UR moves under R and should still draw, after a spec that drew nothing');
 });
 
 // Building published `this.scene` — the "already built" marker — before the WebGL context existed.
