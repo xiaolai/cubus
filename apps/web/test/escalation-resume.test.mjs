@@ -736,3 +736,38 @@ test('falling back to one worker empties the pooled resume point rather than mis
     console.warn = realWarn;
   }
 });
+
+// Found by a Codex audit, 2026-09-16. Every other forgery in this protocol is caught by the KEY or by
+// the finished-record's work bound; an UNFINISHED record's position was believed on its own word. A fresh
+// point with `depth` patched to 1 claims every view of depth 0 walked to its end, and the resumed search
+// therefore never looks there — for a cube whose answer is at depth 0 that is a permanent null, and a
+// finished point is never searched again.
+test('an unfinished resume point has to have paid for the position it claims', () => {
+  try {
+    engine.setBounds({ solLen: 2, probeMax: 5_000_000, maxPhase2: 12 });
+    const oneTurn = new Cube();
+    oneTurn.move('U');
+    const facelets = oneTurn.asString();
+    // The honest search, for comparison: one move, found at depth 0.
+    const fresh = engine.openSearch(facelets, { viewFilter: [0] });
+    assert.equal(fresh.continueTo(), "U'", 'precondition: this cube is one turn from solved');
+
+    const forged = { ...engine.openSearch(facelets, { viewFilter: [0] }).state, depth: 1 };
+    assert.equal(forged.covered, 0, 'precondition: the forged point banks nothing');
+    assert.throws(
+      () => engine.openSearch(facelets, { viewFilter: [0], resume: forged }).continueTo(),
+      /never ran that far/,
+      'a point standing past work it never did was continued from',
+    );
+    // And a REAL unfinished point, which has paid for where it stands, still continues.
+    engine.setBounds({ solLen: 21, probeMax: 200_000, maxPhase2: 12 });
+    const opened = engine.openSearch(WORST.facelets, {});
+    assert.equal(opened.continueTo(), null, 'precondition: 200k nodes is not enough for this cube');
+    assert.ok(opened.state.covered >= opened.state.depth * 6 + opened.state.cursor,
+      'a real point banks at least one node per pair it has walked');
+    engine.setBounds({ probeMax: 20_000_000 });
+    assert.equal(typeof engine.openSearch(WORST.facelets, { resume: opened.state }).continueTo(), 'string');
+  } finally {
+    restore();
+  }
+});

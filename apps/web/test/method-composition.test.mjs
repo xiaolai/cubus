@@ -15,7 +15,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { CORNER, CORNERS, EDGE, EDGES, SOLVED, allSolved, applyAlg, cornerSolved, edgeSolved } from '../lib/cube-pieces.js';
+import { CORNER, CORNERS, EDGE, EDGES, SOLVED, allSolved, applyAlg, cornerSolved, edgeSolved, toFacelets } from '../lib/cube-pieces.js';
+import { fromRepertoire } from '../lib/methods/engine.js';
 import { identityFace } from '../lib/cube-moves.js';
 import {
   LADDER, MethodSolverError, STAGE_IDS, allRungCombinations, methodFor, rungKey, solveByMethod,
@@ -410,4 +411,49 @@ test('a malformed cube is refused at the boundary, by name', () => {
   [parity.ep[0], parity.ep[1]] = [parity.ep[1], parity.ep[0]];
   const err = thrown(() => solveByMethod(parity));
   assert.ok(err instanceof MethodSolverError, 'an unsolvable cube is a solver refusal, not a shape error');
+});
+
+// ---- the repertoire search's own invariants ---------------------------------------------------
+//
+// Found by a Codex audit, 2026-09-16: every claim `fromRepertoire`'s comments make about determinism was
+// exercised only through whole solves, which cannot tell "the search picks this route" from "the frontier
+// happened to be built in this order". These ask it directly.
+
+const reaches = (target) => (state) => toFacelets(state) === toFacelets(target);
+
+test('the repertoire search answers the same thing whichever order the candidates arrive in', () => {
+  // `U D` and `D U` are the same cube, the same length and — under any rank that cannot tell two
+  // algorithms apart — the same rank. Arrival order decided between them until the algorithm itself
+  // became the last tie-break.
+  const candidates = [{ alg: 'U' }, { alg: 'D' }, { alg: 'R' }];
+  const goal = reaches(applyAlg(SOLVED, 'U D'));
+  const forwards = fromRepertoire(SOLVED, candidates, goal, 2);
+  const backwards = fromRepertoire(SOLVED, [...candidates].reverse(), goal, 2);
+  assert.equal(forwards.alg, backwards.alg, 'reversing the candidates changed the answer');
+  assert.equal(forwards.alg, 'D U', 'the tie-break is the algorithm itself, so the answer is stable');
+  // And with a rank that gives every route the same value, which is the case the audit reproduced.
+  const flat = () => 0;
+  assert.equal(
+    fromRepertoire(SOLVED, candidates, goal, 2, undefined, flat).alg,
+    fromRepertoire(SOLVED, [...candidates].reverse(), goal, 2, undefined, flat).alg,
+  );
+});
+
+test('the best route to a state is the one kept, not the first one that reached it', () => {
+  // Two candidates land on the same cube; the longer is offered first. Deduplicating on arrival kept it,
+  // and the next ply was then expanded from a route four moves long instead of one.
+  const candidates = [{ alg: "R U U'" }, { alg: 'R' }, { alg: 'F' }];
+  const found = fromRepertoire(SOLVED, candidates, reaches(applyAlg(SOLVED, 'R F')), 2);
+  assert.equal(found.alg, 'R F', 'the search kept the longer route to a state it had already reached');
+});
+
+test('routes are ordered by length as a NUMBER', () => {
+  // Nine moves and thirteen moves reaching the same cube: 9 is shorter, and "13" sorts before "9" as
+  // text. The length was stringified and zero-padded once for this reason; the padding is gone and the
+  // comparison is arithmetic, which this pins.
+  const nine = 'U '.repeat(9).trim();
+  const thirteen = 'U '.repeat(13).trim();
+  const goal = reaches(applyAlg(SOLVED, 'U'));
+  assert.equal(fromRepertoire(SOLVED, [{ alg: thirteen }, { alg: nine }], goal, 1).alg, nine);
+  assert.equal(fromRepertoire(SOLVED, [{ alg: nine }, { alg: thirteen }], goal, 1).alg, nine);
 });

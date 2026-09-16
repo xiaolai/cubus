@@ -389,8 +389,19 @@ function parity(p) {
   return inversions % 2;
 }
 
+/**
+ * How many states the enumeration below has, worked out from its own shape: 24 corner permutations
+ * against 24 edge permutations, half of which disagree in parity (288), times the 27 twist vectors whose
+ * total is 0 mod 3, times the 8 flip vectors whose total is even. 288 x 27 x 8 = 62,208.
+ *
+ * Asserted rather than described, because "the table is complete" is this sweep's whole claim and a
+ * generator that yielded nothing would have made it in a tenth of a second with no failures to report
+ * (Codex audit, 2026-09-16).
+ */
+export const LAST_LAYER_STATES = 62_208;
+
 /** Every reachable last-layer state, as an iterator — so the sweep reads as a loop over states. */
-function* lastLayerStates() {
+export function* lastLayerStates() {
   const P4 = permutations([0, 1, 2, 3]);
   const twists = [];
   for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) for (let c = 0; c < 3; c++) {
@@ -460,6 +471,14 @@ function exhaustiveAt(rungs) {
     }
   }
 
+  // THE SWEEP COVERED THE ENUMERATION. Before anything is reported: a truncated or empty generator
+  // reports zero failures, which reads exactly like a pass.
+  if (total !== LAST_LAYER_STATES) {
+    throw new Error(
+      `method-solver-profile: swept ${total} last-layer states, not ${LAST_LAYER_STATES} — `
+      + 'the enumeration is not the one this sweep claims to have covered',
+    );
+  }
   console.log(`\n[exhaustive ${rungKey(rungs)}] every reachable last-layer state, ${((Date.now() - t0) / 1000).toFixed(0)}s`);
   console.log(`  states ${total} | failures ${failures.length} | mean ${(moves / (total - failures.length)).toFixed(1)} moves`);
   console.log('  each algorithm, and how many of those states needed it:');

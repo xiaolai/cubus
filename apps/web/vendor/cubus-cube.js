@@ -30637,14 +30637,6 @@ function after(frame, state, move) {
     state: { ...turnPieces(move, state), ct }
   };
 }
-var MOVE_DESCRIPTORS = Object.freeze(Object.assign(/* @__PURE__ */ Object.create(null), Object.fromEntries(
-  Object.keys(MOVES).map((name) => {
-    const { axis, sign } = axisOf(name[0]);
-    const turns = name.endsWith("2") ? 2 : 1;
-    const dir = name.endsWith("'") ? -1 : 1;
-    return [name, Object.freeze({ axis, layers: Object.freeze([sign]), turns, angle: -dir * sign * turns * (Math.PI / 2) })];
-  })
-)));
 
 // src/cubus-cube.js
 var PALETTES = STICKER_PALETTES;
