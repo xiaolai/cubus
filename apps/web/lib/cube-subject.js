@@ -30,15 +30,25 @@ import { Cube, challenges, invertAlg, solverWorker } from './solver-service.js';
 // every arriving snapshot — the cube emits those at ~1Hz for as long as it is connected, on the
 // UI thread, for a solution most of them never need. Screens that want the derived values ask for
 // them; the live path just records what the cube says.
+/**
+ * Everything derived from an arrangement, put down: the answer, what it is, and the lesson about it.
+ *
+ * Said once because it is now needed twice — a new arrangement arriving, and an answer the oracle has
+ * refuted. The lesson is about the arrangement it was worked out for; carried across a new one it would
+ * caption a walk with another cube's steps, which is the exact failure that made the first attempt look
+ * like a broken solver.
+ */
+function forgetAnswer(c) {
+  c.solution = ''; c.moves = []; c.stepFacelets = []; c.solveResult = null; c.solvedFor = null;
+  c.lesson = null;
+  c.setupAlg = ''; c.crossChecked = false;
+}
+
 export function ingestFacelets(f) {
   const c = state.cube;
   c.facelets = f;
-  c.solution = ''; c.moves = []; c.stepFacelets = []; c.solveResult = null; c.solvedFor = null;
-  // The lesson is about the arrangement it was worked out for. Carried across a new one it would
-  // caption a walk with another cube's steps — the exact failure that made the first attempt look
-  // like a broken solver.
-  c.lesson = null;
-  c.setupAlg = ''; c.derived = false; c.unsolvable = false; c.crossChecked = false;
+  forgetAnswer(c);
+  c.derived = false; c.unsolvable = false;
 }
 
 // `movesOf` is imported from `cube-pieces.js`: the move list, the lesson's move counts and the
@@ -244,7 +254,12 @@ function finishSolve(c, alg) {
     // exactly like one that keeps passing.
     console.warn('cubejs cross-check could not run; solution accepted unverified', err);
   }
-  if (verified === false) throw new Error('solver cross-check failed — re-scan');
+  // A REFUTED ANSWER IS PUT DOWN BEFORE THE RAISE. It was left standing, so a carried answer the oracle
+  // rejects — `held && !crossChecked`, the branch that re-checks an answer that arrived without a search
+  // — was re-checked and re-rejected on every later call, and the search that would have found a real
+  // answer never ran (Codex audit, 2026-09-16). Throwing is still how it is reported; what changes is
+  // that the next ask starts from nothing rather than from the same refuted alg.
+  if (verified === false) { forgetAnswer(c); throw new Error('solver cross-check failed — re-scan'); }
   c.solution = solution; c.moves = moves;
   // Per-step facelets so the 2D net + move list can co-move with the 3D animation.
   c.stepFacelets = stepStates(c.facelets, moves);

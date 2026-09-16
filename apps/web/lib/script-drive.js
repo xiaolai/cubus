@@ -16,6 +16,11 @@ import { CAM_DEFAULT, GHOST_ELEV, QUARTER_GAP } from './lesson-schedule.js';
 import { viewAtPosition } from './script-view.js';
 import { locate, trackFor } from './script-track.js';
 
+/** How many tokens a stop arrival will walk one at a time when it does not land on one of the
+ *  element's own stops. Two, because the element snaps the oldest turn the moment a third is
+ *  queued — past that a walk is a jump wearing an animation. */
+const WALK_TOKENS = 2;
+
 /**
  * Write views onto one element, and only what changed.
  *
@@ -68,6 +73,14 @@ export function createElementWriter(cube) {
       const before = [...stops].reverse().find((p) => p < applied);
       if (moves === after) cube.stepStop();
       else if (moves === before) cube.stepBackStop();
+      // A SCRIPT POSITION NEED NOT BE ONE OF THE ELEMENT'S STOPS. The element groups the concatenated
+      // sequence — `x R` is one group, because a regrip belongs to the turn it leads into — while a
+      // script gives every STEP its own position, so a step that is only a regrip ends inside the
+      // element's group. Its arrival was a jump, which snapped the very turn D4's "turn the whole cube
+      // so the gap is in front" exists to show (Codex audit, 2026-09-16). One or two tokens are walked
+      // instead, animated, in the direction of travel; anything further is a scrub and stays a jump.
+      else if (moves > applied && moves - applied <= WALK_TOKENS) for (let i = applied; i < moves; i += 1) cube.step();
+      else if (moves < applied && applied - moves <= WALK_TOKENS) for (let i = applied; i > moves; i -= 1) cube.stepBack();
       else cube.seek(moves);
     } else if (how === 'clock' && moves === applied + 1) {
       cube.step();
@@ -125,6 +138,15 @@ export function createStopDriver(built, { cube = null } = {}) {
     back: () => go(position - 1, 'stop'),
     seek: (k) => go(k, 'jump'),
     /**
+     * Stop where this driver believes the cube is, and stay there.
+     *
+     * For a route being superseded: dropping the route stops the HOST's transitions, and left the
+     * element playing the old walk's group — turning on screen, a whole walk behind, for as long as the
+     * replacement took to find (Codex audit, 2026-09-16). A jump to the position already reached re-seats
+     * a turn in flight, which is the one thing `how: 'jump'` does even when the count has not changed.
+     */
+    halt: () => go(position, 'jump'),
+    /**
      * A cube the child turned, as 54 facelets: where it is on the walk.
      *
      * `{ kind: 'step', position }` moved the walk there; `{ kind: 'mid' }` is part way into a turn the
@@ -181,7 +203,13 @@ export function createClockDriver(built, { cube = null } = {}) {
     const view = viewAtPosition(built, k);
     // The tokens STARTED by `t`, which is what the element should be animating toward: a trailing
     // regrip turns when its time comes, never when its segment loads (ADR 0004 R7).
-    const moves = timeline.tokenTimes[view.segment].filter((at) => at <= t).length;
+    // The PREFIX whose times have come, not a count of them: tokens are played in order, so token j
+    // cannot have started while token j-1 has not. Counting matching times instead answered a script
+    // whose steps overlap — `{move:'R U', at:1, secs:4}` then `{move:'F', at:2}`, times [1, 3, 2] — with
+    // two tokens at t=2.1, applying `U` a second before its own time (Codex audit, 2026-09-16).
+    const times = timeline.tokenTimes[view.segment];
+    let moves = 0;
+    while (moves < times.length && times[moves] <= t) moves += 1;
     if (writer) writer.show(view, { moves, how: jumped ? 'jump' : 'clock' });
     return Object.freeze({ ...view, moves, t });
   };

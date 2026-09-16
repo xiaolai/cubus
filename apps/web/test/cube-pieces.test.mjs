@@ -141,3 +141,20 @@ test('the rotation flips the U and D edges, and not the middle ones', () => {
   const rotated = rotateState(flipped, 1);
   assert.deepEqual(rotated, applyAlg(SOLVED, 'R'), 'F seen after a y turn is R');
 });
+
+test('the identity is frozen all the way down, because it is handed out by reference', () => {
+  // `Object.freeze` is shallow, and this constant IS what a script's position 0 and a dozen callers hold:
+  // one of them writing to `SOLVED.cp` rewrote what solved means for every later question in the process
+  // (Codex audit, 2026-09-16). `methods/engine.js` froze its own copy for this reason in 2026-09-10; this
+  // is the constant that copy was made from, and a second instance of one mechanism is the class.
+  for (const key of ['cp', 'co', 'ep', 'eo']) {
+    assert.throws(() => { SOLVED[key][0] = 4; }, TypeError, `SOLVED.${key} was handed out writable`);
+  }
+  assert.deepEqual(SOLVED.cp, [0, 1, 2, 3, 4, 5, 6, 7], 'freezing changed what the identity is');
+  // And what is derived from it is still ordinary, writable state: freezing a constant is not a change
+  // to the model's arithmetic.
+  const moved = applyAlg(SOLVED, 'R');
+  moved.cp[0] = 4;
+  assert.equal(moved.cp[0], 4);
+  assert.equal(SOLVED.cp[0], 0);
+});

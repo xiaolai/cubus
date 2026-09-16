@@ -108,6 +108,16 @@ export function locate(track, facelets, from) {
     while (k + 1 < states.length && !observable[k + 1] && states[k + 1] === states[k]) k++;
     return k;
   };
+  // The other way along the same run: where the cube WAS when it was carried to `from`. Arriving at a
+  // position passes the regrips that follow it, so a cube standing at `from` may be mid-way through the
+  // turn that led into the position the pass started at — undoing a quarter of `R2` in `R2 x2` produced
+  // transition 0's midpoint while `from` was already 2, and that was reported as off the walk entirely
+  // (Codex audit, 2026-09-16).
+  const passedFrom = (idx) => {
+    let k = idx;
+    while (k > 0 && !observable[k] && states[k] === states[k - 1]) k--;
+    return k;
+  };
   for (let d = 0; d <= 2; d++) {
     for (const idx of d === 0 ? [from] : [from + d, from - d]) {
       if (idx >= 0 && idx < states.length && states[idx] === facelets) {
@@ -117,7 +127,8 @@ export function locate(track, facelets, from) {
       }
     }
   }
-  if (midpoints.get(facelets)?.some((k) => k === from || k === from - 1)) return { kind: 'mid', idx: from };
+  const oldest = passedFrom(from) - 1;                 // the transition INTO the run `from` sits at the end of
+  if (midpoints.get(facelets)?.some((k) => k <= from && k >= oldest)) return { kind: 'mid', idx: from };
   const idx = states.indexOf(facelets);
   return idx >= 0 ? { kind: 'step', idx: passRegrips(idx) } : { kind: 'off' };
 }
