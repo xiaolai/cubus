@@ -13,8 +13,12 @@
 // `exports` map in `package.json` plus a link, or by a resolver on the consumer's side using
 // dynamic `import()`. Anyone reaching for this file to fix a path is in the wrong place.
 //
-// Adding an export here is free. REMOVING or renaming one is a breaking change to a downstream
-// project, which is exactly what the surface test makes visible before it ships.
+// ADDING an export here is not free either, and has not been since 2026-09-15: the surface test fails
+// until the new name is written into its `PROMISED` list and the module that owns it is registered
+// there. That is the point — a promise is made deliberately, in two places that have to agree, rather
+// than by re-exporting something and finding out later that somebody depends on it. REMOVING or
+// renaming one is a breaking change to a downstream project, which is what the same test makes visible
+// before it ships. (This said "adding is free" until a Codex audit read it against the test, 2026-09-16.)
 
 // The move tables — the app's model of a cube's pieces, replayed by every check the course runs.
 export {

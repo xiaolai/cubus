@@ -297,8 +297,15 @@ function assertReferencedAssets(dist) {
   // step that quietly drops a file looks exactly like one that worked, and the
   // failure would surface only as a blank window in a packaged app.
   const html = readFileSync(join(dist, 'index.html'), 'utf8');
+  // EVERY LOCAL REFERENCE, however it is spelt. This matched one spelling — double quotes and a leading
+  // `./` — so `src='./app.js'` and `src="app.js"` were skipped in silence, and a dist missing either
+  // passed the check that exists to catch exactly that (Codex audit, 2026-09-16). What is skipped is
+  // said out loud: a remote URL, a data URI and an in-page anchor are not files this build copies.
   const referenced = new Set(
-    [...html.matchAll(/(?:href|src)="\.\/([^"]+)"/g)].map((m) => m[1]),
+    [...html.matchAll(/(?:href|src)\s*=\s*("([^"]*)"|'([^']*)')/g)]
+      .map((m) => (m[2] ?? m[3]).trim())
+      .filter((url) => url && !/^(?:[a-z][a-z0-9+.-]*:|\/\/|#|\/)/i.test(url))
+      .map((url) => url.replace(/^\.\//, '').replace(/[?#].*$/, '')),
   );
   for (const icon of JSON.parse(readFileSync(join(dist, 'manifest.webmanifest'), 'utf8')).icons ?? []) {
     referenced.add(icon.src.replace(/^\.\//, ''));

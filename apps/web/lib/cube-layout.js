@@ -32,6 +32,23 @@ export const CENTERS = Object.freeze([4, 13, 22, 31, 40, 49]);
 export const FACE_LETTERS = 'URFDLB';
 
 /**
+ * Face letter -> outward normal, in the fixed frame every part of this app shares: R = +x, U = +y, F = +z.
+ *
+ * ONE TABLE. It was typed out in three production modules — `cube-orientation.js`, `cube-moves.js` and
+ * the renderer's `pose.js` — each maintaining the same coordinate convention independently (Codex audit,
+ * 2026-09-16). Three spellings of one convention are three chances for one of them to have a sign the
+ * other way round, and the one that did would be found by a drawing looking wrong rather than by a test.
+ *
+ * Frozen ROW BY ROW, not just at the top: `Object.freeze` is shallow, and `orientationMatrix` hands two
+ * of these vectors straight back as rows of its matrix — one `m[1][1] = 0` by a caller corrupted the
+ * module for every later call, because the next call read the same array.
+ */
+export const FACE_NORMAL = Object.freeze({
+  U: Object.freeze([0, 1, 0]), R: Object.freeze([1, 0, 0]), F: Object.freeze([0, 0, 1]),
+  D: Object.freeze([0, -1, 0]), L: Object.freeze([-1, 0, 0]), B: Object.freeze([0, 0, -1]),
+});
+
+/**
  * Which facelet indices belong to which slot, and which letter each face's centre carries, as one value.
  *
  * READ-ONLY BY CONSTRUCTION: the arrays inside are frozen too, because `Object.freeze` is shallow and

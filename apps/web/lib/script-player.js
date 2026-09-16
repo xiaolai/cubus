@@ -81,7 +81,14 @@ export function createScriptPlayer({ cube = null, trusted = () => true, onLoad =
     load(source) {
       const mine = ++generation;
       supersede();                                   // the superseded route's transitions stop here
-      if (!thenable(source)) return Promise.resolve(apply(mine, source));
+      // ONE SHAPE OF FAILURE, whichever way the script arrived. A plain script is applied before this
+      // returns — a host with its route in hand can read the position on the next line — but a script
+      // that does not check threw SYNCHRONOUSLY out of `load()`, so `player.load(script).catch(…)` caught
+      // a promised script's refusal and not a plain one's (Codex audit, 2026-09-16). The application is
+      // still immediate; only the failure is handed back the way the signature promises.
+      if (!thenable(source)) {
+        try { return Promise.resolve(apply(mine, source)); } catch (err) { return Promise.reject(err); }
+      }
       return Promise.resolve(source).then(
         (script) => (mine === generation ? apply(mine, script) : false),
         (err) => { if (mine === generation) throw err; return false; },

@@ -16,7 +16,6 @@
 // painted picture — exactly as `cube-questions.js` is, and the only thing this module adds is
 // relabelling. A question that needed a move's result would be a script step, not a question.
 import {
-  edgesInLayerWithout,
   inLayerWithout,
   isHome,
   pairOf,
@@ -39,6 +38,18 @@ const heldList = (names, hold) => Object.freeze(names.map((n) => toHeld(n, hold)
 /** Every answer has the same two fields, so a cue can light one without knowing which question it is. */
 const answer = (fields) => Object.freeze({ pieces: Object.freeze([]), unknown: Object.freeze([]), ...fields });
 
+/** A list question's answer, in the child's letters: the same conversion three handlers each spelled out
+ *  (Codex audit, 2026-09-16). What differs between them is the QUESTION, which is the argument. */
+const listAnswer = (found, hold) =>
+  answer({ pieces: heldList([...found.pieces], hold), unknown: heldList([...found.unknown], hold) });
+
+/** The pieces of one kind in the top layer that carry none of the top colour — the recognition both the
+ *  middle layer and the tumbled first layer are taught by, asked of edges or of corners. */
+const topWithoutTopColour = (kind) => (cube, hold) => {
+  const up = identityFace('U', hold);
+  return listAnswer(inLayerWithout(cube, up, up, kind), hold);
+};
+
 /**
  * The questions, by name. Each takes the cube, the hold in force and the script's argument (`of`),
  * and answers in the child's letters.
@@ -52,24 +63,13 @@ export const QUESTIONS = Object.freeze({
   __proto__: null,
 
   /** Every piece not in its own place, the right way round. */
-  piecesAway: (cube, hold) => {
-    const a = piecesAway(cube);
-    return answer({ pieces: heldList([...a.pieces], hold), unknown: heldList([...a.unknown], hold) });
-  },
+  piecesAway: (cube, hold) => listAnswer(piecesAway(cube), hold),
 
   /** The edges of the top layer carrying none of the top colour — the middle layer's recognition. */
-  topEdgesWithoutTopColour: (cube, hold) => {
-    const up = identityFace('U', hold);
-    const a = edgesInLayerWithout(cube, up, up);
-    return answer({ pieces: heldList([...a.pieces], hold), unknown: heldList([...a.unknown], hold) });
-  },
+  topEdgesWithoutTopColour: topWithoutTopColour('edges'),
 
   /** The same question of the corners — the first layer's, once the cube is tumbled. */
-  topCornersWithoutTopColour: (cube, hold) => {
-    const up = identityFace('U', hold);
-    const a = inLayerWithout(cube, up, up, 'corners');
-    return answer({ pieces: heldList([...a.pieces], hold), unknown: heldList([...a.unknown], hold) });
-  },
+  topCornersWithoutTopColour: topWithoutTopColour('corners'),
 
   /** Where a piece is: the slot it sits in and how it is twisted, or unknown. */
   whereIs: (cube, hold, of) => {

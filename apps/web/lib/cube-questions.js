@@ -18,8 +18,8 @@
 // a piece is answered only when every one of its stickers is painted AND they spell a real piece in a
 // real twist; everything else is unknown, and a list answer says which slots it could not read rather
 // than leaving them out.
-import { CORNERS, EDGES } from './cube-pieces.js';
-import { CORNER_FACELETS, EDGE_FACELETS } from './cube-layout.js';
+import { CORNERS, EDGES, pieceStateError } from './cube-pieces.js';
+import { CENTERS, CORNER_FACELETS, EDGE_FACELETS, FACE_LETTERS as FACE_LETTER } from './cube-layout.js';
 import { pieceKey } from './cube-highlight.js';
 
 const sorted = (letters) => [...letters].sort().join('');
@@ -51,14 +51,40 @@ export function readCube(cube) {
     });
     return Object.freeze({ corners: Object.freeze(read(CORNER_FACELETS, CORNERS)), edges: Object.freeze(read(EDGE_FACELETS, EDGES)) });
   }
-  const { cp, co, ep, eo } = cube ?? {};
-  if (![cp, co, ep, eo].every(Array.isArray) || cp.length !== 8 || ep.length !== 12) {
-    throw new Error('cube-questions: expected a piece state {cp, co, ep, eo} or a 54-sticker picture');
-  }
+  // ALL FOUR ARRAYS, their lengths, their ranges and their permutations — through the model's own
+  // checker, so a state is well-formed by one definition rather than by whichever fields a reader
+  // happened to look at. This checked that all four were arrays and then only `cp` and `ep` for length:
+  // `{...SOLVED, co: []}` answered `twist: undefined` and reported a piece not home (Codex audit,
+  // 2026-09-16), and an out-of-range edge index crashed `inLayerWithout` a few frames later.
+  const wrong = pieceStateError(cube);
+  if (wrong) throw new Error(`cube-questions: expected a piece state or a 54-sticker picture — ${wrong}`);
+  const { cp, co, ep, eo } = cube;
   return Object.freeze({
     corners: Object.freeze(cp.map((p, i) => Object.freeze({ slot: CORNERS[i], piece: CORNERS[p], twist: co[i] }))),
     edges: Object.freeze(ep.map((p, i) => Object.freeze({ slot: EDGES[i], piece: EDGES[p], twist: eo[i] }))),
   });
+}
+
+/**
+ * What is wrong with `text` as a complete cube, or null when nothing is.
+ *
+ * THREE THINGS, in the order a reader meets them: 54 letters of URFDLB; centres that spell the frame a
+ * cube is stated in; and stickers that spell a real piece in a real twist at every slot. A checker that
+ * asked only the first accepted `'U'.repeat(54)` and the reader downstream threw instead, in a place
+ * that no longer knew which step it came from (Codex audit, 2026-09-16). Legality — whether the pieces
+ * could be reached by turning — is a further question, and `isCubeState` in `lib/cube-trust.js` asks it.
+ */
+export function faceletsError(text) {
+  // Said apart, because they are different mistakes: a value that is not text at all (and `String(value)`
+  // would have hidden it), and text that is not 54 letters of the alphabet a cube is written in.
+  if (typeof text !== 'string') return `must be written as text, not ${Array.isArray(text) ? 'a list' : typeof text}`;
+  if (!/^[URFDLB]{54}$/.test(text)) return 'expected 54 facelets of URFDLB';
+  const centres = [...FACE_LETTER].map((_, i) => text[CENTERS[i]]).join('');
+  if (centres !== FACE_LETTER) return `the centres read ${centres}, not ${FACE_LETTER}`;
+  const read = readCube(text);
+  const unknown = [...read.corners, ...read.edges].filter((r) => r.piece === null).map((r) => r.slot);
+  if (unknown.length) return `these slots do not spell a piece: ${unknown.join(', ')}`;
+  return null;
 }
 
 const allSlots = (read) => [...read.corners, ...read.edges];
@@ -106,7 +132,13 @@ export function piecesAway(cube) {
 
 /** The slots of the layer on face `face`, of one kind (`corners` or `edges`) or both. */
 export function layerSlots(face, kind = null) {
-  if (!['U', 'R', 'F', 'D', 'L', 'B'].includes(face)) throw new Error(`cube-questions: "${face}" is not a face`);
+  if (!FACE_LETTER.includes(face)) throw new Error(`cube-questions: "${face}" is not a face`);
+  // A KIND THAT IS NOT A KIND IS A REFUSAL, not "both". `layerSlots('U', 'edge')` — singular — quietly
+  // answered with the corners as well, which is a wrong answer wearing a right one's shape (Codex audit,
+  // 2026-09-16). `null` still means both, because that is a caller saying so rather than mistyping.
+  if (kind !== null && kind !== 'corners' && kind !== 'edges') {
+    throw new Error(`cube-questions: "${kind}" is not a kind — corners, edges, or null for both`);
+  }
   const names = kind === 'corners' ? CORNERS : kind === 'edges' ? EDGES : [...CORNERS, ...EDGES];
   return Object.freeze(names.filter((n) => n.includes(face)));
 }
@@ -116,6 +148,10 @@ export function layerSlots(face, kind = null) {
  * with none of the top colour" is `inLayerWithout(cube, top, top, 'edges')`.
  */
 export function inLayerWithout(cube, layer, without, kind) {
+  // `without` IS A FACE, and one that is not was compared against piece names it could never match — so
+  // "the top edges with none of the Q colour" answered with every top edge, as though the question had
+  // been asked and answered (Codex audit, 2026-09-16).
+  if (!FACE_LETTER.includes(without)) throw new Error(`cube-questions: "${without}" is not a face`);
   const read = readCube(cube);
   const slots = new Set(layerSlots(layer, kind));
   const inLayer = allSlots(read).filter((r) => slots.has(r.slot));

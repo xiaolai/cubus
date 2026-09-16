@@ -27,9 +27,11 @@
 
 import { CORNERS, EDGES, MOVES, applyMove } from '../../../apps/web/lib/cube-pieces.js';
 import { faceTurnsOf, turnPieces } from '../../../apps/web/lib/cube-moves.js';
+import { FACE_NORMAL } from '../../../apps/web/lib/cube-layout.js';
 
-/** Face letter -> outward normal, the renderer's own axes (R=+x, U=+y, F=+z). */
-const NORMAL = { R: [1, 0, 0], L: [-1, 0, 0], U: [0, 1, 0], D: [0, -1, 0], F: [0, 0, 1], B: [0, 0, -1] };
+/** Face letter -> outward normal, the renderer's own axes — the app's one table, so the renderer and
+ *  the model cannot come to disagree about which way +x points. */
+const NORMAL = FACE_NORMAL;
 const CENTRES = ['U', 'R', 'F', 'D', 'L', 'B'];
 const AXIS_OF = { x: 0, y: 1, z: 2 };
 

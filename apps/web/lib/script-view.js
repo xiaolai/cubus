@@ -19,7 +19,7 @@ import { STEP_CUES, checkScript } from './lesson-format.js';
 import { CORNERS, EDGES, SOLVED, toFacelets } from './cube-pieces.js';
 import { parse } from './cube-notation.js';
 import { convertSelectors, faceTurnsOf, run } from './cube-moves.js';
-import { readCube } from './cube-questions.js';
+import { faceletsError, readCube } from './cube-questions.js';
 import { parseHighlight, pieceKey, resolveStickers, slotVector } from './cube-highlight.js';
 import { CENTERS, CORNER_FACELETS, EDGE_FACELETS, FACE_LETTERS } from './cube-layout.js';
 import { ask } from './script-questions.js';
@@ -52,13 +52,15 @@ export function groupsOf(moves) {
 
 /** A complete facelet string as the piece state it spells. Throws on one that does not spell pieces. */
 export function stateFrom(facelets) {
-  // THE CENTRES ARE THE FRAME. A cube's letters mean what its centres say they mean, so a string whose
-  // centres are not U R F D L B does not state a cube in the frame a script writes one in — reading it as
-  // pieces answered questions about a different cube, and the segment went on showing the string it was
-  // given (found by a Codex audit, 2026-09-16).
-  const centres = [...FACE_LETTERS].map((_, i) => facelets[CENTERS[i]]).join('');
-  if (centres !== FACE_LETTERS) {
-    throw new Error(`script-view: the centres read ${centres}, not ${FACE_LETTERS} — a cube is stated in its own frame, and how it is HELD is a hold step's business`);
+  // THE CENTRES ARE THE FRAME, and every slot has to spell a piece. Both are asked by one reader
+  // (`faceletsError`), which `lesson-format.js` asks at the door as well — so a script is refused when it
+  // is READ rather than when it is played, and the two places cannot come to disagree about what a cube
+  // is. A string whose centres are not U R F D L B does not state a cube in the frame a script writes one
+  // in: reading it as pieces answered questions about a different cube while the segment went on showing
+  // the string it was given (Codex audit, 2026-09-16).
+  const wrong = faceletsError(facelets);
+  if (wrong) {
+    throw new Error(`script-view: ${wrong} — a cube is stated in its own frame, and how it is HELD is a hold step's business`);
   }
   const read = readCube(facelets);
   const state = { cp: [], co: [], ep: [], eo: [] };

@@ -89,3 +89,23 @@ test('bad input is refused, and a title is escaped', () => {
   assert.match(netSvg(SOLVED, { title: '<script>"&' }), /aria-label="&lt;script&gt;&quot;&amp;"/);
   assert.doesNotMatch(netSvg(SOLVED, { title: '<script>' }), /<script>/);
 });
+
+// Found by a Codex audit, 2026-09-16. Both halves are the same mistake in different places: something is
+// drawn first and questioned afterwards, or not questioned at all.
+test('a malformed cube and an impossible width are refused before anything is drawn', () => {
+  // A state was converted and then the STRING was checked, which a malformed state passes: an out-of-range
+  // twist and a permutation naming one corner twice both drew as an ordinary cube.
+  assert.throws(() => netSvg({ ...SOLVED, co: [3, 0, 0, 0, 0, 0, 0, 0] }), /whole numbers 0 to 2/);
+  assert.throws(() => netSvg({ ...SOLVED, cp: [0, 0, 2, 3, 4, 5, 6, 7] }), /names one cubie twice/);
+  assert.throws(() => netSvg({ ...SOLVED, eo: [] }), /array of 12/);
+  assert.throws(() => topFaceSvg({ ...SOLVED, co: [0, 0, 0, 0, 0, 0, 0, 9] }), /whole numbers 0 to 2/);
+  // And a width that is not a positive number made an SVG of `NaN` geometry, or one no pixel wide, and
+  // said nothing about it.
+  for (const width of [0, -320, Number.NaN, Number.POSITIVE_INFINITY, '320', null]) {
+    assert.throws(() => netSvg(SOLVED, { width }), /positive number of pixels/, `netSvg accepted ${String(width)}`);
+    assert.throws(() => topFaceSvg(SOLVED, { width }), /positive number of pixels/, `topFaceSvg accepted ${String(width)}`);
+  }
+  // The ordinary cases still draw.
+  assert.match(netSvg(SOLVED, { width: 64 }), /^<svg /);
+  assert.match(topFaceSvg(SOLVED), /^<svg /);
+});

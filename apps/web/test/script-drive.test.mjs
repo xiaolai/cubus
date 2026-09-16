@@ -251,3 +251,31 @@ test('an untimed step turns after the step before it has finished turning, not w
   const said = timelineOf(script([{ move: 'R', at: 2, secs: 1 }, { say: 'like that' }]));
   assert.equal(said.tokenTimes[0].length, 1);
 });
+
+// Found by a Codex audit, 2026-09-16: the rule that a jump RE-SEATS a cube that is still turning had no
+// case that ever set `animating`, so the branch was never taken by any test. It exists because the
+// element finishes the turn it is on: a listener that scrubs away mid-turn would otherwise have that turn
+// land on top of the cube it scrubbed to.
+test('a jump to the position already reached re-seats a cube that is still turning, and only then', () => {
+  const built = script([{ move: 'R' }, { move: 'U' }]);
+  const cube = recordingCube();
+  const walk = createStopDriver(built, { cube });
+  walk.next();
+  const settled = transport(cube).length;
+  // Nothing in flight: a jump to where we already are says nothing to the element.
+  cube.animating = false;
+  walk.seek(1);
+  assert.equal(transport(cube).length, settled, 'a jump to the same position moved a settled cube');
+  // A turn in flight: the same jump re-seats it, so the turn cannot land after the scrub.
+  cube.animating = true;
+  walk.seek(1);
+  assert.deepEqual(transport(cube).at(-1), ['seek', 1], 'a turn in flight was left to land on the scrubbed cube');
+  // And the clock driver's seek does the same, for the same reason.
+  const clockCube = recordingCube();
+  const clock = createClockDriver(built, { cube: clockCube });
+  clock.paint(0.01);
+  const at = transport(clockCube).length;
+  clockCube.animating = true;
+  clock.seek(0.01);
+  assert.ok(transport(clockCube).length > at, 'a clock seek left a turn in flight to land');
+});
