@@ -249,7 +249,10 @@ test('focus, orientation and camera changes all reach the element', async () => 
   };
 
   const a = await at(2.5);
-  assert.equal(a.focus, 'layer:U', 'focus never reached the element');
+  // The PIECES the selector named, not the selector: a positional focus is bound to the cube at its own
+  // cue before it is written, so the same lesson lights the same pieces played or scrubbed into (below).
+  assert.equal(a.focus, 'piece:FRU,piece:FLU,piece:BLU,piece:BRU,piece:RU,piece:FU,piece:LU,piece:BU,piece:U',
+    'focus never reached the element as the pieces it names');
   // CLEARED, not left behind: a focus that outlives its cue greys pieces the narration is talking
   // about.
   const b = await at(4.5);
@@ -353,4 +356,40 @@ test('the player reads no private member of the element', () => {
   const privateReads = [...src.matchAll(/\bcube\._[A-Za-z]+/g)].map((m) => m[0]);
   assert.deepEqual(privateReads, [], 'the player is reaching past the manifest into the element');
   assert.ok(/cube\.animating/.test(src), 'precondition: the player asks whether a turn is animating');
+});
+
+// ADR 0004 decisions 9 and 10, the writer's half. The element binds a positional focus where it is
+// WRITTEN and keeps those pieces through a seek — so a cold seek, which writes it after the jump, bound
+// it to whatever had arrived in the slot by then: `focus: 'slot:UR'` on a line whose turn is `R` lit the
+// piece the turn brought there rather than the one the child was shown (Codex audit, 2026-09-16).
+test('a positional focus names the pieces its own cue named, however the listener arrived', async () => {
+  const cue = (start, end, extra = {}) => ({ say: `line ${start}`, ...extra, start, end });
+  const episode = {
+    cues: [
+      cue(0, 1, { hl: 'none', ghosts: false, cam: [35, 45] }),
+      cue(2, 3, { hl: 'none', ghosts: false, cam: [35, 45], focus: 'slot:UR', quarters: ['R'], secs: 1 }),
+      cue(6, 7, { hl: 'none', ghosts: false, cam: [35, 45], focus: 'slot:UR' }),
+    ],
+  };
+  const focusAt = async (t) => {
+    await page.evaluate((e) => window.__makePlayer(e), episode);       // a fresh player: a COLD arrival
+    await page.evaluate((x) => { window.__player.seek(x); }, t);
+    return page.evaluate(() => window.__cube.getAttribute('focus'));
+  };
+  // `piece:RU` is the UR edge, spelled the way a piece key is: the letters sorted, so `UR` and `RU` are
+  // one piece rather than two names for it.
+  assert.equal(await focusAt(2.5), 'piece:RU', 'the focus was not bound to the piece at its own cue');
+  assert.equal(await focusAt(4.5), 'piece:RU',
+    'seeking past the cue\'s own turn bound the focus to whatever the turn brought to UR');
+  // A LATER cue that names the same slot is a different cue, and names what is in that slot NOW — the
+  // FR edge, which the R turn put there.
+  assert.equal(await focusAt(6.5), 'piece:FR', 'a cue written after the turn was bound before it');
+  // And played through rather than jumped into, the answer is the same one.
+  await page.evaluate((e) => window.__makePlayer(e), episode);
+  const played = await page.evaluate(async () => {
+    const seen = [];
+    for (const t of [0.5, 2.5, 3.5, 4.5]) { window.__player.paint(t); seen.push(window.__cube.getAttribute('focus')); }
+    return seen;
+  });
+  assert.deepEqual(played, [null, 'piece:RU', 'piece:RU', 'piece:RU'], 'playing through gave a different answer from jumping');
 });
