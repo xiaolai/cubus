@@ -334,6 +334,68 @@ export function checkScript(script) {
   return script;
 }
 
+/**
+ * The cues any step may carry, checked where they are written.
+ *
+ * Split out of `checkSteps` (Codex audit, 2026-09-16), which was one function holding segment state, six
+ * step kinds, recursive rounds, timing AND these — five jobs and a hundred lines. What stays in the caller
+ * is the part with STATE: which segment we are inside, and how the times run. These are pure: a field, a
+ * rule, a reason.
+ */
+function checkCues(step, i, where) {
+  for (const k of ['say', 'section']) {
+    if (step[k] !== undefined && step[k] !== null && typeof step[k] !== 'string') where(i, `\`${k}\` must be a string`);
+  }
+  for (const k of ['hl', 'focus']) {
+    if (step[k] === undefined || step[k] === null) continue;
+    if (typeof step[k] !== 'string') where(i, `\`${k}\` must be a string, or null to clear it`);
+    const bad = badSelector(step[k]);
+    if (bad) where(i, `\`${k}\`: ${bad}`);
+  }
+  if (step.ask !== undefined && step.ask !== null) {
+    if (typeof step.ask !== 'string') where(i, '`ask` must be a string');
+    const { why } = readAsk(step.ask);
+    if (why) where(i, `\`ask\`: ${why}`);
+  }
+  if (step.arrow !== undefined && step.arrow !== null && step.arrow !== 'next') {
+    // One move, in the child's letters like every move a script writes — or `next`, the move about to be made.
+    if (notText(step.arrow)) where(i, `\`arrow\` ${notText(step.arrow)}`);
+    const tokens = step.arrow.trim().split(/\s+/);
+    if (tokens.length !== 1) where(i, `\`arrow\` is one move or "next", not "${step.arrow}"`);
+    const bad = badMoves(step.arrow);
+    if (bad) where(i, `\`arrow\` ${bad}`);
+  }
+  if (step.trail !== undefined && step.trail !== null && step.trail !== 'none') {
+    if (notText(step.trail)) where(i, `\`trail\` ${notText(step.trail)}`);
+    const bad = step.trail.split(',').map((t) => t.trim()).find((t) => !/^(piece|slot):[URFDLB]{2,3}$/i.test(t) || parseHighlight(t).invalid !== null);
+    if (bad !== undefined) where(i, `\`trail\` names pieces — piece:UF or slot:UF — and "${bad}" is not one`);
+  }
+  if (step.labels !== undefined && step.labels !== null && !['none', 'position', 'face'].includes(step.labels)) {
+    where(i, `\`labels\` is none, position or face, not "${step.labels}"`);
+  }
+  // The same rules the episode checker applies, with a script's own `null` rule in front of each: a
+  // script writes `null` to CLEAR a cue, and an episode has no such value.
+  if (step.ghosts !== undefined && step.ghosts !== null && badBoolean('ghosts', step.ghosts)) {
+    where(i, badBoolean('ghosts', step.ghosts));
+  }
+  if (step.counting !== undefined && step.counting !== null && badBoolean('counting', step.counting)) {
+    where(i, badBoolean('counting', step.counting));
+  }
+  if (step.ghostElevation !== undefined && step.ghostElevation !== null && !isNum(step.ghostElevation)) {
+    where(i, '`ghostElevation` must be a number');
+  }
+  if (step.cam !== undefined && step.cam !== null && badCamera(step.cam)) {
+    where(i, badCamera(step.cam));
+  }
+  if (step.camUp !== undefined && step.camUp !== null && badFaceLetter(step.camUp)) {
+    where(i, badFaceLetter(step.camUp));
+  }
+  if (step.number !== undefined && step.number !== null && badCount(step.number)) {
+    where(i, badCount(step.number));
+  }
+  if (step.secs !== undefined && (!isNum(step.secs) || step.secs <= 0)) where(i, '`secs` must be positive');
+}
+
 /** The step rules, shared by a script and by a round's reveal segment (plan item 3.4). */
 function checkSteps(steps, where, { rounds = true, painted: startPainted = false } = {}) {
   let painted = startPainted;             // inside a picture segment?
@@ -390,62 +452,12 @@ function checkSteps(steps, where, { rounds = true, painted: startPainted = false
       checkRound(step.round, (msg) => where(i, msg), { painted });
     }
 
-    // The cues, which any step may carry.
-    for (const k of ['say', 'section']) {
-      if (step[k] !== undefined && step[k] !== null && typeof step[k] !== 'string') where(i, `\`${k}\` must be a string`);
-    }
-    for (const k of ['hl', 'focus']) {
-      if (step[k] === undefined || step[k] === null) continue;
-      if (typeof step[k] !== 'string') where(i, `\`${k}\` must be a string, or null to clear it`);
-      const bad = badSelector(step[k]);
-      if (bad) where(i, `\`${k}\`: ${bad}`);
-    }
-    if (step.ask !== undefined && step.ask !== null) {
-      if (typeof step.ask !== 'string') where(i, '`ask` must be a string');
-      const { why } = readAsk(step.ask);
-      if (why) where(i, `\`ask\`: ${why}`);
-    }
-    if (step.arrow !== undefined && step.arrow !== null && step.arrow !== 'next') {
-      // One move, in the child's letters like every move a script writes — or `next`, the move about to be made.
-      if (notText(step.arrow)) where(i, `\`arrow\` ${notText(step.arrow)}`);
-      const tokens = step.arrow.trim().split(/\s+/);
-      if (tokens.length !== 1) where(i, `\`arrow\` is one move or "next", not "${step.arrow}"`);
-      const bad = badMoves(step.arrow);
-      if (bad) where(i, `\`arrow\` ${bad}`);
-    }
-    if (step.trail !== undefined && step.trail !== null && step.trail !== 'none') {
-      if (notText(step.trail)) where(i, `\`trail\` ${notText(step.trail)}`);
-      const bad = step.trail.split(',').map((t) => t.trim()).find((t) => !/^(piece|slot):[URFDLB]{2,3}$/i.test(t) || parseHighlight(t).invalid !== null);
-      if (bad !== undefined) where(i, `\`trail\` names pieces — piece:UF or slot:UF — and "${bad}" is not one`);
-    }
-    if (step.labels !== undefined && step.labels !== null && !['none', 'position', 'face'].includes(step.labels)) {
-      where(i, `\`labels\` is none, position or face, not "${step.labels}"`);
-    }
-    // The same rules the episode checker applies, with a script's own `null` rule in front of each: a
-    // script writes `null` to CLEAR a cue, and an episode has no such value.
-    if (step.ghosts !== undefined && step.ghosts !== null && badBoolean('ghosts', step.ghosts)) {
-      where(i, badBoolean('ghosts', step.ghosts));
-    }
-    if (step.counting !== undefined && step.counting !== null && badBoolean('counting', step.counting)) {
-      where(i, badBoolean('counting', step.counting));
-    }
-    if (step.ghostElevation !== undefined && step.ghostElevation !== null && !isNum(step.ghostElevation)) {
-      where(i, '`ghostElevation` must be a number');
-    }
-    if (step.cam !== undefined && step.cam !== null && badCamera(step.cam)) {
-      where(i, badCamera(step.cam));
-    }
-    if (step.camUp !== undefined && step.camUp !== null && badFaceLetter(step.camUp)) {
-      where(i, badFaceLetter(step.camUp));
-    }
-    if (step.number !== undefined && step.number !== null && badCount(step.number)) {
-      where(i, badCount(step.number));
-    }
-    if (step.secs !== undefined && (!isNum(step.secs) || step.secs <= 0)) where(i, '`secs` must be positive');
+    checkCues(step, i, where);
+    // `at` is the one cue with STATE behind it, so it stays here with the rest of the walk: monotonic,
+    // for the same reason an episode's cues are — a clock driver scans forward for the step a time is
+    // inside, and out of order two steps would silently overlap.
     if (step.at !== undefined) {
       if (!isNum(step.at) || step.at < 0) where(i, '`at` must be a number of seconds');
-      // Monotonic, for the same reason an episode's cues are: a clock driver scans forward for the
-      // step a time is inside, and out of order two steps would silently overlap.
       if (step.at < last) where(i, `is at ${step.at}, before the step before it at ${last}`);
       last = step.at;
     }

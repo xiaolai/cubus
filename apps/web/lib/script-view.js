@@ -78,6 +78,21 @@ export function stateFrom(facelets) {
 }
 
 /**
+ * Carry the cues a step writes into the set in force, remembering WHERE each took effect.
+ *
+ * Absent means unchanged, which is the whole of R9 (ADR 0004): a cue is stated once, at the step that
+ * gives it, and every position after that is still under it. `null` is the only way to clear one, and
+ * `at` is what lets a positional selector be bound where it was written rather than where it is read.
+ */
+function inheritCues(cues, step, at) {
+  for (const key of STEP_CUES) {
+    if (step[key] === undefined) continue;
+    if (step[key] === null) cues.delete(key);
+    else cues.set(key, { value: step[key], at });
+  }
+}
+
+/**
  * Everything a script's positions are, worked out once.
  *
  * `positions[k]` is the cube at position k; `segments` are what the ELEMENT is given — a cube to load
@@ -154,11 +169,7 @@ export function buildScript(script) {
   record(null, -1, 'start');
 
   script.steps.forEach((step, i) => {
-    for (const key of STEP_CUES) {
-      if (step[key] === undefined) continue;          // absent means unchanged, which is the whole of R9
-      if (step[key] === null) cues.delete(key);
-      else cues.set(key, { value: step[key], at: positions.length });
-    }
+    inheritCues(cues, step, positions.length);
 
     if (step.move !== undefined) {
       for (const group of groupsOf(parse(step.move))) {
@@ -210,6 +221,17 @@ export function buildScript(script) {
     record(step, i, step.round !== undefined ? 'round' : 'say');
   });
 
+  return snapshotOf(script, positions, segments);
+}
+
+/**
+ * The built script, frozen: what every driver and every test is handed.
+ *
+ * A segment's `alg` is its tokens joined — worked out ONCE here rather than by each reader, because the
+ * element is written one string and two readers joining the same tokens differently is two elements
+ * loaded with different sequences.
+ */
+function snapshotOf(script, positions, segments) {
   return Object.freeze({
     script,
     positions: Object.freeze(positions),

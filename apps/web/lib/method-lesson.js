@@ -205,37 +205,51 @@ export function caseText(name) {
 }
 
 /** The sentence for a step, with the case name where the step is a named algorithm. */
-export function whyText(step) {
-  if (!step) return '';
+/**
+ * The sentence a step's reason writes, in the hold that step is made in — or '' when it has no reason.
+ *
+ * Refuses rather than guesses, twice over, because the caller HIDES an empty line: a missing entry would
+ * remove the sentence silently and look like a step that simply had nothing to say, and a hold-dependent
+ * sentence with no stage to pick by would print one of two opposite instructions.
+ */
+function sentenceFor(step) {
   const key = step.why?.key;
   // `hasOwn`, never `WHY_TEXT[key]` alone: the key comes from a step record, and `constructor`
   // would resolve to a function while `__proto__` throws. `cube-highlight.js` records the same
   // lesson about `in` and pays it the same way.
   const entry = typeof key === 'string' && Object.hasOwn(WHY_TEXT, key) ? WHY_TEXT[key] : null;
-  // A reason nothing can caption is a step with no explanation, and the caller HIDES an empty
-  // line — so a missing entry would remove the sentence silently and look like a step that
-  // simply had nothing to say. Loud instead; `method-lesson.test.mjs` proves the table covers
-  // every key the solver emits, so reaching this is a defect and not an input.
+  // `method-lesson.test.mjs` proves the table covers every key the solver emits, so reaching this is a
+  // defect and not an input.
   if (key !== undefined && !entry) {
     throw new Error(`method-lesson: no sentence for reason "${key}"`);
   }
-  // A sentence that says where a piece goes is picked by the hold its step is made in. A step with
-  // no stage cannot say which, and guessing would print one of two opposite instructions — so it is
-  // refused, the same way an unknown reason is. Every step the solver emits carries its stage.
-  if (entry && typeof entry !== 'function' && typeof step.stage !== 'string') {
+  if (!entry) return '';
+  if (typeof entry === 'function') return entry(step.why);
+  if (typeof step.stage !== 'string') {
     throw new Error(`method-lesson: "${key}" reads differently held white up and turned over, and this step has no stage to say which`);
   }
-  const write = !entry ? null : typeof entry === 'function' ? entry : WHITE_UP_STAGES.includes(step.stage) ? entry.up : entry.over;
-  const sentence = write ? write(step.why) : '';
-  // A case name is what a learner recognises next time, so it is worth showing — but only for
-  // named algorithms, never for a searched sequence, which has no case to name.
-  if (!(step.kind === 'case' && step.caseName && !step.parts)) return sentence;
-  // A generated case IDENTIFIER is carried on the step and never shown. `oll:1a2b3c4d` is this
-  // repository's key for a position; it is not the number a learner would find anywhere else, and
-  // our own numbering shown as if it were the world's would be worse than showing none. The step
-  // keeps it so a future screen can look the case up — see lib/data/case-tables.js.
-  if (GENERATED_CASE_ID.test(step.caseName)) return sentence;
-  return t('%1 (%2)', sentence, caseText(step.caseName));
+  return (WHITE_UP_STAGES.includes(step.stage) ? entry.up : entry.over)(step.why);
+}
+
+/**
+ * The case name to show after a step's sentence, or null.
+ *
+ * Only for named algorithms — a searched sequence has no case to name — and never for a GENERATED case
+ * identifier: `oll:1a2b3c4d` is this repository's key for a position, not the number a learner would find
+ * anywhere else, and our own numbering shown as if it were the world's would be worse than showing none.
+ * The step keeps it so a future screen can look the case up — see lib/data/case-tables.js.
+ */
+function caseLabel(step) {
+  if (!(step.kind === 'case' && step.caseName && !step.parts)) return null;
+  return GENERATED_CASE_ID.test(step.caseName) ? null : caseText(step.caseName);
+}
+
+/** The sentence for a step, with the case name where the step is a named algorithm. */
+export function whyText(step) {
+  if (!step) return '';
+  const sentence = sentenceFor(step);
+  const label = caseLabel(step);
+  return label === null ? sentence : t('%1 (%2)', sentence, label);
 }
 
 /** A cubie index as its slot name, refusing anything that is not one.
