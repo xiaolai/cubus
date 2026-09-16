@@ -203,21 +203,28 @@ export function heldFace(face, hold) {
 const SELECTOR = /\b(layer|slot|piece):([URFDLB]{1,3})(?:\/([URFDLB]))?(?![\w/])/gi;
 
 /**
- * A highlight or focus spec written the way the child holds the cube, in identity letters.
+ * A highlight or focus spec with every face letter relabelled by `faceOf` — the ONE rewriting both
+ * directions share.
  *
- * Every letter of `slot:`, `layer:` and `piece:` names a position in the hold in force, as a move letter
- * does (ADR 0004 decision 6); the bare kinds — `centers`, `edges`, `corners` — are the same set in
- * every frame and pass through.
+ * Every letter of `slot:`, `layer:` and `piece:` names a face, as a move letter does (ADR 0004
+ * decision 6), and so does a sticker's suffix — `slot:UF/U` is the sticker facing the child's top (plan
+ * item 4.1). The bare kinds — `centers`, `edges`, `corners` — are the same set in every frame and pass
+ * through. Shared because the two directions had drifted: the display's renaming (`renameSelectors` in
+ * lib/solving-hold.js) kept its own copy without the suffix, so a round trip turned `slot:DF/D` into
+ * `slot:UB/D` — a sticker of a piece that does not carry it.
  */
-export function convertSelectors(spec, hold) {
-  checkHold(hold);
-  // A sticker's face letter is a position in the hold too — `slot:UF/U` is the sticker facing the child's
-  // top — so it is relabelled with the letters it belongs to (plan item 4.1).
-  const relabel = (letters) => [...letters.toUpperCase()].map((c) => identityFace(c, hold)).join('');
+export function relabelSelectors(spec, faceOf) {
+  const relabel = (letters) => [...letters.toUpperCase()].map(faceOf).join('');
   return String(spec ?? '').replace(
     SELECTOR,
     (_, kind, letters, face) => `${kind}:${relabel(letters)}${face ? `/${relabel(face)}` : ''}`,
   );
+}
+
+/** A spec written the way the child holds the cube, in the cube's own letters. */
+export function convertSelectors(spec, hold) {
+  checkHold(hold);
+  return relabelSelectors(spec, (c) => identityFace(c, hold));
 }
 
 /** Identity layer masks -> the letter that names them, per axis. */

@@ -129,3 +129,46 @@ test('the event driver: answered, then revealed, then on — and never revealed 
   const loads = cube.calls.filter(([c, n]) => c === 'set' && (n === 'facelets' || n === 'scramble')).length;
   assert.ok(loads >= 3, 'moving on after a reveal did not re-load the cube the reveal had replaced');
 });
+
+// ---- what a Codex audit of 2026-09-16 found, each pinned here ---------------------------------------
+
+test('a prediction asks about the piece the child was SHOWN, even when its turn regrips', () => {
+  // `whereIs:UF` names the piece at the child's top front WHEN THE ROUND IS ASKED. The turn `y R` regrips,
+  // so those same letters name a different piece afterwards, and the round answered about that one — a
+  // drill marking a right answer wrong, which is the failure rounds exist to prevent.
+  const round = { say: 'Where will it be?', turn: 'y R', ask: 'whereIs:UF', choose: 2, reveal: [{ move: 'y R' }] };
+  const built = buildScript(checkScript({ schema: 2, start: { hold: 'U F' }, steps: [{ round }] }));
+  const { answer, faces } = answerAt(built, 1);
+  // `y` moves no piece and `R` — the child's right, which is the cube's B after the regrip — does not
+  // touch the piece that was at UF. So it is where it was, and the child, now holding the cube turned,
+  // calls that place UL.
+  assert.equal(answer.slot, 'UL');
+  assert.equal(faces, 'LU');
+  assert.deepEqual([...answer.pieces], ['UL'], 'and the piece is named the way the child now holds it');
+});
+
+test("a reveal shows the cues as they were BOUND, not re-read against the cube it starts from", () => {
+  // ADR 0004 R9: a cue takes effect where it is written. A `slot:` focus written before a turn names the
+  // piece that was there; re-reading the raw selector at the round lit whatever had arrived since.
+  const steps = [
+    { say: 'this piece', focus: 'slot:UF' },
+    { move: 'U' },
+    { round: { say: 'Where does it live?', ask: 'whereIs:UF', choose: 2, reveal: [] } },
+  ];
+  const built = buildScript(checkScript({ schema: 2, start: { hold: 'U F' }, steps }));
+  const reveal = revealScript(built, 3);
+  // A piece, not the slot: the letters are the cubie's own and the renderer matches them unordered.
+  const [kind, letters] = reveal.steps[0].focus.split(':');
+  assert.equal(`${kind}:${[...letters].sort().join('')}`, 'piece:FU', 'the reveal keeps the piece the focus was bound to');
+});
+
+test('a fractional seek lands on the position it shows', () => {
+  // `viewAtPosition` rounds and the driver did not, so `seek(1.5)` displayed the round at position 2 while
+  // the driver still held 1.5 and answered `round: null` — answering it threw.
+  const driver = createEventDriver(buildScript(checkScript(predictionScript(PREDICTION[0]))));
+  driver.seek(ROUND - 0.5);
+  assert.equal(driver.position, ROUND);
+  assert.ok(driver.round, 'the round the position shows is the round the driver has');
+  driver.seek(Number.NaN);
+  assert.equal(driver.position, 0, 'a seek to nothing lands at the start rather than stalling every step');
+});

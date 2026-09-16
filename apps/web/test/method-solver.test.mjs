@@ -887,9 +887,11 @@ test('a step that is not a step is refused by name, not by TypeError', () => {
     [(steps) => steps.push(null), /step 0: is null/],
     [(steps) => steps.push({ stage: 'only' }), /step 0: carries no algorithm/],
     [(steps) => steps.push({ stage: 'only', alg: 'R Q U' }), /step 0: .*"Q" at move 2/],
-    // A regrip is a move. One that tips the cross off the bottom is not one a method makes.
-    [(steps) => steps.push({ stage: 'only', alg: 'R x U' }), /step 0: leaves F on top/],
-    [(steps) => steps.push({ stage: 'only', alg: 'M2' }), /step 0: leaves D on top/],
+    // A regrip is a move. One that tips the cross off the bottom is not one a method makes — including
+    // one that puts it back before the step ends, which every question asked in between is wrong about.
+    [(steps) => steps.push({ stage: 'only', alg: 'R x U' }), /step 0: puts F on top/],
+    [(steps) => steps.push({ stage: 'only', alg: "x U x'" }), /step 0: puts F on top/],
+    [(steps) => steps.push({ stage: 'only', alg: 'M2' }), /step 0: puts D on top/],
     [(steps) => steps.push({ stage: 'only', alg: 'R', hold: ['U', 'F'] }), /step 0: carries a hold of its own/],
     [(steps) => steps.push({ alg: 'R' }), /step 0: names no stage/],
   ];

@@ -47,6 +47,14 @@ export function groupsOf(moves) {
 
 /** A complete facelet string as the piece state it spells. Throws on one that does not spell pieces. */
 export function stateFrom(facelets) {
+  // THE CENTRES ARE THE FRAME. A cube's letters mean what its centres say they mean, so a string whose
+  // centres are not U R F D L B does not state a cube in the frame a script writes one in — reading it as
+  // pieces answered questions about a different cube, and the segment went on showing the string it was
+  // given (found by a Codex audit, 2026-09-16).
+  const centres = [...FACE_LETTERS].map((_, i) => facelets[CENTERS[i]]).join('');
+  if (centres !== FACE_LETTERS) {
+    throw new Error(`script-view: the centres read ${centres}, not ${FACE_LETTERS} — a cube is stated in its own frame, and how it is HELD is a hold step's business`);
+  }
   const read = readCube(facelets);
   const state = { cp: [], co: [], ep: [], eo: [] };
   read.corners.forEach((r, slot) => {

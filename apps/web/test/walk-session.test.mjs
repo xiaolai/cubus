@@ -1429,3 +1429,15 @@ test('a jump or a step back across the turn says so where it lands', async () =>
   head(flip - 2);
   assert.ok(!why().includes('Hold it with'), `a hold already shown was said again: ${why()}`);
 });
+
+test('a second paint at the same move keeps the hold instruction on screen', async () => {
+  // A paint is not a move. While a lesson loads, the renderer reports its own reset and the session syncs
+  // again at the same head; the second paint found the hold already told and dropped "Hold it with white
+  // underneath…", leaving a child looking at a cube turned over with nothing saying why (Codex audit,
+  // 2026-09-16).
+  const w = await turnedLessonWorld('D');
+  const say = () => w.$('#whyLine').textContent;
+  assert.ok(say().includes(holdSentence(TUMBLED)), `precondition: the lesson begins turned over and says so — ${say()}`);
+  w.cube.dispatchEvent(new w.win.CustomEvent('cubus-step', { detail: { index: 0 } }));
+  assert.ok(say().includes(holdSentence(TUMBLED)), `a repaint at the same move erased it: ${say()}`);
+});
