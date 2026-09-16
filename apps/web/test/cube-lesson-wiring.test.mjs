@@ -93,8 +93,10 @@ test('both objects are offered, and neither stands where the other was', () => {
   // 20 steps" cannot be mistaken for a solution length. Both numbers go through `plural`, because
   // both can be 1 — a one-move lesson read "1 moves · 1 steps".
   assert.match(code, /t\('%1 · %2',/, 'the lesson count must name both numbers');
-  assert.match(code, /plural\(total, \{ one: '%1 move', other: '%1 moves' \}\)/,
-    'the move count must be pluralised');
+  // A lesson's moves are its FACE TURNS (plan item 6.1): a regrip is a position on the walk, never a
+  // move it costs, so the count is not the walk's length.
+  assert.match(code, /plural\(turnsIn\(lesson\.alg\), \{ one: '%1 move', other: '%1 moves' \}\)/,
+    'the move count must be pluralised, and count face turns');
   assert.match(code, /plural\(lesson\.steps\.length, \{ one: '%1 step', other: '%1 steps' \}\)/,
     'the step count must be pluralised');
 });
@@ -138,8 +140,14 @@ test('a STAGE route has no lesson, and the switch goes with it', () => {
 });
 
 test('the lesson is thrown away with the arrangement it was about', () => {
+  // Read through the function that owns the clearing, because there are now two ways to lose an answer:
+  // a new arrangement arriving, and an answer the oracle refuted (2026-09-16). Both go through
+  // `forgetAnswer`, so the claim is checked where it is made AND at the call that has to make it.
   const ingest = blockAt(code, 'function ingestFacelets(f)');
-  assert.match(ingest, /c\.lesson = null/, 'a new arrangement must not keep the old cube\'s lesson');
+  assert.match(ingest, /forgetAnswer\(c\)/, 'a new arrangement must put the old cube\'s answer down');
+  const forget = blockAt(code, 'function forgetAnswer(c)');
+  assert.match(forget, /c\.lesson = null/, 'a new arrangement must not keep the old cube\'s lesson');
+  assert.match(forget, /c\.solution = ''/, 'and it must not keep the old cube\'s solution');
   // And the cache key is the arrangement AND the rungs, so raising a rung produces a new lesson
   // rather than the old one under a new name.
   const fn = blockAt(code, 'function lessonFor(');

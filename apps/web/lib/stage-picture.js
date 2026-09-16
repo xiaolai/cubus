@@ -18,7 +18,8 @@
 // asserts a colour that varies across them.
 
 import { SOLVED } from './cube-pieces.js';
-import { SLOT_FACELETS, toFacelets } from './two-phase.js';
+import { SLOT_FACELETS } from './cube-layout.js';
+import { toFacelets } from './two-phase.js';
 import { targetById } from './stage-targets.js';
 
 /** What the renderer draws as "not known". */
@@ -60,23 +61,25 @@ export function targetPicture(targetOrId) {
   // The centres, always.
   SLOT_FACELETS.centers.forEach((at, i) => { out[at] = SLOT_FACELETS.faces[i]; });
 
+  // ONE TRAVERSAL for both kinds: what differs is the slot table and the edge bookkeeping, and the
+  // home-goal check, the walk and the sticker copy were written out twice (Codex audit, 2026-09-16).
+  // `cornerSlot` pins nothing a sticker can show — the piece is home and the twist is free — and
+  // `isHomeGoal` refuses it by kind.
   const pinnedEdgeSlots = new Set();
   for (const projection of target.projections) {
-    if (projection.kind === 'edge' && isHomeGoal(projection)) {
-      for (const cubie of projection.cubies) {
-        pinnedEdgeSlots.add(cubie);
-        for (const at of SLOT_FACELETS.edges[cubie]) out[at] = SOLVED_FACELETS[at];
-      }
+    if (!isHomeGoal(projection)) continue;
+    const slots = projection.kind === 'edge' ? SLOT_FACELETS.edges : SLOT_FACELETS.corners;
+    for (const cubie of projection.cubies) {
+      if (projection.kind === 'edge') pinnedEdgeSlots.add(cubie);
+      for (const at of slots[cubie]) out[at] = SOLVED_FACELETS[at];
     }
-    if (projection.kind === 'corner' && isHomeGoal(projection)) {
-      for (const cubie of projection.cubies) {
-        for (const at of SLOT_FACELETS.corners[cubie]) out[at] = SOLVED_FACELETS[at];
-      }
-    }
-    // `cornerSlot` pins nothing a sticker can show: the piece is home and the twist is free.
   }
 
-  const readsFlip = target.projections.some((p) => p.kind === 'flip');
+  // AND THE FLIP PROJECTION HAS TO PROMISE IT. This asked only that a flip projection EXISTED, so a
+  // target reading flips toward some other goal — say "these edges are flipped" — would have had four U
+  // stickers painted that its own goal contradicts. Every shipped target uses the solved goal, which is
+  // why nothing showed it (Codex audit, 2026-09-16).
+  const readsFlip = target.projections.some((p) => p.kind === 'flip' && isSolvedGoal(p));
   const bottomEightPinned = NON_U_EDGE_SLOTS.every((slot) => pinnedEdgeSlots.has(slot));
   if (readsFlip && bottomEightPinned) {
     // `toFacelets` writes `name[(k + eo) % 2]` at `EDGE_FACELETS[slot][k]`, so with eo === 0 the
@@ -102,9 +105,13 @@ export function targetPicture(targetOrId) {
  * a corner whose twist the target leaves free. That is the over-claim this file exists to avoid.
  */
 const TRACKS_ORIENTATION = new Set(['edge', 'corner']);
+/** Does this projection admit exactly the solved cube? Asked of a flip projection too, which tracks no
+ *  cubie's place and so is not a "home" goal, but does promise every tracked edge is the right way up. */
+const isSolvedGoal = (projection) => projection.goals.length === 1
+  && projection.goals[0] === projection.codeOf(SOLVED);
 function isHomeGoal(projection) {
   if (!TRACKS_ORIENTATION.has(projection.kind)) return false;
-  return projection.goals.length === 1 && projection.goals[0] === projection.codeOf(SOLVED);
+  return isSolvedGoal(projection);
 }
 
 /** How many of the 54 stickers a target pins — the number a chip's "how much is fixed" reads. */

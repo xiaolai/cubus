@@ -22,7 +22,12 @@
 // replays its phase-1 maneuver through preallocated per-depth buffers. That is what makes a
 // probe budget (~tens of thousands per tier) affordable — measured in solver-move-count.md.
 
-import { CORNERS, EDGES, MOVES, MOVE_NAMES, SOLVED, applyMove } from './cube-pieces.js';
+import { CORNERS, EDGES, MOVES, MOVE_NAMES, SOLVED, applyMove, inverseOf, toFacelets } from './cube-pieces.js';
+
+// Re-exported where it has always been read from: the writer itself moved to the piece model, which is
+// what it is a statement about, so a module that needs a state's stickers no longer imports the SOLVER
+// to get them (plan item 3.2 of dev-docs/tutorial-capability-plan.md).
+export { toFacelets };
 // One parity, not two. It was computed identically here and in random-state.js, and a cycle
 // decomposition that drifted in one copy would make a legal cube unparseable or an illegal one
 // parseable — silently, in the file that decides which states exist at all.
@@ -33,6 +38,7 @@ import { CORNERS, EDGES, MOVES, MOVE_NAMES, SOLVED, applyMove } from './cube-pie
 // — into the main bundle to read one function, which is the duplication solver-engine.js's
 // VIEW_COUNT comment already refuses for one integer.
 import { permutationParity } from './random-state.js';
+import { CENTERS, CORNER_FACELETS, EDGE_FACELETS, FACE_LETTERS } from './cube-layout.js';
 
 // ---- the move set -----------------------------------------------------------------------------
 
@@ -718,6 +724,14 @@ const IS_PHASE2 = (() => {
  * trailing run fits under the phase-2 cap, MAX_PHASE2 = 12. See solve-target.js's GODS_NUMBER
  * for what that leaves the promise resting on, and `two-phase.test.mjs`'s "the phase-2 cap is
  * what makes the trailing-G1 split reachable" for the mechanism at cap 1.
+ *
+ * WRITTEN AS ONE FUNCTION, DELIBERATELY. An audit measured this file's complexity and asked for its
+ * decisions to be separated (2026-09-16); the validators around the search were, and this was not. It and
+ * `probeView` are the recursive hot paths — every node of every search runs through them, ~20 ns each, and
+ * the whole engine's measured ladder (`dev-docs/solver-move-count.md` §7) is a statement about this code
+ * as it stands. The audit's own instruction was to benchmark any change to them, and a refactor whose only
+ * evidence is that it reads more tidily is not worth re-earning those numbers for. Split them when there
+ * is a defect to fix in them, with the ladder re-measured in the same pass.
  */
 function phase1DFS(t, f, s, depthLeft, prevMove, path, onSolution) {
   if (mustStop()) return true; // true is phase 1's "stop": abort the enumeration
@@ -788,42 +802,9 @@ export function solveIntoG1(state, { maxDepth = 12 } = {}) {
 // U R F D L B, nine stickers each, row-major with the face held as the published convention
 // holds it. Colors are named by their home face's letter. cube-pieces' CORNERS/EDGES names
 // double as the color sequences — letter k of 'URF' is the color at the cubie's k-th sticker —
-// and the test suite pins this whole convention to cubejs by round-tripping random states.
-
-/** Facelet indices of each corner slot's three stickers, U/D sticker first. */
-const CORNER_FACELETS = [
-  [8, 9, 20], [6, 18, 38], [0, 36, 47], [2, 45, 11],
-  [29, 26, 15], [27, 44, 24], [33, 53, 42], [35, 17, 51],
-];
-
-/** Facelet indices of each edge slot's two stickers, the EDGES-name order first. */
-const EDGE_FACELETS = [
-  [5, 10], [7, 19], [3, 37], [1, 46], [32, 16], [28, 25], [30, 43], [34, 52],
-  [23, 12], [21, 41], [50, 39], [48, 14],
-];
-
-const CENTERS = [4, 13, 22, 31, 40, 49];
-const FACE_LETTERS = 'URFDLB';
-
-/**
- * Which facelet indices belong to which slot, and which letter each face's centre carries.
- *
- * Exported for `lib/stage-picture.js`, which draws a TARGET rather than a state: a target leaves
- * some pieces free, and the only honest way to draw one is to blank the stickers it does not
- * constrain. Doing that needs to know which stickers belong to which piece, and this module is
- * where that fact already lives — a second copy of these tables somewhere else would be a second
- * place for the facelet layout to be wrong, and the failure would be a picture that quietly points
- * at the wrong sticker.
- *
- * READ-ONLY BY CONSTRUCTION: the arrays inside are frozen too, because `Object.freeze` is shallow
- * and these are the tables every facelet string in the app is built from.
- */
-export const SLOT_FACELETS = Object.freeze({
-  corners: Object.freeze(CORNER_FACELETS.map((f) => Object.freeze([...f]))),
-  edges: Object.freeze(EDGE_FACELETS.map((f) => Object.freeze([...f]))),
-  centers: Object.freeze([...CENTERS]),
-  faces: FACE_LETTERS,
-});
+// and the test suite pins this whole convention to cubejs by round-tripping random states. The
+// layout tables themselves live in `lib/cube-layout.js` (lifted 2026-09-15), because the stage
+// pictures and the tutorial questions read them without needing a solver.
 
 /**
  * A facelet string as a cubie state, or null when it is not a solvable cube.
@@ -850,14 +831,40 @@ export function parseFacelets(facelets) {
   const { cp, co } = corners;
   const { ep, eo } = edges;
 
-  // A real cube has each piece exactly once, orientations that cancel out, and matching
-  // permutation parities — anything else is scanner noise or a twisted/reassembled cube.
-  if (new Set(cp).size !== 8 || new Set(ep).size !== 12) return null;
-  if (co.reduce((x, y) => x + y, 0) % 3 !== 0) return null;
-  if (eo.reduce((x, y) => x + y, 0) % 2 !== 0) return null;
-  if (permutationParity(cp) !== permutationParity(ep)) return null;
-  return { cp, co, ep, eo };
+  return isLegalState({ cp, co, ep, eo }) ? { cp, co, ep, eo } : null;
 }
+
+/**
+ * The four classical conditions: each piece exactly once, orientations that cancel out, and matching
+ * permutation parities.
+ *
+ * Anything else is scanner noise or a twisted/reassembled cube. Named (Codex audit, 2026-09-16, on this
+ * file's complexity) because it is a CONCEPT the app states in more than one place — `isCubeState` in
+ * `lib/cube-trust.js` asks the same four of the app's own model — and a list of anonymous early returns
+ * is the shape in which one of them goes missing.
+ */
+function isLegalState({ cp, co, ep, eo }) {
+  if (new Set(cp).size !== 8 || new Set(ep).size !== 12) return false;
+  if (co.reduce((x, y) => x + y, 0) % 3 !== 0) return false;
+  if (eo.reduce((x, y) => x + y, 0) % 2 !== 0) return false;
+  return permutationParity(cp) === permutationParity(ep);
+}
+
+/** The answer really solves the cube the key names — replayed, never taken on trust. */
+function answerSolves(moves, key) {
+  let state = parseFacelets(key.facelets);
+  if (state === null) {
+    throw new RangeError('two-phase: this resume point solves a state that is not a cube');
+  }
+  for (const name of moves) state = applyMove(state, name);
+  if (!statesEqual(state, SOLVED)) {
+    throw new RangeError(
+      'two-phase: this resume point\'s answer does not solve the cube its key names — it is not ' +
+        'an answer this search can have produced',
+    );
+  }
+}
+
 
 /** Corner slots from stickers: which cubie sits in each slot, and how it is twisted. null when
  *  any sticker triple spells no real corner. */
@@ -897,21 +904,6 @@ function parseEdgeSlots(facelets) {
     }
   }
   return { ep, eo };
-}
-
-/** The inverse of parseFacelets, for tests: a cubie state as its facelet string. */
-export function toFacelets(state) {
-  const out = new Array(54);
-  for (let i = 0; i < 6; i++) out[CENTERS[i]] = FACE_LETTERS[i];
-  for (let slot = 0; slot < 8; slot++) {
-    const name = CORNERS[state.cp[slot]];
-    for (let k = 0; k < 3; k++) out[CORNER_FACELETS[slot][(k + state.co[slot]) % 3]] = name[k];
-  }
-  for (let slot = 0; slot < 12; slot++) {
-    const name = EDGES[state.ep[slot]];
-    for (let k = 0; k < 2; k++) out[EDGE_FACELETS[slot][(k + state.eo[slot]) % 2]] = name[k];
-  }
-  return out.join('');
 }
 
 // ---- phase 2: inside G1 -----------------------------------------------------------------------
@@ -956,21 +948,10 @@ export const ROTATION_PERMS = Object.freeze({
 /** The group inverse: where each piece CAME FROM, with the twist undone. Solving the inverse
  *  and inverting the answer is a fourth-through-sixth view of the same cube — the published
  *  companion to axis conjugation, and worth having for the same reason: independent luck. */
-function inverseState(state) {
-  const cp = new Array(8);
-  const co = new Array(8);
-  const ep = new Array(12);
-  const eo = new Array(12);
-  for (let i = 0; i < 8; i++) {
-    cp[state.cp[i]] = i;
-    co[state.cp[i]] = (3 - state.co[i]) % 3;
-  }
-  for (let i = 0; i < 12; i++) {
-    ep[state.ep[i]] = i;
-    eo[state.ep[i]] = state.eo[i];
-  }
-  return { cp, co, ep, eo };
-}
+// The piece model's own inverse, not a second copy of it: this file had one, identical down to the
+// `(3 - co) % 3` (Codex audit, 2026-09-16). cubejs stays the independent oracle; this is the app's one
+// model agreeing with itself.
+const inverseState = inverseOf;
 
 /** U <-> U', F2 <-> F2 — the inverse move at the index level. */
 const invMoveIdx = (m) => m - (m % 3) + (2 - (m % 3));
@@ -1125,22 +1106,27 @@ let MAX_PHASE2 = 12;
  * trusting what a previous caller left here. Everything is validated on the way in: a NaN
  * budget would otherwise defeat the decrement-based termination check and search forever.
  */
+/** A bound that must be a whole number in a range, refused by name. One rule, three callers — the three
+ *  bounds differ only in their limits, and each had the same three conditions written out (Codex audit,
+ *  2026-09-16, on this file's complexity). */
+function checkWhole(name, value, low, high, safe = false) {
+  const whole = safe ? Number.isSafeInteger(value) : Number.isInteger(value);
+  if (!whole || value < low || value > high) {
+    throw new RangeError(high === Number.MAX_SAFE_INTEGER
+      ? `two-phase: ${name} ${value} is not a positive integer`
+      : `two-phase: ${name} ${value} is not an integer in ${low}..${high}`);
+  }
+}
+
 export function setBounds(b) {
   // Validate everything FIRST, commit together after: a call like {solLen: 10, probeMax: NaN}
   // must change nothing at all, not leave solLen moved behind a thrown budget.
-  if (b.solLen !== undefined) {
-    // ≥ 1 (asking for a zero-move solution is answerable — by a solved cube); ≤ 24 keeps the
-    // replay stacks in bounds. The app's own ceiling is tighter (LOOSEST_BOUND, solver-engine).
-    if (!Number.isInteger(b.solLen) || b.solLen < 1 || b.solLen > 24) {
-      throw new RangeError(`two-phase: solLen ${b.solLen} is not an integer in 1..24`);
-    }
-  }
-  if (b.probeMax !== undefined && (!Number.isSafeInteger(b.probeMax) || b.probeMax < 1)) {
-    throw new RangeError(`two-phase: probeMax ${b.probeMax} is not a positive integer`);
-  }
-  if (b.maxPhase2 !== undefined && (!Number.isInteger(b.maxPhase2) || b.maxPhase2 < 1 || b.maxPhase2 > 18)) {
-    throw new RangeError(`two-phase: maxPhase2 ${b.maxPhase2} is not an integer in 1..18`);
-  }
+  //
+  // `solLen` ≥ 1 because asking for a zero-move solution is answerable — by a solved cube — and ≤ 24
+  // keeps the replay stacks in bounds. The app's own ceiling is tighter (LOOSEST_BOUND, solver-engine).
+  if (b.solLen !== undefined) checkWhole('solLen', b.solLen, 1, 24);
+  if (b.probeMax !== undefined) checkWhole('probeMax', b.probeMax, 1, Number.MAX_SAFE_INTEGER, true);
+  if (b.maxPhase2 !== undefined) checkWhole('maxPhase2', b.maxPhase2, 1, 18);
   if (b.solLen !== undefined) BOUNDS.solLen = b.solLen;
   if (b.probeMax !== undefined) BOUNDS.probeMax = b.probeMax;
   if (b.maxPhase2 !== undefined) MAX_PHASE2 = b.maxPhase2;
@@ -1390,7 +1376,7 @@ function checkOutcome(point, key) {
   // The view count is the SLICE's, not the engine's: a two-view search finishes at cursor 2, and
   // measuring it against six would accept a position it can never be at.
   const viewCount = key.views === null ? VIEW_COUNT : key.views.length;
-  if (!point.done) return checkUnfinished(point);
+  if (!point.done) return checkUnfinished(point, viewCount);
   if (point.alg === null) return checkEmptyFinish(point, key, viewCount);
   return checkAnsweredFinish(point, key, viewCount);
 }
@@ -1398,11 +1384,25 @@ function checkOutcome(point, key) {
 /** A search still going carries no outcome. A record with one is not a position in this enumeration;
  *  `runSearch` would search on and then overwrite it, so believing it silently would hide whatever
  *  produced it. */
-function checkUnfinished(point) {
+function checkUnfinished(point, viewCount) {
   if (point.alg !== null || point.foundDepth !== -1 || point.foundView !== -1) {
     throw new RangeError(
       'two-phase: this resume point is unfinished and yet carries an answer, so it is not a ' +
         'position any search of this enumeration left',
+    );
+  }
+  // AND ITS POSITION HAS TO HAVE BEEN PAID FOR — the same arithmetic `checkEmptyFinish` uses, applied to
+  // a search still going. A point at (depth d, view c) claims every (depth, view) pair before it walked
+  // to its end, and each of those costs at least one node in `phase1DFS`'s `mustStop`. A fresh record
+  // with `depth` patched to 1 claimed all of depth 0 while banking nothing, and the resumed search
+  // therefore never looked there: a cube one turn from solved answered null, permanently (Codex audit,
+  // 2026-09-16).
+  const leastWork = point.depth * viewCount + point.cursor;
+  if (point.covered < leastWork) {
+    throw new RangeError(
+      `two-phase: this resume point stands at depth ${point.depth}, view ${point.cursor} and banks ` +
+        `${point.covered} nodes — reaching there costs at least ${leastWork}, so the search it claims ` +
+        'to continue never ran that far',
     );
   }
 }
@@ -1468,21 +1468,30 @@ function checkEmptyFinish(point, key, viewCount) {
  * tables, it must land on solved. That costs one parse and at most 22 cubie permutations, on a path
  * that runs once per adoption and never inside the search.
  */
-function checkAnsweredFinish(point, key, viewCount) {
+/**
+ * The answer a finished record carries, as moves — checked to BE moves, and to be short enough.
+ *
+ * The bound is EXCLUSIVE and part of the key, so this is the same bound the search that produced the
+ * answer was under.
+ */
+function answerMoves(point, key) {
   const moves = point.alg.trim() ? point.alg.trim().split(/\s+/) : [];
   for (const name of moves) {
     if (!MOVE_NAMES.includes(name)) {
       throw new RangeError(`two-phase: this resume point's answer contains "${name}", which is not a move`);
     }
   }
-  // The bound is EXCLUSIVE, and it is part of the key, so this is the same bound the search that
-  // produced the answer was under.
   if (moves.length >= key.solLen) {
     throw new RangeError(
       `two-phase: this resume point carries a ${moves.length}-move answer under a bound of ` +
         `${key.solLen}, which no search of this enumeration can have found`,
     );
   }
+  return moves;
+}
+
+function checkAnsweredFinish(point, key, viewCount) {
+  const moves = answerMoves(point, key);
   if (!Number.isInteger(point.foundDepth) || point.foundDepth < 0 || point.foundDepth > moves.length) {
     throw new RangeError(
       `two-phase: this resume point's answer was found at phase-1 depth ${point.foundDepth} of a ` +
@@ -1496,17 +1505,7 @@ function checkAnsweredFinish(point, key, viewCount) {
         `${key.views === null ? `one of the ${VIEW_COUNT} views` : `in the searched slice ${JSON.stringify(key.views)}`}`,
     );
   }
-  let state = parseFacelets(key.facelets);
-  if (state === null) {
-    throw new RangeError('two-phase: this resume point solves a state that is not a cube');
-  }
-  for (const name of moves) state = applyMove(state, name);
-  if (!statesEqual(state, SOLVED)) {
-    throw new RangeError(
-      'two-phase: this resume point\'s answer does not solve the cube its key names — it is not ' +
-        'an answer this search can have produced',
-    );
-  }
+  answerSolves(moves, key);
   // And the position it finished FROM. A search that found an answer leaves the loop by `break` and
   // never writes `depth`/`cursor` back, so they are still the position it was resumed at: inside the
   // enumeration, both of them — the SAME question `runSearch` asks of every unfinished point,

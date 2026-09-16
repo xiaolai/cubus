@@ -38,11 +38,21 @@ const BUNDLES = [
     sources: [
       '../../../packages/cubus-cube/src/cubus-cube.js', '../lib/cube-frame.js',
       '../lib/cube-highlight.js', '../lib/cube-orientation.js', '../lib/sticker-palettes.js',
+      // What a MARK on the cube is coloured in, beside the table for what a sticker is coloured in, and
+      // in this app for the same reason: the arrow's ink has to be chosen against the stickers and against
+      // the plastic, and a table in the renderer's package could not be measured against either.
+      '../lib/annotation-inks.js',
       // Where a cubie IS, since the renderer stopped keeping that in its scene graph — and
       // cube-pieces with it, because the pose is arithmetic over the piece model. So the model
       // this repository publishes as its API is now IN the bundle it draws with, which is the
       // whole point of A1: one implementation, not two.
       '../../../packages/cubus-cube/src/pose.js', '../lib/cube-pieces.js',
+      // The notation it reads `alg` through, and the interpreter whose face-turn arithmetic the pose
+      // runs (dev-docs/tutorial-capability-plan.md items 2.1 and 2.2): the model the tutorials are
+      // tested against is the one the element draws with.
+      '../lib/cube-notation.js', '../lib/cube-moves.js',
+      // The facelet layout, which the piece model reads to write a state as stickers (`toFacelets`).
+      '../lib/cube-layout.js',
     ],
     // The renderer imports three of cube-orientation.js's exports (isFace, orientationMatrix,
     // sameAxis); esbuild drops the rest, and the messages inside them. Same delete-when-used
@@ -53,13 +63,44 @@ const BUNDLES = [
     // renderer takes the model's move tables and none of its searching, and an entry that stops
     // being tree-shaken means the bundle just grew a dependency nobody asked for.
     treeShaken: [
-      'CENTERS', 'orientationPerm', 'orientationRelabel', 'permCache', 'turnFacelets',
+      'orientationPerm', 'orientationRelabel', 'permCache', 'turnFacelets',
       'Y_FACES', 'allSolved', 'applyAlg', 'cornerSlot', 'cornerSolved', 'edgeSlot', 'edgeSolved',
       'fromCube', 'moveCount', 'movesOf', 'rotateAlg', 'rotateState',
+      // `everyIndex` serves `pieceStateError`, which is itself shaken out: the element is handed a painted
+      // string and never validates a piece state. `composited` answers what a mark LOOKS like over a
+      // surface, which only the measuring test asks — the renderer states the colours and the alphas and
+      // lets the compositor do the mixing.
+      'everyIndex', 'composited',
+      // From the interpreter the element takes the face-turn arithmetic of an identity-frame move
+      // (`faceTurnsOf`, `turnPieces`) and none of the HOLD: reading a child's letters in a hold is the
+      // host's job, and the element is handed identity tokens (ADR 0004 decision 7). From the notation it
+      // takes `readToken` and not the formatter.
+      'SELECTOR', 'applyIdentity', 'checkHold', 'convertSelectors', 'heldFace', 'holdOfRows',
+      'identityFace', 'toIdentity', 'tokenOf', 'turnVector', 'formatMoves',
+      // Naming an identity move for a hold, and a walk's moves as face turns (plan item 6.1), are the
+      // display's and the method's: the element draws identity tokens and names nothing.
+      'faceTurnsAlg', 'heldMove', 'heldToken', 'relabelSelectors',
+      // Writing a state back out as 54 stickers is the app's and the script player's question; the
+      // renderer is handed the string it paints, so `toFacelets` goes. The layout TABLES it reads stay in
+      // the bundle — esbuild cannot prove a frozen, mapped array free of side effects — and are guarded
+      // as the declarations they are.
+      'toFacelets',
+      // The renderer resolves both channels to STICKERS (plan item 4.1), so the cubie-level resolver — kept
+      // for the script view and the kit — and its sticker test are not in the bundle.
+      'resolveHighlight', 'isSticker',
+      // Whether four arrays are a well-formed piece state is asked by the app's readers and validators
+      // (2026-09-16): the element is handed a state the host has already read, and reads no cube of its
+      // own. (`inverseOf` is NOT here — `rotateState` builds its `Y_INVERSE` from it at module scope, so
+      // it rides into the bundle as a declaration that survived.)
+      'pieceStateError',
     ],
     treeShakenMessages: [
       'cube-orientation: sticker', 'cube-orientation: rotation is not a bijection',
       'relabelling is not a bijection', 'cube-orientation: expected 54 facelets, got',
+      'cube-moves: a hold is [up, front]', 'cube-moves: no token for axis', 'quarter turns is not an amount',
+      // The piece-state validator's refusals go with the validator.
+      'must be an array of', 'must be whole numbers 0 to', 'names one cubie twice',
+      'expected a piece state of',
     ],
   },
   {
@@ -257,6 +298,19 @@ for (const b of BUNDLES) {
       }
     }
     assert.deepEqual(missing.sort(), [], `source is ahead of the bundle — run \`${b.build}\``);
+  });
+
+  // The other half of "delete it here when it is used", which was a comment until plan item 3.2 found a
+  // list naming three layout tables the bundle does carry: an entry that is not really dropped exempts a
+  // live declaration from the check above, silently. So a name listed as tree-shaken must be ABSENT.
+  test(`${b.name}: every name listed as tree-shaken really is absent from the bundle`, (t) => {
+    if (b.optional && !existsSync(new URL(b.bundle, import.meta.url))) {
+      t.skip(`${b.bundle} not built yet — run \`${b.build}\``);
+      return;
+    }
+    const bundle = read(b.bundle);
+    const kept = (b.treeShaken ?? []).filter((n) => new RegExp(`(?<![\\w$])${n}(?![\\w$])`).test(bundle));
+    assert.deepEqual(kept, [], 'listed as tree-shaken and still in the bundle — remove it from the list so the guard covers it');
   });
 
   // Names are not enough, and this is the fourth time that has mattered.

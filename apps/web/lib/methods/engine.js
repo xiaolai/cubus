@@ -24,7 +24,7 @@
 // slot" and "the cubie that belongs there".
 
 import {
-  CORNER, EDGE, MOVE_NAMES, SOLVED, allSolved, applyAlg, applyMove, moveCount, rotateAlg,
+  CORNER, CORNERS, EDGE, EDGES, MOVE_NAMES, SOLVED, allSolved, applyAlg, applyMove, moveCount, rotateAlg,
 } from '../cube-pieces.js';
 
 /** U-layer slots. "In the top layer" is the staging area every stage lifts pieces into. */
@@ -68,6 +68,33 @@ export const SOLVED_STATE = Object.freeze({
 });
 
 export const joinAlg = (...parts) => parts.filter(Boolean).join(' ').trim();
+
+/**
+ * The regrips a stage may make — the whole cube turned about its vertical axis, so the cross stays
+ * underneath — smallest first, each with the quarter turns it makes of the cube as held, as
+ * `rotateState` counts them (plan item 6.2).
+ *
+ * A stage is handed the cube as it is held (`solveByMethod`), and after a regrip it goes on with the
+ * cube as held after it: `rotateState(view, turns)`, and every piece it names renamed by `turnedEdge` /
+ * `turnedCorner`. The pairing of each token with its count is the interpreter's, and
+ * `method-solver.test.mjs` holds it there rather than trusting this table.
+ */
+export const REGRIPS = Object.freeze([
+  Object.freeze({ token: '', turns: 0, cost: 0 }),
+  Object.freeze({ token: 'y', turns: 3, cost: 1 }),
+  Object.freeze({ token: "y'", turns: 1, cost: 1 }),
+  Object.freeze({ token: 'y2', turns: 2, cost: 2 }),
+]);
+
+const lettersKey = (name) => [...name].sort().join('');
+const EDGE_BY_LETTERS = new Map(EDGES.map((name, i) => [lettersKey(name), i]));
+const CORNER_BY_LETTERS = new Map(CORNERS.map((name, i) => [lettersKey(name), i]));
+
+/** An edge — a cubie or a slot — as it is named once the cube is turned `turns` quarter turns about U,
+ *  as `rotateState` counts: the letters `rotateAlg` gives it, found in the table's own order. */
+export const turnedEdge = (edge, turns) => EDGE_BY_LETTERS.get(lettersKey(rotateAlg(EDGES[edge], turns)));
+/** The same for a corner. */
+export const turnedCorner = (corner, turns) => CORNER_BY_LETTERS.get(lettersKey(rotateAlg(CORNERS[corner], turns)));
 /** How many moves an algorithm is — `cube-pieces.js`'s tokenizer, not a fourth copy of it. */
 export const algLength = moveCount;
 
@@ -86,6 +113,10 @@ export const algLength = moveCount;
 export function simplify(alg) {
   const runs = [];
   for (const move of String(alg).trim().split(/\s+/).filter(Boolean)) {
+    // Only a plain face turn merges. Anything else a step may carry since plan item 6.1 — a regrip, a slice, a
+    // wide move — is kept as written and breaks the run. Read by its first letter, `R Rw` became `R2`: a wide
+    // move is not a turn of the face it is named after.
+    if (!/^[URFDLB][2']?$/.test(move)) { runs.push({ token: move }); continue; }
     const face = move[0];
     const turns = move.endsWith('2') ? 2 : move.endsWith("'") ? 3 : 1;
     const last = runs[runs.length - 1];
@@ -96,7 +127,7 @@ export function simplify(alg) {
       runs.push({ face, turns });
     }
   }
-  return runs.map(({ face, turns }) => face + (turns === 1 ? '' : turns === 2 ? '2' : "'")).join(' ');
+  return runs.map((run) => run.token ?? run.face + (run.turns === 1 ? '' : run.turns === 2 ? '2' : "'")).join(' ');
 }
 
 /**
@@ -144,7 +175,15 @@ export function fromRepertoire(state, candidates, goal, plies = 1, keyOf = state
   // stringified and zero-padded to three digits, so a 1,000-move route sorted ahead of a 104-move
   // one. Nothing here produces four-digit algorithms today, which is what made it a defect worth
   // fixing rather than a bug worth waiting for.
-  const precedes = (a, b) => (a.length !== b.length ? a.length < b.length : a.rank < b.rank);
+  // ...and then by the algorithm ITSELF, which is the only tie-break that cannot depend on the order the
+  // frontier was built in. Length and rank alone left equal routes in arrival order, so reversing the
+  // candidate list turned `U D R` into `D U R` — exactly the order-dependence the note below says this
+  // comparison exists to end (Codex audit, 2026-09-16).
+  const precedes = (a, b) => {
+    if (a.length !== b.length) return a.length < b.length;
+    if (a.rank !== b.rank) return a.rank < b.rank;
+    return a.alg < b.alg;
+  };
   // The comparison values are computed ONCE per route. They used to be recomputed inside a
   // comparator, so `rank` — which rotates a whole algorithm into a common frame — ran O(n log n)
   // times over a list from which exactly one element was ever read.
@@ -155,6 +194,14 @@ export function fromRepertoire(state, candidates, goal, plies = 1, keyOf = state
     length: algLength(alg),
     rank: rank(alg),
   });
+
+  /** Keep the better of two routes to one state. THE BEST ROUTE, not the first one found: deduplicating
+   *  on arrival kept whichever route the candidate order happened to produce first, so reordering two
+   *  equally-ranked candidates changed what the NEXT ply was expanded from. */
+  const retain = (into, key, route) => {
+    const held = into.get(key);
+    if (held === undefined || precedes(route, held)) into.set(key, route);
+  };
 
   let frontier = [{ state, alg: '', used: [] }];
   // Different runs of triggers land on the same cube constantly — `R U R'` then `R U' R'` is
@@ -185,14 +232,9 @@ export function fromRepertoire(state, candidates, goal, plies = 1, keyOf = state
         if (lastPly) continue;
         const key = keyOf(after, alg);
         if (seen.has(key)) continue;
-        // THE BEST ROUTE TO A STATE, not the first one found. Deduplicating on arrival kept
-        // whichever route the candidate order happened to produce first, so reordering two
-        // equally-ranked candidates changed what the NEXT ply was expanded from — `U D` and `D U`
-        // reach the same cube, and which one was retained decided between `U D R` and `D U R`
-        // under a ranking function that cannot tell them apart.
-        const held = next.get(key);
-        const successor = route(node, candidate, after, alg);
-        if (held === undefined || precedes(successor, held)) next.set(key, successor);
+        // `U D` and `D U` reach the same cube, and which one is retained decides between `U D R` and
+        // `D U R` under a ranking function that cannot tell them apart — see `retain` above.
+        retain(next, key, route(node, candidate, after, alg));
       }
     }
     if (best !== null) return { state: best.state, alg: best.alg, used: best.used };

@@ -14,6 +14,7 @@ import {
   parseHighlight,
   pieceKey,
   resolveHighlight,
+  resolveStickers,
   selects,
   slotVector,
 } from '../lib/cube-highlight.js';
@@ -193,4 +194,84 @@ test('a layer selector does not hand out the module\'s own axis table', () => {
   selectors[0].layer[1] = -1;
   assert.deepEqual(slotVector('UF'), [0, 1, 1], 'the shared table must be unharmed');
   assert.deepEqual(parseHighlight('layer:U').selectors[0].layer, [1, 1], 'and a fresh parse too');
+});
+
+// ---- one sticker of a piece, and sets (plan item 4.1 of dev-docs/tutorial-capability-plan.md) --------
+
+/** The solved cube's cubies with their stickers: each sticker's painted face, facing that way. */
+function solvedWithStickers() {
+  const letterOf = { 0: { 1: 'R', [-1]: 'L' }, 1: { 1: 'U', [-1]: 'D' }, 2: { 1: 'F', [-1]: 'B' } };
+  return solvedCubies().map((c) => ({
+    ...c,
+    stickers: c.pos.flatMap((v, axis) => (v ? [{ face: letterOf[axis][v], dir: letterOf[axis][v] }] : [])),
+  }));
+}
+const stickersOf = (spec, cubies = solvedWithStickers()) => {
+  const { selectors, invalid } = parseHighlight(spec);
+  assert.equal(invalid, null, `expected "${spec}" to parse`);
+  return resolveStickers(selectors, cubies).stickers.map(([i, j]) => `${cubies[i].piece}/${cubies[i].stickers[j].dir}`).sort();
+};
+
+test('a sticker is named by where it faces, or by the face it belongs to', async () => {
+  assert.deepEqual(stickersOf('slot:UF/U'), ['FU/U']);
+  assert.deepEqual(stickersOf('piece:UF/F'), ['FU/F']);
+  // On a cube where the UF edge is flipped in place, the two sentences part company.
+  const flipped = solvedWithStickers().map((c) => (c.piece === 'FU'
+    ? { ...c, stickers: [{ face: 'F', dir: 'U' }, { face: 'U', dir: 'F' }] } : c));
+  assert.deepEqual(stickersOf('slot:UF/U', flipped), ['FU/U'], 'the sticker facing up is whichever one is up');
+  assert.deepEqual(stickersOf('piece:UF/F', flipped), ['FU/U'], 'the F sticker went where the flip took it');
+  // A sticker a slot or a piece does not have is refused whole, as a bad token always is.
+  for (const bad of ['slot:UF/R', 'piece:UF/D', 'layer:U/U', 'slot:UF/']) {
+    assert.notEqual(parseHighlight(bad).invalid, null, `"${bad}" was accepted`);
+  }
+});
+
+test('sets read left to right: comma and plus add, minus takes away', () => {
+  assert.equal(stickersOf('layer:U').length, 21, 'nine cubies of the top layer carry 21 stickers');
+  const topEdgesAndCentre = stickersOf('layer:U - corners');
+  assert.equal(topEdgesAndCentre.length, 9, 'four edges of two stickers and a centre of one');
+  assert.deepEqual(stickersOf('layer:U + slot:DF'), stickersOf('layer:U,slot:DF'));
+  // Taking away one sticker leaves the rest of its cubie lit.
+  const lessOne = stickersOf('slot:UF - slot:UF/U');
+  assert.deepEqual(lessOne, ['FU/F']);
+  // Order matters, as it does in any left-to-right algebra.
+  assert.deepEqual(stickersOf('edges - layer:U + slot:UF'), [...stickersOf('edges - layer:U'), 'FU/F', 'FU/U'].sort());
+  assert.equal(stickersOf('edges + slot:UF - layer:U').includes('FU/U'), false);
+  assert.notEqual(parseHighlight('- corners').invalid, null, 'a set that begins by taking away was accepted');
+  // The cubie-level reading keeps a cubie with any sticker left, and drops one taken away whole.
+  const { selectors } = parseHighlight('layer:U - corners - slot:UF/U');
+  const cubies = resolveHighlight(selectors, solvedCubies()).indices;
+  assert.equal(cubies.length, 5, 'four edges and the centre, the UF edge kept for its F sticker');
+});
+
+// Found by a Codex audit, 2026-09-16. Two ways a spec could say one thing and be read as another.
+test('an operator that was written is never thrown away, and a cancelled sticker unlights its cubie', () => {
+  // `-` followed by another operator used to be overwritten by it: a subtraction became a union.
+  assert.equal(parseHighlight('edges - + corners').invalid, '- +');
+  assert.equal(parseHighlight('edges - , corners').invalid, '- ,');
+  assert.deepEqual(parseHighlight('edges - + corners').selectors, []);
+  // A trailing operator, and an operator on its own, were dropped: both read as "nothing selected".
+  assert.equal(parseHighlight('edges -').invalid, 'edges -');
+  assert.equal(parseHighlight('-').invalid, '-');
+  assert.equal(parseHighlight('edges +').invalid, 'edges +');
+  // What still parses: a repeated comma (untidy, not wrong), and a subtraction written after one.
+  assert.equal(parseHighlight('edges,,corners').invalid, null);
+  assert.equal(parseHighlight('edges, - slot:UF').invalid, null);
+  assert.deepEqual(parseHighlight('edges, - slot:UF').selectors.map((s) => s.op), ['+', '-']);
+
+  // And the resolver: taking away the only sticker a cubie had lit leaves nothing to light it.
+  const cubies = [
+    { pos: [0, 1, 1], piece: 'FU', stickers: [{ face: 'U', dir: 'U' }, { face: 'F', dir: 'F' }] },
+    { pos: [1, 1, 0], piece: 'RU', stickers: [{ face: 'U', dir: 'U' }, { face: 'R', dir: 'R' }] },
+  ];
+  const of = (spec) => resolveHighlight(parseHighlight(spec).selectors, cubies).indices;
+  assert.deepEqual(of('slot:UF/U'), [0], 'precondition: one sticker lights its cubie');
+  assert.deepEqual(of('slot:UF/U - slot:UF/U'), [], 'a cubie stayed lit with no sticker of it selected');
+  assert.deepEqual(of('edges - slot:UF/U'), [0, 1], 'taking a sticker away must leave the rest of its cubie lit');
+  assert.deepEqual(of('edges - edges'), [], 'a whole-cubie subtraction still takes the cubie away');
+  assert.deepEqual(of('edges'), [0, 1]);
+  // The two exported answers about one spec agree now, which is the whole point.
+  const sticky = parseHighlight('slot:UF/U - slot:UF/U').selectors;
+  assert.deepEqual(resolveStickers(sticky, cubies).stickers, []);
+  assert.deepEqual(resolveHighlight(sticky, cubies).indices, []);
 });

@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { fromCube } from '../lib/cube-pieces.js';
-import { createHoldCube, holdAtMove, holdChangeAt, walkHoldFor } from '../lib/hold-presenter.js';
+import { createHoldCube, holdAtMove, holdChangeAt, moveHold, walkHoldFor } from '../lib/hold-presenter.js';
 import { moveStepIndex } from '../lib/method-lesson.js';
 import { methodFor, solveByMethod } from '../lib/method-solver.js';
 import { SCAN_HOLD, TUMBLED, holdSentence, toMethodFrame } from '../lib/solving-hold.js';
@@ -153,4 +153,18 @@ test('the hold sentence follows the hold the screen showed — begun turned over
   assert.equal(holdChangeAt(lesson, SCAN_HOLD, flip - 1, TUMBLED).say, holdSentence(SCAN_HOLD),
     'a step back across the turn landed silently');
   assert.equal(holdChangeAt(lesson, SCAN_HOLD, flip + 1, TUMBLED).say, '', 'a hold already shown is said again');
+});
+
+test('a move is named for the hold it is made in — the stage\'s, turned by every regrip before it', () => {
+  // The renderer is turned to the stage's hold (`holdAtMove`) and the drawing turns with a regrip by itself;
+  // a CHIP needs the hold the child is in at that move, which is the lesson's own record (plan item 6.1).
+  const lesson = { steps: [], moveStep: [], moveHolds: [SCAN_HOLD, TUMBLED, ['D', 'R']] };
+  assert.equal(spec(moveHold(lesson, SCAN_HOLD, 0)), 'U F');
+  assert.equal(spec(moveHold(lesson, SCAN_HOLD, 1)), 'D B');
+  assert.equal(spec(moveHold(lesson, SCAN_HOLD, 2)), 'D R');
+  assert.equal(spec(moveHold(lesson, SCAN_HOLD, 9)), 'D R', 'past the last move, the hold it left');
+  assert.equal(spec(moveHold(lesson, SCAN_HOLD, -1)), 'U F');
+  assert.equal(spec(moveHold(null, TUMBLED, 3)), 'D B', 'any other walk is held one way throughout');
+  assert.throws(() => moveHold({ steps: [], moveStep: [] }, SCAN_HOLD, 0), /moveHolds/,
+    'a lesson without its holds is a defect, not a walk to name for the stage');
 });

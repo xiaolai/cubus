@@ -33,6 +33,7 @@
 
 import { SOLVED, applyAlg, invert, moveCount } from '../lib/cube-pieces.js';
 import { solveByMethod } from '../lib/method-solver.js';
+import { turnsOf } from '../test/fixtures/method-replay.mjs';
 import { OLL_ALGS, PLL_ALGS } from '../lib/methods/last-layer.js';
 import { F2L_CASES } from '../lib/data/case-tables.js';
 import { INDEPENDENT_PREDICATE } from '../test/fixtures/independent-predicates.mjs';
@@ -77,6 +78,25 @@ export const CORPUS_TARGETS = Object.freeze(Object.keys(INSIDE));
 
 /** Real algorithms a learner has actually been taught, for the two kinds that use one. */
 const REAL_ALGS = Object.freeze([...OLL_ALGS, ...PLL_ALGS, ...F2L_CASES].map((a) => a.alg).filter(Boolean));
+
+/**
+ * The same algorithms, each carrying WHICH STAGE it belongs to — so "a whole later-stage alg" can be one.
+ *
+ * The wrong-stage case drew from the whole pool, so a last-layer cube could be handed an F2L algorithm
+ * under a label saying it came from later in the solve (Codex audit, 2026-09-16). What the case is FOR is
+ * a child running ahead of themselves; an algorithm from a stage they have already passed is a different
+ * mistake, and counting it as this one blurs the population the bench is measuring.
+ */
+const STAGE_RANK = Object.freeze({
+  cross: 0, 'first-layer': 1, 'middle-layer': 1, f2l: 1, 'top-cross': 2, 'top-face': 2, 'top-corners': 3, 'top-edges': 3,
+});
+const TAUGHT = Object.freeze([
+  ...F2L_CASES.map((a) => ({ alg: a.alg, rank: 1 })),
+  ...OLL_ALGS.map((a) => ({ alg: a.alg, rank: 2 })),
+  ...PLL_ALGS.map((a) => ({ alg: a.alg, rank: 3 })),
+].filter((a) => a.alg));
+const rankOf = (targetId) => Math.max(...INSIDE[targetId].map((label) => STAGE_RANK[label] ?? 0));
+const laterThan = (targetId) => TAUGHT.filter((a) => a.rank > rankOf(targetId));
 const AUF = Object.freeze(['U', 'U2', "U'"]);
 
 const pick = (rnd, list) => list[Math.floor(rnd() * list.length)];
@@ -93,7 +113,8 @@ function methodRoute(scramble) {
   const states = [start];
   let s = start;
   for (const step of lesson.steps) {
-    s = applyAlg(s, step.alg);
+    // Played in the step's hold, as the face turns it makes: a step may regrip (plan item 6.1).
+    s = applyAlg(s, turnsOf(step));
     states.push(s);
   }
   return { start, steps: lesson.steps, states };
@@ -114,7 +135,7 @@ function geometry(route, targetId) {
   // How many moves from states[i] to states[reachedAt], along the route.
   const suffix = route.states.map((_, i) => (i >= reachedAt
     ? 0
-    : route.steps.slice(i, reachedAt).reduce((n, step) => n + moveCount(step.alg), 0)));
+    : route.steps.slice(i, reachedAt).reduce((n, step) => n + moveCount(turnsOf(step)), 0)));
   // Part way: at least one step of this target done, and the target not yet reached.
   const partWay = [];
   for (let i = 1; i < reachedAt; i++) {
@@ -131,11 +152,18 @@ function slip(rnd, alg) {
   const moves = alg.trim().split(/\s+/).filter(Boolean);
   if (moves.length === 0) return null;
   const at = Math.floor(rnd() * moves.length);
-  const how = pick(rnd, ['omitted', 'reversed', 'repeated']);
+  let how = pick(rnd, ['omitted', 'reversed', 'repeated']);
   const out = [...moves];
   if (how === 'omitted') out.splice(at, 1);
-  else if (how === 'reversed') out[at] = invert(moves[at]);
-  else out.splice(at, 0, moves[at]);
+  else if (how === 'reversed') {
+    // A HALF TURN REVERSED IS THE SAME HALF TURN. `invert('R2')` is `R2`, so this produced a step
+    // identical to the one it was damaging and filed it under `reversed` — a correctly executed step
+    // sitting in the mistake sample (Codex audit, 2026-09-16). The reversal moves to a quarter turn in
+    // the same algorithm, and where there is none the hand slips a different way instead.
+    const quarter = moves.findIndex((m, i) => i >= at && !m.endsWith('2'));
+    const other = quarter >= 0 ? quarter : moves.findIndex((m) => !m.endsWith('2'));
+    if (other < 0) { how = 'repeated'; out.splice(at, 0, moves[at]); } else out[other] = invert(moves[other]);
+  } else out.splice(at, 0, moves[at]);
   return { how, alg: out.join(' ') };
 }
 
@@ -149,7 +177,25 @@ function slip(rnd, alg) {
 export function buildCorpus({ seed = CORPUS_SEED, seeds = 24, randomCases = 12 } = {}) {
   const rnd = lcg(seed);
   const cases = [];
-  const routes = seededScrambles(seeds, seed, 25).map(methodRoute).filter(Boolean);
+  // A SCRAMBLE THE SOLVER REFUSES IS A SOLVER BUG, which is what `methodRoute`'s own comment says — and
+  // the refusals were then dropped by a `.filter(Boolean)` that said nothing. Zero routes still produced
+  // a corpus, because the random cases populate every target on their own, and the coverage guard at the
+  // end could not tell that every ROUTED case had quietly gone missing (Codex audit, 2026-09-16).
+  const drawn = seededScrambles(seeds, seed, 25);
+  const refused = [];
+  const routes = drawn.filter((scramble, i) => {
+    const route = methodRoute(scramble);
+    if (route) { drawn[i] = route; return true; }
+    refused.push(scramble);
+    return false;
+  }).map((_, i) => drawn[i]);
+  if (refused.length) {
+    throw new Error(
+      `solve-to-state-corpus: the method solver refused ${refused.length} of ${seeds} scrambles, which is `
+      + `a solver defect rather than a corpus one. The first: ${refused[0]}`,
+    );
+  }
+  if (!routes.length) throw new Error('solve-to-state-corpus: no scrambles were routed, so there is no corpus');
 
   for (const targetId of CORPUS_TARGETS) {
     for (const route of routes) {
@@ -179,7 +225,7 @@ export function buildCorpus({ seed = CORPUS_SEED, seeds = 24, randomCases = 12 }
 
       // --- slip: part way, and the next step goes wrong by one turn.
       const i = pick(rnd, g.partWay);
-      const damaged = slip(rnd, route.steps[i].alg);
+      const damaged = slip(rnd, turnsOf(route.steps[i]));
       if (damaged) {
         cases.push({
           target: targetId, kind: 'slip', errorKind: damaged.how,
@@ -192,23 +238,39 @@ export function buildCorpus({ seed = CORPUS_SEED, seeds = 24, randomCases = 12 }
 
       // --- wrong-stage: part way, and a whole algorithm from later in the solve lands on it.
       const j = pick(rnd, g.partWay);
-      const later = pick(rnd, REAL_ALGS);
-      cases.push({
-        target: targetId, kind: 'wrong-stage', errorKind: 'a whole later-stage alg',
-        state: applyAlg(route.states[j], later),
-        atTarget: false, progress: g.ownSteps ? g.doneBy(j) / g.ownSteps : 0,
-        errorLen: moveCount(later), suffixLen: g.suffix[j],
-        bound: moveCount(later) + g.suffix[j],
-      });
+      const pool = laterThan(targetId);
+      if (pool.length) {
+        const later = pick(rnd, pool).alg;
+        cases.push({
+          target: targetId, kind: 'wrong-stage', errorKind: 'a whole later-stage alg',
+          state: applyAlg(route.states[j], later),
+          atTarget: false, progress: g.ownSteps ? g.doneBy(j) / g.ownSteps : 0,
+          errorLen: moveCount(later), suffixLen: g.suffix[j],
+          bound: moveCount(later) + g.suffix[j],
+        });
+      }
     }
 
     // --- random: the pathological case, and the only kind with no bound at all.
     for (const scramble of seededScrambles(randomCases, seed + 1, 30)) {
       cases.push({
-        target: targetId, kind: 'random', errorKind: 'uniform',
+        // NOT `uniform`, which this said until 2026-09-16 (Codex audit): thirty random face turns is a
+        // random WALK, and its distribution is not the uniform one over all 43 quintillion states. The
+        // walk is what this bench wants — it is seeded, so the corpus is reproducible, and `randomState`
+        // draws from a cryptographic source that cannot be — but the label has to say which it is.
+        target: targetId, kind: 'random', errorKind: 'a 30-turn random walk',
         state: applyAlg(SOLVED, scramble),
         atTarget: false, progress: 0, errorLen: null, suffixLen: null, bound: null,
       });
+    }
+  }
+  // AND EVERY TARGET GOT CASES OF ITS OWN. The random cases are drawn per target regardless, so a target
+  // whose routes all failed the geometry check still appeared in the counts — with nothing in it but
+  // noise. Checked here, where the counts are still a list rather than a table.
+  for (const targetId of CORPUS_TARGETS) {
+    const routed = cases.filter((c) => c.target === targetId && c.kind !== 'random').length;
+    if (routed === 0) {
+      throw new Error(`solve-to-state-corpus: "${targetId}" drew no case from any route — only random ones`);
     }
   }
   return cases;

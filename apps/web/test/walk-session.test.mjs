@@ -13,13 +13,14 @@ import { after, test } from 'node:test';
 import { Window } from 'happy-dom';
 
 import Cube from '../vendor/cubejs.js';
-import { fromCube, invert, movesOf } from '../lib/cube-pieces.js';
+import { fromCube, invert } from '../lib/cube-pieces.js';
+import { faceTurnsAlg } from '../lib/cube-moves.js';
 import { registerLocale, setLocale } from '../lib/i18n.js';
 import { FOLLOWS_TO_OFFER, NO_PROGRESS, recordCleanFollow, repairProgress } from '../lib/method-ladder.js';
 import { lessonSections, moveStepIndex } from '../lib/method-lesson.js';
 import { methodFor, solveByMethod } from '../lib/method-solver.js';
 import {
-  METHOD_TO_SCAN, SCAN_HOLD, TUMBLED, holdSentence, renameAlg, toMethodFrame,
+  SCAN_HOLD, TUMBLED, holdSentence, scanFrameWalk, toMethodFrame,
 } from '../lib/solving-hold.js';
 import { createFollowTracker } from '../lib/walk-follow.js';
 import { createWalkPresenter } from '../lib/walk-presenter.js';
@@ -840,7 +841,7 @@ function followRig() {
   const walk = { moves: ["R'"], steps: [R, SOLVED] };
   const follow = createFollowTracker({
     root, cube: { seek: () => {}, step: () => {}, stepBack: () => {} }, state, cubejs: () => Cube,
-    applyTempo: () => {}, setPlaying: () => {}, holdAt: () => SCAN_HOLD, markStale: () => {},
+    applyTempo: () => {}, setPlaying: () => {}, moveHoldAt: () => SCAN_HOLD, markStale: () => {},
     adoptCube: () => {}, go: () => {}, scrambling: false,
     refreshLiveDistance: async () => {}, dropLiveDistance: () => { drops.count += 1; },
     chainTrusted: () => state.cube.trusted && state.cube.source === 'cube',
@@ -885,7 +886,7 @@ test('a turn that cancels the one before it is the walk\'s next move, not an und
     root,
     cube: { seek: () => {}, step: () => calls.push('step'), stepBack: () => calls.push('stepBack') },
     state, cubejs: () => Cube,
-    applyTempo: () => {}, setPlaying: () => {}, holdAt: () => SCAN_HOLD, markStale: () => {},
+    applyTempo: () => {}, setPlaying: () => {}, moveHoldAt: () => SCAN_HOLD, markStale: () => {},
     adoptCube: () => {}, go: () => {}, scrambling: false,
     refreshLiveDistance: async () => {}, dropLiveDistance: () => {},
     chainTrusted: () => state.cube.trusted && state.cube.source === 'cube',
@@ -1252,7 +1253,7 @@ async function lessonWalk(over = {}) {
       const moves = ["R'", "U'"];
       const stepFacelets = [cube.facelets, turned("R'", cube.facelets), turned("R' U'", cube.facelets)];
       return {
-        alg: moves.join(' '), moves, stepFacelets, summary: 'Cross', steps: [], moveStep: [],
+        alg: moves.join(' '), moves, moveHolds: [SCAN_HOLD, SCAN_HOLD, SCAN_HOLD], stepFacelets, summary: 'Cross', steps: [], moveStep: [],
         sections: [{ id: 'cross', name: 'Cross', steps: 1, moves: 2, from: 0, to: 2 }],
       };
     },
@@ -1381,13 +1382,15 @@ test('why trust lapsed is said in the catalog\'s words, inside the sentence that
  *  scan's. */
 function scanFrameLesson(facelets) {
   const result = solveByMethod(fromCube(Cube.fromString(toMethodFrame(facelets))), methodFor());
-  const steps = result.steps.map((s) => ({ ...s, alg: renameAlg(s.alg, METHOD_TO_SCAN), focus: '', highlight: '' }));
-  const alg = renameAlg(result.alg, METHOD_TO_SCAN);
-  const moves = movesOf(alg);
+  const walk = scanFrameWalk(result.steps);
+  const steps = result.steps.map((s, i) => ({ ...s, alg: walk.algs[i], hold: walk.stepHolds[i], focus: '', highlight: '' }));
+  const moves = [...walk.moves];
+  const alg = moves.join(' ');
   const stepFacelets = [facelets];
   const c = Cube.fromString(facelets);
-  for (const m of moves) { c.move(m); stepFacelets.push(c.asString()); }
-  return { facelets, steps, sections: lessonSections(steps), moveStep: moveStepIndex(steps), alg, moves, stepFacelets, summary: '' };
+  // As face turns, the way `lessonFor` builds them: a regrip moves no piece, and cubejs reads no rotation.
+  for (const m of moves) { c.move(faceTurnsAlg(m)); stepFacelets.push(c.asString()); }
+  return { facelets, steps, sections: lessonSections(steps), moveStep: moveStepIndex(steps), alg, moves, moveHolds: walk.holds, stepFacelets, summary: '' };
 }
 
 /** A walking screen on the Lesson for `scramble`, loaded and switched to. */
@@ -1425,4 +1428,111 @@ test('a jump or a step back across the turn says so where it lands', async () =>
   assert.ok(why().includes(holdSentence(SCAN_HOLD)), `a step back across the turn landed silently: ${why()}`);
   head(flip - 2);
   assert.ok(!why().includes('Hold it with'), `a hold already shown was said again: ${why()}`);
+});
+
+test('a second paint at the same move keeps the hold instruction on screen', async () => {
+  // A paint is not a move. While a lesson loads, the renderer reports its own reset and the session syncs
+  // again at the same head; the second paint found the hold already told and dropped "Hold it with white
+  // underneath…", leaving a child looking at a cube turned over with nothing saying why (Codex audit,
+  // 2026-09-16).
+  const w = await turnedLessonWorld('D');
+  const say = () => w.$('#whyLine').textContent;
+  assert.ok(say().includes(holdSentence(TUMBLED)), `precondition: the lesson begins turned over and says so — ${say()}`);
+  w.cube.dispatchEvent(new w.win.CustomEvent('cubus-step', { detail: { index: 0 } }));
+  assert.ok(say().includes(holdSentence(TUMBLED)), `a repaint at the same move erased it: ${say()}`);
+});
+
+// Found by a Codex audit, 2026-09-16. `beginWalk` leaves the scramble cube alone on purpose — it always
+// starts from solved, and flashing it while a roll is searched for would be a picture of nothing — but a
+// roll that FAILS then left the previous scramble drawn and its net standing beside an empty move list
+// and a refusal: a picture of one cube over the words of another.
+test('a roll that fails puts the scramble cube back to solved rather than leaving the last one drawn', async () => {
+  let fail = false;
+  let rolling = async () => ({ facelets: turned('F'), alg: 'F' });
+  const nets = [];
+  const w = world({ screen: { scrambling: true, paintNet: (f) => nets.push(f) } }, () => ({
+    randomScramble: async () => {
+      if (fail) throw new Error('no scramble');
+      return rolling();
+    },
+  }));
+  assert.equal(await w.session.load(), true);
+  // The Scramble side loads a solved cube and animates the roll as `alg`, which is what has to go.
+  assert.equal(w.cube.getAttribute('alg'), 'F', 'precondition: the first roll drew its scramble');
+  assert.deepEqual(w.chips(), ['F'], 'precondition: the first roll listed its move');
+
+  // And WHILE the next roll is searched for, nothing about the old one is left standing either: its
+  // moves would animate from a press and its net is a picture of a cube nobody is about to be given.
+  let release;
+  const held = new Promise((r) => { release = r; });
+  rolling = () => held;
+  const pending = w.session.load();
+  await settle();
+  assert.equal(w.cube.getAttribute('alg'), null, 'the old roll was left ready to animate during the search');
+  assert.deepEqual(w.chips(), [], 'the old roll was left listed during the search');
+  assert.equal(nets.at(-1), SOLVED, 'the old target net stood through the search');
+  release({ facelets: turned('F'), alg: 'F' });
+  assert.equal(await pending, true);
+
+  fail = true;
+  assert.equal(await within(w.session.load()), false, 'a failed roll was committed as a walk');
+  assert.equal(w.$('#moveCount').textContent, 'no scramble', 'the failure was not said');
+  assert.deepEqual(w.chips(), [], 'the old roll left moves on screen');
+  assert.equal(w.cube.getAttribute('alg'), null, 'the cube still held the old roll to animate');
+  assert.equal(nets.at(-1), SOLVED, 'the net still showed a cube that is no longer drawn');
+});
+
+// Found by a Codex audit, 2026-09-16. Only the SEARCH was inside a try, so a failure anywhere else in
+// the load — resetting the screen, drawing the walk — escaped `loadWalk`. Its callers are pill handlers
+// that discard the promise, so the failure became an unhandled rejection with nothing said on screen:
+// the one outcome a load must never have.
+test('a load that fails while resetting the screen says so, rather than throwing past the press', async () => {
+  const w = world({ subject: { facelets: turned('R U') } }, ({ state }) => ({
+    deriveCube: async () => { solvedBy(state, "U' R'"); },
+    lastRoute: async () => ({ kind: 'exact', alg: "U'", moves: 1, minimal: true, overshoot: false }),
+  }));
+  assert.equal(await w.session.load(), true, 'precondition: this subject loads');
+  w.cube.pause = () => { throw new Error('the cube is gone'); };
+  let threw = null;
+  const answered = await w.session.load().catch((err) => { threw = err; return 'threw'; });
+  assert.equal(threw, null, 'the failure escaped the load');
+  assert.equal(answered, false, 'a failed load reported that it drew a walk');
+  assert.equal(w.$('#moveCount').textContent, 'could not work it out', 'the failure was not said');
+});
+
+test('a load that fails after the search, while the walk is drawn, says so too', async () => {
+  const w = world({ subject: { facelets: turned('R U') } }, ({ state }) => ({
+    deriveCube: async () => { solvedBy(state, "U' R'"); },
+    lastRoute: async () => ({ kind: 'exact', alg: "U'", moves: 1, minimal: true, overshoot: false }),
+  }));
+  assert.equal(await w.session.load(), true, 'precondition: this subject loads');
+  // Writing the walk onto the cube is `drawWalk`, which runs after the search has answered — the reset
+  // before it only REMOVES `alg`, so this fails in the half that draws and not in the half that clears.
+  const write = w.cube.setAttribute.bind(w.cube);
+  w.cube.setAttribute = (name, value) => {
+    if (name === 'alg') throw new Error('the renderer will not take the walk');
+    return write(name, value);
+  };
+  let threw = null;
+  const answered = await w.session.load().catch((err) => { threw = err; return 'threw'; });
+  assert.equal(threw, null, 'a failure after the search escaped the load');
+  assert.equal(answered, false);
+  assert.equal(w.$('#moveCount').textContent, 'could not work it out');
+});
+
+// And the reporter itself is one of the things that can fail: it puts the cube down, and the renderer
+// may be exactly what threw. Reporting must not depend on it.
+test('a failure while the reporter puts the cube down is still a failure the screen says', async () => {
+  const w = world({ subject: { facelets: turned('R U') } }, () => ({
+    deriveCube: async () => { throw new Error('solver unavailable'); },
+    lastRoute: async () => null,
+  }));
+  // Only the cube: the load fails for its own reason, and the REPORTER must survive a renderer it
+  // cannot put down.
+  w.cube.turnTo = () => { throw new Error('the renderer is gone'); };
+  let threw = null;
+  const answered = await w.session.load().catch((err) => { threw = err; return 'threw'; });
+  assert.equal(threw, null, 'the reporter threw while reporting');
+  assert.equal(answered, false);
+  assert.equal(w.$('#moveCount').textContent, 'no solver', 'the reason was lost when the cube could not be put down');
 });

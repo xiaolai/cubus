@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs';
 
 import { Window } from 'happy-dom';
 import Cube from '../vendor/cubejs.js';
+import { lcg, randomAlg } from './fixtures/seeded-scrambles.mjs';
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -179,6 +180,82 @@ test('an oracle that could not run accepts the answer unverified, and the next s
       await subject.deriveCube({});
       assert.equal(asked.length, searches, 'checking again searched again');
       assert.equal(state.cube.crossChecked, true, 'the next solve did not retry the check');
+    });
+  } finally { svc.Cube.fromString = real; }
+});
+
+test('a regrip on a walk is a position whose cube is the one before it', async () => {
+  // Plan item 6.1: a lesson's moves may turn the whole cube, which moves no piece. The walk's states are
+  // about the pieces — what a smart cube reports and `follow` compares — so a regrip, handed over as the
+  // no face turns it is, repeats the state rather than failing the replay or skipping a position.
+  const { subject } = await app();
+  const after = move(SOLVED, 'R');
+  assert.deepEqual(subject.stepStates(SOLVED, ['R', '', "R'"]), [SOLVED, after, after, SOLVED]);
+});
+
+test('a lesson step made after a regrip lights the edge it sends home, on the cube as scanned', async () => {
+  // Plan items 6.1 and 6.2: after a regrip a step names its pieces as the child then sees the cube, so the
+  // lesson reads its cues in that hold before renaming them into the scan frame. Checked on the stickers,
+  // never with the renaming itself: the edge a middle-layer insert lights must be home once its moves are
+  // made, and must not have been before.
+  const { subject } = await app();
+  /** Each middle-layer slot's two stickers on the published layout, as the scan frame writes them. */
+  const HOME = { FR: [[23, 'F'], [12, 'R']], FL: [[21, 'F'], [41, 'L']], BR: [[48, 'B'], [14, 'R']], BL: [[50, 'B'], [39, 'L']] };
+  const sorted = (letters) => [...letters].sort().join('');
+  let checked = 0;
+  for (let seed = 1; seed < 60 && checked < 4; seed += 1) {
+    const lesson = subject.lessonFor({ facelets: move(SOLVED, randomAlg(lcg(seed), 25)), lesson: null });
+    assert.ok(lesson, `seed ${seed}: the method solved the cube`);
+    let at = 0;
+    for (const step of lesson.steps) {
+      const n = step.alg.split(' ').filter(Boolean).length;
+      if (step.why.key === 'middleLayer.insert' && step.hold.join(' ') !== 'D B') {
+        const pieces = step.highlight.split(',').filter((t) => t.startsWith('piece:')).map((t) => t.slice('piece:'.length));
+        assert.equal(pieces.length, 1, `seed ${seed}: an insert lights one edge — "${step.highlight}"`);
+        const slot = Object.keys(HOME).find((name) => sorted(name) === sorted(pieces[0]));
+        assert.ok(slot, `seed ${seed}: ${pieces[0]} is not a middle-layer edge`);
+        const home = (facelets) => HOME[slot].every(([i, face]) => facelets[i] === face);
+        assert.ok(!home(lesson.stepFacelets[at]), `seed ${seed}: the lit edge ${pieces[0]} was already home`);
+        assert.ok(home(lesson.stepFacelets[at + n]), `seed ${seed}: the lit edge ${pieces[0]} is not the one the step sends home`);
+        checked += 1;
+      }
+      at += n;
+    }
+  }
+  assert.ok(checked >= 4, `precondition: ${checked} middle-layer inserts made after a regrip were checked`);
+});
+
+// Found by a Codex audit, 2026-09-16. An answer the oracle could not check is kept unverified, and the
+// next solve re-checks it — so a REFUTED one has to be put down there, or that branch is taken again on
+// every later call: re-checked, re-refused, and the search that would have found a real answer never runs.
+test('an answer the oracle refutes is put down, and the next ask searches instead of refusing again', async () => {
+  const { state, subject, svc } = await app();
+  subject.setFacelets(move(SOLVED, 'R U'));
+  const real = svc.Cube.fromString;
+  let down = true;
+  let refute = false;
+  // The cross-check is the first thing `finishSolve` asks the oracle, so an armed refusal is answered to
+  // it and to nothing else; everything after it (the per-step facelets) gets the real oracle back.
+  svc.Cube.fromString = function (f) {
+    if (down) { down = false; throw new Error('oracle down (test)'); }
+    if (refute) { refute = false; return { move() { return this; }, isSolved: () => false }; }
+    return real.call(this, f);
+  };
+  try {
+    await withAnswers((f, b) => (b.solLen > 2 ? "U' R'" : null), async (asked) => {
+      await subject.deriveCube({});
+      assert.equal(state.cube.crossChecked, false, 'an answer nobody verified was marked checked');
+      const searches = asked.length;
+      refute = true;
+      await assert.rejects(() => subject.deriveCube({}), /cross-check failed/);
+      assert.equal(state.cube.solution, '', 'a refuted answer was left standing');
+      assert.equal(state.cube.solveResult, null, 'a refuted answer kept its verdict');
+      assert.equal(state.cube.setupAlg, '', 'a refuted answer left a setup alg to animate from');
+      assert.equal(asked.length, searches, 'the refutation searched');
+      await subject.deriveCube({});
+      assert.equal(asked.length > searches, true, 'the ask after a refutation refused again instead of searching');
+      assert.equal(state.cube.solution, "U' R'");
+      assert.equal(state.cube.crossChecked, true);
     });
   } finally { svc.Cube.fromString = real; }
 });

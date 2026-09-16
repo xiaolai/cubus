@@ -19,13 +19,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { CORNER, EDGE, applyAlg } from '../lib/cube-pieces.js';
+import { CORNER, EDGE } from '../lib/cube-pieces.js';
 import {
   EVERY_CONFIGURATION, PAIR, PROTECTED_CORNERS, PROTECTED_EDGES, configuration,
 } from './fixtures/f2l-positions.mjs';
 import { CROSS, F1L, F2L_PAIRS, MIDDLE } from '../lib/methods/engine.js';
 import { PAIRS_ALGS, PAIRS_RUNGS } from '../lib/methods/pairs.js';
 import { __testing } from '../lib/method-solver.js';
+import { replayStage } from './fixtures/method-replay.mjs';
 
 const { repertoire, slotSafe, f2lCaseName } = __testing;
 
@@ -33,7 +34,11 @@ const { repertoire, slotSafe, f2lCaseName } = __testing;
 function slotZeroStep(config, filler = 0) {
   const steps = [];
   PAIRS_RUNGS[1].run(configuration(config.cornerAt, config.twist, config.edgeAt, config.flip, filler), steps);
-  return steps.find((s) => s.stage === 'f2l'
+  // Slot 0's pair comes first and needs no turn. After a step that turns the cube, pieces are named in the
+  // hold it leaves, where another pair's pieces can wear slot 0's names (plan item 6.3) — so the search
+  // stops at the first turning step.
+  const turnedAt = steps.findIndex((s) => /^y/.test(s.alg));
+  return (turnedAt < 0 ? steps : steps.slice(0, turnedAt + 1)).find((s) => s.stage === 'f2l'
     && (s.target === PAIR.corner || s.why?.corner === PAIR.corner || s.why?.edge === PAIR.edge)) ?? null;
 }
 
@@ -128,7 +133,8 @@ test('a fallback pair is still placed, and the cube is still legal afterwards', 
       `corner ${config.cornerAt}.${config.twist} edge ${config.edgeAt}.${config.flip}: `
       + 'the stage did not reach its own contract');
     // The steps replay to the state the stage returned — the same check the driver makes.
-    const replayed = steps.reduce((cube, step) => applyAlg(cube, step.alg), state);
-    assert.deepEqual(replayed, after, 'the steps do not add up to the cube the stage returned');
+    // As held: the stage turns the cube to bring each slot to the front, and returns it as it is then held.
+    const replayed = replayStage(state, steps);
+    assert.deepEqual(__testing.asHeld(replayed.state, replayed.hold), after, 'the steps do not add up to the cube the stage returned');
   }
 });

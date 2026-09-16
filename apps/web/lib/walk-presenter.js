@@ -10,7 +10,7 @@
 // scramble-handoff.test.mjs.
 
 import { t } from './i18n.js';
-import { createHoldCube, holdAtMove, holdChangeAt } from './hold-presenter.js';
+import { createHoldCube, holdAtMove, holdChangeAt, moveHold } from './hold-presenter.js';
 import { stepAtMove, whyText } from './method-lesson.js';
 import { SCAN_HOLD } from './solving-hold.js';
 
@@ -72,6 +72,13 @@ export function createWalkPresenter({
     return holdAtMove(lesson, walkHold, k);
   };
 
+  /** The hold move `k` is MADE in — a lesson's regrips included — which is what a chip is named for.
+   *  The renderer is never turned to it: the drawing turns with the regrip itself. */
+  const moveHoldAt = (k) => {
+    const { lesson, walkHold } = walkNow();
+    return moveHold(lesson, walkHold, k);
+  };
+
   /** Turns this screen's cube to a hold — the object, never the camera — waiting for the renderer
    *  when the tag is not one yet, and turning nothing once this screen has been replaced. */
   const holdCube = createHoldCube({ cube, isStale: stale });
@@ -81,6 +88,12 @@ export function createWalkPresenter({
   const turnTo = (h) => { drawnHold = h; holdCube(h); };
   /** The hold the lesson line last spoke for; while no lesson is showing, the drawing's. */
   let toldHold = SCAN_HOLD;
+  /** The line last written, and the walk and head it was written for. A PAINT IS NOT A MOVE: the same
+   *  head can be painted twice — the renderer reports its reset while a lesson loads, and the session
+   *  syncs again before the frame — and the second paint found the hold already told and dropped "Hold it
+   *  with white underneath…", leaving a child looking at a cube turned over with nothing saying why
+   *  (found by a Codex audit, 2026-09-16). */
+  let said = { gen: -1, at: -1, line: '' };
 
   /**
    * Point the cube at what the step under the transport head is about — plan §5.2.
@@ -104,7 +117,7 @@ export function createWalkPresenter({
    * steps and inventing cues for it is exactly what this app does not do.
    */
   function pointAtStep(i) {
-    const { lesson, walkHold } = walkNow();
+    const { lesson, walkHold, walkGen } = walkNow();
     const whyLine = $('#whyLine', root);
     if (!lesson || scrambling) {
       cube.removeAttribute('focus');
@@ -126,7 +139,11 @@ export function createWalkPresenter({
     turnTo(held);
     if (!whyLine) return;
     const reason = whyText(step);
-    const text = say ? (reason ? t('%1 %2', say, reason) : say) : reason;
+    const fresh = say ? (reason ? t('%1 %2', say, reason) : say) : reason;
+    // The same walk, the same head: whatever was said there stands. Recomputing it would drop the hold
+    // sentence, because the hold it asks about has by then been told.
+    const text = said.gen === walkGen && said.at === i ? said.line : fresh;
+    said = { gen: walkGen, at: i, line: text };
     whyLine.hidden = !text;
     whyLine.textContent = text
       ? t('Step %1 of %2 — %3', lesson.steps.indexOf(step) + 1, lesson.steps.length, text)
@@ -241,7 +258,7 @@ export function createWalkPresenter({
   });
 
   return Object.freeze({
-    holdAt, holdCube: turnTo, pointAtStep, sync, setPlaying,
+    holdAt, moveHoldAt, holdCube: turnTo, pointAtStep, sync, setPlaying,
     /** A new subject: the previous walk's chips describe a cube that is no longer there. */
     clearChips: () => { chips = []; },
     /** The chips the walk just committed painted into the move list. */

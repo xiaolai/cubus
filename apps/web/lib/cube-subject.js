@@ -10,13 +10,14 @@ import { provenAnswer } from './optimal-challenges.js';
 // short can this be" — so the two are two OBJECTS on this screen, never one standing where the
 // other was. That rule is what the first attempt broke; §3 of the plan is about it.
 import { fromCube, movesOf } from './cube-pieces.js';
+import { convertSelectors, faceTurnsAlg } from './cube-moves.js';
 import { methodFor, solveByMethod } from './method-solver.js';
 import { lessonCues, lessonSections, moveStepIndex, rungSummary } from './method-lesson.js';
 import { acceptOffer } from './method-ladder.js';
 import { isCubeState } from './cube-trust.js';
 // How the cube is held while it is solved, and the renamings between the scan frame, the method
 // frame and the hold (ADR 0003). Every crossing between those frames in this file goes through it.
-import { METHOD_TO_SCAN, renameAlg, renameSelectors, toMethodFrame } from './solving-hold.js';
+import { METHOD_TO_SCAN, renameSelectors, scanFrameWalk, toMethodFrame } from './solving-hold.js';
 
 import { SOLVED, state } from './app-state.js';
 import { save, settings } from './app-settings.js';
@@ -29,15 +30,25 @@ import { Cube, challenges, invertAlg, solverWorker } from './solver-service.js';
 // every arriving snapshot — the cube emits those at ~1Hz for as long as it is connected, on the
 // UI thread, for a solution most of them never need. Screens that want the derived values ask for
 // them; the live path just records what the cube says.
+/**
+ * Everything derived from an arrangement, put down: the answer, what it is, and the lesson about it.
+ *
+ * Said once because it is now needed twice — a new arrangement arriving, and an answer the oracle has
+ * refuted. The lesson is about the arrangement it was worked out for; carried across a new one it would
+ * caption a walk with another cube's steps, which is the exact failure that made the first attempt look
+ * like a broken solver.
+ */
+function forgetAnswer(c) {
+  c.solution = ''; c.moves = []; c.stepFacelets = []; c.solveResult = null; c.solvedFor = null;
+  c.lesson = null;
+  c.setupAlg = ''; c.crossChecked = false;
+}
+
 export function ingestFacelets(f) {
   const c = state.cube;
   c.facelets = f;
-  c.solution = ''; c.moves = []; c.stepFacelets = []; c.solveResult = null; c.solvedFor = null;
-  // The lesson is about the arrangement it was worked out for. Carried across a new one it would
-  // caption a walk with another cube's steps — the exact failure that made the first attempt look
-  // like a broken solver.
-  c.lesson = null;
-  c.setupAlg = ''; c.derived = false; c.unsolvable = false; c.crossChecked = false;
+  forgetAnswer(c);
+  c.derived = false; c.unsolvable = false;
 }
 
 // `movesOf` is imported from `cube-pieces.js`: the move list, the lesson's move counts and the
@@ -78,21 +89,25 @@ export function lessonFor(c = state.cube) {
   }
   // …and the walk lives in the scan frame, like every other walk: the renderer, `follow` and the
   // smart cube all compare against scan-frame states. SO DOES EVERY STEP, converted once, here: its
-  // moves renamed, and the pieces it points at worked out and renamed into `focus` and `highlight`,
-  // so nothing downstream has a frame to remember. What stays the solver's is `why`, whose key and
-  // wording are frame-free and whose piece indices have already become those two cues.
-  const lessonAlg = renameAlg(result.alg, METHOD_TO_SCAN);
-  const moves = movesOf(lessonAlg);
-  const steps = Object.freeze(result.steps.map((step) => {
+  // moves played in its hold and renamed, the hold each move is made in worked out beside them, and
+  // the pieces it points at renamed into `focus` and `highlight`, so nothing downstream has a frame to
+  // remember. What stays the solver's is `why`, whose key and wording are frame-free and whose piece
+  // indices have already become those two cues.
+  const walk = scanFrameWalk(result.steps);
+  const moves = walk.moves;
+  const steps = Object.freeze(result.steps.map((step, i) => {
     const cues = lessonCues(step);
+    // The solver names pieces as seen in the hold the step is made in, and in the METHOD frame; the
+    // renderer draws the scan frame, so the white-blue edge a step calls DF is UB on screen. Read into
+    // the method's own letters and then renamed — unrenamed, the pulse lands on the yellow-green edge,
+    // a real piece, pointed at with total confidence.
+    const cue = (spec) => renameSelectors(convertSelectors(spec, step.hold), METHOD_TO_SCAN);
     return Object.freeze({
       ...step,
-      alg: renameAlg(step.alg, METHOD_TO_SCAN),
-      // The solver names pieces in the METHOD frame and the renderer draws the scan frame, so the
-      // white-blue edge a step calls DF is UB on screen. Unrenamed, the pulse lands on the
-      // yellow-green edge — a real piece, pointed at with total confidence.
-      focus: renameSelectors(cues.focus, METHOD_TO_SCAN),
-      highlight: renameSelectors(cues.highlight, METHOD_TO_SCAN),
+      alg: walk.algs[i],
+      hold: walk.stepHolds[i],
+      focus: cue(cues.focus),
+      highlight: cue(cues.highlight),
     });
   }));
   c.lesson = {
@@ -104,9 +119,14 @@ export function lessonFor(c = state.cube) {
     sections: lessonSections(steps),
     // Which step each move belongs to, so the walk can point at what the move you are on is for.
     moveStep: moveStepIndex(steps),
-    alg: lessonAlg,
+    alg: moves.join(' '),
     moves,
-    stepFacelets: stepStates(c.facelets, moves),
+    // How each move is held: what its chip is named for. `moveHolds[k]` is the hold once `k` moves
+    // are made, so a regrip turns the names of the moves after it and not its own.
+    moveHolds: walk.holds,
+    // A regrip leaves the pieces where they were, so the cube after one is the cube before it: the
+    // walk's states are about the pieces, which is what a smart cube reports and `follow` compares.
+    stepFacelets: stepStates(c.facelets, moves.map(faceTurnsAlg)),
   };
   return c.lesson;
 }
@@ -234,7 +254,12 @@ function finishSolve(c, alg) {
     // exactly like one that keeps passing.
     console.warn('cubejs cross-check could not run; solution accepted unverified', err);
   }
-  if (verified === false) throw new Error('solver cross-check failed — re-scan');
+  // A REFUTED ANSWER IS PUT DOWN BEFORE THE RAISE. It was left standing, so a carried answer the oracle
+  // rejects — `held && !crossChecked`, the branch that re-checks an answer that arrived without a search
+  // — was re-checked and re-rejected on every later call, and the search that would have found a real
+  // answer never ran (Codex audit, 2026-09-16). Throwing is still how it is reported; what changes is
+  // that the next ask starts from nothing rather than from the same refuted alg.
+  if (verified === false) { forgetAnswer(c); throw new Error('solver cross-check failed — re-scan'); }
   c.solution = solution; c.moves = moves;
   // Per-step facelets so the 2D net + move list can co-move with the 3D animation.
   c.stepFacelets = stepStates(c.facelets, moves);
@@ -281,11 +306,42 @@ const answersTier = (solvedFor, tier) => solvedFor === ANY_TIER || solvedFor ===
  * replaced it is the one on screen, and an error message about the cube it abandoned would be
  * about a cube nobody is looking at. `onProgress` is the engine's "still going", forwarded.
  */
+/** The one shape a superseded search reports with. `AbortError` rather than a sentinel value because
+ *  every caller already has a catch, and a sentinel returned through one is a value that gets committed
+ *  by whoever forgets to check it. */
+const aborted = () => Object.assign(new Error('solve: superseded'), { name: 'AbortError' });
+
+/**
+ * An answer this cube already carries that the tier in force accepts, or null — checked, never assumed.
+ *
+ * Two kinds come back: one the oracle has already agreed to (handed straight over), and one that arrived
+ * WITHOUT a search — the inverse of a setup alg the worker found, the scramble hand-off. There is nothing
+ * to search for in either, but the oracle discipline is unchanged for the second: `finishSolve` applies it
+ * through cubejs (move application, ~µs, no search) and a definite refutation blocks exactly as it does on
+ * the searched path. Reused only under a tier it ANSWERS: a carried answer under `<= 18` is searched
+ * again, not shown as though it met a tier nobody asked it about (found by audit, 2026-09-13).
+ */
+function heldAnswer(c, tier) {
+  if (!c.solution || !answersTier(c.solvedFor, tier)) return null;
+  return c.crossChecked ? c.solution : finishSolve(c, c.solution);
+}
+
+/**
+ * An answer the shipped library already proves minimal, or null.
+ *
+ * The whole point of shipping it as data: the minimum for these states is a fact we carry, not a
+ * computation the device repeats. `commitAnswer` still applies it through the cubejs oracle, so a library
+ * entry gets the same refutation every searched answer gets; what it skips is the search, not the check.
+ */
+function provenMinimum(c, onImprovement) {
+  const proven = provenAnswer(challenges, c.facelets);
+  if (!proven) return null;
+  const solution = commitAnswer(c, proven.alg, { key: 'solve.provenMinimum', moves: proven.moves }, ANY_TIER);
+  onImprovement?.({ alg: proven.alg, moves: proven.moves, target: null, met: true, stopped: 'met' });
+  return solution;
+}
+
 async function solve({ onImprovement, onProgress, signal } = {}) {
-  /** The one shape a superseded search reports with. `AbortError` rather than a sentinel value
-   *  because every caller already has a catch, and a sentinel returned through one is a value
-   *  that gets committed by whoever forgets to check it. */
-  const aborted = () => Object.assign(new Error('solve: superseded'), { name: 'AbortError' });
   if (signal?.aborted) throw aborted();
   const c = state.cube;
   // There used to be a "the setup alg is stale — recompute now" line here, which called back into
@@ -295,27 +351,12 @@ async function solve({ onImprovement, onProgress, signal } = {}) {
   // Reused only under a tier it answers: a carried answer under <= 18 is searched again, not shown
   // as though it met a tier nobody asked it about (found by audit, 2026-09-13).
   const tier = settings.solveTier;
-  const held = Boolean(c.solution) && answersTier(c.solvedFor, tier);
-  if (held && c.crossChecked) return c.solution;
-  if (held) {
-    // A solution that arrived WITHOUT a search — the inverse of a setup alg the worker already
-    // found (the scramble hand-off). There is nothing to search for, but the oracle discipline
-    // is unchanged: finishSolve applies it through cubejs — move application, ~µs, no search —
-    // and a definite refutation blocks exactly as it does on the searched path.
-    return finishSolve(c, c.solution);
-  }
-
-  // Already proved, offline, by crates/optimal-solver — so there is nothing to search for and
-  // nothing to prove. This is the whole point of shipping the library as data: the minimum for
-  // these states is a fact we carry, not a computation the device repeats. finishSolve still
-  // applies it through the cubejs oracle, so a library entry gets exactly the same refutation
-  // every searched answer gets; what it skips is the search, not the check.
-  const proven = provenAnswer(challenges, c.facelets);
-  if (proven) {
-    const solution = commitAnswer(c, proven.alg, { key: 'solve.provenMinimum', moves: proven.moves }, ANY_TIER);
-    onImprovement?.({ alg: proven.alg, moves: proven.moves, target: null, met: true, stopped: 'met' });
-    return solution;
-  }
+  // Three ways to answer without searching, in the order they cost anything: an answer already here, an
+  // answer proved offline, and then the search.
+  const held = heldAnswer(c, tier);
+  if (held) return held;
+  const proven = provenMinimum(c, onImprovement);
+  if (proven) return proven;
 
   const client = solverWorker();
   // Captured: the search is about THIS arrangement. A live snapshot can re-ingest the cube

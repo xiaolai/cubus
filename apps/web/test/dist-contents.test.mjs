@@ -93,7 +93,9 @@ function makeRoot(parent = tmpdir()) {
   put('notices/onnxruntime-0.0.0-ThirdPartyNotices.txt', 'THIRD PARTY SOFTWARE NOTICES AND INFORMATION\n');
   put('icons/icon.png', 'png');
   put('lib/app.js', 'export {};');
-  for (const f of ['two-phase', 'solver-engine', 'solve-worker', 'solve-client', 'cube-pieces']) put(`lib/${f}.js`, 'export {};');
+  // The solving chain build.mjs asserts, file for file — `cube-layout` since the facelet layout left
+  // two-phase.js on 2026-09-15.
+  for (const f of ['two-phase', 'cube-layout', 'solver-engine', 'solve-worker', 'solve-client', 'cube-pieces']) put(`lib/${f}.js`, 'export {};');
   put('lib/cube-frame.js', 'export const fitDistance = () => 1;');
   put('lib/cubus-cube.js', "import { fitDistance } from './cube-frame.js';\nexport { fitDistance };\n");
   put('vendor/cubejs.js', 'export default {};');
@@ -288,6 +290,53 @@ test('an assembly into a directory the copy reads FROM is refused', () => {
     assert.ok(existsSync(join(root, 'lib', 'cube-frame.js')), 'lib/ was deleted');
     assert.ok(existsSync(join(root, 'vendor', 'cubejs.js')), 'vendor/ was deleted');
     assert.ok(existsSync(join(root, 'index.html')), 'index.html was deleted');
+  });
+});
+
+// Found by a Codex audit, 2026-09-16. The reference scan read ONE spelling — double quotes and a leading
+// `./` — so a file referenced with single quotes or a bare relative path was skipped in silence, and a
+// dist missing it passed the check written to catch exactly that. A check that quietly skips its subject
+// is the failure generator this repository keeps digging back out.
+test('every local reference is checked, however it is spelt — and remote ones are not', () => {
+  withRoot(({ root, build }) => {
+    writeFileSync(join(root, 'index.html'), [
+      '<!doctype html>',
+      '<link rel="stylesheet" href="./tokens.css">',
+      "<link rel=icon href='icons/icon.png'>",                        // single quotes, no ./
+      '<script type="module" src="lib/app.js"></script>',              // bare relative
+      '<script src="https://example.invalid/x.js"></script>',          // remote: not this build\'s file
+      '<img src="data:image/png;base64,AAAA">',                        // a data URI is not a file either
+      '<a href="#main">skip</a>',                                      // nor an in-page anchor
+    ].join(''));
+    const { referenced } = build({ freshness: false });
+    // Three distinct files: the stylesheet, the script and the icon — which the manifest names too, and
+    // one file referenced twice is one file.
+    assert.equal(referenced, 3, `checked ${referenced} assets, not the three local files`);
+    // And a missing one is now found whichever way it was written.
+    rmSync(join(root, 'icons', 'icon.png'));
+    assert.throws(() => build({ freshness: false }), /missing referenced assets/);
+  });
+});
+
+test('an assembly into a directory that HOLDS a copied tree is refused', () => {
+  // The same delete from the other side. The guard asked whether the DESTINATION sits inside a copied
+  // tree and not whether a copied tree sits inside the destination — and a symlink is how the second
+  // happens without anyone spelling it: vendor/ living elsewhere and linked back in is still what the
+  // assembly copies from, and a dist at its real home deletes it before reading it (Codex audit,
+  // 2026-09-16).
+  withRoot(({ root }) => {
+    const away = mkdtempSync(join(tmpdir(), 'cubus-away-'));
+    try {
+      const moved = join(away, 'vendor');
+      renameSync(join(root, 'vendor'), moved);
+      symlinkSync(moved, join(root, 'vendor'));
+      assert.ok(existsSync(join(root, 'vendor', 'cubejs.js')), 'precondition: the copy still reads vendor/');
+      assert.throws(() => assembleDist({ root, dist: away, freshness: false }),
+        (err) => /copies FROM/.test(err.message), 'a destination holding a copied tree was accepted');
+      assert.ok(existsSync(join(moved, 'cubejs.js')), 'the copied tree was deleted');
+    } finally {
+      rmSync(away, { recursive: true, force: true });
+    }
   });
 });
 
