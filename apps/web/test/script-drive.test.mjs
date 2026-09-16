@@ -30,7 +30,7 @@ function recordingCube() {
     },
     animating: false,
   };
-  for (const m of ['step', 'stepBack', 'stepStop', 'stepBackStop', 'seek']) target[m] = (...a) => calls.push([m, ...a]);
+  for (const m of ['step', 'stepBack', 'stepStop', 'stepBackStop', 'seek', 'playTo']) target[m] = (...a) => calls.push([m, ...a]);
   // The proxy half: anything the manifest does not list throws, naming itself.
   const allowed = new Set([...MANIFEST.methods, ...MANIFEST.properties.map((p) => p.name), ...Object.keys(MANIFEST.operations), 'calls', 'attrs']);
   return new Proxy(target, {
@@ -175,11 +175,11 @@ test('a step that is only a regrip is turned, not snapped, though the element gr
   const walk = createStopDriver(built, { cube });
   assert.deepEqual(cube.stops, [0, 2], 'the element no longer groups the regrip with the turn');
   walk.next();
-  assert.deepEqual(transport(cube).at(-1), ['step'], 'the regrip was jumped to rather than turned');
+  assert.deepEqual(transport(cube).at(-1), ['playTo', 1], 'the regrip was jumped to rather than turned');
   walk.next();
   assert.deepEqual(transport(cube).at(-1), ['stepStop'], 'the turn after it was not played as a group');
   walk.back();
-  assert.deepEqual(transport(cube).at(-1), ['stepBack'], 'stepping back to the regrip snapped');
+  assert.deepEqual(transport(cube).at(-1), ['playTo', 1], 'stepping back to the regrip snapped');
   // A scrub is still a jump: seeking is not a walk, however near it lands.
   walk.seek(0);
   assert.deepEqual(transport(cube).at(-1), ['seek', 0]);
@@ -188,17 +188,26 @@ test('a step that is only a regrip is turned, not snapped, though the element gr
 // Found by the verify pass over that fix, 2026-09-16: it walked a fixed two tokens, and a step may regrip
 // more than twice. What makes a gap walkable is what the tokens ARE — a run of regrips moves nothing a
 // child can see — not how many of them there are.
-test('a step of three regrips is walked too, and a run of real turns is still a jump', () => {
+test('a step of any size is walked, and a position on the element\'s own stop is still a group', () => {
   const cube = recordingCube();
   const walk = createStopDriver(script([{ move: 'x y z' }, { move: 'R' }]), { cube });
   walk.next();
-  assert.deepEqual(transport(cube).slice(-3), [['step'], ['step'], ['step']], 'a three-regrip step snapped');
+  // Three regrips is one press and one instruction to the element, which walks them a token at a time.
+  // It used to be a fixed two tokens walked from out here, and a third snapped (the verify pass over
+  // that fix, 2026-09-16) — the element can walk to any token now, which is what it always needed.
+  assert.deepEqual(transport(cube).at(-1), ['playTo', 3], 'a three-regrip step was not walked');
   // Back the other way it lands exactly on the element's own stop 0, so the element walks the group
   // itself — one token at a time, which is the same animation by the shorter road.
   walk.back();
   assert.deepEqual(transport(cube).at(-1), ['stepBackStop'], 'stepping back to the start snapped');
-  // And the other side of the same rule: a position two TURNS away is a jump, because a child watching
-  // two turns play as one press is watching the walk lose a stop.
+  // Crossing a real turn AND a regrip together is walked too, which the token-count rule could not do.
+  const mixed = recordingCube();
+  const both = createStopDriver(script([{ move: 'x' }, { move: 'y R' }]), { cube: mixed });
+  both.next();
+  both.next();
+  both.back();
+  assert.deepEqual(transport(mixed).at(-1), ['playTo', 1], 'backing across a turn and a regrip snapped');
+  // And a position that IS one of the element's stops is still played as a group by the element.
   const far = recordingCube();
   const two = createStopDriver(script([{ move: "R U" }, { move: 'F' }]), { cube: far });
   two.seek(2);

@@ -20,7 +20,7 @@ import {
 } from '../lib/method-solver.js';
 import { OLL_ALGS, PLL_ALGS } from '../lib/methods/last-layer.js';
 import { BASELINES, capture } from './fixtures/regen-method-steps.mjs';
-import { RUNG_CRITERIA, UsageError, judgeRung, parseArgs, reportCriteria } from '../bench/method-solver-profile.mjs';
+import { RUNG_CRITERIA, UsageError, judgeRung, parseArgs, partsOf, reportCriteria } from '../bench/method-solver-profile.mjs';
 import { seededPairs, seededScrambles, seededStates } from './fixtures/seeded-scrambles.mjs';
 import { turnsOf } from './fixtures/method-replay.mjs';
 
@@ -312,7 +312,7 @@ test('the F2L rung is one recalled case, never a chain — which is what it is F
       for (const s of solveByMethod(state, method).steps) {
         // The turn that brings the slot to the front (plan item 6.3) is a part, like the alignment, and
         // is not a trigger: a chain is counted in what the learner assembles once the pair is in front.
-        if (s.stage === 'f2l' && s.parts) sizes.push(s.parts.filter((p) => p.name !== 'turn').length);
+        if (s.stage === 'f2l' && s.parts) sizes.push(partsOf(s));
       }
     }
     return sizes;

@@ -1448,17 +1448,31 @@ test('a second paint at the same move keeps the hold instruction on screen', asy
 // and a refusal: a picture of one cube over the words of another.
 test('a roll that fails puts the scramble cube back to solved rather than leaving the last one drawn', async () => {
   let fail = false;
+  let rolling = async () => ({ facelets: turned('F'), alg: 'F' });
   const nets = [];
   const w = world({ screen: { scrambling: true, paintNet: (f) => nets.push(f) } }, () => ({
     randomScramble: async () => {
       if (fail) throw new Error('no scramble');
-      return { facelets: turned('F'), alg: 'F' };
+      return rolling();
     },
   }));
   assert.equal(await w.session.load(), true);
   // The Scramble side loads a solved cube and animates the roll as `alg`, which is what has to go.
   assert.equal(w.cube.getAttribute('alg'), 'F', 'precondition: the first roll drew its scramble');
   assert.deepEqual(w.chips(), ['F'], 'precondition: the first roll listed its move');
+
+  // And WHILE the next roll is searched for, nothing about the old one is left standing either: its
+  // moves would animate from a press and its net is a picture of a cube nobody is about to be given.
+  let release;
+  const held = new Promise((r) => { release = r; });
+  rolling = () => held;
+  const pending = w.session.load();
+  await settle();
+  assert.equal(w.cube.getAttribute('alg'), null, 'the old roll was left ready to animate during the search');
+  assert.deepEqual(w.chips(), [], 'the old roll was left listed during the search');
+  assert.equal(nets.at(-1), SOLVED, 'the old target net stood through the search');
+  release({ facelets: turned('F'), alg: 'F' });
+  assert.equal(await pending, true);
 
   fail = true;
   assert.equal(await within(w.session.load()), false, 'a failed roll was committed as a walk');

@@ -29,7 +29,7 @@ function recordingCube() {
     get stops() { const n = (attrs.get('alg') || '').split(' ').filter(Boolean).length; return [...Array(n + 1).keys()]; },
     animating: false,
   };
-  for (const m of ['step', 'stepBack', 'stepStop', 'stepBackStop', 'seek']) target[m] = (...a) => calls.push([m, ...a]);
+  for (const m of ['step', 'stepBack', 'stepStop', 'stepBackStop', 'seek', 'playTo']) target[m] = (...a) => calls.push([m, ...a]);
   const allowed = new Set([...MANIFEST.methods, ...MANIFEST.properties.map((p) => p.name), ...Object.keys(MANIFEST.operations), 'calls']);
   return new Proxy(target, { get(t, n) { if (typeof n === 'string' && !allowed.has(n)) throw new Error(`no member "${n}"`); return t[n]; } });
 }
