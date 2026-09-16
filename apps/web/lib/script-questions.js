@@ -24,6 +24,7 @@ import {
   piecesAway,
   whereIs,
 } from './cube-questions.js';
+import { CORNERS, EDGES } from './cube-pieces.js';
 import { heldFace, identityFace } from './cube-moves.js';
 
 /** A piece or slot's letters, as the cube's own faces, read from the letters the child used. */
@@ -93,15 +94,26 @@ export const QUESTIONS = Object.freeze({
     return answer({ pieces: Object.freeze([piece]), home, unknown: home === null ? Object.freeze([piece]) : Object.freeze([]) });
   },
 
-  /** A first-two-layers pair: the corner slot a script names and the middle-layer edge slot beside it. */
+  /**
+   * A first-two-layers pair: the corner slot a script names and the middle-layer edge slot beside it.
+   *
+   * ASKED IN THE CHILD'S FRAME. "The middle layer" is the layer between the child's top and bottom, so the
+   * edge is the corner's two faces that are neither — read `cube-questions.js`'s rule in the letters the
+   * script wrote. Converting the corner to identity letters first and stripping the CUBE's U and D named
+   * the wrong edge under any hold that is not upright: `pairOf:DFR` held `R F` answered `FD`.
+   */
   pairOf: (cube, hold, of) => {
-    const [corner, edge] = pairOf(toIdentity(of, hold));
-    return answer({ slots: heldList([corner, edge], hold) });
+    const [corner, edge] = pairOf(String(of).toUpperCase());
+    return answer({ slots: Object.freeze([corner, edge].map((slot) => String(slot).toUpperCase())) });
   },
 });
 
 /** Which questions take an argument, and so must be written `name:ARG`. */
 export const TAKES_ARGUMENT = Object.freeze(['whereIs', 'pieceIn', 'isHome', 'pairOf']);
+
+/** Every piece of a cube, by its letters in any order — what an argument has to name. */
+const PIECES = new Set([...CORNERS, ...EDGES].map((name) => [...name].sort().join('')));
+const lettersOf = (text) => [...text].sort().join('');
 
 /**
  * Read `"name"` or `"name:ARG"` into `{ name, of }`, or `{ why }` saying what is wrong with it.
@@ -118,6 +130,17 @@ export function readAsk(text) {
   if (!wants && of !== undefined) return { why: `"${name}" takes no argument, and was given "${of}"` };
   if (of !== undefined && !/^[URFDLB]{2,3}$/.test(of.toUpperCase())) {
     return { why: `"${of}" is not a piece or a slot — two or three of URFDLB` };
+  }
+  // AND THE LETTERS MUST MEET ON A CUBE. `UU` and `UD` are two of URFDLB and neither is a piece: they
+  // passed the check above, `checkScript` accepted the lesson, and the throw arrived when a child reached
+  // that line (found by a Codex audit, 2026-09-16).
+  if (of !== undefined && !PIECES.has(lettersOf(of.toUpperCase()))) {
+    return { why: `"${of}" is not a piece of a cube — its faces do not meet` };
+  }
+  // `pairOf` is asked of a CORNER: it answers with the corner's slot and the middle-layer edge beside it,
+  // and an edge has no such pair.
+  if (name === 'pairOf' && of.length !== 3) {
+    return { why: `"${of}" is an edge — a pair is a corner and the edge beside it, as in "pairOf:DFR"` };
   }
   return { name, of: of === undefined ? null : of.toUpperCase() };
 }

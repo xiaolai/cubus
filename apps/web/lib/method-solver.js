@@ -273,14 +273,20 @@ function adopt(steps, stage, before, hold) {
     // The hold is the REPLAY's to record. One a stage wrote itself could disagree with the moves before
     // it, and every chip after it would be named for a cube held some other way.
     if (step.hold !== undefined) refuse(i, 'carries a hold of its own — the hold a step is made in is the replay\'s to record');
-    let played;
+    // MOVE BY MOVE, because the cross must stay underneath THROUGHOUT: a step that tips the cube and
+    // rights it again — `x U x'` — ends upright while every question the stages ask in between is about a
+    // cube on its side, and checking only the end let that through.
+    let played = { state, hold: held };
     try {
-      played = run(parse(step.alg), held, state);
+      for (const move of parse(step.alg)) {
+        played = run([move], played.hold, played.state);
+        if (played.hold[0] !== 'U') {
+          refuse(i, `puts ${played.hold[0]} on top — a method turns the cube about its vertical axis only, so the cross stays underneath`);
+        }
+      }
     } catch (err) {
+      if (err.name === 'MethodSolverError') throw err;
       refuse(i, err.message);
-    }
-    if (played.hold[0] !== 'U') {
-      refuse(i, `leaves ${played.hold[0]} on top — a method turns the cube about its vertical axis only, so the cross stays underneath`);
     }
     const record = snapshot({ ...step, hold: [...held] });
     state = played.state;

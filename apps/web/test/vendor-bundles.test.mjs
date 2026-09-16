@@ -70,7 +70,7 @@ const BUNDLES = [
       'identityFace', 'toIdentity', 'tokenOf', 'turnVector', 'formatMoves',
       // Naming an identity move for a hold, and a walk's moves as face turns (plan item 6.1), are the
       // display's and the method's: the element draws identity tokens and names nothing.
-      'faceTurnsAlg', 'heldMove', 'heldToken',
+      'faceTurnsAlg', 'heldMove', 'heldToken', 'relabelSelectors',
       // Writing a state back out as 54 stickers is the app's and the script player's question; the
       // renderer is handed the string it paints, so `toFacelets` goes. The layout TABLES it reads stay in
       // the bundle — esbuild cannot prove a frozen, mapped array free of side effects — and are guarded
