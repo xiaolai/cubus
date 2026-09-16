@@ -26,7 +26,9 @@ test('the digest is of the bundle sitting beside it', () => {
 test('it names the element, its bundle, and a schema a reader can check', () => {
   assert.equal(manifest.tag, 'cubus-cube');
   assert.equal(manifest.bundle, 'cubus-cube.js');
-  assert.equal(manifest.schema, 1);
+  // 2 since the contract grew to everything a consumer touches — properties, events and the DOM
+  // operations (plan item 2.5). A reader checks this before it parses, which is what the field is for.
+  assert.equal(manifest.schema, 2);
   // No release version, deliberately — see the renderer package's `build-cube-manifest.mjs`. A
   // number to compare is an invitation to compare numbers instead of asking whether the
   // capability is there.
@@ -67,7 +69,47 @@ test('the manifest is exactly what the bundle registers, name for name', async (
   assert.deepEqual(manifest.attributes, live.attributes,
     'the manifest advertises capabilities the bundle does not have, or omits ones it does');
   assert.deepEqual(manifest.methods, live.methods);
+  assert.deepEqual(manifest.properties, live.properties);
+  assert.deepEqual(manifest.events, live.events);
+  assert.deepEqual(manifest.operations, live.operations);
   assert.equal(manifest.digest, live.digest);
+});
+
+// A consumer touches more than attributes and methods, and every one of those was outside the contract
+// while being used: `lesson-player.js` read `_anim` because "is a turn animating" was not in it, and a
+// host listens for `cubus-step` and writes attributes with no rule saying it may
+// (dev-docs/adr/0005-the-renderer-plays-scripts-methods-choose.md decision 4).
+test('it lists the properties, events and DOM operations a consumer uses', () => {
+  const byName = new Map(manifest.properties.map((p) => [p.name, p]));
+  assert.deepEqual(byName.get('animating'), { name: 'animating', read: true, write: false },
+    'the public read that replaces lesson-player.js\'s `cube._anim` is missing');
+  assert.deepEqual(byName.get('stops'), { name: 'stops', read: true, write: false });
+  assert.deepEqual(byName.get('alg'), { name: 'alg', read: false, write: true });
+  assert.deepEqual(manifest.properties.filter((p) => p.name.startsWith('_')), [],
+    'a private accessor is being advertised as a capability');
+  // The pinned clock is a test seam the element declares as one; advertising it would invite a
+  // consumer to stop the cube.
+  assert.equal(byName.has('clock'), false, 'the test seam is in the contract');
+
+  assert.deepEqual(manifest.events, ['cubus-step']);
+  for (const [op, rule] of Object.entries(manifest.operations)) {
+    assert.ok(Array.isArray(rule.args) || rule.read === true, `${op} says neither how it is called nor that it is read`);
+    for (const arg of rule.args ?? []) {
+      assert.ok(['attribute', 'event', 'listener', 'value', 'options'].includes(arg), `${op} takes a rule nothing enforces: "${arg}"`);
+    }
+  }
+  assert.deepEqual(manifest.operations.setAttribute, { args: ['attribute', 'value'] });
+  assert.deepEqual(manifest.operations.addEventListener, { args: ['event', 'listener', 'options'] });
+});
+
+// The declaration and the source, which can drift apart in the one direction the generator cannot see:
+// an event dispatched but never declared is a capability the manifest denies and consumers cannot use.
+test('every event the source dispatches is declared', () => {
+  const src = readFileSync(new URL('../../../packages/cubus-cube/src/cubus-cube.js', import.meta.url), 'utf8');
+  const dispatched = [...src.matchAll(/new CustomEvent\('([^']+)'/g)].map((m) => m[1]);
+  assert.ok(dispatched.length > 0, 'precondition: the source dispatches an event');
+  assert.deepEqual([...new Set(dispatched)].sort(), manifest.events,
+    'an event is dispatched that the element does not declare, so the manifest denies it');
 });
 
 // What the manifest CANNOT answer, written down so nobody mistakes it for an answer. Keeping an
@@ -113,6 +155,50 @@ test('overlapping reads each get the element, and leave the globals as they foun
   } finally {
     globalThis.HTMLElement = savedElement;
     globalThis.customElements = savedRegistry;
+  }
+});
+
+// Found by a Codex audit, 2026-09-16, as two findings that turned out to be one design: the reader
+// stubbed `HTMLElement` and `customElements` on THIS process and put them back afterwards — which left
+// both names as own properties valued `undefined` on a process that never had them, so a
+// `'customElements' in globalThis` check answered differently after a read than before it — and each read
+// imported the bundle under a URL of its own, which Node caches forever (ten reads, 46.2 MiB retained).
+// A worker has its own globals and its own module cache, and the cache dies when it is terminated.
+test('a read borrows nothing from the process it runs in, and leaves no reader behind', async () => {
+  const { readElement } = await import('../../../packages/cubus-cube/read-element.mjs');
+  // Made bare first: the case above deliberately puts both globals on this process, and putting a
+  // value BACK is exactly what leaves the property behind — which is half of what this is about.
+  delete globalThis.HTMLElement;
+  delete globalThis.customElements;
+  assert.equal('HTMLElement' in globalThis, false, 'precondition: this process has neither global');
+  assert.equal('customElements' in globalThis, false, 'precondition: this process has neither global');
+  const reads = await Promise.all([readElement(), readElement(), readElement()]);
+  assert.deepEqual(reads.map((r) => r.tag), ['cubus-cube', 'cubus-cube', 'cubus-cube']);
+
+  // Not merely "the value is back": the PROPERTY must not exist, which is what a restore cannot do.
+  assert.equal('HTMLElement' in globalThis, false, 'the reader left HTMLElement on a process that had none');
+  assert.equal('customElements' in globalThis, false, 'the reader left customElements on a process that had none');
+  assert.equal(Object.hasOwn(globalThis, 'HTMLElement'), false);
+  assert.equal(Object.hasOwn(globalThis, 'customElements'), false);
+  // AND THE BUNDLE NEVER RAN HERE, which is what stops its copies accumulating in this process's module
+  // cache — the cache Node never frees, and the leak this replaced. Asked by giving a copy of the bundle
+  // a line that marks whatever global object it is loaded into: run in-process, the mark lands on ours.
+  const { mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const dir = mkdtempSync(join(tmpdir(), 'cubus-read-element-'));
+  try {
+    const path = join(dir, 'cubus-cube.js');
+    const marked = `globalThis.__readInThisProcess = (globalThis.__readInThisProcess ?? 0) + 1;\n${readFileSync(BUNDLE, 'utf8')}`;
+    writeFileSync(path, marked);
+    const read = await readElement(pathToFileURL(path));
+    assert.equal(read.tag, 'cubus-cube', 'precondition: the marked copy still reads');
+    assert.equal('__readInThisProcess' in globalThis, false,
+      'the bundle was imported into this process, so its module — and its copy of the bundle — is cached here forever');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    delete globalThis.__readInThisProcess;
   }
 });
 

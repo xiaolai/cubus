@@ -35,6 +35,7 @@ import { pathToFileURL } from 'node:url';
 import { SOLVED, applyAlg, moveCount } from '../lib/cube-pieces.js';
 import { LADDER, allRungCombinations, methodFor, rungKey, solveByMethod } from '../lib/method-solver.js';
 import { seededStates } from '../test/fixtures/seeded-scrambles.mjs';
+import { turnsOf } from '../test/fixtures/method-replay.mjs';
 
 const require = createRequire(import.meta.url);
 const Cube = require('cubejs');
@@ -64,7 +65,9 @@ const NAMED = [
  */
 export const RUNG_CRITERIA = Object.freeze([
   Object.freeze({ dial: 'cross', from: 0, to: 1, axis: 'steps', floor: 4 }),
-  Object.freeze({ dial: 'pairs', from: 0, to: 1, axis: 'steps', floor: 2 }),
+  // Restated from 2 by the owner on 2026-09-16 (dev-docs/method-solver-return-plan.md §10): the course's
+  // middle layer made the rung below shorter, and joined pairs still saves about two steps a solve.
+  Object.freeze({ dial: 'pairs', from: 0, to: 1, axis: 'steps', floor: 1.75 }),
   Object.freeze({ dial: 'pairs', from: 1, to: 2, axis: 'parts', floor: 0.75 }),
   Object.freeze({ dial: 'oll', from: 0, to: 1, axis: 'steps', floor: 1.5 }),
   Object.freeze({ dial: 'pll', from: 0, to: 1, axis: 'steps', floor: 0.9 }),
@@ -88,6 +91,16 @@ export const STAGES_OF = Object.freeze({
  * The other three dials are held at rung 0, so the number is about this dial and not about the
  * company it keeps.
  */
+/**
+ * How many parts a pair step is MADE OF — the axis the joined-pairs rung is judged on.
+ *
+ * Without the turn that brings a slot to the front (plan item 6.3): it is part of the step and nothing
+ * the learner assembles. Written once and exported because three places count it — the criterion below,
+ * the ladder table, and the suite's structural case — and two of them had said different numbers under
+ * one name (Codex audit, 2026-09-16: 4/3 against 3/2 on seed 20260908).
+ */
+export const partsOf = (step) => (step.parts ?? []).filter((part) => part.name !== 'turn').length;
+
 export function rungDelta(states, { dial, from, to, axis }) {
   const BOTTOM = { cross: 0, pairs: 0, oll: 0, pll: 0 };
   const below = methodFor({ ...BOTTOM, [dial]: from });
@@ -95,20 +108,46 @@ export function rungDelta(states, { dial, from, to, axis }) {
   const mine = (m, state) => solveByMethod(state, m).steps.filter((s) => STAGES_OF[dial].includes(s.stage));
   const measure = (steps) => ({
     steps: steps.length,
-    moves: steps.reduce((n, s) => n + moveCount(s.alg), 0),
-    parts: steps.reduce((n, s) => n + (s.parts?.length ?? 0), 0)
+    // Face turns, played in each step's hold: a regrip is not a move (plan item 6.1).
+    moves: steps.reduce((n, s) => n + moveCount(turnsOf(s)), 0),
+    // The turn that brings a slot to the front (plan item 6.3) is a part of the step but nothing the
+    // learner assembles, so the parts axis does not count it.
+    parts: steps.reduce((n, s) => n + (s.parts ? partsOf(s) : 0), 0)
       / Math.max(1, steps.filter((s) => s.parts).length),
   });
-  let compared = 0;
-  let delta = 0;
+  const deltas = [];
   for (const state of states) {
     const a = mine(below, state);
     const b = mine(above, state);
     if (!a.length || !b.length) continue;
-    compared += 1;
-    delta += measure(a)[axis] - measure(b)[axis];
+    deltas.push(measure(a)[axis] - measure(b)[axis]);
   }
-  return { moved: compared ? delta / compared : 0, compared };
+  const compared = deltas.length;
+  const moved = compared ? deltas.reduce((x, y) => x + y, 0) / compared : 0;
+  // The spread too, so a caller can tell a rung that clears its floor from one that lands on it by chance.
+  const sd = compared > 1 ? Math.sqrt(deltas.reduce((x, d) => x + (d - moved) ** 2, 0) / (compared - 1)) : 0;
+  return { moved, compared, sd };
+}
+
+/**
+ * Whether a rung earns its place: what it moves, against its floor, on a sample able to fail it.
+ *
+ * A result at or above the floor passes on the states given. One BELOW it by less than two standard
+ * errors is not failed on that sample: it is measured again on `wider` states (a list, or a function
+ * that makes one), and only that measurement is judged — dev-docs/method-solver-return-plan.md §10,
+ * 2026-09-16, when the pairs rung measured 1.875 on 120 cubes and 1.905 on 1,000 against a floor of
+ * 1.75. `measure` is `rungDelta`, and is a parameter so the rule itself can be tested without a solve.
+ */
+export function judgeRung(states, criterion, { wider = null, measure = rungDelta } = {}) {
+  let result = measure(states, criterion);
+  let remeasured = false;
+  const withinNoise = result.moved < criterion.floor
+    && criterion.floor - result.moved < (2 * result.sd) / Math.sqrt(result.compared);
+  if (wider && withinNoise) {
+    result = measure(typeof wider === 'function' ? wider() : wider, criterion);
+    remeasured = true;
+  }
+  return { ...result, remeasured, earns: result.moved >= criterion.floor };
 }
 
 // ---- the command line -------------------------------------------------------------------------
@@ -212,7 +251,7 @@ function profile(n, { name, rungs }) {
       tally(algorithms, algorithmsOf(step));
       if (step.caseName) tally(cases, [step.caseName]);
       stageSteps.set(step.stage, (stageSteps.get(step.stage) ?? 0) + 1);
-      stageMoves.set(step.stage, (stageMoves.get(step.stage) ?? 0) + moveCount(step.alg));
+      stageMoves.set(step.stage, (stageMoves.get(step.stage) ?? 0) + moveCount(turnsOf(step)));
     }
   }
 
@@ -263,7 +302,9 @@ function measureRungs(rungs, states) {
     // a number this bench must report rather than a defect to hide.
     for (const step of result.steps) {
       if (step.stage !== 'f2l') continue;
-      if (step.parts) { pairSteps++; parts += step.parts.length; } else fallbacks++;
+      // Through `partsOf`, the one definition — not a second copy of it, which is how this table and
+      // the criterion table came to print different numbers under one name.
+      if (step.parts) { pairSteps++; parts += partsOf(step); } else fallbacks++;
     }
   }
   return {
@@ -293,19 +334,24 @@ function measureRungs(rungs, states) {
  * happy with — which it did, because whole-solve step counts include cubes whose last layer was
  * already oriented and dilute every delta toward zero.
  */
-function reportCriteria(states) {
-  console.log(`\n  what each dial is worth, against the rung below it (${states.length} cubes):`);
+export function reportCriteria(states, { wider = null, measure = rungDelta, log = console.log } = {}) {
+  log(`\n  what each dial is worth, against the rung below it (${states.length} cubes):`);
   for (const criterion of RUNG_CRITERIA) {
     const { dial, from, to, axis, floor } = criterion;
-    const { moved, compared } = rungDelta(states, criterion);
+    // THROUGH `judgeRung`, which is the rule the gate applies — the verdict was worked out again here,
+    // without the re-measure, so a rung landing just under its floor by noise was printed as "not a
+    // lesson" while `method-solver.test.mjs` passed it (Codex audit, 2026-09-16). That is the very
+    // divergence the note above is about, one line further down than it was looking.
+    const { moved, compared, remeasured, earns } = judgeRung(states, criterion, { wider, measure });
     const label = LADDER[dial].find((s) => s.rung === to)?.label ?? '';
     if (compared === 0) {
-      console.log(`  ${dial} ${from}->${to} (${label})`.padEnd(34) + `no cube ran this stage at both rungs`);
+      log(`  ${dial} ${from}->${to} (${label})`.padEnd(34) + `no cube ran this stage at both rungs`);
       continue;
     }
-    const verdict = moved >= floor ? 'a lesson' : `UNDER ITS FLOOR OF ${floor} — not a lesson (§10)`;
-    console.log(`  ${dial} ${from}->${to} (${label})`.padEnd(34) +
-      `${moved >= 0 ? '-' : '+'}${Math.abs(moved).toFixed(2)} ${axis} over ${compared}  ${verdict}`);
+    const verdict = earns ? 'a lesson' : `UNDER ITS FLOOR OF ${floor} — not a lesson (§10)`;
+    log(`  ${dial} ${from}->${to} (${label})`.padEnd(34) +
+      `${moved >= 0 ? '-' : '+'}${Math.abs(moved).toFixed(2)} ${axis} over ${compared}` +
+      `${remeasured ? ' (re-measured wider)' : ''}  ${verdict}`);
   }
 }
 
@@ -331,7 +377,9 @@ function ladder(n, seed = 20260908) {
       `   ${row.fallbackRate === null ? '    —' : `${(row.fallbackRate * 100).toFixed(0)}%`.padStart(5)}`,
     );
   }
-  reportCriteria(states);
+  // The wider sample is drawn only if a rung lands just under its floor — a lazy function, because
+  // ten times the cubes is ten times the solving and most runs never need it (§10).
+  reportCriteria(states, { wider: () => seededStates(Math.max(1000, n * 10), seed + 1) });
   return rows;
 }
 
@@ -349,8 +397,19 @@ function parity(p) {
   return inversions % 2;
 }
 
+/**
+ * How many states the enumeration below has, worked out from its own shape: 24 corner permutations
+ * against 24 edge permutations, half of which disagree in parity (288), times the 27 twist vectors whose
+ * total is 0 mod 3, times the 8 flip vectors whose total is even. 288 x 27 x 8 = 62,208.
+ *
+ * Asserted rather than described, because "the table is complete" is this sweep's whole claim and a
+ * generator that yielded nothing would have made it in a tenth of a second with no failures to report
+ * (Codex audit, 2026-09-16).
+ */
+export const LAST_LAYER_STATES = 62_208;
+
 /** Every reachable last-layer state, as an iterator — so the sweep reads as a loop over states. */
-function* lastLayerStates() {
+export function* lastLayerStates() {
   const P4 = permutations([0, 1, 2, 3]);
   const twists = [];
   for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) for (let c = 0; c < 3; c++) {
@@ -420,6 +479,14 @@ function exhaustiveAt(rungs) {
     }
   }
 
+  // THE SWEEP COVERED THE ENUMERATION. Before anything is reported: a truncated or empty generator
+  // reports zero failures, which reads exactly like a pass.
+  if (total !== LAST_LAYER_STATES) {
+    throw new Error(
+      `method-solver-profile: swept ${total} last-layer states, not ${LAST_LAYER_STATES} — `
+      + 'the enumeration is not the one this sweep claims to have covered',
+    );
+  }
   console.log(`\n[exhaustive ${rungKey(rungs)}] every reachable last-layer state, ${((Date.now() - t0) / 1000).toFixed(0)}s`);
   console.log(`  states ${total} | failures ${failures.length} | mean ${(moves / (total - failures.length)).toFixed(1)} moves`);
   console.log('  each algorithm, and how many of those states needed it:');

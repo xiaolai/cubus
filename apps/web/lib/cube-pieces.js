@@ -16,6 +16,10 @@
 // still produces well-formed algs that simply do not solve, so the failure it guards against
 // is silent by construction.
 
+// The facelet layout — which sticker belongs to which slot — so a state can be written as the 54
+// characters every other part of the app speaks in. Tables only; the arithmetic is `toFacelets` below.
+import { CENTERS, CORNER_FACELETS, EDGE_FACELETS, FACE_LETTERS } from './cube-layout.js';
+
 /** Corner slots, in cubejs order. Index is the slot; the value stored there is the cubie. */
 export const CORNERS = ['URF', 'UFL', 'ULB', 'UBR', 'DFR', 'DLF', 'DBL', 'DRB'];
 /** Edge slots, in cubejs order. */
@@ -41,12 +45,20 @@ const QUARTER = {
        ep: [0, 1, 2, 11, 4, 5, 6, 10, 8, 9, 3, 7], eo: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 1] },
 };
 
-/** The identity — also what "solved" means, since a slot holding its own cubie is solved. */
+/**
+ * The identity — also what "solved" means, since a slot holding its own cubie is solved.
+ *
+ * FROZEN ALL THE WAY DOWN. `Object.freeze` is shallow, so the arrays inside were writable and this
+ * constant is handed out by reference all over the app: a script's position 0 IS this object, so
+ * `viewAtPosition(built, 0).cube.cp[0] = 4` re-wrote what solved means for every later question in
+ * the process (Codex audit, 2026-09-16). `methods/engine.js` froze its own copy for the same reason
+ * in 2026-09-10; this is the constant that copy was made from, and the second time is the class.
+ */
 export const SOLVED = Object.freeze({
-  cp: [0, 1, 2, 3, 4, 5, 6, 7],
-  co: [0, 0, 0, 0, 0, 0, 0, 0],
-  ep: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
-  eo: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  cp: Object.freeze([0, 1, 2, 3, 4, 5, 6, 7]),
+  co: Object.freeze([0, 0, 0, 0, 0, 0, 0, 0]),
+  ep: Object.freeze([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
+  eo: Object.freeze([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
 });
 
 /** `a` then `b`. Orientation adds in the destination's frame, which is why the lookup is by
@@ -71,17 +83,62 @@ function compose(a, b) {
  *  so a typo cannot introduce a move that is subtly not the move it is named after. */
 export const MOVES = (() => {
   const all = {};
+  // Frozen all the way down, like `SOLVED` above and for the same reason: this table is read by every
+  // move the app ever applies, and a shallow freeze leaves each permutation's arrays writable — one
+  // caller's `MOVES.R.ep[0] = 3` would redefine what R means for the life of the process.
+  const deep = (m) => Object.freeze({
+    cp: Object.freeze([...m.cp]), co: Object.freeze([...m.co]),
+    ep: Object.freeze([...m.ep]), eo: Object.freeze([...m.eo]),
+  });
   for (const [face, q] of Object.entries(QUARTER)) {
     const twice = compose(q, q);
-    all[face] = q;
-    all[`${face}2`] = twice;
-    all[`${face}'`] = compose(twice, q);
+    all[face] = deep(q);
+    all[`${face}2`] = deep(twice);
+    all[`${face}'`] = deep(compose(twice, q));
   }
   return Object.freeze(all);
 })();
 
 /** Every move name, in a stable order — the move set a stage searches over. */
 export const MOVE_NAMES = Object.freeze(Object.keys(MOVES));
+
+/**
+ * What is wrong with `state` as a piece state, or null when nothing is.
+ *
+ * STRUCTURE, NOT LEGALITY. Four arrays of the right lengths, whole numbers in range, and each
+ * permutation naming every cubie once — the properties the move tables and every reader assume and
+ * none of them checked. `cube-flat.js` converted first and validated the STRING afterwards, so `co`
+ * filled with 3 or a `cp` naming one corner twice drew as a solved cube; `cube-questions.js` read
+ * lengths off `cp`/`ep` only, so `{...SOLVED, co: []}` answered `twist: undefined` and called a piece
+ * not-home (Codex audit, 2026-09-16). Whether a well-formed state is REACHABLE is a different
+ * question, asked by `isCubeState` in `lib/cube-trust.js` with the four classical conditions.
+ */
+/**
+ * Every INDEX of `a` satisfies `ok` — holes included.
+ *
+ * `Array.prototype.every` SKIPS holes, so `Array(8)` satisfies any predicate at all, including one that
+ * rejects `undefined`. A sparse array reached `pieceStateError` validated and came out of `toFacelets` as 30
+ * characters, which `netSvg` drew as 24 stickers filled `undefined` (audit, 2026-09-16). The same hole is in
+ * `forEach`, `map`, `filter` and `some`; anywhere a validator walks an array whose LENGTH it has already
+ * checked, it has to walk the indices and not the elements.
+ */
+const everyIndex = (a, ok) => {
+  for (let i = 0; i < a.length; i++) if (!ok(a[i])) return false;
+  return true;
+};
+
+export function pieceStateError(state) {
+  if (!state || typeof state !== 'object') return 'expected a piece state of {cp, co, ep, eo}';
+  for (const [key, n, max] of [['cp', 8, 7], ['co', 8, 2], ['ep', 12, 11], ['eo', 12, 1]]) {
+    const a = state[key];
+    if (!Array.isArray(a) || a.length !== n) return `${key} must be an array of ${n} numbers`;
+    if (!everyIndex(a, (v) => Number.isInteger(v) && v >= 0 && v <= max)) return `${key} must be whole numbers 0 to ${max}`;
+  }
+  for (const key of ['cp', 'ep']) {
+    if (new Set(state[key]).size !== state[key].length) return `${key} names one cubie twice`;
+  }
+  return null;
+}
 
 /** State after applying one move. Never mutates its input. */
 export function applyMove(state, move) {
@@ -93,13 +150,39 @@ export function applyMove(state, move) {
 /** State after applying a space-separated alg. An empty alg returns an equal copy. */
 export function applyAlg(state, alg) {
   let s = { cp: [...state.cp], co: [...state.co], ep: [...state.ep], eo: [...state.eo] };
-  for (const move of String(alg).trim().split(/\s+/).filter(Boolean)) s = applyMove(s, move);
+  // Through the shared tokenizer: these split the text themselves, and had drifted — `movesOf(null)`
+  // is no moves while this threw on it (Codex audit, 2026-09-16). What counts as a move is one
+  // answer or it is not an answer.
+  for (const move of movesOf(alg)) s = applyMove(s, move);
   return s;
+}
+
+/**
+ * A state as its facelet string — the inverse of reading one.
+ *
+ * Here rather than in the solver, where it lived until plan item 3.2: it is a statement about the
+ * PIECE MODEL in the published facelet layout, and `lib/stage-picture.js` was importing the whole
+ * two-phase engine to get at it. `lib/two-phase.js` re-exports it, so every caller's import still
+ * reads the same.
+ */
+export function toFacelets(state) {
+  const out = new Array(54);
+  for (let i = 0; i < 6; i++) out[CENTERS[i]] = FACE_LETTERS[i];
+  for (let slot = 0; slot < 8; slot++) {
+    const name = CORNERS[state.cp[slot]];
+    for (let k = 0; k < 3; k++) out[CORNER_FACELETS[slot][(k + state.co[slot]) % 3]] = name[k];
+  }
+  for (let slot = 0; slot < 12; slot++) {
+    const name = EDGES[state.ep[slot]];
+    for (let k = 0; k < 2; k++) out[EDGE_FACELETS[slot][(k + state.eo[slot]) % 2]] = name[k];
+  }
+  return out.join('');
 }
 
 /** The state of a cubejs `Cube`, copied out. cubejs is the only parser we have for a facelet
  *  string, so this is the seam — and it reads cubejs's INTERNAL fields, which is exactly why
- *  the test pins their layout. */
+ *  the test pins their layout. (It sat above `toFacelets` until 2026-09-16, describing the
+ *  serializer instead of the reader — a Codex audit found it.) */
 export function fromCube(cube) {
   return { cp: [...cube.cp], co: [...cube.co], ep: [...cube.ep], eo: [...cube.eo] };
 }
@@ -177,7 +260,14 @@ const Y_STATE = Object.freeze({
   eo: [1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0],
 });
 
-function inverseOf(state) {
+/**
+ * The state that undoes `state`: where each cubie came FROM, with its orientation taken back.
+ *
+ * Exported since 2026-09-16 because `two-phase.js` had a second copy of exactly this arithmetic, down to
+ * the `(3 - co) % 3` (Codex audit). Two spellings of an inverse is two chances to get a corner twist the
+ * wrong way round, and the wrong one would show up as a solver that answers a slightly different cube.
+ */
+export function inverseOf(state) {
   const cp = new Array(8);
   const co = new Array(8);
   for (let i = 0; i < 8; i++) { cp[state.cp[i]] = i; co[state.cp[i]] = (3 - state.co[i]) % 3; }
@@ -199,7 +289,7 @@ export function rotateState(state, k) {
  *  face-turn form (R->R'->R, R2->R2), which is what lets one function turn a solution into a setup
  *  alg and a setup alg back into a solution. */
 export function invert(alg) {
-  return String(alg).trim().split(/\s+/).filter(Boolean).reverse()
+  return movesOf(alg).reverse()
     .map((m) => (m.endsWith('2') ? m : m.endsWith("'") ? m[0] : `${m}'`))
     .join(' ');
 }

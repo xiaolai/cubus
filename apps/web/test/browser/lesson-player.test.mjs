@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs';
 
 import { checkEpisode, resolveSpanning } from '../../lib/lesson-format.js';
 import { buildSchedule, viewAt } from '../../lib/lesson-schedule.js';
+import { MANIFEST, installPublicCube } from './public-cube.mjs';
 import { startBrowserFixture } from './harness.mjs';
 
 const raw = JSON.parse(
@@ -248,7 +249,10 @@ test('focus, orientation and camera changes all reach the element', async () => 
   };
 
   const a = await at(2.5);
-  assert.equal(a.focus, 'layer:U', 'focus never reached the element');
+  // The PIECES the selector named, not the selector: a positional focus is bound to the cube at its own
+  // cue before it is written, so the same lesson lights the same pieces played or scrubbed into (below).
+  assert.equal(a.focus, 'piece:FRU,piece:FLU,piece:BLU,piece:BRU,piece:RU,piece:FU,piece:LU,piece:BU,piece:U',
+    'focus never reached the element as the pieces it names');
   // CLEARED, not left behind: a focus that outlives its cue greys pieces the narration is talking
   // about.
   const b = await at(4.5);
@@ -284,4 +288,124 @@ test('seeking during an animation does not leave a stale turn running', async ()
   }, m.at);
   assert.equal(stale.animating, true, 'the step never started, so this proves nothing');
   assert.equal(stale.stillAnimating, false, 'a turn went on running after the listener jumped away');
+});
+
+// THE CONTRACT, RUN RATHER THAN DECLARED (plan item 2.5). The player is a consumer of
+// `<cubus-cube>`, and until the manifest grew it could not paint a single frame without reaching
+// past it: `setAttribute` was not in the contract, and neither was "is a turn animating", which is
+// why it read the private `_anim`. Both cases are here because the refusal is what makes the claim
+// checkable — the proxy names what it refused.
+test('the player paints an episode through the public cube, touching nothing the manifest omits', async () => {
+  await installPublicCube(page);
+  await page.addScriptTag({
+    type: 'module',
+    content: `
+      import { createLessonPlayer } from '/lib/lesson-player.js';
+      window.__playerOn = (target) => createLessonPlayer(target, window.__schedule);
+    `,
+  });
+  await page.waitForFunction(() => typeof window.__playerOn === 'function');
+  await page.evaluate((episode) => window.__makePlayer(episode), EPISODE);
+  await page.evaluate(() => window.__cube.recycle());
+
+  const refused = await page.evaluate(async (probes) => {
+    const player = window.__playerOn(window.__publicCube(window.__cube));
+    const out = [];
+    for (const t of probes) {
+      try { player.seek(t); player.paint(t + 0.01); } catch (e) { out.push(`${t}: ${e.message}`); }
+      await new Promise((r) => requestAnimationFrame(r));
+    }
+    return out;
+  }, PROBES);
+  assert.deepEqual(refused, [], 'the player reached past the manifest');
+
+  // And the picture is the one the same episode draws through the element directly: a contract that
+  // is kept by drawing nothing would pass the case above.
+  const throughProxy = await picture();
+  await page.evaluate((episode) => window.__makePlayer(episode), EPISODE);
+  await page.evaluate(() => window.__cube.recycle());
+  await seek(PROBES.at(-1));
+  await page.evaluate((t) => { window.__player.paint(t + 0.01); }, PROBES.at(-1));
+  assert.equal(await picture(), throughProxy, 'the player drew a different cube through the proxy');
+});
+
+test('the contract is what makes that possible: without it the first attribute write is refused', async () => {
+  // The manifest as it was before item 2.5 — attributes and methods, no DOM operations — is what the
+  // player used to be held to, and it cannot write an attribute at all. Restored at the end, because
+  // every later case in this file drives the real one.
+  const asSchema1 = { ...MANIFEST, properties: [], events: [], operations: {} };
+  await installPublicCube(page, asSchema1);
+  try {
+    await page.evaluate((episode) => window.__makePlayer(episode), EPISODE);
+    await page.evaluate(() => window.__cube.recycle());
+    const first = await page.evaluate(() => {
+      const player = window.__playerOn(window.__publicCube(window.__cube));
+      try { player.seek(0); return null; } catch (e) { return e.message; }
+    });
+    assert.match(first ?? '', /no member "(setAttribute|removeAttribute)"/,
+      'a manifest without DOM operations should refuse the first attribute the player writes');
+  } finally {
+    await installPublicCube(page);
+  }
+});
+
+// The private read the public member replaced. A comment saying "use `animating`" is not a check;
+// this is, and it fails the day someone reaches for a private field again.
+test('the player reads no private member of the element', () => {
+  const src = readFileSync(new URL('../../lib/lesson-player.js', import.meta.url), 'utf8');
+  const privateReads = [...src.matchAll(/\bcube\._[A-Za-z]+/g)].map((m) => m[0]);
+  assert.deepEqual(privateReads, [], 'the player is reaching past the manifest into the element');
+  assert.ok(/cube\.animating/.test(src), 'precondition: the player asks whether a turn is animating');
+});
+
+// ADR 0004 decisions 9 and 10, the writer's half. The element binds a positional focus where it is
+// WRITTEN and keeps those pieces through a seek — so a cold seek, which writes it after the jump, bound
+// it to whatever had arrived in the slot by then: `focus: 'slot:UR'` on a line whose turn is `R` lit the
+// piece the turn brought there rather than the one the child was shown (Codex audit, 2026-09-16).
+test('a positional focus names the pieces its own cue named, however the listener arrived', async () => {
+  const cue = (start, end, extra = {}) => ({ say: `line ${start}`, ...extra, start, end });
+  const episode = {
+    cues: [
+      cue(0, 1, { hl: 'none', ghosts: false, cam: [35, 45] }),
+      cue(2, 3, { hl: 'none', ghosts: false, cam: [35, 45], focus: 'slot:UR', quarters: ['R'], secs: 1 }),
+      cue(6, 7, { hl: 'none', ghosts: false, cam: [35, 45], focus: 'slot:UR' }),
+    ],
+  };
+  const focusAt = async (t) => {
+    await page.evaluate((e) => window.__makePlayer(e), episode);       // a fresh player: a COLD arrival
+    await page.evaluate((x) => { window.__player.seek(x); }, t);
+    return page.evaluate(() => window.__cube.getAttribute('focus'));
+  };
+  // `piece:RU` is the UR edge, spelled the way a piece key is: the letters sorted, so `UR` and `RU` are
+  // one piece rather than two names for it.
+  assert.equal(await focusAt(2.5), 'piece:RU', 'the focus was not bound to the piece at its own cue');
+  assert.equal(await focusAt(4.5), 'piece:RU',
+    'seeking past the cue\'s own turn bound the focus to whatever the turn brought to UR');
+  // A LATER cue that names the same slot is a different cue, and names what is in that slot NOW — the
+  // FR edge, which the R turn put there.
+  assert.equal(await focusAt(6.5), 'piece:FR', 'a cue written after the turn was bound before it');
+  // And played through rather than jumped into, the answer is the same one.
+  await page.evaluate((e) => window.__makePlayer(e), episode);
+  const played = await page.evaluate(async () => {
+    const seen = [];
+    for (const t of [0.5, 2.5, 3.5, 4.5]) { window.__player.paint(t); seen.push(window.__cube.getAttribute('focus')); }
+    return seen;
+  });
+  assert.deepEqual(played, [null, 'piece:RU', 'piece:RU', 'piece:RU'], 'playing through gave a different answer from jumping');
+});
+
+// `<cubus-cube>` is parked and RE-USED between screens (app.js), and the renderer gives a valid
+// `facelets` precedence over a `scramble` — so an episode loaded onto an element whose last user left
+// facelets on it drew that user's cube, for every segment, with nothing saying so. The script runtime's
+// writer has always cleared it; this is the same rule (Codex audit, 2026-09-16).
+test('an episode clears a facelets left on a re-used cube, which would outrank its own scramble', async () => {
+  const cue = (start, end, extra = {}) => ({ say: `line ${start}`, ...extra, start, end });
+  const episode = { cues: [cue(0, 1, { setup: "R U R'", hl: 'none', ghosts: false, cam: [35, 45] })] };
+  const OTHER = 'DDDDUDDDDRRRRRRRRRFFFFFFFFFUUUUDUUUULLLLLLLLLBBBBBBBBB';
+  await page.evaluate((f) => { window.__cube.setAttribute('facelets', f); }, OTHER);
+  await page.evaluate((e) => window.__makePlayer(e), episode);
+  await page.evaluate(() => { window.__player.seek(0.5); });
+  assert.equal(await page.evaluate(() => window.__cube.getAttribute('facelets')), null,
+    "the episode's segment was drawn over a cube some other screen left behind");
+  assert.equal(await page.evaluate(() => window.__cube.getAttribute('scramble')), "R U R'");
 });

@@ -59,16 +59,18 @@ export const APP_SOURCES = Object.freeze([
  *  app-source.test.mjs fails until it is, and a "library" that imports the app's own modules is
  *  refused, because that is app code filed where the scans cannot see it. */
 export const LIBRARY_SOURCES = Object.freeze([
-  'lib/app-update.js', 'lib/ble-bridge.js', 'lib/ble-polyfill.js', 'lib/cube-frame.js',
-  'lib/cube-highlight.js', 'lib/cube-kit.js', 'lib/cube-orientation.js', 'lib/cube-pieces.js',
+  'lib/annotation-inks.js', 'lib/app-update.js', 'lib/ble-bridge.js', 'lib/ble-polyfill.js', 'lib/cube-flat.js', 'lib/cube-frame.js', 'lib/cube-gallery.js',
+  'lib/cube-highlight.js', 'lib/cube-kit.js', 'lib/cube-layout.js', 'lib/cube-moves.js', 'lib/cube-notation.js',
+  'lib/cube-orientation.js', 'lib/cube-pieces.js', 'lib/cube-questions.js',
   'lib/cube-reconnect.js', 'lib/cube-registry.js', 'lib/cube-report.js', 'lib/cube-selfcheck.js',
   'lib/cube-session.js', 'lib/cube-trust.js', 'lib/cube-view.js', 'lib/cubejs-entry.js',
-  'lib/data/case-tables.js', 'lib/host.js', 'lib/i18n.js', 'lib/lesson-format.js',
+  'lib/data/case-tables.js', 'lib/element-writes.js', 'lib/host.js', 'lib/i18n.js', 'lib/lesson-format.js',
   'lib/lesson-player.js', 'lib/lesson-schedule.js', 'lib/method-ladder.js', 'lib/method-lesson.js',
   'lib/method-solver.js', 'lib/methods/cross.js', 'lib/methods/engine.js', 'lib/methods/index.js',
   'lib/methods/last-layer.js', 'lib/methods/pairs.js', 'lib/optimal-challenges.js', 'lib/optimal.js',
   'lib/os-insets.js', 'lib/random-state.js', 'lib/router.js', 'lib/scheme.js', 'lib/smartcube-entry.js',
   'lib/solve-client.js', 'lib/solve-stats.js', 'lib/solve-target.js', 'lib/solve-timer.js',
+  'lib/script-drive.js', 'lib/script-player.js', 'lib/script-questions.js', 'lib/script-rounds.js', 'lib/script-track.js', 'lib/script-view.js',
   'lib/solve-worker.js', 'lib/solved.js', 'lib/solver-engine.js', 'lib/solving-hold.js', 'lib/stage-distance.js',
   'lib/stage-picture.js', 'lib/stage-report.js', 'lib/stage-route.js', 'lib/stage-targets.js',
   'lib/stage.js', 'lib/sticker-palettes.js', 'lib/tauri-mcp-guest-entry.js', 'lib/two-phase.js',

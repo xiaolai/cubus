@@ -20,8 +20,9 @@ import {
   CORNERS, EDGES, SOLVED, applyAlg, applyMove,
 } from '../lib/cube-pieces.js';
 import {
-  CUBIES, HOME, MOVE_DESCRIPTORS, after, poseAll,
+  CUBIES, HOME, after, poseAll,
 } from '../../../packages/cubus-cube/src/pose.js';
+import { FACE_DESCRIPTORS } from './fixtures/face-descriptors.mjs';
 
 const I3 = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
 const QUARTER = Math.PI / 2;
@@ -245,9 +246,9 @@ test('the cubie list is the renderer\'s own order, and every home is a real slot
 // `__proto__` are all present, and the renderer's parser once turned `alg="toString"` into an empty
 // descriptor that threw at play time instead of being refused (found by verification, 2026-09-14).
 test('the move table answers for the eighteen moves and nothing an object inherits', () => {
-  assert.equal(Object.getPrototypeOf(MOVE_DESCRIPTORS), null, 'the move table has a prototype to inherit from');
-  assert.equal(Object.keys(MOVE_DESCRIPTORS).length, 18, 'six faces, three turns each');
+  assert.equal(Object.getPrototypeOf(FACE_DESCRIPTORS), null, 'the move table has a prototype to inherit from');
+  assert.equal(Object.keys(FACE_DESCRIPTORS).length, 18, 'six faces, three turns each');
   for (const inherited of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf']) {
-    assert.equal(MOVE_DESCRIPTORS[inherited], undefined, `"${inherited}" answered as if it were a move`);
+    assert.equal(FACE_DESCRIPTORS[inherited], undefined, `"${inherited}" answered as if it were a move`);
   }
 });

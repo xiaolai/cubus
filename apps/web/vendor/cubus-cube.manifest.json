@@ -1,10 +1,11 @@
 {
-  "schema": 1,
+  "schema": 2,
   "tag": "cubus-cube",
   "bundle": "cubus-cube.js",
-  "digest": "sha256:db2a84cd94b4a3546a4d5394e5de35ef52129277e550cd3f3efce465b25142f1",
+  "digest": "sha256:7ac83315667d6ec89f198c630b401b6f5a4cef06d042b2ae5d0dc44e454fc23e",
   "attributes": [
     "alg",
+    "arrow",
     "autorotate",
     "back-view",
     "backview",
@@ -24,24 +25,168 @@
     "ghostelevation",
     "ghosts",
     "highlight",
+    "labels",
     "orbit",
     "orientation",
     "palette",
     "scheme",
     "scramble",
     "tempo-scale",
-    "temposcale"
+    "temposcale",
+    "trail",
+    "trail-style",
+    "trailstyle"
   ],
   "methods": [
     "dispose",
+    "drawnColours",
     "pause",
     "play",
+    "playTo",
     "recycle",
     "reset",
     "seek",
     "showTurn",
     "step",
     "stepBack",
+    "stepBackStop",
+    "stepStop",
     "turnTo"
-  ]
+  ],
+  "properties": [
+    {
+      "name": "alg",
+      "read": false,
+      "write": true
+    },
+    {
+      "name": "animating",
+      "read": true,
+      "write": false
+    },
+    {
+      "name": "backView",
+      "read": false,
+      "write": true
+    },
+    {
+      "name": "cameraLatitude",
+      "read": false,
+      "write": true
+    },
+    {
+      "name": "cameraLongitude",
+      "read": false,
+      "write": true
+    },
+    {
+      "name": "cameraUp",
+      "read": false,
+      "write": true
+    },
+    {
+      "name": "faceletScale",
+      "read": false,
+      "write": true
+    },
+    {
+      "name": "facelets",
+      "read": true,
+      "write": true
+    },
+    {
+      "name": "ghostElevation",
+      "read": false,
+      "write": true
+    },
+    {
+      "name": "ghosts",
+      "read": false,
+      "write": true
+    },
+    {
+      "name": "highlight",
+      "read": true,
+      "write": true
+    },
+    {
+      "name": "orientation",
+      "read": true,
+      "write": true
+    },
+    {
+      "name": "palette",
+      "read": false,
+      "write": true
+    },
+    {
+      "name": "scheme",
+      "read": false,
+      "write": true
+    },
+    {
+      "name": "scramble",
+      "read": false,
+      "write": true
+    },
+    {
+      "name": "stops",
+      "read": true,
+      "write": false
+    },
+    {
+      "name": "tempoScale",
+      "read": false,
+      "write": true
+    }
+  ],
+  "events": [
+    "cubus-step"
+  ],
+  "operations": {
+    "addEventListener": {
+      "args": [
+        "event",
+        "listener",
+        "options"
+      ]
+    },
+    "getAttribute": {
+      "args": [
+        "attribute"
+      ]
+    },
+    "hasAttribute": {
+      "args": [
+        "attribute"
+      ]
+    },
+    "isConnected": {
+      "read": true
+    },
+    "remove": {
+      "args": []
+    },
+    "removeAttribute": {
+      "args": [
+        "attribute"
+      ]
+    },
+    "removeEventListener": {
+      "args": [
+        "event",
+        "listener",
+        "options"
+      ]
+    },
+    "setAttribute": {
+      "args": [
+        "attribute",
+        "value"
+      ]
+    },
+    "style": {
+      "read": true
+    }
+  }
 }

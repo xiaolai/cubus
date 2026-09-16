@@ -76,6 +76,7 @@ export const FIXTURES = [
  *
  * The clock is pinned BEFORE the element connects, so every timed thing — the highlight's breath,
  * the turn — starts on the pinned timeline and the frame is a function of the fixture alone.
+ * `turn` catches the first move of `alg` half way; `seek` lands on a position of it, settled.
  */
 export async function render(page, fixture) {
   const shot = await page.evaluate(async (fx) => {
@@ -89,6 +90,7 @@ export async function render(page, fixture) {
     window.__cube = el;
     await tick();
     if (fx.turn) { el.step(); el.clock = 3_000_000 + 95; }
+    if (fx.seek !== undefined) el.seek(fx.seek);
     await tick(); await tick();
     el._dirty = true;
     el._draw();

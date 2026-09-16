@@ -124,7 +124,7 @@ export function createWalkSession(screen, app) {
   // reads the walk when it paints, and reaches the follow tracker and the rung offer only once both
   // exist.
   const {
-    holdAt, holdCube, pointAtStep, sync, setPlaying, clearChips, takeChips, resetHead,
+    holdAt, moveHoldAt, holdCube, pointAtStep, sync, setPlaying, clearChips, takeChips, resetHead,
   } = createWalkPresenter({
     root, cube, state, signal, scrambling, stale, solList, icon, adoptCube, go,
     walkNow: () => ({ total, target, alg, lesson, walkHold, walkGen, walkLoaded }),
@@ -193,7 +193,7 @@ export function createWalkSession(screen, app) {
   // the drawing that mirrors turns, and the button that lets the cube lead — is its own unit
   // (lib/walk-follow.js). It reads the walk when it acts.
   const follow = createFollowTracker({
-    root, cube, state, cubejs, applyTempo, setPlaying, holdAt, markStale, adoptCube, go, scrambling,
+    root, cube, state, cubejs, applyTempo, setPlaying, moveHoldAt, markStale, adoptCube, go, scrambling,
     refreshLiveDistance, dropLiveDistance, chainTrusted, walkNow: () => ({ moves, steps }),
   });
 
@@ -281,6 +281,14 @@ export function createWalkSession(screen, app) {
       cube.setAttribute('facelets', state.cube.facelets);
       paintNet(state.cube.facelets);
       describeCube(cube, state.cube);
+    } else {
+      // THE ROLL BEING REPLACED IS NOT THE SUBJECT ANY MORE. The scramble cube itself always starts from
+      // solved, so it was left alone — but its `alg` and its target net were left standing too, and a
+      // search that takes a moment then showed the last roll's moves ready to animate beside an empty
+      // move list, over a net of a cube nobody is about to be given (Codex audit's verify pass,
+      // 2026-09-16). Put down together with the chips, so nothing on the screen is about the old roll.
+      cube.removeAttribute('alg');
+      paintNet(SOLVED);
     }
     sync(0);
     setStatus('working…');
@@ -299,8 +307,32 @@ export function createWalkSession(screen, app) {
     // down under the failure, about a subject with no hold of its own. Put back HERE rather than
     // in `beginWalk`, where a retarget between two tumbled stages would turn the cube up and back
     // down again while the search ran. `hold-wiring.test.mjs` fails without this.
+    // THE WORDS FIRST, THE CUBE AFTER — and the cube inside a guard of its own, because the renderer
+    // is one of the things that can have failed. A reporter that throws while reporting leaves the
+    // screen with no walk, no explanation and an unhandled rejection (Codex audit, 2026-09-16).
+    try {
+      putCubeDown();
+    } catch (err) {
+      console.warn('walk: the cube could not be put down under a failed load', err);
+    }
+  }
+
+  /** The cube, after a load that failed: upright, and on the scramble side back to solved. */
+  function putCubeDown() {
     walkHold = SCAN_HOLD;
     holdCube(SCAN_HOLD);
+    // AND ON THE SCRAMBLE SIDE, THE CUBE GOES BACK TO SOLVED. `beginWalk` leaves the scramble cube
+    // alone on purpose — it always starts from solved, and flashing it while a roll is searched for
+    // would be a picture of nothing — but a roll that FAILS then left the previous scramble drawn,
+    // and its target net standing, beside an empty move list and a refusal: a picture of one cube
+    // over the words of another, which is the shape of the 2026-08-29 defect (Codex audit,
+    // 2026-09-16). What is shown is what is known, which after a failed roll is a solved cube: the
+    // Scramble side always loads `scramble=""` and carries the roll in `alg`, so dropping the alg and
+    // repainting the net is the whole of putting it back.
+    if (scrambling) {
+      cube.removeAttribute('alg');
+      paintNet(SOLVED);
+    }
   }
 
   /** A cube the method cannot teach falls back to its solution, and the switch says so. The walk
@@ -503,8 +535,9 @@ export function createWalkSession(screen, app) {
     const chipsFor = (from, to) => moves.slice(from, to)
       // NAMED FOR THE HOLD the move is made in (ADR 0003): the walk is stored in the scan frame,
       // and a child holding the cube tumbled turns the face at the bottom when the cube's own
-      // white face is meant — which, held that way, is called D.
-      .map((m, k) => `<button class="chip-m" data-i="${from + k}" title="${escHtml(t('Jump to this move'))}">${escHtml(renameAlg(m, holdAt(from + k)))}</button>`)
+      // white face is meant — which, held that way, is called D. After a regrip, the face on the
+      // child's right is another of the cube's faces again, so that hold is per move (plan item 6.1).
+      .map((m, k) => `<button class="chip-m" data-i="${from + k}" title="${escHtml(t('Jump to this move'))}">${escHtml(renameAlg(m, moveHoldAt(from + k)))}</button>`)
       .join('');
     solList.innerHTML = route && route.moves === 0
       // AN EMPTY ROUTE MUST NEVER RENDER AS A WALK (§9a). With no moves the grid below draws
@@ -537,6 +570,24 @@ export function createWalkSession(screen, app) {
     const abort = walkAbort = new AbortController();
     // The cube in hand first, then whether this screen can still show it, then the empty screen to
     // wait in — three calls in this order, and none of them inside another.
+    try {
+      return await runLoad({ fresh, abort, mine });
+    } catch (err) {
+      // EVERY PART OF THE LOAD, not only the search. The search was the only thing in a try, so a
+      // failure while resetting the screen or drawing the walk escaped `loadWalk` — and its callers
+      // are pill handlers that discard the promise, so it became an unhandled rejection with nothing
+      // said on screen (Codex audit, 2026-09-16: reproduced with `cube.pause()` throwing during the
+      // reset). A load either puts a walk on the screen or says why it could not.
+      if (abort.signal.aborted) return false;
+      if (fresh()) failWalk(err);
+      return false;
+    }
+  }
+
+  /** The load itself, from the cube in hand to the drawn walk. Separated from the reporting above so
+   *  that every step of it is inside one try and the reporting is outside it. */
+  async function runLoad({ fresh, abort, mine }) {
+    void mine;
     adoptTurnsAhead();
     if (compositionGone()) return false;
     beginWalk();
@@ -552,17 +603,11 @@ export function createWalkSession(screen, app) {
     // until this load is known to still be the current one, so there is no window in which
     // that disagreement exists at all.
     const stageTarget = scrambling ? null : stageTargetNow();
-    let got;
-    try {
-      // The search, and the race inside it, are the resolver's (lib/walk-resolver.js).
-      got = await resolveWalk({ scrambling, stageTarget, walkKind, fresh, signal: abort.signal });
-    } catch (err) {
-      // A search this screen itself called off is not a failure to report: the subject it was
-      // about is gone, and the walk that replaced it owns the screen now. Superseded, silent.
-      if (abort.signal.aborted) return false;
-      if (fresh()) failWalk(err);
-      return false;
-    }
+    // The search, and the race inside it, are the resolver's (lib/walk-resolver.js). A search this
+    // screen itself called off is not a failure to report — the subject it was about is gone, and the
+    // walk that replaced it owns the screen now — which is why the reporter above checks the signal
+    // before it says anything.
+    const got = await resolveWalk({ scrambling, stageTarget, walkKind, fresh, signal: abort.signal });
     if (!got) return false; // overtaken while it searched: a newer load owns the screen
     if (!fresh()) { parkRoll(got.roll); return false; } // navigated away, or a newer load took over
     commitWalk(got, stageTarget);

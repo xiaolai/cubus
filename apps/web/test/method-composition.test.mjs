@@ -15,11 +15,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { CORNER, EDGE, SOLVED, allSolved, applyAlg, cornerSolved, edgeSolved } from '../lib/cube-pieces.js';
+import { CORNER, CORNERS, EDGE, EDGES, SOLVED, allSolved, applyAlg, cornerSolved, edgeSolved, toFacelets } from '../lib/cube-pieces.js';
+import { fromRepertoire } from '../lib/methods/engine.js';
+import { identityFace } from '../lib/cube-moves.js';
 import {
   LADDER, MethodSolverError, STAGE_IDS, allRungCombinations, methodFor, rungKey, solveByMethod,
 } from '../lib/method-solver.js';
 import { seededScrambles } from './fixtures/seeded-scrambles.mjs';
+import { turnsOf } from './fixtures/method-replay.mjs';
 
 const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url))).default;
 
@@ -151,7 +154,7 @@ function walkContracts(start, steps, where) {
       held.push(current);
       current = dial;
     }
-    state = applyAlg(state, step.alg);
+    state = applyAlg(state, turnsOf(step));
     for (const done of held) {
       if (!CONTRACT[done](state)) return `${where}: step ${i} (${step.stage}) broke the ${done} contract`;
     }
@@ -159,6 +162,14 @@ function walkContracts(start, steps, where) {
   if (current && !CONTRACT[current](state)) return `${where}: the ${current} stage ended without meeting its contract`;
   return null;
 }
+
+/** A piece a step names as seen in the hold it is made in, as the cube's own piece — a pair's turn to the
+ *  front renames every piece after it (plan item 6.3). */
+const lettersOf = (names) => new Map(names.map((n, i) => [[...n].sort().join(''), i]));
+const CORNER_OF = lettersOf(CORNERS);
+const EDGE_OF = lettersOf(EDGES);
+const ownCorner = (i, hold) => CORNER_OF.get([...CORNERS[Number(i)]].map((c) => identityFace(c, hold)).sort().join(''));
+const ownEdge = (i, hold) => EDGE_OF.get([...EDGES[Number(i)]].map((c) => identityFace(c, hold)).sort().join(''));
 
 /**
  * Every one of the four slots is placed, and by a route the step stream names.
@@ -171,7 +182,7 @@ function accountForPairs(start, steps, where) {
   const pairSteps = steps.filter((s) => s.stage === 'f2l');
   if (pairSteps.length === 0) {
     // The rung below (`first-layer` / `middle-layer`) placed them, or they were already home.
-    const end = steps.reduce((s, step) => applyAlg(s, step.alg), start);
+    const end = steps.reduce((s, step) => applyAlg(s, turnsOf(step)), start);
     if (!CONTRACT.pairs(end)) return { problem: `${where}: no pair steps and the first two layers are not solved` };
     return { problem: null, fallbacks: 0, paired: 0 };
   }
@@ -181,19 +192,19 @@ function accountForPairs(start, steps, where) {
   for (const step of pairSteps) {
     if (step.parts) {
       paired++;
-      covered.add(Number(step.target));
+      covered.add(ownCorner(step.target, step.hold));
       continue;
     }
     fallbacks++;
     // A fallback step names either the corner (a lift or an insert) or the edge.
     if (step.why?.key === 'firstLayer.lift' || step.why?.key === 'firstLayer.insert') {
-      covered.add(Number(step.why.corner));
+      covered.add(ownCorner(step.why.corner, step.hold));
     } else if (step.why?.key === 'middleLayer.insert' || step.why?.key === 'middleLayer.eject') {
       // Both halves of the middle-layer algorithm belong to the same pair: it EJECTS a wrong edge
       // and INSERTS the right one, and the two carry different reasons so their captions can say
       // which is happening. Accounting for only one of them read the other as an unclaimed step.
       // The edge's slot, mapped back to the corner its pair is named after.
-      const slot = MIDDLE.indexOf(Number(step.why.edge));
+      const slot = MIDDLE.indexOf(ownEdge(step.why.edge, step.hold));
       if (slot < 0) return { problem: `${where}: a fallback named edge ${step.why.edge}, which is in no pair` };
       covered.add(PAIR_CORNERS[slot]);
     } else {
@@ -201,7 +212,7 @@ function accountForPairs(start, steps, where) {
     }
   }
   const missing = PAIR_CORNERS.filter((c) => !covered.has(c));
-  const end = steps.reduce((s, step) => applyAlg(s, step.alg), start);
+  const end = steps.reduce((s, step) => applyAlg(s, turnsOf(step)), start);
   // A slot already solved by the cross rung's leftovers needs no step; that is the only way a
   // slot may be missing, and it must be solved for that excuse to hold.
   for (const corner of missing) {
@@ -400,4 +411,49 @@ test('a malformed cube is refused at the boundary, by name', () => {
   [parity.ep[0], parity.ep[1]] = [parity.ep[1], parity.ep[0]];
   const err = thrown(() => solveByMethod(parity));
   assert.ok(err instanceof MethodSolverError, 'an unsolvable cube is a solver refusal, not a shape error');
+});
+
+// ---- the repertoire search's own invariants ---------------------------------------------------
+//
+// Found by a Codex audit, 2026-09-16: every claim `fromRepertoire`'s comments make about determinism was
+// exercised only through whole solves, which cannot tell "the search picks this route" from "the frontier
+// happened to be built in this order". These ask it directly.
+
+const reaches = (target) => (state) => toFacelets(state) === toFacelets(target);
+
+test('the repertoire search answers the same thing whichever order the candidates arrive in', () => {
+  // `U D` and `D U` are the same cube, the same length and — under any rank that cannot tell two
+  // algorithms apart — the same rank. Arrival order decided between them until the algorithm itself
+  // became the last tie-break.
+  const candidates = [{ alg: 'U' }, { alg: 'D' }, { alg: 'R' }];
+  const goal = reaches(applyAlg(SOLVED, 'U D'));
+  const forwards = fromRepertoire(SOLVED, candidates, goal, 2);
+  const backwards = fromRepertoire(SOLVED, [...candidates].reverse(), goal, 2);
+  assert.equal(forwards.alg, backwards.alg, 'reversing the candidates changed the answer');
+  assert.equal(forwards.alg, 'D U', 'the tie-break is the algorithm itself, so the answer is stable');
+  // And with a rank that gives every route the same value, which is the case the audit reproduced.
+  const flat = () => 0;
+  assert.equal(
+    fromRepertoire(SOLVED, candidates, goal, 2, undefined, flat).alg,
+    fromRepertoire(SOLVED, [...candidates].reverse(), goal, 2, undefined, flat).alg,
+  );
+});
+
+test('the best route to a state is the one kept, not the first one that reached it', () => {
+  // Two candidates land on the same cube; the longer is offered first. Deduplicating on arrival kept it,
+  // and the next ply was then expanded from a route four moves long instead of one.
+  const candidates = [{ alg: "R U U'" }, { alg: 'R' }, { alg: 'F' }];
+  const found = fromRepertoire(SOLVED, candidates, reaches(applyAlg(SOLVED, 'R F')), 2);
+  assert.equal(found.alg, 'R F', 'the search kept the longer route to a state it had already reached');
+});
+
+test('routes are ordered by length as a NUMBER', () => {
+  // Nine moves and thirteen moves reaching the same cube: 9 is shorter, and "13" sorts before "9" as
+  // text. The length was stringified and zero-padded once for this reason; the padding is gone and the
+  // comparison is arithmetic, which this pins.
+  const nine = 'U '.repeat(9).trim();
+  const thirteen = 'U '.repeat(13).trim();
+  const goal = reaches(applyAlg(SOLVED, 'U'));
+  assert.equal(fromRepertoire(SOLVED, [{ alg: thirteen }, { alg: nine }], goal, 1).alg, nine);
+  assert.equal(fromRepertoire(SOLVED, [{ alg: nine }, { alg: thirteen }], goal, 1).alg, nine);
 });

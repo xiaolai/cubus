@@ -30,15 +30,24 @@ import { readElement } from './read-element.mjs';
 const OUT = new URL('../../apps/web/vendor/cubus-cube.manifest.json', import.meta.url);
 
 const element = await readElement();
+// SCHEMA 2 (2026-09-15, plan item 2.5 of dev-docs/tutorial-capability-plan.md): a consumer touches
+// more than attributes and methods — it reads properties, listens for events, and does ordinary DOM
+// things to the element — and every one of those was outside the contract while being used. A reader
+// checks `schema` before it parses, so growing the shape is what the field is for.
 const manifest = {
-  schema: 1,
+  schema: 2,
   tag: element.tag,
   bundle: 'cubus-cube.js',
   digest: element.digest,
   attributes: element.attributes,
   methods: element.methods,
+  properties: element.properties,
+  events: element.events,
+  operations: element.operations,
 };
 writeFileSync(OUT, `${JSON.stringify(manifest, null, 2)}\n`);
 console.log(
-  `${fileURLToPath(OUT)}: ${manifest.attributes.length} attributes, ${manifest.methods.length} methods`,
+  `${fileURLToPath(OUT)}: ${manifest.attributes.length} attributes, ${manifest.methods.length} methods, `
+  + `${manifest.properties.length} properties, ${manifest.events.length} events, `
+  + `${Object.keys(manifest.operations).length} DOM operations`,
 );

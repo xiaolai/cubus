@@ -37,6 +37,7 @@ import { solveByMethod } from '../lib/method-solver.js';
 import { NESTING, OFFERED_TARGETS, PROJECTIONS, TARGETS, TARGET_BY_ID, targetById } from '../lib/stage-targets.js';
 import { CONTRACT_CUBES, ENGINE_CONTRACT_CUBES, WORKER_CUBES } from './fixtures/solver-cubes.mjs';
 import { seededScrambles, seededStates } from './fixtures/seeded-scrambles.mjs';
+import { turnsOf } from './fixtures/method-replay.mjs';
 import { STAGE_TARGET_CASES } from './fixtures/stage-targets.mjs';
 import { INDEPENDENT_PREDICATE } from './fixtures/independent-predicates.mjs';
 
@@ -92,7 +93,7 @@ function methodRouteStates(scrambles) {
     let lesson;
     try { lesson = solveByMethod(s); } catch { continue; }
     for (const step of lesson.steps) {
-      s = applyAlg(s, step.alg);
+      s = applyAlg(s, turnsOf(step));
       const k = key(s);
       if (seen.has(k)) continue;
       seen.add(k);

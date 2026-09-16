@@ -22,18 +22,18 @@
 // The relabelling is derived the same way `two-phase.js` derives its own: from where the rotation
 // puts the six CENTRES, and asserted to be a bijection. Never typed.
 
-export const FACE_LETTERS = 'URFDLB';
+// Which facelet is each face's centre: the layout's one table, not a copy of it. This module kept its
+// own until plan item 3.2, when the bundle's guard could not tell the two apart by name.
+import { CENTERS, FACE_LETTERS, FACE_NORMAL } from './cube-layout.js';
 
-/** Outward normal of each face, in the renderer's fixed frame. */
-// Frozen ROW BY ROW, not just at the top: `Object.freeze` is shallow, so freezing only the map
-// left every vector writable — and `orientationMatrix` hands two of them straight back as rows.
-// One `m[1][1] = 0` by a caller permanently corrupted the module for every later call, because the
-// next call reads the same array. The copies in `orientationMatrix` are the real fix; these
-// freezes are the assertion that stops it coming back silently.
-const NORMAL = Object.freeze({
-  U: Object.freeze([0, 1, 0]), R: Object.freeze([1, 0, 0]), F: Object.freeze([0, 0, 1]),
-  D: Object.freeze([0, -1, 0]), L: Object.freeze([-1, 0, 0]), B: Object.freeze([0, 0, -1]),
-});
+// Re-exported, not re-typed: the letters and the centres are one table's two halves, and this module
+// kept its own copy of the letters after taking the centres from the layout (Codex audit, 2026-09-16).
+// Callers that read them from here — `cube-questions.js` has them on its allow-list — keep working.
+export { FACE_LETTERS };
+
+/** Outward normal of each face, in the fixed frame — the layout's table, not a fourth copy of it.
+ *  The copies `orientationMatrix` makes of these rows are what keeps a caller from corrupting it. */
+const NORMAL = FACE_NORMAL;
 
 /**
  * The outward normal of a face letter, or null.
@@ -52,8 +52,6 @@ function normalOf(letter) {
   return isFace(letter) ? NORMAL[letter] : null;
 }
 
-/** Facelet index of each face's centre, in URFDLB order. */
-const CENTERS = [4, 13, 22, 31, 40, 49];
 
 /**
  * How each face is READ: the in-plane direction of increasing column ("right" in the view) and of

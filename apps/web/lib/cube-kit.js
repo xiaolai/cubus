@@ -13,8 +13,12 @@
 // `exports` map in `package.json` plus a link, or by a resolver on the consumer's side using
 // dynamic `import()`. Anyone reaching for this file to fix a path is in the wrong place.
 //
-// Adding an export here is free. REMOVING or renaming one is a breaking change to a downstream
-// project, which is exactly what the surface test makes visible before it ships.
+// ADDING an export here is not free either, and has not been since 2026-09-15: the surface test fails
+// until the new name is written into its `PROMISED` list and the module that owns it is registered
+// there. That is the point — a promise is made deliberately, in two places that have to agree, rather
+// than by re-exporting something and finding out later that somebody depends on it. REMOVING or
+// renaming one is a breaking change to a downstream project, which is what the same test makes visible
+// before it ships. (This said "adding is free" until a Codex audit read it against the test, 2026-09-16.)
 
 // The move tables — the app's model of a cube's pieces, replayed by every check the course runs.
 export {
@@ -74,6 +78,28 @@ export {
   turnFacelets,
 } from './cube-orientation.js';
 
+// Notation as syntax: text to layer-mask moves — faces, outer blocks, slices, rotations — with no hold
+// and no colour (dev-docs/adr/0004-orientation-notation-and-colour-are-three-things.md, decision 4).
+export { formatMoves, parse } from './cube-notation.js';
+
+// The interpreter: the child's moves, read in the hold in force as each is made, applied to a cube —
+// the pieces, the hold after, and the identity-frame tokens that draw it (ADR 0004 decision 5).
+export { convertSelectors, heldFace, identityFace, run } from './cube-moves.js';
+
+// Questions a tutorial asks of one cube — a piece state or a painted picture with unknown stickers.
+// They read and never move (dev-docs/adr/0005-the-renderer-plays-scripts-methods-choose.md, decision 2).
+export {
+  edgesInLayerWithout,
+  inLayerWithout,
+  isHome,
+  layerSlots,
+  pairOf,
+  pieceIn,
+  piecesAway,
+  readCube,
+  whereIs,
+} from './cube-questions.js';
+
 // The view the app draws its own cubes at, so a consumer's cubes can look like the app's without
 // keeping a hand-copied set of numbers that goes stale in silence.
 export { CUBE_VIEW, CUBE_VIEW_ATTRS } from './cube-view.js';
@@ -84,6 +110,40 @@ export { CUBE_VIEW, CUBE_VIEW_ATTRS } from './cube-view.js';
 // rather than part of a build script, because a schedule that resolves it differently is a
 // different schedule with nothing to say so.
 export { checkEpisode, MIN_PER_MOVE, resolveSpanning, SPAN_LEAD } from './lesson-format.js';
+
+// A SCRIPT is the same tutorial with no clock attached: steps in the child's frame, cues that take
+// effect where they are written, pictures that are not cubes, and drill rounds
+// (dev-docs/adr/0005-the-renderer-plays-scripts-methods-choose.md decision 3). `checkLesson` is the one
+// door that tells the two kinds apart.
+export { STEP_CUES, STEP_KINDS, checkLesson, checkScript } from './lesson-format.js';
+
+// The questions a script names, and the frame they are asked in: a script writes "the top edges with
+// none of the top colour" the way the child holds the cube, and this is where that becomes a question
+// `lib/cube-questions.js` can answer.
+export { QUESTIONS, TAKES_ARGUMENT, ask, readAsk } from './script-questions.js';
+
+// A script's cube at every position — the pure half every driver stands on (plan item 3.2).
+export { askAt, buildScript, groupsOf, stateFrom, viewAtPosition } from './script-view.js';
+
+// The drivers: a clock (a narrated lesson), stops (a walk a cube follows), and the one writer both hand
+// their views to — plus the matcher that finds a turned cube on a walk (plan item 3.3).
+export { createClockDriver, createElementWriter, createStopDriver, timelineOf } from './script-drive.js';
+export { locate, trackFor, trackOf } from './script-track.js';
+
+// The event driver: a drill round's answer worked out from the cube, its picks and verdict, and its reveal
+// as a script segment (plan item 3.4). The page keeps its controls; a round never reads the DOM.
+export { answerAt, createEventDriver, createRound, revealScript } from './script-rounds.js';
+export { ROUND_QUESTIONS } from './lesson-format.js';
+
+// The load contract: one route at a time, nothing from a superseded one applied, and the connection's
+// live model kept across loads and located on each (plan item 3.5).
+export { createScriptPlayer } from './script-player.js';
+
+// Flat views from the same model: the net and the top-face case diagram, as SVG text (plan item 4.5).
+export { TOP_RING, faceletsOf, netSvg, topFaceSvg } from './cube-flat.js';
+
+// Many cubes on one page: live cubes while the browser can hold them, flat diagrams past that (plan item 4.6).
+export { CONTEXT_CAP, LIVE_BUDGET, flatGallery, galleryKind } from './cube-gallery.js';
 export {
   CAM_DEFAULT,
   CAM_EASE,
