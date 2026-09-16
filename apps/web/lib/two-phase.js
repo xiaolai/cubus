@@ -1337,7 +1337,7 @@ function checkOutcome(point, key) {
   // The view count is the SLICE's, not the engine's: a two-view search finishes at cursor 2, and
   // measuring it against six would accept a position it can never be at.
   const viewCount = key.views === null ? VIEW_COUNT : key.views.length;
-  if (!point.done) return checkUnfinished(point);
+  if (!point.done) return checkUnfinished(point, viewCount);
   if (point.alg === null) return checkEmptyFinish(point, key, viewCount);
   return checkAnsweredFinish(point, key, viewCount);
 }
@@ -1345,11 +1345,25 @@ function checkOutcome(point, key) {
 /** A search still going carries no outcome. A record with one is not a position in this enumeration;
  *  `runSearch` would search on and then overwrite it, so believing it silently would hide whatever
  *  produced it. */
-function checkUnfinished(point) {
+function checkUnfinished(point, viewCount) {
   if (point.alg !== null || point.foundDepth !== -1 || point.foundView !== -1) {
     throw new RangeError(
       'two-phase: this resume point is unfinished and yet carries an answer, so it is not a ' +
         'position any search of this enumeration left',
+    );
+  }
+  // AND ITS POSITION HAS TO HAVE BEEN PAID FOR — the same arithmetic `checkEmptyFinish` uses, applied to
+  // a search still going. A point at (depth d, view c) claims every (depth, view) pair before it walked
+  // to its end, and each of those costs at least one node in `phase1DFS`'s `mustStop`. A fresh record
+  // with `depth` patched to 1 claimed all of depth 0 while banking nothing, and the resumed search
+  // therefore never looked there: a cube one turn from solved answered null, permanently (Codex audit,
+  // 2026-09-16).
+  const leastWork = point.depth * viewCount + point.cursor;
+  if (point.covered < leastWork) {
+    throw new RangeError(
+      `two-phase: this resume point stands at depth ${point.depth}, view ${point.cursor} and banks ` +
+        `${point.covered} nodes — reaching there costs at least ${leastWork}, so the search it claims ` +
+        'to continue never ran that far',
     );
   }
 }

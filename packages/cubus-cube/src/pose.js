@@ -25,7 +25,7 @@
 // a PAIR — the pieces and the frame they are now held in — and `after()` answers both at once so
 // they cannot come to disagree.
 
-import { CORNERS, EDGES, MOVES, applyMove } from '../../../apps/web/lib/cube-pieces.js';
+import { CORNERS, EDGES, applyMove } from '../../../apps/web/lib/cube-pieces.js';
 import { faceTurnsOf, turnPieces } from '../../../apps/web/lib/cube-moves.js';
 import { FACE_NORMAL } from '../../../apps/web/lib/cube-layout.js';
 
@@ -252,22 +252,3 @@ export function after(frame, state, move) {
   };
 }
 
-/**
- * Every move cube-pieces knows, as this module's descriptor — the bridge for a caller that still
- * speaks in face letters.
- *
- * NO PROTOTYPE. A move token is whatever an author typed, and on an ordinary object `constructor`,
- * `toString` and `__proto__` are all present: the renderer's parser looked them up here, got a
- * function back, and turned `alg="toString"` into an empty descriptor that threw at play time
- * instead of being refused (found by verification, 2026-09-14). `lib/cube-highlight.js` learned the
- * same lesson for its own tokens. A null-prototype table closes it for every caller, not just the
- * one that was caught.
- */
-export const MOVE_DESCRIPTORS = Object.freeze(Object.assign(Object.create(null), Object.fromEntries(
-  Object.keys(MOVES).map((name) => {
-    const { axis, sign } = axisOf(name[0]);
-    const turns = name.endsWith('2') ? 2 : 1;
-    const dir = name.endsWith("'") ? -1 : 1;
-    return [name, Object.freeze({ axis, layers: Object.freeze([sign]), turns, angle: -dir * sign * turns * (Math.PI / 2) })];
-  }),
-)));
