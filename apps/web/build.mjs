@@ -229,11 +229,22 @@ function assertDistIsDisposable(src, out, entry) {
       `build: refusing to assemble into ${out} — it is the source tree ${src} (or holds it), and the first thing an assembly does is delete its destination`,
     );
   }
+  // BOTH DIRECTIONS, because a recursive delete destroys everything on either side of the relation.
+  // This asked only whether the destination sits inside a copied tree; a copied tree sitting inside the
+  // DESTINATION is destroyed just as thoroughly, and a symlink is how that happens without anyone
+  // spelling it: with `apps/web/vendor` linked to `/assets/vendor`, `assembleDist({ dist: '/assets' })`
+  // passed every check and deleted the vendor tree it was about to copy (Codex audit, 2026-09-16). The
+  // renderer guard below has asked both ways since it was written; this is the same question.
   for (const p of [...DIRS, ...FILES]) {
     const copied = join(src, p);
     if (beneath(out, copied)) {
       throw new Error(
         `build: refusing to assemble into ${out} — it is ${posix(src, copied)}, which the assembly copies FROM, and the destination is deleted first`,
+      );
+    }
+    if (beneath(copied, out)) {
+      throw new Error(
+        `build: refusing to assemble into ${out} — it holds ${posix(src, copied)}, which the assembly copies FROM, and the destination is deleted first`,
       );
     }
   }

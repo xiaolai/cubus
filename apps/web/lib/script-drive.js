@@ -13,13 +13,8 @@
 // `stepBackStop`/`seek`, and the `animating` and `stops` properties. The browser suite runs both drivers
 // against a proxy that throws on anything else.
 import { CAM_DEFAULT, GHOST_ELEV, QUARTER_GAP } from './lesson-schedule.js';
-import { viewAtPosition } from './script-view.js';
+import { regripsOnly, viewAtPosition } from './script-view.js';
 import { locate, trackFor } from './script-track.js';
-
-/** How many tokens a stop arrival will walk one at a time when it does not land on one of the
- *  element's own stops. Two, because the element snaps the oldest turn the moment a third is
- *  queued — past that a walk is a jump wearing an animation. */
-const WALK_TOKENS = 2;
 
 /**
  * Write views onto one element, and only what changed.
@@ -27,6 +22,9 @@ const WALK_TOKENS = 2;
  * `focus` and `highlight` repaint 108 materials when written, and `scramble` rebuilds the cube, so a
  * write that changes nothing is not free — the rule `lesson-player.js` learned the hard way, kept here.
  */
+/** A segment's tokens, as the view carries them: `alg` is what the element was written. */
+const segmentTokens = (view) => String(view.alg ?? '').split(' ').filter(Boolean);
+
 export function createElementWriter(cube) {
   const written = new Map();
   let segment = -1;
@@ -66,11 +64,17 @@ export function createElementWriter(cube) {
    * re-seat even when the count is unchanged if a turn is still in flight, or the element finishes a
    * turn the listener has scrubbed away from.
    */
-  const transport = (moves, how) => {
+  const transport = (moves, how, tokens = []) => {
     if (how === 'stop' && moves !== applied) {
       const stops = cube.stops;
       const after = stops.find((p) => p > applied);
       const before = [...stops].reverse().find((p) => p < applied);
+      // The tokens this arrival crosses. A gap of one is the ordinary turn; a gap of regrips is the
+      // element's group being stopped part way through, which is the only other way a script position
+      // falls between the element's stops. Bounded by what it IS rather than by a count: a step of
+      // `x y z` is three tokens and still nothing a child sees move (found by the verify pass, 2026-09-16).
+      const crossed = tokens.slice(Math.min(applied, moves), Math.max(applied, moves));
+      const walkable = crossed.length === 1 || regripsOnly(crossed);
       if (moves === after) cube.stepStop();
       else if (moves === before) cube.stepBackStop();
       // A SCRIPT POSITION NEED NOT BE ONE OF THE ELEMENT'S STOPS. The element groups the concatenated
@@ -79,8 +83,8 @@ export function createElementWriter(cube) {
       // element's group. Its arrival was a jump, which snapped the very turn D4's "turn the whole cube
       // so the gap is in front" exists to show (Codex audit, 2026-09-16). One or two tokens are walked
       // instead, animated, in the direction of travel; anything further is a scrub and stays a jump.
-      else if (moves > applied && moves - applied <= WALK_TOKENS) for (let i = applied; i < moves; i += 1) cube.step();
-      else if (moves < applied && applied - moves <= WALK_TOKENS) for (let i = applied; i > moves; i -= 1) cube.stepBack();
+      else if (walkable && moves > applied) for (let i = applied; i < moves; i += 1) cube.step();
+      else if (walkable) for (let i = applied; i > moves; i -= 1) cube.stepBack();
       else cube.seek(moves);
     } else if (how === 'clock' && moves === applied + 1) {
       cube.step();
@@ -97,7 +101,7 @@ export function createElementWriter(cube) {
       // and its transport is a jump whatever kind of arrival the driver meant.
       const cold = view.segment !== segment;
       if (cold) load(view);
-      transport(moves, cold ? 'jump' : how);
+      transport(moves, cold ? 'jump' : how, segmentTokens(view));
       const { cues } = view;
       write('highlight', cues.hl ?? 'none');
       write('focus', cues.focus ?? null);
@@ -189,6 +193,21 @@ export function timelineOf(built) {
     // A stop is reached when its first token starts: its cues are in force while it animates.
     return tokenTimes[p.segment][from];
   });
+  // A TIMELINE THAT CONTRADICTS ITSELF IS REFUSED, not played as best it can be. Tokens are turned in
+  // order, so a token timed before the one in front of it states two things at once: a step given four
+  // seconds for two tokens is still turning when the next step's `at` arrives, and the clock then has a
+  // position whose cues are in force over a cube those cues are not about. `checkScript` cannot see this —
+  // the times come from `secs` and the default gap, which are this driver's arithmetic — so it is said
+  // here, where the numbers are (Codex audit, 2026-09-16, and the verify pass that followed it).
+  tokenTimes.forEach((times, s) => {
+    const bad = times.findIndex((at, i) => i > 0 && at < times[i - 1]);
+    if (bad > 0) {
+      throw new Error(
+        `script-drive: segment ${s} turns token ${bad} at ${times[bad]}s, before token ${bad - 1} at `
+        + `${times[bad - 1]}s — a step's \`secs\` runs past the next step's \`at\`, and a cube is turned in order`,
+      );
+    }
+  });
   const ends = tokenTimes.flatMap((times, s) => times.map((at) => at + QUARTER_GAP)).concat(stepTimes);
   return Object.freeze({ positionTimes, tokenTimes, duration: Math.max(0, ...ends) + 0.6 });
 }
@@ -203,10 +222,10 @@ export function createClockDriver(built, { cube = null } = {}) {
     const view = viewAtPosition(built, k);
     // The tokens STARTED by `t`, which is what the element should be animating toward: a trailing
     // regrip turns when its time comes, never when its segment loads (ADR 0004 R7).
-    // The PREFIX whose times have come, not a count of them: tokens are played in order, so token j
-    // cannot have started while token j-1 has not. Counting matching times instead answered a script
-    // whose steps overlap — `{move:'R U', at:1, secs:4}` then `{move:'F', at:2}`, times [1, 3, 2] — with
-    // two tokens at t=2.1, applying `U` a second before its own time (Codex audit, 2026-09-16).
+    // The PREFIX whose times have come: tokens are turned in order, so token j cannot have started while
+    // token j-1 has not. Read this way rather than counted, so it says the same thing as the timeline's
+    // own rule (`timelineOf` refuses a token timed before the one in front of it) instead of quietly
+    // resting on it.
     const times = timeline.tokenTimes[view.segment];
     let moves = 0;
     while (moves < times.length && times[moves] <= t) moves += 1;

@@ -293,6 +293,28 @@ test('an assembly into a directory the copy reads FROM is refused', () => {
   });
 });
 
+test('an assembly into a directory that HOLDS a copied tree is refused', () => {
+  // The same delete from the other side. The guard asked whether the DESTINATION sits inside a copied
+  // tree and not whether a copied tree sits inside the destination — and a symlink is how the second
+  // happens without anyone spelling it: vendor/ living elsewhere and linked back in is still what the
+  // assembly copies from, and a dist at its real home deletes it before reading it (Codex audit,
+  // 2026-09-16).
+  withRoot(({ root }) => {
+    const away = mkdtempSync(join(tmpdir(), 'cubus-away-'));
+    try {
+      const moved = join(away, 'vendor');
+      renameSync(join(root, 'vendor'), moved);
+      symlinkSync(moved, join(root, 'vendor'));
+      assert.ok(existsSync(join(root, 'vendor', 'cubejs.js')), 'precondition: the copy still reads vendor/');
+      assert.throws(() => assembleDist({ root, dist: away, freshness: false }),
+        (err) => /copies FROM/.test(err.message), 'a destination holding a copied tree was accepted');
+      assert.ok(existsSync(join(moved, 'cubejs.js')), 'the copied tree was deleted');
+    } finally {
+      rmSync(away, { recursive: true, force: true });
+    }
+  });
+});
+
 test('the ordinary destination — a dist inside root — is still assembled', () => {
   // The positive control for the three refusals above: the guard must reject the destination
   // that eats its source and nothing else. `root/dist` is inside root, which is exactly why the
