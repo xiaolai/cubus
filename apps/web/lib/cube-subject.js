@@ -306,11 +306,42 @@ const answersTier = (solvedFor, tier) => solvedFor === ANY_TIER || solvedFor ===
  * replaced it is the one on screen, and an error message about the cube it abandoned would be
  * about a cube nobody is looking at. `onProgress` is the engine's "still going", forwarded.
  */
+/** The one shape a superseded search reports with. `AbortError` rather than a sentinel value because
+ *  every caller already has a catch, and a sentinel returned through one is a value that gets committed
+ *  by whoever forgets to check it. */
+const aborted = () => Object.assign(new Error('solve: superseded'), { name: 'AbortError' });
+
+/**
+ * An answer this cube already carries that the tier in force accepts, or null — checked, never assumed.
+ *
+ * Two kinds come back: one the oracle has already agreed to (handed straight over), and one that arrived
+ * WITHOUT a search — the inverse of a setup alg the worker found, the scramble hand-off. There is nothing
+ * to search for in either, but the oracle discipline is unchanged for the second: `finishSolve` applies it
+ * through cubejs (move application, ~µs, no search) and a definite refutation blocks exactly as it does on
+ * the searched path. Reused only under a tier it ANSWERS: a carried answer under `<= 18` is searched
+ * again, not shown as though it met a tier nobody asked it about (found by audit, 2026-09-13).
+ */
+function heldAnswer(c, tier) {
+  if (!c.solution || !answersTier(c.solvedFor, tier)) return null;
+  return c.crossChecked ? c.solution : finishSolve(c, c.solution);
+}
+
+/**
+ * An answer the shipped library already proves minimal, or null.
+ *
+ * The whole point of shipping it as data: the minimum for these states is a fact we carry, not a
+ * computation the device repeats. `commitAnswer` still applies it through the cubejs oracle, so a library
+ * entry gets the same refutation every searched answer gets; what it skips is the search, not the check.
+ */
+function provenMinimum(c, onImprovement) {
+  const proven = provenAnswer(challenges, c.facelets);
+  if (!proven) return null;
+  const solution = commitAnswer(c, proven.alg, { key: 'solve.provenMinimum', moves: proven.moves }, ANY_TIER);
+  onImprovement?.({ alg: proven.alg, moves: proven.moves, target: null, met: true, stopped: 'met' });
+  return solution;
+}
+
 async function solve({ onImprovement, onProgress, signal } = {}) {
-  /** The one shape a superseded search reports with. `AbortError` rather than a sentinel value
-   *  because every caller already has a catch, and a sentinel returned through one is a value
-   *  that gets committed by whoever forgets to check it. */
-  const aborted = () => Object.assign(new Error('solve: superseded'), { name: 'AbortError' });
   if (signal?.aborted) throw aborted();
   const c = state.cube;
   // There used to be a "the setup alg is stale — recompute now" line here, which called back into
@@ -320,27 +351,12 @@ async function solve({ onImprovement, onProgress, signal } = {}) {
   // Reused only under a tier it answers: a carried answer under <= 18 is searched again, not shown
   // as though it met a tier nobody asked it about (found by audit, 2026-09-13).
   const tier = settings.solveTier;
-  const held = Boolean(c.solution) && answersTier(c.solvedFor, tier);
-  if (held && c.crossChecked) return c.solution;
-  if (held) {
-    // A solution that arrived WITHOUT a search — the inverse of a setup alg the worker already
-    // found (the scramble hand-off). There is nothing to search for, but the oracle discipline
-    // is unchanged: finishSolve applies it through cubejs — move application, ~µs, no search —
-    // and a definite refutation blocks exactly as it does on the searched path.
-    return finishSolve(c, c.solution);
-  }
-
-  // Already proved, offline, by crates/optimal-solver — so there is nothing to search for and
-  // nothing to prove. This is the whole point of shipping the library as data: the minimum for
-  // these states is a fact we carry, not a computation the device repeats. finishSolve still
-  // applies it through the cubejs oracle, so a library entry gets exactly the same refutation
-  // every searched answer gets; what it skips is the search, not the check.
-  const proven = provenAnswer(challenges, c.facelets);
-  if (proven) {
-    const solution = commitAnswer(c, proven.alg, { key: 'solve.provenMinimum', moves: proven.moves }, ANY_TIER);
-    onImprovement?.({ alg: proven.alg, moves: proven.moves, target: null, met: true, stopped: 'met' });
-    return solution;
-  }
+  // Three ways to answer without searching, in the order they cost anything: an answer already here, an
+  // answer proved offline, and then the search.
+  const held = heldAnswer(c, tier);
+  if (held) return held;
+  const proven = provenMinimum(c, onImprovement);
+  if (proven) return proven;
 
   const client = solverWorker();
   // Captured: the search is about THIS arrangement. A live snapshot can re-ingest the cube

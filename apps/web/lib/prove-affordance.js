@@ -124,6 +124,62 @@ async function tablesReady({ proveBtn, fresh, signal }) {
  *          shown: number, fresh: () => boolean, signal: AbortSignal|undefined,
  *          sayProved: (proof: object) => void}} o
  */
+/**
+ * The wait, as a thing that can be shown and disposed of — the timer, the clock and the stop button.
+ *
+ * A DISPOSABLE CONTROLLER rather than four mutable variables in `runProof` (Codex audit, 2026-09-16),
+ * which held seven lifecycle values across nested callbacks. Two waits with different shapes live in this
+ * file and they must not be dressed the same: table GENERATION is known-slow and has a denominator, so it
+ * announces itself with a percentage; the PROOF has neither — milliseconds on a shallow cube, hours on a
+ * deep one, no knowable fraction — so it stays silent until it has actually taken time and then reports
+ * the only honest number it has.
+ *
+ * `owns` and `fresh` are two different questions and both are asked: this run's own timer stops whoever
+ * holds the buttons, and the SHARED buttons are only put back while this run still owns them — a stop
+ * hidden by a superseded proof's cleanup is a proof that cannot be called off.
+ */
+function waitingDisplay({ proveBtn, cancelBtn, fresh, owns }) {
+  const startedAt = Date.now();
+  let ticking = null;
+  let reveal = null;
+  let ruledOut = null;
+
+  const clock = () => {
+    const secs = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+    return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+  };
+  // "at least N" is a fact, not a spinner: every contour the native side reports has been exhausted, so
+  // the answer really is longer than it. Before the first one lands there is nothing true to say beyond
+  // the clock.
+  const paint = () => {
+    if (!fresh()) { clearInterval(ticking); ticking = null; return; }
+    proveBtn.textContent = ruledOut === null ? `proving… ${clock()}` : `at least ${ruledOut + 1} · ${clock()}`;
+  };
+  const show = () => {
+    if (!fresh()) return;
+    proveBtn.title = 'A deep cube can take hours to prove. Stop whenever you like — nothing is lost.';
+    if (cancelBtn) { cancelBtn.hidden = false; cancelBtn.disabled = false; cancelBtn.textContent = 'stop'; }
+    paint();
+    ticking ??= setInterval(paint, 1000);
+  };
+  return {
+    /** Show the wait once it has actually taken time — never before. */
+    revealAfter(ms) { reveal = setTimeout(show, ms); },
+    /** A contour the native side has exhausted: the answer is longer than it. */
+    ruleOut(depth) {
+      ruledOut = depth;
+      if (ticking) paint();  // only once the wait is on screen; before that, nothing to repaint
+    },
+    /** Put everything down. Safe to call twice, and safe to call from a run that has been superseded. */
+    end() {
+      clearTimeout(reveal); clearInterval(ticking); ticking = null;
+      if (!owns()) return;
+      proveBtn.title = '';
+      if (cancelBtn) { cancelBtn.hidden = true; cancelBtn.onclick = null; }
+    },
+  };
+}
+
 async function runProof({ proveBtn, cancelBtn, startFacelets, shown, fresh, signal, sayProved }) {
   // Two waits with different shapes, and they must not be dressed the same. Table
   // GENERATION is known-slow and has a denominator, so it announces itself and shows
@@ -131,48 +187,12 @@ async function runProof({ proveBtn, cancelBtn, startFacelets, shown, fresh, sign
   // hours on a deep one, and no fraction of it is knowable — so it stays silent until
   // it has actually taken time, and then reports the only honest number it has.
   let unlistenProof = null;
-  let ticking = null;
-  let reveal = null;
-  let ruledOut = null;
-  const startedAt = Date.now();
   // Taken synchronously with the press: from here on, this run owns the buttons until another
   // press takes them. `fresh()` cannot answer this — it is about the WALK, and two proofs about
   // two different walks are exactly the case where the older one's cleanup arrives last.
   const myRun = ++proofRun;
   const owns = () => myRun === proofRun;
-
-  const clock = () => {
-    const secs = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
-    return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
-  };
-  // "at least N" is a fact, not a spinner: every contour the native side reports has
-  // been exhausted, so the answer really is longer than it. Before the first one
-  // lands there is nothing true to say beyond the clock.
-  const paintWait = () => {
-    if (!fresh()) { clearInterval(ticking); ticking = null; return; }
-    proveBtn.textContent = ruledOut === null
-      ? `proving… ${clock()}`
-      : `at least ${ruledOut + 1} · ${clock()}`;
-  };
-  const showWaiting = () => {
-    if (!fresh()) return;
-    proveBtn.title = 'A deep cube can take hours to prove. Stop whenever you like — nothing is lost.';
-    if (cancelBtn) { cancelBtn.hidden = false; cancelBtn.disabled = false; cancelBtn.textContent = 'stop'; }
-    paintWait();
-    ticking ??= setInterval(paintWait, 1000);
-  };
-  const endWaiting = () => {
-    // OWNED unconditionally: this run's timer and its reveal stop when this run ends, whoever
-    // holds the buttons. Releasing them is never someone else's business, and skipping it would
-    // leave a superseded proof repainting a button it no longer writes to.
-    clearTimeout(reveal); clearInterval(ticking); ticking = null;
-    // SHARED, so only while this run still owns them. A stop hidden by the previous proof's
-    // cleanup is a proof that cannot be called off — minutes to hours of native work with
-    // nothing on screen to end it.
-    if (!owns()) return;
-    proveBtn.title = '';
-    if (cancelBtn) { cancelBtn.hidden = true; cancelBtn.onclick = null; }
-  };
+  const waiting = waitingDisplay({ proveBtn, cancelBtn, fresh, owns });
 
   const letGoContours = () => { const off = unlistenProof; unlistenProof = null; off?.(); };
   proveBtn.disabled = true;
@@ -189,8 +209,7 @@ async function runProof({ proveBtn, cancelBtn, startFacelets, shown, fresh, sign
       unlistenProof = await window.__TAURI__?.event?.listen?.('optimal-proof-progress', (ev) => {
         const depth = ev?.payload?.ruled_out;
         if (!fresh() || ev?.payload?.proof !== myRun || !Number.isInteger(depth)) return;
-        ruledOut = depth;
-        if (ticking) paintWait(); // only once the wait is on screen; before that, nothing to repaint
+        waiting.ruleOut(depth);
       });
     } catch (err) {
       console.warn('optimal: no proof progress; a long proof will show only its clock', err);
@@ -211,7 +230,7 @@ async function runProof({ proveBtn, cancelBtn, startFacelets, shown, fresh, sign
         });
       };
     }
-    reveal = setTimeout(showWaiting, PROOF_WAIT_VISIBLE_MS);
+    waiting.revealAfter(PROOF_WAIT_VISIBLE_MS);
     const proof = await optimalProve(startFacelets, { Cube, upperBound: shown, proof: myRun });
     if (!fresh()) return; // the finally below is the ONE cleanup path
 
@@ -232,7 +251,7 @@ async function runProof({ proveBtn, cancelBtn, startFacelets, shown, fresh, sign
     if (stopped) console.info('optimal: the proof was stopped');
     else console.error('optimal proof failed', err);
   } finally {
-    endWaiting();
+    waiting.end();
     signal?.removeEventListener('abort', letGoContours);
     letGoContours();
   }

@@ -195,6 +195,14 @@ export function fromRepertoire(state, candidates, goal, plies = 1, keyOf = state
     rank: rank(alg),
   });
 
+  /** Keep the better of two routes to one state. THE BEST ROUTE, not the first one found: deduplicating
+   *  on arrival kept whichever route the candidate order happened to produce first, so reordering two
+   *  equally-ranked candidates changed what the NEXT ply was expanded from. */
+  const retain = (into, key, route) => {
+    const held = into.get(key);
+    if (held === undefined || precedes(route, held)) into.set(key, route);
+  };
+
   let frontier = [{ state, alg: '', used: [] }];
   // Different runs of triggers land on the same cube constantly — `R U R'` then `R U' R'` is
   // where it started. Without this the frontier squares every ply and the budget is spent
@@ -224,14 +232,9 @@ export function fromRepertoire(state, candidates, goal, plies = 1, keyOf = state
         if (lastPly) continue;
         const key = keyOf(after, alg);
         if (seen.has(key)) continue;
-        // THE BEST ROUTE TO A STATE, not the first one found. Deduplicating on arrival kept
-        // whichever route the candidate order happened to produce first, so reordering two
-        // equally-ranked candidates changed what the NEXT ply was expanded from — `U D` and `D U`
-        // reach the same cube, and which one was retained decided between `U D R` and `D U R`
-        // under a ranking function that cannot tell them apart.
-        const held = next.get(key);
-        const successor = route(node, candidate, after, alg);
-        if (held === undefined || precedes(successor, held)) next.set(key, successor);
+        // `U D` and `D U` reach the same cube, and which one is retained decides between `U D R` and
+        // `D U R` under a ranking function that cannot tell them apart — see `retain` above.
+        retain(next, key, route(node, candidate, after, alg));
       }
     }
     if (best !== null) return { state: best.state, alg: best.alg, used: best.used };

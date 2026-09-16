@@ -31239,6 +31239,29 @@ var CubusCube = class _CubusCube extends HTMLElement {
    * shows all of it. Its start, end and axis are kept on the group (`userData`), in the cube's own frame, so
    * a test can check the direction without judging the look.
    */
+  /**
+   * A directed curve: a tube along `points` with a cone on the end, pointing the way the path goes.
+   *
+   * Both things this element draws as a path are this — the turn arrow and a piece's trail — and they
+   * were built twice, differing only in their dimensions and their material (Codex audit, 2026-09-16).
+   * The TANGENT is what makes it directed, and it is taken from the last two points rather than from the
+   * curve's own derivative: a Catmull-Rom curve through settled positions is smooth enough that the two
+   * agree, and the last segment is what a child sees the arrow leaving from.
+   */
+  static _directedCurve(points, { radius, segments, headRadius, headLength, headSides, lift, material }) {
+    const tube = new Mesh(
+      new TubeGeometry(new CatmullRomCurve3(points), segments, radius, 8, false),
+      material
+    );
+    const end = points[points.length - 1];
+    const tangent = end.clone().sub(points[points.length - 2]).normalize();
+    const head = new Mesh(new ConeGeometry(headRadius, headLength, headSides), material);
+    head.position.copy(end.clone().add(tangent.clone().multiplyScalar(lift)));
+    head.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), tangent);
+    tube.renderOrder = 3;
+    head.renderOrder = 3;
+    return { tube, head, end };
+  }
   _placeArrow() {
     if (!this._arrow) return;
     for (const child of [...this._arrow.children]) {
@@ -31280,14 +31303,15 @@ var CubusCube = class _CubusCube extends HTMLElement {
       const half = quarters === 2 ? 1.05 : 0.8;
       for (let i = 0; i <= 8; i++) points.push(centre.clone().add(d.clone().multiplyScalar(-half + i / 8 * 2 * half)));
     }
-    const tube = new Mesh(new TubeGeometry(new CatmullRomCurve3(points), 48, 0.055, 8, false), this._arrowMat);
-    const end = points[points.length - 1];
-    const tangent = end.clone().sub(points[points.length - 2]).normalize();
-    const head = new Mesh(new ConeGeometry(0.15, 0.34, 20), this._arrowMat);
-    head.position.copy(end.clone().add(tangent.clone().multiplyScalar(0.12)));
-    head.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), tangent);
-    tube.renderOrder = 3;
-    head.renderOrder = 3;
+    const { tube, head, end } = _CubusCube._directedCurve(points, {
+      radius: 0.055,
+      segments: 48,
+      headRadius: 0.15,
+      headLength: 0.34,
+      headSides: 20,
+      lift: 0.12,
+      material: this._arrowMat
+    });
     this._arrow.add(tube, head);
     this._arrow.userData = { axis: axis.toArray(), start: points[0].toArray(), end: end.toArray(), angle: move.angle, layers: [...layers], points: points.map((q) => q.toArray()) };
     this._placeArrowFrame();
@@ -31340,6 +31364,63 @@ var CubusCube = class _CubusCube extends HTMLElement {
     }
   }
   /**
+   * The cubies a `trail` spec names, in the order written — or null when a token is not a trail selector.
+   *
+   * Null, not an empty list: a spec with a typo in it is refused whole, exactly as `highlight` is, because
+   * a trail that silently drew three of four pieces would be read as a statement about the fourth.
+   */
+  _trailTargets(spec) {
+    const settled0 = poseAll(UPRIGHT, this._base ?? this._state);
+    const named = [];
+    for (const token of spec.split(",").map((t) => t.trim()).filter(Boolean)) {
+      const m = /^(piece|slot):([URFDLB]{2,3})$/i.exec(token);
+      const key2 = m && pieceKey(m[2]);
+      if (!key2) {
+        console.warn(`<cubus-cube> refusing trail \u2014 "${token}" is not piece:XX or slot:XX`);
+        return null;
+      }
+      const index = m[1].toLowerCase() === "piece" ? this.cubies.findIndex((c) => c.userData.piece === key2) : this.cubies.findIndex((_, i) => {
+        const pos = settled0[POSE_OF[i]].pos;
+        const want = slotVector(m[2]);
+        return pos.every((v, k) => v === want[k]);
+      });
+      if (index < 0) {
+        console.warn(`<cubus-cube> trail matched nothing for ${token} \u2014 this cube has no known identity for it`);
+        continue;
+      }
+      named.push({ token, index });
+    }
+    return named;
+  }
+  /**
+   * Where cubie `index` goes over the whole sequence: its settled `stops`, and the `curve` between them.
+   *
+   * ARITHMETIC ONLY — no mesh, no material, nothing of three.js but the vectors. Between two positions the
+   * piece moves along an ARC about the turn's axis, by the turn's angle: a chord would cut through the cube
+   * and is not where the piece went.
+   */
+  _trailPath(index) {
+    let frame = UPRIGHT;
+    let state = this._base ?? this._state;
+    const stops = [poseAll(frame, state)[POSE_OF[index]].pos];
+    const curve = [new Vector3(...stops[0])];
+    for (const move of this._sol ?? []) {
+      const from = new Vector3(...poseAll(frame, state)[POSE_OF[index]].pos);
+      const axisWorld = new Vector3(...AXIS_VECTOR[move.axis]).applyMatrix3(new Matrix3().set(...frame.flat()));
+      const landed = after(frame, state, move);
+      frame = landed.frame;
+      state = landed.state;
+      const to = poseAll(frame, state)[POSE_OF[index]].pos;
+      if (to.every((v, k) => v === stops[stops.length - 1][k])) continue;
+      const along = from.dot(axisWorld);
+      const moved = move.layers.some((l) => Math.abs(l - along) < 0.5) || move.layers.length === 3;
+      if (!moved) continue;
+      for (let i = 1; i <= 12; i++) curve.push(from.clone().applyAxisAngle(axisWorld, move.angle * (i / 12)));
+      stops.push(to);
+    }
+    return { stops, curve };
+  }
+  /**
    * Draw the trails `trail` asks for: where each named piece goes over the whole of `alg`.
    *
    * THE PATH THE CUBIE REALLY TRAVELS. Its settled position at every position of the sequence comes from the
@@ -31366,58 +31447,23 @@ var CubusCube = class _CubusCube extends HTMLElement {
       this._applyCamera();
       return;
     }
-    const tokens = spec.split(",").map((t) => t.trim()).filter(Boolean);
-    const settled0 = poseAll(UPRIGHT, this._base ?? this._state);
-    const named = [];
-    for (const token of tokens) {
-      const m = /^(piece|slot):([URFDLB]{2,3})$/i.exec(token);
-      const key2 = m && pieceKey(m[2]);
-      if (!key2) {
-        console.warn(`<cubus-cube> refusing trail \u2014 "${token}" is not piece:XX or slot:XX`);
-        return;
-      }
-      const index = m[1].toLowerCase() === "piece" ? this.cubies.findIndex((c) => c.userData.piece === key2) : this.cubies.findIndex((_, i) => {
-        const pos = settled0[POSE_OF[i]].pos;
-        const want = slotVector(m[2]);
-        return pos.every((v, k) => v === want[k]);
-      });
-      if (index < 0) {
-        console.warn(`<cubus-cube> trail matched nothing for ${token} \u2014 this cube has no known identity for it`);
-        continue;
-      }
-      named.push({ token, index });
-    }
+    const named = this._trailTargets(spec);
+    if (named === null) return;
     for (const [n, { token, index }] of named.entries()) {
-      let frame = UPRIGHT;
-      let state = this._base ?? this._state;
-      const stops = [poseAll(frame, state)[POSE_OF[index]].pos];
-      const curve = [new Vector3(...stops[0])];
-      for (const move of this._sol ?? []) {
-        const from = new Vector3(...poseAll(frame, state)[POSE_OF[index]].pos);
-        const axisWorld = new Vector3(...AXIS_VECTOR[move.axis]).applyMatrix3(new Matrix3().set(...frame.flat()));
-        const landed = after(frame, state, move);
-        frame = landed.frame;
-        state = landed.state;
-        const to = poseAll(frame, state)[POSE_OF[index]].pos;
-        if (to.every((v, k) => v === stops[stops.length - 1][k])) continue;
-        const along = from.dot(axisWorld);
-        const moved = move.layers.some((l) => Math.abs(l - along) < 0.5) || move.layers.length === 3;
-        if (!moved) continue;
-        for (let i = 1; i <= 12; i++) curve.push(from.clone().applyAxisAngle(axisWorld, move.angle * (i / 12)));
-        stops.push(to);
-      }
+      const { stops, curve } = this._trailPath(index);
       if (stops.length < 2) continue;
       const lifted = curve.map((p) => p.clone().multiplyScalar(TRAIL_SHELL / Math.max(Math.abs(p.x), Math.abs(p.y), Math.abs(p.z))));
       const ink = TRAIL_INKS[n % TRAIL_INKS.length];
       const material = new MeshBasicMaterial({ color: ink, transparent: true, opacity: 0.88, depthWrite: false });
-      const tube = new Mesh(new TubeGeometry(new CatmullRomCurve3(lifted), lifted.length * 3, 0.045, 8, false), material);
-      const end = lifted[lifted.length - 1];
-      const tangent = end.clone().sub(lifted[lifted.length - 2]).normalize();
-      const head = new Mesh(new ConeGeometry(0.12, 0.28, 16), material);
-      head.position.copy(end.clone().add(tangent.clone().multiplyScalar(0.1)));
-      head.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), tangent);
-      tube.renderOrder = 3;
-      head.renderOrder = 3;
+      const { tube, head } = _CubusCube._directedCurve(lifted, {
+        radius: 0.045,
+        segments: lifted.length * 3,
+        headRadius: 0.12,
+        headLength: 0.28,
+        headSides: 16,
+        lift: 0.1,
+        material
+      });
       tube.userData = { trail: token, stops, curve: curve.map((v) => v.toArray()), lifted: lifted.map((v) => v.toArray()) };
       this.root.add(tube, head);
       this._trailMeshes.push(tube, head);
