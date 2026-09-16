@@ -30,6 +30,11 @@ const holdName = (pair) => pair.join(' ');
 /** Does this move change the pieces relative to the centres? A regrip does not, so it is no stop. */
 const movesPieces = (move) => faceTurnsOf(move).turns.some((t) => t.name);
 
+/** Do these tokens leave every piece where it was? A run of regrips does, which is exactly why a script
+ *  position can sit INSIDE one of the element's groups: the element keeps a regrip with the turn it leads
+ *  into, and a script gives the step that regrips a position of its own. */
+export const regripsOnly = (tokens) => tokens.length > 0 && tokens.every((t) => !movesPieces(parse(t)[0]));
+
 /**
  * A move text as GROUPS of moves, one per stop: every regrip belongs to the turn it leads into, and a
  * trailing run of regrips is a stop of its own because the hold it leaves is what the step asked for.

@@ -138,10 +138,23 @@ test('superseding a route stops the cube it was driving, and leaves it where the
   assert.deepEqual(cube.calls.at(-1), ['seek', 1], 'the superseded walk was left turning while the next was searched for');
   assert.ok(cube.calls.filter(([c]) => c === 'seek').length >= 1);
   assert.equal(moved > 0, true);
-  // `unload()` is the same supersession with no promise to hand over, and says the same thing to the cube.
+  void pending;
+});
+
+// `unload()` is the same supersession with no promise to hand over, and has to say the same thing to the
+// cube. Its own route, because the case above has already superseded everything by the time it gets here —
+// with no route loaded `unload()` has nothing to halt and the assertion passed over an older call (found by
+// the verify pass over this fix, 2026-09-16: a test that cannot fail is not coverage).
+test('unload stops the cube too, on a route that is still loaded', async () => {
+  const cube = recordingCube();
+  const player = createScriptPlayer({ cube });
+  await player.load(walk("R U R'"));
+  player.next();
   cube.animating = true;
+  const before = cube.calls.length;
+  assert.equal(player.loaded, true, 'precondition: there is a route to unload');
   player.unload();
+  assert.ok(cube.calls.length > before, 'unload said nothing to the cube it had been driving');
   assert.deepEqual(cube.calls.at(-1), ['seek', 1], 'unload left the cube playing a walk nobody owns');
   assert.equal(player.loaded, false);
-  void pending;
 });

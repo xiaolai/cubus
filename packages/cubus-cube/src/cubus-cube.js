@@ -1134,6 +1134,12 @@ class CubusCube extends HTMLElement {
     // the point (Codex audit, 2026-09-16).
     this._arrow = this._arrowMat = this._labelMeshes = this._trailMeshes = null;
     this._ghostTwin?.clear();
+    // And the three that hold meshes without being made of them: the lamps, and the two BOUND selector
+    // sets. A bound focus or highlight is a set of sticker meshes — the whole point of binding — so it
+    // holds the scene exactly as the annotations did (found by the verify pass over this fix, 2026-09-16).
+    // Both go through the same doors they always did: `_rebindFocus()` nulls the one, and a highlight with
+    // no selectors nulls the other.
+    this._lights = this._fcSet = this._hlSet = null;
   }
 
   /**
@@ -2034,9 +2040,13 @@ class CubusCube extends HTMLElement {
    * queued behind an animation nobody is watching any more.
    */
   stepStop() {
+    const sol = this._sol;
     this._settleGroup();
-    // The settle above reports every token it lands, and a host may dispose this element from inside one.
-    if (!this.stickers) return;
+    // The settle above reports every token it lands, and a host may dispose this element — or write a new
+    // `alg` — from inside one. Either way this press is about a cube that is gone or a walk that is no
+    // longer the one being played, and carrying on starts the NEW sequence's first turn off the old press
+    // (found by the verify pass over this fix, 2026-09-16). Same question `_settleGroup` asks per token.
+    if (!this.stickers || this._sol !== sol) return;
     const to = this._stops.find((p) => p > this._cursor);
     if (to === undefined) return;
     this._group = { to, delta: 1 };
@@ -2045,8 +2055,9 @@ class CubusCube extends HTMLElement {
 
   /** Undo back to the previous stop — the whole group, one token at a time, the same way round. */
   stepBackStop() {
+    const sol = this._sol;
     this._settleGroup();
-    if (!this.stickers) return;
+    if (!this.stickers || this._sol !== sol) return;
     const to = [...this._stops].reverse().find((p) => p < this._cursor);
     if (to === undefined) return;
     this._group = { to, delta: -1 };
