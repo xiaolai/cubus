@@ -158,3 +158,19 @@ test('unload stops the cube too, on a route that is still loaded', async () => {
   assert.deepEqual(cube.calls.at(-1), ['seek', 1], 'unload left the cube playing a walk nobody owns');
   assert.equal(player.loaded, false);
 });
+
+// Found by the verify pass over that fix, 2026-09-16. Between two tokens of a group the element has
+// nothing in flight — `animating` is false for that instant — and goes on feeding the group from its own
+// completion handler. A halt that asked whether a turn was animating therefore did nothing about a third
+// of the time, and the superseded walk carried on turning. What a halt stops is the GROUP.
+test('a route superseded between two turns of a group is stopped too', async () => {
+  const cube = recordingCube();
+  const player = createScriptPlayer({ cube });
+  await player.load(walk("R U R'"));
+  player.next();
+  cube.animating = false;                        // the gap between two tokens of the group
+  const before = cube.calls.length;
+  player.unload();
+  assert.ok(cube.calls.length > before, 'nothing was said to a cube that was between turns');
+  assert.deepEqual(cube.calls.at(-1), ['seek', 1], 'the superseded group was left to finish itself');
+});
