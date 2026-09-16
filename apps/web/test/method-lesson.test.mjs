@@ -16,7 +16,7 @@ import { CORNERS, EDGES, SOLVED, applyAlg } from '../lib/cube-pieces.js';
 import { registerLocale, setLocale } from '../lib/i18n.js';
 import { parseHighlight } from '../lib/cube-highlight.js';
 import {
-  CASE_TEXT_KEYS, WHY_KEYS, caseText, lessonCues, lessonSections, moveStepIndex, namedPieces,
+  CASE_TEXT_KEYS, WHY_KEYS, caseText, lessonCues, lessonSections, moveStepIndex, namedPieces, turnsIn,
   stepAtMove,
   rungSummary, whyText,
 } from '../lib/method-lesson.js';
@@ -145,7 +145,10 @@ test('focus keeps the centres, highlight does not', () => {
     const { focus, highlight } = lessonCues(step);
     assert.ok(focus.startsWith('centers,'), `${step.why.key}: focus drops the centres`);
     assert.ok(!highlight.includes('centers'), `${step.why.key}: the pulse should not be on the centres`);
-    assert.equal(focus, `centers,${highlight}`, 'focus is the highlight set plus context, nothing else');
+    // Plus what the child looks for before the move, where a step names it (plan item 6.2) — the top
+    // edges with none of the top colour — and nothing else.
+    const looked = (step.why.look ?? []).map((i) => `piece:${EDGES[i]}`).filter((p) => !highlight.split(',').includes(p));
+    assert.equal(focus, ['centers', highlight, ...looked].join(','), 'focus is the highlight set plus context, nothing else');
     assert.equal(parseHighlight(focus).invalid, null);
     assert.equal(parseHighlight(highlight).invalid, null);
   }
@@ -221,10 +224,11 @@ const dialsSeen = new Set();
       // that drifted would put a chip under the wrong heading, which is the invented structure
       // this replaced.
       assert.equal(sections[0].from, 0);
-      assert.equal(sections[sections.length - 1].to, moveCount);
+      assert.equal(sections[sections.length - 1].to, steps.reduce((n, st) => n + st.alg.trim().split(/\s+/).filter(Boolean).length, 0));
+      assert.equal(sections.reduce((n, s) => n + s.moves, 0), moveCount, 'the headings count the lesson\'s face turns, no more and no fewer');
       for (const [i, s] of sections.entries()) {
         if (i > 0) assert.equal(s.from, sections[i - 1].to, 'a gap between sections');
-        assert.equal(s.to - s.from, s.moves);
+        assert.ok(s.to - s.from >= s.moves, 'a section holds fewer positions than it counts face turns');
         assert.ok(s.steps > 0 && s.name.length > 0);
       }
       assert.equal(sections.reduce((n, s) => n + s.steps, 0), steps.length);
@@ -251,9 +255,11 @@ const dialsSeen = new Set();
 test('a stage with no heading is a stage with no work, and the cube is still solved', () => {
   // The other side of the allowance above, and what keeps it from being a hole. A missing heading
   // has to mean the stage had nothing to do — never that a section went missing from a solve that
-  // needed it. The cube below is the one that produces it: its last layer comes out already
-  // permuted after OLL, so PLL contributes no steps at every rung combination there is.
-  const [state] = seededStates(60, 31337).slice(56);
+  // needed it. The cube below is one that produces it: at the rung combinations where its first two
+  // layers leave a last layer already permuted after OLL, PLL contributes no steps. (It was the 57th
+  // of this draw until the middle layer and the joined pairs began turning the slot to the front —
+  // plan items 6.2 and 6.3 — which leaves every cube a different last layer.)
+  const [state] = seededStates(60, 31337).slice(28);
   let sawShort = 0;
   for (const rungs of allRungCombinations()) {
     const { steps, alg } = solveByMethod(state, methodFor(rungs));
@@ -292,9 +298,10 @@ test('an unknown stage is refused rather than silently folded into the previous 
 
 test('every move knows which step it belongs to', () => {
   for (const state of seededStates(5, 88)) {
-    const { steps, moveCount } = solveByMethod(state);
+    const { steps } = solveByMethod(state);
     const map = moveStepIndex(steps);
-    assert.equal(map.length, moveCount, 'the map must cover every move and no more');
+    const positions = steps.reduce((n, s) => n + s.alg.trim().split(/\s+/).filter(Boolean).length, 0);
+    assert.equal(map.length, positions, 'the map must cover every position of the walk — a regrip is one — and no more');
     // Monotonic: a move cannot belong to an earlier step than the move before it.
     for (let i = 1; i < map.length; i++) assert.ok(map[i] >= map[i - 1]);
     assert.equal(map[0], 0);
@@ -347,4 +354,18 @@ test('the cue is about the move about to happen, not the one just made', () => {
   // And a lesson with no moves has no step to point at.
   assert.equal(stepAtMove([], 0), undefined);
   assert.equal(stepAtMove(undefined, 0), undefined);
+});
+
+test('a regrip is a position on the walk, but not a move the lesson costs', () => {
+  // Plan item 6.1: the chips and the playhead index positions, a regrip among them; the count a heading
+  // and the walk say is face turns in the half-turn metric.
+  const steps = [
+    { stage: 'middle-layer', alg: 'y', why: { key: 'x' } },
+    { stage: 'middle-layer', alg: "U R U' R' U' F' U F", why: { key: 'x' } },
+  ];
+  const [section] = lessonSections(steps);
+  assert.deepEqual({ from: section.from, to: section.to, moves: section.moves, steps: section.steps }, { from: 0, to: 9, moves: 8, steps: 2 });
+  assert.deepEqual(moveStepIndex(steps), [0, 1, 1, 1, 1, 1, 1, 1, 1]);
+  assert.equal(turnsIn("y R U R' U' M2"), 6, 'a regrip none, a slice two');
+  assert.equal(turnsIn(''), 0);
 });

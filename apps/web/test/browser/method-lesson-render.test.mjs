@@ -19,11 +19,13 @@ import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { webkit } from 'playwright';
 
-import { SOLVED as SOLVED_STATE, applyAlg } from '../../lib/cube-pieces.js';
+import { convertSelectors } from '../../lib/cube-moves.js';
+import { EDGES, SOLVED as SOLVED_STATE, applyAlg } from '../../lib/cube-pieces.js';
 import { lessonCues, namedPieces } from '../../lib/method-lesson.js';
 import { methodFor, solveByMethod } from '../../lib/method-solver.js';
 import { freePort } from '../free-port.mjs';
 import { lcg, randomAlg } from '../fixtures/seeded-scrambles.mjs';
+import { drawnOf, turnsOf } from '../fixtures/method-replay.mjs';
 
 const SERVE = fileURLToPath(new URL('../../serve.mjs', import.meta.url));
 const Cube = (await import(new URL('../../vendor/cubejs.js', import.meta.url))).default;
@@ -65,7 +67,7 @@ function findSample() {
     const oracle = Cube.fromString(SOLVED);
     oracle.move(scramble);
     const startOf = [];
-    for (const step of lesson.steps) { startOf.push(oracle.asString()); oracle.move(step.alg); }
+    for (const step of lesson.steps) { startOf.push(oracle.asString()); oracle.move(turnsOf(step)); }
     return { scramble, lesson, divide, lift, startOf };
   }
   return null;
@@ -144,7 +146,11 @@ const litPositions = () => page.evaluate(() => window.__cube.cubies
 
 /** Put the cube in the arrangement this step begins from, then apply the step's cues. */
 async function showStep(step, facelets) {
-  const { focus, highlight } = lessonCues(step);
+  const cues = lessonCues(step);
+  // Read in the hold the step is made in, as `lessonFor` reads them (plan item 6.1): after a regrip a step
+  // names its pieces the way the child sees the cube then, and this cube is drawn in the method's own frame.
+  const focus = cues.focus ? convertSelectors(cues.focus, step.hold) : '';
+  const highlight = cues.highlight ? convertSelectors(cues.highlight, step.hold) : '';
   await page.evaluate(({ f, h, fl }) => {
     window.__cube.removeAttribute('scramble');
     window.__cube.removeAttribute('alg');
@@ -157,6 +163,15 @@ async function showStep(step, facelets) {
 
 /** `piece:UF` -> `FU`, the sorted key the renderer stamps on a cubie. */
 const keyOf = (token) => [...token.slice('piece:'.length)].sort().join('');
+
+/**
+ * The cube's own keys for the pieces a step names — and, with `look`, the top edges it asks the child to
+ * look for (plan item 6.2) — read in the hold the step is made in.
+ */
+const piecesNamed = (step, { look = false } = {}) => {
+  const tokens = [...namedPieces(step), ...(look ? (step.why.look ?? []).map((i) => `piece:${EDGES[i]}`) : [])];
+  return tokens.length ? [...new Set(convertSelectors(tokens.join(','), step.hold).split(',').map(keyOf))] : [];
+};
 
 test('a lesson exercising every stage was found — the sample is not a lucky one', () => {
   // A sample that had lost a stage would make everything below pass while proving less, and the
@@ -174,7 +189,7 @@ test('a step focuses exactly the pieces its why payload names, and nothing else'
   // example cannot see it.
   for (const [i, step] of SAMPLE.lesson.steps.entries()) {
     const { focus } = await showStep(step, SAMPLE.startOf[i]);
-    const wanted = new Set(namedPieces(step).map(keyOf));
+    const wanted = new Set(piecesNamed(step, { look: true }));
     const all = await stickers();
     assert.equal(all.length, 54, 'a cube has 54 stickers');
     // A sticker is IN focus when it kept its hue. Centres are context and are always kept, so
@@ -191,7 +206,7 @@ test('the highlight pulses exactly the named pieces, and never the centres', asy
   for (const [i, step] of SAMPLE.lesson.steps.entries()) {
     await showStep(step, SAMPLE.startOf[i]);
     const lit = await litPieces();
-    const wanted = namedPieces(step).map(keyOf).sort();
+    const wanted = piecesNamed(step).sort();
     assert.deepEqual(lit, wanted, `step ${i} (${step.why.key}) lit the wrong pieces`);
     assert.ok(!lit.some((p) => p.length === 1), 'a centre was pulsed; focus keeps them, the pulse does not');
   }
@@ -220,24 +235,24 @@ test('the highlight travels with the piece through the step it describes', async
   // from the one the sentence is about. `piece:` is why `cube-highlight.js` exists.
   const step = SAMPLE.lift;
   const at = SAMPLE.lesson.steps.indexOf(step);
-  const { highlight } = lessonCues(step);
+  const highlight = convertSelectors(lessonCues(step).highlight, step.hold);
   await page.evaluate(({ fl, alg, h }) => {
     window.__cube.removeAttribute('scramble');
     window.__cube.setAttribute('facelets', fl);
     window.__cube.setAttribute('alg', alg);
     window.__cube.setAttribute('highlight', h);
     window.__cube.seek(0);
-  }, { fl: SAMPLE.startOf[at], alg: step.alg, h: highlight });
+  }, { fl: SAMPLE.startOf[at], alg: drawnOf(step), h: highlight });
   const before = await litPositions();
   assert.ok(before.length > 0, 'the lift step lit nothing to begin with');
 
-  await page.evaluate((n) => window.__cube.seek(n), step.alg.trim().split(/\s+/).length);
+  await page.evaluate((n) => window.__cube.seek(n), drawnOf(step).split(' ').length);
   const after = await litPositions();
 
   assert.equal(after.length, before.length, 'the same number of pieces stays lit across the step');
   assert.notDeepEqual(after, before, 'a lift MOVES the piece it names — the glow must have moved with it');
   // The IDENTITIES are unchanged, which is what "travelled" means: same piece, new seat.
-  assert.deepEqual(await litPieces(), namedPieces(step).map(keyOf).sort());
+  assert.deepEqual(await litPieces(), piecesNamed(step).sort());
 });
 
 test('clearing the cues returns every sticker to its own colour', async () => {

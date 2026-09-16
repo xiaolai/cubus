@@ -229,11 +229,22 @@ function assertDistIsDisposable(src, out, entry) {
       `build: refusing to assemble into ${out} — it is the source tree ${src} (or holds it), and the first thing an assembly does is delete its destination`,
     );
   }
+  // BOTH DIRECTIONS, because a recursive delete destroys everything on either side of the relation.
+  // This asked only whether the destination sits inside a copied tree; a copied tree sitting inside the
+  // DESTINATION is destroyed just as thoroughly, and a symlink is how that happens without anyone
+  // spelling it: with `apps/web/vendor` linked to `/assets/vendor`, `assembleDist({ dist: '/assets' })`
+  // passed every check and deleted the vendor tree it was about to copy (Codex audit, 2026-09-16). The
+  // renderer guard below has asked both ways since it was written; this is the same question.
   for (const p of [...DIRS, ...FILES]) {
     const copied = join(src, p);
     if (beneath(out, copied)) {
       throw new Error(
         `build: refusing to assemble into ${out} — it is ${posix(src, copied)}, which the assembly copies FROM, and the destination is deleted first`,
+      );
+    }
+    if (beneath(copied, out)) {
+      throw new Error(
+        `build: refusing to assemble into ${out} — it holds ${posix(src, copied)}, which the assembly copies FROM, and the destination is deleted first`,
       );
     }
   }
@@ -286,8 +297,15 @@ function assertReferencedAssets(dist) {
   // step that quietly drops a file looks exactly like one that worked, and the
   // failure would surface only as a blank window in a packaged app.
   const html = readFileSync(join(dist, 'index.html'), 'utf8');
+  // EVERY LOCAL REFERENCE, however it is spelt. This matched one spelling — double quotes and a leading
+  // `./` — so `src='./app.js'` and `src="app.js"` were skipped in silence, and a dist missing either
+  // passed the check that exists to catch exactly that (Codex audit, 2026-09-16). What is skipped is
+  // said out loud: a remote URL, a data URI and an in-page anchor are not files this build copies.
   const referenced = new Set(
-    [...html.matchAll(/(?:href|src)="\.\/([^"]+)"/g)].map((m) => m[1]),
+    [...html.matchAll(/(?:href|src)\s*=\s*("([^"]*)"|'([^']*)')/g)]
+      .map((m) => (m[2] ?? m[3]).trim())
+      .filter((url) => url && !/^(?:[a-z][a-z0-9+.-]*:|\/\/|#|\/)/i.test(url))
+      .map((url) => url.replace(/^\.\//, '').replace(/[?#].*$/, '')),
   );
   for (const icon of JSON.parse(readFileSync(join(dist, 'manifest.webmanifest'), 'utf8')).icons ?? []) {
     referenced.add(icon.src.replace(/^\.\//, ''));
@@ -311,6 +329,7 @@ function assertSolverAssets(dist) {
   const SOLVER = [
     'vendor/cubejs.js',
     'lib/two-phase.js',
+    'lib/cube-layout.js',
     'lib/solver-engine.js',
     'lib/solve-worker.js',
     'lib/solve-client.js',

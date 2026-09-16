@@ -10,19 +10,21 @@
 // session, in test/walk-session.test.mjs.
 
 import { t } from './i18n.js';
+import { createScriptPlayer } from './script-player.js';
+import { locate as locateOnTrack, trackOf } from './script-track.js';
 import { showMove } from './solving-hold.js';
 
 /**
  * The follow tracker of one mounted cube screen, its buttons wired.
  *
  * @param {object} deps `root`; the renderer `cube`; shared `state`; `cubejs()`; the speed menu's
- *   `applyTempo()`; the transport's `setPlaying(on)`; `holdAt(k)`, how move `k` is held;
+ *   `applyTempo()`; the transport's `setPlaying(on)`; `moveHoldAt(k)`, the hold move `k` is made in;
  *   `markStale`; `adoptCube`; `go`; `scrambling`; the live distance's `refreshLiveDistance` and
  *   `dropLiveDistance`; `chainTrusted()`, the one predicate for trust in the live chain; and
  *   `walkNow()`, the walk on screen as `{ moves, steps }`.
  */
 export function createFollowTracker({
-  root, cube, state, cubejs, applyTempo, setPlaying, holdAt, markStale, adoptCube, go, scrambling,
+  root, cube, state, cubejs, applyTempo, setPlaying, moveHoldAt, markStale, adoptCube, go, scrambling,
   refreshLiveDistance, dropLiveDistance, chainTrusted, walkNow,
 }) {
   const $ = (sel, from) => from.querySelector(sel);
@@ -37,7 +39,18 @@ export function createFollowTracker({
   // Where the PHYSICAL cube is, in solution indices. The model beneath it tracks in EVERY
   // mode — only drawing and notes are gated on `mode` — so resuming follow needs no special
   // case: the position is simply already right.
-  let cubePos = 0;
+  //
+  // The walk is a ROUTE on the script player (lib/script-player.js, plan item 3.5 of
+  // dev-docs/tutorial-capability-plan.md): which walk is loaded, the arrangement at each step and
+  // where on it the cube is. The player supersedes a walk the moment its replacement is asked for,
+  // so nothing belonging to the old walk can move a position on the new one. The model of the cube,
+  // trust in it, whether it may lead and the drawing all stay here — the host's, as the plan splits
+  // them. A walk too incomplete to be a route (steps short, which judge() refuses) is tracked by
+  // index alone, as it always was.
+  const player = createScriptPlayer();
+  let unrouted = 0;
+  const cubePosNow = () => (player.loaded ? player.position : unrouted);
+  const moveTo = (k) => { if (player.loaded) player.seek(k); else unrouted = k; };
   let liveModel = null; // cubejs cube in truth frame; made by seed() or a snapshot, on a trusted chain
   /**
    * Has `liveModel` advanced past the snapshot it was seeded from?
@@ -53,11 +66,6 @@ export function createFollowTracker({
   let liveMoved = false;
   let drawn = 0;        // index the renderer's QUEUE will end at; meaningful only while following
   let lastSerial = null;
-  // For each half-turn step i, the two states one quarter turn in: the cube passes through
-  // one of them mid-R2 in either direction (undoing is steps[i]·R2·R = steps[i]·R'). Owner-
-  // indexed, because a midpoint only counts BESIDE its own half turn — landing on a distant
-  // one is a wrong move, not silent progress.
-  const midpoints = new Map();
   /** Why the cube may not lead the walk on screen, or null while it may. */
   let refusal = null;
   /** Where the cube was when the walk being searched for was asked about — see judge(). */
@@ -129,20 +137,12 @@ export function createFollowTracker({
     pauseNote();
   }
 
+  // Near first, ahead before behind (R6), then a midpoint beside the cube, then anywhere on the walk.
+  // A walk with no track — none committed yet — is matched by its steps alone, as it always was.
   const locate = (f) => {
+    if (player.loaded) return player.locate(f, cubePosNow());
     const { steps } = walkNow();
-    for (let d = 0; d <= 2; d++) {
-      // AHEAD BEFORE BEHIND, at the same distance. A walk can pass through one arrangement twice —
-      // a step ending on `R` and the next beginning with `R'` are not merged — and there the cube
-      // matches both. The turn that reached it IS the walk's next move, so it is progress; checking
-      // behind first drew an undo nobody made. Where only one side matches, the order changes nothing.
-      for (const idx of d === 0 ? [cubePos] : [cubePos + d, cubePos - d]) {
-        if (idx >= 0 && idx < steps.length && steps[idx] === f) return { kind: 'step', idx };
-      }
-    }
-    if (midpoints.get(f)?.some((i) => i === cubePos || i === cubePos - 1)) return { kind: 'mid' };
-    const idx = steps.indexOf(f);
-    return idx >= 0 ? { kind: 'step', idx } : { kind: 'off' };
+    return locateOnTrack(trackOf(steps, steps.slice(1).map(() => [])), f, cubePosNow());
   };
 
   /** Move the drawing toward where the cube is. Deltas are against `drawn` — the end of the
@@ -164,8 +164,8 @@ export function createFollowTracker({
   /** ONE reaction to every accepted reading, move or snapshot. */
   const act = (loc, offMsg) => {
     if (loc.kind === 'step') {
-      cubePos = loc.idx;
-      if (mode === 'cube') { clearNote(); drawTo(cubePos); }
+      moveTo(loc.idx);
+      if (mode === 'cube') { clearNote(); drawTo(cubePosNow()); }
     } else if (loc.kind === 'mid') {
       if (mode === 'cube') clearNote(); // half a half-turn: legal, silent, position held
     } else if (mode === 'cube') {
@@ -201,8 +201,8 @@ export function createFollowTracker({
     const want = on && refusal === null ? 'cube' : 'slow';
     if (mode !== want) {
       mode = want;
-      if (typeof cube.seek === 'function') cube.seek(cubePos);
-      drawn = cubePos;
+      if (typeof cube.seek === 'function') cube.seek(cubePosNow());
+      drawn = cubePosNow();
       applyTempo();
       if (mode === 'cube') {
         setPlaying(false);
@@ -249,10 +249,10 @@ export function createFollowTracker({
     liveMoved = true;
     // Both moves named for the hold the walk is in: the cube reports in its own colour frame,
     // which is the scan frame, and the child is holding it the way the chips say.
-    const heldNow = holdAt(cubePos);
+    const heldNow = moveHoldAt(cubePosNow());
     const { moves } = walkNow();
     act(locate(liveModel.asString()), t('That was %1 — the next move is %2.',
-      showMove(m.notation, heldNow), cubePos < moves.length ? showMove(moves[cubePos], heldNow) : '—'));
+      showMove(m.notation, heldNow), cubePosNow() < moves.length ? showMove(moves[cubePosNow()], heldNow) : '—'));
     tripwire(m.serial);
     rejudge();
     void refreshLiveDistance();
@@ -368,7 +368,7 @@ export function createFollowTracker({
   const lead = () => {
     refusal = null;
     const loc = locate(liveModel.asString());
-    if (loc.kind === 'step') cubePos = loc.idx;
+    if (loc.kind === 'step') moveTo(loc.idx);
     setFollow(true);
   };
 
@@ -380,21 +380,16 @@ export function createFollowTracker({
     if (judge(walkNow()) === null) lead();
   };
 
-  /** The midpoints of a walk's half turns. Built only from a COMPLETE step array: with steps short
-   *  (a walk judge() refuses), steps[i] is undefined for the tail and fromString(undefined)
-   *  throws — which turned "follow is refused" into "the whole screen fails to mount". */
+  /** Load the walk as the player's route. Only a COMPLETE step array is one: with steps short (a walk
+   *  judge() refuses), steps[i] is undefined for the tail — which once turned "follow is refused" into
+   *  "the whole screen fails to mount". An empty walk — a cube already where it is going — has nowhere
+   *  to go, and is no route either. */
   const buildMidpoints = ({ moves, steps }) => {
-    midpoints.clear();
-    if (steps.length !== moves.length + 1) return;
-    for (let i = 0; i < moves.length; i++) {
-      if (!moves[i].endsWith('2')) continue;
-      for (const q of [moves[i][0], `${moves[i][0]}'`]) {
-        const c = cubejs().fromString(steps[i]); c.move(q);
-        const s = c.asString();
-        if (!midpoints.has(s)) midpoints.set(s, []);
-        midpoints.get(s).push(i);
-      }
-    }
+    unrouted = 0;
+    if (steps.length !== moves.length + 1 || !moves.length) { player.unload(); return; }
+    // The walk's moves are face turns in the cube's own frame, one stop each, so a script of them at the
+    // reference hold has exactly the walk's positions: step k is position k.
+    void player.load({ schema: 2, start: { facelets: steps[0] }, steps: [{ move: moves.join(' ') }] });
   };
 
   /**
@@ -403,7 +398,6 @@ export function createFollowTracker({
    * model is not touched — it is where the cube in your hand is, and a new walk does not move it.
    */
   function rebase(walk) {
-    cubePos = 0;
     drawn = 0;
     lastSerial = null;
     clearNote();
@@ -423,7 +417,8 @@ export function createFollowTracker({
      *  toggle — there is nothing to follow while the next walk is searched for. Where the cube is
      *  NOW is kept (`startedFrom`), because the walk being searched for is about that cube. */
     standDown() {
-      midpoints.clear();
+      player.unload();
+      unrouted = 0;
       startedFrom = seed()?.asString() ?? null;
       refuseFollow(t('Needs a solve worked out on this screen'));
       clearNote();

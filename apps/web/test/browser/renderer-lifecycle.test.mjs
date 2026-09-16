@@ -107,6 +107,12 @@ test('dispose releases every geometry and material once, and lets go of the old 
       const real = r.dispose.bind(r);
       r.dispose = () => { count.set(r.uuid, (count.get(r.uuid) ?? 0) + 1); real(); };
     }
+    // The arrow's material is NOT in the scene here — no arrow is shown, and its meshes exist only while
+    // one is — so the traverse above cannot find it. It is still the element's to release.
+    const arrowMat = el._arrowMat;
+    let arrowDisposed = 0;
+    const realArrow = arrowMat.dispose.bind(arrowMat);
+    arrowMat.dispose = () => { arrowDisposed += 1; realArrow(); };
     el.dispose();
     const once = [...count.values()].every((n) => n === 1);
     return {
@@ -114,13 +120,80 @@ test('dispose releases every geometry and material once, and lets go of the old 
       materials: materials.size,
       disposed: count.size,
       once,
-      held: ['root', 'cubies', 'stickers', '_tick', '_resize', '_ro', '_io'].filter((k) => el[k] != null),
+      // The annotations are on this list too: each of `_arrow`, `_labelMeshes` and `_trailMeshes` held
+      // meshes of the old scene, and `_ghostTwin` held 54 of them, so a host still holding a disposed
+      // element kept the whole graph on the JS heap even though the GPU had let go.
+      held: ['root', 'cubies', 'stickers', '_tick', '_resize', '_ro', '_io',
+        '_arrow', '_arrowMat', '_labelMeshes', '_trailMeshes'].filter((k) => el[k] != null),
+      twins: el._ghostTwin?.size ?? 0,
+      arrowDisposed,
+      // The lamps, and the two BOUND selector sets: a bound focus or highlight IS a set of sticker meshes
+      // — the whole point of binding — so each held the scene exactly as the annotations did (found by the
+      // verify pass over that fix, 2026-09-16).
+      bound: ['_lights', '_fcSet', '_hlSet'].filter((k) => el[k] != null),
     };
   });
   assert.equal(outcome.disposed, outcome.geometries + outcome.materials,
     `disposed ${outcome.disposed} of ${outcome.geometries} geometries and ${outcome.materials} materials`);
   assert.equal(outcome.once, true, 'a shared geometry or material was disposed more than once');
   assert.deepEqual(outcome.held, [], `a disposed cube still holds the old scene through ${outcome.held.join(', ')}`);
+  assert.equal(outcome.twins, 0, 'a disposed cube still holds every sticker through its ghost twins');
+  assert.equal(outcome.arrowDisposed, 1, "the arrow's material was left undisposed on a cube drawn without an arrow");
+  assert.deepEqual(outcome.bound, [], `a disposed cube still holds the scene through ${outcome.bound.join(', ')}`);
+});
+
+// A trail is drawn in its own ink, so it owns its material — and clearing one disposed the geometry and
+// left the material behind. `_placeTrails()` re-runs at every seek, so a scrub leaked one per trail per
+// position; a disposed element never released them either, because the meshes had left the scene.
+//
+// The COUNT is a rule and not a number (2026-09-16, when the rim and then the numerals arrived): each trail
+// owns ONE ink; all of them share ONE rim, because the rim is not a choice — it is the same light edge
+// whatever the body is; and each NUMERAL owns one, because each carries its own canvas texture. Asserted as
+// that sum rather than as a total, so the day a trail starts owning a material nobody accounted for, this
+// fails and says which, instead of being edited to whatever the new number happens to be.
+test('clearing a trail releases its material, not only its geometry', async () => {
+  await build({ facelets: SOLVED, alg: "R U R' U'", trail: 'piece:UF, piece:UR' });
+  const outcome = await page.evaluate(() => {
+    const el = window.__cube;
+    const meshes = window.__cube._trailMeshes ?? [];
+    const materials = [...new Set(meshes.map((m) => m.material))];
+    const gone = new Set();
+    for (const m of materials) { const real = m.dispose.bind(m); m.dispose = () => { gone.add(m.uuid); real(); }; }
+    el.setAttribute('trail', 'none');
+    const afterClear = [...gone].length;
+    return {
+      materials: materials.length, afterClear, left: el._trailMeshes.length,
+      trails: meshes.filter((m) => m.userData.trail).length,
+      numerals: meshes.filter((m) => m.userData.billboard).length,
+    };
+  });
+  assert.equal(outcome.trails, 2, `precondition: two trails should be drawn, not ${outcome.trails}`);
+  assert.ok(outcome.numerals > 0, 'precondition: a trail should be numbered');
+  const owed = outcome.trails + 1 + outcome.numerals;
+  assert.equal(outcome.materials, owed,
+    `${outcome.trails} trails (an ink each) + 1 shared rim + ${outcome.numerals} numerals = ${owed} materials, not ${outcome.materials}`);
+  assert.equal(outcome.left, 0, 'clearing the trail left meshes in the scene');
+  assert.equal(outcome.afterClear, outcome.materials, 'a cleared trail left its material undisposed');
+});
+
+// The rim is made before the loop that draws the trails, so a spec that names a piece nothing moves — every
+// selector can miss — would build one and attach it to nothing, and nothing would ever dispose it: the
+// release path walks `_trailMeshes`, which an unused material never reaches. The ordinary path, not an
+// unlucky one, and invisible from outside except as memory.
+test('a trail spec that draws nothing leaves no material behind either', async () => {
+  await build({ facelets: SOLVED, alg: 'R', trail: 'piece:UF' }); // R does not move UF
+  const outcome = await page.evaluate(() => {
+    const el = window.__cube;
+    let live = 0;
+    el.scene.traverse((o) => { for (const m of [o.material].flat()) if (m) live++; });
+    return { meshes: el._trailMeshes.length, live };
+  });
+  assert.equal(outcome.meshes, 0, 'precondition: R does not move UF, so no trail should be drawn');
+  // Drawn or not, nothing of the trail is in the scene; the guard is that the material was disposed rather
+  // than merely unreferenced, which `renderer-lifecycle`'s disposal case above cannot see for an orphan.
+  await page.evaluate(() => { window.__cube.setAttribute('trail', 'piece:UF,piece:UR'); });
+  const after = await page.evaluate(() => window.__cube._trailMeshes.filter((m) => m.userData.trail).length);
+  assert.equal(after, 1, 'UR moves under R and should still draw, after a spec that drew nothing');
 });
 
 // Building published `this.scene` — the "already built" marker — before the WebGL context existed.
@@ -335,4 +408,92 @@ test('a cube switched from side-by-side to top-right, at a new size, draws what 
     return n;
   });
   assert.equal(differ, 0, `${differ} pixels differ between a switched top-right cube and a fresh one`);
+});
+
+// ---- what a Codex audit of 2026-09-16 found, each pinned here ---------------------------------------
+
+test('a positional focus binds to the cube the scramble made, not the one it started from', async () => {
+  // `_paint()` resolved `focus` before the scramble was applied, so `slot:UR` named the piece that STARTS
+  // at UR. What a child is shown is the scrambled cube, and a focus written with it has to be about that
+  // one: after `R`, the piece at UR is the one that was at FR.
+  await build({ scramble: 'R', focus: 'slot:UR' });
+  const kept = await page.evaluate(() => window.__cube.cubies
+    .filter((c) => c.userData.piece && c.userData.piece.length > 1)
+    .filter((c) => c.children.some((m) => {
+      if (!m.userData?.face || m.userData.n) return false;
+      const { r, g, b } = m.material.color;
+      return !(Math.abs(r - g) < 0.02 && Math.abs(g - b) < 0.02);
+    }))
+    .map((c) => [...c.userData.piece].sort().join(''))
+    .sort());
+  assert.deepEqual(kept, ['FR'], 'the focus kept the piece that starts at UR rather than the one there now');
+});
+
+test('replacing the alg starts the new sequence where the sequence starts', async () => {
+  // `seek(k)` replays k tokens from the cube the scramble describes, and a trail is drawn from that same
+  // origin, but playback of a replaced alg carried on from wherever the old one had reached — so one
+  // position meant two different cubes.
+  await build({ scramble: 'R', alg: 'U F' });
+  const outcome = await page.evaluate(async () => {
+    const el = window.__cube;
+    const tick = () => new Promise((r) => requestAnimationFrame(() => r()));
+    const pose = () => el.cubies.map((c) => [c.position.x, c.position.y, c.position.z].map(Math.round).join(',')).join('|');
+    el.seek(2);                        // part way through the old alg
+    el.setAttribute('alg', 'D');       // a new walk
+    const replaced = pose();
+    el.clock = 2_000_000;
+    el.step();
+    el.clock = 2_000_000 + 10_000;
+    await tick(); await tick();
+    const played = pose();
+    el.seek(0);
+    const start = pose();
+    el.seek(1);
+    const sought = pose();
+    return { replaced, played, start, sought };
+  });
+  assert.equal(outcome.replaced, outcome.start, 'a replaced alg left the cube part way through the old one');
+  assert.equal(outcome.played, outcome.sought, 'playing the first move and seeking to it drew different cubes');
+});
+
+// The same TWO presses, and the other way a host can pull the ground out from under them: the second
+// press settles the first one's group, `_completeMove` reports each token it lands, and a listener may
+// write a new `alg` from inside that report. `_settleGroup` stops feeding tokens when the sequence changes
+// under it — and then `stepStop` carried on with the new sequence's stops and started ITS first turn off
+// the old press (found by the verify pass over that fix, 2026-09-16).
+test('a step listener that replaces the alg does not have the old press play the new sequence', async () => {
+  await build({ facelets: SOLVED, alg: 'x y R U' });
+  const outcome = await page.evaluate(async () => {
+    const el = window.__cube;
+    const tick = () => new Promise((r) => requestAnimationFrame(() => r()));
+    let steps = 0;
+    el.addEventListener('cubus-step', () => { steps += 1; if (steps === 1) el.setAttribute('alg', 'F'); });
+    el.stepStop();
+    el.stepStop();                       // settles the first group, which is where the listener fires
+    const right = { queue: el._queue.length, anim: Boolean(el._anim), cursor: el._cursor };
+    el.clock = 3_000_000;
+    await tick(); await tick();
+    return { steps, right, alg: el.getAttribute('alg'), cursor: el._cursor, applied: el._applied };
+  });
+  assert.equal(outcome.alg, 'F', 'precondition: the listener replaced the sequence');
+  assert.ok(outcome.steps > 0, 'precondition: the second press settled the first one, so the listener ran');
+  assert.deepEqual(outcome.right, { queue: 0, anim: false, cursor: 0 },
+    'the press that ended the old sequence started a turn of the new one');
+  assert.equal(outcome.cursor, 0, 'the old press walked on into the new sequence');
+  assert.equal(outcome.applied, 0, 'the new sequence had a turn applied by the press that ended it');
+});
+
+test("a step listener that disposes the cube stops the group being settled", async () => {
+  // `_completeMove` reports a step synchronously, and a host may dispose the element from inside that
+  // report — after which every later token of the group is about a cube that is gone.
+  await build({ alg: "x y R U" });
+  const outcome = await page.evaluate(() => {
+    const el = window.__cube;
+    el.addEventListener('cubus-step', () => el.dispose());
+    let threw = null;
+    try { el.stepStop(); el.stepStop(); } catch (e) { threw = String(e.message); }
+    return { threw, alive: Boolean(el.stickers) };
+  });
+  assert.equal(outcome.threw, null, 'settling went on using a cube its own listener had disposed');
+  assert.equal(outcome.alive, false, 'precondition: the listener disposed it');
 });

@@ -19,6 +19,7 @@
 // mounting a screen.
 
 import { CORNERS, EDGES, moveCount } from './cube-pieces.js';
+import { faceTurnsAlg } from './cube-moves.js';
 import { plural, t } from './i18n.js';
 import { WHITE_UP_STAGES } from './solving-hold.js';
 
@@ -88,21 +89,36 @@ const WHY_TEXT = Object.freeze({
       other: 'Make the cross on the bottom — %1 moves, planned as one.',
     }),
   },
+  // Turned over, the joined-pairs rung's fallback may begin by turning the whole cube so the slot is in
+  // front (plan item 6.3). Those sentences were approved by the owner as D4, 2026-09-16.
   'firstLayer.lift': {
     up: () => t('Bring this corner down to the bottom, where you can work with it.'),
-    over: () => t('Bring this corner up to the top, where you can work with it.'),
+    over: ({ turn } = {}) => (turn
+      ? t('Turn the whole cube so the slot is in front of you, then bring this corner up to the top.')
+      : t('Bring this corner up to the top, where you can work with it.')),
   },
   'firstLayer.insert': {
     up: () => t('Turn the corner up into its slot above.'),
-    over: () => t('Drop the corner into its slot underneath.'),
+    over: ({ turn } = {}) => (turn
+      ? t('Turn the whole cube so the slot is in front of you, then drop the corner into it.')
+      : t('Drop the corner into its slot underneath.')),
   },
-  'middleLayer.insert': () => t('Send this edge down into the middle layer.'),
+  // A middle-layer step may begin by turning the whole cube so the gap is in front (plan item 6.2),
+  // and then says so. The two turning sentences were approved by the owner as D4 of
+  // dev-docs/tutorial-capability-plan.md, 2026-09-16.
+  'middleLayer.insert': ({ turn } = {}) => (turn
+    ? t('Turn the whole cube so the gap is in front of you, then send this edge down into it.')
+    : t('Send this edge down into the middle layer.')),
   // The same algorithm ejects a wrong edge and inserts the right one. Captioning an ejection
   // "send this edge down" describes the opposite of what is about to happen on screen.
-  'middleLayer.eject': () => t('Lift the wrong edge out of the slot first.'),
+  'middleLayer.eject': ({ turn } = {}) => (turn
+    ? t('Turn the whole cube so the wrong edge is in front of you, then lift it out.')
+    : t('Lift the wrong edge out of the slot first.')),
   // One sentence, not two. The second described an ejection first, and `pairs.js` proves that
   // branch of the search could never run — so the caption was for a step nothing could produce.
-  'f2l.pair': () => t('Join the corner to its edge, then put the pair in together.'),
+  'f2l.pair': ({ turn } = {}) => (turn
+    ? t('Turn the whole cube so the slot is in front of you, then join the corner to its edge and put the pair in.')
+    : t('Join the corner to its edge, then put the pair in together.')),
   // A look may take several applications, and only the last one reaches its goal. The `.step`
   // forms are what the ones before it say — the difference between describing a step and
   // describing the stage it belongs to.
@@ -167,6 +183,7 @@ const CASE_TEXT = Object.freeze({
   'u-perm-a': () => t('U perm a'),
   'u-perm-b': () => t('U perm b'),
   align: () => t('align'),
+  turn: () => t('turn the cube'),
 });
 
 /** A key from a generated table rather than a name — `oll:00120011`, `f2l:0c10`. Matched
@@ -188,37 +205,51 @@ export function caseText(name) {
 }
 
 /** The sentence for a step, with the case name where the step is a named algorithm. */
-export function whyText(step) {
-  if (!step) return '';
+/**
+ * The sentence a step's reason writes, in the hold that step is made in — or '' when it has no reason.
+ *
+ * Refuses rather than guesses, twice over, because the caller HIDES an empty line: a missing entry would
+ * remove the sentence silently and look like a step that simply had nothing to say, and a hold-dependent
+ * sentence with no stage to pick by would print one of two opposite instructions.
+ */
+function sentenceFor(step) {
   const key = step.why?.key;
   // `hasOwn`, never `WHY_TEXT[key]` alone: the key comes from a step record, and `constructor`
   // would resolve to a function while `__proto__` throws. `cube-highlight.js` records the same
   // lesson about `in` and pays it the same way.
   const entry = typeof key === 'string' && Object.hasOwn(WHY_TEXT, key) ? WHY_TEXT[key] : null;
-  // A reason nothing can caption is a step with no explanation, and the caller HIDES an empty
-  // line — so a missing entry would remove the sentence silently and look like a step that
-  // simply had nothing to say. Loud instead; `method-lesson.test.mjs` proves the table covers
-  // every key the solver emits, so reaching this is a defect and not an input.
+  // `method-lesson.test.mjs` proves the table covers every key the solver emits, so reaching this is a
+  // defect and not an input.
   if (key !== undefined && !entry) {
     throw new Error(`method-lesson: no sentence for reason "${key}"`);
   }
-  // A sentence that says where a piece goes is picked by the hold its step is made in. A step with
-  // no stage cannot say which, and guessing would print one of two opposite instructions — so it is
-  // refused, the same way an unknown reason is. Every step the solver emits carries its stage.
-  if (entry && typeof entry !== 'function' && typeof step.stage !== 'string') {
+  if (!entry) return '';
+  if (typeof entry === 'function') return entry(step.why);
+  if (typeof step.stage !== 'string') {
     throw new Error(`method-lesson: "${key}" reads differently held white up and turned over, and this step has no stage to say which`);
   }
-  const write = !entry ? null : typeof entry === 'function' ? entry : WHITE_UP_STAGES.includes(step.stage) ? entry.up : entry.over;
-  const sentence = write ? write(step.why) : '';
-  // A case name is what a learner recognises next time, so it is worth showing — but only for
-  // named algorithms, never for a searched sequence, which has no case to name.
-  if (!(step.kind === 'case' && step.caseName && !step.parts)) return sentence;
-  // A generated case IDENTIFIER is carried on the step and never shown. `oll:1a2b3c4d` is this
-  // repository's key for a position; it is not the number a learner would find anywhere else, and
-  // our own numbering shown as if it were the world's would be worse than showing none. The step
-  // keeps it so a future screen can look the case up — see lib/data/case-tables.js.
-  if (GENERATED_CASE_ID.test(step.caseName)) return sentence;
-  return t('%1 (%2)', sentence, caseText(step.caseName));
+  return (WHITE_UP_STAGES.includes(step.stage) ? entry.up : entry.over)(step.why);
+}
+
+/**
+ * The case name to show after a step's sentence, or null.
+ *
+ * Only for named algorithms — a searched sequence has no case to name — and never for a GENERATED case
+ * identifier: `oll:1a2b3c4d` is this repository's key for a position, not the number a learner would find
+ * anywhere else, and our own numbering shown as if it were the world's would be worse than showing none.
+ * The step keeps it so a future screen can look the case up — see lib/data/case-tables.js.
+ */
+function caseLabel(step) {
+  if (!(step.kind === 'case' && step.caseName && !step.parts)) return null;
+  return GENERATED_CASE_ID.test(step.caseName) ? null : caseText(step.caseName);
+}
+
+/** The sentence for a step, with the case name where the step is a named algorithm. */
+export function whyText(step) {
+  if (!step) return '';
+  const sentence = sentenceFor(step);
+  const label = caseLabel(step);
+  return label === null ? sentence : t('%1 (%2)', sentence, label);
 }
 
 /** A cubie index as its slot name, refusing anything that is not one.
@@ -271,11 +302,22 @@ export function namedPieces(step) {
 export function lessonCues(step) {
   const pieces = namedPieces(step);
   if (pieces.length === 0) return { highlight: '', focus: '' };
-  return { highlight: pieces.join(','), focus: ['centers', ...pieces].join(',') };
+  // What the child looks for before the move — the top edges with none of the top colour (plan item
+  // 6.2) — stays in colour beside the piece the step is about, and only that piece pulses.
+  const looked = asList(step.why?.look).map((i) => `piece:${edgeName(i)}`).filter((p) => !pieces.includes(p));
+  return { highlight: pieces.join(','), focus: ['centers', ...pieces, ...looked].join(',') };
 }
 
-/** How many moves are in an alg — the shared tokenizer, not a third spelling of it. */
+/** How many moves are in an alg — the shared tokenizer, not a third spelling of it. A regrip is one:
+ *  this counts POSITIONS in a walk, which is what a chip and the playhead are indexed by. */
 const movesIn = moveCount;
+
+/**
+ * How many face turns an alg is, in the half-turn metric — a regrip none, a slice two. What a lesson
+ * says it COSTS (plan item 6.1): turning the cube so the gap is in front is not a move a child is
+ * charged for, and a count that included it would make the method look longer for teaching it.
+ */
+export const turnsIn = (alg) => moveCount(faceTurnsAlg(String(alg ?? '')));
 
 /**
  * The move list, cut into the four stages — §5.1.
@@ -308,7 +350,7 @@ export function lessonSections(steps) {
     }
     const n = movesIn(s.alg);
     last.steps += 1;
-    last.moves += n;
+    last.moves += turnsIn(s.alg);
     move += n;
     last.to = move;
     step += 1;
