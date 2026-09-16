@@ -312,8 +312,8 @@ export function checkScript(script) {
 }
 
 /** The step rules, shared by a script and by a round's reveal segment (plan item 3.4). */
-function checkSteps(steps, where, { rounds = true } = {}) {
-  let painted = false;                    // inside a picture segment?
+function checkSteps(steps, where, { rounds = true, painted: startPainted = false } = {}) {
+  let painted = startPainted;             // inside a picture segment?
   let last = -Infinity;                   // the last `at`, so a timed script cannot go backwards
   steps.forEach((step, i) => {
     if (!step || typeof step !== 'object') where(i, 'expected an object');
@@ -356,9 +356,11 @@ function checkSteps(steps, where, { rounds = true } = {}) {
     }
     if (kind === 'round') {
       if (!rounds) where(i, 'a round inside a reveal — a reveal shows an answer, it does not ask again');
-      checkRound(step.round, (msg) => where(i, msg));
-      // A prediction imagines a turn of the cube, and a picture is not a cube.
-      if (painted && step.round.turn !== undefined) where(i, 'a round with a turn inside a picture segment — a picture cannot be turned, even in imagination');
+      // A prediction imagines a turn of the cube, and a picture is not a cube. Asked BEFORE the round's
+      // own fields are read: its reveal is a segment of its own, and a round that turns a picture should
+      // be refused for the turn it names rather than for the first move of the answer it would show.
+      if (painted && step.round?.turn !== undefined) where(i, 'a round with a turn inside a picture segment — a picture cannot be turned, even in imagination');
+      checkRound(step.round, (msg) => where(i, msg), { painted });
     }
 
     // The cues, which any step may carry.
@@ -425,7 +427,7 @@ function checkSteps(steps, where, { rounds = true } = {}) {
 export const ROUND_QUESTIONS = Object.freeze(['whereIs', 'pieceIn']);
 
 /** A drill round's shape; `lib/script-rounds.js` gives it its behaviour (plan item 3.4). */
-function checkRound(round, where) {
+function checkRound(round, where, { painted = false } = {}) {
   if (!round || typeof round !== 'object') where('`round` must be an object');
   const known = new Set(['say', 'turn', 'ask', 'choose', 'reveal']);
   for (const k of Object.keys(round)) if (!known.has(k)) where(`round: unknown field "${k}"`);
@@ -446,8 +448,11 @@ function checkRound(round, where) {
   if (round.reveal !== undefined) {
     if (!Array.isArray(round.reveal)) where('round: `reveal` must be an array of steps');
     // A reveal is a script segment, so it is checked by the same rules — minus rounds, because a
-    // reveal shows the answer and cannot ask another question.
-    checkSteps(round.reveal, (j, msg) => where(`round: reveal step ${j}: ${msg}`), { rounds: false });
+    // reveal shows the answer and cannot ask another question. It also INHERITS the picture segment it
+    // sits in: a fresh check started `painted` at false, so a reveal with a move in it passed validation
+    // inside a picture and then threw when the reveal was built, which is the one failure a checker
+    // exists to move forward in time (Codex audit, 2026-09-16).
+    checkSteps(round.reveal, (j, msg) => where(`round: reveal step ${j}: ${msg}`), { rounds: false, painted });
   }
 }
 

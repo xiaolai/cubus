@@ -105,6 +105,23 @@ export function buildScript(script) {
   };
   let segment = openSegment(start.facelets ? { facelets: start.facelets } : { scramble: opening });
 
+  // A position's cube is frozen ALL THE WAY DOWN, because `Object.freeze` is shallow and a position is
+  // promised to be a pure function of the script: a consumer that wrote to `view.cube.ep` changed what
+  // every later reader of that position — and, at position 0, every reader of `SOLVED` — sees. Memoised
+  // by identity, so the positions a cube passes through unchanged share one frozen object rather than a
+  // copy each.
+  const frozen = new Map();
+  const frozenCube = (s) => {
+    if (typeof s === 'string' || s === null) return s;      // a painted picture is already a value
+    if (!frozen.has(s)) {
+      frozen.set(s, Object.freeze({
+        cp: Object.freeze([...s.cp]), co: Object.freeze([...s.co]),
+        ep: Object.freeze([...s.ep]), eo: Object.freeze([...s.eo]),
+      }));
+    }
+    return frozen.get(s);
+  };
+
   const record = (step, stepIndex, kind, { stop = null } = {}) => {
     positions.push(Object.freeze({
       index: positions.length,
@@ -114,9 +131,14 @@ export function buildScript(script) {
       segment: segment.index,
       moves: segment.tokens.length,
       hold: holdName(hold),
-      cube: picture ?? state,
+      cube: frozenCube(picture ?? state),
       isPicture: picture !== null,
-      cues: Object.freeze(Object.fromEntries([...cues].map(([k, v]) => [k, Object.freeze({ ...v })]))),
+      // A cue's VALUE is frozen too when it is one an author wrote as an array — `cam: [lat, lon]` is
+      // the script's own array, shared by every position the cue is in force at, so one consumer
+      // writing to it moved the camera at all of them.
+      cues: Object.freeze(Object.fromEntries([...cues].map(([k, v]) => [
+        k, Object.freeze({ ...v, value: Array.isArray(v.value) ? Object.freeze([...v.value]) : v.value }),
+      ]))),
     }));
   };
 

@@ -224,3 +224,38 @@ test('a lesson step made after a regrip lights the edge it sends home, on the cu
   }
   assert.ok(checked >= 4, `precondition: ${checked} middle-layer inserts made after a regrip were checked`);
 });
+
+// Found by a Codex audit, 2026-09-16. An answer the oracle could not check is kept unverified, and the
+// next solve re-checks it — so a REFUTED one has to be put down there, or that branch is taken again on
+// every later call: re-checked, re-refused, and the search that would have found a real answer never runs.
+test('an answer the oracle refutes is put down, and the next ask searches instead of refusing again', async () => {
+  const { state, subject, svc } = await app();
+  subject.setFacelets(move(SOLVED, 'R U'));
+  const real = svc.Cube.fromString;
+  let down = true;
+  let refute = false;
+  // The cross-check is the first thing `finishSolve` asks the oracle, so an armed refusal is answered to
+  // it and to nothing else; everything after it (the per-step facelets) gets the real oracle back.
+  svc.Cube.fromString = function (f) {
+    if (down) { down = false; throw new Error('oracle down (test)'); }
+    if (refute) { refute = false; return { move() { return this; }, isSolved: () => false }; }
+    return real.call(this, f);
+  };
+  try {
+    await withAnswers((f, b) => (b.solLen > 2 ? "U' R'" : null), async (asked) => {
+      await subject.deriveCube({});
+      assert.equal(state.cube.crossChecked, false, 'an answer nobody verified was marked checked');
+      const searches = asked.length;
+      refute = true;
+      await assert.rejects(() => subject.deriveCube({}), /cross-check failed/);
+      assert.equal(state.cube.solution, '', 'a refuted answer was left standing');
+      assert.equal(state.cube.solveResult, null, 'a refuted answer kept its verdict');
+      assert.equal(state.cube.setupAlg, '', 'a refuted answer left a setup alg to animate from');
+      assert.equal(asked.length, searches, 'the refutation searched');
+      await subject.deriveCube({});
+      assert.equal(asked.length > searches, true, 'the ask after a refutation refused again instead of searching');
+      assert.equal(state.cube.solution, "U' R'");
+      assert.equal(state.cube.crossChecked, true);
+    });
+  } finally { svc.Cube.fromString = real; }
+});

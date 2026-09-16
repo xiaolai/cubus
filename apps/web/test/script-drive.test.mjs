@@ -142,3 +142,38 @@ test('the writer touches nothing the manifest omits', () => {
   assert.equal(sets['camera-up'], 'F');
   assert.match(sets.focus, /^piece:/, 'focus reached the element as a slot, so a seek could re-bind it');
 });
+
+// Found by a Codex audit, 2026-09-16. Token times are worked out per STEP, and two steps can overlap —
+// a step given four seconds for two tokens is still running when the next step's `at` arrives. Counting
+// the times that have passed then answered with a token count, and the tokens between were applied with
+// it: `U` was played a second before its own time.
+test('a token is applied when its own time comes, not because a later one was scheduled sooner', () => {
+  const built = script([{ move: 'R U', at: 1, secs: 4 }, { move: 'F', at: 2 }]);
+  const cube = recordingCube();
+  const clock = createClockDriver(built, { cube });
+  assert.deepEqual(built.segments[0].tokens, ['R', 'U', 'F'], 'the segment is not the three tokens this is about');
+  assert.equal(clock.paint(0.9).moves, 0);
+  assert.equal(clock.paint(1.1).moves, 1, 'the first token had not started');
+  assert.equal(clock.paint(2.1).moves, 1, 'a token was applied a second before its time');
+  assert.equal(clock.paint(3.01).moves, 3, 'the tokens whose time had come were not all applied');
+});
+
+// The element groups the concatenated sequence — `y R` is one group, because a regrip belongs to the turn
+// it leads into — while a script gives every STEP its own position. A step that is only a regrip therefore
+// ends INSIDE the element's group, and its arrival was a jump: the one turn D4's "turn the whole cube so
+// the gap is in front" exists to show was the one that snapped (Codex audit, 2026-09-16).
+test('a step that is only a regrip is turned, not snapped, though the element groups it with the turn after', () => {
+  const built = script([{ move: 'y' }, { move: 'R' }]);
+  const cube = recordingCube();
+  const walk = createStopDriver(built, { cube });
+  assert.deepEqual(cube.stops, [0, 2], 'the element no longer groups the regrip with the turn');
+  walk.next();
+  assert.deepEqual(transport(cube).at(-1), ['step'], 'the regrip was jumped to rather than turned');
+  walk.next();
+  assert.deepEqual(transport(cube).at(-1), ['stepStop'], 'the turn after it was not played as a group');
+  walk.back();
+  assert.deepEqual(transport(cube).at(-1), ['stepBack'], 'stepping back to the regrip snapped');
+  // A scrub is still a jump: seeking is not a walk, however near it lands.
+  walk.seek(0);
+  assert.deepEqual(transport(cube).at(-1), ['seek', 0]);
+});
