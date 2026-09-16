@@ -225,6 +225,12 @@ test('a position is a whole number, and a paint says which stop plus how far int
   assert.equal(mid.hold, viewAtPosition(built, 1).hold,
     "the stop's hold is in force from the moment its first token starts");
   assert.deepEqual(mid.cube, viewAtPosition(built, 1).cube, 'the view is the stop being animated toward');
+  // And the cube those tokens have actually reached, which is what a reader draws: mid-group that is the
+  // stop BEFORE this one, because every token in between is a regrip and a regrip moves no piece.
+  assert.deepEqual(mid.settled, viewAtPosition(built, 0).cube, 'the settled cube was the turn not yet made');
+  assert.notDeepEqual(mid.settled, mid.cube, 'precondition: this group is one the two answers differ in');
+  const done = clock.paint(10);
+  assert.deepEqual(done.settled, done.cube, 'once the group has landed the two are the same cube');
 });
 
 // Found by the verify pass over the overlap fix, 2026-09-16: the reason ordinary scripts overlapped at
