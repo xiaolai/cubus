@@ -127,6 +127,10 @@ test('dispose releases every geometry and material once, and lets go of the old 
         '_arrow', '_arrowMat', '_labelMeshes', '_trailMeshes'].filter((k) => el[k] != null),
       twins: el._ghostTwin?.size ?? 0,
       arrowDisposed,
+      // The lamps, and the two BOUND selector sets: a bound focus or highlight IS a set of sticker meshes
+      // — the whole point of binding — so each held the scene exactly as the annotations did (found by the
+      // verify pass over that fix, 2026-09-16).
+      bound: ['_lights', '_fcSet', '_hlSet'].filter((k) => el[k] != null),
     };
   });
   assert.equal(outcome.disposed, outcome.geometries + outcome.materials,
@@ -135,6 +139,7 @@ test('dispose releases every geometry and material once, and lets go of the old 
   assert.deepEqual(outcome.held, [], `a disposed cube still holds the old scene through ${outcome.held.join(', ')}`);
   assert.equal(outcome.twins, 0, 'a disposed cube still holds every sticker through its ghost twins');
   assert.equal(outcome.arrowDisposed, 1, "the arrow's material was left undisposed on a cube drawn without an arrow");
+  assert.deepEqual(outcome.bound, [], `a disposed cube still holds the scene through ${outcome.bound.join(', ')}`);
 });
 
 // A trail is drawn in its own ink, so it owns its material — and clearing one disposed the geometry and
@@ -415,6 +420,33 @@ test('replacing the alg starts the new sequence where the sequence starts', asyn
   });
   assert.equal(outcome.replaced, outcome.start, 'a replaced alg left the cube part way through the old one');
   assert.equal(outcome.played, outcome.sought, 'playing the first move and seeking to it drew different cubes');
+});
+
+// The same TWO presses, and the other way a host can pull the ground out from under them: the second
+// press settles the first one's group, `_completeMove` reports each token it lands, and a listener may
+// write a new `alg` from inside that report. `_settleGroup` stops feeding tokens when the sequence changes
+// under it — and then `stepStop` carried on with the new sequence's stops and started ITS first turn off
+// the old press (found by the verify pass over that fix, 2026-09-16).
+test('a step listener that replaces the alg does not have the old press play the new sequence', async () => {
+  await build({ facelets: SOLVED, alg: 'x y R U' });
+  const outcome = await page.evaluate(async () => {
+    const el = window.__cube;
+    const tick = () => new Promise((r) => requestAnimationFrame(() => r()));
+    let steps = 0;
+    el.addEventListener('cubus-step', () => { steps += 1; if (steps === 1) el.setAttribute('alg', 'F'); });
+    el.stepStop();
+    el.stepStop();                       // settles the first group, which is where the listener fires
+    const right = { queue: el._queue.length, anim: Boolean(el._anim), cursor: el._cursor };
+    el.clock = 3_000_000;
+    await tick(); await tick();
+    return { steps, right, alg: el.getAttribute('alg'), cursor: el._cursor, applied: el._applied };
+  });
+  assert.equal(outcome.alg, 'F', 'precondition: the listener replaced the sequence');
+  assert.ok(outcome.steps > 0, 'precondition: the second press settled the first one, so the listener ran');
+  assert.deepEqual(outcome.right, { queue: 0, anim: false, cursor: 0 },
+    'the press that ended the old sequence started a turn of the new one');
+  assert.equal(outcome.cursor, 0, 'the old press walked on into the new sequence');
+  assert.equal(outcome.applied, 0, 'the new sequence had a turn applied by the press that ended it');
 });
 
 test("a step listener that disposes the cube stops the group being settled", async () => {

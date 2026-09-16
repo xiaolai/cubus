@@ -292,7 +292,11 @@ function measureRungs(rungs, states) {
     // a number this bench must report rather than a defect to hide.
     for (const step of result.steps) {
       if (step.stage !== 'f2l') continue;
-      if (step.parts) { pairSteps++; parts += step.parts.length; } else fallbacks++;
+      // Counted the way `rungDelta` counts it — without the turn that brings a slot to the front,
+      // which is part of the step but nothing the learner assembles (plan item 6.3). It was counted
+      // WITH it here, so this table and the criterion table below printed two different numbers under
+      // one name: 4/3 parts against 3/2 on seed 20260908 (Codex audit, 2026-09-16).
+      if (step.parts) { pairSteps++; parts += step.parts.filter((part) => part.name !== 'turn').length; } else fallbacks++;
     }
   }
   return {
@@ -322,19 +326,24 @@ function measureRungs(rungs, states) {
  * happy with — which it did, because whole-solve step counts include cubes whose last layer was
  * already oriented and dilute every delta toward zero.
  */
-function reportCriteria(states) {
-  console.log(`\n  what each dial is worth, against the rung below it (${states.length} cubes):`);
+export function reportCriteria(states, { wider = null, measure = rungDelta, log = console.log } = {}) {
+  log(`\n  what each dial is worth, against the rung below it (${states.length} cubes):`);
   for (const criterion of RUNG_CRITERIA) {
     const { dial, from, to, axis, floor } = criterion;
-    const { moved, compared } = rungDelta(states, criterion);
+    // THROUGH `judgeRung`, which is the rule the gate applies — the verdict was worked out again here,
+    // without the re-measure, so a rung landing just under its floor by noise was printed as "not a
+    // lesson" while `method-solver.test.mjs` passed it (Codex audit, 2026-09-16). That is the very
+    // divergence the note above is about, one line further down than it was looking.
+    const { moved, compared, remeasured, earns } = judgeRung(states, criterion, { wider, measure });
     const label = LADDER[dial].find((s) => s.rung === to)?.label ?? '';
     if (compared === 0) {
-      console.log(`  ${dial} ${from}->${to} (${label})`.padEnd(34) + `no cube ran this stage at both rungs`);
+      log(`  ${dial} ${from}->${to} (${label})`.padEnd(34) + `no cube ran this stage at both rungs`);
       continue;
     }
-    const verdict = moved >= floor ? 'a lesson' : `UNDER ITS FLOOR OF ${floor} — not a lesson (§10)`;
-    console.log(`  ${dial} ${from}->${to} (${label})`.padEnd(34) +
-      `${moved >= 0 ? '-' : '+'}${Math.abs(moved).toFixed(2)} ${axis} over ${compared}  ${verdict}`);
+    const verdict = earns ? 'a lesson' : `UNDER ITS FLOOR OF ${floor} — not a lesson (§10)`;
+    log(`  ${dial} ${from}->${to} (${label})`.padEnd(34) +
+      `${moved >= 0 ? '-' : '+'}${Math.abs(moved).toFixed(2)} ${axis} over ${compared}` +
+      `${remeasured ? ' (re-measured wider)' : ''}  ${verdict}`);
   }
 }
 
@@ -360,7 +369,9 @@ function ladder(n, seed = 20260908) {
       `   ${row.fallbackRate === null ? '    —' : `${(row.fallbackRate * 100).toFixed(0)}%`.padStart(5)}`,
     );
   }
-  reportCriteria(states);
+  // The wider sample is drawn only if a rung lands just under its floor — a lazy function, because
+  // ten times the cubes is ten times the solving and most runs never need it (§10).
+  reportCriteria(states, { wider: () => seededStates(Math.max(1000, n * 10), seed + 1) });
   return rows;
 }
 

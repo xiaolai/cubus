@@ -30366,10 +30366,10 @@ var QUARTER = {
   }
 };
 var SOLVED = Object.freeze({
-  cp: [0, 1, 2, 3, 4, 5, 6, 7],
-  co: [0, 0, 0, 0, 0, 0, 0, 0],
-  ep: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
-  eo: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  cp: Object.freeze([0, 1, 2, 3, 4, 5, 6, 7]),
+  co: Object.freeze([0, 0, 0, 0, 0, 0, 0, 0]),
+  ep: Object.freeze([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
+  eo: Object.freeze([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
 });
 function compose(a, b) {
   const cp = new Array(8);
@@ -31614,6 +31614,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._tick = this._resize = this._ro = this._io = null;
     this._arrow = this._arrowMat = this._labelMeshes = this._trailMeshes = null;
     this._ghostTwin?.clear();
+    this._lights = this._fcSet = this._hlSet = null;
   }
   /**
    * Hand this element back for a different screen to use: every observed attribute to its
@@ -32324,8 +32325,9 @@ var CubusCube = class _CubusCube extends HTMLElement {
    * queued behind an animation nobody is watching any more.
    */
   stepStop() {
+    const sol = this._sol;
     this._settleGroup();
-    if (!this.stickers) return;
+    if (!this.stickers || this._sol !== sol) return;
     const to = this._stops.find((p) => p > this._cursor);
     if (to === void 0) return;
     this._group = { to, delta: 1 };
@@ -32333,8 +32335,9 @@ var CubusCube = class _CubusCube extends HTMLElement {
   }
   /** Undo back to the previous stop — the whole group, one token at a time, the same way round. */
   stepBackStop() {
+    const sol = this._sol;
     this._settleGroup();
-    if (!this.stickers) return;
+    if (!this.stickers || this._sol !== sol) return;
     const to = [...this._stops].reverse().find((p) => p < this._cursor);
     if (to === void 0) return;
     this._group = { to, delta: -1 };

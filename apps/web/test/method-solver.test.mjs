@@ -20,7 +20,7 @@ import {
 } from '../lib/method-solver.js';
 import { OLL_ALGS, PLL_ALGS } from '../lib/methods/last-layer.js';
 import { BASELINES, capture } from './fixtures/regen-method-steps.mjs';
-import { RUNG_CRITERIA, UsageError, judgeRung, parseArgs } from '../bench/method-solver-profile.mjs';
+import { RUNG_CRITERIA, UsageError, judgeRung, parseArgs, reportCriteria } from '../bench/method-solver-profile.mjs';
 import { seededPairs, seededScrambles, seededStates } from './fixtures/seeded-scrambles.mjs';
 import { turnsOf } from './fixtures/method-replay.mjs';
 
@@ -1148,4 +1148,27 @@ test('a rung just under its floor is measured again before it fails, and only th
   const stillUnder = scripted({ moved: 1.9, compared: 120, sd: 1.8 }, { moved: 1.93, compared: 1000, sd: 1.8 });
   assert.equal(judgeRung('small', criterion, { wider: 'large', measure: stillUnder.measure }).earns, false,
     'and a rung still under its floor on the wider sample fails there');
+});
+
+test('the ladder prints the verdict the gate applies, re-measure and all', () => {
+  // The bench worked the verdict out a second time — `moved >= floor`, with no re-measure — so a rung
+  // landing just under its floor by noise was printed as "not a lesson" while this suite passed it on the
+  // wider sample (Codex audit, 2026-09-16). That is the divergence the function's own note is about, one
+  // line below where it was looking. `measure` is the seam `judgeRung` already documents, so the rule can
+  // be exercised without a solve.
+  const criterion = RUNG_CRITERIA.find((c) => c.dial === 'pairs' && c.axis === 'moves') ?? RUNG_CRITERIA[0];
+  const narrow = [{ moved: criterion.floor - 0.01, compared: 120, sd: 1 }];   // under, but well inside noise
+  const wide = { moved: criterion.floor + 0.5, compared: 1000, sd: 1 };
+  const measure = (states) => (states === 'wider' ? wide : narrow[0]);
+  const lines = [];
+  reportCriteria([], { wider: 'wider', measure, log: (line) => lines.push(line) });
+  const said = lines.find((l) => l.includes(`${criterion.dial} ${criterion.from}->${criterion.to}`));
+  assert.ok(said, 'the criterion was not reported at all');
+  assert.match(said, /a lesson/, 'a rung the gate passes on the wider sample was printed as not a lesson');
+  assert.match(said, /re-measured wider/, 'the re-measure was not said, so the reader cannot tell which sample answered');
+  assert.doesNotMatch(said, /UNDER ITS FLOOR/);
+  // And a rung that really is under its floor still fails, on the sample that answered.
+  const under = [];
+  reportCriteria([], { wider: 'wider', measure: () => ({ moved: criterion.floor - 5, compared: 1000, sd: 0.01 }), log: (l) => under.push(l) });
+  assert.match(under.find((l) => l.includes(`${criterion.dial} ${criterion.from}->${criterion.to}`)), /UNDER ITS FLOOR/);
 });
