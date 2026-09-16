@@ -31096,15 +31096,16 @@ var CubusCube = class _CubusCube extends HTMLElement {
   _replaceAlg() {
     this._anim = null;
     this._queue = [];
-    this._writePose();
     this._readSol();
-    this._refitIfTurned();
+    this._quiet = true;
+    try {
+      this.reset();
+    } finally {
+      this._quiet = false;
+    }
     this._cursor = 0;
     this._applied = 0;
     this._playing = false;
-    this._placeArrow();
-    this._placeTrails();
-    this._dirty = true;
   }
   /** `alg` as moves, with what follows from it: whether it turns the cube, and where it stops. */
   _readSol() {
@@ -31359,10 +31360,13 @@ var CubusCube = class _CubusCube extends HTMLElement {
    */
   _placeTrails() {
     if (!this.cubies) return;
+    const spent = /* @__PURE__ */ new Set();
     for (const mesh of this._trailMeshes ?? []) {
       mesh.parent?.remove(mesh);
       mesh.geometry.dispose();
+      spent.add(mesh.material);
     }
+    for (const m of spent) m.dispose();
     this._trailMeshes = [];
     this._dirty = true;
     const spec = String(this._attrs.trail ?? "none").trim();
@@ -31594,7 +31598,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
       canvas.remove();
       canvas.style.display = wasDisplay;
     }
-    const owned = /* @__PURE__ */ new Set();
+    const owned = new Set(this._arrowMat ? [this._arrowMat] : []);
     this.scene?.traverse((o) => {
       if (o.geometry) owned.add(o.geometry);
       for (const m of [o.material].flat()) if (m) {
@@ -31608,6 +31612,8 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this.scene = this.renderer = this.camera = this.controls = this._controlsRoot = null;
     this.root = this.cubies = this.stickers = this._ghostMeshes = null;
     this._tick = this._resize = this._ro = this._io = null;
+    this._arrow = this._arrowMat = this._labelMeshes = this._trailMeshes = null;
+    this._ghostTwin?.clear();
   }
   /**
    * Hand this element back for a different screen to use: every observed attribute to its
@@ -32247,13 +32253,10 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._group = null;
     this._state = SOLVED_STATE;
     this._seq = UPRIGHT;
-    this._writePose();
     const fl = this._facelets();
-    this._paint(fl);
-    if (!fl) {
-      for (const m of this._parse(this._attrs.scramble || "")) this._state = after(UPRIGHT, this._state, m).state;
-    }
+    if (!fl) for (const m of this._parse(this._attrs.scramble || "")) this._state = after(UPRIGHT, this._state, m).state;
     this._writePose();
+    this._paint(fl);
     this._base = this._state;
     this._refitIfTurned();
     this._placeArrow();
@@ -32322,6 +32325,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
    */
   stepStop() {
     this._settleGroup();
+    if (!this.stickers) return;
     const to = this._stops.find((p) => p > this._cursor);
     if (to === void 0) return;
     this._group = { to, delta: 1 };
@@ -32330,6 +32334,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
   /** Undo back to the previous stop — the whole group, one token at a time, the same way round. */
   stepBackStop() {
     this._settleGroup();
+    if (!this.stickers) return;
     const to = [...this._stops].reverse().find((p) => p < this._cursor);
     if (to === void 0) return;
     this._group = { to, delta: -1 };
@@ -32340,9 +32345,11 @@ var CubusCube = class _CubusCube extends HTMLElement {
     const g = this._group;
     if (!g) return;
     this._group = null;
+    const sol = this._sol;
+    const walking = () => Boolean(this.stickers) && this._sol === sol;
     if (this._anim) this._completeMove(this._anim);
-    while (this._queue.length) this._completeMove({ m: this._queue.shift() });
-    while (this._cursor !== g.to) {
+    while (walking() && this._queue.length) this._completeMove({ m: this._queue.shift() });
+    while (walking() && this._cursor !== g.to) {
       if (g.delta > 0) this._completeMove({ m: this._sol[this._cursor++] });
       else {
         const m = this._sol[--this._cursor];
