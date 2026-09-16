@@ -44,6 +44,94 @@ const build = (attrs) => page.evaluate(async (a) => {
   await new Promise((r) => requestAnimationFrame(() => r()));
 }, attrs);
 
+// AUTOROTATE IS A TURN, AND THE FIT DID NOT KNOW IT (audit, 2026-09-16). `_advanceSpin` rotates the root on
+// every frame while the attribute is on, so the upright silhouette the `view` fit assumes is exactly what the
+// cube is not — and the fit never re-ran, because spinning is not an event anything refits for. A ghost
+// vertex reached 1.062 of the frame at elevation 9, 34 degrees in.
+//
+// Checked over a WHOLE REVOLUTION rather than at one angle: the defect is that some angles clip, so a single
+// sample can pass a broken fit by landing on one that does not.
+test('a spinning cube keeps every ghost on the canvas, at every angle of the turn', async () => {
+  for (const elevation of ['4', '9']) {
+    await build({ facelets: SOLVED_FACELETS, ghosts: 'on', 'ghost-elevation': elevation, autorotate: '' });
+    const worst = await page.evaluate(async () => {
+      const el = window.__cube;
+      const V = el.camera.position.constructor;
+      let out = 0;
+      for (let deg = 0; deg < 360; deg += 2) {
+        el._spin = (deg * Math.PI) / 180;
+        el._applyRoot();
+        el.root.updateMatrixWorld(true);
+        el.camera.updateMatrixWorld(true);
+        for (const g of el._ghostMeshes) {
+          if (g.visible === false) continue;
+          const pos = g.geometry.attributes.position;
+          g.updateMatrixWorld(true);
+          for (let i = 0; i < pos.count; i++) {
+            const p = new V().fromBufferAttribute(pos, i).applyMatrix4(g.matrixWorld).project(el.camera);
+            out = Math.max(out, Math.abs(p.x), Math.abs(p.y));
+          }
+        }
+      }
+      return Math.round(out * 10000) / 10000;
+    });
+    assert.ok(worst <= 1, `spinning at elevation ${elevation}: a ghost vertex reaches ${worst} of the frame`);
+  }
+  // And switching the spin OFF is an event the fit hears: neither state is an event the draw loop refits
+  // for, so the attribute's reaction is what keeps the two in step.
+  await build({ facelets: SOLVED_FACELETS, ghosts: 'on', 'ghost-elevation': '9', autorotate: '' });
+  const spinning = await page.evaluate(() => window.__cube.camera.position.length());
+  await page.evaluate(() => window.__cube.removeAttribute('autorotate'));
+  const still = await page.evaluate(() => window.__cube.camera.position.length());
+  assert.ok(still < spinning, `stopping the spin left the wide fit in place (${still} vs ${spinning})`);
+});
+
+// A SEEK IS NOT A NEW PICTURE (audit, 2026-09-16). `seek()` calls `reset()`, which rebuilt every trail and
+// refitted the camera — so scrubbing rebuilt geometry, materials and a canvas texture per numeral to draw
+// the identical trail, and snapped a hand-turned view back to the attributes' angle on every position.
+test('seeking does not rebuild an unchanged trail, or throw away a hand-turned view', async () => {
+  await build({ alg: "R U R' U'", trail: 'piece:URF' });
+  const outcome = await page.evaluate(async () => {
+    const el = window.__cube;
+    const before = new Set(el._trailMeshes.map((m) => m.uuid));
+    // A trail covers the WHOLE of `alg` from position 0, so the cursor is not one of its inputs.
+    el.seek(2); el.seek(1); el.seek(3);
+    const after = new Set(el._trailMeshes.map((m) => m.uuid));
+    const kept = [...after].filter((id) => before.has(id)).length;
+
+    // And a hand on the cube: move the camera the way a drag does, then seek.
+    const V = el.camera.position.constructor;
+    const turned = new V(1, 0.2, 0.3).normalize().multiplyScalar(el.camera.position.length());
+    el.camera.position.copy(turned); el.camera.lookAt(0, 0, 0);
+    el.seek(0);
+    const drift = new V().copy(el.camera.position).normalize().angleTo(turned.clone().normalize());
+
+    // ...but an explicit instruction still outranks the hand.
+    el.setAttribute('camera-longitude', '200');
+    const obeyed = new V().copy(el.camera.position).normalize().angleTo(turned.clone().normalize());
+    return { before: before.size, kept, drift, obeyed };
+  });
+  assert.ok(outcome.before > 0, 'precondition: a trail was drawn');
+  assert.equal(outcome.kept, outcome.before, `three seeks rebuilt the trail: ${outcome.kept} of ${outcome.before} meshes survived`);
+  assert.ok(outcome.drift < 1e-3, `seeking moved a hand-turned view by ${outcome.drift.toFixed(4)} rad`);
+  assert.ok(outcome.obeyed > 0.1, 'a new camera-longitude was ignored because the view had been orbited once');
+});
+
+// ...and changing something a trail IS a function of still redraws it, or the cache is a stale picture.
+test('a trail is redrawn when anything it is drawn from changes', async () => {
+  await build({ alg: "R U R' U'", trail: 'piece:URF' });
+  for (const [attr, value] of [['trail-style', 'ribbon'], ['trail', 'piece:UF'], ['alg', "R U R' U' R U R' U'"]]) {
+    const changed = await page.evaluate(async ([a, v]) => {
+      const el = window.__cube;
+      const before = new Set(el._trailMeshes.map((m) => m.uuid));
+      el.setAttribute(a, v);
+      await new Promise((r) => requestAnimationFrame(() => r()));
+      return el._trailMeshes.filter((m) => !before.has(m.uuid)).length;
+    }, [attr, value]);
+    assert.ok(changed > 0, `changing \`${attr}\` left the old trail on screen`);
+  }
+});
+
 /** Call `method` on the element with `args`. */
 const call = (method, ...args) => page.evaluate(([m, a]) => window.__cube[m](...a), [method, args]);
 const setAttr = (name, value) => page.evaluate(([n, v]) => window.__cube.setAttribute(n, v), [name, value]);

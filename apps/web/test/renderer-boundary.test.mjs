@@ -59,6 +59,11 @@ export const DOMAIN = Object.freeze([
   'apps/web/lib/sticker-palettes.js',
   // The colour scheme's arithmetic, which the flat views paint with (plan item 4.5). It imports nothing.
   'apps/web/lib/scheme.js',
+  // What a MARK drawn on the cube is coloured in — the turn arrow's body and each trail's (plan item 4.2).
+  // Domain and not renderer, and beside `sticker-palettes.js` for the reason that one is: an ink has to be
+  // chosen against the stickers it crosses AND the plastic it lies over, so it belongs with the tables it is
+  // measured against rather than in the package that happens to draw it. It imports nothing.
+  'apps/web/lib/annotation-inks.js',
 ]);
 
 /** Question modules, and the names each may import from where (ADR 0005 decision 2). */

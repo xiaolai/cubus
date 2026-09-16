@@ -2,7 +2,7 @@
   "schema": 2,
   "tag": "cubus-cube",
   "bundle": "cubus-cube.js",
-  "digest": "sha256:63bcd9b07ec423819e60df1e08b12ba55515cbd68d0ebdee38e341ffb5d97218",
+  "digest": "sha256:7ac83315667d6ec89f198c630b401b6f5a4cef06d042b2ae5d0dc44e454fc23e",
   "attributes": [
     "alg",
     "arrow",
@@ -33,7 +33,9 @@
     "scramble",
     "tempo-scale",
     "temposcale",
-    "trail"
+    "trail",
+    "trail-style",
+    "trailstyle"
   ],
   "methods": [
     "dispose",

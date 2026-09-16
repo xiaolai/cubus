@@ -38,6 +38,10 @@ const BUNDLES = [
     sources: [
       '../../../packages/cubus-cube/src/cubus-cube.js', '../lib/cube-frame.js',
       '../lib/cube-highlight.js', '../lib/cube-orientation.js', '../lib/sticker-palettes.js',
+      // What a MARK on the cube is coloured in, beside the table for what a sticker is coloured in, and
+      // in this app for the same reason: the arrow's ink has to be chosen against the stickers and against
+      // the plastic, and a table in the renderer's package could not be measured against either.
+      '../lib/annotation-inks.js',
       // Where a cubie IS, since the renderer stopped keeping that in its scene graph — and
       // cube-pieces with it, because the pose is arithmetic over the piece model. So the model
       // this repository publishes as its API is now IN the bundle it draws with, which is the
@@ -62,6 +66,11 @@ const BUNDLES = [
       'orientationPerm', 'orientationRelabel', 'permCache', 'turnFacelets',
       'Y_FACES', 'allSolved', 'applyAlg', 'cornerSlot', 'cornerSolved', 'edgeSlot', 'edgeSolved',
       'fromCube', 'moveCount', 'movesOf', 'rotateAlg', 'rotateState',
+      // `everyIndex` serves `pieceStateError`, which is itself shaken out: the element is handed a painted
+      // string and never validates a piece state. `composited` answers what a mark LOOKS like over a
+      // surface, which only the measuring test asks — the renderer states the colours and the alphas and
+      // lets the compositor do the mixing.
+      'everyIndex', 'composited',
       // From the interpreter the element takes the face-turn arithmetic of an identity-frame move
       // (`faceTurnsOf`, `turnPieces`) and none of the HOLD: reading a child's letters in a hold is the
       // host's job, and the element is handed identity tokens (ADR 0004 decision 7). From the notation it

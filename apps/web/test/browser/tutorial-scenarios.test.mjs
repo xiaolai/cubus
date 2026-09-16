@@ -294,23 +294,27 @@ const ELEMENT_RUNNERS = {
       assert.deepEqual(drawn.at(-1), endOf(piece), `${sc.id}: ${piece}'s trail does not end where the oracle puts it`);
     }
   },
-  // Plan item 4.3: held any of several ways, the `position` letter on top is U, and the `face` letter on top
-  // is the face whose centre the oracle puts there.
+  // Plan item 4.3: held any of several ways, the letter on top is U — and the COLOUR under it is whatever the
+  // oracle puts there, which is the whole point. A `face` mode used to be checked here too, and is gone
+  // (owner's call, 2026-09-16): a letter that moved with the cube said the opposite of the lesson.
   async label(sc) {
-    const onTop = (mode) => page.evaluate((m) => {
+    const onTop = () => page.evaluate(() => {
       const el = window.__cube;
-      window.__publicCube(el).setAttribute('labels', m);
+      window.__publicCube(el).setAttribute('labels', 'position');
       el.scene.updateMatrixWorld(true);
       const V = el.camera.position.constructor;
       const top = (el._labelMeshes ?? []).find((mesh) => mesh.getWorldPosition(new V()).y > 1);
       return top?.userData.label ?? null;
-    }, mode);
+    });
+    const colours = new Set();
     for (const hold of sc.holds) {
       await build({ orientation: hold });
-      assert.equal(await onTop('position'), 'U', `${sc.id}: held ${hold}, the place on top is not called U`);
-      const centreOnTop = held(SOLVED_FACELETS, hold)[4];
-      assert.equal(await onTop('face'), centreOnTop, `${sc.id}: held ${hold}, the letter on top is not the face the oracle puts there`);
+      assert.equal(await onTop(), 'U', `${sc.id}: held ${hold}, the place on top is not called U`);
+      colours.add(held(SOLVED_FACELETS, hold)[4]);
     }
+    // The lesson this scenario comes from is "the face on top is U WHICHEVER COLOUR IT IS", so the holds have
+    // to put more than one colour up there or the case passes without ever testing the claim.
+    assert.ok(colours.size > 1, `${sc.id}: every hold puts the same face on top, so "whichever colour" is untested`);
   },
   // Plan item 4.2: `arrow="next"` shows the move about to be made at every position of a sequence — on that
   // move's layers, turning its way — and nothing once it is done; and the cube under it is the oracle's. The

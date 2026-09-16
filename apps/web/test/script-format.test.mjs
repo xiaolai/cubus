@@ -7,7 +7,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { STEP_CUES, STEP_KINDS, checkEpisode, checkLesson, checkScript } from '../lib/lesson-format.js';
+import {
+  CHECKED_CUE_FIELDS, CHECKED_EPISODE_FIELDS, EPISODE_CUE_FIELDS,
+  STEP_CUES, STEP_KINDS, checkEpisode, checkLesson, checkScript,
+} from '../lib/lesson-format.js';
 import { QUESTIONS, ask, readAsk } from '../lib/script-questions.js';
 import { SOLVED, applyAlg } from '../lib/cube-pieces.js';
 import { targetPicture } from '../lib/stage-picture.js';
@@ -168,10 +171,12 @@ test('a painted picture answers what it shows, and says what it cannot', () => {
 
 test('Phase 4\'s annotations are cues: an arrow is one move or next, and letters are a mode', () => {
   assert.equal(refusal(script([{ move: 'R', arrow: "U'", labels: 'position' }])), null);
-  assert.equal(refusal(script([{ move: 'R', arrow: 'next', labels: 'face' }])), null);
+  assert.equal(refusal(script([{ move: 'R', arrow: 'next', labels: 'position' }])), null);
+  // `face` was a value and is not one any more (2026-09-16): a letter that moved with the cube.
+  assert.match(refusal(script([{ move: 'R', labels: 'face' }])), /`labels` is none or position/);
   assert.match(refusal(script([{ move: 'R', arrow: 'R U' }])), /`arrow` is one move or "next"/);
   assert.match(refusal(script([{ move: 'R', arrow: 'Q' }])), /`arrow` "Q" is not a move/);
-  assert.match(refusal(script([{ move: 'R', labels: 'all' }])), /`labels` is none, position or face/);
+  assert.match(refusal(script([{ move: 'R', labels: 'all' }])), /`labels` is none or position/);
 });
 
 test('a trail cue names pieces, and nothing else', () => {
@@ -261,4 +266,37 @@ test('one rule, two formats: the shared value checks answer the same way on both
   // The orientation pair is one definition too, said with each format's own noun.
   assert.match(refusal(script([{ hold: 'U D' }])), /is not a hold — two perpendicular faces/);
   assert.match(refusal(cue({ orientation: 'U D' }), checkEpisode), /is not an orientation — two perpendicular faces/);
+});
+
+// A NAMED FIELD IS NOT A CHECKED FIELD — this file says so in a comment, about a defect it has already had,
+// and until the validators became registries there was no way to hold it to that. Thirteen `if` blocks
+// cannot be asked what they cover; a table can (audit, 2026-09-16).
+//
+// This is the assertion that makes the next unchecked field loud. Adding a name to `CUE_KEYS` or
+// `STEP_CUES` without adding a rule is otherwise silent: the field passes the "is the key allowed" test and
+// then fails somewhere the cue number is no longer available to blame, which is exactly how `setup:
+// "banana"`, `number: "six"` and `ghosts: "false"` all got in.
+test('every field a cue may carry is a field something checks', () => {
+  // The fields that are deliberately NOT per-field rules, because they are about a cue's neighbours: you
+  // cannot decide `start` alone, only `start` against the cue before it. Named, so the exemption is a
+  // decision rather than an omission.
+  const SEQUENCING = ['start', 'end', 'at'];
+
+  const scriptRules = CHECKED_CUE_FIELDS();
+  const missingFromScript = STEP_CUES.filter((k) => !scriptRules.includes(k) && !SEQUENCING.includes(k));
+  assert.deepEqual(missingFromScript, [],
+    `a script step may carry ${missingFromScript.join(', ')}, and nothing validates ${missingFromScript.length > 1 ? 'them' : 'it'}`);
+
+  const episodeRules = CHECKED_EPISODE_FIELDS();
+  const missingFromEpisode = EPISODE_CUE_FIELDS().filter((k) => !episodeRules.includes(k) && !SEQUENCING.includes(k));
+  assert.deepEqual(missingFromEpisode, [],
+    `an episode cue may carry ${missingFromEpisode.join(', ')}, and nothing validates ${missingFromEpisode.length > 1 ? 'them' : 'it'}`);
+
+  // And the reverse: a rule for a field no format accepts is a rule that never runs, which reads as
+  // coverage and is not.
+  const named = new Set([...STEP_CUES, ...EPISODE_CUE_FIELDS()]);
+  for (const rules of [scriptRules, episodeRules]) {
+    const orphans = rules.filter((k) => !named.has(k));
+    assert.deepEqual(orphans, [], `these rules validate fields nothing may carry: ${orphans.join(', ')}`);
+  }
 });
