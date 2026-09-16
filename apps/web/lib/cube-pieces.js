@@ -45,12 +45,20 @@ const QUARTER = {
        ep: [0, 1, 2, 11, 4, 5, 6, 10, 8, 9, 3, 7], eo: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 1] },
 };
 
-/** The identity — also what "solved" means, since a slot holding its own cubie is solved. */
+/**
+ * The identity — also what "solved" means, since a slot holding its own cubie is solved.
+ *
+ * FROZEN ALL THE WAY DOWN. `Object.freeze` is shallow, so the arrays inside were writable and this
+ * constant is handed out by reference all over the app: a script's position 0 IS this object, so
+ * `viewAtPosition(built, 0).cube.cp[0] = 4` re-wrote what solved means for every later question in
+ * the process (Codex audit, 2026-09-16). `methods/engine.js` froze its own copy for the same reason
+ * in 2026-09-10; this is the constant that copy was made from, and the second time is the class.
+ */
 export const SOLVED = Object.freeze({
-  cp: [0, 1, 2, 3, 4, 5, 6, 7],
-  co: [0, 0, 0, 0, 0, 0, 0, 0],
-  ep: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
-  eo: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  cp: Object.freeze([0, 1, 2, 3, 4, 5, 6, 7]),
+  co: Object.freeze([0, 0, 0, 0, 0, 0, 0, 0]),
+  ep: Object.freeze([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
+  eo: Object.freeze([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
 });
 
 /** `a` then `b`. Orientation adds in the destination's frame, which is why the lookup is by

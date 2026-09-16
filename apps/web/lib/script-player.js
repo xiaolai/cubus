@@ -42,6 +42,19 @@ export function createScriptPlayer({ cube = null, trusted = () => true, onLoad =
     return true;
   };
 
+  /**
+   * Put the current route down: its transitions stop, AND so does the cube it was driving.
+   *
+   * Dropping `route` alone stopped only the half the host can see. The element had been handed a stop
+   * group and went on playing the superseded walk's moves — through the whole of the search for the
+   * replacement, which is exactly when nobody is watching for it (Codex audit, 2026-09-16). The cube is
+   * left at the position the route had reached rather than reset: what supersedes it will load its own.
+   */
+  const supersede = () => {
+    route?.driver.halt();
+    route = null;
+  };
+
   /** Operations on the route that is current NOW, refused once a newer load has been asked for. */
   const handle = (mine) => {
     const current = () => route !== null && route.generation === mine && generation === mine;
@@ -64,7 +77,7 @@ export function createScriptPlayer({ cube = null, trusted = () => true, onLoad =
      */
     load(source) {
       const mine = ++generation;
-      route = null;                                  // the superseded route's transitions stop here
+      supersede();                                   // the superseded route's transitions stop here
       if (!thenable(source)) return Promise.resolve(apply(mine, source));
       return Promise.resolve(source).then(
         (script) => (mine === generation ? apply(mine, script) : false),
@@ -95,7 +108,7 @@ export function createScriptPlayer({ cube = null, trusted = () => true, onLoad =
      * Supersede the route with none: the host has started looking for a replacement and has no promise to
      * hand over. Everything a `load` promises about the old route holds from here.
      */
-    unload() { generation++; route = null; },
+    unload() { generation++; supersede(); },
 
     /** Trust lapsed: the live model is not knowledge of anything any more, whatever is loaded. */
     dropLive() { live = null; },

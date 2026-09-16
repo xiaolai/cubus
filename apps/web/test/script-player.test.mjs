@@ -123,3 +123,25 @@ test('a plain script loads before load() returns, so its position can be read on
   assert.ok(done instanceof Promise);
   assert.deepEqual(player.locate(turned('R U')), { kind: 'step', idx: 2 });
 });
+
+// Found by a Codex audit, 2026-09-16. Superseding a route stopped the HOST's transitions and nothing
+// else: the element had been handed a stop group and went on playing the old walk's moves — through the
+// whole of the search for the replacement, which is exactly when nobody is watching for it.
+test('superseding a route stops the cube it was driving, and leaves it where the route had reached', async () => {
+  const cube = recordingCube();
+  const player = createScriptPlayer({ cube });
+  await player.load(walk("R U R'"));
+  player.next();
+  cube.animating = true;                          // the group the press started is still turning
+  const moved = cube.calls.filter(([c]) => c === 'seek' || c === 'stepStop').length;
+  const pending = player.load(new Promise(() => {}));   // a search that has not answered yet
+  assert.deepEqual(cube.calls.at(-1), ['seek', 1], 'the superseded walk was left turning while the next was searched for');
+  assert.ok(cube.calls.filter(([c]) => c === 'seek').length >= 1);
+  assert.equal(moved > 0, true);
+  // `unload()` is the same supersession with no promise to hand over, and says the same thing to the cube.
+  cube.animating = true;
+  player.unload();
+  assert.deepEqual(cube.calls.at(-1), ['seek', 1], 'unload left the cube playing a walk nobody owns');
+  assert.equal(player.loaded, false);
+  void pending;
+});

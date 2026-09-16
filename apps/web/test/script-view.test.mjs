@@ -203,3 +203,22 @@ test('a cube is stated in its own frame: swapped centres are refused, not read a
   assert.throws(() => buildScript(script([{ cube: swapped.join('') }])), /centres read UFRDLB/);
   assert.deepEqual(stateFrom(SOLVED_FACELETS), SOLVED, 'and a cube in its own frame reads as the cube it is');
 });
+
+test("a position's cube is frozen, so a reader cannot rewrite what every other reader sees", () => {
+  // Found by a Codex audit, 2026-09-16. `Object.freeze` is shallow: the position was frozen and the four
+  // arrays inside its cube were not, and position 0's cube IS `cube-pieces.js`'s `SOLVED` — so one
+  // consumer writing to it changed what solved means for every later question in the process.
+  const built = buildScript(script([{ move: 'R', cam: [20, 30] }]));
+  const start = viewAtPosition(built, 0);
+  assert.throws(() => { start.cube.cp[0] = 4; }, TypeError, 'a position handed out a writable cube');
+  assert.throws(() => { start.cube.eo[0] = 1; }, TypeError);
+  assert.equal(SOLVED.cp[0], 0, 'the identity itself was rewritten');
+  assert.equal(SOLVED.eo[0], 0);
+  // Including a cue an author wrote as an array, which every position the cue covers shares.
+  const cam = viewAtPosition(built, 1).cues.cam;
+  assert.deepEqual(cam, [20, 30]);
+  assert.throws(() => { cam[0] = 99; }, TypeError, 'a camera cue was handed out writable');
+  // And the positions after a turn are frozen too, not only the shared start.
+  assert.throws(() => { viewAtPosition(built, 1).cube.ep[0] = 4; }, TypeError);
+  assert.deepEqual(viewAtPosition(built, 1).cube, applyAlg(SOLVED, 'R'), 'freezing changed what the cube is');
+});

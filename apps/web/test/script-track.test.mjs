@@ -82,3 +82,23 @@ test('the track refuses a shape that cannot be a walk', () => {
   assert.deepEqual(locate(trackOf([], []), new Cube().asString(), 0), { kind: 'off' });
   assert.equal(parse('R').length, 1);
 });
+
+// Found by a Codex audit, 2026-09-16. Arriving at a position carries the cube through the regrips that
+// follow it, so a cube standing at the end of that run may be mid-way through the turn that led INTO the
+// position the pass started from. The midpoint window was the two transitions nearest `from`, which after
+// a passed regrip does not reach that one: undoing a quarter of `R2` was reported as off the walk.
+test('an undo reads as a half-made turn even when the walk had passed a regrip', () => {
+  const built = script([{ move: 'R2' }, { move: 'x2' }]);
+  const track = trackFor(built);
+  assert.deepEqual(track.states[1], track.states[2], 'the regrip moved the pieces');
+  const cube = new Cube();
+  cube.move('R R');
+  const at = locate(track, cube.asString(), 0);
+  assert.deepEqual(at, { kind: 'step', idx: 2 }, 'completing R2 did not carry the cube through the regrip');
+  cube.move("R'");
+  assert.deepEqual(locate(track, cube.asString(), at.idx), { kind: 'mid', idx: 2 },
+    'a half-undone turn after a passed regrip was called off the walk');
+  // And a cube that really is off the walk still is.
+  cube.move("R' U");
+  assert.deepEqual(locate(track, cube.asString(), 2), { kind: 'off' });
+});

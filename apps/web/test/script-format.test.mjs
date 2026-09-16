@@ -103,6 +103,20 @@ test('a round says what it asks and how many answers it wants, and its reveal is
   assert.match(refusal(script([{ paint: 'U'.repeat(54) }, { round }])), /step 1: a round with a turn inside a picture segment/);
   assert.equal(refusal(script([{ paint: 'U'.repeat(54) }, { round: { ask: 'pieceIn:UR', choose: 2 } }])), null,
     'a recognition round on a picture turns nothing, and is ordinary');
+  // A REVEAL INHERITS THE PICTURE SEGMENT IT SITS IN. Its steps were checked from a clean slate, so this
+  // passed validation and then threw where a child would have met it — the one failure a checker exists
+  // to move earlier in time.
+  assert.match(
+    refusal(script([{ paint: 'U'.repeat(54) }, { round: { ask: 'pieceIn:UR', choose: 2, reveal: [{ move: 'R' }] } }])),
+    /step 1: round: reveal step 0: a move inside a picture segment/,
+  );
+  // And it is the segment's state that is inherited, not a flag that sticks: a reveal that cuts to a cube
+  // of its own may turn it.
+  assert.equal(
+    refusal(script([{ paint: 'U'.repeat(54) },
+      { round: { ask: 'pieceIn:UR', choose: 2, reveal: [{ cube: SOLVED_FACELETS }, { move: 'R' }] } }])),
+    null,
+  );
 });
 
 // R9 of dev-docs/adr/0004-orientation-notation-and-colour-are-three-things.md. cubus-im's builder copies
