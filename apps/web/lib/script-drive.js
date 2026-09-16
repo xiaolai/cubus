@@ -89,7 +89,12 @@ export function createElementWriter(cube) {
       else cube.seek(moves);
     } else if (how === 'clock' && moves === applied + 1) {
       cube.step();
-    } else if (moves !== applied || (how === 'jump' && cube.animating)) {
+    } else if (how === 'halt' || moves !== applied || (how === 'jump' && cube.animating)) {
+      // A HALT ALWAYS RE-SEATS. `animating` is false for the instant between two tokens of a group, and
+      // the element keeps feeding the group from its own completion handler — so a halt that asked
+      // whether a turn was in flight did nothing about a third of the time and the superseded walk
+      // carried on turning (found by the verify pass over that fix, 2026-09-16). What a halt stops is
+      // the GROUP, which is not visible in `animating` at all.
       cube.seek(moves);
     }
     applied = moves;
@@ -157,10 +162,10 @@ export function createStopDriver(built, { cube = null } = {}) {
      *
      * For a route being superseded: dropping the route stops the HOST's transitions, and left the
      * element playing the old walk's group — turning on screen, a whole walk behind, for as long as the
-     * replacement took to find (Codex audit, 2026-09-16). A jump to the position already reached re-seats
-     * a turn in flight, which is the one thing `how: 'jump'` does even when the count has not changed.
+     * replacement took to find (Codex audit, 2026-09-16). Its own kind of arrival rather than a jump: a
+     * jump re-seats only what is visibly animating, and a group between two of its tokens is not.
      */
-    halt: () => go(position, 'jump'),
+    halt: () => go(position, 'halt'),
     /**
      * A cube the child turned, as 54 facelets: where it is on the walk.
      *
@@ -248,11 +253,10 @@ export function createClockDriver(built, { cube = null } = {}) {
     // The tokens STARTED by `t`, which is what the element should be animating toward: a trailing
     // regrip turns when its time comes, never when its segment loads (ADR 0004 R7).
     //
-    // So the pair this returns is a STOP and how far into it the element has got — `cube`, `hold` and
-    // the cues are the stop's, in force from the moment its first token starts, and `moves` is what has
-    // actually been played. They are meant to differ while a group animates; a reader wanting the cube
-    // after `moves` tokens wants a different question (`viewAtPosition` at the position that ends
-    // there), and this is said out loud because the two look interchangeable (Codex audit, 2026-09-16).
+    // So what this returns is a STOP and how far into it the element has got — `cube`, `hold` and the
+    // cues are the stop's, in force from the moment its first token starts, `moves` is what has actually
+    // been played, and `settled` is the cube those moves have reached. They are meant to differ while a
+    // group animates (Codex audit, 2026-09-16).
     // The PREFIX whose times have come: tokens are turned in order, so token j cannot have started while
     // token j-1 has not. Read this way rather than counted, so it says the same thing as the timeline's
     // own rule (`timelineOf` refuses a token timed before the one in front of it) instead of quietly
@@ -261,7 +265,13 @@ export function createClockDriver(built, { cube = null } = {}) {
     let moves = 0;
     while (moves < times.length && times[moves] <= t) moves += 1;
     if (writer) writer.show(view, { moves, how: jumped ? 'jump' : 'clock' });
-    return Object.freeze({ ...view, moves, t });
+    // `settled` is the cube AS IT STANDS, which mid-group is the stop before this one: the tokens
+    // between two stops are regrips, and a regrip moves no piece. A reader drawing a net wants this
+    // one; `cube` is the stop being animated toward, and drawing THAT beside `moves` is a picture of a
+    // turn that has not happened yet (found by the verify pass, 2026-09-16 — it was being said in a
+    // comment and is a value now, because a comment cannot be read by a consumer).
+    const landed = built.positions.findLast((p) => p.segment === view.segment && p.moves <= moves);
+    return Object.freeze({ ...view, moves, t, settled: landed?.cube ?? view.cube });
   };
   return Object.freeze({
     duration: timeline.duration,
