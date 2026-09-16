@@ -183,6 +183,76 @@ test('a group in flight is dropped by a new alg, a reset and a seek', async () =
 // step that only regrips ends INSIDE one of those groups — reachable only by `seek`, which snaps the very
 // turn D4's "turn the whole cube so the gap is in front of you" exists to show (Codex audit and its verify
 // pass, 2026-09-16). `playTo` is the element's answer: any token, walked the way a group plays.
+// THREE FINDINGS, ONE MECHANISM (audit, 2026-09-16). `stepStop`, `playTo` and `stepBackStop` were three
+// copies of one procedure — settle, check the press still means something, pick a target, start — and each
+// kept its own copy of the lifecycle rules. The copies had drifted into two real defects, and the fix is one
+// `_walkTo`: a freshness check that notices a cube sent somewhere else, and transports that exclude.
+
+test('a step listener that seeks or resets mid-settle does not have the old press carry on', async () => {
+  // `_sol` identity says the SEQUENCE was not replaced. It says nothing about the cube having been sent
+  // somewhere else WITHIN it, because reset() and seek() leave `_sol` exactly as it was — so the old check
+  // passed and the press walked on from a cursor that had moved under it. Reproduced by the audit as an
+  // overrun past the end of the solution.
+  for (const [what, act] of [['seek', 'seek(4)'], ['reset', 'reset()']]) {
+    const outcome = await page.evaluate(async (call) => {
+      const tick = () => new Promise((r) => requestAnimationFrame(() => r()));
+      if (window.__cube) { window.__cube.dispose?.(); window.__cube.remove?.(); }
+      const el = document.createElement('cubus-cube');
+      el.style.cssText = 'position:fixed;left:0;top:0;width:200px;height:200px';
+      el.setAttribute('alg', 'x y R U');
+      document.body.appendChild(el); window.__cube = el;
+      await tick();
+      el.clock = 1_000_000;
+      el.stepStop();                               // a group in flight
+      let fired = false;
+      const errors = [];
+      window.addEventListener('error', (e) => { errors.push(String(e.message)); e.preventDefault?.(); });
+      el.addEventListener('cubus-step', function once() {
+        if (fired) return;
+        fired = true;
+        // eslint-disable-next-line no-eval
+        eval(`el.${call}`);
+      });
+      el.stepStop();                               // settles the first group, and the listener moves the cube
+      el.clock = 1_000_000 + 60_000;
+      await tick(); await tick();
+      return { cursor: el._cursor, length: el._sol.length, errors };
+    }, act);
+    assert.deepEqual(outcome.errors, [], `${what} during a settle threw: ${outcome.errors.join(', ')}`);
+    assert.ok(outcome.cursor >= 0 && outcome.cursor <= outcome.length,
+      `${what} during a settle left the cursor at ${outcome.cursor} of ${outcome.length}`);
+  }
+});
+
+test('a bounded walk supersedes continuous play, and pause stops a group too', async () => {
+  const land = (setup) => page.evaluate(async (call) => {
+    const tick = () => new Promise((r) => requestAnimationFrame(() => r()));
+    if (window.__cube) { window.__cube.dispose?.(); window.__cube.remove?.(); }
+    const el = document.createElement('cubus-cube');
+    el.style.cssText = 'position:fixed;left:0;top:0;width:200px;height:200px';
+    el.setAttribute('alg', 'R U F');
+    document.body.appendChild(el); window.__cube = el;
+    await tick();
+    el.clock = 1_000_000;
+    // eslint-disable-next-line no-eval
+    eval(call);
+    el.clock = 1_000_000 + 60_000;
+    await tick(); await tick(); await tick();
+    return { cursor: el._cursor, playing: el._playing, group: el._group };
+  }, setup);
+
+  // play() then playTo(1): the cube must stop at 1. It used to leave `_playing` set and run to the end —
+  // two transports driving one cursor, and the one the caller asked for losing.
+  const bounded = await land('el.play(); el.playTo(1);');
+  assert.equal(bounded.cursor, 1, `play() then playTo(1) finished at ${bounded.cursor}, not 1`);
+  assert.equal(bounded.playing, false, 'continuous play was left running under a bounded walk');
+
+  // pause() during a stop group: clearing only `_playing` left `_advanceGroup` walking on.
+  const paused = await land('el.stepStop(); el.pause();');
+  assert.equal(paused.group, null, 'pause() left a stop group advancing');
+  assert.ok(paused.cursor < 3, `pause() let the group run to ${paused.cursor} of 3`);
+});
+
 test('playTo walks to any token, one at a time, and lands exactly there', async () => {
   await build({ alg: 'x y R U' });
   const outcome = await page.evaluate(async () => {

@@ -14439,6 +14439,98 @@ var PlaneGeometry = class _PlaneGeometry extends BufferGeometry {
     return new _PlaneGeometry(data.width, data.height, data.widthSegments, data.heightSegments);
   }
 };
+var SphereGeometry = class _SphereGeometry extends BufferGeometry {
+  /**
+   * Constructs a new sphere geometry.
+   *
+   * @param {number} [radius=1] - The sphere radius.
+   * @param {number} [widthSegments=32] - The number of horizontal segments. Minimum value is `3`.
+   * @param {number} [heightSegments=16] - The number of vertical segments. Minimum value is `2`.
+   * @param {number} [phiStart=0] - The horizontal starting angle in radians.
+   * @param {number} [phiLength=Math.PI*2] - The horizontal sweep angle size.
+   * @param {number} [thetaStart=0] - The vertical starting angle in radians.
+   * @param {number} [thetaLength=Math.PI] - The vertical sweep angle size.
+   */
+  constructor(radius = 1, widthSegments = 32, heightSegments = 16, phiStart = 0, phiLength = Math.PI * 2, thetaStart = 0, thetaLength = Math.PI) {
+    super();
+    this.type = "SphereGeometry";
+    this.parameters = {
+      radius,
+      widthSegments,
+      heightSegments,
+      phiStart,
+      phiLength,
+      thetaStart,
+      thetaLength
+    };
+    widthSegments = Math.max(3, Math.floor(widthSegments));
+    heightSegments = Math.max(2, Math.floor(heightSegments));
+    const thetaEnd = Math.min(thetaStart + thetaLength, Math.PI);
+    let index = 0;
+    const grid = [];
+    const vertex2 = new Vector3();
+    const normal = new Vector3();
+    const indices = [];
+    const vertices = [];
+    const normals = [];
+    const uvs = [];
+    for (let iy = 0; iy <= heightSegments; iy++) {
+      const verticesRow = [];
+      const v = iy / heightSegments;
+      const theta = thetaStart + v * thetaLength;
+      const y = radius * Math.cos(theta);
+      const ringRadius = Math.sqrt(radius * radius - y * y);
+      let uOffset = 0;
+      if (iy === 0 && thetaStart === 0) {
+        uOffset = 0.5 / widthSegments;
+      } else if (iy === heightSegments && thetaEnd === Math.PI) {
+        uOffset = -0.5 / widthSegments;
+      }
+      for (let ix = 0; ix <= widthSegments; ix++) {
+        const u = ix / widthSegments;
+        const phi = phiStart + u * phiLength;
+        vertex2.x = -ringRadius * Math.cos(phi);
+        vertex2.y = y;
+        vertex2.z = ringRadius * Math.sin(phi);
+        vertices.push(vertex2.x, vertex2.y, vertex2.z);
+        normal.copy(vertex2).normalize();
+        normals.push(normal.x, normal.y, normal.z);
+        uvs.push(u + uOffset, 1 - v);
+        verticesRow.push(index++);
+      }
+      grid.push(verticesRow);
+    }
+    for (let iy = 0; iy < heightSegments; iy++) {
+      for (let ix = 0; ix < widthSegments; ix++) {
+        const a = grid[iy][ix + 1];
+        const b = grid[iy][ix];
+        const c = grid[iy + 1][ix];
+        const d = grid[iy + 1][ix + 1];
+        if (iy !== 0 || thetaStart > 0) indices.push(a, b, d);
+        if (iy !== heightSegments - 1 || thetaEnd < Math.PI) indices.push(b, c, d);
+      }
+    }
+    this.setIndex(indices);
+    this.setAttribute("position", new Float32BufferAttribute(vertices, 3));
+    this.setAttribute("normal", new Float32BufferAttribute(normals, 3));
+    this.setAttribute("uv", new Float32BufferAttribute(uvs, 2));
+  }
+  copy(source) {
+    super.copy(source);
+    this.parameters = Object.assign({}, source.parameters);
+    return this;
+  }
+  /**
+   * Factory method for creating an instance of this class from the given
+   * JSON object.
+   *
+   * @param {Object} data - A JSON object representing the serialized geometry.
+   * @return {SphereGeometry} A new instance.
+   */
+  static fromJSON(data) {
+    return new _SphereGeometry(data.radius, data.widthSegments, data.heightSegments, data.phiStart, data.phiLength, data.thetaStart, data.thetaLength);
+  }
+};
 var TubeGeometry = class _TubeGeometry extends BufferGeometry {
   /**
    * Constructs a new tube geometry.
@@ -30323,6 +30415,14 @@ var STICKER_PALETTES = Object.freeze({
   colorsafe: Object.freeze({ U: "#EFEAE0", D: "#E9C46A", F: "#6A9FB5", B: "#20405C", R: "#D1495B", L: "#8C5E8A" })
 });
 
+// ../../apps/web/lib/annotation-inks.js
+var PLASTIC = 1709842;
+var MARK_BODY = 16777215;
+var MARK_SHADOW = 1511945;
+var MARK_SHADOW_ALPHA = 0.55;
+var MARK_BODY_ALPHA = 0.94;
+var TEXT_INK = 2826520;
+
 // ../../apps/web/lib/cube-pieces.js
 var CORNERS = ["URF", "UFL", "ULB", "UBR", "DFR", "DLF", "DBL", "DRB"];
 var EDGES = ["UR", "UF", "UL", "UB", "DR", "DF", "DL", "DB", "FR", "FL", "BL", "BR"];
@@ -30700,9 +30800,61 @@ var HL_PEAK = 0.38;
 var FOCUS_FLATTEN = 0.62;
 var FOCUS_MID = 0.44;
 var HL_PERIOD = 1200;
-var ARROW_COLOUR = 2826520;
-var ARROW_OPACITY = 0.9;
-var LABEL_LIFT = 1.54;
+var ARROW_OPACITY = MARK_BODY_ALPHA;
+var RIM = Object.freeze({ colour: MARK_SHADOW, alpha: MARK_SHADOW_ALPHA, grow: 0.026 });
+var CUBIE_AT = Object.freeze(
+  [-1, 0, 1].flatMap((x) => [-1, 0, 1].flatMap((y) => [-1, 0, 1].map((z) => [x, y, z]))).filter(([x, y, z]) => x || y || z).map((at) => Object.freeze(at))
+);
+var showsFace = (at, f) => f.n.some((component, axis) => component && component === at[axis]);
+function meshCorners(mesh) {
+  if (!mesh.geometry) return [];
+  if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+  const box = mesh.geometry.boundingBox;
+  if (!box) return [];
+  mesh.updateMatrix();
+  const out = [];
+  const v = new Vector3();
+  if (mesh.userData.billboard) {
+    const reach = box.min.distanceTo(box.max) / 2;
+    const at = mesh.position;
+    for (const x of [-reach, reach]) {
+      for (const y of [-reach, reach]) {
+        for (const z of [-reach, reach]) out.push([at.x + x, at.y + y, at.z + z]);
+      }
+    }
+    return out;
+  }
+  for (const x of [box.min.x, box.max.x]) {
+    for (const y of [box.min.y, box.max.y]) {
+      for (const z of [box.min.z, box.max.z]) out.push(v.set(x, y, z).applyMatrix4(mesh.matrix).toArray());
+    }
+  }
+  return out;
+}
+var setBasis = (out, m) => out.set(
+  m[0][0],
+  m[0][1],
+  m[0][2],
+  0,
+  m[1][0],
+  m[1][1],
+  m[1][2],
+  0,
+  m[2][0],
+  m[2][1],
+  m[2][2],
+  0,
+  0,
+  0,
+  0,
+  1
+);
+var LETTER_PLATE = Object.freeze({ plate: { colour: MARK_BODY, alpha: 0.94 } });
+var NUMERAL_PLATE = Object.freeze({ plate: { colour: MARK_BODY, alpha: 0.9 } });
+var rgbaOf = ({ colour, alpha }) => `rgba(${colour >> 16 & 255},${colour >> 8 & 255},${colour & 255},${alpha})`;
+var ORDER = Object.freeze({ rim: 2, mark: 3, letter: 4 });
+var RIBBON_TAPER = 0.34;
+var LABEL_LIFT = 1.513;
 var LABEL_TURN = Object.freeze({
   F: [0, 0, 0],
   B: [0, Math.PI, 0],
@@ -30711,26 +30863,60 @@ var LABEL_TURN = Object.freeze({
   U: [-Math.PI / 2, 0, 0],
   D: [Math.PI / 2, 0, 0]
 });
-function letterTexture(letter) {
+var LABEL_FONT = '700 92px system-ui, -apple-system, "Segoe UI", sans-serif';
+var NUMERAL_FONT = "700 76px ui-monospace, SFMono-Regular, Menlo, monospace";
+function textTexture(text, font, { fill = TEXT_INK, stroke = RIM, plate = null } = {}) {
   const canvas = document.createElement("canvas");
-  canvas.width = 128;
-  canvas.height = 128;
+  const height = 128;
+  const pad = 26;
+  const probe = document.createElement("canvas").getContext("2d");
+  probe.font = font;
+  const width = Math.max(height, Math.ceil(probe.measureText(text).width) + pad * 2);
+  canvas.width = width;
+  canvas.height = height;
   const g = canvas.getContext("2d");
-  g.font = '700 92px system-ui, -apple-system, "Segoe UI", sans-serif';
+  if (plate) {
+    g.fillStyle = rgbaOf(plate);
+    const r = height * 0.22;
+    const pad2 = 5;
+    g.beginPath();
+    g.roundRect(pad2, pad2, width - pad2 * 2, height - pad2 * 2, r);
+    g.fill();
+  }
+  g.font = font;
   g.textAlign = "center";
   g.textBaseline = "middle";
   g.lineJoin = "round";
   g.lineWidth = 14;
-  g.strokeStyle = "rgba(255,250,240,0.92)";
-  g.strokeText(letter, 64, 70);
-  g.fillStyle = "#2b2118";
-  g.fillText(letter, 64, 70);
+  g.strokeStyle = rgbaOf(stroke);
+  g.strokeText(text, width / 2, height / 2 + 6);
+  g.fillStyle = `#${fill.toString(16).padStart(6, "0")}`;
+  g.fillText(text, width / 2, height / 2 + 6);
   const texture = new CanvasTexture(canvas);
   texture.colorSpace = SRGBColorSpace;
-  return texture;
+  return { texture, aspect: width / height };
+}
+function billboard(text, font, height, renderOrder, colours) {
+  const { texture, aspect: aspect2 } = textTexture(text, font, colours);
+  const mesh = new Mesh(
+    new PlaneGeometry(height * aspect2, height),
+    new MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false })
+  );
+  mesh.renderOrder = renderOrder;
+  mesh.userData.billboard = true;
+  mesh.userData.text = text;
+  return mesh;
 }
 var TRAIL_SHELL = 1.64;
-var TRAIL_INKS = Object.freeze([2826520, 10173726, 2056058, 6109834]);
+var TRAIL_SPACING = 0.15;
+var TRAIL_LANE = 0.34;
+var ARC_STEPS = 12;
+var NUMERAL_LIFT = 0.26;
+var STEP_GAP = 2;
+var HALF_TURN_DOT = 0.078;
+var HALF_TURN_GAP = 0.3;
+var TIE_ALONG = 0.74;
+var TIE_OVERHANG = 0.3;
 var ARROW_FACE_PREFERENCE = Object.freeze(["F", "U", "R", "B", "D", "L"]);
 var AXIS_VECTOR = Object.freeze({ x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] });
 var GHOST_OPACITY = 0.45;
@@ -30764,6 +30950,9 @@ var REACTIONS = Object.freeze({
   // Splitting the view halves the aspect the fit is for.
   "back-view": (el) => el._applyCamera(),
   orbit: (el) => el._applyOrbit(),
+  // Turning the spin on or off changes which FIT the cube needs (`_turned`), and neither is an event the
+  // draw loop would refit for: spinning is continuous, and stopping it is silence.
+  autorotate: (el) => el._applyCamera(),
   // A new cube is a new subject, so a focus bound to pieces is re-bound to the cube in front of you.
   facelets: (el) => {
     el._rebindFocus();
@@ -30785,7 +30974,8 @@ var REACTIONS = Object.freeze({
   },
   arrow: (el) => el._placeArrow(),
   labels: (el) => el._placeLabels(),
-  trail: (el) => el._placeTrails()
+  trail: (el) => el._placeTrails(),
+  "trail-style": (el) => el._placeTrails()
 });
 var CubusCube = class _CubusCube extends HTMLElement {
   // Kebab is canonical, but a host that writes camelCase props as attributes lands
@@ -30820,7 +31010,9 @@ var CubusCube = class _CubusCube extends HTMLElement {
     "orbit",
     "arrow",
     "labels",
-    "trail"
+    "trail",
+    "trail-style",
+    "trailstyle"
   ];
   /**
    * The events this element dispatches — part of the contract, so part of the manifest.
@@ -30871,7 +31063,8 @@ var CubusCube = class _CubusCube extends HTMLElement {
     cameraup: "camera-up",
     faceletscale: "facelet-scale",
     temposcale: "tempo-scale",
-    backview: "back-view"
+    backview: "back-view",
+    trailstyle: "trail-style"
   };
   set facelets(v) {
     this._set("facelets", v);
@@ -31012,13 +31205,21 @@ var CubusCube = class _CubusCube extends HTMLElement {
     // `alg` the cube is about to make, and follows the cursor (plan item 4.2).
     arrow: "none",
     // No letters. `position` writes U R F D L B on the six places a face can be — the face on top is U
-    // whichever colour it is, which is what a notation lesson teaches; `face` writes each face's own letter
-    // on its centre, and the letter travels with the centre through regrips and slices (plan item 4.3).
+    // whichever colour it is, which is what a notation lesson teaches, and it is the only value besides
+    // `none`. A `face` mode wrote each face's own letter on its centre and carried it through regrips; it
+    // was removed on 2026-09-16 because it said the opposite of the lesson (plan item 4.3).
     labels: "none",
     // No trail. `piece:UF` (or `slot:UF`, the piece in UF where `alg` starts; comma-separated for several)
     // draws where that piece goes over the whole of `alg` — the arc its cubie travels in each turn — for a
     // PLL cycle or a commutator (plan item 4.4).
     trail: "none",
+    // HOW a trail says which way time ran (the owner's ask of 2026-09-16: over `R U R' U'` the curve was
+    // hard to follow). `steps` breaks the route into one directed segment per turn, each with its own head
+    // and a gap at every stop, so a path that doubles back over itself is still four countable hops in
+    // order; `ribbon` keeps it one unbroken path and says the same thing with width — thin where the piece
+    // started, full where it ended — with a chevron at each stop it passes through. Neither invents a
+    // route: both draw the same `stops` and the same arcs, and only the marking differs.
+    "trail-style": "steps",
     palette: "muted",
     // Western unless a host says otherwise: the arrangement PALETTES is written in, and the
     // one the app assumes until a scan proves the cube is the other kind.
@@ -31044,9 +31245,12 @@ var CubusCube = class _CubusCube extends HTMLElement {
     // still picture as in an animated one, where a relative `y` accumulates and cannot be
     // asserted without replaying the history that produced it.
     //
-    // NOT part of `alg`, ever. If `alg` took `y`, an `R` after it would mean the new right or the
-    // old right, and a letter that sometimes names a fixed face and sometimes a moving one is the
-    // exact defect the fixed frame exists to prevent.
+    // NOT A MOVE, and not what a whole-cube turn inside `alg` does. `alg` DOES take `y` — a sequence may
+    // regrip, and `_seq` carries the frame through it, which is why `_placeArrowFrame` exists and why an
+    // `R` after a `y` is drawn about the cube's own x axis rather than the world's. What this attribute
+    // states is where the cube STARTS, absolutely; the two answer different questions and only this one is
+    // idempotent. (It read "NOT part of `alg`, ever" until an audit checked it against `readToken`,
+    // 2026-09-16 — true when written, false since regrips in a sequence were built.)
     orientation: "U F",
     // 'view' fits the silhouette THIS angle draws — tightest framing, and what a view that never
     // moves programmatically wants. 'stable' fits every angle at once, so swinging the camera
@@ -31098,6 +31302,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._cursor = 0;
     this._applied = 0;
     this._playing = false;
+    this._era = 0;
   }
   /** `alg` as moves, with what follows from it: whether it turns the cube, and where it stops. */
   _readSol() {
@@ -31169,75 +31374,114 @@ var CubusCube = class _CubusCube extends HTMLElement {
     ];
     this._placeLights();
   }
-  /** The 26 cubies, each with its body, its stickers and a ghost per sticker, under `root`. */
+  /**
+   * The geometries and materials every cubie shares — made once, because 26 bodies and 54 stickers that
+   * each made their own would be 80 uploads of the same buffers.
+   *
+   * The sticker MATERIAL is the exception and is made per sticker: it carries that sticker's colour, which
+   * is the one thing about a sticker that is not shared.
+   */
+  static _sharedParts() {
+    const ghostGeo = new PlaneGeometry(0.78, 0.78);
+    return {
+      bodyGeo: new RoundedBoxGeometry(0.94, 0.94, 0.94, 4, 0.1),
+      bodyMat: new MeshStandardMaterial({ color: PLASTIC, roughness: 0.62, metalness: 0.04 }),
+      stickerGeo: new RoundedBoxGeometry(0.78, 0.78, 0.06, 3, 0.07),
+      // Ghosts are flat planes, not boxes — they read as projections rather than solid tiles.
+      ghostGeo,
+      // A hairline around each ghost, for the reason the scan grid has one: a white ghost at 45% opacity
+      // over a pale background has no edge, so it reads as a gap rather than as a sticker. The solid
+      // stickers need no such line — they sit inset on the near-black body, which draws their boundary for
+      // them. The outline is a CHILD of its ghost, so it inherits that ghost's transform, scale and
+      // visibility and needs no bookkeeping of its own in `_cullGhosts` or the flip path.
+      ghostEdgeGeo: new EdgesGeometry(ghostGeo),
+      ghostEdgeMat: new LineBasicMaterial({ color: 0, transparent: true, opacity: 0.55, depthWrite: false })
+    };
+  }
+  /**
+   * One sticker of face `f` on the cubie at `at`, with the floating ghost twin that belongs to it.
+   *
+   * The two are made TOGETHER because they are one thing seen twice, and the pairing is recorded here —
+   * where both exist — rather than recovered later by matching positions (plan item 4.1 lights one sticker,
+   * and so one ghost).
+   */
+  _addSticker(cubie, f, at, parts) {
+    const n = f.n;
+    const m = new Mesh(parts.stickerGeo, new MeshStandardMaterial({ roughness: 0.55, metalness: 0 }));
+    m.position.set(n[0] * 0.48, n[1] * 0.48, n[2] * 0.48);
+    if (n[0]) m.rotation.y = Math.PI / 2;
+    else if (n[1]) m.rotation.x = Math.PI / 2;
+    m.userData = { face: f.key, home: [...at] };
+    cubie.add(m);
+    this.stickers.push(m);
+    const g = new Mesh(parts.ghostGeo, new MeshBasicMaterial({
+      transparent: true,
+      opacity: GHOST_OPACITY,
+      depthWrite: false,
+      side: DoubleSide
+    }));
+    g.rotation.copy(m.rotation);
+    g.userData = { face: f.key, home: [...at], n };
+    this._ghostTwin.set(m, g);
+    g.renderOrder = 1;
+    const edge = new LineSegments(parts.ghostEdgeGeo, parts.ghostEdgeMat);
+    edge.renderOrder = 2;
+    g.add(edge);
+    cubie.add(g);
+    this._ghostMeshes.push(g);
+  }
+  /** The turn arrow's carrier, empty until an arrow is asked for (plan item 4.2). */
+  _buildArrow(root) {
+    this._arrow = new Group();
+    this._arrow.visible = false;
+    this._arrowMat = new MeshBasicMaterial({ color: MARK_BODY, transparent: true, opacity: ARROW_OPACITY, depthWrite: false, side: DoubleSide });
+    this._arrowRimMat = new MeshBasicMaterial({ color: RIM.colour, transparent: true, opacity: RIM.alpha, depthWrite: false, side: DoubleSide });
+    root.add(this._arrow);
+  }
+  /**
+   * The 26 cubies, each with its body, its stickers and a ghost per sticker, under `root`.
+   *
+   * Two levels of control flow, where it was five: a triple loop with a face loop and a visibility test
+   * inside it (audit, 2026-09-16). What the nesting hid is that this method does three separable jobs —
+   * make the shared parts, build one cubie, carry the arrow — and each is now named. THE ORDER OF
+   * `cubies` AND `stickers` IS LOAD-BEARING and unchanged: `POSE_OF` indexes the first by position, and
+   * `_paint` walks the second; `CUBIE_AT` is built in exactly the order the loops produced.
+   */
   _buildCubies(scene) {
     const root = this.root = new Group();
     scene.add(root);
-    const bodyGeo = new RoundedBoxGeometry(0.94, 0.94, 0.94, 4, 0.1);
-    const bodyMat = new MeshStandardMaterial({ color: 1709842, roughness: 0.62, metalness: 0.04 });
-    const stickerGeo = new RoundedBoxGeometry(0.78, 0.78, 0.06, 3, 0.07);
-    const ghostGeo = new PlaneGeometry(0.78, 0.78);
-    const ghostEdgeGeo = new EdgesGeometry(ghostGeo);
-    const ghostEdgeMat = new LineBasicMaterial({
-      color: 0,
-      transparent: true,
-      opacity: 0.55,
-      depthWrite: false
-    });
+    const parts = _CubusCube._sharedParts();
     this.cubies = [];
     this.stickers = [];
     this._ghostMeshes = [];
     this._ghostTwin = /* @__PURE__ */ new Map();
-    for (let x = -1; x <= 1; x++) for (let y = -1; y <= 1; y++) for (let z = -1; z <= 1; z++) {
-      if (!x && !y && !z) continue;
+    for (const at of CUBIE_AT) {
       const c = new Group();
-      c.position.set(x, y, z);
-      c.add(new Mesh(bodyGeo, bodyMat));
-      for (const f of FACES) {
-        const n = f.n;
-        if (n[0] && n[0] === x || n[1] && n[1] === y || n[2] && n[2] === z) {
-          const m = new Mesh(stickerGeo, new MeshStandardMaterial({ roughness: 0.55, metalness: 0 }));
-          m.position.set(n[0] * 0.48, n[1] * 0.48, n[2] * 0.48);
-          if (n[0]) m.rotation.y = Math.PI / 2;
-          else if (n[1]) m.rotation.x = Math.PI / 2;
-          m.userData = { face: f.key, home: [x, y, z] };
-          c.add(m);
-          this.stickers.push(m);
-          const g = new Mesh(ghostGeo, new MeshBasicMaterial({
-            transparent: true,
-            opacity: GHOST_OPACITY,
-            depthWrite: false,
-            side: DoubleSide
-          }));
-          g.rotation.copy(m.rotation);
-          g.userData = { face: f.key, home: [x, y, z], n };
-          this._ghostTwin.set(m, g);
-          g.renderOrder = 1;
-          const gEdge = new LineSegments(ghostEdgeGeo, ghostEdgeMat);
-          gEdge.renderOrder = 2;
-          g.add(gEdge);
-          c.add(g);
-          this._ghostMeshes.push(g);
-        }
-      }
+      c.position.set(at[0], at[1], at[2]);
+      c.add(new Mesh(parts.bodyGeo, parts.bodyMat));
+      for (const f of FACES) if (showsFace(at, f)) this._addSticker(c, f, at, parts);
       root.add(c);
       this.cubies.push(c);
     }
-    this._arrow = new Group();
-    this._arrow.visible = false;
-    this._arrowMat = new MeshBasicMaterial({ color: ARROW_COLOUR, transparent: true, opacity: ARROW_OPACITY, depthWrite: false, side: DoubleSide });
-    root.add(this._arrow);
+    this._buildArrow(root);
   }
   /**
    * Draw the turn arrow `arrow` asks for, or none.
    *
    * WHICH LAYER AND WHICH WAY is the whole content of an arrow, so the geometry is computed from the move's
-   * own descriptor — the axis, the layers, the signed angle — rather than from a table of pictures: an arc
-   * about the move's axis, on its layer, sweeping the way the layer turns, with the head at the end. A face
-   * turn's arc sits on the face; a slice, a wide move or a rotation has no one face to sit on, so its arc
-   * rings the layer just outside the cube. The arc is centred toward the default eye, so the default view
-   * shows all of it. Its start, end and axis are kept on the group (`userData`), in the cube's own frame, so
-   * a test can check the direction without judging the look.
+   * own descriptor — the axis, the layers, the signed angle — rather than from a table of pictures.
+   *
+   * ONE STRAIGHT LINE PER LAYER TURNED (owner's call, 2026-09-16). A face turn used to get an ARC on its own
+   * face while a slice, a wide move and a rotation got a straight line, because a ring round a slice's layer
+   * passes through the cube at every corner and drew as fragments. That left the app teaching two pictures
+   * for one instruction. Straight everywhere is one picture — and it says more than the arc could: the cube
+   * is shown FUR-corner-on, its nine layers read as nine lines across the three visible faces, and the
+   * number of lines IS the move's width. `R` is one line, `Rw` two, `x` three. An arc cannot say that at all.
+   *
+   * What it cannot say is 180°, so that is written rather than drawn — see the `×2` below.
+   *
+   * Its start, end and axis are kept on the group (`userData`), in the cube's own frame, so a test can check
+   * the direction without judging the look.
    */
   /**
    * A directed curve: a tube along `points` with a cone on the end, pointing the way the path goes.
@@ -31248,19 +31492,137 @@ var CubusCube = class _CubusCube extends HTMLElement {
    * curve's own derivative: a Catmull-Rom curve through settled positions is smooth enough that the two
    * agree, and the last segment is what a child sees the arrow leaving from.
    */
-  static _directedCurve(points, { radius, segments, headRadius, headLength, headSides, lift, material }) {
-    const tube = new Mesh(
-      new TubeGeometry(new CatmullRomCurve3(points), segments, radius, 8, false),
-      material
-    );
+  static _directedCurve(points, { radius, segments, headRadius, headLength, headSides, lift, material, rim, taper = 0 }) {
+    const path = new CatmullRomCurve3(points);
     const end = points[points.length - 1];
     const tangent = end.clone().sub(points[points.length - 2]).normalize();
-    const head = new Mesh(new ConeGeometry(headRadius, headLength, headSides), material);
-    head.position.copy(end.clone().add(tangent.clone().multiplyScalar(lift)));
-    head.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), tangent);
-    tube.renderOrder = 3;
-    head.renderOrder = 3;
-    return { tube, head, end };
+    const body = (swell, mat, order) => {
+      const tube2 = new Mesh(new TubeGeometry(path, segments, radius + swell, 8, false), mat);
+      if (taper) _CubusCube._taper(tube2, path, taper);
+      const head2 = new Mesh(new ConeGeometry(headRadius + swell * 1.8, headLength + swell * 1.8, headSides), mat);
+      head2.position.copy(end.clone().add(tangent.clone().multiplyScalar(lift)));
+      head2.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), tangent);
+      tube2.renderOrder = head2.renderOrder = order;
+      return [tube2, head2];
+    };
+    const meshes = rim ? body(rim.grow, rim.material, ORDER.rim) : [];
+    const [tube, head] = body(0, material, ORDER.mark);
+    meshes.push(tube, head);
+    return { meshes, tube, head, end };
+  }
+  /**
+   * Squeeze a tube's start, so how wide the path is says how far along the sequence you are.
+   *
+   * A tube's vertices are RINGS about the spine — one per tubular segment — so each ring is drawn toward its
+   * OWN spine point. Scaled toward the cube's centre instead, the tube would flatten onto the shell rather
+   * than thin, which is a different picture that happens to be narrower from one angle. The spine is sampled
+   * the way `TubeGeometry` samples it (`getPointAt`, arc-length), so the two agree ring for ring; sampled any
+   * other way the rings pull toward points the geometry was never built around, and the tube kinks.
+   *
+   * No normals are recomputed: every mark here is a `MeshBasicMaterial`, which has no lighting to get wrong.
+   */
+  static _taper(tube, path, from) {
+    const pos = tube.geometry.attributes.position;
+    const { tubularSegments, radialSegments } = tube.geometry.parameters;
+    const at = new Vector3();
+    const v = new Vector3();
+    for (let i = 0; i <= tubularSegments; i++) {
+      const t = i / tubularSegments;
+      path.getPointAt(t, at);
+      const k = from + (1 - from) * t;
+      for (let j = 0; j <= radialSegments; j++) {
+        const n = i * (radialSegments + 1) + j;
+        v.fromBufferAttribute(pos, n).sub(at).multiplyScalar(k).add(at);
+        pos.setXYZ(n, v.x, v.y, v.z);
+      }
+    }
+    pos.needsUpdate = true;
+  }
+  /** A small cone at `at` pointing along `tangent` — the mark a ribbon wears at each stop it passes through. */
+  static _chevron(at, tangent, size, material, order) {
+    const cone = new Mesh(new ConeGeometry(size, size * 2, 12), material);
+    cone.position.copy(at);
+    cone.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), tangent);
+    cone.renderOrder = order;
+    return cone;
+  }
+  /**
+   * WHICH MOVE an arrow is for, or null — the whole of reading `arrow`, and nothing about drawing.
+   *
+   * `next` follows the cube as it has SETTLED (`_applied`), not the cursor, which runs ahead when turns are
+   * queued: a turn in flight keeps its arrow until it lands.
+   */
+  _arrowMove() {
+    const spec = String(this._attrs.arrow ?? "none").trim();
+    if (spec === "next") return this._sol?.[this._applied] ?? null;
+    if (!spec || spec === "none") return null;
+    const read = readToken(spec);
+    if (!read.move) {
+      console.warn(`<cubus-cube> refusing arrow \u2014 "${spec}" is ${read.why}`);
+      return null;
+    }
+    return read.move;
+  }
+  /**
+   * WHERE the lines of `move` go — pure arithmetic over the move's own descriptor, no meshes.
+   *
+   * One straight line per layer the move turns, across a face that layer crosses, pointing the way that
+   * face's stickers travel: a point on a face with normal `n` moves along `axis x n` when the layer turns
+   * the positive way. A face whose normal is PARALLEL to the axis cannot host the line — the layer is
+   * parallel to it — so the candidates are the four it crosses and the preference picks the one the default
+   * eye sees best.
+   */
+  static _arrowPlan(move) {
+    const axis = new Vector3(...AXIS_VECTOR[move.axis]);
+    const across = FACES.map((f) => new Vector3(...f.n)).filter((v) => Math.abs(v.dot(axis)) < 1e-9);
+    const n = ARROW_FACE_PREFERENCE.map((key2) => new Vector3(...FACES.find((f) => f.key === key2).n)).find((c) => across.some((a) => a.equals(c)));
+    const d = axis.clone().cross(n).multiplyScalar(Math.sign(move.angle));
+    const half = 0.92;
+    const centreOf = (layer) => n.clone().multiplyScalar(1.53).add(axis.clone().multiplyScalar(layer));
+    const lanes = move.layers.map((layer) => Array.from({ length: 9 }, (_, i) => centreOf(layer).add(d.clone().multiplyScalar(-half + i / 8 * 2 * half))));
+    return {
+      axis,
+      n,
+      d,
+      half,
+      lanes,
+      centreOf,
+      layers: move.layers,
+      quarters: Math.min(2, Math.abs(Math.round(move.angle / (Math.PI / 2))))
+    };
+  }
+  /**
+   * The two passes every mark is drawn in: its shadow, then its body over the top.
+   *
+   * Yielded rather than written out, because it was written out three times in this method alone — the
+   * line, the half-turn dot and the tie — and "a mark is a body carried by a shadow" is one rule
+   * (audit, 2026-09-16). `swell` is how much wider the shadow is than what it carries.
+   */
+  *_markPasses() {
+    yield [RIM.grow, this._arrowRimMat, ORDER.rim];
+    yield [0, this._arrowMat, ORDER.mark];
+  }
+  /** A half turn's dot, behind the tail of the first lane — see HALF_TURN_GAP for why it is not at the head. */
+  _addHalfTurnDot(plan, tail) {
+    for (const [swell, mat, order] of this._markPasses()) {
+      const dot2 = new Mesh(new SphereGeometry(HALF_TURN_DOT + swell, 16, 12), mat);
+      dot2.position.copy(tail).sub(plan.d.clone().multiplyScalar(HALF_TURN_GAP));
+      dot2.renderOrder = order;
+      dot2.userData.halfTurn = true;
+      this._arrow.add(dot2);
+    }
+  }
+  /** The bar tying a wide move's lines together, so they read as one grip rather than two instructions. */
+  _addTie(plan) {
+    const at = (layer) => plan.centreOf(layer).add(plan.d.clone().multiplyScalar(-plan.half * TIE_ALONG));
+    const from = at(Math.min(...plan.layers) - TIE_OVERHANG);
+    const to = at(Math.max(...plan.layers) + TIE_OVERHANG);
+    for (const [swell, mat, order] of this._markPasses()) {
+      const bar = new Mesh(new TubeGeometry(new LineCurve3(from, to), 1, 0.034 + swell, 8, false), mat);
+      bar.renderOrder = order;
+      bar.userData.tie = true;
+      this._arrow.add(bar);
+    }
   }
   _placeArrow() {
     if (!this._arrow) return;
@@ -31268,63 +31630,56 @@ var CubusCube = class _CubusCube extends HTMLElement {
       child.geometry.dispose();
       this._arrow.remove(child);
     }
-    const spec = String(this._attrs.arrow ?? "none").trim();
-    let move = null;
-    if (spec === "next") move = this._sol?.[this._applied] ?? null;
-    else if (spec && spec !== "none") {
-      const read = readToken(spec);
-      if (!read.move) console.warn(`<cubus-cube> refusing arrow \u2014 "${spec}" is ${read.why}`);
-      else move = read.move;
-    }
+    const move = this._arrowMove();
     this._arrow.visible = move !== null;
     this._arrow.userData = {};
     this._dirty = true;
     if (!move) return;
-    const axis = new Vector3(...AXIS_VECTOR[move.axis]);
-    const layers = move.layers;
-    const face = layers.length === 1 && layers[0] !== 0;
-    const quarters = Math.min(2, Math.abs(Math.round(move.angle / (Math.PI / 2))));
-    const sign = Math.sign(move.angle);
-    const points = [];
-    if (face) {
-      const sweep = quarters * (Math.PI / 2) * 0.78;
-      const eye = new Vector3(1, 1, 1);
-      const u = eye.clone().sub(axis.clone().multiplyScalar(eye.dot(axis))).normalize();
-      const v = axis.clone().cross(u);
-      const centre = axis.clone().multiplyScalar(layers[0] * 1.53);
-      const at = (theta) => centre.clone().add(u.clone().multiplyScalar(Math.cos(theta) * 0.92)).add(v.clone().multiplyScalar(Math.sin(theta) * 0.92));
-      for (let i = 0; i <= 32; i++) points.push(at(sign * (-sweep / 2 + i / 32 * sweep)));
-    } else {
-      const across = FACES.map((f) => new Vector3(...f.n)).filter((n2) => Math.abs(n2.dot(axis)) < 1e-9);
-      const n = ARROW_FACE_PREFERENCE.map((key2) => new Vector3(...FACES.find((f) => f.key === key2).n)).find((c) => across.some((a) => a.equals(c)));
-      const d = axis.clone().cross(n).multiplyScalar(sign);
-      const offset = layers.reduce((a, b) => a + b, 0) / layers.length;
-      const centre = n.clone().multiplyScalar(1.53).add(axis.clone().multiplyScalar(offset));
-      const half = quarters === 2 ? 1.05 : 0.8;
-      for (let i = 0; i <= 8; i++) points.push(centre.clone().add(d.clone().multiplyScalar(-half + i / 8 * 2 * half)));
+    const plan = _CubusCube._arrowPlan(move);
+    let end = null;
+    for (const lane of plan.lanes) {
+      const made = _CubusCube._directedCurve(lane, {
+        radius: 0.044,
+        segments: 24,
+        headRadius: 0.155,
+        headLength: 0.36,
+        headSides: 20,
+        lift: 0.1,
+        material: this._arrowMat,
+        rim: { grow: RIM.grow, material: this._arrowRimMat }
+      });
+      end ??= made.end;
+      this._arrow.add(...made.meshes);
     }
-    const { tube, head, end } = _CubusCube._directedCurve(points, {
-      radius: 0.055,
-      segments: 48,
-      headRadius: 0.15,
-      headLength: 0.34,
-      headSides: 20,
-      lift: 0.12,
-      material: this._arrowMat
-    });
-    this._arrow.add(tube, head);
-    this._arrow.userData = { axis: axis.toArray(), start: points[0].toArray(), end: end.toArray(), angle: move.angle, layers: [...layers], points: points.map((q) => q.toArray()) };
+    if (plan.quarters === 2) this._addHalfTurnDot(plan, plan.lanes[0][0]);
+    if (plan.lanes.length > 1) this._addTie(plan);
+    const points = plan.lanes.flat();
+    this._arrow.userData = {
+      axis: plan.axis.toArray(),
+      start: plan.lanes[0][0].toArray(),
+      end: end.toArray(),
+      angle: move.angle,
+      layers: [...plan.layers],
+      lanes: plan.lanes.length,
+      points: points.map((q) => q.toArray())
+    };
     this._placeArrowFrame();
   }
   /**
    * Write the face letters `labels` asks for, or none.
    *
-   * TWO SENTENCES, as with every other name on the cube. `position`: the letter of the PLACE — the six
-   * letters stay where they are in the child's view while the cube turns under them, so after a regrip the
-   * face on top is still called U. They hang off the scene, not the cube. `face`: the letter of the FACE — each
-   * centre carries its own, and the letter goes where the centre goes. They hang off the centre cubies.
+   * ONE SENTENCE, and it is about the PLACE (owner's call, 2026-09-16, reversing his own earlier one):
+   * however the cube is turned, the face toward you is F, the one on top is U and the one on the right is R.
+   * The letters hang off the scene rather than the cube, so the cube turns under them and they do not move.
    *
-   * Drawn as flat letters just above the stickers, from a canvas: system fonts only, as the whole app is.
+   * A `face` mode used to exist beside this — a letter riding its own centre, so a regrip carried U underneath
+   * — and it is gone. It said the opposite of the rule above, which makes it a trap for whoever writes the
+   * next lesson rather than a second way to teach; nothing in the app, and no lesson, ever asked for it.
+   *
+   * WRITTEN ON THE CENTRE STICKER, lying in that face's plane (owner's call, 2026-09-16). It is a letter
+   * painted on the cube, at the place whose name it is — so it is foreshortened with the face it is on, as
+   * anything written on a cube is. "Facing the reader" means the right way up as the reader sees it, which is
+   * what `LABEL_TURN` does; it briefly meant turned-to-the-camera, and that floated the letters off the cube.
    */
   _placeLabels() {
     if (!this.cubies) return;
@@ -31338,29 +31693,47 @@ var CubusCube = class _CubusCube extends HTMLElement {
     const mode = String(this._attrs.labels ?? "none").trim();
     this._dirty = true;
     if (mode === "none" || mode === "") return;
-    if (mode !== "position" && mode !== "face") {
-      console.warn(`<cubus-cube> refusing labels \u2014 "${mode}" is not none, position or face`);
+    if (mode !== "position") {
+      console.warn(`<cubus-cube> refusing labels \u2014 "${mode}" is not none or position`);
       return;
     }
     const scene = this.root.parent;
     for (const f of FACES) {
-      const mesh = new Mesh(new PlaneGeometry(0.6, 0.6), new MeshBasicMaterial({
-        map: letterTexture(f.key),
-        transparent: true,
-        depthWrite: false
-      }));
-      mesh.renderOrder = 4;
-      mesh.userData = { label: f.key, mode };
+      const mesh = billboard(f.key, LABEL_FONT, 0.62, ORDER.letter, LETTER_PLATE);
+      mesh.userData.billboard = false;
+      mesh.userData.label = f.key;
+      mesh.userData.mode = mode;
       mesh.rotation.set(...LABEL_TURN[f.key]);
-      if (mode === "position") {
-        mesh.position.set(f.n[0] * LABEL_LIFT, f.n[1] * LABEL_LIFT, f.n[2] * LABEL_LIFT);
-        scene.add(mesh);
-      } else {
-        const centre = this.cubies.find((c) => c.children.some((m) => m.userData?.face === f.key && !m.userData.n && m.userData.home.every((v, i) => v === f.n[i])));
-        mesh.position.set(f.n[0] * (LABEL_LIFT - 1), f.n[1] * (LABEL_LIFT - 1), f.n[2] * (LABEL_LIFT - 1));
-        centre.add(mesh);
-      }
+      mesh.position.set(f.n[0] * LABEL_LIFT, f.n[1] * LABEL_LIFT, f.n[2] * LABEL_LIFT);
+      scene.add(mesh);
       this._labelMeshes.push(mesh);
+    }
+  }
+  /**
+   * Turn every billboarded mark — a trail's numerals — to face `cam`, upright.
+   *
+   * Per RENDER and not per frame, because the back view renders the same scene from the opposite eye: a
+   * letter turned to the main camera would be seen from behind there, and read mirrored. Each render orients
+   * for itself, so whichever ran last leaves the state it wanted.
+   *
+   * The parent's own rotation is divided out rather than assumed away: a numeral hangs off `root`, which
+   * carries the orientation AND the autorotate spin, so copying the camera's quaternion straight in would
+   * make it counter-rotate with the cube.
+   *
+   * The face letters are NOT in this: they are painted on their faces and turn with them. The loop still
+   * reads `_labelMeshes` rather than trusting that, because "the letters are not billboards" is a fact about
+   * another method, and a flag each mesh carries is one this one can check.
+   */
+  _faceCamera(cam) {
+    if (!this.scene) return;
+    const q = this._faceQ ||= new Quaternion();
+    this.scene.updateMatrixWorld(true);
+    for (const list of [this._labelMeshes, this._trailMeshes, this._arrow?.children]) {
+      for (const mesh of list ?? []) {
+        if (!mesh.userData.billboard || !mesh.parent) continue;
+        mesh.parent.getWorldQuaternion(q).invert();
+        mesh.quaternion.copy(q).multiply(cam.quaternion);
+      }
     }
   }
   /**
@@ -31415,7 +31788,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
       const along = from.dot(axisWorld);
       const moved = move.layers.some((l) => Math.abs(l - along) < 0.5) || move.layers.length === 3;
       if (!moved) continue;
-      for (let i = 1; i <= 12; i++) curve.push(from.clone().applyAxisAngle(axisWorld, move.angle * (i / 12)));
+      for (let i = 1; i <= ARC_STEPS; i++) curve.push(from.clone().applyAxisAngle(axisWorld, move.angle * (i / ARC_STEPS)));
       stops.push(to);
     }
     return { stops, curve };
@@ -31431,16 +31804,80 @@ var CubusCube = class _CubusCube extends HTMLElement {
    * on each trail's `userData`, in the cube's frame, so a test can check the route against an independent
    * model without judging the look.
    */
-  _placeTrails() {
-    if (!this.cubies) return;
+  /** What a trail is a function of. Two drawings with the same key are the same drawing. */
+  _trailKey() {
+    return [
+      String(this._attrs.trail ?? "none").trim(),
+      String(this._attrs["trail-style"] ?? "steps").trim().toLowerCase(),
+      this._attrs.alg ?? "",
+      this._attrs.scramble ?? "",
+      this._attrs.facelets ?? ""
+    ].join("\0");
+  }
+  /**
+   * Where trail `n` of `count` is DRAWN: its path lifted onto its own shell, then slid into its own lane.
+   *
+   * Arithmetic only — no meshes, no materials. Two separations, because they do different jobs and only one
+   * of them is visible: the SHELL keeps trails from intersecting in space, and the LANE keeps them from
+   * landing on each other in the picture, which is the one a reader notices (audit, 2026-09-16). The lane is
+   * centred, so a single trail is not moved at all and several open outward evenly.
+   */
+  static _trailLane(curve, n, count) {
+    const shell = TRAIL_SHELL + n * TRAIL_SPACING;
+    const onShell = curve.map((p) => p.clone().multiplyScalar(shell / Math.max(Math.abs(p.x), Math.abs(p.y), Math.abs(p.z))));
+    const offset = (n - (count - 1) / 2) * TRAIL_LANE;
+    if (offset === 0) return onShell;
+    return onShell.map((p, i) => {
+      const ahead = onShell[Math.min(i + 1, onShell.length - 1)];
+      const behind = onShell[Math.max(i - 1, 0)];
+      const alongPath = ahead.clone().sub(behind);
+      if (alongPath.lengthSq() < 1e-12) return p.clone();
+      const sideways = p.clone().normalize().cross(alongPath.normalize());
+      if (sideways.lengthSq() < 1e-12) return p.clone();
+      return p.clone().add(sideways.normalize().multiplyScalar(offset));
+    });
+  }
+  /**
+   * The numerals for trail `n`: which trail, then which hop — `2.3` is the second piece's third turn.
+   *
+   * At each hop's MIDDLE, because both ends are taken — a leg's end carries its arrowhead and is also the
+   * next leg's start — and STAGGERED by trail, because nesting separates the paths and not the writing: two
+   * trails running the same way put their numerals at the same angle a shell apart, which projects to
+   * almost nothing.
+   */
+  static _trailNumerals(lifted, stopCount, n) {
+    const out = [];
+    const along = Math.round(ARC_STEPS * (0.36 + 0.14 * (n % 3)));
+    for (let k = 1; k < stopCount; k++) {
+      const at = lifted[(k - 1) * ARC_STEPS + along].clone();
+      at.setLength(at.length() + NUMERAL_LIFT);
+      const numeral = billboard(`${n + 1}.${k}`, NUMERAL_FONT, 0.34, ORDER.letter, NUMERAL_PLATE);
+      numeral.position.copy(at);
+      numeral.userData.lifted = [at.toArray()];
+      out.push(numeral);
+    }
+    return out;
+  }
+  /** Let go of every trail mesh, and the materials and textures they own. */
+  _clearTrails() {
     const spent = /* @__PURE__ */ new Set();
     for (const mesh of this._trailMeshes ?? []) {
       mesh.parent?.remove(mesh);
       mesh.geometry.dispose();
       spent.add(mesh.material);
     }
-    for (const m of spent) m.dispose();
+    for (const m of spent) {
+      m.map?.dispose();
+      m.dispose();
+    }
     this._trailMeshes = [];
+  }
+  _placeTrails() {
+    if (!this.cubies) return;
+    const key2 = this._trailKey();
+    if (this._trailMeshes?.length && this._trailsFor === key2) return;
+    this._trailsFor = key2;
+    this._clearTrails();
     this._dirty = true;
     const spec = String(this._attrs.trail ?? "none").trim();
     if (!spec || spec === "none") {
@@ -31448,34 +31885,102 @@ var CubusCube = class _CubusCube extends HTMLElement {
       return;
     }
     const named = this._trailTargets(spec);
-    if (named === null) return;
+    if (named === null) {
+      this._applyCamera();
+      return;
+    }
+    const style = String(this._attrs["trail-style"] ?? "steps").trim().toLowerCase();
+    if (style !== "steps" && style !== "ribbon") {
+      console.warn(`<cubus-cube> refusing trail-style \u2014 "${style}" is not steps or ribbon`);
+      this._applyCamera();
+      return;
+    }
+    const rim = new MeshBasicMaterial({ color: RIM.colour, transparent: true, opacity: RIM.alpha, depthWrite: false });
     for (const [n, { token, index }] of named.entries()) {
       const { stops, curve } = this._trailPath(index);
       if (stops.length < 2) continue;
-      const lifted = curve.map((p) => p.clone().multiplyScalar(TRAIL_SHELL / Math.max(Math.abs(p.x), Math.abs(p.y), Math.abs(p.z))));
-      const ink = TRAIL_INKS[n % TRAIL_INKS.length];
-      const material = new MeshBasicMaterial({ color: ink, transparent: true, opacity: 0.88, depthWrite: false });
-      const { tube, head } = _CubusCube._directedCurve(lifted, {
-        radius: 0.045,
-        segments: lifted.length * 3,
-        headRadius: 0.12,
-        headLength: 0.28,
-        headSides: 16,
-        lift: 0.1,
-        material
-      });
-      tube.userData = { trail: token, stops, curve: curve.map((v) => v.toArray()), lifted: lifted.map((v) => v.toArray()) };
-      this.root.add(tube, head);
-      this._trailMeshes.push(tube, head);
+      const lifted = _CubusCube._trailLane(curve, n, named.length);
+      const material = new MeshBasicMaterial({ color: MARK_BODY, transparent: true, opacity: MARK_BODY_ALPHA, depthWrite: false });
+      const { meshes, body } = style === "ribbon" ? _CubusCube._ribbonTrail(lifted, stops.length, material, rim) : _CubusCube._stepTrail(lifted, stops.length, material, rim);
+      if (!body) {
+        material.dispose();
+        continue;
+      }
+      meshes.push(..._CubusCube._trailNumerals(lifted, stops.length, n));
+      body.userData = { trail: token, stops, curve: curve.map((v) => v.toArray()), lifted: lifted.map((v) => v.toArray()) };
+      this.root.add(...meshes);
+      this._trailMeshes.push(...meshes);
     }
+    if (this._trailMeshes.length === 0) rim.dispose();
     this._applyCamera();
+  }
+  /**
+   * A trail as ONE DIRECTED SEGMENT PER TURN, with a gap at every stop (`trail-style: steps`).
+   *
+   * The complaint this answers, 2026-09-16: over `R U R' U'` the curve was hard to follow. One unbroken tube
+   * with one head at the very end says where the piece ENDED and nothing about the order it got there in, and
+   * a commutator's path crosses itself — so at a crossing there was no way to tell which strand came first.
+   * A head per turn puts the direction on every part of the path, and the gaps make the turns countable.
+   *
+   * The legs are cut on `ARC_STEPS`, the same number `_trailPath` draws each arc with, so a leg is exactly one
+   * turn and never straddles two.
+   */
+  static _stepTrail(lifted, stopCount, material, rim) {
+    const meshes = [];
+    let body = null;
+    for (let k = 1; k < stopCount; k++) {
+      const leg = lifted.slice((k - 1) * ARC_STEPS + STEP_GAP, k * ARC_STEPS + 1 - STEP_GAP);
+      if (leg.length < 2) continue;
+      const made = _CubusCube._directedCurve(leg, {
+        radius: 0.036,
+        segments: leg.length * 3,
+        headRadius: 0.142,
+        headLength: 0.32,
+        headSides: 16,
+        lift: 0.075,
+        material,
+        rim: { grow: RIM.grow, material: rim }
+      });
+      body ??= made.tube;
+      meshes.push(...made.meshes);
+    }
+    return { meshes, body };
+  }
+  /**
+   * A trail as ONE UNBROKEN PATH whose width is time (`trail-style: ribbon`): thin where the piece started,
+   * full where it ended, with a chevron at each stop it passed through.
+   *
+   * The width is readable at a glance along the whole path, which the segmented form gives up in exchange for
+   * countability. The chevrons are what keeps it honest where it crosses itself: width alone is a comparison
+   * between two places, and at a crossing the eye has both strands at once and no way to rank them.
+   */
+  static _ribbonTrail(lifted, stopCount, material, rim) {
+    const made = _CubusCube._directedCurve(lifted, {
+      radius: 0.046,
+      segments: lifted.length * 3,
+      headRadius: 0.15,
+      headLength: 0.34,
+      headSides: 16,
+      lift: 0.08,
+      material,
+      rim: { grow: RIM.grow, material: rim },
+      taper: RIBBON_TAPER
+    });
+    const meshes = [...made.meshes];
+    for (let k = 1; k < stopCount - 1; k++) {
+      const at = lifted[k * ARC_STEPS];
+      const tangent = lifted[k * ARC_STEPS + 1].clone().sub(at).normalize();
+      meshes.push(_CubusCube._chevron(at, tangent, 0.118 + RIM.grow, rim, ORDER.rim));
+      meshes.push(_CubusCube._chevron(at, tangent, 0.118, material, ORDER.mark));
+    }
+    return { meshes, body: made.tube };
   }
   /** Hold the arrow in the sequence's frame, so the next move is drawn about the axis it will turn. */
   _placeArrowFrame() {
     if (!this._arrow) return;
     const m = this._seq ?? UPRIGHT;
     this._m4a ||= new Matrix4();
-    this._m4a.set(m[0][0], m[0][1], m[0][2], 0, m[1][0], m[1][1], m[1][2], 0, m[2][0], m[2][1], m[2][2], 0, 0, 0, 0, 1);
+    setBasis(this._m4a, m);
     this._arrow.quaternion.setFromRotationMatrix(this._m4a);
   }
   /** The walk's starting state, with every attribute read in: `_set()` skips an unbuilt cube. */
@@ -31491,7 +31996,12 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._readFocus();
     this._ghostVisible();
     this.showTurn(this._attrs.orientation, this._attrs.orientation, 1);
-    this.reset();
+    this._quiet = true;
+    try {
+      this.reset();
+    } finally {
+      this._quiet = false;
+    }
     this._placeLabels();
   }
   /** The resize and visibility observers, and the frame loop itself. */
@@ -31636,7 +32146,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
       canvas.remove();
       canvas.style.display = wasDisplay;
     }
-    const owned = new Set(this._arrowMat ? [this._arrowMat] : []);
+    const owned = new Set([this._arrowMat, this._arrowRimMat].filter(Boolean));
     this.scene?.traverse((o) => {
       if (o.geometry) owned.add(o.geometry);
       for (const m of [o.material].flat()) if (m) {
@@ -31650,7 +32160,8 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this.scene = this.renderer = this.camera = this.controls = this._controlsRoot = null;
     this.root = this.cubies = this.stickers = this._ghostMeshes = null;
     this._tick = this._resize = this._ro = this._io = null;
-    this._arrow = this._arrowMat = this._labelMeshes = this._trailMeshes = null;
+    this._arrow = this._arrowMat = this._arrowRimMat = this._labelMeshes = this._trailMeshes = null;
+    this._trailsFor = null;
     this._ghostTwin?.clear();
     this._lights = this._fcSet = this._hlSet = null;
   }
@@ -31717,24 +32228,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     if (parts.length !== 2 || !up || !front) return null;
     if (!isFace(up) || !isFace(front) || sameAxis(up, front)) return null;
     const m = orientationMatrix(up, front);
-    const basis = new Matrix4().set(
-      m[0][0],
-      m[0][1],
-      m[0][2],
-      0,
-      m[1][0],
-      m[1][1],
-      m[1][2],
-      0,
-      m[2][0],
-      m[2][1],
-      m[2][2],
-      0,
-      0,
-      0,
-      0,
-      1
-    );
+    const basis = setBasis(new Matrix4(), m);
     return { q: new Quaternion().setFromRotationMatrix(basis), spec: `${up} ${front}` };
   }
   /**
@@ -31834,6 +32328,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
    * the frame edge.
    */
   _turned() {
+    if (this._attrs.autorotate != null) return true;
     if (this._solMovesCentres || !isUpright(this._seq ?? UPRIGHT)) return true;
     const { from, to, phase } = this._turn;
     if (from === to || phase >= 1) return to !== "U F";
@@ -31856,6 +32351,8 @@ var CubusCube = class _CubusCube extends HTMLElement {
   }
   _applyCamera() {
     if (!this.camera) return;
+    this._v3a ||= new Vector3();
+    this._v3b ||= new Vector3();
     const lat = this._num("camera-latitude", 35);
     const lon = this._num("camera-longitude", 45);
     const eye = eyeDirection(lat, lon);
@@ -31867,7 +32364,10 @@ var CubusCube = class _CubusCube extends HTMLElement {
       scale: this._num("facelet-scale", 0.9),
       cull: !stable
     });
-    for (const mesh of this._trailMeshes ?? []) for (const q of mesh.userData.lifted ?? []) points.push(q);
+    for (const mesh of this._trailMeshes ?? []) {
+      for (const q of mesh.userData.lifted ?? []) points.push(q);
+      points.push(...meshCorners(mesh));
+    }
     const geom = { points, vfovDeg: this.camera.fov, aspect: this._drawAspect(), eye, worldUp };
     const d = stable ? fitDistanceStable(geom) : fitDistance(geom);
     if (this.controls) {
@@ -31875,7 +32375,12 @@ var CubusCube = class _CubusCube extends HTMLElement {
       this.controls.maxDistance = d;
     }
     this.camera.up.set(worldUp[0], worldUp[1], worldUp[2]);
-    this.camera.position.set(d * eye[0], d * eye[1], d * eye[2]);
+    const askedChanged = !this._eyeAsked || eye.some((v, i) => Math.abs(v - this._eyeAsked[i]) > 1e-9);
+    const orbited = !askedChanged && this._eyeWritten !== void 0 && this.camera.position.lengthSq() > 0 && this._v3a.set(...this._eyeWritten).angleTo(this._v3b.copy(this.camera.position).normalize()) > 1e-4;
+    const dir = orbited ? this._v3b.toArray() : eye;
+    this._eyeAsked = [...eye];
+    this._eyeWritten = [...dir];
+    this.camera.position.set(d * dir[0], d * dir[1], d * dir[2]);
     this.camera.lookAt(0, 0, 0);
     if (this.controls?._quat) {
       this.controls._quat.setFromUnitVectors(this.camera.up, new Vector3(0, 1, 0));
@@ -31951,6 +32456,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
       try {
         r.setViewport(0, 0, left, h);
         r.setScissor(0, 0, left, h);
+        this._faceCamera(this.camera);
         r.render(this.scene, this.camera);
         this._renderOpposite(left, 0, right, h);
       } finally {
@@ -31961,6 +32467,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     r.setViewport(0, 0, w, h);
+    this._faceCamera(this.camera);
     r.render(this.scene, this.camera);
     if (bv === "top-right" && Math.floor(w * 0.32) > 0 && Math.floor(h * 0.32) > 0) {
       const iw = Math.floor(w * 0.32), ih = Math.floor(h * 0.32);
@@ -32006,6 +32513,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
       this._placeLights(cam);
       r.setViewport(x, y, w, h);
       r.setScissor(x, y, w, h);
+      this._faceCamera(cam);
       r.render(this.scene, cam);
     } finally {
       this._placeLights();
@@ -32266,7 +32774,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
       const c = this.cubies[i];
       c.position.set(pos[0], pos[1], pos[2]);
       this._m4 ||= new Matrix4();
-      this._m4.set(m[0][0], m[0][1], m[0][2], 0, m[1][0], m[1][1], m[1][2], 0, m[2][0], m[2][1], m[2][2], 0, 0, 0, 0, 1);
+      setBasis(this._m4, m);
       c.quaternion.setFromRotationMatrix(this._m4);
     }
   }
@@ -32290,6 +32798,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._playing = false;
     this._applied = 0;
     this._group = null;
+    this._era = (this._era ?? 0) + 1;
     this._state = SOLVED_STATE;
     this._seq = UPRIGHT;
     const fl = this._facelets();
@@ -32332,10 +32841,13 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._playing = true;
     this._next();
   }
+  // The in-flight quarter turn finishes, then it stops — BOTH transports. Clearing only `_playing` left a
+  // stop group advancing through `_advanceGroup`, so pausing a grouped walk paused nothing (audit,
+  // 2026-09-16). Whatever is mid-turn still lands: a cube left between two layers is not a paused cube.
   pause() {
     this._playing = false;
+    this._group = null;
   }
-  // the in-flight quarter turn finishes, then it stops
   step() {
     if (this._cursor < this._sol.length) {
       this._queue.push(this._sol[this._cursor++]);
@@ -32362,14 +32874,31 @@ var CubusCube = class _CubusCube extends HTMLElement {
    * turns still in flight land at once and the new group animates, rather than the press being dropped or
    * queued behind an animation nobody is watching any more.
    */
-  stepStop() {
+  /**
+   * Settle whatever is in flight, check the press still means something, then walk to the token `pick`
+   * names — the whole body of every stop command.
+   *
+   * ONE COPY, because the three of them are one procedure with one line different, and each was keeping
+   * its own copy of the lifecycle rules (audit, 2026-09-16). `_settleGroup` reports every token it lands,
+   * and a host may dispose this element, write a new `alg`, `reset()` or `seek()` from inside one — so the
+   * press that started before all that is about a cube that is gone, a walk that is no longer the one being
+   * played, or a position the cube has already left. `pick` runs AFTER the settle, because the cursor it
+   * reads from is what the settle just moved.
+   */
+  _walkTo(pick) {
     const sol = this._sol;
+    const era = this._era;
     this._settleGroup();
-    if (!this.stickers || this._sol !== sol) return;
-    const to = this._stops.find((p) => p > this._cursor);
-    if (to === void 0) return;
-    this._group = { to, delta: 1 };
-    this.step();
+    if (!this.stickers || this._sol !== sol || this._era !== era) return;
+    this._playing = false;
+    const to = pick();
+    if (to === void 0 || to === this._cursor) return;
+    this._group = { to, delta: to > this._cursor ? 1 : -1 };
+    if (to > this._cursor) this.step();
+    else this.stepBack();
+  }
+  stepStop() {
+    this._walkTo(() => this._stops.find((p) => p > this._cursor));
   }
   /**
    * Play to token `k`, one token at a time, the way a stop group plays.
@@ -32386,24 +32915,14 @@ var CubusCube = class _CubusCube extends HTMLElement {
    * sequence, and the worst answer to a disagreement about its length is a cube left part way.
    */
   playTo(k) {
-    const sol = this._sol;
-    this._settleGroup();
-    if (!this.stickers || this._sol !== sol) return;
-    const to = Math.max(0, Math.min(Math.round(Number(k)), this._sol.length));
-    if (!Number.isFinite(to) || to === this._cursor) return;
-    this._group = { to, delta: to > this._cursor ? 1 : -1 };
-    if (to > this._cursor) this.step();
-    else this.stepBack();
+    this._walkTo(() => {
+      const to = Math.max(0, Math.min(Math.round(Number(k)), this._sol.length));
+      return Number.isFinite(to) ? to : void 0;
+    });
   }
   /** Undo back to the previous stop — the whole group, one token at a time, the same way round. */
   stepBackStop() {
-    const sol = this._sol;
-    this._settleGroup();
-    if (!this.stickers || this._sol !== sol) return;
-    const to = [...this._stops].reverse().find((p) => p < this._cursor);
-    if (to === void 0) return;
-    this._group = { to, delta: -1 };
-    this.stepBack();
+    this._walkTo(() => [...this._stops].reverse().find((p) => p < this._cursor));
   }
   /** Land a group in flight where it was going, at once: the in-flight turn, the queue, then the rest. */
   _settleGroup() {
@@ -32411,7 +32930,8 @@ var CubusCube = class _CubusCube extends HTMLElement {
     if (!g) return;
     this._group = null;
     const sol = this._sol;
-    const walking = () => Boolean(this.stickers) && this._sol === sol;
+    const era = this._era;
+    const walking = () => Boolean(this.stickers) && this._sol === sol && this._era === era;
     if (this._anim) this._completeMove(this._anim);
     while (walking() && this._queue.length) this._completeMove({ m: this._queue.shift() });
     while (walking() && this._cursor !== g.to) {

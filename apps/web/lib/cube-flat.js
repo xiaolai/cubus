@@ -24,6 +24,21 @@ export const FREE = '#3A332A';
 /** A sticker's hairline edge — `--sticker-edge`. */
 export const EDGE = 'rgba(0,0,0,.28)';
 
+/**
+ * A sticker's corner radius as a fraction OF THE STICKER, on each axis separately.
+ *
+ * The number is the net's approved look — 3px on a 24.58px sticker at the 320px reference — held as a
+ * ratio rather than as a pixel count, because a ratio is the only form of it that survives a sticker
+ * changing size. Scaled from the DRAWING's width instead (`3 * k`), the radius stayed put while the ring
+ * shrank the wells by a third to make room: measured 2026-09-16, the wells drew at 0.200 of their side
+ * and the ring's bars at 0.265, against the net's 0.122 — the outermost shapes on the page, the roundest.
+ *
+ * Per axis, so a foreshortened sticker's corner is foreshortened with it: the ring's side stickers are the
+ * same stickers seen edge-on, and a circular corner on a bar a third as tall is a corner the cube does not
+ * have. A square sticker gets rx === ry and is unchanged.
+ */
+const CORNER = 3 / (((320 - 3 * 3) / 12 * 3 - 2 * 2) / 3);
+
 /** Where each face sits in the net, as [row, column] of its top-left cell on the 12 by 9 grid. */
 const NET_AT = Object.freeze({ U: [0, 3], L: [3, 0], F: [3, 3], R: [3, 6], B: [3, 9], D: [6, 3] });
 const FACE_ORDER = 'URFDLB';
@@ -58,11 +73,22 @@ export function faceletsOf(cube) {
   return cube;
 }
 
+/** Below this, a net's own stickers are less than a pixel across and the drawing is empty but accepted. */
+const MIN_WIDTH = 13;
+
 /** The drawing's width in pixels, or a refusal. A width that is not a positive finite number makes an
  *  SVG with `NaN` geometry or nothing visible at all — drawn, accepted, and empty. */
 function widthOf(width) {
   if (typeof width !== 'number' || !Number.isFinite(width) || width <= 0) {
     throw new Error(`cube-flat: width must be a positive number of pixels, not ${JSON.stringify(width)}`);
+  }
+  // AND BIG ENOUGH TO BE A DRAWING. Positive is not the same as visible: `width: 0.001` passed the check
+  // above and serialised to `viewBox="0 0 0.00 0.00"` with stickers of zero size — a drawing that is
+  // accepted, returned, and shows nothing (audit, 2026-09-16), which is the silent-empty-output failure
+  // this file already refuses for a malformed cube. The floor is where the net's smallest sticker is still
+  // a whole pixel: a net is 13 sticker-widths across, so below 13 a sticker cannot be one.
+  if (width < MIN_WIDTH) {
+    throw new Error(`cube-flat: width ${width} is too small to draw; ${MIN_WIDTH} is the smallest sticker that is a pixel`);
   }
   return width;
 }
@@ -74,7 +100,22 @@ function coloursFor({ palette = 'muted', scheme = 'western' } = {}) {
   return paletteFor(STICKER_PALETTES[palette], scheme);
 }
 
-const rect = ({ x, y, w, h, r, fill, facelet, free }) => `<rect data-facelet="${facelet}" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${w.toFixed(2)}" height="${h.toFixed(2)}" rx="${r.toFixed(2)}" fill="${fill}"${free ? ' fill-opacity="0.35"' : ''} stroke="${EDGE}" stroke-width="1"/>`;
+// The radius is the rect's own, never the caller's: it is a property of the sticker, and a caller that
+// could pass one is a caller that could pass a different one for two stickers of the same size.
+const rect = ({ x, y, w, h, fill, facelet, free }) => `<rect data-facelet="${facelet}" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${w.toFixed(2)}" height="${h.toFixed(2)}" rx="${(w * CORNER).toFixed(2)}" ry="${(h * CORNER).toFixed(2)}" fill="${fill}"${free ? ' fill-opacity="0.35"' : ''} stroke="${EDGE}" stroke-width="1"/>`;
+
+/**
+ * The document every flat view is: a viewBox, a size, a label, and the stickers.
+ *
+ * ONE COPY. The envelope was written out in both renderers — the same numeric formatting, the same
+ * `role="img"`, the same title escaping, the same join — so the accessibility of a diagram depended on
+ * which function drew it, and a change to any of those rules needed finding twice (audit, 2026-09-16).
+ * The title is escaped HERE and nowhere else, which is what makes "a title cannot inject markup" a
+ * property of flat views rather than of two functions that currently agree.
+ */
+const svgOf = ({ width, height, title, parts }) => `<svg xmlns="http://www.w3.org/2000/svg" `
+  + `viewBox="0 0 ${width.toFixed(2)} ${height.toFixed(2)}" width="${width.toFixed(2)}" height="${height.toFixed(2)}" `
+  + `role="img" aria-label="${escapeXml(title)}">${parts.join('')}</svg>`;
 
 /**
  * The net: every sticker of the cube unfolded, U above F, L F R B across, D below — the app's net, as SVG.
@@ -100,12 +141,12 @@ export function netSvg(cube, { palette, scheme, width = 320, title = 'The cube, 
       const index = f * 9 + i;
       const letter = facelets[index];
       parts.push(rect({
-        x: ox + (i % 3) * (size + stickerGap), y: oy + Math.floor(i / 3) * (size + stickerGap), w: size, h: size, r: 3 * k,
+        x: ox + (i % 3) * (size + stickerGap), y: oy + Math.floor(i / 3) * (size + stickerGap), w: size, h: size,
         fill: letter === '?' ? FREE : colours[letter], facelet: index, free: letter === '?',
       }));
     }
   }
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width.toFixed(2)} ${height.toFixed(2)}" width="${width.toFixed(2)}" height="${height.toFixed(2)}" role="img" aria-label="${escapeXml(title)}">${parts.join('')}</svg>`;
+  return svgOf({ width, height, title, parts });
 }
 
 /**
@@ -137,15 +178,35 @@ export function topFaceSvg(cube, { palette, scheme, width = 76, mode = 'colours'
   };
   const parts = [];
   for (let i = 0; i < 9; i++) {
-    parts.push(rect({ x: origin + (i % 3) * (size + gap), y: origin + Math.floor(i / 3) * (size + gap), w: size, h: size, r: 3 * k, facelet: i, ...fillOf(i) }));
+    parts.push(rect({ x: origin + (i % 3) * (size + gap), y: origin + Math.floor(i / 3) * (size + gap), w: size, h: size, facelet: i, ...fillOf(i) }));
   }
   if (ring) {
+    // THE FOUR SIDES AS DATA, then one loop. They were four hand-written lines differing only in which
+    // coordinate ran along the strip and which was pinned — so the four could drift apart, and the way to
+    // read them was to diff them against each other (audit, 2026-09-16). Each side now says only the two
+    // things that are actually different about it: which strip of facelets it draws, and where a sticker
+    // `j` of it goes. `across` is true when the strip runs left to right, which is also what decides
+    // whether the rect is wide or tall.
     const along = (j) => origin + j * (size + gap);
     const far = origin + inner + gap;
-    TOP_RING.back.forEach((index, j) => parts.push(rect({ x: along(j), y: 0, w: size, h: band, r: 2 * k, facelet: index, ...fillOf(index) })));
-    TOP_RING.front.forEach((index, j) => parts.push(rect({ x: along(j), y: far, w: size, h: band, r: 2 * k, facelet: index, ...fillOf(index) })));
-    TOP_RING.left.forEach((index, j) => parts.push(rect({ x: 0, y: along(j), w: band, h: size, r: 2 * k, facelet: index, ...fillOf(index) })));
-    TOP_RING.right.forEach((index, j) => parts.push(rect({ x: far, y: along(j), w: band, h: size, r: 2 * k, facelet: index, ...fillOf(index) })));
+    const sides = [
+      { strip: TOP_RING.back, across: true, pinned: 0 },
+      { strip: TOP_RING.front, across: true, pinned: far },
+      { strip: TOP_RING.left, across: false, pinned: 0 },
+      { strip: TOP_RING.right, across: false, pinned: far },
+    ];
+    for (const { strip, across, pinned } of sides) {
+      for (const [j, index] of strip.entries()) {
+        parts.push(rect({
+          x: across ? along(j) : pinned,
+          y: across ? pinned : along(j),
+          w: across ? size : band,
+          h: across ? band : size,
+          facelet: index,
+          ...fillOf(index),
+        }));
+      }
+    }
   }
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width.toFixed(2)} ${width.toFixed(2)}" width="${width.toFixed(2)}" height="${width.toFixed(2)}" role="img" aria-label="${escapeXml(title)}">${parts.join('')}</svg>`;
+  return svgOf({ width, height: width, title, parts });
 }

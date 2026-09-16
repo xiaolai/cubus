@@ -84,6 +84,18 @@ export function faceletsError(text) {
   const read = readCube(text);
   const unknown = [...read.corners, ...read.edges].filter((r) => r.piece === null).map((r) => r.slot);
   if (unknown.length) return `these slots do not spell a piece: ${unknown.join(', ')}`;
+  // AND NO PIECE TWICE. Every slot spelling a real piece is not the same as every piece being in one slot:
+  // a cube with two URF corners passed all of the above, and only threw later, out of `ep names one cubie
+  // twice`, in a place that no longer knew which script had written it (audit, 2026-09-16). Said here, the
+  // reason arrives with the step that wrote it — the same argument the `cube` step's check was added on.
+  for (const [kind, records] of [['corner', read.corners], ['edge', read.edges]]) {
+    const seen = new Map();
+    for (const r of records) {
+      const first = seen.get(r.piece);
+      if (first) return `the ${kind} ${r.piece} is in two places: ${first} and ${r.slot}`;
+      seen.set(r.piece, r.slot);
+    }
+  }
   return null;
 }
 

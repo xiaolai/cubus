@@ -36,6 +36,48 @@ const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
  * Returns the SAME object rather than a copy: callers pass it straight to `buildSchedule`, and a
  * defensive copy here would only hide which one they were holding.
  */
+/**
+ * One rule per EPISODE cue field: the reason the value is wrong, or null.
+ *
+ * Separated from the sequencing rules for the reason the script format's registry was (audit, 2026-09-16):
+ * the loop mixed twelve independent per-field checks with four rules about a cue's RELATIONSHIP to the cues
+ * around it — monotonic starts, turns still landing, the setup boundary — so neither kind could be read
+ * without stepping over the other. These are the ones that need no neighbour. An episode cue is not
+ * clearable: `null` is a value nothing here accepts, and every rule refuses it by refusing its type.
+ */
+const EPISODE_CUE_RULES = Object.freeze({
+  __proto__: null,
+  say: (v) => (typeof v === 'string' && v ? null : '`say` must be a non-empty string'),
+  quarters: (v) => {
+    if (!Array.isArray(v)) return '`quarters` must be an array of moves';
+    const bad = v.find((q) => typeof q !== 'string' || !isFaceTurn(q));
+    return bad === undefined ? null : `"${bad}" is not a face turn — the fixed frame takes URFDLB only, never a rotation`;
+  },
+  setup: (v) => {
+    if (typeof v !== 'string') return '`setup` must be a string';
+    const bad = v.trim().split(/\s+/).filter(Boolean).filter((m) => !isFaceTurn(m));
+    return bad.length ? `\`setup\` has moves the renderer cannot apply: ${bad.join(' ')}` : null;
+  },
+  secs: (v) => (isNum(v) && v > 0 ? null : '`secs` must be positive'),
+  // Wrapped rather than referenced directly: this table is built where `checkEpisode` is, above the `const`
+  // helpers it uses, so naming one as a VALUE reads it before it is initialised. Called from inside an arrow
+  // it is looked up when a cue is checked, which is after the module has finished loading.
+  number: (v) => badCount(v),
+  ghosts: (v) => badBoolean('ghosts', v),
+  counting: (v) => badBoolean('counting', v),
+  hl: (v) => (typeof v !== 'string' ? '`hl` must be a string' : (badSelector(v) ? `\`hl\`: ${badSelector(v)}` : null)),
+  focus: (v) => (typeof v !== 'string' ? '`focus` must be a string' : (badSelector(v) ? `\`focus\`: ${badSelector(v)}` : null)),
+  move: (v) => (typeof v === 'string' ? null : '`move` must be a string'),
+  section: (v) => (typeof v === 'string' ? null : '`section` must be a string'),
+  hold: (v) => (typeof v === 'string' ? null : '`hold` must be a string'),
+  cam: (v) => badCamera(v),
+  camUp: (v) => badFaceLetter(v),
+  orientation: (v) => (badPair(v) ? `"${v}" is not an orientation — ${badPair(v)}` : null),
+  // Not a value at all: a resolved episode has none, and one that still carries it has not been through
+  // `resolveSpanning()` — which is a step that was skipped, not a field that is wrong.
+  spanning: () => '`spanning` is unresolved — run resolveSpanning() before the episode is played',
+});
+
 export function checkEpisode(episode) {
   const where = (i, msg) => { throw new Error(`episode cue ${i}: ${msg}`); };
   if (!episode || typeof episode !== 'object') throw new Error('episode: expected an object');
@@ -51,50 +93,23 @@ export function checkEpisode(episode) {
     throw new Error('episode: `cues` must be a non-empty array');
   }
   let last = -Infinity;
-  cues.forEach((c, i) => {
+  // By INDEX: `forEach` skips holes, so `{ cues: new Array(1) }` was a "non-empty array" that validated
+  // with nothing in it and crashed in `buildSchedule` (audit, 2026-09-16).
+  eachIndex(cues, (c, i) => {
     if (!c || typeof c !== 'object') where(i, 'expected an object');
     for (const k of Object.keys(c)) if (!CUE_KEYS.has(k)) where(i, `unknown field "${k}"`);
-    if (typeof c.say !== 'string' || !c.say) where(i, '`say` must be a non-empty string');
+    // THE FIELDS, each by its own rule.
+    for (const field of Object.keys(EPISODE_CUE_RULES)) {
+      if (c[field] === undefined) continue;
+      const why = EPISODE_CUE_RULES[field](c[field]);
+      if (why) where(i, why);
+    }
+    // AND THE SEQUENCING, which is about this cue's neighbours and so cannot be a field rule.
     if (!isNum(c.start) || !isNum(c.end)) where(i, '`start` and `end` must be numbers');
+    if (c.start < 0 || c.end < 0) where(i, `starts at ${c.start} and ends at ${c.end}; an episode begins at 0`);
     if (c.end < c.start) where(i, `ends (${c.end}) before it starts (${c.start})`);
-    // Monotonic starts are what makes `lineAt` a scan rather than a search, and what makes a seek
-    // land on exactly one line. Out of order they would silently overlap.
     if (c.start < last) where(i, `starts at ${c.start}, before the previous cue's ${last}`);
     last = c.start;
-    if (c.quarters !== undefined) {
-      if (!Array.isArray(c.quarters)) where(i, '`quarters` must be an array of moves');
-      for (const q of c.quarters) {
-        if (typeof q !== 'string' || !/^[URFDLB](2|')?$/.test(q)) {
-          where(i, `"${q}" is not a face turn — the fixed frame takes URFDLB only, never a rotation`);
-        }
-      }
-    }
-    // A NAMED field is not a checked field. Every one of these passed the old "is the key allowed"
-    // test and then failed somewhere the cue number was no longer available to blame:
-    //   `setup: "banana"`  the renderer refuses the tokens and applies NO scramble, so the episode
-    //                      silently opens on a solved cube instead of the position it describes
-    //   `number: "six"`    reaches `BigInt()` and throws inside the player, mid-playback
-    //   `ghosts: "false"`  is a truthy string, so it turns the ghosts ON
-    if (c.setup !== undefined) {
-      if (typeof c.setup !== 'string') where(i, '`setup` must be a string');
-      const bad = c.setup.trim().split(/\s+/).filter(Boolean).filter((m) => !/^[URFDLB](2|')?$/.test(m));
-      if (bad.length) where(i, `\`setup\` has moves the renderer cannot apply: ${bad.join(' ')}`);
-    }
-    if (c.secs !== undefined && (!isNum(c.secs) || c.secs <= 0)) where(i, '`secs` must be positive');
-    if (c.number !== undefined && badCount(c.number)) where(i, badCount(c.number));
-    if (c.ghosts !== undefined && badBoolean('ghosts', c.ghosts)) where(i, badBoolean('ghosts', c.ghosts));
-    if (c.counting !== undefined && badBoolean('counting', c.counting)) where(i, badBoolean('counting', c.counting));
-    for (const k of ['hl', 'focus', 'move', 'section', 'say', 'hold']) {
-      if (c[k] !== undefined && typeof c[k] !== 'string') where(i, `\`${k}\` must be a string`);
-    }
-    if (c.spanning !== undefined) {
-      where(i, '`spanning` is unresolved — run resolveSpanning() before the episode is played');
-    }
-    if (c.cam !== undefined && badCamera(c.cam)) where(i, badCamera(c.cam));
-    if (c.orientation !== undefined && badPair(c.orientation)) {
-      where(i, `"${c.orientation}" is not an orientation — ${badPair(c.orientation)}`);
-    }
-    if (c.camUp !== undefined && badFaceLetter(c.camUp)) where(i, badFaceLetter(c.camUp));
   });
 
   // A cue's turns are scheduled from its own end, so two cues whose windows overlap interleave
@@ -102,7 +117,7 @@ export function checkEpisode(episode) {
   // effect is silent and wrong: timestamps [1, 3, 5, 2.5] make the player apply `R U` at 2.6s
   // where the schedule says `R D`. Cheaper to refuse than to make the player order-aware.
   let reach = -Infinity;
-  cues.forEach((c, i) => {
+  eachIndex(cues, (c, i) => {
     // A `setup` starts a NEW position, and the previous position's remaining turns are discarded
     // rather than played — so they cannot overlap anything here. Carrying `reach` across that
     // boundary rejected a legitimate reset at 2s because a discarded sequence ran to 5s.
@@ -212,6 +227,14 @@ export function resolveSpanning(cues) {
 export const STEP_KINDS = Object.freeze(['move', 'setup', 'cube', 'paint', 'hold', 'round']);
 
 /** What a step may say about the LESSON, beside what the cube does. */
+/** Which cue fields have a rule. Exported so a field that is NAMED but not CHECKED fails a test rather
+ *  than being accepted unvalidated — see `script-format.test.mjs`. */
+export const CHECKED_CUE_FIELDS = Object.freeze(() => Object.keys(CUE_RULES));
+/** The same, for the episode format's own field set. */
+export const CHECKED_EPISODE_FIELDS = Object.freeze(() => Object.keys(EPISODE_CUE_RULES));
+/** Every field an episode cue may carry. */
+export const EPISODE_CUE_FIELDS = Object.freeze(() => [...CUE_KEYS]);
+
 export const STEP_CUES = Object.freeze([
   'say', 'section', 'hl', 'focus', 'ask', 'ghosts', 'ghostElevation', 'cam', 'camUp',
   'number', 'counting', 'at', 'secs',
@@ -220,7 +243,6 @@ export const STEP_CUES = Object.freeze([
 ]);
 
 const STEP_KEYS = new Set([...STEP_KINDS, ...STEP_CUES]);
-const FACELETS = /^[URFDLB]{54}$/;
 /**
  * A field written as TEXT, or the reason it is not.
  *
@@ -239,8 +261,24 @@ const PICTURE = /^[URFDLB?]{54}$/;
  * stays per format is what genuinely differs: a script may write `null` to clear a cue and an episode may
  * not, and their notation rules are their own. Each returns the reason, or null when there is none.
  */
+/**
+ * A face turn in the EPISODE format's fixed frame: URFDLB, optionally doubled or primed, never a rotation.
+ *
+ * Once. It was a regex literal in `quarters` and the same literal again in `setup`, so the grammar an
+ * episode is written in lived in two places and could come to differ by a character (audit, 2026-09-16).
+ * The SCRIPT format's grammar is `badMoves`, which is the notation reader and accepts far more — the two
+ * formats really do differ here, which is exactly why each needs one name rather than several spellings.
+ */
+const isFaceTurn = (token) => /^[URFDLB](2|')?$/.test(token);
+
+/** `forEach` over every INDEX, holes included — see `everyIndex` in `cube-pieces.js` for the mechanism.
+ *  A hole arrives as `undefined`, which every validator below already refuses. */
+const eachIndex = (a, visit) => { for (let i = 0; i < a.length; i++) visit(a[i], i); };
+
 const badCamera = (value) => (value === 'tour'
-  || (Array.isArray(value) && value.length === 2 && value.every(isNum))
+  // Indices, not elements: `.every` skips holes, so `new Array(2)` passed and played back as
+  // `{ lat: NaN, lon: NaN }` (audit, 2026-09-16). Same mechanism as `pieceStateError`'s.
+  || (Array.isArray(value) && value.length === 2 && isNum(value[0]) && isNum(value[1]))
   ? null : '`cam` must be [latitude, longitude] or "tour"');
 const badCount = (value) => (/^\d{1,3}(,\d{3})*$|^\d+$/.test(String(value))
   ? null : `\`number\` must be digits, optionally grouped: "${value}"`);
@@ -313,8 +351,12 @@ export function checkScript(script) {
   for (const k of Object.keys(start)) {
     if (!['facelets', 'scramble', 'hold'].includes(k)) throw new Error(`script start: unknown field "${k}"`);
   }
-  if (start.facelets !== undefined && faceletsError(start.facelets)) {
-    throw new Error('script start: `facelets` must be 54 of URFDLB — a picture is a `paint` step');
+  if (start.facelets !== undefined) {
+    // The REASON, not a guess at it. This reported a length-and-alphabet problem whatever was actually
+    // wrong, so a cube with 54 valid letters and swapped centres was described as neither (audit,
+    // 2026-09-16). The `cube` step already reported the real one; there is no reason for two answers.
+    const wrong = faceletsError(start.facelets);
+    if (wrong) throw new Error(`script start: \`facelets\` ${wrong} — a picture with unknowns is a \`paint\` step`);
   }
   if (start.scramble !== undefined) {
     const bad = badMoves(start.scramble);
@@ -342,65 +384,79 @@ export function checkScript(script) {
  * is the part with STATE: which segment we are inside, and how the times run. These are pure: a field, a
  * rule, a reason.
  */
+/**
+ * A field that may be CLEARED by writing `null` — which is most of them, and was previously stated by
+ * whether somebody had written `!== null` in that field's own `if`.
+ */
+const clearable = (check) => (value) => (value === null ? null : check(value));
+
+/**
+ * One rule per cue field: given the value, the reason it is wrong, or null.
+ *
+ * A REGISTRY, because it was thirteen `if` blocks of one shape — `if (defined && not null && bad) where(...)`
+ * — and the shape being repeated was hiding two things (audit, 2026-09-16). First, several of them called
+ * their validator TWICE, once to test and once for the message, so a validator with a side effect or a cost
+ * paid it twice and the two calls could disagree. Second, whether a field could be cleared with `null` was
+ * information carried by whether somebody had remembered `!== null` — `secs` alone had not, and there was no
+ * way to tell whether that was a decision. It is `clearable` or it is not, now, and that reads as a choice.
+ */
+const CUE_RULES = Object.freeze({
+  __proto__: null,
+  say: clearable((v) => (typeof v === 'string' ? null : '`say` must be a string')),
+  section: clearable((v) => (typeof v === 'string' ? null : '`section` must be a string')),
+  hl: clearable((v) => (typeof v !== 'string'
+    ? '`hl` must be a string, or null to clear it'
+    : (badSelector(v) ? `\`hl\`: ${badSelector(v)}` : null))),
+  focus: clearable((v) => (typeof v !== 'string'
+    ? '`focus` must be a string, or null to clear it'
+    : (badSelector(v) ? `\`focus\`: ${badSelector(v)}` : null))),
+  ask: clearable((v) => {
+    if (typeof v !== 'string') return '`ask` must be a string';
+    const { why } = readAsk(v);
+    return why ? `\`ask\`: ${why}` : null;
+  }),
+  arrow: clearable((v) => {
+    if (v === 'next') return null;
+    const wrong = notText(v);
+    if (wrong) return `\`arrow\` ${wrong}`;
+    if (v.trim().split(/\s+/).length !== 1) return `\`arrow\` is one move or "next", not "${v}"`;
+    const bad = badMoves(v);
+    return bad ? `\`arrow\` ${bad}` : null;
+  }),
+  trail: clearable((v) => {
+    if (v === 'none') return null;
+    const wrong = notText(v);
+    if (wrong) return `\`trail\` ${wrong}`;
+    const bad = v.split(',').map((t) => t.trim())
+      .find((t) => !/^(piece|slot):[URFDLB]{2,3}$/i.test(t) || parseHighlight(t).invalid !== null);
+    return bad === undefined ? null : `\`trail\` names pieces — piece:UF or slot:UF — and "${bad}" is not one`;
+  }),
+  labels: clearable((v) => (['none', 'position'].includes(v) ? null : `\`labels\` is none or position, not "${v}"`)),
+  ghosts: clearable((v) => badBoolean('ghosts', v)),
+  counting: clearable((v) => badBoolean('counting', v)),
+  ghostElevation: clearable((v) => (isNum(v) ? null : '`ghostElevation` must be a number')),
+  cam: clearable(badCamera),
+  camUp: clearable(badFaceLetter),
+  number: clearable(badCount),
+  // NOT clearable, and that is now visible rather than an omission: a cue with `secs: null` has no duration,
+  // and the schedule cannot be built from one.
+  secs: (v) => (isNum(v) && v > 0 ? null : '`secs` must be positive'),
+});
+
+/** Every cue field a step carries, checked by its own rule. Sequencing rules are the callers'. */
 function checkCues(step, i, where) {
-  for (const k of ['say', 'section']) {
-    if (step[k] !== undefined && step[k] !== null && typeof step[k] !== 'string') where(i, `\`${k}\` must be a string`);
+  for (const field of Object.keys(CUE_RULES)) {
+    if (step[field] === undefined) continue;
+    const why = CUE_RULES[field](step[field]);
+    if (why) where(i, why);
   }
-  for (const k of ['hl', 'focus']) {
-    if (step[k] === undefined || step[k] === null) continue;
-    if (typeof step[k] !== 'string') where(i, `\`${k}\` must be a string, or null to clear it`);
-    const bad = badSelector(step[k]);
-    if (bad) where(i, `\`${k}\`: ${bad}`);
-  }
-  if (step.ask !== undefined && step.ask !== null) {
-    if (typeof step.ask !== 'string') where(i, '`ask` must be a string');
-    const { why } = readAsk(step.ask);
-    if (why) where(i, `\`ask\`: ${why}`);
-  }
-  if (step.arrow !== undefined && step.arrow !== null && step.arrow !== 'next') {
-    // One move, in the child's letters like every move a script writes — or `next`, the move about to be made.
-    if (notText(step.arrow)) where(i, `\`arrow\` ${notText(step.arrow)}`);
-    const tokens = step.arrow.trim().split(/\s+/);
-    if (tokens.length !== 1) where(i, `\`arrow\` is one move or "next", not "${step.arrow}"`);
-    const bad = badMoves(step.arrow);
-    if (bad) where(i, `\`arrow\` ${bad}`);
-  }
-  if (step.trail !== undefined && step.trail !== null && step.trail !== 'none') {
-    if (notText(step.trail)) where(i, `\`trail\` ${notText(step.trail)}`);
-    const bad = step.trail.split(',').map((t) => t.trim()).find((t) => !/^(piece|slot):[URFDLB]{2,3}$/i.test(t) || parseHighlight(t).invalid !== null);
-    if (bad !== undefined) where(i, `\`trail\` names pieces — piece:UF or slot:UF — and "${bad}" is not one`);
-  }
-  if (step.labels !== undefined && step.labels !== null && !['none', 'position', 'face'].includes(step.labels)) {
-    where(i, `\`labels\` is none, position or face, not "${step.labels}"`);
-  }
-  // The same rules the episode checker applies, with a script's own `null` rule in front of each: a
-  // script writes `null` to CLEAR a cue, and an episode has no such value.
-  if (step.ghosts !== undefined && step.ghosts !== null && badBoolean('ghosts', step.ghosts)) {
-    where(i, badBoolean('ghosts', step.ghosts));
-  }
-  if (step.counting !== undefined && step.counting !== null && badBoolean('counting', step.counting)) {
-    where(i, badBoolean('counting', step.counting));
-  }
-  if (step.ghostElevation !== undefined && step.ghostElevation !== null && !isNum(step.ghostElevation)) {
-    where(i, '`ghostElevation` must be a number');
-  }
-  if (step.cam !== undefined && step.cam !== null && badCamera(step.cam)) {
-    where(i, badCamera(step.cam));
-  }
-  if (step.camUp !== undefined && step.camUp !== null && badFaceLetter(step.camUp)) {
-    where(i, badFaceLetter(step.camUp));
-  }
-  if (step.number !== undefined && step.number !== null && badCount(step.number)) {
-    where(i, badCount(step.number));
-  }
-  if (step.secs !== undefined && (!isNum(step.secs) || step.secs <= 0)) where(i, '`secs` must be positive');
 }
 
 /** The step rules, shared by a script and by a round's reveal segment (plan item 3.4). */
 function checkSteps(steps, where, { rounds = true, painted: startPainted = false } = {}) {
   let painted = startPainted;             // inside a picture segment?
   let last = -Infinity;                   // the last `at`, so a timed script cannot go backwards
-  steps.forEach((step, i) => {
+  eachIndex(steps, (step, i) => {
     if (!step || typeof step !== 'object') where(i, 'expected an object');
     for (const k of Object.keys(step)) if (!STEP_KEYS.has(k)) where(i, `unknown field "${k}"`);
     const kinds = STEP_KINDS.filter((k) => step[k] !== undefined);
@@ -413,21 +469,21 @@ function checkSteps(steps, where, { rounds = true, painted: startPainted = false
     }
     const [kind] = kinds;
 
-    if (kind === 'move') {
-      if (typeof step.move !== 'string') where(i, '`move` must be a string');
-      const bad = badMoves(step.move);
-      if (bad) where(i, `\`move\` ${bad}`);
-      // The picture segment's rule, and the reason it is a refusal rather than a best effort: a
-      // picture claims nothing about the stickers it leaves unknown, so turning one would be
-      // inventing them.
-      if (painted) where(i, 'a move inside a picture segment — a picture is not a cube, and cannot be turned');
+    // `move` and `setup` are the same field twice — a string of moves the notation must accept — and they
+    // were validated by two copies of one three-line sequence, which is two places for the rule to change
+    // (audit, 2026-09-16). What is genuinely different about them is what they do to a PICTURE SEGMENT, and
+    // that stays written out below, once each, because it is the part that is not shared.
+    if (kind === 'move' || kind === 'setup') {
+      if (typeof step[kind] !== 'string') where(i, `\`${kind}\` must be a string`);
+      const bad = badMoves(step[kind]);
+      if (bad) where(i, `\`${kind}\` ${bad}`);
+    }
+    // The picture segment's rule, and the reason it is a refusal rather than a best effort: a picture claims
+    // nothing about the stickers it leaves unknown, so turning one would be inventing them.
+    if (kind === 'move' && painted) {
+      where(i, 'a move inside a picture segment — a picture is not a cube, and cannot be turned');
     }
     if (kind === 'setup' || kind === 'cube') painted = false;
-    if (kind === 'setup') {
-      if (typeof step.setup !== 'string') where(i, '`setup` must be a string');
-      const bad = badMoves(step.setup);
-      if (bad) where(i, `\`setup\` ${bad}`);
-    }
     if (kind === 'cube') {
       // THE WHOLE CUBE, HERE. It was 54 letters of the right alphabet and nothing else, so `'U'.repeat(54)`
       // passed and `buildScript` threw about a slot — in a place that no longer knew which step it came
