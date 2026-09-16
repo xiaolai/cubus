@@ -24,9 +24,12 @@
 
 // Which facelet is each face's centre: the layout's one table, not a copy of it. This module kept its
 // own until plan item 3.2, when the bundle's guard could not tell the two apart by name.
-import { CENTERS } from './cube-layout.js';
+import { CENTERS, FACE_LETTERS } from './cube-layout.js';
 
-export const FACE_LETTERS = 'URFDLB';
+// Re-exported, not re-typed: the letters and the centres are one table's two halves, and this module
+// kept its own copy of the letters after taking the centres from the layout (Codex audit, 2026-09-16).
+// Callers that read them from here — `cube-questions.js` has them on its allow-list — keep working.
+export { FACE_LETTERS };
 
 /** Outward normal of each face, in the renderer's fixed frame. */
 // Frozen ROW BY ROW, not just at the top: `Object.freeze` is shallow, so freezing only the map

@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import {
   CORNER, CORNERS, EDGE, EDGES, MOVES, MOVE_NAMES, SOLVED,
   applyAlg, applyMove, cornerSlot, cornerSolved, edgeSlot, edgeSolved, fromCube, invert,
-  rotateAlg, rotateState,
+  movesOf, rotateAlg, rotateState,
 } from '../lib/cube-pieces.js';
 // The one seeded generator (test/fixtures/seeded-scrambles.mjs). `lcg` and `randomAlg` used to be
 // retyped here; a copy of a draw is a copy of a sample, and two samples that agree by hand are the
@@ -157,4 +157,16 @@ test('the identity is frozen all the way down, because it is handed out by refer
   moved.cp[0] = 4;
   assert.equal(moved.cp[0], 4);
   assert.equal(SOLVED.cp[0], 0);
+});
+
+test('one tokenizer: what counts as a move is the same answer everywhere', () => {
+  // `applyAlg` and `invert` split the text themselves, and had drifted from the shared `movesOf`:
+  // `movesOf(null)` is no moves while `applyAlg(SOLVED, null)` threw on it, so two callers with the
+  // same empty alg got an answer and an exception (Codex audit, 2026-09-16).
+  assert.deepEqual(movesOf(null), []);
+  assert.deepEqual(applyAlg(SOLVED, null), SOLVED, 'an alg of no moves changed the cube');
+  assert.deepEqual(applyAlg(SOLVED, undefined), SOLVED);
+  assert.equal(invert(null), '', 'inverting no moves is no moves');
+  assert.equal(invert('  R  U2   '), "U2 R'", 'the tokenizer disagreed about spacing');
+  assert.deepEqual(applyAlg(SOLVED, '  R   U  '), applyAlg(applyAlg(SOLVED, 'R'), 'U'));
 });

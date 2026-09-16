@@ -105,7 +105,10 @@ export function applyMove(state, move) {
 /** State after applying a space-separated alg. An empty alg returns an equal copy. */
 export function applyAlg(state, alg) {
   let s = { cp: [...state.cp], co: [...state.co], ep: [...state.ep], eo: [...state.eo] };
-  for (const move of String(alg).trim().split(/\s+/).filter(Boolean)) s = applyMove(s, move);
+  // Through the shared tokenizer: these split the text themselves, and had drifted — `movesOf(null)`
+  // is no moves while this threw on it (Codex audit, 2026-09-16). What counts as a move is one
+  // answer or it is not an answer.
+  for (const move of movesOf(alg)) s = applyMove(s, move);
   return s;
 }
 
@@ -233,7 +236,7 @@ export function rotateState(state, k) {
  *  face-turn form (R->R'->R, R2->R2), which is what lets one function turn a solution into a setup
  *  alg and a setup alg back into a solution. */
 export function invert(alg) {
-  return String(alg).trim().split(/\s+/).filter(Boolean).reverse()
+  return movesOf(alg).reverse()
     .map((m) => (m.endsWith('2') ? m : m.endsWith("'") ? m[0] : `${m}'`))
     .join(' ');
 }
