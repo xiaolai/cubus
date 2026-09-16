@@ -376,7 +376,7 @@ test('field VALUES are checked, not just their names', () => {
   bad({ ghosts: 'false' }, /`ghosts` must be true or false/);
   bad({ setup: 'banana' }, /moves the renderer cannot apply/);
   bad({ setup: 'R y U' }, /moves the renderer cannot apply/);
-  bad({ counting: 'yes' }, /`counting` must be a boolean/);
+  bad({ counting: 'yes' }, /`counting` must be true or false/);
   bad({ hl: 7 }, /`hl` must be a string/);
   // And the ones that are fine stay fine.
   checkEpisode({ cues: [cue(0, 1, { setup: '', ghosts: false, number: '43,252,003,274,489,856,000' })] });

@@ -42,6 +42,9 @@ export const RENDERER = Object.freeze([
   'apps/web/lib/cube-gallery.js',
   'apps/web/lib/lesson-schedule.js',
   'apps/web/lib/lesson-player.js',
+  // Writing an attribute onto the element, and only what changed — the one rule both runtimes' writers
+  // had a copy of until 2026-09-16. It imports nothing.
+  'apps/web/lib/element-writes.js',
   'packages/cubus-cube/src/cubus-cube.js',
   'packages/cubus-cube/src/pose.js',
 ]);
