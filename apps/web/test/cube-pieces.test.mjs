@@ -151,6 +151,13 @@ test('the identity is frozen all the way down, because it is handed out by refer
     assert.throws(() => { SOLVED[key][0] = 4; }, TypeError, `SOLVED.${key} was handed out writable`);
   }
   assert.deepEqual(SOLVED.cp, [0, 1, 2, 3, 4, 5, 6, 7], 'freezing changed what the identity is');
+  // And the move table, which every applied move reads: one `MOVES.R.ep[0] = 3` would redefine R for
+  // the life of the process.
+  for (const name of MOVE_NAMES) {
+    for (const key of ['cp', 'co', 'ep', 'eo']) {
+      assert.throws(() => { MOVES[name][key][0] = 3; }, TypeError, `MOVES.${name}.${key} was writable`);
+    }
+  }
   // And what is derived from it is still ordinary, writable state: freezing a constant is not a change
   // to the model's arithmetic.
   const moved = applyAlg(SOLVED, 'R');

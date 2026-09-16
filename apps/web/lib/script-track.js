@@ -81,7 +81,14 @@ export function trackOf(states, transitions) {
     throw new Error(`script-track: ${states.length} positions need ${needed} transitions, not ${transitions.length}`);
   }
   const midpoints = new Map();
-  const observable = states.map((_, k) => k === 0 || transitions[k - 1].some((m) => faceQuarters(m).length));
+  // A position reached by NO moves — a line of narration, a picture, a cut to another cube — is one the
+  // walk must stop at: nothing about the cube says the child has heard it, which is exactly why they
+  // have to be the one to move on. It read as unobservable, so `passRegrips` walked straight past every
+  // such line whenever the cube before it was unchanged (Codex audit, 2026-09-16); this is what the
+  // comment above has always said and what the code did not.
+  const observable = states.map((_, k) => k === 0
+    || transitions[k - 1].length === 0
+    || transitions[k - 1].some((m) => faceQuarters(m).length));
   transitions.forEach((moves, k) => {
     if (states[k] === null) return;
     for (const f of between(stateFrom(states[k]), moves)) {
