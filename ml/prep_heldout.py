@@ -10,7 +10,9 @@ colour naming, generic "sticker" labels) is caught before any mAP is reported â€
 
   python prep_heldout.py --src out/heldout_raw/<project> --out out/heldout
 
-Writes out/heldout/{images,labels}/ + out/heldout/data.yaml (val: -> the images).
+Writes out/heldout/{images,labels}/ + out/heldout/data.yaml (val: -> the images), and
+out/heldout/cubes/ from photo_cubes.json (cube_identity.py): a photograph the record does not vouch
+for as one cube has every sticker's cube unknown, and the per-cube measurements leave it out.
 """
 
 from __future__ import annotations
@@ -19,6 +21,8 @@ import argparse
 import glob
 import os
 import shutil
+
+from cube_identity import apply_record, load_record, report
 
 CANON = {"white": 0, "red": 1, "green": 2, "yellow": 3, "orange": 4, "blue": 5}
 DROP = {"face", "center", "centre", "cube"}  # structural / generic, not a sticker colour
@@ -121,17 +125,18 @@ def prep(src: str, out: str) -> dict:
     return stats
 
 
-def main() -> None:
+def main(argv=None) -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", required=True)
     ap.add_argument("--out", required=True)
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     s = prep(args.src, args.out)
     print(f"\nheld-out val set -> {args.out}")
     print(f"  images={s['images']}  empty(no colour box)={s['empty']}")
     print(f"  colour boxes kept={s['kept_boxes']}  dropped={s['dropped_boxes']}")
     if s["images"] == 0:
         raise SystemExit("ERROR: 0 usable images â€” class names likely don't match our colour scheme.")
+    report(apply_record(args.out, load_record()))
 
 
 if __name__ == "__main__":
