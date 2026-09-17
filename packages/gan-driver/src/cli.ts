@@ -15,6 +15,7 @@ import { decodePacket, recordingShutdown, startRecording } from './capture.js';
 import { GanCube } from './driver.js';
 import { GanGen4Cipher } from './gen4/crypto.js';
 import { sightCube } from './mac.js';
+import { startPulse } from './pulse.js';
 import { BlewTransport, runBlew, scanForCube, type Transport } from './transport/blew.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -112,7 +113,18 @@ async function cmdMonitor() {
   const transport = new BlewTransport(c.id);
   const cube = new GanCube({ mac: c.mac, transport });
   console.log(`connecting to ${c.name} (${c.mac}) — keep the cube moving…`);
-  cube.on('live', () => console.log(`CONNECTED ${c.name}`));
+  // Until the cube's first report, a line every few seconds: a connection can take twenty, and a
+  // terminal saying nothing for that long was reported as the cube not responding (see src/pulse.ts).
+  const stopWaiting = startPulse(
+    console.log,
+    (s) => `… no report from the cube yet (${s} s) — keep turning it`,
+  );
+  cube.on('live', () => {
+    stopWaiting();
+    console.log(`CONNECTED ${c.name}`);
+  });
+  // The transport respawns `blew` when the link drops; said, because a respawn is the link going away.
+  cube.on('reconnecting', () => console.log('… the link to the cube dropped — reconnecting'));
   cube.on('error', (e) => console.error('error:', e.message));
   cube.on('giveup', (e) => {
     console.error(e.message);
@@ -249,6 +261,11 @@ async function cmdRecord(rawName: string) {
   // the belt is the braces here — but truncating an existing capture is unrecoverable, and a
   // refusal costs a rerun.
   const out = createWriteStream(path, { flags: 'wx' });
+  // Silent until the first packet otherwise: the progress line only exists once there is progress.
+  const stopWaiting = startPulse(
+    console.log,
+    (s) => `… no packet from the cube yet (${s} s) — keep turning it`,
+  );
   const transport = host.transport(c.id);
   const sub = transport.subscribe('FFF6');
   const rec = startRecording({
@@ -263,7 +280,10 @@ async function cmdRecord(rawName: string) {
       experiment: name,
       startedAt: new Date().toISOString(),
     },
-    onPacket: (packets) => process.stdout.write(`\rrecorded ${packets} packets -> ${path}`),
+    onPacket: (packets) => {
+      stopWaiting();
+      process.stdout.write(`\rrecorded ${packets} packets -> ${path}`);
+    },
     // The shutdown reports the failure from stop(), naming the path — printing it here as well
     // would say the same thing twice.
     onError: () => finish(1),
@@ -283,6 +303,7 @@ async function cmdRecord(rawName: string) {
     warn: (msg) => console.error(msg),
   });
   function finish(code: number): void {
+    stopWaiting();
     void shutdown(code).then((c) => process.exit(c));
   }
 
