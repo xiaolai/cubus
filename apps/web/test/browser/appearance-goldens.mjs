@@ -41,8 +41,6 @@ export const LAUNCH = { args: ['--use-angle=swiftshader', '--enable-unsafe-swift
 const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
 const HALF_READ = `${'U'.repeat(9)}${'R'.repeat(9)}${'?'.repeat(27)}${'B'.repeat(9)}`;
 const SCRAMBLE = "R U R' U' F2 L D B'";
-const COMMUTATOR = "R U R' U'";
-const UPERM = "R U' R U R U R U' R' U' R2";
 
 /**
  * §3c's matrix, one axis at a time from a scrambled muted Western cube at 240x240 — the cross
@@ -82,12 +80,38 @@ export const FIXTURES = [
   { name: 'arrow-R', attrs: { scramble: SCRAMBLE, arrow: 'R' } },
   { name: 'arrow-Rw2', attrs: { scramble: SCRAMBLE, arrow: 'Rw2' } },
   { name: 'arrow-x', attrs: { scramble: SCRAMBLE, arrow: 'x' } },
-  { name: 'labels-position', attrs: { scramble: SCRAMBLE, labels: 'position' } },
-  { name: 'labels-position-DB', attrs: { scramble: SCRAMBLE, labels: 'position', orientation: 'D B' } },
-  { name: 'trail-steps', attrs: { alg: COMMUTATOR, trail: 'piece:URF' } },
-  { name: 'trail-ribbon', attrs: { alg: COMMUTATOR, trail: 'piece:URF', 'trail-style': 'ribbon' } },
-  { name: 'trail-three', attrs: { alg: UPERM, trail: 'piece:UF,piece:UL,piece:UR' } },
 ];
+
+/**
+ * WHY THE LETTERS AND THE TRAILS ARE NOT HERE, though they were approved with the arrows.
+ *
+ * A golden is portable because SwiftShader draws the same WebGL on every machine — the header's whole
+ * argument, measured over three of them. It says nothing about CANVAS TEXT, and the face letters and the
+ * trail numerals are `fillText` in `system-ui` and a mono stack: the PLATFORM's font rasteriser, SF Pro on
+ * a Mac and DejaVu on the Linux runner. A glyph drawn by a different font is a different picture, not a
+ * different channel.
+ *
+ * Pinned on the dev Mac and pushed, 2026-09-17, they went red on CI immediately and by a mile:
+ * `labels-position` 558 pixels past one step with a WORST of 129, `labels-position-DB` 552 and 132, the
+ * three trail fixtures the same class. The three arrow fixtures, which carry no text, passed untouched —
+ * which is the measurement that separates the two cases rather than a guess about them.
+ *
+ * Raising TOLERANCE would have hidden it, and 129 steps is not a tolerance question anyway: it is two
+ * different letters. So these looks are held by assertions that do not depend on a font — the plate's
+ * contrast measured INSIDE the texture it is drawn from (`renderer-labels.test.mjs`), every letter's place
+ * and plane at four holds, each numeral's text read off `userData` with one per hop of each trail, the
+ * lanes measured as a percentage of length, the taper measured on the geometry, and every drawn vertex
+ * projected inside the frame. That is more than a golden was giving them, and it is true on every machine.
+ *
+ * This is the same reasoning the header already applies to WebKit, one level down: a golden is only worth
+ * having where the thing being drawn is deterministic across the machines that draw it.
+ */
+export const DRAWS_PLATFORM_TEXT = Object.freeze(['labels', 'trail']);
+
+/** Which fixtures would draw text the platform's font rasteriser owns — none may, and a test says so. */
+export const textFixtures = (fixtures = FIXTURES) => fixtures
+  .filter((f) => DRAWS_PLATFORM_TEXT.some((attr) => f.attrs[attr] && f.attrs[attr] !== 'none'))
+  .map((f) => f.name);
 
 /**
  * Render `fixture` in `page` and return `{ w, h, backend, rgba }`, rows top first.
