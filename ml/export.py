@@ -83,7 +83,9 @@ ARTEFACT_LABELS: dict[str, dict[str, str]] = {
         "precision": "dynamic int8 (QInt8 weights, uint8 activations)",
         "quantisation_note": "quantises ACTIVATIONS as well as weights, and that is what costs the reads: it diverges from fp32 on golden fixtures — ml/golden/expected.json pins which fixtures and how (a different face, a face where fp32 refuses, a refusal where fp32 reads), and the parity gate fails on any NEW misread. Contrast cube-yolo.tflite, which takes the same size reduction weight-only and diverges on none. Do not ship this without re-exporting weight-only.",
     },
-    MLPACKAGE: {"runtime": "CoreML — macOS and iOS, via crates/cube-vision", "precision": "fp16 compute, fp32 tensor in, fp16 out", "min_target": "macOS13 / iOS16"},
+    # The precision here is the CUBEDET path's, because that is what ships. The Detlib path still
+    # converts at fp16 (that graph loses nothing to it) and records its own string — see main().
+    MLPACKAGE: {"runtime": "CoreML — macOS and iOS, via crates/cube-vision", "precision": "fp32 compute, fp32 tensor in and out", "min_target": "macOS13 / iOS16"},
     TFLITE: {
         "runtime": "LiteRT/TFLite (onnx2tf) — bundled in the Android APK by gen/android/app/build.gradle.kts, but gated OFF: VisionPlugin.kt answers probe with verifiedOnDevice=false, so Android runs the WebView fp32 path until the native path is verified on a device",
         "precision": "dynamic-range int8: int8 weights, fp32 activations, fp32 I/O",
@@ -144,7 +146,7 @@ def assert_int8_derived(fp32: Path, int8: Path, work: Path) -> None:
         sys.exit(f"{int8.name} is not quantize_dynamic({fp32.name}): the two artefacts do not describe one model")
 
 
-def export_onnx(pt: Path, work: Path, out: Path) -> tuple[Path, Path]:
+def export_onnx(pt: Path, work: Path, out: Path) -> tuple[Path, Path, str]:
     from detlib import YOLO
 
     src = fresh_copy(pt, work / "onnx")
@@ -154,7 +156,9 @@ def export_onnx(pt: Path, work: Path, out: Path) -> tuple[Path, Path]:
     shutil.copyfile(produced, fp32)
     int8 = out / INT8
     quantize_int8(fp32, int8)
-    return fp32, int8
+    # The v3 lineage quantises fine (checked: it reads the same fixture the fp32 reads), so this path
+    # has no reason to drop the artefact — but it says so in the same words the cubedet path uses.
+    return fp32, int8, int8_reads_a_face(fp32, int8)[1]
 
 
 def export_coreml(pt: Path, work: Path, out: Path) -> Path:
@@ -204,12 +208,14 @@ def export_coreml(pt: Path, work: Path, out: Path) -> Path:
     return dst
 
 
-def export_onnx_cubedet(pt: Path, work: Path, out: Path) -> tuple[Path, Path]:
-    """The same two ONNX artefacts, from a `cubedet` checkpoint and with no Detlib anywhere.
+def export_onnx_cubedet(pt: Path, work: Path, out: Path) -> tuple[Path, Path | None, str]:
+    """The same ONNX artefacts, from a `cubedet` checkpoint and with no Detlib anywhere.
 
     `cubedet` builds the app's output tensor itself (see `ml/cubedet/model.py`), so there is no
     exporter to override and no head to re-wire — the traced module IS the contract. opset 12 and
     `nms=False` are kept because they are what every consumer downstream was built against.
+
+    The int8 comes back as None when dynamic quantisation destroys the model — see `int8_reads_a_face`.
     """
     import torch
 
@@ -230,15 +236,59 @@ def export_onnx_cubedet(pt: Path, work: Path, out: Path) -> tuple[Path, Path]:
     _assert_contract(fp32, model.image_size)
     int8 = out / INT8
     quantize_int8(fp32, int8)
-    return fp32, int8
+    alive, why = int8_reads_a_face(fp32, int8)
+    if not alive:
+        int8.unlink(missing_ok=True)
+        print(f"NOT WRITING {INT8}: {why}")
+        return fp32, None, why
+    return fp32, int8, why
+
+
+def int8_reads_a_face(fp32: Path, int8: Path) -> tuple[bool, str]:
+    """Does the quantised graph still read the face the fp32 reads, on a committed fixture?
+
+    DYNAMIC QUANTISATION CAN DESTROY A MODEL SILENTLY, and it does destroy this one: the MobileNetV4
+    backbone's int8 graph returns a top class score of 0.001 where the fp32 returns 0.922, so it reads
+    NO_FACE on every golden frame (measured 2026-09-17; per-channel weights, unsigned weights and
+    leaving the head's convolutions in fp32 all give the same collapse). v3's Detlib graph
+    quantises fine, so nothing upstream noticed.
+
+    An artefact that answers nothing is worse than no artefact: it ships, it is pinned, and the pins
+    record its silence as expected behaviour. So the export writes it only if it still reads.
+    """
+    frame = HERE / "golden" / "frames" / "photo-01.png"
+    if not frame.is_file():  # a checkout without fixtures cannot judge; say so rather than guess
+        return True, f"unchecked: {frame} is not there"
+    import onnxruntime as ort
+
+    sys.path.insert(0, str(HERE))
+    import cube_infer
+
+    tensor = cube_infer.letterbox(cube_infer.load_rgb(str(frame)))[None]
+
+    def read(path: Path):
+        session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+        return cube_infer.read_face(session.run(None, {session.get_inputs()[0].name: tensor})[0])
+
+    reference, quantised = read(fp32), read(int8)
+    if reference.verdict != "OK":
+        return True, f"unchecked: the fp32 itself does not read {frame.name} ({reference.verdict})"
+    if quantised.verdict != "OK":
+        return False, f"the quantised graph reads {quantised.verdict} on {frame.name} where the fp32 reads a face"
+    return True, "reads the same fixture the fp32 reads"
 
 
 def export_coreml_cubedet(pt: Path, work: Path, out: Path) -> Path:
-    """CoreML from the same checkpoint, with the tensor input and fp16 output the bridge expects.
+    """CoreML from the same checkpoint, at fp32 — unlike the Detlib path above, which is fp16.
 
-    Identical settings to `export_coreml` above — tensor (not image) input, fp16 output, mlprogram,
-    macOS13 — but reached directly through `torch.jit.trace`, because the only thing Detlib
-    was providing on that path was the trace and the metadata.
+    WHY fp32 HERE. fp16 is what pushes a CoreML model onto the Neural Engine, and for the v3 graph
+    that was a straight win. For this one it is not: measured over the 20 golden fixtures on an
+    M-series Mac (2026-09-17), the fp16 build disagrees with the fp32 ONNX on one of them and takes
+    4.7 ms, while the fp32 build matches all twenty and takes 3.8 ms — the conversions cost more than
+    the Neural Engine saves. The price is size: 13.8 MB against 7.0 MB.
+
+    The output is fp32 for the same reason. `crates/cube-vision/swift/Sources/CubeVision/Model.swift`
+    reads either width (it widens fp16 by hand and passes fp32 through), so the bridge is unaffected.
     """
     import coremltools as ct
     import numpy as np
@@ -252,9 +302,9 @@ def export_coreml_cubedet(pt: Path, work: Path, out: Path) -> Path:
     converted = ct.convert(
         traced,
         inputs=[ct.TensorType("image", shape=tuple(sample.shape), dtype=np.float32)],
-        outputs=[ct.TensorType("output0", dtype=np.float16)],
+        outputs=[ct.TensorType("output0", dtype=np.float32)],
         convert_to="mlprogram",
-        compute_precision=ct.precision.FLOAT16,
+        compute_precision=ct.precision.FLOAT32,
         minimum_deployment_target=ct.target.macOS13,
         skip_model_load=True,
     )
@@ -519,12 +569,18 @@ def main() -> None:
         if fp32_sha is not None and sha256(fp32) != fp32_sha:
             sys.exit(f"{FP32} changed during the {step} step — a tool rewrote the reference in place; the artefacts no longer describe one model")
 
+    int8_note = ""
     if "onnx" not in args.skip:
-        fp32, int8 = (export_onnx_cubedet if args.cubedet else export_onnx)(args.pt, work, args.out)
+        fp32, int8, int8_note = (export_onnx_cubedet if args.cubedet else export_onnx)(args.pt, work, args.out)
         paths[fp32.name] = fp32
-        paths[int8.name] = int8
         manifest["artefacts"][FP32] = {**ARTEFACT_LABELS[FP32], "opset": 12}
-        manifest["artefacts"][INT8] = dict(ARTEFACT_LABELS[INT8])
+        if int8 is None:
+            # Recorded, not omitted: the gate reads this to know the leg is absent on purpose, and a
+            # reader of the manifest is told why rather than finding one artefact fewer than the docs say.
+            manifest["artefacts"][INT8] = {"produced": False, "reason": int8_note}
+        else:
+            paths[int8.name] = int8
+            manifest["artefacts"][INT8] = dict(ARTEFACT_LABELS[INT8])
     if fp32.is_file():
         fp32_sha = sha256(fp32)
     if "coreml" not in args.skip:
@@ -535,6 +591,8 @@ def main() -> None:
         guard_fp32("coreml")
         paths[mlp.name] = mlp
         manifest["artefacts"][MLPACKAGE] = dict(ARTEFACT_LABELS[MLPACKAGE])
+        if not args.cubedet:  # the Detlib path converts at fp16; see export_coreml_cubedet for why cubedet does not
+            manifest["artefacts"][MLPACKAGE]["precision"] = "fp16 compute, fp32 tensor in, fp16 out"
     if "tflite" not in args.skip:
         import onnx2tf as _o2t
         import tensorflow as tf
@@ -563,6 +621,9 @@ def main() -> None:
     if tmp is not None:
         tmp.cleanup()
     for name, meta in manifest["artefacts"].items():
+        if "sha256" not in meta:  # an artefact the export declined to write, with its reason recorded
+            print(f"{name:24s} {'NOT WRITTEN':16s}  {meta.get('reason', 'no reason recorded')}")
+            continue
         print(f"{name:24s} {meta['sha256'][:16]}  {meta['runtime']}")
     print(f"manifest → {args.out / 'MANIFEST.json'}")
 
