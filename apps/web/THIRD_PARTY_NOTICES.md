@@ -155,13 +155,13 @@ environment maps from [Poly Haven](https://polyhaven.com), published under **CC0
 The golden-frame fixtures in `ml/golden/frames/` (repository test data, not shipped in the app)
 include photographs from Wikimedia Commons:
 
-- `abstain-01.png`: <https://upload.wikimedia.org/wikipedia/commons/2/20/2x2_rubik%27s_cube.jpg> — CC0
-- `abstain-02.png`: <https://upload.wikimedia.org/wikipedia/commons/5/52/2x2-5x5_rubik%27s_cube.jpg> — CC0
-- `photo-00.png`: <https://upload.wikimedia.org/wikipedia/commons/7/77/3cubes.jpg> — Public domain
-- `photo-01.png`: <https://upload.wikimedia.org/wikipedia/commons/8/8b/EmiMa-045.jpg> — CC0
-- `photo-02.png`: <https://upload.wikimedia.org/wikipedia/commons/f/fc/EmiMa-046.jpg> — CC0
-- `photo-03.png`: <https://upload.wikimedia.org/wikipedia/commons/b/bc/EmiMa-047.jpg> — CC0
-- `photo-04.png`: <https://upload.wikimedia.org/wikipedia/commons/7/7b/EmiMa-048.jpg> — CC0
+- `abstain-01.png`: <https://upload.wikimedia.org/wikipedia/commons/5/52/2x2-5x5_rubik%27s_cube.jpg> — CC0
+- `abstain-02.png`: <https://upload.wikimedia.org/wikipedia/commons/b/b5/4x4_Oll_parity.jpg> — CC0
+- `photo-00.png`: <https://upload.wikimedia.org/wikipedia/commons/8/8b/EmiMa-045.jpg> — CC0
+- `photo-01.png`: <https://upload.wikimedia.org/wikipedia/commons/f/fc/EmiMa-046.jpg> — CC0
+- `photo-02.png`: <https://upload.wikimedia.org/wikipedia/commons/b/bc/EmiMa-047.jpg> — CC0
+- `photo-03.png`: <https://upload.wikimedia.org/wikipedia/commons/7/7b/EmiMa-048.jpg> — CC0
+- `photo-04.png`: <https://upload.wikimedia.org/wikipedia/commons/7/71/EmiMa-049.jpg> — CC0
 
 ## 3. Desktop and mobile binaries — Rust crates
 
