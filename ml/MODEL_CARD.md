@@ -53,6 +53,12 @@ stickers-beyond-the-grid test refuses three golden 3×3 fixtures first, and a pl
 4×4 sets score 1 to 16 — and the app does not carry it yet.
 
 ## Training data
+**The shipped detector's** is in §Reproduce: the `synth_v6` render mixed with the 423 de-duplicated
+real photographs, then those photographs alone. The de-duplication matters beyond size: the
+Roboflow download was 3.2x duplicated and every split leaked into every other (`ml/clean_real.py`
+has the measurement), which is part of why v3's held-out numbers below read high.
+
+### v3's, which the comparisons above are against
 Combined **30,738 images** = synthetic (breadth) + real (authenticity):
 - **Synthetic ~28.8k** — the `generate_cube3d.py` 3D-cube generator under heavy domain
   randomization (materials/stickerless, wide colour incl. red↔orange, HDRI + coloured lighting,
@@ -217,17 +223,31 @@ gated by the existing dual verifier (facelet parity + cubejs). The detector abst
 (`NO_FACE`/`PARTIAL_FACE`/`BAD_GEOMETRY`) rather than emit a garbage face.
 
 ## Reproduce
-The whole sequence, with every flag, is `ml/README.md` §"Regenerating the model". In short: render
-on the many-core desktop (`ml/render.sh` with `GEN=generate_cube3d.py`; never the fanless laptop),
-train on the near GPU box (`ml/train.sh`, in the pinned `cube-train:1` image, from the pinned
-`base11n.pt`), export all four artefacts with **`ml/export.py`** (one checkpoint → ONNX fp32 + int8,
-CoreML, TFLite, and `MANIFEST.json` with the tool versions and git commit), then run the golden gate
-**`ml/golden_frames.py`** — a model change is not verified until it has — and re-pin with its
-guarded `--write-expected --yes --repin-checkpoint REASON`. The tables in this card come from
-`ml/metrics_table.py` (mAP) and `ml/color_eval.py` / `ml/face_eval.py` (per-sticker, per-face,
-through the app's own letterbox). Note for the DGX Spark GB10: it hard-resets under sustained load
-unless the GPU clock is capped — `sudo nvidia-smi -lgc 300,2200` (community-verified; it's power
-*spikes*, not average temp).
+The shipped detector is two runs of `ml/cubedet`, pretrain then fine-tune. The full sequence, with
+every flag, is `ml/README.md` §"Regenerating the model".
+
+1. **Pretrain (V6).** The timm backbone `mobilenetv4_conv_small.e2400_r224_in1k`, from its ImageNet
+   weights, fed normalised input, trained on the `synth_v6` render (48,000 images from
+   `generate_cube3d.py`) mixed with the 423 de-duplicated real photographs (`ml/clean_real.py`).
+2. **Fine-tune (V6FT).** `--init-from` V6's `best.pt`: a fresh schedule of 100 epochs at lr 1e-4
+   over the real photographs alone. The best epoch, 54, is what ships. Why two stages, measured
+   (commit `a2b071e`): mixed straight in at a hundred to one, the renders doubled red→orange errors.
+
+Both ran through `ml/run-cubedet.sh` in the NGC PyTorch image, with no copyleft package present
+(`MANIFEST.json` `training_environment`). `ml/export.py --cubedet` then wrote the artefacts and the
+manifest, and `ml/golden_frames.py` passed before the pins moved.
+
+**What those runs did not record** is their exact dataset roots and V6's own schedule: checkpoints of
+that date carried their architecture and environment and nothing else, so the steps above come from
+the commit history. `train.py` now writes the recipe (dataset, schedule, starting weights with their
+sha256, argv) into every checkpoint, and `export.py` copies it into `MANIFEST.json`. The shipped
+manifest predates that field; exporting V6FT again would record it as `not recorded`, and the next
+model's manifest will carry the real thing.
+
+v3's recipe (Detlib, `ml/train.sh`, from the pinned `base11n.pt`) is `ml/README.md`
+§"Legacy: v3". Note for the DGX Spark GB10: it hard-resets under sustained load unless the GPU clock
+is capped — `sudo nvidia-smi -lgc 300,2200` (community-verified; it's power *spikes*, not average
+temp) — and `run-cubedet.sh` refuses to start on a box whose idle clock shows the cap is gone.
 
 ## Attribution
 

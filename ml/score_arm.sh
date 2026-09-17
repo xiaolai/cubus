@@ -26,8 +26,11 @@ RUN="${1:?usage: score_arm.sh <run-name> [ssh-host]}"
 HOST="${2:-}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PY="${PY:-$HERE/venv/bin/python}"
+# A worktree has no venv of its own, so the main checkout's is the fallback -- and which one ran is
+# printed, because a comparison scored by an environment nobody chose is not reproducible.
 [ -x "$PY" ] || PY="$(cd "$HERE/../../cubus/ml" 2>/dev/null && pwd)/venv/bin/python"
 [ -x "$PY" ] || { echo "no python venv found; set PY=" >&2; exit 1; }
+echo "--- python: $PY"
 
 SHIPPED="$HERE/models/cubedet.onnx"
 [ -f "$SHIPPED" ] || SHIPPED="$HERE/../apps/web/vendor/cubedet.onnx"
@@ -56,7 +59,7 @@ echo
 echo "=== per-sticker, 207 held-out photographs, one evaluator ==="
 "$PY" "$HERE/compare_detectors.py" --data "$DS" --split test \
   --json "$HERE/out/compare_${RUN}.json" \
-  --model "v3_shipped=$SHIPPED" --model "$RUN=$ONNX"
+  --model "shipped=$SHIPPED" --model "$RUN=$ONNX"
 
 echo
 echo "=== whole-cube read rate, simulated, faces drawn from single photographs ==="
@@ -65,7 +68,7 @@ echo "=== whole-cube read rate, simulated, faces drawn from single photographs =
 # run -- the shipped detector's number came from whenever someone last ran it, with whatever
 # trials and seed were current then.
 SIM_ARGS=(--trials 2000 --seed 20260830 --mode clustered)
-echo "--- v3_shipped"
+echo "--- shipped"
 "$PY" "$HERE/assign_sim.py" --model "$SHIPPED" "${SIM_ARGS[@]}"
 echo "--- $RUN"
 "$PY" "$HERE/assign_sim.py" --model "$ONNX" "${SIM_ARGS[@]}"
