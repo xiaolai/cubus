@@ -11,13 +11,13 @@ So: take the stickers readable in EVERY arm, and report each arm over exactly th
 """
 from __future__ import annotations
 
+import argparse
 import collections
 import colorsys
 import glob
 import json
 import math
 import os
-import sys
 
 import numpy as np
 from PIL import Image
@@ -81,7 +81,7 @@ def readable(rec):
     return s >= S_MIN and V_MIN < v < V_MAX
 
 
-def main(root, arms):
+def main(root, arms, group="cube"):
     read = {a: read_arm(os.path.join(root, a)) for a in arms}
     data = {a: d for a, (d, _) in read.items()}
     common = set.intersection(*(set(d) for d in data.values()))
@@ -89,7 +89,8 @@ def main(root, arms):
     unowned = {a: n for a, (_, n) in read.items()}
     if not both:
         raise SystemExit(f"no sticker is readable in every arm with a known cube (left out, cube unknown: {unowned})")
-    print(f"stickers present in every arm: {len(common)}   readable in EVERY arm: {len(both)}")
+    print(f"stickers present in every arm: {len(common)}   readable in EVERY arm: {len(both)}   "
+          f"grouped by {group}")
     print(f"left out because their cube is unknown, per arm: {unowned}")
     print()
     header = f"{'arm':16} {'unreadable':>10} {'red':>7} {'orange':>7} {'green':>7} {'all':>7} {'inv':>6}"
@@ -104,7 +105,7 @@ def main(root, arms):
         # cube's one colour" spread -- the quantity this table is labelled as.
         for k in both:
             cid, h, _s, _v, cube = d[k]
-            groups[(k[0], k[1], cube, cid)].append(h)
+            groups[(k[0], k[1], cube if group == "cube" else 0, cid)].append(h)
         per_class = collections.defaultdict(list)
         alls = []
         counts = collections.Counter()
@@ -120,7 +121,7 @@ def main(root, arms):
         frames = collections.defaultdict(lambda: collections.defaultdict(list))
         for k in both:
             cid, h, _s, _v, cube = d[k]
-            frames[(k[0], k[1], cube)][cid].append(h)  # per cube: see the grouping above
+            frames[(k[0], k[1], cube if group == "cube" else 0)][cid].append(h)  # per cube: see above
         pair = [f for f in frames.values() if f.get(1) and f.get(4)]
         inv = sum(1 for f in pair if max(f[1]) > min(f[4]))
         # MEDIAN over groups, not mean. Pairing leaves about two dozen groups per colour, and
@@ -140,6 +141,13 @@ def main(root, arms):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 4:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("root")
+    ap.add_argument("arms", nargs="+")
+    # The same knob as hue_decompose.py's, and for the same reason: `frame` is the reading that took
+    # a frame to be one cube, kept only to measure what that was worth on the same stickers.
+    ap.add_argument("--group", choices=["cube", "frame"], default="cube")
+    args = ap.parse_args()
+    if len(args.arms) < 2:
         raise SystemExit("usage: paired_arms.py SWEEP_ROOT ARM [ARM ...]   (two arms minimum)")
-    main(os.path.expanduser(sys.argv[1]), sys.argv[2:])
+    main(os.path.expanduser(args.root), args.arms, args.group)

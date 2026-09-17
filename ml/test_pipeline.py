@@ -618,11 +618,14 @@ def test_hue_decompose_never_pools_two_cubes_from_a_label_tree() -> None:
 
     import hue_decompose
 
-    def run(root: Path) -> str:
+    def run_with(root: Path, *flags: str) -> str:
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            hue_decompose.main([str(root), "--format", "detector"])
+            hue_decompose.main([str(root), "--format", "detector", *flags])
         return buf.getvalue()
+
+    def run(root: Path) -> str:
+        return run_with(root)
 
     with tempfile.TemporaryDirectory() as tmp:
         told = Path(tmp, "told")
@@ -630,6 +633,12 @@ def test_hue_decompose_never_pools_two_cubes_from_a_label_tree() -> None:
         report = run(told)
         assert "cubes with both red and orange readable: 2" in report and "INVERTED: 0.0%" in report, report
         assert "stickers left out because their cube is unknown: 0" in report, report
+
+        # --group frame is the old reading, on exactly the same stickers: one group per frame, so
+        # cube A's red and cube B's orange are compared and the frame inverts.
+        pooled = run_with(told, "--group", "frame")
+        assert "cubes with both red and orange readable: 1" in pooled, pooled
+        assert "INVERTED: 100.0%" in pooled, pooled
 
         half = Path(tmp, "half")
         _two_cube_label_tree(half, [0] * 8 + [-1] * 8)

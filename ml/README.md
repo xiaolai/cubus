@@ -45,6 +45,7 @@ environments), **glossy materials** (physically-correct glare), **perspective**,
 | `merge_real.py` | remap/merge those into our 6-class detector set (pure) | — |
 | `generate_cube_dataset.py` | **BlenderProc generator** (needs Blender) | validated on Mac |
 | `render.sh` | parallel render → merge → detector → split (on a Mac) | — |
+| `arm_sweep.sh` | render one generator arm against the shipped defaults on the same scenes, and read both per cube | — |
 | `cubedet/` | the detector: backbone + neck + head (`model.py`), assigner, loss, data, trainer (`train.py`), evaluator (`val.py`) | ✅ `test_pipeline.py`, `test_cubedet.py` (CI: the `cubedet` job) |
 | `run-cubedet.sh` | launch a cubedet run, detached and restartable, in the clean NGC image | the near GPU box |
 | `watch-cubedet.sh` | watch runs across hosts: progress, restarts, crash loops | — |

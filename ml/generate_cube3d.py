@@ -253,6 +253,13 @@ def main() -> None:
     # unpaired statistic would compare different populations and call the difference a result.
     # Through hue_decompose.py and paired_arms.py, against the real photographs:
     #
+    # THE HUE ROW BELOW WAS READ WITH FRAME GROUPING, before either script could tell two cubes
+    # apart, and 15% of scenes here hold two cubes with independently drawn pigments -- so it is
+    # inflated by comparisons between two cubes' paints. The unreadable rows are per sticker and are
+    # not affected. `ml/arm_sweep.sh` renders both arms again and reads them per cube; it prints the
+    # frame reading beside it, so the size of the old error is on the page rather than in an
+    # argument.
+    #
     #                          synth_v5    now      real photographs
     #     stickers unreadable    47.8%    32.4%         24.6%
     #       ... too grey         45.4%    19.5%         14.5%
