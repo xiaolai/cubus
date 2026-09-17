@@ -422,13 +422,30 @@ describe('WebDetector — next(), the one call the scan loop makes', () => {
     return det;
   }
 
-  it('preprocesses the frame and hands back what the model said', async () => {
+  it('preprocesses the frame and hands back what the model said, with the frame', async () => {
     const det = await ready();
     await expect(det.next()).resolves.toEqual({
       data: expect.any(Float32Array),
       anchors: 0,
       rows: 10,
+      // The frame travels with the output: the panel reads the paint under the fitted stickers from
+      // it, and this is the last moment it exists.
+      frame: {
+        data: expect.any(Uint8ClampedArray),
+        width: expect.any(Number),
+        height: expect.any(Number),
+      },
     });
+  });
+
+  it('hands back a COPY of the frame, because the grabber reuses its buffer', async () => {
+    // A reference would be overwritten by the next tick before the panel has read the pixels under
+    // the stickers — and the read would silently describe a later frame than the fit it belongs to.
+    const buffer = new Uint8ClampedArray(4 * 4 * 4).fill(9);
+    const det = await ready(() => ({ data: buffer, width: 4, height: 4 }));
+    const out = await det.next();
+    buffer.fill(200);
+    expect(out?.frame?.data[0]).toBe(9);
   });
 
   it('answers null for a camera that has opened but delivered nothing yet', async () => {
