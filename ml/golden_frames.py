@@ -630,6 +630,15 @@ def parity(args, doc, live: dict, legs: list[str], fx: list[Path]) -> int:
     manifest = json.loads(manifest_path.read_text())
     for artefact, meta in manifest.get("artefacts", {}).items():
         path = args.models / artefact
+        if meta.get("produced") is False:
+            # Not written on purpose, with the reason recorded beside it (export.py::int8_reads_a_face).
+            # Absent is the expected state; a file HERE would mean the manifest and the directory disagree.
+            if path.exists():
+                print(f"[manifest] {artefact} is present, but MANIFEST.json says it was not written")
+                failures += 1
+            else:
+                print(f"[manifest] ok — {artefact} not written: {meta.get('reason', 'no reason recorded')}")
+            continue
         if not path.exists():
             print(f"[manifest] MISSING {artefact}")
             failures += 1
