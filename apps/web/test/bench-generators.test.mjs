@@ -11,7 +11,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { LAST_LAYER_STATES, lastLayerStates } from '../bench/method-solver-profile.mjs';
+import { LAST_LAYER_STATES, checkCoverage, lastLayerStates, sweepPart } from '../bench/method-solver-profile.mjs';
 import { CORPUS_TARGETS, buildCorpus, coverage } from '../bench/solve-to-state-corpus.mjs';
 import { SOLVED, applyAlg, toFacelets } from '../lib/cube-pieces.js';
 import { isCubeState } from '../lib/cube-trust.js';
@@ -34,6 +34,36 @@ test('the last-layer sweep enumerates its whole domain, once each, and every sta
   }
   assert.equal(n, LAST_LAYER_STATES, 'the sweep does not cover the number it claims');
   assert.equal(seen.size, n, 'the enumeration yields a state twice');
+});
+
+// The sweep runs on every core since 2026-09-17: one slice of the enumeration per worker, by place mod
+// the worker count. What makes that safe is that the slices are checked to be the enumeration — a worker
+// that swept nothing reports no failures, which reads exactly like a pass.
+
+test('a slice of the sweep is the states at its place, and nothing else', () => {
+  // The first and the last state, each alone: the whole slicing rule, for the cost of two solves.
+  const rungs = { cross: 0, pairs: 0, oll: 1, pll: 1 };
+  const first = sweepPart(rungs, 0, LAST_LAYER_STATES);
+  const last = sweepPart(rungs, LAST_LAYER_STATES - 1, LAST_LAYER_STATES);
+  assert.deepEqual([first.total, last.total], [1, 1], 'a one-state slice swept some other number of states');
+  assert.deepEqual([first.failed, last.failed], [0, 0]);
+  assert.ok(first.moves > 0 || last.moves > 0, 'the slices solved nothing');
+});
+
+test('the slices are refused unless together they are the enumeration, once each', () => {
+  const N = LAST_LAYER_STATES;
+  const slice = (part, parts, total = Math.ceil((N - part) / parts)) => ({ part, total });
+  assert.equal(checkCoverage([slice(0, 4), slice(1, 4), slice(2, 4), slice(3, 4)], 4), N);
+  assert.equal(checkCoverage([slice(0, 1)], 1), N);
+  // Uneven slices are still exact: 62,208 over 7 is 8,887 or 8,886 each.
+  assert.equal(checkCoverage(Array.from({ length: 7 }, (_, k) => slice(k, 7)), 7), N);
+  // A worker that swept nothing is the failure that reads like a pass.
+  assert.throws(() => checkCoverage([slice(0, 2), slice(1, 2, 0)], 2), /slice 1\/2 swept 0 states/);
+  // A slice missing, and a slice counted twice.
+  assert.throws(() => checkCoverage([slice(0, 2)], 2), /not 0\.\.1 once each/);
+  assert.throws(() => checkCoverage([slice(0, 2), slice(0, 2)], 2), /not 0\.\.1 once each/);
+  // A slice that swept a neighbour's share too.
+  assert.throws(() => checkCoverage([slice(0, 2, N), slice(1, 2)], 2), /slice 0\/2 swept 62208/);
 });
 
 test('every state the sweep yields is one a cube can actually reach', () => {
