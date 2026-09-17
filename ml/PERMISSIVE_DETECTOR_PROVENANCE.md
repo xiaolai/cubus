@@ -1,16 +1,17 @@
 # cubedet — provenance
 
 > Written before the training, in the manner of `dev-docs/two-phase-provenance.md` and
-> `dev-docs/optimal-solver-provenance.md`. The point of this file is that the licence claim made in
-> `LICENSE-COMMERCIAL.md` should be **checkable**, not merely asserted.
+> `dev-docs/optimal-solver-provenance.md`. The point of this file is that the licence claim the
+> project makes should be **checkable**, not merely asserted. It is what the move to MIT on
+> 2026-09-17 rests on, so it is worth reading before trusting that licence.
 
 ## Why the detector was rebuilt
 
 `apps/web/vendor/cube-yolo.onnx` is a YOLOv11n fine-tuned with
 [Detlib](https://github.com/detlib/detlib), which is MIT. Detlib's stated
 position is that the licence reaches models trained with their software and applications that use
-those models. That is why cubus is MIT rather than permissive, and it is why a closed or paid
-product built on this repository would additionally need an Detlib Enterprise Licence.
+those models. That is why cubus WAS MIT rather than permissive, and why a closed or paid
+product built on this repository would additionally have needed an Detlib Enterprise Licence.
 
 The owner's decision, 2026-09-08: retrain on a stack that is not copyleft, so the project's licence
 becomes the project's own choice again.
@@ -131,8 +132,10 @@ as the old one.
 - [x] Scored against the old model by one evaluator (`ml/compare_detectors.py`, 2026-09-10)
 - [ ] **A checkpoint that is actually good enough to ship** — see the table below; none is yet
 - [ ] Four artefacts exported and `ml/golden_frames.py` re-pinned with a stated reason
-- [ ] `MODEL_CARD.md`, `LICENSE-COMMERCIAL.md` and `THIRD_PARTY_NOTICES.md` updated
-- [ ] Licence changed from MIT — **the owner's call, and not implied by this work**
+- [x] `MODEL_CARD.md` and `THIRD_PARTY_NOTICES.md` updated (2026-09-17). `LICENSE-COMMERCIAL.md` is
+      gone: MIT needs no exception to sell against.
+- [x] Licence changed from MIT — **the owner's call, and not implied by this work**. Made
+      2026-09-17: MIT.
 
 ### Where it stands, on the 207 held-out photographs
 
