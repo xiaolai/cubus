@@ -22,9 +22,18 @@ set -u
 OUT="${1:?usage: thermal-log.sh <csv-path> [interval]}"
 INTERVAL="${2:-30}"
 
+# `set -e` is deliberately NOT on: a missing sensor is normal and must not end the log. So the two
+# failures that DO matter are checked by hand. An interval that is not a positive whole number made
+# `sleep` fail instantly and the loop spin; an unwritable path left a live process appending
+# nothing, which from the outside looks exactly like a logger doing its job.
+case "$INTERVAL" in
+  '' | *[!0-9]* | 0) echo "thermal-log.sh: interval must be a positive whole number of seconds, not '$INTERVAL'" >&2; exit 2 ;;
+esac
+write_row() { printf '%s\n' "$1" >> "$OUT" || { echo "thermal-log.sh: cannot write $OUT -- stopping rather than logging nothing" >&2; exit 1; }; }
+
 if [ ! -s "$OUT" ]; then
   zones=$(for z in /sys/class/thermal/thermal_zone*; do basename "$z"; done | paste -sd, -)
-  printf 'utc,gpu_c,power_w,clock_mhz,util_pct,%s\n' "$zones" >> "$OUT"
+  write_row "utc,gpu_c,power_w,clock_mhz,util_pct,$zones"
 fi
 
 while :; do
@@ -41,7 +50,7 @@ while :; do
             v=$(cat "$z" 2>/dev/null || echo "")
             if [ -n "$v" ]; then awk -v m="$v" 'BEGIN{printf "%.1f\n", m/1000}'; else echo ""; fi
           done | paste -sd, -)
-  printf '%s,%s,%s\n' "$ts" "$gpu" "$zones" >> "$OUT"
+  write_row "$ts,$gpu,$zones"
   sync -d "$OUT" 2>/dev/null || true
-  sleep "$INTERVAL"
+  sleep "$INTERVAL" || exit 1
 done
