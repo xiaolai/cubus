@@ -16,6 +16,7 @@ import { readFileSync } from 'node:fs';
 
 import { Window } from 'happy-dom';
 import Cube from '../vendor/cubejs.js';
+import { solverLoaded } from './fixtures/app-waits.mjs';
 
 const SOLVED_FACELETS = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
@@ -67,8 +68,10 @@ before(async () => {
   observer.observe(win.document.querySelector('#stage'), { childList: true });
   await import('../lib/app.js');
   await tick();
-  // The solver lands asynchronously; the re-render this test is about came after it.
-  await settle(1500);
+  // The solver lands asynchronously; the re-render this test is about comes after it — so the load is
+  // waited for as a fact, and only the render that follows it by a tick is given a fixed moment.
+  await solverLoaded();
+  await settle(100);
   bootMutations = stageMutations;
   observer.disconnect();
 });

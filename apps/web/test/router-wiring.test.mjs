@@ -18,6 +18,7 @@ import { readFileSync } from 'node:fs';
 import { APP_SOURCES, blockAt, walk } from './app-source.mjs';
 
 import { Window } from 'happy-dom';
+import { solverLoaded } from './fixtures/app-waits.mjs';
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -2473,6 +2474,9 @@ test('the die on the cube screen says a roll failed, where it says everything el
   await tick();
   try {
     await scrambledHome(); // a cube with a walk, so the screen has its status line
+    // A press before the solver has loaded is ignored, and the loop below would read that as a press
+    // that said nothing. The walk above implies a solver; this says so (test/fixtures/app-waits.mjs).
+    await solverLoaded();
     const status = () => win.document.querySelector('#moveCount');
     assert.ok(status(), 'precondition: the solution card is on screen');
     await withoutEntropy(async () => {
