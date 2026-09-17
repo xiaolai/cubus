@@ -16,6 +16,7 @@ import { test, before, after } from 'node:test';
 import { readFileSync } from 'node:fs';
 
 import { Window } from 'happy-dom';
+import { solverLoaded } from './fixtures/app-waits.mjs';
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -129,7 +130,7 @@ before(async () => {
   }
   await import('../lib/app.js');
   await tick();
-  await settle(1500); // the solver loads in the background, and the die does nothing without it
+  await solverLoaded(); // the die ignores a press made before the solver has loaded
   win.__TAURI__ = {
     core: { invoke },
     event: {

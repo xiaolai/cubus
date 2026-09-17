@@ -23,6 +23,7 @@ import { readFileSync } from 'node:fs';
 import { Window } from 'happy-dom';
 import { TUMBLED, renameAlg } from '../lib/solving-hold.js';
 import Cube from '../vendor/cubejs.js';
+import { solverLoaded } from './fixtures/app-waits.mjs';
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -66,7 +67,7 @@ before(async () => {
   }
   ({ state } = await import('../lib/app.js'));
   await tick();
-  await settle(1500); // the solver loads in the background, and the die does nothing without it
+  await solverLoaded(); // the die ignores a press made before the solver has loaded
 });
 
 const chipTexts = () => [...win.document.querySelectorAll('#solList .chip-m')].map((b) => b.textContent);

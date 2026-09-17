@@ -20,6 +20,7 @@ import Cube from '../vendor/cubejs.js';
 import { createSelfCheck } from '../lib/cube-selfcheck.js';
 import { NAME_PREFIX } from '../lib/cube-registry.js';
 import { blockAt, readAppSource } from './app-source.mjs';
+import { solverLoaded } from './fixtures/app-waits.mjs';
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -102,7 +103,7 @@ before(async () => {
   }
   await import('../lib/app.js');
   await tick();
-  await settle(600); // the solver, which the registry's reachability round-trip needs
+  await solverLoaded(); // the registry's reachability round-trip needs the solver — a fact, not a guess
 });
 
 // ---- The host that cannot reach a radio -------------------------------------------------------
