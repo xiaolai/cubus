@@ -164,28 +164,34 @@ def main(argv=None) -> int:
     for fx, truth, pinned, note in rows:
         print(f"{fx:16s} {truth:13s} {str(pinned):16s} {note}")
     # SELF-TEST, because this checker has been wrong twice and both times looked plausible.
-    # These three readings were derived BY HAND against the render pool in use at the time, and each
-    # matched a real model on all nine stickers: render-04 and render-06 matched the shipped model,
-    # render-08 matched P_large. They are known-good anchors for THAT pool and for no other -- the
-    # fixture names were reused when the pool changed, so they now name different pictures entirely.
-    # Rather than quietly drop the only check that can catch a broken checker, the mismatch is
-    # reported for what it is, and re-deriving three readings by hand is the work it asks for.
-    ANCHOR_POOL = "synth_v3"
-    ANCHORS = {"render-04.png": "512430234", "render-06.png": "432142034", "render-08.png": "045523234"}
+    # Each pool's anchors were read BY HAND from the fixture images, and each matched a real model on
+    # all nine stickers. They are anchors for their own pool and no other: fixture names are reused
+    # when the pool changes, so they then name different pictures entirely.
+    #
+    #   synth_v3 (retired): render-04 and render-06 matched v3, render-08 matched P_large.
+    #   synth_v6_val (2026-09-17): read from the PNGs, the colours judged against one another under
+    #     each scene's light (render-00's red renders magenta, render-11's red purple and its white
+    #     lavender), then checked against the renderer's labels and V6FT's pinned read -- all three
+    #     agree on every sticker. render-00 shows a second face, so it exercises the face selection.
+    ANCHORS = {
+        "synth_v3": {"render-04.png": "512430234", "render-06.png": "432142034", "render-08.png": "045523234"},
+        "synth_v6_val": {"render-00.png": "103500205", "render-04.png": "353324330", "render-11.png": "110324553"},
+    }
     pool = next((Path(e["source"]).parent.parent.name for e in sources if e["source"].startswith("ml/out/")), None)
     derived = {fx: t for fx, t, _, _ in rows}
-    if pool != ANCHOR_POOL:
-        print(f"\nSELF-TEST NOT RUN: its anchors were hand-derived against '{ANCHOR_POOL}' and the "
-              f"fixtures now come from '{pool}'. Three readings need deriving by hand against the "
-              "current pool before this checker can vouch for itself.")
-    else:
-        bad = [f"{fx}: got {derived.get(fx)} want {want}" for fx, want in ANCHORS.items()
-               if derived.get(fx) != want]
-        if bad:
-            print("\nSELF-TEST FAILED -- results above are NOT trustworthy:")
-            for b in bad: print("  " + b)
-            return 2
-        print("\nself-test: reproduced all 3 hand-verified anchors")
+    anchors = ANCHORS.get(pool)
+    if anchors is None:
+        # Not a failure of the checker, and not a pass either: nobody has read this pool by hand yet.
+        print(f"\nSELF-TEST NOT RUN: no hand-read anchors for the render pool '{pool}'. Read three "
+              "fixtures by hand and add them to ANCHORS before trusting this checker on it.")
+        return 2
+    bad = [f"{fx}: got {derived.get(fx)} want {want}" for fx, want in anchors.items()
+           if derived.get(fx) != want]
+    if bad:
+        print("\nSELF-TEST FAILED -- results above are NOT trustworthy:")
+        for b in bad: print("  " + b)
+        return 2
+    print(f"\nself-test: reproduced all {len(anchors)} hand-verified anchors for {pool}")
     print(f"\n{wrong} pinned read(s) disagree with ground truth; "
           f"{unknown} unlabelled; {unreliable} unreliable face selection")
     return 1 if wrong else 0
