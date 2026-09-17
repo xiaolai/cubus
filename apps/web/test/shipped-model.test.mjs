@@ -6,15 +6,18 @@
 // as the "web / Windows / Linux runtime". It is not: apps/web/vendor/cubedet.onnx is byte-
 // identical to the fp32 graph, and the int8 file is referenced nowhere outside CI job names.
 //
-// That label was not a harmless inaccuracy. int8 is the one export that MISREADS — measured on the
-// golden fixtures and recorded in ml/golden/expected.json, 4 of 20 read differently from the fp32
-// graph: a different face on photo-00 and render-02, a commit to a face on abstain-02 that fp32
-// correctly refuses, and a refusal on render-07 that fp32 reads. Every one of those is the failure
-// this app cannot tolerate — a wrong sticker becomes a wrong cube, and a beginner is walked
-// through solving something that is not in their hands; a refusal is merely annoying, and a false
-// commit is the dangerous half. So the question "which file does the browser get" deserves an
-// assertion and not a sentence in a document. (The counts and frame names here are read off
-// expected.json rather than remembered — see the test at the bottom, which asserts they agree.)
+// That label was not a harmless inaccuracy. int8 was the one export that MISREAD, and for the v3
+// graph expected.json pinned four such fixtures: a different face, a commit to a face fp32 refuses,
+// a refusal on a face fp32 reads. Every one of those is the failure this app cannot tolerate — a
+// wrong sticker becomes a wrong cube, and a beginner is walked through solving something that is not
+// in their hands; a refusal is merely annoying, and a false commit is the dangerous half.
+//
+// The detector shipping today has NO int8 artefact: dynamic quantisation collapses it (top class
+// score 0.001 against fp32's 0.922, so it reads no face at all), and ml/export.py refuses to write an
+// artefact that answers nothing — MANIFEST.json records `produced: false` with that reason. So the
+// pins now carry 0 of 20 read differently from the fp32 graph, and the question "which file does the
+// browser get" still deserves an assertion rather than a sentence in a document. (The count here is
+// read off expected.json rather than remembered — see the test at the bottom, which asserts so.)
 //
 // It pins the FILE, by content, not the filename. Swapping the vendored bundle for the int8 export
 // keeps the name `cubedet.onnx` and changes nothing else a test would notice.
