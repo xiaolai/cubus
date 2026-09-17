@@ -1,128 +1,140 @@
 [
   {
     "file": "render-00.png",
-    "source": "ml/out/synth_v3/part_0/coco/images/000000.jpg",
+    "source": "ml/out/synth_v6_val/images/p0_000033.jpg",
     "licence": "project-rendered (generate_cube3d.py)",
-    "shape": "landscape-720"
+    "shape": "landscape-720",
+    "verified_against_labels": true
   },
   {
     "file": "render-01.png",
-    "source": "ml/out/synth_v3/part_0/coco/images/000001.jpg",
+    "source": "ml/out/synth_v6_val/images/p0_000071.jpg",
     "licence": "project-rendered (generate_cube3d.py)",
-    "shape": "landscape-720"
+    "shape": "landscape-720",
+    "verified_against_labels": true
   },
   {
     "file": "render-02.png",
-    "source": "ml/out/synth_v3/part_0/coco/images/000002.jpg",
+    "source": "ml/out/synth_v6_val/images/p0_000076.jpg",
     "licence": "project-rendered (generate_cube3d.py)",
-    "shape": "landscape-720"
+    "shape": "landscape-720",
+    "verified_against_labels": true
   },
   {
     "file": "render-03.png",
-    "source": "ml/out/synth_v3/part_0/coco/images/000003.jpg",
+    "source": "ml/out/synth_v6_val/images/p0_000120.jpg",
     "licence": "project-rendered (generate_cube3d.py)",
-    "shape": "landscape-720"
+    "shape": "landscape-720",
+    "verified_against_labels": true
   },
   {
     "file": "render-04.png",
-    "source": "ml/out/synth_v3/part_0/coco/images/000004.jpg",
+    "source": "ml/out/synth_v6_val/images/p0_000121.jpg",
     "licence": "project-rendered (generate_cube3d.py)",
-    "shape": "landscape-720"
+    "shape": "landscape-720",
+    "verified_against_labels": true
   },
   {
     "file": "render-05.png",
-    "source": "ml/out/synth_v3/part_0/coco/images/000005.jpg",
+    "source": "ml/out/synth_v6_val/images/p0_000146.jpg",
     "licence": "project-rendered (generate_cube3d.py)",
-    "shape": "landscape-720"
+    "shape": "landscape-720",
+    "verified_against_labels": true
   },
   {
     "file": "render-06.png",
-    "source": "ml/out/synth_v3/part_0/coco/images/000006.jpg",
+    "source": "ml/out/synth_v6_val/images/p0_000187.jpg",
     "licence": "project-rendered (generate_cube3d.py)",
-    "shape": "landscape-640"
+    "shape": "landscape-640",
+    "verified_against_labels": true
   },
   {
     "file": "render-07.png",
-    "source": "ml/out/synth_v3/part_0/coco/images/000007.jpg",
+    "source": "ml/out/synth_v6_val/images/p0_000206.jpg",
     "licence": "project-rendered (generate_cube3d.py)",
-    "shape": "landscape-640"
+    "shape": "landscape-640",
+    "verified_against_labels": true
   },
   {
     "file": "render-08.png",
-    "source": "ml/out/synth_v3/part_0/coco/images/000010.jpg",
+    "source": "ml/out/synth_v6_val/images/p0_000229.jpg",
     "licence": "project-rendered (generate_cube3d.py)",
-    "shape": "landscape-640"
+    "shape": "landscape-640",
+    "verified_against_labels": true
   },
   {
     "file": "render-09.png",
-    "source": "ml/out/synth_v3/part_0/coco/images/000011.jpg",
+    "source": "ml/out/synth_v6_val/images/p0_000278.jpg",
     "licence": "project-rendered (generate_cube3d.py)",
-    "shape": "portrait-720"
+    "shape": "portrait-720",
+    "verified_against_labels": true
   },
   {
     "file": "render-10.png",
-    "source": "ml/out/synth_v3/part_0/coco/images/000012.jpg",
+    "source": "ml/out/synth_v6_val/images/p0_000343.jpg",
     "licence": "project-rendered (generate_cube3d.py)",
-    "shape": "portrait-720"
+    "shape": "portrait-720",
+    "verified_against_labels": true
   },
   {
     "file": "render-11.png",
-    "source": "ml/out/synth_v3/part_0/coco/images/000013.jpg",
+    "source": "ml/out/synth_v6_val/images/p0_000352.jpg",
     "licence": "project-rendered (generate_cube3d.py)",
-    "shape": "portrait-720"
+    "shape": "portrait-720",
+    "verified_against_labels": true
   },
   {
     "file": "abstain-00.png",
-    "source": "ml/out/synth_v3/part_0/coco/images/000008.jpg",
+    "source": "ml/out/synth_v6_val/images/p0_000010.jpg",
     "licence": "project-rendered (generate_cube3d.py), CC0",
     "shape": "landscape-720",
     "reference_verdict": "BAD_GEOMETRY"
   },
   {
     "file": "abstain-01.png",
-    "source": "https://upload.wikimedia.org/wikipedia/commons/2/20/2x2_rubik%27s_cube.jpg",
-    "licence": "CC0",
-    "shape": "photo-720",
-    "reference_verdict": "PARTIAL_FACE"
-  },
-  {
-    "file": "abstain-02.png",
     "source": "https://upload.wikimedia.org/wikipedia/commons/5/52/2x2-5x5_rubik%27s_cube.jpg",
     "licence": "CC0",
     "shape": "photo-720",
     "reference_verdict": "BAD_GEOMETRY"
   },
   {
-    "file": "photo-00.png",
-    "source": "https://upload.wikimedia.org/wikipedia/commons/7/77/3cubes.jpg",
-    "licence": "Public domain",
+    "file": "abstain-02.png",
+    "source": "https://upload.wikimedia.org/wikipedia/commons/b/b5/4x4_Oll_parity.jpg",
+    "licence": "CC0",
     "shape": "photo-720",
-    "reference_verdict": "OK"
+    "reference_verdict": "BAD_GEOMETRY"
   },
   {
-    "file": "photo-01.png",
+    "file": "photo-00.png",
     "source": "https://upload.wikimedia.org/wikipedia/commons/8/8b/EmiMa-045.jpg",
     "licence": "CC0",
     "shape": "photo-720",
     "reference_verdict": "OK"
   },
   {
-    "file": "photo-02.png",
+    "file": "photo-01.png",
     "source": "https://upload.wikimedia.org/wikipedia/commons/f/fc/EmiMa-046.jpg",
     "licence": "CC0",
     "shape": "photo-720",
     "reference_verdict": "OK"
   },
   {
-    "file": "photo-03.png",
+    "file": "photo-02.png",
     "source": "https://upload.wikimedia.org/wikipedia/commons/b/bc/EmiMa-047.jpg",
     "licence": "CC0",
     "shape": "photo-720",
     "reference_verdict": "OK"
   },
   {
-    "file": "photo-04.png",
+    "file": "photo-03.png",
     "source": "https://upload.wikimedia.org/wikipedia/commons/7/7b/EmiMa-048.jpg",
+    "licence": "CC0",
+    "shape": "photo-720",
+    "reference_verdict": "OK"
+  },
+  {
+    "file": "photo-04.png",
+    "source": "https://upload.wikimedia.org/wikipedia/commons/7/71/EmiMa-049.jpg",
     "licence": "CC0",
     "shape": "photo-720",
     "reference_verdict": "OK"
