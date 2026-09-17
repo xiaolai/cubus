@@ -17,17 +17,22 @@ shift 4 2>/dev/null || shift $#
 EXTRA=("$@")          # anything further goes straight to train.py: --imgsz, --context, ...
 
 IMAGE='nvcr.io/nvidia/pytorch:26.01-py3'
-# WHICH DATASET, and it is not the obvious one. `cube_combined` looks right by name and has the
-# model card's exact 30,738 images — and it is the v2-era render, from before the v3 white-fix.
-# All three candidate sets hold the same 1,938 real photographs (byte-identical) and the same
-# 28,800 synthetic filenames; only the RENDERS differ, and p0_000000.jpg is 45 KB in cube_combined
-# against 105 KB in synth_v3. Training on it silently reproduces the white weakness that v3 was
-# built to remove (white mAP50 0.705 → 0.859).
+# WHICH DATASET is a decision to state every time, so there is no default. There was one, synth_v3,
+# chosen when this launcher reproduced v3: v3 trained on it (created 2026-08-22 15:05, and
+# cube_v3_best.pt was written 21:24 the same day, one 80-epoch run later). It stayed the default
+# after the shipped detector became cubedet's, whose pretraining used the synth_v6 render mixed with
+# the cleaned real photographs and whose fine-tune used the real photographs alone -- so a launch
+# that forgot the variable quietly trained on the wrong model's data.
 #
-# synth_v3 is what the shipped model trained on: created 2026-08-22 15:05, and cube_v3_best.pt was
-# written 21:24 the same day — one 80-epoch run later. synth_v4 is the REJECTED red/orange
-# hue-separation experiment (ml/OOD_EVAL.md, "a negative result"); v5 was shipped and reverted.
-DATASET_NAME="${DATASET_NAME:-synth_v3}"
+# Beware look-alikes. `cube_combined` has the model card's exact 30,738 images and is the v2-era
+# render, from before the v3 white-fix: all three candidate sets hold the same 1,938 real photographs
+# and the same 28,800 synthetic filenames, and only the RENDERS differ (p0_000000.jpg is 45 KB there
+# against 105 KB in synth_v3). synth_v4 is the rejected red/orange experiment (ml/OOD_EVAL.md); v5
+# was shipped and reverted.
+#
+# The name is also handed to the trainer (CUBEDET_DATASET), which writes it into the checkpoint's
+# recipe: inside the container the data is only ever `/data`.
+DATASET_NAME="${DATASET_NAME:?set DATASET_NAME to the dataset under ~/datasets/ this run trains on}"
 DATA="$HOME/datasets/$DATASET_NAME/dataset"
 WORK="$HOME/cubus-ml"
 # CLOCK_CEILING lived here until the guard below stopped probing the peak clock. It is gone rather
@@ -209,7 +214,7 @@ docker run -d --name "cubedet_${RUN}" --gpus all --ipc=host \
   --ulimit memlock=-1 --ulimit stack=67108864 \
   -v "$WORK:/work" -v "$DATA:/data:ro" -w /work \
   -e TORCH_HOME=/work/.torch -e HF_HOME=/work/.hf -e HF_HUB_OFFLINE=1 \
-  -e PYTHONPATH=/work/.pylibs -e CUBEDET_RUN="$RUN" \
+  -e PYTHONPATH=/work/.pylibs -e CUBEDET_RUN="$RUN" -e CUBEDET_DATASET="$DATASET_NAME" \
   "$IMAGE" \
   bash -c 'DONE="/work/out/$CUBEDET_RUN/COMPLETE"
            if [ -f "$DONE" ]; then
