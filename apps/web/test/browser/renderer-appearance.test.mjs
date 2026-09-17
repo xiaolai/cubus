@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 
 import { encodePng } from '../png.mjs';
-import { BACKEND, CHANNEL_STEP, FIXTURES, GOLDENS, LAUNCH, TOLERANCE, compare, readGolden, render } from './appearance-goldens.mjs';
+import { BACKEND, CHANNEL_STEP, FIXTURES, GOLDENS, LAUNCH, TOLERANCE, compare, readGolden, render, textFixtures} from './appearance-goldens.mjs';
 import { startBrowserFixture } from './harness.mjs';
 
 let fixture; let page;
@@ -52,3 +52,20 @@ for (const f of FIXTURES) {
     }
   });
 }
+
+// A GOLDEN IS ONLY WORTH HAVING WHERE THE DRAWING IS THE SAME ON EVERY MACHINE THAT DRAWS IT.
+//
+// SwiftShader makes WebGL portable, which is the argument the whole file rests on. It does nothing for
+// CANVAS TEXT: the face letters and the trail numerals are `fillText` in the platform's own fonts, SF Pro
+// here and DejaVu on the Linux runner, and a glyph drawn by a different font is a different picture. Pinned
+// anyway on 2026-09-17, they went red on CI at 558 pixels and a WORST of 129 steps while the text-free
+// arrow fixtures passed untouched.
+//
+// This is the guard, so the next person learns it from a local test instead of from a red main. Their looks
+// are held by assertions that do not depend on a font — see the note beside `DRAWS_PLATFORM_TEXT`.
+test('no golden is pinned on a picture the platform draws the text of', () => {
+  const drawn = textFixtures();
+  assert.deepEqual(drawn, [],
+    `${drawn.join(', ')} would pin a glyph the runner's fonts decide. Hold those looks with a measurement `
+    + 'that reads the texture or the model, not with a picture of a font this machine happens to have.');
+});
