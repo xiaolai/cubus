@@ -459,7 +459,7 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **rgb** 0.8.53 (MIT) — Kornel Lesiński, James Forster — <https://github.com/kornelski/rust-rgb>
 - **rustc-hash** 2.1.3 (Apache-2.0 OR MIT) — The Rust Project Developers — <https://github.com/rust-lang/rustc-hash>
 - **rustix** 1.1.4 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT) — Dan Gohman, Jakub Konka — <https://github.com/bytecodealliance/rustix>
-- **rustls** 0.23.43 (Apache-2.0 OR ISC OR MIT) — <https://github.com/rustls/rustls>
+- **rustls** 0.23.45 (Apache-2.0 OR ISC OR MIT) — <https://github.com/rustls/rustls>
 - **rustls-native-certs** 0.8.4 (Apache-2.0 OR ISC OR MIT) — <https://github.com/rustls/rustls-native-certs>
 - **rustls-pki-types** 1.15.1 (MIT OR Apache-2.0) — <https://github.com/rustls/pki-types>
 - **rustls-platform-verifier** 0.7.0 (MIT OR Apache-2.0) — <https://github.com/rustls/rustls-platform-verifier>
