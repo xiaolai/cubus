@@ -132,9 +132,9 @@ carries it.
 ## 2. The detector model and its training data
 
 The sticker detector (`cube-yolo.onnx`, `.mlpackage`, `.tflite` — one checkpoint, three exports) is
-trained by this repository's own `ml/cubedet`, on PyTorch and torchvision (**BSD-3**), starting from
-a `timm` feature extractor pretrained on ImageNet (**Apache-2.0**): `mobilenetv4_conv_small.e2400_r224_in1k`.
-As `ml/models/MANIFEST.json` records it:
+trained by this repository's own `ml/cubedet`, on PyTorch and torchvision (**BSD-3**). Its backbone
+is `mobilenetv4_conv_small.e2400_r224_in1k`, and where that backbone's weights came from is recorded by the export that
+produced it, in `ml/models/MANIFEST.json`:
 
 > Trained by ml/cubedet (PyTorch/torchvision, BSD-3), with the mobilenetv4_conv_small.e2400_r224_in1k feature extractor from ImageNet weights (torchvision BSD-3 or timm Apache-2.0) and the neck and head from random initialisation. No Ultralytics code and no Ultralytics pretrained weights. See ml/PERMISSIVE_DETECTOR_PROVENANCE.md.
 
