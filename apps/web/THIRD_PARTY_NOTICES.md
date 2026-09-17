@@ -131,11 +131,18 @@ carries it.
 
 ## 2. The detector model and its training data
 
-The sticker detector (`cube-yolo.onnx`, `.mlpackage`, `.tflite` — one checkpoint, three exports) is a
-YOLO model trained with [Ultralytics](https://github.com/ultralytics/ultralytics) 8.4.126,
-which is **AGPL-3.0**. Ultralytics' stated position is that the licence reaches models trained with
-their software and applications that use those models; that is why cubus is AGPL-3.0 rather than
-permissive (`LICENSE-COMMERCIAL.md`).
+The sticker detector (`cube-yolo.onnx`, `.mlpackage`, `.tflite` — one checkpoint, three exports) is
+trained by this repository's own `ml/cubedet`, a detector written here (PyTorch and torchvision,
+**BSD-3**), starting from a `timm` MobileNetV4 feature extractor pretrained on ImageNet
+(<https://github.com/huggingface/pytorch-image-models>, **Apache-2.0**). There is no Ultralytics code
+and no Ultralytics checkpoint anywhere in its lineage; `ml/models/MANIFEST.json` records that, and
+`ml/export.py` refuses to export a `cubedet` checkpoint through any Ultralytics path.
+
+Until 2026-09-17 the shipped detector was a YOLO model trained with
+[Ultralytics](https://github.com/ultralytics/ultralytics) 8.4.126, which is **AGPL-3.0**, and
+Ultralytics' stated position — that the licence reaches models trained with their software and the
+applications using those models — is why this project is AGPL-3.0 (`LICENSE-COMMERCIAL.md`). That
+constraint no longer applies to the detector; the licence choice is now the project's own.
 
 The real photographs it was trained and tested on are Roboflow Universe datasets published under
 **CC BY 4.0** (<https://creativecommons.org/licenses/by/4.0/>). Attribution, one line per dataset,

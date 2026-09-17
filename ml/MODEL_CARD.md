@@ -3,18 +3,49 @@
 `apps/web/vendor/cube-yolo.onnx` — the model the app's **AI-scan** mode runs in-browser.
 
 ## What it does
-A **YOLOv11n** object detector that finds each sticker on a cube face and classifies its
-colour. It replaces the classical HSV scanner, whose accuracy collapsed under uncontrolled
-lighting (the red↔orange confusion in particular).
+An object detector that finds each sticker on a cube face and classifies its colour. It replaces the
+classical HSV scanner, whose accuracy collapsed under uncontrolled lighting (the red↔orange confusion
+in particular).
 
-- **Input:** 640×640 letterboxed RGB (Ultralytics-style, grey-114 pad).
-- **Output:** per-sticker boxes + colour class. Classes (`ml/data.yaml`): `0 white 1 red 2 green
-  3 yellow 4 orange 5 blue`.
-- **Params:** ~2.6 M. **Inference**, per 640×640 frame, each number with its silicon: CoreML on an
-  Apple M5, compute units `all`, median **1.48 ms** (`ml/golden/compute-units.m5.json`,
-  `ml/compute_units.py`); Python onnxruntime on the CPU provider, fp32, on the maintainer's
-  Apple-silicon Mac, **48 ms** (the §"What the app ships" table; the chip was not recorded when it
-  was measured, 2026-08-29). The browser's wasm/WebGPU numbers belong to `packages/cube-scanner`.
+**Since 2026-09-17 it is `ml/cubedet`'s own detector**, not a YOLO one: a `timm` MobileNetV4-small
+feature extractor pretrained on ImageNet, a PAN neck and an anchor-free head, trained by this
+repository. Everything below dated before then describes the Ultralytics-trained v3 that preceded it,
+and is kept because the measurements are still the comparison this model is judged against.
+
+- **Input:** 640×640 letterboxed RGB (aspect preserved, grey-114 pad).
+- **Output:** per-sticker boxes + colour class, `(1, 4 + 6, 8400)`. Classes (`ml/data.yaml`):
+  `0 white 1 red 2 green 3 yellow 4 orange 5 blue`.
+- **Params:** ~3.4 M (v3: ~2.6 M). **Inference**, per 640×640 frame: CoreML fp32 on an M-series Mac,
+  **3.8 ms** (the fp16 build was slower AND less faithful — `ml/export.py::export_coreml_cubedet`);
+  onnxruntime-web on wasm, one thread, **214 ms** against v3's 173 ms on the same machine.
+- **Artefacts:** fp32 everywhere. There is no int8 ONNX: dynamic quantisation collapses this graph
+  (top class score 0.001 against fp32's 0.922), and the export refuses to write an artefact that
+  reads nothing — `MANIFEST.json` records that decision with its reason.
+
+### How it compares with v3, on real photographs nobody trained on
+140 complete sets from 22 contributors in the community photo drop, each colour confirmed by the
+person who photographed their own cube, scored through the app's own read (`ml/drop_eval.py`):
+
+| | v3 (Ultralytics) | this model |
+|---|---|---|
+| stickers located and read correctly | 97.7% | 96.6% |
+| per-contributor average | 96.9% | 90.3% |
+| cubes read correctly | 122 of 140 | **128 of 140** |
+| cubes read WRONG | 9 | **3** |
+
+It is weaker per contributor and stronger per cube: it declines more often instead of committing to a
+wrong face, which for a scanner that can ask for another photo is the better failure. Three other
+recipes were measured and none closed the per-contributor gap — a COCO-pretrained transformer
+(D-FINE-N) reached 92.4%, v3's own dataset made this architecture worse, not better, and re-running
+v3's recipe with a different seed reproduced v3, so the gap is the training recipe rather than luck.
+
+### Known limitation: a 2×2 cube at a corner
+This model fits a 3×3 grid across the visible faces of a 2×2 cube photographed at a corner, where v3
+refused. No frame-level rule separates that case without refusing legitimate frames: a
+stickers-beyond-the-grid test refuses three golden 3×3 fixtures first, and a planarity test ranks the
+2×2 frame as more face-like than every golden render. What does separate them is the SET-level rule
+`propose.py::beyond_grid` already uses — summed over a set, all 140 real 3×3 sets score 0 or 1 while
+4×4 sets score 1 to 16 — and the app does not carry it yet.
 
 ## Training data
 Combined **30,738 images** = synthetic (breadth) + real (authenticity):
@@ -216,13 +247,17 @@ under CC BY 4.0.*
 
 ## Licence
 
-The detector is a YOLO model trained with [Ultralytics](https://github.com/ultralytics/ultralytics)
-(pinned at 8.4.126 in `ml/models/MANIFEST.json`), which is **AGPL-3.0**. Ultralytics' stated
-position is that the licence reaches models trained with their software, and applications that use
-those models — so this file is part of why cubus is AGPL-3.0 rather than permissive. See
-`LICENSE-COMMERCIAL.md`.
+The detector shipped since 2026-09-17 is trained by `ml/cubedet`, this repository's own code, on
+PyTorch and torchvision (**BSD-3**), starting from a `timm` MobileNetV4 feature extractor pretrained
+on ImageNet (**Apache-2.0**). No Ultralytics code and no Ultralytics weights are in its lineage;
+`ml/models/MANIFEST.json` carries that as `licence_note`, and `ml/export.py` refuses to send a
+`cubedet` checkpoint down any Ultralytics path. Its training photographs are the CC BY 4.0 Roboflow
+Universe sets credited under §Attribution, plus renders from `ml/generate_cube3d.py`.
 
-The practical consequence for anyone reusing this model: a closed-source product cannot simply take
-`cube-yolo.onnx`. It needs an Ultralytics Enterprise Licence, or a detector trained on a stack that
-is not copyleft. A commercial licence for cubus covers cubus, and cannot grant rights to
-Ultralytics' work.
+Before that date the detector was a YOLO model trained with
+[Ultralytics](https://github.com/ultralytics/ultralytics), which is **AGPL-3.0**, and Ultralytics'
+stated position — that the licence reaches models trained with their software and the applications
+using them — is why cubus is AGPL-3.0 rather than permissive (`LICENSE-COMMERCIAL.md`). That
+inheritance is what the change removes: taking `cube-yolo.onnx` into a closed-source product now
+raises no Ultralytics question. Anyone reusing the PREVIOUS model, which is still in this
+repository's history, still needs an Ultralytics Enterprise Licence for that use.

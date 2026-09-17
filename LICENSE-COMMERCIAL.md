@@ -15,14 +15,19 @@ other terms.
 **Contact:** open an issue at <https://github.com/xiaolai/cubus/issues> and say what you have in
 mind, or reach the author through the address on the GitHub profile.
 
-## Why the project is AGPL rather than permissive
+## Why the project is AGPL
 
-Not as a philosophical position, and worth stating plainly because it constrains anyone who
-forks: the sticker detector shipped in this repository — `apps/web/vendor/cube-yolo.onnx` — is a
-YOLO model trained with [Ultralytics](https://github.com/ultralytics/ultralytics), which is
-itself AGPL-3.0. Ultralytics' stated position is that the licence reaches models trained with
-their software and applications that use those models. A permissive licence here would not be
-honest about that.
+Until 2026-09-17 this was not a choice. The sticker detector shipped here —
+`apps/web/vendor/cube-yolo.onnx` — was a YOLO model trained with
+[Ultralytics](https://github.com/ultralytics/ultralytics), which is itself AGPL-3.0, and
+Ultralytics' stated position is that the licence reaches models trained with their software and the
+applications that use those models. A permissive licence would not have been honest about that.
+
+The detector shipped now is this repository's own (`ml/cubedet`): a detector written here, trained
+from a timm ImageNet feature extractor (Apache-2.0) on this project's renders and on CC BY 4.0
+photographs, with no Ultralytics code and no Ultralytics weights in its lineage. The inherited
+constraint is gone, so the licence is now a decision rather than an obligation — and until that
+decision is revisited, the terms above are the ones that apply.
 
 Everything else the application ships is permissively licensed, and
 `apps/web/THIRD_PARTY_NOTICES.md` lists all of it with each licence's text: the bundled npm
@@ -38,6 +43,7 @@ likewise MIT and stays that way — it is a standalone Bluetooth driver that tou
 model code, and part of it derives from MIT-licensed upstream work
 (`packages/gan-driver/THIRD_PARTY.md`).
 
-A commercial licence for cubus covers cubus. It does not, and cannot, grant rights to
-Ultralytics' work: a closed-source product built on this detector needs an Ultralytics
-Enterprise Licence too, or a detector trained on a stack that is not copyleft.
+A commercial licence for cubus covers cubus, and since the detector became this project's own it can
+cover the detector too. That was not true before 2026-09-17: a closed-source product built on the
+Ultralytics-trained detector needed an Ultralytics Enterprise Licence as well, and a fork that goes
+back to that detector still would.
