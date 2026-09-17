@@ -30,7 +30,9 @@
 
 import { createRequire } from 'node:module';
 import { realpathSync } from 'node:fs';
+import { availableParallelism } from 'node:os';
 import { pathToFileURL } from 'node:url';
+import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 
 import { SOLVED, applyAlg, moveCount } from '../lib/cube-pieces.js';
 import { LADDER, allRungCombinations, methodFor, rungKey, solveByMethod } from '../lib/method-solver.js';
@@ -434,7 +436,7 @@ export function* lastLayerStates() {
   }
 }
 
-function exhaustive(selector) {
+async function exhaustive(selector) {
   // Every last-layer rung combination, not just the default. The one-look rungs are a 57-case and
   // a 21-case table, and "the table is complete" is precisely the claim a sample cannot make: it
   // is the enumeration or it is nothing. Rung 0's completeness was already proved this way; the
@@ -447,58 +449,161 @@ function exhaustive(selector) {
     }
   }
   if (combinations.length === 0) throw new UsageError('no such last-layer rung combination');
-  for (const rungs of combinations) exhaustiveAt(rungs);
+  for (const rungs of combinations) await exhaustiveAt(rungs);
 }
 
-/** The sweep at one rung combination. Separated so the loop above reads as what it is. */
-function exhaustiveAt(rungs) {
-  const method = methodFor(rungs);
-  let total = 0;
-  const failures = [];
-  let moves = 0;
-  const cases = new Map();
-  const t0 = Date.now();
+/** How many failures are printed in full. The count is always reported; the detail is for reading. */
+const FAILURES_SHOWN = 5;
 
+/**
+ * ONE SLICE OF THE SWEEP: the states whose place in the enumeration is `part` mod `parts`.
+ *
+ * Pure and synchronous, so the same function is the whole sweep at `parts` = 1 and one worker's share
+ * at more. It returns what the report needs rather than printing it, because a worker's console is not
+ * the place a reader looks and the parent must be the one that decides the sweep passed.
+ */
+export function sweepPart(rungs, part = 0, parts = 1) {
+  const method = methodFor(rungs);
+  let index = -1;
+  let total = 0;
+  let moves = 0;
+  let failed = 0;
+  const cases = new Map();
+  const shown = [];
   for (const state of lastLayerStates()) {
-    total++;
+    index += 1;
+    if (index % parts !== part) continue;
+    total += 1;
     try {
       const result = solveByMethod(state, method);
       moves += result.moveCount;
       for (const step of result.steps) tally(cases, [step.caseName ?? 'goal (searched)']);
     } catch (err) {
+      failed += 1;
       // The EXCEPTION, not two fields it may not have. A `MethodSolverError` carries `stage` and
-      // `target`; anything else — a TypeError from a broken import, say — carries neither, and
-      // this printed "FAIL undefined/undefined" and threw the message away. The one thing a sweep
-      // over 62,208 states must not do is lose the reason the first of them failed.
-      failures.push({ state, err });
-      if (failures.length <= 5) {
-        const where = err.stage ? `${err.stage}/${err.target}` : err.name || 'error';
-        console.log(`  FAIL ${where}: ${err.message}`);
-        console.log(`       ${JSON.stringify(state)}`);
+      // `target`; anything else — a TypeError from a broken import, say — carries neither, and this
+      // once printed "FAIL undefined/undefined" and threw the message away. Copied into plain fields
+      // because a worker's error crosses to the parent by structured clone, which keeps `message` and
+      // `stack` and drops everything a subclass added.
+      if (shown.length < FAILURES_SHOWN) {
+        shown.push({
+          index,
+          state,
+          where: err.stage ? `${err.stage}/${err.target}` : err.name || 'error',
+          message: err.message,
+          stack: err.stack ?? err.message,
+        });
       }
     }
   }
+  return { part, parts, total, moves, failed, cases: [...cases], shown };
+}
 
-  // THE SWEEP COVERED THE ENUMERATION. Before anything is reported: a truncated or empty generator
-  // reports zero failures, which reads exactly like a pass.
-  if (total !== LAST_LAYER_STATES) {
+/**
+ * THE SWEEP COVERED THE ENUMERATION, slice by slice and as a whole — or it throws. Returns the total.
+ *
+ * `index % parts === part` puts ceil((N - part) / parts) states in slice `part`, so a slice of any other
+ * size swept the wrong set; and the slices must be exactly `0..parts-1`, once each. Checked before
+ * anything is reported, because a slice that swept nothing reports no failures, which reads exactly
+ * like a pass.
+ */
+export function checkCoverage(results, parts, states = LAST_LAYER_STATES) {
+  const seen = results.map((r) => r.part).sort((a, b) => a - b);
+  if (seen.length !== parts || seen.some((part, i) => part !== i)) {
+    throw new Error(`method-solver-profile: slices ${seen.join(',')} are not 0..${parts - 1} once each`);
+  }
+  let total = 0;
+  for (const r of results) {
+    const expected = Math.ceil((states - r.part) / parts);
+    if (r.total !== expected) {
+      throw new Error(`method-solver-profile: slice ${r.part}/${parts} swept ${r.total} states, not ${expected}`);
+    }
+    total += r.total;
+  }
+  if (total !== states) {
     throw new Error(
-      `method-solver-profile: swept ${total} last-layer states, not ${LAST_LAYER_STATES} — `
+      `method-solver-profile: swept ${total} last-layer states, not ${states} — `
       + 'the enumeration is not the one this sweep claims to have covered',
     );
   }
-  console.log(`\n[exhaustive ${rungKey(rungs)}] every reachable last-layer state, ${((Date.now() - t0) / 1000).toFixed(0)}s`);
-  console.log(`  states ${total} | failures ${failures.length} | mean ${(moves / (total - failures.length)).toFixed(1)} moves`);
+  return total;
+}
+
+/**
+ * How many workers a sweep uses: every core the machine offers, unless `SWEEP_WORKERS` says otherwise
+ * (a positive whole number; 1 runs the sweep on this thread, which is how its output is compared with
+ * the parallel one).
+ */
+function workerCount() {
+  const asked = process.env.SWEEP_WORKERS;
+  if (asked === undefined) return Math.max(1, availableParallelism());
+  const n = Number(asked);
+  if (!Number.isInteger(n) || n < 1) throw new UsageError(`SWEEP_WORKERS: "${asked}" is not a positive whole number`);
+  return n;
+}
+
+/** One slice on a worker thread of this same file. A worker that dies is the sweep failing, loudly. */
+function onWorker(rungs, part, parts) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL(import.meta.url), { workerData: { sweep: { rungs, part, parts } } });
+    let answered = false;
+    worker.once('message', (result) => { answered = true; resolve(result); });
+    worker.once('error', reject);
+    worker.once('exit', (code) => {
+      if (!answered) reject(new Error(`sweep worker ${part}/${parts} exited with code ${code} and no result`));
+    });
+  });
+}
+
+/**
+ * The sweep at one rung combination, spread over the machine's cores.
+ *
+ * WHY IN PARALLEL (2026-09-17). Every state is solved on its own, so the sweep is 62,208 independent
+ * jobs run one after another on one core of a four-core CI runner. The (oll 0, pll 1) shard measured 23,
+ * 24, 43 and 44 minutes on four runs of identical work — two runner speeds, one twice the other — and
+ * was cancelled at its 45-minute liveness bound on the fifth, where the job's own comment says "a proof
+ * that is merely running must never be cancelled". Raising the bound would have kept a proof taking 45
+ * minutes of one core while three sat idle; splitting it across them takes the slow runner's worst case
+ * to a fraction of the bound instead.
+ *
+ * THE COMPLETENESS CLAIM STAYS WHOLE. Each slice is checked against the size it must have, and the
+ * slices against the enumeration, before anything is reported — a worker that swept nothing reports no
+ * failures, which reads exactly like a pass.
+ */
+async function exhaustiveAt(rungs) {
+  const t0 = Date.now();
+  const parts = workerCount();
+  const results = parts === 1
+    ? [sweepPart(rungs, 0, 1)]
+    : await Promise.all(Array.from({ length: parts }, (_, part) => onWorker(rungs, part, parts)));
+
+  const total = checkCoverage(results, parts);
+
+  const moves = results.reduce((sum, r) => sum + r.moves, 0);
+  const failed = results.reduce((sum, r) => sum + r.failed, 0);
+  const cases = new Map();
+  for (const r of results) for (const [name, count] of r.cases) cases.set(name, (cases.get(name) ?? 0) + count);
+  // In enumeration order, whichever worker found them, so a failing run names the same first states
+  // however many cores it had.
+  const shown = results.flatMap((r) => r.shown).sort((a, b) => a.index - b.index).slice(0, FAILURES_SHOWN);
+  for (const f of shown) {
+    console.log(`  FAIL ${f.where}: ${f.message}`);
+    console.log(`       ${JSON.stringify(f.state)}`);
+  }
+
+  console.log(`\n[exhaustive ${rungKey(rungs)}] every reachable last-layer state, ${((Date.now() - t0) / 1000).toFixed(0)}s on ${parts} thread${parts === 1 ? '' : 's'}`);
+  console.log(`  states ${total} | failures ${failed} | mean ${(moves / (total - failed)).toFixed(1)} moves`);
   console.log('  each algorithm, and how many of those states needed it:');
-  for (const [name, count] of [...cases].sort((a, b) => b[1] - a[1])) {
+  // Ties broken by name, so the table reads the same whatever order the slices were merged in.
+  for (const [name, count] of [...cases].sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])))) {
     console.log(`  ${String(name).padEnd(18)} ${count}`);
   }
-  if (failures.length > 0) {
+  if (failed > 0) {
     // A partial pass is not a pass: it means some learner's cube reaches a position the tutor
     // cannot finish, and the whole value of this file is ruling that out. The first failure's
     // stack goes with the message, because "which state" is not the same question as "why".
-    console.error(failures[0].err.stack ?? failures[0].err.message);
-    throw new Error(`${failures.length} last-layer states have no solution in the repertoire`);
+    console.error(shown[0].stack);
+    throw new Error(`${failed} last-layer states have no solution in the repertoire`);
   }
 }
 
@@ -517,14 +622,17 @@ function exhaustiveAt(rungs) {
 export { exhaustive, ladder, profile, UsageError };
 export { seededStates };
 
-export function main(argv) {
+export async function main(argv) {
   const { command, n, selector } = parseArgs(argv);
+  // Checked before anything runs, like every other argument: a bad worker count found after the
+  // profile and the ladder had spent their minutes is the `all 2` defect again.
+  if (command === 'exhaustive' || command === 'all') workerCount();
   if (command === 'profile' || command === 'all') for (const named of NAMED) profile(n, named);
   if (command === 'ladder' || command === 'all') ladder(n);
   // `all` runs the WHOLE sweep, with no selector: the sample count it was given is a sample
   // count, and reading it as an OLL rung is how `all 2` used to fail after the first two
   // commands had already run.
-  if (command === 'exhaustive' || command === 'all') exhaustive(command === 'all' ? null : selector);
+  if (command === 'exhaustive' || command === 'all') await exhaustive(command === 'all' ? null : selector);
 }
 
 /** Run, or imported? `pathToFileURL` and the realpath, for the reasons `regen-case-tables.mjs`
@@ -541,12 +649,20 @@ function isDirectEntry() {
   return import.meta.url === pathToFileURL(entry).href;
 }
 
-if (isDirectEntry()) {
-  try {
-    main(process.argv.slice(2));
-  } catch (err) {
-    if (!(err instanceof UsageError)) throw err;
-    console.error(`${err.message}\n${USAGE}`);
-    process.exit(1);
-  }
+// A sweep worker: this same file on another thread, handed one slice. Checked BEFORE the entry test,
+// because a worker's argv is not its own and must never be mistaken for a command line.
+if (!isMainThread && workerData?.sweep) {
+  const { rungs, part, parts } = workerData.sweep;
+  parentPort.postMessage(sweepPart(rungs, part, parts));
+} else if (isMainThread && isDirectEntry()) {
+  // Awaited, and a rejection that is not a usage error still exits non-zero: an async `main` whose
+  // failure was only logged would leave CI reading a failed proof as a passed one.
+  main(process.argv.slice(2)).catch((err) => {
+    if (err instanceof UsageError) {
+      console.error(`${err.message}\n${USAGE}`);
+    } else {
+      console.error(err);
+    }
+    process.exitCode = 1;
+  });
 }

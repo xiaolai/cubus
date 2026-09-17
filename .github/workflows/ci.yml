@@ -246,6 +246,14 @@ jobs:
   # per-combination cost" — reasoning, not measurement, and the measurement then said 16 minutes
   # for the slowest shard on the fastest machine available. That is the same mistake one rung
   # down.
+  #
+  # **2.8x was not enough, and the answer was not a bigger number (2026-09-17).** On the runners,
+  # the (oll 0, pll 1) shard measured 23, 24, 43 and 44 minutes over four runs of identical work —
+  # two runner speeds, one twice the other — and was cancelled at 45 on the fifth. The sweep was
+  # 62,208 independent solves on ONE core of a four-core runner, so it now spreads them across every
+  # core (worker threads, one slice per core, the slices checked to be the whole enumeration before
+  # anything is reported — `checkCoverage` in the bench). The bound stays where it is: it is a
+  # liveness bound, and the work it bounds is what changed.
   last-layer-sweep:
     name: method solver — the 62,208-state completeness sweep (nightly)
     needs: [plan]
