@@ -101,6 +101,9 @@ class Detection:
     h: float
     class_id: int
     confidence: float
+    # Every class's score, like the optional `scores` on the TypeScript Detection. Only propose.py
+    # reads them — the nine-of-each repair needs the runner-up colours argmax throws away.
+    scores: tuple[float, ...] | None = None
 
 
 def decode(output: np.ndarray, conf_threshold: float = 0.25, num_classes: int = NUM_CLASSES) -> list[Detection]:
@@ -115,7 +118,12 @@ def decode(output: np.ndarray, conf_threshold: float = 0.25, num_classes: int = 
     conf = scores[cls, np.arange(o.shape[1])]
     out: list[Detection] = []
     for a in np.nonzero(conf >= conf_threshold)[0]:
-        out.append(Detection(float(o[0, a]), float(o[1, a]), float(o[2, a]), float(o[3, a]), int(cls[a]), float(conf[a])))
+        out.append(
+            Detection(
+                float(o[0, a]), float(o[1, a]), float(o[2, a]), float(o[3, a]), int(cls[a]), float(conf[a]),
+                tuple(float(s) for s in scores[:, a]),
+            )
+        )
     return out
 
 
@@ -140,6 +148,37 @@ def nms(dets: list[Detection], iou_threshold: float = 0.45) -> list[Detection]:
     return kept
 
 
+# `dropNested` in packages/cube-scanner/src/onnx-postprocess.ts, where the measurement that set these
+# is written. Both implementations answer the shared cases in
+# packages/cube-scanner/tests/fixtures/nested-detections.json, and test_pipeline.py reads them here.
+NESTED_INSIDE = 0.7
+NESTED_MAX_AREA_RATIO = 4.0
+APP_MIN_CONFIDENCE = 0.25  # MIN_STICKER_CONFIDENCE: the lowest box the app ever decodes
+
+
+def drop_nested(dets: list[Detection], floor: float = 0.0) -> list[Detection]:
+    """Every box not nested in a larger box of similar scale, in the order given. Mirrors `dropNested`.
+
+    `floor` is for callers that decode below the app's threshold (propose.py's tolerant fit reads down
+    to 0.10): only a box the app itself would have decoded may remove another, so a faint large box can
+    never take away a sticker the app keeps. Every box the app decodes is above it, so the app's own
+    chain passes nothing.
+    """
+
+    def overlap(a: Detection, b: Detection) -> float:
+        iw = max(0.0, min(a.cx + a.w / 2, b.cx + b.w / 2) - max(a.cx - a.w / 2, b.cx - b.w / 2))
+        ih = max(0.0, min(a.cy + a.h / 2, b.cy + b.h / 2) - max(a.cy - a.h / 2, b.cy - b.h / 2))
+        return iw * ih
+
+    kept = []
+    for d in dets:
+        area = d.w * d.h
+        if not any(o is not d and o.confidence >= floor and o.w * o.h > area and o.w * o.h <= NESTED_MAX_AREA_RATIO * area
+                   and overlap(d, o) >= NESTED_INSIDE * area for o in dets):
+            kept.append(d)
+    return kept
+
+
 # The three bounds `toGrid` in packages/cube-scanner/src/onnx-postprocess.ts applies, with the
 # same values and in the same order. That file carries the derivation; the short version is that
 # every one was measured over all 20 fixtures in ml/golden/frames/ and set high enough that no
@@ -152,7 +191,7 @@ MAX_COLUMN_SPREAD = 3.0
 MAX_AREA_RATIO = 5.0
 
 
-def _to_grid(nine: list[Detection]) -> list[Detection] | None:
+def to_grid(nine: list[Detection]) -> list[Detection] | None:
     by_y = sorted(nine, key=lambda d: d.cy)
     rows = [sorted(by_y[i : i + 3], key=lambda d: d.cx) for i in (0, 3, 6)]
     size = sum((d.w + d.h) / 2 for d in nine) / 9
@@ -184,22 +223,28 @@ class FaceRead:
     confidence: tuple[float, ...] | None
 
 
-def fit_face(dets: list[Detection], min_conf: float = 0.25) -> FaceRead:
+def fit_grid(dets: list[Detection], min_conf: float = 0.25) -> tuple[str, list[Detection] | None]:
+    """`fit_face` one step short: the verdict and the nine detections in reading order, boxes and all."""
     good = [d for d in dets if d.confidence >= min_conf and 0 <= d.class_id < NUM_CLASSES]
     if not good:
-        return FaceRead("NO_FACE", None, None)
+        return "NO_FACE", None
     if len(good) < 9:
-        return FaceRead("PARTIAL_FACE", None, None)
+        return "PARTIAL_FACE", None
     nine = sorted(good, key=lambda d: -(d.w * d.h))[:9]
-    grid = _to_grid(nine)
+    grid = to_grid(nine)
+    return ("BAD_GEOMETRY", None) if grid is None else ("OK", grid)
+
+
+def fit_face(dets: list[Detection], min_conf: float = 0.25) -> FaceRead:
+    verdict, grid = fit_grid(dets, min_conf)
     if grid is None:
-        return FaceRead("BAD_GEOMETRY", None, None)
+        return FaceRead(verdict, None, None)
     return FaceRead("OK", tuple(d.class_id for d in grid), tuple(d.confidence for d in grid))
 
 
 def read_face(output: np.ndarray) -> FaceRead:
-    """The whole post-processing chain on one raw output tensor: decode → NMS → fit."""
-    return fit_face(nms(decode(output)))
+    """The whole post-processing chain on one raw output tensor: decode → NMS → drop nested → fit."""
+    return fit_face(drop_nested(nms(decode(output))))
 
 
 def load_rgb(path: str) -> np.ndarray:

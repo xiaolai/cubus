@@ -531,8 +531,16 @@ export function androidInventory(root = ROOT) {
 function modelAttribution(root) {
   const read = (p) => readFileSync(join(root, p), 'utf8');
   const card = read('ml/MODEL_CARD.md');
-  const detlib = /pinned at ([\d.]+) in `ml\/models\/MANIFEST\.json`/.exec(card)?.[1];
-  if (!detlib) fail('could not read the pinned Detlib version from ml/MODEL_CARD.md');
+  // WHERE THE DETECTOR CAME FROM, read from the manifest the export writes rather than from prose.
+  // Until 2026-09-17 this read a pinned Detlib version out of the model card, because the
+  // shipped detector was trained with it; the sentence it parsed is gone with the lineage, and a
+  // regex over a document is the wrong place to learn what a model is anyway.
+  const manifest = JSON.parse(read('ml/models/MANIFEST.json'));
+  const provenance = manifest.licence_note;
+  if (!provenance) fail('ml/models/MANIFEST.json carries no licence_note — re-run ml/export.py');
+  if (manifest.stack !== 'cubedet') {
+    fail(`ml/models/MANIFEST.json says the shipped model was built by ${manifest.stack}; this file describes cubedet's`);
+  }
   const rows = [...card.matchAll(/^\| `([^`/]+)\/([^`]+)` \| (https:\/\/universe\.roboflow\.com\/\S+) \| ([^|]+) \|$/gm)]
     .map((m) => ({ workspace: m[1], project: m[2], url: m[3], usedFor: m[4].trim() }));
   if (rows.length === 0) fail('no Roboflow attribution rows found in ml/MODEL_CARD.md');
@@ -542,7 +550,7 @@ function modelAttribution(root) {
     if (!rows.some((r) => `${r.workspace}/${r.project}` === id)) fail(`ml/fetch_roboflow.py downloads ${id}, which ml/MODEL_CARD.md's attribution table does not list`);
   }
   const fixtures = JSON.parse(read('ml/golden/SOURCES.json')).filter((e) => /^https?:\/\//.test(e.source));
-  return { detlib, rows, fixtures };
+  return { provenance, backbone: manifest.backbone, rows, fixtures };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -643,7 +651,7 @@ export function render({ npm, rust, android, model }) {
   const w = (...lines) => out.push(...lines);
   w('# Third-party notices',
     '',
-    'cubus is licensed under the MIT-only (`LICENSE`); `packages/gan-driver` is MIT. This file',
+    'cubus is licensed under the MIT licence (`LICENSE`). This file',
     'lists what ships **with** it — in the web app, in the desktop and mobile binaries, and in the',
     'detector model — and the licence each component is used under. Every licence and notice file',
     'those components carry is reproduced in §5, as each carries it, one copy per distinct text. It is',
@@ -683,11 +691,22 @@ export function render({ npm, rust, android, model }) {
   }
   w('## 2. The detector model and its training data',
     '',
-    `The sticker detector (\`cube-yolo.onnx\`, \`.mlpackage\`, \`.tflite\` — one checkpoint, three exports) is a`,
-    `YOLO model trained with [Detlib](https://github.com/detlib/detlib) ${model.detlib},`,
-    'which is **MIT**. Detlib\' stated position is that the licence reaches models trained with',
-    'their software and applications that use those models; that is why cubus is MIT rather than',
-    'permissive (`LICENSE-COMMERCIAL.md`).',
+    // The backbone's FAMILY is not asserted here. The trainer builds from-scratch, torchvision and
+    // timm backbones, and a sentence naming one of them would be false for the other two the day the
+    // shipped model changed family. Where the weights started is the manifest's to say — export.py
+    // writes it per checkpoint — so it is quoted, not paraphrased.
+    `The sticker detector (\`cube-yolo.onnx\`, \`.mlpackage\`, \`.tflite\` — one checkpoint, three exports) is`,
+    'trained by this repository\'s own `ml/cubedet`, on PyTorch and torchvision (**BSD-3**). Its backbone',
+    `is \`${model.backbone}\`, and where that backbone's weights came from is recorded by the export that`,
+    'produced it, in `ml/models/MANIFEST.json`:',
+    '',
+    `> ${model.provenance}`,
+    '',
+    'Until 2026-09-17 the detector was a YOLO model trained with',
+    '[Detlib](https://github.com/detlib/detlib), which is **MIT**, and Detlib\'',
+    'stated position — that the licence reaches models trained with their software and the applications',
+    'using those models — is why this project was MIT until the detector was replaced. Anyone taking',
+    'the PREVIOUS model out of this repository\'s history is still bound by that.',
     '',
     'The real photographs it was trained and tested on are Roboflow Universe datasets published under',
     '**CC BY 4.0** (<https://creativecommons.org/licenses/by/4.0/>). Attribution, one line per dataset,',

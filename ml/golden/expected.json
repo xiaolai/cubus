@@ -5,8 +5,8 @@
     "python": "3.11.16"
   },
   "model": {
-    "checkpoint_sha256": "22c654125163ed8185fb7b6f026d17bae256c025172c50cba5342d8eba0c531b",
-    "fp32_sha256": "5be4e55a9bae7d162775b431e09ea71947838dfeca421c1369f5cd6ad89fb472"
+    "checkpoint_sha256": "03710b01f6bfa05126123e9a477baac989a079b020a77a6854a352ef173aaad5",
+    "fp32_sha256": "092f6c411b2a21261cee30ebcdf2c4e9ee1f1fcfe651f87017ff48a827b85d06"
   },
   "faithful_legs": [
     "onnx",
@@ -19,211 +19,195 @@
   },
   "divergence_from_fp32": {
     "onnx": 0,
-    "onnx-int8": 4,
     "coreml": 0,
     "tflite": 0,
     "native": 0
   },
   "frames": {
     "abstain-00.png": {
-      "preprocess_sha256": "e282a8f725dcfed3a7d5a64fa4047053ee5ce358825379699e13e9feba187ea4",
+      "preprocess_sha256": "e581d633be2b0dbcd08e2797e6e9f18bf72f105c62649d46e034df48179ae65b",
       "legs": {
         "onnx": "BAD_GEOMETRY",
-        "onnx-int8": "BAD_GEOMETRY",
         "coreml": "BAD_GEOMETRY",
         "tflite": "BAD_GEOMETRY",
         "native": "BAD_GEOMETRY"
       }
     },
     "abstain-01.png": {
-      "preprocess_sha256": "f721960c619837e5d4995aee0835b688384cd1dbd0a815d2ef277829cc1e19c8",
-      "legs": {
-        "onnx": "PARTIAL_FACE",
-        "onnx-int8": "PARTIAL_FACE",
-        "coreml": "PARTIAL_FACE",
-        "tflite": "PARTIAL_FACE",
-        "native": "PARTIAL_FACE"
-      }
-    },
-    "abstain-02.png": {
       "preprocess_sha256": "1566064bfc75d395766be638c62684aa524dea74471b7f968b14ed0a0d8a246a",
       "legs": {
         "onnx": "BAD_GEOMETRY",
-        "onnx-int8": "OK 000000442",
         "coreml": "BAD_GEOMETRY",
         "tflite": "BAD_GEOMETRY",
         "native": "BAD_GEOMETRY"
       }
     },
-    "photo-00.png": {
-      "preprocess_sha256": "2a87bf06c120f566660a8a741cef5613d3594b9b362d62675267130e021c8791",
+    "abstain-02.png": {
+      "preprocess_sha256": "32ae07a45b407de58696594907c1df2bcff11dc5d85fa1722146011827e6a049",
       "legs": {
-        "onnx": "OK 325511251",
-        "onnx-int8": "OK 221511251",
-        "coreml": "OK 325511251",
-        "tflite": "OK 325511251",
-        "native": "OK 325511251"
+        "onnx": "PARTIAL_FACE",
+        "coreml": "PARTIAL_FACE",
+        "tflite": "PARTIAL_FACE",
+        "native": "PARTIAL_FACE"
       }
     },
-    "photo-01.png": {
+    "photo-00.png": {
       "preprocess_sha256": "a10e91a3f0c72c65d32a7785cd2ccbafade209e9f18077d4a888ff05aa224313",
       "legs": {
         "onnx": "OK 024005235",
-        "onnx-int8": "OK 024005235",
         "coreml": "OK 024005235",
         "tflite": "OK 024005235",
         "native": "OK 024005235"
       }
     },
-    "photo-02.png": {
+    "photo-01.png": {
       "preprocess_sha256": "21f5b708ff9b724cd987afd431ccf7ed470eaa8691977126b2471bc4171956d6",
       "legs": {
         "onnx": "OK 024005023",
-        "onnx-int8": "OK 024005023",
+        "coreml": "OK 024005023",
+        "tflite": "OK 024005023",
+        "native": "OK 024005023"
+      }
+    },
+    "photo-02.png": {
+      "preprocess_sha256": "b0faeb69f43eb9a0ca1dba0f719eaeb79be8f562484d6e7e401ef6a2359f0e1c",
+      "legs": {
+        "onnx": "OK 024005023",
         "coreml": "OK 024005023",
         "tflite": "OK 024005023",
         "native": "OK 024005023"
       }
     },
     "photo-03.png": {
-      "preprocess_sha256": "b0faeb69f43eb9a0ca1dba0f719eaeb79be8f562484d6e7e401ef6a2359f0e1c",
-      "legs": {
-        "onnx": "OK 024005023",
-        "onnx-int8": "OK 024005023",
-        "coreml": "OK 024005023",
-        "tflite": "OK 024005023",
-        "native": "OK 024005023"
-      }
-    },
-    "photo-04.png": {
       "preprocess_sha256": "8d791ea14fc51c0b61a16a4fcd6c3880ba4192f88e695ed30ba0ee1a92261fc0",
       "legs": {
         "onnx": "OK 050340023",
-        "onnx-int8": "OK 050340023",
+        "coreml": "OK 050340023",
+        "tflite": "OK 050340023",
+        "native": "OK 050340023"
+      }
+    },
+    "photo-04.png": {
+      "preprocess_sha256": "7b7311682db246a3d39eb1cde722fa76cc363119bf6595c401711c5975ed2b2e",
+      "legs": {
+        "onnx": "OK 050340023",
         "coreml": "OK 050340023",
         "tflite": "OK 050340023",
         "native": "OK 050340023"
       }
     },
     "render-00.png": {
-      "preprocess_sha256": "54bb82f7e2da514563177c44fcb2b085b26bcb21b4869e295762f5bda96d8c36",
+      "preprocess_sha256": "ec5fb7ad595dc3f7583a17db568ca95d1b9aaec3f71e9ce38cc768865b32963d",
       "legs": {
-        "onnx": "OK 142204534",
-        "onnx-int8": "OK 142204534",
-        "coreml": "OK 142204534",
-        "tflite": "OK 142204534",
-        "native": "OK 142204534"
+        "onnx": "OK 103500205",
+        "coreml": "OK 103500205",
+        "tflite": "OK 103500205",
+        "native": "OK 103500205"
       }
     },
     "render-01.png": {
-      "preprocess_sha256": "0934a38f79e9e99005269d96a37f54d1e08bad0b027b99040c982edd223dfe49",
+      "preprocess_sha256": "92219935c8944b23d5013ce8585735a8a4bdc67ff6c03b970a3f6670a8d72959",
       "legs": {
-        "onnx": "OK 534232405",
-        "onnx-int8": "OK 534232405",
-        "coreml": "OK 534232405",
-        "tflite": "OK 534232405",
-        "native": "OK 534232405"
+        "onnx": "OK 305553225",
+        "coreml": "OK 305553225",
+        "tflite": "OK 305553225",
+        "native": "OK 305553225"
       }
     },
     "render-02.png": {
-      "preprocess_sha256": "eedee9c8e45707eb68a9ef0fe0f5d34dde088f2938ceae303d489c43ae964bf2",
+      "preprocess_sha256": "9b055c7f3d991cf095e4e1b0e2ab973ec87dc6ef52cc185cd6ad56f6058cd043",
       "legs": {
-        "onnx": "OK 355554023",
-        "onnx-int8": "OK 355554024",
-        "coreml": "OK 355554023",
-        "tflite": "OK 355554023",
-        "native": "OK 355554023"
+        "onnx": "OK 535205110",
+        "coreml": "OK 535205110",
+        "tflite": "OK 535205110",
+        "native": "OK 535205110"
       }
     },
     "render-03.png": {
-      "preprocess_sha256": "f591e96832a8f320fcb924f5b864d4e95165f873c895e9c87dd735fae96783e5",
+      "preprocess_sha256": "25f265039bd52ddce5905a5c0edc91e2ebd45a21c9b23e238ae4e1ab9dfa6d87",
       "legs": {
-        "onnx": "OK 145502250",
-        "onnx-int8": "OK 145502250",
-        "coreml": "OK 145502250",
-        "tflite": "OK 145502250",
-        "native": "OK 145502250"
+        "onnx": "OK 340523333",
+        "coreml": "OK 340523333",
+        "tflite": "OK 340523333",
+        "native": "OK 340523333"
       }
     },
     "render-04.png": {
-      "preprocess_sha256": "17f22cbb3c7b87ac69774491ced36f401579d695d2f8b4edbd86d36c1653e6d1",
+      "preprocess_sha256": "909ca87eed8ddd909ccafc687584c9a66a91c4929ca775ee48aafab703063323",
       "legs": {
-        "onnx": "OK 512430234",
-        "onnx-int8": "OK 512430234",
-        "coreml": "OK 512430234",
-        "tflite": "OK 512430234",
-        "native": "OK 512430234"
+        "onnx": "OK 353324330",
+        "coreml": "OK 353324330",
+        "tflite": "OK 353324330",
+        "native": "OK 353324330"
       }
     },
     "render-05.png": {
-      "preprocess_sha256": "1bd2c4f89af4b163514e5c2840dc814e062f8f69b9102ec422eb17f625f0dce0",
+      "preprocess_sha256": "73bd8b602209abb57a1c45674aea1a1d6643f92fd6f17c8d39d60b4203c33349",
       "legs": {
-        "onnx": "OK 043232154",
-        "onnx-int8": "OK 043232154",
-        "coreml": "OK 043232154",
-        "tflite": "OK 043232154",
-        "native": "OK 043232154"
+        "onnx": "OK 334203330",
+        "coreml": "OK 334203330",
+        "tflite": "OK 334203330",
+        "native": "OK 334203330"
       }
     },
     "render-06.png": {
-      "preprocess_sha256": "399908885d8f9aee0c6055c525098d8e5997eb1602302a6067c762ee911fecc8",
+      "preprocess_sha256": "389c5d1e14a070932cb593fcdb30d07c6197eea22f8b4b5b9a6476daebc34bb0",
       "legs": {
-        "onnx": "OK 432142034",
-        "onnx-int8": "OK 432142034",
-        "coreml": "OK 432142034",
-        "tflite": "OK 432142034",
-        "native": "OK 432142034"
+        "onnx": "OK 503432542",
+        "coreml": "OK 503432542",
+        "tflite": "OK 503432542",
+        "native": "OK 503432542"
       }
     },
     "render-07.png": {
-      "preprocess_sha256": "d9c6cbbdb763ab85bdefed38acbd617c32383f80954f67e1dfaf048b93630e20",
+      "preprocess_sha256": "4d9bd27d3b7e0e4d8b6845402d4fb2c191e4479aefa8bbc4db5467c03d017bd6",
       "legs": {
-        "onnx": "OK 402241310",
-        "onnx-int8": "BAD_GEOMETRY",
-        "coreml": "OK 402241310",
-        "tflite": "OK 402241310",
-        "native": "OK 402241310"
+        "onnx": "OK 212314553",
+        "coreml": "OK 212314553",
+        "tflite": "OK 212314553",
+        "native": "OK 212314553"
       }
     },
     "render-08.png": {
-      "preprocess_sha256": "becbe00c693536a0a887dc1a2b8324f0955d9e37b7da4d5111f8fe573d02cd41",
+      "preprocess_sha256": "468c4c86496a60803159dd1f46bfdbac28ca7411528b244067e56ccd0ed552e4",
       "legs": {
-        "onnx": "OK 504523234",
-        "onnx-int8": "OK 504523234",
-        "coreml": "OK 504523234",
-        "tflite": "OK 504523234",
-        "native": "OK 504523234"
+        "onnx": "OK 032120323",
+        "coreml": "OK 032120323",
+        "tflite": "OK 032120323",
+        "native": "OK 032120323"
       }
     },
     "render-09.png": {
-      "preprocess_sha256": "aed521c2efe1e698efdfdd48e61eba5f98036bf14a32b0015fd2b7ffadd9c3f2",
+      "preprocess_sha256": "d473c01703c3db6cbfc08731ee59f19a9cf38744f27e11eb9b72fc82678919f9",
       "legs": {
-        "onnx": "OK 204133542",
-        "onnx-int8": "OK 204133542",
-        "coreml": "OK 204133542",
-        "tflite": "OK 204133542",
-        "native": "OK 204133542"
+        "onnx": "OK 435552000",
+        "coreml": "OK 435552000",
+        "tflite": "OK 435552000",
+        "native": "OK 435552000"
       }
     },
     "render-10.png": {
-      "preprocess_sha256": "c740ab7df6df277606acb5dc0499fc310178d1b41373154099244700c0b9a9bf",
+      "preprocess_sha256": "e36da11167f5db10ca2f7415cb60943539ec5c78c1c222eb0ca8ea21967f7227",
       "legs": {
-        "onnx": "OK 112105451",
-        "onnx-int8": "OK 112105451",
-        "coreml": "OK 112105451",
-        "tflite": "OK 112105451",
-        "native": "OK 112105451"
+        "onnx": "OK 331141111",
+        "coreml": "OK 331141111",
+        "tflite": "OK 331141111",
+        "native": "OK 331141111"
       }
     },
     "render-11.png": {
-      "preprocess_sha256": "0c552321cba1ce5fbc17e23e57ef9120b9791652dcb633828028f5398de27da1",
+      "preprocess_sha256": "aca617f0c5ea1f00793c7165da8c4cd289a734f81d34478f6d2e128918d7eaf1",
       "legs": {
-        "onnx": "OK 242114410",
-        "onnx-int8": "OK 242114410",
-        "coreml": "OK 242114410",
-        "tflite": "OK 242114410",
-        "native": "OK 242114410"
+        "onnx": "OK 110324553",
+        "coreml": "OK 110324553",
+        "tflite": "OK 110324553",
+        "native": "OK 110324553"
       }
     }
+  },
+  "repin": {
+    "when": "2026-09-17T03:57:42+00:00",
+    "reason": "V6FT: the shipped detector is cubedet's (no Detlib lineage), and the fixtures are rebuilt from synth_v6 val and checked against the renderer's labels",
+    "previous_checkpoint_sha256": "03710b01f6bfa05126123e9a477baac989a079b020a77a6854a352ef173aaad5"
   }
 }

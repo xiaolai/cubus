@@ -8,6 +8,11 @@ Both are scored on the SAME stickers (detector matched AND a reference buildable
 
 This isolates the colour decision (samples taken from GT boxes; localization is measured elsewhere).
 
+"The cube's own references" are built per CUBE, from the labels' cube files (cube_identity.py): two
+cubes in one photograph have two reds, and pooling them made one cube's red the other's reference. A
+sticker whose cube is unknown still claims its detection, so the matching is unchanged, but it is
+neither scored nor used as a reference, and the count is printed.
+
   ml/venv/bin/python ml/verify_relative.py [--model ml/models/cube-yolo.onnx]
 
 The measurement recorded in OOD_EVAL.md ("Rejected experiment 2") was taken against
@@ -28,6 +33,7 @@ from PIL import Image
 from skimage.color import deltaE_ciede2000, rgb2lab
 
 from color_eval import iou_xyxy, load_gt
+from cube_identity import label_rows, read_cubes
 from ood_eval import decode, letterbox, nms
 
 HERE = Path(__file__).resolve().parent
@@ -62,6 +68,7 @@ def main() -> None:
     tot = {c: 0 for c in range(6)}
     conf_abs: dict = {}
     conf_rel: dict = {}
+    unowned = 0
 
     for lblf in sorted(glob.glob(os.path.join(LBL, "*.txt"))):
         stem = os.path.splitext(os.path.basename(lblf))[0]
@@ -75,6 +82,7 @@ def main() -> None:
         w, h = im.size
         arr = np.asarray(im)
         gts = load_gt(lblf, w, h)
+        cubes = read_cubes(Path(lblf), len(label_rows(Path(lblf))))
 
         # detector boxes → pixel space
         t, sc, px, py = letterbox(im)
@@ -90,7 +98,7 @@ def main() -> None:
         ]
 
         # per GT sticker: sampled colour + matched detector class
-        stickers = []  # (gt_cls, rgb, det_cls|None)
+        stickers = []  # (gt_cls, rgb, det_cls|None, cube|None)
         used = [False] * len(dpix)
         for g in gts:
             rgb = sample_rgb(arr, g, w, h)
@@ -106,14 +114,18 @@ def main() -> None:
             det_cls = dpix[bi]["cls"] if bi >= 0 else None
             if bi >= 0:
                 used[bi] = True
-            stickers.append((g["cls"], rgb, det_cls))
+            stickers.append((g["cls"], rgb, det_cls, cubes[g["row"]] if cubes else None))
 
-        present = sorted({gc for gc, _, _ in stickers})
-        for idx, (gc, rgb, det_cls) in enumerate(stickers):
-            # relative reference for each present colour, leave-one-out for gc
+        for idx, (gc, rgb, det_cls, cube) in enumerate(stickers):
+            if cube is None:
+                unowned += 1
+                continue
+            # relative reference for each colour present ON THIS CUBE, leave-one-out for gc
+            present = sorted({g2 for g2, _, _, c2 in stickers if c2 == cube})
             refs = {}
             for c in present:
-                pts = [r for j, (g2, r, _) in enumerate(stickers) if g2 == c and not (c == gc and j == idx)]
+                pts = [r for j, (g2, r, _, c2) in enumerate(stickers)
+                       if c2 == cube and g2 == c and not (c == gc and j == idx)]
                 if pts:
                     refs[c] = np.median(np.array(pts), axis=0)
             # comparable set: both a detector match AND a buildable own-colour reference
@@ -133,6 +145,10 @@ def main() -> None:
         r = rel_ok[c] / tot[c] if tot[c] else 0
         print(f"  {NAMES[c]:7s} n={tot[c]:4d}  absolute={a:.1%}   relative={r:.1%}")
     tt = sum(tot.values())
+    print(f"\nstickers left out because their cube is unknown: {unowned}")
+    if tt == 0:
+        raise SystemExit("no sticker could be scored: none has both a detector match and a known cube "
+                         "with a reference for its colour (the labels need cube files: see cube_identity.py)")
     print(f"\nOVERALL   absolute={sum(abs_ok.values())/tt:.1%}   relative={sum(rel_ok.values())/tt:.1%}   (n={tt})")
     print(f"red→orange errors:  absolute={conf_abs.get((1,4),0)}   relative={conf_rel.get((1,4),0)}")
     print(f"orange→red errors:  absolute={conf_abs.get((4,1),0)}   relative={conf_rel.get((4,1),0)}")

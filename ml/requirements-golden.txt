@@ -3,12 +3,13 @@
 # The harness compares DECODED CLASSES, not raw scores, so it is robust to small numerical drift —
 # but the versions are pinned anyway so a CI run reproduces exactly what pinned ml/golden/expected.json
 # on the maintainer's machine, and a genuine model/runtime change is the only thing that can move a
-# read. Split by platform: Linux CI runs onnx + onnx-int8 + tflite; the macOS runner adds coreml +
-# the native (plugin) leg, which also needs the Swift probe built (see .github/workflows/ci.yml).
+# read. Split by platform: Linux CI runs onnx + tflite, plus onnx-int8 whenever the export wrote one
+# (the shipped detector has none; MANIFEST.json says why); the macOS runner adds coreml + the native
+# (plugin) leg, which also needs the Swift probe built (see .github/workflows/ci.yml).
 numpy==2.3.5
 pillow==12.3.0
 onnxruntime==1.29.0
-# ml/test_pipeline.py re-derives cube-yolo.int8.onnx with onnxruntime.quantization, which imports onnx.
+# ml/test_pipeline.py re-derives any committed int8 with onnxruntime.quantization, which imports onnx.
 onnx==1.22.0
 # Linux + macOS: the Android artefact's runtime.
 ai-edge-litert==2.2.0

@@ -27,11 +27,34 @@ export interface Detection {
   h: number;
   classId: number; // 0..5 colour class
   confidence: number;
+  /**
+   * All `numClasses` scores, not just the winning one. OPTIONAL because a Detection can be built
+   * by hand -- tests do it constantly -- and a partial set is worse than none: the repair in
+   * `ai-assemble` needs all 54 or it cannot satisfy the counts at all.
+   *
+   * The argmax above throws five of six away, and the discarded five are what a whole-cube repair
+   * needs: a cube has nine stickers of each colour, so a misread breaks the count, and the cheapest
+   * repair is decided by how sure the detector was about each ALTERNATIVE. See `nine-of-each.ts`,
+   * which measured this lifting simulated whole-cube reads from 80.0% to 98.7%.
+   */
+  scores?: number[];
 }
 
 export interface FaceFit {
   colors: number[]; // 9 colour classes, reading order (row-major)
   confidence: number[]; // 9 per-sticker confidences
+  /**
+   * 9 x numClasses scores in the same reading order. OPTIONAL on purpose: every existing consumer
+   * reads `colors` and `confidence` and must keep working untouched, so this is added evidence
+   * rather than a changed contract.
+   */
+  scores?: number[][];
+  /**
+   * The nine boxes the grid was fitted to, in MODEL space (the letterboxed square), same reading
+   * order. OPTIONAL like `scores`, and for the same reason — added evidence, not a changed contract.
+   * Whoever still holds the frame can map these back onto it (`sticker-pixels.ts`) and read the paint.
+   */
+  boxes?: [number, number, number, number][];
 }
 
 export type FitResult = { ok: true; face: FaceFit } | { ok: false; reason: FitReason };
@@ -65,13 +88,23 @@ export function decodeDetections(
       }
     }
     if (bestScore >= confThreshold) {
+      // The tensor is the far side of a boundary: whatever the runtime hands back, a box only
+      // means something if it is finite and has an area. A NaN coordinate would survive every
+      // geometric check downstream, because every comparison against NaN is false -- so nine of
+      // them would read as a face whose rows and columns nothing could dispute.
+      const [cx, cy, w, h] = [at(0, a), at(1, a), at(2, a), at(3, a)];
+      const side = (v: number): boolean => Number.isFinite(v) && v > 0;
+      if (!Number.isFinite(cx) || !Number.isFinite(cy) || !side(w) || !side(h)) continue;
+      const scores = new Array<number>(numClasses);
+      for (let c = 0; c < numClasses; c++) scores[c] = at(4 + c, a);
       out.push({
-        cx: at(0, a),
-        cy: at(1, a),
-        w: at(2, a),
-        h: at(3, a),
+        cx,
+        cy,
+        w,
+        h,
         classId: best,
         confidence: bestScore,
+        scores,
       });
     }
   }
@@ -102,6 +135,53 @@ export function nms(dets: Detection[], iouThreshold = 0.45): Detection[] {
     if (kept.every((k) => iou(k, d) < iouThreshold)) kept.push(d);
   }
   return kept;
+}
+
+/**
+ * A box at least this much inside a larger one, of at most NESTED_MAX_AREA_RATIO its area, is a second
+ * box on the same sticker, not a second sticker.
+ *
+ * WHY. When a face fills the frame (stickers near 200 px at the model's input, against ~74 px in
+ * training) the permissive detectors drew two boxes on a sticker, one around it and one inside it.
+ * Their IoU is about the ratio of their areas, under NMS's 0.45, so both survived, and `fitFace`'s nine
+ * largest then held one sticker twice and missed another. Measured on 40 checked community sets (2,160
+ * stickers, 22 contributors, 2026-09-15), dropping the inner box recovered stickers for every model
+ * tried (v3 +0.9, V6FT +0.5, MNV4 +0.6 points of stickers read), changed none of the 20 golden reads,
+ * and made the fit accept no photo of a 4x4 or of no cube that it did not already accept.
+ *
+ * The AREA bound is what keeps a box spanning several stickers (a whole face is about 9x one) from
+ * removing the stickers inside it. The shared cases in `tests/fixtures/nested-detections.json` hold this
+ * and `ml/cube_infer.py::drop_nested` to the same answers.
+ */
+export const NESTED_INSIDE = 0.7;
+export const NESTED_MAX_AREA_RATIO = 4;
+
+function overlapArea(a: Detection, b: Detection): number {
+  const iw = Math.max(
+    0,
+    Math.min(a.cx + a.w / 2, b.cx + b.w / 2) - Math.max(a.cx - a.w / 2, b.cx - b.w / 2),
+  );
+  const ih = Math.max(
+    0,
+    Math.min(a.cy + a.h / 2, b.cy + b.h / 2) - Math.max(a.cy - a.h / 2, b.cy - b.h / 2),
+  );
+  return iw * ih;
+}
+
+/** Every box that is not nested in a larger box of similar scale, in the order given. */
+export function dropNested(dets: Detection[]): Detection[] {
+  return dets.filter((d) => {
+    const area = d.w * d.h;
+    return !dets.some((o) => {
+      const outer = o.w * o.h;
+      return (
+        o !== d &&
+        outer > area &&
+        outer <= NESTED_MAX_AREA_RATIO * area &&
+        overlapArea(d, o) >= NESTED_INSIDE * area
+      );
+    });
+  });
 }
 
 /**
@@ -193,6 +273,17 @@ export function fitFace(dets: Detection[], minConf = MIN_STICKER_CONFIDENCE): Fi
   if (!grid) return { ok: false, reason: 'BAD_GEOMETRY' };
   return {
     ok: true,
-    face: { colors: grid.map((d) => d.classId), confidence: grid.map((d) => d.confidence) },
+    face: {
+      colors: grid.map((d) => d.classId),
+      confidence: grid.map((d) => d.confidence),
+      // Only when EVERY sticker has them. Nine-of-each is a whole-cube constraint; a face with
+      // eight score vectors and one gap cannot contribute to it, and silently passing a short
+      // array would fail much further away from the cause.
+      scores: grid.every((d) => d.scores) ? grid.map((d) => d.scores as number[]) : undefined,
+      // Detections carry a CENTRE and a size; a box here is the corner form the pixel reader wants.
+      boxes: grid.map(
+        (d) => [d.cx - d.w / 2, d.cy - d.h / 2, d.w, d.h] as [number, number, number, number],
+      ),
+    },
   };
 }

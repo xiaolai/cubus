@@ -26,8 +26,9 @@ import { fileURLToPath } from 'node:url';
 export const FULL_TIER_LABEL = 'e2e';
 
 /**
- * Inputs per job group. An entry ending in `/` is a directory prefix; any other entry is a file
- * name matched at the root or in any directory (`package.json` means every package.json).
+ * Inputs per job group. An entry ending in `/` is a directory prefix; an entry starting `*.` is a
+ * file extension, anywhere; any other entry is a file name matched at the root or in any directory
+ * (`package.json` means every package.json).
  */
 export const FILTERS = Object.freeze({
   rust: Object.freeze([
@@ -46,9 +47,11 @@ export const FILTERS = Object.freeze({
     'apps/desktop/src-tauri/gen/android/app/src/main/res/',
     'scripts/verify-icons.py',
   ]),
-  // cargo audit, pnpm audit, shellcheck, the licence notices.
+  // cargo audit, pnpm audit, shellcheck, the licence notices. Shellcheck reads EVERY tracked shell
+  // script, so any of them is an input: `ml/train.sh` once executed its own comments on the host,
+  // and no job ever looked at it, because this list named only scripts/ and .githooks/.
   deps: Object.freeze([
-    'scripts/', '.githooks/',
+    'scripts/', '.githooks/', '*.sh',
     'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc', 'package.json', 'Cargo.lock', 'Cargo.toml',
     'THIRD_PARTY_NOTICES.md',
     // What the notices generator reads besides the lockfiles above, so a change to any of them
@@ -64,8 +67,11 @@ export const FILTERS = Object.freeze({
  *  merely a fast-tier pull request would reach `main` having never run in the job it exists for. */
 const PLAN_INPUTS = ['.github/workflows/', '.github/actions/', 'scripts/ci-plan.mjs'];
 
-const matches = (path, entry) =>
-  entry.endsWith('/') ? path.startsWith(entry) : path === entry || path.endsWith(`/${entry}`);
+const matches = (path, entry) => {
+  if (entry.endsWith('/')) return path.startsWith(entry);
+  if (entry.startsWith('*.')) return path.endsWith(entry.slice(1));
+  return path === entry || path.endsWith(`/${entry}`);
+};
 
 const touches = (changed, entries) => changed.some((path) => entries.some((entry) => matches(path, entry)));
 

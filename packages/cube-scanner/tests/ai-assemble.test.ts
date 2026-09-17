@@ -983,3 +983,75 @@ describe('assembleColors — the colour scheme is a third ambiguity dimension (A
     }
   });
 });
+
+describe('the pixels, when the scores have been refused', () => {
+  // Where the six paints sit in a*b*, and the per-face lighting a real scan has: six photographs of
+  // one cube, taken in one sitting, so the shifts are small next to the gaps between paints.
+  const PAINT: Record<number, [number, number]> = {
+    0: [0, 2],
+    1: [55, 40],
+    2: [-50, 35],
+    3: [-5, 70],
+    4: [35, 60],
+    5: [10, -50],
+  };
+  const SHIFT: [number, number][] = [
+    [0, 0],
+    [5, -6],
+    [-4, 5],
+    [2, 7],
+    [-6, -4],
+    [3, 3],
+  ];
+
+  /**
+   * A cube the detector reads with orange called red, CONFIDENTLY, everywhere but the centres —
+   * the shape of a lighting shift along the blue-yellow axis, and of the set the assembly refused on
+   * 2026-09-17 with two such stickers. Too expensive for the nine-of-each repair, whose ceiling is
+   * 12 nats; eight stickers at 0.9 against 0.05 cost about 23.
+   *
+   * THE CENTRES ARE LEFT ALONE ON PURPOSE. A capture is filed under its centre's colour, so a
+   * misread centre is refused earlier and by a different rule — `checkedBySlot`, "a slot names a
+   * colour, not a position" — and never reaches this path at all.
+   */
+  function misreadOrangeAsRed(facelets: string, withLab: boolean): Record<Face, ColorFace> {
+    const out = {} as Record<Face, ColorFace>;
+    FACES.forEach((face, fi) => {
+      const truth: number[] = [];
+      for (let k = 0; k < 9; k++) truth.push(LETTER_CLASS[facelets[fi * 9 + k] as Face]!);
+      const colors = truth.map((c, k) => (c === 4 && k !== 4 ? 1 : c));
+      const scores = truth.map((c, k) => {
+        const row = new Array<number>(6).fill(0.01);
+        if (c === 4 && k !== 4) {
+          row[1] = 0.9;
+          row[4] = 0.05;
+        } else {
+          row[c] = 0.95;
+        }
+        return row;
+      });
+      const lab = truth.map((c) => {
+        const [a, b] = PAINT[c]!;
+        const [da, db] = SHIFT[fi]!;
+        return [60, a + da, b + db] as [number, number, number];
+      });
+      out[face] = withLab
+        ? { colors, confidence: Array(9).fill(0.9), scores, lab }
+        : { colors, confidence: Array(9).fill(0.9), scores };
+    });
+    return out;
+  }
+
+  const scrambled = scrambleFacelets("R U R' U' F2 L D L'");
+
+  it('reads the cube the pixels say it is', () => {
+    const r = assembleColors(misreadOrangeAsRed(scrambled, true));
+    expect(r.valid).toBe(true);
+    expect(r.facelets).toBe(scrambled);
+  });
+
+  it('refuses exactly as before when no Lab was supplied', () => {
+    const r = assembleColors(misreadOrangeAsRed(scrambled, false));
+    expect(r.valid).toBe(false);
+  });
+});
