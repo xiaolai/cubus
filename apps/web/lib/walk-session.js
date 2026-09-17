@@ -29,9 +29,54 @@ import { targetPicture } from './stage-picture.js';
 import { cancel as optimalCancel, capability as optimalCapability } from './optimal.js';
 import { createLiveDistance } from './walk-live-distance.js';
 import { createRungOffer } from './walk-offer.js';
+import { createScriptPlayer } from './script-player.js';
+import { walkScript } from './walk-script.js';
+import { createWalkClock } from './walk-clock.js';
 import { createWalkResolver } from './walk-resolver.js';
 import { createWalkPresenter } from './walk-presenter.js';
 import { createFollowTracker } from './walk-follow.js';
+
+/**
+ * The attributes of `<cubus-cube>` this SCREEN owns, which the script writer must never write.
+ *
+ * Declared rather than guessed at inside the writer: which attributes a surface owns is a fact about
+ * that surface. The reason for each is beside the player that is handed this, in `createWalkSession`.
+ */
+const HOST_OWNED = Object.freeze([
+  'ghosts', 'ghost-elevation', 'camera-latitude', 'camera-longitude', 'camera-up',
+  'orientation', 'focus', 'highlight',
+]);
+
+/** The transport calls the driver makes on an element, and the shape each answers with when the tag
+ *  is not a renderer. `stops` is a value rather than a method and is read the same way. */
+const NO_TRANSPORT = Object.freeze({
+  step: () => {}, stepBack: () => {}, stepStop: () => {}, stepBackStop: () => {},
+  playTo: () => {}, seek: () => {}, play: () => {}, pause: () => {}, turnTo: () => {},
+  stops: Object.freeze([0]),
+});
+
+/**
+ * The element as the DRIVER may use it — guarded per call, not once at construction.
+ *
+ * Until `vendor/cubus-cube.js` has upgraded the tag, `<cubus-cube>` is a plain unknown element with
+ * none of these methods (AGENTS.md; assuming otherwise once took out 21 tests at once). The guard is
+ * per CALL because the upgrade can land after this screen has mounted — `createHoldCube` already waits
+ * for exactly that — so a session that decided once, at construction, would leave a whole screen
+ * unable to animate because the bundle was a tick late.
+ *
+ * ATTRIBUTES ARE STILL WRITTEN to an element that cannot turn, and that is the point: they are what an
+ * upgrade reads when it arrives, so the cube comes up showing the walk instead of nothing. Only the
+ * TURNING is dropped, because there is nothing there to turn.
+ */
+function drivable(cube) {
+  return new Proxy(cube, {
+    get(el, key) {
+      const own = Reflect.get(el, key);
+      if (own !== undefined) return typeof own === 'function' ? own.bind(el) : own;
+      return Reflect.get(NO_TRANSPORT, key);
+    },
+  });
+}
 
 /** Destructuring through this refuses, AT CONSTRUCTION, any name `from` does not provide — so a
  *  service missing from `WALK_APP` fails the mount, not the one rare press that would first call
@@ -119,6 +164,41 @@ export function createWalkSession(screen, app) {
    *  after a load that failed. `total` cannot say it — a stage already reached is a walk of 0. */
   let walkLoaded = false;
 
+  /**
+   * THE ONE THING THAT DRIVES THE ELEMENT (plan item 6.5).
+   *
+   * Every turn this screen shows — a transport press, a play, a jump to a chip, a smart cube
+   * mirrored — goes through this player, and nothing else on the screen calls the renderer's
+   * transport. It used to be two hand-rolled ones: the presenter pressed `cube.step()` and
+   * `cube.seek()` directly, and the follow tracker kept a second position (`drawn`) and its own
+   * `drawTo` beside it, so "where the drawing is" had two owners that agreed by construction and
+   * nothing checked.
+   *
+   * WHAT THE SCREEN KEEPS, declared rather than guessed at (the writer never writes these):
+   *
+   *   ghosts, ghost-elevation, camera-latitude, camera-longitude  the view the child tuned,
+   *       read from `cubeView` at mount (`VIEW_ATTRS` in lib/screens/cube.js). A script that put
+   *       them back on every position would undo that on every press.
+   *   camera-up  ADR 0003 again, from the other side: the writer writes it on EVERY view, defaulting
+   *       to 'U', and `camera-up` MOVES THE EYE. This screen turns the cube and leaves the camera
+   *       alone — the lamp rolled with the eye and every move stayed named for white up while the face
+   *       turning on screen was the one at the bottom. Caught by `stage-target.test.mjs` in the browser,
+   *       which is where it could be caught: the node fakes have no camera.
+   *   orientation  ADR 0003's tumble. A script's hold is the frame its letters are READ in as well
+   *       as the pose, and a walk's moves are already in the scan frame, so handing the hold over
+   *       would relabel every one of them. `holdCube` goes on turning the cube.
+   *   focus, highlight  a lesson's cues. Position 0 carries none — a cue on the first move step is
+   *       in force from position 1 — and this screen shows the first step's cue at head 0, before
+   *       anything is pressed. See lib/walk-script.js; moving these needs that answered first.
+   *
+   * With no renderer — the vendored bundle has not upgraded the tag, which this repo has shipped more
+   * than once — the element is still handed over, guarded per call by `drivable`: the route and the
+   * position are still kept, the attributes are still written for the upgrade to read, and the
+   * TURNING is what answers with nothing. The transport counts and the chips work either way.
+   */
+  const clock = createWalkClock(cube);
+  const player = createScriptPlayer({ cube: drivable(cube), owned: HOST_OWNED, schedule: clock.schedule });
+
   // The walk's view — the transport head, the chips' marks, the play and step buttons, the
   // renderer's step event and the scramble hand-off — is its own unit (lib/walk-presenter.js). It
   // reads the walk when it paints, and reaches the follow tracker and the rung offer only once both
@@ -126,7 +206,9 @@ export function createWalkSession(screen, app) {
   const {
     holdAt, moveHoldAt, holdCube, pointAtStep, sync, setPlaying, clearChips, takeChips, resetHead,
   } = createWalkPresenter({
-    root, cube, state, signal, scrambling, stale, solList, icon, adoptCube, go,
+    root, cube, player, afterTurn: clock.afterTurn, turnLanded: clock.landed,
+    state, signal, scrambling, stale, solList, icon,
+    adoptCube, go,
     walkNow: () => ({ total, target, alg, lesson, walkHold, walkGen, walkLoaded }),
     takeOver: () => follow.takeOver(),
     onHead: (from, to, walk) => offer.onHead(from, to, walk),
@@ -193,8 +275,8 @@ export function createWalkSession(screen, app) {
   // the drawing that mirrors turns, and the button that lets the cube lead — is its own unit
   // (lib/walk-follow.js). It reads the walk when it acts.
   const follow = createFollowTracker({
-    root, cube, state, cubejs, applyTempo, setPlaying, moveHoldAt, markStale, adoptCube, go, scrambling,
-    refreshLiveDistance, dropLiveDistance, chainTrusted, walkNow: () => ({ moves, steps }),
+    root, cube, player, state, cubejs, applyTempo, setPlaying, moveHoldAt, markStale, adoptCube, go,
+    scrambling, refreshLiveDistance, dropLiveDistance, chainTrusted, walkNow: () => ({ moves, steps }),
   });
 
   /**
@@ -433,30 +515,40 @@ export function createWalkSession(screen, app) {
   /** The walk on the renderer: where it starts, the moves it animates, and which way up. */
   function drawWalk() {
     if (scrambling) paintNet(target);
-    // The Scramble side genuinely starts from solved, so an empty setup alg is its normal
-    // case and `scramble=""` says exactly that. On the SOLVE side an empty one means
-    // takeSetupAlg refused the inverse of the answer — the walk is still cross-checked and
-    // still right, but there is no verified path from solved to this arrangement, and
-    // `scramble=""` would draw a solved cube under a scrambled walk. So the arrangement is
-    // drawn instead: `facelets` outranks `scramble` in the renderer and `alg` is independent
-    // of both, so the walk still animates, just from where the cube actually is.
-    if (scrambling || setup) {
-      cube.setAttribute('scramble', setup ?? '');
-      cube.removeAttribute('facelets');
-    } else {
-      cube.removeAttribute('scramble');
-      // THE WALK'S OWN STARTING CUBE, not whatever the subject has become. `steps[0]` is the
-      // state this walk begins at, by construction; `state.cube.facelets` can have moved under
-      // it since the search started, and handing that to the renderer put a picture of one cube
-      // over a move list for another.
+    // THE WALK IS LOADED AS A ROUTE, and the route writes the element (plan item 6.5). What this
+    // used to do by hand — choose between `scramble` and `facelets`, write `alg` — is
+    // `walkScript`'s choice now and the element writer's write, so the transport, the smart cube
+    // and the drawing all come from one place. The walk's OWN starting cube travels with it:
+    // `steps[0]` is where this walk begins by construction, while `state.cube.facelets` can have
+    // moved under it since the search started, and handing the renderer that put a picture of one
+    // cube over a move list for another.
+    const script = walkScript({ setup, moves, from: steps[0] ?? state.cube.facelets, scrambling });
+    // THE PROMISE IS HANDED BACK, not dropped. `load` applies a plain script before it returns — the
+    // element is written and the position set on this tick, so everything painted after this call
+    // still sees the walk — but it hands a FAILURE back as a rejection rather than throwing, which
+    // `void` would turn into an unhandled rejection with nothing said on screen: the one outcome a
+    // load must never have. `loadWalk` awaits it once its painting is done.
+    //
+    // A walk with nothing to walk — a stage already reached — has no route. The element is left
+    // showing the cube it was given rather than being handed an empty sequence.
+    let drawn = null;
+    if (script) drawn = player.load(script);
+    else {
+      player.unload();
       cube.setAttribute('facelets', steps[0] ?? state.cube.facelets);
+      cube.removeAttribute('alg');
     }
-    cube.setAttribute('alg', alg);
     // WHICH WAY UP (ADR 0003): the CUBE turns, never the camera. This used to set `camera-up`,
     // which moves the eye — the lamp rolled with it, and every move stayed named for white up
     // while the face turning on screen was the one at the bottom. The renderer turns the object,
-    // and the chips below are named for the same hold, so the drawing and the words agree.
+    // and the chips below are named for the same hold, so the drawing and the words agree. Still
+    // the screen's: `orientation` is host-owned, so the writer never touches it.
+    //
+    // AFTER the route is loaded and BEFORE the promise is handed back — the hold is not part of the
+    // route, and a `return` above this line makes it dead code (which is exactly what the first draft
+    // of this did, and what left every walk untumbled).
     holdCube(holdAt(0));
+    return drawn;
   }
 
   /** WHAT THE CHILD IS AIMING AT, with everything the target leaves free drawn as an empty well. */
@@ -611,7 +703,7 @@ export function createWalkSession(screen, app) {
     if (!got) return false; // overtaken while it searched: a newer load owns the screen
     if (!fresh()) { parkRoll(got.roll); return false; } // navigated away, or a newer load took over
     commitWalk(got, stageTarget);
-    drawWalk();
+    const drawn = drawWalk();
     presentTarget();
     labelWalk(fresh);
     renderMoveList();
@@ -628,6 +720,11 @@ export function createWalkSession(screen, app) {
     // asked the PREVIOUS model about the NEW target. Both are the same mistake: a question asked
     // before its subject exists. Found by an audit.
     void refreshLiveDistance();
+    // LAST, and awaited: the route was applied synchronously above, so this is already settled and
+    // everything on screen has been painted from the walk it drew. What is left is the renderer's
+    // refusal, if it made one — and that is this load's failure, reported by `loadWalk`'s own
+    // reporter rather than escaping as a rejection nobody hears.
+    await drawn;
     return true;
   }
 
