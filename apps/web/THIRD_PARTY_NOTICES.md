@@ -1,6 +1,6 @@
 # Third-party notices
 
-cubus is licensed under the GNU AGPL-3.0-only (`LICENSE`); `packages/gan-driver` is MIT. This file
+cubus is licensed under the MIT licence (`LICENSE`). This file
 lists what ships **with** it — in the web app, in the desktop and mobile binaries, and in the
 detector model — and the licence each component is used under. Every licence and notice file
 those components carry is reproduced in §5, as each carries it, one copy per distinct text. It is
@@ -61,11 +61,18 @@ which `apps/web/build.mjs` excludes from every dist, so no release carries it.
 
 ## 2. The detector model and its training data
 
-The sticker detector (`cube-yolo.onnx`, `.mlpackage`, `.tflite` — one checkpoint, three exports) is a
-YOLO model trained with [Ultralytics](https://github.com/ultralytics/ultralytics) 8.4.126,
-which is **AGPL-3.0**. Ultralytics' stated position is that the licence reaches models trained with
-their software and applications that use those models; that is why cubus is AGPL-3.0 rather than
-permissive (`LICENSE-COMMERCIAL.md`).
+The sticker detector (`cube-yolo.onnx`, `.mlpackage`, `.tflite` — one checkpoint, three exports) is
+trained by this repository's own `ml/cubedet`, on PyTorch and torchvision (**BSD-3**). Its backbone
+is `mobilenetv4_conv_small.e2400_r224_in1k`, and where that backbone's weights came from is recorded by the export that
+produced it, in `ml/models/MANIFEST.json`:
+
+> Trained by ml/cubedet (PyTorch/torchvision, BSD-3), with the mobilenetv4_conv_small.e2400_r224_in1k feature extractor from ImageNet weights (torchvision BSD-3 or timm Apache-2.0) and the neck and head from random initialisation. No Ultralytics code and no Ultralytics pretrained weights. See ml/PERMISSIVE_DETECTOR_PROVENANCE.md.
+
+Until 2026-09-17 the detector was a YOLO model trained with
+[Ultralytics](https://github.com/ultralytics/ultralytics), which is **AGPL-3.0**, and Ultralytics'
+stated position — that the licence reaches models trained with their software and the applications
+using those models — is why this project was AGPL-3.0 until the detector was replaced. Anyone taking
+the PREVIOUS model out of this repository's history is still bound by that.
 
 The real photographs it was trained and tested on are Roboflow Universe datasets published under
 **CC BY 4.0** (<https://creativecommons.org/licenses/by/4.0/>). Attribution, one line per dataset,
@@ -85,13 +92,13 @@ environment maps from [Poly Haven](https://polyhaven.com), published under **CC0
 The golden-frame fixtures in `ml/golden/frames/` (repository test data, not shipped in the app)
 include photographs from Wikimedia Commons:
 
-- `abstain-01.png`: <https://upload.wikimedia.org/wikipedia/commons/2/20/2x2_rubik%27s_cube.jpg> — CC0
-- `abstain-02.png`: <https://upload.wikimedia.org/wikipedia/commons/5/52/2x2-5x5_rubik%27s_cube.jpg> — CC0
-- `photo-00.png`: <https://upload.wikimedia.org/wikipedia/commons/7/77/3cubes.jpg> — Public domain
-- `photo-01.png`: <https://upload.wikimedia.org/wikipedia/commons/8/8b/EmiMa-045.jpg> — CC0
-- `photo-02.png`: <https://upload.wikimedia.org/wikipedia/commons/f/fc/EmiMa-046.jpg> — CC0
-- `photo-03.png`: <https://upload.wikimedia.org/wikipedia/commons/b/bc/EmiMa-047.jpg> — CC0
-- `photo-04.png`: <https://upload.wikimedia.org/wikipedia/commons/7/7b/EmiMa-048.jpg> — CC0
+- `abstain-01.png`: <https://upload.wikimedia.org/wikipedia/commons/5/52/2x2-5x5_rubik%27s_cube.jpg> — CC0
+- `abstain-02.png`: <https://upload.wikimedia.org/wikipedia/commons/9/91/4x4_Pll_parity.png> — CC0
+- `photo-00.png`: <https://upload.wikimedia.org/wikipedia/commons/8/8b/EmiMa-045.jpg> — CC0
+- `photo-01.png`: <https://upload.wikimedia.org/wikipedia/commons/f/fc/EmiMa-046.jpg> — CC0
+- `photo-02.png`: <https://upload.wikimedia.org/wikipedia/commons/b/bc/EmiMa-047.jpg> — CC0
+- `photo-03.png`: <https://upload.wikimedia.org/wikipedia/commons/7/7b/EmiMa-048.jpg> — CC0
+- `photo-04.png`: <https://upload.wikimedia.org/wikipedia/commons/7/71/EmiMa-049.jpg> — CC0
 
 ## 3. Desktop and mobile binaries — Rust crates
 
@@ -102,7 +109,7 @@ the licence it is used under, with its full expression, the authors its Cargo me
 are not necessarily its copyright holders — those are in its own files), and the licence and
 notice files it carries, reproduced in §5. The Rust standard library, statically linked into
 every binary, is MIT OR Apache-2.0 (<https://github.com/rust-lang/rust>). The project's own
-crates — `cube-ble`, `cube-vision`, `cubus-desktop`, `optimal-solver` — are AGPL-3.0-only.
+crates — `cube-ble`, `cube-vision`, `cubus-desktop`, `optimal-solver` — are MIT.
 
 The native shells are [Tauri](https://tauri.app) 2.11.5 (MIT OR Apache-2.0),
 which renders the web app in the platform's own webview (WebKit on Apple platforms, WebView2 on
@@ -691,7 +698,7 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
   installers and asserts it is there (`.github/workflows/release.yml`, the two-phase Windows
   build), while a local `tauri build` leaves it in `target/release/` only. Without it the scanner
   falls back to onnxruntime's CPU provider and says so in the log.
-- **macOS and iOS — Swift.** `crates/cube-vision/swift` (the project's own, AGPL-3.0-only) is linked
+- **macOS and iOS — Swift.** `crates/cube-vision/swift` (the project's own, MIT) is linked
   into the binary; on iOS the Swift standard libraries are embedded in the app, under the Apache
   License 2.0 with the Runtime Library Exception (<https://swift.org/LICENSE.txt>). CoreML,
   AVFoundation and CoreBluetooth are operating-system frameworks, not redistributed.

@@ -83,6 +83,24 @@ BRAND_RED_ORANGE: list[tuple[str, str]] = [
 # scheme (30.8 deg), so it constrains only draws that would have been unphysical anyway.
 MIN_RED_ORANGE_SEPARATION = 18.0 / 360.0
 
+# AND THE SAME FOR YELLOW/ORANGE, because fixing the first pair opened this one.
+#
+# Orange sits between red and yellow on the hue circle, and the red/orange floor above separates
+# that pair about their MIDPOINT -- which moves orange up, toward yellow. Measured over 4000
+# palettes, yellow/orange then became the CLOSEST pair in the whole palette: mean 26.9 deg and a
+# minimum of 2.7, against red/orange's floored 18.0. A 2.7 deg gap is two labels on one colour,
+# which is the exact defect this module exists to prevent, recreated one pair over.
+#
+# It showed up as a real error before it was found here: on 60 rendered fixtures that neither the
+# shipped model nor the candidate trained on, the candidate's dominant mistake was orange read as
+# YELLOW, six times, with red/orange no longer in the top confusions at all.
+#
+# The floor is set from the published schemes, as the red/orange one was: their yellow/orange gaps
+# are 29.4, 25.2 and 34.3 deg, so 15 sits comfortably under the narrowest and constrains only
+# draws that were already unphysical. YELLOW is what moves -- pushing orange back down would
+# undo the red/orange floor and simply return the problem to the other pair.
+MIN_YELLOW_ORANGE_SEPARATION = 15.0 / 360.0
+
 
 def _signed_hue(h: float) -> float:
     """Hue on (-0.5, 0.5] so red (just below 1.0) compares numerically below orange."""
@@ -100,7 +118,13 @@ def _hex_to_hsv(value: str) -> tuple[float, float, float]:
     return (_signed_hue(h), s, v)
 
 
-def cube_palette(rng: random.Random, wide: bool) -> list[tuple[float, float, float]]:
+_FALLBACK_SAT_RNG = random.Random(0)  # see cube_palette: a stream, seeded once, for callers that pass none
+
+
+def cube_palette(
+    rng: random.Random, wide: bool, sat_scope: str = "cube",
+    sat_rng: random.Random | None = None,
+) -> list[tuple[float, float, float]]:
     """The six pigments ONE cube is painted with, as signed-hue HSV. Call once per cube.
 
     HUE ONLY is decided here, and that is deliberate. This module exists to test exactly one
@@ -146,26 +170,74 @@ def cube_palette(rng: random.Random, wide: bool) -> list[tuple[float, float, flo
         mid = (oh + rh) / 2.0
         palette[RED] = (mid - MIN_RED_ORANGE_SEPARATION / 2.0, rs, rv)
         palette[ORANGE] = (mid + MIN_RED_ORANGE_SEPARATION / 2.0, os_, ov)
+
+    # Applied AFTER the pair above, and it moves yellow only, so it cannot walk orange back
+    # into red. Ordering is the whole content of this block.
+    oh = palette[ORANGE][0]
+    yh, ys, yv = palette[YELLOW]
+    if yh - oh < MIN_YELLOW_ORANGE_SEPARATION:
+        palette[YELLOW] = (oh + MIN_YELLOW_ORANGE_SEPARATION, ys, yv)
+
+    if sat_scope == "cube":
+        # Saturation is a PIGMENT property, so it belongs here and not on the tile. See
+        # shade_sticker for the measurement that moved it. The draw comes from a SEPARATE
+        # stream so that choosing the scope cannot also choose the scene: `rng` advances
+        # identically either way, and a sweep arm differs from its control in one thing.
+        # ONE stream, not a new one per cube. `random.Random(0)` built here was reseeded on every
+        # call, so every cube in a run got the identical multiplier and the arm that was supposed to
+        # vary saturation per cube varied nothing -- while still looking like jitter in the code.
+        pick = sat_rng or _FALLBACK_SAT_RNG
+        palette = [
+            (h, min(max(s * pick.uniform(*SAT_JITTER[wide]), 0.0), 1.0), v) for h, s, v in palette
+        ]
     return palette
 
+# The per-draw saturation multiplier, keyed on `wide`. Named because two call sites use it now:
+# per sticker under sat_scope="sticker", and per cube in cube_palette under "cube".
+SAT_JITTER = {False: (0.85, 1.05), True: (0.55, 1.1)}
+VAL_JITTER = {False: (0.8, 1.12), True: (0.5, 1.3)}
+
+
 def shade_sticker(
-    pigment: tuple[float, float, float], rng: random.Random, wide: bool
+    pigment: tuple[float, float, float], rng: random.Random, wide: bool,
+    sat_scope: str = "cube",
 ) -> list[float]:
     """One sticker of a cube already painted: same pigment, its own share of the light.
 
-    The value and saturation ranges here are the OLD generator's, unchanged and applied exactly
-    once, so this reproduces its marginal distribution. Shading genuinely is per-sticker — one face
-    points at the lamp and another sits in shadow — and the old code was right about that. The only
-    thing this module takes away from the sticker is HUE IDENTITY, which is the single variable
-    under test.
+    Shading genuinely is per-sticker — one tile catches the lamp and its neighbour sits in
+    shadow — and it is a VALUE effect: less light reaching a surface scales all three channels
+    together, which moves v and leaves s and h where they were.
+
+    A per-sticker SATURATION multiplier is not that, and sat_scope exists to take it off the
+    tile. It looks harmless because saturation cannot move hue in HSV — but the renderer does not
+    stop at HSV. A rendered pixel is albedo times light, channel by channel, and under a coloured
+    light the hue of that product depends on how saturated the albedo was: the greyer the tile,
+    the further the light's own hue pulls it. So nine tiles of ONE pigment, drawn with nine
+    different saturations, come back with nine different hues, and the module's whole promise —
+    that a cube's nine reds are one colour — is broken downstream of where it is kept.
+
+    This is the third appearance of one class of defect, which is why it is written out rather
+    than fixed quietly: a randomization applied at a level no physical cube has. The v3 white bug
+    was a multiplicative saturation jitter that could not tint a neutral white; the per-sticker
+    hue draw this module was written to remove was the second; this is the same mistake in the
+    saturation channel, surviving the fix aimed at the hue one.
+
+    Both multipliers are drawn whatever the scope, so the random stream advances identically and
+    an arm of a sweep differs from its control in the knob and in nothing else.
     """
     h, s, v = pigment
+    # The two modes drew in opposite ORDER, and the order is part of the stream: swapping it
+    # would hand every later sticker a different number and quietly make the default something
+    # other than what synth_v5 rendered. Kept as it was, per mode.
     if wide:
-        s = min(max(s * rng.uniform(0.55, 1.1), 0.0), 1.0)
-        v = min(max(v * rng.uniform(0.5, 1.3), 0.0), 1.0)
+        sat_mult = rng.uniform(*SAT_JITTER[wide])
+        val_mult = rng.uniform(*VAL_JITTER[wide])
     else:
-        v = min(max(v * rng.uniform(0.8, 1.12), 0.0), 1.0)
-        s = min(max(s * rng.uniform(0.85, 1.05), 0.0), 1.0)
+        val_mult = rng.uniform(*VAL_JITTER[wide])
+        sat_mult = rng.uniform(*SAT_JITTER[wide])
+    v = min(max(v * val_mult, 0.0), 1.0)
+    if sat_scope == "sticker":
+        s = min(max(s * sat_mult, 0.0), 1.0)
     # White-balance cast, at the old generator's magnitudes: how strongly THIS tile shows the
     # scene's light. The direction came from the cube (one light); only the strength varies here.
     if s < 0.15:

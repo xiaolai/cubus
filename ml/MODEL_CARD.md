@@ -3,20 +3,62 @@
 `apps/web/vendor/cube-yolo.onnx` — the model the app's **AI-scan** mode runs in-browser.
 
 ## What it does
-A **YOLOv11n** object detector that finds each sticker on a cube face and classifies its
-colour. It replaces the classical HSV scanner, whose accuracy collapsed under uncontrolled
-lighting (the red↔orange confusion in particular).
+An object detector that finds each sticker on a cube face and classifies its colour. It replaces the
+classical HSV scanner, whose accuracy collapsed under uncontrolled lighting (the red↔orange confusion
+in particular).
 
-- **Input:** 640×640 letterboxed RGB (Ultralytics-style, grey-114 pad).
-- **Output:** per-sticker boxes + colour class. Classes (`ml/data.yaml`): `0 white 1 red 2 green
-  3 yellow 4 orange 5 blue`.
-- **Params:** ~2.6 M. **Inference**, per 640×640 frame, each number with its silicon: CoreML on an
-  Apple M5, compute units `all`, median **1.48 ms** (`ml/golden/compute-units.m5.json`,
-  `ml/compute_units.py`); Python onnxruntime on the CPU provider, fp32, on the maintainer's
-  Apple-silicon Mac, **48 ms** (the §"What the app ships" table; the chip was not recorded when it
-  was measured, 2026-08-29). The browser's wasm/WebGPU numbers belong to `packages/cube-scanner`.
+**Since 2026-09-17 it is `ml/cubedet`'s own detector**, not a YOLO one: a `timm` MobileNetV4-small
+feature extractor pretrained on ImageNet, a PAN neck and an anchor-free head, trained by this
+repository. Everything below dated before then describes the Ultralytics-trained v3 that preceded it,
+and is kept because the measurements are still the comparison this model is judged against.
+
+- **Input:** 640×640 letterboxed RGB (aspect preserved, grey-114 pad).
+- **Output:** per-sticker boxes + colour class, `(1, 4 + 6, 8400)`. Classes (`ml/data.yaml`):
+  `0 white 1 red 2 green 3 yellow 4 orange 5 blue`.
+- **Params:** ~3.4 M (v3: ~2.6 M). **Inference**, per 640×640 frame: CoreML fp32 on an M-series Mac,
+  **3.8 ms** (the fp16 build was slower AND less faithful — `ml/export.py::export_coreml_cubedet`);
+  onnxruntime-web on wasm, one thread, **214 ms** against v3's 173 ms on the same machine.
+- **Artefacts:** fp32 everywhere. There is no int8 ONNX: dynamic quantisation collapses this graph
+  (top class score 0.001 against fp32's 0.922), and the export refuses to write an artefact that
+  reads nothing — `MANIFEST.json` records that decision with its reason.
+
+### How it compares with v3, on real photographs nobody trained on
+140 complete sets from 22 contributors in the community photo drop, each colour confirmed by the
+person who photographed their own cube, scored through the app's own read (`ml/drop_eval.py`):
+
+| | v3 (Ultralytics) | this model |
+|---|---|---|
+| stickers located and read correctly | 97.7% | 96.6% |
+| per-contributor average | 96.9% | 90.3% |
+| cubes read correctly | 122 of 140 | **128 of 140** |
+| cubes refused — the app asks for another look | 9 | **3** |
+| cubes read WRONG | **0** | **0** |
+| sets where a face was never read at all | 7 (+2 unusable) | 9 |
+
+NEITHER MODEL PRODUCES A WRONG CUBE on this data, and that is the assembly's doing rather than the
+detector's: legality, the nine-of-each repair's cost ceiling and the centre rules turn what would have
+been a misread cube into a refusal. So the comparison at cube level is "how often does it get there",
+not "how often does it lie". This model gets there more often; its remaining losses are 3 refusals and
+9 sets where a face was never found, which is geometry rather than colour. Three other
+recipes were measured and none closed the per-contributor gap — a COCO-pretrained transformer
+(D-FINE-N) reached 92.4%, v3's own dataset made this architecture worse, not better, and re-running
+v3's recipe with a different seed reproduced v3, so the gap is the training recipe rather than luck.
+
+### Known limitation: a 2×2 cube at a corner
+This model fits a 3×3 grid across the visible faces of a 2×2 cube photographed at a corner, where v3
+refused. No frame-level rule separates that case without refusing legitimate frames: a
+stickers-beyond-the-grid test refuses three golden 3×3 fixtures first, and a planarity test ranks the
+2×2 frame as more face-like than every golden render. What does separate them is the SET-level rule
+`propose.py::beyond_grid` already uses — summed over a set, all 140 real 3×3 sets score 0 or 1 while
+4×4 sets score 1 to 16 — and the app does not carry it yet.
 
 ## Training data
+**The shipped detector's** is in §Reproduce: the `synth_v6` render mixed with the 423 de-duplicated
+real photographs, then those photographs alone. The de-duplication matters beyond size: the
+Roboflow download was 3.2x duplicated and every split leaked into every other (`ml/clean_real.py`
+has the measurement), which is part of why v3's held-out numbers below read high.
+
+### v3's, which the comparisons above are against
 Combined **30,738 images** = synthetic (breadth) + real (authenticity):
 - **Synthetic ~28.8k** — the `generate_cube3d.py` 3D-cube generator under heavy domain
   randomization (materials/stickerless, wide colour incl. red↔orange, HDRI + coloured lighting,
@@ -181,17 +223,31 @@ gated by the existing dual verifier (facelet parity + cubejs). The detector abst
 (`NO_FACE`/`PARTIAL_FACE`/`BAD_GEOMETRY`) rather than emit a garbage face.
 
 ## Reproduce
-The whole sequence, with every flag, is `ml/README.md` §"Regenerating the model". In short: render
-on the many-core desktop (`ml/render.sh` with `GEN=generate_cube3d.py`; never the fanless laptop),
-train on the near GPU box (`ml/train.sh`, in the pinned `cube-train:1` image, from the pinned
-`yolo11n.pt`), export all four artefacts with **`ml/export.py`** (one checkpoint → ONNX fp32 + int8,
-CoreML, TFLite, and `MANIFEST.json` with the tool versions and git commit), then run the golden gate
-**`ml/golden_frames.py`** — a model change is not verified until it has — and re-pin with its
-guarded `--write-expected --yes --repin-checkpoint REASON`. The tables in this card come from
-`ml/metrics_table.py` (mAP) and `ml/color_eval.py` / `ml/face_eval.py` (per-sticker, per-face,
-through the app's own letterbox). Note for the DGX Spark GB10: it hard-resets under sustained load
-unless the GPU clock is capped — `sudo nvidia-smi -lgc 300,2200` (community-verified; it's power
-*spikes*, not average temp).
+The shipped detector is two runs of `ml/cubedet`, pretrain then fine-tune. The full sequence, with
+every flag, is `ml/README.md` §"Regenerating the model".
+
+1. **Pretrain (V6).** The timm backbone `mobilenetv4_conv_small.e2400_r224_in1k`, from its ImageNet
+   weights, fed normalised input, trained on the `synth_v6` render (48,000 images from
+   `generate_cube3d.py`) mixed with the 423 de-duplicated real photographs (`ml/clean_real.py`).
+2. **Fine-tune (V6FT).** `--init-from` V6's `best.pt`: a fresh schedule of 100 epochs at lr 1e-4
+   over the real photographs alone. The best epoch, 54, is what ships. Why two stages, measured
+   (commit `a2b071e`): mixed straight in at a hundred to one, the renders doubled red→orange errors.
+
+Both ran through `ml/run-cubedet.sh` in the NGC PyTorch image, with no copyleft package present
+(`MANIFEST.json` `training_environment`). `ml/export.py --cubedet` then wrote the artefacts and the
+manifest, and `ml/golden_frames.py` passed before the pins moved.
+
+**What those runs did not record** is their exact dataset roots and V6's own schedule: checkpoints of
+that date carried their architecture and environment and nothing else, so the steps above come from
+the commit history. `train.py` now writes the recipe (dataset, schedule, starting weights with their
+sha256, argv) into every checkpoint, and `export.py` copies it into `MANIFEST.json`. The shipped
+manifest predates that field; exporting V6FT again would record it as `not recorded`, and the next
+model's manifest will carry the real thing.
+
+v3's recipe (Ultralytics, `ml/train.sh`, from the pinned `yolo11n.pt`) is `ml/README.md`
+§"Legacy: v3". Note for the DGX Spark GB10: it hard-resets under sustained load unless the GPU clock
+is capped — `sudo nvidia-smi -lgc 300,2200` (community-verified; it's power *spikes*, not average
+temp) — and `run-cubedet.sh` refuses to start on a box whose idle clock shows the cap is gone.
 
 ## Attribution
 
@@ -216,13 +272,20 @@ under CC BY 4.0.*
 
 ## Licence
 
-The detector is a YOLO model trained with [Ultralytics](https://github.com/ultralytics/ultralytics)
-(pinned at 8.4.126 in `ml/models/MANIFEST.json`), which is **AGPL-3.0**. Ultralytics' stated
-position is that the licence reaches models trained with their software, and applications that use
-those models — so this file is part of why cubus is AGPL-3.0 rather than permissive. See
-`LICENSE-COMMERCIAL.md`.
+The detector shipped since 2026-09-17 is trained by `ml/cubedet`, this repository's own code, on
+PyTorch and torchvision (**BSD-3**), starting from a `timm` MobileNetV4 feature extractor pretrained
+on ImageNet (**Apache-2.0**). No Ultralytics code and no Ultralytics weights are in its lineage;
+`ml/models/MANIFEST.json` carries that as `licence_note`, and `ml/export.py` refuses to send a
+`cubedet` checkpoint down any Ultralytics path. Its training photographs are the CC BY 4.0 Roboflow
+Universe sets credited under §Attribution, plus renders from `ml/generate_cube3d.py`.
 
-The practical consequence for anyone reusing this model: a closed-source product cannot simply take
-`cube-yolo.onnx`. It needs an Ultralytics Enterprise Licence, or a detector trained on a stack that
-is not copyleft. A commercial licence for cubus covers cubus, and cannot grant rights to
-Ultralytics' work.
+Before that date the detector was a YOLO model trained with
+[Ultralytics](https://github.com/ultralytics/ultralytics), which is **AGPL-3.0**, and Ultralytics'
+stated position — that the licence reaches models trained with their software and the applications
+using them — is why cubus was AGPL-3.0. That inheritance is what the change removed, and the project
+is MIT from 2026-09-17: taking `cube-yolo.onnx` into a closed-source product raises no Ultralytics
+question. Anyone reusing the PREVIOUS model, which is still in this repository's history, still needs
+an Ultralytics Enterprise Licence for that use.
+
+What MIT does not lift is the **CC BY 4.0** attribution the training photographs carry: the Roboflow
+Universe credits under §Attribution must travel wherever this model does.

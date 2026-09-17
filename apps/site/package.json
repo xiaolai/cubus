@@ -1,7 +1,7 @@
 {
   "name": "cubus-site",
   "version": "0.0.0",
-  "license": "AGPL-3.0-only",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "description": "The introduction site at https://cubus.im — public/ is published verbatim by GitHub Pages. The web app is not hosted here; see README.md, Hosting the web build.",

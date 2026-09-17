@@ -62,16 +62,22 @@ sed -i "s#^path:.*#path: /work/dataset#" "$DATASET/data.yaml"
 # DETACH=1 → run the container dockerd-managed (-d), immune to ssh drops / SIGHUP. Over the flaky
 # overlay this is the only reliable way to run a multi-hour job: nohup'd shells still got killed.
 CONTAINER="${RUN_NAME:-cube_train}"
-DFLAG="--rm"   # foreground: auto-remove
+RUN_FLAGS=(--rm)   # foreground: auto-remove
 # Detached keeps the container (no --rm) so `docker logs` survives a crash for inspection.
-if [ "${DETACH:-0}" = "1" ]; then docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; DFLAG="-d --name $CONTAINER"; fi
+# An ARRAY, because these are several argv words: the string it replaces reached docker through an
+# unquoted expansion, which also word-split and globbed whatever RUN_NAME the caller supplied.
+if [ "${DETACH:-0}" = "1" ]; then docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; RUN_FLAGS=(-d --name "$CONTAINER"); fi
 
-docker run $DFLAG --gpus all --ipc=host \
+docker run "${RUN_FLAGS[@]}" --gpus all --ipc=host \
   --ulimit memlock=-1 --ulimit stack=67108864 \
   -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
   -v "$HERE":/ml -v "$DATASET":/work/dataset \
   -e PREBUILT="$PREBUILT" \
   -w /work/dataset "$IMAGE" bash -lc "
+    # THIS WHOLE SCRIPT IS ONE DOUBLE-QUOTED STRING, expanded by the HOST shell before docker sees
+    # it. A comment in here is not inert: a backtick or an unescaped dollar-paren in one is run on
+    # the host. One was -- a note about 'yolo export' ran that command on the launching machine on
+    # every training run. Write commands in comments in plain quotes.
     set -e
     # NEVER delete a previous run. /work/dataset is a BIND MOUNT of a real host directory, so this
     # path deletes the host's weights, and Linux has no Trash to recover them from — each run is
@@ -119,12 +125,12 @@ docker run $DFLAG --gpus all --ipc=host \
     yolo detect train model=$MODEL data=/work/dataset/data.yaml \
       epochs=$EPOCHS imgsz=$IMGSZ batch=$BATCH device=0 workers=$WORKERS amp=$AMP \
       project=/work/dataset/runs name=cube plots=False
-    # No export here. This used to run a second `yolo export ... format=onnx` on best.pt, which
+    # No export here. This used to run a second 'yolo export ... format=onnx' on best.pt, which
     # produced an ONNX with a lineage of its own — a different ultralytics, no manifest, no int8,
     # no CoreML/TFLite siblings, and nothing to hand the golden gate. ml/export.py is the ONE
     # exporter: it writes all four artefacts from best.pt and records what produced them.
     chown -R \$HOST_UID:\$HOST_GID /work/dataset/runs   # hand outputs back to the host user (docker runs as root)
-    echo 'best.pt at /work/dataset/runs/cube/weights/best.pt — export with ml/export.py (see ml/README.md, Regenerating the model)'
+    echo 'best.pt at /work/dataset/runs/cube/weights/best.pt — export it with ml/export.py --pt (ml/README.md, Legacy: v3)'
   "
 if [ "${DETACH:-0}" = "1" ]; then
   echo "Detached container '$CONTAINER' launched. Follow: docker logs -f $CONTAINER"

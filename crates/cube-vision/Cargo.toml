@@ -1,7 +1,7 @@
 [package]
 name = "cube-vision"
 version = "0.1.0"
-license = "AGPL-3.0-only"
+license = "MIT"
 description = "Native camera capture + CoreML inference for cubus, as a Tauri plugin. The one sanctioned command-bearing native capability (AGENTS.md, 2026-08-26): it sits behind the Detector seam the browser build also implements, so both builds stay the same app."
 edition = "2021"
 # The floor the dependency tree actually needs (measured 2026-09-05 by the build agent over every

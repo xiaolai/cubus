@@ -4,7 +4,7 @@
 [package]
 name = "optimal-solver"
 version = "0.1.0"
-license = "AGPL-3.0-only"
+license = "MIT"
 description = "Prove a 3x3 solution minimal: three pattern databases and IDA*, per Korf 1997"
 edition = "2021"
 # The floor the dependency tree actually needs (measured 2026-09-05 by the build agent over every

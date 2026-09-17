@@ -94,6 +94,8 @@ import {
   diagnoseMisread,
   type MisreadDiagnosis,
 } from './misread-decode.js';
+import { assignNineOfEach, NUM_COLORS, STICKERS } from './nine-of-each.js';
+import { colorsFromPaint } from './paint-groups.js';
 import {
   type Colour,
   colourOfSlot,
@@ -116,6 +118,29 @@ export { rotateFace };
 export interface ColorFace {
   colors: number[]; // 9 colour-class indices (0..5)
   confidence: number[]; // 9 per-sticker detector confidences (0..1)
+  /**
+   * 9 x 6 scores per sticker, when the detector supplied them. OPTIONAL, and every existing
+   * consumer ignores it: `repairByCounts` below is the only reader, and it runs only after the
+   * normal path has already refused.
+   */
+  scores?: number[][];
+  /**
+   * Median CIE Lab per sticker, from the pixels of the frame this capture came from. OPTIONAL: read
+   * only by `recolourByPaint`, which runs after everything else has refused. Supplied by whoever
+   * held the frame and the boxes at the same moment — the detector's caller — because nothing
+   * downstream of that has the pixels any more.
+   */
+  lab?: [number, number, number][];
+  /**
+   * 9 flags: stickers a PERSON set, which no repair may change. OPTIONAL, and absent means none.
+   *
+   * Both fallbacks recolour stickers, and a correction the user typed in has to outrank them
+   * unconditionally. Making the correction expensive for the count repair (a one-hot score row) is
+   * not enough on its own: `resolveCentreCollision` lifts the repair's cost ceiling to infinity, so a
+   * finite cost is no barrier there. The flag is checked against the colours, not the costs, and so
+   * holds whatever ceiling a caller passes.
+   */
+  locked?: boolean[];
 }
 
 /**
@@ -198,6 +223,14 @@ export type AiScanResult = ScanResult & {
    * is to let a setting choose. See the header's scheme section.
    */
   schemeAmbiguous?: boolean;
+  /**
+   * Two sides' centres read as the same colour, so a sixth side could not be filed: `shared` is the
+   * slot both claimed and `missing` the slot neither did. A 3x3 has one centre of each colour, so one
+   * of those two sides IS the missing colour. Set by `resolveCentreCollision` only when it could not
+   * decide which, and `legalFilings` says why: 0 — neither filing is a legal cube, so something
+   * besides the centre was misread; 2 — both are, and nothing in the captures says which.
+   */
+  centreConflict?: { shared: Face; missing: Face; legalFilings: 0 | 2 };
   /**
    * On success: which arrangement the accepted `facelets` are positional in. `'undetermined'`
    * when the surviving readings are the SAME string under both schemes — the solved cube, two
@@ -922,6 +955,107 @@ function symmetricRefusal(
 }
 
 /**
+ * A last resort before refusing: the cheapest recolouring that gives the cube nine of each colour.
+ *
+ * WHY IT SITS HERE AND NOT EARLIER. Applied to every scan it would MOVE stickers on cubes that were
+ * already read correctly -- `ml/assign_sim.py` measured that breaking 0.5% of the shipped model's
+ * cubes and 3.2% of a weaker model's. It amplifies a good detector and endangers a bad one. Run
+ * only after `solvableReadings` has found nothing, it cannot damage a scan that was going to
+ * succeed: the alternative at this point is a refusal.
+ *
+ * The gain it is here for, same measurement: whole cubes read perfectly 80.0% -> 98.7%, repairing
+ * 592 of 636 sticker errors.
+ *
+ * Returns null when the detector gave no scores, when the repair changes nothing, or when it would
+ * have to overrule the detector so hard that the reading is better refused than rewritten --
+ * `MAX_REPAIR_COST` is that line, and a reading past it is not one misread but a bad capture.
+ * The one caller that lifts it is `resolveCentreCollision`, which replaces it with a stricter gate
+ * of its own — see there.
+ */
+const MAX_REPAIR_COST = 12;
+
+/** Would `colors` (54, in FACES order) change a sticker that a person locked? */
+function movesALockedSticker(faces: Record<Face, ColorFace>, colors: readonly number[]): boolean {
+  return FACES.some((face, fi) =>
+    (faces[face]?.locked ?? []).some(
+      (on, k) => on && colors[fi * 9 + k] !== faces[face]!.colors[k],
+    ),
+  );
+}
+
+function repairByCounts(
+  faces: Record<Face, ColorFace>,
+  maxCost: number,
+): Record<Face, ColorFace> | null {
+  const scores: number[][] = [];
+  for (const face of FACES) {
+    const s = faces[face]?.scores;
+    if (s?.length !== 9 || s.some((row) => row.length !== NUM_COLORS)) return null;
+    for (const row of s) scores.push(row);
+  }
+  if (scores.length !== STICKERS) return null;
+  let result: ReturnType<typeof assignNineOfEach>;
+  try {
+    result = assignNineOfEach(scores);
+  } catch {
+    return null; // malformed scores are the detector's problem, not something to guess through
+  }
+  if (result.changed.length === 0 || result.cost > maxCost) return null;
+  if (movesALockedSticker(faces, result.colors)) return null;
+  const out = {} as Record<Face, ColorFace>;
+  FACES.forEach((face, i) => {
+    // `confidence` stays the DETECTOR's, for the class it picked -- so for a repaired sticker it
+    // describes a colour the cube no longer says. That is a known inaccuracy, kept on purpose until
+    // it is decided what a repaired sticker should MEAN to the user. Rewriting it to the chosen
+    // class's score is not neutral: that score is whatever the detector gave its second choice, and
+    // whenever it falls under LOW_CONFIDENCE_THRESHOLD, `ai-scan-panel`'s `finish` sends the cube to
+    // `finishUnsure` and it is not accepted -- a path that is unreachable today by design. How many
+    // of the measured repairs (592 of 636 sticker fixes, `ml/assign_sim.py`) would cross that line
+    // has not been measured. The repair itself is licensed by the constraint (nine of each, and a
+    // solvable reading), not by a per-sticker probability.
+    out[face] = {
+      ...faces[face]!,
+      colors: result.colors.slice(i * 9, i * 9 + 9),
+    };
+  });
+  return out;
+}
+
+/**
+ * The colouring the PIXELS imply, when the scores' own colouring has been refused.
+ *
+ * `paint-groups.ts` carries the measurement and the reasoning; the short version is that stickers in
+ * one frame share an illuminant, so which of them carry the same paint survives lighting that the
+ * absolute question does not. Used only here, only after `repairByCounts` has failed too, and
+ * accepted only if the result passes the same two gates: six distinct centres that match their
+ * slots, and a reading that is actually solvable.
+ *
+ * The pixels regroup the stickers; the CENTRES name the groups, which is what keeps this from
+ * inventing a cube — see `colorsFromPaint`. So it can repair any misread except a centre's, and a
+ * misread centre is the one case the assembly already has a resolver for.
+ *
+ * Returns null unless every face carried its Lab — an app that does not supply it never reaches this,
+ * and behaves exactly as it did before.
+ */
+function recolourByPaint(faces: Record<Face, ColorFace>): Record<Face, ColorFace> | null {
+  const lab: [number, number, number][] = [];
+  const centres: number[] = [];
+  for (const face of FACES) {
+    const capture = faces[face];
+    if (capture?.lab?.length !== 9) return null;
+    for (const row of capture.lab) lab.push(row);
+    centres.push(capture.colors[4]!);
+  }
+  const colors = colorsFromPaint(lab, centres);
+  if (!colors || movesALockedSticker(faces, colors)) return null;
+  const out = {} as Record<Face, ColorFace>;
+  FACES.forEach((face, i) => {
+    out[face] = { ...faces[face]!, colors: colors.slice(i * 9, i * 9 + 9) };
+  });
+  return out;
+}
+
+/**
  * Turn 6 detected faces (colour classes, any rotation) into a validated ScanResult by solving each
  * face's rotation and the cube's colour scheme together. Rejects a scan whose 6 centres are not 6
  * distinct colours (not a real cube) and a colour misread (no rotation is solvable under any
@@ -939,12 +1073,55 @@ export function assembleColors(
   confirmed: Partial<Record<Face, Confirmation>> = {},
   options: AssembleOptions = {},
 ): AiScanResult {
+  return assembleWithin(faces, threshold, confirmed, options, MAX_REPAIR_COST);
+}
+
+/**
+ * `assembleColors` with the repair's cost ceiling as a parameter. Exactly one caller passes anything
+ * but MAX_REPAIR_COST: `resolveCentreCollision`, which gates on legality and uniqueness instead.
+ */
+function assembleWithin(
+  faces: Record<Face, ColorFace>,
+  threshold: number,
+  confirmed: Partial<Record<Face, Confirmation>>,
+  options: AssembleOptions,
+  maxRepairCost: number,
+  allowPaint = true,
+): AiScanResult {
   const bySlot = checkedBySlot(faces);
   if ('valid' in bySlot) return bySlot;
+
+  /**
+   * The gate both fallbacks are accepted on, written once: a recolouring is worth having only if
+   * it still checks out by slot AND some scheme finds it solvable. Null means "not this one, try
+   * the next"; anything else is the verdict for the recoloured cube, refusal included -- reaching
+   * this point at all means the reading as detected was going to be refused.
+   */
+  const accept = (candidate: Record<Face, ColorFace> | null): AiScanResult | null => {
+    if (!candidate) return null;
+    const bySlotCandidate = checkedBySlot(candidate);
+    if ('valid' in bySlotCandidate) return null;
+    const solvable = SCHEMES.flatMap((scheme) => solvableReadings(bySlotCandidate, scheme));
+    if (solvable.length === 0) return null;
+    return assembleWithin(candidate, threshold, confirmed, options, maxRepairCost, allowPaint);
+  };
 
   const all = SCHEMES.flatMap((scheme) => solvableReadings(bySlot, scheme));
 
   if (all.length === 0) {
+    // The reading is not solvable as read. Before refusing, try the one repair that is justified
+    // here and nowhere else: the cheapest recolouring with nine of each colour. Accepted ONLY if
+    // the repaired reading is itself solvable, so this can turn a refusal into a scan and can
+    // never turn a scan into something worse.
+    const byCounts = accept(repairByCounts(faces, maxRepairCost));
+    if (byCounts) return byCounts;
+    // Still nothing. One more source of evidence exists and has not been used: the pixels. The
+    // scores answered "what colour is each sticker" and were refused; the pixels answer "which
+    // stickers share a paint", which a shared illuminant makes answerable when the other is not.
+    // Same two gates, so this can turn a refusal into a read and cannot turn a read into anything.
+    const byPaint = accept(allowPaint ? recolourByPaint(faces) : null);
+    if (byPaint) return byPaint;
+
     // Before refusing, do the diagnosis a refusal makes possible: how many stickers are wrong is
     // always answerable, and when it is exactly one, WHICH one is answerable too. Under every
     // scheme, because the refused reading says nothing about which the cube has.
@@ -1004,5 +1181,118 @@ export function assembleColors(
     scheme: schemes.length === 1 ? schemes[0]! : 'undetermined',
     ...summariseConfidence(conf, threshold),
     rotations: [...chosen],
+  };
+}
+
+/** What `resolveCentreCollision` decided: the verdict, and the filing it was reached on. */
+export interface CentreResolution {
+  result: AiScanResult;
+  /**
+   * The six captures filed as the resolution decided, one of them now carrying the colour no side
+   * had claimed. Present exactly when a single filing fits — its `result` is accepted, or asks for
+   * a look — and absent on a refusal, where no filing is the right one to keep.
+   */
+  faces?: Record<Face, ColorFace>;
+}
+
+/**
+ * Two sides read with the same centre colour: decide which of them is really the side nobody
+ * claimed, without trying to read that centre again.
+ *
+ * WHY THIS EXISTS. Brands print their logo on the white centre, and a logo printed in one of the six
+ * cube colours reads as that colour. On seven real cubes photographed side by side (2026-09-13),
+ * four of the seven centre collisions were a blue logo on a white cap read as blue; the other three
+ * were a red centre read as orange. The panel files a capture under its centre's colour, so the
+ * second "blue" side had nowhere to go and was turned away with "still need white" — while the user
+ * was holding the white side, which would only read as blue again. The scan could never finish.
+ *
+ * THE MECHANISM IS COUNTING, NOT SEEING. A 3x3 has exactly one centre of each colour, in either
+ * scheme. With five sides filed and a sixth whose centre collides, one colour is unclaimed, so one
+ * of the two colliding sides IS that colour. That leaves exactly two filings and both are tried:
+ * the newcomer takes the unclaimed colour, or the side filed first does and the newcomer takes its
+ * slot. The side that changes colour has its centre's score row made certain, so the nine-of-each
+ * repair cannot quietly hand the old colour back.
+ *
+ * LEGALITY DECIDES, AND ONLY WHEN IT IS UNIQUE. A real cube is legal, so a filing is kept when it has
+ * a legal reading — accepted outright, or legal but needing a look (`confirm`, `ambiguous`). On all
+ * seven measured collisions exactly one filing fitted, and it was the cube as it physically was.
+ * The detector's own evidence would not have found it: in none of the seven was the cheaper
+ * nine-of-each repair the true filing's (six went the other way, one tied). When both filings fit
+ * this refuses rather than choosing — two legal colourings of one set of captures do exist near
+ * each other (a measured pair stood four stickers apart), and a confident wrong cube is the failure
+ * this package treats as the worst.
+ *
+ * THE REPAIR CEILING IS LIFTED HERE, AND ONLY HERE. MAX_REPAIR_COST refused five of the seven true
+ * filings — their costs ran from 13 to 36 — because a misread logo cap rarely comes alone: the cool
+ * tint that turned the centre blue turned the white stickers around it blue too. The ceiling guards
+ * one reading against being rewritten into a cube nobody held; here that job is done by the rule
+ * above, which is stricter — two filings, a legal cube required, exactly one allowed.
+ *
+ * THE LIMIT, stated so it is not rediscovered: when the misread side's OUTER stickers read as the
+ * other side's colour as well — a near-solved white face read as nine blues — the two captures are
+ * the same picture, the panel cannot tell them apart, and nothing here is ever reached.
+ */
+export function resolveCentreCollision(
+  filed: Partial<Record<Face, ColorFace>>,
+  newcomer: ColorFace,
+  threshold = LOW_CONFIDENCE_THRESHOLD,
+  options: AssembleOptions = {},
+): CentreResolution {
+  const centre = newcomer.colors[4];
+  if (centre === undefined || !isColour(centre)) {
+    return { result: reject(`the new capture's centre colour ${centre} is not one of the six`) };
+  }
+  const shared = slotOf(centre);
+  const holder = filed[shared];
+  const unclaimed = FACES.filter((face) => !filed[face]);
+  if (!holder || unclaimed.length !== 1) {
+    return {
+      result: reject(
+        "a centre collision needs five filed sides, one of them sharing the new capture's centre",
+      ),
+    };
+  }
+  const missing = unclaimed[0]!;
+  const colour = colourOfSlot(missing);
+  const asMissing = (capture: ColorFace): ColorFace => {
+    const colors = [...capture.colors];
+    colors[4] = colour;
+    if (!capture.scores) return { ...capture, colors };
+    const scores = capture.scores.map((row) => [...row]);
+    scores[4] = scores[4]!.map((_, c) => (c === colour ? 1 : 0));
+    return { ...capture, colors, scores };
+  };
+  const filings = [
+    { ...filed, [missing]: asMissing(newcomer) },
+    { ...filed, [shared]: newcomer, [missing]: asMissing(holder) },
+  ] as Record<Face, ColorFace>[];
+  const fits = filings
+    .map((faces) => ({
+      faces,
+      result: assembleWithin(
+        faces,
+        threshold,
+        {},
+        { ...options, diagnose: false },
+        Number.POSITIVE_INFINITY,
+        // NO PIXEL PATH HERE. It names its groups from the centres, and this is the one situation
+        // where a centre is already known to be wrong — the two filings below differ by which centre
+        // was misread. Left on, it makes the WRONG filing assemble too: measured 2026-09-17 on the
+        // 140 community sets, it turned one of v3's refusals into a legal cube that was not the
+        // user's, which is the failure this whole file exists to prevent.
+        false,
+      ),
+    }))
+    .filter(
+      ({ result }) => result.valid || result.ambiguous === true || result.confirm !== undefined,
+    );
+  if (fits.length === 1) return fits[0]!;
+  return {
+    result: reject(
+      fits.length === 0
+        ? 'two sides read with the same centre colour, and neither way of filing them is a legal cube'
+        : 'two sides read with the same centre colour, and both ways of filing them are legal cubes',
+      { centreConflict: { shared, missing, legalFilings: fits.length === 0 ? 0 : 2 } },
+    ),
   };
 }

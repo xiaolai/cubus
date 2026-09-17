@@ -8,7 +8,8 @@ photos (crop/downsample first, then this).
 
   python augment.py --images DIR/images/train --labels DIR/labels/train --per 1 --frac 0.5
 
-Writes `<stem>_augN.jpg` + copied `<stem>_augN.txt` next to the originals. PIL + numpy only.
+Writes `<stem>_augN.jpg` + copied `<stem>_augN.txt` next to the originals, and copies the label's
+cube file (cube_identity.py) when it has one. PIL + numpy only.
 
 Idempotent: a second run over the same directory skips its own outputs (`*_augN`) rather than
 augmenting an augmentation — without that, every run compounded the effects and doubled the
@@ -26,9 +27,12 @@ import math
 import os
 import re
 import shutil
+from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageFilter
+
+from cube_identity import copy_cubes
 
 
 def _motion_blur(arr: np.ndarray, rng: np.random.Generator) -> np.ndarray:
@@ -92,6 +96,7 @@ def augment(images: str, labels: str, per: int, frac: float, seed: int = 0) -> i
             dst = f"{stem}_aug{k}"
             out.save(os.path.join(images, dst + ".jpg"), quality=92)
             shutil.copy2(lbl, os.path.join(labels, dst + ".txt"))
+            copy_cubes(Path(lbl), Path(labels, dst + ".txt"))
             made += 1
     return made
 

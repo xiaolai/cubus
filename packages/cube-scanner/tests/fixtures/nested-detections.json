@@ -1,0 +1,53 @@
+{
+  "about": "Shared cases for dropNested (src/onnx-postprocess.ts) and drop_nested (ml/cube_infer.py). Both suites read this file, so the two implementations cannot drift apart. `kept` lists indices into `detections`, in order.",
+  "cases": [
+    {
+      "name": "an inner box inside a full-sticker box is dropped, even when it is the more confident",
+      "detections": [
+        { "cx": 100, "cy": 100, "w": 40, "h": 40, "classId": 1, "confidence": 0.6 },
+        { "cx": 100, "cy": 100, "w": 26, "h": 26, "classId": 4, "confidence": 0.9 }
+      ],
+      "kept": [0]
+    },
+    {
+      "name": "a box spanning a whole face does not remove the stickers inside it",
+      "detections": [
+        { "cx": 145, "cy": 145, "w": 140, "h": 140, "classId": 0, "confidence": 0.3 },
+        { "cx": 100, "cy": 100, "w": 30, "h": 30, "classId": 2, "confidence": 0.9 }
+      ],
+      "kept": [0, 1]
+    },
+    {
+      "name": "neighbours overlapping by less than 70% of the smaller both stay",
+      "detections": [
+        { "cx": 100, "cy": 100, "w": 30, "h": 30, "classId": 2, "confidence": 0.9 },
+        { "cx": 118, "cy": 100, "w": 30, "h": 30, "classId": 3, "confidence": 0.8 }
+      ],
+      "kept": [0, 1]
+    },
+    {
+      "name": "exactly four times the area still counts as the same sticker",
+      "detections": [
+        { "cx": 100, "cy": 100, "w": 60, "h": 60, "classId": 5, "confidence": 0.7 },
+        { "cx": 100, "cy": 100, "w": 30, "h": 30, "classId": 5, "confidence": 0.7 }
+      ],
+      "kept": [0]
+    },
+    {
+      "name": "exactly 70% inside is nested",
+      "detections": [
+        { "cx": 100, "cy": 100, "w": 40, "h": 40, "classId": 1, "confidence": 0.8 },
+        { "cx": 114, "cy": 100, "w": 30, "h": 30, "classId": 1, "confidence": 0.8 }
+      ],
+      "kept": [0]
+    },
+    {
+      "name": "two boxes of equal area never remove each other",
+      "detections": [
+        { "cx": 100, "cy": 100, "w": 30, "h": 30, "classId": 1, "confidence": 0.8 },
+        { "cx": 101, "cy": 100, "w": 30, "h": 30, "classId": 4, "confidence": 0.7 }
+      ],
+      "kept": [0, 1]
+    }
+  ]
+}

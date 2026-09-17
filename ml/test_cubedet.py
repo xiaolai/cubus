@@ -1,0 +1,1191 @@
+"""Checks that must pass before any GPU time is spent on `cubedet`.
+
+An assigner or loss bug does not crash. It trains — slowly, to a mediocre model — and the only
+symptom is a number six hours later that is worse than the baseline for no stated reason. Every
+test here exists to make one such bug fail in seconds instead.
+
+The load-bearing one is `test_overfits_a_single_batch`: a detector that cannot drive the loss to
+near zero on eight images it sees two hundred times has a wiring fault, and no amount of data will
+fix it. It is the cheapest possible refutation of "the model is fine, the data must be wrong".
+
+Run: ml/venv/bin/python -m pytest ml/test_cubedet.py -q
+"""
+
+from __future__ import annotations
+
+import math
+import random
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from cube_infer import IMG_SIZE  # noqa: E402
+from cubedet.assign import TaskAlignedAssigner, points_in_boxes  # noqa: E402
+from cubedet.data import _affine, _clip_and_drop, _photometric, _to_canvas, collate  # noqa: E402
+from cubedet.loss import DetectionLoss, complete_iou  # noqa: E402
+from cubedet.model import (  # noqa: E402
+    CSP_BACKBONE,
+    NUM_CLASSES,
+    REG_MAX,
+    STRIDES,
+    CubeDet,
+    ExportWrapper,
+    PretrainedBackbone,
+    boxes_to_distances,
+    count_parameters,
+    detection_widths,
+    distances_to_boxes,
+    make_anchors,
+    stride_cuts,
+)
+
+
+# ---------------------------------------------------------------- the output contract
+
+def test_export_tensor_is_exactly_what_the_app_decodes():
+    """[1, 4 + 6, 8400] — the shape `fitFromOutput` asserts and `decodeDetections` indexes.
+
+    This is the single test that makes the whole replacement drop-in. If it fails, the app, both
+    native plugins and the golden gate all need changing, and the job just became much larger.
+    """
+    model = CubeDet().eval()
+    out = model.forward_export(torch.zeros(1, 3, IMG_SIZE, IMG_SIZE))
+    assert out.shape == (1, 4 + NUM_CLASSES, 8400), out.shape
+    # Rows 4.. are probabilities, because the TypeScript compares them against a confidence
+    # threshold directly and never applies its own sigmoid.
+    scores = out[0, 4:, :]
+    assert float(scores.min()) >= 0.0 and float(scores.max()) <= 1.0
+
+
+def test_anchor_grid_is_the_three_strides_the_app_assumes():
+    points, strides = make_anchors(IMG_SIZE)
+    assert points.shape == (8400, 2) and strides.shape == (8400,)
+    counts = {int(s): int((strides == s).sum()) for s in strides.unique()}
+    assert counts == {8: 6400, 16: 1600, 32: 400}
+    # Cell CENTRES, not corners: the first stride-8 point sits at (4, 4), not (0, 0). Half a cell
+    # of bias here would be 4 px on every box the detector ever produced.
+    assert torch.allclose(points[0], torch.tensor([4.0, 4.0]))
+
+
+def test_distance_encoding_round_trips():
+    """boxes → distances → boxes must be the identity, or the DFL targets teach the wrong box."""
+    points, strides = make_anchors(IMG_SIZE)
+    torch.manual_seed(0)
+    take = torch.randint(0, 8400, (256,))
+    p, s = points[take], strides[take]
+    # Boxes built around each point so the distances land inside the REG_MAX range.
+    half = (torch.rand(256, 2) * 3 + 1) * s[:, None]
+    boxes = torch.cat((p - half, p + half), dim=-1)
+    distances = boxes_to_distances(p, boxes, s)
+    assert float(distances.max()) < REG_MAX
+    assert torch.allclose(distances_to_boxes(p, distances, s), boxes, atol=1e-3)
+
+
+def test_onnx_export_keeps_the_contract():
+    onnx = pytest.importorskip("onnx")
+    import io
+
+    model = CubeDet().eval()
+    buffer = io.BytesIO()
+    torch.onnx.export(
+        ExportWrapper(model),
+        torch.zeros(1, 3, IMG_SIZE, IMG_SIZE),
+        buffer,
+        input_names=["images"],
+        output_names=["output0"],
+        opset_version=12,
+        dynamo=False,
+    )
+    buffer.seek(0)
+    graph = onnx.load_model(buffer).graph
+    shape = [d.dim_value for d in graph.output[0].type.tensor_type.shape.dim]
+    assert shape == [1, 4 + NUM_CLASSES, 8400], shape
+
+
+# ---------------------------------------------------------------- assignment
+
+def test_points_in_boxes_is_strict_about_the_edge():
+    points = torch.tensor([[10.0, 10.0], [0.0, 0.0], [30.0, 10.0]])
+    boxes = torch.tensor([[[5.0, 5.0, 20.0, 20.0]]])
+    inside = points_in_boxes(points, boxes)[0, 0]
+    assert inside.tolist() == [True, False, False]
+
+
+def test_assigner_gives_each_anchor_one_owner():
+    """Two touching stickers, the geometry of a real face. No anchor may serve both."""
+    assigner = TaskAlignedAssigner(NUM_CLASSES)
+    points, _ = make_anchors(IMG_SIZE)
+    gt_boxes = torch.tensor([[[100.0, 100.0, 160.0, 160.0], [160.0, 100.0, 220.0, 160.0]]])
+    gt_labels = torch.tensor([[1, 4]])              # red beside orange — the hard pair
+    gt_mask = torch.ones(1, 2, dtype=torch.bool)
+    scores = torch.full((1, 8400, NUM_CLASSES), 0.5)
+    boxes = torch.cat((points - 30, points + 30), dim=-1)[None]
+    positive, target_boxes, target_scores = assigner(scores, boxes, points, gt_labels, gt_boxes, gt_mask)
+    assert bool(positive.any())
+    # Exactly one class is non-zero for every positive anchor.
+    non_zero = (target_scores[positive] > 0).sum(dim=-1)
+    assert int(non_zero.max()) == 1, "an anchor was given two colours"
+    # And every assigned target box is one of the two ground truths, never an average of them.
+    for box in target_boxes[positive]:
+        assert any(torch.allclose(box, gt) for gt in gt_boxes[0]), box
+
+
+def test_assigner_survives_an_image_with_no_stickers():
+    """Distractor-only frames are in the training set on purpose; they must yield all-negative
+    targets rather than a NaN that poisons the epoch."""
+    assigner = TaskAlignedAssigner(NUM_CLASSES)
+    points, _ = make_anchors(IMG_SIZE)
+    positive, _, target_scores = assigner(
+        torch.full((1, 8400, NUM_CLASSES), 0.3),
+        torch.cat((points - 10, points + 10), dim=-1)[None],
+        points,
+        torch.zeros(1, 1, dtype=torch.long),
+        torch.zeros(1, 1, 4),
+        torch.zeros(1, 1, dtype=torch.bool),
+    )
+    assert not bool(positive.any())
+    assert torch.isfinite(target_scores).all() and float(target_scores.sum()) == 0.0
+
+
+# ---------------------------------------------------------------- loss
+
+def test_complete_iou_is_one_for_identical_boxes_and_falls_with_distance():
+    a = torch.tensor([[10.0, 10.0, 50.0, 50.0]])
+    assert float(complete_iou(a, a)) == pytest.approx(1.0, abs=1e-5)
+    near = torch.tensor([[15.0, 10.0, 55.0, 50.0]])
+    far = torch.tensor([[200.0, 200.0, 240.0, 240.0]])
+    assert float(complete_iou(a, near)) > float(complete_iou(a, far))
+    # Disjoint boxes still produce a usable gradient — the reason CIoU is used over plain IoU,
+    # whose gradient is identically zero once the boxes stop overlapping.
+    disjoint = complete_iou(a.requires_grad_(False), far)
+    assert float(disjoint) < 0.0 and torch.isfinite(disjoint).all()
+
+
+def test_loss_is_finite_and_falls_when_the_prediction_is_made_right():
+    torch.manual_seed(0)
+    model = CubeDet()
+    criterion = DetectionLoss(NUM_CLASSES)
+    images = torch.rand(2, 3, IMG_SIZE, IMG_SIZE)
+    targets = {
+        "labels": torch.tensor([[1, 4], [2, 0]]),
+        "boxes": torch.tensor(
+            [[[100.0, 100.0, 150.0, 150.0], [160.0, 100.0, 210.0, 150.0]],
+             [[300.0, 300.0, 350.0, 350.0], [360.0, 300.0, 410.0, 350.0]]]
+        ),
+        "mask": torch.ones(2, 2, dtype=torch.bool),
+    }
+    total, parts = criterion(model(images), targets)
+    assert torch.isfinite(total) and float(total) > 0
+    assert parts["positives"] > 0, "the assigner found no positives on a plainly visible target"
+
+
+# ---------------------------------------------------------------- the one that matters
+
+def test_overfits_a_single_batch():
+    """Eight images, two hundred steps, loss must collapse and the boxes must be found.
+
+    This is the refutation test for the whole training stack. A detector that cannot memorise
+    eight images has a fault in the assignment, the loss, the decode or the anchor geometry — and
+    every one of those faults otherwise presents as "the model trained but the numbers are
+    disappointing", six hours later.
+    """
+    torch.manual_seed(0)
+    device = "cpu"
+    # A tiny model: the point is the wiring, not the capacity, and CPU time is the budget here.
+    model = CubeDet(width=0.25).to(device)
+    criterion = DetectionLoss(NUM_CLASSES)
+    optimiser = torch.optim.AdamW(model.parameters(), lr=3e-3, weight_decay=0.0)
+
+    # Two bright squares on grey, at fixed places — the simplest thing that exercises box
+    # regression AND class choice.
+    images = torch.full((4, 3, IMG_SIZE, IMG_SIZE), 114 / 255)
+    boxes = torch.tensor([[120.0, 120.0, 200.0, 200.0], [280.0, 300.0, 360.0, 380.0]])
+    labels = torch.tensor([1, 4])
+    for i in range(4):
+        for b, (box, label) in enumerate(zip(boxes, labels)):
+            x0, y0, x1, y1 = (int(v) for v in box)
+            colour = torch.zeros(3)
+            colour[b] = 1.0
+            images[i, :, y0:y1, x0:x1] = colour[:, None, None]
+    targets = {
+        "labels": labels[None].repeat(4, 1),
+        "boxes": boxes[None].repeat(4, 1, 1),
+        "mask": torch.ones(4, 2, dtype=torch.bool),
+    }
+
+    first = None
+    model.train()
+    for step in range(200):
+        total, parts = criterion(model(images), targets)
+        optimiser.zero_grad(set_to_none=True)
+        total.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
+        optimiser.step()
+        if step == 0:
+            first = parts["total"]
+    last = parts["total"]
+    assert last < first * 0.25, f"loss barely moved: {first:.3f} → {last:.3f}"
+
+    # And it must actually find them. The check is PER CLASS, not the global top-k: nine or ten
+    # anchors survive assignment for one sticker, so the two highest-scoring anchors overall are
+    # routinely both on the SAME square — which is correct behaviour that a global top-2 test
+    # reads as a miss. NMS is what collapses them, and NMS lives in TypeScript, not here.
+    model.eval()
+    out = model.forward_export(images[:1])[0]          # [10, 8400]
+    scores = out[4:]
+    for box, label in zip(boxes, labels):
+        anchor = int(scores[int(label)].argmax())
+        cx, cy = float(out[0, anchor]), float(out[1, anchor])
+        w, h = float(out[2, anchor]), float(out[3, anchor])
+        centre = (float(box[0] + box[2]) / 2, float(box[1] + box[3]) / 2)
+        confidence = float(scores[int(label), anchor])
+        assert confidence > 0.5, f"class {int(label)} never became confident: {confidence:.3f}"
+        assert abs(cx - centre[0]) < 12 and abs(cy - centre[1]) < 12, (
+            f"class {int(label)} best anchor at ({cx:.1f}, {cy:.1f}), target {centre}"
+        )
+        # The box, not only the point. A model that learns centres but not extents still fails
+        # `fitFace`, which sizes the grid from the boxes.
+        assert abs(w - float(box[2] - box[0])) < 15 and abs(h - float(box[3] - box[1])) < 15, (
+            f"class {int(label)} predicted {w:.1f}×{h:.1f}, target "
+            f"{float(box[2] - box[0]):.0f}×{float(box[3] - box[1]):.0f}"
+        )
+
+
+# ---------------------------------------------------------------- data pipeline
+
+def test_letterbox_label_mapping_matches_the_app_geometry():
+    """A box covering the whole source frame must cover exactly the un-padded region."""
+    labels = np.array([[2.0, 0.5, 0.5, 1.0, 1.0]], dtype=np.float32)
+    mapped = _to_canvas(labels, 400, 300)[0]
+    from cube_infer import letterbox_geometry
+
+    _, new_w, new_h, pad_x, pad_y = letterbox_geometry(400, 300)
+    assert mapped[1] == pytest.approx(pad_x, abs=0.5)
+    assert mapped[2] == pytest.approx(pad_y, abs=0.5)
+    assert mapped[3] == pytest.approx(pad_x + new_w, abs=0.5)
+    assert mapped[4] == pytest.approx(pad_y + new_h, abs=0.5)
+
+
+def test_affine_carries_boxes_onto_the_object_they_label():
+    """Paint a square, transform image and label together, and check the label still covers paint.
+
+    Boxes are re-derived from all four rotated corners; a two-corner shortcut passes an identity
+    test and fails here, which is the point.
+    """
+    rng_seeds = range(12)
+    for seed in rng_seeds:
+        import random as _random
+
+        rng = _random.Random(seed)
+        image = np.full((IMG_SIZE, IMG_SIZE, 3), 114, dtype=np.uint8)
+        image[200:300, 250:350] = (255, 0, 0)
+        boxes = np.array([[1.0, 250.0, 200.0, 350.0, 300.0]], dtype=np.float32)
+        moved_image, moved_boxes = _affine(image, boxes, rng, degrees=8.0, translate=0.08, scale=0.30)
+        moved_boxes = _clip_and_drop(moved_boxes)
+        if len(moved_boxes) == 0:
+            continue
+        red = (moved_image[:, :, 0] > 128) & (moved_image[:, :, 1] < 100)
+        if not red.any():
+            continue
+        ys, xs = np.nonzero(red)
+        box = moved_boxes[0]
+        # Every red pixel must be inside the transformed box, with a pixel of slack for resampling.
+        assert xs.min() >= box[1] - 2, (seed, xs.min(), box)
+        assert ys.min() >= box[2] - 2, (seed, ys.min(), box)
+        assert xs.max() <= box[3] + 2, (seed, xs.max(), box)
+        assert ys.max() <= box[4] + 2, (seed, ys.max(), box)
+
+
+# The palette's saturated colours and where they sit on the hue circle. WHITE IS ABSENT ON
+# PURPOSE: at zero saturation hue is undefined, so a 2/255 change flips it by 180° and means
+# nothing. Asserting on white's hue measures floating-point noise and calls it a colour shift.
+_HUE_REFERENCE = {"red": (196, 30, 58), "orange": (255, 88, 0), "yellow": (255, 213, 0),
+                  "green": (0, 158, 96), "blue": (0, 70, 173)}
+
+
+def _hue_degrees(rgb) -> float:
+    import colorsys
+
+    return colorsys.rgb_to_hsv(*[c / 255 for c in rgb])[0] * 360
+
+
+def _hue_gap(name: str) -> float:
+    """Distance from this colour to its NEAREST palette neighbour, the width of its safe zone."""
+    here = _hue_degrees(_HUE_REFERENCE[name])
+    others = (_hue_degrees(v) for k, v in _HUE_REFERENCE.items() if k != name)
+    return min(min(abs(o - here), 360 - abs(o - here)) for o in others)
+
+
+def test_photometric_never_moves_a_hue():
+    """The colour trap, asserted against the class boundary rather than against a round number.
+
+    A sticker is misclassified when the augmenter moves its hue more than HALF the way to the
+    nearest other colour — for red that is 15.4°, since red and orange sit 30.8° apart and are the
+    pair MODEL_CARD.md records as the weak one. Every colour must keep a real margin below its own
+    half-gap, so this fails both if hue jitter is added and if the white-balance cast is widened
+    past what was measured (see `CAST_LIMIT`).
+
+    Distance is CIRCULAR. Red's hue is 349.9°, so a drift to 0.1° is 10°, not 349.8° — the linear
+    reading was this test's own first bug.
+    """
+    import random as _random
+
+    worst: dict[str, float] = {name: 0.0 for name in _HUE_REFERENCE}
+    for seed in range(500):
+        rng = _random.Random(seed)
+        for name, rgb in _HUE_REFERENCE.items():
+            patch = np.full((8, 8, 3), rgb, dtype=np.uint8)
+            out = _photometric(patch, rng).astype(np.float32).mean(axis=(0, 1))
+            raw = abs(_hue_degrees(out) - _hue_degrees(rgb))
+            worst[name] = max(worst[name], min(raw, 360 - raw))
+
+    for name, drift in worst.items():
+        half_gap = _hue_gap(name) / 2
+        assert drift < half_gap, (
+            f"{name} drifted {drift:.1f}°, past the {half_gap:.1f}° boundary to its nearest "
+            f"neighbour — the augmenter is relabelling colours"
+        )
+    # And the margins that were actually measured, so a widened cast fails here rather than six
+    # hours later in a confusion matrix. Red is the pair that matters; yellow is the tightest.
+    assert worst["red"] < 10.0, worst["red"]
+    assert worst["yellow"] < 11.5, worst["yellow"]
+
+
+def _tiny_dataset(tmp_path, n=8):
+    """A few 640×640 frames with one bright square each, in YOLO layout."""
+    from PIL import Image
+
+    (tmp_path / "images" / "train").mkdir(parents=True)
+    (tmp_path / "labels" / "train").mkdir(parents=True)
+    for i in range(n):
+        img = np.full((IMG_SIZE, IMG_SIZE, 3), 114, np.uint8)
+        x0, y0 = 100 + (i % 3) * 40, 120 + (i % 4) * 30
+        img[y0:y0 + 90, x0:x0 + 90] = (255, 0, 0)
+        Image.fromarray(img).save(tmp_path / "images" / "train" / f"{i:03d}.jpg", quality=95)
+        cx, cy = (x0 + 45) / IMG_SIZE, (y0 + 45) / IMG_SIZE
+        wh = 90 / IMG_SIZE
+        (tmp_path / "labels" / "train" / f"{i:03d}.txt").write_text(
+            f"1 {cx:.6f} {cy:.6f} {wh:.6f} {wh:.6f}\n"
+        )
+    return tmp_path
+
+
+def test_mosaic_keeps_every_box_on_its_own_paint(tmp_path):
+    """Four images into one frame, and every surviving box must still sit on red pixels.
+
+    Mosaic is the augmentation most able to corrupt labels quietly: it composes four images at a
+    random centre, each cropped differently, and every box has to be shifted by its own image's
+    offset. Get one quadrant's arithmetic wrong and the model trains on boxes pointing at a
+    neighbour's pixels — which presents as a slightly worse model, never as a bug.
+    """
+    from cubedet.data import CubeDataset
+
+    dataset = CubeDataset(_tiny_dataset(tmp_path), "train", augment=True, seed=1)
+    checked = 0
+    for index in range(8):
+        for epoch in range(4):
+            dataset.set_epoch(epoch, 100)          # well before close_mosaic
+            image, boxes = dataset[index]
+            picture = (image.numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
+            # PAINT IS FOUND BY HUE, not by raw channel thresholds. The augmenter scales saturation
+            # over [0.5, 1.5] and brightness over [0.75, 1.25], so a perfectly good red sticker can
+            # come out as (196, 120, 130) — which a `G < 100` test calls background. That is what
+            # the first version of this check did, and it reported a correctly-placed box as
+            # "sitting on the wrong image". Hue survives every one of those transforms by
+            # construction (HUE_LIMIT_DEG is 0), and grey padding has no saturation at all, so
+            # hue-plus-saturation is the predicate that means what this test is asking.
+            from cubedet.data import _rgb_to_hsv
+
+            hsv = _rgb_to_hsv(picture.astype(np.float32) / 255.0)
+            hue, sat = hsv[:, :, 0], hsv[:, :, 1]
+            near_red = np.minimum(np.abs(hue - 0.0), 360 - np.abs(hue - 0.0)) < 40
+            red = near_red & (sat > 0.25)
+            for box in boxes.numpy():
+                x0, y0, x1, y1 = (int(round(v)) for v in box[1:])
+                x0, y0 = max(x0, 0), max(y0, 0)
+                x1, y1 = min(x1, IMG_SIZE), min(y1, IMG_SIZE)
+                if x1 - x0 < 6 or y1 - y0 < 6:
+                    continue
+                covered = red[y0:y1, x0:x1].mean()
+                # A kept box must be mostly paint. The threshold is loose because a rotated
+                # square's axis-aligned hull includes padding at the corners; it is nowhere near
+                # loose enough to admit a box on the wrong quadrant, which scores near zero.
+                assert covered > 0.45, (
+                    f"box {box[1:]} at index={index} epoch={epoch} covers {covered:.2f} paint "
+                    f"— it is sitting on the wrong image"
+                )
+                checked += 1
+    assert checked > 20, f"only {checked} boxes examined — the mosaic path may not have run"
+
+
+def test_mosaic_keeps_objects_near_their_native_size(tmp_path):
+    """A mosaic is CROPPED back to IMG_SIZE, not shrunk to it — so stickers keep their size.
+
+    This is the assertion that was missing while the first mosaic run burned two hours. Scaling the
+    2×IMG_SIZE collage down to one frame scales the cubes down with it: measured mean 43.5 px
+    against a native 90 px, 48%, while validation shows them at 100%. Nothing about that is visible
+    in a training log — it reads as a model that detects well and localises badly, which is exactly
+    what it was (mAP50 0.8682 vs 0.8648, mAP50-95 0.6271 vs 0.7492 at matched epochs).
+
+    The bound is deliberately wide. Scale jitter is ±50% by design, and clipping at the frame edge
+    trims some boxes, so the mean sits below native even when correct. It is nowhere near wide
+    enough to admit a half-scale mosaic.
+    """
+    from cubedet.data import (ROTATE_DEGREES, SCALE_JITTER, TRANSLATE_JITTER, CubeDataset,
+                              _affine, _clip_and_drop, _mosaic)
+
+    native = 90.0
+    dataset = CubeDataset(_tiny_dataset(tmp_path, n=16), "train", augment=True, seed=5)
+    sizes = []
+    for i in range(120):
+        rng = random.Random(i)
+        canvas, boxes = _mosaic(dataset._read, len(dataset.files), i % 16, rng)
+        _, moved = _affine(canvas, boxes, rng, degrees=ROTATE_DEGREES,
+                           translate=TRANSLATE_JITTER, scale=SCALE_JITTER,
+                           out_size=IMG_SIZE, base_scale=1.0)
+        kept = _clip_and_drop(moved)
+        sizes.extend(np.sqrt((kept[:, 3] - kept[:, 1]) * (kept[:, 4] - kept[:, 2])))
+    assert len(sizes) > 50, f"only {len(sizes)} boxes — the mosaic path may not have run"
+    mean = float(np.mean(sizes))
+    assert 0.65 * native < mean < 1.35 * native, (
+        f"mosaic stickers average {mean:.1f} px against a native {native:.0f} px "
+        f"({mean / native:.0%}) — the collage is being scaled instead of cropped"
+    )
+
+
+def test_mosaic_closes_for_the_final_epochs():
+    """`close_mosaic` must actually close, or training never ends on a clean image."""
+    from cubedet.data import CLOSE_MOSAIC_EPOCHS, CubeDataset
+
+    dataset = CubeDataset.__new__(CubeDataset)     # the predicate needs no disk
+    dataset.augment = True
+    dataset.total_epochs = 100
+    dataset.epoch = 0
+    assert dataset.mosaic_open()
+    dataset.epoch = 100 - CLOSE_MOSAIC_EPOCHS - 1
+    assert dataset.mosaic_open()
+    dataset.epoch = 100 - CLOSE_MOSAIC_EPOCHS
+    assert not dataset.mosaic_open(), "mosaic must be shut for the final epochs"
+    dataset.epoch = 99
+    assert not dataset.mosaic_open()
+    dataset.augment = False                        # never on for validation
+    dataset.epoch = 0
+    assert not dataset.mosaic_open()
+
+
+def test_set_epoch_reaches_the_workers(tmp_path):
+    """The epoch must cross the process boundary, or closing mosaic is a no-op.
+
+    DataLoader workers get a COPY of the dataset when they spawn. With `persistent_workers=True`
+    that copy outlives the epoch, so `set_epoch` updates the object in the parent and reaches
+    nothing that loads data: mosaic never closes, the augmentation seed never advances, and the
+    training log looks identical either way. This is the check that keeps it switched off.
+    """
+    from torch.utils.data import DataLoader
+
+    from cubedet.data import CubeDataset
+
+    dataset = CubeDataset(_tiny_dataset(tmp_path), "train", augment=True, seed=3)
+
+    def first_batch(epoch):
+        dataset.set_epoch(epoch, 100)
+        loader = DataLoader(dataset, batch_size=4, shuffle=False, num_workers=2,
+                            collate_fn=collate, persistent_workers=False)
+        images, _ = next(iter(loader))
+        return images.clone()
+
+    a = first_batch(0)
+    b = first_batch(1)
+    assert not torch.equal(a, b), "identical pixels at two epochs — set_epoch never reached the workers"
+    assert torch.equal(a, first_batch(0)), "the same epoch must reproduce, or the run is not seeded"
+
+
+def test_collate_masks_padding_rather_than_inventing_a_white_sticker():
+    a = (torch.zeros(3, IMG_SIZE, IMG_SIZE), torch.tensor([[1.0, 10.0, 10.0, 20.0, 20.0]]))
+    b = (torch.zeros(3, IMG_SIZE, IMG_SIZE), torch.zeros(0, 5))
+    images, targets = collate([a, b])
+    assert images.shape == (2, 3, IMG_SIZE, IMG_SIZE)
+    assert targets["mask"][0].tolist() == [True]
+    assert targets["mask"][1].tolist() == [False]
+
+
+def test_collate_keeps_unlabelled_regions_out_of_the_stickers():
+    a = (torch.zeros(3, IMG_SIZE, IMG_SIZE), torch.tensor([[2.0, 10.0, 10.0, 20.0, 20.0], [-1.0, 30.0, 30.0, 60.0, 60.0]]))
+    b = (torch.zeros(3, IMG_SIZE, IMG_SIZE), torch.tensor([[4.0, 100.0, 100.0, 120.0, 120.0]]))
+    _, targets = collate([a, b])
+    assert targets["labels"][targets["mask"]].tolist() == [2, 4], "an ignore row became a sticker"
+    assert targets["ignore_mask"].tolist() == [[True], [False]]
+    assert targets["ignore"][0, 0].tolist() == [30.0, 30.0, 60.0, 60.0]
+    with pytest.raises(ValueError):
+        collate([(torch.zeros(3, IMG_SIZE, IMG_SIZE), torch.tensor([[-2.0, 1.0, 1.0, 5.0, 5.0]]))])
+
+
+def test_the_drop_dataset_writes_the_ignore_class_the_trainer_reads():
+    # drop_dataset.py mirrors the value because it runs without torch; this is where both are importable.
+    import drop_dataset
+    from cubedet.data import IGNORE_CLASS
+
+    assert drop_dataset.IGNORE_CLASS == IGNORE_CLASS
+
+
+def _loss_and_class_gradient(targets):
+    torch.manual_seed(0)
+    model = CubeDet()
+    outputs = model(torch.rand(1, 3, IMG_SIZE, IMG_SIZE))
+    outputs[0].retain_grad()
+    total, parts = DetectionLoss(NUM_CLASSES)(outputs, targets)
+    total.backward()
+    points = outputs[2]
+    return float(total), parts, outputs[0].grad[0].abs().sum(dim=-1), points
+
+
+def test_an_unlabelled_region_is_not_taught_as_background():
+    sticker = {"labels": torch.tensor([[1]]), "boxes": torch.tensor([[[100.0, 100.0, 160.0, 160.0]]]),
+               "mask": torch.ones(1, 1, dtype=torch.bool)}
+    region = torch.tensor([[[300.0, 300.0, 420.0, 420.0]]])
+    plain, _, plain_grad, points = _loss_and_class_gradient(dict(sticker))
+    _, _, grad, _ = _loss_and_class_gradient({**sticker, "ignore": region, "ignore_mask": torch.ones(1, 1, dtype=torch.bool)})
+    inside = points_in_boxes(points, region)[0, 0]
+    assert inside.sum() > 0
+    assert float(grad[inside].abs().max()) == 0.0, "anchors in an unlabelled region still learned 'background'"
+    assert float(plain_grad[inside].abs().min()) > 0.0, "the control: without the region those anchors do learn"
+    outside = ~inside
+    assert torch.allclose(grad[outside], plain_grad[outside]), "the region changed anchors outside it"
+
+    # An empty ignore list is the same loss as no ignore list at all: old datasets train unchanged.
+    empty, _, _, _ = _loss_and_class_gradient({**sticker, "ignore": torch.zeros(1, 1, 4), "ignore_mask": torch.zeros(1, 1, dtype=torch.bool)})
+    assert empty == plain
+
+
+def test_a_labelled_sticker_inside_an_unlabelled_region_still_trains():
+    sticker = {"labels": torch.tensor([[1]]), "boxes": torch.tensor([[[100.0, 100.0, 160.0, 160.0]]]),
+               "mask": torch.ones(1, 1, dtype=torch.bool)}
+    covering = {"ignore": torch.tensor([[[80.0, 80.0, 180.0, 180.0]]]), "ignore_mask": torch.ones(1, 1, dtype=torch.bool)}
+    _, parts, grad, points = _loss_and_class_gradient({**sticker, **covering})
+    assert parts["positives"] > 0
+    in_sticker = points_in_boxes(points, sticker["boxes"])[0, 0]
+    assert float(grad[in_sticker].abs().max()) > 0.0, "the sticker's own anchors stopped learning"
+
+
+def _accelerator() -> str | None:
+    """CUDA on the training box, MPS on the maintainer's Mac, otherwise nothing.
+
+    Both are enough to expose a device mismatch, which is the point: a test that only ever runs on
+    CPU cannot see one, because there is only one device for tensors to be on.
+    """
+    if torch.cuda.is_available():
+        return "cuda"
+    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        return "mps"
+    return None
+
+
+def test_evaluate_runs_on_an_accelerator():
+    """The whole validation path on a real device, end to end.
+
+    This exists because a `torch.zeros(...)` without `device=` in `val.py` killed a training run
+    at the end of its first epoch — five minutes of GPU time to reach a line that a CPU-only test
+    had run hundreds of times without complaint. The failure is not subtle once it happens; the
+    point is that nothing before this could make it happen.
+    """
+    device = _accelerator()
+    if device is None:
+        pytest.skip("no CUDA or MPS device available")
+
+    from torch.utils.data import DataLoader
+
+    from cubedet.val import evaluate
+
+    model = CubeDet(width=0.25).to(device)
+    # FORCE THE CONFIDENT BRANCH. The precision/recall block — the one that carried the device bug
+    # — runs only when some prediction clears REPORT_CONF. A freshly built model sits at the 0.01
+    # class prior by construction (`DetectHead._init_biases`), so that branch is dead and the first
+    # version of this test passed happily against the bug it was written to catch. Driving the
+    # class bias positive makes every anchor confident, so the block actually executes.
+    with torch.no_grad():
+        for layer in model.head.cls_out:
+            layer.bias.fill_(4.0)          # sigmoid(4) ≈ 0.98
+
+    class TwoImages(torch.utils.data.Dataset):
+        def __len__(self):
+            return 2
+
+        def __getitem__(self, index):
+            image = torch.full((3, IMG_SIZE, IMG_SIZE), 114 / 255)
+            image[:, 120:200, 120:200] = 1.0
+            target = torch.tensor([[1.0, 120.0, 120.0, 200.0, 200.0]])
+            return image, target
+
+    loader = DataLoader(TwoImages(), batch_size=2, collate_fn=collate)
+    metrics = evaluate(model, loader, device)
+    for key in ("map50", "map50_95", "precision", "recall"):
+        assert key in metrics and metrics[key] == metrics[key], (key, metrics)
+
+
+def test_checkpoint_reloads_under_weights_only(tmp_path):
+    """A checkpoint must be plain data, because that is how everything downstream opens it.
+
+    Both the resume path and `export.py --cubedet` load with `weights_only=True`, which refuses any
+    pickled object that is not a tensor or a primitive. `torch.__version__` is a `TorchVersion` —
+    a str SUBCLASS — so recording it verbatim produced checkpoints that could be written for hours
+    and then not read at all. The failure surfaces at the very end of a run, which is the worst
+    possible time to discover it, and never during training.
+    """
+    from cubedet.train import assert_permissive_environment
+
+    environment = assert_permissive_environment(allow=True)
+    for key, value in environment.items():
+        assert type(value) is str, f"{key} is {type(value).__name__}, not a plain str"
+
+    model = CubeDet(width=0.25)
+    path = tmp_path / "ckpt.pt"
+    torch.save(
+        {"model": model.state_dict(), "width": 0.25, "num_classes": NUM_CLASSES,
+         "epoch": 3, "metrics": {"map50": 0.5}, "environment": environment},
+        path,
+    )
+    state = torch.load(path, map_location="cpu", weights_only=True)
+    rebuilt = CubeDet(num_classes=state["num_classes"], width=state["width"])
+    rebuilt.load_state_dict(state["model"])
+    assert state["environment"]["copyleft_detector_packages_present"] in {"none", "ultralytics"}
+
+
+def test_parameter_count_stays_near_the_model_it_replaces():
+    """10.6 MB was an accepted download cost; this keeps a redesign from quietly doubling it."""
+    params = count_parameters(CubeDet())
+    assert 2.0e6 < params < 3.4e6, params
+
+
+# ---------------------------------------------------------------- the pretrained backbone
+#
+# These exist because swapping the backbone is the one change that can silently produce a model
+# which trains, exports and ships while being wrong: a wrong feature level still has a shape, and a
+# damaged BatchNorm still has weights. Every test below is aimed at a failure with no symptom.
+
+PRETRAINED_UNDER_TEST = "mobilenet_v3_small"
+
+
+def test_pretrained_backbone_keeps_the_output_contract():
+    """A different backbone must not move one byte of the tensor the app reads.
+
+    The whole case for `PretrainedBackbone` being a substitution rather than a redesign rests on
+    this: same shape, same row meanings, same probability range.
+    """
+    model = CubeDet(backbone=PRETRAINED_UNDER_TEST, pretrained=False).eval()
+    out = model.forward_export(torch.zeros(1, 3, IMG_SIZE, IMG_SIZE))
+    assert out.shape == (1, 4 + NUM_CLASSES, 8400), out.shape
+    scores = out[0, 4:, :]
+    assert float(scores.min()) >= 0.0 and float(scores.max()) <= 1.0
+
+
+def test_pretrained_backbone_hands_the_neck_the_widths_it_was_built_for():
+    """`PANNeck` and `DetectHead` are built for `detection_widths`; the reduction is what guarantees it."""
+    backbone = PretrainedBackbone(PRETRAINED_UNDER_TEST, pretrained=False)
+    assert (backbone.c1, backbone.c2, backbone.c3) == detection_widths()
+    p3, p4, p5 = backbone(torch.zeros(1, 3, IMG_SIZE, IMG_SIZE))
+    for feat, stride, channels in zip((p3, p4, p5), STRIDES, detection_widths()):
+        assert feat.shape[1] == channels, (feat.shape, channels)
+        assert feat.shape[-1] == IMG_SIZE // stride, (feat.shape, stride)
+
+
+def test_stride_cuts_does_not_disturb_the_pretrained_batchnorm_statistics():
+    """The probe runs a forward pass, and a forward pass in training mode REWRITES running stats.
+
+    This is the silent one. A probe that left BatchNorm in training mode would corrupt the very
+    weights it was called to measure — before step one, with no error and no symptom beyond a run
+    that trains to a slightly worse model than it should have.
+    """
+    import torchvision
+
+    features = torchvision.models.get_model(PRETRAINED_UNDER_TEST, weights=None).features
+    features.train()
+    norms = [m for m in features.modules() if isinstance(m, torch.nn.BatchNorm2d)]
+    assert norms, "expected BatchNorm layers to protect"
+    before = [(m.running_mean.clone(), m.running_var.clone(), int(m.num_batches_tracked)) for m in norms]
+
+    stride_cuts(features)
+
+    assert features.training, "the probe must restore the mode it found"
+    for module, (mean, var, batches) in zip(norms, before):
+        assert torch.equal(module.running_mean, mean)
+        assert torch.equal(module.running_var, var)
+        assert int(module.num_batches_tracked) == batches
+
+
+def test_stride_cuts_refuses_a_backbone_that_lacks_a_level():
+    """Loud, not a guess: a backbone with no stride-32 output cannot serve a three-level head."""
+    shallow = torch.nn.Sequential(
+        torch.nn.Conv2d(3, 8, 3, stride=2, padding=1),
+        torch.nn.Conv2d(8, 16, 3, stride=2, padding=1),
+        torch.nn.Conv2d(16, 32, 3, stride=2, padding=1),
+    )  # reaches stride 8 and stops
+    with pytest.raises(ValueError, match="stride"):
+        stride_cuts(shallow)
+
+
+@pytest.mark.parametrize("name", [PRETRAINED_UNDER_TEST, "mobilenetv4_conv_small.e2400_r224_in1k"])
+def test_a_normalised_backbone_sees_the_input_its_imagenet_weights_were_trained_on(name):
+    """Both publishers' statistics, and switching the scale on is exactly feeding normalised pixels."""
+    if "." in name:
+        pytest.importorskip("timm")
+    torch.manual_seed(0)
+    raw = PretrainedBackbone(name, pretrained=False, input_normalised=False).eval()
+    scaled = PretrainedBackbone(name, pretrained=False, input_normalised=True).eval()
+    scaled.load_state_dict(raw.state_dict())
+    assert scaled.input_mean.flatten().tolist() == pytest.approx([0.485, 0.456, 0.406])
+    assert scaled.input_std.flatten().tolist() == pytest.approx([0.229, 0.224, 0.225])
+    assert not any(k.startswith("input_") for k in scaled.state_dict()), "the statistics became checkpoint keys"
+    x = torch.rand(1, 3, 160, 160)
+    with torch.no_grad():
+        by_hand = raw((x - scaled.input_mean) / scaled.input_std)
+        for got, want in zip(scaled(x), by_hand, strict=True):
+            assert torch.allclose(got, want, atol=1e-5)
+        assert not torch.allclose(scaled(x)[0], raw(x)[0]), "switching the input scale on changed nothing"
+
+
+def test_a_checkpoint_loads_with_the_input_scale_it_was_trained_on(tmp_path):
+    import export
+
+    torch.manual_seed(0)
+    model = CubeDet(backbone=PRETRAINED_UNDER_TEST, pretrained=False, input_normalised=True).eval()
+    x = torch.rand(1, 3, IMG_SIZE, IMG_SIZE)
+    with torch.no_grad():
+        # Backbone features, not the detector's output: an untrained head answers the same boxes and
+        # scores for any input, so the output alone cannot show which input scale a model is using.
+        want = model.backbone(x)[0]
+        for recorded, expected in ((None, False), (False, False), (True, True)):
+            state = {"model": model.state_dict(), "backbone": PRETRAINED_UNDER_TEST, "width": 1.0, "imgsz": IMG_SIZE}
+            if recorded is not None:
+                state["input_normalised"] = recorded
+            torch.save(state, tmp_path / "c.pt")
+            loaded = export._load_cubedet(tmp_path / "c.pt")
+            assert loaded.input_normalised is expected, recorded
+            assert torch.allclose(loaded.backbone(x)[0], want, atol=1e-4) is expected, recorded
+
+
+def test_a_run_refuses_to_continue_across_input_scales(tmp_path):
+    from cubedet.train import input_scale_mismatch
+
+    assert input_scale_mismatch({}, False, tmp_path) is None, "an old checkpoint is raw pixels, like --no-input-normalise"
+    assert input_scale_mismatch({"input_normalised": True}, True, tmp_path) is None
+    assert input_scale_mismatch({}, True, tmp_path) is not None, "a pre-fix checkpoint was warm-started under normalisation"
+    assert input_scale_mismatch({"input_normalised": True}, False, tmp_path) is not None
+
+
+def test_the_from_scratch_backbone_refuses_an_input_scale():
+    with pytest.raises(ValueError, match="no published input statistics"):
+        CubeDet(backbone=CSP_BACKBONE, input_normalised=True)
+
+
+def test_a_normalised_model_carries_the_normalisation_into_the_onnx_graph():
+    ort = pytest.importorskip("onnxruntime")
+    import io
+
+    # THE BACKBONE, not the whole detector: an untrained head answers nearly the same boxes and scores
+    # whatever it is fed (measured: the normalised and raw models agreed to 1e-3 even with random head
+    # weights), so a graph that dropped the normalisation would pass a whole-model comparison. The
+    # backbone's features do depend on the input scale, and its forward is where the normalisation is.
+    torch.manual_seed(0)
+    backbone = PretrainedBackbone(PRETRAINED_UNDER_TEST, pretrained=False, input_normalised=True).eval()
+    buffer = io.BytesIO()
+    torch.onnx.export(backbone, torch.zeros(1, 3, IMG_SIZE, IMG_SIZE), buffer, input_names=["images"],
+                      output_names=["p3", "p4", "p5"], opset_version=12, dynamo=False)
+    backbone.eval()  # the exporter restores the mode it found; say which one the comparison runs in
+    x = torch.rand(1, 3, IMG_SIZE, IMG_SIZE)
+    # Single-threaded, and released before the test returns. The first full run with this test in it
+    # passed every test and then aborted at interpreter exit ("recursive_mutex lock failed", exit 134):
+    # onnxruntime's thread pool outliving the runtime state it locks, beside torch, in one process.
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = options.inter_op_num_threads = 1
+    session = ort.InferenceSession(buffer.getvalue(), options, providers=["CPUExecutionProvider"])
+    got = session.run(None, {"images": x.numpy()})
+    del session
+    import gc
+
+    gc.collect()
+    with torch.no_grad():
+        want = [t.numpy() for t in backbone(x)]
+        backbone.input_normalised = False
+        unscaled = [t.numpy() for t in backbone(x)]
+    assert not np.allclose(unscaled[0], want[0], atol=1e-3), "the features do not depend on the input scale"
+    for g, w in zip(got, want, strict=True):
+        assert np.allclose(g, w, rtol=1e-4, atol=1e-4), float(np.abs(g - w).max())
+
+
+def test_the_size_matched_arm_really_is_size_matched():
+    """`mobilenet_v3_small` is the arm that isolates pretraining, and it can only do that at equal size.
+
+    If this drifts, the comparison against `A_baseline` stops being a test of pretraining and
+    silently becomes a test of capacity — which the D_wide run already answered separately.
+    """
+    control = count_parameters(CubeDet(backbone=CSP_BACKBONE))
+    matched = count_parameters(CubeDet(backbone=PRETRAINED_UNDER_TEST, pretrained=False))
+    assert abs(matched - control) / control < 0.10, (control, matched)
+
+
+def test_backbone_choice_round_trips_through_a_checkpoint(tmp_path):
+    """The switch travels with the weights, and a rebuild on the wrong one fails rather than exports.
+
+    `export.py::_load_cubedet` rebuilds from the checkpoint and loads strictly. That is only safe
+    while the checkpoint actually carries the backbone name, so this asserts both halves: the right
+    name loads, and the wrong one raises instead of producing an artefact.
+    """
+    trained = CubeDet(backbone=PRETRAINED_UNDER_TEST, pretrained=False)
+    path = tmp_path / "best.pt"
+    torch.save(
+        {"model": trained.state_dict(), "width": 1.0, "imgsz": IMG_SIZE,
+         "context": False, "backbone": PRETRAINED_UNDER_TEST, "num_classes": NUM_CLASSES},
+        path,
+    )
+    state = torch.load(path, map_location="cpu", weights_only=True)
+
+    rebuilt = CubeDet(
+        num_classes=state["num_classes"], width=state["width"], image_size=state["imgsz"],
+        context=state["context"], backbone=state["backbone"], pretrained=False,
+    )
+    rebuilt.load_state_dict(state["model"], strict=True)
+
+    wrong = CubeDet(num_classes=state["num_classes"], width=state["width"], backbone=CSP_BACKBONE)
+    with pytest.raises(RuntimeError):
+        wrong.load_state_dict(state["model"], strict=True)
+
+
+def test_pretrained_export_survives_the_opset_the_shipped_lineage_pins():
+    """opset 12 is not negotiable — it is what every downstream consumer was built against.
+
+    MobileNet's hardswish has no ONNX operator before opset 14, so this is a real question rather
+    than a formality: it passes because the exporter decomposes it into Mul and HardSigmoid.
+    """
+    onnx = pytest.importorskip("onnx")
+    import io
+
+    model = CubeDet(backbone=PRETRAINED_UNDER_TEST, pretrained=False).eval()
+    buffer = io.BytesIO()
+    torch.onnx.export(
+        ExportWrapper(model),
+        torch.zeros(1, 3, IMG_SIZE, IMG_SIZE),
+        buffer,
+        input_names=["images"],
+        output_names=["output0"],
+        opset_version=12,
+        dynamo=False,
+    )
+    buffer.seek(0)
+    graph = onnx.load_model(buffer).graph
+    shape = [d.dim_value for d in graph.output[0].type.tensor_type.shape.dim]
+    assert shape == [1, 4 + NUM_CLASSES, 8400], shape
+
+
+def test_export_graph_reads_no_tensor_shapes():
+    """The exported graph must contain no Shape/Gather shape arithmetic and no channel-axis Slice.
+
+    Not a style rule -- it is the difference between having an Android artefact and not having one.
+    onnx2tf cannot infer a tensor layout through runtime shape arithmetic, and it mis-handles a
+    channel-axis Slice when rewriting NCHW to NHWC: it transposes some branches of a CSP block and
+    not others, so the concat that rejoins them sees 128 channels against 64. Measured 2026-09-11,
+    no cubedet model could produce a TFLite file at all while the YOLO model it replaces converted
+    fine from the same venv; op-for-op the working graph had 0 Shape and 10 Split, ours had 4 Shape
+    and 0 Split.
+
+    Two lines put them there and either would come back unnoticed: `b = feat.shape[0]` before the
+    head's reshape, and `chunk(2, dim=1)` in CSPStage, which must ask how many channels it is
+    splitting. `torch.split` with an explicit size and a reshape with a literal anchor count are
+    the spellings that read nothing.
+    """
+    onnx = pytest.importorskip("onnx")
+    import io
+    from collections import Counter
+
+    buffer = io.BytesIO()
+    torch.onnx.export(
+        ExportWrapper(CubeDet(backbone=PRETRAINED_UNDER_TEST, pretrained=False).eval()),
+        torch.zeros(1, 3, IMG_SIZE, IMG_SIZE),
+        buffer,
+        input_names=["images"],
+        output_names=["output0"],
+        opset_version=12,
+        dynamo=False,
+    )
+    buffer.seek(0)
+    ops = Counter(n.op_type for n in onnx.load_model(buffer).graph.node)
+    assert ops["Shape"] == 0, f"{ops['Shape']} Shape op(s): something reads a tensor shape at runtime"
+    assert ops["Slice"] == 0, f"{ops['Slice']} Slice op(s): use torch.split for a channel-axis split"
+    assert ops["Expand"] == 0, f"{ops['Expand']} Expand op(s): the anchor grid must stay a constant"
+
+
+def _contrastive_batch(labels):
+    """Two images, four stickers each, at fixed positions. `labels` gives each image's colours."""
+    boxes = torch.tensor(
+        [[[100.0, 100.0, 140.0, 140.0], [200.0, 100.0, 240.0, 140.0],
+          [100.0, 200.0, 140.0, 240.0], [200.0, 200.0, 240.0, 240.0]]] * 2
+    )
+    return {"labels": torch.tensor(labels), "boxes": boxes, "mask": torch.ones(2, 4, dtype=torch.bool)}
+
+
+def test_embedding_branch_leaves_the_exported_tensor_alone():
+    """The colour-embedding branch is training-only, and the app must not be able to tell.
+
+    `forward_export` is the app's contract — [1, 4 + 6, 8400] read at fixed row offsets by
+    `decodeDetections`, and by both native plugins and the golden gate. A new head that changed it
+    would turn a model experiment into a cross-platform migration.
+    """
+    plain = CubeDet().eval()
+    with_emb = CubeDet(embed_dim=16).eval()
+    x = torch.zeros(1, 3, IMG_SIZE, IMG_SIZE)
+    assert with_emb.forward_export(x).shape == plain.forward_export(x).shape
+    assert with_emb.forward_export(x).shape == (1, 4 + NUM_CLASSES, 8400)
+    # And it is genuinely absent by default, so an unflagged model carries no extra parameters.
+    assert plain.head.embed_dim == 0
+    assert not any("emb_" in n for n, _ in plain.named_parameters())
+    assert any("emb_" in n for n, _ in with_emb.named_parameters())
+
+
+def test_embedding_loss_is_finite_and_is_computed_WITHIN_each_image():
+    """Two assertions, and the second one is the entire mechanism.
+
+    FINITE: the diagonal of the similarity matrix is masked to -inf so an anchor cannot be its own
+    positive, and the pair mask is zero there. 0 * -inf is NaN, so the diagonal has to be zeroed in
+    the VALUE and not merely weighted out. The first version was not, and every batch returned a
+    NaN total from step one while the three detection terms beside it stayed perfectly finite.
+
+    WITHIN-IMAGE: pooling pairs across the batch would let the network satisfy the loss by learning
+    absolute colour again -- "every orange anywhere sits near every other orange" -- which is
+    exactly what stops surviving a change of illuminant, and is the thing this branch exists to
+    avoid.
+
+    The check is DECOMPOSITION, not a permutation. A within-image loss over a batch is the mean of
+    the per-image losses, exactly; a batch-pooled one is not, because it also counts cross-image
+    pairs that neither single-image run can see. The model runs in eval() so BatchNorm cannot make
+    a batch of two differ from two batches of one for unrelated reasons.
+
+    The first version of this test compared two label GROUPINGS and asserted the loss moved. It
+    passed against a deliberately batch-pooled mutation of the loss -- because regrouping changes
+    which embeddings pair up under pooling too -- so it asserted nothing. Written down because a
+    test that cannot fail is worse than no test: it reports the property as checked.
+    """
+    torch.manual_seed(0)
+    model = CubeDet(embed_dim=16, backbone=CSP_BACKBONE).eval()
+    x = torch.rand(2, 3, IMG_SIZE, IMG_SIZE)
+    criterion = DetectionLoss(NUM_CLASSES, embed_dim=16)
+
+    labels = [[1, 1, 4, 4], [1, 1, 4, 4]]
+    with torch.no_grad():
+        _, both = criterion(model(x), _contrastive_batch(labels))
+        singles = []
+        for i in (0, 1):
+            batch = _contrastive_batch(labels)
+            one = {k: v[i : i + 1] for k, v in batch.items()}
+            _, parts = criterion(model(x[i : i + 1]), one)
+            singles.append(parts["emb"])
+
+    assert math.isfinite(both["emb"]), "contrastive term is NaN — the 0 * -inf diagonal is back"
+    mean_of_singles = sum(singles) / 2
+    assert abs(both["emb"] - mean_of_singles) < 1e-4, (
+        f"batch loss {both['emb']:.6f} is not the mean of the per-image losses "
+        f"{mean_of_singles:.6f}, so pairs are being formed ACROSS images and the illuminant no "
+        "longer cancels"
+    )
+
+
+def test_embedding_loss_contributes_exactly_nothing_when_the_branch_is_off():
+    """Off must be free, not merely small: the default model's training is unchanged."""
+    torch.manual_seed(0)
+    model = CubeDet(backbone=CSP_BACKBONE)
+    model.train()
+    criterion = DetectionLoss(NUM_CLASSES, embed_dim=0)
+    _, parts = criterion(model(torch.rand(2, 3, IMG_SIZE, IMG_SIZE)),
+                         _contrastive_batch([[1, 1, 4, 4], [3, 3, 0, 0]]))
+    assert parts["emb"] == 0.0
+
+
+# ---------------------------------------------------------------------------------------------------
+# Scoring semantics shared by cubedet.val.evaluate and compare_detectors.py. Both used to carry their
+# own copy of these loops, and the copies disagreed; these pin the one they now share.
+
+
+def _scoring_fixture():
+    """Empty accumulators in the shape accumulate_ap fills: per class, per IoU threshold."""
+    import numpy as np
+    from cubedet.val import IOU_THRESHOLDS
+
+    flags = [[[] for _ in IOU_THRESHOLDS] for _ in range(NUM_CLASSES)]
+    confs = [[[] for _ in IOU_THRESHOLDS] for _ in range(NUM_CLASSES)]
+    return flags, confs, np.zeros(NUM_CLASSES, dtype=np.int64)
+
+
+def test_a_correct_detection_on_an_unlabelled_region_is_still_a_hit():
+    """Match first, ignore second. Filtering on the ignore rows before matching discarded a true
+    positive whenever it overlapped one."""
+    from cubedet.val import accumulate_ap
+
+    gt = torch.tensor([[0.0, 0.0, 10.0, 10.0]])
+    labels = torch.tensor([1])
+    ignore = torch.tensor([[0.0, 0.0, 10.0, 10.0]])  # the same place, for the sake of the test
+    pred = torch.tensor([[0.0, 0.0, 10.0, 10.0, 0.9, 1.0]])
+    flags, confs, counts = _scoring_fixture()
+    accumulate_ap(pred, gt, labels, flags, confs, counts, NUM_CLASSES, ignore)
+    assert flags[1][0][0].tolist() == [True], "a correct detection was dropped for overlapping an ignore row"
+
+
+def test_an_unmatched_detection_on_an_unlabelled_sticker_is_neither_hit_nor_miss():
+    from cubedet.val import accumulate_ap, tally_reads
+
+    gt = torch.tensor([[50.0, 50.0, 60.0, 60.0]])
+    labels = torch.tensor([2])
+    ignore = torch.tensor([[0.0, 0.0, 10.0, 10.0]])
+    pred = torch.tensor([[0.0, 0.0, 10.0, 10.0, 0.9, 1.0]])  # finds the sticker nobody labelled
+    flags, confs, counts = _scoring_fixture()
+    accumulate_ap(pred, gt, labels, flags, confs, counts, NUM_CLASSES, ignore)
+    assert all(len(a) == 0 for a in flags[1][0]), "an ignored detection was scored"
+    tally = {"tp": 0, "fp": 0, "fn": 0}
+    tally_reads(pred, gt, labels, tally, ignore_boxes=ignore)
+    assert tally == {"tp": 0, "fp": 0, "fn": 1}, tally
+
+
+def test_a_confident_wrong_colour_cannot_take_a_sticker_from_the_right_one():
+    """Reads are class-aware; the confusion matrix is location-only. One loop doing both let the
+    wrong-colour box claim the sticker first and turned the correct detection into a false alarm."""
+    import numpy as np
+    from cubedet.val import tally_reads
+
+    gt = torch.tensor([[0.0, 0.0, 10.0, 10.0]])
+    labels = torch.tensor([1])  # red
+    pred = torch.tensor([
+        [0.0, 0.0, 10.0, 10.0, 0.95, 4.0],  # orange, and surer
+        [0.0, 0.0, 10.0, 10.0, 0.60, 1.0],  # red
+    ])
+    tally = {"tp": 0, "fp": 0, "fn": 0}
+    confusion = np.zeros((NUM_CLASSES, NUM_CLASSES), dtype=np.int64)
+    tally_reads(pred, gt, labels, tally, confusion)
+    assert tally == {"tp": 1, "fp": 1, "fn": 0}, tally
+    assert confusion[1, 4] == 1 and confusion.sum() == 1, "the confusion row must record what the sticker was taken FOR"
+
+
+def test_a_misnamed_sticker_nobody_read_right_is_a_miss_as_well_as_a_false_alarm():
+    from cubedet.val import tally_reads
+
+    gt = torch.tensor([[0.0, 0.0, 10.0, 10.0]])
+    labels = torch.tensor([1])
+    pred = torch.tensor([[0.0, 0.0, 10.0, 10.0, 0.95, 4.0]])
+    tally = {"tp": 0, "fp": 0, "fn": 0}
+    tally_reads(pred, gt, labels, tally)
+    assert tally == {"tp": 0, "fp": 1, "fn": 1}, tally
+
+
+# ---------------------------------------------------------------------------------------------------
+# Silent failures in the trainer, each of which once let a run go ahead on something it should have
+# refused. Pinned so a refactor that drops the refusal fails here rather than in a six-hour run.
+
+
+def _one_image(classes):
+    """One collate item: an image and rows of (class, x0, y0, x1, y1), one row per class given."""
+    rows = torch.tensor([[float(c), 10.0 + 20 * i, 10.0, 25.0 + 20 * i, 25.0] for i, c in enumerate(classes)])
+    return torch.zeros(3, IMG_SIZE, IMG_SIZE), rows
+
+
+@pytest.mark.parametrize("bad", [1.9, float(NUM_CLASSES), -2.0])
+def test_a_label_that_is_not_a_class_is_refused_not_truncated(bad):
+    """`.long()` truncated 1.9 to class 1 and let 6 through to fail in the assigner; -2 is neither a
+    class nor the ignore marker."""
+    with pytest.raises(ValueError):
+        collate([_one_image([0, bad])])
+
+
+def test_whole_classes_and_the_ignore_marker_are_accepted():
+    _, targets = collate([_one_image([0, 5, -1])])
+    assert targets["labels"][0, :2].tolist() == [0, 5]
+    assert int(targets["ignore_mask"][0].sum()) == 1
+
+
+def test_a_loss_built_with_the_branch_off_ignores_embeddings_the_model_emits():
+    """`embed_dim` was stored and never read, so "off" depended on the model alone."""
+    torch.manual_seed(0)
+    model = CubeDet(embed_dim=16, backbone=CSP_BACKBONE).train()
+    outputs = model(torch.rand(2, 3, IMG_SIZE, IMG_SIZE))
+    assert outputs[-1] is not None, "the model under test must emit embeddings for this to mean anything"
+    _, parts = DetectionLoss(NUM_CLASSES, embed_dim=0)(outputs, _contrastive_batch([[1, 1, 4, 4], [3, 3, 0, 0]]))
+    assert parts["emb"] == 0.0
+    _, on = DetectionLoss(NUM_CLASSES, embed_dim=16)(outputs, _contrastive_batch([[1, 1, 4, 4], [3, 3, 0, 0]]))
+    assert on["emb"] != 0.0, "the control: with the branch on, the same outputs do produce a term"
+
+
+@pytest.mark.parametrize("flag", ["--resume", "--init-from"])
+def test_a_checkpoint_path_that_does_not_exist_stops_the_run(flag, tmp_path):
+    """Both flags were guarded by `.exists()` at the point of use, so a typo trained from scratch."""
+    from cubedet import train
+
+    missing = tmp_path / "no-such.pt"
+    with pytest.raises(SystemExit) as stop:
+        train.main(["--data", str(tmp_path), "--out", str(tmp_path / "out"), flag, str(missing)])
+    assert str(missing) in str(stop.value)
+
+
+def test_resume_refuses_a_checkpoint_of_another_resolution():
+    """Resume checked only the input scale; the anchor grid is a non-persistent buffer, so an 896px
+    checkpoint loaded into a 640px run without a word."""
+    from types import SimpleNamespace
+
+    from cubedet.train import assert_same_architecture
+
+    cfg = SimpleNamespace(backbone=CSP_BACKBONE, width=1.0, imgsz=640, context=False, embed_dim=0)
+    assert_same_architecture({"imgsz": 640, "backbone": CSP_BACKBONE}, cfg, Path("x.pt"), "--resume", "")
+    with pytest.raises(SystemExit, match="imgsz=896"):
+        assert_same_architecture({"imgsz": 896}, cfg, Path("x.pt"), "--resume", "")
+
+
+def test_export_refuses_a_checkpoint_the_app_cannot_read(monkeypatch, tmp_path):
+    """The contract is 640px and 8400 anchors everywhere downstream; `_assert_contract` used to be
+    handed the checkpoint's own size, so an 896px arm exported cleanly against a grid of its own."""
+    import export
+
+    monkeypatch.setattr(export, "_load_cubedet", lambda pt: CubeDet(backbone=CSP_BACKBONE, image_size=896).eval())
+    with pytest.raises(SystemExit, match="896px"):
+        export.export_onnx_cubedet(tmp_path / "arm.pt", tmp_path, tmp_path)
+    assert not (tmp_path / export.FP32).exists(), "the refusal must come before anything is written"
+
+
+def test_a_trained_and_exported_model_carries_its_recipe(tmp_path, monkeypatch):
+    """One epoch on two images, then the exporter: how the run was asked for must reach the manifest.
+
+    The shipped model's recipe could only be reconstructed from commit messages, because checkpoints
+    recorded their architecture and environment and nothing about their data or schedule. This is
+    also the only test that drives train.main and export.main end to end.
+    """
+    import importlib.util
+    import json
+
+    import export
+    from cubedet import train
+    from PIL import Image
+
+    data = tmp_path / "data"
+    for split in ("train", "val"):
+        (data / "images" / split).mkdir(parents=True)
+        (data / "labels" / split).mkdir(parents=True)
+        for k in range(2):
+            Image.new("RGB", (64, 48), (200, 30, 30)).save(data / "images" / split / f"{k}.jpg")
+            (data / "labels" / split / f"{k}.txt").write_text("1 0.5 0.5 0.2 0.2\n")
+    out = tmp_path / "run"
+    argv = ["--data", str(data), "--out", str(out), "--epochs", "1", "--batch", "2", "--workers", "0",
+            "--width", "0.25", "--lr", "0.002", "--seed", "3"]
+    if importlib.util.find_spec("ultralytics"):
+        argv.append("--allow-agpl-in-env")  # a shared development venv; the CI job has no ultralytics
+    monkeypatch.setenv("CUBEDET_DATASET", "tiny_fixture")  # what run-cubedet.sh passes into its container
+    assert train.main(argv) == 0
+    for name in ("best.pt", "last.pt"):
+        recipe = torch.load(out / name, map_location="cpu", weights_only=True)["recipe"]
+        assert (recipe["data"], recipe["epochs"], recipe["lr"], recipe["seed"]) == (str(data), 1, 0.002, 3), name
+        assert recipe["init_from"] is None and recipe["argv"] == argv, name
+        assert recipe["dataset"] == "tiny_fixture", name
+
+    models = tmp_path / "models"
+    export.main(["--pt", str(out / "best.pt"), "--out", str(models), "--cubedet", "--skip", "coreml", "tflite"])
+    manifest = json.loads((models / "MANIFEST.json").read_text())
+    assert manifest["recipe"]["argv"] == argv
+    assert "torchvision" in manifest["tools"]
+    assert ("timm" in manifest["tools"]) == bool(importlib.util.find_spec("timm"))
