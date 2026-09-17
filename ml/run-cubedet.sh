@@ -77,6 +77,17 @@ else
 fi
 
 mkdir -p "$WORK/out/$RUN"
+# A RELAUNCH MUST NOT KILL A RUN THAT IS TRAINING. `docker rm -f` removed whatever held the name,
+# running or not, so re-issuing a launch -- a second terminal, a retried ssh, a mistyped RUN that
+# matched a live one -- threw away the current epoch and raced the restart policy. A container that
+# has finished idles on its COMPLETE marker and is fair to replace; one still training is not,
+# unless CUBEDET_REPLACE=1 says so on purpose. The GPU-busy check above does not cover this: it is
+# skipped under CUBEDET_ALLOW_UNCAPPED, and a run between epochs can read as idle.
+if [ "$(docker inspect -f '{{.State.Running}}' "cubedet_${RUN}" 2>/dev/null)" = "true" ] \
+   && [ ! -e "$WORK/out/$RUN/COMPLETE" ] && [ "${CUBEDET_REPLACE:-0}" != "1" ]; then
+  echo "REFUSING: cubedet_${RUN} is running and has not finished. CUBEDET_REPLACE=1 to replace it anyway." >&2
+  exit 1
+fi
 docker rm -f "cubedet_${RUN}" >/dev/null 2>&1 || true
 
 # A PRETRAINED BACKBONE NEEDS ITS WEIGHTS ON DISK BEFORE THE RUN, NOT DURING IT.
@@ -97,13 +108,40 @@ mkdir -p "$CHECKPOINT_CACHE" "$WORK/.hf/hub"
 # for a reason unrelated to training.
 BACKBONE="$CSP_NAME"
 for i in "${!EXTRA[@]}"; do
-  if [ "${EXTRA[$i]}" = "--backbone" ]; then BACKBONE="${EXTRA[$((i + 1))]:-$CSP_NAME}"; fi
+  case "${EXTRA[$i]}" in
+    --backbone) BACKBONE="${EXTRA[$((i + 1))]:-$CSP_NAME}" ;;
+    --backbone=*) BACKBONE="${EXTRA[$i]#--backbone=}" ;;  # argparse accepts both spellings
+  esac
 done
-if [ "$BACKBONE" != "$CSP_NAME" ] && ! compgen -G "$CHECKPOINT_CACHE/*.pth" >/dev/null; then
-  echo "REFUSING: --backbone $BACKBONE needs ImageNet weights, and $CHECKPOINT_CACHE is empty." >&2
-  echo "  Seed it from a machine with fast internet, then re-run:" >&2
-  echo "    scp ~/.cache/torch/hub/checkpoints/${BACKBONE}-*.pth $(hostname):cubus-ml/.torch/hub/checkpoints/" >&2
-  exit 1
+# THE WEIGHTS FOR THIS BACKBONE, from the library that will load it. Any .pth used to satisfy any
+# backbone, and then any cache holding the name did -- but names are shared (`resnet50` is both a
+# torchvision and a timm model), and PretrainedBackbone picks torchvision whenever
+# `hasattr(torchvision.models, name)`. So the image that will run the job is asked that same
+# question, and the one cache that library reads must hold the weight FILE: torchvision's
+# `<name>-<hash>.pth`, or the HF hub's `models--timm--<name>.../snapshots/<rev>/` file (an
+# interrupted download leaves the directory without it). No network: the image is local.
+if [ "$BACKBONE" != "$CSP_NAME" ]; then
+  family=$(docker run --rm "$IMAGE" python -c \
+    'import sys, torchvision; print("torchvision" if hasattr(torchvision.models, sys.argv[1]) else "timm")' \
+    "$BACKBONE" 2>/dev/null | tail -n 1) || family=""
+  case "$family" in
+    torchvision)
+      where="$CHECKPOINT_CACHE/${BACKBONE}-*.pth"
+      compgen -G "$where" >/dev/null && have=1 || have=0 ;;
+    timm)
+      where="$WORK/.hf/hub/models--timm--${BACKBONE}*/snapshots/*/{*.safetensors,*.bin}"
+      { compgen -G "$WORK/.hf/hub/models--timm--${BACKBONE}*/snapshots/*/*.safetensors" \
+          || compgen -G "$WORK/.hf/hub/models--timm--${BACKBONE}*/snapshots/*/*.bin"; } >/dev/null && have=1 || have=0 ;;
+    *)
+      echo "REFUSING: could not ask $IMAGE which library provides --backbone $BACKBONE (got '$family')." >&2
+      exit 1 ;;
+  esac
+  if [ "$have" != 1 ]; then
+    echo "REFUSING: --backbone $BACKBONE is a $family model, and its weights are not at" >&2
+    echo "  $where" >&2
+    echo "  Seed that cache from a machine with fast internet, then re-run." >&2
+    exit 1
+  fi
 fi
 
 # RESUME BY DEFAULT IF THERE IS SOMETHING TO RESUME FROM.
@@ -124,10 +162,16 @@ fi
 # container reads. A flag would be baked into the container's environment and so would apply to
 # every automatic restart too -- turning "start this run over" into "start over after every host
 # reset", which is the opposite of what it means.
-if [ "${CUBEDET_FRESH:-0}" = "1" ] && [ -e "$WORK/out/$RUN/last.pt" ]; then
-  mv "$WORK/out/$RUN/last.pt" "$WORK/out/$RUN/last.pt.superseded.$(date +%s)"
-  rm -f "$WORK/out/$RUN/COMPLETE"   # or a restarted run would idle on the old completion marker
-  echo "CUBEDET_FRESH=1 -- previous checkpoint moved aside, starting over"
+if [ "${CUBEDET_FRESH:-0}" = "1" ]; then
+  # The marker goes UNCONDITIONALLY. It used to go only when last.pt was there too, so a stale
+  # COMPLETE beside no checkpoint survived a fresh start and the new container idled on it forever.
+  rm -f "$WORK/out/$RUN/COMPLETE"
+  if [ -e "$WORK/out/$RUN/last.pt" ]; then
+    mv "$WORK/out/$RUN/last.pt" "$WORK/out/$RUN/last.pt.superseded.$(date +%s)"
+    echo "CUBEDET_FRESH=1 -- previous checkpoint moved aside, starting over"
+  else
+    echo "CUBEDET_FRESH=1 -- no checkpoint to move aside, starting over"
+  fi
 elif [ -s "$WORK/out/$RUN/last.pt" ]; then
   echo "resuming $RUN from its last checkpoint (CUBEDET_FRESH=1 to start over)"
 fi

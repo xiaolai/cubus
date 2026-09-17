@@ -45,7 +45,12 @@ ssh_q() { ssh -o BatchMode=yes -o ConnectTimeout=15 ${CUBEDET_SSH_OPTS:-} "$1" "
 arm_state() {   # host run -> "<status> <exitcode> <restarts> <epochs>"
   local host=$1 run=$2 raw ep
   raw=$(ssh_q "$host" "docker inspect cubedet_${run} --format '{{.State.Status}} {{.State.ExitCode}} {{.RestartCount}}'")
-  [ -z "$raw" ] && { echo "unreachable - - -"; return; }
+  # ssh exits 255 when IT fails and passes the remote status through otherwise. Every empty answer
+  # used to read as "unreachable", so a healthy host with no such container -- a typo in ARMS, a
+  # run already removed -- was reported as a host that had gone down.
+  local rc=$?
+  if [ "$rc" -eq 255 ]; then echo "unreachable - - -"; return; fi
+  if [ -z "$raw" ]; then echo "missing - - -"; return; fi
   ep=$(ssh_q "$host" "grep -o '\"epoch\"' ~/cubus-ml/out/${run}/history.json 2>/dev/null | wc -l | tr -d ' '")
   [ -z "$ep" ] && ep=0
   echo "$raw $ep"
@@ -53,6 +58,17 @@ arm_state() {   # host run -> "<status> <exitcode> <restarts> <epochs>"
 
 # Derived from ARMS, not hardcoded: with `set -u` an arm the loop forgot dies on its first
 # poll with 'unbound variable', which is how making ARMS configurable broke this the first time.
+#
+# Every run name becomes part of a VARIABLE NAME through eval below, so it is checked first. A name
+# with `-` or `.` -- both legal for docker -- made the assignment a syntax error on the first poll,
+# and one carrying shell metacharacters would have been executed. bash 3.2 (the laptop this runs on)
+# has no associative arrays, so constraining the name is the fix rather than a different store.
+for pair in $ARMS; do
+  r=${pair##*:}
+  case "$r" in
+    '' | [0-9]* | *[!A-Za-z0-9_]*) echo "watch-cubedet.sh: run name '$r' must be letters, digits and _ (not starting with a digit)" >&2; exit 2 ;;
+  esac
+done
 for pair in $ARMS; do r=${pair##*:}; eval "done_${r}=''; miss_${r}=0; exited_${r}=0; rc_${r}=-1; ep_${r}=-1; loop_${r}=0"; done
 ticks=0
 
@@ -74,6 +90,11 @@ while :; do
       continue
     fi
     eval "miss_${run}=0"
+
+    if [ "$status" = "missing" ]; then
+      echo "$run on $host has NO CONTAINER named cubedet_${run} -- the host answered; check ARMS or whether the run was removed"
+      continue
+    fi
 
     if [ "$ep" -ge "$TARGET_EPOCHS" ]; then
       echo "$run on $host FINISHED: $ep/$TARGET_EPOCHS epochs"
