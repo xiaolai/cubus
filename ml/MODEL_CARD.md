@@ -31,10 +31,15 @@ person who photographed their own cube, scored through the app's own read (`ml/d
 | stickers located and read correctly | 97.7% | 96.6% |
 | per-contributor average | 96.9% | 90.3% |
 | cubes read correctly | 122 of 140 | **128 of 140** |
-| cubes read WRONG | 9 | **3** |
+| cubes refused — the app asks for another look | 9 | **3** |
+| cubes read WRONG | **0** | **0** |
+| sets where a face was never read at all | 7 (+2 unusable) | 9 |
 
-It is weaker per contributor and stronger per cube: it declines more often instead of committing to a
-wrong face, which for a scanner that can ask for another photo is the better failure. Three other
+NEITHER MODEL PRODUCES A WRONG CUBE on this data, and that is the assembly's doing rather than the
+detector's: legality, the nine-of-each repair's cost ceiling and the centre rules turn what would have
+been a misread cube into a refusal. So the comparison at cube level is "how often does it get there",
+not "how often does it lie". This model gets there more often; its remaining losses are 3 refusals and
+9 sets where a face was never found, which is geometry rather than colour. Three other
 recipes were measured and none closed the per-contributor gap — a COCO-pretrained transformer
 (D-FINE-N) reached 92.4%, v3's own dataset made this architecture worse, not better, and re-running
 v3's recipe with a different seed reproduced v3, so the gap is the training recipe rather than luck.
