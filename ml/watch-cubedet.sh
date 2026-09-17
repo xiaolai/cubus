@@ -33,7 +33,12 @@ HEARTBEAT_TICKS=24        # every 2h, so a quiet watch still proves it is alive
 # Overridable, because the arms and the schedule change per experiment and a watcher that needs
 # editing to be reused is a watcher that gets skipped.
 TARGET_EPOCHS="${CUBEDET_TARGET_EPOCHS:-80}"
-ARMS="${CUBEDET_ARMS:-trainer-a:P_large trainer-b:P_small}"
+# REQUIRED, and deliberately without a default. It used to default to this machine's own two
+# training boxes by name, which put the maintainer's private ssh aliases in a public repository —
+# AGENTS.md settles that the other way ("the hosts are named in the maintainer's private ssh
+# config, not here"). A placeholder default would be worse than none: it would resolve for nobody
+# and fail somewhere inside ssh, several steps from the cause. So it fails here, saying what to set.
+ARMS="${CUBEDET_ARMS:?set CUBEDET_ARMS to the arms to watch, e.g. \"host-a:P_large host-b:P_small\" (hosts are ssh aliases from your own config)}"
 
 # Extra ssh options, so a broken direct route does not end the watch. On 2026-09-11 this laptop
 # lost its path to trainer-a while trainer-b and render-box could both still reach it and the box was
