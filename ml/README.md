@@ -1,8 +1,14 @@
-# Cube scanner — synthetic-data model pipeline
+# Cube scanner — the detector's pipeline
 
-Train a YOLOv11n model that detects the 9 sticker colors of a cube face, robustly, under any
-lighting — by generating **synthetic** cube images with domain randomization (perfect
-auto-labels), so it generalizes to any user's cube without hand-labeling.
+Train the model that detects the 9 sticker colours of a cube face, robustly, under any lighting:
+generate **synthetic** cube images with domain randomization (perfect auto-labels), add the real
+photographs that exist, and train.
+
+**The shipped detector is `cubedet`** (`ml/cubedet/`, since 2026-09-17): this repository's own
+architecture, a timm ImageNet backbone with a PAN neck and an anchor-free head, trained with no
+copyleft code anywhere on the path. Everything here describes that pipeline unless it says
+**legacy**: the Ultralytics YOLOv11n pipeline that produced v3, the model it replaced, is kept so v3's
+numbers stay reproducible (§"Legacy: v3").
 
 ## Two-machine split (why)
 Blender publishes **no Linux ARM64 build** (only linux-x64; conda-forge/pip `bpy` are x86_64
@@ -12,9 +18,10 @@ source. But Blender has **native macOS Apple-Silicon builds with Metal GPU Cycle
 - **Render on the many-core desktop Mac** (Apple Silicon + Metal) — never on the fanless laptop,
   which is 5.2× slower and is the machine you are being asked to keep usable (AGENTS.md, measured
   2026-08-29).
-- **Train on the near GPU box** (GB10 CUDA, the pinned `cube-train:1` container from
-  `Dockerfile.train`). The far box is identical silicon but 0.1 MB/s away: use it only for work whose
-  data is already on it (baseline evals, parallel jobs). The reasoning is in `train.sh`'s header.
+- **Train on the near GPU box** (GB10 CUDA). `run-cubedet.sh` runs the trainer in the clean NGC
+  PyTorch image, which has no ultralytics in it; the legacy `train.sh` used the `cube-train:1`
+  container from `Dockerfile.train`, which does. The far box is identical silicon but 0.1 MB/s away:
+  use it only for work whose data is already on it (baseline evals, parallel jobs).
 - Move the dataset between them over the **LAN** (fast; the internet egress is a slow US proxy).
 
 ## Why synthetic
@@ -37,16 +44,28 @@ environments), **glossy materials** (physically-correct glare), **perspective**,
 | `merge_real.py` | remap/merge those into our 6-class YOLO set (pure) | — |
 | `generate_cube_dataset.py` | **BlenderProc generator** (needs Blender) | validated on Mac |
 | `render.sh` | parallel render → merge → YOLO → split (on a Mac) | — |
-| `train.sh` | YOLOv11n fine-tune in the pinned NGC arm64 container → `best.pt` | the near GPU box |
-| `export.py` | ONE checkpoint → `models/` (ONNX fp32 + int8, CoreML, TFLite) + `MANIFEST.json` | — |
+| `cubedet/` | the detector: backbone + neck + head (`model.py`), assigner, loss, data, trainer (`train.py`), evaluator (`val.py`) | ✅ `test_pipeline.py`, `test_cubedet.py` (CI: the `cubedet` job) |
+| `run-cubedet.sh` | launch a cubedet run, detached and restartable, in the clean NGC image | the near GPU box |
+| `watch-cubedet.sh` | watch runs across hosts: progress, restarts, crash loops | — |
+| `clean_real.py` | de-duplicate the real photographs and cut splits that do not leak | — |
+| `drop_dataset.py` / `drop-train-datasets.sh` | the photo drop's confirmed sets as training data, by contributor fold | ✅ `test_drop_dataset.py` |
+| `score_arm.sh` | score one checkpoint against the shipped model: per sticker (`compare_detectors.py`) and per cube (`assign_sim.py`) | — |
+| `drop_eval.py` | score models on the photo drop's checked sets, through the app's own fit | ✅ `test_drop_eval.py` |
+| `train.sh` | **legacy:** YOLOv11n fine-tune in the pinned `cube-train:1` container → `best.pt` | the near GPU box |
+| `export.py` | ONE checkpoint → `models/` (ONNX fp32, CoreML, TFLite, and an int8 ONNX only if it still reads a face) + `MANIFEST.json` | ✅ `test_cubedet.py` |
 | `golden_frames.py` | the parity gate: every runtime reads 20 fixtures as pinned in `golden/expected.json` | CI |
 | `propose.py` | the photo drop's proposal tool: the colours of each finished cube set, for its contributor to confirm. Its cube half, `propose_assemble.ts`, is the scanner's own assembly, bundled | ✅ `test_propose.py` (CI: the `ts` job) |
 | `metrics_table.py` | the mAP tables of `MODEL_CARD.md` / `OOD_EVAL.md`, from `yolo val` | — |
 | `data.yaml` | 6-class dataset config | — |
 
-Run the pure tests locally: `ml/venv/bin/python ml/test_pipeline.py` (needs only
-`ml/requirements-golden.txt`; it also asserts the committed int8 is `quantize_dynamic` of the
-committed fp32 and that `MANIFEST.json` carries `export.py`'s labels).
+Environments, one per purpose (`venv-*/` is gitignored):
+
+| File | For |
+|---|---|
+| `requirements-golden.txt` | the golden gate and the pure tests. `ml/venv/bin/python ml/test_pipeline.py` needs nothing more; it also checks `MANIFEST.json` carries `export.py`'s labels and that any committed int8 is `quantize_dynamic` of the fp32 |
+| `requirements-cubedet.txt` | training, `test_cubedet.py`, and the ONNX export. No ultralytics: `cubedet/train.py` refuses to run beside it |
+| `requirements-export.txt` | all four artefacts: the above plus the CoreML and TFLite converters |
+| `requirements-train.txt` | **legacy:** the Ultralytics stack for v3. Never in the same environment as cubedet |
 
 ## Run: render on a Mac → train on the training host
 
@@ -97,13 +116,19 @@ ml/venv/bin/blenderproc run ml/generate_cube_dataset.py -- \
 ```
 
 ### 2. Train on the near GPU box (GB10 CUDA)
-Move `~/datasets/cube/dataset` to the box over the **LAN** (fast), not the internet proxy.
+Move the dataset to the box over the **LAN** (fast), not the internet proxy, under
+`~/datasets/<name>/dataset`. Pretrained weights are seeded beforehand, because the run is started
+with the hub offline: timm's under `~/cubus-ml/.hf`, and timm itself under `~/cubus-ml/.pylibs`.
 ```bash
-DATASET=~/datasets/cube/dataset DETACH=1 bash ml/train.sh   # in cube-train:1; detached survives an SSH drop
-#    → $DATASET/runs/cube/weights/best.pt   (no ONNX here — export.py is the one exporter, step 3 below)
+# run-cubedet.sh RUN EPOCHS BATCH WIDTH [train.py flags...]; DATASET_NAME has no default on purpose.
+DATASET_NAME=<name> bash ml/run-cubedet.sh <run> 80 64 1.0 --backbone mobilenetv4_conv_small.e2400_r224_in1k
+#    → ~/cubus-ml/out/<run>/best.pt, and last.pt every epoch; a host reset resumes from last.pt.
+#    Refuses an uncapped GPU clock, a busy GPU, a running container of the same name, and a
+#    backbone whose weights are not in the cache its library reads.
+CUBEDET_ARMS="<host>:<run>" bash ml/watch-cubedet.sh   # from the laptop: progress, restarts, crash loops
 ```
-Batch can be large (GB10 shares ~113 GB unified memory). The starting `yolo11n.pt` must be present
-and match its pinned md5 (`train.sh` refuses otherwise).
+Every checkpoint records its recipe (dataset, schedule, starting weights and their sha256, argv),
+and `export.py` copies it into `MANIFEST.json`.
 
 ## Real data (domain adaptation + a real test set)
 Synthetic is the volume backbone, but real photos close the sim-to-real gap. Public real cube
@@ -122,54 +147,75 @@ arXiv 1901.03470 color tables for red↔orange calibration.
 
 A model change is not verified until `golden_frames.py` has run (AGENTS.md), and nothing reaches the
 app by copying a file: the artefacts, the manifest, the golden pins and the app's vendored copy are
-one set. Every flag below exists as written.
+one set. Every flag below exists as written. The shipped detector is two runs, pretrain then
+fine-tune, because mixing the renders straight into the real photographs at a hundred to one doubled
+red-to-orange errors (commit `a2b071e`).
 
 ```bash
 # 1. Render (many-core desktop). Absolute paths for HDRI_DIR/OUT; GEN passed explicitly on purpose.
 BLENDERPROC=ml/venv/bin/blenderproc PYTHON=ml/venv/bin/python WORKERS=4 GEN=generate_cube3d.py \
   SCENES=1000 POSES=40 HDRI_DIR="$HOME/datasets/hdris" OUT="$HOME/datasets/cube" bash ml/render.sh
 
-# 2. Train (near GPU box). Detached; refuses unless the pinned yolo11n.pt is present.
-DATASET=~/datasets/cube/dataset DETACH=1 EPOCHS=80 bash ml/train.sh
-#    → $DATASET/runs/cube/weights/best.pt — copy it to ml/out/<name>_best.pt
+# 2. The real photographs, de-duplicated and split without leaks (see the Real data section above).
+ml/venv/bin/python ml/clean_real.py --src ~/datasets/real_cube/merged --out ~/datasets/real_clean
 
-# 3. Export all four artefacts + MANIFEST.json from that ONE checkpoint (venv from requirements-train.txt).
-ml/venv/bin/python ml/export.py --pt ml/out/<name>_best.pt --out ml/models
-#    asserts sha256(fp32) unchanged after every step and int8 == quantize_dynamic(fp32)
+# 3. Pretrain on the renders mixed with the cleaned photographs (near GPU box).
+DATASET_NAME=<mix> bash ml/run-cubedet.sh <base> 80 64 1.0 --backbone mobilenetv4_conv_small.e2400_r224_in1k
 
-# 4. The golden gate, on the pinning host. Expect reads to change; read WHICH before re-pinning.
-ml/venv/bin/python ml/golden_frames.py                 # all five legs on macOS; fails on any drift
+# 4. Fine-tune on the photographs alone: a fresh, short, low-rate schedule from the base weights.
+#    --init-from takes the weights only; --resume would carry the base run's optimiser and epoch.
+DATASET_NAME=real_clean bash ml/run-cubedet.sh <ft> 100 64 1.0 \
+  --backbone mobilenetv4_conv_small.e2400_r224_in1k --init-from /work/out/<base>/best.pt --lr 1e-4
+
+# 5. Score it against the shipped model, the same way every time (per sticker and per cube), and
+#    on the photo drop's checked sets, which nobody trained on.
+bash ml/score_arm.sh <ft> <host>        # fetches best.pt to ml/out/<ft>_best.pt
+ml/venv/bin/python ml/drop_eval.py --drop <drop> --model shipped=ml/models/cube-yolo.onnx --model <ft>=ml/out/onnx_<ft>/cube-yolo.onnx
+
+# 6. Export all four artefacts + MANIFEST.json from that ONE checkpoint (venv from requirements-export.txt).
+ml/venv-cubedet/bin/python ml/export.py --cubedet --pt ml/out/<ft>_best.pt --out ml/models
+#    refuses a checkpoint that is not 640px, and writes an int8 only if it still reads the fixture's face
+
+# 7. The golden gate, on the pinning host. Expect reads to change; read WHICH before re-pinning.
+ml/venv/bin/python ml/golden_frames.py                 # every leg this Mac can run; fails on any drift
 ml/venv/bin/python ml/golden_frames.py --parity        # what CI runs; must also be green
 
-# 5. Re-pin — guarded: --yes, a COMMITTED ml/models (commit the artefacts + manifest first), and the
+# 8. Re-pin — guarded: --yes, a COMMITTED ml/models (commit the artefacts + manifest first), and the
 #    reason for the checkpoint change, which is written into expected.json.
-ml/venv/bin/python ml/golden_frames.py --write-expected --yes --repin-checkpoint "v6: <why>"
+ml/venv/bin/python ml/golden_frames.py --write-expected --yes --repin-checkpoint "<ft>: <why>"
 ml/venv/bin/python ml/golden_frames.py                 # green against the new pins
 
-# 6. Vendor the fp32 for the browser (the desktop/mobile bundles copy from ml/models at build time:
-#    tauri.macos/ios.conf.json bundle the .mlpackage, gen/android's gradle copies the .tflite).
+# 9. Vendor the fp32 for the browser (the desktop/mobile bundles copy from ml/models at build time:
+#    tauri.macos/ios.conf.json bundle the .mlpackage, gen/android's gradle copies the .tflite), and
+#    re-copy the iOS .mlpackage, which Xcode stages from its own committed copy.
 cp ml/models/cube-yolo.onnx apps/web/vendor/cube-yolo.onnx
-node --test apps/web/test/shipped-model.test.mjs       # pins that the browser serves the fp32, byte for byte
-pnpm check
-
-# 7. The numbers in MODEL_CARD.md / OOD_EVAL.md (needs the labelled sets under ml/out).
-ml/venv/bin/python ml/metrics_table.py --json ml/out/metrics.json
-ml/venv/bin/python ml/color_eval.py --model ml/models/cube-yolo.onnx --images ml/out/heldout/images --labels ml/out/heldout/labels
+rm -rf apps/desktop/src-tauri/gen/apple/assets/models/cube-yolo.mlpackage
+cp -R ml/models/cube-yolo.mlpackage apps/desktop/src-tauri/gen/apple/assets/models/
+node --test apps/web/test/shipped-model.test.mjs       # pins that every platform ships the same detector
+pnpm notices && pnpm check                             # the fixture credits and the model paragraph move too
 ```
 
-Only the int8 drifted? `ml/venv/bin/python ml/export.py --int8-only` re-derives it from the committed
-fp32 and touches nothing else (that is not a model change; the pins stay).
+### Legacy: v3
+The Ultralytics pipeline that produced v3, in its own environment (`requirements-train.txt`):
+render as above, then `DATASET=~/datasets/cube/dataset DETACH=1 EPOCHS=80 bash ml/train.sh` in
+`cube-train:1` (it refuses unless the pinned `yolo11n.pt` is present and matches its md5), then
+`ml/venv-v3/bin/python ml/export.py --pt ml/out/cube_v3_best.pt --out <dir>`. The numbers in
+`MODEL_CARD.md` and `OOD_EVAL.md` dated before 2026-09-17 are v3's and come from
+`ml/metrics_table.py` and `ml/color_eval.py`. `export.py --int8-only` re-derives a committed int8
+from the fp32 beside it and touches nothing else; only v3's lineage has one.
 
 ## Status
 - [x] **Generator validated on macOS-arm64** — Blender 4.2 Cycles renders; all 9 stickers are
       labelled per frame; COCO→YOLO shift + body-drop verified (`test_pipeline.py` guards it).
 - [x] **HDRIs** — 200 Poly Haven CC0 `.hdr` fetched (`fetch_hdris.py`); parallel render + merge
       + split validated end-to-end (part-prefixed, no filename collisions).
-- [x] **Training image pinned** — `Dockerfile.train` pins the NGC base by digest and the
-      ultralytics/onnxruntime versions, and asserts the pins took; `train.sh` pins `yolo11n.pt` by md5.
+- [x] **Training environment clean** — `run-cubedet.sh` uses the NGC image with no ultralytics in
+      it, and `cubedet/train.py` refuses to start beside one and records what it ran on. (Legacy:
+      `Dockerfile.train` pins v3's ultralytics/onnxruntime and `train.sh` pins `yolo11n.pt` by md5.)
 - [x] **Real Roboflow images mixed in** — ~1.9k training photos (`MODEL_CARD.md` §Training data;
       attribution in §Attribution).
-- [x] **Shipped: v3** — `MODEL_CARD.md`; v5 was shipped and reverted 2026-08-29 (it failed the golden gate).
+- [x] **Shipped: V6FT (cubedet)**, since 2026-09-17 — `MODEL_CARD.md`. Before it, v3; v5 was
+      shipped and reverted 2026-08-29 (it failed the golden gate).
 - [ ] **Android native path** — the `.tflite` is in the APK but `verifiedOnDevice=false` until it is
       measured on a device (`VisionPlugin.kt`).
 - [ ] **Held-out set re-cut** — `dedup_heldout.py --dihedral` flags 36 of the 207 as rotated/flipped

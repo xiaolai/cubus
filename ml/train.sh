@@ -130,7 +130,7 @@ docker run "${RUN_FLAGS[@]}" --gpus all --ipc=host \
     # no CoreML/TFLite siblings, and nothing to hand the golden gate. ml/export.py is the ONE
     # exporter: it writes all four artefacts from best.pt and records what produced them.
     chown -R \$HOST_UID:\$HOST_GID /work/dataset/runs   # hand outputs back to the host user (docker runs as root)
-    echo 'best.pt at /work/dataset/runs/cube/weights/best.pt — export with ml/export.py (see ml/README.md, Regenerating the model)'
+    echo 'best.pt at /work/dataset/runs/cube/weights/best.pt — export it with ml/export.py --pt (ml/README.md, Legacy: v3)'
   "
 if [ "${DETACH:-0}" = "1" ]; then
   echo "Detached container '$CONTAINER' launched. Follow: docker logs -f $CONTAINER"

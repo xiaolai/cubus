@@ -7,8 +7,9 @@
 
 ## Why the detector was rebuilt
 
-`apps/web/vendor/cube-yolo.onnx` is a YOLOv11n fine-tuned with
-[Ultralytics](https://github.com/ultralytics/ultralytics), which is AGPL-3.0. Ultralytics' stated
+Until 2026-09-17, `apps/web/vendor/cube-yolo.onnx` was a YOLOv11n fine-tuned with
+[Ultralytics](https://github.com/ultralytics/ultralytics), which is AGPL-3.0. (It is cubedet's V6FT
+now; this section is kept as the reason the work was done.) Ultralytics' stated
 position is that the licence reaches models trained with their software and applications that use
 those models. That is why cubus WAS AGPL-3.0 rather than permissive, and why a closed or paid
 product built on this repository would additionally have needed an Ultralytics Enterprise Licence.
@@ -23,7 +24,9 @@ becomes the project's own choice again.
    weights are Ultralytics' work. A permissive trainer that still initialises from them has
    cleared nothing.
 
-`cubedet` starts from random initialisation and touches neither.
+`cubedet` touches neither. It was written to start from random initialisation; the shipped model's
+backbone starts from permissively licensed ImageNet weights instead, and its neck and head from
+random initialisation — §"The pretrained backbone" says what that changes and what it does not.
 
 ## What this code depends on
 
