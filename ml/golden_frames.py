@@ -68,7 +68,6 @@ code is taken first, so nothing is masked.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import platform
@@ -78,6 +77,8 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+
+from artefact_hash import artefact_sha256  # ml/ is on the path: run as ml/golden_frames.py, or imported from ml/
 
 import numpy as np
 
@@ -205,22 +206,12 @@ class Leg:
 
 
 def sha256_of(path: Path) -> str:
-    """Hash a file, or a directory (an .mlpackage) by its sorted relative paths and contents.
+    """An artefact's identity: artefact_hash.py, the same function export.py writes MANIFEST.json with.
 
-    Deliberately the same method as ml/export.py's `sha256`, because it is that function's output
-    this compares against — MANIFEST.json is written by export.py. Duplicated rather than imported
-    so the gate does not drag ultralytics and torch into a CI job that only needs to read bytes; if
-    the two ever disagree the manifest check goes red, which is the loud failure, not a silent one.
+    This was a hand-kept copy of export.py's hash, duplicated so the gate would not import the export
+    stack. A standard-library module serves that reason without the copy.
     """
-    h = hashlib.sha256()
-    if path.is_dir():
-        for p in sorted(path.rglob("*")):
-            if p.is_file():
-                h.update(str(p.relative_to(path)).encode())
-                h.update(p.read_bytes())
-    else:
-        h.update(path.read_bytes())
-    return h.hexdigest()
+    return artefact_sha256(path)
 
 
 def reads_a_face(read: str) -> bool:

@@ -55,7 +55,6 @@ check, not a hope. `quantize_dynamic` is deterministic (two runs, identical byte
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import platform
@@ -65,6 +64,8 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+
+from artefact_hash import artefact_sha256  # ml/ is on the path: run as ml/export.py, or imported from ml/
 
 HERE = Path(__file__).resolve().parent
 NAME = "cube-yolo"
@@ -101,16 +102,11 @@ FROM_SCRATCH_BACKBONE = "csp"
 
 
 def sha256(path: Path) -> str:
-    """Hash a file, or a directory (an .mlpackage) by its sorted relative paths and contents."""
-    h = hashlib.sha256()
-    if path.is_dir():
-        for p in sorted(path.rglob("*")):
-            if p.is_file():
-                h.update(str(p.relative_to(path)).encode())
-                h.update(p.read_bytes())
-    else:
-        h.update(path.read_bytes())
-    return h.hexdigest()
+    """An artefact's identity, as MANIFEST.json records it and the golden gate checks it.
+
+    Defined once, in artefact_hash.py, which the gate imports too: the two used to carry copies.
+    """
+    return artefact_sha256(path)
 
 
 def git_commit() -> dict:
