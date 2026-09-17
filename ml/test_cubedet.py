@@ -25,7 +25,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from cube_infer import IMG_SIZE  # noqa: E402
-from cubedet.assign import TaskAlignedAssigner, box_iou_pairwise, points_in_boxes  # noqa: E402
+from cubedet.assign import TaskAlignedAssigner, points_in_boxes  # noqa: E402
 from cubedet.data import _affine, _clip_and_drop, _photometric, _to_canvas, collate  # noqa: E402
 from cubedet.loss import DetectionLoss, complete_iou  # noqa: E402
 from cubedet.model import (  # noqa: E402
@@ -1001,3 +1001,149 @@ def test_embedding_loss_contributes_exactly_nothing_when_the_branch_is_off():
     _, parts = criterion(model(torch.rand(2, 3, IMG_SIZE, IMG_SIZE)),
                          _contrastive_batch([[1, 1, 4, 4], [3, 3, 0, 0]]))
     assert parts["emb"] == 0.0
+
+
+# ---------------------------------------------------------------------------------------------------
+# Scoring semantics shared by cubedet.val.evaluate and compare_detectors.py. Both used to carry their
+# own copy of these loops, and the copies disagreed; these pin the one they now share.
+
+
+def _scoring_fixture():
+    """Empty accumulators in the shape accumulate_ap fills: per class, per IoU threshold."""
+    import numpy as np
+    from cubedet.val import IOU_THRESHOLDS
+
+    flags = [[[] for _ in IOU_THRESHOLDS] for _ in range(NUM_CLASSES)]
+    confs = [[[] for _ in IOU_THRESHOLDS] for _ in range(NUM_CLASSES)]
+    return flags, confs, np.zeros(NUM_CLASSES, dtype=np.int64)
+
+
+def test_a_correct_detection_on_an_unlabelled_region_is_still_a_hit():
+    """Match first, ignore second. Filtering on the ignore rows before matching discarded a true
+    positive whenever it overlapped one."""
+    from cubedet.val import accumulate_ap
+
+    gt = torch.tensor([[0.0, 0.0, 10.0, 10.0]])
+    labels = torch.tensor([1])
+    ignore = torch.tensor([[0.0, 0.0, 10.0, 10.0]])  # the same place, for the sake of the test
+    pred = torch.tensor([[0.0, 0.0, 10.0, 10.0, 0.9, 1.0]])
+    flags, confs, counts = _scoring_fixture()
+    accumulate_ap(pred, gt, labels, flags, confs, counts, NUM_CLASSES, ignore)
+    assert flags[1][0][0].tolist() == [True], "a correct detection was dropped for overlapping an ignore row"
+
+
+def test_an_unmatched_detection_on_an_unlabelled_sticker_is_neither_hit_nor_miss():
+    from cubedet.val import accumulate_ap, tally_reads
+
+    gt = torch.tensor([[50.0, 50.0, 60.0, 60.0]])
+    labels = torch.tensor([2])
+    ignore = torch.tensor([[0.0, 0.0, 10.0, 10.0]])
+    pred = torch.tensor([[0.0, 0.0, 10.0, 10.0, 0.9, 1.0]])  # finds the sticker nobody labelled
+    flags, confs, counts = _scoring_fixture()
+    accumulate_ap(pred, gt, labels, flags, confs, counts, NUM_CLASSES, ignore)
+    assert all(len(a) == 0 for a in flags[1][0]), "an ignored detection was scored"
+    tally = {"tp": 0, "fp": 0, "fn": 0}
+    tally_reads(pred, gt, labels, tally, ignore_boxes=ignore)
+    assert tally == {"tp": 0, "fp": 0, "fn": 1}, tally
+
+
+def test_a_confident_wrong_colour_cannot_take_a_sticker_from_the_right_one():
+    """Reads are class-aware; the confusion matrix is location-only. One loop doing both let the
+    wrong-colour box claim the sticker first and turned the correct detection into a false alarm."""
+    import numpy as np
+    from cubedet.val import tally_reads
+
+    gt = torch.tensor([[0.0, 0.0, 10.0, 10.0]])
+    labels = torch.tensor([1])  # red
+    pred = torch.tensor([
+        [0.0, 0.0, 10.0, 10.0, 0.95, 4.0],  # orange, and surer
+        [0.0, 0.0, 10.0, 10.0, 0.60, 1.0],  # red
+    ])
+    tally = {"tp": 0, "fp": 0, "fn": 0}
+    confusion = np.zeros((NUM_CLASSES, NUM_CLASSES), dtype=np.int64)
+    tally_reads(pred, gt, labels, tally, confusion)
+    assert tally == {"tp": 1, "fp": 1, "fn": 0}, tally
+    assert confusion[1, 4] == 1 and confusion.sum() == 1, "the confusion row must record what the sticker was taken FOR"
+
+
+def test_a_misnamed_sticker_nobody_read_right_is_a_miss_as_well_as_a_false_alarm():
+    from cubedet.val import tally_reads
+
+    gt = torch.tensor([[0.0, 0.0, 10.0, 10.0]])
+    labels = torch.tensor([1])
+    pred = torch.tensor([[0.0, 0.0, 10.0, 10.0, 0.95, 4.0]])
+    tally = {"tp": 0, "fp": 0, "fn": 0}
+    tally_reads(pred, gt, labels, tally)
+    assert tally == {"tp": 0, "fp": 1, "fn": 1}, tally
+
+
+# ---------------------------------------------------------------------------------------------------
+# Silent failures in the trainer, each of which once let a run go ahead on something it should have
+# refused. Pinned so a refactor that drops the refusal fails here rather than in a six-hour run.
+
+
+def _one_image(classes):
+    """One collate item: an image and rows of (class, x0, y0, x1, y1), one row per class given."""
+    rows = torch.tensor([[float(c), 10.0 + 20 * i, 10.0, 25.0 + 20 * i, 25.0] for i, c in enumerate(classes)])
+    return torch.zeros(3, IMG_SIZE, IMG_SIZE), rows
+
+
+@pytest.mark.parametrize("bad", [1.9, float(NUM_CLASSES), -2.0])
+def test_a_label_that_is_not_a_class_is_refused_not_truncated(bad):
+    """`.long()` truncated 1.9 to class 1 and let 6 through to fail in the assigner; -2 is neither a
+    class nor the ignore marker."""
+    with pytest.raises(ValueError):
+        collate([_one_image([0, bad])])
+
+
+def test_whole_classes_and_the_ignore_marker_are_accepted():
+    _, targets = collate([_one_image([0, 5, -1])])
+    assert targets["labels"][0, :2].tolist() == [0, 5]
+    assert int(targets["ignore_mask"][0].sum()) == 1
+
+
+def test_a_loss_built_with_the_branch_off_ignores_embeddings_the_model_emits():
+    """`embed_dim` was stored and never read, so "off" depended on the model alone."""
+    torch.manual_seed(0)
+    model = CubeDet(embed_dim=16, backbone=CSP_BACKBONE).train()
+    outputs = model(torch.rand(2, 3, IMG_SIZE, IMG_SIZE))
+    assert outputs[-1] is not None, "the model under test must emit embeddings for this to mean anything"
+    _, parts = DetectionLoss(NUM_CLASSES, embed_dim=0)(outputs, _contrastive_batch([[1, 1, 4, 4], [3, 3, 0, 0]]))
+    assert parts["emb"] == 0.0
+    _, on = DetectionLoss(NUM_CLASSES, embed_dim=16)(outputs, _contrastive_batch([[1, 1, 4, 4], [3, 3, 0, 0]]))
+    assert on["emb"] != 0.0, "the control: with the branch on, the same outputs do produce a term"
+
+
+@pytest.mark.parametrize("flag", ["--resume", "--init-from"])
+def test_a_checkpoint_path_that_does_not_exist_stops_the_run(flag, tmp_path):
+    """Both flags were guarded by `.exists()` at the point of use, so a typo trained from scratch."""
+    from cubedet import train
+
+    missing = tmp_path / "no-such.pt"
+    with pytest.raises(SystemExit) as stop:
+        train.main(["--data", str(tmp_path), "--out", str(tmp_path / "out"), flag, str(missing)])
+    assert str(missing) in str(stop.value)
+
+
+def test_resume_refuses_a_checkpoint_of_another_resolution():
+    """Resume checked only the input scale; the anchor grid is a non-persistent buffer, so an 896px
+    checkpoint loaded into a 640px run without a word."""
+    from types import SimpleNamespace
+
+    from cubedet.train import assert_same_architecture
+
+    cfg = SimpleNamespace(backbone=CSP_BACKBONE, width=1.0, imgsz=640, context=False, embed_dim=0)
+    assert_same_architecture({"imgsz": 640, "backbone": CSP_BACKBONE}, cfg, Path("x.pt"), "--resume", "")
+    with pytest.raises(SystemExit, match="imgsz=896"):
+        assert_same_architecture({"imgsz": 896}, cfg, Path("x.pt"), "--resume", "")
+
+
+def test_export_refuses_a_checkpoint_the_app_cannot_read(monkeypatch, tmp_path):
+    """The contract is 640px and 8400 anchors everywhere downstream; `_assert_contract` used to be
+    handed the checkpoint's own size, so an 896px arm exported cleanly against a grid of its own."""
+    import export
+
+    monkeypatch.setattr(export, "_load_cubedet", lambda pt: CubeDet(backbone=CSP_BACKBONE, image_size=896).eval())
+    with pytest.raises(SystemExit, match="896px"):
+        export.export_onnx_cubedet(tmp_path / "arm.pt", tmp_path, tmp_path)
+    assert not (tmp_path / export.FP32).exists(), "the refusal must come before anything is written"

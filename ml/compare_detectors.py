@@ -33,7 +33,17 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from cube_infer import IMG_SIZE, letterbox  # noqa: E402
+from cube_infer import letterbox  # noqa: E402
+
+
+def _positive(text: str) -> int:
+    """`--limit 0` used to mean "all images" (`limit or len(files)`) and `--limit -5` silently
+    dropped the last five. Both are typos, and a comparison run on a different set of images than
+    the one asked for is a comparison nobody can check."""
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"--limit must be at least 1, not {value}")
+    return value
 
 
 def _load_labels(path: Path) -> np.ndarray:
@@ -62,14 +72,16 @@ def score(model_path: Path, files: list[Path], label_dir: Path, limit: int | Non
     import onnxruntime as ort
     import torch
 
-    from cubedet.val import IOU_THRESHOLDS, REPORT_CONF, _average_precision, _iou_matrix, decode
+    from cubedet.val import (
+        IOU_THRESHOLDS, _average_precision, accumulate_ap, decode, tally_reads,
+    )
 
     session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
     input_name = session.get_inputs()[0].name
     names = ["white", "red", "green", "yellow", "orange", "blue"]
 
     flags = [[[] for _ in IOU_THRESHOLDS] for _ in names]
-    confs: list[list[np.ndarray]] = [[] for _ in names]
+    confs: list[list[list[np.ndarray]]] = [[[] for _ in IOU_THRESHOLDS] for _ in names]
     gt_counts = np.zeros(len(names), dtype=np.int64)
     tally = {"tp": 0, "fp": 0, "fn": 0}
     confusion = np.zeros((len(names), len(names)), dtype=np.int64)
@@ -90,61 +102,28 @@ def score(model_path: Path, files: list[Path], label_dir: Path, limit: int | Non
         gt_boxes_np, gt_labels_np = _targets_on_canvas(_load_labels(label_dir / f"{path.stem}.txt"), w, h)
         gt_boxes = torch.from_numpy(gt_boxes_np)
         gt_labels = torch.from_numpy(gt_labels_np)
-        for c in range(len(names)):
-            gt_counts[c] += int((gt_labels == c).sum())
+        # IGNORE ROWS ARE NOT GROUND TRUTH, and were being treated as if they were: class -1 went
+        # straight into `gt_labels`, so an unlabelled sticker counted as a miss, and a detection that
+        # found one was written into `confusion[-1]` -- which is the blue row, silently corrupting
+        # the one table the model card argues from. They go to the scorer as what they are.
+        keep = gt_labels >= 0
+        ignore_boxes, gt_boxes, gt_labels = gt_boxes[~keep], gt_boxes[keep], gt_labels[keep]
 
-        for c in range(len(names)):
-            pred_c = prediction[prediction[:, 5] == c]
-            gt_c = gt_boxes[gt_labels == c]
-            if len(pred_c) == 0:
-                continue
-            pred_c = pred_c[torch.argsort(pred_c[:, 4], descending=True)]
-            confs[c].append(pred_c[:, 4].numpy())
-            if len(gt_c) == 0:
-                for t in range(len(IOU_THRESHOLDS)):
-                    flags[c][t].append(np.zeros(len(pred_c), dtype=bool))
-                continue
-            ious = _iou_matrix(pred_c[:, :4], gt_c).numpy()
-            for t, threshold in enumerate(IOU_THRESHOLDS):
-                taken = np.zeros(len(gt_c), dtype=bool)
-                tp = np.zeros(len(pred_c), dtype=bool)
-                for p in range(len(pred_c)):
-                    best, best_iou = -1, threshold
-                    for g in range(len(gt_c)):
-                        if taken[g] or ious[p, g] < best_iou:
-                            continue
-                        best, best_iou = g, ious[p, g]
-                    if best >= 0:
-                        taken[best] = True
-                        tp[p] = True
-                flags[c][t].append(tp)
-
-        # Per-sticker recall and the colour confusion, at the app's own confidence floor. The
-        # confusion matrix is the row the model card actually argues from — red→orange is the
+        # THE SAME SCORING cubedet.val.evaluate does, from the same functions. This file used to
+        # carry its own copy of both loops -- which is how it came to count a mis-named sticker as a
+        # false positive and not also as a miss, while the trainer counted it both ways. Two
+        # evaluators disagreeing about recall is the one thing a comparison script cannot afford.
+        accumulate_ap(prediction, gt_boxes, gt_labels, flags, confs, gt_counts, len(names), ignore_boxes)
+        # The confusion matrix is the row the model card actually argues from -- red->orange is the
         # documented weak pair, and an aggregate mAP hides a regression in exactly that cell.
-        confident = prediction[prediction[:, 4] >= REPORT_CONF]
-        matched = torch.zeros(len(gt_boxes), dtype=torch.bool)
-        if len(confident) and len(gt_boxes):
-            ious = _iou_matrix(confident[:, :4], gt_boxes)
-            for p in torch.argsort(confident[:, 4], descending=True).tolist():
-                free = (ious[p] >= 0.5) & (~matched)
-                if bool(free.any()):
-                    g = int(torch.argmax(ious[p] * free))
-                    matched[g] = True
-                    confusion[int(gt_labels[g]), int(confident[p, 5])] += 1
-                    tally["tp" if int(gt_labels[g]) == int(confident[p, 5]) else "fp"] += 1
-                else:
-                    tally["fp"] += 1
-        else:
-            tally["fp"] += len(confident)
-        tally["fn"] += int((~matched).sum())
+        tally_reads(prediction, gt_boxes, gt_labels, tally, confusion, ignore_boxes)
 
     per_class = np.full((len(names), len(IOU_THRESHOLDS)), np.nan)
     for c in range(len(names)):
         if gt_counts[c] == 0:
             continue
-        conf_c = np.concatenate(confs[c]) if confs[c] else np.zeros(0)
         for t in range(len(IOU_THRESHOLDS)):
+            conf_c = np.concatenate(confs[c][t]) if confs[c][t] else np.zeros(0)
             tp_c = np.concatenate(flags[c][t]) if flags[c][t] else np.zeros(0, dtype=bool)
             per_class[c, t] = _average_precision(tp_c, conf_c, int(gt_counts[c]))
 
@@ -173,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--split", default="val")
     ap.add_argument("--model", action="append", required=True, metavar="LABEL=PATH",
                     help="repeatable; e.g. --model old=ml/models/cubedet.onnx")
-    ap.add_argument("--limit", type=int, default=None, help="score only the first N images")
+    ap.add_argument("--limit", type=_positive, default=None, help="score only the first N images")
     ap.add_argument("--json", type=Path, default=None)
     args = ap.parse_args(argv)
 

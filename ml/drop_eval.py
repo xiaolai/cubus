@@ -63,6 +63,54 @@ class PhotoScore:
     lab: tuple[tuple[float, float, float], ...] = ()
 
 
+def _min_cost_assignment(cost: list[list[float]], pad: float) -> list[int | None]:
+    """Minimum-cost assignment of rows to distinct columns (Hungarian method, O(n^3)).
+
+    The matrix may be rectangular; it is squared with `pad`, and a row assigned to a padding column
+    comes back as None. Written out rather than imported: nine cells is the whole problem, and scipy is
+    in the environment only by accident of another package's requirements.
+    """
+    rows, cols = len(cost), len(cost[0]) if cost else 0
+    n = max(rows, cols)
+    if n == 0:
+        return [None] * rows
+    a = [[(cost[i][j] if i < rows and j < cols else pad) for j in range(n)] for i in range(n)]
+    inf = float("inf")
+    u, v = [0.0] * (n + 1), [0.0] * (n + 1)
+    owner, way = [0] * (n + 1), [0] * (n + 1)  # owner[col] = row (1-based), 0 = free
+    for i in range(1, n + 1):
+        owner[0], j0 = i, 0
+        minv, used = [inf] * (n + 1), [False] * (n + 1)
+        while True:
+            used[j0] = True
+            i0, delta, j1 = owner[j0], inf, 0
+            for j in range(1, n + 1):
+                if not used[j]:
+                    cur = a[i0 - 1][j - 1] - u[i0] - v[j]
+                    if cur < minv[j]:
+                        minv[j], way[j] = cur, j0
+                    if minv[j] < delta:
+                        delta, j1 = minv[j], j
+            for j in range(n + 1):
+                if used[j]:
+                    u[owner[j]] += delta
+                    v[j] -= delta
+                else:
+                    minv[j] -= delta
+            j0 = j1
+            if owner[j0] == 0:
+                break
+        while j0:
+            j1 = way[j0]
+            owner[j0] = owner[j1]
+            j0 = j1
+    result: list[int | None] = [None] * rows
+    for j in range(1, n + 1):
+        if 0 < owner[j] <= rows and j <= cols:
+            result[owner[j] - 1] = j - 1
+    return result
+
+
 def match_cells(checked: tuple[Box, ...], boxes: list[Box]) -> list[int | None]:
     """For each checked sticker, the model's grid sticker centred on it, or None. One model box, one sticker.
 
@@ -71,18 +119,26 @@ def match_cells(checked: tuple[Box, ...], boxes: list[Box]) -> list[int | None]:
     draw the same box edges V6FT did.
     """
     centres = [(x + w / 2, y + h / 2) for x, y, w, h in boxes]
-    taken: set[int] = set()
-    found: list[int | None] = []
+    # AS MANY STICKERS LOCATED AS THE BOXES ALLOW, AND EACH WITH ITS NEAREST AVAILABLE BOX. Greedy
+    # matching -- in cell order, or nearest pair first -- could strand a locatable sticker; a plain
+    # maximum matching fixed the count but could hand a cell a farther box while a nearer one went
+    # elsewhere, and "located_right" then compared the wrong box's colour with the sticker. So this is
+    # a minimum-cost assignment in which an out-of-range pair costs more than every in-range pair
+    # together: the solver maximises how many are located first, and total distance second.
+    far = 1.0 + sum(max(w, h) for _, _, w, h in checked) * max(1, len(checked))
+    cost = []
     for x, y, w, h in checked:
         cx, cy = x + w / 2, y + h / 2
-        best, best_distance = None, 0.5 * min(w, h)
-        for j, (mx, my) in enumerate(centres):
-            distance = ((mx - cx) ** 2 + (my - cy) ** 2) ** 0.5
-            if j not in taken and distance < best_distance:
-                best, best_distance = j, distance
-        if best is not None:
-            taken.add(best)
-        found.append(best)
+        limit = 0.5 * min(w, h)
+        row = []
+        for mx, my in centres:
+            d = ((mx - cx) ** 2 + (my - cy) ** 2) ** 0.5
+            row.append(d if d < limit else far)
+        cost.append(row)
+    assignment = _min_cost_assignment(cost, far)
+    found: list[int | None] = [
+        j if j is not None and cost[i][j] < far else None for i, j in enumerate(assignment)
+    ]
     return found
 
 
@@ -144,6 +200,12 @@ def contributor_interval(pairs: dict[str, tuple[float, float]], draws: int = 200
 
 def summarise(scores: list[PhotoScore], models: list[str], reference: str) -> dict[str, dict]:
     """Every quantity in the module docstring, per model, on denominators that are asserted equal."""
+    # SAY SO HERE, where the cause is still nameable. With nothing to summarise, the first thing to
+    # fail was `statistics.mean` on an empty per-contributor table, several frames down and reading
+    # like a bug in the statistics -- when what actually happened is that the selection upstream
+    # matched no legal set at all.
+    if not scores:
+        raise SystemExit("drop_eval.py: nothing to summarise — no checked, legal set was selected")
     keyed = {m: {(s.contributor, s.set, s.photo): s for s in scores if s.model == m} for m in models}
     keys = sorted(keyed[reference])
     for m in models:
