@@ -31,7 +31,6 @@ import math
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 # The six colour classes, in `ml/data.yaml` order. The order is a contract with the app: the
 # scanner maps class index straight to a colour, so a reordering here is a silent mis-read
@@ -497,7 +496,7 @@ class DetectHead(nn.Module):
         for layer in self.reg_out:
             nn.init.constant_(layer.bias, 1.0)
 
-    def forward(self, feats) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, feats) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         """Returns raw per-anchor tensors, concatenated across levels.
 
         cls_logits: [B, A, num_classes] — logits, NOT probabilities. The loss needs logits and the

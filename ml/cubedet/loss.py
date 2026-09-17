@@ -146,7 +146,11 @@ class DetectionLoss(nn.Module):
             loss_box = cls_logits.sum() * 0.0
             loss_dfl = cls_logits.sum() * 0.0
 
-        loss_emb = self._embedding_loss(embeddings, positive, target_scores)
+        # `self.embed_dim` was stored and never read, so "the branch is off" was a property of the
+        # MODEL alone: a loss built with embed_dim=0 still computed a contrastive term for any
+        # outputs that happened to carry embeddings. Off is now off on this side too, through the
+        # same path an embedding-less model takes.
+        loss_emb = self._embedding_loss(embeddings if self.embed_dim else None, positive, target_scores)
 
         total = W_CLS * loss_cls + W_BOX * loss_box + W_DFL * loss_dfl + W_EMB * loss_emb
         return total, {

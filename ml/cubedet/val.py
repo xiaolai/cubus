@@ -30,6 +30,10 @@ IOU_THRESHOLDS = np.arange(0.5, 1.0, 0.05)
 # stickers the scanner would accept, how many were right, and how many did it find?
 REPORT_CONF = 0.25
 
+# How much of an unlabelled sticker a detection has to cover before it counts as that sticker
+# rather than as a mistake. Sticker boxes barely overlap each other, so half is decisive.
+IGNORE_IOU = 0.5
+
 # NMS settings, matched to `fitFromOutput`'s defaults so validation sees what the app sees.
 NMS_IOU = 0.45
 SCORE_FLOOR = 0.001  # for the AP curve, which needs the low-confidence tail
@@ -83,13 +87,98 @@ def _average_precision(tp: np.ndarray, conf: np.ndarray, n_gt: int) -> float:
     return float(np.interp(points, recall, precision, left=precision[0] if len(precision) else 0.0, right=0.0).mean())
 
 
+def _on_ignored(boxes, ignore_boxes) -> torch.Tensor:
+    """Which of `boxes` cover an unlabelled sticker -- an `ignore` row -- by at least IGNORE_IOU."""
+    if ignore_boxes is None or len(ignore_boxes) == 0 or len(boxes) == 0:
+        return torch.zeros(len(boxes), dtype=torch.bool, device=boxes.device)
+    return (_iou_matrix(boxes[:, :4], ignore_boxes) >= IGNORE_IOU).any(dim=1)
+
+
+def accumulate_ap(prediction, gt_boxes, gt_labels, flags, confs, gt_counts,
+                  num_classes: int = NUM_CLASSES, ignore_boxes=None) -> None:
+    """One image's contribution to average precision: per class and IoU threshold, TP flags and scores.
+
+    UNLABELLED IS NOT BACKGROUND, and it is not a reason to discard a detection either. Predictions
+    are matched against the real labels FIRST; only one that is still unmatched and sits on an
+    `ignore` row is left out -- neither a hit nor a false alarm. Filtering on the ignore rows before
+    matching (the first version of this) threw away a correct detection whenever it happened to
+    overlap one. The unmatched set differs per threshold, so `confs` is kept per threshold as well.
+    """
+    for c in range(num_classes):
+        gt_counts[c] += int((gt_labels == c).sum())
+    for c in range(num_classes):
+        pred_c = prediction[prediction[:, 5] == c]
+        gt_c = gt_boxes[gt_labels == c]
+        if len(pred_c) == 0:
+            continue
+        pred_c = pred_c[torch.argsort(pred_c[:, 4], descending=True)]
+        scores = pred_c[:, 4].cpu().numpy()
+        ignored = _on_ignored(pred_c, ignore_boxes).cpu().numpy()
+        ious = _iou_matrix(pred_c[:, :4], gt_c).cpu().numpy() if len(gt_c) else None
+        for t, threshold in enumerate(IOU_THRESHOLDS):
+            taken = np.zeros(len(gt_c), dtype=bool)
+            tp = np.zeros(len(pred_c), dtype=bool)
+            for p in range(len(pred_c) if ious is not None else 0):
+                best, best_iou = -1, threshold
+                for g in range(len(gt_c)):
+                    if taken[g] or ious[p, g] < best_iou:
+                        continue
+                    best, best_iou = g, ious[p, g]
+                if best >= 0:
+                    taken[best] = True
+                    tp[p] = True
+            keep = tp | ~ignored
+            flags[c][t].append(tp[keep])
+            confs[c][t].append(scores[keep])
+
+
+def tally_reads(prediction, gt_boxes, gt_labels, tally: dict, confusion=None, ignore_boxes=None) -> None:
+    """Precision and recall at the app's own confidence floor, and optionally the colour confusion.
+
+    Two matchings, because they answer two questions. The READ tally is class-aware: a detection
+    counts only against a label of its own colour, so a confident wrong-colour box cannot take a
+    sticker away from a correct detection of it, and a sticker nobody read in its right colour is a
+    miss. The CONFUSION matrix is location-only, because its whole job is to say which colour a
+    sticker was mistaken FOR -- the row the model card argues from.
+    """
+    confident = prediction[prediction[:, 4] >= REPORT_CONF]
+    order = torch.argsort(confident[:, 4], descending=True).tolist() if len(confident) else []
+    # `device=` is load-bearing and its absence cost a training run: every other tensor in this
+    # block lives on the accelerator, and a CPU-only smoke test cannot see the mismatch because
+    # there is only ever one device. `test_evaluate_runs_on_an_accelerator` is the check that can.
+    read = torch.zeros(len(gt_boxes), dtype=torch.bool, device=gt_boxes.device)
+    ious = _iou_matrix(confident[:, :4], gt_boxes) if len(confident) and len(gt_boxes) else None
+    ignored = _on_ignored(confident, ignore_boxes)
+    for p in order:
+        said = int(confident[p, 5])
+        if ious is not None:
+            candidates = (ious[p] >= 0.5) & (~read) & (gt_labels == said)
+            if bool(candidates.any()):
+                read[int(torch.argmax(ious[p] * candidates))] = True
+                tally["tp"] += 1
+                continue
+        if not bool(ignored[p]):
+            tally["fp"] += 1
+    tally["fn"] += int((~read).sum())
+
+    if confusion is None or ious is None:
+        return
+    located = torch.zeros(len(gt_boxes), dtype=torch.bool, device=gt_boxes.device)
+    for p in order:
+        free = (ious[p] >= 0.5) & (~located)
+        if bool(free.any()):
+            g = int(torch.argmax(ious[p] * free))
+            located[g] = True
+            confusion[int(gt_labels[g]), int(confident[p, 5])] += 1
+
+
 @torch.no_grad()
 def evaluate(model, loader, device: str, num_classes: int = NUM_CLASSES) -> dict[str, float]:
     """mAP50, mAP50-95, and precision/recall at the app's own confidence floor."""
     model.eval()
     # Per class, per IoU threshold: the true-positive flags and their scores, plus a GT count.
     flags: list[list[list[np.ndarray]]] = [[[] for _ in IOU_THRESHOLDS] for _ in range(num_classes)]
-    confs: list[list[np.ndarray]] = [[] for _ in range(num_classes)]
+    confs: list[list[list[np.ndarray]]] = [[[] for _ in IOU_THRESHOLDS] for _ in range(num_classes)]
     gt_counts = np.zeros(num_classes, dtype=np.int64)
     reported = {"tp": 0, "fp": 0, "fn": 0}
 
@@ -100,63 +189,20 @@ def evaluate(model, loader, device: str, num_classes: int = NUM_CLASSES) -> dict
             mask = targets["mask"][i]
             gt_boxes = targets["boxes"][i][mask].to(device)
             gt_labels = targets["labels"][i][mask].to(device)
-            for c in range(num_classes):
-                gt_counts[c] += int((gt_labels == c).sum())
-
-            for c in range(num_classes):
-                pred_c = prediction[prediction[:, 5] == c]
-                gt_c = gt_boxes[gt_labels == c]
-                if len(pred_c) == 0:
-                    continue
-                order = torch.argsort(pred_c[:, 4], descending=True)
-                pred_c = pred_c[order]
-                confs[c].append(pred_c[:, 4].cpu().numpy())
-                if len(gt_c) == 0:
-                    for t in range(len(IOU_THRESHOLDS)):
-                        flags[c][t].append(np.zeros(len(pred_c), dtype=bool))
-                    continue
-                ious = _iou_matrix(pred_c[:, :4], gt_c).cpu().numpy()
-                for t, threshold in enumerate(IOU_THRESHOLDS):
-                    taken = np.zeros(len(gt_c), dtype=bool)
-                    tp = np.zeros(len(pred_c), dtype=bool)
-                    for p in range(len(pred_c)):
-                        best, best_iou = -1, threshold
-                        for g in range(len(gt_c)):
-                            if taken[g] or ious[p, g] < best_iou:
-                                continue
-                            best, best_iou = g, ious[p, g]
-                        if best >= 0:
-                            taken[best] = True
-                            tp[p] = True
-                    flags[c][t].append(tp)
-
-            # Precision and recall at the app's threshold, class-agnostic on location but
-            # requiring the colour to be right — which is the product's actual success condition.
-            confident = prediction[prediction[:, 4] >= REPORT_CONF]
-            # `device=` is load-bearing and its absence cost a training run: every other tensor in
-            # this block lives on the accelerator, and the CPU-only smoke test could not see the
-            # mismatch because there was only ever one device. `test_evaluate_runs_on_an_accelerator`
-            # is the check that can.
-            matched = torch.zeros(len(gt_boxes), dtype=torch.bool, device=gt_boxes.device)
-            if len(confident) and len(gt_boxes):
-                ious = _iou_matrix(confident[:, :4], gt_boxes)
-                for p in torch.argsort(confident[:, 4], descending=True).tolist():
-                    candidates = (ious[p] >= 0.5) & (~matched) & (gt_labels == confident[p, 5].long())
-                    if bool(candidates.any()):
-                        matched[int(torch.argmax(ious[p] * candidates))] = True
-                        reported["tp"] += 1
-                    else:
-                        reported["fp"] += 1
-            else:
-                reported["fp"] += len(confident)
-            reported["fn"] += int((~matched).sum())
+            # `collate` puts the stickers nobody labelled into their own `ignore` rows, and the loss
+            # already declines to penalise a prediction there. Scoring did not, so reading the part
+            # of the cube a label file left blank counted against the model -- in the number
+            # `best.pt` is chosen on. See accumulate_ap for how they are honoured.
+            ignore_boxes = targets["ignore"][i][targets["ignore_mask"][i]].to(device)
+            accumulate_ap(prediction, gt_boxes, gt_labels, flags, confs, gt_counts, num_classes, ignore_boxes)
+            tally_reads(prediction, gt_boxes, gt_labels, reported, ignore_boxes=ignore_boxes)
 
     per_class_ap = np.full((num_classes, len(IOU_THRESHOLDS)), np.nan)
     for c in range(num_classes):
         if gt_counts[c] == 0:
             continue
-        conf_c = np.concatenate(confs[c]) if confs[c] else np.zeros(0)
         for t in range(len(IOU_THRESHOLDS)):
+            conf_c = np.concatenate(confs[c][t]) if confs[c][t] else np.zeros(0)
             tp_c = np.concatenate(flags[c][t]) if flags[c][t] else np.zeros(0, dtype=bool)
             per_class_ap[c, t] = _average_precision(tp_c, conf_c, int(gt_counts[c]))
 
@@ -168,9 +214,9 @@ def evaluate(model, loader, device: str, num_classes: int = NUM_CLASSES) -> dict
         "precision": float(precision),
         "recall": float(recall),
     }
-    from .model import NUM_CLASSES as _n  # names for the per-class row
-
-    names = ["white", "red", "green", "yellow", "orange", "blue"][:_n]
+    # Sliced by the ARGUMENT, not by the module constant: `evaluate(..., num_classes=3)` used to
+    # build six names and then index a three-row table with the fourth.
+    names = ["white", "red", "green", "yellow", "orange", "blue"][:num_classes]
     for c, name in enumerate(names):
         out[f"ap50_{name}"] = float(per_class_ap[c, 0]) if gt_counts[c] else float("nan")
     return out

@@ -116,6 +116,23 @@ def input_scale_mismatch(state: dict, mine: bool, source: Path) -> str | None:
             f"Pass --no-input-normalise to match an older checkpoint, or start fresh.")
 
 
+def assert_same_architecture(state: dict, cfg, source: Path, flag: str, advice: str) -> None:
+    """Refuse a checkpoint whose architecture is not this run's. Shared by --init-from and --resume.
+
+    Refuse a mismatch rather than let load_state_dict paper over it: a checkpoint whose backbone or
+    resolution differs builds a model that loads, trains and exports, and is quietly wrong -- the
+    same failure mode the stride-cut probe exists to prevent.
+    """
+    for key, mine in (("backbone", cfg.backbone), ("width", cfg.width),
+                      ("imgsz", cfg.imgsz), ("num_classes", NUM_CLASSES),
+                      ("context", cfg.context), ("embed_dim", cfg.embed_dim)):
+        theirs = state.get(key)
+        if theirs is not None and theirs != mine:
+            raise SystemExit(
+                f"{flag} {source}: checkpoint {key}={theirs!r} but this run is {key}={mine!r}. {advice}"
+            )
+
+
 class ModelEMA:
     """An exponential moving average of the weights, evaluated instead of the raw model.
 
@@ -223,6 +240,15 @@ def main(argv: list[str] | None = None) -> int:
                         help="train even if ultralytics is importable; warns and records it")
     args = parser.parse_args(argv)
 
+    # A CHECKPOINT THAT IS NOT THERE IS A TYPO. Both flags used to be guarded by `.exists()` at the
+    # point of use, so a mistyped path -- or a volume that had not mounted yet -- started a fresh
+    # run from ImageNet weights and said nothing about it. That is days of GPU time spent answering
+    # a question nobody asked, and the log looks normal. run-cubedet.sh only ever passes --resume
+    # when the file is there (`[ -s "$LAST" ]`), so nothing legitimate depends on the silence.
+    for flag, path in (("--init-from", args.init_from), ("--resume", args.resume)):
+        if path is not None and not path.exists():
+            raise SystemExit(f"{flag} {path}: no such file. Fix the path, or omit the flag to start fresh.")
+
     environment = assert_permissive_environment(args.allow_agpl_in_env)
     cfg = Config(
         data=args.data, out=args.out, epochs=args.epochs, batch=args.batch, workers=args.workers,
@@ -256,8 +282,12 @@ def main(argv: list[str] | None = None) -> int:
         collate_fn=collate, pin_memory=True, persistent_workers=cfg.workers > 0,
     )
 
+    # Pretrained weights are fetched to be thrown away when a checkpoint is about to overwrite
+    # them. That is a download and a cache lookup on every restart of a resumed run -- on a box
+    # behind a slow proxy it is also the step most likely to fail, for weights the run never uses.
+    incoming = args.resume is not None or args.init_from is not None
     model = CubeDet(num_classes=NUM_CLASSES, width=cfg.width, image_size=cfg.imgsz,
-                    context=cfg.context, backbone=cfg.backbone,
+                    context=cfg.context, backbone=cfg.backbone, pretrained=not incoming,
                     embed_dim=cfg.embed_dim, input_normalised=cfg.input_normalised).to(device)
     criterion = DetectionLoss(NUM_CLASSES, embed_dim=cfg.embed_dim)
     # No weight decay on norms and biases: decaying a BatchNorm scale pulls it towards zero, which
@@ -293,15 +323,8 @@ def main(argv: list[str] | None = None) -> int:
         # Refuse a mismatch rather than let load_state_dict paper over it. A checkpoint whose
         # backbone or resolution differs builds a model that loads, trains and exports, and is
         # quietly wrong -- the same failure mode the stride-cut probe exists to prevent.
-        for key, mine in (("backbone", cfg.backbone), ("width", cfg.width),
-                          ("imgsz", cfg.imgsz), ("num_classes", NUM_CLASSES),
-                          ("context", cfg.context), ("embed_dim", cfg.embed_dim)):
-            theirs = state.get(key)
-            if theirs is not None and theirs != mine:
-                raise SystemExit(
-                    f"--init-from {args.init_from}: checkpoint {key}={theirs!r} but this run is "
-                    f"{key}={mine!r}. Fine-tuning across architectures is not what this flag does."
-                )
+        assert_same_architecture(state, cfg, args.init_from, "--init-from",
+                                 "Fine-tuning across architectures is not what this flag does.")
         # A checkpoint from before the embedding branch existed has no head.emb_* keys, and a
         # strict load rejects it on MISSING keys. That is a legitimate case -- adding a head and
         # warm-starting the rest is the whole point of this flag -- so it is allowed and then
@@ -332,6 +355,12 @@ def main(argv: list[str] | None = None) -> int:
         # scale existed would otherwise resume under a different one, with nothing to say so.
         if (mismatch := input_scale_mismatch(state, cfg.input_normalised, args.resume)):
             raise SystemExit(f"--resume {mismatch}")
+        # The SAME architecture check --init-from makes, for the same reason and one it needs more:
+        # resume checked only the input scale, and every other difference loads. The anchor grid is
+        # a non-persistent buffer built from cfg.imgsz, so an 896px run resumed at the default 640
+        # loaded cleanly, trained on a grid its weights had never seen, and reported nothing.
+        assert_same_architecture(state, cfg, args.resume, "--resume",
+                                 "A run continues at the geometry it began with.")
         model.load_state_dict(state["model"])
         ema.module.load_state_dict(state["ema"])
         optimiser.load_state_dict(state["optimiser"])

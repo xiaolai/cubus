@@ -28,6 +28,14 @@ def test_a_sticker_is_matched_by_its_centre_and_a_box_serves_one_sticker() -> No
     assert de.match_cells(((0, 0, 10, 10), (8, 0, 10, 10)), [(4, 0, 10, 10)]) == [0, None], "one model box counted for two stickers"
     assert de.match_cells(checked, [(6, 0, 10, 10)]) == [None, None], "a box between two stickers matched one"
     assert de.match_cells(checked, []) == [None, None]
+    # Greedy in any order can strand a cell: cell 0 is nearest box 0 and could use box 1; cell 1 can
+    # only use box 0. Both are locatable, so both must be located (the audit's counterexample).
+    crowded = ((0, 0, 10, 10), (3, 0, 10, 10))
+    assert de.match_cells(crowded, [(0.5, 0, 10, 10), (-3.5, 0, 10, 10)]) == [1, 0], "a greedy match stranded a locatable sticker"
+    # Among the matchings that locate the most, the NEAREST: cell C's only box sits 0.1 from it,
+    # and a count-only matching gave that box to cell A (1.1 away) while A had its own box at 1.0.
+    cells = ((-1.0, 0, 4, 4), (-3.05, 0, 4, 4), (0.2, 0, 4, 4))  # centres x = 1.0, -1.05, 2.2
+    assert de.match_cells(cells, [(-2, 0, 4, 4), (0.1, 0, 4, 4)]) == [0, None, 1], "the assignment crossed"
     print("PASS match: by centre, within half a sticker, one box per sticker")
 
 
