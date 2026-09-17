@@ -44,7 +44,14 @@ export default defineConfig({
       // process, which is the only way to see a signal handler and an exit code, and v8 coverage
       // in THIS process cannot see into that one. Including it would report an executable-tested
       // file as untested.
-      include: ['src/gen4/**', 'src/mac.ts', 'src/capture.ts', 'src/transport/blew.ts'],
+      // pulse.ts joined on 2026-09-17: a timer and a callback, no hardware in it.
+      include: [
+        'src/gen4/**',
+        'src/mac.ts',
+        'src/capture.ts',
+        'src/transport/blew.ts',
+        'src/pulse.ts',
+      ],
       reporter: ['text', 'html'],
       thresholds: {
         lines: 85,
