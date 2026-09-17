@@ -30,7 +30,10 @@ function recordingCube() {
     },
     animating: false,
   };
+  // `turnTo` records like the rest, and answers a promise as the element does: a hold change between two
+  // adjacent positions is an animated tumble now (ADR 0003), so it has to be observable here.
   for (const m of ['step', 'stepBack', 'stepStop', 'stepBackStop', 'seek', 'playTo']) target[m] = (...a) => calls.push([m, ...a]);
+  target.turnTo = (...a) => { calls.push(['turnTo', ...a]); return Promise.resolve(true); };
   // The proxy half: anything the manifest does not list throws, naming itself.
   const allowed = new Set([...MANIFEST.methods, ...MANIFEST.properties.map((p) => p.name), ...Object.keys(MANIFEST.operations), 'calls', 'attrs']);
   return new Proxy(target, {
@@ -110,21 +113,41 @@ test('a walk followed by the cube: a turn along the walk steps, and a jump seeks
   assert.equal(walk.position, 4, 'an arrangement off the walk moved it');
 });
 
-test('a hold cut re-loads the element holding the cube the new way', () => {
+// A HOLD CHANGE IS A TUMBLE WHEN THE CHILD IS WALKING, AND A CUT WHEN THEY ARE SCRUBBING (plan item 6.5,
+// owner's decision 2026-09-17). This case asserted that a hold change always wrote `orientation`, which was
+// the behaviour before that decision: ADR 0003 says the cube turns over IN FRONT of the child, and the one
+// step where the first layer is finished and the cube goes over is the step that mattered most. A scrub
+// still cuts, because a seek cannot animate through every hold it passes.
+test('a hold change tumbles on a press and cuts on a seek, and loads the cube either way', () => {
   const built = script([{ move: 'R' }, { hold: 'D B' }, { move: 'U' }]);
+
   const cube = recordingCube();
   const walk = createStopDriver(built, { cube });
   walk.next();
   const before = transport(cube).length;
   walk.next();
   const sets = cube.calls.filter(([c]) => c === 'set').map(([, n, v]) => `${n}=${v}`);
-  assert.ok(sets.includes('orientation=D B'), 'the cut never told the element how the cube is held');
-  assert.ok(sets.some((s) => s.startsWith('facelets=')), 'the cut did not load the cube in front of the child');
-  assert.equal(transport(cube).length, before, 'the element was asked to animate across a cut');
+  assert.deepEqual(transport(cube).filter(([c]) => c === 'turnTo').at(-1), ['turnTo', 'D', 'B'],
+    'walking into a new hold did not turn the cube over in front of the child');
+  assert.equal(sets.includes('orientation=D B'), false,
+    'the hold was also written as an attribute, which states the end of the turn and cancels it');
+  assert.ok(sets.some((s) => s.startsWith('facelets=')), 'the tumble did not load the cube in front of the child');
+  assert.equal(transport(cube).filter(([c]) => c !== 'turnTo').length, before,
+    'the element was asked to animate its sequence across a hold change');
+
+  // A SEEK STILL CUTS. Scrubbing crosses holds it is not showing, and animating each one would make a drag
+  // take as long as the walk it is skipping.
+  const scrubbed = recordingCube();
+  createStopDriver(built, { cube: scrubbed }).seek(2);
+  const cutSets = scrubbed.calls.filter(([c]) => c === 'set').map(([, n, v]) => `${n}=${v}`);
+  assert.ok(cutSets.includes('orientation=D B'), 'a seek into a new hold never told the element how the cube is held');
+  assert.deepEqual(transport(scrubbed).filter(([c]) => c === 'turnTo'), [], 'a seek animated a hold change');
+
   // Landing cold in the middle of a later segment is a jump into it, never a stop-step from its start.
   const cold = recordingCube();
   createStopDriver(built, { cube: cold }).seek(3);
-  assert.deepEqual(transport(cold).at(-1), ['seek', 1], 'a cold landing past the start of a segment was not a seek');
+  assert.deepEqual(transport(cold).filter(([c]) => c !== 'turnTo').at(-1), ['seek', 1],
+    'a cold landing past the start of a segment was not a seek');
 });
 
 test('the writer touches nothing the manifest omits', () => {
@@ -287,4 +310,75 @@ test('a jump to the position already reached re-seats a cube that is still turni
   clockCube.animating = true;
   clock.seek(0.01);
   assert.ok(transport(clockCube).length > at, 'a clock seek left a turn in flight to land');
+});
+
+// THE THREE CAPABILITIES PLAN ITEM 6.5 WAS BLOCKED ON, each a design the owner settled on 2026-09-17. The
+// cube screen could not become a driver consumer without them, and the item named each: a writer that
+// leaves host-owned attributes alone, an animated hold change, and a stop driver that plays.
+
+test('a host keeps the attributes it says it owns, and the writer fills in the rest', () => {
+  // The cube screen lets a child tune the view. A writer that put `camera-latitude` back on every position
+  // would undo that on every press — which is the first reason the screen could not be a consumer.
+  const built = script([{ move: 'R', cam: [10, 20], ghosts: true, camUp: 'D' }, { move: 'U', ghosts: true }]);
+  const owned = ['ghosts', 'ghost-elevation', 'camera-latitude', 'camera-longitude', 'camera-up'];
+
+  const free = recordingCube();
+  createStopDriver(built, { cube: free }).next();
+  const freeNames = new Set(free.calls.filter(([c]) => c === 'set').map(([, n]) => n));
+  for (const attr of owned) {
+    assert.ok(freeNames.has(attr), `precondition: a writer with no owner set writes ${attr}`);
+  }
+
+  const kept = recordingCube();
+  createStopDriver(built, { cube: kept, owned }).next();
+  const keptNames = new Set(kept.calls.filter(([c]) => c === 'set').map(([, n]) => n));
+  for (const attr of owned) {
+    assert.equal(keptNames.has(attr), false, `the writer wrote ${attr}, which the host owns`);
+  }
+  // Everything else still arrives: owning the view does not mean owning the cube.
+  for (const attr of ['orientation', 'alg', 'highlight']) {
+    assert.ok(keptNames.has(attr), `owning the view stopped the writer saying ${attr}`);
+  }
+});
+
+test('a driver that plays walks one stop at a time, and anything a person does stops it', () => {
+  // The clock is a seam, so the whole walk runs here without waiting for any of it.
+  const pending = [];
+  const schedule = Object.assign((fn) => { pending.push(fn); return pending.length; },
+    { cancel: (id) => { pending[id - 1] = null; } });
+  const run = (n) => { for (let i = 0; i < n; i++) { const fn = pending.find(Boolean); if (!fn) return; pending[pending.indexOf(fn)] = null; fn(); } };
+
+  const built = script([{ move: 'R' }, { move: 'U' }, { move: 'F' }]);
+  const cube = recordingCube();
+  const walk = createStopDriver(built, { cube, schedule });
+  assert.equal(walk.playing, false, 'a driver plays before it is asked to');
+  walk.play({ every: 10 });
+  assert.equal(walk.playing, true);
+  run(2);
+  assert.equal(walk.position, 2, `playing walked to ${walk.position}, not 2`);
+
+  // It STOPS at the end rather than wrapping, unless asked to repeat.
+  run(5);
+  assert.equal(walk.position, 3, 'playing ran past the end of the walk');
+  assert.equal(walk.playing, false, 'the clock is still running with nowhere to go');
+
+  // With `repeat` it wraps instead.
+  const looped = createStopDriver(built, { cube: recordingCube(), schedule });
+  looped.play({ every: 10, repeat: true });
+  run(5);
+  assert.equal(looped.playing, true, 'a repeating walk stopped at the end');
+  assert.ok(looped.position < 3, `a repeating walk did not wrap (at ${looped.position})`);
+
+  // AND A PERSON OUTRANKS THE CLOCK — a press, a scrub, a halt, or a cube turned in a hand.
+  for (const take of [(d) => d.next(), (d) => d.back(), (d) => d.seek(1), (d) => d.halt()]) {
+    const d = createStopDriver(built, { cube: recordingCube(), schedule });
+    d.play({ every: 10 });
+    assert.equal(d.playing, true, 'precondition: it is playing');
+    take(d);
+    assert.equal(d.playing, false, 'the walk kept playing under the person driving it');
+  }
+  const followed = createStopDriver(built, { cube: recordingCube(), schedule });
+  followed.play({ every: 10 });
+  followed.observe(toFacelets(built.positions[1].cube));
+  assert.equal(followed.playing, false, 'a cube turned in a hand did not stop the clock');
 });

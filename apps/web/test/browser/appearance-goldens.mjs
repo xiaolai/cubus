@@ -41,6 +41,8 @@ export const LAUNCH = { args: ['--use-angle=swiftshader', '--enable-unsafe-swift
 const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
 const HALF_READ = `${'U'.repeat(9)}${'R'.repeat(9)}${'?'.repeat(27)}${'B'.repeat(9)}`;
 const SCRAMBLE = "R U R' U' F2 L D B'";
+const COMMUTATOR = "R U R' U'";
+const UPERM = "R U' R U R U R U' R' U' R2";
 
 /**
  * §3c's matrix, one axis at a time from a scrambled muted Western cube at 240x240 — the cross
@@ -69,6 +71,22 @@ export const FIXTURES = [
   { name: 'back-view-top-right', attrs: { scramble: SCRAMBLE, 'back-view': 'top-right' }, w: 320, h: 240 },
   { name: 'mid-turn', attrs: { facelets: SOLVED, alg: 'R' }, turn: true },
   { name: 'non-square', attrs: { scramble: SCRAMBLE, ghosts: 'on' }, w: 240, h: 360 },
+  // PHASE 4's DRAWINGS, approved by the owner on the look sheet 2026-09-17 after six rounds of changes,
+  // and pinned on that approval — which is the plan's rule, and the reason these were absent until now.
+  //
+  // Chosen so each picture is the only one that would move if its own mechanism changed. The arrow's three
+  // widths are the whole idea of the language (one layer, one line), and `Rw2` carries BOTH marks a line
+  // cannot say by itself — the tie and the half-turn dot. The letters are drawn at two holds because the
+  // entire claim is that they do not move. The trails cover the two styles and, separately, three at once,
+  // which is the only fixture where the nesting and the lanes are visible at all.
+  { name: 'arrow-R', attrs: { scramble: SCRAMBLE, arrow: 'R' } },
+  { name: 'arrow-Rw2', attrs: { scramble: SCRAMBLE, arrow: 'Rw2' } },
+  { name: 'arrow-x', attrs: { scramble: SCRAMBLE, arrow: 'x' } },
+  { name: 'labels-position', attrs: { scramble: SCRAMBLE, labels: 'position' } },
+  { name: 'labels-position-DB', attrs: { scramble: SCRAMBLE, labels: 'position', orientation: 'D B' } },
+  { name: 'trail-steps', attrs: { alg: COMMUTATOR, trail: 'piece:URF' } },
+  { name: 'trail-ribbon', attrs: { alg: COMMUTATOR, trail: 'piece:URF', 'trail-style': 'ribbon' } },
+  { name: 'trail-three', attrs: { alg: UPERM, trail: 'piece:UF,piece:UL,piece:UR' } },
 ];
 
 /**

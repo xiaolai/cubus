@@ -27,16 +27,46 @@ import { locate, trackFor } from './script-track.js';
 /** A segment's tokens, as the view carries them: `alg` is what the element was written. */
 const segmentTokens = (view) => String(view.alg ?? '').split(' ').filter(Boolean);
 
-export function createElementWriter(cube) {
+export function createElementWriter(cube, { owned = [] } = {}) {
   // The cache is `lib/element-writes.js`'s, shared with the episode runtime's player: the rule "write only
   // what changed" was written out in both, and they had drifted.
-  const write = createAttributeWriter(cube);
+  const writeAny = createAttributeWriter(cube);
+  /**
+   * ATTRIBUTES THE HOST OWNS ARE NEVER WRITTEN (plan item 6.5, owner's decision 2026-09-17).
+   *
+   * A script says what it needs to say about the cube; it does not say everything about the element. The
+   * cube screen lets a child tune the view — ghosts, the camera's angle, which way is up — and a writer
+   * that puts `camera-latitude` back on every position would undo that on every press, which is the first
+   * of the three reasons the screen could not become a driver consumer. Declared by the HOST rather than
+   * guessed at here: which attributes a surface owns is a fact about that surface.
+   */
+  const ownedSet = new Set(owned);
+  const write = (name, value, opts) => (ownedSet.has(name) ? undefined : writeAny(name, value, opts));
   let segment = -1;
   let applied = -1;
+  // The hold this writer last put the cube in. Kept rather than read back off the element: the writer
+  // already caches every attribute it writes, so asking the DOM would be a second source for a fact it
+  // owns — and a host that owns `orientation` never has it written at all, which a read could not tell.
+  let held = null;
 
   /** Load a segment: the hold, then the cube, then the sequence — each of which resets what follows it. */
-  const load = (view) => {
-    write('orientation', view.orientation);
+  const load = (view, how) => {
+    // A HOLD CHANGE IS A TUMBLE, NOT A CUT, when the child is walking (ADR 0003: the cube turns over in
+    // front of them, and that turn is the thing being taught). Writing `orientation` STATES where the cube
+    // is and arrives instantly, which is right for a seek — a scrub cannot animate through every hold it
+    // passes — and wrong for the one step where the first layer is finished and the cube goes over.
+    // `turnTo` animates between two NAMED orientations, which is exactly what a hold change is.
+    const tumble = how === 'stop' && held !== null && view.orientation && view.orientation !== held
+      && !ownedSet.has('orientation');
+    if (tumble) {
+      const [up, front] = String(view.orientation).split(/\s+/);
+      cube.turnTo(up, front);
+    } else {
+      write('orientation', view.orientation);
+    }
+    // Recorded whichever way it was said, because the NEXT hold change is measured against it. The first
+    // load is never a tumble: there is no hold to turn from, and the cube has to start somewhere.
+    if (view.orientation) held = view.orientation;
     // FORCED: two segments can load the same stickers with different sequences, and the element only
     // rebuilds its cube when the attribute is written. Skipping an "unchanged" scramble left the cube
     // wherever the last segment's moves had put it.
@@ -102,7 +132,7 @@ export function createElementWriter(cube) {
       // Asked BEFORE loading, because loading changes the answer: a segment just loaded is a cold landing,
       // and its transport is a jump whatever kind of arrival the driver meant.
       const cold = view.segment !== segment;
-      if (cold) load(view);
+      if (cold) load(view, how);
       transport(moves, cold ? 'jump' : how, segmentTokens(view));
       const { cues } = view;
       write('highlight', cues.hl ?? 'none');
@@ -127,14 +157,22 @@ export function createElementWriter(cube) {
  * The host keeps the smart cube's plumbing and its trust; this takes an arrangement it has decided to
  * believe and answers where on the walk that is, or that it is not on the walk at all.
  */
-export function createStopDriver(built, { cube = null } = {}) {
+/**
+ * How `play` measures time, as a seam. `setTimeout` in a browser; a test hands in its own and runs a whole
+ * walk without waiting for any of it — the same reason the element takes a `clock`.
+ */
+export const defaultSchedule = Object.assign((fn, ms) => setTimeout(fn, ms), { cancel: (t) => clearTimeout(t) });
+
+export function createStopDriver(built, { cube = null, owned = [], schedule = defaultSchedule } = {}) {
   const track = trackFor(built);
   // Handed out rather than kept private: the player built a SECOND one for the same script — every
   // state converted to facelets and every midpoint generated twice, and two objects that must agree
   // about where the cube is (Codex audit, 2026-09-16).
-  const writer = cube ? createElementWriter(cube) : null;
+  const writer = cube ? createElementWriter(cube, { owned }) : null;
   const last = built.positions.length - 1;
   let position = 0;
+  let timer = null;
+  const stop = () => { if (timer !== null) { schedule.cancel(timer); timer = null; } };
   const go = (k, how) => {
     // A POSITION IS A WHOLE NUMBER. `viewAtPosition` rounds what it is asked for, so a fractional seek
     // stored 0.6 here and showed position 1 — the driver and the picture disagreeing about where the
@@ -150,9 +188,9 @@ export function createStopDriver(built, { cube = null } = {}) {
     get position() { return position; },
     get view() { return viewAtPosition(built, position); },
     get track() { return track; },
-    next: () => go(position + 1, 'stop'),
-    back: () => go(position - 1, 'stop'),
-    seek: (k) => go(k, 'jump'),
+    next: () => { stop(); return go(position + 1, 'stop'); },
+    back: () => { stop(); return go(position - 1, 'stop'); },
+    seek: (k) => { stop(); return go(k, 'jump'); },
     /**
      * Stop where this driver believes the cube is, and stay there.
      *
@@ -161,15 +199,47 @@ export function createStopDriver(built, { cube = null } = {}) {
      * replacement took to find (Codex audit, 2026-09-16). Its own kind of arrival rather than a jump: a
      * jump re-seats only what is visibly animating, and a group between two of its tokens is not.
      */
-    halt: () => go(position, 'halt'),
+    halt: () => { stop(); return go(position, 'halt'); },
     /**
      * A cube the child turned, as 54 facelets: where it is on the walk.
      *
      * `{ kind: 'step', position }` moved the walk there; `{ kind: 'mid' }` is part way into a turn the
      * walk asked for and moves nothing; `{ kind: 'off' }` is not on the walk, and the host says so.
      */
+    /**
+     * WALK THE STOPS ON A CLOCK — the third thing the screen's transport offers and the driver did not
+     * (plan item 6.5, owner's decision 2026-09-17).
+     *
+     * One stop at a time, each arriving the way a press arrives, so a hold change still tumbles and the
+     * element still animates every token of the group. `every` is the gap BETWEEN stops, and the next is
+     * scheduled once the last has been asked for rather than on a fixed cadence: a stop four tokens long
+     * takes longer to walk than a single turn, and a metronome would start the next over the top of it.
+     *
+     * `repeat` wraps at the end rather than stopping there. Without it the walk ends, which is what a
+     * lesson wants; with it a drill loops until something stops it.
+     */
+    play({ every = 900, repeat = false } = {}) {
+      stop();
+      const tick = () => {
+        if (position < last) go(position + 1, 'stop');
+        else if (repeat) go(0, 'jump');
+        else { timer = null; return; }
+        timer = schedule(tick, every);
+      };
+      timer = schedule(tick, every);
+      return this;
+    },
+
+    /** Stop the clock. What the element is mid-way through still lands; a paused cube is a settled one. */
+    pause() { stop(); return this; },
+
+    get playing() { return timer !== null; },
+
     observe(facelets) {
       const loc = locate(track, facelets, position);
+      // A CUBE IN A HAND OUTRANKS THE CLOCK. Turning it is a person taking over, and a walk still playing
+      // underneath them would race the hands it is meant to be following.
+      if (loc.kind === 'step' && loc.idx !== position) stop();
       if (loc.kind === 'step' && loc.idx !== position) go(loc.idx, Math.abs(loc.idx - position) === 1 ? 'stop' : 'jump');
       return Object.freeze({ kind: loc.kind, position });
     },
