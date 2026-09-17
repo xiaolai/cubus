@@ -33,6 +33,41 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--res", type=int, default=640)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device", choices=["cpu", "gpu"], default="gpu")
+    # LIGHTING KNOBS, exposed so the randomisation can be SWEPT and measured rather than guessed.
+    # Their defaults are the values that produced synth_v3, so an unflagged run is unchanged.
+    # Why they exist: measured 2026-09-11, a cube rendered with ONE pigment per colour still shows
+    # 43.7 deg of within-cube red hue spread against 7.9 deg in real photographs, and 25% of frames
+    # end up with a red sticker hue-oranger than an orange one in the same frame. That is not the
+    # pigment draw (cube_colors.shade_sticker provably preserves hue); it is this lighting, which
+    # is wide enough to invert the one relation the app can exploit. Randomisation that changes the
+    # answer is label noise, not augmentation.
+    p.add_argument("--key-prob", type=float, default=0.6, help="chance of a coloured key light")
+    p.add_argument("--key-energy", type=float, nargs=2, default=[2.0, 8.0], metavar=("MIN", "MAX"))
+    p.add_argument("--key-types", default="SUN,AREA,POINT",
+                   help="comma-separated; SUN is directional so its cast lands evenly across a cube, "
+                        "while POINT/AREA fall off per face and are the likelier inverters")
+    # 0.15-2.6 was fitted under Filmic, which compresses highlights so hard that almost nothing
+    # clipped; under a transform that does not, the same strength blows out. Swept against the
+    # real photographs' own distribution -- see the table in main().
+    p.add_argument("--hdri-strength", type=float, nargs=2, default=[0.35, 1.1], metavar=("MIN", "MAX"))
+    # Saturation is a PIGMENT property and drawing it per tile is what put nine hues on a cube's
+    # nine reds. The mechanism and the measurement are in cube_colors.shade_sticker.
+    p.add_argument("--sat-scope", choices=["sticker", "cube"], default="cube",
+                   help="where the saturation jitter is drawn. 'sticker' is the synth_v5 defect.")
+    # Kept because a cube is one material with one finish, and a per-tile draw of how shiny it is
+    # describes nothing physical -- but it is NOT the colour defect. Measured over paired scenes
+    # it moved the red hue deviation from 3.77 deg to 3.76: no effect at all. Recorded so the
+    # hypothesis is not re-derived and re-tested a third time.
+    p.add_argument("--specular-scope", choices=["sticker", "cube"], default="sticker",
+                   help="where the specular level is drawn. 'sticker' reproduces synth_v5.")
+    p.add_argument("--specular-range", type=float, nargs=2, default=[0.3, 1.0],
+                   metavar=("MIN", "MAX"),
+                   help="Specular IOR Level range. 0.5 is plastic; 1.0 is well past glass.")
+    # BlenderProc's DefaultConfig sets this to "Filmic" and bproc.init() applies it, so every
+    # render before 2026-09-12 was tone-mapped by a film emulation nobody chose. See main().
+    p.add_argument("--view-transform", default="Khronos PBR Neutral",
+                   choices=["Filmic", "Standard", "AgX", "Khronos PBR Neutral"],
+                   help="Blender view transform. 'Filmic' is what every render up to synth_v5 got.")
     return p.parse_args(argv)
 
 
@@ -44,12 +79,21 @@ def color_scheme(rng: random.Random) -> callable:
         per_face = {f: [rng.randrange(6)] * 9 for f in FACE_NAMES}
         return lambda f: per_face[f]
     if roll < 0.30:  # low-variety: two colours per face
-        per_face = {f: [rng.choice(rng.sample(range(6), 2)) for _ in range(9)] for f in FACE_NAMES}
+        # The pair is drawn ONCE per face. Drawn inside the comprehension it was redrawn for every
+        # sticker, so a "two-colour" face could carry all six and this arm -- which exists so the
+        # model sees the low-variety inputs real cubes produce -- was generating ordinary noise.
+        per_face = {}
+        for f in FACE_NAMES:
+            pair = rng.sample(range(6), 2)
+            per_face[f] = [rng.choice(pair) for _ in range(9)]
         return lambda f: per_face[f]
     return lambda f: [rng.randrange(6) for _ in range(9)]  # fully random
 
 
-def build_cube(rng: random.Random, origin=(0.0, 0.0, 0.0)) -> None:
+def build_cube(rng: random.Random, origin=(0.0, 0.0, 0.0),
+               spec_scope: str = "sticker", spec_range=(0.3, 1.0),
+               aux_rng: random.Random | None = None,
+               sat_scope: str = "sticker") -> None:
     """A body cube + 54 colour stickers on its faces, with per-cube brand/material randomization."""
     stickerless = rng.random() < 0.4  # modern speedcubes are stickerless
     wide = rng.random() < 0.6  # wide colour spread (brands / fading / white balance)
@@ -73,11 +117,26 @@ def build_cube(rng: random.Random, origin=(0.0, 0.0, 0.0)) -> None:
     bev.width = rng.uniform(0.005, 0.02)
     bev.segments = rng.randint(2, 4)
 
-    scheme = color_scheme(rng)
-    face_ids = {f: scheme(f) for f in FACE_NAMES}
+    # ONE cube, ONE finish: every sticker is the same vinyl or the same moulded plastic, so how
+    # shiny it is cannot vary from tile to tile. This was the leading suspect for the hue spread
+    # and it was WRONG -- over paired scenes, moving the draw here changed the red hue deviation
+    # from 3.77 deg to 3.76. The knob stays because the per-tile draw still describes nothing
+    # physical; the cause was the saturation draw, in cube_colors.shade_sticker.
+    #
+    # Both scope knobs read from a SEPARATE stream, so that choosing a scope cannot also choose
+    # the scene. The first run of that experiment drew this from `rng`, which consumes a value
+    # and shifts every draw after it: the arms rendered different HDRIs, lights and camera poses
+    # and were compared anyway, and the knob measured the scene lottery. Two halves make the
+    # arms comparable -- the per-cube level comes from its own generator, and the per-tile draw
+    # it replaces is still taken from `rng` and discarded, so `rng` advances identically
+    # whichever scope is in force and every arm renders exactly the scenes synth_v5 did.
+    aux_rng = aux_rng or random.Random(0)
+    spec_level = aux_rng.uniform(*spec_range)
+    face_ids_scheme = color_scheme(rng)
+    face_ids = {f: face_ids_scheme(f) for f in FACE_NAMES}
     # ONE draw of the six pigments for this cube. Per-sticker hue draws were the red<->orange
     # label-noise bug — see cube_colors.py for the measurement and the physical model.
-    palette = cube_palette(rng, wide)
+    palette = cube_palette(rng, wide, sat_scope=sat_scope, sat_rng=aux_rng)
     for st in stickers():
         color_id = face_ids[st.face][st.row * 3 + st.col]
         tile = bproc.object.create_primitive("PLANE")  # unit plane, corners (±1, ±1, 0)
@@ -92,9 +151,16 @@ def build_cube(rng: random.Random, origin=(0.0, 0.0, 0.0)) -> None:
         m[:3, 3] = np.array(st.center, dtype=float) + o
         tile.set_local2world_mat(m)
         mat = bproc.material.create(f"stk_{st.face}_{st.row}_{st.col}")
-        mat.set_principled_shader_value("Base Color", shade_sticker(palette[color_id], rng, wide))
+        mat.set_principled_shader_value(
+            "Base Color", shade_sticker(palette[color_id], rng, wide, sat_scope=sat_scope)
+        )
         mat.set_principled_shader_value("Roughness", gloss)
-        mat.set_principled_shader_value("Specular IOR Level", rng.uniform(0.3, 1.0))
+        # Drawn unconditionally to keep `rng` in step across scopes (see spec_level above);
+        # used only in sticker scope.
+        per_sticker = rng.uniform(*spec_range)
+        mat.set_principled_shader_value(
+            "Specular IOR Level", per_sticker if spec_scope == "sticker" else spec_level
+        )
         tile.replace_materials(mat)
         tile.set_cp("category_id", color_id + 1)
 
@@ -116,7 +182,9 @@ def add_distractors(rng: random.Random, n: int) -> None:
         obj.set_cp("category_id", 0)  # background → dropped, but it still renders + occludes
 
 
-def build_scene(rng: random.Random) -> np.ndarray:
+def build_scene(rng: random.Random, spec_scope: str = "sticker",
+                spec_range=(0.3, 1.0), aux_rng: random.Random | None = None,
+                sat_scope: str = "sticker") -> np.ndarray:
     """Compose the scene; return the point-of-interest for the camera. Scene types:
     ~10% pure negative (no cube, just distractors), else 1 cube (sometimes 2 = multi-cube),
     with distractors sprinkled in ~35% of cube scenes."""
@@ -129,22 +197,26 @@ def build_scene(rng: random.Random) -> np.ndarray:
         for sign in (-1, 1):
             o = [0.0, 0.0, 0.0]
             o[axis] = sign * 1.5
-            build_cube(rng, origin=tuple(o))
+            build_cube(rng, origin=tuple(o), spec_scope=spec_scope, spec_range=spec_range,
+                       aux_rng=aux_rng, sat_scope=sat_scope)
         if rng.random() < 0.35:
             add_distractors(rng, rng.randint(1, 3))
         return np.array([0.0, 0.0, 0.0])
-    build_cube(rng)  # single cube
+    build_cube(rng, spec_scope=spec_scope, spec_range=spec_range,
+               aux_rng=aux_rng, sat_scope=sat_scope)  # single cube
     if rng.random() < 0.35:
         add_distractors(rng, rng.randint(1, 4))
     return np.array([0.0, 0.0, 0.0])
 
 
-def setup_light(rng: random.Random, hdri_dir: str) -> None:
+def setup_light(rng: random.Random, hdri_dir: str, key_prob: float = 0.6,
+                key_energy=(2.0, 8.0), key_types=("SUN", "AREA", "POINT"),
+                hdri_strength=(0.15, 2.6)) -> None:
     """HDRI environment (varied strength = exposure) plus an optional coloured key light for
     warm indoor / cool LED / mixed casts — the illumination that shifts white<->yellow, red<->orange."""
     hdris = glob.glob(os.path.join(hdri_dir, "*.hdr")) + glob.glob(os.path.join(hdri_dir, "*.exr"))
     if hdris:
-        bproc.world.set_world_background_hdr_img(rng.choice(hdris), strength=rng.uniform(0.15, 2.6))
+        bproc.world.set_world_background_hdr_img(rng.choice(hdris), strength=rng.uniform(*hdri_strength))
     else:
         # No environment map: the key light below is forced on and is the ONLY illumination, so
         # the render is lit but has no background. Fine for a smoke test; shouted about so a
@@ -153,14 +225,14 @@ def setup_light(rng: random.Random, hdri_dir: str) -> None:
         # follow this print was a bare attribute expression — a no-op that named "sun fallback"
         # without doing anything; the fallback is the block below, whose light type is random.
         print(f"WARNING: no .hdr/.exr in '{hdri_dir}'; no environment map — key light only", file=sys.stderr)
-    if not hdris or rng.random() < 0.6:
+    if not hdris or rng.random() < key_prob:
         # coloured cast: warm (>1 R), cool (>1 B), or neutral-bright
         temp = rng.choice(["warm", "cool", "neutral"])
         color = {"warm": [1.0, 0.75, 0.5], "cool": [0.6, 0.8, 1.0], "neutral": [1.0, 1.0, 1.0]}[temp]
         light = bproc.types.Light()
-        light.set_type(rng.choice(["SUN", "AREA", "POINT"]))
+        light.set_type(rng.choice(key_types))
         light.set_color(color)
-        light.set_energy(rng.uniform(2.0, 8.0))
+        light.set_energy(rng.uniform(*key_energy))
         light.set_location([rng.uniform(-4, 4), rng.uniform(-4, 4), rng.uniform(3, 7)])
 
 
@@ -169,10 +241,68 @@ def main() -> None:
     rng = random.Random(args.seed)
     np.random.seed(args.seed)
     bproc.init()
+    # A VIEW TRANSFORM IS A CAMERA DECISION AND MUST BE MADE ON PURPOSE.
+    #
+    # bproc.init() applies DefaultConfig.view_transform, which is "Filmic" -- a film-emulation
+    # tone curve that rolls highlights off and desaturates as it does. Nothing here ever chose
+    # it, and it silently shaped every synthetic image this project has trained on.
+    #
+    # The three defaults changed on 2026-09-12 (sat scope, this, and --hdri-strength) were
+    # settled by a sweep whose arms render IDENTICAL scenes, and read on the stickers readable in
+    # EVERY arm -- because the readability gate passes a different fraction per arm, and an
+    # unpaired statistic would compare different populations and call the difference a result.
+    # Through hue_decompose.py and paired_arms.py, against the real photographs:
+    #
+    # THE HUE ROW BELOW WAS READ WITH FRAME GROUPING, before either script could tell two cubes
+    # apart, and 15% of scenes here hold two cubes with independently drawn pigments -- so it is
+    # inflated by comparisons between two cubes' paints. The unreadable rows are per sticker and are
+    # not affected. `ml/arm_sweep.sh` renders both arms again and reads them per cube; it prints the
+    # frame reading beside it, so the size of the old error is on the page rather than in an
+    # argument.
+    #
+    # RE-MEASURED 2026-09-18 with that script, on 30 scenes x 8 poses per arm (2,821 stickers
+    # readable in EVERY arm), with the generator as it stands after 1cae749:
+    #
+    #                          synth_v5   now     real photographs
+    #     stickers unreadable    43.8%   30.1%        22.7%
+    #       ... too grey         42.2%   19.2%        14.8%
+    #       ... too bright        0.6%    6.6%         7.7%
+    #       ... too dark          1.0%    4.2%         0.1%
+    #     red hue deviation      4.92deg 3.19deg        --
+    #       ... read by frame    4.94deg 3.73deg        --
+    #
+    # The defaults stand: on every row the shipped arm reads closer to the photographs. Frame
+    # grouping cost the shipped arm 0.54 deg of the red row and synth_v5 0.02 -- an arm whose spread
+    # is already wide hides the second cube inside it -- so the old reading flattered the arm it
+    # rejected, and the decision survives being re-read. The absolute figures differ from the row
+    # above because that render is gone and this one is smaller; the ordering is what carries.
+    #
+    #                          synth_v5    now      real photographs
+    #     stickers unreadable    47.8%    32.4%         24.6%
+    #       ... too grey         45.4%    19.5%         14.5%
+    #       ... too bright        1.1%     9.0%          9.2%
+    #       ... too dark          1.3%     3.9%          0.8%
+    #     red hue deviation      3.77deg  2.28deg         --
+    #
+    # Filmic exists to prevent clipping, so it produced almost none where a phone camera clips
+    # 5% of a cube's stickers; the price it charges is that saturated pigment is pulled toward
+    # grey, and nearly half of every synthetic sticker arrived too grey for its hue to mean
+    # anything. Training on that teaches a colour distribution no user's camera produces.
+    #
+    # To reproduce synth_v5 exactly, all three have to be named: --sat-scope sticker
+    # --view-transform Filmic --hdri-strength 0.15 2.6. The SCENES are unchanged in any case --
+    # both scope knobs draw from an auxiliary stream, so the main one advances as it always did.
+    bproc.renderer.set_output_format(view_transform=args.view_transform)
     bproc.renderer.set_render_devices(use_only_cpu=(args.device == "cpu"))
 
-    poi_base = build_scene(rng)
-    setup_light(rng, args.hdri_dir)
+    poi_base = build_scene(rng, spec_scope=args.specular_scope,
+                           spec_range=tuple(args.specular_range),
+                           aux_rng=random.Random(args.seed ^ 0x5EC),
+                           sat_scope=args.sat_scope)
+    setup_light(rng, args.hdri_dir, key_prob=args.key_prob,
+                key_energy=tuple(args.key_energy),
+                key_types=tuple(t.strip() for t in args.key_types.split(",") if t.strip()),
+                hdri_strength=tuple(args.hdri_strength))
 
     bproc.camera.set_resolution(args.res, args.res)
     for _ in range(args.num_poses):

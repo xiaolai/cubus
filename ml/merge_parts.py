@@ -4,11 +4,13 @@ The parallel renderer gives each worker its own output dir (`OUT/part_<k>/coco`)
 `write_coco_annotations` calls don't race on a shared file. But every worker numbers its images
 000000.jpg, 000001.jpg… — unique only within the part. This flattens all parts into
 `OUT/images_all` + `OUT/labels_all`, prefixing each filename with its part index so nothing
-collides, and converts the boxes to detector labels on the way (reusing coco_to_labels).
+collides, and converts the boxes to detector labels on the way (reusing coco_to_labels). Beside the labels,
+`OUT/cubes_all` says which cube each label row is on (cube_identity.py), from the body boxes that the
+labels themselves leave out.
 
   python3 merge_parts.py --out ~/datasets/cube --parts ~/datasets/cube/part_*
 
-Stdlib only. Idempotent per run: the two output dirs are CLEARED first, so a part that has been
+Stdlib only. Idempotent per run: the output dirs are CLEARED first, so a part that has been
 removed or re-rendered since the last merge cannot leave its old images behind — before this,
 files were only ever overwritten by filename, and a stale `p3_*.jpg` from a deleted part stayed
 in the set with a label nothing had regenerated.
@@ -20,17 +22,20 @@ import argparse
 import json
 import os
 import shutil
+from pathlib import Path
 
-from coco_to_labels import DEFAULT_MAP, coco_to_label_lines
+from coco_to_labels import DEFAULT_MAP, coco_to_label_rows
+from cube_identity import write_cubes
 
 
 def merge(out: str, parts: list[str]) -> tuple[int, int]:
     """Copy every part's images (prefixed) + write their detector labels. Returns (images, labels)."""
     img_dir = os.path.join(out, "images_all")
     lbl_dir = os.path.join(out, "labels_all")
-    # These two directories are this script's own output and nothing else's; clearing them is
+    cube_dir = os.path.join(out, "cubes_all")
+    # These directories are this script's own output and nothing else's; clearing them is
     # what makes the merge a function of the parts rather than of the previous merge.
-    for d in (img_dir, lbl_dir):
+    for d in (img_dir, lbl_dir, cube_dir):
         shutil.rmtree(d, ignore_errors=True)
         os.makedirs(d)
 
@@ -53,9 +58,10 @@ def merge(out: str, parts: list[str]) -> tuple[int, int]:
                 continue
             stem = f"p{pi}_" + os.path.splitext(os.path.basename(im["file_name"]))[0]
             shutil.copy2(src_img, os.path.join(img_dir, stem + ".jpg"))
-            lines = coco_to_label_lines(per_image.get(img_id, []), im["width"], im["height"], DEFAULT_MAP)
+            lines, cubes = coco_to_label_rows(per_image.get(img_id, []), im["width"], im["height"], DEFAULT_MAP)
             with open(os.path.join(lbl_dir, stem + ".txt"), "w", encoding="utf-8") as f:
                 f.write("".join(f"{line}\n" for line in lines))
+            write_cubes(Path(cube_dir, stem + ".txt"), cubes)
             n_img += 1
             n_with_boxes += 1 if lines else 0
     return n_img, n_with_boxes
@@ -63,8 +69,8 @@ def merge(out: str, parts: list[str]) -> tuple[int, int]:
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--out", required=True, help="dataset root; writes <out>/images_all + <out>/labels_all")
+    p.add_argument("--out", required=True, help="dataset root; writes <out>/images_all, labels_all and cubes_all")
     p.add_argument("--parts", nargs="+", required=True, help="the part_* dirs to merge")
     args = p.parse_args()
     imgs, labeled = merge(args.out, args.parts)
-    print(f"merged {imgs} images ({labeled} with boxes) → {args.out}/images_all + labels_all")
+    print(f"merged {imgs} images ({labeled} with boxes) → {args.out}/images_all, labels_all, cubes_all")

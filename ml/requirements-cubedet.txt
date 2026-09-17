@@ -1,0 +1,25 @@
+# The permissive detector's own stack: what ml/cubedet trains with, what ml/test_cubedet.py needs,
+# and what ml/export.py needs to write the ONNX artefact. NO detlib -- cubedet/train.py
+# refuses to run beside it, and that refusal is what makes the licence claim checkable.
+#
+# Pinned to the environment that exported the shipped model (ml/models/MANIFEST.json `tools`).
+# The training itself ran in the NGC image instead (MANIFEST.json `training_environment`), which
+# brings its own torch and torchvision builds and has timm seeded beside it (ml/run-cubedet.sh).
+#
+#   python3.11 -m venv ml/venv-cubedet
+#   ml/venv-cubedet/bin/pip install --extra-index-url https://download.pytorch.org/whl/cpu -r ml/requirements-cubedet.txt
+#
+# The extra index matters on Linux only: without it pip takes the CUDA build of torch, gigabytes of
+# libraries for tests that never touch a GPU. `2.13.0+cpu` satisfies `==2.13.0`. macOS wheels come
+# from PyPI either way. For all four artefacts, install ml/requirements-export.txt instead.
+torch==2.13.0
+torchvision==0.28.0
+timm==1.0.29
+# 2.1, not the golden harness's 2.3: tensorflow 2.19.0 -- the converter that produced the shipped
+# TFLite, pinned in requirements-export.txt -- requires numpy<2.2, and pip refuses the pair
+# otherwise. It is also the numpy line the training image ran (MANIFEST.json: 2.1.0).
+numpy==2.1.3
+pillow==12.3.0
+onnx==1.22.0
+onnxruntime==1.29.0
+pytest==9.1.1

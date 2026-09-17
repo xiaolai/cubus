@@ -1,8 +1,11 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { LOW_CONFIDENCE_THRESHOLD } from '../src/ai-assemble.js';
+import { fitFromOutput } from '../src/onnx-detect.js';
 import {
   type Detection,
   decodeDetections,
+  dropNested,
   fitFace,
   MIN_STICKER_CONFIDENCE,
   nms,
@@ -60,6 +63,62 @@ describe('nms', () => {
     const kept = nms([a, dup, far], 0.45);
     expect(kept).toHaveLength(2);
     expect(kept.map((d) => d.confidence).sort()).toEqual([0.7, 0.9]);
+  });
+});
+
+describe('dropNested', () => {
+  // The same file ml/test_pipeline.py reads for cube_infer.drop_nested, so the two cannot drift apart.
+  const shared = JSON.parse(
+    readFileSync(new URL('./fixtures/nested-detections.json', import.meta.url), 'utf8'),
+  ) as { cases: { name: string; detections: Detection[]; kept: number[] }[] };
+  for (const c of shared.cases) {
+    it(c.name, () => {
+      expect(dropNested(c.detections).map((d) => c.detections.indexOf(d))).toEqual(c.kept);
+    });
+  }
+
+  /**
+   * A close-up face: six stickers with a full box, three of those also with an inner box whose IoU with
+   * it (0.39) is under NMS's 0.45, and three stickers whose only box is smaller than those inner ones.
+   * The nine largest boxes therefore hold three stickers twice. ml/test_pipeline.py builds the same.
+   */
+  const closeUpColors = [0, 1, 2, 3, 4, 5, 0, 1, 2];
+  function closeUp(): Detection[] {
+    const dets: Detection[] = [];
+    closeUpColors.forEach((classId, i) => {
+      const cx = 100 + (i % 3) * 45;
+      const cy = 100 + Math.floor(i / 3) * 45;
+      if (i < 6) dets.push({ cx, cy, w: 40, h: 40, classId, confidence: 0.9 });
+      if (i < 3) dets.push({ cx, cy, w: 25, h: 25, classId, confidence: 0.8 });
+      if (i >= 6) dets.push({ cx, cy, w: 24, h: 24, classId, confidence: 0.9 });
+    });
+    return dets;
+  }
+
+  it('lets fitFace read a close-up face whose nine largest held three stickers twice', () => {
+    const dets = closeUp();
+    expect(nms(dets)).toHaveLength(12);
+    expect(fitFace(nms(dets)).ok).toBe(false);
+    const fit = fitFace(dropNested(nms(dets)));
+    expect(fit.ok).toBe(true);
+    if (fit.ok) expect(fit.face.colors).toEqual(closeUpColors);
+  });
+
+  it('is applied where the app reads a face: fitFromOutput on the raw tensor', () => {
+    const dets = closeUp();
+    const anchors = dets.length;
+    const rows = 4 + 6;
+    const data = new Float32Array(rows * anchors);
+    dets.forEach((d, a) => {
+      data[a] = d.cx;
+      data[anchors + a] = d.cy;
+      data[2 * anchors + a] = d.w;
+      data[3 * anchors + a] = d.h;
+      data[(4 + d.classId) * anchors + a] = d.confidence;
+    });
+    const fit = fitFromOutput({ data, anchors, rows });
+    expect(fit.ok).toBe(true);
+    if (fit.ok) expect(fit.face.colors).toEqual(closeUpColors);
   });
 });
 
@@ -231,5 +290,62 @@ describe('the confidence floor sits above the low-confidence bar', () => {
       confidence: (MIN_STICKER_CONFIDENCE + LOW_CONFIDENCE_THRESHOLD) / 2,
     }));
     expect(fitFace(faint)).toEqual({ ok: false, reason: 'NO_FACE' });
+  });
+});
+
+describe('a box that is not a box', () => {
+  /** Row-major [4 + numClasses, numAnchors], the layout decodeDetections documents. */
+  function tensor(rows: number[][]): Float32Array {
+    return Float32Array.from(rows.flat());
+  }
+
+  it('drops a detection whose geometry is not finite, however sure the score is', () => {
+    const data = tensor([
+      [100, Number.NaN], // cx — the second anchor's is NaN
+      [100, 100],
+      [30, 30],
+      [30, 30],
+      [0.9, 0.9], // class 0 scores, both well over the threshold
+      [0, 0],
+      [0, 0],
+      [0, 0],
+      [0, 0],
+      [0, 0],
+    ]);
+    const dets = decodeDetections(data, 6, 2, 0.25);
+    expect(dets).toHaveLength(1);
+    expect(dets[0]!.cx).toBe(100);
+  });
+
+  it('drops a detection with an infinite side, which `w > 0` alone lets through', () => {
+    const data = tensor([
+      [100, 100],
+      [100, 100],
+      [30, Number.POSITIVE_INFINITY], // w
+      [30, 30],
+      [0.9, 0.9],
+      [0, 0],
+      [0, 0],
+      [0, 0],
+      [0, 0],
+      [0, 0],
+    ]);
+    expect(decodeDetections(data, 6, 2, 0.25)).toHaveLength(1);
+  });
+
+  it('drops a detection with no area', () => {
+    const data = tensor([
+      [100, 100],
+      [100, 100],
+      [30, 0], // w
+      [30, 30],
+      [0.9, 0.9],
+      [0, 0],
+      [0, 0],
+      [0, 0],
+      [0, 0],
+      [0, 0],
+    ]);
+    expect(decodeDetections(data, 6, 2, 0.25)).toHaveLength(1);
   });
 });

@@ -1,6 +1,6 @@
 # Third-party notices
 
-cubus is licensed under the MIT-only (`LICENSE`); `packages/gan-driver` is MIT. This file
+cubus is licensed under the MIT licence (`LICENSE`). This file
 lists what ships **with** it — in the web app, in the desktop and mobile binaries, and in the
 detector model — and the licence each component is used under. Every licence and notice file
 those components carry is reproduced in §5, as each carries it, one copy per distinct text. It is
@@ -61,11 +61,18 @@ which `apps/web/build.mjs` excludes from every dist, so no release carries it.
 
 ## 2. The detector model and its training data
 
-The sticker detector (`cubedet.onnx`, `.mlpackage`, `.tflite` — one checkpoint, three exports) is a
-detector model trained with [Detlib](https://github.com/detlib/detlib) 8.4.126,
-which is **MIT**. Detlib's stated position is that the licence reaches models trained with
-their software and applications that use those models; that is why cubus is MIT rather than
-permissive (`LICENSE-COMMERCIAL.md`).
+The sticker detector (`cubedet.onnx`, `.mlpackage`, `.tflite` — one checkpoint, three exports) is
+trained by this repository's own `ml/cubedet`, on PyTorch and torchvision (**BSD-3**). Its backbone
+is `mobilenetv4_conv_small.e2400_r224_in1k`, and where that backbone's weights came from is recorded by the export that
+produced it, in `ml/models/MANIFEST.json`:
+
+> Trained by ml/cubedet (PyTorch/torchvision, BSD-3), with the mobilenetv4_conv_small.e2400_r224_in1k feature extractor from ImageNet weights (torchvision BSD-3 or timm Apache-2.0) and the neck and head from random initialisation. No Detlib code and no Detlib pretrained weights. See ml/PERMISSIVE_DETECTOR_PROVENANCE.md.
+
+Until 2026-09-17 the detector was a detector model trained with
+[Detlib](https://github.com/detlib/detlib), which is **MIT**, and Detlib's
+stated position — that the licence reaches models trained with their software and the applications
+using those models — is why this project was MIT until the detector was replaced. Anyone taking
+the PREVIOUS model out of this repository's history is still bound by that.
 
 The real photographs it was trained and tested on are Roboflow Universe datasets published under
 **CC BY 4.0** (<https://creativecommons.org/licenses/by/4.0/>). Attribution, one line per dataset,
@@ -85,13 +92,13 @@ environment maps from [Poly Haven](https://polyhaven.com), published under **CC0
 The golden-frame fixtures in `ml/golden/frames/` (repository test data, not shipped in the app)
 include photographs from Wikimedia Commons:
 
-- `abstain-01.png`: <https://upload.wikimedia.org/wikipedia/commons/2/20/2x2_rubik%27s_cube.jpg> — CC0
-- `abstain-02.png`: <https://upload.wikimedia.org/wikipedia/commons/5/52/2x2-5x5_rubik%27s_cube.jpg> — CC0
-- `photo-00.png`: <https://upload.wikimedia.org/wikipedia/commons/7/77/3cubes.jpg> — Public domain
-- `photo-01.png`: <https://upload.wikimedia.org/wikipedia/commons/8/8b/EmiMa-045.jpg> — CC0
-- `photo-02.png`: <https://upload.wikimedia.org/wikipedia/commons/f/fc/EmiMa-046.jpg> — CC0
-- `photo-03.png`: <https://upload.wikimedia.org/wikipedia/commons/b/bc/EmiMa-047.jpg> — CC0
-- `photo-04.png`: <https://upload.wikimedia.org/wikipedia/commons/7/7b/EmiMa-048.jpg> — CC0
+- `abstain-01.png`: <https://upload.wikimedia.org/wikipedia/commons/5/52/2x2-5x5_rubik%27s_cube.jpg> — CC0
+- `abstain-02.png`: <https://upload.wikimedia.org/wikipedia/commons/9/91/4x4_Pll_parity.png> — CC0
+- `photo-00.png`: <https://upload.wikimedia.org/wikipedia/commons/8/8b/EmiMa-045.jpg> — CC0
+- `photo-01.png`: <https://upload.wikimedia.org/wikipedia/commons/f/fc/EmiMa-046.jpg> — CC0
+- `photo-02.png`: <https://upload.wikimedia.org/wikipedia/commons/b/bc/EmiMa-047.jpg> — CC0
+- `photo-03.png`: <https://upload.wikimedia.org/wikipedia/commons/7/7b/EmiMa-048.jpg> — CC0
+- `photo-04.png`: <https://upload.wikimedia.org/wikipedia/commons/7/71/EmiMa-049.jpg> — CC0
 
 ## 3. Desktop and mobile binaries — Rust crates
 

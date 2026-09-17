@@ -19,7 +19,7 @@ reported mAP is on genuinely unseen images only:
   python dedup_heldout.py --heldout out/heldout --refs out/train_imgs out/iid_test/images [--thresh 5]
   python dedup_heldout.py --heldout out/heldout --refs ... --dihedral --phash --dry-run   # report only
 
-Moves overlapping images+labels into out/heldout/_removed_overlap/ and reports the counts, unless
+Moves overlapping images+labels (and their cube files) into out/heldout/_removed_overlap/ and reports the counts, unless
 --dry-run, which only reports — the held-out composition is a dataset decision, and a stronger
 check should say what it WOULD remove before anyone re-measures on a smaller set. PIL + numpy.
 """
@@ -31,9 +31,12 @@ import glob
 import hashlib
 import os
 import shutil
+from pathlib import Path
 
 import numpy as np
 from PIL import Image
+
+from cube_identity import cubes_path
 
 EXT = (".jpg", ".jpeg", ".png")
 
@@ -109,7 +112,7 @@ def hamming_within(h: int, pool: np.ndarray, thresh: int) -> bool:
     return bool((counts <= thresh).any())
 
 
-def main() -> None:
+def main(argv=None) -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--heldout", required=True)
     ap.add_argument("--refs", nargs="+", required=True)
@@ -118,7 +121,7 @@ def main() -> None:
     ap.add_argument("--phash", action="store_true", help="also match on a perceptual (DCT) hash")
     ap.add_argument("--phash-thresh", type=int, default=8, help="max pHash Hamming distance to call a near-dup")
     ap.add_argument("--dry-run", action="store_true", help="report what would be removed; move nothing")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     ref_sha: set[str] = set()
     ref_ah: list[int] = []
@@ -169,6 +172,11 @@ def main() -> None:
             lp = os.path.join(lbl_dir, stem + ".txt")
             if os.path.exists(lp):
                 shutil.move(lp, os.path.join(rm_lbl, stem + ".txt"))
+            cubes = cubes_path(Path(lp))
+            if cubes.exists():  # left behind, it would describe a photograph no longer in the set
+                removed = cubes_path(Path(rm_lbl, stem + ".txt"))
+                removed.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(cubes, removed)
 
     remaining = len(held) - len(flagged)
     verb = "would remove" if args.dry_run else "removed"

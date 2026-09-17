@@ -20,9 +20,17 @@ import type { CameraDevice, CameraOptions } from './camera.js';
  * The raw detect-head output for one frame: `[4 + numClasses, anchors]`, row-major, boxes in the
  * model's 640×640 input space — exactly what `decodeDetections` parses, from every runtime.
  */
+import type { Frame } from './types.js';
+
 export interface ModelOutput {
   data: Float32Array;
   anchors: number;
+  /**
+   * The frame this output was computed from, when the detector still had it. OPTIONAL: the native
+   * plugin hands back a tensor and nothing else, and a detector that omits this simply means the
+   * assembly's pixel path (`paint-groups.ts`) never runs — which is how it behaved before it existed.
+   */
+  frame?: Frame;
   /**
    * The tensor's ROW count, carried so `fitFromOutput` can refuse a head that is not this model's.
    *

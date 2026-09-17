@@ -1870,3 +1870,85 @@ describe('ai-scan-panel — the colour scheme is the scan’s to decide (ADR 000
     expect(last().suspects).toEqual([{ face: 'B', index: 0, to: sides.D[0] }]);
   });
 });
+
+describe('ai-scan-panel — a centre that reads as another side’s colour', () => {
+  // A blue logo printed on the white centre reads as BLUE. Measured on real cubes: four of seven
+  // centre collisions. The panel used to answer the second "blue" side with "Already have the BLUE
+  // side — still need WHITE" while the user held the white side, which a scan can never get past.
+  const DEEP = new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString();
+  const withLogo = (colors: number[]): number[] => {
+    const out = [...colors];
+    out[4] = LETTER_CLASS.B;
+    return out;
+  };
+
+  it('keeps the logo side instead of turning it away, and completes with the true cube', async () => {
+    const faces = facesOf(DEEP);
+    for (const f of ['R', 'F', 'D', 'L', 'B'] as Face[]) await show(faces[f]);
+    await show(withLogo(faces.U));
+    await vi.advanceTimersByTimeAsync(CHECK);
+    expect(completions).toEqual([DEEP]);
+  });
+
+  it('also when the logo side is shown first and filed under blue', async () => {
+    const faces = facesOf(DEEP);
+    await show(withLogo(faces.U));
+    for (const f of ['R', 'F', 'D', 'L', 'B'] as Face[]) await show(faces[f]);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    expect(completions).toEqual([DEEP]);
+  });
+
+  it('answers the same side shown twice exactly as before — it is not a second side', async () => {
+    const faces = facesOf(DEEP);
+    await show(faces.B);
+    await show(rotateFace(faces.B, 1));
+    expect(last().message).toContain('Already have the');
+    expect(last().captured).toHaveLength(1);
+  });
+
+  it('never names the side it has already been shown as missing while a contest is open', async () => {
+    const faces = facesOf(DEEP);
+    for (const f of ['R', 'F', 'B'] as Face[]) await show(faces[f]);
+    await show(withLogo(faces.U));
+    await show(faces.D);
+    // Four filed and one held back: 5/6. The two unfiled slots are WHITE and ORANGE, and the held side
+    // IS the white one — so "still to show: white" would send the user back to a side they have
+    // already shown. A capture after the hold is where that line would be written, so this makes one.
+    expect(last().message).toContain('5/6');
+    expect(
+      events.some((e) => /still need|still to show/i.test(e.message) && /white/i.test(e.message)),
+    ).toBe(false);
+  });
+
+  it('when neither filing is a real cube, says so and offers to start over — it does not guess', async () => {
+    const faces = facesOf(DEEP);
+    const green = [...faces.F];
+    const j = [1, 2, 3, 5, 6, 7, 8].find((k) => green[k] !== green[0])!;
+    [green[0], green[j]] = [green[j]!, green[0]!];
+    for (const colors of [faces.R, green, faces.D, faces.L, faces.B]) await show(colors);
+    await show(withLogo(faces.U));
+    await vi.advanceTimersByTimeAsync(CHECK);
+    expect(completions).toEqual([]);
+    expect(last().notice?.title).toBe('Two sides read the same centre');
+    expect(last().notice?.action?.kind).toBe('restart');
+    expect(last().notice?.body).toContain('Neither way of filing them makes a real cube');
+  });
+});
+
+describe('ai-scan-panel — a centre collision the captures cannot decide', () => {
+  it('when both filings are real cubes, says so — not that something else was misread', async () => {
+    // One half turn from solved: the yellow side with its centre read as white is a legal cube filed
+    // either way, so the resolution refuses. The two refusals need different instructions, and this
+    // is the one that must not say "something else was misread".
+    const faces = facesOf(new Cube().move('U2').asString());
+    for (const f of ['U', 'R', 'F', 'L', 'B'] as Face[]) await show(faces[f]);
+    const yellow = [...faces.D];
+    yellow[4] = LETTER_CLASS.U;
+    await show(yellow);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    expect(completions).toEqual([]);
+    expect(last().notice?.title).toBe('Two sides read the same centre');
+    expect(last().notice?.body).toContain('Both ways make a real cube');
+    expect(last().notice?.body).not.toContain('something else was misread');
+  });
+});

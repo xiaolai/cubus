@@ -6,6 +6,7 @@
 import type { ModelOutput } from './detector.js';
 import {
   decodeDetections,
+  dropNested,
   type FitResult,
   fitFace,
   MIN_STICKER_CONFIDENCE,
@@ -146,9 +147,8 @@ export function fitFromOutput(output: ModelOutput, opts: DetectOptions = {}): Fi
       `model output has ${output.rows} rows, not the ${expected} a ${numClasses}-class detect head produces${why}`,
     );
   }
-  const dets = nms(
-    decodeDetections(output.data, numClasses, output.anchors, confThreshold),
-    iouThreshold,
+  const dets = dropNested(
+    nms(decodeDetections(output.data, numClasses, output.anchors, confThreshold), iouThreshold),
   );
   return fitFace(dets, minConf);
 }
