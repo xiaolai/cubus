@@ -2,6 +2,14 @@
 // taught pointed at on the cube, the play and step buttons, the renderer's step event, and the
 // hand-off from a finished scramble to the solve.
 //
+// IT DOES NOT DRIVE THE ELEMENT (plan item 6.5, 2026-09-17). Every press goes to the script player the
+// session owns, which owns the stop driver, which owns what the element is told. This module pressed
+// `cube.step()`, `cube.seek()` and `cube.play()` directly until then, and `lib/walk-follow.js` kept a
+// second transport beside it — so "where the drawing is" had two owners that agreed by construction and
+// nothing checked. `test/walk-transport-wiring.test.mjs` reads this file as text and fails on any
+// transport call in it, because a behavioural test can show a press moves the cube and cannot show that
+// no other line does.
+//
 // Its own unit because it is the walk's VIEW: it owns where the head is, whether the walk is
 // playing and the chips on screen, and reads the walk itself through `walkNow()` when it paints.
 // The session orchestrates loads and commits them; this is what they look like. Lifted out of
@@ -25,7 +33,8 @@ import { SCAN_HOLD } from './solving-hold.js';
  *   at construction, because both are built after this.
  */
 export function createWalkPresenter({
-  root, cube, state, signal, scrambling, stale, solList, icon, adoptCube, go, walkNow, takeOver, onHead,
+  root, cube, player, afterTurn, turnLanded, state, signal, scrambling, stale, solList, icon, adoptCube,
+  go, walkNow, takeOver, onHead,
 }) {
   const $ = (sel, from) => from.querySelector(sel);
   let chips = [];
@@ -189,34 +198,56 @@ export function createWalkPresenter({
       if (target && i >= total) solveIt.textContent = solveItLabel();
     }
   }
+  /**
+   * THE HEAD IS WHAT HAS BEEN SHOWN, so it still comes from the element's own report.
+   *
+   * The player MOVES the walk now (plan item 6.5), but it is not what the head should be read from:
+   * the driver sets its position when a stop is ASKED for, and the element takes up to 3.8 seconds to
+   * turn — so reading the player would fill the chip and advance the count at the press, before the
+   * move it describes had happened. The two are the same number once the turn lands, which is what
+   * `test/walk-script.test.mjs` pins: this screen's script gives every token a position.
+   */
   // Signalled, because `cube` is parked and re-used between screens now: an unscoped
   // listener here would arrive at the next screen still calling this screen's sync().
-  cube.addEventListener('cubus-step', (e) => sync(e.detail.index), { signal });
+  //
+  // THE SCREEN'S ONE STEP LISTENER, and the walk clock is told from inside it rather than taking its
+  // own: `screen-swap.test.mjs` asserts that a step reaches exactly one handler, which is how a
+  // listener left behind by an earlier visit is caught at all. Painted first, then the clock — the
+  // clock's tick asks for the next stop, and the head being repainted after the walk had already
+  // moved on would show the move that is starting rather than the one that just landed.
+  cube.addEventListener('cubus-step', (e) => { sync(e.detail.index); turnLanded(); }, { signal });
 
-  /** Whether the renderer can do each of `names`. False while the tag is not a renderer — the
-   *  vendored bundle has not upgraded it yet, or failed to; lib/walk-follow.js's drawTo guards the
-   *  same way. */
-  const can = (...names) => names.every((name) => typeof cube[name] === 'function');
+  /** Whether the element can SHOW a walk — the vendored bundle may not have upgraded the tag, which
+   *  this repo has shipped more than once. The player still keeps the route and the position then, so
+   *  every press is bookkeeping and none of them throws; what there is no point doing is playing. */
+  const shows = () => typeof cube.stepStop === 'function';
+
+  /** Repaint after a press the element will not report: with no renderer nothing ever lands, so the
+   *  head is bookkeeping and this is the only thing that moves it. Declared AFTER `shows` on purpose —
+   *  a `const` arrow read before its initialiser is a TDZ throw, not a hoisted function. */
+  const syncNow = () => { if (!shows()) sync(player.position ?? at); };
 
   const setPlaying = (on) => {
-    // Nothing plays without a renderer, and a button reading Pause over a still cube claims a deed.
-    playing = on && can('play', 'pause');
+    // A button reading Pause over a still cube claims a deed. So a walk plays only where it can be
+    // watched: with no renderer, and with no route loaded — a walk still being searched for — the
+    // press turns into a pause, and `playing` comes back from the player rather than from the ask.
+    if (on && shows()) player.play(); else player.pause();
+    playing = player.playing;
     const play = $('#playBtn', root);
     play.innerHTML = icon(playing ? 'pause' : 'play', 18);
     // The name follows the action: a button drawn as Pause while announcing "Play from here
     // to the end" claims the wrong deed.
     play.title = playing ? t('Pause') : t('Play from here to the end');
     play.setAttribute('aria-label', play.title);
-    if (!can('play', 'pause')) return;
-    if (playing) cube.play(); else cube.pause();
   };
 
-  /** Move the head to `k` without showing the moves between: the renderer's instant seek, or with
-   *  no renderer the head itself, as bookkeeping. Marked as a jump, because nothing was watched. */
+  /** Move the head to `k` without showing the moves between. Marked as a jump, because nothing was
+   *  watched — which is what the rung offer counts, and it counts only steps. */
   const jumpTo = (k) => {
     jumping = true;
     try {
-      if (can('seek')) cube.seek(k); else sync(Math.max(0, Math.min(k, walkNow().total)));
+      player.seek(Math.max(0, Math.min(k, walkNow().total)));
+      syncNow();
     } finally { jumping = false; }
   };
   /** Every transport press starts the same way — the cube stops leading, playback stops — and then
@@ -228,14 +259,15 @@ export function createWalkPresenter({
   };
 
   $('#playBtn', root).onclick = () => { takeOver(); setPlaying(!playing); };
-  $('#nextBtn', root).onclick = () => press(() => (can('step') ? cube.step() : jumpTo(at + 1)));
+  $('#nextBtn', root).onclick = () => press(() => { player.next(); syncNow(); });
   // Back and repeat are both animated, at the one walking speed, and differ only in where they
   // leave you. Back undoes the last move and stops there. Repeat answers "show me that again":
   // it undoes the move and then makes it again, so you end up where you started having watched
   // it twice. Neither jumps: a cut to a new state teaches nothing about the turn that got there.
-  // The renderer's queue is FIFO and pulls the next move only when the current one finishes,
-  // so pushing both halves of a repeat here plays them in order.
-  $('#prevBtn', root).onclick = () => press(() => (can('stepBack') ? cube.stepBack() : jumpTo(at - 1)));
+  // Repeat's two halves are ORDERED BY THE ELEMENT'S OWN COMPLETION, not by a queue: since the walk
+  // is driven by stop commands (plan item 6.5) and a stop command settles the group in flight,
+  // pushing both at once would snap the undo. See the press itself, below.
+  $('#prevBtn', root).onclick = () => press(() => { player.back(); syncNow(); });
   // A move in the list is a place in the solution, so clicking one goes there. seek() is instant
   // on purpose: jumping twelve moves is not something to sit through, which is exactly the case
   // step()/stepBack() do not cover. It seeks to just AFTER the clicked move: the cube shows that
@@ -250,11 +282,15 @@ export function createWalkPresenter({
   // Through press() like every other step, so one press takes over once: it used to take over
   // here and again inside press() (found by audit, 2026-09-13).
   $('#repeatBtn', root).onclick = () => press(() => {
-    // Not merely belt-and-braces with the disabled attribute: stepBack() self-guards at step 0
-    // but step() does not, so without this a repeat at the start would go FORWARD one move.
+    // Not merely belt-and-braces with the disabled attribute: back() self-guards at position 0 but
+    // next() does not, so without this a repeat at the start would go FORWARD one move.
     if (at === 0) return;
-    // With no renderer there is no turn to show again, and the head is already where it leaves you.
-    if (can('stepBack', 'step')) { cube.stepBack(); cube.step(); }
+    player.back();
+    syncNow();
+    // The forward half waits for the undo to LAND. Both halves are stop commands, and a stop command
+    // settles whatever group is in flight — so asking for both in one breath snaps the undo and animates
+    // only the redo, which is the one thing this button exists not to do.
+    afterTurn(() => { player.next(); syncNow(); });
   });
 
   return Object.freeze({

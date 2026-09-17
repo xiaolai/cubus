@@ -10,8 +10,6 @@
 // session, in test/walk-session.test.mjs.
 
 import { t } from './i18n.js';
-import { createScriptPlayer } from './script-player.js';
-import { walkScript } from './walk-script.js';
 import { locate as locateOnTrack, trackOf } from './script-track.js';
 import { showMove } from './solving-hold.js';
 
@@ -25,8 +23,8 @@ import { showMove } from './solving-hold.js';
  *   `walkNow()`, the walk on screen as `{ moves, steps }`.
  */
 export function createFollowTracker({
-  root, cube, state, cubejs, applyTempo, setPlaying, moveHoldAt, markStale, adoptCube, go, scrambling,
-  refreshLiveDistance, dropLiveDistance, chainTrusted, walkNow,
+  root, cube, player, state, cubejs, applyTempo, setPlaying, moveHoldAt, markStale, adoptCube, go,
+  scrambling, refreshLiveDistance, dropLiveDistance, chainTrusted, walkNow,
 }) {
   const $ = (sel, from) => from.querySelector(sel);
 
@@ -42,16 +40,16 @@ export function createFollowTracker({
   // case: the position is simply already right.
   //
   // The walk is a ROUTE on the script player (lib/script-player.js, plan item 3.5 of
-  // dev-docs/tutorial-capability-plan.md): which walk is loaded, the arrangement at each step and
-  // where on it the cube is. The player supersedes a walk the moment its replacement is asked for,
-  // so nothing belonging to the old walk can move a position on the new one. The model of the cube,
-  // trust in it, whether it may lead and the drawing all stay here — the host's, as the plan splits
-  // them. A walk too incomplete to be a route (steps short, which judge() refuses) is tracked by
-  // index alone, as it always was.
-  const player = createScriptPlayer();
-  let unrouted = 0;
-  const cubePosNow = () => (player.loaded ? player.position : unrouted);
-  const moveTo = (k) => { if (player.loaded) player.seek(k); else unrouted = k; };
+  // dev-docs/tutorial-capability-plan.md): which walk is loaded and the arrangement at each step. The
+  // session owns that player now and it drives the element (plan item 6.5), so this module no longer
+  // makes one — but where the PHYSICAL CUBE is remains its own number and is deliberately NOT the
+  // player's position. They are two quantities, and the difference is the feature: the model beneath
+  // this tracks in every mode, while only `mode === 'cube'` mirrors it into the drawing, so while you
+  // are driving with the buttons your own cube can sit two turns behind what is on screen. Collapsing
+  // them would have made a cube turned in your hand move a walk you were stepping through by hand.
+  let cubePos = 0;
+  const cubePosNow = () => cubePos;
+  const moveTo = (k) => { cubePos = k; };
   let liveModel = null; // cubejs cube in truth frame; made by seed() or a snapshot, on a trusted chain
   /**
    * Has `liveModel` advanced past the snapshot it was seeded from?
@@ -65,7 +63,6 @@ export function createFollowTracker({
    * not it.
    */
   let liveMoved = false;
-  let drawn = 0;        // index the renderer's QUEUE will end at; meaningful only while following
   let lastSerial = null;
   /** Why the cube may not lead the walk on screen, or null while it may. */
   let refusal = null;
@@ -146,20 +143,48 @@ export function createFollowTracker({
     return locateOnTrack(trackOf(steps, steps.slice(1).map(() => [])), f, cubePosNow());
   };
 
-  /** Move the drawing toward where the cube is. Deltas are against `drawn` — the end of the
-   *  renderer's QUEUE — never against the animation's progress: reading the completion index
-   *  dropped any turn made inside the 0.19–3.8s animation window, permanently.
+  /** Whether there is a route to move the drawing ALONG. Not a guard on the element: the session
+   *  hands the player a per-call-guarded one, so a tag the bundle has not upgraded answers a transport
+   *  call with nothing rather than a TypeError. What this refuses is moving a walk that is not loaded
+   *  — while one is being searched for, and after one was superseded. */
+  const drawable = () => player.loaded && player.position !== null;
+
+  /**
+   * Move the drawing toward where the cube is — through the ONE thing that drives the element.
    *
-   *  The renderer guard is not belt-and-braces: if the vendored bundle failed to upgrade the
-   *  element — which this repo has shipped more than once — the guide still tracks turns
-   *  rather than throwing on every one. */
+   * Deltas are against the player's position, which is the end of the renderer's queue rather than
+   * the animation's progress: reading the completion index dropped any turn made inside the
+   * 0.19–3.8s animation window, permanently. That is what the separate `drawn` counter here used to
+   * be for, and the player's position is the same fact with one owner instead of two.
+   *
+   * HOW FAR IS ANIMATED IS THE DRIVER'S RULE NOW, and it is one turn rather than two (plan item 6.5,
+   * 2026-09-17). `observe`'s rule — a neighbour animates, anything further is a jump — is what every
+   * other arrival at a position already used, and two hand-rolled transports each with their own
+   * idea of "near" is exactly the duplication this item removes. It shows only when turns arrive
+   * faster than the drawing can animate them, where a jump is the better answer anyway: a mirror
+   * slower than the hand must fall behind, and catching up in one cut beats queueing.
+   */
   const drawTo = (idx) => {
-    if (typeof cube.step !== 'function' || typeof cube.seek !== 'function') return;
-    if (idx === drawn) return;
-    if (idx > drawn && idx - drawn <= 2) { for (let i = drawn; i < idx; i++) cube.step(); }
-    else if (idx === drawn - 1) cube.stepBack(); // an undo is a turn worth watching too
-    else cube.seek(idx); // a jump: animating a dozen moves to catch up helps nobody
-    drawn = idx;
+    if (!drawable()) return;
+    const at = player.position;
+    if (idx === at) return;
+    if (idx === at + 1) player.next();
+    else if (idx === at - 1) player.back();   // an undo is a turn worth watching too
+    else player.seek(idx);                    // a jump: animating a dozen moves to catch up helps nobody
+  };
+
+  /**
+   * Put the drawing at the cube's position AND settle whatever is in flight — the driver switch, both
+   * ways round.
+   *
+   * Not `drawTo`. A seek to the position the drawing is already at writes nothing, which is right for a
+   * transport press and wrong here: collapsing the queue and the turn in flight is the WHOLE point of
+   * the switch, and the two positions being equal is the ordinary case (you take over at the move your
+   * cube is on). `halt` is the arrival that always re-seats, which is exactly that collapse.
+   */
+  const settleAt = (idx) => {
+    if (!drawable()) return;
+    if (idx === player.position) player.halt(); else player.seek(idx);
   };
 
   /** ONE reaction to every accepted reading, move or snapshot. */
@@ -194,16 +219,15 @@ export function createFollowTracker({
   /** ONE owner for the driver switch: tempo, button paint and the atomic hand-over all live
    *  here, so no exit path can leak follow's tempo into a demonstration or leave the queue
    *  running under the wrong driver. BOTH directions seek: taking over collapses follow's
-   *  queue debt and its in-flight animation; resuming re-bases `drawn` on wherever the cube
-   *  is now — which is what makes `drawn` trustworthy within a follow session. */
+   *  queue debt and its in-flight animation; resuming puts the drawing on wherever the cube is
+   *  now — which is what makes the player's position trustworthy within a follow session. */
   function setFollow(on) {
     // A refused walk is never followed, whoever asks. Checked HERE and not only through the
     // toggle's `disabled`, which is DOM state any later paint could get wrong.
     const want = on && refusal === null ? 'cube' : 'slow';
     if (mode !== want) {
       mode = want;
-      if (typeof cube.seek === 'function') cube.seek(cubePosNow());
-      drawn = cubePosNow();
+      settleAt(cubePosNow());
       applyTempo();
       if (mode === 'cube') {
         setPlaying(false);
@@ -381,20 +405,6 @@ export function createFollowTracker({
     if (judge(walkNow()) === null) lead();
   };
 
-  /** Load the walk as the player's route. Only a COMPLETE step array is one: with steps short (a walk
-   *  judge() refuses), steps[i] is undefined for the tail — which once turned "follow is refused" into
-   *  "the whole screen fails to mount". An empty walk — a cube already where it is going — has nowhere
-   *  to go, and is no route either. */
-  const buildMidpoints = (walk) => {
-    unrouted = 0;
-    // The walk's moves are face turns in the cube's own frame, one stop each, so a script of them at the
-    // reference hold has exactly the walk's positions: step k is position k. Built by `walkScript`
-    // rather than written out here — this WAS the only reader, and the transport is becoming a second
-    // (plan item 6.5); two scripts for one walk are two answers about where the cube is.
-    const script = walkScript(walk);
-    if (!script) { player.unload(); return; }
-    void player.load(script);
-  };
 
   /**
    * Put following back at the start of a walk the session has just committed: its positions reset,
@@ -402,14 +412,17 @@ export function createFollowTracker({
    * model is not touched — it is where the cube in your hand is, and a new walk does not move it.
    */
   function rebase(walk) {
-    drawn = 0;
+    // WHERE THE PHYSICAL CUBE IS, back to the start of the new walk. The ROUTE is not loaded here any
+    // more: the session loads it in `drawWalk`, before this runs, because one walk is one route and
+    // loading it twice superseded the first — which halts the element, on the walk it had just drawn.
+    cubePos = 0;
     lastSerial = null;
     clearNote();
     // Following is judged per walk, so a session that was following must be stood down before
     // the new walk is judged — otherwise setFollow(true) below sees `mode` already 'cube',
     // returns early, and never re-bases the drawing on the new plan.
     setFollow(false);
-    buildMidpoints(walk);
+    void walk;
     if (!followBtn) return;
     refusal = judge(walk);
     if (refusal === null) lead(); else paintFollow();
@@ -421,8 +434,10 @@ export function createFollowTracker({
      *  toggle — there is nothing to follow while the next walk is searched for. Where the cube is
      *  NOW is kept (`startedFrom`), because the walk being searched for is about that cube. */
     standDown() {
+      // The ROUTE goes — which stops the element too, on whatever the superseded walk had it
+      // playing — and with it this module's own record of where the cube stood on that walk.
       player.unload();
-      unrouted = 0;
+      cubePos = 0;
       startedFrom = seed()?.asString() ?? null;
       refuseFollow(t('Needs a solve worked out on this screen'));
       clearNote();

@@ -1562,12 +1562,29 @@ const feedQ = (qs) => { for (const q of qs) feed().move({ notation: q, serial: (
 const wrongFaceFor = (...near) => ['U', 'R', 'F', 'D', 'L', 'B'].find((f) => !near.some((m) => m && m[0] === f));
 
 /** Replace the inert renderer's transport API with spies. seek() announces its landing
- *  synchronously exactly like the real one; step()/stepBack() never complete — the race. */
+ *  synchronously exactly like the real one; the stop commands never complete — the race.
+ *
+ *  THE STOP TRANSPORT since plan item 6.5: the walk is driven through the script player, so these are
+ *  the calls it makes. Recorded under the old names, because what every case below is about — how many
+ *  turns were drawn and which way — did not change, and renaming them would make those cases read as
+ *  though their subject had. */
 const spyCube = () => {
   const el = win.document.querySelector('cubus-cube');
   const calls = [];
+  // Every token of a walk is a stop, so the element's stops are 0..n. The driver reads this to decide
+  // whether a position is one step along; without it every arrival would be a jump.
+  Object.defineProperty(el, 'stops', {
+    configurable: true,
+    get: () => {
+      const n = (el.getAttribute('alg') ?? '').split(' ').filter(Boolean).length;
+      return Array.from({ length: n + 1 }, (_, i) => i);
+    },
+  });
+  el.stepStop = () => { calls.push(['step']); };
+  el.stepBackStop = () => { calls.push(['stepBack']); };
   el.step = () => { calls.push(['step']); };
   el.stepBack = () => { calls.push(['stepBack']); };
+  el.playTo = (k) => { calls.push(['playTo', k]); };
   el.seek = (k) => {
     calls.push(['seek', k]);
     el.dispatchEvent(new win.CustomEvent('cubus-step', { detail: { index: k, total: 0 } }));

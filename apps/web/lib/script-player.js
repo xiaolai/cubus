@@ -18,7 +18,7 @@
 // its own generation checks for those (the cube screen's `walkGen`, `liveGen`); this only promises that
 // the player cannot be the thing that applies a stale answer.
 import { buildScript } from './script-view.js';
-import { createStopDriver } from './script-drive.js';
+import { createStopDriver, defaultSchedule } from './script-drive.js';
 import { locate } from './script-track.js';
 
 const thenable = (x) => typeof x?.then === 'function';
@@ -28,15 +28,23 @@ const thenable = (x) => typeof x?.then === 'function';
  *
  * `trusted()` is the host's word on the live chain, asked at every report. `onLoad(view)` is told when a
  * route has been applied — after the live model has been located on it.
+ *
+ * `owned` and `schedule` belong to the DRIVER and pass straight through, because a host that hands over
+ * its element has to be able to say what about that element is still its own, and what its walk's clock
+ * is. Held here rather than rebuilt per load: they are facts about the host, and a route is not (plan
+ * item 6.5 — the cube screen owns the view a child tuned, and paces its play from the element's own
+ * turns rather than from a metronome).
  */
-export function createScriptPlayer({ cube = null, trusted = () => true, onLoad = () => {} } = {}) {
+export function createScriptPlayer({
+  cube = null, owned = [], schedule = defaultSchedule, trusted = () => true, onLoad = () => {},
+} = {}) {
   let generation = 0;
   let route = null;        // { generation, built, track, driver }
   let live = null;         // the connection's latest trusted arrangement, as 54 facelets
 
   const apply = (mine, script) => {
     const built = buildScript(script);
-    const driver = createStopDriver(built, { cube });
+    const driver = createStopDriver(built, { cube, owned, schedule });
     // The driver's own track, not a second one built here: they are the same conversion of the same
     // script, and two of them are two answers about where the cube is (Codex audit, 2026-09-16).
     route = { generation: mine, built, track: driver.track, driver };
@@ -134,5 +142,19 @@ export function createScriptPlayer({ cube = null, trusted = () => true, onLoad =
     next: () => route?.driver.next() ?? null,
     back: () => route?.driver.back() ?? null,
     seek: (k) => route?.driver.seek(k) ?? null,
+
+    /**
+     * Walking the route on a clock, and stopping where it has got to.
+     *
+     * Pass-throughs on purpose: playing is the DRIVER's, and a second implementation here would be a
+     * second answer about whether the walk is running. With no route loaded there is nothing to play,
+     * and `playing` is false rather than an error — a host may press Play while its walk is still
+     * being searched for.
+     */
+    play: (opts) => route?.driver.play(opts) ?? null,
+    pause: () => route?.driver.pause() ?? null,
+    get playing() { return route?.driver.playing ?? false; },
+    /** Stop where the route believes the cube is: what the element is mid-way through still lands. */
+    halt: () => route?.driver.halt() ?? null,
   });
 }
