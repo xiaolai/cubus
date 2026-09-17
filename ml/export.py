@@ -9,9 +9,9 @@ writes into `ml/models/` (see --out):
 | file                  | runtime                          | what it is                                        |
 |-----------------------|----------------------------------|---------------------------------------------------|
 | cubedet.onnx        | reference (Python/onnxruntime)   | fp32, opset 12, simplified                        |
-| cubedet.int8.onnx   | NOT SHIPPED (onnxruntime-web)    | the above, onnxruntime `quantize_dynamic` (QInt8) |
-| cubedet.mlpackage   | Apple (CoreML, macOS + iOS)      | ML program, fp16 compute, fp32 tensor IN, fp16 OUT |
-| cubedet.tflite      | Android APK, gated OFF (LiteRT)  | dynamic-range int8 (int8 weights, fp32 activations), fp32 I/O — full-int8 collapses the head |
+| cubedet.int8.onnx   | NOT SHIPPED (onnxruntime-web)    | the above, `quantize_dynamic` (QInt8) — written only if it still reads (see `int8_reads_a_face`) |
+| cubedet.mlpackage   | Apple (CoreML, macOS + iOS)      | ML program; fp32 for cubedet (measured faster AND exact), fp16 for the Detlib path |
+| cubedet.tflite      | Android APK, gated OFF (LiteRT)  | fp32 for cubedet; dynamic-range int8 for the Detlib path |
 | MANIFEST.json         | —                                | checkpoint + artefact hashes, tool versions, git commit |
 
 The `runtime` column names the runtime an artefact is FOR, and says plainly what ships it today.
@@ -88,9 +88,9 @@ ARTEFACT_LABELS: dict[str, dict[str, str]] = {
     MLPACKAGE: {"runtime": "CoreML — macOS and iOS, via crates/cube-vision", "precision": "fp32 compute, fp32 tensor in and out", "min_target": "macOS13 / iOS16"},
     TFLITE: {
         "runtime": "LiteRT/TFLite (onnx2tf) — bundled in the Android APK by gen/android/app/build.gradle.kts, but gated OFF: VisionPlugin.kt answers probe with verifiedOnDevice=false, so Android runs the WebView fp32 path until the native path is verified on a device",
-        "precision": "dynamic-range int8: int8 weights, fp32 activations, fp32 I/O",
+        "precision": "fp32",
         "layout": "NHWC input; box coords in 640-space (the read is scale-invariant, so the consumer need not rescale)",
-        "quantisation_note": "full-integer int8 (int8 activations) was rejected — it collapses the detect head's class scores to ~0 (NO_FACE on all golden frames); weight-only int8 reads identical to fp32 (0/20). Verified by ml/golden_frames.py.",
+        "quantisation_note": "NOT quantised, for this model. Full-integer int8 was rejected long ago (it collapses the head's class scores to ~0), and weight-only int8 read identically to fp32 for the v3 graph (0/20) — but for the cubedet graph it diverges on 5 of the 20 golden fixtures, including a face on a frame the reference refuses, which is the failure the abstain fixtures exist to catch. Every other artefact of this model is fp32 and Android serves the fp32 WebView graph, so there was nothing to trade that for. The Detlib path still exports weight-only int8 and records it here.",
     },
 }
 
@@ -394,7 +394,7 @@ def _write_onnx2tf_sample(cwd: Path) -> None:
         np.save(f, rng.random((20, 128, 128, 3), dtype=np.float32))
 
 
-def export_tflite(fp32: Path, work: Path, out: Path) -> Path:
+def export_tflite(fp32: Path, work: Path, out: Path, quantised: bool = True) -> Path:
     """ONNX → TF SavedModel → dynamic-range int8 TFLite via onnx2tf, from a COPY of the fp32.
 
     detlib 8.4 routes format='tflite' to litert-torch, which hard-aborts on macOS arm64 (jax /
@@ -429,7 +429,7 @@ def export_tflite(fp32: Path, work: Path, out: Path) -> Path:
         onnx2tf.convert(
             input_onnx_file_path=str(private),
             output_folder_path=str(tf_out),
-            output_dynamic_range_quantized_tflite=True,  # int8 weights, fp32 activations — the faithful one
+            output_dynamic_range_quantized_tflite=quantised,  # int8 weights, fp32 activations, when asked for
             output_signaturedefs=True,  # the dynamic-range path rejects '/'-containing op names without this
             copy_onnx_input_output_names_to_tflite=True,
             non_verbose=True,
@@ -437,10 +437,11 @@ def export_tflite(fp32: Path, work: Path, out: Path) -> Path:
     finally:
         os.chdir(cwd)
 
-    candidates = sorted(tf_out.glob(f"{NAME}_dynamic_range_quant.tflite"))
+    wanted = f"{NAME}_dynamic_range_quant.tflite" if quantised else f"{NAME}_float32.tflite"
+    candidates = sorted(tf_out.glob(wanted))
     if len(candidates) != 1:
         found = [c.name for c in tf_out.glob("*.tflite")]
-        sys.exit(f"expected one {NAME}_dynamic_range_quant.tflite, found {found}")
+        sys.exit(f"expected one {wanted}, found {found}")
     dst = out / TFLITE
     shutil.copyfile(candidates[0], dst)
     return dst
@@ -593,16 +594,22 @@ def main() -> None:
         manifest["artefacts"][MLPACKAGE] = dict(ARTEFACT_LABELS[MLPACKAGE])
         if not args.cubedet:  # the Detlib path converts at fp16; see export_coreml_cubedet for why cubedet does not
             manifest["artefacts"][MLPACKAGE]["precision"] = "fp16 compute, fp32 tensor in, fp16 out"
+
     if "tflite" not in args.skip:
         import onnx2tf as _o2t
         import tensorflow as tf
 
         manifest["tools"]["tensorflow"] = tf.__version__
         manifest["tools"]["onnx2tf"] = getattr(_o2t, "__version__", "unknown")
-        tfl = export_tflite(fp32, work, args.out)
+        # cubedet ships fp32 on every other platform, and the quantised TFLite is the only artefact that
+        # still diverges from it (5 of 20 fixtures, one of them a face on a frame the reference refuses).
+        # Android serves the WebView fp32 graph today, so there is nothing to trade the faithfulness for.
+        tfl = export_tflite(fp32, work, args.out, quantised=not args.cubedet)
         guard_fp32("tflite")
         paths[tfl.name] = tfl
         manifest["artefacts"][TFLITE] = dict(ARTEFACT_LABELS[TFLITE])
+        if not args.cubedet:  # the Detlib graph loses nothing to weight-only int8, so it keeps it
+            manifest["artefacts"][TFLITE]["precision"] = "dynamic-range int8: int8 weights, fp32 activations, fp32 I/O"
 
     # The relation between the two ONNX files is asserted, not assumed (module docstring).
     int8 = args.out / INT8

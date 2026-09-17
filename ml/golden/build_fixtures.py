@@ -10,8 +10,14 @@ plugin — must read identically. They are chosen, not sampled: a golden frame h
 reference model's answer is unambiguous, so that a later disagreement is drift and not noise.
 
 Selection rules (all measured with the reference fp32 ONNX through the app's own post-processing):
-  * rendered cubes — reads OK, every sticker's class margin (best − runner-up score) ≥ MARGIN, and
-    the nine classes are not all the same colour, so a shifted grid cannot pass by accident;
+  * rendered cubes — reads OK, every sticker's class margin (best − runner-up score) ≥ MARGIN, the
+    nine classes are not all the same colour (so a shifted grid cannot pass by accident), AND every
+    one of the nine matches the label the renderer wrote. THE LAST RULE IS THE ONE THAT WAS MISSING,
+    and its absence was not theoretical: the set committed before 2026-09-17 was picked by v3's reads
+    alone, and measured against the renderer's labels afterwards, v3 is right on 89.8% of those
+    stickers. Re-pinning them for a different model pinned ITS mistakes — the candidate scored 69.4%
+    on the same frames while reading real photographs at 96.6%. A fixture nobody checked is a fixture
+    that teaches the gate whatever the reference believed;
   * real photos (CC0 / public-domain only, from the Wikimedia OOD pull) — same bar;
   * abstentions — frames the reference REFUSES (NO_FACE / PARTIAL_FACE / BAD_GEOMETRY), because
     a runtime that starts hallucinating a face on them is as broken as one that stops seeing a real one.
@@ -55,6 +61,9 @@ OUT = ML / "out"
 FRAMES = HERE / "frames"
 MARGIN = 0.20
 MIN_CONF = 0.50
+# The renders and their labels: images/*.jpg beside labels/*.txt in detector form, from a split the model
+# did NOT train on. Fixtures drawn from training frames measure memorisation, not reading.
+RENDER_POOL = "synth_v6_val"
 N_RENDERS = 12
 N_PHOTOS = 5
 N_ABSTAIN_RENDERS = 1
@@ -65,6 +74,12 @@ EXCLUDED_SOURCES = {
     # Wikimedia filename → why it may not be a fixture. Checked by name so the exclusion survives a
     # re-download; the walk simply passes over it.
     "1334579571.4ac18b.jpg": "a cinema poster; the uploader's CC0 tag is not credible for a studio's artwork (2026-09-04)",
+    "3cubes.jpg": "a 5x5, a 5x5 and a 3x3 in one frame: the nine largest stickers can span two cubes, so "
+                  "no read is definitively right and the fixture cannot say what correct means. It was "
+                  "photo-00 until 2026-09-17, and its beyond-the-grid count is 3 where every real 3x3 set "
+                  "measures 0 or 1",
+    "Cylinder_rubik's_cube.jpg": "a cylinder puzzle photographed from above; its top is not a 3x3 cube face, "
+                                 "so whether a model should read it is not a question the gate can settle (2026-09-17)",
 }
 
 
@@ -134,11 +149,58 @@ def to_fixture(rgb: np.ndarray, shape: str) -> np.ndarray:
     return np.asarray(im.convert("RGB"), dtype=np.uint8)
 
 
+def labels_in_fixture(label: Path, w: int, h: int, shape: str) -> list[tuple[int, float, float, float]]:
+    """The renderer's stickers as (class, cx, cy, side) in FIXTURE pixels: the same crop and resize
+    `to_fixture` applies to the image, applied to the labels, so the two still describe one picture."""
+    if shape in ("landscape-720", "landscape-640"):
+        cw, ch = (w, int(w * 3 / 4)) if w * 3 / 4 <= h else (int(h * 4 / 3), h)
+        ow, oh = (720, 540) if shape == "landscape-720" else (640, 480)
+    elif shape == "portrait-720":
+        cw, ch = (int(h * 3 / 4), h) if h * 3 / 4 <= w else (w, int(w * 4 / 3))
+        ow, oh = 540, 720
+    else:
+        raise ValueError(shape)
+    x0, y0 = (w - cw) // 2, (h - ch) // 2
+    sx, sy = ow / cw, oh / ch
+    rows = []
+    for line in label.read_text().splitlines():
+        parts = line.split()
+        if len(parts) != 5:
+            continue
+        cls, cx, cy, bw, bh = int(parts[0]), *(float(v) for v in parts[1:])
+        x, y = (cx * w - x0) * sx, (cy * h - y0) * sy
+        if 0 <= x < ow and 0 <= y < oh:
+            rows.append((cls, x, y, (bw * w * sx + bh * h * sy) / 2))
+    return rows
+
+
+def reads_the_labels(out: np.ndarray, rgb: np.ndarray, truth: list[tuple[int, float, float, float]]) -> bool:
+    """Is every one of the nine fitted stickers the colour the renderer says it is?
+
+    Each fitted box is mapped off the letterbox canvas and matched to the nearest labelled sticker; a
+    match counts only if the centre lands inside that sticker and the class agrees.
+    """
+    if not truth:
+        return False
+    height, width = rgb.shape[:2]
+    scale, _, _, pad_x, pad_y = cube_infer.letterbox_geometry(width, height)
+    _, grid = cube_infer.fit_grid(cube_infer.drop_nested(cube_infer.nms(cube_infer.decode(out[0]))))
+    if grid is None:
+        return False
+    for d in grid:
+        cx, cy = (d.cx - pad_x) / scale, (d.cy - pad_y) / scale
+        cls, tx, ty, side = min(truth, key=lambda t: (t[1] - cx) ** 2 + (t[2] - cy) ** 2)
+        if float(np.hypot(tx - cx, ty - cy)) > side / 2 or cls != d.class_id:
+            return False
+    return True
+
+
 def select(session) -> list[tuple[str, np.ndarray, dict]]:
     """The whole fixture set, in memory: (file name, pixels, SOURCES.json entry). Reads; writes nothing."""
-    render_dir = OUT / "synth_v3" / "part_0" / "coco" / "images"
+    render_dir = OUT / RENDER_POOL / "images"
+    label_dir = OUT / RENDER_POOL / "labels"
     manifest = OUT / "ood_wikimedia" / "manifest.csv"
-    for needed in (render_dir, manifest):
+    for needed in (render_dir, label_dir, manifest):
         if not needed.exists():
             sys.exit(f"source missing: {needed} — nothing has been touched")
     chosen: list[tuple[str, np.ndarray, dict]] = []
@@ -152,13 +214,20 @@ def select(session) -> list[tuple[str, np.ndarray, dict]]:
         if taken >= N_RENDERS and abstain_renders >= N_ABSTAIN_RENDERS:
             break
         shape = shapes[taken] if taken < N_RENDERS else ABSTAIN_RENDER_SHAPE
-        rgb = to_fixture(np.asarray(Image.open(src).convert("RGB")), shape)
+        original = np.asarray(Image.open(src).convert("RGB"))
+        rgb = to_fixture(original, shape)
         out, read = run(session, rgb)
-        source = f"ml/out/synth_v3/part_0/coco/images/{src.name}"
+        source = f"ml/out/{RENDER_POOL}/images/{src.name}"
+        label = label_dir / f"{src.stem}.txt"
         if read.verdict == "OK":
             if taken >= N_RENDERS or len(set(read.colors)) < 2 or min(read.confidence) < MIN_CONF or margins(out, read) < MARGIN:
                 continue
-            chosen.append((f"render-{taken:02d}.png", rgb, {"source": source, "licence": "project-rendered (generate_cube3d.py)", "shape": shape}))
+            if not label.is_file():
+                sys.exit(f"no labels for {src.name} at {label} — a render fixture must be checkable; nothing has been touched")
+            if not reads_the_labels(out, rgb, labels_in_fixture(label, original.shape[1], original.shape[0], shape)):
+                continue  # the reference misreads it; pinning that would teach the gate the mistake
+            chosen.append((f"render-{taken:02d}.png", rgb, {"source": source, "licence": "project-rendered (generate_cube3d.py)",
+                                                            "shape": shape, "verified_against_labels": True}))
             taken += 1
         elif abstain_renders < N_ABSTAIN_RENDERS:
             # A refusal is judged at the abstain geometry, whatever slot the OK walk is on.
