@@ -295,13 +295,22 @@ def test_shipped_int8_is_derived_from_the_shipped_fp32() -> None:
     models = HERE / "models"
     manifest = json.loads((models / "MANIFEST.json").read_text())
     fp32, int8 = models / "cubedet.onnx", models / "cubedet.int8.onnx"
+    entry = manifest["artefacts"]["cubedet.int8.onnx"]
+    # A MODEL WHOSE INT8 IS DEAD SHIPS NO INT8, and the manifest says so rather than the file simply
+    # being missing. export.py::int8_reads_a_face makes that call: dynamic quantisation collapses the
+    # MobileNetV4 graph (top class score 0.001 against fp32's 0.922 — it reads NO_FACE everywhere), so
+    # writing it would ship an artefact that answers nothing and pin its silence as expected.
+    if entry.get("produced") is False:
+        assert not int8.exists(), "MANIFEST.json says the int8 was not produced, but the file is there"
+        assert entry.get("reason"), "MANIFEST.json does not say WHY the int8 was not produced"
+        print(f"PASS models: no int8 artefact, on purpose — {entry['reason']}")
+        return
     with tempfile.TemporaryDirectory() as d:
         out = Path(d) / "q.onnx"
         quantize_dynamic(str(fp32), str(out), weight_type=QuantType.QInt8)
         derived = hashlib.sha256(out.read_bytes()).hexdigest()
     committed = hashlib.sha256(int8.read_bytes()).hexdigest()
     assert derived == committed, f"cubedet.int8.onnx ({committed[:12]}) is not quantize_dynamic of cubedet.onnx ({derived[:12]}) — run export.py --int8-only"
-    entry = manifest["artefacts"]["cubedet.int8.onnx"]
     assert entry["sha256"] == committed, "MANIFEST.json's int8 sha256 does not describe the file beside it"
     assert entry.get("derived_from_fp32_sha256") == hashlib.sha256(fp32.read_bytes()).hexdigest(), (
         "MANIFEST.json does not record which fp32 the int8 was derived from, or records the wrong one"
@@ -319,11 +328,17 @@ def test_manifest_labels_match_export_py() -> None:
     import export
 
     manifest = json.loads((HERE / "models" / "MANIFEST.json").read_text())
+    declined = []
     for name, labels in export.ARTEFACT_LABELS.items():
         entry = manifest["artefacts"][name]
+        # An artefact the export declined to write has no shipping state to describe; it carries the
+        # decision and the reason instead, and the test above holds it to that.
+        if entry.get("produced") is False:
+            declined.append(name)
+            continue
         for key, value in labels.items():
             assert entry.get(key) == value, f"MANIFEST.json {name}.{key} differs from export.py — regenerate the manifest (export.py) rather than editing one of them by hand"
-    print("PASS models: MANIFEST.json labels are export.py's, verbatim")
+    print(f"PASS models: MANIFEST.json labels are export.py's, verbatim" + (f" (not written: {', '.join(declined)})" if declined else ""))
 
 
 def test_nested_boxes_are_dropped_exactly_as_the_app_drops_them():

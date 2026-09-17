@@ -314,7 +314,7 @@ def fixtures(frames: Path) -> list[Path]:
     return fx
 
 
-def default_legs() -> list[str]:
+def default_legs(models: Path | None = None) -> list[str]:
     """Every leg this PLATFORM has — not every leg that happens to be installed.
 
     This used to be `runnable_legs`: tflite only if the .tflite existed, native only if the probe
@@ -322,13 +322,35 @@ def default_legs() -> list[str]:
     "PASS: 3 leg(s)", and `--write-expected` pinned only what was runnable at the time. On macOS
     all five are the default now and a missing artefact or probe FAILS the leg; off macOS the two
     CoreML legs cannot exist and are reported as not run, every time.
+
+    The ONE exception is an artefact the export DECLINED to write, which the manifest records as
+    `produced: false` with a reason (export.py::int8_reads_a_face — dynamic quantisation destroys the
+    cubedet graph, so shipping an int8 would pin a model that reads nothing). That is a decision taken
+    upstream and written down, not a missing file, and `--legs onnx-int8` still forces the attempt.
     """
-    return list(ALL_LEGS) if platform.system() == "Darwin" else ["onnx", "onnx-int8", "tflite"]
+    legs = list(ALL_LEGS) if platform.system() == "Darwin" else ["onnx", "onnx-int8", "tflite"]
+    return [n for n in legs if not (n == "onnx-int8" and models is not None and not artefact_produced(models, INT8_NAME))]
 
 
-def announce_legs(legs: list[str]) -> None:
+INT8_NAME = "cubedet.int8.onnx"
+
+
+def artefact_produced(models: Path, name: str) -> bool:
+    """False only when MANIFEST.json says this artefact was deliberately not written."""
+    manifest_path = models / "MANIFEST.json"
+    if not manifest_path.is_file():
+        return True
+    entry = json.loads(manifest_path.read_text()).get("artefacts", {}).get(name, {})
+    return entry.get("produced", True) is not False
+
+
+def announce_legs(legs: list[str], models: Path | None = None) -> None:
     """Say which legs run and which do not, on every run — a skipped leg must never be silent."""
     not_run = [n for n in ALL_LEGS if n not in legs]
+    if models is not None and "onnx-int8" in not_run and not artefact_produced(models, INT8_NAME):
+        why = f"{INT8_NAME} was deliberately not written; MANIFEST.json says why"
+        print(f"legs: {', '.join(legs)}; NOT run: {', '.join(not_run)} ({why})")
+        return
     why = "not requested" if len(not_run) and platform.system() == "Darwin" else "not runnable off macOS (CoreML)"
     print(f"legs: {', '.join(legs)}" + (f"; NOT run: {', '.join(not_run)} ({why})" if not_run else "; NOT run: none"))
 
@@ -410,8 +432,8 @@ def write_expected(args) -> int:
         if not (args.frames / args.fixture).is_file():
             sys.exit(f"--fixture {args.fixture}: no such file in {args.frames}")
         fx = [args.frames / args.fixture]
-    legs = default_legs()
-    announce_legs(legs)
+    legs = default_legs(args.models)
+    announce_legs(legs, args.models)
     print(f"pinning {len(fx)} fixture(s) × {len(legs)} legs — a leg that cannot run is a failure, not a smaller pin")
     instances = {n: Leg(n, args.models, args.compute_units, args.probe) for n in legs}
     frames: dict[str, dict] = dict(existing["frames"]) if args.fixture else {}
@@ -470,8 +492,8 @@ def check(args) -> int:
     if missing or gone:
         sys.exit(f"expected.json and frames/ disagree: unpinned {missing}, pinned-but-gone {gone}")
 
-    legs = args.legs or default_legs()
-    announce_legs(legs)
+    legs = args.legs or default_legs(args.models)
+    announce_legs(legs, args.models)
     failures = check_identity(doc, args.models)
     live: dict[str, dict[str, str]] = {}
 
