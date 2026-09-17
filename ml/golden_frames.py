@@ -47,7 +47,7 @@ MANIFEST.json) — without that, a checkpoint swap made through export.py regene
 nothing compared the new manifest to the pins. Two facts are then asserted from the pins, because
 they are the decision the harness defends:
 
-  * CoreML and the native plugin (both fp16 on Apple) never read a face DIFFERENTLY from fp32, and
+  * CoreML and the native plugin (the Apple legs; fp16 for the v3 lineage, fp32 for cubedet) never read a face DIFFERENTLY from fp32, and
     never commit to a face fp32 refused. They MAY refuse a frame fp32 reads. The rule is directional,
     not "exact": on this pinning host it is exact (0/20), on a GitHub M1-class runner one fixture
     abstains where fp32 reads it — see `parity()` for the measurement.
@@ -184,7 +184,13 @@ class Leg:
             with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as tf:
                 out_bin = Path(tf.name)
             try:
-                r = subprocess.run([str(self.probe), str(self.models / "cubedet.mlpackage"), str(png), str(out_bin), self.compute_units], capture_output=True, text=True)
+                try:
+                    # Bounded, because this is a release gate: an unbounded wait on a wedged runtime
+                    # is not a slow pass, it is a gate that never returns a verdict at all. 120 s is
+                    # ~100x the probe's measured cost on one fixture.
+                    r = subprocess.run([str(self.probe), str(self.models / "cubedet.mlpackage"), str(png), str(out_bin), self.compute_units], capture_output=True, text=True, timeout=120)
+                except subprocess.TimeoutExpired as e:
+                    raise RuntimeError(f"cube-vision-probe timed out after {e.timeout:g}s on {png.name}") from e
                 if r.returncode != 0:
                     raise RuntimeError(f"cube-vision-probe failed on {png.name}: {r.stderr.strip()[:200]}")
                 sha = r.stdout.strip()
@@ -333,6 +339,7 @@ def default_legs(models: Path | None = None) -> list[str]:
 
 
 INT8_NAME = "cubedet.int8.onnx"
+INT8_NAME_LEG = "onnx-int8"
 
 
 def artefact_produced(models: Path, name: str) -> bool:
@@ -359,6 +366,27 @@ def model_identity(models: Path) -> dict[str, str]:
     """The two hashes that name the model, read from MANIFEST.json: the checkpoint and the fp32 bytes."""
     manifest = json.loads((models / "MANIFEST.json").read_text())
     return {"checkpoint_sha256": manifest["checkpoint"]["sha256"], "fp32_sha256": manifest["artefacts"]["cubedet.onnx"]["sha256"]}
+
+
+def check_pinned_legs_still_run(doc: dict, legs: list[str], models: Path) -> int:
+    """A leg that expected.json pins but this run does not execute is a silent shrinking of the gate.
+
+    `default_legs` drops `onnx-int8` when MANIFEST.json says the artefact was deliberately not
+    written — a decision taken upstream, in a file that is edited by hand as easily as by export.py.
+    Nothing compared that decision with the pins, so flipping `produced: false` removed a leg from
+    the gate while expected.json went on carrying twenty pinned int8 reads that no longer ran.
+    A re-pin is what retires a leg; this makes the manifest alone insufficient.
+
+    Legs the platform cannot run (CoreML off macOS) are pinned-but-absent by design and are the
+    reason this checks only the artefact-driven case.
+    """
+    if INT8_NAME_LEG in legs or artefact_produced(models, INT8_NAME):
+        return 0
+    pinned_frames = [name for name, fr in doc.get("frames", {}).items() if INT8_NAME_LEG in fr.get("legs", {})]
+    if not pinned_frames:
+        return 0
+    print(f"[legs] XX MANIFEST.json says {INT8_NAME} was not produced, but expected.json still pins {INT8_NAME_LEG} reads for {len(pinned_frames)} fixture(s) — re-pin with --write-expected, or restore the artefact")
+    return 1
 
 
 def check_identity(doc: dict, models: Path) -> int:
@@ -427,6 +455,11 @@ def write_expected(args) -> int:
     fx = fixtures(args.frames)
     if args.fixture:
         # One fixture, every other entry byte-for-byte as it was: the case for a replaced frame.
+        # Which is exactly why it cannot be combined with a checkpoint change: the document would
+        # claim the new model's identity while nineteen of its twenty frames still held the old
+        # model's reads, and every later run would check the new model against them.
+        if args.repin_checkpoint:
+            sys.exit("--fixture re-pins ONE frame; --repin-checkpoint changes which model the whole document describes. Re-pin every fixture when the checkpoint changes.")
         if existing is None:
             sys.exit("--fixture needs an existing expected.json to leave the other entries in")
         if not (args.frames / args.fixture).is_file():
@@ -495,6 +528,8 @@ def check(args) -> int:
     legs = args.legs or default_legs(args.models)
     announce_legs(legs, args.models)
     failures = check_identity(doc, args.models)
+    failures += check_artefact_bytes(args.models)
+    failures += check_pinned_legs_still_run(doc, legs, args.models)
     live: dict[str, dict[str, str]] = {}
 
     for name in legs:
@@ -538,6 +573,11 @@ def check(args) -> int:
         # counted a failure here, and parity() counts its own, so the sum can exceed 1.
         return 1 if failures + parity(args, doc, live, legs, fx) else 0
 
+    manifest_path = args.models / "MANIFEST.json"
+    apple_precision = "precision unrecorded"
+    if manifest_path.is_file():
+        entry = json.loads(manifest_path.read_text()).get("artefacts", {}).get("cubedet.mlpackage", {})
+        apple_precision = entry.get("precision", apple_precision)
     # Faithfulness, computed from the LIVE reads of this run.
     #
     # This used to read `pins` on both sides of the comparison — the pinned coreml read against the
@@ -548,7 +588,10 @@ def check(args) -> int:
     for faithful in ("coreml", "native"):
         if faithful in live and ref is not None:
             div = [n for n in ref if live[faithful].get(n) != ref[n]]
-            print(f"live: {faithful} (fp16) vs fp32 — {len(div)} divergence(s){' : ' + ', '.join(div) if div else ' (exact class parity, as the plan claims)'}")
+            # The precision is the manifest's to state. This printed "(fp16)" unconditionally, which
+            # stopped being true when the cubedet export moved CoreML to fp32 -- a gate reporting the
+            # wrong precision for the leg it has just passed is the kind of line that gets believed.
+            print(f"live: {faithful} ({apple_precision}) vs fp32 — {len(div)} divergence(s){' : ' + ', '.join(div) if div else ' (exact class parity, as the plan claims)'}")
             if div:
                 failures += 1  # the headline faithfulness claim regressed
     if ref is None and any(f in live for f in ("coreml", "native")):
@@ -560,6 +603,50 @@ def check(args) -> int:
         return 1
     print(f"PASS: {len(legs)} leg(s) match their pins on all {len(fx)} fixtures")
     return 0
+
+
+def check_artefact_bytes(models: Path) -> int:
+    """Do the files in `models/` hash to what MANIFEST.json says? Returns the number of failures.
+
+    RUN IN BOTH MODES, which it was not. It lived inside `parity()`, so the pinned gate — the one the
+    release runs — checked model identity by comparing two DOCUMENTS: expected.json's recorded hashes
+    against MANIFEST.json's recorded hashes. Neither is a file. An artefact replaced without touching
+    the manifest was therefore invisible to it unless the replacement also changed a read on one of
+    the twenty fixtures, and the whole point of a byte pin is not to depend on that.
+    """
+    failures = 0
+    manifest_path = models / "MANIFEST.json"
+    if not manifest_path.is_file():
+        print(f"[manifest] MISSING {manifest_path} — cannot verify the model bytes")
+        return 1
+    manifest = json.loads(manifest_path.read_text())
+    for artefact, meta in manifest.get("artefacts", {}).items():
+        path = models / artefact
+        if meta.get("produced") is False:
+            # Not written on purpose, with the reason recorded beside it (export.py::int8_reads_a_face).
+            # Absent is the expected state; a file HERE would mean the manifest and the directory disagree.
+            if path.exists():
+                print(f"[manifest] {artefact} is present, but MANIFEST.json says it was not written")
+                failures += 1
+            else:
+                print(f"[manifest] ok — {artefact} not written: {meta.get('reason', 'no reason recorded')}")
+            continue
+        if not path.exists():
+            print(f"[manifest] MISSING {artefact}")
+            failures += 1
+            continue
+        want = meta.get("sha256")
+        if not want:
+            print(f"[manifest] {artefact}: no sha256 recorded — re-run export.py")
+            failures += 1
+            continue
+        got = sha256_of(path)
+        if got != want:
+            print(f"[manifest] XX {artefact}: {got[:12]} vs pinned {want[:12]} — the model changed")
+            failures += 1
+    if not failures:
+        print(f"[manifest] ok — {len(manifest.get('artefacts', {}))} artefact(s) match their pinned sha256")
+    return failures
 
 
 def parity(args, doc, live: dict, legs: list[str], fx: list[Path]) -> int:
@@ -621,39 +708,7 @@ def parity(args, doc, live: dict, legs: list[str], fx: list[Path]) -> int:
     """
     failures = 0
 
-    # The model bytes. Without this, parity mode would pass a wholesale model swap — every leg would
-    # move together and the relations would still hold.
-    manifest_path = args.models / "MANIFEST.json"
-    if not manifest_path.is_file():
-        print(f"[manifest] MISSING {manifest_path} — cannot verify the model bytes")
-        return failures + 1
-    manifest = json.loads(manifest_path.read_text())
-    for artefact, meta in manifest.get("artefacts", {}).items():
-        path = args.models / artefact
-        if meta.get("produced") is False:
-            # Not written on purpose, with the reason recorded beside it (export.py::int8_reads_a_face).
-            # Absent is the expected state; a file HERE would mean the manifest and the directory disagree.
-            if path.exists():
-                print(f"[manifest] {artefact} is present, but MANIFEST.json says it was not written")
-                failures += 1
-            else:
-                print(f"[manifest] ok — {artefact} not written: {meta.get('reason', 'no reason recorded')}")
-            continue
-        if not path.exists():
-            print(f"[manifest] MISSING {artefact}")
-            failures += 1
-            continue
-        want = meta.get("sha256")
-        if not want:
-            print(f"[manifest] {artefact}: no sha256 recorded — re-run export.py")
-            failures += 1
-            continue
-        got = sha256_of(path)
-        if got != want:
-            print(f"[manifest] XX {artefact}: {got[:12]} vs pinned {want[:12]} — the model changed")
-            failures += 1
-    if not failures:
-        print(f"[manifest] ok — {len(manifest.get('artefacts', {}))} artefact(s) match their pinned sha256")
+    failures += check_artefact_bytes(args.models)
 
     ref = live.get("onnx")
     if ref is None:

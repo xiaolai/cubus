@@ -163,7 +163,7 @@ The golden-frame fixtures in `ml/golden/frames/` (repository test data, not ship
 include photographs from Wikimedia Commons:
 
 - `abstain-01.png`: <https://upload.wikimedia.org/wikipedia/commons/5/52/2x2-5x5_rubik%27s_cube.jpg> — CC0
-- `abstain-02.png`: <https://upload.wikimedia.org/wikipedia/commons/b/b5/4x4_Oll_parity.jpg> — CC0
+- `abstain-02.png`: <https://upload.wikimedia.org/wikipedia/commons/9/91/4x4_Pll_parity.png> — CC0
 - `photo-00.png`: <https://upload.wikimedia.org/wikipedia/commons/8/8b/EmiMa-045.jpg> — CC0
 - `photo-01.png`: <https://upload.wikimedia.org/wikipedia/commons/f/fc/EmiMa-046.jpg> — CC0
 - `photo-02.png`: <https://upload.wikimedia.org/wikipedia/commons/b/bc/EmiMa-047.jpg> — CC0

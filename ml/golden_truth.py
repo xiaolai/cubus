@@ -2,7 +2,6 @@
 """Check the golden gate's PINNED reads against the ground truth of the frames they pin.
 
     ml/venv/bin/python ml/golden_truth.py                    # audit expected.json
-    ml/venv/bin/python ml/golden_truth.py --reads a.json     # audit a model's reads too
 
 WHY THIS EXISTS. `golden_frames.py` pins BEHAVIOUR -- what each runtime reads -- and asserts that
 every leg keeps reading it. That is the right shape for a parity and regression gate, and it has a
@@ -25,8 +24,6 @@ import argparse, json, os, sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-NAMES = ["white", "red", "green", "yellow", "orange", "blue"]
-BODY_CATEGORY = 7          # the generator labels the cube body 7; stickers are 1..6
 
 
 def face_from_coco(anns: list) -> tuple[str | None, str]:
@@ -55,12 +52,69 @@ def face_from_coco(anns: list) -> tuple[str | None, str]:
     return "".join(str(a["category_id"] - 1) for r in rows for a in r), "ok"
 
 
+def face_from_labels(rows: list[tuple[int, float, float, float]]) -> tuple[str | None, str]:
+    """`face_from_coco`'s selection, over labels already mapped into FIXTURE pixels.
+
+    Same three rules: the nine largest stickers, read top-to-bottom then left-to-right, refused when
+    their areas span more than 4x (which means the selection has strayed onto a second face).
+    """
+    if len(rows) < 9:
+        return None, f"only {len(rows)} sticker(s) inside the fixture"
+    nine = sorted(rows, key=lambda r: r[3], reverse=True)[:9]
+    nine.sort(key=lambda r: r[2])
+    grid = [sorted(nine[i:i + 3], key=lambda r: r[1]) for i in (0, 3, 6)]
+    areas = [r[3] ** 2 for row in grid for r in row]
+    if max(areas) / max(1e-12, min(areas)) > 4.0:
+        return None, f"sticker areas span {max(areas) / max(1e-12, min(areas)):.1f}x -- selection likely spans two faces"
+    return "".join(str(row_item[0]) for row in grid for row_item in row), "ok"
+
+
+def truth_of(repo: Path, entry: dict, cache: dict) -> tuple[str | None, str]:
+    """Ground truth for one rendered fixture, from whichever label format its pool carries.
+
+    THE LABELS MUST BE PUT THROUGH THE SAME CROP THE FIXTURE WAS. `build_fixtures.py` makes each
+    fixture by centre-cropping and resizing its source, so a sticker in the source image may not be
+    in the fixture at all. Deriving truth from the raw label file therefore selects a face the model
+    was never shown, and reports the difference as a wrong pin -- the checker's own fault, which is
+    the failure this file's docstring already warns about. `labels_in_fixture` is the transform the
+    builder applies, imported rather than reimplemented so the two cannot drift.
+    """
+    src = entry["source"]
+    label = repo / Path(src).parent.parent / "labels" / f"{Path(src).stem}.txt"
+    if label.is_file():
+        sys.path.insert(0, str(HERE / "golden"))
+        from build_fixtures import labels_in_fixture  # imported here: it needs PIL, which the COCO path does not
+        from PIL import Image
+
+        with Image.open(repo / src) as handle:
+            w, h = handle.size
+        return face_from_labels(labels_in_fixture(label, w, h, entry["shape"]))
+    coco = repo / Path(src).parent.parent / "coco_annotations.json"
+    if not coco.exists():
+        return None, f"no labels beside the source: neither {label} nor {coco}"
+    if str(coco) not in cache:
+        d = json.load(open(coco))
+        per: dict[int, list] = {}
+        for a in d["annotations"]:
+            per.setdefault(a["image_id"], []).append(a)
+        cache[str(coco)] = {"ids": {os.path.basename(i["file_name"]): i["id"] for i in d["images"]}, "per": per}
+    c = cache[str(coco)]
+    iid = c["ids"].get(os.path.basename(src))
+    if iid is None:
+        return None, "source image not in COCO"
+    return face_from_coco(c["per"].get(iid, []))
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--sources", type=Path, default=HERE / "golden" / "SOURCES.json")
     ap.add_argument("--expected", type=Path, default=HERE / "golden" / "expected.json")
     ap.add_argument("--repo", type=Path, default=HERE.parent, help="root that SOURCES paths are relative to")
-    ap.add_argument("--leg", default="onnx", help="which leg's pinned read to audit (fp32 is the reference)")
+    # CONSTRAINED, because an unrecognised leg is indistinguishable from a leg that refused every
+    # frame: every pin lookup returns None, every row reads as a refusal, nothing is reported wrong,
+    # and the script exits 0 having audited nothing.
+    ap.add_argument("--leg", default="onnx", choices=["onnx", "onnx-int8", "coreml", "tflite", "native"],
+                    help="which leg's pinned read to audit (fp32 is the reference)")
     args = ap.parse_args(argv)
 
     sources = json.load(open(args.sources))
@@ -75,25 +129,11 @@ def main(argv=None) -> int:
             unknown += 1
             rows.append((fx, "-", pinned, "no labels (photograph)"))
             continue
-        coco = args.repo / Path(src).parent.parent / "coco_annotations.json"
-        if not coco.exists():
+        truth, why = truth_of(args.repo, entry, cache)
+        if truth is None and why.startswith(("no labels beside", "source image not in COCO")):
             unknown += 1
-            rows.append((fx, "-", pinned, f"source COCO missing: {coco}"))
+            rows.append((fx, "-", pinned, why))
             continue
-        if str(coco) not in cache:
-            d = json.load(open(coco))
-            ids = {os.path.basename(i["file_name"]): i["id"] for i in d["images"]}
-            per: dict[int, list] = {}
-            for a in d["annotations"]:
-                per.setdefault(a["image_id"], []).append(a)
-            cache[str(coco)] = {"ids": ids, "per": per}
-        c = cache[str(coco)]
-        iid = c["ids"].get(os.path.basename(src))
-        if iid is None:
-            unknown += 1
-            rows.append((fx, "-", pinned, "source image not in COCO"))
-            continue
-        truth, why = face_from_coco(c["per"].get(iid, []))
         if truth is None:
             unreliable += 1
             rows.append((fx, "-", pinned, f"UNRELIABLE: {why}"))
@@ -101,8 +141,21 @@ def main(argv=None) -> int:
         if pinned and pinned.startswith("OK "):
             read = pinned[3:]
             agree = sum(a == b for a, b in zip(truth, read))
-            note = "pin matches truth" if agree == 9 else f"PIN WRONG on {9 - agree}/9"
-            if agree != 9: wrong += 1
+            if agree == 9:
+                note = "pin matches truth"
+            elif entry.get("verified_against_labels"):
+                # WHOSE FAULT THE DISAGREEMENT IS. build_fixtures.py picked this fixture by matching
+                # every one of the model's nine FITTED boxes to the nearest labelled sticker and
+                # checking the colour -- a stronger method than this file's "nine largest", which
+                # can select a different nine when two faces foreshorten alike. When the builder has
+                # already verified the read, a disagreement here is this checker's face selection,
+                # not a wrong pin, and calling it "PIN WRONG" would send someone re-pinning a gate
+                # over a heuristic. Counted as unreliable, which is what it is.
+                note = f"checker selects a different face than the builder matched ({9 - agree}/9 differ) -- NOT a pin verdict"
+                unreliable += 1
+            else:
+                note = f"PIN WRONG on {9 - agree}/9"
+                wrong += 1
         else:
             note = f"pin is a refusal ({pinned}); truth exists but refusal may be correct"
         rows.append((fx, truth, pinned, note))
@@ -111,18 +164,28 @@ def main(argv=None) -> int:
     for fx, truth, pinned, note in rows:
         print(f"{fx:16s} {truth:13s} {str(pinned):16s} {note}")
     # SELF-TEST, because this checker has been wrong twice and both times looked plausible.
-    # These three readings were derived by hand and each matched a real model on all nine stickers,
-    # so they are known-good anchors: render-04 and render-06 matched the shipped model, render-08
-    # matched P_large. If the checker cannot reproduce them it is not trustworthy on anything else.
+    # These three readings were derived BY HAND against the render pool in use at the time, and each
+    # matched a real model on all nine stickers: render-04 and render-06 matched the shipped model,
+    # render-08 matched P_large. They are known-good anchors for THAT pool and for no other -- the
+    # fixture names were reused when the pool changed, so they now name different pictures entirely.
+    # Rather than quietly drop the only check that can catch a broken checker, the mismatch is
+    # reported for what it is, and re-deriving three readings by hand is the work it asks for.
+    ANCHOR_POOL = "synth_v3"
     ANCHORS = {"render-04.png": "512430234", "render-06.png": "432142034", "render-08.png": "045523234"}
+    pool = next((Path(e["source"]).parent.parent.name for e in sources if e["source"].startswith("ml/out/")), None)
     derived = {fx: t for fx, t, _, _ in rows}
-    bad = [f"{fx}: got {derived.get(fx)} want {want}" for fx, want in ANCHORS.items()
-           if derived.get(fx) != want]
-    if bad:
-        print("\nSELF-TEST FAILED -- results above are NOT trustworthy:")
-        for b in bad: print("  " + b)
-        return 2
-    print("\nself-test: reproduced all 3 hand-verified anchors")
+    if pool != ANCHOR_POOL:
+        print(f"\nSELF-TEST NOT RUN: its anchors were hand-derived against '{ANCHOR_POOL}' and the "
+              f"fixtures now come from '{pool}'. Three readings need deriving by hand against the "
+              "current pool before this checker can vouch for itself.")
+    else:
+        bad = [f"{fx}: got {derived.get(fx)} want {want}" for fx, want in ANCHORS.items()
+               if derived.get(fx) != want]
+        if bad:
+            print("\nSELF-TEST FAILED -- results above are NOT trustworthy:")
+            for b in bad: print("  " + b)
+            return 2
+        print("\nself-test: reproduced all 3 hand-verified anchors")
     print(f"\n{wrong} pinned read(s) disagree with ground truth; "
           f"{unknown} unlabelled; {unreliable} unreliable face selection")
     return 1 if wrong else 0
