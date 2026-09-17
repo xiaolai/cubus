@@ -425,10 +425,14 @@ def test_every_script_run_test_is_called_by_its_runner() -> None:
         missing = sorted(defined - referenced)
         assert defined, f"{name} defines no tests -- is it still a test file?"
         assert not missing, f"{name} defines tests its __main__ never calls, so CI never runs them: {missing}"
+    # And every test FILE in ml/ is run by some CI step, however it is run -- script or pytest. That
+    # is the half that would have caught test_cubedet.py, which had no job at all.
     workflow = (HERE.parent / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    unrun = [n for n in SCRIPT_RUN_TESTS if f"ml/{n}" not in workflow]
-    assert not unrun, f"CI never invokes {unrun}"
-    print(f"PASS runners: every test in {len(SCRIPT_RUN_TESTS)} script-run files is called, and CI runs each file")
+    test_files = sorted(p.name for p in HERE.glob("test_*.py"))
+    assert set(SCRIPT_RUN_TESTS) <= set(test_files), f"SCRIPT_RUN_TESTS names a file that is gone: {SCRIPT_RUN_TESTS}"
+    unrun = [n for n in test_files if f"ml/{n}" not in workflow]
+    assert not unrun, f"no CI step runs {unrun}"
+    print(f"PASS runners: every test in {len(SCRIPT_RUN_TESTS)} script-run files is called, and CI runs all {len(test_files)} test files")
 
 
 def test_an_int8_that_could_not_be_checked_is_not_written() -> None:

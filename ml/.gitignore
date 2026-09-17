@@ -4,5 +4,7 @@ dataset/
 out/
 # Local validation artifacts (Blender venv, smoke-test renders, run logs).
 venv/
+# The per-stack environments the requirements files describe (venv-cubedet, venv-v3).
+venv-*/
 out_*/
 *.log
