@@ -150,6 +150,15 @@ const BUNDLES = [
       // running the decode here when a page has no `Worker`, so both halves ship in this bundle.
       '../../../packages/cube-scanner/view/misread-client.ts',
       '../../../packages/cube-scanner/view/misread-protocol.ts',
+      // The colour repair, which arrived with the permissive detector: the constraint a cube's
+      // paint satisfies (`nine-of-each`), the pixels a sticker actually carries, read at the one
+      // moment a frame and a fitted grid are both in hand (`sticker-pixels`), and the question
+      // that survives an unknown illuminant — which stickers share paint, asked only after the
+      // scores have been refused (`paint-groups`). All three decide what the app may CLAIM about a
+      // scan, which is the reason misread-decode.ts is on this list too.
+      '../../../packages/cube-scanner/src/nine-of-each.ts',
+      '../../../packages/cube-scanner/src/paint-groups.ts',
+      '../../../packages/cube-scanner/src/sticker-pixels.ts',
     ],
     // Exported from the package entry and used by its tests, but never by the panel — so esbuild
     // drops them and their absence is correct, not stale. Listed rather than silently ignored: if
