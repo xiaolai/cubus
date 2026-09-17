@@ -533,16 +533,21 @@ def licence_note(backbone: str) -> str:
     )
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--pt", type=Path, default=HERE / "out" / "cube_v3_best.pt", help="the ONE checkpoint (default: the shipped v3)")
+    # NO DEFAULT. This defaulted to cube_v3_best.pt, "the shipped v3", long after v3 stopped
+    # shipping, so a bare `export.py` rebuilt the retired Detlib model over the committed
+    # artefacts of the one that replaced it. Which checkpoint ships is a decision to state each time.
+    ap.add_argument("--pt", type=Path, help="the ONE checkpoint to export (required, except with --int8-only)")
     ap.add_argument("--out", type=Path, default=HERE / "models", help="artefact directory (committed)")
     ap.add_argument("--skip", nargs="*", default=[], choices=["onnx", "coreml", "tflite"], help="formats to skip")
     ap.add_argument("--int8-only", action="store_true", help="re-derive cubedet.int8.onnx from the fp32 already in --out; nothing else is touched")
     ap.add_argument("--work", type=Path, help="scratch directory (default: a temp dir, deleted afterwards)")
     ap.add_argument("--cubedet", action="store_true",
                     help="the checkpoint is a cubedet one (ml/cubedet) — export with no Detlib on any path")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
+    if args.pt is None and not args.int8_only:
+        ap.error("--pt is required: name the checkpoint to export")
 
     tmp = None
     work = args.work
@@ -586,6 +591,21 @@ def main() -> None:
         manifest["training_environment"] = state.get("environment", {})
         manifest["backbone"] = state.get("backbone", FROM_SCRATCH_BACKBONE)
         manifest["licence_note"] = licence_note(manifest["backbone"])
+        # HOW it was trained, which the weights cannot say. Said plainly when the checkpoint predates
+        # recipes, rather than left out -- an absent key reads like a field nobody thought of.
+        manifest["recipe"] = state.get("recipe") or "not recorded: the checkpoint predates train.py recording its recipe"
+        # The model definition that was traced is library code too: torchvision's or timm's layers
+        # built the graph these artefacts hold, so their versions belong beside torch's.
+        import torchvision
+
+        manifest["tools"]["torchvision"] = torchvision.__version__
+        try:
+            import timm
+        except ImportError:
+            if manifest["backbone"] != FROM_SCRATCH_BACKBONE and not hasattr(torchvision.models, manifest["backbone"]):
+                raise SystemExit(f"{manifest['backbone']} is a timm backbone and timm is not installed")
+        else:
+            manifest["tools"]["timm"] = timm.__version__
     else:
         import detlib
 

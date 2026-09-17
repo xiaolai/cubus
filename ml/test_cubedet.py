@@ -1147,3 +1147,45 @@ def test_export_refuses_a_checkpoint_the_app_cannot_read(monkeypatch, tmp_path):
     with pytest.raises(SystemExit, match="896px"):
         export.export_onnx_cubedet(tmp_path / "arm.pt", tmp_path, tmp_path)
     assert not (tmp_path / export.FP32).exists(), "the refusal must come before anything is written"
+
+
+def test_a_trained_and_exported_model_carries_its_recipe(tmp_path, monkeypatch):
+    """One epoch on two images, then the exporter: how the run was asked for must reach the manifest.
+
+    The shipped model's recipe could only be reconstructed from commit messages, because checkpoints
+    recorded their architecture and environment and nothing about their data or schedule. This is
+    also the only test that drives train.main and export.main end to end.
+    """
+    import importlib.util
+    import json
+
+    import export
+    from cubedet import train
+    from PIL import Image
+
+    data = tmp_path / "data"
+    for split in ("train", "val"):
+        (data / "images" / split).mkdir(parents=True)
+        (data / "labels" / split).mkdir(parents=True)
+        for k in range(2):
+            Image.new("RGB", (64, 48), (200, 30, 30)).save(data / "images" / split / f"{k}.jpg")
+            (data / "labels" / split / f"{k}.txt").write_text("1 0.5 0.5 0.2 0.2\n")
+    out = tmp_path / "run"
+    argv = ["--data", str(data), "--out", str(out), "--epochs", "1", "--batch", "2", "--workers", "0",
+            "--width", "0.25", "--lr", "0.002", "--seed", "3"]
+    if importlib.util.find_spec("detlib"):
+        argv.append("--allow-thirdparty-in-env")  # a shared development venv; the CI job has no detlib
+    monkeypatch.setenv("CUBEDET_DATASET", "tiny_fixture")  # what run-cubedet.sh passes into its container
+    assert train.main(argv) == 0
+    for name in ("best.pt", "last.pt"):
+        recipe = torch.load(out / name, map_location="cpu", weights_only=True)["recipe"]
+        assert (recipe["data"], recipe["epochs"], recipe["lr"], recipe["seed"]) == (str(data), 1, 0.002, 3), name
+        assert recipe["init_from"] is None and recipe["argv"] == argv, name
+        assert recipe["dataset"] == "tiny_fixture", name
+
+    models = tmp_path / "models"
+    export.main(["--pt", str(out / "best.pt"), "--out", str(models), "--cubedet", "--skip", "coreml", "tflite"])
+    manifest = json.loads((models / "MANIFEST.json").read_text())
+    assert manifest["recipe"]["argv"] == argv
+    assert "torchvision" in manifest["tools"]
+    assert ("timm" in manifest["tools"]) == bool(importlib.util.find_spec("timm"))

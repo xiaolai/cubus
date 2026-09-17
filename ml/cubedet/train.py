@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -114,6 +115,40 @@ def input_scale_mismatch(state: dict, mine: bool, source: Path) -> str | None:
         return None
     return (f"{source}: checkpoint input_normalised={theirs} but this run is input_normalised={mine}. "
             f"Pass --no-input-normalise to match an older checkpoint, or start fresh.")
+
+
+def recipe_of(cfg, args, argv: list[str] | None) -> dict:
+    """How this run was asked for: the part of a model's provenance the weights cannot show.
+
+    Written into every checkpoint and, by export.py, into MANIFEST.json. Before 2026-09-17 a
+    checkpoint recorded its architecture and environment and nothing about its schedule or data, so
+    the shipped model's own recipe could only be reconstructed from commit messages.
+    """
+    start = None
+    if args.init_from is not None:
+        start = {"path": str(args.init_from), "sha256": hashlib.sha256(args.init_from.read_bytes()).hexdigest()}
+    return {
+        # Inside run-cubedet.sh's container the data is always mounted at /data, so the launcher
+        # names the host dataset in CUBEDET_DATASET; a direct run records the path alone.
+        "data": str(cfg.data), "dataset": os.environ.get("CUBEDET_DATASET"),
+        "epochs": cfg.epochs, "batch": cfg.batch, "lr": cfg.lr,
+        "weight_decay": cfg.weight_decay, "seed": cfg.seed, "amp": cfg.amp,
+        "init_from": start, "argv": list(sys.argv[1:] if argv is None else argv),
+    }
+
+
+def checkpoint_metadata(cfg, environment: dict, recipe: dict) -> dict:
+    """Everything best.pt and last.pt both carry besides weights and progress.
+
+    `imgsz`, `context` and `backbone` are in both files, and the reason is a silent failure rather
+    than tidiness: `export.py::_load_cubedet` rebuilds from whatever the checkpoint says and defaults
+    each of these when it is absent. A `--context` run at least fails loudly on unexpected
+    state-dict keys, but `imgsz` is not in the state dict at all -- so exporting last.pt from an 896
+    run would have built a 640 model, loaded cleanly, and shipped anchors for the wrong resolution.
+    """
+    return {"width": cfg.width, "imgsz": cfg.imgsz, "context": cfg.context, "backbone": cfg.backbone,
+            "embed_dim": cfg.embed_dim, "input_normalised": cfg.input_normalised,
+            "num_classes": NUM_CLASSES, "environment": environment, "recipe": recipe}
 
 
 def assert_same_architecture(state: dict, cfg, source: Path, flag: str, advice: str) -> None:
@@ -306,6 +341,7 @@ def main(argv: list[str] | None = None) -> int:
     ema = ModelEMA(model, cfg.ema_decay)
 
     start_epoch, best = 0, -1.0
+    recipe = recipe_of(cfg, args, argv)
     if args.init_from and args.init_from.exists() and not (args.resume and args.resume.exists()):
         # WEIGHTS ONLY, FRESH SCHEDULE. --resume restores the optimiser, the scheduler and the
         # epoch counter, which is exactly right for picking a crashed run back up and exactly
@@ -367,6 +403,9 @@ def main(argv: list[str] | None = None) -> int:
         scheduler.load_state_dict(state["scheduler"])
         start_epoch, best = state["epoch"] + 1, state.get("best", -1.0)
         cfg.history = state.get("history", [])
+        # A restart is the same run: its recipe is the one it began with, not the restart's argv
+        # (which adds --resume). A checkpoint from before recipes were recorded says so.
+        recipe = state.get("recipe") or {**recipe, "note": "resumed from a checkpoint that recorded no recipe"}
         print(f"resumed from {args.resume} at epoch {start_epoch}")
 
     print(f"device={device} bf16={use_bf16} params={count_parameters(model):,} "
@@ -418,11 +457,8 @@ def main(argv: list[str] | None = None) -> int:
             if score > best:
                 best = score
                 atomic_save(
-                    {"model": ema.module.state_dict(), "width": cfg.width,
-                     "imgsz": cfg.imgsz, "context": cfg.context, "backbone": cfg.backbone,
-             "embed_dim": cfg.embed_dim, "input_normalised": cfg.input_normalised,
-                     "num_classes": NUM_CLASSES, "epoch": epoch, "metrics": metrics,
-                     "environment": environment},
+                    {"model": ema.module.state_dict(), "epoch": epoch, "metrics": metrics,
+                     **checkpoint_metadata(cfg, environment, recipe)},
                     cfg.out / "best.pt",
                 )
             print(f"epoch {epoch:3d} | train {record['total']:.4f} | "
@@ -432,18 +468,10 @@ def main(argv: list[str] | None = None) -> int:
 
         cfg.history.append(record)
         atomic_save(
-            # `imgsz`, `context` and `backbone` are recorded here as well as in best.pt, and the
-            # reason is a silent failure rather than tidiness: `export.py::_load_cubedet` rebuilds
-            # from whatever the checkpoint says and defaults each of these when it is absent. A
-            # `--context` run at least fails loudly on unexpected state-dict keys, but `imgsz` is
-            # not in the state dict at all — so exporting last.pt from an 896 run would have built
-            # a 640 model, loaded cleanly, and shipped anchors for the wrong resolution.
             {"model": model.state_dict(), "ema": ema.module.state_dict(),
              "optimiser": optimiser.state_dict(), "scheduler": scheduler.state_dict(),
-             "epoch": epoch, "best": best, "history": cfg.history, "width": cfg.width,
-             "imgsz": cfg.imgsz, "context": cfg.context, "backbone": cfg.backbone,
-             "embed_dim": cfg.embed_dim, "input_normalised": cfg.input_normalised,
-             "num_classes": NUM_CLASSES, "environment": environment},
+             "epoch": epoch, "best": best, "history": cfg.history,
+             **checkpoint_metadata(cfg, environment, recipe)},
             cfg.out / "last.pt",
         )
         (cfg.out / "history.json").write_text(json.dumps(cfg.history, indent=2))
