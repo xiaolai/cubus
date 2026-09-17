@@ -15,6 +15,10 @@ the 89 held-out photographs those numbers are 98.6% on red/orange pairs and 83.6
 purity across six colours. Beating 83.6% is the bar; the class head's 98.86% colour accuracy is a
 different question and is not comparable to either.
 
+PER CUBE. "The same paint" is a question about one cube: two cubes in one frame share the light but
+not the paint, and their two reds are not one pigment. Stickers are grouped by the labels' cube files
+(cube_identity.py); a sticker whose cube is unknown is left out and counted.
+
 GROUND-TRUTH BOXES, NOT DETECTIONS, on purpose. This isolates the embedding's quality from the
 detector's recall. A model that finds fewer stickers would otherwise look like a model with better
 embeddings.
@@ -32,6 +36,8 @@ import torch
 from PIL import Image
 
 import sys
+
+from cube_identity import label_rows, read_cubes
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -70,7 +76,7 @@ def load_model(pt: Path):
 
 
 def sticker_vectors(model, imgsz, arr, boxes, anchor_pick="centre"):
-    """Per ground-truth sticker: its learned embedding, and its plain LAB colour.
+    """Per ground-truth sticker (cid, cx, cy, w, h, cube): (cid, embedding, plain LAB colour, cube).
 
     The embedding is taken at the anchor whose point is nearest the sticker's centre IN LETTERBOX
     SPACE, at the finest stride that still resolves it. The assigner picks anchors by score during
@@ -85,7 +91,7 @@ def sticker_vectors(model, imgsz, arr, boxes, anchor_pick="centre"):
     emb = torch.nn.functional.normalize(emb[0], dim=-1).numpy()
 
     out = []
-    for cid, cx, cy, bw, bh in boxes:
+    for cid, cx, cy, bw, bh, cube in boxes:
         lx, ly = cx * W * scale + pad_x, cy * H * scale + pad_y
         d = (points[:, 0] - lx) ** 2 + (points[:, 1] - ly) ** 2
         if anchor_pick == "confident":
@@ -112,15 +118,15 @@ def sticker_vectors(model, imgsz, arr, boxes, anchor_pick="centre"):
         if x1 <= x0 or y1 <= y0:
             continue
         med = np.median(arr[y0:y1, x0:x1].reshape(-1, 3), axis=0) / 255.0
-        out.append((cid, emb[idx], rgb_to_lab(med)))
+        out.append((cid, emb[idx], rgb_to_lab(med), cube))
     return out
 
 
-def score(per_image, key):
-    """The two rows from the note, over whichever feature `key` selects."""
+def score(per_cube, key):
+    """The two rows from the note, over whichever feature `key` selects, each cube on its own."""
     pair_ok = n_pairs = 0
     ro_ok = ro_n = 0
-    for items in per_image:
+    for items in per_cube:
         if len(items) < 4 or len({c for c, _, _ in items}) < 2:
             continue
         vec = [it[key] for it in items]
@@ -150,7 +156,8 @@ def main() -> None:
     args = ap.parse_args()
 
     model, imgsz, dim = load_model(args.pt)
-    per_image = []
+    per_cube = []
+    unowned = 0
     for lp in sorted(glob.glob(str(args.data / "labels" / args.split / "*.txt"))):
         stem = Path(lp).stem
         ip = next((p for e in (".jpg", ".jpeg", ".png")
@@ -158,18 +165,28 @@ def main() -> None:
         if ip is None:
             continue
         arr = np.asarray(Image.open(ip).convert("RGB"))
+        rows = label_rows(Path(lp))
         boxes = []
-        for line in open(lp):
+        for line, cube in zip(rows, read_cubes(Path(lp), len(rows)) or [None] * len(rows), strict=True):
             b = line.split()
             if len(b) >= 5 and 0 <= int(b[0]) <= 5:
-                boxes.append((int(b[0]), *[float(v) for v in b[1:5]]))
+                if cube is None:
+                    unowned += 1
+                    continue
+                boxes.append((int(b[0]), *[float(v) for v in b[1:5]], cube))
         if boxes:
-            per_image.append(sticker_vectors(model, imgsz, arr, boxes, args.anchor))
+            items = sticker_vectors(model, imgsz, arr, boxes, args.anchor)
+            for cube in sorted({it[3] for it in items}):
+                per_cube.append([it[:3] for it in items if it[3] == cube])
 
-    print(f"{len(per_image)} images, dim {dim}, {args.pt.name}, anchor={args.anchor}\n")
+    if not per_cube:
+        raise SystemExit(f"no sticker to compare: {unowned} left out because their cube is unknown "
+                         "(the labels need cube files: see cube_identity.py)")
+    print(f"{len(per_cube)} cubes, dim {dim}, {args.pt.name}, anchor={args.anchor}; "
+          f"{unowned} stickers left out because their cube is unknown\n")
     print(f"{'feature':22} {'6-colour NN purity':>20} {'red/orange pairs kept apart':>30}")
     for name, key in (("plain median LAB", 2), (f"learned embedding (d={dim})", 1)):
-        (purity, n_p), (ro, n_ro) = score(per_image, key)
+        (purity, n_p), (ro, n_ro) = score(per_cube, key)
         print(f"{name:22} {purity:17.1f}% {ro:29.1f}%")
     print(f"{'':22} {'n = ' + str(n_p):>20} {'n = ' + str(n_ro):>30}")
 

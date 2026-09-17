@@ -26,12 +26,14 @@ from PIL import Image
 # The two files had grown identical copies of the gate, the hue helpers and the cube-ownership rule,
 # and a threshold changed in one would have made the "paired" comparison measure something else.
 # A plain import: `python ml/paired_arms.py` puts ml/ on the path already.
-from hue_decompose import BODY_CLASS, S_MIN, V_MAX, V_MIN, circ_deg, cube_of, signed
+from cube_identity import cube_of
+from hue_decompose import BODY_CLASS, S_MIN, V_MAX, V_MIN, circ_deg, signed
 
 
 def read_arm(root):
-    """key -> (class, h, s, v, cube). The key is (scene, image file, rounded box), stable across arms."""
+    """(key -> (class, h, s, v, cube), stickers left out). The key is (scene, image file, rounded box)."""
     out = {}
+    unowned = 0
     for pj in sorted(glob.glob(os.path.join(root, "part_*", "coco", "coco_annotations.json"))):
         scene = os.path.basename(os.path.dirname(os.path.dirname(pj)))
         with open(pj) as f:
@@ -68,9 +70,10 @@ def read_arm(root):
                 key = (scene, os.path.basename(path), round(x, 1), round(y, 1))
                 cube = cube_of((x, y, w, h), bodies)
                 if cube is None:
-                    continue  # ambiguous ownership: left out of every arm alike, since the scenes are identical
+                    unowned += 1  # left out of every arm alike, since the scenes are identical
+                    continue
                 out[key] = (cid, signed(hh_), ss, vv, cube)
-    return out
+    return out, unowned
 
 
 def readable(rec):
@@ -79,10 +82,15 @@ def readable(rec):
 
 
 def main(root, arms):
-    data = {a: read_arm(os.path.join(root, a)) for a in arms}
+    read = {a: read_arm(os.path.join(root, a)) for a in arms}
+    data = {a: d for a, (d, _) in read.items()}
     common = set.intersection(*(set(d) for d in data.values()))
     both = {k for k in common if all(readable(data[a][k]) for a in arms)}
+    unowned = {a: n for a, (_, n) in read.items()}
+    if not both:
+        raise SystemExit(f"no sticker is readable in every arm with a known cube (left out, cube unknown: {unowned})")
     print(f"stickers present in every arm: {len(common)}   readable in EVERY arm: {len(both)}")
+    print(f"left out because their cube is unknown, per arm: {unowned}")
     print()
     header = f"{'arm':16} {'unreadable':>10} {'red':>7} {'orange':>7} {'green':>7} {'all':>7} {'inv':>6}"
     print(header)

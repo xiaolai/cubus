@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Is red/orange separable WITHIN one image, from the pixels alone?
+"""Is red/orange separable WITHIN one cube in one image, from the pixels alone?
 
     ml/venv/bin/python ml/redorange_separability.py \
         --images ml/out/heldout/images --labels ml/out/heldout/labels
@@ -26,6 +26,11 @@ WHY GROUND-TRUTH BOXES. This isolates colour from detection deliberately. The de
 recall is a separate problem with a separate fix; mixing them would leave any result ambiguous
 about which stage was responsible.
 
+WHY PER CUBE, NOT PER IMAGE. The relation is about one cube's six pigments. Two cubes in one
+photograph have two reds and two oranges, and pooling them tests nothing the hypothesis claims. Which
+cube each sticker is on comes from the labels' cube files (cube_identity.py); a sticker whose cube is
+unknown is left out and counted. "Per-image" below means per cube within its image.
+
 WHY FULL RESOLUTION. The detector decides colour from features inside a 640x640 letterbox. Here the
 pixels are read from the ORIGINAL photograph, which is the resolution a second stage would have.
 Any gap between the two is itself a finding.
@@ -41,6 +46,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from cube_identity import label_rows, read_cubes
+
 RED, ORANGE = 1, 4
 
 # Fraction of each box kept, centred. A sticker box includes the black gap between stickers and,
@@ -52,18 +59,20 @@ INNER = 0.5
 GAP_DEGREES = 8.0
 
 
-def load_labels(path: Path, width: int, height: int) -> list[tuple[int, float, float, float, float]]:
-    """detector normalised (class cx cy w h) → (class, x0, y0, x1, y1) in original pixels."""
+def load_labels(path: Path, width: int, height: int) -> list[tuple[int, float, float, float, float, int | None]]:
+    """detector normalised (class cx cy w h) → (class, x0, y0, x1, y1, cube) in original pixels; cube None if unknown."""
     if not path.exists():
         return []
+    rows = label_rows(path)
+    cubes = read_cubes(path, len(rows)) or [None] * len(rows)
     out = []
-    for line in path.read_text().splitlines():
+    for line, cube in zip(rows, cubes, strict=True):
         parts = line.split()
         if len(parts) != 5:
             continue
         cls, cx, cy, bw, bh = int(float(parts[0])), *[float(v) for v in parts[1:]]
         out.append((cls, (cx - bw / 2) * width, (cy - bh / 2) * height,
-                    (cx + bw / 2) * width, (cy + bh / 2) * height))
+                    (cx + bw / 2) * width, (cy + bh / 2) * height, cube))
     return out
 
 
@@ -74,7 +83,7 @@ def patch_statistic(rgb: np.ndarray, box) -> tuple[float, float, float] | None:
     reading towards white. The median ignores them, which is the entire reason a highlight does not
     have to be detected and masked.
     """
-    _, x0, y0, x1, y1 = box
+    x0, y0, x1, y1 = box[1:5]
     w, h = x1 - x0, y1 - y0
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
     hw, hh = w * INNER / 2, h * INNER / 2
@@ -106,61 +115,67 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     files = sorted(p for p in args.images.iterdir() if p.suffix.lower() in {".jpg", ".jpeg", ".png"})
-    per_image = []
+    per_image = []  # one entry per CUBE with both colours; "image" names the photograph it is in
     global_red, global_orange = [], []
-    candidates_by_image: list[list[tuple[float, int]]] = []
+    candidates_by_image: list[list[tuple[float, int]]] = []  # likewise one list per cube
+    unowned = 0
 
     for path in files:
         with Image.open(path) as handle:
             rgb = np.asarray(handle.convert("RGB"), dtype=np.uint8)
-        boxes = load_labels(args.labels / f"{path.stem}.txt", rgb.shape[1], rgb.shape[0])
-        reds, oranges = [], []
-        hues: list[tuple[float, int]] = []
-        for box in boxes:
+        by_cube: dict[int, list[tuple[float, int]]] = {}
+        for box in load_labels(args.labels / f"{path.stem}.txt", rgb.shape[1], rgb.shape[0]):
             if box[0] not in (RED, ORANGE):
+                continue
+            if box[5] is None:
+                unowned += 1
                 continue
             stat = patch_statistic(rgb, box)
             if stat is None:
                 continue
-            hues.append((stat[0], box[0]))
-            (reds if box[0] == RED else oranges).append(stat[0])
-        # Kept for the label-free pass below, which used to open and measure every image a second
-        # time -- the same patches, through a second copy of the loop that could drift from this one.
-        candidates_by_image.append(hues)
-        global_red.extend(reds)
-        global_orange.extend(oranges)
-        if not reds or not oranges:
-            continue
+            by_cube.setdefault(box[5], []).append((stat[0], box[0]))
+        for cube, hues in sorted(by_cube.items()):
+            reds = [h for h, cls in hues if cls == RED]
+            oranges = [h for h, cls in hues if cls == ORANGE]
+            # Kept for the label-free pass below, which used to open and measure every image a second
+            # time -- the same patches, through a second copy of the loop that could drift from this one.
+            candidates_by_image.append(hues)
+            global_red.extend(reds)
+            global_orange.extend(oranges)
+            if not reds or not oranges:
+                continue
 
-        # Hue is circular and red straddles 0°, so measure on an axis that does not wrap: rotate so
-        # the midpoint between the two groups sits at 180°.
-        def unwrap(values, pivot):
-            return [(v - pivot) % 360 for v in values]
+            # Hue is circular and red straddles 0°, so measure on an axis that does not wrap: rotate so
+            # the midpoint between the two groups sits at 180°.
+            def unwrap(values, pivot):
+                return [(v - pivot) % 360 for v in values]
 
-        pivot = (np.mean([np.cos(np.radians(h)) for h in reds + oranges]),
-                 np.mean([np.sin(np.radians(h)) for h in reds + oranges]))
-        centre = np.degrees(np.arctan2(pivot[1], pivot[0])) % 360
-        r = unwrap(reds, centre - 180)
-        o = unwrap(oranges, centre - 180)
-        # SEPARABLE means: every red is on one side of some threshold and every orange on the other.
-        margin = min(o) - max(r)         # positive ⇒ a clean gap exists in this image
-        per_image.append({
-            "image": path.name, "reds": len(r), "oranges": len(o),
-            "max_red": float(max(r)), "min_orange": float(min(o)), "margin": float(margin),
-            "separable": bool(margin > 0),
-        })
+            pivot = (np.mean([np.cos(np.radians(h)) for h in reds + oranges]),
+                     np.mean([np.sin(np.radians(h)) for h in reds + oranges]))
+            centre = np.degrees(np.arctan2(pivot[1], pivot[0])) % 360
+            r = unwrap(reds, centre - 180)
+            o = unwrap(oranges, centre - 180)
+            # SEPARABLE means: every red is on one side of some threshold and every orange on the other.
+            margin = min(o) - max(r)         # positive ⇒ a clean gap exists in this image
+            per_image.append({
+                "image": path.name, "cube": cube, "reds": len(r), "oranges": len(o),
+                "max_red": float(max(r)), "min_orange": float(min(o)), "margin": float(margin),
+                "separable": bool(margin > 0),
+            })
 
     n = len(per_image)
     sep = sum(1 for r in per_image if r["separable"])
     margins = np.array([r["margin"] for r in per_image])
-    print(f"images with BOTH red and orange stickers: {n} of {len(files)}")
+    print(f"cubes with BOTH red and orange stickers: {n}, in {len(files)} images")
+    print(f"  red/orange stickers left out because their cube is unknown: {unowned}")
     # Both analyses need data from both classes. Without it the percentiles below were taken of an
     # empty array and the threshold sweep raised on `.min()` of one -- a crash that read like a bug
     # in the statistics, for a dataset that simply has nothing to compare.
     if n == 0 or not global_red or not global_orange:
         raise SystemExit(f"nothing to measure: {len(global_red)} red and {len(global_orange)} orange "
-                         f"stickers readable, {n} image(s) with both")
-    print(f"  separable by a per-image threshold: {sep}/{n} = {sep / n:.1%}")
+                         f"stickers readable, {n} cube(s) with both, {unowned} left out because their cube "
+                         "is unknown (the labels need cube files: see cube_identity.py)")
+    print(f"  separable by a per-cube threshold: {sep}/{n} = {sep / n:.1%}")
     print(f"  margin (degrees): median {np.median(margins):+.1f}  "
           f"p10 {np.percentile(margins,10):+.1f}  p90 {np.percentile(margins,90):+.1f}")
     print()
@@ -244,14 +259,14 @@ def main(argv=None) -> int:
         total += len(truth)
         per_image_acc.append(hit / len(truth))
 
-    print(f"  images split on their own gap: {split_used}   fell back to the prior: {prior_used}")
+    print(f"  cubes split on their own gap: {split_used}   fell back to the prior: {prior_used}")
     print(f"  stickers scored: {total}   accuracy: {correct / max(total,1):.1%}")
-    print(f"  images perfect: {sum(1 for a in per_image_acc if a == 1.0)}/{len(per_image_acc)}")
+    print(f"  cubes perfect: {sum(1 for a in per_image_acc if a == 1.0)}/{len(per_image_acc)}")
     print()
     # The oracle figure is the separable fraction MEASURED above. It was printed as a flat 100%,
     # which is only true on a set where every image separates -- the thing this script is testing.
     print(f"  Compare: per-sticker ceiling {prior_acc:.1%}, "
-          f"oracle per-image threshold {sep / n:.1%} (images separable with the labels in hand).")
+          f"oracle per-cube threshold {sep / n:.1%} (cubes separable with the labels in hand).")
 
     if args.json:
         args.json.write_text(json.dumps({

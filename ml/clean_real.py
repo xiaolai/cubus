@@ -35,6 +35,14 @@ project rather than the task.
 
 Files whose names do not parse are kept and treated as one photograph each: they cannot be
 de-duplicated safely, and silently dropping data is worse than carrying a few extra copies.
+
+WHICH CUBE EACH STICKER IS ON. A detector label cannot say (cube_identity.py), and these labels came from
+Roboflow without it. Whether a photograph's labelled stickers are all on one cube was checked by
+looking at every photograph with its boxes drawn, and the answer is committed as data:
+photo_cubes.json, keyed by file stem and tied to the exact image and label bytes that were looked
+at. The build writes `cubes/<split>/<stem>.txt` from it (cube_identity.apply_record) -- every row on
+cube 0 for a photograph checked as one cube, every row unknown for anything else, with the count
+printed.
 """
 from __future__ import annotations
 
@@ -49,6 +57,8 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+
+from cube_identity import RECORD, apply_record, load_record, report
 
 NAME = re.compile(r"^(.*?)_(train|val|valid|test)_(.*?)_(jpg|png|jpeg)\.rf\.([0-9a-f]+)\.(jpg|png|jpeg)$", re.I)
 SPLIT_PREFERENCE = {"test": 0, "val": 1, "valid": 1, "train": 2}
@@ -92,11 +102,13 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--cube-record", type=Path, default=RECORD, help="which photographs were checked as one cube")
     ap.add_argument("--val-frac", type=float, default=0.15)
     ap.add_argument("--test-frac", type=float, default=0.15)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
+    record = load_record(args.cube_record)
     # Unchecked, these silently produce a dataset nobody asked for: a negative fraction makes
     # `round(n * frac)` negative so `max(1, ...)` hands one photograph to a split that was meant to
     # be empty, and fractions summing past 1 leave no training images at all.
@@ -248,6 +260,7 @@ def main(argv=None) -> int:
         written[split] += 1
 
     print(f"\nwritten: {dict(written)}   (skipped {missing_labels} photograph(s) with no label)")
+    report(apply_record(args.out / "dataset", record))
     # The property the whole file exists for, asserted rather than assumed -- and asserted against
     # the FILES, which is the fix. It used to build its sets from `assignment`, where every key has
     # exactly one split by construction, so every intersection was empty however the splits had

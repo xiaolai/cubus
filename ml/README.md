@@ -36,9 +36,10 @@ environments), **glossy materials** (physically-correct glare), **perspective**,
 | File | Role | Tested off-GPU |
 |---|---|---|
 | `cube_geometry.py` | 54-sticker geometry (pure) | ✅ `test_pipeline.py` |
-| `coco_to_labels.py` | BlenderProc COCO → detector labels (pure) | ✅ `test_pipeline.py` |
-| `merge_parts.py` | merge parallel worker parts → one detector set (pure) | — |
-| `split_dataset.py` | train/val split into detector layout | — |
+| `coco_to_labels.py` | BlenderProc COCO → detector labels, and each row's cube (pure) | ✅ `test_pipeline.py` |
+| `cube_identity.py` | which cube each label row is on: `cubes/<split>/<stem>.txt` beside `labels/`, one id per row, `-1` unknown (pure) | ✅ `test_pipeline.py` |
+| `merge_parts.py` | merge parallel worker parts → one detector set, with its cube files (pure) | ✅ `test_pipeline.py` |
+| `split_dataset.py` | train/val split into detector layout; refuses a label without its cube file unless `--no-cubes` | ✅ `test_pipeline.py` |
 | `fetch_hdris.py` | download CC0 Poly Haven HDRIs (stdlib, no key) | — |
 | `fetch_roboflow.py` | download the real Roboflow cube datasets (needs a free key) | — |
 | `merge_real.py` | remap/merge those into our 6-class detector set (pure) | — |
@@ -47,7 +48,9 @@ environments), **glossy materials** (physically-correct glare), **perspective**,
 | `cubedet/` | the detector: backbone + neck + head (`model.py`), assigner, loss, data, trainer (`train.py`), evaluator (`val.py`) | ✅ `test_pipeline.py`, `test_cubedet.py` (CI: the `cubedet` job) |
 | `run-cubedet.sh` | launch a cubedet run, detached and restartable, in the clean NGC image | the near GPU box |
 | `watch-cubedet.sh` | watch runs across hosts: progress, restarts, crash loops | — |
-| `clean_real.py` | de-duplicate the real photographs and cut splits that do not leak | — |
+| `clean_real.py` | de-duplicate the real photographs, cut splits that do not leak, and write their cube files from `photo_cubes.json` | ✅ `test_pipeline.py` |
+| `photo_cubes.json` | which photographs were looked at and found to show one cube, tied to their image and label bytes | ✅ `test_pipeline.py` |
+| `hue_decompose.py` / `paired_arms.py` / `redorange_separability.py` / `verify_relative.py` / `embed_eval.py` | per-cube colour measurements; only stickers whose cube is known count | ✅ `test_pipeline.py` (the first three) |
 | `drop_dataset.py` / `drop-train-datasets.sh` | the photo drop's confirmed sets as training data, by contributor fold | ✅ `test_drop_dataset.py` |
 | `score_arm.sh` | score one checkpoint against the shipped model: per sticker (`compare_detectors.py`) and per cube (`assign_sim.py`) | — |
 | `drop_eval.py` | score models on the photo drop's checked sets, through the app's own fit | ✅ `test_drop_eval.py` |
@@ -157,7 +160,11 @@ BLENDERPROC=ml/venv/bin/blenderproc PYTHON=ml/venv/bin/python WORKERS=4 GEN=gene
   SCENES=1000 POSES=40 HDRI_DIR="$HOME/datasets/hdris" OUT="$HOME/datasets/cube" bash ml/render.sh
 
 # 2. The real photographs, de-duplicated and split without leaks (see the Real data section above).
+#    Their cube files come from photo_cubes.json, the recorded check that each photograph's
+#    labelled stickers are on one cube; a photograph not in it, or changed since, gets unknown cubes.
 ml/venv/bin/python ml/clean_real.py --src ~/datasets/real_cube/merged --out ~/datasets/real_clean
+#    A tree built before cube files existed gets them without being rebuilt:
+python3 ml/cube_identity.py --root ~/datasets/real_clean/dataset
 
 # 3. Pretrain on the renders mixed with the cleaned photographs (near GPU box).
 DATASET_NAME=<mix> bash ml/run-cubedet.sh <base> 80 64 1.0 --backbone mobilenetv4_conv_small.e2400_r224_in1k

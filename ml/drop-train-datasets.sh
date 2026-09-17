@@ -43,7 +43,13 @@ trap discard_partial EXIT
 
 link_split() {  # link_split SRC_ROOT SRC_SPLIT DST_ROOT DST_SPLIT
   local src="$1" from="$2" dst="$3" to="$4" kind f name
-  for kind in images labels; do
+  for kind in images labels cubes; do
+    # cubes/ says which cube each label row is on (ml/cube_identity.py). A source built before it
+    # existed has none, and its stickers' cube is then unknown to everything that reads this root.
+    if [ "$kind" = cubes ] && [ ! -d "$src/$kind/$from" ]; then
+      echo "note: $src has no cubes/$from; which cube its stickers are on is unknown" >&2
+      continue
+    fi
     mkdir -p "$dst/$kind/$to"
     for f in "$src/$kind/$from"/*; do
       [ -e "$f" ] || { echo "$src/$kind/$from is empty" >&2; exit 1; }
@@ -72,6 +78,15 @@ for root in "$R" "$F"; do
       echo "$root/$split: images and labels do not pair up:" >&2
       echo "$unpaired" | head -20 >&2
       exit 1
+    fi
+    # A label may lack a cube file (unknown); a cube file without its label belongs to nothing.
+    if [ -d "$root/cubes/$split" ]; then
+      orphans=$(LC_ALL=C comm -23 <(stems "$root/cubes/$split") <(stems "$root/labels/$split"))
+      if [ -n "$orphans" ]; then
+        echo "$root/$split: cube files with no label:" >&2
+        echo "$orphans" | head -20 >&2
+        exit 1
+      fi
     fi
   done
   echo "$root: train $(find "$root/images/train" -type f | wc -l), val $(find "$root/images/val" -type f | wc -l)"

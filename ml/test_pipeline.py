@@ -13,6 +13,7 @@ import json
 import math
 import os
 import random
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,7 +22,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))  # runnable from any cwd: `python ml/test_pipeline.py` (CI) as well as from ml/
 
-from coco_to_labels import DEFAULT_MAP, coco_to_label_lines  # noqa: E402
+from coco_to_labels import DEFAULT_MAP, coco_to_label_lines, coco_to_label_rows  # noqa: E402
 from cube_colors import (  # noqa: E402
     MIN_RED_ORANGE_SEPARATION,
     MIN_YELLOW_ORANGE_SEPARATION,
@@ -401,6 +402,436 @@ def test_licence_note_says_where_the_weights_started():
     print("PASS export: the licence note says where a checkpoint's weights started")
 
 
+def test_a_label_row_and_its_cube_travel_together() -> None:
+    """A detector row has no column for the cube, so the cube file must stay aligned with it everywhere."""
+    from cube_identity import UNKNOWN, copy_cubes, cube_of, cubes_path, read_cubes, write_cubes
+
+    assert cubes_path(Path("d/labels/train/x.txt")) == Path("d/cubes/train/x.txt")
+    assert cubes_path(Path("o/labels_all/x.txt")) == Path("o/cubes_all/x.txt")
+    assert cubes_path(Path("labels/a/labels/val/x.txt")) == Path("labels/a/cubes/val/x.txt"), "the nearest labels dir"
+    for stray in ("d/labelsmith/x.txt", "d/train/x.txt", "labels"):
+        try:
+            cubes_path(Path(stray))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"{stray} was given a cube file though it is not under a labels directory")
+
+    body_a, body_b = [0, 0, 100, 100], [80, 0, 100, 100]
+    assert cube_of([10, 10, 10, 10], [body_a, body_b]) == 0
+    assert cube_of([150, 10, 10, 10], [body_a, body_b]) == 1
+    assert cube_of([85, 10, 10, 10], [body_a, body_b]) is None, "a sticker inside two bodies was given to one"
+    assert cube_of([300, 10, 10, 10], [body_a, body_b]) is None, "a sticker on no body was given to one"
+    assert cube_of([10, 10, 10, 10], []) is None, "no body boxes at all was read as one cube"
+
+    anns = [
+        {"category_id": 7, "bbox": body_a},
+        {"category_id": 2, "bbox": [10, 10, 10, 10]},    # red on cube 0
+        {"category_id": 7, "bbox": body_b},
+        {"category_id": 5, "bbox": [85, 10, 10, 10]},    # orange in the overlap: unknown
+        {"category_id": 1, "bbox": [150, 10, 1, 1]},     # too small: no row, and no cube entry either
+        {"category_id": 99, "bbox": [150, 10, 10, 10]},  # unmapped: likewise
+        {"category_id": 6, "bbox": [150, 50, 10, 10]},   # green on cube 1
+    ]
+    lines, cubes = coco_to_label_rows(anns, 200, 100, DEFAULT_MAP)
+    assert [line.split()[0] for line in lines] == ["1", "4", "5"], lines
+    assert cubes == [0, UNKNOWN, 1], cubes
+
+    with tempfile.TemporaryDirectory() as tmp:
+        label = Path(tmp, "labels", "train", "x.txt")
+        label.parent.mkdir(parents=True)
+        label.write_text("0 .5 .5 .1 .1\n\n1 .2 .2 .1 .1\n")
+        assert read_cubes(label, 2) is None, "a label with no cube file must read as unrecorded"
+        write_cubes(cubes_path(label), [3, UNKNOWN])
+        assert read_cubes(label, 2) == [3, None]
+        for rows in (1, 3):
+            try:
+                read_cubes(label, rows)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"a cube file of 2 ids was zipped against {rows} rows")
+        for bad in ([-2], [True], [1.0]):
+            try:
+                write_cubes(cubes_path(label), bad)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"{bad} was written as a cube id")
+        moved = Path(tmp, "other", "labels", "val", "y.txt")
+        moved.parent.mkdir(parents=True)
+        assert copy_cubes(label, moved) and read_cubes(moved, 2) == [3, None]
+        bare = moved.with_name("bare.txt")
+        bare.write_text("0 .5 .5 .1 .1\n")
+        assert not copy_cubes(bare, label), "a label with no cube file had one to copy"
+        label.write_text("0 .5 .5 .1 .1\n")  # one row now: its cube file of two is stale
+        try:
+            copy_cubes(label, moved)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("a misaligned cube file was copied")
+    print("PASS cube identity: one entry per label row, unknown where no body box answers, refused when misaligned")
+
+
+def _render_part(part: Path, frames: list[list[dict]]) -> None:
+    from PIL import Image
+
+    (part / "coco" / "images").mkdir(parents=True)
+    images = []
+    for i, _ in enumerate(frames):
+        Image.new("RGB", (200, 100), (i * 40, 0, 0)).save(part / "coco" / "images" / f"{i:06d}.jpg")
+        images.append({"id": i, "file_name": f"images/{i:06d}.jpg", "width": 200, "height": 100})
+    annotations = [{**a, "image_id": i} for i, anns in enumerate(frames) for a in anns]
+    (part / "coco" / "coco_annotations.json").write_text(json.dumps({"images": images, "annotations": annotations}))
+
+
+def test_a_render_keeps_its_cube_identity_through_merge_and_split() -> None:
+    import merge_parts
+    import split_dataset
+    from cube_identity import label_rows, read_cubes
+
+    two_cubes = [
+        {"category_id": 7, "bbox": [0, 0, 90, 100]},
+        {"category_id": 7, "bbox": [110, 0, 90, 100]},
+        {"category_id": 2, "bbox": [10, 10, 10, 10]},
+        {"category_id": 5, "bbox": [150, 10, 10, 10]},
+    ]
+    no_body = [{"category_id": 3, "bbox": [10, 10, 10, 10]}]
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp)
+        for k in range(2):
+            _render_part(out / f"part_{k}", [two_cubes, no_body, two_cubes])
+        assert merge_parts.merge(str(out), sorted(str(p) for p in out.glob("part_*"))) == (6, 6)
+        n_train, n_val = split_dataset.split(str(out / "images_all"), str(out / "labels_all"), str(out / "dataset"), 0.5)
+        assert (n_train, n_val) == (3, 3), (n_train, n_val)
+        seen = []
+        for label in sorted((out / "dataset" / "labels").glob("*/*.txt")):
+            rows = label_rows(label)
+            by_x = {row.split()[0]: cube for row, cube in zip(rows, read_cubes(label, len(rows)), strict=True)}
+            seen.append(by_x)
+        # The red sticker sits in the left body, the orange in the right; the frame with no body has
+        # a sticker nobody can place.
+        assert sorted(map(str, seen)) == sorted(map(str, [{"1": 0, "4": 1}] * 4 + [{"2": None}] * 2)), seen
+
+        stale = out / "cubes_all" / "p0_000000.txt"
+        stale.unlink()
+        try:
+            split_dataset.split(str(out / "images_all"), str(out / "labels_all"), str(out / "again"), 0.5)
+        except SystemExit as e:
+            assert "no cube file" in str(e), e
+        else:
+            raise AssertionError("a label that lost its cube file was split as if it had one")
+        assert not (out / "again").exists(), "the refused split left files behind"
+        split_dataset.split(str(out / "images_all"), str(out / "labels_all"), str(out / "plain"), 0.5, cubes=False)
+        assert not (out / "plain" / "cubes").exists(), "--no-cubes wrote cube files"
+    print("PASS render: merge and split keep every label row's cube, and refuse a label that lost it")
+
+
+def test_labels_moved_by_combine_and_augment_keep_their_cubes() -> None:
+    import contextlib
+    import io
+
+    from PIL import Image
+
+    import augment
+    import combine_real
+    from cube_identity import cubes_path, write_cubes
+
+    def photo(root: Path, split: str, stem: str, cubes: list[int] | None) -> None:
+        for kind in ("images", "labels"):
+            (root / kind / split).mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (32, 32), (90, 30, 30)).save(root / "images" / split / f"{stem}.jpg")
+        label = root / "labels" / split / f"{stem}.txt"
+        label.write_text("0 .5 .5 .2 .2\n1 .2 .2 .1 .1\n")
+        if cubes is not None:
+            write_cubes(cubes_path(label), cubes)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        synth, real = Path(tmp, "synth"), Path(tmp, "real")
+        for split in ("train", "val"):
+            photo(synth, split, f"s_{split}", [0, 1])
+            photo(real, split, "known", [0, 0])
+            photo(real, split, "unknown", None)
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            combine_real.combine(str(synth), str(real))
+        assert "2 of them have no cube file" in said.getvalue(), said.getvalue()
+        for split in ("train", "val"):
+            cubes = synth / "cubes" / split
+            assert sorted(p.name for p in cubes.iterdir()) == [f"real_{split}_known.txt", f"s_{split}.txt"]
+            assert (cubes / f"real_{split}_known.txt").read_text().split() == ["0", "0"]
+
+        made = augment.augment(str(synth / "images" / "train"), str(synth / "labels" / "train"), per=1, frac=1.0)
+        assert made == 3, made
+        cubes = synth / "cubes" / "train"
+        assert (cubes / "s_train_aug0.txt").read_text() == (cubes / "s_train.txt").read_text()
+        assert (cubes / "real_train_known_aug0.txt").read_text().split() == ["0", "0"]
+        assert not (cubes / "real_train_unknown_aug0.txt").exists(), "an unknown cube became a recorded one"
+    print("PASS moved labels: combine_real and augment take each label's cube file with it, or say it has none")
+
+
+def _two_cube_label_tree(root: Path, cubes: list[int] | None) -> None:
+    """One photo, two cubes: A's red is oranger than B's orange, so only a pooled reading inverts."""
+    from PIL import Image
+
+    from cube_identity import cubes_path, write_cubes
+
+    hues = [("A", 1, 20), ("A", 4, 30), ("B", 1, 2), ("B", 4, 12)]
+    image = Image.new("RGB", (400, 100), (0, 0, 0))
+    rows = []
+    for g, (_, cls, hue) in enumerate(hues):
+        colour = tuple(round(c * 255) for c in colorsys.hsv_to_rgb(hue / 360, 0.8, 0.8))
+        for n in range(4):
+            x, y = 10 + g * 100 + (n % 2) * 40, 10 + (n // 2) * 40
+            image.paste(colour, (x, y, x + 30, y + 30))
+            rows.append(f"{cls} {(x + 15) / 400:.6f} {(y + 15) / 100:.6f} {30 / 400:.6f} {30 / 100:.6f}")
+    (root / "images" / "train").mkdir(parents=True)
+    (root / "labels" / "train").mkdir(parents=True)
+    image.save(root / "images" / "train" / "two.png")
+    label = root / "labels" / "train" / "two.txt"
+    label.write_text("\n".join(rows) + "\n")
+    if cubes is not None:
+        write_cubes(cubes_path(label), cubes)
+
+
+def _two_cube_render(root: Path, bodies: list[list[float]]) -> None:
+    """The two-cube photograph as a BlenderProc part: its stickers, and the given body boxes."""
+    detector = root / "detector"
+    _two_cube_label_tree(detector, None)
+    part = root / "part_0" / "coco"
+    (part / "images").mkdir(parents=True)
+    (detector / "images" / "train" / "two.png").rename(part / "images" / "000000.png")
+    anns = [{"image_id": 0, "category_id": 7, "bbox": b} for b in bodies]
+    for line in (detector / "labels" / "train" / "two.txt").read_text().splitlines():
+        cls, cx, cy, w, h = (float(v) for v in line.split())
+        anns.append({"image_id": 0, "category_id": int(cls) + 1,
+                     "bbox": [(cx - w / 2) * 400, (cy - h / 2) * 100, w * 400, h * 100]})
+    shutil.rmtree(detector)
+    (part / "coco_annotations.json").write_text(json.dumps({
+        "images": [{"id": 0, "file_name": "images/000000.png", "width": 400, "height": 100}],
+        "annotations": anns,
+    }))
+
+def test_hue_decompose_never_pools_two_cubes_from_a_label_tree() -> None:
+    import contextlib
+    import io
+
+    import hue_decompose
+
+    def run(root: Path) -> str:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            hue_decompose.main([str(root), "--format", "detector"])
+        return buf.getvalue()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        told = Path(tmp, "told")
+        _two_cube_label_tree(told, [0] * 8 + [1] * 8)
+        report = run(told)
+        assert "cubes with both red and orange readable: 2" in report and "INVERTED: 0.0%" in report, report
+        assert "stickers left out because their cube is unknown: 0" in report, report
+
+        half = Path(tmp, "half")
+        _two_cube_label_tree(half, [0] * 8 + [-1] * 8)
+        report = run(half)
+        assert "cubes with both red and orange readable: 1" in report, report
+        assert "stickers left out because their cube is unknown: 8" in report, report
+
+        for name, cubes in (("untold", None), ("unknown", [-1] * 16)):
+            _two_cube_label_tree(Path(tmp, name), cubes)
+            try:
+                run(Path(tmp, name))
+            except SystemExit as e:
+                assert "16 were left out because their cube is unknown" in str(e), e
+            else:
+                raise AssertionError(f"{name}: a frame whose cubes nobody knows was measured as one cube")
+
+        crowded = Path(tmp, "crowded")
+        _two_cube_label_tree(crowded, [0] * 16)
+        label = crowded / "labels" / "train" / "two.txt"
+        label.write_text(label.read_text() * 2)
+        (crowded / "cubes" / "train" / "two.txt").write_text("0\n" * 32)
+        try:
+            run(crowded)
+        except SystemExit as e:
+            assert "32 stickers on cube 0" in str(e), e
+        else:
+            raise AssertionError("a cube file putting 32 stickers on one cube was believed")
+
+        # The sample counts only frames with a known cube: unknown frames must not use it up, or a
+        # sample of one can end before the one frame that could be measured.
+        mixed = Path(tmp, "mixed")
+        _two_cube_label_tree(mixed, None)
+        for i in range(5):
+            for kind, ext in (("labels", ".txt"), ("images", ".png")):
+                (mixed / kind / "train" / f"n{i}{ext}").write_bytes((mixed / kind / "train" / f"two{ext}").read_bytes())
+        (mixed / "cubes" / "train").mkdir(parents=True)
+        (mixed / "cubes" / "train" / "n4.txt").write_text("0\n" * 16)
+        for seed in range(8):
+            frames = list(hue_decompose.load_labels(str(mixed), 1, random.Random(seed)))
+            known = [f for f in frames if any(cube is not None for _, _, cube in f[1])]
+            assert len(known) == 1 and frames[-1] is known[0], (seed, [f[0] for f in frames])
+
+        # A render says the same through its body boxes: the COCO path groups by them, and a frame
+        # with no body at all is unknown rather than one cube.
+        render = Path(tmp, "render")
+        _two_cube_render(render, bodies=[[0, 0, 195, 100], [205, 0, 195, 100]])
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            hue_decompose.main([str(render)])
+        assert "cubes with both red and orange readable: 2" in said.getvalue(), said.getvalue()
+        assert "INVERTED: 0.0%" in said.getvalue(), said.getvalue()
+        bodiless = Path(tmp, "bodiless")
+        _two_cube_render(bodiless, bodies=[])
+        try:
+            hue_decompose.main([str(bodiless)])
+        except SystemExit as e:
+            assert "16 were left out" in str(e), e
+        else:
+            raise AssertionError("a render with no body boxes was measured as one cube")
+    print("PASS hue_decompose: a frame's stickers are grouped by their cube file or body box, and unknown ones are left out")
+
+
+def test_red_orange_separability_is_asked_of_one_cube_at_a_time() -> None:
+    import contextlib
+    import io
+
+    import redorange_separability
+
+    def run(root: Path) -> str:
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            redorange_separability.main(["--images", str(root / "images" / "train"),
+                                         "--labels", str(root / "labels" / "train")])
+        return said.getvalue()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        told = Path(tmp, "told")
+        _two_cube_label_tree(told, [0] * 8 + [1] * 8)
+        report = run(told)
+        assert "cubes with BOTH red and orange stickers: 2, in 1 images" in report, report
+        assert "separable by a per-cube threshold: 2/2" in report, report
+
+        # The same photograph read as one cube: A's red is oranger than B's orange, so no gap.
+        pooled = Path(tmp, "pooled")
+        _two_cube_label_tree(pooled, [0] * 16)
+        assert "separable by a per-cube threshold: 0/1" in run(pooled)
+
+        untold = Path(tmp, "untold")
+        _two_cube_label_tree(untold, None)
+        try:
+            run(untold)
+        except SystemExit as e:
+            assert "16 left out because their cube is unknown" in str(e), e
+        else:
+            raise AssertionError("a photograph whose cubes nobody knows was measured as one cube")
+    print("PASS redorange_separability: the red/orange gap is measured per cube, and unknown cubes are left out")
+
+def test_clean_real_writes_cube_files_only_for_photographs_checked_as_one_cube() -> None:
+    import contextlib
+    import io
+
+    from PIL import Image
+
+    import clean_real
+    from cube_identity import RECORD, apply_record, load_record, photo_identity
+
+    with tempfile.TemporaryDirectory() as tmp:
+        src, out = Path(tmp, "merged"), Path(tmp, "clean")
+        names = [f"proj_train_photo{i}_jpg.rf.{i:032x}" for i in range(3)]
+        (src / "images" / "train").mkdir(parents=True)
+        (src / "labels" / "train").mkdir(parents=True)
+        for i, stem in enumerate(names):
+            Image.new("RGB", (16, 16), [(250, 0, 0), (0, 250, 0), (0, 0, 250)][i]).save(src / "images" / "train" / f"{stem}.jpg")
+            (src / "labels" / "train" / f"{stem}.txt").write_text("0 .5 .5 .2 .2\n1 .2 .2 .1 .1\n")
+        ident = {stem: photo_identity(src / "images" / "train" / f"{stem}.jpg", src / "labels" / "train" / f"{stem}.txt")
+                 for stem in names}
+        record = Path(tmp, "record.json")
+        record.write_text(json.dumps({
+            "one_cube": {names[0]: ident[names[0]], names[1]: "0" * 16},  # names[1] checked, but not these bytes
+            "several_cubes": {},
+        }))
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            assert clean_real.main(["--src", str(src), "--out", str(out), "--cube-record", str(record)]) == 0
+        cubes = {stem: (out / "dataset" / "cubes" / "train" / f"{stem}.txt").read_text().split() for stem in names}
+        assert cubes == {names[0]: ["0", "0"], names[1]: ["-1", "-1"], names[2]: ["-1", "-1"]}, cubes
+        assert "'changed since the check': 1" in said.getvalue() and "'never checked': 1" in said.getvalue(), said.getvalue()
+
+        # A later check that finds a second cube turns a photograph's rows unknown when the tree is
+        # brought up to date, and a file the check never saw is not left behind.
+        record.write_text(json.dumps({"one_cube": {}, "several_cubes": {names[0]: ident[names[0]]}}))
+        stale = out / "dataset" / "cubes" / "val" / "gone.txt"
+        stale.parent.mkdir(parents=True)
+        stale.write_text("0\n")
+        tally = apply_record(out / "dataset", load_record(record))
+        assert tally == {"with several cubes": 1, "never checked": 2}, tally
+        assert (out / "dataset" / "cubes" / "train" / f"{names[0]}.txt").read_text().split() == ["-1", "-1"]
+        assert not stale.exists(), "a cube file for a photograph no longer in the tree survived"
+
+        for broken in ({"one_cube": {names[0]: "short"}, "several_cubes": {}},
+                       {"one_cube": {names[0]: ident[names[0]]}, "several_cubes": {names[0]: ident[names[0]]}},
+                       {"one_cube": [], "several_cubes": {}},
+                       {"one_cube": {}}):
+            record.write_text(json.dumps(broken))
+            try:
+                load_record(record)
+            except SystemExit:
+                pass
+            else:
+                raise AssertionError(f"a malformed record was accepted: {broken}")
+
+    # The held-out set is built the same way: a photograph the record does not vouch for is unknown.
+    import prep_heldout
+
+    with tempfile.TemporaryDirectory() as tmp:
+        src, out = Path(tmp, "raw"), Path(tmp, "heldout")
+        (src / "test" / "images").mkdir(parents=True)
+        (src / "test" / "labels").mkdir(parents=True)
+        (src / "data.yaml").write_text("names: [Red, Face, Orange]\n")
+        Image.new("RGB", (16, 16), (200, 0, 0)).save(src / "test" / "images" / "a.jpg")
+        (src / "test" / "labels" / "a.txt").write_text("0 .5 .5 .2 .2\n1 .1 .1 .1 .1\n2 .2 .2 .1 .1\n")
+        halves = Image.new("RGB", (16, 16), (0, 0, 0))
+        halves.paste((255, 255, 255), (0, 0, 8, 16))  # nothing like `a` to a perceptual hash
+        halves.save(src / "test" / "images" / "b.jpg")
+        (src / "test" / "labels" / "b.txt").write_text("2 .5 .5 .2 .2\n")
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            prep_heldout.main(["--src", str(src), "--out", str(out)])
+        assert (out / "cubes" / "test_a.txt").read_text().split() == ["-1", "-1"], "the face row was dropped, so two rows"
+        assert "'never checked': 2" in said.getvalue(), said.getvalue()
+
+        # Removing a leaked photograph takes its cube file too.
+        import dedup_heldout
+
+        refs = Path(tmp, "refs")
+        refs.mkdir()
+        (refs / "copy.jpg").write_bytes((out / "images" / "test_a.jpg").read_bytes())
+        with contextlib.redirect_stdout(io.StringIO()):
+            dedup_heldout.main(["--heldout", str(out), "--refs", str(refs)])
+        assert not (out / "cubes" / "test_a.txt").exists(), "a removed photograph's cube file stayed in the set"
+        assert (out / "_removed_overlap" / "cubes" / "test_a.txt").read_text().split() == ["-1", "-1"]
+        assert (out / "cubes" / "test_b.txt").exists(), "a photograph that stayed lost its cube file"
+
+    shipped = json.loads(RECORD.read_text())
+    assert len(load_record()["one_cube"]) == sum(c["photographs"] for c in shipped["checks"]) == 808, \
+        "the record no longer lists exactly the photographs its checks describe"
+    assert not shipped["several_cubes"]
+    print("PASS photo record: cube files follow the recorded check, and only for the bytes that were checked")
+
+
+def test_paired_arms_leaves_out_stickers_with_no_known_cube() -> None:
+    import paired_arms
+
+    with tempfile.TemporaryDirectory() as tmp:
+        for arm in ("a", "b"):
+            _render_part(Path(tmp, arm, "part_0"), [[{"category_id": 2, "bbox": [10, 10, 10, 10]}]])
+        assert paired_arms.read_arm(str(Path(tmp, "a"))) == ({}, 1), "a sticker on no body was kept, or not counted"
+        try:
+            paired_arms.main(tmp, ["a", "b"])
+        except SystemExit as e:
+            assert "known cube" in str(e), e
+        else:
+            raise AssertionError("arms with no sticker on a known cube printed a table")
+    print("PASS paired_arms: a sticker on no known cube is counted and left out, and none at all is an error")
+
+
 # The files CI runs as `python ml/<file>` call their tests by name from `__main__`, so a test that is
 # written and not added to that list is a test that never runs -- and says nothing, because the
 # runner prints ALL PASS over whatever it did call. This is the check that makes that loud.
@@ -506,6 +937,13 @@ if __name__ == "__main__":
     test_orange_is_never_redder_than_red()
     test_no_two_pigments_are_closer_than_the_pair_we_floored()
     test_coco_to_labels()
+    test_a_label_row_and_its_cube_travel_together()
+    test_a_render_keeps_its_cube_identity_through_merge_and_split()
+    test_labels_moved_by_combine_and_augment_keep_their_cubes()
+    test_hue_decompose_never_pools_two_cubes_from_a_label_tree()
+    test_red_orange_separability_is_asked_of_one_cube_at_a_time()
+    test_clean_real_writes_cube_files_only_for_photographs_checked_as_one_cube()
+    test_paired_arms_leaves_out_stickers_with_no_known_cube()
     test_split_order_is_the_same_in_every_process()
     test_shipped_int8_is_derived_from_the_shipped_fp32()
     test_manifest_labels_match_export_py()

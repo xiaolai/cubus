@@ -13,7 +13,9 @@ gets introduced and then trained on.
 the one mistake that would make every later number meaningless while looking like an improvement.
 
 Filenames are prefixed `real_<split>_` so they cannot collide with synthetic ones, and the script
-refuses rather than proceeds if anything is inconsistent. Pure stdlib.
+refuses rather than proceeds if anything is inconsistent. A real label's cube file
+(cube_identity.py) comes with it when it has one; the count of those without is printed, because
+their stickers' cube is unknown to everything downstream. Pure stdlib.
 """
 
 from __future__ import annotations
@@ -22,6 +24,9 @@ import argparse
 import glob
 import os
 import shutil
+from pathlib import Path
+
+from cube_identity import copy_cubes, label_rows, read_cubes
 
 SPLITS = ("train", "val")
 IMAGE_EXTS = (".jpg", ".jpeg", ".png")
@@ -69,6 +74,7 @@ def combine(dataset: str, real: str) -> None:
         print(f"holding back {n_test} real test images (the benchmark) — not copied")
 
     added = {}
+    without_cubes = 0
     for split in SPLITS:
         src_img = os.path.join(real, "images", split)
         src_lbl = os.path.join(real, "labels", split)
@@ -86,8 +92,11 @@ def combine(dataset: str, real: str) -> None:
             dst_lbl = os.path.join(dataset, "labels", split, prefix + stem + ".txt")
             if os.path.exists(dst_img) or os.path.exists(dst_lbl):
                 raise SystemExit(f"{dst_img} already exists — combine_real.py is not idempotent, refusing")
+            read_cubes(Path(lbl), len(label_rows(Path(lbl))))  # a misaligned cube file stops it before the copy
             shutil.copy2(img, dst_img)
             shutil.copy2(lbl, dst_lbl)
+            if not copy_cubes(Path(lbl), Path(dst_lbl)):
+                without_cubes += 1
             n += 1
         added[split] = n
 
@@ -97,6 +106,8 @@ def combine(dataset: str, real: str) -> None:
         if after[split] != expected:
             raise SystemExit(f"{split}: expected {expected} after adding {added[split]}, found {after[split]}")
     print(f"added real: train={added['train']} val={added['val']}")
+    if without_cubes:
+        print(f"  {without_cubes} of them have no cube file: which cube their stickers are on is unknown")
     print(f"combined:   train={after['train']} val={after['val']}")
 
 

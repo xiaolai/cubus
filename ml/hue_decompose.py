@@ -24,8 +24,13 @@ box's central half, `full` reproduces a whole-box mean. Running both on one data
 finding from an artefact, which is why the flag exists rather than the better method simply
 replacing the worse one.
 
-Reads BlenderProc COCO (--coco) or detector txt (--detector), so synthetic and real photographs go
-through ONE evaluator. They previously did not, and the numbers were compared anyway.
+Reads BlenderProc COCO (--format coco) or a detector tree (--format labels), so synthetic and real
+photographs go through ONE evaluator. They previously did not, and the numbers were compared anyway.
+
+Every figure is about ONE cube's stickers, so a sticker counts only when its cube is known: from the
+body boxes in a render, from the cube files beside a detector tree's labels (cube_identity.py). The rest
+are left out and counted, and a run that could place no sticker on a cube fails instead of printing
+zeros.
 """
 from __future__ import annotations
 
@@ -37,9 +42,17 @@ import json
 import math
 import os
 import random
+from pathlib import Path
 
 import numpy as np
 from PIL import Image
+
+from coco_to_labels import BODY_CATEGORY_ID
+from cube_identity import cube_of, label_rows, read_cubes
+
+BODY_CLASS = BODY_CATEGORY_ID - 1  # the cube body, after the same background shift as the colours
+# One cube shows at most three faces of nine.
+MAX_STICKERS_PER_CUBE = 27
 
 NAMES = ["white", "red", "green", "yellow", "orange", "blue"]
 # Outside this gate hue carries no information, so a sticker is reported as unreadable rather
@@ -79,7 +92,11 @@ def sticker_colour(arr, x, y, w, h, mode):
 
 
 def load_coco(root, budget, rng):
-    """Yield (image_path, [(class, bbox)]) from BlenderProc COCO parts."""
+    """Yield (image_path, [(class, bbox, cube)]) from BlenderProc COCO parts; cube None when unknown.
+
+    A frame counts against the sample only when at least one of its stickers has a known cube, so the
+    sample asked for is the sample measured.
+    """
     parts = sorted(glob.glob(os.path.join(root, "part_*", "coco", "coco_annotations.json")))
     if not parts:
         parts = sorted(glob.glob(os.path.join(root, "**", "coco_annotations.json"), recursive=True))
@@ -116,42 +133,25 @@ def load_coco(root, budget, rng):
                     boxes.append((cid, a["bbox"]))
                 elif cid == BODY_CLASS:
                     bodies.append(a["bbox"])
-            budget -= 1
             # WHICH CUBE each sticker is on. A scene can hold several, each with its own pigments
             # drawn independently, and every per-frame statistic below -- the red/orange inversion
             # above all -- is a claim about ONE cube's colours. Grouped by frame, two cubes' reds
             # and oranges were compared with each other and the difference reported as this
             # dataset's inversion rate. The body annotation is what says where each cube is.
-            yield path, [(cid, bbox, cube_of(bbox, bodies)) for cid, bbox in boxes]
-
-
-BODY_CLASS = 6  # the cube body, category_id 7 before the background shift
-
-
-def cube_of(bbox, bodies) -> int | None:
-    """Index of the cube this sticker sits on, or None when that cannot be said.
-
-    A sticker is on the surface of its own cube, so its centre lies inside that cube's projected
-    body box. Exactly one containing box is an answer. None or several is not: two cubes overlapping
-    on screen both contain the tiles in the overlap, and "the first" or "the nearest" was a guess
-    that could file one cube's red under the other's. Those stickers are left out and counted. The
-    body's mask would not settle it either -- a sticker covers the body pixels beneath its centre.
-
-    -1 when the loader has no body rows at all (the detector path): the frame is taken as one cube.
-    """
-    if not bodies:
-        return -1
-    cx, cy = bbox[0] + bbox[2] / 2, bbox[1] + bbox[3] / 2
-    inside = [i for i, (bx, by, bw, bh) in enumerate(bodies) if bx <= cx <= bx + bw and by <= cy <= by + bh]
-    return inside[0] if len(inside) == 1 else None
+            owned = [(cid, bbox, cube_of(bbox, bodies)) for cid, bbox in boxes]
+            if any(cube is not None for _, _, cube in owned):
+                budget -= 1
+            yield path, owned
 
 
 def load_labels(root, budget, rng):
     """Yield (image_path, [(class, bbox, cube)]) from a detector tree, converting normalised xywh.
 
-    detector labels carry no cube body, so every sticker comes back as cube -1 and the frame is treated
-    as one cube -- right for the photographs this path is for. A file with more than 27 stickers
-    cannot be one cube and is skipped; a multi-cube frame with fewer is indistinguishable here.
+    A detector row has no column for the cube, so it comes from the label's cube file; a row the file
+    marks unknown, or a label with no cube file, comes back as None. The frame is never taken to be
+    one cube because it looks like one: two cubes showing 27 stickers between them read exactly like
+    one cube showing 27. As with renders, a frame counts against the sample only when at least one
+    of its stickers has a known cube.
     """
     labels = sorted(glob.glob(os.path.join(root, "labels", "**", "*.txt"), recursive=True))
     rng.shuffle(labels)
@@ -170,25 +170,28 @@ def load_labels(root, budget, rng):
             continue
         with Image.open(ip) as im:
             W, H = im.size
+        rows = label_rows(Path(lp))
+        cubes = read_cubes(Path(lp), len(rows)) or [None] * len(rows)
         boxes = []
-        with open(lp) as f:
-            for line in f:
-                bits = line.split()
-                if len(bits) < 5:
-                    continue
-                cid = int(bits[0])
-                if not 0 <= cid <= 5:
-                    continue
-                cx, cy, nw, nh = (float(v) for v in bits[1:5])
-                boxes.append((cid, [(cx - nw / 2) * W, (cy - nh / 2) * H, nw * W, nh * H]))
-        # One cube shows at most three faces, 27 stickers. More than that in a detector file is several
-        # cubes with nothing to say which tile is whose, so the frame is left out rather than pooled --
-        # before it is counted against the sample, so the sample asked for is the sample measured.
-        # Two cubes that happen to total 27 or fewer are NOT caught; the format cannot tell them apart.
-        if len(boxes) > 27:
-            continue
-        budget -= 1
-        yield ip, [(cid, bbox, -1) for cid, bbox in boxes]
+        for line, cube in zip(rows, cubes, strict=True):
+            bits = line.split()
+            if len(bits) < 5:
+                continue
+            cid = int(bits[0])
+            if not 0 <= cid <= 5:
+                continue
+            cx, cy, nw, nh = (float(v) for v in bits[1:5])
+            boxes.append((cid, [(cx - nw / 2) * W, (cy - nh / 2) * H, nw * W, nh * H], cube))
+        # A cube file that puts more stickers on one cube than a cube can show is wrong about that
+        # frame, and every figure built on it would be too.
+        per_cube = collections.Counter(cube for _, _, cube in boxes if cube is not None)
+        for cube, n in per_cube.items():
+            if n > MAX_STICKERS_PER_CUBE:
+                raise SystemExit(f"{lp}: its cube file puts {n} stickers on cube {cube}; one cube shows at most "
+                                 f"{MAX_STICKERS_PER_CUBE}")
+        if per_cube:
+            budget -= 1
+        yield ip, boxes
 
 
 def _kmeans(points, k, seed=0):
@@ -235,7 +238,7 @@ def face_groups(items, seed=0):
     return list(out.values())
 
 
-def main() -> None:
+def main(argv=None) -> None:
     global S_MIN, V_MIN, V_MAX
     ap = argparse.ArgumentParser()
     ap.add_argument("root")
@@ -252,7 +255,7 @@ def main() -> None:
                     metavar=("S_MIN", "V_MIN", "V_MAX"))
     ap.add_argument("--faces", action="store_true",
                     help="decompose the within-cube spread into between-face and within-face")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     rng = random.Random(args.seed)
     S_MIN, V_MIN, V_MAX = args.gate
@@ -270,6 +273,9 @@ def main() -> None:
 
     face_between, face_within = [], []
     for path, boxes in source(args.root, args.sample, rng):
+        if all(cube is None for _, _, cube in boxes):
+            unowned += len(boxes)  # nothing here can be measured; the pixels are not worth decoding
+            continue
         arr = np.asarray(Image.open(path).convert("RGB"))
         if arr.ndim != 3:
             continue
@@ -277,7 +283,7 @@ def main() -> None:
         placed = []
         for cid, bbox, cube in boxes:
             if cube is None:
-                unowned += 1  # on no cube or on two; see cube_of
+                unowned += 1  # on no body box or on two (cube_of), or marked unknown in a cube file
                 continue
             col = sticker_colour(arr, *bbox, args.box)
             if col is None:
@@ -356,10 +362,13 @@ def main() -> None:
                     face_between.append(float(np.std(means)) * 360.0)
                     face_within.append(float(np.mean(withins)))
 
+    if total == 0:
+        raise SystemExit(f"{args.root}: no sticker could be measured; {unowned} were left out because "
+                         "their cube is unknown (a detector tree needs its cube files: see cube_identity.py)")
     print(f"{args.root}  [{args.format}, box={args.box}]")
     print(f"stickers {total}   unreadable (gated out) {100 * gated / max(total, 1):.1f}%   "
           f"a channel at 254+ {100 * clipped / max(total, 1):.1f}%")
-    print(f"stickers left out because their cube could not be told: {unowned}")
+    print(f"stickers left out because their cube is unknown: {unowned}")
     print(f"cubes with both red and orange readable: {cubes_with_pair}   "
           f"of those, INVERTED: {100 * inverted / max(cubes_with_pair, 1):.1f}%")
     print(f"    on a matched EIGHT of each: {100 * matched_inverted / max(matched_pair, 1):.1f}% "

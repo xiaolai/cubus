@@ -96,6 +96,7 @@ secretly overlap the training data. Pipeline:
 ```bash
 # fetch a DIFFERENT Roboflow cube dataset (needs ROBOFLOW_API_KEY); here rxdj9 (6-colour, seg)
 ml/venv/bin/python ml/prep_heldout.py --src ml/out/heldout_raw/<project> --out ml/out/heldout
+#   also writes ml/out/heldout/cubes/ from ml/photo_cubes.json: which cube each sticker is on, for the per-cube scripts
 ml/venv/bin/python ml/dedup_heldout.py --heldout ml/out/heldout --refs ml/out/train_imgs ml/out/iid_test/images   # remove leakage
 ml/venv/bin/python ml/dedup_heldout.py --heldout ml/out/heldout --refs ml/out/train_imgs ml/out/iid_test/images --dihedral --phash --dry-run   # the stronger check, report only
 ml/venv/bin/python ml/metrics_table.py     # the rows below: checkpoint, fp32, int8 × iid, heldout
