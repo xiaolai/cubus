@@ -7,8 +7,9 @@
 
 ## Why the detector was rebuilt
 
-`apps/web/vendor/cube-yolo.onnx` is a YOLOv11n fine-tuned with
-[Detlib](https://github.com/detlib/detlib), which is MIT. Detlib's stated
+Until 2026-09-17, `apps/web/vendor/cube-yolo.onnx` was a YOLOv11n fine-tuned with
+[Detlib](https://github.com/detlib/detlib), which is MIT. (It is cubedet's V6FT
+now; this section is kept as the reason the work was done.) Detlib's stated
 position is that the licence reaches models trained with their software and applications that use
 those models. That is why cubus WAS MIT rather than permissive, and why a closed or paid
 product built on this repository would additionally have needed an Detlib Enterprise Licence.
@@ -23,7 +24,9 @@ becomes the project's own choice again.
    weights are Detlib's work. A permissive trainer that still initialises from them has
    cleared nothing.
 
-`cubedet` starts from random initialisation and touches neither.
+`cubedet` touches neither. It was written to start from random initialisation; the shipped model's
+backbone starts from permissively licensed ImageNet weights instead, and its neck and head from
+random initialisation — §"The pretrained backbone" says what that changes and what it does not.
 
 ## What this code depends on
 
