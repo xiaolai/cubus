@@ -1,13 +1,16 @@
 {
   "checkpoint": {
-    "path": "ml/out/cube_v3_best.pt",
-    "sha256": "22c654125163ed8185fb7b6f026d17bae256c025172c50cba5342d8eba0c531b"
+    "path": "ml/out/ckpt_2026-09-13/V6FT_best.pt",
+    "sha256": "03710b01f6bfa05126123e9a477baac989a079b020a77a6854a352ef173aaad5"
   },
-  "exported": "2026-08-26T12:30:28+00:00",
+  "exported": "2026-09-17T03:56:38+00:00",
+  "git": {
+    "commit": "fa7623e1c82d3bd0c194d95cac611764846cfbb8",
+    "dirty": true
+  },
   "host": "macOS-26.6.2-arm64-arm-64bit",
   "python": "3.11.16",
   "tools": {
-    "ultralytics": "8.4.126",
     "torch": "2.13.0",
     "onnx": "1.22.0",
     "onnxruntime": "1.29.0",
@@ -17,40 +20,39 @@
   },
   "artefacts": {
     "cube-yolo.onnx": {
-      "sha256": "5be4e55a9bae7d162775b431e09ea71947838dfeca421c1369f5cd6ad89fb472",
       "runtime": "onnxruntime \u2014 the reference; byte-identical to apps/web/vendor/cube-yolo.onnx (web, Windows, Linux, and the Android WebView)",
       "precision": "fp32",
-      "opset": 12
+      "opset": 12,
+      "sha256": "092f6c411b2a21261cee30ebcdf2c4e9ee1f1fcfe651f87017ff48a827b85d06"
     },
     "cube-yolo.int8.onnx": {
-      "sha256": "7a9d985dd98d9a9d6e5c5c385670c5ac1a02a1959cb3f360a866bc34f4f7aa1e",
-      "runtime": "onnxruntime-web \u2014 NOT SHIPPED; the web build serves the fp32 graph",
-      "precision": "dynamic int8 (QInt8 weights, uint8 activations)",
-      "quantisation_note": "quantises ACTIVATIONS as well as weights, and that is what costs the reads: it diverges from fp32 on golden fixtures \u2014 ml/golden/expected.json pins which fixtures and how (a different face, a face where fp32 refuses, a refusal where fp32 reads), and the parity gate fails on any NEW misread. Contrast cube-yolo.tflite, which takes the same size reduction weight-only and diverges on none. Do not ship this without re-exporting weight-only.",
-      "derived_from_fp32_sha256": "5be4e55a9bae7d162775b431e09ea71947838dfeca421c1369f5cd6ad89fb472",
-      "regenerated": {
-        "when": "2026-09-04T15:59:49+00:00",
-        "git": {
-          "commit": "b1030c70309ff3d775886b676c9e088fdfdfff15",
-          "dirty": true
-        },
-        "onnxruntime": "1.29.0"
-      }
+      "produced": false,
+      "reason": "the quantised graph reads NO_FACE on photo-01.png where the fp32 reads a face"
     },
     "cube-yolo.mlpackage": {
-      "sha256": "f7e76d1bc93674b8d8893be55d94394908383225d8bf09dd527007db98d92737",
       "runtime": "CoreML \u2014 macOS and iOS, via crates/cube-vision",
-      "precision": "fp16 compute, fp32 tensor in, fp16 out",
-      "min_target": "macOS13 / iOS16"
+      "precision": "fp32 compute, fp32 tensor in and out",
+      "min_target": "macOS13 / iOS16",
+      "sha256": "441e4104e70d5f21de5ab7fe036c03cfea71427433787e1a44bb2776934384cd"
     },
     "cube-yolo.tflite": {
-      "sha256": "d1a2d2cb15249737e3b97783fa67d16a96881040cfe244e95009415441f9c1a3",
       "runtime": "LiteRT/TFLite (onnx2tf) \u2014 bundled in the Android APK by gen/android/app/build.gradle.kts, but gated OFF: VisionPlugin.kt answers probe with verifiedOnDevice=false, so Android runs the WebView fp32 path until the native path is verified on a device",
-      "precision": "dynamic-range int8: int8 weights, fp32 activations, fp32 I/O",
+      "precision": "fp32",
       "layout": "NHWC input; box coords in 640-space (the read is scale-invariant, so the consumer need not rescale)",
-      "quantisation_note": "full-integer int8 (int8 activations) was rejected \u2014 it collapses the detect head's class scores to ~0 (NO_FACE on all golden frames); weight-only int8 reads identical to fp32 (0/20). Verified by ml/golden_frames.py."
+      "quantisation_note": "NOT quantised, for this model. Full-integer int8 was rejected long ago (it collapses the head's class scores to ~0), and weight-only int8 read identically to fp32 for the v3 graph (0/20) \u2014 but for the cubedet graph it diverges on 5 of the 20 golden fixtures, including a face on a frame the reference refuses, which is the failure the abstain fixtures exist to catch. Every other artefact of this model is fp32 and Android serves the fp32 WebView graph, so there was nothing to trade that for. The Ultralytics path still exports weight-only int8 and records it here.",
+      "sha256": "159fc1233b773d2686de192a38bd9fbc3ff1931d60f3207e8fd43e1a8d785871"
     }
   },
   "nms_embedded": false,
-  "imgsz": 640
+  "imgsz": 640,
+  "stack": "cubedet",
+  "training_environment": {
+    "python": "3.12.3",
+    "torch": "2.10.0a0+a36e1d39eb.nv26.01.42222806",
+    "torchvision": "0.25.0a0+6b56de1c.nv26.01.42222806",
+    "numpy": "2.1.0",
+    "copyleft_detector_packages_present": "none"
+  },
+  "backbone": "mobilenetv4_conv_small.e2400_r224_in1k",
+  "licence_note": "Trained by ml/cubedet (PyTorch/torchvision, BSD-3), with the mobilenetv4_conv_small.e2400_r224_in1k feature extractor from ImageNet weights (torchvision BSD-3 or timm Apache-2.0) and the neck and head from random initialisation. No Ultralytics code and no Ultralytics pretrained weights. See ml/PERMISSIVE_DETECTOR_PROVENANCE.md."
 }
