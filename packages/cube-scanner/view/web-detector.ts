@@ -260,7 +260,15 @@ export class WebDetector implements Detector {
       throw err;
     }
     const pre = preprocess(frame);
-    return this.run(pre.data, pre.imgsz);
+    const output = await this.run(pre.data, pre.imgsz);
+    // The frame travels with its output because this is the last moment it exists: `grab()` reuses
+    // its buffer on the next tick, and the panel needs the pixels under the fitted stickers to let
+    // the assembly ask which of them carry the same paint (`paint-groups.ts`). Copied for that
+    // reason — a reference would be overwritten before the fit that names the boxes is even read.
+    return {
+      ...output,
+      frame: { data: new Uint8ClampedArray(frame.data), width: frame.width, height: frame.height },
+    };
   }
 
   cameras() {

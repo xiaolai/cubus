@@ -46,7 +46,7 @@ import {
 import type { CameraDevice } from '../src/camera.js';
 import type { Detector, ModelOutput } from '../src/detector.js';
 import type { MisreadDiagnosis } from '../src/misread-decode.js';
-import { fitFromOutput } from '../src/onnx-detect.js';
+import { fitFromOutput, IMG_SIZE } from '../src/onnx-detect.js';
 import type { FitReason } from '../src/onnx-postprocess.js';
 import {
   colourOf,
@@ -57,6 +57,7 @@ import {
   type Scheme,
   slotOf,
 } from '../src/scheme.js';
+import { stickerLab } from '../src/sticker-pixels.js';
 import { FACES, type Face } from '../src/types.js';
 import { CameraSession } from './camera-session.js';
 import { MisreadDecoder } from './misread-client.js';
@@ -1143,7 +1144,14 @@ export class AiScanPanel extends HTMLElement {
     // Everything above decides whether there is a read worth acting on; this decides what
     // the read MEANS and where it goes. Separated because the first half is about the
     // camera and the second is about the cube, and only the second can capture anything.
-    this.fileSettledRead(fit.face);
+    // The paint, while the frame is still in hand. The assembly uses it only where the detector's own
+    // reading has been refused (`paint-groups.ts`), and a detector that supplies no frame — the native
+    // plugin — simply leaves this undefined and the scan behaves exactly as it did before.
+    const lab =
+      output.frame && fit.face.boxes
+        ? (stickerLab(output.frame, fit.face.boxes, IMG_SIZE) ?? undefined)
+        : undefined;
+    this.fileSettledRead(lab ? { ...fit.face, lab } : fit.face);
   }
 
   /**

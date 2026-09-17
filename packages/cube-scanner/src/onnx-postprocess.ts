@@ -49,6 +49,12 @@ export interface FaceFit {
    * rather than a changed contract.
    */
   scores?: number[][];
+  /**
+   * The nine boxes the grid was fitted to, in MODEL space (the letterboxed square), same reading
+   * order. OPTIONAL like `scores`, and for the same reason — added evidence, not a changed contract.
+   * Whoever still holds the frame can map these back onto it (`sticker-pixels.ts`) and read the paint.
+   */
+  boxes?: [number, number, number, number][];
 }
 
 export type FitResult = { ok: true; face: FaceFit } | { ok: false; reason: FitReason };
@@ -267,6 +273,10 @@ export function fitFace(dets: Detection[], minConf = MIN_STICKER_CONFIDENCE): Fi
       // eight score vectors and one gap cannot contribute to it, and silently passing a short
       // array would fail much further away from the cause.
       scores: grid.every((d) => d.scores) ? grid.map((d) => d.scores as number[]) : undefined,
+      // Detections carry a CENTRE and a size; a box here is the corner form the pixel reader wants.
+      boxes: grid.map(
+        (d) => [d.cx - d.w / 2, d.cy - d.h / 2, d.w, d.h] as [number, number, number, number],
+      ),
     },
   };
 }
