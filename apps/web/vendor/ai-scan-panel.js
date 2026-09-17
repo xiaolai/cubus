@@ -2976,7 +2976,14 @@ function assembleWithin(faces, threshold, confirmed, options, maxRepairCost, all
       if (!("valid" in bySlotRepainted)) {
         const afterPaint = SCHEMES.flatMap((scheme) => solvableReadings(bySlotRepainted, scheme));
         if (afterPaint.length > 0) {
-          return assembleWithin(repainted, threshold, confirmed, options, maxRepairCost, allowPaint);
+          return assembleWithin(
+            repainted,
+            threshold,
+            confirmed,
+            options,
+            maxRepairCost,
+            allowPaint
+          );
         }
       }
     }
@@ -3205,7 +3212,11 @@ function fitFace(dets, minConf = MIN_STICKER_CONFIDENCE) {
       // Only when EVERY sticker has them. Nine-of-each is a whole-cube constraint; a face with
       // eight score vectors and one gap cannot contribute to it, and silently passing a short
       // array would fail much further away from the cause.
-      scores: grid.every((d) => d.scores) ? grid.map((d) => d.scores) : void 0
+      scores: grid.every((d) => d.scores) ? grid.map((d) => d.scores) : void 0,
+      // Detections carry a CENTRE and a size; a box here is the corner form the pixel reader wants.
+      boxes: grid.map(
+        (d) => [d.cx - d.w / 2, d.cy - d.h / 2, d.w, d.h]
+      )
     }
   };
 }
@@ -3278,6 +3289,64 @@ function fitFromOutput(output, opts = {}) {
     nms(decodeDetections(output.data, numClasses, output.anchors, confThreshold), iouThreshold)
   );
   return fitFace(dets, minConf);
+}
+
+// src/sticker-pixels.ts
+var INNER = 0.6;
+function toFrameBox(box, frame, imgsz) {
+  const scale = imgsz / Math.max(frame.width, frame.height);
+  const padX = Math.floor((imgsz - Math.max(1, Math.round(frame.width * scale))) / 2);
+  const padY = Math.floor((imgsz - Math.max(1, Math.round(frame.height * scale))) / 2);
+  return [(box[0] - padX) / scale, (box[1] - padY) / scale, box[2] / scale, box[3] / scale];
+}
+function medianLab(frame, box) {
+  const cx = box[0] + box[2] / 2;
+  const cy = box[1] + box[3] / 2;
+  const x0 = Math.max(0, Math.floor(cx - box[2] * INNER / 2));
+  const x1 = Math.min(frame.width, Math.ceil(cx + box[2] * INNER / 2));
+  const y0 = Math.max(0, Math.floor(cy - box[3] * INNER / 2));
+  const y1 = Math.min(frame.height, Math.ceil(cy + box[3] * INNER / 2));
+  if (x1 <= x0 || y1 <= y0) return null;
+  const l = [];
+  const a = [];
+  const b = [];
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const i = (y * frame.width + x) * 4;
+      const [L, A, B] = rgbToLab(frame.data[i], frame.data[i + 1], frame.data[i + 2]);
+      l.push(L);
+      a.push(A);
+      b.push(B);
+    }
+  }
+  return [median(l), median(a), median(b)];
+}
+function stickerLab(frame, boxes, imgsz) {
+  const out = [];
+  for (const box of boxes) {
+    const lab = medianLab(frame, toFrameBox(box, frame, imgsz));
+    if (!lab) return null;
+    out.push(lab);
+  }
+  return out;
+}
+function rgbToLab(r, g, b) {
+  const lin = (v) => {
+    const c = v / 255;
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  const [R, G, B] = [lin(r), lin(g), lin(b)];
+  const x = (0.4124 * R + 0.3576 * G + 0.1805 * B) / 0.95047;
+  const y = 0.2126 * R + 0.7152 * G + 0.0722 * B;
+  const z = (0.0193 * R + 0.1192 * G + 0.9505 * B) / 1.08883;
+  const f = (t) => t > 8856e-6 ? Math.cbrt(t) : 7.787 * t + 16 / 116;
+  const [fx, fy, fz] = [f(x), f(y), f(z)];
+  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+}
+function median(values) {
+  values.sort((p, q) => p - q);
+  const mid = values.length >> 1;
+  return values.length % 2 ? values[mid] : (values[mid - 1] + values[mid]) / 2;
 }
 
 // view/native-detector.ts
@@ -4092,7 +4161,11 @@ var WebDetector = class {
       throw err;
     }
     const pre = preprocess(frame);
-    return this.run(pre.data, pre.imgsz);
+    const output = await this.run(pre.data, pre.imgsz);
+    return {
+      ...output,
+      frame: { data: new Uint8ClampedArray(frame.data), width: frame.width, height: frame.height }
+    };
   }
   cameras() {
     return listCameras();
@@ -5400,7 +5473,8 @@ var AiScanPanel = class extends HTMLElement {
       );
       return;
     }
-    this.fileSettledRead(fit.face);
+    const lab = output.frame && fit.face.boxes ? stickerLab(output.frame, fit.face.boxes, IMG_SIZE) ?? void 0 : void 0;
+    this.fileSettledRead(lab ? { ...fit.face, lab } : fit.face);
   }
   /**
    * The tick failed: transient at first, an error if it persists.
