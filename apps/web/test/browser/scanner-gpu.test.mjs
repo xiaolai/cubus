@@ -211,7 +211,13 @@ test('a software adapter is refused, however real it says it is', async () => {
   const seen = await withBrowser(
     async (browser) => {
       const page = await browser.newPage();
-      await page.goto(`${base}/index.html`);
+      // THIS ONE NAVIGATION GETS A LONGER LEASH, and the reason is the thing being tested: the
+      // browser here is forced onto SwiftShader, the case whose load times this file measures in
+      // TENS OF SECONDS (86.3 s in the table above). Playwright's default is 30 s, so on a busy
+      // machine the page it is deliberately loading the slow way times out and the suite reports a
+      // failure about GPU selection that is really a failure about how long software rendering
+      // takes. Observed 2026-09-17: passes in 7 s run alone, times out at the end of the full suite.
+      await page.goto(`${base}/index.html`, { timeout: 180_000 });
       const out = await page.evaluate(async () => {
         const { preferredProviders } = await import('./vendor/ai-scan-panel.js');
         if (!navigator.gpu) return { api: false };
