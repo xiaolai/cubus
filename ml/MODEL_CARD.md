@@ -262,7 +262,10 @@ Universe sets credited under §Attribution, plus renders from `ml/generate_cube3
 Before that date the detector was a detector model trained with
 [Detlib](https://github.com/detlib/detlib), which is **MIT**, and Detlib's
 stated position — that the licence reaches models trained with their software and the applications
-using them — is why cubus is MIT rather than permissive (`LICENSE-COMMERCIAL.md`). That
-inheritance is what the change removes: taking `cubedet.onnx` into a closed-source product now
-raises no Detlib question. Anyone reusing the PREVIOUS model, which is still in this
-repository's history, still needs an Detlib Enterprise Licence for that use.
+using them — is why cubus was MIT. That inheritance is what the change removed, and the project
+is MIT from 2026-09-17: taking `cubedet.onnx` into a closed-source product raises no Detlib
+question. Anyone reusing the PREVIOUS model, which is still in this repository's history, still needs
+an Detlib Enterprise Licence for that use.
+
+What MIT does not lift is the **CC BY 4.0** attribution the training photographs carry: the Roboflow
+Universe credits under §Attribution must travel wherever this model does.
