@@ -79,7 +79,13 @@ def color_scheme(rng: random.Random) -> callable:
         per_face = {f: [rng.randrange(6)] * 9 for f in FACE_NAMES}
         return lambda f: per_face[f]
     if roll < 0.30:  # low-variety: two colours per face
-        per_face = {f: [rng.choice(rng.sample(range(6), 2)) for _ in range(9)] for f in FACE_NAMES}
+        # The pair is drawn ONCE per face. Drawn inside the comprehension it was redrawn for every
+        # sticker, so a "two-colour" face could carry all six and this arm -- which exists so the
+        # model sees the low-variety inputs real cubes produce -- was generating ordinary noise.
+        per_face = {}
+        for f in FACE_NAMES:
+            pair = rng.sample(range(6), 2)
+            per_face[f] = [rng.choice(pair) for _ in range(9)]
         return lambda f: per_face[f]
     return lambda f: [rng.randrange(6) for _ in range(9)]  # fully random
 

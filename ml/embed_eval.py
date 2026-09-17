@@ -77,11 +77,11 @@ def sticker_vectors(model, imgsz, arr, boxes, anchor_pick="centre"):
     training; here the box is known, so its centre is the honest choice and needs no model opinion.
     """
     H, W = arr.shape[:2]
-    scale, new_w, new_h, pad_x, pad_y = letterbox_geometry(W, H, imgsz)
+    scale, _, _, pad_x, pad_y = letterbox_geometry(W, H, imgsz)
     x = torch.from_numpy(letterbox(arr, imgsz))[None]
     with torch.no_grad():
         cls, _reg, points, _strides, emb = model(x)
-    conf = cls[0].sigmoid().max(dim=-1).values
+    scores = cls[0].sigmoid()
     emb = torch.nn.functional.normalize(emb[0], dim=-1).numpy()
 
     out = []
@@ -95,12 +95,20 @@ def sticker_vectors(model, imgsz, arr, boxes, anchor_pick="centre"):
             # flaw in this script rather than in the model.
             half_w, half_h = bw * W * scale / 2, bh * H * scale / 2
             inside = ((points[:, 0] - lx).abs() <= half_w) & ((points[:, 1] - ly).abs() <= half_h)
+            # Ranked on THIS STICKER'S class, not on the anchor's best class. Taking the maximum
+            # over all six could hand back an anchor that is confidently the wrong colour -- a
+            # position the contrastive term never supervised for `cid`, which is the very thing
+            # this option exists to avoid.
+            conf = scores[:, cid]
             idx = int(torch.argmax(torch.where(inside, conf, torch.full_like(conf, -1.0)))) \
                 if bool(inside.any()) else int(torch.argmin(d))
         else:
             idx = int(torch.argmin(d))
-        x0, x1 = int((cx - bw / 4) * W), int(np.ceil((cx + bw / 4) * W))
-        y0, y1 = int((cy - bh / 4) * H), int(np.ceil((cy + bh / 4) * H))
+        # CLAMPED, because a negative index is not an error in numpy -- it counts from the far
+        # edge. A sticker crossing the left edge of the frame silently produced a patch from the
+        # right of the image, and its Lab went into the comparison as if it were this sticker's.
+        x0, x1 = max(0, int((cx - bw / 4) * W)), min(W, int(np.ceil((cx + bw / 4) * W)))
+        y0, y1 = max(0, int((cy - bh / 4) * H)), min(H, int(np.ceil((cy + bh / 4) * H)))
         if x1 <= x0 or y1 <= y0:
             continue
         med = np.median(arr[y0:y1, x0:x1].reshape(-1, 3), axis=0) / 255.0

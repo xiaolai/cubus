@@ -107,18 +107,52 @@ def load_coco(root, budget, rng):
                 if not os.path.exists(path):
                     continue
             boxes = []
+            bodies = []
             for a in by_img[iid]:
                 # BlenderProc reserves category_id 0 for background, so the generator stores
                 # white=1..blue=6 and the cube BODY as 7 -- the same shift coco_to_labels.py makes.
                 cid = a["category_id"] - 1
                 if 0 <= cid <= 5:
                     boxes.append((cid, a["bbox"]))
+                elif cid == BODY_CLASS:
+                    bodies.append(a["bbox"])
             budget -= 1
-            yield path, boxes
+            # WHICH CUBE each sticker is on. A scene can hold several, each with its own pigments
+            # drawn independently, and every per-frame statistic below -- the red/orange inversion
+            # above all -- is a claim about ONE cube's colours. Grouped by frame, two cubes' reds
+            # and oranges were compared with each other and the difference reported as this
+            # dataset's inversion rate. The body annotation is what says where each cube is.
+            yield path, [(cid, bbox, cube_of(bbox, bodies)) for cid, bbox in boxes]
+
+
+BODY_CLASS = 6  # the cube body, category_id 7 before the background shift
+
+
+def cube_of(bbox, bodies) -> int | None:
+    """Index of the cube this sticker sits on, or None when that cannot be said.
+
+    A sticker is on the surface of its own cube, so its centre lies inside that cube's projected
+    body box. Exactly one containing box is an answer. None or several is not: two cubes overlapping
+    on screen both contain the tiles in the overlap, and "the first" or "the nearest" was a guess
+    that could file one cube's red under the other's. Those stickers are left out and counted. The
+    body's mask would not settle it either -- a sticker covers the body pixels beneath its centre.
+
+    -1 when the loader has no body rows at all (the detector path): the frame is taken as one cube.
+    """
+    if not bodies:
+        return -1
+    cx, cy = bbox[0] + bbox[2] / 2, bbox[1] + bbox[3] / 2
+    inside = [i for i, (bx, by, bw, bh) in enumerate(bodies) if bx <= cx <= bx + bw and by <= cy <= by + bh]
+    return inside[0] if len(inside) == 1 else None
 
 
 def load_labels(root, budget, rng):
-    """Yield (image_path, [(class, bbox)]) from a detector tree, converting normalised xywh."""
+    """Yield (image_path, [(class, bbox, cube)]) from a detector tree, converting normalised xywh.
+
+    detector labels carry no cube body, so every sticker comes back as cube -1 and the frame is treated
+    as one cube -- right for the photographs this path is for. A file with more than 27 stickers
+    cannot be one cube and is skipped; a multi-cube frame with fewer is indistinguishable here.
+    """
     labels = sorted(glob.glob(os.path.join(root, "labels", "**", "*.txt"), recursive=True))
     rng.shuffle(labels)
     for lp in labels:
@@ -147,8 +181,14 @@ def load_labels(root, budget, rng):
                     continue
                 cx, cy, nw, nh = (float(v) for v in bits[1:5])
                 boxes.append((cid, [(cx - nw / 2) * W, (cy - nh / 2) * H, nw * W, nh * H]))
+        # One cube shows at most three faces, 27 stickers. More than that in a detector file is several
+        # cubes with nothing to say which tile is whose, so the frame is left out rather than pooled --
+        # before it is counted against the sample, so the sample asked for is the sample measured.
+        # Two cubes that happen to total 27 or fewer are NOT caught; the format cannot tell them apart.
+        if len(boxes) > 27:
+            continue
         budget -= 1
-        yield ip, boxes
+        yield ip, [(cid, bbox, -1) for cid, bbox in boxes]
 
 
 def _kmeans(points, k, seed=0):
@@ -223,7 +263,9 @@ def main() -> None:
     dev_by_s = collections.defaultdict(list)
     clipped = total = gated = 0
     why = __import__('collections').Counter()
-    inverted = frames_with_pair = 0
+    inverted = cubes_with_pair = 0
+    unowned = 0
+    pick = random.Random(args.seed)  # the matched-eight draw, seeded so a run is repeatable
     matched_inverted = matched_pair = median_inverted = 0
 
     face_between, face_within = [], []
@@ -233,7 +275,10 @@ def main() -> None:
             continue
         groups = collections.defaultdict(list)
         placed = []
-        for cid, bbox in boxes:
+        for cid, bbox, cube in boxes:
+            if cube is None:
+                unowned += 1  # on no cube or on two; see cube_of
+                continue
             col = sticker_colour(arr, *bbox, args.box)
             if col is None:
                 continue
@@ -245,63 +290,81 @@ def main() -> None:
                 gated += 1
                 # WHICH branch rejects is the whole fix: too dark and too bright are opposite
                 # knobs, and "too grey" is neither -- it is the pigment or the body bleeding in.
+                # Formatted from the thresholds in force, not from three numbers typed beside them:
+                # --gate moves all three, and the labels went on naming the defaults.
                 if vv <= V_MIN:
-                    why["too dark (v<=0.15)"] += 1
+                    why[f"too dark (v<={V_MIN:g})"] += 1
                 elif vv >= V_MAX:
-                    why["too bright (v>=0.97)"] += 1
+                    why[f"too bright (v>={V_MAX:g})"] += 1
                 else:
-                    why["too grey (s<0.30)"] += 1
+                    why[f"too grey (s<{S_MIN:g})"] += 1
                 continue
-            groups[cid].append((signed(hh), ss, vv))
-            placed.append((bbox[0] + bbox[2] / 2, bbox[1] + bbox[3] / 2, cid, signed(hh)))
-        reds = [h for h, _, _ in groups.get(1, [])]
-        oranges = [h for h, _, _ in groups.get(4, [])]
-        if reds and oranges:
-            frames_with_pair += 1
-            # A red hue-oranger than an orange in the SAME frame: two opposite labels on
-            # indistinguishable colour, which is label noise no network can resolve.
+            groups[(cube, cid)].append((signed(hh), ss, vv))
+            placed.append((bbox[0] + bbox[2] / 2, bbox[1] + bbox[3] / 2, cid, signed(hh), cube))
+        # PER CUBE, not per frame. A scene can hold several cubes, each with pigments drawn
+        # independently, and "a red hue-oranger than an orange" is only label noise when both
+        # sit on the SAME cube. Across two cubes it is just two different paints, and counting
+        # it as inversion inflated the rate this whole script exists to measure.
+        for cube in sorted({c for c, _ in groups}):
+            reds = [h for h, _, _ in groups.get((cube, 1), [])]
+            oranges = [h for h, _, _ in groups.get((cube, 4), [])]
+            if not (reds and oranges):
+                continue
+            cubes_with_pair += 1
             if max(reds) > min(oranges):
                 inverted += 1
             # The rate above is NOT comparable between two datasets that pass different numbers
-            # of stickers per frame: it is an extreme-order statistic, so drawing more readable
+            # of stickers per cube: it is an extreme-order statistic, so drawing more readable
             # tiles raises it even when nothing about the colour has changed. A set that got
             # BETTER at readability therefore looks worse at inversion. Two count-free readings
             # go beside it: the same test on a fixed eight of each, and the pigment-level
             # question of whether the cube's median red sits below its median orange at all.
+            #
+            # The eight are drawn at RANDOM from a seeded stream. Taking the eight lowest reds and
+            # the eight highest oranges selected against the very observations that can invert --
+            # the most favourable subset available, reported as a measurement.
             if len(reds) >= 8 and len(oranges) >= 8:
                 matched_pair += 1
-                if max(sorted(reds)[:8]) > min(sorted(oranges)[-8:]):
+                if max(pick.sample(reds, 8)) > min(pick.sample(oranges, 8)):
                     matched_inverted += 1
             if float(np.median(reds)) > float(np.median(oranges)):
                 median_inverted += 1
-        for cid, lst in groups.items():
+        for (_cube, cid), lst in groups.items():
             if len(lst) >= 4:
                 per_image.append((cid, lst))
-        if args.faces and len(placed) >= 12:
-            faces = face_groups(placed, args.seed)
-            if len(faces) >= 2:
-                for cid in range(6):
-                    means, withins = [], []
-                    for face in faces:
-                        hs = [h for c, h in face if c == cid]
-                        if len(hs) >= 2:
-                            means.append(float(np.mean(hs)))
-                            withins.append(float(np.std(hs)) * 360.0)
-                    if len(means) >= 2:
-                        # Between: how far apart the FACES sit. Within: the scatter inside one
-                        # face. Same pigment throughout, so both are lighting -- but only the
-                        # first is fixed by changing the environment map.
-                        face_between.append(float(np.std(means)) * 360.0)
-                        face_within.append(float(np.mean(withins)))
+        # Faces are found PER CUBE. "Same pigment throughout" -- the premise that makes the spread
+        # between faces pure lighting -- holds only on one cube; pooling two cubes' tiles into one
+        # face grouping reported their paint difference as a lighting effect.
+        for cube in sorted({t[4] for t in placed}):
+            tiles = [t[:4] for t in placed if t[4] == cube]
+            if not (args.faces and len(tiles) >= 12):
+                continue
+            faces = face_groups(tiles, args.seed)
+            if len(faces) < 2:
+                continue
+            for cid in range(6):
+                means, withins = [], []
+                for face in faces:
+                    hs = [h for c, h in face if c == cid]
+                    if len(hs) >= 2:
+                        means.append(float(np.mean(hs)))
+                        withins.append(float(np.std(hs)) * 360.0)
+                if len(means) >= 2:
+                    # Between: how far apart the FACES sit. Within: the scatter inside one
+                    # face. Same pigment throughout, so both are lighting -- but only the
+                    # first is fixed by changing the environment map.
+                    face_between.append(float(np.std(means)) * 360.0)
+                    face_within.append(float(np.mean(withins)))
 
     print(f"{args.root}  [{args.format}, box={args.box}]")
     print(f"stickers {total}   unreadable (gated out) {100 * gated / max(total, 1):.1f}%   "
           f"a channel at 254+ {100 * clipped / max(total, 1):.1f}%")
-    print(f"frames with both red and orange readable: {frames_with_pair}   "
-          f"of those, INVERTED: {100 * inverted / max(frames_with_pair, 1):.1f}%")
+    print(f"stickers left out because their cube could not be told: {unowned}")
+    print(f"cubes with both red and orange readable: {cubes_with_pair}   "
+          f"of those, INVERTED: {100 * inverted / max(cubes_with_pair, 1):.1f}%")
     print(f"    on a matched EIGHT of each: {100 * matched_inverted / max(matched_pair, 1):.1f}% "
-          f"of {matched_pair} frames; by MEDIAN hue: "
-          f"{100 * median_inverted / max(frames_with_pair, 1):.1f}%")
+          f"of {matched_pair} cubes; by MEDIAN hue: "
+          f"{100 * median_inverted / max(cubes_with_pair, 1):.1f}%")
     for reason, count in why.most_common():
         print(f"    {reason:22} {100 * count / max(total, 1):5.1f}%")
     print()

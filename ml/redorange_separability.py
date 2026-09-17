@@ -41,7 +41,6 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-CLASS_NAMES = ["white", "red", "green", "yellow", "orange", "blue"]
 RED, ORANGE = 1, 4
 
 # Fraction of each box kept, centred. A sticker box includes the black gap between stickers and,
@@ -109,20 +108,25 @@ def main(argv=None) -> int:
     files = sorted(p for p in args.images.iterdir() if p.suffix.lower() in {".jpg", ".jpeg", ".png"})
     per_image = []
     global_red, global_orange = [], []
+    candidates_by_image: list[list[tuple[float, int]]] = []
 
     for path in files:
         with Image.open(path) as handle:
             rgb = np.asarray(handle.convert("RGB"), dtype=np.uint8)
         boxes = load_labels(args.labels / f"{path.stem}.txt", rgb.shape[1], rgb.shape[0])
         reds, oranges = [], []
+        hues: list[tuple[float, int]] = []
         for box in boxes:
+            if box[0] not in (RED, ORANGE):
+                continue
             stat = patch_statistic(rgb, box)
             if stat is None:
                 continue
-            if box[0] == RED:
-                reds.append(stat[0])
-            elif box[0] == ORANGE:
-                oranges.append(stat[0])
+            hues.append((stat[0], box[0]))
+            (reds if box[0] == RED else oranges).append(stat[0])
+        # Kept for the label-free pass below, which used to open and measure every image a second
+        # time -- the same patches, through a second copy of the loop that could drift from this one.
+        candidates_by_image.append(hues)
         global_red.extend(reds)
         global_orange.extend(oranges)
         if not reds or not oranges:
@@ -150,7 +154,13 @@ def main(argv=None) -> int:
     sep = sum(1 for r in per_image if r["separable"])
     margins = np.array([r["margin"] for r in per_image])
     print(f"images with BOTH red and orange stickers: {n} of {len(files)}")
-    print(f"  separable by a per-image threshold: {sep}/{n} = {sep / max(n,1):.1%}")
+    # Both analyses need data from both classes. Without it the percentiles below were taken of an
+    # empty array and the threshold sweep raised on `.min()` of one -- a crash that read like a bug
+    # in the statistics, for a dataset that simply has nothing to compare.
+    if n == 0 or not global_red or not global_orange:
+        raise SystemExit(f"nothing to measure: {len(global_red)} red and {len(global_orange)} orange "
+                         f"stickers readable, {n} image(s) with both")
+    print(f"  separable by a per-image threshold: {sep}/{n} = {sep / n:.1%}")
     print(f"  margin (degrees): median {np.median(margins):+.1f}  "
           f"p10 {np.percentile(margins,10):+.1f}  p90 {np.percentile(margins,90):+.1f}")
     print()
@@ -172,7 +182,10 @@ def main(argv=None) -> int:
     print(f"  overlap: reds above the threshold = {(gru >= best_t).sum()}, "
           f"oranges below = {(gou < best_t).sum()}")
     print()
-    print("The shipped detector reads red at 96.6% on this same set (ml/color_eval.py).")
+    # A detector's own accuracy is ml/color_eval.py's to measure, on whichever set it is given.
+    # This line used to print 96.6% unconditionally -- for any --images, and for a shipped detector
+    # that has since been replaced.
+    print("For the detector's own accuracy on this set, run ml/color_eval.py against it.")
     print()
     # ------------------------------------------------------------------ recoverable, not merely present
     #
@@ -206,17 +219,8 @@ def main(argv=None) -> int:
     correct = total = 0
     split_used = prior_used = 0
     per_image_acc = []
-    for path in files:
-        with Image.open(path) as handle:
-            rgb = np.asarray(handle.convert("RGB"), dtype=np.uint8)
-        boxes = load_labels(args.labels / f"{path.stem}.txt", rgb.shape[1], rgb.shape[0])
-        cands = []
-        for box in boxes:
-            if box[0] not in (RED, ORANGE):
-                continue
-            stat = patch_statistic(rgb, box)
-            if stat is not None:
-                cands.append((axis_of(stat[0]), box[0]))
+    for hues in candidates_by_image:
+        cands = [(axis_of(h), cls) for h, cls in hues]
         if not cands:
             continue
         axis = np.array([c[0] for c in cands])
@@ -244,8 +248,10 @@ def main(argv=None) -> int:
     print(f"  stickers scored: {total}   accuracy: {correct / max(total,1):.1%}")
     print(f"  images perfect: {sum(1 for a in per_image_acc if a == 1.0)}/{len(per_image_acc)}")
     print()
-    print("  Compare: shipped detector 96.6% on red, per-sticker ceiling "
-          f"{prior_acc:.1%}, oracle per-image threshold 100%.")
+    # The oracle figure is the separable fraction MEASURED above. It was printed as a flat 100%,
+    # which is only true on a set where every image separates -- the thing this script is testing.
+    print(f"  Compare: per-sticker ceiling {prior_acc:.1%}, "
+          f"oracle per-image threshold {sep / n:.1%} (images separable with the labels in hand).")
 
     if args.json:
         args.json.write_text(json.dumps({

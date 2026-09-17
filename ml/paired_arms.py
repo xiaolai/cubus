@@ -22,25 +22,15 @@ import sys
 import numpy as np
 from PIL import Image
 
-NAMES = ["white", "red", "green", "yellow", "orange", "blue"]
-S_MIN, V_MIN, V_MAX = 0.30, 0.15, 0.97
-
-
-def signed(h):
-    return h - 1.0 if h > 0.5 else h
-
-
-def circ_deg(a, b):
-    d = (a - b) * 360.0
-    while d > 180:
-        d -= 360
-    while d < -180:
-        d += 360
-    return d
+# ONE definition of each, shared with hue_decompose.py -- the script whose readings this one pairs.
+# The two files had grown identical copies of the gate, the hue helpers and the cube-ownership rule,
+# and a threshold changed in one would have made the "paired" comparison measure something else.
+# A plain import: `python ml/paired_arms.py` puts ml/ on the path already.
+from hue_decompose import BODY_CLASS, S_MIN, V_MAX, V_MIN, circ_deg, cube_of, signed
 
 
 def read_arm(root):
-    """key -> (class, h, s, v). The key is (scene, image file, rounded box), stable across arms."""
+    """key -> (class, h, s, v, cube). The key is (scene, image file, rounded box), stable across arms."""
     out = {}
     for pj in sorted(glob.glob(os.path.join(root, "part_*", "coco", "coco_annotations.json"))):
         scene = os.path.basename(os.path.dirname(os.path.dirname(pj)))
@@ -58,6 +48,9 @@ def read_arm(root):
             if not os.path.exists(path):
                 continue
             arr = np.asarray(Image.open(path).convert("RGB"))
+            # Which cube each sticker is on, from the body annotation (category 7). See main():
+            # the spread and inversion figures are claims about one cube's paint.
+            bodies = [b["bbox"] for b in anns if b["category_id"] - 1 == BODY_CLASS]
             for a in anns:
                 cid = a["category_id"] - 1
                 if not 0 <= cid <= 5:
@@ -73,12 +66,15 @@ def read_arm(root):
                 col = np.median(arr[y0:y1, x0:x1].reshape(-1, 3), axis=0) / 255.0
                 hh_, ss, vv = colorsys.rgb_to_hsv(*col)
                 key = (scene, os.path.basename(path), round(x, 1), round(y, 1))
-                out[key] = (cid, signed(hh_), ss, vv)
+                cube = cube_of((x, y, w, h), bodies)
+                if cube is None:
+                    continue  # ambiguous ownership: left out of every arm alike, since the scenes are identical
+                out[key] = (cid, signed(hh_), ss, vv, cube)
     return out
 
 
 def readable(rec):
-    _cid, _h, s, v = rec
+    _cid, _h, s, v, _cube = rec
     return s >= S_MIN and V_MIN < v < V_MAX
 
 
@@ -95,13 +91,16 @@ def main(root, arms):
         un = 100 * sum(not readable(d[k]) for k in common) / max(len(common), 1)
         # Regroup the shared stickers by frame and colour; spread is within one cube's one colour.
         groups = collections.defaultdict(list)
+        # Keyed by CUBE as well as frame. A scene can hold several cubes with independently drawn
+        # pigments, so grouping by (scene, image, colour) mixed two cubes' reds into one "within one
+        # cube's one colour" spread -- the quantity this table is labelled as.
         for k in both:
-            cid, h, _s, _v = d[k]
-            groups[(k[0], k[1], cid)].append(h)
+            cid, h, _s, _v, cube = d[k]
+            groups[(k[0], k[1], cube, cid)].append(h)
         per_class = collections.defaultdict(list)
         alls = []
         counts = collections.Counter()
-        for (_sc, _im, cid), hs in groups.items():
+        for (_sc, _im, _cube, cid), hs in groups.items():
             if len(hs) < 3:
                 continue
             med = float(np.median(hs))
@@ -112,8 +111,8 @@ def main(root, arms):
         # Inversion is asked of the shared stickers too, or it measures the gate as well.
         frames = collections.defaultdict(lambda: collections.defaultdict(list))
         for k in both:
-            cid, h, _s, _v = d[k]
-            frames[(k[0], k[1])][cid].append(h)
+            cid, h, _s, _v, cube = d[k]
+            frames[(k[0], k[1], cube)][cid].append(h)  # per cube: see the grouping above
         pair = [f for f in frames.values() if f.get(1) and f.get(4)]
         inv = sum(1 for f in pair if max(f[1]) > min(f[4]))
         # MEDIAN over groups, not mean. Pairing leaves about two dozen groups per colour, and
