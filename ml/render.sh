@@ -10,8 +10,18 @@
 # HDRI folder of Poly Haven CC0 .hdr (run fetch_hdris.py). Point OUT at fast scratch.
 #
 # Usage: BLENDERPROC=venv/bin/blenderproc WORKERS=4 \
-#          SCENES=1000 POSES=40 HDRI_DIR=~/datasets/hdris OUT=~/datasets/cube bash render.sh
+#          SCENES=1000 POSES=40 HDRI_DIR=~/datasets/hdris OUT=~/datasets/cube bash render.sh [-- GEN_FLAG...]
+#
+# Generator flags go after `--`, one argv word each, so a value with a space survives. GEN_ARGS
+# (below) is still read when no `--` is given, for flags that need no quoting.
 set -euo pipefail
+
+gen_args=()
+if [ "$#" -gt 0 ]; then
+  if [ "$1" != "--" ]; then echo "usage: render.sh [-- generator flags...]  (got '$1')" >&2; exit 2; fi
+  shift
+  gen_args=("$@")
+fi
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BLENDERPROC="${BLENDERPROC:-blenderproc}"
@@ -67,23 +77,75 @@ echo "Found ${#_hdris[@]} HDRIs in $HDRI_DIR"
 echo "Generator: $GEN"   # named loudly: picking the wrong one is invisible in the output
 # An `if`, not `[ … ] && echo`: that form returns non-zero when the test fails, which under
 # `set -e` aborts the script if it is ever the last statement in a block.
-if [ -n "$GEN_ARGS" ]; then echo "Generator args: $GEN_ARGS"; fi
+if [ "${#gen_args[@]}" -gt 0 ]; then echo "Generator args: ${gen_args[*]}"; fi
 echo "Rendering $SCENES scenes x $POSES poses (~$((SCENES * POSES)) images) across $WORKERS workers -> $OUT"
 mkdir -p "$OUT"
 
 # Each worker renders the scenes whose seed ≡ its index (mod WORKERS): a disjoint, exhaustive
 # partition of [0, SCENES). Distinct seeds → distinct HDRI/scramble/camera, so no duplicated work.
+#
+# A RETRY MUST NOT RENDER A SCENE TWICE. Both generators APPEND to their part's COCO file, so an
+# interrupted run started again used to re-render every scene it had already finished and write
+# each one a second time -- identical images that the split then scatters across train and val.
+# Each part records the seeds it completed, and a seed already recorded is skipped. A top-up with
+# a new SEED_BASE is unaffected: its seeds are new.
+#
+# GEN_ARGS is split on whitespace into an array, without pathname expansion: an unquoted
+# `$GEN_ARGS` also globbed, so a flag value like `*.hdr` became whatever files matched in the
+# current directory. An environment variable cannot carry an argument vector, so quoting inside
+# GEN_ARGS is not honoured; a value with a space goes after `--` instead.
+if [ -n "$GEN_ARGS" ]; then
+  if [ "${#gen_args[@]}" -gt 0 ]; then echo "give generator flags after -- or in GEN_ARGS, not both" >&2; exit 2; fi
+  read -r -a gen_args <<< "$GEN_ARGS"
+fi
+
+#
+# Recording a seed only AFTER its render leaves one gap: a run killed while the generator is
+# appending, or between the append and the record, leaves that seed's annotations in the file and
+# the seed unrecorded -- so the retry appends them again. So each seed's append is made undoable: the
+# COCO file is snapshotted as `.coco.pre.<seed>` first, and a snapshot found at the next start is
+# RESTORED if its seed never got recorded (the attempt died) and simply DISCARDED if it did (the run
+# died between recording and cleaning up). Every interruption point lands on one of the two.
+settle_snapshots() {  # settle_snapshots PART
+  local part="$1" pre seed coco="$1/coco/coco_annotations.json"
+  for pre in "$part"/.coco.pre.*; do
+    [ -e "$pre" ] || continue
+    seed="${pre##*.coco.pre.}"
+    if ! grep -qx "$seed" "$part/.done_seeds"; then
+      if [ -s "$pre" ]; then cp "$pre" "$coco"; else rm -f "$coco"; fi
+      echo "  part $(basename "$part"): seed $seed did not finish last time; its annotations were rolled back" >&2
+    fi
+    rm -f "$pre"
+  done
+}
+
+# DONE ANYWHERE IS DONE. Which part a seed lands in depends on WORKERS, so a retry with a different
+# worker count sends seeds to parts that never recorded them -- and every part is merged, so the
+# scene would exist twice. The record is read across all parts. grep takes the files directly:
+# piped through `cat | grep -q` under pipefail, grep's early exit fails the pipeline and a done seed
+# reads as not done.
+seed_done() { grep -qxs -- "$1" /dev/null "$OUT"/part_*/.done_seeds; }
+
 render_worker() {
-  local w="$1" part="$OUT/part_$1"
+  local w="$1" part="$OUT/part_$1" seed coco="$OUT/part_$1/coco/coco_annotations.json"
   mkdir -p "$part"
+  touch "$part/.done_seeds"
   for ((s = w; s < SCENES; s += WORKERS)); do
-    # shellcheck disable=SC2086  # GEN_ARGS is a deliberate word-split of caller-supplied flags
+    seed=$((SEED_BASE + s))
+    if seed_done "$seed"; then continue; fi
+    if [ -e "$coco" ]; then cp "$coco" "$part/.coco.pre.$seed"; else : > "$part/.coco.pre.$seed"; fi
     "$BLENDERPROC" run "$HERE/$GEN" -- \
       --output_dir "$part" --hdri_dir "$HDRI_DIR" --num_poses "$POSES" --res "$RES" \
-      --seed "$((SEED_BASE + s))" --device "$DEVICE" $GEN_ARGS
+      --seed "$seed" --device "$DEVICE" ${gen_args[@]+"${gen_args[@]}"}  # bash 3.2 + set -u: an empty array is "unbound"
+    echo "$seed" >> "$part/.done_seeds"
+    rm -f "$part/.coco.pre.$seed"
   done
   echo "  worker $w done"
 }
+
+# Every existing part is settled before any worker starts -- including parts a smaller WORKERS will
+# not run again, whose interrupted appends would otherwise be merged as they were left.
+for part in "$OUT"/part_*; do [ -d "$part" ] && touch "$part/.done_seeds" && settle_snapshots "$part"; done
 
 pids=()
 for ((w = 0; w < WORKERS; w++)); do
@@ -103,18 +165,21 @@ echo "Merging $WORKERS parts -> detector labels…"
 # its box counts vary and routinely exceed 9. Rendering v1 by mistake is otherwise invisible —
 # the images look fine, the labels are valid, and only the count distribution gives it away.
 if [ "$GEN" = "generate_cube3d.py" ]; then
-  distinct=$("$PYTHON" - "$OUT/labels_all" <<'PYEOF'
+  shape=$("$PYTHON" - "$OUT/labels_all" <<'PYEOF'
 import sys, glob, os
-counts = set()
+counts = []
 for f in glob.glob(os.path.join(sys.argv[1], "*.txt")):
     with open(f) as fh:
-        counts.add(sum(1 for line in fh if line.strip()))
-print(len(counts), max(counts) if counts else 0)
+        counts.append(sum(1 for line in fh if line.strip()))
+print(len(counts), len(set(counts)), max(counts) if counts else 0)
 PYEOF
 )
-  n_distinct=${distinct% *}; max_boxes=${distinct#* }
-  echo "Label shape: $n_distinct distinct box-counts, max $max_boxes per image"
-  if [ "$n_distinct" -le 1 ] || [ "$max_boxes" -le 9 ]; then
+  read -r n_images n_distinct max_boxes <<< "$shape"
+  echo "Label shape: $n_images images, $n_distinct distinct box-counts, max $max_boxes per image"
+  # "Every image has the same count" is evidence only over enough images to vary. On a smoke render
+  # of one or a few it is always true, so it refused a correct 3D render; the max test still holds
+  # at any size, because a 3D view shows two or three faces and a v1 frame never exceeds nine.
+  if [ "$max_boxes" -le 9 ] || { [ "$n_images" -ge 20 ] && [ "$n_distinct" -le 1 ]; }; then
     echo "ERROR: every image has the same (<=9) box count — that is single-face v1 data, not $GEN." >&2
     echo "       Refusing to split. Check GEN and re-render." >&2
     exit 1

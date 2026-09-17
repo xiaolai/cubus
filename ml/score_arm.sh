@@ -60,4 +60,12 @@ echo "=== per-sticker, 207 held-out photographs, one evaluator ==="
 
 echo
 echo "=== whole-cube read rate, simulated, faces drawn from single photographs ==="
-"$PY" "$HERE/assign_sim.py" --model "$ONNX"
+# BOTH models, with the simulation's defaults pinned in one place. This ran for the candidate only,
+# so the one whole-cube figure this script exists to compare had nothing beside it from the same
+# run -- the shipped detector's number came from whenever someone last ran it, with whatever
+# trials and seed were current then.
+SIM_ARGS=(--trials 2000 --seed 20260830 --mode clustered)
+echo "--- v3_shipped"
+"$PY" "$HERE/assign_sim.py" --model "$SHIPPED" "${SIM_ARGS[@]}"
+echo "--- $RUN"
+"$PY" "$HERE/assign_sim.py" --model "$ONNX" "${SIM_ARGS[@]}"
