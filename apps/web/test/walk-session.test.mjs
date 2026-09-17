@@ -23,6 +23,8 @@ import {
   SCAN_HOLD, TUMBLED, holdSentence, scanFrameWalk, toMethodFrame,
 } from '../lib/solving-hold.js';
 import { createFollowTracker } from '../lib/walk-follow.js';
+import { createScriptPlayer } from '../lib/script-player.js';
+import { walkScript } from '../lib/walk-script.js';
 import { createWalkPresenter } from '../lib/walk-presenter.js';
 import { createWalkSession } from '../lib/walk-session.js';
 import { lcg, randomAlg } from './fixtures/seeded-scrambles.mjs';
@@ -99,10 +101,37 @@ function world({ subject = {}, omit = [], screen: screenOver = {} } = {}, make =
   doc.body.appendChild(root);
 
   // The renderer, reduced to the calls a walk makes on it. Attributes are the element's own.
+  //
+  // A STOP TRANSPORT since plan item 6.5: the walk is driven through the script player now, so the
+  // calls it makes are the stop commands and not `step`/`play`. `calls` still records them under the
+  // old names — `step`, `stepBack`, `seek n` — because what every case here asserts is which MOVE was
+  // shown and which way, and that did not change; renaming them would have made seventeen cases read
+  // as though their subject had.
+  //
+  // Turns land at once (`animating` is always false): a fake that animated would need a clock, and
+  // every case here is about what was ASKED for. The consequence is deliberate and is what the walk
+  // clock is built to handle — with nothing in flight, the next stop is due immediately.
   const cube = doc.createElement('div');
   cube.calls = [];
-  for (const name of ['step', 'stepBack', 'play', 'pause']) cube[name] = () => { cube.calls.push(name); };
-  cube.seek = (i) => { cube.calls.push(`seek ${i}`); };
+  let shown = 0;
+  const land = (i) => {
+    shown = Math.max(0, i);
+    cube.dispatchEvent(new win.CustomEvent('cubus-step', { detail: { index: shown } }));
+  };
+  Object.defineProperty(cube, 'animating', { get: () => false });
+  // Every token of a walk is a stop, so the element's stops are 0..n — which is what makes a script
+  // position and an element stop the same number on this screen.
+  Object.defineProperty(cube, 'stops', {
+    get: () => {
+      const n = (cube.getAttribute('alg') ?? '').split(' ').filter(Boolean).length;
+      return Array.from({ length: n + 1 }, (_, i) => i);
+    },
+  });
+  cube.stepStop = () => { cube.calls.push('step'); land(shown + 1); };
+  cube.stepBackStop = () => { cube.calls.push('stepBack'); land(shown - 1); };
+  cube.playTo = (k) => { cube.calls.push(`seek ${k}`); land(k); };
+  cube.seek = (i) => { cube.calls.push(`seek ${i}`); land(i); };
+  cube.pause = () => { cube.calls.push('pause'); };
   cube.turnTo = async () => {};
 
   const log = [];
@@ -778,12 +807,17 @@ test('a lost turn, and trust lapsing, each take the live number off the screen',
 // carries on, and whatever the hook had left to do after the throw never happens: the model and
 // the number made from it are what must not be left behind.
 
+let throwOnTempo = false;
+
 test('a stand-down that throws still forgets the model and calls off the number made from it', async () => {
   for (const hook of ['onTrustLost', 'liveGap']) {
     const R = turned('R');
     const RU = turned('U', R);
     const routes = [];
-    const w = world({ subject: { facelets: R, trusted: true, isPhysical: true, source: 'cube' } }, () => ({
+    const w = world({
+      subject: { facelets: R, trusted: true, isPhysical: true, source: 'cube' },
+      screen: { applyTempo: () => { if (throwOnTempo) throw new Error('the renderer is gone (test)'); } },
+    }, () => ({
       deriveCube: () => new Promise(() => {}),
       lastRoute: async () => ({ kind: 'exact', alg: "R'", moves: 1, minimal: true, overshoot: false }),
       stageAsk: (q) => {
@@ -805,11 +839,15 @@ test('a stand-down that throws still forgets the model and calls off the number 
     assert.equal(out?.signal.aborted, false, `${hook}: precondition: the live distance has an exact search out`);
     assert.match(w.$('#stageLive').textContent, /your cube now/, `${hook}: precondition: a live number is showing`);
 
-    const seek = w.cube.seek;
-    w.cube.seek = () => { throw new Error('the renderer is gone (test)'); };
+    // Standing down re-seats the drawing and re-applies the tempo, and either can throw on a screen
+    // whose renderer has gone. The tempo is the one it does UNCONDITIONALLY: since the walk is driven
+    // through the script player (plan item 6.5), a re-seat to the position the element is already at
+    // writes nothing — so injecting on `cube.seek` stopped reproducing the case this was written for,
+    // which is a throw ANYWHERE inside the stand-down.
+    throwOnTempo = true;
     if (hook === 'onTrustLost') Object.assign(w.state.cube, { trusted: false, staleWhy: 'it disconnected' });
     assert.throws(() => w.session[hook](), /the renderer is gone/, `${hook}: precondition: standing down threw`);
-    w.cube.seek = seek;
+    throwOnTempo = false;
     assert.equal(out.signal.aborted, true, `${hook}: a throw while standing down left the search about the old cube running`);
     assert.equal(w.$('#stageLive').textContent, '', `${hook}: a throw while standing down left the live number standing`);
 
@@ -839,8 +877,13 @@ function followRig() {
   const state = { cube: { facelets: R, trusted: true, isPhysical: true, source: 'cube', staleWhy: '' }, live: R };
   const drops = { count: 0 };
   const walk = { moves: ["R'"], steps: [R, SOLVED] };
+  // The route the SESSION loads, loaded here instead: follow reads the player and no longer makes one
+  // (plan item 6.5). No element, so its transitions are position and nothing else — which is all this
+  // rig is about.
+  const player = createScriptPlayer();
+  void player.load(walkScript({ moves: walk.moves, holds: walk.moves.map(() => SCAN_HOLD), from: R }));
   const follow = createFollowTracker({
-    root, cube: { seek: () => {}, step: () => {}, stepBack: () => {} }, state, cubejs: () => Cube,
+    root, player, cube: { seek: () => {}, step: () => {}, stepBack: () => {} }, state, cubejs: () => Cube,
     applyTempo: () => {}, setPlaying: () => {}, moveHoldAt: () => SCAN_HOLD, markStale: () => {},
     adoptCube: () => {}, go: () => {}, scrambling: false,
     refreshLiveDistance: async () => {}, dropLiveDistance: () => { drops.count += 1; },
@@ -882,9 +925,26 @@ test('a turn that cancels the one before it is the walk\'s next move, not an und
   const state = { cube: { facelets: SOLVED, trusted: true, isPhysical: true, source: 'cube', staleWhy: '' }, live: SOLVED };
   const calls = [];
   const walk = { moves: ['R', "R'"], steps: [SOLVED, R, SOLVED] };
+  // Counted on the STOP transport, which is what the drawing is mirrored through now (plan item 6.5).
+  // The names are the old ones because what this case is about — which way the drawing was moved — is
+  // unchanged: a second turn drawn as `stepBack` sends the walk backwards.
+  const attrs = new Map();
+  const cube = {
+    stops: [0, 1, 2],
+    // The writer writes the walk onto the element before any of it turns, so an element the driver can
+    // hold has to take attributes as well as commands.
+    setAttribute: (k, v) => attrs.set(k, v),
+    removeAttribute: (k) => attrs.delete(k),
+    getAttribute: (k) => attrs.get(k) ?? null,
+    seek: () => {},
+    stepStop: () => calls.push('step'),
+    stepBackStop: () => calls.push('stepBack'),
+    playTo: (k) => calls.push(`playTo ${k}`),
+  };
+  const player = createScriptPlayer({ cube });
+  void player.load(walkScript({ moves: walk.moves, holds: walk.moves.map(() => SCAN_HOLD), from: SOLVED }));
   const follow = createFollowTracker({
-    root,
-    cube: { seek: () => {}, step: () => calls.push('step'), stepBack: () => calls.push('stepBack') },
+    root, player, cube,
     state, cubejs: () => Cube,
     applyTempo: () => {}, setPlaying: () => {}, moveHoldAt: () => SCAN_HOLD, markStale: () => {},
     adoptCube: () => {}, go: () => {}, scrambling: false,
@@ -946,8 +1006,11 @@ test('repeat at the first move does nothing — even if the button is pressable'
   w.$('#repeatBtn').click();
   assert.deepEqual(turns(), [], 'a repeat at the start stepped the cube');
 
-  // After a move, a repeat undoes it and makes it again.
-  w.cube.dispatchEvent(new w.win.CustomEvent('cubus-step', { detail: { index: 1 } }));
+  // After a move, a repeat undoes it and makes it again. Stepped through the TRANSPORT rather than by
+  // dispatching the renderer's event: the walk is driven by the script player now, so an event alone
+  // would move the head the presenter paints and leave the player where it was — a disagreement this
+  // screen can no longer have, and simulating one is not worth keeping.
+  w.$('#nextBtn').click();
   w.cube.calls.length = 0;
   w.$('#repeatBtn').click();
   assert.deepEqual(turns(), ['stepBack', 'step'], 'a repeat did not show the last move again');
@@ -959,7 +1022,9 @@ test('the play button is named for what pressing it will do', async () => {
   const play = w.$('#playBtn');
   assert.equal(play.getAttribute('aria-label'), 'Play from here to the end');
   play.click();
-  assert.ok(w.cube.calls.includes('play'), 'precondition: the walk is playing');
+  // NOT `cube.play()` any more: a playing walk is the stop driver asking for one stop at a time, paced
+  // by the element's own turns (lib/walk-clock.js), so there is no continuous play to press. Whether it
+  // is playing is the button's own account of it, which is this case's whole subject.
   assert.equal(play.getAttribute('aria-label'), 'Pause', 'a playing walk offered to play');
   play.click();
   assert.equal(play.getAttribute('aria-label'), 'Play from here to the end', 'a paused walk offered to pause');
@@ -1001,11 +1066,19 @@ function presenterRig(head) {
   win.document.body.appendChild(root);
   const cube = win.document.createElement('div');
   for (const name of ['step', 'stepBack', 'play', 'pause', 'seek']) cube[name] = () => {};
+  // The player, reduced to what a transport press asks of it. This rig exists to count take-overs,
+  // so where the walk actually goes does not matter — only that every press reaches the one thing
+  // that drives the element, which is what makes a press a take-over.
+  const player = {
+    position: head, loaded: true, playing: false,
+    next() {}, back() {}, seek() {}, play() {}, pause() {},
+  };
   const solList = root.querySelector('#solList');
   solList.innerHTML = '<button class="chip-m" data-i="0"></button><button class="chip-m" data-i="1"></button>';
   const takeOvers = { count: 0 };
   const presenter = createWalkPresenter({
-    root, cube, state: { connected: false, cube: {} }, signal: new AbortController().signal, scrambling: false,
+    root, cube, player, afterTurn: (fn) => fn(),
+    state: { connected: false, cube: {} }, signal: new AbortController().signal, scrambling: false,
     stale: () => false, solList, icon: () => '', adoptCube: () => {}, go: () => {},
     walkNow: () => ({ total: 2, target: null, alg: '', lesson: null, walkHold: SCAN_HOLD, walkGen: 1, walkLoaded: true }),
     takeOver: () => { takeOvers.count += 1; }, onHead: () => {},
@@ -1201,7 +1274,11 @@ test('a walk played to its end stops being played: the button offers Play again'
 
 test('with no renderer, the transport moves the head as bookkeeping, and no press throws', async () => {
   const w = world({}, ({ state }) => ({ deriveCube: async () => { solvedBy(state, "R' U'"); } }));
-  for (const name of ['step', 'stepBack', 'seek', 'play', 'pause']) delete w.cube[name]; // never upgraded
+  // Never upgraded: the stop transport the walk drives through goes too, or the element is a renderer
+  // with half its methods missing, which is not a thing that ships.
+  for (const name of ['step', 'stepBack', 'seek', 'play', 'pause', 'stepStop', 'stepBackStop', 'playTo']) {
+    delete w.cube[name];
+  }
   const errors = [];
   w.win.addEventListener('error', (e) => { errors.push(String(e.error?.message ?? e.message)); });
   assert.equal(await w.session.load(), true);
@@ -1492,7 +1569,14 @@ test('a load that fails while resetting the screen says so, rather than throwing
     lastRoute: async () => ({ kind: 'exact', alg: "U'", moves: 1, minimal: true, overshoot: false }),
   }));
   assert.equal(await w.session.load(), true, 'precondition: this subject loads');
-  w.cube.pause = () => { throw new Error('the cube is gone'); };
+  // Drawing the subject without a walk, which is the last thing `beginWalk` does. It used to be
+  // `cube.pause()`, and the reset no longer presses that: pausing is the stop driver's clock now,
+  // not a command to the element (plan item 6.5).
+  const write = w.cube.setAttribute.bind(w.cube);
+  w.cube.setAttribute = (name, value) => {
+    if (name === 'facelets') throw new Error('the cube is gone');
+    return write(name, value);
+  };
   let threw = null;
   const answered = await w.session.load().catch((err) => { threw = err; return 'threw'; });
   assert.equal(threw, null, 'the failure escaped the load');
