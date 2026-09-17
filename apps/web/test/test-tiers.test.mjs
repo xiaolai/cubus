@@ -20,7 +20,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { TIERS, allTestFiles, expand, resolveTier } from '../run-tests.mjs';
+import { TIERS, allTestFiles, expand, phasesOf, resolveTier } from '../run-tests.mjs';
 
 const WEB = fileURLToPath(new URL('../', import.meta.url));
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
@@ -80,6 +80,48 @@ test('fast + browser is every test file under apps/web, with nothing counted twi
     all.sort(),
     '`all` is not the union of the two tiers',
   );
+});
+
+// A SLOT IS NOT A UNIT OF COST, which is the assumption `--test-concurrency` makes and this repository's
+// suites break. A node-only solver suite spawns a worker pool and takes the whole machine — 963% CPU across
+// the fast tier on an 8-core box, measured 2026-09-17 — while a browser suite needs almost no CPU and
+// carries a 120 s wall-clock bound on `page.goto`. Run at one flat concurrency, a browser is scheduled
+// beside two pools and starves: `screen-swap` in 2026-09-09, `scan screen composition` on the nightly of
+// 2026-09-16, `initsolver-off-main-thread` locally the same day — three different suites, all at 120 s, all
+// in `page.goto`, and never in the browser tier alone.
+//
+// So the full tier is two phases and the two kinds never share the machine. This is the assertion that
+// keeps it that way: a phase is all-browser or all-node, never mixed.
+test('the full tier runs the two kinds of suite in phases, never side by side', () => {
+  const phases = phasesOf('all');
+  assert.equal(phases.length, 2, 'the full tier is no longer two phases');
+  const browser = new Set(resolveTier('browser'));
+  for (const phase of phases) {
+    const kinds = new Set(phase.files.map((f) => (browser.has(f) ? 'browser' : 'node')));
+    assert.equal(kinds.size, 1, `the "${phase.name}" phase mixes ${[...kinds].join(' and ')} suites`);
+  }
+  // Node first, so the pools are finished and gone before a browser needs the machine to be responsive.
+  assert.deepEqual(phases.map((p) => p.name), ['node', 'browser']);
+  assert.ok(phases[0].concurrency > phases[1].concurrency,
+    'the node phase is no longer the wider one, which is the whole reason for splitting');
+
+  // AND THE SPLIT LOSES NOTHING. "A tier is where a suite runs, never a way to leave one out" has to
+  // survive the run being cut in two — a phase list that dropped a file would be a green gate over an
+  // unrun suite, which is exactly the failure the runner exists to prevent.
+  const run = phases.flatMap((p) => p.files);
+  assert.deepEqual([...run].sort(), [...resolveTier('all')].sort(), 'the phases do not add up to the full tier');
+  assert.equal(new Set(run).size, run.length, 'a suite is run twice across the phases');
+});
+
+// The single-tier callers are unchanged: `fast` is what the pre-push hook and every pull request run, and
+// splitting `all` must not have quietly reshaped them.
+test('fast and browser are still one phase each, at the concurrency they always had', () => {
+  for (const [tier, concurrency] of [['fast', 6], ['browser', 3]]) {
+    const phases = phasesOf(tier);
+    assert.equal(phases.length, 1, `"${tier}" became more than one phase`);
+    assert.equal(phases[0].concurrency, concurrency, `"${tier}" no longer runs at ${concurrency}`);
+    assert.deepEqual(phases[0].files, resolveTier(tier), `"${tier}" runs different files than it resolves`);
+  }
 });
 
 test('a pattern that matches nothing is refused, not run as zero tests', () => {
