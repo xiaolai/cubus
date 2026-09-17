@@ -262,7 +262,10 @@ Universe sets credited under §Attribution, plus renders from `ml/generate_cube3
 Before that date the detector was a YOLO model trained with
 [Ultralytics](https://github.com/ultralytics/ultralytics), which is **AGPL-3.0**, and Ultralytics'
 stated position — that the licence reaches models trained with their software and the applications
-using them — is why cubus is AGPL-3.0 rather than permissive (`LICENSE-COMMERCIAL.md`). That
-inheritance is what the change removes: taking `cube-yolo.onnx` into a closed-source product now
-raises no Ultralytics question. Anyone reusing the PREVIOUS model, which is still in this
-repository's history, still needs an Ultralytics Enterprise Licence for that use.
+using them — is why cubus was AGPL-3.0. That inheritance is what the change removed, and the project
+is MIT from 2026-09-17: taking `cube-yolo.onnx` into a closed-source product raises no Ultralytics
+question. Anyone reusing the PREVIOUS model, which is still in this repository's history, still needs
+an Ultralytics Enterprise Licence for that use.
+
+What MIT does not lift is the **CC BY 4.0** attribution the training photographs carry: the Roboflow
+Universe credits under §Attribution must travel wherever this model does.

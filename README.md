@@ -83,10 +83,15 @@ that ships with the app are in `apps/web/THIRD_PARTY_NOTICES.md`.
 
 ## Licence
 
-**GNU AGPL-3.0** — see [`LICENSE`](LICENSE). A commercial licence is available if those terms
-do not suit you: [`LICENSE-COMMERCIAL.md`](LICENSE-COMMERCIAL.md). The project was copyleft because
-the shipped sticker detector was trained with Ultralytics, itself AGPL-3.0; since 2026-09-17 the
-detector is this repository's own (`ml/cubedet`), with no Ultralytics lineage, so that reason no
-longer holds and the licence is a choice rather than an inheritance.
+**MIT** — see [`LICENSE`](LICENSE). Use it, sell it, close it, no permission needed.
 
-`packages/gan-driver` is MIT. Third-party components keep their own licences.
+It was AGPL-3.0 until 2026-09-17, and not by preference: the shipped sticker detector had been
+trained with Ultralytics, which is AGPL-3.0 and whose stated position reaches the applications that
+use such a model. The detector is now this repository's own (`ml/cubedet`, trained from an
+ImageNet-pretrained backbone under Apache-2.0/BSD-3), so the inherited obligation is gone and the
+licence is a choice. Two things MIT does not lift: the training photographs are Roboflow Universe
+sets under **CC BY 4.0** and must stay credited wherever the model ships
+([`apps/web/THIRD_PARTY_NOTICES.md`](apps/web/THIRD_PARTY_NOTICES.md)), and anyone taking the
+PREVIOUS detector out of this repository's history takes it under the terms it had then.
+
+Third-party components keep their own licences.
