@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assembleColors, type ColorFace } from '../src/ai-assemble';
+import { assembleColors, type ColorFace, resolveCentreCollision } from '../src/ai-assemble';
 import { NUM_COLORS } from '../src/nine-of-each';
 import { FACES, type Face } from '../src/types';
 
@@ -73,5 +73,72 @@ describe('nine-of-each repair inside assembleColors', () => {
       );
     }
     expect(assembleColors(faces).valid).toBe(false);
+  });
+});
+
+describe('a sticker a person locked', () => {
+  /** The one-misread cube the first test repairs: R0 read as orange, narrowly. */
+  function misread(): Record<Face, ColorFace> {
+    const faces = facesWithScores(SOLVED);
+    faces.R!.colors[0] = LETTER_CLASS.L;
+    faces.R!.scores![0] = Array.from({ length: NUM_COLORS }, (_, j) =>
+      j === LETTER_CLASS.L ? 0.4 : j === LETTER_CLASS.R ? 0.38 : 0.01,
+    );
+    return faces;
+  }
+
+  it('is never moved by the count repair, even when moving it is the cheap fix', () => {
+    const faces = misread();
+    faces.R!.locked = Array<boolean>(9).fill(false);
+    faces.R!.locked[0] = true; // the user said orange; the repair must take that as given
+    expect(assembleColors(faces).valid).toBe(false);
+  });
+
+  describe('under the collision resolver, whose repair has no cost ceiling', () => {
+    // resolveCentreCollision assembles with an INFINITE repair ceiling, so a correction that is only
+    // expensive to overrule would be overruled there. The setup: D is the side not yet filed, and
+    // the newcomer is D's capture with its centre misread as U -- a collision with the filed U. The
+    // one legal filing puts the newcomer at D, and that filing ALSO needs R0 repaired.
+    function collision(lockR0: boolean): ReturnType<typeof resolveCentreCollision> {
+      const faces = misread();
+      if (lockR0) {
+        faces.R!.locked = Array<boolean>(9).fill(false);
+        faces.R!.locked[0] = true;
+      }
+      const d = faces.D!;
+      const newcomer: ColorFace = {
+        ...d,
+        colors: d.colors.map((c, k) => (k === 4 ? LETTER_CLASS.U : c)),
+        scores: d.scores!.map((row, k) =>
+          k === 4 ? row.map((_, j) => (j === LETTER_CLASS.U ? 0.95 : 0.01)) : [...row],
+        ),
+      };
+      const filed: Partial<Record<Face, ColorFace>> = { ...faces };
+      delete filed.D;
+      return resolveCentreCollision(filed, newcomer, undefined, { diagnose: false });
+    }
+
+    it('repairs R0 when nobody locked it -- the control, so the next test means something', () => {
+      const { result } = collision(false);
+      expect(result.valid).toBe(true);
+      expect(result.facelets).toBe(SOLVED);
+    });
+
+    it('refuses rather than move R0 once a person has locked it', () => {
+      expect(collision(true).result.valid).toBe(false);
+    });
+  });
+
+  it('does not stop the repair when the lock agrees with it', () => {
+    const faces = misread();
+    faces.R!.colors[0] = LETTER_CLASS.R; // corrected to the truth...
+    faces.R!.scores![0] = Array.from({ length: NUM_COLORS }, (_, j) =>
+      j === LETTER_CLASS.R ? 1 : 0,
+    );
+    faces.R!.locked = Array<boolean>(9).fill(false);
+    faces.R!.locked[0] = true; // ...and locked there
+    const result = assembleColors(faces);
+    expect(result.valid).toBe(true);
+    expect(result.facelets).toBe(SOLVED);
   });
 });

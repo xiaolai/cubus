@@ -88,13 +88,20 @@ export function decodeDetections(
       }
     }
     if (bestScore >= confThreshold) {
+      // The tensor is the far side of a boundary: whatever the runtime hands back, a box only
+      // means something if it is finite and has an area. A NaN coordinate would survive every
+      // geometric check downstream, because every comparison against NaN is false -- so nine of
+      // them would read as a face whose rows and columns nothing could dispute.
+      const [cx, cy, w, h] = [at(0, a), at(1, a), at(2, a), at(3, a)];
+      const side = (v: number): boolean => Number.isFinite(v) && v > 0;
+      if (!Number.isFinite(cx) || !Number.isFinite(cy) || !side(w) || !side(h)) continue;
       const scores = new Array<number>(numClasses);
       for (let c = 0; c < numClasses; c++) scores[c] = at(4 + c, a);
       out.push({
-        cx: at(0, a),
-        cy: at(1, a),
-        w: at(2, a),
-        h: at(3, a),
+        cx,
+        cy,
+        w,
+        h,
         classId: best,
         confidence: bestScore,
         scores,

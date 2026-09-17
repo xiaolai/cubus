@@ -1449,6 +1449,16 @@ export class AiScanPanel extends HTMLElement {
     }
     read.colors[index] = colour;
     read.confidence[index] = 1; // a person looked at it, which beats the detector's guess
+    // ...and so must every fallback in `assembleColors`, or they quietly undo it. `locked` is the
+    // guarantee: neither the count repair nor the paint path may return a colouring that changes
+    // this sticker, whatever cost ceiling it runs under. The one-hot row is guidance on top of that
+    // -- the count repair reads `scores`, not `colors`, and a stale row would have it spend its
+    // search trying to move this sticker back, find the lock, and refuse a cube it could otherwise
+    // have repaired around the correction.
+    read.locked ??= Array<boolean>(9).fill(false);
+    read.locked[index] = true;
+    const row = read.scores?.[index];
+    if (read.scores && row) read.scores[index] = row.map((_, c) => (c === colour ? 1 : 0));
     // Whatever was settled is being re-decided — the same sentence `scheduleCheck` says on the
     // camera path, and the same reason. Painting had no equivalent, so editing an ACCEPTED cube
     // into an invalid one emitted 'scan-invalid' while still reporting complete: true, and the
@@ -1595,6 +1605,11 @@ export class AiScanPanel extends HTMLElement {
    */
   private dropUnsettledCaptures(): Face[] {
     const dropped = FACES.filter((f) => this.faces[f] && !this.settled.has(f));
+    // A contested capture is an unsettled capture -- it is a side held up whose centre collided
+    // with one already filed, waiting for the next look to say which is which. It was surviving
+    // this drop, so it went on counting towards progress and was still there to be resolved
+    // against readings that no longer existed.
+    this.contested = null;
     if (dropped.length === 0) return dropped;
     for (const f of dropped) delete (this.faces as Partial<Record<Face, ColorFace>>)[f];
     // Every confirmation answered a question about a reading that no longer exists.
@@ -2019,9 +2034,18 @@ export class AiScanPanel extends HTMLElement {
         const read = this.faces[f];
         const k = rots[fi] ?? 0;
         if (read && k !== 0) {
+          // Everything the capture carries is per-sticker and rotates together. Dropping `scores`,
+          // `lab` or `locked` here left the fallbacks with nothing to work on -- or nothing to
+          // respect -- the next time this cube was checked, after a sticker correction, say; and
+          // only for the sides that happened to need rotating, which is the worst kind of
+          // difference: one that depends on how the cube was held.
           this.faces[f] = {
+            ...read,
             colors: rotateFace(read.colors, k),
             confidence: rotateFace(read.confidence, k),
+            ...(read.scores ? { scores: rotateFace(read.scores, k) } : {}),
+            ...(read.lab ? { lab: rotateFace(read.lab, k) } : {}),
+            ...(read.locked ? { locked: rotateFace(read.locked, k) } : {}),
           };
         }
       });
