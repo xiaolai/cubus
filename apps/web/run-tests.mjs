@@ -89,30 +89,78 @@ export function resolveTier(tier, root = WEB) {
  * test passes in about 200 ms alone and 3/3 locally — a timeout caused by the neighbours, reported
  * as a fault in the test.
  *
- * The trigger was arithmetic: two merges took the browser tier from 11 suites to 13, and the sixth
- * concurrent WebKit is where the runner ran out. Nothing about `screen-swap` changed.
- *
  * Raising the timeout would have hidden it, and a retry would have hidden it twice. The cause is
  * contention, so the fix is to stop contending: browser suites run three at a time, node-only
- * suites keep six. `all` takes the lower number because it contains the browser ones.
+ * suites keep six.
  *
  * The repository already knew this hazard — `scanner-gpu.test.mjs` documents a headed Chromium
  * going red at 2.5 s under `--test-concurrency=6` "with a dozen other browsers alive" and passing
  * at 6.8 s alone — but the lesson was written into one suite's retry rather than into the runner.
  */
-const CONCURRENCY = { fast: 6, browser: 3, all: 3 };
+const CONCURRENCY = { fast: 6, browser: 3 };
+
+/**
+ * `all` IS TWO PHASES, NOT ONE NUMBER — and this is the half the 2026-09-09 fix missed.
+ *
+ * Lowering `all` to 3 stopped six browsers competing with each other, and left the other half of the
+ * problem standing: `node --test --test-concurrency=N` treats every FILE as one slot of equal cost, and
+ * the costs here are not remotely equal. A node-only solver suite spawns a WORKER POOL and takes the whole
+ * machine — measured at 963% CPU across the `fast` tier on an 8-core box, so one slot is many cores — while
+ * a browser suite needs very little CPU but carries a 120 s wall-clock bound on `page.goto`. At one flat
+ * concurrency a browser gets scheduled next to two of those pools, and on a two-core runner it starves.
+ *
+ * The evidence that this is the live mechanism, measured 2026-09-17: the `browser` tier alone has never
+ * failed this way, the FULL tier fails intermittently, and it fails on a DIFFERENT suite each time —
+ * `screen-swap` in 2026-09-09, `scan screen composition` on the nightly of 2026-09-16, and
+ * `initsolver-off-main-thread` locally the same day, all at 120 s, all in `page.goto`. A census of live
+ * Playwright processes across the browser tier held a flat plateau of 16-20 with nothing left behind, so
+ * the browsers are not leaking and three is not too many browsers: the problem is what they are three
+ * ALONGSIDE.
+ *
+ * So the two kinds no longer share the machine. Node suites run first, six at a time, then the browsers run
+ * three at a time with the pools finished and gone.
+ *
+ * IT COSTS ABOUT A HUNDRED SECONDS, and that is the honest trade. Measured on the dev Mac, 2026-09-17: 368 s
+ * for the node phase plus 264 s for the browser phase, against 527-559 s for the same suites interleaved at
+ * a flat concurrency of 3. The overlap that is being given up was doing real work — a browser waiting on a
+ * page is CPU a solver could have used. What it buys is that a `page.goto` is never waiting on a machine
+ * some other suite has taken, which is a whole CI run each time it happens, and a red nightly that has to be
+ * read by a person before it can be dismissed.
+ *
+ * (An earlier draft of this comment claimed the split made the tier FASTER, on the reasoning that the node
+ * half gains concurrency. It does gain concurrency, and the tier is still slower; the reasoning was fine and
+ * the conclusion was wrong, which is the difference between an argument and a measurement.)
+ */
+export function phasesOf(tier, root = WEB) {
+  if (tier !== 'all') return [{ name: tier, files: resolveTier(tier, root), concurrency: CONCURRENCY[tier] ?? 3 }];
+  // `resolveTier` is still asked for `all`, so its "every test file belongs to a tier" check runs exactly
+  // as it did: splitting the RUN must not split the guard that says nothing is left out.
+  const every = new Set(resolveTier('all', root));
+  const browser = resolveTier('browser', root);
+  const node = [...every].filter((f) => !browser.includes(f));
+  return [
+    { name: 'node', files: node, concurrency: CONCURRENCY.fast },
+    { name: 'browser', files: browser, concurrency: CONCURRENCY.browser },
+  ];
+}
 
 function main(argv) {
   const [tier = 'all'] = argv;
-  const files = resolveTier(tier);
-  const concurrency = CONCURRENCY[tier] ?? 3;
-  console.log(`test tier "${tier}": ${files.length} files, concurrency ${concurrency}`);
-  const result = spawnSync(process.execPath, ['--test', `--test-concurrency=${concurrency}`, ...files], {
-    cwd: WEB,
-    stdio: 'inherit',
-  });
-  if (result.error) throw result.error;
-  process.exit(result.status ?? 1);
+  const phases = phasesOf(tier);
+  for (const phase of phases) {
+    console.log(`test tier "${tier}"${phases.length > 1 ? ` · ${phase.name} phase` : ''}: `
+      + `${phase.files.length} files, concurrency ${phase.concurrency}`);
+    const result = spawnSync(process.execPath, ['--test', `--test-concurrency=${phase.concurrency}`, ...phase.files], {
+      cwd: WEB,
+      stdio: 'inherit',
+    });
+    if (result.error) throw result.error;
+    // STOP AT THE FIRST RED PHASE. Carrying on would spend minutes of browser time on a tree already known
+    // to be broken, and — worse — would end on the second phase's exit code, so a red node phase followed
+    // by a green browser phase would exit 0.
+    if (result.status !== 0) process.exit(result.status ?? 1);
+  }
+  process.exit(0);
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
