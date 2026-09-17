@@ -11,7 +11,7 @@
 # TRAINING CODE between a baseline and the experiment meant to be compared against it.
 #
 #   python3.11 -m venv ml/venv-v3 && ml/venv-v3/bin/pip install -r ml/requirements-train.txt
-ultralytics==8.4.126
+ultralytics==8.4.152
 torch==2.13.0
 onnx==1.22.0
 onnxruntime==1.29.0
