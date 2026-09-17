@@ -2633,7 +2633,7 @@ function wellSeparated(lab, groups, maxRatio) {
     for (let c = 0; c < NUM_COLORS; c++) {
       if (c !== groups[i]) nearest = Math.min(nearest, Math.sqrt(squared(point, centres[c])));
     }
-    if (own > maxRatio * nearest) return false;
+    if (!(own < maxRatio * nearest)) return false;
   }
   return true;
 }
@@ -2911,6 +2911,13 @@ function symmetricRefusal(survivors, alternatives) {
   );
 }
 var MAX_REPAIR_COST = 12;
+function movesALockedSticker(faces, colors) {
+  return FACES.some(
+    (face, fi) => (faces[face]?.locked ?? []).some(
+      (on, k) => on && colors[fi * 9 + k] !== faces[face].colors[k]
+    )
+  );
+}
 function repairByCounts(faces, maxCost) {
   const scores = [];
   for (const face of FACES) {
@@ -2926,6 +2933,7 @@ function repairByCounts(faces, maxCost) {
     return null;
   }
   if (result.changed.length === 0 || result.cost > maxCost) return null;
+  if (movesALockedSticker(faces, result.colors)) return null;
   const out = {};
   FACES.forEach((face, i) => {
     out[face] = {
@@ -2945,7 +2953,7 @@ function recolourByPaint(faces) {
     centres.push(capture.colors[4]);
   }
   const colors = colorsFromPaint(lab, centres);
-  if (!colors) return null;
+  if (!colors || movesALockedSticker(faces, colors)) return null;
   const out = {};
   FACES.forEach((face, i) => {
     out[face] = { ...faces[face], colors: colors.slice(i * 9, i * 9 + 9) };
@@ -2958,35 +2966,20 @@ function assembleColors(faces, threshold = LOW_CONFIDENCE_THRESHOLD, confirmed =
 function assembleWithin(faces, threshold, confirmed, options, maxRepairCost, allowPaint = true) {
   const bySlot = checkedBySlot(faces);
   if ("valid" in bySlot) return bySlot;
+  const accept = (candidate) => {
+    if (!candidate) return null;
+    const bySlotCandidate = checkedBySlot(candidate);
+    if ("valid" in bySlotCandidate) return null;
+    const solvable = SCHEMES.flatMap((scheme) => solvableReadings(bySlotCandidate, scheme));
+    if (solvable.length === 0) return null;
+    return assembleWithin(candidate, threshold, confirmed, options, maxRepairCost, allowPaint);
+  };
   const all = SCHEMES.flatMap((scheme) => solvableReadings(bySlot, scheme));
   if (all.length === 0) {
-    const repaired = repairByCounts(faces, maxRepairCost);
-    if (repaired) {
-      const bySlotRepaired = checkedBySlot(repaired);
-      if (!("valid" in bySlotRepaired)) {
-        const afterRepair = SCHEMES.flatMap((scheme) => solvableReadings(bySlotRepaired, scheme));
-        if (afterRepair.length > 0) {
-          return assembleWithin(repaired, threshold, confirmed, options, maxRepairCost, allowPaint);
-        }
-      }
-    }
-    const repainted = allowPaint ? recolourByPaint(faces) : null;
-    if (repainted) {
-      const bySlotRepainted = checkedBySlot(repainted);
-      if (!("valid" in bySlotRepainted)) {
-        const afterPaint = SCHEMES.flatMap((scheme) => solvableReadings(bySlotRepainted, scheme));
-        if (afterPaint.length > 0) {
-          return assembleWithin(
-            repainted,
-            threshold,
-            confirmed,
-            options,
-            maxRepairCost,
-            allowPaint
-          );
-        }
-      }
-    }
+    const byCounts = accept(repairByCounts(faces, maxRepairCost));
+    if (byCounts) return byCounts;
+    const byPaint = accept(allowPaint ? recolourByPaint(faces) : null);
+    if (byPaint) return byPaint;
     return reject(
       "no orientation of the faces is solvable \u2014 a colour was misread",
       options.diagnose === false ? { misreadCount: null } : diagnoseAcrossSchemes(bySlot)
@@ -3106,13 +3099,16 @@ function decodeDetections(data, numClasses, numAnchors, confThreshold = 0.25) {
       }
     }
     if (bestScore >= confThreshold) {
+      const [cx, cy, w, h] = [at(0, a), at(1, a), at(2, a), at(3, a)];
+      const side = (v) => Number.isFinite(v) && v > 0;
+      if (!Number.isFinite(cx) || !Number.isFinite(cy) || !side(w) || !side(h)) continue;
       const scores = new Array(numClasses);
       for (let c = 0; c < numClasses; c++) scores[c] = at(4 + c, a);
       out.push({
-        cx: at(0, a),
-        cy: at(1, a),
-        w: at(2, a),
-        h: at(3, a),
+        cx,
+        cy,
+        w,
+        h,
         classId: best,
         confidence: bestScore,
         scores
@@ -5717,6 +5713,10 @@ var AiScanPanel = class extends HTMLElement {
     }
     read.colors[index] = colour;
     read.confidence[index] = 1;
+    read.locked ??= Array(9).fill(false);
+    read.locked[index] = true;
+    const row = read.scores?.[index];
+    if (read.scores && row) read.scores[index] = row.map((_, c) => c === colour ? 1 : 0);
     this.invalidateReading();
     const done = this.capturedFaces().length;
     if (this.painting) {
@@ -5839,6 +5839,7 @@ var AiScanPanel = class extends HTMLElement {
    */
   dropUnsettledCaptures() {
     const dropped = FACES.filter((f) => this.faces[f] && !this.settled.has(f));
+    this.contested = null;
     if (dropped.length === 0) return dropped;
     for (const f of dropped) delete this.faces[f];
     this.confirmed = {};
@@ -6157,8 +6158,12 @@ var AiScanPanel = class extends HTMLElement {
         const k = rots[fi] ?? 0;
         if (read && k !== 0) {
           this.faces[f] = {
+            ...read,
             colors: rotateFace(read.colors, k),
-            confidence: rotateFace(read.confidence, k)
+            confidence: rotateFace(read.confidence, k),
+            ...read.scores ? { scores: rotateFace(read.scores, k) } : {},
+            ...read.lab ? { lab: rotateFace(read.lab, k) } : {},
+            ...read.locked ? { locked: rotateFace(read.locked, k) } : {}
           };
         }
       });

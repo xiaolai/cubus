@@ -170,7 +170,12 @@ function wellSeparated(lab: StickerLab, groups: readonly number[], maxRatio: num
     for (let c = 0; c < NUM_COLORS; c++) {
       if (c !== groups[i]) nearest = Math.min(nearest, Math.sqrt(squared(point, centres[c]!)));
     }
-    if (own > maxRatio * nearest) return false;
+    // Stated as a NEGATED `<` so the degenerate cases fail closed. When a frame's stickers share
+    // one a*b* -- a blown-out or monochrome capture -- every centroid coincides, own and nearest
+    // are both zero, and `0 > 0` would have called that well separated and let balanced k-means
+    // split 54 identical points into six invented paints. `!(0 < 0)` refuses it, and so does any
+    // NaN, which is the same class of answer.
+    if (!(own < maxRatio * nearest)) return false;
   }
   return true;
 }
