@@ -432,14 +432,28 @@ test('a repair called off mid-search lets go of its worker', async () => {
         // Every distance table built and the search run once, so nothing below times a warm-up.
         await pool.stageRoute({ want: 'bounds', facelets });
         await solved(Math.floor(budget / 8), new AbortController().signal);
+        // HOW LONG A REQUEST TAKES TO GET THERE AND BACK, with no search in it: a `bounds` read is a
+        // table lookup. The worst of a few, because it is the slowest delivery that matters below.
+        let trip = 0;
+        for (let i = 0; i < 4; i += 1) {
+          const t0 = clock();
+          await pool.stageRoute({ want: 'bounds', facelets });
+          trip = Math.max(trip, clock() - t0);
+        }
         // Unstopped, with a word nobody raises: the same request, and how long it holds the worker.
         let from = clock();
         const full = await solved(budget, new AbortController().signal);
         const fullMs = clock() - from;
-        // Called off an eighth of the way through, by that same clock.
+        // Called off an eighth of the way through THE SEARCH — measured from when the search can have
+        // started, not from when it was posted. The budget is about 80 ms of work, so an eighth of
+        // `fullMs` alone is some 10 ms, and a message reaching a worker while three browsers run at
+        // once can take longer than that: the word was then up before the search read node zero, and
+        // the case failed on its own precondition rather than on anything the product did (seen once
+        // in the full tier, 2026-09-17). Both terms stretch together on a slow machine, which is the
+        // reasoning the wall-clock assertion below already rests on.
         const walk = new AbortController();
         const asked = solved(budget, walk.signal);
-        await new Promise((resolve) => { setTimeout(resolve, fullMs / 8); });
+        await new Promise((resolve) => { setTimeout(resolve, trip + Math.max(0, fullMs - trip) / 8); });
         from = clock();
         walk.abort();
         // Posted while the stopped search still holds the worker, so the worker reads it only once
@@ -450,7 +464,7 @@ test('a repair called off mid-search lets go of its worker', async () => {
         const stopped = await asked;
         const answered = await next;
         const freedMs = clock() - from;
-        return { isolated: true, spawned, full, fullMs, stopped, answered, freedMs };
+        return { isolated: true, spawned, full, fullMs, trip, stopped, answered, freedMs };
       } finally {
         pool.cancel();
       }
@@ -467,7 +481,8 @@ test('a repair called off mid-search lets go of its worker', async () => {
     assert.equal(out.stopped.moves, null, 'a stopped search has no route to offer');
     // WHILE IT RAN. The first poll is at node zero, so a word up before the search began stops it
     // there; a positive multiple of STOP_POLL is a running search that the word reached at a poll.
-    assert.ok(out.stopped.nodes > 0, 'the word was up before the search began, not during it');
+    assert.ok(out.stopped.nodes > 0, `the word was up before the search began, not during it`
+      + ` (a round trip took up to ${Math.round(out.trip)} ms against ${Math.round(out.fullMs)} ms for the whole budget)`);
     assert.equal(out.stopped.nodes % STOP_POLL, 0,
       `${out.stopped.nodes} nodes is not a poll, so the word is not what stopped the search`);
     // An eighth of the way in by the clock; half the budget leaves the two runs' speeds a factor
