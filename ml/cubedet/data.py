@@ -34,7 +34,7 @@ from torch.utils.data import Dataset
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from cube_infer import IMG_SIZE, PAD, letterbox_geometry  # noqa: E402
+from cube_infer import IMG_SIZE, NUM_CLASSES, PAD, letterbox_geometry  # noqa: E402
 
 # Cap on ground-truth stickers per SAMPLE. A single face is 9; the renderer's multi-cube scenes go
 # higher; and a mosaic merges four images, so the ceiling has to be four times a single image's,
@@ -538,6 +538,17 @@ def _padded(rows: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor, torch
     mask = torch.zeros(len(rows), width, dtype=torch.bool)
     for i, r in enumerate(rows):
         if len(r):
+            # `.long()` TRUNCATES. A label file carrying 1.9 -- a bad converter, a hand-edited txt,
+            # a class column that picked up a confidence -- became colour 1 with nothing said, and
+            # the model learned it. Out-of-range is caught here too, where the file that produced it
+            # can still be named, rather than as an index error inside the assigner ten steps later.
+            cls = r[:, 0]
+            wrong = (cls != cls.round()) | (cls >= NUM_CLASSES) | ((cls < 0) & (cls != IGNORE_CLASS))
+            if bool(wrong.any()):
+                raise ValueError(
+                    f"label rows {wrong.nonzero(as_tuple=True)[0].tolist()} of image {i} in this batch "
+                    f"carry classes {cls[wrong].tolist()}; expected whole numbers in [0, {NUM_CLASSES}) or {IGNORE_CLASS}"
+                )
             labels[i, : len(r)] = r[:, 0].long()
             boxes[i, : len(r)] = r[:, 1:]
             mask[i, : len(r)] = True
