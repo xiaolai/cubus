@@ -260,6 +260,23 @@ def main() -> None:
     # frame reading beside it, so the size of the old error is on the page rather than in an
     # argument.
     #
+    # RE-MEASURED 2026-09-18 with that script, on 30 scenes x 8 poses per arm (2,821 stickers
+    # readable in EVERY arm), with the generator as it stands after 1cae749:
+    #
+    #                          synth_v5   now     real photographs
+    #     stickers unreadable    43.8%   30.1%        22.7%
+    #       ... too grey         42.2%   19.2%        14.8%
+    #       ... too bright        0.6%    6.6%         7.7%
+    #       ... too dark          1.0%    4.2%         0.1%
+    #     red hue deviation      4.92deg 3.19deg        --
+    #       ... read by frame    4.94deg 3.73deg        --
+    #
+    # The defaults stand: on every row the shipped arm reads closer to the photographs. Frame
+    # grouping cost the shipped arm 0.54 deg of the red row and synth_v5 0.02 -- an arm whose spread
+    # is already wide hides the second cube inside it -- so the old reading flattered the arm it
+    # rejected, and the decision survives being re-read. The absolute figures differ from the row
+    # above because that render is gone and this one is smaller; the ordering is what carries.
+    #
     #                          synth_v5    now      real photographs
     #     stickers unreadable    47.8%    32.4%         24.6%
     #       ... too grey         45.4%    19.5%         14.5%
