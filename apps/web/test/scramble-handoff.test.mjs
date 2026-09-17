@@ -18,6 +18,7 @@ import { readFileSync } from 'node:fs';
 import { Window } from 'happy-dom';
 import Cube from '../vendor/cubejs.js';
 import { blockAt, readAppSource } from './app-source.mjs';
+import { solverLoaded } from './fixtures/app-waits.mjs';
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -59,7 +60,7 @@ before(async () => {
   }
   ({ state } = await import('../lib/app.js'));
   await tick();
-  await settle(1500); // the solver loads in the background, and nothing rolls without it
+  await solverLoaded(); // nothing rolls before the solver has loaded, and a press before it is ignored
 });
 
 // The loading window. Every observation taken while the walk is still being worked out must find

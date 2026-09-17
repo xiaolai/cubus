@@ -23,6 +23,7 @@ import { readFileSync } from 'node:fs';
 
 import { Window } from 'happy-dom';
 import Cube from '../vendor/cubejs.js';
+import { eventually, solverLoaded } from './fixtures/app-waits.mjs';
 
 const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
@@ -61,7 +62,7 @@ before(async () => {
   }
   ({ state } = await import('../lib/app.js'));
   await tick();
-  await settle(1500); // the solver loads in the background, and the die does nothing without it
+  await solverLoaded(); // the die ignores a press made before the solver has loaded
 });
 
 // The failure has to reach the person who pressed the button. `#moveCount` is where it is said
@@ -115,7 +116,9 @@ test('the die is held from the press, not from after the roll', async () => {
     'the die stayed live across the roll it started — a second press rolls a second cube, and the two can land in either order');
   die.click(); // held, so this one does nothing at all
 
-  await settle(3000);
+  // Waited for as a fact — the die released — rather than a guessed three seconds, which a busy machine
+  // outruns (test/fixtures/app-waits.mjs).
+  await eventually(() => !$('#randCube').disabled, 'the roll to finish and the die to come back');
   assert.notEqual(state.cube.facelets, before, 'the press produced a cube');
   assert.equal($('#randCube').disabled, false, 'and the die comes back, or one roll costs the screen its button');
 });
