@@ -22,6 +22,10 @@ def face_of(boxes):
     """(ok, digits). boxes = [(cls, cx, cy, w, h)] in pixels."""
     if len(boxes) < 10:
         return False, None, "too few boxes"
+    # A box with no area is an annotation fault, and as the tenth largest it made the ratio below a
+    # division by zero.
+    if any(not (b[3] > 0 and b[4] > 0) for b in boxes):
+        return False, None, "a sticker box has no area"
     order = sorted(boxes, key=lambda b: b[3] * b[4], reverse=True)
     areas = [b[3] * b[4] for b in order]
     ratio = areas[8] / areas[9]
@@ -29,7 +33,6 @@ def face_of(boxes):
         return False, None, f"front face ambiguous (9th/10th area {ratio:.2f})"
     face = order[:9]
     ys = np.array([b[2] for b in face])
-    xs = np.array([b[1] for b in face])
     rows = np.argsort(ys)
     banded = [sorted([face[i] for i in rows[k:k + 3]], key=lambda b: b[1]) for k in (0, 3, 6)]
     # rows must SEPARATE: the gap between bands beats the spread inside one
@@ -38,6 +41,15 @@ def face_of(boxes):
     gap = min(band_y[1] - band_y[0], band_y[2] - band_y[1])
     if gap <= inner:
         return False, None, f"rows not separable (gap {gap:.1f} <= spread {inner:.1f})"
+    # ...and so must the COLUMNS, which the docstring always promised and nothing checked: sorting
+    # each row by x imposes a column order on any nine boxes, so nine stacked on one x passed as a
+    # face. A column is the j-th box of each row.
+    cols = [[band[j] for band in banded] for j in range(3)]
+    col_x = [np.mean([b[1] for b in col]) for col in cols]
+    col_inner = max(max(b[1] for b in col) - min(b[1] for b in col) for col in cols)
+    col_gap = min(col_x[1] - col_x[0], col_x[2] - col_x[1])
+    if col_gap <= col_inner:
+        return False, None, f"columns not separable (gap {col_gap:.1f} <= spread {col_inner:.1f})"
     flat = [b for band in banded for b in band]
     return True, "".join(str(b[0]) for b in flat), f"ratio {ratio:.2f}"
 

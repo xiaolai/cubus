@@ -338,7 +338,7 @@ def test_manifest_labels_match_export_py() -> None:
             continue
         for key, value in labels.items():
             assert entry.get(key) == value, f"MANIFEST.json {name}.{key} differs from export.py — regenerate the manifest (export.py) rather than editing one of them by hand"
-    print(f"PASS models: MANIFEST.json labels are export.py's, verbatim" + (f" (not written: {', '.join(declined)})" if declined else ""))
+    print("PASS models: MANIFEST.json labels are export.py's, verbatim" + (f" (not written: {', '.join(declined)})" if declined else ""))
 
 
 def test_nested_boxes_are_dropped_exactly_as_the_app_drops_them():
@@ -401,6 +401,53 @@ def test_licence_note_says_where_the_weights_started():
     print("PASS export: the licence note says where a checkpoint's weights started")
 
 
+# The files CI runs as `python ml/<file>` call their tests by name from `__main__`, so a test that is
+# written and not added to that list is a test that never runs -- and says nothing, because the
+# runner prints ALL PASS over whatever it did call. This is the check that makes that loud.
+SCRIPT_RUN_TESTS = ("test_pipeline.py", "test_propose.py", "test_drop_dataset.py", "test_drop_eval.py")
+
+
+def test_every_script_run_test_is_called_by_its_runner() -> None:
+    import ast
+
+    for name in SCRIPT_RUN_TESTS:
+        tree = ast.parse((HERE / name).read_text(encoding="utf-8"))
+        # Module-level test functions, wherever they sit -- including after the runner block, which
+        # a text search would read as part of the runner.
+        defined = {n.name for n in tree.body if isinstance(n, ast.FunctionDef) and n.name.startswith("test_")}
+        runners = [
+            n for n in tree.body
+            if isinstance(n, ast.If) and isinstance(n.test, ast.Compare)
+            and isinstance(n.test.left, ast.Name) and n.test.left.id == "__name__"
+        ]
+        assert len(runners) == 1, f"{name} has {len(runners)} __main__ blocks"
+        referenced = {n.id for n in ast.walk(runners[0]) if isinstance(n, ast.Name)}
+        missing = sorted(defined - referenced)
+        assert defined, f"{name} defines no tests -- is it still a test file?"
+        assert not missing, f"{name} defines tests its __main__ never calls, so CI never runs them: {missing}"
+    workflow = (HERE.parent / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    unrun = [n for n in SCRIPT_RUN_TESTS if f"ml/{n}" not in workflow]
+    assert not unrun, f"CI never invokes {unrun}"
+    print(f"PASS runners: every test in {len(SCRIPT_RUN_TESTS)} script-run files is called, and CI runs each file")
+
+
+def test_an_int8_that_could_not_be_checked_is_not_written() -> None:
+    """Both "unchecked" answers used to be True, so an artefact nobody could verify shipped anyway."""
+    import tempfile
+
+    import export
+
+    saved = export.HERE
+    with tempfile.TemporaryDirectory() as tmp:
+        export.HERE = Path(tmp)  # no golden fixture here: the question cannot be asked
+        try:
+            alive, why = export.int8_reads_a_face(Path(tmp) / "a.onnx", Path(tmp) / "b.onnx")
+        finally:
+            export.HERE = saved
+    assert alive is False and why.startswith("unchecked"), (alive, why)
+    print("PASS export: an int8 that could not be checked is refused, and the reason says so")
+
+
 if __name__ == "__main__":
     test_cube_geometry()
     test_one_cube_has_one_pigment_per_colour()
@@ -413,4 +460,6 @@ if __name__ == "__main__":
     test_manifest_labels_match_export_py()
     test_licence_note_says_where_the_weights_started()
     test_nested_boxes_are_dropped_exactly_as_the_app_drops_them()
+    test_an_int8_that_could_not_be_checked_is_not_written()
+    test_every_script_run_test_is_called_by_its_runner()
     print("ALL PASS")

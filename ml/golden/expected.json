@@ -43,12 +43,12 @@
       }
     },
     "abstain-02.png": {
-      "preprocess_sha256": "df79ca9b614590f34c6afc0ed5d68196b441bc26ecd539026df6eb1db317cbec",
+      "preprocess_sha256": "32ae07a45b407de58696594907c1df2bcff11dc5d85fa1722146011827e6a049",
       "legs": {
-        "onnx": "BAD_GEOMETRY",
-        "coreml": "BAD_GEOMETRY",
-        "tflite": "BAD_GEOMETRY",
-        "native": "BAD_GEOMETRY"
+        "onnx": "PARTIAL_FACE",
+        "coreml": "PARTIAL_FACE",
+        "tflite": "PARTIAL_FACE",
+        "native": "PARTIAL_FACE"
       }
     },
     "photo-00.png": {
