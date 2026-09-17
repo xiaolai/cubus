@@ -103,6 +103,12 @@ class PhotoRead:
     boxes: tuple[tuple[int, int, int, int], ...] = ()  # [x, y, w, h] in upright photo pixels
     fit: str = ""  # which fit found the grid, "app" or "tolerant"; empty when none did
     beyond: int = 0  # stickers of the grid's size one lattice step outside it (BIGGER_CUBE_STICKERS)
+    # LAST, and it has to stay last: callers build this positionally. Median CIE Lab per sticker from
+    # the photograph's own pixels — the assembly reads it only where everything else has refused
+    # (packages/cube-scanner/src/paint-groups.ts). The scores answer "what colour is this sticker",
+    # which a shared illuminant makes ambiguous; these answer "which stickers carry the same paint",
+    # which it does not.
+    lab: tuple[tuple[float, float, float], ...] = ()
 
 
 def find_sets(photo_dir: Path) -> list[CubeSet]:
@@ -231,7 +237,10 @@ class Detector:
 def assemble(node: str, assembler: Path, sets: list[list[PhotoRead]]) -> list[dict]:
     """One run of the bundled cube half over every set that needs it."""
     payload = [
-        {"captures": [{"colors": r.colors, "confidence": r.confidence, "scores": r.scores} for r in reads]}
+        # `lab` is omitted rather than sent empty: absent means "no pixels were supplied", and the
+        # assembly refuses a malformed one instead of dropping it, so the two must not look alike.
+        {"captures": [{"colors": r.colors, "confidence": r.confidence, "scores": r.scores,
+                       **({"lab": r.lab} if r.lab else {})} for r in reads]}
         for reads in sets
     ]
     done = subprocess.run(
