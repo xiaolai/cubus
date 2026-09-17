@@ -99,10 +99,10 @@
   },
   {
     "file": "abstain-02.png",
-    "source": "https://upload.wikimedia.org/wikipedia/commons/b/b5/4x4_Oll_parity.jpg",
+    "source": "https://upload.wikimedia.org/wikipedia/commons/9/91/4x4_Pll_parity.png",
     "licence": "CC0",
     "shape": "photo-720",
-    "reference_verdict": "BAD_GEOMETRY"
+    "reference_verdict": "PARTIAL_FACE"
   },
   {
     "file": "photo-00.png",

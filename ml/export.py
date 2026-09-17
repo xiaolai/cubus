@@ -146,7 +146,7 @@ def assert_int8_derived(fp32: Path, int8: Path, work: Path) -> None:
         sys.exit(f"{int8.name} is not quantize_dynamic({fp32.name}): the two artefacts do not describe one model")
 
 
-def export_onnx(pt: Path, work: Path, out: Path) -> tuple[Path, Path, str]:
+def export_onnx(pt: Path, work: Path, out: Path) -> tuple[Path, Path | None, str]:
     from ultralytics import YOLO
 
     src = fresh_copy(pt, work / "onnx")
@@ -156,9 +156,15 @@ def export_onnx(pt: Path, work: Path, out: Path) -> tuple[Path, Path, str]:
     shutil.copyfile(produced, fp32)
     int8 = out / INT8
     quantize_int8(fp32, int8)
-    # The v3 lineage quantises fine (checked: it reads the same fixture the fp32 reads), so this path
-    # has no reason to drop the artefact — but it says so in the same words the cubedet path uses.
-    return fp32, int8, int8_reads_a_face(fp32, int8)[1]
+    # The v3 lineage quantises fine (checked: it reads the same fixture the fp32 reads), so in
+    # practice this path keeps its artefact — but it now HONOURS the answer rather than printing it.
+    # Reading the verdict and shipping anyway is the same defect the cubedet path was written to fix.
+    alive, why = int8_reads_a_face(fp32, int8)
+    if not alive:
+        int8.unlink(missing_ok=True)
+        print(f"NOT WRITING {INT8}: {why}")
+        return fp32, None, why
+    return fp32, int8, why
 
 
 def export_coreml(pt: Path, work: Path, out: Path) -> Path:
@@ -219,9 +225,18 @@ def export_onnx_cubedet(pt: Path, work: Path, out: Path) -> tuple[Path, Path | N
     """
     import torch
 
-    from cubedet.model import CubeDet, ExportWrapper
+    from cubedet.model import ExportWrapper
 
     model = _load_cubedet(pt)
+    # The contract is FIXED, not relative to the checkpoint. `_assert_contract` used to be handed
+    # this model's own image size, so an 896px arm exported cleanly against a grid computed from
+    # 896 — while the manifest written below records `imgsz: 640` regardless and every consumer
+    # (onnx-detect.ts, cube-vision, the golden gate) letterboxes to 640 and reads 8400 anchors.
+    if model.image_size != IMGSZ:
+        sys.exit(
+            f"{pt.name} was trained at {model.image_size}px; the app reads {IMGSZ}px and {sum((IMGSZ // s) ** 2 for s in (8, 16, 32))} anchors. "
+            "Export a 640px checkpoint, or change the contract everywhere at once."
+        )
     fp32 = out / FP32
     torch.onnx.export(
         ExportWrapper(model),
@@ -233,7 +248,7 @@ def export_onnx_cubedet(pt: Path, work: Path, out: Path) -> tuple[Path, Path | N
         do_constant_folding=True,
         dynamo=False,
     )
-    _assert_contract(fp32, model.image_size)
+    _assert_contract(fp32)
     int8 = out / INT8
     quantize_int8(fp32, int8)
     alive, why = int8_reads_a_face(fp32, int8)
@@ -257,8 +272,12 @@ def int8_reads_a_face(fp32: Path, int8: Path) -> tuple[bool, str]:
     record its silence as expected behaviour. So the export writes it only if it still reads.
     """
     frame = HERE / "golden" / "frames" / "photo-01.png"
-    if not frame.is_file():  # a checkout without fixtures cannot judge; say so rather than guess
-        return True, f"unchecked: {frame} is not there"
+    # UNCHECKED IS NOT ALIVE. Both of these used to return True — the artefact shipped because the
+    # question could not be asked, which is the exact shape of failure this function exists to
+    # prevent: a silent artefact whose silence the pins then record as expected. There is no cost to
+    # refusing, because the export writes fp32 either way and the manifest says why the int8 is absent.
+    if not frame.is_file():
+        return False, f"unchecked: {frame} is not there"
     import onnxruntime as ort
 
     sys.path.insert(0, str(HERE))
@@ -272,10 +291,15 @@ def int8_reads_a_face(fp32: Path, int8: Path) -> tuple[bool, str]:
 
     reference, quantised = read(fp32), read(int8)
     if reference.verdict != "OK":
-        return True, f"unchecked: the fp32 itself does not read {frame.name} ({reference.verdict})"
+        return False, f"unchecked: the fp32 itself does not read {frame.name} ({reference.verdict})"
     if quantised.verdict != "OK":
         return False, f"the quantised graph reads {quantised.verdict} on {frame.name} where the fp32 reads a face"
-    return True, "reads the same fixture the fp32 reads"
+    # A verdict of OK is not agreement. The gate is "does the quantised graph read the same FACE",
+    # and a graph that finds nine stickers and names them differently answers the wrong question
+    # correctly — it would ship, and the pins would record its colours as this model's reading.
+    if reference.colors != quantised.colors:
+        return False, f"the quantised graph reads {quantised.colors} on {frame.name} where the fp32 reads {reference.colors}"
+    return True, "reads the same fixture, and the same face, the fp32 reads"
 
 
 def export_coreml_cubedet(pt: Path, work: Path, out: Path) -> Path:
@@ -464,6 +488,13 @@ def int8_only(out: Path, work: Path) -> None:
         sys.exit(f"{FP32} ({fp32_sha[:12]}) is not the file MANIFEST.json describes ({str(recorded)[:12]}) — refusing to derive an int8 from bytes of unknown provenance")
     quantize_int8(fp32, int8)
     assert_int8_derived(fp32, int8, work)
+    # Derived-from-the-right-fp32 is not the same question as reads-anything. The full export asks
+    # both; this path asked only the first, so the one case it exists for — an int8 that has drifted
+    # beside a model that has not — could re-derive a graph that answers nothing and pin its hash.
+    alive, why = int8_reads_a_face(fp32, int8)
+    if not alive:
+        int8.unlink(missing_ok=True)
+        sys.exit(f"refusing to pin {INT8}: {why}")
     entry = manifest["artefacts"].setdefault(INT8, {})
     entry["sha256"] = sha256(int8)
     entry["derived_from_fp32_sha256"] = fp32_sha
