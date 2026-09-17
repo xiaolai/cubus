@@ -366,7 +366,10 @@ def test_only_finished_unanswered_cube_sets_are_proposed() -> None:
         )
         (photos / CONTRIBUTOR / name("linked")).symlink_to(photos / CONTRIBUTOR / name("done"))
         (state / "reviews" / CONTRIBUTOR / name("answered")).mkdir(parents=True)
-        (state / "reviews" / CONTRIBUTOR / name("answered") / "answers.json").write_text("{}")
+        # `answers-*.json` is the name the drop writes and the name drop_dataset.py and
+        # drop_eval.py read. A plain `answers.json` was matched only by propose.py's looser
+        # glob, so this fixture was standing in for a file the rest of the pipeline ignores.
+        (state / "reviews" / CONTRIBUTOR / name("answered") / "answers-1.json").write_text("{}")
         written = propose.propose(photos, state, fake_read, FakeCubeHalf(), TOOLS)
         assert sorted(written) == [
             (f"{CONTRIBUTOR}/{name('done')}", "confirm, legal, 6 outlined"),
@@ -394,7 +397,7 @@ def test_a_pass_is_idempotent_and_an_answer_freezes_its_proposal() -> None:
         assert len(propose.propose(photos, state, fake_read, half, retooled)) == 2, "a new model re-proposes"
 
         answered = state / "reviews" / CONTRIBUTOR / name("a")
-        (answered / "answers.json").write_text("{}")
+        (answered / "answers-1.json").write_text("{}")
         frozen = (answered / "proposal.json").read_bytes()
         written = propose.propose(photos, state, fake_read, half, TOOLS)
         assert [key for key, _ in written] == [f"{CONTRIBUTOR}/{name('b')}"], written
@@ -404,6 +407,34 @@ def test_a_pass_is_idempotent_and_an_answer_freezes_its_proposal() -> None:
         photo.write_bytes(photo.read_bytes() + b"!")
         assert [key for key, _ in propose.propose(photos, state, fake_read, half, TOOLS)] == [f"{CONTRIBUTOR}/{name('b')}"]
     print("PASS files: a second pass writes nothing, a new model or photo re-proposes, an answer freezes")
+
+
+def test_an_answer_that_lands_while_the_run_is_reading_is_not_orphaned() -> None:
+    """The run reads every photo before it writes; an answer can arrive in between. Both the
+    early-unusable path and the confirm path must see it at the moment of writing."""
+    with tempfile.TemporaryDirectory() as tmp:
+        photos, state = make_drop(Path(tmp), {name("slow"): 6, name("blurry"): 6})
+        slow_files = sorted((photos / CONTRIBUTOR / name("slow")).glob("*.jpg"))
+        blurry_files = sorted((photos / CONTRIBUTOR / name("blurry")).glob("*.jpg"))
+        reviews = state / "reviews" / CONTRIBUTOR
+
+        def read(path: Path) -> PhotoRead:
+            # The contributor answers each set while its last photo is being read.
+            for files, set_name in ((slow_files, name("slow")), (blurry_files, name("blurry"))):
+                if path == files[-1]:
+                    (reviews / set_name).mkdir(parents=True, exist_ok=True)
+                    (reviews / set_name / "answers-1.json").write_text("{}")
+            return PhotoRead("PARTIAL_FACE") if path == blurry_files[0] else fake_read(path)
+
+        written = dict(propose.propose(photos, state, read, FakeCubeHalf(), TOOLS))
+        assert written == {
+            f"{CONTRIBUTOR}/{name('slow')}": propose.ANSWERED_WHILE_READING,
+            f"{CONTRIBUTOR}/{name('blurry')}": propose.ANSWERED_WHILE_READING,
+        }, written
+        assert not (reviews / name("slow") / "proposal.json").exists(), "the answered set got a proposal anyway"
+        assert not (reviews / name("blurry") / "proposal.json").exists(), "the early unusable path skipped the check"
+        assert not list(reviews.glob("*/.proposal.*")), "no temporary file left behind"
+    print("PASS files: an answer that lands mid-run stops both the confirm and the unusable write")
 
 
 def test_a_photo_without_a_whole_face_makes_its_set_unusable() -> None:
@@ -539,6 +570,7 @@ if __name__ == "__main__":
     test_a_tolerantly_fitted_photo_is_checked_sticker_by_sticker()
     test_only_finished_unanswered_cube_sets_are_proposed()
     test_a_pass_is_idempotent_and_an_answer_freezes_its_proposal()
+    test_an_answer_that_lands_while_the_run_is_reading_is_not_orphaned()
     test_a_photo_without_a_whole_face_makes_its_set_unusable()
     test_asking_for_a_set_that_is_not_there_fails_loudly()
     test_the_contract_refuses_what_the_page_could_not_draw()
