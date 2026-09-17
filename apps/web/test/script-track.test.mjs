@@ -39,6 +39,56 @@ test('a slice reported as two face turns, in either order, is followed with noth
   }
 });
 
+// Plan item 3.6 — THE HARDWARE'S ANSWER, not a model of it. A GAN16 ui (`GAN16ui_C8D3`), held white up and
+// green in front, turned `M M' Rw Rw'` as real slice and wide turns through `gan-driver`'s monitor on
+// 2026-09-17, starting from the arrangement `U` leaves. Every line below is what the cube printed: its move
+// serial, the move in its own letters, its own millisecond clock, and the STATE it sent after that move
+// (null where it sent none before the next move arrived). All seven states replay from solved in cubejs.
+//
+// What the session bought, and what this case therefore pins:
+//   - a slice is TWO reports, and the cube put the L-face half FIRST both times — the order the synthetic
+//     case above calls unknown, seen once in each direction;
+//   - the two halves of one slice land 39 ms and 8 ms apart (an attempt the same day made with separate
+//     R and L' turns put them 1.3 s apart, which is how a slice and two face turns are told apart);
+//   - the cube BROADCAST the half-finished slice as a snapshot (serial 23), so a midpoint is not only a
+//     moment inside the move stream but an arrangement a live snapshot can land on;
+//   - a wide move is ONE report, `L` for `Rw`, and it moves no centre as far as the cube can tell.
+const GAN16_2026_09_17 = Object.freeze({
+  start: 'UUUUUUUUUBBBRRRRRRRRRFFFFFFDDDDDDDDDFFFLLLLLLLLLBBBBBB',
+  reports: [
+    { serial: 23, move: "L'", t: 233133, state: 'RUUFUUFUUBBBRRRRRRDRRDFFDFFBDDBDDLDDFLLFLLFLLLLUBBUBBU' },
+    { serial: 24, move: 'R', t: 233172, state: 'RURFUFFUFRRBRRBRRBDRDDFDDFDBDBBDBLDLFLLFLLFLLULUUBUUBU' },
+    { serial: 25, move: 'L', t: 236059, state: null },
+    { serial: 26, move: "R'", t: 236067, state: 'UUUUUUUUUBBBRRRRRRRRRFFFFFFDDDDDDDDDFFFLLLLLLLLLBBBBBB' },
+    { serial: 27, move: 'L', t: 239685, state: 'BUUBUULUUBBBRRRRRRURRUFFUFFRDDFDDFDDLLFLLFLLFLLDBBDBBD' },
+    { serial: 28, move: "L'", t: 243548, state: 'UUUUUUUUUBBBRRRRRRRRRFFFFFFDDDDDDDDDFFFLLLLLLLLLBBBBBB' },
+  ],
+});
+
+test('what a real GAN16 reported for M M\' Rw Rw\' is followed with nothing off plan', () => {
+  const { start, reports } = GAN16_2026_09_17;
+  const track = trackFor(script([{ move: "M M' Rw Rw'" }], { facelets: start }));
+  const cube = Cube.fromString(start);
+  let at = 0;
+  const read = reports.map(({ move, state }) => {
+    cube.move(move);
+    // The cube's own snapshot, where it sent one, is the arrangement its moves replay to — so what is
+    // matched below is what the hardware said, not a reconstruction of it.
+    if (state !== null) assert.equal(cube.asString(), state, `the cube's state after ${move} is not its moves replayed`);
+    const loc = locate(track, cube.asString(), at);
+    if (loc.kind === 'step') at = loc.idx;
+    return loc.kind;
+  });
+  assert.deepEqual(read, ['mid', 'step', 'mid', 'step', 'step', 'step']);
+  assert.equal(at, track.states.length - 1, 'the walk did not finish');
+
+  // A slice is two reports close together, and a wide move is one.
+  const gap = (a, b) => reports[b].t - reports[a].t;
+  assert.ok(gap(0, 1) < 100 && gap(2, 3) < 100, 'the two halves of a slice were not one motion');
+  // The snapshot the cube sent BETWEEN the two halves of `M` is the walk's midpoint, and is silent.
+  assert.deepEqual(locate(track, reports[0].state, 0), { kind: 'mid', idx: 0 });
+});
+
 test('a half turn is two quarter turns either way round, and its midpoint counts only beside it', () => {
   const track = trackFor(script([{ move: 'R2 U' }]));
   assert.deepEqual(follow(track, 'R R U').map((r) => r.kind), ['mid', 'step', 'step']);
