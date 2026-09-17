@@ -118,6 +118,9 @@ def _hex_to_hsv(value: str) -> tuple[float, float, float]:
     return (_signed_hue(h), s, v)
 
 
+_FALLBACK_SAT_RNG = random.Random(0)  # see cube_palette: a stream, seeded once, for callers that pass none
+
+
 def cube_palette(
     rng: random.Random, wide: bool, sat_scope: str = "cube",
     sat_rng: random.Random | None = None,
@@ -180,7 +183,10 @@ def cube_palette(
         # shade_sticker for the measurement that moved it. The draw comes from a SEPARATE
         # stream so that choosing the scope cannot also choose the scene: `rng` advances
         # identically either way, and a sweep arm differs from its control in one thing.
-        pick = sat_rng or random.Random(0)
+        # ONE stream, not a new one per cube. `random.Random(0)` built here was reseeded on every
+        # call, so every cube in a run got the identical multiplier and the arm that was supposed to
+        # vary saturation per cube varied nothing -- while still looking like jitter in the code.
+        pick = sat_rng or _FALLBACK_SAT_RNG
         palette = [
             (h, min(max(s * pick.uniform(*SAT_JITTER[wide]), 0.0), 1.0), v) for h, s, v in palette
         ]
