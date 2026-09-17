@@ -2559,6 +2559,93 @@ function hungarian(cost) {
   return col;
 }
 
+// src/paint-groups.ts
+var ROUNDS = 25;
+var MAX_RATIO = 0.7;
+function groupByPaint(lab) {
+  if (lab.length !== STICKERS) return null;
+  const ab = [];
+  for (const row of lab) {
+    if (row.length !== 3 || !row.every((v) => Number.isFinite(v))) return null;
+    ab.push([row[1], row[2]]);
+  }
+  const mean = [
+    ab.reduce((s, p) => s + p[0], 0) / ab.length,
+    ab.reduce((s, p) => s + p[1], 0) / ab.length
+  ];
+  const seeds = [ab[argmaxBy(ab, (p) => squared(p, mean))]];
+  while (seeds.length < NUM_COLORS) {
+    seeds.push(ab[argmaxBy(ab, (p) => Math.min(...seeds.map((s) => squared(p, s))))]);
+  }
+  let centres = seeds;
+  let groups = null;
+  for (let round = 0; round < ROUNDS; round++) {
+    const cost = ab.map((p) => {
+      const row = new Array(STICKERS);
+      for (let c = 0; c < NUM_COLORS; c++) {
+        const d = squared(p, centres[c]);
+        for (let k = 0; k < PER_COLOR; k++) row[c * PER_COLOR + k] = d;
+      }
+      return row;
+    });
+    const next = hungarian(cost).map((slot) => Math.floor(slot / PER_COLOR));
+    if (groups && next.every((g, i) => g === groups[i])) break;
+    groups = next;
+    centres = centres.map((_, c) => {
+      const members = ab.filter((_2, i) => groups[i] === c);
+      return [
+        members.reduce((s, p) => s + p[0], 0) / members.length,
+        members.reduce((s, p) => s + p[1], 0) / members.length
+      ];
+    });
+  }
+  return groups;
+}
+function colorsFromPaint(lab, centres, maxRatio = MAX_RATIO) {
+  if (centres.length !== NUM_COLORS) return null;
+  if (!centres.every((c) => Number.isInteger(c) && c >= 0 && c < NUM_COLORS)) return null;
+  if (new Set(centres).size !== NUM_COLORS) return null;
+  const groups = groupByPaint(lab);
+  if (!groups) return null;
+  if (!wellSeparated(lab, groups, maxRatio)) return null;
+  const naming = new Array(NUM_COLORS).fill(-1);
+  for (let face = 0; face < NUM_COLORS; face++) {
+    const group = groups[face * PER_COLOR + 4];
+    if (naming[group] !== -1) return null;
+    naming[group] = centres[face];
+  }
+  return groups.map((g) => naming[g]);
+}
+function wellSeparated(lab, groups, maxRatio) {
+  const ab = lab.map((row) => [row[1], row[2]]);
+  const centres = [];
+  for (let c = 0; c < NUM_COLORS; c++) {
+    const members = ab.filter((_, i) => groups[i] === c);
+    if (members.length === 0) return false;
+    centres.push([
+      members.reduce((s, q) => s + q[0], 0) / members.length,
+      members.reduce((s, q) => s + q[1], 0) / members.length
+    ]);
+  }
+  for (const [i, point] of ab.entries()) {
+    const own = Math.sqrt(squared(point, centres[groups[i]]));
+    let nearest = Number.POSITIVE_INFINITY;
+    for (let c = 0; c < NUM_COLORS; c++) {
+      if (c !== groups[i]) nearest = Math.min(nearest, Math.sqrt(squared(point, centres[c])));
+    }
+    if (own > maxRatio * nearest) return false;
+  }
+  return true;
+}
+function squared(a, b) {
+  return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2;
+}
+function argmaxBy(items, value) {
+  let best = 0;
+  for (let i = 1; i < items.length; i++) if (value(items[i]) > value(items[best])) best = i;
+  return best;
+}
+
 // src/ai-assemble.ts
 var CONFIRM_TOLERANCE = 2;
 var LOW_CONFIDENCE_THRESHOLD = 0.15;
@@ -2848,10 +2935,27 @@ function repairByCounts(faces, maxCost) {
   });
   return out;
 }
+function recolourByPaint(faces) {
+  const lab = [];
+  const centres = [];
+  for (const face of FACES) {
+    const capture = faces[face];
+    if (capture?.lab?.length !== 9) return null;
+    for (const row of capture.lab) lab.push(row);
+    centres.push(capture.colors[4]);
+  }
+  const colors = colorsFromPaint(lab, centres);
+  if (!colors) return null;
+  const out = {};
+  FACES.forEach((face, i) => {
+    out[face] = { ...faces[face], colors: colors.slice(i * 9, i * 9 + 9) };
+  });
+  return out;
+}
 function assembleColors(faces, threshold = LOW_CONFIDENCE_THRESHOLD, confirmed = {}, options = {}) {
   return assembleWithin(faces, threshold, confirmed, options, MAX_REPAIR_COST);
 }
-function assembleWithin(faces, threshold, confirmed, options, maxRepairCost) {
+function assembleWithin(faces, threshold, confirmed, options, maxRepairCost, allowPaint = true) {
   const bySlot = checkedBySlot(faces);
   if ("valid" in bySlot) return bySlot;
   const all = SCHEMES.flatMap((scheme) => solvableReadings(bySlot, scheme));
@@ -2862,7 +2966,17 @@ function assembleWithin(faces, threshold, confirmed, options, maxRepairCost) {
       if (!("valid" in bySlotRepaired)) {
         const afterRepair = SCHEMES.flatMap((scheme) => solvableReadings(bySlotRepaired, scheme));
         if (afterRepair.length > 0) {
-          return assembleWithin(repaired, threshold, confirmed, options, maxRepairCost);
+          return assembleWithin(repaired, threshold, confirmed, options, maxRepairCost, allowPaint);
+        }
+      }
+    }
+    const repainted = allowPaint ? recolourByPaint(faces) : null;
+    if (repainted) {
+      const bySlotRepainted = checkedBySlot(repainted);
+      if (!("valid" in bySlotRepainted)) {
+        const afterPaint = SCHEMES.flatMap((scheme) => solvableReadings(bySlotRepainted, scheme));
+        if (afterPaint.length > 0) {
+          return assembleWithin(repainted, threshold, confirmed, options, maxRepairCost, allowPaint);
         }
       }
     }
@@ -2945,7 +3059,13 @@ function resolveCentreCollision(filed, newcomer, threshold = LOW_CONFIDENCE_THRE
       threshold,
       {},
       { ...options, diagnose: false },
-      Number.POSITIVE_INFINITY
+      Number.POSITIVE_INFINITY,
+      // NO PIXEL PATH HERE. It names its groups from the centres, and this is the one situation
+      // where a centre is already known to be wrong — the two filings below differ by which centre
+      // was misread. Left on, it makes the WRONG filing assemble too: measured 2026-09-17 on the
+      // 140 community sets, it turned one of v3's refusals into a legal cube that was not the
+      // user's, which is the failure this whole file exists to prevent.
+      false
     )
   })).filter(
     ({ result }) => result.valid || result.ambiguous === true || result.confirm !== void 0

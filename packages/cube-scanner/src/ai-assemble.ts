@@ -95,6 +95,7 @@ import {
   type MisreadDiagnosis,
 } from './misread-decode.js';
 import { assignNineOfEach, NUM_COLORS, STICKERS } from './nine-of-each.js';
+import { colorsFromPaint } from './paint-groups.js';
 import {
   type Colour,
   colourOfSlot,
@@ -123,6 +124,13 @@ export interface ColorFace {
    * normal path has already refused.
    */
   scores?: number[][];
+  /**
+   * Median CIE Lab per sticker, from the pixels of the frame this capture came from. OPTIONAL: read
+   * only by `recolourByPaint`, which runs after everything else has refused. Supplied by whoever
+   * held the frame and the boxes at the same moment — the detector's caller — because nothing
+   * downstream of that has the pixels any more.
+   */
+  lab?: [number, number, number][];
 }
 
 /**
@@ -985,6 +993,40 @@ function repairByCounts(
 }
 
 /**
+ * The colouring the PIXELS imply, when the scores' own colouring has been refused.
+ *
+ * `paint-groups.ts` carries the measurement and the reasoning; the short version is that stickers in
+ * one frame share an illuminant, so which of them carry the same paint survives lighting that the
+ * absolute question does not. Used only here, only after `repairByCounts` has failed too, and
+ * accepted only if the result passes the same two gates: six distinct centres that match their
+ * slots, and a reading that is actually solvable.
+ *
+ * The pixels regroup the stickers; the CENTRES name the groups, which is what keeps this from
+ * inventing a cube — see `colorsFromPaint`. So it can repair any misread except a centre's, and a
+ * misread centre is the one case the assembly already has a resolver for.
+ *
+ * Returns null unless every face carried its Lab — an app that does not supply it never reaches this,
+ * and behaves exactly as it did before.
+ */
+function recolourByPaint(faces: Record<Face, ColorFace>): Record<Face, ColorFace> | null {
+  const lab: [number, number, number][] = [];
+  const centres: number[] = [];
+  for (const face of FACES) {
+    const capture = faces[face];
+    if (capture?.lab?.length !== 9) return null;
+    for (const row of capture.lab) lab.push(row);
+    centres.push(capture.colors[4]!);
+  }
+  const colors = colorsFromPaint(lab, centres);
+  if (!colors) return null;
+  const out = {} as Record<Face, ColorFace>;
+  FACES.forEach((face, i) => {
+    out[face] = { ...faces[face]!, colors: colors.slice(i * 9, i * 9 + 9) };
+  });
+  return out;
+}
+
+/**
  * Turn 6 detected faces (colour classes, any rotation) into a validated ScanResult by solving each
  * face's rotation and the cube's colour scheme together. Rejects a scan whose 6 centres are not 6
  * distinct colours (not a real cube) and a colour misread (no rotation is solvable under any
@@ -1015,6 +1057,7 @@ function assembleWithin(
   confirmed: Partial<Record<Face, Confirmation>>,
   options: AssembleOptions,
   maxRepairCost: number,
+  allowPaint = true,
 ): AiScanResult {
   const bySlot = checkedBySlot(faces);
   if ('valid' in bySlot) return bySlot;
@@ -1032,10 +1075,32 @@ function assembleWithin(
       if (!('valid' in bySlotRepaired)) {
         const afterRepair = SCHEMES.flatMap((scheme) => solvableReadings(bySlotRepaired, scheme));
         if (afterRepair.length > 0) {
-          return assembleWithin(repaired, threshold, confirmed, options, maxRepairCost);
+          return assembleWithin(repaired, threshold, confirmed, options, maxRepairCost, allowPaint);
         }
       }
     }
+    // Still nothing. One more source of evidence exists and has not been used: the pixels. The
+    // scores answered "what colour is each sticker" and were refused; the pixels answer "which
+    // stickers share a paint", which a shared illuminant makes answerable when the other is not.
+    // Same two gates, so this can turn a refusal into a read and cannot turn a read into anything.
+    const repainted = allowPaint ? recolourByPaint(faces) : null;
+    if (repainted) {
+      const bySlotRepainted = checkedBySlot(repainted);
+      if (!('valid' in bySlotRepainted)) {
+        const afterPaint = SCHEMES.flatMap((scheme) => solvableReadings(bySlotRepainted, scheme));
+        if (afterPaint.length > 0) {
+          return assembleWithin(
+            repainted,
+            threshold,
+            confirmed,
+            options,
+            maxRepairCost,
+            allowPaint,
+          );
+        }
+      }
+    }
+
     // Before refusing, do the diagnosis a refusal makes possible: how many stickers are wrong is
     // always answerable, and when it is exactly one, WHICH one is answerable too. Under every
     // scheme, because the refused reading says nothing about which the cube has.
@@ -1189,6 +1254,12 @@ export function resolveCentreCollision(
         {},
         { ...options, diagnose: false },
         Number.POSITIVE_INFINITY,
+        // NO PIXEL PATH HERE. It names its groups from the centres, and this is the one situation
+        // where a centre is already known to be wrong — the two filings below differ by which centre
+        // was misread. Left on, it makes the WRONG filing assemble too: measured 2026-09-17 on the
+        // 140 community sets, it turned one of v3's refusals into a legal cube that was not the
+        // user's, which is the failure this whole file exists to prevent.
+        false,
       ),
     }))
     .filter(
