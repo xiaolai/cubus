@@ -9,7 +9,7 @@
 //
 //   node propose-assemble.mjs < sets.json > decisions.json
 //
-// stdin: a JSON array of sets, each `{ "captures": [six { colors, confidence, scores }] }` in photo
+// stdin: a JSON array of sets, each `{ "captures": [six { colors, confidence, scores, lab? }] }` in photo
 // order, every array in the app's reading order. stdout: one decision per set, in the same order.
 import { readFileSync } from 'node:fs';
 import {
@@ -25,6 +25,7 @@ import {
   NUM_COLORS,
   PER_COLOR,
 } from '../packages/cube-scanner/src/nine-of-each.js';
+import { colorsFromPaint } from '../packages/cube-scanner/src/paint-groups.js';
 import { type Colour, isColour, slotOf } from '../packages/cube-scanner/src/scheme.js';
 import { FACES, type Face } from '../packages/cube-scanner/src/types.js';
 
@@ -47,6 +48,12 @@ export interface Capture {
   colors: number[];
   confidence: number[];
   scores: number[][];
+  /**
+   * Median CIE Lab per sticker, when the caller had the pixels. OPTIONAL: the assembly reads it only
+   * where everything else has refused (`paint-groups.ts`), so a payload without it decides exactly as
+   * it did before.
+   */
+  lab?: [number, number, number][];
 }
 
 export type Decision =
@@ -161,16 +168,52 @@ export function decide(captures: readonly Capture[]): Decision {
   const reads: ColorFace[] = [...captures];
   if (filing) for (const slot of FACES) reads[filing.photoOf[slot]] = filing.faces[slot];
 
-  // Legal as read: show it as read. Otherwise the nine-of-each colouring — the repair the assembly
-  // made to reach its legal cube, or, when none was reached, still the likeliest colouring a
-  // physical cube allows. Stickers go to the assignment in slot order when there is a filing,
-  // because that is the order `repairByCounts` uses and a tie must break the way the scanner's did.
+  // WHICH COLOURING TO SHOW. Legal as read: show it as read. Otherwise the assembly reached its legal
+  // cube by recolouring, and this has to show the SAME recolouring — it cannot be re-derived by
+  // guessing, so the candidates are tried in the assembly's own order and the first that assembles
+  // to a legal cube wins: nine-of-each first (`repairByCounts`), then the pixels
+  // (`recolourByPaint`). Stickers go to each in slot order when there is a filing, because that is
+  // the order the assembly uses and a tie must break the way the scanner's did.
+  //
+  // When none of them is legal the reading is refused anyway, and the nine-of-each colouring is
+  // still the likeliest one a physical cube allows, so that is what the page is shown.
   const colors = reads.map((read) => [...read.colors]);
   if (!(legal && nineOfEach(colors))) {
     const order = filing ? FACES.map((slot) => filing.photoOf[slot]) : captures.map((_, p) => p);
-    const assigned = assignNineOfEach(order.flatMap((p) => reads[p]!.scores!)).colors;
-    order.forEach((p, k) => {
-      colors[p] = assigned.slice(k * PER_COLOR, (k + 1) * PER_COLOR);
+    const scores = order.flatMap((p) => reads[p]!.scores!);
+    const lab = order.every((p) => reads[p]!.lab?.length === PER_COLOR)
+      ? order.flatMap((p) => reads[p]!.lab!)
+      : null;
+    const candidates = [assignNineOfEach(scores).colors];
+    // The pixels regroup, the centres name — the same call the assembly makes, in the same order.
+    const painted = lab
+      ? colorsFromPaint(
+          lab,
+          order.map((p) => reads[p]!.colors[4]!),
+        )
+      : null;
+    if (painted) candidates.push(painted);
+    const apply = (flat: number[]): number[][] => {
+      const out = colors.map((row) => [...row]);
+      order.forEach((p, k) => {
+        out[p] = flat.slice(k * PER_COLOR, (k + 1) * PER_COLOR);
+      });
+      return out;
+    };
+    const fits = (rows: number[][]): boolean => {
+      const faces = {} as Record<Face, ColorFace>;
+      rows.forEach((row, p) => {
+        faces[slotOf(row[4] as Colour)] = { ...reads[p]!, colors: row };
+      });
+      return (
+        Object.keys(faces).length === FACES.length &&
+        legalFit(assembleColors(faces, LOW_CONFIDENCE_THRESHOLD, {}, { diagnose: false }))
+      );
+    };
+    const chosen =
+      candidates.map(apply).find((rows) => !legal || fits(rows)) ?? apply(candidates[0]!);
+    chosen.forEach((row, p) => {
+      colors[p] = row;
     });
   }
 
@@ -211,7 +254,7 @@ export function parseSet(value: unknown, where: string): Capture[] {
     throw new Error(`${where}: expected ${FACES.length} captures`);
   }
   return captures.map((raw: unknown, p) => {
-    const { colors, confidence, scores } = (raw ?? {}) as Record<string, unknown>;
+    const { colors, confidence, scores, lab } = (raw ?? {}) as Record<string, unknown>;
     const ok =
       Array.isArray(colors) &&
       colors.length === PER_COLOR &&
@@ -223,7 +266,25 @@ export function parseSet(value: unknown, where: string): Capture[] {
       scores.length === PER_COLOR &&
       scores.every((row) => Array.isArray(row) && row.length === NUM_COLORS && row.every(isScore));
     if (!ok) throw new Error(`${where}, photo ${p}: malformed capture`);
-    return { colors, confidence, scores } as Capture;
+    // Lab is optional, but a malformed one is refused rather than dropped: silently ignoring it would
+    // turn "the pixels were supplied" into "the pixels were supplied and quietly thrown away".
+    const labOk =
+      lab === undefined ||
+      (Array.isArray(lab) &&
+        lab.length === PER_COLOR &&
+        lab.every(
+          (row) =>
+            Array.isArray(row) &&
+            row.length === 3 &&
+            row.every((v) => typeof v === 'number' && Number.isFinite(v)),
+        ));
+    if (!labOk) throw new Error(`${where}, photo ${p}: malformed lab`);
+    return {
+      colors,
+      confidence,
+      scores,
+      ...(Array.isArray(lab) && lab.length === PER_COLOR ? { lab } : {}),
+    } as Capture;
   });
 }
 

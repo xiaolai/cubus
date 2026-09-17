@@ -111,9 +111,10 @@ export function assignNineOfEach(scores: readonly (readonly number[])[]): NineOf
  *
  * Returns `col[r]`: the column assigned to row r. Implemented here rather than pulled in because it
  * is forty lines and this package ships to a browser, where a dependency costs download size that a
- * scan budget does not have.
+ * scan budget does not have. Exported for `paint-groups.ts`, which needs the same matching on a
+ * different cost: one solver, so a fix reaches both.
  */
-function hungarian(cost: readonly (readonly number[])[]): number[] {
+export function hungarian(cost: readonly (readonly number[])[]): number[] {
   const n = cost.length;
   // 1-indexed potentials and assignment, the classic formulation: index 0 is the sentinel the
   // augmenting path starts from, which is what keeps the inner loop free of special cases.

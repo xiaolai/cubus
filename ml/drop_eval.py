@@ -58,6 +58,9 @@ class PhotoScore:
     truth: tuple[int, ...]
     scores: tuple[tuple[float, ...] | None, ...]  # per checked cell: the model's six scores, for assembly
     confidence: tuple[float | None, ...]
+    # Per checked cell: the median CIE Lab of the photograph's own pixels there. The assembly reads it
+    # only where the scores have already been refused — see packages/cube-scanner/src/paint-groups.ts.
+    lab: tuple[tuple[float, float, float], ...] = ()
 
 
 def match_cells(checked: tuple[Box, ...], boxes: list[Box]) -> list[int | None]:
@@ -83,17 +86,49 @@ def match_cells(checked: tuple[Box, ...], boxes: list[Box]) -> list[int | None]:
     return found
 
 
+INNER = 0.6  # the middle of a sticker: its edges carry the black border and the neighbour's bleed
+
+
+def median_lab(rgb, box: Box) -> tuple[float, float, float]:
+    """The median CIE Lab (D65) of a sticker's middle, which is what the assembly compares.
+
+    Mirrors `medianLab` in packages/cube-scanner/src/ai-scan pixels path: same inner fraction, same
+    conversion, so the evaluation asks the assembly the same question the app does.
+    """
+    import numpy as np
+
+    x, y, w, h = box
+    cx, cy = x + w / 2, y + h / 2
+    x0, x1 = int(cx - w * INNER / 2), int(np.ceil(cx + w * INNER / 2))
+    y0, y1 = int(cy - h * INNER / 2), int(np.ceil(cy + h * INNER / 2))
+    patch = rgb[max(0, y0):max(1, y1), max(0, x0):max(1, x1)]
+    if patch.size == 0:
+        patch = rgb[int(cy):int(cy) + 1, int(cx):int(cx) + 1]
+    c = patch.reshape(-1, 3).astype(np.float64) / 255.0
+    c = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    matrix = np.array([[0.4124, 0.3576, 0.1805], [0.2126, 0.7152, 0.0722], [0.0193, 0.1192, 0.9505]])
+    xyz = c @ matrix.T / np.array([0.95047, 1.0, 1.08883])
+    f = np.where(xyz > 0.008856, np.cbrt(xyz), 7.787 * xyz + 16 / 116)
+    lab = np.stack([116 * f[:, 1] - 16, 500 * (f[:, 0] - f[:, 1]), 200 * (f[:, 1] - f[:, 2])], axis=-1)
+    return tuple(float(v) for v in np.median(lab, axis=0))
+
+
 def score_photo(model: str, contributor: str, name: str, photo: int, checked: tuple[Box, ...],
-                truth: tuple[int, ...], grid, boxes: list[Box]) -> PhotoScore:
+                truth: tuple[int, ...], grid, boxes: list[Box], rgb=None) -> PhotoScore:
     if grid is None:
         nothing = (None,) * len(checked)
         return PhotoScore(model, contributor, name, photo, False, nothing, truth, nothing, nothing)
     idx = match_cells(checked, boxes)
+    # The pixels come from the CHECKED boxes, not the model's: a sticker the model misplaced would
+    # otherwise be sampled off the sticker, and the paint comparison would be asked about the wrong
+    # pixels. The checked boxes are where the contributor confirmed a sticker is.
+    lab = tuple(median_lab(rgb, box) for box in checked) if rgb is not None else ()
     return PhotoScore(
         model, contributor, name, photo, True,
         tuple(None if j is None else grid[j].class_id for j in idx), truth,
         tuple(None if j is None else tuple(grid[j].scores or ()) for j in idx),
         tuple(None if j is None else grid[j].confidence for j in idx),
+        lab,
     )
 
 
@@ -162,7 +197,8 @@ def cube_outcomes(scores: list[PhotoScore], models: list[str], decide: Callable)
         readable = {k: sorted(v, key=lambda s: s.photo) for k, v in by_set.items()
                     if all(None not in s.read for s in v)}
         keys = sorted(readable)
-        decisions = decide([[propose.PhotoRead("OK", tuple(s.read), tuple(s.confidence), tuple(s.scores)) for s in readable[k]] for k in keys]) if keys else []
+        decisions = decide([[propose.PhotoRead("OK", tuple(s.read), tuple(s.confidence), tuple(s.scores), lab=tuple(s.lab))
+                             for s in readable[k]] for k in keys]) if keys else []
         outcome = {k: "not read" for k in by_set}
         for k, d in zip(keys, decisions, strict=True):
             if d["status"] != "confirm":
@@ -251,13 +287,13 @@ def main(argv: list[str] | None = None) -> int:
         for name, (session, inp) in sessions.items():
             detections = cube_infer.drop_nested(cube_infer.nms(cube_infer.decode(session.run(None, {inp: tensor})[0])))
             _, grid = cube_infer.fit_grid(detections)
-            yield name, grid, [propose.upright_box(d, width, height) for d in grid or []]
+            yield name, grid, [propose.upright_box(d, width, height) for d in grid or []], rgb
 
     scores: list[PhotoScore] = []
     for s in chosen:
         for i, (file, boxes, colours) in enumerate(zip(s.photos, s.boxes, s.colours, strict=True)):
-            for name, grid, found in strict(args.drop / "photos" / s.contributor / s.name / file):
-                scores.append(score_photo(name, s.contributor, s.name, i, boxes, colours, grid, found))
+            for name, grid, found, rgb in strict(args.drop / "photos" / s.contributor / s.name / file):
+                scores.append(score_photo(name, s.contributor, s.name, i, boxes, colours, grid, found, rgb))
 
     false_faces: dict[str, Counter[str]] = {m: Counter() for m in models}
     reviews = args.drop / "state" / "reviews"
@@ -266,7 +302,7 @@ def main(argv: list[str] | None = None) -> int:
     no_cube = sorted((args.drop / "photos").glob(f"*/{propose.OTHER_SET}/*.jpg"))
     for kind, files in (("not a 3x3", not_3x3), ("no cube", no_cube)):
         for f in files:
-            for name, grid, _ in strict(f):
+            for name, grid, _, _rgb in strict(f):
                 false_faces[name][kind] += grid is not None
         for name in models:
             false_faces[name][f"{kind} photos"] = len(files)
