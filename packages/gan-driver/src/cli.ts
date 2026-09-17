@@ -14,29 +14,29 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { decodePacket, recordingShutdown, startRecording } from './capture.js';
 import { GanCube } from './driver.js';
 import { GanGen4Cipher } from './gen4/crypto.js';
-import { extractMacFromManufacturerData, macMatchesName } from './mac.js';
+import { sightCube } from './mac.js';
 import { BlewTransport, runBlew, scanForCube, type Transport } from './transport/blew.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SCAN_ADV = join(ROOT, 'scripts', 'scan-adv');
 
 /** Discover the cube, retrying across several scan windows — it only advertises
- *  while moving, so a single scan often misses a resting cube. */
+ *  while moving, so a single scan often misses a resting cube. Which advertiser is the cube, and
+ *  why the other GAN-named ones are not, is `sightCube`'s decision; this owns only the retrying. */
 async function findCube(windowSecs = 10, attempts = 6) {
+  const passedOver = new Map<string, string>(); // name -> why, deduped across windows
   for (let i = 0; i < attempts; i++) {
-    const devices = await scanForCube(SCAN_ADV, windowSecs);
-    const cube = devices.find((d) => /gan/i.test(d.name) && d.manufacturerData);
-    if (cube?.manufacturerData) {
-      const mac = extractMacFromManufacturerData(cube.manufacturerData);
-      if (!mac)
-        throw new Error(
-          `found ${cube.name} but could not recover MAC from ${cube.manufacturerData}`,
-        );
-      return { ...cube, mac, macOk: macMatchesName(mac, cube.name) };
-    }
+    const sighting = sightCube(await scanForCube(SCAN_ADV, windowSecs));
+    if (sighting.cube) return sighting.cube;
+    for (const { name, why } of sighting.passedOver) passedOver.set(name, why);
     if (i === 0) console.error('no cube yet — give it a twist to wake it…');
   }
-  throw new Error('no GAN cube found — keep it moving and retry');
+  const seen = [...passedOver].map(([name, why]) => `${name} — ${why}`).join('; ');
+  throw new Error(
+    seen
+      ? `no GAN cube found after ${attempts} scans. Passed over: ${seen}`
+      : `no GAN cube found after ${attempts} scans — keep it moving and retry`,
+  );
 }
 
 /** Render a Kociemba facelet string as a labelled 6-face map. */
