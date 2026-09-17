@@ -651,6 +651,17 @@ jobs:
   # CPU wheels (the extra index), because the PyPI build of torch on Linux carries CUDA and nothing
   # here has a GPU. And A SKIP IS A FAILURE: several tests `importorskip` onnx, onnxruntime or timm,
   # so an environment missing one would report green over tests that never ran.
+  #
+  # THE ONE TEST THAT CANNOT RUN HERE IS DESELECTED, NOT SKIPPED, and the distinction is the whole
+  # point of the rule above. `test_evaluate_runs_on_an_accelerator` needs CUDA or MPS by design — it
+  # exists to catch a `torch.zeros(...)` with no `device=`, which a CPU-only run structurally cannot
+  # see, because there is only one device for tensors to be on. On this runner it skipped, and "a
+  # skip is a failure" then made the job unpassable: it went red on its first run, on the commit that
+  # landed it. Deselecting names the exclusion in the command where a reader sees it, and leaves the
+  # skip rule doing its real job — catching a missing dependency. It is also self-correcting: rename
+  # the test and the deselect stops matching, the test is collected, it skips, and this goes red
+  # again. It runs on the training box and on the maintainer's Mac, which is where a device
+  # mismatch can actually be observed.
   cubedet:
     name: cubedet (trainer · scoring · export contract, CPU)
     needs: [plan]
@@ -666,7 +677,8 @@ jobs:
         run: pip install --extra-index-url https://download.pytorch.org/whl/cpu -r ml/requirements-cubedet.txt
       - name: ml/test_cubedet.py, where a skipped test fails the job
         run: |
-          python -m pytest ml/test_cubedet.py -q -rs -p no:cacheprovider --junitxml=cubedet-junit.xml
+          python -m pytest ml/test_cubedet.py -q -rs -p no:cacheprovider --junitxml=cubedet-junit.xml \
+            --deselect ml/test_cubedet.py::test_evaluate_runs_on_an_accelerator
           python -c "import sys, xml.etree.ElementTree as E; r = E.parse('cubedet-junit.xml').getroot(); s = r if r.tag == 'testsuite' else r.find('testsuite'); n, k = int(s.get('tests')), int(s.get('skipped')); print(f'{n} tests, {k} skipped'); sys.exit(1 if n == 0 or k else 0)"
 
   golden-macos:
