@@ -21,18 +21,22 @@ from ood_eval import CLASS_NAMES, NUM_CLASSES, decode, letterbox, nms
 
 
 def load_gt(path: str, w: int, h: int) -> list[dict]:
-    """YOLO label (class cx cy w h, normalized) -> boxes in original-pixel corners."""
+    """YOLO label (class cx cy w h, normalized) -> boxes in original-pixel corners.
+
+    `row` is the box's index among the file's non-blank lines, which is how its cube file
+    (cube_identity.py) addresses it.
+    """
     out = []
     if not os.path.exists(path):
         return out
     with open(path) as f:
-        for line in f:
+        for row, line in enumerate(line for line in f if line.strip()):
             p = line.split()
             if len(p) < 5:
                 continue
             c = int(float(p[0]))
             cx, cy, bw, bh = (float(x) for x in p[1:5])
-            out.append({"cls": c, "x0": (cx - bw / 2) * w, "y0": (cy - bh / 2) * h,
+            out.append({"cls": c, "row": row, "x0": (cx - bw / 2) * w, "y0": (cy - bh / 2) * h,
                         "x1": (cx + bw / 2) * w, "y1": (cy + bh / 2) * h})
     return out
 

@@ -134,6 +134,9 @@ def test_only_legal_current_answers_with_consent_become_data() -> None:
         for label in labels:
             rows = label.read_text().splitlines()
             assert len(rows) == 10 and rows[0].startswith("1 ") and rows[-1].startswith("-1 "), rows
+            # The nine confirmed stickers are one cube; the ignore row's cube is not known.
+            cubes = (all_root / "cubes" / "train" / label.name).read_text().split()
+            assert cubes == ["0"] * 9 + ["-1"], (label.name, cubes)
         sideways = next((all_root / "images" / "train").glob(f"{'b' * 32}_*.jpg"))
         assert Image.open(sideways).size == (64, 48), "an EXIF-rotated photo was written as stored, not upright"
         assert all(p["consent"] == "2026-09-13" for r in manifests["all"]["train"] for p in r["photos"])
@@ -152,11 +155,61 @@ def test_only_legal_current_answers_with_consent_become_data() -> None:
             assert "no consent" in str(e), e
         else:
             raise AssertionError("a photo with no recorded consent became training data")
-    print("PASS build: only legal answers to the proposal on disk, contributor-disjoint, capped, upright, consented")
+    print("PASS build: only legal answers to the proposal on disk, contributor-disjoint, capped, upright, consented, one cube")
+
+
+def test_training_roots_carry_the_cube_files() -> None:
+    """drop-train-datasets.sh links cubes/ beside labels/ when a source has it, and refuses an orphan."""
+    import os
+    import subprocess
+
+    def source(root: Path, split: str, stems: list[str], cubes: bool) -> None:
+        for kind in ("images", "labels") + (("cubes",) if cubes else ()):
+            (root / kind / split).mkdir(parents=True, exist_ok=True)
+        for stem in stems:
+            (root / "images" / split / f"{stem}.jpg").write_bytes(b"jpg")
+            (root / "labels" / split / f"{stem}.txt").write_text("0 .5 .5 .1 .1\n")
+            if cubes:
+                (root / "cubes" / split / f"{stem}.txt").write_text("0\n")
+
+    def assemble(home: Path) -> subprocess.CompletedProcess:
+        return subprocess.run(["bash", str(HERE / "drop-train-datasets.sh"), "fold0"], capture_output=True, text=True,
+                              env={**os.environ, "HOME": str(home)})
+
+    with tempfile.TemporaryDirectory() as tmp:
+        for drop_has_cubes in (True, False):
+            home = Path(tmp, f"home_{drop_has_cubes}")
+            real, drop = home / "datasets" / "real_clean" / "dataset", home / "datasets" / "drop_train" / "fold0"
+            source(real, "train", ["r1", "r2"], cubes=True)
+            source(real, "val", ["v1"], cubes=True)
+            source(drop, "train", ["d1"], cubes=drop_has_cubes)
+            (drop / "manifest.json").write_text("{}")
+            done = assemble(home)
+            assert done.returncode == 0, done.stderr
+            retrain = home / "datasets" / "retrain_fold0" / "dataset"
+            finetune = home / "datasets" / "finetune_fold0" / "dataset"
+            want = ["d1.txt", "r1.txt", "r2.txt"] if drop_has_cubes else ["r1.txt", "r2.txt"]
+            assert sorted(p.name for p in (retrain / "cubes" / "train").iterdir()) == want
+            assert sorted(p.name for p in (retrain / "cubes" / "val").iterdir()) == ["v1.txt"]
+            assert (finetune / "cubes" / "train" / "d1.txt").exists() == drop_has_cubes
+            assert ("has no cubes/train" in done.stderr) != drop_has_cubes, done.stderr
+
+        home = Path(tmp, "orphan")
+        real, drop = home / "datasets" / "real_clean" / "dataset", home / "datasets" / "drop_train" / "fold0"
+        source(real, "train", ["r1"], cubes=True)
+        source(real, "val", ["v1"], cubes=True)
+        source(drop, "train", ["d1"], cubes=True)
+        (drop / "manifest.json").write_text("{}")
+        (drop / "cubes" / "train" / "stray.txt").write_text("0\n")
+        done = assemble(home)
+        assert done.returncode != 0 and "cube files with no label" in done.stderr, done.stderr
+        assert not (home / "datasets" / "retrain_fold0" / "dataset").exists(), "a refused assembly left its root behind"
+    print("PASS training roots: cube files are linked beside labels, a source without them is named, an orphan stops it")
 
 
 if __name__ == "__main__":
     test_folds_are_disjoint_balanced_and_repeatable()
     test_labels_are_normalised_and_other_stickers_are_ignore_rows()
+    test_training_roots_carry_the_cube_files()
     test_only_legal_current_answers_with_consent_become_data()
     print("ALL PASS")

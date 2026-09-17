@@ -3,7 +3,7 @@
     drop_dataset.py --drop DIR --model cube-yolo.onnx --out DIR [--folds 2] [--train-cap 5] [--test-cap 3]
 
 `--drop` is a copy of cube-drop's data: `photos/` (CUBE_PHOTO_DIR) and `state/` (reviews/,
-uploads.jsonl). It writes YOLO-layout roots, each with `images/`, `labels/` and `manifest.json`:
+uploads.jsonl). It writes YOLO-layout roots, each with `images/`, `labels/`, `cubes/` and `manifest.json`:
 
     fold0/ ... fold{N-1}/   train on the other folds' contributors, test on this fold's
     all/                    every contributor in training, for the model trained once the folds are read
@@ -24,6 +24,10 @@ photo's other stickers (the side faces) are real and unlabelled, so each becomes
 -1 (cubedet/data.py IGNORE_CLASS), which the loss leaves alone instead of teaching as background. They
 are whatever the detector finds in the upright photo that does not overlap a labelled box.
 
+WHICH CUBE. `cubes/` (cube_identity.py) puts the nine confirmed stickers on cube 0: they are one face
+of the cube the contributor scanned. An IGNORE row's cube is unknown -- a side face of that cube, or
+another cube in the shot.
+
 Images are written upright, EXIF Orientation applied, because the trainer does not read EXIF and the
 proposal's boxes are in the upright frame.
 """
@@ -40,6 +44,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+
+from cube_identity import UNKNOWN, write_cubes
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))  # runnable from any cwd, like the other ml/ scripts
@@ -218,6 +224,7 @@ def write_split(drop: Path, root: Path, split: str, sets: list[CheckedSet], find
 
     (root / "images" / split).mkdir(parents=True, exist_ok=True)
     (root / "labels" / split).mkdir(parents=True, exist_ok=True)
+    (root / "cubes" / split).mkdir(parents=True, exist_ok=True)
     records = []
     for s in sets:
         photos = []
@@ -231,6 +238,7 @@ def write_split(drop: Path, root: Path, split: str, sets: list[CheckedSet], find
             Image.fromarray(rgb).save(root / "images" / split / f"{stem}.jpg", quality=JPEG_QUALITY)
             lines = label_lines(width, height, boxes, colours, find(rgb))
             (root / "labels" / split / f"{stem}.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+            write_cubes(root / "cubes" / split / f"{stem}.txt", [0] * len(colours) + [UNKNOWN] * (len(lines) - len(colours)))
             photos.append({"file": file, "consent": consent[key], "ignored": sum(line.startswith(f"{IGNORE_CLASS} ") for line in lines)})
         records.append({"contributor": s.contributor, "set": s.name, "against": s.against, "trust": s.trust,
                         "answer_sha256": s.answer_sha256, "photos": photos})
