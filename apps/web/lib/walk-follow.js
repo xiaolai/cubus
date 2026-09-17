@@ -11,6 +11,7 @@
 
 import { t } from './i18n.js';
 import { createScriptPlayer } from './script-player.js';
+import { walkScript } from './walk-script.js';
 import { locate as locateOnTrack, trackOf } from './script-track.js';
 import { showMove } from './solving-hold.js';
 
@@ -384,12 +385,15 @@ export function createFollowTracker({
    *  judge() refuses), steps[i] is undefined for the tail — which once turned "follow is refused" into
    *  "the whole screen fails to mount". An empty walk — a cube already where it is going — has nowhere
    *  to go, and is no route either. */
-  const buildMidpoints = ({ moves, steps }) => {
+  const buildMidpoints = (walk) => {
     unrouted = 0;
-    if (steps.length !== moves.length + 1 || !moves.length) { player.unload(); return; }
     // The walk's moves are face turns in the cube's own frame, one stop each, so a script of them at the
-    // reference hold has exactly the walk's positions: step k is position k.
-    void player.load({ schema: 2, start: { facelets: steps[0] }, steps: [{ move: moves.join(' ') }] });
+    // reference hold has exactly the walk's positions: step k is position k. Built by `walkScript`
+    // rather than written out here — this WAS the only reader, and the transport is becoming a second
+    // (plan item 6.5); two scripts for one walk are two answers about where the cube is.
+    const script = walkScript(walk);
+    if (!script) { player.unload(); return; }
+    void player.load(script);
   };
 
   /**
