@@ -452,6 +452,53 @@ def test_an_int8_that_could_not_be_checked_is_not_written() -> None:
     print("PASS export: an int8 that could not be checked is refused, and the reason says so")
 
 
+def test_a_coreml_package_is_identified_by_its_model_not_its_random_ids() -> None:
+    """coremltools names a package's items with fresh UUIDs on every save, so hashing Manifest.json as
+    bytes made the recorded CoreML hash impossible to reproduce from the same checkpoint."""
+    import copy
+    import shutil
+    import tempfile
+
+    from artefact_hash import artefact_sha256
+
+    shipped = HERE / "models" / "cube-yolo.mlpackage"
+    manifest = json.loads((shipped / "Manifest.json").read_text())
+    want = artefact_sha256(shipped)
+
+    def variant(edit) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            copy_ = Path(tmp) / "m.mlpackage"
+            shutil.copytree(shipped, copy_)
+            edit(copy_)
+            return artefact_sha256(copy_)
+
+    def fresh_ids(pkg: Path) -> None:
+        doc = copy.deepcopy(manifest)
+        renamed = {key: f"00000000-0000-4000-8000-{i:012d}" for i, key in enumerate(doc["itemInfoEntries"])}
+        doc["itemInfoEntries"] = {renamed[k]: v for k, v in reversed(list(doc["itemInfoEntries"].items()))}
+        doc["rootModelIdentifier"] = renamed[doc["rootModelIdentifier"]]
+        (pkg / "Manifest.json").write_text(json.dumps(doc, indent=2))
+
+    def wrong_root(pkg: Path) -> None:
+        doc = copy.deepcopy(manifest)
+        other = next(k for k in doc["itemInfoEntries"] if k != doc["rootModelIdentifier"])
+        doc["rootModelIdentifier"] = other
+        (pkg / "Manifest.json").write_text(json.dumps(doc))
+
+    def one_weight_byte(pkg: Path) -> None:
+        weights = pkg / "Data" / "com.apple.CoreML" / "weights" / "weight.bin"
+        data = bytearray(weights.read_bytes())
+        data[len(data) // 2] ^= 1
+        weights.write_bytes(bytes(data))
+
+    assert variant(fresh_ids) == want, "a re-save with new item ids changed the model's identity"
+    assert variant(wrong_root) != want, "which item is the root no longer counts"
+    assert variant(one_weight_byte) != want, "a weight change did not change the identity"
+    recorded = json.loads((HERE / "models" / "MANIFEST.json").read_text())["artefacts"]["cube-yolo.mlpackage"]["sha256"]
+    assert recorded == want, "MANIFEST.json records the CoreML package under another identity"
+    print("PASS artefacts: a CoreML package's identity ignores its random ids and nothing else")
+
+
 if __name__ == "__main__":
     test_cube_geometry()
     test_one_cube_has_one_pigment_per_colour()
@@ -465,5 +512,6 @@ if __name__ == "__main__":
     test_licence_note_says_where_the_weights_started()
     test_nested_boxes_are_dropped_exactly_as_the_app_drops_them()
     test_an_int8_that_could_not_be_checked_is_not_written()
+    test_a_coreml_package_is_identified_by_its_model_not_its_random_ids()
     test_every_script_run_test_is_called_by_its_runner()
     print("ALL PASS")

@@ -33,7 +33,7 @@
       "runtime": "CoreML \u2014 macOS and iOS, via crates/cube-vision",
       "precision": "fp32 compute, fp32 tensor in and out",
       "min_target": "macOS13 / iOS16",
-      "sha256": "441e4104e70d5f21de5ab7fe036c03cfea71427433787e1a44bb2776934384cd"
+      "sha256": "9bad4e2ac443f702b6901d13a6923f895d7b0ab92ff422ff6e4dba0fcc8700ad"
     },
     "cube-yolo.tflite": {
       "runtime": "LiteRT/TFLite (onnx2tf) \u2014 bundled in the Android APK by gen/android/app/build.gradle.kts, but gated OFF: VisionPlugin.kt answers probe with verifiedOnDevice=false, so Android runs the WebView fp32 path until the native path is verified on a device",
