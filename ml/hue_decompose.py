@@ -31,6 +31,11 @@ Every figure is about ONE cube's stickers, so a sticker counts only when its cub
 body boxes in a render, from the cube files beside a YOLO tree's labels (cube_identity.py). The rest
 are left out and counted, and a run that could place no sticker on a cube fails instead of printing
 zeros.
+
+--group frame puts a frame's stickers in ONE group, which is how this script read a dataset before it
+could tell cubes apart, and 15% of the generator's scenes hold two cubes. It is kept so the size of
+that error can be measured on the same stickers rather than argued about: the two runs differ in the
+grouping and in nothing else. It is not a way to read a dataset; `cube` is.
 """
 from __future__ import annotations
 
@@ -255,6 +260,8 @@ def main(argv=None) -> None:
                     metavar=("S_MIN", "V_MIN", "V_MAX"))
     ap.add_argument("--faces", action="store_true",
                     help="decompose the within-cube spread into between-face and within-face")
+    ap.add_argument("--group", choices=["cube", "frame"], default="cube",
+                    help="frame: the old reading that took every sticker in a frame to be one cube")
     args = ap.parse_args(argv)
 
     rng = random.Random(args.seed)
@@ -285,6 +292,8 @@ def main(argv=None) -> None:
             if cube is None:
                 unowned += 1  # on no body box or on two (cube_of), or marked unknown in a cube file
                 continue
+            if args.group == "frame":
+                cube = 0  # the old reading: one group per frame, on exactly the same stickers
             col = sticker_colour(arr, *bbox, args.box)
             if col is None:
                 continue
@@ -365,7 +374,7 @@ def main(argv=None) -> None:
     if total == 0:
         raise SystemExit(f"{args.root}: no sticker could be measured; {unowned} were left out because "
                          "their cube is unknown (a YOLO tree needs its cube files: see cube_identity.py)")
-    print(f"{args.root}  [{args.format}, box={args.box}]")
+    print(f"{args.root}  [{args.format}, box={args.box}, grouped by {args.group}]")
     print(f"stickers {total}   unreadable (gated out) {100 * gated / max(total, 1):.1f}%   "
           f"a channel at 254+ {100 * clipped / max(total, 1):.1f}%")
     print(f"stickers left out because their cube is unknown: {unowned}")
