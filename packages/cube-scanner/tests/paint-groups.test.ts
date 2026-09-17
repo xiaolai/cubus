@@ -146,3 +146,26 @@ describe('colorsFromPaint', () => {
     expect(colorsFromPaint(lab, [0, 1, 2, 3, 4, 9])).toBeNull();
   });
 });
+
+describe('a frame with no colour in it', () => {
+  /**
+   * The gate's whole job. Balanced k-means always answers, so a blown-out or monochrome capture —
+   * every sticker the same a*b* — still comes back as six groups of nine. Nothing about that
+   * grouping is evidence, and reading a cube out of it would be inventing one.
+   */
+  it('is refused, however confidently the grouping splits it', () => {
+    const flat: StickerLab = Array.from({ length: STICKERS }, () => [62, 4, 4]);
+    const centres = Array.from({ length: NUM_COLORS }, (_, f) => f);
+    expect(colorsFromPaint(flat, centres)).toBeNull();
+  });
+
+  it('is refused when the paints differ only in lightness, which shading moves', () => {
+    const shaded: StickerLab = Array.from({ length: STICKERS }, (_, i) => [
+      30 + (i % NUM_COLORS) * 10,
+      4,
+      4,
+    ]);
+    const centres = Array.from({ length: NUM_COLORS }, (_, f) => f);
+    expect(colorsFromPaint(shaded, centres)).toBeNull();
+  });
+});

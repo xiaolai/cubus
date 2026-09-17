@@ -292,3 +292,60 @@ describe('the confidence floor sits above the low-confidence bar', () => {
     expect(fitFace(faint)).toEqual({ ok: false, reason: 'NO_FACE' });
   });
 });
+
+describe('a box that is not a box', () => {
+  /** Row-major [4 + numClasses, numAnchors], the layout decodeDetections documents. */
+  function tensor(rows: number[][]): Float32Array {
+    return Float32Array.from(rows.flat());
+  }
+
+  it('drops a detection whose geometry is not finite, however sure the score is', () => {
+    const data = tensor([
+      [100, Number.NaN], // cx — the second anchor's is NaN
+      [100, 100],
+      [30, 30],
+      [30, 30],
+      [0.9, 0.9], // class 0 scores, both well over the threshold
+      [0, 0],
+      [0, 0],
+      [0, 0],
+      [0, 0],
+      [0, 0],
+    ]);
+    const dets = decodeDetections(data, 6, 2, 0.25);
+    expect(dets).toHaveLength(1);
+    expect(dets[0]!.cx).toBe(100);
+  });
+
+  it('drops a detection with an infinite side, which `w > 0` alone lets through', () => {
+    const data = tensor([
+      [100, 100],
+      [100, 100],
+      [30, Number.POSITIVE_INFINITY], // w
+      [30, 30],
+      [0.9, 0.9],
+      [0, 0],
+      [0, 0],
+      [0, 0],
+      [0, 0],
+      [0, 0],
+    ]);
+    expect(decodeDetections(data, 6, 2, 0.25)).toHaveLength(1);
+  });
+
+  it('drops a detection with no area', () => {
+    const data = tensor([
+      [100, 100],
+      [100, 100],
+      [30, 0], // w
+      [30, 30],
+      [0.9, 0.9],
+      [0, 0],
+      [0, 0],
+      [0, 0],
+      [0, 0],
+      [0, 0],
+    ]);
+    expect(decodeDetections(data, 6, 2, 0.25)).toHaveLength(1);
+  });
+});

@@ -131,6 +131,16 @@ export interface ColorFace {
    * downstream of that has the pixels any more.
    */
   lab?: [number, number, number][];
+  /**
+   * 9 flags: stickers a PERSON set, which no repair may change. OPTIONAL, and absent means none.
+   *
+   * Both fallbacks recolour stickers, and a correction the user typed in has to outrank them
+   * unconditionally. Making the correction expensive for the count repair (a one-hot score row) is
+   * not enough on its own: `resolveCentreCollision` lifts the repair's cost ceiling to infinity, so a
+   * finite cost is no barrier there. The flag is checked against the colours, not the costs, and so
+   * holds whatever ceiling a caller passes.
+   */
+  locked?: boolean[];
 }
 
 /**
@@ -964,6 +974,15 @@ function symmetricRefusal(
  */
 const MAX_REPAIR_COST = 12;
 
+/** Would `colors` (54, in FACES order) change a sticker that a person locked? */
+function movesALockedSticker(faces: Record<Face, ColorFace>, colors: readonly number[]): boolean {
+  return FACES.some((face, fi) =>
+    (faces[face]?.locked ?? []).some(
+      (on, k) => on && colors[fi * 9 + k] !== faces[face]!.colors[k],
+    ),
+  );
+}
+
 function repairByCounts(
   faces: Record<Face, ColorFace>,
   maxCost: number,
@@ -982,8 +1001,18 @@ function repairByCounts(
     return null; // malformed scores are the detector's problem, not something to guess through
   }
   if (result.changed.length === 0 || result.cost > maxCost) return null;
+  if (movesALockedSticker(faces, result.colors)) return null;
   const out = {} as Record<Face, ColorFace>;
   FACES.forEach((face, i) => {
+    // `confidence` stays the DETECTOR's, for the class it picked -- so for a repaired sticker it
+    // describes a colour the cube no longer says. That is a known inaccuracy, kept on purpose until
+    // it is decided what a repaired sticker should MEAN to the user. Rewriting it to the chosen
+    // class's score is not neutral: that score is whatever the detector gave its second choice, and
+    // whenever it falls under LOW_CONFIDENCE_THRESHOLD, `ai-scan-panel`'s `finish` sends the cube to
+    // `finishUnsure` and it is not accepted -- a path that is unreachable today by design. How many
+    // of the measured repairs (592 of 636 sticker fixes, `ml/assign_sim.py`) would cross that line
+    // has not been measured. The repair itself is licensed by the constraint (nine of each, and a
+    // solvable reading), not by a per-sticker probability.
     out[face] = {
       ...faces[face]!,
       colors: result.colors.slice(i * 9, i * 9 + 9),
@@ -1018,7 +1047,7 @@ function recolourByPaint(faces: Record<Face, ColorFace>): Record<Face, ColorFace
     centres.push(capture.colors[4]!);
   }
   const colors = colorsFromPaint(lab, centres);
-  if (!colors) return null;
+  if (!colors || movesALockedSticker(faces, colors)) return null;
   const out = {} as Record<Face, ColorFace>;
   FACES.forEach((face, i) => {
     out[face] = { ...faces[face]!, colors: colors.slice(i * 9, i * 9 + 9) };
@@ -1062,6 +1091,21 @@ function assembleWithin(
   const bySlot = checkedBySlot(faces);
   if ('valid' in bySlot) return bySlot;
 
+  /**
+   * The gate both fallbacks are accepted on, written once: a recolouring is worth having only if
+   * it still checks out by slot AND some scheme finds it solvable. Null means "not this one, try
+   * the next"; anything else is the verdict for the recoloured cube, refusal included -- reaching
+   * this point at all means the reading as detected was going to be refused.
+   */
+  const accept = (candidate: Record<Face, ColorFace> | null): AiScanResult | null => {
+    if (!candidate) return null;
+    const bySlotCandidate = checkedBySlot(candidate);
+    if ('valid' in bySlotCandidate) return null;
+    const solvable = SCHEMES.flatMap((scheme) => solvableReadings(bySlotCandidate, scheme));
+    if (solvable.length === 0) return null;
+    return assembleWithin(candidate, threshold, confirmed, options, maxRepairCost, allowPaint);
+  };
+
   const all = SCHEMES.flatMap((scheme) => solvableReadings(bySlot, scheme));
 
   if (all.length === 0) {
@@ -1069,37 +1113,14 @@ function assembleWithin(
     // here and nowhere else: the cheapest recolouring with nine of each colour. Accepted ONLY if
     // the repaired reading is itself solvable, so this can turn a refusal into a scan and can
     // never turn a scan into something worse.
-    const repaired = repairByCounts(faces, maxRepairCost);
-    if (repaired) {
-      const bySlotRepaired = checkedBySlot(repaired);
-      if (!('valid' in bySlotRepaired)) {
-        const afterRepair = SCHEMES.flatMap((scheme) => solvableReadings(bySlotRepaired, scheme));
-        if (afterRepair.length > 0) {
-          return assembleWithin(repaired, threshold, confirmed, options, maxRepairCost, allowPaint);
-        }
-      }
-    }
+    const byCounts = accept(repairByCounts(faces, maxRepairCost));
+    if (byCounts) return byCounts;
     // Still nothing. One more source of evidence exists and has not been used: the pixels. The
     // scores answered "what colour is each sticker" and were refused; the pixels answer "which
     // stickers share a paint", which a shared illuminant makes answerable when the other is not.
     // Same two gates, so this can turn a refusal into a read and cannot turn a read into anything.
-    const repainted = allowPaint ? recolourByPaint(faces) : null;
-    if (repainted) {
-      const bySlotRepainted = checkedBySlot(repainted);
-      if (!('valid' in bySlotRepainted)) {
-        const afterPaint = SCHEMES.flatMap((scheme) => solvableReadings(bySlotRepainted, scheme));
-        if (afterPaint.length > 0) {
-          return assembleWithin(
-            repainted,
-            threshold,
-            confirmed,
-            options,
-            maxRepairCost,
-            allowPaint,
-          );
-        }
-      }
-    }
+    const byPaint = accept(allowPaint ? recolourByPaint(faces) : null);
+    if (byPaint) return byPaint;
 
     // Before refusing, do the diagnosis a refusal makes possible: how many stickers are wrong is
     // always answerable, and when it is exactly one, WHICH one is answerable too. Under every
