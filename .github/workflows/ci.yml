@@ -467,7 +467,7 @@ jobs:
   # model/runtime has drifted from the one checkpoint. Split by platform: the runtimes that run on
   # Linux here, CoreML + the native plugin path on macOS below.
   golden-linux:
-    name: Golden frames (onnx · int8 · tflite)
+    name: Golden frames (onnx · tflite · int8 when exported)
     needs: [plan]
     if: needs.plan.outputs.ml == 'true'
     runs-on: ubuntu-latest
@@ -488,8 +488,39 @@ jobs:
       # which was inverted when first written and passed every real leg anyway.
       - name: The faithfulness rule is directional
         run: python ml/golden_frames.py --self-check
-      - name: onnx · onnx-int8 · tflite — host-internal parity (see golden_frames.py, PARITY mode)
-        run: python ml/golden_frames.py --parity --legs onnx onnx-int8 tflite
+      # NO --legs. The Linux legs are onnx, tflite and the int8 ONNX -- but only when the export
+      # wrote an int8, which it refuses to do for a graph that quantisation destroys (MANIFEST.json
+      # records `produced: false` and why). Naming the leg here forced the attempt anyway, and the
+      # job failed on a file that is absent on purpose. The default set follows the manifest, and
+      # the harness fails if expected.json still pins reads for a leg the manifest has retired.
+      - name: host-internal parity on every leg this host can run (see golden_frames.py, PARITY mode)
+        run: python ml/golden_frames.py --parity
+
+  # THE TRAINER'S OWN TESTS, which ran nowhere. ml/test_cubedet.py covers the code that produced the
+  # shipped detector -- the assigner, the loss, the backbone contract, the export graph, the scoring
+  # both evaluators share, and the refusals that stop a run from training on the wrong thing -- and
+  # until 2026-09-17 no job invoked it: a docstring said how to run it, and nobody did.
+  #
+  # CPU wheels (the extra index), because the PyPI build of torch on Linux carries CUDA and nothing
+  # here has a GPU. And A SKIP IS A FAILURE: several tests `importorskip` onnx, onnxruntime or timm,
+  # so an environment missing one would report green over tests that never ran.
+  cubedet:
+    name: cubedet (trainer · scoring · export contract, CPU)
+    needs: [plan]
+    if: needs.plan.outputs.ml == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+      - name: Install the cubedet stack (ml/requirements-cubedet.txt, CPU wheels)
+        run: pip install --extra-index-url https://download.pytorch.org/whl/cpu -r ml/requirements-cubedet.txt
+      - name: ml/test_cubedet.py, where a skipped test fails the job
+        run: |
+          python -m pytest ml/test_cubedet.py -q -rs -p no:cacheprovider --junitxml=cubedet-junit.xml
+          python -c "import sys, xml.etree.ElementTree as E; r = E.parse('cubedet-junit.xml').getroot(); s = r if r.tag == 'testsuite' else r.find('testsuite'); n, k = int(s.get('tests')), int(s.get('skipped')); print(f'{n} tests, {k} skipped'); sys.exit(1 if n == 0 or k else 0)"
 
   golden-macos:
     name: Golden frames (coreml · native plugin)
@@ -585,11 +616,14 @@ jobs:
             --ignore RUSTSEC-2024-0370 --ignore RUSTSEC-2025-0075 --ignore RUSTSEC-2025-0080 \
             --ignore RUSTSEC-2025-0081 --ignore RUSTSEC-2025-0098 --ignore RUSTSEC-2025-0100
 
-      # Every shell script in scripts/. The gate that would have caught `security list-keychain
-      # -s` replacing a keychain search list and an unquoted `build-tools/*/apksigner` glob, had
-      # it existed when those were written.
+      # Every shell script git tracks, found by git rather than listed by hand. The gate that would
+      # have caught `security list-keychain -s` replacing a keychain search list and an unquoted
+      # `build-tools/*/apksigner` glob, had it existed when those were written. It named only
+      # scripts/ and .githooks/, so ml/train.sh -- which ran `detector export` on the host from a
+      # comment inside a double-quoted container script -- was never checked at all. The plan's
+      # `*.sh` input is what brings this job to a pull request that touches any of them.
       - name: shellcheck
-        run: shellcheck scripts/*.sh .githooks/*
+        run: git ls-files -z -- '*.sh' '.githooks/*' | xargs -0 shellcheck
 
       # The licence notices are generated from the lockfiles and the packages themselves
       # (scripts/make-third-party-notices.mjs) and committed, like the vendored bundles — and like

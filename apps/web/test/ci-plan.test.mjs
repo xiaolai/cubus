@@ -63,6 +63,9 @@ test('a pull request runs a platform job when it touches that platform', () => {
     ['packages/cube-scanner/src/letterbox.ts', nothingExtra],
     ['scripts/verify-icons.py', { ...only('icons'), deps: true }],
     ['scripts/sign-macos.sh', only('deps')],
+    // Every shell script is shellchecked, so every one of them runs that job.
+    ['ml/train.sh', { ...only('ml'), deps: true }],
+    ['apps/desktop/src-tauri/gen/android/tools/ci.sh', { ...only('rust'), android: true, deps: true }],
     ['.githooks/pre-push', only('deps')],
     ['packages/gan-driver/package.json', only('deps')],
     ['pnpm-lock.yaml', only('deps')],
@@ -71,6 +74,12 @@ test('a pull request runs a platform job when it touches that platform', () => {
   for (const [path, expected] of cases) {
     assert.deepEqual(plan({ event: 'pull_request', changed: [path] }), expected, path);
   }
+});
+
+test('an extension entry matches that extension anywhere, and nothing that merely contains it', () => {
+  assert.equal(plan({ event: 'pull_request', changed: ['deep/down/tool.sh'] }).deps, true);
+  assert.equal(plan({ event: 'pull_request', changed: ['notes.sh.md'] }).deps, false);
+  assert.equal(plan({ event: 'pull_request', changed: ['bash'] }).deps, false);
 });
 
 test('a file-name entry matches the name in any directory, and a directory entry only under it', () => {
@@ -123,6 +132,7 @@ test('every skippable CI job is gated on an output the plan emits, and the alway
     ['rust-macos', 'rust'],
     ['android-shell', 'android'],
     ['golden-linux', 'ml'],
+    ['cubedet', 'ml'],
     ['golden-macos', 'ml'],
     ['supply-chain', 'deps'],
   ]);
@@ -173,4 +183,42 @@ test('the triggers carry the three ways to ask for the full tier, and the plan s
 
 test('the release gate reads the push-event run, which is always the full tier', () => {
   assert.match(RELEASE, /gh run list --workflow CI --event push --commit "\$GITHUB_SHA"/);
+});
+
+test('shellcheck reads every tracked shell script, found by git rather than by a hand list', () => {
+  const step = CI.split('\n').find((line) => /^\s*run: .*\bshellcheck\b/.test(line));
+  assert.ok(step, 'no shellcheck step');
+  assert.match(step, /git ls-files\b.*'\*\.sh'/, `the shellcheck step names its files by hand: ${step.trim()}`);
+  assert.ok(FILTERS.deps.includes('*.sh'), 'a change to a shell script would not bring the shellcheck job to a pull request');
+});
+
+// A golden leg named on the command line is ATTEMPTED even when the export declined to write its
+// artefact, so naming one that MANIFEST.json marks unproduced is a job that fails on purpose-absent
+// files. That is how the Linux job broke when the int8 was retired.
+test('no CI step asks the golden gate for a leg whose artefact was deliberately not written', () => {
+  const url = new URL('../../../ml/models/MANIFEST.json', import.meta.url);
+  const artefacts = JSON.parse(readFileSync(url, 'utf8')).artefacts;
+  const artefactOf = {
+    onnx: 'cubedet.onnx',
+    'onnx-int8': 'cubedet.int8.onnx',
+    coreml: 'cubedet.mlpackage',
+    native: 'cubedet.mlpackage',
+    tflite: 'cubedet.tflite',
+  };
+  const runs = [...CI.matchAll(/golden_frames\.py[^\n]*/g)].map((m) => m[0]);
+  assert.ok(runs.length > 0, 'CI no longer runs the golden gate');
+  for (const run of runs) {
+    // Every word after --legs up to the next flag. Leg names contain hyphens (onnx-int8), so a
+    // pattern that stops at the first hyphen silently checks only part of the list.
+    const legs = /--legs((?:\s+(?!--)\S+)+)/.exec(run)?.[1].trim().split(/\s+/) ?? [];
+    assert.ok(!/--legs\b/.test(run) || legs.length > 0, `could not read the legs of: ${run}`);
+    for (const leg of legs) {
+      assert.ok(leg in artefactOf, `unknown golden leg "${leg}" in: ${run}`);
+      assert.notEqual(
+        artefacts[artefactOf[leg]]?.produced,
+        false,
+        `CI asks for the ${leg} leg, but MANIFEST.json says ${artefactOf[leg]} was not written: ${run}`,
+      );
+    }
+  }
 });
