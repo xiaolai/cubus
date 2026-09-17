@@ -24,7 +24,7 @@ FAR = (50, 30, 8, 8)  # a detection overlapping no labelled box: a side-face sti
 
 
 def a_set(drop: Path, contributor: str, name: str, stamp: int, colour: str = "red", stale: bool = False,
-          consent: bool = True, orientation: int | None = None) -> None:
+          consent: bool = True, orientation: int | None = None, replaced: bool = False) -> None:
     from PIL import Image
 
     folder = drop / "photos" / contributor / name
@@ -41,13 +41,19 @@ def a_set(drop: Path, contributor: str, name: str, stamp: int, colour: str = "re
                 log.write(json.dumps({"file": f"{contributor}/{name}/{f}", "consent": "2026-09-13"}) + "\n")
     review = drop / "state" / "reviews" / contributor / name
     review.mkdir(parents=True)
+    # `made_from` as propose.py writes it (and as check_proposal requires): each photo's name and size.
     proposal = {"version": 1, "contributor": contributor, "set": name, "status": "confirm", "legal": True,
+                "made_from": {"photos": [[f, (folder / f).stat().st_size] for f in files]},
+                "made_at": "2026-09-14T00:00:00+00:00",
                 "photos": [{"file": f, "grid": [colour] * 9, "uncertain": [], "boxes": GRID} for f in files]}
     (review / "proposal.json").write_text(json.dumps(proposal))
     sha = hashlib.sha256((review / "proposal.json").read_bytes()).hexdigest()
     answer = {"version": 1, "proposal_sha256": "0" * 64 if stale else sha, "against": "cube",
               "attention": {"missed_first": False, "disputed": False}, "photos": {f: [colour] * 9 for f in files}}
     (review / "answers-20260914T100000-ab.json").write_text(json.dumps(answer))
+    if replaced:  # the photo changed on disk after its colours were confirmed
+        photo = folder / files[0]
+        photo.write_bytes(photo.read_bytes() + b"!")
 
 
 def fake_decide(sets):
@@ -70,6 +76,7 @@ def make_drop(root: Path) -> Path:
     a_set(drop, "c" * 32, "c" * 16, stamp=5)
     a_set(drop, "d" * 32, "d" * 16, stamp=6, stale=True)
     a_set(drop, "e" * 32, "e" * 16, stamp=7, colour="blue")
+    a_set(drop, "9" * 32, "9" * 16, stamp=9, replaced=True)
     return drop
 
 
@@ -101,7 +108,11 @@ def test_only_legal_current_answers_with_consent_become_data() -> None:
         assert sorted(manifests) == ["all", "fold0", "fold1"], sorted(manifests)
         legal = {"a" * 32, "b" * 32, "c" * 32}
         reasons = {(r["contributor"][:1], r["reason"]) for r in manifests["all"]["left_out"]}
-        assert reasons == {("d", "answer is to a different proposal"), ("e", "the confirmed colours are not a legal cube")}, reasons
+        assert reasons == {
+            ("d", "answer is to a different proposal"),
+            ("e", "the confirmed colours are not a legal cube"),
+            ("9", "photo does not match the proposal: 20260914-090000_000000000000.jpg (size changed)"),
+        }, reasons
 
         tested = []
         for name in ("fold0", "fold1"):

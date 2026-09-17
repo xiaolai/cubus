@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import hashlib
 import os
 import random
 import re
@@ -96,28 +97,58 @@ def main(argv=None) -> int:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
+    # Unchecked, these silently produce a dataset nobody asked for: a negative fraction makes
+    # `round(n * frac)` negative so `max(1, ...)` hands one photograph to a split that was meant to
+    # be empty, and fractions summing past 1 leave no training images at all.
+    if not (0 <= args.val_frac <= 1 and 0 <= args.test_frac <= 1 and args.val_frac + args.test_frac < 1):
+        raise SystemExit(
+            f"--val-frac {args.val_frac} and --test-frac {args.test_frac} must each be in [0, 1] and sum below 1"
+        )
 
     found = collect(args.src)
 
     # MERGE PHOTOGRAPHS THAT SHARE AN EXPORT HASH. Same hash, same bytes, same photograph -- no
     # matter which project name is glued on the front. Without this, `lazycube` and `lazycube-fac`
     # contribute the same pictures twice and can land on opposite sides of a split boundary.
+    #
+    # UNION, not "a destination each". `merge_into[key] = owner` held one target per key and did not
+    # follow chains, so a key that was both a source and someone else's destination was popped and
+    # then skipped (`if src_key in found`) -- leaving the cluster it belonged to split across two
+    # keys, which is the leak this merge exists to prevent. B sharing one hash with A and another
+    # with C is enough to produce it, and it does occur in the corpus.
+    parent: dict[tuple[str, str], tuple[str, str]] = {}
+
+    def find(k):
+        parent.setdefault(k, k)
+        while parent[k] != k:
+            parent[k] = parent[parent[k]]
+            k = parent[k]
+        return k
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)  # the lexicographically first key names the cluster
+
     hash_owner: dict[str, tuple[str, str]] = {}
-    merge_into: dict[tuple[str, str], tuple[str, str]] = {}
     for key in sorted(found):
+        find(key)
         for _, _, filename in found[key]:
             h = export_hash(filename)
             if h is None:
                 continue
-            if h in hash_owner and hash_owner[h] != key:
-                merge_into[key] = hash_owner[h]
+            if h in hash_owner:
+                union(key, hash_owner[h])
             else:
-                hash_owner.setdefault(h, key)
-    if merge_into:
-        for src_key, dst_key in merge_into.items():
-            if src_key in found:
-                found[dst_key].extend(found.pop(src_key))
-        print(f"merged {len(merge_into)} photograph(s) that were published under a second project name")
+                hash_owner[h] = key
+    merged = 0
+    for key in sorted(found):
+        root = find(key)
+        if root != key and key in found:
+            found[root].extend(found.pop(key))
+            merged += 1
+    if merged:
+        print(f"merged {merged} photograph(s) that were published under a second project name")
 
     # MERGE PHOTOGRAPHS THAT ARE THE SAME PICTURE UNDER DIFFERENT NAMES. Roboflow re-names files
     # between exports, so the same photograph appears as `..._7` in one and
@@ -189,11 +220,18 @@ def main(argv=None) -> int:
         print("\n--dry-run: nothing written")
         return 0
 
+    # A BUILD STARTS EMPTY. Copying into an existing tree kept whatever an earlier run with a
+    # different assignment had left there -- photographs this run never meant to include, possibly
+    # in a different split -- and they were trained on all the same.
+    existing = args.out / "dataset"
+    if existing.exists() and any(existing.rglob("*")):
+        raise SystemExit(f"{existing} is not empty; remove it deliberately before rebuilding")
     for split in ("train", "val", "test"):
         for kind in ("images", "labels"):
             (args.out / "dataset" / kind / split).mkdir(parents=True, exist_ok=True)
 
     written = collections.Counter()
+    key_of_file: dict[tuple[str, str], tuple[str, str]] = {}  # (split, file) -> photograph
     missing_labels = 0
     for key, copies in found.items():
         split = assignment[key]
@@ -205,20 +243,38 @@ def main(argv=None) -> int:
             missing_labels += 1
             continue
         shutil.copyfile(src_img, args.out / "dataset" / "images" / split / filename)
+        key_of_file[(split, filename)] = key
         shutil.copyfile(src_lbl, args.out / "dataset" / "labels" / split / f"{stem}.txt")
         written[split] += 1
 
     print(f"\nwritten: {dict(written)}   (skipped {missing_labels} photograph(s) with no label)")
-    # The property the whole file exists for, asserted rather than assumed.
-    per_split_keys = collections.defaultdict(set)
-    for key, split in assignment.items():
-        if any((args.out / "dataset" / "images" / split / f).is_file() for _, _, f in found[key]):
-            per_split_keys[split].add(key)
+    # The property the whole file exists for, asserted rather than assumed -- and asserted against
+    # the FILES, which is the fix. It used to build its sets from `assignment`, where every key has
+    # exactly one split by construction, so every intersection was empty however the splits had
+    # actually been written: a check that could not fail, reporting the property as checked. Hashing
+    # what is on disk catches the two cases that matter -- a photograph the dedup did not recognise
+    # under two names, and files left behind by an earlier run with a different assignment.
+    #
+    # Two identities, because they fail differently: the content hash catches the same bytes under
+    # two names, and the photograph KEY -- recovered from each written file's name -- catches the
+    # same photograph written twice under the dedup's own identity. A file whose name maps to no key
+    # was not written by this run, which the empty-start check above should make impossible.
+    by_content: dict[str, set[str]] = collections.defaultdict(set)
+    by_key: dict[tuple[str, str], set[str]] = collections.defaultdict(set)
+    for split in ("train", "val", "test"):
+        for image in sorted((args.out / "dataset" / "images" / split).glob("*")):
+            if not image.is_file():
+                continue
+            by_content[hashlib.sha256(image.read_bytes()).hexdigest()].add(split)
+            if (split, image.name) not in key_of_file:
+                raise SystemExit(f"{image} was not written by this run")
+            by_key[key_of_file[(split, image.name)]].add(split)
     for a, b in (("train", "val"), ("train", "test"), ("val", "test")):
-        overlap = per_split_keys[a] & per_split_keys[b]
-        print(f"  {a} & {b} share {len(overlap)} photographs")
-        if overlap:
-            raise SystemExit(f"LEAKAGE: {a} and {b} share {len(overlap)} photographs")
+        overlap = {h for h, splits in by_content.items() if {a, b} <= splits}
+        shared = {k for k, splits in by_key.items() if {a, b} <= splits}
+        print(f"  {a} & {b} share {len(overlap)} photographs by content, {len(shared)} by key")
+        if overlap or shared:
+            raise SystemExit(f"LEAKAGE: {a} and {b} share {len(overlap)} photographs by content and {len(shared)} by key")
     return 0
 
 

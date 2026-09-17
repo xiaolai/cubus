@@ -94,8 +94,28 @@ def checked_sets(drop: Path) -> tuple[list[CheckedSet], list[dict]]:
             left_out.append({**where, "reason": "answer is to a different proposal"})
             continue
         files = tuple(p["file"] for p in proposal["photos"])
-        if any(not (drop / "photos" / review.parent.name / review.name / f).is_file() for f in files):
+        photo_dir = drop / "photos" / review.parent.name / review.name
+        if any(not (photo_dir / f).is_file() for f in files):
             left_out.append({**where, "reason": "a photo is missing"})
+            continue
+        # THE LABELS WERE CONFIRMED FOR PARTICULAR BYTES. Existence was the only thing checked, so a
+        # photo replaced after the answer was given -- a re-upload, a rotation applied in place, a
+        # sync that restored an older copy -- kept the grid a contributor confirmed for a picture
+        # that is no longer there. The proposal records each photo's size in `made_from`, and the
+        # drop never rewrites a photo, so a size that has moved means the bytes have. A photo the
+        # proposal labels but never recorded is refused too: there is nothing to compare it with.
+        #
+        # WHAT THIS DOES NOT CATCH: a replacement of exactly the same size. Closing that needs each
+        # photo's sha256 in `made_from` -- the drop's own name-embedded hash is defined by the drop
+        # server, not here, and guessing its format would be a check that only looks like one.
+        # Adding the hash changes `made_from`, which propose.py compares for equality, so every
+        # unanswered set would be proposed once more; that is a decision, not a fix.
+        sizes = dict(proposal.get("made_from", {}).get("photos", []))
+        unrecorded = [f for f in files if f not in sizes]
+        moved = [f for f in files if f in sizes and (photo_dir / f).stat().st_size != sizes[f]]
+        if unrecorded or moved:
+            detail = [f"{f} (not recorded)" for f in unrecorded] + [f"{f} (size changed)" for f in moved]
+            left_out.append({**where, "reason": f"photo does not match the proposal: {', '.join(detail)}"})
             continue
         usable.append(CheckedSet(
             review.parent.name, review.name, files,
@@ -225,26 +245,38 @@ def build(drop: Path, out: Path, decide: Callable, find: Callable, folds: int, t
     fold_of = assign_folds(dict(counts), folds)
     consent = consent_by_file(drop)
     schemes = {f"fold{k}": k for k in range(folds)} | {"all": None}
-    manifests = {}
-    for name, k in schemes.items():
-        root = out / name
-        if root.exists():
-            raise SystemExit(f"drop_dataset.py: {root} exists; refusing to mix two builds in one root")
-        train = capped([s for s in legal if fold_of[s.contributor] != k], train_cap)
-        test = [] if k is None else capped([s for s in legal if fold_of[s.contributor] == k], test_cap)
-        manifest = {
-            "scheme": name, "made_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-            "caps": {"train": train_cap, "test": test_cap}, "folds": folds, "tools": tools,
-            "train": write_split(drop, root, "train", train, find, consent),
-            "test": write_split(drop, root, "test", test, find, consent) if test else [],
-            "left_out": left_out,
-        }
-        train_people = {r["contributor"] for r in manifest["train"]}
-        test_people = {r["contributor"] for r in manifest["test"]}
-        if train_people & test_people:
-            raise AssertionError(f"{name}: contributors in both train and test: {sorted(train_people & test_people)}")
-        (root / "manifest.json").write_text(json.dumps(manifest, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
-        manifests[name] = manifest
+    manifests: dict = {}
+    # PREFLIGHT EVERY ROOT before writing any of them. Checked one at a time, a clash on the last
+    # scheme left the earlier ones built -- and the next run refuses at the FIRST of those, so the
+    # only way forward was deleting directories by hand. `created` then makes the failure path
+    # symmetric: a build that cannot finish leaves nothing of itself behind to trip over.
+    for name in schemes:
+        if (out / name).exists():
+            raise SystemExit(f"drop_dataset.py: {out / name} exists; refusing to mix two builds in one root")
+    created: list[Path] = []
+    try:
+        for name, k in schemes.items():
+            root = out / name
+            created.append(root)
+            train = capped([s for s in legal if fold_of[s.contributor] != k], train_cap)
+            test = [] if k is None else capped([s for s in legal if fold_of[s.contributor] == k], test_cap)
+            manifest = {
+                "scheme": name, "made_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "caps": {"train": train_cap, "test": test_cap}, "folds": folds, "tools": tools,
+                "train": write_split(drop, root, "train", train, find, consent),
+                "test": write_split(drop, root, "test", test, find, consent) if test else [],
+                "left_out": left_out,
+            }
+            train_people = {r["contributor"] for r in manifest["train"]}
+            test_people = {r["contributor"] for r in manifest["test"]}
+            if train_people & test_people:
+                raise AssertionError(f"{name}: contributors in both train and test: {sorted(train_people & test_people)}")
+            (root / "manifest.json").write_text(json.dumps(manifest, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+            manifests[name] = manifest
+    except BaseException:
+        for root in created:
+            shutil.rmtree(root, ignore_errors=True)
+        raise
     return manifests
 
 

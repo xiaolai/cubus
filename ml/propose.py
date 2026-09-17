@@ -296,8 +296,19 @@ def check_proposal(p: dict) -> None:
         require(photo.get("fit") != "tolerant" or uncertain == list(range(9)), "a tolerant fit outlines every sticker")
 
 
-def write_proposal(review_dir: Path, proposal: dict) -> None:
-    """Checked, then written whole: a reader sees the old file or the new one, never half of one."""
+ANSWERED_WHILE_READING = "skipped: answered while this run was reading"
+
+
+def write_proposal(review_dir: Path, proposal: dict) -> bool:
+    """Checked, then written whole: a reader sees the old file or the new one, never half of one.
+
+    Returns False, and writes nothing, when the set has been ANSWERED since the run began. Reading a
+    set's photos takes seconds to minutes, and an answer submitted in that time answers the proposal
+    about to be replaced -- its sha256 would no longer match, it would be orphaned without a word, and
+    the contributor would be asked the same question twice. The check sits here, against the
+    replace itself, so every write path has it and the window left is the write's own. Closing that
+    too needs a lock, which is worth having only if this ever runs on more than one machine.
+    """
     check_proposal(proposal)
     review_dir.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=review_dir, prefix=".proposal.", suffix=".tmp")
@@ -307,10 +318,14 @@ def write_proposal(review_dir: Path, proposal: dict) -> None:
             f.write("\n")
             f.flush()
             os.fsync(f.fileno())
+        if any(review_dir.glob("answers-*.json")):
+            os.unlink(tmp)
+            return False
         os.replace(tmp, review_dir / "proposal.json")
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+    return True
 
 
 def sha256_file(path: Path) -> str:
@@ -341,7 +356,10 @@ def propose(
         if only is not None and cube.key not in only:
             continue
         review_dir = state_dir / "reviews" / cube.contributor / cube.name
-        if len(cube.photos) < FACES_PER_CUBE or any(review_dir.glob("answers*")):
+        # `answers-*.json` is the contract `drop_dataset.py` reads; `answers*` also matched a
+        # half-written temporary or an editor backup, and one of those would suppress this set's
+        # proposal for good while the pipeline that consumes answers ignored the file entirely.
+        if len(cube.photos) < FACES_PER_CUBE or any(review_dir.glob("answers-*.json")):
             continue  # still being photographed, or already answered
         # The drop names a photo by its capture time and content hash and never rewrites one, so the
         # names and sizes identify the photos without hashing every set's bytes on every pass.
@@ -354,21 +372,18 @@ def propose(
         if len(cube.photos) > FACES_PER_CUBE:
             # Only sets from before the drop refused a seventh photo can get here.
             detail = f"{len(cube.photos)} photos; a set is {FACES_PER_CUBE}"
-            write_proposal(review_dir, {**head, "status": "unusable", "reason": "too_many_photos", "detail": detail, **stamp})
-            written.append((cube.key, "unusable: too_many_photos"))
+            written.append((cube.key, "unusable: too_many_photos" if write_proposal(review_dir, {**head, "status": "unusable", "reason": "too_many_photos", "detail": detail, **stamp}) else ANSWERED_WHILE_READING))
             continue
         reads = [read(p) for p in cube.photos]
         # Before the face check: a 4x4 set often has photos no fit reads too, and "not a 3x3" is the
         # thing its contributor needs to hear.
         beyond = [{"file": p.name, "beyond": r.beyond} for p, r in zip(cube.photos, reads) if r.beyond]
         if sum(b["beyond"] for b in beyond) >= BIGGER_CUBE_STICKERS:
-            write_proposal(review_dir, {**head, "status": "unusable", "reason": "not_3x3", "detail": beyond, **stamp})
-            written.append((cube.key, "unusable: not_3x3"))
+            written.append((cube.key, "unusable: not_3x3" if write_proposal(review_dir, {**head, "status": "unusable", "reason": "not_3x3", "detail": beyond, **stamp}) else ANSWERED_WHILE_READING))
             continue
         missed = [{"file": p.name, "verdict": r.verdict} for p, r in zip(cube.photos, reads) if r.verdict != "OK"]
         if missed:
-            write_proposal(review_dir, {**head, "status": "unusable", "reason": "face_not_found", "detail": missed, **stamp})
-            written.append((cube.key, "unusable: face_not_found"))
+            written.append((cube.key, "unusable: face_not_found" if write_proposal(review_dir, {**head, "status": "unusable", "reason": "face_not_found", "detail": missed, **stamp}) else ANSWERED_WHILE_READING))
             continue
         pending.append((cube, review_dir, {**head, **stamp}, reads))
 
@@ -376,8 +391,8 @@ def propose(
     for (cube, review_dir, base, reads), decision in zip(pending, decisions, strict=True):
         if decision["status"] == "unusable":
             files = [cube.photos[i].name for i in decision["photos"]]
-            write_proposal(review_dir, {**base, "status": "unusable", "reason": decision["reason"], "detail": files})
-            written.append((cube.key, f"unusable: {decision['reason']}"))
+            ok = write_proposal(review_dir, {**base, "status": "unusable", "reason": decision["reason"], "detail": files})
+            written.append((cube.key, f"unusable: {decision['reason']}" if ok else ANSWERED_WHILE_READING))
             continue
         photos = [
             {
@@ -390,7 +405,9 @@ def propose(
             }
             for path, r, shown in zip(cube.photos, reads, decision["photos"], strict=True)
         ]
-        write_proposal(review_dir, {**base, "status": "confirm", "legal": decision["legal"], "photos": photos})
+        if not write_proposal(review_dir, {**base, "status": "confirm", "legal": decision["legal"], "photos": photos}):
+            written.append((cube.key, ANSWERED_WHILE_READING))
+            continue
         outlined = sum(len(p["uncertain"]) for p in photos)
         legality = "legal" if decision["legal"] else f"NOT legal ({decision['verdict']})"
         tolerant = sum(p["fit"] == "tolerant" for p in photos)
