@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assembleColors, type ColorFace, resolveCentreCollision } from '../src/ai-assemble';
+import { assembleColors, type ColorFace, resolveCentres } from '../src/ai-assemble';
 import { NUM_COLORS } from '../src/nine-of-each';
 import { FACES, type Face } from '../src/types';
 
@@ -95,11 +95,11 @@ describe('a sticker a person locked', () => {
   });
 
   describe('under the collision resolver, whose repair has no cost ceiling', () => {
-    // resolveCentreCollision assembles with an INFINITE repair ceiling, so a correction that is only
-    // expensive to overrule would be overruled there. The setup: D is the side not yet filed, and
-    // the newcomer is D's capture with its centre misread as U -- a collision with the filed U. The
-    // one legal filing puts the newcomer at D, and that filing ALSO needs R0 repaired.
-    function collision(lockR0: boolean): ReturnType<typeof resolveCentreCollision> {
+    // resolveCentres assembles with an INFINITE repair ceiling, so a correction that is only
+    // expensive to overrule would be overruled there. The setup: the newcomer is D's capture with its
+    // centre misread as U -- a collision with U, which leaves both unnamed. The one legal filing puts
+    // the newcomer at D, and that filing ALSO needs R0 repaired.
+    function collision(lockR0: boolean): ReturnType<typeof resolveCentres> {
       const faces = misread();
       if (lockR0) {
         faces.R!.locked = Array<boolean>(9).fill(false);
@@ -113,9 +113,16 @@ describe('a sticker a person locked', () => {
           k === 4 ? row.map((_, j) => (j === LETTER_CLASS.U ? 0.95 : 0.01)) : [...row],
         ),
       };
-      const filed: Partial<Record<Face, ColorFace>> = { ...faces };
-      delete filed.D;
-      return resolveCentreCollision(filed, newcomer, undefined, { diagnose: false });
+      const named: Partial<Record<Face, ColorFace>> = { ...faces };
+      const white = named.U!;
+      delete named.D;
+      delete named.U;
+      return resolveCentres(
+        named,
+        [white, newcomer].map((capture) => ({ capture, centreConfidence: capture.confidence[4]! })),
+        undefined,
+        { diagnose: false },
+      );
     }
 
     it('repairs R0 when nobody locked it -- the control, so the next test means something', () => {

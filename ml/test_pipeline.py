@@ -381,6 +381,35 @@ def test_nested_boxes_are_dropped_exactly_as_the_app_drops_them():
     print("PASS inference: nested boxes are dropped as the app drops them, and read_face applies it")
 
 
+def test_isolated_boxes_are_dropped_exactly_as_the_app_drops_them():
+    """cube_infer.drop_isolated answers the cases dropIsolated (TypeScript) is tested on, and fit_grid applies
+    it — held to the same real frames, so the golden gate keeps testing the fit the app actually runs."""
+    import cube_infer
+
+    fixtures = HERE.parent / "packages/cube-scanner/tests/fixtures"
+    shared = json.loads((fixtures / "isolated-detections.json").read_text())
+    for case in shared["cases"]:
+        dets = [cube_infer.Detection(d["cx"], d["cy"], d["w"], d["h"], d["classId"], d["confidence"]) for d in case["detections"]]
+        kept = [next(i for i, d in enumerate(dets) if d is k) for k in cube_infer.drop_isolated(dets)]
+        assert kept == case["kept"], (case["name"], kept)
+
+    def read(boxes):
+        verdict, grid = cube_infer.fit_grid([cube_infer.Detection(b[0], b[1], b[2], b[3], int(b[4]), b[5]) for b in boxes])
+        return verdict if grid is None else "OK " + "".join("WRGYOB"[d.class_id] for d in grid)
+
+    frames = json.loads((fixtures / "background-box-frames.json").read_text())["frames"]
+    for f in frames:
+        assert read(f["boxes"]) == f["after"], ("recorded frame", f["t"], read(f["boxes"]), f["after"])
+    reading = [f for f in frames if f["recorded"] != "area-ratio"]
+    spoiled = [f for f in frames if f["recorded"] == "area-ratio"]
+    assert len(reading) > 20 and all(f["before"] == f["after"] for f in reading), "a frame that read before reads differently now"
+    assert spoiled and all(f["before"] == "BAD_GEOMETRY" for f in spoiled), "the fixture no longer shows the bug it was recorded for"
+    recovered = sum(f["after"].startswith("OK") for f in spoiled)
+    assert recovered / len(spoiled) >= 0.75, f"only {recovered}/{len(spoiled)} spoiled frames read"
+    print(f"PASS inference: isolated boxes are dropped as the app drops them — {recovered}/{len(spoiled)} spoiled frames read, "
+          f"{len(reading)}/{len(reading)} reading frames unchanged")
+
+
 def test_licence_note_says_where_the_weights_started():
     """The manifest's provenance sentence must follow the backbone, not be a constant.
 
@@ -958,6 +987,7 @@ if __name__ == "__main__":
     test_manifest_labels_match_export_py()
     test_licence_note_says_where_the_weights_started()
     test_nested_boxes_are_dropped_exactly_as_the_app_drops_them()
+    test_isolated_boxes_are_dropped_exactly_as_the_app_drops_them()
     test_an_int8_that_could_not_be_checked_is_not_written()
     test_a_coreml_package_is_identified_by_its_model_not_its_random_ids()
     test_every_script_run_test_is_called_by_its_runner()

@@ -57,8 +57,24 @@ export interface FaceFit {
   boxes?: [number, number, number, number][];
 }
 
-export type FitResult = { ok: true; face: FaceFit } | { ok: false; reason: FitReason };
+export type FitResult =
+  | { ok: true; face: FaceFit }
+  | { ok: false; reason: FitReason; geometry?: GeometryFailure };
 export type FitReason = 'NO_FACE' | 'PARTIAL_FACE' | 'BAD_GEOMETRY';
+
+/**
+ * Which grid rule refused nine boxes, and by how much. Carried only on `BAD_GEOMETRY`, for the scan
+ * trace: "bad geometry" alone does not say whether the boxes were uneven in SIZE or out of LINE,
+ * and those are different faults — the first is a detector drawing loose boxes, the second a cube
+ * held at an angle. Every bound here was set on one detector's boxes (`ml/golden/frames/`), so when
+ * the detector changes, this is where a mismatch shows. `value` and `bound` share a unit (a ratio of
+ * areas, or a distance in mean sticker sizes) so the two can be compared by eye.
+ */
+export interface GeometryFailure {
+  rule: 'area-ratio' | 'row-spread' | 'column-spread' | 'step-short' | 'step-long';
+  value: number;
+  bound: number;
+}
 
 /**
  * Decode a v3 detect output tensor of shape [4 + numClasses, numAnchors]
@@ -185,6 +201,48 @@ export function dropNested(dets: Detection[]): Detection[] {
 }
 
 /**
+ * A box with no other box within this many median sticker-sizes of it is not a sticker of the face
+ * being shown: a sticker sits among its face's other stickers.
+ *
+ * WHY (2026-09-18). After v0.6.0 the detector began reporting one large false box in the BACKGROUND
+ * — labelled orange at 0.34, about twelve sticker-widths from the cube, most likely skin — on almost
+ * half the frames of a real scan. `fitFace` takes the nine LARGEST boxes, and that box was seventeen
+ * times a sticker's area, so it always took a real sticker's place and the frame was refused as bad
+ * geometry. A face that was detected perfectly well could not be read, and each refusal reset the
+ * stillness run, so a side almost never settled.
+ *
+ * WHY ISOLATION AND NOT SIZE OR DISTANCE. Measured, not argued, on the 20 golden frames and 410 frames
+ * recorded from a Studio Display camera: every real front sticker has at least FOUR other boxes within
+ * this radius, and the background box had NONE in all 271 frames it spoiled. The alternatives failed:
+ * dropping boxes over 4x the median area changed a golden read (render-02 has a real sticker at
+ * 4.16x), and dropping boxes far from the boxes' median centre changed six — two to a different cube —
+ * because neighbour-face slivers crowd one side and drag that centre off the face. Isolation is local,
+ * so there is no centre to drag. It changes no golden read and recovers 223 of the 271 spoiled frames;
+ * the rest held only eight real stickers under the false box.
+ *
+ * Distances are compared SQUARED. `Math.hypot` is not guaranteed to round as Python's does, and
+ * `ml/cube_infer.py` runs this same rule for the golden gate; multiplication and addition round the
+ * same way in both, so a box on the boundary gets the same answer in both.
+ */
+export const ISOLATION_RADIUS = 3;
+
+/** `dets` without the boxes that have no other box within ISOLATION_RADIUS median sticker-sizes. */
+export function dropIsolated(dets: Detection[]): Detection[] {
+  if (dets.length === 0) return dets;
+  const sides = dets.map((d) => (d.w + d.h) / 2).sort((a, b) => a - b);
+  const reach = ISOLATION_RADIUS * sides[Math.floor(sides.length / 2)]!;
+  const reach2 = reach * reach;
+  return dets.filter((d) =>
+    dets.some((o) => {
+      if (o === d) return false;
+      const dx = o.cx - d.cx;
+      const dy = o.cy - d.cy;
+      return dx * dx + dy * dy <= reach2;
+    }),
+  );
+}
+
+/**
  * The largest step between adjacent rows or columns, as a multiple of the mean sticker size.
  *
  * There was a MINIMUM step and no maximum, so nine boxes scattered across the frame — a column
@@ -223,7 +281,15 @@ const MAX_COLUMN_SPREAD = 3;
 const MAX_AREA_RATIO = 5;
 
 /** Split 9 detections into 3 rows of 3 (reading order) iff they form a plausible 3x3 grid. */
-function toGrid(nine: Detection[]): Detection[] | null {
+/**
+ * The nine boxes in reading order, or the rule that refused them.
+ *
+ * Each refusal names what it measured. The DECISIONS are exactly the ones this made when it
+ * returned null — the comparisons are unchanged, character for character — and the measurement is
+ * computed beside them for the scan trace, never in their place. That matters in one corner: nine
+ * boxes of zero area pass the area rule (`0 > 0 * 5` is false), where a ratio would be `0 / 0`.
+ */
+function gridOf(nine: Detection[]): { grid: Detection[] } | { fail: GeometryFailure } {
   const byY = [...nine].sort((a, b) => a.cy - b.cy);
   const rows = [byY.slice(0, 3), byY.slice(3, 6), byY.slice(6, 9)].map((r) =>
     r.sort((a, b) => a.cx - b.cx),
@@ -232,18 +298,26 @@ function toGrid(nine: Detection[]): Detection[] | null {
   // Nine boxes of wildly different areas are not nine stickers of one face. A degenerate box
   // (w or h at zero) makes this infinite, which refuses rather than dividing by zero downstream.
   const areas = nine.map((d) => d.w * d.h);
-  if (Math.max(...areas) > Math.min(...areas) * MAX_AREA_RATIO) return null;
+  const largest = Math.max(...areas);
+  const smallest = Math.min(...areas);
+  if (largest > smallest * MAX_AREA_RATIO) {
+    return { fail: { rule: 'area-ratio', value: largest / smallest, bound: MAX_AREA_RATIO } };
+  }
   // Each row's 3 stickers must share a y-band (spread < ~1 sticker), and the 3 rows must
   // step apart in y; likewise columns in x. A non-grid arrangement (partial face, junk)
   // fails this and we abstain rather than emit a garbage face.
   for (const row of rows) {
-    if (Math.max(...row.map((d) => d.cy)) - Math.min(...row.map((d) => d.cy)) > size) return null;
+    const spread = Math.max(...row.map((d) => d.cy)) - Math.min(...row.map((d) => d.cy));
+    if (spread > size) return { fail: { rule: 'row-spread', value: spread / size, bound: 1 } };
   }
   // …and each column's 3 stickers must share an x-band. Without this, three rows sheared past
   // each other — row 0 at x 100, row 2 at x 400 — satisfied every rule above and read as a face.
   for (const c of [0, 1, 2]) {
     const xs = rows.map((r) => r[c]!.cx);
-    if (Math.max(...xs) - Math.min(...xs) > size * MAX_COLUMN_SPREAD) return null;
+    const spread = Math.max(...xs) - Math.min(...xs);
+    if (spread > size * MAX_COLUMN_SPREAD) {
+      return { fail: { rule: 'column-spread', value: spread / size, bound: MAX_COLUMN_SPREAD } };
+    }
   }
   const rowY = rows.map((r) => r.reduce((s, d) => s + d.cy, 0) / 3);
   const colX = [0, 1, 2].map((c) => rows.reduce((s, r) => s + r[c]!.cx, 0) / 3);
@@ -254,9 +328,11 @@ function toGrid(nine: Detection[]): Detection[] | null {
     colX[2]! - colX[1]!,
   ];
   for (const step of steps) {
-    if (step < size * 0.4 || step > size * MAX_STEP) return null;
+    if (step < size * 0.4) return { fail: { rule: 'step-short', value: step / size, bound: 0.4 } };
+    if (step > size * MAX_STEP)
+      return { fail: { rule: 'step-long', value: step / size, bound: MAX_STEP } };
   }
-  return rows.flat();
+  return { grid: rows.flat() };
 }
 
 /**
@@ -267,10 +343,14 @@ function toGrid(nine: Detection[]): Detection[] | null {
 export function fitFace(dets: Detection[], minConf = MIN_STICKER_CONFIDENCE): FitResult {
   const good = dets.filter((d) => d.confidence >= minConf && d.classId >= 0 && d.classId < 6);
   if (good.length === 0) return { ok: false, reason: 'NO_FACE' };
-  if (good.length < 9) return { ok: false, reason: 'PARTIAL_FACE' };
-  const nine = [...good].sort((a, b) => b.w * b.h - a.w * a.h).slice(0, 9);
-  const grid = toGrid(nine);
-  if (!grid) return { ok: false, reason: 'BAD_GEOMETRY' };
+  // Isolation is applied before the nine largest are chosen, not after: an isolated false box is
+  // usually the LARGEST box in the frame, so it is exactly the one "the nine largest" would pick first.
+  const neighboured = dropIsolated(good);
+  if (neighboured.length < 9) return { ok: false, reason: 'PARTIAL_FACE' };
+  const nine = [...neighboured].sort((a, b) => b.w * b.h - a.w * a.h).slice(0, 9);
+  const fitted = gridOf(nine);
+  if ('fail' in fitted) return { ok: false, reason: 'BAD_GEOMETRY', geometry: fitted.fail };
+  const { grid } = fitted;
   return {
     ok: true,
     face: {

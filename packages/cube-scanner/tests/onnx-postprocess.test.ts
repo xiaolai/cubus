@@ -5,6 +5,7 @@ import { fitFromOutput } from '../src/onnx-detect.js';
 import {
   type Detection,
   decodeDetections,
+  dropIsolated,
   dropNested,
   fitFace,
   MIN_STICKER_CONFIDENCE,
@@ -122,6 +123,59 @@ describe('dropNested', () => {
   });
 });
 
+describe('dropIsolated', () => {
+  // The same file ml/test_pipeline.py reads for cube_infer.drop_isolated, so the two cannot drift apart.
+  const shared = JSON.parse(
+    readFileSync(new URL('./fixtures/isolated-detections.json', import.meta.url), 'utf8'),
+  ) as { cases: { name: string; detections: Detection[]; kept: number[] }[] };
+  for (const c of shared.cases) {
+    it(c.name, () => {
+      expect(dropIsolated(c.detections).map((d) => c.detections.indexOf(d))).toEqual(c.kept);
+    });
+  }
+});
+
+describe('fitFace on frames recorded from a real camera, with a false box in the background', () => {
+  // Frames the scan trace recorded on 2026-09-18 (see the fixture's `about`). They are why the
+  // isolation rule exists, so they are what it is held to — in both directions.
+  type Frame = {
+    recorded: string;
+    boxes: [number, number, number, number, number, number][];
+    before: string;
+    after: string;
+  };
+  const { frames } = JSON.parse(
+    readFileSync(new URL('./fixtures/background-box-frames.json', import.meta.url), 'utf8'),
+  ) as { frames: Frame[] };
+  const read = (f: Frame): string => {
+    const r = fitFace(
+      f.boxes.map(([cx, cy, w, h, classId, confidence]) => ({ cx, cy, w, h, classId, confidence })),
+    );
+    return r.ok ? `OK ${r.face.colors.map((c) => 'WRGYOB'[c]).join('')}` : r.reason;
+  };
+  const spoiled = frames.filter((f) => f.recorded === 'area-ratio');
+  const reading = frames.filter((f) => f.recorded !== 'area-ratio');
+
+  it('reads every frame exactly as the Python mirror does', () => {
+    // ml/cube_infer.py is held to the same `after`, so this is the cross-language check.
+    expect(frames.map(read)).toEqual(frames.map((f) => f.after));
+  });
+
+  it('leaves every frame that already read exactly as it was — no sticker moved, none recoloured', () => {
+    expect(reading.length).toBeGreaterThan(20);
+    for (const f of reading) expect(read(f)).toBe(f.before);
+  });
+
+  it('reads most of the frames the false box spoiled', () => {
+    // Every one was refused before, which is what makes the fixture evidence of the bug.
+    expect(spoiled.every((f) => f.before === 'BAD_GEOMETRY')).toBe(true);
+    const recovered = spoiled.filter((f) => read(f).startsWith('OK')).length;
+    // 48 of 55 today; the rest held only eight real stickers under the false box. The floor sits
+    // below today's figure so a genuine improvement never has to edit it.
+    expect(recovered / spoiled.length).toBeGreaterThanOrEqual(0.75);
+  });
+});
+
 describe('fitFace', () => {
   it('returns 9 colours in reading order for a clean grid', () => {
     const colors = [0, 1, 2, 3, 4, 5, 0, 1, 2];
@@ -191,7 +245,14 @@ describe('fitFace — the geometry a real face has, and the arrangements that on
     }
     // The sliver: same height, a fifth of the width, just past the face's right edge.
     dets.push({ cx: 210, cy: 145, w: 5, h: 25, classId: 5, confidence: 0.6 });
-    expect(fitFace(dets)).toEqual({ ok: false, reason: 'BAD_GEOMETRY' });
+    // Refused by SIZE, not by position: a sliver a fifth as wide is 7.2x smaller than a sticker.
+    // Naming the rule pins which bound this depends on, so loosening a different one cannot let it
+    // through unnoticed.
+    expect(fitFace(dets)).toMatchObject({
+      ok: false,
+      reason: 'BAD_GEOMETRY',
+      geometry: { rule: 'area-ratio' },
+    });
   });
 
   it('refuses three rows sheared past each other', () => {
@@ -210,7 +271,13 @@ describe('fitFace — the geometry a real face has, and the arrangements that on
         });
       }
     }
-    expect(fitFace(dets)).toEqual({ ok: false, reason: 'BAD_GEOMETRY' });
+    // The case the column rule was added for: every row passes on its own, and it is the columns'
+    // x-spread that gives the staircase away.
+    expect(fitFace(dets)).toMatchObject({
+      ok: false,
+      reason: 'BAD_GEOMETRY',
+      geometry: { rule: 'column-spread' },
+    });
   });
 
   it('refuses a column displaced far from its neighbours', () => {
@@ -227,7 +294,71 @@ describe('fitFace — the geometry a real face has, and the arrangements that on
         });
       }
     }
-    expect(fitFace(dets)).toEqual({ ok: false, reason: 'BAD_GEOMETRY' });
+    // The WHOLE column moves, so each column is still internally aligned and column-spread passes
+    // it. What is wrong is the gap between columns 1 and 2, which is the step rule's to catch.
+    expect(fitFace(dets)).toMatchObject({
+      ok: false,
+      reason: 'BAD_GEOMETRY',
+      geometry: { rule: 'step-long' },
+    });
+  });
+
+  // Every rule the scan trace can name has a case that names it. The trace reports these strings
+  // to whoever is diagnosing a scan, so a rule that fired under a different name — or never fired
+  // at all — would send that person after the wrong bound.
+  it('names row-spread when one row is not level', () => {
+    // Size 30. Row 0 dips by 35 at its right end, which is more than a sticker, while staying well
+    // clear of row 1 so the sort by y still groups the rows as rows.
+    const ys = [
+      [100, 100, 135],
+      [190, 190, 190],
+      [235, 235, 235],
+    ];
+    const dets: Detection[] = [];
+    for (let r = 0; r < 3; r++) {
+      for (let c = 0; c < 3; c++) {
+        dets.push({ cx: 100 + c * 45, cy: ys[r]![c]!, w: 30, h: 30, classId: 3, confidence: 0.9 });
+      }
+    }
+    const fit = fitFace(dets);
+    expect(fit).toMatchObject({
+      ok: false,
+      reason: 'BAD_GEOMETRY',
+      geometry: { rule: 'row-spread', bound: 1 },
+    });
+    if (!fit.ok) expect(fit.geometry!.value).toBeCloseTo(35 / 30);
+  });
+
+  it('names step-short when the rows are stacked on top of each other', () => {
+    // Rows 8 apart with stickers 30 across: level, aligned, even in size, and not a face.
+    const dets: Detection[] = [];
+    for (let r = 0; r < 3; r++) {
+      for (let c = 0; c < 3; c++) {
+        dets.push({ cx: 100 + c * 45, cy: 100 + r * 8, w: 30, h: 30, classId: 4, confidence: 0.9 });
+      }
+    }
+    const fit = fitFace(dets);
+    expect(fit).toMatchObject({
+      ok: false,
+      reason: 'BAD_GEOMETRY',
+      geometry: { rule: 'step-short', bound: 0.4 },
+    });
+    if (!fit.ok) expect(fit.geometry!.value).toBeCloseTo(8 / 30);
+  });
+
+  it('carries no geometry on an abstention that is not about geometry', () => {
+    // Only BAD_GEOMETRY measured a grid. A NO_FACE or PARTIAL_FACE with a geometry attached would
+    // tell the trace's reader about a grid nobody fitted.
+    expect(fitFace([])).toEqual({ ok: false, reason: 'NO_FACE' });
+    const eight: Detection[] = Array.from({ length: 8 }, (_, i) => ({
+      cx: 100 + (i % 3) * 45,
+      cy: 100 + Math.floor(i / 3) * 45,
+      w: 30,
+      h: 30,
+      classId: 0,
+      confidence: 0.9,
+    }));
+    expect(fitFace(eight)).toEqual({ ok: false, reason: 'PARTIAL_FACE' });
   });
 
   it('refuses one sticker flung out of its column while the other two hold', () => {

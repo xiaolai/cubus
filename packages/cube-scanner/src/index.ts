@@ -17,8 +17,12 @@ export {
   type Confirmation,
   type ConfirmRequest,
   LOW_CONFIDENCE_THRESHOLD,
-  resolveCentreCollision,
+  resolveCentres,
+  SAME_SIDE_STICKERS,
   type StickerSuspect,
+  sameSide,
+  type UnnamedSide,
+  withCentre,
 } from './ai-assemble.js';
 export {
   type CameraDevice,

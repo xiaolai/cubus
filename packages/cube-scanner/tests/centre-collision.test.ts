@@ -1,6 +1,6 @@
 import Cube from 'cubejs';
 import { describe, expect, it } from 'vitest';
-import { type ColorFace, resolveCentreCollision } from '../src/ai-assemble.js';
+import { type ColorFace, resolveCentres, type UnnamedSide } from '../src/ai-assemble.js';
 import { assignNineOfEach } from '../src/nine-of-each.js';
 import { type Colour, colourOfSlot, slotOf } from '../src/scheme.js';
 import { FACES, type Face } from '../src/types.js';
@@ -19,38 +19,84 @@ function capturesOf(facelets: string): Record<Face, ColorFace> {
   return out;
 }
 
-/** File captures in arrival order, as the panel does: the first of a colour takes the slot. */
+/**
+ * File captures in arrival order, as the panel does: a side is named by its centre, and a colour two
+ * sides claim leaves BOTH of them unnamed, in the order they arrived.
+ */
 function fileInOrder(captures: readonly ColorFace[]): {
-  filed: Partial<Record<Face, ColorFace>>;
-  newcomers: ColorFace[];
+  named: Partial<Record<Face, ColorFace>>;
+  unnamed: ColorFace[];
 } {
-  const filed: Partial<Record<Face, ColorFace>> = {};
-  const newcomers: ColorFace[] = [];
+  const named: Partial<Record<Face, ColorFace>> = {};
+  const unnamed: ColorFace[] = [];
   for (const capture of captures) {
     const slot = slotOf(capture.colors[4] as Colour);
-    if (filed[slot]) newcomers.push(capture);
-    else filed[slot] = capture;
+    const holder = named[slot];
+    if (holder) {
+      delete named[slot];
+      unnamed.push(holder);
+    }
+    if (holder || unnamed.some((u) => u.colors[4] === capture.colors[4])) unnamed.push(capture);
+    else named[slot] = capture;
   }
-  return { filed, newcomers };
+  return { named, unnamed };
 }
 
-/** The white side with its centre read as blue — a blue logo printed on the white cap. */
-function whiteReadAsBlue(faces: Record<Face, ColorFace>): ColorFace {
-  const colors = [...faces.U.colors];
-  colors[4] = LETTER_CLASS.B;
-  return { ...faces.U, colors };
+/** Each capture as an unnamed side, with the confidence its own centre was read at. */
+const asUnnamed = (captures: readonly ColorFace[]): UnnamedSide[] =>
+  captures.map((capture) => ({ capture, centreConfidence: capture.confidence[4]! }));
+
+/** `capture` with its centre read at `confidence`. */
+function centreAt(capture: ColorFace, confidence: number): ColorFace {
+  const out = [...capture.confidence];
+  out[4] = confidence;
+  return { ...capture, confidence: out };
 }
 
-describe('resolveCentreCollision — the seven collisions measured on real cubes', () => {
+/** `capture` with its centre read as `colour` — a logo on the cap, or a red read as orange. */
+function centreReadAs(capture: ColorFace, colour: number): ColorFace {
+  const colors = [...capture.colors];
+  colors[4] = colour;
+  return { ...capture, colors };
+}
+
+/**
+ * Two outer stickers of different colours swapped on one side — their scores and confidences with
+ * them, so the evidence agrees with the swap and no score-guided repair can quietly swap them back.
+ * Every colour still counts nine, and no rotation can undo a swap between two cubies: no filing is legal.
+ */
+function swapTwo(capture: ColorFace): ColorFace {
+  const colors = [...capture.colors];
+  const confidence = [...capture.confidence];
+  const scores = capture.scores?.map((row) => [...row]);
+  const j = [1, 2, 3, 5, 6, 7, 8].find((k) => colors[k] !== colors[0])!;
+  [colors[0], colors[j]] = [colors[j]!, colors[0]!];
+  [confidence[0], confidence[j]] = [confidence[j]!, confidence[0]!];
+  if (scores) [scores[0], scores[j]] = [scores[j]!, scores[0]!];
+  return { ...capture, colors, confidence, ...(scores ? { scores } : {}) };
+}
+
+/** Which slot each unnamed capture was filed in — by its outer stickers, which filing never changes. */
+function slotsOf(faces: Record<Face, ColorFace>, unnamed: readonly ColorFace[]): Face[] {
+  return unnamed.map(
+    (u) =>
+      FACES.find((f) =>
+        faces[f].colors.every((colour, i) => i === 4 || colour === u.colors[i]),
+      ) as Face,
+  );
+}
+
+describe('resolveCentres — the seven collisions measured on real cubes', () => {
   it.each(CENTRE_COLLISIONS)('$name: resolves to the cube as it physically was', (c) => {
-    const { filed, newcomers } = fileInOrder(c.captures);
-    expect(newcomers).toHaveLength(1);
-    expect(Object.keys(filed)).toHaveLength(5);
+    const { named, unnamed } = fileInOrder(c.captures);
+    expect(unnamed).toHaveLength(2);
+    expect(Object.keys(named)).toHaveLength(4);
 
-    const resolution = resolveCentreCollision(filed, newcomers[0]!);
+    const resolution = resolveCentres(named, asUnnamed(unnamed));
 
     expect(resolution.result.valid).toBe(true);
     expect(resolution.result.facelets).toBe(c.truth);
+    expect(resolution.decidedBy).toBe('legality');
     expect(Object.keys(resolution.faces ?? {})).toHaveLength(6);
   });
 
@@ -61,18 +107,12 @@ describe('resolveCentreCollision — the seven collisions measured on real cubes
     let trueCheaper = 0;
     let wrongCheaper = 0;
     for (const c of CENTRE_COLLISIONS) {
-      const { filed, newcomers } = fileInOrder(c.captures);
-      const newcomer = newcomers[0]!;
-      const shared = slotOf(newcomer.colors[4] as Colour);
-      const missing = FACES.find((f) => !filed[f])!;
+      const { named, unnamed } = fileInOrder(c.captures);
+      const [first, second] = unnamed as [ColorFace, ColorFace];
+      const shared = slotOf(first.colors[4] as Colour);
+      const missing = FACES.find((f) => f !== shared && !named[f])!;
       const costWhenCertain = (recoloured: ColorFace): number => {
-        const all = FACES.flatMap((f) => {
-          const cap = f === shared || f === missing ? null : filed[f]!;
-          return cap ? [cap] : [];
-        });
-        const pair =
-          recoloured === newcomer ? [filed[shared]!, newcomer] : [newcomer, filed[shared]!];
-        const scores = [...all, ...pair].flatMap((cap) =>
+        const scores = [...Object.values(named), first, second].flatMap((cap) =>
           cap.scores!.map((row, i) =>
             cap === recoloured && i === 4
               ? row.map((_, k) => (k === colourOfSlot(missing) ? 1 : 0))
@@ -81,85 +121,153 @@ describe('resolveCentreCollision — the seven collisions measured on real cubes
         );
         return assignNineOfEach(scores).cost;
       };
-      const resolution = resolveCentreCollision(filed, newcomer);
-      const newcomerIsMissing = resolution.faces![missing]!.colors.every(
-        (colour, i) => i === 4 || colour === newcomer.colors[i],
-      );
-      const costTrue = costWhenCertain(newcomerIsMissing ? newcomer : filed[shared]!);
-      const costWrong = costWhenCertain(newcomerIsMissing ? filed[shared]! : newcomer);
+      const resolution = resolveCentres(named, asUnnamed(unnamed));
+      const [firstSlot] = slotsOf(resolution.faces!, [first]);
+      const misread = firstSlot === missing ? first : second;
+      const costTrue = costWhenCertain(misread);
+      const costWrong = costWhenCertain(misread === first ? second : first);
       if (costTrue < costWrong - 1e-6) trueCheaper++;
       if (costWrong < costTrue - 1e-6) wrongCheaper++;
     }
     expect(trueCheaper).toBe(0);
     expect(wrongCheaper).toBeGreaterThanOrEqual(6);
   });
+
+  it('names the misread centre by its confidence on all seven, when something else is misread too', () => {
+    // The fallback's evidence, pinned on real reads. Each case gets a second fault no filing survives
+    // — two stickers swapped on a side whose centre is not in question — so legality has nothing left
+    // to say, and only the centres' own confidence can pick which reading to put in front of the
+    // person. On every case it picks the filing legality picked on the clean captures.
+    for (const c of CENTRE_COLLISIONS) {
+      const { named, unnamed } = fileInOrder(c.captures);
+      const truth = slotsOf(resolveCentres(named, asUnnamed(unnamed)).faces!, unnamed);
+
+      const bystander = FACES.find((f) => named[f])!;
+      const broken = { ...named, [bystander]: swapTwo(named[bystander]!) };
+      const resolution = resolveCentres(broken, asUnnamed(unnamed));
+
+      expect(resolution.decidedBy, c.name).toBe('confidence');
+      expect(resolution.result.valid, c.name).toBe(false); // a reading chosen, never a cube
+      expect(slotsOf(resolution.faces!, unnamed), c.name).toEqual(truth);
+    }
+  });
 });
 
-describe('resolveCentreCollision — on a synthetic cube', () => {
+describe('resolveCentres — on a synthetic cube', () => {
   it('accepts the true cube when the logo side arrives after the blue side', () => {
     const faces = capturesOf(DEEP);
-    const { U: _white, ...filed } = faces;
-    const resolution = resolveCentreCollision(filed, whiteReadAsBlue(faces));
+    const logo = centreReadAs(faces.U, LETTER_CLASS.B);
+    const { U: _white, B: _blue, ...named } = faces;
+    const resolution = resolveCentres(named, asUnnamed([faces.B, logo]));
     expect(resolution.result.valid).toBe(true);
     expect(resolution.result.facelets).toBe(DEEP);
     // The white side is filed as white, with its centre put right.
     expect(resolution.faces!.U.colors[4]).toBe(LETTER_CLASS.U);
   });
 
-  it('accepts the true cube when the logo side was filed first, under blue', () => {
-    // The white side arrived first and was filed under BLUE; the real blue side is the newcomer.
+  it('accepts the true cube when the logo side arrived first', () => {
     const faces = capturesOf(DEEP);
-    const { U: _white, B: blue, ...rest } = faces;
-    const filed = { ...rest, B: whiteReadAsBlue(faces) };
-    const resolution = resolveCentreCollision(filed, blue);
+    const logo = centreReadAs(faces.U, LETTER_CLASS.B);
+    const { U: _white, B: _blue, ...named } = faces;
+    const resolution = resolveCentres(named, asUnnamed([logo, faces.B]));
     expect(resolution.result.valid).toBe(true);
     expect(resolution.result.facelets).toBe(DEEP);
     expect(resolution.faces!.B.colors).toEqual(faces.B.colors);
   });
 
-  it('refuses, naming both slots, when neither filing is a legal cube — and guesses nothing', () => {
-    // Two outer stickers of different colours swapped on the green side: every colour still counts
-    // nine, so no repair can move anything, and no rotation can undo a swap between two cubies.
+  it('takes two collisions at once, which a one-contest design could not', () => {
+    // A logo on the white cap read as blue AND a red centre read as orange: four sides unnamed, four
+    // slots free, 24 filings — and legality still leaves exactly one.
     const faces = capturesOf(DEEP);
-    const green = faces.F.colors;
-    const j = [1, 2, 3, 5, 6, 7, 8].find((k) => green[k] !== green[0])!;
-    [green[0], green[j]] = [green[j]!, green[0]!];
-    const { U: _white, ...filed } = faces;
+    const logo = centreReadAs(faces.U, LETTER_CLASS.B);
+    const redAsOrange = centreReadAs(faces.R, LETTER_CLASS.L);
+    const { U: _u, R: _r, L: _l, B: _b, ...named } = faces;
+    const resolution = resolveCentres(named, asUnnamed([logo, faces.B, redAsOrange, faces.L]));
+    expect(resolution.result.valid).toBe(true);
+    expect(resolution.result.facelets).toBe(DEEP);
+    expect(resolution.decidedBy).toBe('legality');
+  });
 
-    const resolution = resolveCentreCollision(filed, whiteReadAsBlue(faces));
+  describe('when no filing is a legal cube', () => {
+    const faces = capturesOf(DEEP);
+    const { U: _white, B: _blue, F: green, ...rest } = faces;
+    const named = { ...rest, F: swapTwo(green) };
 
-    expect(resolution.result.valid).toBe(false);
-    expect(resolution.result.centreConflict).toEqual({
-      shared: 'B',
-      missing: 'U',
-      legalFilings: 0,
+    it('takes the side whose centre read less surely as the misread one, and still refuses', () => {
+      const logo = centreAt(centreReadAs(faces.U, LETTER_CLASS.B), 0.6);
+      const resolution = resolveCentres(named, asUnnamed([faces.B, logo]));
+      expect(resolution.decidedBy).toBe('confidence');
+      expect(resolution.result.valid).toBe(false);
+      expect(resolution.faces!.U.colors).toEqual(faces.U.colors); // the logo side, filed as white
+      expect(resolution.faces!.B.colors).toEqual(faces.B.colors);
     });
+
+    it('whichever order the two arrived in', () => {
+      const logo = centreAt(centreReadAs(faces.U, LETTER_CLASS.B), 0.6);
+      const resolution = resolveCentres(named, asUnnamed([logo, faces.B]));
+      expect(resolution.faces!.U.colors).toEqual(faces.U.colors);
+    });
+
+    it('refuses, naming both slots, when the centres read equally surely — and guesses nothing', () => {
+      const logo = centreReadAs(faces.U, LETTER_CLASS.B); // 0.9, as surely as the real blue
+      const resolution = resolveCentres(named, asUnnamed([faces.B, logo]));
+      expect(resolution.result.valid).toBe(false);
+      expect(resolution.result.centreConflict).toEqual({
+        shared: 'B',
+        missing: 'U',
+        legalFilings: 0,
+      });
+      expect(resolution.faces).toBeUndefined();
+    });
+
+    it('refuses when two sides are misread, because confidence cannot say which unclaimed colour is whose', () => {
+      const logo = centreAt(centreReadAs(faces.U, LETTER_CLASS.B), 0.6);
+      const redAsOrange = centreAt(centreReadAs(faces.R, LETTER_CLASS.L), 0.6);
+      const { R: _r, L: _l, ...fewer } = named;
+      const resolution = resolveCentres(fewer, asUnnamed([logo, faces.B, redAsOrange, faces.L]));
+      expect(resolution.faces).toBeUndefined();
+      expect(resolution.result.centreConflict?.legalFilings).toBe(0);
+    });
+  });
+
+  it('refuses a centre the detector cannot produce rather than filing it anywhere', () => {
+    const faces = capturesOf(DEEP);
+    const { U: white, B: blue, ...named } = faces;
+    const resolution = resolveCentres(named, asUnnamed([centreReadAs(white, 7), blue]));
+    expect(resolution.result.valid).toBe(false);
+    expect(resolution.result.reason).toMatch(/not one of the six/);
     expect(resolution.faces).toBeUndefined();
   });
 
   it('refuses input that is not a centre collision rather than inventing one', () => {
     const faces = capturesOf(DEEP);
-    // All six already filed: nothing is unclaimed.
-    expect(resolveCentreCollision(faces, whiteReadAsBlue(faces)).result.valid).toBe(false);
-    // The newcomer's centre is shared with nothing filed.
-    const { U: white, ...filed } = faces;
-    expect(resolveCentreCollision(filed, white).result.valid).toBe(false);
-    expect(resolveCentreCollision(filed, white).result.centreConflict).toBeUndefined();
+    const logo = centreReadAs(faces.U, LETTER_CLASS.B);
+    // All six already named: nothing is free.
+    expect(resolveCentres(faces, asUnnamed([logo])).result.valid).toBe(false);
+    // One unnamed side is not a collision.
+    const { U: white, ...five } = faces;
+    expect(resolveCentres(five, asUnnamed([white])).result.valid).toBe(false);
+    // More unnamed sides than free slots.
+    const { B: blue, ...four } = five;
+    expect(resolveCentres(four, asUnnamed([logo, blue, faces.R])).result.valid).toBe(false);
+    expect(
+      resolveCentres(four, asUnnamed([logo, blue, faces.R])).result.centreConflict,
+    ).toBeUndefined();
   });
 });
 
-describe('resolveCentreCollision — when both filings are legal cubes', () => {
+describe('resolveCentres — when both filings are legal cubes', () => {
   it('refuses rather than choosing, and says both were legal', () => {
     // Found by exhaustive search over near-solved cubes: a half turn of U leaves U and D uniform, so a
     // yellow side whose centre reads white is a legal cube filed either way. Measured: 120 of 4,568
     // contests on cubes 0-2 moves from solved refuse like this; none of 1,792 on deep scrambles did,
     // and no wrong cube was accepted in either set.
     const state = new Cube().move('U2').asString();
-    const { D: yellow, ...filed } = capturesOf(state);
-    const colors = [...yellow.colors];
-    colors[4] = LETTER_CLASS.U;
+    const faces = capturesOf(state);
+    const { U: white, D: yellow, ...named } = faces;
+    const yellowAsWhite = centreReadAs(yellow, LETTER_CLASS.U);
 
-    const resolution = resolveCentreCollision(filed, { ...yellow, colors });
+    const resolution = resolveCentres(named, asUnnamed([white, yellowAsWhite]));
 
     expect(resolution.result.valid).toBe(false);
     expect(resolution.result.centreConflict).toEqual({
