@@ -179,6 +179,28 @@ def drop_nested(dets: list[Detection], floor: float = 0.0) -> list[Detection]:
     return kept
 
 
+# `dropIsolated` in packages/cube-scanner/src/onnx-postprocess.ts, which carries the derivation: a box
+# with no other box within this many median sticker-sizes is not a sticker of the face being shown.
+# Measured on the 20 golden frames and 410 frames from a Studio Display camera (2026-09-18): every real
+# front sticker has at least four neighbours inside this radius, and the false background box the
+# v0.6.0 detector reports had none in all 271 frames it spoiled. Both suites read
+# packages/cube-scanner/tests/fixtures/isolated-detections.json, so the two cannot drift apart.
+# Distances are compared SQUARED, as the TypeScript does, so a box on the boundary is answered the same.
+ISOLATION_RADIUS = 3.0
+
+
+def drop_isolated(dets: list[Detection]) -> list[Detection]:
+    if not dets:
+        return dets
+    sides = sorted((d.w + d.h) / 2 for d in dets)
+    reach = ISOLATION_RADIUS * sides[len(sides) // 2]
+    reach2 = reach * reach
+    return [
+        d for d in dets
+        if any(o is not d and (o.cx - d.cx) * (o.cx - d.cx) + (o.cy - d.cy) * (o.cy - d.cy) <= reach2 for o in dets)
+    ]
+
+
 # The three bounds `toGrid` in packages/cube-scanner/src/onnx-postprocess.ts applies, with the
 # same values and in the same order. That file carries the derivation; the short version is that
 # every one was measured over all 20 fixtures in ml/golden/frames/ and set high enough that no
@@ -228,9 +250,11 @@ def fit_grid(dets: list[Detection], min_conf: float = 0.25) -> tuple[str, list[D
     good = [d for d in dets if d.confidence >= min_conf and 0 <= d.class_id < NUM_CLASSES]
     if not good:
         return "NO_FACE", None
-    if len(good) < 9:
+    # Before the nine largest are chosen, as in fitFace: the isolated false box is usually the largest.
+    neighboured = drop_isolated(good)
+    if len(neighboured) < 9:
         return "PARTIAL_FACE", None
-    nine = sorted(good, key=lambda d: -(d.w * d.h))[:9]
+    nine = sorted(neighboured, key=lambda d: -(d.w * d.h))[:9]
     grid = to_grid(nine)
     return ("BAD_GEOMETRY", None) if grid is None else ("OK", grid)
 

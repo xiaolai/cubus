@@ -66,6 +66,11 @@ export default defineConfig({
         'view/misread-protocol.ts',
         'view/pick-detector.ts',
         'view/native-detector.ts',
+        // The scan trace (2026-09-18). Both halves are pure — a frame in, a record out; ticks in, a
+        // summary out — and a diagnostic is only worth reading if it is itself measured: a trace
+        // that misreports a scan sends whoever reads it after a fault that is not there.
+        'src/fit-trace.ts',
+        'view/scan-trace.ts',
       ],
       reporter: ['text', 'html'],
       thresholds: {

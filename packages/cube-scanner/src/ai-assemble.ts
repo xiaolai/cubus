@@ -136,7 +136,7 @@ export interface ColorFace {
    *
    * Both fallbacks recolour stickers, and a correction the user typed in has to outrank them
    * unconditionally. Making the correction expensive for the count repair (a one-hot score row) is
-   * not enough on its own: `resolveCentreCollision` lifts the repair's cost ceiling to infinity, so a
+   * not enough on its own: `resolveCentres` lifts the repair's cost ceiling to infinity, so a
    * finite cost is no barrier there. The flag is checked against the colours, not the costs, and so
    * holds whatever ceiling a caller passes.
    */
@@ -224,13 +224,14 @@ export type AiScanResult = ScanResult & {
    */
   schemeAmbiguous?: boolean;
   /**
-   * Two sides' centres read as the same colour, so a sixth side could not be filed: `shared` is the
-   * slot both claimed and `missing` the slot neither did. A 3x3 has one centre of each colour, so one
-   * of those two sides IS the missing colour. Set by `resolveCentreCollision` only when it could not
-   * decide which, and `legalFilings` says why: 0 — neither filing is a legal cube, so something
-   * besides the centre was misread; 2 — both are, and nothing in the captures says which.
+   * Sides' centres read as the same colour, so they could not all be filed: `shared` is a slot two of
+   * them claimed and `missing` a slot none did. A 3x3 has one centre of each colour, so one of the
+   * sides claiming `shared` IS a missing colour. Set by `resolveCentres` only when it could not
+   * decide, and `legalFilings` says why: 0 — no filing is a legal cube and the centres' confidence
+   * could not say which was misread; 2 or more — that many are legal, and nothing in the captures
+   * says which.
    */
-  centreConflict?: { shared: Face; missing: Face; legalFilings: 0 | 2 };
+  centreConflict?: { shared: Face; missing: Face; legalFilings: number };
   /**
    * On success: which arrangement the accepted `facelets` are positional in. `'undetermined'`
    * when the surviving readings are the SAME string under both schemes — the solved cube, two
@@ -384,6 +385,40 @@ export function matchingRotations(original: ColorFace, confirmed: ColorFace): Se
     rotateFace(original.colors, k).reduce((s, c, i) => s + (c === confirmed.colors[i] ? 0 : 1), 0),
   );
   return new Set([0, 1, 2, 3].filter((k) => dist[k]! <= CONFIRM_TOLERANCE));
+}
+
+/**
+ * How many of the eight stickers around the centre must agree for two captures to be one side.
+ *
+ * Seven, not eight: one sticker flickering between orange and yellow is the detector's commonest
+ * disagreement with itself, and a side re-shown with one sticker read differently used to count as a
+ * DIFFERENT side — held back as a centre collision, or filed twice. Two different sides of a real
+ * cube agreeing in seven of eight places under some quarter turn is not a case worth designing around:
+ * a side's eight are mostly its own colour's neighbours, which no other side shares.
+ */
+export const SAME_SIDE_STICKERS = 7;
+
+/**
+ * Whether two captures show the same side of the cube, held any way up: the eight stickers around the
+ * centre agree in SAME_SIDE_STICKERS places or more under some quarter turn.
+ *
+ * THE CENTRE IS LEFT OUT, AND THE CALLER DECIDES WHAT IT MEANS (2026-09-18). It is the one sticker a
+ * logo misreads, and it reads differently from one showing of a side to the next — yellow on one, white
+ * on another, measured on the same cap — so this compares only what a logo cannot touch. But the eight
+ * alone do not name a side either: different sides can share them exactly (after U D R L F B the white
+ * and yellow sides are the same eight stickers around different centres). So the panel recognises a
+ * side again only when its centre also claims the same colour, lets the eight alone decide only when
+ * they point to one side in hand and no other, and leaves two sides with the same eight under different
+ * centres for the six to settle (`twinToDrop`).
+ */
+export function sameSide(a: readonly number[], b: readonly number[]): boolean {
+  for (let k = 0; k < 4; k++) {
+    const turned = rotateFace(b, k);
+    let agree = 0;
+    for (let i = 0; i < 9; i++) if (i !== 4 && turned[i] === a[i]) agree += 1;
+    if (agree >= SAME_SIDE_STICKERS) return true;
+  }
+  return false;
 }
 
 /**
@@ -969,7 +1004,7 @@ function symmetricRefusal(
  * Returns null when the detector gave no scores, when the repair changes nothing, or when it would
  * have to overrule the detector so hard that the reading is better refused than rewritten --
  * `MAX_REPAIR_COST` is that line, and a reading past it is not one misread but a bad capture.
- * The one caller that lifts it is `resolveCentreCollision`, which replaces it with a stricter gate
+ * The one caller that lifts it is `resolveCentres`, which replaces it with a stricter gate
  * of its own — see there.
  */
 const MAX_REPAIR_COST = 12;
@@ -1078,7 +1113,7 @@ export function assembleColors(
 
 /**
  * `assembleColors` with the repair's cost ceiling as a parameter. Exactly one caller passes anything
- * but MAX_REPAIR_COST: `resolveCentreCollision`, which gates on legality and uniqueness instead.
+ * but MAX_REPAIR_COST: `resolveCentres`, which gates on legality and uniqueness instead.
  */
 function assembleWithin(
   faces: Record<Face, ColorFace>,
@@ -1184,115 +1219,184 @@ function assembleWithin(
   };
 }
 
-/** What `resolveCentreCollision` decided: the verdict, and the filing it was reached on. */
+/** What `resolveCentres` decided: the verdict, and the filing it was reached on. */
 export interface CentreResolution {
   result: AiScanResult;
   /**
-   * The six captures filed as the resolution decided, one of them now carrying the colour no side
-   * had claimed. Present exactly when a single filing fits — its `result` is accepted, or asks for
-   * a look — and absent on a refusal, where no filing is the right one to keep.
+   * The six captures filed as the resolution decided, every unnamed side now carrying its slot's
+   * centre colour. Present when one filing was chosen — by legality, or by the centres' confidence
+   * when no filing is legal — and absent when nothing decided, where no filing is the right one to keep.
    */
   faces?: Record<Face, ColorFace>;
+  /** What chose `faces`: the one legal filing, or — when none is legal — the centres' confidence. */
+  decidedBy?: 'legality' | 'confidence';
+}
+
+/** A side the scan could not name by its centre, and how surely its centre read the colour it claims. */
+export interface UnnamedSide {
+  capture: ColorFace;
+  /**
+   * The centre's confidence in the colour it reads as — for a side seen many times, typical over its
+   * reads rather than the one frame that happened to be filed. On a real clip (2026-09-18) single
+   * frames of a logo centre and of a plain one overlapped (0.756 to 0.776 read on both), while their
+   * medians did not (0.728 against 0.783).
+   */
+  centreConfidence: number;
+}
+
+/** `capture` filed as the side whose centre is `colour`: that colour at the centre, and certain. */
+export function withCentre(capture: ColorFace, colour: number): ColorFace {
+  if (capture.colors[4] === colour) return capture;
+  const colors = [...capture.colors];
+  colors[4] = colour;
+  if (!capture.scores) return { ...capture, colors };
+  const scores = capture.scores.map((row) => [...row]);
+  scores[4] = scores[4]!.map((_, c) => (c === colour ? 1 : 0));
+  return { ...capture, colors, scores };
+}
+
+/** Every ordering of `items` — n! of them, for the at most six sides a scan can hold. */
+function orderings<T>(items: readonly T[]): T[][] {
+  if (items.length <= 1) return [[...items]];
+  return items.flatMap((item, i) =>
+    orderings([...items.slice(0, i), ...items.slice(i + 1)]).map((rest) => [item, ...rest]),
+  );
 }
 
 /**
- * Two sides read with the same centre colour: decide which of them is really the side nobody
- * claimed, without trying to read that centre again.
+ * Sides whose centres the scan could not name — two or more read as one colour — decided once all
+ * six are in: which slot each of them fills, without trying to read those centres again.
  *
- * WHY THIS EXISTS. Brands print their logo on the white centre, and a logo printed in one of the six
- * cube colours reads as that colour. On seven real cubes photographed side by side (2026-09-13),
- * four of the seven centre collisions were a blue logo on a white cap read as blue; the other three
- * were a red centre read as orange. The panel files a capture under its centre's colour, so the
- * second "blue" side had nowhere to go and was turned away with "still need white" — while the user
- * was holding the white side, which would only read as blue again. The scan could never finish.
+ * WHY THIS EXISTS. Brands print their logo on the white centre, and a logo reads as whatever colour
+ * its ink and the light make it — blue on one scan, yellow on another. On seven real cubes photographed
+ * side by side (2026-09-13), four of the seven centre collisions were a blue logo on a white cap read as
+ * blue; the other three were a red centre read as orange. A side is filed under its centre's colour,
+ * so the second side claiming that colour has nowhere to go. It used to be turned away while the user
+ * held the white side, which would only read as blue again, and the scan could never finish.
  *
  * THE MECHANISM IS COUNTING, NOT SEEING. A 3x3 has exactly one centre of each colour, in either
- * scheme. With five sides filed and a sixth whose centre collides, one colour is unclaimed, so one
- * of the two colliding sides IS that colour. That leaves exactly two filings and both are tried:
- * the newcomer takes the unclaimed colour, or the side filed first does and the newcomer takes its
- * slot. The side that changes colour has its centre's score row made certain, so the nine-of-each
- * repair cannot quietly hand the old colour back.
+ * scheme. So the unnamed sides fill exactly the slots no named side holds, one each, and every way of
+ * doing that is tried — two for the common case of one pair, more when several centres collided,
+ * which the one-contest design this replaces could not take. Each side that changes colour has its
+ * centre made certain (`withCentre`), so the nine-of-each repair cannot quietly hand the old colour back.
  *
- * LEGALITY DECIDES, AND ONLY WHEN IT IS UNIQUE. A real cube is legal, so a filing is kept when it has
- * a legal reading — accepted outright, or legal but needing a look (`confirm`, `ambiguous`). On all
- * seven measured collisions exactly one filing fitted, and it was the cube as it physically was.
- * The detector's own evidence would not have found it: in none of the seven was the cheaper
- * nine-of-each repair the true filing's (six went the other way, one tied). When both filings fit
- * this refuses rather than choosing — two legal colourings of one set of captures do exist near
- * each other (a measured pair stood four stickers apart), and a confident wrong cube is the failure
- * this package treats as the worst.
+ * LEGALITY DECIDES FIRST, AND ONLY WHEN IT IS UNIQUE. A real cube is legal, so a filing is kept when it
+ * has a legal reading — accepted outright, or legal but needing a look (`confirm`, `ambiguous`). On all
+ * seven measured collisions exactly one filing fitted, and it was the cube as it physically was. The
+ * cheaper nine-of-each repair was NOT the evidence to use instead: in none of the seven was it the true
+ * filing's (six went the other way, one tied). When several filings fit this refuses rather than
+ * choosing — two legal colourings of one set of captures do exist near each other (a measured pair
+ * stood four stickers apart), and a confident wrong cube is the failure this package treats as the worst.
+ *
+ * WHEN NO FILING IS LEGAL, THE CENTRES' CONFIDENCE CHOOSES WHICH READING TO FIX (2026-09-18). That is
+ * the case where something besides a centre was misread too — on a real clip, the sticker beside a
+ * blue logo read blue as well — and it used to end the scan with "start over". But the question left is
+ * narrower than the one legality answers: not "which cube is this" but "which of these centres was
+ * misread". Of the sides claiming one colour, the one whose centre read it less surely is the misread
+ * one. On all seven measured collisions that rule named the misread centre (logos by a wide margin,
+ * 0.55-0.71 against 0.90-0.92; red read as orange by 0.014-0.047), and on the clip by 0.728 to 0.783.
+ * It chooses a READING, never a cube: what comes back is still refused, and the misread stickers are
+ * what the person is then shown. It decides only when it is unambiguous — one side per colour to keep,
+ * a strict difference, and exactly one side left over to take the one unclaimed colour. Otherwise it
+ * refuses as before.
  *
  * THE REPAIR CEILING IS LIFTED HERE, AND ONLY HERE. MAX_REPAIR_COST refused five of the seven true
  * filings — their costs ran from 13 to 36 — because a misread logo cap rarely comes alone: the cool
  * tint that turned the centre blue turned the white stickers around it blue too. The ceiling guards
  * one reading against being rewritten into a cube nobody held; here that job is done by the rule
- * above, which is stricter — two filings, a legal cube required, exactly one allowed.
+ * above, which is stricter — a legal cube required, exactly one allowed.
  *
- * THE LIMIT, stated so it is not rediscovered: when the misread side's OUTER stickers read as the
- * other side's colour as well — a near-solved white face read as nine blues — the two captures are
- * the same picture, the panel cannot tell them apart, and nothing here is ever reached.
+ * THE LIMIT, stated so it is not rediscovered: when a misread side's OUTER stickers read as another
+ * side's too — a near-solved white face read as nine blues — the two captures are the same picture,
+ * the panel cannot tell them apart, and nothing here is ever reached.
  */
-export function resolveCentreCollision(
-  filed: Partial<Record<Face, ColorFace>>,
-  newcomer: ColorFace,
+export function resolveCentres(
+  named: Partial<Record<Face, ColorFace>>,
+  unnamed: readonly UnnamedSide[],
   threshold = LOW_CONFIDENCE_THRESHOLD,
   options: AssembleOptions = {},
 ): CentreResolution {
-  const centre = newcomer.colors[4];
-  if (centre === undefined || !isColour(centre)) {
-    return { result: reject(`the new capture's centre colour ${centre} is not one of the six`) };
-  }
-  const shared = slotOf(centre);
-  const holder = filed[shared];
-  const unclaimed = FACES.filter((face) => !filed[face]);
-  if (!holder || unclaimed.length !== 1) {
+  const free = FACES.filter((face) => !named[face]);
+  if (unnamed.length < 2 || unnamed.length !== free.length) {
     return {
       result: reject(
-        "a centre collision needs five filed sides, one of them sharing the new capture's centre",
+        'a centre collision needs two or more unnamed sides, exactly as many as the slots no side holds',
       ),
     };
   }
-  const missing = unclaimed[0]!;
-  const colour = colourOfSlot(missing);
-  const asMissing = (capture: ColorFace): ColorFace => {
-    const colors = [...capture.colors];
-    colors[4] = colour;
-    if (!capture.scores) return { ...capture, colors };
-    const scores = capture.scores.map((row) => [...row]);
-    scores[4] = scores[4]!.map((_, c) => (c === colour ? 1 : 0));
-    return { ...capture, colors, scores };
-  };
-  const filings = [
-    { ...filed, [missing]: asMissing(newcomer) },
-    { ...filed, [shared]: newcomer, [missing]: asMissing(holder) },
-  ] as Record<Face, ColorFace>[];
-  const fits = filings
-    .map((faces) => ({
-      faces,
-      result: assembleWithin(
-        faces,
-        threshold,
-        {},
-        { ...options, diagnose: false },
-        Number.POSITIVE_INFINITY,
-        // NO PIXEL PATH HERE. It names its groups from the centres, and this is the one situation
-        // where a centre is already known to be wrong — the two filings below differ by which centre
-        // was misread. Left on, it makes the WRONG filing assemble too: measured 2026-09-17 on the
-        // 140 community sets, it turned one of v3's refusals into a legal cube that was not the
-        // user's, which is the failure this whole file exists to prevent.
-        false,
-      ),
-    }))
-    .filter(
-      ({ result }) => result.valid || result.ambiguous === true || result.confirm !== undefined,
-    );
-  if (fits.length === 1) return fits[0]!;
-  return {
-    result: reject(
-      fits.length === 0
-        ? 'two sides read with the same centre colour, and neither way of filing them is a legal cube'
-        : 'two sides read with the same centre colour, and both ways of filing them are legal cubes',
-      { centreConflict: { shared, missing, legalFilings: fits.length === 0 ? 0 : 2 } },
+  const claims: Colour[] = [];
+  for (const { capture } of unnamed) {
+    const centre = capture.colors[4];
+    if (centre === undefined || !isColour(centre)) {
+      return {
+        result: reject(`an unnamed capture's centre colour ${centre} is not one of the six`),
+      };
+    }
+    claims.push(centre);
+  }
+  const filings = orderings(free).map((slots) => {
+    const faces = { ...named } as Record<Face, ColorFace>;
+    slots.forEach((slot, i) => {
+      faces[slot] = withCentre(unnamed[i]!.capture, colourOfSlot(slot));
+    });
+    return { slots, faces };
+  });
+  const assessed = filings.map((f) => ({
+    ...f,
+    result: assembleWithin(
+      f.faces,
+      threshold,
+      {},
+      { ...options, diagnose: false },
+      Number.POSITIVE_INFINITY,
+      // NO PIXEL PATH HERE. It names its groups from the centres, and this is the one situation
+      // where a centre is already known to be wrong — the filings differ by which centre was
+      // misread. Left on, it makes a WRONG filing assemble too: measured 2026-09-17 on the 140
+      // community sets, it turned one of v3's refusals into a legal cube that was not the user's,
+      // which is the failure this whole file exists to prevent.
+      false,
     ),
-  };
+  }));
+  const fits = assessed.filter(
+    ({ result }) => result.valid || result.ambiguous === true || result.confirm !== undefined,
+  );
+  if (fits.length === 1) {
+    const [fit] = fits;
+    return { result: fit!.result, faces: fit!.faces, decidedBy: 'legality' };
+  }
+  // The pair a refusal names: the first colour two sides claimed, and the first slot nobody claimed.
+  const shared = slotOf(claims.find((c, i) => claims.indexOf(c) !== i) ?? claims[0]!);
+  const missing = free.find((slot) => !claims.includes(colourOfSlot(slot))) ?? free[0]!;
+  const conflict = (legalFilings: number): CentreResolution => ({
+    result: reject(
+      legalFilings === 0
+        ? 'sides read with the same centre colour, and no way of filing them is a legal cube'
+        : 'sides read with the same centre colour, and more than one way of filing them is a legal cube',
+      { centreConflict: { shared, missing, legalFilings } },
+    ),
+  });
+  if (fits.length > 1) return conflict(fits.length);
+
+  // No filing is legal. For each colour the unnamed sides claim, the side that read it most surely
+  // keeps it; every other side is a misread centre. Only a unique answer is used.
+  const keeps = new Map<Colour, number>(); // colour -> index of the side that keeps it
+  for (const colour of new Set(claims)) {
+    const claimants = claims.flatMap((c, i) => (c === colour ? [i] : []));
+    const ranked = [...claimants].sort(
+      (a, b) => unnamed[b]!.centreConfidence - unnamed[a]!.centreConfidence,
+    );
+    const [top, next] = ranked;
+    if (next !== undefined && unnamed[top!]!.centreConfidence === unnamed[next]!.centreConfidence) {
+      return conflict(0);
+    }
+    keeps.set(colour, top!);
+  }
+  const movers = unnamed.map((_, i) => i).filter((i) => keeps.get(claims[i]!) !== i);
+  const open = free.filter((slot) => !keeps.has(colourOfSlot(slot)));
+  if (movers.length !== 1 || open.length !== 1) return conflict(0);
+  const chosen = assessed.find(({ slots }) =>
+    slots.every((slot, i) => (i === movers[0] ? slot === open[0] : slot === slotOf(claims[i]!))),
+  );
+  if (!chosen) return conflict(0);
+  return { result: chosen.result, faces: chosen.faces, decidedBy: 'confidence' };
 }

@@ -159,14 +159,24 @@ const BUNDLES = [
       '../../../packages/cube-scanner/src/nine-of-each.ts',
       '../../../packages/cube-scanner/src/paint-groups.ts',
       '../../../packages/cube-scanner/src/sticker-pixels.ts',
+      // The scan trace (2026-09-18), switched on by `localStorage.cubusScanTrace = '1'` and silent
+      // otherwise. It ships in the bundle dormant; guarded like any other source, because a trace
+      // edited and not rebuilt would describe the scan with code the scan no longer runs.
+      '../../../packages/cube-scanner/src/fit-trace.ts',
+      '../../../packages/cube-scanner/view/scan-trace.ts',
     ],
     // Exported from the package entry and used by its tests, but never by the panel — so esbuild
     // drops them and their absence is correct, not stale. Listed rather than silently ignored: if
     // the panel ever starts using one, delete it here and the guard covers it again.
     // `detectFace` is the composed preprocess→run→fit convenience the package entry offers and the
     // tests exercise; the panel drives the two halves through a `Detector`, so esbuild drops it.
-    // `COLOUR_NAMES` is scheme.ts's table of colour words, which the panel does not import.
-    treeShaken: ['SOLVED_FACELETS', 'encodeFacelets', 'detectFace', 'COLOUR_NAMES'],
+    // `COLOUR_NAMES` was listed here until 2026-09-18, when the scan trace began naming colours in
+    // its summary ("white", not "class 0") and so began importing it. Removed, as this comment asks,
+    // so the guard now covers it like any other name the panel uses.
+    // `fitFromOutput` joined on 2026-09-18: the panel now decodes a frame once with
+    // `detectionsFromOutput` and hands the same boxes to `fitFace` and the scan trace, so
+    // it no longer calls the composed form. The package entry and its tests still use it.
+    treeShaken: ['SOLVED_FACELETS', 'encodeFacelets', 'detectFace', 'fitFromOutput'],
     // encodeFacelets' refusal of a malformed state (2026-09-13) leaves with the function: the
     // message is in facelet-cube.ts and, correctly, nowhere in a bundle that never encodes.
     treeShakenMessages: ['encodeFacelets: not a well-formed cube state'],
