@@ -18,7 +18,7 @@ import {
   type ColorFace,
   LOW_CONFIDENCE_THRESHOLD,
   matchingRotations,
-  resolveCentreCollision,
+  resolveCentres,
 } from '../packages/cube-scanner/src/ai-assemble.js';
 import {
   assignNineOfEach,
@@ -92,8 +92,9 @@ const nineOfEach = (colors: readonly (readonly number[])[]): boolean => {
 /**
  * File six sides under their centres' colours, as the panel does — or, when one colour is on two
  * centres and one on none (most often a brand logo on the white cap, read as its ink), let
- * `resolveCentreCollision` decide which of the two is the missing colour. Null when no filing can
- * be made: two or more collisions, or a collision the resolver refuses to decide.
+ * `resolveCentres` decide which of the two is the missing colour: by legality, or — when no filing is
+ * legal — by which centre read less surely, exactly as the app does. Null when no filing can be
+ * made: two or more collisions, or a collision the resolver refuses to decide.
  */
 function fileSides(
   captures: readonly Capture[],
@@ -116,21 +117,27 @@ function fileSides(
   const shared = [...byCentre.entries()].filter(([, photos]) => photos.length > 1);
   if (byCentre.size !== FACES.length - 1 || shared.length !== 1) return null;
   const [centre, [first, second]] = shared[0] as [number, [number, number]];
-  const filed: Partial<Record<Face, ColorFace>> = {};
+  const named: Partial<Record<Face, ColorFace>> = {};
   const photoOf: Partial<Record<Face, number>> = {};
   captures.forEach((capture, p) => {
-    if (p === second) return;
+    if (p === first || p === second) return;
     const slot = slotOf(capture.colors[4] as Colour);
-    filed[slot] = capture;
+    named[slot] = capture;
     photoOf[slot] = p;
   });
   const newcomer = captures[second]!;
-  const { faces, result } = resolveCentreCollision(filed, newcomer, LOW_CONFIDENCE_THRESHOLD, {
-    diagnose: false,
-  });
+  const { faces, result } = resolveCentres(
+    named,
+    [captures[first]!, newcomer].map((capture) => ({
+      capture,
+      centreConfidence: capture.confidence[4] ?? 0,
+    })),
+    LOW_CONFIDENCE_THRESHOLD,
+    { diagnose: false },
+  );
   if (!faces) return null;
   const sharedSlot = slotOf(centre as Colour);
-  const missingSlot = FACES.find((slot) => filed[slot] === undefined)!;
+  const missingSlot = FACES.find((slot) => slot !== sharedSlot && named[slot] === undefined)!;
   // Which photo went where. The resolver recolours one of the two and files the other under the
   // shared colour; whichever holds the shared slot still carries its own read there, and the two
   // reads differ in at least three stickers (the same-side check has already run), so comparing

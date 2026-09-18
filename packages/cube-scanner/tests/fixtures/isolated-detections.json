@@ -1,0 +1,82 @@
+{
+  "about": "Shared cases for dropIsolated (src/onnx-postprocess.ts) and drop_isolated (ml/cube_infer.py). Both suites read this file, so the two implementations cannot drift apart. `kept` lists indices into `detections`, in order. A box is kept when some OTHER box lies within ISOLATION_RADIUS (3) median sticker-sizes of it, the boundary included.",
+  "cases": [
+    {
+      "name": "a large false box far from the face is dropped, and every sticker of the face is kept",
+      "detections": [
+        { "cx": 100, "cy": 100, "w": 30, "h": 30, "classId": 0, "confidence": 0.9 },
+        { "cx": 145, "cy": 100, "w": 30, "h": 30, "classId": 1, "confidence": 0.9 },
+        { "cx": 190, "cy": 100, "w": 30, "h": 30, "classId": 2, "confidence": 0.9 },
+        { "cx": 100, "cy": 145, "w": 30, "h": 30, "classId": 3, "confidence": 0.9 },
+        { "cx": 145, "cy": 145, "w": 30, "h": 30, "classId": 4, "confidence": 0.9 },
+        { "cx": 190, "cy": 145, "w": 30, "h": 30, "classId": 5, "confidence": 0.9 },
+        { "cx": 100, "cy": 190, "w": 30, "h": 30, "classId": 0, "confidence": 0.9 },
+        { "cx": 145, "cy": 190, "w": 30, "h": 30, "classId": 1, "confidence": 0.9 },
+        { "cx": 190, "cy": 190, "w": 30, "h": 30, "classId": 2, "confidence": 0.9 },
+        { "cx": 560, "cy": 390, "w": 85, "h": 125, "classId": 4, "confidence": 0.34 }
+      ],
+      "kept": [0, 1, 2, 3, 4, 5, 6, 7, 8]
+    },
+    {
+      "name": "a small stray box far from the face is dropped too — isolation, not size, is the rule",
+      "detections": [
+        { "cx": 100, "cy": 100, "w": 30, "h": 30, "classId": 0, "confidence": 0.9 },
+        { "cx": 145, "cy": 100, "w": 30, "h": 30, "classId": 1, "confidence": 0.9 },
+        { "cx": 100, "cy": 145, "w": 30, "h": 30, "classId": 3, "confidence": 0.9 },
+        { "cx": 500, "cy": 500, "w": 12, "h": 12, "classId": 5, "confidence": 0.4 }
+      ],
+      "kept": [0, 1, 2]
+    },
+    {
+      "name": "two neighbour-face slivers beside each other keep each other, as fitFace has always had them",
+      "detections": [
+        { "cx": 100, "cy": 100, "w": 30, "h": 30, "classId": 0, "confidence": 0.9 },
+        { "cx": 145, "cy": 100, "w": 30, "h": 30, "classId": 1, "confidence": 0.9 },
+        { "cx": 190, "cy": 100, "w": 30, "h": 30, "classId": 2, "confidence": 0.9 },
+        { "cx": 100, "cy": 145, "w": 30, "h": 30, "classId": 3, "confidence": 0.9 },
+        { "cx": 145, "cy": 145, "w": 30, "h": 30, "classId": 4, "confidence": 0.9 },
+        { "cx": 190, "cy": 145, "w": 30, "h": 30, "classId": 5, "confidence": 0.9 },
+        { "cx": 100, "cy": 190, "w": 30, "h": 30, "classId": 0, "confidence": 0.9 },
+        { "cx": 145, "cy": 190, "w": 30, "h": 30, "classId": 1, "confidence": 0.9 },
+        { "cx": 190, "cy": 190, "w": 30, "h": 30, "classId": 2, "confidence": 0.9 },
+        { "cx": 320, "cy": 100, "w": 5, "h": 25, "classId": 5, "confidence": 0.5 },
+        { "cx": 320, "cy": 145, "w": 5, "h": 25, "classId": 5, "confidence": 0.5 }
+      ],
+      "kept": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    },
+    {
+      "name": "a close-up face is not thinned: the radius is in the frame's own sticker size",
+      "detections": [
+        { "cx": 100, "cy": 100, "w": 100, "h": 100, "classId": 0, "confidence": 0.9 },
+        { "cx": 250, "cy": 100, "w": 100, "h": 100, "classId": 1, "confidence": 0.9 },
+        { "cx": 400, "cy": 100, "w": 100, "h": 100, "classId": 2, "confidence": 0.9 },
+        { "cx": 100, "cy": 250, "w": 100, "h": 100, "classId": 3, "confidence": 0.9 },
+        { "cx": 400, "cy": 400, "w": 100, "h": 100, "classId": 4, "confidence": 0.9 }
+      ],
+      "kept": [0, 1, 2, 3, 4]
+    },
+    {
+      "name": "a single box has no neighbour and is dropped",
+      "detections": [
+        { "cx": 100, "cy": 100, "w": 30, "h": 30, "classId": 0, "confidence": 0.9 }
+      ],
+      "kept": []
+    },
+    {
+      "name": "the boundary is included: two boxes exactly three sticker-sizes apart are neighbours",
+      "detections": [
+        { "cx": 0, "cy": 0, "w": 30, "h": 30, "classId": 0, "confidence": 0.9 },
+        { "cx": 90, "cy": 0, "w": 30, "h": 30, "classId": 1, "confidence": 0.9 }
+      ],
+      "kept": [0, 1]
+    },
+    {
+      "name": "just past the boundary, neither has a neighbour",
+      "detections": [
+        { "cx": 0, "cy": 0, "w": 30, "h": 30, "classId": 0, "confidence": 0.9 },
+        { "cx": 90.5, "cy": 0, "w": 30, "h": 30, "classId": 1, "confidence": 0.9 }
+      ],
+      "kept": []
+    }
+  ]
+}

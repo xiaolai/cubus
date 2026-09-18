@@ -60,4 +60,21 @@ describe('Stillness', () => {
     expect(s.offer(READ, 9200)).toBe(false); // count reached; 9000 is the start, not 1000
     expect(s.offer(READ, 9500)).toBe(true);
   });
+
+  it('reports where the run stands without changing what the gate decides', () => {
+    // `status` is for the scan trace. It must read the same fields the gate reads, on the same
+    // clock, and asking it must not move the run — or watching a scan would change it.
+    const s = new Stillness(3, 500);
+    expect(s.status(0)).toEqual({ run: 0, heldMs: 0 });
+    s.offer(READ, 1000);
+    s.offer(READ, 1200);
+    expect(s.status(1300)).toEqual({ run: 2, heldMs: 300 });
+    expect(s.status(1300)).toEqual({ run: 2, heldMs: 300 }); // asking twice changes nothing
+    expect(s.offer(READ, 1400)).toBe(false); // three reads, 400 ms: short of 500 exactly as before
+    expect(s.offer(READ, 1500)).toBe(true);
+    s.offer(OTHER, 1600); // a new run
+    expect(s.status(1650)).toEqual({ run: 1, heldMs: 50 });
+    s.reset();
+    expect(s.status(9999)).toEqual({ run: 0, heldMs: 0 });
+  });
 });

@@ -5,6 +5,7 @@
 
 import type { ModelOutput } from './detector.js';
 import {
+  type Detection,
   decodeDetections,
   dropNested,
   type FitResult,
@@ -120,11 +121,21 @@ export interface DetectOptions {
  * NO_FACE / PARTIAL_FACE / BAD_GEOMETRY) by this one implementation, which the invariant tests cover.
  */
 export function fitFromOutput(output: ModelOutput, opts: DetectOptions = {}): FitResult {
+  return fitFace(detectionsFromOutput(output, opts), opts.minConf ?? MIN_STICKER_CONFIDENCE);
+}
+
+/**
+ * The boxes `fitFromOutput` fits a face to: decode → NMS → drop nested, after the row check.
+ *
+ * Split out for the scan trace, which must see exactly the boxes the scan saw. A trace that
+ * re-derived them would be a second implementation of this tail, and the day the two disagreed it
+ * would describe a scan that never happened — the one thing a diagnostic cannot be allowed to do.
+ */
+export function detectionsFromOutput(output: ModelOutput, opts: DetectOptions = {}): Detection[] {
   const {
     numClasses = NUM_CLASSES,
     confThreshold = MIN_STICKER_CONFIDENCE,
     iouThreshold = 0.45,
-    minConf = MIN_STICKER_CONFIDENCE,
   } = opts;
   // THE ROW COUNT, at the seam both runtimes pass through.
   //
@@ -147,10 +158,9 @@ export function fitFromOutput(output: ModelOutput, opts: DetectOptions = {}): Fi
       `model output has ${output.rows} rows, not the ${expected} a ${numClasses}-class detect head produces${why}`,
     );
   }
-  const dets = dropNested(
+  return dropNested(
     nms(decodeDetections(output.data, numClasses, output.anchors, confThreshold), iouThreshold),
   );
-  return fitFace(dets, minConf);
 }
 
 /**

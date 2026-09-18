@@ -100,6 +100,15 @@ export class Stillness {
     return best;
   }
 
+  /**
+   * Where the current run stands, for the scan trace. Read-only, and never consulted by `offer`:
+   * the gate decides from its own fields, so recording this cannot change what it decides. `heldMs`
+   * is measured the same way the gate measures it — from the run's FIRST read, on the same clock.
+   */
+  status(now: number = performance.now()): { run: number; heldMs: number } {
+    return { run: this.count, heldMs: this.key === null ? 0 : now - this.since };
+  }
+
   /** Forget the current run — the cube left the frame, or the scan was restarted. */
   reset(): void {
     this.key = null;
