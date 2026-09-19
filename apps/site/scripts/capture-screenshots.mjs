@@ -33,6 +33,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium, webkit } from 'playwright';
 
 import { freePort } from '../../web/test/free-port.mjs';
+import { makeCameraFeed } from './camera-feed.mjs';
 import { OG, SCALE, SHOTS, WINDOWS } from './shots.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -145,11 +146,9 @@ async function serveWeb() {
 /** A golden frame as a looping camera feed, for Chromium's fake video capture. */
 function cameraFile(dir) {
   if (!existsSync(GOLDEN_FRAME)) throw new Error(`no golden frame at ${GOLDEN_FRAME}`);
-  const y4m = join(dir, 'camera.y4m');
-  // yuv420p needs even dimensions; the frame is 649×720, so it is scaled by one pixel.
-  execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-loop', '1', '-i', GOLDEN_FRAME, '-t', '2', '-r', '15',
-    '-vf', 'scale=648:720', '-pix_fmt', 'yuv420p', y4m]);
-  return y4m;
+  // The feed is made and checked in one place, which the site's test drives with a stand-in runner
+  // (scripts/camera-feed.mjs says why the shape matters).
+  return makeCameraFeed(GOLDEN_FRAME, join(dir, 'camera.y4m'), execFileSync);
 }
 
 /** Open the app at `shot`'s screen in a fresh context shaped like its window, drive it, and
