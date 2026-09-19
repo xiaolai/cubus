@@ -37,11 +37,11 @@ export function say(text, lang = 'en', { onFail } = {}) {
   // for a child.
   line.lang = lang;
   line.rate = 0.95;
-  line.onerror = (e) => {
+  line.addEventListener('error', (e) => {
     if (CUT_OFF.has(e.error)) return;
     console.warn(`[cubus] a spoken line did not play (${e.error}): "${text}"`);
     onFail?.(e.error);
-  };
+  });
   synth.speak(line);
   return true;
 }
