@@ -5,6 +5,7 @@
 
 import { STARTUP_DELAY_MS } from './app-update.js';
 import { initLocale } from './i18n.js';
+import { unlockOnGestures } from './sound.js';
 import { parseInsetOverride, readAndroidInsets } from './os-insets.js';
 
 import { $, state } from './app-state.js';
@@ -109,6 +110,9 @@ async function boot() {
   installSettingsShortcut();
   installAdvancedShortcut();
   installExternalLinks();
+  // Audio starts only inside a user gesture on every engine the app runs in, so the page's one
+  // AudioContext is made on the first one (lib/sound.js).
+  unlockOnGestures(document);
   // '' = follow the browser/OS language. No-op until a catalog is registered; the picker arrives
   // with the first second language, because a menu listing only English is furniture.
   initLocale(settings.language);

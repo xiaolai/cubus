@@ -4,12 +4,12 @@
 
 import { TIERS } from '../solve-target.js';
 import { capability as optimalCapability } from '../optimal.js';
-import { isDesktopHost } from '../host.js';
+import { isDesktopHost, scannerPlacesStickers } from '../host.js';
 import { t } from '../i18n.js';
 import { VERSION } from '../version.js';
 
 import { $, escHtml, icon, state } from '../app-state.js';
-import { HIDEABLE, PALETTES, THEMES, navHidden, settings } from '../app-settings.js';
+import { HIDEABLE, PALETTES, SCAN_VIEWS, THEMES, navHidden, settings } from '../app-settings.js';
 import { applyNetColors, applyTheme, netPalette } from '../cube-drawing.js';
 import { isTauri } from '../window-chrome.js';
 import { PROVE_COPY } from '../prove-affordance.js';
@@ -19,7 +19,9 @@ import {
 import { SCREENS, advancedChordWords, advancedOpen, go, renderNav, renderScreen } from '../screen-shell.js';
 import { mountSmartCube, smartCubeCard } from './settings/smart-cube.js';
 import { wireOrientation } from './settings/window-orientation.js';
-import { commitPref, switchRow, unsavedNote } from './settings/preferences.js';
+import { bindSwitch, commitPref, switchRow, unsavedNote } from './settings/preferences.js';
+import { hush } from '../speech.js';
+import { stopAll } from '../sound.js';
 
 // How the four rungs read on the Settings screen. A rung with no label here would render as
 // "undefined", so solve-tier-wiring.test.mjs checks every TIERS entry has one.
@@ -37,7 +39,11 @@ SCREENS.settings = () => {
   // No WCA-inspection toggle: it flipped a label and nothing else — the timer never implemented
   // the 15s countdown it named. A setting that claims behaviour it does not have is exactly the
   // invented data this app refuses elsewhere; it returns when the Timer actually earns it.
-  const toggles = [['autosolve', 'Auto-solve after scan', 'Jump straight to the guide']];
+  const toggles = [
+    ['autosolve', 'Auto-solve after scan', 'Jump straight to the guide'],
+    // One switch for every sound the scan makes (lib/sound.js), on unless turned off.
+    ['sounds', 'Sounds', 'A chime when a side is saved, and a spoken word where this device has a voice'],
+  ];
   // The window's orientation is the desktop's to choose (dev-docs/stage-contract.md, decision
   // 4): a fixed window that can be either shape. The row exists only where there is a window to
   // shape — the Tauri API on a desktop platform. A phone or tablet rotates in the hand, and the
@@ -101,6 +107,12 @@ SCREENS.settings = () => {
           blurb: "Shows the die on the solve screen that loads a random scrambled cube — a developer shortcut, since that cube is not the one in anyone's hand. Scramble keeps its own die regardless.",
           id: 'setToggle-devRandCube', on: Boolean(settings.devRandCube), attrs: 'data-toggle="devRandCube"', label: 'Random-cube die',
         })}
+        ${scannerPlacesStickers() ? switchRow({
+          style: 'padding:13px 0;border-bottom:1px solid var(--line-faint)',
+          title: 'Sticker view while scanning',
+          blurb: 'For the scan-guidance study: while a scan reads, the small cube beside the tiles is replaced by where the camera sees each sticker. It never shows the camera picture.',
+          id: 'setToggle-devScanView', on: settings.devScanView === SCAN_VIEWS.stickers, attrs: 'data-scan-view', label: 'Sticker view while scanning',
+        }) : ''}
         <div class="sub" style="color:var(--ink-5);margin-top:12px">${escHtml(t('%1 hides this section again.', advancedChordWords()))}</div>
         ${unsavedNote('advanced')}</div>` : ''}
       <div class="card"><div class="eyebrow">ABOUT</div>
@@ -123,6 +135,14 @@ SCREENS.settings = () => {
       // Every preference takes lib/screens/settings/preferences.js's one path: changed, kept,
       // shown — and said in its own card when the browser would not keep it.
       for (const b of root.querySelectorAll('[data-set-theme]')) b.onclick = () => commitPref(b, () => { settings.theme = b.dataset.setTheme; }, () => { applyTheme(); renderScreen(); });
+      // The study's arm is a pair of values, not a boolean, so it has its own press rather than the
+      // generic toggle's `!settings[k]` (dev-docs/scan-guidance-plan.md 4.1).
+      const scanView = $('[data-scan-view]', root);
+      const stickersOn = () => settings.devScanView === SCAN_VIEWS.stickers;
+      if (scanView) bindSwitch(scanView, {
+        isOn: stickersOn,
+        flip: () => { settings.devScanView = stickersOn() ? SCAN_VIEWS.today : SCAN_VIEWS.stickers; },
+      });
       // Changing the target does not re-solve anything now — the next solve uses it. Clearing
       // the cached solution is what makes that true; without it the old answer would stand.
       for (const b of root.querySelectorAll('[data-set-tier]')) b.onclick = () => commitPref(b, () => { settings.solveTier = b.dataset.setTier; state.cube.solution = ''; state.cube.solveResult = null; }, renderScreen);
@@ -139,13 +159,18 @@ SCREENS.settings = () => {
         applyNetColors();
         renderScreen();
       });
-      for (const b of root.querySelectorAll('[data-toggle]')) b.onclick = () => {
+      for (const b of root.querySelectorAll('[data-toggle]')) {
         const k = b.dataset.toggle;
-        commitPref(b, () => { settings[k] = !settings[k]; }, () => {
-          b.classList.toggle('on', settings[k]);
-          b.setAttribute('aria-checked', String(Boolean(settings[k])));
+        bindSwitch(b, {
+          isOn: () => settings[k],
+          flip: () => {
+            settings[k] = !settings[k];
+            // Sounds off means silent NOW: a chime or a line already under way is stopped, not left
+            // to finish after the switch said off (audit, 2026-09-19).
+            if (k === 'sounds' && !settings.sounds) { hush(); stopAll(); }
+          },
         });
-      };
+      }
 
       mountSmartCube(root);
 

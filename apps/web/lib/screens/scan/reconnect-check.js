@@ -62,7 +62,7 @@ export function createReconnectCheck({ speak, tileOf, tileSchemeNow, go, capture
     const off = deriveOffset(rc.candidate, rc.raw, Cube);
     return (off && applyOffset(off, state.reported, Cube)) || rc.candidate;
   };
-  const CONFIRM_HOW = 'We remember this cube. Show any two sides that meet along an edge — the front, then the top, works well. If both match what we remember, that’s your cube confirmed with no full scan; if either differs, keep going and the camera reads all six.';
+  const CONFIRM_HOW = 'We remember this cube. Show any two sides that meet along an edge — the front, then the top, for example. If both match what we remember, that’s your cube confirmed with no full scan; if either differs, keep going and the camera reads all six.';
   if (confirming) {
     speak(t('Checking your cube'), t(CONFIRM_HOW));
   }

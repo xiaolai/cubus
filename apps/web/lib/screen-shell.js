@@ -226,7 +226,7 @@ const brokenScreen = () => ({
     <div class="card" style="max-width:460px;text-align:center;padding:34px">
       <div class="eyebrow">${escHtml(t('THIS SCREEN DID NOT OPEN'))}</div>
       <div style="font-size:var(--fs-title);font-weight:600;margin-top:10px">${escHtml(t('Something went wrong drawing this screen'))}</div>
-      <div class="sub" style="color:var(--ink-3);margin-top:8px;line-height:1.55">${escHtml(t('Nothing you did caused it, and nothing is lost. The other screens still work; reloading the app usually clears it.'))}</div>
+      <div class="sub" style="color:var(--ink-3);margin-top:8px;line-height:1.55">${escHtml(t('Nothing you did caused it, and nothing is lost. The other screens still work, and reloading the app starts this one over.'))}</div>
       <button class="btn accent-outline block" data-go="home" style="margin-top:18px">${escHtml(t('Go to the cube'))}</button>
     </div></div>`,
 });

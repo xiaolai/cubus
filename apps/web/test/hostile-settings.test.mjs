@@ -18,6 +18,7 @@
 import assert from 'node:assert/strict';
 import { test, before } from 'node:test';
 import { readFileSync } from 'node:fs';
+import { blockAt } from './app-source.mjs';
 
 import { Window } from 'happy-dom';
 
@@ -28,6 +29,8 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 const SCREENS = ['home', 'scan', 'scramble', 'timer', 'stats', 'trainer', 'drill', 'lessons', 'settings'];
 
 let win;
+/** Every boolean setting, taken from the defaults' source — see `before`. */
+let hostileFlags;
 const errors = [];
 
 before(async () => {
@@ -50,7 +53,15 @@ before(async () => {
   //   navHidden — a string where a list belongs, and a nav id that is not hideable
   //   solveTier — a rung that does not exist
   //   language  — a number
+  // Every boolean the app HAS, read from the defaults' own source rather than from the list the app
+  // derives at runtime: a flag added there arrives here as a hostile string, where a list taken from
+  // the app itself would have "tested" it by leaving it at its default (audit, 2026-09-19).
+  hostileFlags = Object.fromEntries(
+    [...blockAt(readFileSync(new URL('../lib/app-settings.js', import.meta.url), 'utf8'), 'DEFAULT_SETTINGS = Object.freeze(')
+      .matchAll(/(\w+):\s*(?:true|false)\b/g)].map((m) => [m[1], 'not a boolean']),
+  );
   win.localStorage.setItem('cubusSettings', JSON.stringify({
+    ...hostileFlags,
     palette: 'chartreuse',
     theme: 'neon',
     autosolve: 'false',
@@ -61,6 +72,8 @@ before(async () => {
     language: 7,
     solveTier: 'eleven',
     dragRotate: 'no',
+    sounds: 'false',
+    devScanView: 'preview',
     cameraId: { nope: true },
   }));
   for (const k of [
@@ -89,11 +102,20 @@ test('an unknown palette is repaired at load, and the repair is saved', async ()
   // Every flag the object carries as a string or a number is a real boolean, in memory and in
   // storage. "false" is truthy, and a Settings toggle flips `!settings[k]`, so a stored "false"
   // showed as on — and auto-solve then left a believed scan nobody had asked to leave.
-  const { settings } = await import('../lib/app-settings.js');
-  for (const k of ['autosolve', 'dragRotate', 'devRandCube', 'proveMinimum']) {
-    assert.equal(settings[k], false, `the hostile ${k} was kept truthy`);
-    assert.equal(stored[k], false, `the hostile ${k} was not written back as false`);
+  const { BOOLEAN_SETTINGS, DEFAULT_SETTINGS, settings } = await import('../lib/app-settings.js');
+  // Every flag — the app's own derived list, so this cannot leave one out the way a copy did — is back
+  // to its DEFAULT when storage held anything but a real boolean: off for most, on for `sounds`.
+  assert.ok(BOOLEAN_SETTINGS.includes('sounds') && BOOLEAN_SETTINGS.includes('autosolve'), 'the flag list is not derived from the defaults');
+  assert.deepEqual([...BOOLEAN_SETTINGS].sort(), Object.keys(hostileFlags).sort(),
+    'the flags the app derives and the flags this file made hostile have drifted apart');
+  for (const k of BOOLEAN_SETTINGS) {
+    assert.equal(settings[k], DEFAULT_SETTINGS[k], `the hostile ${k} was believed`);
+    assert.equal(stored[k], DEFAULT_SETTINGS[k], `the hostile ${k} was not written back as its default`);
   }
+  // The study's arm is today's screen or the sticker view, and nothing else — least of all the camera
+  // picture, which the owner ruled out (dev-docs/scan-guidance-plan.md, D2).
+  assert.equal(settings.devScanView, 'today', 'a study arm that does not exist was believed');
+  assert.equal(stored.devScanView, 'today');
 });
 
 test('every screen renders over hostile settings, and the stage is actually replaced', async () => {
