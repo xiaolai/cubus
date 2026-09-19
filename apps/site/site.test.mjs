@@ -10,11 +10,13 @@
 // workflow can run it on a bare checkout, and a missing install cannot become a skipped gate.
 
 import assert from 'node:assert/strict';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { EVEN_SIZE, assertSameShape, pngSize, y4mSize } from './scripts/camera-feed.mjs';
 import { OG, SCALE, SHOTS, WINDOWS, pixels } from './scripts/shots.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -235,3 +237,72 @@ test('README names the site and the workflow that publishes it', () => {
   assert.ok(readme.includes('apps/site/'), 'README does not mention apps/site/');
   assert.ok(readme.includes('deploy-site.yml'), 'README does not name the deploy workflow');
 });
+
+/** A PNG head that says `w`×`h` — enough of one for `pngSize`, and for a file a feed is made from. */
+function pngBytes(w, h) {
+  const b = Buffer.alloc(24);
+  Buffer.from('89504e470d0a1a0a', 'hex').copy(b, 0);
+  b.write('IHDR', 12, 'latin1');
+  b.writeUInt32BE(w, 16);
+  b.writeUInt32BE(h, 20);
+  return b;
+}
+
+// The scan shot's fake camera must be the golden frame's own shape (scripts/camera-feed.mjs): the old
+// fixed `scale=648:720` stretched a re-picked 720×480 photo 1.67×, the scanner refused every frame, and
+// the shot timed out — or worse, would have photographed a scanner that cannot read (2026-09-19).
+test('the fake camera is refused unless it is the photo\'s shape, and a header that says no size is refused', () => {
+  const png = pngBytes;
+  const y4m = (fields) => Buffer.from(`YUV4MPEG2 ${fields} F15:1 Ip A1:1 C420jpeg\nFRAME\n`, 'latin1');
+  // Even and odd sources, on EITHER side: ffmpeg rounds each down to even independently, so an odd
+  // height is its own case — every fixture here was even-heighted before (audit, 2026-09-19).
+  assert.doesNotThrow(() => assertSameShape(pngSize(png(720, 480)), y4mSize(y4m('W720 H480')), 'photo'));
+  assert.doesNotThrow(() => assertSameShape(pngSize(png(649, 720)), y4mSize(y4m('W648 H720')), 'photo'));
+  assert.doesNotThrow(() => assertSameShape(pngSize(png(720, 481)), y4mSize(y4m('W720 H480')), 'photo'));
+  assert.doesNotThrow(() => assertSameShape(pngSize(png(649, 481)), y4mSize(y4m('W648 H480')), 'photo'));
+  assert.throws(() => assertSameShape(pngSize(png(720, 481)), y4mSize(y4m('W720 H482')), 'photo'), /distorted cube/);
+  assert.throws(() => assertSameShape(pngSize(png(720, 481)), y4mSize(y4m('W720 H481')), 'photo'), /distorted cube/);
+  assert.throws(() => assertSameShape(pngSize(png(720, 480)), y4mSize(y4m('W648 H720')), 'photo'), /distorted cube/);
+  // A header that does not say its size is refused, not compared as NaN (which passes every check).
+  assert.throws(() => y4mSize(y4m('H480')), /does not say a size/);
+  assert.throws(() => y4mSize(y4m('W0 H480')), /does not say a size/);
+  assert.throws(() => y4mSize(Buffer.from('RIFF....', 'latin1')), /not a Y4M/);
+  assert.throws(() => pngSize(Buffer.alloc(24)), /not a PNG/);
+  // Exactly what the filter makes: an odd side rounded UP, or an even side changed, is not it.
+  assert.throws(() => assertSameShape(pngSize(png(649, 720)), y4mSize(y4m('W650 H720')), 'photo'), /distorted cube/);
+  assert.throws(() => assertSameShape(pngSize(png(720, 480)), y4mSize(y4m('W718 H480')), 'photo'), /distorted cube/);
+  // A header cut short of its newline is not a header.
+  assert.throws(() => y4mSize(Buffer.from('YUV4MPEG2 W720 H480 F15:1', 'latin1')), /terminating newline/);
+});
+
+// The path that MAKES the feed, driven with a stand-in runner: the rule above is only worth anything
+// if the making applies it, and reading the script's source for the right characters is satisfied by a
+// comment or by dead code (audit, 2026-09-19).
+test('the fake camera is made with the floor-to-even filter, and a feed of the wrong shape is refused', async () => {
+  const { makeCameraFeed } = await import('./scripts/camera-feed.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'cubus-feed-'));
+  try {
+    const photo = join(dir, 'photo.png');
+    const feed = join(dir, 'camera.y4m');
+    writeFileSync(photo, pngBytes(649, 481));
+    let ran = null;
+    const run = (cmd, args) => {
+      ran = { cmd, args };
+      // What ffmpeg would write for this photo: each side rounded down to even.
+      writeFileSync(feed, Buffer.from('YUV4MPEG2 W648 H480 F15:1 Ip A1:1 C420jpeg\nFRAME\n', 'latin1'));
+    };
+    assert.equal(makeCameraFeed(photo, feed, run), feed);
+    assert.equal(ran.cmd, 'ffmpeg');
+    assert.ok(ran.args.includes('-vf'), 'the feed is built without a filter');
+    assert.equal(ran.args[ran.args.indexOf('-vf') + 1], EVEN_SIZE, 'the feed is built with another filter');
+    assert.equal(ran.args[ran.args.indexOf('-pix_fmt') + 1], 'yuv420p');
+    assert.equal(ran.args.at(-1), feed, 'the feed is written somewhere else');
+    assert.equal(ran.args[ran.args.indexOf('-i') + 1], photo, 'another picture was fed to the camera');
+    // …and a runner that produced the wrong shape is caught by the same call.
+    const stretched = () => writeFileSync(feed, Buffer.from('YUV4MPEG2 W720 H480 F15:1 Ip A1:1 C420jpeg\nFRAME\n', 'latin1'));
+    assert.throws(() => makeCameraFeed(photo, feed, stretched), /distorted cube/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
