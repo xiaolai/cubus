@@ -22,4 +22,4 @@ rayon = "1"
 sha2 = "0.10"
 # Uniform random states for the library generator and the distribution smoke test — the same
 # "random state, never random turns, never a weak source" discipline as apps/web/lib/random-state.js.
-getrandom = "0.2"
+getrandom = "0.4"
