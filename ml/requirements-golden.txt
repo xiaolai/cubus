@@ -6,7 +6,7 @@
 # read. Split by platform: Linux CI runs onnx + tflite, plus onnx-int8 whenever the export wrote one
 # (the shipped detector has none; MANIFEST.json says why); the macOS runner adds coreml + the native
 # (plugin) leg, which also needs the Swift probe built (see .github/workflows/ci.yml).
-numpy==2.3.5
+numpy==2.5.3
 pillow==12.3.0
 onnxruntime==1.29.0
 # ml/test_pipeline.py re-derives any committed int8 with onnxruntime.quantization, which imports onnx.
