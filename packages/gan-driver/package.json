@@ -9,7 +9,7 @@
   },
   "scripts": {
     "cli": "tsx src/cli.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "node node_modules/typescript-7/bin/tsc --noEmit",
     "lint": "biome check src tests scripts && eslint src",
     "format": "biome format --write src tests scripts",
     "test": "vitest run",
@@ -33,6 +33,7 @@
     "smartcube-web-bluetooth": "github:xiaolai/smartcube-web-bluetooth#77df8e9507ac87031c12ad1717d71de98d56784b",
     "tsx": "^4.23.13",
     "typescript": "^6.0.3",
+    "typescript-7": "npm:typescript@^7.0.2",
     "typescript-eslint": "^8.69.0",
     "vite": "^8.2.2",
     "vitest": "^5.0.0"
