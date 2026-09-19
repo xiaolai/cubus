@@ -642,6 +642,24 @@ jobs:
       # the harness fails if expected.json still pins reads for a leg the manifest has retired.
       - name: host-internal parity on every leg this host can run (see golden_frames.py, PARITY mode)
         run: python ml/golden_frames.py --parity
+      # THE TFLITE LEG, CONVERTED FOR REAL. test_pipeline.py drives that path with the converter stood
+      # in for, which cannot see onnx2tf itself changing under us — a differently named output, a graph
+      # the runtime will not load, or the in-place rewrite of the fp32 that the 2026-09-04 repair was
+      # about. The export stack is a ~600 MB install, so the conversion runs where the full tier runs
+      # (main, the nightly, a dispatch); on a pull request the check SKIPS, out loud, and never as a
+      # pass (audit, 2026-09-19).
+      - name: Install the export stack (full tier only)
+        if: github.event_name != 'pull_request'
+        run: pip install -r ml/requirements-export.txt
+      - name: ml/test_export_tflite.py — the committed fp32 converts, and the graph loads
+        run: python ml/test_export_tflite.py
+      # And the metrics table's adapter, end to end: the shipped model scored against its own reads of
+      # a golden frame, which only comes back near-perfect when every box and class survives the trip
+      # between the adapter and the evaluator. Needs torch, which the export stack brings and the
+      # golden harness alone does not — so it runs on the full tier and SKIPS, out loud, on a pull
+      # request (audit, 2026-09-19).
+      - name: ml/test_evaluator.py — the adapter and the evaluator agree about a box
+        run: python ml/test_evaluator.py
 
   # THE TRAINER'S OWN TESTS, which ran nowhere. ml/test_cubedet.py covers the code that produced the
   # shipped detector -- the assigner, the loss, the backbone contract, the export graph, the scoring
@@ -698,6 +716,19 @@ jobs:
       # it — this is what proves the shipped native code, not a Python stand-in, still reads identically.
       - name: Build the cube-vision probe
         run: swift build -c release --package-path crates/cube-vision/swift
+      # The native scanner's per-tick entry end to end on an injected frame — the size of the picture the
+      # page places each sticker in, on every path, no model and no camera included — and the camera
+      # position behind the facing that decides whether the sticker view is mirrored. The support the
+      # tests reach (an injected frame, a stand-in model, a state reset) is `internal`, so it carries no
+      # C symbol and no Rust or page caller can reach it; it is compiled into every configuration, which
+      # is why the release one is run too (2026-09-19).
+      - name: The cube-vision Swift tests
+        run: swift test --package-path crates/cube-vision/swift
+      # And in the configuration the app actually links: optimisation is where a wrong assumption about
+      # lifetimes or exclusivity shows up, and the debug run cannot see it (audit, 2026-09-19). Its own
+      # scratch path, so it cannot rebuild the release probe the steps below measure.
+      - name: The cube-vision Swift tests, release
+        run: swift test -c release --scratch-path crates/cube-vision/swift/.build-release-tests --package-path crates/cube-vision/swift
       # The fp16 widening in Model.swift is hand-written, because Swift's Float16 is arm64-only and
       # the macOS release target is a universal binary. Exhaustive over all 65,536 half patterns, so
       # it is a proof and not a sample — it caught 1022 wrong ones (signalling NaNs) on its first run.
@@ -778,7 +809,7 @@ jobs:
       # Every shell script git tracks, found by git rather than listed by hand. The gate that would
       # have caught `security list-keychain -s` replacing a keychain search list and an unquoted
       # `build-tools/*/apksigner` glob, had it existed when those were written. It named only
-      # scripts/ and .githooks/, so ml/train.sh -- which ran `detector export` on the host from a
+      # scripts/ and .githooks/, so a training script under ml/ (since removed) -- which ran `detector export` on the host from a
       # comment inside a double-quoted container script -- was never checked at all. The plan's
       # `*.sh` input is what brings this job to a pull request that touches any of them.
       - name: shellcheck
