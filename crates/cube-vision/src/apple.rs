@@ -44,6 +44,7 @@ extern "C" {
     fn cube_vision_compile_count() -> i32;
     fn cube_vision_infer_rgba(
         rgba: *const u8,
+        byte_count: usize,
         w: i32,
         h: i32,
         out: *mut f32,
@@ -57,11 +58,13 @@ extern "C" {
     fn cube_vision_free_string(p: *mut c_char);
     fn cube_vision_open_camera(device_id: *const c_char) -> i32;
     fn cube_vision_close_camera();
+    /// `picture` is two i32s, `[width, height]`, written whole by the Swift side.
     fn cube_vision_next_detection(
         out: *mut f32,
         cap: i32,
         rows: *mut i32,
         anchors: *mut i32,
+        picture: *mut i32,
     ) -> i32;
 }
 
@@ -94,24 +97,69 @@ struct CameraInfo {
     #[serde(rename = "deviceId")]
     device_id: String,
     label: String,
+    /// "user" or "environment" when AVFoundation knows the camera's position; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    facing: Option<String>,
 }
 
-/// Encode a raw detect tensor for the bridge: `int32 rows, int32 anchors` (little-endian) then the
-/// `rows*anchors` f32 values. The TS side reads the header, then a `Float32Array` over the rest —
-/// the same shape `decodeDetections` parses. A header of `0, 0` means "no frame yet" (the caller
-/// treats it as null and tries again), so an idle tick costs 8 bytes, not an error.
-fn tensor_response(count: i32, rows: i32, anchors: i32, data: &[f32]) -> Response {
+/// Encode a raw detect tensor for the bridge (layout: `tensor_bytes`). The TS side reads the header,
+/// then a `Float32Array` over the rest — the same shape `decodeDetections` parses. Zero anchors means
+/// "no frame yet" (the caller treats it as null and tries again), so an idle tick costs 20 bytes,
+/// not an error.
+fn tensor_response(
+    count: i32,
+    rows: i32,
+    anchors: i32,
+    picture: [i32; 2],
+    data: &[f32],
+) -> Response {
+    Response::new(tensor_bytes(count, rows, anchors, picture, data))
+}
+
+/// What `next_detection` sends for a frame the Swift side inferred: its tensor and the size of the
+/// picture it was letterboxed from. Pure, so the tests hold the command's own handling of the FFI's
+/// outputs — the Swift side's writes are held by `swift test` (swift/Tests/CubeVisionTests). A frame
+/// with no size is the two sides of the FFI disagreeing, not a frame to pass on unplaceable: `[0, 0]`
+/// means "no frame" and nothing else (audit, 2026-09-19). `picture` is `[width, height]` exactly as the
+/// Swift side wrote it — one value handed on whole, so no call site orders the pair.
+fn detection_bytes(
+    count: i32,
+    rows: i32,
+    anchors: i32,
+    picture: [i32; 2],
+    data: &[f32],
+) -> Result<Vec<u8>, String> {
+    let [width, height] = picture;
+    if width <= 0 || height <= 0 {
+        return Err(format!(
+            "next_detection produced a tensor but reported its picture as {width}x{height}"
+        ));
+    }
+    Ok(tensor_bytes(count, rows, anchors, picture, data))
+}
+
+/// The bytes of a tensor response, wire version 2 (2026-09-19): `int32 -2` (the version, negative so
+/// it can never be read as a row count), `int32 rows, int32 anchors, int32 width, int32 height`, then
+/// the f32s — little-endian. `width`×`height` is the camera picture the tensor was letterboxed from,
+/// zero when there was none; the page places each sticker in the picture with it
+/// (`decodeTensorResponse` in packages/cube-scanner/view/native-detector.ts, which reads versions 1
+/// and 2; dev-docs/scan-guidance-plan.md 5).
+fn tensor_bytes(count: i32, rows: i32, anchors: i32, picture: [i32; 2], data: &[f32]) -> Vec<u8> {
     // Clamp to the buffer as well as to zero. The Swift side never reports more than the cap it was
     // given (= data.len()), so this only ever guards against a future contract break — but it does so
     // by shipping a short tensor the TS side rejects, not by panicking the whole process.
     let n = (count.max(0) as usize).min(data.len());
-    let mut out = Vec::with_capacity(8 + n * 4);
+    let mut out = Vec::with_capacity(20 + n * 4);
+    out.extend_from_slice(&(-2i32).to_le_bytes());
     out.extend_from_slice(&rows.max(0).to_le_bytes());
     out.extend_from_slice(&anchors.max(0).to_le_bytes());
+    for side in picture {
+        out.extend_from_slice(&side.max(0).to_le_bytes());
+    }
     for &v in &data[..n] {
         out.extend_from_slice(&v.to_le_bytes());
     }
-    Response::new(out)
+    out
 }
 
 /// Take ownership of a C string the Swift side allocated with `strdup`, or None for null.
@@ -278,17 +326,38 @@ fn next_detection(state: State<'_, CubeVision>) -> Result<Response, String> {
     if len <= 0 {
         return Err("model not loaded".into());
     }
-    let mut buf = vec![0f32; len as usize];
+    next_detection_bytes(len, &state.waiting_since, |buf, rows, anchors, picture| {
+        // SAFETY: `buf` has `len` elements (`next_detection_bytes` allocates it so), matching the
+        // `cap` passed; rows/anchors are valid out-params and `picture` is the two Int32s the Swift
+        // side writes.
+        unsafe {
+            cube_vision_next_detection(buf.as_mut_ptr(), len, rows, anchors, picture.as_mut_ptr())
+        }
+    })
+    .map(Response::new)
+}
+
+/// One tick's handling, with the Swift call handed in as `detect(buffer, rows, anchors, picture)`:
+/// the command passes `cube_vision_next_detection`, the tests a stand-in that writes what a camera
+/// frame would. So everything this side does with the call's outputs — the tensor, its shape, the
+/// picture's `[width, height]`, the no-frame clock, a refusal — runs end to end without a camera
+/// (round-3 audit). The Swift side of the same call is held by `swift test`, which can inject a
+/// frame, and the ABI between the two by `next_detection_writes_the_picture_through_its_own_argument`.
+fn next_detection_bytes(
+    len: i32,
+    waiting_since: &Mutex<Option<Instant>>,
+    detect: impl FnOnce(&mut [f32], &mut i32, &mut i32, &mut [i32; 2]) -> i32,
+) -> Result<Vec<u8>, String> {
+    let mut buf =
+        vec![0f32; usize::try_from(len).map_err(|_| format!("a model output of {len} elements"))?];
     let (mut rows, mut anchors) = (0i32, 0i32);
-    // SAFETY: `buf` has `len` elements, matching the `cap` we pass; rows/anchors are valid out-params.
-    let n = unsafe { cube_vision_next_detection(buf.as_mut_ptr(), len, &mut rows, &mut anchors) };
+    // `[width, height]`, written whole by the Swift side.
+    let mut picture = [0i32; 2];
+    let n = detect(&mut buf, &mut rows, &mut anchors, &mut picture);
     if n < 0 {
         return Err(ffi_failure("next_detection", n));
     }
-    let mut waiting = state
-        .waiting_since
-        .lock()
-        .map_err(|_| "camera state poisoned")?;
+    let mut waiting = waiting_since.lock().map_err(|_| "camera state poisoned")?;
     if n == NO_FRAME_YET {
         // Opened but no frame yet — for a while, that is warm-up and the panel tries again next
         // tick. Past the window it is a camera that is not going to deliver, and the wait ends in
@@ -302,10 +371,10 @@ fn next_detection(state: State<'_, CubeVision>) -> Result<Response, String> {
                 NO_FRAME_TIMEOUT.as_secs()
             ));
         }
-        return Ok(tensor_response(0, 0, 0, &[]));
+        return Ok(tensor_bytes(0, 0, 0, [0, 0], &[]));
     }
     *waiting = None;
-    Ok(tensor_response(n, rows, anchors, &buf))
+    detection_bytes(n, rows, anchors, picture, &buf)
 }
 
 /// Decode and check an `infer_frame` payload into what the Swift ABI takes: the RGBA bytes and
@@ -347,11 +416,13 @@ fn infer_frame(
     let (rgba, w, h) = prepare_still(&rgba_base64, width, height)?;
     let mut buf = vec![0f32; len as usize];
     let (mut rows, mut anchors) = (0i32, 0i32);
-    // SAFETY: rgba is exactly w*h*4 bytes (checked by prepare_still); buf has `len` elements
-    // matching `cap`; rows/anchors are valid out-params.
+    // SAFETY: rgba is exactly w*h*4 bytes (checked by prepare_still, and again by the Swift side
+    // against the length passed with it); buf has `len` elements matching `cap`; rows/anchors are
+    // valid out-params.
     let n = unsafe {
         cube_vision_infer_rgba(
             rgba.as_ptr(),
+            rgba.len(),
             w,
             h,
             buf.as_mut_ptr(),
@@ -363,7 +434,7 @@ fn infer_frame(
     if n < 0 {
         return Err(ffi_failure("infer_frame", n));
     }
-    Ok(tensor_response(n, rows, anchors, &buf))
+    Ok(tensor_response(n, rows, anchors, [w, h], &buf))
 }
 
 /// The plugin. Registers the command surface and the shared output-size state, and closes the camera
@@ -416,6 +487,18 @@ mod tests {
 
     /// Load the committed model once for the tests that need it. The Swift side is process-global,
     /// so this is also what `load_is_free_for_the_same_model_and_units` measures against.
+    /// The Swift side holds ONE model and ONE camera for the whole process, and the harness runs tests
+    /// on parallel threads — so every test that loads the model or touches the camera holds this for
+    /// its length. The compile-count test counted another test's load as its own once a second model
+    /// test existed (2026-09-19); the race had been there all along, with one fewer contender.
+    static NATIVE_STATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn native_state() -> std::sync::MutexGuard<'static, ()> {
+        NATIVE_STATE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn load_source_model(units: i32) -> i32 {
         let model = source_model_path();
         assert!(
@@ -432,6 +515,7 @@ mod tests {
 
     #[test]
     fn infer_rgba_returns_a_correctly_shaped_tensor() {
+        let _state = native_state();
         let len = load_source_model(0);
         let (w, h) = (64i32, 48i32);
         let rgba = vec![128u8; (w * h * 4) as usize];
@@ -441,6 +525,7 @@ mod tests {
         let n = unsafe {
             cube_vision_infer_rgba(
                 rgba.as_ptr(),
+                rgba.len(),
                 w,
                 h,
                 buf.as_mut_ptr(),
@@ -454,6 +539,139 @@ mod tests {
         assert_eq!(anchors, 8400, "v3 at 640 has 8400 anchors");
     }
 
+    /// The byte count crosses with the pointer and the Swift side checks it against the dimensions:
+    /// a buffer shorter or longer than `w * h * 4`, or dimensions that overflow, are refused with a
+    /// code rather than read past or trapped on (audit, 2026-09-19). No model is needed — the check
+    /// runs before the model is asked for.
+    #[test]
+    fn infer_rgba_refuses_a_byte_count_that_is_not_its_size() {
+        let _state = native_state();
+        // Longer than any count passed below, so a Swift side that ignored the count would still
+        // read inside it.
+        let rgba = [0u8; 32];
+        let mut buf = vec![0f32; 1];
+        let (mut rows, mut anchors) = (0i32, 0i32);
+        for (count, w, h) in [
+            (15usize, 2, 2),
+            (17, 2, 2),
+            (0, 0, 4),
+            (16, i32::MAX, i32::MAX),
+        ] {
+            // SAFETY: `count` never exceeds `rgba.len()`, so a Swift side that ignored it still
+            // reads inside the buffer; the call is expected to refuse before reading at all.
+            let n = unsafe {
+                cube_vision_infer_rgba(
+                    rgba.as_ptr(),
+                    count,
+                    w,
+                    h,
+                    buf.as_mut_ptr(),
+                    1,
+                    &mut rows,
+                    &mut anchors,
+                )
+            };
+            assert_eq!(n, -5, "{w}x{h} against {count} bytes was not refused");
+            assert!(
+                last_error().contains("is not"),
+                "the refusal carried no reason"
+            );
+        }
+    }
+
+    /// The per-tick entry's ABI, driven from Rust: argument order and the picture's pointer are the
+    /// extern above's, and a mistake there compiles. With a model and no camera the Swift side answers
+    /// -4 and zeroes the picture through the FIFTH argument, touching neither the rows nor the anchors —
+    /// so a declaration that swapped `picture` with either would zero the wrong one and fail here. The
+    /// frame-present path is `swift test`'s (swift/Tests/CubeVisionTests), which can inject a frame.
+    #[test]
+    fn next_detection_writes_the_picture_through_its_own_argument() {
+        let _state = native_state();
+        let len = load_source_model(0);
+        // SAFETY: idempotent; no camera is open afterwards.
+        unsafe { cube_vision_close_camera() };
+        let mut buf = vec![0f32; len as usize];
+        let (mut rows, mut anchors) = (-7i32, -7i32);
+        let mut picture = [-1i32, -1];
+        // SAFETY: `buf` has `len` elements matching the cap; the rest are valid out-params.
+        let n = unsafe {
+            cube_vision_next_detection(
+                buf.as_mut_ptr(),
+                len,
+                &mut rows,
+                &mut anchors,
+                picture.as_mut_ptr(),
+            )
+        };
+        assert_eq!(n, -4, "expected no camera: {}", last_error());
+        assert_eq!(
+            picture,
+            [0, 0],
+            "the picture was not written through its argument"
+        );
+        assert_eq!(
+            (rows, anchors),
+            (-7, -7),
+            "the picture's zeroes landed on the shape"
+        );
+    }
+
+    /// A tick end to end on this side, with the Swift call stood in for: what it wrote reaches the wire
+    /// as it wrote it — a picture odd both ways, so a swapped or rounded pair cannot pass — and a frame
+    /// whose size did not come back, a camera with no frame yet and a frame after that wait each get
+    /// the answer the page expects.
+    #[test]
+    fn a_tick_carries_what_the_swift_side_wrote_to_the_wire() {
+        let waiting = Mutex::new(None);
+        let frame = |buf: &mut [f32], rows: &mut i32, anchors: &mut i32, picture: &mut [i32; 2]| {
+            assert_eq!(
+                buf.len(),
+                3,
+                "the buffer is not the size the model promised"
+            );
+            buf.copy_from_slice(&[0.5, 0.25, 0.125]);
+            (*rows, *anchors, *picture) = (1, 3, [721, 479]);
+            3
+        };
+        let bytes = next_detection_bytes(3, &waiting, frame).unwrap();
+        let word = |i: usize| i32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
+        assert_eq!(
+            [word(0), word(1), word(2), word(3), word(4)],
+            [-2, 1, 3, 721, 479]
+        );
+        let f = |i: usize| f32::from_le_bytes(bytes[20 + i * 4..24 + i * 4].try_into().unwrap());
+        assert_eq!([f(0), f(1), f(2)], [0.5, 0.25, 0.125]);
+        assert_eq!(bytes.len(), 20 + 3 * 4);
+
+        let no_size = next_detection_bytes(3, &waiting, |_, rows, anchors, _| {
+            (*rows, *anchors) = (1, 3);
+            3
+        })
+        .unwrap_err();
+        assert!(no_size.contains("reported its picture"), "{no_size}");
+
+        let idle = next_detection_bytes(3, &waiting, |_, _, _, _| NO_FRAME_YET).unwrap();
+        assert_eq!(idle.len(), 20, "no frame yet is the 20-byte header alone");
+        assert!(
+            waiting.lock().unwrap().is_some(),
+            "the no-frame clock did not start"
+        );
+        next_detection_bytes(3, &waiting, frame).unwrap();
+        assert!(
+            waiting.lock().unwrap().is_none(),
+            "a frame did not stop the no-frame clock"
+        );
+    }
+
+    /// A refused tick is an error carrying the Swift side's code, never a tensor.
+    #[test]
+    fn a_refused_tick_is_an_error_with_its_code() {
+        // The Swift side's last error is process-wide, and the failing-call test reads it.
+        let _state = native_state();
+        let e = next_detection_bytes(3, &Mutex::new(None), |_, _, _, _| -4).unwrap_err();
+        assert!(e.contains("next_detection failed (-4)"), "{e}");
+    }
+
     /// The park-and-reuse contract: the scan panel is re-mounted per screen and asks its detector
     /// to load every time, so a repeat `cube_vision_load` for the SAME path and units must not
     /// recompile (seconds, on the main thread's watch). The compile counter is the Swift side's own
@@ -461,6 +679,7 @@ mod tests {
     /// is exactly what happened before the short-circuit existed.
     #[test]
     fn load_is_free_for_the_same_model_and_units() {
+        let _state = native_state();
         let first = load_source_model(0);
         // SAFETY: a plain counter read, no arguments, no ownership.
         let compiled = unsafe { cube_vision_compile_count() };
@@ -481,6 +700,42 @@ mod tests {
             compiled + 1,
             "changing compute units must compile a new model"
         );
+    }
+
+    /// The command's own handling of what the Swift side wrote: a frame's size reaches the wire as it
+    /// came — odd both ways, so a swapped or rounded pair cannot pass — and a frame with no size is
+    /// refused, never sent as a frame the page cannot place.
+    #[test]
+    fn a_detection_carries_its_picture_and_one_without_is_refused() {
+        let bytes = detection_bytes(3, 1, 3, [721, 479], &[0.5, 0.25, 0.125]).unwrap();
+        let word = |i: usize| i32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
+        assert_eq!(
+            [word(0), word(1), word(2), word(3), word(4)],
+            [-2, 1, 3, 721, 479]
+        );
+        for bad in [[0, 479], [721, 0], [-721, 479], [0, 0]] {
+            let e = detection_bytes(3, 1, 3, bad, &[0.5, 0.25, 0.125]).unwrap_err();
+            assert!(e.contains("reported its picture"), "{bad:?}: {e}");
+        }
+    }
+
+    /// Wire version 2, byte for byte: the page's `decodeTensorResponse` reads exactly this, and a
+    /// header that moved would place every sticker of the scan screen's view in the wrong picture.
+    #[test]
+    fn a_tensor_response_is_version_2_with_the_picture_size() {
+        let bytes = tensor_bytes(2, 1, 2, [1280, 720], &[1.5, -2.0, 9.0]);
+        let word = |i: usize| i32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
+        assert_eq!(
+            [word(0), word(1), word(2), word(3), word(4)],
+            [-2, 1, 2, 1280, 720]
+        );
+        let f = |i: usize| f32::from_le_bytes(bytes[20 + i * 4..24 + i * 4].try_into().unwrap());
+        assert_eq!([f(0), f(1)], [1.5, -2.0], "only `count` floats cross");
+        assert_eq!(bytes.len(), 20 + 2 * 4);
+        // "No frame yet" is still recognisable: zero anchors, and no picture.
+        let none = tensor_bytes(0, 0, 0, [0, 0], &[]);
+        assert_eq!(none.len(), 20);
+        assert_eq!(i32::from_le_bytes(none[8..12].try_into().unwrap()), 0);
     }
 
     /// The guards in front of the FFI, exercised without it: every shape the audit named is
@@ -526,6 +781,7 @@ mod tests {
     /// deterministic failure — no permission prompt, no device.
     #[test]
     fn a_failing_call_leaves_its_reason_where_ffi_failure_finds_it() {
+        let _state = native_state();
         let bogus = std::ffi::CString::new("no-such-camera-id").unwrap();
         // SAFETY: valid C string that outlives the call.
         let rc = unsafe { cube_vision_open_camera(bogus.as_ptr()) };

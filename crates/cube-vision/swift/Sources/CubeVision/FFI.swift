@@ -15,13 +15,15 @@
 //
 // Codes: 0 / positive = success (a count where one is meaningful); -1 = the operation threw (see
 // the message); -2 = the caller's buffer is smaller than load() promised (a bug, not a condition);
-// -3 = no model loaded; -4 = no camera open.
+// -3 = no model loaded; -4 = no camera open; -5 = a still's byte count is not its dimensions' RGBA size.
 
 import CoreML
 import Foundation
 
-private final class State {
-    var model: CubeModel?
+/// The process's one model and one camera. Internal, not private, so `swift test` reaches it through
+/// `@testable import`; nothing outside the module sees it.
+final class State {
+    var model: (any FrameInferring)?
     /// What `model` was built from. A repeat load for the same pair is answered from here without
     /// recompiling — the scan panel is re-mounted per screen and asks its parked detector to load
     /// every time, and `MLModel.compileModel` is seconds of work that must not be paid per mount.
@@ -37,7 +39,7 @@ private final class State {
     var lastError: String?
 }
 
-private let state = State()
+let state = State()
 private let stateLock = NSLock()
 
 /// Every entry below runs inside this: the state lock, and an autorelease pool.
@@ -60,6 +62,39 @@ private func entry<T>(_ body: () -> T) -> T {
 /// The same pool for an entry that reads no state and so takes no lock.
 private func pooled<T>(_ body: () -> T) -> T {
     autoreleasepool(invoking: body)
+}
+
+/// Tests only (`@testable import`; internal, so no C symbol): put the process's state back to nothing
+/// loaded and nothing open — under the lock every entry takes — so each test starts from, and leaves,
+/// the same state rather than whatever the test before it left (round-3 audit).
+func resetStateForTests() {
+    entry {
+        state.model = nil
+        state.loadedPath = nil
+        state.loadedUnits = nil
+        state.camera = nil
+        state.rows = 0
+        state.anchors = 0
+        state.compileCount = 0
+        state.lastError = nil
+    }
+}
+
+/// Tests only: `model` as the loaded model, claiming the shape `rows`×`anchors`, under the entries'
+/// lock — a stand-in that fails, for the path the committed model cannot be made to take.
+func useModelForTests(_ model: (any FrameInferring)?, rows: Int, anchors: Int) {
+    entry {
+        state.model = model
+        state.loadedPath = nil
+        state.loadedUnits = nil
+        state.rows = rows
+        state.anchors = anchors
+    }
+}
+
+/// Tests only: `camera` as the process's open camera, under the entries' lock.
+func useCameraForTests(_ camera: Camera?) {
+    entry { state.camera = camera }
 }
 
 /// Record why a call failed. Under the lock already held by every caller.
@@ -143,20 +178,30 @@ private func writeInference(_ inf: Inference, _ out: UnsafeMutablePointer<Float>
 }
 
 /// Letterbox + infer a still RGBA frame (the inject-frame path the golden harness uses). Returns the
-/// element count written, or a negative error. The Rust side has already proven `w`/`h` positive
-/// and the buffer exactly `w*h*4`; `Letterbox.chw` preconditions the former again, loudly.
+/// element count written, or a negative error. The Rust side has already proven `w`/`h` positive and
+/// the buffer exactly `w*h*4`; the byte count that crosses with the pointer is checked against them
+/// here too (-5), and `Letterbox.chw` preconditions positive dimensions again, loudly.
 @_cdecl("cube_vision_infer_rgba")
-public func cube_vision_infer_rgba(_ rgba: UnsafePointer<UInt8>, _ w: Int32, _ h: Int32,
+public func cube_vision_infer_rgba(_ rgba: UnsafePointer<UInt8>, _ byteCount: Int, _ w: Int32, _ h: Int32,
                                    _ out: UnsafeMutablePointer<Float>, _ cap: Int32,
                                    _ outRows: UnsafeMutablePointer<Int32>, _ outAnchors: UnsafeMutablePointer<Int32>) -> Int32 {
     return entry { () -> Int32 in
+        // The buffer's LENGTH crosses with it and is checked here, at the boundary, not only by the
+        // one caller that happens to validate first: a pointer and two dimensions alone cannot stop a
+        // read past the end, and `w * h * 4` can overflow into a trap (audit, 2026-09-19).
+        let (px, pxOverflow) = Int(w).multipliedReportingOverflow(by: Int(h))
+        let (bytes, bytesOverflow) = px.multipliedReportingOverflow(by: 4)
+        guard w > 0, h > 0, !pxOverflow, !bytesOverflow, bytes == byteCount else {
+            state.lastError = "cube_vision_infer_rgba: \(w)x\(h) RGBA is not \(byteCount) bytes"
+            return -5
+        }
         guard let model = state.model else {
             state.lastError = "no model loaded"
             return -3
         }
         do {
             let chw = Letterbox.chw(rgba: rgba, width: Int(w), height: Int(h))
-            return writeInference(try model.infer(chw: chw), out, cap, outRows, outAnchors)
+            return writeInference(try model.infer(chw: chw, imgsz: Letterbox.imgSize), out, cap, outRows, outAnchors)
         } catch {
             return fail("cube_vision_infer_rgba", error)
         }
@@ -216,10 +261,19 @@ public func cube_vision_close_camera() {
 /// is open but no frame has arrived yet (the caller tries again next tick, and keeps a clock on how
 /// long that goes on), or a negative error — -4 when no camera is open at all, which is a different
 /// condition from "no frame yet" and used to be reported as the same zero.
+/// Also writes the size of the camera picture the tensor was letterboxed from into `outPicture`, TWO
+/// Int32s — `[width, height]` — zero when there is no frame; the page places each sticker in the
+/// picture with it (dev-docs/scan-guidance-plan.md 5). One value rather than two out-parameters, so the
+/// Rust side hands it on whole and cannot pass the pair in the wrong order (audit, 2026-09-19).
 @_cdecl("cube_vision_next_detection")
 public func cube_vision_next_detection(_ out: UnsafeMutablePointer<Float>, _ cap: Int32,
-                                       _ outRows: UnsafeMutablePointer<Int32>, _ outAnchors: UnsafeMutablePointer<Int32>) -> Int32 {
+                                       _ outRows: UnsafeMutablePointer<Int32>, _ outAnchors: UnsafeMutablePointer<Int32>,
+                                       _ outPicture: UnsafeMutablePointer<Int32>) -> Int32 {
     return entry { () -> Int32 in
+        // Zero before anything can return, so EVERY path that is not a frame — no model, no camera,
+        // no frame yet, a failed inference — leaves the size saying so (audit, 2026-09-19).
+        outPicture[0] = 0
+        outPicture[1] = 0
         guard let model = state.model else {
             state.lastError = "no model loaded"
             return -3
@@ -231,7 +285,12 @@ public func cube_vision_next_detection(_ out: UnsafeMutablePointer<Float>, _ cap
         guard let frame = cam.latestFrame() else { return 0 }
         do {
             let chw = frame.bytes.withUnsafeBufferPointer { Letterbox.chw(rgba: $0.baseAddress!, width: frame.width, height: frame.height) }
-            return writeInference(try model.infer(chw: chw), out, cap, outRows, outAnchors)
+            let n = writeInference(try model.infer(chw: chw, imgsz: Letterbox.imgSize), out, cap, outRows, outAnchors)
+            if n > 0 {
+                outPicture[0] = Int32(frame.width)
+                outPicture[1] = Int32(frame.height)
+            }
+            return n
         } catch {
             return fail("cube_vision_next_detection", error)
         }

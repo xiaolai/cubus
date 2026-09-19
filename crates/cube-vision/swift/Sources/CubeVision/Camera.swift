@@ -13,6 +13,30 @@ import Foundation
 public struct CameraInfo: Codable {
     public let deviceId: String
     public let label: String
+    /// Which way the camera points, when AVFoundation knows: "user" (front) or "environment" (back).
+    /// Nil for `unspecified` — a Mac's built-in and external cameras — and the page mirrors what it
+    /// draws unless this says "environment" (dev-docs/scan-guidance-plan.md 5).
+    public let facing: String?
+
+    init(deviceId: String, label: String, facing: String?) {
+        self.deviceId = deviceId
+        self.label = label
+        self.facing = facing
+    }
+
+    init(_ device: AVCaptureDevice) {
+        self.init(deviceId: device.uniqueID, label: device.localizedName, facing: CameraInfo.facing(for: device.position))
+    }
+
+    /// AVFoundation's position as the page's facing — pure, so `swift test` holds every case
+    /// (Tests/CubeVisionTests): a wrong answer here mirrors the scan's sticker view on a phone.
+    static func facing(for position: AVCaptureDevice.Position) -> String? {
+        switch position {
+        case .front: return "user"
+        case .back: return "environment"
+        default: return nil
+        }
+    }
 }
 
 public final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
@@ -58,7 +82,7 @@ public final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
 
     public static func list() -> [CameraInfo] {
         AVCaptureDevice.DiscoverySession(deviceTypes: deviceTypes, mediaType: .video, position: .unspecified)
-            .devices.map { CameraInfo(deviceId: $0.uniqueID, label: $0.localizedName) }
+            .devices.map { CameraInfo($0) }
     }
 
     /// Ask for the camera, and say WHICH answer stood in the way when one did.
@@ -149,7 +173,7 @@ public final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         try Camera.orientConnection(output)
         session.commitConfiguration()
         session.startRunning()
-        current = CameraInfo(deviceId: device.uniqueID, label: device.localizedName)
+        current = CameraInfo(device)
     }
 
     /// Make the frames upright and unmirrored, where the platform would hand them over otherwise.
@@ -197,6 +221,16 @@ public final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         session.commitConfiguration()
         lock.lock(); latest = nil; lock.unlock()
         current = nil
+    }
+
+    /// Tests only: stands in for an opened camera whose latest frame is `frame` (none yet when nil), so
+    /// the per-tick entry can be driven end to end with no lens (Tests/CubeVisionTests). Internal, so no
+    /// C symbol, no Rust caller and no page can reach it — only `@testable import`. In every build
+    /// configuration rather than DEBUG only: `swift test -c release` compiles the tests with testable
+    /// imports, and a hook that exists in one configuration fails that build (round-3 audit).
+    func injectForTests(_ frame: (bytes: [UInt8], width: Int, height: Int)?) {
+        lock.lock(); latest = frame; lock.unlock()
+        current = CameraInfo(deviceId: "test", label: "Injected frame", facing: nil)
     }
 
     /// The most recent frame as straight RGBA8, or nil if none has arrived yet.
