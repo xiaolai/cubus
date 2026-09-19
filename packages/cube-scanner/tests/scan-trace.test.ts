@@ -147,7 +147,7 @@ describe('ScanTrace — the summary', () => {
           outcome: 'abstain',
           reason: 'BAD_GEOMETRY',
           geometry: { rule: 'area-ratio', value: 6.1, bound: 5 },
-          line: 'Show a side. Hold it flatter and steadier.',
+          line: 'Show any side of your cube to the camera.',
           centre: null,
         },
       ],

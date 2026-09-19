@@ -28,7 +28,13 @@ import {
   slotOf,
 } from '../src/scheme.js';
 import { FACES, type Face } from '../src/types.js';
-import { AiScanPanel, type ScanProgress } from '../view/ai-scan-panel.js';
+import {
+  AiScanPanel,
+  type ScanCapture,
+  type ScanProgress,
+  seenIn,
+  sideClaimed,
+} from '../view/ai-scan-panel.js';
 import {
   handleMisreadRequest,
   type MisreadReply,
@@ -107,6 +113,29 @@ function withWorker(): void {
 const LETTER_CLASS: Record<Face, number> = { U: 0, R: 1, F: 2, D: 3, L: 4, B: 5 };
 // TICK_FLOOR_MS. The cadence follows the runtime now — `max(60, last inference ms)` — and the fake
 // detector answers instantly under fake timers, so every tick here lands on the floor.
+/** A deeply scrambled cube: every side a mix, so a read of one cannot be mistaken for another. */
+const DEEP = new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString();
+
+/** `t` as a detection of a picture that size — what the native runtime reports alongside its boxes. */
+const inPicture = (t: ModelOutput, width = 640, height = 480): ModelOutput => ({
+  ...t,
+  picture: { width, height },
+});
+
+/** `t` as a detection whose FRAME is a picture that size — the browser runtime's shape, pixels and all. */
+const inFrame = (t: ModelOutput, width: number, height: number): ModelOutput => ({
+  ...t,
+  frame: { width, height, data: new Uint8ClampedArray(width * height * 4) },
+});
+
+/** A side with two of its stickers swapped: a reading no cube can have, for the refusal path. */
+function malformed(colors: readonly number[]): number[] {
+  const bad = [...colors];
+  const other = [1, 2, 3, 5, 6, 7, 8].find((k) => bad[k] !== bad[0])!;
+  [bad[0], bad[other]] = [bad[other]!, bad[0]!];
+  return bad;
+}
+
 const TICK = 60;
 /**
  * Ticks a face must be held for before it is captured, at the floor cadence.
@@ -304,7 +333,6 @@ afterEach(() => {
 
 describe('ai-scan-panel — capture and settle', () => {
   // A deep scramble reads uniquely, so six sides held any way up settle with no extra look.
-  const DEEP = new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString();
 
   it('captures six sides held any way up and completes with the true cube', async () => {
     await showAll(DEEP, [1, 2, 3, 0, 1, 2]);
@@ -381,6 +409,10 @@ describe('ai-scan-panel — a refusal keeps the captures', () => {
     expect(body).toMatch(/would make this a solvable cube/i); // proven
     expect(body).toMatch(/check it against your cube/i); // and who decides
     expect(body).toMatch(/read correctly/i); // and why they have to
+    // The tip that ended this notice promised a hold would settle the scan; the assembly never
+    // prefers the hold a side was shown in (dev-docs/scan-guidance-plan.md §1.1).
+    expect(body).not.toMatch(/settles itself|edge colours/i);
+    expect(body).toMatch(/show that side again to re-read it\.$/);
     for (const claim of [
       /this sticker is wrong/i,
       // Lookbehind, because the body's own disclosure contains the phrase inside "when MORE THAN
@@ -446,6 +478,12 @@ describe('ai-scan-panel — a refusal keeps the captures', () => {
     );
     expect(p.notice?.body).toMatch(/Show one side to the camera to re-read just that side\.$/);
     expect(p.notice?.body).not.toMatch(/Show those sides|edge colours|settles itself/);
+    // What the evidence says about light is that WARM light confuses red and orange; nothing
+    // measured a tilt, so "held flat" is gone (dev-docs/scan-guidance-plan.md §1.1).
+    expect(p.notice?.body).toContain(
+      'Start the scan over in whiter light; red and orange are the colours it confuses most.',
+    );
+    expect(p.notice?.body).not.toMatch(/held flat|more light/);
     expect(p.notice?.action).toEqual({ label: 'Start over', kind: 'restart' });
     // The transient line keeps the refusal's verdict and takes the notice's advice — never
     // "fix a sticker" under a notice that says start over.
@@ -508,8 +546,6 @@ describe('ai-scan-panel — confirmations', () => {
 });
 
 describe('ai-scan-panel — a finished scan is a state, not a moment', () => {
-  const DEEP = new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString();
-
   it('reports complete, and a reopened camera guides instead of nagging for sides', async () => {
     await showAll(DEEP, [0, 0, 0, 0, 0, 0]);
     expect(last().phase).toBe('done');
@@ -552,8 +588,6 @@ describe('ai-scan-panel — a finished scan is a state, not a moment', () => {
 });
 
 describe('ai-scan-panel — captures survive mode and camera changes', () => {
-  const DEEP = new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString();
-
   it('start() — a camera switch — keeps the sides already captured', async () => {
     const shown = facesOf(DEEP);
     await show(shown.U);
@@ -1011,7 +1045,6 @@ describe('ai-scan-panel — a camera that answers but never delivers', () => {
 });
 
 describe('ai-scan-panel — an inference that is lost rather than slow', () => {
-  const DEEP = new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString();
   // INFERENCE_TIMEOUT_MS and TICK_FAIL_MS, written out because neither is exported and both are
   // load-bearing for the arithmetic below: the deadline abandons a wait, and two abandoned waits
   // in a row are what the failure clock then reports on.
@@ -1280,7 +1313,6 @@ describe('ai-scan-panel — what it says when things go wrong', () => {
     // the session's model loaded — and `useDetector` may have put a DIFFERENT detector there in
     // the meantime, whose model has never been compiled. The next start then skipped the load
     // entirely and the tick loop asked an unloaded runtime for frames.
-    const DEEP = new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString();
     const solo = new AiScanPanel();
     solo.setAttribute('headless', '');
     const first = new FakeDetector();
@@ -1323,8 +1355,6 @@ describe('ai-scan-panel — what it says when things go wrong', () => {
 });
 
 describe('ai-scan-panel — an instruction survives the camera reopening', () => {
-  const DEEP = new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString();
-
   it('names the side it wants after a finished scan released the camera', async () => {
     // `rescanFace` is what a tap on a CENTRE sticker does — a centre cannot be recoloured, so the
     // side is read again. After a finished scan the camera is off, and `loop()` handled that by
@@ -1383,21 +1413,57 @@ describe('ai-scan-panel — a settled scan is not re-solved', () => {
 });
 
 describe('ai-scan-panel — a sticker that will not settle is named', () => {
-  const DEEP = new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString();
-
-  it('says which sticker keeps changing instead of repeating "hold still"', async () => {
-    // The gate keys on all nine colours, so ONE sticker flickering between red and orange — the
-    // detector's known weak pair — means no run ever completes and the side is never captured.
-    // That was a dead end with no message: "hold still" for as long as the user was willing.
+  /** Show the U side with its top-right sticker alternating between colour classes `a` and `b`. */
+  const flickerBetween = async (a: number, b: number) => {
     const face = [...facesOf(DEEP).U];
-    const other = (face[2]! + 1) % 6;
     for (let i = 0; i < 12; i++) {
-      face[2] = i % 2 === 0 ? facesOf(DEEP).U[2]! : other;
+      face[2] = i % 2 === 0 ? a : b;
       fake.output = tensorFor(face);
       await vi.advanceTimersByTimeAsync(TICK);
     }
+  };
+
+  it('says which sticker keeps changing, and between which two colours, instead of repeating "hold still"', async () => {
+    // The gate keys on all nine colours, so ONE sticker flickering between red and orange — the
+    // detector's known weak pair — means no run ever completes and the side is never captured.
+    // That was a dead end with no message: "hold still" for as long as the user was willing.
+    await flickerBetween(1, 4); // red, orange
     expect(last().captured).toHaveLength(0); // it genuinely never settles
-    expect(last().message).toMatch(/top right sticker keeps changing colour/i);
+    expect(last().message).toBe(
+      'Reading a side — the top right sticker keeps changing between RED and ORANGE. Whiter light on it helps tell them apart.',
+    );
+    fake.output = null;
+  });
+
+  it('a read whose centre is not a colour claims no side', () => {
+    // The rule the "couldn't read this side's centre" report rests on, asked of the rule itself: a
+    // fitted centre is always a colour class, so no camera reaches the branch, and the test for it
+    // used to call a private method to get there (audit, 2026-09-19).
+    const read = [...facesOf(DEEP).U];
+    expect(sideClaimed(read)).toBe('U');
+    for (const centre of [9, -1, 6, Number.NaN]) {
+      const notAColour = [...read];
+      notAColour[4] = centre;
+      expect(sideClaimed(notAColour), `centre ${centre}`).toBeUndefined();
+    }
+    expect(sideClaimed([])).toBeUndefined();
+  });
+
+  it('adds the light remark only for a pair the light is known to confuse', async () => {
+    // Orange read as yellow followed the light (AGENTS.md, 0.6.1); white against blue has no such
+    // evidence, so it gets the measured half of the sentence and nothing more — never a promise
+    // that steadier hands or more light "will settle it".
+    await flickerBetween(3, 4); // yellow, orange
+    expect(last().message).toMatch(
+      /between YELLOW and ORANGE\. Whiter light on it helps tell them apart\.$/,
+    );
+    fake.output = null;
+    await vi.advanceTimersByTimeAsync(TICK * 3);
+    await flickerBetween(0, 5); // white, blue
+    expect(last().message).toBe(
+      'Reading a side — the top right sticker keeps changing between WHITE and BLUE.',
+    );
+    expect(last().message).not.toMatch(/light|steadier|settle/i);
     fake.output = null;
   });
 
@@ -1666,7 +1732,6 @@ describe('ai-scan-panel — the misread count arrives after the refusal, not bef
 });
 
 describe('ai-scan-panel — the colour scheme is the scan’s to decide (ADR 0001)', () => {
-  const DEEP = new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString();
   /** The U-layer edge 3-cycle: valid under both schemes as two different cubes. */
   const CYCLE = 'UFUUUUUUURRRFRRRRRFBFFFUFFFDDDDDDDDDLLLLLLLLLBRBBBBBBB';
 
@@ -1877,7 +1942,6 @@ describe('ai-scan-panel — sides whose centres read as the same colour', () => 
   // on the cubes measured 2026-09-13 (four of seven centre collisions), YELLOW on a real clip
   // 2026-09-18. Two sides then claim one colour. Neither is named until all six are in; then the one
   // legal filing decides, or, when none is legal, the centre that read less surely is the misread one.
-  const DEEP = new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString();
   const withCentre = (colors: number[], centre: number): number[] => {
     const out = [...colors];
     out[4] = centre;
@@ -2034,6 +2098,8 @@ describe('ai-scan-panel — sides whose centres read as the same colour', () => 
     expect(last().notice?.title).toBe('Two sides read the same centre');
     expect(last().notice?.action?.kind).toBe('restart');
     expect(last().notice?.body).toContain('No way of filing them makes a real cube');
+    expect(last().notice?.body).toMatch(/Start the scan over in whiter light\.$/);
+    expect(last().notice?.body).not.toMatch(/held flat|more light/);
   });
 
   it('when more than one filing is a real cube, says so — not that something else was misread', async () => {
@@ -2215,5 +2281,361 @@ describe('ai-scan-panel — the scan trace', () => {
     expect(last().captured.map((c) => c.face)).not.toContain('U');
     await vi.advanceTimersByTimeAsync(TICK);
     expect(last().captured.map((c) => c.face)).toEqual(offCapture);
+  });
+});
+
+describe('ai-scan-panel — a capture is announced once; a read under way is a state', () => {
+  // A host that plays a sound or moves a picture on "a side was saved" needs the MOMENT, once. It
+  // cannot diff `captured` for it: a re-read replaces a side without changing the count, and a settled
+  // read can still be refused. And "reading" must never look like "saved" — so the read under way is
+  // a separate state that promises nothing (dev-docs/scan-guidance-plan.md 3.1).
+  const ONE_TURN = new Cube().move('U').asString();
+  let captures: ScanCapture[];
+  beforeEach(() => {
+    captures = [];
+    panel.addEventListener('scan-capture', (e) =>
+      captures.push((e as CustomEvent<ScanCapture>).detail),
+    );
+  });
+
+  it('announces each new side once, and nothing for a settled read it refuses', async () => {
+    const f = facesOf(DEEP);
+    await show(f.U); // held for ten ticks: settled once, then re-read as "already have" every tick after
+    await show(f.R);
+    await show(f.U); // settles again, and is refused: already have it
+    expect(captures).toEqual([
+      { kind: 'side', face: 'U', sides: 1 },
+      { kind: 'side', face: 'R', sides: 2 },
+    ]);
+    expect(last().message).toMatch(/Already have/);
+    // Said structurally too, so a host that speaks it never parses the sentence.
+    expect(last().shownAgain).toBe(true);
+    expect(events.filter((e) => e.shownAgain).every((e) => /^Already have/.test(e.message))).toBe(
+      true,
+    );
+    expect(events.some((e) => e.shownAgain && e.captured.length !== 2)).toBe(false);
+  });
+
+  it('announces a side whose centre another side also claims, before it can be named', async () => {
+    const f = facesOf(DEEP);
+    const withBlueCentre = [...f.U];
+    withBlueCentre[4] = f.B[4]!; // a logo on the white centre, read as blue
+    await show(f.B);
+    await show(withBlueCentre);
+    expect(captures).toEqual([
+      { kind: 'side', face: 'B', sides: 1 },
+      { kind: 'side', face: null, sides: 2 },
+    ]);
+    // Both sides are now held unnamed: the NAMED list shrank to none while the scan moved forward,
+    // and `sides` is the count a host can trust.
+    expect(last().captured).toHaveLength(0);
+    expect(last().sides).toBe(2);
+  });
+
+  it('announces a re-read as a re-read, and the look a confirm asked for as a confirm', async () => {
+    const f = facesOf(DEEP);
+    const bad = malformed(f.F);
+    for (const face of FACES) await show(face === 'F' ? bad : f[face]);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    expect(completions).toEqual([]); // precondition: refused
+    captures.length = 0;
+    await show(f.F);
+    expect(captures).toEqual([{ kind: 'reread', face: 'F', sides: 6 }]);
+
+    panel.restart();
+    await vi.advanceTimersByTimeAsync(TICK);
+    await showAll(ONE_TURN, [0, 0, 0, 0, 0, 0]);
+    expect(last().phase).toBe('confirm'); // precondition: one more look is needed
+    const ask = last().confirm!;
+    captures.length = 0;
+    await answerConfirms(ONE_TURN);
+    expect(captures[0]).toEqual({ kind: 'confirm', face: ask.face, sides: 6 });
+    expect(captures.every((c) => c.kind === 'confirm')).toBe(true);
+  });
+
+  it('reports the read under way, and forgets it on every failed fit and every capture', async () => {
+    const f = facesOf(DEEP);
+    fake.output = tensorFor(f.U);
+    await vi.advanceTimersByTimeAsync(TICK * 2);
+    const reading = last().settling;
+    expect(reading).not.toBeNull();
+    expect(reading).toMatchObject({ needed: 3, neededMs: 500 });
+    expect(reading!.run).toBeGreaterThanOrEqual(1);
+    expect(last().captured).toHaveLength(0); // reading is not saved
+    fake.output = emptyTensor();
+    await vi.advanceTimersByTimeAsync(TICK);
+    expect(last().settling).toBeNull();
+    await show(f.U);
+    expect(captures).toHaveLength(1);
+    const atCapture = events.findIndex((e) => e.captured.length === 1);
+    expect(events[atCapture]!.settling).toBeNull();
+  });
+});
+
+describe('ai-scan-panel — where each sticker sits in the camera picture', () => {
+  // The boxes of every frame, placed in the picture the camera took rather than the model's padded
+  // square, so a host can draw where the cube is and what is being read — including while no side
+  // fits, which is when `live` is empty and exactly when someone needs to see it
+  // (dev-docs/scan-guidance-plan.md 4.1).
+  /** A detector output that also says what picture it came from — as the browser runtime's does. */
+  it('places every box in the picture and marks the nine the face was fitted to', async () => {
+    const f = facesOf(DEEP);
+    fake.output = inFrame(tensorFor(f.U), 640, 480);
+    await vi.advanceTimersByTimeAsync(TICK * 2);
+    expect([last().seen!.width, last().seen!.height]).toEqual([640, 480]);
+    const seen = last().seen!.stickers;
+    expect(seen).toHaveLength(9);
+    expect(seen.every((b) => b.inFace)).toBe(true);
+    // tensorFor's first box is 30 wide at (100, 100) in the 640 square; a 640×480 picture is padded
+    // 80 above and below, so in the picture it is at (100, 20).
+    expect(seen[0]!.colour).toBe(f.U[0]);
+    expect(seen[0]!.x).toBeCloseTo(100 / 640, 6);
+    expect(seen[0]!.y).toBeCloseTo(20 / 480, 6);
+    expect(seen[0]!.w).toBeCloseTo(30 / 640, 6);
+    expect(seen[0]!.h).toBeCloseTo(30 / 480, 6);
+    fake.output = null;
+  });
+
+  it('reports the boxes while no side fits, none of them as a face', async () => {
+    const f = facesOf(DEEP);
+    const eight = tensorFor(f.U);
+    eight.data[(4 + f.U[8]!) * eight.anchors + 8] = 0; // the ninth sticker is not found
+    // 640×480: a 4:3 picture, where the whole grid is inside the frame, so every box the detector
+    // found is reported. (What happens to a box in a LETTERBOX's padding is `seenIn`'s own case
+    // below — this one would report eight either way, and claiming otherwise here made it look
+    // tested when it was not; audit, 2026-09-19.)
+    fake.output = inFrame(eight, 640, 480);
+    await vi.advanceTimersByTimeAsync(TICK * 2);
+    expect(last().live).toBeNull();
+    expect(last().seen!.stickers).toHaveLength(8);
+    expect(last().seen!.stickers.some((b) => b.inFace)).toBe(false);
+    fake.output = null;
+  });
+
+  it('places boxes from a native picture size, with no pixels crossing', async () => {
+    // The native plugins never hand the frame over; since wire version 2 the Apple plugin says the
+    // picture's size, and that is all placing a box needs (dev-docs/scan-guidance-plan.md 5).
+    fake.output = { ...tensorFor(facesOf(DEEP).U), picture: { width: 640, height: 480 } };
+    await vi.advanceTimersByTimeAsync(TICK * 2);
+    expect([last().seen!.width, last().seen!.height]).toEqual([640, 480]);
+    expect(last().seen!.stickers[0]!.y).toBeCloseTo(20 / 480, 6);
+    fake.output = null;
+  });
+
+  it('is empty for a frame with nothing found, and null with no picture to place boxes in', async () => {
+    fake.output = inFrame(emptyTensor(), 640, 480);
+    await vi.advanceTimersByTimeAsync(TICK);
+    expect(last().seen).toEqual({ width: 640, height: 480, stickers: [] });
+    fake.output = tensorFor(facesOf(DEEP).U); // the native path: a tensor and no picture size
+    await vi.advanceTimersByTimeAsync(TICK);
+    expect(last().seen).toBeNull();
+    fake.output = null;
+    await vi.advanceTimersByTimeAsync(TICK * 2);
+    expect(last().seen).toBeNull(); // no frame is no observation
+  });
+});
+
+describe('ai-scan-panel — what the camera showed is forgotten on every path that stops watching', () => {
+  // `live`, `seen` and the read under way are one observation, forgotten together
+  // (`forgetObservation`). Each path below once kept part of it (audit, 2026-09-19).
+  it('painting after a camera stop carries no boxes and no read in progress', async () => {
+    fake.output = inPicture(tensorFor(facesOf(DEEP).U));
+    await vi.advanceTimersByTimeAsync(TICK * 2);
+    expect(last().seen).not.toBeNull();
+    expect(last().settling).not.toBeNull();
+    fake.output = null;
+    panel.setPainting(true);
+    expect(last().phase).toBe('painting');
+    expect(last().seen).toBeNull();
+    expect(last().settling).toBeNull();
+    expect(last().live).toBeNull();
+    panel.setPainting(false);
+  });
+
+  it('a camera that stops delivering withdraws the last frame with a report', async () => {
+    fake.output = inPicture(tensorFor(facesOf(DEEP).U));
+    await vi.advanceTimersByTimeAsync(TICK * 2);
+    expect(last().seen).not.toBeNull();
+    const before = events.length;
+    fake.output = null;
+    await vi.advanceTimersByTimeAsync(TICK);
+    expect(events.length).toBeGreaterThan(before); // said, not left standing
+    expect(last().seen).toBeNull();
+    expect(last().settling).toBeNull();
+    const after = events.length;
+    await vi.advanceTimersByTimeAsync(TICK * 3);
+    // SAID ONCE: three more ticks over nothing send nothing. `every(e => e.seen === null)` passed
+    // just as well over three fresh reports a second (audit, 2026-09-19).
+    expect(events.length).toBe(after);
+  });
+
+  it('every kind of capture leaves no read in progress behind it', async () => {
+    const f = facesOf(DEEP);
+    const bad = malformed(f.F);
+    const settlingAtCapture: Record<string, ScanProgress['settling'] | undefined> = {};
+    panel.addEventListener('scan-capture', (e) => {
+      const kind = (e as CustomEvent<ScanCapture>).detail.kind;
+      queueMicrotask(() => {
+        settlingAtCapture[kind] ??= last().settling;
+      });
+    });
+    for (const face of FACES) await show(face === 'F' ? bad : f[face]);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    await show(f.F); // a re-read of the refused side
+    expect(settlingAtCapture.side).toBeNull();
+    expect(settlingAtCapture.reread).toBeNull();
+    // And the look a confirm asked for.
+    panel.restart();
+    await vi.advanceTimersByTimeAsync(TICK);
+    const ONE_TURN = new Cube().move('U').asString();
+    await showAll(ONE_TURN, [0, 0, 0, 0, 0, 0]);
+    expect(last().phase).toBe('confirm'); // precondition
+    await answerConfirms(ONE_TURN);
+    expect(settlingAtCapture.confirm).toBeNull();
+  });
+
+  it('says a side shown again after a refusal is a repeat, and a nested report is not stamped', async () => {
+    const f = facesOf(DEEP);
+    const bad = malformed(f.F);
+    for (const face of FACES) await show(face === 'F' ? bad : f[face]);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    let nested: ScanProgress | null = null;
+    let armed = true;
+    panel.addEventListener('scan-progress', (e) => {
+      if (armed && (e as CustomEvent<ScanProgress>).detail.shownAgain) {
+        armed = false;
+        panel.setPainting(true); // reports from inside the listener
+        nested = last();
+        panel.setPainting(false);
+      }
+    });
+    await show(bad); // the identical reading again
+    expect(events.some((e) => e.shownAgain && /reads the same as before/.test(e.message))).toBe(
+      true,
+    );
+    expect(nested).not.toBeNull();
+    expect(nested!.shownAgain).toBe(false);
+  });
+});
+
+describe('seenIn — boxes placed in the picture', () => {
+  const det = (cx: number, cy: number, w: number, h: number) => ({
+    cx,
+    cy,
+    w,
+    h,
+    classId: 1,
+    confidence: 0.9,
+  });
+  const output = {
+    data: new Float32Array(0),
+    anchors: 0,
+    rows: 10,
+    picture: { width: 640, height: 480 },
+  };
+
+  it('marks a face box by all four numbers, not by its corner alone', () => {
+    const corner = (d: ReturnType<typeof det>) => [d.cx - d.w / 2, d.cy - d.h / 2, d.w, d.h];
+    const faceBox = det(100, 100, 30, 30); // top-left (85, 85)
+    const trap = det(110, 110, 50, 50); // top-left (85, 85) as well, and a different size
+    const seen = seenIn(output, [faceBox, trap], [corner(faceBox)])!;
+    expect(seen.stickers.map((s) => s.inFace)).toEqual([true, false]);
+  });
+
+  it('does not report a box centred in the letterbox padding', () => {
+    // A 640×480 picture is padded 80 above and below; y = 30 is padding, y = 100 is picture.
+    const seen = seenIn(output, [det(320, 30, 20, 20), det(320, 100, 20, 20)], undefined)!;
+    expect(seen.stickers).toHaveLength(1);
+    expect(seen.stickers.every((s) => s.x >= 0 && s.x <= 1 && s.y >= 0 && s.y <= 1)).toBe(true);
+  });
+});
+
+describe('ai-scan-panel — round-2 audit: listeners that act, ticks that fail', () => {
+  it('a listener that restarts the scan on a capture event wins, and nothing after it claims the side', async () => {
+    // The event used to go out in the middle of the capture path, which then carried on over the
+    // state the listener had just cleared and reported a side the scan no longer held.
+    let restarted = false;
+    panel.addEventListener('scan-capture', () => {
+      if (!restarted) {
+        restarted = true;
+        panel.restart();
+      }
+    });
+    await show(facesOf(DEEP).U);
+    await vi.advanceTimersByTimeAsync(TICK);
+    expect(restarted).toBe(true);
+    expect(last().captured).toHaveLength(0);
+    expect(last().sides).toBe(0);
+    let after = -1;
+    events.forEach((e, k) => {
+      if (e.captured.length === 0 && e.sides === 0 && /Show any side/.test(e.message)) after = k;
+    });
+    // Found, before anything is said about what came after it: at -1 the slice below is the LAST
+    // report alone, and would pass over a "Got the…" in between (audit, 2026-09-19).
+    expect(after, 'the restart never reported a scan starting over').toBeGreaterThanOrEqual(0);
+    expect(events.slice(after).some((e) => /Got the/.test(e.message))).toBe(false);
+  });
+
+  // The announcement waits for the capture path to finish; a listener to that path's OWN report can
+  // restart the scan, stop it, switch to painting or take the side back in between, and a chime for a
+  // moment that is gone is a lie (round-3 audit). One case per action, so a failure names the action
+  // (audit, 2026-09-19).
+  const CHANGES: Record<string, () => void> = {
+    'restarting the scan': () => panel.restart(),
+    'stopping the scanner': () => panel.stop(),
+    'switching to painting': () => panel.setPainting(true),
+    'taking the side back': () => panel.rescanFace('U'),
+  };
+
+  for (const [name, change] of Object.entries(CHANGES)) {
+    it(`a capture is not announced when a listener answers its report by ${name}`, async () => {
+      const announced: ScanCapture[] = [];
+      panel.addEventListener('scan-capture', (e) =>
+        announced.push((e as CustomEvent<ScanCapture>).detail),
+      );
+      let acted = false;
+      panel.addEventListener('scan-progress', (e) => {
+        if (!acted && (e as CustomEvent<ScanProgress>).detail.sides === 1) {
+          acted = true;
+          change();
+        }
+      });
+      await show(facesOf(DEEP).U);
+      await vi.advanceTimersByTimeAsync(TICK);
+      expect(acted, 'the listener never saw the side it was waiting for').toBe(true);
+      expect(announced, 'a capture was announced over it').toEqual([]);
+    });
+  }
+
+  it('and with nothing in between, a capture is announced as usual', async () => {
+    const announced: ScanCapture[] = [];
+    panel.addEventListener('scan-capture', (e) =>
+      announced.push((e as CustomEvent<ScanCapture>).detail),
+    );
+    await show(facesOf(DEEP).R);
+    expect(announced).toEqual([{ kind: 'side', face: 'R', sides: 1 }]);
+  });
+
+  it('a failed inference withdraws the boxes and the read with the waiting line, not the last one', async () => {
+    fake.output = inPicture(tensorFor(facesOf(DEEP).U));
+    await vi.advanceTimersByTimeAsync(TICK * 2);
+    expect(last().message).toMatch(/Reading a side/);
+    expect(last().seen).not.toBeNull();
+    fake.failWith = new Error('a transient inference failure');
+    await vi.advanceTimersByTimeAsync(TICK);
+    fake.failWith = null;
+    expect(last().seen).toBeNull();
+    expect(last().settling).toBeNull();
+    expect(last().message).toBe('Show any side to the camera.');
+    fake.output = null;
+  });
+
+  it('a missing frame withdraws with the waiting line — "Reading a side" does not stand over nothing', async () => {
+    fake.output = inPicture(tensorFor(facesOf(DEEP).U));
+    await vi.advanceTimersByTimeAsync(TICK * 2);
+    expect(last().message).toMatch(/Reading a side/);
+    fake.output = null;
+    await vi.advanceTimersByTimeAsync(TICK);
+    expect(last().message).toBe('Show any side to the camera.');
   });
 });

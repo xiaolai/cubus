@@ -3160,6 +3160,114 @@ function resolveCentres(named, unnamed, threshold = LOW_CONFIDENCE_THRESHOLD, op
   return { result: chosen.result, faces: chosen.faces, decidedBy: "confidence" };
 }
 
+// src/camera.ts
+var FrameNotReadyError = class extends Error {
+  constructor() {
+    super("camera not ready: video has no dimensions yet");
+    this.name = "FrameNotReadyError";
+  }
+};
+var IDEAL_WIDTH = 1280;
+var IDEAL_HEIGHT = 720;
+function facingOf(value) {
+  return value === "user" || value === "environment" ? value : void 0;
+}
+function describeTrack(track) {
+  const settings = track?.getSettings();
+  const facing = facingOf(settings?.facingMode);
+  return {
+    deviceId: settings?.deviceId ?? "",
+    label: track?.label || "Camera",
+    ...facing ? { facing } : {}
+  };
+}
+async function listCameras() {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  return devices.filter((d) => d.kind === "videoinput").map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Camera ${i + 1}` }));
+}
+function raceAbort(promise, signal) {
+  if (!signal) return promise;
+  return new Promise((resolve, reject2) => {
+    if (signal.aborted) {
+      reject2(abortError());
+      return;
+    }
+    const onAbort = () => reject2(abortError());
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err) => {
+        signal.removeEventListener("abort", onAbort);
+        reject2(err);
+      }
+    );
+  });
+}
+var abortError = () => new DOMException("camera open aborted", "AbortError");
+async function openCamera(video, opts = {}, signal) {
+  if (signal?.aborted) throw abortError();
+  const videoConstraints = {};
+  if (opts.deviceId) videoConstraints.deviceId = { exact: opts.deviceId };
+  else if (opts.facingMode) videoConstraints.facingMode = opts.facingMode;
+  videoConstraints.width = { ideal: opts.width ?? IDEAL_WIDTH };
+  videoConstraints.height = { ideal: opts.height ?? IDEAL_HEIGHT };
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: videoConstraints,
+    audio: false
+  });
+  const release = () => {
+    for (const track of stream.getTracks()) track.stop();
+    if (video.srcObject === stream) video.srcObject = null;
+  };
+  const throwIfAborted = () => {
+    if (signal?.aborted) throw abortError();
+  };
+  try {
+    throwIfAborted();
+    video.srcObject = stream;
+    await raceAbort(video.play(), signal);
+    throwIfAborted();
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) throw new Error("2D canvas context unavailable");
+    const device = describeTrack(stream.getVideoTracks()[0]);
+    return {
+      device,
+      grab() {
+        const w = video.videoWidth;
+        const h = video.videoHeight;
+        if (w === 0 || h === 0) throw new FrameNotReadyError();
+        if (canvas.width !== w) canvas.width = w;
+        if (canvas.height !== h) canvas.height = h;
+        ctx.drawImage(video, 0, 0, w, h);
+        const img = ctx.getImageData(0, 0, w, h);
+        return { data: img.data, width: img.width, height: img.height };
+      },
+      stop: release
+    };
+  } catch (err) {
+    release();
+    throw err;
+  }
+}
+
+// src/letterbox.ts
+function letterboxOf(width, height, imgsz) {
+  const scale = imgsz / Math.max(width, height);
+  const newW = Math.max(1, Math.round(width * scale));
+  const newH = Math.max(1, Math.round(height * scale));
+  return {
+    scale,
+    newW,
+    newH,
+    padX: Math.floor((imgsz - newW) / 2),
+    padY: Math.floor((imgsz - newH) / 2)
+  };
+}
+
 // src/onnx-postprocess.ts
 var MIN_STICKER_CONFIDENCE = 0.25;
 function decodeDetections(data, numClasses, numAnchors, confThreshold = 0.25) {
@@ -3341,11 +3449,7 @@ function preprocess(frame, imgsz = IMG_SIZE) {
       `preprocess: a ${w}x${h} RGBA frame is ${w * h * 4} bytes, but this one holds ${src.length}`
     );
   }
-  const scale = imgsz / Math.max(w, h);
-  const newW = Math.max(1, Math.round(w * scale));
-  const newH = Math.max(1, Math.round(h * scale));
-  const padX = Math.floor((imgsz - newW) / 2);
-  const padY = Math.floor((imgsz - newH) / 2);
+  const { scale, newW, newH, padX, padY } = letterboxOf(w, h, imgsz);
   const plane = imgsz * imgsz;
   const out = new Float32Array(3 * plane).fill(PAD);
   for (let y = 0; y < newH; y++) {
@@ -3477,9 +3581,7 @@ function traceFrame(output, opts = {}, kept = detectionsFromOutput(output, opts)
 // src/sticker-pixels.ts
 var INNER = 0.6;
 function toFrameBox(box2, frame, imgsz) {
-  const scale = imgsz / Math.max(frame.width, frame.height);
-  const padX = Math.floor((imgsz - Math.max(1, Math.round(frame.width * scale))) / 2);
-  const padY = Math.floor((imgsz - Math.max(1, Math.round(frame.height * scale))) / 2);
+  const { scale, padX, padY } = letterboxOf(frame.width, frame.height, imgsz);
   return [(box2[0] - padX) / scale, (box2[1] - padY) / scale, box2[2] / scale, box2[3] / scale];
 }
 function medianLab(frame, box2) {
@@ -3615,7 +3717,7 @@ var NativeDetector = class {
     if (cancelled()) abort();
     let info;
     try {
-      info = await this.invoke(`${P}current_camera`);
+      info = nativeDevice(await this.invoke(`${P}current_camera`));
     } catch (err) {
       this.dev = null;
       this.closeCamera(claim);
@@ -3725,105 +3827,53 @@ function base64ToBuffer(b64) {
 }
 function decodeTensorResponse(input) {
   const buf = typeof input === "string" ? base64ToBuffer(input) : input;
-  if (buf === null || buf.byteLength < 8) return null;
-  const header = new Int32Array(buf, 0, 2);
-  const rows = header[0];
-  const anchors = header[1];
+  if (buf === null) return null;
+  const versioned = buf.byteLength >= 4 && new Int32Array(buf, 0, 1)[0] < 0;
+  if (!versioned && buf.byteLength < 8) return null;
+  const { rows, anchors, headerBytes, picture } = tensorHeader(buf);
   if (anchors <= 0 || rows <= 0) return null;
   const count2 = rows * anchors;
-  if (buf.byteLength < 8 + count2 * 4) {
+  if (buf.byteLength < headerBytes + count2 * 4) {
     throw new Error(
-      `cube-vision tensor is ${buf.byteLength} bytes, need ${8 + count2 * 4} for ${rows}\xD7${anchors}`
+      `cube-vision tensor is ${buf.byteLength} bytes, need ${headerBytes + count2 * 4} for ${rows}\xD7${anchors}`
     );
   }
-  const data = new Float32Array(buf, 8, count2);
-  return { data, anchors, rows };
+  const data = new Float32Array(buf, headerBytes, count2);
+  return picture ? { data, anchors, rows, picture } : { data, anchors, rows };
 }
-
-// src/camera.ts
-var FrameNotReadyError = class extends Error {
-  constructor() {
-    super("camera not ready: video has no dimensions yet");
-    this.name = "FrameNotReadyError";
+function tensorHeader(buf) {
+  const first = new Int32Array(buf, 0, 1)[0];
+  if (first >= 0) {
+    const [rows2, anchors2] = new Int32Array(buf, 0, 2);
+    return { rows: rows2, anchors: anchors2, headerBytes: 8 };
   }
-};
-var IDEAL_WIDTH = 1280;
-var IDEAL_HEIGHT = 720;
-async function listCameras() {
-  const devices = await navigator.mediaDevices.enumerateDevices();
-  return devices.filter((d) => d.kind === "videoinput").map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Camera ${i + 1}` }));
-}
-function raceAbort(promise, signal) {
-  if (!signal) return promise;
-  return new Promise((resolve, reject2) => {
-    if (signal.aborted) {
-      reject2(abortError());
-      return;
-    }
-    const onAbort = () => reject2(abortError());
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (err) => {
-        signal.removeEventListener("abort", onAbort);
-        reject2(err);
-      }
-    );
-  });
-}
-var abortError = () => new DOMException("camera open aborted", "AbortError");
-async function openCamera(video, opts = {}, signal) {
-  if (signal?.aborted) throw abortError();
-  const videoConstraints = {};
-  if (opts.deviceId) videoConstraints.deviceId = { exact: opts.deviceId };
-  else if (opts.facingMode) videoConstraints.facingMode = opts.facingMode;
-  videoConstraints.width = { ideal: opts.width ?? IDEAL_WIDTH };
-  videoConstraints.height = { ideal: opts.height ?? IDEAL_HEIGHT };
-  const stream = await navigator.mediaDevices.getUserMedia({
-    video: videoConstraints,
-    audio: false
-  });
-  const release = () => {
-    for (const track of stream.getTracks()) track.stop();
-    if (video.srcObject === stream) video.srcObject = null;
-  };
-  const throwIfAborted = () => {
-    if (signal?.aborted) throw abortError();
-  };
-  try {
-    throwIfAborted();
-    video.srcObject = stream;
-    await raceAbort(video.play(), signal);
-    throwIfAborted();
-    const canvas = document.createElement("canvas");
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    if (!ctx) throw new Error("2D canvas context unavailable");
-    const track = stream.getVideoTracks()[0];
-    const device = {
-      deviceId: track?.getSettings().deviceId ?? "",
-      label: track?.label || "Camera"
-    };
-    return {
-      device,
-      grab() {
-        const w = video.videoWidth;
-        const h = video.videoHeight;
-        if (w === 0 || h === 0) throw new FrameNotReadyError();
-        if (canvas.width !== w) canvas.width = w;
-        if (canvas.height !== h) canvas.height = h;
-        ctx.drawImage(video, 0, 0, w, h);
-        const img = ctx.getImageData(0, 0, w, h);
-        return { data: img.data, width: img.width, height: img.height };
-      },
-      stop: release
-    };
-  } catch (err) {
-    release();
-    throw err;
+  if (first !== -2) throw new Error(`cube-vision tensor: unknown wire version ${-first}`);
+  if (buf.byteLength < 20) {
+    throw new Error(`cube-vision tensor: a version 2 header is 20 bytes, got ${buf.byteLength}`);
   }
+  const header = new Int32Array(buf, 0, 5);
+  const [rows, anchors, width, height] = [header[1], header[2], header[3], header[4]];
+  if (rows > 0 && anchors > 0 && width > 0 && height > 0) {
+    return { rows, anchors, headerBytes: 20, picture: { width, height } };
+  }
+  if (rows === 0 && anchors === 0 && width === 0 && height === 0) {
+    return { rows, anchors, headerBytes: 20 };
+  }
+  throw new Error(
+    `cube-vision tensor: a version 2 header of ${rows}\xD7${anchors} with a ${width}\xD7${height} picture is neither a frame nor "no frame"`
+  );
+}
+function nativeDevice(raw) {
+  if (raw === null || raw === void 0) return null;
+  const r = raw;
+  if (typeof r.deviceId !== "string")
+    throw new Error("cube-vision: current_camera answered with no deviceId");
+  const facing = facingOf(r.facing);
+  return {
+    deviceId: r.deviceId,
+    label: typeof r.label === "string" && r.label ? r.label : "Camera",
+    ...facing ? { facing } : {}
+  };
 }
 
 // view/onnx-runtime.ts
@@ -5119,6 +5169,19 @@ var ScanTrace = class {
 };
 
 // view/stillness.ts
+var SUBJECT_CHANGE = 4;
+var CENTRE = 4;
+var QUARTER_TURN = [6, 3, 0, 7, 4, 1, 8, 5, 2];
+function turnedFrom(prev, next) {
+  if (prev.length !== QUARTER_TURN.length || next.length !== QUARTER_TURN.length) return false;
+  let turned = prev;
+  for (let quarter = 1; quarter <= 3; quarter++) {
+    const from = turned;
+    turned = QUARTER_TURN.map((i) => from[i]);
+    if (turned.every((c, i) => c === next[i])) return true;
+  }
+  return false;
+}
 var Stillness = class {
   /**
    * @param reads Identical consecutive reads required.
@@ -5145,6 +5208,8 @@ var Stillness = class {
   colors = null;
   /** Per position, how many times a run has been broken by that position alone. */
   breaks = /* @__PURE__ */ new Map();
+  /** Per position, every colour it showed on either side of a break it made alone. */
+  breakColours = /* @__PURE__ */ new Map();
   /**
    * Offer the latest read. True once it has been identical `reads` times AND still for `ms`.
    *
@@ -5164,11 +5229,22 @@ var Stillness = class {
       const previous = this.colors;
       if (previous && previous.length === colors.length) {
         const differing = [];
-        for (let i = 0; i < colors.length && differing.length < 2; i++) {
+        for (let i = 0; i < colors.length; i++) {
           if (colors[i] !== previous[i]) differing.push(i);
         }
         const only = differing.length === 1 ? differing[0] : void 0;
-        if (only !== void 0) this.breaks.set(only, (this.breaks.get(only) ?? 0) + 1);
+        const anotherSide = differing.includes(CENTRE) && differing.length >= 2;
+        const turned = differing.length >= 2 && turnedFrom(previous, colors);
+        if (differing.length >= SUBJECT_CHANGE || anotherSide || turned) {
+          this.breaks.clear();
+          this.breakColours.clear();
+        }
+        if (only !== void 0) {
+          this.breaks.set(only, (this.breaks.get(only) ?? 0) + 1);
+          const seen = this.breakColours.get(only) ?? /* @__PURE__ */ new Set();
+          seen.add(previous[only]).add(colors[only]);
+          this.breakColours.set(only, seen);
+        }
       }
       this.key = key;
       this.colors = [...colors];
@@ -5196,6 +5272,14 @@ var Stillness = class {
     return best;
   }
   /**
+   * The colours `position` showed across the breaks it made alone, ascending — what the sticker
+   * keeps changing BETWEEN. Two colours is the case worth a sentence: a pair the detector confuses
+   * under some light. Empty for a position that never broke a run alone.
+   */
+  flickerColours(position) {
+    return [...this.breakColours.get(position) ?? []].sort((a, b) => a - b);
+  }
+  /**
    * Where the current run stands, for the scan trace. Read-only, and never consulted by `offer`:
    * the gate decides from its own fields, so recording this cannot change what it decides. `heldMs`
    * is measured the same way the gate measures it — from the run's FIRST read, on the same clock.
@@ -5210,6 +5294,7 @@ var Stillness = class {
     this.count = 0;
     this.since = 0;
     this.breaks.clear();
+    this.breakColours.clear();
   }
 };
 
@@ -5241,18 +5326,40 @@ var GUIDE = {
   B: { color: "BLUE", swatch: "#0057c8" }
 };
 var CLASS_SWATCH = FACES.map((f) => GUIDE[f].swatch);
-var FRAME_HINT = {
-  NO_FACE: "",
-  PARTIAL_FACE: "",
-  BAD_GEOMETRY: " Hold it flatter and steadier."
-};
 var TICK_FLOOR_MS = 60;
 var STABLE = 3;
 var STABLE_MS = 500;
 var TICK_FAIL_MS = 3e3;
 var INFERENCE_TIMEOUT_MS = 15e3;
 var CHECK_BEAT_MS = 350;
-var OPENING = "Show any side to the camera \u2014 held flat and centred.";
+function sideClaimed(colors) {
+  const centre = colors[4];
+  return centre !== void 0 && isColour(centre) ? slotOf(centre) : void 0;
+}
+function seenIn(output, dets, faceBoxes) {
+  const picture = output.frame ?? output.picture;
+  if (!picture) return null;
+  const stickers = dets.flatMap((d) => {
+    const [x, y, w, h] = toFrameBox([d.cx, d.cy, d.w, d.h], picture, IMG_SIZE);
+    if (x < 0 || y < 0 || x > picture.width || y > picture.height) return [];
+    return {
+      x: x / picture.width,
+      y: y / picture.height,
+      w: w / picture.width,
+      h: h / picture.height,
+      colour: d.classId,
+      confidence: d.confidence,
+      // The face's boxes are in corner form (`FaceFit.boxes`), made from these very detections by
+      // the same arithmetic, so equality is exact.
+      inFace: faceBoxes?.some(
+        (b) => b[0] === d.cx - d.w / 2 && b[1] === d.cy - d.h / 2 && b[2] === d.w && b[3] === d.h
+      ) ?? false
+    };
+  });
+  return { width: picture.width, height: picture.height, stickers };
+}
+var LIGHT_CONFUSED = /* @__PURE__ */ new Set(["1,4", "3,4"]);
+var OPENING = "Show any side of your cube to the camera.";
 var PAINTING = "Painting by hand \u2014 tap any sticker and pick its colour.";
 var SLOW_OPEN_MS = 8e3;
 var SLOW_OPEN = "The camera has not opened. Allow camera access for this app, then try again.";
@@ -5280,7 +5387,7 @@ function cameraRefusalWords(name) {
       return "No camera was found. Plug one in or connect one, then press Start. You can also paint the cube by hand.";
     case "NotReadableError":
     case "TrackStartError":
-      return "Another app is using the camera. Close it \u2014 a video call is the usual one \u2014 then press Start.";
+      return "Another app is using the camera. Close it, then press Start.";
     case "OverconstrainedError":
     case "ConstraintNotSatisfiedError":
       return "That camera cannot be used for scanning. Press Start to try the default one instead.";
@@ -5353,6 +5460,17 @@ var AiScanPanel = class extends HTMLElement {
   faces = {};
   /** The 9 colour classes in view right now, or null when no clean side is; rides on every report. */
   live = null;
+  /** The latest frame's boxes in picture coordinates, for `ScanProgress.seen`. */
+  seen = null;
+  /** Set just before the report that refuses a side already held, and taken by that report. */
+  shownAgain = false;
+  /**
+   * Moved by everything that changes what a queued capture announcement would be about — `reset()`
+   * (the scan thrown away), `stop()` (the camera released: painting, a finished scan, the element
+   * leaving the page) and `rescanFace()` (a side taken back) — so an announcement queued before one
+   * of them can tell it is stale (see `captured`).
+   */
+  captureEpoch = 0;
   /**
    * The count-and-duration gate that decides a read is worth capturing.
    *
@@ -5567,12 +5685,13 @@ var AiScanPanel = class extends HTMLElement {
   /** Release the camera + stop the loop. Safe repeatedly and before first render. The detector
    *  itself is kept, so the loaded model survives a stop()/start() (only the camera is released). */
   stop() {
+    this.captureEpoch += 1;
     if (this.checkTimer !== null) {
       clearTimeout(this.checkTimer);
       this.checkTimer = null;
     }
     this.cam.close();
-    this.showPreview(null);
+    this.forgetObservation();
     const start = this.maybe("start");
     if (start) {
       start.disabled = false;
@@ -5623,7 +5742,7 @@ var AiScanPanel = class extends HTMLElement {
     }, SLOW_OPEN_MS);
     try {
       const facing = this.getAttribute("facing");
-      const facingMode = facing === "user" || facing === "environment" ? facing : void 0;
+      const facingMode = facingOf(facing);
       const pinned = this.getAttribute("device-id") || void 0;
       const { fellBack } = await this.cam.open(detector, { deviceId: pinned, facingMode }, gen);
       if (!this.cam.current(gen)) return;
@@ -5794,8 +5913,8 @@ var AiScanPanel = class extends HTMLElement {
     console.info(`[cubus] scanner runtime: ${where}`);
   }
   reset() {
-    this.still.reset();
-    this.live = null;
+    this.captureEpoch += 1;
+    this.forgetObservation();
     this.invalidateReading();
     this.settled.clear();
     this.pendingOpening = null;
@@ -5811,8 +5930,7 @@ var AiScanPanel = class extends HTMLElement {
    */
   loop(phase, ...opening2) {
     this.cam.stopLoop();
-    this.showPreview(null);
-    this.still.reset();
+    this.forgetObservation();
     this.tickFailingSince = null;
     this.noFrameSince = null;
     const restart = this.maybe("restart");
@@ -5909,7 +6027,7 @@ var AiScanPanel = class extends HTMLElement {
    * watched. Its own clock, same limit, same fail-loud exit.
    */
   noFrameTick() {
-    this.still.reset();
+    this.withdrawObservation();
     const now = performance.now();
     this.noFrameSince ??= now;
     if (now - this.noFrameSince >= TICK_FAIL_MS) {
@@ -5935,10 +6053,11 @@ var AiScanPanel = class extends HTMLElement {
     } else {
       fit = fitFace(dets);
     }
+    this.seen = seenIn(output, dets, fit.ok ? fit.face.boxes : void 0);
     if (!fit.ok) {
       this.still.reset();
       this.showPreview(null);
-      this.report(this.awaiting ? "confirm" : "scanning", this.idleLine() + FRAME_HINT[fit.reason]);
+      this.report(this.awaiting ? "confirm" : "scanning", this.idleLine());
       this.note({ outcome: "abstain", reason: fit.reason, geometry: fit.geometry });
       return;
     }
@@ -5948,7 +6067,7 @@ var AiScanPanel = class extends HTMLElement {
       const flicker = this.still.flickering();
       this.report(
         this.awaiting ? "confirm" : "scanning",
-        flicker === null ? "Reading a side \u2014 hold still\u2026" : `Reading a side \u2014 the ${CELL_NAMES[flicker] ?? "marked"} sticker keeps changing colour. More light on it, or a steadier hold, will settle it.`
+        flicker === null ? "Reading a side \u2014 hold still\u2026" : this.flickerLine(flicker)
       );
       this.note({ outcome: "reading", ...this.readNote(fit.face), flicker });
       return;
@@ -6009,7 +6128,7 @@ var AiScanPanel = class extends HTMLElement {
    * is not a frame that showed the cube unmoved.
    */
   failingTick(err) {
-    this.still.reset();
+    this.withdrawObservation();
     const now = performance.now();
     this.tickFailingSince ??= now;
     if (now - this.tickFailingSince >= TICK_FAIL_MS) {
@@ -6026,7 +6145,7 @@ var AiScanPanel = class extends HTMLElement {
    */
   tickFail(err) {
     this.cam.close();
-    this.showPreview(null);
+    this.forgetObservation();
     this.tickFailingSince = null;
     this.noFrameSince = null;
     this.dropDiagnosis();
@@ -6058,7 +6177,7 @@ var AiScanPanel = class extends HTMLElement {
    */
   fileSettledRead(read) {
     const centre = read.colors[4];
-    const claim = centre !== void 0 && isColour(centre) ? slotOf(centre) : void 0;
+    const claim = sideClaimed(read.colors);
     if (this.awaiting) {
       const asked = this.awaiting.face;
       const held = this.faces[asked];
@@ -6071,12 +6190,15 @@ var AiScanPanel = class extends HTMLElement {
         up: this.awaiting.up
       };
       this.awaiting = null;
-      this.flash();
+      this.captured("confirm", asked);
       this.scheduleCheck(this.tinted("ok", "Got it \u2014 checking\u2026"));
       return;
     }
     if (claim === void 0) {
-      this.report("scanning", this.tinted("err", "Couldn't read the centre \u2014 hold it steadier."));
+      this.report(
+        "scanning",
+        this.tinted("err", "Couldn't read this side's centre \u2014 keep showing it.")
+      );
       return;
     }
     if (this.finished) {
@@ -6090,6 +6212,7 @@ var AiScanPanel = class extends HTMLElement {
       const slot = this.sideByEight(read) ?? claim;
       const fresh = withCentre(read, colourOfSlot(slot));
       if (fresh.colors.join(",") === this.faces[slot].colors.join(",")) {
+        this.shownAgain = true;
         this.report(
           "scanning",
           "The ",
@@ -6103,7 +6226,7 @@ var AiScanPanel = class extends HTMLElement {
       this.confirmed = {};
       this.mismatches = 0;
       this.buildDots();
-      this.flash();
+      this.captured("reread", slot);
       this.scheduleCheck(this.tinted("ok", `Re-read the ${GUIDE[slot].color} side \u2014 checking\u2026`));
       return;
     }
@@ -6117,6 +6240,7 @@ var AiScanPanel = class extends HTMLElement {
       });
       const named = this.missingSides();
       const which = inHand.slot ? ["the ", this.bold(GUIDE[inHand.slot].color), " side"] : ["that side"];
+      this.shownAgain = true;
       this.report(
         "scanning",
         "Already have ",
@@ -6143,9 +6267,8 @@ var AiScanPanel = class extends HTMLElement {
     }
     this.unnamed.push(read);
     this.centreSeen.set(read, [read.confidence[4] ?? 0]);
-    this.still.reset();
     this.buildDots();
-    this.flash();
+    this.captured("side", null);
     const done = this.sidesHeld();
     if (done >= FACES.length) {
       this.scheduleCheck(this.tinted("ok", "All six sides captured \u2014 checking\u2026"));
@@ -6250,9 +6373,8 @@ var AiScanPanel = class extends HTMLElement {
     this.faces[face] = read;
     this.centreSeen.set(read, [read.confidence[4] ?? 0]);
     this.settled.delete(face);
-    this.still.reset();
     this.buildDots();
-    this.flash();
+    this.captured("side", face);
     const done = this.sidesHeld();
     if (done >= FACES.length) {
       this.scheduleCheck(this.tinted("ok", "All six sides captured \u2014 checking\u2026"));
@@ -6286,7 +6408,7 @@ var AiScanPanel = class extends HTMLElement {
    */
   scheduleCheck(...opening2) {
     this.stopLoop();
-    this.showPreview(null);
+    this.forgetObservation();
     this.finished = false;
     this.notice = null;
     this.suspects = [];
@@ -6308,9 +6430,12 @@ var AiScanPanel = class extends HTMLElement {
     }
     return out;
   }
-  /** Sides in hand: those named, plus those whose centres collided and are not named yet. */
+  /** Sides in hand: those named, plus those whose centres collided and are not named yet. Counted
+   *  by the same test `capturedFaces` files by, without copying a side to count it. */
   sidesHeld() {
-    return this.capturedFaces().length + this.unnamed.length;
+    let held = this.unnamed.length;
+    for (const face of FACES) if (this.faces[face]) held += 1;
+    return held;
   }
   /**
    * Correct one sticker of an already-captured side, and re-check the cube. The detector is good,
@@ -6489,6 +6614,7 @@ var AiScanPanel = class extends HTMLElement {
    */
   rescanFace(face) {
     if (!this.faces[face]) return;
+    this.captureEpoch += 1;
     delete this.faces[face];
     this.settled.delete(face);
     this.invalidateReading();
@@ -6514,6 +6640,56 @@ var AiScanPanel = class extends HTMLElement {
       return;
     }
     this.loop("scanning");
+  }
+  /** Where the read under way stands, for `ScanProgress.settling`. */
+  settling() {
+    const { run, heldMs } = this.still.status();
+    return run === 0 ? null : { run, needed: STABLE, heldMs: Math.round(heldMs), neededMs: STABLE_MS };
+  }
+  /**
+   * One accepted capture: the stage's pulse, and the `scan-capture` event a headless host hears.
+   *
+   * The event goes out once the capture path has FINISHED — its report written, its check
+   * scheduled — as a snapshot taken now. Dispatched in the middle of that path, a listener that
+   * restarted the scan, stopped it or switched to painting had its change overwritten when the path
+   * carried on over the state it had just cleared (audit, 2026-09-19). And it is not sent at all
+   * if the scan changed under it in between — a listener to the path's own report can restart the
+   * scan, stop it, switch to painting or take a side back, and "a side was saved" over any of those
+   * is a chime and a "got it" for a moment that is gone (audit, 2026-09-19, round 3).
+   */
+  captured(kind, face) {
+    this.still.reset();
+    this.flash();
+    const detail = { kind, face, sides: this.sidesHeld() };
+    const epoch = this.captureEpoch;
+    queueMicrotask(() => {
+      if (epoch === this.captureEpoch) {
+        this.dispatchEvent(new CustomEvent("scan-capture", { detail }));
+      }
+    });
+  }
+  /**
+   * Forget what the camera last showed: the read under way, the live face, and the boxes. ONE place,
+   * because it was written out by hand at every site that stops watching, and when `seen` was added
+   * it reached some of them — `stop()` then reported a painting with the last frame's boxes still in
+   * it, and a check with a finished read's progress (found by audit, 2026-09-19).
+   */
+  forgetObservation() {
+    this.still.reset();
+    this.showPreview(null);
+    this.seen = null;
+  }
+  /**
+   * A tick that showed nothing — no frame, or an inference that failed: forget the observation, and
+   * if something was on show (boxes, a live face, a read under way) say so with one report carrying
+   * the waiting line. A headless host otherwise kept drawing the last frame until a later report or
+   * the fatal limit; and republishing the last line kept "Reading a side" standing over nothing
+   * (audit, 2026-09-19). A tick over nothing says nothing, as before.
+   */
+  withdrawObservation() {
+    const showing = this.seen !== null || this.live !== null || this.still.status().run > 0;
+    this.forgetObservation();
+    if (showing) this.report(this.awaiting ? "confirm" : "scanning", this.idleLine());
   }
   /** Brief green border pulse on the stage to confirm a capture. */
   flash() {
@@ -6555,6 +6731,22 @@ var AiScanPanel = class extends HTMLElement {
     const sides = (result.undetermined ?? []).map((f) => GUIDE[f].color);
     const held = sides.length === 0 ? "" : sides.length === 1 ? ` \u2014 the ${sides[0]} side could have been held more than one way up \u2014` : ` \u2014 the ${sides.slice(0, -1).join(", ")} and ${sides[sides.length - 1]} sides could each have been held more than one way up \u2014`;
     return `Every side's colours are read. This cube fits them ${ways}${held} and the picture shows the sides as they were held, not which of the ${count2 || "readings"} it is.`;
+  }
+  /**
+   * What to say about a sticker that keeps breaking the read on its own: WHICH sticker, and — when it
+   * has only ever shown two colours — which two. That much is measured. The light remark is added only
+   * for a pair the light is known to confuse, because that is the only cause with evidence behind it:
+   * red against orange is ambiguous under warm light (`dev-docs/red-orange-fine-tune.md`), and orange
+   * read as yellow followed the light, not the pipeline or the sticker size (AGENTS.md, 0.6.1). It
+   * says "helps", never "will settle it": the capture rule promises nothing about the next read.
+   */
+  flickerLine(position) {
+    const cell = CELL_NAMES[position] ?? "marked";
+    const pair = this.still.flickerColours(position);
+    if (pair.length !== 2) return `Reading a side \u2014 the ${cell} sticker keeps changing colour.`;
+    const [a, b] = pair.map((c) => GUIDE[FACES[c]].color);
+    const light = LIGHT_CONFUSED.has(pair.join(",")) ? " Whiter light on it helps tell them apart." : "";
+    return `Reading a side \u2014 the ${cell} sticker keeps changing between ${a} and ${b}.${light}`;
   }
   /**
    * The waiting-for-input line, matched to where the scan actually is. One generic "show any
@@ -6787,7 +6979,7 @@ var AiScanPanel = class extends HTMLElement {
    */
   finish(result) {
     this.stopLoop();
-    this.showPreview(null);
+    this.forgetObservation();
     this.suspects = result.suspects ?? [];
     if (result.valid) {
       if ((result.lowConfidence?.length ?? 0) === 0) {
@@ -6926,11 +7118,10 @@ var AiScanPanel = class extends HTMLElement {
   publishRefusal(result, first) {
     this.suspects = result.suspects ?? [];
     this.dispatchEvent(new CustomEvent("scan-invalid", { detail: result }));
-    const hold = " Tip: hold each side the way its tile's edge colours show, and a scan settles itself.";
     const camera = this.misreadNotice(result, {
-      one: `If it is wrong, tap it and pick the colour you see; if it is right, show that side again to re-read it.${hold}`,
+      one: "If it is wrong, tap it and pick the colour you see; if it is right, show that side again to re-read it.",
       lead: result.misreadFace ? void 0 : "At least %1 stickers do not fit a real cube \u2014 too many to tell which.",
-      many: result.misreadFace ? "Show the %2 side to the camera again \u2014 it will be read fresh." : `Start the scan over, with more light and each side held flat to the camera; red and orange are the colours it confuses most. ${RE_READ_LINE}`,
+      many: result.misreadFace ? "Show the %2 side to the camera again \u2014 it will be read fresh." : `Start the scan over in whiter light; red and orange are the colours it confuses most. ${RE_READ_LINE}`,
       params: result.misreadFace ? [GUIDE[result.misreadFace].color] : [],
       action: result.misreadFace ? void 0 : { label: "Start over", kind: "restart" }
     });
@@ -6945,7 +7136,7 @@ var AiScanPanel = class extends HTMLElement {
       this.notice = {
         title: "Two sides read the same centre",
         tone: "err",
-        body: legalFilings === 0 ? "Two sides read with a %1 centre, so one of them must really be the %2 side \u2014 a logo printed on a centre often does this. No way of filing them makes a real cube, and neither centre read more surely than the other, so something else was misread too. Start the scan over, with more light and each side held flat." : "Two sides read with a %1 centre, so one of them must really be the %2 side \u2014 a logo printed on a centre often does this. More than one way makes a real cube and nothing in the photos says which. Turn any one face a quarter turn, then start the scan over.",
+        body: legalFilings === 0 ? "Two sides read with a %1 centre, so one of them must really be the %2 side \u2014 a logo printed on a centre often does this. No way of filing them makes a real cube, and neither centre read more surely than the other, so something else was misread too. Start the scan over in whiter light." : "Two sides read with a %1 centre, so one of them must really be the %2 side \u2014 a logo printed on a centre often does this. More than one way makes a real cube and nothing in the photos says which. Turn any one face a quarter turn, then start the scan over.",
         params: [GUIDE[shared].color, GUIDE[missing].color],
         action: { label: "Start over", kind: "restart" }
       };
@@ -6968,7 +7159,7 @@ var AiScanPanel = class extends HTMLElement {
       this.notice = {
         title: "That doesn't read as a solvable cube",
         tone: "err",
-        body: `Too much of the cube was read wrong to say where. Show the sides to the camera again \u2014 each one is read fresh \u2014 or start the scan over.${hold}`
+        body: `Too much of the cube was read wrong to say where. Show the sides to the camera again \u2014 each one is read fresh \u2014 or start the scan over.`
       };
     }
     if (first) this.loop("scanning", this.tinted("err", line));
@@ -7012,6 +7203,8 @@ var AiScanPanel = class extends HTMLElement {
    * Every status change goes through here, so a headless host sees exactly what a visible one does.
    */
   report(phase, ...parts) {
+    const shownAgain = this.shownAgain;
+    this.shownAgain = false;
     const message = parts.map((p) => typeof p === "string" ? p : p.textContent ?? "").join("");
     this.lastLine = message;
     const status = this.maybe("status");
@@ -7025,7 +7218,11 @@ var AiScanPanel = class extends HTMLElement {
           phase,
           message,
           captured: this.capturedFaces(),
+          sides: this.sidesHeld(),
           live: this.live,
+          settling: this.settling(),
+          seen: this.seen,
+          shownAgain,
           device: this.cam.device,
           confirm: this.awaiting,
           runtime: this.cam.runtime,
@@ -7066,5 +7263,7 @@ export {
   nms,
   parkedDetector,
   preferredProviders,
-  preprocess
+  preprocess,
+  seenIn,
+  sideClaimed
 };
