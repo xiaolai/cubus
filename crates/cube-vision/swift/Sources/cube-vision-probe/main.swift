@@ -112,7 +112,7 @@ if args.count > 2 && args[1] == "--leak-check" {
             let one = {
                 let r = rgba.withUnsafeBufferPointer { p in
                     out.withUnsafeMutableBufferPointer { o in
-                        cube_vision_infer_rgba(p.baseAddress!, Int32(w), Int32(h), o.baseAddress!, cap, &rows, &anchors)
+                        cube_vision_infer_rgba(p.baseAddress!, p.count, Int32(w), Int32(h), o.baseAddress!, cap, &rows, &anchors)
                     }
                 }
                 if r < 0 { die("cube_vision_infer_rgba failed: \(r)") }

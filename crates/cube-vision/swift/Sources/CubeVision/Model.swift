@@ -16,6 +16,15 @@ public struct Inference {
     public let anchors: Int
 }
 
+/// What the per-tick and still entries ask of a model: one letterboxed frame in, the raw tensor out.
+/// `CubeModel` is the one that ships; the protocol exists so a test can stand in a model that FAILS —
+/// the one path of those entries the committed model cannot be made to take (Tests/CubeVisionTests).
+protocol FrameInferring: AnyObject {
+    func infer(chw: [Float], imgsz: Int) throws -> Inference
+}
+
+extension CubeModel: FrameInferring {}
+
 public final class CubeModel {
     private let model: MLModel
     private let inputName: String

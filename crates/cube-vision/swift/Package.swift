@@ -16,5 +16,9 @@ let package = Package(
     targets: [
         .target(name: "CubeVision"),
         .executableTarget(name: "cube-vision-probe", dependencies: ["CubeVision"]),
+        // `swift test` (debug): the FFI's size outputs on every path and the facing mapping, driven
+        // through the real entries with an injected frame — no camera, and nothing test-only in the
+        // release library the app links. Run by CI's golden-macos job.
+        .testTarget(name: "CubeVisionTests", dependencies: ["CubeVision"]),
     ]
 )
