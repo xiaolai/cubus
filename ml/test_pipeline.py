@@ -1100,6 +1100,16 @@ def test_the_metrics_table_scores_the_set_its_dataset_file_names() -> None:
         refuses(f"path: {root}\nval: elsewhere/val\nnc: 6\nnames: [{names}]\n", "no labels beside")
         refuses(f"path: {root / 'elsewhere'}\nval: val\nnc: 2\nnames: [a, b]\n", "not this evaluator")
 
+        # Both shapes this repository writes, read without a YAML library — and a line that is neither
+        # refused by name rather than skipped (2026-09-19: the library was not installed in the CI job
+        # that runs this file, which is how the first version passed here and failed there).
+        dashed = f"path: {root / 'elsewhere'}\nval: val\nnc: 6\nnames:\n" + "".join(f"  - {n}\n" for n in mt.CLASS_NAMES)
+        (root / "dashed.yaml").write_text(dashed, encoding="utf-8")
+        assert mt.dataset_of(root / "dashed.yaml")[1].name == "labels"
+        assert mt.dataset_fields("names: [a, b] # a comment\n\n", root)["names"] == ["a", "b"]
+        refuses("path: /x\nthis line has no colon\n", "neither `key: value` nor a list item")
+        refuses("path: /x\n  - stray\n", "not a list")
+
         # Labels that are there but EMPTY are ground truth nobody wrote: scored, every prediction is a
         # false positive and the row reads as a bad model (audit, 2026-09-19).
         (root / "blank" / "val").mkdir(parents=True)
