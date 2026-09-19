@@ -630,7 +630,7 @@ def test_evaluate_runs_on_an_accelerator():
 def test_checkpoint_reloads_under_weights_only(tmp_path):
     """A checkpoint must be plain data, because that is how everything downstream opens it.
 
-    Both the resume path and `export.py --cubedet` load with `weights_only=True`, which refuses any
+    Both the resume path and `export.py` load with `weights_only=True`, which refuses any
     pickled object that is not a tensor or a primitive. `torch.__version__` is a `TorchVersion` —
     a str SUBCLASS — so recording it verbatim produced checkpoints that could be written for hours
     and then not read at all. The failure surfaces at the very end of a run, which is the worst
@@ -1184,7 +1184,7 @@ def test_a_trained_and_exported_model_carries_its_recipe(tmp_path, monkeypatch):
         assert recipe["dataset"] == "tiny_fixture", name
 
     models = tmp_path / "models"
-    export.main(["--pt", str(out / "best.pt"), "--out", str(models), "--cubedet", "--skip", "coreml", "tflite"])
+    export.main(["--pt", str(out / "best.pt"), "--out", str(models), "--skip", "coreml", "tflite"])
     manifest = json.loads((models / "MANIFEST.json").read_text())
     assert manifest["recipe"]["argv"] == argv
     assert "torchvision" in manifest["tools"]

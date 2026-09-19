@@ -1,7 +1,8 @@
 # Detection metrics, computed here rather than shelled out to `detector val`.
 #
-# WHY THIS EXISTS. `ml/metrics_table.py` produces the model card's mAP rows by invoking
-# Detlib's validator, which is one of the two things that has to go. But the deeper reason is
+# WHY THIS EXISTS. `ml/metrics_table.py` produced the model card's mAP rows by invoking
+# Detlib's validator, which was one of the two things that had to go (since 2026-09-18 it scores
+# through this file, via `compare_detectors.score`). But the deeper reason is
 # comparability: the numbers in MODEL_CARD.md were produced by a DIFFERENT implementation from
 # this one, and mAP is not a physical constant — matching rules, score thresholds, interpolation
 # and box-clipping all differ between implementations by a percentage point or two.

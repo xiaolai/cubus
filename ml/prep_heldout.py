@@ -1,4 +1,4 @@
-"""Turn a downloaded Roboflow cube dataset into a `detector val` set in OUR 6-colour scheme.
+"""Turn a downloaded Roboflow cube dataset into a label-layout labelled set in OUR 6-colour scheme.
 
 Used to score the model on a dataset it was NEVER trained on (a held-out / near-OOD real test).
 Remaps class labels BY NAME to our canonical colours (0 white 1 red 2 green 3 yellow 4 orange 5 blue),

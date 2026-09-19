@@ -53,7 +53,7 @@ def _rigorous_block(m: dict) -> str:
     iid, ho = m["iid"], m["heldout"]
     return f"""
 <h2>The rigorous number: unseen-dataset mAP</h2>
-<p>Scored with the same tool (<code>detector val</code>, via <code>ml/metrics_table.py</code>) on the
+<p>Scored with the same tool (the repository's evaluator, <code>cubedet.val</code>, via <code>ml/metrics_table.py</code>) on the
 in-distribution test split, then on a <b>different</b> Roboflow dataset the model never trained on.
 It's a fork of a related set, so <b>{ho['removed']} of its images were near-duplicates</b> of our data
 and were removed (leakage) before scoring {ho['images']} genuinely-unseen photos.</p>

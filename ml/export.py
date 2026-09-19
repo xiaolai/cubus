@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 """Export every runtime artefact the app ships from ONE checkpoint, in one command.
 
-    ml/venv/bin/python ml/export.py --pt ml/out/cube_v3_best.pt --out ml/models   # the shipped v3 (also the default)
-    ml/venv/bin/python ml/export.py --int8-only                                    # re-derive the int8 from the COMMITTED fp32
+    ml/venv-cubedet/bin/python ml/export.py --pt ml/out/<run>_best.pt --out ml/models   # a cubedet checkpoint
+    ml/venv/bin/python ml/export.py --int8-only                                         # re-derive the int8 from the COMMITTED fp32
 
 writes into `ml/models/` (see --out):
 
@@ -10,8 +10,8 @@ writes into `ml/models/` (see --out):
 |-----------------------|----------------------------------|---------------------------------------------------|
 | cubedet.onnx        | reference (Python/onnxruntime)   | fp32, opset 12, simplified                        |
 | cubedet.int8.onnx   | NOT SHIPPED (onnxruntime-web)    | the above, `quantize_dynamic` (QInt8) — written only if it still reads (see `int8_reads_a_face`) |
-| cubedet.mlpackage   | Apple (CoreML, macOS + iOS)      | ML program; fp32 for cubedet (measured faster AND exact), fp16 for the Detlib path |
-| cubedet.tflite      | Android APK, gated OFF (LiteRT)  | fp32 for cubedet; dynamic-range int8 for the Detlib path |
+| cubedet.mlpackage   | Apple (CoreML, macOS + iOS)      | ML program, fp32 (measured faster AND exact)       |
+| cubedet.tflite      | Android APK, gated OFF (LiteRT)  | fp32                                              |
 | MANIFEST.json         | —                                | checkpoint + artefact hashes, tool versions, git commit |
 
 The `runtime` column names the runtime an artefact is FOR, and says plainly what ships it today.
@@ -28,15 +28,16 @@ carries them verbatim.
 
 Every artefact is exported WITHOUT NMS: each runtime's job is the identical black box
 `letterboxed 640×640 float → (1, 4+nc, 8400)` that `decodeDetections` in cube-scanner already parses.
-Detlib's `nms=True` CoreML pipeline would bury a second, untested NMS in the model — refused here.
+An NMS inside a model would be a second, untested NMS beside the app's — refused here.
 
-Why CoreML gets a TENSOR input rather than detlib' default image input: an image input takes 8-bit
-pixels and scales them inside the model, which means the letterbox has to be quantised to bytes
-before the model sees it — and that can never byte-match `preprocess()`, which hands the model
-floats straight from the bilinear resample. A float32 tensor input is that Float32Array, as is.
-The only detlib behaviour overridden to get there is the conversion call itself; the model
-preparation (fuse, export flags, dry runs) is the exporter's own, so it cannot drift from what the
-ONNX export does.
+Why CoreML gets a TENSOR input rather than an image input: an image input takes 8-bit pixels and
+scales them inside the model, which means the letterbox has to be quantised to bytes before the
+model sees it — and that can never byte-match `preprocess()`, which hands the model floats straight
+from the bilinear resample. A float32 tensor input is that Float32Array, as is.
+
+Every artefact comes from a `cubedet` checkpoint (ml/cubedet), with no Detlib code on any path.
+The Detlib pipeline that produced v3 — its training scripts, its image, and this file's export
+path for it — was removed on 2026-09-18; git history holds it.
 
 THE fp32 IS NEVER HANDED TO ANOTHER TOOL IN PLACE. onnx2tf runs onnx-simplifier on its input and
 saves the result back OVER the input path (onnx2tf.py, `onnx.save(estimated_graph,
@@ -71,8 +72,8 @@ HERE = Path(__file__).resolve().parent
 NAME = "cubedet"
 IMGSZ = 640
 FP32, INT8, MLPACKAGE, TFLITE = f"{NAME}.onnx", f"{NAME}.int8.onnx", f"{NAME}.mlpackage", f"{NAME}.tflite"
-# The six colour classes in `ml/data.yaml` order. Repeated here rather than imported so that
-# `--cubedet` can run in an environment with nothing but torch, onnx and coremltools.
+# The six colour classes in `ml/data.yaml` order. Repeated here rather than imported so that the
+# export runs in an environment with nothing but torch, onnx and coremltools.
 CLASS_NAMES = ["white", "red", "green", "yellow", "orange", "blue"]
 
 # What ships where, in one place. The committed MANIFEST.json must carry these strings verbatim
@@ -84,14 +85,12 @@ ARTEFACT_LABELS: dict[str, dict[str, str]] = {
         "precision": "dynamic int8 (QInt8 weights, uint8 activations)",
         "quantisation_note": "quantises ACTIVATIONS as well as weights, and that is what costs the reads: it diverges from fp32 on golden fixtures — ml/golden/expected.json pins which fixtures and how (a different face, a face where fp32 refuses, a refusal where fp32 reads), and the parity gate fails on any NEW misread. Contrast cubedet.tflite, which takes the same size reduction weight-only and diverges on none. Do not ship this without re-exporting weight-only.",
     },
-    # The precision here is the CUBEDET path's, because that is what ships. The Detlib path still
-    # converts at fp16 (that graph loses nothing to it) and records its own string — see main().
     MLPACKAGE: {"runtime": "CoreML — macOS and iOS, via crates/cube-vision", "precision": "fp32 compute, fp32 tensor in and out", "min_target": "macOS13 / iOS16"},
     TFLITE: {
         "runtime": "LiteRT/TFLite (onnx2tf) — bundled in the Android APK by gen/android/app/build.gradle.kts, but gated OFF: VisionPlugin.kt answers probe with verifiedOnDevice=false, so Android runs the WebView fp32 path until the native path is verified on a device",
         "precision": "fp32",
         "layout": "NHWC input; box coords in 640-space (the read is scale-invariant, so the consumer need not rescale)",
-        "quantisation_note": "NOT quantised, for this model. Full-integer int8 was rejected long ago (it collapses the head's class scores to ~0), and weight-only int8 read identically to fp32 for the v3 graph (0/20) — but for the cubedet graph it diverges on 5 of the 20 golden fixtures, including a face on a frame the reference refuses, which is the failure the abstain fixtures exist to catch. Every other artefact of this model is fp32 and Android serves the fp32 WebView graph, so there was nothing to trade that for. The Detlib path still exports weight-only int8 and records it here.",
+        "quantisation_note": "NOT quantised, for this model. Full-integer int8 was rejected long ago (it collapses the head's class scores to ~0), and weight-only int8 read identically to fp32 for the v3 graph (0/20) — but for the cubedet graph it diverges on 5 of the 20 golden fixtures, including a face on a frame the reference refuses, which is the failure the abstain fixtures exist to catch. Every other artefact of this model is fp32 and Android serves the fp32 WebView graph, so there was nothing to trade that for.",
     },
 }
 
@@ -119,14 +118,6 @@ def git_commit() -> dict:
     return {"commit": head, "dirty": bool(dirty)}
 
 
-def fresh_copy(pt: Path, work: Path) -> Path:
-    """Detlib writes next to the checkpoint and names outputs after it: give it a private copy."""
-    work.mkdir(parents=True, exist_ok=True)
-    dst = work / f"{NAME}.pt"
-    shutil.copyfile(pt, dst)
-    return dst
-
-
 def quantize_int8(fp32: Path, int8: Path) -> None:
     """The same dynamic quantisation the int8 artefact has always carried (DynamicQuantizeLinear + ConvInteger, QInt8 weights)."""
     from onnxruntime.quantization import QuantType, quantize_dynamic
@@ -140,74 +131,6 @@ def assert_int8_derived(fp32: Path, int8: Path, work: Path) -> None:
     quantize_int8(fp32, probe)
     if sha256(probe) != sha256(int8):
         sys.exit(f"{int8.name} is not quantize_dynamic({fp32.name}): the two artefacts do not describe one model")
-
-
-def export_onnx(pt: Path, work: Path, out: Path) -> tuple[Path, Path | None, str]:
-    from detlib import detector
-
-    src = fresh_copy(pt, work / "onnx")
-    # opset 12 + simplify is the lineage of the shipped model; nms=False is the whole contract.
-    produced = Path(detector(str(src)).export(format="onnx", opset=12, simplify=True, nms=False, imgsz=IMGSZ, batch=1))
-    fp32 = out / FP32
-    shutil.copyfile(produced, fp32)
-    int8 = out / INT8
-    quantize_int8(fp32, int8)
-    # The v3 lineage quantises fine (checked: it reads the same fixture the fp32 reads), so in
-    # practice this path keeps its artefact — but it now HONOURS the answer rather than printing it.
-    # Reading the verdict and shipping anyway is the same defect the cubedet path was written to fix.
-    alive, why = int8_reads_a_face(fp32, int8)
-    if not alive:
-        int8.unlink(missing_ok=True)
-        print(f"NOT WRITING {INT8}: {why}")
-        return fp32, None, why
-    return fp32, int8, why
-
-
-def export_coreml(pt: Path, work: Path, out: Path) -> Path:
-    import coremltools as ct
-    import numpy as np
-    import torch
-    from detlib import detector
-    from detlib.engine.exporter import Exporter, try_export
-
-    class TensorInputCoreMLExporter(Exporter):
-        """Detlib's exporter with one method swapped: the CoreML conversion takes a float tensor."""
-
-        @try_export
-        def export_coreml(self, prefix="CoreML:"):
-            assert not self.args.nms, "export.py refuses the nms=True CoreML pipeline (see module docstring)"
-            f = self.file.with_suffix(".mlpackage")
-            if f.is_dir():
-                shutil.rmtree(f)
-            ts = torch.jit.trace(self.model.eval(), self.im, strict=False)
-            model = ct.convert(
-                ts,
-                inputs=[ct.TensorType("image", shape=tuple(self.im.shape), dtype=np.float32)],
-                # fp16 out is what crosses the Tauri bridge: 10×8400×2 bytes ≈ 170 KB per frame.
-                outputs=[ct.TensorType("output0", dtype=np.float16)],
-                convert_to="mlprogram",
-                compute_precision=ct.precision.FLOAT16,
-                # fp16 tensor I/O needs iOS16 / macOS13; anything older cannot run the app's webview anyway.
-                minimum_deployment_target=ct.target.macOS13,
-                skip_model_load=True,
-            )
-            model.short_description = self.metadata["description"]
-            model.author = self.metadata["author"]
-            model.license = self.metadata["license"]
-            model.version = self.metadata["version"]
-            model.user_defined_metadata.update({k: str(v) for k, v in self.metadata.items()})
-            model.save(str(f))
-            return str(f)
-
-    src = fresh_copy(pt, work / "coreml")
-    detector = detector(str(src))
-    exporter = TensorInputCoreMLExporter(overrides={"format": "coreml", "imgsz": IMGSZ, "batch": 1, "nms": False, "device": "cpu"})
-    produced = Path(exporter(model=detector.model))
-    dst = out / MLPACKAGE
-    if dst.exists():
-        shutil.rmtree(dst)
-    shutil.copytree(produced, dst)
-    return dst
 
 
 def export_onnx_cubedet(pt: Path, work: Path, out: Path) -> tuple[Path, Path | None, str]:
@@ -299,7 +222,7 @@ def int8_reads_a_face(fp32: Path, int8: Path) -> tuple[bool, str]:
 
 
 def export_coreml_cubedet(pt: Path, work: Path, out: Path) -> Path:
-    """CoreML from the same checkpoint, at fp32 — unlike the Detlib path above, which is fp16.
+    """CoreML from the same checkpoint, at fp32.
 
     WHY fp32 HERE. fp16 is what pushes a CoreML model onto the Neural Engine, and for the v3 graph
     that was a straight win. For this one it is not: measured over the 20 golden fixtures on an
@@ -414,23 +337,17 @@ def _write_onnx2tf_sample(cwd: Path) -> None:
         np.save(f, rng.random((20, 128, 128, 3), dtype=np.float32))
 
 
-def export_tflite(fp32: Path, work: Path, out: Path, quantised: bool = True) -> Path:
-    """ONNX → TF SavedModel → dynamic-range int8 TFLite via onnx2tf, from a COPY of the fp32.
+def export_tflite(fp32: Path, work: Path, out: Path) -> Path:
+    """ONNX → TF SavedModel → fp32 TFLite via onnx2tf, from a COPY of the fp32.
 
-    detlib 8.4 routes format='tflite' to litert-torch, which hard-aborts on macOS arm64 (jax /
-    torchao). onnx2tf is the stabler route; it takes the fp32 ONNX this same script produced, so the
-    TFLite is the same graph, only quantised. It takes a copy because it writes its simplified graph
-    back over whatever path it is given (module docstring) — the committed fp32 must stay the bytes
-    the int8 was derived from.
+    onnx2tf takes the fp32 ONNX this same script produced, so the TFLite is the same graph. It takes a
+    copy because it writes its simplified graph back over whatever path it is given (module
+    docstring) — the committed fp32 must stay the bytes the int8 is derived from.
 
-    The artefact is `*_dynamic_range_quant.tflite`: **int8 weights, float32 activations** (and float32
-    I/O). This is a first-principles correction to the decision table's default "int8, XNNPACK".
-    FULL-integer int8 (int8 activations) was tried first and the golden-frame harness caught it
-    collapsing the detector detect head's class scores to ~0 — NO_FACE on all 20 fixtures (a documented
-    failure mode of int8-activation quantisation on detection heads with a wide logit range). Weight-
-    only int8 keeps the 4× model-size win (2.9 MB, same as the int8 ONNX) with the class read
-    IDENTICAL to fp32 (0/20 divergence, verified), and XNNPACK still accelerates it via its dynamic
-    path. So no calibration set is needed, and the slow full-integer build is skipped.
+    fp32, not quantised, for this model (ARTEFACT_LABELS says why in full): full-integer int8 collapsed
+    an earlier detect head's class scores to ~0 (NO_FACE on all 20 fixtures), and weight-only int8,
+    which read identically to fp32 for the v3 graph, diverges on 5 of the 20 golden fixtures for the
+    cubedet graph.
     """
     import onnx2tf
 
@@ -449,7 +366,7 @@ def export_tflite(fp32: Path, work: Path, out: Path, quantised: bool = True) -> 
         onnx2tf.convert(
             input_onnx_file_path=str(private),
             output_folder_path=str(tf_out),
-            output_dynamic_range_quantized_tflite=quantised,  # int8 weights, fp32 activations, when asked for
+            output_dynamic_range_quantized_tflite=False,
             output_signaturedefs=True,  # the dynamic-range path rejects '/'-containing op names without this
             copy_onnx_input_output_names_to_tflite=True,
             non_verbose=True,
@@ -457,13 +374,12 @@ def export_tflite(fp32: Path, work: Path, out: Path, quantised: bool = True) -> 
     finally:
         os.chdir(cwd)
 
-    wanted = f"{NAME}_dynamic_range_quant.tflite" if quantised else f"{NAME}_float32.tflite"
-    candidates = sorted(tf_out.glob(wanted))
-    if len(candidates) != 1:
-        found = [c.name for c in tf_out.glob("*.tflite")]
-        sys.exit(f"expected one {wanted}, found {found}")
+    wanted = tf_out / f"{NAME}_float32.tflite"
+    if not wanted.is_file():
+        found = sorted(c.name for c in tf_out.glob("*.tflite"))
+        sys.exit(f"expected one {wanted.name}, found {found}")
     dst = out / TFLITE
-    shutil.copyfile(candidates[0], dst)
+    shutil.copyfile(wanted, dst)
     return dst
 
 
@@ -539,8 +455,6 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--skip", nargs="*", default=[], choices=["onnx", "coreml", "tflite"], help="formats to skip")
     ap.add_argument("--int8-only", action="store_true", help="re-derive cubedet.int8.onnx from the fp32 already in --out; nothing else is touched")
     ap.add_argument("--work", type=Path, help="scratch directory (default: a temp dir, deleted afterwards)")
-    ap.add_argument("--cubedet", action="store_true",
-                    help="the checkpoint is a cubedet one (ml/cubedet) — export with no Detlib on any path")
     args = ap.parse_args(argv)
     if args.pt is None and not args.int8_only:
         ap.error("--pt is required: name the checkpoint to export")
@@ -578,35 +492,29 @@ def main(argv: list[str] | None = None) -> None:
     import torch
 
     manifest["tools"].update({"torch": torch.__version__, "onnx": onnx.__version__, "onnxruntime": onnxruntime.__version__})
-    if args.cubedet:
-        # The whole point of the --cubedet path: record that the model has no MIT lineage, and
-        # carry the training environment the checkpoint itself recorded, so the manifest — which
-        # ships beside the artefacts — is where the provenance can be read.
-        state = torch.load(args.pt, map_location="cpu", weights_only=True)
-        manifest["stack"] = "cubedet"
-        manifest["training_environment"] = state.get("environment", {})
-        manifest["backbone"] = state.get("backbone", FROM_SCRATCH_BACKBONE)
-        manifest["licence_note"] = licence_note(manifest["backbone"])
-        # HOW it was trained, which the weights cannot say. Said plainly when the checkpoint predates
-        # recipes, rather than left out -- an absent key reads like a field nobody thought of.
-        manifest["recipe"] = state.get("recipe") or "not recorded: the checkpoint predates train.py recording its recipe"
-        # The model definition that was traced is library code too: torchvision's or timm's layers
-        # built the graph these artefacts hold, so their versions belong beside torch's.
-        import torchvision
+    # Record that the model has no MIT lineage, and carry the training environment the
+    # checkpoint itself recorded, so the manifest — which ships beside the artefacts — is where
+    # the provenance can be read.
+    state = torch.load(args.pt, map_location="cpu", weights_only=True)
+    manifest["stack"] = "cubedet"
+    manifest["training_environment"] = state.get("environment", {})
+    manifest["backbone"] = state.get("backbone", FROM_SCRATCH_BACKBONE)
+    manifest["licence_note"] = licence_note(manifest["backbone"])
+    # HOW it was trained, which the weights cannot say. Said plainly when the checkpoint predates
+    # recipes, rather than left out -- an absent key reads like a field nobody thought of.
+    manifest["recipe"] = state.get("recipe") or "not recorded: the checkpoint predates train.py recording its recipe"
+    # The model definition that was traced is library code too: torchvision's or timm's layers
+    # built the graph these artefacts hold, so their versions belong beside torch's.
+    import torchvision
 
-        manifest["tools"]["torchvision"] = torchvision.__version__
-        try:
-            import timm
-        except ImportError:
-            if manifest["backbone"] != FROM_SCRATCH_BACKBONE and not hasattr(torchvision.models, manifest["backbone"]):
-                raise SystemExit(f"{manifest['backbone']} is a timm backbone and timm is not installed")
-        else:
-            manifest["tools"]["timm"] = timm.__version__
+    manifest["tools"]["torchvision"] = torchvision.__version__
+    try:
+        import timm
+    except ImportError:
+        if manifest["backbone"] != FROM_SCRATCH_BACKBONE and not hasattr(torchvision.models, manifest["backbone"]):
+            raise SystemExit(f"{manifest['backbone']} is a timm backbone and timm is not installed")
     else:
-        import detlib
-
-        manifest["stack"] = "detlib"
-        manifest["tools"]["detlib"] = detlib.__version__
+        manifest["tools"]["timm"] = timm.__version__
 
     paths: dict[str, Path] = {}
     fp32 = args.out / FP32
@@ -619,7 +527,7 @@ def main(argv: list[str] | None = None) -> None:
 
     int8_note = ""
     if "onnx" not in args.skip:
-        fp32, int8, int8_note = (export_onnx_cubedet if args.cubedet else export_onnx)(args.pt, work, args.out)
+        fp32, int8, int8_note = export_onnx_cubedet(args.pt, work, args.out)
         paths[fp32.name] = fp32
         manifest["artefacts"][FP32] = {**ARTEFACT_LABELS[FP32], "opset": 12}
         if int8 is None:
@@ -635,12 +543,10 @@ def main(argv: list[str] | None = None) -> None:
         import coremltools as ct
 
         manifest["tools"]["coremltools"] = ct.__version__
-        mlp = (export_coreml_cubedet if args.cubedet else export_coreml)(args.pt, work, args.out)
+        mlp = export_coreml_cubedet(args.pt, work, args.out)
         guard_fp32("coreml")
         paths[mlp.name] = mlp
         manifest["artefacts"][MLPACKAGE] = dict(ARTEFACT_LABELS[MLPACKAGE])
-        if not args.cubedet:  # the Detlib path converts at fp16; see export_coreml_cubedet for why cubedet does not
-            manifest["artefacts"][MLPACKAGE]["precision"] = "fp16 compute, fp32 tensor in, fp16 out"
 
     if "tflite" not in args.skip:
         import onnx2tf as _o2t
@@ -648,15 +554,10 @@ def main(argv: list[str] | None = None) -> None:
 
         manifest["tools"]["tensorflow"] = tf.__version__
         manifest["tools"]["onnx2tf"] = getattr(_o2t, "__version__", "unknown")
-        # cubedet ships fp32 on every other platform, and the quantised TFLite is the only artefact that
-        # still diverges from it (5 of 20 fixtures, one of them a face on a frame the reference refuses).
-        # Android serves the WebView fp32 graph today, so there is nothing to trade the faithfulness for.
-        tfl = export_tflite(fp32, work, args.out, quantised=not args.cubedet)
+        tfl = export_tflite(fp32, work, args.out)
         guard_fp32("tflite")
         paths[tfl.name] = tfl
         manifest["artefacts"][TFLITE] = dict(ARTEFACT_LABELS[TFLITE])
-        if not args.cubedet:  # the Detlib graph loses nothing to weight-only int8, so it keeps it
-            manifest["artefacts"][TFLITE]["precision"] = "dynamic-range int8: int8 weights, fp32 activations, fp32 I/O"
 
     # The relation between the two ONNX files is asserted, not assumed (module docstring).
     int8 = args.out / INT8
@@ -683,5 +584,4 @@ def main(argv: list[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
-    os.environ.setdefault("DET_VERBOSE", "True")
     main()

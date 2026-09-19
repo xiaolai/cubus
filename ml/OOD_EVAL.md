@@ -27,11 +27,11 @@ This doc is the out-of-distribution (OOD) evaluation harness and what it found.
 |---|---|
 | `fetch_wikimedia.py` | Pulls real cube photos from Wikimedia Commons (a *different source* → genuinely OOD), with per-file license/attribution in `manifest.csv`. No auth, resumable. |
 | `ood_eval.py` | Runs the shipped `cubedet.onnx` over a folder and reports **label-free** signals: detection rate, per-class confidence, and the app's real `fitFace` abstention mix. The letterbox is `cube_infer.letterbox` (byte-identical to the app's `preprocess()`, pinned by the golden gate) and decode/NMS/fitFace mirror `onnx-postprocess.ts`, so the numbers match what ships. Also writes label-format **pre-labels** and annotated **previews**. |
-| `metrics_table.py` | Emits the mAP rows of `MODEL_CARD.md` and this file from `detector val` (detlib' validator, imgsz 640, CPU), naming each artefact by sha256 — and writes the `--metrics` JSON `ood_report.py` reads, so no number in the report is a literal. |
+| `metrics_table.py` | Emits the mAP rows of `MODEL_CARD.md` and this file from the repository's own evaluator (`cubedet.val` via `compare_detectors.score`, imgsz 640, CPU; Detlib's `detector val` until 2026-09-18), naming each artefact by sha256 — and writes the `--metrics` JSON `ood_report.py` reads, so no number in the report is a literal. |
 | `color_eval.py` / `face_eval.py` | Per-sticker colour accuracy (matched at IoU ≥ 0.5) and per-face success through the app's own `fitFace` gate — the product-relevant reads, on the same letterbox the app uses. |
 | `ood_gallery.py` | Builds a local `gallery.html` grouping previews by verdict — for fast human scanning of failures. |
 | `ood_report.py` | Builds a self-contained, shareable `dev-docs/artifacts/cubedet-ood-report.html` (embedded thumbnails, dark/light aware). |
-| `prep_heldout.py` | Turns a downloaded Roboflow cube dataset into a `detector val` set in our 6-colour scheme (remap by name, drop non-colour, seg→box). Reports the mapping so an incompatible set is caught. |
+| `prep_heldout.py` | Turns a downloaded Roboflow cube dataset into a label-layout labelled set in our 6-colour scheme (remap by name, drop non-colour, seg→box). Reports the mapping so an incompatible set is caught. |
 | `dedup_heldout.py` | Removes held-out images that overlap our training/test data (exact SHA1 + aHash near-dup; `--dihedral` matches every rotation and flip of each training image, `--phash` adds a DCT hash, `--dry-run` reports without moving) — the anti-leakage step that makes a "held-out" number honest. |
 
 ### Reproduce
@@ -97,9 +97,12 @@ secretly overlap the training data. Pipeline:
 # fetch a DIFFERENT Roboflow cube dataset (needs ROBOFLOW_API_KEY); here rxdj9 (6-colour, seg)
 ml/venv/bin/python ml/prep_heldout.py --src ml/out/heldout_raw/<project> --out ml/out/heldout
 #   also writes ml/out/heldout/cubes/ from ml/photo_cubes.json: which cube each sticker is on, for the per-cube scripts
-ml/venv/bin/python ml/dedup_heldout.py --heldout ml/out/heldout --refs ml/out/train_imgs ml/out/iid_test/images   # remove leakage
-ml/venv/bin/python ml/dedup_heldout.py --heldout ml/out/heldout --refs ml/out/train_imgs ml/out/iid_test/images --dihedral --phash --dry-run   # the stronger check, report only
-ml/venv/bin/python ml/metrics_table.py     # the rows below: checkpoint, fp32, int8 × iid, heldout
+# remove leakage against EVERY training source — the Roboflow download and the shipped model's own
+# train/val (clean_real.py's output) — rotated and flipped copies included. --dry-run reports only.
+ml/venv/bin/python ml/dedup_heldout.py --heldout ml/out/heldout --refs ml/out/train_imgs ml/out/iid_test/images \
+    ~/datasets/real_clean/dataset/images/train ~/datasets/real_clean/dataset/images/val --dihedral --phash
+# the IID set: the shipped model's own test split, less its copies of its own train/val → ml/out/iid_v6ft
+ml/venv/bin/python ml/metrics_table.py     # the rows below: fp32 (and an int8 if one was written) × iid, heldout
 ```
 
 **The leakage step is not optional.** `rxdj9` is a fork of a related dataset: **67 of its 274 images
@@ -111,9 +114,12 @@ which are exactly Roboflow's default augmentations, and `prep_heldout.py` pools 
 copies. `--dihedral` — the aHash of every training image under all eight rotations and flips — flags
 **36 more of the 207**: 24 are `rubik-s-cube-sticker-detection` training photos with the *same
 `IMG_NNNN` stem*, flipped or turned a quarter, half or three-quarter turn; 10 are `lazycube`, 1
-`lazycube-faces`, 1 `rubyrizz`; a DCT pHash adds none. The composition on disk has NOT been changed
-(a dataset decision; every number in this file and the card is on the 207 as committed), but the
-effect was measured without moving a file: on the 171 that remain, the shipped fp32 reads mAP50
+`lazycube-faces`, 1 `rubyrizz`; a DCT pHash adds none. **Re-cut 2026-09-18**: the 36 were moved to
+`heldout/_removed_overlap/` beside the 67 found before, and — checked then against the SHIPPED model's
+own photographs, which the first checks never were — 6 more: 3 of V6FT's training photos, 2 of its
+validation photos, and a burst frame shot between three of them (`IMG_9107`). The held-out set is
+**165** from that date; every number dated before it is on the 207. The effect of the first 36 had
+been measured before the move: on the 171 that remained, v3's fp32 read mAP50
 0.884 / mAP50-95 0.779 / P 0.861 / R 0.865 (white 0.840), per-sticker recall 85.7%, colour 99.2% —
 against 0.878 / 0.772 / 0.862 / 0.860, 85.2%, 99.3% on all 207. The copies were not flattering the
 model; they are, if anything, slightly harder than the rest.
@@ -134,7 +140,25 @@ ships, same tool (`metrics_table.py`, detlib 8.4.126, imgsz 640, CPU):
 | v3 int8 ONNX (not shipped) | `7a9d985dd98d` | IID | 169 | 0.972 | 0.788 | 0.923 | 0.917 | 0.982 |
 | v3 int8 ONNX (not shipped) | `7a9d985dd98d` | held-out | 207 | 0.888 | 0.760 | 0.862 | 0.870 | 0.859 |
 
-Real generalization for the shipped model is **~0.88 mAP50** (v2 was ~0.81). Biggest drop from IID:
+**V6FT, shipped since 2026-09-17**, on sets it never trained on, measured 2026-09-18 by the
+repository's own evaluator (`metrics_table.py`, which no longer runs `detector val` — compare these rows
+only with each other; the two evaluators differ by a point or two):
+
+| artefact | sha256 | set | images | mAP50 | mAP50-95 | precision | recall | white mAP50 |
+|---|---|---|---|---|---|---|---|---|
+| **V6FT fp32 ONNX (shipped)** | `092f6c411b2a` | IID | 66 | **0.957** | 0.742 | 0.937 | 0.943 | 0.949 |
+| **V6FT fp32 ONNX (shipped)** | `092f6c411b2a` | held-out | 165 | **0.966** | 0.719 | 0.929 | 0.959 | 0.976 |
+
+The IID row is NOT `iid_test`: V6FT's real photographs were re-split from the whole Roboflow download
+(`clean_real.py`), so **124 of iid_test's 169 photos are in V6FT's training set** (111 byte-identical,
+13 turned or flipped) — on them it reads 0.959, which measures memory. Its own test split is not clean
+either: 23 of its 89 photos are turned, flipped or near copies of its train/val, which `clean_real.py`'s
+check could not see. The 66 that remain are `ml/out/iid_v6ft`. Removing every copy moved the held-out
+number by 0.001 (0.967 on the 207): the copies were not flattering V6FT. Per sticker on the held-out 165
+(`color_eval.py`): recall 97.4%, colour 98.3% on matched stickers, and the weak class is now **red**
+(93.0%; 25 of 357 read as orange).
+
+For **v3**, real generalization was **~0.88 mAP50** (v2 was ~0.81). Biggest drop from IID:
 **recall** (misses more stickers); weakest class flips from red (IID) to **white** (held-out mAP50
 0.831 fp32, 0.859 int8). The checkpoint and its exports differ by up to 0.012 mAP50 on the same
 photos — the exporter's fused graph and onnxruntime's kernels are not the PyTorch forward pass bit
@@ -154,7 +178,7 @@ ground-truth labels, and the labels that predict *app* success are on **your own
 2. Run `ood_eval.py` on them — it writes detector pre-labels into `<out>/labels/`.
 3. Spot-correct those labels (labelImg / CVAT / Roboflow) — fixing predictions is far faster than
    labelling from scratch.
-4. `detector val` (or a small mAP script) against the corrected labels → the honest deployment number.
+4. `metrics_table.py` against the corrected labels → the honest deployment number.
 
 That number, not 0.971, is the one to track as the model improves.
 

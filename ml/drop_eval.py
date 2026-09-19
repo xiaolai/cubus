@@ -274,7 +274,9 @@ def cube_outcomes(scores: list[PhotoScore], models: list[str], decide: Callable)
             per_contributor[c][0] += o == "right"
             per_contributor[c][1] += 1
         out[m] = {"counts": dict(Counter(outcome.values())), "sets": len(outcome),
-                  "macro_right": statistics.mean(a / b for a, b in per_contributor.values()) if per_contributor else float("nan")}
+                  "macro_right": statistics.mean(a / b for a, b in per_contributor.values()) if per_contributor else float("nan"),
+                  # Every set's outcome, so a reader of --out can join it to that set's photos (misread_k.py).
+                  "per_set": [{"contributor": c, "set": s, "outcome": o} for (c, s), o in sorted(outcome.items())]}
     return out
 
 
@@ -295,6 +297,19 @@ def funnel(drop: Path, legal: int, scored: int) -> dict[str, int]:
         answered += doc["status"] == "confirm" and any(review.glob("answers-*.json"))
     return {"complete sets": len(complete), **{f"proposal {k}": v for k, v in sorted(proposals.items())},
             "checked": answered, "checked and legal": legal, "scored here": scored}
+
+
+def out_document(flow: dict, reference: str, summary: dict, cubes: dict, false_faces: dict,
+                 scores: list[PhotoScore]) -> dict:
+    """The `--out` file: the summary, the per-set outcomes, and every per-photo record.
+
+    Its own function so a test can build one the way this script does and hand it to the script that
+    READS it (`misread_k.py`) — the join between the two is a contract between files, and each half
+    was tested against a hand-written idea of the other (audit, 2026-09-19).
+    """
+    public = {m: {k: v for k, v in r.items() if not k.startswith("_")} for m, r in summary.items()}
+    return {"funnel": flow, "reference": reference, "summary": public, "cubes": cubes,
+            "false_faces": false_faces, "photos": [asdict(s) for s in scores]}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -387,9 +402,7 @@ def main(argv: list[str] | None = None) -> int:
               f"{c['counts'].get('WRONG accepted', 0):>5} {c['counts'].get('refused', 0):>7} {c['counts'].get('not read', 0):>8} "
               f"{f['not a 3x3']:>3}/{f['not a 3x3 photos']} {f['no cube']:>2}/{f['no cube photos']}")
     if args.out:
-        public = {m: {k: v for k, v in r.items() if not k.startswith("_")} for m, r in summary.items()}
-        args.out.write_text(json.dumps({"funnel": flow, "reference": reference, "summary": public, "cubes": cubes,
-                                        "false_faces": false_faces, "photos": [asdict(s) for s in scores]}, indent=1))
+        args.out.write_text(json.dumps(out_document(flow, reference, summary, cubes, false_faces, scores), indent=1))
     return 0
 
 

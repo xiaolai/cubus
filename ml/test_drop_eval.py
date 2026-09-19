@@ -7,6 +7,7 @@ evaluation of the community sets got exactly that wrong.
 from __future__ import annotations
 
 import sys
+from collections import Counter
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -97,7 +98,20 @@ def test_every_set_gets_exactly_one_cube_outcome() -> None:
     out = de.cube_outcomes(scores, ["m"], decide)["m"]
     assert out["counts"] == {"refused": 1, "right": 1, "not read": 1, "WRONG accepted": 1}, out
     assert out["sets"] == 4 and out["macro_right"] == 0.25
-    print("PASS cubes: right, wrong-accepted, refused and not-read, each set counted once")
+    # `per_set` is the join misread_k.py reads this file by: one record per set, named the way the
+    # photos are, with the outcome beside it. A missing or mis-keyed record there becomes a scan with
+    # no outcome, and used to be counted as an "unknown" (audit, 2026-09-19).
+    assert out["per_set"] == [
+        {"contributor": "p", "set": "refused", "outcome": "refused"},
+        {"contributor": "p", "set": "right", "outcome": "right"},
+        {"contributor": "p", "set": "unread", "outcome": "not read"},
+        {"contributor": "p", "set": "wrong", "outcome": "WRONG accepted"},
+    ], out["per_set"]
+    keys = [(r["contributor"], r["set"]) for r in out["per_set"]]
+    assert len(set(keys)) == len(keys) == out["sets"], "a set is missing from per_set, or is in it twice"
+    assert sorted(Counter(r["outcome"] for r in out["per_set"]).items()) == sorted(out["counts"].items()), \
+        "the per-set records and the counts describe different scans"
+    print("PASS cubes: right, wrong-accepted, refused and not-read, each set counted once and named in per_set")
 
 
 if __name__ == "__main__":
