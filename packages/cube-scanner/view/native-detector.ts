@@ -10,7 +10,7 @@
 // This module is only ever constructed when `__TAURI__` is present AND the plugin answers its probe
 // (see ai-scan-panel's selectDetector); the browser build never loads it.
 
-import type { CameraDevice, CameraOptions } from '../src/camera.js';
+import { type CameraDevice, type CameraOptions, facingOf } from '../src/camera.js';
 import type { Detector, ModelOutput } from '../src/detector.js';
 
 /** The sliver of the Tauri API this needs — typed here so the scanner package takes no Tauri dep. */
@@ -214,7 +214,7 @@ export class NativeDetector implements Detector {
     // Camera or a virtual one is indistinguishable from the built-in otherwise.
     let info: CameraDevice | null;
     try {
-      info = (await this.invoke(`${P}current_camera`)) as CameraDevice | null;
+      info = nativeDevice(await this.invoke(`${P}current_camera`));
     } catch (err) {
       // THE CAMERA IS OPEN AND THE CALLER IS ABOUT TO BE TOLD IT IS NOT (2026-09-05). Only the
       // metadata read failed, so the lens is on with nothing reading it and no handle anywhere
@@ -352,9 +352,20 @@ function base64ToBuffer(b64: string): ArrayBuffer | null {
 }
 
 /**
- * Decode the plugin's tensor response: `int32 rows, int32 anchors` (little-endian) then
- * `rows*anchors` f32. A header of `0` anchors means "no frame yet" → null, which the panel treats as
- * a tick to skip. Exported so a test can pin the wire format without a running plugin.
+ * Decode the plugin's tensor response, little-endian, in one of two shapes:
+ *
+ * - version 1: `int32 rows, int32 anchors`, then `rows*anchors` f32;
+ * - version 2 (2026-09-19): `int32 -2, int32 rows, int32 anchors, int32 width, int32 height`, then the
+ *   same f32s — `width`×`height` being the camera picture the tensor was letterboxed from (after any
+ *   rotation), which is how the scan screen places each sticker in the picture
+ *   (dev-docs/scan-guidance-plan.md 5).
+ *
+ * The version is a NEGATIVE first word because a row count never is, so the two cannot be mistaken
+ * for each other, and an unknown version is refused rather than read as a row count. Both are
+ * accepted because a plugin moves to version 2 when its platform can be built and tested: Apple
+ * has; Windows and Android keep version 1 until they can be (dev-docs/scan-guidance-plan.md 5). `0`
+ * anchors means "no frame yet" → null, which the panel treats as a tick to skip. Exported so a test
+ * can pin the wire format without a plugin.
  */
 export function decodeTensorResponse(input: ArrayBuffer | string): ModelOutput | null {
   // TWO shapes, because the two native plugin APIs cannot produce the same one. Tauri's Rust
@@ -371,25 +382,83 @@ export function decodeTensorResponse(input: ArrayBuffer | string): ModelOutput |
   // An empty string is the Android plugin's "camera open, no frame yet" — the same null the Apple
   // path expresses with a short buffer, and what the panel treats as a tick to skip.
   const buf = typeof input === 'string' ? base64ToBuffer(input) : input;
-  if (buf === null || buf.byteLength < 8) return null;
-  const header = new Int32Array(buf, 0, 2);
-  const rows = header[0]!;
-  const anchors = header[1]!;
+  if (buf === null) return null;
+  // A version marker is read as soon as there is a word to read: a short response that STARTS a
+  // version 2 header is a bridge disagreement, not the idle "no frame yet" a short version 1 one is.
+  const versioned = buf.byteLength >= 4 && new Int32Array(buf, 0, 1)[0]! < 0;
+  if (!versioned && buf.byteLength < 8) return null;
+  const { rows, anchors, headerBytes, picture } = tensorHeader(buf);
   if (anchors <= 0 || rows <= 0) return null;
   const count = rows * anchors;
   // Fail loud on a malformed response rather than letting the Float32Array constructor throw an
-  // opaque RangeError: the plugin promised `count` floats after the 8-byte header, so if the buffer
-  // is shorter the two sides of the bridge have disagreed and the read cannot be trusted.
-  if (buf.byteLength < 8 + count * 4) {
+  // opaque RangeError: the plugin promised `count` floats after its header, so if the buffer is
+  // shorter the two sides of the bridge have disagreed and the read cannot be trusted.
+  if (buf.byteLength < headerBytes + count * 4) {
     throw new Error(
-      `cube-vision tensor is ${buf.byteLength} bytes, need ${8 + count * 4} for ${rows}×${anchors}`,
+      `cube-vision tensor is ${buf.byteLength} bytes, need ${headerBytes + count * 4} for ${rows}×${anchors}`,
     );
   }
-  const data = new Float32Array(buf, 8, count);
+  const data = new Float32Array(buf, headerBytes, count);
   // `rows` is CARRIED, not discarded. It was read off the header, used for one length check and
   // thrown away, so the one runtime that crosses a bridge was the one with no assertion that the
   // tensor is this model's detect head: a re-exported or transposed model reached
   // `decodeDetections` and was read off stale offsets. `fitFromOutput` is where that is now
   // refused, for every runtime at once.
-  return { data, anchors, rows };
+  return picture ? { data, anchors, rows, picture } : { data, anchors, rows };
+}
+
+/**
+ * The header of a tensor response, in either wire version. A version 2 header either says "no frame
+ * yet" — zero anchors, and no picture — or carries a frame AND the positive size of the picture it
+ * came from; a frame with no size, or a size with no frame, is the two sides of the bridge
+ * disagreeing, and is refused rather than read as a frame nobody can place (audit, 2026-09-19).
+ */
+function tensorHeader(buf: ArrayBuffer): {
+  rows: number;
+  anchors: number;
+  headerBytes: number;
+  picture?: { width: number; height: number };
+} {
+  const first = new Int32Array(buf, 0, 1)[0]!;
+  if (first >= 0) {
+    const [rows, anchors] = new Int32Array(buf, 0, 2);
+    return { rows: rows!, anchors: anchors!, headerBytes: 8 };
+  }
+  if (first !== -2) throw new Error(`cube-vision tensor: unknown wire version ${-first}`);
+  if (buf.byteLength < 20) {
+    throw new Error(`cube-vision tensor: a version 2 header is 20 bytes, got ${buf.byteLength}`);
+  }
+  const header = new Int32Array(buf, 0, 5);
+  const [rows, anchors, width, height] = [header[1]!, header[2]!, header[3]!, header[4]!];
+  // Exactly two shapes, and nothing between them: a frame, every number positive; or "no frame
+  // yet", every number zero. A zero row count beside anchors, a negative anything, a size with no
+  // frame or a frame with no size is the two sides disagreeing (audit, 2026-09-19).
+  if (rows > 0 && anchors > 0 && width > 0 && height > 0) {
+    return { rows, anchors, headerBytes: 20, picture: { width, height } };
+  }
+  if (rows === 0 && anchors === 0 && width === 0 && height === 0) {
+    return { rows, anchors, headerBytes: 20 };
+  }
+  throw new Error(
+    `cube-vision tensor: a version 2 header of ${rows}×${anchors} with a ${width}×${height} picture is neither a frame nor "no frame"`,
+  );
+}
+
+/**
+ * The camera the plugin says is open, as a `CameraDevice` — checked, because it crossed a bridge.
+ * `facing` is kept only when it names one of the two directions (the Apple plugin reports
+ * AVFoundation's position); anything else means the plugin did not say, which is what a desktop
+ * webcam's `unspecified` is.
+ */
+export function nativeDevice(raw: unknown): CameraDevice | null {
+  if (raw === null || raw === undefined) return null;
+  const r = raw as Partial<Record<keyof CameraDevice, unknown>>;
+  if (typeof r.deviceId !== 'string')
+    throw new Error('cube-vision: current_camera answered with no deviceId');
+  const facing = facingOf(r.facing);
+  return {
+    deviceId: r.deviceId,
+    label: typeof r.label === 'string' && r.label ? r.label : 'Camera',
+    ...(facing ? { facing } : {}),
+  };
 }

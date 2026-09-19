@@ -4,6 +4,7 @@
 // a heavy wasm runtime, and the whole path is exercised in tests with a fake `run`.
 
 import type { ModelOutput } from './detector.js';
+import { letterboxOf } from './letterbox.js';
 import {
   type Detection,
   decodeDetections,
@@ -53,11 +54,7 @@ export function preprocess(frame: Frame, imgsz: number = IMG_SIZE): Preprocessed
       `preprocess: a ${w}x${h} RGBA frame is ${w * h * 4} bytes, but this one holds ${src.length}`,
     );
   }
-  const scale = imgsz / Math.max(w, h);
-  const newW = Math.max(1, Math.round(w * scale));
-  const newH = Math.max(1, Math.round(h * scale));
-  const padX = Math.floor((imgsz - newW) / 2);
-  const padY = Math.floor((imgsz - newH) / 2);
+  const { scale, newW, newH, padX, padY } = letterboxOf(w, h, imgsz);
   const plane = imgsz * imgsz;
   const out = new Float32Array(3 * plane).fill(PAD);
 

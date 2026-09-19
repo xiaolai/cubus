@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fitFromOutput } from '../src/onnx-detect.js';
-import { CUBE_VISION, decodeTensorResponse, NativeDetector } from '../view/native-detector.js';
+import {
+  CUBE_VISION,
+  decodeTensorResponse,
+  NativeDetector,
+  nativeDevice,
+} from '../view/native-detector.js';
 
 // The wire format the cube-vision plugin returns over the Tauri bridge — int32 rows, int32 anchors
 // (little-endian), then rows*anchors f32. This is the TS half of the contract; the Rust half is
@@ -8,29 +13,130 @@ import { CUBE_VISION, decodeTensorResponse, NativeDetector } from '../view/nativ
 // native scan reads garbage. The Swift-through-CoreML parity is proven separately by the golden
 // harness's `native` leg; this pins the decode so a change to either side is caught here.
 
-function encode(rows: number, anchors: number, values: number[]): ArrayBuffer {
-  const buf = new ArrayBuffer(8 + values.length * 4);
-  const head = new Int32Array(buf, 0, 2);
-  head[0] = rows;
-  head[1] = anchors;
-  new Float32Array(buf, 8).set(values);
+/**
+ * The bytes the plugin sends, written LITTLE-ENDIAN by hand.
+ *
+ * Not `Int32Array`/`Float32Array` over the buffer: those write in the host's own order, which on every
+ * machine this runs on happens to be the order the decoder assumes — so the fixture would mirror the
+ * decoder instead of pinning the contract the Rust side actually writes (audit, 2026-09-19).
+ */
+function bytes(header: number[], values: number[]): ArrayBuffer {
+  const buf = new ArrayBuffer(header.length * 4 + values.length * 4);
+  const view = new DataView(buf);
+  header.forEach((n, i) => {
+    view.setInt32(i * 4, n, true);
+  });
+  values.forEach((v, i) => {
+    view.setFloat32(header.length * 4 + i * 4, v, true);
+  });
   return buf;
 }
 
-describe('decodeTensorResponse', () => {
-  it('reads rows*anchors floats after the header', () => {
-    const out = decodeTensorResponse(encode(2, 3, [1, 2, 3, 4, 5, 6]));
-    expect(out).not.toBeNull();
+/** Wire version 1: `rows, anchors`, then the floats. */
+const encode = (rows: number, anchors: number, values: number[]): ArrayBuffer =>
+  bytes([rows, anchors], values);
+
+/** Wire version 2: `-2, rows, anchors, width, height`, then the floats — the Apple plugin's since 2026-09-19. */
+const encode2 = (
+  rows: number,
+  anchors: number,
+  width: number,
+  height: number,
+  values: number[],
+): ArrayBuffer => bytes([-2, rows, anchors, width, height], values);
+
+/** A buffer of `size` bytes whose first int32 is `version` — a header that started and stopped. */
+function startedHeader(version: number, size: number): ArrayBuffer {
+  const buf = new ArrayBuffer(size);
+  if (size >= 4) new DataView(buf).setInt32(0, version, true);
+  return buf;
+}
+
+describe('decodeTensorResponse — wire version 2, and the camera a plugin reports', () => {
+  // The picture's size crosses so the scan screen can place each sticker in the camera's picture
+  // (dev-docs/scan-guidance-plan.md 5); the Rust half is `tensor_bytes` in crates/cube-vision/src/apple.rs.
+  it('reads the picture size and the same floats', () => {
+    const out = decodeTensorResponse(encode2(2, 3, 1280, 720, [1, 2, 3, 4, 5, 6]));
+    expect(out?.picture).toEqual({ width: 1280, height: 720 });
+    // Every field the decode is read for: a wrong anchor count corrupts every box downstream while
+    // the picture and the floats look right (audit, 2026-09-19).
+    expect(out?.rows).toBe(2);
     expect(out?.anchors).toBe(3);
     expect(Array.from(out!.data)).toEqual([1, 2, 3, 4, 5, 6]);
   });
 
-  it('treats a zero-anchor header as "no frame yet" (null), so an idle tick is not an error', () => {
-    expect(decodeTensorResponse(encode(0, 0, []))).toBeNull();
+  it('keeps reading version 1, which has no picture', () => {
+    const out = decodeTensorResponse(encode(2, 3, [1, 2, 3, 4, 5, 6]));
+    // Decoded, and only THEN without a picture: `null` has no picture either, and would have passed
+    // this as "version 1 still reads" (audit, 2026-09-19).
+    expect(out).not.toBeNull();
+    expect([out?.rows, out?.anchors]).toEqual([2, 3]);
+    expect(Array.from(out!.data)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(out).not.toHaveProperty('picture');
   });
 
-  it('treats a truncated response (< the 8-byte header) as null rather than throwing', () => {
+  it('treats a version 2 "no frame yet" as null, and the idle empty buffer as one too', () => {
+    expect(decodeTensorResponse(encode2(0, 0, 0, 0, []))).toBeNull();
     expect(decodeTensorResponse(new ArrayBuffer(4))).toBeNull();
+  });
+
+  it('refuses every malformed version 2 response, each shape once', () => {
+    // Exactly two shapes pass: a frame with every number positive, or "no frame" with every number
+    // zero. Anything between is the two sides of the bridge disagreeing (audit, 2026-09-19), and a
+    // header that started but did not finish is the same disagreement one step earlier.
+    const half = (rows: number, anchors: number, w: number, h: number) => ({
+      name: `${rows}×${anchors} ${w}×${h}`,
+      buf: encode2(rows, anchors, w, h, [1, 2, 3, 4, 5, 6]),
+      says: /neither a frame nor "no frame"/,
+    });
+    const cases = [
+      half(2, 3, 0, 480), // a frame with no size
+      half(2, 3, -640, 480),
+      half(0, 0, 640, 480), // a size with no frame
+      half(0, 0, -1, 0),
+      half(0, 3, 0, 0), // anchors with no rows
+      half(2, 0, 0, 0),
+      half(-1, 3, 0, 0),
+      // Too short to hold the header it started — its two boundaries: the first four bytes that name
+      // the version, and one byte short of the whole twenty.
+      ...[4, 19].map((size) => ({
+        name: `${size} bytes`,
+        buf: startedHeader(-2, size),
+        says: /version 2 header is 20 bytes/,
+      })),
+      // A version this build does not speak.
+      {
+        name: 'version 3',
+        buf: encode2(2, 3, 640, 480, [1, 2, 3, 4, 5, 6]),
+        says: /unknown wire version 3/,
+      },
+      // A header whose floats did not all arrive.
+      { name: 'two floats of six', buf: encode2(2, 3, 640, 480, [1, 2]), says: /need 44/ },
+    ];
+    new DataView(cases.find((c) => c.name === 'version 3')!.buf).setInt32(0, -3, true);
+    for (const { name, buf, says } of cases) {
+      expect(() => decodeTensorResponse(buf), name).toThrow(says);
+    }
+  });
+
+  it('checks the camera a plugin reports, keeping a facing only when it names a direction', () => {
+    expect(nativeDevice({ deviceId: 'x', label: 'Back Camera', facing: 'environment' })).toEqual({
+      deviceId: 'x',
+      label: 'Back Camera',
+      facing: 'environment',
+    });
+    expect(
+      nativeDevice({ deviceId: 'y', label: 'FaceTime HD', facing: 'unspecified' }),
+    ).not.toHaveProperty('facing');
+    expect(nativeDevice({ deviceId: 'z', label: '' })).toEqual({ deviceId: 'z', label: 'Camera' });
+    expect(nativeDevice(null)).toBeNull();
+    expect(() => nativeDevice({ label: 'no id' })).toThrow(/no deviceId/);
+  });
+});
+
+describe('decodeTensorResponse', () => {
+  it('treats a zero-anchor header as "no frame yet" (null), so an idle tick is not an error', () => {
+    expect(decodeTensorResponse(encode(0, 0, []))).toBeNull();
   });
 
   it('fails loud on a header that promises more floats than the buffer holds', () => {
@@ -91,7 +197,9 @@ describe('NativeDetector — stop() cancels a pending use()', () => {
           openGate = r;
         });
       }
-      if (cmd.endsWith('current_camera')) return { deviceId: 'native-1', label: 'Native' };
+      if (cmd.endsWith('current_camera')) {
+        return { deviceId: 'native-1', label: 'Native', facing: 'environment' };
+      }
       return null;
     };
     return { calls, invoke, finishOpen: () => openGate() };
@@ -118,13 +226,16 @@ describe('NativeDetector — stop() cancels a pending use()', () => {
     expect(b.calls).not.toContain('current_camera');
   });
 
-  it('an uninterrupted open still installs the camera', async () => {
+  it('an uninterrupted open installs the camera, facing and all', async () => {
+    // Through `use()`, not through the helper alone: the facing is what decides whether the sticker
+    // view is mirrored, and it is dropped by an integration that never passes it on (audit,
+    // 2026-09-19).
     const b = bridge();
     const det = new NativeDetector(b.invoke);
     const opening = det.use({});
     b.finishOpen();
     await opening;
-    expect(det.device).toEqual({ deviceId: 'native-1', label: 'Native' });
+    expect(det.device).toEqual({ deviceId: 'native-1', label: 'Native', facing: 'environment' });
   });
 });
 

@@ -66,6 +66,38 @@ export interface CameraOptions {
 export interface CameraDevice {
   deviceId: string;
   label: string;
+  /**
+   * Which way the camera points, when the camera says: 'user' faces the person, 'environment'
+   * faces away. Absent when it does not say, which is what a laptop's webcam usually does — and a
+   * laptop's webcam faces the person. A host drawing where the camera sees things mirrors unless
+   * this says 'environment' (dev-docs/scan-guidance-plan.md 4.1).
+   */
+  facing?: 'user' | 'environment';
+}
+
+/**
+ * A facing, if `value` names one of the two directions — and nothing otherwise. ONE check, because it
+ * was written out three times (a track's settings, the native plugin's answer, the panel's attribute)
+ * and a copy that drifted would mirror a camera the others do not (audit, 2026-09-19).
+ */
+export function facingOf(value: unknown): 'user' | 'environment' | undefined {
+  return value === 'user' || value === 'environment' ? value : undefined;
+}
+
+/**
+ * The camera a video track came from, as the track itself reports it. Pure, so it is tested without
+ * a camera: the facing is kept only when the track names one of the two directions.
+ */
+export function describeTrack(
+  track: Pick<MediaStreamTrack, 'label' | 'getSettings'> | undefined,
+): CameraDevice {
+  const settings = track?.getSettings();
+  const facing = facingOf(settings?.facingMode);
+  return {
+    deviceId: settings?.deviceId ?? '',
+    label: track?.label || 'Camera',
+    ...(facing ? { facing } : {}),
+  };
 }
 
 /**
@@ -157,11 +189,7 @@ export async function openCamera(
 
     // Read back what we actually got, rather than what we asked for. `label` is only populated
     // once permission has been granted — which it has, by the time we are here.
-    const track = stream.getVideoTracks()[0];
-    const device: CameraDevice = {
-      deviceId: track?.getSettings().deviceId ?? '',
-      label: track?.label || 'Camera',
-    };
+    const device = describeTrack(stream.getVideoTracks()[0]);
 
     return {
       device,

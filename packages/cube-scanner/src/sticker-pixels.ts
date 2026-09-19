@@ -14,6 +14,7 @@
 // separate hue from brightness — a face turned away from the window is darker paint-for-paint, and
 // the grouping ignores L* for exactly that reason.
 
+import { letterboxOf } from './letterbox.js';
 import type { Frame } from './types.js';
 
 /** The fraction of a sticker kept, centred: 0.6 leaves the border and the bleed outside. */
@@ -29,10 +30,8 @@ export type Box = readonly [number, number, number, number];
  * `preprocess` does, read backwards. Kept next to the reader rather than inside it because the
  * detector is the only thing that knows `imgsz`.
  */
-export function toFrameBox(box: Box, frame: Frame, imgsz: number): Box {
-  const scale = imgsz / Math.max(frame.width, frame.height);
-  const padX = Math.floor((imgsz - Math.max(1, Math.round(frame.width * scale))) / 2);
-  const padY = Math.floor((imgsz - Math.max(1, Math.round(frame.height * scale))) / 2);
+export function toFrameBox(box: Box, frame: Pick<Frame, 'width' | 'height'>, imgsz: number): Box {
+  const { scale, padX, padY } = letterboxOf(frame.width, frame.height, imgsz);
   return [(box[0] - padX) / scale, (box[1] - padY) / scale, box[2] / scale, box[3] / scale];
 }
 

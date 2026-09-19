@@ -18,7 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CameraDevice } from '../src/camera.js';
 import type { Detector, ModelOutput } from '../src/detector.js';
 import { rotateFace } from '../src/facelet-cube.js';
-import { AiScanPanel, type ScanProgress } from '../view/ai-scan-panel.js';
+import { AiScanPanel, type ScanCapture, type ScanProgress } from '../view/ai-scan-panel.js';
 
 // A path, not `new URL(…, import.meta.url)`: under happy-dom the module's URL is not a file URL.
 const clip = JSON.parse(
@@ -60,6 +60,9 @@ class ClipDetector implements Detector {
 let panel: AiScanPanel;
 let events: ScanProgress[];
 let completions: string[];
+/** Each `scan-capture`, with the sides the LATEST report held when it arrived — the announcement is
+ *  queued after the filing report, so the report it belongs to is the last one sent, not the next. */
+let captures: { faces: (string | null)[]; detail: ScanCapture }[];
 const last = () => events[events.length - 1]!;
 
 beforeEach(async () => {
@@ -77,12 +80,19 @@ beforeEach(async () => {
   });
   events = [];
   completions = [];
+  captures = [];
   panel = new AiScanPanel();
   panel.setAttribute('headless', '');
   document.body.appendChild(panel);
   panel.useDetector(new ClipDetector(), 'native');
   panel.addEventListener('scan-progress', (e) =>
     events.push((e as CustomEvent<ScanProgress>).detail),
+  );
+  panel.addEventListener('scan-capture', (e) =>
+    captures.push({
+      faces: last().captured.map((c) => c.face),
+      detail: (e as CustomEvent<ScanCapture>).detail,
+    }),
   );
   panel.addEventListener('scan-complete', (e) =>
     completions.push((e as CustomEvent<{ facelets: string }>).detail.facelets),
@@ -132,5 +142,33 @@ describe('a real scan of a cube with a logo on its white centre', () => {
 
   it('finishes with the cube as it physically was', () => {
     expect(completions).toEqual([TRUTH]);
+  });
+
+  it('announces every side it files, once, as it files it', () => {
+    // A host plays its capture sound on this event, so it must match the filing exactly: six sides
+    // filed, six announcements counting 1…6, and each named one already in the report that follows.
+    // The logo side is among them, announced before it could be named — its centre read as yellow,
+    // the colour another side had already claimed (dev-docs/scan-guidance-plan.md 3.1).
+    expect(captures.map((c) => c.detail.sides)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(captures.every((c) => c.detail.kind === 'side')).toBe(true);
+    // Each announcement names a side filed AT THAT MOMENT: in the report it arrived with, and not in
+    // the one before it. Sides stay filed for the rest of the scan, so "it is in the list" alone
+    // passes for an announcement naming a side filed three captures ago (audit, 2026-09-19).
+    let before: (string | null)[] = [];
+    for (const { faces, detail } of captures) {
+      if (detail.face) {
+        expect(faces, `${detail.face} was announced but not filed`).toContain(detail.face);
+        expect(before, `${detail.face} was announced again`).not.toContain(detail.face);
+      } else {
+        // Filed unnamed: held and counted, but not in the named list — and neither is the side whose
+        // centre colour it collided with, which is why the two counts can differ by more than one.
+        expect(faces.length, 'an unnamed capture was announced with every side named').toBeLessThan(
+          detail.sides,
+        );
+      }
+      before = faces;
+    }
+    const named = captures.flatMap((c) => (c.detail.face ? [c.detail.face] : [])).sort();
+    expect(named).toEqual(['B', 'D', 'F', 'L', 'R']); // the one filed unnamed is the white side
   });
 });

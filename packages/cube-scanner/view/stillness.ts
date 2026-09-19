@@ -12,6 +12,29 @@
  * alone would accept a cube that drifted through several different readings during the window.
  * Requiring both is what makes a captured frame a frame somebody actually held.
  */
+/** Positions that must change at once for a read to be a different subject, not a noisy frame. */
+const SUBJECT_CHANGE = 4;
+/** The centre's position. Every side has its own centre colour, so another side always changes it. */
+const CENTRE = 4;
+/** Where each position's sticker comes from when a side is turned a quarter in the hand (row-major). */
+const QUARTER_TURN = [6, 3, 0, 7, 4, 1, 8, 5, 2] as const;
+
+/**
+ * Whether `next` is `prev` turned a quarter, a half or three quarters — the same side, turned in the
+ * hand. Never true of a read that differs in ONE position: a turn moves stickers round in fours (a
+ * half turn in pairs), and a cycle whose stickers changed cannot change in just one place.
+ */
+function turnedFrom(prev: readonly number[], next: readonly number[]): boolean {
+  if (prev.length !== QUARTER_TURN.length || next.length !== QUARTER_TURN.length) return false;
+  let turned: readonly number[] = prev;
+  for (let quarter = 1; quarter <= 3; quarter++) {
+    const from = turned;
+    turned = QUARTER_TURN.map((i) => from[i]!);
+    if (turned.every((c, i) => c === next[i])) return true;
+  }
+  return false;
+}
+
 export class Stillness {
   /**
    * The read the current run is made of, or null when there is no run.
@@ -28,6 +51,8 @@ export class Stillness {
   private colors: readonly number[] | null = null;
   /** Per position, how many times a run has been broken by that position alone. */
   private readonly breaks = new Map<number, number>();
+  /** Per position, every colour it showed on either side of a break it made alone. */
+  private readonly breakColours = new Map<number, Set<number>>();
 
   /**
    * @param reads Identical consecutive reads required.
@@ -67,11 +92,35 @@ export class Stillness {
       const previous = this.colors;
       if (previous && previous.length === colors.length) {
         const differing: number[] = [];
-        for (let i = 0; i < colors.length && differing.length < 2; i++) {
+        for (let i = 0; i < colors.length; i++) {
           if (colors[i] !== previous[i]) differing.push(i);
         }
         const only = differing.length === 1 ? differing[0] : undefined;
-        if (only !== undefined) this.breaks.set(only, (this.breaks.get(only) ?? 0) + 1);
+        // Most of the face changing is a cube that MOVED — another side, or the same side turned —
+        // and what the last subject's stickers did says nothing about this one: without this, a face
+        // turned straight into another fully read one was described by the old face's red/orange
+        // flicker (audit, 2026-09-19). Two or three positions at once is a noisy frame, not a new
+        // subject, and wiping the history there would keep a real flicker from ever being named —
+        // UNLESS the centre is one of them: a centre is fixed to its side, so a changed centre with
+        // anything else changed is another side, however many of its stickers happen to match the
+        // last one's (a near-solved cube's sides can). The centre ALONE is still a flicker: a logo
+        // reads as more than one colour, and that is exactly the sticker worth naming. And a read
+        // that is the last one TURNED is the same side turned in the hand: every sticker the history
+        // names has moved, though a side with a near-symmetric pattern changes in only two or three
+        // places (round-3 audit). Wiping is the safe direction either way — a flicker named later,
+        // never the wrong sticker named now.
+        const anotherSide = differing.includes(CENTRE) && differing.length >= 2;
+        const turned = differing.length >= 2 && turnedFrom(previous, colors);
+        if (differing.length >= SUBJECT_CHANGE || anotherSide || turned) {
+          this.breaks.clear();
+          this.breakColours.clear();
+        }
+        if (only !== undefined) {
+          this.breaks.set(only, (this.breaks.get(only) ?? 0) + 1);
+          const seen = this.breakColours.get(only) ?? new Set<number>();
+          seen.add(previous[only]!).add(colors[only]!);
+          this.breakColours.set(only, seen);
+        }
       }
       this.key = key;
       this.colors = [...colors];
@@ -101,6 +150,15 @@ export class Stillness {
   }
 
   /**
+   * The colours `position` showed across the breaks it made alone, ascending — what the sticker
+   * keeps changing BETWEEN. Two colours is the case worth a sentence: a pair the detector confuses
+   * under some light. Empty for a position that never broke a run alone.
+   */
+  flickerColours(position: number): number[] {
+    return [...(this.breakColours.get(position) ?? [])].sort((a, b) => a - b);
+  }
+
+  /**
    * Where the current run stands, for the scan trace. Read-only, and never consulted by `offer`:
    * the gate decides from its own fields, so recording this cannot change what it decides. `heldMs`
    * is measured the same way the gate measures it — from the run's FIRST read, on the same clock.
@@ -116,5 +174,6 @@ export class Stillness {
     this.count = 0;
     this.since = 0;
     this.breaks.clear();
+    this.breakColours.clear();
   }
 }
