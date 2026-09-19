@@ -961,6 +961,53 @@ test('the Advanced toggle brings the dev die back, and turning it off takes it a
   win.localStorage.removeItem('cubusSettings');
 });
 
+// The scan-guidance study's arm (dev-docs/scan-guidance-plan.md 4.1) is a developer setting beside the
+// die: behind the Advanced chord, off by default, and a press moves it between today's scan screen and
+// the sticker view — two values, never the camera picture the owner ruled out (D2).
+test('the Advanced section holds the sticker-view switch, off by default, and a press keeps the arm', async () => {
+  const { settings } = await import('../lib/app-settings.js');
+  // Everything this case changes is taken BEFORE it changes any of it, and put back exactly — the
+  // disclosure is closed by asking for it rather than by toggling whatever state it is in, and the
+  // stored settings go back to what they were rather than being deleted (audit, 2026-09-19).
+  const was = { arm: settings.devScanView, stored: win.localStorage.getItem('cubusSettings') };
+  const sw = () => win.document.querySelector('[data-scan-view]');
+  const kept = () => JSON.parse(win.localStorage.getItem('cubusSettings')).devScanView;
+  /** What the switch SAYS it is: the state a screen reader reads, and the state it is drawn in. */
+  const shown = () => [sw().getAttribute('aria-checked'), sw().classList.contains('on')];
+  // EVERYTHING this case does is inside the guard, the disclosure chord included: opening Advanced is
+  // itself a change to shared state, and a failure between it and the `try` used to leave the section
+  // open for every test after this one (audit, 2026-09-19).
+  try {
+    win.location.hash = '#/settings';
+    await tick();
+    isAbsent(win.document.querySelector('[data-scan-view]'), 'the study switch showed outside Advanced');
+    win.document.dispatchEvent(chord());
+    await tick();
+    assert.ok(sw(), 'Advanced has no sticker-view switch');
+    assert.deepEqual(shown(), ['false', false], 'the study arm was on for someone who never chose it');
+    sw().click();
+    await tick();
+    assert.deepEqual(shown(), ['true', true]);
+    assert.equal(kept(), 'dots', 'the arm was not kept');
+    sw().click();
+    await tick();
+    // Back, in what is kept AND in what the switch shows: a one-way switch keeps the right value
+    // while telling the user the opposite (audit, 2026-09-19).
+    assert.equal(kept(), 'today');
+    assert.deepEqual(shown(), ['false', false], 'the switch stayed on over an arm that went off');
+  } finally {
+    // Whatever failed, the next test gets Advanced closed and the arm off: this screen's state is
+    // shared, and a failure here otherwise cascades into tests that never touched it.
+    settings.devScanView = was.arm;
+    if (was.stored === null) win.localStorage.removeItem('cubusSettings');
+    else win.localStorage.setItem('cubusSettings', was.stored);
+    // Closed, not toggled: a failure before the switch was found would otherwise leave it OPEN.
+    if (win.document.querySelector('[data-scan-view]')) win.document.dispatchEvent(chord());
+    await tick();
+    isAbsent(win.document.querySelector('[data-scan-view]'), 'Advanced was left open for the next test');
+  }
+});
+
 test('showing an entry adds it to the toolbar, hiding removes it, and the rest is untouched', async () => {
   win.location.hash = '#/settings';
   await tick();

@@ -39,13 +39,21 @@ export const save = (k, v) => {
  * `hostile-settings.test.mjs` pins the repair against this constant rather than a copy of it.
  */
 export const DEFAULT_PALETTE = 'classic';
+/** The scan-guidance study's two arms (dev-docs/scan-guidance-plan.md 4.1), declared once: today's scan
+ *  screen, and the sticker view beside it. A developer setting; its default, its repair, the Settings
+ *  switch and the scan screen all read these. */
+export const SCAN_VIEWS = Object.freeze({ today: 'today', stickers: 'dots' });
 /** What a fresh install gets and what every repair below falls back to — one table, so the two
  *  cannot come to disagree about a default. */
 export const DEFAULT_SETTINGS = Object.freeze({
   theme: 'auto', palette: DEFAULT_PALETTE, scheme: 'western', schemeSource: 'default', autosolve: false, cameraId: '',
   navHidden: null, navDefaults: 0, devRandCube: false, language: '', dragRotate: false, solveTier: 'twenty',
-  proveMinimum: false,
+  proveMinimum: false, sounds: true, devScanView: SCAN_VIEWS.today,
 });
+/** Every setting whose default is a boolean — DERIVED, so a new flag is repaired the moment it has a
+ *  default, and no list kept by hand can leave one out (audit, 2026-09-19: the tests' own copies had
+ *  already drifted). */
+export const BOOLEAN_SETTINGS = Object.freeze(Object.keys(DEFAULT_SETTINGS).filter((k) => typeof DEFAULT_SETTINGS[k] === 'boolean'));
 /** The record exactly as storage held it, so the one write at the end of this file happens only when a
  *  repair or a migration changed something — or on a first launch, when storage held nothing. */
 const storedRecord = (() => { try { return localStorage.getItem('cubusSettings'); } catch { return null; } })();
@@ -53,8 +61,15 @@ export const settings = load('cubusSettings', DEFAULT_SETTINGS);
 // localStorage is untrusted input, and `load` merges it raw. The string "false" is truthy, so a
 // hand-edited or half-migrated flag reads as ON: proveMinimum would opt someone in to an operation
 // that runs for hours, and a Settings toggle flips `!settings[k]`, so a stored "false" showed as on
-// while auto-solve left a believed scan. Off unless explicitly true — for every flag, not one.
-for (const flag of ['autosolve', 'dragRotate', 'devRandCube', 'proveMinimum']) settings[flag] = settings[flag] === true;
+// while auto-solve left a believed scan. ONE rule for every flag: a real boolean is kept, and
+// anything else is the flag's DEFAULT — off for all of them but `sounds`, which is on
+// (dev-docs/scan-guidance-plan.md, D3: a chime is how a child who cannot read hears a side saved).
+// It was two rules until 2026-09-19, one per default, free to drift apart.
+for (const flag of BOOLEAN_SETTINGS) {
+  if (typeof settings[flag] !== 'boolean') settings[flag] = DEFAULT_SETTINGS[flag];
+}
+// The study's arm: anything but one of its two values is today's screen.
+if (!Object.values(SCAN_VIEWS).includes(settings.devScanView)) settings.devScanView = DEFAULT_SETTINGS.devScanView;
 // The inspection flag is gone (it toggled a label, never a behaviour); drop the stored leftover
 // rather than letting save() keep rewriting a field nothing reads — the advancedOpen precedent.
 delete settings.inspection;

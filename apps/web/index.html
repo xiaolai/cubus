@@ -680,7 +680,10 @@
          height — nine buttons' worth of line boxes — and that beat its own aspect-ratio
          whenever the column was narrow. Without this the tile is only square by luck of having
          enough width. */
-      .scan-face .tile { min-height: 0; width: 100%; aspect-ratio: 1; padding: 6px; border-radius: var(--r-5); border: 3px solid var(--line-strong); box-shadow: 0 0 0 1px var(--line); display: grid; }
+      /* The two hairlines a tile edge always wears (tokens.test.mjs holds them at 3:1 on every
+         surface) are written ONCE and composed into every shadow the tile can wear — base, asked and
+         the asked pulse's keyframe — so the three cannot drift apart (audit, 2026-09-19). */
+      .scan-face .tile { --tile-hairlines: 0 0 0 1px var(--band-edge), inset 0 0 0 1px var(--band-edge); min-height: 0; width: 100%; aspect-ratio: 1; padding: 6px; border-radius: var(--r-5); border: 3px solid var(--line-strong); box-shadow: var(--tile-hairlines); display: grid; }
       /* The 3x3 grid lives on an inner wrapper, NOT on the tile: when a scan settles, a face that
          was captured the wrong way up is animated turning to its true orientation, and rotating
          the tile itself would carry its edge colours along — which are canonical guidance and must
@@ -783,7 +786,23 @@
          from the six captures alone. Outranks .done: it has been captured, that is the point. */
       /* Keeps its edge colours: the point of asking is that this side be held a particular way up,
          which is exactly what those colours say. The halo carries the attention instead. */
-      .scan-face.asked .tile { box-shadow: 0 0 0 1px var(--line), 0 0 0 4px color-mix(in srgb, var(--accent) 32%, transparent); }
+      .scan-face.asked .tile { box-shadow: var(--tile-hairlines), 0 0 0 4px color-mix(in srgb, var(--accent) 32%, transparent); animation: cubusAsked var(--pulse) ease-in-out infinite; }
+      /* The asked tile breathes, so the side the scan wants back is found without reading. Under reduced
+         motion the global rule runs it once, and it rests as the static ring above. */
+      @keyframes cubusAsked { 50% { box-shadow: var(--tile-hairlines), 0 0 0 7px color-mix(in srgb, var(--accent) 20%, transparent); } }
+      /* The study's sticker view (lib/screens/scan/sticker-view.js): where the camera sees stickers, in the
+         twin's slot while a scan reads. Theme colours live here, not in SVG attributes, where var() is
+         not reliably honoured. */
+      /* The sticker view stands in for the twin by a class on the slot, never a hidden attribute on the
+         twin: the twin is the page's one parked cube and would carry it to the next screen. !important
+         for the reason the [hidden] rule has it: the renderer writes display:block on its own style. */
+      .seen-on > cubus-cube { display: none !important; }
+      .scan-seen { width: 100%; height: 100%; display: grid; place-items: center; }
+      .scan-seen > svg { width: 100%; height: 100%; }
+      .scan-seen .seen-frame { fill: var(--panel-sunk); stroke: var(--band-edge); }
+      .scan-seen .seen-settle { fill: none; stroke: var(--accent); }
+      .scan-seen .seen-sticker { stroke: var(--sticker-edge); }
+      .scan-seen .seen-sticker.in-face { stroke: var(--ink); }
       .scan-face.asked .lbl { color: var(--accent); }
       /* Camera control, out of the centred column so it does not shift the scan. The lens fills and
          pulses while a camera is open: with no video on screen, that is the only thing telling a

@@ -17,6 +17,7 @@ import { readFileSync } from 'node:fs';
 import { Window } from 'happy-dom';
 import Cube from '../vendor/cubejs.js';
 import { solverLoaded } from './fixtures/app-waits.mjs';
+import { audioStandIn, speechStandIn } from './sound-stand-ins.mjs';
 
 const SOLVED_FACELETS = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
@@ -118,6 +119,55 @@ test('a REPAINT of the screen you are on does not steal focus', async () => {
   isNotSame(win.document.activeElement, $('#stage .screen.active'), 'a repaint pulled focus to the screen');
   $('[data-toggle="autosolve"]').click(); // leave the setting as it was
   await tick();
+});
+
+// The one switch for every sound the scan makes (lib/sound.js; dev-docs/scan-guidance-plan.md 3.2,
+// D3): drawn in Settings, ON for someone who never chose, and a press turns it off and keeps that.
+test('Settings has a Sounds switch, on by default, and a press turns it off and keeps it', async () => {
+  await go('settings');
+  const sw = $('[data-toggle="sounds"]');
+  assert.ok(sw, 'there is no Sounds switch');
+  assert.equal(sw.getAttribute('aria-checked'), 'true', 'sounds were off for someone who never chose');
+  sw.click();
+  await tick();
+  assert.equal($('[data-toggle="sounds"]').getAttribute('aria-checked'), 'false');
+  assert.equal(JSON.parse(win.localStorage.getItem('cubusSettings')).sounds, false, 'the choice was not kept');
+  $('[data-toggle="sounds"]').click(); // leave the setting as it was
+  await tick();
+});
+
+// Off means silent NOW: a chime or a spoken line already under way stops when the switch is turned
+// off, rather than finishing after it said off (audit, 2026-09-19).
+test('turning Sounds off stops a chime and a line already under way', async () => {
+  const sound = await import('../lib/sound.js');
+  const speech = await import('../lib/speech.js');
+  const { ctx, made: oscillators } = audioStandIn({ state: 'running' });
+  const voice = speechStandIn();
+  const wasAudio = sound.useAudioContextFactory(() => ctx);
+  const wasVoice = speech.useSpeechEngine(voice.make);
+  try {
+    await go('settings');
+    // The gesture reaches the listener the app installed at boot: registering the same callback again
+    // is ignored by EventTarget, so a second call here would prove nothing (audit, 2026-09-19).
+    win.document.dispatchEvent(new win.Event('pointerdown'));
+    assert.equal(sound.play('capture'), true, 'precondition: a chime is sounding');
+    speech.say('Got it!');
+    assert.deepEqual(voice.said.at(-1), 'Got it!', 'precondition: a line is being said');
+    $('[data-toggle="sounds"]').click();
+    await tick();
+    assert.equal($('[data-toggle="sounds"]').getAttribute('aria-checked'), 'false');
+    // The line CUT OFF is the one that was being said — one synth throughout, so "something was
+    // cancelled" cannot stand in for it (audit, 2026-09-19).
+    assert.equal(voice.cuts.at(-1), 'Got it!', 'the line under way was left speaking');
+    assert.ok(oscillators.every((o) => o.stops.length >= 2), 'the chime under way was left sounding');
+    $('[data-toggle="sounds"]').click(); // back on, as it was
+    await tick();
+  } finally {
+    // Put back what was there, rather than leaving the next test a platform with no audio and no
+    // voice (audit, 2026-09-19).
+    sound.useAudioContextFactory(wasAudio);
+    speech.useSpeechEngine(wasVoice);
+  }
 });
 
 test('the trust indicator is still a BUTTON, and its live text is a sibling', () => {

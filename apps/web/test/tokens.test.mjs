@@ -320,6 +320,52 @@ test('every status fill clears the 3:1 a meaningful graphic needs', () => {
   assert.deepEqual(failures, [], 'a graphic that carries meaning needs 3:1');
 });
 
+// A scan tile's border is four colour bands — each the colour of the side that borders it — and they
+// are how a side is laid out. Three of those colours sit within 3:1 of the surface in some theme (white
+// is 1.1:1 on the light pages, yellow 1.7:1, orange 2.8:1; blue 2.2:1 and red 2.8:1 on night), so a
+// band would vanish into the page exactly where it matters. The band keeps its colour — white must
+// still read as white — and is drawn between two hairlines that DO clear 1.4.11's 3:1, which is how
+// the stickers already solve the same problem (`--sticker-edge`). dev-docs/scan-guidance-plan.md 2.1.
+test('a colour band sits between hairlines that clear 3:1 on every surface, on both sides of every tile', () => {
+  const failures = [];
+  for (const [theme, block] of THEMES) {
+    for (const surface of ['--bg', '--panel', '--panel-sunk']) {
+      const ratio = contrast(valueIn(block, '--band-edge'), valueIn(block, surface));
+      if (ratio < 3) failures.push(`${theme}: --band-edge on ${surface} is ${ratio.toFixed(2)}:1`);
+    }
+  }
+  assert.deepEqual(failures, [], 'a hairline that marks out a meaningful graphic needs 3:1');
+  // Both sides of the band — outside the border and inside it — written ONCE as `--tile-hairlines`
+  // and composed into every shadow the tile wears: the base, the asked state, and the asked pulse's
+  // keyframe, which drops out of sight if it is left out (audit, 2026-09-19).
+  const hairlines = html.slice(html.indexOf('--tile-hairlines:'), html.indexOf(';', html.indexOf('--tile-hairlines:')));
+  assert.match(hairlines, /(?<!inset )0 0 0 1px var\(--band-edge\)/, 'the band is not outlined outside');
+  assert.match(hairlines, /inset 0 0 0 1px var\(--band-edge\)/, 'the band is not outlined inside');
+  for (const selector of ['.scan-face .tile {', '.scan-face.asked .tile {', '@keyframes cubusAsked']) {
+    assert.ok(html.includes(selector), `${selector} exists`);
+    const at = html.indexOf(selector);
+    const rule = html.slice(at, html.indexOf('}', at + selector.length));
+    assert.match(rule, /box-shadow:\s*var\(--tile-hairlines\)/, `${selector} does not wear the hairlines`);
+  }
+});
+
+// The side a confirm asks for back is found without reading: its tile's ring breathes on the shared
+// `--pulse`, and under reduced motion the global rule runs the animation once so it rests as the static
+// ring (dev-docs/scan-guidance-plan.md 2.2).
+test('the asked tile breathes on --pulse, and rests under reduced motion', () => {
+  const rule = html.slice(html.indexOf('.scan-face.asked .tile {'), html.indexOf('}', html.indexOf('.scan-face.asked .tile {')));
+  assert.match(rule, /animation:\s*cubusAsked\s+var\(--pulse\)[^;]*infinite/, 'the asked tile does not pulse');
+  // The breathing frame is a ring ON TOP of the hairlines, which the band test holds for every site.
+  const keyframes = html.slice(html.indexOf('@keyframes cubusAsked'), html.indexOf('}', html.indexOf('@keyframes cubusAsked') + 30));
+  assert.match(keyframes, /0 0 0 7px color-mix/, 'the pulse no longer grows the ring');
+  // Under reduced motion the pulse must rest: run once AND take no time. Either alone leaves the
+  // tile breathing through one full 2.4s cycle (audit, 2026-09-19).
+  const reduced = html.slice(html.indexOf('@media (prefers-reduced-motion: reduce)'), html.indexOf('}', html.indexOf('@media (prefers-reduced-motion: reduce)') + 60));
+  assert.match(reduced, /\*, \*::before, \*::after \{/, 'the reduced-motion rule no longer covers everything');
+  assert.match(reduced, /animation-iteration-count:\s*1 !important/, 'the global rule that stills it under reduced motion is gone');
+  assert.match(reduced, /animation-duration:\s*\.001ms !important/, 'reduced motion left the pulse its full duration');
+});
+
 // White is Cream with the warmth taken out, and that is a checkable claim rather than a mood:
 // every colour it overrides is a grey (R = G = B), and each has the same relative luminance as
 // its Cream counterpart — which is what carries every contrast ratio across unchanged — except
