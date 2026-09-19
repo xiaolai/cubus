@@ -1,1 +1,4 @@
 .build/
+# The release test run's own scratch path (CI, and anyone repeating it): it must not rebuild the
+# release probe the leak check and the golden parity legs measure.
+.build-release-tests/
