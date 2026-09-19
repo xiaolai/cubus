@@ -164,6 +164,10 @@ const BUNDLES = [
       // edited and not rebuilt would describe the scan with code the scan no longer runs.
       '../../../packages/cube-scanner/src/fit-trace.ts',
       '../../../packages/cube-scanner/view/scan-trace.ts',
+      // The letterbox, forward and back (2026-09-19): `preprocess` fits a picture into the model's
+      // square with it, and `ScanProgress.seen` places each box back in the picture with the same
+      // arithmetic — so a bundle built before an edit to it would place stickers somewhere else.
+      '../../../packages/cube-scanner/src/letterbox.ts',
     ],
     // Exported from the package entry and used by its tests, but never by the panel — so esbuild
     // drops them and their absence is correct, not stale. Listed rather than silently ignored: if

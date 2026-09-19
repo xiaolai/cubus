@@ -2,12 +2,12 @@
 //
 // Lifted out of app.js on 2026-09-13, when that file was split into modules.
 
-import { isDesktopHost } from '../host.js';
+import { isDesktopHost, noteScanReport } from '../host.js';
 import { t } from '../i18n.js';
 import { colourOfSlot, isScheme, positionOf, slotAt, slotOf } from '../scheme.js';
 
 import { $, escHtml, icon, state } from '../app-state.js';
-import { DEFAULT_PALETTE, settings } from '../app-settings.js';
+import { DEFAULT_PALETTE, SCAN_VIEWS, settings } from '../app-settings.js';
 import { hooks } from '../screen-slots.js';
 import { CHIP_NODE_BUDGET, stageAsk, warmSolver } from '../solver-service.js';
 import { NET_COLORS, NET_FACES, adoptScheme, describeCube, netPalette, newCube } from '../cube-drawing.js';
@@ -26,15 +26,21 @@ import { createReconnectCheck } from './scan/reconnect-check.js';
 import { createRefusal } from './scan/refusal.js';
 import { createScanBoard } from './scan/board.js';
 import { createStickerPicker } from './scan/sticker-picker.js';
+import { createConfirmHold } from './scan/confirm-hold.js';
+import { createScanChime } from './scan/chime.js';
+import { createStickerView } from './scan/sticker-view.js';
+import { createSpokenScan } from './scan/spoken.js';
 
 // Restore — the screen that reads your cube so it can be solved. Its route id stays `scan`, and
 // renaming it is not worth breaking every #/scan link and bookmark already in the wild.
 // The camera opens the moment this screen mounts — <ai-scan-panel headless autostart>
 // sits in the markup invisibly, owning the camera, the model and the capture state machine, and
 // reports every change through `scan-progress`. The whole six-face flow happens right here: no
-// modal, and deliberately no camera picture. What the user needs to see is what the scanner READ,
-// so the live 3x3 below is the viewfinder. Colour class i <-> FACES[i] <-> NET_FACES[i], so a
-// scanned sticker is painted in the app's own palette, matching the 3D cube beside it.
+// modal, and deliberately no camera picture. There is no viewfinder either: the live 3x3 that
+// replaced the picture was removed the same day (ae10b42, 2026-08-24), so what reacts to the cube
+// is the aside's sentence and a tile filling in once its side is captured. The panel still reports
+// `live`; nothing here draws it. Colour class i <-> FACES[i] <-> NET_FACES[i], so a scanned sticker
+// is painted in the app's own palette, matching the 3D cube beside it.
 const SCAN_FACE_NAME = { U: 'Up', R: 'Right', F: 'Front', D: 'Down', L: 'Left', B: 'Back' };
 // Which side neighbours each face, in the canonical URFDLB facelet layout — so a tile can paint
 // its four edges in the neighbours' colours and show, without words, which way up to hold that
@@ -167,7 +173,10 @@ SCREENS.scan = () => {
       // the whole job of a twin meant to show what has been read so far. The rest match the
       // renderer's own defaults today and are pinned anyway: this twin has a job (read six sides at
       // a glance) that a future change to those defaults should not quietly retune.
-      stateCube.setAttribute('ghosts', 'floating');
+      // The view a scan is read by — kept as one record, because a confirm ask looks at the twin
+      // from the front and puts this back when the ask ends (lib/screens/scan/confirm-hold.js).
+      const READ_VIEW = { ghosts: 'floating', 'camera-latitude': '35', 'camera-longitude': '45' };
+      stateCube.setAttribute('ghosts', READ_VIEW.ghosts);
       // Tuned by eye against a half-finished scan, not inherited: this twin has one job — read all
       // six sides at a glance — and the renderer's defaults are set for a cube you orbit, not one
       // you read. Ghosts are thrown further out than the Cube screen's slider even offers (9, past
@@ -175,8 +184,8 @@ SCREENS.scan = () => {
       // nine-grid stays legible at this size. The camera's distance is the renderer's to fit —
       // it frames whatever this puts in view to whatever slot the twin has (lib/cube-frame.js).
       stateCube.setAttribute('ghost-elevation', '9');
-      stateCube.setAttribute('camera-latitude', '35');
-      stateCube.setAttribute('camera-longitude', '45');
+      stateCube.setAttribute('camera-latitude', READ_VIEW['camera-latitude']);
+      stateCube.setAttribute('camera-longitude', READ_VIEW['camera-longitude']);
       stateCube.setAttribute('facelet-scale', '1');
 
       $('#scanCube', root).appendChild(stateCube);
@@ -189,7 +198,21 @@ SCREENS.scan = () => {
       };
       // Set by scan-complete and cleared by a report that reopens the scan; the twin reads it.
       let settled = false;
+      // A confirm ask, drawn: the twin turns to the hold the scanner asks for
+      // (lib/screens/scan/confirm-hold.js).
+      const confirmHold = createConfirmHold({ cube: stateCube, tileOf, restView: READ_VIEW });
       const panel = $('ai-scan-panel', root);
+      // A chime for each side saved and another when the cube checks out
+      // (lib/screens/scan/chime.js); silenced with the screen.
+      const chime = createScanChime({ panel, signal });
+      // And the few lines said out loud, where the system has a voice (lib/screens/scan/spoken.js).
+      const spoken = createSpokenScan({ panel, signal });
+      // The scan-guidance study's sticker view (lib/screens/scan/sticker-view.js), in the twin's slot
+      // while a scan reads — only where the developer setting turns the arm on.
+      const stickerView = createStickerView({
+        slot: $('#scanCube', root), classColor,
+        enabled: () => settings.devScanView === SCAN_VIEWS.stickers,
+      });
       // The largest of the warm windows: a scan is seconds of camera and then a solve, so the
       // tables can be built entirely inside time the user is already spending.
       warmSolver();
@@ -212,7 +235,7 @@ SCREENS.scan = () => {
         setTimeout(() => {
           // Guarded on the SCREEN, not only on the flag: this outlives its screen by design.
           if (landed || !root.isConnected) return;
-          speak(t('The scanner did not load'), t('The camera part of cubus failed to start, so there is nothing to scan with. Reloading the app usually fixes it. Everything else — the solver, the guide, a smart cube — still works.'), 'err');
+          speak(t('The scanner did not load'), t('The camera part of cubus failed to start, so there is nothing to scan with. Reload the app to try again. Everything else — the solver, the guide, a smart cube — still works.'), 'err');
         }, SCANNER_WAIT_MS);
       }
       // When each side the scanner holds was read — over which connection, at which of the cube's
@@ -323,6 +346,11 @@ SCREENS.scan = () => {
         picker.closeIfStale();
         // The twin follows the scan side by side rather than waiting for all six.
         if (!settled) showState(board.partialFacelets(p.captured));
+        confirmHold.show(p.confirm);
+        stickerView.show(p);
+        // What this build's scanner can actually do, learned from what it just did (lib/host.js): the
+        // Settings row that offers the study's view follows the scanner, never the platform string.
+        noteScanReport(p);
         camera.paintCameraRow(p);
         reconnectCheck.answerFromSides(p);
         // Last, so it stands over the generic caption — and it declines to speak over a notice,
@@ -410,6 +438,11 @@ SCREENS.scan = () => {
           refusal.refuse(() => speak(t('These do not match'), t(repaired.text), 'err'));
         } else {
           refusal.accept();
+          // The scan is ACCEPTED here, not when the scanner said complete — a finished scan can still
+          // be refused just above — so here is where the child hears it (the chime's second sound and
+          // "All done!", lib/screens/scan/chime.js and spoken.js).
+          chime.accepted();
+          spoken.accepted();
           // A completed scan answers the reconnect question outright — six sides ESTABLISH what
           // two sides could only spot-check — so the question closes before the adoption that
           // would otherwise mark a cube trusted with its own question still open.

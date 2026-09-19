@@ -15,6 +15,7 @@
   --panel-sunk:    #EFE9DC;  /* titlebar, inset wells */
   --line:          #E2DACA;  /* hairline on panel */
   --line-strong:   #D3C9B4;  /* hairline on desk */
+  --band-edge:     #857C6C;  /* the hairlines either side of a colour band (a scan tile's edges): ≥ 3:1 on --bg, --panel and --panel-sunk, because the band itself can be white on white (tokens.test.mjs) */
   --line-faint:    #F3EEE3;  /* row dividers inside cards */
   --row-sel:       #F6F2E9;  /* selected row inside a card */
 
@@ -239,6 +240,7 @@
   --panel-sunk:    #E9E9E9;
   --line:          #DBDBDB;
   --line-strong:   #CACACA;
+  --band-edge:     #7D7D7D;
   --line-faint:    #EEEEEE;
   --row-sel:       #F2F2F2;
 
@@ -283,6 +285,7 @@
   --panel-sunk:    #1E1B16;
   --line:          #332E26;
   --line-strong:   #3E382E;
+  --band-edge:     #8A8174;
   --line-faint:    #2A251F;
   --row-sel:       #2A251F;
 
@@ -336,7 +339,7 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="cream"]):not([data-theme="white"]) {
     --desk:#14120E; --bg:#1B1814; --panel:#232019; --panel-sunk:#1E1B16;
-    --line:#332E26; --line-strong:#3E382E; --line-faint:#2A251F; --row-sel:#2A251F;
+    --line:#332E26; --line-strong:#3E382E; --line-faint:#2A251F; --row-sel:#2A251F; --band-edge:#8A8174;
     --ink:#EDE7DA; --ink-2:#D2C9B8; --ink-3:#B5AC9C; --ink-4:#978E80; --ink-5:#9A9184; --ink-6:#5C5449;
     --invert-bg:#EDE7DA; --invert-fg:#1B1814; --on-ink-dim:#6B6154; --on-ink-2:#3A342B;
     --track:#3E382E; --bar:#5C5449;

@@ -12,6 +12,8 @@
 
 import assert from 'node:assert/strict';
 import { isAbsent, isSame } from './dom-assert.mjs';
+import { installSoundStandIns } from './sound-stand-ins.mjs';
+import { assertFinishedFeedbackSurvived } from './accepted-feedback.mjs';
 import { test, before } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { registerHooks } from 'node:module';
@@ -41,8 +43,10 @@ let win;
 const $ = (sel) => win.document.querySelector(sel);
 const all = (sel) => [...win.document.querySelectorAll(sel)];
 const panel = () => $('#stage ai-scan-panel');
+/** A scanner report. `sides` is every report's, and a stand-in scanner holds no two sides that share a
+ *  centre, so it is the named list's length unless a case says otherwise. */
 const progress = (detail) =>
-  panel().dispatchEvent(new win.CustomEvent('scan-progress', { detail }));
+  panel().dispatchEvent(new win.CustomEvent('scan-progress', { detail: { sides: detail.captured?.length ?? 0, ...detail } }));
 
 const FACES = ['U', 'R', 'F', 'D', 'L', 'B'];
 const face = (n) => ({ face: n, colors: Array(9).fill(FACES.indexOf(n)) });
@@ -155,7 +159,7 @@ test('progress marks exactly the captured sides and moves the count', () => {
 });
 
 test('a restart un-captures the sides again rather than leaving them marked done', () => {
-  progress({ phase: 'scanning', message: 'Show any side to the camera — held flat and centred.',
+  progress({ phase: 'scanning', message: 'Show any side of your cube to the camera.',
     captured: [], live: null });
   assert.equal(all('.scan-face.done').length, 0);
 });
@@ -200,7 +204,7 @@ test('the menu lists the cameras and marks the one in use', async () => {
     { deviceId: 'builtin', label: 'MacBook Air Camera' },
     { deviceId: 'iphone', label: 'iPhone Camera' }, // a Continuity Camera, the case that started this
   ];
-  progress({ phase: 'scanning', message: 'Show any side to the camera — held flat and centred.',
+  progress({ phase: 'scanning', message: 'Show any side of your cube to the camera.',
     captured: [], live: null, device: { deviceId: 'builtin', label: 'MacBook Air Camera' } });
   await tick();
   $('#scanCamBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
@@ -241,7 +245,7 @@ test('a nearly-solved cube points at the one side it needs shown again', () => {
 });
 
 test('the pointer clears once the scan moves on', () => {
-  progress({ phase: 'scanning', message: 'Show any side to the camera — held flat and centred.',
+  progress({ phase: 'scanning', message: 'Show any side of your cube to the camera.',
     captured: [], live: null, confirm: null });
   assert.deepEqual(all('.scan-face.asked'), []);
 });
@@ -1219,6 +1223,325 @@ test('the scan twin says how much of the cube it shows has been read', async () 
   assert.equal(twin.getAttribute('aria-label'), 'A cube being read — 2 sides so far', 'and did not keep count as the scan read on');
 });
 
+// A confirm ask is drawn, not only said: the twin turns until the asked side faces the viewer with
+// the up side on top (lib/screens/scan/confirm-hold.js; dev-docs/scan-guidance-plan.md 2.2). The
+// board had pointed at the asked tile and never read the ask's `up`, so "hold it with WHITE up"
+// reached a child who cannot read as nothing at all. What the renderer DRAWS for each ask is checked
+// in test/browser/confirm-hold.test.mjs; this is the screen handing the ask to the twin.
+test('a confirm ask turns the twin to the asked hold, and the twin turns back when it is answered', async () => {
+  await enterScan();
+  const twin = $('#scanCube > cubus-cube');
+  assert.ok(twin, 'precondition: the twin is drawn');
+  const holdOf = async (want) => {
+    for (let i = 0; i < 200 && twin.orientation !== want && twin.getAttribute('orientation') !== want; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    return twin.getAttribute('orientation') ?? twin.orientation;
+  };
+  progress({ phase: 'confirm', message: 'Show the RED side again, with WHITE facing up.',
+    captured: FACES.map(face), live: null, confirm: { face: 'R', up: 'U' } });
+  assert.equal(await holdOf('U R'), 'U R', 'the red side was asked for with white up, and the twin did not turn to it');
+  progress({ phase: 'confirm', message: 'Show the YELLOW side again, with GREEN facing up.',
+    captured: FACES.map(face), live: null, confirm: { face: 'D', up: 'F' } });
+  assert.equal(await holdOf('F D'), 'F D', 'a new ask did not move the twin to its hold');
+  progress({ phase: 'scanning', message: 'Show any side of your cube to the camera.',
+    captured: FACES.map(face), live: null, confirm: null });
+  assert.equal(await holdOf('U F'), 'U F', 'the ask was answered and the twin stayed turned');
+});
+
+// The scan's sounds (lib/screens/scan/chime.js, lib/sound.js; dev-docs/scan-guidance-plan.md 3.2) and
+// its spoken lines (lib/screens/scan/spoken.js, lib/speech.js; Phase 6), against stand-ins for both —
+// happy-dom has neither. Each case below is one claim about them, so a failure names itself rather
+// than arriving as "the sounds test failed" (audit, 2026-09-19).
+
+/** A cube that checks out, for the scan-complete events below. */
+const SOLVED_CUBE = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
+
+/**
+ * The scan screen with stand-in sound and voice, entered fresh. Everything it changes — the two
+ * platform seams and the sounds setting — goes back when the test ends, so no case here can leave the
+ * next one a platform it did not ask for.
+ */
+async function soundsRig(t, { sounds = true, autosolve = false } = {}) {
+  const sound = await import('../lib/sound.js');
+  const speech = await import('../lib/speech.js');
+  const { settings } = await import('../lib/app-settings.js');
+  const stand = installSoundStandIns({ sound, speech, settings, sounds });
+  const { made, voice } = stand;
+  const wasAutosolve = settings.autosolve;
+  settings.autosolve = autosolve;
+  // The gesture reaches the listener the app installed at boot; a second registration of the same
+  // callback is ignored by EventTarget, so there is nothing to install here (audit, 2026-09-19).
+  win.document.dispatchEvent(new win.Event('pointerdown'));
+  t.after(() => {
+    settings.autosolve = wasAutosolve;
+    stand.restore();
+  });
+  await enterScan();
+  const scanner = panel();
+  return {
+    made,
+    voice,
+    scanner,
+    /** The scanner saved a side. */
+    saved: (face, sides = 1) => scanner.dispatchEvent(new win.CustomEvent('scan-capture', { detail: { kind: 'side', face, sides } })),
+    /** The scanner finished, and the screen accepts it. */
+    complete: (facelets = SOLVED_CUBE) => scanner.dispatchEvent(new win.CustomEvent('scan-complete', {
+      detail: { facelets, valid: true, confidence: 1, lowConfidence: [], rotations: [0, 0, 0, 0, 0, 0] },
+    })),
+    /** One scanner report, with the fields these cases care about. */
+    report: (over) => progress({ phase: 'scanning', message: 'x', captured: [], live: null, confirm: null, complete: false, ...over }),
+  };
+}
+
+test('a chime for each side SAVED, and the checked-out sound only when the screen accepts the scan', async (t) => {
+  const { made, report, saved, complete } = await soundsRig(t);
+  report({});
+  saved('U');
+  assert.equal(made.length, 2, 'a side saved is one two-note chime');
+  report({ phase: 'checking', captured: FACES.map(face) });
+  assert.equal(made.length, 2, 'six filled tiles chimed — six sides can still be refused');
+  report({ phase: 'done', captured: FACES.map(face), complete: true });
+  assert.equal(made.length, 2, 'the scanner saying complete chimed — the screen has not accepted it yet');
+  complete();
+  assert.equal(made.length, 6, 'the screen accepted the scan with no sound, or not its own four notes');
+  report({ phase: 'done', captured: FACES.map(face), complete: true });
+  assert.equal(made.length, 6, 'a finished scan chimed again on the next report');
+});
+
+test('a correction after the cube checked out ends the sound that said so', async (t) => {
+  const { made, report, complete } = await soundsRig(t);
+  report({ phase: 'done', captured: FACES.map(face), complete: true });
+  complete();
+  const checkedOut = made.slice(-4);
+  report({ phase: 'checking', captured: FACES.map(face) });
+  assert.ok(checkedOut.every((o) => o.stops.length === 2), 'the checked-out sound played on over a scan reopened');
+  report({ phase: 'checking', captured: FACES.map(face) });
+  assert.ok(checkedOut.every((o) => o.stops.length === 2), 'a reopened scan was silenced again on every report');
+});
+
+test('a scan thrown away silences what is still sounding; a centre collision is not a scan thrown away', async (t) => {
+  // Counted by ALL sides held (`sides`), since two sides sharing a centre shrink the NAMED list
+  // without anything being thrown away.
+  const { made, report, saved } = await soundsRig(t);
+  report({ captured: [face('U')], sides: 2 });
+  saved('R');
+  const ringing = made.slice(-2);
+  report({ captured: [], sides: 2 });
+  assert.ok(ringing.every((o) => o.stops.length === 1), 'a collision emptying the named list was taken for a restart');
+  report({ captured: [], sides: 0 });
+  assert.ok(ringing.every((o) => o.stops.length >= 2), 'a restart left a chime sounding');
+});
+
+test('leaving the screen silences the scan, and a scanner left behind chimes nothing', async (t) => {
+  const { made, report, saved } = await soundsRig(t);
+  report({});
+  saved('U');
+  assert.equal(made.length, 2, 'precondition: a chime is sounding');
+  await leaveScan();
+  assert.ok(made.every((o) => o.stops.length >= 2), 'leaving the screen left a note sounding');
+  const madeWhenLeft = made.length;
+  saved('R');
+  assert.equal(made.length, madeWhenLeft, 'a scanner left behind still chimed');
+});
+
+test('with sounds off a scan is silent and unspoken, and finishes exactly as a sounding one does', async (t) => {
+  // The whole path, acceptance included: the earlier version stopped at the scanner's own report, so
+  // a silent acceptance could have been broken without this noticing (audit, 2026-09-19).
+  const { state } = await import('../lib/app.js');
+  const { made, voice, report, saved, complete } = await soundsRig(t, { sounds: false });
+  report({});
+  saved('U');
+  report({ phase: 'done', message: 'Scan complete — solvable cube captured.', captured: FACES.map(face), device: null, notice: null, complete: true });
+  complete();
+  await tick();
+  assert.equal(made.length, 0, 'a sound was made with sounds off');
+  assert.deepEqual(voice.said, [], 'a line was said with sounds off');
+  assert.equal($('#scanSolveBtn').disabled, false, 'a silent scan did not finish as a sounding one does');
+  assert.equal(state.cube.facelets, SOLVED_CUBE, 'a silent scan was not adopted');
+  assert.equal(state.cube.source, 'camera');
+});
+
+// An accepted scan can leave the screen at once — auto-solve, here; a scan answering a reconnect
+// question, in test/reconnect-flow.test.mjs — and leaving silences the screen. The checked-out sound and
+// "All done" are the exception: what they say is still true where the app went, and cut at the jump
+// they were never heard (round-3 audit).
+test('auto-solve leaves at acceptance, and the checked-out sound and "All done" finish over the jump', async (t) => {
+  const { SPOKEN } = await import('../lib/screens/scan/spoken.js');
+  const { made, voice, report, complete } = await soundsRig(t, { autosolve: true });
+  report({ phase: 'done', captured: FACES.map(face), complete: true });
+  complete();
+  await tick();
+  assert.equal(win.location.hash, '#/home', 'precondition: auto-solve took the accepted scan home');
+  assert.equal(panel(), null, 'precondition: the scan screen is gone');
+  assertFinishedFeedbackSurvived({ made, voice, done: SPOKEN.done });
+});
+
+// What this build's scanner can do is learned from what it DOES (lib/host.js): the Settings row that
+// offers the study's view follows the scanner's own reports, not the platform string a design-review
+// pin can write (audit, 2026-09-19).
+test('the scan screen tells the app what its scanner did with each report', async (t) => {
+  const { forgetScannerReports, scannerPlacesStickers } = await import('../lib/host.js');
+  forgetScannerReports();
+  t.after(() => forgetScannerReports());
+  await enterScan();
+  assert.equal(scannerPlacesStickers(), true, 'precondition: this build is expected to place stickers');
+  // A scanner that READ a side and placed no stickers cannot feed the view, whatever the platform says.
+  progress({ phase: 'scanning', message: 'x', captured: [], live: 'U', confirm: null, complete: false, seen: null });
+  assert.equal(scannerPlacesStickers(), false, 'a read with no stickers placed left the platform guess standing');
+  // …and one that places them says so.
+  forgetScannerReports();
+  progress({ phase: 'scanning', message: 'x', captured: [], live: 'U', confirm: null, complete: false,
+    seen: { width: 640, height: 480, stickers: [] } });
+  assert.equal(scannerPlacesStickers(), true);
+});
+
+// The study's sticker view (lib/screens/scan/sticker-view.js; dev-docs/scan-guidance-plan.md 4.1): with
+// the developer setting on, the twin's slot shows where the camera sees each sticker while a scan
+// reads — never a camera picture (D2) — and hands the slot back for an ask, a finished scan, or a
+// report that cannot place its boxes.
+test('the sticker view draws the scanner\'s boxes in the twin\'s place, only while the study\'s arm is on', async () => {
+  const { settings } = await import('../lib/app-settings.js');
+  const was = settings.devScanView;
+  const seen = {
+    width: 640, height: 480,
+    stickers: [
+      { x: 0.25, y: 0.5, w: 0.05, h: 32 / 480, colour: 1, confidence: 0.9, inFace: true },
+      { x: 0.5, y: 0.5, w: 0.05, h: 32 / 480, colour: 2, confidence: 0.6, inFace: true },
+      { x: 0.9, y: 0.1, w: 0.05, h: 32 / 480, colour: 5, confidence: 0.3, inFace: false },
+    ],
+  };
+  const report = (extra) => progress({ phase: 'scanning', message: 'x', captured: [], live: null, confirm: null,
+    complete: false, device: { deviceId: 'cam', label: 'Webcam' }, seen, settling: null, ...extra });
+  try {
+    settings.devScanView = 'today';
+    await enterScan();
+    report({});
+    const view = $('#scanCube .scan-seen');
+    const twin = $('#scanCube > cubus-cube');
+    assert.ok(view && twin, 'precondition: both are in the slot');
+    assert.equal(view.hidden, true, "today's screen drew the study's view");
+    const slot = $('#scanCube');
+    // The twin gives way through the SLOT's class; an attribute on the twin itself would travel with
+    // the page's one parked cube to the next screen (round-3 audit; test/browser/confirm-hold.test.mjs
+    // leaves the screen mid-view in the real renderer).
+    const twinShown = () => !slot.classList.contains('seen-on') && !twin.hidden;
+    assert.equal(twinShown(), true);
+
+    settings.devScanView = 'dots';
+    report({});
+    assert.equal(view.hidden, false, 'the arm is on and the view is not drawn');
+    assert.equal(twinShown(), false, 'the twin stayed in the slot the view took');
+    assert.equal(twin.hidden, false, 'the twin was hidden by an attribute it will carry to the next screen');
+    assert.equal(view.querySelector('svg').getAttribute('viewBox'), '0 0 640 480', 'not drawn at the picture\'s shape');
+    const rects = [...view.querySelectorAll('.seen-sticker')];
+    assert.equal(rects.length, 3, 'a sticker the detector found was not drawn');
+    assert.equal(view.querySelectorAll('.seen-sticker.in-face').length, 2, 'the fitted face is not told apart');
+    assert.deepEqual(['x', 'y', 'width'].map((a) => Number(rects[0].getAttribute(a))), [144, 224, 32], 'a sticker is not where the camera saw it');
+    assert.match(view.querySelector('.seen-stickers').getAttribute('transform') ?? '', /scale\(-1 1\)/,
+      'a camera that does not say it faces away was not mirrored');
+
+    report({ device: { deviceId: 'back', label: 'Back Camera', facing: 'environment' }, settling: { run: 3, needed: 3, heldMs: 250, neededMs: 500 } });
+    assert.equal(view.querySelector('.seen-stickers').getAttribute('transform'), null, 'a camera facing away was mirrored');
+    assert.equal(view.querySelector('.seen-settle').getAttribute('stroke-dasharray'), '0.5 1', 'the edge does not show the read settling');
+
+    report({ confirm: { face: 'R', up: 'U' } });
+    assert.equal(view.hidden, true, 'the view covered the twin drawing an ask');
+    report({ complete: true });
+    assert.equal(twinShown(), true, 'a finished scan did not get the twin back');
+    report({ seen: null });
+    assert.equal(view.hidden, true, 'boxes with no picture to place them in were drawn');
+    // Only while the scanner READS: a painting, a check or a camera error has no camera behind its
+    // boxes, stale or not (audit, 2026-09-19).
+    for (const phase of ['painting', 'checking', 'error', 'loading']) {
+      report({});
+      assert.equal(view.hidden, false, `precondition before ${phase}`);
+      report({ phase });
+      assert.equal(view.hidden, true, `the view stayed up in the ${phase} phase`);
+      assert.equal(twinShown(), true);
+    }
+  } finally {
+    settings.devScanView = was;
+  }
+});
+
+// What the scan says out loud (lib/screens/scan/spoken.js, lib/speech.js; dev-docs/scan-guidance-plan.md
+// Phase 6): a line for each moment a child meets, heard from structured reports only, each cut off
+// the instant the state it describes is gone, nothing after the screen is left, nothing with sounds
+// off — and a scan that finishes the same whether or not anything was said.
+test('each moment of a scan is said once, and a line whose moment has passed is cut off', async (t) => {
+  const { SPOKEN } = await import('../lib/screens/scan/spoken.js');
+  const { voice, report, saved, complete } = await soundsRig(t);
+  const said = voice.said;
+  const camera = { deviceId: 'cam', label: 'Webcam' };
+  report({ device: camera });
+  report({ device: camera });
+  assert.deepEqual(said, [SPOKEN.open], 'the opening line was not said once');
+  saved('U');
+  report({ device: camera, captured: [face('U')] });
+  assert.equal(said.at(-1), SPOKEN.saved);
+  report({ device: camera, captured: [face('U')], shownAgain: true });
+  report({ device: camera, captured: [face('U')], shownAgain: true });
+  assert.equal(said.filter((l) => l === SPOKEN.again).length, 1, 'the same side again was said on every report');
+  const before = voice.cuts.length;
+  report({ device: camera, captured: [face('U')], shownAgain: false });
+  assert.equal(voice.cuts.length, before + 1, 'a line about a side no longer in view was not cut off');
+  report({ phase: 'confirm', device: camera, captured: FACES.map(face), confirm: { face: 'R', up: 'U' } });
+  assert.equal(said.at(-1), SPOKEN.ask);
+  report({ phase: 'done', device: camera, captured: FACES.map(face), complete: true });
+  assert.notEqual(said.at(-1), SPOKEN.done, '"All done" was said before the screen accepted the scan');
+  complete();
+  assert.equal(said.at(-1), SPOKEN.done, 'the screen accepted the scan and nothing said so');
+});
+
+test('a refusal is said once per CHECK, and a camera in trouble says so instead', async (t) => {
+  // `scan-invalid` is dispatched again when the refusal's diagnosis lands, and a confirm mismatch
+  // carries an error tone of its own — neither may put the line twice.
+  const { SPOKEN } = await import('../lib/screens/scan/spoken.js');
+  const { voice, report, scanner } = await soundsRig(t);
+  const said = voice.said;
+  const camera = { deviceId: 'cam', label: 'Webcam' };
+  const refused = () => scanner.dispatchEvent(new win.CustomEvent('scan-invalid', { detail: { valid: false } }));
+  report({ phase: 'checking', device: camera, captured: FACES.map(face), sides: 6 });
+  const beforeRefusal = said.length;
+  refused();
+  refused();
+  assert.deepEqual(said.slice(beforeRefusal), [SPOKEN.help], 'a refusal was not said, or said twice');
+  // A correction starts a NEW check; if it is refused too, at the same count, that is said again.
+  report({ phase: 'checking', device: camera, captured: FACES.map(face), sides: 6 });
+  report({ device: camera, captured: FACES.map(face), sides: 6 });
+  refused();
+  assert.equal(said.slice(beforeRefusal).filter((l) => l === SPOKEN.help).length, 2, 'a second refusal after a correction went unsaid');
+  report({ phase: 'error', captured: [], message: 'The camera did not open', notice: { title: 'The camera did not open', tone: 'err', body: 'x' } });
+  assert.equal(said.at(-1), SPOKEN.camera, 'a camera in trouble was told to check the stickers');
+});
+
+test('leaving the screen cuts the line being said, and a scanner left behind says nothing', async (t) => {
+  const { voice, report, saved } = await soundsRig(t);
+  report({ device: { deviceId: 'cam', label: 'Webcam' } });
+  assert.equal(voice.said.length, 1, 'precondition: a line is being said');
+  const cutsBeforeLeaving = voice.cuts.length;
+  await leaveScan();
+  assert.equal(voice.cuts.length, cutsBeforeLeaving + 1, 'leaving the screen did not cut off the line being said');
+  saved('U', 2);
+  assert.equal(voice.said.length, 1, 'a scan left behind still spoke');
+});
+
+// The sticker view's accessible name is a sentence like any other on the screen: translated, so a
+// screen reader in another language does not read it in English (audit, 2026-09-19).
+test('the sticker view is named in the active language', async () => {
+  const i18n = await import('../lib/i18n.js');
+  i18n.registerLocale('xx-test', { 'Where the camera sees stickers': 'Là où la caméra voit les autocollants' });
+  try {
+    assert.equal(i18n.setLocale('xx-test'), true, 'precondition: the test catalog is active');
+    await enterScan();
+    assert.equal($('#scanCube .scan-seen').getAttribute('aria-label'), 'Là où la caméra voit les autocollants');
+  } finally {
+    i18n.setLocale('en');
+    await leaveScan();
+  }
+});
+
 // The twin draws positions, so it reads them in the arrangement the scan established: the tiles
 // took a Japanese verdict and the twin beside them stayed Western (found beside audit row 12,
 // 2026-09-13).
@@ -1550,7 +1873,7 @@ test('a scanner that never loads is said as trouble once its wait runs out, with
     mock.timers.tick(15000);
     assert.equal($('#scanHowTitle').textContent, 'The scanner did not load', 'a scanner that never loaded was never said');
     assert.ok($('#scanHow').classList.contains('err'), 'a scanner that never loaded was not said as trouble');
-    assert.match($('#scanHow').textContent, /Reloading the app/, 'and the way out is named');
+    assert.match($('#scanHow').textContent, /Reload the app to try again\./, 'and the way out is named');
   } finally {
     mock.timers.reset();
   }
@@ -1982,7 +2305,7 @@ test('a scan report that lands after its screen has gone establishes nothing', a
   await leaveScan();
   try {
     old.dispatchEvent(new win.CustomEvent('scan-progress', { detail: {
-      phase: 'scanning', complete: false, captured: [], suspects: [], message: '', scheme: other,
+      phase: 'scanning', complete: false, captured: [], sides: 0, suspects: [], message: '', scheme: other,
     } }));
     await tick();
     assert.equal(settings.scheme, was.scheme, "a panel whose screen had gone moved the app's colour arrangement");

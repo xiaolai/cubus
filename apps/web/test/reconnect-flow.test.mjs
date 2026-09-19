@@ -19,6 +19,8 @@
 
 import assert from 'node:assert/strict';
 import { isAbsent } from './dom-assert.mjs';
+import { installSoundStandIns } from './sound-stand-ins.mjs';
+import { assertFinishedFeedbackSurvived } from './accepted-feedback.mjs';
 import { test, before } from 'node:test';
 import { readFileSync } from 'node:fs';
 
@@ -353,7 +355,7 @@ test('in the scanner, two adjacent matching sides take the Yes — any way up', 
   assert.match($('#scanHow').textContent, /two sides that meet along an edge/, 'confirm mode did not say what the check needs');
   const panel = $('#stage ai-scan-panel');
   const progress = (captured) => panel.dispatchEvent(new win.CustomEvent('scan-progress', {
-    detail: { phase: 'scanning', complete: false, captured, suspects: [], message: '' },
+    detail: { phase: 'scanning', complete: false, captured, sides: captured.length, suspects: [], message: '' },
   }));
 
   // Before any side is shown, a report with nothing to say leaves the check's own words on the
@@ -367,10 +369,10 @@ test('in the scanner, two adjacent matching sides take the Yes — any way up', 
   // The scanner's own notice, and a camera error, outrank the check: it waits rather than talking
   // over either.
   const F = { face: 'F', colors: colorsOf(sideOf(candidate, 'F')) };
-  panel.dispatchEvent(new win.CustomEvent('scan-progress', { detail: { phase: 'scanning', complete: false, captured: [F],
+  panel.dispatchEvent(new win.CustomEvent('scan-progress', { detail: { phase: 'scanning', complete: false, captured: [F], sides: 1,
     suspects: [], message: '', notice: { title: 'Hold it still', tone: 'info', body: 'Keep the side flat to the camera.' } } }));
   assert.equal($('#scanHowTitle').textContent, 'Hold it still', "the check spoke over the scanner's notice");
-  panel.dispatchEvent(new win.CustomEvent('scan-progress', { detail: { phase: 'error', complete: false, captured: [F],
+  panel.dispatchEvent(new win.CustomEvent('scan-progress', { detail: { phase: 'error', complete: false, captured: [F], sides: 1,
     suspects: [], message: 'Cannot start: Permission denied' } }));
   assert.equal($('#scanHowTitle').textContent, 'Camera trouble', 'the check spoke over a camera error');
   assert.equal(state.reconnect?.reading, 'unchanged', 'still open — one side confirms nothing');
@@ -413,7 +415,7 @@ test("a Japanese cube's two matching sides take the Yes — each side read at th
     // colour per sticker.
     const seen = (f) => ({ face: slotAt(f, 'japanese'), colors: [...sideOf(candidate, f)].map((letter) => colourOf(letter, 'japanese')) });
     panel.dispatchEvent(new win.CustomEvent('scan-progress', {
-      detail: { phase: 'scanning', complete: false, captured: [seen('F'), seen('D')], suspects: [], message: '' },
+      detail: { phase: 'scanning', complete: false, captured: [seen('F'), seen('D')], sides: 2, suspects: [], message: '' },
     }));
     await tick();
     assert.equal(state.reconnect, null, "a Japanese cube's two matching sides were not taken as the Yes");
@@ -439,17 +441,34 @@ test('one mismatched side continues into the full repair scan, sides kept — an
   const wrongF = [...sideOf(candidate, 'F')];
   wrongF[0] = wrongF[0] === 'U' ? 'D' : 'U'; // ONE misread sticker — the tolerance the check must not have
   panel.dispatchEvent(new win.CustomEvent('scan-progress', {
-    detail: { phase: 'scanning', complete: false, captured: [{ face: 'F', colors: colorsOf(wrongF.join('')) }], suspects: [], message: '' },
+    detail: { phase: 'scanning', complete: false, captured: [{ face: 'F', colors: colorsOf(wrongF.join('')) }], sides: 1, suspects: [], message: '' },
   }));
   assert.match($('#scanHow').textContent, /read the whole cube/, 'a misread costs a scan, never a false yes');
   assert.equal(Boolean(state.reconnect), true, 'the question stands until the scan establishes the truth');
   assert.equal(state.cube.trusted, false);
 
+  // The scan goes back to the question's screen as it is accepted; "All done" is said as it goes and is
+  // not cut off by the jump (round-3 audit; the chime's half is held by test/scan-screen.test.mjs).
+  const speech = await import('../lib/speech.js');
+  const sound = await import('../lib/sound.js');
+  const { settings } = await import('../lib/app-settings.js');
+  const { SPOKEN } = await import('../lib/screens/scan/spoken.js');
+  // The same installation the scan screen's own sound cases use (test/sound-stand-ins.mjs).
+  const stand = installSoundStandIns({ sound, speech, settings });
+  const { made, voice } = stand;
+  // The gesture reaches the listener the app installed at boot; registering the same callback again is
+  // ignored by EventTarget (audit, 2026-09-19).
+  win.document.dispatchEvent(new win.Event('pointerdown'));
   const W = move(candidate, 'F2 L');
-  panel.dispatchEvent(new win.CustomEvent('scan-complete', {
-    detail: { facelets: W, rotations: [0, 0, 0, 0, 0, 0] },
-  }));
-  await tick();
+  try {
+    panel.dispatchEvent(new win.CustomEvent('scan-complete', {
+      detail: { facelets: W, rotations: [0, 0, 0, 0, 0, 0] },
+    }));
+    await tick();
+    assertFinishedFeedbackSurvived({ made, voice, done: SPOKEN.done });
+  } finally {
+    stand.restore();
+  }
   assert.equal(state.reconnect, null, 'six sides ESTABLISH what two could only spot-check');
   assert.equal(state.cube.trusted, true);
   assert.equal(state.cube.source, 'camera');
@@ -480,7 +499,7 @@ test('a finished scan with a side that does not match is not said as good news',
     wrongU[0] = wrongU[0] === 'F' ? 'B' : 'F';
     const captured = [...FACES].map((f) => ({ face: f, colors: colorsOf(f === 'U' ? wrongU.join('') : sideOf(candidate, f)) }));
     panel.dispatchEvent(new win.CustomEvent('scan-progress', {
-      detail: { phase: 'done', complete: true, captured, suspects: [], message: '' },
+      detail: { phase: 'done', complete: true, captured, sides: 6, suspects: [], message: '' },
     }));
     assert.equal($('#scanHowTitle').textContent, 'Not what we remembered', 'precondition: the finished scan did not match');
     assert.ok(!$('#scanHow').classList.contains('ok'), 'a side that did not match was said as good news');
@@ -488,7 +507,7 @@ test('a finished scan with a side that does not match is not said as good news',
     // after it are part of that scan, not a second try at the Yes.
     const matching = [...FACES].map((f) => ({ face: f, colors: colorsOf(sideOf(candidate, f)) }));
     panel.dispatchEvent(new win.CustomEvent('scan-progress', {
-      detail: { phase: 'scanning', complete: false, captured: matching, suspects: [], message: '' },
+      detail: { phase: 'scanning', complete: false, captured: matching, sides: 6, suspects: [], message: '' },
     }));
     await tick();
     assert.equal(win.location.hash, '#/scan', 'a mismatch did not end the check: sides matching after it took the Yes');
@@ -513,7 +532,7 @@ test('a finished scan whose Yes the check cannot take is said plainly', async ()
     const panel = $('#stage ai-scan-panel');
     const captured = [...FACES].map((f) => ({ face: f, colors: colorsOf(sideOf(candidate, f)) }));
     panel.dispatchEvent(new win.CustomEvent('scan-progress', {
-      detail: { phase: 'done', complete: true, captured, suspects: [], message: '' },
+      detail: { phase: 'done', complete: true, captured, sides: 6, suspects: [], message: '' },
     }));
     await tick();
     assert.equal($('#scanHowTitle').textContent, 'Keep going', 'precondition: the Yes was refused, and the scan goes on');
@@ -522,7 +541,7 @@ test('a finished scan whose Yes the check cannot take is said plainly', async ()
     // A Yes refused is said once. The check has ended, so the scanner's next report is in the
     // scanner's own words.
     panel.dispatchEvent(new win.CustomEvent('scan-progress', {
-      detail: { phase: 'scanning', complete: false, captured, suspects: [], message: 'Show another side.' },
+      detail: { phase: 'scanning', complete: false, captured, sides: 6, suspects: [], message: 'Show another side.' },
     }));
     assert.equal($('#scanHowTitle').textContent, 'How it works', "a refused Yes was said again over the scanner's next words");
   } finally {
@@ -567,7 +586,7 @@ test('a cube turned between the question and the check still confirms', async ()
   await go('scan');
   const panel = $('#stage ai-scan-panel');
   const progress = (captured) => panel.dispatchEvent(new win.CustomEvent('scan-progress', {
-    detail: { phase: 'scanning', complete: false, captured, suspects: [], message: '' },
+    detail: { phase: 'scanning', complete: false, captured, sides: captured.length, suspects: [], message: '' },
   }));
   progress([{ face: 'F', colors: colorsOf(sideOf(nowLooks, 'F')) }]);
   assert.notEqual($('#scanHowTitle').textContent, 'Not what we remembered',
@@ -596,7 +615,7 @@ async function confirmModeScan(session = fakeConn()) {
   await go('scan');
   const panel = $('#stage ai-scan-panel');
   const report = (captured) => panel.dispatchEvent(new win.CustomEvent('scan-progress', {
-    detail: { phase: 'scanning', complete: false, captured, suspects: [], message: '' },
+    detail: { phase: 'scanning', complete: false, captured, sides: captured.length, suspects: [], message: '' },
   }));
   return { state, memory, candidate, report };
 }
@@ -696,7 +715,7 @@ test('a scan finished from sides read before the cube reconnected is refused unt
     rescans.push(slot);
     held = held.filter((c) => c.face !== slot);
     panel.dispatchEvent(new win.CustomEvent('scan-progress', {
-      detail: { phase: 'starting', complete: false, captured: held, suspects: [], message: 'Opening the camera…' },
+      detail: { phase: 'starting', complete: false, captured: held, sides: held.length, suspects: [], message: 'Opening the camera…' },
     }));
   };
   const wrongU = [...sideOf(candidate, 'U')];
@@ -707,7 +726,7 @@ test('a scan finished from sides read before the cube reconnected is refused unt
     held = captured;
     for (const phase of ['checking', 'done']) {
       panel.dispatchEvent(new win.CustomEvent('scan-progress', {
-        detail: { phase, complete: phase === 'done', captured, suspects: [], message: '' },
+        detail: { phase, complete: phase === 'done', captured, sides: captured.length, suspects: [], message: '' },
       }));
     }
     panel.dispatchEvent(new win.CustomEvent('scan-complete', { detail: { facelets: candidate, rotations: [0, 0, 0, 0, 0, 0] } }));
@@ -761,7 +780,7 @@ test('a side asked for again is dropped from the scanner, and read again alike i
   $('#stage ai-scan-panel').rescanFace = (slot) => {
     rescans.push(slot);
     $('#stage ai-scan-panel').dispatchEvent(new win.CustomEvent('scan-progress', {
-      detail: { phase: 'scanning', complete: false, captured: [], suspects: [], message: 'Show that side again — it will be read fresh.' },
+      detail: { phase: 'scanning', complete: false, captured: [], sides: 0, suspects: [], message: 'Show that side again — it will be read fresh.' },
     }));
   };
   try {
@@ -796,7 +815,7 @@ function holdingPanel() {
   rig.say = (phase, captured) => {
     rig.held = captured;
     panel.dispatchEvent(new win.CustomEvent('scan-progress', {
-      detail: { phase, complete: phase === 'done', captured, suspects: [], message: '' },
+      detail: { phase, complete: phase === 'done', captured, sides: captured.length, suspects: [], message: '' },
     }));
   };
   rig.finish = (facelets, rotations = [0, 0, 0, 0, 0, 0]) => {
@@ -806,7 +825,7 @@ function holdingPanel() {
     rig.rescans.push(slot);
     rig.held = rig.held.filter((c) => c.face !== slot);
     panel.dispatchEvent(new win.CustomEvent('scan-progress', {
-      detail: { phase: 'starting', complete: false, captured: rig.held, suspects: [], message: 'Opening the camera…' },
+      detail: { phase: 'starting', complete: false, captured: rig.held, sides: rig.held.length, suspects: [], message: 'Opening the camera…' },
     }));
   };
   return rig;
@@ -1012,7 +1031,7 @@ test('a cube that reported turns leaves the next connection checked against its 
     const panel = $('#stage ai-scan-panel');
     panel.rescanFace = () => {};
     panel.dispatchEvent(new win.CustomEvent('scan-progress', {
-      detail: { phase: 'scanning', complete: false, suspects: [], message: '', captured: [{ face: 'F', colors: colorsOf(sideOf(candidate, 'F')) }] },
+      detail: { phase: 'scanning', complete: false, suspects: [], message: '', captured: [{ face: 'F', colors: colorsOf(sideOf(candidate, 'F')) }], sides: 1 },
     }));
     assert.equal(cardTitle(), 'One more side', 'the last connection’s turn count was taken for this one’s, and the check waited for a report');
   } finally {
@@ -1133,7 +1152,7 @@ test('a side read before the cube first reported still counts, unless the cube r
       const rescans = [];
       panel.rescanFace = (slot) => rescans.push(slot);
       const report = (captured) => panel.dispatchEvent(new win.CustomEvent('scan-progress', {
-        detail: { phase: 'scanning', complete: false, captured, suspects: [], message: '' },
+        detail: { phase: 'scanning', complete: false, captured, sides: captured.length, suspects: [], message: '' },
       }));
       const F = { face: 'F', colors: colorsOf(sideOf(candidate, 'F')) };
       report([F]);

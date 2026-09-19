@@ -14,13 +14,18 @@ import { $ } from '../../app-state.js';
 import { t } from '../../i18n.js';
 
 // Shown when the scanner is not saying anything more specific. The scan's own messages replace
-// it, so the aside is one voice rather than a caption competing with a status line.
-const HOW = 'The camera opens with this screen and the YOLO scanner reads the stickers on device — no picture is kept, and none leaves it. Show the sides in any order; each is captured as soon as it holds still. Each tile is edged in the colours of its neighbours: hold a side that way up and the scan needs nothing more from you. Got a sticker wrong? Click it and pick the right colour.';
+// it, so the aside is one voice rather than a caption competing with a status line. Written for a
+// child's parent (2026-09-18, `dev-docs/scan-guidance-plan.md` §1.2): no model name, and no promise
+// that a hold settles the scan — the assembly never prefers the hold a side was shown in, so the
+// tile edges are how a side is laid out, and the small cube is how an ask for one is answered.
+/** How a misread sticker is fixed — said in the card before a scan and after it, so written once. */
+const FIX_A_STICKER = 'Tap or click it and pick the right colour.';
+const HOW = `The camera reads the stickers right here — no picture is kept, and none leaves this device. Show the sides in any order, holding each still while the camera reads it. If a side is asked for again, turn the whole cube the way the small cube shows. Got a sticker wrong? ${FIX_A_STICKER}`;
 // What to call the aside while the scanner is speaking, so "How it works" never heads an error.
 const SAY_TITLE = { error: 'Camera trouble', confirm: 'One more look', checking: 'Checking', done: 'Scanned' };
 // What a finished scan says to do next. A constant because the colour sentence must be able to keep
 // it: the panel stops the camera BEFORE it reports 'done', so nothing would say it a second time.
-const DONE_BODY = 'That’s the whole cube, checked and solvable — press "Solve this cube" when you’re ready. Spotted a wrong sticker? Click it and pick the right colour. Different cube? Start over with the ↻ button.';
+const DONE_BODY = `That’s the whole cube, checked and solvable — press "Solve this cube" when you’re ready. Spotted a wrong sticker? ${FIX_A_STICKER} Different cube? Start over with the ↻ button.`;
 /** A notice's tone, and a phase's, as the card's class: one table each, so 'err' and 'ok' cannot
  *  come to mean different things in the four places that wrote them by hand (found by audit,
  *  2026-09-13). */
@@ -109,8 +114,8 @@ export function createScanVoice({ root, panel, closePops }) {
   const sayScheme = (p) => {
     if (!schemeNote || p.notice || p.phase === 'error') return;
     const colours = t(schemeNote === 'japanese'
-      ? 'Your cube has blue under white — the Japanese colours, common on older cubes. Nothing to do: the colours on screen now match it, and they will next time too.'
-      : 'Your cube has yellow under white — the usual colours. The colours on screen now match it, and they will next time too.');
+      ? 'Your cube has blue under white — the Japanese colours. Nothing to do: the colours on screen now match it, and they will next time too.'
+      : 'Your cube has yellow under white — the Western colours. The colours on screen now match it, and they will next time too.');
     // A finished scan's instruction is not a caption to speak over. The panel stops the camera
     // BEFORE it reports 'done', so "press Solve this cube" was replaced by the colour sentence
     // with nothing left to say it again (found by audit, 2026-09-13): on a finished scan the two

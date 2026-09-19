@@ -730,7 +730,7 @@ for (const fixture of FIXTURES) {
         document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-progress', {
           detail: {
             phase: 'scanning', message: 'Show one side to the camera to re-read just that side.',
-            captured: [], live: null, confirm: null, device: null, complete: false,
+            captured: [], sides: 0, live: null, confirm: null, device: null, complete: false,
             notice: {
               title: 'Some stickers were misread', tone: 'err',
               body: 'At least %1 stickers do not fit a real cube, and with that many the camera cannot tell which. Start the scan over, with more light on the cube and each side held flat to the camera — red and orange are the colours it confuses most. Show one side to the camera to re-read just that side. And a sentence more than any real notice carries, so the card is asked for more than it can ever need.',

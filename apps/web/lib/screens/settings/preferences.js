@@ -31,6 +31,19 @@ export const unsavedNote = (card) => {
   return `<div class="sub" data-unsaved="${card}" role="status" style="color:var(--err-ink);padding:8px 0 0"${mine ? '' : ' hidden'}>${mine ? escHtml(t(UNSAVED)) : ''}</div>`;
 };
 
+/**
+ * Wire a switch drawn by `switchRow`: `isOn` reads the setting it shows, `flip` changes it. The one
+ * way a switch takes a press — through `commitPref` — and shows its state, for boolean and two-valued
+ * settings alike, so their class and `aria-checked` cannot drift apart (audit, 2026-09-19).
+ */
+export function bindSwitch(button, { isOn, flip }) {
+  button.onclick = () => commitPref(button, flip, () => {
+    const on = Boolean(isOn());
+    button.classList.toggle('on', on);
+    button.setAttribute('aria-checked', String(on));
+  });
+}
+
 /** Change a preference, keep it, then show it. When the browser would not keep it, the card the
  *  control sits in says so; once a change is kept, no card does. */
 export function commitPref(control, change, show) {

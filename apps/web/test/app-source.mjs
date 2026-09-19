@@ -44,6 +44,9 @@ export const APP_SOURCES = Object.freeze([
   'lib/screens/scan/stage-chips.js', 'lib/screens/scan/voice.js',
   'lib/screens/scan/camera-menu.js', 'lib/screens/scan/reconnect-check.js', 'lib/screens/scan/refusal.js',
   'lib/screens/scan/board.js', 'lib/screens/scan/sticker-picker.js', 'lib/screens/scan/capture-record.js',
+  'lib/screens/scan/confirm-hold.js', 'lib/screens/scan/chime.js', 'lib/sound.js',
+  'lib/screens/scan/sticker-view.js', 'lib/screens/scan/spoken.js', 'lib/speech.js',
+  'lib/screens/scan/report-sides.js',
   // the settings screen's own parts, 2026-09-14
   'lib/screens/settings/smart-cube.js', 'lib/screens/settings/window-orientation.js',
   'lib/screens/settings/preferences.js',
@@ -143,12 +146,26 @@ function endOfRegex(src, at) {
  * With `balanced`, the scan starts at a `{` and stops after the `}` that closes it, ignoring
  * braces inside strings, templates, comments and regexes — which is how a block is extracted
  * without depending on how it happens to be indented.
+ *
+ * `sentences` is the other reading of the same literals: the pieces of ONE expression joined back
+ * together — a template's parts across its holes, and literals joined by `+` — because a claim split
+ * across an interpolation (`will ${qualifier} settle`) or a concatenation is still one sentence on
+ * screen, and a guard that reads the pieces alone never sees it (audit, 2026-09-19). The hole itself
+ * becomes a space, so what is read is what remains fixed in the sentence.
  */
 export function walk(src, { from = 0, balanced = false } = {}) {
   const literals = [];
+  /** Each literal with where it sat, so the pieces of one expression can be told from separate ones. */
+  const pieces = [];
   const modes = [];
   let i = from;
   let part = '';
+  /** Where the piece being gathered began: a quote, or the `}` that closed the hole before it. */
+  let partAt = from;
+  const piece = (text, start, end, { hole = false } = {}) => {
+    literals.push(text);
+    pieces.push({ text, start, end, hole });
+  };
   if (balanced) {
     if (src[i] !== '{') throw new Error('scan: a balanced walk must start at a {');
     modes.push('block');
@@ -158,8 +175,15 @@ export function walk(src, { from = 0, balanced = false } = {}) {
     const ch = src[i];
     if (modes[modes.length - 1] === 'template') {
       if (ch === '\\') { part += src.slice(i, i + 2); i += 2; continue; }
-      if (ch === '`') { literals.push(part); part = ''; modes.pop(); i += 1; continue; }
-      if (ch === '$' && src[i + 1] === '{') { literals.push(part); part = ''; modes.push('expr'); i += 2; continue; }
+      // Past the closing backtick, so what lies between two templates is the `+` alone.
+      if (ch === '`') { piece(part, partAt, i + 1, { hole: partAt > from && src[partAt - 1] === '}' }); part = ''; modes.pop(); i += 1; continue; }
+      if (ch === '$' && src[i + 1] === '{') {
+        piece(part, partAt, i, { hole: partAt > from && src[partAt - 1] === '}' });
+        part = '';
+        modes.push('expr');
+        i += 2;
+        continue;
+      }
       part += ch;
       i += 1;
       continue;
@@ -178,24 +202,51 @@ export function walk(src, { from = 0, balanced = false } = {}) {
     if (ch === '/' && startsRegex(src, i)) { i = endOfRegex(src, i); continue; }
     if (ch === "'" || ch === '"') {
       const end = endOfQuoted(src, i);
-      literals.push(src.slice(i + 1, end - 1));
+      piece(src.slice(i + 1, end - 1), i, end);
       i = end;
       continue;
     }
-    if (ch === '`') { modes.push('template'); i += 1; continue; }
+    // From the backtick itself, as a quoted literal's span starts at its quote.
+    if (ch === '`') { modes.push('template'); partAt = i; i += 1; continue; }
     if (ch === '{') { modes.push('block'); i += 1; continue; }
     if (ch === '}') {
       if (modes.length === 0) throw new Error(`scan: a } closing nothing at ${i}`);
-      modes.pop();
+      const closed = modes.pop();
       i += 1;
-      if (balanced && modes.length === 0) return { literals, end: i };
+      if (closed === 'expr') partAt = i;
+      if (balanced && modes.length === 0) return { literals, sentences: sentencesOf(src, pieces), end: i };
       continue;
     }
     i += 1;
   }
   if (modes.length > 0) throw new Error(`scan: ended inside a ${modes[modes.length - 1]}`);
   if (balanced) throw new Error('scan: the block never closed');
-  return { literals, end: i };
+  return { literals, sentences: sentencesOf(src, pieces), end: i };
+}
+
+/**
+ * Whether what sits between two literals makes them ONE expression. `+` and whitespace do, with at
+ * most one plain name or call between them, so `'a' + b + 'c'` and `t('a') + ' b'` are each one
+ * sentence. A comma, a new statement or an argument list does not — array elements and a call's
+ * arguments are separate sentences however close together they are written.
+ */
+const JOINS = /^\s*\)*\s*\+\s*(?:[A-Za-z_$][\w$.]*\s*\(?\s*)?$/;
+
+/** The pieces of one expression joined back into the sentence they make, holes closed up as spaces. */
+function sentencesOf(src, pieces) {
+  const out = [];
+  let run = null;
+  for (const p of pieces) {
+    const joins = run && (p.hole || JOINS.test(src.slice(run.end, p.start)));
+    if (joins) run.parts.push(p.text);
+    else {
+      if (run) out.push(run.parts.join(' '));
+      run = { parts: [p.text] };
+    }
+    run.end = p.end;
+  }
+  if (run) out.push(run.parts.join(' '));
+  return out;
 }
 
 /**
