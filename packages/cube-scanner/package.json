@@ -6,7 +6,7 @@
   "license": "MIT",
   "private": true,
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "node node_modules/typescript-7/bin/tsc --noEmit",
     "lint": "biome check src view tests && eslint src view",
     "format": "biome format --write src view tests",
     "test": "vitest run",
@@ -31,6 +31,7 @@
     "eslint": "^10.10.0",
     "happy-dom": "^20.14.0",
     "typescript": "^6.0.3",
+    "typescript-7": "npm:typescript@^7.0.2",
     "typescript-eslint": "^8.69.0",
     "vite": "^8.2.2",
     "vitest": "^5.0.0"

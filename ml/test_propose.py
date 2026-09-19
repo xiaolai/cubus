@@ -77,14 +77,16 @@ def truth_of(facelets: str = LEGAL[0], order: tuple[int, ...] = ORDER) -> list[l
 
 def test_the_cube_half_typechecks_and_lints_as_the_scanner_does() -> None:
     bin_dir = propose.ESBUILD.parent
+    scanner = HERE.parent / "packages" / "cube-scanner"
     # esbuild strips types without checking them, so without this a changed type in the scanner
-    # would still bundle.
+    # would still bundle. The scanner's own type-checker, by path: TypeScript 7 is installed beside
+    # the 6.0.x that typescript-eslint loads, and both are named `tsc`, so `.bin/tsc` could be either.
+    tsc = scanner / "node_modules" / "typescript-7" / "bin" / "tsc"
     done = subprocess.run(
-        [str(bin_dir / "tsc"), "-p", str(HERE / "tsconfig.propose.json")], capture_output=True, text=True, check=False
+        ["node", str(tsc), "-p", str(HERE / "tsconfig.propose.json")], capture_output=True, text=True, check=False
     )
     assert done.returncode == 0, done.stdout + done.stderr
     # No package's lint script reaches ml/, so the scanner's Biome config is applied here.
-    scanner = HERE.parent / "packages" / "cube-scanner"
     done = subprocess.run(
         [str(bin_dir / "biome"), "check", f"--config-path={scanner}", str(HERE / "propose_assemble.ts")],
         capture_output=True, text=True, check=False, cwd=HERE.parent,
