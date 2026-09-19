@@ -44,7 +44,14 @@ export function speechStandIn() {
   const utterances = [];
   /** The line the platform is saying, as it sees it: set by `speak`, cleared by `cancel` and by a failure. */
   let speaking = null;
-  class Utterance { constructor(text) { this.text = text; } }
+  // An EventTarget, because that is what a platform utterance is: the app listens for `error` rather
+  // than assigning `onerror`, which anything else touching the utterance could replace (2026-09-19).
+  class Utterance extends EventTarget {
+    constructor(text) {
+      super();
+      this.text = text;
+    }
+  }
   const synth = {
     speak: (u) => { utterances.push(u); said.push(u.text); speaking = u; log.push(['speak', u.text, u.lang]); },
     cancel: () => { cuts.push(speaking?.text ?? null); speaking = null; log.push(['cancel']); },
@@ -52,14 +59,14 @@ export function speechStandIn() {
   const fail = (error, utterance = speaking) => {
     if (!utterance) throw new Error('speechStandIn: no line is being said, so none can fail');
     if (utterance === speaking) speaking = null;
-    utterance.onerror?.({ error });
+    utterance.dispatchEvent(Object.assign(new Event('error'), { error }));
   };
   /** The platform finished saying a line. Nothing is being said afterwards, so a cancel that follows
    *  is attributed to no line — a finished line is not one anybody cut off (audit, 2026-09-19). */
   const finish = (utterance = speaking) => {
     if (!utterance) throw new Error('speechStandIn: no line is being said, so none can finish');
     if (utterance === speaking) speaking = null;
-    utterance.onend?.({});
+    utterance.dispatchEvent(new Event('end'));
   };
   return { log, said, cuts, utterances, fail, finish, make: () => ({ synth, Utterance }) };
 }
