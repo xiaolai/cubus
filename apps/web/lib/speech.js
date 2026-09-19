@@ -38,9 +38,12 @@ export function say(text, lang = 'en', { onFail } = {}) {
   line.lang = lang;
   line.rate = 0.95;
   line.addEventListener('error', (e) => {
-    if (CUT_OFF.has(e.error)) return;
-    console.warn(`[cubus] a spoken line did not play (${e.error}): "${text}"`);
-    onFail?.(e.error);
+    // An event that names no reason is still a line that did not play: reported as `unnamed` rather
+    // than as `undefined`, which a caller cannot tell from "nothing was reported" (CI, 2026-09-19).
+    const reason = e.error ?? 'unnamed';
+    if (CUT_OFF.has(reason)) return;
+    console.warn(`[cubus] a spoken line did not play (${reason}): "${text}"`);
+    onFail?.(reason);
   });
   synth.speak(line);
   return true;

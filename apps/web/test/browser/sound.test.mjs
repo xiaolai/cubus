@@ -24,6 +24,12 @@ for (const engine of ['webkit', 'chromium']) {
     try {
       const context = await fixture.browser.newContext({ viewport: { width: 1280, height: 1012 } });
       const page = pace(await context.newPage());
+      // The page's own words, for the assertions below: `say()` logs a line it could not play, and a
+      // failure message that cannot quote the app is a failure message that needs another CI round
+      // to understand (2026-09-19).
+      const logged = [];
+      page.on('console', (m) => { if (m.text().includes('[cubus]')) logged.push(m.text()); });
+      page.on('pageerror', (e) => logged.push(`pageerror: ${e.message}`));
       await page.goto(`${fixture.base}/#/settings`);
       await page.waitForSelector('[data-toggle="sounds"]');
       const state = () => page.evaluate(async () => (await import('/lib/sound.js')).audioState());
@@ -40,7 +46,10 @@ for (const engine of ['webkit', 'chromium']) {
         const speech = await import('/lib/speech.js');
         const can = typeof speechSynthesis === 'object' && typeof SpeechSynthesisUtterance === 'function';
         if (!can) return { can, said: null, failure: null, settled: null };
+        // Every call, as it arrived: a message saying "null" cannot tell a handler that never ran from
+        // one that reported nothing, and one CI round per guess is too slow (2026-09-19).
         const failures = [];
+        const calls = [];
         // The utterance's OWN terminal event, not a fixed wait: a failure arriving a moment after
         // whatever span this test guessed would go unseen (audit, 2026-09-19). A line that neither
         // ends nor fails inside the bound is reported as that, rather than as a pass.
@@ -50,12 +59,15 @@ for (const engine of ['webkit', 'chromium']) {
         });
         let reason = null;
         let spoken = null;
+        /** Every utterance this engine made, so "which line failed" is answerable. */
+        const made = [];
         const engine = {
           synth: speechSynthesis,
           Utterance: class extends SpeechSynthesisUtterance {
             constructor(text) {
               super(text);
               spoken = this;
+              made.push(text);
               this.addEventListener('end', () => settle('ended'));
               this.addEventListener('error', (e) => {
                 // Only the line THIS test asked for: another utterance failing would be a different
@@ -68,14 +80,24 @@ for (const engine of ['webkit', 'chromium']) {
           },
         };
         const was = speech.useSpeechEngine(() => engine);
-        const said = speech.say('Got it!', 'en', { onFail: (e) => failures.push(e) });
+        const said = speech.say('Got it!', 'en', {
+          onFail: (e) => {
+            calls.push(String(e));
+            failures.push(e);
+          },
+        });
         const settled = await Promise.race([
           done,
           new Promise((r) => setTimeout(() => r('still speaking after 10s'), 10_000)),
         ]);
         speech.hush();
         speech.useSpeechEngine(was);
-        return { can, said, failure: failures[0] ?? null, settled, reason, voices: speechSynthesis.getVoices().length };
+        return {
+          can, said, settled, reason, calls,
+          failure: failures[0] ?? null,
+          voices: speechSynthesis.getVoices().length,
+          utterances: made.length,
+        };
       });
       assert.equal(spoke.can, true, `${engine} has no speechSynthesis`);
       assert.equal(spoke.said, true);
@@ -91,7 +113,9 @@ for (const engine of ['webkit', 'chromium']) {
       // …and whichever happened, the two channels agree: a failure the caller was told about is a
       // failure the utterance reported, and a cut-off is not reported as a failure at all.
       assert.equal(spoke.failure, spoke.reason && !['canceled', 'interrupted'].includes(spoke.reason) ? spoke.reason : null,
-        `${engine}: onFail said ${spoke.failure} and the utterance said ${spoke.reason}`);
+        `${engine}: onFail was called ${spoke.calls.length} time(s) with [${spoke.calls}] and the utterance `
+        + `said ${spoke.reason}, over ${spoke.utterances} line(s) with ${spoke.voices} voices; `
+        + `the page said: ${logged.join(' | ') || '(nothing)'}`);
       await context.close();
     } finally {
       await fixture.close();
