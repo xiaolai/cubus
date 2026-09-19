@@ -76,10 +76,13 @@ Combined **30,738 images** = synthetic (breadth) + real (authenticity):
   benchmarks — never trained on. **Known contamination (2026-09-04):** a dihedral-aware check
   (`dedup_heldout.py --dihedral`, aHash over every rotation and flip of each training image) flags
   **36 of the 207** as rotated or flipped copies of training images — Roboflow's default
-  augmentations, which the original check could not see. The composition has not been changed
-  (that is a dataset decision, and every number below is on the 207 as committed); measured on the
-  171 that remain, the shipped fp32 reads mAP50 0.884 / mAP50-95 0.779 / P 0.861 / R 0.865 against
-  0.878 / 0.772 / 0.862 / 0.860 on all 207, so the copies were not inflating the score.
+  augmentations, which the original check could not see. **Re-cut 2026-09-18** to 165: those 36,
+  and 6 more found against V6FT's own training and validation photos. Numbers below dated before
+  then are on the 207. For v3, measured on the 171 before the move, the copies were not inflating
+  the score (mAP50 0.884 against 0.878 on all 207). For V6FT on the clean sets (the repository's
+  evaluator, 2026-09-18): held-out 165 mAP50 **0.966** / mAP50-95 0.719 / P 0.929 / R 0.959, and IID
+  mAP50 0.957 on the 66 photos of its own test split that are not copies of its training photos —
+  NOT on the 169 above, 124 of which V6FT trained on (`ml/OOD_EVAL.md`).
 
 ## In-distribution accuracy (169 REAL photos from the training sources, 2,261 stickers)
 
@@ -244,7 +247,7 @@ sha256, argv) into every checkpoint, and `export.py` copies it into `MANIFEST.js
 manifest predates that field; exporting V6FT again would record it as `not recorded`, and the next
 model's manifest will carry the real thing.
 
-v3's recipe (Ultralytics, `ml/train.sh`, from the pinned `yolo11n.pt`) is `ml/README.md`
+v3's recipe (Ultralytics, `ml/train.sh`, from the pinned `yolo11n.pt`) was removed from the repository on 2026-09-18 and is in git history; it was `ml/README.md`
 §"Legacy: v3". Note for the DGX Spark GB10: it hard-resets under sustained load unless the GPU clock
 is capped — `sudo nvidia-smi -lgc 300,2200` (community-verified; it's power *spikes*, not average
 temp) — and `run-cubedet.sh` refuses to start on a box whose idle clock shows the cap is gone.

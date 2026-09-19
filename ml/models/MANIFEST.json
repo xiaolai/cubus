@@ -39,7 +39,7 @@
       "runtime": "LiteRT/TFLite (onnx2tf) \u2014 bundled in the Android APK by gen/android/app/build.gradle.kts, but gated OFF: VisionPlugin.kt answers probe with verifiedOnDevice=false, so Android runs the WebView fp32 path until the native path is verified on a device",
       "precision": "fp32",
       "layout": "NHWC input; box coords in 640-space (the read is scale-invariant, so the consumer need not rescale)",
-      "quantisation_note": "NOT quantised, for this model. Full-integer int8 was rejected long ago (it collapses the head's class scores to ~0), and weight-only int8 read identically to fp32 for the v3 graph (0/20) \u2014 but for the cubedet graph it diverges on 5 of the 20 golden fixtures, including a face on a frame the reference refuses, which is the failure the abstain fixtures exist to catch. Every other artefact of this model is fp32 and Android serves the fp32 WebView graph, so there was nothing to trade that for. The Ultralytics path still exports weight-only int8 and records it here.",
+      "quantisation_note": "NOT quantised, for this model. Full-integer int8 was rejected long ago (it collapses the head's class scores to ~0), and weight-only int8 read identically to fp32 for the v3 graph (0/20) \u2014 but for the cubedet graph it diverges on 5 of the 20 golden fixtures, including a face on a frame the reference refuses, which is the failure the abstain fixtures exist to catch. Every other artefact of this model is fp32 and Android serves the fp32 WebView graph, so there was nothing to trade that for.",
       "sha256": "159fc1233b773d2686de192a38bd9fbc3ff1931d60f3207e8fd43e1a8d785871"
     }
   },

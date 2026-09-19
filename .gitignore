@@ -10,7 +10,7 @@
 node_modules/
 node_modules
 
-# ML training + validation output (YOLO / ultralytics)
+# ML training + validation output (cubedet)
 runs/
 
 # Rust workspace build output

@@ -17,6 +17,7 @@ import os
 
 from PIL import Image
 
+from misread_k import confidence_row
 from ood_eval import CLASS_NAMES, NUM_CLASSES, decode, letterbox, nms
 
 
@@ -64,6 +65,10 @@ def main() -> None:
     conf = [[0] * NUM_CLASSES for _ in range(NUM_CLASSES)]  # conf[gt][pred]
     gt_total = [0] * NUM_CLASSES
     matched = 0
+    # The confidence of each matched read, split by whether it named the colour right: the question
+    # dev-docs/misread-decoding.md §3 asks — is the detector hesitant exactly when it is wrong?
+    right_conf: list[float] = []
+    wrong_conf: list[float] = []
     for img_path in sorted(glob.glob(os.path.join(args.images, "*"))):
         if os.path.splitext(img_path)[1].lower() not in (".jpg", ".jpeg", ".png"):
             continue
@@ -81,7 +86,7 @@ def main() -> None:
         preds = nms(decode(out))
         pboxes = [{"x0": (d["cx"] - d["w"] / 2 - px) / scale, "y0": (d["cy"] - d["h"] / 2 - py) / scale,
                    "x1": (d["cx"] + d["w"] / 2 - px) / scale, "y1": (d["cy"] + d["h"] / 2 - py) / scale,
-                   "cls": d["classId"]} for d in preds]
+                   "cls": d["classId"], "confidence": d["confidence"]} for d in preds]
         used = [False] * len(pboxes)
         for g in gts:
             best, bi = 0.5, -1
@@ -95,6 +100,7 @@ def main() -> None:
                 used[bi] = True
                 matched += 1
                 conf[g["cls"]][pboxes[bi]["cls"]] += 1
+                (right_conf if pboxes[bi]["cls"] == g["cls"] else wrong_conf).append(pboxes[bi]["confidence"])
 
     total_gt = sum(gt_total)
     correct = sum(conf[c][c] for c in range(NUM_CLASSES))
@@ -107,6 +113,16 @@ def main() -> None:
         acc = conf[c][c] / row if row else 0
         wrong = {CLASS_NAMES[j]: conf[c][j] for j in range(NUM_CLASSES) if j != c and conf[c][j] > 0}
         print(f"  {CLASS_NAMES[c]:7s} matched={row:4d} correct={acc:.1%}  confusedWith={wrong or '-'}")
+    print("\nconfidence of matched reads (misread-decoding.md §3):")
+    for name, values in (("correct", right_conf), ("error", wrong_conf)):
+        # The same summary misread_k.py prints of the same measurement, from the same function: two
+        # definitions of "median, and the share below a threshold" drift apart (audit, 2026-09-19).
+        row = confidence_row(values)
+        if not row["n"]:
+            print(f"  {name:7s} n=0")
+            continue
+        print(f"  {name:7s} n={row['n']:5d}  median {row['median']:.3f}  below 0.5 {row['below_0.5']:.0%}  "
+              f"below 0.7 {row['below_0.7']:.0%}")
 
 
 if __name__ == "__main__":
