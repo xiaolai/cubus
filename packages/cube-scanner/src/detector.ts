@@ -32,6 +32,13 @@ export interface ModelOutput {
    */
   frame?: Frame;
   /**
+   * The size of the camera picture the tensor was letterboxed from, when the detector knows it but
+   * does not hand the pixels over — the native plugins (the RGBA frame never crosses their bridge).
+   * With `frame` or this, the panel can place each box in the picture (`ScanProgress.seen`); with
+   * neither it says it cannot, rather than guessing a shape.
+   */
+  picture?: { width: number; height: number };
+  /**
    * The tensor's ROW count, carried so `fitFromOutput` can refuse a head that is not this model's.
    *
    * Required, not optional, and that is the whole value of it. The web runtime already checked

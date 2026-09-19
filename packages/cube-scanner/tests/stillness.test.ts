@@ -77,4 +77,91 @@ describe('Stillness', () => {
     s.reset();
     expect(s.status(9999)).toEqual({ run: 0, heldMs: 0 });
   });
+  /**
+   * A gate with a flicker already in it: position `at` alternating between colours 1 and 4 over six
+   * reads, every other sticker the same. One seeding for every case below, so a change to it cannot
+   * be applied to two of them and missed in the third (audit, 2026-09-19).
+   */
+  const flickering = (at: number, rest: readonly number[] = new Array(9).fill(0)) => {
+    const s = new Stillness(3, 500);
+    const a = [...rest];
+    const b = [...rest];
+    a[at] = 1;
+    b[at] = 4;
+    for (let i = 0; i < 6; i++) s.offer(i % 2 === 0 ? a : b, i * 100);
+    return { gate: s, a, b };
+  };
+
+  it('says which colours a lone flickering sticker changes between, and forgets them on reset', () => {
+    // The panel's sentence names the pair, and adds the light remark only for a pair the light
+    // is known to confuse — so the pair has to be what the sticker actually showed, not a guess.
+    const { gate: s } = flickering(2);
+    expect(s.flickering()).toBe(2);
+    expect(s.flickerColours(2)).toEqual([1, 4]);
+    expect(s.flickerColours(0)).toEqual([]); // never broke a run alone
+    // Two positions changing at once is a cube that moved: it names no pair.
+    s.offer([5, 0, 1, 5, 0, 0, 0, 0, 0], 700);
+    expect(s.flickerColours(0)).toEqual([]);
+    s.reset();
+    expect(s.flickerColours(2)).toEqual([]);
+    // …and the COUNT is forgotten with the colours: kept, it would go on naming that sticker for a
+    // cube the gate has never seen (audit, 2026-09-19).
+    expect(s.flickering()).toBeNull();
+  });
+
+  it('forgets a flicker when the subject changes, and keeps it through a noisy frame', () => {
+    // Most of the face changing is a cube that moved: another side's stickers must not be described
+    // by the last one's flicker. Two positions at once is a noisy frame and keeps the history, or a
+    // real flicker with the odd bad frame could never be named (audit, 2026-09-19).
+    const { gate: s, b } = flickering(2);
+    const noisy = [...b];
+    noisy[0] = 2;
+    noisy[3] = 5; // exactly two stickers misread for a frame, and neither is the centre
+    expect(noisy.filter((c, i) => c !== b[i]).length).toBe(2);
+    s.offer(noisy, 700);
+    expect(s.flickerColours(2)).toEqual([1, 4]);
+    // Neither of the two names a pair of its own: a frame is not a flicker.
+    expect(s.flickerColours(0)).toEqual([]);
+    expect(s.flickerColours(3)).toEqual([]);
+    s.offer([5, 5, 5, 5, 5, 5, 0, 0, 0], 800); // a different face
+    expect(s.flickerColours(2)).toEqual([]);
+    expect(s.flickering()).toBeNull();
+  });
+
+  it('forgets a flicker on another side even when only the centre and one more sticker changed', () => {
+    // A centre belongs to its side, so a changed centre beside any other change is a new subject —
+    // two sides of a near-solved cube can share all but a couple of stickers (audit, 2026-09-19).
+    const { gate: s } = flickering(2);
+    expect(s.flickerColours(2)).toEqual([1, 4]);
+    s.offer([0, 0, 4, 0, 3, 0, 0, 5, 0], 700); // another side: its centre and one sticker differ
+    expect(s.flickerColours(2)).toEqual([]);
+    expect(s.flickering()).toBeNull();
+  });
+
+  it('forgets a flicker when the side is turned in the hand, through any quarter of a turn', () => {
+    // A near-symmetric side turned changes in only a few places, all of them moved stickers: the
+    // history names positions that no longer hold what it saw (round-3 audit). Each turned frame is
+    // written out by hand — derived from the production permutation, one wrong mapping would satisfy
+    // both sides of the test (audit, 2026-09-19). One sticker above the centre, which travels round
+    // the edges, so every turn moves exactly two positions and only the turn rule can clear it:
+    //
+    //     . 4 .        . . .        . . .        . . .
+    //     . . .   -->  . . 4   -->  . . .   -->  4 . .
+    //     . . .        . . .        . 4 .        . . .
+    //      still      a quarter      a half    three quarters
+    const turns = [
+      { name: 'a quarter', frame: [0, 0, 0, 0, 0, 4, 0, 0, 0] },
+      { name: 'a half', frame: [0, 0, 0, 0, 0, 0, 0, 4, 0] },
+      { name: 'three quarters', frame: [0, 0, 0, 4, 0, 0, 0, 0, 0] },
+    ];
+    for (const { name, frame } of turns) {
+      const { gate: s, b } = flickering(1);
+      expect(s.flickering()).toBe(1);
+      expect(frame.filter((c, i) => c !== b[i]).length, name).toBe(2); // the case is the one it claims to be
+      expect(frame[4], name).toBe(b[4]); // and the centre did not move
+      s.offer(frame, 700);
+      expect(s.flickerColours(1), name).toEqual([]);
+      expect(s.flickering(), name).toBeNull();
+    }
+  });
 });
