@@ -19,7 +19,7 @@ rust-version = "1.88"
 rayon = "1"
 # Artifact integrity: every table file carries a SHA-256 and the loader refuses any corrupt or
 # truncated file (plan §7, packed-layout row). Corruption here is silent inadmissibility.
-sha2 = "0.10"
+sha2 = "0.11"
 # Uniform random states for the library generator and the distribution smoke test — the same
 # "random state, never random turns, never a weak source" discipline as apps/web/lib/random-state.js.
 getrandom = "0.2"
