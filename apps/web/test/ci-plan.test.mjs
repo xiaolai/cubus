@@ -86,7 +86,7 @@ test('a pull request runs a platform job when it touches that platform', () => {
     ['scripts/verify-icons.py', { ...only('icons'), deps: true }],
     ['scripts/sign-macos.sh', only('deps')],
     // Every shell script is shellchecked, so every one of them runs that job.
-    ['ml/train.sh', { ...only('ml'), deps: true }],
+    ['ml/run-cubedet.sh', { ...only('ml'), deps: true }],
     ['apps/desktop/src-tauri/gen/android/tools/ci.sh', { ...only('rust'), android: true, deps: true }],
     ['.githooks/pre-push', only('deps')],
     ['packages/gan-driver/package.json', only('deps')],

@@ -52,7 +52,7 @@ ln -s "$HERE/out/heldout/images" "$DS/images/test"
 ln -s "$HERE/out/heldout/labels" "$DS/labels/test"
 
 echo "--- exporting $RUN to ONNX (no Detlib on this path)"
-"$PY" "$HERE/export.py" --cubedet --pt "$CKPT" --out "$HERE/out/onnx_$RUN" --skip coreml tflite >/dev/null
+"$PY" "$HERE/export.py" --pt "$CKPT" --out "$HERE/out/onnx_$RUN" --skip coreml tflite >/dev/null
 ONNX="$HERE/out/onnx_$RUN/cube-yolo.onnx"
 
 echo

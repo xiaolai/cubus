@@ -1,6 +1,6 @@
 # Training the permissive detector.
 #
-# Run (on the GPU box, in the NGC base image — NOT in cube-train:1, which carries detlib):
+# Run (on the GPU box, in the NGC base image — NOT in cube-train:1, v3's image, which carries detlib):
 #
 #   docker run --rm --gpus all --ipc=host \
 #     -v ~/cubus-ml:/work -v ~/datasets/cube_combined/dataset:/data \
@@ -69,7 +69,7 @@ def assert_permissive_environment(allow: bool) -> dict[str, str]:
     # EVERY VALUE IS COERCED TO str, and that is not cosmetic. `torch.__version__` is a
     # `TorchVersion`, a str SUBCLASS, and pickling it records the class — so a checkpoint carrying
     # it cannot be read back with `weights_only=True`, which is how both the resume path and
-    # `export.py --cubedet` load it. Left alone, this fails at the END: the run trains for hours
+    # `export.py` load it. Left alone, this fails at the END: the run trains for hours
     # and then nothing can open the weights. Stored as plain strings, the checkpoint is data.
     return {
         "python": sys.version.split()[0],

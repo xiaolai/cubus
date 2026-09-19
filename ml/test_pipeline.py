@@ -873,7 +873,307 @@ def test_paired_arms_leaves_out_stickers_with_no_known_cube() -> None:
 # The files CI runs as `python ml/<file>` call their tests by name from `__main__`, so a test that is
 # written and not added to that list is a test that never runs -- and says nothing, because the
 # runner prints ALL PASS over whatever it did call. This is the check that makes that loud.
-SCRIPT_RUN_TESTS = ("test_pipeline.py", "test_propose.py", "test_drop_dataset.py", "test_drop_eval.py")
+SCRIPT_RUN_TESTS = ("test_pipeline.py", "test_propose.py", "test_drop_dataset.py", "test_drop_eval.py",
+                    "test_export_tflite.py", "test_evaluator.py")
+
+
+def test_the_misread_report_reads_a_drop_eval_file_end_to_end() -> None:
+    """misread_k.py over a file in `drop_eval.py --out`'s own shape, through its `main` (audit, 2026-09-19).
+
+    The join between the two scripts is a contract between files: the photos under `photos`, the per-set
+    outcomes under `cubes[model].per_set`. The pieces were tested apart, so a change to either shape —
+    a renamed key, a set in one and not the other — passed everything until someone ran the pair.
+    """
+    import contextlib
+    import io
+    import json
+    import re
+    import tempfile
+
+    import misread_k
+
+    import drop_eval as de
+
+    truth = tuple([0, 1, 2, 3, 4, 5, 0, 1, 2])
+    wrong = list(truth)
+    wrong[4] = (wrong[4] + 1) % 6
+
+    def score(contributor, name, index, read):
+        located = tuple(c is not None for c in read)
+        return de.PhotoScore("V6FT", contributor, name, index, True, tuple(read), truth,
+                             tuple((0.9,) * 6 if hit else None for hit in located),
+                             tuple(0.9 if hit else None for hit in located))
+
+    scores = [score("c1", "A", i, wrong if i == 0 else truth) for i in range(6)]
+    scores += [score("c2", "E", i, truth) for i in range(6)]
+
+    # The app's assembly, as drop_eval drives it: both sets read, both accepted as the cube they are.
+    def decide(sets):
+        return [{"status": "confirm", "legal": True, "photos": [{"colors": list(truth)}] * 6} for _ in sets]
+
+    cubes = de.cube_outcomes(scores, ["V6FT"], decide)
+    # …written by the very function that writes `--out`, so what is read below is the file's own shape.
+    doc = de.out_document({}, "V6FT", {"V6FT": {}}, cubes, {}, scores)
+    assert [r["outcome"] for r in doc["cubes"]["V6FT"]["per_set"]] == ["right", "right"], doc["cubes"]
+
+    def run(document) -> str:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump(document, f)
+            path = f.name
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                assert misread_k.main([path, "--bootstrap", "50", "--seed", "1"]) == 0
+        finally:
+            Path(path).unlink()
+        return out.getvalue()
+
+    text = run(doc)
+    assert "V6FT: 2 sets, 2 scanned whole" in text, text
+    assert "| 0 | 1 | 50.0% | 1 | 0 | 0 | 0 |" in text, text  # the clean scan, which the app got right
+    assert "| 1 | 1 | 50.0% | 1 | 0 | 0 | 0 |" in text, text  # the one with a single misread, also right
+    assert "scans with a misread: 1; of those, k = 1 in 1, all on ONE face in 1" in text, text
+    assert "| error | 1 |" in text, text
+
+    # EVERY outcome drop_eval can file is one this report can show. Read from drop_eval's own source,
+    # so an outcome added there fails here rather than being refused by the report at runtime — which
+    # is what would have happened to "unusable" (audit, 2026-09-19).
+    filed = set(re.findall(r'outcome\[k\] = "([^"]+)"', (HERE / "drop_eval.py").read_text(encoding="utf-8")))
+    filed |= set(re.findall(r'outcome = \{k: "([^"]+)"', (HERE / "drop_eval.py").read_text(encoding="utf-8")))
+    filed |= set(re.findall(r'outcome\[k\] = "([^"]+)" if ', (HERE / "drop_eval.py").read_text(encoding="utf-8")))
+    filed |= {"WRONG accepted"}  # the other arm of that conditional, which the pattern above cannot see
+    assert filed <= misread_k.OUTCOMES, f"drop_eval files outcomes this report has no column for: {sorted(filed - misread_k.OUTCOMES)}"
+    assert misread_k.OUTCOMES <= filed, f"this report has columns for outcomes drop_eval never files: {sorted(misread_k.OUTCOMES - filed)}"
+
+    # A file whose two halves disagree is refused, in either direction, rather than counted.
+    for broken, says in (
+        ({**doc, "cubes": {"V6FT": {"per_set": doc["cubes"]["V6FT"]["per_set"][:1]}}}, "no app outcome"),
+        ({**doc, "cubes": {"V6FT": {"per_set": [*doc["cubes"]["V6FT"]["per_set"],
+                                                {"contributor": "c9", "set": "Z", "outcome": "right"}]}}}, "not in this file's photos"),
+        ({**doc, "cubes": {"V6FT": {"per_set": [{"contributor": "c1", "set": "A", "outcome": "partly"},
+                                                {"contributor": "c2", "set": "E", "outcome": "right"}]}}}, "cannot show"),
+    ):
+        try:
+            run(broken)
+        except SystemExit as e:
+            assert says in str(e), f"{says!r} not in {e}"
+        else:
+            raise AssertionError(f"a file missing {says} was reported on")
+    # A set nothing misread is a RESULT: the conditional shares have no denominator, the run says so
+    # and stands. A share the data DOES define but no resample could compute is a measurement that did
+    # not finish, and the run fails (audit, 2026-09-19).
+    clean = de.out_document({}, "V6FT", {"V6FT": {}},
+                            de.cube_outcomes([s for s in scores if s.set == "E"], ["V6FT"], decide), {},
+                            [s for s in scores if s.set == "E"])
+    text = run(clean)
+    assert "(not defined: no scan in this set misread anything)" in text, text
+    assert text.count("not defined") == 2, text  # both conditional shares, and only those
+    assert "P(k>=1)              0.0%" in text, text
+
+    was_bootstrap = misread_k.bootstrap
+    misread_k.bootstrap = lambda *a, **k: {}
+    try:
+        run(doc)
+    except SystemExit as e:
+        assert "did not finish" in str(e), e
+    else:
+        raise AssertionError("a run whose intervals never came back was reported as finished")
+    finally:
+        misread_k.bootstrap = was_bootstrap
+
+    # And a file in which nothing was scanned whole has no k to count, rather than a division by zero.
+    nothing = de.out_document({}, "V6FT", {"V6FT": {}}, {"V6FT": {"per_set": []}}, {}, [])
+    try:
+        run(nothing)
+    except SystemExit as e:
+        assert "none of the 0 sets was scanned whole" in str(e), e
+    else:
+        raise AssertionError("a file with no whole scan was reported on")
+
+    print("PASS misread_k end to end: the report reads a drop_eval file, and refuses one whose halves disagree")
+
+
+def test_the_tflite_leg_converts_a_copy_and_takes_the_one_float32_graph() -> None:
+    """export.py's TFLite path, with onnx2tf stood in for.
+
+    CI validates the committed artefacts and never calls this function, so the converter options and
+    the file it picks could drift without anything saying so (audit, 2026-09-19). What is held here is
+    what the module docstring promises: the fp32 is handed over as a COPY, the quantised output is not
+    asked for, and exactly one `cube-yolo_float32.tflite` is accepted.
+    """
+    import sys
+    import tempfile
+    import types
+
+    import export
+
+    calls: list[dict] = []
+    written: list[str] = ["cube-yolo_float32.tflite"]
+
+    def convert(**kwargs):
+        calls.append(kwargs)
+        out_dir = Path(kwargs["output_folder_path"])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        # onnx2tf rewrites the graph it is GIVEN: if that were the committed fp32, the model would be
+        # a different one afterwards (the 2026-09-04 repair).
+        Path(kwargs["input_onnx_file_path"]).write_bytes(b"simplified")
+        for name in written:
+            (out_dir / name).write_bytes(b"tflite")
+
+    stand_in = types.ModuleType("onnx2tf")
+    stand_in.convert = convert
+    sys.modules["onnx2tf"] = stand_in
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fp32 = root / export.FP32
+            fp32.write_bytes(b"the committed graph")
+            out, work = root / "out", root / "work"
+            out.mkdir()
+            dst = export.export_tflite(fp32, work, out)
+
+            assert dst == out / export.TFLITE and dst.read_bytes() == b"tflite", dst
+            assert fp32.read_bytes() == b"the committed graph", "onnx2tf was handed the committed fp32 itself"
+            assert len(calls) == 1, calls
+            assert calls[0]["input_onnx_file_path"] != str(fp32), "the converter was pointed at the original"
+            assert calls[0]["output_dynamic_range_quantized_tflite"] is False, "a quantised graph was asked for"
+            assert calls[0]["output_signaturedefs"] is True, "signature defs are what keep '/' in op names"
+
+            # A converter that wrote something else is a converter that changed under us: refused,
+            # and the refusal says what it did write.
+            written[:] = ["cube-yolo_float16.tflite", "cube-yolo_integer_quant.tflite"]
+            calls.clear()
+            try:
+                export.export_tflite(fp32, root / "work-other", out)
+            except SystemExit as e:
+                assert "expected one cube-yolo_float32.tflite" in str(e), e
+                assert "cube-yolo_float16.tflite" in str(e), "the refusal does not say what was there"
+            else:
+                raise AssertionError("a converter that wrote no float32 graph was accepted")
+    finally:
+        del sys.modules["onnx2tf"]
+    print("PASS tflite: the converter gets a copy, no quantisation, and one named graph or an error")
+
+
+def test_the_metrics_table_scores_the_set_its_dataset_file_names() -> None:
+    """metrics_table.py's dataset resolution and its refusals (audit, 2026-09-19).
+
+    The file used to be a flag: `--dataset name=other.yaml` scored the `images/` folder beside it
+    whatever the file said. And an empty set or a missing labels directory reached `score`, which
+    answers NaN — a row that reads as a measurement.
+    """
+    import json
+    import sys
+    import tempfile
+    import types
+
+    import metrics_table as mt
+
+    names = ", ".join(mt.CLASS_NAMES)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "elsewhere" / "val").mkdir(parents=True)
+        (root / "elsewhere" / "labels").mkdir()
+        (root / "elsewhere" / "val" / "a.jpg").write_bytes(b"")
+        (root / "elsewhere" / "val" / "b.png").write_bytes(b"")
+        (root / "elsewhere" / "val" / "notes.txt").write_bytes(b"")
+        (root / "elsewhere" / "labels" / "a.txt").write_text("0 0.5 0.5 0.1 0.1\n", encoding="utf-8")
+        yaml_path = root / "data.yaml"
+        yaml_path.write_text(f"path: {root / 'elsewhere'}\nval: val\nnc: 6\nnames: [{names}]\n", encoding="utf-8")
+
+        files, labels = mt.dataset_of(yaml_path)
+        assert [f.name for f in files] == ["a.jpg", "b.png"], files
+        assert labels == root / "elsewhere" / "labels"
+
+        def refuses(text: str, says: str) -> None:
+            bad = root / "bad.yaml"
+            bad.write_text(text, encoding="utf-8")
+            try:
+                mt.dataset_of(bad)
+            except SystemExit as e:
+                assert says in str(e), f"{says!r} not in {e}"
+            else:
+                raise AssertionError(f"accepted: {text!r}")
+
+        refuses(f"path: {root / 'elsewhere'}\nval: missing\nnc: 6\nnames: [{names}]\n", "not a directory")
+        refuses(f"path: {root / 'elsewhere'}\nval: labels\nnc: 6\nnames: [{names}]\n", "holds no")
+        refuses(f"path: {root}\nval: elsewhere/val\nnc: 6\nnames: [{names}]\n", "no labels beside")
+        refuses(f"path: {root / 'elsewhere'}\nval: val\nnc: 2\nnames: [a, b]\n", "not this evaluator")
+
+        # Labels that are there but EMPTY are ground truth nobody wrote: scored, every prediction is a
+        # false positive and the row reads as a bad model (audit, 2026-09-19).
+        (root / "blank" / "val").mkdir(parents=True)
+        (root / "blank" / "labels").mkdir()
+        (root / "blank" / "val" / "a.jpg").write_bytes(b"")
+        (root / "blank" / "labels" / "a.txt").write_text("", encoding="utf-8")
+        refuses(f"path: {root / 'blank'}\nval: val\nnc: 6\nnames: [{names}]\n", "no labelled picture")
+
+        # The evaluator is named by CONTENT, so a change to the matching rules cannot hide behind the
+        # same label. Every source it names is present.
+        digest = mt.evaluator_digest()
+        assert "MISSING" not in digest, digest
+        assert digest.count(":") == 3, digest
+
+        # One row, with the scorer stood in for: the keys the table and the JSON are written from, and
+        # the image count taken from the very list that was scored (audit, 2026-09-19).
+        scored: dict = {}
+
+        def score(model_path, files, label_dir, limit):
+            scored.update(model=model_path.name, files=[f.name for f in files], labels=label_dir.name)
+            return {"map50": 0.9, "map50_95": 0.7, "precision": 0.8, "recall": 0.75,
+                    "ap50_per_class": {"white": 0.95, "red": None}}
+
+        stand_in = types.ModuleType("compare_detectors")
+        stand_in.score = score
+        sys.modules["compare_detectors"] = stand_in
+        try:
+            model = root / "cube-yolo.onnx"
+            model.write_bytes(b"not really a model")
+            row = mt.validate(model, yaml_path)
+            assert scored == {"model": "cube-yolo.onnx", "files": ["a.jpg", "b.png"], "labels": "labels"}, scored
+            assert row == {"mAP50": 0.9, "mAP50_95": 0.7, "P": 0.8, "R": 0.75, "images": 2,
+                           "per_class_mAP50": {"white": 0.95}}, row
+
+            # A per-class number that is not one never reaches the table or the JSON either.
+            stand_in.score = lambda *a: {"map50": 0.9, "map50_95": 0.7, "precision": 0.8, "recall": 0.75,
+                                         "ap50_per_class": {"white": 0.95, "red": float("nan"), "blue": None}}
+            assert mt.validate(model, yaml_path)["per_class_mAP50"] == {"white": 0.95}
+
+            # A metric that is not a number is not a measurement: refused before it can be printed or
+            # written as a JSON token no reader accepts.
+            stand_in.score = lambda *a: {"map50": float("nan"), "map50_95": 0.7, "precision": 0.8,
+                                         "recall": 0.75, "ap50_per_class": {}}
+            try:
+                mt.validate(model, yaml_path)
+            except SystemExit as e:
+                assert "not a number" in str(e), e
+            else:
+                raise AssertionError("a NaN row was accepted")
+
+            # And the JSON `ood_report.py --metrics` reads, written through main(): both sets, the
+            # artefact named by content, and the evaluator named by content too (audit, 2026-09-19).
+            stand_in.score = score
+            out_json = root / "metrics.json"
+            heldout = root / "heldout.yaml"
+            heldout.write_text(yaml_path.read_text(encoding="utf-8"), encoding="utf-8")
+            argv = ["metrics_table.py", "--models", str(model), "--json", str(out_json),
+                    "--dataset", f"iid={yaml_path}", "--dataset", f"heldout={heldout}"]
+            was_argv = sys.argv
+            sys.argv = argv
+            try:
+                assert mt.main() == 0
+            finally:
+                sys.argv = was_argv
+            doc = json.loads(out_json.read_text(encoding="utf-8"))
+            assert doc["model"]["sha256_12"] == mt.sha12(model), doc["model"]
+            assert doc["tool"]["source"] == mt.evaluator_digest(), doc["tool"]
+            assert doc["iid"] == {"images": 2, "mAP50": 0.9, "mAP50_95": 0.7, "P": 0.8, "R": 0.75,
+                                  "per_class_mAP50": {"white": 0.95}}, doc["iid"]
+            assert doc["heldout"]["images"] == 2 and "removed" in doc["heldout"], doc["heldout"]
+            assert "NaN" not in out_json.read_text(encoding="utf-8"), "the JSON carries a token no reader accepts"
+        finally:
+            del sys.modules["compare_detectors"]
+    print("PASS metrics table: the dataset file is read, an unusable set is refused, the evaluator is named by content")
 
 
 def test_every_script_run_test_is_called_by_its_runner() -> None:
@@ -968,6 +1268,106 @@ def test_a_coreml_package_is_identified_by_its_model_not_its_random_ids() -> Non
     print("PASS artefacts: a CoreML package's identity ignores its random ids and nothing else")
 
 
+def test_misread_k_counts_a_scan_as_the_app_would_have_captured_it() -> None:
+    """misread_k.py's definitions, on a drop built by hand.
+
+    A face counts only if the strict fit took it and every confirmed sticker was located; a set counts
+    only if all six did. k is the wrong colours on those faces, and "one face" means every one of them
+    on a single side — the case a re-shown side can recover.
+    """
+    import misread_k
+
+    truth = [0, 1, 2, 3, 4, 5, 0, 1, 2]
+
+    def photo(contributor, name, index, read=None, fitted=True, conf=0.9):
+        read = list(truth) if read is None else read
+        return {"model": "M", "contributor": contributor, "set": name, "photo": index, "fitted": fitted,
+                "read": read, "truth": list(truth), "confidence": [conf] * 9}
+
+    def wrong(at):
+        read = list(truth)
+        read[at] = (read[at] + 1) % 6
+        return read
+
+    photos = []
+    for i in range(6):  # A: one misread, on face 0
+        photos.append(photo("c1", "A", i, wrong(4) if i == 0 else None))
+    for i in range(6):  # B: two misreads, on faces 1 and 2
+        photos.append(photo("c1", "B", i, wrong(0) if i in (1, 2) else None))
+    for i in range(6):  # C: a face the strict fit refused, so no scan
+        photos.append(photo("c2", "C", i, fitted=i != 3))
+    for i in range(6):  # D: a face with a sticker not located, so no scan
+        photos.append(photo("c2", "D", i, [None] + truth[1:] if i == 5 else None))
+    for i in range(6):  # E: read right
+        photos.append(photo("c2", "E", i))
+
+    # Another model's records, under the same contributor and set names: `sets_of` must not mix them,
+    # and nothing below may change when they are present (audit, 2026-09-19).
+    other = [{**photo("c1", "A", i, wrong(2)), "model": "OTHER"} for i in range(6)]
+    other += [{**photo("c9", "Z", i), "model": "OTHER"} for i in range(6)]
+
+    sets = misread_k.sets_of(photos + other, "M")
+    scans = {k: s for k, v in sets.items() if (s := misread_k.scan_of(v)) is not None}
+    assert sorted(name for _, name in scans) == ["A", "B", "E"], scans
+    assert ("c9", "Z") not in sets, "another model's set was counted as this one's"
+    assert scans[("c1", "A")] == {"k": 1, "per_face": [1, 0, 0, 0, 0, 0], "faces_with_errors": 1}
+    assert scans[("c1", "B")]["faces_with_errors"] == 2
+
+    outcomes = {("c1", "A"): "right", ("c1", "B"): "refused", ("c2", "E"): "right"}
+    summary = misread_k.summarise(scans, outcomes)
+    assert summary["k"] == {"0": 1, "1": 1, "2": 1}
+    assert (summary["with_a_misread"], summary["k_is_1"], summary["all_on_one_face"]) == (2, 1, 1)
+    assert summary["app_outcome_by_k"] == {"0": {"right": 1}, "1": {"right": 1}, "2": {"refused": 1}}
+    assert misread_k.bucket(3) == "3" and misread_k.bucket(9) == "4+"
+
+    assert misread_k.bucket(3) == "3" and misread_k.bucket(4) == "4+" and misread_k.bucket(9) == "4+"
+
+    # A SCAN is six faces, each a different one, every one captured: five is not a scan the app would
+    # have accepted, and seven counts a face twice (audit, 2026-09-19).
+    whole = [photo("c1", "A", i) for i in range(6)]
+    assert misread_k.scan_of(whole) is not None
+    assert misread_k.scan_of(whole[:5]) is None, "five faces counted as a whole scan"
+    assert misread_k.scan_of(whole + [photo("c1", "A", 6)]) is None, "seven faces counted as a whole scan"
+    assert misread_k.scan_of(whole[:5] + [photo("c1", "A", 4)]) is None, "one face counted twice"
+
+    shares = misread_k.shares(scans)
+    assert shares == {"P(k>=1)": 2 / 3, "P(k=1 | k>=1)": 0.5, "P(one face | k>=1)": 0.5}
+    assert misread_k.tally(scans) == {"scans": 3, "with_a_misread": 2, "k_is_1": 1, "all_on_one_face": 1}
+
+    first = misread_k.bootstrap(scans, 200, seed=7)
+    assert first == misread_k.bootstrap(scans, 200, seed=7), "a seeded bootstrap must repeat"
+    # The intervals themselves, for this fixture: c1 owns both failing sets and c2 the clean one, so a
+    # resample is all-c1, all-c2, or one of each — P(k>=1) reaches 0 and 1, and both conditional shares
+    # are 0.5 wherever they can be computed at all. Asserted exactly, because "some interval came back"
+    # is satisfied by a wrong one (audit, 2026-09-19).
+    assert first == {
+        "P(k>=1)": (0.0, 1.0),
+        "P(k=1 | k>=1)": (0.5, 0.5),
+        "P(one face | k>=1)": (0.5, 0.5),
+    }, first
+    # An interval for every share, and each one an interval: `{}` passed both of those checks before
+    # (audit, 2026-09-19).
+    assert sorted(first) == sorted(shares), first
+    assert all(0 <= lo <= hi <= 1 for lo, hi in first.values())
+    # And it resamples CONTRIBUTORS, not scans: c1 owns both failing sets and c2 the clean one, so a
+    # resample that draws two of one person cannot land between them — 0, 0.5 and 1 are the only
+    # shares of `P(k>=1)` reachable, and a bootstrap over scans would reach 1/3 and 2/3 as well.
+    spread = misread_k.bootstrap(scans, 400, seed=3)["P(k>=1)"]
+    assert spread == (0.0, 1.0), spread
+
+    # Confidence over every captured face, whole scan or not: 28 of the 30 (C's refused face and D's
+    # unlocated one are out), so 252 stickers, 3 of them wrong.
+    photos[0]["confidence"] = [0.9] * 4 + [0.4] + [0.9] * 4  # A's misread read at 0.4
+    conf = misread_k.confidence(photos + other, "M")
+    # BOTH rows, whole: the median and the two thresholds are the measurement the note quotes, and a
+    # regression in either was invisible while only `n` and one threshold were asserted (audit,
+    # 2026-09-19).
+    assert conf["error"] == {"n": 3, "median": 0.9, "below_0.5": 1 / 3, "below_0.7": 1 / 3}, conf["error"]
+    assert conf["correct"] == {"n": 28 * 9 - 3, "median": 0.9, "below_0.5": 0.0, "below_0.7": 0.0}, conf["correct"]
+    assert misread_k.confidence_row([]) == {"n": 0, "median": None, "below_0.5": None, "below_0.7": None}
+    print("PASS misread_k: k counts wrong colours on faces a scan would have captured, and nothing else")
+
+
 if __name__ == "__main__":
     test_cube_geometry()
     test_one_cube_has_one_pigment_per_colour()
@@ -990,5 +1390,9 @@ if __name__ == "__main__":
     test_isolated_boxes_are_dropped_exactly_as_the_app_drops_them()
     test_an_int8_that_could_not_be_checked_is_not_written()
     test_a_coreml_package_is_identified_by_its_model_not_its_random_ids()
+    test_misread_k_counts_a_scan_as_the_app_would_have_captured_it()
+    test_the_misread_report_reads_a_drop_eval_file_end_to_end()
+    test_the_tflite_leg_converts_a_copy_and_takes_the_one_float32_graph()
+    test_the_metrics_table_scores_the_set_its_dataset_file_names()
     test_every_script_run_test_is_called_by_its_runner()
     print("ALL PASS")

@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Launch a cubedet training run, detached, in the CLEAN NGC image.
 #
-# Not cube-train:1 — that image carries detlib, and cubedet/train.py refuses to start beside
-# it. The refusal is the point: it is what makes the licence claim checkable rather than asserted.
+# Not cube-train:1, v3's image — it carries detlib, and cubedet/train.py refuses to start
+# beside it. The refusal is the point: it is what makes the licence claim checkable rather than
+# asserted.
 #
-# The container is deliberately started WITHOUT --rm, following ml/Dockerfile.train's note: a
-# finished run leaves a container holding exactly the environment that produced the weights, which
-# can be committed as an image if the run ever needs reproducing on a host with no network.
+# The container is deliberately started WITHOUT --rm: a finished run leaves a container holding
+# exactly the environment that produced the weights, which can be committed as an image if the run
+# ever needs reproducing on a host with no network.
 set -euo pipefail
 
 RUN="${1:-cubedet_v1}"

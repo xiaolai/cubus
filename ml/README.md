@@ -6,9 +6,8 @@ photographs that exist, and train.
 
 **The shipped detector is `cubedet`** (`ml/cubedet/`, since 2026-09-17): this repository's own
 architecture, a timm ImageNet backbone with a PAN neck and an anchor-free head, trained with no
-copyleft code anywhere on the path. Everything here describes that pipeline unless it says
-**legacy**: the Detlib YOLOv11n pipeline that produced v3, the model it replaced, is kept so v3's
-numbers stay reproducible (§"Legacy: v3").
+copyleft code anywhere on the path. Everything here describes that pipeline. The Detlib
+YOLOv11n pipeline that produced v3, the model it replaced, was removed on 2026-09-18 (§"v3").
 
 ## Two-machine split (why)
 Blender publishes **no Linux ARM64 build** (only linux-x64; conda-forge/pip `bpy` are x86_64
@@ -19,8 +18,7 @@ source. But Blender has **native macOS Apple-Silicon builds with Metal GPU Cycle
   which is 5.2× slower and is the machine you are being asked to keep usable (AGENTS.md, measured
   2026-08-29).
 - **Train on the near GPU box** (GB10 CUDA). `run-cubedet.sh` runs the trainer in the clean NGC
-  PyTorch image, which has no detlib in it; the legacy `train.sh` used the `cube-train:1`
-  container from `Dockerfile.train`, which does. The far box is identical silicon but 0.1 MB/s away:
+  PyTorch image, which has no detlib in it. The far box is identical silicon but 0.1 MB/s away:
   use it only for work whose data is already on it (baseline evals, parallel jobs).
 - Move the dataset between them over the **LAN** (fast; the internet egress is a slow US proxy).
 
@@ -55,11 +53,11 @@ environments), **glossy materials** (physically-correct glare), **perspective**,
 | `drop_dataset.py` / `drop-train-datasets.sh` | the photo drop's confirmed sets as training data, by contributor fold | ✅ `test_drop_dataset.py` |
 | `score_arm.sh` | score one checkpoint against the shipped model: per sticker (`compare_detectors.py`) and per cube (`assign_sim.py`) | — |
 | `drop_eval.py` | score models on the photo drop's checked sets, through the app's own fit | ✅ `test_drop_eval.py` |
-| `train.sh` | **legacy:** YOLOv11n fine-tune in the pinned `cube-train:1` container → `best.pt` | the near GPU box |
 | `export.py` | ONE checkpoint → `models/` (ONNX fp32, CoreML, TFLite, and an int8 ONNX only if it still reads a face) + `MANIFEST.json` | ✅ `test_cubedet.py` |
 | `golden_frames.py` | the parity gate: every runtime reads 20 fixtures as pinned in `golden/expected.json` | CI |
 | `propose.py` | the photo drop's proposal tool: the colours of each finished cube set, for its contributor to confirm. Its cube half, `propose_assemble.ts`, is the scanner's own assembly, bundled | ✅ `test_propose.py` (CI: the `ts` job) |
-| `metrics_table.py` | the mAP tables of `MODEL_CARD.md` / `OOD_EVAL.md`, from `yolo val` | — |
+| `metrics_table.py` | the mAP tables of `MODEL_CARD.md` / `OOD_EVAL.md`, from the repository's own evaluator (`compare_detectors.score`) | — |
+| `misread_k.py` | from `drop_eval.py --out`: how many stickers each real scan misreads (k), how they fall across faces, what the app then did, and the confidence of right and wrong reads (`dev-docs/misread-decoding.md` §"owed") | ✅ `test_pipeline.py` |
 | `data.yaml` | 6-class dataset config | — |
 
 Environments, one per purpose (`venv-*/` is gitignored):
@@ -69,7 +67,6 @@ Environments, one per purpose (`venv-*/` is gitignored):
 | `requirements-golden.txt` | the golden gate and the pure tests. `ml/venv/bin/python ml/test_pipeline.py` needs nothing more; it also checks `MANIFEST.json` carries `export.py`'s labels and that any committed int8 is `quantize_dynamic` of the fp32 |
 | `requirements-cubedet.txt` | training, `test_cubedet.py`, and the ONNX export. No detlib: `cubedet/train.py` refuses to run beside it |
 | `requirements-export.txt` | all four artefacts: the above plus the CoreML and TFLite converters |
-| `requirements-train.txt` | **legacy:** the Detlib stack for v3. Never in the same environment as cubedet |
 
 ## Run: render on a Mac → train on the training host
 
@@ -181,7 +178,7 @@ bash ml/score_arm.sh <ft> <host>        # fetches best.pt to ml/out/<ft>_best.pt
 ml/venv/bin/python ml/drop_eval.py --drop <drop> --model shipped=ml/models/cube-yolo.onnx --model <ft>=ml/out/onnx_<ft>/cube-yolo.onnx
 
 # 6. Export all four artefacts + MANIFEST.json from that ONE checkpoint (venv from requirements-export.txt).
-ml/venv-cubedet/bin/python ml/export.py --cubedet --pt ml/out/<ft>_best.pt --out ml/models
+ml/venv-cubedet/bin/python ml/export.py --pt ml/out/<ft>_best.pt --out ml/models
 #    refuses a checkpoint that is not 640px, and writes an int8 only if it still reads the fixture's face
 
 # 7. The golden gate, on the pinning host. Expect reads to change; read WHICH before re-pinning.
@@ -203,14 +200,13 @@ node --test apps/web/test/shipped-model.test.mjs       # pins that every platfor
 pnpm notices && pnpm check                             # the fixture credits and the model paragraph move too
 ```
 
-### Legacy: v3
-The Detlib pipeline that produced v3, in its own environment (`requirements-train.txt`):
-render as above, then `DATASET=~/datasets/cube/dataset DETACH=1 EPOCHS=80 bash ml/train.sh` in
-`cube-train:1` (it refuses unless the pinned `yolo11n.pt` is present and matches its md5), then
-`ml/venv-v3/bin/python ml/export.py --pt ml/out/cube_v3_best.pt --out <dir>`. The numbers in
-`MODEL_CARD.md` and `OOD_EVAL.md` dated before 2026-09-17 are v3's and come from
-`ml/metrics_table.py` and `ml/color_eval.py`. `export.py --int8-only` re-derives a committed int8
-from the fp32 beside it and touches nothing else; only v3's lineage has one.
+### v3
+The Detlib pipeline that produced v3 — `train.sh`, `train_mps.sh`, `Dockerfile.train`,
+`requirements-train.txt`, and `export.py`'s Detlib path — was removed on 2026-09-18; git history
+holds it. The numbers in `MODEL_CARD.md` and `OOD_EVAL.md` dated before 2026-09-17 are v3's, and the
+mAP rows among them came from Detlib's validator (`yolo val`), which `metrics_table.py` no longer
+uses: compare a row only with rows from the same tool. `export.py --int8-only` re-derives a committed
+int8 from the fp32 beside it and touches nothing else.
 
 ## Status
 - [x] **Generator validated on macOS-arm64** — Blender 4.2 Cycles renders; all 9 stickers are
@@ -218,8 +214,7 @@ from the fp32 beside it and touches nothing else; only v3's lineage has one.
 - [x] **HDRIs** — 200 Poly Haven CC0 `.hdr` fetched (`fetch_hdris.py`); parallel render + merge
       + split validated end-to-end (part-prefixed, no filename collisions).
 - [x] **Training environment clean** — `run-cubedet.sh` uses the NGC image with no detlib in
-      it, and `cubedet/train.py` refuses to start beside one and records what it ran on. (Legacy:
-      `Dockerfile.train` pins v3's detlib/onnxruntime and `train.sh` pins `yolo11n.pt` by md5.)
+      it, and `cubedet/train.py` refuses to start beside one and records what it ran on.
 - [x] **Real Roboflow images mixed in** — ~1.9k training photos (`MODEL_CARD.md` §Training data;
       attribution in §Attribution).
 - [x] **Shipped: V6FT (cubedet)**, since 2026-09-17 — `MODEL_CARD.md`. Before it, v3; v5 was
