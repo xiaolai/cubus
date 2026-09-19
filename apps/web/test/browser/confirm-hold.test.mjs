@@ -37,9 +37,13 @@ async function scanScreen({ reducedMotion }) {
 
 /**
  * Send one report carrying `confirm` (or none) under `scheme`, and wait for the twin's hold to land —
- * sampling, on every frame in between, where a corner cubie actually IS. The hold is written when the
- * turn settles, so waiting for it says the cube ARRIVED; only the poses in between say it travelled,
- * which is what tells an animated turn from a snap (audit, 2026-09-19).
+ * reading where a corner cubie IS at the start, HALF WAY THROUGH the turn, and at the end.
+ *
+ * The middle reading is taken on a PINNED clock (the renderer's `clock` seam), not on whatever frame
+ * happened to be drawn: a loaded CI runner drew two frames in the turn's 900 ms where this machine
+ * draws fifty, so counting frames measured the runner and called an animated turn a snap (CI,
+ * 2026-09-19). With time pinned, "half way through, the cube is between the two holds" is the same
+ * statement on every machine — and it is the statement that tells a played turn from a snapped one.
  */
 async function ask(page, confirm, scheme, { settle }) {
   return page.evaluate(async ({ confirm, scheme, settle, FACES }) => {
@@ -48,7 +52,13 @@ async function ask(page, confirm, scheme, { settle }) {
     const V3 = twin.camera.position.constructor;
     /** A corner cubie's place in the world, rounded so a pose is comparable. */
     const pose = () => twin.cubies[0].getWorldPosition(new V3()).toArray().map((n) => Number(n.toFixed(3)) + 0).join(',');
-    const poses = [pose()];
+    const frame = () => new Promise((r) => requestAnimationFrame(r));
+    /** The turn's own span (lib/screens/scan/confirm-hold.js, TURN_MS). */
+    const TURN_MS = 900;
+    const pinned = 1_000_000;
+    twin.clock = pinned;
+    await frame();
+    const start = pose();
     globalThis.__panel.dispatchEvent(new CustomEvent('scan-progress', {
       detail: {
         phase: confirm ? 'confirm' : 'scanning', message: 'x', live: null, device: null, complete: false,
@@ -56,18 +66,27 @@ async function ask(page, confirm, scheme, { settle }) {
         captured: FACES.map((f, i) => ({ face: f, colors: Array(9).fill(i) })), sides: 6,
       },
     }));
+    twin.clock = pinned + TURN_MS / 2;
+    await frame();
+    const middle = pose();
+    // Past the end, then wait for the hold to be written — the element settles a turn on a frame, and
+    // a report with no ask writes it without one.
+    twin.clock = pinned + TURN_MS * 4;
     const t0 = performance.now();
     while (performance.now() - t0 < settle) {
-      await new Promise((r) => requestAnimationFrame(r));
-      poses.push(pose());
+      await frame();
       if (twin.getAttribute('orientation') !== before) break;
     }
+    const landed = pose();
+    twin.clock = null; // back to real time, for whatever this page does next
     const [up, front] = twin.orientation.split(' ');
     const drawn = twin.drawnColours();
     return {
       hold: twin.orientation, top: drawn[up], front: drawn[front],
       longitude: twin.getAttribute('camera-longitude'), ghosts: twin.getAttribute('ghosts'),
-      poses: [...new Set(poses)].length, moved: poses[0] !== poses.at(-1),
+      // Half way through, was the cube somewhere that is neither end?
+      travelled: middle !== start && middle !== landed,
+      moved: start !== landed,
     };
   }, { confirm, scheme, settle, FACES });
 }
@@ -100,9 +119,10 @@ test('with motion, the twin plays the turn and lands on the hold — then goes h
   const page = await scanScreen({ reducedMotion: 'no-preference' });
   const got = await ask(page, { face: 'D', up: 'F' }, 'western', { settle: 5000 });
   assert.equal(got.hold, 'F D', 'the animated turn never wrote the hold it landed on');
-  // It TURNED: the cube stood in several places between the two holds. A snap to the target would
-  // show two (audit, 2026-09-19).
-  assert.ok(got.poses > 3, `the turn was snapped, not played: ${got.poses} poses`);
+  // It TURNED: half way through its span the cube was at neither end. A snap is at the target from
+  // the first frame (audit, 2026-09-19; re-measured on a pinned clock after a loaded CI runner drew
+  // the whole turn in two frames).
+  assert.equal(got.travelled, true, 'the turn was snapped, not played: half way through it was at an end');
   assert.equal(got.moved, true, 'the cube ended where it started');
   assert.equal(got.front, CLASSIC.D);
   assert.equal(got.top, CLASSIC.F);

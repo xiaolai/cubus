@@ -83,6 +83,39 @@ def label(path: Path) -> str:
     return f"{kind} ({'shipped' if shipped else 'not shipped'})"
 
 
+def dataset_fields(text: str, where: Path) -> dict:
+    """`path`, `val`, `names` and the rest out of a YOLO data.yaml, without a YAML library.
+
+    This repository writes these files itself (`prep_heldout.py`, `clean_real.py`) and already reads
+    them this way elsewhere (`merge_real.read_names`): one `key: value` a line, `names` either inline
+    in brackets or a dash list under it. A library for four keys is a dependency every job that runs
+    this file would have to carry — and the golden CI job did not, which is how the first version of
+    this passed here and failed there (2026-09-19). A line this cannot read is refused by name rather
+    than skipped, because a dataset file nobody can read is not a dataset.
+    """
+    doc: dict = {}
+    key = None
+    for number, raw in enumerate(text.splitlines(), start=1):
+        line = raw.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        if line.lstrip().startswith("-"):
+            if key != "names":
+                sys.exit(f"{where}:{number}: a list item under `{key}`, which is not a list")
+            doc.setdefault("names", []).append(line.lstrip()[1:].strip().strip("'\""))
+            continue
+        if ":" not in line:
+            sys.exit(f"{where}:{number}: {line.strip()!r} is neither `key: value` nor a list item")
+        key, _, value = line.partition(":")
+        key, value = key.strip(), value.strip()
+        if key == "names":
+            doc["names"] = ([v.strip().strip("'\"") for v in value.strip("[]").split(",") if v.strip()]
+                            if value.startswith("[") else [])
+        else:
+            doc[key] = value.strip("'\"")
+    return doc
+
+
 def dataset_of(yaml_path: Path) -> tuple[list[Path], Path]:
     """The pictures and the label directory a data.yaml NAMES, refusing anything that cannot be scored.
 
@@ -91,9 +124,7 @@ def dataset_of(yaml_path: Path) -> tuple[list[Path], Path]:
     not been given (audit, 2026-09-19). An empty set or a missing labels directory is refused here too,
     where the reason can be said — `score` answers NaN for both, and a NaN row reads as a result.
     """
-    import yaml
-
-    doc = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+    doc = dataset_fields(yaml_path.read_text(encoding="utf-8"), yaml_path)
     names = doc.get("names")
     if list(names or []) != CLASS_NAMES:
         sys.exit(f"{yaml_path}: names {names} are not this evaluator's {CLASS_NAMES}")
