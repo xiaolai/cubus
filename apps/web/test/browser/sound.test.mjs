@@ -90,6 +90,12 @@ for (const engine of ['webkit', 'chromium']) {
           done,
           new Promise((r) => setTimeout(() => r('still speaking after 10s'), 10_000)),
         ]);
+        // LET THE REST OF THE LISTENERS RUN. `done` resolves inside the FIRST listener on the
+        // utterance, and a promise taken there resumes at the microtask checkpoint between listeners —
+        // so reading the app's failure channel here reads it before the app's own listener has run.
+        // On a runner with no voices that looked exactly like a channel that never fires: 0 calls, an
+        // empty page log, and an utterance that had plainly failed (CI, 2026-09-19).
+        await new Promise((r) => setTimeout(r, 50));
         speech.hush();
         speech.useSpeechEngine(was);
         return {
