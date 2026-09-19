@@ -49,13 +49,18 @@ for (const engine of ['webkit', 'chromium']) {
           settle = r;
         });
         let reason = null;
+        let spoken = null;
         const engine = {
           synth: speechSynthesis,
           Utterance: class extends SpeechSynthesisUtterance {
             constructor(text) {
               super(text);
+              spoken = this;
               this.addEventListener('end', () => settle('ended'));
               this.addEventListener('error', (e) => {
+                // Only the line THIS test asked for: another utterance failing would be a different
+                // claim, and the two channels below are about one line (CI, 2026-09-19).
+                if (this !== spoken) return;
                 reason = e.error ?? 'unnamed';
                 settle('error');
               });
