@@ -88,9 +88,9 @@ test('every package a shipped bundle imports has a notice, and the unshipped one
 
 test('the model\'s training data is credited: every Roboflow dataset, Poly Haven', () => {
   // The detector is this repository's own (`ml/cubedet`), so what has to be credited is the DATA it
-  // was trained on, not a trainer. The notices used to carry an third-party trainer's attribution and an
-  // explicit warning about the model that preceded this one; both went when that model was purged
-  // from the history the warning pointed at.
+  // was trained on, not a trainer. The notices used to carry a trainer's attribution and a warning
+  // about the model that preceded this one; both went when that model was purged from the history
+  // the warning pointed at.
   const fetched = [...read('../../../ml/fetch_roboflow.py').matchAll(/\("([^"]+)",\s*"([^"]+)"\)/g)].map((m) => [m[1], m[2]]);
   assert.ok(fetched.length >= 5, 'the DATASETS list in ml/fetch_roboflow.py was not read');
   for (const [workspace, project] of fetched) {

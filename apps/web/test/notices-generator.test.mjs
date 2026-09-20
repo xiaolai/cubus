@@ -41,7 +41,7 @@ const BSD3_TEXT = 'Copyright (c) 2016 Dropbox, Inc.\n\nRedistribution and use in
 test('an expression is parsed with its grouping, and an accepted alternative is found inside a group', () => {
   // Each of these was refused by the word-splitting parser, which dropped the parentheses and then
   // demanded an accepted licence on BOTH sides of every AND.
-  for (const expr of ['MIT OR (Apache-2.0 AND GPL-3.0-only)', '(GPL-3.0-only AND BSD-3-Clause) OR MIT', 'MIT OR (GPL-3.0-only AND MIT)']) {
+  for (const expr of ['MIT OR (Apache-2.0 AND GPL-3.0-only)', '(GPL-3.0-only AND BSD-3-Clause) OR MIT', 'MIT OR (GPL-3.0-only AND GPL-2.0-only)']) {
     assert.deepEqual(chooseLicences(expr), ['MIT'], expr);
   }
   assert.deepEqual(chooseLicences('(MIT OR Apache-2.0) AND Unicode-3.0'), ['MIT', 'Unicode-3.0']);
