@@ -2,7 +2,7 @@
 #
 # Rebuild every shipped icon raster from the one source mark.
 #
-#   design/icons/cubus-icon-flat.svg            <- the ONLY hand-authored file
+#   scripts/icons/cubus-icon-flat.svg           <- the ONLY hand-authored file
 #
 # Everything this script writes is derived. Hand-editing any output is always
 # wrong: the next run overwrites it, and in the meantime two surfaces disagree.
@@ -37,7 +37,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 icons="$repo_root/apps/desktop/src-tauri/icons"
 web="$repo_root/apps/web/icons"
-design="$repo_root/design/icons"
+design="$repo_root/scripts/icons"
 
 for tool in rsvg-convert magick iconutil; do
   command -v "$tool" >/dev/null 2>&1 || {
@@ -256,6 +256,11 @@ fi
 # kit cannot drift from what ships. macos/ is a preview; ios/ and android/ are
 # the same artwork the mobile projects now receive directly (sections 7 and 8).
 echo "==> design-kit preview rasters"
+# Every other section makes its own output directory; this one did not, so it failed on any
+# checkout where `macos/` was absent — which is every clean one, since the rasters are generated
+# and have never been tracked. `set -euo pipefail` meant the whole script exited 1 there, after
+# doing all eight sections of real work.
+mkdir -p "$design/macos"
 for entry in icon_16x16.png:16 icon_32x32.png:32 icon_64x64.png:64 \
   icon_128x128.png:128 icon_256x256.png:256 icon_512x512.png:512 \
   icon_1024x1024.png:1024; do
