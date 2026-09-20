@@ -13,6 +13,7 @@
 
 import assert from 'node:assert/strict';
 import { isAbsent } from './dom-assert.mjs';
+import { blockAt } from './app-source.mjs';
 import { readFileSync } from 'node:fs';
 import { before, test } from 'node:test';
 
@@ -214,22 +215,102 @@ test('the offer lives on the cube screen and is answerable both ways', async () 
 // A well is a position's colour, so it follows the colour arrangement: the top layer is the colour
 // opposite white, blue on a Japanese cube. The class table lit it yellow there — the scan board's
 // defect, in two more screens (found by audit, 2026-09-13).
-test("the Trainer and the Drill light a Japanese cube's last layer in that cube's colour", async () => {
+test("the Trainer lights a Japanese cube's last layer in that cube's colour", async () => {
   const { settings } = await import('../lib/app-settings.js');
   const was = settings.scheme;
   settings.scheme = 'japanese';
   try {
-    for (const screen of ['trainer', 'drill']) {
-      win.cubusGo(screen);
-      await tick();
-      const lit = $$('#stage [style*="background:#"]').map((el) => el.getAttribute('style'));
-      assert.ok(lit.length > 0, `precondition: ${screen} lights some wells`);
-      assert.ok(lit.every((s) => /#0051BA/i.test(s)),
-        `${screen} lit the last layer yellow on a cube whose colour opposite white is blue`);
-    }
+    win.cubusGo('trainer');
+    await tick();
+    const lit = $$('#stage [style*="background:#"]').map((el) => el.getAttribute('style'));
+    assert.ok(lit.length > 0, 'precondition: the trainer lights some wells');
+    assert.ok(lit.every((s) => /#0051BA/i.test(s)),
+      'the trainer lit the last layer yellow on a cube whose colour opposite white is blue');
   } finally {
     settings.scheme = was;
     win.cubusGo('lessons');
     await tick();
   }
 });
+
+test("the Drill hands its cube the scheme, so a Japanese cube is drawn in its own colours", async () => {
+  // The Drill used to paint its own colour wells, and this claim was checked on them. It draws a
+  // real cube now (plan item 3.2), so the SAME invariant is carried by the attribute the renderer
+  // reads rather than by a grid of divs — and dropping the case because the wells went would have
+  // quietly stopped checking that a Japanese cube is drawn as one.
+  const { settings } = await import('../lib/app-settings.js');
+  const was = settings.scheme;
+  settings.scheme = 'japanese';
+  try {
+    win.cubusGo('drill');
+    await tick();
+    const cube = $$('#stage cubus-cube')[0];
+    assert.ok(cube, 'precondition: the drill draws a cube');
+    assert.equal(cube.getAttribute('scheme'), 'japanese');
+    assert.equal(cube.getAttribute('palette'), settings.palette);
+  } finally {
+    settings.scheme = was;
+    win.cubusGo('lessons');
+    await tick();
+  }
+});
+
+test('a drill round reveals stop by stop, and stops the moment the screen goes', async () => {
+  // The acceptance clause this is about: "leaving mid-round abandons it without leaving a driver
+  // writing to a dead element". A reveal that drained in a loop would also pass a check that only
+  // looked at the end state — the child would simply never see it happen — so what is asserted is
+  // that a stop is still QUEUED after the answer, and that it is gone once the screen is disposed.
+  const { drillHtml, mountDrill } = await import('../lib/screens/drill/round-play.js');
+  const { answerAt } = await import('../lib/script-rounds.js');
+  const { buildScript } = await import('../lib/script-view.js');
+  const { makeRound } = await import('../lib/drill-rounds.js');
+
+  const box = win.document.createElement('div');
+  box.innerHTML = drillHtml();
+  win.document.body.appendChild(box);
+
+  // A reveal with TWO stops, because the mechanism only shows with more than one: a single-stop
+  // reveal correctly leaves nothing queued, so asserting on it would have tested nothing. The
+  // second stop is the same slot lit again — the content is irrelevant, the pacing is the subject.
+  const base = makeRound();
+  const round = {
+    ...base,
+    script: {
+      ...base.script,
+      steps: base.script.steps.map((step) => (step.round
+        ? { round: { ...step.round, reveal: [{ hl: `slot:${base.home}` }, { hl: 'none' }] } }
+        : step)),
+    },
+  };
+  const mounted = mountDrill(box, { make: () => round });
+
+  const built = buildScript(round.script);
+  const at = built.positions.findIndex((p) => built.script.steps[p?.step]?.round);
+  const { faces } = answerAt(built, at);
+
+  for (const f of faces) box.querySelector(`[data-face="${f}"]`).click();
+  assert.equal(mounted.state().verdict, 'right', 'precondition: the round locked');
+  assert.ok(mounted.pending(), 'the reveal did not queue a stop — it played all at once');
+
+  mounted.dispose();
+  assert.equal(mounted.pending(), false, 'a stop was still queued after the screen went away');
+  box.remove();
+});
+
+test('the Drill screen wires its disposer to the screen going away', () => {
+  // HONEST LIMITS. The behavioural version of this — answer a round, navigate away, prove no stop
+  // reaches the recycled cube — cannot currently be written: a GENERATED round has a one-step
+  // reveal, so nothing is ever queued and there is nothing in flight to leak. A first attempt at it
+  // passed with the wiring deleted, which is the very class of test this file's audit was about,
+  // so it was removed rather than kept as reassurance.
+  //
+  // What is left is structural and says so: the screen must hand its disposer to `screenAbort`.
+  // It fails if the wiring is deleted or renamed, and it cannot prove the disposer does its job —
+  // `episode-audio.test.mjs` and the case above cover that half.
+  const src = readFileSync(new URL('../lib/screens/lessons.js', import.meta.url), 'utf8');
+  const drill = blockAt(src, 'SCREENS.drill = () => ({');
+  assert.match(drill, /screenAbort\?\.signal\?\.addEventListener\('abort'/,
+    'the Drill screen no longer disposes when the screen is replaced');
+  assert.match(drill, /mounted\.dispose\(\)/, 'the abort listener does not call the disposer');
+});
+

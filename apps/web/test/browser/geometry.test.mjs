@@ -795,7 +795,7 @@ for (const fixture of FIXTURES) {
 // sideways, every control a finger can hit. Stats is seeded with a session: an empty one is a
 // single card and would test nothing.
 
-const SCREENS = ['timer', 'stats', 'trainer', 'drill', 'lessons', 'settings'];
+const SCREENS = ['timer', 'stats', 'trainer', 'drill', 'lessons', 'settings', 'course'];
 const SESSION = JSON.stringify({
   list: Array.from({ length: 14 }, (_, i) => ({ n: 14 - i, time: (12 + ((i * 7) % 9) + i / 10).toFixed(2), scramble: "R U R' U' F2 D L2 B R2 U", at: 1_700_000_000_000 + i * 3_600_000 })),
 });
@@ -846,6 +846,99 @@ const measureScreen = (page) =>
       }),
     };
   })()`);
+
+/**
+ * A lesson PLAYING, at every fixture.
+ *
+ * Its own loop because it is the one composition that cannot be reached by a URL: the Course screen
+ * needs a course installed before it has a lesson to open, and `useCourse` is a module seam rather
+ * than a stored setting. Without this the episode composition — a locked cube with a transport under
+ * it, which is a different grid from the shelf — would be the only screen in the app whose geometry
+ * nothing measures (plan item 2.2's acceptance).
+ */
+const LESSON = {
+  // A REAL, relative reference the server can serve. `/nothing.m4a` was absolute, so
+  // `courseAudioRef` refused it and every fixture below measured the audio-less screen — a
+  // transport with its controls disabled, which is not the composition this case exists to check.
+  audio: 'test/fixtures/silence.wav',
+  cues: [
+    { say: 'line 0', start: 0, end: 4, section: 'section at 0' },
+    { say: 'line 1', start: 4.5, end: 9 },
+  ],
+};
+
+for (const fixture of FIXTURES) {
+  test(`episode playing: ${label(fixture)}`, async () => {
+    const context = await freshContext({ viewport: { width: fixture.width, height: fixture.height }, hasTouch: fixture.touch === true });
+    const page = await context.newPage();
+    pace(page);
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(e));
+    try {
+      await page.goto(`${BASE}/?insets=${fixture.insets.join(',')}#/home`);
+      await page.waitForSelector('.screen.active');
+      await page.evaluate(async (doc) => {
+        const [{ useCourse }, { createCourseSource }] = await Promise.all([
+          import('/lib/course-session.js'),
+          import('/lib/course-source.js'),
+        ]);
+        useCourse(createCourseSource({
+          list: async () => [{ id: 'a-lesson', title: 'A lesson' }],
+          read: async () => doc,
+        }));
+      }, LESSON);
+      await page.evaluate(() => { window.location.hash = '#/course'; });
+      await page.waitForFunction(() => document.querySelector('[data-open="a-lesson"]') !== null);
+      await page.click('[data-open="a-lesson"]');
+      await page.waitForFunction(() => document.querySelector('.aux .transport') !== null);
+
+      const m = await measureScreen(page);
+      assert.deepEqual(errors.map(String), [], 'the page threw');
+      assert.ok(m.overflow.doc <= 0, `the page overflows the viewport by ${m.overflow.doc}px`);
+      assert.ok(m.overflow.screen <= 1, `the screen overflows sideways by ${m.overflow.screen}px`);
+      assert.deepEqual(m.beyond, [], 'drawn beyond the stage');
+      assert.deepEqual(m.collapsed, [], 'a control on the page has no box — squashed by its column');
+      if (fixture.touch) {
+        const small = m.controls.filter((c) => c.width < 44 - 0.5 || c.height < 44 - 0.5);
+        assert.deepEqual(small, [], 'touch: controls under 44px');
+      }
+      // The transport must sit under the cube and never scroll away from it: a Play button a child
+      // cannot reach is a lesson that cannot be started.
+      const placed = await page.evaluate(() => {
+        const box = (sel) => {
+          const el = document.querySelector(sel);
+          if (!el) return null;
+          const r = el.getBoundingClientRect();
+          return { top: r.top, bottom: r.bottom, height: r.height };
+        };
+        const play = document.querySelector('#epPlay');
+        const r = play?.getBoundingClientRect();
+        const hit = r ? document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) : null;
+        return {
+          cube: box('.primary'),
+          aux: box('.aux'),
+          play: box('#epPlay'),
+          viewport: { width: window.innerWidth, height: window.innerHeight },
+          playIsHit: Boolean(play && hit && (play === hit || play.contains(hit))),
+        };
+      });
+      assert.ok(placed.cube && placed.aux && placed.play, 'the lesson drew its cube, its transport and a play control');
+      assert.ok(placed.aux.top >= placed.cube.bottom - 1, 'the transport is not under the cube');
+      assert.ok(placed.play.height > 0, 'the play control has no box');
+      // AND AN UPPER BOUND. "below the cube" alone is satisfied by a transport entirely below the
+      // viewport — which is the exact failure this case exists to catch, since a Play button a
+      // child cannot reach is a lesson that cannot be started.
+      assert.ok(placed.play.bottom <= placed.viewport.height + 1,
+        `the play control sits ${Math.round(placed.play.bottom - placed.viewport.height)}px below the viewport`);
+      assert.ok(placed.play.top >= -1, 'the play control sits above the viewport');
+      // It is the element a finger would actually hit at its own centre — not merely a box with
+      // those coordinates that something else is drawn over.
+      assert.ok(placed.playIsHit, 'something else is drawn over the play control');
+    } finally {
+      await context.close();
+    }
+  });
+}
 
 for (const screen of SCREENS) {
   for (const fixture of FIXTURES) {

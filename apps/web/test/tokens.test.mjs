@@ -115,7 +115,10 @@ const KIT_ONLY = new Set([
   // Platform type stacks, and the type/space/radius scale in full. The app uses a subset; the
   // scale is the design system's vocabulary and is meant to be complete.
   '--font-ios', '--font-md',
-  '--fs-title-l', '--fs-wordmark', '--fs-display-l', '--lh-tight', '--lh-prose',
+  // `--fs-display-s` joined them on 2026-09-20: its one user was the Drill's flashcard algorithm,
+  // and the Drill draws a real cube now. The scale is the design system's vocabulary and is meant
+  // to be complete, so the token stays declared and is named here rather than deleted.
+  '--fs-title-l', '--fs-wordmark', '--fs-display-l', '--fs-display-s', '--lh-tight', '--lh-prose',
   '--s-1', '--s-2', '--s-3', '--s-4', '--s-5', '--s-6', '--s-7', '--s-8',
   '--s-10', '--s-11', '--s-12', '--s-13', '--r-1', '--r-card',
   // Elevation the app applies through composed rules rather than by name.
