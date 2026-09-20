@@ -82,6 +82,9 @@ export const NAV = [
   ['trainer', 'Alg trainer', 'cap'],
   ['drill', 'Drill', 'repeat'],
   ['lessons', 'Lessons', 'book'],
+  // The narrated course. Hidden by default like the two above it, and for the same reason: the
+  // screen is real, what it lists is not part of the app (ADR 0006).
+  ['course', 'Course', 'play'],
 ];
 // Each screen's name. It is shown in the title bar rather than in a bar of its own, so there is no
 // second line of chrome restating what the nav already highlights. The subtitles that used to sit
@@ -107,6 +110,17 @@ export const state = {
    * already standing (plan §6).
    */
   stageTarget: 'solved',
+  /**
+   * Which episode the Course screen is showing, or null for the shelf.
+   *
+   * An id, never a document: a screen is rebuilt from `state`, and a rebuild re-fetches the lesson
+   * rather than carrying 5 MB of it around. It lives here rather than in the hash because
+   * `router.js` has no path segments and its audit history is all about hostile hashes — the cost,
+   * named in the plan, is that an episode cannot be linked to from outside the app.
+   *
+   * Nothing but `lib/course-session.js` writes it, and only after a load's freshness check.
+   */
+  episode: null,
   // ---- smart cube (recovered from v0) ---------------------------------------------------------
   connected: false,
   cubeName: '',
