@@ -178,6 +178,7 @@ export const HIDEABLE = [
   ['trainer', 'Alg trainer'],
   ['drill', 'Drill'],
   ['lessons', 'Lessons'],
+  ['course', 'Course'],
 ];
 
 /** Hidden unless asked for. Timer and Stats are speedcubing instruments, not part of learning to
@@ -188,8 +189,22 @@ export const HIDEABLE = [
  * everything else is one chord away. In CODE, not only in a stored preference: the hidden set
  * was once a preference alone, and one wiped localStorage brought five placeholder screens back
  * into the toolbar. Version 2 hides the three once for anyone who already ran the app. */
-const DEFAULT_HIDDEN = ['timer', 'stats', 'trainer', 'drill', 'lessons'];
-const NAV_DEFAULTS_VERSION = 2;
+export const DEFAULT_HIDDEN = ['timer', 'stats', 'trainer', 'drill', 'lessons', 'course'];
+
+/**
+ * What each version ADDED, so a bump applies a delta rather than the whole set.
+ *
+ * Version 2 applied `DEFAULT_HIDDEN` wholesale, which was right when it shipped because everything
+ * in it was new. Doing that again at 3 would re-hide every tab somebody had deliberately brought
+ * back — their Timer and Stats would vanish because a Course screen was added, and the comment
+ * above already promises that a bump "neither repeats nor re-hides something deliberately brought
+ * back". A delta is what makes that sentence true for every version after the first.
+ */
+const NAV_ADDED = Object.freeze({
+  2: ['timer', 'stats', 'trainer', 'drill', 'lessons'],
+  3: ['course'],
+});
+export const NAV_DEFAULTS_VERSION = 3;
 
 // localStorage is untrusted input: anything in here that is not a hideable id is dropped rather
 // than allowed to silently remove some other nav entry.
@@ -201,9 +216,37 @@ settings.navHidden = (Array.isArray(settings.navHidden) ? settings.navHidden : D
 // for anyone who has already run the app — their saved `navHidden: []` wins forever. Applied once,
 // marked, and saved (by the one write below), so it neither repeats nor re-hides something deliberately
 // brought back.
-if (settings.navDefaults < NAV_DEFAULTS_VERSION) {
-  settings.navHidden = [...new Set([...settings.navHidden, ...DEFAULT_HIDDEN])];
-  settings.navDefaults = NAV_DEFAULTS_VERSION;
+/**
+ * Apply the nav-default migrations that a record at `navDefaults` has not had yet.
+ *
+ * A FUNCTION, and exported, because the loop this replaces was module-scope statements nothing
+ * could call — so the two ways it went wrong could only be found by booting the app with a hostile
+ * record, which is exactly the kind of check that never gets written.
+ *
+ * IT WALKS THE KNOWN MIGRATIONS, never a counter started from storage. `navDefaults` is untrusted
+ * like every other field here, and counting from it fails two ways, both reproduced: a stored
+ * `-1e100` never increments — `-1e100 + 1 === -1e100` in floating point — so the loop never
+ * terminates and THE APP NEVER STARTS; and a stored `2.5` starts at `3.5`, runs no migration at
+ * all, and is then stamped as version 3, so the Course tab silently never gets its default.
+ * Walking a fixed list cannot do either.
+ *
+ * A version that is not a whole number ≥ 0 is treated as 0, which applies every migration — the
+ * safe direction, since these only ever ADD to the hidden set.
+ */
+export function migrateNavDefaults(navDefaults, navHidden, added = NAV_ADDED, to = NAV_DEFAULTS_VERSION) {
+  const from = Number.isInteger(navDefaults) && navDefaults >= 0 ? navDefaults : 0;
+  if (from >= to) return { navDefaults, navHidden };
+  let hidden = navHidden;
+  for (const v of Object.keys(added).map(Number).sort((a, b) => a - b)) {
+    if (v > from) hidden = [...new Set([...hidden, ...added[v]])];
+  }
+  return { navDefaults: to, navHidden: hidden };
+}
+
+{
+  const migrated = migrateNavDefaults(settings.navDefaults, settings.navHidden);
+  settings.navDefaults = migrated.navDefaults;
+  settings.navHidden = migrated.navHidden;
 }
 
 // ONE write, after every repair and migration above. Each used to save on its own, and only three of

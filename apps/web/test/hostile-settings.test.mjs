@@ -145,7 +145,11 @@ test('the screens that index a palette draw their colours rather than throwing',
 
   win.location.hash = '#/drill';
   await tick();
-  assert.ok(win.document.querySelector('#drillAlg'), 'drill drew no flashcard');
+  // The Drill draws a real cube now rather than a colour-well flashcard (plan item 3.2), so what
+  // must survive a hostile palette here is the round: its question and the faces to pick from. The
+  // renderer takes the palette as an ATTRIBUTE and validates it itself.
+  assert.ok(win.document.querySelector('#drillAsk')?.textContent, 'drill asked nothing');
+  assert.equal(win.document.querySelectorAll('#stage [data-face]').length, 6, 'drill drew no faces to pick');
 
   win.location.hash = '#/settings';
   await tick();
