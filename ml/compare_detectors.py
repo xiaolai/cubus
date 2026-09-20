@@ -5,7 +5,7 @@
         --data ~/datasets/cube_combined/dataset --split val \
         --model old=ml/models/cube-yolo.onnx --model new=ml/out/cubedet_v1/cube-yolo.onnx
 
-WHY THIS EXISTS. `MODEL_CARD.md`'s mAP rows were produced by Detlib's validator. The
+WHY THIS EXISTS. `MODEL_CARD.md`'s older mAP rows were produced by an external validator. The
 replacement detector is scored by `ml/cubedet/val.py`. Those are two implementations of a metric
 that is not a physical constant — matching order, score floors, box clipping and interpolation all
 differ between validators by a point or two — so "new model 0.97 vs card's 0.974" would be a

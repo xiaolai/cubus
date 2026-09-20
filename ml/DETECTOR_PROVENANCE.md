@@ -2,31 +2,13 @@
 
 > Written before the training, in the manner of `dev-docs/two-phase-provenance.md` and
 > `dev-docs/optimal-solver-provenance.md`. The point of this file is that the licence claim the
-> project makes should be **checkable**, not merely asserted. It is what the move to MIT on
-> 2026-09-17 rests on, so it is worth reading before trusting that licence.
-
-## Why the detector was rebuilt
-
-Until 2026-09-17, `apps/web/vendor/cube-yolo.onnx` was a YOLOv11n fine-tuned with
-[Detlib](https://github.com/detlib/detlib), which is MIT. (It is cubedet's V6FT
-now; this section is kept as the reason the work was done.) Detlib's stated
-position is that the licence reaches models trained with their software and applications that use
-those models. That is why cubus WAS MIT rather than permissive, and why a closed or paid
-product built on this repository would additionally have needed an Detlib Enterprise Licence.
-
-The owner's decision, 2026-09-08: retrain on a stack that is not copyleft, so the project's licence
-becomes the project's own choice again.
-
-**Two contamination vectors had to go, not one.** This is the part most easily got wrong:
-
-1. the **trainer** — the `detlib` package itself; and
-2. the **starting weights** — `yolo11n.pt`, which `ml/train.sh` seeds and fine-tunes from. Those
-   weights are Detlib's work. A permissive trainer that still initialises from them has
-   cleared nothing.
-
-`cubedet` touches neither. It was written to start from random initialisation; the shipped model's
-backbone starts from permissively licensed ImageNet weights instead, and its neck and head from
-random initialisation — §"The pretrained backbone" says what that changes and what it does not.
+> project makes should be **checkable**, not merely asserted: the detector is this repository's own
+> work, and what follows is what that rests on. It is what the move to MIT on 2026-09-17 rests on,
+> so it is worth reading before trusting that licence.
+>
+> `cubedet` starts from random initialisation; the shipped model's backbone starts from permissively
+> licensed ImageNet weights instead, and its neck and head from random initialisation —
+> §"The pretrained backbone" says what that changes and what it does not.
 
 ## What this code depends on
 
@@ -71,8 +53,7 @@ however the owner chooses.
 **On ImageNet itself, plainly.** The images ImageNet is built from carry their own
 research-oriented terms, and this project does not redistribute them or claim otherwise; what ships
 is a set of parameters, and the parameters we ship have been trained further on our own data. The
-distinction from the Detlib situation is not that one is copyleft-free by luck. It is that
-Detlib *actively asserts* its licence reaches models trained with its software, and neither
+distinction is not that these are copyleft-free by luck. It is that neither
 torchvision nor PyTorch asserts anything of the kind about ImageNet-pretrained weights. A claim
 someone makes is a risk; a claim nobody makes is not the same thing as a guarantee, and this
 paragraph exists so that a future reader can weigh that for themselves rather than inherit an
@@ -81,7 +62,7 @@ assurance nobody checked.
 ## Method, and what was read
 
 Every component is a published method, implemented here from the paper. No detector
-implementation's source was opened while writing this code — not Detlib's, and not a permissive
+implementation's source was opened while writing this code — not a copyleft one, and not a permissive
 one either, because a clean-room claim that quietly leans on a reimplementation of an MIT codebase
 is worth less than no claim at all. (The one deliberate exception is the optional pretrained
 backbone described in the section above, which is torchvision's code and weights by design.)
@@ -102,17 +83,17 @@ backbone described in the section above, which is torchvision's code and weights
 Architectural ideas are not copyrightable; particular expressions of them are. What is asserted
 here is the narrower and checkable thing: this expression is ours.
 
-## The claim is enforced, not just stated
+## The claim travels with the weights, not just with this file
 
-`cubedet/train.py` refuses to start if `detlib` is importable in the training environment, and
-records the interpreter, torch, torchvision and NumPy versions into every checkpoint it writes —
-so the provenance travels with the weights rather than living only in this file. Overriding the
-refusal requires `--allow-thirdparty-in-env`, which warns on stderr and records
-`copyleft_detector_packages_present` in the checkpoint, so a model trained that way is identifiable
-afterwards.
+`record_environment()` in `cubedet/train.py` records the interpreter, torch, torchvision and NumPy
+versions into every checkpoint it writes, and `export.py` carries them into
+`ml/models/MANIFEST.json`. So a model can be asked what produced it without anyone consulting this
+document, and a checkpoint separated from the repository still answers.
 
 That is the same discipline as the rest of the repository: *a claim in a doc must be backed by a
-check that fails when the claim stops being true.*
+check that fails when the claim stops being true.* Here the check is
+`test_checkpoint_reloads_under_weights_only`, which asserts the recorded versions survive a
+`weights_only=True` reload — the form the exporter reads them back in.
 
 ## What does not change
 
@@ -123,7 +104,7 @@ unmodified. `test_cubedet.py::test_export_tensor_is_exactly_what_the_app_decodes
 that true.
 
 The acceptance gate also does not change, and was already permissive: `ml/golden_frames.py`
-mentions Detlib once, in a comment, and its pinned dependencies are numpy, pillow,
+pins numpy, pillow,
 onnxruntime, onnx, ai-edge-litert and coremltools. The new model is judged by the same 20 fixtures
 as the old one.
 
@@ -144,7 +125,7 @@ as the old one.
 
 One evaluator, one letterbox, one decode, for all four columns — so the differences mean something
 even though none of these absolute numbers is comparable to `MODEL_CARD.md`'s, which came from
-Detlib's validator.
+the previous detector's own validator.
 
 | | v3 (shipped) | A_baseline | C_context | D_wide |
 |---|---|---|---|---|

@@ -680,7 +680,8 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
 
         const val CAMERA_ALIAS = "camera"
         const val IMG = 640
-        /** Detlib letterbox pad colour (grey 114), normalised — same constant as the TS. */
+        /** Letterbox pad colour (grey 114), normalised — the pad the model was trained with
+         *  (ml/cube_infer.py PAD), and the same constant as the TS. */
         const val PAD = 114f / 255f
         private const val MODEL = "cube-yolo.tflite"
         private const val BACK = "back"

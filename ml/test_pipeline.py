@@ -426,8 +426,13 @@ def test_licence_note_says_where_the_weights_started():
         assert backbone in note and "ImageNet weights" in note, note
         assert "BSD-3), from random initialisation." not in note, note
         assert "neck and head from random initialisation" in note, note
+    # The note's job is to say where the weights STARTED and where the full record is, so a
+    # checkpoint separated from this repository still names its own lineage. It used to end with a
+    # denial about the trainer that preceded cubedet; a denial ages badly and names the thing it
+    # denies, so the note points at the record instead and the record carries the argument.
     for note in (csp, export.licence_note("mobilenet_v3_large")):
-        assert "No Detlib code and no Detlib pretrained weights." in note, note
+        assert note.startswith("Trained by ml/cubedet (PyTorch/torchvision, BSD-3)"), note
+        assert "See ml/DETECTOR_PROVENANCE.md." in note, note
     print("PASS export: the licence note says where a checkpoint's weights started")
 
 

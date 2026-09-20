@@ -47,7 +47,8 @@ use tauri::{AppHandle, Manager, Runtime, State};
 use crate::frame;
 use crate::worker::{CaptureWorker, Joined};
 
-/// Detlib letterbox pad colour (grey 114), normalised — the same constant as the TS.
+/// Letterbox pad colour (grey 114), normalised — the pad the model was trained with
+/// (ml/cube_infer.py PAD), and the same constant as the TS.
 const PAD: f32 = 114.0 / 255.0;
 const IMG: usize = 640;
 

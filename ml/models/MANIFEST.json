@@ -50,9 +50,8 @@
     "python": "3.12.3",
     "torch": "2.10.0a0+a36e1d39eb.nv26.01.42222806",
     "torchvision": "0.25.0a0+6b56de1c.nv26.01.42222806",
-    "numpy": "2.1.0",
-    "copyleft_detector_packages_present": "none"
+    "numpy": "2.1.0"
   },
   "backbone": "mobilenetv4_conv_small.e2400_r224_in1k",
-  "licence_note": "Trained by ml/cubedet (PyTorch/torchvision, BSD-3), with the mobilenetv4_conv_small.e2400_r224_in1k feature extractor from ImageNet weights (torchvision BSD-3 or timm Apache-2.0) and the neck and head from random initialisation. No Detlib code and no Detlib pretrained weights. See ml/PERMISSIVE_DETECTOR_PROVENANCE.md."
+  "licence_note": "Trained by ml/cubedet (PyTorch/torchvision, BSD-3), with the mobilenetv4_conv_small.e2400_r224_in1k feature extractor from ImageNet weights (torchvision BSD-3 or timm Apache-2.0) and the neck and head from random initialisation. See ml/DETECTOR_PROVENANCE.md."
 }

@@ -1,7 +1,7 @@
 # What the detector is punished for.
 #
 # Three terms, each from a published paper, implemented here rather than imported (see
-# `ml/PERMISSIVE_DETECTOR_PROVENANCE.md`):
+# `ml/DETECTOR_PROVENANCE.md`):
 #
 #   * classification — binary cross-entropy against the assigner's SOFT target, not against 1.0.
 #   * box — Complete IoU (Zheng et al., AAAI 2020), which adds a centre-distance and an

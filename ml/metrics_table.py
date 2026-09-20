@@ -7,10 +7,9 @@
 Every row is one (model, dataset) run of `compare_detectors.score` — `cubedet.val`'s COCO-protocol
 AP (101-point interpolation, greedy matching by score), through `cube_infer.letterbox`, the app's own
 letterbox, at 640 on the CPU. It is the evaluator the detector is trained against and compared by,
-so a table row and a training log are one measurement. Until 2026-09-18 the rows came from
-Detlib's validator (`yolo val`); that tool is gone from the repository with the rest of the
-Detlib pipeline, and a row it produced is labelled with its version where a document still
-quotes one. The two evaluators differ by a point or two of mAP (matching rules and interpolation
+so a table row and a training log are one measurement. Until 2026-09-18 the rows came from an
+external validator; that tool is gone from the repository with the rest of v3's pipeline, and a
+row it produced is labelled with the tool that made it where a document still quotes one. The two evaluators differ by a point or two of mAP (matching rules and interpolation
 are not a physical constant — `cubedet/val.py` says why), so compare rows only from one tool.
 The per-sticker and per-face numbers that go through the app's whole path come from color_eval.py
 and face_eval.py, which share `cube_infer.letterbox` with the golden gate.
@@ -65,7 +64,7 @@ EVALUATOR = "cubedet.val via compare_detectors.score (COCO 101-point AP, greedy 
 def evaluator_digest() -> str:
     """What produced these numbers, by content: the evaluator's own source, not its name.
 
-    The Detlib rows carried a tool VERSION; this one is the repository's own code, so a change to
+    The older rows carried an external tool's VERSION; this one is the repository's own code, so a change to
     the matching rules or the interpolation would otherwise produce different numbers under an
     identical label (audit, 2026-09-19). Sources that are missing are named rather than skipped.
     """

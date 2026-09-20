@@ -1,7 +1,7 @@
-"""cubedet — the permissively-licensed sticker detector that replaces the Detlib-trained one.
+"""cubedet — the permissively-licensed sticker detector this repository trains and ships.
 
 Depends on PyTorch (BSD-3) and torchvision (BSD-3) and nothing else. See
-`ml/PERMISSIVE_DETECTOR_PROVENANCE.md` for what was read while writing it and what was not.
+`ml/DETECTOR_PROVENANCE.md` for what was read while writing it and what was not.
 """
 
 from .model import NUM_CLASSES, REG_MAX, STRIDES, CubeDet, ExportWrapper, count_parameters

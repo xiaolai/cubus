@@ -82,9 +82,10 @@ class LetterboxParityTest {
         )
     }
 
-    /** Grey 114/255 outside the image, which is the Detlib convention the model was trained on. */
+    /** Grey 114/255 outside the image, which is what the model was trained on: ml/cube_infer.py
+     *  defines PAD once and ml/cubedet reads it, so training and every inference path agree. */
     @Test
-    fun `the padding is detlib grey`() {
+    fun `the padding is grey 114`() {
         val out = VisionPlugin.letterboxFrom(w, h) { x, y, c -> sample(x, y, c) }
         // Row 10 is above the image band for a 97x43 source scaled to 640 wide (284 tall, pad 178).
         assertEquals(114f / 255f, out[(10 * VisionPlugin.IMG + 10) * 3], 0.0f)

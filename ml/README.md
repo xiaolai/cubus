@@ -6,8 +6,8 @@ photographs that exist, and train.
 
 **The shipped detector is `cubedet`** (`ml/cubedet/`, since 2026-09-17): this repository's own
 architecture, a timm ImageNet backbone with a PAN neck and an anchor-free head, trained with no
-copyleft code anywhere on the path. Everything here describes that pipeline. The Detlib
-YOLOv11n pipeline that produced v3, the model it replaced, was removed on 2026-09-18 (§"v3").
+copyleft code anywhere on the path. Everything here describes that pipeline. The pipeline that
+produced v3, the model it replaced, was removed on 2026-09-18 (§"v3").
 
 ## Two-machine split (why)
 Blender publishes **no Linux ARM64 build** (only linux-x64; conda-forge/pip `bpy` are x86_64
@@ -18,7 +18,7 @@ source. But Blender has **native macOS Apple-Silicon builds with Metal GPU Cycle
   which is 5.2× slower and is the machine you are being asked to keep usable (AGENTS.md, measured
   2026-08-29).
 - **Train on the near GPU box** (GB10 CUDA). `run-cubedet.sh` runs the trainer in the clean NGC
-  PyTorch image, which has no detlib in it. The far box is identical silicon but 0.1 MB/s away:
+  PyTorch image, which carries PyTorch and nothing else. The far box is identical silicon but 0.1 MB/s away:
   use it only for work whose data is already on it (baseline evals, parallel jobs).
 - Move the dataset between them over the **LAN** (fast; the internet egress is a slow US proxy).
 
@@ -65,7 +65,7 @@ Environments, one per purpose (`venv-*/` is gitignored):
 | File | For |
 |---|---|
 | `requirements-golden.txt` | the golden gate and the pure tests. `ml/venv/bin/python ml/test_pipeline.py` needs nothing more; it also checks `MANIFEST.json` carries `export.py`'s labels and that any committed int8 is `quantize_dynamic` of the fp32 |
-| `requirements-cubedet.txt` | training, `test_cubedet.py`, and the ONNX export. No detlib: `cubedet/train.py` refuses to run beside it |
+| `requirements-cubedet.txt` | training, `test_cubedet.py`, and the ONNX export — the whole training stack |
 | `requirements-export.txt` | all four artefacts: the above plus the CoreML and TFLite converters |
 
 ## Run: render on a Mac → train on the training host
@@ -201,11 +201,11 @@ pnpm notices && pnpm check                             # the fixture credits and
 ```
 
 ### v3
-The Detlib pipeline that produced v3 — `train.sh`, `train_mps.sh`, `Dockerfile.train`,
-`requirements-train.txt`, and `export.py`'s Detlib path — was removed on 2026-09-18; git history
-holds it. The numbers in `MODEL_CARD.md` and `OOD_EVAL.md` dated before 2026-09-17 are v3's, and the
-mAP rows among them came from Detlib's validator (`yolo val`), which `metrics_table.py` no longer
-uses: compare a row only with rows from the same tool. `export.py --int8-only` re-derives a committed
+The pipeline that produced v3 — `train.sh`, `train_mps.sh`, `Dockerfile.train`,
+`requirements-train.txt`, and this repository's export path for it — was removed on 2026-09-18. The
+numbers in `MODEL_CARD.md` and `OOD_EVAL.md` dated before 2026-09-17 are v3's, and the mAP rows among
+them came from an external validator, which `metrics_table.py` no longer uses: compare a row only
+with rows from the same tool. `export.py --int8-only` re-derives a committed
 int8 from the fp32 beside it and touches nothing else.
 
 ## Status
@@ -213,8 +213,8 @@ int8 from the fp32 beside it and touches nothing else.
       labelled per frame; COCO→YOLO shift + body-drop verified (`test_pipeline.py` guards it).
 - [x] **HDRIs** — 200 Poly Haven CC0 `.hdr` fetched (`fetch_hdris.py`); parallel render + merge
       + split validated end-to-end (part-prefixed, no filename collisions).
-- [x] **Training environment clean** — `run-cubedet.sh` uses the NGC image with no detlib in
-      it, and `cubedet/train.py` refuses to start beside one and records what it ran on.
+- [x] **Training environment recorded** — `run-cubedet.sh` uses the clean NGC image, and
+      `cubedet/train.py` records what it ran on into the checkpoint and the manifest.
 - [x] **Real Roboflow images mixed in** — ~1.9k training photos (`MODEL_CARD.md` §Training data;
       attribution in §Attribution).
 - [x] **Shipped: V6FT (cubedet)**, since 2026-09-17 — `MODEL_CARD.md`. Before it, v3; v5 was

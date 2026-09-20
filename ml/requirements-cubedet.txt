@@ -1,6 +1,6 @@
 # The permissive detector's own stack: what ml/cubedet trains with, what ml/test_cubedet.py needs,
-# and what ml/export.py needs to write the ONNX artefact. NO detlib -- cubedet/train.py
-# refuses to run beside it, and that refusal is what makes the licence claim checkable.
+# and what ml/export.py needs to write the ONNX artefact. This is the whole stack: PyTorch,
+# torchvision, and the tools that write the artefacts. Nothing else trains the detector.
 #
 # Pinned to the environment that exported the shipped model (ml/models/MANIFEST.json `tools`).
 # The training itself ran in the NGC image instead (MANIFEST.json `training_environment`), which

@@ -1,4 +1,4 @@
-"""Lay images + YOLO labels into the train/val split Detlib expects. Stdlib only.
+"""Lay images + YOLO labels into the standard train/val split on disk. Stdlib only.
 
 Produces:
   <out>/images/train/*.jpg  <out>/labels/train/*.txt  <out>/cubes/train/*.txt

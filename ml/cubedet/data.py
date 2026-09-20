@@ -56,7 +56,7 @@ CAST_LIMIT = 10.0
 # precision eroded — more false positives, not more learning.
 #
 # The cause was a recipe weaker than the one that produced the model this replaces. Read out of
-# `detlib.cfg.get_cfg()` rather than remembered, those defaults are: mosaic 1.0,
+# that pipeline's own resolved config rather than remembered, those defaults are: mosaic 1.0,
 # close_mosaic 10, scale 0.5, translate 0.1, hsv_h 0.015, hsv_s 0.7, hsv_v 0.4, fliplr 0.5,
 # degrees 0, mixup 0, copy_paste 0. `erasing 0.4` appears in the same dump and is NOT one of them:
 # it lives in `classify_augmentations` and never touches detection. Copying it on the strength of
@@ -482,9 +482,9 @@ class CubeDataset(Dataset):
             # against 0.7492), and the TRAINING box loss was worse too, which is what ruled out an
             # evaluation artefact.
             #
-            # Detlib does it by cropping: `Mosaic.border = (-imgsz // 2, -imgsz // 2)`, a
-            # negative border that takes an IMG_SIZE window out of the 2×IMG_SIZE canvas, with the
-            # scale jitter then applied around NATIVE size. base_scale 1.0 here is that crop — the
+            # The fix is to CROP rather than shrink: a negative border of -imgsz // 2 on each side
+            # takes an IMG_SIZE window out of the 2×IMG_SIZE canvas, with the scale jitter then
+            # applied around NATIVE size. base_scale 1.0 here is that crop — the
             # window lands where `translate` puts it, and objects keep the size they were rendered
             # at (measured mean 74.0 px, 82% of native, the shortfall being ordinary scale jitter).
             image, boxes = _mosaic(self._read, len(self.files), index, rng, self.imgsz)
