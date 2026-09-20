@@ -307,15 +307,22 @@ test('a preview control that would pretend to work is disabled, not silently ine
   // PRESSED, not merely present. "exists and is enabled" would pass with no click handler at all,
   // or with one whose failure is swallowed — so the button is actually used and the screen is
   // checked for having moved on.
+  // WHAT MUST CHANGE IS THE POSITION, not the sentence. The question has only two forms — edge or
+  // corner — and the lit slot is one of twenty, so comparing those made the assertion depend on a
+  // random draw: two consecutive rounds of the same kind at the same slot left both unchanged, and
+  // the case failed about one run in twenty. It passed in isolation and went red in a tier run,
+  // which is exactly how a test that draws its own state behaves.
+  //
+  // The scramble is fourteen random turns, so a replaced round cannot coincide with the one before.
+  const position = () => $('#stage cubus-cube')?.getAttribute('scramble')
+    ?? $('#stage cubus-cube')?.getAttribute('facelets') ?? '';
   const asked = () => $('#stage #drillAsk').textContent;
-  const before = asked();
-  const lit = () => $('#stage cubus-cube')?.getAttribute('highlight') ?? '';
-  const litBefore = lit();
+  const before = position();
+  assert.ok(before, 'precondition: the drill drew a position');
   next.click();
   await tick();
   assert.ok(asked(), 'Next left the drill with no question');
-  assert.ok(asked() !== before || lit() !== litBefore,
-    'pressing Next changed nothing — the round was not replaced');
+  assert.notEqual(position(), before, 'pressing Next changed nothing — the round was not replaced');
   for (const b of all('#stage .btn')) {
     assert.equal(b.disabled, true, `"${b.textContent.trim()}" records nothing, so it must not invite a press`);
   }
