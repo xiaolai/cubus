@@ -6,7 +6,8 @@
 # absence threw before a single test ran), apps/web/test/tokens.test.mjs (the design kit's
 # tokens.css), and scripts/verify-icons.py, which at the time read cubus-icon-flat.svg — the one
 # hand-authored source every app icon is generated from — out of dev-docs/design/icons/ (the source
-# has been the tracked design/icons/ since 2026-09-01, 1d46c00). Each was found by CI going red,
+# has been tracked since 2026-09-01, 1d46c00, and sits beside the scripts that read it as
+# scripts/icons/ since 2026-09-20). Each was found by CI going red,
 # one at a time, after the class had been "checked" by grepping for file reads.
 #
 # A static check was tried first and abandoned, and the reason is worth keeping: verify-icons.py
@@ -124,14 +125,14 @@ run() {
 }
 
 # THE DESIGN KIT'S COPY OF THE ICON SOURCE, compared while both are in view — this runs before
-# dev-docs is hidden, and CI never sees dev-docs at all. design/icons/ (tracked) is the source
+# dev-docs is hidden, and CI never sees dev-docs at all. scripts/icons/ (tracked) is the source
 # every icon is built from; dev-docs/design/icons/ carries a byte-identical copy for the design
 # kit's previews, and nothing else keeps the two equal. A drifted copy is a FAILED check, not a
 # note: the next person to edit the kit's copy would be editing a file nothing builds from.
 icon_copies() {
   local src copy drift=0
-  for src in design/icons/*.svg; do
-    copy="dev-docs/design/icons/${src#design/icons/}"
+  for src in scripts/icons/*.svg; do
+    copy="dev-docs/design/icons/${src#scripts/icons/}"
     [ -e "$copy" ] || continue
     if ! cmp -s "$src" "$copy"; then
       echo "  $copy differs from $src, which is the source — copy the source over it"
@@ -141,7 +142,7 @@ icon_copies() {
   return $drift
 }
 if [ -d dev-docs/design/icons ]; then
-  run "design-kit icon copies match design/icons/ (the source)" cmp icon_copies
+  run "design-kit icon copies match scripts/icons/ (the source)" cmp icon_copies
 fi
 
 # A LIVE run owns the stash, and a second one must not touch it.

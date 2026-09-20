@@ -182,27 +182,27 @@ test('a check whose tool is missing is reported SKIPPED, and the run is not a pa
   }
 });
 
-// design/icons/ is the tracked source every icon is built from; dev-docs/design/icons/ is the
+// scripts/icons/ is the tracked source every icon is built from; dev-docs/design/icons/ is the
 // design kit's byte-identical copy, and nothing else keeps the two equal. This script is the one
 // place both are in view (CI never sees dev-docs), so it compares them before hiding dev-docs.
 test('a drifted design-kit copy of the icon source fails the run; an identical one passes', () => {
   const root = fixture();
   try {
     contents(root, 'original');
-    mkdirSync(join(root, 'design/icons'), { recursive: true });
+    mkdirSync(join(root, 'scripts/icons'), { recursive: true });
     mkdirSync(join(root, 'dev-docs/design/icons'), { recursive: true });
-    writeFileSync(join(root, 'design/icons/cubus-icon-flat.svg'), '<svg>source</svg>');
+    writeFileSync(join(root, 'scripts/icons/cubus-icon-flat.svg'), '<svg>source</svg>');
     writeFileSync(join(root, 'dev-docs/design/icons/cubus-icon-flat.svg'), '<svg>edited copy</svg>');
     let r = run(root);
     assert.equal(r.status, 1, r.stdout + r.stderr);
-    assert.match(r.stdout, /=== design-kit icon copies match design\/icons\/ \(the source\) ===/);
-    assert.match(r.stdout, /dev-docs\/design\/icons\/cubus-icon-flat\.svg differs from design\/icons\/cubus-icon-flat\.svg, which is the source/);
+    assert.match(r.stdout, /=== design-kit icon copies match scripts\/icons\/ \(the source\) ===/);
+    assert.match(r.stdout, /dev-docs\/design\/icons\/cubus-icon-flat\.svg differs from scripts\/icons\/cubus-icon-flat\.svg, which is the source/);
     assert.match(r.stdout, /^FAIL: 1 check/m);
 
     writeFileSync(join(root, 'dev-docs/design/icons/cubus-icon-flat.svg'), '<svg>source</svg>');
     r = run(root);
     assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.match(r.stdout, /=== design-kit icon copies match design\/icons\/ \(the source\) ===\n {2}ok/);
+    assert.match(r.stdout, /=== design-kit icon copies match scripts\/icons\/ \(the source\) ===\n {2}ok/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

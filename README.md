@@ -51,7 +51,10 @@ one reason the app is not served there. Whoever hosts the app has to serve exact
   inference in WebKit, about three frames a second.
 - **MIME types.** `.wasm` as `application/wasm` (streaming compilation fails on anything else),
   `.js` and `.mjs` as `text/javascript`, `.onnx` as `application/octet-stream`, `.webmanifest`
-  as `application/manifest+json`, `.md` as `text/markdown`.
+  as `application/manifest+json`, `.md` as `text/markdown`. If a narrated course is served
+  alongside the app, its audio needs real types too — `.m4a` as `audio/mp4`, `.mp3` as
+  `audio/mpeg`, `.wav` as `audio/wav`, `.ogg` as `audio/ogg`; served as
+  `application/octet-stream` no element will decode them.
 - **HTTPS**, or the browser refuses the camera. Only `localhost` is a secure context over plain
   http, which is why the dev server needs no certificate.
 - **No rewrite rules.** Routes live in the URL hash (`#/scan`), so every path is a real file and
