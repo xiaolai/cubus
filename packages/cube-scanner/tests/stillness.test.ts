@@ -196,9 +196,13 @@ describe('Stillness — a centre that will not settle (the logo cube, 2026-09-20
 
   it('the centre is reported as UNREAD when the run disagreed, and as its colour when it did not', () => {
     const logo = new Stillness(3, 500);
-    for (const [i, c] of [B, W, B, W].entries()) logo.offer(white(c), 1000 + i * 200);
-    // Unanimous, not a majority: blue-white-blue has a majority of blue, and filing the side as blue
-    // is exactly the confidently-wrong answer the alternation is evidence against.
+    // A MAJORITY, NOT A TIE. `[B, W, B, W]` is two of each, so an implementation that took the
+    // majority would also answer null here and the case would pass while testing nothing (audit,
+    // 2026-09-20). Three reads, two of them blue: a majority rule answers BLUE and fails.
+    const run = [B, W, B];
+    let settled = false;
+    for (const [i, c] of run.entries()) settled = logo.offer(white(c), 1000 + i * 250);
+    expect(settled).toBe(true);
     expect(logo.centre()).toBe(null);
     const plain = new Stillness(3, 500);
     for (let i = 0; i < 4; i++) plain.offer(white(W), 1000 + i * 200);
@@ -229,16 +233,25 @@ describe('Stillness — a centre that will not settle (the logo cube, 2026-09-20
     });
   });
 
-  it('one of the EIGHT flickering still blocks the capture, and is still named', () => {
-    // Unchanged on purpose: a sticker in the ring is a real reading the user can act on, and a run
-    // that accepted it would be filing a colour nobody saw twice.
-    const s = new Stillness(3, 500);
-    const ring = (corner: number) => [corner, W, W, W, W, W, W, W, W];
-    for (const [i, c] of [1, 2, 1, 2, 1, 2].entries()) {
-      expect(s.offer(ring(c), 1000 + i * 200)).toBe(false);
-    }
-    expect(s.flickering(2)).toBe(0);
-  });
+  it.each([0, 1, 2, 3, 5, 6, 7, 8])(
+    'position %i is in the key: flickering there still blocks the capture, and is still named',
+    (position) => {
+      // EVERY outer position, not just the first. The key is built by filtering the centre out, so
+      // dropping one of the other eight by accident would leave a sticker that cannot stop a
+      // capture — a side filed on a colour nobody saw twice — and a suite testing position 0 alone
+      // would stay green through it (audit, 2026-09-20).
+      const s = new Stillness(3, 500);
+      const ring = (colour: number) => {
+        const face = [W, W, W, W, W, W, W, W, W];
+        face[position] = colour;
+        return face;
+      };
+      for (const [i, c] of [1, 2, 1, 2, 1, 2].entries()) {
+        expect(s.offer(ring(c), 1000 + i * 200)).toBe(false);
+      }
+      expect(s.flickering(2)).toBe(position);
+    },
+  );
 });
 
 describe('Stillness — a logo centre beside a flickering outer sticker (audit, 2026-09-20)', () => {

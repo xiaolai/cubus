@@ -123,20 +123,42 @@ test('a REPAINT of the screen you are on does not steal focus', async () => {
 
 // The one switch for every sound the scan makes (lib/sound.js; dev-docs/scan-guidance-plan.md 3.2,
 // D3): drawn in Settings, ON for someone who never chose, and a press turns it off and keeps that.
-test('Settings offers three sound modes, Voice by default, and a press keeps the choice', async () => {
+test('Settings offers three sound modes, Voice by default, and a press keeps the choice', async (t) => {
   // One boolean became three modes on 2026-09-20: the only way to stop a repeated spoken line used
   // to be silencing the bell a child depends on.
+  //
+  // RESTORED WHATEVER HAPPENS. This mutates a PERSISTED setting, and restoring it on the success
+  // path alone meant one failed assertion left every later test — in this file and the next — with a
+  // mode nobody chose (audit, 2026-09-20).
+  const { settings } = await import('../lib/app-settings.js');
+  const wasMode = settings.soundMode;
+  const wasStored = win.localStorage.getItem('cubusSettings');
+  t.after(() => {
+    settings.soundMode = wasMode;
+    if (wasStored === null) win.localStorage.removeItem('cubusSettings');
+    else win.localStorage.setItem('cubusSettings', wasStored);
+  });
   await go('settings');
   const pill = (mode) => $(`[data-set-sound="${mode}"]`);
-  for (const mode of ['voice', 'chime', 'off']) assert.ok(pill(mode), `there is no ${mode} choice`);
-  assert.equal(pill('voice').getAttribute('aria-pressed'), 'true', 'someone who never chose was not given Voice');
-  pill('chime').click();
-  await tick();
-  assert.equal(pill('chime').getAttribute('aria-pressed'), 'true');
-  assert.equal(pill('voice').getAttribute('aria-pressed'), 'false', 'two modes were on at once');
-  assert.equal(JSON.parse(win.localStorage.getItem('cubusSettings')).soundMode, 'chime', 'the choice was not kept');
-  pill('voice').click(); // leave the setting as it was
-  await tick();
+  const MODES = ['voice', 'chime', 'off'];
+  for (const mode of MODES) assert.ok(pill(mode), `there is no ${mode} choice`);
+  /** The modes drawn as chosen — by `aria-pressed` and by the class, which must agree. */
+  const pressed = () => MODES.filter((m) => pill(m).getAttribute('aria-pressed') === 'true');
+  const lit = () => MODES.filter((m) => pill(m).classList.contains('on'));
+  assert.deepEqual(pressed(), ['voice'], 'someone who never chose was not given Voice, or several were on');
+  assert.deepEqual(lit(), pressed(), 'what is drawn as chosen and what is announced as chosen disagree');
+  // EVERY mode, and exactly one pressed after each — checking Voice against Chime alone would pass
+  // with Off stuck on as well (audit, 2026-09-20).
+  for (const mode of MODES) {
+    pill(mode).click();
+    await tick();
+    assert.deepEqual(pressed(), [mode], `${mode} did not become the only chosen mode`);
+    assert.deepEqual(lit(), [mode], `${mode}'s class and aria-pressed disagree`);
+    assert.equal(
+      JSON.parse(win.localStorage.getItem('cubusSettings')).soundMode, mode,
+      `${mode} was not kept`,
+    );
+  }
 });
 
 // A quieter mode means quieter NOW: a chime or a spoken line already under way stops when the mode
@@ -162,7 +184,15 @@ test('choosing a quieter mode stops a chime and a line already under way', async
     // The line CUT OFF is the one that was being said — one synth throughout, so "something was
     // cancelled" cannot stand in for it (audit, 2026-09-19).
     assert.equal(voice.cuts.at(-1), 'Got it!', 'the line under way was left speaking');
-    assert.ok(oscillators.every((o) => o.stops.length >= 2), 'the chime under way was left sounding');
+    // NOT VACUOUS, AND NOT MERELY COUNTED (audit, 2026-09-20). `every` on an empty list is true, so
+    // this passed if the chime was never made at all; and counting stops cannot tell a note that was
+    // SCHEDULED to end from one cut short. `stopAll()` asks for `stop()` with no time, which the
+    // stand-in records as `undefined` — that is what "silenced now" looks like.
+    assert.ok(oscillators.length > 0, 'no chime was ever made, so none could be silenced');
+    assert.ok(
+      oscillators.every((o) => o.stops.at(-1) === undefined),
+      'a note was left to finish on its own schedule rather than cut off',
+    );
     // LEAVING VOICE FOR THE BELL MUST ALSO CUT THE WORDS — the mode a person picks precisely because
     // the words were too much. `hush()` runs on every change for this; only `off` stops the bell too.
     $('[data-set-sound="voice"]').click();

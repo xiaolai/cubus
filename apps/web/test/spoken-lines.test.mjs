@@ -53,6 +53,24 @@ test('an edit that cannot be used is dropped, and the default is said instead', 
   assert.equal(spokenLines({ open: atLimit }).open, atLimit);
 });
 
+test('a placeholder is read, not searched for', () => {
+  // `includes('%1')` accepted three lines that speak nonsense to a child (audit, 2026-09-20).
+  const cases = [
+    ['%10 substitutes the count and leaves the zero — five sides announced as fifty', 'Got it! %10 more.'],
+    ['a parameter the line is never given is spoken aloud as "percent nine"', 'Got it! %9 more.'],
+    ['two placeholders where one is supplied leaves the other in the sentence', 'Got it! %1 of %2 more.'],
+  ];
+  for (const [why, line] of cases) {
+    assert.equal(spokenLines({ savedMany: line }).savedMany, SPOKEN.savedMany, why);
+    assert.ok(refuse('savedMany', line), `the card accepted a line the voice drops: ${why}`);
+  }
+  // A line with the same placeholder twice is fine — the set matches, and %1 may be repeated.
+  assert.equal(spokenLines({ savedMany: '%1 more — just %1 more.' }).savedMany, '%1 more — just %1 more.');
+  // And a line with NO placeholder may not gain one: nothing would be substituted into it.
+  assert.equal(spokenLines({ done: 'All done, %1!' }).done, SPOKEN.done);
+  assert.ok(refuse('done', 'All done, %1!'), 'a placeholder was added to a line given no parameter');
+});
+
 test('the card refuses exactly what the voice drops, and says why', () => {
   // Same rules, asked of the same function — the card cannot drift into accepting a line the voice
   // will not say, which would look like an edit that did not stick.

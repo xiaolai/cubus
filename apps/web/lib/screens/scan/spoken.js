@@ -19,7 +19,7 @@ import { settings } from '../../app-settings.js';
 import { locale, t } from '../../i18n.js';
 import { hush, say } from '../../speech.js';
 // Every side held, named or not — `captured` lists only the named ones and can shrink mid-scan.
-import { sidesIn as sidesOf } from './report-sides.js';
+import { SIDES, sidesIn as sidesOf } from './report-sides.js';
 
 /** The lines, English. Short on purpose: a child listens while holding a cube up.
  *
@@ -43,13 +43,38 @@ export const SPOKEN = Object.freeze({
   camera: "The camera isn't working. Ask a grown-up to help.",
 });
 
-/** The sides a whole cube has. Named because the countdown is `SIDES - sides` and a bare 6 in that
- *  expression is the kind of number that later disagrees with the scanner's own. */
-export const SIDES = 6;
 /** Longest an edited line may be. A spoken line is heard, not read: past a breath it stops being a
  *  cue and becomes a paragraph the scan has moved on from. Generous rather than tight -- the point
  *  is to refuse a pasted essay, not to police wording. */
 export const LINE_LIMIT = 160;
+
+/**
+ * Every `%`-token in a line, read WHOLE: `%1`..`%9`, and `null` for anything else.
+ *
+ * The digits have to be taken greedily. Matching a single digit finds `%1` inside `%10` and leaves
+ * the `0` behind as a literal, so the check passes and a count of five is announced as fifty — the
+ * very defect this reads for. `%10` is not a tenth parameter; `t()` substitutes `%1..%9` and nothing
+ * else, so a longer run of digits is a token the line cannot have meant.
+ */
+const placeholdersOf = (line) =>
+  [...line.matchAll(/%(\d+)/g)].map((m) => (m[1].length === 1 ? Number(m[1]) : null));
+
+/**
+ * Whether `line` carries exactly the placeholders `template` does.
+ *
+ * `includes('%1')` was not enough (audit, 2026-09-20). It accepted `%10`, which substitutes the
+ * count and leaves the 0 — five sides announced as fifty. It accepted `%9` on a line given one
+ * parameter, which is then spoken aloud as "percent nine". And it let a line with NO placeholder
+ * gain one, which would speak an `undefined`. The set has to match, not merely be non-empty.
+ */
+const placeholdersFit = (template, line) => {
+  const got = placeholdersOf(line);
+  // A token that is not `%1`..`%9` is refused outright, whatever the template carries.
+  if (got.includes(null)) return false;
+  const want = [...new Set(placeholdersOf(template))].sort();
+  const seen = [...new Set(got)].sort();
+  return want.length === seen.length && want.every((n, i) => n === seen[i]);
+};
 
 /**
  * The lines as they will actually be said: the defaults above, with any edited in
@@ -71,7 +96,7 @@ export function spokenLines(edits = settings.spokenLines) {
     if (typeof value !== 'string') continue;
     const line = value.trim();
     if (!line || line.length > LINE_LIMIT) continue;
-    if (SPOKEN[key].includes('%1') && !line.includes('%1')) continue;
+    if (!placeholdersFit(SPOKEN[key], line)) continue;
     lines[key] = line;
   }
   return Object.freeze(lines);
@@ -147,6 +172,11 @@ export function hear(memo, p) {
  */
 export function capturedCue({ kind, sides }) {
   if (kind === 'confirm') return null;
+  // A COUNT THAT IS NOT A COUNT NEVER BECOMES A SENTENCE (audit, 2026-09-20). `scan-progress` is
+  // validated by `sidesIn`; this path was not, so a malformed capture event said "NaN more sides" to
+  // a child, or "7 more sides", or "4.5". Saying nothing is the honest answer to a number the
+  // scanner cannot have meant — the chime still marks the capture.
+  if (!Number.isInteger(sides) || sides < 1 || sides > SIDES) return null;
   if (sides >= SIDES) {
     return {
       line: 'lastSaved',

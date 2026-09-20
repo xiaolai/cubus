@@ -17,10 +17,28 @@ globalThis.localStorage ??= {
 const { settings } = await import('../lib/app-settings.js');
 const { hush, say, useSpeechEngine } = await import('../lib/speech.js');
 
-test('a line cuts off the last, is read as English, and hush stops it', () => {
+/**
+ * A stand-in voice in `mode`, with everything it changes put back when the test ends.
+ *
+ * Both halves were written out in every test and restored in none (audit, 2026-09-20): the module's
+ * engine is a MODULE GLOBAL and `settings.soundMode` is shared, so each case left the next one a
+ * platform and a mode it never asked for. Nothing failed — the order happened to suit — which is the
+ * kind of coupling that only ever surfaces when somebody adds a fourth test.
+ */
+function voiceRig(t, mode = 'voice') {
   const voice = speechStandIn();
-  useSpeechEngine(voice.make);
-  settings.soundMode = 'voice';
+  const wasEngine = useSpeechEngine(voice.make);
+  const wasMode = settings.soundMode;
+  settings.soundMode = mode;
+  t.after(() => {
+    useSpeechEngine(wasEngine);
+    settings.soundMode = wasMode;
+  });
+  return voice;
+}
+
+test('a line cuts off the last, is read as English, and hush stops it', (t) => {
+  const voice = voiceRig(t);
   assert.equal(say('Got it!'), true);
   assert.equal(say('All done!'), true);
   hush();
@@ -28,10 +46,8 @@ test('a line cuts off the last, is read as English, and hush stops it', () => {
   assert.deepEqual(voice.cuts, [null, 'Got it!', 'All done!'], 'the line each cut-off ended is not the one that was being said');
 });
 
-test('no voice with sounds off, and none where either half of the API is missing', () => {
-  const voice = speechStandIn();
-  useSpeechEngine(voice.make);
-  settings.soundMode = 'off';
+test('no voice with sounds off, and none where either half of the API is missing', (t) => {
+  const voice = voiceRig(t, 'off');
   assert.equal(say('Got it!'), false);
   assert.deepEqual(voice.log, [], 'sounds off still spoke');
   // …and `chime` is the bell WITHOUT the words: the mode the owner asked for after finding the
@@ -51,13 +67,11 @@ test('no voice with sounds off, and none where either half of the API is missing
   assert.deepEqual(voice.said, [], 'a line was spoken through half an API');
 });
 
-test('a line the platform declines is logged and reported; one the app cut off itself is neither', () => {
+test('a line the platform declines is logged and reported; one the app cut off itself is neither', (t) => {
   // Queued is not heard: the platform speaks asynchronously and can still decline. The caller is the
   // one that knows whether the moment is still there, so it is told — and the app's own cancels, which
   // arrive as `interrupted` and `canceled`, are not failures (audit, 2026-09-19).
-  const voice = speechStandIn();
-  useSpeechEngine(voice.make);
-  settings.soundMode = 'voice';
+  const voice = voiceRig(t);
   const warned = [];
   const failures = [];
   const warn = console.warn;

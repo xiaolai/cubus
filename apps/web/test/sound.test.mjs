@@ -20,6 +20,30 @@ const { audioState, play, stopAll, unlockOnGestures, useAudioContextFactory } = 
 /** A page to gesture on. */
 const page = () => new EventTarget();
 
+/**
+ * A stand-in audio context in `soundMode`, installed and put back when the test ends.
+ *
+ * The five lines this replaces were written out six times and had already diverged: the
+ * no-Web-Audio case never set a mode at all, so it could pass because sound was OFF rather than
+ * because the platform had none — a false green depending on the order tests happen to run in
+ * (audit, 2026-09-20). Nothing restored the factory or the mode either.
+ */
+function audio(t, { soundMode = 'voice', state, unlocked = false } = {}) {
+  const stand = audioStandIn(state ? { state } : {});
+  const wasFactory = useAudioContextFactory(() => stand.ctx);
+  const wasMode = settings.soundMode;
+  settings.soundMode = soundMode;
+  const target = page();
+  unlockOnGestures(target);
+  if (unlocked) target.dispatchEvent(new Event('pointerdown'));
+  t.after(() => {
+    stopAll();
+    useAudioContextFactory(wasFactory);
+    settings.soundMode = wasMode;
+  });
+  return { ...stand, target };
+}
+
 test('no sound before a gesture, and none saved up for after it', () => {
   const { ctx } = audioStandIn();
   useAudioContextFactory(() => ctx);
@@ -92,8 +116,17 @@ test('a note that ends on its own is forgotten, not stopped a second time later'
   assert.ok(notes.every((o) => o.stops.length === 1), 'a note that had ended was stopped again');
 });
 
-test('a platform with no Web Audio makes no sound and raises nothing', () => {
-  useAudioContextFactory(() => null);
+test('a platform with no Web Audio makes no sound and raises nothing', (t) => {
+  // SILENT FOR THE RIGHT REASON. This never set a mode, so it passed whenever an earlier test left
+  // `soundMode` at `off` — proving nothing about a platform without Web Audio (audit, 2026-09-20).
+  // Sound is explicitly ON here, so the only thing that can silence it is the missing platform.
+  const wasFactory = useAudioContextFactory(() => null);
+  const wasMode = settings.soundMode;
+  settings.soundMode = 'voice';
+  t.after(() => {
+    useAudioContextFactory(wasFactory);
+    settings.soundMode = wasMode;
+  });
   const target = page();
   unlockOnGestures(target);
   target.dispatchEvent(new Event('pointerdown'));
@@ -147,4 +180,47 @@ test('waking a context suspended mid-chime does not play the rest of the chime',
   target.dispatchEvent(new Event('pointerdown'));
   assert.deepEqual(stoppedAtResume, [true], 'a note scheduled before the suspension was still due when audio woke');
   assert.equal(audioState(), 'running');
+});
+
+test('a chime is AUDIBLE: every note reaches the destination through a gain that opens', (t) => {
+  // "An oscillator was created" is not "a sound was made" (audit, 2026-09-20). The stand-in used to
+  // discard every envelope call and every connection, so a chime whose gain never left zero — or one
+  // wired to nothing — satisfied all of these assertions while being silent to the user.
+  const { ctx, made, gains, audible } = audio(t, { state: 'running', unlocked: true });
+  assert.equal(play('capture'), true);
+  assert.ok(made.length > 0, 'no notes at all');
+  assert.ok(gains.length > 0, 'the notes were not routed through a gain');
+  assert.ok(audible(), 'a note never reached the destination, or its gain never opened');
+  for (const gain of gains) {
+    assert.ok(gain.gain.opens, 'a gain never rose above the value it decays to — a silent note');
+    assert.ok(gain.gain.ops.length > 1, 'a gain was set once and never shaped — no envelope');
+  }
+  assert.ok(ctx.made.every((o) => o.started !== null), 'a note was built and never started');
+});
+
+test('the bell-only mode makes the SAME chime, note for note, not merely some notes', (t) => {
+  // The contract is that `chime` keeps the bell exactly as `voice` has it. Counting oscillators
+  // cannot see a different frequency, a different order or a different start time — so the two runs
+  // are compared as sequences (audit, 2026-09-20).
+  const wasFactory = useAudioContextFactory(() => null);
+  const wasMode = settings.soundMode;
+  t.after(() => {
+    stopAll();
+    useAudioContextFactory(wasFactory);
+    settings.soundMode = wasMode;
+  });
+  /** The notes one `capture` chime makes in `mode`, on a context of its own. */
+  const shape = (mode) => {
+    const { ctx, made } = audioStandIn({ state: 'running' });
+    useAudioContextFactory(() => ctx);
+    settings.soundMode = mode;
+    const target = page();
+    unlockOnGestures(target);
+    target.dispatchEvent(new Event('pointerdown'));
+    assert.equal(play('capture'), true, `${mode} made no chime`);
+    const seq = made.map((o) => [o.type, o.frequency.value, o.started]);
+    stopAll();
+    return seq;
+  };
+  assert.deepEqual(shape('chime'), shape('voice'), 'the bell differs between the two modes that have one');
 });

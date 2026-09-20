@@ -12,23 +12,66 @@
  */
 export function audioStandIn({ state = 'suspended' } = {}) {
   const made = [];
-  const param = () => ({ value: 0, setValueAtTime() {}, linearRampToValueAtTime() {}, exponentialRampToValueAtTime() {} });
+  const gains = [];
+  // EVERY ENVELOPE CALL IS KEPT (audit, 2026-09-20). The old param discarded them, so a chime whose
+  // gain never rose above zero — audible to nobody — passed every assertion about "a sound was made".
+  // `ops` is what was asked of the param, in order; `peak` is the loudest value it was ever given.
+  const param = () => {
+    const ops = [];
+    const self = {
+      value: 0,
+      ops,
+      get peak() {
+        return ops.reduce((hi, [, v]) => Math.max(hi, v), 0);
+      },
+      /** Where the envelope ENDS — the value it was last asked to reach. */
+      get last() {
+        return ops.length ? ops[ops.length - 1][1] : 0;
+      },
+      /** Whether it rose above where it ends. `peak > 0` is not enough: a note decays TOWARDS a
+       *  small positive value (an exponential ramp cannot reach zero), so a gain that never opened
+       *  still had a peak above zero and passed (mutation-checked, 2026-09-20). */
+      get opens() {
+        return self.peak > self.last;
+      },
+      setValueAtTime(v, t) { ops.push(['set', v, t]); self.value = v; return self; },
+      linearRampToValueAtTime(v, t) { ops.push(['linear', v, t]); return self; },
+      exponentialRampToValueAtTime(v, t) { ops.push(['exp', v, t]); return self; },
+    };
+    return self;
+  };
   const ctx = {
-    state, currentTime: 0, destination: {}, resumed: 0, made,
+    state, currentTime: 0, destination: {}, resumed: 0, made, gains,
     resume() { ctx.resumed += 1; ctx.state = 'running'; return Promise.resolve(); },
-    createGain: () => ({ gain: param(), connect: (to) => to }),
+    createGain() {
+      // `into` records the graph: a note connected nowhere reaches no speaker, and a fake that
+      // returned its argument without noting it could not tell the difference.
+      const node = { gain: param(), into: [], connect(to) { node.into.push(to); return to; } };
+      gains.push(node);
+      return node;
+    },
     createOscillator() {
       // `stops` holds the time each stop was asked for — `undefined` for "now", which is what
       // `stopAll()` asks: a note scheduled to end and a note cut short are not the same event.
       const osc = {
-        type: '', frequency: param(), started: null, stops: [], onended: null,
-        connect: (to) => to, start(t) { osc.started = t; }, stop(t) { osc.stops.push(t); },
+        type: '', frequency: param(), started: null, stops: [], onended: null, into: [],
+        connect(to) { osc.into.push(to); return to; },
+        start(t) { osc.started = t; },
+        stop(t) { osc.stops.push(t); },
       };
       made.push(osc);
       return osc;
     },
   };
-  return { ctx, made };
+  /** Whether every note made reaches the destination through a gain that was actually opened —
+   *  the audible path, which "an oscillator exists" does not establish. */
+  const audible = () =>
+    made.length > 0 &&
+    made.every((osc) => {
+      const gain = osc.into.find((node) => gains.includes(node));
+      return Boolean(gain) && gain.into.includes(ctx.destination) && gain.gain.opens;
+    });
+  return { ctx, made, gains, audible };
 }
 
 /**
@@ -84,6 +127,12 @@ export function speechStandIn() {
  *   `soundMode` for this test — 'voice' (bell and words), 'chime' (bell alone) or 'off'.
  */
 export function installSoundStandIns({ sound, speech, settings, soundMode = 'voice' }) {
+  // A typo, or the boolean this replaced, would otherwise install a configuration the app cannot be
+  // in — chimes on and speech off, or both off while the caller believed otherwise — and the test
+  // would pass for the wrong reason (audit, 2026-09-20).
+  if (!['voice', 'chime', 'off'].includes(soundMode)) {
+    throw new TypeError(`installSoundStandIns: soundMode ${JSON.stringify(soundMode)} is not voice, chime or off`);
+  }
   const { ctx, made } = audioStandIn();
   const voice = speechStandIn();
   const wasAudio = sound.useAudioContextFactory(() => ctx);

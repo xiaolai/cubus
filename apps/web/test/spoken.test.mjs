@@ -150,6 +150,19 @@ test('a capture: its line by how many sides are held, nothing for a confirm look
   }
 });
 
+test('a capture count that is not a count says nothing at all', () => {
+  // The capture path was unvalidated while `scan-progress` was (audit, 2026-09-20), so a malformed
+  // event spoke "NaN more sides" to a child, or "7 more sides", or "4.5 more sides". The chime still
+  // marks the capture; the words are what must not invent a number.
+  for (const sides of [undefined, null, Number.NaN, -1, 0, 1.5, 7, 60, '3']) {
+    assert.equal(capturedCue({ kind: 'side', sides }), null, `sides ${String(sides)} spoke anyway`);
+  }
+  // …and every count a cube can actually reach still speaks.
+  for (const sides of [1, 2, 3, 4, 5, 6]) {
+    assert.ok(capturedCue({ kind: 'side', sides }), `sides ${sides} said nothing`);
+  }
+});
+
 test('a refusal: "ask a grown-up", not while painting, and cut when the scan moves on or checks again', () => {
   const { memo } = run(r({ phase: 'checking', sides: 6 }));
   const cue = refusedCue(memo);
