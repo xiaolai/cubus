@@ -3089,15 +3089,19 @@ function resolveCentres(named, unnamed, threshold = LOW_CONFIDENCE_THRESHOLD, op
       )
     };
   }
-  const claims2 = [];
-  for (const { capture } of unnamed) {
-    const centre = capture.colors[4];
+  const claimed = [];
+  for (const side of unnamed) {
+    if (side.centreClaim === null) {
+      claimed.push(null);
+      continue;
+    }
+    const centre = side.centreClaim ?? side.capture.colors[4];
     if (centre === void 0 || !isColour(centre)) {
       return {
         result: reject(`an unnamed capture's centre colour ${centre} is not one of the six`)
       };
     }
-    claims2.push(centre);
+    claimed.push(centre);
   }
   const filings = orderings(free).map((slots) => {
     const faces = { ...named };
@@ -3122,6 +3126,10 @@ function resolveCentres(named, unnamed, threshold = LOW_CONFIDENCE_THRESHOLD, op
       false
     )
   }));
+  if (unnamed.length === 1) {
+    const only = assessed[0];
+    return { result: only.result, faces: only.faces, decidedBy: "counting" };
+  }
   const fits = assessed.filter(
     ({ result }) => result.valid || result.ambiguous === true || result.confirm !== void 0
   );
@@ -3129,7 +3137,10 @@ function resolveCentres(named, unnamed, threshold = LOW_CONFIDENCE_THRESHOLD, op
     const [fit] = fits;
     return { result: fit.result, faces: fit.faces, decidedBy: "legality" };
   }
-  const shared = slotOf(claims2.find((c, i) => claims2.indexOf(c) !== i) ?? claims2[0]);
+  const claims2 = claimed.filter((c) => c !== null);
+  const shared = slotOf(
+    claims2.find((c, i) => claims2.indexOf(c) !== i) ?? claims2[0] ?? colourOfSlot(free[0])
+  );
   const missing = free.find((slot) => !claims2.includes(colourOfSlot(slot))) ?? free[0];
   const conflict = (legalFilings) => ({
     result: reject(
@@ -3138,6 +3149,7 @@ function resolveCentres(named, unnamed, threshold = LOW_CONFIDENCE_THRESHOLD, op
     )
   });
   if (fits.length > 1) return conflict(fits.length);
+  if (claimed.some((c) => c === null)) return conflict(0);
   const keeps = /* @__PURE__ */ new Map();
   for (const colour of new Set(claims2)) {
     const claimants = claims2.flatMap((c, i) => c === colour ? [i] : []);
@@ -5185,7 +5197,8 @@ function turnedFrom(prev, next) {
 }
 var Stillness = class {
   /**
-   * @param reads Identical consecutive reads required.
+   * @param reads Consecutive reads required with an identical EIGHT-sticker ring. The centre may
+   *   differ between them; whether it agreed is reported separately by `centre()`.
    * @param ms Wall-clock stillness required, from the first read of the current run.
    */
   constructor(reads, ms) {
@@ -5219,7 +5232,8 @@ var Stillness = class {
   /** Per position, every colour it showed on either side of a break it made alone. */
   breakColours = /* @__PURE__ */ new Map();
   /**
-   * Offer the latest read. True once it has been identical `reads` times AND still for `ms`.
+   * Offer the latest read. True once its EIGHT-sticker ring has been identical `reads` times AND
+   * still for `ms` — the centre is free to disagree across a run, and `centre()` says whether it did.
    *
    * `now` is injectable because the alternative is a test that sleeps: the timing rule is the whole
    * point of this class, so it has to be drivable without wall-clock waits.
@@ -5241,8 +5255,9 @@ var Stillness = class {
         for (let i = 0; i < colors.length; i++) {
           if (colors[i] !== previous[i]) differing.push(i);
         }
-        const only = differing.length === 1 ? differing[0] : void 0;
-        const anotherSide = differing.includes(CENTRE) && differing.length >= 2;
+        const outer = differing.filter((i) => i !== CENTRE);
+        const only = outer.length === 1 ? outer[0] : void 0;
+        const anotherSide = differing.includes(CENTRE) && outer.length >= 2;
         const turned = differing.length >= 2 && turnedFrom(previous, colors);
         if (differing.length >= SUBJECT_CHANGE || anotherSide || turned) {
           this.breaks.clear();
@@ -5631,6 +5646,13 @@ var AiScanPanel = class extends HTMLElement {
    * frames of a logo centre and of a plain one overlapped while their medians did not.
    */
   centreSeen = /* @__PURE__ */ new Map();
+  /**
+   * What each unnamed capture's centre CLAIMS — its colour for a collision, `null` for a centre no
+   * run ever agreed on. Kept beside the capture rather than re-derived from it, because the capture
+   * carries whichever frame happened to be filed and that frame's centre is an accident when the
+   * run never settled (audit, 2026-09-20).
+   */
+  unnamedClaim = /* @__PURE__ */ new Map();
   constructor() {
     super();
     this.root = this.attachShadow({ mode: "open" });
@@ -5945,6 +5967,7 @@ var AiScanPanel = class extends HTMLElement {
     for (const f of FACES) delete this.faces[f];
     this.unnamed = [];
     this.centreSeen.clear();
+    this.unnamedClaim.clear();
     this.scheme = null;
     this.buildDots();
   }
@@ -6284,19 +6307,9 @@ var AiScanPanel = class extends HTMLElement {
     }
     if (claim === void 0) {
       this.traceEvent("held-back", { shares: null, colors: [...read.colors] });
-      this.unnamed.push(read);
-      this.centreSeen.set(read, [read.confidence[4] ?? 0]);
-      this.buildDots();
-      this.captured("side", null);
-      const held = this.sidesHeld();
-      if (held >= FACES.length) {
-        this.scheduleCheck(this.tinted("ok", "All six sides captured \u2014 checking\u2026"));
-        return;
-      }
-      this.report(
-        "scanning",
+      this.holdUnnamed(read, null, (held) => [
         `Got that side \u2014 ${held}/6. Its middle sticker kept changing colour, so which side it is gets worked out once all six are in. Show another side\u2026`
-      );
+      ]);
       return;
     }
     const holder = this.faces[claim];
@@ -6314,22 +6327,36 @@ var AiScanPanel = class extends HTMLElement {
       delete this.faces[claim];
       this.settled.delete(claim);
       this.unnamed.push(holder);
+      this.unnamedClaim.set(holder, holder.colors[4] ?? null);
     }
-    this.unnamed.push(read);
-    this.centreSeen.set(read, [read.confidence[4] ?? 0]);
-    this.buildDots();
-    this.captured("side", null);
-    const done = this.sidesHeld();
-    if (done >= FACES.length) {
-      this.scheduleCheck(this.tinted("ok", "All six sides captured \u2014 checking\u2026"));
-      return;
-    }
-    this.report(
-      "scanning",
+    this.holdUnnamed(read, centre ?? null, (done) => [
       `Got that side \u2014 ${done}/6. Two sides look like the `,
       this.bold(GUIDE[claim].color),
       " side; which is which is worked out once all six are in. Show another side\u2026"
-    );
+    ]);
+  }
+  /**
+   * Hold `read` as a side the scan cannot name yet, whatever the reason.
+   *
+   * ONE TRANSITION, TWO REASONS. A collision (`claim` is a colour: two sides read it) and a centre
+   * that never settled (`claim` is null) end in exactly the same six mutations — trace, append,
+   * record the claim and the confidence, redraw, announce, count, and either check or report. They
+   * were written out twice, and their centre semantics now differ, which is precisely when two
+   * copies start to drift (audit, 2026-09-20). Only the sentence varies, so only the sentence is
+   * passed in.
+   */
+  holdUnnamed(read, claim, words) {
+    this.unnamed.push(read);
+    this.unnamedClaim.set(read, claim);
+    this.centreSeen.set(read, [read.confidence[4] ?? 0]);
+    this.buildDots();
+    this.captured("side", null);
+    const held = this.sidesHeld();
+    if (held >= FACES.length) {
+      this.scheduleCheck(this.tinted("ok", "All six sides captured \u2014 checking\u2026"));
+      return;
+    }
+    this.report("scanning", ...words(held));
   }
   /**
    * The side in hand that `read` shows again — named, with its slot, or unnamed — or null for a side
@@ -6337,6 +6364,15 @@ var AiScanPanel = class extends HTMLElement {
    */
   sideInHand(read, centreUnread = false) {
     const same = (side2) => (centreUnread || side2.colors[4] === read.colors[4]) && sameSide(read.colors, side2.colors);
+    if (centreUnread) {
+      const hits = [];
+      for (const slot of FACES) {
+        const side2 = this.faces[slot];
+        if (side2 && same(side2)) hits.push({ side: side2, slot });
+      }
+      for (const side2 of this.unnamed) if (same(side2)) hits.push({ side: side2 });
+      return hits.length === 1 ? hits[0] : null;
+    }
     for (const slot of FACES) {
       const side2 = this.faces[slot];
       if (side2 && same(side2)) return { side: side2, slot };
@@ -6887,6 +6923,7 @@ var AiScanPanel = class extends HTMLElement {
     }
     if (this.unnamed.length > 0) {
       const unnamed = this.unnamed.map((capture) => ({
+        centreClaim: this.unnamedClaim.get(capture) ?? capture.colors[4],
         capture,
         centreConfidence: median2(this.centreSeen.get(capture) ?? [capture.confidence[4] ?? 0])
       }));

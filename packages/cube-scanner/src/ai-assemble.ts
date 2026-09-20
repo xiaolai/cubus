@@ -1228,13 +1228,26 @@ export interface CentreResolution {
    * when no filing is legal — and absent when nothing decided, where no filing is the right one to keep.
    */
   faces?: Record<Face, ColorFace>;
-  /** What chose `faces`: the one legal filing, or — when none is legal — the centres' confidence. */
-  decidedBy?: 'legality' | 'confidence';
+  /** What chose `faces`: the one legal filing, the centres' confidence when none is legal, or
+   *  `counting` when one unnamed side and one free slot left no choice to make. */
+  decidedBy?: 'legality' | 'confidence' | 'counting';
 }
 
 /** A side the scan could not name by its centre, and how surely its centre read the colour it claims. */
 export interface UnnamedSide {
   capture: ColorFace;
+  /**
+   * The colour this side's centre CLAIMS, or null when no run ever agreed on one.
+   *
+   * THE TWO REASONS A SIDE IS UNNAMED ARE NOT THE SAME (2026-09-20). A collision is two sides
+   * reading the same colour surely — there is a claim, and whose is weaker decides. A centre that
+   * never settled makes no claim at all, and the last frame's colour is an accident of which frame
+   * happened to be filed. Deriving one from the other let an arbitrary colour into the confidence
+   * ranking below, which is the one place a wrong claim picks the wrong cube.
+   *
+   * Absent means "claims its capture's centre" — how every caller before this field behaved.
+   */
+  centreClaim?: Colour | null;
   /**
    * The centre's confidence in the colour it reads as — for a side seen many times, typical over its
    * reads rather than the one frame that happened to be filed. On a real clip (2026-09-18) single
@@ -1331,15 +1344,21 @@ export function resolveCentres(
       ),
     };
   }
-  const claims: Colour[] = [];
-  for (const { capture } of unnamed) {
-    const centre = capture.colors[4];
+  // What each unnamed side claims: its explicit claim where it has one, its capture's centre where
+  // the field is absent, and null where the run never agreed. A null never becomes a colour here.
+  const claimed: Array<Colour | null> = [];
+  for (const side of unnamed) {
+    if (side.centreClaim === null) {
+      claimed.push(null);
+      continue;
+    }
+    const centre = side.centreClaim ?? side.capture.colors[4];
     if (centre === undefined || !isColour(centre)) {
       return {
         result: reject(`an unnamed capture's centre colour ${centre} is not one of the six`),
       };
     }
-    claims.push(centre);
+    claimed.push(centre);
   }
   const filings = orderings(free).map((slots) => {
     const faces = { ...named } as Record<Face, ColorFace>;
@@ -1364,6 +1383,16 @@ export function resolveCentres(
       false,
     ),
   }));
+  // ONE UNNAMED SIDE MAKES NO CHOICE, SO IT CANNOT FALL INTO CHOOSING LOGIC. With a single free slot
+  // there is exactly one filing; legality has nothing to pick between and the confidence ranking has
+  // nobody to rank. Returning `faces` even when the cube comes back invalid is what keeps the scan at
+  // SIX captures: the panel adopts the filing and reports the refusal against it, where before it
+  // cleared the unnamed side and restored it only if its arbitrary last-frame centre happened to name
+  // a free slot — so a refused scan silently became five sides (audit, 2026-09-20).
+  if (unnamed.length === 1) {
+    const only = assessed[0]!;
+    return { result: only.result, faces: only.faces, decidedBy: 'counting' };
+  }
   const fits = assessed.filter(
     ({ result }) => result.valid || result.ambiguous === true || result.confirm !== undefined,
   );
@@ -1372,7 +1401,10 @@ export function resolveCentres(
     return { result: fit!.result, faces: fit!.faces, decidedBy: 'legality' };
   }
   // The pair a refusal names: the first colour two sides claimed, and the first slot nobody claimed.
-  const shared = slotOf(claims.find((c, i) => claims.indexOf(c) !== i) ?? claims[0]!);
+  const claims = claimed.filter((c): c is Colour => c !== null);
+  const shared = slotOf(
+    claims.find((c, i) => claims.indexOf(c) !== i) ?? claims[0] ?? colourOfSlot(free[0]!),
+  );
   const missing = free.find((slot) => !claims.includes(colourOfSlot(slot))) ?? free[0]!;
   const conflict = (legalFilings: number): CentreResolution => ({
     result: reject(
@@ -1386,6 +1418,10 @@ export function resolveCentres(
 
   // No filing is legal. For each colour the unnamed sides claim, the side that read it most surely
   // keeps it; every other side is a misread centre. Only a unique answer is used.
+  // A SIDE THAT CLAIMS NOTHING CANNOT BE RANKED, AND MUST NOT BE GUESSED. Its confidence is a figure
+  // about a colour it never settled on, so feeding it here would let an accident of framing decide
+  // which reading to call misread. Where any side is unread and more than one remains, this refuses.
+  if (claimed.some((c) => c === null)) return conflict(0);
   const keeps = new Map<Colour, number>(); // colour -> index of the side that keeps it
   for (const colour of new Set(claims)) {
     const claimants = claims.flatMap((c, i) => (c === colour ? [i] : []));

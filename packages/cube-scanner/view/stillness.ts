@@ -81,7 +81,8 @@ export class Stillness {
   private readonly breakColours = new Map<number, Set<number>>();
 
   /**
-   * @param reads Identical consecutive reads required.
+   * @param reads Consecutive reads required with an identical EIGHT-sticker ring. The centre may
+   *   differ between them; whether it agreed is reported separately by `centre()`.
    * @param ms Wall-clock stillness required, from the first read of the current run.
    */
   constructor(
@@ -90,7 +91,8 @@ export class Stillness {
   ) {}
 
   /**
-   * Offer the latest read. True once it has been identical `reads` times AND still for `ms`.
+   * Offer the latest read. True once its EIGHT-sticker ring has been identical `reads` times AND
+   * still for `ms` — the centre is free to disagree across a run, and `centre()` says whether it did.
    *
    * `now` is injectable because the alternative is a test that sleeps: the timing rule is the whole
    * point of this class, so it has to be drivable without wall-clock waits.
@@ -126,7 +128,11 @@ export class Stillness {
         for (let i = 0; i < colors.length; i++) {
           if (colors[i] !== previous[i]) differing.push(i);
         }
-        const only = differing.length === 1 ? differing[0] : undefined;
+        // The single changed sticker OF THE EIGHT. Counting the centre here meant a logo cap
+        // alternating beside one flickering corner was "two changed positions", so the corner was
+        // never recorded and never named — the same 2026-09-20 dead end as the wipe below.
+        const outer = differing.filter((i) => i !== CENTRE);
+        const only = outer.length === 1 ? outer[0] : undefined;
         // Most of the face changing is a cube that MOVED — another side, or the same side turned —
         // and what the last subject's stickers did says nothing about this one: without this, a face
         // turned straight into another fully read one was described by the old face's red/orange
@@ -140,7 +146,15 @@ export class Stillness {
         // names has moved, though a side with a near-symmetric pattern changes in only two or three
         // places (round-3 audit). Wiping is the safe direction either way — a flicker named later,
         // never the wrong sticker named now.
-        const anotherSide = differing.includes(CENTRE) && differing.length >= 2;
+        // A CENTRE CHANGE IS NO LONGER EVIDENCE OF A NEW SUBJECT ON ITS OWN (2026-09-20). It was,
+        // when the run was keyed on all nine and a centre could not differ inside one. Now it can:
+        // that is the logo fix. So `differing.length >= 2` including the centre meant ONE outer
+        // sticker flickering beside an alternating logo cap was read as another side on every frame,
+        // wiping the flicker history each time — the run could never settle (the outer sticker) and
+        // the sticker could never be named (the wipe), which is a dead end with no guidance at all.
+        // The evidence is the EIGHT: two or more of them changing beside a changed centre is a
+        // different side, and one is a sticker worth naming.
+        const anotherSide = differing.includes(CENTRE) && outer.length >= 2;
         const turned = differing.length >= 2 && turnedFrom(previous, colors);
         if (differing.length >= SUBJECT_CHANGE || anotherSide || turned) {
           this.breaks.clear();

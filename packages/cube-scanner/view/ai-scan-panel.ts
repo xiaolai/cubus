@@ -52,6 +52,7 @@ import { traceFrame } from '../src/fit-trace.js';
 import type { MisreadDiagnosis } from '../src/misread-decode.js';
 import { detectionsFromOutput, IMG_SIZE } from '../src/onnx-detect.js';
 import { type Detection, type FaceFit, type FitResult, fitFace } from '../src/onnx-postprocess.js';
+import type { Colour } from '../src/scheme.js';
 import {
   colourOf,
   colourOfSlot,
@@ -722,6 +723,13 @@ export class AiScanPanel extends HTMLElement {
    * frames of a logo centre and of a plain one overlapped while their medians did not.
    */
   private readonly centreSeen = new Map<ColorFace, number[]>();
+  /**
+   * What each unnamed capture's centre CLAIMS — its colour for a collision, `null` for a centre no
+   * run ever agreed on. Kept beside the capture rather than re-derived from it, because the capture
+   * carries whichever frame happened to be filed and that frame's centre is an accident when the
+   * run never settled (audit, 2026-09-20).
+   */
+  private readonly unnamedClaim = new Map<ColorFace, Colour | null>();
 
   constructor() {
     super();
@@ -1129,6 +1137,7 @@ export class AiScanPanel extends HTMLElement {
     for (const f of FACES) delete (this.faces as Partial<Record<Face, ColorFace>>)[f];
     this.unnamed = [];
     this.centreSeen.clear();
+    this.unnamedClaim.clear();
     // The next cube is a different cube; what the last verdict said about this one's colours
     // must not outlive it.
     this.scheme = null;
@@ -1606,20 +1615,10 @@ export class AiScanPanel extends HTMLElement {
     // nobody, because it claims nothing. `resolveCentres` gives it the slot left over at six.
     if (claim === undefined) {
       this.traceEvent('held-back', { shares: null, colors: [...read.colors] });
-      this.unnamed.push(read);
-      this.centreSeen.set(read, [read.confidence[4] ?? 0]);
-      this.buildDots();
-      this.captured('side', null);
-      const held = this.sidesHeld();
-      if (held >= FACES.length) {
-        this.scheduleCheck(this.tinted('ok', 'All six sides captured — checking…'));
-        return;
-      }
-      this.report(
-        'scanning',
+      this.holdUnnamed(read, null, (held) => [
         `Got that side — ${held}/6. Its middle sticker kept changing colour, so which side it is ` +
           'gets worked out once all six are in. Show another side…',
-      );
+      ]);
       return;
     }
     // A new side. Named by its centre — unless another side in hand claims that colour too, in
@@ -1639,22 +1638,43 @@ export class AiScanPanel extends HTMLElement {
       delete (this.faces as Partial<Record<Face, ColorFace>>)[claim];
       this.settled.delete(claim);
       this.unnamed.push(holder);
+      this.unnamedClaim.set(holder, (holder.colors[4] ?? null) as Colour | null);
     }
-    this.unnamed.push(read);
-    this.centreSeen.set(read, [read.confidence[4] ?? 0]);
-    this.buildDots();
-    this.captured('side', null);
-    const done = this.sidesHeld();
-    if (done >= FACES.length) {
-      this.scheduleCheck(this.tinted('ok', 'All six sides captured — checking…'));
-      return;
-    }
-    this.report(
-      'scanning',
+    // The claim as a COLOUR — `claim` is the slot letter this side was filed under, and
+    // `resolveCentres` reasons in colours.
+    this.holdUnnamed(read, (centre ?? null) as Colour | null, (done) => [
       `Got that side — ${done}/6. Two sides look like the `,
       this.bold(GUIDE[claim].color),
       ' side; which is which is worked out once all six are in. Show another side…',
-    );
+    ]);
+  }
+
+  /**
+   * Hold `read` as a side the scan cannot name yet, whatever the reason.
+   *
+   * ONE TRANSITION, TWO REASONS. A collision (`claim` is a colour: two sides read it) and a centre
+   * that never settled (`claim` is null) end in exactly the same six mutations — trace, append,
+   * record the claim and the confidence, redraw, announce, count, and either check or report. They
+   * were written out twice, and their centre semantics now differ, which is precisely when two
+   * copies start to drift (audit, 2026-09-20). Only the sentence varies, so only the sentence is
+   * passed in.
+   */
+  private holdUnnamed(
+    read: ColorFace,
+    claim: Colour | null,
+    words: (held: number) => Array<string | Node>,
+  ): void {
+    this.unnamed.push(read);
+    this.unnamedClaim.set(read, claim);
+    this.centreSeen.set(read, [read.confidence[4] ?? 0]);
+    this.buildDots();
+    this.captured('side', null);
+    const held = this.sidesHeld();
+    if (held >= FACES.length) {
+      this.scheduleCheck(this.tinted('ok', 'All six sides captured — checking…'));
+      return;
+    }
+    this.report('scanning', ...words(held));
   }
 
   /**
@@ -1665,12 +1685,23 @@ export class AiScanPanel extends HTMLElement {
     read: ColorFace,
     centreUnread = false,
   ): { side: ColorFace; slot?: Face } | null {
-    // With the centre UNREAD there is no colour to compare, so the eight decide alone. That is
-    // weaker than the usual rule on purpose — different sides can share their eight exactly (after
-    // U D R L F B, white and yellow do) — but the alternative is worse: a logo side shown twice
-    // would be captured twice, and six captures would be five sides and a duplicate.
+    // With the centre UNREAD there is no colour to compare, so the eight decide alone — and they are
+    // not always enough: different sides can share their eight exactly (after U D R L F B, white and
+    // yellow do). So a centre-free match that fits MORE THAN ONE side in hand decides nothing and is
+    // reported as not-in-hand, which holds the read as another unnamed side for `twinToDrop` and the
+    // six-side resolution to settle. Returning the first match instead meant the second of two
+    // identical-ring sides was turned away forever as "Already have" (audit, 2026-09-20).
     const same = (side: ColorFace) =>
       (centreUnread || side.colors[4] === read.colors[4]) && sameSide(read.colors, side.colors);
+    if (centreUnread) {
+      const hits: Array<{ side: ColorFace; slot?: Face }> = [];
+      for (const slot of FACES) {
+        const side = this.faces[slot];
+        if (side && same(side)) hits.push({ side, slot });
+      }
+      for (const side of this.unnamed) if (same(side)) hits.push({ side });
+      return hits.length === 1 ? hits[0]! : null;
+    }
     for (const slot of FACES) {
       const side = this.faces[slot];
       if (side && same(side)) return { side, slot };
@@ -2340,6 +2371,7 @@ export class AiScanPanel extends HTMLElement {
     // reading. Nothing else on this path has run yet, so there are no confirmations to keep.
     if (this.unnamed.length > 0) {
       const unnamed: UnnamedSide[] = this.unnamed.map((capture) => ({
+        centreClaim: this.unnamedClaim.get(capture) ?? (capture.colors[4] as Colour),
         capture,
         centreConfidence: median(this.centreSeen.get(capture) ?? [capture.confidence[4] ?? 0]),
       }));

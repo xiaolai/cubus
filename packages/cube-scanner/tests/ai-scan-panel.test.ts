@@ -2639,3 +2639,52 @@ describe('ai-scan-panel — round-2 audit: listeners that act, ticks that fail',
     expect(last().message).toBe('Show any side to the camera.');
   });
 });
+
+describe('ai-scan-panel — a centre that never settles (the logo cube, 2026-09-20)', () => {
+  /** Show `face` with its CENTRE alternating between its true colour and `logo`, held perfectly still. */
+  const showWithLogo = async (face: number[], logo: number) => {
+    for (let i = 0; i < SETTLE_TICKS + 3; i++) {
+      const frame = [...face];
+      frame[4] = i % 2 === 0 ? logo : face[4]!;
+      fake.output = tensorFor(frame);
+      await vi.advanceTimersByTimeAsync(TICK);
+    }
+  };
+
+  it('captures the side instead of asking for stillness forever', async () => {
+    // THE REPORTED FAILURE. A white cap with a blue logo never agreed on a centre, so with the run
+    // keyed on all nine it never settled and was never captured: five sides in, the sixth refused to
+    // go in, and the panel asked for stillness the user was already giving it.
+    const shown = facesOf(DEEP);
+    await showWithLogo(shown.U, shown.B[4]!);
+    expect(last().sides).toBe(1);
+    // Held UNNAMED, not filed under the logo's colour: it claims nothing until six are in.
+    expect(last().captured).toHaveLength(0);
+  });
+
+  it('shown again it is the same side, not a second one', async () => {
+    // Its centre names nothing, so the eight have to recognise it. Captured twice, six showings
+    // would be five sides and a duplicate, and the scan would never check out.
+    const shown = facesOf(DEEP);
+    await showWithLogo(shown.U, shown.B[4]!);
+    expect(last().sides).toBe(1);
+    fake.output = null;
+    await vi.advanceTimersByTimeAsync(TICK);
+    await showWithLogo(shown.U, shown.B[4]!);
+    expect(last().sides).toBe(1);
+  });
+
+  it('six sides, one of them unread, still complete as the true cube', async () => {
+    // The whole path: `Stillness.centre()` answering null, the panel holding that side unnamed, and
+    // `resolveCentres` placing it into the one free slot by counting. The cube that comes out is the
+    // cube that went in — the side is not merely captured, it is captured as the RIGHT side.
+    const shown = facesOf(DEEP);
+    await showWithLogo(shown.U, shown.B[4]!);
+    for (const face of FACES) {
+      if (face === 'U') continue;
+      await show(shown[face]);
+    }
+    await vi.advanceTimersByTimeAsync(CHECK);
+    expect(completions).toEqual([DEEP]);
+  });
+});

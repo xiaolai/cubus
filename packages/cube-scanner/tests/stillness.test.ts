@@ -128,12 +128,20 @@ describe('Stillness', () => {
     expect(s.flickering()).toBeNull();
   });
 
-  it('forgets a flicker on another side even when only the centre and one more sticker changed', () => {
-    // A centre belongs to its side, so a changed centre beside any other change is a new subject —
+  it('forgets a flicker on another side when the centre and two more stickers changed', () => {
+    // A centre belongs to its side, so a changed centre beside real outer change is a new subject —
     // two sides of a near-solved cube can share all but a couple of stickers (audit, 2026-09-19).
+    //
+    // THE THRESHOLD MOVED FROM ONE OUTER STICKER TO TWO (2026-09-20), and the reason is that the run
+    // is now keyed on the eight: a centre is free to differ WITHIN a run, so a centre change is no
+    // longer evidence that the subject changed. At one, a logo cap alternating beside a single
+    // flickering corner was read as a new side on every frame — the flicker history was wiped each
+    // time and the corner could never be named, while the corner itself kept the run from settling.
+    // At two, that cube is served and this case still is: turning to a near-identical side changes
+    // more than one sticker in the ring.
     const { gate: s } = flickering(2);
     expect(s.flickerColours(2)).toEqual([1, 4]);
-    s.offer([0, 0, 4, 0, 3, 0, 0, 5, 0], 700); // another side: its centre and one sticker differ
+    s.offer([0, 0, 4, 5, 3, 0, 0, 5, 0], 700); // another side: its centre and two stickers differ
     expect(s.flickerColours(2)).toEqual([]);
     expect(s.flickering()).toBeNull();
   });
@@ -230,5 +238,44 @@ describe('Stillness — a centre that will not settle (the logo cube, 2026-09-20
       expect(s.offer(ring(c), 1000 + i * 200)).toBe(false);
     }
     expect(s.flickering(2)).toBe(0);
+  });
+});
+
+describe('Stillness — a logo centre beside a flickering outer sticker (audit, 2026-09-20)', () => {
+  const W = 0;
+  const B = 5;
+
+  it('names the outer sticker: a changed centre is not proof the subject changed', () => {
+    // THE REGRESSION THE EIGHT-KEY INTRODUCED. `anotherSide` counted the centre, so an alternating
+    // logo cap beside one flickering corner looked like a new side on every frame and cleared the
+    // flicker history each time. The run could never settle (the corner) and the corner could never
+    // be named (the wipe): the scan sat there with "hold still" and nothing to act on.
+    const s = new Stillness(3, 500);
+    const read = (corner: number, centre: number) => [corner, W, W, W, centre, W, W, W, W];
+    const frames: Array<[number, number]> = [
+      [1, B],
+      [2, W],
+      [1, B],
+      [2, W],
+      [1, B],
+      [2, W],
+    ];
+    frames.forEach(([corner, centre], i) => {
+      expect(s.offer(read(corner, centre), 1000 + i * 200)).toBe(false);
+    });
+    expect(s.flickering(2)).toBe(0);
+    expect(s.flickerColours(0)).toEqual([1, 2]);
+  });
+
+  it('still calls it another side when the eight change with the centre', () => {
+    // The case `anotherSide` exists for is kept: a near-solved cube's sides can share most stickers,
+    // so a changed centre beside TWO or more changed outer stickers is a different side, and the
+    // last side's flicker history says nothing about this one.
+    const s = new Stillness(3, 500);
+    s.offer([1, 1, W, W, W, W, W, W, W], 1000);
+    s.offer([2, 1, W, W, W, W, W, W, W], 1200); // one outer sticker: a flicker, recorded
+    expect(s.flickering(1)).toBe(0);
+    s.offer([3, 3, W, W, B, W, W, W, W], 1400); // two outer + the centre: another side, wiped
+    expect(s.flickering(1)).toBe(null);
   });
 });
