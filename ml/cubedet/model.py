@@ -390,7 +390,7 @@ class PANNeck(nn.Module):
 class DetectHead(nn.Module):
     """Anchor-free decoupled head: one branch for colour, one for the box.
 
-    Decoupled (Ge et al., "arXiv:2107.08430", 2021) because classification wants translation-invariant
+    Decoupled (Ge et al., 2021 — arXiv:2107.08430) because classification wants translation-invariant
     features and regression wants translation-sensitive ones; sharing the last layer between them
     measurably costs both. Anchor-free (Tian et al., "FCOS", 2019) because a sticker has no
     interesting aspect-ratio prior to encode — every one is a rough square — so anchors would add

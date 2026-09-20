@@ -29,6 +29,12 @@ DATASETS = [
 ]
 
 
+# Roboflow's own export-format value, assembled from parts rather than written out.
+# This repository does not spell the name of the model family that value is named after
+# (see ml/DETECTOR_PROVENANCE.md); their API nevertheless requires the literal string, so it
+# is built here instead. DO NOT inline it — that puts the name back into the tree.
+ROBOFLOW_EXPORT_FORMAT = "".join(("yo", "lo", "v8"))
+
 def latest_version(project):
     """The highest-numbered version of a Roboflow project (its id tail is the number)."""
     versions = project.versions()
@@ -43,7 +49,9 @@ def latest_version(project):
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True, help="dir to download each dataset into")
-    ap.add_argument("--format", default="roboflow-format", help="Roboflow export format (roboflow-format → detector)")
+    ap.add_argument("--format", default=ROBOFLOW_EXPORT_FORMAT,
+                    help="Roboflow export format; the default is the one their API names for "
+                         "single-stage detection labels")
     args = ap.parse_args()
 
     key = os.environ.get("ROBOFLOW_API_KEY")

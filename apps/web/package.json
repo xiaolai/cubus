@@ -9,7 +9,7 @@
     "./element": "./vendor/cubus-cube.js",
     "./element-manifest": "./vendor/cubus-cube.manifest.json"
   },
-  "description": "Cubus SPA — camera (detector) cube scanner and solver. Served as a static site; the only build steps are self-contained vendor bundles.",
+  "description": "Cubus SPA — camera cube scanner and solver. Served as a static site; the only build steps are self-contained vendor bundles.",
   "scripts": {
     "copy-ort": "node copy-ort.mjs",
     "build:cube": "pnpm --filter cubus-cube build",

@@ -73,7 +73,7 @@ backbone described in the section above, which is torchvision's code and weights
 | Fast spatial pyramid pooling | He et al., *SPPNet*, 2014 (sequential form) | `cubedet/model.py` |
 | Path-aggregation neck | Liu et al., *PANet*, 2018 | `cubedet/model.py` |
 | Anchor-free per-point regression | Tian et al., *FCOS*, 2019 | `cubedet/model.py` |
-| Decoupled head | Ge et al., *arXiv:2107.08430*, 2021 | `cubedet/model.py` |
+| Decoupled head | Ge et al., 2021 — arXiv:2107.08430 | `cubedet/model.py` |
 | Class-prior bias initialisation | Lin et al., *Focal Loss*, 2017, §3.3 | `cubedet/model.py` |
 | Distribution Focal Loss | Li et al., *Generalized Focal Loss*, 2020 | `cubedet/model.py`, `cubedet/loss.py` |
 | Complete IoU loss | Zheng et al., *Distance-IoU Loss*, AAAI 2020 | `cubedet/loss.py` |

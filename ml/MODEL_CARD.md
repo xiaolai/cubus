@@ -7,7 +7,7 @@ An object detector that finds each sticker on a cube face and classifies its col
 classical HSV scanner, whose accuracy collapsed under uncontrolled lighting (the red↔orange confusion
 in particular).
 
-**Since 2026-09-17 it is `ml/cubedet`'s own detector**, not a detector one: a `timm` MobileNetV4-small
+**Since 2026-09-17 it is `ml/cubedet`'s own**, not a third-party model: a `timm` MobileNetV4-small
 feature extractor pretrained on ImageNet, a PAN neck and an anchor-free head, trained by this
 repository. Everything below dated before then describes v3, the model that preceded it, and is kept
 because the measurements are still the comparison this model is judged against.
@@ -116,7 +116,7 @@ near-duplicates of our training/test images (aHash) and were **removed** to prev
 leaving 207 genuinely-unseen photos, 2,776 stickers (but see the dihedral caveat under
 §Training data). Like-for-like **int8** (the format shipped at the time), v2 → v3 — the four
 `detector val` rows reproduced 2026-09-05 by `ml/metrics_table.py` from `ml/out/cube_v2_int8.onnx`
-(`bc90bfc80100`) and the regenerated `ml/models/cubedet.int8.onnx` (`7a9d985dd98d`):
+(`bc90bfc80100`) and the regenerated `ml/models/cubedet.int8.onnx` (`7a9d985dd98d`, the name the artefacts carried then):
 
 | Held-out 207 (int8) | v2 | **v3** | Δ |
 |---|---|---|---|
@@ -182,7 +182,7 @@ render fixtures are not drawn from one model's own training data. Re-pinning wit
 
 ## What the app ships: fp32, not int8 (changed 2026-08-29)
 
-`apps/web/vendor/cubedet.onnx` is now the **fp32** export. It used to be the int8 one, under the
+`apps/web/vendor/cubedet.onnx` (then `cubedet.onnx`) is now the **fp32** export. It used to be the int8 one, under the
 same filename. Measured on the 169-photo real held-out split, same checkpoint, int8 vs fp32:
 
 | | int8 (was shipped) | **fp32 (now shipped)** |
