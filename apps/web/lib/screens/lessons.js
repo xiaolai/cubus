@@ -10,7 +10,8 @@ import { $, escHtml, icon } from '../app-state.js';
 import { settings } from '../app-settings.js';
 import { raiseRung } from '../cube-subject.js';
 import { netPalette } from '../cube-drawing.js';
-import { SCREENS, renderScreen } from '../screen-shell.js';
+import { drillHtml, mountDrill } from './drill/round-play.js';
+import { SCREENS, renderScreen, screenAbort } from '../screen-shell.js';
 
 /** How far along a stage is, in words a learner can act on — never a claim about a thing undone. */
 function rungNote(row) {
@@ -86,8 +87,6 @@ const CASES = Object.freeze([
   { name: 'PLL T', alg: "R U R' U' R' F R2 U' R' U' R U R' F'", top: 'xxxxxxxxx' },
   { name: 'PLL Y', alg: "F R U' R' U' R U R' F' R U R' U' R' F R F'", top: 'xxxxxxxxx' },
 ]);
-/** The case the Drill shows. */
-const DRILLED = CASES.find((c) => c.name === 'OLL 24');
 /** A case's top face as nine wells, lit in the palette's top colour. */
 const topWells = (c, P2) => [...c.top].map((m) => (m === 'x' ? P2.D : 'var(--facelet-off)'));
 
@@ -109,30 +108,13 @@ SCREENS.trainer = () => {
       <div class="num sub" style="margin-top:6px;color:var(--ink-5)">—</div></div>`).join('')}</div></div>`, mount() {} };
 };
 
-SCREENS.drill = () => {
-  const P2 = netPalette();
-  const grid = topWells(DRILLED, P2);
-  // `flow`: the flashcard is taller than a phone's locked primary region, and its controls
-  // (Reveal, Again / Good / Easy) must never sit below a fold — so the box scrolls as one.
-  //
-  // Reveal STILL WORKS: it shows a real algorithm, which is a fact rather than a measurement, and
-  // it is the one thing on this screen that does what it says. The spaced-repetition grades are
-  // disabled — pressing "Good" recorded nothing and scheduled nothing.
-  return { html: `<div class="cols flow"><div class="col">${previewBanner(t('this screen is a design in progress. The layout is real and Reveal shows a real algorithm; the figures are placeholders shown as dashes, and the grades do nothing yet.'))}<div class="card" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px">
-      <div class="eyebrow">${escHtml(DRILLED.name)} · ${escHtml(t('ALL EDGES ORIENTED'))}</div>
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;width:180px">${grid.map((g) => `<div style="aspect-ratio:1;border-radius:var(--r-sticker);background:${g}"></div>`).join('')}</div>
-      <div class="num" id="drillAlg" style="font-size:var(--fs-display-s);font-weight:600;color:var(--ink-6)">· · · · · · · ·</div>
-      <button class="btn accent-outline" id="reveal">${escHtml(t('Reveal algorithm'))}</button>
-      <div style="display:flex;gap:10px" role="group" aria-label="${escHtml(t('How well did that go'))}"><button class="btn outline" disabled>${escHtml(t('Again'))}</button><button class="btn outline" disabled>${escHtml(t('Good'))}</button><button class="btn primary" disabled>${escHtml(t('Easy'))}</button></div>
-    </div></div>
-    <div class="aside"><div class="card"><div class="eyebrow">${escHtml(t('THIS DRILL'))}</div><div class="num" style="font-size:var(--fs-display);font-weight:600;margin-top:6px">—</div><div class="sub" style="color:var(--ink-4)">${escHtml(t('average execution — nothing recorded yet'))}</div></div>
-      <div class="card" style="flex:1;min-height:0"><div class="eyebrow">${escHtml(t('QUEUE'))}</div><div class="sub" style="color:var(--ink-4);margin-top:8px;line-height:1.5">${escHtml(t('A queue needs a schedule, and a schedule needs solves this screen does not record yet.'))}</div></div></div></div>`,
-    mount(root) {
-      let shown = false; const { alg } = DRILLED;
-      $('#reveal', root).onclick = (e) => { shown = !shown; $('#drillAlg', root).textContent = shown ? alg : '· · · · · · · ·'; $('#drillAlg', root).style.color = shown ? 'var(--ink)' : 'var(--ink-6)'; e.target.textContent = shown ? t('Hide algorithm') : t('Reveal algorithm'); };
-    },
-  };
-};
+SCREENS.drill = () => ({
+  html: drillHtml(),
+  mount(root) {
+    const mounted = mountDrill(root);
+    screenAbort?.signal?.addEventListener('abort', () => mounted.dispose(), { once: true });
+  },
+});
 
 SCREENS.lessons = () => {
   // THE LADDER — dev-docs/method-solver-return-plan.md §3 rule 2, and this screen is what that
