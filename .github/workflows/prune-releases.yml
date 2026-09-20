@@ -1,0 +1,89 @@
+# Keep the two most recent releases, and no more (owner's call, 2026-09-20).
+#
+# WHY IT RUNS ON `published` AND NOT IN release.yml. release.yml opens a DRAFT; a draft is not a
+# release anyone can download, and pruning while one is open would be counting something nobody has.
+# Publication is the moment the set of live releases actually changes, which is the same reason
+# update-homebrew.yml is triggered this way.
+#
+# TAGS ARE NEVER TOUCHED. A release is the binaries plus a page; the tag is the source. Deleting the
+# tag would make the commit a release was built from unreachable by name, and `git tag -d` on a
+# pushed tag is the move the release gate already refuses for other reasons. `gh release delete`
+# without `--cleanup-tag` is deliberate — adding that flag would quietly start deleting history.
+#
+# IT REFUSES RATHER THAN GUESSES. If the newest release is not the one that triggered the run, or if
+# the count to delete looks wrong, the job fails and deletes nothing: a pruner that misfires deletes
+# the thing it was meant to keep, and there is no undo for a deleted release's assets.
+
+name: Prune releases
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      keep:
+        description: How many of the most recent releases to keep
+        required: false
+        default: "2"
+
+permissions:
+  contents: write
+
+jobs:
+  prune:
+    name: keep the newest ${{ github.event.inputs.keep || 2 }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Delete every release but the newest few, keeping all tags
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          KEEP: ${{ github.event.inputs.keep || '2' }}
+          # Through the environment, never interpolated into the script. A tag name is event data:
+          # spliced into a shell line it is a command, which is the same class of defect as the
+          # commit-message substitution this repository already got bitten by.
+          FIRED: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$KEEP" =~ ^[0-9]+$ ]] || [ "$KEEP" -lt 1 ]; then
+            echo "::error::keep must be a positive integer, got '$KEEP'"
+            exit 1
+          fi
+          # Published releases only, newest first. A draft is not a release anyone has, and counting
+          # one would let a draft push a real release off the end of the list.
+          gh release list --repo "$REPO" --limit 200 \
+            --json tagName,publishedAt,isDraft \
+            --jq 'map(select(.isDraft | not)) | sort_by(.publishedAt) | reverse | .[].tagName' > all.txt
+          total=$(wc -l < all.txt | tr -d ' ')
+          echo "$total published releases; keeping $KEEP"
+          if [ "$total" -le "$KEEP" ]; then
+            echo "nothing to prune"
+            exit 0
+          fi
+          head -n "$KEEP" all.txt | sed 's/^/  keep   /'
+          tail -n +"$((KEEP + 1))" all.txt > doomed.txt
+          sed 's/^/  delete /' doomed.txt
+          # THE RELEASE THAT TRIGGERED THIS RUN MUST BE ONE OF THE KEPT ONES. If it is not, the list
+          # is not what this job thinks it is — a race, a backdated publish, a manual edit — and
+          # deleting on that footing could remove the release just published.
+          if [ "${GITHUB_EVENT_NAME:-}" = "release" ]; then
+            if ! head -n "$KEEP" all.txt | grep -qxF -- "$FIRED"; then
+              echo "::error::the release that triggered this run is not among the $KEEP newest — refusing to delete anything"
+              exit 1
+            fi
+          fi
+          while read -r tag; do
+            [ -z "$tag" ] && continue
+            # No --cleanup-tag: the tag stays, so the commit a release was built from keeps its name.
+            gh release delete "$tag" --repo "$REPO" --yes
+            echo "deleted release $tag (tag kept)"
+          done < doomed.txt
+          # Loud rather than quiet: a pruner that silently does nothing looks exactly like one that
+          # worked, and this job only runs where nobody is watching.
+          left=$(gh release list --repo "$REPO" --limit 200 --json isDraft --jq 'map(select(.isDraft | not)) | length')
+          echo "releases now: $left"
+          if [ "$left" -ne "$KEEP" ]; then
+            echo "::error::expected $KEEP releases after pruning, found $left"
+            exit 1
+          fi
