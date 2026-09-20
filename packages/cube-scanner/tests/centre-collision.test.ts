@@ -244,15 +244,41 @@ describe('resolveCentres — on a synthetic cube', () => {
     const logo = centreReadAs(faces.U, LETTER_CLASS.B);
     // All six already named: nothing is free.
     expect(resolveCentres(faces, asUnnamed([logo])).result.valid).toBe(false);
-    // One unnamed side is not a collision.
-    const { U: white, ...five } = faces;
-    expect(resolveCentres(five, asUnnamed([white])).result.valid).toBe(false);
     // More unnamed sides than free slots.
+    const { U: white, ...five } = faces;
     const { B: blue, ...four } = five;
     expect(resolveCentres(four, asUnnamed([logo, blue, faces.R])).result.valid).toBe(false);
+    void white;
     expect(
       resolveCentres(four, asUnnamed([logo, blue, faces.R])).result.centreConflict,
     ).toBeUndefined();
+  });
+});
+
+describe('resolveCentres — one unnamed side, one free slot', () => {
+  it('places it: six centres, five taken, so the colour is forced', () => {
+    // The case the logo fix creates (2026-09-20). A white cap with a blue logo never settles on a
+    // centre colour, so the panel holds that side unnamed rather than filing it as blue — and it
+    // collides with nobody, because it claims nothing. One unnamed side used to be refused outright,
+    // which meant the scan ended with "start over" on the one cube this mechanism was built for.
+    const faces = capturesOf(DEEP);
+    const { U: white, ...five } = faces;
+    // The centre reads as anything at all — the point is that it is NOT trusted.
+    const unread = centreReadAs(white, LETTER_CLASS.B);
+    const resolved = resolveCentres(five, asUnnamed([unread]));
+    expect(resolved.result.valid).toBe(true);
+    // Placed in the one free slot, with its centre made certain rather than left as it read.
+    expect(resolved.faces?.U.colors[4]).toBe(LETTER_CLASS.U);
+  });
+
+  it('is forced, not unchecked: a side that cannot make a legal cube is still refused', () => {
+    // "Forced" decides WHICH SLOT, never whether the cube is real. A capture whose eight cannot
+    // belong to the free slot has to come back refused, or this mechanism would launder any reading
+    // into a cube by arithmetic alone.
+    const faces = capturesOf(DEEP);
+    const { U: _white, ...five } = faces;
+    const wrong = { ...faces.R, colors: faces.R.colors.map(() => LETTER_CLASS.R) };
+    expect(resolveCentres(five, asUnnamed([wrong])).result.valid).toBe(false);
   });
 });
 

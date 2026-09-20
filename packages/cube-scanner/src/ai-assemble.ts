@@ -1276,7 +1276,8 @@ function orderings<T>(items: readonly T[]): T[][] {
  *
  * THE MECHANISM IS COUNTING, NOT SEEING. A 3x3 has exactly one centre of each colour, in either
  * scheme. So the unnamed sides fill exactly the slots no named side holds, one each, and every way of
- * doing that is tried — two for the common case of one pair, more when several centres collided,
+ * doing that is tried — including the single-side case, where one slot is free and the colour is
+ * therefore forced — two for the common case of one pair, more when several centres collided,
  * which the one-contest design this replaces could not take. Each side that changes colour has its
  * centre made certain (`withCentre`), so the nine-of-each repair cannot quietly hand the old colour back.
  *
@@ -1317,10 +1318,16 @@ export function resolveCentres(
   options: AssembleOptions = {},
 ): CentreResolution {
   const free = FACES.filter((face) => !named[face]);
-  if (unnamed.length < 2 || unnamed.length !== free.length) {
+  // ONE UNNAMED SIDE IS ENOUGH (2026-09-20). It used to take two, because the only way to be unnamed
+  // was to collide with another side over a colour. Since the panel also holds back a side whose
+  // centre never settled — a logo cap alternating between two colours — the common case is a single
+  // unnamed side and a single free slot, and there the answer is forced: six centres, five taken.
+  // Forced is not the same as unchecked; the filing still has to assemble into a legal cube below,
+  // and a cube that does not is still refused.
+  if (unnamed.length < 1 || unnamed.length !== free.length) {
     return {
       result: reject(
-        'a centre collision needs two or more unnamed sides, exactly as many as the slots no side holds',
+        'a centre resolution needs at least one unnamed side, exactly as many as the slots no side holds',
       ),
     };
   }

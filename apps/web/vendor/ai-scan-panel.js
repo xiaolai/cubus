@@ -3082,10 +3082,10 @@ function orderings(items) {
 }
 function resolveCentres(named, unnamed, threshold = LOW_CONFIDENCE_THRESHOLD, options = {}) {
   const free = FACES.filter((face) => !named[face]);
-  if (unnamed.length < 2 || unnamed.length !== free.length) {
+  if (unnamed.length < 1 || unnamed.length !== free.length) {
     return {
       result: reject(
-        "a centre collision needs two or more unnamed sides, exactly as many as the slots no side holds"
+        "a centre resolution needs at least one unnamed side, exactly as many as the slots no side holds"
       )
     };
   }
@@ -5171,6 +5171,7 @@ var ScanTrace = class {
 // view/stillness.ts
 var SUBJECT_CHANGE = 4;
 var CENTRE = 4;
+var eightOf = (colors) => colors.filter((_, i) => i !== CENTRE).join(",");
 var QUARTER_TURN = [6, 3, 0, 7, 4, 1, 8, 5, 2];
 function turnedFrom(prev, next) {
   if (prev.length !== QUARTER_TURN.length || next.length !== QUARTER_TURN.length) return false;
@@ -5204,6 +5205,13 @@ var Stillness = class {
   key = null;
   count = 0;
   since = 0;
+  /**
+   * The centre colour each read of the current run showed, in order.
+   *
+   * The run is keyed on the EIGHT (see `offer`), so the centre is free to disagree across a run and
+   * this is where that disagreement is recorded. Emptied with the run.
+   */
+  centres = [];
   /** The colours of the run's read, kept so a broken run can be told WHERE it broke. */
   colors = null;
   /** Per position, how many times a run has been broken by that position alone. */
@@ -5222,9 +5230,10 @@ var Stillness = class {
    * so it is measured with the clock that only measures elapsed time.
    */
   offer(colors, now = performance.now()) {
-    const key = colors.join(",");
+    const key = eightOf(colors);
     if (key === this.key) {
       this.count += 1;
+      this.centres.push(colors[CENTRE] ?? -1);
     } else {
       const previous = this.colors;
       if (previous && previous.length === colors.length) {
@@ -5247,11 +5256,25 @@ var Stillness = class {
         }
       }
       this.key = key;
-      this.colors = [...colors];
       this.count = 1;
       this.since = now;
+      this.centres = [colors[CENTRE] ?? -1];
     }
+    this.colors = [...colors];
     return this.count >= this.reads && now - this.since >= this.ms;
+  }
+  /**
+   * The centre every read of the run agreed on, or null when they did not.
+   *
+   * UNANIMOUS, not a majority. A logo cap alternates — blue, white, blue — and a majority would pick
+   * one of them and file the side under a colour it may not be, which is the confidently-wrong
+   * answer this package refuses everywhere. No agreement means the centre is UNREAD, and an unread
+   * centre is what `resolveCentres` exists to place: counting, not seeing.
+   */
+  centre() {
+    const first = this.centres[0];
+    if (first === void 0 || first < 0) return null;
+    return this.centres.every((c) => c === first) ? first : null;
   }
   /**
    * The one position that keeps breaking the run on its own, or null.
@@ -5293,6 +5316,7 @@ var Stillness = class {
     this.colors = null;
     this.count = 0;
     this.since = 0;
+    this.centres = [];
     this.breaks.clear();
     this.breakColours.clear();
   }
@@ -6073,8 +6097,9 @@ var AiScanPanel = class extends HTMLElement {
       return;
     }
     this.note({ outcome: "settled", ...this.readNote(fit.face) });
+    const agreedCentre = this.still.centre();
     const lab = output.frame && fit.face.boxes ? stickerLab(output.frame, fit.face.boxes, IMG_SIZE) ?? void 0 : void 0;
-    this.fileSettledRead(lab ? { ...fit.face, lab } : fit.face);
+    this.fileSettledRead(lab ? { ...fit.face, lab } : fit.face, agreedCentre);
   }
   /** Record a decision that is not a frame, for the trace. A no-op with the trace off. */
   traceEvent(kind, detail) {
@@ -6175,9 +6200,10 @@ var AiScanPanel = class extends HTMLElement {
    * centres. So a read whose eight match a side in hand but whose centre says another colour is kept as a
    * new side — it may be that sibling — and `twinToDrop` settles it once six are in.
    */
-  fileSettledRead(read) {
+  fileSettledRead(read, agreedCentre = read.colors[4] ?? null) {
     const centre = read.colors[4];
-    const claim = sideClaimed(read.colors);
+    const centreUnread = agreedCentre === null;
+    const claim = centreUnread ? void 0 : sideClaimed(read.colors);
     if (this.awaiting) {
       const asked = this.awaiting.face;
       const held = this.faces[asked];
@@ -6194,7 +6220,7 @@ var AiScanPanel = class extends HTMLElement {
       this.scheduleCheck(this.tinted("ok", "Got it \u2014 checking\u2026"));
       return;
     }
-    if (claim === void 0) {
+    if (claim === void 0 && !centreUnread) {
       this.report(
         "scanning",
         this.tinted("err", "Couldn't read this side's centre \u2014 keep showing it.")
@@ -6210,6 +6236,13 @@ var AiScanPanel = class extends HTMLElement {
     }
     if (this.capturedFaces().length >= FACES.length) {
       const slot = this.sideByEight(read) ?? claim;
+      if (slot === void 0) {
+        this.report(
+          "scanning",
+          "Keep showing that side \u2014 its middle sticker keeps changing colour."
+        );
+        return;
+      }
       const fresh = withCentre(read, colourOfSlot(slot));
       if (fresh.colors.join(",") === this.faces[slot].colors.join(",")) {
         this.shownAgain = true;
@@ -6230,7 +6263,7 @@ var AiScanPanel = class extends HTMLElement {
       this.scheduleCheck(this.tinted("ok", `Re-read the ${GUIDE[slot].color} side \u2014 checking\u2026`));
       return;
     }
-    const inHand = this.sideInHand(read);
+    const inHand = this.sideInHand(read, centreUnread);
     if (inHand) {
       this.noteCentre(inHand.side, read);
       this.traceEvent("turned-away", {
@@ -6246,6 +6279,23 @@ var AiScanPanel = class extends HTMLElement {
         "Already have ",
         ...which,
         named ? ` \u2014 still need ${named}.` : " \u2014 show a different one."
+      );
+      return;
+    }
+    if (claim === void 0) {
+      this.traceEvent("held-back", { shares: null, colors: [...read.colors] });
+      this.unnamed.push(read);
+      this.centreSeen.set(read, [read.confidence[4] ?? 0]);
+      this.buildDots();
+      this.captured("side", null);
+      const held = this.sidesHeld();
+      if (held >= FACES.length) {
+        this.scheduleCheck(this.tinted("ok", "All six sides captured \u2014 checking\u2026"));
+        return;
+      }
+      this.report(
+        "scanning",
+        `Got that side \u2014 ${held}/6. Its middle sticker kept changing colour, so which side it is gets worked out once all six are in. Show another side\u2026`
       );
       return;
     }
@@ -6285,8 +6335,8 @@ var AiScanPanel = class extends HTMLElement {
    * The side in hand that `read` shows again — named, with its slot, or unnamed — or null for a side
    * not in hand: its centre claims the same colour and its eight agree (`sameSide`).
    */
-  sideInHand(read) {
-    const same = (side2) => side2.colors[4] === read.colors[4] && sameSide(read.colors, side2.colors);
+  sideInHand(read, centreUnread = false) {
+    const same = (side2) => (centreUnread || side2.colors[4] === read.colors[4]) && sameSide(read.colors, side2.colors);
     for (const slot of FACES) {
       const side2 = this.faces[slot];
       if (side2 && same(side2)) return { side: side2, slot };

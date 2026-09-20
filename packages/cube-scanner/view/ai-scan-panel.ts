@@ -1351,6 +1351,10 @@ export class AiScanPanel extends HTMLElement {
       return;
     }
     this.note({ outcome: 'settled', ...this.readNote(fit.face) });
+    // What the run agreed the CENTRE was, or null when it never agreed — a logo cap reading blue on
+    // one frame and white on the next (2026-09-20). Null is not a failure and not a guess: it is the
+    // side captured with its colour left open, for `resolveCentres` to settle by counting at six.
+    const agreedCentre = this.still.centre();
     // A face's CENTRE colour is its identity (centres never move): colour class i ↔ FACES[i].
     // So sides can be shown in any order — file each stable read under the face it belongs to.
     // Everything above decides whether there is a read worth acting on; this decides what
@@ -1363,7 +1367,7 @@ export class AiScanPanel extends HTMLElement {
       output.frame && fit.face.boxes
         ? (stickerLab(output.frame, fit.face.boxes, IMG_SIZE) ?? undefined)
         : undefined;
-    this.fileSettledRead(lab ? { ...fit.face, lab } : fit.face);
+    this.fileSettledRead(lab ? { ...fit.face, lab } : fit.face, agreedCentre);
   }
 
   /** Record a decision that is not a frame, for the trace. A no-op with the trace off. */
@@ -1482,9 +1486,17 @@ export class AiScanPanel extends HTMLElement {
    * centres. So a read whose eight match a side in hand but whose centre says another colour is kept as a
    * new side — it may be that sibling — and `twinToDrop` settles it once six are in.
    */
-  private fileSettledRead(read: ColorFace): void {
+  private fileSettledRead(
+    read: ColorFace,
+    agreedCentre: number | null = read.colors[4] ?? null,
+  ): void {
     const centre = read.colors[4];
-    const claim = sideClaimed(read.colors);
+    // A CENTRE THE RUN NEVER AGREED ON NAMES NOTHING (2026-09-20). Filing by one frame's centre is
+    // how a white cap with a blue logo became the blue side, confidently, with no collision to
+    // settle it — and then the real blue side had nowhere to go. An unread centre makes the side
+    // unnamed instead, which is the state this package already knows how to place.
+    const centreUnread = agreedCentre === null;
+    const claim = centreUnread ? undefined : sideClaimed(read.colors);
     // While confirming, only the side we asked for counts, and it is taken as a CANONICAL
     // capture rather than filed as a new face: its rotation is the whole point of asking. It is the
     // side asked for when its centre says so — or, for a side whose centre was misread, when its eight
@@ -1505,7 +1517,7 @@ export class AiScanPanel extends HTMLElement {
       this.scheduleCheck(this.tinted('ok', 'Got it — checking…'));
       return;
     }
-    if (claim === undefined) {
+    if (claim === undefined && !centreUnread) {
       // Unreachable from the camera today — `fitFace` keeps only colour classes, so a fitted centre
       // is always a colour — and kept because a read that names no side must never be filed. The
       // sentence says what happened and the one thing that helps: the scanner keeps reading.
@@ -1531,6 +1543,16 @@ export class AiScanPanel extends HTMLElement {
     // correction is the moment a sticker has changed, so the eight may no longer agree.
     if (this.capturedFaces().length >= FACES.length) {
       const slot = this.sideByEight(read) ?? claim;
+      // With every side named and this read naming none, the eight are the only way in. They did not
+      // point anywhere, so there is nothing to correct and nothing honest to say about which side
+      // this is — the scanner keeps reading rather than guessing a slot.
+      if (slot === undefined) {
+        this.report(
+          'scanning',
+          'Keep showing that side — its middle sticker keeps changing colour.',
+        );
+        return;
+      }
       const fresh = withCentre(read, colourOfSlot(slot));
       // A read identical to the one already filed would re-run the same refusal forever, so it
       // just restates the options.
@@ -1559,7 +1581,7 @@ export class AiScanPanel extends HTMLElement {
       return;
     }
     // A side the scan already has.
-    const inHand = this.sideInHand(read);
+    const inHand = this.sideInHand(read, centreUnread);
     if (inHand) {
       this.noteCentre(inHand.side, read);
       this.traceEvent('turned-away', {
@@ -1577,6 +1599,26 @@ export class AiScanPanel extends HTMLElement {
         'Already have ',
         ...which,
         named ? ` — still need ${named}.` : ' — show a different one.',
+      );
+      return;
+    }
+    // A side whose centre was never read is held unnamed on its own account — it collides with
+    // nobody, because it claims nothing. `resolveCentres` gives it the slot left over at six.
+    if (claim === undefined) {
+      this.traceEvent('held-back', { shares: null, colors: [...read.colors] });
+      this.unnamed.push(read);
+      this.centreSeen.set(read, [read.confidence[4] ?? 0]);
+      this.buildDots();
+      this.captured('side', null);
+      const held = this.sidesHeld();
+      if (held >= FACES.length) {
+        this.scheduleCheck(this.tinted('ok', 'All six sides captured — checking…'));
+        return;
+      }
+      this.report(
+        'scanning',
+        `Got that side — ${held}/6. Its middle sticker kept changing colour, so which side it is ` +
+          'gets worked out once all six are in. Show another side…',
       );
       return;
     }
@@ -1619,9 +1661,16 @@ export class AiScanPanel extends HTMLElement {
    * The side in hand that `read` shows again — named, with its slot, or unnamed — or null for a side
    * not in hand: its centre claims the same colour and its eight agree (`sameSide`).
    */
-  private sideInHand(read: ColorFace): { side: ColorFace; slot?: Face } | null {
+  private sideInHand(
+    read: ColorFace,
+    centreUnread = false,
+  ): { side: ColorFace; slot?: Face } | null {
+    // With the centre UNREAD there is no colour to compare, so the eight decide alone. That is
+    // weaker than the usual rule on purpose — different sides can share their eight exactly (after
+    // U D R L F B, white and yellow do) — but the alternative is worse: a logo side shown twice
+    // would be captured twice, and six captures would be five sides and a duplicate.
     const same = (side: ColorFace) =>
-      side.colors[4] === read.colors[4] && sameSide(read.colors, side.colors);
+      (centreUnread || side.colors[4] === read.colors[4]) && sameSide(read.colors, side.colors);
     for (const slot of FACES) {
       const side = this.faces[slot];
       if (side && same(side)) return { side, slot };

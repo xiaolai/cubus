@@ -165,3 +165,70 @@ describe('Stillness', () => {
     }
   });
 });
+
+describe('Stillness — a centre that will not settle (the logo cube, 2026-09-20)', () => {
+  const W = 0;
+  const B = 5;
+  /** A white side whose middle sticker reads `centre` on this frame. */
+  const white = (centre: number) => [W, W, W, W, centre, W, W, W, W];
+
+  it('a face whose centre alternates still settles, and settles when a plain one would', () => {
+    // THE BUG THIS FIXES. Keyed on all nine, a white cap with a blue logo broke the run on every
+    // alternation, so the side was never captured at all — the panel asked for stillness the user
+    // was already giving it, forever. Reported from a real cube: five sides read, the white one
+    // never taken.
+    const logo = new Stillness(3, 500);
+    const plain = new Stillness(3, 500);
+    const alternating = [B, W, B, W, B];
+    const settledLogo = alternating.map((c, i) => logo.offer(white(c), 1000 + i * 200));
+    const settledPlain = alternating.map((_, i) => plain.offer(white(W), 1000 + i * 200));
+    expect(settledLogo).toEqual(settledPlain);
+    expect(settledLogo).toContain(true);
+  });
+
+  it('the centre is reported as UNREAD when the run disagreed, and as its colour when it did not', () => {
+    const logo = new Stillness(3, 500);
+    for (const [i, c] of [B, W, B, W].entries()) logo.offer(white(c), 1000 + i * 200);
+    // Unanimous, not a majority: blue-white-blue has a majority of blue, and filing the side as blue
+    // is exactly the confidently-wrong answer the alternation is evidence against.
+    expect(logo.centre()).toBe(null);
+    const plain = new Stillness(3, 500);
+    for (let i = 0; i < 4; i++) plain.offer(white(W), 1000 + i * 200);
+    expect(plain.centre()).toBe(W);
+  });
+
+  it('a centre alone never names a flickering sticker, because it can no longer break a run', () => {
+    // `flickering()` exists to name ONE of the eight the user can light better or tap. A centre is
+    // neither — it is placed by counting — so it must not be narrated at, which is all the old code
+    // did with it.
+    const s = new Stillness(3, 500);
+    for (const [i, c] of [B, W, B, W, B, W].entries()) s.offer(white(c), 1000 + i * 200);
+    expect(s.flickering(1)).toBe(null);
+  });
+
+  it('what it does NOT give up: a cube being turned through the frame still cannot settle', () => {
+    // The guard the old comment worried about. Relaxing the centre does not relax this: a face on
+    // its way past changes far more than its middle sticker.
+    const s = new Stillness(3, 500);
+    const faces = [
+      [0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [1, 1, 1, 1, 1, 1, 1, 1, 1],
+      [2, 2, 2, 2, 2, 2, 2, 2, 2],
+      [3, 3, 3, 3, 3, 3, 3, 3, 3],
+    ];
+    faces.forEach((f, i) => {
+      expect(s.offer(f, 1000 + i * 300)).toBe(false);
+    });
+  });
+
+  it('one of the EIGHT flickering still blocks the capture, and is still named', () => {
+    // Unchanged on purpose: a sticker in the ring is a real reading the user can act on, and a run
+    // that accepted it would be filing a colour nobody saw twice.
+    const s = new Stillness(3, 500);
+    const ring = (corner: number) => [corner, W, W, W, W, W, W, W, W];
+    for (const [i, c] of [1, 2, 1, 2, 1, 2].entries()) {
+      expect(s.offer(ring(c), 1000 + i * 200)).toBe(false);
+    }
+    expect(s.flickering(2)).toBe(0);
+  });
+});
