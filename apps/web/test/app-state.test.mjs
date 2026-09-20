@@ -58,6 +58,7 @@ test('every tab has a window title, and the titles that differ from their tab sa
     trainer: 'Algorithm trainer',
     drill: 'Drill',
     lessons: 'Lessons',
+    course: 'Course',
     settings: 'Settings',
   });
   for (const [id] of NAV) assert.ok(typeof TITLES[id] === 'string', `the ${id} tab has no window title`);

@@ -28,6 +28,8 @@ export const APP_SOURCES = Object.freeze([
   'lib/version.js', 'lib/app-state.js', 'lib/app-settings.js', 'lib/screen-slots.js', 'lib/solver-service.js',
   'lib/cube-subject.js', 'lib/cube-drawing.js', 'lib/wake-lock.js', 'lib/window-chrome.js',
   'lib/cube-memory.js', 'lib/cube-trust-state.js',
+  // the course's own state: which episode is showing, and surviving the load that fetches it
+  'lib/course-session.js',
   'lib/reconnect-answer.js',
   'lib/live-session.js',
   'lib/cube-reports.js',
@@ -36,7 +38,11 @@ export const APP_SOURCES = Object.freeze([
   // the menu both screens' corner menus are built on, 2026-09-14
   'lib/menu-popover.js', 'lib/scroll-strip.js',
   'lib/screens/scan.js', 'lib/screens/cube.js', 'lib/screens/timer.js', 'lib/screens/settings.js',
-  'lib/screens/stats.js', 'lib/screens/lessons.js',
+  'lib/screens/stats.js', 'lib/screens/lessons.js', 'lib/screens/course.js',
+  // the Course screen's second composition: a lesson playing
+  'lib/screens/course/episode-view.js',
+  // the Drill screen's rounds
+  'lib/screens/drill/round-play.js',
   // the cube screen's own parts, 2026-09-14
   'lib/screens/cube/route-race.js', 'lib/screens/cube/speed-menu.js', 'lib/screens/cube/die.js',
   'lib/screens/cube/reconnect-ask.js',
@@ -67,7 +73,8 @@ export const LIBRARY_SOURCES = Object.freeze([
   'lib/cube-orientation.js', 'lib/cube-pieces.js', 'lib/cube-questions.js',
   'lib/cube-reconnect.js', 'lib/cube-registry.js', 'lib/cube-report.js', 'lib/cube-selfcheck.js',
   'lib/cube-session.js', 'lib/cube-trust.js', 'lib/cube-view.js', 'lib/cubejs-entry.js',
-  'lib/data/case-tables.js', 'lib/element-writes.js', 'lib/host.js', 'lib/i18n.js', 'lib/lesson-format.js',
+  'lib/course-source.js',
+  'lib/data/case-tables.js', 'lib/drill-rounds.js', 'lib/element-writes.js', 'lib/episode-audio.js', 'lib/host.js', 'lib/i18n.js', 'lib/lesson-format.js',
   'lib/lesson-player.js', 'lib/lesson-schedule.js', 'lib/method-ladder.js', 'lib/method-lesson.js',
   'lib/method-solver.js', 'lib/methods/cross.js', 'lib/methods/engine.js', 'lib/methods/index.js',
   'lib/methods/last-layer.js', 'lib/methods/pairs.js', 'lib/optimal-challenges.js', 'lib/optimal.js',
