@@ -47,6 +47,13 @@ const MIME = {
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
   '.webmanifest': 'application/manifest+json',
+  // Audio, because a course is narration: without these a lesson's track is served as
+  // application/octet-stream and the element refuses to decode it. The dev server could not serve
+  // a course at all until this was here (found by audit, 2026-09-20).
+  '.m4a': 'audio/mp4',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.ogg': 'audio/ogg',
   '.md': 'text/markdown; charset=utf-8', // THIRD_PARTY_NOTICES.md, linked from the About card
   '.txt': 'text/plain; charset=utf-8', // notices/*.txt, linked from THIRD_PARTY_NOTICES.md
 };
