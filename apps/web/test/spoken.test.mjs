@@ -13,12 +13,11 @@ const store = new Map();
 globalThis.localStorage ??= {
   getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k),
 };
-const { QUIET, SPOKEN, acceptedCue, capturedCue, createSpokenScan, hear, lineFor, refusedCue } =
+const { QUIET, SPOKEN, acceptedCue, capturedCue, createSpokenScan, cueText, hear, refusedCue } =
   await import('../lib/screens/scan/spoken.js');
-const { t } = await import('../lib/i18n.js');
+const { settings } = await import('../lib/app-settings.js');
 const { sidesIn } = await import('../lib/screens/scan/report-sides.js');
 const { useSpeechEngine } = await import('../lib/speech.js');
-const { settings } = await import('../lib/app-settings.js');
 const { speechStandIn } = await import('./sound-stand-ins.mjs');
 
 const CAM = { deviceId: 'cam', label: 'Webcam' };
@@ -27,10 +26,11 @@ const r = (over = {}) => ({
   phase: 'scanning', message: 'x', captured: [], sides: 0, confirm: null, complete: false,
   shownAgain: false, device: CAM, notice: null, ...over,
 });
-/** A cue's words, resolved exactly as `speak` resolves them: the line looked up by NAME, then its
- *  count substituted. Cues carry names so an edited line is used at once (2026-09-20), so a test
- *  that compared `cue.line` to a sentence would now be comparing a key to prose. */
-const spoken = (cue) => (cue ? t(lineFor(cue.line), ...(cue.params ?? [])) : null);
+/** A cue's words, asked of the app rather than rebuilt here (`cueText`). Three copies of the
+ *  placeholder-and-translation pipeline existed before this — one in production and one in each of
+ *  two suites — so a change to it could leave the tests agreeing with themselves (audit,
+ *  2026-09-20). Where the WORDING is the claim, the cases below assert hard-coded strings. */
+const spoken = (cue) => (cue ? cueText(cue) : null);
 
 /** Run reports through `hear` from silence; the line said on each (null for none), and the last cue. */
 function run(...reports) {

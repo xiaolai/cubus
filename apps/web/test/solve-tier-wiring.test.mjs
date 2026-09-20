@@ -34,9 +34,18 @@ test('the chosen target is stored, and the solver reads it', () => {
 test('changing the target throws away the answer computed under the old one', () => {
   // Without this the pills look like they do nothing: the cached solution short-circuits
   // solve(), so the move count never changes and the setting appears to be ignored.
-  const handler = app.match(/data-set-tier\]'\)\)[^\n]*\n?[^\n]*/)?.[0] ?? '';
-  assert.match(handler, /solution = ''/, 'the cached solution must be cleared when the tier changes');
-  assert.match(handler, /solveResult = null/, 'and so must its verdict');
+  //
+  // READ WITH `blockAt`, NOT A LAZY LINE MATCH (audit, 2026-09-20). This used to be
+  // `app.match(/data-set-tier\]'\)\)[^\n]*\n?[^\n]*/)?.[0] ?? ''` — two lines after a literal
+  // `querySelectorAll('[data-set-tier]'))`, which is the shape the wiring happened to have that
+  // week. Extracting the four exclusive-choice rows into one `bindChoice` helper left the regex
+  // matching nothing, so the assertion ran against `''` and the gate went red over a behaviour that
+  // had not changed at all. `app-source.test.mjs` forbids exactly this read for exactly this reason.
+  // Anchored on the CALLBACK, not on the call: a string literal between the anchor and the brace is
+  // what `blockAt` refuses, and `'data-set-tier'` is one.
+  const wiring = blockAt(app, "'setTier', (v) => {");
+  assert.match(wiring, /solution = ''/, 'the cached solution must be cleared when the tier changes');
+  assert.match(wiring, /solveResult = null/, 'and so must its verdict');
 });
 
 test('a missed target is said out loud rather than shown as a plain count', () => {

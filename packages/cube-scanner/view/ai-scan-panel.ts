@@ -1511,19 +1511,7 @@ export class AiScanPanel extends HTMLElement {
     // side asked for when its centre says so — or, for a side whose centre was misread, when its eight
     // point to that side and no other.
     if (this.awaiting) {
-      const asked = this.awaiting.face;
-      const held = this.faces[asked];
-      if (claim !== asked && (held === undefined || this.sideByEight(read) !== asked)) {
-        this.report('confirm', ...this.confirmWords(this.awaiting));
-        return;
-      }
-      this.confirmed[asked] = {
-        capture: withCentre(read, colourOfSlot(asked)),
-        up: this.awaiting.up,
-      };
-      this.awaiting = null;
-      this.captured('confirm', asked);
-      this.scheduleCheck(this.tinted('ok', 'Got it — checking…'));
+      this.acceptConfirmation(read, claim);
       return;
     }
     if (claim === undefined && !centreUnread) {
@@ -1551,42 +1539,7 @@ export class AiScanPanel extends HTMLElement {
     // eight point to when they point to one alone, and otherwise the one its centre names — a
     // correction is the moment a sticker has changed, so the eight may no longer agree.
     if (this.capturedFaces().length >= FACES.length) {
-      const slot = this.sideByEight(read) ?? claim;
-      // With every side named and this read naming none, the eight are the only way in. They did not
-      // point anywhere, so there is nothing to correct and nothing honest to say about which side
-      // this is — the scanner keeps reading rather than guessing a slot.
-      if (slot === undefined) {
-        this.report(
-          'scanning',
-          'Keep showing that side — its middle sticker keeps changing colour.',
-        );
-        return;
-      }
-      const fresh = withCentre(read, colourOfSlot(slot));
-      // A read identical to the one already filed would re-run the same refusal forever, so it
-      // just restates the options.
-      if (fresh.colors.join(',') === this.faces[slot]!.colors.join(',')) {
-        // Sides are named by COLOUR in every sentence here, never by position: a capture is a
-        // colour, and where it sits is the scan's to decide (the blue side of an older cube
-        // is its bottom, not its back — ADR 0001).
-        this.shownAgain = true;
-        this.report(
-          'scanning',
-          'The ',
-          this.bold(GUIDE[slot].color),
-          ' side reads the same as before — tap a sticker to fix it, or show another side.',
-        );
-        return;
-      }
-      this.faces[slot] = fresh;
-      // A fresh camera read is at whatever rotation it was held at, so whatever the settle knew
-      // about this side is no longer true of what is stored.
-      this.settled.delete(slot);
-      this.confirmed = {};
-      this.mismatches = 0;
-      this.buildDots();
-      this.captured('reread', slot);
-      this.scheduleCheck(this.tinted('ok', `Re-read the ${GUIDE[slot].color} side — checking…`));
+      this.replaceCapturedSide(read, claim);
       return;
     }
     // A side the scan already has.
@@ -1647,6 +1600,76 @@ export class AiScanPanel extends HTMLElement {
       this.bold(GUIDE[claim].color),
       ' side; which is which is worked out once all six are in. Show another side…',
     ]);
+  }
+
+  /**
+   * A side shown again once all six are in: a CORRECTION, since the loop only runs then because the
+   * scan was refused.
+   *
+   * Which side it corrects is the side its eight point to when they point to one alone, and
+   * otherwise the one its centre names — a correction is the moment a sticker has changed, so the
+   * eight may no longer agree. Lifted out of `fileSettledRead` (audit, 2026-09-20).
+   */
+  private replaceCapturedSide(read: ColorFace, claim: Face | undefined): void {
+    const slot = this.sideByEight(read) ?? claim;
+    // With every side named and this read naming none, the eight are the only way in. They did not
+    // point anywhere, so there is nothing to correct and nothing honest to say about which side
+    // this is — the scanner keeps reading rather than guessing a slot.
+    if (slot === undefined) {
+      this.report('scanning', 'Keep showing that side — its middle sticker keeps changing colour.');
+      return;
+    }
+    const fresh = withCentre(read, colourOfSlot(slot));
+    // A read identical to the one already filed would re-run the same refusal forever, so it
+    // just restates the options.
+    if (fresh.colors.join(',') === this.faces[slot]!.colors.join(',')) {
+      // Sides are named by COLOUR in every sentence here, never by position: a capture is a
+      // colour, and where it sits is the scan's to decide (the blue side of an older cube
+      // is its bottom, not its back — ADR 0001).
+      this.shownAgain = true;
+      this.report(
+        'scanning',
+        'The ',
+        this.bold(GUIDE[slot].color),
+        ' side reads the same as before — tap a sticker to fix it, or show another side.',
+      );
+      return;
+    }
+    this.faces[slot] = fresh;
+    // A fresh camera read is at whatever rotation it was held at, so whatever the settle knew
+    // about this side is no longer true of what is stored.
+    this.settled.delete(slot);
+    this.confirmed = {};
+    this.mismatches = 0;
+    this.buildDots();
+    this.captured('reread', slot);
+    this.scheduleCheck(this.tinted('ok', `Re-read the ${GUIDE[slot].color} side — checking…`));
+    return;
+  }
+  /**
+   * A read offered while a confirm is standing: take it as that side, or ask again.
+   *
+   * Lifted out of `fileSettledRead` (audit, 2026-09-20), which owned eight decisions at once. This
+   * is the first of them and the most self-contained: it is the only branch that ends a confirm, and
+   * nothing after it in the original ran when a confirm was standing.
+   */
+  private acceptConfirmation(read: ColorFace, claim: Face | undefined): void {
+    const asking = this.awaiting;
+    if (!asking) return;
+    const asked = asking.face;
+    const held = this.faces[asked];
+    // The side asked for when its centre says so — or, for a side whose centre was misread or never
+    // settled, when its eight point to that side and no other.
+    if (claim !== asked && (held === undefined || this.sideByEight(read) !== asked)) {
+      this.report('confirm', ...this.confirmWords(asking));
+      return;
+    }
+    // Taken as a CANONICAL capture rather than filed as a new face: its rotation is the whole point
+    // of having asked.
+    this.confirmed[asked] = { capture: withCentre(read, colourOfSlot(asked)), up: asking.up };
+    this.awaiting = null;
+    this.captured('confirm', asked);
+    this.scheduleCheck(this.tinted('ok', 'Got it — checking…'));
   }
 
   /**

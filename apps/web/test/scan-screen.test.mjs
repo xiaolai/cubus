@@ -1469,37 +1469,61 @@ test('the sticker view draws the scanner\'s boxes in the twin\'s place, only whi
 // Phase 6): a line for each moment a child meets, heard from structured reports only, each cut off
 // the instant the state it describes is gone, nothing after the screen is left, nothing with sounds
 // off — and a scan that finishes the same whether or not anything was said.
-test('each moment of a scan is said once, and a line whose moment has passed is cut off', async (t) => {
-  const { SPOKEN, capturedCue, lineFor } = await import('../lib/screens/scan/spoken.js');
-  const { t: translate } = await import('../lib/i18n.js');
-  // A capture's line counts the sides LEFT (2026-09-20), so it is derived rather than named here:
-  // this case is about each moment being said ONCE, and it should not also fail when the wording
-  // changes. `spoken.test.mjs` owns the words and the rule that no two captures repeat.
-  const savedLine = (sides) => {
-    const cue = capturedCue({ kind: 'side', sides });
-    return translate(lineFor(cue.line), ...(cue.params ?? []));
-  };
-  const { voice, report, saved, complete } = await soundsRig(t);
+// SPLIT INTO THREE (audit, 2026-09-20). One case drove the opening, the capture countdown, the
+// duplicate-side rule, the cut-off, the confirm ask, the premature completion and the acceptance —
+// so every failure arrived coupled to six behaviours it had nothing to do with.
+
+/** The scan's spoken lines through a rigged panel, with a camera to report from. */
+const CAM = { deviceId: 'cam', label: 'Webcam' };
+
+test('the opening line is said once, and a capture counts down rather than repeating', async (t) => {
+  const { SPOKEN } = await import('../lib/screens/scan/spoken.js');
+  // HARD-CODED, NOT DERIVED (audit, 2026-09-20). This used to build the expected sentence by calling
+  // the very functions under test, so a wrong countdown would have made the actual and the expected
+  // wrong together and the case would have passed.
+  const SAVED = ['Got it! 5 more sides.', 'Got it! 4 more sides.'];
+  const { voice, report, saved } = await soundsRig(t);
   const said = voice.said;
-  const camera = { deviceId: 'cam', label: 'Webcam' };
-  report({ device: camera });
-  report({ device: camera });
+  report({ device: CAM });
+  report({ device: CAM });
   assert.deepEqual(said, [SPOKEN.open], 'the opening line was not said once');
   saved('U');
-  report({ device: camera, captured: [face('U')] });
-  assert.equal(said.at(-1), savedLine(1), 'a saved side was not announced with what is left');
-  report({ device: camera, captured: [face('U')], shownAgain: true });
-  report({ device: camera, captured: [face('U')], shownAgain: true });
-  assert.equal(said.filter((l) => l === SPOKEN.again).length, 1, 'the same side again was said on every report');
+  report({ device: CAM, captured: [face('U')] });
+  assert.equal(said.at(-1), SAVED[0], 'a saved side was not announced with what is left');
+  // A SECOND capture, because one sentence proves nothing about a countdown: the whole point is
+  // that consecutive captures differ.
+  saved('R', 2);
+  report({ device: CAM, captured: [face('U'), face('R')], sides: 2 });
+  assert.equal(said.at(-1), SAVED[1], 'the second saved side repeated the first sentence');
+});
+
+test('a side shown again is said once, and the line is cut when that side goes', async (t) => {
+  const { SPOKEN } = await import('../lib/screens/scan/spoken.js');
+  const { voice, report, saved } = await soundsRig(t);
+  report({ device: CAM });
+  saved('U');
+  report({ device: CAM, captured: [face('U')] });
+  report({ device: CAM, captured: [face('U')], shownAgain: true });
+  report({ device: CAM, captured: [face('U')], shownAgain: true });
+  assert.equal(
+    voice.said.filter((l) => l === SPOKEN.again).length, 1,
+    'the same side again was said on every report',
+  );
   const before = voice.cuts.length;
-  report({ device: camera, captured: [face('U')], shownAgain: false });
+  report({ device: CAM, captured: [face('U')], shownAgain: false });
   assert.equal(voice.cuts.length, before + 1, 'a line about a side no longer in view was not cut off');
-  report({ phase: 'confirm', device: camera, captured: FACES.map(face), confirm: { face: 'R', up: 'U' } });
-  assert.equal(said.at(-1), SPOKEN.ask);
-  report({ phase: 'done', device: camera, captured: FACES.map(face), complete: true });
-  assert.notEqual(said.at(-1), SPOKEN.done, '"All done" was said before the screen accepted the scan');
+});
+
+test('"all done" waits for the SCREEN to accept the scan, not for the scanner to finish', async (t) => {
+  const { SPOKEN } = await import('../lib/screens/scan/spoken.js');
+  const { voice, report, complete } = await soundsRig(t);
+  report({ device: CAM });
+  report({ phase: 'confirm', device: CAM, captured: FACES.map(face), confirm: { face: 'R', up: 'U' } });
+  assert.equal(voice.said.at(-1), SPOKEN.ask);
+  report({ phase: 'done', device: CAM, captured: FACES.map(face), complete: true });
+  assert.notEqual(voice.said.at(-1), SPOKEN.done, '"All done" was said before the screen accepted the scan');
   complete();
-  assert.equal(said.at(-1), SPOKEN.done, 'the screen accepted the scan and nothing said so');
+  assert.equal(voice.said.at(-1), SPOKEN.done, 'the screen accepted the scan and nothing said so');
 });
 
 test('a refusal is said once per CHECK, and a camera in trouble says so instead', async (t) => {
@@ -2484,4 +2508,38 @@ test('painting chosen before the scanner registers is the mode the scanner start
   await tick();
   isSame(panel(), el, 'precondition: the element on screen is the one that upgraded');
   assert.deepEqual(calls, ['painting:true'], 'the scanner registered and opened its camera under a board that says it is painting');
+});
+
+test('the bell-only mode chimes for a saved side and says nothing', async (t) => {
+  // The middle mode had no end-to-end coverage at all: every caller used `voice` or `off`, so the
+  // one the owner asked for — the bell without the words — was never driven through a real scan
+  // (audit, 2026-09-20).
+  const { made, voice, report, saved, complete } = await soundsRig(t, { soundMode: 'chime' });
+  report({});
+  saved('U');
+  assert.ok(made.length > 0, 'the bell-only mode made no chime for a saved side');
+  assert.deepEqual(voice.said, [], 'the bell-only mode spoke');
+  const before = made.length;
+  complete();
+  assert.ok(made.length > before, 'the cube checking out made no sound in the bell-only mode');
+  assert.deepEqual(voice.said, [], 'the bell-only mode spoke when the cube checked out');
+});
+
+test('a line edited in Settings is used by the very next thing said', async (t) => {
+  // The promise the editable list rests on. `spoken-lines.test.mjs` proves `lineFor` reads the live
+  // record; this proves the SPEAKING PATH does — a cue could have cached its words when it was made
+  // and every unit test would still pass (audit, 2026-09-20).
+  const { settings } = await import('../lib/app-settings.js');
+  const { voice, report, saved } = await soundsRig(t);
+  const wasLines = { ...settings.spokenLines };
+  t.after(() => { settings.spokenLines = wasLines; });
+  const camera = { deviceId: 'cam', label: 'Webcam' };
+  report({ device: camera });
+  saved('U');
+  report({ device: camera, captured: [face('U')], sides: 1 });
+  assert.equal(voice.said.at(-1), 'Got it! 5 more sides.');
+  settings.spokenLines = { ...settings.spokenLines, savedMany: 'Nice! %1 to go.' };
+  saved('R', 2);
+  report({ device: camera, captured: [face('U'), face('R')], sides: 2 });
+  assert.equal(voice.said.at(-1), 'Nice! 4 to go.', 'the edit did not reach the voice');
 });

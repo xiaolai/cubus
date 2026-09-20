@@ -44,6 +44,26 @@ export function bindSwitch(button, { isOn, flip }) {
   });
 }
 
+/**
+ * Wire a row of EXCLUSIVE choices — theme, solve tier, sound mode, palette — drawn as pills.
+ *
+ * All four were written out as the same four-part shape: query every button carrying the attribute,
+ * give it an `onclick`, send the press through `commitPref`, repaint (audit, 2026-09-20). Four
+ * copies of one structure is four places to forget `commitPref`, which is the only thing that
+ * notices a browser refusing to store the choice.
+ *
+ * @param root the mounted screen
+ * @param attr the attribute the pills carry, e.g. `data-set-theme`
+ * @param key  its dataset name, e.g. `setTheme`
+ * @param choose applies the chosen value; receives the value and the button
+ * @param show repaints afterwards
+ */
+export function bindChoice(root, attr, key, choose, show) {
+  for (const button of root.querySelectorAll(`[${attr}]`)) {
+    button.onclick = () => commitPref(button, () => choose(button.dataset[key], button), show);
+  }
+}
+
 /** Change a preference, keep it, then show it. When the browser would not keep it, the card the
  *  control sits in says so; once a change is kept, no card does. */
 export function commitPref(control, change, show) {

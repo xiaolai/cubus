@@ -107,6 +107,17 @@ export function spokenLines(edits = settings.spokenLines) {
 export const lineFor = (key) => spokenLines()[key] ?? SPOKEN[key];
 
 /**
+ * A cue's words, ready to speak: the line looked up by name, translated, with its count substituted.
+ *
+ * THE ONE PLACE THIS HAPPENS. `speak` did it inline and two test files each re-implemented it, so
+ * the placeholder-and-translation pipeline existed three times (audit, 2026-09-20). Exported because
+ * a test that needs to know what a cue SOUNDS like should ask the app, not rebuild it — and where a
+ * test is about the wording itself it asserts a hard-coded string instead, which is the only kind of
+ * oracle that can disagree with the code.
+ */
+export const cueText = (cue) => t(lineFor(cue.line), ...(cue.params ?? []));
+
+/**
  * @typedef {object} Cue
  * @property {string} line  the NAME of a line in `SPOKEN`, resolved through `lineFor` when spoken.
  * @property {unknown[]} [params]  substituted into %1.. after translation.
@@ -217,64 +228,98 @@ export function acceptedCue() {
  * @param {object} deps `panel`, the scanner element whose events are heard; `signal`, the screen's
  *   abort signal, which removes the listeners and stops the voice.
  */
+/**
+ * The voice's lifecycle: what is being said, whether it may outlive the screen, which line is the
+ * latest, and a line worth trying once more.
+ *
+ * FOUR MUTABLE VARIABLES THAT ONLY EVER MOVE TOGETHER (audit, 2026-09-20). They lived as `let`s
+ * beside the listeners, and every transition between them was implicit — `speaking` cleared here,
+ * `finale` there, `latest` compared in a callback that closed over a number. Delayed failures make
+ * these races, so the states are named and the transitions are the only way to reach them.
+ */
+function speechLife() {
+  /** The state the line now being said describes, as the test that it still holds. */
+  let speaking = null;
+  /** Whether the line under way is "all done", the one line that may outlive the screen. */
+  let finale = false;
+  /** Which line is the latest, so a failure reported for one already replaced changes nothing. */
+  let latest = 0;
+  /** A line the platform failed for a reason that can pass, to try ONCE more at the next report. */
+  let retry = null;
+  return {
+    get finale() { return finale; },
+    /** Take the line worth retrying, if any, and forget it — a retry is never offered twice. */
+    takeRetry() {
+      const again = retry;
+      retry = null;
+      return again;
+    },
+    /** Say `cue`. Returns nothing; everything it decides lands in this object. */
+    say(cue, { outlivesScreen = false, retried = false } = {}) {
+      if (!cue) return;
+      const line = ++latest;
+      retry = null;
+      const onFail = (error) => {
+        // A failure for a line already replaced changes nothing about the one now being said.
+        if (line !== latest) return;
+        speaking = null;
+        finale = false;
+        if (!retried && RETRYABLE.has(error)) retry = { cue, outlivesScreen };
+      };
+      // Resolved HERE, not when the cue was made: a line edited in Settings while the scan is on
+      // screen is used by the very next thing said. In the language the words were translated into,
+      // so a catalog is never read in an English voice; the count substitutes after the lookup, so a
+      // catalog keeps one whole sentence rather than two halves around a number.
+      const queued = say(cueText(cue), locale(), { onFail });
+      speaking = queued ? cue.holds : null;
+      finale = queued && outlivesScreen;
+    },
+    /** The moment the line described has passed: stop it. */
+    cutIfStale(report) {
+      if (speaking && !speaking(report)) {
+        hush();
+        speaking = null;
+        finale = false;
+      }
+    },
+  };
+}
+
+/**
+ * @param {object} deps `panel`, the scanner element whose events are heard; `signal`, the screen's
+ *   abort signal, which removes the listeners and stops the voice.
+ */
 export function createSpokenScan({ panel: scanner, signal }) {
   let memo = QUIET;
-  // The state the line now being said describes, as the test that it still holds.
-  let speaking = null;
   // A refusal is dispatched once and again when its diagnosis lands; it is said once per CHECK. A new
   // check — a correction, a side read again — may refuse again at the same count and be said again.
   let refusalSaid = false;
-  // Whether the line under way is "all done", the one line that may outlive the screen (see the abort).
-  let finale = false;
-  // Which line is the latest, so a failure reported for one already replaced changes nothing.
-  let latest = 0;
-  // A line the platform failed for a reason that can pass, to try ONCE more at the next report — and
-  // only if its moment still stands then, and no newer line has been called for (round-3 audit).
-  let retry = null;
-  const speak = (cue, { outlivesScreen = false, retried = false } = {}) => {
-    if (!cue) return;
-    const line = ++latest;
-    retry = null;
-    const onFail = (error) => {
-      if (line !== latest) return;
-      speaking = null;
-      finale = false;
-      if (!retried && RETRYABLE.has(error)) retry = { cue, outlivesScreen };
-    };
-    // Resolved HERE, not when the cue was made: a line edited in Settings while the scan is on
-    // screen is used by the very next thing said. In the language the words were translated into,
-    // so a catalog is never read in an English voice; the count substitutes after the lookup, so a
-    // catalog keeps one whole sentence rather than two halves around a number.
-    const queued = say(t(lineFor(cue.line), ...(cue.params ?? [])), locale(), { onFail });
-    speaking = queued ? cue.holds : null;
-    finale = queued && outlivesScreen;
-  };
+  const voice = speechLife();
 
   scanner.addEventListener('scan-capture', (e) => {
     refusalSaid = false;
-    speak(capturedCue(e.detail));
+    voice.say(capturedCue(e.detail));
   }, { signal });
   scanner.addEventListener('scan-invalid', () => {
     if (refusalSaid) return;
     const cue = refusedCue(memo);
-    if (cue) { refusalSaid = true; speak(cue); }
+    if (cue) { refusalSaid = true; voice.say(cue); }
   }, { signal });
   scanner.addEventListener('scan-progress', (e) => {
     const p = e.detail;
-    if (speaking && !speaking(p)) { hush(); speaking = null; finale = false; }
+    voice.cutIfStale(p);
     if (p.phase === 'checking' || sidesOf(p) < memo.sides) refusalSaid = false;
     const heard = hear(memo, p);
     memo = heard.memo;
-    const again = retry;
-    retry = null;
-    if (heard.cue) speak(heard.cue);
-    else if (again?.cue.holds(p)) speak(again.cue, { outlivesScreen: again.outlivesScreen, retried: true });
+    const again = voice.takeRetry();
+    if (heard.cue) voice.say(heard.cue);
+    else if (again?.cue.holds(p)) voice.say(again.cue, { outlivesScreen: again.outlivesScreen, retried: true });
   }, { signal });
 
   // Leaving stops the voice — except "all done", which an accepted scan can leave the screen in the
   // middle of (auto-solve, a scan answering a reconnect question) and which is still true where the
   // app went; cut at the jump, a child on auto-solve never heard it (round-3 audit).
-  signal?.addEventListener('abort', () => { if (!finale) hush(); }, { once: true });
+  signal?.addEventListener('abort', () => { if (!voice.finale) hush(); }, { once: true });
   /** The screen accepted a finished scan: say so (see `acceptedCue`). */
-  return Object.freeze({ accepted: () => speak(acceptedCue(), { outlivesScreen: true }) });
+  return Object.freeze({ accepted: () => voice.say(acceptedCue(), { outlivesScreen: true }) });
 }

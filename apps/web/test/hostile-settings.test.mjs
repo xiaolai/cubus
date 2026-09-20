@@ -25,8 +25,15 @@ import { Window } from 'happy-dom';
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
-/** Every screen the router will resolve, including the ones hidden from the toolbar. */
-const SCREENS = ['home', 'scan', 'scramble', 'timer', 'stats', 'trainer', 'drill', 'lessons', 'settings'];
+/**
+ * Every screen the router will resolve, taken from the APP rather than listed here.
+ *
+ * The hand-written copy had already drifted: `course` registers itself in `lib/screens/course.js`
+ * and was never added, so the newest routable screen — the one most likely to mishandle a hostile
+ * setting — was the one screen this file never opened (audit, 2026-09-20). A list kept by hand of
+ * things the app registers itself is a list that goes stale silently.
+ */
+let SCREENS = [];
 
 let win;
 /** Every boolean setting, taken from the defaults' source — see `before`. */
@@ -73,6 +80,7 @@ before(async () => {
     solveTier: 'eleven',
     dragRotate: 'no',
     soundMode: 'deafening',
+    spokenLines: 'not an object',
     devScanView: 'preview',
     cameraId: { nope: true },
   }));
@@ -85,8 +93,17 @@ before(async () => {
   }
   // Anything the app throws asynchronously surfaces here rather than being lost.
   win.addEventListener('error', (e) => errors.push(String(e.message ?? e)));
-  await import('../lib/app.js');
+  const app = await import('../lib/app.js');
+  // Every screen the app itself registers, so a new one is covered the day it lands.
+  SCREENS = Object.keys(app.SCREENS);
   await tick();
+});
+
+test('the screen list is the app\'s own, and carries the newest screen', () => {
+  // The guard on the guard: a derived list that silently came back empty would make every case
+  // below pass over nothing.
+  assert.ok(SCREENS.length >= 9, `only ${SCREENS.length} screens were discovered`);
+  assert.ok(SCREENS.includes('settings') && SCREENS.includes('course'), 'a registered screen is missing');
 });
 
 test('an unknown palette is repaired at load, and the repair is saved', async () => {
@@ -122,26 +139,47 @@ test('an unknown palette is repaired at load, and the repair is saved', async ()
   // A sound mode that does not exist is the default, not a silent app and not a crash.
   assert.equal(settings.soundMode, 'voice', 'a sound mode that does not exist was believed');
   assert.equal(stored.soundMode, 'voice');
-  // And the edited spoken lines are an object, whatever storage held.
-  assert.equal(typeof settings.spokenLines, 'object');
-  assert.ok(!Array.isArray(settings.spokenLines));
+  // And the edited spoken lines are an object, whatever storage held. The fixture supplies a STRING
+  // above: without one these assertions read the default and would have passed against `null` too
+  // (audit, 2026-09-20).
+  assert.deepEqual(settings.spokenLines, {}, 'a hostile spokenLines record was believed');
+  assert.deepEqual(stored.spokenLines, {}, 'the hostile record was not written back as an object');
 });
 
 test('every screen renders over hostile settings, and the stage is actually replaced', async () => {
   const seen = new Set();
+  const titles = new Map();
   for (const id of SCREENS) {
     win.location.hash = `#/${id}`;
     await tick();
     const screen = win.document.querySelector('#stage .screen.active');
     assert.ok(screen, `${id} rendered no screen element`);
     assert.ok(screen.innerHTML.trim().length > 0, `${id} rendered an empty stage`);
+    // NOT THE BROKEN-SCREEN CARD. A builder that throws is caught and rendered as a fresh,
+    // non-empty `.screen.active` with only a `console.error` to say so — so every assertion here
+    // passed for a screen that had crashed (audit, 2026-09-20). This is what that card says.
+    assert.ok(
+      !screen.textContent.includes('THIS SCREEN DID NOT OPEN'),
+      `${id} crashed over hostile settings and rendered the broken-screen card`,
+    );
     // The frame that must NOT exist: the previous screen's DOM under the new screen's title. Each
     // render replaces the node, so the element identity must differ from the last one — a builder
     // that threw used to leave the old node in place, with the title bar already changed.
     assert.ok(!seen.has(screen), `${id} left the previous screen's DOM on the stage`);
     seen.add(screen);
-    assert.equal(win.document.title, `${win.document.title.replace(' · Cubus', '')} · Cubus`);
+    // A TITLE, NOT A TAUTOLOGY. This compared the title against itself with the suffix stripped and
+    // re-added, so it held for any title at all — including the same one on every route, and one
+    // carrying the suffix twice (audit, 2026-09-20).
+    const title = win.document.title;
+    assert.ok(title.endsWith(' · Cubus'), `${id} has no app suffix: ${title}`);
+    const name = title.slice(0, -' · Cubus'.length);
+    assert.ok(name.length > 0, `${id} has a title that is only the suffix`);
+    assert.ok(!name.includes('· Cubus'), `${id} carries the suffix twice: ${title}`);
+    titles.set(id, title);
   }
+  // Distinct per screen: one title reused everywhere satisfied every check above, and is exactly
+  // what a router that stopped updating it would produce.
+  assert.equal(new Set(titles.values()).size, titles.size, `two screens share a title: ${[...titles]}`);
   assert.deepEqual(errors, [], 'a screen raised while rendering over hostile settings');
 });
 

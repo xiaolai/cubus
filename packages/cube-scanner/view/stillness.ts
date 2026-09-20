@@ -54,6 +54,50 @@ function turnedFrom(prev: readonly number[], next: readonly number[]): boolean {
   return false;
 }
 
+/**
+ * What one frame-to-frame change MEANS: the single ring sticker that changed, and whether the
+ * flicker history should be forgotten because the subject changed.
+ *
+ * Pure, and lifted out of `offer` (audit, 2026-09-20) so the rule can be read and tested without a
+ * run, a clock or a gate. Every one of its three answers is a decision this class got wrong at least
+ * once: what counts as one changed sticker, what counts as another side, and whether a turn counts
+ * as either.
+ */
+export function classify(
+  previous: readonly number[],
+  colors: readonly number[],
+): { only: number | null; forget: boolean } {
+  const differing: number[] = [];
+  for (let i = 0; i < colors.length; i++) {
+    if (colors[i] !== previous[i]) differing.push(i);
+  }
+  // The changed stickers OF THE EIGHT. Counting the centre here meant a logo cap alternating beside
+  // one flickering corner was "two changed positions", so the corner was never recorded and never
+  // named — a dead end with no guidance at all.
+  const outer = differing.filter((i) => i !== CENTRE);
+  // Most of the face changing is a cube that MOVED — another side, or the same side turned — and
+  // what the last subject's stickers did says nothing about this one: without this, a face turned
+  // straight into another fully read one was described by the old face's red/orange flicker (audit,
+  // 2026-09-19). Two or three positions at once is a noisy frame, not a new subject, and wiping the
+  // history there would keep a real flicker from ever being named.
+  //
+  // A CENTRE CHANGE IS NOT EVIDENCE OF A NEW SUBJECT ON ITS OWN (2026-09-20). It was, when the run
+  // was keyed on all nine and a centre could not differ inside one. Now it can — that is the logo
+  // fix — so the evidence is the EIGHT: two or more of them changing beside a changed centre is a
+  // different side, and one is a sticker worth naming.
+  //
+  // And a read that is the last one TURNED is the same side turned in the hand: every sticker the
+  // history names has moved, though a side with a near-symmetric pattern changes in only two or
+  // three places (round-3 audit). Wiping is the safe direction either way — a flicker named later,
+  // never the wrong sticker named now.
+  const anotherSide = differing.includes(CENTRE) && outer.length >= 2;
+  const turned = differing.length >= 2 && turnedFrom(previous, colors);
+  return {
+    only: outer.length === 1 ? outer[0]! : null,
+    forget: differing.length >= SUBJECT_CHANGE || anotherSide || turned,
+  };
+}
+
 export class Stillness {
   /**
    * The read the current run is made of, or null when there is no run.
@@ -124,43 +168,12 @@ export class Stillness {
       // unread, and the side is captured and placed by counting instead of being narrated at.
       const previous = this.colors;
       if (previous && previous.length === colors.length) {
-        const differing: number[] = [];
-        for (let i = 0; i < colors.length; i++) {
-          if (colors[i] !== previous[i]) differing.push(i);
-        }
-        // The single changed sticker OF THE EIGHT. Counting the centre here meant a logo cap
-        // alternating beside one flickering corner was "two changed positions", so the corner was
-        // never recorded and never named — the same 2026-09-20 dead end as the wipe below.
-        const outer = differing.filter((i) => i !== CENTRE);
-        const only = outer.length === 1 ? outer[0] : undefined;
-        // Most of the face changing is a cube that MOVED — another side, or the same side turned —
-        // and what the last subject's stickers did says nothing about this one: without this, a face
-        // turned straight into another fully read one was described by the old face's red/orange
-        // flicker (audit, 2026-09-19). Two or three positions at once is a noisy frame, not a new
-        // subject, and wiping the history there would keep a real flicker from ever being named —
-        // UNLESS the centre is one of them: a centre is fixed to its side, so a changed centre with
-        // anything else changed is another side, however many of its stickers happen to match the
-        // last one's (a near-solved cube's sides can). The centre ALONE no longer reaches here at
-        // all — the key excludes it — which is the whole of the logo fix. And a read
-        // that is the last one TURNED is the same side turned in the hand: every sticker the history
-        // names has moved, though a side with a near-symmetric pattern changes in only two or three
-        // places (round-3 audit). Wiping is the safe direction either way — a flicker named later,
-        // never the wrong sticker named now.
-        // A CENTRE CHANGE IS NO LONGER EVIDENCE OF A NEW SUBJECT ON ITS OWN (2026-09-20). It was,
-        // when the run was keyed on all nine and a centre could not differ inside one. Now it can:
-        // that is the logo fix. So `differing.length >= 2` including the centre meant ONE outer
-        // sticker flickering beside an alternating logo cap was read as another side on every frame,
-        // wiping the flicker history each time — the run could never settle (the outer sticker) and
-        // the sticker could never be named (the wipe), which is a dead end with no guidance at all.
-        // The evidence is the EIGHT: two or more of them changing beside a changed centre is a
-        // different side, and one is a sticker worth naming.
-        const anotherSide = differing.includes(CENTRE) && outer.length >= 2;
-        const turned = differing.length >= 2 && turnedFrom(previous, colors);
-        if (differing.length >= SUBJECT_CHANGE || anotherSide || turned) {
+        const { only, forget } = classify(previous, colors);
+        if (forget) {
           this.breaks.clear();
           this.breakColours.clear();
         }
-        if (only !== undefined) {
+        if (only !== null) {
           this.breaks.set(only, (this.breaks.get(only) ?? 0) + 1);
           const seen = this.breakColours.get(only) ?? new Set<number>();
           seen.add(previous[only]!).add(colors[only]!);

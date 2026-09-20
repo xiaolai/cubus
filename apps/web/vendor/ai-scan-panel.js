@@ -3149,6 +3149,9 @@ function resolveCentres(named, unnamed, threshold = LOW_CONFIDENCE_THRESHOLD, op
     )
   });
   if (fits.length > 1) return conflict(fits.length);
+  return byConfidence(claimed, claims2, unnamed, free, assessed, conflict);
+}
+function byConfidence(claimed, claims2, unnamed, free, assessed, conflict) {
   if (claimed.some((c) => c === null)) return conflict(0);
   const keeps = /* @__PURE__ */ new Map();
   for (const colour of new Set(claims2)) {
@@ -5195,6 +5198,19 @@ function turnedFrom(prev, next) {
   }
   return false;
 }
+function classify(previous, colors) {
+  const differing = [];
+  for (let i = 0; i < colors.length; i++) {
+    if (colors[i] !== previous[i]) differing.push(i);
+  }
+  const outer = differing.filter((i) => i !== CENTRE);
+  const anotherSide = differing.includes(CENTRE) && outer.length >= 2;
+  const turned = differing.length >= 2 && turnedFrom(previous, colors);
+  return {
+    only: outer.length === 1 ? outer[0] : null,
+    forget: differing.length >= SUBJECT_CHANGE || anotherSide || turned
+  };
+}
 var Stillness = class {
   /**
    * @param reads Consecutive reads required with an identical EIGHT-sticker ring. The centre may
@@ -5251,19 +5267,12 @@ var Stillness = class {
     } else {
       const previous = this.colors;
       if (previous && previous.length === colors.length) {
-        const differing = [];
-        for (let i = 0; i < colors.length; i++) {
-          if (colors[i] !== previous[i]) differing.push(i);
-        }
-        const outer = differing.filter((i) => i !== CENTRE);
-        const only = outer.length === 1 ? outer[0] : void 0;
-        const anotherSide = differing.includes(CENTRE) && outer.length >= 2;
-        const turned = differing.length >= 2 && turnedFrom(previous, colors);
-        if (differing.length >= SUBJECT_CHANGE || anotherSide || turned) {
+        const { only, forget } = classify(previous, colors);
+        if (forget) {
           this.breaks.clear();
           this.breakColours.clear();
         }
-        if (only !== void 0) {
+        if (only !== null) {
           this.breaks.set(only, (this.breaks.get(only) ?? 0) + 1);
           const seen = this.breakColours.get(only) ?? /* @__PURE__ */ new Set();
           seen.add(previous[only]).add(colors[only]);
@@ -6228,19 +6237,7 @@ var AiScanPanel = class extends HTMLElement {
     const centreUnread = agreedCentre === null;
     const claim = centreUnread ? void 0 : sideClaimed(read.colors);
     if (this.awaiting) {
-      const asked = this.awaiting.face;
-      const held = this.faces[asked];
-      if (claim !== asked && (held === void 0 || this.sideByEight(read) !== asked)) {
-        this.report("confirm", ...this.confirmWords(this.awaiting));
-        return;
-      }
-      this.confirmed[asked] = {
-        capture: withCentre(read, colourOfSlot(asked)),
-        up: this.awaiting.up
-      };
-      this.awaiting = null;
-      this.captured("confirm", asked);
-      this.scheduleCheck(this.tinted("ok", "Got it \u2014 checking\u2026"));
+      this.acceptConfirmation(read, claim);
       return;
     }
     if (claim === void 0 && !centreUnread) {
@@ -6258,32 +6255,7 @@ var AiScanPanel = class extends HTMLElement {
       return;
     }
     if (this.capturedFaces().length >= FACES.length) {
-      const slot = this.sideByEight(read) ?? claim;
-      if (slot === void 0) {
-        this.report(
-          "scanning",
-          "Keep showing that side \u2014 its middle sticker keeps changing colour."
-        );
-        return;
-      }
-      const fresh = withCentre(read, colourOfSlot(slot));
-      if (fresh.colors.join(",") === this.faces[slot].colors.join(",")) {
-        this.shownAgain = true;
-        this.report(
-          "scanning",
-          "The ",
-          this.bold(GUIDE[slot].color),
-          " side reads the same as before \u2014 tap a sticker to fix it, or show another side."
-        );
-        return;
-      }
-      this.faces[slot] = fresh;
-      this.settled.delete(slot);
-      this.confirmed = {};
-      this.mismatches = 0;
-      this.buildDots();
-      this.captured("reread", slot);
-      this.scheduleCheck(this.tinted("ok", `Re-read the ${GUIDE[slot].color} side \u2014 checking\u2026`));
+      this.replaceCapturedSide(read, claim);
       return;
     }
     const inHand = this.sideInHand(read, centreUnread);
@@ -6334,6 +6306,61 @@ var AiScanPanel = class extends HTMLElement {
       this.bold(GUIDE[claim].color),
       " side; which is which is worked out once all six are in. Show another side\u2026"
     ]);
+  }
+  /**
+   * A side shown again once all six are in: a CORRECTION, since the loop only runs then because the
+   * scan was refused.
+   *
+   * Which side it corrects is the side its eight point to when they point to one alone, and
+   * otherwise the one its centre names — a correction is the moment a sticker has changed, so the
+   * eight may no longer agree. Lifted out of `fileSettledRead` (audit, 2026-09-20).
+   */
+  replaceCapturedSide(read, claim) {
+    const slot = this.sideByEight(read) ?? claim;
+    if (slot === void 0) {
+      this.report("scanning", "Keep showing that side \u2014 its middle sticker keeps changing colour.");
+      return;
+    }
+    const fresh = withCentre(read, colourOfSlot(slot));
+    if (fresh.colors.join(",") === this.faces[slot].colors.join(",")) {
+      this.shownAgain = true;
+      this.report(
+        "scanning",
+        "The ",
+        this.bold(GUIDE[slot].color),
+        " side reads the same as before \u2014 tap a sticker to fix it, or show another side."
+      );
+      return;
+    }
+    this.faces[slot] = fresh;
+    this.settled.delete(slot);
+    this.confirmed = {};
+    this.mismatches = 0;
+    this.buildDots();
+    this.captured("reread", slot);
+    this.scheduleCheck(this.tinted("ok", `Re-read the ${GUIDE[slot].color} side \u2014 checking\u2026`));
+    return;
+  }
+  /**
+   * A read offered while a confirm is standing: take it as that side, or ask again.
+   *
+   * Lifted out of `fileSettledRead` (audit, 2026-09-20), which owned eight decisions at once. This
+   * is the first of them and the most self-contained: it is the only branch that ends a confirm, and
+   * nothing after it in the original ran when a confirm was standing.
+   */
+  acceptConfirmation(read, claim) {
+    const asking = this.awaiting;
+    if (!asking) return;
+    const asked = asking.face;
+    const held = this.faces[asked];
+    if (claim !== asked && (held === void 0 || this.sideByEight(read) !== asked)) {
+      this.report("confirm", ...this.confirmWords(asking));
+      return;
+    }
+    this.confirmed[asked] = { capture: withCentre(read, colourOfSlot(asked)), up: asking.up };
+    this.awaiting = null;
+    this.captured("confirm", asked);
+    this.scheduleCheck(this.tinted("ok", "Got it \u2014 checking\u2026"));
   }
   /**
    * Hold `read` as a side the scan cannot name yet, whatever the reason.

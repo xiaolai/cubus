@@ -4,7 +4,7 @@
 // onTick, so reaching it meant driving the entire scan loop, and the timing half — the part most
 // likely to be wrong — could only be exercised by advancing fake timers through a fake detector.
 import { describe, expect, it } from 'vitest';
-import { Stillness } from '../view/stillness.js';
+import { classify, Stillness } from '../view/stillness.js';
 
 const READ = [0, 1, 2, 3, 4, 5, 0, 1, 2];
 const OTHER = [5, 4, 3, 2, 1, 0, 5, 4, 3];
@@ -290,5 +290,42 @@ describe('Stillness — a logo centre beside a flickering outer sticker (audit, 
     expect(s.flickering(1)).toBe(0);
     s.offer([3, 3, W, W, B, W, W, W, W], 1400); // two outer + the centre: another side, wiped
     expect(s.flickering(1)).toBe(null);
+  });
+});
+
+describe('classify — the transition rule, read on its own', () => {
+  const ring = (...changed: number[]) => {
+    const face = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+    for (const i of changed) face[i] = 1;
+    return face;
+  };
+  const still = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+  it('one ring sticker is a flicker worth naming; the centre riding along does not change that', () => {
+    expect(classify(still, ring(2))).toEqual({ only: 2, forget: false });
+    // The logo case: the corner AND the centre differ, and the corner is still the one to name.
+    expect(classify(still, ring(2, 4))).toEqual({ only: 2, forget: false });
+  });
+
+  it('the centre alone is neither a flicker nor a subject change', () => {
+    // It cannot break a run at all now, so this combination never reaches the gate — asked of the
+    // rule directly so the answer is recorded rather than inferred from the gate's silence.
+    expect(classify(still, ring(4))).toEqual({ only: null, forget: false });
+  });
+
+  it('two ring stickers beside a changed centre is another side, and the history goes', () => {
+    expect(classify(still, ring(2, 5, 4)).forget).toBe(true);
+  });
+
+  it('four changed positions is a cube that moved, centre or not', () => {
+    expect(classify(still, ring(0, 1, 2, 3)).forget).toBe(true);
+  });
+
+  it('a side turned in the hand is forgotten, however few places it changed', () => {
+    const before = [0, 1, 0, 0, 0, 0, 0, 0, 0];
+    const quarter = [0, 0, 0, 0, 0, 0, 0, 1, 0].map(
+      (_, i) => before[[6, 3, 0, 7, 4, 1, 8, 5, 2][i]!]!,
+    );
+    expect(classify(before, quarter).forget).toBe(true);
   });
 });

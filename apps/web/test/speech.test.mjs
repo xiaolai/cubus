@@ -91,3 +91,15 @@ test('a line the platform declines is logged and reported; one the app cut off i
   assert.match(warned[0], /synthesis-unavailable/);
   assert.match(warned[0], /Show me any side/);
 });
+
+test('a line that ENDED is not a line anybody cut off', (t) => {
+  // `finish()` had no caller anywhere in the suite (audit, 2026-09-20) — it was either dead code or
+  // an untested behaviour, and it is the second: the platform finishing a line leaves nothing being
+  // said, so the next `hush()` must be attributed to no line at all. Recording it against the line
+  // that had already ended would make `cuts` say the app interrupted something it did not.
+  const voice = voiceRig(t);
+  say('All done! Your cube is ready.');
+  voice.finish();
+  hush();
+  assert.deepEqual(voice.cuts, [null, null], 'a line that ended on its own was recorded as cut off');
+});

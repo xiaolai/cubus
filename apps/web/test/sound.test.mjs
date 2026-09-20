@@ -60,42 +60,67 @@ test('no sound before a gesture, and none saved up for after it', () => {
   assert.equal(ctx.resumed, 1, 'audio already running was resumed again by the next gesture');
 });
 
-test('each sound is its own rising notes; sounds off makes none; a left screen silences what still sounds', () => {
-  const { ctx } = audioStandIn();
-  useAudioContextFactory(() => ctx);
-  const target = page();
-  unlockOnGestures(target);
-  target.dispatchEvent(new Event('pointerdown'));
-  settings.soundMode = 'voice';
+// SPLIT INTO FOUR (audit, 2026-09-20). One case held note shapes, sequencing, `stopAll`, the
+// disabled mode, the bell-only mode and an unknown name — its oscillator counts were CUMULATIVE, so
+// a failure in the first assertion changed the numbers every later one depended on, and a failure
+// anywhere named the whole list rather than the behaviour that broke.
+
+/** The notes one sound makes, as {hz, at}. */
+const notesOf = (made, from = 0) => made.slice(from).map((o) => ({ hz: o.frequency.value, at: o.started }));
+
+test('each sound is its own rising run of notes', (t) => {
+  const { ctx, made } = audio(t, { state: 'running', unlocked: true });
   assert.equal(play('capture'), true);
-  const capture = ctx.made.map((o) => ({ hz: o.frequency.value, at: o.started }));
+  const capture = notesOf(made);
   assert.equal(capture.length, 2, 'the capture chime is two notes');
   assert.equal(play('done'), true);
-  const done = ctx.made.slice(2).map((o) => ({ hz: o.frequency.value, at: o.started }));
+  const done = notesOf(made, 2);
   assert.equal(done.length, 4, 'the checked-out sound is four more');
-  // Each sound is its own: both rise, both are played one note after another, and they do not begin
-  // alike — comparing the two lists as wholes passes on their different LENGTHS alone (audit, 2026-09-19).
+  // Both rise and both are played one note after another.
   for (const [name, notes] of [['capture', capture], ['done', done]]) {
     for (let i = 1; i < notes.length; i++) {
       assert.ok(notes[i].hz > notes[i - 1].hz, `${name} note ${i} does not rise`);
       assert.ok(notes[i].at > notes[i - 1].at, `${name} note ${i} does not follow the one before it`);
     }
   }
+  assert.ok(ctx.made.length === 6);
+});
+
+test('the two sounds are told apart by ear, not only by length', (t) => {
+  // Comparing the lists as wholes passes on their different LENGTHS alone (audit, 2026-09-19).
+  const { made } = audio(t, { state: 'running', unlocked: true });
+  play('capture');
+  const capture = notesOf(made);
+  play('done');
+  const done = notesOf(made, 2);
   assert.notEqual(done[0].hz, capture[0].hz, 'the two sounds begin on the same note');
   assert.notDeepEqual(done.slice(0, 2).map((n) => n.hz), capture.map((n) => n.hz),
     'the checked-out sound opens with the capture chime');
+});
+
+test('leaving a screen silences every note still sounding', (t) => {
+  const { made } = audio(t, { state: 'running', unlocked: true });
+  play('capture');
+  play('done');
+  assert.ok(made.length > 0, 'nothing was sounding, so nothing could be silenced');
   stopAll();
-  assert.ok(ctx.made.every((o) => o.stops.length === 2), 'a note still sounding was not stopped');
-  settings.soundMode = 'off';
+  assert.ok(made.every((o) => o.stops.length === 2), 'a note still sounding was not stopped');
+  assert.ok(made.every((o) => o.stops.at(-1) === undefined), 'a note was left on its own schedule');
+});
+
+test('sounds off makes none, and the bell-only mode still rings', (t) => {
+  const { made } = audio(t, { soundMode: 'off', state: 'running', unlocked: true });
   assert.equal(play('capture'), false, 'a sound was made with sounds off');
-  assert.equal(ctx.made.length, 6, 'a refused sound still built its oscillators');
+  assert.equal(made.length, 0, 'a refused sound still built its oscillators');
   // THE BELL IS NOT THE VOICE (2026-09-20). `chime` exists for someone who wanted the tick without
-  // the words, so the chime must sound there exactly as it does under `voice` — the whole point of
-  // splitting one boolean into three modes, and the half a boolean could not express.
+  // the words, so the chime must sound there exactly as it does under `voice`.
   settings.soundMode = 'chime';
   assert.equal(play('capture'), true, 'the bell was silent in the mode that is only the bell');
-  assert.equal(ctx.made.length, 8, 'the bell-only mode made a different number of notes');
-  settings.soundMode = 'voice';
+  assert.equal(made.length, 2, 'the bell-only mode made a different number of notes');
+});
+
+test('an unknown sound is refused rather than silently skipped', (t) => {
+  audio(t, { state: 'running', unlocked: true });
   assert.throws(() => play('fanfare'), /no sound called "fanfare"/);
 });
 

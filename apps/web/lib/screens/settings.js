@@ -19,7 +19,7 @@ import {
 import { SCREENS, advancedChordWords, advancedOpen, go, renderNav, renderScreen } from '../screen-shell.js';
 import { mountSmartCube, smartCubeCard } from './settings/smart-cube.js';
 import { wireOrientation } from './settings/window-orientation.js';
-import { bindSwitch, commitPref, switchRow, unsavedNote } from './settings/preferences.js';
+import { bindChoice, bindSwitch, commitPref, switchRow, unsavedNote } from './settings/preferences.js';
 import { mountSpokenLines, spokenLinesCard } from './settings/spoken-lines.js';
 import { hush } from '../speech.js';
 import { stopAll } from '../sound.js';
@@ -137,71 +137,97 @@ SCREENS.settings = () => {
         <div class="sub" style="color:var(--ink-3);margin-top:10px;line-height:1.55">${t(privacySentence())}</div></div>
     </div></div>`,
     mount(root) {
-      const swatch = () => { const p = netPalette(); $('#palSwatch', root).innerHTML = ['U', 'D', 'R', 'L', 'F', 'B'].map((k) => `<div style="flex:1;height:34px;border-radius:var(--r-2);background:${p[k]}"></div>`).join(''); };
-      swatch();
-      // Drawn only where `updater` exists, which is the desktop gate — so this never looks for a
-      // button the browser build does not have. What a press does is lib/update-ui.js's.
-      const checkBtn = $('#checkUpdate', root);
-      const upd = appUpdater();
-      if (checkBtn && upd) checkBtn.onclick = () => runUpdatePress(upd, checkBtn);
-      // Every preference takes lib/screens/settings/preferences.js's one path: changed, kept,
-      // shown — and said in its own card when the browser would not keep it.
-      for (const b of root.querySelectorAll('[data-set-theme]')) b.onclick = () => commitPref(b, () => { settings.theme = b.dataset.setTheme; }, () => { applyTheme(); renderScreen(); });
-      // The study's arm is a pair of values, not a boolean, so it has its own press rather than the
-      // generic toggle's `!settings[k]` (dev-docs/scan-guidance-plan.md 4.1).
-      const scanView = $('[data-scan-view]', root);
-      const stickersOn = () => settings.devScanView === SCAN_VIEWS.stickers;
-      if (scanView) bindSwitch(scanView, {
-        isOn: stickersOn,
-        flip: () => { settings.devScanView = stickersOn() ? SCAN_VIEWS.today : SCAN_VIEWS.stickers; },
-      });
-      // Changing the target does not re-solve anything now — the next solve uses it. Clearing
-      // the cached solution is what makes that true; without it the old answer would stand.
-      for (const b of root.querySelectorAll('[data-set-tier]')) b.onclick = () => commitPref(b, () => { settings.solveTier = b.dataset.setTier; state.cube.solution = ''; state.cube.solveResult = null; }, renderScreen);
-      // Choosing a quieter mode means quieter NOW: a chime or a line already under way is stopped
-      // rather than left to finish after the choice said otherwise (audit, 2026-09-19, kept through
-      // the move from a boolean to three modes). `hush()` on every change, because leaving `voice`
-      // for either other mode must cut a line mid-word; `stopAll()` only for `off`, since `chime`
-      // keeps the bell that may be sounding.
-      for (const b of root.querySelectorAll('[data-set-sound]')) b.onclick = () => commitPref(b, () => {
-        settings.soundMode = b.dataset.setSound;
-        hush();
-        if (settings.soundMode === SOUND_MODES.off) stopAll();
-      }, renderScreen);
-      wireOrientation($('#orientationPills', root));
-      for (const b of root.querySelectorAll('[data-pal]')) b.onclick = () => commitPref(b, () => { settings.palette = b.dataset.pal; }, () => { applyNetColors(); renderScreen(); });
-      // Setting it by hand is EVIDENCE, and is recorded as such: a scan may still correct it —
-      // the cube in the hand outranks a setting about the cube in the hand — but until one does,
-      // this is what the app draws, and it is no longer the default nobody chose (ADR 0001 §8.3).
-      const schemeToggle = $('[data-scheme]', root);
-      if (schemeToggle) schemeToggle.onclick = () => commitPref(schemeToggle, () => {
-        settings.scheme = settings.scheme === 'japanese' ? 'western' : 'japanese';
-        settings.schemeSource = 'user';
-      }, () => {
-        applyNetColors();
-        renderScreen();
-      });
-      for (const b of root.querySelectorAll('[data-toggle]')) {
-        const k = b.dataset.toggle;
-        bindSwitch(b, {
-          isOn: () => settings[k],
-          flip: () => { settings[k] = !settings[k]; },
-        });
-      }
-
+      // ONE CALL PER CARD, in the order the cards are drawn. This was a single 51-line run of
+      // wiring — every card's controls, the updater, the nav — so a change to one card's behaviour
+      // was a change inside a function that owned eight others (audit, 2026-09-20). `mountSmartCube`
+      // and `wireOrientation` were already shaped this way; the rest now match them.
+      mountAppearance(root);
+      mountAbout(root);
+      mountCubeColours(root);
+      mountCamera(root);
+      mountAdvanced(root);
       mountSpokenLines(root);
       mountSmartCube(root);
-
-      for (const b of root.querySelectorAll('[data-nav-toggle]')) b.onclick = () => commitPref(b, () => {
-        const id = b.dataset.navToggle;
-        settings.navHidden = navHidden(id) ? settings.navHidden.filter((x) => x !== id) : [...settings.navHidden, id];
-      }, () => {
-        renderNav();
-        // Hiding the screen you are standing on would leave the toolbar with nothing marked
-        // active. You are on Settings when you press this, so that only bites via a deep link.
-        if (navHidden(state.screen)) { go('home'); return; }
-        renderScreen(); // repaints this card's own labels, so it cannot describe the old state
-      });
     },
   };
 };
+
+/** The palette swatch, the theme pills, the solve tier and the window shape. */
+function mountAppearance(root) {
+  const swatch = () => { const p = netPalette(); $('#palSwatch', root).innerHTML = ['U', 'D', 'R', 'L', 'F', 'B'].map((k) => `<div style="flex:1;height:34px;border-radius:var(--r-2);background:${p[k]}"></div>`).join(''); };
+  swatch();
+  // Every preference takes lib/screens/settings/preferences.js's one path: changed, kept,
+  // shown — and said in its own card when the browser would not keep it.
+  bindChoice(root, 'data-set-theme', 'setTheme', (v) => { settings.theme = v; }, () => { applyTheme(); renderScreen(); });
+  // Changing the target does not re-solve anything now — the next solve uses it. Clearing
+  // the cached solution is what makes that true; without it the old answer would stand.
+  bindChoice(root, 'data-set-tier', 'setTier', (v) => {
+    settings.solveTier = v;
+    state.cube.solution = '';
+    state.cube.solveResult = null;
+  }, renderScreen);
+  wireOrientation($('#orientationPills', root));
+  for (const b of root.querySelectorAll('[data-toggle]')) {
+    const k = b.dataset.toggle;
+    bindSwitch(b, { isOn: () => settings[k], flip: () => { settings[k] = !settings[k]; } });
+  }
+}
+
+/** The update check, drawn only where `updater` exists — the desktop gate — so this never looks for
+ *  a button the browser build does not have. What a press does is lib/update-ui.js's. */
+function mountAbout(root) {
+  const checkBtn = $('#checkUpdate', root);
+  const upd = appUpdater();
+  if (checkBtn && upd) checkBtn.onclick = () => runUpdatePress(upd, checkBtn);
+}
+
+/** The palette pills and the colour scheme. */
+function mountCubeColours(root) {
+  bindChoice(root, 'data-pal', 'pal', (v) => { settings.palette = v; }, () => { applyNetColors(); renderScreen(); });
+  // Setting it by hand is EVIDENCE, and is recorded as such: a scan may still correct it —
+  // the cube in the hand outranks a setting about the cube in the hand — but until one does,
+  // this is what the app draws, and it is no longer the default nobody chose (ADR 0001 §8.3).
+  const schemeToggle = $('[data-scheme]', root);
+  if (schemeToggle) schemeToggle.onclick = () => commitPref(schemeToggle, () => {
+    settings.scheme = settings.scheme === 'japanese' ? 'western' : 'japanese';
+    settings.schemeSource = 'user';
+  }, () => {
+    applyNetColors();
+    renderScreen();
+  });
+}
+
+/** The sound mode. Choosing a quieter one means quieter NOW: a chime or a line already under way is
+ *  stopped rather than left to finish after the choice said otherwise (audit, 2026-09-19, kept
+ *  through the move from a boolean to three modes). `hush()` on every change, because leaving
+ *  `voice` for either other mode must cut a line mid-word; `stopAll()` only for `off`, since
+ *  `chime` keeps the bell that may be sounding. */
+function mountCamera(root) {
+  bindChoice(root, 'data-set-sound', 'setSound', (v) => {
+    settings.soundMode = v;
+    hush();
+    if (settings.soundMode === SOUND_MODES.off) stopAll();
+  }, renderScreen);
+}
+
+/** The developer section: the study's arm, and which screens the toolbar shows. */
+function mountAdvanced(root) {
+  // The study's arm is a pair of values, not a boolean, so it has its own press rather than the
+  // generic toggle's `!settings[k]` (dev-docs/scan-guidance-plan.md 4.1).
+  const scanView = $('[data-scan-view]', root);
+  const stickersOn = () => settings.devScanView === SCAN_VIEWS.stickers;
+  if (scanView) bindSwitch(scanView, {
+    isOn: stickersOn,
+    flip: () => { settings.devScanView = stickersOn() ? SCAN_VIEWS.today : SCAN_VIEWS.stickers; },
+  });
+  for (const b of root.querySelectorAll('[data-nav-toggle]')) b.onclick = () => commitPref(b, () => {
+    const id = b.dataset.navToggle;
+    settings.navHidden = navHidden(id) ? settings.navHidden.filter((x) => x !== id) : [...settings.navHidden, id];
+  }, () => {
+    renderNav();
+    // Hiding the screen you are standing on would leave the toolbar with nothing marked
+    // active. You are on Settings when you press this, so that only bites via a deep link.
+    if (navHidden(state.screen)) { go('home'); return; }
+    renderScreen(); // repaints this card's own labels, so it cannot describe the old state
+  });
+}

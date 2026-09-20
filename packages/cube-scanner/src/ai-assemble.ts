@@ -1418,6 +1418,28 @@ export function resolveCentres(
 
   // No filing is legal. For each colour the unnamed sides claim, the side that read it most surely
   // keeps it; every other side is a misread centre. Only a unique answer is used.
+  return byConfidence(claimed, claims, unnamed, free, assessed, conflict);
+}
+
+/**
+ * No filing is legal: decide WHICH CENTRE was misread, by how surely each was read.
+ *
+ * The tail of `resolveCentres`, lifted out (audit, 2026-09-20) — that function held validation,
+ * enumeration, solver assessment, the forced case, conflict reporting and this ranking, and the
+ * single-side bug it had was a direct consequence of one path falling into another's logic. This is
+ * the only part that chooses a READING rather than a cube, and it is worth being able to read alone.
+ *
+ * For each colour the unnamed sides claim, the side that read it most surely keeps it; every other
+ * is a misread centre. Only a unique answer is used.
+ */
+function byConfidence(
+  claimed: ReadonlyArray<Colour | null>,
+  claims: readonly Colour[],
+  unnamed: readonly UnnamedSide[],
+  free: readonly Face[],
+  assessed: ReadonlyArray<{ slots: Face[]; faces: Record<Face, ColorFace>; result: AiScanResult }>,
+  conflict: (legalFilings: number) => CentreResolution,
+): CentreResolution {
   // A SIDE THAT CLAIMS NOTHING CANNOT BE RANKED, AND MUST NOT BE GUESSED. Its confidence is a figure
   // about a colour it never settled on, so feeding it here would let an accident of framing decide
   // which reading to call misread. Where any side is unread and more than one remains, this refuses.

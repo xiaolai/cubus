@@ -9,7 +9,7 @@
 // are pinned here rather than being left to a careful reader.
 
 import assert from 'node:assert/strict';
-import { isNotSame, isSame } from './dom-assert.mjs';
+import { isAbsent, isNotSame, isSame } from './dom-assert.mjs';
 import { blockAt, readAppSource, APP_SOURCES } from './app-source.mjs';
 import { test, before } from 'node:test';
 import { readFileSync } from 'node:fs';
@@ -123,6 +123,21 @@ test('a REPAINT of the screen you are on does not steal focus', async () => {
 
 // The one switch for every sound the scan makes (lib/sound.js; dev-docs/scan-guidance-plan.md 3.2,
 // D3): drawn in Settings, ON for someone who never chose, and a press turns it off and keeps that.
+test('every sound mode has a label and a blurb of its own', async () => {
+  // Three parallel registries — `SOUND_MODES`, `SOUND_LABEL`, `SOUND_BLURB` — with nothing checking
+  // they agree. A fourth mode would render a pill labelled "undefined" and silently show Voice's
+  // description, and no test would notice (audit, 2026-09-20).
+  const { SOUND_MODES } = await import('../lib/app-settings.js');
+  const source = readFileSync(new URL('../lib/screens/settings.js', import.meta.url), 'utf8');
+  const keysOf = (name) => {
+    const block = blockAt(source, `const ${name} = `);
+    return [...block.matchAll(/(\w+):/g)].map((m) => m[1]).sort();
+  };
+  const modes = Object.values(SOUND_MODES).sort();
+  assert.deepEqual(keysOf('SOUND_LABEL'), modes, 'a mode has no label, or a label has no mode');
+  assert.deepEqual(keysOf('SOUND_BLURB'), modes, 'a mode has no blurb, or a blurb has no mode');
+});
+
 test('Settings offers three sound modes, Voice by default, and a press keeps the choice', async (t) => {
   // One boolean became three modes on 2026-09-20: the only way to stop a repeated spoken line used
   // to be silencing the bell a child depends on.
@@ -1221,4 +1236,49 @@ test('a platform that takes the lock back again and again is asked with a growin
   } finally {
     await leaveQuietScreen();
   }
+});
+
+test('the editable spoken lines: an edit sticks, a bad one is refused out loud, Reset puts it back', async (t) => {
+  // The card had no DOM test at all — only its validation helpers were covered — so Advanced
+  // disclosure, the change and reset handlers, persistence and the refusal message were all
+  // unexercised on the one path that speaks to a child (audit, 2026-09-20).
+  const { settings } = await import('../lib/app-settings.js');
+  const { SPOKEN } = await import('../lib/screens/scan/spoken.js');
+  const wasLines = { ...settings.spokenLines };
+  t.after(() => { settings.spokenLines = wasLines; });
+  const chord = () => win.document.dispatchEvent(new win.KeyboardEvent('keydown', {
+    code: 'KeyD', ctrlKey: true, altKey: true, metaKey: true, repeat: false, bubbles: true,
+  }));
+  await go('settings');
+  isAbsent($('[data-spoken="open"]'), 'the lines were editable without opening Advanced');
+  chord();
+  await tick();
+  t.after(async () => { chord(); await tick(); });
+  const field = $('[data-spoken="open"]');
+  assert.ok(field, 'Advanced does not offer the spoken lines');
+  assert.equal(field.value, SPOKEN.open, 'the field did not start at the line in force');
+
+  // An edit is kept, in memory and in storage.
+  field.value = 'Hold up any side.';
+  field.dispatchEvent(new win.Event('change'));
+  await tick();
+  assert.equal(settings.spokenLines.open, 'Hold up any side.');
+  assert.equal(JSON.parse(win.localStorage.getItem('cubusSettings')).spokenLines.open, 'Hold up any side.');
+
+  // A bad one is refused OUT LOUD and changes nothing — silently reverting would look like an edit
+  // that did not take.
+  const why = $('#spokenWhy-savedMany');
+  const count = $('[data-spoken="savedMany"]');
+  count.value = 'Got it! more sides.';
+  count.dispatchEvent(new win.Event('change'));
+  await tick();
+  assert.ok(why.textContent.length > 0, 'a refused edit said nothing');
+  assert.equal(why.hidden, false, 'the refusal was written but left hidden');
+  assert.equal(settings.spokenLines.savedMany, undefined, 'a refused edit was stored anyway');
+
+  // Reset puts the default back and stops being an override.
+  $('[data-spoken-reset="open"]').click();
+  await tick();
+  assert.equal($('[data-spoken="open"]').value, SPOKEN.open);
+  assert.ok(!Object.hasOwn(settings.spokenLines, 'open'), 'Reset left the default stored as an override');
 });
