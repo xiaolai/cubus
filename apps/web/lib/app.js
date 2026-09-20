@@ -29,6 +29,7 @@ import './screens/timer.js';
 import './screens/settings.js';
 import './screens/stats.js';
 import './screens/lessons.js';
+import './screens/course.js';
 
 // The names the test suites read off the app, from the modules that own them.
 export { DEFAULT_PALETTE } from './app-settings.js';

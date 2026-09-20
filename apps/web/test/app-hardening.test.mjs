@@ -257,12 +257,25 @@ const noInventedFigure = (screen, id) => {
   assert.doesNotMatch(text, /\b\d+\.\d+\b/, `${id} shows a decimal — a time or an average`);
 };
 
+/**
+ * What each screen must say about what it does NOT know.
+ *
+ * Two different sentences on purpose since 2026-09-20. The Trainer is still a design in full and
+ * keeps the shared note. The Drill runs real rounds now, so a banner saying nothing here is
+ * measured would be false about the half that works — it narrows to the half that does not, and
+ * changing the shared `PREVIEW_NOTE` would have re-described the Trainer.
+ */
+const DISCLAIMER = {
+  trainer: /Preview — nothing here is measured yet/,
+  drill: /Results are not saved/,
+};
+
 test('the preview screens carry no invented figure', async () => {
   for (const id of PREVIEW_SCREENS) {
     await go(id);
     const screen = $('#stage .screen.active');
-    assert.match(screen.textContent, /Preview — nothing here is measured yet/,
-      `${id} must say plainly that nothing here is measured`);
+    assert.match(screen.textContent, DISCLAIMER[id],
+      `${id} must say plainly what it does not measure`);
     noInventedFigure(screen, id);
     assert.doesNotMatch(screen.textContent.replace(/\s+/g, ' '), /\b\d+\s*(reps|min|minutes|solves)\b/i,
       `${id} shows a count of something`);
@@ -284,10 +297,26 @@ test('a preview control that would pretend to work is disabled, not silently ine
     assert.equal(b.disabled, true, 'a filter that filters nothing must say so');
   }
   await go('drill');
-  const buttons = all('#stage .btn');
-  const reveal = buttons.find((b) => /Reveal|Hide/.test(b.textContent));
-  assert.ok(reveal && !reveal.disabled, 'Reveal shows a real algorithm and stays live');
-  for (const b of buttons.filter((x) => x !== reveal)) {
+  // The Drill plays real rounds now: its faces and Next DO something and must stay live. What still
+  // records nothing is the grade row, and those must not invite a press.
+  for (const b of all('#stage [data-face]')) {
+    assert.equal(b.disabled, false, 'a face the child answers with must be pressable');
+  }
+  const next = all('#stage .pill').find((b) => /Next/.test(b.textContent));
+  assert.ok(next && !next.disabled, 'Next deals another round and stays live');
+  // PRESSED, not merely present. "exists and is enabled" would pass with no click handler at all,
+  // or with one whose failure is swallowed — so the button is actually used and the screen is
+  // checked for having moved on.
+  const asked = () => $('#stage #drillAsk').textContent;
+  const before = asked();
+  const lit = () => $('#stage cubus-cube')?.getAttribute('highlight') ?? '';
+  const litBefore = lit();
+  next.click();
+  await tick();
+  assert.ok(asked(), 'Next left the drill with no question');
+  assert.ok(asked() !== before || lit() !== litBefore,
+    'pressing Next changed nothing — the round was not replaced');
+  for (const b of all('#stage .btn')) {
     assert.equal(b.disabled, true, `"${b.textContent.trim()}" records nothing, so it must not invite a press`);
   }
 });
@@ -312,9 +341,14 @@ test('a rung the browser refused to store says so on the ladder', async () => {
   }
 });
 
-test('every case diagram on Trainer and Drill is the top face its algorithm solves', async () => {
+test('every case diagram on the Trainer is the top face its algorithm solves', async () => {
   // The case an algorithm solves is its inverse applied to a solved cube; a lit well is a sticker
   // already the top colour. Worked out here from cubejs, never copied from the screen's own table.
+  //
+  // The DRILL used to be checked the same way and is not any more, because it no longer draws a
+  // case diagram: it draws a real cube from a generated script, and `answerAt` computes the answer
+  // FROM that cube. A picture disagreeing with its answer is unrepresentable there rather than
+  // merely untested — `drill-rounds.test.mjs` pins the property at its source.
   const { invert } = await import('../lib/cube-pieces.js');
   const topOf = (alg) => { const c = new Cube(); c.move(invert(alg)); return c.asString().slice(0, 9); };
   const lit = (wells) => wells.map((w) => !(w.getAttribute('style') || '').includes('--facelet-off'));
@@ -327,22 +361,17 @@ test('every case diagram on Trainer and Drill is the top face its algorithm solv
     assert.deepEqual(lit(wells), [...topOf(alg)].map((ch) => ch === 'U'),
       `${alg}: the diagram beside it is not the case it solves`);
   }
-  await go('drill');
-  $('#reveal').click();
-  const alg = $('#drillAlg').textContent;
-  const top = topOf(alg);
-  assert.deepEqual(lit([...$('#stage div[style*="gap:6px;width:180px"]').children]), [...top].map((ch) => ch === 'U'),
-    "the drill's diagram is not the case its algorithm solves");
-  const allEdges = [1, 3, 5, 7].every((i) => top[i] === 'U');
-  assert.doesNotMatch($('#stage').textContent, allEdges ? /DOT CASES/ : /ALL EDGES ORIENTED/,
-    'the drilled case is filed under a shape it does not have');
 });
 
-test('Drill does not say its controls do nothing while Reveal shows the algorithm', async () => {
+test('the Drill disclaims only the half that does not work', async () => {
   await go('drill');
-  const banner = all('#stage .card').find((c) => /Preview — nothing here is measured yet/.test(c.textContent));
-  assert.ok(banner, 'precondition: the Drill carries its preview banner');
-  assert.doesNotMatch(banner.textContent, /controls do nothing/, 'the banner says the controls do nothing over a Reveal that works');
+  const banner = all('#stage .card').find((c) => /Results are not saved/.test(c.textContent));
+  assert.ok(banner, 'precondition: the Drill says what it does not keep');
+  // A banner that disclaims a screen which DOES work teaches a reader to disbelieve the one place
+  // the app is telling them something true — the argument the Lessons ladder's own case makes.
+  assert.doesNotMatch(banner.textContent, /controls do nothing/, 'the banner disclaims rounds that work');
+  assert.doesNotMatch(banner.textContent, /nothing here is measured/, 'the rounds are real; only the history is not');
+  assert.match(banner.textContent, /Practice works/, 'it must say which half does work');
 });
 
 test('the Trainer filter "Weak first" reaches the reader in their language', async () => {

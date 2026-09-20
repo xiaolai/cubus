@@ -650,7 +650,7 @@ test('the Advanced section is hidden until the chord asks for it', async () => {
   assert.equal(state.screen, 'settings');
   assert.deepEqual(
     [...win.document.querySelectorAll('[data-nav-toggle]')].map((b) => b.dataset.navToggle),
-    ['timer', 'stats', 'trainer', 'drill', 'lessons'],
+    ['timer', 'stats', 'trainer', 'drill', 'lessons', 'course'],
   );
 
   win.document.dispatchEvent(chord());
