@@ -63,8 +63,8 @@ assurance nobody checked.
 
 Every component is a published method, implemented here from the paper. No detector
 implementation's source was opened while writing this code — not a copyleft one, and not a permissive
-one either, because a clean-room claim that quietly leans on a reimplementation of an MIT codebase
-is worth less than no claim at all. (The one deliberate exception is the optional pretrained
+one either, because a clean-room claim that quietly leans on somebody else's reimplementation is
+worth less than no claim at all. (The one deliberate exception is the optional pretrained
 backbone described in the section above, which is torchvision's code and weights by design.)
 
 | Component | Source read | File |
@@ -118,8 +118,7 @@ as the old one.
 - [ ] Four artefacts exported and `ml/golden_frames.py` re-pinned with a stated reason
 - [x] `MODEL_CARD.md` and `THIRD_PARTY_NOTICES.md` updated (2026-09-17). `LICENSE-COMMERCIAL.md` is
       gone: MIT needs no exception to sell against.
-- [x] Licence changed from MIT — **the owner's call, and not implied by this work**. Made
-      2026-09-17: MIT.
+- [x] Licence set by **the owner's call, and not implied by this work**. Made 2026-09-17: MIT.
 
 ### Where it stands, on the 207 held-out photographs
 

@@ -491,9 +491,9 @@ def main(argv: list[str] | None = None) -> None:
     import torch
 
     manifest["tools"].update({"torch": torch.__version__, "onnx": onnx.__version__, "onnxruntime": onnxruntime.__version__})
-    # Record that the model has no MIT lineage, and carry the training environment the
-    # checkpoint itself recorded, so the manifest — which ships beside the artefacts — is where
-    # the provenance can be read.
+    # Record which stack produced the model, and carry the training environment the checkpoint
+    # itself recorded, so the manifest — which ships beside the artefacts — is where the
+    # provenance can be read.
     state = torch.load(args.pt, map_location="cpu", weights_only=True)
     manifest["stack"] = "cubedet"
     manifest["training_environment"] = state.get("environment", {})
