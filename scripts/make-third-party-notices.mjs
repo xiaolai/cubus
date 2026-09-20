@@ -532,7 +532,7 @@ function modelAttribution(root) {
   const read = (p) => readFileSync(join(root, p), 'utf8');
   const card = read('ml/MODEL_CARD.md');
   // WHERE THE DETECTOR CAME FROM, read from the manifest the export writes rather than from prose.
-  // Until 2026-09-17 this read a pinned Detlib version out of the model card, because the
+  // This once read a pinned trainer version out of the model card, because the
   // shipped detector was trained with it; the sentence it parsed is gone with the lineage, and a
   // regex over a document is the wrong place to learn what a model is anyway.
   const manifest = JSON.parse(read('ml/models/MANIFEST.json'));
@@ -701,12 +701,6 @@ export function render({ npm, rust, android, model }) {
     'produced it, in `ml/models/MANIFEST.json`:',
     '',
     `> ${model.provenance}`,
-    '',
-    'Until 2026-09-17 the detector was a detector model trained with',
-    '[Detlib](https://github.com/detlib/detlib), which is **MIT**, and Detlib\'',
-    'stated position — that the licence reaches models trained with their software and the applications',
-    'using those models — is why this project was MIT until the detector was replaced. Anyone taking',
-    'the PREVIOUS model out of this repository\'s history is still bound by that.',
     '',
     'The real photographs it was trained and tested on are Roboflow Universe datasets published under',
     '**CC BY 4.0** (<https://creativecommons.org/licenses/by/4.0/>). Attribution, one line per dataset,',

@@ -42,7 +42,7 @@ CLAUDE.local.md
 .agents/skills
 
 # Agent worktrees. A registered git worktree per agent, each a full checkout of this repo — one
-# left behind on 2026-09-15 held 518 MB and a stale copy of the deleted Detlib pipeline, which
+# left behind on 2026-09-15 held 518 MB and a stale copy of a deleted training pipeline, which
 # is exactly the kind of thing that turns up in a grep months later and reads as if it were live.
 # Remove them with `git worktree remove` rather than `rm -rf`, or the registration outlives the
 # directory.

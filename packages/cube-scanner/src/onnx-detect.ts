@@ -17,7 +17,7 @@ import {
 import type { Frame } from './types.js';
 
 export const IMG_SIZE = 640;
-const PAD = 114 / 255; // Detlib letterbox pad colour (grey 114), normalized
+const PAD = 114 / 255; // grey 114, normalized — the pad the model was trained with (ml/cube_infer.py PAD)
 
 export interface Preprocessed {
   data: Float32Array; // CHW RGB, [0,1], length 3*imgsz*imgsz
@@ -26,8 +26,9 @@ export interface Preprocessed {
 
 /**
  * Letterbox an RGBA frame to imgsz×imgsz (aspect-preserving, grey pad) and emit a CHW RGB
- * float tensor in [0,1] — the exact input Detlib detector expects. Bilinear resample so
- * it matches the training-time resize. Pure: no canvas, no DOM.
+ * float tensor in [0,1] — the exact input the detector was trained on. Bilinear resample so
+ * it matches the training-time resize, which is `letterbox` in ml/cube_infer.py and is the
+ * one definition both this and ml/cubedet read. Pure: no canvas, no DOM.
  *
  * IT REFUSES A FRAME IT CANNOT READ, rather than producing a tensor from one (2026-09-05). Every
  * malformed input had an answer that looked like an answer: a 0×0 frame ran no loop at all and

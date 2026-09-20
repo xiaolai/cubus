@@ -59,7 +59,7 @@ def letterbox(img: Image.Image) -> tuple[np.ndarray, float, int, int]:
 
 
 def decode(out: np.ndarray, conf_th: float = 0.25) -> list[dict]:
-    """Decode Detlib ONNX detect output [1, 4+nc, anchors] into detections.
+    """Decode the detector's ONNX output [1, 4+nc, anchors] into detections.
     Box coords are in the 640 input space (cx,cy,w,h). Mirrors decodeDetections()."""
     o = out[0]  # (4+nc, anchors)
     boxes = o[:4, :]  # cx,cy,w,h

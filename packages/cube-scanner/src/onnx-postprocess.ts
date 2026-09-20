@@ -78,7 +78,7 @@ export interface GeometryFailure {
 
 /**
  * Decode a v3 detect output tensor of shape [4 + numClasses, numAnchors]
- * (row-major, the Detlib ONNX layout: rows cx,cy,w,h,cls0..) into detections
+ * (row-major: rows cx,cy,w,h,cls0.. — the layout ml/export.py writes) into detections
  * above `confThreshold`. Box coords are passed through in the model's input space.
  */
 export function decodeDetections(

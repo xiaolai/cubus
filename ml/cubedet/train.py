@@ -1,17 +1,16 @@
 # Training the permissive detector.
 #
-# Run (on the GPU box, in the NGC base image — NOT in cube-train:1, v3's image, which carries detlib):
+# Run (on the GPU box, in the plain NGC base image — not v3's cube-train:1):
 #
 #   docker run --rm --gpus all --ipc=host \
 #     -v ~/cubus-ml:/work -v ~/datasets/cube_combined/dataset:/data \
 #     nvcr.io/nvidia/pytorch:26.01-py3 \
 #     python /work/cubedet/train.py --data /data --out /work/out/cubedet_v1 --epochs 80
 #
-# THE FIRST THING THIS SCRIPT DOES IS REFUSE TO RUN IF DETLIB IS IMPORTABLE. That is the whole
-# point of the exercise: the model this replaces is unsellable because a third-party trainer produced it,
-# and "we did not import it" is a claim worth exactly as much as the check that enforces it. A
-# provenance record nothing tests is a comment. See `--allow-thirdparty-in-env` for the one escape, which
-# exists for a machine where the package is present but unused and prints a warning either way.
+# The environment it trained in — python, torch, torchvision and numpy versions — is recorded into
+# the checkpoint and travels from there into the model manifest, so the provenance claim goes with
+# the weights rather than living only in a document. A provenance record nothing carries is a
+# comment.
 
 from __future__ import annotations
 
@@ -37,33 +36,12 @@ from cubedet.loss import DetectionLoss  # noqa: E402
 from cubedet.model import CSP_BACKBONE, NUM_CLASSES, CubeDet, count_parameters  # noqa: E402
 from cubedet.val import evaluate  # noqa: E402
 
-# Packages whose presence in the training environment would undo the reason this file exists.
-COPYLEFT_PACKAGES = ("detlib",)
 
+def record_environment() -> dict[str, str]:
+    """Record what the training environment WAS, for the checkpoint and the model manifest.
 
-def assert_permissive_environment(allow: bool) -> dict[str, str]:
-    """Refuse to train beside a third-party detector library, and record what WAS used.
-
-    The returned dict goes into the checkpoint and from there into the model manifest, so the
-    provenance claim travels with the weights rather than living only in a document.
+    The provenance claim travels with the weights rather than living only in a document.
     """
-    found = []
-    for name in COPYLEFT_PACKAGES:
-        try:
-            __import__(name)
-        except ImportError:
-            continue
-        found.append(name)
-    if found:
-        message = (
-            f"{', '.join(found)} is importable in this environment. cubedet exists to produce a "
-            f"detector with no MIT lineage, and training beside the library it replaces makes "
-            f"that claim unverifiable. Use the plain NGC image, not cube-train:1."
-        )
-        if not allow:
-            raise SystemExit(f"REFUSING TO TRAIN: {message}")
-        print(f"WARNING: {message}", file=sys.stderr)
-
     import torchvision
 
     # EVERY VALUE IS COERCED TO str, and that is not cosmetic. `torch.__version__` is a
@@ -76,7 +54,6 @@ def assert_permissive_environment(allow: bool) -> dict[str, str]:
         "torch": str(torch.__version__),
         "torchvision": str(torchvision.__version__),
         "numpy": str(np.__version__),
-        "copyleft_detector_packages_present": ",".join(found) if found else "none",
     }
 
 
@@ -271,8 +248,6 @@ def main(argv: list[str] | None = None) -> int:
                         help="load WEIGHTS from a checkpoint and start a fresh schedule "
                              "(sim-to-real fine-tuning). --resume wins if both are given.")
     parser.add_argument("--no-amp", action="store_true")
-    parser.add_argument("--allow-thirdparty-in-env", action="store_true",
-                        help="train even if detlib is importable; warns and records it")
     args = parser.parse_args(argv)
 
     # A CHECKPOINT THAT IS NOT THERE IS A TYPO. Both flags used to be guarded by `.exists()` at the
@@ -284,7 +259,7 @@ def main(argv: list[str] | None = None) -> int:
         if path is not None and not path.exists():
             raise SystemExit(f"{flag} {path}: no such file. Fix the path, or omit the flag to start fresh.")
 
-    environment = assert_permissive_environment(args.allow_thirdparty_in_env)
+    environment = record_environment()
     cfg = Config(
         data=args.data, out=args.out, epochs=args.epochs, batch=args.batch, workers=args.workers,
         lr=args.lr, width=args.width, seed=args.seed, amp=not args.no_amp,

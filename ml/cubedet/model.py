@@ -1,11 +1,11 @@
 # The sticker detector's network, written here rather than imported.
 #
-# WHY THIS FILE EXISTS AT ALL: the shipped detector was fine-tuned with Detlib, which is
-# MIT, and Detlib's stated position is that the licence reaches models trained with their
-# software. That made a closed or paid product impossible without their Enterprise Licence. This
-# module, its assigner, its loss and its trainer are the replacement: written from the published
-# papers, depending on nothing but PyTorch (BSD-3) and torchvision (BSD-3). The record of what was
-# read and what was not is `ml/PERMISSIVE_DETECTOR_PROVENANCE.md`.
+# WHY THIS FILE EXISTS AT ALL: the detector this app ships has to be one the project can license
+# on its own terms, which means the weights and every line that produced them must be ours. A
+# detector trained by someone else's pipeline is not that, however the numbers come out. So this
+# module, its assigner, its loss and its trainer are written from the published papers, depending
+# on nothing but PyTorch (BSD-3) and torchvision (BSD-3). The record of what was read while
+# writing them — and what deliberately was not — is `ml/DETECTOR_PROVENANCE.md`.
 #
 # THE OUTPUT CONTRACT IS THE WHOLE POINT, and it is not negotiable. `decodeDetections` in
 # `packages/cube-scanner/src/onnx-postprocess.ts` reads a tensor of shape [1, 4 + numClasses,
@@ -258,7 +258,7 @@ class PretrainedBackbone(nn.Module):
     this is not a capacity problem being solved by a bigger backbone.
 
     LICENCE, since that is the whole reason this package exists. torchvision and its published
-    weights are BSD-3-Clause. What `PERMISSIVE_DETECTOR_PROVENANCE.md` claims and does not claim
+    weights are BSD-3-Clause. What `DETECTOR_PROVENANCE.md` claims and does not claim
     about the ImageNet images underneath them is written out there, not glossed here.
 
     WHAT DOES NOT CHANGE. Three 1×1 convolutions bring the backbone's own widths to

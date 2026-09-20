@@ -27,7 +27,7 @@ This doc is the out-of-distribution (OOD) evaluation harness and what it found.
 |---|---|
 | `fetch_wikimedia.py` | Pulls real cube photos from Wikimedia Commons (a *different source* → genuinely OOD), with per-file license/attribution in `manifest.csv`. No auth, resumable. |
 | `ood_eval.py` | Runs the shipped `cubedet.onnx` over a folder and reports **label-free** signals: detection rate, per-class confidence, and the app's real `fitFace` abstention mix. The letterbox is `cube_infer.letterbox` (byte-identical to the app's `preprocess()`, pinned by the golden gate) and decode/NMS/fitFace mirror `onnx-postprocess.ts`, so the numbers match what ships. Also writes label-format **pre-labels** and annotated **previews**. |
-| `metrics_table.py` | Emits the mAP rows of `MODEL_CARD.md` and this file from the repository's own evaluator (`cubedet.val` via `compare_detectors.score`, imgsz 640, CPU; Detlib's `detector val` until 2026-09-18), naming each artefact by sha256 — and writes the `--metrics` JSON `ood_report.py` reads, so no number in the report is a literal. |
+| `metrics_table.py` | Emits the mAP rows of `MODEL_CARD.md` and this file from the repository's own evaluator (`cubedet.val` via `compare_detectors.score`, imgsz 640, CPU; an external validator until 2026-09-18), naming each artefact by sha256 — and writes the `--metrics` JSON `ood_report.py` reads, so no number in the report is a literal. |
 | `color_eval.py` / `face_eval.py` | Per-sticker colour accuracy (matched at IoU ≥ 0.5) and per-face success through the app's own `fitFace` gate — the product-relevant reads, on the same letterbox the app uses. |
 | `ood_gallery.py` | Builds a local `gallery.html` grouping previews by verdict — for fast human scanning of failures. |
 | `ood_report.py` | Builds a self-contained, shareable `dev-docs/artifacts/cubedet-ood-report.html` (embedded thumbnails, dark/light aware). |
@@ -127,7 +127,7 @@ model; they are, if anything, slightly harder than the rest.
 The table this section used to carry (0.973 / 0.798 / 0.939 / 0.887 IID; 0.812 / 0.703 / 0.881 / 0.750
 held-out; white 0.669) is the **v2 checkpoint** `ml/out/cube_best.pt` (`dd54abbeb49f`), reproduced
 to the digit on 2026-09-05 — it had been sitting under a v3 heading. The rows for the model the app
-ships, same tool (`metrics_table.py`, detlib 8.4.126, imgsz 640, CPU):
+ships, same tool (`metrics_table.py`, the external validator of the time, imgsz 640, CPU):
 
 | artefact | sha256 | set | images | mAP50 | mAP50-95 | precision | recall | white mAP50 |
 |---|---|---|---|---|---|---|---|---|

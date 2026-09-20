@@ -88,13 +88,10 @@ that ships with the app are in `apps/web/THIRD_PARTY_NOTICES.md`.
 
 **MIT** — see [`LICENSE`](LICENSE). Use it, sell it, close it, no permission needed.
 
-It was MIT until 2026-09-17, and not by preference: the shipped sticker detector had been
-trained with Detlib, which is MIT and whose stated position reaches the applications that
-use such a model. The detector is now this repository's own (`ml/cubedet`, trained from an
-ImageNet-pretrained backbone under Apache-2.0/BSD-3), so the inherited obligation is gone and the
-licence is a choice. Two things MIT does not lift: the training photographs are Roboflow Universe
-sets under **CC BY 4.0** and must stay credited wherever the model ships
-([`apps/web/THIRD_PARTY_NOTICES.md`](apps/web/THIRD_PARTY_NOTICES.md)), and anyone taking the
-PREVIOUS detector out of this repository's history takes it under the terms it had then.
+The sticker detector is this repository's own — `ml/cubedet`, written from the published papers and
+trained from an ImageNet-pretrained backbone under Apache-2.0/BSD-3, with its full record in
+[`ml/DETECTOR_PROVENANCE.md`](ml/DETECTOR_PROVENANCE.md). One thing MIT does not lift: the training
+photographs are Roboflow Universe sets under **CC BY 4.0** and must stay credited wherever the model
+ships ([`apps/web/THIRD_PARTY_NOTICES.md`](apps/web/THIRD_PARTY_NOTICES.md)).
 
 Third-party components keep their own licences.

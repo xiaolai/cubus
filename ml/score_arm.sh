@@ -51,7 +51,7 @@ mkdir -p "$DS/images" "$DS/labels"
 ln -s "$HERE/out/heldout/images" "$DS/images/test"
 ln -s "$HERE/out/heldout/labels" "$DS/labels/test"
 
-echo "--- exporting $RUN to ONNX (no Detlib on this path)"
+echo "--- exporting $RUN to ONNX"
 "$PY" "$HERE/export.py" --pt "$CKPT" --out "$HERE/out/onnx_$RUN" --skip coreml tflite >/dev/null
 ONNX="$HERE/out/onnx_$RUN/cubedet.onnx"
 

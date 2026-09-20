@@ -66,13 +66,7 @@ trained by this repository's own `ml/cubedet`, on PyTorch and torchvision (**BSD
 is `mobilenetv4_conv_small.e2400_r224_in1k`, and where that backbone's weights came from is recorded by the export that
 produced it, in `ml/models/MANIFEST.json`:
 
-> Trained by ml/cubedet (PyTorch/torchvision, BSD-3), with the mobilenetv4_conv_small.e2400_r224_in1k feature extractor from ImageNet weights (torchvision BSD-3 or timm Apache-2.0) and the neck and head from random initialisation. No Detlib code and no Detlib pretrained weights. See ml/PERMISSIVE_DETECTOR_PROVENANCE.md.
-
-Until 2026-09-17 the detector was a detector model trained with
-[Detlib](https://github.com/detlib/detlib), which is **MIT**, and Detlib's
-stated position — that the licence reaches models trained with their software and the applications
-using those models — is why this project was MIT until the detector was replaced. Anyone taking
-the PREVIOUS model out of this repository's history is still bound by that.
+> Trained by ml/cubedet (PyTorch/torchvision, BSD-3), with the mobilenetv4_conv_small.e2400_r224_in1k feature extractor from ImageNet weights (torchvision BSD-3 or timm Apache-2.0) and the neck and head from random initialisation. See ml/DETECTOR_PROVENANCE.md.
 
 The real photographs it was trained and tested on are Roboflow Universe datasets published under
 **CC BY 4.0** (<https://creativecommons.org/licenses/by/4.0/>). Attribution, one line per dataset,

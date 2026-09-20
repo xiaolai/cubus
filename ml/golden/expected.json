@@ -207,7 +207,7 @@
   },
   "repin": {
     "when": "2026-09-17T03:57:42+00:00",
-    "reason": "V6FT: the shipped detector is cubedet's (no Detlib lineage), and the fixtures are rebuilt from synth_v6 val and checked against the renderer's labels",
+    "reason": "V6FT: the shipped detector is cubedet's, and the fixtures are rebuilt from synth_v6 val and checked against the renderer's labels",
     "previous_checkpoint_sha256": "03710b01f6bfa05126123e9a477baac989a079b020a77a6854a352ef173aaad5"
   }
 }

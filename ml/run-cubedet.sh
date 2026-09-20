@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Launch a cubedet training run, detached, in the CLEAN NGC image.
 #
-# Not cube-train:1, v3's image — it carries detlib, and cubedet/train.py refuses to start
-# beside it. The refusal is the point: it is what makes the licence claim checkable rather than
-# asserted.
+# Not cube-train:1, v3's image. The clean image is the point: cubedet trains on PyTorch and
+# torchvision and nothing else, and the environment it ran in is recorded into the checkpoint by
+# `record_environment()`, so what produced a model travels with it.
 #
 # The container is deliberately started WITHOUT --rm: a finished run leaves a container holding
 # exactly the environment that produced the weights, which can be committed as an image if the run

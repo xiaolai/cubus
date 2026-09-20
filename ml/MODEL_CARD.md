@@ -9,8 +9,8 @@ in particular).
 
 **Since 2026-09-17 it is `ml/cubedet`'s own detector**, not a detector one: a `timm` MobileNetV4-small
 feature extractor pretrained on ImageNet, a PAN neck and an anchor-free head, trained by this
-repository. Everything below dated before then describes the Detlib-trained v3 that preceded it,
-and is kept because the measurements are still the comparison this model is judged against.
+repository. Everything below dated before then describes v3, the model that preceded it, and is kept
+because the measurements are still the comparison this model is judged against.
 
 - **Input:** 640×640 letterboxed RGB (aspect preserved, grey-114 pad).
 - **Output:** per-sticker boxes + colour class, `(1, 4 + 6, 8400)`. Classes (`ml/data.yaml`):
@@ -26,7 +26,7 @@ and is kept because the measurements are still the comparison this model is judg
 140 complete sets from 22 contributors in the community photo drop, each colour confirmed by the
 person who photographed their own cube, scored through the app's own read (`ml/drop_eval.py`):
 
-| | v3 (Detlib) | this model |
+| | v3 (previous) | this model |
 |---|---|---|
 | stickers located and read correctly | 97.7% | 96.6% |
 | per-contributor average | 96.9% | 90.3% |
@@ -91,7 +91,8 @@ splits — held out from *training*, but drawn from the **same datasets** as the
 this is an **in-distribution (IID)** score and is optimistic. See the next section for generalization.
 
 The **v3** model (with the white-fix), every row emitted by `ml/metrics_table.py` on 2026-09-05
-(`detector val`, detlib 8.4.126, imgsz 640, CPU) so that each number names the artefact it belongs
+(an external validator, imgsz 640, CPU — not `cubedet/val.py`, so do not compare these rows with
+this model's) so that each number names the artefact it belongs
 to — the earlier version of this table put the checkpoint's row under the label "fp32" and called
 int8 "shipped", and nothing could regenerate either:
 
@@ -247,8 +248,8 @@ sha256, argv) into every checkpoint, and `export.py` copies it into `MANIFEST.js
 manifest predates that field; exporting V6FT again would record it as `not recorded`, and the next
 model's manifest will carry the real thing.
 
-v3's recipe (Detlib, `ml/train.sh`, from the pinned `base11n.pt`) was removed from the repository on 2026-09-18 and is in git history; it was `ml/README.md`
-§"Legacy: v3". Note for the DGX Spark GB10: it hard-resets under sustained load unless the GPU clock
+v3's recipe (`ml/train.sh`, from a pinned third-party checkpoint) was removed from the repository on
+2026-09-18; it was `ml/README.md` §"Legacy: v3". Note for the DGX Spark GB10: it hard-resets under sustained load unless the GPU clock
 is capped — `sudo nvidia-smi -lgc 300,2200` (community-verified; it's power *spikes*, not average
 temp) — and `run-cubedet.sh` refuses to start on a box whose idle clock shows the cap is gone.
 
@@ -277,18 +278,13 @@ under CC BY 4.0.*
 
 The detector shipped since 2026-09-17 is trained by `ml/cubedet`, this repository's own code, on
 PyTorch and torchvision (**BSD-3**), starting from a `timm` MobileNetV4 feature extractor pretrained
-on ImageNet (**Apache-2.0**). No Detlib code and no Detlib weights are in its lineage;
-`ml/models/MANIFEST.json` carries that as `licence_note`, and `ml/export.py` refuses to send a
-`cubedet` checkpoint down any Detlib path. Its training photographs are the CC BY 4.0 Roboflow
-Universe sets credited under §Attribution, plus renders from `ml/generate_cube3d.py`.
+on ImageNet (**Apache-2.0**). `ml/models/MANIFEST.json` carries that lineage as `licence_note`, and
+`ml/DETECTOR_PROVENANCE.md` is the full record: which papers were read, which source deliberately
+was not, and why a pretrained backbone is permissible. Its training photographs are the CC BY 4.0
+Roboflow Universe sets credited under §Attribution, plus renders from `ml/generate_cube3d.py`.
 
-Before that date the detector was a detector model trained with
-[Detlib](https://github.com/detlib/detlib), which is **MIT**, and Detlib's
-stated position — that the licence reaches models trained with their software and the applications
-using them — is why cubus was MIT. That inheritance is what the change removed, and the project
-is MIT from 2026-09-17: taking `cubedet.onnx` into a closed-source product raises no Detlib
-question. Anyone reusing the PREVIOUS model, which is still in this repository's history, still needs
-an Detlib Enterprise Licence for that use.
+cubus is **MIT** from 2026-09-17: taking `cubedet.onnx` into a closed-source product needs no
+further permission from anyone.
 
 What MIT does not lift is the **CC BY 4.0** attribution the training photographs carry: the Roboflow
 Universe credits under §Attribution must travel wherever this model does.

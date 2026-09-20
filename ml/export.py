@@ -35,9 +35,9 @@ scales them inside the model, which means the letterbox has to be quantised to b
 model sees it — and that can never byte-match `preprocess()`, which hands the model floats straight
 from the bilinear resample. A float32 tensor input is that Float32Array, as is.
 
-Every artefact comes from a `cubedet` checkpoint (ml/cubedet), with no Detlib code on any path.
-The Detlib pipeline that produced v3 — its training scripts, its image, and this file's export
-path for it — was removed on 2026-09-18; git history holds it.
+Every artefact comes from a `cubedet` checkpoint (ml/cubedet), and there is exactly one export
+path. The pipeline that produced v3 — its training scripts, its image, and this file's export path
+for it — was removed on 2026-09-18.
 
 THE fp32 IS NEVER HANDED TO ANOTHER TOOL IN PLACE. onnx2tf runs onnx-simplifier on its input and
 saves the result back OVER the input path (onnx2tf.py, `onnx.save(estimated_graph,
@@ -134,7 +134,7 @@ def assert_int8_derived(fp32: Path, int8: Path, work: Path) -> None:
 
 
 def export_onnx_cubedet(pt: Path, work: Path, out: Path) -> tuple[Path, Path | None, str]:
-    """The same ONNX artefacts, from a `cubedet` checkpoint and with no Detlib anywhere.
+    """The same ONNX artefacts, from a `cubedet` checkpoint.
 
     `cubedet` builds the app's output tensor itself (see `ml/cubedet/model.py`), so there is no
     exporter to override and no head to re-wire — the traced module IS the contract. opset 12 and
@@ -184,8 +184,8 @@ def int8_reads_a_face(fp32: Path, int8: Path) -> tuple[bool, str]:
     DYNAMIC QUANTISATION CAN DESTROY A MODEL SILENTLY, and it does destroy this one: the MobileNetV4
     backbone's int8 graph returns a top class score of 0.001 where the fp32 returns 0.922, so it reads
     NO_FACE on every golden frame (measured 2026-09-17; per-channel weights, unsigned weights and
-    leaving the head's convolutions in fp32 all give the same collapse). v3's Detlib graph
-    quantises fine, so nothing upstream noticed.
+    leaving the head's convolutions in fp32 all give the same collapse). v3's graph quantised
+    fine, so nothing upstream noticed.
 
     An artefact that answers nothing is worse than no artefact: it ships, it is pinned, and the pins
     record its silence as expected behaviour. So the export writes it only if it still reads.
@@ -430,7 +430,7 @@ def licence_note(backbone: str) -> str:
     weights (`cubedet/model.py::PretrainedBackbone`). Only `csp` starts from noise. The licence claim
     is unchanged either way — torchvision's weights are BSD-3 and timm's are Apache-2.0 — which is
     exactly why the wrong sentence sat here unnoticed: nothing it got wrong was the licence.
-    PERMISSIVE_DETECTOR_PROVENANCE.md §"The pretrained backbone" carries the argument in full.
+    DETECTOR_PROVENANCE.md §"The pretrained backbone" carries the argument in full.
     """
     start = (
         "from random initialisation"
@@ -440,15 +440,14 @@ def licence_note(backbone: str) -> str:
     )
     return (
         f"Trained by ml/cubedet (PyTorch/torchvision, BSD-3), {start}. "
-        "No Detlib code and no Detlib pretrained weights. "
-        "See ml/PERMISSIVE_DETECTOR_PROVENANCE.md."
+        "See ml/DETECTOR_PROVENANCE.md."
     )
 
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     # NO DEFAULT. This defaulted to cube_v3_best.pt, "the shipped v3", long after v3 stopped
-    # shipping, so a bare `export.py` rebuilt the retired Detlib model over the committed
+    # shipping, so a bare `export.py` rebuilt the retired model over the committed
     # artefacts of the one that replaced it. Which checkpoint ships is a decision to state each time.
     ap.add_argument("--pt", type=Path, help="the ONE checkpoint to export (required, except with --int8-only)")
     ap.add_argument("--out", type=Path, default=HERE / "models", help="artefact directory (committed)")

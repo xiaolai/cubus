@@ -48,7 +48,7 @@ export const FILTERS = Object.freeze({
     'scripts/verify-icons.py',
   ]),
   // cargo audit, pnpm audit, shellcheck, the licence notices. Shellcheck reads EVERY tracked shell
-  // script, so any of them is an input: a training script under ml/, since removed with the Detlib
+  // script, so any of them is an input: a training script under ml/, since removed with v3's
   // pipeline, once executed its own comments on the host, and no job ever looked at it, because this
   // list named only scripts/ and .githooks/.
   deps: Object.freeze([

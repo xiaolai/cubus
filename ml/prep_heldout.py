@@ -118,7 +118,7 @@ def prep(src: str, out: str) -> dict:
 
     with open(os.path.join(out, "data.yaml"), "w", encoding="utf-8") as f:
         f.write(f"path: {os.path.abspath(out)}\n")
-        f.write("train: images\n")  # detlib requires a train: key even for val-only
+        f.write("train: images\n")  # the dataset YAML needs a train: key even for val-only
         f.write("val: images\n")
         f.write(f"nc: {len(CANON_NAMES)}\n")
         f.write("names: [" + ", ".join(CANON_NAMES) + "]\n")

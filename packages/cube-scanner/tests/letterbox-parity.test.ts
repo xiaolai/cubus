@@ -74,7 +74,7 @@ describe('preprocess — the letterbox every implementation must reproduce', () 
     expect(Math.abs(sum - CHECKSUM)).toBeLessThan(1e-3);
   });
 
-  it('pads with Detlib grey, which is what the model was trained on', () => {
+  it('pads with grey 114, which is what the model was trained on', () => {
     // Row 10 is above the image band for a 97x43 source scaled to 640 wide (284 tall, pad 178) —
     // the same probe the Kotlin test makes, in CHW rather than NHWC.
     expect(out[10 * IMG_SIZE + 10]).toBe(Math.fround(114 / 255));

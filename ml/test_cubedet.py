@@ -636,9 +636,9 @@ def test_checkpoint_reloads_under_weights_only(tmp_path):
     and then not read at all. The failure surfaces at the very end of a run, which is the worst
     possible time to discover it, and never during training.
     """
-    from cubedet.train import assert_permissive_environment
+    from cubedet.train import record_environment
 
-    environment = assert_permissive_environment(allow=True)
+    environment = record_environment()
     for key, value in environment.items():
         assert type(value) is str, f"{key} is {type(value).__name__}, not a plain str"
 
@@ -652,7 +652,8 @@ def test_checkpoint_reloads_under_weights_only(tmp_path):
     state = torch.load(path, map_location="cpu", weights_only=True)
     rebuilt = CubeDet(num_classes=state["num_classes"], width=state["width"])
     rebuilt.load_state_dict(state["model"])
-    assert state["environment"]["copyleft_detector_packages_present"] in {"none", "detlib"}
+    # The versions travel with the weights, which is the point of recording them at all.
+    assert state["environment"]["torch"] == environment["torch"]
 
 
 def test_parameter_count_stays_near_the_model_it_replaces():
@@ -1173,8 +1174,6 @@ def test_a_trained_and_exported_model_carries_its_recipe(tmp_path, monkeypatch):
     out = tmp_path / "run"
     argv = ["--data", str(data), "--out", str(out), "--epochs", "1", "--batch", "2", "--workers", "0",
             "--width", "0.25", "--lr", "0.002", "--seed", "3"]
-    if importlib.util.find_spec("detlib"):
-        argv.append("--allow-thirdparty-in-env")  # a shared development venv; the CI job has no detlib
     monkeypatch.setenv("CUBEDET_DATASET", "tiny_fixture")  # what run-cubedet.sh passes into its container
     assert train.main(argv) == 0
     for name in ("best.pt", "last.pt"):

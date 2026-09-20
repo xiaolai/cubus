@@ -1,7 +1,7 @@
 # Which anchor point is responsible for which sticker.
 #
 # Task-aligned assignment, from Feng et al., "TOOD: Task-aligned One-stage Object Detection"
-# (ICCV 2021), §3.2. Written from the paper; see `ml/PERMISSIVE_DETECTOR_PROVENANCE.md`.
+# (ICCV 2021), §3.2. Written from the paper; see `ml/DETECTOR_PROVENANCE.md`.
 #
 # WHY NOT THE OBVIOUS RULE. The simple thing is "the anchor nearest each ground-truth centre owns
 # it". That trains a detector which localises well and classifies badly, because nothing ever tells
