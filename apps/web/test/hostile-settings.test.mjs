@@ -72,7 +72,7 @@ before(async () => {
     language: 7,
     solveTier: 'eleven',
     dragRotate: 'no',
-    sounds: 'false',
+    soundMode: 'deafening',
     devScanView: 'preview',
     cameraId: { nope: true },
   }));
@@ -104,8 +104,11 @@ test('an unknown palette is repaired at load, and the repair is saved', async ()
   // showed as on — and auto-solve then left a believed scan nobody had asked to leave.
   const { BOOLEAN_SETTINGS, DEFAULT_SETTINGS, settings } = await import('../lib/app-settings.js');
   // Every flag — the app's own derived list, so this cannot leave one out the way a copy did — is back
-  // to its DEFAULT when storage held anything but a real boolean: off for most, on for `sounds`.
-  assert.ok(BOOLEAN_SETTINGS.includes('sounds') && BOOLEAN_SETTINGS.includes('autosolve'), 'the flag list is not derived from the defaults');
+  // to its DEFAULT when storage held anything but a real boolean.
+  assert.ok(BOOLEAN_SETTINGS.includes('proveMinimum') && BOOLEAN_SETTINGS.includes('autosolve'), 'the flag list is not derived from the defaults');
+  // `sounds` was one of these until 2026-09-20 and is deliberately not any more: three modes cannot be
+  // a boolean, and a boolean repair would have written `true` over a chosen mode on every load.
+  assert.ok(!BOOLEAN_SETTINGS.includes('sounds'), 'the sound mode is being repaired as a boolean');
   assert.deepEqual([...BOOLEAN_SETTINGS].sort(), Object.keys(hostileFlags).sort(),
     'the flags the app derives and the flags this file made hostile have drifted apart');
   for (const k of BOOLEAN_SETTINGS) {
@@ -116,6 +119,12 @@ test('an unknown palette is repaired at load, and the repair is saved', async ()
   // picture, which the owner ruled out (dev-docs/scan-guidance-plan.md, D2).
   assert.equal(settings.devScanView, 'today', 'a study arm that does not exist was believed');
   assert.equal(stored.devScanView, 'today');
+  // A sound mode that does not exist is the default, not a silent app and not a crash.
+  assert.equal(settings.soundMode, 'voice', 'a sound mode that does not exist was believed');
+  assert.equal(stored.soundMode, 'voice');
+  // And the edited spoken lines are an object, whatever storage held.
+  assert.equal(typeof settings.spokenLines, 'object');
+  assert.ok(!Array.isArray(settings.spokenLines));
 });
 
 test('every screen renders over hostile settings, and the stage is actually replaced', async () => {

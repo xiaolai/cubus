@@ -31,7 +31,11 @@ for (const engine of ['webkit', 'chromium']) {
       page.on('console', (m) => { if (m.text().includes('[cubus]')) logged.push(m.text()); });
       page.on('pageerror', (e) => logged.push(`pageerror: ${e.message}`));
       await page.goto(`${fixture.base}/#/settings`);
-      await page.waitForSelector('[data-toggle="sounds"]');
+      // The sound control, which is how this test knows Settings is drawn. It was a single toggle
+      // until 2026-09-20 and is three pills now (voice / chime / off); this suite is in the BROWSER
+      // tier, which `pnpm check:fast` does not run, so the rename went unnoticed through a green
+      // fast gate. `settings-key-drift.test.mjs` is the guard that makes the next one loud.
+      await page.waitForSelector('[data-set-sound="voice"]');
       const state = () => page.evaluate(async () => (await import('/lib/sound.js')).audioState());
       assert.equal(await state(), 'none', 'audio existed before anyone touched the page');
       await page.mouse.click(4, 4);

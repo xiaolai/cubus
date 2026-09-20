@@ -9,7 +9,7 @@ import { t } from '../i18n.js';
 import { VERSION } from '../version.js';
 
 import { $, escHtml, icon, state } from '../app-state.js';
-import { HIDEABLE, PALETTES, SCAN_VIEWS, THEMES, navHidden, settings } from '../app-settings.js';
+import { HIDEABLE, PALETTES, SCAN_VIEWS, SOUND_MODES, THEMES, navHidden, settings } from '../app-settings.js';
 import { applyNetColors, applyTheme, netPalette } from '../cube-drawing.js';
 import { isTauri } from '../window-chrome.js';
 import { PROVE_COPY } from '../prove-affordance.js';
@@ -20,6 +20,7 @@ import { SCREENS, advancedChordWords, advancedOpen, go, renderNav, renderScreen 
 import { mountSmartCube, smartCubeCard } from './settings/smart-cube.js';
 import { wireOrientation } from './settings/window-orientation.js';
 import { bindSwitch, commitPref, switchRow, unsavedNote } from './settings/preferences.js';
+import { mountSpokenLines, spokenLinesCard } from './settings/spoken-lines.js';
 import { hush } from '../speech.js';
 import { stopAll } from '../sound.js';
 
@@ -33,6 +34,16 @@ const TIER_BLURB = {
   shortest: 'Keeps looking for a shorter one until you move on',
 };
 
+// The three sound modes, as they read on the Settings screen. `voice` is the chime AND the words:
+// the chime lands at once and the line follows, so a scan never loses the immediate tick that says a
+// side went in. A mode with no label here would render as "undefined", the TIER_LABEL precedent.
+const SOUND_LABEL = { voice: 'Voice', chime: 'Bell', off: 'Off' };
+const SOUND_BLURB = {
+  voice: 'A bell when a side is saved, and a spoken line with it where this device has a voice',
+  chime: 'A bell when a side is saved, and when the cube checks out — no spoken lines',
+  off: 'Silent. The tiles and the small cube still show what the scan needs',
+};
+
 SCREENS.settings = () => {
   // The list is PALETTES — the validated one — not a second copy of it beside it.
   const pals = PALETTES;
@@ -41,8 +52,6 @@ SCREENS.settings = () => {
   // invented data this app refuses elsewhere; it returns when the Timer actually earns it.
   const toggles = [
     ['autosolve', 'Auto-solve after scan', 'Jump straight to the guide'],
-    // One switch for every sound the scan makes (lib/sound.js), on unless turned off.
-    ['sounds', 'Sounds', 'A chime when a side is saved, and a spoken word where this device has a voice'],
   ];
   // The window's orientation is the desktop's to choose (dev-docs/stage-contract.md, decision
   // 4): a fixed window that can be either shape. The row exists only where there is a window to
@@ -81,6 +90,8 @@ SCREENS.settings = () => {
           style: 'padding:13px 0;border-bottom:1px solid var(--line-faint)',
           id: `setToggle-${k}`, title: t(lbl), blurb: t(sub), on: Boolean(settings[k]), attrs: `data-toggle="${k}"`, label: t(lbl),
         })).join('')}
+        <div class="wrap-row" style="justify-content:space-between;padding:13px 0 0"><div><div style="font-weight:600">${escHtml(t('Sounds'))}</div><div class="sub" style="color:var(--ink-4)">${escHtml(t(SOUND_BLURB[settings.soundMode] ?? SOUND_BLURB.voice))}</div></div>
+          <div class="wrap-row" style="gap:6px">${Object.values(SOUND_MODES).map((m) => `<button class="pill ${settings.soundMode === m ? 'on' : ''}" id="setSound-${m}" data-set-sound="${m}" aria-pressed="${settings.soundMode === m}">${escHtml(t(SOUND_LABEL[m]))}</button>`).join('')}</div></div>
         ${unsavedNote('camera')}</div>
     </div>
     <div class="aside">
@@ -114,7 +125,8 @@ SCREENS.settings = () => {
           id: 'setToggle-devScanView', on: settings.devScanView === SCAN_VIEWS.stickers, attrs: 'data-scan-view', label: 'Sticker view while scanning',
         }) : ''}
         <div class="sub" style="color:var(--ink-5);margin-top:12px">${escHtml(t('%1 hides this section again.', advancedChordWords()))}</div>
-        ${unsavedNote('advanced')}</div>` : ''}
+        ${unsavedNote('advanced')}</div>
+        ${spokenLinesCard()}` : ''}
       <div class="card"><div class="eyebrow">ABOUT</div>
         <div class="about-brand"><img src="./icons/icon.svg" alt="" width="22" height="22" /><b>Cubus</b></div>
         <div class="about-row">${icon('tag', 15)}<span class="k">${t('Version')}</span><span class="num">${VERSION}</span></div>
@@ -146,6 +158,16 @@ SCREENS.settings = () => {
       // Changing the target does not re-solve anything now — the next solve uses it. Clearing
       // the cached solution is what makes that true; without it the old answer would stand.
       for (const b of root.querySelectorAll('[data-set-tier]')) b.onclick = () => commitPref(b, () => { settings.solveTier = b.dataset.setTier; state.cube.solution = ''; state.cube.solveResult = null; }, renderScreen);
+      // Choosing a quieter mode means quieter NOW: a chime or a line already under way is stopped
+      // rather than left to finish after the choice said otherwise (audit, 2026-09-19, kept through
+      // the move from a boolean to three modes). `hush()` on every change, because leaving `voice`
+      // for either other mode must cut a line mid-word; `stopAll()` only for `off`, since `chime`
+      // keeps the bell that may be sounding.
+      for (const b of root.querySelectorAll('[data-set-sound]')) b.onclick = () => commitPref(b, () => {
+        settings.soundMode = b.dataset.setSound;
+        hush();
+        if (settings.soundMode === SOUND_MODES.off) stopAll();
+      }, renderScreen);
       wireOrientation($('#orientationPills', root));
       for (const b of root.querySelectorAll('[data-pal]')) b.onclick = () => commitPref(b, () => { settings.palette = b.dataset.pal; }, () => { applyNetColors(); renderScreen(); });
       // Setting it by hand is EVIDENCE, and is recorded as such: a scan may still correct it —
@@ -163,15 +185,11 @@ SCREENS.settings = () => {
         const k = b.dataset.toggle;
         bindSwitch(b, {
           isOn: () => settings[k],
-          flip: () => {
-            settings[k] = !settings[k];
-            // Sounds off means silent NOW: a chime or a line already under way is stopped, not left
-            // to finish after the switch said off (audit, 2026-09-19).
-            if (k === 'sounds' && !settings.sounds) { hush(); stopAll(); }
-          },
+          flip: () => { settings[k] = !settings[k]; },
         });
       }
 
+      mountSpokenLines(root);
       mountSmartCube(root);
 
       for (const b of root.querySelectorAll('[data-nav-toggle]')) b.onclick = () => commitPref(b, () => {

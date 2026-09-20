@@ -55,7 +55,7 @@ export const APP_SOURCES = Object.freeze([
   'lib/screens/scan/report-sides.js',
   // the settings screen's own parts, 2026-09-14
   'lib/screens/settings/smart-cube.js', 'lib/screens/settings/window-orientation.js',
-  'lib/screens/settings/preferences.js',
+  'lib/screens/settings/preferences.js', 'lib/screens/settings/spoken-lines.js',
   // the Timer's own parts, 2026-09-14
   'lib/screens/timer/scramble-request.js',
 ]);

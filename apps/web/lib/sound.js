@@ -5,10 +5,11 @@
 // is nothing to load, no licence to carry, and they are the same on every build. There is ONE
 // AudioContext for the page, created and resumed on the first user gesture, because the engines the
 // app runs in refuse to start audio before one; a sound asked for earlier is simply not made — it is
-// never queued to burst out later. `settings.sounds` silences all of it, and a silent scan loses
+// never queued to burst out later. `settings.soundMode` decides: `off` silences all of it — `voice`
+// and `chime` both keep the bell — and a silent scan loses
 // nothing: every sound has a picture beside it, which is the rule the plan holds them to.
 
-import { settings } from './app-settings.js';
+import { SOUND_MODES, settings } from './app-settings.js';
 
 /** Each sound as notes: [frequency in Hz, start in seconds]. */
 const SOUNDS = Object.freeze({
@@ -64,7 +65,7 @@ export const audioState = () => context?.state ?? 'none';
 export function play(name) {
   const notes = SOUNDS[name];
   if (!notes) throw new Error(`sound: there is no sound called "${name}"`);
-  if (!settings.sounds || context?.state !== 'running') return false;
+  if (settings.soundMode === SOUND_MODES.off || context?.state !== 'running') return false;
   const t0 = context.currentTime;
   for (const [hz, at] of notes) {
     const osc = context.createOscillator();

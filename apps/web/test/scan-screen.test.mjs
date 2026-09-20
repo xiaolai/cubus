@@ -1262,11 +1262,11 @@ const SOLVED_CUBE = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
  * platform seams and the sounds setting — goes back when the test ends, so no case here can leave the
  * next one a platform it did not ask for.
  */
-async function soundsRig(t, { sounds = true, autosolve = false } = {}) {
+async function soundsRig(t, { soundMode = 'voice', autosolve = false } = {}) {
   const sound = await import('../lib/sound.js');
   const speech = await import('../lib/speech.js');
   const { settings } = await import('../lib/app-settings.js');
-  const stand = installSoundStandIns({ sound, speech, settings, sounds });
+  const stand = installSoundStandIns({ sound, speech, settings, soundMode });
   const { made, voice } = stand;
   const wasAutosolve = settings.autosolve;
   settings.autosolve = autosolve;
@@ -1349,7 +1349,7 @@ test('with sounds off a scan is silent and unspoken, and finishes exactly as a s
   // The whole path, acceptance included: the earlier version stopped at the scanner's own report, so
   // a silent acceptance could have been broken without this noticing (audit, 2026-09-19).
   const { state } = await import('../lib/app.js');
-  const { made, voice, report, saved, complete } = await soundsRig(t, { sounds: false });
+  const { made, voice, report, saved, complete } = await soundsRig(t, { soundMode: 'off' });
   report({});
   saved('U');
   report({ phase: 'done', message: 'Scan complete — solvable cube captured.', captured: FACES.map(face), device: null, notice: null, complete: true });
@@ -1470,7 +1470,15 @@ test('the sticker view draws the scanner\'s boxes in the twin\'s place, only whi
 // the instant the state it describes is gone, nothing after the screen is left, nothing with sounds
 // off — and a scan that finishes the same whether or not anything was said.
 test('each moment of a scan is said once, and a line whose moment has passed is cut off', async (t) => {
-  const { SPOKEN } = await import('../lib/screens/scan/spoken.js');
+  const { SPOKEN, capturedCue, lineFor } = await import('../lib/screens/scan/spoken.js');
+  const { t: translate } = await import('../lib/i18n.js');
+  // A capture's line counts the sides LEFT (2026-09-20), so it is derived rather than named here:
+  // this case is about each moment being said ONCE, and it should not also fail when the wording
+  // changes. `spoken.test.mjs` owns the words and the rule that no two captures repeat.
+  const savedLine = (sides) => {
+    const cue = capturedCue({ kind: 'side', sides });
+    return translate(lineFor(cue.line), ...(cue.params ?? []));
+  };
   const { voice, report, saved, complete } = await soundsRig(t);
   const said = voice.said;
   const camera = { deviceId: 'cam', label: 'Webcam' };
@@ -1479,7 +1487,7 @@ test('each moment of a scan is said once, and a line whose moment has passed is 
   assert.deepEqual(said, [SPOKEN.open], 'the opening line was not said once');
   saved('U');
   report({ device: camera, captured: [face('U')] });
-  assert.equal(said.at(-1), SPOKEN.saved);
+  assert.equal(said.at(-1), savedLine(1), 'a saved side was not announced with what is left');
   report({ device: camera, captured: [face('U')], shownAgain: true });
   report({ device: camera, captured: [face('U')], shownAgain: true });
   assert.equal(said.filter((l) => l === SPOKEN.again).length, 1, 'the same side again was said on every report');

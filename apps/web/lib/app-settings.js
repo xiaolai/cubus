@@ -43,12 +43,24 @@ export const DEFAULT_PALETTE = 'classic';
  *  screen, and the sticker view beside it. A developer setting; its default, its repair, the Settings
  *  switch and the scan screen all read these. */
 export const SCAN_VIEWS = Object.freeze({ today: 'today', stickers: 'dots' });
+/** How the scan sounds, as three exclusive choices rather than one on/off (owner's call,
+ *  2026-09-20). `sounds` was a single boolean covering the chime and the voice together, so the only
+ *  way to stop a spoken line repeating was to silence the chime a child depends on. `voice` is both
+ *  — the chime marks the capture at once and the line follows, because speech has latency and a tick
+ *  that lands immediately is what says "it heard me". `chime` is the bell alone. `off` is silent.
+ *  One value, so the two cannot come to disagree about what "sounds on" meant. */
+export const SOUND_MODES = Object.freeze({ voice: 'voice', chime: 'chime', off: 'off' });
 /** What a fresh install gets and what every repair below falls back to — one table, so the two
  *  cannot come to disagree about a default. */
 export const DEFAULT_SETTINGS = Object.freeze({
   theme: 'auto', palette: DEFAULT_PALETTE, scheme: 'western', schemeSource: 'default', autosolve: false, cameraId: '',
   navHidden: null, navDefaults: 0, devRandCube: false, language: '', dragRotate: false, solveTier: 'twenty',
-  proveMinimum: false, sounds: true, devScanView: SCAN_VIEWS.today,
+  proveMinimum: false, soundMode: SOUND_MODES.voice, devScanView: SCAN_VIEWS.today,
+  // What the scan says out loud, where a line has been edited in Settings -> Advanced. Keyed by the
+  // line's name in lib/screens/scan/spoken.js, which owns the defaults and the repair: this file
+  // must not import a screen's module (AGENTS.md, the one-way dependency), so all it promises is
+  // that the value is an object.
+  spokenLines: {},
 });
 /** Every setting whose default is a boolean — DERIVED, so a new flag is repaired the moment it has a
  *  default, and no list kept by hand can leave one out (audit, 2026-09-19: the tests' own copies had
@@ -70,6 +82,26 @@ for (const flag of BOOLEAN_SETTINGS) {
 }
 // The study's arm: anything but one of its two values is today's screen.
 if (!Object.values(SCAN_VIEWS).includes(settings.devScanView)) settings.devScanView = DEFAULT_SETTINGS.devScanView;
+// The sound mode, repaired and MIGRATED in one place. A stored `sounds: false` is a person who
+// asked for silence and must keep it; anything else -- true, absent, or the string "false" that the
+// boolean repair above used to catch -- becomes the default.
+//
+// ASKED OF THE STORED RECORD, NOT OF `settings`. `load()` merges storage over the defaults, so
+// `settings.soundMode` is ALWAYS a valid mode by the time this runs -- the default supplies one --
+// and a test that a chosen silence survives failed against exactly that. What decides is whether
+// STORAGE held a mode: if it did not, this install predates the split and the boolean beside it is
+// the only record of what anyone asked for.
+const storedSound = (() => { try { return JSON.parse(storedRecord || '{}'); } catch { return {}; } })();
+if (!Object.values(SOUND_MODES).includes(storedSound.soundMode)) {
+  settings.soundMode = storedSound.sounds === false ? SOUND_MODES.off : DEFAULT_SETTINGS.soundMode;
+}
+delete settings.sounds;
+// Edited spoken lines are untrusted input like everything else in this file. Only that it is an
+// object is promised here; WHICH keys are real, and how long a line may be, is
+// lib/screens/scan/spoken.js's to say, because that is where the lines live.
+if (!settings.spokenLines || typeof settings.spokenLines !== 'object' || Array.isArray(settings.spokenLines)) {
+  settings.spokenLines = {};
+}
 // The inspection flag is gone (it toggled a label, never a behaviour); drop the stored leftover
 // rather than letting save() keep rewriting a field nothing reads — the advancedOpen precedent.
 delete settings.inspection;

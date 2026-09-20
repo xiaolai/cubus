@@ -4,11 +4,12 @@
 // recordings. Speech is offered where the platform provides `speechSynthesis` and nowhere else, as
 // smart-cube pairing is offered only where a radio route exists (`bleReach`, lib/cube-connection.js):
 // Android's WebView and standard WebKitGTK have none, and there a scan still completes on the chime
-// and the pictures, which every scan must be able to do anyway. One switch, `settings.sounds`,
-// silences the voice with the chime (lib/sound.js). A line replaces whatever was being said, so the
-// voice never queues up behind a scan that has moved on.
+// and the pictures, which every scan must be able to do anyway. Speech is the `voice` mode of
+// `settings.soundMode` and nothing else: `chime` keeps the bell without the words, which is the
+// setting for someone who found the lines repetitive rather than unwanted (2026-09-20). A line
+// replaces whatever was being said, so the voice never queues up behind a scan that has moved on.
 
-import { settings } from './app-settings.js';
+import { SOUND_MODES, settings } from './app-settings.js';
 
 let engine = () => ({
   synth: globalThis.speechSynthesis ?? null,
@@ -27,7 +28,7 @@ const CUT_OFF = new Set(['interrupted', 'canceled']);
  * line describes still stands — can decide whether to try again (round-3 audit).
  */
 export function say(text, lang = 'en', { onFail } = {}) {
-  if (!settings.sounds) return false;
+  if (settings.soundMode !== SOUND_MODES.voice) return false;
   const { synth, Utterance } = engine();
   if (!synth || !Utterance) return false;
   synth.cancel();

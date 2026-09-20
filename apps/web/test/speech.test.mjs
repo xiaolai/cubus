@@ -20,7 +20,7 @@ const { hush, say, useSpeechEngine } = await import('../lib/speech.js');
 test('a line cuts off the last, is read as English, and hush stops it', () => {
   const voice = speechStandIn();
   useSpeechEngine(voice.make);
-  settings.sounds = true;
+  settings.soundMode = 'voice';
   assert.equal(say('Got it!'), true);
   assert.equal(say('All done!'), true);
   hush();
@@ -31,10 +31,15 @@ test('a line cuts off the last, is read as English, and hush stops it', () => {
 test('no voice with sounds off, and none where either half of the API is missing', () => {
   const voice = speechStandIn();
   useSpeechEngine(voice.make);
-  settings.sounds = false;
+  settings.soundMode = 'off';
   assert.equal(say('Got it!'), false);
   assert.deepEqual(voice.log, [], 'sounds off still spoke');
-  settings.sounds = true;
+  // …and `chime` is the bell WITHOUT the words: the mode the owner asked for after finding the
+  // lines repetitive (2026-09-20). Silence here is the feature, not a missing voice.
+  settings.soundMode = 'chime';
+  assert.equal(say('anything'), false, 'the voice spoke in the bell-only mode');
+  assert.deepEqual(voice.log, [], 'the bell-only mode queued a line');
+  settings.soundMode = 'voice';
   // Each half is asked for separately: a guard that wanted BOTH missing would speak on a platform
   // with one of them (audit, 2026-09-19).
   const { synth, Utterance } = voice.make();
@@ -52,7 +57,7 @@ test('a line the platform declines is logged and reported; one the app cut off i
   // arrive as `interrupted` and `canceled`, are not failures (audit, 2026-09-19).
   const voice = speechStandIn();
   useSpeechEngine(voice.make);
-  settings.sounds = true;
+  settings.soundMode = 'voice';
   const warned = [];
   const failures = [];
   const warn = console.warn;

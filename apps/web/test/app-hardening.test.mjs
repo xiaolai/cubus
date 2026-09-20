@@ -123,22 +123,25 @@ test('a REPAINT of the screen you are on does not steal focus', async () => {
 
 // The one switch for every sound the scan makes (lib/sound.js; dev-docs/scan-guidance-plan.md 3.2,
 // D3): drawn in Settings, ON for someone who never chose, and a press turns it off and keeps that.
-test('Settings has a Sounds switch, on by default, and a press turns it off and keeps it', async () => {
+test('Settings offers three sound modes, Voice by default, and a press keeps the choice', async () => {
+  // One boolean became three modes on 2026-09-20: the only way to stop a repeated spoken line used
+  // to be silencing the bell a child depends on.
   await go('settings');
-  const sw = $('[data-toggle="sounds"]');
-  assert.ok(sw, 'there is no Sounds switch');
-  assert.equal(sw.getAttribute('aria-checked'), 'true', 'sounds were off for someone who never chose');
-  sw.click();
+  const pill = (mode) => $(`[data-set-sound="${mode}"]`);
+  for (const mode of ['voice', 'chime', 'off']) assert.ok(pill(mode), `there is no ${mode} choice`);
+  assert.equal(pill('voice').getAttribute('aria-pressed'), 'true', 'someone who never chose was not given Voice');
+  pill('chime').click();
   await tick();
-  assert.equal($('[data-toggle="sounds"]').getAttribute('aria-checked'), 'false');
-  assert.equal(JSON.parse(win.localStorage.getItem('cubusSettings')).sounds, false, 'the choice was not kept');
-  $('[data-toggle="sounds"]').click(); // leave the setting as it was
+  assert.equal(pill('chime').getAttribute('aria-pressed'), 'true');
+  assert.equal(pill('voice').getAttribute('aria-pressed'), 'false', 'two modes were on at once');
+  assert.equal(JSON.parse(win.localStorage.getItem('cubusSettings')).soundMode, 'chime', 'the choice was not kept');
+  pill('voice').click(); // leave the setting as it was
   await tick();
 });
 
-// Off means silent NOW: a chime or a spoken line already under way stops when the switch is turned
-// off, rather than finishing after it said off (audit, 2026-09-19).
-test('turning Sounds off stops a chime and a line already under way', async () => {
+// A quieter mode means quieter NOW: a chime or a spoken line already under way stops when the mode
+// changes, rather than finishing after the choice said otherwise (audit, 2026-09-19).
+test('choosing a quieter mode stops a chime and a line already under way', async () => {
   const sound = await import('../lib/sound.js');
   const speech = await import('../lib/speech.js');
   const { ctx, made: oscillators } = audioStandIn({ state: 'running' });
@@ -153,14 +156,22 @@ test('turning Sounds off stops a chime and a line already under way', async () =
     assert.equal(sound.play('capture'), true, 'precondition: a chime is sounding');
     speech.say('Got it!');
     assert.deepEqual(voice.said.at(-1), 'Got it!', 'precondition: a line is being said');
-    $('[data-toggle="sounds"]').click();
+    $('[data-set-sound="off"]').click();
     await tick();
-    assert.equal($('[data-toggle="sounds"]').getAttribute('aria-checked'), 'false');
+    assert.equal($('[data-set-sound="off"]').getAttribute('aria-pressed'), 'true');
     // The line CUT OFF is the one that was being said — one synth throughout, so "something was
     // cancelled" cannot stand in for it (audit, 2026-09-19).
     assert.equal(voice.cuts.at(-1), 'Got it!', 'the line under way was left speaking');
     assert.ok(oscillators.every((o) => o.stops.length >= 2), 'the chime under way was left sounding');
-    $('[data-toggle="sounds"]').click(); // back on, as it was
+    // LEAVING VOICE FOR THE BELL MUST ALSO CUT THE WORDS — the mode a person picks precisely because
+    // the words were too much. `hush()` runs on every change for this; only `off` stops the bell too.
+    $('[data-set-sound="voice"]').click();
+    await tick();
+    speech.say('Still talking');
+    $('[data-set-sound="chime"]').click();
+    await tick();
+    assert.equal(voice.cuts.at(-1), 'Still talking', 'the bell-only mode left a line speaking');
+    $('[data-set-sound="voice"]').click(); // back on, as it was
     await tick();
   } finally {
     // Put back what was there, rather than leaving the next test a platform with no audio and no

@@ -13,8 +13,9 @@ const store = new Map();
 globalThis.localStorage ??= {
   getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k),
 };
-const { QUIET, SPOKEN, acceptedCue, capturedCue, createSpokenScan, hear, refusedCue } =
+const { QUIET, SPOKEN, acceptedCue, capturedCue, createSpokenScan, hear, lineFor, refusedCue } =
   await import('../lib/screens/scan/spoken.js');
+const { t } = await import('../lib/i18n.js');
 const { sidesIn } = await import('../lib/screens/scan/report-sides.js');
 const { useSpeechEngine } = await import('../lib/speech.js');
 const { settings } = await import('../lib/app-settings.js');
@@ -26,13 +27,18 @@ const r = (over = {}) => ({
   phase: 'scanning', message: 'x', captured: [], sides: 0, confirm: null, complete: false,
   shownAgain: false, device: CAM, notice: null, ...over,
 });
+/** A cue's words, resolved exactly as `speak` resolves them: the line looked up by NAME, then its
+ *  count substituted. Cues carry names so an edited line is used at once (2026-09-20), so a test
+ *  that compared `cue.line` to a sentence would now be comparing a key to prose. */
+const spoken = (cue) => (cue ? t(lineFor(cue.line), ...(cue.params ?? [])) : null);
+
 /** Run reports through `hear` from silence; the line said on each (null for none), and the last cue. */
 function run(...reports) {
   let memo = QUIET;
   let cue = null;
   const said = reports.map((p) => {
     ({ memo, cue } = hear(memo, p));
-    return cue?.line ?? null;
+    return spoken(cue);
   });
   return { said, cue, memo };
 }
@@ -79,7 +85,7 @@ test('"all done" is not a report\'s to say: only the screen accepting the scan s
   // a tracking contradiction), so no report — however complete — calls for it (audit, 2026-09-19).
   assert.deepEqual(run(r({ sides: 6 }), r({ phase: 'done', sides: 6, complete: true })).said, [null, null]);
   const cue = acceptedCue();
-  assert.equal(cue.line, SPOKEN.done);
+  assert.equal(cue.line, 'done');
   assert.equal(cue.holds(r({ phase: 'done', sides: 6, complete: true })), true);
   assert.equal(cue.holds(r({ sides: 6 })), false, 'all done held over a scan reopened');
 });
@@ -118,9 +124,16 @@ test('overlaps are decided by priority, not by order of arrival: camera, ask, ag
 
 test('a capture: its line by how many sides are held, nothing for a confirm look, cut by painting or a restart', () => {
   assert.equal(capturedCue({ kind: 'confirm', sides: 6 }), null);
-  assert.equal(capturedCue({ kind: 'side', sides: 2 }).line, SPOKEN.saved);
-  assert.equal(capturedCue({ kind: 'side', sides: 6 }).line, SPOKEN.lastSaved);
-  assert.equal(capturedCue({ kind: 'reread', sides: 6 }).line, SPOKEN.lastSaved);
+  assert.equal(capturedCue({ kind: 'side', sides: 6 }).line, 'lastSaved');
+  assert.equal(capturedCue({ kind: 'reread', sides: 6 }).line, 'lastSaved');
+  // THE COUNTDOWN IS THE POINT (2026-09-20): five captures, five different sentences. It said one
+  // sentence five times, over a chime that had already marked each capture.
+  const saved = [1, 2, 3, 4, 5].map((sides) => spoken(capturedCue({ kind: 'side', sides })));
+  assert.deepEqual(saved, [
+    'Got it! 5 more sides.', 'Got it! 4 more sides.', 'Got it! 3 more sides.',
+    'Got it! 2 more sides.', 'Got it! One more side.',
+  ]);
+  assert.equal(new Set(saved).size, saved.length, 'two captures in one scan said the same words');
   const { holds } = capturedCue({ kind: 'side', sides: 2 });
   assert.equal(holds(r({ sides: 2 })), true);
   assert.equal(holds(r({ sides: 3 })), true, 'the next side cut the last one off before its own line could');
@@ -140,7 +153,7 @@ test('a capture: its line by how many sides are held, nothing for a confirm look
 test('a refusal: "ask a grown-up", not while painting, and cut when the scan moves on or checks again', () => {
   const { memo } = run(r({ phase: 'checking', sides: 6 }));
   const cue = refusedCue(memo);
-  assert.equal(cue.line, SPOKEN.help);
+  assert.equal(cue.line, 'help');
   assert.equal(cue.holds(r({ sides: 6, notice: { title: 'Some stickers were misread', tone: 'err' } })), true);
   assert.equal(cue.holds(r({ sides: 5 })), false, 'held over a side thrown away');
   assert.equal(cue.holds(r({ phase: 'checking', sides: 6 })), false, 'held into a new check');
@@ -162,15 +175,20 @@ test('a report without a side count is refused, never counted by the named list'
 
 /**
  * A voice on a stand-in engine, with a scanner to drive it — one per test, and everything it changes
- * (the engine, the sounds setting, the warning channel) put back when the test ends, so no test can
+ * (the engine, the sound mode, the warning channel) put back when the test ends, so no test can
  * leave the next one a voice it did not ask for (audit, 2026-09-19).
+ *
+ * IT MUST SET THE KEY PRODUCTION READS. It set `settings.sounds` until 2026-09-20, after that key
+ * became `settings.soundMode` — so the rig was saving and restoring a property nothing reads, and
+ * every test here ran at whatever mode the previous one happened to leave. The isolation this
+ * comment promises was false, silently, while the suite stayed green.
  */
 function rig(t) {
-  const wasSounds = settings.sounds;
+  const wasMode = settings.soundMode;
   const warn = console.warn;
   const voice = speechStandIn();
   const wasVoice = useSpeechEngine(voice.make);
-  settings.sounds = true;
+  settings.soundMode = 'voice';
   console.warn = () => {};
   const panel = new EventTarget();
   const stop = new AbortController();
@@ -178,7 +196,7 @@ function rig(t) {
   t.after(() => {
     stop.abort();
     console.warn = warn;
-    settings.sounds = wasSounds;
+    settings.soundMode = wasMode;
     useSpeechEngine(wasVoice);
   });
   return {
@@ -225,8 +243,9 @@ test('a failure arriving for a line already replaced neither brings it back nor 
   capture({ kind: 'side', face: 'U', sides: 1 });
   voice.fail('audio-busy', opening);
   report({ sides: 1, captured: [{}] });
-  assert.deepEqual(voice.said, [SPOKEN.open, SPOKEN.saved], 'a late failure of a replaced line brought it back');
+  const firstSaved = spoken(capturedCue({ kind: 'side', sides: 1 }));
+  assert.deepEqual(voice.said, [SPOKEN.open, firstSaved], 'a late failure of a replaced line brought it back');
   // …and the line now being said is still cut off when its own moment passes.
   report({ phase: 'painting', sides: 1, captured: [{}] });
-  assert.equal(voice.cuts.at(-1), SPOKEN.saved, "a replaced line's late failure kept the current line from being cut off");
+  assert.equal(voice.cuts.at(-1), firstSaved, "a replaced line's late failure kept the current line from being cut off");
 });

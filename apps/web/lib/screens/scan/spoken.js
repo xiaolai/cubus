@@ -15,15 +15,26 @@
 // their order decide, which is how a notice's error tone spoke "ask a grown-up" over a confirm ask
 // that was still the thing to do (found by audit, 2026-09-19).
 
+import { settings } from '../../app-settings.js';
 import { locale, t } from '../../i18n.js';
 import { hush, say } from '../../speech.js';
 // Every side held, named or not — `captured` lists only the named ones and can shrink mid-scan.
 import { sidesIn as sidesOf } from './report-sides.js';
 
-/** The lines, English. Short on purpose: a child listens while holding a cube up. */
+/** The lines, English. Short on purpose: a child listens while holding a cube up.
+ *
+ *  A SAVED SIDE COUNTS DOWN rather than repeating (owner's call, 2026-09-20). It said
+ *  "Got it! Now show me another side." on every accepted capture, so an ordinary scan was that one
+ *  sentence five times over a chime that had already marked each one — the chime says a side landed,
+ *  and the words after it added nothing but length. The remaining count is a fact the scanner
+ *  measures and already passes to `capturedCue`, so the line now carries it: no two captures in a
+ *  scan say the same thing, and what a child hears is progress rather than a repeated instruction.
+ *  Two keys instead of `plural()` on purpose — these are edited by hand in Settings -> Advanced, and
+ *  an editable plural table is a worse thing to hand someone than two plain sentences. */
 export const SPOKEN = Object.freeze({
   open: 'Show me any side of your cube.',
-  saved: 'Got it! Now show me another side.',
+  savedMany: 'Got it! %1 more sides.',
+  savedOne: 'Got it! One more side.',
   lastSaved: 'Got it! Let me check your cube.',
   again: "I've got that one. Show me a different side.",
   ask: 'Turn your whole cube like the little cube, and show me that side.',
@@ -31,6 +42,51 @@ export const SPOKEN = Object.freeze({
   help: "Something doesn't look right. Ask a grown-up to check the stickers.",
   camera: "The camera isn't working. Ask a grown-up to help.",
 });
+
+/** The sides a whole cube has. Named because the countdown is `SIDES - sides` and a bare 6 in that
+ *  expression is the kind of number that later disagrees with the scanner's own. */
+export const SIDES = 6;
+/** Longest an edited line may be. A spoken line is heard, not read: past a breath it stops being a
+ *  cue and becomes a paragraph the scan has moved on from. Generous rather than tight -- the point
+ *  is to refuse a pasted essay, not to police wording. */
+export const LINE_LIMIT = 160;
+
+/**
+ * The lines as they will actually be said: the defaults above, with any edited in
+ * Settings -> Advanced laid over them.
+ *
+ * The stored record is untrusted input (`settings.spokenLines`, repaired to an object by
+ * lib/app-settings.js and no further). A key the app does not know is dropped rather than passed to
+ * the voice; a value that is not a non-empty string is dropped; a line longer than `LINE_LIMIT` is
+ * dropped whole rather than truncated, because half a sentence said out loud is worse than the
+ * default one. AND A LINE THAT DROPS A PLACEHOLDER THE DEFAULT CARRIES IS DROPPED: `savedMany`
+ * without `%1` would announce "Got it! more sides." for the rest of the scan, which is exactly the
+ * kind of invented sentence this app refuses everywhere else.
+ */
+export function spokenLines(edits = settings.spokenLines) {
+  const lines = { ...SPOKEN };
+  if (!edits || typeof edits !== 'object') return Object.freeze(lines);
+  for (const [key, value] of Object.entries(edits)) {
+    if (!Object.hasOwn(SPOKEN, key)) continue;
+    if (typeof value !== 'string') continue;
+    const line = value.trim();
+    if (!line || line.length > LINE_LIMIT) continue;
+    if (SPOKEN[key].includes('%1') && !line.includes('%1')) continue;
+    lines[key] = line;
+  }
+  return Object.freeze(lines);
+}
+
+/** One line, by name, as it will be said. Cues carry the NAME rather than the words so that an edit
+ *  made while a scan is on screen is used by the next line, not the next launch. */
+export const lineFor = (key) => spokenLines()[key] ?? SPOKEN[key];
+
+/**
+ * @typedef {object} Cue
+ * @property {string} line  the NAME of a line in `SPOKEN`, resolved through `lineFor` when spoken.
+ * @property {unknown[]} [params]  substituted into %1.. after translation.
+ * @property {(report: object) => boolean} holds  whether a later report still shows that state.
+ */
 
 /** The ask for a side back, as one comparable value, or null. */
 const askOf = (p) => (p.confirm ? `${p.confirm.face}/${p.confirm.up}` : null);
@@ -47,8 +103,8 @@ export const QUIET = Object.freeze({ opened: false, sides: 0, again: false, askS
  * The line a report calls for, if any, and what to remember for the next one. Pure: every cue's
  * entry, persistence, exit and overlap is tested as a table (test/spoken.test.mjs).
  *
- * @returns {{ memo: object, cue: { line: string, holds: (report: object) => boolean } | null }}
- *   `holds` says whether a later report still shows the state the line describes.
+ * @returns {{ memo: object, cue: Cue | null }} `holds` says whether a later report still shows
+ *   the state the line describes.
  */
 export function hear(memo, p) {
   const sides = sidesOf(p);
@@ -67,19 +123,19 @@ export function hear(memo, p) {
   // scanner cannot see — and the camera line is said on ENTERING the error, not per message, since
   // one failure can report several (audit, 2026-09-19).
   if (p.phase === 'error') {
-    const cue = memo.phase === 'error' ? null : { line: SPOKEN.camera, holds: (q) => q.phase === 'error' };
+    const cue = memo.phase === 'error' ? null : { line: 'camera', holds: (q) => q.phase === 'error' };
     return { memo: next, cue };
   }
   if (ask !== null && ask !== next.askSaid) {
     next.askSaid = ask;
-    return { memo: next, cue: { line: SPOKEN.ask, holds: (q) => askOf(q) === ask } };
+    return { memo: next, cue: { line: 'ask', holds: (q) => askOf(q) === ask } };
   }
   if (next.again && !memo.again) {
-    return { memo: next, cue: { line: SPOKEN.again, holds: (q) => q.shownAgain === true } };
+    return { memo: next, cue: { line: 'again', holds: (q) => q.shownAgain === true } };
   }
   if (!next.opened && p.phase === 'scanning' && p.device && sides === 0) {
     next.opened = true;
-    return { memo: next, cue: { line: SPOKEN.open, holds: (q) => q.phase === 'scanning' && sidesOf(q) === 0 } };
+    return { memo: next, cue: { line: 'open', holds: (q) => q.phase === 'scanning' && sidesOf(q) === 0 } };
   }
   return { memo: next, cue: null };
 }
@@ -91,13 +147,19 @@ export function hear(memo, p) {
  */
 export function capturedCue({ kind, sides }) {
   if (kind === 'confirm') return null;
-  if (sides >= 6) {
+  if (sides >= SIDES) {
     return {
-      line: SPOKEN.lastSaved,
+      line: 'lastSaved',
       holds: (q) => (q.phase === 'scanning' || q.phase === 'checking') && sidesOf(q) >= sides,
     };
   }
-  return { line: SPOKEN.saved, holds: (q) => q.phase === 'scanning' && sidesOf(q) >= sides };
+  // What is LEFT, which is what changes: five captures in a scan, five different sentences.
+  const left = SIDES - sides;
+  return {
+    line: left === 1 ? 'savedOne' : 'savedMany',
+    params: [left],
+    holds: (q) => q.phase === 'scanning' && sidesOf(q) >= sides,
+  };
 }
 
 /**
@@ -109,7 +171,7 @@ export function refusedCue(memo) {
   if (memo.askSaid !== null || memo.phase === 'painting') return null;
   const sides = memo.sides;
   return {
-    line: SPOKEN.help,
+    line: 'help',
     holds: (q) => q.phase === 'scanning' && !q.complete && askOf(q) === null && sidesOf(q) === sides,
   };
 }
@@ -118,7 +180,7 @@ export function refusedCue(memo) {
  *  the screen can still refuse a finished scan (sides read before a smart cube moved, a tracking
  *  contradiction) — and "your cube is ready" over a disabled Solve button is false (audit, 2026-09-19). */
 export function acceptedCue() {
-  return { line: SPOKEN.done, holds: (q) => Boolean(q.complete) };
+  return { line: 'done', holds: (q) => Boolean(q.complete) };
 }
 
 /**
@@ -149,8 +211,11 @@ export function createSpokenScan({ panel: scanner, signal }) {
       finale = false;
       if (!retried && RETRYABLE.has(error)) retry = { cue, outlivesScreen };
     };
-    // In the language the words were translated into, so a catalog is never read in an English voice.
-    const queued = say(t(cue.line), locale(), { onFail });
+    // Resolved HERE, not when the cue was made: a line edited in Settings while the scan is on
+    // screen is used by the very next thing said. In the language the words were translated into,
+    // so a catalog is never read in an English voice; the count substitutes after the lookup, so a
+    // catalog keeps one whole sentence rather than two halves around a number.
+    const queued = say(t(lineFor(cue.line), ...(cue.params ?? [])), locale(), { onFail });
     speaking = queued ? cue.holds : null;
     finale = queued && outlivesScreen;
   };

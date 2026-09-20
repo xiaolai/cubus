@@ -23,7 +23,7 @@ const page = () => new EventTarget();
 test('no sound before a gesture, and none saved up for after it', () => {
   const { ctx } = audioStandIn();
   useAudioContextFactory(() => ctx);
-  settings.sounds = true;
+  settings.soundMode = 'voice';
   const target = page();
   unlockOnGestures(target);
   assert.equal(audioState(), 'none');
@@ -42,7 +42,7 @@ test('each sound is its own rising notes; sounds off makes none; a left screen s
   const target = page();
   unlockOnGestures(target);
   target.dispatchEvent(new Event('pointerdown'));
-  settings.sounds = true;
+  settings.soundMode = 'voice';
   assert.equal(play('capture'), true);
   const capture = ctx.made.map((o) => ({ hz: o.frequency.value, at: o.started }));
   assert.equal(capture.length, 2, 'the capture chime is two notes');
@@ -62,10 +62,16 @@ test('each sound is its own rising notes; sounds off makes none; a left screen s
     'the checked-out sound opens with the capture chime');
   stopAll();
   assert.ok(ctx.made.every((o) => o.stops.length === 2), 'a note still sounding was not stopped');
-  settings.sounds = false;
+  settings.soundMode = 'off';
   assert.equal(play('capture'), false, 'a sound was made with sounds off');
-  assert.equal(ctx.made.length, 6);
-  settings.sounds = true;
+  assert.equal(ctx.made.length, 6, 'a refused sound still built its oscillators');
+  // THE BELL IS NOT THE VOICE (2026-09-20). `chime` exists for someone who wanted the tick without
+  // the words, so the chime must sound there exactly as it does under `voice` — the whole point of
+  // splitting one boolean into three modes, and the half a boolean could not express.
+  settings.soundMode = 'chime';
+  assert.equal(play('capture'), true, 'the bell was silent in the mode that is only the bell');
+  assert.equal(ctx.made.length, 8, 'the bell-only mode made a different number of notes');
+  settings.soundMode = 'voice';
   assert.throws(() => play('fanfare'), /no sound called "fanfare"/);
 });
 
@@ -77,7 +83,7 @@ test('a note that ends on its own is forgotten, not stopped a second time later'
   const target = page();
   unlockOnGestures(target);
   target.dispatchEvent(new Event('pointerdown'));
-  settings.sounds = true;
+  settings.soundMode = 'voice';
   assert.equal(play('capture'), true);
   const notes = ctx.made.slice();
   assert.ok(notes.every((o) => typeof o.onended === 'function'), 'a note cannot say when it ended');
@@ -107,7 +113,7 @@ test('a refused first resume is tried again on the next gesture, and a context s
     return Promise.resolve();
   };
   useAudioContextFactory(() => ctx);
-  settings.sounds = true;
+  settings.soundMode = 'voice';
   const target = page();
   unlockOnGestures(target);
   target.dispatchEvent(new Event('pointerdown'));
@@ -128,7 +134,7 @@ test('waking a context suspended mid-chime does not play the rest of the chime',
   // that has passed (round-3 audit). They are stopped BEFORE the resume.
   const { ctx } = audioStandIn();
   useAudioContextFactory(() => ctx);
-  settings.sounds = true;
+  settings.soundMode = 'voice';
   const target = page();
   unlockOnGestures(target);
   target.dispatchEvent(new Event('pointerdown'));

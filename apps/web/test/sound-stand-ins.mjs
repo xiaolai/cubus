@@ -81,21 +81,21 @@ export function speechStandIn() {
  * caller's own document.
  *
  * @param {object} deps the `lib/sound.js` and `lib/speech.js` modules, the `settings` object, and
- *   whether sounds are on for this test.
+ *   `soundMode` for this test — 'voice' (bell and words), 'chime' (bell alone) or 'off'.
  */
-export function installSoundStandIns({ sound, speech, settings, sounds = true }) {
+export function installSoundStandIns({ sound, speech, settings, soundMode = 'voice' }) {
   const { ctx, made } = audioStandIn();
   const voice = speechStandIn();
   const wasAudio = sound.useAudioContextFactory(() => ctx);
   const wasVoice = speech.useSpeechEngine(voice.make);
-  const wasSounds = settings.sounds;
-  settings.sounds = sounds;
+  const wasMode = settings.soundMode;
+  settings.soundMode = soundMode;
   return {
     ctx,
     made,
     voice,
     restore() {
-      settings.sounds = wasSounds;
+      settings.soundMode = wasMode;
       sound.useAudioContextFactory(wasAudio);
       speech.useSpeechEngine(wasVoice);
     },
