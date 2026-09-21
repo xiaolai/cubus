@@ -38,7 +38,7 @@ test('a stored choice of silence survives the split into three modes', async () 
   const on = await loadWith({ sounds: true });
   assert.equal(on.settings.soundMode, 'voice');
   const fresh = await loadWith(undefined);
-  assert.equal(fresh.settings.soundMode, 'voice', 'a first launch was not given the default');
+  assert.equal(fresh.settings.soundMode, 'chime', 'a first launch was not given the default');
 });
 
 test('the legacy key is read once and then dropped, and never outranks an explicit mode', async () => {
@@ -51,10 +51,21 @@ test('the legacy key is read once and then dropped, and never outranks an explic
   assert.equal(both.settings.soundMode, 'voice', 'a stale boolean overruled an explicit mode');
 });
 
+test('only the ABSENCE of a mode lets the legacy boolean speak', async () => {
+  // The distinction the default moving to `chime` created, and the one a reader is most likely to
+  // collapse again: a record carrying `sounds: true` is only a pre-split install while it has no
+  // `soundMode` of its own. Give it an unusable one and it is a modern record that got corrupted,
+  // so it takes the DEFAULT -- not the bell-and-words the boolean used to mean.
+  const preSplit = await loadWith({ sounds: true });
+  assert.equal(preSplit.settings.soundMode, 'voice', 'a pre-split install lost the words it had');
+  const corrupted = await loadWith({ sounds: true, soundMode: 'deafening' });
+  assert.equal(corrupted.settings.soundMode, 'chime', 'a corrupted modern record was read as pre-split');
+});
+
 test('a mode that does not exist is the default, and the modes are exactly three', async () => {
   for (const bad of ['deafening', '', 0, null, true, ['voice'], { mode: 'voice' }]) {
     const { settings } = await loadWith({ soundMode: bad });
-    assert.equal(settings.soundMode, 'voice', `a soundMode of ${JSON.stringify(bad)} was believed`);
+    assert.equal(settings.soundMode, 'chime', `a soundMode of ${JSON.stringify(bad)} was believed`);
   }
   const { SOUND_MODES } = await loadWith(undefined);
   assert.deepEqual(Object.values(SOUND_MODES).sort(), ['chime', 'off', 'voice'],

@@ -48,6 +48,10 @@ for (const engine of ['webkit', 'chromium']) {
       // the page is given time to use it, and the line is only called good if nothing came back.
       const spoke = await page.evaluate(async () => {
         const speech = await import('/lib/speech.js');
+        // VOICE IS ASKED FOR, NOT INHERITED. The default sound mode became `chime` on 2026-09-21, and
+        // `say()` is gated on the mode — so a test about whether the PLATFORM can speak has to select
+        // the mode that speaks, or it measures the default instead of the engine.
+        (await import('/lib/app-settings.js')).settings.soundMode = 'voice';
         const can = typeof speechSynthesis === 'object' && typeof SpeechSynthesisUtterance === 'function';
         if (!can) return { can, said: null, failure: null, settled: null };
         // Every call, as it arrived: a message saying "null" cannot tell a handler that never ran from

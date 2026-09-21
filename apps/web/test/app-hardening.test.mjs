@@ -138,7 +138,7 @@ test('every sound mode has a label and a blurb of its own', async () => {
   assert.deepEqual(keysOf('SOUND_BLURB'), modes, 'a mode has no blurb, or a blurb has no mode');
 });
 
-test('Settings offers three sound modes, Voice by default, and a press keeps the choice', async (t) => {
+test('Settings offers three sound modes, Chime by default, and a press keeps the choice', async (t) => {
   // One boolean became three modes on 2026-09-20: the only way to stop a repeated spoken line used
   // to be silencing the bell a child depends on.
   //
@@ -160,7 +160,7 @@ test('Settings offers three sound modes, Voice by default, and a press keeps the
   /** The modes drawn as chosen — by `aria-pressed` and by the class, which must agree. */
   const pressed = () => MODES.filter((m) => pill(m).getAttribute('aria-pressed') === 'true');
   const lit = () => MODES.filter((m) => pill(m).classList.contains('on'));
-  assert.deepEqual(pressed(), ['voice'], 'someone who never chose was not given Voice, or several were on');
+  assert.deepEqual(pressed(), ['chime'], 'someone who never chose was not given Chime, or several were on');
   assert.deepEqual(lit(), pressed(), 'what is drawn as chosen and what is announced as chosen disagree');
   // EVERY mode, and exactly one pressed after each — checking Voice against Chime alone would pass
   // with Off stuck on as well (audit, 2026-09-20).
@@ -178,7 +178,18 @@ test('Settings offers three sound modes, Voice by default, and a press keeps the
 
 // A quieter mode means quieter NOW: a chime or a spoken line already under way stops when the mode
 // changes, rather than finishing after the choice said otherwise (audit, 2026-09-19).
-test('choosing a quieter mode stops a chime and a line already under way', async () => {
+test('choosing a quieter mode stops a chime and a line already under way', async (t) => {
+  // VOICE IS SET, NOT INHERITED. The default became `chime` on 2026-09-21, so a test that needs a
+  // line under way must ask for the mode that says lines; inheriting it made the precondition a
+  // fact about the default rather than about this test.
+  const { settings } = await import('../lib/app-settings.js');
+  const wasMode = settings.soundMode;
+  const wasStored = win.localStorage.getItem('cubusSettings');
+  t.after(() => {
+    settings.soundMode = wasMode;
+    if (wasStored === null) win.localStorage.removeItem('cubusSettings');
+    else win.localStorage.setItem('cubusSettings', wasStored);
+  });
   const sound = await import('../lib/sound.js');
   const speech = await import('../lib/speech.js');
   const { ctx, made: oscillators } = audioStandIn({ state: 'running' });
@@ -190,6 +201,8 @@ test('choosing a quieter mode stops a chime and a line already under way', async
     // The gesture reaches the listener the app installed at boot: registering the same callback again
     // is ignored by EventTarget, so a second call here would prove nothing (audit, 2026-09-19).
     win.document.dispatchEvent(new win.Event('pointerdown'));
+    $('[data-set-sound="voice"]').click();
+    await tick();
     assert.equal(sound.play('capture'), true, 'precondition: a chime is sounding');
     speech.say('Got it!');
     assert.deepEqual(voice.said.at(-1), 'Got it!', 'precondition: a line is being said');
@@ -216,8 +229,7 @@ test('choosing a quieter mode stops a chime and a line already under way', async
     $('[data-set-sound="chime"]').click();
     await tick();
     assert.equal(voice.cuts.at(-1), 'Still talking', 'the bell-only mode left a line speaking');
-    $('[data-set-sound="voice"]').click(); // back on, as it was
-    await tick();
+    // The mode this test changed is put back by `t.after`, which runs however this ends.
   } finally {
     // Put back what was there, rather than leaving the next test a platform with no audio and no
     // voice (audit, 2026-09-19).

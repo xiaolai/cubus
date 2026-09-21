@@ -137,8 +137,8 @@ test('an unknown palette is repaired at load, and the repair is saved', async ()
   assert.equal(settings.devScanView, 'today', 'a study arm that does not exist was believed');
   assert.equal(stored.devScanView, 'today');
   // A sound mode that does not exist is the default, not a silent app and not a crash.
-  assert.equal(settings.soundMode, 'voice', 'a sound mode that does not exist was believed');
-  assert.equal(stored.soundMode, 'voice');
+  assert.equal(settings.soundMode, 'chime', 'a sound mode that does not exist was believed');
+  assert.equal(stored.soundMode, 'chime');
   // And the edited spoken lines are an object, whatever storage held. The fixture supplies a STRING
   // above: without one these assertions read the default and would have passed against `null` too
   // (audit, 2026-09-20).

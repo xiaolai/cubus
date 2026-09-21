@@ -48,14 +48,20 @@ export const SCAN_VIEWS = Object.freeze({ today: 'today', stickers: 'dots' });
  *  way to stop a spoken line repeating was to silence the chime a child depends on. `voice` is both
  *  — the chime marks the capture at once and the line follows, because speech has latency and a tick
  *  that lands immediately is what says "it heard me". `chime` is the bell alone. `off` is silent.
- *  One value, so the two cannot come to disagree about what "sounds on" meant. */
+ *  One value, so the two cannot come to disagree about what "sounds on" meant.
+ *
+ *  THE DEFAULT IS `chime`, not `voice` (owner's call, 2026-09-21). A fresh install ticks when a
+ *  side is saved and says nothing. The tick is the affordance scan-guidance-plan D3 argues for --
+ *  it is how a child who cannot read hears a side land -- and it costs a beginner nothing; the
+ *  spoken lines are the part that talks over a person who did not ask for them, so they are opt-in.
+ *  An install that already stored a mode keeps it; the migration below is unchanged. */
 export const SOUND_MODES = Object.freeze({ voice: 'voice', chime: 'chime', off: 'off' });
 /** What a fresh install gets and what every repair below falls back to — one table, so the two
  *  cannot come to disagree about a default. */
 export const DEFAULT_SETTINGS = Object.freeze({
   theme: 'auto', palette: DEFAULT_PALETTE, scheme: 'western', schemeSource: 'default', autosolve: false, cameraId: '',
   navHidden: null, navDefaults: 0, devRandCube: false, language: '', dragRotate: false, solveTier: 'twenty',
-  proveMinimum: false, soundMode: SOUND_MODES.voice, devScanView: SCAN_VIEWS.today,
+  proveMinimum: false, soundMode: SOUND_MODES.chime, devScanView: SCAN_VIEWS.today,
   // What the scan says out loud, where a line has been edited in Settings -> Advanced. Keyed by the
   // line's name in lib/screens/scan/spoken.js, which owns the defaults and the repair: this file
   // must not import a screen's module (AGENTS.md, the one-way dependency), so all it promises is
@@ -74,8 +80,8 @@ export const settings = load('cubusSettings', DEFAULT_SETTINGS);
 // hand-edited or half-migrated flag reads as ON: proveMinimum would opt someone in to an operation
 // that runs for hours, and a Settings toggle flips `!settings[k]`, so a stored "false" showed as on
 // while auto-solve left a believed scan. ONE rule for every flag: a real boolean is kept, and
-// anything else is the flag's DEFAULT — off for all of them but `sounds`, which is on
-// (dev-docs/scan-guidance-plan.md, D3: a chime is how a child who cannot read hears a side saved).
+// anything else is the flag's DEFAULT — off for every one of them. The scan's sound is no longer
+// among them: it is `soundMode`, three values, repaired and migrated below.
 // It was two rules until 2026-09-19, one per default, free to drift apart.
 for (const flag of BOOLEAN_SETTINGS) {
   if (typeof settings[flag] !== 'boolean') settings[flag] = DEFAULT_SETTINGS[flag];
@@ -92,8 +98,25 @@ if (!Object.values(SCAN_VIEWS).includes(settings.devScanView)) settings.devScanV
 // STORAGE held a mode: if it did not, this install predates the split and the boolean beside it is
 // the only record of what anyone asked for.
 const storedSound = (() => { try { return JSON.parse(storedRecord || '{}'); } catch { return {}; } })();
+//
+// THE MIGRATION DOES NOT READ THE DEFAULT, and since 2026-09-21 it must not. These are two
+// different questions: "what does a NEW install get" (the default -- `chime`) and "what did THIS
+// person already have" (the legacy boolean -- `sounds: true` was the bell AND the words, which is
+// `voice`). They were the same answer until the default moved, and using one for the other would
+// quietly take the spoken lines away from every install that predates the split. So the legacy
+// behaviour is named here rather than inherited.
+// THREE situations, and only one of them is a migration -- conflating them is what this block got
+// wrong the moment the default stopped equalling the legacy behaviour:
+//   storage held nothing            a first launch          -> the default
+//   storage held no `soundMode`     predates the split      -> what the boolean meant
+//   storage held an unusable one    modern, corrupted       -> the default
+// The middle one is the only place the legacy boolean may speak, and it is recognised by the
+// ABSENCE of the key rather than by the value being unusable.
+const preSplit = storedRecord !== null && !('soundMode' in storedSound);
 if (!Object.values(SOUND_MODES).includes(storedSound.soundMode)) {
-  settings.soundMode = storedSound.sounds === false ? SOUND_MODES.off : DEFAULT_SETTINGS.soundMode;
+  settings.soundMode = preSplit
+    ? (storedSound.sounds === false ? SOUND_MODES.off : SOUND_MODES.voice)
+    : DEFAULT_SETTINGS.soundMode;
 }
 delete settings.sounds;
 // Edited spoken lines are untrusted input like everything else in this file. Only that it is an
