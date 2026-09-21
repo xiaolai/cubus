@@ -263,7 +263,16 @@ final class CompiledModelCacheTests: XCTestCase {
         let weights = copy.appendingPathComponent("Data/com.apple.CoreML/weights/weight.bin")
         let attributes = try FileManager.default.attributesOfItem(atPath: weights.path)
         let size = attributes[.size] as! Int
-        let modified = attributes[.modificationDate] as! Date
+        // THE DATE MAKES ONE TRIP BEFORE IT IS THE BASELINE. A date read from the filesystem does not
+        // survive being written back through `setAttributes` — the conversion loses precision below
+        // the microsecond, so the value read afterwards differs from it by less than `Date` prints
+        // (measured 2026-09-21: set …123456836, read …123456955). A value that has made the trip once
+        // survives every later one exactly. So the baseline is the read-back of its own write, and
+        // the check below stays an EXACT equality rather than a tolerance: CI's fresh checkout had
+        // nanosecond mtimes and failed this line with two dates that printed identically.
+        try FileManager.default.setAttributes(
+            [.modificationDate: attributes[.modificationDate] as! Date], ofItemAtPath: weights.path)
+        let modified = try FileManager.default.attributesOfItem(atPath: weights.path)[.modificationDate] as! Date
         let handle = try FileHandle(forUpdating: weights)
         try handle.seek(toOffset: UInt64(size / 2))
         let byte = try XCTUnwrap(try handle.read(upToCount: 1)?.first)
