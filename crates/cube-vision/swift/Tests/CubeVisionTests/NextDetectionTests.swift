@@ -1,10 +1,14 @@
 // The native scanner's per-tick entry, end to end: the Swift letterbox and CoreML on an injected frame,
 // with no camera — and the camera-position mapping behind the page's facing (2026-09-19,
-// dev-docs/scan-guidance-plan.md 5; audit rounds 2 and 3). The still entry's byte-count check is held
-// from the Rust side, across the real boundary (`infer_rgba_refuses_a_byte_count_that_is_not_its_size`
-// in src/apple.rs). Run with `swift test` from crates/cube-vision/swift; CI runs it in the golden-macos
-// job.
+// dev-docs/scan-guidance-plan.md 5; audit rounds 2 and 3), and what a camera that stops delivering
+// answers (2026-09-20, audit §1.2): a stale frame is no frame, a disconnect or a failed session is an
+// error naming the cause. Since 2026-09-21 also the load's transaction — a failed reload keeps the
+// model that worked, a probe whose shape nothing can hold loads nothing — and the error channel, one
+// slot per thread. The still entry's byte-count check is held from the Rust side, across the real
+// boundary (`infer_rgba_refuses_a_byte_count_that_is_not_its_size` in src/apple.rs). Run with
+// `swift test` from crates/cube-vision/swift; CI runs it in the golden-macos job.
 import AVFoundation
+import CoreML
 import XCTest
 @testable import CubeVision
 
@@ -52,15 +56,28 @@ final class NextDetectionTests: XCTestCase {
     private func loadModel() -> Int32 {
         XCTAssertTrue(FileManager.default.fileExists(atPath: Self.modelPath), "no model at \(Self.modelPath) — run ml/export.py")
         let cap = Self.modelPath.withCString { cube_vision_load($0, 1) }
-        XCTAssertGreaterThan(cap, 0, "the model did not load")
+        XCTAssertGreaterThan(cap, 0, "the model did not load: \(lastError() ?? "no reason")")
         return cap
     }
 
-    /// A camera whose latest frame is `frame`, installed as the open one.
-    private func openInjectedCamera(_ frame: (bytes: [UInt8], width: Int, height: Int)?) {
-        let camera = Camera()
-        camera.injectForTests(frame)
+    /// A camera opened with no lens, its latest frame `frame` when one is given, installed as the
+    /// open one.
+    @discardableResult
+    private func openInjectedCamera(_ frame: (bytes: [UInt8], width: Int, height: Int)?) -> (camera: Camera, generation: Int) {
+        let camera = Camera(orientationSource: nil)
+        let generation = camera.openForTests()
+        if let frame { camera.injectForTests(frame) }
         useCameraForTests(camera)
+        return (camera, generation)
+    }
+
+    private static let frame = (bytes: frameBytes, width: frameWidth, height: frameHeight)
+
+    /// The reason the last failing call left, consumed.
+    private func lastError() -> String? {
+        guard let why = cube_vision_last_error() else { return nil }
+        defer { cube_vision_free_string(why) }
+        return String(cString: why)
     }
 
     /// One call: the element count (or error), the buffer and shape it wrote, and the picture size.
@@ -91,7 +108,7 @@ final class NextDetectionTests: XCTestCase {
 
     func testAFrameIsInferredWholeAndCarriesItsPictureSize() {
         let cap = loadModel()
-        openInjectedCamera((bytes: Self.frameBytes, width: Self.frameWidth, height: Self.frameHeight))
+        openInjectedCamera(Self.frame)
         let got = detect(cap: cap)
         XCTAssertEqual(got.n, cap, "the frame was not inferred")
         XCTAssertEqual([got.rows, got.anchors], [10, 8400], "rows = 4 box coords + 6 colour classes; 8400 anchors at 640")
@@ -115,7 +132,7 @@ final class NextDetectionTests: XCTestCase {
     /// A frame that arrived but could not be written out is not a frame: no size.
     func testAFrameTheBufferCannotHoldLeavesNoPicture() {
         let cap = loadModel()
-        openInjectedCamera((bytes: Self.frameBytes, width: Self.frameWidth, height: Self.frameHeight))
+        openInjectedCamera(Self.frame)
         let got = detect(cap: cap - 1)
         XCTAssertEqual(got.n, -2, "an undersized buffer was written into")
         XCTAssertEqual([got.width, got.height], [0, 0], "a frame that was not written out left its size behind")
@@ -125,13 +142,177 @@ final class NextDetectionTests: XCTestCase {
     /// caller. The committed model cannot be made to fail, so a stand-in does.
     func testAFrameWhoseInferenceFailsLeavesNoPictureAndSaysWhy() {
         useModelForTests(FailingModel(), rows: 10, anchors: 8400)
-        openInjectedCamera((bytes: Self.frameBytes, width: Self.frameWidth, height: Self.frameHeight))
+        openInjectedCamera(Self.frame)
         let got = detect(cap: 10 * 8400)
         XCTAssertEqual(got.n, -1, "a failed inference was not reported as one")
         XCTAssertEqual([got.width, got.height], [0, 0], "a frame that was not inferred left its size behind")
-        guard let why = cube_vision_last_error() else { return XCTFail("the failure left no reason") }
-        defer { cube_vision_free_string(why) }
-        XCTAssertTrue(String(cString: why).contains("cube_vision_next_detection"), String(cString: why))
+        guard let why = lastError() else { return XCTFail("the failure left no reason") }
+        XCTAssertTrue(why.contains("cube_vision_next_detection"), why)
+    }
+
+    /// A frame is served while it is younger than the window and refused once it is older
+    /// (2026-09-20, audit §1.2): the camera used to keep its last frame until a new one or `close()`,
+    /// so a webcam unplugged mid-scan was re-inferred every tick as a perfectly still cube and the
+    /// Rust side's no-frame clock — which starts only on a 0 — never started. Injected with an age
+    /// rather than waited for, so the case is exact and costs no time.
+    func testAFrameIsServedFreshAndRefusedOnceStale() {
+        let cap = loadModel()
+        let camera = openInjectedCamera(nil).camera
+        camera.injectForTests(Self.frame, age: Camera.frameStaleAfter / 2)
+        XCTAssertEqual(detect(cap: cap).n, cap, "a frame inside the window was not served")
+        camera.injectForTests(Self.frame, age: Camera.frameStaleAfter)
+        let got = detect(cap: cap)
+        XCTAssertEqual(got.n, 0, "a frame older than the window was served as the latest")
+        XCTAssertEqual([got.width, got.height], [0, 0], "a refused frame left its size behind")
+        XCTAssertNil(lastError(), "no frame is not a failure, and must leave no reason")
+        // A frame that arrives afterwards is served: the window is about age, not about history.
+        camera.injectForTests(Self.frame)
+        XCTAssertEqual(detect(cap: cap).n, cap, "a fresh frame after a stale one was not served")
+    }
+
+    /// The OS said the device went away: -6, no picture, and a reason naming the device — and the
+    /// fault outranks a frame in hand, because that frame is from a camera that is not there. Until
+    /// 2026-09-20 nothing observed the disconnect and the last frame was served forever.
+    func testADisconnectedCameraIsAnErrorNamingTheDevice() {
+        let cap = loadModel()
+        let (camera, generation) = openInjectedCamera(Self.frame)
+        XCTAssertEqual(detect(cap: cap).n, cap)
+        camera.deviceWasDisconnected(label: "Injected frame", generation: generation)
+        let got = detect(cap: cap)
+        XCTAssertEqual(got.n, -6, "a disconnected camera was not reported as one")
+        XCTAssertEqual([got.width, got.height], [0, 0], "a disconnect left a size behind")
+        guard let why = lastError() else { return XCTFail("the disconnect left no reason") }
+        XCTAssertTrue(why.contains("Injected frame") && why.contains("disconnected"), why)
+        camera.injectForTests(Self.frame)
+        XCTAssertEqual(detect(cap: cap).n, -6, "a frame injected after the disconnect was served")
+        XCTAssertNotNil(lastError(), "every -6 carries its reason, not only the first")
+    }
+
+    /// The session's own notifications, posted the way AVFoundation posts them, reach the same
+    /// answers through the observers `init` installs — the real wiring, not a hook. A runtime error
+    /// is the session stopping: -6 with its reason. An interruption is a pause the OS ends (a call,
+    /// another app taking the device, the background): the tick answers "no frame" until the end
+    /// arrives, so the Rust clock bounds it, and the next frame after the end is served as ever.
+    func testASessionErrorAndAnInterruptionArriveThroughTheNotifications() {
+        let cap = loadModel()
+        let camera = openInjectedCamera(Self.frame).camera
+        let center = NotificationCenter.default
+        center.post(name: .AVCaptureSessionWasInterrupted, object: camera.sessionForTests)
+        XCTAssertEqual(detect(cap: cap).n, 0, "an interrupted session served its last frame")
+        XCTAssertNil(lastError(), "an interruption is not a failure")
+        camera.injectForTests(Self.frame)
+        XCTAssertEqual(detect(cap: cap).n, 0, "a frame published during the interruption was served")
+        center.post(name: .AVCaptureSessionInterruptionEnded, object: camera.sessionForTests)
+        camera.injectForTests(Self.frame)
+        XCTAssertEqual(detect(cap: cap).n, cap, "a frame after the interruption ended was not served")
+
+        let error = NSError(
+            domain: AVFoundationErrorDomain, code: AVError.Code.deviceWasDisconnected.rawValue,
+            userInfo: [NSLocalizedDescriptionKey: "the media services were reset"])
+        center.post(name: .AVCaptureSessionRuntimeError, object: camera.sessionForTests, userInfo: [AVCaptureSessionErrorKey: error])
+        let got = detect(cap: cap)
+        XCTAssertEqual(got.n, -6, "a failed session was not reported as one")
+        guard let why = lastError() else { return XCTFail("the failure left no reason") }
+        XCTAssertTrue(why.contains("the media services were reset"), why)
+
+        // Another camera's session says nothing about this one: the observers are keyed to the object.
+        let other = Camera(orientationSource: nil)
+        other.openForTests()
+        center.post(name: .AVCaptureSessionRuntimeError, object: other.sessionForTests, userInfo: [AVCaptureSessionErrorKey: error])
+        camera.injectForTests(Self.frame)
+        XCTAssertEqual(detect(cap: cap).n, -6, "the fault was lost")
+        useCameraForTests(other)
+        other.injectForTests(Self.frame)
+        XCTAssertEqual(detect(cap: cap).n, -6, "the other camera's own session error was not recorded")
+    }
+
+    /// The reason a call failed stays with the thread that made the call: a failure on another
+    /// thread in between — another Tauri worker's command — neither overwrites nor consumes it
+    /// (audit finding 105). Ordered with semaphores, so the interleaving is the one described.
+    func testAFailureOnOneThreadKeepsItsReasonWhileAnotherThreadFails() {
+        let failedOnA = DispatchSemaphore(value: 0)
+        let fetchedOnB = DispatchSemaphore(value: 0)
+        let finished = DispatchSemaphore(value: 0)
+        var codeOnA: Int32 = 0
+        var reasonOnA: String?
+        Thread {
+            var buf: Float = .nan
+            var rows: Int32 = 0, anchors: Int32 = 0
+            var picture: [Int32] = [0, 0]
+            codeOnA = picture.withUnsafeMutableBufferPointer { cube_vision_next_detection(&buf, 1, &rows, &anchors, $0.baseAddress!) }
+            failedOnA.signal()
+            fetchedOnB.wait()
+            reasonOnA = self.lastError()
+            finished.signal()
+        }.start()
+        failedOnA.wait()
+        XCTAssertEqual(codeOnA, -3, "thread A's call did not fail as expected")
+        let bytes = [UInt8](repeating: 0, count: 4)
+        var out: Float = .nan
+        var rows: Int32 = 0, anchors: Int32 = 0
+        let codeOnB = bytes.withUnsafeBufferPointer { cube_vision_infer_rgba($0.baseAddress!, 3, 1, 1, &out, 1, &rows, &anchors) }
+        XCTAssertEqual(codeOnB, -5, "thread B's call did not fail as expected")
+        let reasonOnB = lastError()
+        XCTAssertTrue(reasonOnB?.contains("is not 3 bytes") == true, "thread B did not get its own reason: \(reasonOnB ?? "nil")")
+        fetchedOnB.signal()
+        XCTAssertEqual(finished.wait(timeout: .now() + 10), .success)
+        XCTAssertEqual(reasonOnA, "no model loaded", "thread A's reason was overwritten or consumed by thread B's failure")
+        XCTAssertNil(lastError(), "a reason was left on the main thread")
+    }
+
+    /// A load that fails leaves the model that was working exactly as it was: the next tick still
+    /// infers with the count the Rust side sized from, and a repeat load of the working pair is
+    /// answered without a build. Until 2026-09-21 the failure cleared the model while the Rust side
+    /// kept the count (audit finding 104).
+    func testAFailedReloadKeepsTheWorkingModel() {
+        let cap = loadModel()
+        XCTAssertEqual(cube_vision_compile_count(), 1)
+        openInjectedCamera(Self.frame)
+        let rc = "/no/such/place/cubedet.mlpackage".withCString { cube_vision_load($0, 1) }
+        XCTAssertEqual(rc, -1, "a load from a path that does not exist did not fail")
+        guard let why = lastError() else { return XCTFail("the failed load left no reason") }
+        XCTAssertTrue(why.contains("no model at"), why)
+        XCTAssertEqual(detect(cap: cap).n, cap, "the working model was cleared by the failed reload")
+        XCTAssertEqual(Self.modelPath.withCString { cube_vision_load($0, 1) }, cap, "the working pair was not answered")
+        XCTAssertEqual(cube_vision_compile_count(), 1, "the working pair was built again after the failed reload")
+
+        // A build that fails AFTER construction — the probe — keeps it too.
+        useModelBuilderForTests { _, _ in FailingModel() }
+        XCTAssertEqual(Self.modelPath.withCString { cube_vision_load($0, 2) }, -1, "a model whose probe fails loaded")
+        XCTAssertNotNil(lastError())
+        XCTAssertEqual(detect(cap: cap).n, cap, "the working model was cleared by a probe that failed")
+    }
+
+    /// A probe's output that nothing can hold — a zero dimension, a count the ABI's Int32 cannot
+    /// return, data that is not the shape it claims — is a refused load with the reason, and no
+    /// model is loaded by it (audit finding 103). A zero used to be returned as a success of 0
+    /// elements; an overflow as a wrapped count.
+    func testAProbeWhoseShapeCannotBeHeldIsRefusedAndLoadsNothing() throws {
+        XCTAssertEqual(try outputCount(of: Inference(data: [Float](repeating: 0, count: 6), rows: 2, anchors: 3)), 6)
+        let refused: [(Inference, String)] = [
+            (Inference(data: [], rows: 0, anchors: 8400), "positive"),
+            (Inference(data: [], rows: 10, anchors: 0), "positive"),
+            (Inference(data: [], rows: 1 << 20, anchors: 1 << 12), "Int32"),
+            (Inference(data: [], rows: Int.max, anchors: 2), "Int32"),
+            (Inference(data: [Float](repeating: 0, count: 5), rows: 2, anchors: 3), "holds 5"),
+        ]
+        for (probe, word) in refused {
+            XCTAssertThrowsError(try outputCount(of: probe), "\(probe.rows)×\(probe.anchors)") { error in
+                let said = "\(error)"
+                XCTAssertTrue(said.contains("model:") && said.contains(word), said)
+            }
+        }
+        // Through the load: the refusal is the load's, and nothing is loaded.
+        useModelBuilderForTests { _, _ in ShapedModel(Inference(data: [], rows: 0, anchors: 8400)) }
+        XCTAssertEqual("shaped.mlpackage".withCString { cube_vision_load($0, 0) }, -1, "a probe with zero rows loaded")
+        XCTAssertTrue(lastError()?.contains("positive") == true)
+        XCTAssertEqual(detect(cap: 1).n, -3, "a model whose probe was refused is loaded")
+        // A probe that holds up loads, with its count, and the same pair is then answered from it.
+        useModelBuilderForTests { _, _ in ShapedModel(Inference(data: [Float](repeating: 1, count: 6), rows: 2, anchors: 3)) }
+        XCTAssertEqual("shaped.mlpackage".withCString { cube_vision_load($0, 0) }, 6)
+        XCTAssertEqual(cube_vision_compile_count(), 2)
+        XCTAssertEqual("shaped.mlpackage".withCString { cube_vision_load($0, 0) }, 6)
+        XCTAssertEqual(cube_vision_compile_count(), 2, "the same pair was built again")
     }
 }
 
@@ -139,4 +320,11 @@ final class NextDetectionTests: XCTestCase {
 private final class FailingModel: FrameInferring {
     struct Refused: Error {}
     func infer(chw: [Float], imgsz: Int) throws -> Inference { throw Refused() }
+}
+
+/// A model whose every inference answers the same tensor, whatever its shape claims.
+private final class ShapedModel: FrameInferring {
+    private let answer: Inference
+    init(_ answer: Inference) { self.answer = answer }
+    func infer(chw: [Float], imgsz: Int) throws -> Inference { answer }
 }
