@@ -9,6 +9,7 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
+import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.lifecycle.LifecycleOwner
 import app.tauri.annotation.Command
@@ -27,7 +28,6 @@ import java.nio.ByteOrder
 import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
 import java.util.ArrayDeque
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -38,8 +38,9 @@ import java.util.concurrent.atomic.AtomicReference
  * The seam is `Detector` (packages/cube-scanner/src/detector.ts): the panel asks for the model's
  * output for a fresh frame and does not know what produced it. `pickDetector` probes this plugin
  * and falls back to `WebDetector` when it is absent, which is what every non-Apple build did until
- * now. The commands here are the ones `NativeDetector` calls, spelled the same way, because a
- * platform that answers a different vocabulary is a second app.
+ * now. The commands here are the ones `NativeDetector` calls, because a platform that answers a
+ * different vocabulary is a second app — spelled the way TAURI DELIVERS THEM, which is not the way
+ * the page sends them (see [listCameras]).
  *
  * THE LETTERBOX IS THE WHOLE CORRECTNESS PROBLEM. Everything downstream of `next_detection` —
  * decode, NMS, fitFace, assembleColors — is one TypeScript implementation shared by every runtime,
@@ -140,11 +141,25 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
     private var outputShape: IntArray = intArrayOf(1, 0, 0)
 
     /**
-     * What to run once the camera permission is answered, keyed by the INVOKE — not by its command
-     * name. Two concurrent `open_camera` invokes are two entries here; keyed by name, the second
-     * overwrote the first and one of the two promises never settled.
+     * Who is waiting on the camera permission, in order, and — by whether the queue was empty —
+     * whether a request is already out.
+     *
+     * ONE REQUEST IN FLIGHT (2026-09-21, audit). Tauri's `PluginManager` keeps a single
+     * `requestPermissionsCallback` (tauri-2.11.5/mobile/android/src/main/java/app/tauri/plugin/
+     * PluginManager.kt, `requestPermissions`), so a second `requestPermissionForAlias` while the
+     * first was unanswered OVERWROTE it: the first invoke's callback never ran and its promise never
+     * settled — and the map this replaced, keyed by invoke id "so both are kept", only hid that,
+     * since the callback for the overwritten entry was never going to arrive. Now the first caller
+     * launches the request and every caller waits here; the answer, a failed launch, an undeclared
+     * permission and [onDestroy] each drain the WHOLE queue, so no invoke is left pending whichever
+     * way the request ends.
      */
-    private val pendingPermissionAction = ConcurrentHashMap<Long, () -> Unit>()
+    private val permissionWaiters = Waiters<Pair<Invoke, () -> Unit>>()
+
+    /** Set by [onDestroy], read on the model thread: a task queued behind the teardown must not
+     *  build or use an interpreter the teardown has closed. */
+    @Volatile
+    private var destroyed = false
 
     // ---- capability ----------------------------------------------------------------------------
 
@@ -190,20 +205,34 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
      * ASKED, not assumed. This used to return a fixed front/back pair, so a device with no front
      * lens still offered one and selecting it failed later, at bind time, as an opaque camera
      * error rather than an absence the picker could have shown.
+     *
+     * NAMED IN lowerCamelCase, AND EVERY OTHER COMMAND HERE TOO (2026-09-20, audit 1.6). The page
+     * sends `plugin:cube-vision|list_cameras`. This plugin registers no Rust `invoke_handler`
+     * (crates/cube-vision/src/lib.rs, the Android `init`), so the call takes Tauri's mobile
+     * fallback, which camel-cases the command before handing it to Kotlin —
+     * `heck::AsLowerCamelCase(message.command)` in tauri-2.11.5/src/webview/mod.rs (the
+     * `run_command` call around line 1891) — and `PluginHandle.kt` indexes `@Command` methods by
+     * the exact `method.name` (`indexMethods`, `commands[method.name]`, mobile/android/src/main/
+     * java/app/tauri/plugin/PluginHandle.kt:156). So `list_cameras` here was a method nothing could
+     * reach: `listCameras` is what arrives, and "No command listCameras found" was the answer. Six
+     * of the seven commands were unreachable this way; only `probe`, one word, was found — which is
+     * why an `@Command` here is spelled as the camel-casing of what the page sends, held to it by
+     * `apps/web/test/native-plugin-commands.test.mjs` on the source and by
+     * `VisionPluginCommandsTest` on the compiled class.
+     *
+     * The BLE plugin's `ble_*` methods are snake_case and DO work, and that is not a counter-
+     * example: Rust calls them through `run_mobile_plugin`, which passes the name verbatim. Copying
+     * that convention here was the defect.
      */
     @Command
-    fun list_cameras(invoke: Invoke) {
+    fun listCameras(invoke: Invoke) {
         val future = ProcessCameraProvider.getInstance(activity)
         future.addListener({
             runCatching {
                 val p = future.get()
                 val cameras = buildList {
-                    if (p.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA)) {
-                        add(mapOf("deviceId" to BACK, "label" to "Back camera"))
-                    }
-                    if (p.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)) {
-                        add(mapOf("deviceId" to FRONT, "label" to "Front camera"))
-                    }
+                    if (p.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA)) add(cameraEntry(BACK))
+                    if (p.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)) add(cameraEntry(FRONT))
                 }
                 invoke.resolveObject(cameras)
             }.onFailure { invoke.reject("could not enumerate cameras: ${it.message}") }
@@ -221,39 +250,76 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
             proceed()
             return
         }
-        pendingPermissionAction[invoke.id] = proceed
-        requestPermissionForAlias(CAMERA_ALIAS, invoke, "onCameraPermissionResult")
+        // Only the FIRST waiter launches the request; the rest ride on its answer (see [permissionWaiters]).
+        if (!permissionWaiters.add(invoke to proceed)) return
+        // Tauri answers a permission the manifest does not declare by rejecting the LAUNCHING
+        // invoke and never calling the callback (`PluginHandle.requestPermissions` runs it only
+        // when `validatePermissions` passes) — which, with one request shared by everyone, would
+        // leave every later caller queued for an answer that is never coming. The same check,
+        // made here, refuses all of them at once instead (2026-09-21).
+        if (!isPermissionDeclared(CAMERA_ALIAS)) {
+            rejectWaiters("the camera permission is not declared in AndroidManifest.xml")
+            return
+        }
+        runCatching { requestPermissionForAlias(CAMERA_ALIAS, invoke, "onCameraPermissionResult") }
+            .onFailure { e ->
+                // A launch that throws would otherwise leave every waiter pending for ever.
+                rejectWaiters("could not ask for the camera permission: ${e.message}")
+            }
     }
 
+    /** Everyone waiting on the camera permission is rejected with [reason]; the queue is empty after. */
+    private fun rejectWaiters(reason: String) {
+        for ((waiting, _) in permissionWaiters.drain()) waiting.reject(reason)
+    }
+
+    /**
+     * Whichever invoke Tauri hands back, EVERYONE drained is answered (2026-09-21). A callback
+     * means a dialog was answered and the permission state is re-read fresh, so the answer is the
+     * same for all of them; and an empty queue means whoever drained it — a failed launch, a
+     * destroy — already settled the launching invoke, so nothing is answered twice. An earlier
+     * draft returned early when the callback's invoke was not among the waiters, which dropped
+     * the waiters it had just drained, unresolved.
+     *
+     * `invoke` is the signature Tauri's `PluginHandle` calls this with (`method(instance, invoke)`),
+     * not a value this reads: the launching invoke is the first waiter, answered with the rest.
+     */
+    @Suppress("UNUSED_PARAMETER")
     @PermissionCallback
     private fun onCameraPermissionResult(invoke: Invoke) {
-        val proceed = pendingPermissionAction.remove(invoke.id)
-        if (getPermissionState(CAMERA_ALIAS) != PermissionState.GRANTED) {
-            return invoke.reject("camera permission was not granted")
-        }
-        if (proceed == null) {
-            return invoke.reject("the permission result arrived with nothing waiting on it")
-        }
-        // Inside Tauri's ActivityResult callback there is no try/catch above this frame: a
-        // throwing first post-grant command crashed the app instead of rejecting one promise.
-        runCatching(proceed).onFailure {
-            invoke.reject("${invoke.command} failed after the permission was granted: ${it.message}")
+        val granted = getPermissionState(CAMERA_ALIAS) == PermissionState.GRANTED
+        val waiting = permissionWaiters.drain()
+        for ((each, proceed) in waiting) {
+            if (!granted) {
+                each.reject("camera permission was not granted")
+                continue
+            }
+            // Inside Tauri's ActivityResult callback there is no try/catch above this frame: a
+            // throwing first post-grant command crashed the app instead of rejecting one promise.
+            runCatching(proceed).onFailure {
+                each.reject("${each.command} failed after the permission was granted: ${it.message}")
+            }
         }
     }
 
     @SuppressLint("UnsafeOptInUsageError")
     @Command
-    fun open_camera(invoke: Invoke) = withCameraPermission(invoke) { bindCamera(invoke) }
+    fun openCamera(invoke: Invoke) = withCameraPermission(invoke) { bindCamera(invoke) }
 
-    @SuppressLint("UnsafeOptInUsageError")
     private fun bindCamera(invoke: Invoke) {
         val args = invoke.parseArgs(OpenArgs::class.java)
         // The REAR camera by default. A phone's front lens is the trap the web path documents:
         // the app expresses no preference and the platform hands back a selfie camera, so the
         // scanner looks at a face while the user points the cube at the back of the phone.
-        val id = args.deviceId ?: BACK
+        // And an id this plugin never listed is REFUSED, before any state moves (2026-09-21,
+        // audit): every unknown id used to fall through to the rear camera, where `Detector.use`
+        // promises a rejection — the one `CameraSession.open` acts on by retrying with the id
+        // dropped (packages/cube-scanner/view/camera-session.ts, its pinned-camera fallback).
+        val facing = facingOf(args.deviceId)
+            ?: return invoke.reject("no camera with id \"${args.deviceId}\": this plugin lists \"$BACK\" and \"$FRONT\"")
+        val id = if (facing == Facing.FRONT) FRONT else BACK
         val selector =
-            if (id == FRONT) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
+            if (facing == Facing.FRONT) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
 
         // Claim this session BEFORE anything async starts, and clear the last camera's frame with
         // it. Whatever was in `latest` belongs to a camera that is about to be unbound.
@@ -269,81 +335,122 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
             if (generation.get() != mine) {
                 return@addListener invoke.reject("the camera was closed before it finished opening")
             }
-            runCatching {
-                val p = future.get()
-                provider = p
-                p.unbindAll()
-                val a = ImageAnalysis.Builder()
-                    // The modern selector: `setTargetResolution` is deprecated and, past CameraX
-                    // 1.3, ignored on some devices. Closest-higher-then-lower keeps the frame at or
-                    // just above 640 on the long side, which is all the letterbox can use.
-                    .setResolutionSelector(
-                        ResolutionSelector.Builder()
-                            .setResolutionStrategy(
-                                ResolutionStrategy(
-                                    Size(IMG, IMG),
-                                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER,
-                                ),
-                            )
-                            .build(),
+            // ONE catch around the whole bind — the provider, `unbindAll`, the builder and the
+            // bind itself — because a throw that escapes this Runnable is an uncaught exception
+            // on the main thread: the app dies with the invoke unanswered, where the contract is
+            // a rejection that says why.
+            runCatching { bindTransactionally(future.get(), selector, id, mine) }
+                .onSuccess { invoke.resolve() }
+                .onFailure { invoke.reject("could not open the camera: ${it.message}") }
+        }, androidx.core.content.ContextCompat.getMainExecutor(activity))
+    }
+
+    /**
+     * Unbind whatever was bound, bind `selector` with a fresh analyzer, and commit the session's
+     * state only when the bind succeeded. Throws on any failure — with NOTHING committed and the
+     * candidate analyzer cleared — and the caller answers the invoke.
+     *
+     * TRANSACTIONAL (2026-09-21, audit). `analysis`/`openedId` used to be written only on success
+     * and left alone on failure — but `unbindAll()` had already run, so a failed switch left
+     * [currentCamera] naming a camera that was no longer bound, and the analyzer built for the new
+     * one was neither installed nor cleared. The committed state is cleared BEFORE the old camera
+     * is unbound, so no step can leave the fields describing a camera that is gone; the candidate
+     * analyzer is local until the bind succeeds.
+     */
+    @SuppressLint("UnsafeOptInUsageError")
+    private fun bindTransactionally(
+        p: ProcessCameraProvider,
+        selector: CameraSelector,
+        id: String,
+        mine: Int,
+    ) {
+        provider = p
+        analysis?.clearAnalyzer()
+        analysis = null
+        openedId = null
+        p.unbindAll()
+        val candidate = analysisFor(mine)
+        try {
+            p.bindToLifecycle(activity as LifecycleOwner, selector, candidate)
+        } catch (e: Throwable) {
+            candidate.clearAnalyzer()
+            throw e
+        }
+        analysis = candidate
+        openedId = id
+    }
+
+    /** The analysis use case for session `mine`: frames at or just above 640, RGBA, newest only. */
+    @SuppressLint("UnsafeOptInUsageError")
+    private fun analysisFor(mine: Int): ImageAnalysis =
+        ImageAnalysis.Builder()
+            // The modern selector: `setTargetResolution` is deprecated and, past CameraX
+            // 1.3, ignored on some devices. Closest-higher-then-lower keeps the frame at or
+            // just above 640 on the long side, which is all the letterbox can use.
+            .setResolutionSelector(
+                ResolutionSelector.Builder()
+                    .setResolutionStrategy(
+                        ResolutionStrategy(
+                            Size(IMG, IMG),
+                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER,
+                        ),
                     )
-                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
-                    .build()
+                    .build(),
+            )
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
+            .build()
+            .also { a ->
                 a.setAnalyzer(analysisExecutor) { image ->
                     // `use` rather than a bare close, so a throwing letterbox still releases the
                     // image — a leaked ImageProxy stalls the whole analysis pipeline after two
                     // frames, which looks like a camera that froze.
-                    image.use {
-                        if (generation.get() != mine) return@use
-                        // No free buffer means the model thread and the slot hold all three: the
-                        // model is behind the camera, and the honest thing is to drop this frame
-                        // rather than allocate a fourth.
-                        val buf = pool.acquire() ?: return@use
-                        runCatching { letterbox(it, buf) }
-                            .onSuccess {
-                                // Re-checked after the work: a close can land while a frame is
-                                // being letterboxed, and publishing it then revives a closed
-                                // camera's pixels.
-                                if (generation.get() == mine) {
-                                    lastFrameError.set(null)
-                                    latest.getAndSet(buf)?.let(pool::release)
-                                } else {
-                                    pool.release(buf)
-                                }
-                            }
-                            .onFailure { e ->
-                                pool.release(buf)
-                                if (generation.get() == mine) {
-                                    // Recorded AND the stale frame dropped: answering with older
-                                    // pixels would let a broken camera read as a working one.
-                                    latest.getAndSet(null)?.let(pool::release)
-                                    lastFrameError.set(e.message ?: e.toString())
-                                }
-                            }
-                    }
+                    image.use { publishFrame(mine, it) }
                 }
-                p.bindToLifecycle(activity as LifecycleOwner, selector, a)
-                analysis = a
-                openedId = id
-                invoke.resolve()
-            }.onFailure { invoke.reject("could not open the camera: ${it.message}") }
-        }, androidx.core.content.ContextCompat.getMainExecutor(activity))
+            }
+
+    /** Letterbox one frame of session `mine` into a pooled buffer and publish it as [latest]. */
+    private fun publishFrame(mine: Int, image: ImageProxy) {
+        if (generation.get() != mine) return
+        // No free buffer means the model thread and the slot hold all three: the model is behind
+        // the camera, and the honest thing is to drop this frame rather than allocate a fourth.
+        val buf = pool.acquire() ?: return
+        runCatching { letterbox(image, buf) }
+            .onSuccess {
+                // Re-checked after the work: a close can land while a frame is being letterboxed,
+                // and publishing it then revives a closed camera's pixels.
+                if (generation.get() == mine) {
+                    lastFrameError.set(null)
+                    latest.getAndSet(buf)?.let(pool::release)
+                } else {
+                    pool.release(buf)
+                }
+            }
+            .onFailure { e ->
+                pool.release(buf)
+                if (generation.get() == mine) {
+                    // Recorded AND the stale frame dropped: answering with older pixels would let
+                    // a broken camera read as a working one.
+                    latest.getAndSet(null)?.let(pool::release)
+                    lastFrameError.set(e.message ?: e.toString())
+                }
+            }
     }
 
+    /**
+     * The camera that is open, as the same entry [listCameras] lists it — `facing` included
+     * (2026-09-20). The scan screen mirrors its sticker view unless `facing === 'environment'`
+     * (apps/web/lib/screens/scan/sticker-view.js), and `nativeDevice` on the TS side already reads
+     * the field; this reply omitted it, so a phone's BACK camera was drawn mirrored.
+     */
     @Command
-    fun current_camera(invoke: Invoke) {
+    fun currentCamera(invoke: Invoke) {
         val id = openedId ?: return invoke.resolve()
-        invoke.resolve(
-            JSObject().apply {
-                put("deviceId", id)
-                put("label", if (id == FRONT) "Front camera" else "Back camera")
-            },
-        )
+        invoke.resolveObject(cameraEntry(id))
     }
 
     @Command
-    fun close_camera(invoke: Invoke) {
+    fun closeCamera(invoke: Invoke) {
         closeCamera()
         invoke.resolve()
     }
@@ -362,11 +469,12 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
     // ---- model ---------------------------------------------------------------------------------
 
     @Command
-    fun load_model(invoke: Invoke) {
+    fun loadModel(invoke: Invoke) {
         invoke.parseArgs(LoadArgs::class.java)
         // On the model thread: building an Interpreter maps the file and initialises XNNPACK, which
         // is not work for the thread that has to keep drawing.
         modelExecutor.execute {
+            if (destroyed) return@execute invoke.reject("the plugin was destroyed")
             if (interpreter != null) return@execute invoke.resolve()
             runCatching {
                 val opts = Interpreter.Options().apply {
@@ -375,19 +483,28 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
                     numThreads = maxOf(1, Runtime.getRuntime().availableProcessors() - 2)
                     setUseXNNPACK(true)
                 }
-                val i = Interpreter(loadModel(), opts)
-                // ASSERTED, not assumed. The shipped graph takes NHWC [1,640,640,3]; an export that
-                // changed layout would otherwise be discovered as boxes that are subtly wrong
-                // everywhere, which reads as a worse model rather than a wrong tensor.
-                val inShape = i.getInputTensor(0).shape()
-                check(inShape.contentEquals(intArrayOf(1, IMG, IMG, 3))) {
-                    "the model wants input ${inShape.joinToString()}, not [1, $IMG, $IMG, 3] — " +
-                        "this plugin builds NHWC and would feed it the wrong pixels"
+                val candidate = Interpreter(loadModel(), opts)
+                // CLOSED ON EVERY FAILURE FROM HERE (2026-09-21, audit): an interpreter whose shape
+                // check failed used to be dropped unclosed, and each retry leaked another LiteRT
+                // instance. It becomes [interpreter] only once every check has passed.
+                try {
+                    // ASSERTED, not assumed. The shipped graph takes NHWC [1,640,640,3]; an export
+                    // that changed layout would otherwise be discovered as boxes that are subtly
+                    // wrong everywhere, which reads as a worse model rather than a wrong tensor.
+                    val inShape = candidate.getInputTensor(0).shape()
+                    check(inShape.contentEquals(intArrayOf(1, IMG, IMG, 3))) {
+                        "the model wants input ${inShape.joinToString()}, not [1, $IMG, $IMG, 3] — " +
+                            "this plugin builds NHWC and would feed it the wrong pixels"
+                    }
+                    val outShape = candidate.getOutputTensor(0).shape()
+                    outputShape = outShape
+                    interpreter = candidate
+                } catch (e: Throwable) {
+                    candidate.close()
+                    throw e
                 }
-                outputShape = i.getOutputTensor(0).shape()
-                interpreter = i
-                invoke.resolve()
-            }.onFailure { invoke.reject("could not load the model: ${it.message}") }
+            }.onSuccess { invoke.resolve() }
+                .onFailure { invoke.reject("could not load the model: ${it.message}") }
         }
     }
 
@@ -420,53 +537,64 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
      * already answered.
      */
     @Command
-    fun next_detection(invoke: Invoke) {
+    fun nextDetection(invoke: Invoke) {
         modelExecutor.execute {
+            if (destroyed) return@execute invoke.reject("the plugin was destroyed")
             val i = interpreter
                 ?: return@execute invoke.reject("the model is not loaded — call load_model first")
             val input = latest.getAndSet(null)
             if (input == null) {
                 // A recorded preprocessing failure is reported, not papered over as "no frame yet".
-                lastFrameError.get()?.let {
-                    return@execute invoke.reject("the camera frame could not be prepared: $it")
-                }
+                val why = lastFrameError.get()
+                if (why != null) return@execute invoke.reject("the camera frame could not be prepared: $why")
                 return@execute invoke.resolve(JSObject().apply { put("tensor", "") })
             }
-            val rows = outputShape.getOrElse(1) { 0 }
-            val anchors = outputShape.getOrElse(2) { 0 }
-            if (rows <= 0 || anchors <= 0) {
+            // OWNED FROM HERE, RELEASED IN `finally` (2026-09-21, audit): only `Interpreter.run`
+            // used to be guarded, so a throw in the output allocation, the encoding or the reply
+            // skipped the release — a leaked buffer per failure, three failures and the pool was
+            // empty and the camera "froze" — and left the invoke unresolved.
+            try {
+                val rows = outputShape.getOrElse(1) { 0 }
+                val anchors = outputShape.getOrElse(2) { 0 }
+                if (rows <= 0 || anchors <= 0) {
+                    return@execute invoke.reject("the model reports no output shape")
+                }
+                // The ENCODING is inside the same guard as the inference (2026-09-21, verification of
+                // the audit fix): with it in `onSuccess`, a throw from Base64 or the reply object escaped
+                // `runCatching` after it had already succeeded — the buffer was released, the invoke was
+                // never answered, and the executor task died with the exception.
+                runCatching {
+                    val bytes = infer(i, input, rows, anchors)
+                    JSObject().apply {
+                        put("tensor", android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP))
+                    }
+                }
+                    .onSuccess { invoke.resolve(it) }
+                    .onFailure { invoke.reject("inference failed: ${it.message}") }
+            } finally {
                 pool.release(input)
-                return@execute invoke.reject("the model reports no output shape")
             }
-
-            val out = Array(1) { Array(rows) { FloatArray(anchors) } }
-            val ran = runCatching {
-                // A DIRECT ByteBuffer, and `run` rather than `runForMultipleInputsOutputs`.
-                //
-                // This previously nested the frame into `[1,3,640,640]` and wrapped THAT in
-                // `arrayOf(...)`, producing a five-dimensional NCHW tensor for a model whose input
-                // is `[1,640,640,3]` — and handed `run()` a Map, which is the multi-input API. Three
-                // mistakes that all had to be fixed together, because each one alone still threw.
-                val buf = inputBuffer()
-                buf.clear()
-                val f = buf.asFloatBuffer()
-                f.put(input)
-                buf.rewind()
-                i.run(buf, out)
-            }
-            pool.release(input)
-            ran.onFailure { return@execute invoke.reject("inference failed: ${it.message}") }
-
-            val bytes = ByteBuffer.allocate(8 + rows * anchors * 4).order(ByteOrder.LITTLE_ENDIAN)
-            bytes.putInt(rows)
-            bytes.putInt(anchors)
-            for (r in 0 until rows) for (a in 0 until anchors) bytes.putFloat(out[0][r][a])
-            invoke.resolve(
-                JSObject().apply {
-                    put("tensor", android.util.Base64.encodeToString(bytes.array(), android.util.Base64.NO_WRAP))
-                },
-            )
         }
+    }
+
+    /**
+     * One inference on an owned frame: the wire bytes `decodeTensorResponse` reads. Throws on any
+     * failure; the caller owns `frame` and its release.
+     */
+    private fun infer(i: Interpreter, frame: FloatArray, rows: Int, anchors: Int): ByteArray {
+        val out = Array(1) { Array(rows) { FloatArray(anchors) } }
+        // A DIRECT ByteBuffer, and `run` rather than `runForMultipleInputsOutputs`.
+        //
+        // This previously nested the frame into `[1,3,640,640]` and wrapped THAT in
+        // `arrayOf(...)`, producing a five-dimensional NCHW tensor for a model whose input
+        // is `[1,640,640,3]` — and handed `run()` a Map, which is the multi-input API. Three
+        // mistakes that all had to be fixed together, because each one alone still threw.
+        val buf = inputBuffer()
+        buf.clear()
+        buf.asFloatBuffer().put(frame)
+        buf.rewind()
+        i.run(buf, out)
+        return encodeTensor(rows, anchors, out[0])
     }
 
     /**
@@ -480,14 +608,38 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
             .order(ByteOrder.nativeOrder())
             .also { input = it }
 
-    /** Release what a plugin instance owns; an activity can be recreated under us. */
-    override fun onDestroy() {
+    /**
+     * Release what a plugin instance owns; an activity can be recreated under us.
+     *
+     * THE INTERPRETER IS CLOSED ON ITS OWN THREAD, BEHIND EVERY TASK ALREADY QUEUED (2026-09-21,
+     * audit). It used to be closed here, on the main thread, while an inference could be running
+     * on it — LiteRT is not safe to call from two threads — and a `loadModel` queued before the
+     * destroy could then build a fresh interpreter into a dead plugin and leak it. Every model task
+     * checks [destroyed] first, the close is the last task the executor accepts — `shutdown`, never
+     * `shutdownNow`, so what is queued still runs and answers its own invoke — and permission
+     * waiters are answered rather than abandoned. A command that arrives after the shutdown finds
+     * `execute` throwing, which Tauri's dispatcher turns into a rejection of that invoke.
+     *
+     * The activity-taking overload: Tauri deprecated the bare `onDestroy()` and its
+     * `triggerOnDestroy` calls each once, so this runs exactly as before and compiles clean.
+     */
+    override fun onDestroy(activity: AppCompatActivity) {
+        destroyed = true
         closeCamera()
         analysisExecutor.shutdown()
+        // Guarded: a second destroy finds the executor shut and `execute` throwing, and nothing
+        // may escape the destroy path.
+        runCatching {
+            modelExecutor.execute {
+                runCatching { interpreter?.close() }
+                interpreter = null
+                input = null
+            }
+        }
         modelExecutor.shutdown()
-        interpreter?.close()
-        interpreter = null
-        input = null
+        for ((waiting, _) in permissionWaiters.drain()) {
+            waiting.reject("the plugin was destroyed before the camera permission was answered")
+        }
     }
 
     /**
@@ -532,6 +684,34 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
         return letterboxFrom(rotation.width, rotation.height, into) { x, y, c ->
             src.get(rotation.srcY(x, y) * row + rotation.srcX(x, y) * pixel + c).toInt() and 0xff
         }
+    }
+
+    /** The two lenses this plugin can name. */
+    enum class Facing { BACK, FRONT }
+
+    /**
+     * Callers waiting on one shared answer, in order. `add` says whether the caller is the FIRST
+     * waiting — the one that must launch the request — and `drain` hands every waiter back and
+     * re-arms, so the next `add` launches again. Pure, so the one-request-in-flight rule of
+     * [permissionWaiters] is pinned without a permission dialog.
+     */
+    class Waiters<T> {
+        private val queue = ArrayDeque<T>()
+
+        /** Adds `item`; true when it is the only one waiting, i.e. the caller must launch. */
+        fun add(item: T): Boolean = synchronized(queue) {
+            queue.add(item)
+            queue.size == 1
+        }
+
+        /** Everyone waiting, in order, and the queue emptied. */
+        fun drain(): List<T> = synchronized(queue) {
+            val all = queue.toList()
+            queue.clear()
+            all
+        }
+
+        val size: Int get() = synchronized(queue) { queue.size }
     }
 
     /**
@@ -676,6 +856,51 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
                 }
             }
             return out
+        }
+
+        /**
+         * One camera as the page reads it — a `CameraDevice` (packages/cube-scanner/src/camera.ts):
+         * `deviceId`, `label`, and `facing` as `getUserMedia` would say it, `'environment'` for the
+         * lens that faces away and `'user'` for the one that faces the person. The one place the
+         * two ids become words, so [listCameras] and [currentCamera] cannot disagree; pure, so
+         * `VisionPluginCommandsTest` pins the facing without a camera.
+         */
+        fun cameraEntry(id: String): Map<String, String> =
+            if (id == FRONT) {
+                mapOf("deviceId" to FRONT, "label" to "Front camera", "facing" to "user")
+            } else {
+                mapOf("deviceId" to BACK, "label" to "Back camera", "facing" to "environment")
+            }
+
+        /**
+         * Which lens `deviceId` names: the rear by default, and null for an id this plugin never
+         * listed — which [openCamera] refuses rather than opening the rear camera in its place.
+         * Only null means "no preference": the panel already turns an empty `device-id` into
+         * undefined (`ai-scan-panel.ts`, `|| undefined`) and `NativeDetector.use` sends null, so an
+         * empty string here is an id nobody listed. Pure, so `VisionPluginLifecycleTest` pins the
+         * refusal without a camera.
+         */
+        fun facingOf(deviceId: String?): Facing? = when (deviceId) {
+            null, BACK -> Facing.BACK
+            FRONT -> Facing.FRONT
+            else -> null
+        }
+
+        /**
+         * The wire format `decodeTensorResponse` reads: two little-endian int32s (rows, anchors)
+         * then rows×anchors float32, row-major. Pure, and refuses an `out` whose shape is not the
+         * one declared, so the header can never promise bytes the body does not carry.
+         */
+        fun encodeTensor(rows: Int, anchors: Int, out: Array<FloatArray>): ByteArray {
+            require(rows > 0 && anchors > 0) { "a ${rows}×$anchors tensor has no cells" }
+            require(out.size == rows && out.all { it.size == anchors }) {
+                "the output is ${out.size} rows of ${out.firstOrNull()?.size ?: 0}, not ${rows}×$anchors"
+            }
+            val bytes = ByteBuffer.allocate(8 + rows * anchors * 4).order(ByteOrder.LITTLE_ENDIAN)
+            bytes.putInt(rows)
+            bytes.putInt(anchors)
+            for (r in 0 until rows) for (a in 0 until anchors) bytes.putFloat(out[r][a])
+            return bytes.array()
         }
 
         const val CAMERA_ALIAS = "camera"
