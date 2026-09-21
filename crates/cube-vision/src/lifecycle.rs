@@ -148,7 +148,12 @@ impl<O> CaptureLifecycle<O> {
         self.lock().opened.clone()
     }
 
-    /// The published generation, for a test or a log.
+    /// The published generation — test instrumentation, and compiled only for tests. This module is
+    /// in the LIB on Windows alone (`lib.rs`: `cfg(any(target_os = "windows", test))`), and nothing
+    /// there reads the number, so on the one target where the module ships the method was dead code
+    /// that `-D warnings` refuses (CI, 2026-09-21). No host check could see it: on macOS the module
+    /// exists only under test, where the method is used.
+    #[cfg(test)]
     pub fn generation(&self) -> usize {
         self.published.load(Ordering::SeqCst)
     }
