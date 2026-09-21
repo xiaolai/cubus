@@ -29,6 +29,9 @@ import { type Detection, fitFace, ROLL_TIE_BAND_DEG } from '../src/onnx-postproc
 const SWEEP = new URL('./fixtures/rolled-grids-sweep.json', import.meta.url);
 const HAND = new URL('./fixtures/rolled-grids.json', import.meta.url);
 const SEED = 20260921;
+/** How far a regenerated coordinate may sit from the pinned one: one engine's libm against
+ *  another's, and nothing more (see the regeneration test for the arithmetic). */
+const LIBM_TOLERANCE_PX = 1e-9;
 const CASES = 300;
 
 interface SweepCase {
@@ -233,12 +236,37 @@ describe('the seeded sweep of generated holds, shared with ml/test_pipeline.py',
   it('is the sweep this file generates: the same seed, the same detections', () => {
     // A fixture regenerated from a different generator would pin different holds under the same
     // names; the detections themselves are the identity of the sweep.
+    //
+    // TO WITHIN ONE LIBM, NOT TO THE BIT. This check re-runs the generator, and the generator calls
+    // `Math.cos`/`Math.sin`, which ECMAScript leaves "implementation-approximated": the same engine
+    // on another CPU or another release may differ in the last place. It did — on 2026-09-21 the
+    // fixture written on macOS arm64 (Node 24.18) failed at case 219 on CI's Linux x64 (Node 24.20),
+    // while the pinned-reading test below, which feeds `fitFace` the STORED bits, passed there.
+    // Nothing in `face()` can amplify that: the PRNG is integer-only, every branch compares a draw
+    // with 0.5, each case takes a fixed 26 draws, and every output is linear in cos/sin — so one ulp
+    // moves a coordinate by ~1e-13 px. The tolerance sits four orders above that and ten below a
+    // 74 px sticker: any change to the generator itself still fails here. The integer fields are
+    // exact, and the decisions are pinned by the next test on the stored numbers, not on these.
     const sweep = load();
     expect(sweep.seed).toBe(SEED);
     expect(sweep.cases).toHaveLength(CASES);
     const again = generate();
-    for (let k = 0; k < CASES; k++)
-      expect(sweep.cases[k]!.detections, sweep.cases[k]!.name).toEqual(again[k]!.detections);
+    for (let k = 0; k < CASES; k++) {
+      const { name, detections: pinned } = sweep.cases[k]!;
+      const now = again[k]!.detections;
+      expect(now, name).toHaveLength(pinned.length);
+      pinned.forEach((p, i) => {
+        const n = now[i]!;
+        expect(n.classId, `${name}, box ${i}: classId`).toBe(p.classId);
+        expect(n.confidence, `${name}, box ${i}: confidence`).toBe(p.confidence);
+        for (const key of ['cx', 'cy', 'w', 'h'] as const) {
+          expect(
+            Math.abs(n[key] - p[key]),
+            `${name}, box ${i}, ${key}: generated ${n[key]}, pinned ${p[key]}`,
+          ).toBeLessThanOrEqual(LIBM_TOLERANCE_PX);
+        }
+      });
+    }
   });
 
   it('reads every case as pinned, and never as a scramble', () => {
