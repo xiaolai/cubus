@@ -1,11 +1,9 @@
-// Minimal zero-dependency static server for the Cubus SPA (local dev only), with live-reload.
+// Minimal zero-dependency static server for the Cubus SPA (local dev only), with live-reload. This file
+// reads the environment and listens; what a request meets is `dev-server.mjs`, where a test can reach it.
 //
 // Why this exists: getUserMedia requires a "secure context".
 // http://localhost counts as secure, so this server is enough for local dev with
 // NO TLS certificates. Production must be served over HTTPS on a real origin.
-//
-// MIME correctness matters: .wasm must be served as application/wasm and .mjs/.js as
-// text/javascript, or ES-module imports and WebAssembly streaming instantiation fail.
 //
 // Live-reload: the server watches web/ and pushes a reload over Server-Sent Events
 // (SSE — a plain text/event-stream, so no WebSocket library is needed). A tiny <script>
@@ -13,15 +11,15 @@
 // when a change is broadcast. So editing index.html — or running `npm run build:panel`,
 // which writes web/vendor/ai-scan-panel.js — refreshes the open tab on its own.
 
-import { createReadStream, realpathSync, watch } from 'node:fs';
-import { readFile, realpath, stat } from 'node:fs/promises';
-import { createServer } from 'node:http';
-import { dirname, extname, join, normalize, sep } from 'node:path';
+import { realpathSync, statSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { createDevServer } from './dev-server.mjs';
+
 const ROOT = dirname(fileURLToPath(import.meta.url));
-// The root with every symlink resolved, because containment is decided on REAL paths (see the
-// request handler): a checkout that itself sits behind a symlink must not be refused wholesale.
+// The root with every symlink resolved, because containment is decided on REAL paths (see `openServed`
+// in dev-server.mjs): a checkout that itself sits behind a symlink must not be refused wholesale.
 const ROOT_REAL = realpathSync(ROOT);
 const PORT = Number(process.env.PORT) || 15173;
 // Loopback by default, on purpose: this server has no auth and serves the whole app directory, so
@@ -33,79 +31,35 @@ const PORT = Number(process.env.PORT) || 15173;
 // exactly why the web fallback must not be relied on silently. The iOS simulator shares the host's
 // loopback and needs none of this.
 const HOST = process.env.CUBUS_DEV_HOST || '127.0.0.1';
-const RELOAD_PATH = '/__livereload';
 
-const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.mjs': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.wasm': 'application/wasm',
-  '.onnx': 'application/octet-stream',
-  '.png': 'image/png',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon',
-  '.webmanifest': 'application/manifest+json',
-  // Audio, because a course is narration: without these a lesson's track is served as
-  // application/octet-stream and the element refuses to decode it. The dev server could not serve
-  // a course at all until this was here (found by audit, 2026-09-20).
-  '.m4a': 'audio/mp4',
-  '.mp3': 'audio/mpeg',
-  '.wav': 'audio/wav',
-  '.ogg': 'audio/ogg',
-  '.md': 'text/markdown; charset=utf-8', // THIRD_PARTY_NOTICES.md, linked from the About card
-  '.txt': 'text/plain; charset=utf-8', // notices/*.txt, linked from THIRD_PARTY_NOTICES.md
-};
-
-/** The host name inside a Host header, lower-cased and without its port; null when there is none. */
-function hostnameOf(header) {
-  if (typeof header !== 'string' || header.trim() === '') return null;
-  const h = header.trim().toLowerCase();
-  if (h.startsWith('[')) { // an IPv6 literal: [::1]:15173
-    const end = h.indexOf(']');
-    return end === -1 ? null : h.slice(1, end);
+// A COURSE, mounted beside the app for authoring (ADR 0007; dev-docs/course-and-drills-plan.md §10,
+// item 1). The course is not in this repository and may never be (ADR 0006 decision 1), so it is
+// served from wherever `CUBUS_COURSE_DIR` points — at `/course/`, SAME ORIGIN as the app, which is what
+// lets the release CSP's `connect-src 'self'` and `media-src 'self'` cover it with no change.
+//
+// It is a SECOND ROOT on a server whose every guard exists because something once leaked through it, so
+// the request handling (`dev-server.mjs`) asks each of them again of this root: the text of the path must
+// stay inside it, and so must its real location once every link is followed. A variable naming something
+// that is not a directory stops the server here, by name — serving the app with no course, while the author
+// believes a course is mounted, is the silent failure this refuses.
+const COURSE_MOUNT = 'course';
+const COURSE_ROOT = (() => {
+  const named = process.env.CUBUS_COURSE_DIR;
+  if (!named) return null;
+  const dir = resolve(named);
+  let isDir = false;
+  try { isDir = statSync(dir).isDirectory(); } catch { /* not there at all */ }
+  if (!isDir) {
+    console.error(`CUBUS_COURSE_DIR=${named} is not a directory, so there is no course to serve.`);
+    console.error('  Point it at a built course (the folder holding index.json), or unset it.');
+    process.exit(1);
   }
-  const colon = h.lastIndexOf(':');
-  return colon === -1 ? h : h.slice(0, colon);
-}
-
-const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
-const IPV6 = /^[0-9a-f:.]+$/; // already unbracketed; loose on purpose — an IP literal is not a DNS name
-
-/**
- * Whether a request's Host header names THIS server rather than a name an attacker controls.
- *
- * DNS rebinding: a page on evil.example, once loaded, re-points its own name at 127.0.0.1 and then
- * reads http://evil.example:15173/ — same-origin to itself, answered by this process, which has no
- * auth and serves the whole app directory. The tell is the Host header: it carries the attacker's
- * NAME, because a name is the only thing that can be rebound. So a Host that is a loopback name or
- * an IP literal is this server's, and anything else is refused before routing. `.localhost` names
- * are loopback by RFC 6761; an IP literal has no DNS record to move (and a cross-origin fetch to
- * one gets no CORS headers from here, so its response is unreadable anyway). CUBUS_DEV_HOST set to
- * a NAME is allowed too, since that is what the operator asked this server to answer as; the
- * wildcard binds (0.0.0.0, ::) are not names and grant nothing.
- */
-function hostAllowed(hostname) {
-  if (hostname === 'localhost' || hostname.endsWith('.localhost')) return true;
-  if (IPV4.test(hostname) || (hostname.includes(':') && IPV6.test(hostname))) return true;
-  const bound = HOST.toLowerCase();
-  return hostname === bound && bound !== '0.0.0.0' && bound !== '::';
-}
-
-/** Is `p` the directory `root`, or somewhere beneath it? A text comparison; see the handler. */
-const inside = (p, root) => p === root || p.startsWith(root + sep);
-
-// --- live-reload plumbing (SSE) ---
-// Open SSE connections; each is an http response we keep writing to.
-const clients = new Set();
-
-function broadcastReload() {
-  for (const res of clients) {
-    // A dead SSE client throws synchronously on write; it is retired, never mourned.
-    try { res.write('data: reload\n\n'); } catch { clients.delete(res); }
-  }
-}
+  return dir;
+})();
+const COURSE_REAL = COURSE_ROOT ? realpathSync(COURSE_ROOT) : null;
+// What tells the page it has a course: the app installs one only when this is present. Not a probe for
+// `course/index.json` — a packaged build answers a missing file with index.html, not a 404.
+const COURSE_META = `<meta name="cubus-course" content="${COURSE_MOUNT}/">`;
 
 // Live-reload is for a human with an editor open, and it is actively hostile to a test.
 //
@@ -117,185 +71,26 @@ function broadcastReload() {
 // created and deleted in apps/web while the suite ran failed three unrelated tests across two
 // files, and a different three on the next run.
 //
-// So it is off unless asked for. `pnpm dev` asks (it wants exactly this); every test spawn
-// sets CUBUS_LIVE_RELOAD=0 and gets a server that cannot pull the page out from under it.
-// Off means BOTH halves off: no watcher, and no snippet in the HTML, so a page served this way
-// never even opens the EventSource.
+// So it is ON BY DEFAULT and off when asked: `pnpm dev` wants exactly this and passes nothing, and
+// every test spawn sets CUBUS_LIVE_RELOAD=0 and gets a server that cannot pull the page out from under
+// it. (This said "off unless asked for", which was never what the line below did — audit, 2026-09-21.)
+// Off means BOTH halves off: no watcher, and no snippet in the HTML, so a page served this way never
+// even opens the EventSource.
 const LIVE_RELOAD = process.env.CUBUS_LIVE_RELOAD !== '0';
+if (!LIVE_RELOAD) console.log('live-reload off (CUBUS_LIVE_RELOAD=0)');
 
-// A single save often emits several fs events; coalesce a burst into one reload, and
-// fire only after the burst settles so we never reload mid-write of a rebuilt bundle.
-let debounce = null;
-if (!LIVE_RELOAD) {
-  console.log('live-reload off (CUBUS_LIVE_RELOAD=0)');
-} else try {
-  watch(ROOT, { recursive: true }, (_event, filename) => {
-    if (filename?.includes('node_modules')) return;
-    if (debounce) clearTimeout(debounce);
-    debounce = setTimeout(() => {
-      debounce = null;
-      if (clients.size) {
-        broadcastReload();
-        console.log('reload → browser');
-      }
-    }, 80);
-  });
-} catch (err) {
-  // Live-reload is a convenience; if watching fails, keep serving without it.
-  console.warn(`live-reload disabled (fs.watch failed): ${err.message}`);
-}
-
-const RELOAD_SNIPPET =
-  `\n<script>(() => { const es = new EventSource(${JSON.stringify(RELOAD_PATH)});` +
-  ' es.onmessage = () => location.reload(); })();</script>\n';
-
-// A client that vanished mid-response — a tab closed, a test navigated, webkit tore a context
-// down — is churn, not a server fault: without handlers, the stream's 'error' event crashes the
-// whole process, and under a parallel test run (six webkits opening and closing pages against
-// this server) that killed it mid-suite on 2026-08-30, failing every later test with "could not
-// connect". ONLY the client-gone class is swallowed; anything else still fails loud.
-const CLIENT_GONE = new Set(['ECONNRESET', 'EPIPE', 'ERR_STREAM_DESTROYED', 'ERR_STREAM_WRITE_AFTER_END']);
-const ignoreClientLoss = (stream, onGone) => {
-  stream.on('error', (err) => {
-    if (CLIENT_GONE.has(err.code)) {
-      onGone?.();
-      return;
-    }
-    console.error('serve: stream error', err);
-    throw err; // unhandled on purpose — an unknown stream error must not be absorbed
-  });
-};
-
-const server = createServer(async (req, res) => {
-  ignoreClientLoss(req);
-  ignoreClientLoss(res);
-  // The Host header before any route — the reload endpoint included, because a rebound name must
-  // not get to hold a connection open either. HTTP/1.1 requires the header; a request without one
-  // is not a browser's, and there is nothing to check it against.
-  const hostname = hostnameOf(req.headers.host);
-  if (hostname === null) {
-    res.writeHead(400).end('bad request: no Host header');
-    return;
-  }
-  if (!hostAllowed(hostname)) {
-    res.writeHead(403).end('forbidden: this server answers to localhost and IP literals only');
-    return;
-  }
-  // SSE endpoint: keep the connection open and register this client for reload pushes.
-  if (req.url === RELOAD_PATH) {
-    res.writeHead(200, {
-      'content-type': 'text/event-stream',
-      'cache-control': 'no-store',
-      connection: 'keep-alive',
-    });
-    res.write(': connected\n\n');
-    clients.add(res);
-    ignoreClientLoss(res, () => clients.delete(res));
-    req.on('close', () => clients.delete(res));
-    return;
-  }
-
-  try {
-    // A fixed base: the path is all that is wanted from the request line, and the Host header
-    // has already been judged above — it must not get a second chance to shape the URL.
-    const url = new URL(req.url ?? '/', 'http://localhost');
-    const rel = decodeURIComponent(url.pathname).replace(/^\/+/, '') || 'index.html';
-    let target = normalize(join(ROOT, rel));
-    // Reject path traversal: the resolved path must stay inside ROOT.
-    if (!inside(target, ROOT)) {
-      res.writeHead(403).end('forbidden');
-      return;
-    }
-    let s = await stat(target).catch(() => null);
-    if (s?.isDirectory()) {
-      target = join(target, 'index.html');
-      s = await stat(target).catch(() => null);
-    }
-    if (!s?.isFile()) {
-      res.writeHead(404).end('not found');
-      return;
-    }
-    // SYMLINKS RESOLVED, and checked again. `normalize` reasons about the TEXT of a path, and a
-    // symlink is a file whose text says one thing while its bytes live somewhere else: with
-    // CUBUS_DEV_HOST=0.0.0.0, `/node_modules/three/package.json` stayed inside ROOT textually and
-    // served the pnpm store — every package in the monorepo, from the repository root — through
-    // the link, to anyone on the LAN. So the path is realpath'd, every link in it followed, and
-    // the REAL location must be inside the REAL root. ROOT is realpath'd too (ROOT_REAL), so a
-    // checkout that itself sits behind a symlink is not refused wholesale.
-    const real = await realpath(target);
-    if (!inside(real, ROOT_REAL)) {
-      res.writeHead(403).end('forbidden');
-      return;
-    }
-    const ext = extname(target);
-    // Dev server: never cache, so a plain reload always fetches fresh files. Not for production.
-    // Cross-origin isolation, which is the whole reason the scanner can use more than one core.
-    //
-    // onnxruntime-web ships a THREADED wasm build (copy-ort.mjs picks the
-    // `ort-wasm-simd-threaded.asyncify` pair) and it needs SharedArrayBuffer, which the browser only
-    // hands out to a cross-origin-isolated page. Without these two headers the runtime silently
-    // reports numThreads: 1 and one core does the work of eight — measured at 297 ms per
-    // inference in WebKit and 234 ms in Chromium, about 3-4 fps, which is the "same rate as the
-    // wasm fallback" the desktop shell's Cargo.toml already complains about.
-    //
-    // require-corp is safe here in a way it would not be in most apps: this page embeds nothing
-    // cross-origin at all. No CDN, no web fonts, no remote model — and solver-offline.test.mjs
-    // already fails the build if a CDN import ever creeps in. CORP on every response is the
-    // matching half, so a same-origin subresource cannot be refused by its own policy.
-    const headers = {
-      'content-type': MIME[ext] ?? 'application/octet-stream',
-      'cache-control': 'no-store',
-      'cross-origin-opener-policy': 'same-origin',
-      'cross-origin-embedder-policy': 'require-corp',
-      'cross-origin-resource-policy': 'same-origin',
-    };
-
-    if (ext === '.html') {
-      // Inject the live-reload client just before </body> (or append if there is none) — unless
-      // live-reload is off, in which case the page must not even open the EventSource: a client
-      // that is merely never pushed to is one broadcastReload away from a reload nobody wanted.
-      let html = await readFile(real, 'utf8');
-      if (LIVE_RELOAD) {
-        html = html.includes('</body>') ? html.replace('</body>', `${RELOAD_SNIPPET}</body>`) : html + RELOAD_SNIPPET;
-      }
-      res.writeHead(200, headers);
-      res.end(html);
-      return;
-    }
-
-    // Streamed, with an explicit Content-Length, and neither half is cosmetic.
-    //
-    // This used to `readFile` the whole file and `res.end(buffer)`. With no Content-Length, Node
-    // sends HTTP/1.1 chunked — and a chunked body that stops early looks COMPLETE to the client,
-    // which is how a truncated 26.8 MB wasm reached WebKit and failed as
-    // "WebAssembly.Module doesn't parse at byte 24666430". The file on disk was byte-identical
-    // to its source the whole time; the delivery was short. It surfaced as
-    // threads-do-not-change-output failing, i.e. as a MODEL regression — the most expensive
-    // possible disguise for a dev-server bug.
-    //
-    // Content-Length makes a short read an error the client raises instead of a corrupt asset it
-    // parses. Streaming removes the cause: the suite runs at --test-concurrency=6 and several
-    // files each spawn their own server, so buffering ~27 MB per request multiplied by
-    // concurrent requests, and a socket write under that memory pressure is where the bytes went.
-    // `s` is the stat of the file being sent: a directory request was re-stat'd as its index.html
-    // above, and `stat` follows links, so this is the size of the real bytes.
-    res.writeHead(200, { ...headers, 'Content-Length': s.size });
-    const file = createReadStream(real);
-    // A read that dies mid-flight must break the connection, never end it tidily: a clean end
-    // after a partial body is exactly the silent truncation this whole change is about.
-    file.on('error', () => res.destroy());
-    file.pipe(res);
-  } catch {
-    res.writeHead(404).end('not found');
-  }
+const dev = createDevServer({
+  root: ROOT,
+  rootReal: ROOT_REAL,
+  course: COURSE_ROOT ? { mount: COURSE_MOUNT, root: COURSE_ROOT, real: COURSE_REAL } : null,
+  courseMeta: COURSE_META,
+  liveReload: LIVE_RELOAD,
+  host: HOST,
 });
 
 // Fail with a clear, actionable message instead of an unhandled-error stack trace when the port
 // is taken (usually a dev server left running from an earlier session).
-// Malformed or aborted connections before a request exists — same churn class.
-server.on('clientError', (_err, socket) => socket.destroy());
-
-server.on('error', (err) => {
+dev.server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     console.error(`Port ${PORT} is already in use — another dev server is probably still running.`);
     console.error(`  Free it:      lsof -ti tcp:${PORT} | xargs kill`);
@@ -305,12 +100,14 @@ server.on('error', (err) => {
   throw err;
 });
 
-server.listen(PORT, HOST, () => {
+dev.server.listen(PORT, HOST, () => {
   console.log(`Cubus SPA → http://localhost:${PORT}`);
-  // Say what is actually true. This line printed unconditionally, so a server started with
-  // live-reload off announced that it was watching — contradicting the line it had already
-  // printed and leaving anyone reading the log with two answers.
-  console.log(LIVE_RELOAD
-    ? '  live-reload: watching web/ (edit HTML, or run `npm run build:panel`, to auto-refresh).'
-    : '  live-reload: off — nothing is watched and no reload client is served.');
+  if (COURSE_ROOT) console.log(`  course: ${COURSE_ROOT} → /${COURSE_MOUNT}/`);
+  // Say what is actually true — read from what IS watched, not from what was asked for. This line
+  // printed unconditionally, so a server started with live-reload off announced that it was watching;
+  // and a watcher that failed to start was reported as live-reload disabled while another still ran.
+  const watching = dev.watching();
+  if (!LIVE_RELOAD) console.log('  live-reload: off — nothing is watched and no reload client is served.');
+  else if (!watching.length) console.log('  live-reload: off — nothing could be watched, so no reload client is served.');
+  else console.log(`  live-reload: watching ${watching.join(' and ')} (edit HTML, or run \`npm run build:panel\`, to auto-refresh).`);
 });
