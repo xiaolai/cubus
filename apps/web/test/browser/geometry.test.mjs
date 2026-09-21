@@ -100,15 +100,35 @@ after(async () => {
  */
 const CONTEXTS_PER_BROWSER = 24;
 let servedContexts = 0;
+async function relaunchBrowser() {
+  await browser.close();
+  browser = await webkit.launch();
+  servedContexts = 0;
+}
 async function freshContext(options) {
-  if (servedContexts >= CONTEXTS_PER_BROWSER) {
-    await browser.close();
-    browser = await webkit.launch();
-    servedContexts = 0;
-  }
+  if (servedContexts >= CONTEXTS_PER_BROWSER) await relaunchBrowser();
   servedContexts += 1;
   return browser.newContext(options);
 }
+
+/**
+ * Navigations that wedged and were recovered in a fresh browser, printed as they happen.
+ *
+ * THE COUNT BOUND ABOVE IS NOT THE WHOLE STORY ON LINUX. On CI's Linux WebKit the same symptom —
+ * a `page.goto` whose `load` never arrives, burning the full navigation bound — came back twice in
+ * two days (runs 35486935512 and 35557685603, 2026-09-20/21), and the second was only the 6th
+ * context in its browser, far below both this file's bound of 24 and the ~63 measured on macOS. One
+ * navigation in ~97 hung. That is not a ceiling a smaller count would clear; it is a rare wedge in a
+ * browser process that was otherwise healthy.
+ *
+ * So a navigation that times out is tried ONCE more, in a fresh browser process. That recovers a
+ * wedged browser and nothing else: a page that genuinely never loads — a hung subresource, an app
+ * that stalls its own boot — hangs again in the fresh process and fails exactly as before. Only a
+ * TimeoutError from the navigation itself is retried; an assertion, a page error or a second
+ * timeout is never retried. And never silently: each recovery is printed with the case it
+ * rescued, so a wedge that stops being rare shows up as lines in the log, not as a green run.
+ */
+const recovered = [];
 
 // [top, right, bottom, left] insets are the OS's: status bar / Dynamic Island / home indicator.
 // The desktop windows are what the contract's formulas give for a 13" Air (stage 840×630 and
@@ -129,28 +149,55 @@ const FIXTURES = [
 const near = (a, b, what, tol = 1) => assert.ok(Math.abs(a - b) <= tol, `${what}: ${a} vs ${b} (±${tol})`);
 const label = (f) => `${f.name} (${f.width}×${f.height}, insets ${f.insets.join('/')}${f.touch ? ', touch' : ''})`;
 
-async function open(fixture, route = 'home', settings = null) {
-  const context = await freshContext({ viewport: { width: fixture.width, height: fixture.height }, hasTouch: fixture.touch === true });
-  // A stored setting a case needs — the developer die, to put a scrambled cube on Home — goes in
-  // before the page runs, because the app reads its settings at module scope.
-  if (settings) await context.addInitScript((s) => localStorage.setItem('cubusSettings', JSON.stringify(s)), settings);
-  // node --test saturates the machine by design, and a WebKit navigation on a saturated
-  // machine is queued work, not a hung page — the 30 s default read exactly that as failure
-  // (2026-08-29, two fixtures, both clean alone), and even 120 s was exceeded under the full
-  // unbounded fan-out, which is why package.json bounds --test-concurrency as well. Both
-  // halves are needed. The selector waits below still bound the app's own boot.
-  const page = await context.newPage();
-  pace(page); // both bounds, navigation included — see BROWSER_NAV_MS
+/**
+ * A context and a page navigated to `url` — THE ONE place this file navigates, so the wedge
+ * recovery (see `recovered`) covers every case. It had three copies until 2026-09-21, and the two
+ * recorded wedges came through two of them: `open()` on 2026-09-20, the per-screen loop the next
+ * day. `prepare(context)` runs before the page does — anything a case stores in localStorage goes
+ * in there, because the app reads its storage at module scope.
+ *
+ * The navigation bound is the suite's (`pace`, BROWSER_NAV_MS): node --test saturates the machine
+ * by design, and a WebKit navigation on a saturated machine is queued work, not a hung page — the
+ * 30 s default read exactly that as failure (2026-08-29, two fixtures, both clean alone), and even
+ * 120 s was exceeded under the full unbounded fan-out, which is why package.json bounds
+ * --test-concurrency as well. A navigation that exhausts it is retried once in a fresh browser;
+ * any other error, or a second timeout, fails the case. Returns before the app has mounted.
+ */
+async function openAt(fixture, url, prepare = async () => {}) {
+  for (let attempt = 1; ; attempt += 1) {
+    const context = await freshContext({ viewport: { width: fixture.width, height: fixture.height }, hasTouch: fixture.touch === true });
+    await prepare(context);
+    const page = await context.newPage();
+    pace(page); // both bounds, navigation included — see BROWSER_NAV_MS
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(e));
+    try {
+      await page.goto(url);
+      return { page, context, errors };
+    } catch (error) {
+      await context.close().catch(() => {});
+      if (attempt > 1 || error?.name !== 'TimeoutError') throw error;
+      const what = `${label(fixture)} ${new URL(url).hash}`;
+      recovered.push(what);
+      console.error(`geometry: navigation to ${what} never reached load — retrying once in a fresh WebKit (recovery ${recovered.length})`);
+      await relaunchBrowser();
+    }
+  }
+}
 
-  const errors = [];
-  page.on('pageerror', (e) => errors.push(e));
-  await page.goto(`${BASE}/?insets=${fixture.insets.join(',')}#/${route}`);
+const urlFor = (fixture, route) => `${BASE}/?insets=${fixture.insets.join(',')}#/${route}`;
+
+async function open(fixture, route = 'home', settings = null) {
+  // A stored setting a case needs — the developer die, to put a scrambled cube on Home.
+  const opened = await openAt(fixture, urlFor(fixture, route), async (context) => {
+    if (settings) await context.addInitScript((s) => localStorage.setItem('cubusSettings', JSON.stringify(s)), settings);
+  });
   // 30 s, not 10: this is an AVAILABILITY wait (did the app mount), not an assertion —
   // under test-concurrency=6, six webkits and dev servers share one machine, and the mount
   // once lost a 10 s race (2026-08-30) while every geometry assertion behind it would have
   // passed. Generous waits here; the strictness belongs to the geometry checks themselves.
-  await page.waitForSelector('.screen.active');
-  return { page, context, errors };
+  await opened.page.waitForSelector('.screen.active');
+  return opened;
 }
 
 /** A DOMRect as plain numbers. Inlined into page.evaluate source below, so keep it self-contained. */
@@ -869,13 +916,8 @@ const LESSON = {
 
 for (const fixture of FIXTURES) {
   test(`episode playing: ${label(fixture)}`, async () => {
-    const context = await freshContext({ viewport: { width: fixture.width, height: fixture.height }, hasTouch: fixture.touch === true });
-    const page = await context.newPage();
-    pace(page);
-    const errors = [];
-    page.on('pageerror', (e) => errors.push(e));
+    const { page, context, errors } = await openAt(fixture, urlFor(fixture, 'home'));
     try {
-      await page.goto(`${BASE}/?insets=${fixture.insets.join(',')}#/home`);
       await page.waitForSelector('.screen.active');
       await page.evaluate(async (doc) => {
         const [{ useCourse }, { createCourseSource }] = await Promise.all([
@@ -943,14 +985,10 @@ for (const fixture of FIXTURES) {
 for (const screen of SCREENS) {
   for (const fixture of FIXTURES) {
     test(`${screen} screen: ${label(fixture)}`, async () => {
-      const context = await freshContext({ viewport: { width: fixture.width, height: fixture.height }, hasTouch: fixture.touch === true });
-      await context.addInitScript((session) => localStorage.setItem('cubusSolves', session), SESSION);
-      const page = await context.newPage();
-      pace(page);
-      const errors = [];
-      page.on('pageerror', (e) => errors.push(e));
+      const { page, context, errors } = await openAt(fixture, urlFor(fixture, screen), (context) =>
+        context.addInitScript((session) => localStorage.setItem('cubusSolves', session), SESSION),
+      );
       try {
-        await page.goto(`${BASE}/?insets=${fixture.insets.join(',')}#/${screen}`);
         await page.waitForSelector('.screen.active');
         const m = await measureScreen(page);
         assert.deepEqual(errors.map(String), [], 'the page threw');
