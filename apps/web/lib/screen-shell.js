@@ -199,6 +199,7 @@ let refreshing = false;
  * and gets rebuilt exactly as before.
  */
 export function refreshScreen() {
+  if (halted) return;
   // A retarget repaints things that can call back into here — the reconnect answers are re-wired
   // by it — and a rebuild from inside a retarget would pull the DOM out from under the caller.
   if (refreshing) return;
@@ -382,6 +383,7 @@ function leaveTyping() {
 }
 
 export function renderScreen({ navigated = false } = {}) {
+  if (halted) return;
   // Read BEFORE leaving, and left before anything is torn down or built: the commit reaches the
   // screen that drew the field, and the new screen is built from what it committed.
   const typing = navigated || focusedScreen !== state.screen ? null : focusInside($('#stage'));
@@ -415,5 +417,48 @@ export function applyRoute() { state.screen = router.normalize(); renderNav(); r
 // screen already showing would do nothing. go() renders directly in that case, preserving the
 // always-re-render behaviour the scan flow depends on (go('home') while on home).
 export function go(id) { if (!router.go(id)) applyRoute(); }
+
+/** The hash listener while navigation is on, null while it is off. */
+let onHashChange = null;
+/** Set by `haltApp`: nothing renders a screen again. */
+let halted = false;
+
+/**
+ * Turn navigation on: the address bar's hash, and `window.cubusGo` for the native shells and the tests.
+ * Called by boot only once everything a screen stands on is built — see `haltApp`.
+ */
+export function startNavigation() {
+  if (onHashChange || halted) return;
+  onHashChange = () => applyRoute();
+  window.addEventListener('hashchange', onHashChange);
+  window.cubusGo = go;
+}
+
+/**
+ * Stop the app where it stands, for a boot that failed: navigation off, the screen on the paper torn down,
+ * and `sentence` on the stage — or, when `sentence` is null, whatever the stage already says left standing.
+ *
+ * A failed boot used to write its sentence and leave everything else running (audit, 2026-09-21): the hash
+ * listener and `cubusGo` were already installed, so the next navigation rendered a screen over the
+ * sentence — a Course screen saying NO COURSE INSTALLED beside a valid course tag, because boot never
+ * reached the line that installs it — and a screen already mounted kept its listeners and its camera under
+ * the text that replaced it. Every route back to a screen is shut here, the rebuilds a background service
+ * can ask for included.
+ */
+export function haltApp(sentence) {
+  halted = true;
+  if (onHashChange) window.removeEventListener('hashchange', onHashChange);
+  onHashChange = null;
+  if (window.cubusGo === go) delete window.cubusGo;
+  tearDownScreen();
+  liveScreen = null;
+  // A mount still in flight belongs to the screen just torn down: moving the generation on is how it learns
+  // so — `mountFailed`, and every async mount that compares the generation after an await. Without it, a
+  // mount that failed AFTER the halt put its "this screen did not open" card — with a button that navigates
+  // — over the halt's sentence (verify pass, 2026-09-21).
+  screenGen += 1;
+  const stage = $('#stage');
+  if (stage && sentence !== null) stage.textContent = sentence;
+}
 // The code beneath the screens reaches these through `shell` (declared with `hooks`), never by import.
 Object.assign(shell, { go, refreshScreen, renderScreen });

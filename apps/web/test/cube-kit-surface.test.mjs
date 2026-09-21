@@ -32,6 +32,7 @@ import * as scriptDrive from '../lib/script-drive.js';
 import * as scriptTrack from '../lib/script-track.js';
 import * as scriptRounds from '../lib/script-rounds.js';
 import * as scriptPlayer from '../lib/script-player.js';
+import * as scriptLesson from '../lib/script-lesson.js';
 import * as flat from '../lib/cube-flat.js';
 import * as gallery from '../lib/cube-gallery.js';
 import * as view from '../lib/cube-view.js';
@@ -58,16 +59,18 @@ const PROMISED = [
   'SPAN_LEAD', 'buildSchedule', 'cameraAt', 'checkEpisode', 'createLessonPlayer', 'lineAt',
   'numberAt', 'resolveSpanning', 'segmentAt', 'viewAt',
   // The script runtime (plan item 3.1): the format both drivers read, and the questions a cue names.
-  'STEP_CUES', 'STEP_KINDS', 'checkLesson', 'checkScript', 'heldFace', 'identityFace',
+  'STEP_CUES', 'STEP_KINDS', 'STEP_MARKS', 'checkLesson', 'checkScript', 'heldFace', 'identityFace',
   'QUESTIONS', 'TAKES_ARGUMENT', 'ask', 'readAsk',
   'askAt', 'buildScript', 'groupsOf', 'stateFrom', 'viewAtPosition',
   'createClockDriver', 'createElementWriter', 'createStopDriver', 'timelineOf', 'locate', 'trackFor', 'trackOf',
   'answerAt', 'createEventDriver', 'createRound', 'revealScript', 'ROUND_QUESTIONS', 'createScriptPlayer',
+  // A script played as a lesson (ADR 0007).
+  'createScriptLesson',
   'TOP_RING', 'faceletsOf', 'netSvg', 'topFaceSvg', 'CONTEXT_CAP', 'LIVE_BUDGET', 'flatGallery', 'galleryKind',
 ];
 
 /** The modules whose names the kit re-exports. A new owning module is added here with its first name. */
-const SOURCES = [pieces, frame, highlight, moves, notation, questions, orientation, view, format, schedule, player, scriptQuestions, scriptView, scriptDrive, scriptTrack, scriptRounds, scriptPlayer, flat, gallery];
+const SOURCES = [pieces, frame, highlight, moves, notation, questions, orientation, view, format, schedule, player, scriptQuestions, scriptView, scriptDrive, scriptTrack, scriptRounds, scriptPlayer, scriptLesson, flat, gallery];
 
 /** Promised names the kit does not export. */
 export const missingFrom = (exports, promised) => promised.filter((n) => !Object.hasOwn(exports, n)).sort();

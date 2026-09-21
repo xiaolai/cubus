@@ -201,6 +201,17 @@ export function createStopDriver(built, { cube = null, owned = [], schedule = de
      */
     halt: () => { stop(); return go(position, 'halt'); },
     /**
+     * Position `k`'s CUES on the cube as it stands, without moving it -- how a step the child is asked to
+     * make is described before they make it (ADR 0007: a `yours` step's arrow and highlight). The cube, the
+     * segment and the transport stay where they are; only what the cues say changes. Selectors keep the
+     * letters of the step that wrote them, and a positional one lights whatever occupies its place here.
+     */
+    describe: (k) => {
+      stop();
+      const view = Object.freeze({ ...viewAtPosition(built, position), cues: viewAtPosition(built, k).cues });
+      return writer ? writer.show(view, { how: 'jump' }) : view;
+    },
+    /**
      * A cube the child turned, as 54 facelets: where it is on the walk.
      *
      * `{ kind: 'step', position }` moved the walk there; `{ kind: 'mid' }` is part way into a turn the

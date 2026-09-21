@@ -31,6 +31,25 @@ import { checkLesson } from './lesson-format.js';
 export const REFUSALS = Object.freeze(['unknown', 'unreadable', 'malformed']);
 
 /**
+ * Bytes that ARRIVED and are not a lesson -- a body that is not JSON, or one that decoded to nothing. A
+ * reader throws this so the source can say `malformed` (they arrived) rather than `unreadable` (they did
+ * not); every other throw from a reader is a transfer that failed. Merging the two told a person to check
+ * their connection about a file that was simply broken (audit, 2026-09-21).
+ */
+/** The refusal for an id that is not an episode id -- or null for one that is. ONE rule, used by the source's
+ *  door and by the session's, which had each written the condition, reason and words out for themselves. */
+export function episodeIdRefusal(id) {
+  return isEpisodeId(id) ? null : new CourseRefusal('unknown', id, 'is not an episode id, so nothing was asked for');
+}
+
+export class CourseContentError extends Error {
+  constructor(message, options) {
+    super(message, options);
+    this.name = 'CourseContentError';
+  }
+}
+
+/**
  * How long a course fetch may take before it is a hang rather than a wait.
  *
  * A network call somebody is waiting on needs a bound AND a visible pulse; either alone still reads
@@ -102,7 +121,18 @@ function entryOf(raw, index) {
  * nothing to play.
  */
 export function courseAudioRef(episode) {
-  const raw = typeof episode?.audio === 'string' ? episode.audio.trim() : '';
+  return courseRef(episode?.audio);
+}
+
+/**
+ * Any reference a course document makes to a file of its own — an episode's `audio`, a script step's
+ * `voice` — held inside the course's directory, or nothing.
+ *
+ * ONE DOOR for every such field (ADR 0007): a second copy of this function for recordings would be a
+ * second place for the two bypasses recorded below to come back through.
+ */
+export function courseRef(value) {
+  const raw = typeof value === 'string' ? value.trim() : '';
   if (!raw) return '';
   // THE URL PARSER IS THE ORACLE, not a pattern of mine. Two attempts at this were wrong in
   // opposite directions and both were caught by review:
@@ -118,21 +148,35 @@ export function courseAudioRef(episode) {
   // Resolving against a sentinel base and checking where it LANDS answers both: whatever tricks
   // the string plays, the question is only ever "did it stay inside the course directory", and the
   // parser that the browser will use is the one that decides.
-  // An ENCODED separator is refused before the parser sees it. `%2F` and `%5C` are not separators
-  // to `new URL`, so `..%2F..%2Fx` stays inside the sentinel path and looks contained — but a
-  // server that percent-decodes before resolving sees `../../x`. No legitimate course filename
-  // needs an encoded slash, so the ambiguity is removed rather than reasoned about.
-  if (/%2f|%5c/i.test(raw)) return '';
-  const base = 'https://course.invalid/root/';
-  let resolved;
-  try {
-    resolved = new URL(raw, base);
-  } catch {
-    return '';
+  //
+  // TWO SENTINELS, WITH NO NAME IN COMMON. One sentinel directory could be NAMED by the reference:
+  // `/root/a.m4a` (absolute), `../root/a.m4a` (climbs out and back) and `https://course.invalid/root/a.m4a`
+  // all landed under `/root/` and were handed back raw, to escape the real course directory wherever a
+  // reader has no `resolve` (audit, 2026-09-21). A string cannot name two unrelated directories on two
+  // origins at once, so only a reference that is genuinely relative, and climbs nowhere, lands in both.
+  // And the two sentinels differ in SCHEME: a reference that names the scheme of the base it is resolved
+  // against is RELATIVE to the parser — `https:audio/a.m4a` against an https base is that base's
+  // `audio/a.m4a` — so with both sentinels https it passed, and a page served over http resolved it to
+  // `https://audio/a.m4a` (verify pass, 2026-09-21). A string names one scheme at most, so against the
+  // other sentinel it is absolute, on another origin, and refused.
+  //
+  // An ENCODED separator is refused on the PARSED path, not the raw string. `%2F` and `%5C` are not
+  // separators to `new URL`, so `..%2F..%2Fx` looks contained -- but a server that percent-decodes before
+  // resolving sees `../../x`. Checked after parsing because the parser DROPS tabs and newlines: the raw
+  // `..%2\nf..%2\nfx` passed a check on the string and became `..%2f..%2fx` (audit, 2026-09-21).
+  for (const base of ['https://one.course.invalid/a/b/', 'http://two.course.invalid/c/d/']) {
+    const root = new URL(base);
+    let resolved;
+    try {
+      resolved = new URL(raw, root);
+    } catch {
+      return '';
+    }
+    if (resolved.origin !== root.origin) return '';                  // changed host, or a scheme
+    if (!resolved.pathname.startsWith(root.pathname)) return '';     // climbed out, or an absolute path
+    if (resolved.pathname === root.pathname) return '';              // the directory itself
+    if (/%2f|%5c/i.test(resolved.pathname)) return '';               // an encoded separator
   }
-  if (resolved.origin !== 'https://course.invalid') return '';   // changed host, or a scheme
-  if (!resolved.pathname.startsWith('/root/')) return '';        // climbed out with `..` or `/`
-  if (resolved.pathname === '/root/') return '';                 // resolved to the directory itself
   return raw;
 }
 
@@ -146,7 +190,12 @@ export function courseAudioRef(episode) {
  * unchanged, which is what a bundled course beside the page wants.
  */
 export function resolveCourseAudio(reader, episode) {
-  const ref = courseAudioRef(episode);
+  return resolveCourseRef(reader, episode?.audio);
+}
+
+/** Where any course-relative reference actually is, as a URL the app may load — or nothing. */
+export function resolveCourseRef(reader, value) {
+  const ref = courseRef(value);
   if (!ref) return '';
   try {
     return typeof reader?.resolve === 'function' ? reader.resolve(ref) : ref;
@@ -207,13 +256,15 @@ export function createCourseSource({ list, read, resolve } = {}) {
      * one that was checked.
      */
     async episode(id) {
-      if (!isEpisodeId(id)) {
-        throw new CourseRefusal('unknown', id, 'is not an episode id, so nothing was asked for');
-      }
+      const notAnId = episodeIdRefusal(id);
+      if (notAnId) throw notAnId;
       let doc;
       try {
         doc = await read(id);
       } catch (cause) {
+        if (cause instanceof CourseContentError) {
+          throw new CourseRefusal('malformed', id, `is not a lesson — ${cause.message}`, { cause });
+        }
         throw new CourseRefusal('unreadable', id, `could not be read — ${cause?.message ?? cause}`, { cause });
       }
       if (doc === null || doc === undefined) {
@@ -265,58 +316,80 @@ export function fetchCourse({
   // 'http://localhost')` silently rewrites a relative base onto localhost with no port, so a dev
   // server on :15173 and any deployed origin both fetched the wrong place. A relative base with no
   // document to resolve against is refused rather than guessed at.
-  const withSlash = String(base).endsWith('/') ? String(base) : `${base}/`;
   let root;
   try {
-    root = baseURI ? new URL(withSlash, baseURI) : new URL(withSlash);
+    root = baseURI ? new URL(String(base), baseURI) : new URL(String(base));
   } catch {
     throw new Error(`course: "${base}" is a relative base and there is no document to resolve it against`);
   }
+  // A DIRECTORY, normalised after parsing. Appending `/` to the whole string put it inside a query or a
+  // fragment -- `…/course?version=1` became `?version=1/`, and the index was then fetched from the
+  // origin's root (audit, 2026-09-21). A base is where a course IS; a query or fragment names no directory.
+  // Asked of the HREF, not of `search` and `hash`: an EMPTY query or fragment (`…/course?`, `…/course#`)
+  // reads as '' there while its delimiter stays in the URL, and every reference resolved against it then
+  // failed the containment check below (verify pass, 2026-09-21). After parsing, a `?` or `#` in the href
+  // can only be a delimiter — the parser percent-encodes both anywhere else.
+  if (root.href.includes('?') || root.href.includes('#')) {
+    throw new Error(`course: "${base}" carries a query or a fragment — a course base is a directory`);
+  }
+  if (!root.pathname.endsWith('/')) root.pathname += '/';
 
   /** What a 404 answers with — distinct from a body that decoded to `null`, which is a broken file. */
   const MISSING = Symbol('course:missing');
 
+  /**
+   * A deadline for one request: a signal, and how to stop its timer.
+   *
+   * A BOUND, because a fetch with neither timeout nor progress is a hang to the person watching -- the rule
+   * this repository already paid for on the updater. A BOUND EITHER WAY: `AbortSignal.timeout` is the short
+   * spelling, and where it is missing -- an older WebView is exactly where this matters -- the controller
+   * below is the same bound spelled out. NAMED, not messaged: `new Error('TimeoutError')` has
+   * `name === 'Error'`, and the classifier would report a deadline as "could not be reached".
+   */
+  const deadline = () => {
+    if (timeoutMs > 0 && typeof AbortSignal?.timeout === 'function') {
+      return { signal: AbortSignal.timeout(timeoutMs), clear: () => {} };
+    }
+    if (timeoutMs > 0 && typeof AbortController === 'function') {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(Object.assign(new Error('timed out'), { name: 'TimeoutError' })), timeoutMs);
+      return { signal: controller.signal, clear: () => clearTimeout(timer) };
+    }
+    return { signal: undefined, clear: () => {} };
+  };
+
+  /** Errors this reader already worded, which the classifier hands on unchanged. */
+  const worded = new WeakSet();
+
+  /** Why a request failed, said about its URL: a deadline, content that is not JSON, or a lost transfer. */
+  const failure = (url, cause) => {
+    if (worded.has(cause) || cause instanceof CourseContentError) return cause;
+    if (cause?.name === 'TimeoutError' || cause?.name === 'AbortError') {
+      return new Error(`${url} did not answer within ${timeoutMs}ms`, { cause });
+    }
+    if (cause?.name === 'SyntaxError') return new CourseContentError(`${url} is not valid JSON — ${cause.message}`, { cause });
+    return new Error(`${url} could not be reached — ${cause?.message ?? cause}`, { cause });
+  };
+
   const json = async (url) => {
-    // A BOUND, because a fetch with neither timeout nor progress is a hang to the person watching —
-    // the rule this repository already paid for on the updater. Without it a stalled course leaves
-    // the shelf on "Looking…" for ever with nothing to act on.
-    // A BOUND EITHER WAY. `AbortSignal.timeout` is the short spelling; where it is missing — an
-    // older WebView is exactly where this matters — falling through with no signal left the fetch
-    // unbounded on the platform least able to afford it, which is the defect wearing a feature
-    // check. The controller below is the same bound, spelled out.
-    let signal;
-    let timer = null;
-    if (timeoutMs > 0) {
-      if (typeof AbortSignal?.timeout === 'function') {
-        signal = AbortSignal.timeout(timeoutMs);
-      } else if (typeof AbortController === 'function') {
-        const controller = new AbortController();
-        signal = controller.signal;
-        // NAMED, not messaged. `new Error('TimeoutError')` has `name === 'Error'`, so the handler
-        // below missed it and reported a deadline as "could not be reached" — the one diagnostic
-        // this whole branch exists to produce, lost to a string in the wrong field.
-        timer = setTimeout(() => controller.abort(Object.assign(new Error('timed out'), { name: 'TimeoutError' })), timeoutMs);
-      }
-    }
-    let response;
+    const { signal, clear } = deadline();
+    // ONE try AROUND BOTH AWAITS. The timer runs through the BODY on purpose -- a response that opens
+    // promptly and then stalls mid-stream is the hang this bound exists to prevent -- but only the fetch
+    // was inside the handler, so a deadline that struck the body said "The operation was aborted." with no
+    // URL and no bound (audit, 2026-09-21). Both phases now fail the same way.
     try {
-      response = await get(url, signal ? { signal } : undefined);
-    } catch (cause) {
-      const why = cause?.name === 'TimeoutError' || cause?.name === 'AbortError'
-        ? `${url} did not answer within ${timeoutMs}ms`
-        : `${url} could not be reached — ${cause?.message ?? cause}`;
-      if (timer !== null) clearTimeout(timer);
-      throw new Error(why, { cause });
-    }
-    // THE TIMER IS STILL RUNNING HERE, on purpose. Clearing it as soon as the headers arrived left
-    // the BODY unbounded: a response that opens promptly and then stalls mid-stream is exactly the
-    // hang this bound exists to prevent, and it would have waited for ever.
-    try {
+      const response = await get(url, signal ? { signal } : undefined);
       if (response.status === 404) return MISSING;
-      if (!response.ok) throw new Error(`${url} did not load (${response.status})`);
+      if (!response.ok) {
+        const refused = new Error(`${url} did not load (${response.status})`);
+        worded.add(refused);
+        throw refused;
+      }
       return await response.json();
+    } catch (cause) {
+      throw failure(url, cause);
     } finally {
-      if (timer !== null) clearTimeout(timer);
+      clear();
     }
   };
 
@@ -342,7 +415,7 @@ export function fetchCourse({
       // and the next caller may not come through `episode()`.
       const doc = await json(new URL(`${encodeURIComponent(id)}.json`, root));
       if (doc === MISSING) return null;
-      if (doc === null) throw new Error(`${id}.json decoded to null, which is not a lesson`);
+      if (doc === null) throw new CourseContentError(`${id}.json decoded to null, which is not a lesson`);
       return doc;
     },
   };

@@ -15,10 +15,11 @@ import { setFacelets } from './cube-subject.js';
 import { applyNetColors, applyTheme } from './cube-drawing.js';
 import { buildChrome, detectPlatform, isTauri } from './window-chrome.js';
 import { reparseRegistry } from './cube-memory.js';
+import { installCourseFromPage } from './course-session.js';
 import { schedulePreroll } from './scramble-roll.js';
 import { appUpdater, runLaunchCheck } from './update-ui.js';
 import {
-  applyRoute, go, installAdvancedShortcut, installExternalLinks, installSettingsShortcut,
+  applyRoute, haltApp, installAdvancedShortcut, installExternalLinks, installSettingsShortcut, startNavigation,
 } from './screen-shell.js';
 
 // The screens register themselves in the screen registry as they load, so importing them is how
@@ -95,12 +96,6 @@ function pullAndroidInsets() {
 async function boot() {
   assertStageSupport();
   applyInsetOverride();
-  // Navigation is wired only once boot's prerequisites have passed. Installed when the module
-  // loaded, a hash change after the layout guard had stopped boot rendered a screen over the
-  // guard's sentence (found by audit, 2026-09-13): the stage had said why the app cannot run here,
-  // and the next click unsaid it.
-  window.addEventListener('hashchange', () => applyRoute());
-  window.cubusGo = go;
   const platform = detectPlatform();
   document.documentElement.dataset.host = isTauri ? 'tauri' : 'web';
   document.documentElement.dataset.platform = platform;
@@ -127,9 +122,19 @@ async function boot() {
       .then((m) => m.setupPluginListeners?.())
       .catch((e) => console.debug('tauri-mcp guest not loaded', e));
   }
+  // The course the page says it has (ADR 0007), before the first route: a deep link to #/course must
+  // find it installed, since the Course screen builds its session on mount.
+  installCourseFromPage(document);
+  applyTheme(); applyNetColors();
+  // NAVIGATION ON ONLY NOW, with everything a screen stands on built. Installed when the module loaded,
+  // a hash change after the layout guard had stopped boot rendered a screen over the guard's sentence
+  // (found by audit, 2026-09-13); installed after the guard but before the chrome, a native window API
+  // that threw while the toolbar was built left navigation live over the failure's sentence (audit,
+  // 2026-09-21). A failure from here on still goes through `haltApp`, which switches it off again.
+  startNavigation();
   // Resolve the deep link before the first paint, and canonicalise the URL so a bogus hash does
   // not sit in the address bar contradicting the screen on show.
-  applyTheme(); applyNetColors(); applyRoute();
+  applyRoute();
   // Load the solver in the background so Random / Solve / Timer are ready. 'scan' is deliberately
   // NOT in that list: nothing on it depends on the solver, and re-rendering it would tear down a
   // camera that just opened and open a second one.
@@ -157,6 +162,5 @@ async function boot() {
 // failed — gets a plain one, and the console keeps the error (found by audit, 2026-09-13).
 boot().catch((err) => {
   console.error('cubus could not start', err);
-  const stage = $('#stage');
-  if (stage && !err?.onStage) stage.textContent = 'Cubus could not start here. Reloading the app usually fixes it.';
+  haltApp(err?.onStage ? null : 'Cubus could not start here. Reloading the app usually fixes it.');
 });

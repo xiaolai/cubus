@@ -382,3 +382,20 @@ test('a driver that plays walks one stop at a time, and anything a person does s
   followed.observe(toFacelets(built.positions[1].cube));
   assert.equal(followed.playing, false, 'a cube turned in a hand did not stop the clock');
 });
+
+// ADR 0007, added with the 2026-09-21 audit: a step the child will make is DESCRIBED before it is made.
+test('describe(k) draws position k\'s cues on the cube as it stands, and moves nothing', () => {
+  const cube = recordingCube();
+  const built = script([{ say: 'look' }, { move: 'R', say: 'your turn', arrow: 'R', hl: 'slot:UF' }], { scramble: "R U R' U'" });
+  const walk = createStopDriver(built, { cube });
+  walk.seek(1);                                     // the cube before the move
+  const before = walk.position;
+  const turned = cube.calls.length;
+  walk.describe(2);                                  // the move's position: its cues, not its turn
+  assert.equal(walk.position, before, 'describing a step moved the driver');
+  const since = cube.calls.slice(turned).map(([m, name]) => (m === 'set' || m === 'remove' ? name : m));
+  assert.ok(!since.some((what) => ['step', 'stepStop', 'playTo', 'seek', 'facelets', 'scramble', 'alg'].includes(what)),
+    `describing a step turned or reloaded the cube: ${since.join(', ')}`);
+  assert.notEqual(cube.attrs.get('arrow') ?? 'none', 'none', 'the arrow was not drawn');
+  assert.notEqual(cube.attrs.get('highlight') ?? 'none', 'none', 'the highlight was not drawn');
+});

@@ -115,7 +115,9 @@ export { checkEpisode, MIN_PER_MOVE, resolveSpanning, SPAN_LEAD } from './lesson
 // effect where they are written, pictures that are not cubes, and drill rounds
 // (dev-docs/adr/0005-the-renderer-plays-scripts-methods-choose.md decision 3). `checkLesson` is the one
 // door that tells the two kinds apart.
-export { STEP_CUES, STEP_KINDS, checkLesson, checkScript } from './lesson-format.js';
+// A step's MARKS — `voice` and `yours` — are about that step alone and are never carried forward
+// (dev-docs/adr/0007-the-course-plays-scripts-a-clip-per-line.md); a course's build checks against them.
+export { STEP_CUES, STEP_KINDS, STEP_MARKS, checkLesson, checkScript } from './lesson-format.js';
 
 // The questions a script names, and the frame they are asked in: a script writes "the top edges with
 // none of the top colour" the way the child holds the cube, and this is where that becomes a question
@@ -138,6 +140,11 @@ export { ROUND_QUESTIONS } from './lesson-format.js';
 // The load contract: one route at a time, nothing from a superseded one applied, and the connection's
 // live model kept across loads and located on each (plan item 3.5).
 export { createScriptPlayer } from './script-player.js';
+
+// A script played as a LESSON (ADR 0007): a recording per step, a question the child answers, a move the
+// child makes — and the lesson waiting for each. The same host the Course screen plays a script with, so
+// a course's build can play every lesson to its end before a child ever opens one.
+export { createScriptLesson } from './script-lesson.js';
 
 // Flat views from the same model: the net and the top-face case diagram, as SVG text (plan item 4.5).
 export { TOP_RING, faceletsOf, netSvg, topFaceSvg } from './cube-flat.js';

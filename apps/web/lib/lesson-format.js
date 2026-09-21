@@ -50,8 +50,15 @@ const EPISODE_CUE_RULES = Object.freeze({
   say: (v) => (typeof v === 'string' && v ? null : '`say` must be a non-empty string'),
   quarters: (v) => {
     if (!Array.isArray(v)) return '`quarters` must be an array of moves';
-    const bad = v.find((q) => typeof q !== 'string' || !isFaceTurn(q));
-    return bad === undefined ? null : `"${bad}" is not a face turn — the fixed frame takes URFDLB only, never a rotation`;
+    // INDICES, not `find`: `find` answers `undefined` both for "nothing is wrong" and for an element that
+    // IS `undefined`, so `[undefined, 'BAD']` passed and was scheduled, and so did a sparse array — the
+    // same hole `eachIndex` exists to close for the steps (audit, 2026-09-21).
+    for (let i = 0; i < v.length; i++) {
+      if (typeof v[i] !== 'string' || !isFaceTurn(v[i])) {
+        return `"${v[i]}" is not a face turn — the fixed frame takes URFDLB only, never a rotation`;
+      }
+    }
+    return null;
   },
   setup: (v) => {
     if (typeof v !== 'string') return '`setup` must be a string';
@@ -201,7 +208,7 @@ export function resolveSpanning(cues) {
 // said differently. A step is the unit all three share: what the cube does, and what the lesson is
 // saying about it while it does.
 //
-// FOUR THINGS A STEP CAN BE, and exactly one of them per step:
+// WHAT A STEP CAN BE, and exactly one of them per step (`STEP_KINDS` is the list; this is what each means):
 //
 //   { move: "y R U R'" }   the child's letters, in the hold in force — rotations, slices and wide
 //                          moves included (ADR 0004 decision 5)
@@ -238,11 +245,26 @@ export const EPISODE_CUE_FIELDS = Object.freeze(() => [...CUE_KEYS]);
 export const STEP_CUES = Object.freeze([
   'say', 'section', 'hl', 'focus', 'ask', 'ghosts', 'ghostElevation', 'cam', 'camUp',
   'number', 'counting', 'at', 'secs',
+  // What a lesson shows where the cube is, when what it is talking about is not a cube: a photograph, or a
+  // short silent clip (ADR 0007). Cues rather than marks — one picture usually carries several lines.
+  'image', 'clip',
   // Phase 4's annotations, as they land (plan item 3.1): a turn arrow, the face letters, a piece's trail.
   'arrow', 'labels', 'trail',
 ]);
 
-const STEP_KEYS = new Set([...STEP_KINDS, ...STEP_CUES]);
+/**
+ * What a step says about ITSELF alone, and never about the steps after it.
+ *
+ * A cue is a STATE: `hl` set on step 2 is still lit on step 5 (R9). These are EVENTS, and inheriting one is
+ * a defect with a sound: `voice` is the recording of this step's words, so carried forward it would be
+ * played again over every later step; `yours` hands this move to the child, so carried forward it would
+ * hand them every move after it. They are therefore not cues — `buildScript` carries `STEP_CUES` and
+ * nothing else, so no position inherits one — and a player reads them off the step itself
+ * (dev-docs/adr/0007-the-course-plays-scripts-a-clip-per-line.md).
+ */
+export const STEP_MARKS = Object.freeze(['voice', 'yours']);
+
+const STEP_KEYS = new Set([...STEP_KINDS, ...STEP_CUES, ...STEP_MARKS]);
 /**
  * A field written as TEXT, or the reason it is not.
  *
@@ -251,6 +273,24 @@ const STEP_KEYS = new Set([...STEP_KINDS, ...STEP_CUES]);
  * and crashed the cube reader a layer down (Codex audit, 2026-09-16). Asked before the contents are.
  */
 const notText = (value) => (typeof value === 'string' ? null : `must be written as text, not ${Array.isArray(value) ? 'a list' : typeof value}`);
+const said = (value) => typeof value === 'string' && value.trim() !== '';
+
+/**
+ * A picture or a clip: the file, and the words that describe it.
+ *
+ * `alt` is REQUIRED, not optional. This is a course for children, and a picture nobody describes is simply
+ * absent for a child who cannot see it — while the lesson goes on talking as though it were there. Where
+ * the file may POINT is the course door's business (`courseRef`), exactly as it is for `voice` and `audio`.
+ */
+const badPicture = (name, value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return `\`${name}\` is a file and the words that describe it: { "src": …, "alt": … }`;
+  }
+  for (const k of Object.keys(value)) if (k !== 'src' && k !== 'alt') return `\`${name}\`: unknown field "${k}"`;
+  if (!said(value.src)) return `\`${name}\` needs \`src\`, the file inside the course`;
+  if (!said(value.alt)) return `\`${name}\` needs \`alt\`, the words that describe it`;
+  return null;
+};
 const PICTURE = /^[URFDLB?]{54}$/;
 
 /**
@@ -280,11 +320,14 @@ const badCamera = (value) => (value === 'tour'
   // `{ lat: NaN, lon: NaN }` (audit, 2026-09-16). Same mechanism as `pieceStateError`'s.
   || (Array.isArray(value) && value.length === 2 && isNum(value[0]) && isNum(value[1]))
   ? null : '`cam` must be [latitude, longitude] or "tour"');
-const badCount = (value) => (/^\d{1,3}(,\d{3})*$|^\d+$/.test(String(value))
+// THE TYPE BEFORE THE PATTERN: `String(['123'])` is "123", so an array passed a regex written for text and
+// was handed on as an array (audit, 2026-09-21). A count is written as text or as a whole number.
+const badCount = (value) => (((typeof value === 'string' && /^\d{1,3}(,\d{3})*$|^\d+$/.test(value))
+  || (Number.isInteger(value) && value >= 0))
   ? null : `\`number\` must be digits, optionally grouped: "${value}"`);
 const badBoolean = (name, value) => (typeof value === 'boolean'
   ? null : `\`${name}\` must be true or false — a string is always truthy`);
-const badFaceLetter = (value) => (/^[URFDLB]$/.test(value) ? null : `"${value}" is not a face letter`);
+const badFaceLetter = (value) => (typeof value === 'string' && /^[URFDLB]$/.test(value) ? null : `"${value}" is not a face letter`);
 /** Two perpendicular faces — what a hold is, and what an orientation is. `sameAxis` rather than a second
  *  regex: "U D" passes every shape check anybody writes by hand and is not one, and the renderer refuses
  *  it for the same reason. */
@@ -437,81 +480,158 @@ const CUE_RULES = Object.freeze({
   ghostElevation: clearable((v) => (isNum(v) ? null : '`ghostElevation` must be a number')),
   cam: clearable(badCamera),
   camUp: clearable(badFaceLetter),
+  image: clearable((v) => badPicture('image', v)),
+  clip: clearable((v) => badPicture('clip', v)),
   number: clearable(badCount),
   // NOT clearable, and that is now visible rather than an omission: a cue with `secs: null` has no duration,
   // and the schedule cannot be built from one.
   secs: (v) => (isNum(v) && v > 0 ? null : '`secs` must be positive'),
 });
 
-/** Every cue field a step carries, checked by its own rule. Sequencing rules are the callers'. */
-function checkCues(step, i, where) {
-  for (const field of Object.keys(CUE_RULES)) {
+/** Every field of `step` that `rules` has a rule for, checked by that rule — the one loop the cue and mark
+ *  registries share. A rule reads `(value, step)`; a cue's ignores the step. Sequencing is the callers'. */
+function checkFields(rules, step, i, where) {
+  for (const field of Object.keys(rules)) {
     if (step[field] === undefined) continue;
-    const why = CUE_RULES[field](step[field]);
+    const why = rules[field](step[field], step);
     if (why) where(i, why);
   }
 }
 
-/** The step rules, shared by a script and by a round's reveal segment (plan item 3.4). */
-function checkSteps(steps, where, { rounds = true, painted: startPainted = false } = {}) {
-  let painted = startPainted;             // inside a picture segment?
-  let last = -Infinity;                   // the last `at`, so a timed script cannot go backwards
+/** A recording's reference, or the reason it is not one. Where it may POINT is the course door's
+ *  business (`courseRef` in `course-source.js`), exactly as it is for an episode's `audio`. */
+const badRecording = (v) => notText(v) ?? (v.trim() ? null : 'must name a recording');
+
+/**
+ * A recording and the words it records, checked as one claim — for a step's `voice` and for a round's.
+ * THE WORDS ON THE SAME STEP, never inherited ones: a caption is how a child who cannot hear the recording,
+ * or a parent, follows the lesson, and it has to be the words of THIS recording. Only the wording differs
+ * between the two places, so it is passed in.
+ */
+function recordingError(voice, say, silent) {
+  const bad = badRecording(voice);
+  if (bad) return `\`voice\` ${bad}`;
+  return typeof say === 'string' && say.trim() ? null : silent;
+}
+
+/**
+ * One rule per step MARK. Each reads the step it sits on, because a mark is a claim about that step: a
+ * recording of words it must carry, a move it must make.
+ */
+const MARK_RULES = Object.freeze({
+  __proto__: null,
+  voice: (v, step) => {
+    if (step.round !== undefined && badRecording(v) === null) return "a round's recording is `round.voice`, beside the question it records";
+    return recordingError(v, step.say, "`voice` is the recording of this step's `say`, and this step says nothing");
+  },
+  yours: (v, step) => {
+    if (v !== true) return '`yours` is true or absent';
+    if (step.move === undefined) return '`yours` hands a MOVE to the child, and this step makes none';
+    return null;
+  },
+});
+
+/** Which mark fields have a rule — the same guard `CHECKED_CUE_FIELDS` is, for the marks. */
+export const CHECKED_MARK_FIELDS = Object.freeze(() => Object.keys(MARK_RULES));
+
+/** `move` and `setup` are the same field twice -- a string of moves the notation must accept -- and they were
+ *  validated by two copies of one three-line sequence, which is two places for the rule to change (audit,
+ *  2026-09-16). What is genuinely different about them is what they do to a picture segment, below. */
+function checkMoveString(kind, step, i, where) {
+  if (typeof step[kind] !== 'string') where(i, `\`${kind}\` must be a string`);
+  const bad = badMoves(step[kind]);
+  if (bad) where(i, `\`${kind}\` ${bad}`);
+}
+
+/**
+ * What each step KIND asks of its step, and whether the walk is inside a PICTURE SEGMENT after it. One entry
+ * per kind, so adding a kind is adding an entry rather than another branch in the traversal (audit,
+ * 2026-09-21: the traversal had grown to 70 lines and 22 conditions). `ctx` is `{ painted, rounds, at }`:
+ * the picture state before this step, whether rounds are allowed here, and the `at` in force.
+ */
+const KIND_CHECKS = Object.freeze({
+  __proto__: null,
+  move: (step, i, where, ctx) => {
+    checkMoveString('move', step, i, where);
+    // A refusal rather than a best effort: a picture claims nothing about the stickers it leaves unknown,
+    // so turning one would be inventing them.
+    if (ctx.painted) where(i, 'a move inside a picture segment — a picture is not a cube, and cannot be turned');
+    return ctx.painted;
+  },
+  setup: (step, i, where) => {
+    checkMoveString('setup', step, i, where);
+    return false;
+  },
+  cube: (step, i, where) => {
+    // THE WHOLE CUBE, HERE. It was 54 letters of the right alphabet and nothing else, so `'U'.repeat(54)`
+    // passed and `buildScript` threw about a slot -- in a place that no longer knew which step it came
+    // from (Codex audit, 2026-09-16). The same reader the builder uses says why, at the step that wrote it.
+    const wrong = faceletsError(step.cube);
+    if (wrong) where(i, `\`cube\` ${wrong} — a picture with unknowns is a \`paint\` step`);
+    return false;
+  },
+  paint: (step, i, where) => {
+    if (notText(step.paint) || !PICTURE.test(step.paint)) where(i, '`paint` must be 54 of URFDLB and `?`');
+    return true;
+  },
+  hold: (step, i, where, ctx) => {
+    const bad = badHold(step.hold);
+    if (bad) where(i, bad);
+    return ctx.painted;
+  },
+  round: (step, i, where, ctx) => {
+    if (!ctx.rounds) where(i, 'a round inside a reveal — a reveal shows an answer, it does not ask again');
+    // A prediction imagines a turn of the cube, and a picture is not a cube. Asked BEFORE the round's own
+    // fields are read: its reveal is a segment of its own, and a round that turns a picture should be
+    // refused for the turn it names rather than for the first move of the answer it would show.
+    if (ctx.painted && step.round?.turn !== undefined) where(i, 'a round with a turn inside a picture segment — a picture cannot be turned, even in imagination');
+    checkRound(step.round, (msg) => where(i, msg), { painted: ctx.painted, at: ctx.at });
+    return ctx.painted;
+  },
+});
+
+/** A step's SHAPE: an object, known fields, at most one kind, and not empty. Returns its kind, if any. */
+function stepKind(step, i, where) {
+  if (!step || typeof step !== 'object') where(i, 'expected an object');
+  for (const k of Object.keys(step)) if (!STEP_KEYS.has(k)) where(i, `unknown field "${k}"`);
+  const kinds = STEP_KINDS.filter((k) => step[k] !== undefined);
+  if (kinds.length > 1) where(i, `says ${kinds.join(' and ')}; a step is one of them`);
+  // A step that does nothing to the cube is ordinary: most of a narrated lesson is a line being said over a
+  // cube that is standing still, and a cue change is a step of its own. What is refused is a step that says
+  // nothing at all, which is a typo rather than a pause.
+  if (kinds.length === 0 && !STEP_CUES.some((k) => step[k] !== undefined)) {
+    where(i, `says nothing — one of ${STEP_KINDS.join(', ')}, or a cue`);
+  }
+  return kinds[0];
+}
+
+/**
+ * The step rules, shared by a script and by a round's reveal segment (plan item 3.4). The traversal owns
+ * the two pieces of STATE -- the picture segment and the last `at` -- and each kind's own rules live in
+ * `KIND_CHECKS`.
+ *
+ * `at` is where a reveal's clock starts. `revealScript` plays a reveal as the cues in force at its round --
+ * that round's `at` among them -- followed by the reveal's own steps, so a reveal step timed before its
+ * round passed here and then threw when it was built (audit, 2026-09-21). A reveal is checked from the
+ * round's `at`, which is the timeline it is actually played on.
+ */
+function checkSteps(steps, where, { rounds = true, painted: startPainted = false, at: startAt = -Infinity } = {}) {
+  let painted = startPainted;
+  let last = startAt;                     // the `at` in force, so a timed script cannot go backwards
   eachIndex(steps, (step, i) => {
-    if (!step || typeof step !== 'object') where(i, 'expected an object');
-    for (const k of Object.keys(step)) if (!STEP_KEYS.has(k)) where(i, `unknown field "${k}"`);
-    const kinds = STEP_KINDS.filter((k) => step[k] !== undefined);
-    if (kinds.length > 1) where(i, `says ${kinds.join(' and ')}; a step is one of them`);
-    // A step that does nothing to the cube is ordinary: most of a narrated lesson is a line being
-    // said over a cube that is standing still, and a cue change is a step of its own. What is refused
-    // is a step that says nothing at all, which is a typo rather than a pause.
-    if (kinds.length === 0 && !STEP_CUES.some((k) => step[k] !== undefined)) {
-      where(i, `says nothing — one of ${STEP_KINDS.join(', ')}, or a cue`);
-    }
-    const [kind] = kinds;
-
-    // `move` and `setup` are the same field twice — a string of moves the notation must accept — and they
-    // were validated by two copies of one three-line sequence, which is two places for the rule to change
-    // (audit, 2026-09-16). What is genuinely different about them is what they do to a PICTURE SEGMENT, and
-    // that stays written out below, once each, because it is the part that is not shared.
-    if (kind === 'move' || kind === 'setup') {
-      if (typeof step[kind] !== 'string') where(i, `\`${kind}\` must be a string`);
-      const bad = badMoves(step[kind]);
-      if (bad) where(i, `\`${kind}\` ${bad}`);
-    }
-    // The picture segment's rule, and the reason it is a refusal rather than a best effort: a picture claims
-    // nothing about the stickers it leaves unknown, so turning one would be inventing them.
-    if (kind === 'move' && painted) {
-      where(i, 'a move inside a picture segment — a picture is not a cube, and cannot be turned');
-    }
-    if (kind === 'setup' || kind === 'cube') painted = false;
-    if (kind === 'cube') {
-      // THE WHOLE CUBE, HERE. It was 54 letters of the right alphabet and nothing else, so `'U'.repeat(54)`
-      // passed and `buildScript` threw about a slot — in a place that no longer knew which step it came
-      // from (Codex audit, 2026-09-16). The same reader the builder uses says why, at the step that wrote it.
-      const wrong = faceletsError(step.cube);
-      if (wrong) where(i, `\`cube\` ${wrong} — a picture with unknowns is a \`paint\` step`);
-    }
-    if (kind === 'paint') {
-      if (notText(step.paint) || !PICTURE.test(step.paint)) where(i, '`paint` must be 54 of URFDLB and `?`');
-      painted = true;
-    }
-    if (kind === 'hold') {
-      const bad = badHold(step.hold);
-      if (bad) where(i, bad);
-    }
-    if (kind === 'round') {
-      if (!rounds) where(i, 'a round inside a reveal — a reveal shows an answer, it does not ask again');
-      // A prediction imagines a turn of the cube, and a picture is not a cube. Asked BEFORE the round's
-      // own fields are read: its reveal is a segment of its own, and a round that turns a picture should
-      // be refused for the turn it names rather than for the first move of the answer it would show.
-      if (painted && step.round?.turn !== undefined) where(i, 'a round with a turn inside a picture segment — a picture cannot be turned, even in imagination');
-      checkRound(step.round, (msg) => where(i, msg), { painted });
-    }
-
-    checkCues(step, i, where);
-    // `at` is the one cue with STATE behind it, so it stays here with the rest of the walk: monotonic,
-    // for the same reason an episode's cues are — a clock driver scans forward for the step a time is
-    // inside, and out of order two steps would silently overlap.
+    const kind = stepKind(step, i, where);
+    const inForce = isNum(step.at) ? step.at : last;
+    if (kind) painted = KIND_CHECKS[kind](step, i, where, { painted, rounds, at: inForce });
+    checkFields(CUE_RULES, step, i, where);
+    // The cube's place holds ONE thing at a time, so a step setting both says two things about one region.
+    // Here rather than in a field's rule, because it is about the step and not about either value.
+    if (step.image && step.clip) where(i, "shows an image and a clip; the cube's place holds one of them");
+    checkFields(MARK_RULES, step, i, where);
+    // A reveal plays the answer to a question just answered. Handing the child the cube in the middle of
+    // it would be a second exercise wearing the first one's name.
+    if (!rounds && step.yours !== undefined) where(i, 'a reveal shows the answer — it does not hand the cube to the child');
+    // Monotonic, for the same reason an episode's cues are: a clock driver scans forward for the step a
+    // time is inside, and out of order two steps would silently overlap.
     if (step.at !== undefined) {
       if (!isNum(step.at) || step.at < 0) where(i, '`at` must be a number of seconds');
       if (step.at < last) where(i, `is at ${step.at}, before the step before it at ${last}`);
@@ -524,11 +644,15 @@ function checkSteps(steps, where, { rounds = true, painted: startPainted = false
 export const ROUND_QUESTIONS = Object.freeze(['whereIs', 'pieceIn']);
 
 /** A drill round's shape; `lib/script-rounds.js` gives it its behaviour (plan item 3.4). */
-function checkRound(round, where, { painted = false } = {}) {
+function checkRound(round, where, { painted = false, at = -Infinity } = {}) {
   if (!round || typeof round !== 'object') where('`round` must be an object');
-  const known = new Set(['say', 'turn', 'ask', 'choose', 'reveal']);
+  const known = new Set(['say', 'voice', 'turn', 'ask', 'choose', 'reveal']);
   for (const k of Object.keys(round)) if (!known.has(k)) where(`round: unknown field "${k}"`);
   if (round.say !== undefined && typeof round.say !== 'string') where('round: `say` must be a string');
+  if (round.voice !== undefined) {
+    const bad = recordingError(round.voice, round.say, "`voice` is the recording of the round's `say`, and it asks nothing aloud");
+    if (bad) where(`round: ${bad}`);
+  }
   if (round.turn !== undefined) {
     if (typeof round.turn !== 'string') where('round: `turn` must be a string');
     const bad = badMoves(round.turn);
@@ -549,7 +673,7 @@ function checkRound(round, where, { painted = false } = {}) {
     // sits in: a fresh check started `painted` at false, so a reveal with a move in it passed validation
     // inside a picture and then threw when the reveal was built, which is the one failure a checker
     // exists to move forward in time (Codex audit, 2026-09-16).
-    checkSteps(round.reveal, (j, msg) => where(`round: reveal step ${j}: ${msg}`), { rounds: false, painted });
+    checkSteps(round.reveal, (j, msg) => where(`round: reveal step ${j}: ${msg}`), { rounds: false, painted, at });
   }
 }
 

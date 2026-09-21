@@ -16,11 +16,13 @@
 
 import { $, escHtml, icon, state } from '../app-state.js';
 import { pageCourseSession } from '../course-session.js';
-import { courseSource } from '../course-session.js';
-import { resolveCourseAudio } from '../course-source.js';
+import { resolveCourseAudio, resolveCourseRef } from '../course-source.js';
 import { t } from '../i18n.js';
 import { SCREENS, refreshScreen, screenAbort } from '../screen-shell.js';
+import { buildScript } from '../script-view.js';
+import { progressRefusal, sectionsOf as scriptSections } from '../script-lesson.js';
 import { episodeHtml, mountEpisodeView, sectionsOf } from './course/episode-view.js';
+import { mountScriptLessonView, scriptLessonHtml } from './course/script-lesson-view.js';
 
 /**
  * What to say when there is nothing on the shelf.
@@ -88,7 +90,25 @@ const shelfRow = (entry) => `<button class="card tight" data-open="${escHtml(ent
 /** The catalogue's title for an id, falling back to the id — never a prettified invention. */
 const titleOf = (id, view) => view.entries.find((e) => e.id === id)?.title ?? id;
 
+/**
+ * WHERE THE LAST SCRIPT LESSON RESTED, held between mounts — one, like the parked `<audio>` an episode keeps
+ * its place in (`lib/episode-audio.js`). A lesson is rebuilt whenever its screen is — a visit to Settings,
+ * Back and open again — and every mount builds a fresh one, so without this each rebuild put the child back
+ * at the first step (audit, 2026-09-21: 2 / 3 became 1 / 3). Keyed on the SOURCE and the lesson: another
+ * course's lesson of the same name starts from its own beginning.
+ */
+let rested = null;
 
+/** Where `id` rested in `source`, if it did and the record still fits the lesson as it now is. */
+function restedAt(source, id, built) {
+  if (!rested || rested.source !== source || rested.id !== id) return null;
+  const refusal = progressRefusal(built, rested.progress);
+  if (!refusal) return rested.progress;
+  // Loud, and then the lesson from its start: the lesson changed under the record, which is a fact about
+  // the course's content, not a reason to refuse the child the lesson.
+  console.warn(`course: where "${id}" rested no longer fits it — ${refusal}; it starts from the beginning`);
+  return null;
+}
 
 /**
  * THE SHELF AND A LESSON ARE TWO COMPOSITIONS, so moving between them rebuilds the screen rather
@@ -101,7 +121,10 @@ SCREENS.course = () => {
   const session = pageCourseSession();
   const first = session.view();
   const showing = state.episode && first.episode ? state.episode : null;
-  let mounted = null;
+  // THE SOURCE THAT SUPPLIED THIS LESSON, not whichever the page holds when a recording is asked for: read
+  // live, a lesson from one course resolved its recordings against the course that replaced it (audit,
+  // 2026-09-21). A replaced course now rebuilds this screen (`COURSE_REPLACED`), so the two never meet.
+  const source = session.source;
 
   const paintShelf = (root, view) => {
     const col = $('#courseCol', root);
@@ -123,32 +146,55 @@ SCREENS.course = () => {
     }
   };
 
+  /**
+   * A lesson on screen, of either kind: its view mounted with Back wired to the session, the session watched,
+   * and the view disposed when the screen goes. ONE place — the two kinds had a copy each (audit,
+   * 2026-09-21), and a cleanup added to one would have been missed in the other.
+   */
+  const lessonScreen = (html, mountView) => ({
+    html,
+    mount(root) {
+      const signal = screenAbort?.signal;
+      const view = mountView(root, () => session.close());
+      // Back to the shelf is the other direction of the composition change, and so is the course being
+      // replaced under the lesson: both rebuild. Registered here, replacing the shelf's listener, because a
+      // listener from the screen before this one is writing to a DOM that is gone.
+      pageCourseSession((v) => {
+        if (signal?.aborted) return;
+        if (v.replaced || !v.showing) refreshScreen();
+      });
+      // The screen owns when the lesson stops, because the screen is what is going away.
+      signal?.addEventListener('abort', () => view.dispose(), { once: true });
+    },
+  });
+
+  // A SCRIPT is played a step at a time, an EPISODE on its track (ADR 0007). Which one this is was read
+  // once, at the course door, by `checkLesson`: `schema: 2` is a script and no `schema` is an episode.
+  if (showing && first.episode.schema === 2) {
+    const built = buildScript(first.episode);
+    return lessonScreen(scriptLessonHtml({ title: titleOf(showing, first), sections: scriptSections(built) }), (root, onBack) => {
+      const mounted = mountScriptLessonView(root, {
+        built,
+        from: restedAt(source, showing, built),
+        resolveFile: (ref) => resolveCourseRef(source, ref),
+        onBack,
+      });
+      return {
+        dispose() {
+          // Taken BEFORE disposing, which cancels what the lesson was waiting on and so forgets it.
+          rested = { source, id: showing, progress: mounted.lesson.progress() };
+          mounted.dispose();
+        },
+      };
+    });
+  }
+
   if (showing) {
-    return {
-      html: episodeHtml({
-        title: titleOf(showing, first),
-        sections: sectionsOf(first.episode),
-        playable: Boolean(resolveCourseAudio(courseSource, first.episode)),
-      }),
-      mount(root) {
-        const signal = screenAbort?.signal;
-        mounted = mountEpisodeView(root, {
-          episode: first.episode,
-          episodeId: showing,
-          audioSrc: resolveCourseAudio(courseSource, first.episode),
-          onBack: () => session.close(),
-        });
-        // Going back to the shelf is the other direction of the same composition change, so it is
-        // a rebuild too. Registered here, replacing the shelf's listener, because a listener from
-        // the screen before this one is writing to a DOM that is gone.
-        pageCourseSession((view) => {
-          if (signal?.aborted) return;
-          if (!view.showing) refreshScreen();
-        });
-        // The screen owns when the lesson stops, because the screen is what is going away.
-        signal?.addEventListener('abort', () => mounted?.dispose(), { once: true });
-      },
-    };
+    const audioSrc = resolveCourseAudio(source, first.episode);
+    return lessonScreen(
+      episodeHtml({ title: titleOf(showing, first), sections: sectionsOf(first.episode), playable: Boolean(audioSrc) }),
+      (root, onBack) => mountEpisodeView(root, { episode: first.episode, episodeId: showing, audioSrc, onBack }),
+    );
   }
 
   return {
@@ -156,7 +202,7 @@ SCREENS.course = () => {
       <div class="col" id="courseCol"></div>
       <div class="aside">
         <div class="card"><div class="eyebrow">${escHtml(t('WHAT THIS IS'))}</div>
-          <div class="sub" style="color:var(--ink-3);margin-top:8px;line-height:1.5">${escHtml(t('Narrated lessons: a voice, and a cube that turns as it talks. Each one is checked before it is shown.'))}</div></div>
+          <div class="sub" style="color:var(--ink-3);margin-top:8px;line-height:1.5">${escHtml(t('Lessons: a voice, and a cube that turns as it talks. Some stop to ask you something, or hand the cube to you. Each one is checked before it is shown.'))}</div></div>
       </div></div>`,
     mount(root) {
       // The abort signal, so a load that finishes after the learner has left writes nothing: the
@@ -165,8 +211,9 @@ SCREENS.course = () => {
       const signal = screenAbort?.signal;
       pageCourseSession((view) => {
         if (signal?.aborted) return;
-        // A lesson arriving is a new composition, so the screen is rebuilt; anything else repaints.
-        if (view.showing && view.episode) refreshScreen();
+        // A lesson arriving is a new composition, so the screen is rebuilt, and so is a replaced course,
+        // whose shelf this is not; anything else repaints.
+        if (view.replaced || (view.showing && view.episode)) refreshScreen();
         else paintShelf(root, view);
       });
       paintShelf(root, session.view());

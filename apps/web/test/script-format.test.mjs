@@ -8,9 +8,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  CHECKED_CUE_FIELDS, CHECKED_EPISODE_FIELDS, EPISODE_CUE_FIELDS,
-  STEP_CUES, STEP_KINDS, checkEpisode, checkLesson, checkScript,
+  CHECKED_CUE_FIELDS, CHECKED_EPISODE_FIELDS, CHECKED_MARK_FIELDS, EPISODE_CUE_FIELDS,
+  STEP_CUES, STEP_KINDS, STEP_MARKS, checkEpisode, checkLesson, checkScript,
 } from '../lib/lesson-format.js';
+import { buildScript } from '../lib/script-view.js';
+import { revealScript } from '../lib/script-rounds.js';
 import { QUESTIONS, ask, readAsk } from '../lib/script-questions.js';
 import { SOLVED, applyAlg } from '../lib/cube-pieces.js';
 import { targetPicture } from '../lib/stage-picture.js';
@@ -120,6 +122,57 @@ test('a round says what it asks and how many answers it wants, and its reveal is
       { round: { ask: 'pieceIn:UR', choose: 2, reveal: [{ cube: SOLVED_FACELETS }, { move: 'R' }] } }])),
     null,
   );
+});
+
+// A step's MARKS are about that step alone (dev-docs/adr/0007-the-course-plays-scripts-a-clip-per-line.md).
+// A cue is a state and is carried forward; a recording carried forward would be replayed over every later
+// step, and a move handed to the child carried forward would hand them every move after it.
+test('a voice is the recording of the words on its own step, and is never carried to the next', () => {
+  assert.equal(refusal(script([{ say: 'line 0', voice: 'voice/l0.m4a' }])), null);
+  assert.equal(refusal(script([{ move: 'R', say: 'line 1', voice: 'l1.m4a' }])), null);
+  // A recording with no words beside it cannot be captioned, and a caption is how a child who cannot
+  // hear it, or a parent, follows along — so the words are required on the SAME step, not inherited.
+  assert.match(refusal(script([{ say: 'line 0' }, { move: 'R', voice: 'l1.m4a' }])),
+    /step 1: `voice` is the recording of this step's `say`, and this step says nothing/);
+  assert.match(refusal(script([{ say: '', voice: 'l0.m4a' }])), /step 0: `voice` is the recording of this step's `say`/);
+  assert.match(refusal(script([{ say: null, voice: 'l0.m4a' }])), /step 0: `voice` is the recording/);
+  assert.match(refusal(script([{ say: 'line 0', voice: '  ' }])), /step 0: `voice` must name a recording/);
+  assert.match(refusal(script([{ say: 'line 0', voice: 3 }])), /step 0: `voice` must be written as text, not number/);
+  // A round's words are its question, so its recording sits beside the question and not on the step.
+  const round = { say: 'line 2', ask: 'pieceIn:UR', choose: 2 };
+  assert.equal(refusal(script([{ round: { ...round, voice: 'l2.m4a' } }])), null);
+  assert.match(refusal(script([{ say: 'line 1', voice: 'l1.m4a', round }])),
+    /step 0: a round's recording is `round.voice`, beside the question it records/);
+  assert.match(refusal(script([{ round: { ask: 'pieceIn:UR', choose: 2, voice: 'l2.m4a' } }])),
+    /round: `voice` is the recording of the round's `say`, and it asks nothing aloud/);
+  assert.match(refusal(script([{ round: { ...round, voice: '' } }])), /round: `voice` must name a recording/);
+  // A reveal's steps are steps, and may be spoken.
+  assert.equal(refusal(script([{ round: { ...round, reveal: [{ hl: 'slot:UB', say: 'line 3', voice: 'l3.m4a' }] } }])), null);
+
+  // NOT A CUE, BY CONSTRUCTION: `buildScript` carries STEP_CUES forward and nothing else, so the position
+  // after a spoken step carries its `say` (the last thing said is still the last thing said) and no voice.
+  const built = buildScript(script([{ say: 'line 0', voice: 'l0.m4a' }, { move: 'R' }]));
+  assert.equal(built.positions[2].cues.say.value, 'line 0');
+  assert.equal(built.positions[2].cues.voice, undefined, 'a recording is not a state a later position is in');
+  assert.ok(!STEP_CUES.includes('voice') && STEP_MARKS.includes('voice'));
+});
+
+test('yours hands a move to the child, and only a move, and never inside a reveal', () => {
+  assert.equal(refusal(script([{ move: 'R', yours: true }])), null);
+  assert.equal(refusal(script([{ move: "y R U R'", say: 'line 0', voice: 'l0.m4a', yours: true }])), null);
+  assert.match(refusal(script([{ say: 'line 0', yours: true }])), /step 0: `yours` hands a MOVE to the child, and this step makes none/);
+  assert.match(refusal(script([{ hold: 'D B', yours: true }])), /step 0: `yours` hands a MOVE/);
+  // `false` would mean what leaving it out means, and two spellings of one thing is one too many.
+  assert.match(refusal(script([{ move: 'R', yours: false }])), /step 0: `yours` is true or absent/);
+  assert.match(refusal(script([{ move: 'R', yours: 'yes' }])), /step 0: `yours` is true or absent/);
+  // A reveal plays the answer to a question the child has just answered; handing them the cube in the
+  // middle of it is a second exercise wearing the first one's name.
+  assert.match(
+    refusal(script([{ round: { ask: 'pieceIn:UR', choose: 2, reveal: [{ move: 'R', yours: true }] } }])),
+    /step 0: round: reveal step 0: a reveal shows the answer — it does not hand the cube to the child/,
+  );
+  const built = buildScript(script([{ move: 'R', yours: true }, { move: 'U' }]));
+  assert.equal(built.positions[2].cues.yours, undefined, 'a later move is not the child\'s because an earlier one was');
 });
 
 // R9 of dev-docs/adr/0004-orientation-notation-and-colour-are-three-things.md. cubus-im's builder copies
@@ -292,6 +345,12 @@ test('every field a cue may carry is a field something checks', () => {
   assert.deepEqual(missingFromEpisode, [],
     `an episode cue may carry ${missingFromEpisode.join(', ')}, and nothing validates ${missingFromEpisode.length > 1 ? 'them' : 'it'}`);
 
+  // A step's marks are checked by their own registry, because each rule reads the step it sits on.
+  const markRules = CHECKED_MARK_FIELDS();
+  const missingMarks = STEP_MARKS.filter((k) => !markRules.includes(k));
+  assert.deepEqual(missingMarks, [], `a script step may carry ${missingMarks.join(', ')}, and nothing validates it`);
+  assert.deepEqual(markRules.filter((k) => !STEP_MARKS.includes(k)), [], 'a mark rule validates a field no step may carry');
+
   // And the reverse: a rule for a field no format accepts is a rule that never runs, which reads as
   // coverage and is not.
   const named = new Set([...STEP_CUES, ...EPISODE_CUE_FIELDS()]);
@@ -299,4 +358,63 @@ test('every field a cue may carry is a field something checks', () => {
     const orphans = rules.filter((k) => !named.has(k));
     assert.deepEqual(orphans, [], `these rules validate fields nothing may carry: ${orphans.join(', ')}`);
   }
+});
+
+// The 2026-09-21 audit of the course-player branch: three values the validator used to let through.
+
+test('an undefined move, a hole, or a value that only LOOKS like text is refused, not scheduled', () => {
+  // `find` answered `undefined` both for "nothing wrong" and for an element that IS undefined.
+  const episode = (quarters) => ({ cues: [{ say: 'line', start: 0, end: 1, quarters }] });
+  assert.match(refusal(episode([undefined, 'BAD']), checkEpisode) ?? '', /is not a face turn/);
+  assert.match(refusal(episode([, 'R']), checkEpisode) ?? '', /is not a face turn/); // eslint-disable-line no-sparse-arrays
+  // `String(['123'])` is "123": the regex passed an array and the array was handed on.
+  assert.match(refusal(script([{ say: 'x', number: ['123'] }])) ?? '', /`number` must be digits/);
+  assert.match(refusal(script([{ say: 'x', camUp: ['D'] }])) ?? '', /is not a face letter/);
+  // What was valid still is.
+  assert.equal(refusal(script([{ say: 'x', number: '43,252,003,274,489,856,000' }])), null);
+  assert.equal(refusal(script([{ say: 'x', camUp: 'D' }])), null);
+});
+
+test("a reveal is timed on its round's clock, because that is the timeline it is played on", () => {
+  // `revealScript` plays the cues in force at the round -- its `at` among them -- before the reveal's own
+  // steps, so a reveal step timed before its round passed here and then threw when it was built.
+  const doc = (revealAt) => script([
+    { say: 'look', at: 0 },
+    { round: { ask: 'pieceIn:FR', choose: 2, reveal: [{ say: 'here', at: revealAt }] }, at: 10 },
+  ], { start: { scramble: "R U R' U'" } });
+  assert.match(refusal(doc(0)) ?? '', /reveal step 0: is at 0, before the step before it at 10/);
+  const built = buildScript(checkScript(doc(12)));
+  const at = built.positions.findIndex((position) => built.script.steps[position.step]?.round);
+  assert.ok(at >= 0, 'the fixture has no round');
+  assert.doesNotThrow(() => buildScript(checkScript(revealScript(built, at))));
+});
+
+// A lesson may show a PICTURE where the cube is — a photograph of the first wooden prototype, the box it
+// was sold in — and a short silent clip. Both are cues: a picture stays until something clears it, because
+// one photograph usually carries several lines of narration.
+test('a picture and a clip are cues, each a file and the words that describe it', () => {
+  const pic = { src: 'media/blue-box.jpg', alt: 'A plain blue cardboard box' };
+  const clip = { src: 'media/turning.mp4', alt: 'A hand turning the top of a cube' };
+  assert.equal(refusal(script([{ say: 'line 0', image: pic }])), null);
+  assert.equal(refusal(script([{ say: 'line 0', clip }])), null);
+  assert.equal(refusal(script([{ image: pic }, { move: 'R' }, { image: null }])), null, 'a picture is cleared like any cue');
+
+  // A picture with no words describing it is invisible to a child who cannot see it.
+  assert.match(refusal(script([{ image: { src: 'media/x.jpg' } }])), /step 0: `image` needs `alt`/);
+  assert.match(refusal(script([{ image: { src: 'media/x.jpg', alt: '  ' } }])), /step 0: `image` needs `alt`/);
+  assert.match(refusal(script([{ image: { alt: 'A box' } }])), /step 0: `image` needs `src`/);
+  assert.match(refusal(script([{ image: 'media/x.jpg' }])), /step 0: `image` is a file and the words that describe it/);
+  assert.match(refusal(script([{ image: { ...pic, caption: 'hi' } }])), /step 0: `image`: unknown field "caption"/);
+  assert.match(refusal(script([{ clip: { src: 'media/x.mp4' } }])), /step 0: `clip` needs `alt`/);
+
+  // The cube's place is one thing at a time: a step showing both says two things about the same region.
+  assert.match(refusal(script([{ image: pic, clip }])), /step 0: shows an image and a clip; the cube's place holds one of them/);
+
+  // Carried forward like every cue, and written once (R9).
+  const built = buildScript(script([{ say: 'line 0', image: pic }, { move: 'R' }, { image: null }, { move: 'U' }]));
+  assert.deepEqual(built.positions[2].cues.image.value, pic, 'a picture did not carry to the step after it');
+  assert.equal(built.positions.at(-1).cues.image, undefined, 'a cleared picture was still in force');
+  assert.ok(STEP_CUES.includes('image') && STEP_CUES.includes('clip'));
+  // An EPISODE is cubus-im's narrated lesson and has no pictures: the fields are the script format's.
+  assert.match(refusal({ cues: [{ say: 'line 0', start: 0, end: 1, image: pic }] }, checkEpisode), /unknown field "image"/);
 });

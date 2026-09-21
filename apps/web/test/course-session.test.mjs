@@ -11,7 +11,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { state } from '../lib/app-state.js';
-import { createCourseSession, pageCourseSession, resetCourseSession, useCourse } from '../lib/course-session.js';
+import {
+  courseSource, createCourseSession, installCourseFromPage, pageCourseSession, resetCourseSession, useCourse,
+} from '../lib/course-session.js';
 import { createCourseSource } from '../lib/course-source.js';
 
 const EPISODE = { cues: [{ say: 'line 0', start: 0, end: 1 }] };
@@ -304,4 +306,145 @@ test('the view reports loading while it loads, and stops when it stops', async (
 
 test('a session needs a source', () => {
   assert.throws(() => createCourseSession(), /needs a source/);
+});
+
+// ADR 0007: the Course screen plays scripts as well as episodes. It refused them by name until then,
+// because the only thing it could mount was the episode player; a script is now opened like any lesson,
+// and the SCREEN chooses the player from the document's own `schema` (`checkLesson`'s one door).
+test('a script opens like an episode, and a script that does not validate is refused by name', async () => {
+  const script = { schema: 2, steps: [{ say: 'line 0', voice: 'voice/l0.m4a' }, { move: 'R', yours: true }] };
+  const broken = { schema: 2, steps: [{ move: 'R', yours: 'yes' }] };
+  const { session } = sessionOver([{ id: 'a-lesson' }, { id: 'b-lesson' }], { 'a-lesson': script, 'b-lesson': broken });
+  await session.load();
+  await session.open('a-lesson');
+  assert.equal(session.view().showing, 'a-lesson');
+  assert.equal(session.view().episode, script, 'the document shown is the one that was checked');
+  assert.equal(session.view().refusal, null);
+
+  await session.open('b-lesson');
+  assert.equal(session.view().showing, null);
+  assert.equal(session.view().refusal.reason, 'malformed');
+  assert.match(session.view().refusal.message, /script step 0: `yours` is true or absent/);
+  assert.equal(session.view().entries.length, 2, 'a bad script emptied the shelf');
+});
+
+// ---- The course the PAGE says it has (ADR 0007) ---------------------------------------------------
+//
+// A server that has a course beside the app says so in the page's head, and the app installs it at
+// start. Never by probing `course/index.json`: a packaged build answers a missing file with index.html,
+// so a probe would report a broken shelf where there is simply no course.
+
+/** A document with, or without, the course tag — the only part of a document this reads. */
+const pageWith = (content) => ({
+  querySelector: (sel) => (sel === 'meta[name="cubus-course"]' && content !== undefined
+    ? { getAttribute: (name) => (name === 'content' ? content : null) }
+    : null),
+});
+
+test('a page with no course tag installs nothing, and the empty course stands', async (t) => {
+  t.after(() => useCourse(null));
+  useCourse(null);   // from nothing: an earlier case in this file installs a course of its own
+  const made = [];
+  assert.equal(installCourseFromPage(pageWith(undefined), { make: (base) => { made.push(base); } }), false);
+  assert.deepEqual(made, []);
+  assert.deepEqual([...await courseSource.catalogue()], []);
+});
+
+test('a page naming a directory beside the app installs the course from there', async (t) => {
+  t.after(() => useCourse(null));
+  const made = [];
+  const source = createCourseSource({ list: async () => [{ id: 'a-lesson' }], read: async () => null });
+  assert.equal(installCourseFromPage(pageWith('course/'), { make: (base) => { made.push(base); return source; } }), true);
+  assert.deepEqual(made, ['course/']);
+  assert.equal(courseSource, source);
+});
+
+test('a course tag that names anything but a directory beside the app is refused ON THE SHELF', async (t) => {
+  t.after(() => useCourse(null));
+  for (const bad of ['https://example.test/course/', '//example.test/c/', '/course/', '../course/', 'course', 'a/../b/', '', 'course/\n']) {
+    const made = [];
+    assert.equal(installCourseFromPage(pageWith(bad), { make: (base) => { made.push(base); } }), true);
+    assert.deepEqual(made, [], `${JSON.stringify(bad)} was used as a course location`);
+    // Loud, and where the author will look: the shelf says the lessons did not load, and why.
+    await assert.rejects(courseSource.catalogue(), /names its course as .* which is not a directory beside the app/);
+  }
+});
+
+// The 2026-09-21 audit of the course-player branch: a session's lifecycle, asked seven more questions.
+
+test('a retired session, still held by a reference, can neither open nor close anything', async (t) => {
+  t.after(() => { state.episode = null; });
+  const old = createCourseSession({ source: createCourseSource({ list: async () => [], read: async () => EPISODE }) });
+  old.invalidate();
+  state.episode = 'kept';
+  await old.open('a-lesson');
+  assert.equal(state.episode, 'kept', 'a retired session committed an episode');
+  old.close();
+  assert.equal(state.episode, 'kept', "a retired session cleared another session's selection");
+});
+
+test('a reset retires the session, so an open in flight cannot land on the next one', async (t) => {
+  t.after(() => { resetCourseSession(); useCourse(null); });
+  const gate = deferred();
+  useCourse(createCourseSource({ list: async () => [], read: async () => { await gate.promise; return EPISODE; } }));
+  const pending = pageCourseSession().open('a-lesson');
+  resetCourseSession();
+  const heard = [];
+  pageCourseSession((view) => heard.push(view.showing));
+  gate.resolve();
+  await pending;
+  assert.equal(state.episode, null, 'the old open wrote the episode after the reset');
+  assert.deepEqual(heard, [], "the old open notified the next session's listener");
+});
+
+test("replacing the course clears the replaced course's selection", async (t) => {
+  t.after(() => { resetCourseSession(); useCourse(null); });
+  useCourse(createCourseSource({ list: async () => [], read: async () => EPISODE }));
+  await pageCourseSession().open('a-lesson');
+  assert.equal(state.episode, 'a-lesson');
+  useCourse(null);
+  assert.equal(pageCourseSession().view().showing, null, "the new course showed the old course's lesson id");
+});
+
+test('a screen that throws while drawing cannot stop a read or leave the shelf loading', async (t) => {
+  const was = console.error;
+  const reported = [];
+  console.error = (...args) => reported.push(args.map(String).join(' '));
+  t.after(() => { console.error = was; state.episode = null; });
+  let reads = 0;
+  const source = createCourseSource({ list: async () => { reads += 1; return []; }, read: async () => EPISODE });
+  const session = createCourseSession({ source, onChange: () => { throw new Error('drawing failed'); } });
+  await session.load();
+  assert.equal(reads, 1, 'the throwing listener stopped the read from starting');
+  assert.equal(session.view().loading, false, 'the shelf was left loading');
+  await assert.doesNotReject(session.open('a-lesson'), 'a failing notification rejected the open');
+  assert.ok(reported.some((line) => /failed while drawing/.test(line)), 'the listener failure went unreported');
+});
+
+test('the page installs its course against its OWN address, not the global document', async (t) => {
+  const was = globalThis.fetch;
+  t.after(() => { globalThis.fetch = was; useCourse(null); });
+  const seen = [];
+  globalThis.fetch = async (url) => { seen.push(String(url)); return { ok: true, status: 200, json: async () => [] }; };
+  installCourseFromPage({ ...pageWith('course/'), baseURI: 'https://app.test/deep/index.html' });
+  await courseSource.catalogue();
+  assert.deepEqual(seen, ['https://app.test/deep/course/index.json']);
+});
+
+test('a course tag with no location is refused on the shelf, never mistaken for no tag', async (t) => {
+  t.after(() => useCourse(null));
+  assert.equal(installCourseFromPage(pageWith(null)), true, 'a declared course with no location was ignored');
+  await assert.rejects(courseSource.catalogue(), /names no location/);
+});
+
+test('a failure opening one lesson is reported against THAT lesson, not the one on show', async (t) => {
+  t.after(() => { state.episode = null; });
+  const source = {
+    catalogue: async () => [],
+    episode: async (id) => { if (id === 'b-lesson') throw new Error('the disk is full'); return EPISODE; },
+  };
+  const session = createCourseSession({ source });
+  await session.open('a-lesson');
+  await session.open('b-lesson');
+  assert.equal(session.view().refusal?.episode, 'b-lesson');
 });

@@ -982,6 +982,103 @@ for (const fixture of FIXTURES) {
   });
 }
 
+/**
+ * A SCRIPT lesson asking a question, at every fixture (ADR 0007).
+ *
+ * Its tallest state: the step controls AND the six faces are both in `aux`, under the cube. A question a
+ * child cannot answer because its faces were pushed off a phone is a lesson that cannot go on, so every
+ * face must be on screen and be the element a finger hits, as the Play control must.
+ */
+const ASKING = {
+  schema: 2,
+  start: { scramble: "R U R' U'" },
+  steps: [
+    // WITH A FIGURE ON SCREEN: the longest one a lesson has to show is twenty-six characters, drawn over the
+    // cube, and the narrowest supported client is a 320px column.
+    // AND A PICTURE where the cube is (ADR 0007), so the layer that covers the primary region is measured
+    // at every shape too — including the 320px column.
+    { number: '43,252,003,274,489,856,000', image: { src: 'test/fixtures/picture.png', alt: 'A red square' },
+      round: { say: 'line 0', voice: 'test/fixtures/silence.wav', ask: 'whereIs:UF', choose: 2 } },
+    { move: 'R', say: 'line 1', voice: 'test/fixtures/silence.wav' },
+  ],
+};
+
+for (const fixture of FIXTURES) {
+  test(`script lesson asking: ${label(fixture)}`, async () => {
+    const { page, context, errors } = await openAt(fixture, urlFor(fixture, 'home'));
+    try {
+      await page.waitForSelector('.screen.active');
+      await page.evaluate(async (doc) => {
+        const [{ useCourse }, { createCourseSource }] = await Promise.all([
+          import('/lib/course-session.js'),
+          import('/lib/course-source.js'),
+        ]);
+        useCourse(createCourseSource({
+          list: async () => [{ id: 'a-script', title: 'A script lesson' }],
+          read: async () => doc,
+        }));
+      }, ASKING);
+      await page.evaluate(() => { window.location.hash = '#/course'; });
+      await page.waitForFunction(() => document.querySelector('[data-open="a-script"]') !== null);
+      await page.click('[data-open="a-script"]');
+      await page.waitForFunction(() => document.querySelector('#slPlay') !== null);
+      await page.click('#slPlay');
+      await page.waitForFunction(() => document.querySelector('#slAsk')?.hidden === false);
+
+      const m = await measureScreen(page);
+      assert.deepEqual(errors.map(String), [], 'the page threw');
+      assert.ok(m.overflow.doc <= 0, `the page overflows the viewport by ${m.overflow.doc}px`);
+      assert.ok(m.overflow.screen <= 1, `the screen overflows sideways by ${m.overflow.screen}px`);
+      assert.deepEqual(m.beyond, [], 'drawn beyond the stage');
+      assert.deepEqual(m.collapsed, [], 'a control on the page has no box — squashed by its column');
+      if (fixture.touch) {
+        const small = m.controls.filter((c) => c.width < 44 - 0.5 || c.height < 44 - 0.5);
+        assert.deepEqual(small, [], 'touch: controls under 44px');
+      }
+      const placed = await page.evaluate(() => {
+        const hitAt = (el) => {
+          const r = el.getBoundingClientRect();
+          const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+          return { top: r.top, bottom: r.bottom, height: r.height, hit: Boolean(hit && (el === hit || el.contains(hit))) };
+        };
+        const cube = document.querySelector('.primary').getBoundingClientRect();
+        const aux = document.querySelector('.aux').getBoundingClientRect();
+        const media = document.querySelector('#slMedia');
+        const mediaBox = media && !media.hidden ? media.getBoundingClientRect() : null;
+        const fig = document.querySelector('#slNumber');
+        const figBox = fig && !fig.hidden ? fig.getBoundingClientRect() : null;
+        return {
+          cubeBottom: cube.bottom,
+          auxTop: aux.top,
+          primaryLeft: cube.left,
+          primaryRight: cube.right,
+          number: figBox && { left: figBox.left, right: figBox.right, top: figBox.top, bottom: figBox.bottom },
+          media: mediaBox && { left: mediaBox.left, right: mediaBox.right, top: mediaBox.top, bottom: mediaBox.bottom },
+          viewport: window.innerHeight,
+          controls: ['#slPlay', ...['U', 'R', 'F', 'D', 'L', 'B'].map((f) => `[data-face="${f}"]`)]
+            .map((sel) => ({ sel, ...hitAt(document.querySelector(sel)) })),
+        };
+      });
+      assert.ok(placed.auxTop >= placed.cubeBottom - 1, 'the controls are not under the cube');
+      assert.ok(placed.number, 'the lesson\'s figure was not drawn');
+      assert.ok(placed.media, 'the lesson\'s picture was not drawn');
+      assert.ok(placed.media.left >= placed.primaryLeft - 1 && placed.media.right <= placed.primaryRight + 1
+        && placed.media.bottom <= placed.cubeBottom + 1,
+      'the picture is drawn outside the cube\'s own region');
+      assert.ok(placed.number.right <= placed.primaryRight + 1 && placed.number.left >= placed.primaryLeft - 1,
+        'the figure is drawn outside the cube\'s own region');
+      for (const c of placed.controls) {
+        assert.ok(c.height > 0, `${c.sel} has no box`);
+        assert.ok(c.bottom <= placed.viewport + 1, `${c.sel} sits ${Math.round(c.bottom - placed.viewport)}px below the viewport`);
+        assert.ok(c.top >= -1, `${c.sel} sits above the viewport`);
+        assert.ok(c.hit, `something else is drawn over ${c.sel}`);
+      }
+    } finally {
+      await context.close();
+    }
+  });
+}
+
 for (const screen of SCREENS) {
   for (const fixture of FIXTURES) {
     test(`${screen} screen: ${label(fixture)}`, async () => {

@@ -17,7 +17,9 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 
-import { checkLesson, MIN_PER_MOVE, resolveSpanning, SPAN_LEAD, STEP_CUES, STEP_KINDS } from '../lib/cube-kit.js';
+import {
+  checkLesson, createScriptLesson, MIN_PER_MOVE, resolveSpanning, SPAN_LEAD, STEP_CUES, STEP_KINDS, STEP_MARKS,
+} from '../lib/cube-kit.js';
 // Not through the kit: `EPISODE_CUE_FIELDS` and `ROUND_QUESTIONS` are the format module's own
 // vocabularies and are not part of the promised public surface. ADR 0005 decision 4 makes every
 // kit export a promise, so widening that surface for a test's convenience would be a commitment
@@ -27,7 +29,7 @@ import { buildScript } from '../lib/script-view.js';
 import { createClockDriver, timelineOf } from '../lib/script-drive.js';
 import { buildSchedule } from '../lib/lesson-schedule.js';
 import { answerAt } from '../lib/script-rounds.js';
-import { courseAudioRef } from '../lib/course-source.js';
+import { courseAudioRef, courseRef } from '../lib/course-source.js';
 import { CORNERS, EDGES, SOLVED, applyAlg } from '../lib/cube-pieces.js';
 
 /**
@@ -68,6 +70,14 @@ test('the spec names every step kind and every step cue', (t) => {
   assert.deepEqual(STEP_CUES.filter((c) => !names(c)), [], 'a step cue is missing from the spec');
 });
 
+test('the spec names every step mark, and says a mark is not carried forward', (t) => {
+  if (!SPEC) return t.skip(NO_SPEC);
+  assert.deepEqual(STEP_MARKS.filter((m) => !names(m)), [], 'a step mark is missing from the spec');
+  // The one rule that makes a mark different from a cue, and the one an author would otherwise assume
+  // the other way round, since every cue IS carried forward.
+  assert.match(SPEC, /never carried/i);
+});
+
 test('the spec names both round questions', (t) => {
   if (!SPEC) return t.skip(NO_SPEC);
   assert.deepEqual(ROUND_QUESTIONS.filter((q) => !SPEC.includes(q)), []);
@@ -90,6 +100,8 @@ test('the spec states that validation is necessary and not sufficient', (t) => {
   // `createClockDriver`, which throws — the documented route did not run.
   assert.match(SPEC, /EPISODE\s+resolveSpanning\(cues\)\s*→\s*checkLesson\(doc\)\s*→\s*buildSchedule\(doc\)\s*→\s*createLessonPlayer/);
   assert.match(SPEC, /SCRIPT\s+checkLesson\(doc\)\s*→\s*buildScript\(doc\)\s*→\s*createClockDriver\(built\)/);
+  // And the lesson the Course screen plays: the same script, played a step at a time on its recordings.
+  assert.match(SPEC, /LESSON\s+checkLesson\(doc\)\s*→\s*buildScript\(doc\)\s*→\s*createScriptLesson\(built/);
   // And the order that catches people: resolve before check, never after.
   assert.match(SPEC, /resolveSpanning` runs BEFORE validation/);
 });
@@ -108,9 +120,11 @@ test('the document publishes the examples these cases run', (t) => {
   if (!SPEC) return t.skip(NO_SPEC);
   // If the document grows or loses an example, this file must be re-read rather than silently
   // checking fewer things.
-  assert.equal(EXAMPLES.length, 2, 'the spec no longer publishes exactly one episode and one script');
+  assert.equal(EXAMPLES.length, 3, 'the spec no longer publishes exactly one episode, one script and one lesson');
   assert.ok(EXAMPLES[0].cues, 'the first example is the episode');
   assert.equal(EXAMPLES[1].schema, 2, 'the second example is the script');
+  assert.equal(EXAMPLES[2].schema, 2, 'the third example is the lesson');
+  assert.ok(EXAMPLES[2].steps.some((step) => step.voice), 'the lesson example records none of its lines');
 });
 
 test('THE PUBLISHED EPISODE runs the pipeline the document prescribes', (t) => {
@@ -129,6 +143,38 @@ test('THE PUBLISHED SCRIPT runs the pipeline the document prescribes', (t) => {
   const built = buildScript(checkLesson(EXAMPLES[1]));
   assert.ok(timelineOf(built), 'the published script has no timeline');
   assert.ok(createClockDriver(built), 'the published script does not drive');
+});
+
+test('THE PUBLISHED LESSON plays to its end on the host the Course screen plays it with', async (t) => {
+  if (!SPEC) return t.skip(NO_SPEC);
+  const doc = EXAMPLES[2];
+  const built = buildScript(checkLesson(doc));
+  // Every recording it names is one the course door lets through — a refused one is a line that says
+  // nothing on screen.
+  const refs = [...doc.steps.map((s) => s.voice), ...doc.steps.map((s) => s.round?.voice)].filter(Boolean);
+  assert.ok(refs.length > 0);
+  for (const ref of refs) assert.ok(courseRef(ref), `the published recording ${JSON.stringify(ref)} is refused`);
+
+  // Played the way a child plays it: each recording ends, the move handed over is made, the question is
+  // answered from the cube. A voice that ends every recording at once, and a clock with no waiting in it.
+  let finish = null;
+  const voice = {
+    speak: () => new Promise((resolve) => { finish = resolve; }),
+    stop: () => { finish?.('stopped'); finish = null; },
+  };
+  const schedule = Object.assign((fn) => { queueMicrotask(fn); return 0; }, { cancel: () => {} });
+  const lesson = createScriptLesson(built, { voice, schedule });
+  lesson.play();
+  for (let guard = 0; guard < 200 && lesson.view.phase !== 'ended'; guard++) {
+    const v = lesson.view;
+    if (v.phase === 'yours') lesson.done();
+    else if (v.phase === 'asking' && !v.round.locked) {
+      const at = built.positions.find((p) => p.step === v.step).index;
+      for (const face of answerAt(built, at).faces) lesson.select(face);
+    } else if (finish) { const f = finish; finish = null; f('ended'); }
+    await new Promise((r) => setImmediate(r));
+  }
+  assert.equal(lesson.view.phase, 'ended', `the published lesson stopped at step ${lesson.view.step} (${lesson.view.phase})`);
 });
 
 test("THE PUBLISHED DRILL's reveal points where its piece actually lives", (t) => {

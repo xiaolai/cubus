@@ -34,21 +34,10 @@ import { resolveSpanning } from '../../lesson-format.js';
 import { createLessonPlayer } from '../../lesson-player.js';
 import { buildSchedule } from '../../lesson-schedule.js';
 import { t } from '../../i18n.js';
-import { SOLVED_FACELETS } from '../../solved.js';
-
-/**
- * Whether captions are on, for this page only.
- *
- * Not persisted on purpose: it is a preference about one sitting, and the Settings screen is where
- * durable choices live. Module scope so it survives a re-mount of the screen, which is what
- * "remembered for the session" has to mean when a screen is rebuilt on every navigation.
- */
-let captionsOn = false;
-
-/** The subject a lesson's cube stands for: not the learner's cube, and not claimed to be. */
-const LESSON_SUBJECT = Object.freeze({
-  facelets: SOLVED_FACELETS, moves: [], isPhysical: false, setupAlg: '', solution: '',
-});
+import {
+  LESSON_SUBJECT, bindCaptions, captionButtonHtml, captionCardHtml, captionsShown, createPlayLabel, createTextSlot,
+  lessonCubeHtml, sectionsHtml, titleCardHtml,
+} from './lesson-chrome.js';
 
 /** mm:ss, or a dash when there is no number to show. Never a guess, never NaN on screen. */
 export function clockText(seconds) {
@@ -69,34 +58,30 @@ export function sectionsOf(episode) {
 /**
  * The line being spoken at `t`, or empty.
  *
- * The window check is the whole point — see the trap at the top of this file.
+ * The window check is the whole point — see the trap at the top of this file. And the cue asked is the
+ * LATEST one to have started, not the first whose window holds `t`: cues may meet end to end, and at the
+ * seam the first match was the line just finished — so a jump to a section starting at 1 s showed the
+ * previous line, and kept showing it while paused (audit, 2026-09-21). Starts never go backwards (the
+ * validator refuses it), so the latest start at or before `t` is the one that is speaking, if any is.
  */
 export function lineAtTime(schedule, t) {
-  const cues = schedule?.cues ?? [];
-  for (const cue of cues) {
-    if (t >= cue.start && t <= cue.end) return typeof cue.say === 'string' ? cue.say : '';
+  let speaking = null;
+  for (const cue of schedule?.cues ?? []) {
+    if (cue.start <= t) speaking = cue;
   }
-  return '';
+  if (!speaking || t > speaking.end) return '';
+  return typeof speaking.say === 'string' ? speaking.say : '';
 }
 
 /** The episode composition: primary, aux, and an aside that may scroll. */
 export function episodeHtml({ title, sections, playable }) {
-  const sectionList = sections.length
-    ? `<details class="card" id="sectionsBox">
-        <summary style="cursor:pointer;font-weight:600">${escHtml(t('Sections'))}</summary>
-        <div style="padding-top:8px;display:flex;flex-direction:column;gap:2px">
-          ${sections.map((s, i) => `<button class="pill" data-seek="${s.at}" style="text-align:left">${escHtml(s.label)}</button>`).join('')}
-        </div>
-      </details>`
-    : '';
   // `walking` is the grid modifier that PLACES an aux row — without it `.aux` has no grid area at
   // all on a coarse-pointer portrait window and is auto-placed, which squashed the transport's
   // controls to 32px wide. The class is named for the cube screen's walk, where it first appeared;
   // what it means to the grid is "this composition has a transport under the primary".
+  const silent = playable ? '' : `<div class="sub" style="color:var(--ink-4);margin-top:8px;line-height:1.5">${escHtml(t('This lesson has no audio with it, so there is nothing to play.'))}</div>`;
   return `<div class="cols walking">
-    <div class="card primary" style="display:flex;flex-direction:column;align-items:center;position:relative">
-      <div style="flex:1;min-height:0;width:100%"><div class="cube-slot" id="episodeCube" style="height:100%"></div></div>
-    </div>
+    ${lessonCubeHtml('episodeCube')}
     <div class="card aux">
       <div class="transport" id="epTransport">
         <button class="tbtn primary" id="epPlay" title="${escHtml(t('Play the lesson'))}" aria-label="${escHtml(t('Play the lesson'))}"${playable ? '' : ' disabled'}>${icon('play', 18)}</button>
@@ -104,22 +89,106 @@ export function episodeHtml({ title, sections, playable }) {
                aria-label="${escHtml(t('How far through the lesson'))}"${playable ? '' : ' disabled'}
                style="flex:1;min-width:110px;height:44px">
         <span class="num sub" id="epTime" role="status" aria-live="off" style="color:var(--ink-4);min-width:88px;text-align:right">—</span>
-        <button class="pill" style="flex:none;min-width:44px" id="epCaptions" aria-pressed="${captionsOn}" title="${escHtml(t('Show the words being spoken'))}">${escHtml(t('Captions'))}</button>
+        ${captionButtonHtml('epCaptions')}
         <button class="pill" style="flex:none;min-width:44px" id="epBack" title="${escHtml(t('Back to the lessons'))}">${escHtml(t('Back'))}</button>
       </div>
     </div>
     <div class="aside">
-      <div class="card"><div class="eyebrow">${escHtml(t('LESSON'))}</div>
-        <div class="num" style="font-size:var(--fs-title);font-weight:600;margin-top:2px">${escHtml(title)}</div>
-        ${playable ? '' : `<div class="sub" style="color:var(--ink-4);margin-top:8px;line-height:1.5">${escHtml(t('This lesson has no audio with it, so there is nothing to play.'))}</div>`}
-      </div>
-      <div class="card" id="epCaptionBox"${captionsOn ? '' : ' hidden'}>
-        <div class="eyebrow">${escHtml(t('WORDS'))}</div>
-        <div class="sub" id="epCaption" style="color:var(--ink-3);margin-top:8px;line-height:1.6;min-height:3em"></div>
-      </div>
-      ${sectionList}
+      ${titleCardHtml(title, silent)}
+      ${captionCardHtml('epCaptionBox', 'epCaption')}
+      ${sectionsHtml('sectionsBox', sections, 'seek', (s) => s.at)}
       <div class="card" id="epNotice" hidden><div class="sub" style="color:var(--err-ink);line-height:1.5" id="epNoticeText"></div></div>
     </div></div>`;
+}
+
+/**
+ * What the transport and the aside SHOW: time, Play's state, the scrubber, the caption, and the notice.
+ * Each written only when its value changes — every audio frame rewrote all of them, the Play icon through
+ * `innerHTML` (audit, 2026-09-21).
+ */
+function createEpisodeChrome(root, schedule) {
+  const scrub = $('#epScrub', root);
+  const notice = $('#epNotice', root);
+  const playLabel = createPlayLabel($('#epPlay', root));
+  const time = createTextSlot($('#epTime', root));
+  const caption = createTextSlot($('#epCaption', root));
+  const noticeText = createTextSlot($('#epNoticeText', root));
+  let dragging = false;
+  return {
+    caption,
+    paint(view) {
+      time(`${clockText(view.at)} / ${clockText(view.total ?? Number.NaN)}`);
+      playLabel(view.playing);
+      if (scrub && !dragging && view.total) {
+        const value = String(Math.round((view.at / view.total) * 1000));
+        if (scrub.value !== value) scrub.value = value;
+      }
+      if (captionsShown()) caption(lineAtTime(schedule, view.at));
+    },
+    say(words) {
+      noticeText(words);
+      if (notice) notice.hidden = !words;
+    },
+    set dragging(on) { dragging = on; },
+  };
+}
+
+/**
+ * Wire the transport: Play, the scrubber, the captions, the sections and Back. Every listener carries
+ * `signal`, so disposing the view removes them all.
+ *
+ * ONE guarded play, for Play and for a section jump. Each request is numbered, and a Pause, a newer request
+ * or leaving the screen moves the number on — so an answer that arrives late is dropped rather than shown,
+ * and an `AbortError` -- a play cut short by a pause from ANYWHERE, the system's own media controls
+ * included, which moves no number here -- is never reported as the device refusing.
+ * A section jump used to discard `play()`'s answer, and a late rejection could overwrite the notice after a
+ * newer Play had succeeded (audit, 2026-09-21).
+ */
+export function bindEpisodeTransport(root, { audio, chrome, schedule, onBack, signal }) {
+  let request = 0;
+  const play = async () => {
+    const mine = ++request;
+    chrome.say('');
+    const started = await audio.play();
+    if (mine !== request) return;
+    if (started === true || started === 'AbortError') return;
+    // A refusal leaves a usable control and an explanation, and the two refusals are not the same
+    // sentence: a policy refusal is answered by pressing again, and a file that cannot be decoded
+    // never will be — telling a child to press again would be a lie.
+    chrome.say(started === 'NotSupportedError'
+      ? t('This lesson’s sound will not play on this device.')
+      : t('This device would not start the sound on its own. Press play again.'));
+  };
+  const pause = () => { request += 1; audio.pause(); };
+
+  $('#epPlay', root)?.addEventListener('click', () => (audio.view().playing ? pause() : play()), { signal });
+
+  const scrub = $('#epScrub', root);
+  scrub?.addEventListener('input', () => {
+    const total = audio.view().total;
+    if (!total) return;
+    chrome.dragging = true;
+    audio.seek((Number(scrub.value) / 1000) * total);
+  }, { signal });
+  scrub?.addEventListener('change', () => { chrome.dragging = false; }, { signal });
+
+  bindCaptions({
+    button: $('#epCaptions', root), box: $('#epCaptionBox', root), write: chrome.caption,
+    words: () => lineAtTime(schedule, audio.view().at), signal,
+  });
+
+  for (const b of root.querySelectorAll('[data-seek]')) {
+    b.addEventListener('click', () => {
+      // Where the child was — playing or stopped — is preserved across the jump: a section press is
+      // "show me that bit again", never "start playing" and never "stop".
+      const wasPlaying = audio.view().playing;
+      audio.seek(Number(b.dataset.seek) || 0);
+      if (wasPlaying) void play();
+    }, { signal });
+  }
+
+  $('#epBack', root)?.addEventListener('click', () => onBack(), { signal });
+  return { invalidate: () => { request += 1; } };
 }
 
 /**
@@ -135,7 +204,7 @@ export function mountEpisodeView(root, { episode, episodeId = '', audioSrc = '',
   // The subject is a stand-in — the lesson drives this cube, so its facelets are whatever `t` says
   // and never the solved ones the subject carries. Announcing "A solved cube" for the whole lesson
   // is the same defect the drill had.
-  cube.setAttribute('aria-label', t('The lesson\u2019s cube, which turns as the lesson talks'));
+  cube.setAttribute('aria-label', t('The lesson’s cube, which turns as the lesson talks'));
   $('#episodeCube', root)?.appendChild(cube);
 
   // Through the element's own window, never a bare global: the node mount tests expose a LIST of
@@ -144,39 +213,13 @@ export function mountEpisodeView(root, { episode, episodeId = '', audioSrc = '',
   const reducedMotion = () => Boolean(win?.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches);
 
   const player = createLessonPlayer(cube, schedule, { reducedMotion });
-  const caption = $('#epCaption', root);
-  const captionBox = $('#epCaptionBox', root);
-  const timeLbl = $('#epTime', root);
-  const scrub = $('#epScrub', root);
-  const playBtn = $('#epPlay', root);
-  const notice = $('#epNotice', root);
-  const noticeText = $('#epNoticeText', root);
-
-  let dragging = false;
-  let gone = false;
-
-  const say = (words) => {
-    if (!noticeText || !notice) return;
-    noticeText.textContent = words;
-    notice.hidden = !words;
-  };
-
-  const paintChrome = (view) => {
-    if (timeLbl) timeLbl.textContent = `${clockText(view.at)} / ${clockText(view.total ?? Number.NaN)}`;
-    if (playBtn) {
-      playBtn.innerHTML = icon(view.playing ? 'pause' : 'play', 18);
-      playBtn.setAttribute('aria-label', view.playing ? t('Pause the lesson') : t('Play the lesson'));
-    }
-    if (scrub && !dragging && view.total) scrub.value = String(Math.round((view.at / view.total) * 1000));
-    if (caption && captionsOn) caption.textContent = lineAtTime(schedule, view.at);
-  };
-
+  const chrome = createEpisodeChrome(root, schedule);
   const audio = createEpisodeAudio({
     player,
     src: audioSrc,
     episodeId,
     doc: root.ownerDocument ?? globalThis.document,
-    onChange: paintChrome,
+    onChange: (view) => chrome.paint(view),
   });
 
   // IN THE DOCUMENT, hidden. A media element the screen owns but never attaches is invisible to
@@ -193,54 +236,15 @@ export function mountEpisodeView(root, { episode, episodeId = '', audioSrc = '',
   // it: leaving for Settings and coming back restarted the lesson.
   audio.seek(audio.view().at);
 
-  playBtn?.addEventListener('click', async () => {
-    if (audio.view().playing) { audio.pause(); return; }
-    say('');
-    const started = await audio.play();
-    // The screen may be gone by the time a rejection arrives — navigating away while `play()` is
-    // pending and then having it reject wrote to the old screen's DOM.
-    if (gone) return;
-    if (started === true) return;
-    // A refusal leaves a usable control and an explanation, and the two refusals are not the same
-    // sentence: a policy refusal is answered by pressing again, and a file that cannot be decoded
-    // never will be — telling a child to press again would be a lie.
-    say(started === 'NotSupportedError'
-      ? t('This lesson\u2019s sound will not play on this device.')
-      : t('This device would not start the sound on its own. Press play again.'));
-  });
+  const listeners = new AbortController();
+  const transport = bindEpisodeTransport(root, { audio, chrome, schedule, onBack, signal: listeners.signal });
 
-  scrub?.addEventListener('input', () => {
-    const total = audio.view().total;
-    if (!total) return;
-    dragging = true;
-    audio.seek((Number(scrub.value) / 1000) * total);
-  });
-  scrub?.addEventListener('change', () => { dragging = false; });
-
-  $('#epCaptions', root)?.addEventListener('click', (e) => {
-    captionsOn = !captionsOn;
-    e.currentTarget.setAttribute('aria-pressed', String(captionsOn));
-    if (captionBox) captionBox.hidden = !captionsOn;
-    if (caption) caption.textContent = captionsOn ? lineAtTime(schedule, audio.view().at) : '';
-  });
-
-  for (const b of root.querySelectorAll('[data-seek]')) {
-    b.addEventListener('click', async () => {
-      // Where the child was — playing or stopped — is preserved across the jump: a section press is
-      // "show me that bit again", never "start playing" and never "stop".
-      const wasPlaying = audio.view().playing;
-      audio.seek(Number(b.dataset.seek) || 0);
-      if (wasPlaying) await audio.play();
-    });
-  }
-
-  $('#epBack', root)?.addEventListener('click', () => onBack());
-
-  paintChrome(audio.view());
+  chrome.paint(audio.view());
 
   return {
     dispose() {
-      gone = true;
+      transport.invalidate();
+      listeners.abort();
       audio.dispose();
     },
     // For tests and for the screen: what is on show, without reading the DOM back.

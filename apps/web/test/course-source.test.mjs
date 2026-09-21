@@ -13,9 +13,11 @@ import {
   CourseRefusal,
   EMPTY_COURSE,
   courseAudioRef,
+  courseRef,
   fetchCourse,
   isEpisodeId,
   resolveCourseAudio,
+  resolveCourseRef,
 } from '../lib/course-source.js';
 
 /** A real episode's cue structure, narration already replaced — the repo's own fixture. */
@@ -412,6 +414,29 @@ test('a course-relative reference resolves against the COURSE, not the page', as
   assert.equal(resolveCourseAudio(bare, { audio: 'audio/lesson.m4a' }), 'audio/lesson.m4a');
 });
 
+test('a script step\'s recording goes through the same door as an episode\'s audio', async () => {
+  // ADR 0007: a `voice` is a course document naming a file of its own, exactly as `audio` is — and
+  // it is assigned to the same kind of preloading media element. A second, looser check for it would
+  // re-open both bypasses the audio door records.
+  for (const bad of [
+    'https://example.test/l0.m4a', '//example.test/l0.m4a', 'data:audio/mp4;base64,AAAA', '/l0.m4a',
+    '\\\\external.test\\l0.m4a', 'ht\ntps://external.test/l0.m4a', '../l0.m4a', '..%2Fl0.m4a', 'voice/%5C..%5Cx.m4a',
+  ]) {
+    assert.equal(courseRef(bad), '', `${JSON.stringify(bad)} was accepted`);
+    assert.equal(courseRef(bad), courseAudioRef({ audio: bad }), 'the two fields must be one rule');
+  }
+  assert.equal(courseRef('voice/00-sample/hold-it.m4a'), 'voice/00-sample/hold-it.m4a');
+  assert.equal(courseRef(3), '');
+  assert.equal(courseRef(undefined), '');
+
+  const source = createCourseSource(fetchCourse({
+    base: 'http://host.test/course/',
+    fetch: async () => ({ ok: true, status: 200, json: async () => [] }),
+  }));
+  assert.equal(resolveCourseRef(source, 'voice/a/b.m4a'), 'http://host.test/course/voice/a/b.m4a');
+  assert.equal(resolveCourseRef(source, 'https://evil.test/b.m4a'), '');
+});
+
 test('a timeout says it timed out, even without AbortSignal.timeout', async () => {
   // `new Error('TimeoutError')` has `name === 'Error'`, so the handler's name check missed it and a
   // deadline was reported as "could not be reached" — losing the one diagnostic the branch exists
@@ -457,4 +482,65 @@ test('the course door knows nothing about screens', () => {
   // It validates and it fetches. Anything else — a screen, the shell, app state — would make this
   // app code filed where the source scans cannot see it (test/app-source.mjs's rule).
   assert.deepEqual(imports, ['./lesson-format.js']);
+});
+
+// The 2026-09-21 audit of the course-player branch: the course door, asked five more questions.
+
+test('a reference that NAMES a sentinel directory is not thereby inside the course', () => {
+  // Absolute, climbing out and back by name, or another origin that happens to spell the sentinel.
+  // Then a reference naming a scheme with no slashes, which the parser reads as RELATIVE to a base of that
+  // scheme: every spelling of it the parser accepts (verify pass, 2026-09-21).
+  for (const escaping of [
+    '/root/a.m4a', '../root/a.m4a', 'https://course.invalid/root/a.m4a', '../b/a.m4a', '/a/b/a.m4a',
+    'https:audio/a.m4a', 'http:audio/a.m4a', 'HTTPS:audio/a.m4a', ' https:audio/a.m4a', 'ht\ttps:audio/a.m4a', 'wss:audio/a.m4a',
+  ]) {
+    assert.equal(courseRef(escaping), '', `${escaping} was treated as inside the course`);
+    assert.equal(resolveCourseRef({}, escaping), '', `${escaping} escaped through a reader with no resolve`);
+  }
+  for (const inside of ['audio/lesson.m4a', './audio/lesson.m4a', 'audio/my lesson.m4a', 'a.m4a?v=1', 'leçon.m4a']) {
+    assert.equal(courseRef(inside), inside, `${inside} is inside the course and was refused`);
+  }
+});
+
+test('an encoded separator is refused after the parser drops the characters hiding it', () => {
+  for (const hidden of ['..%2\nf..%2\nfsecret.m4a', '..%2\tf..%2\tfsecret.m4a', '..%2\rf..%2\rfsecret.m4a', '..%5\nc..%5\ncsecret.m4a']) {
+    assert.equal(courseRef(hidden), '', `${JSON.stringify(hidden)} hid an encoded separator`);
+  }
+});
+
+test('a course base with a query or a fragment is refused, not mangled onto the origin root', async () => {
+  const get = async () => ({ ok: true, status: 200, json: async () => [] });
+  for (const base of ['https://app.test/course?version=1', 'https://app.test/course#local', 'https://app.test/course?', 'https://app.test/course#']) {
+    assert.throws(() => fetchCourse({ base, baseURI: null, fetch: get }), /query or a fragment/, base);
+  }
+  const seen = [];
+  const reader = fetchCourse({
+    base: 'https://app.test/course', baseURI: null,
+    fetch: async (url) => { seen.push(String(url)); return { ok: true, status: 200, json: async () => [] }; },
+  });
+  await reader.list();
+  assert.deepEqual(seen, ['https://app.test/course/index.json'], 'a base with no trailing slash is still a directory');
+});
+
+test('a deadline that strikes the BODY names the URL and the bound, as one that strikes the headers does', async () => {
+  const stalling = async (_url, { signal }) => ({
+    ok: true, status: 200,
+    json: () => new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })),
+  });
+  const reader = fetchCourse({ base: 'https://app.test/course/', baseURI: null, timeoutMs: 20, fetch: stalling });
+  await assert.rejects(reader.list(), /https:\/\/app\.test\/course\/index\.json did not answer within 20ms/);
+});
+
+test('bytes that arrived and are not a lesson are malformed, never unreadable', async () => {
+  const serving = (body) => fetchCourse({
+    base: 'https://app.test/course/', baseURI: null,
+    fetch: async (url) => (String(url).endsWith('index.json')
+      ? { ok: true, status: 200, json: async () => [{ id: 'a-lesson' }] }
+      : { ok: true, status: 200, json: body }),
+  });
+  const bodies = [['a body of null', async () => null], ['a body that is not JSON', async () => { throw new SyntaxError('Unexpected token <'); }]];
+  for (const [label, body] of bodies) {
+    await assert.rejects(createCourseSource(serving(body)).episode('a-lesson'),
+      (e) => e instanceof CourseRefusal && e.reason === 'malformed', `${label} was not called malformed`);
+  }
 });
