@@ -18,6 +18,7 @@ import { conn } from '../../live-session.js';
 import { confirmReconnect } from '../../reconnect-answer.js';
 import { isColour, positionOf } from '../../scheme.js';
 import { Cube } from '../../solver-service.js';
+import { reportOwnsCard } from './voice.js';
 
 /**
  * The reconnect check of one mounted scan screen — in confirm mode from the start when a reconnect
@@ -115,8 +116,10 @@ export function createReconnectCheck({ speak, tileOf, tileSchemeNow, go, capture
   const answerFromSides = (p) => {
     // Nothing to answer: the check has ended, the question has closed — a disconnect closes it —
     // or the scanner's own notice or a camera error has the card. Last, so its words stand over
-    // the generic caption, but never over the scanner's pinned notice.
-    if (!confirming || !state.reconnect?.candidate || p.notice || p.phase === 'error') return;
+    // the generic caption, but never over the scanner's pinned notice — and "the report owns the
+    // card" is the voice module's ONE rule, asked here rather than restated (2026-09-21; a third
+    // copy of it was what let the two drift).
+    if (!confirming || !state.reconnect?.candidate || reportOwnsCard(p)) return;
     // A DIFFERENT CONNECTION IS A DIFFERENT QUESTION. A reconnect opens a new one while this
     // screen and the sides the panel holds both stand — and sides read against the old cube's
     // memory took the new cube's Yes with no fresh look at all (found by audit, 2026-09-13). They

@@ -55,6 +55,12 @@ let lastSerialSeen = null;
  *  only while that count stands: after a turn it describes a cube that has since moved, which for a
  *  repair is the same as no report at all (repairTracking holds the scan for the next one). */
 let reportedAtTurns = 0;
+/** The camera reading this connection's checker holds as its STANDING evidence — the report it was
+ *  derived against — or null when the last reading handed to `repairTracking` was not taken (a
+ *  contradiction, a refusal, nothing established). It is what a corrected reading of the same look
+ *  withdraws (see `retracting` there), and only that: a correction of a reading this layer refused
+ *  withdraws nothing, because nothing of it stands. Cleared with the connection. */
+let standingScan = null;
 
 /**
  * Does what the cube has said account for every turn it has counted?
@@ -96,10 +102,28 @@ export function rememberLastSeen(how, { force = false } = {}) {
  *  nothing (found by audit, 2026-09-04). One derivation now, with the checker's answer as the
  *  answer, so a scan advances the verdict and a refusal reaches this screen.
  *
+ *  `retracting` says the reading is a CORRECTION of the scan before it — a sticker fixed by hand
+ *  on a reading already accepted — and not a second look at the cube (2026-09-20). The two differ
+ *  in what they say about the first scan: a second scan that disagrees says one of the two is
+ *  wrong and nothing can tell which; a correction says the first was wrong, where, and that the
+ *  corrected reading is the only reading of that look the camera ever produced. So it is not
+ *  compared against the correction the first scan installed — that correction was derived from
+ *  the very sticker being fixed, and comparing against it refused every genuine correction as
+ *  "not what your cube is reporting" (scanner audit 2026-09-20, §1.3) — and the checker is told
+ *  to withdraw the first scan rather than count a second (`cameraScan(…, { retracts })`), so its
+ *  constancy rule has no pair to judge and a fresh scan afterwards is held to the corrected
+ *  offset, not the misread one. Only when the first scan STANDS: a correction of a reading this
+ *  layer refused is judged exactly as before, because that reading became nothing. And only
+ *  against the report the standing scan was derived from: a look corrected after the cube has
+ *  reported a turn describes the cube before it, and the screen hands those sides back to the
+ *  camera before this is reached; here it is simply not a retraction. A correction that arrives
+ *  while a report is awaited replaces the held scan as any scan does, and is reconciled as an
+ *  observation: a held look cannot withdraw a scan the checker took, only follow it.
+ *
  *  @returns {{ok: boolean, text: string}|null} what to tell the user, or null when the scan
  *  changed nothing about tracking (no cube, or it already agreed).
  */
-export function repairTracking(scanned, { tracking = chainTrusted() } = {}) {
+export function repairTracking(scanned, { tracking = chainTrusted(), retracting = false } = {}) {
   if (!state.connected || !conn) return null;
   // A refused cube cannot be repaired by a camera, and this is the door that used to let one be.
   // The correction is derived FROM the cube's own report; if that report has been proved not to
@@ -107,6 +131,7 @@ export function repairTracking(scanned, { tracking = chainTrusted() } = {}) {
   // afterwards called the cube trusted again. A refusal is about the cube, and only a fresh
   // connection can revisit it.
   if (cubeRefused()) {
+    standingScan = null;
     return {
       ok: false,
       text: 'This cube’s own reports have stopped adding up, so a scan cannot put it back in step — what the camera saw would be measured against a reading that means nothing. Disconnect it and pair again; the camera still solves the cube either way.',
@@ -155,19 +180,25 @@ export function repairTracking(scanned, { tracking = chainTrusted() } = {}) {
   // tracking" purely because a scramble had been rolled, which is the one moment the repair
   // exists for (found by audit, 2026-09-05). chainTrusted() is the predicate that means what
   // this sentence claims: trusted knowledge of the cube ITSELF.
-  if (tracking && scanned !== applyOffset(state.cube.offset, reported, Cube)) {
+  //
+  // Not on a retraction of the scan that stands: the correction in force is the one that scan
+  // derived from the sticker now being fixed (the header says why).
+  const retracts = retracting && standingScan !== null && standingScan.reported === reported;
+  if (!retracts && tracking && scanned !== applyOffset(state.cube.offset, reported, Cube)) {
+    standingScan = null;
     return {
       ok: false,
       text: 'This is not what your cube is reporting, and the cube was tracking. One of the two is wrong, so nothing was changed — check that you scanned the cube that is connected.',
     };
   }
-  const offset = conn.cameraScan(scanned, reported);
+  const offset = conn.cameraScan(scanned, reported, { retracts });
   // The checker may have REFUSED on this very scan — two scans implying two different corrections
   // with an unbroken stream between them is the self-consistent-but-wrong decoder it exists to
   // catch. Asked after the scan, because that is when the answer exists; `offset` still holds the
   // previous correction in that case, so applying it would silently keep a correction the checker
   // has just disowned.
   if (cubeRefused()) {
+    standingScan = null;
     return {
       ok: false,
       text: 'This scan and the last one imply two different corrections, with nothing lost in between — so what this cube reports cannot be corrected by any fixed amount. cubus has stopped trusting its reports; the camera still solves it.',
@@ -175,12 +206,13 @@ export function repairTracking(scanned, { tracking = chainTrusted() } = {}) {
   }
   // A checker that established nothing repaired nothing, and the scan must not be adopted as if it
   // had: the next report would replace it, uncorrected, under the camera's trust.
-  if (offset === null) return { ok: false, text: SCAN_UNCHECKED };
+  if (offset === null) { standingScan = null; return { ok: false, text: SCAN_UNCHECKED }; }
   // Recomputed on the spot: live is the last report WITH the correction applied, and leaving it
   // describing the old correction until the next ~1s snapshot lands means everything reading it
   // in between sees a position that is no longer claimed.
   const corrected = installOffset(offset, 'scan', [reported], Cube);
-  if (corrected === null) return { ok: false, text: SCAN_UNCHECKED };
+  if (corrected === null) { standingScan = null; return { ok: false, text: SCAN_UNCHECKED }; }
+  standingScan = { reported };
   state.live = corrected;
   return state.cube.offset
     ? { ok: true, text: 'Tracking repaired — your cube is back in step for as long as it stays connected, and you never had to solve it.' }
@@ -207,6 +239,8 @@ export function onDisconnect() {
   // A scan waiting for a report it will never get. It stays the SUBJECT — the camera did see that
   // cube — but the chain it was to be reconciled with has ended, and markStale below says so.
   scanAwaitingReport = null;
+  // And the scan that stood is evidence about a chain that has ended: nothing to withdraw now.
+  standingScan = null;
   lastSerialSeen = null;
   // Order matters: mark stale BEFORE setConnected, so the indicator repaints once, already
   // knowing the truth, rather than flashing "connected and fine" on its way out.
@@ -296,8 +330,9 @@ export function adoptConnection(mac, name) {
   reportedAtTurns = 0;
   lastSerialSeen = null;
   // Including a scan that was waiting to be reconciled: it is evidence about the cube that was in
-  // front of the camera, and this may be another one.
+  // front of the camera, and this may be another one. The same for the scan that stood.
   scanAwaitingReport = null;
+  standingScan = null;
   clearOffset();
   // The reconnect reading. Until the first report arrives the evidence is "no report" — with a
   // remembered arrangement that is already a picture worth showing (dimmed, unconfirmed), and if

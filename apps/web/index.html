@@ -738,13 +738,18 @@
         opacity: 0; color: #fff; transition: opacity var(--fade);
         filter: drop-shadow(0 0 1px rgba(0,0,0,.95)) drop-shadow(0 0 3px rgba(0,0,0,.55));
       }
-      /* Shown, not hidden behind a hover: it is how a user learns the centre re-reads its side, and
-         it appears exactly when that is possible — once the side has been read. Hover uses the same
-         outline ring the other stickers use, rather than darkening the swatch. */
-      .scan-face.done .tgrid > .cell:nth-child(5) { cursor: pointer; }
-      .scan-face.done .tgrid > .cell:nth-child(5) > .ic { opacity: .92; }
-      .scan-face.done .tgrid > .cell:nth-child(5):hover { box-shadow: 0 0 0 2px var(--ink); }
-      .scan-face.done .tgrid > .cell:nth-child(5):hover > .ic { opacity: 1; }
+      /* Shown, not hidden behind a hover: it is how a user learns what the centre does, and it
+         appears exactly when a press will be heard. `data-action` is the board's word for the press
+         the centre makes — re-read the side; while painting, swap which colour is under white — and
+         is absent on a centre that only names its side (lib/screens/scan/board.js). It was keyed on
+         the tile being read (`.done`), which wore the re-read glyph and a pointer on a captured
+         side while painting, when the press did nothing, and nothing at all on the two centres
+         that swap (audit-fix, 2026-09-21). Hover uses the same outline ring the other stickers
+         use, rather than darkening the swatch. */
+      .scan-face .tgrid > .cell:nth-child(5)[data-action] { cursor: pointer; }
+      .scan-face .tgrid > .cell:nth-child(5)[data-action] > .ic { opacity: .92; }
+      .scan-face .tgrid > .cell:nth-child(5)[data-action]:hover { box-shadow: 0 0 0 2px var(--ink); }
+      .scan-face .tgrid > .cell:nth-child(5)[data-action]:hover > .ic { opacity: 1; }
       /* The scan settling: once the cube reads as solvable its true orientation is known, and any
          face captured the wrong way up TURNS to it — the .tgrid rotates (transition set inline,
          duration matched to the angle, deliberately unhurried), then the repaint lands in the same

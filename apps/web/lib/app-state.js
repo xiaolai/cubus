@@ -164,7 +164,11 @@ export const state = {
     // turned since it was last told where it was — disconnect it, turn it, reconnect, and it
     // reports a state that is confidently wrong. Conflating the two is the bug this models away.
     trusted: false,
-    source: 'none',     // 'none' | 'camera' | 'cube' | 'generated' — what last established it
+    // What last established it. 'generated' and 'painted' are both perfect knowledge of a cube
+    // nobody looked at — a rolled scramble, a cube authored by hand on the scan screen
+    // (2026-09-20) — and neither is knowledge of the cube ITSELF (chainTrusted, in
+    // lib/cube-trust-state.js, admits only 'cube' and 'camera').
+    source: 'none',     // 'none' | 'camera' | 'cube' | 'generated' | 'painted'
     staleWhy: '',       // why trust lapsed, for a UI that must explain rather than just refuse
     // Is the arrangement on screen the cube in your HAND? Knowing an arrangement and holding it
     // are different claims. A generated cube is perfectly known and is not yours, so a guide

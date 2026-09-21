@@ -19,7 +19,7 @@ import { onDisconnect } from '../../cube-reports.js';
 import { conn, cubeRefused } from '../../live-session.js';
 import { wireReconnectAnswers } from '../../reconnect-answer.js';
 import {
-  clearOffset, markStale, markTrusted, repaintIndicator, repaintSettings, settingsRepaintPending,
+  clearOffset, flushSettingsRepaint, markStale, markTrusted, repaintIndicator,
 } from '../../cube-trust-state.js';
 import {
   cubes, forgetKnownCube, idWords, liveCubeLabel, registryWriteBad, renameKnownCube, whenWords,
@@ -256,9 +256,10 @@ export function mountSmartCube(root) {
 
   // A repaint deferred because a nickname or address was mid-typing flushes when the typing
   // stops — deferred is not dropped. The timeout lets focus land on its next element first,
-  // so tabbing between the two inputs does not flush (and discard) between them.
+  // so tabbing between the two inputs does not flush (and discard) between them. The flush
+  // itself knows whether the deferral is still about the Settings on stage (2026-09-21).
   root.addEventListener('focusout', () => {
-    setTimeout(() => { if (settingsRepaintPending) repaintSettings(); }, 0);
+    setTimeout(flushSettingsRepaint, 0);
   });
 
   // ONE connect flow for the Pair button and every remembered-cube Use button: same pending

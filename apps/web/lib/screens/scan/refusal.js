@@ -8,6 +8,8 @@
 // Solve this cube" over that disabled button. Lifted out of lib/screens/scan.js on 2026-09-14;
 // pinned by the refusal cases in test/scan-screen.test.mjs.
 
+import { reportOwnsCard } from './voice.js';
+
 /**
  * The refusal of one mounted scan screen.
  *
@@ -17,7 +19,19 @@
 export function createRefusal({ solveBtn, dropStageChips }) {
   let refused = false;
   /** Says a refusal the APP made, again. The scanner's own arrives with its notice on every
-   *  report, so there is nothing of it to keep. */
+   *  report, so there is nothing of it to keep.
+   *
+   *  ITS LIFE IS NOT THE FLAG'S (2026-09-20). `refused` follows `complete`: it is about the scan
+   *  standing complete under the button, and a reading that reopens takes it away. The words are
+   *  about what the app SAID, and they stand until they are answered — by the next scan-complete,
+   *  accepted or refused (`accept`, `refuse`), or by this screen throwing the scan away
+   *  (`restart`). Cleared with the flag, "show those sides again" was said and then overwritten
+   *  a tick later by the very reopen it caused — the camera opening on the sides handed back
+   *  reports `complete: false` with no notice — so the person read the camera's line and never
+   *  the reason (scanner audit 2026-09-20, §2.14). No REPORT clears them, not even one holding
+   *  no side: every side handed back to the camera reports exactly as a restart does, and that
+   *  is the case the words exist for. The scanner's own refusal arrives as `scan-invalid`, which
+   *  refuses with no words and so replaces them. */
   let words = null;
 
   /** Refuse the scan in front of the screen. `say`, for a refusal the app made, speaks why — now,
@@ -38,6 +52,10 @@ export function createRefusal({ solveBtn, dropStageChips }) {
     solveBtn.disabled = false;
   };
 
+  /** This screen is throwing the scan away — the ↻ button, a notice's "start over" — so a refusal
+   *  of it has nothing left to be about. The flag follows the report the restart brings. */
+  const restart = () => { words = null; };
+
   /** A report from the scanner. */
   const fromProgress = (p) => {
     // A scan this screen REFUSED stays refused until there is a new one to judge. The panel
@@ -49,8 +67,8 @@ export function createRefusal({ solveBtn, dropStageChips }) {
     // 2026-09-04). The flag is this screen's own, because the panel is right not to carry it:
     // the panel judged the scan legal, and what was refused is what the APP made of it.
     // Cleared by a scan that is no longer complete — a restart, or a capture that reopens the
-    // verdict — and by the next accepted scan-complete.
-    if (!p.complete) { refused = false; words = null; }
+    // verdict — and by the next accepted scan-complete. The WORDS are not: see their declaration.
+    if (!p.complete) refused = false;
     solveBtn.disabled = !p.complete || refused;
     // A scan that is no longer complete — or one this screen refused — has taken its cube back,
     // and numbers about it stop being about anything. Bumping the generation is what stops a
@@ -64,14 +82,24 @@ export function createRefusal({ solveBtn, dropStageChips }) {
     if (!p.complete || refused) dropStageChips();
   };
 
-  /** Say a refusal the app made over a report's generic caption, never over the scanner's notice,
-   *  which is about what is happening now. True when it spoke: a colour sentence owed meanwhile
-   *  then waits for the refusal to be lifted, rather than being said and spoken over at once. */
+  /** Whether the refusal's words are to be said over `p`: never over a report whose own words own
+   *  the card — the scanner's notice, which is about what is happening now, and a camera in
+   *  trouble, which the words now outlive (2026-09-20) and which the colour sentence already waits
+   *  out for the same reason. The rule is the voice's (`reportOwnsCard`), and this only asks it: it
+   *  was written here a second time, and the order the screen spoke in was a third copy
+   *  (audit-fix, 2026-09-21). */
+  const willSay = (p) => Boolean(words) && !reportOwnsCard(p);
+
+  /** Say a refusal the app made over a report — LAST of everything the screen says over one, so it
+   *  stands over the generic caption and the reconnect check's line alike; the voice leaves the
+   *  card to it (`paintSay`'s `standing`), so the card is written once per report. True when it
+   *  spoke: a colour sentence owed meanwhile then waits for the refusal to be lifted, rather than
+   *  being said and spoken over at once. */
   const sayAgain = (p) => {
-    if (!words || p.notice) return false;
+    if (!willSay(p)) return false;
     words();
     return true;
   };
 
-  return Object.freeze({ refuse, accept, fromProgress, sayAgain, isRefused: () => refused });
+  return Object.freeze({ refuse, accept, restart, fromProgress, sayAgain, willSay, isRefused: () => refused });
 }

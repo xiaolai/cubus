@@ -76,7 +76,8 @@ const fakeConn = (over = {}) => {
     mayFollow: () => check.verdict !== 'refused',
     numbersMoves: () => true,
     get verdict() { return check.verdict; },
-    cameraScan: (scanned, reported) => { check.onCameraScan(scanned, reported); return check.offset; },
+    // The session's own signature (lib/cube-session.js): a third argument reaches the checker.
+    cameraScan: (scanned, reported, opts) => { check.onCameraScan(scanned, reported, opts); return check.offset; },
     ...over,
   };
 };

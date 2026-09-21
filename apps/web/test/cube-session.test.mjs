@@ -9,8 +9,8 @@ import assert from 'node:assert/strict';
 import { before, describe, test } from 'node:test';
 import { makeTauriBridge } from '../lib/ble-bridge.js';
 import { createBluetooth } from '../lib/ble-polyfill.js';
-import { VERDICT, connectCube } from '../lib/cube-session.js';
-import { IDENTITY } from '../lib/cube-trust.js';
+import { VERDICT, connectCube, requestEvent } from '../lib/cube-session.js';
+import { IDENTITY, deriveOffset } from '../lib/cube-trust.js';
 
 let Cube;
 before(async () => {
@@ -704,6 +704,74 @@ describe('asking the cube things', () => {
     const ev = await p;
     assert.equal(ev.facelets, IDENTITY);
     assert.deepEqual(f.sent, ['REQUEST_FACELETS']);
+  });
+
+  // An Observable may deliver INSIDE `subscribe` (rxjs does, for a replayed value). The request
+  // then settles before the command is sent — and used to go on and send it anyway, asking the
+  // transport to fetch what it had just delivered (audit-fix, 2026-09-21, row 87). One stream, the
+  // three ways it can settle synchronously, and in none of them may `send` run.
+  const settlesOnSubscribe = (how) => ({
+    subscribe(s) {
+      if (how === 'next') s.next?.({ type: 'FACELETS', facelets: IDENTITY });
+      if (how === 'error') s.error?.(new Error('the stream failed as it opened'));
+      if (how === 'complete') s.complete?.();
+      return { unsubscribe() {} };
+    },
+  });
+
+  test('a stream that answers as it is subscribed to settles the request, and the command is never sent', async () => {
+    let sends = 0;
+    const ev = await requestEvent(settlesOnSubscribe('next'), 'FACELETS', () => { sends += 1; }, 1000);
+    assert.equal(ev.facelets, IDENTITY);
+    assert.equal(sends, 0, 'the answer was in hand, and the command was sent anyway');
+  });
+
+  test('a stream that errors or ends as it is subscribed to rejects the request, and the command is never sent', async () => {
+    for (const [how, said] of [['error', /failed as it opened/], ['complete', /ended before FACELETS/]]) {
+      let sends = 0;
+      await assert.rejects(() => requestEvent(settlesOnSubscribe(how), 'FACELETS', () => { sends += 1; }, 1000), said);
+      assert.equal(sends, 0, `the stream ${how}d on subscribe, and the command was sent anyway`);
+    }
+  });
+
+  test('through the session: a report delivered on subscribe answers requestState with nothing sent', async () => {
+    const { session, f } = await open();
+    // The fake's stream, made to replay the last report to a new subscriber — as rxjs does.
+    const subscribe = f.conn.events$.subscribe;
+    f.conn.events$.subscribe = (s) => { s.next?.({ type: 'FACELETS', facelets: IDENTITY }); return subscribe(s); };
+    assert.equal((await session.requestState({ timeoutMs: 500 })).facelets, IDENTITY);
+    assert.deepEqual(f.sent, [], 'the transport was asked for a report that had already arrived');
+    assert.equal(f.subscribers, 1, 'and the request left nothing subscribed behind it (the session\'s own is the one)');
+  });
+
+  // The timeout path tore the subscription down BEFORE rejecting, unguarded: a teardown that threw
+  // left the timer's callback throwing and the request pending for ever, with the caller's own
+  // timeout already spent (audit-fix, 2026-09-21, row 86).
+  test('a subscription whose teardown throws still lets the request time out, rather than hang', async () => {
+    const stream = { subscribe: () => ({ unsubscribe() { throw new Error('teardown failed (test)'); } }) };
+    await assert.rejects(() => requestEvent(stream, 'FACELETS', () => {}, 20), /did not answer with FACELETS within 20ms/);
+  });
+});
+
+describe('a correction reaches the checker as a retraction', () => {
+  // The session is the one door to the checker, and `{ retracts }` had been forwarded through it
+  // by hand-written fakes in every test that exercised the rule — so deleting the forwarding here
+  // left them all green while a corrected reading became a contradictory second scan (audit-fix,
+  // 2026-09-21, row 17). Driven through connectCube.
+  test('a correction of the standing look withdraws it, counts a retraction and no second scan', async () => {
+    const { session, f } = await open();
+    f.emit({ type: 'FACELETS', facelets: IDENTITY });
+    f.emit({ type: 'MOVE', move: 'R', face: 0, direction: 0 });
+    f.emit({ type: 'FACELETS', facelets: after_('R') });
+    assert.equal(session.cameraScan(after_('R U2'), after_('R')), deriveOffset(after_('R U2'), after_('R'), Cube));
+    assert.equal(session.verdict, VERDICT.TRUSTED, 'precondition: the misread look was taken');
+    // The same look, one sticker fixed by hand.
+    const offset = session.cameraScan(after_('R U'), after_('R'), { retracts: true });
+    assert.equal(session.verdict, VERDICT.TRUSTED, 'the correction was judged a contradictory second scan');
+    assert.equal(offset, deriveOffset(after_('R U'), after_('R'), Cube), 'the corrected offset is the one in force');
+    assert.equal(session.offset, offset);
+    assert.deepEqual([session.evidence.cameraScans, session.evidence.retractions], [1, 1],
+      'one scan withdrawn, one put in its place');
   });
 });
 

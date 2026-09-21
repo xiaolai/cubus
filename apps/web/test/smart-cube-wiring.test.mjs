@@ -61,9 +61,10 @@ const fakeConn = (over = {}) => {
      *  shows every MOVE to the checker before any listener of ours sees it, so this is the half of
      *  a turn that can reach the app through no door of its own. */
     countTurn(notation) { check.onMove(notation); },
-    cameraScan(scanned, reported) {
+    // The session's own signature (lib/cube-session.js): a third argument reaches the checker.
+    cameraScan(scanned, reported, opts) {
       scans.push({ scanned, reported });
-      check.onCameraScan(scanned, reported);
+      check.onCameraScan(scanned, reported, opts);
       return check.offset;
     },
     /** Force the checker into a refusal the way the real one gets there: an illegal state. */
@@ -1390,4 +1391,135 @@ test('a remembered moment names its year once it is not this one, and a weekday 
   assert.match(lastYear, /2025/, 'a memory from last year does not say which year');
   assert.doesNotMatch(whenWords(at(2026, 8, 1), now).day, /2026/, "this year's dates carry the year everyone is in");
   assert.doesNotMatch(whenWords(at(2026, 11, 30), at(2027, 0, 2)).day, /\d/, 'three days ago, across New Year, is a weekday');
+});
+
+// ---- the chain predicate, the battery and the deferred repaint, audited 2026-09-21 ------------
+
+test('a camera scan with no cube connected is not a trusted chain; the same scan over a connected cube is', async () => {
+  // `chainTrusted()` is what the Timer reads to promise "the clock starts itself" and what the
+  // walk reads to let the cube lead. A scan with nothing paired adopts `trusted` and `camera`
+  // exactly as one with a cube does, and the predicate answered yes for it: a chain of reports
+  // from a cube that is not there (audit-fix, 2026-09-21, row 88).
+  const state = await appState();
+  const { adoptCube } = await import('../lib/cube-connection.js');
+  const { chainTrusted } = await import('../lib/cube-trust-state.js');
+  noCube(state);
+  adoptCube(move(SOLVED, 'R U'), { physical: true, source: 'camera' });
+  assert.equal(state.cube.trusted, true, 'precondition: the camera saw the cube');
+  assert.equal(state.connected, false, 'precondition: nothing is connected');
+  assert.equal(chainTrusted(), false, 'with no cube connected there is no chain, and this said there was');
+  feed().useConnection(fakeConn(), FRESH_MAC);
+  await tick();
+  adoptCube(move(SOLVED, 'R U'), { physical: true, source: 'camera' });
+  assert.equal(chainTrusted(), true, 'the same scan over a connected cube is the chain');
+  noCube(state);
+});
+
+test('a refused cube is not a trusted chain to anything, not only to the indicator', async () => {
+  // The indicator carried `!cubeRefused()` beside the predicate; the walk, the timer, the live
+  // distance and the disconnect timestamp read the predicate alone, so a refused session later
+  // marked camera-trusted was "tracking" to them and "unverified" to the dot (row 18).
+  const state = await appState();
+  const { adoptCube } = await import('../lib/cube-connection.js');
+  const { chainTrusted, markTrusted, repaintIndicator } = await import('../lib/cube-trust-state.js');
+  noCube(state);
+  const session = fakeConn();
+  feed().useConnection(session, FRESH_MAC);
+  await tick();
+  adoptCube(move(SOLVED, 'R U'), { physical: true, source: 'camera' });
+  assert.equal(chainTrusted(), true, 'precondition: a camera-trusted connected cube is the chain');
+  session.refuse();
+  markTrusted('camera');
+  assert.equal(state.cube.trusted, true, 'precondition: camera trust is not what a refusal withholds');
+  assert.equal(chainTrusted(), false, 'a refused cube was a trusted chain');
+  // The stand-in has no verdict channel, so the refusal reaches no repaint on its own (the real
+  // session's does, through markStale); painted now, the dot reads the same predicate.
+  repaintIndicator();
+  assert.ok($('#cubeLive').classList.contains('stale'), 'and the indicator agrees, from the same predicate');
+  noCube(state);
+});
+
+test('setConnected with the identity already in force keeps the battery level, and Settings keeps showing it', async () => {
+  // The level was reset on every call, including the one that changed nothing — which the same
+  // comparison then declined to repaint for, so the model said "unknown" while the card went on
+  // showing a number (row 90). A level belongs to a connection: it goes when the connection does.
+  const state = await settingsWith(fakeConn({ requestBattery: async () => 64 }));
+  await settle(10);
+  assert.equal(state.battery, 64, 'precondition: the level landed');
+  assert.match($('#battMeter')?.title ?? '', /64% battery/, 'precondition: the card shows it');
+  const { setConnected } = await import('../lib/cube-trust-state.js');
+  const root = $('#stage').firstElementChild;
+  setConnected(true, state.cubeName, state.cubeMac);
+  assert.equal(state.battery, 64, 'a call that changed nothing about the connection forgot its battery');
+  isSame($('#stage').firstElementChild, root, 'and nothing was rebuilt, so the card and the model must agree');
+  assert.match($('#battMeter')?.title ?? '', /64% battery/);
+  feed().useConnection(null);
+  await tick();
+  assert.equal(state.battery, null, 'the level goes with the connection');
+});
+
+/** The nickname field of the remembered cube, focused, with a battery reply then landing under
+ *  it — so the repaint it causes is DEFERRED. Answers the field. */
+const deferredWhileTyping = async () => {
+  let answer;
+  await settingsWith(fakeConn({ requestBattery: () => new Promise((r) => { answer = r; }) }));
+  const input = $(`[data-rename-cube="${NAME_PREFIX}GoCube-42"]`);
+  assert.ok(input, 'precondition: a remembered cube offers its nickname field');
+  input.focus();
+  answer(64);
+  await settle(10);
+  const trust = await import('../lib/cube-trust-state.js');
+  assert.equal(trust.settingsRepaintPending, true, 'precondition: the repaint was deferred');
+  return { input, trust };
+};
+
+test('a repaint deferred while typing is dropped once a navigation has drawn Settings afresh, not made over it', async () => {
+  // The flag was read bare by the focusout of whatever Settings was on stage, and it outlived
+  // every render that was not this module's own: leave and come back, and the fresh Settings —
+  // already showing the level — was rebuilt for nothing on its first focusout (row 89).
+  const { trust } = await deferredWhileTyping();
+  await go('home');
+  await go('settings');
+  assert.match($('#battMeter')?.title ?? '', /64% battery/, 'precondition: the fresh Settings shows the level the deferral was about');
+  const root = $('#stage').firstElementChild;
+  const input = $(`[data-rename-cube="${NAME_PREFIX}GoCube-42"]`);
+  input.focus();
+  input.blur();
+  input.dispatchEvent(new win.Event('focusout', { bubbles: true }));
+  await settle(10);
+  isSame($('#stage').firstElementChild, root, 'a deferral for a Settings since replaced rebuilt the fresh one');
+  assert.equal(trust.settingsRepaintPending, false, 'and the stale deferral was consumed, not left for the next focusout');
+  feed().useConnection(null);
+});
+
+test('a repaint deferred while typing is consumed by a caller that redraws Settings itself, and not made again after it', async () => {
+  // The reconnect Yes: the press takes focus off the field (its focusout queues the flush), holds
+  // the repaints and redraws the screen itself. The flush then found the flag still up and
+  // rebuilt Settings a second time (row 89).
+  const { input } = await deferredWhileTyping();
+  const { shell } = await import('../lib/screen-slots.js');
+  const { withRepaintsHeld } = await import('../lib/cube-trust-state.js');
+  input.blur();
+  input.dispatchEvent(new win.Event('focusout', { bubbles: true }));
+  withRepaintsHeld(() => {});
+  shell.refreshScreen();
+  const root = $('#stage').firstElementChild;
+  assert.match($('#battMeter')?.title ?? '', /64% battery/, 'precondition: the caller\'s own redraw shows the level');
+  await settle(10);
+  isSame($('#stage').firstElementChild, root, 'the stale flush rebuilt Settings a second time');
+  feed().useConnection(null);
+});
+
+test('a repaint deferred while typing still lands on the Settings it was deferred under', async () => {
+  // The positive control for the two above: a deferral whose screen is still on stage is what the
+  // flush exists for, and dropping it would be the original defect back (deferred became dropped).
+  const { input, trust } = await deferredWhileTyping();
+  const root = $('#stage').firstElementChild;
+  input.blur();
+  input.dispatchEvent(new win.Event('focusout', { bubbles: true }));
+  await settle(10);
+  assert.notEqual($('#stage').firstElementChild, root, 'the deferred repaint never landed');
+  assert.equal(trust.settingsRepaintPending, false);
+  assert.match($('#battMeter')?.title ?? '', /64% battery/);
+  feed().useConnection(null);
 });

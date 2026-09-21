@@ -32,13 +32,24 @@ const DONE_BODY = `That’s the whole cube, checked and solvable — press "Solv
 const NOTICE_TONE = Object.freeze({ err: 'err', ok: 'ok' });
 const PHASE_TONE = Object.freeze({ error: 'err', checking: 'ok', done: 'ok' });
 
+/** Whether a report's OWN words own the card — the one rule for what the screen may say over a
+ *  report (audit-fix, 2026-09-21: it was written here and again in refusal.js, and the order the
+ *  screen spoke in was a third copy). The scanner's pinned notice, which is about the scan and
+ *  outranks everything the screen has to add, and a camera in trouble, which is about now. Under
+ *  those, in order: a refusal the app made and is still saying (refusal.js), the colour sentence a
+ *  scan earned, a finished scan's instruction, the generic caption. What a report outranks is KEPT,
+ *  never dropped — the colour sentence waits for a card that is free. */
+export const reportOwnsCard = (p) => Boolean(p.notice) || p.phase === 'error';
+
 /**
  * The aside of one mounted scan screen.
  *
- * @param {object} deps `root`; the scanner `panel`, whose restart a notice's action runs; and
- *   `closePops()`, which closes the screen's open popovers before that action acts.
+ * @param {object} deps `root`; `restart()`, the screen's own throwing-away of the scan, which a
+ *   notice's action runs (the screen's rather than the scanner's, so a refusal the screen made is
+ *   let go with the scan it was about — 2026-09-20); and `closePops()`, which closes the screen's
+ *   open popovers before that action acts.
  */
-export function createScanVoice({ root, panel, closePops }) {
+export function createScanVoice({ root, restart, closePops }) {
   const say = $('#scanHow', root), sayTitle = $('#scanHowTitle', root), hint = $('#scanHint', root);
   /** Set when a scan MOVED the app's belief about this cube's colours, so the screen can say
    *  so once. Null the rest of the time — including when a scan merely confirms it. */
@@ -50,9 +61,36 @@ export function createScanVoice({ root, panel, closePops }) {
    * the guard in scan-screen.test.mjs reads it.
    */
   function speak(title, body, tone = '') {
+    if (held) {
+      held.words = [title, body, tone];
+      return;
+    }
+    write(title, body, tone);
+  }
+  function write(title, body, tone) {
     sayTitle.textContent = title;
     say.textContent = body;
     say.className = `sub scan-say${tone ? ` ${tone}` : ''}`;
+  }
+  /**
+   * The words spoken while a report is being handled, so the card is written ONCE per report
+   * (audit-fix 2026-09-21, finding 25 on verification). Three things may speak to one report —
+   * the caption (`paintSay`), the reconnect check's line, a refusal the app is still saying —
+   * and each spoke straight into the live region, so a screen reader could hear a caption and then
+   * its replacement. Precedence stays exactly the order the screen calls them in: while held, every
+   * `speak` merely records, and the release writes the LAST words, once.
+   */
+  let held = null;
+  function holdWords() {
+    const mine = { words: null };
+    held = mine;
+    return () => {
+      // Only the hold that took the door releases it — a stale release must not write over a
+      // newer report's words.
+      if (held !== mine) return;
+      held = null;
+      if (mine.words) write(...mine.words);
+    };
   }
   /** The two voices of the scan, and the only thing this writes: a pinned notice (what the
    *  scanner needs and why — it stands until the situation changes) and the transient camera
@@ -64,8 +102,15 @@ export function createScanVoice({ root, panel, closePops }) {
    *  look like a silent crash. The scanner's prose passes through t(): its sentences are
    *  exact English strings, so a catalog can translate them here without the scanner package
    *  knowing languages exist. Sentences with colour words baked in pass through untranslated
-   *  until their call sites move to placeholder form — the seam dev-docs/i18n.md tracks. */
-  const paintSay = (p) => {
+   *  until their call sites move to placeholder form — the seam dev-docs/i18n.md tracks.
+   *
+   *  ONE write to the card per report (audit-fix, 2026-09-21). `standing` says the screen has a
+   *  refusal to say over this report (refusal.js, `willSay`): the card is then left to it — it
+   *  speaks LAST, after the reconnect check has had its line — where the generic caption used to
+   *  be written first and overwritten a moment later, twice into a live region per report. Under
+   *  the same rule, `reportOwnsCard`, the colour sentence a scan earned is said here in the
+   *  caption's place, and kept while a notice, a camera in trouble or a refusal has the card. */
+  const paintSay = (p, { standing = false } = {}) => {
     wireAction(p.notice);
     const n = p.notice;
     if (n) {
@@ -77,20 +122,28 @@ export function createScanVoice({ root, panel, closePops }) {
       const dup = !p.message || n.body.includes(p.message);
       hint.textContent = dup ? '' : t(p.message);
       hint.hidden = dup;
-    } else if (p.complete) {
+      return;
+    }
+    // With the camera reopened over a finished scan, the camera's own line still matters
+    // ("this cube is already scanned…"); otherwise there is nothing to hint about.
+    const line = p.complete && p.device && p.message ? t(p.message) : '';
+    hint.textContent = line;
+    hint.hidden = !line;
+    if (!reportOwnsCard(p)) {
+      if (standing) return;
+      if (schemeNote) {
+        sayScheme(p);
+        return;
+      }
+    }
+    if (p.complete) {
       // A finished scan answers "what do I do now?", and only this file can: the next action
       // is THIS screen's button. The scanner says the scan is complete; the words naming
       // "Solve this cube" belong to the screen the button lives on.
       speak(t('Scanned'), t(DONE_BODY), 'ok');
-      // With the camera reopened over a finished scan, the camera's own line still matters
-      // ("this cube is already scanned…"); with it off there is nothing to hint about.
-      hint.textContent = p.device && p.message ? t(p.message) : '';
-      hint.hidden = !hint.textContent;
-    } else {
-      speak((p.message && t(SAY_TITLE[p.phase] ?? '')) || t('How it works'), t(p.message || HOW), PHASE_TONE[p.phase] ?? '');
-      hint.textContent = '';
-      hint.hidden = true;
+      return;
     }
+    speak((p.message && t(SAY_TITLE[p.phase] ?? '')) || t('How it works'), t(p.message || HOW), PHASE_TONE[p.phase] ?? '');
   };
 
   /** The notice's one recommended action, as a button in the same card as the sentence. A refusal
@@ -103,16 +156,16 @@ export function createScanVoice({ root, panel, closePops }) {
     action.hidden = !a;
     if (!a) return;
     action.textContent = t(a.label);
-    action.onclick = () => { closePops(); if (a.kind === 'restart') panel.restart?.(); };
+    action.onclick = () => { closePops(); if (a.kind === 'restart') restart(); };
   };
 
   /**
    * The one sentence this screen owes when a scan has proved the cube's colours are not what
-   * the app assumed. Said once, over the generic caption only — never over the scanner's own
-   * pinned notice, which is about the scan and outranks a remark about colours.
+   * the app assumed. Said once, in the generic caption's place — `paintSay` asks for it under the
+   * one rule, so never over the scanner's own pinned notice, which is about the scan and outranks
+   * a remark about colours, and never over a refusal the app is still saying.
    */
   const sayScheme = (p) => {
-    if (!schemeNote || p.notice || p.phase === 'error') return;
     const colours = t(schemeNote === 'japanese'
       ? 'Your cube has blue under white — the Japanese colours. Nothing to do: the colours on screen now match it, and they will next time too.'
       : 'Your cube has yellow under white — the Western colours. The colours on screen now match it, and they will next time too.');
@@ -129,5 +182,5 @@ export function createScanVoice({ root, panel, closePops }) {
    *  free. */
   const noteScheme = (scheme) => { schemeNote = scheme; };
 
-  return Object.freeze({ speak, paintSay, sayScheme, noteScheme });
+  return Object.freeze({ speak, paintSay, noteScheme, holdWords });
 }

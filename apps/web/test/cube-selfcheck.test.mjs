@@ -18,7 +18,7 @@ import {
   reconciles,
 } from '../lib/cube-selfcheck.js';
 import { fromCube, rotateState } from '../lib/cube-pieces.js';
-import { IDENTITY, deriveOffset } from '../lib/cube-trust.js';
+import { IDENTITY, applyOffset, deriveOffset } from '../lib/cube-trust.js';
 
 let Cube;
 before(async () => {
@@ -501,6 +501,7 @@ describe('what the report will carry', () => {
       stateReports: 2,
       moveReports: 1,
       cameraScans: 0,
+      retractions: 0,
       needed: 1,
       tolerated: 3,
     });
@@ -512,5 +513,124 @@ describe('what the report will carry', () => {
     for (let i = 0; i < 10; i++) c.onFacelets(IDENTITY);
     assert.equal(c.verdict, VERDICT.UNKNOWN);
     assert.equal(c.evidence.reconciled, 0);
+  });
+});
+
+describe('a correction withdraws the scan it corrects — and only that scan (audit-fix, 2026-09-21)', () => {
+  // The report the standing scan was derived against names the LOOK it read; a reading flagged
+  // `retracts` withdraws that scan only when it is derived against the same report. Table-driven
+  // over every verdict a retraction can arrive at, because the transition is trust-critical and
+  // had no direct coverage: the wiring tests drove it through the screen, never through here.
+  const R1 = () => after('R');
+  /** The camera's first look, and that look with its misread stickers fixed — one report, two readings. */
+  const MISREAD = () => after('R U2');
+  const CORRECTED = () => after('R U');
+
+  /** A checker brought to `verdict` with one scan standing, derived against R1. */
+  const withScanAt = (verdict) => {
+    const c = createSelfCheck({ Cube });
+    if (verdict === VERDICT.REDUCED) c.declareNoStateReports();
+    if (verdict === VERDICT.STREAM || verdict === VERDICT.TRUSTED) {
+      c.onFacelets(IDENTITY);
+      c.onMove('R');
+      assert.equal(c.onFacelets(R1()), VERDICT.STREAM, 'precondition: the stream reconciled');
+    }
+    const scanned = c.onCameraScan(MISREAD(), R1());
+    const expected = verdict === VERDICT.STREAM ? VERDICT.TRUSTED : verdict;
+    assert.equal(scanned, expected, `precondition: the first scan leaves a ${verdict} cube at ${expected}`);
+    return c;
+  };
+
+  for (const verdict of [VERDICT.UNKNOWN, VERDICT.REDUCED, VERDICT.STREAM, VERDICT.TRUSTED]) {
+    test(`from ${verdict}: a correction of the standing look replaces its offset, counts a retraction and no second scan`, () => {
+      const c = withScanAt(verdict);
+      const misread = c.offset;
+      const before = c.verdict;
+      const v = c.onCameraScan(CORRECTED(), R1(), { retracts: true });
+      assert.equal(v, before, 'a correction moves no verdict: it is the same look, read right');
+      assert.notEqual(c.offset, misread, 'the correction derives its own offset');
+      assert.equal(c.offset, deriveOffset(CORRECTED(), R1(), Cube));
+      assert.equal(c.evidence.retractions, 1);
+      assert.equal(c.evidence.cameraScans, 1, 'one withdrawn, one put in its place');
+      assert.equal(c.evidence.offsetResyncs, 0, 'and it was not a re-baseline either');
+      if (before === VERDICT.TRUSTED) assert.equal(c.reason, REASON.CAMERA_AGREED);
+    });
+  }
+
+  test('with no scan standing, a reading flagged as a correction is an ordinary first scan', () => {
+    const c = createSelfCheck({ Cube });
+    c.onCameraScan(CORRECTED(), R1(), { retracts: true });
+    assert.equal(c.evidence.retractions, 0, 'nothing was withdrawn');
+    assert.equal(c.evidence.cameraScans, 1);
+    assert.equal(c.offset, deriveOffset(CORRECTED(), R1(), Cube));
+  });
+
+  test('a look corrected twice withdraws the scan twice, and the last correction stands', () => {
+    const c = withScanAt(VERDICT.TRUSTED);
+    c.onCameraScan(CORRECTED(), R1(), { retracts: true });
+    c.onCameraScan(after("R U'"), R1(), { retracts: true });
+    assert.equal(c.evidence.retractions, 2);
+    assert.equal(c.evidence.cameraScans, 1);
+    assert.equal(c.offset, deriveOffset(after("R U'"), R1(), Cube));
+    assert.equal(c.verdict, VERDICT.TRUSTED);
+  });
+
+  test('an unreadable correction changes nothing — not the offset, not the counts, not the verdict', () => {
+    const c = withScanAt(VERDICT.TRUSTED);
+    const offset = c.offset;
+    assert.equal(c.onCameraScan('not a cube', R1(), { retracts: true }), VERDICT.TRUSTED);
+    assert.equal(c.offset, offset);
+    assert.deepEqual([c.evidence.retractions, c.evidence.cameraScans], [0, 1]);
+  });
+
+  test('a "correction" derived against a LATER report is not a retraction, and is held to the offset', () => {
+    // THE HOLE (audit-fix, 2026-09-21): `retracts` used to be honoured whenever any scan had ever
+    // been taken. So a reading flagged as a correction after the cube had been TURNED — a report
+    // the standing scan never read — walked past the constancy rule, replaced the offset and left
+    // the cube trusted. A correction is of one look; a later report is another look, and a reading
+    // of it is a second scan whatever it is called.
+    const c = withScanAt(VERDICT.TRUSTED);
+    const standing = c.offset;
+    c.onMove('F');
+    assert.equal(c.onFacelets(after('R F')), VERDICT.TRUSTED, 'precondition: an intact stream');
+    // `MISREAD` read `U2` past the report; this reads `U` past it — a different relationship.
+    const v = c.onCameraScan(after('R F U'), after('R F'), { retracts: true });
+    assert.equal(v, VERDICT.REFUSED, 'two looks with an intact stream between them imply two corrections');
+    assert.equal(c.reason, REASON.CAMERA_DISAGREED);
+    assert.equal(c.evidence.retractions, 0, 'nothing was withdrawn');
+    assert.equal(c.offset, standing, 'a refused scan installs nothing');
+  });
+
+  test('after a lost turn, a reading flagged as a correction is a re-baseline of the next look, not a retraction', () => {
+    const c = withScanAt(VERDICT.TRUSTED);
+    c.onMove('F');
+    assert.equal(c.onFacelets(after("R F'")), VERDICT.TRUSTED, 'precondition: a turn went missing');
+    assert.equal(c.losses, 1);
+    const v = c.onCameraScan(after("R F' U"), after("R F'"), { retracts: true });
+    assert.equal(v, VERDICT.TRUSTED, 'the window a lost turn opens is still open');
+    assert.equal(c.reason, REASON.OFFSET_RESYNCED);
+    assert.deepEqual(
+      [c.evidence.retractions, c.evidence.cameraScans, c.evidence.offsetResyncs],
+      [0, 2, 1],
+      'a second scan re-baselined, nothing withdrawn',
+    );
+  });
+
+  test('the next ordinary scan is held to the CORRECTED offset, not the misread one', () => {
+    const c = withScanAt(VERDICT.TRUSTED);
+    const misread = c.offset;
+    c.onCameraScan(CORRECTED(), R1(), { retracts: true });
+    const corrected = c.offset;
+    c.onMove('F');
+    c.onFacelets(after('R F'));
+    // The same relationship as the correction, observed again after an intact turn…
+    assert.equal(c.onCameraScan(applyOffset(corrected, after('R F'), Cube), after('R F')), VERDICT.TRUSTED);
+    assert.equal(c.evidence.cameraScans, 2);
+    // …whereas the misread relationship, seen again, is the contradiction it always was.
+    const d = withScanAt(VERDICT.TRUSTED);
+    d.onCameraScan(CORRECTED(), R1(), { retracts: true });
+    d.onMove('F');
+    d.onFacelets(after('R F'));
+    assert.equal(d.onCameraScan(applyOffset(misread, after('R F'), Cube), after('R F')), VERDICT.REFUSED);
   });
 });

@@ -12,7 +12,15 @@
 
 import { $, icon } from '../../app-state.js';
 import { NET_FACES } from '../../cube-drawing.js';
-import { COLOUR_NAMES, colourOf, isColour, positionOf } from '../../scheme.js';
+import { COLOUR_NAMES, SCHEMES, SCHEME_COLOURS, colourOf, isColour, positionOf } from '../../scheme.js';
+
+/** Does the centre at `position` differ between the arrangements — is it where a PAINTER swaps
+ *  which of blue and yellow is under white (2026-09-20)? Answered from the scheme tables, never
+ *  from a list kept beside them: a `Set(['D', 'B'])` here was the same fact written a second time,
+ *  and exported mutable (audit-fix, 2026-09-21). Under ADR 0001 only D and B differ, and this says
+ *  so without being told — and would say so of a third arrangement the day one joined the tables. */
+export const swapsArrangement = (position) =>
+  new Set(SCHEMES.map((scheme) => SCHEME_COLOURS[scheme][position])).size > 1;
 
 /**
  * The board of one mounted scan screen, its roving tab stop placed. Nothing is painted here: the
@@ -156,32 +164,74 @@ export function createScanBoard({
     if (i >= 0) setRove(i);
   });
 
+  /** The captures the tiles show — the last report's, or a finished scan's, rebuilt from it. */
+  let lastCaptured = [];
+  /** The capture on show for the tile at position `f`, if any. */
+  const captureAt = (f) => lastCaptured.find((c) => c.face === slotFor(f));
+
+  /** What a press on a tile's centre does, as ONE record: its `kind` — `'rescan'`, `'swap'`, or
+   *  null for a centre that only names its side — its `name` (the label and the title, so the
+   *  hover and the screen reader agree on it) and its `icon`. The names, the glyph and the
+   *  screen's click dispatch all read this one record; each derived it for itself before, so the
+   *  cell could be named and enabled for a press the handler then refused (audit-fix, 2026-09-21).
+   *  While painting it is the swap on the two tiles whose centre the two arrangements disagree
+   *  about, and nothing on the other four — a camera capture on show changes nothing, there being
+   *  no camera to re-read with; with the camera it re-reads a side already read. Named for the
+   *  press it makes rather than for the side alone, because the same cell is three different
+   *  controls across the modes (2026-09-20). */
+  const centreAction = (f, got) => {
+    const names = { kind: null, name: `${SCAN_FACE_NAME[f]} side centre — it names the side`, icon: null };
+    if (isPainting()) {
+      return swapsArrangement(f)
+        ? { kind: 'swap', name: `${SCAN_FACE_NAME[f]} side centre — press to swap which of blue and yellow is under white`, icon: 'repeat' }
+        : names;
+    }
+    return got ? { kind: 'rescan', name: `Scan the ${SCAN_FACE_NAME[f]} side again`, icon: 'refresh' } : names;
+  };
+  /** The centre's action for the tile at position `f`, as the board stands now — what the
+   *  screen's click handler dispatches on, so a press does exactly what the cell said it would. */
+  const centreActionOf = (f) => centreAction(f, captureAt(f));
+  /** The centre cell, dressed for its action: named, marked actionable or not, and wearing the
+   *  glyph of what a press does. `data-action` is what the stylesheet keys the pointer, the glyph
+   *  and the hover ring on, so a centre with nothing to do shows nothing to do — it was keyed on
+   *  the tile being read, which showed a re-read glyph over a press painting refuses and none over
+   *  the swap (audit-fix, 2026-09-21). The glyph is rewritten only when the action changes: every
+   *  report refreshes the names. */
+  const dressCentre = (c, action) => {
+    c.setAttribute('aria-disabled', String(action.kind === null));
+    c.setAttribute('aria-label', action.name);
+    c.title = action.name;
+    if ((c.dataset.action ?? null) === action.kind) return;
+    if (action.kind) {
+      c.dataset.action = action.kind;
+      c.innerHTML = icon(action.icon, 15);
+    } else {
+      delete c.dataset.action;
+      c.innerHTML = '';
+    }
+  };
   /** Names and actionability for all 54 cells, refreshed on every capture and every paint
    *  toggle: the label is how a screen reader inspects the board the way an eye does, and
    *  aria-disabled marks the cells whose press the handler will refuse (a pending outer
-   *  sticker; the centre before its side is read, or while painting). */
-  let lastCaptured = [];
+   *  sticker; the centre before its side is read, or, while painting, any centre but the two
+   *  that swap the arrangement). */
   const refreshCellNames = () => {
     for (const tile of tiles) {
       const f = tile.dataset.face;
-      const got = lastCaptured.find((c) => c.face === slotFor(f));
+      const got = captureAt(f);
       [...tile.querySelectorAll('.cell')].forEach((c, i) => {
-        const centre = i === 4;
-        const actionable = centre ? Boolean(got) && !isPainting() : Boolean(got) || isPainting();
-        c.setAttribute('aria-disabled', String(!actionable));
-        if (centre) {
-          c.setAttribute('aria-label', got
-            ? `Scan the ${SCAN_FACE_NAME[f]} side again`
-            : `${SCAN_FACE_NAME[f]} side centre — it names the side`);
-        } else {
-          // The COLOUR it was read as. Naming a side here ("read as the Back side's colour")
-          // was the Western identity in a sentence: blue is the back of most cubes and the
-          // bottom of an older one, and the camera read a colour either way.
-          const read = got
-            ? `read as ${COLOUR_NAMES[got.colors[i]] ?? 'an unknown colour'}`
-            : 'not read yet';
-          c.setAttribute('aria-label', `${SCAN_FACE_NAME[f]} side, sticker ${i + 1} — ${read}`);
+        if (i === 4) {
+          dressCentre(c, centreAction(f, got));
+          return;
         }
+        c.setAttribute('aria-disabled', String(!(Boolean(got) || isPainting())));
+        // The COLOUR it was read as. Naming a side here ("read as the Back side's colour")
+        // was the Western identity in a sentence: blue is the back of most cubes and the
+        // bottom of an older one, and the camera read a colour either way.
+        const read = got
+          ? `read as ${COLOUR_NAMES[got.colors[i]] ?? 'an unknown colour'}`
+          : 'not read yet';
+        c.setAttribute('aria-label', `${SCAN_FACE_NAME[f]} side, sticker ${i + 1} — ${read}`);
       });
     }
   };
@@ -189,37 +239,38 @@ export function createScanBoard({
   // colour when it opens on one of them.
   let suspects = [];
 
-  /** A scan report, drawn: which sides are read, the side asked for again, the suspected
-   *  stickers, and what every sticker is painted and called. */
+  /** One tile, drawn from a report: read or still pending, asked for again or not, its suspected
+   *  stickers, and what its nine stickers are painted. Lifted out of `paintProgress` (audit-fix,
+   *  2026-09-21), which drew all six here beside its own two jobs. */
+  const paintTileReport = (tile, p) => {
+    const f = tile.dataset.face;
+    const got = p.captured.find((c) => c.face === slotFor(f));
+    const cells = [...tile.querySelectorAll('.cell')];
+    tile.classList.toggle('done', Boolean(got));
+    // A nearly-solved cube can read as several different cubes; the scanner then names one
+    // side to show again, held a stated way up. Point at it — the sentence alone makes a
+    // child hunt through six tiles for the colour it named.
+    tile.classList.toggle('asked', p.confirm?.face === slotFor(f));
+    // Same pointing for a suspected misread: the sticker whose fix would make the cube
+    // legal pulses, so "one sticker looks wrong" never sends anyone hunting either.
+    const sus = suspects.filter((s) => s.face === slotFor(f));
+    cells.forEach((c, i) => c.classList.toggle('suspect', sus.some((s) => s.index === i)));
+    // On 'done' the captures are already canonical and the settle turn owns the repaint —
+    // painting them here would snap the tiles canonical before the turn starts.
+    if (got && p.phase !== 'done') paint(cells, got.colors);
+    else if (!got) {
+      cells.forEach((c, i) => {
+        c.style.backgroundColor = i === 4
+          ? positionColor(f, tileSchemeNow()) : 'var(--facelet-off)';
+      });
+    }
+  };
+
+  /** A scan report, drawn: the suspects the picker reads, every tile, and every sticker named
+   *  for what it now shows. */
   const paintProgress = (p) => {
     suspects = p.suspects ?? [];
-    for (const tile of tiles) {
-      const f = tile.dataset.face;
-      // The centre carries the rescan affordance, revealed on hover over a captured side.
-      const centreCell = tile.querySelectorAll('.cell')[4];
-      if (!centreCell.firstChild) centreCell.innerHTML = icon('refresh', 15);
-      centreCell.title = `Scan the ${SCAN_FACE_NAME[f]} side again`;
-      const got = p.captured.find((c) => c.face === slotFor(f));
-      const cells = [...tile.querySelectorAll('.cell')];
-      tile.classList.toggle('done', Boolean(got));
-      // A nearly-solved cube can read as several different cubes; the scanner then names one
-      // side to show again, held a stated way up. Point at it — the sentence alone makes a
-      // child hunt through six tiles for the colour it named.
-      tile.classList.toggle('asked', p.confirm?.face === slotFor(f));
-      // Same pointing for a suspected misread: the sticker whose fix would make the cube
-      // legal pulses, so "one sticker looks wrong" never sends anyone hunting either.
-      const sus = suspects.filter((s) => s.face === slotFor(f));
-      cells.forEach((c, i) => c.classList.toggle('suspect', sus.some((s) => s.index === i)));
-      // On 'done' the captures are already canonical and the settle turn owns the repaint —
-      // painting them here would snap the tiles canonical before the turn starts.
-      if (got && p.phase !== 'done') paint(cells, got.colors);
-      else if (!got) {
-        cells.forEach((c, i) => {
-          c.style.backgroundColor = i === 4
-            ? positionColor(f, tileSchemeNow()) : 'var(--facelet-off)';
-        });
-      }
-    }
+    for (const tile of tiles) paintTileReport(tile, p);
     lastCaptured = p.captured;
     refreshCellNames();
   };
@@ -246,6 +297,6 @@ export function createScanBoard({
 
   return Object.freeze({
     paintProgress, settle, clearTurns, repaintTileFurniture, refreshCellNames, partialFacelets,
-    captured, isTurning, suspectAt,
+    captured, isTurning, suspectAt, centreActionOf,
   });
 }

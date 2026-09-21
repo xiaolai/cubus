@@ -366,16 +366,19 @@ export async function connectCube({
      *
      * Null when the scan established nothing: an unreadable scan is not evidence against the cube
      * and says nothing rather than accusing it, and a refused cube never acquires an offset at all.
+     *
+     * `retracts` is passed through untouched (2026-09-20): a corrected reading withdraws the scan
+     * before it rather than following it, and the checker is the one place that rule is applied.
      */
-    cameraScan(scanned, reported) {
-      check.onCameraScan(scanned, reported);
+    cameraScan(scanned, reported, { retracts = false } = {}) {
+      check.onCameraScan(scanned, reported, { retracts });
       notifyVerdict();
       return check.offset;
     },
 
     /** Ask for a fresh full state. Resolves when one arrives, or rejects — never silently. */
     async requestState({ timeoutMs = 5000 } = {}) {
-      return awaitEvent('FACELETS', () => conn.sendCommand({ type: 'REQUEST_FACELETS' }), timeoutMs);
+      return requestEvent(conn.events$, 'FACELETS', () => conn.sendCommand({ type: 'REQUEST_FACELETS' }), timeoutMs);
     },
 
     /** Ask for the battery level. Null when the cube will not say — never a fictional number. */
@@ -385,7 +388,7 @@ export async function connectCube({
       const cached = conn.getSnapshot?.()?.battery?.value;
       if (Number.isFinite(cached)) return cached;
       try {
-        const ev = await awaitEvent('BATTERY', () => conn.sendCommand({ type: 'REQUEST_BATTERY' }), timeoutMs);
+        const ev = await requestEvent(conn.events$, 'BATTERY', () => conn.sendCommand({ type: 'REQUEST_BATTERY' }), timeoutMs);
         return Number.isFinite(ev.batteryLevel) ? ev.batteryLevel : null;
       } catch {
         return null;
@@ -538,68 +541,86 @@ export async function connectCube({
     return disconnectError;
   }
 
-  /** Send a command and wait for the event it should produce. */
-  function awaitEvent(type, send, timeoutMs) {
-    return new Promise((resolve, reject) => {
-      let done = false;
-      const timer = setTimeout(() => {
-        if (done) return;
-        done = true;
-        s.unsubscribe();
-        reject(new Error(`the cube did not answer with ${type} within ${timeoutMs}ms`));
-      }, timeoutMs);
-      // `let`, assigned after subscribe returns — and `settle` must tolerate it being unset.
-      // An Observable is allowed to deliver synchronously, in which case `settle` runs INSIDE
-      // `subscribe()` before the binding exists; with a `const` that was a ReferenceError from the
-      // temporal dead zone, turning a delivered answer into a crash.
-      let s = null;
-      const settle = (fn) => {
-        if (done) return;
-        done = true;
-        clearTimeout(timer);
-        // Null only on the synchronous path, where the subscription is torn down just below.
-        try {
-          s?.unsubscribe();
-        } catch {}
-        fn();
-      };
-      s = conn.events$.subscribe({
-        next: (ev) => {
-          if (done) return;
-          // A cube that goes away mid-request must not leave the caller waiting out the full
-          // timeout for an answer that can no longer come. DISCONNECT is a definite no.
-          if (ev.type === 'DISCONNECT') {
-            settle(() => reject(new Error(`the cube disconnected before answering with ${type}`)));
-            return;
-          }
-          if (ev.type !== type) return;
-          settle(() => resolve(ev));
-        },
-        error: (e) => settle(() => reject(e instanceof Error ? e : new Error(String(e)))),
-        complete: () => settle(() => reject(new Error(`the event stream ended before ${type} arrived`))),
-      });
-      // If the stream settled synchronously during subscribe, `s` was null inside settle — so
-      // release it here, now that the binding exists.
-      if (done) {
-        try {
-          s.unsubscribe();
-        } catch {}
-      }
-      // The send is guarded, not merely its promise. A SYNCHRONOUS throw from `send()` — a closed
-      // transport, a characteristic the polyfill refuses — escaped the executor and rejected this
-      // promise directly, leaving the subscription and the timer alive until the full timeout
-      // elapsed: the caller saw the right error at the right moment while a listener went on
-      // receiving events for a request that had already failed. Settling releases both.
-      let sent;
+}
+
+/**
+ * Send a command and wait for the event it should produce — the one request/response the session
+ * makes of a cube, as a function of the stream and the send rather than of the session
+ * (lifted out of `connectCube` on 2026-09-21, audit-fix: it needed no session state, and its two
+ * settlement bugs below could only be reached through a fake session).
+ *
+ * Every settlement path — the answer, a DISCONNECT, the stream erroring or ending, the timeout, a
+ * send that throws or rejects — releases the subscription and the timer exactly once, and none of
+ * them can leave the promise pending: `release` never throws (a subscription whose teardown throws
+ * is torn down as far as it will go, and the settlement still lands), and a stream that settles
+ * SYNCHRONOUSLY, inside `subscribe`, is answered without the command ever being sent — there is
+ * nothing left to ask, and a write after the answer arrived was the transport being told to fetch
+ * what it had already delivered (audit-fix, 2026-09-21, rows 86 and 87).
+ */
+export function requestEvent(events$, type, send, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    // `let`, assigned after subscribe returns — and `settle` must tolerate it being unset.
+    // An Observable is allowed to deliver synchronously, in which case `settle` runs INSIDE
+    // `subscribe()` before the binding exists; with a `const` that was a ReferenceError from the
+    // temporal dead zone, turning a delivered answer into a crash.
+    let s = null;
+    /** Let the subscription go, whatever letting it go does: a teardown that throws must not be
+     *  the reason a caller waits for ever. Null only on the synchronous path. */
+    const release = () => {
       try {
-        sent = send();
-      } catch (e) {
-        settle(() => reject(e instanceof Error ? e : new Error(String(e))));
-        return;
-      }
-      Promise.resolve(sent).catch((e) => settle(() => reject(e)));
+        s?.unsubscribe();
+      } catch {}
+    };
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      release();
+      reject(new Error(`the cube did not answer with ${type} within ${timeoutMs}ms`));
+    }, timeoutMs);
+    const settle = (fn) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      release();
+      fn();
+    };
+    s = events$.subscribe({
+      next: (ev) => {
+        if (done) return;
+        // A cube that goes away mid-request must not leave the caller waiting out the full
+        // timeout for an answer that can no longer come. DISCONNECT is a definite no.
+        if (ev.type === 'DISCONNECT') {
+          settle(() => reject(new Error(`the cube disconnected before answering with ${type}`)));
+          return;
+        }
+        if (ev.type !== type) return;
+        settle(() => resolve(ev));
+      },
+      error: (e) => settle(() => reject(e instanceof Error ? e : new Error(String(e)))),
+      complete: () => settle(() => reject(new Error(`the event stream ended before ${type} arrived`))),
     });
-  }
+    // If the stream settled synchronously during subscribe, `s` was null inside settle — so
+    // release it here, now that the binding exists — and STOP: the request is answered, and the
+    // command it would have sent has nothing left to fetch.
+    if (done) {
+      release();
+      return;
+    }
+    // The send is guarded, not merely its promise. A SYNCHRONOUS throw from `send()` — a closed
+    // transport, a characteristic the polyfill refuses — escaped the executor and rejected this
+    // promise directly, leaving the subscription and the timer alive until the full timeout
+    // elapsed: the caller saw the right error at the right moment while a listener went on
+    // receiving events for a request that had already failed. Settling releases both.
+    let sent;
+    try {
+      sent = send();
+    } catch (e) {
+      settle(() => reject(e instanceof Error ? e : new Error(String(e))));
+      return;
+    }
+    Promise.resolve(sent).catch((e) => settle(() => reject(e)));
+  });
 }
 
 export { VERDICT };

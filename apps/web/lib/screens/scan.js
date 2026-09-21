@@ -191,10 +191,12 @@ SCREENS.scan = () => {
       $('#scanCube', root).appendChild(stateCube);
       // The picture and its words, together: the twin kept the words of the cube it was built
       // from while a scan drew a different one into it (found by audit, 2026-09-13). What a scan
-      // reads is the cube in the hand.
-      const showState = (f) => {
+      // reads is the cube in the hand — and what a PAINTING shows is not: it was adopted as no
+      // cube in anyone's hand while the twin went on being named for one (audit-fix, 2026-09-21),
+      // so the caller says which.
+      const showState = (f, { physical = true } = {}) => {
         stateCube.setAttribute('facelets', f);
-        describeCube(stateCube, { facelets: f, isPhysical: true, moves: [] });
+        describeCube(stateCube, { facelets: f, isPhysical: physical, moves: [] });
       };
       // Set by scan-complete and cleared by a report that reopens the scan; the twin reads it.
       let settled = false;
@@ -218,10 +220,10 @@ SCREENS.scan = () => {
       warmSolver();
       // The aside's words — the scanner's notices and hints, the colour sentence, and every other
       // title and sentence this screen puts in the card — are their own unit
-      // (lib/screens/scan/voice.js), and the card is written only through it. `closePops` is
-      // declared further down the mount, so the unit is handed a way to reach it.
-      const { speak, paintSay, sayScheme, noteScheme } = createScanVoice({
-        root, panel, closePops: () => closePops(),
+      // (lib/screens/scan/voice.js), and the card is written only through it. `closePops` and
+      // `restart` are declared further down the mount, so the unit is handed a way to reach them.
+      const { speak, paintSay, noteScheme, holdWords } = createScanVoice({
+        root, restart: () => restart(), closePops: () => closePops(),
       });
       // "Loading the scanner…" was INITIAL COPY and nothing else: if the bundle never registers —
       // a failed fetch, a parse error, a blocked module — the element stays inert forever and the
@@ -265,8 +267,13 @@ SCREENS.scan = () => {
       const resetBtn = $('#scanResetBtn', root), paintBtn = $('#scanPaintBtn', root);
       // Painting and the camera are exclusive: one authors the cube, the other reads it.
       let painting = false;
+      /** The arrangement a painter asked for before the scanner could take the call — replayed
+       *  once it registers, as the painting mode is. Null when nothing waits. */
+      let pendingPaintScheme = null;
       const setPainting = (on) => {
         painting = on;
+        // An arrangement asked of a painting that has ended has nothing to be about.
+        if (!on) pendingPaintScheme = null;
         camera.showPainting(on);
         // The tiles read this: outer stickers only wear a pointer when a click will be heard —
         // on a read side, or while painting. The class is what lets the stylesheet know.
@@ -282,9 +289,29 @@ SCREENS.scan = () => {
         if (typeof panel.setPainting === 'function') panel.setPainting(on);
         else panel.toggleAttribute('autostart', !on);
       };
+      /** Which of blue and yellow is under white, swapped — the Down or Back centre pressed while
+       *  painting. A painting is authored by POSITION, so its centres are its scheme, and this is
+       *  the one thing a painter can say that the tiles cannot (2026-09-20; until it was wired a
+       *  Western-settings painter could not paint a Japanese cube, scanner audit §2.13). The panel
+       *  re-decides the painting under the arrangement declared and reports it back through
+       *  `scan-progress`, which is the one path that moves the tiles (ADR 0001 §8.3) — nothing
+       *  moves here on the press. Before the element upgrades it has no `setPaintScheme`, and
+       *  `?.` DROPPED the press while the centre stood enabled and named for it (audit-fix,
+       *  2026-09-21): the ask is kept and replayed with the painting mode below, so the press is
+       *  honoured — and until the panel can answer, a second press toggles the ASK, not the belief
+       *  the tiles still draw. */
+      const swapPaintScheme = () => {
+        const from = pendingPaintScheme ?? tileScheme;
+        const to = from === 'japanese' ? 'western' : 'japanese';
+        if (typeof panel.setPaintScheme === 'function') panel.setPaintScheme(to);
+        else pendingPaintScheme = to;
+      };
       if (!registered) {
         void customElements.whenDefined('ai-scan-panel').then(() => {
-          if (painting && root.isConnected) panel.setPainting(true);
+          if (!painting || !root.isConnected) return;
+          panel.setPainting(true);
+          if (pendingPaintScheme) panel.setPaintScheme(pendingPaintScheme);
+          pendingPaintScheme = null;
         });
       }
       board.refreshCellNames();
@@ -297,10 +324,11 @@ SCREENS.scan = () => {
         isPainting: () => painting, stopPainting: () => setPainting(false),
       });
       // Throw the whole scan away — the panel's restart() also turns the camera back on when it
-      // is dark, so this one call is the whole contract.
+      // is dark, so this one call is the whole contract. `restart` is declared with the refusal
+      // below, because a refusal this screen made of the scan goes with it.
       resetBtn.onclick = () => {
         closePops();
-        panel.restart?.();
+        restart();
       };
 
       // The chip row — its two passes, its generation, its freshness test and its press — is its
@@ -312,6 +340,13 @@ SCREENS.scan = () => {
       // Whether this screen refused the scan in front of it — the Solve button, the chip row and
       // the words that said why, moved together — is its own unit (lib/screens/scan/refusal.js).
       const refusal = createRefusal({ solveBtn, dropStageChips });
+      // Every restart THIS screen asks for goes through here: the ↻ button and a notice's "start
+      // over". The refusal's words are let go first, because they were about the scan being
+      // thrown away — and no report can do that for them (2026-09-20; the refusal unit says why).
+      const restart = () => {
+        refusal.restart();
+        panel.restart?.();
+      };
       // The cube under the row can change while the row stands — a smart cube's snapshot replaces
       // the subject — and this screen installed no live-update hook, so it never heard (found by
       // audit, 2026-09-13). renderScreen clears the hook with the screen.
@@ -339,24 +374,34 @@ SCREENS.scan = () => {
           board.repaintTileFurniture();
         }
         if (isScheme(p.scheme) && adoptScheme(p.scheme)) noteScheme(p.scheme);
-        paintSay(p);
-        // The tiles: which sides are read, the side asked for again, the suspected stickers, and
-        // what every sticker is painted and called.
-        board.paintProgress(p);
-        picker.closeIfStale();
-        // The twin follows the scan side by side rather than waiting for all six.
-        if (!settled) showState(board.partialFacelets(p.captured));
-        confirmHold.show(p.confirm);
-        stickerView.show(p);
-        // What this build's scanner can actually do, learned from what it just did (lib/host.js): the
-        // Settings row that offers the study's view follows the scanner, never the platform string.
-        noteScanReport(p);
-        camera.paintCameraRow(p);
-        reconnectCheck.answerFromSides(p);
-        // Last, so it stands over the generic caption — and it declines to speak over a notice,
-        // which is why it is safe to run after everything else has had its say. A refusal the app
-        // made is said in its place while it stands.
-        if (!refusal.sayAgain(p)) sayScheme(p);
+        // The card, written ONCE per report: everything that speaks to this report — the caption,
+        // the reconnect check's line, a refusal the app is still saying — speaks into a hold, and
+        // the release writes the last words, so the live region hears one sentence per report and
+        // the precedence is still the order below (the voice's `holdWords`).
+        const releaseWords = holdWords();
+        try {
+          paintSay(p, { standing: refusal.willSay(p) });
+          // The tiles: which sides are read, the side asked for again, the suspected stickers, and
+          // what every sticker is painted and called.
+          board.paintProgress(p);
+          picker.closeIfStale();
+          // The twin follows the scan side by side rather than waiting for all six — what the
+          // camera has read of the cube in the hand, or what a painter has authored so far.
+          if (!settled) showState(board.partialFacelets(p.captured), { physical: !painting });
+          confirmHold.show(p.confirm);
+          stickerView.show(p);
+          // What this build's scanner can actually do, learned from what it just did (lib/host.js):
+          // the Settings row that offers the study's view follows the scanner, never the platform.
+          noteScanReport(p);
+          camera.paintCameraRow(p);
+          reconnectCheck.answerFromSides(p);
+          // Last, so a refusal the app made stands over the reconnect check's line as well as the
+          // caption the voice left unwritten for it — and it declines to speak over a notice, which
+          // is why it is safe to run after everything else has had its say.
+          refusal.sayAgain(p);
+        } finally {
+          releaseWords();
+        }
         // `{ signal }`, as its siblings have: a report from a panel whose screen had gone adopted a
         // colour arrangement, rebuilt a detached camera menu and answered a reconnect question for
         // nobody (found by audit, 2026-09-13).
@@ -380,12 +425,43 @@ SCREENS.scan = () => {
         // feature inherits the scan's refusal rather than forming an opinion of its own).
         refusal.refuse();
       }, { signal });
+      /** A finished reading this screen BELIEVES, taken as the subject — ONE transaction for a
+       *  reading the camera made and one authored by hand, which had each written it out and
+       *  already differed in order (audit-fix, 2026-09-21): the refusal lifted; the chime and
+       *  "All done" — the scan is ACCEPTED here, not when the scanner said complete, since a
+       *  finished scan can still be refused before this, so here is where the child hears it
+       *  (lib/screens/scan/chime.js and spoken.js); the adoption with its source; the memory —
+       *  a camera reading over a connected cube that has reported is the moment the chain became
+       *  trusted, worth remembering with the cube's own raw claim beside it, and a painting is
+       *  remembered nowhere, since nobody looked; the chip row, AFTER the adoption because it is
+       *  about the cube the app now believes in, and only on a reading it BELIEVED (no repair runs
+       *  on a read the scanner did not accept, plan §9a); and the twin, with the words for what it
+       *  shows. What differs between the two — the repair a camera reading makes first and the
+       *  reconnect question it answers, and where each goes next — stays with each caller. */
+      const acceptReading = (fl, { physical, source }) => {
+        refusal.accept();
+        chime.accepted();
+        spoken.accepted();
+        adoptCube(fl, { physical, source });
+        if (physical && state.connected && state.reported) rememberLastSeen('camera', { force: true });
+        void paintStageChips(fl);
+        showState(fl, { physical });
+      };
       // Only a validated cube leaves this screen.
       panel.addEventListener('scan-complete', (e) => {
         // The panel is torn down on navigation, but an event already in flight still lands. Without
         // this, a scan finishing just after you left could adopt a cube, derive a correction, and
         // navigate you from a screen that no longer exists.
         if (!root.isConnected) return;
+        // WHAT THIS READING IS (2026-09-20): the panel's word first — `'camera'` for a scan
+        // assembled from captures, `'correction'` for its in-place re-check after a sticker was
+        // fixed on a reading already settled, `'painted'` for a cube authored by hand — and,
+        // from a panel that has no word yet, this screen's own paint switch. Each is adopted
+        // differently below, and treating all three as a camera reading was two of the audit's
+        // findings (§1.3 and §2.5). Read before anything else: a painting is never a stale LOOK
+        // either, so sides painted before a cube connected are not handed back to a camera that
+        // painting keeps shut — the panel would have forgotten them and reopened nothing.
+        const origin = e.detail.origin ?? (painting ? 'painted' : 'camera');
         // A scan finished from sides read before the report in force pictures a cube that may no
         // longer be the one in the hand: read before a turn the cube reported, or before a
         // reconnect, after which it may have been turned while nobody counted, or be another cube
@@ -395,7 +471,7 @@ SCREENS.scan = () => {
         // back to the camera, and the scan is refused until they are read — refused AFTER they go
         // back, because the scanner reports a side handed back at once, and that report lifts a
         // refusal made before it. Which of the two it was is read first: that report forgets them.
-        const readBefore = captures.readBeforeReport();
+        const readBefore = origin === 'painted' ? [] : captures.readBeforeReport();
         if (readBefore.length) {
           const reconnected = captures.readBeforeConnection().length > 0;
           for (const slot of readBefore) rescan(slot);
@@ -419,6 +495,20 @@ SCREENS.scan = () => {
         // from the validated string.
         board.settle(fl, e.detail.rotations);
         picker.closeIfStale();
+        if (origin === 'painted') {
+          // A painting is NOT an observation of the cube in the hand: nobody looked. Taken as one
+          // it repaired a smart cube's tracking against a picture the camera never saw, was
+          // remembered as the cube "as we last saw it", and dropped the cube's trust when the two
+          // disagreed (scanner audit 2026-09-20, §2.5). So: no repair, no memory, no answer to the
+          // reconnect question, and a source that says what it is. Like a rolled scramble it is
+          // perfect knowledge of a cube nobody looked at — not physical, so the cube's reports
+          // neither replace it nor drive a walk of it — and the chips and Solve work on it as on
+          // any subject. The chime and "All done" are the screen accepting the cube, painted or
+          // read.
+          acceptReading(fl, { physical: false, source: 'painted' });
+          if (settings.autosolve) go('home');
+          return;
+        }
         // The camera SAW the cube in the user's hand; nothing was inferred from anywhere else.
         //
         // Order matters: the repair reads what the cube CLAIMED, so it runs before the scan is
@@ -426,7 +516,11 @@ SCREENS.scan = () => {
         // where the cube is, and it puts the cube's own tracking back in step for the rest of
         // this connection, with no solving involved. (Not permanently: the correction is
         // discarded on disconnect, because the cube may sleep or be turned while nobody counts.)
-        const repaired = repairTracking(fl);
+        //
+        // A CORRECTION withdraws the scan before it rather than following it: the trust layer
+        // decides what that withdraws (lib/cube-reports.js says why a correction is not a
+        // contradiction); this screen only passes the panel's word on.
+        const repaired = repairTracking(fl, { retracting: origin === 'correction' });
         const adopted = repaired?.ok !== false;
         if (!adopted) {
           // A contradiction is not a reading to adopt: one of the two is wrong and nothing can
@@ -436,27 +530,15 @@ SCREENS.scan = () => {
           // Its words stand while it does: the next report would otherwise say "press Solve this
           // cube" over the button this has just taken away.
           refusal.refuse(() => speak(t('These do not match'), t(repaired.text), 'err'));
+          // The twin still shows what the camera found, beside the words refusing it.
+          showState(fl);
         } else {
-          refusal.accept();
-          // The scan is ACCEPTED here, not when the scanner said complete — a finished scan can still
-          // be refused just above — so here is where the child hears it (the chime's second sound and
-          // "All done!", lib/screens/scan/chime.js and spoken.js).
-          chime.accepted();
-          spoken.accepted();
           // A completed scan answers the reconnect question outright — six sides ESTABLISH what
           // two sides could only spot-check — so the question closes before the adoption that
           // would otherwise mark a cube trusted with its own question still open.
           state.reconnect = null;
           reconnectCheck.close();
-          adoptCube(fl, { physical: true, source: 'camera' });
-          // The moment the chain became trusted is a moment worth remembering: truth from the
-          // scan, the cube's own raw claim beside it.
-          if (state.connected && state.reported) rememberLastSeen('camera', { force: true });
-          // …and how far this cube is from each named stage. AFTER the adoption, because the
-          // chips are about the cube the app now believes in — and only on a scan it BELIEVED:
-          // no repair runs on a read the scanner did not accept (plan §9a), so the feature
-          // inherits the scan's refusal rather than forming an opinion of its own.
-          void paintStageChips(fl);
+          acceptReading(fl, { physical: true, source: 'camera' });
         }
         // The session's sentence is an English key, like the scanner's notices; translated here. A
         // refusal has said its own already.
@@ -467,7 +549,6 @@ SCREENS.scan = () => {
         // wants the jump has the "Auto-solve after scan" setting, which this now actually honours
         // — and honours only for a scan that was BELIEVED: auto-solving a refused reading would
         // walk the previous cube behind a disabled Solve button.
-        showState(e.detail.facelets);
         // A scan entered as a reconnect confirmation goes back to the question's screen once the
         // question is answered — "then back here" — exactly as a two-side confirmation does.
         if ((settings.autosolve || reconnectCheck.cameAsConfirmation()) && adopted) go('home');
@@ -492,11 +573,17 @@ SCREENS.scan = () => {
         if (!cellEl) return;
         const index = [...cellEl.parentElement.children].indexOf(cellEl);
         // The centre cannot be colour-corrected — it names the face — so it does the other useful
-        // thing: throws that side's reading away so the camera reads it again.
+        // thing the board names for it (lib/screens/scan/board.js, `centreActionOf`): with the
+        // camera, throws that side's reading away so the camera reads it again; while painting, on
+        // the two tiles whose centre the arrangements disagree about, swaps which of blue and
+        // yellow is under white (`swapPaintScheme`). ONE record for the cell's name, its glyph and
+        // this dispatch, so a press does what the cell said it would — the three were derived
+        // apart, and could disagree (audit-fix, 2026-09-21).
         if (index === 4) {
           closePops();
-          // Re-reading needs something to read with, so the centre does nothing while painting.
-          if (!painting && tile.classList.contains('done')) panel.rescanFace?.(slotFor(tile.dataset.face));
+          const action = board.centreActionOf(tile.dataset.face);
+          if (action.kind === 'swap') swapPaintScheme();
+          else if (action.kind === 'rescan') rescan(slotFor(tile.dataset.face));
           return;
         }
         // Correcting needs a reading to overrule; painting is where supplying one is the point, so

@@ -83,16 +83,28 @@ test('the chip row exists, is hidden until there is a cube, and offers every tar
 
 test('chips are painted only for a scan the app BELIEVED', () => {
   // §9a: no repair runs on a read the scanner did not accept. The feature inherits the scan's
-  // refusal rather than forming an opinion of its own — which here means the call sits in the
-  // branch that adopts the cube, never beside the one that refuses it.
+  // refusal rather than forming an opinion of its own — which here means the call sits in the ONE
+  // transaction that adopts the cube (`acceptReading`, since 2026-09-21: the camera's and the
+  // painted branch each wrote the acceptance out before), never beside the branch that refuses it.
+  // The helper's parameter list opens a brace of its own (a destructuring), which blockAt reads as
+  // the block when anchored on the definition; anchored on the arrow inside the stretch between
+  // the definition and the handler, the first brace is the body's.
+  const start = code.indexOf('const acceptReading = (fl, { physical, source }) => {');
+  assert.ok(start >= 0, 'the acceptance must exist');
+  const accept = blockAt(code.slice(start, code.indexOf("panel.addEventListener('scan-complete'", start)), ') => {');
+  assert.match(accept, /adoptCube\(fl,/, 'the acceptance must be the one that adopts the cube');
+  assert.match(accept, /paintStageChips\(fl\)/, 'the chips are painted from the acceptance');
+  assert.ok(accept.indexOf('adoptCube(fl,') < accept.indexOf('paintStageChips(fl)'),
+    'the chips are about the cube the app now believes in, so the adoption comes first');
   const complete = blockAt(code, "panel.addEventListener('scan-complete'");
   assert.ok(complete, 'the scan-complete handler must exist');
   const adopted = blockAt(complete, '} else {');
-  assert.match(adopted, /adoptCube\(fl,/, 'the adoption branch must exist, and be the one that adopts the cube');
-  assert.match(adopted, /paintStageChips\(fl\)/, 'the chips are painted from the adoption branch');
+  assert.match(adopted, /acceptReading\(fl,/, 'the adoption branch must exist, and be the one that accepts the reading');
   const refusedBranch = blockAt(complete, 'if (!adopted)');
   assert.ok(refusedBranch, 'the refusal branch must exist');
-  assert.doesNotMatch(refusedBranch, /paintStageChips/, 'a refused read must produce no numbers at all');
+  assert.doesNotMatch(refusedBranch, /paintStageChips|acceptReading|adoptCube/, 'a refused read must produce no numbers at all');
+  // And outside the acceptance, nothing in the handler paints chips or adopts on its own.
+  assert.doesNotMatch(complete, /paintStageChips|adoptCube\(/, 'a second door to the chips or the adoption, beside the acceptance');
 });
 
 test('a late chip answer cannot land on a cube that has been replaced', () => {

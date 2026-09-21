@@ -146,7 +146,20 @@ export function createCameraMenu({ root, panel, signal, closePops, isPainting, s
     camsKey = key;
     // RECONCILED, NOT REBUILT. A camera still listed keeps its button, so a list that changes while
     // the menu is open no longer takes the keyboard's focus with it (found by audit, 2026-09-13).
-    const want = [['', t('Default camera')], ...list.map((d) => [d.deviceId, d.label])];
+    //
+    // ONE BUTTON PER ID, and the empty id is this menu's own (2026-09-20). Before permission is
+    // granted the platform lists its cameras with an empty `deviceId` and an empty label — a
+    // placeholder, not a device — and a row keyed on it was a second "Default camera" that the
+    // tick landed on as well, both marked, neither choosable apart (scanner audit 2026-09-20,
+    // §2.11). The scanner drops such entries itself now; the menu holds its own invariant so it
+    // does not depend on that, and a list that names one camera twice gets one row for it.
+    const want = [['', t('Default camera')]];
+    const listed = new Set(['']);
+    for (const d of list) {
+      if (listed.has(d.deviceId)) continue;
+      listed.add(d.deviceId);
+      want.push([d.deviceId, d.label]);
+    }
     const keep = new Set(want.map(([value]) => value));
     let lostFocus = false;
     for (const b of [...menu.querySelectorAll('[data-value], [data-retry]')]) {

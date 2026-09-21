@@ -70,7 +70,8 @@ const fakeConn = (over = {}) => {
     mayFollow: () => check.verdict !== 'refused',
     numbersMoves: () => true,
     get verdict() { return check.verdict; },
-    cameraScan: (scanned, reported) => { check.onCameraScan(scanned, reported); return check.offset; },
+    // The session's own signature (lib/cube-session.js): a third argument reaches the checker.
+    cameraScan: (scanned, reported, opts) => { check.onCameraScan(scanned, reported, opts); return check.offset; },
     ...over,
   };
 };
@@ -230,6 +231,29 @@ test('choosing a camera pins it and remembers it', async () => {
   assert.equal(JSON.parse(win.localStorage.getItem('cubusSettings')).cameraId, 'iphone', 'and remembered');
   assert.equal(started, 1, 'and the camera reopens on the chosen device');
   assert.equal($('.menu').hidden, true, 'the menu closes on choosing');
+});
+
+// Before permission is granted the platform lists its cameras as placeholders with an empty id and
+// an empty label, and a row keyed on that id was a second "Default camera" — ticked as well, since
+// the tick is by id (scanner audit 2026-09-20, §2.11). The scanner drops such entries itself now;
+// the menu holds the invariant on its own, and a camera listed twice gets one row.
+test('a pre-permission placeholder and a camera listed twice make one row each, and the tick lands once', async () => {
+  panel().cameras = async () => [
+    { deviceId: '', label: '' },
+    { deviceId: 'a', label: 'Cam A' },
+    { deviceId: 'a', label: 'Cam A' },
+  ];
+  progress({ phase: 'scanning', message: 'Show any side of your cube to the camera.',
+    captured: [], live: null, device: null });
+  await tick();
+  $('#scanCamBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  await tick();
+  const rows = [...$('.menu').querySelectorAll('[data-value]')];
+  assert.deepEqual(rows.map((b) => b.textContent), ['Default camera', 'Cam A'], 'a placeholder made a second default row, or a camera listed twice made two');
+  assert.deepEqual(rows.map((b) => b.dataset.value), ['', 'a'], 'the empty id is the menu’s own row and no other’s');
+  assert.deepEqual(rows.filter((b) => b.getAttribute('aria-checked') === 'true').map((b) => b.textContent), ['Default camera'],
+    'the tick landed on more than one row, or on none');
+  $('#scanCamBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
 });
 
 test('a nearly-solved cube points at the one side it needs shown again', () => {
@@ -2487,27 +2511,343 @@ test('a refusal the app made keeps its words, and the next believed scan hands S
   }
 });
 
+// A painting is authored by position, so its centres ARE its scheme, and the one thing a painter can
+// say that the tiles cannot is which of blue and yellow is under white. The panel had the call
+// (`setPaintScheme`) and nothing reached it, so a Western-settings painter could not paint a
+// Japanese cube (scanner audit 2026-09-20, §2.13). The press asks the panel; the tiles move only when
+// the panel reports the arrangement back, the one path that moves them (ADR 0001 §8.3).
+test('while painting, the Down and Back centres swap which colour is under white, and the tiles follow the panel', async () => {
+  const { settings } = await import('../lib/app-settings.js');
+  const was = { scheme: settings.scheme, source: settings.schemeSource };
+  const other = was.scheme === 'japanese' ? 'western' : 'japanese';
+  const HEX = { western: { D: NET_HEX.D, B: NET_HEX.B }, japanese: { D: NET_HEX.B, B: NET_HEX.D } };
+  await enterScan();
+  const schemes = [], rescans = [];
+  panel().setPaintScheme = (s) => schemes.push(s);
+  panel().rescanFace = (...a) => rescans.push(a);
+  const centre = (f) => all(`.scan-face[data-face="${f}"] .tgrid > .cell`)[4];
+  const border = (f) => $(`.scan-face[data-face="${f}"] .tile`).style.borderColor;
+  try {
+    progress({ phase: 'scanning', message: 'x', captured: [face('R')], live: null, confirm: null, scheme: was.scheme });
+    // With the camera: the centre re-reads a read side, as ever, and swaps nothing.
+    centre('D').click();
+    assert.deepEqual({ schemes, rescans }, { schemes: [], rescans: [] }, 'a centre pressed with the camera on swapped the arrangement, or re-read an unread side');
+    centre('R').click();
+    assert.deepEqual({ schemes, rescans }, { schemes: [], rescans: [['R']] }, 'the centre of a read side stopped re-reading it');
+    assert.match(centre('R').getAttribute('aria-label'), /Scan the Right side again/);
+    assert.equal(centre('R').title, centre('R').getAttribute('aria-label'), 'the hover and the screen reader disagree about the press');
+    $('#scanPaintBtn').click();
+    progress({ phase: 'painting', message: 'x', captured: [face('R')], live: null, confirm: null, scheme: was.scheme });
+    // Painting: the two centres the arrangements disagree about swap it; the other four do nothing.
+    for (const f of ['D', 'B']) {
+      assert.equal(centre(f).getAttribute('aria-disabled'), 'false', `${f}: the centre is not offered while painting`);
+      assert.match(centre(f).getAttribute('aria-label'), /swap which of blue and yellow is under white/, `${f}: the name does not say what the press does`);
+      assert.equal(centre(f).title, centre(f).getAttribute('aria-label'), `${f}: the hover and the screen reader disagree`);
+    }
+    for (const f of ['U', 'R', 'F', 'L']) {
+      assert.equal(centre(f).getAttribute('aria-disabled'), 'true', `${f}: a centre that swaps nothing is offered`);
+      assert.doesNotMatch(centre(f).getAttribute('aria-label'), /swap/, `${f}: named as a swap it cannot make`);
+    }
+    centre('R').click();
+    assert.deepEqual({ schemes, rescans }, { schemes: [], rescans: [['R']] }, 'a centre that swaps nothing did something');
+    const before = { D: centre('D').style.backgroundColor, border: border('D') };
+    centre('D').click();
+    assert.deepEqual(schemes, [other], 'the Down centre did not ask the panel to swap the arrangement');
+    assert.deepEqual(rescans, [['R']], 'the Down centre re-read its side while painting');
+    assert.equal(centre('D').style.backgroundColor, before.D, 'the tiles moved on the press, before the panel decided');
+    assert.equal(border('D'), before.border);
+    // The panel re-decides the painting under the arrangement declared and reports it.
+    progress({ phase: 'painting', message: 'Centres swapped.', captured: [face('R')], live: null, confirm: null, scheme: other });
+    assert.equal(centre('D').style.backgroundColor, HEX[other].D, 'the Down centre was not repainted for the arrangement the panel reported');
+    assert.equal(centre('B').style.backgroundColor, HEX[other].B, 'the Back centre was not repainted for it');
+    assert.notEqual(border('D'), before.border, 'the tile edges did not follow');
+    assert.equal(panel().getAttribute('scheme'), other, 'the panel’s own attribute did not follow');
+    centre('B').click();
+    assert.deepEqual(schemes, [other, was.scheme], 'the Back centre did not swap back');
+  } finally {
+    $('#scanPaintBtn').click();
+    progress({ phase: 'scanning', complete: false, message: 'x', captured: [], live: null, confirm: null, scheme: was.scheme });
+    settings.scheme = was.scheme; settings.schemeSource = was.source;
+  }
+});
+
+// ---- the centre's action is one record (audit-fix, 2026-09-21) ---------------------------------
+
+test('which centres swap the arrangement is read off the scheme tables, not a list kept beside them', async () => {
+  const board = await import('../lib/screens/scan/board.js');
+  const { POSITIONS, colourOf } = await import('../lib/scheme.js');
+  assert.deepEqual(POSITIONS.filter(board.swapsArrangement), ['D', 'B'],
+    'ADR 0001: only which of blue and yellow is under white differs between the arrangements');
+  for (const p of POSITIONS) {
+    assert.equal(board.swapsArrangement(p), colourOf(p, 'western') !== colourOf(p, 'japanese'),
+      `${p}: the predicate disagrees with the tables it is derived from`);
+  }
+  assert.ok(!Object.values(board).some((v) => v instanceof Set), 'the board exports a mutable list of centres beside the tables');
+});
+
+// The name, the glyph, the pointer and the press were derived apart — the names in one place, the
+// glyph in another, the dispatch in the screen — so a centre could be named and enabled for a
+// press the handler then refused, and a captured side's centre wore the re-read glyph and a
+// pointer while painting, when the press did nothing (rows 23, 93 and 94).
+test("the centre's name, glyph, pointer and press are one record, in every mode", async () => {
+  const { icon } = await import('../lib/app-state.js');
+  const { settings } = await import('../lib/app-settings.js');
+  await enterScan();
+  const other = settings.scheme === 'japanese' ? 'western' : 'japanese';
+  const rescans = [], schemes = [];
+  panel().rescanFace = (...a) => rescans.push(a);
+  panel().setPaintScheme = (s) => schemes.push(s);
+  const centre = (f) => all(`.scan-face[data-face="${f}"] .tgrid > .cell`)[4];
+  const dressed = (f) => ({
+    action: centre(f).dataset.action ?? null, glyph: centre(f).innerHTML,
+    disabled: centre(f).getAttribute('aria-disabled'), named: centre(f).title === centre(f).getAttribute('aria-label'),
+  });
+  /** A glyph as the DOM serialises it (`<path/>` comes back as `<path></path>`). */
+  const glyph = (name) => { const el = win.document.createElement('div'); el.innerHTML = icon(name, 15); return el.innerHTML; };
+  const RESCAN = { action: 'rescan', glyph: glyph('refresh'), disabled: 'false', named: true };
+  const SWAP = { action: 'swap', glyph: glyph('repeat'), disabled: 'false', named: true };
+  const NOTHING = { action: null, glyph: '', disabled: 'true', named: true };
+  try {
+    progress({ phase: 'scanning', message: 'x', captured: [face('R')], live: null, confirm: null, device: null });
+    // With the camera: a read side's centre re-reads it and wears the re-read glyph; an unread
+    // side's does nothing and wears nothing.
+    assert.deepEqual(dressed('R'), RESCAN, 'a read side, with the camera');
+    assert.deepEqual(dressed('U'), NOTHING, 'an unread side, with the camera');
+    centre('R').click();
+    centre('U').click();
+    assert.deepEqual({ rescans, schemes }, { rescans: [['R']], schemes: [] }, 'the press did not do what the record said');
+    // Painting: the two centres the arrangements disagree about swap it and wear the swap glyph; a
+    // CAPTURED side's centre wears nothing and does nothing, like an unread one's.
+    $('#scanPaintBtn').click();
+    assert.deepEqual(dressed('D'), SWAP, 'the Down centre, painting');
+    assert.deepEqual(dressed('B'), SWAP, 'the Back centre, painting');
+    assert.deepEqual(dressed('R'), NOTHING, 'a captured side while painting still offered the re-read');
+    assert.deepEqual(dressed('U'), NOTHING, 'an unread side, painting');
+    centre('R').click();
+    centre('D').click();
+    assert.deepEqual({ rescans, schemes }, { rescans: [['R']], schemes: [other] }, 'the press did not do what the record said, painting');
+    // And back to the camera: the record follows the mode, not the last report.
+    $('#scanPaintBtn').click();
+    assert.deepEqual(dressed('R'), RESCAN, 'a read side, back with the camera');
+    assert.deepEqual(dressed('D'), NOTHING, 'the Down centre, back with the camera');
+  } finally {
+    if ($('.scan-cam').classList.contains('paint')) $('#scanPaintBtn').click();
+    delete panel().rescanFace;
+    delete panel().setPaintScheme;
+  }
+});
+
+test("the stylesheet keys the centre's affordance on its action, never on the side being read", () => {
+  const css = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+  assert.doesNotMatch(css, /\.scan-face\.done \.tgrid > \.cell:nth-child\(5\)/,
+    "keyed on `.done`, a captured side's centre wears the pointer and the glyph while painting refuses its press");
+  for (const rule of ['[data-action] { cursor: pointer; }', '[data-action] > .ic { opacity: .92; }', '[data-action]:hover { box-shadow: 0 0 0 2px var(--ink); }']) {
+    assert.ok(css.includes(`.cell:nth-child(5)${rule}`), `the centre rule \`${rule}\` is not keyed on the action`);
+  }
+});
+
+// ---- the card is written once per report (audit-fix, 2026-09-21) --------------------------------
+
+const S_TRACKING = 'UULUUFUUFRRUBRRURRFFDFFUFFFDDRDDDDDDBLLLLLLLLBRRBBBBBB';
+const S_OTHER = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
+const deliverScan = (facelets) => panel().dispatchEvent(new win.CustomEvent('scan-complete', {
+  detail: { facelets, valid: true, confidence: 1, lowConfidence: [] } }));
+/** The nearest accessor for `key` up `obj`'s prototype chain. */
+const accessorOf = (obj, key) => {
+  for (let o = obj; o; o = Object.getPrototypeOf(o)) {
+    const d = Object.getOwnPropertyDescriptor(o, key);
+    if (d) return d;
+  }
+  return null;
+};
+
+test('the card is written once per report, whoever speaks — a refusal is not written under and then over', async () => {
+  // The generic caption was written first and a standing refusal, or the colour sentence, over it
+  // a moment later: two writes into a live region per report, and the precedence between them
+  // lived in the order the screen called things (row 25). One rule in the voice now, one write.
+  const { state } = await import('../lib/app.js');
+  const { settings } = await import('../lib/app-settings.js');
+  const was = { scheme: settings.scheme, source: settings.schemeSource };
+  const other = was.scheme === 'japanese' ? 'western' : 'japanese';
+  const title = () => $('#scanHowTitle').textContent;
+  await enterScan();
+  const say = $('#scanHow');
+  const inherited = accessorOf(say, 'textContent');
+  let writes = 0;
+  Object.defineProperty(say, 'textContent', {
+    configurable: true,
+    get() { return inherited.get.call(this); },
+    set(v) { writes += 1; inherited.set.call(this, v); },
+  });
+  const written = (fn) => { writes = 0; fn(); return writes; };
+  const report = (extra = {}) => progress({ phase: 'scanning', complete: false, message: 'Show any side.', captured: [],
+    live: null, confirm: null, device: null, notice: null, ...extra });
+  try {
+    assert.equal(written(() => report()), 1, 'a plain report');
+    assert.equal(written(() => report({ notice: { title: 'Hold it still', tone: 'info', body: 'Keep the side flat.' } })), 1, 'a notice');
+    assert.equal(written(() => report({ phase: 'error', message: 'Cannot start: Permission denied' })), 1, 'a camera in trouble');
+    assert.equal(written(() => report({ scheme: other })), 1, 'the colour sentence');
+    assert.match(title(), /under white$/, 'precondition: the colour sentence was said');
+    win.cubusFeed.useConnection(fakeConn());
+    win.cubusFeed.facelets(S_TRACKING);
+    state.cube.trusted = true; state.cube.source = 'cube';
+    deliverScan(S_OTHER);
+    assert.equal(title(), 'These do not match', 'precondition: the app refused the reading');
+    assert.equal(written(() => report({ phase: 'done', complete: true, captured: FACES.map(face) })), 1,
+      'a report under a standing refusal was written twice — the caption, then the refusal over it');
+    assert.equal(title(), 'These do not match', 'and the one write was the refusal');
+    // The colour sentence owed under a refusal waits, and is one write when the card is free.
+    report({ scheme: was.scheme });
+    assert.equal(title(), 'These do not match', 'precondition: the colour sentence waited for the refusal');
+    deliverScan(S_TRACKING);
+    assert.equal(written(() => report({ phase: 'done', complete: true, captured: FACES.map(face) })), 1, 'the colour sentence with the finished scan\'s instruction');
+    assert.equal(title(), 'Scanned');
+    assert.match($('#scanHow').textContent, /under white/);
+  } finally {
+    delete say.textContent;
+    win.cubusFeed.useConnection(null);
+    state.cube.trusted = false; state.cube.source = 'none'; state.cube.staleWhy = '';
+    state.live = null; state.reported = null;
+    progress({ phase: 'scanning', complete: false, message: 'x', captured: [], live: null, confirm: null, scheme: was.scheme });
+    settings.scheme = was.scheme; settings.schemeSource = was.source;
+  }
+});
+
+// The reconnect check writes the card LAST and by design — its words stand over the generic caption
+// and never over a notice or a camera error. Whether the report owns the card is the voice module's
+// ONE rule; a restated `p.notice || p.phase === 'error'` here was the third copy of it (audit-fix
+// 2026-09-21, finding 25 on verification), and three copies of a rule are how one drifts.
+test('the reconnect check asks the voice module whether the report owns the card, and restates nothing', () => {
+  const src = readFileSync(new URL('../lib/screens/scan/reconnect-check.js', import.meta.url), 'utf8');
+  assert.match(src, /import \{ reportOwnsCard \} from '\.\/voice\.js'/, 'the rule is imported from voice.js');
+  assert.match(src, /reportOwnsCard\(p\)/, 'the guard asks the rule');
+  assert.doesNotMatch(src, /p\.notice \|\||p\.phase === 'error'/, 'the rule is restated beside the import');
+});
+
+// The hold behind that rule (audit-fix 2026-09-21, finding 25 on verification): the reconnect check
+// and a standing refusal both speak to a report AFTER the caption, each through the one door — so
+// the door records while a report is being handled and writes the last words once on release.
+test('holdWords: every word spoken to one report lands as ONE write of the last words, in call order', async () => {
+  const { createScanVoice } = await import('../lib/screens/scan/voice.js');
+  const root = win.document.createElement('div');
+  root.innerHTML = '<p id="scanHowTitle"></p><p id="scanHow"></p><p id="scanHint"></p><button id="scanAction"></button>';
+  const voice = createScanVoice({ root, restart: () => {}, closePops: () => {} });
+  const say = root.querySelector('#scanHow');
+  const inherited = accessorOf(say, 'textContent');
+  let writes = 0;
+  Object.defineProperty(say, 'textContent', {
+    configurable: true,
+    get() { return inherited.get.call(this); },
+    set(v) { writes += 1; inherited.set.call(this, v); },
+  });
+  const release = voice.holdWords();
+  voice.speak('Caption', 'the generic caption');
+  voice.speak('One more side', 'the reconnect check\'s line', 'ok');
+  voice.speak('These do not match', 'the refusal, last');
+  assert.equal(writes, 0, 'a held word reached the live region');
+  release();
+  assert.equal(writes, 1, 'the release wrote more than once');
+  assert.equal(say.textContent, 'the refusal, last', 'the last words are what stands');
+  assert.equal(root.querySelector('#scanHowTitle').textContent, 'These do not match');
+  // A hold nothing spoke into writes nothing; a stale release writes over nothing newer.
+  const quiet = voice.holdWords();
+  quiet();
+  assert.equal(writes, 1);
+  const first = voice.holdWords();
+  const second = voice.holdWords();
+  voice.speak('Newer', 'the newer report\'s words');
+  first();
+  assert.equal(writes, 1, 'a stale release wrote');
+  second();
+  assert.equal(writes, 2);
+  assert.equal(say.textContent, 'the newer report\'s words');
+  // And with no hold in force, a word is written at once, as it always was.
+  voice.speak('Now', 'straight through');
+  assert.equal(writes, 3);
+});
+
+test('the progress handler speaks into one hold: caption, reconnect line and refusal are released together', () => {
+  const src = readFileSync(new URL('../lib/screens/scan.js', import.meta.url), 'utf8');
+  const hold = src.indexOf('const releaseWords = holdWords();');
+  const release = src.indexOf('releaseWords();', hold);
+  assert.ok(hold > 0 && release > hold, 'the handler does not hold the door');
+  const held = src.slice(hold, release);
+  for (const call of ['paintSay(p', 'reconnectCheck.answerFromSides(p)', 'refusal.sayAgain(p)']) {
+    assert.ok(held.includes(call), `${call} speaks outside the hold`);
+  }
+});
+
+// The screen-level restart lets go of a refusal the app made BEFORE the panel restarts — and the
+// panel reports from inside restart(), synchronously, so the other order speaks the stale refusal
+// over the very report the restart brings. The action test above only counted the restart (row 26).
+test("a notice's start-over lets go of the app's refusal before the panel restarts, and it never reappears", async () => {
+  const { state } = await import('../lib/app.js');
+  const title = () => $('#scanHowTitle').textContent;
+  await enterScan();
+  win.cubusFeed.useConnection(fakeConn());
+  const seen = [];
+  let restarts = 0;
+  // The panel's restart as the real one behaves: it reports at once, from inside the call.
+  panel().restart = () => {
+    restarts += 1;
+    progress({ phase: 'scanning', complete: false, captured: [], message: 'Opening the camera…', device: null, confirm: null, notice: null });
+    seen.push(title());
+  };
+  try {
+    win.cubusFeed.facelets(S_TRACKING);
+    state.cube.trusted = true; state.cube.source = 'cube';
+    deliverScan(S_OTHER);
+    assert.equal(title(), 'These do not match', 'precondition: the app refused the reading');
+    progress({ phase: 'scanning', complete: true, captured: FACES.map(face), device: null, confirm: null, message: '',
+      notice: { title: 'Some stickers were misread', tone: 'err', body: 'At least %1 stickers do not fit a real cube. Start the scan over.',
+        params: [3], action: { label: 'Start over', kind: 'restart' } } });
+    assert.equal(title(), 'Some stickers were misread', 'precondition: the notice owns the card');
+    $('#scanAction').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    assert.equal(restarts, 1, 'the panel restarts exactly once');
+    assert.deepEqual(seen, ['How it works'], 'the restart report, arriving from inside restart(), was spoken over by the refusal the restart threw away');
+    progress({ phase: 'scanning', complete: false, captured: [], message: 'Show any side of your cube to the camera.', device: null, confirm: null, notice: null });
+    assert.equal(title(), 'How it works', 'the stale refusal reappeared on a later report');
+    assert.equal($('#scanHow').textContent, 'Show any side of your cube to the camera.');
+    assert.equal($('#scanAction').hidden, true, 'the notice\'s action outlived the notice');
+  } finally {
+    delete panel().restart;
+    win.cubusFeed.useConnection(null);
+    state.cube.trusted = false; state.cube.source = 'none'; state.cube.staleWhy = '';
+    state.live = null; state.reported = null;
+  }
+});
+
 // ---- a scanner that registers late ------------------------------------------------------------
 //
 // LAST IN THE FILE: it registers <ai-scan-panel> for the rest of the process, and every case above
 // depends on the element staying inert.
 
-test('painting chosen before the scanner registers is the mode the scanner starts in', async () => {
+test('painting chosen before the scanner registers is the mode the scanner starts in, and an arrangement asked of it is replayed', async () => {
+  const { settings } = await import('../lib/app-settings.js');
   await enterScan();
+  const other = settings.scheme === 'japanese' ? 'western' : 'japanese';
   const el = panel();
   assert.equal(typeof el.setPainting, 'undefined', 'precondition: the scanner has not registered');
   $('#scanPaintBtn').click();
   assert.ok($('.scan-cam').classList.contains('paint'), 'precondition: the board took the press');
+  // The Down centre stands enabled and named for the swap before the scanner can take the call:
+  // the press was dropped by `setPaintScheme?.()` while the cell promised it (rows 92 and 93).
+  const centre = all('.scan-face[data-face="D"] .tgrid > .cell')[4];
+  assert.equal(centre.getAttribute('aria-disabled'), 'false', 'precondition: the centre is offered');
+  assert.equal(typeof el.setPaintScheme, 'undefined', 'precondition: the scanner cannot take the swap yet');
+  centre.click();
   const calls = [];
   win.customElements.define('ai-scan-panel', class extends win.HTMLElement {
     connectedCallback() { if (this.hasAttribute('autostart')) queueMicrotask(() => this.start()); }
     start() { calls.push('start'); }
     setPainting(on) { calls.push(`painting:${on}`); }
+    setPaintScheme(scheme) { calls.push(`scheme:${scheme}`); }
     stop() {}
   });
   await tick();
   isSame(panel(), el, 'precondition: the element on screen is the one that upgraded');
-  assert.deepEqual(calls, ['painting:true'], 'the scanner registered and opened its camera under a board that says it is painting');
+  assert.deepEqual(calls, ['painting:true', `scheme:${other}`],
+    'the scanner registered and opened its camera under a board that says it is painting, or the arrangement asked of it was dropped');
 });
 
 test('the bell-only mode chimes for a saved side and says nothing', async (t) => {
