@@ -42,6 +42,28 @@ mod frame;
 #[cfg(any(target_os = "windows", test))]
 mod worker;
 
+/// Which capture session is current, and the worker and camera owned with it, behind one lock —
+/// Windows' open/close/reopen arbitration, tested on every host (2026-09-21).
+#[cfg(any(target_os = "windows", test))]
+mod lifecycle;
+
+/// `preprocess()` in Rust, and the parity tests that hold it to the TypeScript on every host.
+#[cfg(any(target_os = "windows", test))]
+mod letterbox;
+
+/// Which of a camera's formats the scan captures at, over plain numbers, tested on every host.
+#[cfg(any(target_os = "windows", test))]
+mod format_policy;
+
+/// The tensor wire format (version 2) and the checks a native answer passes before it is encoded —
+/// one encoder for the Apple and Windows arms.
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "windows", test))]
+mod wire;
+
+/// The two-tier model lookup both arms use: the bundled Resource dir, then the committed source.
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "windows", test))]
+mod model_path;
+
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub use apple::init;
 

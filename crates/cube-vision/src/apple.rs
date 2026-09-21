@@ -10,7 +10,9 @@
 //! have, so a camera that refused to open reported "open_camera failed (-1)" and nothing else.
 //! Now every negative code is followed by `cube_vision_last_error()`, the message the Swift side
 //! kept for exactly that call, and the pair is logged through the `log` facade (which is what
-//! `tauri_plugin_log` captures) and returned to the webview as the command's error.
+//! `tauri_plugin_log` captures) and returned to the webview as the command's error. The call and
+//! that read are ONE step under `SWIFT` (2026-09-21), or a second command's failure could overwrite
+//! the message between them.
 //!
 //! EVERY COMMAND THAT TOUCHES THE SWIFT STATE IS `(async)`. A plain `#[tauri::command]` runs on
 //! the main thread, and these hold the Swift `stateLock` around work that is anything but quick:
@@ -19,11 +21,15 @@
 //! tick. On the main thread that is the UI frozen for the duration, on the one screen whose job
 //! is to stay live while the camera comes up; `windows.rs` documents and avoids the same trap. The
 //! Swift lock serialises them, so moving them off the main thread changes nothing about ordering.
+//! The rule covers the QUICK ones too — `current_camera` reads a string under that same lock, and
+//! a lock a tick's CoreML run holds for milliseconds is a main-thread wait of milliseconds (it was
+//! plain until 2026-09-20; audit §2.14). Only `probe` is plain: it reaches no Swift state at all.
+//! Mechanised in `every_command_that_reaches_the_swift_state_is_async` below, on this file's text.
 
 use std::os::raw::c_char;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -33,6 +39,8 @@ use tauri::plugin::TauriPlugin;
 use tauri::{AppHandle, Manager, Runtime, State};
 
 use crate::frame;
+use crate::model_path;
+use crate::wire;
 
 // The C ABI exported by libCubeVision.a (see swift/Sources/CubeVision/FFI.swift). Every call is
 // process-global on the Swift side (one model, one camera) — a plugin is a singleton and CoreML load
@@ -71,13 +79,41 @@ extern "C" {
 /// `cube_vision_next_detection`'s "camera open, no frame has arrived" answer.
 const NO_FRAME_YET: i32 = 0;
 
+/// EVERY SWIFT CALL, AND THE NARRATION OF ITS FAILURE, UNDER ONE LOCK (2026-09-21, audit-fix
+/// row 27). The Swift side kept ONE process-global `lastError`, written by a failing call and
+/// consumed by `cube_vision_last_error()` — a second call. Its own lock covered each call alone, so
+/// between a failure returning and this side asking why, another `(async)` command on another
+/// tokio worker could fail and overwrite the message, or succeed and consume it: `open_camera`'s
+/// error carrying `load_model`'s reason, or "the Swift side recorded no detail". This crate is the
+/// only in-process caller (the probe CLI is another process), so serialising here makes the pair
+/// atomic. Nothing is lost by it: the Swift `stateLock` already ran these one at a time.
+///
+/// TWO GUARDS, ONE ON EACH SIDE OF THE BOUNDARY. The same day, the Swift side moved the message
+/// to a PER-THREAD slot (`LastError` in FFI.swift): a message now travels with the thread that made
+/// the failing call, whatever other threads do meanwhile — and it asks of this side exactly what
+/// `ffi_failure` does, a fetch on the same thread, right after the call. Either guard alone keeps
+/// the contract, so neither side depends on a detail of the other it cannot see; it also means
+/// the two tests below hold the CONTRACT and not this lock — with this lock removed both stay
+/// green on the Swift slot (measured), and only both guards gone would fail them.
+static SWIFT: Mutex<()> = Mutex::new(());
+
+/// Run `f` — a Swift call and, on failure, `ffi_failure` — as one step nobody interleaves.
+fn swift<T>(f: impl FnOnce() -> T) -> T {
+    let _one_at_a_time = SWIFT.lock().unwrap_or_else(PoisonError::into_inner);
+    f()
+}
+
 /// How long an open camera may deliver nothing before `next_detection` says so. A capture session
 /// that starts delivers its first frame within a few hundred milliseconds; one that never will —
-/// a device that went away, a Continuity Camera that dropped, a session AVFoundation interrupted
-/// for another app — used to answer `0,0` forever, which `decodeTensorResponse` reads as "try
-/// again next tick", so the scanner waited on it with nothing said. The Windows arm records a
-/// capture error to report in the same spot; here the Swift side has no error to record (no
-/// frame is not a failure to it), so the clock is the signal.
+/// a Continuity Camera that dropped, a session AVFoundation interrupted for another app — used to
+/// answer `0,0` forever, which `decodeTensorResponse` reads as "try again next tick", so the
+/// scanner waited on it with nothing said. The Windows arm records a capture error to report in
+/// the same spot; here the clock is the signal for what the OS only PAUSES or says nothing about.
+/// What the OS announces — a device disconnected, a session that failed — the Swift side reports
+/// as `-6` with the reason the tick after it happens (2026-09-20), and since the same day a frame
+/// older than a second is not served as the latest, so a camera that stops mid-scan reaches this
+/// clock at all: until then its last frame was re-inferred every tick as a perfectly still cube
+/// and the clock, which starts only on a frameless tick, never started (audit §1.2).
 const NO_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Output element count from the last successful `load_model`, so `next_detection` sizes its buffer
@@ -102,64 +138,19 @@ struct CameraInfo {
     facing: Option<String>,
 }
 
-/// Encode a raw detect tensor for the bridge (layout: `tensor_bytes`). The TS side reads the header,
-/// then a `Float32Array` over the rest — the same shape `decodeDetections` parses. Zero anchors means
-/// "no frame yet" (the caller treats it as null and tries again), so an idle tick costs 20 bytes,
-/// not an error.
+/// Encode a raw detect tensor for the bridge — wire version 2, VALIDATED at this boundary
+/// (`crate::wire`, 2026-09-21): a count the buffer cannot hold, a shape whose product is not the
+/// count, a negative dimension or half a picture size is an error naming the value, never a
+/// clamped tensor that fails later in TypeScript (audit-fix row 95). Zero anchors with no picture
+/// is "no frame yet" (the caller treats it as null and tries again), 20 bytes, not an error.
 fn tensor_response(
     count: i32,
     rows: i32,
     anchors: i32,
     picture: [i32; 2],
     data: &[f32],
-) -> Response {
-    Response::new(tensor_bytes(count, rows, anchors, picture, data))
-}
-
-/// What `next_detection` sends for a frame the Swift side inferred: its tensor and the size of the
-/// picture it was letterboxed from. Pure, so the tests hold the command's own handling of the FFI's
-/// outputs — the Swift side's writes are held by `swift test` (swift/Tests/CubeVisionTests). A frame
-/// with no size is the two sides of the FFI disagreeing, not a frame to pass on unplaceable: `[0, 0]`
-/// means "no frame" and nothing else (audit, 2026-09-19). `picture` is `[width, height]` exactly as the
-/// Swift side wrote it — one value handed on whole, so no call site orders the pair.
-fn detection_bytes(
-    count: i32,
-    rows: i32,
-    anchors: i32,
-    picture: [i32; 2],
-    data: &[f32],
-) -> Result<Vec<u8>, String> {
-    let [width, height] = picture;
-    if width <= 0 || height <= 0 {
-        return Err(format!(
-            "next_detection produced a tensor but reported its picture as {width}x{height}"
-        ));
-    }
-    Ok(tensor_bytes(count, rows, anchors, picture, data))
-}
-
-/// The bytes of a tensor response, wire version 2 (2026-09-19): `int32 -2` (the version, negative so
-/// it can never be read as a row count), `int32 rows, int32 anchors, int32 width, int32 height`, then
-/// the f32s — little-endian. `width`×`height` is the camera picture the tensor was letterboxed from,
-/// zero when there was none; the page places each sticker in the picture with it
-/// (`decodeTensorResponse` in packages/cube-scanner/view/native-detector.ts, which reads versions 1
-/// and 2; dev-docs/scan-guidance-plan.md 5).
-fn tensor_bytes(count: i32, rows: i32, anchors: i32, picture: [i32; 2], data: &[f32]) -> Vec<u8> {
-    // Clamp to the buffer as well as to zero. The Swift side never reports more than the cap it was
-    // given (= data.len()), so this only ever guards against a future contract break — but it does so
-    // by shipping a short tensor the TS side rejects, not by panicking the whole process.
-    let n = (count.max(0) as usize).min(data.len());
-    let mut out = Vec::with_capacity(20 + n * 4);
-    out.extend_from_slice(&(-2i32).to_le_bytes());
-    out.extend_from_slice(&rows.max(0).to_le_bytes());
-    out.extend_from_slice(&anchors.max(0).to_le_bytes());
-    for side in picture {
-        out.extend_from_slice(&side.max(0).to_le_bytes());
-    }
-    for &v in &data[..n] {
-        out.extend_from_slice(&v.to_le_bytes());
-    }
-    out
+) -> Result<Response, String> {
+    wire::tensor_bytes(count, rows, anchors, picture, data).map(Response::new)
 }
 
 /// Take ownership of a C string the Swift side allocated with `strdup`, or None for null.
@@ -185,6 +176,8 @@ fn last_error() -> String {
 
 /// Narrate a failing FFI call: the code plus the Swift side's message, logged AND returned. The
 /// return value is what the webview shows; the log line is what survives when nobody was looking.
+/// Called INSIDE the `swift` closure that made the failing call, so the message read is that
+/// call's — see `SWIFT`.
 fn ffi_failure(what: &str, rc: i32) -> String {
     let detail = last_error();
     log::error!("cube-vision: {what} failed ({rc}): {detail}");
@@ -215,15 +208,17 @@ fn probe<R: Runtime>(app: AppHandle<R>) -> bool {
 #[tauri::command(async)]
 fn list_cameras() -> Result<Vec<CameraInfo>, String> {
     // SAFETY: the Swift side returns a heap C string we own; `take_string` frees it.
-    let json = take_string(unsafe { cube_vision_list_cameras() })
+    let json = swift(|| take_string(unsafe { cube_vision_list_cameras() }))
         .ok_or_else(|| "list_cameras returned null".to_string())?;
     serde_json::from_str(&json).map_err(|e| format!("bad camera list: {e}"))
 }
 
-#[tauri::command]
+/// `(async)`: a lookup, but one made under the Swift state lock, which a tick's CoreML run holds
+/// for milliseconds at a time — on the main thread that wait is the UI's (2026-09-20, audit §2.14).
+#[tauri::command(async)]
 fn current_camera() -> Result<Option<CameraInfo>, String> {
     // SAFETY: null (no camera open) or a heap C string we own; `take_string` frees it.
-    match take_string(unsafe { cube_vision_current_camera() }) {
+    match swift(|| take_string(unsafe { cube_vision_current_camera() })) {
         None => Ok(None),
         Some(json) => serde_json::from_str(&json)
             .map(Some)
@@ -244,26 +239,16 @@ fn source_model_path() -> PathBuf {
 
 /// Find the CoreML model. The webview no longer passes a path (it cannot reliably resolve one — the
 /// JS `path` API may be absent or unpermitted, and that silently dropped the whole app to the wasm
-/// runtime): resolution is the plugin's job.
-///
-/// Two tiers, in order: the bundled Resource dir (a shipped app), then the committed source tree
-/// (`tauri dev`, which does NOT stage `bundle.resources`, so the resource dir is empty there). The
-/// resource dir is tried FIRST so a shipped app never uses the source path — which is the build
-/// machine's and would not exist on a user's disk.
+/// runtime): resolution is the plugin's job, and the two-tier rule — the bundled Resource dir, then
+/// the committed source tree — is `crate::model_path`'s, shared with the Windows arm (2026-09-21).
 fn resolve_model_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
-    if let Ok(p) = app.path().resolve(MODEL_RESOURCE, BaseDirectory::Resource) {
-        if p.exists() {
-            return Ok(p);
-        }
-    }
-    let dev = source_model_path();
-    if dev.exists() {
-        return Ok(dev);
-    }
-    Err(format!(
-        "cubedet.mlpackage not found — not in the app Resource dir, and not at {} (run ml/export.py)",
-        dev.display()
-    ))
+    model_path::resolve(
+        app.path()
+            .resolve(MODEL_RESOURCE, BaseDirectory::Resource)
+            .ok(),
+        source_model_path(),
+        "cubedet.mlpackage",
+    )
 }
 
 /// `(async)`: a CoreML compile plus a warm inference, seconds on first load. The Swift side
@@ -278,14 +263,17 @@ fn load_model<R: Runtime>(
 ) -> Result<i32, String> {
     let path = resolve_model_path(&app)?;
     let c = std::ffi::CString::new(path.to_string_lossy().as_ref()).map_err(|e| e.to_string())?;
-    // SAFETY: `c` outlives the call; the Swift side copies the path.
-    let len = unsafe { cube_vision_load(c.as_ptr(), compute_units) };
-    if len <= 0 {
-        return Err(ffi_failure(
-            &format!("model load for {}", path.display()),
-            len,
-        ));
-    }
+    let len = swift(|| {
+        // SAFETY: `c` outlives the call; the Swift side copies the path.
+        let len = unsafe { cube_vision_load(c.as_ptr(), compute_units) };
+        if len <= 0 {
+            return Err(ffi_failure(
+                &format!("model load for {}", path.display()),
+                len,
+            ));
+        }
+        Ok(len)
+    })?;
     state.out_len.store(len, Ordering::SeqCst);
     Ok(len)
 }
@@ -294,16 +282,7 @@ fn load_model<R: Runtime>(
 /// camera-permission prompt sits in front of it.
 #[tauri::command(async)]
 fn open_camera(state: State<'_, CubeVision>, device_id: Option<String>) -> Result<(), String> {
-    let c = device_id
-        .map(std::ffi::CString::new)
-        .transpose()
-        .map_err(|e| e.to_string())?;
-    let ptr = c.as_ref().map_or(std::ptr::null(), |s| s.as_ptr());
-    // SAFETY: `c` (and thus `ptr`) outlives the call.
-    let rc = unsafe { cube_vision_open_camera(ptr) };
-    if rc != 0 {
-        return Err(ffi_failure("open_camera", rc));
-    }
+    open_camera_named(device_id.as_deref())?;
     // A fresh session gets a fresh clock: frames from the previous camera do not count for this one.
     *state
         .waiting_since
@@ -312,11 +291,30 @@ fn open_camera(state: State<'_, CubeVision>, device_id: Option<String>) -> Resul
     Ok(())
 }
 
+/// The Swift half of `open_camera`: the call and, on failure, its reason — one step under `SWIFT`,
+/// so the reason is this call's and not another command's (row 27; the test with eight concurrent
+/// bogus opens holds it).
+fn open_camera_named(device_id: Option<&str>) -> Result<(), String> {
+    let c = device_id
+        .map(std::ffi::CString::new)
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    let ptr = c.as_ref().map_or(std::ptr::null(), |s| s.as_ptr());
+    swift(|| {
+        // SAFETY: `c` (and thus `ptr`) outlives the call.
+        let rc = unsafe { cube_vision_open_camera(ptr) };
+        if rc != 0 {
+            return Err(ffi_failure("open_camera", rc));
+        }
+        Ok(())
+    })
+}
+
 /// `(async)`: takes the Swift state lock, which a running inference may hold for a few ms.
 #[tauri::command(async)]
 fn close_camera() {
     // SAFETY: idempotent on the Swift side; safe to call with no camera open.
-    unsafe { cube_vision_close_camera() };
+    swift(|| unsafe { cube_vision_close_camera() });
 }
 
 /// `(async)`: one CoreML run per tick, the single most expensive thing this plugin does.
@@ -353,10 +351,13 @@ fn next_detection_bytes(
     let (mut rows, mut anchors) = (0i32, 0i32);
     // `[width, height]`, written whole by the Swift side.
     let mut picture = [0i32; 2];
-    let n = detect(&mut buf, &mut rows, &mut anchors, &mut picture);
-    if n < 0 {
-        return Err(ffi_failure("next_detection", n));
-    }
+    let n = swift(|| {
+        let n = detect(&mut buf, &mut rows, &mut anchors, &mut picture);
+        if n < 0 {
+            return Err(ffi_failure("next_detection", n));
+        }
+        Ok(n)
+    })?;
     let mut waiting = waiting_since.lock().map_err(|_| "camera state poisoned")?;
     if n == NO_FRAME_YET {
         // Opened but no frame yet — for a while, that is warm-up and the panel tries again next
@@ -371,10 +372,10 @@ fn next_detection_bytes(
                 NO_FRAME_TIMEOUT.as_secs()
             ));
         }
-        return Ok(tensor_bytes(0, 0, 0, [0, 0], &[]));
+        return Ok(wire::no_frame());
     }
     *waiting = None;
-    detection_bytes(n, rows, anchors, picture, &buf)
+    wire::frame_bytes(n, rows, anchors, picture, &buf)
 }
 
 /// Decode and check an `infer_frame` payload into what the Swift ABI takes: the RGBA bytes and
@@ -416,25 +417,28 @@ fn infer_frame(
     let (rgba, w, h) = prepare_still(&rgba_base64, width, height)?;
     let mut buf = vec![0f32; len as usize];
     let (mut rows, mut anchors) = (0i32, 0i32);
-    // SAFETY: rgba is exactly w*h*4 bytes (checked by prepare_still, and again by the Swift side
-    // against the length passed with it); buf has `len` elements matching `cap`; rows/anchors are
-    // valid out-params.
-    let n = unsafe {
-        cube_vision_infer_rgba(
-            rgba.as_ptr(),
-            rgba.len(),
-            w,
-            h,
-            buf.as_mut_ptr(),
-            len,
-            &mut rows,
-            &mut anchors,
-        )
-    };
-    if n < 0 {
-        return Err(ffi_failure("infer_frame", n));
-    }
-    Ok(tensor_response(n, rows, anchors, [w, h], &buf))
+    let n = swift(|| {
+        // SAFETY: rgba is exactly w*h*4 bytes (checked by prepare_still, and again by the Swift side
+        // against the length passed with it); buf has `len` elements matching `cap`; rows/anchors
+        // are valid out-params.
+        let n = unsafe {
+            cube_vision_infer_rgba(
+                rgba.as_ptr(),
+                rgba.len(),
+                w,
+                h,
+                buf.as_mut_ptr(),
+                len,
+                &mut rows,
+                &mut anchors,
+            )
+        };
+        if n < 0 {
+            return Err(ffi_failure("infer_frame", n));
+        }
+        Ok(n)
+    })?;
+    tensor_response(n, rows, anchors, [w, h], &buf)
 }
 
 /// The plugin. Registers the command surface and the shared output-size state, and closes the camera
@@ -458,7 +462,7 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
         .on_event(|_app, event| {
             if let tauri::RunEvent::Exit = event {
                 // SAFETY: idempotent; releases the capture device on shutdown.
-                unsafe { cube_vision_close_camera() };
+                swift(|| unsafe { cube_vision_close_camera() });
             }
         })
         .build()
@@ -663,6 +667,40 @@ mod tests {
         );
     }
 
+    /// THE FIVE-SECOND BRANCH (2026-09-21, audit-fix row 28): a clock that started `NO_FRAME_TIMEOUT` ago turns
+    /// the next frameless tick into an error naming the wait; the tick after it errors again (the
+    /// clock is not reset by the error); a frame clears it, and the next frameless tick starts a
+    /// new clock rather than inheriting the expired one. Driven by setting the clock's start
+    /// directly, which is what the mutex is for.
+    #[test]
+    fn the_no_frame_clock_expires_into_an_error_and_a_frame_resets_it() {
+        let expired = Instant::now()
+            .checked_sub(NO_FRAME_TIMEOUT)
+            .expect("five seconds ago exists");
+        let waiting = Mutex::new(Some(expired));
+        let idle = |_: &mut [f32], _: &mut i32, _: &mut i32, _: &mut [i32; 2]| NO_FRAME_YET;
+        let e = next_detection_bytes(3, &waiting, idle).unwrap_err();
+        assert!(e.contains("no frame in 5s"), "{e}");
+        assert!(e.contains("close and reopen"), "{e}");
+        // Still expired on the next tick: the error repeats rather than restarting the wait.
+        assert!(next_detection_bytes(3, &waiting, idle).is_err());
+        // A frame ends the wait…
+        let frame = |buf: &mut [f32], rows: &mut i32, anchors: &mut i32, picture: &mut [i32; 2]| {
+            buf.copy_from_slice(&[0.5, 0.25, 0.125]);
+            (*rows, *anchors, *picture) = (1, 3, [640, 480]);
+            3
+        };
+        next_detection_bytes(3, &waiting, frame).unwrap();
+        assert!(
+            waiting.lock().unwrap().is_none(),
+            "a frame did not clear the clock"
+        );
+        // …and the next frameless tick is warm-up again, timed from now.
+        assert_eq!(next_detection_bytes(3, &waiting, idle).unwrap().len(), 20);
+        let restarted = waiting.lock().unwrap().expect("a new clock started");
+        assert!(restarted.elapsed() < NO_FRAME_TIMEOUT);
+    }
+
     /// A refused tick is an error carrying the Swift side's code, never a tensor.
     #[test]
     fn a_refused_tick_is_an_error_with_its_code() {
@@ -672,17 +710,109 @@ mod tests {
         assert!(e.contains("next_detection failed (-4)"), "{e}");
     }
 
+    /// The Swift side's answer for a camera the OS took away — `-6`, since 2026-09-20 — goes down
+    /// the same road as every other refusal: an error naming the code, narrated with the Swift
+    /// side's reason, and never a wait. A stopped camera is not a camera to keep a no-frame clock
+    /// on, and the clock is untouched by it: the error returns before the clock is read. The Swift
+    /// half — that a disconnect or a failed session produces the code and the reason — is held by
+    /// `swift test` (swift/Tests/CubeVisionTests), which can record one; this side cannot.
+    #[test]
+    fn a_stopped_camera_is_an_error_with_its_code_and_not_a_wait() {
+        let _state = native_state();
+        let waiting = Mutex::new(None);
+        let e = next_detection_bytes(3, &waiting, |_, _, _, _| CAMERA_STOPPED).unwrap_err();
+        assert!(e.contains("next_detection failed (-6)"), "{e}");
+        assert!(
+            waiting.lock().unwrap().is_none(),
+            "a stopped camera started the no-frame clock"
+        );
+    }
+
+    /// `cube_vision_next_detection`'s "the camera that was open stopped" answer (FFI.swift's code
+    /// table); this side branches on no code, so the constant lives with the test that pins the path.
+    const CAMERA_STOPPED: i32 = -6;
+
+    /// The module doc's rule, mechanised on this file's own text and KEYED ON COMMAND IDENTITY
+    /// (2026-09-21, audit-fix row 29): every command the plugin registers is declared
+    /// `#[tauri::command(async)]`, except the ones on an explicit allowlist that reach no Swift
+    /// state — and each of those must exist and BE plain, so the list cannot rot. The first draft
+    /// inferred "reaches Swift" from substrings of each command's body, which a helper named
+    /// anything but `next_detection_bytes` slipped past. `current_camera` was plain until
+    /// 2026-09-20 (audit §2.14), and the doc claimed the rule held.
+    #[test]
+    fn every_command_that_reaches_the_swift_state_is_async() {
+        /// Commands that reach no Swift state, and so may run on the main thread.
+        const PLAIN: &[&str] = &["probe"];
+        let src = include_str!("apple.rs");
+        // The registered names, read out of the builder's list rather than guessed.
+        let list_at = src
+            .find("generate_handler![")
+            .expect("the plugin registers commands");
+        let list_end = src[list_at..].find(']').expect("the list closes") + list_at;
+        let registered: Vec<&str> = src[list_at + "generate_handler![".len()..list_end]
+            .split(',')
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .collect();
+        assert_eq!(registered.len(), 8, "the plugin registers eight commands");
+        for plain in PLAIN {
+            assert!(
+                registered.contains(plain),
+                "{plain} is on the plain allowlist but not registered"
+            );
+        }
+        let lines: Vec<&str> = src.lines().collect();
+        let mut offenders = Vec::new();
+        for name in &registered {
+            // The command's `fn` line, then the attribute directly above it, past any doc lines.
+            let fn_line = lines
+                .iter()
+                .position(|l| {
+                    l.strip_prefix("fn ")
+                        .is_some_and(|rest| rest.split(['<', '(']).next() == Some(name))
+                })
+                .unwrap_or_else(|| panic!("no fn {name} at column 0"));
+            let attribute = lines[..fn_line]
+                .iter()
+                .rev()
+                .find(|l| !l.starts_with("///"))
+                .copied()
+                .unwrap_or("");
+            let is_async = attribute == "#[tauri::command(async)]";
+            let is_plain = attribute == "#[tauri::command]";
+            assert!(
+                is_async || is_plain,
+                "{name} is registered but not declared as a command: {attribute:?}"
+            );
+            let allowed_plain = PLAIN.contains(name);
+            if allowed_plain && !is_plain {
+                offenders.push(format!(
+                    "{name}: on the plain allowlist but declared {attribute}"
+                ));
+            }
+            if !allowed_plain && !is_async {
+                offenders.push(format!("{name}: {attribute}"));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "commands that must be (async) but are not, or allowlisted ones that are: {offenders:?}"
+        );
+    }
+
     /// The park-and-reuse contract: the scan panel is re-mounted per screen and asks its detector
     /// to load every time, so a repeat `cube_vision_load` for the SAME path and units must not
-    /// recompile (seconds, on the main thread's watch). The compile counter is the Swift side's own
-    /// count of `MLModel.compileModel` calls — a second load that recompiled would move it, which
-    /// is exactly what happened before the short-circuit existed.
+    /// rebuild the model (a CoreML load, and until 2026-09-20 a compile too — seconds, on the main
+    /// thread's watch). The counter is the Swift side's own count of `CubeModel` builds — a second
+    /// load that rebuilt would move it, which is exactly what happened before the short-circuit
+    /// existed. Since the compiled-model cache (Model.swift) a build compiles only when the cache
+    /// has no entry for the source; the counter counts builds under its older name.
     #[test]
     fn load_is_free_for_the_same_model_and_units() {
         let _state = native_state();
         let first = load_source_model(0);
         // SAFETY: a plain counter read, no arguments, no ownership.
-        let compiled = unsafe { cube_vision_compile_count() };
+        let built = unsafe { cube_vision_compile_count() };
         let again = load_source_model(0);
         assert_eq!(
             again, first,
@@ -690,53 +820,20 @@ mod tests {
         );
         assert_eq!(
             unsafe { cube_vision_compile_count() },
-            compiled,
-            "a repeat load of the same model and units must not compile again"
+            built,
+            "a repeat load of the same model and units must not build again"
         );
         // Different compute units ARE a different model configuration and must rebuild.
         let _ = load_source_model(1);
         assert_eq!(
             unsafe { cube_vision_compile_count() },
-            compiled + 1,
-            "changing compute units must compile a new model"
+            built + 1,
+            "changing compute units must build a new model"
         );
     }
 
-    /// The command's own handling of what the Swift side wrote: a frame's size reaches the wire as it
-    /// came — odd both ways, so a swapped or rounded pair cannot pass — and a frame with no size is
-    /// refused, never sent as a frame the page cannot place.
-    #[test]
-    fn a_detection_carries_its_picture_and_one_without_is_refused() {
-        let bytes = detection_bytes(3, 1, 3, [721, 479], &[0.5, 0.25, 0.125]).unwrap();
-        let word = |i: usize| i32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
-        assert_eq!(
-            [word(0), word(1), word(2), word(3), word(4)],
-            [-2, 1, 3, 721, 479]
-        );
-        for bad in [[0, 479], [721, 0], [-721, 479], [0, 0]] {
-            let e = detection_bytes(3, 1, 3, bad, &[0.5, 0.25, 0.125]).unwrap_err();
-            assert!(e.contains("reported its picture"), "{bad:?}: {e}");
-        }
-    }
-
-    /// Wire version 2, byte for byte: the page's `decodeTensorResponse` reads exactly this, and a
-    /// header that moved would place every sticker of the scan screen's view in the wrong picture.
-    #[test]
-    fn a_tensor_response_is_version_2_with_the_picture_size() {
-        let bytes = tensor_bytes(2, 1, 2, [1280, 720], &[1.5, -2.0, 9.0]);
-        let word = |i: usize| i32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
-        assert_eq!(
-            [word(0), word(1), word(2), word(3), word(4)],
-            [-2, 1, 2, 1280, 720]
-        );
-        let f = |i: usize| f32::from_le_bytes(bytes[20 + i * 4..24 + i * 4].try_into().unwrap());
-        assert_eq!([f(0), f(1)], [1.5, -2.0], "only `count` floats cross");
-        assert_eq!(bytes.len(), 20 + 2 * 4);
-        // "No frame yet" is still recognisable: zero anchors, and no picture.
-        let none = tensor_bytes(0, 0, 0, [0, 0], &[]);
-        assert_eq!(none.len(), 20);
-        assert_eq!(i32::from_le_bytes(none[8..12].try_into().unwrap()), 0);
-    }
+    // The wire itself — version 2, the picture, every refusal — is `crate::wire`'s and tested
+    // there; this side's tests hold what the COMMAND does with the Swift side's outputs.
 
     /// The guards in front of the FFI, exercised without it: every shape the audit named is
     /// refused by `prepare_still` before a pointer exists. `crate::frame` carries the finer-grained
@@ -774,6 +871,79 @@ mod tests {
         // Not asserted non-empty: a CI runner or a locked-down machine may expose no video device,
         // and that is a valid answer, not a failure. The point is the path runs and parses.
         eprintln!("list_cameras found {} device(s)", cams.len());
+    }
+
+    /// A FAILURE'S REASON IS ITS OWN, through the real command (2026-09-21, audit-fix row 27):
+    /// eight commands failing at once, on eight threads, each with its own bogus camera id, and
+    /// each error must carry ITS id. The Swift side records a message and this side reads it in a
+    /// second call; with nothing between the two, a thread could read the message another thread's
+    /// failure had just written — or the "no detail" left after another thread consumed its own.
+    /// Real Swift, no device: a bogus id is refused before any camera is touched. This exercises
+    /// the production path with free-running threads, so it is not a check of either guard (see
+    /// `SWIFT`); the test after it forces the interleaving.
+    #[test]
+    fn concurrent_failures_each_get_their_own_reason() {
+        let _state = native_state();
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                std::thread::spawn(move || {
+                    let id = format!("no-such-camera-{i}");
+                    let e = open_camera_named(Some(&id)).expect_err("a bogus id must fail");
+                    (id, e)
+                })
+            })
+            .collect();
+        for t in threads {
+            let (id, e) = t.join().unwrap();
+            assert!(
+                e.contains(&id),
+                "the error for {id} carried another call's reason: {e}"
+            );
+            assert!(
+                !e.contains("no detail"),
+                "the reason was consumed by another call: {e}"
+            );
+        }
+    }
+
+    /// THE CONTRACT, WITH THE RACE FORCED (2026-09-21, audit-fix row 27). Thread A fails a call
+    /// and, still inside its `swift` step, waits 200 ms before reading the reason; thread B fails
+    /// its own call the moment A signals. Each must read its own reason. Against a process-wide
+    /// slot with no lock, B's call overwrites the message during A's wait and B's read consumes
+    /// it, so A reads "no detail". Two guards now stand in the way — `SWIFT` here, the per-thread
+    /// slot in FFI.swift — and either alone passes this (measured with `SWIFT` removed), so it
+    /// pins the contract rather than one guard. The step is written out here rather than taken
+    /// from `open_camera_named` because the wait has to sit BETWEEN the call and the narration,
+    /// where no command has a seam.
+    #[test]
+    fn a_failure_is_narrated_before_another_call_can_overwrite_it() {
+        let _state = native_state();
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        let a = std::thread::spawn(move || {
+            let id = std::ffi::CString::new("no-such-camera-A").unwrap();
+            swift(|| {
+                // SAFETY: valid C string that outlives the call.
+                let rc = unsafe { cube_vision_open_camera(id.as_ptr()) };
+                let _ = started_tx.send(());
+                std::thread::sleep(Duration::from_millis(200));
+                ffi_failure("open_camera", rc)
+            })
+        });
+        started_rx.recv().expect("A made its call");
+        let b = std::thread::spawn(|| {
+            let id = std::ffi::CString::new("no-such-camera-B").unwrap();
+            swift(|| {
+                // SAFETY: valid C string that outlives the call.
+                let rc = unsafe { cube_vision_open_camera(id.as_ptr()) };
+                ffi_failure("open_camera", rc)
+            })
+        });
+        let (a, b) = (a.join().unwrap(), b.join().unwrap());
+        assert!(
+            a.contains("no-such-camera-A"),
+            "A's reason was overwritten or consumed by B's call: {a}"
+        );
+        assert!(b.contains("no-such-camera-B"), "B's reason: {b}");
     }
 
     /// The Swift side's error channel round-trips: a call that fails leaves a message this side can

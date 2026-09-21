@@ -1,10 +1,21 @@
 //! Native capture and inference for Windows: Media Foundation for frames, onnxruntime with the
 //! DirectML execution provider for the model.
 //!
-//! Same seven commands as the Apple plugin, same wire format, same `probe` gate — the panel's
-//! `Detector` seam does not know which of them answered. What differs is only the runtime, which is
-//! the platform's own fastest path: DirectML runs the model on whatever D3D12 device is present,
-//! discrete or integrated, without a vendor-specific dependency.
+//! The same eight commands as the Apple plugin, the same wire format and the same `probe` gate — the
+//! panel's `Detector` seam does not know which of them answered. The wire is version 2 through
+//! `crate::wire` since 2026-09-21 (audit-fix row 96): this arm had stayed on version 1, which
+//! carries no picture size, so the scan screen could not place a sticker in the picture on Windows.
+//! What differs is only the runtime, which is the platform's own fastest path: DirectML runs the
+//! model on whatever D3D12 device is present, discrete or integrated, without a vendor-specific
+//! dependency.
+//!
+//! EVERY COMMAND THAT TOUCHES A DEVICE, THE RUNTIME OR THE MODEL IS `(async)`. Tauri runs a plain
+//! command on the main thread, which here is the thread that draws the scan screen. `open_camera`,
+//! `close_camera`, `load_model` and `next_detection` said so from the start; `probe` (the first
+//! `Session::builder()` loads onnxruntime's DLL) and `list_cameras` (a Media Foundation
+//! enumeration) were plain until 2026-09-20 (audit, 2.14). `current_camera` reads the lifecycle's
+//! lock, which is never held across a wait (`crate::lifecycle` hands a retired thread back to be
+//! joined OUTSIDE it), and stays plain.
 //!
 //! WHAT THIS HAS TO BEAT, and it is no longer the number the accepted plan was written against.
 //! Windows' WebView2 is Chromium, so since 2026-09-02 the fallback `WebDetector` is not the 198 ms
@@ -24,17 +35,25 @@
 //!
 //! THE LETTERBOX IS THE CORRECTNESS PROBLEM, exactly as it is on Android. Everything downstream of
 //! `next_detection` is one TypeScript implementation calibrated against one preprocessing:
-//! `preprocess()` in `packages/cube-scanner/src/onnx-detect.ts` — long side to 640, bilinear at
-//! PIXEL CENTRES, centre-pad grey 114, normalise, CHW, RGB. It is reproduced here line for line.
-//! `ml/golden_frames.py` proves the .onnx agrees with the other runtimes; it does not prove this
-//! code feeds it the same pixels, so that is what a device check has to look at first.
+//! `preprocess()` in `packages/cube-scanner/src/letterbox.ts`. It is reproduced in `crate::letterbox`
+//! and held to the TypeScript's own numbers on every host; `ml/golden_frames.py` proves the .onnx
+//! agrees with the other runtimes, and a device check on Windows is still what has to look first.
+//!
+//! WHAT IS TESTED WHERE (2026-09-21). This file's own tests run only on the Windows CI job, because
+//! nokhwa and ort are Windows-only dependencies — so everything that could be lifted off the
+//! platform was: the session arbitration (`crate::lifecycle`), the letterbox (`crate::letterbox`),
+//! the choice of capture format (`crate::format_policy`), the wire (`crate::wire`) and the model
+//! lookup (`crate::model_path`) are tested on every host. What stays here is the glue to Media
+//! Foundation and onnxruntime, and `infer_frame` driven end to end on the committed model.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
 
 use nokhwa::pixel_format::RgbFormat;
-use nokhwa::utils::{CameraIndex, RequestedFormat, RequestedFormatType};
+use nokhwa::utils::{
+    color_frame_formats, CameraFormat, CameraIndex, RequestedFormat, RequestedFormatType,
+};
 use nokhwa::Camera;
 use ort::ep::{DirectML, CPU};
 use ort::session::{builder::GraphOptimizationLevel, Session};
@@ -44,13 +63,13 @@ use tauri::ipc::Response;
 use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Manager, Runtime, State};
 
+use crate::format_policy::{self, Candidate};
 use crate::frame;
-use crate::worker::{CaptureWorker, Joined};
-
-/// Letterbox pad colour (grey 114), normalised — the pad the model was trained with
-/// (ml/cube_infer.py PAD), and the same constant as the TS.
-const PAD: f32 = 114.0 / 255.0;
-const IMG: usize = 640;
+use crate::letterbox::{letterbox, IMG};
+use crate::lifecycle::CaptureLifecycle;
+use crate::model_path;
+use crate::wire;
+use crate::worker::{settle_open, CaptureWorker, Joined};
 
 /// Consecutive capture failures after which the last good frame stops being served. See
 /// [note_capture_failure].
@@ -60,13 +79,23 @@ const RETRY_BACKOFF_MS: u64 = 20;
 /// worker blocked in `cam.frame()` leaves within one frame interval; one blocked inside a
 /// ten-second `Camera::new` may not, and is then left to notice the generation change on its own
 /// rather than freezing the command that replaced it.
-const WORKER_JOIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+const WORKER_JOIN_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long `open_camera` waits for its worker to say whether the camera opened. Media Foundation
+/// can sit inside device activation for seconds on a camera another process holds.
+const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct CameraInfo {
     #[serde(rename = "deviceId")]
     device_id: String,
     label: String,
+}
+
+/// A frame as the capture thread publishes it: letterboxed for the model, and the size of the
+/// picture it came from, which the wire carries so the page can place each sticker (`crate::wire`).
+struct Prepared {
+    chw: Vec<f32>,
+    picture: [i32; 2],
 }
 
 /// The camera runs on its OWN THREAD and nothing else ever touches it.
@@ -79,28 +108,14 @@ struct CameraInfo {
 /// the same arrangement the Android plugin arrived at, for the same reason.
 #[derive(Default)]
 pub struct CubeVision {
-    latest: Arc<Mutex<Option<Vec<f32>>>>,
-    /// Which capture session is current. Bumped by every open and every close — see [stop_capture].
-    generation: Arc<AtomicUsize>,
+    latest: Arc<Mutex<Option<Prepared>>>,
     /// Why the last frame did not arrive, if it did not. See the capture loop.
     capture_error: Arc<Mutex<Option<String>>>,
-    /// The live capture thread, kept so the NEXT open can wait for it to release the device
-    /// (see [stop_capture] and `crate::worker`). None between sessions.
-    worker: Mutex<Option<CaptureWorker>>,
+    /// Which capture session is current, the thread that owns the device, and the camera the app
+    /// believes is open — ONE lock, so a claim, an install, a conditional retirement and the
+    /// `opened` commit are each one step (`crate::lifecycle`, 2026-09-21, audit-fix rows 35–37, 39).
+    lifecycle: CaptureLifecycle<CameraInfo>,
     session: Mutex<Option<Session>>,
-    opened: Mutex<Option<CameraInfo>>,
-}
-
-/// Encode a raw detect tensor for the bridge: `int32 rows, int32 anchors` (little-endian) then the
-/// floats. Byte-identical to the Apple plugin's, because `decodeTensorResponse` reads one format.
-fn tensor_response(rows: i32, anchors: i32, data: &[f32]) -> Response {
-    let mut out = Vec::with_capacity(8 + data.len() * 4);
-    out.extend_from_slice(&rows.max(0).to_le_bytes());
-    out.extend_from_slice(&anchors.max(0).to_le_bytes());
-    for &v in data {
-        out.extend_from_slice(&v.to_le_bytes());
-    }
-    Response::new(out)
 }
 
 /// The bundled model, relative to the app's Resource dir (see tauri.windows.conf.json resources).
@@ -114,35 +129,32 @@ fn source_model_path() -> PathBuf {
     ))
 }
 
-/// Find the ONNX model, by the SAME two tiers `apple.rs::resolve_model_path` uses: the app's
-/// Resource dir first (a shipped app), then the committed source tree (`tauri dev`, which does
-/// not stage `bundle.resources`, so the resource dir is empty there). Resource first, so a shipped
-/// app never uses the source path — which is the build machine's and is not on a user's disk.
+/// Find the ONNX model, by the SAME two tiers the Apple arm uses — the rule is `crate::model_path`'s,
+/// one implementation for both since 2026-09-21 (audit-fix row 31): the app's Resource dir first
+/// (a shipped app), then the committed source tree (`tauri dev`, which does not stage
+/// `bundle.resources`, so the resource dir is empty there).
 ///
 /// This used to walk out from `std::env::current_exe()` looking for `cubedet.onnx` beside the
 /// binary, and `tauri.windows.conf.json` declared no `resources` at all — so the file was never
 /// placed anywhere the search looked, `probe` answered false in EVERY build, and this entire
 /// module was unreachable code that compiled. That is the shape of failure the repo has a rule
 /// about: a gate nothing runs is not a gate, and a path that is never taken looks exactly like a
-/// path that works. The second implementation of a solved problem was the wrong one; there is now
-/// one method, spelled the same way on both platforms.
+/// path that works. The second implementation of a solved problem was the wrong one.
 fn resolve_model_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
-    if let Ok(p) = app.path().resolve(MODEL_RESOURCE, BaseDirectory::Resource) {
-        if p.exists() {
-            return Ok(p);
-        }
-    }
-    let dev = source_model_path();
-    if dev.exists() {
-        return Ok(dev);
-    }
-    Err(format!(
-        "cubedet.onnx not found — not in the app Resource dir, and not at {} (run ml/export.py)",
-        dev.display()
-    ))
+    model_path::resolve(
+        app.path()
+            .resolve(MODEL_RESOURCE, BaseDirectory::Resource)
+            .ok(),
+        source_model_path(),
+        "cubedet.onnx",
+    )
 }
 
-#[tauri::command]
+/// `(async)` since 2026-09-20 (audit, 2.14): the first `Session::builder()` of the process loads
+/// onnxruntime's DLL and initialises the runtime, which is disk and dynamic-linker work — on the
+/// main thread that is a stall on the first paint of the scan screen, the exact moment `probe` is
+/// asked. Same reasoning as `open_camera`, smaller price.
+#[tauri::command(async)]
 fn probe<R: Runtime>(app: AppHandle<R>) -> bool {
     // True only when the work can actually be done. A build that answers true and then fails per
     // frame is worse than one that answers false, because `pickDetector`'s fallback — which on this
@@ -176,7 +188,10 @@ fn probe<R: Runtime>(app: AppHandle<R>) -> bool {
     }
 }
 
-#[tauri::command]
+/// `(async)` since 2026-09-20 (audit, 2.14): enumerating Media Foundation activates every capture
+/// source on the machine to read its name, which is device I/O with no bound this code controls.
+/// The camera menu asks for this on the scan screen, which is the screen that must keep drawing.
+#[tauri::command(async)]
 fn list_cameras() -> Result<Vec<CameraInfo>, String> {
     let devices = nokhwa::query(nokhwa::utils::ApiBackend::MediaFoundation)
         .map_err(|e| format!("could not enumerate cameras: {e}"))?;
@@ -189,18 +204,17 @@ fn list_cameras() -> Result<Vec<CameraInfo>, String> {
         .collect())
 }
 
+/// Plain on purpose: the lifecycle's lock is held only for the few assignments a transition makes,
+/// never across a join, so this is a lookup and not a wait.
 #[tauri::command]
 fn current_camera(state: State<'_, CubeVision>) -> Result<Option<CameraInfo>, String> {
-    let opened = state.opened.lock().map_err(|_| "camera state poisoned")?;
-    Ok(opened.as_ref().map(|c| CameraInfo {
-        device_id: c.device_id.clone(),
-        label: c.label.clone(),
-    }))
+    Ok(state.lifecycle.opened())
 }
 
-/// `(async)` because Tauri runs a plain command on the MAIN thread, and this one waits up to ten
-/// seconds for a camera to answer. On the main thread that is ten seconds of frozen UI on the
-/// screen whose entire job is to stay responsive while the camera comes up.
+/// `(async)` because Tauri runs a plain command on the MAIN thread, and this one waits up to
+/// `OPEN_TIMEOUT` for a camera to answer — and, when it does not, up to `WORKER_JOIN_TIMEOUT` more
+/// for the thread to leave. On the main thread that is many seconds of frozen UI on the screen
+/// whose entire job is to stay responsive while the camera comes up.
 #[tauri::command(async)]
 fn open_camera(state: State<'_, CubeVision>, device_id: Option<String>) -> Result<(), String> {
     let index = match device_id.as_deref() {
@@ -210,26 +224,105 @@ fn open_camera(state: State<'_, CubeVision>, device_id: Option<String>) -> Resul
         ),
         None => CameraIndex::Index(0),
     };
-    // Retires whatever was running — and WAITS for it to leave, so the device below is free —
-    // then claims the next session number. Everything the new worker does is conditioned on still
-    // owning it.
-    let mine = stop_capture(&state);
+    // Retires whatever was running and claims the next session — one step under the lifecycle's
+    // lock — then forgets what the retired session published and WAITS for its thread to leave, so
+    // the device below is free. Everything the new worker does is conditioned on `token` still
+    // being the current session.
+    let (token, previous) = state.lifecycle.claim();
+    forget_frames(&state);
+    join_retired(previous);
     let (label_tx, label_rx) = mpsc::channel::<Result<String, String>>();
     let latest = Arc::clone(&state.latest);
-    let generation = Arc::clone(&state.generation);
     let capture_error = Arc::clone(&state.capture_error);
     let idx = index.clone();
+    let session = token.clone();
 
     let worker = CaptureWorker::spawn(move || {
-        let format =
-            RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestFrameRate);
-        let mut cam = match Camera::new(idx, format) {
+        // OPENED ON ANY COLOUR FORMAT, THEN SET TO THE ONE THE SCAN WANTS (2026-09-20, audit
+        // 2.15). This asked for `AbsoluteHighestFrameRate`, which nokhwa resolves as "the highest
+        // frame rate on offer, then the highest resolution AT that rate" (`RequestedFormat::
+        // fulfill`, nokhwa-core-0.1.9/src/types.rs:101-114) — so a camera whose top rate exists
+        // only at 640x480 or below was opened there, and the letterbox then UPSCALED it to 640.
+        //
+        // None of nokhwa's one-shot requests says "nearest to 720p, whatever you have":
+        // `Closest(CameraFormat)` keeps only the formats whose `FrameFormat` equals the one named
+        // (nokhwa-core-0.1.9/src/types.rs:155-162), so it refuses a camera that has YUY2 and no
+        // MJPEG, or the reverse; `HighestResolution(Resolution)` keeps only an EXACT size match
+        // (nokhwa-core-0.1.9/src/types.rs:115-130 — its doc comment describes an older signature),
+        // so it refuses any camera without 1280x720 itself. Either would turn a camera that opened
+        // under the old request into "could not open".
+        //
+        // So the device is opened on `None` — the first format the `RgbFormat` decoder can read
+        // (nokhwa-core-0.1.9/src/types.rs:198-201), which resolves exactly when the old request
+        // did — and its own list is then read and `pick_format` chooses. Nothing is captured at the
+        // interim format: the stream is opened only after the format is set, and the bindings'
+        // `set_format` re-reads the media type it set, so the decoder sees the chosen one.
+        let any_colour = RequestedFormat::new::<RgbFormat>(RequestedFormatType::None);
+        let mut cam = match Camera::new(idx, any_colour) {
             Ok(c) => c,
             Err(e) => {
                 let _ = label_tx.send(Err(format!("could not open the camera: {e}")));
                 return;
             }
         };
+        // RETIRED WHILE INSIDE THE DEVICE CALL? Checked after EVERY blocking device operation, the
+        // last of them directly before the stream is opened (2026-09-21, audit-fix row 34). A
+        // worker whose session was closed or replaced while it sat inside `Camera::new` — ten
+        // seconds on a camera another process holds — used to go on to negotiate a format and
+        // light the camera, contending with the session that had replaced it; its first check was
+        // after `open_stream`. Now it drops the device and leaves, and the answer says why to
+        // whoever is still listening.
+        if let Err(why) = session.ensure_current() {
+            let _ = label_tx.send(Err(why));
+            return;
+        }
+        let offered = match cam.compatible_camera_formats() {
+            Ok(list) => list,
+            Err(e) => {
+                let _ = label_tx.send(Err(format!("could not list the camera's formats: {e}")));
+                return;
+            }
+        };
+        if let Err(why) = session.ensure_current() {
+            let _ = label_tx.send(Err(why));
+            return;
+        }
+        let Some(wanted) = pick_format(&offered) else {
+            let _ = label_tx.send(Err("the camera offers no colour format".to_string()));
+            return;
+        };
+        // `Exact` through the request door (`set_camera_format` is deprecated in nokhwa 0.10):
+        // `fulfill` accepts an `Exact` whenever the decoder reads its `FrameFormat`
+        // (nokhwa-core-0.1.9/src/types.rs:147-153), which `pick_format` has already guaranteed,
+        // and the camera then gets the format it listed itself.
+        let exact = RequestedFormat::new::<RgbFormat>(RequestedFormatType::Exact(wanted));
+        let got = match cam.set_camera_requset(exact) {
+            Ok(set) => set,
+            Err(e) => {
+                let _ = label_tx.send(Err(format!(
+                    "could not set the camera to {}x{} {} at {} fps: {e}",
+                    wanted.width(),
+                    wanted.height(),
+                    wanted.format(),
+                    wanted.frame_rate()
+                )));
+                return;
+            }
+        };
+        // What the camera agreed to, for the log: no Windows timing exists for this path yet,
+        // and the frame it runs on is the first thing a measurement needs to know.
+        log::info!(
+            "cube-vision: capturing at {}x{} {} at {} fps",
+            got.width(),
+            got.height(),
+            got.format(),
+            got.frame_rate()
+        );
+        // The check directly before the camera is lit: a stale worker never activates the device.
+        if let Err(why) = session.ensure_current() {
+            let _ = label_tx.send(Err(why));
+            return;
+        }
         if let Err(e) = cam.open_stream() {
             let _ = label_tx.send(Err(format!("could not start the camera: {e}")));
             return;
@@ -243,7 +336,7 @@ fn open_camera(state: State<'_, CubeVision>, device_id: Option<String>) -> Resul
         // nobody holding its stop handle. A session number the worker compares against is none of
         // those — the moment anything else claims the camera, this loop's condition is false.
         let mut consecutive_failures = 0u32;
-        while generation.load(Ordering::SeqCst) == mine {
+        while session.current() {
             let frame = match cam.frame() {
                 Ok(f) => f,
                 Err(e) => {
@@ -268,79 +361,137 @@ fn open_camera(state: State<'_, CubeVision>, device_id: Option<String>) -> Resul
                     continue;
                 }
             };
-            consecutive_failures = 0;
-            let (w, h) = (decoded.width() as usize, decoded.height() as usize);
-            if w == 0 || h == 0 {
-                note_capture_failure(
-                    &capture_error,
-                    &latest,
-                    &mut consecutive_failures,
-                    format!("the camera produced a {w}x{h} frame"),
-                );
-                continue;
-            }
-            let prepared = letterbox(decoded.as_raw(), w, h);
-            // Re-checked after the work: a close can land while a frame is being letterboxed, and
-            // publishing it then hands the next session a previous camera's pixels.
-            if generation.load(Ordering::SeqCst) != mine {
-                break;
-            }
+            // The size the wire carries, and the check that the frame HAS one: a zero side is a
+            // failure to count, not a frame to letterbox (`h - 1` would underflow), and a side past
+            // `i32` is one the wire cannot carry.
+            let picture = match (
+                i32::try_from(decoded.width()),
+                i32::try_from(decoded.height()),
+            ) {
+                (Ok(w), Ok(h)) if w > 0 && h > 0 => [w, h],
+                _ => {
+                    note_capture_failure(
+                        &capture_error,
+                        &latest,
+                        &mut consecutive_failures,
+                        format!(
+                            "the camera produced a {}x{} frame",
+                            decoded.width(),
+                            decoded.height()
+                        ),
+                    );
+                    continue;
+                }
+            };
+            let chw = letterbox(decoded.as_raw(), picture[0] as usize, picture[1] as usize);
+            // Published only while the session is still ours, and the check is made UNDER the
+            // publish lock: a close bumps the generation and THEN clears `latest`, so a frame
+            // letterboxed across the close can never land after the clear and hand the next
+            // session a previous camera's pixels.
             if let Ok(mut slot) = latest.lock() {
-                *slot = Some(prepared);
+                if !session.current() {
+                    break;
+                }
+                *slot = Some(Prepared { chw, picture });
             }
             if let Ok(mut slot) = capture_error.lock() {
                 *slot = None;
             }
+            // Reset AFTER the frame is published, not after it is decoded (2026-09-21, audit-fix
+            // row 97): a camera whose every decoded frame was 0×N reset the counter before the
+            // size check refused it, so `STALE_AFTER_FAILURES` was never reached and the last good
+            // frame was served forever.
+            consecutive_failures = 0;
         }
         let _ = cam.stop_stream();
     });
-    // Kept, so the next `stop_capture` can join it. If a close already superseded this open while
-    // the thread was being spawned, the worker exits on its first generation check and the handle
-    // parked here is joined by whichever stop comes next — never leaked, never re-used.
-    *state.worker.lock().map_err(|_| "camera state poisoned")? = Some(worker);
-
-    // Wait for the thread to say whether the camera opened, so a failure is this command's error
-    // rather than a scan that quietly never produces a frame.
-    let label = label_rx
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .map_err(|_| "the camera did not answer within 10s".to_string())??;
-    // The open may have been superseded while we waited — by a close, or by another open. Its
-    // worker has already stopped on the generation check; all that is left is not to publish it.
-    if state.generation.load(Ordering::SeqCst) != mine {
+    // Installed only if the session is still ours — one step with that check, under the
+    // lifecycle's lock (audit-fix row 35). Refused when a close or another open superseded this
+    // one while the thread was being spawned: the worker exits on its first generation check, and
+    // it is joined here rather than parked over the live session's thread.
+    if let Err(stale) = state.lifecycle.install(&token, worker) {
+        join_retired(Some(stale));
         return Err("the camera was closed before it finished opening".into());
     }
-    *state.opened.lock().map_err(|_| "camera state poisoned")? = Some(CameraInfo {
+
+    // Wait for the thread to say whether the camera opened, so a failure is this command's error
+    // rather than a scan that quietly never produces a frame. `settle_open` (crate::worker) reads
+    // the answer: a timed-out open is retired before the error goes back — this used to leave the
+    // generation alone, so a camera that answered at 11 s published frames with the lens on and
+    // no owner (audit 2026-09-20, 2.8) — and a worker that died before answering is reported as
+    // dead rather than as slow.
+    let label = settle_open(label_rx.recv_timeout(OPEN_TIMEOUT), OPEN_TIMEOUT, || {
+        // ONLY IF THIS ATTEMPT IS STILL THE CURRENT SESSION (audit-fix row 36): the retirement used
+        // to be the global stop, so an attempt that timed out after a newer open had replaced it
+        // closed the newer camera. A superseded attempt retires nothing.
+        if let Some(retired) = state.lifecycle.retire_if_current(&token) {
+            forget_frames(&state);
+            join_retired(retired);
+        }
+    })?;
+    // Committed atomically with the currency check (audit-fix row 37): the check and the write
+    // were two steps, and a close between them wrote a camera back that was not running, which
+    // `current_camera` then reported until the next open.
+    let opened = CameraInfo {
         device_id: index.to_string(),
         label,
-    });
+    };
+    if !state.lifecycle.commit_opened(&token, opened) {
+        return Err("the camera was closed before it finished opening".into());
+    }
     Ok(())
 }
 
-/// Retire the current capture session, wait for its thread to release the device, and return the
-/// number of the NEW session.
-///
-/// Split out so `open_camera` can reuse it without going through the command wrapper — reopening
-/// must not leave the previous thread holding the device. Returning the new generation is what
-/// makes "stop, then start" a single indivisible step from the caller's point of view.
+/// The format to capture at, from what the camera offers: `crate::format_policy`'s choice — the
+/// colour format nearest to the browser's ideal, and at that size the highest frame rate, ties
+/// keeping the camera's own order — over nokhwa's formats. Colour only: `RgbFormat` decodes
+/// `color_frame_formats()` and nothing else, so a GRAY-only camera is refused here instead of
+/// failing on its first frame. The policy is tested on every host; the mapping onto nokhwa's
+/// `CameraFormat` is `mod tests`', run by the Windows CI job.
+fn pick_format(offered: &[CameraFormat]) -> Option<CameraFormat> {
+    let colour = color_frame_formats();
+    let candidates: Vec<Candidate> = offered
+        .iter()
+        .map(|f| Candidate {
+            width: f.width(),
+            height: f.height(),
+            colour: colour.contains(&f.format()),
+            frame_rate: f.frame_rate(),
+        })
+        .collect();
+    format_policy::pick_nearest(&candidates).map(|i| offered[i])
+}
+
+/// Retire the current capture session — whichever it is — forget what it published, and wait for
+/// its thread to release the device.
 ///
 /// The JOIN is the half this used to lack. Bumping the generation tells the worker to stop; it
 /// does not wait for it, so a reopen spawned its new thread while the old one still held Media
 /// Foundation's device — and `Camera::new` on the new thread then failed against a camera nobody
-/// else was using. Bounded (`WORKER_JOIN_TIMEOUT`), and a timeout is logged rather than fatal:
-/// the straggler re-checks the generation before it publishes anything, so the worst it can do
-/// is hold the device a little longer, which the next open then reports honestly.
-fn stop_capture(state: &CubeVision) -> usize {
-    let next = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
-    if let Ok(mut slot) = state.opened.lock() {
-        *slot = None;
-    }
+/// else was using. `open_camera` does the same three steps itself, keeping the claimed session.
+fn stop_capture(state: &CubeVision) {
+    let (_next, previous) = state.lifecycle.claim();
+    forget_frames(state);
+    join_retired(previous);
+}
+
+/// Forget the retired session's last frame and its last failure — AFTER its generation was
+/// bumped, which every caller has just done. The worker checks the generation under the `latest`
+/// lock before it publishes, so nothing of the retired session can land after this.
+fn forget_frames(state: &CubeVision) {
     if let Ok(mut slot) = state.latest.lock() {
         *slot = None;
     }
     if let Ok(mut slot) = state.capture_error.lock() {
         *slot = None;
     }
-    let worker = state.worker.lock().ok().and_then(|mut w| w.take());
+}
+
+/// Wait, bounded, for a retired worker to release the device. Bounded (`WORKER_JOIN_TIMEOUT`),
+/// and a timeout is logged rather than fatal: the straggler re-checks the generation after every
+/// device call and before it publishes anything, so the worst it can do is hold the device a
+/// little longer, which the next open then reports honestly.
+fn join_retired(worker: Option<CaptureWorker>) {
     if let Some(worker) = worker {
         if worker.join_within(WORKER_JOIN_TIMEOUT) == Joined::TimedOut {
             log::warn!(
@@ -350,7 +501,6 @@ fn stop_capture(state: &CubeVision) -> usize {
             );
         }
     }
-    next
 }
 
 /// Record why a frame did not arrive, and stop serving stale pixels once it is clearly not a blip.
@@ -361,7 +511,7 @@ fn stop_capture(state: &CubeVision) -> usize {
 /// the scanner looked like it was working on a cube that was no longer in front of it.
 fn note_capture_failure(
     capture_error: &Mutex<Option<String>>,
-    latest: &Mutex<Option<Vec<f32>>>,
+    latest: &Mutex<Option<Prepared>>,
     consecutive: &mut u32,
     why: String,
 ) {
@@ -385,7 +535,7 @@ fn note_capture_failure(
 /// plain command runs on the main thread — a frozen UI is the wrong price for a clean release.
 #[tauri::command(async)]
 fn close_camera(state: State<'_, CubeVision>) -> Result<(), String> {
-    let _ = stop_capture(&state);
+    stop_capture(&state);
     Ok(())
 }
 
@@ -393,12 +543,14 @@ fn close_camera(state: State<'_, CubeVision>) -> Result<(), String> {
 /// initialises DirectML, which is not work for the thread that has to keep drawing.
 #[tauri::command(async)]
 fn load_model<R: Runtime>(app: AppHandle<R>, state: State<'_, CubeVision>) -> Result<(), String> {
-    if state
-        .session
-        .lock()
-        .map_err(|_| "model state poisoned")?
-        .is_some()
-    {
+    // HELD FROM THE CHECK TO THE STORE (2026-09-21, audit-fix row 98). This checked the slot,
+    // released it, built a session for seconds and then stored — so two loads in flight together
+    // (the scan panel re-mounting while its first load still ran) each built a DirectML session,
+    // and the second replaced the first. Holding the slot makes the second caller wait and find
+    // the session built; a `next_detection` that arrives mid-load waits on the same lock rather
+    // than answering "model not loaded" for a model that is seconds from ready.
+    let mut slot = state.session.lock().map_err(|_| "model state poisoned")?;
+    if slot.is_some() {
         return Ok(());
     }
     let path = resolve_model_path(&app)?;
@@ -429,7 +581,7 @@ fn load_model<R: Runtime>(app: AppHandle<R>, state: State<'_, CubeVision>) -> Re
             session
         }
     };
-    *state.session.lock().map_err(|_| "model state poisoned")? = Some(session);
+    *slot = Some(session);
     Ok(())
 }
 
@@ -454,55 +606,18 @@ fn build_session(
         .map_err(|e| format!("could not load {}: {e}", path.display()))
 }
 
-/// `preprocess()` from src/onnx-detect.ts, reproduced exactly. See the module note.
-fn letterbox(rgb: &[u8], w: usize, h: usize) -> Vec<f32> {
-    // IN f64, because the TypeScript is. Every JS number is a double and only the store into
-    // `Float32Array` rounds; computing in f32 can land `sy` on the other side of an integer
-    // boundary and pick a different source row, so "reproduced line for line" was not true of the
-    // arithmetic — only of the shape of it. The same gap existed in the Android plugin and was
-    // fixed in the same pass; this is the file whose module note makes the strongest claim about
-    // it, and `letterbox_matches_the_typescript_reference` below is what now holds that claim up.
-    let scale = IMG as f64 / w.max(h) as f64;
-    let new_w = ((w as f64 * scale).round() as usize).max(1);
-    let new_h = ((h as f64 * scale).round() as usize).max(1);
-    let pad_x = (IMG - new_w) / 2;
-    let pad_y = (IMG - new_h) / 2;
-    let area = IMG * IMG;
-    let mut out = vec![PAD; 3 * area];
-    let at = |x: usize, y: usize, c: usize| -> f64 { rgb[(y * w + x) * 3 + c] as f64 };
-
-    for y in 0..new_h {
-        // The `+ 0.5 … - 0.5` is the half-pixel convention the model was calibrated against, not
-        // decoration: dropping it shifts every box by half a pixel at 640 and more after the scale
-        // back, which reads as a model that got worse.
-        let sy = (((y as f64 + 0.5) / scale) - 0.5).clamp(0.0, h as f64 - 1.0);
-        let y0 = sy.floor() as usize;
-        let y1 = (y0 + 1).min(h - 1);
-        let fy = sy - y0 as f64;
-        let oy = y + pad_y;
-        for x in 0..new_w {
-            let sx = (((x as f64 + 0.5) / scale) - 0.5).clamp(0.0, w as f64 - 1.0);
-            let x0 = sx.floor() as usize;
-            let x1 = (x0 + 1).min(w - 1);
-            let fx = sx - x0 as f64;
-            let o = oy * IMG + (x + pad_x);
-            for c in 0..3 {
-                let top = at(x0, y0, c) + (at(x1, y0, c) - at(x0, y0, c)) * fx;
-                let bot = at(x0, y1, c) + (at(x1, y1, c) - at(x0, y1, c)) * fx;
-                out[c * area + o] = ((top + (bot - top) * fy) / 255.0) as f32;
-            }
-        }
-    }
-    out
-}
-
-/// One inference, from letterboxed pixels to the wire response.
+/// One inference, from letterboxed pixels to the wire bytes.
 ///
 /// The ONE place tensor construction, the session call, output extraction and encoding live.
 /// `next_detection` and `infer_frame` had a copy each — identical but for where the pixels came
 /// from — so a change to the model contract could reach the camera path and miss the parity
-/// harness, which is precisely the path whose job is to notice such changes.
-fn run_inference(state: &CubeVision, input: Vec<f32>) -> Result<Response, String> {
+/// harness, which is precisely the path whose job is to notice such changes. `picture` is the
+/// size of the camera picture `input` was letterboxed from, which the wire carries.
+fn run_inference(
+    state: &CubeVision,
+    input: Vec<f32>,
+    picture: [i32; 2],
+) -> Result<Vec<u8>, String> {
     if input.len() != 3 * IMG * IMG {
         return Err(format!(
             "letterboxed frame is {} floats, expected {} for 3x{IMG}x{IMG}",
@@ -551,7 +666,17 @@ fn run_inference(state: &CubeVision, input: Vec<f32>) -> Result<Response, String
             data.len()
         ));
     }
-    Ok(tensor_response(rows as i32, anchors as i32, data))
+    // The wire's words are `i32`; a shape past that is refused here with the number, and
+    // `crate::wire` re-checks the count against the shape before a byte is written.
+    let count = i32::try_from(data.len()).map_err(|_| {
+        format!(
+            "the model output of {} floats exceeds the wire's Int32",
+            data.len()
+        )
+    })?;
+    let rows = i32::try_from(rows).map_err(|_| format!("a tensor with {rows} rows"))?;
+    let anchors = i32::try_from(anchors).map_err(|_| format!("a tensor with {anchors} anchors"))?;
+    wire::frame_bytes(count, rows, anchors, picture, data)
 }
 
 /// `(async)`: one inference is the single most expensive thing this plugin does per tick.
@@ -559,10 +684,10 @@ fn run_inference(state: &CubeVision, input: Vec<f32>) -> Result<Response, String
 fn next_detection(state: State<'_, CubeVision>) -> Result<Response, String> {
     // Whatever the capture thread published last. Cloned rather than held, so inference never
     // keeps the lock the camera thread needs to publish the next frame.
-    let input = {
+    let (input, picture) = {
         let slot = state.latest.lock().map_err(|_| "camera state poisoned")?;
         match slot.as_ref() {
-            Some(frame) => frame.clone(),
+            Some(frame) => (frame.chw.clone(), frame.picture),
             None => {
                 // A RECORDED failure is reported. Without this, a camera that cannot produce a
                 // usable frame is indistinguishable from one that has not produced its first yet,
@@ -572,14 +697,14 @@ fn next_detection(state: State<'_, CubeVision>) -> Result<Response, String> {
                         return Err(format!("the camera frame could not be prepared: {why}"));
                     }
                 }
-                // Opened but no frame yet. An empty tensor is what `decodeTensorResponse` reads as
+                // Opened but no frame yet. The idle header is what `decodeTensorResponse` reads as
                 // null, which the panel already handles as "try again next tick" — an error here
                 // would look like a broken scanner during warm-up.
-                return Ok(tensor_response(0, 0, &[]));
+                return Ok(Response::new(wire::no_frame()));
             }
         }
     };
-    run_inference(&state, input)
+    run_inference(&state, input, picture).map(Response::new)
 }
 
 /// Run one frame the caller already has. The parity harness's door: it hands pixels in and compares
@@ -597,9 +722,24 @@ fn infer_frame(
     width: usize,
     height: usize,
 ) -> Result<Response, String> {
-    let rgba = frame::decode_rgba(&rgba_base64, width, height)?;
+    infer_bytes(&state, &rgba_base64, width, height).map(Response::new)
+}
+
+/// `infer_frame` without the IPC wrapper, so the Windows CI job can drive the command end to end on
+/// the committed model (`mod tests`, 2026-09-21, audit-fix row 99).
+fn infer_bytes(
+    state: &CubeVision,
+    rgba_base64: &str,
+    width: usize,
+    height: usize,
+) -> Result<Vec<u8>, String> {
+    let rgba = frame::decode_rgba(rgba_base64, width, height)?;
     let rgb = frame::strip_alpha(&rgba);
-    run_inference(&state, letterbox(&rgb, width, height))
+    let picture = [
+        i32::try_from(width).map_err(|_| format!("width {width} exceeds the wire's Int32"))?,
+        i32::try_from(height).map_err(|_| format!("height {height} exceeds the wire's Int32"))?,
+    ];
+    run_inference(state, letterbox(&rgb, width, height), picture)
 }
 
 pub fn init<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
@@ -625,84 +765,6 @@ pub fn init<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
 mod tests {
     use super::*;
 
-    // The dev tier of `resolve_model_path`, which is the one a developer actually hits: `tauri dev`
-    // does not stage `bundle.resources`, so the Resource dir is empty and this path is the only
-    // thing standing between a working native scanner and a silent fall back to WebDetector.
-    //
-    // The SHIPPED tier is asserted from the other side, in `apps/web/test/shipped-model.test.mjs`,
-    // which reads `MODEL_RESOURCE` out of this file and checks `tauri.windows.conf.json` stages
-    // something to it. Between them the two tiers are both covered; neither could be checked here
-    // alone, because resolving a Resource dir needs a running app.
-    /// The fixture frame, generated the same way on both sides of the comparison.
-    fn fixture(w: usize, h: usize) -> Vec<u8> {
-        let mut rgb = vec![0u8; w * h * 3];
-        for y in 0..h {
-            for x in 0..w {
-                let o = (y * w + x) * 3;
-                rgb[o] = ((x * 7 + y * 13) % 256) as u8;
-                rgb[o + 1] = ((x * 31 + y * 5 + 77) % 256) as u8;
-                rgb[o + 2] = ((x * 17 + y * 23 + 191) % 256) as u8;
-            }
-        }
-        rgb
-    }
-
-    /// THE PARITY TEST, against numbers produced by the TypeScript, not by this code.
-    ///
-    /// The module note says `preprocess()` is "reproduced here line for line", and until now
-    /// nothing checked it: `ml/golden_frames.py` proves the .onnx agrees with the other runtimes
-    /// and says nothing about what this feeds it, and `infer_frame` — documented as the parity
-    /// harness's door — had no caller anywhere in the repo. So the one claim on which every box
-    /// this plugin produces depends was resting on a comment.
-    ///
-    /// The expected values below were computed by running `preprocess` from
-    /// `packages/cube-scanner/src/onnx-detect.ts` on the same fixture, and they are EXACT: both
-    /// sides now compute in double and round once, on the store to f32. When this drifts, it will
-    /// drift the way a letterbox always does — a fraction of a pixel, everywhere, reading as a
-    /// model that has quietly got worse — which is why the assertion is exact rather than
-    /// approximate.
-    #[test]
-    fn letterbox_matches_the_typescript_reference() {
-        let (w, h) = (97usize, 43usize);
-        let out = letterbox(&fixture(w, h), w, h);
-        assert_eq!(out.len(), 3 * IMG * IMG, "the tensor is 3x{IMG}x{IMG}");
-
-        // (index, value) straight out of the TypeScript. Three samples per plane inside the image
-        // band, and one in the letterbox padding so the pad colour is pinned too.
-        let expected: [(usize, f32); 10] = [
-            (128_100, 0.552_769_6),
-            (192_320, 0.232_916_67),
-            (256_600, 0.162_696_08),
-            (537_700, 0.142_132_36),
-            (601_920, 0.477_181_37),
-            (666_200, 0.913_823_55),
-            (947_300, 0.320_842_53),
-            (1_011_520, 0.563_982_84),
-            (1_075_800, 0.744_497_54),
-            (6_410, 0.447_058_83),
-        ];
-        for (i, want) in expected {
-            assert_eq!(
-                out[i], want,
-                "index {i}: this implementation gives {}, the TypeScript gives {want}",
-                out[i]
-            );
-        }
-
-        // A position-weighted checksum over every element, so the samples above are a readable
-        // anchor and this is what actually catches a shift of one row or one channel.
-        let checksum: f64 = out
-            .iter()
-            .enumerate()
-            .map(|(i, v)| *v as f64 * ((i % 97) as f64 + 1.0) / 97.0)
-            .sum();
-        assert!(
-            (checksum - 291_823.355_345_172_75).abs() < 1e-3,
-            "checksum {checksum} differs from the TypeScript's 291823.35534517275 — the letterbox \
-             has drifted from `preprocess()`"
-        );
-    }
-
     /// Zero dimensions and an oversized pair are rejected before anything indexes the buffer.
     /// `letterbox` itself is only ever reached through `frame::decode_rgba`'s validation or the
     /// capture loop's, both of which reject these; `frame.rs` carries the tests for the former.
@@ -715,6 +777,14 @@ mod tests {
         );
     }
 
+    // The dev tier of `resolve_model_path`, which is the one a developer actually hits: `tauri dev`
+    // does not stage `bundle.resources`, so the Resource dir is empty and this path is the only
+    // thing standing between a working native scanner and a silent fall back to WebDetector.
+    //
+    // The SHIPPED tier is asserted from the other side, in `apps/web/test/shipped-model.test.mjs`,
+    // which reads `MODEL_RESOURCE` out of this file and checks `tauri.windows.conf.json` stages
+    // something to it. Between them the two tiers are both covered; neither could be checked here
+    // alone, because resolving a Resource dir needs a running app.
     #[test]
     fn the_dev_model_path_points_at_the_committed_source_model() {
         let p = source_model_path();
@@ -722,6 +792,116 @@ mod tests {
             p.exists(),
             "source cubedet.onnx missing at {} — run ml/export.py",
             p.display()
+        );
+    }
+
+    /// THE PARITY HARNESS'S DOOR, DRIVEN (2026-09-21, audit-fix row 99). `infer_frame` is exposed
+    /// through the ACL and documented as the harness's entry, and nothing in the repository called
+    /// it — so model loading, inference, output extraction and the wire encoding through this
+    /// command had never once run. This runs them on the committed model, on the CPU provider (a
+    /// CI runner promises no D3D12 device), and holds the answer's SHAPE: the detect head's rows
+    /// and anchors, the picture the tensor came from, and the byte length the wire promises. The
+    /// VALUES against the other runtimes remain `ml/golden_frames.py`'s, whose onnx leg runs this
+    /// same graph through onnxruntime; a Windows leg there is owed with the platform's first device
+    /// check.
+    #[test]
+    fn infer_frame_runs_the_committed_model_end_to_end() {
+        use base64::Engine as _;
+        let state = CubeVision::default();
+        let session = build_session(&source_model_path(), None)
+            .expect("the committed model builds a CPU session");
+        *state.session.lock().unwrap() = Some(session);
+        let (w, h) = (97usize, 43usize);
+        let rgba = base64::engine::general_purpose::STANDARD.encode(vec![128u8; w * h * 4]);
+        let bytes = infer_bytes(&state, &rgba, w, h).expect("the committed model answers a still");
+        let word = |i: usize| i32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
+        assert_eq!(word(0), wire::WIRE_VERSION, "wire version 2");
+        assert_eq!(
+            (word(1), word(2)),
+            (4 + 6, 8400),
+            "rows = 4 box coords + 6 colour classes; 8400 anchors at 640"
+        );
+        assert_eq!(
+            (word(3), word(4)),
+            (97, 43),
+            "the picture the tensor was letterboxed from"
+        );
+        assert_eq!(bytes.len(), wire::HEADER_BYTES + 10 * 8400 * 4);
+    }
+
+    /// The model is loaded by `run_inference` only through the slot `load_model` fills, so a still
+    /// before any load is refused, not run against nothing.
+    #[test]
+    fn a_still_before_the_model_is_loaded_is_refused() {
+        use base64::Engine as _;
+        let state = CubeVision::default();
+        let rgba = base64::engine::general_purpose::STANDARD.encode(vec![0u8; 2 * 2 * 4]);
+        let e = infer_bytes(&state, &rgba, 2, 2).unwrap_err();
+        assert_eq!(e, "model not loaded");
+    }
+
+    use nokhwa::utils::FrameFormat;
+
+    fn offered(w: u32, h: u32, format: FrameFormat, fps: u32) -> CameraFormat {
+        CameraFormat::new_from(w, h, format, fps)
+    }
+
+    // The mapping from nokhwa's `CameraFormat` onto `crate::format_policy`'s candidates — the
+    // policy itself is tested on every host; these hold that a colour format reads as colour, that
+    // the chosen index maps back to the format the camera listed, and the audit's own camera.
+
+    /// The audit's camera (2.15): its top rate exists only at 480p. `AbsoluteHighestFrameRate`
+    /// took that mode and the letterbox upscaled it; the scan wants 720p, at 720p's best rate.
+    #[test]
+    fn the_capture_format_is_the_nearest_to_720p_not_the_fastest() {
+        let list = [
+            offered(640, 480, FrameFormat::YUYV, 60),
+            offered(1280, 720, FrameFormat::YUYV, 10),
+            offered(1280, 720, FrameFormat::MJPEG, 30),
+            offered(1920, 1080, FrameFormat::MJPEG, 30),
+        ];
+        let got = pick_format(&list).expect("a colour format was offered");
+        assert_eq!((got.width(), got.height()), (1280, 720));
+        assert_eq!(
+            got.frame_rate(),
+            30,
+            "at the chosen size, the highest rate on offer"
+        );
+        assert_eq!(got.format(), FrameFormat::MJPEG);
+    }
+
+    /// A camera with no 720p mode gets its nearest size — where `Closest(… MJPEG …)` would have
+    /// refused a YUY2-only camera outright and `HighestResolution(720p)` any camera without that
+    /// exact size (nokhwa-core-0.1.9/src/types.rs:115-130, 155-162).
+    #[test]
+    fn a_camera_without_720p_gets_its_nearest_size_rather_than_a_refusal() {
+        let list = [
+            offered(640, 480, FrameFormat::YUYV, 30),
+            offered(1600, 1200, FrameFormat::YUYV, 15),
+        ];
+        let got = pick_format(&list).expect("a colour format was offered");
+        // (1600-1280)² + (1200-720)² = 332 800 against (640-1280)² + (480-720)² = 467 200.
+        assert_eq!((got.width(), got.height()), (1600, 1200));
+    }
+
+    /// Ties keep the camera's order, and a format the decoder cannot read is never chosen.
+    #[test]
+    fn only_colour_formats_are_considered_and_ties_keep_the_cameras_order() {
+        let list = [
+            offered(1280, 720, FrameFormat::GRAY, 60),
+            offered(1280, 720, FrameFormat::NV12, 30),
+            offered(1280, 720, FrameFormat::YUYV, 30),
+        ];
+        let got = pick_format(&list).expect("a colour format was offered");
+        assert_eq!(
+            got.format(),
+            FrameFormat::NV12,
+            "first of the equal candidates"
+        );
+        assert_eq!(
+            pick_format(&[offered(1280, 720, FrameFormat::GRAY, 30)]),
+            None,
+            "a GRAY-only camera is refused before its first frame, not on it"
         );
     }
 }
