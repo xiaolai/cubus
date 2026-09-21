@@ -8,8 +8,11 @@ import {
   dropIsolated,
   dropNested,
   fitFace,
+  fitLattice,
+  latticeOf,
   MIN_STICKER_CONFIDENCE,
   nms,
+  ROLL_TIE_BAND_DEG,
 } from '../src/onnx-postprocess.js';
 
 /** Nine detections laid out as a clean 3x3 grid, colours in reading order. */
@@ -404,6 +407,231 @@ describe('fitFace — the geometry a real face has, and the arrangements that on
     const r = fitFace(dets);
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.face.colors).toEqual(colors);
+  });
+});
+
+describe('fitFace — a face rolled in the image plane (2026-09-20)', () => {
+  // THE DEFECT. Rows were grouped by sorting on y and slicing into threes, which is right only under
+  // ~26.6° of roll; past it corners landed on edge positions and edges on corners, and the spread
+  // rule that should have refused it grew with the roll exactly as the spread did. Measured on the
+  // real fit: 27° to 45° accepted in the order [3,0,1,6,4,2,7,8,5], not a rotation, so the assembly
+  // refused every such cube as "a colour was misread" (dev-docs/scanner-audit-2026-09-20.md §1.1).
+
+  /** Nine square stickers on a pitch, rolled by `deg`; `scores[0]` carries the TRUE reading index. */
+  function rolled(deg: number, tight = false): Detection[] {
+    const th = (deg * Math.PI) / 180;
+    const sticker = 74;
+    const s = sticker + 10;
+    const side = tight ? sticker : sticker * (Math.abs(Math.cos(th)) + Math.abs(Math.sin(th)));
+    const out: Detection[] = [];
+    for (let r = 0; r < 3; r++) {
+      for (let c = 0; c < 3; c++) {
+        const x = (c - 1) * s;
+        const y = (r - 1) * s;
+        out.push({
+          cx: 320 + x * Math.cos(th) - y * Math.sin(th),
+          cy: 320 + x * Math.sin(th) + y * Math.cos(th),
+          w: side,
+          h: side,
+          classId: (r * 3 + c) % 6,
+          confidence: 0.9,
+          scores: [r * 3 + c],
+        });
+      }
+    }
+    return out;
+  }
+  const ROT90 = [6, 3, 0, 7, 4, 1, 8, 5, 2];
+  const rotations = (() => {
+    const all: number[][] = [];
+    let o = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+    for (let k = 0; k < 4; k++) {
+      all.push(o);
+      o = ROT90.map((i) => o[i]!);
+    }
+    return all;
+  })();
+  const orderOf = (dets: Detection[]): number[] | null => {
+    const r = fitFace(dets);
+    return r.ok ? r.face.scores!.map((s) => s[0]!) : null;
+  };
+
+  it('reads every roll from 0° to 90° as a ROTATION of the truth, never a scramble — or refuses it at the tie', () => {
+    const band = ROLL_TIE_BAND_DEG;
+    for (let deg = 0; deg <= 90; deg += 1) {
+      const gap = Math.abs(45 - deg);
+      // The band's own edges (42° and 48° for a 3° band) are a coin toss in the last place of a
+      // double, and are asserted neither way.
+      if (gap === band) continue;
+      const order = orderOf(rolled(deg));
+      if (gap < band) {
+        expect(order, `${deg}°`).toBeNull();
+        expect(fitFace(rolled(deg)), `${deg}°`).toMatchObject({
+          reason: 'BAD_GEOMETRY',
+          geometry: { rule: 'roll-tie', bound: 2 * band },
+        });
+        continue;
+      }
+      expect(order, `${deg}°`).not.toBeNull();
+      expect(
+        rotations.some((rot) => rot.every((v, i) => v === order![i])),
+        `${deg}°: ${order}`,
+      ).toBe(true);
+    }
+  });
+
+  it('reads 27°–41° in the true order and 49°–90° as the quarter turn, and refuses 43°–47°', () => {
+    // The row is whichever lattice axis is nearer horizontal, so up to 45° the face reads as held
+    // and past it as its quarter turn — either is a rotation the assembly solves. Within
+    // ROLL_TIE_BAND_DEG of 45° neither is chosen (2026-09-21): the choice flipped on the sign of a
+    // difference that jitter moves through zero, so one face alternated between the two readings
+    // frame to frame and the stillness gate never saw it settle.
+    for (const deg of [27, 30, 35, 40, 41]) expect(orderOf(rolled(deg))).toEqual(rotations[0]);
+    for (const deg of [49, 60, 75, 90]) expect(orderOf(rolled(deg))).toEqual(rotations[1]);
+    for (const deg of [43, 44, 45, 46, 47]) {
+      const fit = fitFace(rolled(deg));
+      expect(fit, `${deg}°`).toMatchObject({
+        reason: 'BAD_GEOMETRY',
+        geometry: { rule: 'roll-tie' },
+      });
+      // The gap between the two axes' tilts, in degrees: 2° at 44° and 46°, 0 at 45°.
+      if (!fit.ok) expect(fit.geometry!.value, `${deg}°`).toBeCloseTo(2 * Math.abs(45 - deg), 6);
+    }
+    // Both sides of the tie are the same face: 41° and 49° differ by a quarter turn, and neither
+    // reading is a scramble.
+    expect(orderOf(rolled(41))).not.toEqual(orderOf(rolled(49)));
+  });
+
+  it('reads a rolled face whose centre box is pushed off, because the antipodes are matched exactly', () => {
+    // The greedy pairing came apart on a middle box pushed past a fifth of a step: one wrong pair
+    // came in under a true one, no basis fit, and the level-frame fallback read the face in the
+    // scrambled order `[3,0,1,6,4,2,7,8,5]` (measured at 27° and 30° with the centre at (−25, −12)
+    // px). The audit's own example, (−19, −9), had in fact always read — the scramble starts a
+    // little further out — and the exact matching holds to nearly half a step.
+    const pushed = (deg: number, dx: number, dy: number): Detection[] =>
+      rolled(deg).map((d, k) => {
+        if (k !== 4) return d;
+        const th = (deg * Math.PI) / 180;
+        return {
+          ...d,
+          cx: d.cx + dx * Math.cos(th) - dy * Math.sin(th),
+          cy: d.cy + dx * Math.sin(th) + dy * Math.cos(th),
+        };
+      });
+    for (const [deg, dx, dy] of [
+      [27, -19, -9],
+      [27, -25, -12],
+      [30, -25, -12],
+      [35, 0, -30],
+      [40, 22, 18],
+    ] as const) {
+      const dets = pushed(deg, dx, dy);
+      expect(latticeOf(dets), `${deg}° (${dx}, ${dy})`).not.toBeNull();
+      expect(orderOf(dets), `${deg}° (${dx}, ${dy})`).toEqual(rotations[0]);
+    }
+  });
+
+  it('names the stage that refused: not-nine, no-basis, no-cells, roll-tie', () => {
+    const level = rolled(0);
+    expect(fitLattice(level.slice(0, 8))).toEqual({ ok: false, reason: 'not-nine' });
+    // Nine references to eight boxes are not nine boxes, and would have shortened the pairing.
+    expect(fitLattice([...level.slice(0, 8), level[0]!])).toEqual({
+      ok: false,
+      reason: 'not-nine',
+    });
+    const junk: Detection[] = Array.from({ length: 9 }, (_, i) => ({
+      cx: Math.sin(i * 2.3) * 300 + 400,
+      cy: Math.cos(i * 1.7) * 300 + 400,
+      w: 60,
+      h: 60,
+      classId: i % 6,
+      confidence: 0.9,
+    }));
+    expect(fitLattice(junk)).toEqual({ ok: false, reason: 'no-basis' });
+    // A basis that fits and cells that do not: nine boxes on one line pair off as antipodes and
+    // give a basis whose two vectors are parallel — the sum and difference of parallel vectors are
+    // parallel too, so `basisOf` is satisfied — and parallel vectors span no cells.
+    const collinear: Detection[] = Array.from({ length: 9 }, (_, k) => ({
+      cx: 100 + k * 40,
+      cy: 200 + k * 10,
+      w: 30,
+      h: 30,
+      classId: k % 6,
+      confidence: 0.9,
+    }));
+    expect(fitLattice(collinear)).toEqual({ ok: false, reason: 'no-cells' });
+    expect(fitLattice(rolled(45))).toMatchObject({
+      ok: false,
+      reason: 'roll-tie',
+      gap: expect.any(Number),
+    });
+    expect(fitLattice(rolled(20))).toMatchObject({ ok: true });
+  });
+
+  it('reads tight boxes too, which the old spread rule refused at 27°', () => {
+    for (const deg of [27, 28, 30, 40]) expect(orderOf(rolled(deg, true))).toEqual(rotations[0]);
+  });
+
+  it('answers the shared cases exactly as ml/cube_infer.py does', () => {
+    // The same file ml/test_pipeline.py reads for cube_infer.fit_grid: rolls, shears, one junk
+    // arrangement and one staircase, with the order as indices into `detections`.
+    const shared = JSON.parse(
+      readFileSync(new URL('./fixtures/rolled-grids.json', import.meta.url), 'utf8'),
+    ) as {
+      cases: { name: string; detections: Detection[]; order: number[] | null; reason?: string }[];
+    };
+    expect(shared.cases.length).toBeGreaterThan(30);
+    for (const c of shared.cases) {
+      const r = fitFace(c.detections);
+      if (c.order === null) {
+        expect(r.ok, c.name).toBe(false);
+        if (!r.ok) expect(r.reason, c.name).toBe(c.reason);
+        continue;
+      }
+      expect(r.ok, c.name).toBe(true);
+      if (!r.ok) continue;
+      const got = r.face.boxes!.map((b) =>
+        c.detections.findIndex(
+          (d) => d.cx - d.w / 2 === b[0] && d.cy - d.h / 2 === b[1] && d.w === b[2] && d.h === b[3],
+        ),
+      );
+      expect(got, c.name).toEqual(c.order);
+    }
+  });
+
+  it('leaves a level or sheared face on the path its bounds were measured on', () => {
+    // When the lattice and the sort agree, nothing is turned: the sheared face above and the
+    // golden-like case in the fixture read exactly as before. `latticeOf` itself is exported only so
+    // this can say the two AGREE on such a face, which is the condition for the unchanged path.
+    const level = rolled(0);
+    const lattice = latticeOf(level);
+    expect(lattice).not.toBeNull();
+    const cells = level.map((d) => lattice!.cells.get(d)!);
+    expect(cells).toEqual([
+      [-1, -1],
+      [0, -1],
+      [1, -1],
+      [-1, 0],
+      [0, 0],
+      [1, 0],
+      [-1, 1],
+      [0, 1],
+      [1, 1],
+    ]);
+    expect(orderOf(level)).toEqual(rotations[0]);
+  });
+
+  it('finds no lattice in junk, and the level-frame rules refuse it as they always did', () => {
+    const junk: Detection[] = Array.from({ length: 9 }, (_, i) => ({
+      cx: Math.sin(i * 2.3) * 300 + 400,
+      cy: Math.cos(i * 1.7) * 300 + 400,
+      w: 60,
+      h: 60,
+      classId: i % 6,
+      confidence: 0.9,
+    }));
+    expect(latticeOf(junk)).toBeNull();
+    expect(fitFace(junk).ok).toBe(false);
   });
 });
 

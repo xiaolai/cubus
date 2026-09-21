@@ -335,6 +335,7 @@ const BUNDLE_ROLES = {
   'cubejs.js': 'the cube-state model and the solver\'s independent oracle',
   'cubus-cube.js': 'the cube renderer',
   'misread-worker.js': 'the misread decoder\'s worker',
+  'letterbox-worker.js': 'the scanner\'s letterbox worker',
   'smartcube.js': 'the smart-cube protocol layer',
   'tauri-mcp-guest.js': 'the dev-only agent bridge',
 };

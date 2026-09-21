@@ -453,10 +453,10 @@ var require_cube = __commonJS({
           static inverse(arg) {
             var face, k, len, move, power, result, str;
             result = (function() {
-              var k2, len2, ref, results;
+              var k2, len3, ref, results;
               ref = parseAlg(arg);
               results = [];
-              for (k2 = 0, len2 = ref.length; k2 < len2; k2++) {
+              for (k2 = 0, len3 = ref.length; k2 < len3; k2++) {
                 move = ref[k2];
                 face = move / 3 | 0;
                 power = move % 3;
@@ -2002,7 +2002,8 @@ var FACES = ["U", "R", "F", "D", "L", "B"];
 
 // src/facelet-cube.ts
 var SOLVED = "UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB";
-var CORNER_FACELET = [
+var frozenRows = (rows) => Object.freeze(rows.map((row) => Object.freeze([...row])));
+var CORNER_FACELET = frozenRows([
   [8, 9, 20],
   [6, 18, 38],
   [0, 36, 47],
@@ -2011,8 +2012,8 @@ var CORNER_FACELET = [
   [27, 44, 24],
   [33, 53, 42],
   [35, 17, 51]
-];
-var EDGE_FACELET = [
+]);
+var EDGE_FACELET = frozenRows([
   [5, 10],
   [7, 19],
   [3, 37],
@@ -2025,7 +2026,7 @@ var EDGE_FACELET = [
   [21, 41],
   [50, 39],
   [48, 14]
-];
+]);
 var CORNER_COLOR = Object.freeze(
   CORNER_FACELET.map((t) => Object.freeze(t.map((i) => SOLVED[i])))
 );
@@ -2057,16 +2058,17 @@ var FACE_NEIGHBOURS = (() => {
       if (side !== void 0) out[FACES[Math.floor(from / 9)]][side] = FACES[Math.floor(to / 9)];
     }
   }
-  return out;
+  for (const f of FACES) Object.freeze(out[f]);
+  return Object.freeze(out);
 })();
-var CENTER_INDEX = {
+var CENTER_INDEX = Object.freeze({
   U: 4,
   R: 13,
   F: 22,
   D: 31,
   L: 40,
   B: 49
-};
+});
 function decodeFacelets(f) {
   if (f.length !== 54) return null;
   const corners = decodeCorners(f);
@@ -2679,6 +2681,11 @@ function argmaxBy(items, value) {
 }
 
 // src/ai-assemble.ts
+function looksAt(confirmed, slot) {
+  const looks = confirmed[slot];
+  if (looks === void 0) return [];
+  return Array.isArray(looks) ? looks : [looks];
+}
 var CONFIRM_TOLERANCE = 2;
 var LOW_CONFIDENCE_THRESHOLD = 0.15;
 var UP_PREFERENCE = [0, 2, 1, 4, 3, 5];
@@ -2700,15 +2707,16 @@ function matchingRotations(original, confirmed) {
   return new Set([0, 1, 2, 3].filter((k) => dist[k] <= CONFIRM_TOLERANCE));
 }
 var SAME_SIDE_STICKERS = 7;
-function sameSide(a, b) {
+function sameSide(a, b, atLeast = SAME_SIDE_STICKERS) {
   for (let k = 0; k < 4; k++) {
     const turned = rotateFace(b, k);
     let agree = 0;
     for (let i = 0; i < 9; i++) if (i !== 4 && turned[i] === a[i]) agree += 1;
-    if (agree >= SAME_SIDE_STICKERS) return true;
+    if (agree >= atLeast) return true;
   }
   return false;
 }
+var SAME_SIDE_BY_CENTRE = 5;
 function byPosition(bySlot, scheme) {
   const out = {};
   for (const slot of FACES) out[positionOf(colourOfSlot(slot), scheme)] = bySlot[slot];
@@ -2719,9 +2727,8 @@ function comboToSlots(combo, scheme) {
 }
 var readingsOf = (candidates) => new Set(candidates.map((c) => c.facelets));
 var schemesOf = (candidates) => SCHEMES.filter((s) => candidates.some((c) => c.scheme === s));
-function undeterminedSlots(candidates, confirmed) {
+function undeterminedSlots(candidates) {
   return FACES.filter((slot, si) => {
-    if (confirmed[slot]) return false;
     const perCandidate = candidates.map((c) => holdsOf(c, slot, si).join(","));
     return new Set(perCandidate).size > 1;
   });
@@ -2732,34 +2739,66 @@ function holdsOf(candidate, slot, si) {
     ...new Set(candidate.combos.map((combo) => heldUpColour(colour, combo[si], candidate.scheme)))
   ].sort();
 }
-function permittedHold(slot, schemes) {
+function permittedHold(slot, schemes, confirmed = {}) {
   const colour = colourOfSlot(slot);
-  const allowed = commonNeighbours(colour, schemes);
+  const used = new Set(looksAt(confirmed, slot).map((look) => colourOfSlot(look.up)));
+  const allowed = commonNeighbours(colour, schemes).filter((c) => !used.has(c));
   const tops = new Set(schemes.map((s) => neighbourColour(colour, "top", s)));
   const canonical = tops.size === 1 ? [...tops][0] : void 0;
   const up = canonical !== void 0 && allowed.includes(canonical) ? canonical : UP_PREFERENCE.find((c) => allowed.includes(c));
   return up === void 0 ? void 0 : { face: slot, up: slotOf(up) };
 }
-function pickConfirm(candidates, confirmed) {
-  const schemes = schemesOf(candidates);
-  const holds = undeterminedSlots(candidates, confirmed).map((slot) => permittedHold(slot, schemes)).filter((h) => h !== void 0);
-  return holds.find((h) => h.up === "U") ?? holds[0];
+var MAX_LOOKS_PER_SLOT = 2;
+function mayLookAgain(slot, confirmed, effective, schemes) {
+  const given = looksAt(confirmed, slot);
+  if (given.length === 0) return true;
+  if (given.length >= MAX_LOOKS_PER_SLOT || !effective.has(slot)) return false;
+  const first = permittedHold(slot, schemes);
+  return first !== void 0 && given[0].up === first.up;
 }
-function pickVerification(survivors, weak, confirmed, schemes) {
-  let best;
-  let bestScore = 0;
-  FACES.forEach((slot, si) => {
-    if (confirmed[slot]) return;
-    const hold = permittedHold(slot, schemes);
-    if (!hold) return;
+function pickConfirm(candidates, confirmed, effective) {
+  const schemes = schemesOf(candidates);
+  const holds = undeterminedSlots(candidates).filter((slot) => mayLookAgain(slot, confirmed, effective, schemes)).map((slot) => permittedHold(slot, schemes, confirmed)).filter((h) => h !== void 0);
+  const fresh = holds.filter((h) => looksAt(confirmed, h.face).length === 0);
+  const pool = fresh.length > 0 ? fresh : holds;
+  return pool.find((h) => h.up === "U") ?? pool[0];
+}
+function contradictedByEveryLook(exposed, given, si) {
+  if (exposed.length === 0) return false;
+  return exposed.every(
+    (w) => given.some((look) => w.combos.every((c) => !look.get(w.scheme).has(c[si])))
+  );
+}
+function pickVerification(survivors, weak, narrowed, confirmed, schemes) {
+  const exposedAt = (slot, si) => {
     const ours = new Set(survivors.flatMap((s) => holdsOf(s, slot, si)));
-    const score = weak.filter((w) => holdsOf(w, slot, si).every((up) => !ours.has(up))).length + (hold.up === "U" ? 0.5 : 0);
-    if (score > bestScore) {
-      bestScore = score;
-      best = hold;
+    return weak.filter((w) => holdsOf(w, slot, si).every((up) => !ours.has(up)));
+  };
+  const pick = (slots) => {
+    let best;
+    let bestScore = 0;
+    for (const slot of slots) {
+      const hold = permittedHold(slot, schemes, confirmed);
+      if (!hold) continue;
+      const score = exposedAt(slot, FACES.indexOf(slot)).length + (hold.up === "U" ? 0.5 : 0);
+      if (score > bestScore) {
+        bestScore = score;
+        best = hold;
+      }
     }
+    return best === void 0 || bestScore < 1 ? void 0 : best;
+  };
+  const fresh = FACES.filter((slot) => (narrowed.looks.get(slot) ?? []).length === 0);
+  const first = pick(fresh);
+  if (first) return first;
+  const again = FACES.filter((slot, si) => {
+    const given = narrowed.looks.get(slot) ?? [];
+    if (given.length === 0 || !mayLookAgain(slot, confirmed, narrowed.effective, schemes)) {
+      return false;
+    }
+    return contradictedByEveryLook(exposedAt(slot, si), given, si);
   });
-  return best === void 0 || bestScore < 1 ? void 0 : best;
+  return pick(again);
 }
 function solvableReadings(bySlot, scheme) {
   const faces = byPosition(bySlot, scheme);
@@ -2793,7 +2832,7 @@ function solvableReadings(bySlot, scheme) {
   return [...seen].filter((e) => e[1] !== null).map(([facelets, combos]) => ({ scheme, facelets, combos }));
 }
 function checkedCapture(label, f) {
-  if (f?.colors.length !== 9 || f.confidence.length !== 9) {
+  if (!f || !Array.isArray(f.colors) || f.colors.length !== 9 || !Array.isArray(f.confidence) || f.confidence.length !== 9) {
     throw new Error(`${label}: expected 9 colours + 9 confidences`);
   }
   for (const c of f.confidence) {
@@ -2869,68 +2908,99 @@ function assemblePainted(faces, threshold = LOW_CONFIDENCE_THRESHOLD, options = 
     ...schemeOfCentres(centres) ? { scheme: schemeOfCentres(centres) } : {}
   };
 }
-function narrowByConfirmations(bySlot, all, confirmed) {
-  const confirmedSlots = FACES.filter((slot) => confirmed[slot]);
-  const allowed = /* @__PURE__ */ new Map();
-  for (const slot of confirmedSlots) {
-    const { capture, up } = confirmed[slot];
-    const checked = checkedCapture(`confirmation of ${slot}`, capture);
-    if (!FACES.includes(up))
-      throw new Error(`confirmation of ${slot}: up ${String(up)} is not a slot`);
-    const physical = matchingRotations(bySlot[slot], checked);
-    if (physical.size === 0) {
-      return {
-        ok: false,
-        refusal: reject(
-          "that side read differently this time \u2014 checking again with the fresh read",
-          { reread: slot, confirm: { face: slot, up } }
-        )
-      };
-    }
-    const perScheme = /* @__PURE__ */ new Map();
-    for (const scheme of SCHEMES) {
-      const offset = holdOffset(colourOfSlot(slot), colourOfSlot(up), scheme);
-      perScheme.set(
-        scheme,
-        offset === null ? /* @__PURE__ */ new Set() : new Set([...physical].map((k) => (k - offset + 4) % 4))
-      );
-    }
-    allowed.set(slot, perScheme);
+function allowedByLook(slot, look, label, bySlot, originals) {
+  const checked = checkedCapture(label, look.capture);
+  const { up } = look;
+  if (!FACES.includes(up)) throw new Error(`${label}: up ${String(up)} is not a slot`);
+  const physical = /* @__PURE__ */ new Set([
+    ...matchingRotations(bySlot[slot], checked),
+    ...matchingRotations(originals[slot], checked)
+  ]);
+  if (physical.size === 0) return null;
+  const perScheme = /* @__PURE__ */ new Map();
+  for (const scheme of SCHEMES) {
+    const offset = holdOffset(colourOfSlot(slot), colourOfSlot(up), scheme);
+    perScheme.set(
+      scheme,
+      offset === null ? /* @__PURE__ */ new Set() : new Set([...physical].map((k) => (k - offset + 4) % 4))
+    );
   }
+  return perScheme;
+}
+function intersectLooks(perLook) {
+  const together = /* @__PURE__ */ new Map();
+  for (const scheme of SCHEMES) {
+    together.set(
+      scheme,
+      new Set([0, 1, 2, 3].filter((r) => perLook.every((look) => look.get(scheme).has(r))))
+    );
+  }
+  return together;
+}
+function narrowByConfirmations(bySlot, originals, all, confirmed) {
+  const confirmedSlots = FACES.filter((slot) => looksAt(confirmed, slot).length > 0);
+  const allowed = /* @__PURE__ */ new Map();
+  const looks = /* @__PURE__ */ new Map();
+  for (const slot of confirmedSlots) {
+    const perLook = [];
+    for (const [n, look] of looksAt(confirmed, slot).entries()) {
+      const label = n === 0 ? `confirmation of ${slot}` : `confirmation ${n + 1} of ${slot}`;
+      const byLook = allowedByLook(slot, look, label, bySlot, originals);
+      if (byLook === null) {
+        return {
+          ok: false,
+          refusal: reject(
+            "that side read differently this time \u2014 checking again with the fresh read",
+            { reread: slot, rereadLook: n, confirm: { face: slot, up: look.up } }
+          )
+        };
+      }
+      perLook.push(byLook);
+    }
+    looks.set(slot, perLook);
+    allowed.set(slot, intersectLooks(perLook));
+  }
+  const effective = /* @__PURE__ */ new Set();
   const candidates = all.map(
     (c) => ({
       ...c,
+      // EVERY confirmed slot is asked about every combo, and only then are the answers combined
+      // (2026-09-20): an `every` that stopped at the first refusing slot never asked the slots
+      // after it, so a slot whose look also refused the combo was not recorded as `effective` —
+      // the record this set exists to keep, and the one `mayLookAgain` reads.
       combos: c.combos.filter(
-        (combo) => confirmedSlots.every(
-          (slot) => allowed.get(slot).get(c.scheme).has(combo[FACES.indexOf(slot)])
-        )
+        (combo) => confirmedSlots.map((slot) => {
+          const kept = allowed.get(slot).get(c.scheme).has(combo[FACES.indexOf(slot)]);
+          if (!kept) effective.add(slot);
+          return kept;
+        }).every(Boolean)
       )
     })
   ).filter((c) => c.combos.length > 0);
   if (candidates.length === 0) {
     const last = confirmedSlots[confirmedSlots.length - 1];
+    const lastLooks = looksAt(confirmed, last);
     return {
       ok: false,
       refusal: reject("those two looks disagree \u2014 one was held the wrong way up; try again", {
         mismatch: true,
-        confirm: { face: last, up: confirmed[last].up }
+        confirm: { face: last, up: lastLooks[lastLooks.length - 1].up }
       })
     };
   }
-  return { ok: true, confirmedSlots, allowed, candidates };
+  return { ok: true, confirmedSlots, allowed, looks, effective, candidates };
 }
 function verifySurvivor(all, survivors, narrowed, confirmed) {
-  const { confirmedSlots, allowed } = narrowed;
+  const { confirmedSlots, looks } = narrowed;
   const facelets = survivors[0].facelets;
-  const contradictions = (candidate) => confirmedSlots.filter((slot) => {
+  const contradictions = (candidate) => confirmedSlots.reduce((n, slot) => {
     const si = FACES.indexOf(slot);
-    const ok = allowed.get(slot).get(candidate.scheme);
-    return candidate.combos.every((c) => !ok.has(c[si]));
-  }).length;
+    return n + looks.get(slot).filter((look) => candidate.combos.every((c) => !look.get(candidate.scheme).has(c[si]))).length;
+  }, 0);
   const weak = all.filter((c) => c.facelets !== facelets && contradictions(c) < 2);
   if (weak.length === 0) return null;
   const schemes = schemesOf([...survivors, ...weak]);
-  const check = pickVerification(survivors, weak, confirmed, schemes);
+  const check = pickVerification(survivors, weak, narrowed, confirmed, schemes);
   if (check) {
     return reject("one more look to be sure \u2014 a single look could be held wrong", {
       confirm: check
@@ -2975,6 +3045,7 @@ function repairByCounts(faces, maxCost) {
     return null;
   }
   if (result.changed.length === 0 || result.cost > maxCost) return null;
+  if (!(result.cost > 0)) return null;
   if (movesALockedSticker(faces, result.colors)) return null;
   const out = {};
   FACES.forEach((face, i) => {
@@ -3005,16 +3076,25 @@ function recolourByPaint(faces) {
 function assembleColors(faces, threshold = LOW_CONFIDENCE_THRESHOLD, confirmed = {}, options = {}) {
   return assembleWithin(faces, threshold, confirmed, options, MAX_REPAIR_COST);
 }
-function assembleWithin(faces, threshold, confirmed, options, maxRepairCost, allowPaint = true) {
+function assembleWithin(faces, threshold, confirmed, options, maxRepairCost, allowPaint = true, originals) {
   const bySlot = checkedBySlot(faces);
   if ("valid" in bySlot) return bySlot;
+  const asRead = originals ?? bySlot;
   const accept = (candidate) => {
     if (!candidate) return null;
     const bySlotCandidate = checkedBySlot(candidate);
     if ("valid" in bySlotCandidate) return null;
     const solvable = SCHEMES.flatMap((scheme) => solvableReadings(bySlotCandidate, scheme));
     if (solvable.length === 0) return null;
-    return assembleWithin(candidate, threshold, confirmed, options, maxRepairCost, allowPaint);
+    return assembleWithin(
+      candidate,
+      threshold,
+      confirmed,
+      options,
+      maxRepairCost,
+      allowPaint,
+      asRead
+    );
   };
   const all = SCHEMES.flatMap((scheme) => solvableReadings(bySlot, scheme));
   if (all.length === 0) {
@@ -3027,18 +3107,18 @@ function assembleWithin(faces, threshold, confirmed, options, maxRepairCost, all
       options.diagnose === false ? { misreadCount: null } : diagnoseAcrossSchemes(bySlot)
     );
   }
-  const narrowed = narrowByConfirmations(bySlot, all, confirmed);
+  const narrowed = narrowByConfirmations(bySlot, asRead, all, confirmed);
   if (!narrowed.ok) return narrowed.refusal;
   const candidates = narrowed.candidates;
   const readings = readingsOf(candidates);
   if (readings.size > 1) {
-    const confirm = pickConfirm(candidates, confirmed);
+    const confirm = pickConfirm(candidates, confirmed, narrowed.effective);
     if (confirm) {
       return reject(`${readings.size} readings fit \u2014 another look narrows them`, {
         ambiguous: true,
         confirm,
         readings: readings.size,
-        undetermined: undeterminedSlots(candidates, confirmed)
+        undetermined: undeterminedSlots(candidates)
       });
     }
     const [first] = readings;
@@ -3062,7 +3142,10 @@ function assembleWithin(faces, threshold, confirmed, options, maxRepairCost, all
     valid: true,
     scheme: schemes.length === 1 ? schemes[0] : "undetermined",
     ...summariseConfidence(conf, threshold),
-    rotations: [...chosen]
+    rotations: [...chosen],
+    // The captures this reading was built from — repaired when a repair ran — so a host settles
+    // what was accepted and not what the camera first read. See `AiScanResult.captures`.
+    captures: { ...bySlot }
   };
 }
 function withCentre(capture, colour) {
@@ -3073,6 +3156,13 @@ function withCentre(capture, colour) {
   const scores = capture.scores.map((row) => [...row]);
   scores[4] = scores[4].map((_, c) => c === colour ? 1 : 0);
   return { ...capture, colors, scores };
+}
+function placedBy(slots) {
+  const placed = {};
+  slots.forEach((slot, i) => {
+    placed[slot] = i;
+  });
+  return placed;
 }
 function orderings(items) {
   if (items.length <= 1) return [[...items]];
@@ -3128,26 +3218,46 @@ function resolveCentres(named, unnamed, threshold = LOW_CONFIDENCE_THRESHOLD, op
   }));
   if (unnamed.length === 1) {
     const only = assessed[0];
-    return { result: only.result, faces: only.faces, decidedBy: "counting" };
+    return {
+      result: only.result,
+      faces: only.faces,
+      placed: placedBy(only.slots),
+      decidedBy: "counting"
+    };
   }
   const fits = assessed.filter(
     ({ result }) => result.valid || result.ambiguous === true || result.confirm !== void 0
   );
   if (fits.length === 1) {
     const [fit] = fits;
-    return { result: fit.result, faces: fit.faces, decidedBy: "legality" };
+    return {
+      result: fit.result,
+      faces: fit.faces,
+      placed: placedBy(fit.slots),
+      decidedBy: "legality"
+    };
   }
   const claims2 = claimed.filter((c) => c !== null);
-  const shared = slotOf(
-    claims2.find((c, i) => claims2.indexOf(c) !== i) ?? claims2[0] ?? colourOfSlot(free[0])
-  );
-  const missing = free.find((slot) => !claims2.includes(colourOfSlot(slot))) ?? free[0];
-  const conflict = (legalFilings) => ({
-    result: reject(
-      legalFilings === 0 ? "sides read with the same centre colour, and no way of filing them is a legal cube" : "sides read with the same centre colour, and more than one way of filing them is a legal cube",
-      { centreConflict: { shared, missing, legalFilings } }
-    )
-  });
+  const unread = claimed.length - claims2.length;
+  const duplicated = claims2.find((c, i) => claims2.indexOf(c) !== i) ?? (unread === 0 ? claims2[0] : void 0);
+  const conflict = (legalFilings) => {
+    if (duplicated === void 0) {
+      return {
+        result: reject(
+          legalFilings === 0 ? "sides whose centres never settled, and no way of filing them is a legal cube" : "sides whose centres never settled, and more than one way of filing them is a legal cube",
+          { unreadCentres: unread, legalFilings }
+        )
+      };
+    }
+    const shared = slotOf(duplicated);
+    const missing = free.find((slot) => !claims2.includes(colourOfSlot(slot))) ?? free[0];
+    return {
+      result: reject(
+        legalFilings === 0 ? "sides read with the same centre colour, and no way of filing them is a legal cube" : "sides read with the same centre colour, and more than one way of filing them is a legal cube",
+        { centreConflict: { shared, missing, legalFilings } }
+      )
+    };
+  };
   if (fits.length > 1) return conflict(fits.length);
   return byConfidence(claimed, claims2, unnamed, free, assessed, conflict);
 }
@@ -3172,16 +3282,31 @@ function byConfidence(claimed, claims2, unnamed, free, assessed, conflict) {
     ({ slots }) => slots.every((slot, i) => i === movers[0] ? slot === open[0] : slot === slotOf(claims2[i]))
   );
   if (!chosen) return conflict(0);
-  return { result: chosen.result, faces: chosen.faces, decidedBy: "confidence" };
+  return {
+    result: chosen.result,
+    faces: chosen.faces,
+    placed: placedBy(chosen.slots),
+    decidedBy: "confidence"
+  };
 }
 
 // src/camera.ts
 var FrameNotReadyError = class extends Error {
-  constructor() {
-    super("camera not ready: video has no dimensions yet");
+  constructor(reason = "the video has no dimensions yet") {
+    super(`camera not ready: ${reason}`);
     this.name = "FrameNotReadyError";
   }
 };
+var CameraLostError = class extends Error {
+  constructor(why) {
+    super(`camera lost: ${why}`);
+    this.name = "CameraLostError";
+  }
+};
+function frameLiveness(stream, track) {
+  if (!track || track.readyState === "ended" || stream?.active === false) return "ended";
+  return track.muted === true ? "muted" : "live";
+}
 var IDEAL_WIDTH = 1280;
 var IDEAL_HEIGHT = 720;
 function facingOf(value) {
@@ -3198,7 +3323,7 @@ function describeTrack(track) {
 }
 async function listCameras() {
   const devices = await navigator.mediaDevices.enumerateDevices();
-  return devices.filter((d) => d.kind === "videoinput").map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Camera ${i + 1}` }));
+  return devices.filter((d) => d.kind === "videoinput").filter((d) => d.deviceId !== "").map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Camera ${i + 1}` }));
 }
 function raceAbort(promise, signal) {
   if (!signal) return promise;
@@ -3222,17 +3347,60 @@ function raceAbort(promise, signal) {
   });
 }
 var abortError = () => new DOMException("camera open aborted", "AbortError");
+function videoConstraints(opts) {
+  const constraints = {};
+  if (opts.deviceId) constraints.deviceId = { exact: opts.deviceId };
+  else if (opts.facingMode) constraints.facingMode = opts.facingMode;
+  constraints.width = { ideal: opts.width ?? IDEAL_WIDTH };
+  constraints.height = { ideal: opts.height ?? IDEAL_HEIGHT };
+  return constraints;
+}
+async function acquireStream(constraints, signal) {
+  const asked = navigator.mediaDevices.getUserMedia(constraints);
+  if (signal) {
+    void asked.then(
+      (stream) => {
+        if (signal.aborted) for (const track of stream.getTracks()) track.stop();
+      },
+      () => {
+      }
+    );
+  }
+  return raceAbort(asked, signal);
+}
+function frameSourceOf(video, stream, ctx, canvas, release) {
+  const track = stream.getVideoTracks()[0];
+  const device = describeTrack(track);
+  let endedWhy = null;
+  track?.addEventListener("ended", () => {
+    endedWhy = "the video track ended";
+  });
+  const ready = () => {
+    if (endedWhy !== null) throw new CameraLostError(endedWhy);
+    const liveness = frameLiveness(stream, track);
+    if (liveness === "ended") throw new CameraLostError("the camera stopped delivering");
+    if (liveness === "muted") throw new FrameNotReadyError("the video track is muted");
+    if (video.videoWidth === 0 || video.videoHeight === 0) throw new FrameNotReadyError();
+  };
+  return {
+    device,
+    ready,
+    grab() {
+      ready();
+      const w = video.videoWidth;
+      const h = video.videoHeight;
+      if (canvas.width !== w) canvas.width = w;
+      if (canvas.height !== h) canvas.height = h;
+      ctx.drawImage(video, 0, 0, w, h);
+      const img = ctx.getImageData(0, 0, w, h);
+      return { data: img.data, width: img.width, height: img.height };
+    },
+    stop: release
+  };
+}
 async function openCamera(video, opts = {}, signal) {
   if (signal?.aborted) throw abortError();
-  const videoConstraints = {};
-  if (opts.deviceId) videoConstraints.deviceId = { exact: opts.deviceId };
-  else if (opts.facingMode) videoConstraints.facingMode = opts.facingMode;
-  videoConstraints.width = { ideal: opts.width ?? IDEAL_WIDTH };
-  videoConstraints.height = { ideal: opts.height ?? IDEAL_HEIGHT };
-  const stream = await navigator.mediaDevices.getUserMedia({
-    video: videoConstraints,
-    audio: false
-  });
+  const stream = await acquireStream({ video: videoConstraints(opts), audio: false }, signal);
   const release = () => {
     for (const track of stream.getTracks()) track.stop();
     if (video.srcObject === stream) video.srcObject = null;
@@ -3248,21 +3416,7 @@ async function openCamera(video, opts = {}, signal) {
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     if (!ctx) throw new Error("2D canvas context unavailable");
-    const device = describeTrack(stream.getVideoTracks()[0]);
-    return {
-      device,
-      grab() {
-        const w = video.videoWidth;
-        const h = video.videoHeight;
-        if (w === 0 || h === 0) throw new FrameNotReadyError();
-        if (canvas.width !== w) canvas.width = w;
-        if (canvas.height !== h) canvas.height = h;
-        ctx.drawImage(video, 0, 0, w, h);
-        const img = ctx.getImageData(0, 0, w, h);
-        return { data: img.data, width: img.width, height: img.height };
-      },
-      stop: release
-    };
+    return frameSourceOf(video, stream, ctx, canvas, release);
   } catch (err) {
     release();
     throw err;
@@ -3281,6 +3435,53 @@ function letterboxOf(width, height, imgsz) {
     padX: Math.floor((imgsz - newW) / 2),
     padY: Math.floor((imgsz - newH) / 2)
   };
+}
+var IMG_SIZE = 640;
+var PAD = 114 / 255;
+function preprocess(frame, imgsz = IMG_SIZE) {
+  const { src, w, h } = validatedFrame(frame, imgsz);
+  const { scale, newW, newH, padX, padY } = letterboxOf(w, h, imgsz);
+  const plane = imgsz * imgsz;
+  const out = new Float32Array(3 * plane).fill(PAD);
+  for (let y = 0; y < newH; y++) {
+    const sy = Math.min(h - 1, Math.max(0, (y + 0.5) / scale - 0.5));
+    const y0 = Math.floor(sy);
+    const y1 = Math.min(h - 1, y0 + 1);
+    const fy = sy - y0;
+    const oy = y + padY;
+    for (let x = 0; x < newW; x++) {
+      const sx = Math.min(w - 1, Math.max(0, (x + 0.5) / scale - 0.5));
+      const x0 = Math.floor(sx);
+      const x1 = Math.min(w - 1, x0 + 1);
+      const fx = sx - x0;
+      const o = oy * imgsz + (x + padX);
+      for (let ch = 0; ch < 3; ch++) {
+        const p00 = src[(y0 * w + x0) * 4 + ch];
+        const p01 = src[(y0 * w + x1) * 4 + ch];
+        const p10 = src[(y1 * w + x0) * 4 + ch];
+        const p11 = src[(y1 * w + x1) * 4 + ch];
+        const top = p00 + (p01 - p00) * fx;
+        const bot = p10 + (p11 - p10) * fx;
+        out[ch * plane + o] = (top + (bot - top) * fy) / 255;
+      }
+    }
+  }
+  return { data: out, imgsz };
+}
+function validatedFrame(frame, imgsz) {
+  const { data: src, width: w, height: h } = frame;
+  if (!Number.isInteger(imgsz) || imgsz <= 0) {
+    throw new Error(`preprocess: imgsz ${imgsz} is not a positive whole number of pixels`);
+  }
+  if (!Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0) {
+    throw new Error(`preprocess: a frame of ${w}x${h} is not an image`);
+  }
+  if (src.length !== w * h * 4) {
+    throw new Error(
+      `preprocess: a ${w}x${h} RGBA frame is ${w * h * 4} bytes, but this one holds ${src.length}`
+    );
+  }
+  return { src, w, h };
 }
 
 // src/onnx-postprocess.ts
@@ -3384,11 +3585,167 @@ function dropIsolated(dets) {
 var MAX_STEP = 2.5;
 var MAX_COLUMN_SPREAD = 3;
 var MAX_AREA_RATIO = 5;
-function gridOf(nine) {
+var LATTICE_TOLERANCE = 0.5;
+var ROLL_TIE_BAND_DEG = 3;
+var len2 = (v) => v[0] * v[0] + v[1] * v[1];
+var DEG = 180 / Math.PI;
+function centreOf(nine) {
+  const mx = nine.reduce((s, d) => s + d.cx, 0) / 9;
+  const my = nine.reduce((s, d) => s + d.cy, 0) / 9;
+  let centre = nine[0];
+  let nearest = Number.POSITIVE_INFINITY;
+  for (const d of nine) {
+    const dd = (d.cx - mx) * (d.cx - mx) + (d.cy - my) * (d.cy - my);
+    if (dd < nearest) {
+      nearest = dd;
+      centre = d;
+    }
+  }
+  return centre;
+}
+function perfectMatchings(items) {
+  if (items.length === 0) return [[]];
+  const [a, ...others] = items;
+  const out = [];
+  for (let k = 0; k < others.length; k++) {
+    const b = others[k];
+    const rest = [...others.slice(0, k), ...others.slice(k + 1)];
+    for (const m of perfectMatchings(rest)) out.push([[a, b], ...m]);
+  }
+  return out;
+}
+var OUTER_MATCHINGS = perfectMatchings([0, 1, 2, 3, 4, 5, 6, 7]);
+function antipodalDirs(rel) {
+  let best = OUTER_MATCHINGS[0];
+  let bestCost = Number.POSITIVE_INFINITY;
+  for (const m of OUTER_MATCHINGS) {
+    let cost = 0;
+    for (const [i, j] of m)
+      cost += Math.sqrt(len2([rel[i][0] + rel[j][0], rel[i][1] + rel[j][1]]));
+    if (cost < bestCost) {
+      bestCost = cost;
+      best = m;
+    }
+  }
+  return best.map(
+    ([i, j]) => [(rel[i][0] - rel[j][0]) / 2, (rel[i][1] - rel[j][1]) / 2]
+  );
+}
+function basisOf(dirs) {
+  const nearer = (p, q) => Math.min(len2([p[0] - q[0], p[1] - q[1]]), len2([p[0] + q[0], p[1] + q[1]]));
+  let basis = null;
+  let miss = Number.POSITIVE_INFINITY;
+  for (let a = 0; a < 4; a++) {
+    for (let b = a + 1; b < 4; b++) {
+      const u2 = dirs[a];
+      const v2 = dirs[b];
+      const rest = [0, 1, 2, 3].filter((k) => k !== a && k !== b).map((k) => dirs[k]);
+      const sum = [u2[0] + v2[0], u2[1] + v2[1]];
+      const diff = [u2[0] - v2[0], u2[1] - v2[1]];
+      const r = Math.min(
+        Math.sqrt(nearer(rest[0], sum)) + Math.sqrt(nearer(rest[1], diff)),
+        Math.sqrt(nearer(rest[0], diff)) + Math.sqrt(nearer(rest[1], sum))
+      );
+      if (r < miss) {
+        miss = r;
+        basis = [a, b];
+      }
+    }
+  }
+  if (basis === null) return null;
+  const u = dirs[basis[0]];
+  const v = dirs[basis[1]];
+  const step = Math.sqrt(Math.min(len2(u), len2(v)));
+  if (!(step > 0) || miss > LATTICE_TOLERANCE * step) return null;
+  return [u, v];
+}
+function orient(u0, v0) {
+  const pointRight = (w) => w[0] < 0 || w[0] === 0 && w[1] < 0 ? [-w[0], -w[1]] : [w[0], w[1]];
+  const u = pointRight(u0);
+  const v = pointRight(v0);
+  const tilt = (w) => Math.abs(Math.atan2(w[1], w[0]));
+  let row = u;
+  let col = v;
+  if (tilt(v) < tilt(u)) {
+    row = v;
+    col = u;
+  }
+  if (col[1] < 0 || col[1] === 0 && col[0] < 0) col = [-col[0], -col[1]];
+  return { row, col, gap: Math.abs(tilt(u) - tilt(v)) };
+}
+function cellsOf(centre, others, rel, row, col) {
+  const det = row[0] * col[1] - row[1] * col[0];
+  if (det === 0) return null;
+  const cells = /* @__PURE__ */ new Map([[centre, [0, 0]]]);
+  const taken = /* @__PURE__ */ new Set(["0,0"]);
+  for (let k = 0; k < 8; k++) {
+    const p = rel[k];
+    const i = (p[0] * col[1] - p[1] * col[0]) / det;
+    const j = (row[0] * p[1] - row[1] * p[0]) / det;
+    const ci = Math.round(i);
+    const cj = Math.round(j);
+    if (ci < -1 || ci > 1 || cj < -1 || cj > 1) return null;
+    const key = `${ci},${cj}`;
+    if (taken.has(key)) return null;
+    taken.add(key);
+    cells.set(others[k], [ci, cj]);
+  }
+  return cells;
+}
+function latticeAbout(centre, nine) {
+  const others = nine.filter((d) => d !== centre);
+  const rel = others.map((d) => [d.cx - centre.cx, d.cy - centre.cy]);
+  const basis = basisOf(antipodalDirs(rel));
+  if (!basis) return { ok: false, reason: "no-basis" };
+  const { row, col, gap } = orient(basis[0], basis[1]);
+  const cells = cellsOf(centre, others, rel, row, col);
+  if (!cells) return { ok: false, reason: "no-cells" };
+  if (gap < 2 * ROLL_TIE_BAND_DEG / DEG) return { ok: false, reason: "roll-tie", gap: gap * DEG };
+  return { ok: true, lattice: { row, col, cells } };
+}
+function fitLattice(nine) {
+  if (nine.length !== 9 || new Set(nine).size !== 9) return { ok: false, reason: "not-nine" };
+  return latticeAbout(centreOf(nine), nine);
+}
+function latticeOrder(nine, lattice) {
+  return [...nine].sort((a, b) => {
+    const [ai, aj] = lattice.cells.get(a);
+    const [bi, bj] = lattice.cells.get(b);
+    return aj - bj || ai - bi;
+  });
+}
+function rowsByY(nine) {
   const byY = [...nine].sort((a, b) => a.cy - b.cy);
-  const rows = [byY.slice(0, 3), byY.slice(3, 6), byY.slice(6, 9)].map(
+  return [byY.slice(0, 3), byY.slice(3, 6), byY.slice(6, 9)].map(
     (r) => r.sort((a, b) => a.cx - b.cx)
   );
+}
+function gridOf(nine) {
+  const fit = fitLattice(nine);
+  if (fit.ok) {
+    const level = rowsByY(nine).flat();
+    const ordered = latticeOrder(nine, fit.lattice);
+    if (level.every((d, k) => d === ordered[k])) return rulesOn(nine);
+    const phi = Math.atan2(fit.lattice.row[1], fit.lattice.row[0]);
+    const cos = Math.cos(-phi);
+    const sin = Math.sin(-phi);
+    const centre = ordered[4];
+    const turned = nine.map((d) => ({
+      ...d,
+      cx: centre.cx + (d.cx - centre.cx) * cos - (d.cy - centre.cy) * sin,
+      cy: centre.cy + (d.cx - centre.cx) * sin + (d.cy - centre.cy) * cos
+    }));
+    const fitted = rulesOn(turned);
+    if ("fail" in fitted) return fitted;
+    return { grid: fitted.grid.map((t) => nine[turned.indexOf(t)]) };
+  }
+  if (fit.reason === "roll-tie") {
+    return { fail: { rule: "roll-tie", value: fit.gap, bound: 2 * ROLL_TIE_BAND_DEG } };
+  }
+  return rulesOn(nine);
+}
+function rulesOn(nine) {
+  const rows = rowsByY(nine);
   const size = nine.reduce((s, d) => s + (d.w + d.h) / 2, 0) / 9;
   const areas = nine.map((d) => d.w * d.h);
   const largest = Math.max(...areas);
@@ -3449,49 +3806,6 @@ function fitFace(dets, minConf = MIN_STICKER_CONFIDENCE) {
 }
 
 // src/onnx-detect.ts
-var IMG_SIZE = 640;
-var PAD = 114 / 255;
-function preprocess(frame, imgsz = IMG_SIZE) {
-  const { data: src, width: w, height: h } = frame;
-  if (!Number.isInteger(imgsz) || imgsz <= 0) {
-    throw new Error(`preprocess: imgsz ${imgsz} is not a positive whole number of pixels`);
-  }
-  if (!Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0) {
-    throw new Error(`preprocess: a frame of ${w}x${h} is not an image`);
-  }
-  if (src.length !== w * h * 4) {
-    throw new Error(
-      `preprocess: a ${w}x${h} RGBA frame is ${w * h * 4} bytes, but this one holds ${src.length}`
-    );
-  }
-  const { scale, newW, newH, padX, padY } = letterboxOf(w, h, imgsz);
-  const plane = imgsz * imgsz;
-  const out = new Float32Array(3 * plane).fill(PAD);
-  for (let y = 0; y < newH; y++) {
-    const sy = Math.min(h - 1, Math.max(0, (y + 0.5) / scale - 0.5));
-    const y0 = Math.floor(sy);
-    const y1 = Math.min(h - 1, y0 + 1);
-    const fy = sy - y0;
-    const oy = y + padY;
-    for (let x = 0; x < newW; x++) {
-      const sx = Math.min(w - 1, Math.max(0, (x + 0.5) / scale - 0.5));
-      const x0 = Math.floor(sx);
-      const x1 = Math.min(w - 1, x0 + 1);
-      const fx = sx - x0;
-      const o = oy * imgsz + (x + padX);
-      for (let ch = 0; ch < 3; ch++) {
-        const p00 = src[(y0 * w + x0) * 4 + ch];
-        const p01 = src[(y0 * w + x1) * 4 + ch];
-        const p10 = src[(y1 * w + x0) * 4 + ch];
-        const p11 = src[(y1 * w + x1) * 4 + ch];
-        const top = p00 + (p01 - p00) * fx;
-        const bot = p10 + (p11 - p10) * fx;
-        out[ch * plane + o] = (top + (bot - top) * fy) / 255;
-      }
-    }
-  }
-  return { data: out, imgsz };
-}
 var NUM_CLASSES = 6;
 var DETECT_ROWS = 4 + NUM_CLASSES;
 function detectionsFromOutput(output, opts = {}) {
@@ -3600,6 +3914,7 @@ function toFrameBox(box2, frame, imgsz) {
   return [(box2[0] - padX) / scale, (box2[1] - padY) / scale, box2[2] / scale, box2[3] / scale];
 }
 function medianLab(frame, box2) {
+  if (!box2.every(Number.isFinite)) return null;
   const cx = box2[0] + box2[2] / 2;
   const cy = box2[1] + box2[3] / 2;
   const x0 = Math.max(0, Math.floor(cx - box2[2] * INNER / 2));
@@ -3659,6 +3974,14 @@ var closing = Promise.resolve();
 var closesOut = 0;
 var opening = Promise.resolve();
 var opensOut = 0;
+var CLOSE_TIMEOUT_MS = 1e4;
+var newest = null;
+async function awaitClosesLanded(abandoned) {
+  while (closesOut > 0) {
+    await closing;
+    abandoned();
+  }
+}
 function trackOpen(sent) {
   opensOut++;
   const settled = () => {
@@ -3712,21 +4035,28 @@ var NativeDetector = class {
     const claim = ++claims;
     this.claim = claim;
     cameraClaim = claim;
+    let issued = false;
     const abort = () => {
       this.closeCamera(claim);
+      if (issued) this.repairIfOvertaken(claim);
       throw new DOMException("camera open superseded", "AbortError");
     };
-    while (closesOut > 0) {
-      await closing;
-      if (cancelled()) abort();
+    if (closesOut > 0) {
+      await awaitClosesLanded(() => {
+        if (cancelled()) abort();
+      });
     }
     cameraClaim = claim;
     try {
       const sent = this.invoke(`${P}open_camera`, { deviceId: opts.deviceId ?? null });
+      issued = true;
+      newest = { claim, opts, landed: false };
       trackOpen(sent);
       await sent;
+      if (newest?.claim === claim) newest.landed = true;
     } catch (err) {
       if (cameraClaim === claim) cameraClaim = 0;
+      if (newest?.claim === claim) newest = null;
       throw err;
     }
     if (cancelled()) abort();
@@ -3751,27 +4081,79 @@ var NativeDetector = class {
    * bridge and the plugin compiled twice.
    */
   loading = null;
+  /** Bumped by `dispose()`, so a load still crossing the bridge cannot mark the model loaded after it. */
+  loadGeneration = 0;
   async load() {
     if (this.loaded) return;
     if (this.loading) return this.loading;
+    const generation = this.loadGeneration;
     this.loading = this.invoke(`${P}load_model`, { computeUnits: this.computeUnits }).then(() => {
-      this.loaded = true;
+      if (generation === this.loadGeneration) this.loaded = true;
     }).finally(() => {
-      this.loading = null;
+      if (generation === this.loadGeneration) this.loading = null;
     });
     return this.loading;
   }
   async next() {
     const reply = await this.invoke(`${P}next_detection`);
-    return decodeTensorResponse(reply instanceof ArrayBuffer ? reply : reply?.tensor ?? "");
+    if (reply instanceof ArrayBuffer) return decodeTensorResponse(reply);
+    if (reply !== null && typeof reply === "object" && "tensor" in reply) {
+      const { tensor } = reply;
+      if (typeof tensor === "string") return decodeTensorResponse(tensor);
+      throw new Error(`cube-vision: next_detection answered with a ${typeof tensor} tensor`);
+    }
+    throw new Error(
+      `cube-vision: next_detection answered with ${reply === null ? "null" : `a ${typeof reply}`}, not a tensor`
+    );
   }
   async cameras() {
-    return await this.invoke(`${P}list_cameras`);
+    return nativeCameras(await this.invoke(`${P}list_cameras`));
   }
   stop() {
     this.opening++;
     this.dev = null;
     this.closeCamera(this.claim);
+  }
+  /**
+   * Release the camera AND forget the model, so the next `load()` asks the plugin to build it again.
+   *
+   * ADDED 2026-09-21, for the panel's recovery from an inference that never settled: `tickFail`
+   * disposes the detector and clears `modelLoaded`, so that Start builds a fresh session — which it
+   * did for `WebDetector` and not here, because this class had no `dispose()` and its `load()` then
+   * answered "already loaded" without crossing the bridge. The wedged plugin session was kept, and
+   * every Start after a timeout was the same fifteen seconds and the same notice. The model lives in
+   * the plugin, so what is released here is this side's CLAIM on it: `load_model` is sent again,
+   * and the plugin replaces what it holds (each platform's `load_model` builds anew). Not a
+   * tombstone, exactly as `Detector.dispose` says: a `load()` or `use()` after this is a new caller.
+   */
+  dispose() {
+    this.stop();
+    this.loadGeneration++;
+    this.loaded = false;
+    this.loading = null;
+  }
+  /**
+   * This attempt's open has landed, cancelled — and if the NEWEST open had already landed by then,
+   * this one ran after it and the lens is on this attempt's device, not its owner's: re-issue that
+   * owner's open (see `closing`, "two opens are not ordered"). Nothing to do when the newest is
+   * still in flight (it lands after, and so ran after), when the newest is this attempt, or when
+   * the newest owner has since let the claim go (its `stop()` closed what it held).
+   */
+  repairIfOvertaken(claim) {
+    const owner = newest;
+    if (!owner || owner.claim === claim || !owner.landed || cameraClaim !== owner.claim) return;
+    const sent = this.invoke(`${P}open_camera`, { deviceId: owner.opts.deviceId ?? null });
+    trackOpen(sent);
+    void sent.then(
+      () => {
+      },
+      (err) => {
+        console.warn(
+          "[cubus] the native camera could not be reopened for its owner after an abandoned open landed late",
+          err
+        );
+      }
+    );
   }
   /**
    * Close the one native camera, if this claim is entitled to. See `cameraClaim`.
@@ -3824,15 +4206,40 @@ var NativeDetector = class {
         );
       }
     );
-    closing = Promise.all([
-      closing,
-      sent.then(() => {
-        closesOut--;
-        if (closesOut === 0) closing = Promise.resolve();
-      })
-    ]);
+    let counted = false;
+    const countOut = () => {
+      if (counted) return;
+      counted = true;
+      closesOut--;
+      if (closesOut === 0) closing = Promise.resolve();
+    };
+    let timer;
+    const gaveUp = new Promise((resolve) => {
+      timer = setTimeout(() => {
+        console.warn(
+          `[cubus] the native camera's close_camera did not answer within ${Math.round(CLOSE_TIMEOUT_MS / 1e3)} seconds \u2014 presumed lost; a later open no longer waits for it`
+        );
+        resolve();
+      }, CLOSE_TIMEOUT_MS);
+    });
+    const settled = sent.then(() => {
+      clearTimeout(timer);
+    });
+    closing = Promise.all([closing, Promise.race([settled, gaveUp]).then(countOut)]);
   }
 };
+function nativeCameras(raw) {
+  if (!Array.isArray(raw)) {
+    throw new Error(
+      `cube-vision: list_cameras answered with ${raw === null ? "null" : `a ${typeof raw}`}, not a list`
+    );
+  }
+  return raw.map((entry, i) => {
+    const device = nativeDevice(entry);
+    if (device === null) throw new Error(`cube-vision: list_cameras entry ${i} is not a camera`);
+    return device;
+  });
+}
 function base64ToBuffer(b64) {
   if (b64.length === 0) return null;
   const bin = atob(b64);
@@ -3846,11 +4253,15 @@ function decodeTensorResponse(input) {
   const versioned = buf.byteLength >= 4 && new Int32Array(buf, 0, 1)[0] < 0;
   if (!versioned && buf.byteLength < 8) return null;
   const { rows, anchors, headerBytes, picture } = tensorHeader(buf);
-  if (anchors <= 0 || rows <= 0) return null;
+  if (anchors === 0) return null;
   const count2 = rows * anchors;
-  if (buf.byteLength < headerBytes + count2 * 4) {
+  const need = headerBytes + count2 * 4;
+  if (!Number.isSafeInteger(need)) {
+    throw new Error(`cube-vision tensor: a ${rows}\xD7${anchors} header names a length no buffer has`);
+  }
+  if (buf.byteLength !== need) {
     throw new Error(
-      `cube-vision tensor is ${buf.byteLength} bytes, need ${headerBytes + count2 * 4} for ${rows}\xD7${anchors}`
+      `cube-vision tensor is ${buf.byteLength} bytes, need ${need} for ${rows}\xD7${anchors}`
     );
   }
   const data = new Float32Array(buf, headerBytes, count2);
@@ -3860,7 +4271,11 @@ function tensorHeader(buf) {
   const first = new Int32Array(buf, 0, 1)[0];
   if (first >= 0) {
     const [rows2, anchors2] = new Int32Array(buf, 0, 2);
-    return { rows: rows2, anchors: anchors2, headerBytes: 8 };
+    if (rows2 > 0 && anchors2 > 0) return { rows: rows2, anchors: anchors2, headerBytes: 8 };
+    if (rows2 === 0 && anchors2 === 0) return { rows: 0, anchors: 0, headerBytes: 8 };
+    throw new Error(
+      `cube-vision tensor: a version 1 header of ${rows2}\xD7${anchors2} is neither a frame nor "no frame"`
+    );
   }
   if (first !== -2) throw new Error(`cube-vision tensor: unknown wire version ${-first}`);
   if (buf.byteLength < 20) {
@@ -3891,38 +4306,266 @@ function nativeDevice(raw) {
   };
 }
 
+// view/letterbox-protocol.ts
+function handleLetterboxRequest(request) {
+  const pre = preprocess(request.frame, IMG_SIZE);
+  return { id: request.id, data: pre.data, imgsz: pre.imgsz, frame: request.frame };
+}
+
+// view/letterbox-client.ts
+function canOffload() {
+  const page = globalThis;
+  return typeof page.Worker === "function" && typeof page.createImageBitmap === "function" && typeof page.OffscreenCanvas === "function";
+}
+function notYetSnapshottable(err) {
+  return err instanceof DOMException && err.name === "InvalidStateError";
+}
+var LetterboxOffload = class {
+  worker = null;
+  /** Set once a worker has proved it cannot be had at all, so no later request builds another. */
+  broken = false;
+  /** Whether the current worker has ever answered — the test that makes `broken` safe to set. */
+  spoke = false;
+  nextId = 0;
+  waiting = null;
+  /** Whether the next `prepare` will go to a worker. */
+  get offloading() {
+    return !this.broken && canOffload();
+  }
+  /**
+   * Letterbox the video's current picture off the page's thread, or on it when there is no other.
+   *
+   * `fallback` reads the pixels on the page — the caller's `grab()`, with its liveness checks — and
+   * is what a page without the worker path runs. It is NOT what a worker that dies mid-frame runs:
+   * that tick fails loud, as any failed tick does, and the next one falls back.
+   *
+   * THE SLOT IS TAKEN BEFORE THE FIRST AWAIT (2026-09-21). `waiting` used to be set only after
+   * `createImageBitmap` had resolved, so two calls could both pass the one-request guard, both
+   * post, and the second overwrite the first's slot — whose promise then never settled. The
+   * answer returned here is the SLOT's promise, so a request stranded while the engine is still
+   * taking the snapshot is answered the moment it is stranded, not when the snapshot lands; the
+   * snapshot itself runs on the side (`snapshot`) and is what re-checks the worker afterwards.
+   */
+  async prepare(video, fallback) {
+    const worker = this.offloading ? this.spawn() : null;
+    if (!worker) return this.onThread(fallback);
+    if (this.waiting) throw new Error("letterbox: a frame is already being prepared");
+    const id = ++this.nextId;
+    let slot;
+    const answer = new Promise((resolve, reject2) => {
+      slot = { id, resolve, reject: reject2 };
+    });
+    this.waiting = slot;
+    void this.snapshot(video, worker, slot);
+    return answer;
+  }
+  /**
+   * Take the picture and hand it to `worker` under `slot`, unless the slot was stranded meanwhile.
+   *
+   * The worker is re-checked AFTER the await: a `dispose()` or a worker death landing during the
+   * snapshot has already stranded this request, and posting the bitmap to a terminated worker —
+   * which discards its queue — would have left the request installed and unanswerable. A
+   * superseded snapshot's bitmap is the one resource nothing else will release, so it is closed
+   * here; so is one a failed post could not transfer.
+   */
+  async snapshot(video, worker, slot) {
+    let bitmap;
+    try {
+      bitmap = await createImageBitmap(video);
+    } catch (err) {
+      if (this.waiting !== slot) return;
+      this.waiting = null;
+      slot.reject(
+        notYetSnapshottable(err) ? new FrameNotReadyError("the video has no picture to snapshot yet") : err
+      );
+      return;
+    }
+    if (this.worker !== worker || this.waiting !== slot) {
+      bitmap.close();
+      return;
+    }
+    const job = { id: slot.id, bitmap };
+    try {
+      worker.postMessage(job, [bitmap]);
+    } catch (err) {
+      bitmap.close();
+      this.waiting = null;
+      slot.reject(err);
+    }
+  }
+  /**
+   * The page-thread path on its own, for a caller that must not take a bitmap: a source with no
+   * `FrameSource.ready` answers its liveness at `grab()` and nowhere else (2026-09-21).
+   */
+  onThread(fallback) {
+    return { ...handleLetterboxRequest({ id: 0, frame: fallback() }), owned: false };
+  }
+  /**
+   * Abandon the frame in flight, if any, and keep the worker: what a `stop()` mid-frame wants.
+   * The caller of that frame is told; a bitmap still being snapshotted for it is closed when it
+   * arrives (see `prepare`); a reply the worker still sends for it is dropped by its id.
+   */
+  cancel(why = "letterbox: the frame was abandoned") {
+    this.strand(why);
+  }
+  /** Give the worker back. A client is usable again afterwards; it simply spawns a new one. */
+  dispose() {
+    this.worker?.terminate();
+    this.worker = null;
+    this.spoke = false;
+    this.strand("letterbox: the worker was disposed");
+  }
+  spawn() {
+    if (this.worker) return this.worker;
+    try {
+      const spawned = new Worker(new URL("./letterbox-worker.js", import.meta.url), {
+        type: "module"
+      });
+      spawned.addEventListener("message", (ev) => {
+        if (this.worker !== spawned) return;
+        this.spoke = true;
+        this.deliver(ev.data);
+      });
+      spawned.addEventListener("error", (ev) => {
+        if (this.worker !== spawned) return;
+        this.failed(ev);
+      });
+      spawned.addEventListener("messageerror", (ev) => {
+        if (this.worker !== spawned) return;
+        this.failed(ev);
+      });
+      this.worker = spawned;
+      return spawned;
+    } catch (cause) {
+      console.warn(
+        "letterbox-client: the letterbox worker could not be built, so frames are prepared on this thread",
+        cause
+      );
+      this.broken = true;
+      return null;
+    }
+  }
+  deliver(reply) {
+    if ("error" in reply && reply.fatal) {
+      console.warn(
+        `letterbox-client: the letterbox worker cannot letterbox here (${reply.error}), so frames are prepared on this thread`
+      );
+      this.broken = true;
+      this.worker?.terminate();
+      this.worker = null;
+      this.spoke = false;
+      this.strand(`letterbox worker: ${reply.error}`);
+      return;
+    }
+    const waiting = this.waiting;
+    if (!waiting || waiting.id !== reply.id) return;
+    this.waiting = null;
+    if ("error" in reply) {
+      waiting.reject(new Error(`letterbox worker: ${reply.error}`));
+      return;
+    }
+    waiting.resolve({ data: reply.data, imgsz: reply.imgsz, frame: reply.frame, owned: true });
+  }
+  failed(cause) {
+    if (!this.spoke) this.broken = true;
+    console.warn(
+      "letterbox-client: the letterbox worker failed, so frames are prepared on this thread",
+      cause
+    );
+    this.worker?.terminate();
+    this.worker = null;
+    this.spoke = false;
+    this.strand("letterbox: the worker failed while preparing a frame");
+  }
+  /** The frame in flight, if any, is lost with its worker: its caller is told so rather than left waiting. */
+  strand(why) {
+    const stranded = this.waiting;
+    this.waiting = null;
+    stranded?.reject(new Error(why));
+  }
+};
+
 // view/onnx-runtime.ts
 var ortByUrl = /* @__PURE__ */ new Map();
+var urlOf = /* @__PURE__ */ new WeakMap();
+var retiredAt = /* @__PURE__ */ new Map();
+var retired = /* @__PURE__ */ new WeakSet();
+var withQuery = (url, key, value) => {
+  const [addr = "", hash = ""] = url.split(/(?=#)/, 2);
+  return `${addr}${addr.includes("?") ? "&" : "?"}${key}=${value}${hash}`;
+};
+var RuntimeRetiredError = class extends Error {
+  constructor() {
+    super(
+      "the runtime module is retired: a link of its chain did not settle within the chain's patience, so nothing new runs on it \u2014 a new session loads a fresh module"
+    );
+    this.name = "RuntimeRetiredError";
+  }
+};
 var configuring = /* @__PURE__ */ new WeakMap();
 var configured = /* @__PURE__ */ new WeakMap();
-function serialise(ort, work) {
-  const next = (configuring.get(ort) ?? Promise.resolve()).then(work, work);
-  configuring.set(
-    ort,
-    next.catch(() => {
-    })
+var RUN_CHAIN_TIMEOUT_MS = 3e4;
+var chainTimeoutMs = RUN_CHAIN_TIMEOUT_MS;
+function retire(ort, why) {
+  if (retired.has(ort)) return;
+  retired.add(ort);
+  const url = urlOf.get(ort);
+  if (url !== void 0) {
+    ortByUrl.delete(url);
+    retiredAt.set(url, (retiredAt.get(url) ?? 0) + 1);
+  }
+  console.warn(
+    `[cubus] ${why}: the runtime module is retired, and the next session loads a fresh one`
   );
-  return next;
+}
+function serialise(ort, work, kind = "work") {
+  const prev = configuring.get(ort) ?? Promise.resolve();
+  let release = () => {
+  };
+  const released = new Promise((resolve) => {
+    release = resolve;
+  });
+  configuring.set(ort, released);
+  return prev.then(async () => {
+    try {
+      if (kind === "work" && retired.has(ort)) throw new RuntimeRetiredError();
+      const timer = setTimeout(() => {
+        retire(ort, `a link of the runtime's chain did not settle within ${chainTimeoutMs} ms`);
+        release();
+      }, chainTimeoutMs);
+      try {
+        return await work();
+      } finally {
+        clearTimeout(timer);
+      }
+    } finally {
+      release();
+    }
+  });
 }
 var loadOrt = (url) => {
   let pending = ortByUrl.get(url);
   if (!pending) {
+    const generation = retiredAt.get(url) ?? 0;
+    const target = generation === 0 ? url : withQuery(url, "cubus-runtime-generation", `${generation}`);
     pending = import(
       /* @vite-ignore */
-      url
-    ).catch((err) => {
-      ortByUrl.delete(url);
-      throw err;
-    });
+      target
+    ).then(
+      (ort) => {
+        urlOf.set(ort, url);
+        return ort;
+      },
+      (err) => {
+        ortByUrl.delete(url);
+        throw err;
+      }
+    );
     ortByUrl.set(url, pending);
   }
   return pending;
 };
-var runtimeUrl = (url, proxied) => {
-  if (!proxied) return url;
-  const [addr = "", hash = ""] = url.split(/(?=#)/, 2);
-  return `${addr}${addr.includes("?") ? "&" : "?"}cubus-runtime=proxied${hash}`;
-};
+var runtimeUrl = (url, proxied) => proxied ? withQuery(url, "cubus-runtime", "proxied") : url;
 var proxiedSiblingUrl = (url) => {
   const match = /^([^?#]*?)([^/?#]+)(\?[^#]*)?(#.*)?$/.exec(url);
   if (!match) return url;
@@ -4162,15 +4805,21 @@ async function createModelRunner(modelUrl, opts = {}) {
   const ort = await loadRuntime(ortUrl, !gpu);
   const numThreads = opts.numThreads ?? defaultThreadCount();
   const wasmDir = opts.wasmPaths ?? "./";
-  const session = await createSession(ort, {
-    modelUrl,
-    ortUrl,
-    numThreads,
-    wasmDir,
-    // The proxy is OFF for the GPU path — see `createSession` for why that is not a compromise.
-    gpu,
-    executionProviders
-  });
+  let session;
+  try {
+    session = await createSession(ort, {
+      modelUrl,
+      ortUrl,
+      numThreads,
+      wasmDir,
+      // The proxy is OFF for the GPU path — see `createSession` for why that is not a compromise.
+      gpu,
+      executionProviders
+    });
+  } catch (err) {
+    if (!(err instanceof RuntimeRetiredError)) throw err;
+    return createModelRunner(modelUrl, opts);
+  }
   return owning(session, async (relinquish) => {
     const rebuildOnWasm = async (why) => {
       console.info(why);
@@ -4207,7 +4856,7 @@ async function createModelRunner(modelUrl, opts = {}) {
     }
     const serialised = (input, imgsz) => serialise(ort, () => run(input, imgsz));
     return Object.assign(serialised, {
-      dispose: () => session.release(),
+      dispose: () => serialise(ort, () => session.release(), "release"),
       providers: executionProviders
     });
   });
@@ -4231,6 +4880,14 @@ var WebDetector = class {
   modelUrl;
   source = null;
   run = null;
+  /**
+   * The letterbox, on another thread where the page can give it one (2026-09-20). `preprocess` on a
+   * 720p frame measured 14 ms median, 7–94 ms spread, on every tick of the page's thread; the pixel
+   * readback before it is a 3.7 MB copy on the same thread. Both go to `letterbox-worker.js` when
+   * the page has `Worker`, `createImageBitmap` and `OffscreenCanvas`, and stay here otherwise —
+   * the same tensor either way, because both run `handleLetterboxRequest`.
+   */
+  letterbox = new LetterboxOffload();
   /** The model URL `run` was built for — see `load`. */
   loadedUrl = null;
   /** A `load()` still in flight, so a second caller waits on it rather than building a rival. */
@@ -4398,21 +5055,45 @@ var WebDetector = class {
     this.run = run;
     this.loadedUrl = modelUrl;
   }
+  /**
+   * The model output for a fresh frame, or null when there is none to read.
+   *
+   * A TICK THE WORLD MOVED UNDER ANSWERS NULL (2026-09-21). The camera and the runner are read
+   * once, before the first await, and re-checked after it: `stop()`, `dispose()` and a `load()`
+   * for another model all replace them while a frame is out — `loadModel` releases the outgoing
+   * runner through a null `run`, which the continuation used to dereference (a TypeError on a
+   * detector doing exactly what it was told), or it ran the frame through whichever runner had
+   * arrived meanwhile. Null and not an error, because the contract's null is "nothing to infer
+   * this tick, ask again", and that is what a superseded tick is: the camera or the model it was
+   * asked against no longer exists, and the next tick asks against the current ones. A rejection
+   * would start the panel's failure clock over a detector that is working — and for a `stop()`
+   * the panel discards the tick by its epoch anyway.
+   */
   async next() {
     if (!this.source) throw new Error("no camera open \u2014 call use() first");
     if (!this.run) throw new Error("model not loaded \u2014 call load() first");
-    let frame;
+    const source = this.source;
+    const run = this.run;
+    const superseded = () => this.source !== source || this.run !== run;
+    let pre;
     try {
-      frame = this.source.grab();
+      if (source.ready) {
+        source.ready();
+        pre = await this.letterbox.prepare(this.video(), () => source.grab());
+      } else {
+        pre = this.letterbox.onThread(() => source.grab());
+      }
     } catch (err) {
+      if (superseded()) return null;
       if (err instanceof FrameNotReadyError) return null;
       throw err;
     }
-    const pre = preprocess(frame);
-    const output = await this.run(pre.data, pre.imgsz);
+    if (superseded()) return null;
+    const output = await run(pre.data, pre.imgsz);
+    const { frame } = pre;
     return {
       ...output,
-      frame: { data: new Uint8ClampedArray(frame.data), width: frame.width, height: frame.height }
+      frame: pre.owned ? frame : { data: new Uint8ClampedArray(frame.data), width: frame.width, height: frame.height }
     };
   }
   cameras() {
@@ -4423,6 +5104,7 @@ var WebDetector = class {
     this.opening = null;
     this.source?.stop();
     this.source = null;
+    this.letterbox.cancel("letterbox: the camera was stopped mid-frame");
   }
   dispose() {
     this.stop();
@@ -4434,6 +5116,7 @@ var WebDetector = class {
     this.loadedUrl = null;
     void run?.dispose().catch(() => {
     });
+    this.letterbox.dispose();
   }
 };
 
@@ -5211,6 +5894,11 @@ function classify(previous, colors) {
     forget: differing.length >= SUBJECT_CHANGE || anotherSide || turned
   };
 }
+function mostShown(reads) {
+  let most = 0;
+  for (const n of reads.values()) if (n > most) most = n;
+  return most === 0 ? [] : [...reads].filter(([, n]) => n === most).map(([c]) => c);
+}
 var Stillness = class {
   /**
    * @param reads Consecutive reads required with an identical EIGHT-sticker ring. The centre may
@@ -5301,6 +5989,24 @@ var Stillness = class {
     return this.centres.every((c) => c === first) ? first : null;
   }
   /**
+   * How many reads of the run showed each colour at the centre — what a side whose centre never
+   * agreed is remembered by (2026-09-20). A read of that side later, its centre settled, names the
+   * colour the run showed MOST; a different side that happens to share its eight (white and yellow
+   * after U D R L F B) names its own centre colour. That is what tells "the same side, held on"
+   * from "its twin", where the eight alone cannot (`dev-docs/scanner-audit-2026-09-20.md` §4).
+   *
+   * COUNTS, NOT A SET (2026-09-21). As a set, one frame was as good as nine: a white side whose
+   * centre flickered yellow on a single frame was remembered as "showed white and yellow", and the
+   * real yellow side — the same eight, its centre yellow on every frame — was then "the same side,
+   * held on" and turned away for good, so the scan could never reach six. A colour the run showed
+   * once is a flicker, and a flicker alone must not name a side (`mostShown`).
+   */
+  centreReads() {
+    const reads = /* @__PURE__ */ new Map();
+    for (const c of this.centres) if (c >= 0) reads.set(c, (reads.get(c) ?? 0) + 1);
+    return reads;
+  }
+  /**
    * The one position that keeps breaking the run on its own, or null.
    *
    * `atLeast` breaks before it is reported, so a single unlucky frame is not narrated at the user.
@@ -5379,6 +6085,7 @@ var STABLE = 3;
 var STABLE_MS = 500;
 var TICK_FAIL_MS = 3e3;
 var INFERENCE_TIMEOUT_MS = 15e3;
+var INFERENCE_TIMEOUT = "InferenceTimeoutError";
 var CHECK_BEAT_MS = 350;
 function sideClaimed(colors) {
   const centre = colors[4];
@@ -5580,6 +6287,8 @@ var AiScanPanel = class extends HTMLElement {
    * waiting for was never named.
    */
   pendingOpening = null;
+  /** Sides handed back by `rescanFace` since the loop last spoke — named together when it does. */
+  rescanQueue = [];
   /** Captures known to be in canonical rotation, from answering a `confirm` request. */
   /** Each confirmation with the hold it answered: the assembler projects it into every scheme's
    *  frame from `up`, so a capture without its hold is not a confirmation (ADR 0001). */
@@ -5662,6 +6371,15 @@ var AiScanPanel = class extends HTMLElement {
    * run never settled (audit, 2026-09-20).
    */
   unnamedClaim = /* @__PURE__ */ new Map();
+  /**
+   * How many reads of the settling run showed each colour at the centre, for each side held unnamed
+   * because that centre never agreed — what such a side is recognised by when it is read again with
+   * its centre settled (2026-09-20, `sideInHand`). The eight alone cannot tell it from a twin side
+   * that shares them; and only the colour shown MOST may name it (`mostShown`, 2026-09-21), because
+   * a colour shown once is the flicker that left the side unread, and a twin whose centre IS that
+   * colour was taken for the ghost and turned away for good.
+   */
+  unnamedCentres = /* @__PURE__ */ new Map();
   constructor() {
     super();
     this.root = this.attachShadow({ mode: "open" });
@@ -5977,6 +6695,7 @@ var AiScanPanel = class extends HTMLElement {
     this.unnamed = [];
     this.centreSeen.clear();
     this.unnamedClaim.clear();
+    this.unnamedCentres.clear();
     this.scheme = null;
     this.buildDots();
   }
@@ -5997,6 +6716,7 @@ var AiScanPanel = class extends HTMLElement {
       return;
     }
     this.report(phase, ...opening2.length > 0 ? opening2 : [OPENING]);
+    this.rescanQueue = [];
     this.tracing = traceEnabled();
     if (this.tracing) {
       this.trace.begin({
@@ -6036,11 +6756,11 @@ var AiScanPanel = class extends HTMLElement {
         this.cam.chosen.next(),
         new Promise((_resolve, reject2) => {
           deadline = setTimeout(() => {
-            reject2(
-              new Error(
-                `the detector did not answer within ${Math.round(INFERENCE_TIMEOUT_MS / 1e3)} seconds`
-              )
+            const timedOut = new Error(
+              `the detector did not answer within ${Math.round(INFERENCE_TIMEOUT_MS / 1e3)} seconds`
             );
+            timedOut.name = INFERENCE_TIMEOUT;
+            reject2(timedOut);
           }, INFERENCE_TIMEOUT_MS);
         })
       ]);
@@ -6131,7 +6851,11 @@ var AiScanPanel = class extends HTMLElement {
     this.note({ outcome: "settled", ...this.readNote(fit.face) });
     const agreedCentre = this.still.centre();
     const lab = output.frame && fit.face.boxes ? stickerLab(output.frame, fit.face.boxes, IMG_SIZE) ?? void 0 : void 0;
-    this.fileSettledRead(lab ? { ...fit.face, lab } : fit.face, agreedCentre);
+    this.fileSettledRead(
+      lab ? { ...fit.face, lab } : fit.face,
+      agreedCentre,
+      this.still.centreReads()
+    );
   }
   /** Record a decision that is not a frame, for the trace. A no-op with the trace off. */
   traceEvent(kind, detail) {
@@ -6205,6 +6929,10 @@ var AiScanPanel = class extends HTMLElement {
     this.forgetObservation();
     this.tickFailingSince = null;
     this.noFrameSince = null;
+    if (err instanceof Error && err.name === INFERENCE_TIMEOUT) {
+      this.cam.chosen?.dispose?.();
+      this.cam.modelLoaded = false;
+    }
     this.dropDiagnosis();
     const start = this.maybe("start");
     if (start) {
@@ -6232,8 +6960,9 @@ var AiScanPanel = class extends HTMLElement {
    * centres. So a read whose eight match a side in hand but whose centre says another colour is kept as a
    * new side — it may be that sibling — and `twinToDrop` settles it once six are in.
    */
-  fileSettledRead(read, agreedCentre = read.colors[4] ?? null) {
-    const centre = read.colors[4];
+  fileSettledRead(read, agreedCentre = read.colors[4] ?? null, seenCentres = new Map(
+    agreedCentre === null ? [] : [[agreedCentre, 1]]
+  )) {
     const centreUnread = agreedCentre === null;
     const claim = centreUnread ? void 0 : sideClaimed(read.colors);
     if (this.awaiting) {
@@ -6252,10 +6981,11 @@ var AiScanPanel = class extends HTMLElement {
         "scanning",
         "This cube is already scanned \u2014 tap a sticker to fix one, or start the scan over for a different cube."
       );
+      this.still.reset();
       return;
     }
-    if (this.capturedFaces().length >= FACES.length) {
-      this.replaceCapturedSide(read, claim);
+    if (this.sidesHeld() >= FACES.length) {
+      this.replaceCapturedSide(read, claim, agreedCentre, seenCentres);
       return;
     }
     const inHand = this.sideInHand(read, centreUnread);
@@ -6275,19 +7005,41 @@ var AiScanPanel = class extends HTMLElement {
         ...which,
         named ? ` \u2014 still need ${named}.` : " \u2014 show a different one."
       );
+      this.still.reset();
       return;
     }
+    this.fileNewSide(read, claim, seenCentres);
+  }
+  /**
+   * File a read the scan has decided is a side it does not have: named by its centre when nothing
+   * else claims that colour, held unnamed otherwise — with the holder withdrawn when one is named
+   * already — and held unnamed on its own account when its centre never settled.
+   *
+   * The tail of `fileSettledRead`, lifted out (2026-09-21) so that a re-shown UNNAMED side can be
+   * let go and filed again through exactly these branches (`replaceCapturedSide`): whatever its
+   * centre says now decides whether it is named this time, and a second copy of the rules here
+   * would be the drift the audit found in `holdUnnamed`'s two callers. `kind` is what the capture
+   * is announced as — `'side'`, or `'reread'` for a side that was already in hand.
+   */
+  fileNewSide(read, claim, seenCentres, kind = "side") {
+    const centre = read.colors[4];
     if (claim === void 0) {
       this.traceEvent("held-back", { shares: null, colors: [...read.colors] });
-      this.holdUnnamed(read, null, (held) => [
-        `Got that side \u2014 ${held}/6. Its middle sticker kept changing colour, so which side it is gets worked out once all six are in. Show another side\u2026`
-      ]);
+      this.holdUnnamed(
+        read,
+        null,
+        seenCentres,
+        (held) => [
+          `Got that side \u2014 ${held}/6. Its middle sticker kept changing colour, so which side it is gets worked out once all six are in. Show another side\u2026`
+        ],
+        kind
+      );
       return;
     }
     const holder = this.faces[claim];
-    if (!holder && !this.unnamed.some((side) => side.colors[4] === centre)) {
+    if (!holder && !this.unnamed.some((side) => this.claimOf(side) === centre)) {
       this.traceEvent("captured", { face: claim, colors: [...read.colors] });
-      this.capture(claim, read);
+      this.capture(claim, read, kind);
       return;
     }
     this.traceEvent("held-back", {
@@ -6301,11 +7053,17 @@ var AiScanPanel = class extends HTMLElement {
       this.unnamed.push(holder);
       this.unnamedClaim.set(holder, holder.colors[4] ?? null);
     }
-    this.holdUnnamed(read, centre ?? null, (done) => [
-      `Got that side \u2014 ${done}/6. Two sides look like the `,
-      this.bold(GUIDE[claim].color),
-      " side; which is which is worked out once all six are in. Show another side\u2026"
-    ]);
+    this.holdUnnamed(
+      read,
+      centre ?? null,
+      seenCentres,
+      (done) => [
+        `Got that side \u2014 ${done}/6. Two sides look like the `,
+        this.bold(GUIDE[claim].color),
+        " side; which is which is worked out once all six are in. Show another side\u2026"
+      ],
+      kind
+    );
   }
   /**
    * A side shown again once all six are in: a CORRECTION, since the loop only runs then because the
@@ -6315,9 +7073,24 @@ var AiScanPanel = class extends HTMLElement {
    * otherwise the one its centre names — a correction is the moment a sticker has changed, so the
    * eight may no longer agree. Lifted out of `fileSettledRead` (audit, 2026-09-20).
    */
-  replaceCapturedSide(read, claim) {
-    const slot = this.sideByEight(read) ?? claim;
+  replaceCapturedSide(read, claim, agreedCentre, seenCentres) {
+    const byEight = this.sideByEight(read);
+    const unnamedByEight = byEight === void 0 ? this.unnamed.filter((side) => sameSide(read.colors, side.colors)) : [];
+    if (byEight === void 0 && unnamedByEight.length === 1) {
+      this.refileUnnamed(unnamedByEight[0], read, claim, agreedCentre, seenCentres);
+      return;
+    }
+    const slot = byEight ?? (claim !== void 0 && this.faces[claim] ? claim : void 0);
     if (slot === void 0) {
+      const colour = claim === void 0 ? void 0 : colourOfSlot(claim);
+      const waiting = colour === void 0 ? [] : this.unnamed.filter((side) => {
+        const claims2 = this.claimOf(side);
+        return claims2 === null || claims2 === colour;
+      });
+      if (claim !== void 0 && waiting.length === 1) {
+        this.refileUnnamed(waiting[0], read, claim, agreedCentre, seenCentres);
+        return;
+      }
       this.report("scanning", "Keep showing that side \u2014 its middle sticker keeps changing colour.");
       return;
     }
@@ -6332,7 +7105,7 @@ var AiScanPanel = class extends HTMLElement {
       );
       return;
     }
-    this.faces[slot] = fresh;
+    this.replaceFace(slot, fresh);
     this.settled.delete(slot);
     this.confirmed = {};
     this.mismatches = 0;
@@ -6340,6 +7113,25 @@ var AiScanPanel = class extends HTMLElement {
     this.captured("reread", slot);
     this.scheduleCheck(this.tinted("ok", `Re-read the ${GUIDE[slot].color} side \u2014 checking\u2026`));
     return;
+  }
+  /**
+   * A side held UNNAMED shown again once six are in: let the old reading go and file the new one
+   * through the same branches a first showing takes (`fileNewSide`), so what its centre says NOW
+   * decides whether it is named this time. A side that claimed a colour and was left alone on it
+   * by the change is named by that claim (`nameLoners`), as after a dropped twin. Six are held again
+   * when it is done, so the filing schedules the check itself.
+   */
+  refileUnnamed(old, read, claim, agreedCentre, seenCentres) {
+    this.forgetCapture(old);
+    this.confirmed = {};
+    this.mismatches = 0;
+    this.traceEvent("turned-away", {
+      face: "unnamed",
+      colors: [...old.colors],
+      why: "shown again after a refusal \u2014 read fresh"
+    });
+    this.fileNewSide(read, agreedCentre === null ? void 0 : claim, seenCentres, "reread");
+    this.nameLoners();
   }
   /**
    * A read offered while a confirm is standing: take it as that side, or ask again.
@@ -6355,9 +7147,12 @@ var AiScanPanel = class extends HTMLElement {
     const held = this.faces[asked];
     if (claim !== asked && (held === void 0 || this.sideByEight(read) !== asked)) {
       this.report("confirm", ...this.confirmWords(asking));
+      this.still.reset();
       return;
     }
-    this.confirmed[asked] = { capture: withCentre(read, colourOfSlot(asked)), up: asking.up };
+    const looks = this.confirmed[asked] ?? [];
+    looks.push({ capture: withCentre(read, colourOfSlot(asked)), up: asking.up });
+    this.confirmed[asked] = looks;
     this.awaiting = null;
     this.captured("confirm", asked);
     this.scheduleCheck(this.tinted("ok", "Got it \u2014 checking\u2026"));
@@ -6372,12 +7167,13 @@ var AiScanPanel = class extends HTMLElement {
    * copies start to drift (audit, 2026-09-20). Only the sentence varies, so only the sentence is
    * passed in.
    */
-  holdUnnamed(read, claim, words) {
+  holdUnnamed(read, claim, seenCentres, words, kind = "side") {
     this.unnamed.push(read);
     this.unnamedClaim.set(read, claim);
+    this.unnamedCentres.set(read, seenCentres);
     this.centreSeen.set(read, [read.confidence[4] ?? 0]);
     this.buildDots();
-    this.captured("side", null);
+    this.captured(kind, null);
     const held = this.sidesHeld();
     if (held >= FACES.length) {
       this.scheduleCheck(this.tinted("ok", "All six sides captured \u2014 checking\u2026"));
@@ -6390,22 +7186,34 @@ var AiScanPanel = class extends HTMLElement {
    * not in hand: its centre claims the same colour and its eight agree (`sameSide`).
    */
   sideInHand(read, centreUnread = false) {
-    const same = (side2) => (centreUnread || side2.colors[4] === read.colors[4]) && sameSide(read.colors, side2.colors);
+    const eightAgree = (side, atLeast) => sameSide(read.colors, side.colors, atLeast);
     if (centreUnread) {
       const hits = [];
       for (const slot of FACES) {
-        const side2 = this.faces[slot];
-        if (side2 && same(side2)) hits.push({ side: side2, slot });
+        const side = this.faces[slot];
+        if (side && eightAgree(side, SAME_SIDE_STICKERS)) hits.push({ side, slot });
       }
-      for (const side2 of this.unnamed) if (same(side2)) hits.push({ side: side2 });
+      for (const side of this.unnamed)
+        if (eightAgree(side, SAME_SIDE_STICKERS)) hits.push({ side });
       return hits.length === 1 ? hits[0] : null;
     }
+    const centre = read.colors[4];
     for (const slot of FACES) {
-      const side2 = this.faces[slot];
-      if (side2 && same(side2)) return { side: side2, slot };
+      const side = this.faces[slot];
+      if (side && side.colors[4] === centre && eightAgree(side, SAME_SIDE_BY_CENTRE)) {
+        return { side, slot };
+      }
     }
-    const side = this.unnamed.find(same);
-    return side ? { side } : null;
+    const claimed = this.unnamed.find(
+      (side) => this.claimOf(side) === centre && eightAgree(side, SAME_SIDE_BY_CENTRE)
+    );
+    if (claimed) return { side: claimed };
+    const unclaimed = this.unnamed.filter((side) => {
+      if (this.claimOf(side) !== null) return false;
+      const shown = mostShown(this.unnamedCentres.get(side) ?? /* @__PURE__ */ new Map());
+      return shown.length === 1 && shown[0] === centre && eightAgree(side, SAME_SIDE_STICKERS);
+    });
+    return unclaimed.length === 1 ? { side: unclaimed[0] } : null;
   }
   /**
    * The named side whose eight `read` shows, when exactly one does — however its centre read. For the
@@ -6449,30 +7257,39 @@ var AiScanPanel = class extends HTMLElement {
    * claimed is claimed again by whoever is left, so an unnamed side left alone on its colour is named.
    */
   dropTwin(twin) {
-    for (const f of FACES) {
-      if (this.faces[f] === twin) {
-        delete this.faces[f];
-        this.settled.delete(f);
-      }
-    }
-    this.unnamed = this.unnamed.filter((u) => u !== twin);
-    this.centreSeen.delete(twin);
-    for (const side of [...this.unnamed]) {
-      const centre = side.colors[4];
-      if (centre === void 0 || !isColour(centre)) continue;
-      const slot = slotOf(centre);
-      const rivals = this.unnamed.filter((u) => u !== side && u.colors[4] === centre);
-      if (!this.faces[slot] && rivals.length === 0) {
-        this.faces[slot] = side;
-        this.unnamed = this.unnamed.filter((u) => u !== side);
-      }
-    }
+    this.forgetCapture(twin);
+    this.nameLoners();
+    this.confirmed = {};
+    this.awaiting = null;
+    this.mismatches = 0;
     this.traceEvent("turned-away", { colors: [...twin.colors], why: "the same side read twice" });
     this.buildDots();
     this.loop(
       "scanning",
       `One side was read twice, its centre looking different each time \u2014 ${this.sidesHeld()}/6. Show a side you haven't shown yet\u2026`
     );
+  }
+  /**
+   * Name every unnamed side left alone on the colour it CLAIMS, by that claim — after a side is let
+   * go, whatever it had claimed is claimed again by whoever is left. Never by a filed frame's centre:
+   * a side whose centre never settled claims nothing, and filing it by the accident of its settling
+   * frame is how a white side landed on the blue tile (§4, link 5). It stays unnamed for the six to
+   * place by counting. Lifted out of `dropTwin` (2026-09-21) for the second path that lets a side go,
+   * a re-shown unnamed side (`refileUnnamed`).
+   */
+  nameLoners() {
+    for (const side of [...this.unnamed]) {
+      const centre = this.claimOf(side);
+      if (centre === null) continue;
+      const slot = slotOf(centre);
+      const rivals = this.unnamed.filter((u) => u !== side && this.claimOf(u) === centre);
+      if (!this.faces[slot] && rivals.length === 0) {
+        const seen = this.centreSeen.get(side);
+        this.forgetCapture(side);
+        this.faces[slot] = side;
+        if (seen) this.centreSeen.set(side, seen);
+      }
+    }
   }
   /** Add a re-showing's centre confidence to what is known of the side, when it claims the same colour. */
   noteCentre(side, read) {
@@ -6482,12 +7299,12 @@ var AiScanPanel = class extends HTMLElement {
     this.centreSeen.set(side, seen);
   }
   /** File a freshly-recognised face under its own letter, then keep scanning (or finish at six). */
-  capture(face, read) {
+  capture(face, read, kind = "side") {
     this.faces[face] = read;
     this.centreSeen.set(read, [read.confidence[4] ?? 0]);
     this.settled.delete(face);
     this.buildDots();
-    this.captured("side", face);
+    this.captured(kind, face);
     const done = this.sidesHeld();
     if (done >= FACES.length) {
       this.scheduleCheck(this.tinted("ok", "All six sides captured \u2014 checking\u2026"));
@@ -6594,7 +7411,7 @@ var AiScanPanel = class extends HTMLElement {
       );
       return;
     }
-    if (done < FACES.length) {
+    if (this.sidesHeld() < FACES.length) {
       this.report("scanning", `Corrected the ${GUIDE[face].color} side. Show another side\u2026`);
       return;
     }
@@ -6615,7 +7432,7 @@ var AiScanPanel = class extends HTMLElement {
         assemblePainted(this.positionFaces(), void 0, { diagnose: false })
       );
       if (result.valid) {
-        this.finish(result);
+        this.finish(result, "painted");
         return;
       }
       this.diagnose(result, (r, first) => {
@@ -6707,9 +7524,9 @@ var AiScanPanel = class extends HTMLElement {
    */
   dropUnsettledCaptures() {
     const dropped = FACES.filter((f) => this.faces[f] && !this.settled.has(f));
-    this.unnamed = [];
+    for (const side of [...this.unnamed]) this.forgetCapture(side);
     if (dropped.length === 0) return dropped;
-    for (const f of dropped) delete this.faces[f];
+    for (const f of dropped) this.forgetCapture(this.faces[f]);
     this.confirmed = {};
     this.awaiting = null;
     this.mismatches = 0;
@@ -6726,13 +7543,19 @@ var AiScanPanel = class extends HTMLElement {
    * and dropping one means there is something to look for again.
    */
   rescanFace(face) {
-    if (!this.faces[face]) return;
+    const held = this.faces[face];
+    if (!held) return;
     this.captureEpoch += 1;
-    delete this.faces[face];
-    this.settled.delete(face);
+    this.forgetCapture(held);
     this.invalidateReading();
     this.buildDots();
-    this.loop("scanning", `Show the ${GUIDE[face].color} side again \u2014 it will be read fresh.`);
+    if (!this.rescanQueue.includes(face)) this.rescanQueue.push(face);
+    const names = this.rescanQueue.map((f) => GUIDE[f].color);
+    const which = names.length === 1 ? `the ${names[0]} side` : `the ${names.slice(0, -1).join(", ")} and ${names[names.length - 1]} sides`;
+    this.loop(
+      "scanning",
+      `Show ${which} again \u2014 ${names.length === 1 ? "it" : "they"} will be read fresh.`
+    );
   }
   /**
    * The selectable cameras. Labels are only filled in once camera permission has been granted,
@@ -6945,12 +7768,17 @@ var AiScanPanel = class extends HTMLElement {
       const { scheme: _assumed, ...checked } = this.fromPositions(
         assemblePainted(this.positionFaces(), void 0, { diagnose: false })
       );
-      this.finish(checked);
+      this.finish(checked, "correction");
       return;
     }
     if (this.unnamed.length > 0) {
       const unnamed = this.unnamed.map((capture) => ({
-        centreClaim: this.unnamedClaim.get(capture) ?? capture.colors[4],
+        // THE RECORDED CLAIM, null included (2026-09-21). `get(...) ?? colors[4]` read a stored
+        // null — the sentinel for a centre no run ever agreed on — as "absent" and handed the
+        // resolver whichever colour the filed frame happened to show; two such sides whose frames
+        // showed the same colour were then a COLLISION over it, ranked by confidence where the
+        // resolver refuses to rank an unread centre, and refused in a collision's words.
+        centreClaim: this.claimOf(capture),
         capture,
         centreConfidence: median2(this.centreSeen.get(capture) ?? [capture.confidence[4] ?? 0])
       }));
@@ -6958,7 +7786,7 @@ var AiScanPanel = class extends HTMLElement {
       try {
         resolution = resolveCentres(this.faces, unnamed, void 0, { diagnose: false });
       } catch (err) {
-        this.unnamed = [];
+        for (const side of [...this.unnamed]) this.forgetCapture(side);
         this.traceEvent("contest-resolved", {
           sides: unnamed.map((u) => [...u.capture.colors]),
           error: err instanceof Error ? err.message : String(err)
@@ -6966,12 +7794,13 @@ var AiScanPanel = class extends HTMLElement {
         this.checkFailed(err);
         return;
       }
-      const twin = resolution.decidedBy === "legality" ? null : this.twinToDrop();
+      const { result: verdict } = resolution;
+      const settled = verdict.valid || verdict.ambiguous === true || verdict.confirm !== void 0;
+      const twin = settled || resolution.decidedBy === "legality" ? null : this.twinToDrop();
       if (twin) {
         this.dropTwin(twin);
         return;
       }
-      this.unnamed = [];
       this.traceEvent("contest-resolved", {
         sides: unnamed.map((u) => [...u.capture.colors]),
         centreConfidence: unnamed.map((u) => Math.round(u.centreConfidence * 1e3) / 1e3),
@@ -6981,20 +7810,9 @@ var AiScanPanel = class extends HTMLElement {
         reason: resolution.result.reason ?? null,
         ambiguous: resolution.result.ambiguous ?? false
       });
-      if (resolution.faces) {
-        for (const f of FACES) {
-          if (this.faces[f] !== resolution.faces[f]) this.settled.delete(f);
-          this.faces[f] = resolution.faces[f];
-        }
-      } else {
-        const first = unnamed[0].capture;
-        const centre = first.colors[4];
-        if (centre !== void 0 && isColour(centre) && !this.faces[slotOf(centre)]) {
-          this.faces[slotOf(centre)] = first;
-        }
-      }
+      if (resolution.faces) this.adoptFiling(resolution.faces, resolution.placed ?? {}, unnamed);
       this.buildDots();
-      this.finish(resolution.result);
+      this.finish(resolution.result, "camera");
       return;
     }
     for (let round = 0; ; round++) {
@@ -7005,18 +7823,96 @@ var AiScanPanel = class extends HTMLElement {
         return;
       }
       const face = result.reread;
-      const fresh = face === void 0 ? void 0 : this.confirmed[face]?.capture;
-      if (face === void 0 || fresh === void 0 || round >= FACES.length) {
+      const looks = face === void 0 ? void 0 : this.confirmed[face];
+      const named = looks?.[result.rereadLook ?? (looks?.length ?? 0) - 1];
+      const fresh = named?.capture;
+      if (face === void 0 || named === void 0 || fresh === void 0 || round >= FACES.length) {
         const twin = result.valid || result.ambiguous === true || result.confirm !== void 0 ? null : this.twinToDrop();
         if (twin) {
           this.dropTwin(twin);
           return;
         }
-        this.finish(result);
+        this.finish(result, "camera");
         return;
       }
-      this.faces[face] = fresh;
+      this.replaceFace(face, fresh);
+      this.confirmed[face] = looks.filter(
+        (look) => look === named || matchingRotations(fresh, look.capture).size > 0
+      );
     }
+  }
+  /**
+   * Adopt a centre resolution's filing: every slot takes the capture the filing put there, and the
+   * sides the filing named stop being unnamed. What was recorded about each of those — its centre
+   * confidences — travels to the copy the filing installed, found by the resolver's own account of
+   * where each unnamed side went (`placed`, 2026-09-21). It used to be found by identity, and a
+   * filing REBUILDS a capture whenever its centre changes, so for exactly the reassigned-centre case
+   * this exists for nothing matched: the median stayed on an object nothing held, and the claim and
+   * centre-reads maps kept entries for it for the life of the scan.
+   */
+  adoptFiling(filed, placed, unnamed) {
+    for (const f of FACES) {
+      if (this.faces[f] !== filed[f]) this.settled.delete(f);
+      const index = placed[f];
+      const source = index === void 0 ? void 0 : unnamed[index]?.capture;
+      if (source !== void 0) {
+        const seen = this.centreSeen.get(source);
+        this.forgetCapture(source);
+        if (seen) this.centreSeen.set(filed[f], seen);
+      }
+      this.replaceFace(f, filed[f]);
+    }
+    for (const side of [...this.unnamed]) this.forgetCapture(side);
+  }
+  /**
+   * Put `next` where `slot`'s capture is, carrying across what is recorded ABOUT the capture: the
+   * centre confidences seen for it, and its claim if it is one of the unnamed. Both maps are keyed by
+   * the capture object, so a copy installed in its place — a settle, a repair, a resolution's filing —
+   * used to leave the record on an object nothing held any more (audit, 2026-09-20).
+   */
+  replaceFace(slot, next) {
+    const previous = this.faces[slot];
+    if (previous !== void 0 && previous !== next) {
+      const seen = this.centreSeen.get(previous);
+      if (seen !== void 0) {
+        this.centreSeen.delete(previous);
+        this.centreSeen.set(next, seen);
+      }
+    }
+    this.faces[slot] = next;
+  }
+  /**
+   * Let go of one capture wherever it is held — its slot, or the unnamed list — together with every
+   * record kept ABOUT it, which the three maps key by the object (2026-09-21). Four removal paths
+   * each wrote a subset of this by hand: `rescanFace` and the painting drop left `centreSeen`
+   * behind, the undecided resolution emptied `unnamed` and none of the maps, and a capture nothing
+   * held any more went on being counted — in a median, as a claim — until the scan was restarted.
+   */
+  forgetCapture(capture) {
+    for (const f of FACES) {
+      if (this.faces[f] === capture) {
+        delete this.faces[f];
+        this.settled.delete(f);
+      }
+    }
+    this.unnamed = this.unnamed.filter((u) => u !== capture);
+    this.centreSeen.delete(capture);
+    this.unnamedClaim.delete(capture);
+    this.unnamedCentres.delete(capture);
+  }
+  /**
+   * What an unnamed side CLAIMS its centre is — the record made when it was held back, never the
+   * colour of whichever frame happened to be filed. A side whose centre never settled claims
+   * nothing (null); a named side claims its centre. This is the one reading of a centre every
+   * recognition and collision test goes through (2026-09-20): three of them read `colors[4]` and so
+   * compared against an accident, which is how a white side held a little too long, its centre
+   * reading blue on one frame, was captured a second time and then filed under the blue tile
+   * (`dev-docs/scanner-audit-2026-09-20.md` §4).
+   */
+  claimOf(side) {
+    if (this.unnamedClaim.has(side)) return this.unnamedClaim.get(side) ?? null;
+    const centre = side.colors[4];
+    return centre !== void 0 && isColour(centre) ? centre : null;
   }
   /**
    * A check threw. Six well-formed faces should never throw — but if they do, never freeze on
@@ -7091,13 +7987,13 @@ var AiScanPanel = class extends HTMLElement {
    * length was the only thing making them look related — and a reader chasing one branch had
    * to step over the other two to be sure they were not reached.
    */
-  finish(result) {
+  finish(result, origin) {
     this.stopLoop();
     this.forgetObservation();
     this.suspects = result.suspects ?? [];
     if (result.valid) {
       if ((result.lowConfidence?.length ?? 0) === 0) {
-        this.finishAccepted(result);
+        this.finishAccepted(result, origin);
         return;
       }
       this.finishUnsure();
@@ -7119,21 +8015,28 @@ var AiScanPanel = class extends HTMLElement {
     this.loop("scanning", this.tinted("err", "Some stickers were too faint to trust."));
   }
   /** Accepted: settle the captures into canonical rotation, release the camera, announce it. */
-  finishAccepted(result) {
+  finishAccepted(result, origin) {
+    const accepted = result.captures;
+    if (accepted) {
+      for (const f of FACES) {
+        const next = accepted[f];
+        if (next && next !== this.faces[f]) this.replaceFace(f, next);
+      }
+    }
     const rots = result.rotations;
     if (rots) {
       FACES.forEach((f, fi) => {
         const read = this.faces[f];
         const k = rots[fi] ?? 0;
         if (read && k !== 0) {
-          this.faces[f] = {
+          this.replaceFace(f, {
             ...read,
             colors: rotateFace(read.colors, k),
             confidence: rotateFace(read.confidence, k),
             ...read.scores ? { scores: rotateFace(read.scores, k) } : {},
             ...read.lab ? { lab: rotateFace(read.lab, k) } : {},
             ...read.locked ? { locked: rotateFace(read.locked, k) } : {}
-          };
+          });
         }
       });
     }
@@ -7146,7 +8049,10 @@ var AiScanPanel = class extends HTMLElement {
     this.notice = null;
     this.stop();
     this.report("done", this.tinted("ok", "Scan complete \u2014 solvable cube captured."));
-    this.dispatchEvent(new CustomEvent("scan-complete", { detail: result }));
+    const { captures: _kept, ...detail } = result;
+    this.dispatchEvent(
+      new CustomEvent("scan-complete", { detail: { ...detail, origin } })
+    );
   }
   /**
    * One reading is not enough: name a side to show again, and how to hold it.
@@ -7239,43 +8145,8 @@ var AiScanPanel = class extends HTMLElement {
       params: result.misreadFace ? [GUIDE[result.misreadFace].color] : [],
       action: result.misreadFace ? void 0 : { label: "Start over", kind: "restart" }
     });
-    let line = "That isn't a solvable cube yet \u2014 fix a sticker, or show a side again.";
-    if (camera) {
-      this.notice = camera;
-      if (camera.action) {
-        line = "That isn't a solvable cube yet \u2014 start the scan over, or show one side again.";
-      }
-    } else if (result.centreConflict) {
-      const { shared, missing, legalFilings } = result.centreConflict;
-      this.notice = {
-        title: "Two sides read the same centre",
-        tone: "err",
-        body: legalFilings === 0 ? "Two sides read with a %1 centre, so one of them must really be the %2 side \u2014 a logo printed on a centre often does this. No way of filing them makes a real cube, and neither centre read more surely than the other, so something else was misread too. Start the scan over in whiter light." : "Two sides read with a %1 centre, so one of them must really be the %2 side \u2014 a logo printed on a centre often does this. More than one way makes a real cube and nothing in the photos says which. Turn any one face a quarter turn, then start the scan over.",
-        params: [GUIDE[shared].color, GUIDE[missing].color],
-        action: { label: "Start over", kind: "restart" }
-      };
-      line = "Two sides read with the same centre colour \u2014 start the scan over.";
-    } else if (result.schemeAmbiguous) {
-      this.notice = {
-        title: "Which colour is under white?",
-        tone: "err",
-        body: "Every side is read, but these readings differ only in which colour sits under white \u2014 blue or yellow \u2014 and no extra look can tell them apart. Turn any one face a quarter turn, then start the scan over to read the changed cube."
-      };
-      line = "This cube reads two ways that differ only in its colours \u2014 turn any one face a quarter turn, then start over.";
-    } else if (result.ambiguous) {
-      this.notice = {
-        title: "Too symmetric to tell",
-        tone: "err",
-        body: "This cube reads the same several ways, and no extra look can split them. Turn any one face a quarter turn, then start the scan over to read the changed cube."
-      };
-      line = "This cube reads the same several ways \u2014 turn any one face a quarter turn, then start over.";
-    } else {
-      this.notice = {
-        title: "That doesn't read as a solvable cube",
-        tone: "err",
-        body: `Too much of the cube was read wrong to say where. Show the sides to the camera again \u2014 each one is read fresh \u2014 or start the scan over.`
-      };
-    }
+    const { notice, line } = classifyRefusal(result, camera);
+    this.notice = notice;
     if (first) this.loop("scanning", this.tinted("err", line));
     else this.report("scanning", this.tinted("err", line));
   }
@@ -7360,6 +8231,68 @@ var AiScanPanel = class extends HTMLElement {
     return span;
   }
 };
+function classifyRefusal(result, camera) {
+  if (camera) {
+    return {
+      notice: camera,
+      line: camera.action ? "That isn't a solvable cube yet \u2014 start the scan over, or show one side again." : "That isn't a solvable cube yet \u2014 fix a sticker, or show a side again."
+    };
+  }
+  if (result.unreadCentres !== void 0 && result.unreadCentres > 0) {
+    const many = result.unreadCentres > 1;
+    return {
+      notice: {
+        title: many ? "Some middle stickers kept changing" : "A middle sticker kept changing",
+        tone: "err",
+        body: (result.legalFilings ?? 0) === 0 ? `${many ? "The middle stickers of %1 sides" : "The middle sticker of one side"} kept changing colour, and no way of placing ${many ? "them" : "it"} makes a real cube \u2014 so something else was misread too. Start the scan over in whiter light.` : `${many ? "The middle stickers of %1 sides" : "The middle sticker of one side"} kept changing colour, and more than one way of placing ${many ? "them" : "it"} makes a real cube. Turn any one face a quarter turn, then start the scan over.`,
+        params: [result.unreadCentres],
+        action: { label: "Start over", kind: "restart" }
+      },
+      line: "A middle sticker kept changing colour \u2014 start the scan over."
+    };
+  }
+  if (result.centreConflict) {
+    const { shared, missing, legalFilings } = result.centreConflict;
+    return {
+      notice: {
+        title: "Two sides read the same centre",
+        tone: "err",
+        body: legalFilings === 0 ? "Two sides read with a %1 centre, so one of them must really be the %2 side \u2014 a logo printed on a centre often does this. No way of filing them makes a real cube, and neither centre read more surely than the other, so something else was misread too. Start the scan over in whiter light." : "Two sides read with a %1 centre, so one of them must really be the %2 side \u2014 a logo printed on a centre often does this. More than one way makes a real cube and nothing in the photos says which. Turn any one face a quarter turn, then start the scan over.",
+        params: [GUIDE[shared].color, GUIDE[missing].color],
+        action: { label: "Start over", kind: "restart" }
+      },
+      line: "Two sides read with the same centre colour \u2014 start the scan over."
+    };
+  }
+  if (result.schemeAmbiguous) {
+    return {
+      notice: {
+        title: "Which colour is under white?",
+        tone: "err",
+        body: "Every side is read, but these readings differ only in which colour sits under white \u2014 blue or yellow \u2014 and no extra look can tell them apart. Turn any one face a quarter turn, then start the scan over to read the changed cube."
+      },
+      line: "This cube reads two ways that differ only in its colours \u2014 turn any one face a quarter turn, then start over."
+    };
+  }
+  if (result.ambiguous) {
+    return {
+      notice: {
+        title: "Too symmetric to tell",
+        tone: "err",
+        body: "This cube reads the same several ways, and no extra look can split them. Turn any one face a quarter turn, then start the scan over to read the changed cube."
+      },
+      line: "This cube reads the same several ways \u2014 turn any one face a quarter turn, then start over."
+    };
+  }
+  return {
+    notice: {
+      title: "That doesn't read as a solvable cube",
+      tone: "err",
+      body: `Too much of the cube was read wrong to say where. Show the sides to the camera again \u2014 each one is read fresh \u2014 or start the scan over.`
+    },
+    line: "That isn't a solvable cube yet \u2014 fix a sticker, or show a side again."
+  };
+}
 function decided(result, diagnosis) {
   const { misreadCount: _checking, ...settled } = result;
   return { ...settled, ...diagnosis };
@@ -7369,6 +8302,7 @@ if (!customElements.get("ai-scan-panel")) {
 }
 export {
   AiScanPanel,
+  classifyRefusal,
   createModelRunner,
   decodeDetections,
   defaultThreadCount,

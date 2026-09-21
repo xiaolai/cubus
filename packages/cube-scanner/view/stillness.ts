@@ -98,6 +98,21 @@ export function classify(
   };
 }
 
+/**
+ * The colour(s) a run's centre showed on the most reads — every colour tied for the top count, and
+ * nothing for a run that showed none. The only thing a centre that never settled is allowed to say
+ * about which side it belongs to: a colour it showed on a minority of frames is the flicker that
+ * made it unread in the first place, and a side named by a flicker is the twin taken for the ghost
+ * (`Stillness.centreReads`, 2026-09-21). Ties are kept, not broken — a logo that alternated evenly
+ * showed both colours as much as each other, and choosing one would be reading a centre this
+ * package has already refused to read.
+ */
+export function mostShown(reads: ReadonlyMap<number, number>): number[] {
+  let most = 0;
+  for (const n of reads.values()) if (n > most) most = n;
+  return most === 0 ? [] : [...reads].filter(([, n]) => n === most).map(([c]) => c);
+}
+
 export class Stillness {
   /**
    * The read the current run is made of, or null when there is no run.
@@ -203,6 +218,25 @@ export class Stillness {
     const first = this.centres[0];
     if (first === undefined || first < 0) return null;
     return this.centres.every((c) => c === first) ? first : null;
+  }
+
+  /**
+   * How many reads of the run showed each colour at the centre — what a side whose centre never
+   * agreed is remembered by (2026-09-20). A read of that side later, its centre settled, names the
+   * colour the run showed MOST; a different side that happens to share its eight (white and yellow
+   * after U D R L F B) names its own centre colour. That is what tells "the same side, held on"
+   * from "its twin", where the eight alone cannot (`dev-docs/scanner-audit-2026-09-20.md` §4).
+   *
+   * COUNTS, NOT A SET (2026-09-21). As a set, one frame was as good as nine: a white side whose
+   * centre flickered yellow on a single frame was remembered as "showed white and yellow", and the
+   * real yellow side — the same eight, its centre yellow on every frame — was then "the same side,
+   * held on" and turned away for good, so the scan could never reach six. A colour the run showed
+   * once is a flicker, and a flicker alone must not name a side (`mostShown`).
+   */
+  centreReads(): ReadonlyMap<number, number> {
+    const reads = new Map<number, number>();
+    for (const c of this.centres) if (c >= 0) reads.set(c, (reads.get(c) ?? 0) + 1);
+    return reads;
   }
 
   /**

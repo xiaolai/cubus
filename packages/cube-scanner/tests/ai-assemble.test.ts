@@ -6,6 +6,7 @@ import {
   assemblePainted,
   type ColorFace,
   type Confirmation,
+  type Confirmed,
   matchingRotations,
 } from '../src/ai-assemble.js';
 import { SOLVED_FACELETS } from '../src/facelet-cube.js';
@@ -199,18 +200,22 @@ const shownAs = (facelets: string, rots: number[]): Record<Face, ColorFace> =>
  */
 function scanAs(truth: string, scheme: Scheme, rots: number[], misHoldNth = -1) {
   const shown = capturesOf(truth, scheme, rots);
-  let confirmed: Partial<Record<Face, Confirmation>> = {};
+  // Looks ACCUMULATE per slot, as the panel keeps them (2026-09-20): a slot may be looked at twice,
+  // under two holds, and a caller that overwrote the first with the second would be asked again.
+  let confirmed: Confirmed = {};
   let looks = 0;
-  for (let round = 0; round < 8; round++) {
+  for (let round = 0; round < 12; round++) {
     const r = assembleColors(shown, 0.15, confirmed);
     if (r.valid || !r.confirm) return { ...r, looks };
     if (r.mismatch) {
       confirmed = {};
       continue;
     }
+    const given = confirmed[r.confirm.face];
+    const before = given === undefined ? [] : Array.isArray(given) ? given : [given];
     confirmed = {
       ...confirmed,
-      [r.confirm.face]: answer(truth, scheme, r.confirm, looks === misHoldNth ? 1 : 0),
+      [r.confirm.face]: [...before, answer(truth, scheme, r.confirm, looks === misHoldNth ? 1 : 0)],
     };
     looks++;
   }
@@ -533,21 +538,74 @@ describe('assembleColors — confirmations are rotation measurements, and refusa
 });
 
 describe('assembleColors — dead ends refuse rather than guess', () => {
-  it('when no remaining side can check the survivor, it says the cube is too symmetric', () => {
+  it('when no FRESH side can check the survivor, it asks for a side already looked at, held another way up', () => {
     // Found by seeded search: after honestly confirming R and L, exactly this cube at exactly
-    // these shown rotations leaves readings nothing further can tell apart.
+    // these shown rotations leaves readings no OTHER side can tell apart. Until 2026-09-20 that was
+    // the end — "too symmetric, turn any one face" — thrown at a user whose every look was honest,
+    // because the verification wanted a second contradiction from a second SLOT and skipped the
+    // slots already looked at. A second look at R under another colour up is a second photograph,
+    // and the first look at R had already contradicted the impostor, so the side can tell them
+    // apart; asked for, answered honestly, the true cube is accepted.
     const truth = scrambleFacelets("L R' F' B");
     const shown = shownAs(truth, [0, 2, 1, 2, 2, 0]);
-    let confirmed: Partial<Record<Face, Confirmation>> = {};
+    let confirmed: Confirmed = {};
     let r = assembleColors(shown, 0.15, confirmed);
-    for (let round = 0; round < 4 && r.confirm; round++) {
+    const asked: string[] = [];
+    for (let round = 0; round < 8 && r.confirm; round++) {
+      asked.push(`${r.confirm.face}/${r.confirm.up}`);
+      const given = confirmed[r.confirm.face];
+      const before = given === undefined ? [] : Array.isArray(given) ? given : [given];
+      confirmed = {
+        ...confirmed,
+        [r.confirm.face]: [...before, answer(truth, 'western', r.confirm)],
+      };
+      r = assembleColors(shown, 0.15, confirmed);
+    }
+    // R and L each looked at twice, under two different holds, and never the same hold twice.
+    expect(asked).toEqual(['R/U', 'L/U', 'R/F', 'L/F']);
+    expect(r.valid).toBe(true);
+    expect(r.facelets).toBe(truth);
+  });
+
+  it('a caller that keeps one look per side is asked for the SAME side once more and then no more', () => {
+    // The old shape, `confirmed[face] = look`, overwrote: the assembler then sees one look at R
+    // and asks for R again under the other hold — which the old-shape caller overwrites again. The
+    // hold already given is never asked for twice (`permittedHold`), so the asks run out rather
+    // than loop; the pinned bound is what a host that never upgraded its shape can rely on.
+    const truth = scrambleFacelets("L R' F' B");
+    const shown = shownAs(truth, [0, 2, 1, 2, 2, 0]);
+    let confirmed: Confirmed = {};
+    let r = assembleColors(shown, 0.15, confirmed);
+    let rounds = 0;
+    for (; rounds < 12 && r.confirm; rounds++) {
       confirmed = { ...confirmed, [r.confirm.face]: answer(truth, 'western', r.confirm) };
       r = assembleColors(shown, 0.15, confirmed);
     }
+    expect(rounds).toBeLessThan(12);
+  });
+
+  it('when no look at all can tell the readings apart, it says the cube is too symmetric', () => {
+    // A half-turn pattern: four readings, and every side reads the same under every hold within
+    // the tolerance, so a first look at any side separates nothing — which is exactly the
+    // condition under which a second look at it is NOT asked for (`mayLookAgain`). Honest looks
+    // at three sides, and the honest answer is a turn and a fresh scan.
+    const truth = scrambleFacelets("B2 U D'");
+    const r = scanWithConfirmations(truth, [0, 0, 0, 0, 0, 0]);
     expect(r.valid).toBe(false);
     expect(r.confirm).toBeUndefined();
     expect(r.ambiguous).toBe(true);
     expect(r.reason).toMatch(/too symmetric/);
+    expect(r.looks).toBeLessThanOrEqual(6);
+  });
+
+  it('two readings that differ on ONE side are settled by two looks at that side', () => {
+    // The sharpest case of the audit (§3): one honest look at L decides it, and the old rule
+    // then threw the scan away for want of a second slot to ask about.
+    const truth = scrambleFacelets("R2 D2 F2 D2 B R2 D' U");
+    const r = scanWithConfirmations(truth, [0, 0, 0, 0, 0, 0]);
+    expect(r.valid).toBe(true);
+    expect(r.facelets).toBe(truth);
+    expect(r.looks).toBe(2);
   });
 
   it('throws loudly on a malformed face rather than assembling nonsense', () => {
@@ -1053,5 +1111,142 @@ describe('the pixels, when the scores have been refused', () => {
   it('refuses exactly as before when no Lab was supplied', () => {
     const r = assembleColors(misreadOrangeAsRed(scrambled, false));
     expect(r.valid).toBe(false);
+  });
+});
+
+describe('a confirming look is matched against the capture as READ — audit §1.5 (2026-09-20)', () => {
+  // `U`, with three narrow misreads on F: its bottom row read as blue at 0.40 against green at
+  // 0.38. The count repair puts them right (twelve blues and six greens are not a cube), the repaired
+  // cube is the ambiguous one-turn cube, and a look at F comes back READ THE SAME WAY, because a
+  // camera that misreads a paint under this light misreads it again. Matched against the REPAIRED
+  // side, that look differs by three — past CONFIRM_TOLERANCE — and used to come back as a mismatch:
+  // reread, repair, ask again, until the scan was refused. The look is matched against both now —
+  // the side as the camera read it and as the repair reads it — so the systematic misread the repair
+  // exists for can no longer make the confirming look impossible.
+  const truth = scrambleFacelets('U');
+  const MISREAD_AT = [6, 7, 8]; // F's bottom row, in the canonical frame
+  const GREEN = 2;
+  const BLUE = 5;
+
+  /** The side in `slot` as this camera reads it, held with `up` upwards (canonically when null). */
+  function readBy(slot: Face, up: Face | null): ColorFace {
+    const position = positionOf(colourOfSlot(slot), 'western');
+    const fi = FACES.indexOf(position);
+    const colors = [...truth.slice(fi * 9, fi * 9 + 9)].map((l) => paint(l, 'western'));
+    const narrow = new Set<number>();
+    if (slot === 'F') {
+      for (const i of MISREAD_AT) {
+        colors[i] = BLUE;
+        narrow.add(i);
+      }
+    }
+    const scores = colors.map((c, i) =>
+      [0, 1, 2, 3, 4, 5].map((k) => {
+        if (narrow.has(i)) return k === c ? 0.4 : k === GREEN ? 0.38 : 0.02;
+        return k === c ? 0.9 : 0.02;
+      }),
+    );
+    const k = up === null ? 0 : (holdOffset(colourOfSlot(slot), colourOfSlot(up), 'western') ?? 0);
+    const order = rot([0, 1, 2, 3, 4, 5, 6, 7, 8], k);
+    return {
+      colors: order.map((i) => colors[i]!),
+      confidence: order.map((i) => Math.max(...scores[i]!)),
+      scores: order.map((i) => scores[i]!),
+    };
+  }
+
+  it('accepts the true cube, and never sends the misread side back for another read', () => {
+    const shown = {} as Record<Face, ColorFace>;
+    for (const slot of FACES) shown[slot] = readBy(slot, null);
+    let confirmed: Confirmed = {};
+    const asked: Face[] = [];
+    let result = assembleColors(shown, 0.15, confirmed);
+    for (let round = 0; round < 12 && !result.valid && result.confirm; round++) {
+      // Every look is answered by the same camera: F comes back misread again.
+      expect(result.mismatch, `round ${round}: a truthful look was refused`).toBeFalsy();
+      const { face, up } = result.confirm;
+      asked.push(face);
+      const given = confirmed[face];
+      const before = given === undefined ? [] : Array.isArray(given) ? given : [given];
+      confirmed = { ...confirmed, [face]: [...before, { capture: readBy(face, up), up }] };
+      result = assembleColors(shown, 0.15, confirmed);
+    }
+    // The misread side WAS asked for — the case is about that look — and the scan finished right.
+    expect(asked).toContain('F');
+    expect(result.mismatch).toBeFalsy();
+    expect(result.valid).toBe(true);
+    expect(result.facelets).toBe(truth);
+  });
+});
+
+describe('a reread names the look that disagreed (2026-09-21)', () => {
+  const oneTurn = scrambleFacelets('U');
+
+  it('by its index among the looks at that side, whichever of them it is', () => {
+    // A side can carry two looks under two holds, and a caller that took "the last" as the one
+    // that disagreed adopted the wrong photograph whenever it was the earlier one — again and
+    // again, until the six-round cap refused the scan.
+    const shown = shownAs(oneTurn, [0, 0, 0, 0, 0, 0]);
+    const first = assembleColors(shown);
+    const { face, up } = first.confirm!;
+    const good: Confirmation = { capture: heldOf(oneTurn, 'western', face, up), up };
+    const badCapture = heldOf(oneTurn, 'western', face, up);
+    for (const i of [0, 1, 2, 3]) badCapture.colors[i] = (badCapture.colors[i]! + 1) % 6;
+    const bad: Confirmation = { capture: badCapture, up };
+
+    const disagreeingFirst = assembleColors(shown, 0.15, { [face]: [bad, good] });
+    expect(disagreeingFirst.reread).toBe(face);
+    expect(disagreeingFirst.rereadLook).toBe(0);
+
+    const disagreeingSecond = assembleColors(shown, 0.15, { [face]: [good, bad] });
+    expect(disagreeingSecond.reread).toBe(face);
+    expect(disagreeingSecond.rereadLook).toBe(1);
+    expect(disagreeingSecond.confirm).toEqual({ face, up });
+  });
+});
+
+describe('every confirmed slot is asked about every combo (2026-09-21)', () => {
+  it('a later slot whose look also excluded a combo is still offered its second look', () => {
+    // Found by a seeded search over 3,000 short scrambles at random holds, comparing the fixed
+    // assembler against the one that stopped at the first refusing slot. With R and L both looked
+    // at, every combo L would have excluded was excluded by R first — `every` never asked L, L was
+    // never recorded as `effective`, and `mayLookAgain` then refused it the second look it was
+    // entitled to: the scan stopped one look short. The outcome here is still "too symmetric";
+    // the property is the entitlement, and the ask sequence is what shows it.
+    const truth = scrambleFacelets("R2 B' F R2 B2");
+    const shown = shownAs(truth, [1, 1, 0, 1, 3, 1]);
+    let confirmed: Confirmed = {};
+    const asked: string[] = [];
+    let r = assembleColors(shown, 0.15, confirmed);
+    for (let round = 0; round < 8 && r.confirm; round++) {
+      asked.push(`${r.confirm.face}/${r.confirm.up}`);
+      const given = confirmed[r.confirm.face];
+      const before = given === undefined ? [] : Array.isArray(given) ? given : [given];
+      confirmed = {
+        ...confirmed,
+        [r.confirm.face]: [...before, answer(truth, 'western', r.confirm)],
+      };
+      r = assembleColors(shown, 0.15, confirmed);
+    }
+    expect(asked).toEqual(['R/U', 'F/U', 'L/U', 'R/F', 'L/F']);
+  });
+});
+
+describe('a repair that cost nothing is not a repair — audit §2.6 (2026-09-20)', () => {
+  it('refuses flat scores rather than handing back the solved cube for any reading', () => {
+    // Every row flat: the detector preferred nothing, so the nine-of-each matching breaks 54 ties
+    // and hands back whatever its tie-break favours — the SOLVED cube, whatever was read. A repair
+    // is licensed by the likelihood it gives up; zero given up is no licence, and `repairByCounts`
+    // refuses it. Unreachable from the shipped fit, since a flat row never passes the confidence floor,
+    // so this pins the contract on the public field rather than a path a user takes.
+    const f = faces(scrambleFacelets("R U R' U' F2 L D'"));
+    // One misread, so the reading is refused and the repair is asked for.
+    f.F!.colors[0] = (f.F!.colors[0]! + 1) % 6;
+    for (const face of FACES) {
+      f[face]!.scores = Array.from({ length: 9 }, () => Array<number>(6).fill(1 / 6));
+    }
+    const r = assembleColors(f);
+    expect(r.valid).toBe(false);
+    expect(r.facelets).not.toBe(SOLVED_FACELETS);
   });
 });

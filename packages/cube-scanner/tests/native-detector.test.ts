@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fitFromOutput } from '../src/onnx-detect.js';
 import {
+  CLOSE_TIMEOUT_MS,
   CUBE_VISION,
   decodeTensorResponse,
   NativeDetector,
@@ -559,5 +560,225 @@ describe('the row count reaches the shared seam, so the native path is checked t
   it('accepts the shape the plugin really produces', () => {
     const out = decodeTensorResponse(encode(10, 40, new Array(400).fill(0)));
     expect(fitFromOutput(out!)).toEqual({ ok: false, reason: 'NO_FACE' });
+  });
+});
+
+describe('decodeTensorResponse — the header is believed exactly, in both versions (2026-09-21)', () => {
+  it('refuses a version 1 header that is neither a frame nor "no frame"', () => {
+    // Rows with no anchors, or anchors with no rows, used to read as an idle tick: a plugin whose
+    // model produced no head looked like a camera warming up for as long as anyone watched.
+    for (const [rows, anchors] of [
+      [2, 0],
+      [0, 3],
+      [2, -1],
+    ]) {
+      expect(() => decodeTensorResponse(encode(rows!, anchors!, [])), `${rows}×${anchors}`).toThrow(
+        /version 1 header .* neither a frame nor "no frame"/,
+      );
+    }
+    expect(decodeTensorResponse(encode(0, 0, []))).toBeNull(); // "no frame yet" still is
+  });
+
+  it('refuses a payload with MORE bytes than the header promises, as it refuses fewer', () => {
+    // The surplus used to be dropped without a word, so a header that under-counted its own
+    // payload produced a tensor read off the wrong offsets with nothing reporting it.
+    expect(() => decodeTensorResponse(encode(2, 3, [1, 2, 3, 4, 5, 6, 7]))).toThrow(
+      /is 36 bytes, need 32/,
+    );
+    expect(() => decodeTensorResponse(encode2(2, 3, 640, 480, [1, 2, 3, 4, 5, 6, 7]))).toThrow(
+      /is 48 bytes, need 44/,
+    );
+    expect(Array.from(decodeTensorResponse(encode(2, 3, [1, 2, 3, 4, 5, 6]))!.data)).toEqual([
+      1, 2, 3, 4, 5, 6,
+    ]);
+  });
+
+  it('refuses a header whose counts multiply past what a length can be', () => {
+    // Two int32s multiply to 2^60 — past the integers a double counts exactly, so the comparison
+    // that follows would be made on a rounded number.
+    expect(() => decodeTensorResponse(encode(1 << 30, 1 << 30, []))).toThrow(
+      /names a length no buffer has/,
+    );
+  });
+});
+
+describe('NativeDetector — the bridge is checked and bounded (2026-09-21)', () => {
+  const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+  const short = (cmd: string): string => cmd.replace(CUBE_VISION, '');
+
+  it('dispose() forgets the model, so the next load() asks the plugin to build it again', async () => {
+    // The panel's recovery from an inference that never settled disposes the detector and clears
+    // its model flag so that Start builds a fresh session — which this class had no dispose() for:
+    // its load() answered "already loaded" without crossing the bridge, and the wedged plugin
+    // session was kept for every Start after the timeout.
+    const trace: string[] = [];
+    const invoke = async (cmd: string): Promise<unknown> => {
+      trace.push(short(cmd));
+      return null;
+    };
+    const det = new NativeDetector(invoke);
+    await det.load();
+    await det.load();
+    expect(trace.filter((c) => c === 'load_model')).toHaveLength(1); // once, as always
+    det.dispose();
+    await det.load();
+    expect(trace.filter((c) => c === 'load_model')).toHaveLength(2); // and again, on request
+  });
+
+  it('a load still crossing when dispose() ran does not mark the model loaded afterwards', async () => {
+    const trace: string[] = [];
+    let release = (): void => {};
+    const invoke = async (cmd: string): Promise<unknown> => {
+      const name = short(cmd);
+      trace.push(name);
+      if (name === 'load_model' && trace.filter((c) => c === 'load_model').length === 1) {
+        await new Promise<void>((r) => {
+          release = r;
+        });
+      }
+      return null;
+    };
+    const det = new NativeDetector(invoke);
+    const first = det.load();
+    det.dispose();
+    release();
+    await first;
+    await det.load(); // a NEW caller, and it crosses
+    expect(trace.filter((c) => c === 'load_model')).toHaveLength(2);
+  });
+
+  it('an abandoned open landing after the newer one FAILED is refused as cancelled, not as a crash', async () => {
+    // The verification of the case below: the newer open's failure clears `newest` in its own
+    // catch, and the older open, landing afterwards, read `.claim` off null — a TypeError where a
+    // cancelled attempt owes its caller an AbortError, and a scanner that would have reported a
+    // crash for an open that simply lost a race.
+    let release = (): void => {};
+    let held = true;
+    const invoke = async (cmd: string, args?: Record<string, unknown>): Promise<unknown> => {
+      const name = short(cmd);
+      if (name === 'open_camera' && held) {
+        held = false;
+        await new Promise<void>((r) => {
+          release = r;
+        });
+      }
+      if (name === 'open_camera' && args?.deviceId === 'b') throw new Error('no camera with id b');
+      return name === 'current_camera' ? { deviceId: 'a', label: 'Native' } : null;
+    };
+    const first = new NativeDetector(invoke);
+    const abandoned = first.use({ deviceId: 'a' });
+    await flush();
+    first.stop(); // cancelled while its open is still inside the platform
+    const second = new NativeDetector(invoke);
+    await expect(second.use({ deviceId: 'b' })).rejects.toThrow(/no camera with id b/);
+    release(); // the older open lands after the newer one failed
+    await expect(abandoned).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('an abandoned open that ran AFTER the newer one puts the newer owner’s camera back', async () => {
+    // Two opens crossing at once are two Tauri tasks with no order between them: the plugin can
+    // run the newer first and the older second, and the older's camera then replaces the newer's
+    // — with the claim held by the newer, so the older, cancelled, was refused the close that
+    // would have put it right, and the lens stayed on a device its owner never asked for. The
+    // opens are NOT queued (a re-mounted panel must start while an abandoned open sits on a
+    // permission prompt — `detector-park.test.ts`); the older one, landing late, re-issues the
+    // owner's open instead. Reproduced by a bridge that is slow to RUN the first open.
+    const trace: string[] = [];
+    let release = (): void => {};
+    let held = true;
+    let cameraOn: string | null = null;
+    const invoke = async (cmd: string, args?: Record<string, unknown>): Promise<unknown> => {
+      const name = short(cmd);
+      if (name === 'open_camera' && held) {
+        held = false;
+        await new Promise<void>((r) => {
+          release = r;
+        });
+      }
+      if (name === 'open_camera') cameraOn = String(args?.deviceId);
+      trace.push(name === 'open_camera' ? `open:${cameraOn}` : name);
+      return name === 'current_camera' ? { deviceId: cameraOn, label: 'Native' } : null;
+    };
+    const first = new NativeDetector(invoke);
+    const abandoned = first.use({ deviceId: 'a' });
+    await flush();
+    first.stop(); // cancelled while its open is still inside the platform
+    const second = new NativeDetector(invoke);
+    await second.use({ deviceId: 'b' }); // not queued behind the first: it lands, and b is on
+    expect(cameraOn).toBe('b');
+    expect(second.device?.deviceId).toBe('b');
+    release(); // …and only now does the plugin run the first open: a is on, under b's owner
+    await expect(abandoned).rejects.toMatchObject({ name: 'AbortError' });
+    await flush();
+    expect(cameraOn).toBe('b'); // put back for its owner
+    expect(trace.filter((t) => t.startsWith('open:'))).toEqual(['open:b', 'open:a', 'open:b']);
+    expect(trace).not.toContain('close_camera'); // nothing was closed on the owner's behalf
+    second.stop();
+    await flush();
+    expect(trace.filter((t) => t === 'close_camera')).toHaveLength(1); // the owner's own
+  });
+
+  it('refuses a next_detection answer that is not a tensor, rather than reading it as "no frame yet"', async () => {
+    // A reply of any other shape used to become the empty string, which is Android's idle answer:
+    // a plugin answering with nothing at all looked like a camera warming up for ever.
+    for (const reply of [undefined, null, 42, 'not-an-object-either', {}, { tensor: 7 }]) {
+      const det = new NativeDetector(async () => reply);
+      await expect(det.next(), JSON.stringify(reply)).rejects.toThrow(/next_detection answered/);
+    }
+    expect(await new NativeDetector(async () => ({ tensor: '' })).next()).toBeNull();
+  });
+
+  it('checks every camera the plugin lists, through the same parser as the open one', async () => {
+    const det = (reply: unknown): NativeDetector => new NativeDetector(async () => reply);
+    await expect(det(null).cameras()).rejects.toThrow(/not a list/);
+    await expect(det({ length: 1 }).cameras()).rejects.toThrow(/not a list/);
+    await expect(det([{ label: 'no id' }]).cameras()).rejects.toThrow(/no deviceId/);
+    await expect(det([null]).cameras()).rejects.toThrow(/entry 0 is not a camera/);
+    expect(
+      await det([
+        { deviceId: 'x', label: '', facing: 'sideways' },
+        { deviceId: 'y', label: 'Back', facing: 'environment' },
+      ]).cameras(),
+    ).toEqual([
+      { deviceId: 'x', label: 'Camera' },
+      { deviceId: 'y', label: 'Back', facing: 'environment' },
+    ]);
+  });
+
+  // LAST in the file on purpose: it leaves one close unanswered, and the module-level count that
+  // close held is released only by the clock this test controls.
+  it('gives up on a close that never answers, so a later open is not held for ever', async () => {
+    vi.useFakeTimers();
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const trace: string[] = [];
+      let lost = true; // only the FIRST close is lost; the rest answer, so nothing else is held
+      const invoke = async (cmd: string): Promise<unknown> => {
+        const name = short(cmd);
+        trace.push(name);
+        if (name === 'close_camera' && lost) {
+          lost = false;
+          await new Promise<void>(() => {});
+        }
+        return name === 'current_camera' ? { deviceId: 'native-1', label: 'Native' } : null;
+      };
+      const outgoing = new NativeDetector(invoke);
+      await outgoing.use({});
+      outgoing.stop(); // this close never answers
+      const incoming = new NativeDetector(invoke);
+      const opening = incoming.use({});
+      await vi.advanceTimersByTimeAsync(CLOSE_TIMEOUT_MS - 1);
+      expect(trace.filter((c) => c === 'open_camera')).toHaveLength(1); // still waiting, rightly
+      await vi.advanceTimersByTimeAsync(2);
+      await opening;
+      expect(trace.filter((c) => c === 'open_camera')).toHaveLength(2); // and then not
+      expect(warned.mock.calls.some((c) => /presumed lost/.test(String(c[0])))).toBe(true);
+      expect(incoming.device).toEqual({ deviceId: 'native-1', label: 'Native' });
+      incoming.stop();
+      await vi.advanceTimersByTimeAsync(1);
+    } finally {
+      warned.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });

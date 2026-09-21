@@ -28,6 +28,25 @@ export enum ComputeUnits {
  * The plugin's command namespace. Exported because `pickDetector` probes the SAME plugin before
  * this class is ever constructed, and a rename that reached only one of the two would leave the
  * probe answering for a plugin whose commands no longer exist.
+ *
+ * THE NAMES ARE SENT IN snake_case AND ARRIVE IN TWO SPELLINGS (2026-09-20, audit 1.6). A Rust
+ * `invoke_handler` (Apple, Windows) matches a command verbatim, so `open_camera` is `fn
+ * open_camera`. The Android plugin registers no Rust handler, so the call takes Tauri's mobile
+ * fallback, which camel-cases the name before handing it to Kotlin (`heck::AsLowerCamelCase`,
+ * tauri-2.11.5/src/webview/mod.rs ~1891) — so `open_camera` there is `fun openCamera`, and a
+ * Kotlin method spelled `open_camera` is one nothing can reach. Nothing here changes for that;
+ * this file keeps sending what the ACL names (crates/cube-vision/build.rs).
+ *
+ * WHAT IS AND IS NOT PROVEN ABOUT THAT (corrected 2026-09-21).
+ * `apps/web/test/native-plugin-commands.test.mjs` reads every name this file sends and every
+ * `@Command` the Kotlin plugin declares, and requires them to pair under the camel-casing rule AS
+ * THAT TEST SPELLS IT — a copy
+ * of `heck`'s rule, applied to source text. It drives no Tauri dispatch, and it would not go red on
+ * its own if a Tauri upgrade changed how the mobile fallback spells a command: the version the rule
+ * was read from is pinned only by `Cargo.lock`, so a bump of `tauri` there is the moment to re-read
+ * `run_command` and re-check the rule. That the commands are reachable on a device is a claim only
+ * an Android run can make, and none has yet (`VisionPlugin.kt`'s own note; the native path there is
+ * behind a flag until one does).
  */
 export const CUBE_VISION = 'plugin:cube-vision|';
 const P = CUBE_VISION;
@@ -95,10 +114,38 @@ const mayClose = (claim: number): boolean => cameraClaim === 0 || cameraClaim ==
  * the open goes out first and the close is refused.
  *
  * Neither accumulator ever rejects, so a waiter cannot inherit the other side's failure:
- * `sendClose` reports a close's failure where it happens, `use()` reports an open's. A call that
- * never SETTLES does hold the other side up — the same shape of failure a hung `open_camera`
- * already produces, visible as a camera that will not start rather than one that dies mid-scan,
- * and the price of the ordering.
+ * `sendClose` reports a close's failure where it happens, `use()` reports an open's.
+ *
+ * TWO OPENS ARE NOT ORDERED, AND AN ABANDONED ONE THAT LANDS LATE PUTS THINGS RIGHT (2026-09-21).
+ * Two opens issued while the first was still inside the platform are two Tauri tasks with no order
+ * between them: the plugin can run the NEWER first and the older second, and the older's camera
+ * then replaces the newer's — with the claim held by the newer attempt, so the older, on finding
+ * itself cancelled, is refused the close that would have put it right (`mayClose`), and the lens
+ * the plugin holds is on a device its owner never asked for. The claim rule's "the issue order is
+ * the order the plugin sees" is only true of calls awaited one after another — and these must NOT
+ * be: the park's hand-over window makes a second `NativeDetector` ordinary, and a re-mounted panel
+ * has to start its camera while the abandoned open before it sits on an unanswered permission
+ * prompt (`detector-park.test.ts`, "a re-mount inside the deferred park"). Queueing opens behind
+ * opens is the fault the paragraph above refuses, arriving directly.
+ *
+ * So the order is recovered after the fact instead (`newest`, `repairIfOvertaken`). The bridge
+ * answers in the order the plugin finished, and a plugin runs its opens one at a time under its
+ * state lock (the Swift lock; Android's main executor), so an abandoned open that LANDS after the
+ * newest open has already landed is one that RAN after it: the lens is on this attempt's device.
+ * It re-issues the newest owner's open, which puts that owner's device back — one extra open on a
+ * rare path, tracked like any other so a close issued meanwhile waits for it. On the same device
+ * the repair is a re-open of what is already open, which is what a cancelled open landing late has
+ * always amounted to here.
+ *
+ * A CLOSE THAT NEVER SETTLES IS GIVEN UP ON (2026-09-21, `CLOSE_TIMEOUT_MS`). It used to hold
+ * `closesOut` above zero for the life of the page, and every later `use()` waited on it for ever:
+ * a plugin that dropped one `close_camera` was a scanner that could never start again. After the
+ * limit the close is presumed lost, said so on the console, and taken out of the count; an open may
+ * then go out. Should that close land late after all, it can shut the camera the open established
+ * — and that is caught where a dead camera is always caught, by the ticks that stop delivering
+ * (`tickFail`, "Try Start again"), which is a recovery, where the wait had none. An OPEN that never
+ * settles is not bounded the same way, on purpose: a permission prompt is an open that legitimately
+ * settles only when the person answers it.
  */
 let closing: Promise<unknown> = Promise.resolve();
 /** How many closes are crossing the bridge right now — the question an open re-asks after each await. */
@@ -107,6 +154,33 @@ let closesOut = 0;
 let opening: Promise<unknown> = Promise.resolve();
 /** How many opens are in flight; `opening` is only worth reading while this is above zero. */
 let opensOut = 0;
+/**
+ * How long a `close_camera` may go unanswered before it stops holding the bridge (see `closing`).
+ * Generous: a close is a device release, milliseconds on every platform measured, and the cost of
+ * a wrong guess here is one late close on a camera a later open has already established.
+ */
+export const CLOSE_TIMEOUT_MS = 10_000;
+
+/**
+ * The newest open ISSUED — whose claim, what it asked for, and whether it has landed — so an older
+ * open landing after it can tell that it overtook it and put the newest owner's device back
+ * (`repairIfOvertaken`; see `closing`, "two opens are not ordered"). Cleared when that open fails,
+ * because there is then no camera of its to restore.
+ */
+let newest: { claim: number; opts: CameraOptions; landed: boolean } | null = null;
+
+/**
+ * Wait until no close is crossing the bridge, re-asking the count after every await — `closing`
+ * names only the closes outstanding when it was read, and one added during the wait is not in the
+ * promise being waited on. `abandoned` is asked after each await so an attempt cancelled while it
+ * waited opens nothing at all. Opens are deliberately NOT waited for (see `closing`).
+ */
+async function awaitClosesLanded(abandoned: () => void): Promise<void> {
+  while (closesOut > 0) {
+    await closing;
+    abandoned();
+  }
+}
 
 /** Record an open crossing the bridge, so a close issued meanwhile is ordered behind it. */
 function trackOpen(sent: Promise<unknown>): void {
@@ -172,23 +246,26 @@ export class NativeDetector implements Detector {
     const claim = ++claims;
     this.claim = claim;
     cameraClaim = claim;
+    // Whether this attempt's open has been sent: an abort before that has overtaken nothing.
+    let issued = false;
     const abort = (): never => {
       // Close what we are abandoning — unless a LATER open has taken the camera, in which case the
-      // lens on now is not the one this attempt opened.
+      // lens on now is not the one this attempt opened… unless it IS, because this open ran after
+      // that later one (see `closing`, "two opens are not ordered"), which is put right here.
       this.closeCamera(claim);
+      if (issued) this.repairIfOvertaken(claim);
       throw new DOMException('camera open superseded', 'AbortError');
     };
     // A close still crossing the bridge lands FIRST, or it lands on this open's camera (see
-    // `closing`). Asked as a COUNT, and asked AGAIN after every await: `closing` names only the
-    // closes outstanding at the moment it was read, so one added during the wait is not in it, and
-    // an open that waited on that single snapshot went out with a close still crossing. The loop
-    // ends only with the bridge carrying no close at all — and runs zero times for an open with
-    // nothing to wait for, which is therefore issued in the same turn it always was. It terminates
-    // because a close can only be ADDED by a `stop()` or an abandoned attempt, and one that cancels
-    // THIS attempt takes it out through `abort()` on the very next check.
-    while (closesOut > 0) {
-      await closing;
-      if (cancelled()) abort();
+    // `closing`). The wait terminates because a close can only be ADDED by a `stop()` or an
+    // abandoned attempt, one that cancels THIS attempt takes it out through `abort()` on the very
+    // next check, and a close that never lands is bounded (`CLOSE_TIMEOUT_MS`). Awaited ONLY when
+    // there is something to wait for: an open with a quiet bridge is issued in the same turn it
+    // always was, which the claim rule and every caller that stops it in that turn rely on.
+    if (closesOut > 0) {
+      await awaitClosesLanded(() => {
+        if (cancelled()) abort();
+      });
     }
     // The claim belongs to the open being ISSUED, and after a wait of unknown length THIS is the
     // issue. It was taken at entry so that a close arriving mid-wait cannot claim the camera this
@@ -200,13 +277,21 @@ export class NativeDetector implements Detector {
     // a pinned deviceId is honoured, everything else opens the default camera.
     try {
       const sent = this.invoke(`${P}open_camera`, { deviceId: opts.deviceId ?? null });
+      issued = true;
+      newest = { claim, opts, landed: false };
       trackOpen(sent);
       await sent;
+      // `newest` may be NULL here (2026-09-21, on verification): a newer open that FAILED while this
+      // one was crossing cleared it in its own catch, and this landing then read `.claim` off
+      // nothing — a TypeError where a cancelled attempt owes its caller an AbortError.
+      if (newest?.claim === claim) newest.landed = true;
     } catch (err) {
       // Nothing was opened, so nothing is closed — but the claim was taken on the way in and a
       // claim held by an attempt that failed would refuse every later `stop()` the right to close
-      // the camera. Given back, and only if it is still ours.
+      // the camera. Given back, and only if it is still ours; and there is no camera of ours for
+      // an older open landing late to restore.
       if (cameraClaim === claim) cameraClaim = 0;
+      if (newest?.claim === claim) newest = null;
       throw err;
     }
     if (cancelled()) abort();
@@ -239,36 +324,94 @@ export class NativeDetector implements Detector {
    * bridge and the plugin compiled twice.
    */
   private loading: Promise<void> | null = null;
+  /** Bumped by `dispose()`, so a load still crossing the bridge cannot mark the model loaded after it. */
+  private loadGeneration = 0;
 
   async load(): Promise<void> {
     if (this.loaded) return;
     if (this.loading) return this.loading;
     // The plugin finds and compiles the bundled model itself; the panel only waits and reports.
+    const generation = this.loadGeneration;
     this.loading = this.invoke(`${P}load_model`, { computeUnits: this.computeUnits })
       .then(() => {
-        this.loaded = true;
+        // A `dispose()` while this crossed has moved on: the plugin compiled, but this detector
+        // no longer claims it, and the next `load()` asks the plugin afresh (see `dispose`).
+        if (generation === this.loadGeneration) this.loaded = true;
       })
       .finally(() => {
-        this.loading = null;
+        if (generation === this.loadGeneration) this.loading = null;
       });
     return this.loading;
   }
 
   async next(): Promise<ModelOutput | null> {
     // ArrayBuffer on Apple, `{ tensor }` on Android — see decodeTensorResponse for why the two
-    // platforms cannot agree on this one shape.
-    const reply = (await this.invoke(`${P}next_detection`)) as ArrayBuffer | { tensor?: string };
-    return decodeTensorResponse(reply instanceof ArrayBuffer ? reply : (reply?.tensor ?? ''));
+    // platforms cannot agree on this one shape. CHECKED AT THE BRIDGE (2026-09-21): a reply of any
+    // other shape used to become `''`, which is Android's "no frame yet", so a plugin answering
+    // with nothing at all — a missing key, a number, a null — read as a camera that was warming up
+    // for as long as anyone waited, and `tickFail` never fired because every tick "answered".
+    const reply = await this.invoke(`${P}next_detection`);
+    if (reply instanceof ArrayBuffer) return decodeTensorResponse(reply);
+    if (reply !== null && typeof reply === 'object' && 'tensor' in reply) {
+      const { tensor } = reply as { tensor: unknown };
+      if (typeof tensor === 'string') return decodeTensorResponse(tensor);
+      throw new Error(`cube-vision: next_detection answered with a ${typeof tensor} tensor`);
+    }
+    throw new Error(
+      `cube-vision: next_detection answered with ${reply === null ? 'null' : `a ${typeof reply}`}, not a tensor`,
+    );
   }
 
   async cameras(): Promise<CameraDevice[]> {
-    return (await this.invoke(`${P}list_cameras`)) as CameraDevice[];
+    return nativeCameras(await this.invoke(`${P}list_cameras`));
   }
 
   stop(): void {
     this.opening++; // supersede an open still in flight — see `use`
     this.dev = null;
     this.closeCamera(this.claim);
+  }
+
+  /**
+   * Release the camera AND forget the model, so the next `load()` asks the plugin to build it again.
+   *
+   * ADDED 2026-09-21, for the panel's recovery from an inference that never settled: `tickFail`
+   * disposes the detector and clears `modelLoaded`, so that Start builds a fresh session — which it
+   * did for `WebDetector` and not here, because this class had no `dispose()` and its `load()` then
+   * answered "already loaded" without crossing the bridge. The wedged plugin session was kept, and
+   * every Start after a timeout was the same fifteen seconds and the same notice. The model lives in
+   * the plugin, so what is released here is this side's CLAIM on it: `load_model` is sent again,
+   * and the plugin replaces what it holds (each platform's `load_model` builds anew). Not a
+   * tombstone, exactly as `Detector.dispose` says: a `load()` or `use()` after this is a new caller.
+   */
+  dispose(): void {
+    this.stop();
+    this.loadGeneration++;
+    this.loaded = false;
+    this.loading = null;
+  }
+
+  /**
+   * This attempt's open has landed, cancelled — and if the NEWEST open had already landed by then,
+   * this one ran after it and the lens is on this attempt's device, not its owner's: re-issue that
+   * owner's open (see `closing`, "two opens are not ordered"). Nothing to do when the newest is
+   * still in flight (it lands after, and so ran after), when the newest is this attempt, or when
+   * the newest owner has since let the claim go (its `stop()` closed what it held).
+   */
+  private repairIfOvertaken(claim: number): void {
+    const owner = newest;
+    if (!owner || owner.claim === claim || !owner.landed || cameraClaim !== owner.claim) return;
+    const sent = this.invoke(`${P}open_camera`, { deviceId: owner.opts.deviceId ?? null });
+    trackOpen(sent);
+    void sent.then(
+      () => {},
+      (err: unknown) => {
+        console.warn(
+          '[cubus] the native camera could not be reopened for its owner after an abandoned open landed late',
+          err,
+        );
+      },
+    );
   }
 
   /**
@@ -332,14 +475,48 @@ export class NativeDetector implements Detector {
         );
       },
     );
-    closing = Promise.all([
-      closing,
-      sent.then(() => {
-        closesOut--;
-        if (closesOut === 0) closing = Promise.resolve(); // collapsed as in `trackOpen`
-      }),
-    ]);
+    // Counted out when it settles — or when it has gone unanswered past the limit, whichever is
+    // first, and only once (see `closing`, "a close that never settles").
+    let counted = false;
+    const countOut = (): void => {
+      if (counted) return;
+      counted = true;
+      closesOut--;
+      if (closesOut === 0) closing = Promise.resolve(); // collapsed as in `trackOpen`
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const gaveUp = new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        console.warn(
+          `[cubus] the native camera's close_camera did not answer within ${Math.round(CLOSE_TIMEOUT_MS / 1000)} seconds — presumed lost; a later open no longer waits for it`,
+        );
+        resolve();
+      }, CLOSE_TIMEOUT_MS);
+    });
+    const settled = sent.then(() => {
+      clearTimeout(timer);
+    });
+    closing = Promise.all([closing, Promise.race([settled, gaveUp]).then(countOut)]);
   }
+}
+
+/**
+ * The cameras the plugin lists, each checked as `nativeDevice` checks the one that is open — an
+ * array, and every entry a camera with an id, because the list crossed a bridge and used to be
+ * trusted through a cast: a malformed entry then failed later, in a host's menu, away from the
+ * boundary that let it in (audit, 2026-09-21).
+ */
+export function nativeCameras(raw: unknown): CameraDevice[] {
+  if (!Array.isArray(raw)) {
+    throw new Error(
+      `cube-vision: list_cameras answered with ${raw === null ? 'null' : `a ${typeof raw}`}, not a list`,
+    );
+  }
+  return raw.map((entry, i) => {
+    const device = nativeDevice(entry);
+    if (device === null) throw new Error(`cube-vision: list_cameras entry ${i} is not a camera`);
+    return device;
+  });
 }
 
 /** Base64 → ArrayBuffer, or null for the empty string. Kept here beside its only caller. */
@@ -363,7 +540,9 @@ function base64ToBuffer(b64: string): ArrayBuffer | null {
  * The version is a NEGATIVE first word because a row count never is, so the two cannot be mistaken
  * for each other, and an unknown version is refused rather than read as a row count. Both are
  * accepted because a plugin moves to version 2 when its platform can be built and tested: Apple
- * has; Windows and Android keep version 1 until they can be (dev-docs/scan-guidance-plan.md 5). `0`
+ * has, and Windows writes the same bytes through the same Rust encoder (`crates/cube-vision/src/
+ * wire.rs`, 2026-09-21 — unverified on a Windows device); Android keeps version 1 until it can be
+ * (dev-docs/scan-guidance-plan.md 5). `0`
  * anchors means "no frame yet" → null, which the panel treats as a tick to skip. Exported so a test
  * can pin the wire format without a plugin.
  */
@@ -388,14 +567,24 @@ export function decodeTensorResponse(input: ArrayBuffer | string): ModelOutput |
   const versioned = buf.byteLength >= 4 && new Int32Array(buf, 0, 1)[0]! < 0;
   if (!versioned && buf.byteLength < 8) return null;
   const { rows, anchors, headerBytes, picture } = tensorHeader(buf);
-  if (anchors <= 0 || rows <= 0) return null;
+  // "No frame yet", in either version: both counts zero, and `tensorHeader` has refused every
+  // shape between that and a frame.
+  if (anchors === 0) return null;
   const count = rows * anchors;
+  const need = headerBytes + count * 4;
   // Fail loud on a malformed response rather than letting the Float32Array constructor throw an
-  // opaque RangeError: the plugin promised `count` floats after its header, so if the buffer is
-  // shorter the two sides of the bridge have disagreed and the read cannot be trusted.
-  if (buf.byteLength < headerBytes + count * 4) {
+  // opaque RangeError: the plugin promised EXACTLY `count` floats after its header. Shorter, the two
+  // sides of the bridge have disagreed and the read cannot be trusted; LONGER is the same
+  // disagreement, and used to be read anyway — the surplus silently dropped, so a header that
+  // under-counted its own payload produced a tensor read off the wrong offsets with nothing
+  // reporting it (audit, 2026-09-21). The arithmetic is checked first: two int32s multiply past
+  // what a double counts exactly, and a length that cannot be represented cannot be compared.
+  if (!Number.isSafeInteger(need)) {
+    throw new Error(`cube-vision tensor: a ${rows}×${anchors} header names a length no buffer has`);
+  }
+  if (buf.byteLength !== need) {
     throw new Error(
-      `cube-vision tensor is ${buf.byteLength} bytes, need ${headerBytes + count * 4} for ${rows}×${anchors}`,
+      `cube-vision tensor is ${buf.byteLength} bytes, need ${need} for ${rows}×${anchors}`,
     );
   }
   const data = new Float32Array(buf, headerBytes, count);
@@ -422,7 +611,15 @@ function tensorHeader(buf: ArrayBuffer): {
   const first = new Int32Array(buf, 0, 1)[0]!;
   if (first >= 0) {
     const [rows, anchors] = new Int32Array(buf, 0, 2);
-    return { rows: rows!, anchors: anchors!, headerBytes: 8 };
+    // The same two shapes version 2 admits, and nothing between (2026-09-21): a frame, both
+    // counts positive; or "no frame yet", both zero. Rows with no anchors, or anchors with no rows,
+    // used to read as an idle tick — a plugin whose model produced no head, or whose contract had
+    // broken, looked like a camera warming up for as long as anyone watched.
+    if (rows! > 0 && anchors! > 0) return { rows: rows!, anchors: anchors!, headerBytes: 8 };
+    if (rows === 0 && anchors === 0) return { rows: 0, anchors: 0, headerBytes: 8 };
+    throw new Error(
+      `cube-vision tensor: a version 1 header of ${rows}×${anchors} is neither a frame nor "no frame"`,
+    );
   }
   if (first !== -2) throw new Error(`cube-vision tensor: unknown wire version ${-first}`);
   if (buf.byteLength < 20) {

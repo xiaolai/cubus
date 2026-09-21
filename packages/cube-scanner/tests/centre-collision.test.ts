@@ -255,6 +255,69 @@ describe('resolveCentres — on a synthetic cube', () => {
   });
 });
 
+describe('resolveCentres — what it says about where each side went, and what it counts (2026-09-21)', () => {
+  it('`placed` names the unnamed side each free slot took, including one whose centre was rewritten', () => {
+    // A filing REBUILDS a capture whenever its centre changes, so a caller matching the filed
+    // captures to its own by identity found nothing for exactly the reassigned-centre case — the
+    // logo side — and the record it keeps about that side stayed on an object nothing held.
+    const faces = capturesOf(DEEP);
+    const logo = centreReadAs(faces.U, LETTER_CLASS.B);
+    const { U: _white, B: _blue, ...named } = faces;
+    const resolution = resolveCentres(named, asUnnamed([faces.B, logo]));
+    expect(resolution.decidedBy).toBe('legality');
+    expect(resolution.placed).toEqual({ B: 0, U: 1 });
+    expect(resolution.faces!.B).toBe(faces.B); // its centre was right: the same object
+    expect(resolution.faces!.U).not.toBe(logo); // its centre was put right: a copy
+    expect(resolution.faces!.U.colors.filter((_, i) => i !== 4)).toEqual(
+      logo.colors.filter((_, i) => i !== 4),
+    );
+  });
+
+  it('…on the counting path and the confidence path too', () => {
+    const faces = capturesOf(DEEP);
+    const { U: white, ...five } = faces;
+    const counted = resolveCentres(five, asUnnamed([centreReadAs(white, LETTER_CLASS.B)]));
+    expect(counted.decidedBy).toBe('counting');
+    expect(counted.placed).toEqual({ U: 0 });
+
+    const { U: _u, B: _b, F: green, ...rest } = faces;
+    const broken = { ...rest, F: swapTwo(green) };
+    const logo = centreAt(centreReadAs(faces.U, LETTER_CLASS.B), 0.6);
+    const byConf = resolveCentres(broken, asUnnamed([faces.B, logo]));
+    expect(byConf.decidedBy).toBe('confidence');
+    expect(byConf.placed).toEqual({ B: 0, U: 1 });
+  });
+
+  it('a refusal for unread centres counts only the sides whose centre never settled', () => {
+    // `unnamed.length` counted a side that DID claim a colour and merely could not be placed, so
+    // "the middle stickers of 2 sides kept changing" was said about one.
+    const faces = capturesOf(DEEP);
+    const { U: white, D: yellow, F: green, ...rest } = faces;
+    const named = { ...rest, F: swapTwo(green) }; // no filing is legal
+    const unnamed: UnnamedSide[] = [
+      { capture: yellow, centreClaim: LETTER_CLASS.D as Colour, centreConfidence: 0.9 },
+      { capture: white, centreClaim: null, centreConfidence: 0.5 },
+    ];
+    const resolution = resolveCentres(named, unnamed);
+    expect(resolution.faces).toBeUndefined();
+    expect(resolution.result.unreadCentres).toBe(1);
+    expect(resolution.result.centreConflict).toBeUndefined();
+  });
+
+  it('with no unread side and no two claims alike, it names a conflict — never "0 sides" unread', () => {
+    const faces = capturesOf(DEEP);
+    const { U: white, D: yellow, F: green, ...rest } = faces;
+    const named = { ...rest, F: swapTwo(green) };
+    const unnamed: UnnamedSide[] = [
+      { capture: white, centreClaim: LETTER_CLASS.U as Colour, centreConfidence: 0.9 },
+      { capture: yellow, centreClaim: LETTER_CLASS.D as Colour, centreConfidence: 0.9 },
+    ];
+    const resolution = resolveCentres(named, unnamed);
+    expect(resolution.result.unreadCentres).toBeUndefined();
+    expect(resolution.result.centreConflict?.legalFilings).toBe(0);
+  });
+});
+
 describe('resolveCentres — one unnamed side, one free slot', () => {
   it('places it: six centres, five taken, so the colour is forced', () => {
     // The case the logo fix creates (2026-09-20). A white cap with a blue logo never settles on a

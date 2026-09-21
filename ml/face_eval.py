@@ -12,7 +12,7 @@ did no correction — so this is a lower-bound intuition, not the real scan numb
 
   python face_eval.py --model <onnx> --images out/heldout/images --labels out/heldout/labels
 
-Reuses ood_eval (letterbox/decode/nms + the fitFace grid logic) and color_eval (GT loader/IoU).
+Reuses ood_eval's adapters over cube_infer (letterbox, the app's detection tail and fitFace) and color_eval (GT loader/IoU).
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ import os
 from PIL import Image
 
 from color_eval import iou_xyxy, load_gt
-from ood_eval import _to_grid, decode, letterbox, nms
+from ood_eval import detections, fit_face, letterbox
 
 
 def main() -> None:
@@ -54,14 +54,12 @@ def main() -> None:
         gts = load_gt(os.path.join(args.labels, stem + ".txt"), w, h)
         tensor, scale, px, py = letterbox(im)
         out = sess.run([outp], {inp: tensor})[0]
-        dets = nms(decode(out))
-        good = [d for d in dets if d["confidence"] >= args.min_conf and 0 <= d["classId"] < 6]
-        if len(good) < 9:
-            continue
-        nine = sorted(good, key=lambda d: -(d["w"] * d["h"]))[:9]
-        grid = _to_grid(nine)
+        # The app's gate, through cube_infer (2026-09-20): a copy of the grid fit here read a rolled
+        # face in a different order from the app, so "committed" and "correct" were about a fit the
+        # app does not run.
+        _reason, grid = fit_face(detections(out), args.min_conf)
         if grid is None:
-            continue  # fitFace would abstain (BAD_GEOMETRY)
+            continue  # fitFace abstained: NO_FACE, PARTIAL_FACE or BAD_GEOMETRY
         committed += 1
         # map the 9 committed stickers to original-pixel boxes, match to GT, require colour match
         all_ok = True

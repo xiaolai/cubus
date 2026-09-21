@@ -132,7 +132,22 @@ describe('a real scan of a cube with a logo on its white centre', () => {
     // red — at whatever turn it was filed; a capture's rotation is the assembly's to settle.
     const logo = [W, B, 2, B, W, Y, 2, 4, 1];
     const white = last().captured.find((c) => c.face === 'U')!;
-    expect([0, 1, 2, 3].some((k) => rotateFace(logo, k).join() === white.colors.join())).toBe(true);
+    // The tile carries what the assembly SETTLED, not the raw read (2026-09-20; the audit's
+    // adoption of repaired captures): the one misread sticker — blue for yellow, the tap the
+    // full-precision replay had to ask for — is repaired on the tile too, so the person is shown
+    // the cube the app believes in and a correction is measured against it. So: the true white
+    // side, at whatever turn the assembly filed it…
+    const truthU = TRUTH.slice(0, 9)
+      .split('')
+      .map((letter) => 'URFDLB'.indexOf(letter));
+    expect([0, 1, 2, 3].some((k) => rotateFace(truthU, k).join() === white.colors.join())).toBe(
+      true,
+    );
+    // …and ONE sticker from the read, no more: the repair was the misread and nothing else.
+    const away = [0, 1, 2, 3].map(
+      (k) => rotateFace(logo, k).filter((c, i) => c !== white.colors[i]).length,
+    );
+    expect(Math.min(...away)).toBe(1);
   });
 
   it('never tells the person to fit the side in the frame, and never ends the scan', () => {

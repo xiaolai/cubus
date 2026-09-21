@@ -15,8 +15,10 @@ export {
   type CentreResolution,
   type ColorFace,
   type Confirmation,
+  type Confirmed,
   type ConfirmRequest,
   LOW_CONFIDENCE_THRESHOLD,
+  type Looks,
   resolveCentres,
   SAME_SIDE_STICKERS,
   type StickerSuspect,
@@ -26,9 +28,11 @@ export {
 } from './ai-assemble.js';
 export {
   type CameraDevice,
+  CameraLostError,
   type CameraOptions,
   FrameNotReadyError,
   type FrameSource,
+  frameLiveness,
   openCamera,
 } from './camera.js';
 // The capture-and-inference seam: one interface both the browser (WebDetector, wasm) and the native

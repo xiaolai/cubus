@@ -14,7 +14,11 @@
 // question while making the test a browser test. `tests/model-runner.test.ts` owns the runtime.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { FrameNotReadyError } from '../src/camera.js';
+import { CameraLostError, FrameNotReadyError } from '../src/camera.js';
+import { IMG_SIZE, preprocess } from '../src/onnx-detect.js';
+import type { Frame } from '../src/types.js';
+import { handleLetterboxRequest, type LetterboxReply } from '../view/letterbox-protocol.js';
+import type { LetterboxJob } from '../view/letterbox-worker.js';
 import { WebDetector } from '../view/web-detector.js';
 
 /** One `createModelRunner` call, held open so the test decides when the model "arrives". */
@@ -512,6 +516,285 @@ describe('WebDetector — next(), the one call the scan loop makes', () => {
     await loading;
     expect(det.device).toEqual({ deviceId: 'cam-2', label: 'cam-2' });
     await expect(det.next()).resolves.toMatchObject({ rows: 10 });
+  });
+});
+
+describe('WebDetector — next() with the letterbox on another thread (2026-09-20)', () => {
+  /** The worker path's three facilities, faked on the page this suite's detector reads them from. */
+  class FakeBitmap {
+    constructor(readonly frame: Frame) {}
+    close(): void {}
+  }
+  class FakeWorker {
+    static built: FakeWorker[] = [];
+    posted: LetterboxJob[] = [];
+    /** What the last `answer` sent, so the caller's frame can be compared with it by identity. */
+    sent: LetterboxReply | null = null;
+    terminated = false;
+    private listeners = new Map<string, ((ev: unknown) => void)[]>();
+    constructor() {
+      FakeWorker.built.push(this);
+    }
+    addEventListener(type: string, fn: (ev: unknown) => void): void {
+      const list = this.listeners.get(type) ?? [];
+      list.push(fn);
+      this.listeners.set(type, list);
+    }
+    postMessage(message: LetterboxJob): void {
+      this.posted.push(message);
+    }
+    terminate(): void {
+      this.terminated = true;
+    }
+    answer(index = 0): void {
+      const job = this.posted[index];
+      if (!job) throw new Error(`nothing posted at ${index}`);
+      const reply = handleLetterboxRequest({
+        id: job.id,
+        frame: (job.bitmap as unknown as FakeBitmap).frame,
+      });
+      this.sent = reply;
+      for (const fn of this.listeners.get('message') ?? []) fn({ data: reply });
+    }
+  }
+  const page = globalThis as {
+    Worker?: unknown;
+    createImageBitmap?: unknown;
+    OffscreenCanvas?: unknown;
+  };
+  const PICTURE: Frame = { data: new Uint8ClampedArray(4 * 4 * 4).fill(77), width: 4, height: 4 };
+
+  /** Give the page a worker and a bitmap factory; happy-dom already has `OffscreenCanvas`. */
+  function withWorker(): void {
+    FakeWorker.built = [];
+    page.Worker = FakeWorker;
+    page.createImageBitmap = async () => new FakeBitmap(PICTURE);
+  }
+  /** As `withWorker`, with a snapshot the test finishes by hand. */
+  function withDeferredWorker(): { snap: () => void } {
+    withWorker();
+    let take: () => void = () => {};
+    page.createImageBitmap = () =>
+      new Promise<FakeBitmap>((resolve) => {
+        take = () => resolve(new FakeBitmap(PICTURE));
+      });
+    return { snap: () => take() };
+  }
+  afterEach(() => {
+    page.Worker = undefined;
+    delete page.createImageBitmap;
+    FakeWorker.built = [];
+  });
+
+  /** A source that gives its liveness verdict ahead of the read, so the bitmap path may take it. */
+  const readySource = (): Record<string, unknown> => ({
+    ...(sourceNamed('cam-1') as object),
+    ready: () => {},
+  });
+  /** Enough turns of the microtask queue for a tick to reach its post. */
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+  };
+
+  /** A runner that records what it was fed. */
+  function recordingRunner(fed: { input: Float32Array; imgsz: number }[]): unknown {
+    return Object.assign(
+      async (input: Float32Array, imgsz: number) => {
+        fed.push({ input, imgsz });
+        return { data: new Float32Array(0), anchors: 0, rows: 10 };
+      },
+      { dispose: async (): Promise<void> => {}, providers: ['R'] },
+    );
+  }
+
+  async function readyWith(source: Record<string, unknown>, runner: unknown): Promise<WebDetector> {
+    const det = new WebDetector(videoEl, () => './model-a.onnx');
+    const opening = det.use({});
+    await Promise.resolve();
+    seam.cameras[0]!.settle(source);
+    await opening;
+    const loading = det.load();
+    pending()[0]!.resolve(runner);
+    await loading;
+    return det;
+  }
+
+  it('takes the picture as a bitmap, runs the model on the worker’s tensor, and keeps the worker’s frame without a second copy', async () => {
+    withWorker();
+    const grab = vi.fn(() => PICTURE);
+    const fed: { input: Float32Array; imgsz: number }[] = [];
+    const det = await readyWith({ ...readySource(), grab }, recordingRunner(fed));
+    const tick = det.next();
+    await settle();
+    const worker = FakeWorker.built[0]!;
+    expect(worker.posted).toHaveLength(1);
+    worker.answer();
+    const out = await tick;
+    // No pixel was read on this thread…
+    expect(grab).not.toHaveBeenCalled();
+    // …the model saw the worker's tensor, which is the page's tensor…
+    expect(fed).toHaveLength(1);
+    expect(fed[0]!.imgsz).toBe(IMG_SIZE);
+    expect(fed[0]!.input).toEqual(preprocess(PICTURE).data);
+    // …and the frame that travels with the output is the worker's buffer itself: it was
+    // transferred, nothing else holds it, and copying it again would put the 3.7 MB copy per tick
+    // back on the thread the worker took it off.
+    expect(out?.frame?.data).toBe(worker.sent!.frame.data);
+  });
+
+  it('asks the source whether it is live before taking a bitmap: not-ready skips the tick, lost fails it', async () => {
+    // The bitmap path never calls `grab()`, so the camera's own verdicts — the two that used to
+    // live only inside it — have to be asked at the door, or a camera that stopped delivering
+    // would go on being snapshotted as a frozen picture forever.
+    withWorker();
+    let verdict: Error | null = new FrameNotReadyError();
+    const grab = vi.fn(() => PICTURE);
+    const source = {
+      ...(sourceNamed('cam-1') as object),
+      grab,
+      ready: () => {
+        if (verdict) throw verdict;
+      },
+    };
+    const det = await readyWith(source, runnerFor('A'));
+    await expect(det.next()).resolves.toBeNull();
+    verdict = new CameraLostError('the camera stopped delivering');
+    await expect(det.next()).rejects.toBeInstanceOf(CameraLostError);
+    expect(grab).not.toHaveBeenCalled();
+    expect(FakeWorker.built[0]?.posted ?? []).toEqual([]);
+  });
+
+  it('still copies the frame on the page path, where the grabber’s buffer is reused', async () => {
+    // No worker on this page: the fallback runs `grab()`, whose buffer the source may overwrite on
+    // the next tick, and the copy that has always protected the panel's pixel reads stays.
+    const buffer = new Uint8ClampedArray(4 * 4 * 4).fill(9);
+    const det = await readyWith(
+      { ...(sourceNamed('cam-1') as object), grab: () => ({ data: buffer, width: 4, height: 4 }) },
+      runnerFor('A'),
+    );
+    const out = await det.next();
+    expect(out?.frame?.data).not.toBe(buffer);
+    buffer.fill(200);
+    expect(out?.frame?.data[0]).toBe(9);
+  });
+
+  it('dispose() takes the letterbox worker with it, and the tick it held answers null', async () => {
+    withWorker();
+    const det = await readyWith(readySource(), runnerFor('A'));
+    const tick = det.next();
+    await settle();
+    const worker = FakeWorker.built[0]!;
+    det.dispose();
+    expect(worker.terminated).toBe(true);
+    // Null, not the worker's "disposed" rejection: the detector was told to go away, and a
+    // rejection here would start the panel's failure clock over a detector that did exactly that.
+    await expect(tick).resolves.toBeNull();
+  });
+
+  it('reads a source with no ready() through grab(), never as a bitmap', async () => {
+    // `FrameSource.ready` is optional: a source that cannot say ahead of time answers at `grab()`,
+    // and that answer still stands. The bitmap path never calls `grab()`, so such a source used to
+    // lose its only liveness check there — a camera that stopped would have been snapshotted as a
+    // frozen picture on every tick, for ever.
+    withWorker();
+    const grab = vi.fn(() => PICTURE);
+    const det = await readyWith({ ...(sourceNamed('cam-1') as object), grab }, runnerFor('A'));
+    const out = await det.next();
+    expect(grab).toHaveBeenCalledTimes(1);
+    expect(FakeWorker.built).toEqual([]);
+    // And the grabber's buffer is copied, as on any page-thread read.
+    expect(out?.frame?.data).not.toBe(PICTURE.data);
+    expect(out?.frame?.data[0]).toBe(77);
+  });
+
+  it('rejects a snapshot the engine refuses for good, rather than skipping the tick', async () => {
+    // Every `createImageBitmap` rejection used to become "not ready", so a detached element or a
+    // security refusal was retried for ever as a camera that had not delivered yet.
+    withWorker();
+    page.createImageBitmap = async () => {
+      throw new TypeError('the element is detached');
+    };
+    const det = await readyWith(readySource(), runnerFor('A'));
+    await expect(det.next()).rejects.toThrow(/detached/);
+  });
+
+  it('answers null, and feeds no runner, for a tick whose model was replaced while its frame was out', async () => {
+    // `next()` checked `this.run` before awaiting the letterbox and dereferenced the FIELD after
+    // it. A `load()` for another model in between releases the outgoing runner through a null
+    // `run` — a TypeError on a detector doing what it was told — or installs the new one, which
+    // then ran a frame nobody asked it to.
+    withWorker();
+    let url = './model-a.onnx';
+    const fedA: { input: Float32Array; imgsz: number }[] = [];
+    const det = new WebDetector(videoEl, () => url);
+    const opening = det.use({});
+    await Promise.resolve();
+    seam.cameras[0]!.settle(readySource());
+    await opening;
+    const loadA = det.load();
+    pending()[0]!.resolve(recordingRunner(fedA));
+    await loadA;
+
+    const tick = det.next();
+    await settle();
+    const worker = FakeWorker.built[0]!;
+    expect(worker.posted).toHaveLength(1);
+    url = './model-b.onnx';
+    const loadB = det.load(); // releases A first; B is not even asked for yet
+    await flush();
+    worker.answer();
+    await expect(tick).resolves.toBeNull();
+    expect(fedA).toEqual([]);
+
+    const fedB: { input: Float32Array; imgsz: number }[] = [];
+    pending()[1]!.resolve(recordingRunner(fedB));
+    await loadB;
+    expect(fedB).toEqual([]); // the stale frame did not run on the newcomer either
+    // …and the next tick runs on B.
+    const next = det.next();
+    await settle();
+    FakeWorker.built[0]!.answer(1);
+    await expect(next).resolves.toMatchObject({ rows: 10 });
+    expect(fedB).toHaveLength(1);
+  });
+
+  it('stop() abandons the frame in flight, so a restart is not told one is already being prepared', async () => {
+    // A worker that had gone silent held the frame for ever, and every Stop/Start after it found
+    // "a frame is already being prepared" — nothing the user could do got past it.
+    withWorker();
+    const det = await readyWith(readySource(), runnerFor('A'));
+    const tick = det.next();
+    await settle();
+    expect(FakeWorker.built[0]!.posted).toHaveLength(1);
+    det.stop(); // the worker never answered
+    await expect(tick).resolves.toBeNull();
+
+    const reopening = det.use({});
+    await Promise.resolve();
+    seam.cameras[1]!.settle(readySource());
+    await reopening;
+    const next = det.next();
+    await settle();
+    // The same worker, given the next frame — not refused, not rebuilt.
+    expect(FakeWorker.built).toHaveLength(1);
+    expect(FakeWorker.built[0]!.posted).toHaveLength(2);
+    FakeWorker.built[0]!.answer(1);
+    await expect(next).resolves.toMatchObject({ rows: 10 });
+  });
+
+  it('dispose() during the snapshot posts nothing to the terminated worker', async () => {
+    // The continuation after `createImageBitmap` used to post to a worker `dispose()` had already
+    // terminated — which discards its queue — and the request it installed could never settle.
+    const { snap } = withDeferredWorker();
+    const det = await readyWith(readySource(), runnerFor('A'));
+    const tick = det.next();
+    await settle();
+    const worker = FakeWorker.built[0]!;
+    det.dispose();
+    await expect(tick).resolves.toBeNull();
+    snap();
+    await settle();
+    expect(worker.posted).toEqual([]);
   });
 });
 

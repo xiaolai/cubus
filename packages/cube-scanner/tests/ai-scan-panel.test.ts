@@ -12,7 +12,7 @@
 //   - a mis-held confirmation can cost looks but can never produce a wrong cube.
 import Cube from 'cubejs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AiScanResult } from '../src/ai-assemble.js';
+import type { AiScanResult, ColorFace } from '../src/ai-assemble.js';
 import { rotateFace } from '../src/ai-assemble.js';
 import type { CameraDevice, CameraOptions } from '../src/camera.js';
 import type { Detector, ModelOutput } from '../src/detector.js';
@@ -30,7 +30,9 @@ import {
 import { FACES, type Face } from '../src/types.js';
 import {
   AiScanPanel,
+  classifyRefusal,
   type ScanCapture,
+  type ScanNotice,
   type ScanProgress,
   seenIn,
   sideClaimed,
@@ -40,6 +42,7 @@ import {
   type MisreadReply,
   type MisreadRequest,
 } from '../view/misread-protocol.js';
+import { CUBE_VISION, NativeDetector } from '../view/native-detector.js';
 import { type ScanTrace, TRACE_KEY } from '../view/scan-trace.js';
 
 // A SEAM ON THE ONE CALL THAT COSTS SECONDS, and a pass-through in every other respect.
@@ -48,7 +51,26 @@ import { type ScanTrace, TRACE_KEY } from '../view/scan-trace.js';
 // the element: a refusal that decoded and threw the answer away paints exactly like one that never
 // decoded at all — it just takes up to three seconds longer, which no assertion about the DOM can
 // see. Counting the calls is the only way to state it, so the count is what is asserted.
-const seam = vi.hoisted(() => ({ decodes: 0 }));
+const seam = vi.hoisted(() => ({
+  decodes: 0,
+  /**
+   * A scripted assembler for ONE test, or null for the real one. The panel's reread adoption is
+   * pinned against a script ("a reread adopts the look the assembler NAMED"), because the
+   * reachable case needs a second look that is legal yet past tolerance from the first — a legal
+   * cube one face away — which a search over 400 scrambles at random holds did not produce.
+   */
+  assembler: null as null | ((...args: unknown[]) => unknown),
+}));
+vi.mock('../src/ai-assemble.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/ai-assemble.js')>();
+  return {
+    ...actual,
+    assembleColors: (...args: Parameters<typeof actual.assembleColors>) =>
+      seam.assembler
+        ? (seam.assembler(...args) as ReturnType<typeof actual.assembleColors>)
+        : actual.assembleColors(...args),
+  };
+});
 vi.mock('../src/misread-decode.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/misread-decode.js')>();
   return {
@@ -277,7 +299,11 @@ async function answerConfirms(
   for (let round = 0; round < 8 && last().phase === 'confirm'; round++) {
     const ask = last().confirm;
     if (!ask) break;
-    let colors = [...canonical[ask.face]];
+    // HELD AS ASKED (2026-09-20): the canonical capture turned by the hold's offset. Answering every
+    // ask with the canonical capture was a mis-hold whenever the asked `up` was not the canonical
+    // top — which never happened while a slot was looked at once, and happens on a second look.
+    const offset = holdOffset(colourOfSlot(ask.face), colourOfSlot(ask.up), 'western') ?? 0;
+    let colors = rotateFace([...canonical[ask.face]], offset);
     if (opts.misHoldAll) colors = rotateFace(colors, 1);
     if (opts.flipFirst && looks === 0) colors[0] = (colors[0]! + 1) % 6;
     looks++;
@@ -2686,5 +2712,566 @@ describe('ai-scan-panel — a centre that never settles (the logo cube, 2026-09-
     }
     await vi.advanceTimersByTimeAsync(CHECK);
     expect(completions).toEqual([DEEP]);
+  });
+});
+
+describe('ai-scan-panel — the audit of 2026-09-20 (dev-docs/scanner-audit-2026-09-20.md)', () => {
+  /** Hold `face` for `ticks` ticks; on the ticks in `blueOn` (1-based) its centre reads blue. */
+  const holdWithFlicker = async (face: number[], blueOn: number[], ticks: number) => {
+    for (let i = 1; i <= ticks; i++) {
+      const frame = [...face];
+      if (blueOn.includes(i)) frame[4] = LETTER_CLASS.B;
+      fake.output = tensorFor(frame);
+      await vi.advanceTimersByTimeAsync(TICK);
+    }
+    fake.output = null;
+  };
+  /** `showWithLogo` of the block above: the centre alternating between its colour and blue. */
+  const ODD_TICKS = Array.from({ length: SETTLE_TICKS + 3 }, (_, k) => k + 1).filter(
+    (k) => k % 2 === 1,
+  );
+  const showWithLogo = (face: number[]) => holdWithFlicker(face, ODD_TICKS, SETTLE_TICKS + 3);
+  /** A cube with a few pieces out of place — the beginner's cube, whose sides are mostly one colour. */
+  const NEAR = new Cube().move("R U R' U'").asString();
+  /** After U D R L F B the white and yellow sides are the same eight stickers around different centres. */
+  const TWINS = new Cube().move('U D R L F B').asString();
+
+  it('§4: a white centre that reads blue on the settling frame, held on, is ONE side and completes', async () => {
+    // The reported symptom, reproduced through this element before the fix: one blue frame on the
+    // tenth tick made the side unnamed with that frame's blue centre filed; the next run (all white)
+    // was compared against the accident and captured AGAIN as white; at six the twin contest kept
+    // the ghost, and `dropTwin` filed it under BLUE — the white side's stickers on the blue tile.
+    for (const cube of [SOLVED_FACELETS, NEAR]) {
+      const shown = facesOf(cube);
+      await holdWithFlicker(shown.U, [10], 20);
+      expect(last().sides, cube).toBe(1);
+      for (const f of ['R', 'F', 'D', 'L', 'B'] as Face[]) await show(shown[f]);
+      await vi.advanceTimersByTimeAsync(CHECK);
+      expect(completions.at(-1), cube).toBe(cube);
+      panel.restart();
+      await vi.advanceTimersByTimeAsync(TICK);
+    }
+  });
+
+  it('§4: the same, with the blue side already in hand', async () => {
+    const shown = facesOf(SOLVED_FACELETS);
+    await show(shown.B);
+    await holdWithFlicker(shown.U, [10], 20);
+    expect(last().sides).toBe(2);
+    for (const f of ['R', 'F', 'D', 'L'] as Face[]) await show(shown[f]);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    expect(completions).toEqual([SOLVED_FACELETS]);
+  });
+
+  it('§1.7: a side shown again with two stickers read differently is the same side, not a collision', async () => {
+    const shown = facesOf(DEEP);
+    await show(shown.U);
+    expect(last().sides).toBe(1);
+    const again = [...shown.U];
+    again[0] = (again[0]! + 1) % 6;
+    again[8] = (again[8]! + 2) % 6;
+    await show(again);
+    expect(last().sides).toBe(1);
+    expect(last().captured.map((c) => c.face)).toEqual(['U']);
+    expect(last().message).toMatch(/Already have/);
+  });
+
+  it('§2.2: a symmetric cube with one centre unread is not stripped of a side as a twin', async () => {
+    // White and yellow share their eight; the unread white is placed by counting and the six read
+    // as a legal cube that needs a look — and `twinToDrop` used to run over that verdict anyway,
+    // drop one of the two as "read twice", and ask for a sixth side that was already in hand.
+    const shown = facesOf(TWINS);
+    await showWithLogo(shown.U);
+    for (const f of FACES) if (f !== 'U') await show(shown[f]);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    expect(last().sides).toBe(6);
+    expect(last().captured).toHaveLength(6);
+    expect(last().phase).toBe('confirm');
+    expect(events.some((p) => /read twice/.test(p.message))).toBe(false);
+  });
+
+  it('§2.3: a sticker corrected during the check beat, with a side held unnamed, still gets its verdict', async () => {
+    const invalids: number[] = [];
+    panel.addEventListener('scan-invalid', () => invalids.push(1));
+    const shown = facesOf(DEEP);
+    await showWithLogo(shown.U);
+    for (const f of ['R', 'F', 'D', 'L'] as Face[]) await show(shown[f]);
+    await show(shown.B); // the sixth: 'checking', the loop stopped, the beat armed
+    expect(last().phase).toBe('checking');
+    panel.setSticker('R', 0, (shown.R[0]! + 1) % 6); // inside the beat
+    await vi.advanceTimersByTimeAsync(CHECK);
+    // Refused (one sticker is now wrong) or accepted — either is a verdict. What it must not be is
+    // "Corrected the RED side. Show another side…" over a stopped loop.
+    expect(completions.length + invalids.length).toBeGreaterThan(0);
+    expect(last().message).not.toMatch(/Show another side/);
+  });
+
+  it('§2.4: a captured side left in view is answered once per settle, not once per tick', async () => {
+    const shown = facesOf(DEEP);
+    await show(shown.U);
+    const before = events.length;
+    fake.output = tensorFor(shown.U);
+    await vi.advanceTimersByTimeAsync(TICK * 40);
+    fake.output = null;
+    const repeats = events.slice(before).filter((p) => /Already have/.test(p.message)).length;
+    expect(repeats).toBeGreaterThan(0);
+    expect(repeats).toBeLessThanOrEqual(5);
+  });
+
+  it('§1.4: after a repair-assembled scan, a correction re-checks the colours that were ACCEPTED', async () => {
+    // Two stickers read narrowly wrong (0.40 against 0.38 for the truth) and the count repair puts
+    // them right; the captures kept here used to be the misread ones, so tapping any sticker wrong
+    // and back again ended in a refusal of the cube on the board.
+    const shown = facesOf(DEEP);
+    const narrow = (colors: number[], wrongAt: number[]): ModelOutput => {
+      const t = tensorFor(colors);
+      const anchors = 9;
+      for (const a of wrongAt) {
+        const truth = colors[a]!;
+        const wrong = (truth + 1) % 6;
+        t.data[(4 + truth) * anchors + a] = 0.38;
+        t.data[(4 + wrong) * anchors + a] = 0.4;
+      }
+      return t;
+    };
+    fake.output = narrow(shown.U, [0, 8]);
+    await vi.advanceTimersByTimeAsync(TICK * SETTLE_TICKS);
+    fake.output = null;
+    for (const f of FACES) if (f !== 'U') await show(shown[f]);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    expect(completions).toEqual([DEEP]);
+    // Wrong, then back to what the board shows: the second re-check must accept, not refuse.
+    panel.setSticker('R', 1, (shown.R[1]! + 1) % 6);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    panel.setSticker('R', 1, shown.R[1]!);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    expect(completions.at(-1)).toBe(DEEP);
+    expect(last().complete).toBe(true);
+  });
+
+  it('scan-complete says where the cube came from: camera, correction, painted', async () => {
+    const origins: string[] = [];
+    panel.addEventListener('scan-complete', (e) => {
+      origins.push((e as CustomEvent<{ origin: string }>).detail.origin);
+    });
+    await showAll(DEEP, [0, 0, 0, 0, 0, 0]);
+    const shown = facesOf(DEEP);
+    panel.setSticker('R', 1, (shown.R[1]! + 1) % 6);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    panel.setSticker('R', 1, shown.R[1]!);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    expect(origins).toEqual(['camera', 'correction']);
+    panel.restart();
+    panel.setPainting(true);
+    for (const f of FACES) {
+      for (let i = 0; i < 9; i++) if (i !== 4) panel.setSticker(f, i, shown[f][i]!);
+    }
+    expect(origins.at(-1)).toBe('painted');
+  });
+
+  it('§2.14: sides handed back together are named together when the camera reopens', async () => {
+    await showAll(DEEP, [0, 0, 0, 0, 0, 0]);
+    expect(last().phase).toBe('done'); // the camera is released on 'done'
+    panel.rescanFace('L');
+    panel.rescanFace('B');
+    await vi.advanceTimersByTimeAsync(TICK);
+    const said = events.map((p) => p.message).filter((m) => /read fresh/.test(m));
+    expect(said.at(-1)).toMatch(/ORANGE and BLUE sides again/);
+  });
+
+  it('§2.12: sides whose centres never settled are refused in their own words, not as a collision', async () => {
+    // Two logo sides and a sticker read wrong elsewhere: no filing is legal, and the old notice
+    // named the one free slot as both the colour "two sides read" and the side one "must be".
+    const shown = facesOf(DEEP);
+    await showWithLogo(shown.U);
+    await showWithLogo(shown.D);
+    await show(malformed(shown.F));
+    for (const f of ['R', 'L', 'B'] as Face[]) await show(shown[f]);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    expect(completions).toEqual([]);
+    expect(last().notice?.title).toMatch(/middle stickers kept changing/i);
+    expect(last().notice?.body).not.toMatch(/read with a/);
+  });
+
+  it('the headless template shows no picture: a 1px host, clipped, pointer-events none, and a laid-out video', () => {
+    // D2: no camera picture is ever shown. The template is the whole of that promise for a headless
+    // host, and nothing pinned it (verification gap, §2.16).
+    const html = panel.shadowRoot?.innerHTML ?? '';
+    expect(html).toMatch(/<video[^>]*playsinline/);
+    expect(html).toMatch(/width:\s*1px;\s*height:\s*1px/);
+    expect(html).toMatch(/clip-path:\s*inset\(50%\)/);
+    expect(html).toMatch(/pointer-events:\s*none/);
+    expect(html).not.toMatch(/display:\s*none/);
+  });
+});
+
+describe('ai-scan-panel — the audit fixes of 2026-09-21', () => {
+  /** Hold `face` for `ticks` ticks; on the ticks in `on` (1-based) its centre reads `colour`. */
+  const holdWithFlicker = async (
+    face: number[],
+    on: number[],
+    ticks: number,
+    colour = LETTER_CLASS.B,
+  ) => {
+    for (let i = 1; i <= ticks; i++) {
+      const frame = [...face];
+      if (on.includes(i)) frame[4] = colour;
+      fake.output = tensorFor(frame);
+      await vi.advanceTimersByTimeAsync(TICK);
+    }
+    fake.output = null;
+  };
+  const TICKS = Array.from({ length: SETTLE_TICKS + 3 }, (_, k) => k + 1);
+  /** The centre alternating between its colour and blue, blue first — a logo cap. */
+  const showWithLogo = (face: number[]) =>
+    holdWithFlicker(
+      face,
+      TICKS.filter((k) => k % 2 === 1),
+      SETTLE_TICKS + 3,
+    );
+  /** After U D R L F B the white and yellow sides are the same eight stickers around different centres. */
+  const TWINS = new Cube().move('U D R L F B').asString();
+  /** The records the panel keeps about its captures, read for the assertions that are about them. */
+  type Internals = {
+    faces: Partial<Record<Face, ColorFace>>;
+    unnamed: ColorFace[];
+    centreSeen: Map<ColorFace, number[]>;
+    unnamedClaim: Map<ColorFace, number | null>;
+    unnamedCentres: Map<ColorFace, unknown>;
+  };
+  const internals = (): Internals => panel as unknown as Internals;
+
+  it('a colour the centre showed ONCE does not name a twin side: the yellow side of a symmetric cube is still captured', async () => {
+    // A white side whose centre read yellow on the settling frame alone was remembered as "showed
+    // white and yellow"; the real yellow side — the same eight, its centre yellow throughout — was
+    // then "the same side, held on" and turned away for good, and the scan never reached six.
+    const shown = facesOf(TWINS);
+    await holdWithFlicker(shown.U, [10], 20, LETTER_CLASS.D);
+    expect(last().sides).toBe(1);
+    expect(last().captured).toHaveLength(0); // unread, so unnamed — and held on, still one side
+    await show(shown.D);
+    expect(last().sides).toBe(2);
+    expect(last().captured.map((c) => c.face)).toEqual(['D']);
+    for (const f of ['R', 'F', 'L', 'B'] as Face[]) await show(shown[f]);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    // Six in hand, the ghost placed by counting as the white side, and a legal cube that needs a
+    // look — as §2.2 above: this cube is one the looks then cannot settle, which is the assembler's
+    // verdict about its symmetry and not about the capture this pins.
+    expect(last().sides).toBe(6);
+    expect(
+      last()
+        .captured.map((c) => c.face)
+        .sort(),
+    ).toEqual(['B', 'D', 'F', 'L', 'R', 'U']);
+    expect(last().phase).toBe('confirm');
+    expect(events.some((p) => /read twice/.test(p.message))).toBe(false);
+    // The white side held on past its flicker WAS recognised — that is the same-side rule this
+    // fix keeps; what it no longer does is take the yellow side for it.
+    expect(events.some((p) => /Already have/.test(p.message))).toBe(true);
+  });
+
+  it('a centre that alternated EVENLY — a tie — names no twin either: the yellow side is still captured', async () => {
+    // The verification of the fix above: `mostShown` answers every colour tied for the top, and
+    // a side named by EACH of them was the single-flicker defect again for a run that showed white
+    // and yellow ten frames apiece. A tie is a centre the camera could not read; the twin whose
+    // centre IS that colour must be captured, and the six settle the ghost.
+    const shown = facesOf(TWINS);
+    const even = Array.from({ length: 20 }, (_, k) => k + 1).filter((k) => k % 2 === 0);
+    await holdWithFlicker(shown.U, even, 20, LETTER_CLASS.D);
+    expect(last().sides).toBe(1);
+    expect(last().captured).toHaveLength(0); // unread: the run never agreed on a centre
+    await show(shown.D);
+    expect(last().sides).toBe(2);
+    expect(last().captured.map((c) => c.face)).toEqual(['D']);
+  });
+
+  it('after a refusal that decided nothing, a re-shown NAMED side replaces its reading and the six are resolved', async () => {
+    // Two centres never settled and a sticker elsewhere was misread: no filing is legal, nothing is
+    // decided, and the two unnamed sides stay held — six in hand, four named. Counting the NAMED
+    // ones sent the re-shown side down the "already have" branch, so the one way out was shut.
+    const shown = facesOf(DEEP);
+    await showWithLogo(shown.U);
+    await showWithLogo(shown.D);
+    await show(malformed(shown.F));
+    for (const f of ['R', 'L', 'B'] as Face[]) await show(shown[f]);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    expect(completions).toEqual([]);
+    expect(last().sides).toBe(6);
+    expect(last().captured).toHaveLength(4);
+    await show(shown.F); // the misread side, read right this time
+    await vi.advanceTimersByTimeAsync(CHECK);
+    expect(completions).toEqual([DEEP]);
+  });
+
+  it('…and a re-shown UNNAMED side is read fresh too, named this time when its centre settles', async () => {
+    const shown = facesOf(DEEP);
+    await showWithLogo(shown.U);
+    await showWithLogo(shown.D);
+    await show(malformed(shown.F));
+    for (const f of ['R', 'L', 'B'] as Face[]) await show(shown[f]);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    expect(last().captured).toHaveLength(4);
+    await show(shown.U); // the white side again, its centre white throughout now
+    await vi.advanceTimersByTimeAsync(CHECK);
+    expect(last().sides).toBe(6);
+    expect(last().captured.map((c) => c.face)).toContain('U');
+    expect(completions).toEqual([]); // the green side is still wrong
+    await show(shown.F);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    expect(completions).toEqual([DEEP]);
+  });
+
+  it('a side let go takes every record about it: the claim, the centre reads, the confidences', async () => {
+    // Four removal paths each wrote a subset of this by hand; a capture nothing held any more went
+    // on being counted until the scan was restarted.
+    const shown = facesOf(DEEP);
+    await showWithLogo(shown.U); // unnamed: a claim (null), centre reads, confidences
+    await show(shown.R); // named: confidences
+    const s = internals();
+    expect(s.unnamedClaim.size).toBe(1);
+    expect(s.unnamedCentres.size).toBe(1);
+    expect(s.centreSeen.size).toBe(2);
+    const red = s.faces.R!;
+    panel.rescanFace('R');
+    await vi.advanceTimersByTimeAsync(TICK);
+    expect(s.centreSeen.has(red)).toBe(false);
+    panel.setPainting(true); // drops every unsettled capture, the unnamed one included
+    expect(s.unnamedClaim.size).toBe(0);
+    expect(s.unnamedCentres.size).toBe(0);
+    expect(s.centreSeen.size).toBe(0);
+  });
+
+  it('two centres that never settled, whose filed frames happen to show one colour, are unread — not a collision over it', async () => {
+    // `get(...) ?? colors[4]` read the stored null as absent and handed the resolver the filed
+    // frame's colour: two such sides were then two sides "reading a BLUE centre", refused in a
+    // collision's words about a collision that never happened.
+    const shown = facesOf(DEEP);
+    const evenTicks = TICKS.filter((k) => k % 2 === 0); // the settling tick, 10, among them
+    await holdWithFlicker(shown.U, evenTicks, SETTLE_TICKS + 3);
+    await holdWithFlicker(shown.D, evenTicks, SETTLE_TICKS + 3);
+    expect(last().sides).toBe(2);
+    expect(last().captured).toHaveLength(0);
+    await show(malformed(shown.F));
+    for (const f of ['R', 'L', 'B'] as Face[]) await show(shown[f]);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    expect(completions).toEqual([]);
+    expect(last().notice?.title).toMatch(/middle stickers kept changing/i);
+    expect(last().notice?.body).not.toMatch(/read with a/);
+  });
+
+  it('a reread adopts the look the assembler NAMED and lets the other looks at that side go', async () => {
+    // With two looks at R on record, the assembler names the FIRST as the one that disagrees. The
+    // panel used to adopt the LAST and keep both: the named look then went on disagreeing with
+    // the adopted one, round after round, until the six-round cap refused the scan with a
+    // "checking again" that never checked. Scripted, so the naming is exercised exactly (the
+    // assembler's own naming is pinned in ai-assemble.test.ts); every branch below is the answer
+    // a real assembler gives for that state of the looks and the reading.
+    const shown = facesOf(DEEP);
+    const C = shown.R; // the camera's capture of R
+    const A = rotateFace([...C], 1); // the first look: R held another way up
+    const B = [...A];
+    for (const i of [0, 1, 2, 3]) B[i] = (B[i]! + 1) % 6; // the second look: four stickers off
+    const key = (c: readonly number[]) => c.join();
+    const reading = (colors: readonly number[]) =>
+      key(colors) === key(C)
+        ? 'C'
+        : key(colors) === key(A)
+          ? 'A'
+          : key(colors) === key(B)
+            ? 'B'
+            : '?';
+    const calls: string[] = [];
+    seam.assembler = (faces, _threshold, confirmed) => {
+      const r = reading((faces as Record<Face, ColorFace>).R.colors);
+      const looks = (confirmed as Record<string, unknown[]> | undefined)?.R ?? [];
+      calls.push(`${looks.length}:${r}`);
+      const refused = { valid: false, facelets: '' };
+      if (looks.length === 0)
+        return { ...refused, ambiguous: true, confirm: { face: 'R', up: 'U' } };
+      if (looks.length === 1 && r === 'C') {
+        return { ...refused, ambiguous: true, confirm: { face: 'R', up: 'F' } };
+      }
+      if (looks.length === 1 && r === 'A') {
+        return { valid: true, facelets: DEEP, confidence: 1, rotations: [0, 0, 0, 0, 0, 0] };
+      }
+      if (looks.length === 2 && r === 'C') {
+        return { ...refused, reread: 'R', rereadLook: 0, confirm: { face: 'R', up: 'U' } };
+      }
+      if (looks.length === 2 && r === 'A') {
+        return { ...refused, reread: 'R', rereadLook: 1, confirm: { face: 'R', up: 'F' } };
+      }
+      // The reading is B (or anything else): the first look disagrees with it.
+      return { ...refused, reread: 'R', rereadLook: 0, confirm: { face: 'R', up: 'U' } };
+    };
+    const invalids: AiScanResult[] = [];
+    panel.addEventListener('scan-invalid', (e) => {
+      invalids.push((e as CustomEvent<AiScanResult>).detail);
+    });
+    try {
+      await showAll(DEEP, [0, 0, 0, 0, 0, 0]);
+      expect(last().confirm).toEqual({ face: 'R', up: 'U' });
+      await show(A);
+      await vi.advanceTimersByTimeAsync(CHECK);
+      expect(last().confirm).toEqual({ face: 'R', up: 'F' });
+      await show(B);
+      await vi.advanceTimersByTimeAsync(CHECK);
+      // Look 0 (A) adopted as the reading, look 1 (B) let go as one that disagrees with it, and the
+      // next round accepted — never a "checking again" handed to the host as the verdict.
+      expect(calls).toEqual(['0:C', '1:C', '2:C', '1:A']);
+      expect(invalids.every((r) => r.reread === undefined)).toBe(true);
+      expect(completions).toEqual([DEEP]);
+    } finally {
+      seam.assembler = null;
+    }
+  });
+
+  it('a second look read wrong by four stickers ends in a refusal of the cube, and a re-show recovers', async () => {
+    // The garbage look is adopted (it was taken under instruction), the cube it makes is not a
+    // legal one, and the ordinary way out — show the side again — finishes the scan. The reread
+    // never reaches the host as a verdict on this path either.
+    const truth = new Cube().move("L R' F' B").asString();
+    const invalids: AiScanResult[] = [];
+    panel.addEventListener('scan-invalid', (e) => {
+      invalids.push((e as CustomEvent<AiScanResult>).detail);
+    });
+    await showAll(truth, [0, 2, 1, 2, 2, 0]);
+    const canonical = facesOf(truth);
+    const asked: string[] = [];
+    while (asked.length < 3 && last().phase === 'confirm') {
+      const ask = last().confirm!;
+      asked.push(`${ask.face}/${ask.up}`);
+      const offset = holdOffset(colourOfSlot(ask.face), colourOfSlot(ask.up), 'western') ?? 0;
+      const colors = rotateFace([...canonical[ask.face]], offset);
+      if (asked.length === 3) for (const i of [0, 1, 2, 3]) colors[i] = (colors[i]! + 1) % 6;
+      await show(colors);
+      await vi.advanceTimersByTimeAsync(CHECK);
+    }
+    expect(asked).toEqual(['R/U', 'L/U', 'R/F']);
+    expect(invalids.length).toBeGreaterThan(0);
+    expect(invalids.every((r) => r.reread === undefined)).toBe(true);
+    // The way out is the ordinary one: show the side again, and the scan finishes.
+    await show(rotateFace([...canonical.R], 2));
+    await vi.advanceTimersByTimeAsync(CHECK);
+    await answerConfirms(truth);
+    expect(completions).toEqual([truth]);
+  });
+
+  it('adopting a filing moves what was recorded about a side to the copy installed, and forgets the original', async () => {
+    // The logo side's centre is rewritten by the filing, so the installed capture is a copy; the
+    // adoption used to look for it by identity, found nothing, and its records stayed on an
+    // object nothing held.
+    const shown = facesOf(DEEP);
+    await show(shown.B);
+    await holdWithFlicker(shown.U, TICKS, SETTLE_TICKS); // white, its centre blue on every frame
+    expect(last().sides).toBe(2);
+    expect(last().captured).toHaveLength(0); // both claim blue: neither is named
+    const s = internals();
+    expect(s.unnamed).toHaveLength(2);
+    for (const f of ['R', 'F', 'D', 'L'] as Face[]) await show(shown[f]);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    expect(completions).toEqual([DEEP]);
+    expect(s.unnamedClaim.size).toBe(0);
+    expect(s.unnamedCentres.size).toBe(0);
+    const held = new Set(Object.values(s.faces));
+    expect(s.centreSeen.size).toBe(6);
+    expect([...s.centreSeen.keys()].every((k) => held.has(k))).toBe(true);
+  });
+});
+
+describe('ai-scan-panel — a wedged native session is rebuilt on Start (2026-09-21)', () => {
+  const DEADLINE = 15_000;
+  /** A version-1 tensor as the plugin sends it: int32 rows, int32 anchors, then the floats, little-endian. */
+  const wire = (t: ModelOutput): ArrayBuffer => {
+    const buf = new ArrayBuffer(8 + t.data.length * 4);
+    const view = new DataView(buf);
+    view.setInt32(0, t.rows, true);
+    view.setInt32(4, t.anchors, true);
+    t.data.forEach((x, i) => {
+      view.setFloat32(8 + i * 4, x, true);
+    });
+    return buf;
+  };
+
+  it('after the inference deadline stops the scan, Start compiles the model again and reads frames', async () => {
+    // The recovery disposed the detector and cleared the model flag — and `NativeDetector` had no
+    // dispose(), so its load() answered "already loaded" without crossing the bridge and every
+    // Start after a timeout kept the wedged plugin session: the same fifteen seconds, the same
+    // notice, until a reload. The real detector over a bridge whose first session never answers.
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let loads = 0;
+    const invoke = async (cmd: string): Promise<unknown> => {
+      const name = cmd.replace(CUBE_VISION, '');
+      if (name === 'load_model') loads++;
+      if (name === 'current_camera') return { deviceId: 'native-1', label: 'Native' };
+      if (name === 'next_detection') {
+        if (loads < 2) await new Promise<void>(() => {}); // the first session's inference is lost
+        return wire(tensorFor(facesOf(DEEP).U));
+      }
+      return null;
+    };
+    panel.stop();
+    panel.useDetector(new NativeDetector(invoke), 'native');
+    await panel.start();
+    expect(loads).toBe(1);
+    await vi.advanceTimersByTimeAsync(DEADLINE + TICK);
+    await vi.advanceTimersByTimeAsync(DEADLINE + TICK);
+    expect(last().phase).toBe('error');
+    expect(last().notice?.title).toMatch(/scanner stopped/i);
+
+    await panel.start();
+    expect(loads).toBe(2); // a fresh session, not the wedged one
+    await vi.advanceTimersByTimeAsync(TICK * SETTLE_TICKS);
+    expect(last().captured).toHaveLength(1);
+    logged.mockRestore();
+  });
+});
+
+describe('classifyRefusal — the notice and the line say the same thing (2026-09-21)', () => {
+  const refused = (extra: Partial<AiScanResult>): AiScanResult =>
+    ({ valid: false, facelets: '', ...extra }) as AiScanResult;
+
+  it('takes the misread notice first, and lets its action choose the line', () => {
+    const notice: ScanNotice = { title: 'Some stickers were misread', tone: 'err', body: 'x' };
+    expect(classifyRefusal(refused({}), notice)).toEqual({
+      notice,
+      line: "That isn't a solvable cube yet — fix a sticker, or show a side again.",
+    });
+    const restart = { ...notice, action: { label: 'Start over', kind: 'restart' as const } };
+    expect(classifyRefusal(refused({ ambiguous: true }), restart).line).toMatch(
+      /start the scan over/,
+    );
+  });
+
+  it('names each category by the most specific fact the assembler established', () => {
+    const say = (extra: Partial<AiScanResult>) => classifyRefusal(refused(extra), null);
+    expect(say({ unreadCentres: 2, legalFilings: 0 }).notice.title).toBe(
+      'Some middle stickers kept changing',
+    );
+    expect(say({ unreadCentres: 1, legalFilings: 2 }).notice.body).toMatch(
+      /^The middle sticker of one side .* more than one way/,
+    );
+    const conflict = say({ centreConflict: { shared: 'U', missing: 'B', legalFilings: 0 } });
+    expect(conflict.notice.title).toBe('Two sides read the same centre');
+    expect(String(conflict.notice.params?.[0])).toMatch(/white/i);
+    expect(String(conflict.notice.params?.[1])).toMatch(/blue/i);
+    expect(say({ schemeAmbiguous: true, ambiguous: true }).notice.title).toBe(
+      'Which colour is under white?',
+    );
+    expect(say({ ambiguous: true }).notice.title).toBe('Too symmetric to tell');
+    expect(say({}).notice.title).toBe("That doesn't read as a solvable cube");
+    // A count of zero names nothing, and is not "one side".
+    expect(say({ unreadCentres: 0, legalFilings: 0 }).notice.title).toBe(
+      "That doesn't read as a solvable cube",
+    );
+  });
+
+  it('a cube that reads several ways is never called unsolvable on the line', () => {
+    const say = (extra: Partial<AiScanResult>) => classifyRefusal(refused(extra), null).line;
+    expect(say({ ambiguous: true })).not.toMatch(/solvable/);
+    expect(say({ schemeAmbiguous: true, ambiguous: true })).not.toMatch(/solvable/);
+    expect(say({ unreadCentres: 1 })).toMatch(/kept changing colour/);
+    expect(say({ centreConflict: { shared: 'U', missing: 'B', legalFilings: 2 } })).toMatch(
+      /same centre colour/,
+    );
   });
 });

@@ -52,6 +52,17 @@ describe('medianLab', () => {
     const frame = frameOf(8, 8, () => [10, 10, 10]);
     expect(medianLab(frame, [-50, -50, 4, 4])).toBeNull();
   });
+
+  it('refuses a box with a coordinate that is not a number, rather than answering [NaN, NaN, NaN]', () => {
+    // Every bound below is a comparison, and every comparison against NaN is false: the window was
+    // "not empty", the loop ran zero times, and the median of nothing came back as three NaNs — a
+    // value that is not a colour and compares false against every distance downstream. Refused at
+    // the door instead (scanner audit 2026-09-20, §2.14).
+    const frame = frameOf(8, 8, () => [10, 10, 10]);
+    expect(medianLab(frame, [Number.NaN, 0, 4, 4])).toBeNull();
+    expect(medianLab(frame, [0, 0, Number.POSITIVE_INFINITY, 4])).toBeNull();
+    expect(medianLab(frame, [0, 0, 4, 4])).not.toBeNull();
+  });
 });
 
 describe('toFrameBox', () => {

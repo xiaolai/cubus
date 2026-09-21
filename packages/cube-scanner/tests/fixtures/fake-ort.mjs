@@ -35,6 +35,22 @@ const cfg = () => ({
   createFails: false,
   /** Macrotask ticks a run waits before it submits anything, keyed by model URL — see `tick`. */
   runTicks: {},
+  /**
+   * After this many runs on the module, every further run NEVER SETTLES — a proxy worker killed
+   * under memory pressure, from the caller's side. Null means runs always settle. The count is per
+   * module instance, so a runner's warm-up and probes go through and the first real inference is
+   * the one that hangs.
+   */
+  hangAfterRuns: null,
+  /**
+   * Wall-clock milliseconds a run WAITS before it submits anything, keyed by model URL — a run
+   * that is merely slow, as against one that hangs (2026-09-21). It is how a test makes one link
+   * of the chain outlast the chain's patience and then RESUME, which `hangAfterRuns` cannot stage.
+   * `delayAfterRuns` (also by model URL) is how many runs on a session go through undelayed
+   * first, so a runner's warm-up and probes are quick and its scan run is the slow one.
+   */
+  runDelayMs: {},
+  delayAfterRuns: {},
   ...registry.model,
 });
 
@@ -65,6 +81,10 @@ const instance = {
   numThreads: null,
   sessions: 0,
   runs: 0,
+  /** Runs on this module right now, and the most there have ever been at once: the chain's
+   *  mutual exclusion, observed from inside the runtime rather than assumed (2026-09-21). */
+  inFlight: 0,
+  maxInFlight: 0,
   /** Every input buffer this instance was fed, by identity — see the buffer-per-probe rule. */
   inputBuffers: [],
   released: 0,
@@ -145,35 +165,53 @@ export const InferenceSession = {
     if (onGpu) env.webgpu.device = gpuDevice;
     const ticks = cfg().runTicks[modelUrl] ?? 0;
     const session = {
+      runs: 0,
       inputNames: cfg().noInputNames ? [] : ['images'],
       outputNames: ['output0'],
       inputMetadata: [{ isTensor: true, shape: [1, 3, 640, 640] }],
       async run(feeds) {
         instance.runs++;
-        // Awaited BEFORE the submissions, so the window a second probe can open inside is the
-        // window in which this session's own evidence is produced. See `tick`.
-        for (let i = 0; i < ticks; i++) await tick();
-        // Through the queue OBJECT, so an observer that has replaced `submit` on it counts these.
-        if (onGpu) for (let i = 0; i < 17; i++) gpuDevice.queue.submit([]);
-        const fed = Object.values(feeds ?? {})[0];
-        if (fed) {
-          instance.inputBuffers.push(fed.data.buffer);
-          // The PROXIED path transfers the input to onnxruntime's worker, which detaches it here.
-          // Modelled rather than described, because the rule it justifies — a fresh buffer per
-          // probe — is otherwise asserted by a fixture that could not tell the difference.
-          // Measured against the real runtime: reusing one buffer fails the next run with
-          // "Tensor's size(1228800) does not match data length(0)".
-          if (instance.proxy === true) structuredClone(fed.data.buffer, { transfer: [fed.data.buffer] });
+        instance.inFlight++;
+        instance.maxInFlight = Math.max(instance.maxInFlight, instance.inFlight);
+        try {
+          // Per SESSION, so a runner's warm-up goes through and its first real inference is the one
+          // that hangs, while a session built afterwards can still warm up.
+          // Counted on every run, whatever the config says at the time: a test flips the switch after a
+          // runner's warm-up, and a count taken only while the switch is on would restart from zero.
+          session.runs++;
+          const hangAfter = cfg().hangAfterRuns;
+          if (hangAfter !== null && session.runs > hangAfter) await new Promise(() => {});
+          // Awaited BEFORE the submissions, so the window a second probe can open inside is the
+          // window in which this session's own evidence is produced. See `tick`.
+          for (let i = 0; i < ticks; i++) await tick();
+          const delay = cfg().runDelayMs[modelUrl] ?? 0;
+          if (delay > 0 && session.runs > (cfg().delayAfterRuns[modelUrl] ?? 0)) {
+            await new Promise((resolve) => setTimeout(resolve, delay));
+          }
+          // Through the queue OBJECT, so an observer that has replaced `submit` on it counts these.
+          if (onGpu) for (let i = 0; i < 17; i++) gpuDevice.queue.submit([]);
+          const fed = Object.values(feeds ?? {})[0];
+          if (fed) {
+            instance.inputBuffers.push(fed.data.buffer);
+            // The PROXIED path transfers the input to onnxruntime's worker, which detaches it here.
+            // Modelled rather than described, because the rule it justifies — a fresh buffer per
+            // probe — is otherwise asserted by a fixture that could not tell the difference.
+            // Measured against the real runtime: reusing one buffer fails the next run with
+            // "Tensor's size(1228800) does not match data length(0)".
+            if (instance.proxy === true) structuredClone(fed.data.buffer, { transfer: [fed.data.buffer] });
+          }
+          // Wall-clock, because the timing probe measures wall-clock. `nextRunMs` is how a test says
+          // "this provider is a rasteriser" without owning one.
+          const until = performance.now() + registry.nextRunMs;
+          while (performance.now() < until) {
+            /* spin: a timer would not be measured by a synchronous span */
+          }
+          const { dims, outLength } = cfg();
+          const length = outLength ?? dims.slice(1).reduce((a, b) => a * b, 1);
+          return { output0: { type: 'float32', data: new Float32Array(length), dims } };
+        } finally {
+          instance.inFlight--;
         }
-        // Wall-clock, because the timing probe measures wall-clock. `nextRunMs` is how a test says
-        // "this provider is a rasteriser" without owning one.
-        const until = performance.now() + registry.nextRunMs;
-        while (performance.now() < until) {
-          /* spin: a timer would not be measured by a synchronous span */
-        }
-        const { dims, outLength } = cfg();
-        const length = outLength ?? dims.slice(1).reduce((a, b) => a * b, 1);
-        return { output0: { type: 'float32', data: new Float32Array(length), dims } };
       },
       async release() {
         instance.released++;

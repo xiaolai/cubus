@@ -33,6 +33,32 @@ type Ort = typeof ortNs;
  * later caller of a url whose first import failed for a reason outside the module system. */
 const ortByUrl = new Map<string, Promise<Ort>>();
 
+/** The URL each loaded module was cached under — what `retire` evicts and re-numbers. */
+const urlOf = new WeakMap<Ort, string>();
+/** How many modules cached under a URL have been retired; the next load there is a fresh identity. */
+const retiredAt = new Map<string, number>();
+/** Modules whose chain gave up on a link. Nothing new runs on them — see `retire`. */
+const retired = new WeakSet<Ort>();
+
+/** `url` with `key=value` appended to its query, the fragment kept last. */
+const withQuery = (url: string, key: string, value: string): string => {
+  const [addr = '', hash = ''] = url.split(/(?=#)/, 2);
+  return `${addr}${addr.includes('?') ? '&' : '?'}${key}=${value}${hash}`;
+};
+
+/**
+ * What a runner on a retired module answers, and what `createModelRunner` catches to re-ask on a
+ * fresh one. Its own class so the two can tell it from a runtime's own error.
+ */
+export class RuntimeRetiredError extends Error {
+  constructor() {
+    super(
+      "the runtime module is retired: a link of its chain did not settle within the chain's patience, so nothing new runs on it — a new session loads a fresh module",
+    );
+    this.name = 'RuntimeRetiredError';
+  }
+}
+
 /**
  * Session creation is serialised per runtime module, because `ort.env` is GLOBAL to it.
  *
@@ -99,25 +125,124 @@ interface RuntimeConfig {
 }
 const configured = new WeakMap<Ort, RuntimeConfig>();
 
-function serialise<T>(ort: Ort, work: () => Promise<T>): Promise<T> {
-  const next = (configuring.get(ort) ?? Promise.resolve()).then(work, work);
-  // Kept whatever the outcome, so one failed creation does not wedge the queue behind a rejection.
-  configuring.set(
-    ort,
-    next.catch(() => {}),
+/**
+ * How long a link of the chain may hold the runtime's queue, counted from when its WORK STARTS.
+ *
+ * A run that never SETTLES — a proxy worker killed under memory pressure, a native call lost on a
+ * bridge — used to hold every later link for ever: the panel gave the run up after its own fifteen
+ * seconds and told the user to press Start, and Start's new session then queued behind the hung
+ * promise on this chain, so every Start was the same fifteen seconds and the same notice until a
+ * reload (`dev-docs/scanner-audit-2026-09-20.md` §2.15). The chain exists to keep two pieces of
+ * work from being half-applied at once; a piece of work that has been out this long is not being
+ * applied at all. Twice the panel's own limit, so an ordinary slow run is never cut short by it.
+ *
+ * FROM THE START OF THE WORK, NOT FROM ENQUEUE (2026-09-21). The first version armed each link's
+ * timer as the link was queued, so three links queued behind one slow link all counted down
+ * together, and when the timers expired the queued links STARTED AT ONCE — the mutual exclusion
+ * the chain exists for, gone exactly when the chain was busy. The timer is armed inside the link
+ * now, after its predecessor has released.
+ */
+export const RUN_CHAIN_TIMEOUT_MS = 30_000;
+
+/** The chain's own wait on a link: the link's outcome, or a timer — whichever comes first. */
+let chainTimeoutMs = RUN_CHAIN_TIMEOUT_MS;
+
+/**
+ * Tests only: run the chain with a shorter patience, so a hung run can be shown not to hold the
+ * next session up without waiting thirty seconds for it. Returns the previous value.
+ */
+export function setChainTimeoutForTests(ms: number): number {
+  const was = chainTimeoutMs;
+  chainTimeoutMs = ms;
+  return was;
+}
+
+/**
+ * Retire a module whose chain gave up on a link (2026-09-21).
+ *
+ * Releasing the chain past its patience is only half of what a hung link needs, and the finer
+ * half is this. A link that merely took too long RESUMES later — its command buffers land on the
+ * module's one device queue while a newer session's probe may be counting that queue as its own
+ * evidence, and its writes to `ort.env` land under a newer session's configuration: the two races
+ * `serialise` exists to prevent, back through the door the timeout opened. And a link that never
+ * resumes — the proxy worker is dead — takes every later session on the module with it, because
+ * `InferenceSession.create` posts to that same worker. A module is one worker and one device, so
+ * the answer to both is the same: nothing new runs on this module. Its runs and creates reject
+ * with `RuntimeRetiredError` (a release still goes through, since a session is owed its release
+ * whatever its module did), the URL it was cached under is evicted, and the next load at that URL
+ * carries a generation in its query so the browser hands over a FRESH module — its own worker, its
+ * own device, its own queue — rather than the cached one. `createModelRunner` catches the refusal
+ * on a create that was already queued and asks again, once, on the fresh module.
+ *
+ * On a host that cannot serve a query-string URL (see `proxiedSiblingUrl`) the fresh identity
+ * cannot be loaded and the second attempt fails LOUDLY with the loader's error, rather than
+ * quietly reusing the module whose worker is gone.
+ */
+function retire(ort: Ort, why: string): void {
+  if (retired.has(ort)) return;
+  retired.add(ort);
+  const url = urlOf.get(ort);
+  if (url !== undefined) {
+    ortByUrl.delete(url);
+    retiredAt.set(url, (retiredAt.get(url) ?? 0) + 1);
+  }
+  console.warn(
+    `[cubus] ${why}: the runtime module is retired, and the next session loads a fresh one`,
   );
-  return next;
+}
+
+function serialise<T>(
+  ort: Ort,
+  work: () => Promise<T>,
+  kind: 'work' | 'release' = 'work',
+): Promise<T> {
+  const prev = configuring.get(ort) ?? Promise.resolve();
+  let release: () => void = () => {};
+  // Resolved — never rejected — when this link is done with the chain, so one failed creation
+  // does not wedge the queue behind a rejection; and resolved EARLY by the timer, so one that
+  // never settles does not wedge it either.
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  configuring.set(ort, released);
+  return prev.then(async () => {
+    try {
+      if (kind === 'work' && retired.has(ort)) throw new RuntimeRetiredError();
+      const timer = setTimeout(() => {
+        retire(ort, `a link of the runtime's chain did not settle within ${chainTimeoutMs} ms`);
+        release();
+      }, chainTimeoutMs);
+      try {
+        return await work();
+      } finally {
+        // Cleared on settlement, so a chain at rest holds no timer.
+        clearTimeout(timer);
+      }
+    } finally {
+      release();
+    }
+  });
 }
 const loadOrt = (url: string): Promise<Ort> => {
   let pending = ortByUrl.get(url);
   if (!pending) {
+    // A retired module's successor is the same file under a fresh identity — see `retire`.
+    const generation = retiredAt.get(url) ?? 0;
+    const target =
+      generation === 0 ? url : withQuery(url, 'cubus-runtime-generation', `${generation}`);
     // A dynamic import of a VARIABLE: esbuild cannot resolve it, so it stays a real runtime import
     // and onnxruntime is fetched as its own module. Written as a static specifier it would be
     // inlined, and `import.meta.url` inside it would then name the panel bundle.
-    pending = (import(/* @vite-ignore */ url) as Promise<Ort>).catch((err) => {
-      ortByUrl.delete(url);
-      throw err;
-    });
+    pending = (import(/* @vite-ignore */ target) as Promise<Ort>).then(
+      (ort) => {
+        urlOf.set(ort, url);
+        return ort;
+      },
+      (err) => {
+        ortByUrl.delete(url);
+        throw err;
+      },
+    );
     ortByUrl.set(url, pending);
   }
   return pending;
@@ -145,11 +270,8 @@ const loadOrt = (url: string): Promise<Ort> => {
  * the part a browser is entitled to ignore. It costs at most one extra request for a ~0.1 MB
  * loader — the multi-megabyte .wasm is fetched through `wasmPaths` and is unaffected.
  */
-export const runtimeUrl = (url: string, proxied: boolean): string => {
-  if (!proxied) return url;
-  const [addr = '', hash = ''] = url.split(/(?=#)/, 2);
-  return `${addr}${addr.includes('?') ? '&' : '?'}cubus-runtime=proxied${hash}`;
-};
+export const runtimeUrl = (url: string, proxied: boolean): string =>
+  proxied ? withQuery(url, 'cubus-runtime', 'proxied') : url;
 
 /**
  * The SECOND way to get a distinct module instance: a sibling FILE, `ort.mjs` → `ort.proxied.mjs`.
@@ -929,15 +1051,25 @@ export async function createModelRunner(
   // the threads asked for here are real. It still falls back to 1 wherever it is not.
   const numThreads = opts.numThreads ?? defaultThreadCount();
   const wasmDir = opts.wasmPaths ?? './';
-  const session = await createSession(ort, {
-    modelUrl,
-    ortUrl,
-    numThreads,
-    wasmDir,
-    // The proxy is OFF for the GPU path — see `createSession` for why that is not a compromise.
-    gpu,
-    executionProviders,
-  });
+  let session: ortNs.InferenceSession;
+  try {
+    session = await createSession(ort, {
+      modelUrl,
+      ortUrl,
+      numThreads,
+      wasmDir,
+      // The proxy is OFF for the GPU path — see `createSession` for why that is not a compromise.
+      gpu,
+      executionProviders,
+    });
+  } catch (err) {
+    if (!(err instanceof RuntimeRetiredError)) throw err;
+    // Queued behind a link that never settled, and refused when its turn came — see `retire`.
+    // The module was evicted as it was retired, so asking again loads a fresh one. Bounded by
+    // construction: a fresh module's chain is empty, so this create is its first link and cannot
+    // be refused before it starts.
+    return createModelRunner(modelUrl, opts);
+  }
 
   return owning(session, async (relinquish): Promise<ModelRunner> => {
     /**
@@ -1057,9 +1189,15 @@ export async function createModelRunner(
     // ON THE CHAIN, because what this runner submits is what the NEXT session's probe would
     // otherwise count as its own evidence — see `serialise`. The raw `run` stays raw: it is what
     // the probe section above calls, from inside the chain, and taking it there would deadlock.
+    //
+    // THE RELEASE IS ON THE CHAIN TOO (2026-09-21): a session released while its own inference
+    // is still out — `WebDetector.loadModel` releases the outgoing runner while a tick may be
+    // inside `run` — is a release racing a run on one runtime, which is the arrangement the chain
+    // exists to prevent. As a 'release' link it still runs on a retired module, since a session
+    // is owed its release whatever its module did.
     const serialised: RunModel = (input, imgsz) => serialise(ort, () => run(input, imgsz));
     return Object.assign(serialised, {
-      dispose: () => session.release(),
+      dispose: () => serialise(ort, () => session.release(), 'release'),
       providers: executionProviders,
     });
   });

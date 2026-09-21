@@ -1,14 +1,18 @@
 // S2 verification (pure cube logic): decode/encode round-trip and the
-// solvability gate. cubejs is used here as an independent oracle — for the same
-// facelet strings, our pure `isStructurallyValid` and cubejs must agree.
+// solvability gate. cubejs is used here as an independent oracle for the strings this file
+// ACCEPTS — each must parse and round-trip through it unchanged. It is not a second solvability
+// gate: its round trip succeeds on every malformed string below too, which one case pins.
 
 import Cube from 'cubejs';
 import { describe, expect, it } from 'vitest';
 import {
+  CENTER_INDEX,
   CORNER_COLOR,
+  CORNER_FACELET,
   centersOk,
   decodeFacelets,
   EDGE_COLOR,
+  EDGE_FACELET,
   encodeFacelets,
   FACE_NEIGHBOURS,
   isSolvable,
@@ -95,6 +99,57 @@ describe('the solved colour tables', () => {
   });
 });
 
+describe('every exported lookup table', () => {
+  it('cannot be rewritten at any level — facelet tables, the neighbour map, the centre indices', () => {
+    // The colour tables were frozen after one bad assignment poisoned the process (2026-09-13);
+    // the facelet tables they are DERIVED from, and the neighbour map derived from those, were
+    // still typed readonly and left mutable at run time — the same defect, one table over. Every
+    // decode, encode and solvability check indexes through these.
+    const cornerRow = CORNER_FACELET[0] as unknown as number[];
+    const edgeRow = EDGE_FACELET[0] as unknown as number[];
+    const corners = CORNER_FACELET as unknown as number[][];
+    const edges = EDGE_FACELET as unknown as number[][];
+    const neighbours = FACE_NEIGHBOURS as unknown as Record<string, Record<string, string>>;
+    const centres = CENTER_INDEX as unknown as Record<string, number>;
+    const was = {
+      corner: cornerRow[0],
+      edge: edgeRow[0],
+      up: neighbours.U!.top,
+      centre: centres.U,
+    };
+    try {
+      expect(() => {
+        cornerRow[0] = 99;
+      }).toThrow(TypeError);
+      expect(() => corners.push([1, 2, 3])).toThrow(TypeError);
+      expect(() => {
+        edgeRow[0] = 99;
+      }).toThrow(TypeError);
+      expect(() => edges.push([1, 2])).toThrow(TypeError);
+      expect(() => {
+        neighbours.U!.top = 'X';
+      }).toThrow(TypeError);
+      expect(() => {
+        neighbours.U = {};
+      }).toThrow(TypeError);
+      expect(() => {
+        centres.U = 0;
+      }).toThrow(TypeError);
+    } finally {
+      // Put back what a non-frozen table would have let through, so a red run here cannot take
+      // every later case in the file down with it.
+      if (!Object.isFrozen(cornerRow)) cornerRow[0] = was.corner!;
+      if (!Object.isFrozen(edgeRow)) edgeRow[0] = was.edge!;
+      if (!Object.isFrozen(corners) && corners.length > 8) corners.pop();
+      if (!Object.isFrozen(edges) && edges.length > 12) edges.pop();
+      if (!Object.isFrozen(neighbours.U)) neighbours.U!.top = was.up!;
+      if (!Object.isFrozen(centres)) centres.U = was.centre!;
+    }
+    expect(isStructurallyValid(SOLVED_FACELETS)).toBe(true);
+    expect(FACE_NEIGHBOURS.U.top).toBe('B');
+  });
+});
+
 describe('rotateFace', () => {
   it('returns a fresh array at every turn, so a caller may keep or change the one it was given', () => {
     const a = [0, 1, 2, 3, 4, 5, 6, 7, 8];
@@ -161,6 +216,34 @@ describe('solvability gate agrees with cubejs (independent oracle)', () => {
     f[19] = 'R'; // UF slot now reads (U,R) — duplicates the UR edge
     expect(decodeFacelets(f.join(''))).not.toBeNull();
     expect(isStructurallyValid(f.join(''))).toBe(false);
+  });
+
+  it('is the ONLY gate for parity, twist, flip and inventory: cubejs round-trips every one of those', () => {
+    // What the "independent oracle" above actually checks (scanner audit 2026-09-20, §2.7). cubejs's
+    // `fromString` parses the 54 letters into cubies by position and `asString` writes them back;
+    // it does not ask whether the cubies it built are a permutation, or whether their twist, flip
+    // and permutation parities are those of a real cube. So on every malformed string this suite
+    // refuses, the round trip SUCCEEDS — and a reader who took the agreement above for a second
+    // solvability check would be wrong. `assemble` calls both; the parity math here is the gate, and
+    // cubejs's round trip is a check on the string's shape. The day cubejs starts refusing one of
+    // these, this fails and the comment gets stronger, not weaker.
+    const flipped = SOLVED_FACELETS.split('');
+    [flipped[7], flipped[19]] = [flipped[19]!, flipped[7]!]; // one flipped edge
+    const transposed = SOLVED_FACELETS.split('');
+    [transposed[10], transposed[19]] = [transposed[19]!, transposed[10]!]; // two edges swapped
+    const duplicated = SOLVED_FACELETS.split('');
+    duplicated[19] = 'R'; // the UR edge twice
+    const twisted = SOLVED_FACELETS.split('');
+    // Corner URF's three stickers (U9, R1, F3) cycled: the same cubie, turned a third.
+    [twisted[8], twisted[9], twisted[20]] = [twisted[9]!, twisted[20]!, twisted[8]!];
+    const twistedState = decodeFacelets(twisted.join(''));
+    expect(twistedState).not.toBeNull(); // decodable, distinct cubies
+    const twistSum = twistedState?.co.reduce((a, b) => a + b, 0) ?? 0;
+    expect(twistSum % 3).not.toBe(0); // and it is a twist
+    for (const bad of [flipped, transposed, duplicated, twisted].map((f) => f.join(''))) {
+      expect(isStructurallyValid(bad)).toBe(false);
+      expect(Cube.fromString(bad).asString()).toBe(bad);
+    }
   });
 
   it('isSolvable rejects malformed orientation arrays', () => {

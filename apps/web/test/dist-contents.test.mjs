@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict';
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync,
+  copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync,
   symlinkSync, utimesSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -16,9 +16,12 @@ import { dirname, join, relative } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { FILES, NEVER_SHIPPED, assembleDist, bundleInputs } from '../build.mjs';
+import { FILES, NEVER_SHIPPED, assembleDist, assertScannerBundlesFresh, bundleInputs, scannerBundles } from '../build.mjs';
 
 const WEB = new URL('../', import.meta.url);
+/** The scanner package's real manifest: the synthetic roots below have no package beside them, and
+ *  the registry of what the scanner builds into vendor/ is read off its build scripts. */
+const MANIFEST = fileURLToPath(new URL('../../packages/cube-scanner/package.json', WEB));
 
 // The exclusion names real files, or it excludes nothing. A rename on either side would leave the
 // list guarding a path that no longer exists while the renamed file shipped.
@@ -99,7 +102,8 @@ function makeRoot(parent = tmpdir()) {
   put('lib/cube-frame.js', 'export const fitDistance = () => 1;');
   put('lib/cubus-cube.js', "import { fitDistance } from './cube-frame.js';\nexport { fitDistance };\n");
   put('vendor/cubejs.js', 'export default {};');
-  put('vendor/misread-worker.js', 'export {};');
+  // Every bundle the scanner's build scripts write into vendor/ — the registry build.mjs reads.
+  for (const { file } of scannerBundles(MANIFEST)) put(file, 'export {};');
   put('vendor/cubedet.onnx', 'model');
   // The loader names its own assets; that text is what build.mjs now derives the check from.
   const loader = `const wasm = "${ORT_WASM}"; const glue = "${ORT_GLUE}";`;
@@ -121,7 +125,11 @@ function withRoot(fn) {
   // `cubeEntry`: the renderer is its own package now, so its real entry is outside any root
   // this test can assemble. The check under test is the timestamp comparison, not the path.
   const cubeEntry = join(root, 'lib', 'cubus-cube.js');
-  try { return fn({ root, dist, build: (o = {}) => assembleDist({ root, dist, cubeEntry, ...o }) }); }
+  // The synthetic tree's scanner bundles are placeholders, so the freshness check's bundler seam
+  // hands back what the tree holds: this file tests what dist CONTAINS, and the real bundler is
+  // run against the real bundles in its own case below.
+  const asHeld = (o) => readFileSync(join(dist, 'vendor', o.entryPoints[0].split('/').pop().replace(/\.ts$/, '.js')), 'utf8');
+  try { return fn({ root, dist, build: (o = {}) => assembleDist({ root, dist, cubeEntry, scannerManifest: MANIFEST, scannerBuild: asHeld, ...o }) }); }
   finally { rmSync(root, { recursive: true, force: true }); rmSync(dist, { recursive: true, force: true }); }
 }
 
@@ -184,6 +192,129 @@ test('a loader that names no runtime asset is a loud failure, not a green one', 
     writeFileSync(join(root, 'vendor', 'ort.mjs'), 'nothing here names a runtime asset');
     assert.throws(build, (err) => /names no ort-wasm/.test(err.message),
       'a check that derives its expectation from a file must fail when that file yields nothing');
+  });
+});
+
+// ---- the scanner's bundles: one registry, and a remedy per kind (audit-fix, 2026-09-21) --------
+//
+// The worker bundles are reached by URLs computed from the panel's own bundle and appear in no
+// HTML, so only this check sees them in dist/ — and it listed them by hand while
+// vendor-bundles.test.mjs derived the same set from the scanner's build scripts. Two registries:
+// the letterbox worker joined with only one of them knowing, and deleting it from the list here
+// left every test green (rows 8 and 10). The list is read off the build scripts now, and every
+// bundle they emit has a negative test.
+test("the scanner's bundles are read off its build scripts, and a manifest that names none is refused", () => {
+  const bundles = scannerBundles(MANIFEST);
+  const files = bundles.map((b) => b.file).sort();
+  for (const f of ['vendor/ai-scan-panel.js', 'vendor/misread-worker.js', 'vendor/letterbox-worker.js']) {
+    assert.ok(files.includes(f), `${f} is built by the scanner package and the registry does not know it`);
+  }
+  for (const { file, script } of bundles) {
+    assert.match(script, /^build:/, `${file} is emitted by a script that is not a build (${script})`);
+  }
+  const bare = join(mkdtempSync(join(tmpdir(), 'cubus-manifest-')), 'package.json');
+  try {
+    writeFileSync(bare, JSON.stringify({ scripts: { test: 'vitest run' } }));
+    assert.throws(() => scannerBundles(bare), /declares no build script that writes into vendor/);
+    assert.throws(() => scannerBundles(join(dirname(bare), 'missing.json')), /manifest is not at/);
+  } finally {
+    rmSync(dirname(bare), { recursive: true, force: true });
+  }
+});
+
+test('a missing worker bundle fails the build, naming the worker and the build that makes it — not copy-ort', () => {
+  const workers = scannerBundles(MANIFEST).filter((b) => b.file.endsWith('-worker.js'));
+  assert.ok(workers.length >= 2, `precondition: the scanner builds ${workers.length} workers`);
+  for (const { file, script } of workers) {
+    withRoot(({ root, build }) => {
+      rmSync(join(root, file));
+      assert.throws(build, (err) => {
+        assert.ok(err.message.includes(file), `${file}: the failure does not name the missing worker`);
+        assert.ok(err.message.includes(`pnpm --filter cube-scanner ${script}`), `${file}: the remedy is not the build that makes it`);
+        assert.match(err.message, /page's thread/, `${file}: a missing worker is a performance regression, not a scanner that cannot scan`);
+        assert.doesNotMatch(err.message, /copy-ort/, `${file}: copy-ort cannot build a worker`);
+        return true;
+      }, `a dist/ without ${file} was assembled`);
+    });
+  }
+});
+
+test('a missing panel bundle or runtime file names its own remedy, and no other', () => {
+  withRoot(({ root, build }) => {
+    rmSync(join(root, 'vendor', 'ai-scan-panel.js'));
+    assert.throws(build, (err) => /ai-scan-panel\.js[^]*build:panel/.test(err.message) && !/copy-ort/.test(err.message),
+      'a missing panel bundle must be told to build the panel');
+  });
+  withRoot(({ root, build }) => {
+    rmSync(join(root, 'vendor', 'ort.proxied.mjs'));
+    assert.throws(build, (err) => /ort\.proxied\.mjs[^]*copy-ort/.test(err.message) && !/cube-scanner build:/.test(err.message),
+      'a missing runtime file must be told to run copy-ort, and not to build a worker');
+  });
+  withRoot(({ root, build }) => {
+    rmSync(join(root, 'vendor', 'cubedet.onnx'));
+    assert.throws(build, (err) => /cubedet\.onnx[^]*committed/.test(err.message) && !/copy-ort/.test(err.message),
+      'the model is committed, and copy-ort does not produce it');
+  });
+});
+
+// ---- the reference scan: every spelling, and only inside dist/ (audit-fix, 2026-09-21) ----------
+
+test('a reference is found in any case, quoted or bare — and an attribute merely ending in src is not one', () => {
+  withRoot(({ root, build }) => {
+    writeFileSync(join(root, 'index.html'), [
+      '<!doctype html>',
+      '<link rel="stylesheet" href="./tokens.css">',
+      '<script type="module" SRC=lib/app.js></script>',      // upper case, unquoted: valid HTML
+      '<img data-src="ghost.png" srcset="ghost2.png 2x">',   // not references this build copies
+      '<use foo:src="ghost3.png">',                           // nor a name that merely ends in :src
+    ].join(''));
+    const { referenced } = build({ freshness: false });
+    assert.equal(referenced, 3, `checked ${referenced} assets, not the stylesheet, the script and the manifest's icon`);
+    rmSync(join(root, 'lib', 'app.js'));
+    assert.throws(() => build({ freshness: false }), (err) => err.message.includes('lib/app.js'),
+      'a reference written in upper case and unquoted was skipped in silence');
+  });
+});
+
+test('a reference that resolves outside dist/ is refused as such — whether or not a file is there', () => {
+  withRoot(({ root, dist, build }) => {
+    writeFileSync(join(dirname(dist), 'outside.css'), ':root{}');
+    try {
+      writeFileSync(join(root, 'index.html'), [
+        '<!doctype html>',
+        '<link rel="stylesheet" href="../outside.css">',   // exists, outside: passed as present
+        '<link rel="stylesheet" href="../nowhere.css">',   // does not exist: was reported as merely missing
+        '<script type="module" src="./lib/app.js"></script>',
+      ].join(''));
+      assert.throws(() => build({ freshness: false }), (err) => {
+        assert.match(err.message, /outside dist/, 'a reference escaping dist/ passed because the file happened to exist where it pointed');
+        assert.ok(err.message.includes('../outside.css') && err.message.includes('../nowhere.css'), 'both escapes are named');
+        assert.doesNotMatch(err.message, /missing referenced assets/, 'an escape is a wrong reference, not a file to go and create outside dist/');
+        return true;
+      });
+    } finally {
+      rmSync(join(dirname(dist), 'outside.css'), { force: true });
+    }
+  });
+});
+
+test('a symlink inside dist/ whose target is outside it is refused, not counted as present', (t) => {
+  withRoot(({ root, build }) => {
+    const away = mkdtempSync(join(tmpdir(), 'cubus-away-'));
+    try {
+      writeFileSync(join(away, 'away.js'), 'export {};');
+      try {
+        symlinkSync(join(away, 'away.js'), join(root, 'lib', 'away.js'));
+      } catch (err) {
+        t.skip(`this platform refused a file symlink (${err.code})`);
+        return;
+      }
+      writeFileSync(join(root, 'index.html'), '<!doctype html><link rel="stylesheet" href="./tokens.css"><script type="module" src="./lib/away.js"></script>');
+      assert.throws(() => build({ freshness: false }), (err) => /outside dist/.test(err.message) && /through a link/.test(err.message),
+        'a link that leaves dist/ was counted as an asset inside it');
+    } finally {
+      rmSync(away, { recursive: true, force: true });
+    }
   });
 });
 
@@ -345,12 +476,12 @@ test('the ordinary destination — a dist inside root — is still assembled', (
   // that eats its source and nothing else. `root/dist` is inside root, which is exactly why the
   // check is asymmetric rather than "do these two paths overlap".
   withRoot(({ root }) => {
-    const { dist } = assembleDist({ root, dist: join(root, 'dist'), freshness: false });
+    const { dist } = assembleDist({ root, dist: join(root, 'dist'), freshness: false, scannerManifest: MANIFEST });
     assert.ok(existsSync(join(dist, 'index.html')), 'the ordinary assembly stopped working');
     assert.ok(existsSync(join(root, 'lib', 'cubus-cube.js')), 'and it must not have eaten its own source');
     // Not `dist2` either: the guard compares whole path components, or a sibling directory whose
     // name merely starts with a copied one would be refused for no reason.
-    assert.ok(assembleDist({ root, dist: join(root, 'libx'), freshness: false }).referenced > 0);
+    assert.ok(assembleDist({ root, dist: join(root, 'libx'), freshness: false, scannerManifest: MANIFEST }).referenced > 0);
   });
 });
 
@@ -445,7 +576,7 @@ test('a relative root reaches the freshness check the same way an absolute one d
     const rel = relative(process.cwd(), root);
     const soon = Date.now() / 1000 + 600;
     utimesSync(join(root, 'lib', 'cube-frame.js'), soon, soon);
-    assert.throws(() => assembleDist({ root: rel, dist, freshness: true, cubeEntry: join(root, 'lib', 'cubus-cube.js') }),
+    assert.throws(() => assembleDist({ root: rel, dist, freshness: true, cubeEntry: join(root, 'lib', 'cubus-cube.js'), scannerManifest: MANIFEST }),
       (err) => err.message.includes('cube-frame.js'),
       'the freshness check must fail over the STALE BUNDLE, not over how its root was spelled');
   });
@@ -534,3 +665,43 @@ test('a destination reached through a symlink into the source is refused, howeve
     }
   });
 });
+
+// ---- the scanner's bundles are what their sources build NOW (audit-fix 2026-09-21, finding 9) ----
+//
+// The renderer's freshness check compares mtimes, which a fresh checkout makes meaningless; the
+// scanner's bundles are committed and reached by computed URLs, so a direct `build:dist` could
+// package one that its sources no longer build. `assertScannerBundlesFresh` rebuilds each in
+// memory and compares bytes. The real bundler runs once here, on the real bundles, so the check is
+// proved against what ships; the negative cases use the builder seam.
+test('the shipped scanner bundles are byte-for-byte what their build scripts produce', () => {
+  const dist = mkdtempSync(join(tmpdir(), 'cubus-scanner-fresh-'));
+  try {
+    mkdirSync(join(dist, 'vendor'));
+    for (const { file } of scannerBundles(MANIFEST)) copyFileSync(fileURLToPath(new URL(file, WEB)), join(dist, file));
+    assert.doesNotThrow(() => assertScannerBundlesFresh(dist, MANIFEST), 'a committed bundle is behind its source — rebuild and commit it');
+  } finally {
+    rmSync(dist, { recursive: true, force: true });
+  }
+});
+
+test('a scanner bundle that differs from its sources by one byte is a refused dist, naming the bundle and its build', () => {
+  const dist = mkdtempSync(join(tmpdir(), 'cubus-scanner-stale-'));
+  try {
+    mkdirSync(join(dist, 'vendor'));
+    const bundles = scannerBundles(MANIFEST);
+    const shipped = new Map(bundles.map(({ file }) => [file, readFileSync(fileURLToPath(new URL(file, WEB)), 'utf8')]));
+    for (const [file, text] of shipped) writeFileSync(join(dist, file), text);
+    // The builder seam hands back exactly what is shipped, so the check passes on identity…
+    const asShipped = (o) => shipped.get(`vendor/${o.entryPoints[0].split('/').pop().replace(/\.ts$/, '.js')}`);
+    assert.doesNotThrow(() => assertScannerBundlesFresh(dist, MANIFEST, asShipped));
+    // …and one byte off in the letterbox worker is refused, by name, with the command that fixes it.
+    const worker = bundles.find((b) => b.file.endsWith('letterbox-worker.js'));
+    writeFileSync(join(dist, worker.file), `${shipped.get(worker.file)}\n// stale\n`);
+    assert.throws(() => assertScannerBundlesFresh(dist, MANIFEST, asShipped),
+      (err) => err.message.includes(worker.file) && err.message.includes(worker.script) && !err.message.includes('ai-scan-panel.js'),
+      'a stale worker was packaged, or the wrong bundle was blamed');
+  } finally {
+    rmSync(dist, { recursive: true, force: true });
+  }
+});
+

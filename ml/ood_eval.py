@@ -14,8 +14,8 @@ It also writes label-format pre-labels (predictions) so a human can spot-correct
 held-out test set, at which point `mAP` becomes measurable. Predictions alone are NOT ground truth.
 
 The letterbox is `cube_infer.letterbox` — the byte-exact port of cube-scanner's onnx-detect.ts
-`preprocess()` that the golden gate pins — and decode/NMS/fitFace mirror onnx-postprocess.ts, so
-these numbers are measured on the pixels the app actually runs.
+`preprocess()` that the golden gate pins — and decode/NMS/fitFace ARE `cube_infer`'s (adapters
+below, since 2026-09-20), so these numbers are measured on the pixels and the fit the app runs.
 
   ml/venv/bin/python ml/ood_eval.py --model ml/models/cubedet.onnx --images <dir> --out <dir>
 
@@ -58,76 +58,44 @@ def letterbox(img: Image.Image) -> tuple[np.ndarray, float, int, int]:
     return cube_infer.letterbox(rgb)[None], scale, pad_x, pad_y
 
 
+def _as_dict(d: cube_infer.Detection) -> dict:
+    return {"cx": d.cx, "cy": d.cy, "w": d.w, "h": d.h, "classId": d.class_id, "confidence": d.confidence}
+
+
+def _as_detection(d: dict) -> cube_infer.Detection:
+    return cube_infer.Detection(d["cx"], d["cy"], d["w"], d["h"], d["classId"], d["confidence"], d.get("scores"))
+
+
+# ADAPTERS, NOT COPIES (2026-09-20, audit). Until then this file carried its own decode, IoU, NMS
+# and grid fit "mirroring" the TypeScript — and they had stopped mirroring it: no nested-box or
+# isolated-box drop, no lattice de-roll (a 30° face read here with corners and edges swapped while
+# the app read it right), no NaN/zero-size box drop. Every evaluator that imported them
+# (face_eval, color_eval, assign_sim) measured a pipeline the app does not run. Each function below
+# is `cube_infer`'s — the one implementation the golden gate holds to the app — behind the dict
+# shape those scripts read.
+
+
 def decode(out: np.ndarray, conf_th: float = 0.25) -> list[dict]:
-    """Decode the detector's ONNX output [1, 4+nc, anchors] into detections.
-    Box coords are in the 640 input space (cx,cy,w,h). Mirrors decodeDetections()."""
-    o = out[0]  # (4+nc, anchors)
-    boxes = o[:4, :]  # cx,cy,w,h
-    scores = o[4 : 4 + NUM_CLASSES, :]  # (nc, anchors)
-    cls = scores.argmax(axis=0)
-    conf = scores.max(axis=0)
-    keep = conf >= conf_th
-    dets = []
-    idx = np.nonzero(keep)[0]
-    for a in idx:
-        dets.append({
-            "cx": float(boxes[0, a]), "cy": float(boxes[1, a]),
-            "w": float(boxes[2, a]), "h": float(boxes[3, a]),
-            "classId": int(cls[a]), "confidence": float(conf[a]),
-        })
-    return dets
-
-
-def _iou(a: dict, b: dict) -> float:
-    ax0, ay0 = a["cx"] - a["w"] / 2, a["cy"] - a["h"] / 2
-    bx0, by0 = b["cx"] - b["w"] / 2, b["cy"] - b["h"] / 2
-    ix0, iy0 = max(ax0, bx0), max(ay0, by0)
-    ix1 = min(ax0 + a["w"], bx0 + b["w"])
-    iy1 = min(ay0 + a["h"], by0 + b["h"])
-    iw, ih = max(0.0, ix1 - ix0), max(0.0, iy1 - iy0)
-    inter = iw * ih
-    union = a["w"] * a["h"] + b["w"] * b["h"] - inter
-    return 0.0 if union <= 0 else inter / union
+    """`cube_infer.decode` (decodeDetections in onnx-postprocess.ts), as dicts."""
+    return [_as_dict(d) for d in cube_infer.decode(out, conf_th)]
 
 
 def nms(dets: list[dict], iou_th: float = 0.45) -> list[dict]:
-    """Greedy class-agnostic NMS, highest confidence first. Mirrors nms()."""
-    order = sorted(dets, key=lambda d: -d["confidence"])
-    kept: list[dict] = []
-    for d in order:
-        if all(_iou(k, d) < iou_th for k in kept):
-            kept.append(d)
-    return kept
+    """`cube_infer.nms` (nms in onnx-postprocess.ts), as dicts."""
+    return [_as_dict(d) for d in cube_infer.nms([_as_detection(d) for d in dets], iou_th)]
 
 
-def _to_grid(nine: list[dict]) -> list[dict] | None:
-    by_y = sorted(nine, key=lambda d: d["cy"])
-    rows = [sorted(by_y[i : i + 3], key=lambda d: d["cx"]) for i in (0, 3, 6)]
-    size = sum((d["w"] + d["h"]) / 2 for d in nine) / 9
-    for row in rows:
-        if max(d["cy"] for d in row) - min(d["cy"] for d in row) > size:
-            return None
-    row_y = [sum(d["cy"] for d in r) / 3 for r in rows]
-    col_x = [sum(rows[r][c]["cx"] for r in range(3)) / 3 for c in range(3)]
-    if row_y[1] - row_y[0] < size * 0.4 or row_y[2] - row_y[1] < size * 0.4:
-        return None
-    if col_x[1] - col_x[0] < size * 0.4 or col_x[2] - col_x[1] < size * 0.4:
-        return None
-    return [d for r in rows for d in r]
+def detections(out: np.ndarray, conf_th: float = 0.25) -> list[dict]:
+    """The app's whole tail from a raw output to the boxes it fits: decode → NMS → drop nested
+    (`detectionsFromOutput` in onnx-detect.ts)."""
+    return [_as_dict(d) for d in cube_infer.drop_nested(cube_infer.nms(cube_infer.decode(out, conf_th)))]
 
 
 def fit_face(dets: list[dict], min_conf: float = 0.25) -> tuple[str, list[dict] | None]:
-    """Return ('OK', grid) or (reason, None). Mirrors fitFace() abstention logic."""
-    good = [d for d in dets if d["confidence"] >= min_conf and 0 <= d["classId"] < 6]
-    if not good:
-        return "NO_FACE", None
-    if len(good) < 9:
-        return "PARTIAL_FACE", None
-    nine = sorted(good, key=lambda d: -(d["w"] * d["h"]))[:9]
-    grid = _to_grid(nine)
-    if grid is None:
-        return "BAD_GEOMETRY", None
-    return "OK", grid
+    """('OK', grid) or (reason, None): `cube_infer.fit_grid`, the app's fitFace — isolated boxes
+    dropped, the nine largest, and the lattice-aware grid fit."""
+    verdict, grid = cube_infer.fit_grid([_as_detection(d) for d in dets], min_conf)
+    return verdict, None if grid is None else [_as_dict(d) for d in grid]
 
 
 def run_dir(model_path: str, images_dir: str, out_dir: str) -> dict:
@@ -153,7 +121,7 @@ def run_dir(model_path: str, images_dir: str, out_dir: str) -> dict:
         w, h = img.size
         tensor, scale, pad_x, pad_y = letterbox(img)
         out = sess.run([out_name], {in_name: tensor})[0]
-        dets = nms(decode(out))
+        dets = detections(out)
         reason, grid = fit_face(dets)
         abstain[reason] += 1
         for d in dets:

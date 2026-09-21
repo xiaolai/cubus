@@ -13,12 +13,20 @@ import {
   openCamera,
 } from '../src/camera.js';
 import type { Detector, DetectorSource, ModelOutput } from '../src/detector.js';
-import { preprocess } from '../src/onnx-detect.js';
+import { LetterboxOffload, type Prepared } from './letterbox-client.js';
 import { createModelRunner, type ModelRunner } from './onnx-runtime.js';
 
 export class WebDetector implements Detector {
   private source: FrameSource | null = null;
   private run: ModelRunner | null = null;
+  /**
+   * The letterbox, on another thread where the page can give it one (2026-09-20). `preprocess` on a
+   * 720p frame measured 14 ms median, 7–94 ms spread, on every tick of the page's thread; the pixel
+   * readback before it is a 3.7 MB copy on the same thread. Both go to `letterbox-worker.js` when
+   * the page has `Worker`, `createImageBitmap` and `OffscreenCanvas`, and stay here otherwise —
+   * the same tensor either way, because both run `handleLetterboxRequest`.
+   */
+  private readonly letterbox = new LetterboxOffload();
   /** The model URL `run` was built for — see `load`. */
   private loadedUrl: string | null = null;
   /** A `load()` still in flight, so a second caller waits on it rather than building a rival. */
@@ -244,30 +252,68 @@ export class WebDetector implements Detector {
     this.loadedUrl = modelUrl;
   }
 
+  /**
+   * The model output for a fresh frame, or null when there is none to read.
+   *
+   * A TICK THE WORLD MOVED UNDER ANSWERS NULL (2026-09-21). The camera and the runner are read
+   * once, before the first await, and re-checked after it: `stop()`, `dispose()` and a `load()`
+   * for another model all replace them while a frame is out — `loadModel` releases the outgoing
+   * runner through a null `run`, which the continuation used to dereference (a TypeError on a
+   * detector doing exactly what it was told), or it ran the frame through whichever runner had
+   * arrived meanwhile. Null and not an error, because the contract's null is "nothing to infer
+   * this tick, ask again", and that is what a superseded tick is: the camera or the model it was
+   * asked against no longer exists, and the next tick asks against the current ones. A rejection
+   * would start the panel's failure clock over a detector that is working — and for a `stop()`
+   * the panel discards the tick by its epoch anyway.
+   */
   async next(): Promise<ModelOutput | null> {
     if (!this.source) throw new Error('no camera open — call use() first');
     if (!this.run) throw new Error('model not loaded — call load() first');
-    let frame: ReturnType<FrameSource['grab']>;
+    const source = this.source;
+    const run = this.run;
+    const superseded = (): boolean => this.source !== source || this.run !== run;
+    let pre: Prepared;
     try {
-      frame = this.source.grab();
+      if (source.ready) {
+        // The source's own liveness verdict first, whichever way the picture is then taken: the
+        // bitmap path never calls `grab()`, and a camera that stopped delivering has to be
+        // reported from there exactly as it is from the page path (`FrameSource.ready`).
+        source.ready();
+        pre = await this.letterbox.prepare(this.video(), () => source.grab());
+      } else {
+        // A source with no `ready` keeps its verdicts in `grab()` and nowhere else, so its picture
+        // is taken by `grab()` on this thread even where a worker could take a bitmap: the bitmap
+        // path never calls `grab()`, and would snapshot a camera that had stopped as a frozen
+        // picture for ever (2026-09-21).
+        pre = this.letterbox.onThread(() => source.grab());
+      }
     } catch (err) {
+      if (superseded()) return null;
       // EXACTLY the "no frame yet" case, and nothing else. A bare `catch { return null }` turned
       // every failure here into "try again next tick": a canvas that could not be allocated, a
       // `getImageData` refused by a tainted or oversized surface, a video element the owner
       // detached. The scanner then idled forever on "Show any side" with a camera that was never
       // going to deliver — the fail-loud rule suspended for the app's most important surface.
+      // `LetterboxOffload` keeps the same line on the bitmap path: only the engine's own "no
+      // picture yet" (an `InvalidStateError`) becomes this class; every other snapshot failure
+      // arrives here as itself.
       if (err instanceof FrameNotReadyError) return null;
       throw err;
     }
-    const pre = preprocess(frame);
-    const output = await this.run(pre.data, pre.imgsz);
+    if (superseded()) return null;
+    const output = await run(pre.data, pre.imgsz);
     // The frame travels with its output because this is the last moment it exists: `grab()` reuses
     // its buffer on the next tick, and the panel needs the pixels under the fitted stickers to let
     // the assembly ask which of them carry the same paint (`paint-groups.ts`). Copied for that
-    // reason — a reference would be overwritten before the fit that names the boxes is even read.
+    // reason — a reference would be overwritten before the fit that names the boxes is even read —
+    // and only then: a worker's frame arrives in a buffer nothing else holds, and copying it again
+    // would put a 3.7 MB copy per tick back on the thread the worker took it off.
+    const { frame } = pre;
     return {
       ...output,
-      frame: { data: new Uint8ClampedArray(frame.data), width: frame.width, height: frame.height },
+      frame: pre.owned
+        ? frame
+        : { data: new Uint8ClampedArray(frame.data), width: frame.width, height: frame.height },
     };
   }
 
@@ -280,6 +326,11 @@ export class WebDetector implements Detector {
     this.opening = null;
     this.source?.stop();
     this.source = null;
+    // A frame being prepared for the camera just closed is abandoned with it (2026-09-21): left
+    // in flight, the next `use()`'s first tick was refused as "a frame is already being prepared"
+    // — and where that worker had gone silent, Stop and Start could never get past it. The worker
+    // itself is kept; only `dispose()` gives it back.
+    this.letterbox.cancel('letterbox: the camera was stopped mid-frame');
   }
 
   dispose(): void {
@@ -301,5 +352,8 @@ export class WebDetector implements Detector {
     this.run = null;
     this.loadedUrl = null;
     void run?.dispose().catch(() => {});
+    // The letterbox worker goes with the session it fed. It is cheap to bring back (no tables, no
+    // model), so a re-used detector simply spawns another on its next frame.
+    this.letterbox.dispose();
   }
 }

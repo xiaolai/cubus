@@ -21,6 +21,7 @@ import {
   GPU_PROBE_RUNS,
   proxiedSiblingUrl,
   runtimeUrl,
+  setChainTimeoutForTests,
 } from '../view/onnx-runtime.js';
 
 const FAKE_ORT = fileURLToPath(new URL('./fixtures/fake-ort.mjs', import.meta.url));
@@ -30,6 +31,8 @@ interface FakeInstance {
   proxy: boolean | null;
   sessions: number;
   runs: number;
+  /** The most runs this module ever had in flight at once — see the chain tests. */
+  maxInFlight: number;
   released: number;
   providers: unknown;
   inputBuffers: ArrayBufferLike[];
@@ -48,6 +51,12 @@ interface FakeRegistry {
     createFails?: boolean;
     /** Macrotask ticks a run waits before submitting, per model URL. The overlap seam. */
     runTicks?: Record<string, number>;
+    /** After this many runs on a session, every further run never settles — see the fixture. */
+    hangAfterRuns?: number | null;
+    /** Milliseconds a run waits before submitting, per model URL — a slow link that RESUMES. */
+    runDelayMs?: Record<string, number>;
+    /** Runs on a session that go through undelayed first, per model URL. */
+    delayAfterRuns?: Record<string, number>;
   };
 }
 
@@ -556,6 +565,182 @@ describe('createModelRunner — the GPU verdict', () => {
     // test passes just as happily against a fixture that forgot to transfer anything, which is the
     // state the previous version of it was in.
     expect(seen.every((b) => b.byteLength === 0)).toBe(true);
+  });
+});
+
+describe('createModelRunner — a run that never settles does not hold the next session up', () => {
+  // THE DEFECT (2026-09-20). Every run is serialised on the module's chain, and the chain waited
+  // for each link to SETTLE. A proxy worker killed under memory pressure leaves a run that never
+  // does: the panel gave it up after its own limit and offered Start, and Start's fresh session then
+  // queued behind the hung link — the same wait and the same notice on every press, until a reload
+  // (dev-docs/scanner-audit-2026-09-20.md §2.15). The chain now gives a link RUN_CHAIN_TIMEOUT_MS,
+  // and a module whose link outlived it is RETIRED: the next session is built on a fresh module,
+  // because the hung link's worker is the module's only worker (2026-09-21).
+  const input = (): Float32Array => new Float32Array(3 * 640 * 640);
+
+  it('lets a second session be created past the chain timeout, on a FRESH module', async () => {
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const was = setChainTimeoutForTests(50);
+    try {
+      const ortUrl = freshOrtUrl();
+      const first = await createModelRunner('model.onnx', { ortUrl, numThreads: 1 });
+      // The warm-up went through (one run per session); the next run on this session hangs.
+      registry().model = { hangAfterRuns: 1 };
+      const hung = first(input(), 640);
+      let outcome = 'pending';
+      void hung.then(
+        () => {
+          outcome = 'resolved';
+        },
+        (err: unknown) => {
+          outcome = `rejected: ${err instanceof Error ? err.message : String(err)}`;
+        },
+      );
+      const rebuilt = await Promise.race([
+        createModelRunner('model.onnx', { ortUrl, numThreads: 1 }).then(() => 'built' as const),
+        new Promise<'stuck'>((resolve) => setTimeout(() => resolve('stuck'), 2_000)),
+      ]);
+      expect(rebuilt).toBe('built');
+      expect(outcome).toBe('pending'); // the hung run is still hung; only the chain let go of it
+      // The new session is NOT on the module whose worker is hung: that module got no second
+      // session, and a second instance of the same file — the fresh identity — got it. (The
+      // generation rides in the query, which Node's `import.meta.url` does not carry, so the
+      // instance count is the evidence here rather than the URL.)
+      expect(instances()).toHaveLength(2);
+      expect(instances()[0]?.sessions).toBe(1);
+      expect(instances()[1]?.sessions).toBe(1);
+      expect(warned).toHaveBeenCalledTimes(1);
+      // And the retired runner says so, loudly, rather than queueing another run behind the hang.
+      await expect(first(input(), 640)).rejects.toThrow(/retired/);
+    } finally {
+      setChainTimeoutForTests(was);
+      warned.mockRestore();
+    }
+  });
+
+  it('holds an ordinary slow link for as long as it takes, since the timer is only a limit', async () => {
+    // The chain still serialises: a link that does settle is waited for in full, and the next one
+    // runs after it. With the fake's runs instant this is the ordinary ordering, asserted so the
+    // timeout cannot be read as "links now run concurrently".
+    const ortUrl = freshOrtUrl();
+    const a = await createModelRunner('model.onnx', { ortUrl, numThreads: 1 });
+    const b = await createModelRunner('model.onnx', { ortUrl, numThreads: 1 });
+    expect(instances()).toHaveLength(1);
+    expect(instances()[0]?.sessions).toBe(2);
+    await a(input(), 640);
+    await b(input(), 640);
+  });
+
+  it("starts each link's clock when its work starts, so links queued behind a slow one never overlap", async () => {
+    // THE CLOCK RAN FROM ENQUEUE (2026-09-21). Three links queued behind a 200 ms link, under a
+    // 250 ms patience: the second and third were armed as they were queued, so both expired at
+    // 250 ms — while the second, which had only started at 200 ms, was still running — and the
+    // third started on top of it. Two runs at once on one module is the arrangement the chain
+    // exists to prevent, and it happened exactly when the chain was busy.
+    const was = setChainTimeoutForTests(250);
+    try {
+      const ortUrl = freshOrtUrl();
+      const runner = await createModelRunner('model.onnx', { ortUrl, numThreads: 1 });
+      registry().model = { runDelayMs: { 'model.onnx': 200 }, delayAfterRuns: { 'model.onnx': 1 } };
+      const started = performance.now();
+      await Promise.all([runner(input(), 640), runner(input(), 640), runner(input(), 640)]);
+      // One at a time, in full: three 200 ms links take at least 600 ms…
+      expect(performance.now() - started).toBeGreaterThanOrEqual(590);
+      expect(instances()[0]?.maxInFlight).toBe(1);
+      // …and none of them, each inside the patience, retired the module.
+      registry().model = {};
+      await expect(runner(input(), 640)).resolves.toMatchObject({ anchors: 8400 });
+    } finally {
+      setChainTimeoutForTests(was);
+    }
+  });
+
+  it('keeps a run that RESUMES after the chain gave up from becoming a later session’s evidence', async () => {
+    // Releasing the chain was half of it. A link that is merely late resumes — and its command
+    // buffers land on the module's one device queue while a newer session's probe is counting
+    // that queue as its own evidence: a session WebGPU declined then read 17 submissions that were
+    // not its own and kept `['webgpu', 'wasm']`, the proxy off, a ~200 ms wasm run on the page's
+    // thread. Retiring the module puts the newer session on a fresh module — its own device, its
+    // own queue — so nothing the late run does can be counted there.
+    withAdapter(true);
+    const noted = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const was = setChainTimeoutForTests(50);
+    try {
+      const ortUrl = freshOrtUrl();
+      const scanning = await createModelRunner('gpu.onnx', { ortUrl, numThreads: 1 });
+      expect(scanning.providers).toEqual(['webgpu', 'wasm']);
+      registry().model = {
+        webgpuDeclines: ['decliner.onnx'],
+        // The scan run outlasts the patience and then submits; the newcomer's probe, were it on the
+        // same module, would be watching the queue for 400 ms around that moment.
+        runDelayMs: { 'gpu.onnx': 300, 'decliner.onnx': 400 },
+        delayAfterRuns: { 'gpu.onnx': 1 + GPU_PROBE_RUNS },
+      };
+      const late = scanning(input(), 640);
+      let outcome = 'pending';
+      void late.then(
+        () => {
+          outcome = 'resolved';
+        },
+        () => {
+          outcome = 'rejected';
+        },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 100)); // past the patience; still out
+      expect(outcome).toBe('pending');
+
+      const declined = await createModelRunner('decliner.onnx', { ortUrl, numThreads: 1 });
+      // Judged on its own module's evidence: before this it read ['webgpu', 'wasm'].
+      expect(declined.providers).toEqual(['wasm']);
+      // The retired module got no second session; the fresh identity (a second direct module) did,
+      // and the decliner was then rebuilt on the proxied module as any declined session is.
+      expect(instances()).toHaveLength(3);
+      expect(instances()[0]?.sessions).toBe(1);
+      expect(instances()[1]?.proxy).toBe(false);
+      expect(instances()[1]?.sessions).toBe(1);
+      expect(instances()[2]?.proxy).toBe(true);
+
+      // The late run still comes back to its own caller — it was late, not lost…
+      await late;
+      expect(outcome).toBe('resolved');
+      // …the retired runner refuses new work rather than queueing it on a module nothing else
+      // will use, and it can still be released.
+      await expect(scanning(input(), 640)).rejects.toThrow(/retired/);
+      await scanning.dispose();
+      expect(instances()[0]?.released).toBe(1);
+    } finally {
+      setChainTimeoutForTests(was);
+      noted.mockRestore();
+      warned.mockRestore();
+    }
+  });
+
+  it('re-asks on a fresh module for a create that was queued behind the link that hung', async () => {
+    // Start pressed while the hung link still held the chain: its create is queued, the chain
+    // gives up, and the queued create is refused because its module is now retired. That refusal
+    // is caught inside `createModelRunner`, which asks again on the fresh module — so the caller
+    // sees one successful load, not a failure to press Start through a second time.
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const was = setChainTimeoutForTests(100);
+    try {
+      const ortUrl = freshOrtUrl();
+      const first = await createModelRunner('model.onnx', { ortUrl, numThreads: 1 });
+      registry().model = { hangAfterRuns: 1 };
+      void first(input(), 640).catch(() => {});
+      // Queued BEFORE the patience runs out.
+      const queued = createModelRunner('model.onnx', { ortUrl, numThreads: 1 });
+      const runner = await queued;
+      expect(runner.providers).toEqual(['wasm']);
+      expect(instances()).toHaveLength(2);
+      expect(instances()[0]?.sessions).toBe(1);
+      expect(instances()[1]?.sessions).toBe(1);
+      registry().model = {}; // runs settle again: the fresh session's first inference must not hang
+      await expect(runner(input(), 640)).resolves.toMatchObject({ anchors: 8400 });
+    } finally {
+      setChainTimeoutForTests(was);
+      warned.mockRestore();
+    }
   });
 });
 

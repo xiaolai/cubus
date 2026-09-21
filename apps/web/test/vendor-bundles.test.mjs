@@ -168,6 +168,11 @@ const BUNDLES = [
       // square with it, and `ScanProgress.seen` places each box back in the picture with the same
       // arithmetic — so a bundle built before an edit to it would place stickers somewhere else.
       '../../../packages/cube-scanner/src/letterbox.ts',
+      // The letterbox's client half and its wire (2026-09-20): the detector hands each frame to
+      // `letterbox-worker.js` through these, and runs the letterbox here when a page has no worker,
+      // so both halves ship in this bundle — as the misread decoder's do.
+      '../../../packages/cube-scanner/view/letterbox-client.ts',
+      '../../../packages/cube-scanner/view/letterbox-protocol.ts',
     ],
     // Exported from the package entry and used by its tests, but never by the panel — so esbuild
     // drops them and their absence is correct, not stale. Listed rather than silently ignored: if
@@ -180,7 +185,12 @@ const BUNDLES = [
     // `fitFromOutput` joined on 2026-09-18: the panel now decodes a frame once with
     // `detectionsFromOutput` and hands the same boxes to `fitFace` and the scan trace, so
     // it no longer calls the composed form. The package entry and its tests still use it.
-    treeShaken: ['SOLVED_FACELETS', 'encodeFacelets', 'detectFace', 'fitFromOutput'],
+    // `setChainTimeoutForTests` (2026-09-20) is the runtime's one test-only export — the knob that
+    // shortens the run-chain timeout so a hung inference can be reproduced in seconds — and the
+    // panel never calls it.
+    // `latticeOf` (2026-09-21) is the lattice-only view the package entry and the tests read; the
+    // panel reads `fitLattice`, which carries the refusal's reason, so esbuild drops the view.
+    treeShaken: ['SOLVED_FACELETS', 'encodeFacelets', 'detectFace', 'fitFromOutput', 'setChainTimeoutForTests', 'latticeOf'],
     // encodeFacelets' refusal of a malformed state (2026-09-13) leaves with the function: the
     // message is in facelet-cube.ts and, correctly, nowhere in a bundle that never encodes.
     treeShakenMessages: ['encodeFacelets: not a well-formed cube state'],
@@ -215,6 +225,26 @@ const BUNDLES = [
       'heldUpColour', 'holdOffset', 'isColour', 'neighbourColour', 'neighbourColours', 'schemeOfCentres',
     ],
     treeShakenMessages: ['encodeFacelets: not a well-formed cube state'],
+  },
+  {
+    // The letterbox, on its own thread (2026-09-20; dev-docs/scanner-audit-2026-09-20.md §2.10).
+    // `preprocess` on a 720p frame took 14 ms median of the page's thread on every tick, beside the
+    // pixel readback it needs; the detector hands the worker an ImageBitmap and gets the tensor
+    // back by transfer. Reached exactly as the misread worker is — a same-origin URL computed from
+    // the panel's own bundle, in no HTML — and it degrades the same way, quietly back to the page
+    // thread, which is why it needs the same guard.
+    name: 'letterbox-worker',
+    build: 'pnpm --filter cube-scanner build:letterbox-worker',
+    bundle: '../vendor/letterbox-worker.js',
+    // Every file esbuild puts in it — the letterbox and nothing else of the detector, which is why
+    // `preprocess` lives in letterbox.ts and not beside the detect head. NOT letterbox-client.ts,
+    // for the reason misread-client.ts is not listed above: the client is the page's half, and
+    // none of it is in the worker.
+    sources: [
+      '../../../packages/cube-scanner/view/letterbox-worker.ts',
+      '../../../packages/cube-scanner/view/letterbox-protocol.ts',
+      '../../../packages/cube-scanner/src/letterbox.ts',
+    ],
   },
   {
     // The protocol layer for every smart cube: an unpublished git dependency, pinned by commit
@@ -423,7 +453,13 @@ test('onnxruntime is loaded as its own module, not bundled into the panel', () =
   // And it must still be reached, by a computed URL rather than a bare specifier.
   const src = readFileSync(
     new URL('../../../packages/cube-scanner/view/onnx-runtime.ts', import.meta.url), 'utf8');
-  assert.match(src, /import\(\s*\/\*[^*]*\*\/\s*url\s*\)|import\(\s*url\s*\)/, 'must import a URL variable');
+  // Any IDENTIFIER, not the one name `url` (2026-09-21): what keeps the runtime out of the bundle
+  // is that esbuild cannot resolve a variable, whatever it is called — the retire path names its
+  // re-numbered URL `target`, and a guard on the spelling would have refused it for nothing. A
+  // string literal is what must never appear, so that is refused by name below.
+  assert.match(
+    src, /import\(\s*(?:\/\*[^*]*\*\/\s*)?[A-Za-z_$][\w$]*\s*\)/, 'must import a URL variable');
+  assert.doesNotMatch(src, /import\(\s*(?:\/\*[^*]*\*\/\s*)?['"`]/, 'a literal specifier would be bundled');
   assert.doesNotMatch(src, /^\s*import\s+\*\s+as\s+ort\s+from\s+'onnxruntime-web'/m, 'no static runtime import');
   // The proxy is now CONDITIONAL, and the condition is the point. A ~200 ms wasm run has to leave
   // the page's thread or the UI is blocked the whole time the camera is open; a 15 ms GPU run does

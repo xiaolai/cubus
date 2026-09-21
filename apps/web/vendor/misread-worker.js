@@ -2002,7 +2002,8 @@ var FACES = ["U", "R", "F", "D", "L", "B"];
 
 // src/facelet-cube.ts
 var SOLVED = "UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB";
-var CORNER_FACELET = [
+var frozenRows = (rows) => Object.freeze(rows.map((row) => Object.freeze([...row])));
+var CORNER_FACELET = frozenRows([
   [8, 9, 20],
   [6, 18, 38],
   [0, 36, 47],
@@ -2011,8 +2012,8 @@ var CORNER_FACELET = [
   [27, 44, 24],
   [33, 53, 42],
   [35, 17, 51]
-];
-var EDGE_FACELET = [
+]);
+var EDGE_FACELET = frozenRows([
   [5, 10],
   [7, 19],
   [3, 37],
@@ -2025,7 +2026,7 @@ var EDGE_FACELET = [
   [21, 41],
   [50, 39],
   [48, 14]
-];
+]);
 var CORNER_COLOR = Object.freeze(
   CORNER_FACELET.map((t) => Object.freeze(t.map((i) => SOLVED[i])))
 );
@@ -2057,16 +2058,17 @@ var FACE_NEIGHBOURS = (() => {
       if (side !== void 0) out[FACES[Math.floor(from / 9)]][side] = FACES[Math.floor(to / 9)];
     }
   }
-  return out;
+  for (const f of FACES) Object.freeze(out[f]);
+  return Object.freeze(out);
 })();
-var CENTER_INDEX = {
+var CENTER_INDEX = Object.freeze({
   U: 4,
   R: 13,
   F: 22,
   D: 31,
   L: 40,
   B: 49
-};
+});
 function decodeFacelets(f) {
   if (f.length !== 54) return null;
   const corners = decodeCorners(f);

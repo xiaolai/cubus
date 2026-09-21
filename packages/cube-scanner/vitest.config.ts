@@ -64,6 +64,12 @@ export default defineConfig({
         // does, so leaving them unmeasured would leave them untested.
         'view/misread-client.ts',
         'view/misread-protocol.ts',
+        // The letterbox's client half and its wire (2026-09-20), for the same reason: a fake
+        // `Worker` and a fake `createImageBitmap` reach every branch, and the branches that matter
+        // are the ones a page in the wild takes — no worker, a worker that cannot load, one that
+        // dies holding a frame — and a developer's browser never does.
+        'view/letterbox-client.ts',
+        'view/letterbox-protocol.ts',
         'view/pick-detector.ts',
         'view/native-detector.ts',
         // The scan trace (2026-09-18). Both halves are pure — a frame in, a record out; ticks in, a

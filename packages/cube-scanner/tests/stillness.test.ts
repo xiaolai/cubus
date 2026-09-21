@@ -4,7 +4,7 @@
 // onTick, so reaching it meant driving the entire scan loop, and the timing half — the part most
 // likely to be wrong — could only be exercised by advancing fake timers through a fake detector.
 import { describe, expect, it } from 'vitest';
-import { classify, Stillness } from '../view/stillness.js';
+import { classify, mostShown, Stillness } from '../view/stillness.js';
 
 const READ = [0, 1, 2, 3, 4, 5, 0, 1, 2];
 const OTHER = [5, 4, 3, 2, 1, 0, 5, 4, 3];
@@ -290,6 +290,52 @@ describe('Stillness — a logo centre beside a flickering outer sticker (audit, 
     expect(s.flickering(1)).toBe(0);
     s.offer([3, 3, W, W, B, W, W, W, W], 1400); // two outer + the centre: another side, wiped
     expect(s.flickering(1)).toBe(null);
+  });
+});
+
+describe('Stillness — what a run remembers of a centre that never settled (2026-09-21)', () => {
+  const W = 0;
+  const Y = 3;
+  const B = 5;
+  const white = (centre: number) => [W, W, W, W, centre, W, W, W, W];
+
+  it('counts how many reads showed each colour, and names only the colour shown most', () => {
+    // As a SET, one frame was as good as nine: a white side whose centre flickered yellow once was
+    // "showed white and yellow", and the real yellow side — the same eight on a symmetric cube —
+    // was then the same side, turned away for good. The count is what tells a flicker from a side.
+    const s = new Stillness(3, 500);
+    for (const [i, c] of [W, W, W, Y, W, B, W].entries()) s.offer(white(c), 1000 + i * 100);
+    expect([...s.centreReads()]).toEqual([
+      [W, 5],
+      [Y, 1],
+      [B, 1],
+    ]);
+    expect(mostShown(s.centreReads())).toEqual([W]);
+  });
+
+  it('a tie names every colour tied for the top, and a run that showed none names nothing', () => {
+    // An evenly alternating logo showed both colours as much as each other: choosing one would be
+    // reading a centre this package has already refused to read.
+    expect(
+      mostShown(
+        new Map([
+          [W, 2],
+          [B, 2],
+          [Y, 1],
+        ]),
+      ),
+    ).toEqual([W, B]);
+    expect(mostShown(new Map())).toEqual([]);
+    expect(mostShown(new Stillness(3, 500).centreReads())).toEqual([]);
+  });
+
+  it('the reads belong to the run: a new run and a reset both start the count afresh', () => {
+    const s = new Stillness(3, 500);
+    for (let i = 0; i < 4; i++) s.offer(white(B), 1000 + i * 100);
+    s.offer([1, 1, 1, 1, W, 1, 1, 1, 1], 1400); // another side: a new run
+    expect([...s.centreReads()]).toEqual([[W, 1]]);
+    s.reset();
+    expect(s.centreReads().size).toBe(0);
   });
 });
 

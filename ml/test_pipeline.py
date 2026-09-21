@@ -381,6 +381,188 @@ def test_nested_boxes_are_dropped_exactly_as_the_app_drops_them():
     print("PASS inference: nested boxes are dropped as the app drops them, and read_face applies it")
 
 
+def test_rolled_grids_are_read_exactly_as_the_app_reads_them():
+    """cube_infer.lattice_of / to_grid answer the cases fitFace (TypeScript) is tested on: a face rolled in
+    the image plane reads as a ROTATION of the truth, never with corners and edges swapped (the defect of
+    dev-docs/scanner-audit-2026-09-20.md §1.1), and a level or sheared face reads exactly as before."""
+    import cube_infer
+
+    shared = json.loads((HERE.parent / "packages/cube-scanner/tests/fixtures/rolled-grids.json").read_text())
+    assert len(shared["cases"]) > 20
+    for case in shared["cases"]:
+        dets = [cube_infer.Detection(d["cx"], d["cy"], d["w"], d["h"], d["classId"], d["confidence"]) for d in case["detections"]]
+        verdict, grid = cube_infer.fit_grid(dets)
+        if case["order"] is None:
+            assert grid is None and verdict == case["reason"], (case["name"], verdict)
+            continue
+        got = [next(i for i, d in enumerate(dets) if d is g) for g in grid]
+        assert got == case["order"], (case["name"], got, case["order"])
+    # And the old grouping really was wrong past 26.6°: the 27° case's level-frame rows are not the
+    # lattice's, which is exactly the condition under which the de-roll runs.
+    case = next(c for c in shared["cases"] if c["name"].startswith("roll 27°, axis"))
+    dets = [cube_infer.Detection(d["cx"], d["cy"], d["w"], d["h"], d["classId"], d["confidence"]) for d in case["detections"]]
+    lattice = cube_infer.lattice_of(dets)
+    assert lattice is not None
+    level = [d for r in cube_infer._rows_by_y(dets) for d in r]
+    ordered = sorted(range(9), key=lambda k: (lattice[2][k][1], lattice[2][k][0]))
+    assert any(level[k] is not dets[ordered[k]] for k in range(9)), "the 27° case no longer exercises the de-roll"
+    print(f"PASS inference: rolled grids are read as the app reads them — {len(shared['cases'])} shared cases")
+
+
+def test_decode_drops_the_boxes_the_app_drops() -> None:
+    """cube_infer.decode refuses a box that is not finite or has no area, at the same point
+    decodeDetections does (audit 2026-09-20): nine confident boxes with a NaN centre read as
+    PARTIAL_FACE here and NO_FACE in the app before this."""
+    import numpy as np
+
+    import cube_infer
+
+    def head(boxes):
+        out = np.zeros((10, len(boxes)), dtype=np.float32)
+        for a, (cx, cy, w, h) in enumerate(boxes):
+            out[0, a], out[1, a], out[2, a], out[3, a] = cx, cy, w, h
+            out[4, a] = 0.9  # class 0, confidently
+        return out
+
+    good = (100.0, 100.0, 20.0, 20.0)
+    assert len(cube_infer.decode(head([good]))) == 1
+    for bad in [
+        (float("nan"), 100.0, 20.0, 20.0),
+        (100.0, float("inf"), 20.0, 20.0),
+        (100.0, 100.0, 0.0, 20.0),
+        (100.0, 100.0, 20.0, -1.0),
+        (100.0, 100.0, float("nan"), 20.0),
+    ]:
+        assert cube_infer.decode(head([bad])) == [], bad
+    nine_nan = head([(float("nan"), 100.0, 20.0, 20.0)] * 9)
+    assert cube_infer.read_face(nine_nan).verdict == "NO_FACE"
+    print("PASS inference: decode drops non-finite and zero-area boxes as the app does")
+
+
+def test_to_grid_takes_exactly_nine() -> None:
+    """to_grid raises on anything but nine (audit 2026-09-20): eight used to raise an IndexError from
+    the row slicing and ten were read as their first nine with the bounds measured over all ten."""
+    import cube_infer
+
+    def det(x, y):
+        return cube_infer.Detection(x, y, 20.0, 20.0, 0, 0.9)
+
+    nine = [det(100 + 30 * (k % 3), 100 + 30 * (k // 3)) for k in range(9)]
+    assert cube_infer.to_grid(nine) is not None
+    for n in (8, 10):
+        boxes = nine[:n] if n < 9 else nine + [det(220.0, 100.0)]
+        try:
+            cube_infer.to_grid(boxes)
+        except ValueError as e:
+            assert "exactly nine" in str(e), e
+        else:
+            raise AssertionError(f"to_grid accepted {n} detections")
+    print("PASS inference: to_grid holds its nine-detection contract")
+
+
+def test_lattice_stages_agree_with_the_composition() -> None:
+    """lattice_of is five stages composed (audit 2026-09-20); each answers on its own what the whole
+    answers, on the shared rolled fixtures — so a stage can be tested where it fails."""
+    import cube_infer
+
+    shared = json.loads((HERE.parent / "packages/cube-scanner/tests/fixtures/rolled-grids.json").read_text())
+    checked = 0
+    for case in shared["cases"]:
+        dets = [cube_infer.Detection(d["cx"], d["cy"], d["w"], d["h"], d["classId"], d["confidence"]) for d in case["detections"]]
+        whole = cube_infer.lattice_of(dets)
+        if whole is None:
+            continue
+        centre = cube_infer._centre_of(dets)
+        others = [k for k in range(9) if k != centre]
+        rel = [(dets[k].cx - dets[centre].cx, dets[k].cy - dets[centre].cy) for k in others]
+        dirs = cube_infer._antipodal_dirs(rel)
+        assert len(dirs) == 4, case["name"]
+        basis = cube_infer._basis_of(dirs)
+        assert basis is not None, case["name"]
+        row, col, gap = cube_infer._oriented(*basis)
+        assert gap >= math.radians(2 * cube_infer.ROLL_TIE_BAND_DEG), case["name"]
+        assert (row, col) == (whole[0], whole[1]), case["name"]
+        assert cube_infer._cells_of(rel, others, centre, row, col) == whole[2], case["name"]
+        # The row is the basis vector nearer horizontal, pointing right; the column points down.
+        assert row[0] >= 0 and col[1] >= 0, case["name"]
+        checked += 1
+    assert checked >= 10, checked
+    # And a stage refuses what it should: a diagonal offered as a basis misses by a whole step.
+    square = [(1.0, 0.0), (0.0, 1.0), (1.0, 1.0), (-1.0, 1.0)]
+    assert cube_infer._basis_of(square) == ((1.0, 0.0), (0.0, 1.0))
+    assert cube_infer._basis_of([(1.0, 0.0), (0.3, 0.2), (0.7, -0.4), (0.1, 0.9)]) is None
+    # The tie: axes at 44° and 46° are 2° apart, inside the band, and the fit says so by name.
+    assert cube_infer._oriented((1.0, math.tan(math.radians(44))), (-1.0, math.tan(math.radians(44)) ** -1))[2] < math.radians(6)
+    # The pairing is exact: a middle box pushed a third of a step (the case the greedy walk lost)
+    # still pairs the true antipodes, so the basis is the grid's.
+    th = math.radians(30)
+    pushed = [cube_infer.Detection(320 + (((c - 1) * 84 + (-25 if (r, c) == (1, 1) else 0)) * math.cos(th) - ((r - 1) * 84 + (-12 if (r, c) == (1, 1) else 0)) * math.sin(th)),
+                                   320 + (((c - 1) * 84 + (-25 if (r, c) == (1, 1) else 0)) * math.sin(th) + ((r - 1) * 84 + (-12 if (r, c) == (1, 1) else 0)) * math.cos(th)),
+                                   101.1, 101.1, 0, 0.9) for r in range(3) for c in range(3)]
+    assert cube_infer.fit_lattice(pushed)[1] == "ok"
+    assert len(cube_infer._OUTER_MATCHINGS) == 105
+    print(f"PASS inference: lattice stages agree with lattice_of on {checked} fixtures")
+
+
+def test_the_sweep_of_generated_holds_reads_as_the_app_reads_it() -> None:
+    """Three hundred generated faces — rolled, sheared, jittered, foreshortened, the centre pushed —
+    pinned by packages/cube-scanner/tests/rolled-grids-sweep.test.ts and read here through the same
+    numbers (2026-09-21): the hand cases show the two fits agreeing where somebody looked, and this
+    is the space between. Every accepted face is a ROTATION of the truth (the detections are in true
+    reading order), never the corner/edge scramble; every refusal is the pinned one."""
+    import cube_infer
+
+    sweep = json.loads((HERE.parent / "packages/cube-scanner/tests/fixtures/rolled-grids-sweep.json").read_text())
+    assert len(sweep["cases"]) >= 300
+    rot90 = [6, 3, 0, 7, 4, 1, 8, 5, 2]
+    rotations, o = [], list(range(9))
+    for _ in range(4):
+        rotations.append(o)
+        o = [o[i] for i in rot90]
+    accepted = 0
+    for case in sweep["cases"]:
+        dets = [cube_infer.Detection(d["cx"], d["cy"], d["w"], d["h"], d["classId"], d["confidence"]) for d in case["detections"]]
+        verdict, grid = cube_infer.fit_grid(dets)
+        if case["order"] is None:
+            assert grid is None and verdict == case["reason"], (case["name"], verdict)
+            continue
+        got = [next(i for i, d in enumerate(dets) if d is g) for g in grid]
+        assert got == case["order"], (case["name"], got, case["order"])
+        assert got in rotations, (case["name"], got)
+        accepted += 1
+    assert accepted > 0.8 * len(sweep["cases"]), accepted
+    # The stages named in refusals are the app's: the roll tie, and the level check on a grid with
+    # no lattice behind it.
+    tie = [cube_infer.Detection(d["cx"], d["cy"], d["w"], d["h"], d["classId"], d["confidence"])
+           for d in next(c for c in json.loads((HERE.parent / "packages/cube-scanner/tests/fixtures/rolled-grids.json").read_text())["cases"]
+                         if c["name"].startswith("roll 45°"))["detections"]]
+    assert cube_infer.fit_lattice(tie) == (None, "roll-tie")
+    assert cube_infer.to_grid(tie) is None
+    print(f"PASS inference: the sweep of {len(sweep['cases'])} generated holds reads as the app reads it ({accepted} accepted)")
+
+
+def test_the_evaluators_read_through_the_shared_core() -> None:
+    """ood_eval (and face_eval through it) fit a face with cube_infer's pipeline, not a copy of it
+    (audit 2026-09-20): on a 30° rolled face the copy read the corner/edge scramble the app no
+    longer produces, so every evaluator metric was about a fit the app does not run."""
+    import ood_eval
+
+    src = (HERE / "ood_eval.py").read_text()
+    for own in ("def _to_grid", "def _iou", "def _nms"):
+        assert own not in src, f"ood_eval.py still carries its own {own}"
+    assert "_to_grid" not in (HERE / "face_eval.py").read_text()
+    shared = json.loads((HERE.parent / "packages/cube-scanner/tests/fixtures/rolled-grids.json").read_text())
+    rolled = [c for c in shared["cases"] if c["order"] is not None and c["name"].startswith("roll 3")]
+    assert rolled, [c["name"] for c in shared["cases"]]
+    for case in rolled:
+        dicts = [{"cx": d["cx"], "cy": d["cy"], "w": d["w"], "h": d["h"], "classId": d["classId"], "confidence": d["confidence"]} for d in case["detections"]]
+        verdict, grid = ood_eval.fit_face(dicts)
+        assert verdict == "OK", (case["name"], verdict)
+        got = [next(i for i, d in enumerate(dicts) if d["cx"] == g["cx"] and d["cy"] == g["cy"]) for g in grid]
+        assert got == case["order"], (case["name"], got, case["order"])
+    print(f"PASS inference: the evaluators read {len(rolled)} rolled faces as the app does")
+
+
 def test_isolated_boxes_are_dropped_exactly_as_the_app_drops_them():
     """cube_infer.drop_isolated answers the cases dropIsolated (TypeScript) is tested on, and fit_grid applies
     it — held to the same real frames, so the golden gate keeps testing the fit the app actually runs."""
@@ -1402,6 +1584,12 @@ if __name__ == "__main__":
     test_manifest_labels_match_export_py()
     test_licence_note_says_where_the_weights_started()
     test_nested_boxes_are_dropped_exactly_as_the_app_drops_them()
+    test_rolled_grids_are_read_exactly_as_the_app_reads_them()
+    test_decode_drops_the_boxes_the_app_drops()
+    test_to_grid_takes_exactly_nine()
+    test_lattice_stages_agree_with_the_composition()
+    test_the_sweep_of_generated_holds_reads_as_the_app_reads_it()
+    test_the_evaluators_read_through_the_shared_core()
     test_isolated_boxes_are_dropped_exactly_as_the_app_drops_them()
     test_an_int8_that_could_not_be_checked_is_not_written()
     test_a_coreml_package_is_identified_by_its_model_not_its_random_ids()

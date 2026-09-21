@@ -39,8 +39,11 @@ import {
   type ColorFace,
   type Confirmation,
   type ConfirmRequest,
+  matchingRotations,
   resolveCentres,
   rotateFace,
+  SAME_SIDE_BY_CENTRE,
+  SAME_SIDE_STICKERS,
   type StickerSuspect,
   sameSide,
   type UnnamedSide,
@@ -74,7 +77,7 @@ import {
   type TraceEvent,
   traceEnabled,
 } from './scan-trace.js';
-import { Stillness } from './stillness.js';
+import { mostShown, Stillness } from './stillness.js';
 
 // The scan pipeline's pure stages, re-exported so anything holding this bundle can run them.
 // They are already compiled in — the panel itself calls all three — so this costs no bytes; it
@@ -212,6 +215,9 @@ const TICK_FAIL_MS = 3000;
  * limit on SILENCE.
  */
 const INFERENCE_TIMEOUT_MS = 15_000;
+/** The name on the error the deadline above rejects with — the one failure `tickFail` treats as a
+ *  wedged runtime rather than a broken frame. */
+const INFERENCE_TIMEOUT = 'InferenceTimeoutError';
 // The beat between "captured/corrected" and the verdict. Assembly itself is ~5 ms; this exists so
 // the capture that triggered the check — the sixth tile going green, a corrected sticker — paints
 // before any refusal lands. Everything used to run in one task, so the browser painted once,
@@ -395,6 +401,20 @@ export interface ScanCapture {
   face: Face | null;
   sides: number;
 }
+
+/**
+ * Where an accepted cube came from — `scan-complete`'s `origin` (2026-09-20).
+ *
+ * `'camera'` is six sides read by the camera and assembled; `'correction'` is the in-place re-check
+ * after a sticker of an already-settled reading was corrected by hand; `'painted'` is a cube
+ * authored in painting mode. A host with a smart cube connected needs the difference: a correction
+ * RETRACTS the previous verdict rather than contradicting it, and a painting is not an observation
+ * of the cube in the hand at all (`dev-docs/scanner-audit-2026-09-20.md` §1.3, §2.5).
+ */
+export type ScanOrigin = 'camera' | 'correction' | 'painted';
+
+/** `scan-complete` detail: the accepted result, and where it came from. */
+export type ScanCompleteDetail = AiScanResult & { origin: ScanOrigin };
 
 /**
  * How far the current read has come towards capture: `run` identical reads of the `needed`, held
@@ -648,10 +668,12 @@ export class AiScanPanel extends HTMLElement {
    * waiting for was never named.
    */
   private pendingOpening: { phase: ScanPhase; words: (string | Node)[] } | null = null;
+  /** Sides handed back by `rescanFace` since the loop last spoke — named together when it does. */
+  private rescanQueue: Face[] = [];
   /** Captures known to be in canonical rotation, from answering a `confirm` request. */
   /** Each confirmation with the hold it answered: the assembler projects it into every scheme's
    *  frame from `up`, so a capture without its hold is not a confirmation (ADR 0001). */
-  private confirmed: Partial<Record<Face, Confirmation>> = {};
+  private confirmed: Partial<Record<Face, Confirmation[]>> = {};
   private awaiting: ConfirmRequest | null = null;
   /**
    * The cube's colour scheme as the LAST VERDICT established it — `ScanProgress.scheme`. Null
@@ -730,6 +752,15 @@ export class AiScanPanel extends HTMLElement {
    * run never settled (audit, 2026-09-20).
    */
   private readonly unnamedClaim = new Map<ColorFace, Colour | null>();
+  /**
+   * How many reads of the settling run showed each colour at the centre, for each side held unnamed
+   * because that centre never agreed — what such a side is recognised by when it is read again with
+   * its centre settled (2026-09-20, `sideInHand`). The eight alone cannot tell it from a twin side
+   * that shares them; and only the colour shown MOST may name it (`mostShown`, 2026-09-21), because
+   * a colour shown once is the flicker that left the side unread, and a twin whose centre IS that
+   * colour was taken for the ghost and turned away for good.
+   */
+  private readonly unnamedCentres = new Map<ColorFace, ReadonlyMap<number, number>>();
 
   constructor() {
     super();
@@ -1138,6 +1169,7 @@ export class AiScanPanel extends HTMLElement {
     this.unnamed = [];
     this.centreSeen.clear();
     this.unnamedClaim.clear();
+    this.unnamedCentres.clear();
     // The next cube is a different cube; what the last verdict said about this one's colours
     // must not outlive it.
     this.scheme = null;
@@ -1173,6 +1205,8 @@ export class AiScanPanel extends HTMLElement {
       return;
     }
     this.report(phase, ...(opening.length > 0 ? opening : [OPENING]));
+    // Said, so the sides handed back so far have been named; the next hand-back starts a new list.
+    this.rescanQueue = [];
     // The trace switch is read HERE, once per loop, never per frame: a scan must not change how it
     // reads halfway through a side because a developer flipped a flag.
     this.tracing = traceEnabled();
@@ -1221,11 +1255,11 @@ export class AiScanPanel extends HTMLElement {
         this.cam.chosen.next(),
         new Promise<never>((_resolve, reject) => {
           deadline = setTimeout(() => {
-            reject(
-              new Error(
-                `the detector did not answer within ${Math.round(INFERENCE_TIMEOUT_MS / 1000)} seconds`,
-              ),
+            const timedOut = new Error(
+              `the detector did not answer within ${Math.round(INFERENCE_TIMEOUT_MS / 1000)} seconds`,
             );
+            timedOut.name = INFERENCE_TIMEOUT; // so `tickFail` can tell it from a runtime's own error
+            reject(timedOut);
           }, INFERENCE_TIMEOUT_MS);
         }),
       ]);
@@ -1376,7 +1410,11 @@ export class AiScanPanel extends HTMLElement {
       output.frame && fit.face.boxes
         ? (stickerLab(output.frame, fit.face.boxes, IMG_SIZE) ?? undefined)
         : undefined;
-    this.fileSettledRead(lab ? { ...fit.face, lab } : fit.face, agreedCentre);
+    this.fileSettledRead(
+      lab ? { ...fit.face, lab } : fit.face,
+      agreedCentre,
+      this.still.centreReads(),
+    );
   }
 
   /** Record a decision that is not a frame, for the trace. A no-op with the trace off. */
@@ -1458,6 +1496,17 @@ export class AiScanPanel extends HTMLElement {
     this.forgetObservation();
     this.tickFailingSince = null;
     this.noFrameSince = null;
+    // AN INFERENCE THAT NEVER SETTLED IS NOT SOMETHING START CAN GET PAST (2026-09-20). The
+    // notice below says "Try Start again", and Start kept the same runner: `modelLoaded` stayed
+    // true, the detector's `load()` short-circuited, and the next `next()` queued behind the hung
+    // promise on the runtime's per-module chain — so every Start after a wedged run was the same
+    // fifteen seconds and the same notice, until a reload. The runner is given up here, so Start
+    // builds a fresh session; the chain itself stops waiting on a run past its own limit
+    // (`onnx-runtime.ts`, RUN_CHAIN_TIMEOUT_MS), which is what makes the rebuild reachable.
+    if (err instanceof Error && err.name === INFERENCE_TIMEOUT) {
+      this.cam.chosen?.dispose?.();
+      this.cam.modelLoaded = false;
+    }
     // A DIAGNOSIS IN FLIGHT MUST NOT SPEAK AFTER THIS (2026-09-05). A refusal published seconds ago
     // has its misread decode running on another thread, and its answer republishes — `notice` and
     // all, at phase 'scanning'. Landing here it replaced "The scanner stopped" with a sentence
@@ -1498,8 +1547,10 @@ export class AiScanPanel extends HTMLElement {
   private fileSettledRead(
     read: ColorFace,
     agreedCentre: number | null = read.colors[4] ?? null,
+    seenCentres: ReadonlyMap<number, number> = new Map(
+      agreedCentre === null ? [] : [[agreedCentre, 1]],
+    ),
   ): void {
-    const centre = read.colors[4];
     // A CENTRE THE RUN NEVER AGREED ON NAMES NOTHING (2026-09-20). Filing by one frame's centre is
     // how a white cap with a blue logo became the blue side, confidently, with no collision to
     // settle it — and then the real blue side had nowhere to go. An unread centre makes the side
@@ -1532,14 +1583,20 @@ export class AiScanPanel extends HTMLElement {
         'scanning',
         'This cube is already scanned — tap a sticker to fix one, or start the scan over for a different cube.',
       );
+      this.still.reset(); // spent, as in the in-hand branch below
       return;
     }
     // With all six sides in, the loop only runs because the scan was refused — so a re-shown side
     // is a correction: replace its reading and check again. Which side it corrects is the side its
     // eight point to when they point to one alone, and otherwise the one its centre names — a
     // correction is the moment a sticker has changed, so the eight may no longer agree.
-    if (this.capturedFaces().length >= FACES.length) {
-      this.replaceCapturedSide(read, claim);
+    //
+    // SIX HELD, not six named (2026-09-21). A refusal that decided nothing keeps its unnamed sides
+    // (see `assemble`), so the scan stands at six with fewer than six NAMED — and counting the
+    // named ones sent a re-shown side down the "already have" branch below, or filed it as a
+    // seventh: the one way out of that refusal was the one door that was shut.
+    if (this.sidesHeld() >= FACES.length) {
+      this.replaceCapturedSide(read, claim, agreedCentre, seenCentres);
       return;
     }
     // A side the scan already has.
@@ -1562,24 +1619,58 @@ export class AiScanPanel extends HTMLElement {
         ...which,
         named ? ` — still need ${named}.` : ' — show a different one.',
       );
+      // The read is SPENT: a side left in view must settle again before it is answered again.
+      // Left standing, the run stayed satisfied and this branch ran on every tick — sixteen
+      // "Already have" reports a second, a centre confidence appended to `centreSeen` per tick
+      // (so the "typical" a resolution ranks by was a median over ticks, not over showings), and
+      // the trace's event ring filled in half a minute (audit, 2026-09-20).
+      this.still.reset();
       return;
     }
+    this.fileNewSide(read, claim, seenCentres);
+  }
+
+  /**
+   * File a read the scan has decided is a side it does not have: named by its centre when nothing
+   * else claims that colour, held unnamed otherwise — with the holder withdrawn when one is named
+   * already — and held unnamed on its own account when its centre never settled.
+   *
+   * The tail of `fileSettledRead`, lifted out (2026-09-21) so that a re-shown UNNAMED side can be
+   * let go and filed again through exactly these branches (`replaceCapturedSide`): whatever its
+   * centre says now decides whether it is named this time, and a second copy of the rules here
+   * would be the drift the audit found in `holdUnnamed`'s two callers. `kind` is what the capture
+   * is announced as — `'side'`, or `'reread'` for a side that was already in hand.
+   */
+  private fileNewSide(
+    read: ColorFace,
+    claim: Face | undefined,
+    seenCentres: ReadonlyMap<number, number>,
+    kind: ScanCapture['kind'] = 'side',
+  ): void {
+    const centre = read.colors[4];
     // A side whose centre was never read is held unnamed on its own account — it collides with
     // nobody, because it claims nothing. `resolveCentres` gives it the slot left over at six.
     if (claim === undefined) {
       this.traceEvent('held-back', { shares: null, colors: [...read.colors] });
-      this.holdUnnamed(read, null, (held) => [
-        `Got that side — ${held}/6. Its middle sticker kept changing colour, so which side it is ` +
-          'gets worked out once all six are in. Show another side…',
-      ]);
+      this.holdUnnamed(
+        read,
+        null,
+        seenCentres,
+        (held) => [
+          `Got that side — ${held}/6. Its middle sticker kept changing colour, so which side it is ` +
+            'gets worked out once all six are in. Show another side…',
+        ],
+        kind,
+      );
       return;
     }
     // A new side. Named by its centre — unless another side in hand claims that colour too, in
-    // which case one of them is misread and, until all six are in, nothing says which.
+    // which case one of them is misread and, until all six are in, nothing says which. The claim
+    // is what was RECORDED for an unnamed side, never its filed frame's centre (`claimOf`).
     const holder = this.faces[claim];
-    if (!holder && !this.unnamed.some((side) => side.colors[4] === centre)) {
+    if (!holder && !this.unnamed.some((side) => this.claimOf(side) === centre)) {
       this.traceEvent('captured', { face: claim, colors: [...read.colors] });
-      this.capture(claim, read);
+      this.capture(claim, read, kind);
       return;
     }
     this.traceEvent('held-back', {
@@ -1595,11 +1686,17 @@ export class AiScanPanel extends HTMLElement {
     }
     // The claim as a COLOUR — `claim` is the slot letter this side was filed under, and
     // `resolveCentres` reasons in colours.
-    this.holdUnnamed(read, (centre ?? null) as Colour | null, (done) => [
-      `Got that side — ${done}/6. Two sides look like the `,
-      this.bold(GUIDE[claim].color),
-      ' side; which is which is worked out once all six are in. Show another side…',
-    ]);
+    this.holdUnnamed(
+      read,
+      (centre ?? null) as Colour | null,
+      seenCentres,
+      (done) => [
+        `Got that side — ${done}/6. Two sides look like the `,
+        this.bold(GUIDE[claim].color),
+        ' side; which is which is worked out once all six are in. Show another side…',
+      ],
+      kind,
+    );
   }
 
   /**
@@ -1610,12 +1707,47 @@ export class AiScanPanel extends HTMLElement {
    * otherwise the one its centre names — a correction is the moment a sticker has changed, so the
    * eight may no longer agree. Lifted out of `fileSettledRead` (audit, 2026-09-20).
    */
-  private replaceCapturedSide(read: ColorFace, claim: Face | undefined): void {
-    const slot = this.sideByEight(read) ?? claim;
-    // With every side named and this read naming none, the eight are the only way in. They did not
-    // point anywhere, so there is nothing to correct and nothing honest to say about which side
-    // this is — the scanner keeps reading rather than guessing a slot.
+  private replaceCapturedSide(
+    read: ColorFace,
+    claim: Face | undefined,
+    agreedCentre: number | null,
+    seenCentres: ReadonlyMap<number, number>,
+  ): void {
+    // A NAMED side, by its eight, or else an UNNAMED one by its eight (2026-09-21): a side held
+    // without a name is still a side in hand, and a re-read of it replaces its reading like any
+    // other's. Named first, because that is what the eight used to mean here; an unnamed match
+    // only when it is the one side the eight point to, since two unnamed sides can share them.
+    const byEight = this.sideByEight(read);
+    const unnamedByEight =
+      byEight === undefined
+        ? this.unnamed.filter((side) => sameSide(read.colors, side.colors))
+        : [];
+    if (byEight === undefined && unnamedByEight.length === 1) {
+      this.refileUnnamed(unnamedByEight[0]!, read, claim, agreedCentre, seenCentres);
+      return;
+    }
+    // Otherwise the side the centre names: the named one holding that slot, or — the slot being
+    // free — the one side held without a name that could now be filling it: the read names a side
+    // nobody has named, and exactly one side in hand is waiting to be. A collision (two unnamed
+    // sides claiming one colour) is left to the eight, which did not point here, so nothing is
+    // corrected by a guess between them.
+    const slot = byEight ?? (claim !== undefined && this.faces[claim] ? claim : undefined);
     if (slot === undefined) {
+      const colour = claim === undefined ? undefined : colourOfSlot(claim);
+      const waiting =
+        colour === undefined
+          ? []
+          : this.unnamed.filter((side) => {
+              const claims = this.claimOf(side);
+              return claims === null || claims === colour;
+            });
+      if (claim !== undefined && waiting.length === 1) {
+        this.refileUnnamed(waiting[0]!, read, claim, agreedCentre, seenCentres);
+        return;
+      }
+      // The eight did not point anywhere and the centre names no side in hand, so there is nothing
+      // to correct and nothing honest to say about which side this is — the scanner keeps reading
+      // rather than guessing a slot.
       this.report('scanning', 'Keep showing that side — its middle sticker keeps changing colour.');
       return;
     }
@@ -1635,7 +1767,7 @@ export class AiScanPanel extends HTMLElement {
       );
       return;
     }
-    this.faces[slot] = fresh;
+    this.replaceFace(slot, fresh);
     // A fresh camera read is at whatever rotation it was held at, so whatever the settle knew
     // about this side is no longer true of what is stored.
     this.settled.delete(slot);
@@ -1645,6 +1777,32 @@ export class AiScanPanel extends HTMLElement {
     this.captured('reread', slot);
     this.scheduleCheck(this.tinted('ok', `Re-read the ${GUIDE[slot].color} side — checking…`));
     return;
+  }
+
+  /**
+   * A side held UNNAMED shown again once six are in: let the old reading go and file the new one
+   * through the same branches a first showing takes (`fileNewSide`), so what its centre says NOW
+   * decides whether it is named this time. A side that claimed a colour and was left alone on it
+   * by the change is named by that claim (`nameLoners`), as after a dropped twin. Six are held again
+   * when it is done, so the filing schedules the check itself.
+   */
+  private refileUnnamed(
+    old: ColorFace,
+    read: ColorFace,
+    claim: Face | undefined,
+    agreedCentre: number | null,
+    seenCentres: ReadonlyMap<number, number>,
+  ): void {
+    this.forgetCapture(old);
+    this.confirmed = {};
+    this.mismatches = 0;
+    this.traceEvent('turned-away', {
+      face: 'unnamed',
+      colors: [...old.colors],
+      why: 'shown again after a refusal — read fresh',
+    });
+    this.fileNewSide(read, agreedCentre === null ? undefined : claim, seenCentres, 'reread');
+    this.nameLoners();
   }
   /**
    * A read offered while a confirm is standing: take it as that side, or ask again.
@@ -1662,11 +1820,17 @@ export class AiScanPanel extends HTMLElement {
     // settled, when its eight point to that side and no other.
     if (claim !== asked && (held === undefined || this.sideByEight(read) !== asked)) {
       this.report('confirm', ...this.confirmWords(asking));
+      this.still.reset(); // spent: another side in view is answered once per settle, not per tick
       return;
     }
     // Taken as a CANONICAL capture rather than filed as a new face: its rotation is the whole point
-    // of having asked.
-    this.confirmed[asked] = { capture: withCentre(read, colourOfSlot(asked)), up: asking.up };
+    // of having asked. APPENDED, never overwritten (2026-09-20): the assembler may ask for a side
+    // already looked at, under another colour up, and needs both photographs to count two
+    // contradictions (`Looks` in ai-assemble.ts) — an overwrite here would leave it seeing one look
+    // and asking for the same side for as long as it has holds to ask for.
+    const looks = this.confirmed[asked] ?? [];
+    looks.push({ capture: withCentre(read, colourOfSlot(asked)), up: asking.up });
+    this.confirmed[asked] = looks;
     this.awaiting = null;
     this.captured('confirm', asked);
     this.scheduleCheck(this.tinted('ok', 'Got it — checking…'));
@@ -1685,13 +1849,16 @@ export class AiScanPanel extends HTMLElement {
   private holdUnnamed(
     read: ColorFace,
     claim: Colour | null,
+    seenCentres: ReadonlyMap<number, number>,
     words: (held: number) => Array<string | Node>,
+    kind: ScanCapture['kind'] = 'side',
   ): void {
     this.unnamed.push(read);
     this.unnamedClaim.set(read, claim);
+    this.unnamedCentres.set(read, seenCentres);
     this.centreSeen.set(read, [read.confidence[4] ?? 0]);
     this.buildDots();
-    this.captured('side', null);
+    this.captured(kind, null);
     const held = this.sidesHeld();
     if (held >= FACES.length) {
       this.scheduleCheck(this.tinted('ok', 'All six sides captured — checking…'));
@@ -1714,23 +1881,57 @@ export class AiScanPanel extends HTMLElement {
     // reported as not-in-hand, which holds the read as another unnamed side for `twinToDrop` and the
     // six-side resolution to settle. Returning the first match instead meant the second of two
     // identical-ring sides was turned away forever as "Already have" (audit, 2026-09-20).
-    const same = (side: ColorFace) =>
-      (centreUnread || side.colors[4] === read.colors[4]) && sameSide(read.colors, side.colors);
+    //
+    // THE CENTRE COMPARED IS THE CLAIM, and a side that claims nothing is matched by its eight alone
+    // (2026-09-20). It was `side.colors[4]`: the filed frame's centre, which for a side whose centre
+    // never settled is whichever colour the settling frame happened to read — so the same white side,
+    // held a moment longer and now reading white throughout, was "not the side with the blue centre"
+    // and was captured a second time (`dev-docs/scanner-audit-2026-09-20.md` §4, link 3).
+    //
+    // AND A READ WHOSE CENTRE NAMES A SIDE IN HAND IS THAT SIDE UNLESS ITS EIGHT CONTRADICT IT: five
+    // of eight agreeing under some turn (`SAME_SIDE_BY_CENTRE`), not seven. Two stickers read
+    // differently on a re-show is ordinary; two sides of one cube sharing a centre colour AND five of
+    // eight is not (§1.7).
+    const eightAgree = (side: ColorFace, atLeast: number) =>
+      sameSide(read.colors, side.colors, atLeast);
     if (centreUnread) {
       const hits: Array<{ side: ColorFace; slot?: Face }> = [];
       for (const slot of FACES) {
         const side = this.faces[slot];
-        if (side && same(side)) hits.push({ side, slot });
+        if (side && eightAgree(side, SAME_SIDE_STICKERS)) hits.push({ side, slot });
       }
-      for (const side of this.unnamed) if (same(side)) hits.push({ side });
+      for (const side of this.unnamed)
+        if (eightAgree(side, SAME_SIDE_STICKERS)) hits.push({ side });
       return hits.length === 1 ? hits[0]! : null;
     }
+    const centre = read.colors[4];
     for (const slot of FACES) {
       const side = this.faces[slot];
-      if (side && same(side)) return { side, slot };
+      if (side && side.colors[4] === centre && eightAgree(side, SAME_SIDE_BY_CENTRE)) {
+        return { side, slot };
+      }
     }
-    const side = this.unnamed.find(same);
-    return side ? { side } : null;
+    const claimed = this.unnamed.find(
+      (side) => this.claimOf(side) === centre && eightAgree(side, SAME_SIDE_BY_CENTRE),
+    );
+    if (claimed) return { side: claimed };
+    // An unnamed side that claims nothing: its eight, AND the centre its settling run showed MOST.
+    // The eight alone would take a twin side for it — white and yellow share theirs after
+    // U D R L F B — and a yellow read was then "Already have" for a white ghost whose run had shown
+    // white and blue but never yellow. And a colour the run showed ONCE is not enough either
+    // (2026-09-21): that one frame is the flicker that left the side unread, and a twin whose
+    // centre is that colour was "the same side, held on" and turned away for good. Only the colour
+    // shown most may name it (`mostShown`), and only when it points to one such side alone — and a
+    // TIE names nothing (2026-09-21, on verification): a run that showed white and yellow evenly
+    // is a centre the camera could not read, and treating each tied colour as the side's identity
+    // turned its identical-ring twin away exactly as the single flicker had. The six-side
+    // resolution settles what the run could not.
+    const unclaimed = this.unnamed.filter((side) => {
+      if (this.claimOf(side) !== null) return false;
+      const shown = mostShown(this.unnamedCentres.get(side) ?? new Map());
+      return shown.length === 1 && shown[0] === centre && eightAgree(side, SAME_SIDE_STICKERS);
+    });
+    return unclaimed.length === 1 ? { side: unclaimed[0]! } : null;
   }
 
   /**
@@ -1779,30 +1980,41 @@ export class AiScanPanel extends HTMLElement {
    * claimed is claimed again by whoever is left, so an unnamed side left alone on its colour is named.
    */
   private dropTwin(twin: ColorFace): void {
-    for (const f of FACES) {
-      if (this.faces[f] === twin) {
-        delete (this.faces as Partial<Record<Face, ColorFace>>)[f];
-        this.settled.delete(f);
-      }
-    }
-    this.unnamed = this.unnamed.filter((u) => u !== twin);
-    this.centreSeen.delete(twin);
-    for (const side of [...this.unnamed]) {
-      const centre = side.colors[4];
-      if (centre === undefined || !isColour(centre)) continue;
-      const slot = slotOf(centre);
-      const rivals = this.unnamed.filter((u) => u !== side && u.colors[4] === centre);
-      if (!this.faces[slot] && rivals.length === 0) {
-        this.faces[slot] = side;
-        this.unnamed = this.unnamed.filter((u) => u !== side);
-      }
-    }
+    this.forgetCapture(twin);
+    this.nameLoners();
+    // Every look and answer so far was about a reading that included the dropped side.
+    this.confirmed = {};
+    this.awaiting = null;
+    this.mismatches = 0;
     this.traceEvent('turned-away', { colors: [...twin.colors], why: 'the same side read twice' });
     this.buildDots();
     this.loop(
       'scanning',
       `One side was read twice, its centre looking different each time — ${this.sidesHeld()}/6. Show a side you haven't shown yet…`,
     );
+  }
+
+  /**
+   * Name every unnamed side left alone on the colour it CLAIMS, by that claim — after a side is let
+   * go, whatever it had claimed is claimed again by whoever is left. Never by a filed frame's centre:
+   * a side whose centre never settled claims nothing, and filing it by the accident of its settling
+   * frame is how a white side landed on the blue tile (§4, link 5). It stays unnamed for the six to
+   * place by counting. Lifted out of `dropTwin` (2026-09-21) for the second path that lets a side go,
+   * a re-shown unnamed side (`refileUnnamed`).
+   */
+  private nameLoners(): void {
+    for (const side of [...this.unnamed]) {
+      const centre = this.claimOf(side);
+      if (centre === null) continue;
+      const slot = slotOf(centre);
+      const rivals = this.unnamed.filter((u) => u !== side && this.claimOf(u) === centre);
+      if (!this.faces[slot] && rivals.length === 0) {
+        const seen = this.centreSeen.get(side);
+        this.forgetCapture(side);
+        this.faces[slot] = side;
+        if (seen) this.centreSeen.set(side, seen);
+      }
+    }
   }
 
   /** Add a re-showing's centre confidence to what is known of the side, when it claims the same colour. */
@@ -1814,14 +2026,14 @@ export class AiScanPanel extends HTMLElement {
   }
 
   /** File a freshly-recognised face under its own letter, then keep scanning (or finish at six). */
-  private capture(face: Face, read: ColorFace): void {
+  private capture(face: Face, read: ColorFace, kind: ScanCapture['kind'] = 'side'): void {
     this.faces[face] = read;
     this.centreSeen.set(read, [read.confidence[4] ?? 0]);
     // The camera cannot see which way up a side was held, so a capture's rotation is unknown until
     // the assembly solves it. See `settled`.
     this.settled.delete(face);
     this.buildDots();
-    this.captured('side', face);
+    this.captured(kind, face);
     const done = this.sidesHeld();
     if (done >= FACES.length) {
       this.scheduleCheck(this.tinted('ok', 'All six sides captured — checking…'));
@@ -1957,7 +2169,12 @@ export class AiScanPanel extends HTMLElement {
       );
       return;
     }
-    if (done < FACES.length) {
+    // SIDES HELD, not sides named (2026-09-20). With a side held unnamed, the named count is five
+    // while the scan is at six — and `invalidateReading` above has just cancelled any check in its
+    // 350 ms beat, whose `scheduleCheck` had already stopped the loop. Reporting "show another
+    // side" and returning here left no loop running and no check coming: a tap on a done tile
+    // during that beat was a dead scan until Start (`dev-docs/scanner-audit-2026-09-20.md` §2.3).
+    if (this.sidesHeld() < FACES.length) {
       this.report('scanning', `Corrected the ${GUIDE[face].color} side. Show another side…`);
       return;
     }
@@ -1986,7 +2203,9 @@ export class AiScanPanel extends HTMLElement {
         assemblePainted(this.positionFaces(), undefined, { diagnose: false }),
       );
       if (result.valid) {
-        this.finish(result);
+        // Authored by hand, and said so: a host must not repair a smart cube's tracking from a
+        // cube nobody looked at (`dev-docs/scanner-audit-2026-09-20.md` §2.5).
+        this.finish(result, 'painted');
         return;
       }
       this.diagnose(result, (r, first) => {
@@ -2093,10 +2312,11 @@ export class AiScanPanel extends HTMLElement {
     // An unnamed capture is an unsettled capture -- a side whose centre collided with another's,
     // waiting for the six to say which is which. It used to survive this drop, so it went on
     // counting towards progress and was still there to be resolved against readings that no longer
-    // existed.
-    this.unnamed = [];
+    // existed. Let go with everything recorded about it (`forgetCapture`, 2026-09-21): clearing the
+    // list alone left its claim, its centre reads and its confidences in maps nothing else emptied.
+    for (const side of [...this.unnamed]) this.forgetCapture(side);
     if (dropped.length === 0) return dropped;
-    for (const f of dropped) delete (this.faces as Partial<Record<Face, ColorFace>>)[f];
+    for (const f of dropped) this.forgetCapture(this.faces[f]!);
     // Every confirmation answered a question about a reading that no longer exists.
     this.confirmed = {};
     this.awaiting = null;
@@ -2115,14 +2335,28 @@ export class AiScanPanel extends HTMLElement {
    * and dropping one means there is something to look for again.
    */
   rescanFace(face: Face): void {
-    if (!this.faces[face]) return;
+    const held = this.faces[face];
+    if (!held) return;
     this.captureEpoch += 1;
-    delete (this.faces as Partial<Record<Face, ColorFace>>)[face];
-    this.settled.delete(face);
+    this.forgetCapture(held);
     this.invalidateReading();
     this.buildDots();
-    // loop() reopens the camera itself when it is dark, keeping the other five sides.
-    this.loop('scanning', `Show the ${GUIDE[face].color} side again — it will be read fresh.`);
+    // EVERY side handed back since the loop last ran is named, not only this one (2026-09-20). A
+    // host hands back several in a row — the sides a smart cube's report left behind — and with
+    // the camera dark each call's words replaced the last's in `pendingOpening`, so the reopen
+    // said "Show the ORANGE side again" about three sides (`dev-docs/scanner-audit-2026-09-20.md`
+    // §2.14). `loop()` clears the list once the words have actually been said.
+    if (!this.rescanQueue.includes(face)) this.rescanQueue.push(face);
+    const names = this.rescanQueue.map((f) => GUIDE[f].color);
+    const which =
+      names.length === 1
+        ? `the ${names[0]} side`
+        : `the ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]} sides`;
+    // loop() reopens the camera itself when it is dark, keeping the other sides.
+    this.loop(
+      'scanning',
+      `Show ${which} again — ${names.length === 1 ? 'it' : 'they'} will be read fresh.`,
+    );
   }
 
   /**
@@ -2387,14 +2621,22 @@ export class AiScanPanel extends HTMLElement {
       const { scheme: _assumed, ...checked } = this.fromPositions(
         assemblePainted(this.positionFaces(), undefined, { diagnose: false }),
       );
-      this.finish(checked);
+      // A CORRECTION, and said so (2026-09-20): a host with a smart cube connected compared this
+      // verdict against the tracking the previous verdict installed — the very reading the tap
+      // corrects — and refused it (`dev-docs/scanner-audit-2026-09-20.md` §1.3).
+      this.finish(checked, 'correction');
       return;
     }
     // Sides unnamed for a centre collision are decided first, and the filing chosen becomes the
     // reading. Nothing else on this path has run yet, so there are no confirmations to keep.
     if (this.unnamed.length > 0) {
       const unnamed: UnnamedSide[] = this.unnamed.map((capture) => ({
-        centreClaim: this.unnamedClaim.get(capture) ?? (capture.colors[4] as Colour),
+        // THE RECORDED CLAIM, null included (2026-09-21). `get(...) ?? colors[4]` read a stored
+        // null — the sentinel for a centre no run ever agreed on — as "absent" and handed the
+        // resolver whichever colour the filed frame happened to show; two such sides whose frames
+        // showed the same colour were then a COLLISION over it, ranked by confidence where the
+        // resolver refuses to rank an unread centre, and refused in a collision's words.
+        centreClaim: this.claimOf(capture),
         capture,
         centreConfidence: median(this.centreSeen.get(capture) ?? [capture.confidence[4] ?? 0]),
       }));
@@ -2402,7 +2644,10 @@ export class AiScanPanel extends HTMLElement {
       try {
         resolution = resolveCentres(this.faces, unnamed, undefined, { diagnose: false });
       } catch (err) {
-        this.unnamed = [];
+        // Through `forgetCapture`, like every other removal (2026-09-21, on verification): a bare
+        // `this.unnamed = []` here left `centreSeen`, `unnamedClaim` and `unnamedCentres` holding
+        // records of sides no longer held, which the next filing could then be matched against.
+        for (const side of [...this.unnamed]) this.forgetCapture(side);
         this.traceEvent('contest-resolved', {
           sides: unnamed.map((u) => [...u.capture.colors]),
           error: err instanceof Error ? err.message : String(err),
@@ -2412,12 +2657,17 @@ export class AiScanPanel extends HTMLElement {
       }
       // No legal filing, and two of the sides are the same eight stickers: one side read twice, so
       // what is in hand is five sides, not six — ask for the sixth instead of deciding a reading.
-      const twin = resolution.decidedBy === 'legality' ? null : this.twinToDrop();
+      // NEVER over a reading that came back legal (2026-09-20): a single unnamed side is placed by
+      // counting, and on a symmetric cube (white and yellow share their eight after U D R L F B) a
+      // valid `'counting'` resolution reached this and threw a good side away as a twin, then asked
+      // for it for ever. The gate is the one the camera path below already had.
+      const { result: verdict } = resolution;
+      const settled = verdict.valid || verdict.ambiguous === true || verdict.confirm !== undefined;
+      const twin = settled || resolution.decidedBy === 'legality' ? null : this.twinToDrop();
       if (twin) {
         this.dropTwin(twin);
         return;
       }
-      this.unnamed = [];
       this.traceEvent('contest-resolved', {
         sides: unnamed.map((u) => [...u.capture.colors]),
         centreConfidence: unnamed.map((u) => Math.round(u.centreConfidence * 1000) / 1000),
@@ -2427,22 +2677,14 @@ export class AiScanPanel extends HTMLElement {
         reason: resolution.result.reason ?? null,
         ambiguous: resolution.result.ambiguous ?? false,
       });
-      if (resolution.faces) {
-        for (const f of FACES) {
-          if (this.faces[f] !== resolution.faces[f]) this.settled.delete(f);
-          this.faces[f] = resolution.faces[f];
-        }
-      } else {
-        // Nothing decided: the scan stands where it stood before the collision — the side that
-        // claimed the colour first back under it, the rest let go — and the refusal says why.
-        const first = unnamed[0]!.capture;
-        const centre = first.colors[4];
-        if (centre !== undefined && isColour(centre) && !this.faces[slotOf(centre)]) {
-          this.faces[slotOf(centre)] = first;
-        }
-      }
+      if (resolution.faces) this.adoptFiling(resolution.faces, resolution.placed ?? {}, unnamed);
+      // Nothing decided: the sides stay exactly as they are held, unnamed ones included, and the
+      // refusal says why. They used to be dropped to five with only the first restored under
+      // whichever colour its filed frame happened to show, and `missingSides` then asked for the
+      // side just thrown away (audit, 2026-09-20). Held, the scan stands at six, and a side shown
+      // again replaces its reading and is resolved afresh.
       this.buildDots();
-      this.finish(resolution.result);
+      this.finish(resolution.result, 'camera');
       return;
     }
     // A `reread` means a confirmation disagreed with its first capture about colours: adopt the
@@ -2458,8 +2700,19 @@ export class AiScanPanel extends HTMLElement {
         return;
       }
       const face = result.reread;
-      const fresh = face === undefined ? undefined : this.confirmed[face]?.capture;
-      if (face === undefined || fresh === undefined || round >= FACES.length) {
+      // THE LOOK THE ASSEMBLER NAMED (`rereadLook`, 2026-09-21), never "the latest". With two looks
+      // at one side the disagreeing one can be the EARLIER: adopting the last then changed nothing,
+      // the earlier look went on disagreeing with it, and six rounds of that refused the scan with
+      // a "checking again" that never checked. Older assemblers name no look; then it is the last.
+      const looks = face === undefined ? undefined : this.confirmed[face];
+      const named = looks?.[result.rereadLook ?? (looks?.length ?? 0) - 1];
+      const fresh = named?.capture;
+      if (
+        face === undefined ||
+        named === undefined ||
+        fresh === undefined ||
+        round >= FACES.length
+      ) {
         // Refused, and two of the six are the same eight stickers under different centres: one side
         // was read twice, so there are five sides here, not six. A cube that is legal with both kept
         // — a symmetric one — never reaches this.
@@ -2471,11 +2724,101 @@ export class AiScanPanel extends HTMLElement {
           this.dropTwin(twin);
           return;
         }
-        this.finish(result);
+        this.finish(result, 'camera');
         return;
       }
-      this.faces[face] = fresh;
+      this.replaceFace(face, fresh);
+      // The adopted look stays on record — it is now the reading, and against itself it pins the
+      // side's rotation, which is what makes every adoption settle the side within the six rounds.
+      // Every OTHER look at that side is kept only if it could still be a rotation measurement of
+      // this reading (the assembler's own tolerance rule): one that could not would be named next
+      // round, adopted in turn, and un-adopt this one — for as many rounds as the cap allows.
+      this.confirmed[face] = looks!.filter(
+        (look) => look === named || matchingRotations(fresh, look.capture).size > 0,
+      );
     }
+  }
+
+  /**
+   * Adopt a centre resolution's filing: every slot takes the capture the filing put there, and the
+   * sides the filing named stop being unnamed. What was recorded about each of those — its centre
+   * confidences — travels to the copy the filing installed, found by the resolver's own account of
+   * where each unnamed side went (`placed`, 2026-09-21). It used to be found by identity, and a
+   * filing REBUILDS a capture whenever its centre changes, so for exactly the reassigned-centre case
+   * this exists for nothing matched: the median stayed on an object nothing held, and the claim and
+   * centre-reads maps kept entries for it for the life of the scan.
+   */
+  private adoptFiling(
+    filed: Record<Face, ColorFace>,
+    placed: Partial<Record<Face, number>>,
+    unnamed: readonly UnnamedSide[],
+  ): void {
+    for (const f of FACES) {
+      if (this.faces[f] !== filed[f]) this.settled.delete(f);
+      const index = placed[f];
+      const source = index === undefined ? undefined : unnamed[index]?.capture;
+      if (source !== undefined) {
+        const seen = this.centreSeen.get(source);
+        this.forgetCapture(source);
+        if (seen) this.centreSeen.set(filed[f], seen);
+      }
+      this.replaceFace(f, filed[f]);
+    }
+    // The filing placed every unnamed side; anything still listed is a record with no side.
+    for (const side of [...this.unnamed]) this.forgetCapture(side);
+  }
+
+  /**
+   * Put `next` where `slot`'s capture is, carrying across what is recorded ABOUT the capture: the
+   * centre confidences seen for it, and its claim if it is one of the unnamed. Both maps are keyed by
+   * the capture object, so a copy installed in its place — a settle, a repair, a resolution's filing —
+   * used to leave the record on an object nothing held any more (audit, 2026-09-20).
+   */
+  private replaceFace(slot: Face, next: ColorFace): void {
+    const previous = this.faces[slot];
+    if (previous !== undefined && previous !== next) {
+      const seen = this.centreSeen.get(previous);
+      if (seen !== undefined) {
+        this.centreSeen.delete(previous);
+        this.centreSeen.set(next, seen);
+      }
+    }
+    this.faces[slot] = next;
+  }
+
+  /**
+   * Let go of one capture wherever it is held — its slot, or the unnamed list — together with every
+   * record kept ABOUT it, which the three maps key by the object (2026-09-21). Four removal paths
+   * each wrote a subset of this by hand: `rescanFace` and the painting drop left `centreSeen`
+   * behind, the undecided resolution emptied `unnamed` and none of the maps, and a capture nothing
+   * held any more went on being counted — in a median, as a claim — until the scan was restarted.
+   */
+  private forgetCapture(capture: ColorFace): void {
+    for (const f of FACES) {
+      if (this.faces[f] === capture) {
+        delete (this.faces as Partial<Record<Face, ColorFace>>)[f];
+        this.settled.delete(f);
+      }
+    }
+    this.unnamed = this.unnamed.filter((u) => u !== capture);
+    this.centreSeen.delete(capture);
+    this.unnamedClaim.delete(capture);
+    this.unnamedCentres.delete(capture);
+  }
+
+  /**
+   * What an unnamed side CLAIMS its centre is — the record made when it was held back, never the
+   * colour of whichever frame happened to be filed. A side whose centre never settled claims
+   * nothing (null); a named side claims its centre. This is the one reading of a centre every
+   * recognition and collision test goes through (2026-09-20): three of them read `colors[4]` and so
+   * compared against an accident, which is how a white side held a little too long, its centre
+   * reading blue on one frame, was captured a second time and then filed under the blue tile
+   * (`dev-docs/scanner-audit-2026-09-20.md` §4).
+   */
+  private claimOf(side: ColorFace): Colour | null {
+    if (this.unnamedClaim.has(side)) return this.unnamedClaim.get(side) ?? null;
+    const centre = side.colors[4];
+    return centre !== undefined && isColour(centre) ? centre : null;
   }
 
   /**
@@ -2590,13 +2933,13 @@ export class AiScanPanel extends HTMLElement {
    * length was the only thing making them look related — and a reader chasing one branch had
    * to step over the other two to be sure they were not reached.
    */
-  private finish(result: AiScanResult): void {
+  private finish(result: AiScanResult, origin: ScanOrigin): void {
     this.stopLoop();
     this.forgetObservation();
     this.suspects = result.suspects ?? [];
     if (result.valid) {
       if ((result.lowConfidence?.length ?? 0) === 0) {
-        this.finishAccepted(result);
+        this.finishAccepted(result, origin);
         return;
       }
       // Solvable, but read too faintly to trust. It used to fall through to the refusal path,
@@ -2630,7 +2973,21 @@ export class AiScanPanel extends HTMLElement {
   }
 
   /** Accepted: settle the captures into canonical rotation, release the camera, announce it. */
-  private finishAccepted(result: AiScanResult): void {
+  private finishAccepted(result: AiScanResult, origin: ScanOrigin): void {
+    // WHAT WAS ACCEPTED IS WHAT IS KEPT (2026-09-20). A repair-assembled scan — the count or the
+    // pixel path recolouring a sticker to reach a legal cube — accepted a colouring the captures
+    // here did not hold, so the settle below rotated the misread colours and the first correction
+    // tap re-checked them in place and refused the cube the host had just painted from `facelets`
+    // (`dev-docs/scanner-audit-2026-09-20.md` §1.4). The assembler now hands back the captures the
+    // reading was built from, and they are adopted before anything is rotated. What a person
+    // locked survives: a repair never moves a locked sticker, and the copy carries `locked`.
+    const accepted = result.captures;
+    if (accepted) {
+      for (const f of FACES) {
+        const next = accepted[f];
+        if (next && next !== this.faces[f]) this.replaceFace(f, next);
+      }
+    }
     // Settle the captures into canonical rotation. The host repaints its tiles from the
     // validated string after the settle, so from here on a click on sticker i must mean index i
     // of what is stored — without this, correcting a side captured 90° off edited the wrong
@@ -2646,14 +3003,14 @@ export class AiScanPanel extends HTMLElement {
           // respect -- the next time this cube was checked, after a sticker correction, say; and
           // only for the sides that happened to need rotating, which is the worst kind of
           // difference: one that depends on how the cube was held.
-          this.faces[f] = {
+          this.replaceFace(f, {
             ...read,
             colors: rotateFace(read.colors, k),
             confidence: rotateFace(read.confidence, k),
             ...(read.scores ? { scores: rotateFace(read.scores, k) } : {}),
             ...(read.lab ? { lab: rotateFace(read.lab, k) } : {}),
             ...(read.locked ? { locked: rotateFace(read.locked, k) } : {}),
-          };
+          });
         }
       });
     }
@@ -2678,7 +3035,11 @@ export class AiScanPanel extends HTMLElement {
     // that stays on the scan screen stops showing a live lens over a finished scan.
     this.stop();
     this.report('done', this.tinted('ok', 'Scan complete — solvable cube captured.'));
-    this.dispatchEvent(new CustomEvent<AiScanResult>('scan-complete', { detail: result }));
+    // The captures ride along only inside this element; a host draws from `facelets`.
+    const { captures: _kept, ...detail } = result;
+    this.dispatchEvent(
+      new CustomEvent<ScanCompleteDetail>('scan-complete', { detail: { ...detail, origin } }),
+    );
   }
 
   /**
@@ -2818,68 +3179,8 @@ export class AiScanPanel extends HTMLElement {
       params: result.misreadFace ? [GUIDE[result.misreadFace].color] : [],
       action: result.misreadFace ? undefined : { label: 'Start over', kind: 'restart' },
     });
-    // The transient line has to describe the SAME refusal the notice does. It was one sentence for
-    // every branch — "That isn't a solvable cube yet" — which is simply false for the ambiguous
-    // one: a cube that reads several ways is solvable, and every reading of it is, and the notice
-    // three lines above says so. The two voices contradicting each other about the user's cube is
-    // worse than either being terse.
-    let line = "That isn't a solvable cube yet — fix a sticker, or show a side again.";
-    if (camera) {
-      this.notice = camera;
-      // A notice that says "start over" cannot have a transient line under it saying "fix a
-      // sticker". Same verdict, the notice's own advice.
-      if (camera.action) {
-        line = "That isn't a solvable cube yet — start the scan over, or show one side again.";
-      }
-    } else if (result.centreConflict) {
-      // Sides claimed one centre colour and the resolution could not decide which is which. The two
-      // ways that happens need different instructions, and the sentence must not swap them: no filing
-      // legal (and the centres' confidence silent) means something besides a centre was misread;
-      // several legal means the captures genuinely cannot say, which one turn of any face fixes.
-      const { shared, missing, legalFilings } = result.centreConflict;
-      this.notice = {
-        title: 'Two sides read the same centre',
-        tone: 'err',
-        body:
-          legalFilings === 0
-            ? 'Two sides read with a %1 centre, so one of them must really be the %2 side — a logo printed on a centre often does this. No way of filing them makes a real cube, and neither centre read more surely than the other, so something else was misread too. Start the scan over in whiter light.'
-            : 'Two sides read with a %1 centre, so one of them must really be the %2 side — a logo printed on a centre often does this. More than one way makes a real cube and nothing in the photos says which. Turn any one face a quarter turn, then start the scan over.',
-        params: [GUIDE[shared].color, GUIDE[missing].color],
-        action: { label: 'Start over', kind: 'restart' },
-      };
-      line = 'Two sides read with the same centre colour — start the scan over.';
-    } else if (result.schemeAmbiguous) {
-      // The readings left standing are different cubes that differ in nothing but which colour
-      // is under white — blue on an older cube, yellow on most — and no hold a child could be
-      // asked for tells them apart (ADR 0001 §8.2). Never a guess from a setting: the wrong
-      // guess is a confidently wrong cube for whichever child has the other kind. One turn of any
-      // face breaks the symmetry; measured on every continuation of the founding fixture.
-      this.notice = {
-        title: 'Which colour is under white?',
-        tone: 'err',
-        body: 'Every side is read, but these readings differ only in which colour sits under white — blue or yellow — and no extra look can tell them apart. Turn any one face a quarter turn, then start the scan over to read the changed cube.',
-      };
-      line =
-        'This cube reads two ways that differ only in its colours — turn any one face a quarter turn, then start over.';
-    } else if (result.ambiguous) {
-      this.notice = {
-        title: 'Too symmetric to tell',
-        tone: 'err',
-        body: 'This cube reads the same several ways, and no extra look can split them. Turn any one face a quarter turn, then start the scan over to read the changed cube.',
-      };
-      line =
-        'This cube reads the same several ways — turn any one face a quarter turn, then start over.';
-    } else {
-      // The decoder could not say how much is wrong (it hit its work budget, or the damage is past
-      // what it will search). Claim nothing about a count, and ask for the one thing that always
-      // helps. The old copy said "a sticker was misread" here — a singular the code had already
-      // ruled out, over an instruction to tap one of forty-eight.
-      this.notice = {
-        title: "That doesn't read as a solvable cube",
-        tone: 'err',
-        body: `Too much of the cube was read wrong to say where. Show the sides to the camera again — each one is read fresh — or start the scan over.`,
-      };
-    }
+    const { notice, line } = classifyRefusal(result, camera);
+    this.notice = notice;
     // Keep scanning: with all six sides in, a re-shown side replaces its reading (see onTick).
     // A refinement only replaces the WORDS — see finishRefused for why it must not restart it.
     if (first) this.loop('scanning', this.tinted('err', line));
@@ -2972,6 +3273,117 @@ export class AiScanPanel extends HTMLElement {
     span.textContent = text;
     return span;
   }
+}
+
+/**
+ * What a refused camera scan SAYS: the pinned notice and the transient line, decided together.
+ *
+ * Pure, and lifted out of `publishRefusal` (2026-09-21), which had grown the event, the state, this
+ * classification, the action and the copy into one decision tree — where a category added to the
+ * notice and not to the line left the two voices contradicting each other about the user's cube.
+ * The transient line has to describe the SAME refusal the notice does. It was one sentence for
+ * every branch — "That isn't a solvable cube yet" — which is simply false for the ambiguous one: a
+ * cube that reads several ways is solvable, and every reading of it is, and the notice says so.
+ *
+ * `camera` is the misread notice already built for this refusal (`misreadNotice`, which reads the
+ * suspects), or null when the decode named no count: it comes first because a count is the most
+ * specific thing a refusal can say. The categories that follow are ordered from the most specific
+ * fact the assembler established to the least: unread centres, a centre collision, a scheme the
+ * looks cannot settle, a symmetry no look can, and — claiming nothing — damage too wide to place.
+ * Exported so each category's words can be pinned without driving a scan into it.
+ */
+export function classifyRefusal(
+  result: AiScanResult,
+  camera: ScanNotice | null,
+): { notice: ScanNotice; line: string } {
+  if (camera) {
+    // A notice that says "start over" cannot have a transient line under it saying "fix a
+    // sticker". Same verdict, the notice's own advice.
+    return {
+      notice: camera,
+      line: camera.action
+        ? "That isn't a solvable cube yet — start the scan over, or show one side again."
+        : "That isn't a solvable cube yet — fix a sticker, or show a side again.",
+    };
+  }
+  if (result.unreadCentres !== undefined && result.unreadCentres > 0) {
+    // Sides whose centres never settled on a colour — none of them CLAIMED one, so there is no
+    // shared centre to name (that is `centreConflict`, below). The old sentence named the one
+    // free slot as both the colour two sides read and the side one must be, which was about a
+    // collision that never happened (audit, 2026-09-20). Two ways it ends, as for a collision.
+    // A count of zero names nothing and falls through: the resolver reports a conflict for that.
+    const many = result.unreadCentres > 1;
+    return {
+      notice: {
+        title: many ? 'Some middle stickers kept changing' : 'A middle sticker kept changing',
+        tone: 'err',
+        body:
+          (result.legalFilings ?? 0) === 0
+            ? `${many ? 'The middle stickers of %1 sides' : 'The middle sticker of one side'} kept changing colour, and no way of placing ${many ? 'them' : 'it'} makes a real cube — so something else was misread too. Start the scan over in whiter light.`
+            : `${many ? 'The middle stickers of %1 sides' : 'The middle sticker of one side'} kept changing colour, and more than one way of placing ${many ? 'them' : 'it'} makes a real cube. Turn any one face a quarter turn, then start the scan over.`,
+        params: [result.unreadCentres],
+        action: { label: 'Start over', kind: 'restart' },
+      },
+      line: 'A middle sticker kept changing colour — start the scan over.',
+    };
+  }
+  if (result.centreConflict) {
+    // Sides claimed one centre colour and the resolution could not decide which is which. The two
+    // ways that happens need different instructions, and the sentence must not swap them: no filing
+    // legal (and the centres' confidence silent) means something besides a centre was misread;
+    // several legal means the captures genuinely cannot say, which one turn of any face fixes.
+    const { shared, missing, legalFilings } = result.centreConflict;
+    return {
+      notice: {
+        title: 'Two sides read the same centre',
+        tone: 'err',
+        body:
+          legalFilings === 0
+            ? 'Two sides read with a %1 centre, so one of them must really be the %2 side — a logo printed on a centre often does this. No way of filing them makes a real cube, and neither centre read more surely than the other, so something else was misread too. Start the scan over in whiter light.'
+            : 'Two sides read with a %1 centre, so one of them must really be the %2 side — a logo printed on a centre often does this. More than one way makes a real cube and nothing in the photos says which. Turn any one face a quarter turn, then start the scan over.',
+        params: [GUIDE[shared].color, GUIDE[missing].color],
+        action: { label: 'Start over', kind: 'restart' },
+      },
+      line: 'Two sides read with the same centre colour — start the scan over.',
+    };
+  }
+  if (result.schemeAmbiguous) {
+    // The readings left standing are different cubes that differ in nothing but which colour
+    // is under white — blue on an older cube, yellow on most — and no hold a child could be
+    // asked for tells them apart (ADR 0001 §8.2). Never a guess from a setting: the wrong
+    // guess is a confidently wrong cube for whichever child has the other kind. One turn of any
+    // face breaks the symmetry; measured on every continuation of the founding fixture.
+    return {
+      notice: {
+        title: 'Which colour is under white?',
+        tone: 'err',
+        body: 'Every side is read, but these readings differ only in which colour sits under white — blue or yellow — and no extra look can tell them apart. Turn any one face a quarter turn, then start the scan over to read the changed cube.',
+      },
+      line: 'This cube reads two ways that differ only in its colours — turn any one face a quarter turn, then start over.',
+    };
+  }
+  if (result.ambiguous) {
+    return {
+      notice: {
+        title: 'Too symmetric to tell',
+        tone: 'err',
+        body: 'This cube reads the same several ways, and no extra look can split them. Turn any one face a quarter turn, then start the scan over to read the changed cube.',
+      },
+      line: 'This cube reads the same several ways — turn any one face a quarter turn, then start over.',
+    };
+  }
+  // The decoder could not say how much is wrong (it hit its work budget, or the damage is past
+  // what it will search). Claim nothing about a count, and ask for the one thing that always
+  // helps. The old copy said "a sticker was misread" here — a singular the code had already
+  // ruled out, over an instruction to tap one of forty-eight.
+  return {
+    notice: {
+      title: "That doesn't read as a solvable cube",
+      tone: 'err',
+      body: `Too much of the cube was read wrong to say where. Show the sides to the camera again — each one is read fresh — or start the scan over.`,
+    },
+    line: "That isn't a solvable cube yet — fix a sticker, or show a side again.",
+  };
 }
 
 /**

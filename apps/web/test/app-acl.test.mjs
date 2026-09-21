@@ -127,3 +127,24 @@ test('the build hook runs copy-ort once, through vendor:libs', () => {
   assert.equal(steps.filter((s) => /\bcopy-ort\b/.test(s)).length, 0, 'copy-ort is run explicitly AND by vendor:libs');
   assert.ok(steps.some((s) => /vendor:libs/.test(s)), 'vendor:libs (which runs copy-ort) must stay in the hook');
 });
+
+// The hook rebuilt the panel and nothing else of the scanner's, so a desktop build packaged whatever
+// worker bundle was committed — fresh only if someone had remembered to rebuild it (audit-fix
+// 2026-09-21, finding 9). Every `build:*` script the scanner package points at `vendor/` is a
+// bundle build.mjs requires in the dist, so every one of them runs before `build:dist`.
+test('the build hook rebuilds every bundle the scanner package emits into vendor/, before build:dist', () => {
+  const conf = json('tauri.conf.json');
+  const steps = conf.build.beforeBuildCommand.split('&&').map((s) => s.trim());
+  const scanner = JSON.parse(readFileSync(new URL('../../../packages/cube-scanner/package.json', import.meta.url), 'utf8'));
+  const emitters = Object.entries(scanner.scripts ?? {})
+    .filter(([, cmd]) => /--outfile=\S*vendor\//.test(String(cmd)))
+    .map(([name]) => name);
+  assert.ok(emitters.length >= 3, `expected the panel and two workers, found ${emitters.join(', ')}`);
+  const dist = steps.findIndex((s) => /build:dist/.test(s));
+  assert.ok(dist >= 0, 'the hook must end in build:dist');
+  for (const script of emitters) {
+    const at = steps.findIndex((s) => new RegExp(`--filter cube-scanner ${script}\\b`).test(s));
+    assert.ok(at >= 0, `the hook does not rebuild ${script}, so a stale committed bundle would be packaged`);
+    assert.ok(at < dist, `${script} runs after build:dist, which packages the old one`);
+  }
+});

@@ -59,7 +59,15 @@ export interface ScanResult {
    * plausible one.
    */
   confidence?: number;
-  /** Sticker indices (0..53) whose classification was ambiguous — re-check. Absent on a refusal,
-   *  for the reason `confidence` gives. */
+  /**
+   * Sticker indices (0..53) whose classification was ambiguous — re-check. Absent on a refusal,
+   * for the reason `confidence` gives.
+   *
+   * INDEXED BY SLOT, NOT BY POSITION (stated 2026-09-20; scanner audit §2.14): the six captures in
+   * `FACES` order of their CENTRE COLOUR — white's nine first, then red, green, yellow, orange,
+   * blue — each in the order its capture was read. `facelets` is positional in the reported
+   * `scheme`, so index `i` here is not facelet `i`; `positionOf` (`scheme.ts`) maps a slot to its
+   * position under a scheme.
+   */
   lowConfidence?: number[];
 }

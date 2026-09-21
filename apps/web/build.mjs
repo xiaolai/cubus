@@ -20,7 +20,7 @@
 // and look at what came out; `node build.mjs` runs it into dist/.
 
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
-import path, { basename, join, dirname, relative, resolve, sep } from 'node:path';
+import path, { basename, join, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // The same bundler that BUILDS vendor/cubus-cube.js, asked which files went into it. It is
@@ -64,6 +64,42 @@ export const NEVER_SHIPPED = ['vendor/tauri-mcp-guest.js', 'vendor/min2phase.PRO
  * stale copy of this path would make it check nothing while staying green.
  */
 const CUBE_ENTRY = '../../packages/cubus-cube/src/cubus-cube.js';
+
+/**
+ * The scanner package's manifest, named from this app's root: where the bundles it builds into
+ * this app's `vendor/` are declared. The scanner check reads its registry from there
+ * (`scannerBundles`), so a worker the package starts building is guarded here the day its build
+ * script lands, with nothing to remember.
+ */
+const SCANNER_MANIFEST = '../../packages/cube-scanner/package.json';
+
+/**
+ * The bundles the scanner package builds into this app's `vendor/`, read off its build scripts —
+ * `{ file, script }`: the path as dist/ names it, and the `pnpm --filter cube-scanner <script>`
+ * that produces it.
+ *
+ * ONE REGISTRY (audit-fix, 2026-09-21). The scanner reaches each worker by a URL computed from its
+ * own bundle (`new URL('./letterbox-worker.js', import.meta.url)`), so no HTML names them and the
+ * reference scan cannot see them; this check listed them by hand, and vendor-bundles.test.mjs
+ * derived the same set from these scripts — two registries, and the letterbox worker joined the
+ * repo with only one of them knowing. The build script is where a bundle's name is actually
+ * decided, so it is what both read now. Loud when it names none: a manifest whose scripts stopped
+ * spelling `--outfile=…vendor/` is a check that would otherwise verify nothing.
+ */
+export function scannerBundles(manifest) {
+  if (!existsSync(manifest)) {
+    throw new Error(`build: the scanner package's manifest is not at ${manifest} — SCANNER_MANIFEST is out of date`);
+  }
+  const scripts = JSON.parse(readFileSync(manifest, 'utf8')).scripts ?? {};
+  const bundles = Object.entries(scripts).flatMap(([script, cmd]) => {
+    const m = /--outfile=\S*?vendor\/([\w.-]+\.js)/.exec(String(cmd));
+    return m ? [{ file: `vendor/${m[1]}`, script }] : [];
+  });
+  if (!bundles.length) {
+    throw new Error(`build: ${manifest} declares no build script that writes into vendor/ — has the scanner's build moved?`);
+  }
+  return bundles;
+}
 
 
 // ONE grammar for the onnxruntime assets, used for BOTH directions of the scanner check below —
@@ -290,6 +326,29 @@ function copyWebAssets(root, dist) {
   }
 }
 
+/**
+ * Where a reference resolves, INSIDE dist/ — or why it does not: `{ where }` for a path beneath
+ * dist/ that is either absent or really there; `{ escapes }` for one that leaves it.
+ *
+ * Confined both ways (audit-fix, 2026-09-21). Lexically, so `../package.json` is refused rather
+ * than found wherever the checkout happens to keep one — the guarantee this function makes is that
+ * every asset the page names is IN the folder Tauri bundles, and a reference that resolves outside
+ * it passed whenever the file existed there. And through the filesystem, so a symlink inside dist/
+ * whose target is outside it is refused too: `cpSync` copies a link as a link, and one that was
+ * relative in vendor/ comes out pointing back into the SOURCE tree, where the file is — until the
+ * app is installed somewhere the source tree is not.
+ */
+function locateInDist(dist, ref) {
+  const where = resolve(dist, ref);
+  const rel = relative(dist, where);
+  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return { escapes: `${ref} → ${where}` };
+  if (!existsSync(where)) return { where };
+  const real = realpathSync(where);
+  const inside = relative(realpathSync(dist), real);
+  if (inside === '' || inside.startsWith('..') || isAbsolute(inside)) return { escapes: `${ref} → ${real} (through a link)` };
+  return { where };
+}
+
 /** Every asset index.html and the manifest NAME must resolve inside dist/. Returns how many were
  *  checked, which is what the CLI prints. */
 function assertReferencedAssets(dist) {
@@ -299,11 +358,16 @@ function assertReferencedAssets(dist) {
   const html = readFileSync(join(dist, 'index.html'), 'utf8');
   // EVERY LOCAL REFERENCE, however it is spelt. This matched one spelling — double quotes and a leading
   // `./` — so `src='./app.js'` and `src="app.js"` were skipped in silence, and a dist missing either
-  // passed the check that exists to catch exactly that (Codex audit, 2026-09-16). What is skipped is
-  // said out loud: a remote URL, a data URI and an in-page anchor are not files this build copies.
+  // passed the check that exists to catch exactly that (Codex audit, 2026-09-16). Then it matched
+  // quoted values in lower case only, so `SRC=lib/app.js` — valid HTML — was skipped the same way,
+  // while `data-src=` was read as a reference (audit-fix, 2026-09-21): the attribute is matched
+  // whole — an attribute name begins after WHITESPACE in a tag, so `data-src=` and `foo:src=` are
+  // no reference (a lookbehind for "not a word character" let the colon through; verification of
+  // the audit fix, 2026-09-21) — in either case, quoted or bare. What is skipped is said
+  // out loud: a remote URL, a data URI and an in-page anchor are not files this build copies.
   const referenced = new Set(
-    [...html.matchAll(/(?:href|src)\s*=\s*("([^"]*)"|'([^']*)')/g)]
-      .map((m) => (m[2] ?? m[3]).trim())
+    [...html.matchAll(/(?<=\s)(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi)]
+      .map((m) => (m[1] ?? m[2] ?? m[3]).trim())
       .filter((url) => url && !/^(?:[a-z][a-z0-9+.-]*:|\/\/|#|\/)/i.test(url))
       .map((url) => url.replace(/^\.\//, '').replace(/[?#].*$/, '')),
   );
@@ -311,7 +375,12 @@ function assertReferencedAssets(dist) {
     referenced.add(icon.src.replace(/^\.\//, ''));
   }
 
-  const missing = [...referenced].filter((r) => !existsSync(join(dist, r)));
+  const located = [...referenced].map((r) => [r, locateInDist(dist, r)]);
+  const escapes = located.flatMap(([, at]) => (at.escapes ? [at.escapes] : []));
+  if (escapes.length) {
+    throw new Error(`build: index.html references assets outside dist/, which a packaged app cannot reach:\n  ${escapes.join('\n  ')}`);
+  }
+  const missing = located.flatMap(([r, at]) => (existsSync(at.where) ? [] : [r]));
   if (missing.length) {
     throw new Error(`build: dist/ is missing referenced assets:\n  ${missing.join('\n  ')}`);
   }
@@ -344,9 +413,21 @@ function assertSolverAssets(dist) {
   }
 }
 
+/** What puts each kind of scanner asset back, and what its absence costs — one line per KIND, so
+ *  a missing worker is not told to run `copy-ort`, which cannot build one (audit-fix, 2026-09-21).
+ *  A missing worker is not a scanner that cannot scan: the panel falls back to the page's thread
+ *  for the work the worker exists to move off it, which is a performance regression this build
+ *  refuses to ship rather than a blank screen. */
+const SCANNER_REMEDY = {
+  runtime: 'Run `pnpm --filter cubus-web copy-ort` — without the onnxruntime loader and its assets the app loads but cannot scan.',
+  model: 'vendor/cubedet.onnx is committed: restore it from the repository, or re-export it (ml/export.py) — without the model the app loads but cannot scan.',
+  panel: (script) => `Run \`pnpm --filter cube-scanner ${script}\` — without the panel bundle the app loads but cannot scan.`,
+  worker: (script) => `Run \`pnpm --filter cube-scanner ${script}\` — without this worker the scanner still runs, but falls back to the page's thread for the work the worker moves off it: a performance regression this build refuses to ship.`,
+};
+
 /** The scanner's runtime, which no HTML names either — and whose set is derived from the SHIPPED
- *  loader rather than from a filename shape. */
-function assertScannerAssets(root, dist) {
+ *  loader and from the scanner's own build scripts, never from a list kept here. */
+function assertScannerAssets(root, dist, manifest) {
   // Same problem, the scanner's half. ort.mjs is reached by a COMPUTED url (`${wasmPaths}ort.mjs`),
   // the .wasm by onnxruntime from its own import.meta.url, and the model by an attribute the panel
   // reads — so none of them appears in index.html and the scan above is blind to all three. They are
@@ -356,17 +437,27 @@ function assertScannerAssets(root, dist) {
   // ort.mjs in particular must stay a SEPARATE file: onnxruntime spawns its inference worker from
   // its own import.meta.url, so bundling it into the panel puts inference back on the main thread.
   //
-  // misread-worker.js is here for the same reason and one more: the panel reaches it by a URL
-  // computed from its own bundle (`new URL('./misread-worker.js', import.meta.url)`), so it
-  // appears in no HTML either — and its absence degrades QUIETLY, back to the three-second
-  // main-thread decode it exists to move off the page. It is committed rather than generated, so
-  // this catches a dist/ assembled before `build:misread-worker` ever ran.
   // ort.proxied.mjs is the SAME loader under its second name — the identity onnxruntime needs for
   // the proxied wasm instance where a query string cannot serve it (a Tauri asset protocol; see
   // copy-ort.mjs). It is published with ort.mjs and it is fetched at runtime, so a dist/ carrying
   // one and not the other is a scanner that works in one proxy mode and 404s in the other.
-  const SCANNER = ['vendor/ort.mjs', 'vendor/ort.proxied.mjs', 'vendor/cubedet.onnx', 'vendor/misread-worker.js'];
-  const absentScanner = new Set(SCANNER.filter((f) => !existsSync(join(dist, f))));
+  //
+  // And every bundle the scanner package builds into vendor/ (`scannerBundles`): the panel, and the
+  // workers the panel reaches by URLs computed from its own bundle (`new URL('./misread-worker.js',
+  // import.meta.url)`; the letterbox worker since 2026-09-20) — in no HTML either, and their
+  // absence degrades QUIETLY, back to the three-second main-thread decode and the 14 ms-a-tick
+  // letterbox they exist to move off the page. They are committed rather than generated, so this
+  // catches a dist/ assembled before their build ever ran. Read off the build scripts rather than
+  // listed here, because listed here they drifted: the letterbox worker joined with only the test's
+  // registry knowing (audit-fix, 2026-09-21).
+  /** What is absent, by the kind of remedy it needs. */
+  const absent = new Map();
+  const miss = (file, kind, script = null) => absent.set(file, { kind, script });
+  for (const f of ['vendor/ort.mjs', 'vendor/ort.proxied.mjs']) if (!existsSync(join(dist, f))) miss(f, 'runtime');
+  if (!existsSync(join(dist, 'vendor/cubedet.onnx'))) miss('vendor/cubedet.onnx', 'model');
+  for (const { file, script } of scannerBundles(manifest)) {
+    if (!existsSync(join(dist, file))) miss(file, file.endsWith('-worker.js') ? 'worker' : 'panel', script);
+  }
   // The runtime's own assets, DERIVED FROM THE SHIPPED LOADER rather than from a filename shape.
   //
   // onnxruntime picks its binary inside its own worker, so which variant it wants is not knowable
@@ -376,28 +467,62 @@ function assertScannerAssets(root, dist) {
   // BINARY and never the `.mjs` glue beside it (a missing glue file is a scanner that cannot
   // start), and their expectation came from vendor/, so an unrelated variant sitting there passed
   // both while the loader asked for a file nobody had copied.
-  if (!absentScanner.size) {
+  if (existsSync(join(dist, 'vendor', 'ort.mjs'))) {
     const named = ownedAssetsIn(readFileSync(join(dist, 'vendor', 'ort.mjs'), 'utf8'));
     // Loud rather than trivially green: a loader that names none of its assets means onnxruntime
     // has changed how it fetches them, and this check would otherwise silently verify nothing.
-    if (!named.length) absentScanner.add('vendor/ort.mjs names no ort-wasm-* runtime asset (has onnxruntime-web changed?)');
-    for (const f of named) if (!existsSync(join(dist, 'vendor', f))) absentScanner.add(`vendor/${f}`);
+    if (!named.length) miss('vendor/ort.mjs names no ort-wasm-* runtime asset (has onnxruntime-web changed?)', 'runtime');
+    for (const f of named) if (!existsSync(join(dist, 'vendor', f))) miss(`vendor/${f}`, 'runtime');
     // And the other direction, one grammar: everything copy-ort published into vendor/ must
     // survive the copy into dist/. The loader-derived set above cannot see a file the filter
     // dropped on the way in if the loader never names it, and vendor/ is what actually ships.
     for (const f of readdirSync(join(root, 'vendor')).filter(isOwnedAsset)) {
-      if (!existsSync(join(dist, 'vendor', f))) absentScanner.add(`vendor/${f}`);
+      if (!existsSync(join(dist, 'vendor', f))) miss(`vendor/${f}`, 'runtime');
     }
   }
-  if (absentScanner.size) {
-    throw new Error(
-      `build: dist/ is missing vendored scanner files:\n  ${[...absentScanner].join('\n  ')}\n` +
-        '  Run `pnpm --filter cubus-web copy-ort` first — without these the app loads but cannot scan.',
-    );
+  if (absent.size) {
+    const lines = [...absent].map(([file, { kind, script }]) => {
+      const remedy = SCANNER_REMEDY[kind];
+      return `${file}\n    ${typeof remedy === 'function' ? remedy(script) : remedy}`;
+    });
+    throw new Error(`build: dist/ is missing vendored scanner files:\n  ${lines.join('\n  ')}`);
   }
 }
 
 /** The bundle must be newer than every source that went into it. */
+/**
+ * Every scanner bundle in dist/ is byte-for-byte what its build script produces from the sources
+ * as they are now (audit-fix 2026-09-21, finding 9). The check above asks whether a bundle is NEWER
+ * than its sources, which on a fresh checkout (every mtime is checkout time) says nothing — so the
+ * scanner's bundles, which are committed and reached by computed URLs no page names, could be
+ * packaged stale by a direct `build:dist` while every existence check passed. Rebuilt here in
+ * memory, with the same entry and flags the script names, and compared: a difference is a stale
+ * commit or a script that no longer builds what is shipped, and either is a refused dist.
+ *
+ * @param {string} dist the assembled dist
+ * @param {string} manifest the scanner package's package.json (its build scripts are the registry)
+ * @param {(o: import('esbuild').BuildOptions) => string} [build] the in-memory bundler — a seam for
+ *   the tests, which cannot afford an esbuild run per case
+ */
+export function assertScannerBundlesFresh(dist, manifest, build = (o) => buildSync(o).outputFiles[0].text) {
+  const scannerDir = dirname(manifest);
+  const scripts = JSON.parse(readFileSync(manifest, 'utf8')).scripts ?? {};
+  const stale = [];
+  for (const { file, script } of scannerBundles(manifest)) {
+    const words = String(scripts[script]).split('&&')[0].trim().split(/\s+/);
+    if (words[0] !== 'esbuild') throw new Error(`build: ${script} is not a plain esbuild command, so its output cannot be rebuilt here`);
+    const entry = words.slice(1).find((w) => !w.startsWith('-'));
+    const flag = (name) => words.find((w) => w.startsWith(`--${name}=`))?.slice(name.length + 3);
+    const fresh = build({
+      absWorkingDir: scannerDir, entryPoints: [entry], bundle: true, write: false, logLevel: 'silent',
+      format: flag('format'), target: flag('target'), legalComments: flag('legal-comments'),
+    });
+    const shipped = readFileSync(join(dist, file), 'utf8');
+    if (shipped !== fresh) stale.push(`${file} (rebuild it with \`pnpm --filter cube-scanner ${script}\` and commit)`);
+  }
+  if (stale.length) throw new Error(`build: a scanner bundle in dist/ is not what its sources build now — ${stale.join('; ')}`);
+}
+
 function assertBundleFresh(root, entry) {
   // The esbuild bundle must be newer than its source, or beforeBuildCommand ran
   // out of order and we would ship a stale renderer that still looks fine.
@@ -436,9 +561,11 @@ function assertBundleFresh(root, entry) {
  * bundle. They ran here as one body, which made the order look like a detail rather than the
  * contract it is — nothing may be checked before the copy that produces it.
  *
- * @param {{ root?: string, dist?: string, freshness?: boolean, cubeEntry?: string }} [o]
+ * @param {{ root?: string, dist?: string, freshness?: boolean, cubeEntry?: string, scannerManifest?: string, scannerBuild?: (o: import('esbuild').BuildOptions) => string }} [o]
  *   `cubeEntry` is the renderer's source entry, defaulting to the package beside this one. A
  *   parameter because the dist tests assemble a synthetic root and need an entry inside it.
+ *   `scannerManifest` is the scanner package's package.json, whose build scripts say which
+ *   bundles it puts in vendor/ (`scannerBundles`); a parameter for the same reason.
  *   `freshness` (default on) is the bundle-newer-than-source check at the end: the CLI's
  *   guarantee that beforeBuildCommand ran its steps in order. A test of what dist CONTAINS
  *   turns it off, because a working tree with an edited source and a not-yet-rebuilt bundle is
@@ -446,7 +573,7 @@ function assertBundleFresh(root, entry) {
  *   comparing content — which is the better message for it.
  * @returns {{ dist: string, referenced: number }}
  */
-export function assembleDist({ root = here, dist = join(root, 'dist'), freshness = true, cubeEntry } = {}) {
+export function assembleDist({ root = here, dist = join(root, 'dist'), freshness = true, cubeEntry, scannerManifest, scannerBuild } = {}) {
   // Absolute from here down, so "is the destination inside the source" is a question about
   // directories rather than about whoever's cwd this ran under — and so the walk up to the
   // filesystem root that answers it has a root to reach: `dirname` on a relative path stops at
@@ -455,14 +582,19 @@ export function assembleDist({ root = here, dist = join(root, 'dist'), freshness
   const out = resolve(dist);
   // Resolved once, before anything is deleted, and handed to BOTH checks that need it.
   const entry = cubeEntry ? resolve(cubeEntry) : resolve(src, CUBE_ENTRY);
+  const manifest = scannerManifest ? resolve(scannerManifest) : resolve(src, SCANNER_MANIFEST);
   assertDistIsDisposable(src, out, entry);
   rmSync(out, { recursive: true, force: true });
   mkdirSync(out, { recursive: true });
   copyWebAssets(src, out);
   const referenced = assertReferencedAssets(out);
   assertSolverAssets(out);
-  assertScannerAssets(src, out);
-  if (freshness) assertBundleFresh(src, entry);
+  assertScannerAssets(src, out, manifest);
+  if (freshness) {
+    assertBundleFresh(src, entry);
+    // `scannerBuild` is the in-memory bundler seam `assertScannerBundlesFresh` documents.
+    assertScannerBundlesFresh(out, manifest, scannerBuild);
+  }
   return { dist: out, referenced };
 }
 

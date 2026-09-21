@@ -1,6 +1,11 @@
 // Pure facelet <-> cubie logic and the solvability check. No I/O, no cubejs —
 // this is the parity gate that lets `assemble` reject a bad scan instead of
-// trusting it. `assemble` layers cubejs on top as an independent cross-check.
+// trusting it. `assemble` layers cubejs's round trip on top as a check on the
+// string's SHAPE (54 letters that parse into cubies by position and write back
+// unchanged) — not as a second solvability gate: cubejs round-trips a flipped
+// edge, a twisted corner, an edge transposition and a duplicate cubie without
+// complaint, and only the permutation, twist, flip and parity checks here
+// refuse them (`facelet-cube.test.ts` pins all four; scanner audit 2026-09-20 §2.7).
 //
 // Facelet order is Kociemba URFDLB (54 chars). The corner/edge index tables are
 // the standard Kociemba face-cube maps (the same tables cubejs uses to
@@ -10,10 +15,19 @@ import { FACES, type Face } from './types.js';
 
 const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
 
+/** A table frozen row by row: the `readonly` type stops a compile, and this stops the process. */
+const frozenRows = <T>(rows: readonly (readonly T[])[]): readonly (readonly T[])[] =>
+  Object.freeze(rows.map((row) => Object.freeze([...row])));
+
 // Facelet indices for each cubie slot. Corner order URF UFL ULB UBR DFR DLF DBL
 // DRB; edge order UR UF UL UB DR DF DL DB FR FL BL BR. Index 0 of every corner
 // is its U/D ("up/down") facelet — the anchor for orientation.
-export const CORNER_FACELET: readonly (readonly number[])[] = [
+//
+// FROZEN, like the colour tables below them (2026-09-21). They were typed readonly and left
+// mutable at run time, the exact arrangement that let one `CORNER_COLOR[0][0] = 'X'` poison every
+// later scan — and these two are read by more: decoding, encoding, the solvability gate, the
+// misread decoder and the neighbour map are all indexed through them.
+export const CORNER_FACELET: readonly (readonly number[])[] = frozenRows([
   [8, 9, 20],
   [6, 18, 38],
   [0, 36, 47],
@@ -22,8 +36,8 @@ export const CORNER_FACELET: readonly (readonly number[])[] = [
   [27, 44, 24],
   [33, 53, 42],
   [35, 17, 51],
-];
-export const EDGE_FACELET: readonly (readonly number[])[] = [
+]);
+export const EDGE_FACELET: readonly (readonly number[])[] = frozenRows([
   [5, 10],
   [7, 19],
   [3, 37],
@@ -36,7 +50,7 @@ export const EDGE_FACELET: readonly (readonly number[])[] = [
   [21, 41],
   [50, 39],
   [48, 14],
-];
+]);
 
 // Solved-color letters of each cubie, in the slot's own facelet order. Frozen, table and rows,
 // not only typed readonly: the type left each row a mutable array at run time, and one
@@ -108,7 +122,10 @@ export const FACE_NEIGHBOURS: Readonly<Record<Face, Readonly<Record<Side, Face>>
       if (side !== undefined) out[FACES[Math.floor(from / 9)]!]![side] = FACES[Math.floor(to / 9)]!;
     }
   }
-  return out;
+  // Frozen at every level once derived (2026-09-21): the scan screen paints from this, and a
+  // `FACE_NEIGHBOURS.U.top = …` would have repainted every tile wrong for the life of the page.
+  for (const f of FACES) Object.freeze(out[f]);
+  return Object.freeze(out);
 })();
 
 /** A cube as cubie permutations + orientations. */
@@ -120,14 +137,14 @@ export interface CubeState {
 }
 
 /** Which facelet indices carry the 6 face centers, in URFDLB order. */
-export const CENTER_INDEX: Readonly<Record<Face, number>> = {
+export const CENTER_INDEX: Readonly<Record<Face, number>> = Object.freeze({
   U: 4,
   R: 13,
   F: 22,
   D: 31,
   L: 40,
   B: 49,
-};
+});
 
 /**
  * Decode a facelet string into cubie permutation + orientation, or `null` if

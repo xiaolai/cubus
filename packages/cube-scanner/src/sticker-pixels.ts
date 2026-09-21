@@ -39,9 +39,14 @@ export function toFrameBox(box: Box, frame: Pick<Frame, 'width' | 'height'>, img
  * The median CIE Lab (D65) of a sticker's middle, from an RGBA frame.
  *
  * Returns null when the box lands outside the frame entirely — a fit that produced one is not a fit
- * whose pixels should be trusted, and a silent zero would look like a very dark sticker.
+ * whose pixels should be trusted, and a silent zero would look like a very dark sticker. And null
+ * for a box with a coordinate that is not a number (2026-09-20): every comparison below is false
+ * against NaN, so such a box used to walk the loop zero times and answer `[NaN, NaN, NaN]` — a
+ * value that is not a colour and that every later distance compares false against, which
+ * `groupByPaint` happened to contain and nothing else would have.
  */
 export function medianLab(frame: Frame, box: Box): [number, number, number] | null {
+  if (!box.every(Number.isFinite)) return null;
   const cx = box[0] + box[2] / 2;
   const cy = box[1] + box[3] / 2;
   const x0 = Math.max(0, Math.floor(cx - (box[2] * INNER) / 2));
