@@ -523,10 +523,19 @@ public final class Camera: NSObject {
     /// second read would see what this set.
     @available(iOS 17.0, *)
     private static func captureAngle(for orientation: InterfaceOrientation, of device: AVCaptureDevice, on connection: AVCaptureConnection) -> CGFloat {
+        // TWO CHECKS, because they answer two different questions. `#available` is asked at RUN time
+        // — is this device on iOS 27? — and does nothing for the COMPILER, which still needs the SDK to
+        // declare the method. It is declared by the iOS 27.0 SDK only (AVCaptureDevice.h,
+        // `API_AVAILABLE(ios(27.0))`), which ships with Xcode 27 and Swift 6.4; an older Xcode — CI's
+        // `macos-latest` was 26.6 / iPhoneOS 26.5 on 2026-09-21 — refuses the whole file. So the
+        // compile-time guard keys on the compiler that ships with that SDK, and a build from an older
+        // Xcode takes the table below for every iOS version, which is what the table is for.
+        #if compiler(>=6.4)
         if #available(iOS 27.0, *) {
             return AVCaptureDevice.RotationCoordinator(device: device, previewLayer: nil)
                 .videoRotationAngleRelative(toDeviceOrientation: orientation.videoOrientation)
         }
+        #endif
         return captureAngle(orientation, sensorOffset: sensorOffset(of: connection), external: device.position == .unspecified)
     }
 
