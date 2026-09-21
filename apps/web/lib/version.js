@@ -8,4 +8,4 @@
  *  together with every manifest that carries the same number, a test fails when any of them drifts
  *  from it — the About card once spent months claiming 0.4.2 over manifests that all said 0.1.0 —
  *  and release.yml reads it to refuse a tag that does not match. */
-export const VERSION = '0.6.3';
+export const VERSION = '0.6.4';
