@@ -711,6 +711,40 @@ function rulesOn(nine: Detection[]): { grid: Detection[] } | { fail: GeometryFai
  * abstain. The front face's stickers are the largest (adjacent faces foreshorten to
  * slivers), so we take the 9 biggest and require them to form a real 3x3 grid.
  */
+/**
+ * How many boxes may be set aside, one at a time, when the nine largest do not form a face
+ * (D4, `dev-docs/scan-pipeline-audit-2026-09-23.md` §3).
+ *
+ * `dropIsolated` catches a LONE false box, and two false boxes near each other defeat it: each is
+ * the other's neighbour, so both survive, and being large they take two real stickers' places among
+ * "the nine largest". The audit's reproduction is a clean grid of 20 px stickers plus two 60 px
+ * boxes 45 px apart — refused `BAD_GEOMETRY` at an area ratio of 9. Persistent clutter of that kind
+ * — objects on a shelf behind the cube — then blocks every frame, and a side never settles.
+ *
+ * Three, because that is where the cost stops being free: each attempt is one `gridOf`, and a room
+ * with four large false boxes clustered together is a room the isolation rule was never going to
+ * save. It is a bound on wasted work, not a claim about rooms.
+ */
+const MAX_CLUTTER_SET_ASIDE = 3;
+
+/**
+ * How many times the median box's area a box must exceed before it may be set aside as clutter.
+ *
+ * THE BOUND EXISTS BECAUSE THE RETRY WITHOUT IT MANUFACTURES FACES, and the golden gate said so
+ * before this shipped. An unconstrained "drop the largest and try again" read a face on
+ * `ml/golden/frames/abstain-00.png` — a fixture that exists precisely to be REFUSED — on all four
+ * runtimes: given enough boxes and three attempts, some nine of them satisfy the geometry rules.
+ * Turning a refusal into a read is only safe when the thing set aside is independently identifiable
+ * as not-a-sticker, and size is what identifies it here: the audit's clutter is 9x a sticker's
+ * area, while `MAX_AREA_RATIO` already records that the largest and smallest stickers of a real
+ * face measured over the 20 goldens sit within 3.42x of each other.
+ *
+ * So the same 5 the grid rule uses, against the MEDIAN rather than the smallest: a box bigger than
+ * that is not a sticker of the face the median describes. On a frame of uniform noise nothing
+ * qualifies, no attempt is made, and the abstention stands.
+ */
+const CLUTTER_AREA_RATIO = MAX_AREA_RATIO;
+
 export function fitFace(dets: Detection[], minConf = MIN_STICKER_CONFIDENCE): FitResult {
   const good = dets.filter((d) => d.confidence >= minConf && d.classId >= 0 && d.classId < 6);
   if (good.length === 0) return { ok: false, reason: 'NO_FACE' };
@@ -718,10 +752,37 @@ export function fitFace(dets: Detection[], minConf = MIN_STICKER_CONFIDENCE): Fi
   // usually the LARGEST box in the frame, so it is exactly the one "the nine largest" would pick first.
   const neighboured = dropIsolated(good);
   if (neighboured.length < 9) return { ok: false, reason: 'PARTIAL_FACE' };
-  const nine = [...neighboured].sort((a, b) => b.w * b.h - a.w * a.h).slice(0, 9);
-  const fitted = gridOf(nine);
-  if ('fail' in fitted) return { ok: false, reason: 'BAD_GEOMETRY', geometry: fitted.fail };
-  const { grid } = fitted;
+  const bySize = [...neighboured].sort((a, b) => b.w * b.h - a.w * a.h);
+  // THE FIRST ATTEMPT IS EXACTLY WHAT IT ALWAYS WAS, and its refusal is the one reported (D4).
+  // Every later attempt sets aside one more box that is CLUTTER BY SIZE — see CLUTTER_AREA_RATIO,
+  // and the golden fixture that fails without that condition. So a frame that reads today reads
+  // identically tomorrow (an attempt is made only because the one before it failed), a frame of
+  // uniform noise is refused exactly as it was, and a frame refused after every attempt reports the
+  // reason the unmodified rule gave it, leaving the scan trace's diagnosis unchanged.
+  const areas = neighboured.map((d) => d.w * d.h).sort((a, b) => a - b);
+  const clutterAbove = CLUTTER_AREA_RATIO * areas[Math.floor(areas.length / 2)]!;
+  let first: GeometryFailure | undefined;
+  let fitted: ReturnType<typeof gridOf> | undefined;
+  let grid: Detection[] | undefined;
+  for (let aside = 0; aside <= MAX_CLUTTER_SET_ASIDE; aside++) {
+    if (bySize.length - aside < 9) break;
+    // Only a box big enough to be clutter may be the one set aside. `bySize` is descending, so once
+    // a box is small enough to be a sticker every box after it is too, and there is nothing left to
+    // try — which is also what keeps a frame of similar boxes on exactly its old path.
+    if (aside > 0 && !(bySize[aside - 1]!.w * bySize[aside - 1]!.h > clutterAbove)) break;
+    const attempt = gridOf(bySize.slice(aside, aside + 9));
+    if (!('fail' in attempt)) {
+      fitted = attempt;
+      grid = attempt.grid;
+      break;
+    }
+    if (aside === 0) first = attempt.fail;
+  }
+  if (!fitted || !grid) {
+    return first === undefined
+      ? { ok: false, reason: 'PARTIAL_FACE' }
+      : { ok: false, reason: 'BAD_GEOMETRY', geometry: first };
+  }
   return {
     ok: true,
     face: {

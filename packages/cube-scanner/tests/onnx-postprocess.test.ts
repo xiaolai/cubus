@@ -102,6 +102,10 @@ describe('dropNested', () => {
   it('lets fitFace read a close-up face whose nine largest held three stickers twice', () => {
     const dets = closeUp();
     expect(nms(dets)).toHaveLength(12);
+    // Still refused without `dropNested`, and D4's clutter retry deliberately does NOT rescue it:
+    // the duplicate boxes are 2.8x a sticker's area, under `CLUTTER_AREA_RATIO`, so they are not
+    // clutter by size and no attempt is made. `dropNested` remains the thing that makes this frame
+    // readable, which is what this case exists to prove.
     expect(fitFace(nms(dets)).ok).toBe(false);
     const fit = fitFace(dropNested(nms(dets)));
     expect(fit.ok).toBe(true);
@@ -167,6 +171,23 @@ describe('fitFace on frames recorded from a real camera, with a false box in the
   it('leaves every frame that already read exactly as it was — no sticker moved, none recoloured', () => {
     expect(reading.length).toBeGreaterThan(20);
     for (const f of reading) expect(read(f)).toBe(f.before);
+  });
+
+  it('is not disturbed at all by the clutter retry (D4)', () => {
+    // MEASURED, AND THE ANSWER IS "NOTHING CHANGED". Setting aside boxes that are clutter by size
+    // (`CLUTTER_AREA_RATIO`) leaves every one of these 83 recorded frames reading exactly as it did
+    // — the false boxes here are the LONE kind, which `dropIsolated` already removes, so no attempt
+    // past the first is ever made. D4's rule is for the clustered kind, which this set does not
+    // contain; the case that needs it is built by hand below.
+    //
+    // Worth asserting rather than assuming, because the first version of the retry had no size
+    // condition and it DID disturb this set — two frames went from BAD_GEOMETRY to a read — and,
+    // worse, read a face on `ml/golden/frames/abstain-00.png`, a fixture that exists to be refused.
+    for (const f of frames) {
+      if (f.before.startsWith('OK')) {
+        expect(f.after, 'a frame that read now reads differently').toBe(f.before);
+      }
+    }
   });
 
   it('reads most of the frames the false box spoiled', () => {
@@ -706,5 +727,111 @@ describe('a box that is not a box', () => {
       [0, 0],
     ]);
     expect(decodeDetections(data, 6, 2, 0.25)).toHaveLength(1);
+  });
+});
+
+/**
+ * D4 (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3): clustered false boxes take real stickers'
+ * places among "the nine largest", and `dropIsolated` cannot see them because each is the other's
+ * neighbour.
+ *
+ * The audit's reproduction, re-run here: a clean 3×3 of 20 px stickers plus two 60 px boxes 45 px
+ * apart — objects on a shelf behind the cube. One such box is dropped as isolated and always was;
+ * two keep each other, and both being large they displaced two stickers, so the frame was refused
+ * at an area ratio of 9 against a bound of 5. Every frame in a cluttered room failed that way, and
+ * each refusal reset the stillness run, so a side never settled.
+ */
+describe('a cluster of false boxes does not cost the face its place (D4)', () => {
+  const grid = (): Detection[] => {
+    const out: Detection[] = [];
+    for (let r = 0; r < 3; r++) {
+      for (let c = 0; c < 3; c++) {
+        out.push({
+          cx: 200 + 30 * c,
+          cy: 200 + 30 * r,
+          w: 20,
+          h: 20,
+          classId: (r * 3 + c) % 6,
+          confidence: 0.9,
+          scores: [0, 1, 2, 3, 4, 5].map((k) => (k === (r * 3 + c) % 6 ? 0.9 : 0)),
+        });
+      }
+    }
+    return out;
+  };
+  const clutter = (x: number): Detection => ({
+    cx: x,
+    cy: 450,
+    w: 60,
+    h: 60,
+    classId: 1,
+    confidence: 0.4,
+    scores: [0, 0.4, 0, 0, 0, 0],
+  });
+
+  it('reads the face through one, two and three clustered boxes', () => {
+    const clean = fitFace(grid());
+    expect(clean.ok).toBe(true);
+    for (const n of [1, 2, 3]) {
+      const boxes = [...grid(), ...Array.from({ length: n }, (_, i) => clutter(500 + i * 45))];
+      const got = fitFace(boxes);
+      expect(got.ok, `${n} clustered false boxes refused the face`).toBe(true);
+      // And it is the SAME face: the colours the clean frame read, in the same order. A rule that
+      // recovered the frame by reading some other nine would be worse than the refusal it replaced.
+      if (got.ok && clean.ok) expect(got.face.colors).toEqual(clean.face.colors);
+    }
+  });
+
+  it('will not manufacture a face out of boxes that are all one size', () => {
+    // THE CONDITION THAT MAKES THE RETRY SAFE, pinned. Without `CLUTTER_AREA_RATIO`, "drop the
+    // largest and try again" finds nine boxes somewhere in a crowd that satisfy the geometry rules
+    // — it read a face on the golden abstention fixture on all four runtimes. Here twelve boxes of
+    // equal size are scattered so that no nine of them form a grid: nothing is clutter by size,
+    // so no attempt past the first is made and the refusal stands.
+    const crowd: Detection[] = Array.from({ length: 12 }, (_, i) => ({
+      cx: 150 + (i % 4) * 37 + (i % 3) * 11,
+      cy: 150 + Math.floor(i / 4) * 61 + (i % 2) * 17,
+      w: 20,
+      h: 20,
+      classId: i % 6,
+      confidence: 0.9,
+    }));
+    expect(fitFace(crowd).ok).toBe(false);
+  });
+
+  it('reports the unmodified rule’s refusal when no attempt fits', () => {
+    // Nothing here is a face, so every attempt fails and the reason reported is the one the nine
+    // largest gave — the scan trace's diagnosis is unchanged by the retries.
+    const scattered: Detection[] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((i) => ({
+      cx: 100 + (i % 2) * 40,
+      cy: 100 + i * 41,
+      w: 20 + i * 12,
+      h: 20,
+      classId: 0,
+      confidence: 0.9,
+    }));
+    const got = fitFace(scattered);
+    expect(got.ok).toBe(false);
+    if (!got.ok) expect(got.reason).toBe('BAD_GEOMETRY');
+  });
+
+  it('cannot change a frame that already read: a fit is only tried after a refusal', () => {
+    // The property that makes this safe to land without re-pinning a golden. Setting a box aside
+    // happens ONLY when the attempt before it failed, so any frame the old rule read is read
+    // identically — asserted here by giving the clean grid every extra box that cannot displace a
+    // sticker and checking the read never moves.
+    const clean = fitFace(grid());
+    expect(clean.ok).toBe(true);
+    const small: Detection = {
+      cx: 260,
+      cy: 200,
+      w: 8,
+      h: 8,
+      classId: 3,
+      confidence: 0.9,
+    };
+    const got = fitFace([...grid(), small]);
+    expect(got.ok).toBe(true);
+    if (got.ok && clean.ok) expect(got.face.colors).toEqual(clean.face.colors);
   });
 });

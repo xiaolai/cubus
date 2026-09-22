@@ -468,6 +468,17 @@ class FaceRead:
     confidence: tuple[float, ...] | None
 
 
+# How many boxes may be set aside, one at a time, when the nine largest do not form a face, and how
+# much bigger than the median box one must be to be set aside at all. The mirror of
+# MAX_CLUTTER_SET_ASIDE and CLUTTER_AREA_RATIO in src/onnx-postprocess.ts — see there for the
+# reasoning (D4, dev-docs/scan-pipeline-audit-2026-09-23.md §3): drop_isolated catches a LONE false
+# box, and two near each other keep each other alive and, being large, take two real stickers'
+# places. The size condition is load-bearing: without it the retry read a face on
+# ml/golden/frames/abstain-00.png, a fixture that exists to be refused, on all four runtimes.
+MAX_CLUTTER_SET_ASIDE = 3
+CLUTTER_AREA_RATIO = 5.0
+
+
 def fit_grid(dets: list[Detection], min_conf: float = 0.25) -> tuple[str, list[Detection] | None]:
     """`fit_face` one step short: the verdict and the nine detections in reading order, boxes and all."""
     good = [d for d in dets if d.confidence >= min_conf and 0 <= d.class_id < NUM_CLASSES]
@@ -477,9 +488,25 @@ def fit_grid(dets: list[Detection], min_conf: float = 0.25) -> tuple[str, list[D
     neighboured = drop_isolated(good)
     if len(neighboured) < 9:
         return "PARTIAL_FACE", None
-    nine = sorted(neighboured, key=lambda d: -(d.w * d.h))[:9]
-    grid = to_grid(nine)
-    return ("BAD_GEOMETRY", None) if grid is None else ("OK", grid)
+    by_size = sorted(neighboured, key=lambda d: -(d.w * d.h))
+    # The first attempt is exactly what it always was, and its refusal is the one reported. Every
+    # later attempt sets aside one more box that is CLUTTER BY SIZE, so a frame that reads today
+    # reads identically tomorrow and a frame of uniform noise is refused exactly as it was.
+    # Measured on the 83 recorded frames of
+    # packages/cube-scanner/tests/fixtures/background-box-frames.json: two frames changed, both
+    # BAD_GEOMETRY to a read, none read-to-read and none read-to-refusal.
+    areas = sorted(d.w * d.h for d in neighboured)
+    clutter_above = CLUTTER_AREA_RATIO * areas[len(areas) // 2]
+    for aside in range(MAX_CLUTTER_SET_ASIDE + 1):
+        if len(by_size) - aside < 9:
+            break
+        # by_size descends, so once a box is small enough to be a sticker every later one is too.
+        if aside > 0 and not (by_size[aside - 1].w * by_size[aside - 1].h > clutter_above):
+            break
+        grid = to_grid(by_size[aside : aside + 9])
+        if grid is not None:
+            return "OK", grid
+    return "BAD_GEOMETRY", None
 
 
 def fit_face(dets: list[Detection], min_conf: float = 0.25) -> FaceRead:

@@ -217,6 +217,23 @@ export interface AssembleOptions {
    * gets the count, in one call, exactly as before.
    */
   diagnose?: boolean;
+  /**
+   * The count repair's cost ceiling, when it must not be the default `MAX_REPAIR_COST`.
+   *
+   * ONE CALLER, ONE REASON (2026-09-23). A scan whose sides were placed by `resolveCentres` had its
+   * filing decided at an UNBOUNDED ceiling — that is what lets a filing needing a large repair
+   * count as legal at all, and four of the seven collisions measured on real cubes
+   * (`tests/fixtures/centre-collisions.ts`) repair at a cost of 13 to 36. Re-checking that same
+   * scan afterwards at the default 12 would refuse the very cube the resolution had just decided
+   * on, so the panel carries the resolution's ceiling for the rest of the scan.
+   *
+   * Lifting the ceiling is only safe BECAUSE of D1. The bound used to be the whole of the guard
+   * against a large repair inventing a cube ("a reading past it is not one misread but a bad
+   * capture"); now no repair is accepted until the stickers it changed have been looked at again,
+   * so the bound is a heuristic about when to bother asking rather than the thing standing between
+   * a bad read and an accepted cube.
+   */
+  maxRepairCost?: number;
 }
 
 /** ScanResult plus AI-path extras: a human reason, and how to make progress when it failed. */
@@ -233,6 +250,20 @@ export type AiScanResult = ScanResult & {
   undetermined?: Face[];
   /** Set when one more look would help — to break a tie, to verify one, or to retry a mis-hold. */
   confirm?: ConfirmRequest;
+  /**
+   * The stickers the count repair had to INVENT to reach a legal cube, and which nobody has looked
+   * at twice — so the cube is not accepted until somebody does (D1,
+   * `dev-docs/scan-pipeline-audit-2026-09-23.md` §3).
+   *
+   * Set beside a `confirm` and never beside a success: once a second look agrees, the repair is
+   * accepted and the stickers it moved are reported through `captures` like any other repair. A
+   * host may point at these and say "this needs another look"; it may NOT say "this one is wrong",
+   * for the same reason `suspects` may not — the repair names the cheapest legal cube, and cheapest
+   * is not the same as the one in the hand. That is the whole defect: two stickers confidently
+   * misread plus a third whose alternative scores 0.7 repairs into a different legal cube, and it
+   * used to come back `valid`.
+   */
+  repaired?: StickerRepair[];
   /** The confirmations contradict each other: one was mis-held, so they all have to be redone. */
   mismatch?: boolean;
   /**
@@ -1270,10 +1301,82 @@ function movesALockedSticker(faces: Record<Face, ColorFace>, colors: readonly nu
   );
 }
 
-function repairByCounts(
-  faces: Record<Face, ColorFace>,
-  maxCost: number,
-): Record<Face, ColorFace> | null {
+/**
+ * A sticker the count repair moved: where it sits, what the camera read, and what the repair made it.
+ *
+ * Reported rather than kept private (D1, `dev-docs/scan-pipeline-audit-2026-09-23.md` §3) because a
+ * repaired sticker is a colour NOBODY OBSERVED. `face` is the SLOT and `index` the position in that
+ * capture as shown, so it names a sticker a host can point at and a person can look at again.
+ */
+export interface StickerRepair {
+  face: Face;
+  index: number;
+  from: number;
+  to: number;
+}
+
+/** A repaired reading, and exactly which stickers it had to invent to get there. */
+interface CountRepair {
+  faces: Record<Face, ColorFace>;
+  changed: StickerRepair[];
+}
+
+/**
+ * Has this repaired sticker been LOOKED AT AGAIN, and did the second look agree?
+ *
+ * D1, and the whole of it. A second photograph of the side, taken under a known hold, is an
+ * independent observation; a rotation that aligns it with the repaired capture puts its stickers
+ * over the repaired ones, and the question is whether the one the repair invented is the colour
+ * that photograph actually shows.
+ *
+ * ALIGNED BY `matchingRotations` — the same tolerance match every confirmation is read through —
+ * and then asked about ONE POSITION. The tolerance is what makes the alignment robust to the
+ * ordinary one- or two-sticker disagreement between two reads of a side; it is emphatically not a
+ * licence for the repaired sticker itself to disagree, which is why the position is compared
+ * exactly. If several rotations align, agreement under ANY of them is enough: the hold is not known
+ * to better than that, and demanding all of them would refuse a confirmation of a symmetric side.
+ */
+function reobserved(
+  repaired: ColorFace,
+  original: ColorFace,
+  looks: readonly Confirmation[],
+  index: number,
+): boolean {
+  for (const look of looks) {
+    // Aligned against the repaired capture AND the one the camera read, exactly as
+    // `allowedByLook` does: inside a repair the two differ, and a look matches whichever of them
+    // it was taken beside.
+    const rotations = new Set([
+      ...matchingRotations(repaired, look.capture),
+      ...matchingRotations(original, look.capture),
+    ]);
+    for (const k of rotations) {
+      if (rotateFace(repaired.colors, k)[index] === look.capture.colors[index]) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The slot carrying the most stickers the repair invented — the one side whose second look settles
+ * the most at once. Ties go to the earlier slot in `FACES` order, so the ask is deterministic: a
+ * request that moved between two equally-good sides would have the person turning the cube back and
+ * forth while the scan changed its mind.
+ */
+function mostRepaired(changed: readonly StickerRepair[]): Face {
+  let best = changed[0]!.face;
+  let most = 0;
+  for (const face of FACES) {
+    const n = changed.filter((s) => s.face === face).length;
+    if (n > most) {
+      most = n;
+      best = face;
+    }
+  }
+  return best;
+}
+
+function repairByCounts(faces: Record<Face, ColorFace>, maxCost: number): CountRepair | null {
   const scores: number[][] = [];
   for (const face of FACES) {
     const s = faces[face]?.scores;
@@ -1310,7 +1413,25 @@ function repairByCounts(
       colors: result.colors.slice(i * 9, i * 9 + 9),
     };
   });
-  return out;
+  return {
+    faces: out,
+    // WHICH stickers were invented, named where a person can find them.
+    //
+    // MEASURED AGAINST THE CAPTURE, NOT AGAINST THE SCORES' ARGMAX, and the difference is not a
+    // detail. `assignNineOfEach.changed` reports where the assignment differs from each sticker's
+    // top score — which includes every sticker a CALLER had already decided on other evidence.
+    // `resolveCentres` is exactly that caller: `withCentre` overwrites each filed side's centre
+    // with its slot's colour, so the argmax reading counts six centres as "repaired" and D1 would
+    // demand a second look at a colour the repair never touched. What D1 is about is a sticker
+    // whose colour NOBODY observed, so the comparison is with the colour the capture carries.
+    changed: result.changed.flatMap((at) => {
+      const face = FACES[Math.floor(at / 9)]!;
+      const index = at % 9;
+      const from = faces[face]!.colors[index]!;
+      const to = result.colors[at]!;
+      return from === to ? [] : [{ face, index, from, to }];
+    }),
+  };
 }
 
 /**
@@ -1365,7 +1486,13 @@ export function assembleColors(
   confirmed: Confirmed = {},
   options: AssembleOptions = {},
 ): AiScanResult {
-  return assembleWithin(faces, threshold, confirmed, options, MAX_REPAIR_COST);
+  return assembleWithin(
+    faces,
+    threshold,
+    confirmed,
+    options,
+    options.maxRepairCost ?? MAX_REPAIR_COST,
+  );
 }
 
 /**
@@ -1395,6 +1522,19 @@ function assembleWithin(
    * the next"; anything else is the verdict for the recoloured cube, refusal included -- reaching
    * this point at all means the reading as detected was going to be refused.
    */
+  /**
+   * Could this recolouring be accepted at all — does it still check out by slot, and does some
+   * scheme find it solvable? Lifted out of `accept` (D1) so the count repair can ask the question
+   * WITHOUT accepting: a repair whose stickers nobody has looked at twice must not be returned, and
+   * asking for a second look at a repair that leads nowhere would waste the one thing being spent
+   * here, which is the person's patience.
+   */
+  const couldAccept = (candidate: Record<Face, ColorFace>): boolean => {
+    const bySlotCandidate = checkedBySlot(candidate);
+    if ('valid' in bySlotCandidate) return false;
+    return SCHEMES.some((scheme) => solvableReadings(bySlotCandidate, scheme).length > 0);
+  };
+
   const accept = (candidate: Record<Face, ColorFace> | null): AiScanResult | null => {
     if (!candidate) return null;
     const bySlotCandidate = checkedBySlot(candidate);
@@ -1419,8 +1559,54 @@ function assembleWithin(
     // here and nowhere else: the cheapest recolouring with nine of each colour. Accepted ONLY if
     // the repaired reading is itself solvable, so this can turn a refusal into a scan and can
     // never turn a scan into something worse.
-    const byCounts = accept(repairByCounts(faces, maxRepairCost));
+    //
+    // AND ONLY ONCE THE STICKERS IT INVENTED HAVE BEEN LOOKED AT AGAIN (D1, 2026-09-23). "Legal and
+    // cheapest" is not "the cube in the hand": two stickers confidently misread plus a third whose
+    // alternative scores 0.7 repairs into a DIFFERENT legal cube and used to come back `valid` —
+    // the one thing the scanner promises never to do (§3, reproduced by the audit's `verify.ts`).
+    // Legality cannot settle it, because both cubes are legal; nothing in the captures can, because
+    // the evidence is a tie the repair broke by cost. The only thing that can is another look, so
+    // the repair now ASKS for one instead of asserting. A look that agrees accepts the repair
+    // exactly as before, which is why this costs the measured gain (80.0% → 98.7% whole cubes)
+    // nothing on a cube the repair had right — it costs it one more showing of one side.
+    const repair = repairByCounts(faces, maxRepairCost);
+    const unseen = repair
+      ? repair.changed.filter(
+          (s) =>
+            !reobserved(repair.faces[s.face]!, faces[s.face]!, looksAt(confirmed, s.face), s.index),
+        )
+      : [];
+    const byCounts = repair && unseen.length === 0 ? accept(repair.faces) : null;
     if (byCounts) return byCounts;
+    if (repair && unseen.length > 0 && couldAccept(repair.faces)) {
+      // A legal cube is one look away. Ask about the side carrying the most invented stickers,
+      // through `permittedHold` — the same function every other request goes through, so the hold
+      // asked for is one the schemes in play actually permit and one this side has not been asked
+      // for already. `repaired` travels with the refusal so a host can point at the stickers it
+      // wants looked at, and `misreadFace` names the side as every other re-show request does.
+      //
+      // ONE LOOK, THEN A VERDICT — never a second ask at the same side. A sticker the detector got
+      // wrong is one it will get wrong again the same way (`Looks`: "a side the detector misreads
+      // the same way every time could never confirm"), so asking until the second look agrees is a
+      // dead end on exactly the cubes the repair exists for. A side already looked at falls through
+      // to the pixel path and then the diagnosis below, which names the sticker as a suspect and
+      // lets a person tap it — an honest refusal instead of an endless question.
+      //
+      // A side with no hold left to ask for falls through the same way: the repair stays
+      // unconfirmed, and an unconfirmed repair is never accepted.
+      const worst = mostRepaired(unseen);
+      const hold =
+        looksAt(confirmed, worst).length === 0
+          ? permittedHold(worst, SCHEMES, confirmed)
+          : undefined;
+      if (hold) {
+        return reject('a colour needs a second look before this cube can be accepted', {
+          confirm: hold,
+          repaired: unseen,
+          misreadFace: worst,
+        });
+      }
+    }
     // Still nothing. One more source of evidence exists and has not been used: the pixels. The
     // scores answered "what colour is each sticker" and were refused; the pixels answer "which
     // stickers share a paint", which a shared illuminant makes answerable when the other is not.
@@ -1622,6 +1808,16 @@ export function resolveCentres(
   unnamed: readonly UnnamedSide[],
   threshold = LOW_CONFIDENCE_THRESHOLD,
   options: AssembleOptions = {},
+  /**
+   * The looks taken so far, which the filings are assembled WITH (2026-09-23).
+   *
+   * Empty was hard-coded here, and since D1 that is no longer harmless: reaching a legal cube from
+   * a collision's reads needs the count repair to change stickers, a repaired sticker must be
+   * looked at again before the cube is accepted, and a resolver that cannot see the look would ask
+   * for it for ever. The filing itself is still decided by legality alone — a look narrows
+   * rotations and confirms repairs, and neither changes which filing can be a cube.
+   */
+  confirmed: Confirmed = {},
 ): CentreResolution {
   const free = FACES.filter((face) => !named[face]);
   // ONE UNNAMED SIDE IS ENOUGH (2026-09-20). It used to take two, because the only way to be unnamed
@@ -1665,7 +1861,7 @@ export function resolveCentres(
     result: assembleWithin(
       f.faces,
       threshold,
-      {},
+      confirmed,
       { ...options, diagnose: false },
       Number.POSITIVE_INFINITY,
       // NO PIXEL PATH HERE. It names its groups from the centres, and this is the one situation

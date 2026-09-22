@@ -10,6 +10,27 @@ export interface FrameSource {
   /** The current frame as plain RGBA pixels. */
   grab(): Frame;
   /**
+   * WHICH frame is in front of the camera right now — a value that changes when, and only when, the
+   * picture does. Null from a source that cannot tell.
+   *
+   * ADDED FOR D2 (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3). Nothing downstream could tell a
+   * re-served frame from a new one, on either path: the native camera hands back the same frame on
+   * every tick for up to a second, and a `<video>` ticked faster than its stream paints repeats the
+   * last one just as silently. One physical frame then supplied several "reads" of the stillness
+   * gate — three identical reads spanning 500 ms is satisfiable by ONE frame read three times — and
+   * any design that accumulates evidence would have counted it as several observations.
+   *
+   * IDENTITY, NOT A FILTER, and the distinction is the audit's central finding (§0.2): a stage that
+   * decides and discards is how a weak signal becomes total failure. So this reports which frame
+   * this is and refuses nothing; a consumer that wants distinct frames compares it, one that wants
+   * every tick ignores it, and the recorder counts how often each was served.
+   *
+   * Optional because a source that cannot say must say so rather than invent a counter — a
+   * fabricated id is worse than none, since it would read as "always a new frame", which is exactly
+   * the belief that was wrong.
+   */
+  frameId?(): number | null;
+  /**
    * The liveness half of `grab()` on its own: throws exactly what `grab()` would throw before it
    * read a pixel — `CameraLostError`, `FrameNotReadyError` — and returns when a frame could be read.
    *
@@ -287,6 +308,28 @@ function frameSourceOf(
   return {
     device,
     ready,
+    /**
+     * The video's own presentation time, in whole milliseconds, as this frame's identity.
+     *
+     * `currentTime` advances only when the element PAINTS a new frame, so two ticks between paints
+     * read the same number — which is the fact D2 needs reported. Rounded to a millisecond because
+     * it is a double whose low bits differ between reads of the same painted frame on some engines,
+     * and a "new frame" every tick is the very illusion this replaces.
+     *
+     * NOT `requestVideoFrameCallback`'s `presentedFrames`, though it is the exact counter this
+     * wants: it does not exist on every engine this ships to (standard WebKitGTK and Android's
+     * WebView), so it would answer on some platforms and not others — and a source that silently
+     * stops answering is how the frozen-camera defect of 2026-09-20 was invisible. One mechanism
+     * that works everywhere beats a better one that works somewhere.
+     *
+     * Null for a video with no dimensions: there is no frame, so there is no frame to identify,
+     * and returning 0 would make "before any frame" look like a real frame the scan could count.
+     */
+    frameId(): number | null {
+      if (video.videoWidth === 0 || video.videoHeight === 0) return null;
+      const t = video.currentTime;
+      return Number.isFinite(t) ? Math.round(t * 1000) : null;
+    },
     grab(): Frame {
       ready();
       const w = video.videoWidth;

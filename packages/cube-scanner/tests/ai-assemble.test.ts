@@ -1155,27 +1155,71 @@ describe('a confirming look is matched against the capture as READ — audit §1
     };
   }
 
-  it('accepts the true cube, and never sends the misread side back for another read', () => {
-    const shown = {} as Record<Face, ColorFace>;
-    for (const slot of FACES) shown[slot] = readBy(slot, null);
+  /** Drive the look-and-check exchange, answering every ask with `camera`. */
+  function exchange(
+    shown: Record<Face, ColorFace>,
+    camera: (slot: Face, up: Face) => ColorFace,
+  ): { result: AiScanResult; asked: Face[] } {
     let confirmed: Confirmed = {};
     const asked: Face[] = [];
     let result = assembleColors(shown, 0.15, confirmed);
     for (let round = 0; round < 12 && !result.valid && result.confirm; round++) {
-      // Every look is answered by the same camera: F comes back misread again.
       expect(result.mismatch, `round ${round}: a truthful look was refused`).toBeFalsy();
       const { face, up } = result.confirm;
       asked.push(face);
       const given = confirmed[face];
       const before = given === undefined ? [] : Array.isArray(given) ? given : [given];
-      confirmed = { ...confirmed, [face]: [...before, { capture: readBy(face, up), up }] };
+      confirmed = { ...confirmed, [face]: [...before, { capture: camera(face, up), up }] };
       result = assembleColors(shown, 0.15, confirmed);
     }
-    // The misread side WAS asked for — the case is about that look — and the scan finished right.
+    return { result, asked };
+  }
+
+  /** `slot` read WITHOUT the F misread — a second photograph that got the bottom row right. */
+  function trueRead(slot: Face, up: Face | null): ColorFace {
+    const position = positionOf(colourOfSlot(slot), 'western');
+    const fi = FACES.indexOf(position);
+    const colors = [...truth.slice(fi * 9, fi * 9 + 9)].map((l) => paint(l, 'western'));
+    const k = up === null ? 0 : (holdOffset(colourOfSlot(slot), colourOfSlot(up), 'western') ?? 0);
+    const order = rot([0, 1, 2, 3, 4, 5, 6, 7, 8], k);
+    return {
+      colors: order.map((i) => colors[i]!),
+      confidence: order.map(() => 0.9),
+      scores: order.map((i) => [0, 1, 2, 3, 4, 5].map((c) => (c === colors[i] ? 0.9 : 0.02))),
+    };
+  }
+
+  it('asks about the misread side, and takes a second look that reads it right', () => {
+    // The look the repair asks for (D1, 2026-09-23) is answered by a camera that gets F right this
+    // time — a second photograph at another angle, in other light, which is what a second look
+    // physically IS. The repair's answer is confirmed and the scan finishes with the true cube.
+    const shown = {} as Record<Face, ColorFace>;
+    for (const slot of FACES) shown[slot] = readBy(slot, null);
+    const { result, asked } = exchange(shown, (slot, up) =>
+      slot === 'F' ? trueRead(slot, up) : readBy(slot, up),
+    );
     expect(asked).toContain('F');
     expect(result.mismatch).toBeFalsy();
     expect(result.valid).toBe(true);
     expect(result.facelets).toBe(truth);
+  });
+
+  it('refuses rather than assert the cube when every look repeats the same misread', () => {
+    // THE LIMIT OF D1, stated rather than hidden. A repaired sticker is a colour nobody observed,
+    // and a camera that answers every look with the same misread has not observed it either — the
+    // second look is the same measurement taken twice, not independent evidence. The honest answer
+    // is then a refusal naming the sticker, which a person can tap, and NOT a cube built on three
+    // invented colours: this reading sits one repair from the true cube and, on another cube with
+    // the same shape, one repair from a decoy (§3 A2). Nothing in the captures tells the two apart.
+    //
+    // The scan does not loop asking, either: one look per side, then a verdict.
+    const shown = {} as Record<Face, ColorFace>;
+    for (const slot of FACES) shown[slot] = readBy(slot, null);
+    const { result, asked } = exchange(shown, readBy);
+    expect(asked).toContain('F');
+    expect(asked.filter((f) => f === 'F')).toHaveLength(1);
+    expect(result.valid).toBe(false);
+    expect(result.mismatch).toBeFalsy();
   });
 });
 

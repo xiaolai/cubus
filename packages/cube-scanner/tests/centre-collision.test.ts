@@ -1,6 +1,11 @@
 import Cube from 'cubejs';
 import { describe, expect, it } from 'vitest';
-import { type ColorFace, resolveCentres, type UnnamedSide } from '../src/ai-assemble.js';
+import {
+  assembleColors,
+  type ColorFace,
+  resolveCentres,
+  type UnnamedSide,
+} from '../src/ai-assemble.js';
 import { assignNineOfEach } from '../src/nine-of-each.js';
 import { type Colour, colourOfSlot, slotOf } from '../src/scheme.js';
 import { FACES, type Face } from '../src/types.js';
@@ -86,6 +91,17 @@ function slotsOf(faces: Record<Face, ColorFace>, unnamed: readonly ColorFace[]):
   );
 }
 
+/** `capture` with a repair's changed stickers put in — the colouring the repair proposes. */
+function withRepair(
+  capture: ColorFace,
+  repaired: readonly { face: Face; index: number; to: number }[],
+  slot: Face,
+): ColorFace {
+  const colors = [...capture.colors];
+  for (const r of repaired) if (r.face === slot) colors[r.index] = r.to;
+  return { ...capture, colors };
+}
+
 describe('resolveCentres — the seven collisions measured on real cubes', () => {
   it.each(CENTRE_COLLISIONS)('$name: resolves to the cube as it physically was', (c) => {
     const { named, unnamed } = fileInOrder(c.captures);
@@ -94,10 +110,34 @@ describe('resolveCentres — the seven collisions measured on real cubes', () =>
 
     const resolution = resolveCentres(named, asUnnamed(unnamed));
 
-    expect(resolution.result.valid).toBe(true);
-    expect(resolution.result.facelets).toBe(c.truth);
+    // THE FILING IS STILL DECIDED BY LEGALITY, and it is still the true cube's. That is what this
+    // fixture set measures and it is unchanged: of the filings, exactly one can be a cube at all.
     expect(resolution.decidedBy).toBe('legality');
     expect(Object.keys(resolution.faces ?? {})).toHaveLength(6);
+
+    // WHAT CHANGED ON 2026-09-23 (D1, `dev-docs/scan-pipeline-audit-2026-09-23.md` §3). Reaching a
+    // legal cube from these reads needs the count repair to change stickers the camera read
+    // otherwise — 3 to 6 of them across the seven, at a cost of 10.5 to 35.8 — and a repaired
+    // sticker is a colour NOBODY OBSERVED. "Legal and cheapest" is not "the cube in the hand": the
+    // audit's A2 builds two legal cubes where the cheapest repair lands on the wrong one, and this
+    // fixture's own note records that among these seven, two had two legal cubes fitting and once
+    // "the legality-only answer was the wrong one". So the resolver asks for a look at the sides
+    // carrying invented stickers instead of asserting a cube.
+    const asked = resolution.result;
+    expect(asked.valid).toBe(false);
+    expect(asked.confirm).toBeDefined();
+    expect(asked.repaired?.length ?? 0).toBeGreaterThan(0);
+
+    // …and the repair it proposes IS the cube as it physically was. Applied to the filing, the
+    // reading assembles to the truth with nothing left to repair — so what the looks are being
+    // asked to confirm is the right answer, and the capability these seven measure is intact. What
+    // D1 costs is the asking, not the answer.
+    const settled = {} as Record<Face, ColorFace>;
+    for (const f of FACES) settled[f] = withRepair(resolution.faces![f], asked.repaired ?? [], f);
+    const after = assembleColors(settled, undefined, {}, { diagnose: false });
+    expect(after.valid).toBe(true);
+    expect(after.facelets).toBe(c.truth);
+    expect(after.repaired, 'the repaired reading still needed repairing').toBeUndefined();
   });
 
   it('never needed the detector to prefer the true filing — the counts alone would have chosen wrong', () => {

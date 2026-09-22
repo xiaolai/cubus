@@ -134,6 +134,18 @@ export class Stillness {
   private centres: number[] = [];
   /** The colours of the run's read, kept so a broken run can be told WHERE it broke. */
   private colors: readonly number[] | null = null;
+  /**
+   * The frame the last counted read came from, or null when none has been counted or the source
+   * cannot identify its frames.
+   *
+   * D2 (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3). The native camera serves its cached frame
+   * on every tick for up to a second — sixteen ticks at the native rate — and the browser's
+   * `<video>` repeats its last painted frame whenever the loop outruns the stream. Nothing here
+   * could tell that from a stream of new frames, so ONE physical frame could satisfy "three
+   * identical reads" on its own, and a side was captured on a single observation while the gate
+   * reported a run of three.
+   */
+  private lastFrame: number | null = null;
   /** Per position, how many times a run has been broken by that position alone. */
   private readonly breaks = new Map<number, number>();
   /** Per position, every colour it showed on either side of a break it made alone. */
@@ -160,9 +172,27 @@ export class Stillness {
    * clock change, and a step forward of half a second satisfies the duration gate outright — the
    * one thing this class exists to refuse. "Held still for 500 ms" is a claim about elapsed time,
    * so it is measured with the clock that only measures elapsed time.
+   *
+   * A FRAME ALREADY COUNTED IS NOT COUNTED AGAIN (D2, 2026-09-23). `frameId` identifies the picture
+   * the read came from; offering the same one twice advances nothing — not the count, not the
+   * centre tally — and the gate's verdict is re-reported from the state the first offer left. The
+   * DURATION still runs, because wall-clock time passing is real whether or not the camera
+   * delivered; what a repeated frame cannot do is stand in for a second look at the cube.
+   *
+   * `undefined` means the source cannot identify its frames, and is counted exactly as before —
+   * a runtime that does not know must not have an answer invented for it, since a fabricated id
+   * reads as "always a new frame", which is the belief this corrects.
    */
-  offer(colors: readonly number[], now: number = performance.now()): boolean {
+  offer(colors: readonly number[], now: number = performance.now(), frameId?: number): boolean {
     const key = eightOf(colors);
+    // A repeat of the frame the last counted read came from: no new evidence, so nothing moves.
+    // Checked before the key comparison, because a repeated frame necessarily has the same key and
+    // would otherwise be indistinguishable from a genuine second look at a still cube — which is
+    // precisely the confusion that let one frame settle a side.
+    if (frameId !== undefined && frameId === this.lastFrame) {
+      return this.count >= this.reads && now - this.since >= this.ms;
+    }
+    if (frameId !== undefined) this.lastFrame = frameId;
     if (key === this.key) {
       this.count += 1;
       this.centres.push(colors[CENTRE] ?? -1);
@@ -283,7 +313,24 @@ export class Stillness {
     this.count = 0;
     this.since = 0;
     this.centres = [];
+    // The last counted frame is NOT forgotten with the run, and that is deliberate (D2). A reset
+    // means the run is void, not that the camera delivered something new — so if the very next
+    // offer carries the same frame id, it is still the same picture and still not a second look.
+    // Clearing it here would give a re-served frame a fresh vote after every abstention, which on
+    // the native path is a vote it could cast sixteen times a second.
     this.breaks.clear();
     this.breakColours.clear();
+  }
+
+  /**
+   * Forget which frame was last counted — the camera itself changed, so its ids mean nothing here.
+   *
+   * Separate from `reset()` because the two answer different questions: a reset says this RUN is
+   * void, and this says the numbering is. A reopened camera or a switched device may restart its
+   * counter, and a new frame that happened to reuse the last id would otherwise be discarded as a
+   * repeat — silently, and for exactly one frame, which is the kind of fault that is never found.
+   */
+  forgetFrames(): void {
+    this.lastFrame = null;
   }
 }

@@ -80,16 +80,61 @@ final class NextDetectionTests: XCTestCase {
         return String(cString: why)
     }
 
-    /// One call: the element count (or error), the buffer and shape it wrote, and the picture size.
+    /// One call: the element count (or error), the buffer and shape it wrote, and the frame info —
+    /// its picture size and its identity (D2).
     /// The buffer starts as NaN, so an element the entry did not write cannot pass for one it did.
-    private func detect(cap: Int32) -> (n: Int32, tensor: [Float], rows: Int32, anchors: Int32, width: Int32, height: Int32) {
+    private func detect(cap: Int32) -> (n: Int32, tensor: [Float], rows: Int32, anchors: Int32, width: Int32, height: Int32, id: Int32) {
         var buf = [Float](repeating: .nan, count: Int(max(cap, 1)))
         var rows: Int32 = -1, anchors: Int32 = -1
-        var picture: [Int32] = [-1, -1]
+        var info: [Int32] = [-1, -1, -1]
         let n = buf.withUnsafeMutableBufferPointer { out in
-            picture.withUnsafeMutableBufferPointer { cube_vision_next_detection(out.baseAddress!, cap, &rows, &anchors, $0.baseAddress!) }
+            info.withUnsafeMutableBufferPointer { cube_vision_next_detection(out.baseAddress!, cap, &rows, &anchors, $0.baseAddress!) }
         }
-        return (n, buf, rows, anchors, picture[0], picture[1])
+        return (n, buf, rows, anchors, info[0], info[1], info[2])
+    }
+
+    /// THE CLAIM D2 RESTS ON (dev-docs/scan-pipeline-audit-2026-09-23.md §3): the id repeats for
+    /// every tick that is served one physical frame, and changes when a new frame arrives.
+    ///
+    /// This is the defect stated exactly. `latestFrame()` serves its cached frame on every tick for
+    /// up to `frameStaleAfter` — a full second, sixteen ticks at the native rate — and nothing on
+    /// the page could tell that from sixteen new frames. The stillness gate asks for three
+    /// identical reads spanning 500 ms, which ONE frame re-served can satisfy on its own, so a
+    /// "settled" side could rest on a single observation. Asserted as a NEGATIVE too: three ticks
+    /// with no new frame must not produce three identities, because that is the reading that was
+    /// wrong and it would look perfectly healthy.
+    func testOnePhysicalFrameKeepsOneIdentityAcrossEveryTickItIsServedTo() {
+        let cap = loadModel()
+        let camera = openInjectedCamera(Self.frame).camera
+        let first = detect(cap: cap)
+        XCTAssertEqual(first.n, cap, "the injected frame was not served")
+        // Two more ticks with nothing new injected: the SAME frame, so the same identity.
+        let again = [detect(cap: cap), detect(cap: cap)]
+        for (i, got) in again.enumerated() {
+            XCTAssertEqual(got.n, cap, "tick \(i + 2) was not served the cached frame")
+            XCTAssertEqual(got.id, first.id, "a re-served frame was given a new identity on tick \(i + 2)")
+        }
+        XCTAssertEqual(Set([first.id] + again.map(\.id)).count, 1,
+                       "three ticks on one frame reported more than one identity")
+        // A frame that actually arrives is a different one, and says so.
+        camera.injectForTests(Self.frame)
+        let next = detect(cap: cap)
+        XCTAssertEqual(next.n, cap, "the second frame was not served")
+        XCTAssertNotEqual(next.id, first.id, "a new frame reused the previous frame's identity")
+    }
+
+    /// A tick with no frame reports no identity — zero, with the size. An id left standing from the
+    /// previous tick beside a zero size would name a frame that never arrived, and the Rust side
+    /// reads the three words as one unit.
+    func testATickWithNoFrameLeavesNoIdentityBehind() {
+        let cap = loadModel()
+        let camera = openInjectedCamera(Self.frame).camera
+        XCTAssertNotEqual(detect(cap: cap).id, 0, "the served frame had no identity")
+        camera.injectForTests(Self.frame, age: Camera.frameStaleAfter)
+        let stale = detect(cap: cap)
+        XCTAssertEqual(stale.n, 0, "a stale frame was served")
+        XCTAssertEqual([stale.width, stale.height, stale.id], [0, 0, 0],
+                       "a tick with no frame left a size or an identity behind")
     }
 
     func testNoModelNoCameraAndNoFrameEachWriteNoPicture() {

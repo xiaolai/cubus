@@ -46,6 +46,16 @@ const encode2 = (
   values: number[],
 ): ArrayBuffer => bytes([-2, rows, anchors, width, height], values);
 
+/** Wire version 3: version 2 plus the frame's identity — the Apple plugin's since 2026-09-23 (D2). */
+const encode3 = (
+  rows: number,
+  anchors: number,
+  width: number,
+  height: number,
+  frameId: number,
+  values: number[],
+): ArrayBuffer => bytes([-3, rows, anchors, width, height, frameId], values);
+
 /** A buffer of `size` bytes whose first int32 is `version` — a header that started and stopped. */
 function startedHeader(version: number, size: number): ArrayBuffer {
   const buf = new ArrayBuffer(size);
@@ -105,19 +115,56 @@ describe('decodeTensorResponse — wire version 2, and the camera a plugin repor
         buf: startedHeader(-2, size),
         says: /version 2 header is 20 bytes/,
       })),
-      // A version this build does not speak.
+      // A version this build does not speak. Version 3 is read (D2), so the first unknown is 4.
       {
-        name: 'version 3',
+        name: 'version 4',
         buf: encode2(2, 3, 640, 480, [1, 2, 3, 4, 5, 6]),
-        says: /unknown wire version 3/,
+        says: /unknown wire version 4/,
       },
       // A header whose floats did not all arrive.
       { name: 'two floats of six', buf: encode2(2, 3, 640, 480, [1, 2]), says: /need 44/ },
     ];
-    new DataView(cases.find((c) => c.name === 'version 3')!.buf).setInt32(0, -3, true);
+    new DataView(cases.find((c) => c.name === 'version 4')!.buf).setInt32(0, -4, true);
     for (const { name, buf, says } of cases) {
       expect(() => decodeTensorResponse(buf), name).toThrow(says);
     }
+  });
+
+  // D2 (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3). The native camera serves its cached frame
+  // on every tick for up to a second and the page could not tell that from new frames, so one
+  // physical frame could satisfy the stillness gate's "three identical reads" on its own.
+  it("reads version 3, whose extra word is the frame's identity", () => {
+    const out = decodeTensorResponse(encode3(2, 3, 1280, 720, 4242, [1, 2, 3, 4, 5, 6]));
+    expect(out?.frameId).toBe(4242);
+    // The longer header must not eat a float, nor leave one behind: every other field is read from
+    // its own offset, and an off-by-one-word header would shift the whole tensor silently.
+    expect([out?.rows, out?.anchors]).toEqual([2, 3]);
+    expect(out?.picture).toEqual({ width: 1280, height: 720 });
+    expect(Array.from(out!.data)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it('carries any int32 as an identity, and reports none at all from version 1 or 2', () => {
+    // An identity is compared for CHANGE, never ordered — so a counter that wrapped is still a
+    // correct answer to "is this the same frame?", and refusing it would break a long scan.
+    for (const id of [-2147483648, -1, 0, 1, 2147483647]) {
+      expect(decodeTensorResponse(encode3(1, 1, 8, 8, id, [1]))?.frameId).toBe(id);
+    }
+    // A plugin that cannot identify its frames says NOTHING rather than having an id invented for
+    // it: a fabricated one reads as "every tick is a new frame", the belief D2 exists to correct.
+    expect(decodeTensorResponse(encode2(1, 1, 8, 8, [1]))).not.toHaveProperty('frameId');
+    expect(decodeTensorResponse(encode(1, 1, [1]))).not.toHaveProperty('frameId');
+  });
+
+  it('refuses a version 3 header that started and stopped, and one that is neither frame nor none', () => {
+    expect(() => decodeTensorResponse(startedHeader(-3, 23))).toThrow(
+      /version 3 header is 24 bytes/,
+    );
+    // The same two-shapes rule version 2 has: a frame with every number positive, or all zeroes.
+    expect(() => decodeTensorResponse(encode3(2, 3, 0, 480, 9, [1, 2, 3, 4, 5, 6]))).toThrow(
+      /neither a frame nor "no frame"/,
+    );
+    // All-zero counts in a version 3 header is the idle answer, read as null like version 2's.
+    expect(decodeTensorResponse(encode3(0, 0, 0, 0, 0, []))).toBeNull();
   });
 
   it('checks the camera a plugin reports, keeping a facing only when it names a direction', () => {

@@ -39,6 +39,26 @@ export interface ModelOutput {
    */
   picture?: { width: number; height: number };
   /**
+   * WHICH camera frame this output was computed from — a value that changes when, and only when,
+   * the picture does. Absent from a runtime that cannot say.
+   *
+   * D2 (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3), and it crosses the seam because both
+   * runtimes re-serve frames and neither could say so. The native camera returns its cached frame
+   * on every tick for up to a second (`Camera.frameStaleAfter`); a `<video>` ticked faster than its
+   * stream paints repeats the last one. One physical frame therefore supplied several reads to a
+   * gate that requires "three identical reads spanning 500 ms" — a condition ONE frame can satisfy
+   * on its own — and any accumulation built on top would weight it as several observations.
+   *
+   * Comparable only WITHIN one camera session: it is the source's own counter or clock, not a
+   * global one, and a reopened camera may restart it. Every consumer here compares consecutive
+   * values inside a session, which is all it needs.
+   *
+   * Absent rather than fabricated. A runtime that cannot identify its frames must say nothing —
+   * a made-up counter would read as "always a new frame", which is precisely the false belief this
+   * exists to correct.
+   */
+  frameId?: number;
+  /**
    * The tensor's ROW count, carried so `fitFromOutput` can refuse a head that is not this model's.
    *
    * Required, not optional, and that is the whole value of it. The web runtime already checked

@@ -36,7 +36,24 @@ describe('nine-of-each repair inside assembleColors', () => {
       j === wrong ? 0.4 : j === truth ? 0.38 : 0.01,
     );
 
-    const withScores = assembleColors(faces);
+    // ASKED FOR, NOT ASSERTED (D1, 2026-09-23). A repaired sticker is a colour nobody observed, so
+    // the repair names it and asks for one look at the side rather than returning a cube. The
+    // repair is still the thing that found the answer — without the scores there is nothing to ask
+    // about at all, which the next case pins.
+    const asked = assembleColors(faces);
+    expect(asked.valid).toBe(false);
+    expect(asked.confirm?.face).toBe('R');
+    expect(asked.repaired).toEqual([{ face: 'R', index: 0, from: wrong, to: truth }]);
+
+    // A second look that agrees settles it, and the cube is the one the detector nearly missed.
+    const look = {
+      capture: {
+        ...faces.R!,
+        colors: [...SOLVED.slice(9, 18)].map((l) => LETTER_CLASS[l as Face]!),
+      },
+      up: asked.confirm!.up,
+    };
+    const withScores = assembleColors(faces, undefined, { R: look });
     expect(withScores.valid).toBe(true);
     expect(withScores.facelets).toBe(SOLVED);
   });
@@ -126,13 +143,26 @@ describe('a sticker a person locked', () => {
     }
 
     it('repairs R0 when nobody locked it -- the control, so the next test means something', () => {
+      // ASKS ABOUT R0 rather than asserting the cube (D1, 2026-09-23): a repaired sticker is a
+      // colour nobody observed. The control still holds — the repair is reached, it names R0, and
+      // the cube it proposes is the true one — which is what makes the locked case below mean
+      // something: there the repair is refused outright and there is nothing to ask about.
       const { result } = collision(false);
-      expect(result.valid).toBe(true);
-      expect(result.facelets).toBe(SOLVED);
+      expect(result.valid).toBe(false);
+      expect(result.repaired).toEqual([
+        { face: 'R', index: 0, from: LETTER_CLASS.L, to: LETTER_CLASS.R },
+      ]);
+      expect(result.confirm?.face).toBe('R');
     });
 
     it('refuses rather than move R0 once a person has locked it', () => {
-      expect(collision(true).result.valid).toBe(false);
+      const { result } = collision(true);
+      expect(result.valid).toBe(false);
+      // And refuses OUTRIGHT — no repair was proposed, so there is nothing to ask a second look
+      // about. Without this the locked case would be indistinguishable from the control above,
+      // which now also comes back invalid (D1).
+      expect(result.repaired).toBeUndefined();
+      expect(result.confirm).toBeUndefined();
     });
   });
 

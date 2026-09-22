@@ -375,3 +375,83 @@ describe('classify — the transition rule, read on its own', () => {
     expect(classify(before, quarter).forget).toBe(true);
   });
 });
+
+/**
+ * D2 (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3): one physical frame is one observation,
+ * however many ticks it is served to.
+ *
+ * The defect these pin is not hypothetical. `Camera.latestFrame()` re-serves its cached frame for
+ * up to `frameStaleAfter` — a full second, sixteen ticks at the native rate — and the browser's
+ * `<video>` repeats its last painted frame whenever the loop outruns the stream. The gate asks for
+ * three identical reads spanning 500 ms, and ONE frame re-served satisfies both halves on its own:
+ * the count because the reads are identical by construction, the duration because wall-clock time
+ * passes regardless. A side could therefore be captured, and reported as a run of three, on a
+ * single look at the cube.
+ */
+describe('Stillness and the identity of the frame a read came from', () => {
+  it('will not settle on one frame re-served, however long it is offered', () => {
+    const s = new Stillness(3, 500);
+    // Sixteen ticks over a second — the native path's behaviour exactly — all one frame.
+    for (let t = 0; t <= 1000; t += 60) {
+      expect(s.offer(READ, 1000 + t, 7), `tick at ${t} ms settled on one frame`).toBe(false);
+    }
+    expect(s.status(2000).run).toBe(1);
+  });
+
+  it('settles on three DISTINCT frames spanning the duration', () => {
+    const s = new Stillness(3, 500);
+    expect(s.offer(READ, 1000, 1)).toBe(false);
+    expect(s.offer(READ, 1300, 2)).toBe(false);
+    expect(s.offer(READ, 1600, 3)).toBe(true);
+  });
+
+  it('counts a repeat once, not once per tick, and resumes on the next real frame', () => {
+    const s = new Stillness(3, 500);
+    s.offer(READ, 1000, 1);
+    for (let i = 0; i < 9; i++) s.offer(READ, 1000 + i * 10, 1);
+    expect(s.status(1100).run, 'a re-served frame was counted more than once').toBe(1);
+    s.offer(READ, 1200, 2);
+    expect(s.status(1200).run).toBe(2);
+    expect(s.offer(READ, 1600, 3)).toBe(true);
+  });
+
+  it('does not let a repeated frame pad the centre tally', () => {
+    // `centreReads` is what names a side whose centre never settled (`mostShown`), and a colour
+    // shown ONCE is deliberately not enough to name one. A re-served frame voting on every tick
+    // would turn a single flicker into a majority and file the side under the wrong colour.
+    const s = new Stillness(3, 500);
+    const withCentre = (c: number) => READ.map((v, i) => (i === 4 ? c : v));
+    s.offer(withCentre(0), 1000, 1);
+    for (let i = 0; i < 8; i++) s.offer(withCentre(0), 1010 + i * 10, 1); // the same frame, again
+    s.offer(withCentre(3), 1200, 2);
+    expect([...s.centreReads()]).toEqual([
+      [0, 1],
+      [3, 1],
+    ]);
+  });
+
+  it('counts every read when the source cannot identify its frames', () => {
+    // A runtime that does not know must not have an answer invented for it, and must behave
+    // exactly as it did before this existed — Windows and Android still speak wire version 1.
+    const s = new Stillness(3, 500);
+    expect(s.offer(READ, 1000)).toBe(false);
+    expect(s.offer(READ, 1300)).toBe(false);
+    expect(s.offer(READ, 1600)).toBe(true);
+  });
+
+  it('keeps refusing a repeat across a reset, and accepts it again after forgetFrames', () => {
+    // A reset says the RUN is void; it does not say the camera delivered something new. Forgetting
+    // the numbering there would hand a re-served frame a fresh vote after every abstention — on
+    // the native path, sixteen votes a second.
+    const s = new Stillness(3, 500);
+    s.offer(READ, 1000, 5);
+    s.reset();
+    s.offer(READ, 1100, 5);
+    expect(s.status(1100).run, 'a reset let the same frame count again').toBe(0);
+    // A camera change DOES reset the numbering: its ids mean nothing here, and a new frame that
+    // happened to reuse the last id would otherwise be discarded as a repeat.
+    s.forgetFrames();
+    s.offer(READ, 1200, 5);
+    expect(s.status(1200).run).toBe(1);
+  });
+});

@@ -314,6 +314,11 @@ export class WebDetector implements Detector {
     const run = this.run;
     const superseded = (): boolean => this.source !== source || this.run !== run;
     let pre: Prepared;
+    // WHICH frame this is, read BEFORE the picture is taken and not after the model answers (D2).
+    // Inference is awaited, and the `<video>` paints while it runs, so an id read on the way out
+    // would name a frame the tensor was not computed from — the identity would be worse than
+    // useless, because it would look right and be wrong exactly when the camera is fastest.
+    const frameId = source.frameId?.() ?? null;
     try {
       if (source.ready) {
         // The source's own liveness verdict first, whichever way the picture is then taken: the
@@ -368,6 +373,7 @@ export class WebDetector implements Detector {
     const { frame } = pre;
     return {
       ...output,
+      ...(frameId === null ? {} : { frameId }),
       frame: pre.owned
         ? frame
         : { data: new Uint8ClampedArray(frame.data), width: frame.width, height: frame.height },

@@ -45,8 +45,10 @@ public struct CameraInfo: Codable {
 /// What the camera has for the tick that asks. One answer under one lock, so the order of
 /// precedence — stopped, then fresh, then nothing — is decided here and nowhere else.
 public enum LatestFrame {
-    /// A frame younger than `Camera.frameStaleAfter`, as straight RGBA8.
-    case frame(bytes: [UInt8], width: Int, height: Int)
+    /// A frame younger than `Camera.frameStaleAfter`, as straight RGBA8. `id` identifies it: the
+    /// same value across every tick this one frame is served to, a different one for the next
+    /// frame the camera actually delivers (D2).
+    case frame(bytes: [UInt8], width: Int, height: Int, id: Int)
     /// Nothing fresh: no frame has arrived, the last one is older than the window, or the session
     /// is interrupted. The per-tick entry answers 0 and the Rust side's no-frame clock runs.
     case none
@@ -137,7 +139,12 @@ public final class Camera: NSObject {
         }
     }
 
-    typealias Frame = (bytes: [UInt8], width: Int, height: Int, at: TimeInterval)
+    /// `id` is D2's frame identity (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3): it changes
+    /// when, and only when, the picture does. `latestFrame()` serves the SAME frame on every tick
+    /// for up to `frameStaleAfter`, and the page could not tell that from a stream of new frames —
+    /// so one physical frame supplied several reads to a gate that asks for three identical ones.
+    /// Assigned where a frame is PUBLISHED, so a re-served frame keeps the id it was published with.
+    typealias Frame = (bytes: [UInt8], width: Int, height: Int, at: TimeInterval, id: Int)
 
     private let session = AVCaptureSession()
     private let queue = DispatchQueue(label: "im.cubus.cube-vision.frames")
@@ -149,6 +156,10 @@ public final class Camera: NSObject {
     private var lifecycle: Lifecycle = .closed
     /// Counts every `open`; the lifecycle's generation is the latest value.
     private var generations = 0
+    /// Counts every frame PUBLISHED, across opens — the id `latestFrame()` hands out (D2). It never
+    /// restarts, so two frames are never confusable even across a camera switch, where a per-open
+    /// counter would hand the first frame of camera B the id the last frame of camera A had.
+    private var frames = 0
     /// The device the current open opened.
     private var opened: CameraInfo?
     private let orientationSource: InterfaceOrientationSource?
@@ -679,11 +690,19 @@ public final class Camera: NSObject {
     /// A frame from the sink of `generation`: kept only while that generation is running. A
     /// callback still queued from the last camera, or one that arrives during an interruption,
     /// is dropped here, under the same lock the lifecycle changes under.
-    fileprivate func publish(_ frame: Frame, generation: Int) {
+    ///
+    /// THE IDENTITY IS ASSIGNED HERE, and the caller does not supply one (D2). Publishing is the
+    /// one place a NEW picture enters, so a counter incremented here cannot be forgotten by a
+    /// caller or advanced by a tick that merely READ the frame — which is the whole distinction
+    /// the id exists to make. A dropped frame takes no number: a callback from a dead generation
+    /// returns before the increment, so the ids the page sees count frames it was actually served.
+    fileprivate func publish(_ frame: (bytes: [UInt8], width: Int, height: Int, at: TimeInterval),
+                             generation: Int) {
         lock.lock()
         defer { lock.unlock() }
         guard lifecycle == .running(generation) else { return }
-        self.frame = frame
+        frames += 1
+        self.frame = (frame.bytes, frame.width, frame.height, frame.at, frames)
     }
 
     /// Tests only: stands in for `open` — a new generation goes live for a camera called `label`,
@@ -730,7 +749,7 @@ public final class Camera: NSObject {
             return .none
         case .running:
             guard let frame, Camera.now() - frame.at < Camera.frameStaleAfter else { return .none }
-            return .frame(bytes: frame.bytes, width: frame.width, height: frame.height)
+            return .frame(bytes: frame.bytes, width: frame.width, height: frame.height, id: frame.id)
         }
     }
 }

@@ -925,6 +925,11 @@ export class AiScanPanel extends HTMLElement {
     // Release any camera a prior attempt left open (e.g. a failed model load under the
     // camera-first design) before opening a fresh one, so streams can't accumulate.
     this.cam.releaseCamera();
+    // The frame numbering goes with the camera (D2). A reopened camera or a switched device may
+    // restart its counter, and a genuinely new frame that happened to reuse the last id would be
+    // thrown away as a repeat — for exactly one frame, silently, which is the kind of fault nobody
+    // ever finds. The RUN is reset by the paths that already do; this forgets only the numbering.
+    this.still.forgetFrames();
     // Choosing the detector is async on the first call (it probes for the native plugin); a stop()
     // during that probe supersedes this attempt, so re-check the generation before going on.
     const detector = await this.ensureDetector();
@@ -1377,8 +1382,11 @@ export class AiScanPanel extends HTMLElement {
       this.note({ outcome: 'abstain', reason: fit.reason, geometry: fit.geometry });
       return;
     }
-    // Both a count and a duration; see Stillness for why either alone is wrong.
-    const settled = this.still.offer(fit.face.colors);
+    // Both a count and a duration; see Stillness for why either alone is wrong — and WHICH FRAME
+    // this read came from, so one physical frame served to several ticks cannot count as several
+    // looks at the cube (D2, `dev-docs/scan-pipeline-audit-2026-09-23.md` §3). A runtime that
+    // cannot say sends nothing and is counted exactly as it was.
+    const settled = this.still.offer(fit.face.colors, performance.now(), output.frameId);
     this.showPreview(fit.face.colors);
     if (!settled) {
       // WHY it is not settling, when the answer is one sticker. The gate keys on all nine

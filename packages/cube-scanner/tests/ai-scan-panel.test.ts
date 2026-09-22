@@ -2840,6 +2840,12 @@ describe('ai-scan-panel — the audit of 2026-09-20 (dev-docs/scanner-audit-2026
     fake.output = null;
     for (const f of FACES) if (f !== 'U') await show(shown[f]);
     await vi.advanceTimersByTimeAsync(CHECK);
+    // ONE LOOK FIRST (D1, 2026-09-23). A repaired sticker is a colour nobody observed, so the scan
+    // names it and asks for the side again instead of accepting the cube. Answering the ask — the
+    // same side, held as asked, read right this time — is what adopts the repair, and only then
+    // does §1.4's property have anything to be about.
+    expect(last().confirm?.face, 'the repair was accepted without a look').toBe('U');
+    await answerConfirms(DEEP);
     expect(completions).toEqual([DEEP]);
     // Wrong, then back to what the board shows: the second re-check must accept, not refuse.
     panel.setSticker('R', 1, (shown.R[1]! + 1) % 6);

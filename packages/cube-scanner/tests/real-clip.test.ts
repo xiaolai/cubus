@@ -132,20 +132,21 @@ describe('a real scan of a cube with a logo on its white centre', () => {
     // red — at whatever turn it was filed; a capture's rotation is the assembly's to settle.
     const logo = [W, B, 2, B, W, Y, 2, 4, 1];
     const white = last().captured.find((c) => c.face === 'U')!;
-    // The tile carries what the assembly SETTLED, not the raw read (2026-09-20; the audit's
-    // adoption of repaired captures): the one misread sticker — blue for yellow, the tap the
-    // full-precision replay had to ask for — is repaired on the tile too, so the person is shown
-    // the cube the app believes in and a correction is measured against it. So: the true white
-    // side, at whatever turn the assembly filed it…
+    // Filed under WHITE — the point of the case — and carrying the read as the camera gave it.
+    //
+    // THE TILE NO LONGER CARRIES THE REPAIR (D1, 2026-09-23). It used to: the one misread sticker
+    // was put right on the tile, because the repair had been accepted. A repaired sticker is a
+    // colour nobody observed, so it is now proposed rather than adopted — the scan asks for a look
+    // at this side first (see below) — and until that look the person is shown what was actually
+    // read. Once the look agrees, the repair is adopted exactly as before.
+    expect([0, 1, 2, 3].some((k) => rotateFace(logo, k).join() === white.colors.join())).toBe(true);
+    // The true white side is ONE sticker away from it — the misread that the repair proposes to
+    // fix, and the tap the full-precision replay had to ask for.
     const truthU = TRUTH.slice(0, 9)
       .split('')
       .map((letter) => 'URFDLB'.indexOf(letter));
-    expect([0, 1, 2, 3].some((k) => rotateFace(truthU, k).join() === white.colors.join())).toBe(
-      true,
-    );
-    // …and ONE sticker from the read, no more: the repair was the misread and nothing else.
     const away = [0, 1, 2, 3].map(
-      (k) => rotateFace(logo, k).filter((c, i) => c !== white.colors[i]).length,
+      (k) => rotateFace(truthU, k).filter((c, i) => c !== white.colors[i]).length,
     );
     expect(Math.min(...away)).toBe(1);
   });
@@ -155,8 +156,26 @@ describe('a real scan of a cube with a logo on its white centre', () => {
     expect(events.some((e) => e.notice?.action?.kind === 'restart')).toBe(false);
   });
 
-  it('finishes with the cube as it physically was', () => {
-    expect(completions).toEqual([TRUTH]);
+  it('asks for one look at the white side rather than asserting a repaired cube', () => {
+    // WHAT D1 COSTS THIS CLIP, measured rather than glossed (2026-09-23). Before it, the scan
+    // finished here with TRUTH: the count repair changed the one misread sticker and the cube was
+    // accepted. The repair was right — TRUTH is reached two independent ways (see its docstring) —
+    // but "legal and cheapest" is not "the cube in the hand", and the same shape of reading lands
+    // on a decoy in the audit's A2. So the scan now names the sticker and asks for one more look
+    // at the white side, and this twenty-second clip holds no frames after the ask to answer it.
+    //
+    // It still captures all six sides in seventeen seconds, and it still reports NO cube rather
+    // than a wrong one — which is the property that matters most and the one this asserts.
+    expect(completions).toEqual([]);
+    const asking = events.filter((e) => e.confirm !== null);
+    expect(asking.length, 'the scan did not ask for the look it needs').toBeGreaterThan(0);
+    expect(asking[0]!.confirm!.face).toBe('U');
+  });
+
+  it('never reports a cube that is not the cube', () => {
+    // The whole of D1's purpose, as a standing assertion on a real recording: whatever the scan
+    // does here, it does not complete with something that is not TRUTH.
+    for (const facelets of completions) expect(facelets).toBe(TRUTH);
   });
 
   it('announces every side it files, once, as it files it', () => {

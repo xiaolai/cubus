@@ -66,13 +66,15 @@ extern "C" {
     fn cube_vision_free_string(p: *mut c_char);
     fn cube_vision_open_camera(device_id: *const c_char) -> i32;
     fn cube_vision_close_camera();
-    /// `picture` is two i32s, `[width, height]`, written whole by the Swift side.
+    /// `frame_info` is THREE i32s, `[width, height, id]`, written whole by the Swift side. `id`
+    /// is D2's frame identity: the camera's own publish counter, so it repeats on every tick a
+    /// cached frame is re-served and changes when a new frame actually arrives.
     fn cube_vision_next_detection(
         out: *mut f32,
         cap: i32,
         rows: *mut i32,
         anchors: *mut i32,
-        picture: *mut i32,
+        frame_info: *mut i32,
     ) -> i32;
 }
 
@@ -150,7 +152,10 @@ fn tensor_response(
     picture: [i32; 2],
     data: &[f32],
 ) -> Result<Response, String> {
-    wire::tensor_bytes(count, rows, anchors, picture, data).map(Response::new)
+    // No frame id: this encodes an INJECTED still (`infer_frame`, the golden-frame harness), not a
+    // camera frame. There is no camera, so there is nothing whose identity could be reported, and
+    // inventing one would tell the page that a still it handed in was a live frame (D2).
+    wire::tensor_bytes(count, rows, anchors, picture, None, data).map(Response::new)
 }
 
 /// Take ownership of a C string the Swift side allocated with `strdup`, or None for null.
@@ -324,12 +329,12 @@ fn next_detection(state: State<'_, CubeVision>) -> Result<Response, String> {
     if len <= 0 {
         return Err("model not loaded".into());
     }
-    next_detection_bytes(len, &state.waiting_since, |buf, rows, anchors, picture| {
+    next_detection_bytes(len, &state.waiting_since, |buf, rows, anchors, info| {
         // SAFETY: `buf` has `len` elements (`next_detection_bytes` allocates it so), matching the
-        // `cap` passed; rows/anchors are valid out-params and `picture` is the two Int32s the Swift
+        // `cap` passed; rows/anchors are valid out-params and `info` is the three Int32s the Swift
         // side writes.
         unsafe {
-            cube_vision_next_detection(buf.as_mut_ptr(), len, rows, anchors, picture.as_mut_ptr())
+            cube_vision_next_detection(buf.as_mut_ptr(), len, rows, anchors, info.as_mut_ptr())
         }
     })
     .map(Response::new)
@@ -344,15 +349,15 @@ fn next_detection(state: State<'_, CubeVision>) -> Result<Response, String> {
 fn next_detection_bytes(
     len: i32,
     waiting_since: &Mutex<Option<Instant>>,
-    detect: impl FnOnce(&mut [f32], &mut i32, &mut i32, &mut [i32; 2]) -> i32,
+    detect: impl FnOnce(&mut [f32], &mut i32, &mut i32, &mut [i32; 3]) -> i32,
 ) -> Result<Vec<u8>, String> {
     let mut buf =
         vec![0f32; usize::try_from(len).map_err(|_| format!("a model output of {len} elements"))?];
     let (mut rows, mut anchors) = (0i32, 0i32);
-    // `[width, height]`, written whole by the Swift side.
-    let mut picture = [0i32; 2];
+    // `[width, height, id]`, written whole by the Swift side — see the extern declaration.
+    let mut info = [0i32; 3];
     let n = swift(|| {
-        let n = detect(&mut buf, &mut rows, &mut anchors, &mut picture);
+        let n = detect(&mut buf, &mut rows, &mut anchors, &mut info);
         if n < 0 {
             return Err(ffi_failure("next_detection", n));
         }
@@ -375,7 +380,9 @@ fn next_detection_bytes(
         return Ok(wire::no_frame());
     }
     *waiting = None;
-    wire::frame_bytes(n, rows, anchors, picture, &buf)
+    // Apple's camera always knows which frame this is, so the answer always carries it (wire
+    // version 3). The `[width, height]` the wire checks are the first two words of the same triple.
+    wire::frame_bytes(n, rows, anchors, [info[0], info[1]], Some(info[2]), &buf)
 }
 
 /// Decode and check an `infer_frame` payload into what the Swift ABI takes: the RGBA bytes and
@@ -589,14 +596,14 @@ mod tests {
     /// so a declaration that swapped `picture` with either would zero the wrong one and fail here. The
     /// frame-present path is `swift test`'s (swift/Tests/CubeVisionTests), which can inject a frame.
     #[test]
-    fn next_detection_writes_the_picture_through_its_own_argument() {
+    fn next_detection_writes_the_frame_info_through_its_own_argument() {
         let _state = native_state();
         let len = load_source_model(0);
         // SAFETY: idempotent; no camera is open afterwards.
         unsafe { cube_vision_close_camera() };
         let mut buf = vec![0f32; len as usize];
         let (mut rows, mut anchors) = (-7i32, -7i32);
-        let mut picture = [-1i32, -1];
+        let mut info = [-1i32, -1, -1];
         // SAFETY: `buf` has `len` elements matching the cap; the rest are valid out-params.
         let n = unsafe {
             cube_vision_next_detection(
@@ -604,19 +611,21 @@ mod tests {
                 len,
                 &mut rows,
                 &mut anchors,
-                picture.as_mut_ptr(),
+                info.as_mut_ptr(),
             )
         };
         assert_eq!(n, -4, "expected no camera: {}", last_error());
+        // All THREE words, including the id (D2): an id left over from a previous tick beside a
+        // zero size would be an identity for a frame that never arrived.
         assert_eq!(
-            picture,
-            [0, 0],
-            "the picture was not written through its argument"
+            info,
+            [0, 0, 0],
+            "the frame info was not written through its argument"
         );
         assert_eq!(
             (rows, anchors),
             (-7, -7),
-            "the picture's zeroes landed on the shape"
+            "the frame info's zeroes landed on the shape"
         );
     }
 
@@ -627,25 +636,27 @@ mod tests {
     #[test]
     fn a_tick_carries_what_the_swift_side_wrote_to_the_wire() {
         let waiting = Mutex::new(None);
-        let frame = |buf: &mut [f32], rows: &mut i32, anchors: &mut i32, picture: &mut [i32; 2]| {
+        let frame = |buf: &mut [f32], rows: &mut i32, anchors: &mut i32, info: &mut [i32; 3]| {
             assert_eq!(
                 buf.len(),
                 3,
                 "the buffer is not the size the model promised"
             );
             buf.copy_from_slice(&[0.5, 0.25, 0.125]);
-            (*rows, *anchors, *picture) = (1, 3, [721, 479]);
+            (*rows, *anchors, *info) = (1, 3, [721, 479, 42]);
             3
         };
         let bytes = next_detection_bytes(3, &waiting, frame).unwrap();
         let word = |i: usize| i32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
+        // Wire version 3: the frame's identity travels with its tensor (D2), so the page can tell
+        // a re-served cached frame from a new one.
         assert_eq!(
-            [word(0), word(1), word(2), word(3), word(4)],
-            [-2, 1, 3, 721, 479]
+            [word(0), word(1), word(2), word(3), word(4), word(5)],
+            [-3, 1, 3, 721, 479, 42]
         );
-        let f = |i: usize| f32::from_le_bytes(bytes[20 + i * 4..24 + i * 4].try_into().unwrap());
+        let f = |i: usize| f32::from_le_bytes(bytes[24 + i * 4..28 + i * 4].try_into().unwrap());
         assert_eq!([f(0), f(1), f(2)], [0.5, 0.25, 0.125]);
-        assert_eq!(bytes.len(), 20 + 3 * 4);
+        assert_eq!(bytes.len(), 24 + 3 * 4);
 
         let no_size = next_detection_bytes(3, &waiting, |_, rows, anchors, _| {
             (*rows, *anchors) = (1, 3);
@@ -678,16 +689,16 @@ mod tests {
             .checked_sub(NO_FRAME_TIMEOUT)
             .expect("five seconds ago exists");
         let waiting = Mutex::new(Some(expired));
-        let idle = |_: &mut [f32], _: &mut i32, _: &mut i32, _: &mut [i32; 2]| NO_FRAME_YET;
+        let idle = |_: &mut [f32], _: &mut i32, _: &mut i32, _: &mut [i32; 3]| NO_FRAME_YET;
         let e = next_detection_bytes(3, &waiting, idle).unwrap_err();
         assert!(e.contains("no frame in 5s"), "{e}");
         assert!(e.contains("close and reopen"), "{e}");
         // Still expired on the next tick: the error repeats rather than restarting the wait.
         assert!(next_detection_bytes(3, &waiting, idle).is_err());
         // A frame ends the wait…
-        let frame = |buf: &mut [f32], rows: &mut i32, anchors: &mut i32, picture: &mut [i32; 2]| {
+        let frame = |buf: &mut [f32], rows: &mut i32, anchors: &mut i32, info: &mut [i32; 3]| {
             buf.copy_from_slice(&[0.5, 0.25, 0.125]);
-            (*rows, *anchors, *picture) = (1, 3, [640, 480]);
+            (*rows, *anchors, *info) = (1, 3, [640, 480, 7]);
             3
         };
         next_detection_bytes(3, &waiting, frame).unwrap();

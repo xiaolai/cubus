@@ -566,7 +566,7 @@ export function decodeTensorResponse(input: ArrayBuffer | string): ModelOutput |
   // version 2 header is a bridge disagreement, not the idle "no frame yet" a short version 1 one is.
   const versioned = buf.byteLength >= 4 && new Int32Array(buf, 0, 1)[0]! < 0;
   if (!versioned && buf.byteLength < 8) return null;
-  const { rows, anchors, headerBytes, picture } = tensorHeader(buf);
+  const { rows, anchors, headerBytes, picture, frameId } = tensorHeader(buf);
   // "No frame yet", in either version: both counts zero, and `tensorHeader` has refused every
   // shape between that and a frame.
   if (anchors === 0) return null;
@@ -588,25 +588,47 @@ export function decodeTensorResponse(input: ArrayBuffer | string): ModelOutput |
     );
   }
   const data = new Float32Array(buf, headerBytes, count);
+  // WHICH frame this tensor came from (D2, wire version 3). The native camera re-serves its cached
+  // frame on every tick for up to a second, and nothing on this side could tell that from a stream
+  // of new ones, so one physical frame supplied several reads to a gate that asks for three.
+  // Carried, never inferred: a version 1 or 2 plugin says nothing, and nothing is what is reported.
   // `rows` is CARRIED, not discarded. It was read off the header, used for one length check and
   // thrown away, so the one runtime that crosses a bridge was the one with no assertion that the
   // tensor is this model's detect head: a re-exported or transposed model reached
   // `decodeDetections` and was read off stale offsets. `fitFromOutput` is where that is now
   // refused, for every runtime at once.
-  return picture ? { data, anchors, rows, picture } : { data, anchors, rows };
+  return {
+    data,
+    anchors,
+    rows,
+    ...(picture ? { picture } : {}),
+    ...(frameId === undefined ? {} : { frameId }),
+  };
 }
 
 /**
- * The header of a tensor response, in either wire version. A version 2 header either says "no frame
- * yet" — zero anchors, and no picture — or carries a frame AND the positive size of the picture it
- * came from; a frame with no size, or a size with no frame, is the two sides of the bridge
- * disagreeing, and is refused rather than read as a frame nobody can place (audit, 2026-09-19).
+ * The header of a tensor response, in any of the three wire versions. A version 2 header either says
+ * "no frame yet" — zero anchors, and no picture — or carries a frame AND the positive size of the
+ * picture it came from; a frame with no size, or a size with no frame, is the two sides of the
+ * bridge disagreeing, and is refused rather than read as a frame nobody can place (audit,
+ * 2026-09-19).
+ *
+ * VERSION 3 ADDS THE FRAME'S IDENTITY (D2, 2026-09-23): `-3, rows, anchors, width, height, frameId`,
+ * 24 bytes. It is version 2 plus one word, because the frame a tensor was computed from is a fact
+ * only the plugin holds — it is the plugin that re-serves a cached frame for up to a second
+ * (`Camera.frameStaleAfter`) — and no amount of reasoning on this side can recover it.
+ *
+ * THREE VERSIONS ARE READ AND NONE IS REQUIRED. Apple speaks 3; Windows and Android still speak 1,
+ * and a plugin that says nothing about frame identity has `frameId` absent rather than guessed. A
+ * fabricated id would read as "every tick is a new frame", which is precisely the false belief D2
+ * exists to correct, so the older paths must stay silent rather than be made to look modern.
  */
 function tensorHeader(buf: ArrayBuffer): {
   rows: number;
   anchors: number;
   headerBytes: number;
   picture?: { width: number; height: number };
+  frameId?: number;
 } {
   const first = new Int32Array(buf, 0, 1)[0]!;
   if (first >= 0) {
@@ -621,23 +643,42 @@ function tensorHeader(buf: ArrayBuffer): {
       `cube-vision tensor: a version 1 header of ${rows}×${anchors} is neither a frame nor "no frame"`,
     );
   }
-  if (first !== -2) throw new Error(`cube-vision tensor: unknown wire version ${-first}`);
-  if (buf.byteLength < 20) {
-    throw new Error(`cube-vision tensor: a version 2 header is 20 bytes, got ${buf.byteLength}`);
+  if (first !== -2 && first !== -3) {
+    throw new Error(`cube-vision tensor: unknown wire version ${-first}`);
   }
-  const header = new Int32Array(buf, 0, 5);
+  // Version 3 is version 2 plus the frame's identity, so the two are parsed together: one set of
+  // shape rules, one place they can drift. Splitting them into two readers is how the version 1
+  // reader and the version 2 reader came to disagree about what "no frame yet" looks like.
+  const words = first === -2 ? 5 : 6;
+  const headerBytes = words * 4;
+  if (buf.byteLength < headerBytes) {
+    throw new Error(
+      `cube-vision tensor: a version ${-first} header is ${headerBytes} bytes, got ${buf.byteLength}`,
+    );
+  }
+  const header = new Int32Array(buf, 0, words);
   const [rows, anchors, width, height] = [header[1]!, header[2]!, header[3]!, header[4]!];
   // Exactly two shapes, and nothing between them: a frame, every number positive; or "no frame
   // yet", every number zero. A zero row count beside anchors, a negative anything, a size with no
   // frame or a frame with no size is the two sides disagreeing (audit, 2026-09-19).
   if (rows > 0 && anchors > 0 && width > 0 && height > 0) {
-    return { rows, anchors, headerBytes: 20, picture: { width, height } };
+    // The id is a plain int32 and may be ANY value, negative included: it is an identity, not a
+    // count, and the only thing asked of it is that it differ when the picture differs. Refusing a
+    // negative one would make a plugin whose counter wrapped look like a broken bridge.
+    const frameId = first === -3 ? header[5]! : undefined;
+    return {
+      rows,
+      anchors,
+      headerBytes,
+      picture: { width, height },
+      ...(frameId === undefined ? {} : { frameId }),
+    };
   }
   if (rows === 0 && anchors === 0 && width === 0 && height === 0) {
-    return { rows, anchors, headerBytes: 20 };
+    return { rows, anchors, headerBytes };
   }
   throw new Error(
-    `cube-vision tensor: a version 2 header of ${rows}×${anchors} with a ${width}×${height} picture is neither a frame nor "no frame"`,
+    `cube-vision tensor: a version ${-first} header of ${rows}×${anchors} with a ${width}×${height} picture is neither a frame nor "no frame"`,
   );
 }
 
