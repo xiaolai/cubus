@@ -92,7 +92,7 @@ describe('Stillness', () => {
     return { gate: s, a, b };
   };
 
-  it('says which colours a lone flickering sticker changes between, and forgets them on reset', () => {
+  it('says which colours a lone flickering sticker changes between, and forgets them with the subject', () => {
     // The panel's sentence names the pair, and adds the light remark only for a pair the light
     // is known to confuse — so the pair has to be what the sticker actually showed, not a guess.
     const { gate: s } = flickering(2);
@@ -102,11 +102,43 @@ describe('Stillness', () => {
     // Two positions changing at once is a cube that moved: it names no pair.
     s.offer([5, 0, 1, 5, 0, 0, 0, 0, 0], 700);
     expect(s.flickerColours(0)).toEqual([]);
+
+    // A RESET NO LONGER FORGETS IT (D8, `dev-docs/scan-pipeline-audit-2026-09-23.md` §3). The panel
+    // resets on every abstaining frame, and a side that will not settle abstains constantly — so
+    // wiping the history there meant the count could never reach the three breaks `flickering()`
+    // asks for, and the one specific thing the scan can tell a person was replaced by "hold still"
+    // for as long as they were willing to hold it. The history is about a SUBJECT, not a run.
     s.reset();
+    expect(s.flickerColours(2)).toEqual([1, 4]);
+    expect(s.flickering()).toBe(2);
+
+    // The caller says when the subject really changed — a side captured, a camera switched, the
+    // scan restarted — and then it is forgotten, count and colours together. Kept across that, it
+    // would go on naming a sticker of a cube the gate has never seen (audit, 2026-09-19).
+    s.forgetFlicker();
     expect(s.flickerColours(2)).toEqual([]);
-    // …and the COUNT is forgotten with the colours: kept, it would go on naming that sticker for a
-    // cube the gate has never seen (audit, 2026-09-19).
     expect(s.flickering()).toBeNull();
+  });
+
+  it('names the pair a sticker is swapping between NOW, not every colour it ever showed', () => {
+    // With the history surviving resets, a set would accumulate: a sticker that alternated
+    // yellow/orange early and white/blue later would be reported as all four, and the light remark
+    // — added only for a pair the light is known to confuse — would attach itself to a sticker that
+    // never showed that pair.
+    const base = [0, 1, 2, 3, 4, 5, 0, 1, 2];
+    const at = (i: number, c: number) => base.map((v, k) => (k === i ? c : v));
+    const s = new Stillness(3, 500);
+    for (let n = 0; n < 4; n++) {
+      s.offer(at(2, n % 2 === 0 ? 3 : 4), 1000 + n * 100);
+    }
+    expect(s.flickerColours(2)).toEqual([3, 4]);
+    s.reset();
+    for (let n = 0; n < 4; n++) {
+      s.offer(at(2, n % 2 === 0 ? 0 : 5), 2000 + n * 100);
+    }
+    expect(s.flickerColours(2)).toEqual([0, 5]);
+    // …and the COUNT accumulated across the reset, which is the whole point of D8.
+    expect(s.flickering()).toBe(2);
   });
 
   it('forgets a flicker when the subject changes, and keeps it through a noisy frame', () => {

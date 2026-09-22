@@ -93,8 +93,17 @@ export interface SessionMeta {
  * They come in three kinds, which need three different fixes, so they are counted apart:
  *   - abstain  a frame that read no face (`PARTIAL_FACE`, a geometry rule…) — detection;
  *   - colour   exactly one sticker read a different colour than the frame before — colour, keyed
- *              `cell<i>:<from>><to>` with cells in reading order (cell4 is the centre);
+ *              `cell<i>:<from>><to>` with cells in reading order;
  *   - moved    two or more stickers changed at once — the cube was turned or moved, not misread.
+ *
+ * THE CENTRE IS NOT A BREAK, BECAUSE THE GATE DOES NOT TREAT IT AS ONE (D10,
+ * `dev-docs/scan-pipeline-audit-2026-09-23.md` §3). `Stillness` has keyed its run on the EIGHT
+ * since 2026-09-20 — a logo cap alternating white and blue must not be able to veto a capture — so
+ * a centre that changed between two frames broke nothing, and counting it here inflated every
+ * per-side break total on exactly the cubes the trace was opened to diagnose. The audit's §1.2
+ * numbers were read off a trace that did this. Centre changes are still recorded, under `centre`,
+ * because a flickering centre IS the logo cube's signature and losing it would be the opposite
+ * mistake — they are simply not counted as breaks.
  *
  * WHICH FRAMES BELONG TO THE SIDE (2026-09-18). A side is measured from its own first read — a read
  * that is the filed side by `sameSide` (seven of the eight around the centre, under some turn) — and only after
@@ -127,10 +136,18 @@ export interface SideSpeed {
     colour: Record<string, number>;
     moved: number;
   };
+  /**
+   * How many frame-to-frame changes were the CENTRE alone — not breaks (the gate ignores them),
+   * and the logo cube's signature, keyed `<from>><to>` by colour name.
+   */
+  centre: Record<string, number>;
 }
 
 /** Frames that show a side: enough boxes that a face is plausibly in front of the camera. */
 const IN_VIEW_BOXES = 5;
+
+/** The centre's position in a read, in reading order — the one cell the stillness gate ignores. */
+const CENTRE_CELL = 4;
 
 /** The colours a side was filed with. Every capture and hold the panel records carries them. */
 function filedColours(mark: TraceEvent): readonly number[] {
@@ -174,6 +191,7 @@ export function sideSpeeds(
     const firstRead = own[0];
     previous = filed;
     const breaks: SideSpeed['breaks'] = { total: 0, abstain: {}, colour: {}, moved: 0 };
+    const centre: SideSpeed['centre'] = {};
     for (let i = 1; i < own.length; i++) {
       const prev = own[i - 1]!;
       const cur = own[i]!;
@@ -183,9 +201,17 @@ export function sideSpeeds(
         breaks.total += 1;
         continue;
       }
+      // Recorded, and kept OUT of the break counts: the gate keys on the eight (D10).
+      if (cur.colors[CENTRE_CELL] !== prev.colors[CENTRE_CELL]) {
+        count(
+          centre,
+          `${colourOf(prev.colors[CENTRE_CELL]!)}>${colourOf(cur.colors[CENTRE_CELL]!)}`,
+        );
+      }
       const changed: number[] = [];
-      for (let c = 0; c < cur.colors.length; c++)
-        if (cur.colors[c] !== prev.colors[c]) changed.push(c);
+      for (let c = 0; c < cur.colors.length; c++) {
+        if (c !== CENTRE_CELL && cur.colors[c] !== prev.colors[c]) changed.push(c);
+      }
       if (changed.length === 0) continue;
       breaks.total += 1;
       if (changed.length === 1) {
@@ -203,6 +229,7 @@ export function sideSpeeds(
       ticks: own.length,
       reads: own.filter((r) => r.colors !== undefined).length,
       breaks,
+      centre,
     });
   }
   return out;

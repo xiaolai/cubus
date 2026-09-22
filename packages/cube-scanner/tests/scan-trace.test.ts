@@ -325,7 +325,26 @@ describe('sideSpeeds — how fast a side went from shown to captured, and what c
         colour: { 'cell1:red>orange': 1 },
         moved: 2,
       },
+      centre: {},
     });
+  });
+
+  it('does not count a centre flip as a break — the gate does not treat it as one (D10)', () => {
+    // `Stillness` has keyed its run on the EIGHT since 2026-09-20, so a logo cap alternating white
+    // and blue breaks nothing. Counting it here inflated every per-side break total on exactly the
+    // cubes the trace was opened to diagnose, and the audit's §1.2 numbers were read off a trace
+    // that did. The flip is still RECORDED, because a flickering centre is the logo cube's
+    // signature and losing it would be the opposite mistake.
+    const withCentre = (c: number) => A.map((v, i) => (i === 4 ? c : v));
+    const ticks = [
+      rec(100, { colors: withCentre(0), kept: 9 }),
+      rec(200, { colors: withCentre(5), kept: 9 }), // centre alone: white → blue
+      rec(300, { colors: withCentre(0), kept: 9 }), // and back
+      rec(400, { outcome: 'settled', colors: withCentre(0), kept: 9 }),
+    ];
+    const [side] = sideSpeeds(ticks, [ev(400, 'captured', { face: 'F', colors: A })]);
+    expect(side!.breaks).toEqual({ total: 0, abstain: {}, colour: {}, moved: 0 });
+    expect(side!.centre).toEqual({ 'white>blue': 1, 'blue>white': 1 });
   });
 
   it('starts a side at its own first read, not at the previous capture', () => {

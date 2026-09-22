@@ -930,6 +930,8 @@ export class AiScanPanel extends HTMLElement {
     // thrown away as a repeat — for exactly one frame, silently, which is the kind of fault nobody
     // ever finds. The RUN is reset by the paths that already do; this forgets only the numbering.
     this.still.forgetFrames();
+    // A new camera is a new subject as far as the flicker history goes (D8).
+    this.still.forgetFlicker();
     // Choosing the detector is async on the first call (it probes for the native plugin); a stop()
     // during that probe supersedes this attempt, so re-check the generation before going on.
     const detector = await this.ensureDetector();
@@ -2420,6 +2422,12 @@ export class AiScanPanel extends HTMLElement {
     // The read that made this capture is spent, on EVERY path: the confirm and re-read paths did not
     // reset it, so the reports after them carried a finished read's progress (audit, 2026-09-19).
     this.still.reset();
+    // And the flicker history goes WITH the side (D8). It survives an ordinary reset now — a side
+    // that will not settle abstains constantly, and wiping it there meant the one specific thing
+    // the scan can say was never reached — but the next side is a new subject with no frame in
+    // between for `classify` to notice the change on, so naming a sticker of the side just filed
+    // would be describing a cube that is no longer in front of the camera.
+    this.still.forgetFlicker();
     this.flash();
     const detail: ScanCapture = { kind, face, sides: this.sidesHeld() };
     const epoch = this.captureEpoch;

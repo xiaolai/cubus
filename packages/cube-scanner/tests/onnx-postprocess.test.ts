@@ -835,3 +835,80 @@ describe('a cluster of false boxes does not cost the face its place (D4)', () =>
     if (got.ok && clean.ok) expect(got.face.colors).toEqual(clean.face.colors);
   });
 });
+
+/**
+ * D6 (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3): a face with no lattice is ordered by the
+ * y-sort, which scrambles a face whose middle box sits far enough off its row's centre — and the
+ * scan then blames a COLOUR for a geometry error, which is the harm §3 names ("a false misread
+ * accusation").
+ *
+ * The order is REPORTED rather than refused, and the reason is measured. Refusing every sorted face
+ * costs nine of the twenty golden fixtures — run on 2026-09-23 with the fallback removed:
+ * photo-00, render-01, -02, -05, -06, -07, -08, -09, -10 all go from a read to BAD_GEOMETRY, on all
+ * four runtimes. Nothing distinguishes those nine from a scrambled grid at box-centre level, which
+ * `FaceFit.ordering` records in full: three measures refuted in 2026-09-21 and two more on
+ * 2026-09-23 (affine and homography residuals). So the fit says which of the two it did, and a
+ * caller that cares can ask for the side again instead of pointing at a sticker.
+ */
+describe('a fit says whether its order was proven or sorted (D6)', () => {
+  it('reports `lattice` for a clean grid and for one the lattice re-orders', () => {
+    const grid: Detection[] = [];
+    for (let r = 0; r < 3; r++) {
+      for (let c = 0; c < 3; c++) {
+        grid.push({
+          cx: 200 + 45 * c,
+          cy: 200 + 45 * r,
+          w: 30,
+          h: 30,
+          classId: r,
+          confidence: 0.9,
+        });
+      }
+    }
+    const level = fitFace(grid);
+    expect(level.ok).toBe(true);
+    if (level.ok) expect(level.face.ordering).toBe('lattice');
+
+    // Rolled 12°: the sort and the lattice disagree about the order, the lattice wins, and the
+    // answer is still a proven one. (Past about 14° a grid this tight fails `row-spread` before
+    // the ordering question arises, which is the level rules doing their own job.)
+    const t = (12 * Math.PI) / 180;
+    const rolledGrid = grid.map((d) => ({
+      ...d,
+      cx: 245 + (d.cx - 245) * Math.cos(t) - (d.cy - 245) * Math.sin(t),
+      cy: 245 + (d.cx - 245) * Math.sin(t) + (d.cy - 245) * Math.cos(t),
+    }));
+    const rolled = fitFace(rolledGrid);
+    expect(rolled.ok).toBe(true);
+    if (rolled.ok) expect(rolled.face.ordering).toBe('lattice');
+  });
+
+  it('reports `sorted` when no lattice fits and the level rules still read it', () => {
+    // A grid jittered until `fitLattice` finds no basis while the level-frame rules still read it —
+    // the shape nine of the twenty goldens have. The numbers are frozen rather than generated, so
+    // the case is the same one every run.
+    const centres: [number, number][] = [
+      [193, 205.8],
+      [255.2, 207.8],
+      [326, 205.1],
+      [208.9, 259.1],
+      [267.4, 257.2],
+      [311.4, 253],
+      [192.6, 320.2],
+      [252.9, 311.5],
+      [322.4, 326],
+    ];
+    const jittered: Detection[] = centres.map(([cx, cy], i) => ({
+      cx,
+      cy,
+      w: 30,
+      h: 30,
+      classId: i % 6,
+      confidence: 0.9,
+    }));
+    expect(fitLattice(jittered).ok, 'the case no longer reaches the sort').toBe(false);
+    const got = fitFace(jittered);
+    expect(got.ok).toBe(true);
+    if (got.ok) expect(got.face.ordering).toBe('sorted');
+  });
+});

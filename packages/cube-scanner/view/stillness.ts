@@ -148,8 +148,18 @@ export class Stillness {
   private lastFrame: number | null = null;
   /** Per position, how many times a run has been broken by that position alone. */
   private readonly breaks = new Map<number, number>();
-  /** Per position, every colour it showed on either side of a break it made alone. */
-  private readonly breakColours = new Map<number, Set<number>>();
+  /**
+   * Per position, the two colours of its MOST RECENT break — what it is alternating between now.
+   *
+   * The latest pair, not every colour ever seen (2026-09-23, with D8). While the history was wiped
+   * on every abstaining frame it could not grow, so a set and a pair were the same thing; now that
+   * it survives, a set would accumulate every colour a sticker had shown all scan and the sentence
+   * would name four. The sentence exists to say which TWO colours a sticker is swapping between,
+   * and the light remark is added only for a pair the light is known to confuse — a growing set
+   * would eventually contain such a pair by accident and attach the remark to a sticker that never
+   * showed it.
+   */
+  private readonly breakColours = new Map<number, [number, number]>();
 
   /**
    * @param reads Consecutive reads required with an identical EIGHT-sticker ring. The centre may
@@ -220,9 +230,7 @@ export class Stillness {
         }
         if (only !== null) {
           this.breaks.set(only, (this.breaks.get(only) ?? 0) + 1);
-          const seen = this.breakColours.get(only) ?? new Set<number>();
-          seen.add(previous[only]!).add(colors[only]!);
-          this.breakColours.set(only, seen);
+          this.breakColours.set(only, [previous[only]!, colors[only]!]);
         }
       }
       this.key = key;
@@ -294,7 +302,7 @@ export class Stillness {
    * under some light. Empty for a position that never broke a run alone.
    */
   flickerColours(position: number): number[] {
-    return [...(this.breakColours.get(position) ?? [])].sort((a, b) => a - b);
+    return [...new Set(this.breakColours.get(position) ?? [])].sort((a, b) => a - b);
   }
 
   /**
@@ -306,18 +314,39 @@ export class Stillness {
     return { run: this.count, heldMs: this.key === null ? 0 : now - this.since };
   }
 
-  /** Forget the current run — the cube left the frame, or the scan was restarted. */
+  /**
+   * Forget the current RUN — the cube left the frame, a frame could not be read, the read was spent.
+   *
+   * THE FLICKER HISTORY SURVIVES IT (D8, `dev-docs/scan-pipeline-audit-2026-09-23.md` §3). The panel
+   * resets on every abstaining frame, and a side that will not settle abstains constantly — so
+   * wiping `breaks` here meant "which sticker keeps changing" could never reach the three breaks
+   * `flickering()` asks for, and the one specific thing the scan can tell a person was replaced by
+   * "hold still" for as long as they were willing to hold it. The history is about a SUBJECT, not
+   * about a run: `classify`'s `forget` clears it when the subject actually changes, and
+   * `forgetFlicker()` clears it when the caller knows it has.
+   *
+   * The last counted frame does not go either, and for a related reason (D2). A reset means the run
+   * is void, not that the camera delivered something new — so if the very next offer carries the
+   * same frame id, it is still the same picture and still not a second look. Clearing it here would
+   * give a re-served frame a fresh vote after every abstention, which on the native path is a vote
+   * it could cast sixteen times a second.
+   */
   reset(): void {
     this.key = null;
     this.colors = null;
     this.count = 0;
     this.since = 0;
     this.centres = [];
-    // The last counted frame is NOT forgotten with the run, and that is deliberate (D2). A reset
-    // means the run is void, not that the camera delivered something new — so if the very next
-    // offer carries the same frame id, it is still the same picture and still not a second look.
-    // Clearing it here would give a re-served frame a fresh vote after every abstention, which on
-    // the native path is a vote it could cast sixteen times a second.
+  }
+
+  /**
+   * Forget which sticker was flickering — this is a different subject, or a different scan.
+   *
+   * Called where the caller KNOWS the subject changed and `classify` will not see it: a side was
+   * captured (the next side is a new subject with no frame in between to compare), or the scan was
+   * restarted. Keeping it across those would name a sticker of the side before last.
+   */
+  forgetFlicker(): void {
     this.breaks.clear();
     this.breakColours.clear();
   }
