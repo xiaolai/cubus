@@ -102,6 +102,8 @@ export class SessionRecorder {
   private dropped = 0;
   /** The id of the last frame recorded, so a re-served one is counted rather than duplicated. */
   private lastId: number | null = null;
+  /** Frames whose source id could not be used because it did not increase — see `frame`. */
+  private renumbered = 0;
 
   constructor(
     private readonly capacity: number = RECORD_CAPACITY,
@@ -118,11 +120,24 @@ export class SessionRecorder {
     this.decisions.length = 0;
     this.dropped = 0;
     this.lastId = null;
+    this.renumbered = 0;
   }
 
-  /** How many frames this recording holds, and how many the capacity dropped. */
-  get size(): { frames: number; framesDropped: number } {
-    return { frames: this.frames.length, framesDropped: this.dropped };
+  /**
+   * How many frames this recording holds, how many the capacity dropped, and how many carry the
+   * recorder's own ordinal because the source's id did not increase (see `frame`).
+   *
+   * `renumbered` above zero means the recording's ids are not the camera's, so questions about
+   * frame identity — how many DISTINCT frames a decision rested on — are answered about the
+   * recorder's numbering rather than the camera's. Reported rather than hidden, because a silent
+   * substitution here would look exactly like a clean recording.
+   */
+  get size(): { frames: number; framesDropped: number; renumbered: number } {
+    return {
+      frames: this.frames.length,
+      framesDropped: this.dropped,
+      renumbered: this.renumbered,
+    };
   }
 
   /**
@@ -148,8 +163,18 @@ export class SessionRecorder {
     // The id is the SOURCE's where it has one, and the frame's ordinal where it does not.
     // `parseSession` requires it to increase, and a source with no identity would otherwise record
     // every frame as the same one.
-    const id = frameId ?? (last ? last.id + 1 : 0);
-    this.lastId = frameId ?? null;
+    //
+    // A SOURCE WHOSE IDS GO BACKWARDS STILL PRODUCES A READABLE RECORDING. The browser's identity
+    // is the video's presentation time, which restarts at zero when a stream is replaced; a scan
+    // that switched camera mid-recording would otherwise write a session `parseSession` refuses —
+    // and a recording nobody can load is a recording that did not happen. The frame is kept, with
+    // the recorder's own ordinal standing in for an identity the source contradicted. It is not
+    // silent: `renumbered` counts it, so a session whose ids were not the camera's says so.
+    const next = last ? last.id + 1 : 0;
+    const supplied = frameId !== undefined && (!last || frameId > last.id);
+    if (frameId !== undefined && !supplied) this.renumbered += 1;
+    const id = supplied ? (frameId as number) : next;
+    this.lastId = supplied ? (frameId as number) : null;
     this.frames.push({
       id,
       t: Math.round(this.clock() - this.t0),

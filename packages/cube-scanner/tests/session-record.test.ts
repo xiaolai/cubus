@@ -375,3 +375,49 @@ describe('the measurements every later stage is gated on', () => {
     );
   });
 });
+
+describe('a recording stays readable when the source contradicts itself', () => {
+  it('renumbers a frame whose id does not increase, and says it did', () => {
+    // The browser's frame identity is the video's presentation time, which restarts at zero when a
+    // stream is replaced — so a scan that switched camera mid-recording would write a session
+    // `parseSession` refuses, and a recording nobody can load is a recording that did not happen.
+    // The frame is kept under the recorder's own ordinal, and `renumbered` says the ids are no
+    // longer the camera's: a silent substitution would look exactly like a clean recording.
+    let now = 0;
+    const rec = new SessionRecorder(
+      100,
+      () => now,
+      () => '2026-09-23T10:00:00Z',
+    );
+    rec.begin({ id: 's3', model: { hash: 'abc', name: 'cubedet', runtime: 'web' } });
+    rec.frame([det()], { frameId: 5000 });
+    now = 60;
+    rec.frame([det()], { frameId: 12 }); // the stream restarted its clock
+    now = 120;
+    rec.frame([det()], { frameId: 40 }); // …and carries on from there
+    const session = rec.finish({
+      cube: 'worn',
+      conditions: { camera: 'built-in', lighting: 'dim', handling: 'careful', state: 'scrambled' },
+      truth: { facelets: DEEP, source: 'manual-verified' },
+    })!;
+    expect(rec.size.renumbered).toBe(2);
+    expect(session.frames.map((f) => f.id)).toEqual([5000, 5001, 5002]);
+    // The only claim that matters: a reader still accepts it.
+    expect(() => parseSession(JSON.parse(JSON.stringify(session)))).not.toThrow();
+  });
+
+  it('counts nothing as renumbered on a source whose ids behave', () => {
+    let now = 0;
+    const rec = new SessionRecorder(
+      100,
+      () => now,
+      () => '2026-09-23T10:00:00Z',
+    );
+    rec.begin({ id: 's4', model: { hash: 'abc', name: 'cubedet', runtime: 'apple' } });
+    for (const id of [3, 3, 4, 9]) {
+      rec.frame([det()], { frameId: id });
+      now += 60;
+    }
+    expect(rec.size).toEqual({ frames: 3, framesDropped: 0, renumbered: 0 });
+  });
+});
