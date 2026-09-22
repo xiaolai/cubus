@@ -154,6 +154,11 @@ const BUNDLES = [
       // the worker below and falls back to resolving here when a page has no `Worker`.
       '../../../packages/cube-scanner/view/centres-client.ts',
       '../../../packages/cube-scanner/view/centres-protocol.ts',
+      // The session recorder (D9, 2026-09-23), off unless `localStorage.cubusScanRecord` is '1':
+      // the scan trace could never become a replayable fixture, so a bug report could not become a
+      // test. It ships in the panel because the panel is what sees the frames.
+      '../../../packages/cube-scanner/view/session-recorder.ts',
+      '../../../packages/cube-scanner/src/session-record.ts',
       // The colour repair, which arrived with the permissive detector: the constraint a cube's
       // paint satisfies (`nine-of-each`), the pixels a sticker actually carries, read at the one
       // moment a frame and a fitted grid are both in hand (`sticker-pixels`), and the question
@@ -201,10 +206,42 @@ const BUNDLES = [
     // panel never calls it.
     // `latticeOf` (2026-09-21) is the lattice-only view the package entry and the tests read; the
     // panel reads `fitLattice`, which carries the refusal's reason, so esbuild drops the view.
-    treeShaken: ['SOLVED_FACELETS', 'encodeFacelets', 'detectFace', 'fitFromOutput', 'setChainTimeoutForTests', 'latticeOf'],
+    // …and every READER in session-record.ts (2026-09-23): the panel RECORDS, and parsing a
+    // recording is the corpus scripts' and the tests' job, so `parseSession` and its helpers are
+    // dropped along with every refusal message they carry. What survives is the two constants the
+    // recorder needs — `NEAR_FLOOR_RECORD` and `SESSION_SCHEMA` — which is the whole of what
+    // writing a session requires. Same delete-when-used contract as the rest of this list.
+    treeShaken: [
+      'SOLVED_FACELETS', 'encodeFacelets', 'detectFace', 'fitFromOutput',
+      'setChainTimeoutForTests', 'latticeOf',
+      'isRecord', 'num', 'parseConditions', 'parseDetection', 'parseFrame', 'parseTruth',
+      'sessionDurationMs', 'sessionFps', 'sessionTicks',
+    ],
     // encodeFacelets' refusal of a malformed state (2026-09-13) leaves with the function: the
-    // message is in facelet-cube.ts and, correctly, nowhere in a bundle that never encodes.
-    treeShakenMessages: ['encodeFacelets: not a well-formed cube state'],
+    // message is in facelet-cube.ts and, correctly, nowhere in a bundle that never encodes. The
+    // session reader's refusals leave with `parseSession`, for the same reason.
+    treeShakenMessages: [
+      'encodeFacelets: not a well-formed cube state',
+      '.detections must be an array',
+      '.facelets is not a well-formed cube',
+      ".handling must be 'careful' or 'careless'",
+      '.id must be an integer',
+      ".scheme must be 'western' or 'japanese' when present",
+      '.scores must list every class score',
+      '.served must be a whole number of ticks, at least 1',
+      ".state must be 'scrambled' or 'near-solved'",
+      'a session must be an object',
+      'decisions must be an array',
+      'detector measures the detector against itself',
+      'does not increase on',
+      'frames must be a non-empty array',
+      'interpret it, and guessing would corrupt the measurement',
+      'is not a decision kind',
+      'is not a frame of this session',
+      'model must be an object',
+      'must be a finite number',
+      'must be a non-empty string',
+    ],
   },
   {
     // The misread decoder, on its own thread (2026-09-05). A refusal used to spend up to 3.0 s of

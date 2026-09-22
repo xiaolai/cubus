@@ -6475,6 +6475,131 @@ var ScanTrace = class {
   }
 };
 
+// src/session-record.ts
+var SESSION_SCHEMA = "cubus-scan-session/1";
+var NEAR_FLOOR_RECORD = 0.05;
+
+// view/session-recorder.ts
+var RECORD_KEY = "cubusScanRecord";
+var RECORD_CAPACITY = 4e3;
+function recordEnabled(store = globalThis.localStorage) {
+  try {
+    return store?.getItem(RECORD_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+function worthRecording(dets) {
+  return dets.filter((d) => d.confidence >= NEAR_FLOOR_RECORD && d.scores !== void 0).map((d) => ({ ...d, scores: [...d.scores] }));
+}
+var SessionRecorder = class {
+  constructor(capacity = RECORD_CAPACITY, clock = () => performance.now(), wall = () => (/* @__PURE__ */ new Date()).toISOString()) {
+    this.capacity = capacity;
+    this.clock = clock;
+    this.wall = wall;
+  }
+  capacity;
+  clock;
+  wall;
+  start = null;
+  startedAt = "";
+  t0 = 0;
+  frames = [];
+  decisions = [];
+  dropped = 0;
+  /** The id of the last frame recorded, so a re-served one is counted rather than duplicated. */
+  lastId = null;
+  /** A scan loop started: every frame until the next `begin` belongs to it. */
+  begin(start) {
+    this.start = start;
+    this.startedAt = this.wall();
+    this.t0 = this.clock();
+    this.frames.length = 0;
+    this.decisions.length = 0;
+    this.dropped = 0;
+    this.lastId = null;
+  }
+  /** How many frames this recording holds, and how many the capacity dropped. */
+  get size() {
+    return { frames: this.frames.length, framesDropped: this.dropped };
+  }
+  /**
+   * Record one tick's detections.
+   *
+   * `frameId` is the identity D2 put on the seam. A tick served a frame ALREADY RECORDED does not
+   * add a second entry — it increments that frame's `served`, which is the one number that makes
+   * "how many DISTINCT frames did this decision rest on" answerable at all. A source that cannot
+   * identify its frames passes `undefined`, and then every tick is a frame, because that is
+   * genuinely all such a source knows.
+   */
+  frame(dets, options = {}) {
+    if (!this.start) return;
+    const { frameId, inferMs, pixels } = options;
+    const last = this.frames[this.frames.length - 1];
+    if (frameId !== void 0 && last && frameId === this.lastId) {
+      last.served += 1;
+      return;
+    }
+    const id = frameId ?? (last ? last.id + 1 : 0);
+    this.lastId = frameId ?? null;
+    this.frames.push({
+      id,
+      t: Math.round(this.clock() - this.t0),
+      served: 1,
+      detections: worthRecording(dets),
+      ...inferMs === void 0 ? {} : { inferMs: Math.round(inferMs * 10) / 10 },
+      ...pixels === void 0 ? {} : { pixels }
+    });
+    if (this.frames.length > this.capacity) {
+      this.frames.shift();
+      this.dropped += 1;
+    }
+  }
+  /**
+   * Record something the panel decided, against the frame it decided on.
+   *
+   * Dropped when no frame has been recorded yet: `parseSession` refuses a decision pointing at a
+   * frame the session does not hold, and a recording that wrote one would be a corpus entry no
+   * reader will load — a recorder must not be able to produce a file it cannot produce.
+   */
+  decision(kind, detail = {}) {
+    const last = this.frames[this.frames.length - 1];
+    if (!this.start || !last) return;
+    this.decisions.push({
+      frame: last.id,
+      t: Math.round(this.clock() - this.t0),
+      kind,
+      detail: { ...detail }
+    });
+  }
+  /**
+   * The finished session, with the cube, the conditions and the truth a PERSON supplied — or null
+   * when there is nothing to hand over.
+   *
+   * Null rather than a partial session for the two cases that cannot be a corpus entry: no
+   * recording was begun, and no frame was ever recorded. Both would parse as malformed, and a
+   * recorder that emits something a reader refuses is worse than one that says it has nothing.
+   *
+   * Decisions pointing at frames the capacity has since dropped are pruned here, for the same
+   * reason: `parseSession` refuses them, and a long sitting is exactly when the oldest frames go.
+   */
+  finish(end) {
+    if (!this.start || this.frames.length === 0) return null;
+    const ids = new Set(this.frames.map((f) => f.id));
+    return {
+      schema: SESSION_SCHEMA,
+      id: this.start.id,
+      startedAt: this.startedAt,
+      cube: end.cube,
+      conditions: { ...end.conditions },
+      model: { ...this.start.model },
+      truth: { ...end.truth },
+      frames: this.frames.map((f) => ({ ...f, detections: f.detections.map((d) => ({ ...d })) })),
+      decisions: this.decisions.filter((d) => ids.has(d.frame)).map((d) => ({ ...d, detail: { ...d.detail } }))
+    };
+  }
+};
+
 // view/stillness.ts
 var SUBJECT_CHANGE = 4;
 var CENTRE = 4;
@@ -6929,6 +7054,17 @@ var AiScanPanel = class extends HTMLElement {
    * about a millisecond and is spawned only by a centre collision, which most scans never reach.
    */
   centres = new CentreResolver();
+  /**
+   * The session recorder (D9/P2, `dev-docs/scan-pipeline-audit-2026-09-23.md` §3 and §4 Stage 0.1).
+   *
+   * OFF unless `localStorage.cubusScanRecord` is '1', read once per loop exactly as the trace's
+   * switch is. The trace could never become a fixture — rounded boxes, capped at sixteen, scores
+   * only for the centre probe — so a bug report could not be turned into a replayable case. This
+   * keeps what a replay needs, and `__cubusScanRecord.finish({cube, conditions, truth})` hands back
+   * a session `parseSession` accepts.
+   */
+  recorder = new SessionRecorder();
+  recording = false;
   tracing = false;
   tickNote = {};
   /** The words last put on screen, which the trace records as what the person scanning saw. */
@@ -7416,6 +7552,21 @@ var AiScanPanel = class extends HTMLElement {
       });
       globalThis.__cubusScanTrace = this.trace;
     }
+    this.recording = recordEnabled();
+    if (this.recording) {
+      this.recorder.begin({
+        id: `scan-${(/* @__PURE__ */ new Date()).toISOString()}`,
+        // What the scan knows. The cube, the conditions and the TRUTH are a person's to supply at
+        // `finish()` — a corpus labelled by the detector measures nothing (§4.1), and one labelled
+        // `cube: 'unknown'` is worse than no entry because it looks like a measurement.
+        model: {
+          hash: this.cam.chosen?.loadedModel ?? "unknown",
+          name: this.cam.chosen?.loadedModel ?? "bundled",
+          runtime: this.cam.runtime ?? "unknown"
+        }
+      });
+      globalThis.__cubusScanRecord = this.recorder;
+    }
     this.cam.beginLoop(
       () => Math.max(TICK_FLOOR_MS, Math.round(this.lastInferenceMs)),
       () => void this.onTick()
@@ -7507,6 +7658,12 @@ var AiScanPanel = class extends HTMLElement {
   async readFrame(output, epoch) {
     const began = performance.now();
     const dets = detectionsFromOutput(output);
+    if (this.recording) {
+      this.recorder.frame(dets, {
+        ...output.frameId === void 0 ? {} : { frameId: output.frameId },
+        inferMs: this.lastInferenceMs
+      });
+    }
     let fit;
     if (this.tracing) {
       const frame2 = traceFrame(output, {}, dets);
@@ -7574,6 +7731,7 @@ var AiScanPanel = class extends HTMLElement {
   /** Record a decision that is not a frame, for the trace. A no-op with the trace off. */
   traceEvent(kind, detail) {
     if (this.tracing) this.trace.event(kind, detail);
+    if (this.recording) this.recorder.decision(kind, detail);
   }
   /** Add to what this tick has learned, for the trace. A no-op with the trace off. */
   note(fields) {

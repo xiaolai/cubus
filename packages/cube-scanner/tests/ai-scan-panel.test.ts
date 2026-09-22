@@ -27,6 +27,7 @@ import {
   type Scheme,
   slotOf,
 } from '../src/scheme.js';
+import { parseSession } from '../src/session-record.js';
 import { FACES, type Face, type Frame } from '../src/types.js';
 import {
   AiScanPanel,
@@ -45,6 +46,7 @@ import {
 } from '../view/misread-protocol.js';
 import { CUBE_VISION, NativeDetector } from '../view/native-detector.js';
 import { type ScanTrace, TRACE_KEY } from '../view/scan-trace.js';
+import { RECORD_KEY, type SessionRecorder } from '../view/session-recorder.js';
 
 // A SEAM ON THE ONE CALL THAT COSTS SECONDS, and a pass-through in every other respect.
 //
@@ -2322,6 +2324,70 @@ describe('ai-scan-panel — sides whose centres read as the same colour', () => 
     }
     fake.output = null;
     expect(last().captured.map((c) => c.face)).toEqual(['U']);
+  });
+
+  it('records a scan a replay can run, once the switch is on (D9)', async () => {
+    // D9/P2 (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3). The scan trace rounds its boxes,
+    // caps them at sixteen and carries scores only for the centre probe, so a bug report could not
+    // be turned into a replayable case and no camera or model experiment could be replayed at all.
+    // A recording keeps every candidate above a low floor, unrounded, with all six class scores and
+    // the frame's own identity — and the claim that matters is that `parseSession` ACCEPTS what
+    // comes out, because a recorder that emits something no reader will load has recorded nothing.
+    localStorage.setItem(RECORD_KEY, '1');
+    try {
+      panel.restart();
+      await panel.start();
+      const faces = facesOf(DEEP);
+      let id = 0;
+      for (const f of FACES) {
+        for (let i = 0; i < SETTLE_TICKS + 2; i++) {
+          fake.output = { ...tensorFor(faces[f]), frameId: id++ };
+          await vi.advanceTimersByTimeAsync(TICK);
+        }
+      }
+      fake.output = null;
+      await vi.advanceTimersByTimeAsync(CHECK);
+
+      const recorder = (globalThis as { __cubusScanRecord?: SessionRecorder }).__cubusScanRecord;
+      expect(recorder, 'the recorder was not published for a developer to export').toBeDefined();
+      const session = recorder!.finish({
+        cube: 'a cube under test',
+        conditions: {
+          camera: 'built-in',
+          lighting: 'daylight',
+          handling: 'careful',
+          state: 'scrambled',
+        },
+        // From a person, never from the detector — which is exactly why `finish` takes it.
+        truth: { facelets: DEEP, source: 'manual-verified' },
+      });
+      expect(session).not.toBeNull();
+      const parsed = parseSession(JSON.parse(JSON.stringify(session)));
+      expect(parsed.frames.length).toBeGreaterThan(6);
+      // Every frame carries its candidates WITH their scores — the thing the trace threw away.
+      const withDetections = parsed.frames.filter((f) => f.detections.length > 0);
+      expect(withDetections.length).toBeGreaterThan(0);
+      expect(withDetections[0]!.detections[0]!.scores).toHaveLength(6);
+      // And the decisions point at the frames they were decided on.
+      expect(parsed.decisions.some((d: { kind: string }) => d.kind === 'captured')).toBe(true);
+    } finally {
+      localStorage.removeItem(RECORD_KEY);
+      delete (globalThis as { __cubusScanRecord?: SessionRecorder }).__cubusScanRecord;
+    }
+  });
+
+  it('records nothing at all with the switch off', async () => {
+    // The trace's rule, kept: a scan runs exactly the code it ran before, with nothing on the
+    // page's globals.
+    panel.restart();
+    await panel.start();
+    const faces = facesOf(DEEP);
+    fake.output = { ...tensorFor(faces.U), frameId: 1 };
+    await vi.advanceTimersByTimeAsync(TICK * SETTLE_TICKS);
+    fake.output = null;
+    expect(
+      (globalThis as { __cubusScanRecord?: SessionRecorder }).__cubusScanRecord,
+    ).toBeUndefined();
   });
 
   it('sends a correction on a symmetric cube to the side its centre names when its eight fit two sides', async () => {

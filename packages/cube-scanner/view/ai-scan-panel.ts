@@ -78,6 +78,7 @@ import {
   type TraceEvent,
   traceEnabled,
 } from './scan-trace.js';
+import { recordEnabled, SessionRecorder } from './session-recorder.js';
 import { mostShown, Stillness } from './stillness.js';
 
 // The scan pipeline's pure stages, re-exported so anything holding this bundle can run them.
@@ -632,6 +633,17 @@ export class AiScanPanel extends HTMLElement {
    * about a millisecond and is spawned only by a centre collision, which most scans never reach.
    */
   private readonly centres = new CentreResolver();
+  /**
+   * The session recorder (D9/P2, `dev-docs/scan-pipeline-audit-2026-09-23.md` §3 and §4 Stage 0.1).
+   *
+   * OFF unless `localStorage.cubusScanRecord` is '1', read once per loop exactly as the trace's
+   * switch is. The trace could never become a fixture — rounded boxes, capped at sixteen, scores
+   * only for the centre probe — so a bug report could not be turned into a replayable case. This
+   * keeps what a replay needs, and `__cubusScanRecord.finish({cube, conditions, truth})` hands back
+   * a session `parseSession` accepts.
+   */
+  private readonly recorder = new SessionRecorder();
+  private recording = false;
   private tracing = false;
   private tickNote: Partial<TickNote> = {};
   /** The words last put on screen, which the trace records as what the person scanning saw. */
@@ -1238,6 +1250,22 @@ export class AiScanPanel extends HTMLElement {
       });
       (globalThis as { __cubusScanTrace?: ScanTrace }).__cubusScanTrace = this.trace;
     }
+    // Read HERE for the trace's reason: a scan must not start recording halfway through a side.
+    this.recording = recordEnabled();
+    if (this.recording) {
+      this.recorder.begin({
+        id: `scan-${new Date().toISOString()}`,
+        // What the scan knows. The cube, the conditions and the TRUTH are a person's to supply at
+        // `finish()` — a corpus labelled by the detector measures nothing (§4.1), and one labelled
+        // `cube: 'unknown'` is worse than no entry because it looks like a measurement.
+        model: {
+          hash: this.cam.chosen?.loadedModel ?? 'unknown',
+          name: this.cam.chosen?.loadedModel ?? 'bundled',
+          runtime: this.cam.runtime ?? 'unknown',
+        },
+      });
+      (globalThis as { __cubusScanRecord?: SessionRecorder }).__cubusScanRecord = this.recorder;
+    }
     // Tick as fast as the runtime actually answers, floored — see TICK_FLOOR_MS. The busy guard in
     // onTick still prevents overlap if a frame ever runs long.
     this.cam.beginLoop(
@@ -1365,6 +1393,14 @@ export class AiScanPanel extends HTMLElement {
     // being watched or not; the trace only adds what it records beside the verdict.
     const began = performance.now();
     const dets = detectionsFromOutput(output);
+    // EVERY candidate this frame produced, unrounded and with all six scores — what a replay needs
+    // and what the trace discards (D9). A no-op with recording off.
+    if (this.recording) {
+      this.recorder.frame(dets, {
+        ...(output.frameId === undefined ? {} : { frameId: output.frameId }),
+        inferMs: this.lastInferenceMs,
+      });
+    }
     let fit: FitResult;
     if (this.tracing) {
       const frame = traceFrame(output, {}, dets);
@@ -1482,6 +1518,9 @@ export class AiScanPanel extends HTMLElement {
   /** Record a decision that is not a frame, for the trace. A no-op with the trace off. */
   private traceEvent(kind: TraceEvent['kind'], detail: Record<string, unknown>): void {
     if (this.tracing) this.trace.event(kind, detail);
+    // The same decisions, against the FRAME they were decided on rather than a timestamp: on a path
+    // that re-serves frames a timestamp does not say which read was the cause (D9).
+    if (this.recording) this.recorder.decision(kind, detail);
   }
 
   /** Add to what this tick has learned, for the trace. A no-op with the trace off. */

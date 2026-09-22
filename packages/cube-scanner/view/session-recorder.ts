@@ -72,12 +72,25 @@ export function worthRecording(dets: readonly Detection[]): Detection[] {
     .map((d) => ({ ...d, scores: [...(d.scores as number[])] }));
 }
 
-/** What `begin()` needs to know about the sitting. The truth is NOT here — see the file header. */
+/**
+ * What `begin()` needs, which is exactly what the SCAN knows: which sitting this is and what model
+ * is running.
+ *
+ * The cube, the conditions and the truth are NOT here, because the scan does not know them — a
+ * person does. They are supplied at `finish()`, which is also where the truth's provenance is
+ * checked. Asking the panel for them at `begin()` would mean inventing placeholders, and a corpus
+ * entry labelled `cube: 'unknown'` is worse than no entry: it looks like a measurement.
+ */
 export interface RecordingStart {
   id: string;
+  model: ModelIdentity;
+}
+
+/** What a PERSON supplies when a recording is exported. See the file header on the truth. */
+export interface RecordingEnd {
   cube: string;
   conditions: SessionConditions;
-  model: ModelIdentity;
+  truth: SessionTruth;
 }
 
 export class SessionRecorder {
@@ -170,8 +183,8 @@ export class SessionRecorder {
   }
 
   /**
-   * The finished session, with the truth a PERSON supplied — or null when there is nothing to hand
-   * over.
+   * The finished session, with the cube, the conditions and the truth a PERSON supplied — or null
+   * when there is nothing to hand over.
    *
    * Null rather than a partial session for the two cases that cannot be a corpus entry: no
    * recording was begun, and no frame was ever recorded. Both would parse as malformed, and a
@@ -180,17 +193,17 @@ export class SessionRecorder {
    * Decisions pointing at frames the capacity has since dropped are pruned here, for the same
    * reason: `parseSession` refuses them, and a long sitting is exactly when the oldest frames go.
    */
-  finish(truth: SessionTruth): RecordedSession | null {
+  finish(end: RecordingEnd): RecordedSession | null {
     if (!this.start || this.frames.length === 0) return null;
     const ids = new Set(this.frames.map((f) => f.id));
     return {
       schema: SESSION_SCHEMA,
       id: this.start.id,
       startedAt: this.startedAt,
-      cube: this.start.cube,
-      conditions: { ...this.start.conditions },
+      cube: end.cube,
+      conditions: { ...end.conditions },
       model: { ...this.start.model },
-      truth: { ...truth },
+      truth: { ...end.truth },
       frames: this.frames.map((f) => ({ ...f, detections: f.detections.map((d) => ({ ...d })) })),
       decisions: this.decisions
         .filter((d) => ids.has(d.frame))

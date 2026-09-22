@@ -153,17 +153,7 @@ describe('the recorder produces sessions the reader accepts', () => {
       () => now,
       () => '2026-09-23T10:00:00Z',
     );
-    rec.begin({
-      id: 's1',
-      cube: 'logo-white-centre',
-      conditions: {
-        camera: 'built-in',
-        lighting: 'daylight',
-        handling: 'careful',
-        state: 'scrambled',
-      },
-      model: { hash: 'abc', name: 'cubedet', runtime: 'apple' },
-    });
+    rec.begin({ id: 's1', model: { hash: 'abc', name: 'cubedet', runtime: 'apple' } });
     rec.frame([det()], { frameId: 10 });
     now = 60;
     rec.frame([det()], { frameId: 10 }); // the SAME picture, a second tick
@@ -173,7 +163,16 @@ describe('the recorder produces sessions the reader accepts', () => {
     rec.frame([det({ classId: 1 })], { frameId: 11 });
     rec.decision('captured', { face: 'U' });
 
-    const session = rec.finish({ facelets: DEEP, source: 'smart-cube' })!;
+    const session = rec.finish({
+      cube: 'logo-white-centre',
+      conditions: {
+        camera: 'built-in',
+        lighting: 'daylight',
+        handling: 'careful',
+        state: 'scrambled',
+      },
+      truth: { facelets: DEEP, source: 'smart-cube' },
+    })!;
     expect(session.frames.map((f) => [f.id, f.served])).toEqual([
       [10, 3],
       [11, 1],
@@ -200,7 +199,18 @@ describe('the recorder produces sessions the reader accepts', () => {
 
   it('hands back nothing when there is nothing that could be a corpus entry', () => {
     const rec = new SessionRecorder();
-    expect(rec.finish({ facelets: SOLVED, source: 'smart-cube' })).toBeNull();
+    expect(
+      rec.finish({
+        cube: 'worn',
+        conditions: {
+          camera: 'built-in',
+          lighting: 'daylight',
+          handling: 'careful',
+          state: 'scrambled',
+        },
+        truth: { facelets: SOLVED, source: 'smart-cube' },
+      }),
+    ).toBeNull();
   });
 
   it('prunes decisions whose frames the capacity dropped', () => {
@@ -212,19 +222,18 @@ describe('the recorder produces sessions the reader accepts', () => {
       () => now,
       () => '2026-09-23T10:00:00Z',
     );
-    rec.begin({
-      id: 's2',
-      cube: 'worn',
-      conditions: { camera: 'iphone', lighting: 'dim', handling: 'careless', state: 'near-solved' },
-      model: { hash: 'abc', name: 'cubedet', runtime: 'web' },
-    });
+    rec.begin({ id: 's2', model: { hash: 'abc', name: 'cubedet', runtime: 'web' } });
     rec.frame([det()], { frameId: 1 });
     rec.decision('captured', { face: 'U' }); // against frame 1, which is about to fall off
     for (const id of [2, 3, 4]) {
       now += 60;
       rec.frame([det()], { frameId: id });
     }
-    const session = rec.finish({ facelets: DEEP, source: 'manual-verified' })!;
+    const session = rec.finish({
+      cube: 'worn',
+      conditions: { camera: 'iphone', lighting: 'dim', handling: 'careless', state: 'near-solved' },
+      truth: { facelets: DEEP, source: 'manual-verified' },
+    })!;
     expect(rec.size.framesDropped).toBe(2);
     expect(session.decisions).toEqual([]);
     expect(() => parseSession(JSON.parse(JSON.stringify(session)))).not.toThrow();
