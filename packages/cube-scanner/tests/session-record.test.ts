@@ -421,3 +421,30 @@ describe('a recording stays readable when the source contradicts itself', () => 
     expect(rec.size).toEqual({ frames: 3, framesDropped: 0, renumbered: 0 });
   });
 });
+
+describe('a handed-out session does not alias the recorder', () => {
+  it('copies the scores too, so a caller that normalises them changes nothing', () => {
+    const now = 0;
+    const rec = new SessionRecorder(
+      100,
+      () => now,
+      () => '2026-09-23T10:00:00Z',
+    );
+    rec.begin({ id: 's5', model: { hash: 'abc', name: 'cubedet', runtime: 'apple' } });
+    rec.frame([det()], { frameId: 1 });
+    const end = {
+      cube: 'worn',
+      conditions: {
+        camera: 'built-in' as const,
+        lighting: 'daylight',
+        handling: 'careful' as const,
+        state: 'scrambled' as const,
+      },
+      truth: { facelets: DEEP, source: 'manual-verified' as const },
+    };
+    const first = rec.finish(end)!;
+    first.frames[0]!.detections[0]!.scores![0] = 0.123;
+    const second = rec.finish(end)!;
+    expect(second.frames[0]!.detections[0]!.scores![0]).toBe(0.9);
+  });
+});

@@ -229,7 +229,12 @@ export class SessionRecorder {
       conditions: { ...end.conditions },
       model: { ...this.start.model },
       truth: { ...end.truth },
-      frames: this.frames.map((f) => ({ ...f, detections: f.detections.map((d) => ({ ...d })) })),
+      // A DEEP copy, scores included: the session handed out must not alias the recorder's, or a
+      // caller that normalises the scores it was given changes what a later `finish()` reports.
+      frames: this.frames.map((f) => ({
+        ...f,
+        detections: f.detections.map((d) => ({ ...d, scores: [...(d.scores ?? [])] })),
+      })),
       decisions: this.decisions
         .filter((d) => ids.has(d.frame))
         .map((d) => ({ ...d, detail: { ...d.detail } })),
