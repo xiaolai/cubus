@@ -30920,6 +30920,8 @@ var TIE_OVERHANG = 0.3;
 var ARROW_FACE_PREFERENCE = Object.freeze(["F", "U", "R", "B", "D", "L"]);
 var AXIS_VECTOR = Object.freeze({ x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] });
 var GHOST_OPACITY = 0.45;
+var GHOST_FACING = -0.15;
+var OPPOSITE_FACE = Object.freeze({ F: "B", B: "F", R: "L", L: "R", U: "D", D: "U" });
 var GHOST_HL_PEAK = 0.8;
 var reducedMotion = () => globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
 var REACTIONS = Object.freeze({
@@ -32205,7 +32207,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
   _ghostShows(g, eye) {
     const n = this._n ||= new Vector3();
     n.set(...g.userData.n).applyQuaternion(g.parent.getWorldQuaternion(this._q ||= new Quaternion()));
-    return n.dot(eye) < -0.15;
+    return n.dot(eye) < GHOST_FACING;
   }
   /** Drag-to-orbit is a preference, not a given. For a learner reading a guide, a drag that swings
    *  the cube away from the angle the ghost faces are set up for is a mistake waiting to happen,
@@ -32444,9 +32446,51 @@ var CubusCube = class _CubusCube extends HTMLElement {
     const eye = this.camera.position.clone().normalize();
     for (const g of this._ghostMeshes) g.visible = this._ghostShows(g, eye);
   }
+  /**
+   * Put each face letter on whatever is SHOWING that face, and turn it so it can be read.
+   *
+   * A letter is painted on the centre sticker while you can see that sticker. Turn ghosts on and the
+   * three faces you cannot see are drawn as floating planes instead — and a letter left behind on the
+   * sticker is then INSIDE the cube, drawn and invisible. That is the one job `labels` exists for,
+   * naming all six faces in a lesson, failing without a mark on screen to say so.
+   *
+   * ON A GHOST IT IS WRITTEN THE WAY ITS OPPOSITE FACE'S LETTER IS: B as F, L as R, D as U. A ghost is
+   * seen from the side facing the cube, which is the side its opposite face is seen from, so the two
+   * letters of a pair turn the same way (owner's call, 2026-09-22). It lies in the ghost's plane and
+   * is foreshortened with it, exactly as a sticker's letter lies on its sticker.
+   *
+   * Two earlier attempts, recorded because each looked right in a test and wrong on screen: copying
+   * the camera's rotation stood every letter upright, which on a slanted grid reads as crooked; laying
+   * the reader's up into the plane leaned L and B the opposite way to their grids. Both computed an
+   * orientation from the camera. The answer was a table lookup. `_ghostPlaneLift` says how far out it goes, and why that is a
+   * step beyond the ghosts' own offset.
+   *
+   * THIS IS NOT THE REMOVED `face` MODE. That one let the letters ride the cube's own faces, so a
+   * regrip carried U underneath and the letters stopped naming places. Here U is always up: only how
+   * far out it sits, and whether it turns to the reader, depends on anything.
+   */
+  _liftLabels(eye) {
+    if (!this._labelMeshes?.length) return;
+    const ghosted = this._ghostsEnabled();
+    const lift = this._ghostPlaneLift();
+    for (const mesh of this._labelMeshes) {
+      const f = FACES.find((x) => x.key === mesh.userData.label);
+      if (!f) continue;
+      mesh.userData.billboard = false;
+      const onGhost = ghosted && f.n[0] * eye.x + f.n[1] * eye.y + f.n[2] * eye.z < GHOST_FACING;
+      if (!onGhost) {
+        mesh.position.set(f.n[0] * LABEL_LIFT, f.n[1] * LABEL_LIFT, f.n[2] * LABEL_LIFT);
+        mesh.rotation.set(...LABEL_TURN[f.key]);
+        continue;
+      }
+      mesh.position.set(f.n[0] * lift, f.n[1] * lift, f.n[2] * lift);
+      mesh.rotation.set(...LABEL_TURN[OPPOSITE_FACE[f.key]]);
+    }
+  }
   _draw() {
     const r = this.renderer, w = this.clientWidth || 1, h = this.clientHeight || 1;
     this._cullGhosts();
+    this._liftLabels((this._eye ||= new Vector3()).copy(this.camera.position).normalize());
     const bv = this._attrs["back-view"] || "none";
     if (this._split(w)) {
       const left = Math.floor(w / 2), right = w - left;
@@ -32717,10 +32761,23 @@ var CubusCube = class _CubusCube extends HTMLElement {
   }
   // Elevation is how far the twin floats past its sticker, in cubie units.
   // Matches the codebase player's experimentalHintFaceletsElevation (default 4).
+  /** How far a ghost floats PAST ITS CUBIE. A method rather than a line inside `_ghostPlace`, because the
+   *  face letters are lifted from the same arithmetic — through `_ghostPlaneLift` — and two copies of it
+   *  would drift the first time the elevation changed. */
+  _ghostLift() {
+    const e = Number(this._attrs["ghost-elevation"]);
+    return 0.48 + (Number.isFinite(e) ? e : 4) * 0.42;
+  }
+  /** How far a face's ghost GRID sits from the cube's centre, which is not the same number.
+   *  `_ghostLift()` is measured from the cubie the ghost hangs off, and a face's centre cubie is
+   *  one grid step out — `at` runs -1..1 and a cubie's position IS its `at`. A letter placed at the
+   *  lift alone lands one step short, inside the grid's near edge rather than on its centre. */
+  _ghostPlaneLift() {
+    return 1 + this._ghostLift();
+  }
   _ghostPlace() {
     if (!this._ghostMeshes) return;
-    const e = Number(this._attrs["ghost-elevation"]);
-    const d = 0.48 + (Number.isFinite(e) ? e : 4) * 0.42;
+    const d = this._ghostLift();
     for (const g of this._ghostMeshes) {
       const n = g.userData.n;
       g.position.set(n[0] * d, n[1] * d, n[2] * d);

@@ -58,11 +58,21 @@ const letters = () => page.evaluate(() => {
   for (const mesh of el._labelMeshes ?? []) {
     const at = mesh.getWorldPosition(new V());
     const round = (v) => [v.x, v.y, v.z].map((c) => Math.round(c) + 0);
+    // `+ 0`, because a rounding compared against another number must not keep a -0 (app-source's guard).
+    const raw = (v) => [v.x, v.y, v.z].map((c) => Math.round(c * 1000) / 1000 + 0);
     out[mesh.userData.label] = {
       at: round(at.clone().normalize()),
       // Which way the letter's own plane points, in the world. A letter is PAINTED on its face, so this is
       // the face's own outward direction — not the camera's, which is what a billboard would give.
       facing: round(new V(0, 0, 1).applyQuaternion(mesh.getWorldQuaternion(new Q()))),
+      // And which way its TOP points. `facing` alone cannot tell two letters in the same plane apart when
+      // one is turned within it — which is the defect a ghost's letter had, twice, with `facing` right.
+      up: round(new V(0, 1, 0).applyQuaternion(mesh.getWorldQuaternion(new Q()))),
+      // Both again, UNROUNDED. `round` makes whole numbers, so a letter tilted by anything under 45 degrees
+      // rounds to exactly the axis it leans off: a check made on `facing` or `up` passes a 29-degree tilt,
+      // and did, when this suite was first run against one on purpose.
+      facingRaw: raw(new V(0, 0, 1).applyQuaternion(mesh.getWorldQuaternion(new Q()))),
+      upRaw: raw(new V(0, 1, 0).applyQuaternion(mesh.getWorldQuaternion(new Q()))),
       // And how far out it sits. The stickers' surface is at 1.5: a letter on the centre sticker is a hair
       // above it, and one FLOATING off the cube is the defect this number exists to catch.
       lift: Math.round(at.length() * 1000) / 1000,
@@ -71,6 +81,51 @@ const letters = () => page.evaluate(() => {
   return out;
 });
 const WORLD = { U: [0, 1, 0], D: [0, -1, 0], R: [1, 0, 0], L: [-1, 0, 0], F: [0, 0, 1], B: [0, 0, -1] };
+
+/**
+ * The ghosts as DRAWN, a face at a time: how far out they stand, and whether they are showing.
+ *
+ * TWO distances, because they are not the same number. `lift` is the offset each ghost is placed at past its
+ * own CUBIE (`_ghostLift`). `plane` is where that puts the face's ghost grid in the world, one lattice step
+ * further from the middle — and that is the plane a face's letter is put on (`_ghostPlaneLift`), so that it
+ * lands on the grid's centre rather than one step short of it. Read off the meshes rather than computed
+ * again: where the letters go is a claim about the ghosts that are there, and recomputing the elevation here
+ * would pass even if the two had drifted apart.
+ *
+ * Asked of a SOLVED cube: a ghost travels with its cubie, so on a turned cube a face's twins are scattered
+ * among the cubies that now hold its stickers and "that face's plane" names nothing.
+ */
+const ghostPlanes = () => page.evaluate(() => {
+  const el = window.__cube;
+  el._dirty = true; el._draw();
+  el.scene.updateMatrixWorld(true);
+  const V = el.camera.position.constructor;
+  const NORMALS = { R: [1, 0, 0], L: [-1, 0, 0], U: [0, 1, 0], D: [0, -1, 0], F: [0, 0, 1], B: [0, 0, -1] };
+  const round = (v) => Math.round(v * 1000) / 1000;
+  const out = {};
+  for (const g of el._ghostMeshes ?? []) {
+    const n = g.userData.n;
+    const key = Object.keys(NORMALS).find((k) => NORMALS[k].every((c, i) => Math.abs(n[i] - c) < 0.01));
+    if (!key) continue;
+    const at = g.getWorldPosition(new V());
+    const plane = round(at.x * n[0] + at.y * n[1] + at.z * n[2]);
+    const lift = round(g.position.x * n[0] + g.position.y * n[1] + g.position.z * n[2]);
+    const seen = out[key] ??= { plane, lift, shown: false, twins: 0 };
+    seen.twins += 1;
+    if (g.visible) seen.shown = true;
+    // One face, one plane and one offset: anything else is the defect, and NaN fails every comparison below.
+    if (plane !== seen.plane) seen.plane = Number.NaN;
+    if (lift !== seen.lift) seen.lift = Number.NaN;
+  }
+  return out;
+});
+
+/** Where the camera is, as a direction — which decides the faces that are turned away. */
+const eye = () => page.evaluate(() => {
+  const el = window.__cube;
+  const at = el.camera.position.clone().normalize();
+  return [at.x, at.y, at.z].map((c) => Math.round(c * 100) / 100 + 0);
+});
 
 test('position letters name the places: held any way, the face on top is U', async () => {
   for (const orientation of ['U F', 'D B', 'R F']) {
@@ -194,4 +249,72 @@ test('the letters are drawn: the canvas changes when they are asked for', async 
   const lettered = await shoot();
   const changed = plain.filter((v, i) => Math.abs(v - lettered[i]) > 8).length;
   assert.ok(changed > 400, `letters changed only ${changed} channel values — they are not being drawn`);
+});
+
+// Ghosts and letters together (2026-09-21). A letter is painted on the centre sticker — and with ghosts on,
+// the three faces you cannot see are drawn as floating planes instead, so a letter left on the sticker is
+// INSIDE the cube: drawn, and invisible. Which is the whole job `labels` has, naming all six faces at once.
+
+/** Is `a` the same direction as `b`, to within a rounding step? */
+const sameWay = (a, b) => a.every((c, i) => Math.abs(c - b[i]) < 0.2);
+
+const SOLVED = `${'U'.repeat(9)}${'R'.repeat(9)}${'F'.repeat(9)}${'D'.repeat(9)}${'L'.repeat(9)}${'B'.repeat(9)}`;
+
+/** Which faces the element draws as ghosts for a camera at `at` — its own rule, and the letters follow it. */
+const turnedAwayFrom = (at) => Object.keys(WORLD).filter((k) => WORLD[k][0] * at[0] + WORLD[k][1] * at[1] + WORLD[k][2] * at[2] < -0.15);
+
+const OPPOSITE = { F: 'B', B: 'F', R: 'L', L: 'R', U: 'D', D: 'U' };
+
+test('with ghosts on, the letter of a face you cannot see is lifted clear of the cube and turned to be read', async () => {
+  await build({ labels: 'position', ghosts: 'all', facelets: SOLVED });
+  const [letter, ghost, at] = [await letters(), await ghostPlanes(), await eye()];
+  const away = turnedAwayFrom(at);
+  assert.ok(away.length >= 1 && away.length < 6, `expected some faces turned away, got ${away.join('') || 'none'}`);
+  for (const [key, l] of Object.entries(letter)) {
+    if (away.includes(key)) {
+      // Drawn where it can be SEEN. Left on the sticker it was inside the cube: drawn, and invisible — which
+      // defeats the one job `labels` has, naming all six faces at once.
+      assert.equal(ghost[key]?.shown, true, `${key} is turned away and has no ghost drawn to carry its letter`);
+      assert.ok(l.lift > 1.6, `${key} is turned away and its letter is still on the sticker, at ${l.lift}`);
+      // ON the plane that face's ghost grid stands on, exactly — one piece of arithmetic for both, and a
+      // letter placed at the ghosts' own offset instead would land a step short, inside the grid's near edge.
+      assert.equal(l.lift, ghost[key].plane, `${key}'s letter is at ${l.lift}, its ghost grid at ${ghost[key].plane}`);
+      // Written the way its OPPOSITE face's letter is — B as F, L as R, D as U (owner's call, 2026-09-22):
+      // a ghost is seen from the side its opposite face is seen from. The opposite face is always on show
+      // when this one is turned away, so its letter is on its sticker, and it is read off the cube rather
+      // than out of a table that could drift from LABEL_TURN.
+      //
+      // BOTH axes. An earlier version turned each ghost letter to the camera; a later one kept the plane
+      // and laid the reader's up into it. Each had this letter's `facing` right, and each was wrong on
+      // screen — it is the TOP, turned within the plane, that a person reads as crooked.
+      const ref = letter[OPPOSITE[key]];
+      assert.ok(sameWay(l.facingRaw, ref.facingRaw), `${key} is out on a ghost and should face as ${OPPOSITE[key]} does (${ref.facingRaw}), not ${l.facingRaw}`);
+      assert.ok(sameWay(l.upRaw, ref.upRaw), `${key}'s letter should stand as ${OPPOSITE[key]}'s does, top towards ${ref.upRaw}, not ${l.upRaw}`);
+    } else {
+      assert.ok(Math.abs(l.lift - 1.513) < 0.01, `${key} is on show, so its letter belongs on the sticker, not at ${l.lift}`);
+      assert.ok(sameWay(l.facing, WORLD[key]), `${key} is on its sticker and should lie in that face's plane: facing ${l.facing}`);
+    }
+  }
+});
+
+test('a lifted letter moves with the ghosts, step for step, and comes back to the sticker when they go', async () => {
+  await build({ labels: 'position', ghosts: 'all', facelets: SOLVED });
+  const [near, nearGhost, at] = [await letters(), await ghostPlanes(), await eye()];
+  const away = turnedAwayFrom(at);
+  assert.ok(away.length, 'precondition: some face is turned away');
+  await page.evaluate(() => window.__publicCube(window.__cube).setAttribute('ghost-elevation', '9'));
+  const [far, farGhost] = [await letters(), await ghostPlanes()];
+  for (const key of away) {
+    const ghostStep = Math.round((farGhost[key].plane - nearGhost[key].plane) * 1000) / 1000 + 0;
+    const letterStep = Math.round((far[key].lift - near[key].lift) * 1000) / 1000 + 0;
+    assert.ok(ghostStep > 1, `precondition: elevation 9 moved ${key}'s ghosts out by ${ghostStep}`);
+    assert.equal(letterStep, ghostStep, `${key}'s letter moved ${letterStep} while its ghosts moved ${ghostStep}`);
+  }
+  // And back: with the ghosts gone, every letter is on its own sticker again, in that face's plane.
+  await page.evaluate(() => window.__publicCube(window.__cube).setAttribute('ghosts', 'none'));
+  const home = await letters();
+  for (const [key, l] of Object.entries(home)) {
+    assert.ok(Math.abs(l.lift - 1.513) < 0.01, `${key} stayed out at ${l.lift} after the ghosts went`);
+    assert.ok(sameWay(l.facing, WORLD[key]), `${key} kept the turn it had on its ghost: facing ${l.facing}`);
+  }
 });

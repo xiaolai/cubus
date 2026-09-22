@@ -2,7 +2,7 @@
   "schema": 2,
   "tag": "cubus-cube",
   "bundle": "cubus-cube.js",
-  "digest": "sha256:7ac83315667d6ec89f198c630b401b6f5a4cef06d042b2ae5d0dc44e454fc23e",
+  "digest": "sha256:d9698bfee4ac862038c129a91fe5910460a4954bf05b82f23b1a24148e280f50",
   "attributes": [
     "alg",
     "arrow",
