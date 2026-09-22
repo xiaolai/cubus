@@ -35,6 +35,16 @@ export default defineConfig({
     // figure ever measured here (40 s, in the slow regime under coverage). The cost of the headroom is
     // a couple of extra minutes before a slow test is reported, once.
     //
+    // THE BINDING CASE HAS MOVED AGAIN (re-measured 2026-09-22). `ai-scan-panel.test.ts`'s "a second
+    // look read wrong by four stickers ends in a refusal…" (added 2026-09-21) drives a real
+    // four-sticker misread decode on the test's own thread — happy-dom has no `Worker` — and costs
+    // 35.9 s in CI's nightly full tier, 37.8 s alone on the dev Mac, and 79.5 s alone there under
+    // coverage. So 180 s is ~2.3x its local coverage cost and ~5x its CI cost, not the 30x above. It
+    // crossed 180 s once, under coverage with other vitest runs and bundle builds sharing the machine
+    // (184 s); alone it has not. The bound stands on this file's own rule — a quiet laptop does not
+    // cross it — but the margin is now thin: the next slowdown of the decoder or of that case is to
+    // be met by making the case cheaper, not by raising this number.
+    //
     // NO AUTOMATIC GUARD ON THE MARGIN, deliberately. What rots is the relationship between the bound
     // and the cost, and any check on it would be a wall-clock assertion on a machine that varies by
     // 1.8x — it would fail for the reason this bound did. The figures above are the guard: they say
