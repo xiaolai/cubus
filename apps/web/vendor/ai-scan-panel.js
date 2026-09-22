@@ -3030,6 +3030,30 @@ function movesALockedSticker(faces, colors) {
     )
   );
 }
+function reobserved(repaired, original, looks, index) {
+  for (const look of looks) {
+    const rotations = /* @__PURE__ */ new Set([
+      ...matchingRotations(repaired, look.capture),
+      ...matchingRotations(original, look.capture)
+    ]);
+    for (const k of rotations) {
+      if (rotateFace(repaired.colors, k)[index] === look.capture.colors[index]) return true;
+    }
+  }
+  return false;
+}
+function mostRepaired(changed) {
+  let best = changed[0].face;
+  let most = 0;
+  for (const face of FACES) {
+    const n = changed.filter((s) => s.face === face).length;
+    if (n > most) {
+      most = n;
+      best = face;
+    }
+  }
+  return best;
+}
 function repairByCounts(faces, maxCost) {
   const scores = [];
   for (const face of FACES) {
@@ -3054,7 +3078,25 @@ function repairByCounts(faces, maxCost) {
       colors: result.colors.slice(i * 9, i * 9 + 9)
     };
   });
-  return out;
+  return {
+    faces: out,
+    // WHICH stickers were invented, named where a person can find them.
+    //
+    // MEASURED AGAINST THE CAPTURE, NOT AGAINST THE SCORES' ARGMAX, and the difference is not a
+    // detail. `assignNineOfEach.changed` reports where the assignment differs from each sticker's
+    // top score — which includes every sticker a CALLER had already decided on other evidence.
+    // `resolveCentres` is exactly that caller: `withCentre` overwrites each filed side's centre
+    // with its slot's colour, so the argmax reading counts six centres as "repaired" and D1 would
+    // demand a second look at a colour the repair never touched. What D1 is about is a sticker
+    // whose colour NOBODY observed, so the comparison is with the colour the capture carries.
+    changed: result.changed.flatMap((at) => {
+      const face = FACES[Math.floor(at / 9)];
+      const index = at % 9;
+      const from = faces[face].colors[index];
+      const to = result.colors[at];
+      return from === to ? [] : [{ face, index, from, to }];
+    })
+  };
 }
 function recolourByPaint(faces) {
   const lab = [];
@@ -3074,12 +3116,23 @@ function recolourByPaint(faces) {
   return out;
 }
 function assembleColors(faces, threshold = LOW_CONFIDENCE_THRESHOLD, confirmed = {}, options = {}) {
-  return assembleWithin(faces, threshold, confirmed, options, MAX_REPAIR_COST);
+  return assembleWithin(
+    faces,
+    threshold,
+    confirmed,
+    options,
+    options.maxRepairCost ?? MAX_REPAIR_COST
+  );
 }
 function assembleWithin(faces, threshold, confirmed, options, maxRepairCost, allowPaint = true, originals) {
   const bySlot = checkedBySlot(faces);
   if ("valid" in bySlot) return bySlot;
   const asRead = originals ?? bySlot;
+  const couldAccept = (candidate) => {
+    const bySlotCandidate = checkedBySlot(candidate);
+    if ("valid" in bySlotCandidate) return false;
+    return SCHEMES.some((scheme) => solvableReadings(bySlotCandidate, scheme).length > 0);
+  };
   const accept = (candidate) => {
     if (!candidate) return null;
     const bySlotCandidate = checkedBySlot(candidate);
@@ -3098,8 +3151,23 @@ function assembleWithin(faces, threshold, confirmed, options, maxRepairCost, all
   };
   const all = SCHEMES.flatMap((scheme) => solvableReadings(bySlot, scheme));
   if (all.length === 0) {
-    const byCounts = accept(repairByCounts(faces, maxRepairCost));
+    const repair = repairByCounts(faces, maxRepairCost);
+    const unseen = repair ? repair.changed.filter(
+      (s) => !reobserved(repair.faces[s.face], faces[s.face], looksAt(confirmed, s.face), s.index)
+    ) : [];
+    const byCounts = repair && unseen.length === 0 ? accept(repair.faces) : null;
     if (byCounts) return byCounts;
+    if (repair && unseen.length > 0 && couldAccept(repair.faces)) {
+      const worst = mostRepaired(unseen);
+      const hold = looksAt(confirmed, worst).length === 0 ? permittedHold(worst, SCHEMES, confirmed) : void 0;
+      if (hold) {
+        return reject("a colour needs a second look before this cube can be accepted", {
+          confirm: hold,
+          repaired: unseen,
+          misreadFace: worst
+        });
+      }
+    }
     const byPaint = accept(allowPaint ? recolourByPaint(faces) : null);
     if (byPaint) return byPaint;
     return reject(
@@ -3170,7 +3238,8 @@ function orderings(items) {
     (item, i) => orderings([...items.slice(0, i), ...items.slice(i + 1)]).map((rest) => [item, ...rest])
   );
 }
-function resolveCentres(named, unnamed, threshold = LOW_CONFIDENCE_THRESHOLD, options = {}) {
+var MAX_CENTRE_FILINGS = 24;
+function resolveCentres(named, unnamed, threshold = LOW_CONFIDENCE_THRESHOLD, options = {}, confirmed = {}, budget = MAX_CENTRE_FILINGS) {
   const free = FACES.filter((face) => !named[face]);
   if (unnamed.length < 1 || unnamed.length !== free.length) {
     return {
@@ -3193,7 +3262,16 @@ function resolveCentres(named, unnamed, threshold = LOW_CONFIDENCE_THRESHOLD, op
     }
     claimed.push(centre);
   }
-  const filings = orderings(free).map((slots) => {
+  const all = orderings(free);
+  if (all.length > budget) {
+    return {
+      result: reject(
+        `a centre resolution over ${all.length} filings is past the budget of ${budget}`
+      ),
+      assessed: { filings: all.length, budget, truncated: true }
+    };
+  }
+  const filings = all.map((slots) => {
     const faces = { ...named };
     slots.forEach((slot, i) => {
       faces[slot] = withCentre(unnamed[i].capture, colourOfSlot(slot));
@@ -3205,7 +3283,7 @@ function resolveCentres(named, unnamed, threshold = LOW_CONFIDENCE_THRESHOLD, op
     result: assembleWithin(
       f.faces,
       threshold,
-      {},
+      confirmed,
       { ...options, diagnose: false },
       Number.POSITIVE_INFINITY,
       // NO PIXEL PATH HERE. It names its groups from the centres, and this is the one situation
@@ -3216,13 +3294,15 @@ function resolveCentres(named, unnamed, threshold = LOW_CONFIDENCE_THRESHOLD, op
       false
     )
   }));
+  const spent = { filings: all.length, budget, truncated: false };
   if (unnamed.length === 1) {
     const only = assessed[0];
     return {
       result: only.result,
       faces: only.faces,
       placed: placedBy(only.slots),
-      decidedBy: "counting"
+      decidedBy: "counting",
+      assessed: spent
     };
   }
   const fits = assessed.filter(
@@ -3234,7 +3314,8 @@ function resolveCentres(named, unnamed, threshold = LOW_CONFIDENCE_THRESHOLD, op
       result: fit.result,
       faces: fit.faces,
       placed: placedBy(fit.slots),
-      decidedBy: "legality"
+      decidedBy: "legality",
+      assessed: spent
     };
   }
   const claims2 = claimed.filter((c) => c !== null);
@@ -3385,6 +3466,28 @@ function frameSourceOf(video, stream, ctx, canvas, release) {
   return {
     device,
     ready,
+    /**
+     * The video's own presentation time, in whole milliseconds, as this frame's identity.
+     *
+     * `currentTime` advances only when the element PAINTS a new frame, so two ticks between paints
+     * read the same number — which is the fact D2 needs reported. Rounded to a millisecond because
+     * it is a double whose low bits differ between reads of the same painted frame on some engines,
+     * and a "new frame" every tick is the very illusion this replaces.
+     *
+     * NOT `requestVideoFrameCallback`'s `presentedFrames`, though it is the exact counter this
+     * wants: it does not exist on every engine this ships to (standard WebKitGTK and Android's
+     * WebView), so it would answer on some platforms and not others — and a source that silently
+     * stops answering is how the frozen-camera defect of 2026-09-20 was invisible. One mechanism
+     * that works everywhere beats a better one that works somewhere.
+     *
+     * Null for a video with no dimensions: there is no frame, so there is no frame to identify,
+     * and returning 0 would make "before any frame" look like a real frame the scan could count.
+     */
+    frameId() {
+      if (video.videoWidth === 0 || video.videoHeight === 0) return null;
+      const t = video.currentTime;
+      return Number.isFinite(t) ? Math.round(t * 1e3) : null;
+    },
     grab() {
       ready();
       const w = video.videoWidth;
@@ -3729,7 +3832,10 @@ function gridOf(nine) {
   if (fit.ok) {
     const level = rowsByY(nine).flat();
     const ordered = latticeOrder(nine, fit.lattice);
-    if (level.every((d, k) => d === ordered[k])) return rulesOn(nine);
+    if (level.every((d, k) => d === ordered[k])) {
+      const agreed = rulesOn(nine);
+      return "fail" in agreed ? agreed : { ...agreed, ordering: "lattice" };
+    }
     const phi = Math.atan2(fit.lattice.row[1], fit.lattice.row[0]);
     const cos = Math.cos(-phi);
     const sin = Math.sin(-phi);
@@ -3741,12 +3847,16 @@ function gridOf(nine) {
     }));
     const fitted = rulesOn(turned);
     if ("fail" in fitted) return fitted;
-    return { grid: fitted.grid.map((t) => nine[turned.indexOf(t)]) };
+    return {
+      grid: fitted.grid.map((t) => nine[turned.indexOf(t)]),
+      ordering: "lattice"
+    };
   }
   if (fit.reason === "roll-tie") {
     return { fail: { rule: "roll-tie", value: fit.gap, bound: 2 * ROLL_TIE_BAND_DEG } };
   }
-  return rulesOn(nine);
+  const sorted = rulesOn(nine);
+  return "fail" in sorted ? sorted : { ...sorted, ordering: "sorted" };
 }
 function rulesOn(nine) {
   const rows = rowsByY(nine);
@@ -3783,15 +3893,35 @@ function rulesOn(nine) {
   }
   return { grid: rows.flat() };
 }
+var MAX_CLUTTER_SET_ASIDE = 3;
+var CLUTTER_AREA_RATIO = MAX_AREA_RATIO;
 function fitFace(dets, minConf = MIN_STICKER_CONFIDENCE) {
   const good = dets.filter((d) => d.confidence >= minConf && d.classId >= 0 && d.classId < 6);
   if (good.length === 0) return { ok: false, reason: "NO_FACE" };
   const neighboured = dropIsolated(good);
   if (neighboured.length < 9) return { ok: false, reason: "PARTIAL_FACE" };
-  const nine = [...neighboured].sort((a, b) => b.w * b.h - a.w * a.h).slice(0, 9);
-  const fitted = gridOf(nine);
-  if ("fail" in fitted) return { ok: false, reason: "BAD_GEOMETRY", geometry: fitted.fail };
-  const { grid } = fitted;
+  const bySize = [...neighboured].sort((a, b) => b.w * b.h - a.w * a.h);
+  const areas = neighboured.map((d) => d.w * d.h).sort((a, b) => a - b);
+  const clutterAbove = CLUTTER_AREA_RATIO * areas[Math.floor(areas.length / 2)];
+  let first;
+  let fitted;
+  let grid;
+  let ordering = "lattice";
+  for (let aside = 0; aside <= MAX_CLUTTER_SET_ASIDE; aside++) {
+    if (bySize.length - aside < 9) break;
+    if (aside > 0 && !(bySize[aside - 1].w * bySize[aside - 1].h > clutterAbove)) break;
+    const attempt = gridOf(bySize.slice(aside, aside + 9));
+    if (!("fail" in attempt)) {
+      fitted = attempt;
+      grid = attempt.grid;
+      ordering = attempt.ordering;
+      break;
+    }
+    if (aside === 0) first = attempt.fail;
+  }
+  if (!fitted || !grid) {
+    return first === void 0 ? { ok: false, reason: "PARTIAL_FACE" } : { ok: false, reason: "BAD_GEOMETRY", geometry: first };
+  }
   return {
     ok: true,
     face: {
@@ -3804,7 +3934,8 @@ function fitFace(dets, minConf = MIN_STICKER_CONFIDENCE) {
       // Detections carry a CENTRE and a size; a box here is the corner form the pixel reader wants.
       boxes: grid.map(
         (d) => [d.cx - d.w / 2, d.cy - d.h / 2, d.w, d.h]
-      )
+      ),
+      ordering
     }
   };
 }
@@ -4254,7 +4385,7 @@ function decodeTensorResponse(input) {
   if (buf === null) return null;
   const versioned = buf.byteLength >= 4 && new Int32Array(buf, 0, 1)[0] < 0;
   if (!versioned && buf.byteLength < 8) return null;
-  const { rows, anchors, headerBytes, picture } = tensorHeader(buf);
+  const { rows, anchors, headerBytes, picture, frameId } = tensorHeader(buf);
   if (anchors === 0) return null;
   const count2 = rows * anchors;
   const need = headerBytes + count2 * 4;
@@ -4267,7 +4398,13 @@ function decodeTensorResponse(input) {
     );
   }
   const data = new Float32Array(buf, headerBytes, count2);
-  return picture ? { data, anchors, rows, picture } : { data, anchors, rows };
+  return {
+    data,
+    anchors,
+    rows,
+    ...picture ? { picture } : {},
+    ...frameId === void 0 ? {} : { frameId }
+  };
 }
 function tensorHeader(buf) {
   const first = new Int32Array(buf, 0, 1)[0];
@@ -4279,20 +4416,33 @@ function tensorHeader(buf) {
       `cube-vision tensor: a version 1 header of ${rows2}\xD7${anchors2} is neither a frame nor "no frame"`
     );
   }
-  if (first !== -2) throw new Error(`cube-vision tensor: unknown wire version ${-first}`);
-  if (buf.byteLength < 20) {
-    throw new Error(`cube-vision tensor: a version 2 header is 20 bytes, got ${buf.byteLength}`);
+  if (first !== -2 && first !== -3) {
+    throw new Error(`cube-vision tensor: unknown wire version ${-first}`);
   }
-  const header = new Int32Array(buf, 0, 5);
+  const words = first === -2 ? 5 : 6;
+  const headerBytes = words * 4;
+  if (buf.byteLength < headerBytes) {
+    throw new Error(
+      `cube-vision tensor: a version ${-first} header is ${headerBytes} bytes, got ${buf.byteLength}`
+    );
+  }
+  const header = new Int32Array(buf, 0, words);
   const [rows, anchors, width, height] = [header[1], header[2], header[3], header[4]];
   if (rows > 0 && anchors > 0 && width > 0 && height > 0) {
-    return { rows, anchors, headerBytes: 20, picture: { width, height } };
+    const frameId = first === -3 ? header[5] : void 0;
+    return {
+      rows,
+      anchors,
+      headerBytes,
+      picture: { width, height },
+      ...frameId === void 0 ? {} : { frameId }
+    };
   }
   if (rows === 0 && anchors === 0 && width === 0 && height === 0) {
-    return { rows, anchors, headerBytes: 20 };
+    return { rows, anchors, headerBytes };
   }
   throw new Error(
-    `cube-vision tensor: a version 2 header of ${rows}\xD7${anchors} with a ${width}\xD7${height} picture is neither a frame nor "no frame"`
+    `cube-vision tensor: a version ${-first} header of ${rows}\xD7${anchors} with a ${width}\xD7${height} picture is neither a frame nor "no frame"`
   );
 }
 function nativeDevice(raw) {
@@ -5305,6 +5455,7 @@ var WebDetector = class {
     const run = this.run;
     const superseded = () => this.source !== source || this.run !== run;
     let pre;
+    const frameId = source.frameId?.() ?? null;
     try {
       if (source.ready) {
         source.ready();
@@ -5333,6 +5484,7 @@ var WebDetector = class {
     const { frame } = pre;
     return {
       ...output,
+      ...frameId === null ? {} : { frameId },
       frame: pre.owned ? frame : { data: new Uint8ClampedArray(frame.data), width: frame.width, height: frame.height }
     };
   }
@@ -5765,6 +5917,146 @@ var CameraSession = class {
   }
 };
 
+// view/centres-protocol.ts
+function handleCentresRequest(request) {
+  return {
+    epoch: request.epoch,
+    resolution: resolveCentres(
+      request.named,
+      request.unnamed,
+      void 0,
+      { diagnose: false },
+      {},
+      request.budget ?? MAX_CENTRE_FILINGS
+    )
+  };
+}
+
+// view/centres-client.ts
+function snapshot(request) {
+  const copyFace = (f) => ({
+    ...f,
+    colors: [...f.colors],
+    confidence: [...f.confidence],
+    ...f.scores ? { scores: f.scores.map((row) => [...row]) } : {},
+    ...f.lab ? { lab: f.lab.map((row) => [...row]) } : {},
+    ...f.locked ? { locked: [...f.locked] } : {}
+  });
+  const named = {};
+  for (const face of FACES) {
+    const side = request.named[face];
+    if (side) named[face] = copyFace(side);
+  }
+  return {
+    epoch: request.epoch,
+    named,
+    unnamed: request.unnamed.map((u) => ({ ...u, capture: copyFace(u.capture) })),
+    ...request.budget === void 0 ? {} : { budget: request.budget }
+  };
+}
+var CentreResolver = class {
+  worker = null;
+  /** Set once a worker has proved it cannot be had at all, so no later request builds another. */
+  broken = false;
+  /** Whether the current worker has ever answered — the test that makes `broken` safe to set. */
+  spoke = false;
+  /** The request the worker is actually resolving, or null when it is idle. */
+  running = null;
+  /** The one request waiting for it to come free. A newer ask REPLACES this. */
+  queued = null;
+  /**
+   * Ask for `request`'s resolution.
+   *
+   * Returns the answer outright when this page has nowhere else to run it — in which case `answer`
+   * is never called and the caller already has everything. Returns null when a worker took the
+   * request, and `answer` runs AT MOST once, later, with the reply for this epoch.
+   *
+   * AT MOST, for `misread-client.ts`'s three reasons, and every one of them means the answer would
+   * have been discarded on arrival for its epoch anyway. So a caller must not treat this callback
+   * as the thing that clears a "checking…" marker on its own.
+   */
+  request(request, answer) {
+    const worker = this.spawn();
+    if (!worker) return handleCentresRequest(request);
+    this.queued = { request: snapshot(request), answer };
+    this.dispatch();
+    return null;
+  }
+  /** Give the worker back. A resolver is usable again afterwards; it simply spawns a new one. */
+  dispose() {
+    this.worker?.terminate();
+    this.worker = null;
+    this.spoke = false;
+    this.running = null;
+    this.queued = null;
+  }
+  /**
+   * Post the waiting ask, if the worker is free to take it.
+   *
+   * Guarded on `running` rather than called only from the idle path, because `answer` may ask for
+   * another resolution re-entrantly — the panel republishes on a reply, and a host may correct a
+   * sticker from that — and two posts in flight is exactly the backlog this avoids.
+   */
+  dispatch() {
+    if (this.running !== null || this.queued === null || this.worker === null) return;
+    const next = this.queued;
+    this.queued = null;
+    this.running = next;
+    this.worker.postMessage(next.request);
+  }
+  spawn() {
+    if (this.worker) return this.worker;
+    if (this.broken || typeof Worker === "undefined") return null;
+    try {
+      const spawned = new Worker(new URL("./centres-worker.js", import.meta.url), {
+        type: "module"
+      });
+      spawned.addEventListener("message", (ev) => {
+        if (this.worker !== spawned) return;
+        this.spoke = true;
+        this.deliver(ev.data);
+      });
+      spawned.addEventListener("error", (ev) => {
+        if (this.worker !== spawned) return;
+        this.failed(ev);
+      });
+      this.worker = spawned;
+      return spawned;
+    } catch (cause) {
+      console.warn(
+        "centres-client: the resolver worker could not be built, so it runs on this thread",
+        cause
+      );
+      this.broken = true;
+      return null;
+    }
+  }
+  deliver(reply) {
+    const waiting = this.running;
+    if (!waiting || waiting.request.epoch !== reply.epoch) return;
+    this.running = null;
+    try {
+      waiting.answer(reply);
+    } finally {
+      this.dispatch();
+    }
+  }
+  failed(cause) {
+    if (!this.spoke) this.broken = true;
+    console.warn(
+      "centres-client: the resolver worker failed, so the sides are placed on this thread",
+      cause
+    );
+    this.worker?.terminate();
+    this.worker = null;
+    this.spoke = false;
+    const stranded = this.queued ?? this.running;
+    this.running = null;
+    this.queued = null;
+    if (stranded) stranded.answer(handleCentresRequest(stranded.request));
+  }
+};
+
 // view/misread-protocol.ts
 function handleMisreadRequest(request) {
   return {
@@ -5774,7 +6066,7 @@ function handleMisreadRequest(request) {
 }
 
 // view/misread-client.ts
-function snapshot(request) {
+function snapshot2(request) {
   const faces = {};
   for (const face of FACES) faces[face] = { colors: [...request.faces[face].colors] };
   return { epoch: request.epoch, faces, fixedRotation: request.fixedRotation };
@@ -5810,7 +6102,7 @@ var MisreadDecoder = class {
   request(request, answer) {
     const worker = this.spawn();
     if (!worker) return handleMisreadRequest(request);
-    this.queued = { request: snapshot(request), answer };
+    this.queued = { request: snapshot2(request), answer };
     this.dispatch();
     return null;
   }
@@ -5900,6 +6192,7 @@ function traceEnabled(store = globalThis.localStorage) {
   }
 }
 var IN_VIEW_BOXES = 5;
+var CENTRE_CELL = 4;
 function filedColours(mark) {
   const colors = mark.detail.colors;
   if (!Array.isArray(colors) || !colors.every((c) => typeof c === "number")) {
@@ -5933,6 +6226,7 @@ function sideSpeeds(ticks, events) {
     const firstRead = own[0];
     previous = filed;
     const breaks = { total: 0, abstain: {}, colour: {}, moved: 0 };
+    const centre = {};
     for (let i = 1; i < own.length; i++) {
       const prev = own[i - 1];
       const cur = own[i];
@@ -5942,9 +6236,16 @@ function sideSpeeds(ticks, events) {
         breaks.total += 1;
         continue;
       }
+      if (cur.colors[CENTRE_CELL] !== prev.colors[CENTRE_CELL]) {
+        count(
+          centre,
+          `${colourOf2(prev.colors[CENTRE_CELL])}>${colourOf2(cur.colors[CENTRE_CELL])}`
+        );
+      }
       const changed = [];
-      for (let c = 0; c < cur.colors.length; c++)
-        if (cur.colors[c] !== prev.colors[c]) changed.push(c);
+      for (let c = 0; c < cur.colors.length; c++) {
+        if (c !== CENTRE_CELL && cur.colors[c] !== prev.colors[c]) changed.push(c);
+      }
       if (changed.length === 0) continue;
       breaks.total += 1;
       if (changed.length === 1) {
@@ -5960,7 +6261,8 @@ function sideSpeeds(ticks, events) {
       otherReads: (start < 0 ? after : after.slice(0, start)).filter((r) => r.colors !== void 0).length,
       ticks: own.length,
       reads: own.filter((r) => r.colors !== void 0).length,
-      breaks
+      breaks,
+      centre
     });
   }
   return out;
@@ -6188,9 +6490,31 @@ var Stillness = class {
   centres = [];
   /** The colours of the run's read, kept so a broken run can be told WHERE it broke. */
   colors = null;
+  /**
+   * The frame the last counted read came from, or null when none has been counted or the source
+   * cannot identify its frames.
+   *
+   * D2 (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3). The native camera serves its cached frame
+   * on every tick for up to a second — sixteen ticks at the native rate — and the browser's
+   * `<video>` repeats its last painted frame whenever the loop outruns the stream. Nothing here
+   * could tell that from a stream of new frames, so ONE physical frame could satisfy "three
+   * identical reads" on its own, and a side was captured on a single observation while the gate
+   * reported a run of three.
+   */
+  lastFrame = null;
   /** Per position, how many times a run has been broken by that position alone. */
   breaks = /* @__PURE__ */ new Map();
-  /** Per position, every colour it showed on either side of a break it made alone. */
+  /**
+   * Per position, the two colours of its MOST RECENT break — what it is alternating between now.
+   *
+   * The latest pair, not every colour ever seen (2026-09-23, with D8). While the history was wiped
+   * on every abstaining frame it could not grow, so a set and a pair were the same thing; now that
+   * it survives, a set would accumulate every colour a sticker had shown all scan and the sentence
+   * would name four. The sentence exists to say which TWO colours a sticker is swapping between,
+   * and the light remark is added only for a pair the light is known to confuse — a growing set
+   * would eventually contain such a pair by accident and attach the remark to a sticker that never
+   * showed it.
+   */
   breakColours = /* @__PURE__ */ new Map();
   /**
    * Offer the latest read. True once its EIGHT-sticker ring has been identical `reads` times AND
@@ -6203,9 +6527,23 @@ var Stillness = class {
    * clock change, and a step forward of half a second satisfies the duration gate outright — the
    * one thing this class exists to refuse. "Held still for 500 ms" is a claim about elapsed time,
    * so it is measured with the clock that only measures elapsed time.
+   *
+   * A FRAME ALREADY COUNTED IS NOT COUNTED AGAIN (D2, 2026-09-23). `frameId` identifies the picture
+   * the read came from; offering the same one twice advances nothing — not the count, not the
+   * centre tally — and the gate's verdict is re-reported from the state the first offer left. The
+   * DURATION still runs, because wall-clock time passing is real whether or not the camera
+   * delivered; what a repeated frame cannot do is stand in for a second look at the cube.
+   *
+   * `undefined` means the source cannot identify its frames, and is counted exactly as before —
+   * a runtime that does not know must not have an answer invented for it, since a fabricated id
+   * reads as "always a new frame", which is the belief this corrects.
    */
-  offer(colors, now = performance.now()) {
+  offer(colors, now = performance.now(), frameId) {
     const key = eightOf(colors);
+    if (frameId !== void 0 && frameId === this.lastFrame) {
+      return this.count >= this.reads && now - this.since >= this.ms;
+    }
+    if (frameId !== void 0) this.lastFrame = frameId;
     if (key === this.key) {
       this.count += 1;
       this.centres.push(colors[CENTRE] ?? -1);
@@ -6219,9 +6557,7 @@ var Stillness = class {
         }
         if (only !== null) {
           this.breaks.set(only, (this.breaks.get(only) ?? 0) + 1);
-          const seen = this.breakColours.get(only) ?? /* @__PURE__ */ new Set();
-          seen.add(previous[only]).add(colors[only]);
-          this.breakColours.set(only, seen);
+          this.breakColours.set(only, [previous[only], colors[only]]);
         }
       }
       this.key = key;
@@ -6287,7 +6623,7 @@ var Stillness = class {
    * under some light. Empty for a position that never broke a run alone.
    */
   flickerColours(position) {
-    return [...this.breakColours.get(position) ?? []].sort((a, b) => a - b);
+    return [...new Set(this.breakColours.get(position) ?? [])].sort((a, b) => a - b);
   }
   /**
    * Where the current run stands, for the scan trace. Read-only, and never consulted by `offer`:
@@ -6297,15 +6633,51 @@ var Stillness = class {
   status(now = performance.now()) {
     return { run: this.count, heldMs: this.key === null ? 0 : now - this.since };
   }
-  /** Forget the current run — the cube left the frame, or the scan was restarted. */
+  /**
+   * Forget the current RUN — the cube left the frame, a frame could not be read, the read was spent.
+   *
+   * THE FLICKER HISTORY SURVIVES IT (D8, `dev-docs/scan-pipeline-audit-2026-09-23.md` §3). The panel
+   * resets on every abstaining frame, and a side that will not settle abstains constantly — so
+   * wiping `breaks` here meant "which sticker keeps changing" could never reach the three breaks
+   * `flickering()` asks for, and the one specific thing the scan can tell a person was replaced by
+   * "hold still" for as long as they were willing to hold it. The history is about a SUBJECT, not
+   * about a run: `classify`'s `forget` clears it when the subject actually changes, and
+   * `forgetFlicker()` clears it when the caller knows it has.
+   *
+   * The last counted frame does not go either, and for a related reason (D2). A reset means the run
+   * is void, not that the camera delivered something new — so if the very next offer carries the
+   * same frame id, it is still the same picture and still not a second look. Clearing it here would
+   * give a re-served frame a fresh vote after every abstention, which on the native path is a vote
+   * it could cast sixteen times a second.
+   */
   reset() {
     this.key = null;
     this.colors = null;
     this.count = 0;
     this.since = 0;
     this.centres = [];
+  }
+  /**
+   * Forget which sticker was flickering — this is a different subject, or a different scan.
+   *
+   * Called where the caller KNOWS the subject changed and `classify` will not see it: a side was
+   * captured (the next side is a new subject with no frame in between to compare), or the scan was
+   * restarted. Keeping it across those would name a sticker of the side before last.
+   */
+  forgetFlicker() {
     this.breaks.clear();
     this.breakColours.clear();
+  }
+  /**
+   * Forget which frame was last counted — the camera itself changed, so its ids mean nothing here.
+   *
+   * Separate from `reset()` because the two answer different questions: a reset says this RUN is
+   * void, and this says the numbering is. A reopened camera or a switched device may restart its
+   * counter, and a new frame that happened to reuse the last id would otherwise be discarded as a
+   * repeat — silently, and for exactly one frame, which is the kind of fault that is never found.
+   */
+  forgetFrames() {
+    this.lastFrame = null;
   }
 };
 
@@ -6500,6 +6872,13 @@ var AiScanPanel = class extends HTMLElement {
    * `onTick` knows the timing — and is committed once per tick, so a record is never half a tick.
    */
   trace = new ScanTrace();
+  /**
+   * The centre resolution's thread (D3, `dev-docs/scan-pipeline-audit-2026-09-23.md` §3).
+   *
+   * One per panel, like the misread decoder and for the same reason: it is a module that parses in
+   * about a millisecond and is spawned only by a centre collision, which most scans never reach.
+   */
+  centres = new CentreResolver();
   tracing = false;
   tickNote = {};
   /** The words last put on screen, which the trace records as what the person scanning saw. */
@@ -6657,6 +7036,7 @@ var AiScanPanel = class extends HTMLElement {
     this.cam.park();
     this.dropDiagnosis();
     this.misread.dispose();
+    this.centres.dispose();
   }
   /**
    * Everything decided about the current reading is stale from here on.
@@ -6763,6 +7143,8 @@ var AiScanPanel = class extends HTMLElement {
     const gen = this.cam.beginAttempt();
     this.report("starting", "Opening the camera\u2026");
     this.cam.releaseCamera();
+    this.still.forgetFrames();
+    this.still.forgetFlicker();
     const detector = await this.ensureDetector();
     if (!this.cam.current(gen)) return;
     const slowOpen = setTimeout(() => {
@@ -7094,7 +7476,7 @@ var AiScanPanel = class extends HTMLElement {
       this.note({ outcome: "abstain", reason: fit.reason, geometry: fit.geometry });
       return;
     }
-    const settled = this.still.offer(fit.face.colors);
+    const settled = this.still.offer(fit.face.colors, performance.now(), output.frameId);
     this.showPreview(fit.face.colors);
     if (!settled) {
       const flicker = this.still.flickering();
@@ -7245,7 +7627,7 @@ var AiScanPanel = class extends HTMLElement {
       this.replaceCapturedSide(read, claim, agreedCentre, seenCentres);
       return;
     }
-    const inHand = this.sideInHand(read, centreUnread);
+    const inHand = this.sideInHand(read, centreUnread, seenCentres);
     if (inHand) {
       this.noteCentre(inHand.side, read);
       this.traceEvent("turned-away", {
@@ -7442,16 +7824,21 @@ var AiScanPanel = class extends HTMLElement {
    * The side in hand that `read` shows again — named, with its slot, or unnamed — or null for a side
    * not in hand: its centre claims the same colour and its eight agree (`sameSide`).
    */
-  sideInHand(read, centreUnread = false) {
+  sideInHand(read, centreUnread = false, seenCentres = /* @__PURE__ */ new Map()) {
     const eightAgree = (side, atLeast) => sameSide(read.colors, side.colors, atLeast);
     if (centreUnread) {
       const hits = [];
       for (const slot of FACES) {
         const side = this.faces[slot];
-        if (side && eightAgree(side, SAME_SIDE_STICKERS)) hits.push({ side, slot });
+        if (side && eightAgree(side, SAME_SIDE_STICKERS) && this.centresAllow(seenCentres, slot)) {
+          hits.push({ side, slot });
+        }
       }
-      for (const side of this.unnamed)
-        if (eightAgree(side, SAME_SIDE_STICKERS)) hits.push({ side });
+      for (const side of this.unnamed) {
+        if (eightAgree(side, SAME_SIDE_STICKERS) && this.centresAllow(seenCentres, side)) {
+          hits.push({ side });
+        }
+      }
       return hits.length === 1 ? hits[0] : null;
     }
     const centre = read.colors[4];
@@ -7471,6 +7858,33 @@ var AiScanPanel = class extends HTMLElement {
       return shown.length === 1 && shown[0] === centre && eightAgree(side, SAME_SIDE_STICKERS);
     });
     return unclaimed.length === 1 ? { side: unclaimed[0] } : null;
+  }
+  /**
+   * Could a read whose centre never settled be `candidate`, on the evidence of what the two runs'
+   * CENTRES showed?
+   *
+   * D5 (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3), and the uncaptured half of the uniqueness
+   * test. The eight alone cannot tell a side from its twin — after U D R L F B the white and yellow
+   * sides are the same eight stickers — and `sideInHand` only ever asked whether the ring matched
+   * one side IN HAND. An uncaptured side can share the ring too, so a yellow side shown after white
+   * was captured matched white uniquely, was turned away as "Already have", and the scan stalled at
+   * five with a perfectly good cube in front of the camera.
+   *
+   * What separates them is what their centres SHOWED, which both runs record even when neither
+   * settled (`Stillness.centreReads`). Two showings of one side overlap in that; a side and its
+   * twin do not. So the rule is DISJOINTNESS, and only disjointness: no overlap means these are
+   * different sides. Anything else — either run having seen nothing, or any colour in common —
+   * leaves the candidate standing, because an absence of evidence must not create a second side.
+   *
+   * A named candidate's centre is the colour it was filed under, and a read that never once showed
+   * that colour is not it.
+   */
+  centresAllow(seenCentres, candidate) {
+    if (seenCentres.size === 0) return true;
+    const theirs = typeof candidate === "string" ? /* @__PURE__ */ new Map([[colourOfSlot(candidate), 1]]) : this.unnamedCentres.get(candidate) ?? /* @__PURE__ */ new Map();
+    if (theirs.size === 0) return true;
+    for (const colour of seenCentres.keys()) if (theirs.has(colour)) return true;
+    return false;
   }
   /**
    * The named side whose eight `read` shows, when exactly one does — however its centre read. For the
@@ -7852,6 +8266,7 @@ var AiScanPanel = class extends HTMLElement {
    */
   captured(kind, face) {
     this.still.reset();
+    this.still.forgetFlicker();
     this.flash();
     const detail = { kind, face, sides: this.sidesHeld() };
     const epoch = this.captureEpoch;
@@ -8020,7 +8435,6 @@ var AiScanPanel = class extends HTMLElement {
   }
   /** Read the six faces (plus any confirmations) into a cube, and act on what comes back. */
   assemble() {
-    let result;
     if (this.inPlace()) {
       const { scheme: _assumed, ...checked } = this.fromPositions(
         assemblePainted(this.positionFaces(), void 0, { diagnose: false })
@@ -8039,18 +8453,25 @@ var AiScanPanel = class extends HTMLElement {
         capture,
         centreConfidence: median2(this.centreSeen.get(capture) ?? [capture.confidence[4] ?? 0])
       }));
-      let resolution;
-      try {
-        resolution = resolveCentres(this.faces, unnamed, void 0, { diagnose: false });
-      } catch (err) {
-        for (const side of [...this.unnamed]) this.forgetCapture(side);
-        this.traceEvent("contest-resolved", {
-          sides: unnamed.map((u) => [...u.capture.colors]),
-          error: err instanceof Error ? err.message : String(err)
-        });
-        this.checkFailed(err);
-        return;
-      }
+      const epoch = this.diagnosisEpoch;
+      const now = this.centres.request({ epoch, named: this.faces, unnamed }, (reply) => {
+        if (reply.epoch !== this.diagnosisEpoch) return;
+        this.applyResolution(reply.resolution, unnamed);
+      });
+      if (now) this.applyResolution(now.resolution, unnamed);
+      return;
+    }
+    this.assembleNamed();
+  }
+  /**
+   * What a centre resolution MEANS, once it has arrived — from the worker or from this thread.
+   *
+   * Lifted out of `assemble` when the resolution moved off the page's thread (D3): the branches
+   * below are unchanged, and the only new thing is that they can now run a beat later, against a
+   * scan the epoch has already agreed is still the current one.
+   */
+  applyResolution(resolution, unnamed) {
+    {
       const { result: verdict } = resolution;
       const settled = verdict.valid || verdict.ambiguous === true || verdict.confirm !== void 0;
       const twin = settled || resolution.decidedBy === "legality" ? null : this.twinToDrop();
@@ -8070,8 +8491,18 @@ var AiScanPanel = class extends HTMLElement {
       if (resolution.faces) this.adoptFiling(resolution.faces, resolution.placed ?? {}, unnamed);
       this.buildDots();
       this.finish(resolution.result, "camera");
-      return;
     }
+  }
+  /**
+   * The assembly for a scan whose six sides are all named — the tail of `assemble`, lifted out when
+   * the centre resolution moved off the page's thread (D3). Unchanged but for its name.
+   *
+   * A `reread` means a confirmation disagreed with its first capture about colours: adopt the
+   * fresh, deliberately-held look as that side's reading and check again. Each adoption pins its
+   * side at distance 0, so this settles within six rounds; the cap is a backstop, not a path.
+   */
+  assembleNamed() {
+    let result;
     for (let round = 0; ; round++) {
       try {
         result = assembleColors(this.faces, void 0, this.confirmed, { diagnose: false });

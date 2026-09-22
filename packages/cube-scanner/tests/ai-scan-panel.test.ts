@@ -2174,6 +2174,60 @@ describe('ai-scan-panel — sides whose centres read as the same colour', () => 
     ).toEqual(['D', 'U']);
   });
 
+  /**
+   * Show a side whose centre never settles, alternating between `a` and `b`. The gate keys on the
+   * eight (2026-09-20), so the read still settles; `Stillness.centre()` answers null, which is what
+   * makes it a centre-unread filing.
+   */
+  const showFlickeringCentre = async (colors: number[], a: number, b: number) => {
+    for (let i = 0; i < SETTLE_TICKS + 4; i++) {
+      fake.output = tensorFor(colors.map((c, k) => (k === 4 ? (i % 2 === 0 ? a : b) : c)));
+      await vi.advanceTimersByTimeAsync(TICK);
+    }
+    fake.output = null;
+  };
+
+  it('keeps a twin side whose centre never settled — the ring matching one side in hand is not enough (D5)', async () => {
+    // D5 (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3). After U D R L F B the white and yellow
+    // sides are the same eight stickers, and `sideInHand` asked only whether the ring matched one
+    // side IN HAND. So yellow, shown after white was captured and with its own centre flickering,
+    // matched white UNIQUELY and was turned away as "Already have" — the scan stalled at five with a
+    // perfectly good cube in front of the camera, and no second showing could ever get past it.
+    //
+    // What separates a side from its twin is what their centres SHOWED, which both runs record even
+    // when neither settles. Yellow's run never showed white, so it is not the white side.
+    const state = new Cube().move('U D R L F B').asString();
+    const faces = facesOf(state);
+    await show(faces.U);
+    expect(last().captured.map((c) => c.face)).toEqual(['U']);
+    const before = events.length;
+    await showFlickeringCentre(faces.D, LETTER_CLASS.D, LETTER_CLASS.L); // yellow ↔ orange
+    const said = events.slice(before).map((e) => e.message);
+    expect(
+      said.some((m) => /Already have/.test(m)),
+      'the twin side was turned away',
+    ).toBe(false);
+    expect(last().sides, 'the twin side was not kept').toBe(2);
+  });
+
+  it('still turns away the SAME side re-shown with a flickering centre', async () => {
+    // The other half, and what keeps the rule from filing a duplicate on every re-showing: the rule
+    // is DISJOINTNESS of the centres each run showed, not "an unread centre never matches". White
+    // shown again — its centre flickering between white and blue, as a logo cap does — has white in
+    // common with the side already filed, so it is that side.
+    const state = new Cube().move('U D R L F B').asString();
+    const faces = facesOf(state);
+    await show(faces.U);
+    expect(last().captured.map((c) => c.face)).toEqual(['U']);
+    const before = events.length;
+    await showFlickeringCentre(faces.U, LETTER_CLASS.U, LETTER_CLASS.B); // white ↔ blue
+    // Over the reports of that showing, not the last one: a turned-away read is SPENT, so the ticks
+    // after it start a fresh run and the final report is that run's "hold still".
+    const said = events.slice(before).map((e) => e.message);
+    expect(said.some((m) => /Already have/.test(m))).toBe(true);
+    expect(last().sides, 'a duplicate of the side already in hand was filed').toBe(1);
+  });
+
   it('sends a correction on a symmetric cube to the side its centre names when its eight fit two sides', async () => {
     // Every side is in and the scan was refused over one misread sticker on the yellow side. Re-shown
     // right, that side's eight are ALSO the white side's eight (U D R L F B), so the eight point to two

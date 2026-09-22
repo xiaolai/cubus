@@ -150,6 +150,10 @@ const BUNDLES = [
       // running the decode here when a page has no `Worker`, so both halves ship in this bundle.
       '../../../packages/cube-scanner/view/misread-client.ts',
       '../../../packages/cube-scanner/view/misread-protocol.ts',
+      // The centre resolution's client half, for the same reason (D3, 2026-09-23): the panel spawns
+      // the worker below and falls back to resolving here when a page has no `Worker`.
+      '../../../packages/cube-scanner/view/centres-client.ts',
+      '../../../packages/cube-scanner/view/centres-protocol.ts',
       // The colour repair, which arrived with the permissive detector: the constraint a cube's
       // paint satisfies (`nine-of-each`), the pixels a sticker actually carries, read at the one
       // moment a frame and a fitted grid are both in hand (`sticker-pixels`), and the question
@@ -232,6 +236,46 @@ const BUNDLES = [
       'heldUpColour', 'holdOffset', 'isColour', 'neighbourColour', 'neighbourColours', 'schemeOfCentres',
     ],
     treeShakenMessages: ['encodeFacelets: not a well-formed cube state'],
+  },
+  {
+    // The centre resolution, on its own thread (D3, 2026-09-23;
+    // dev-docs/scan-pipeline-audit-2026-09-23.md §3). `resolveCentres` enumerates every way the
+    // unnamed sides could fill the free slots and runs a whole assembly per filing — 26/54/148/509
+    // ms for one to four unnamed sides on the dev Mac, all of it on the page's thread, at the
+    // moment after the sixth capture when a child is waiting to be told the cube is done. Reached
+    // exactly as the misread worker is, by a same-origin URL computed from the panel's own bundle
+    // and named in no HTML, and it degrades the same way — quietly back to the page thread — which
+    // is why it needs the same guard.
+    name: 'centres-worker',
+    build: 'pnpm --filter cube-scanner build:centres-worker',
+    bundle: '../vendor/centres-worker.js',
+    // Every file esbuild puts in it, plus cubejs. Deliberately NOT centres-client.ts: the client's
+    // spawn half is dropped here, exactly as misread-client.ts is dropped from the misread worker.
+    sources: [
+      '../../../packages/cube-scanner/view/centres-worker.ts',
+      '../../../packages/cube-scanner/view/centres-protocol.ts',
+      '../../../packages/cube-scanner/src/ai-assemble.ts',
+      '../../../packages/cube-scanner/src/facelet-cube.ts',
+      '../../../packages/cube-scanner/src/misread-decode.ts',
+      '../../../packages/cube-scanner/src/nine-of-each.ts',
+      '../../../packages/cube-scanner/src/paint-groups.ts',
+      '../../../packages/cube-scanner/src/scheme.ts',
+      '../../../packages/cube-scanner/src/types.ts',
+    ],
+    // The worker's one entry is `resolveCentres`, so everything the PANEL reaches ai-assemble for
+    // — the top-level assemblies, the side-recognition helpers the filing uses, the centre-owner
+    // map — is dropped here, along with the two scheme exports only the panel calls. Same
+    // delete-when-used contract as the lists above.
+    treeShaken: [
+      'SOLVED_FACELETS', 'encodeFacelets', 'MAX_REPAIR_COST', 'SAME_SIDE_BY_CENTRE',
+      'SAME_SIDE_STICKERS', 'assembleColors', 'assemblePainted', 'buildCentreOwner', 'sameSide',
+      'COLOUR_NAMES', 'schemeOfCentres',
+    ],
+    treeShakenMessages: [
+      'encodeFacelets: not a well-formed cube state',
+      'a sticker is not one of the six centre colours',
+      'not a solvable cube yet',
+    ],
   },
   {
     // The letterbox, on its own thread (2026-09-20; dev-docs/scanner-audit-2026-09-20.md §2.10).

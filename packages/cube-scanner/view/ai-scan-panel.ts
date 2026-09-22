@@ -40,7 +40,6 @@ import {
   type Confirmation,
   type ConfirmRequest,
   matchingRotations,
-  resolveCentres,
   rotateFace,
   SAME_SIDE_BY_CENTRE,
   SAME_SIDE_STICKERS,
@@ -68,6 +67,7 @@ import {
 import { stickerLab, toFrameBox } from '../src/sticker-pixels.js';
 import { FACES, type Face } from '../src/types.js';
 import { CameraSession } from './camera-session.js';
+import { CentreResolver } from './centres-client.js';
 import { INFERENCE_WORKER_LOST } from './inference-client.js';
 import { MisreadDecoder } from './misread-client.js';
 import type { ScanRuntime } from './pick-detector.js';
@@ -625,6 +625,13 @@ export class AiScanPanel extends HTMLElement {
    * `onTick` knows the timing — and is committed once per tick, so a record is never half a tick.
    */
   private readonly trace = new ScanTrace();
+  /**
+   * The centre resolution's thread (D3, `dev-docs/scan-pipeline-audit-2026-09-23.md` §3).
+   *
+   * One per panel, like the misread decoder and for the same reason: it is a module that parses in
+   * about a millisecond and is spawned only by a centre collision, which most scans never reach.
+   */
+  private readonly centres = new CentreResolver();
   private tracing = false;
   private tickNote: Partial<TickNote> = {};
   /** The words last put on screen, which the trace records as what the person scanning saw. */
@@ -796,6 +803,10 @@ export class AiScanPanel extends HTMLElement {
     // and megabytes, a worker spawn is a module parse, and only a refusal ever creates one.
     this.dropDiagnosis();
     this.misread.dispose();
+    // Same reasoning for the centre resolver (D3): a worker spawn is a module parse, and only a
+    // centre collision ever creates one. Given back with the decoder so a disconnected panel leaves
+    // no thread behind it.
+    this.centres.dispose();
   }
 
   /**
@@ -1617,8 +1628,10 @@ export class AiScanPanel extends HTMLElement {
       this.replaceCapturedSide(read, claim, agreedCentre, seenCentres);
       return;
     }
-    // A side the scan already has.
-    const inHand = this.sideInHand(read, centreUnread);
+    // A side the scan already has. The centres this run showed go with the question (D5): with no
+    // settled centre the eight alone cannot tell a side from its twin, and an UNCAPTURED side can
+    // share the ring — so what the two runs' centres showed is what separates them.
+    const inHand = this.sideInHand(read, centreUnread, seenCentres);
     if (inHand) {
       this.noteCentre(inHand.side, read);
       this.traceEvent('turned-away', {
@@ -1892,6 +1905,7 @@ export class AiScanPanel extends HTMLElement {
   private sideInHand(
     read: ColorFace,
     centreUnread = false,
+    seenCentres: ReadonlyMap<number, number> = new Map(),
   ): { side: ColorFace; slot?: Face } | null {
     // With the centre UNREAD there is no colour to compare, so the eight decide alone — and they are
     // not always enough: different sides can share their eight exactly (after U D R L F B, white and
@@ -1916,10 +1930,15 @@ export class AiScanPanel extends HTMLElement {
       const hits: Array<{ side: ColorFace; slot?: Face }> = [];
       for (const slot of FACES) {
         const side = this.faces[slot];
-        if (side && eightAgree(side, SAME_SIDE_STICKERS)) hits.push({ side, slot });
+        if (side && eightAgree(side, SAME_SIDE_STICKERS) && this.centresAllow(seenCentres, slot)) {
+          hits.push({ side, slot });
+        }
       }
-      for (const side of this.unnamed)
-        if (eightAgree(side, SAME_SIDE_STICKERS)) hits.push({ side });
+      for (const side of this.unnamed) {
+        if (eightAgree(side, SAME_SIDE_STICKERS) && this.centresAllow(seenCentres, side)) {
+          hits.push({ side });
+        }
+      }
       return hits.length === 1 ? hits[0]! : null;
     }
     const centre = read.colors[4];
@@ -1950,6 +1969,40 @@ export class AiScanPanel extends HTMLElement {
       return shown.length === 1 && shown[0] === centre && eightAgree(side, SAME_SIDE_STICKERS);
     });
     return unclaimed.length === 1 ? { side: unclaimed[0]! } : null;
+  }
+
+  /**
+   * Could a read whose centre never settled be `candidate`, on the evidence of what the two runs'
+   * CENTRES showed?
+   *
+   * D5 (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3), and the uncaptured half of the uniqueness
+   * test. The eight alone cannot tell a side from its twin — after U D R L F B the white and yellow
+   * sides are the same eight stickers — and `sideInHand` only ever asked whether the ring matched
+   * one side IN HAND. An uncaptured side can share the ring too, so a yellow side shown after white
+   * was captured matched white uniquely, was turned away as "Already have", and the scan stalled at
+   * five with a perfectly good cube in front of the camera.
+   *
+   * What separates them is what their centres SHOWED, which both runs record even when neither
+   * settled (`Stillness.centreReads`). Two showings of one side overlap in that; a side and its
+   * twin do not. So the rule is DISJOINTNESS, and only disjointness: no overlap means these are
+   * different sides. Anything else — either run having seen nothing, or any colour in common —
+   * leaves the candidate standing, because an absence of evidence must not create a second side.
+   *
+   * A named candidate's centre is the colour it was filed under, and a read that never once showed
+   * that colour is not it.
+   */
+  private centresAllow(
+    seenCentres: ReadonlyMap<number, number>,
+    candidate: Face | ColorFace,
+  ): boolean {
+    if (seenCentres.size === 0) return true;
+    const theirs =
+      typeof candidate === 'string'
+        ? new Map([[colourOfSlot(candidate) as number, 1]])
+        : (this.unnamedCentres.get(candidate) ?? new Map<number, number>());
+    if (theirs.size === 0) return true;
+    for (const colour of seenCentres.keys()) if (theirs.has(colour)) return true;
+    return false;
   }
 
   /**
@@ -2625,7 +2678,6 @@ export class AiScanPanel extends HTMLElement {
 
   /** Read the six faces (plus any confirmations) into a cube, and act on what comes back. */
   private assemble(): void {
-    let result: AiScanResult;
     // A CUBE WHOSE ROTATIONS ARE ALREADY KNOWN IS NOT A ROTATION PROBLEM.
     //
     // Once a scan has been accepted, `finishAccepted` turns every capture into canonical rotation
@@ -2664,21 +2716,38 @@ export class AiScanPanel extends HTMLElement {
         capture,
         centreConfidence: median(this.centreSeen.get(capture) ?? [capture.confidence[4] ?? 0]),
       }));
-      let resolution: CentreResolution;
-      try {
-        resolution = resolveCentres(this.faces, unnamed, undefined, { diagnose: false });
-      } catch (err) {
-        // Through `forgetCapture`, like every other removal (2026-09-21, on verification): a bare
-        // `this.unnamed = []` here left `centreSeen`, `unnamedClaim` and `unnamedCentres` holding
-        // records of sides no longer held, which the next filing could then be matched against.
-        for (const side of [...this.unnamed]) this.forgetCapture(side);
-        this.traceEvent('contest-resolved', {
-          sides: unnamed.map((u) => [...u.capture.colors]),
-          error: err instanceof Error ? err.message : String(err),
-        });
-        this.checkFailed(err);
-        return;
-      }
+      // OFF THE PAGE'S THREAD (D3, `dev-docs/scan-pipeline-audit-2026-09-23.md` §3). The resolver
+      // enumerates every filing and runs a whole assembly per filing — 26/54/148/509 ms for one to
+      // four unnamed sides on the dev Mac, before any phone slowdown — and all of it used to run
+      // here, at the moment a child is waiting to be told the cube is done. A page with no worker
+      // gets the answer synchronously and behaves exactly as it did.
+      //
+      // The EPOCH is the cancellation: there is nothing to interrupt inside one enumeration, so
+      // what is cancelled is the answer's authority. `diagnosisEpoch` is the same serial every
+      // other superseded reading is checked against.
+      const epoch = this.diagnosisEpoch;
+      const now = this.centres.request({ epoch, named: this.faces, unnamed }, (reply) => {
+        if (reply.epoch !== this.diagnosisEpoch) return;
+        this.applyResolution(reply.resolution, unnamed);
+      });
+      if (now) this.applyResolution(now.resolution, unnamed);
+      return;
+    }
+    // A `reread` means a confirmation disagreed with its first capture about colours: adopt the
+    // fresh, deliberately-held look as that side's reading and check again. Each adoption pins its
+    // side at distance 0, so this settles within six rounds; the cap is a backstop, not a path.
+    this.assembleNamed();
+  }
+
+  /**
+   * What a centre resolution MEANS, once it has arrived — from the worker or from this thread.
+   *
+   * Lifted out of `assemble` when the resolution moved off the page's thread (D3): the branches
+   * below are unchanged, and the only new thing is that they can now run a beat later, against a
+   * scan the epoch has already agreed is still the current one.
+   */
+  private applyResolution(resolution: CentreResolution, unnamed: readonly UnnamedSide[]): void {
+    {
       // No legal filing, and two of the sides are the same eight stickers: one side read twice, so
       // what is in hand is five sides, not six — ask for the sixth instead of deciding a reading.
       // NEVER over a reading that came back legal (2026-09-20): a single unnamed side is placed by
@@ -2709,11 +2778,19 @@ export class AiScanPanel extends HTMLElement {
       // again replaces its reading and is resolved afresh.
       this.buildDots();
       this.finish(resolution.result, 'camera');
-      return;
     }
-    // A `reread` means a confirmation disagreed with its first capture about colours: adopt the
-    // fresh, deliberately-held look as that side's reading and check again. Each adoption pins its
-    // side at distance 0, so this settles within six rounds; the cap is a backstop, not a path.
+  }
+
+  /**
+   * The assembly for a scan whose six sides are all named — the tail of `assemble`, lifted out when
+   * the centre resolution moved off the page's thread (D3). Unchanged but for its name.
+   *
+   * A `reread` means a confirmation disagreed with its first capture about colours: adopt the
+   * fresh, deliberately-held look as that side's reading and check again. Each adoption pins its
+   * side at distance 0, so this settles within six rounds; the cap is a backstop, not a path.
+   */
+  private assembleNamed(): void {
+    let result: AiScanResult;
     for (let round = 0; ; round++) {
       try {
         // `diagnose: false` — the assembly answers now and the misread decode arrives later, off

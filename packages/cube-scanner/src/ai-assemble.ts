@@ -1692,6 +1692,16 @@ export interface CentreResolution {
    *  `counting` when one unnamed side and one free slot left no choice to make. */
   decidedBy?: 'legality' | 'confidence' | 'counting';
   /**
+   * How many filings were assessed, and whether the budget stopped it short (D3,
+   * `dev-docs/scan-pipeline-audit-2026-09-23.md` §3).
+   *
+   * A TRUNCATED SEARCH DECIDES NOTHING, and that is why this is reported rather than kept private.
+   * The gate is uniqueness — "exactly one filing is legal" — and uniqueness over a subset is not
+   * uniqueness: the filing this one ruled out might have been the second legal one. So a run that
+   * hits its budget refuses outright, and says so here.
+   */
+  assessed?: { filings: number; budget: number; truncated: boolean };
+  /**
    * With `faces`: which unnamed side (an index into the `unnamed` given) each formerly free slot now
    * holds. The filing REBUILDS a capture whenever its centre changes, so a caller matching filed
    * captures to its own by identity found nothing for exactly the reassigned-centre case (audit,
@@ -1803,6 +1813,21 @@ function orderings<T>(items: readonly T[]): T[][] {
  * side's too — a near-solved white face read as nine blues — the two captures are the same picture,
  * the panel cannot tell them apart, and nothing here is ever reached.
  */
+/**
+ * The most filings `resolveCentres` will assess before it refuses (D3).
+ *
+ * The cost is one whole `assembleWithin` per filing, and the count is `free!` — 1, 2, 6, 24, 120,
+ * 720 for one to six unnamed sides. Measured on the dev Mac with the audit's own `verify.ts`:
+ * 26 ms, 54 ms, 148 ms and 509 ms for one to four unnamed, before any phone slowdown. Five and six
+ * were never reachable in practice and were never bounded either, so a scan that got there would
+ * have spent minutes inside one call.
+ *
+ * TWENTY-FOUR admits every case that has ever been seen — four unnamed sides is the most the panel
+ * can hold, since a fifth would mean five sides sharing centres — and refuses the two that are only
+ * reachable through a defect. It is a bound on an enumeration, not a judgement about cubes.
+ */
+export const MAX_CENTRE_FILINGS = 24;
+
 export function resolveCentres(
   named: Partial<Record<Face, ColorFace>>,
   unnamed: readonly UnnamedSide[],
@@ -1818,6 +1843,8 @@ export function resolveCentres(
    * rotations and confirms repairs, and neither changes which filing can be a cube.
    */
   confirmed: Confirmed = {},
+  /** The most filings to assess before refusing — see `MAX_CENTRE_FILINGS` (D3). */
+  budget: number = MAX_CENTRE_FILINGS,
 ): CentreResolution {
   const free = FACES.filter((face) => !named[face]);
   // ONE UNNAMED SIDE IS ENOUGH (2026-09-20). It used to take two, because the only way to be unnamed
@@ -1849,7 +1876,19 @@ export function resolveCentres(
     }
     claimed.push(centre);
   }
-  const filings = orderings(free).map((slots) => {
+  const all = orderings(free);
+  // Budget first, and it REFUSES rather than trimming (D3). Assessing the first N of `all` and
+  // taking "exactly one of those is legal" as uniqueness would be a wrong answer wearing the right
+  // shape: the filing left out might have been the second legal one.
+  if (all.length > budget) {
+    return {
+      result: reject(
+        `a centre resolution over ${all.length} filings is past the budget of ${budget}`,
+      ),
+      assessed: { filings: all.length, budget, truncated: true },
+    };
+  }
+  const filings = all.map((slots) => {
     const faces = { ...named } as Record<Face, ColorFace>;
     slots.forEach((slot, i) => {
       faces[slot] = withCentre(unnamed[i]!.capture, colourOfSlot(slot));
@@ -1878,6 +1917,7 @@ export function resolveCentres(
   // SIX captures: the panel adopts the filing and reports the refusal against it, where before it
   // cleared the unnamed side and restored it only if its arbitrary last-frame centre happened to name
   // a free slot — so a refused scan silently became five sides (audit, 2026-09-20).
+  const spent = { filings: all.length, budget, truncated: false };
   if (unnamed.length === 1) {
     const only = assessed[0]!;
     return {
@@ -1885,6 +1925,7 @@ export function resolveCentres(
       faces: only.faces,
       placed: placedBy(only.slots),
       decidedBy: 'counting',
+      assessed: spent,
     };
   }
   const fits = assessed.filter(
@@ -1897,6 +1938,7 @@ export function resolveCentres(
       faces: fit!.faces,
       placed: placedBy(fit!.slots),
       decidedBy: 'legality',
+      assessed: spent,
     };
   }
   // The pair a refusal names: a colour two sides claimed, and a slot nobody claimed. Only when two
