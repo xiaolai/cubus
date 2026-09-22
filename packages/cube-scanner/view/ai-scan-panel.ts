@@ -68,6 +68,7 @@ import {
 import { stickerLab, toFrameBox } from '../src/sticker-pixels.js';
 import { FACES, type Face } from '../src/types.js';
 import { CameraSession } from './camera-session.js';
+import { INFERENCE_WORKER_LOST } from './inference-client.js';
 import { MisreadDecoder } from './misread-client.js';
 import type { ScanRuntime } from './pick-detector.js';
 import {
@@ -215,8 +216,8 @@ const TICK_FAIL_MS = 3000;
  * limit on SILENCE.
  */
 const INFERENCE_TIMEOUT_MS = 15_000;
-/** The name on the error the deadline above rejects with — the one failure `tickFail` treats as a
- *  wedged runtime rather than a broken frame. */
+/** The name on the error the deadline above rejects with — one of the two failures `tickFail`
+ *  treats as a lost runtime rather than a broken frame (the other is `INFERENCE_WORKER_LOST`). */
 const INFERENCE_TIMEOUT = 'InferenceTimeoutError';
 // The beat between "captured/corrected" and the verdict. Assembly itself is ~5 ms; this exists so
 // the capture that triggered the check — the sixth tile going green, a corrected sticker — paints
@@ -1503,7 +1504,14 @@ export class AiScanPanel extends HTMLElement {
     // fifteen seconds and the same notice, until a reload. The runner is given up here, so Start
     // builds a fresh session; the chain itself stops waiting on a run past its own limit
     // (`onnx-runtime.ts`, RUN_CHAIN_TIMEOUT_MS), which is what makes the rebuild reachable.
-    if (err instanceof Error && err.name === INFERENCE_TIMEOUT) {
+    //
+    // A WORKER THAT DIED TOOK ITS MODEL WITH IT (2026-09-22), and is the same case from the other
+    // side: the runtime did not stall, it is gone (`inference-client.ts`). Start rebuilds it the
+    // same way, in a new worker.
+    if (
+      err instanceof Error &&
+      (err.name === INFERENCE_TIMEOUT || err.name === INFERENCE_WORKER_LOST)
+    ) {
       this.cam.chosen?.dispose?.();
       this.cam.modelLoaded = false;
     }

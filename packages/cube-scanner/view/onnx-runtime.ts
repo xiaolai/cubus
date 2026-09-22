@@ -11,8 +11,12 @@
 // TYPE-ONLY. The runtime is loaded from a URL at call time (see `loadOrt`) so that esbuild leaves
 // it out of the panel bundle — which is the whole reason inference can run off the main thread.
 import type * as ortNs from 'onnxruntime-web';
+// The two constants from the leaf modules that define them, not through `onnx-detect.ts`: this file
+// is bundled into the inference worker too (`inference-worker.ts`), and importing a VALUE from
+// onnx-detect would build that bundle from the whole decoder behind it.
+import { DETECT_ROWS } from '../src/detect-head.js';
+import { IMG_SIZE } from '../src/letterbox.js';
 import type { RunModel } from '../src/onnx-detect.js';
-import { DETECT_ROWS, IMG_SIZE } from '../src/onnx-detect.js';
 
 type Ort = typeof ortNs;
 
@@ -370,7 +374,50 @@ export interface ModelRunnerOptions {
    * test that sleeps.
    */
   gpuBudgetMs?: number;
+  /**
+   * Whether the page is being watched, for the GPU timing probe (`bestTimedRun`). Defaults to the
+   * page's own `document`; the inference worker has none, and passes the page's word for it.
+   */
+  visibility?: VisibilitySource;
+  /**
+   * The caller already runs OFF the page's thread: the inference worker (2026-09-22).
+   *
+   * onnxruntime proxies only where there is a `document` — its proxy test in the shipped
+   * `vendor/ort.mjs` is `env.wasm.proxy && typeof document !== "undefined"` — so in a worker the wasm
+   * path runs on the worker's own thread, with its own thread pool, whatever `proxy` says. There is
+   * then one mode, not two, and one module serves both providers: the GPU→wasm fallback rebuilds on
+   * the module it already has rather than importing a second instance (and a second wasm heap), and
+   * no query-string identity is asked of a host that might misread it. Default false: on the page,
+   * the proxy is what keeps a ~200 ms run off the thread that draws.
+   */
+  offPageThread?: boolean;
 }
+
+/**
+ * Whether the page is visible, and a way to hear when that changes — what a timing needs to know
+ * before it is believed (see `bestTimedRun`). An interface rather than a read of `document`,
+ * because the runner also runs in a worker, where there is no document and the page says instead.
+ */
+export interface VisibilitySource {
+  hidden(): boolean;
+  /** Call `onChange` on every change until the function this returns is called. */
+  watch(onChange: () => void): () => void;
+}
+
+/**
+ * The page's own `document`, read AT CALL TIME, so a test that installs one after import is heard.
+ *
+ * Optional-called throughout: a host without a real document (a DOM test, a worker) may have neither
+ * method, and losing the listener costs the extra evidence rather than the verdict.
+ */
+export const documentVisibility: VisibilitySource = {
+  hidden: () => globalThis.document?.visibilityState === 'hidden',
+  watch(onChange) {
+    const doc = globalThis.document;
+    doc?.addEventListener?.('visibilitychange', onChange);
+    return () => doc?.removeEventListener?.('visibilitychange', onChange);
+  },
+};
 
 /**
  * How long a warmed GPU run may take before it is not worth having. See the timing check in
@@ -802,17 +849,21 @@ async function gpuRanTheGraph(ort: Ort, probe: () => Promise<unknown>): Promise<
  *
  * Its own function since 2026-09-05: it is a measurement, and `createModelRunner` had it inline
  * among session ownership, fallback and validation, three levels deep.
+ *
+ * `visibility` is WHOSE page (2026-09-22): the document's own on the page, and the page's word in
+ * the inference worker, which has no document and would otherwise judge every timing as watched.
  */
-async function bestTimedRun(probe: () => Promise<unknown>): Promise<number | null> {
-  const hidden = (): boolean => globalThis.document?.visibilityState === 'hidden';
+async function bestTimedRun(
+  probe: () => Promise<unknown>,
+  visibility: VisibilitySource,
+): Promise<number | null> {
+  const hidden = (): boolean => visibility.hidden();
   if (hidden()) return null;
   let wentHidden = false;
   const noteHidden = (): void => {
     if (hidden()) wentHidden = true;
   };
-  // Optional-called: a host without a real document (a DOM test, a worker) may have neither
-  // method, and losing the listener costs the extra evidence rather than the verdict.
-  globalThis.document?.addEventListener?.('visibilitychange', noteHidden);
+  const unwatch = visibility.watch(noteHidden);
   let best = Number.POSITIVE_INFINITY;
   let watched = true;
   try {
@@ -823,7 +874,7 @@ async function bestTimedRun(probe: () => Promise<unknown>): Promise<number | nul
       else best = Math.min(best, performance.now() - started);
     }
   } finally {
-    globalThis.document?.removeEventListener?.('visibilitychange', noteHidden);
+    unwatch();
   }
   return watched && !hidden() && !wentHidden ? best : null;
 }
@@ -961,12 +1012,15 @@ async function createSession(
     ortUrl: string;
     numThreads: number;
     wasmDir: string;
-    /** Whether the GPU is what was asked for — the proxy is the inverse of it, see below. */
-    gpu: boolean;
+    /**
+     * Whether onnxruntime is to proxy this module into a worker of its own: on the page, for the wasm
+     * path only — see below, and `offPageThread` for why a caller already off the page never does.
+     */
+    proxied: boolean;
     executionProviders: readonly ortNs.InferenceSession.ExecutionProviderConfig[];
   },
 ): Promise<ortNs.InferenceSession> {
-  const { modelUrl, ortUrl, numThreads, wasmDir, gpu, executionProviders } = cfg;
+  const { modelUrl, ortUrl, numThreads, wasmDir, proxied, executionProviders } = cfg;
   return serialise(ort, async () => {
     // A MODULE IS CONFIGURED ONCE — see `configured`. Refused rather than silently inherited.
     const first = configured.get(ort);
@@ -990,7 +1044,10 @@ async function createSession(
     // reason for the worker is gone, while keeping it means the GPU device has to be reached from a
     // worker that onnxruntime spawns for its own purposes. The cheaper arrangement is also the
     // simpler one here.
-    ort.env.wasm.proxy = !gpu;
+    //
+    // And OFF wherever the caller is already off the page's thread (`offPageThread`): there is no
+    // thread to protect, and onnxruntime would not proxy from a worker anyway.
+    ort.env.wasm.proxy = proxied;
     ort.env.wasm.wasmPaths = wasmDir;
 
     // PINNED WHERE INITIALISATION IS ATTEMPTED, not where it succeeds (2026-09-05). Recording it
@@ -1041,8 +1098,10 @@ export async function createModelRunner(
   // a local .wasm.
   const ortUrl = opts.ortUrl ?? './ort.mjs';
   // The proxy mode picks the module, because it cannot be changed on one — see `runtimeUrl`, and
-  // `proxiedSiblingUrl` for the fallback when a host cannot serve the query form.
-  const ort = await loadRuntime(ortUrl, !gpu);
+  // `proxiedSiblingUrl` for the fallback when a host cannot serve the query form. Off the page's
+  // thread there is only one mode, and so only one module (`offPageThread`).
+  const proxied = !gpu && !opts.offPageThread;
+  const ort = await loadRuntime(ortUrl, proxied);
 
   // This was a hard 1, with the note "so no SharedArrayBuffer / cross-origin-isolation headers
   // are needed" — true when written, and it meant every non-Apple build ran a THREADED runtime
@@ -1059,7 +1118,7 @@ export async function createModelRunner(
       numThreads,
       wasmDir,
       // The proxy is OFF for the GPU path — see `createSession` for why that is not a compromise.
-      gpu,
+      proxied,
       executionProviders,
     });
   } catch (err) {
@@ -1081,9 +1140,10 @@ export async function createModelRunner(
      * there is no window in which two places believe they must release it.
      *
      * Released BEFORE the rebuild, not after: two live sessions is the one arrangement that can
-     * fail for want of memory on the machine least able to spare it. The SAME ortUrl, too — asking
-     * for wasm changes the proxy mode, and `runtimeUrl` turns that into a different module by
-     * itself. Nothing here needs to know that it did.
+     * fail for want of memory on the machine least able to spare it. The SAME ortUrl, too — on the
+     * page, asking for wasm changes the proxy mode, and `runtimeUrl` turns that into a different
+     * module by itself; off it (`offPageThread`) there is one mode and the rebuild shares this
+     * module. Nothing here needs to know which.
      */
     const rebuildOnWasm = async (why: string): Promise<ModelRunner> => {
       console.info(why);
@@ -1136,8 +1196,9 @@ export async function createModelRunner(
       // The timing rides inside the same section, which it wants anyway: a run measured against a
       // budget while another session is competing for the same GPU is a measurement of the
       // contention. What is deliberately OUTSIDE is the rebuild — it creates a session of its own
-      // (on the proxied module, so a different chain) and holding this one's lock across it would
-      // be a lock held across an unbounded amount of work for no reason.
+      // (on the proxied module on the page, so a different chain; on THIS module off the page, so
+      // this chain, which the rebuild could not take while the lock was held) and holding this
+      // one's lock across it would be a lock held across an unbounded amount of work for no reason.
       const measured = await serialise(ort, async () => {
         // THE WARM-UP IS ALSO THE EVIDENCE. `gpuRanTheGraph` runs this same probe with the WebGPU
         // device's command queue watched, so the second question costs no extra inference — and a
@@ -1168,7 +1229,10 @@ export async function createModelRunner(
         // be watching; keeping the GPU is the right default when declining, since it was chosen
         // because the adapter is real and not a rasteriser, which is a fact this timing cannot
         // improve on.
-        const best = gpu && chosenHere ? await bestTimedRun(probe) : null;
+        const best =
+          gpu && chosenHere
+            ? await bestTimedRun(probe, opts.visibility ?? documentVisibility)
+            : null;
         return { ranOnGpu, best };
       });
       if (measured.ranOnGpu === false) return rebuildOnWasm(notTheGpu);

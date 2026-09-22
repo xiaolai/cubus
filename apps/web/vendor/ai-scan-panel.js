@@ -3423,6 +3423,10 @@ async function openCamera(video, opts = {}, signal) {
   }
 }
 
+// src/detect-head.ts
+var NUM_CLASSES = 6;
+var DETECT_ROWS = 4 + NUM_CLASSES;
+
 // src/letterbox.ts
 function letterboxOf(width, height, imgsz) {
   const scale = imgsz / Math.max(width, height);
@@ -3806,8 +3810,6 @@ function fitFace(dets, minConf = MIN_STICKER_CONFIDENCE) {
 }
 
 // src/onnx-detect.ts
-var NUM_CLASSES = 6;
-var DETECT_ROWS = 4 + NUM_CLASSES;
 function detectionsFromOutput(output, opts = {}) {
   const {
     numClasses = NUM_CLASSES,
@@ -4306,6 +4308,586 @@ function nativeDevice(raw) {
   };
 }
 
+// view/inference-protocol.ts
+function transferable(data) {
+  const owned = data.buffer instanceof ArrayBuffer && data.byteOffset === 0 && data.byteLength === data.buffer.byteLength;
+  return owned ? data : new Float32Array(data);
+}
+
+// view/onnx-runtime.ts
+var ortByUrl = /* @__PURE__ */ new Map();
+var urlOf = /* @__PURE__ */ new WeakMap();
+var retiredAt = /* @__PURE__ */ new Map();
+var retired = /* @__PURE__ */ new WeakSet();
+var withQuery = (url, key, value) => {
+  const [addr = "", hash = ""] = url.split(/(?=#)/, 2);
+  return `${addr}${addr.includes("?") ? "&" : "?"}${key}=${value}${hash}`;
+};
+var RuntimeRetiredError = class extends Error {
+  constructor() {
+    super(
+      "the runtime module is retired: a link of its chain did not settle within the chain's patience, so nothing new runs on it \u2014 a new session loads a fresh module"
+    );
+    this.name = "RuntimeRetiredError";
+  }
+};
+var configuring = /* @__PURE__ */ new WeakMap();
+var configured = /* @__PURE__ */ new WeakMap();
+var RUN_CHAIN_TIMEOUT_MS = 3e4;
+var chainTimeoutMs = RUN_CHAIN_TIMEOUT_MS;
+function retire(ort, why) {
+  if (retired.has(ort)) return;
+  retired.add(ort);
+  const url = urlOf.get(ort);
+  if (url !== void 0) {
+    ortByUrl.delete(url);
+    retiredAt.set(url, (retiredAt.get(url) ?? 0) + 1);
+  }
+  console.warn(
+    `[cubus] ${why}: the runtime module is retired, and the next session loads a fresh one`
+  );
+}
+function serialise(ort, work, kind = "work") {
+  const prev = configuring.get(ort) ?? Promise.resolve();
+  let release = () => {
+  };
+  const released = new Promise((resolve) => {
+    release = resolve;
+  });
+  configuring.set(ort, released);
+  return prev.then(async () => {
+    try {
+      if (kind === "work" && retired.has(ort)) throw new RuntimeRetiredError();
+      const timer = setTimeout(() => {
+        retire(ort, `a link of the runtime's chain did not settle within ${chainTimeoutMs} ms`);
+        release();
+      }, chainTimeoutMs);
+      try {
+        return await work();
+      } finally {
+        clearTimeout(timer);
+      }
+    } finally {
+      release();
+    }
+  });
+}
+var loadOrt = (url) => {
+  let pending = ortByUrl.get(url);
+  if (!pending) {
+    const generation = retiredAt.get(url) ?? 0;
+    const target = generation === 0 ? url : withQuery(url, "cubus-runtime-generation", `${generation}`);
+    pending = import(
+      /* @vite-ignore */
+      target
+    ).then(
+      (ort) => {
+        urlOf.set(ort, url);
+        return ort;
+      },
+      (err) => {
+        ortByUrl.delete(url);
+        throw err;
+      }
+    );
+    ortByUrl.set(url, pending);
+  }
+  return pending;
+};
+var runtimeUrl = (url, proxied) => proxied ? withQuery(url, "cubus-runtime", "proxied") : url;
+var proxiedSiblingUrl = (url) => {
+  const match = /^([^?#]*?)([^/?#]+)(\?[^#]*)?(#.*)?$/.exec(url);
+  if (!match) return url;
+  const [, dir = "", file = "", query = "", hash = ""] = match;
+  const dot = file.lastIndexOf(".");
+  const named = dot > 0 ? `${file.slice(0, dot)}.proxied${file.slice(dot)}` : `${file}.proxied`;
+  return `${dir}${named}${query}${hash}`;
+};
+async function loadRuntime(ortUrl, proxied) {
+  if (!proxied) return loadOrt(ortUrl);
+  try {
+    return await loadOrt(runtimeUrl(ortUrl, true));
+  } catch (err) {
+    const sibling = proxiedSiblingUrl(ortUrl);
+    if (sibling === ortUrl) throw err;
+    try {
+      const ort = await loadOrt(sibling);
+      console.info(
+        `[cubus] the runtime's query-string identity did not load here \u2014 using ${sibling} instead`
+      );
+      return ort;
+    } catch {
+      throw err;
+    }
+  }
+}
+var documentVisibility = {
+  hidden: () => globalThis.document?.visibilityState === "hidden",
+  watch(onChange) {
+    const doc = globalThis.document;
+    doc?.addEventListener?.("visibilitychange", onChange);
+    return () => doc?.removeEventListener?.("visibilitychange", onChange);
+  }
+};
+var GPU_BUDGET_MS = 400;
+var GPU_PROBE_RUNS = 2;
+var SOFTWARE_RENDERERS = [
+  "swiftshader",
+  "llvmpipe",
+  "lavapipe",
+  "softpipe",
+  "warp",
+  "basic render",
+  "microsoft basic"
+];
+function softwareAdapter(adapter) {
+  if (adapter.isFallbackAdapter === true || adapter.info?.isFallbackAdapter === true) return true;
+  const info = adapter.info;
+  if (!info) return false;
+  const text = `${info.vendor ?? ""} ${info.architecture ?? ""} ${info.description ?? ""}`.toLowerCase().trim();
+  if (text.length === 0) return false;
+  return SOFTWARE_RENDERERS.some((name) => text.includes(name));
+}
+async function preferredProviders() {
+  const gpu = globalThis.navigator?.gpu;
+  if (!gpu) return ["wasm"];
+  try {
+    const adapter = await gpu.requestAdapter();
+    if (!adapter) return ["wasm"];
+    if (softwareAdapter(adapter)) {
+      console.info(
+        "[cubus] WebGPU offers only a software adapter \u2014 using the wasm runtime instead"
+      );
+      return ["wasm"];
+    }
+    return ["webgpu", "wasm"];
+  } catch {
+    return ["wasm"];
+  }
+}
+var usesGpu = (eps) => {
+  const first = eps[0];
+  if (first === void 0) return false;
+  return (typeof first === "string" ? first : first.name) === "webgpu";
+};
+function defaultThreadCount(isolated = typeof globalThis.crossOriginIsolated === "boolean" ? globalThis.crossOriginIsolated : false, cores = globalThis.navigator?.hardwareConcurrency ?? 1) {
+  if (!isolated) return 1;
+  return Math.max(1, Math.min(cores - 2, 6));
+}
+function webgpuBackendLive(ort) {
+  const webgpu = ort.env.webgpu;
+  if (typeof webgpu !== "object" || webgpu === null) return null;
+  return Boolean(webgpu.device);
+}
+function webgpuQueue(ort) {
+  const device = ort.env.webgpu?.device;
+  const queue = device?.queue;
+  if (typeof queue !== "object" || queue === null) return null;
+  return typeof queue.submit === "function" ? queue : null;
+}
+var queueWatches = /* @__PURE__ */ new WeakMap();
+function watchQueue(queue) {
+  let watch = queueWatches.get(queue);
+  if (!watch) {
+    const original = Object.getOwnPropertyDescriptor(queue, "submit");
+    const submit = queue.submit;
+    const counters = /* @__PURE__ */ new Set();
+    const wrapper = function(...args) {
+      for (const counter2 of counters) counter2.n++;
+      return submit.apply(this, args);
+    };
+    try {
+      Object.defineProperty(queue, "submit", {
+        configurable: true,
+        writable: true,
+        enumerable: original?.enumerable ?? false,
+        value: wrapper
+      });
+    } catch {
+      return null;
+    }
+    watch = { wrapper, original, counters };
+    queueWatches.set(queue, watch);
+  }
+  const live = watch;
+  const counter = { n: 0 };
+  live.counters.add(counter);
+  let released = false;
+  return {
+    counter,
+    release() {
+      if (released) return;
+      released = true;
+      live.counters.delete(counter);
+      if (live.counters.size > 0) return;
+      queueWatches.delete(queue);
+      if (queue.submit !== live.wrapper) return;
+      if (live.original) Object.defineProperty(queue, "submit", live.original);
+      else delete queue.submit;
+    }
+  };
+}
+async function gpuRanTheGraph(ort, probe) {
+  const queue = webgpuQueue(ort);
+  const watch = queue ? watchQueue(queue) : null;
+  if (!watch) {
+    await probe();
+    return null;
+  }
+  try {
+    await probe();
+  } finally {
+    watch.release();
+  }
+  return watch.counter.n > 0;
+}
+async function bestTimedRun(probe, visibility) {
+  const hidden = () => visibility.hidden();
+  if (hidden()) return null;
+  let wentHidden = false;
+  const noteHidden = () => {
+    if (hidden()) wentHidden = true;
+  };
+  const unwatch = visibility.watch(noteHidden);
+  let best = Number.POSITIVE_INFINITY;
+  let watched = true;
+  try {
+    for (let i = 0; i < GPU_PROBE_RUNS && watched; i++) {
+      const started = performance.now();
+      await probe();
+      if (hidden() || wentHidden) watched = false;
+      else best = Math.min(best, performance.now() - started);
+    }
+  } finally {
+    unwatch();
+  }
+  return watched && !hidden() && !wentHidden ? best : null;
+}
+async function owning(session, work) {
+  let owned = true;
+  try {
+    return await work(() => {
+      owned = false;
+    });
+  } catch (err) {
+    if (owned) await session.release().catch(() => {
+    });
+    throw err;
+  }
+}
+function inputSide(session) {
+  const meta = session.inputMetadata?.[0];
+  const dims = meta?.isTensor ? meta.shape : void 0;
+  const h = dims?.[2];
+  return typeof h === "number" && h > 0 ? h : IMG_SIZE;
+}
+function validatedRun(ort, session, inputName, outputName) {
+  return async (input, imgsz) => {
+    const tensor = new ort.Tensor("float32", input, [1, 3, imgsz, imgsz]);
+    const result = await session.run({ [inputName]: tensor });
+    const out = result[outputName];
+    if (!out) throw new Error(`model produced no '${outputName}' output`);
+    if (out.type !== "float32" || !(out.data instanceof Float32Array)) {
+      throw new Error(`model output '${outputName}' is ${out.type}, not float32`);
+    }
+    const shape = `[${out.dims.join(", ")}]`;
+    if (out.dims.length !== 3 || out.dims[0] !== 1) {
+      throw new Error(
+        `model output '${outputName}' has dims ${shape}, not the [1, rows, anchors] a detect head produces`
+      );
+    }
+    const rows = out.dims[1] ?? 0;
+    const anchors = out.dims[2] ?? 0;
+    if (!Number.isInteger(rows) || !Number.isInteger(anchors) || rows <= 0 || anchors <= 0) {
+      throw new Error(`model output '${outputName}' has dims ${shape}, which has no anchor axis`);
+    }
+    if (rows !== DETECT_ROWS) {
+      const why = rows >= anchors ? ` \u2014 ${rows} rows against ${anchors} anchors is the transpose of a detect head` : "";
+      throw new Error(
+        `model output '${outputName}' has dims ${shape}: ${rows} rows, not the ${DETECT_ROWS} a ${DETECT_ROWS - 4}-class detect head produces${why}`
+      );
+    }
+    if (out.data.length !== rows * anchors) {
+      throw new Error(
+        `model output '${outputName}' holds ${out.data.length} floats, not the ${rows * anchors} its dims ${shape} promise`
+      );
+    }
+    return { data: out.data, anchors, rows };
+  };
+}
+async function createSession(ort, cfg) {
+  const { modelUrl, ortUrl, numThreads, wasmDir, proxied, executionProviders } = cfg;
+  return serialise(ort, async () => {
+    const first = configured.get(ort);
+    if (first && (first.numThreads !== numThreads || first.wasmPaths !== wasmDir)) {
+      throw new Error(
+        `the runtime at ${ortUrl} is already initialised with numThreads ${first.numThreads} and wasmPaths ${first.wasmPaths}; this runner asked for ${numThreads} and ${wasmDir}, which onnxruntime cannot change on a live module`
+      );
+    }
+    ort.env.wasm.numThreads = numThreads;
+    ort.env.wasm.proxy = proxied;
+    ort.env.wasm.wasmPaths = wasmDir;
+    configured.set(ort, { numThreads, wasmPaths: wasmDir });
+    return ort.InferenceSession.create(modelUrl, {
+      executionProviders,
+      graphOptimizationLevel: "all"
+    });
+  });
+}
+async function createModelRunner(modelUrl, opts = {}) {
+  const chosenHere = opts.executionProviders === void 0;
+  const executionProviders = opts.executionProviders ?? await preferredProviders();
+  const gpu = usesGpu(executionProviders);
+  const ortUrl = opts.ortUrl ?? "./ort.mjs";
+  const proxied = !gpu && !opts.offPageThread;
+  const ort = await loadRuntime(ortUrl, proxied);
+  const numThreads = opts.numThreads ?? defaultThreadCount();
+  const wasmDir = opts.wasmPaths ?? "./";
+  let session;
+  try {
+    session = await createSession(ort, {
+      modelUrl,
+      ortUrl,
+      numThreads,
+      wasmDir,
+      // The proxy is OFF for the GPU path — see `createSession` for why that is not a compromise.
+      proxied,
+      executionProviders
+    });
+  } catch (err) {
+    if (!(err instanceof RuntimeRetiredError)) throw err;
+    return createModelRunner(modelUrl, opts);
+  }
+  return owning(session, async (relinquish) => {
+    const rebuildOnWasm = async (why) => {
+      console.info(why);
+      relinquish();
+      await session.release().catch(() => {
+      });
+      return createModelRunner(modelUrl, { ...opts, executionProviders: ["wasm"] });
+    };
+    const gpuVerdict = gpu && chosenHere ? webgpuBackendLive(ort) : null;
+    const notTheGpu = "[cubus] WebGPU did not take this model \u2014 using the wasm runtime, off the page thread";
+    if (gpuVerdict === false) return rebuildOnWasm(notTheGpu);
+    const inputName = session.inputNames[0];
+    const outputName = session.outputNames[0];
+    if (!inputName || !outputName) throw new Error("model has no input/output tensor");
+    const run = validatedRun(ort, session, inputName, outputName);
+    const side = inputSide(session);
+    const probe = () => run(new Float32Array(3 * side * side), side);
+    if (opts.warmUp ?? true) {
+      const measured = await serialise(ort, async () => {
+        let ranOnGpu = null;
+        if (gpuVerdict === true) ranOnGpu = await gpuRanTheGraph(ort, probe);
+        else await probe();
+        if (ranOnGpu === false) return { ranOnGpu, best: null };
+        const best = gpu && chosenHere ? await bestTimedRun(probe, opts.visibility ?? documentVisibility) : null;
+        return { ranOnGpu, best };
+      });
+      if (measured.ranOnGpu === false) return rebuildOnWasm(notTheGpu);
+      const budget = opts.gpuBudgetMs ?? GPU_BUDGET_MS;
+      if (measured.best !== null && measured.best > budget) {
+        return rebuildOnWasm(
+          `[cubus] the GPU ran this model in ${Math.round(measured.best)} ms \u2014 slower than the wasm runtime, so using that instead`
+        );
+      }
+    }
+    const serialised = (input, imgsz) => serialise(ort, () => run(input, imgsz));
+    return Object.assign(serialised, {
+      dispose: () => serialise(ort, () => session.release(), "release"),
+      providers: executionProviders
+    });
+  });
+}
+
+// view/inference-client.ts
+var INFERENCE_WORKER_LOST = "InferenceWorkerLostError";
+var InferenceWorkerLostError = class extends Error {
+  constructor(why) {
+    super(why);
+    this.name = INFERENCE_WORKER_LOST;
+  }
+};
+var aborted = () => new DOMException("the model load was cancelled", "AbortError");
+var RemoteModel = class {
+  constructor(worker) {
+    this.worker = worker;
+    worker.addEventListener("message", (ev) => this.deliver(ev.data));
+    worker.addEventListener("error", (ev) => {
+      const said = ev.message;
+      this.close(
+        `the inference worker failed${typeof said === "string" && said ? `: ${said}` : ""}`
+      );
+    });
+    worker.addEventListener("messageerror", () => {
+      this.close("an answer from the inference worker could not be read");
+    });
+    this.unwatch = documentVisibility.watch(() => {
+      this.post({ kind: "visibility", hidden: documentVisibility.hidden() });
+    });
+  }
+  worker;
+  pending = /* @__PURE__ */ new Map();
+  loading = null;
+  lost = null;
+  nextId = 0;
+  unwatch;
+  /** Load the model; resolves with the providers it came up on. */
+  load(req) {
+    return new Promise((resolve, reject2) => {
+      this.loading = { resolve, reject: reject2 };
+      this.post({ kind: "load", ...req, hidden: documentVisibility.hidden() });
+    });
+  }
+  /** The runner a detector holds: a run is a round trip, and disposing it terminates the worker. */
+  runner(providers) {
+    const run = (input, imgsz) => this.run(input, imgsz);
+    return Object.assign(run, {
+      dispose: async () => {
+        this.close("the model was released");
+      },
+      providers
+    });
+  }
+  /**
+   * One frame. The input is TRANSFERRED, which detaches it here — as onnxruntime's own proxy always
+   * did on the wasm path, so no caller could rely on keeping it. A view that does not own its
+   * buffer outright is copied first rather than detaching a stranger's memory (`transferable`).
+   */
+  run(input, imgsz) {
+    if (this.lost) return Promise.reject(this.lost);
+    const id = ++this.nextId;
+    return new Promise((resolve, reject2) => {
+      this.pending.set(id, { resolve, reject: reject2 });
+      const tensor = transferable(input);
+      if (!this.post({ kind: "run", id, input: tensor, imgsz }, [tensor.buffer])) {
+        this.pending.delete(id);
+        reject2(this.lost ?? new InferenceWorkerLostError("the frame could not be sent"));
+      }
+    });
+  }
+  /**
+   * Give the worker back: terminate it, and reject everything still waiting on it. Idempotent.
+   *
+   * The ONE place the worker ends, whether the page released it or it failed, so there is no path
+   * on which a run is left waiting on a worker that no longer exists.
+   */
+  close(why) {
+    if (this.lost) return;
+    const lost = new InferenceWorkerLostError(why);
+    this.lost = lost;
+    this.worker.terminate();
+    this.unwatch();
+    const loading = this.loading;
+    this.loading = null;
+    loading?.reject(lost);
+    const waiting = [...this.pending.values()];
+    this.pending.clear();
+    for (const w of waiting) w.reject(lost);
+  }
+  /** Post, or close the worker and say false if the post was refused. */
+  post(message, transfer = []) {
+    if (this.lost) return false;
+    try {
+      this.worker.postMessage(message, transfer);
+      return true;
+    } catch (err) {
+      this.close(
+        `the inference worker could not be sent a message: ${err instanceof Error ? err.message : String(err)}`
+      );
+      return false;
+    }
+  }
+  deliver(reply) {
+    if (this.lost) return;
+    if (reply.kind === "loaded" || reply.kind === "load-failed") {
+      const loading = this.loading;
+      this.loading = null;
+      if (reply.kind === "loaded") loading?.resolve(reply.providers);
+      else loading?.reject(new Error(reply.error));
+      return;
+    }
+    const waiting = this.pending.get(reply.id);
+    if (!waiting) return;
+    this.pending.delete(reply.id);
+    if (reply.kind === "run-failed") {
+      waiting.reject(Object.assign(new Error(reply.error), { name: reply.name }));
+      return;
+    }
+    const { data, anchors, rows } = reply;
+    if (!(data instanceof Float32Array) || !Number.isInteger(anchors) || anchors <= 0 || rows !== DETECT_ROWS || data.length !== rows * anchors) {
+      waiting.reject(
+        new Error(
+          `the inference worker answered with ${data instanceof Float32Array ? `${data.length} floats` : "no tensor"} as [1, ${rows}, ${anchors}], which is not a ${DETECT_ROWS}-row detect head`
+        )
+      );
+      return;
+    }
+    waiting.resolve({ data, anchors, rows });
+  }
+};
+var InferenceOffload = class {
+  constructor(onPage = createModelRunner) {
+    this.onPage = onPage;
+  }
+  onPage;
+  /** Set once the worker path has failed where the page's thread did not, so it is not tried again. */
+  broken = false;
+  /** Whether the next load will go to a worker. Read off the globals, which is what lets a test take them away. */
+  get offloading() {
+    return !this.broken && typeof globalThis.Worker === "function";
+  }
+  /**
+   * Load the model and hand back its runner.
+   *
+   * `modelUrl` is resolved against the DOCUMENT before it crosses: a worker resolves a relative URL
+   * against its own script, which lives in `vendor/`, so './vendor/cubedet.onnx' would become
+   * 'vendor/vendor/cubedet.onnx' there.
+   */
+  async createRunner(modelUrl, opts) {
+    const { signal, ...runtime } = opts;
+    if (signal?.aborted) throw aborted();
+    const worker = this.offloading ? this.spawn() : null;
+    if (!worker) return this.onPage(modelUrl, runtime);
+    const remote = new RemoteModel(worker);
+    const cancel = () => remote.close("the model load was cancelled");
+    signal?.addEventListener("abort", cancel, { once: true });
+    try {
+      const providers = await remote.load({
+        modelUrl: new URL(modelUrl, globalThis.document?.baseURI).href,
+        wasmPaths: runtime.wasmPaths,
+        ortUrl: runtime.ortUrl,
+        ...runtime.numThreads === void 0 ? {} : { numThreads: runtime.numThreads }
+      });
+      return remote.runner(providers);
+    } catch (workerErr) {
+      remote.close("the model did not load in the inference worker");
+      if (signal?.aborted) throw aborted();
+      const runner = await this.onPage(modelUrl, runtime);
+      this.broken = true;
+      console.warn(
+        "[cubus] the inference worker could not load the model and the page could, so the model runs on the page from now on \u2014 releasing it will not return its memory",
+        workerErr
+      );
+      return runner;
+    } finally {
+      signal?.removeEventListener("abort", cancel);
+    }
+  }
+  spawn() {
+    try {
+      return new Worker(new URL("./inference-worker.js", import.meta.url), { type: "module" });
+    } catch (cause) {
+      console.warn(
+        "[cubus] the inference worker could not be built, so the model runs on the page \u2014 releasing it will not return its memory",
+        cause
+      );
+      this.broken = true;
+      return null;
+    }
+  }
+};
+
 // view/letterbox-protocol.ts
 function handleLetterboxRequest(request) {
   const pre = preprocess(request.frame, IMG_SIZE);
@@ -4485,384 +5067,8 @@ var LetterboxOffload = class {
   }
 };
 
-// view/onnx-runtime.ts
-var ortByUrl = /* @__PURE__ */ new Map();
-var urlOf = /* @__PURE__ */ new WeakMap();
-var retiredAt = /* @__PURE__ */ new Map();
-var retired = /* @__PURE__ */ new WeakSet();
-var withQuery = (url, key, value) => {
-  const [addr = "", hash = ""] = url.split(/(?=#)/, 2);
-  return `${addr}${addr.includes("?") ? "&" : "?"}${key}=${value}${hash}`;
-};
-var RuntimeRetiredError = class extends Error {
-  constructor() {
-    super(
-      "the runtime module is retired: a link of its chain did not settle within the chain's patience, so nothing new runs on it \u2014 a new session loads a fresh module"
-    );
-    this.name = "RuntimeRetiredError";
-  }
-};
-var configuring = /* @__PURE__ */ new WeakMap();
-var configured = /* @__PURE__ */ new WeakMap();
-var RUN_CHAIN_TIMEOUT_MS = 3e4;
-var chainTimeoutMs = RUN_CHAIN_TIMEOUT_MS;
-function retire(ort, why) {
-  if (retired.has(ort)) return;
-  retired.add(ort);
-  const url = urlOf.get(ort);
-  if (url !== void 0) {
-    ortByUrl.delete(url);
-    retiredAt.set(url, (retiredAt.get(url) ?? 0) + 1);
-  }
-  console.warn(
-    `[cubus] ${why}: the runtime module is retired, and the next session loads a fresh one`
-  );
-}
-function serialise(ort, work, kind = "work") {
-  const prev = configuring.get(ort) ?? Promise.resolve();
-  let release = () => {
-  };
-  const released = new Promise((resolve) => {
-    release = resolve;
-  });
-  configuring.set(ort, released);
-  return prev.then(async () => {
-    try {
-      if (kind === "work" && retired.has(ort)) throw new RuntimeRetiredError();
-      const timer = setTimeout(() => {
-        retire(ort, `a link of the runtime's chain did not settle within ${chainTimeoutMs} ms`);
-        release();
-      }, chainTimeoutMs);
-      try {
-        return await work();
-      } finally {
-        clearTimeout(timer);
-      }
-    } finally {
-      release();
-    }
-  });
-}
-var loadOrt = (url) => {
-  let pending = ortByUrl.get(url);
-  if (!pending) {
-    const generation = retiredAt.get(url) ?? 0;
-    const target = generation === 0 ? url : withQuery(url, "cubus-runtime-generation", `${generation}`);
-    pending = import(
-      /* @vite-ignore */
-      target
-    ).then(
-      (ort) => {
-        urlOf.set(ort, url);
-        return ort;
-      },
-      (err) => {
-        ortByUrl.delete(url);
-        throw err;
-      }
-    );
-    ortByUrl.set(url, pending);
-  }
-  return pending;
-};
-var runtimeUrl = (url, proxied) => proxied ? withQuery(url, "cubus-runtime", "proxied") : url;
-var proxiedSiblingUrl = (url) => {
-  const match = /^([^?#]*?)([^/?#]+)(\?[^#]*)?(#.*)?$/.exec(url);
-  if (!match) return url;
-  const [, dir = "", file = "", query = "", hash = ""] = match;
-  const dot = file.lastIndexOf(".");
-  const named = dot > 0 ? `${file.slice(0, dot)}.proxied${file.slice(dot)}` : `${file}.proxied`;
-  return `${dir}${named}${query}${hash}`;
-};
-async function loadRuntime(ortUrl, proxied) {
-  if (!proxied) return loadOrt(ortUrl);
-  try {
-    return await loadOrt(runtimeUrl(ortUrl, true));
-  } catch (err) {
-    const sibling = proxiedSiblingUrl(ortUrl);
-    if (sibling === ortUrl) throw err;
-    try {
-      const ort = await loadOrt(sibling);
-      console.info(
-        `[cubus] the runtime's query-string identity did not load here \u2014 using ${sibling} instead`
-      );
-      return ort;
-    } catch {
-      throw err;
-    }
-  }
-}
-var GPU_BUDGET_MS = 400;
-var GPU_PROBE_RUNS = 2;
-var SOFTWARE_RENDERERS = [
-  "swiftshader",
-  "llvmpipe",
-  "lavapipe",
-  "softpipe",
-  "warp",
-  "basic render",
-  "microsoft basic"
-];
-function softwareAdapter(adapter) {
-  if (adapter.isFallbackAdapter === true || adapter.info?.isFallbackAdapter === true) return true;
-  const info = adapter.info;
-  if (!info) return false;
-  const text = `${info.vendor ?? ""} ${info.architecture ?? ""} ${info.description ?? ""}`.toLowerCase().trim();
-  if (text.length === 0) return false;
-  return SOFTWARE_RENDERERS.some((name) => text.includes(name));
-}
-async function preferredProviders() {
-  const gpu = globalThis.navigator?.gpu;
-  if (!gpu) return ["wasm"];
-  try {
-    const adapter = await gpu.requestAdapter();
-    if (!adapter) return ["wasm"];
-    if (softwareAdapter(adapter)) {
-      console.info(
-        "[cubus] WebGPU offers only a software adapter \u2014 using the wasm runtime instead"
-      );
-      return ["wasm"];
-    }
-    return ["webgpu", "wasm"];
-  } catch {
-    return ["wasm"];
-  }
-}
-var usesGpu = (eps) => {
-  const first = eps[0];
-  if (first === void 0) return false;
-  return (typeof first === "string" ? first : first.name) === "webgpu";
-};
-function defaultThreadCount(isolated = typeof globalThis.crossOriginIsolated === "boolean" ? globalThis.crossOriginIsolated : false, cores = globalThis.navigator?.hardwareConcurrency ?? 1) {
-  if (!isolated) return 1;
-  return Math.max(1, Math.min(cores - 2, 6));
-}
-function webgpuBackendLive(ort) {
-  const webgpu = ort.env.webgpu;
-  if (typeof webgpu !== "object" || webgpu === null) return null;
-  return Boolean(webgpu.device);
-}
-function webgpuQueue(ort) {
-  const device = ort.env.webgpu?.device;
-  const queue = device?.queue;
-  if (typeof queue !== "object" || queue === null) return null;
-  return typeof queue.submit === "function" ? queue : null;
-}
-var queueWatches = /* @__PURE__ */ new WeakMap();
-function watchQueue(queue) {
-  let watch = queueWatches.get(queue);
-  if (!watch) {
-    const original = Object.getOwnPropertyDescriptor(queue, "submit");
-    const submit = queue.submit;
-    const counters = /* @__PURE__ */ new Set();
-    const wrapper = function(...args) {
-      for (const counter2 of counters) counter2.n++;
-      return submit.apply(this, args);
-    };
-    try {
-      Object.defineProperty(queue, "submit", {
-        configurable: true,
-        writable: true,
-        enumerable: original?.enumerable ?? false,
-        value: wrapper
-      });
-    } catch {
-      return null;
-    }
-    watch = { wrapper, original, counters };
-    queueWatches.set(queue, watch);
-  }
-  const live = watch;
-  const counter = { n: 0 };
-  live.counters.add(counter);
-  let released = false;
-  return {
-    counter,
-    release() {
-      if (released) return;
-      released = true;
-      live.counters.delete(counter);
-      if (live.counters.size > 0) return;
-      queueWatches.delete(queue);
-      if (queue.submit !== live.wrapper) return;
-      if (live.original) Object.defineProperty(queue, "submit", live.original);
-      else delete queue.submit;
-    }
-  };
-}
-async function gpuRanTheGraph(ort, probe) {
-  const queue = webgpuQueue(ort);
-  const watch = queue ? watchQueue(queue) : null;
-  if (!watch) {
-    await probe();
-    return null;
-  }
-  try {
-    await probe();
-  } finally {
-    watch.release();
-  }
-  return watch.counter.n > 0;
-}
-async function bestTimedRun(probe) {
-  const hidden = () => globalThis.document?.visibilityState === "hidden";
-  if (hidden()) return null;
-  let wentHidden = false;
-  const noteHidden = () => {
-    if (hidden()) wentHidden = true;
-  };
-  globalThis.document?.addEventListener?.("visibilitychange", noteHidden);
-  let best = Number.POSITIVE_INFINITY;
-  let watched = true;
-  try {
-    for (let i = 0; i < GPU_PROBE_RUNS && watched; i++) {
-      const started = performance.now();
-      await probe();
-      if (hidden() || wentHidden) watched = false;
-      else best = Math.min(best, performance.now() - started);
-    }
-  } finally {
-    globalThis.document?.removeEventListener?.("visibilitychange", noteHidden);
-  }
-  return watched && !hidden() && !wentHidden ? best : null;
-}
-async function owning(session, work) {
-  let owned = true;
-  try {
-    return await work(() => {
-      owned = false;
-    });
-  } catch (err) {
-    if (owned) await session.release().catch(() => {
-    });
-    throw err;
-  }
-}
-function inputSide(session) {
-  const meta = session.inputMetadata?.[0];
-  const dims = meta?.isTensor ? meta.shape : void 0;
-  const h = dims?.[2];
-  return typeof h === "number" && h > 0 ? h : IMG_SIZE;
-}
-function validatedRun(ort, session, inputName, outputName) {
-  return async (input, imgsz) => {
-    const tensor = new ort.Tensor("float32", input, [1, 3, imgsz, imgsz]);
-    const result = await session.run({ [inputName]: tensor });
-    const out = result[outputName];
-    if (!out) throw new Error(`model produced no '${outputName}' output`);
-    if (out.type !== "float32" || !(out.data instanceof Float32Array)) {
-      throw new Error(`model output '${outputName}' is ${out.type}, not float32`);
-    }
-    const shape = `[${out.dims.join(", ")}]`;
-    if (out.dims.length !== 3 || out.dims[0] !== 1) {
-      throw new Error(
-        `model output '${outputName}' has dims ${shape}, not the [1, rows, anchors] a detect head produces`
-      );
-    }
-    const rows = out.dims[1] ?? 0;
-    const anchors = out.dims[2] ?? 0;
-    if (!Number.isInteger(rows) || !Number.isInteger(anchors) || rows <= 0 || anchors <= 0) {
-      throw new Error(`model output '${outputName}' has dims ${shape}, which has no anchor axis`);
-    }
-    if (rows !== DETECT_ROWS) {
-      const why = rows >= anchors ? ` \u2014 ${rows} rows against ${anchors} anchors is the transpose of a detect head` : "";
-      throw new Error(
-        `model output '${outputName}' has dims ${shape}: ${rows} rows, not the ${DETECT_ROWS} a ${DETECT_ROWS - 4}-class detect head produces${why}`
-      );
-    }
-    if (out.data.length !== rows * anchors) {
-      throw new Error(
-        `model output '${outputName}' holds ${out.data.length} floats, not the ${rows * anchors} its dims ${shape} promise`
-      );
-    }
-    return { data: out.data, anchors, rows };
-  };
-}
-async function createSession(ort, cfg) {
-  const { modelUrl, ortUrl, numThreads, wasmDir, gpu, executionProviders } = cfg;
-  return serialise(ort, async () => {
-    const first = configured.get(ort);
-    if (first && (first.numThreads !== numThreads || first.wasmPaths !== wasmDir)) {
-      throw new Error(
-        `the runtime at ${ortUrl} is already initialised with numThreads ${first.numThreads} and wasmPaths ${first.wasmPaths}; this runner asked for ${numThreads} and ${wasmDir}, which onnxruntime cannot change on a live module`
-      );
-    }
-    ort.env.wasm.numThreads = numThreads;
-    ort.env.wasm.proxy = !gpu;
-    ort.env.wasm.wasmPaths = wasmDir;
-    configured.set(ort, { numThreads, wasmPaths: wasmDir });
-    return ort.InferenceSession.create(modelUrl, {
-      executionProviders,
-      graphOptimizationLevel: "all"
-    });
-  });
-}
-async function createModelRunner(modelUrl, opts = {}) {
-  const chosenHere = opts.executionProviders === void 0;
-  const executionProviders = opts.executionProviders ?? await preferredProviders();
-  const gpu = usesGpu(executionProviders);
-  const ortUrl = opts.ortUrl ?? "./ort.mjs";
-  const ort = await loadRuntime(ortUrl, !gpu);
-  const numThreads = opts.numThreads ?? defaultThreadCount();
-  const wasmDir = opts.wasmPaths ?? "./";
-  let session;
-  try {
-    session = await createSession(ort, {
-      modelUrl,
-      ortUrl,
-      numThreads,
-      wasmDir,
-      // The proxy is OFF for the GPU path — see `createSession` for why that is not a compromise.
-      gpu,
-      executionProviders
-    });
-  } catch (err) {
-    if (!(err instanceof RuntimeRetiredError)) throw err;
-    return createModelRunner(modelUrl, opts);
-  }
-  return owning(session, async (relinquish) => {
-    const rebuildOnWasm = async (why) => {
-      console.info(why);
-      relinquish();
-      await session.release().catch(() => {
-      });
-      return createModelRunner(modelUrl, { ...opts, executionProviders: ["wasm"] });
-    };
-    const gpuVerdict = gpu && chosenHere ? webgpuBackendLive(ort) : null;
-    const notTheGpu = "[cubus] WebGPU did not take this model \u2014 using the wasm runtime, off the page thread";
-    if (gpuVerdict === false) return rebuildOnWasm(notTheGpu);
-    const inputName = session.inputNames[0];
-    const outputName = session.outputNames[0];
-    if (!inputName || !outputName) throw new Error("model has no input/output tensor");
-    const run = validatedRun(ort, session, inputName, outputName);
-    const side = inputSide(session);
-    const probe = () => run(new Float32Array(3 * side * side), side);
-    if (opts.warmUp ?? true) {
-      const measured = await serialise(ort, async () => {
-        let ranOnGpu = null;
-        if (gpuVerdict === true) ranOnGpu = await gpuRanTheGraph(ort, probe);
-        else await probe();
-        if (ranOnGpu === false) return { ranOnGpu, best: null };
-        const best = gpu && chosenHere ? await bestTimedRun(probe) : null;
-        return { ranOnGpu, best };
-      });
-      if (measured.ranOnGpu === false) return rebuildOnWasm(notTheGpu);
-      const budget = opts.gpuBudgetMs ?? GPU_BUDGET_MS;
-      if (measured.best !== null && measured.best > budget) {
-        return rebuildOnWasm(
-          `[cubus] the GPU ran this model in ${Math.round(measured.best)} ms \u2014 slower than the wasm runtime, so using that instead`
-        );
-      }
-    }
-    const serialised = (input, imgsz) => serialise(ort, () => run(input, imgsz));
-    return Object.assign(serialised, {
-      dispose: () => serialise(ort, () => session.release(), "release"),
-      providers: executionProviders
-    });
-  });
-}
-
 // view/web-detector.ts
+var inference = new InferenceOffload();
 var WebDetector = class {
   /**
    * @param video   returns the element the stream plays into — a getter, not the element itself, so
@@ -4888,6 +5094,14 @@ var WebDetector = class {
    * the same tensor either way, because both run `handleLetterboxRequest`.
    */
   letterbox = new LetterboxOffload();
+  /** Aborted by `dispose()`, so a load in flight terminates its worker at once. */
+  loadAbort = null;
+  /**
+   * The error the installed runner's worker was lost with, once it has been — see `next`. Kept so
+   * EVERY later tick fails with it rather than with "model not loaded": the panel reads the name of
+   * the failure its ticks end on (`tickFail`), and only this one tells it to rebuild the model.
+   */
+  lostWith = null;
   /** The model URL `run` was built for — see `load`. */
   loadedUrl = null;
   /** A `load()` still in flight, so a second caller waits on it rather than building a rival. */
@@ -5046,7 +5260,21 @@ var WebDetector = class {
     }
     const wasmPaths = new URL(".", new URL(modelUrl, document.baseURI)).href;
     const ortUrl = `${wasmPaths}ort.mjs`;
-    const run = await createModelRunner(modelUrl, { wasmPaths, ortUrl });
+    const abort = new AbortController();
+    this.loadAbort = abort;
+    let run;
+    try {
+      run = await inference.createRunner(modelUrl, {
+        wasmPaths,
+        ortUrl,
+        signal: abort.signal
+      });
+    } catch (err) {
+      if (generation !== this.loadGeneration) return;
+      throw err;
+    } finally {
+      if (this.loadAbort === abort) this.loadAbort = null;
+    }
     if (generation !== this.loadGeneration) {
       void run.dispose().catch(() => {
       });
@@ -5054,6 +5282,7 @@ var WebDetector = class {
     }
     this.run = run;
     this.loadedUrl = modelUrl;
+    this.lostWith = null;
   }
   /**
    * The model output for a fresh frame, or null when there is none to read.
@@ -5071,7 +5300,7 @@ var WebDetector = class {
    */
   async next() {
     if (!this.source) throw new Error("no camera open \u2014 call use() first");
-    if (!this.run) throw new Error("model not loaded \u2014 call load() first");
+    if (!this.run) throw this.lostWith ?? new Error("model not loaded \u2014 call load() first");
     const source = this.source;
     const run = this.run;
     const superseded = () => this.source !== source || this.run !== run;
@@ -5089,7 +5318,18 @@ var WebDetector = class {
       throw err;
     }
     if (superseded()) return null;
-    const output = await run(pre.data, pre.imgsz);
+    let output;
+    try {
+      output = await run(pre.data, pre.imgsz);
+    } catch (err) {
+      if (superseded()) return null;
+      if (err instanceof Error && err.name === INFERENCE_WORKER_LOST && this.run === run) {
+        this.run = null;
+        this.loadedUrl = null;
+        this.lostWith = err;
+      }
+      throw err;
+    }
     const { frame } = pre;
     return {
       ...output,
@@ -5111,6 +5351,9 @@ var WebDetector = class {
     this.loadGeneration++;
     this.loading = null;
     this.loadingUrl = null;
+    this.loadAbort?.abort();
+    this.loadAbort = null;
+    this.lostWith = null;
     const run = this.run;
     this.run = null;
     this.loadedUrl = null;
@@ -5122,6 +5365,12 @@ var WebDetector = class {
 
 // view/pick-detector.ts
 var parked = null;
+var PARKED_RELEASE_MS = 6e4;
+var releaseTimer = null;
+function cancelRelease() {
+  if (releaseTimer !== null) clearTimeout(releaseTimer);
+  releaseTimer = null;
+}
 function parkDetector(choice) {
   choice.detector.stop();
   if (parked && parked.detector !== choice.detector) {
@@ -5129,11 +5378,18 @@ function parkDetector(choice) {
     return;
   }
   parked = choice;
+  cancelRelease();
+  if (choice.runtime !== "web") return;
+  releaseTimer = setTimeout(() => {
+    releaseTimer = null;
+    if (parked === choice) disposeParkedDetector();
+  }, PARKED_RELEASE_MS);
 }
 function parkedDetector() {
   return parked;
 }
 function disposeParkedDetector() {
+  cancelRelease();
   const kept = parked;
   parked = null;
   kept?.detector.dispose?.();
@@ -5154,6 +5410,7 @@ async function pickDetector(opts) {
   const kept = parked;
   if (kept) {
     parked = null;
+    cancelRelease();
     kept.detector.retarget?.(opts);
     const wanted = opts.modelUrl();
     if (kept.modelLoaded && kept.modelUrl !== wanted) {
@@ -6929,7 +7186,7 @@ var AiScanPanel = class extends HTMLElement {
     this.forgetObservation();
     this.tickFailingSince = null;
     this.noFrameSince = null;
-    if (err instanceof Error && err.name === INFERENCE_TIMEOUT) {
+    if (err instanceof Error && (err.name === INFERENCE_TIMEOUT || err.name === INFERENCE_WORKER_LOST)) {
       this.cam.chosen?.dispose?.();
       this.cam.modelLoaded = false;
     }

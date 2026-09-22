@@ -37,6 +37,7 @@ import {
   seenIn,
   sideClaimed,
 } from '../view/ai-scan-panel.js';
+import { InferenceWorkerLostError } from '../view/inference-client.js';
 import {
   handleMisreadRequest,
   type MisreadReply,
@@ -3220,6 +3221,51 @@ describe('ai-scan-panel — a wedged native session is rebuilt on Start (2026-09
 
     await panel.start();
     expect(loads).toBe(2); // a fresh session, not the wedged one
+    await vi.advanceTimersByTimeAsync(TICK * SETTLE_TICKS);
+    expect(last().captured).toHaveLength(1);
+    logged.mockRestore();
+  });
+});
+
+describe('ai-scan-panel — a lost inference worker is rebuilt on Start (2026-09-22)', () => {
+  it('after the worker dies the scan stops, and Start loads the model again and reads frames', async () => {
+    // The browser runtime runs in a worker the page owns, so it can be released — and so it can be
+    // lost. Every frame asked of a lost worker fails with the same name, and the recovery is the
+    // one a wedged runtime gets: the scan stops with a way back, and Start builds the model again.
+    // Without that, `modelLoaded` stayed true, Start skipped the load, and every Start ended in the
+    // same three seconds of failures over a worker that no longer existed.
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    class LosingDetector extends FakeDetector {
+      loads = 0;
+      disposed = 0;
+      lost = false;
+      override async load(): Promise<void> {
+        this.loads++;
+        this.lost = false;
+      }
+      dispose(): void {
+        this.disposed++;
+        this.stop();
+      }
+      override async next(): Promise<ModelOutput | null> {
+        if (this.lost)
+          throw new InferenceWorkerLostError('the inference worker failed: out of memory');
+        return super.next();
+      }
+    }
+    const det = new LosingDetector();
+    det.output = tensorFor(facesOf(DEEP).U);
+    panel.stop();
+    panel.useDetector(det, 'web');
+    await panel.start();
+    expect(det.loads).toBe(1);
+    det.lost = true;
+    await vi.advanceTimersByTimeAsync(3000 + TICK * 3); // TICK_FAIL_MS of lost frames
+    expect(last().phase).toBe('error');
+    expect(det.disposed).toBe(1);
+
+    await panel.start();
+    expect(det.loads).toBe(2); // a new worker, not the lost one
     await vi.advanceTimersByTimeAsync(TICK * SETTLE_TICKS);
     expect(last().captured).toHaveLength(1);
     logged.mockRestore();

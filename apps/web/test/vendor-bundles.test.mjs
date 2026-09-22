@@ -173,6 +173,13 @@ const BUNDLES = [
       // so both halves ship in this bundle — as the misread decoder's do.
       '../../../packages/cube-scanner/view/letterbox-client.ts',
       '../../../packages/cube-scanner/view/letterbox-protocol.ts',
+      // The model's client half and its wire (2026-09-22): the detector loads the model into
+      // `inference-worker.js` through these, and on the page's thread where a page has no worker,
+      // so both halves ship here as the letterbox's do. `detect-head.ts` is the output shape both
+      // this bundle and the worker hold a model to.
+      '../../../packages/cube-scanner/view/inference-client.ts',
+      '../../../packages/cube-scanner/view/inference-protocol.ts',
+      '../../../packages/cube-scanner/src/detect-head.ts',
     ],
     // Exported from the package entry and used by its tests, but never by the panel — so esbuild
     // drops them and their absence is correct, not stale. Listed rather than silently ignored: if
@@ -244,6 +251,37 @@ const BUNDLES = [
       '../../../packages/cube-scanner/view/letterbox-worker.ts',
       '../../../packages/cube-scanner/view/letterbox-protocol.ts',
       '../../../packages/cube-scanner/src/letterbox.ts',
+    ],
+  },
+  {
+    // The detector's model, in a worker the page owns (2026-09-22). onnxruntime used to live on the
+    // page (or in its own proxy worker), where nothing could give its memory back; hosted here, the
+    // page releases it by terminating the worker. Reached exactly as the letterbox worker is — a
+    // same-origin URL computed from the panel's own bundle, in no HTML — and it degrades the same
+    // way, back to the page thread, which is why it needs the same guard.
+    name: 'inference-worker',
+    build: 'pnpm --filter cube-scanner build:inference-worker',
+    bundle: '../vendor/inference-worker.js',
+    // Every file esbuild puts in it: the runner, the wire, and the two leaf modules the runner takes
+    // its constants from — `detect-head.ts` and `letterbox.ts`, and not `onnx-detect.ts`, whose
+    // decoder has no business in a worker that only runs the model. NOT inference-client.ts: the
+    // client is the page's half, and none of it is in the worker.
+    sources: [
+      '../../../packages/cube-scanner/view/inference-worker.ts',
+      '../../../packages/cube-scanner/view/inference-protocol.ts',
+      '../../../packages/cube-scanner/view/onnx-runtime.ts',
+      '../../../packages/cube-scanner/src/detect-head.ts',
+      '../../../packages/cube-scanner/src/letterbox.ts',
+    ],
+    // From letterbox.ts the runner takes `IMG_SIZE` and nothing else, so the letterbox itself is
+    // dropped (its pad constant stays — esbuild keeps a top-level value — and is guarded as the
+    // declaration it is); and the runtime's one test-only knob, which nothing in a worker calls.
+    // Same delete-when-used contract as the lists above, messages included.
+    treeShaken: ['letterboxOf', 'preprocess', 'validatedFrame', 'setChainTimeoutForTests'],
+    treeShakenMessages: [
+      'bytes, but this one holds',
+      'is not a positive whole number of pixels',
+      'preprocess: a frame of',
     ],
   },
   {
@@ -445,10 +483,15 @@ test('the renderer animation floor in the bundle is the one the source sets', ()
 // dynamic `import(url)` in onnx-runtime.ts back into a static specifier is all it takes, and
 // nothing else in the suite would notice.
 test('onnxruntime is loaded as its own module, not bundled into the panel', () => {
-  const bundle = readFileSync(new URL('../vendor/ai-scan-panel.js', import.meta.url), 'utf8');
-  // These strings exist only inside onnxruntime's own dist.
-  for (const marker of ['ort-wasm-simd-threaded', 'onnxruntime-web', 'no available backend found']) {
-    assert.ok(!bundle.includes(marker), `"${marker}" in the panel bundle means onnxruntime got inlined`);
+  // Nor into the inference worker (2026-09-22), for the same reason one level down: onnxruntime
+  // spawns its THREADS from its own `import.meta.url`, and inlined there that URL is the worker
+  // bundle — every thread would boot another copy of the worker instead of the runtime.
+  for (const file of ['ai-scan-panel.js', 'inference-worker.js']) {
+    const bundle = readFileSync(new URL(`../vendor/${file}`, import.meta.url), 'utf8');
+    // These strings exist only inside onnxruntime's own dist.
+    for (const marker of ['ort-wasm-simd-threaded', 'onnxruntime-web', 'no available backend found']) {
+      assert.ok(!bundle.includes(marker), `"${marker}" in ${file} means onnxruntime got inlined`);
+    }
   }
   // And it must still be reached, by a computed URL rather than a bare specifier.
   const src = readFileSync(
@@ -466,7 +509,13 @@ test('onnxruntime is loaded as its own module, not bundled into the panel', () =
   // not, and keeping the worker there would mean reaching the GPU device from a worker onnxruntime
   // spawned for its own reasons. Pinned as the rule rather than the literal, so "someone turned the
   // proxy off for wasm" still fails while the GPU exemption stays legible.
-  assert.match(src, /env\.wasm\.proxy\s*=\s*!gpu/, 'wasm inference must still be proxied to a worker');
+  //
+  // And a SECOND exemption since 2026-09-22: a caller already off the page's thread — the
+  // inference worker — has no thread to protect, and onnxruntime would not proxy from a worker
+  // anyway. The rule is both halves, and then the flag is written from it.
+  assert.match(src, /const proxied = !gpu && !opts\.offPageThread;/,
+    'wasm inference ON THE PAGE must still be proxied to a worker');
+  assert.match(src, /env\.wasm\.proxy\s*=\s*proxied\b/, 'the proxy flag must be written from that rule');
 });
 
 // onnxruntime-web ships eight `ort-wasm-simd-threaded.*` files — plain / jsep / asyncify / jspi,

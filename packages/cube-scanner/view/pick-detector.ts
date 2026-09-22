@@ -55,10 +55,50 @@ export interface DetectorChoice {
 let parked: DetectorChoice | null = null;
 
 /**
+ * How long a parked BROWSER detector keeps its model once the scan screen is left (2026-09-22).
+ *
+ * The park keeps a model so that coming back to the scan screen does not cost a reload, and it kept
+ * it for the life of the page — which on the browser runtime is the most memory the app holds:
+ * measured in Chromium on a laptop with the shipped model, a parked detector held +390 MB across
+ * the browser's processes (+205 MB in the page's own) over a Home screen of ~330 MB. That is the
+ * runtime a phone runs today (Android's native path is not yet verified on a device) and the one
+ * Linux runs by design. A scan is the start of a session and solving is the rest of it, so the
+ * model was held through minutes of use that could not need it.
+ *
+ * A MINUTE, because the two ways back to the scan screen are not alike. Straight back — a side
+ * misread, a cube put down wrong — happens within seconds of leaving, and keeps the model. Back
+ * after solving, the one that costs the reload, is minutes later, and the reload it costs is the
+ * wait a first visit has and the panel already explains ("loading the model…"): measured at
+ * 1.5–3 s on the same laptop, from entering the screen to a warmed model, camera included.
+ *
+ * NOT FOR THE NATIVE RUNTIME. Its plugin holds the compiled model for the process whatever this
+ * side does (`NativeDetector.dispose` releases this side's claim, not the model), so releasing it
+ * would give nothing back and cost a round trip on the next visit.
+ *
+ * What makes the release worth anything is where the model now lives: in a worker of the page's
+ * own (`inference-client.ts`), which disposing terminates. Measured: the release returns 330–350 MB
+ * and leaves the page's process within 3 MB of its size before the scan. With the runtime on the
+ * page, releasing the session returned ~30 MB on the wasm path and ~180 MB on the GPU path, and
+ * the rest stayed until the page went.
+ */
+export const PARKED_RELEASE_MS = 60_000;
+
+/** The pending release of the parked detector, or null. Always about `parked`, and cleared with it. */
+let releaseTimer: ReturnType<typeof setTimeout> | null = null;
+
+function cancelRelease(): void {
+  if (releaseTimer !== null) clearTimeout(releaseTimer);
+  releaseTimer = null;
+}
+
+/**
  * Give the page's detector back, or dispose it if the slot is already taken.
  *
  * `stop()` and not `dispose()`: the camera is released and the compiled model is kept, which is
  * the entire point of parking. The only thing parking may cost is a lens left on.
+ *
+ * Kept for `PARKED_RELEASE_MS` on the browser runtime, and released after that unless a panel has
+ * taken it back first.
  */
 export function parkDetector(choice: DetectorChoice): void {
   choice.detector.stop();
@@ -67,6 +107,14 @@ export function parkDetector(choice: DetectorChoice): void {
     return;
   }
   parked = choice;
+  cancelRelease();
+  if (choice.runtime !== 'web') return;
+  releaseTimer = setTimeout(() => {
+    releaseTimer = null;
+    // Only if it is still the one that was parked: a panel that took it has cancelled this, and a
+    // detector parked since has armed its own.
+    if (parked === choice) disposeParkedDetector();
+  }, PARKED_RELEASE_MS);
 }
 
 /** What the page is keeping, or null while it is lent out. Reading it never takes it. */
@@ -81,6 +129,7 @@ export function parkedDetector(): DetectorChoice | null {
  * page's session into the next case.
  */
 export function disposeParkedDetector(): void {
+  cancelRelease();
   const kept = parked;
   parked = null;
   kept?.detector.dispose?.();
@@ -156,6 +205,7 @@ export async function pickDetector(opts: DetectorSource): Promise<DetectorChoice
   const kept = parked;
   if (kept) {
     parked = null;
+    cancelRelease(); // it is in use again, and a detector in use is never released from here
     kept.detector.retarget?.(opts);
     // THE MODEL IS ONLY LOADED IF IT IS THIS OWNER'S MODEL. `retarget` has just changed which URL
     // the detector answers for, so carrying the flag across unchecked told the new panel its model

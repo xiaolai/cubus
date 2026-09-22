@@ -70,6 +70,15 @@ export default defineConfig({
         // dies holding a frame — and a developer's browser never does.
         'view/letterbox-client.ts',
         'view/letterbox-protocol.ts',
+        // The model's worker, both halves and the wire (2026-09-22), for the same reason again: a
+        // fake `Worker` reaches every branch of the client and a fake scope every branch of the
+        // entry, and the ones that matter — a worker that dies holding a frame, a load the worker
+        // cannot do and the page can, a release while a load is out — are the ones a developer's
+        // browser never takes. `detect-head.ts` is the output shape both halves hold a model to.
+        'view/inference-client.ts',
+        'view/inference-protocol.ts',
+        'view/inference-worker.ts',
+        'src/detect-head.ts',
         'view/pick-detector.ts',
         'view/native-detector.ts',
         // The scan trace (2026-09-18). Both halves are pure — a frame in, a record out; ticks in, a
