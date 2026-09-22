@@ -260,3 +260,37 @@ describe('the resolution is bounded (D3)', () => {
     }
   });
 });
+
+/**
+ * The resolver can still THROW, and the scan is what has to report it.
+ *
+ * `resolveCentres` answers with a refusal for every condition it anticipates, but it validates its
+ * captures and raises on ones it cannot read at all — and the panel calls it from a timer, where an
+ * escape is an unhandled rejection and a scan that simply stops with six sides captured and nothing
+ * said. Before D3 a `try`/`catch` sat directly around the call; moving the work to a worker moved
+ * the throw to two places (the synchronous fallback, and the client answering a stranded request on
+ * this thread), so both are covered by one guard at the call site.
+ */
+describe('a resolution that cannot be made at all', () => {
+  it('throws out of the synchronous fallback rather than answering something false', () => {
+    (globalThis as { Worker?: unknown }).Worker = undefined;
+    const resolver = new CentreResolver();
+    const broken = ask(2);
+    // A capture with too few stickers is not a side, and the resolver says so by raising.
+    broken.unnamed[0]!.capture = { colors: [0, 1, 2], confidence: [0.9, 0.9, 0.9] };
+    expect(() => resolver.request(broken, () => {})).toThrow();
+  });
+
+  it('throws out of the worker path’s stranded answer too', () => {
+    // The client answers a stranded request on this thread when the worker dies, so the same throw
+    // arrives from inside `failed()` — which is why the panel guards the call rather than the
+    // fallback alone.
+    withWorker();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const resolver = new CentreResolver();
+    const broken = ask(2);
+    broken.unnamed[0]!.capture = { colors: [0, 1, 2], confidence: [0.9, 0.9, 0.9] };
+    resolver.request(broken, () => {});
+    expect(() => FakeWorker.last().fail()).toThrow();
+  });
+});

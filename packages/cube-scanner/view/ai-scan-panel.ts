@@ -2804,12 +2804,23 @@ export class AiScanPanel extends HTMLElement {
       // The EPOCH is the cancellation: there is nothing to interrupt inside one enumeration, so
       // what is cancelled is the answer's authority. `diagnosisEpoch` is the same serial every
       // other superseded reading is checked against.
+      //
+      // A THROW IS STILL THE SCAN'S TO REPORT, on either path. The synchronous fallback runs the
+      // resolver on this thread and can throw exactly as it did before the worker existed, and
+      // `assemble` is called from a timer — an escape there is an unhandled rejection and a scan
+      // that simply stops, with six sides captured and nothing said. The worker's own failures
+      // reach `centres-client`, which answers the stranded request on this thread and so arrives
+      // here as an ordinary answer or as a throw from the same call.
       const epoch = this.diagnosisEpoch;
-      const now = this.centres.request({ epoch, named: this.faces, unnamed }, (reply) => {
-        if (reply.epoch !== this.diagnosisEpoch) return;
-        this.applyResolution(reply.resolution, unnamed);
-      });
-      if (now) this.applyResolution(now.resolution, unnamed);
+      try {
+        const now = this.centres.request({ epoch, named: this.faces, unnamed }, (reply) => {
+          if (reply.epoch !== this.diagnosisEpoch) return;
+          this.failableResolution(reply.resolution, unnamed);
+        });
+        if (now) this.failableResolution(now.resolution, unnamed);
+      } catch (err) {
+        this.resolutionFailed(err, unnamed);
+      }
       return;
     }
     // A `reread` means a confirmation disagreed with its first capture about colours: adopt the
@@ -2825,6 +2836,31 @@ export class AiScanPanel extends HTMLElement {
    * below are unchanged, and the only new thing is that they can now run a beat later, against a
    * scan the epoch has already agreed is still the current one.
    */
+  /** `applyResolution`, with a throw reported as the scan's failure rather than escaping a timer. */
+  private failableResolution(resolution: CentreResolution, unnamed: readonly UnnamedSide[]): void {
+    try {
+      this.applyResolution(resolution, unnamed);
+    } catch (err) {
+      this.resolutionFailed(err, unnamed);
+    }
+  }
+
+  /**
+   * A centre resolution could not be made, or could not be acted on: let the sides go, record why,
+   * and report it. The `catch` that sat around `resolveCentres` before it moved off this thread.
+   */
+  private resolutionFailed(err: unknown, unnamed: readonly UnnamedSide[]): void {
+    // Through `forgetCapture`, like every other removal (2026-09-21, on verification): a bare
+    // `this.unnamed = []` here left `centreSeen`, `unnamedClaim` and `unnamedCentres` holding
+    // records of sides no longer held, which the next filing could then be matched against.
+    for (const side of [...this.unnamed]) this.forgetCapture(side);
+    this.traceEvent('contest-resolved', {
+      sides: unnamed.map((u) => [...u.capture.colors]),
+      error: err instanceof Error ? err.message : String(err),
+    });
+    this.checkFailed(err);
+  }
+
   private applyResolution(resolution: CentreResolution, unnamed: readonly UnnamedSide[]): void {
     {
       // No legal filing, and two of the sides are the same eight stickers: one side read twice, so

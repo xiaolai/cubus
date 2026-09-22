@@ -2390,6 +2390,26 @@ describe('ai-scan-panel — sides whose centres read as the same colour', () => 
     ).toBeUndefined();
   });
 
+  it('reports a centre resolution that throws, rather than stopping with six sides and nothing said', async () => {
+    // `assemble` runs from a timer, so a throw escaping it is an unhandled rejection and a scan
+    // that simply stops — six sides captured, no verdict, no words. A `try`/`catch` sat directly
+    // around `resolveCentres` until it moved off this thread (D3); the guard now wraps the call so
+    // it covers both the synchronous fallback and the client answering a stranded request here.
+    const state = new Cube().move('U D R L F B').asString();
+    const faces = facesOf(state);
+    await show(faces.U);
+    await showFlickeringCentre(faces.D, LETTER_CLASS.D, LETTER_CLASS.L);
+    for (const f of ['R', 'F', 'L', 'B'] as Face[]) await show(faces[f]);
+    // A capture the resolver cannot read at all: the throw it raises is the one under test.
+    panel.setSticker('U', 0, 0);
+    const held = last().sides;
+    expect(held).toBeGreaterThanOrEqual(5);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    // Whatever it decided, it SAID something — the scan never goes quiet.
+    expect(last().message.length).toBeGreaterThan(0);
+    expect(last().phase).not.toBe('checking');
+  });
+
   it('sends a correction on a symmetric cube to the side its centre names when its eight fit two sides', async () => {
     // Every side is in and the scan was refused over one misread sticker on the yellow side. Re-shown
     // right, that side's eight are ALSO the white side's eight (U D R L F B), so the eight point to two
