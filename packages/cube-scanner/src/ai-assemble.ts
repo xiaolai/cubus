@@ -1322,26 +1322,40 @@ interface CountRepair {
 }
 
 /**
- * Has this repaired sticker been LOOKED AT AGAIN, and did the second look agree?
+ * Have this side's repaired stickers been LOOKED AT AGAIN, and did ONE second look agree about ALL
+ * of them?
  *
  * D1, and the whole of it. A second photograph of the side, taken under a known hold, is an
  * independent observation; a rotation that aligns it with the repaired capture puts its stickers
- * over the repaired ones, and the question is whether the one the repair invented is the colour
- * that photograph actually shows.
+ * over the repaired ones, and the question is whether the colours the repair invented are the
+ * colours that photograph actually shows.
  *
- * ALIGNED BY `matchingRotations` — the same tolerance match every confirmation is read through —
- * and then asked about ONE POSITION. The tolerance is what makes the alignment robust to the
- * ordinary one- or two-sticker disagreement between two reads of a side; it is emphatically not a
- * licence for the repaired sticker itself to disagree, which is why the position is compared
- * exactly. If several rotations align, agreement under ANY of them is enough: the hold is not known
- * to better than that, and demanding all of them would refuse a confirmation of a symmetric side.
+ * ONE LOOK AND ONE ROTATION FOR THE WHOLE FACE, not one per sticker (audit, 2026-09-23). Asked per
+ * sticker, a face could have its first repair confirmed under rotation 0 and its second under
+ * rotation 1 — from the same photograph — so no single physical orientation supported the cube that
+ * was then accepted. Every repaired sticker of a face has to agree with the SAME look held the SAME
+ * way up, because that is what one photograph of one cube means.
+ *
+ * THE LOOK IS TURNED BACK INTO THE CAPTURE'S FRAME, never compared at the raw index (audit,
+ * 2026-09-23). `matchingRotations` says the look is the capture turned by `k`, so turning the look
+ * by `-k` puts its stickers over the capture's — and only then does position `index` name the same
+ * physical sticker in both. Comparing `rotateFace(repaired, k)[index]` against `look[index]`, as the
+ * first version did, asks about whichever sticker ROTATED INTO that position: an unrelated sticker
+ * could confirm the repair, and since `matchingRotations` already requires all but two positions to
+ * agree, it usually did. That is the guard failing open on the one thing it exists for.
+ *
+ * ALIGNED BY `matchingRotations` — the same tolerance match every confirmation is read through. The
+ * tolerance makes the ALIGNMENT robust to the ordinary one- or two-sticker disagreement between two
+ * reads of a side; it is emphatically not a licence for a repaired sticker itself to disagree, which
+ * is why each is then compared exactly.
  */
-function reobserved(
+export function reobserved(
   repaired: ColorFace,
   original: ColorFace,
   looks: readonly Confirmation[],
-  index: number,
+  indices: readonly number[],
 ): boolean {
+  if (indices.length === 0) return true;
   for (const look of looks) {
     // Aligned against the repaired capture AND the one the camera read, exactly as
     // `allowedByLook` does: inside a repair the two differ, and a look matches whichever of them
@@ -1351,7 +1365,8 @@ function reobserved(
       ...matchingRotations(original, look.capture),
     ]);
     for (const k of rotations) {
-      if (rotateFace(repaired.colors, k)[index] === look.capture.colors[index]) return true;
+      const asCaptured = rotateFace(look.capture.colors, -k);
+      if (indices.every((i) => asCaptured[i] === repaired.colors[i])) return true;
     }
   }
   return false;
@@ -1570,10 +1585,18 @@ function assembleWithin(
     // exactly as before, which is why this costs the measured gain (80.0% → 98.7% whole cubes)
     // nothing on a cube the repair had right — it costs it one more showing of one side.
     const repair = repairByCounts(faces, maxRepairCost);
+    // PER FACE, because a photograph is of a face: every sticker the repair invented on one side
+    // has to be confirmed by ONE look held ONE way up, or the accepted cube rests on an orientation
+    // nothing was ever held in (audit, 2026-09-23).
     const unseen = repair
       ? repair.changed.filter(
           (s) =>
-            !reobserved(repair.faces[s.face]!, faces[s.face]!, looksAt(confirmed, s.face), s.index),
+            !reobserved(
+              repair.faces[s.face]!,
+              faces[s.face]!,
+              looksAt(confirmed, s.face),
+              repair.changed.filter((r) => r.face === s.face).map((r) => r.index),
+            ),
         )
       : [];
     const byCounts = repair && unseen.length === 0 ? accept(repair.faces) : null;

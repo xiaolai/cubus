@@ -793,8 +793,18 @@ export function fitFace(dets: Detection[], minConf = MIN_STICKER_CONFIDENCE): Fi
   // identically tomorrow (an attempt is made only because the one before it failed), a frame of
   // uniform noise is refused exactly as it was, and a frame refused after every attempt reports the
   // reason the unmodified rule gave it, leaving the scan trace's diagnosis unchanged.
-  const areas = neighboured.map((d) => d.w * d.h).sort((a, b) => a - b);
-  const clutterAbove = CLUTTER_AREA_RATIO * areas[Math.floor(areas.length / 2)]!;
+  //
+  // THE SCALE COMES FROM THE CANDIDATE FACE, NOT FROM EVERY SURVIVING BOX (audit, 2026-09-23). Over
+  // all of `neighboured`, a frame carrying many SMALL false boxes — a textured surface, a patterned
+  // cloth — drags the median down until real stickers stand above the threshold, and the retry then
+  // sets aside the face itself and fits whatever is left. Measured against the nine largest, the
+  // median is a sticker's own area whenever most of those nine are stickers, which is the only case
+  // in which any of this is worth attempting.
+  const nine = bySize
+    .slice(0, 9)
+    .map((d) => d.w * d.h)
+    .sort((a, b) => a - b);
+  const clutterAbove = CLUTTER_AREA_RATIO * nine[Math.floor(nine.length / 2)]!;
   let first: GeometryFailure | undefined;
   let fitted: ReturnType<typeof gridOf> | undefined;
   let grid: Detection[] | undefined;

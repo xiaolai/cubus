@@ -8,8 +8,9 @@ import {
   type Confirmation,
   type Confirmed,
   matchingRotations,
+  reobserved,
 } from '../src/ai-assemble.js';
-import { SOLVED_FACELETS } from '../src/facelet-cube.js';
+import { rotateFace, SOLVED_FACELETS } from '../src/facelet-cube.js';
 import {
   adjacentIn,
   type Colour,
@@ -1292,5 +1293,82 @@ describe('a repair that cost nothing is not a repair — audit §2.6 (2026-09-20
     const r = assembleColors(f);
     expect(r.valid).toBe(false);
     expect(r.facelets).not.toBe(SOLVED_FACELETS);
+  });
+});
+
+/**
+ * D1's guard, asked about its own mechanics — and about the two ways it failed OPEN, found by an
+ * independent audit on 2026-09-23 (Codex, read-only). Both are the guard admitting a repair no
+ * photograph supports, which is the one thing it exists to prevent.
+ */
+describe('a repair is confirmed by one look, at the right sticker (D1)', () => {
+  const capture = (colors: number[]): ColorFace => ({
+    colors,
+    confidence: Array<number>(9).fill(0.9),
+  });
+  // A side, and the same side turned a quarter in the hand.
+  const base = [0, 1, 2, 3, 4, 5, 0, 1, 2];
+
+  it('accepts a look that shows the repaired colour at the repaired sticker', () => {
+    const repaired = capture(base);
+    const original = capture(base.map((c, i) => (i === 0 ? 5 : c)));
+    const look = { capture: capture(base), up: 'U' as Face };
+    expect(reobserved(repaired, original, [look], [0])).toBe(true);
+  });
+
+  it('refuses a look that shows something else there', () => {
+    const repaired = capture(base);
+    const original = capture(base.map((c, i) => (i === 0 ? 5 : c)));
+    // The look still reads the sticker the way the camera did: it contradicts the repair.
+    const look = { capture: capture(base.map((c, i) => (i === 0 ? 5 : c))), up: 'U' as Face };
+    expect(reobserved(repaired, original, [look], [0])).toBe(false);
+  });
+
+  it('turns a rotated look back before it reads the sticker', () => {
+    // THE FIRST High FINDING. `matchingRotations` says the look is the capture turned by k, so the
+    // look must be turned BACK before position `index` names the same physical sticker in both.
+    // Comparing at the raw index asks about whichever sticker rotated INTO that position — and
+    // since the alignment already requires all but two positions to agree, it usually passed.
+    const repaired = capture(base);
+    const original = capture(base.map((c, i) => (i === 0 ? 5 : c)));
+    // The same side, photographed a quarter turn round. Position 0 of the capture is elsewhere here.
+    const turned = rotateFace(base, 1);
+    const look = { capture: capture(turned), up: 'U' as Face };
+    expect(reobserved(repaired, original, [look], [0])).toBe(true);
+    // …and a turned look that DISAGREES at the repaired sticker is refused, which is what the
+    // wrong-index version could not tell apart.
+    const wrongThere = [...turned];
+    wrongThere[rotateFace([0, 1, 2, 3, 4, 5, 6, 7, 8], 1).indexOf(0)] = 4;
+    expect(reobserved(repaired, original, [{ capture: capture(wrongThere), up: 'U' }], [0])).toBe(
+      false,
+    );
+  });
+
+  it('will not confirm two repaired stickers under two different rotations', () => {
+    // THE SECOND High FINDING. Asked per sticker, a face could have one repair confirmed under
+    // rotation 0 and another under rotation 1 — from the same photograph — so no single physical
+    // orientation supported the cube that was accepted. A photograph is of a face, held one way up.
+    //
+    // A symmetric side, so several rotations align: white everywhere but two positions, each of
+    // which the repair invented, and a look that agrees with one under each of two rotations.
+    const sym = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+    const repaired = capture(sym.map((c, i) => (i === 1 ? 1 : i === 3 ? 2 : c)));
+    const original = capture(sym);
+    // This look reads position 1 as the repair says and position 3 as it does not; turned a
+    // quarter, it reads position 3 as the repair says and position 1 as it does not.
+    const look = capture(sym.map((c, i) => (i === 1 ? 1 : c)));
+    const both = reobserved(repaired, original, [{ capture: look, up: 'U' }], [1, 3]);
+    expect(both, 'two stickers were confirmed under two different holds').toBe(false);
+    // Each ALONE can still be confirmed — which is exactly why asking per sticker was unsound.
+    expect(reobserved(repaired, original, [{ capture: look, up: 'U' }], [1])).toBe(true);
+  });
+
+  it('confirms nothing from no looks, and everything from no repairs', () => {
+    const repaired = capture(base);
+    const original = capture(base);
+    expect(reobserved(repaired, original, [], [0])).toBe(false);
+    // A face with no invented stickers has nothing to confirm; demanding a look would ask for one
+    // about a side the repair never touched.
+    expect(reobserved(repaired, original, [], [])).toBe(true);
   });
 });

@@ -799,6 +799,36 @@ describe('a cluster of false boxes does not cost the face its place (D4)', () =>
     expect(fitFace(crowd).ok).toBe(false);
   });
 
+  it('refuses a speckled frame rather than fabricating a face out of it', () => {
+    // An audit (2026-09-23) proposed that the clutter threshold — five times the MEDIAN box area —
+    // could be dragged down by many small false boxes until real stickers stood above it, so the
+    // retry would set the face aside and fit whatever was left. The scale now comes from the nine
+    // largest rather than from every surviving box, which is the better-targeted measure and is
+    // what this frame exercises.
+    //
+    // HONESTLY: no reachable case was found where the old scale actually fabricated a read, and
+    // this frame is refused under both. The bound is `MAX_CLUTTER_SET_ASIDE` — fabricating needs
+    // the large boxes set aside, at most three of them can be, and with three or fewer the nine
+    // largest are mostly the small boxes either way, so both scales agree. The change is defence in
+    // depth against a fourth clutter box, not a fix for a demonstrated defect. What this case pins
+    // is the outcome that matters: a speckled frame is REFUSED.
+    const face = grid();
+    // AMONG the stickers, not off in a corner: `dropIsolated` scales its reach by the median box
+    // size too, so speckle far from the cube takes the whole face with it before any of this is
+    // reached.
+    const speckle: Detection[] = Array.from({ length: 14 }, (_, i) => ({
+      cx: 205 + (i % 7) * 12,
+      cy: 205 + Math.floor(i / 7) * 22,
+      w: 6,
+      h: 6,
+      classId: 2,
+      confidence: 0.6,
+      scores: [0, 0, 0.6, 0, 0, 0],
+    }));
+    const got = fitFace([...face, ...speckle]);
+    expect(got.ok, 'a face was fabricated out of a speckled frame').toBe(false);
+  });
+
   it('reports the unmodified rule’s refusal when no attempt fits', () => {
     // Nothing here is a face, so every attempt fails and the reason reported is the one the nine
     // largest gave — the scan trace's diagnosis is unchanged by the retries.

@@ -2977,14 +2977,16 @@ function movesALockedSticker(faces, colors) {
     )
   );
 }
-function reobserved(repaired, original, looks, index) {
+function reobserved(repaired, original, looks, indices) {
+  if (indices.length === 0) return true;
   for (const look of looks) {
     const rotations = /* @__PURE__ */ new Set([
       ...matchingRotations(repaired, look.capture),
       ...matchingRotations(original, look.capture)
     ]);
     for (const k of rotations) {
-      if (rotateFace(repaired.colors, k)[index] === look.capture.colors[index]) return true;
+      const asCaptured = rotateFace(look.capture.colors, -k);
+      if (indices.every((i) => asCaptured[i] === repaired.colors[i])) return true;
     }
   }
   return false;
@@ -3091,7 +3093,12 @@ function assembleWithin(faces, threshold, confirmed, options, maxRepairCost, all
   if (all.length === 0) {
     const repair = repairByCounts(faces, maxRepairCost);
     const unseen = repair ? repair.changed.filter(
-      (s) => !reobserved(repair.faces[s.face], faces[s.face], looksAt(confirmed, s.face), s.index)
+      (s) => !reobserved(
+        repair.faces[s.face],
+        faces[s.face],
+        looksAt(confirmed, s.face),
+        repair.changed.filter((r) => r.face === s.face).map((r) => r.index)
+      )
     ) : [];
     const byCounts = repair && unseen.length === 0 ? accept(repair.faces) : null;
     if (byCounts) return byCounts;

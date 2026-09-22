@@ -495,8 +495,11 @@ def fit_grid(dets: list[Detection], min_conf: float = 0.25) -> tuple[str, list[D
     # Measured on the 83 recorded frames of
     # packages/cube-scanner/tests/fixtures/background-box-frames.json: two frames changed, both
     # BAD_GEOMETRY to a read, none read-to-read and none read-to-refusal.
-    areas = sorted(d.w * d.h for d in neighboured)
-    clutter_above = CLUTTER_AREA_RATIO * areas[len(areas) // 2]
+    # The scale comes from the CANDIDATE FACE, not from every surviving box (audit, 2026-09-23):
+    # over all of them, a frame carrying many small false boxes drags the median down until real
+    # stickers stand above the threshold. Mirrors src/onnx-postprocess.ts.
+    nine = sorted(d.w * d.h for d in by_size[:9])
+    clutter_above = CLUTTER_AREA_RATIO * nine[len(nine) // 2]
     for aside in range(MAX_CLUTTER_SET_ASIDE + 1):
         if len(by_size) - aside < 9:
             break
