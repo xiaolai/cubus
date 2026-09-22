@@ -27,7 +27,7 @@ import {
   type Scheme,
   slotOf,
 } from '../src/scheme.js';
-import { FACES, type Face } from '../src/types.js';
+import { FACES, type Face, type Frame } from '../src/types.js';
 import {
   AiScanPanel,
   classifyRefusal,
@@ -250,6 +250,24 @@ class FakeDetector implements Detector {
     if (this.nextHold) await this.nextHold;
     if (this.failWith) throw this.failWith;
     return this.output;
+  }
+  /**
+   * The frames this detector will hand over by id, as `NativeDetector.framePixels` does (D7).
+   *
+   * Absent entirely by default, which is how a runtime that cannot supply pixels behaves — and how
+   * every test written before D7 must go on behaving. Set it and the detector grows the method.
+   */
+  pixels: Map<number, Frame> | null = null;
+  /** Every id `framePixels` was asked for: the cost D7 pays is once per CAPTURED side, not per tick. */
+  pixelAsks: number[] = [];
+  framePixels?: (frameId: number) => Promise<Frame | null>;
+  /** Hand frames over by id from here on, the way the native plugin does. */
+  supplyPixels(frames: Map<number, Frame>): void {
+    this.pixels = frames;
+    this.framePixels = async (frameId: number) => {
+      this.pixelAsks.push(frameId);
+      return this.pixels?.get(frameId) ?? null;
+    };
   }
   async cameras(): Promise<CameraDevice[]> {
     return this.device ? [this.device] : [];
@@ -2226,6 +2244,84 @@ describe('ai-scan-panel — sides whose centres read as the same colour', () => 
     const said = events.slice(before).map((e) => e.message);
     expect(said.some((m) => /Already have/.test(m))).toBe(true);
     expect(last().sides, 'a duplicate of the side already in hand was filed').toBe(1);
+  });
+
+  it('asks the native plugin for the frame behind a SETTLED read, once per side and by id (D7)', async () => {
+    // D7 (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3). `recolourByPaint` — the last thing the
+    // assembly tries before refusing a scan — needs the frame, and the native plugin never shipped
+    // one, so the Mac had one recovery path fewer than the browser. It hands the pixels over by id
+    // now, and the two things that make that affordable and correct are asserted here: it is asked
+    // ONCE PER CAPTURED SIDE and not per tick, and it is asked for the frame the grid was fitted to
+    // rather than "the latest" — pixels from a later frame would place every sticker box over paint
+    // that has since moved.
+    const faces = facesOf(DEEP);
+    const frame: Frame = { data: new Uint8ClampedArray(4 * 4 * 4).fill(120), width: 4, height: 4 };
+    fake.supplyPixels(new Map([...Array(40).keys()].map((i) => [i, frame])));
+
+    // Ticks that do not settle: a face in view, then nothing. Neither is a captured side.
+    // Each tick carries its own frame id, as a camera delivering new frames does (D2).
+    let id = 0;
+    const tick = async (output: ModelOutput | null) => {
+      fake.output = output === null ? null : { ...output, frameId: id++ };
+      await vi.advanceTimersByTimeAsync(TICK);
+    };
+    await tick(tensorFor(faces.U));
+    expect(fake.pixelAsks, 'the pixels were asked for before a read settled').toEqual([]);
+    for (let i = 0; i < 3; i++) await tick(emptyTensor());
+    expect(fake.pixelAsks).toEqual([]);
+
+    // …and now a run that settles. It is asked for ONCE, for the frame that settled it — not once
+    // per tick of the run, and not for "the latest".
+    for (let i = 0; i < SETTLE_TICKS + 2 && fake.pixelAsks.length === 0; i++) {
+      await tick(tensorFor(faces.U));
+    }
+    fake.output = null;
+    expect(last().captured.map((c) => c.face)).toEqual(['U']);
+    expect(fake.pixelAsks).toHaveLength(1);
+    expect(fake.pixelAsks[0]).toBe(id - 1);
+  });
+
+  it('asks for no pixels at all from a runtime that cannot supply them', async () => {
+    // The browser ships its frame with the tensor and needs none of this; a plugin speaking an
+    // older wire has no frame identity to ask by. Both behave exactly as they did before D7.
+    const faces = facesOf(DEEP);
+    fake.supplyPixels(new Map());
+    fake.output = tensorFor(faces.U); // no frameId — every tick counts, as it always did
+    await vi.advanceTimersByTimeAsync(TICK * SETTLE_TICKS);
+    fake.output = null;
+    expect(last().captured.map((c) => c.face)).toEqual(['U']);
+    expect(fake.pixelAsks).toEqual([]);
+  });
+
+  it('captures the side anyway when the plugin no longer holds that frame', async () => {
+    // A tick lands or the camera closes between the fit and the ask. Losing the paint path is a
+    // recovery that did not exist here at all until today; losing the SIDE would be a regression.
+    const faces = facesOf(DEEP);
+    fake.supplyPixels(new Map()); // every ask answers null
+    let n = 0;
+    for (let i = 0; i < SETTLE_TICKS + 4 && fake.pixelAsks.length === 0; i++) {
+      fake.output = { ...tensorFor(faces.U), frameId: n++ };
+      await vi.advanceTimersByTimeAsync(TICK);
+    }
+    fake.output = null;
+    expect(fake.pixelAsks).toHaveLength(1);
+    expect(last().captured.map((c) => c.face)).toEqual(['U']);
+  });
+
+  it('captures the side anyway when asking for the pixels throws', async () => {
+    const faces = facesOf(DEEP);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fake.supplyPixels(new Map());
+    fake.framePixels = async () => {
+      throw new Error('the bridge dropped it');
+    };
+    let n = 0;
+    for (let i = 0; i < SETTLE_TICKS + 4; i++) {
+      fake.output = { ...tensorFor(faces.U), frameId: n++ };
+      await vi.advanceTimersByTimeAsync(TICK);
+    }
+    fake.output = null;
+    expect(last().captured.map((c) => c.face)).toEqual(['U']);
   });
 
   it('sends a correction on a symmetric cube to the side its centre names when its eight fit two sides', async () => {

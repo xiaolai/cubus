@@ -76,6 +76,10 @@ extern "C" {
         anchors: *mut i32,
         frame_info: *mut i32,
     ) -> i32;
+    /// The RGBA pixels of one frame BY ID (D7). `size` is two i32s, `[width, height]`; a `cap` of
+    /// zero is a sizing call that writes no bytes. Returns the byte count, 0 when the camera no
+    /// longer holds that frame, or a negative code.
+    fn cube_vision_frame_pixels(frame_id: i32, out: *mut u8, cap: i32, size: *mut i32) -> i32;
 }
 
 /// `cube_vision_next_detection`'s "camera open, no frame has arrived" answer.
@@ -385,6 +389,83 @@ fn next_detection_bytes(
     wire::frame_bytes(n, rows, anchors, [info[0], info[1]], Some(info[2]), &buf)
 }
 
+/// The pixels of the frame a fit was made on, for the assembly's paint path (D7,
+/// `dev-docs/scan-pipeline-audit-2026-09-23.md` §3).
+///
+/// `recolourByPaint` — the last thing tried before a scan is refused — asks which stickers carry
+/// the same paint, and that needs the frame. The browser detector hands its frame over with every
+/// tensor; this plugin never has, so the Mac had one recovery path fewer than the browser. Asked
+/// for ONCE PER CAPTURED SIDE rather than per tick, so the 3.7 MB a 720p frame costs crosses the
+/// bridge only where it buys something.
+///
+/// The reply is `[width, height]` as two little-endian i32s, then `width * height * 4` RGBA bytes —
+/// and the 8-byte header ALONE when the camera no longer holds that frame, which the page reads as
+/// "no pixels" and behaves exactly as it did before this existed.
+///
+/// `(async)`: takes the Swift state lock and copies a frame.
+#[tauri::command(async)]
+fn frame_pixels(frame_id: i32) -> Result<Response, String> {
+    // TWO CALLS, not one allocation for a plausible maximum: the first asks how big the frame is,
+    // the second fills a buffer that fits. A guess about camera resolutions is broken quietly by a
+    // 4K webcam, and this side cannot know the size any other way.
+    let mut size = [0i32; 2];
+    let needed = swift(|| {
+        // SAFETY: `size` is two valid i32s; a zero `cap` means the null pointer is never written.
+        let n = unsafe {
+            cube_vision_frame_pixels(frame_id, std::ptr::null_mut(), 0, size.as_mut_ptr())
+        };
+        if n < 0 {
+            return Err(ffi_failure("frame_pixels", n));
+        }
+        Ok(n)
+    })?;
+    let mut out = Vec::with_capacity(8 + usize::try_from(needed.max(0)).unwrap_or(0));
+    if needed == 0 {
+        // The frame is gone. The header alone, both zero — the page's "no pixels".
+        out.extend_from_slice(&0i32.to_le_bytes());
+        out.extend_from_slice(&0i32.to_le_bytes());
+        return Ok(Response::new(out));
+    }
+    let len = usize::try_from(needed).map_err(|_| format!("a frame of {needed} bytes"))?;
+    let mut pixels = vec![0u8; len];
+    let written = swift(|| {
+        // SAFETY: `pixels` has exactly `len` bytes, matching the `cap` passed.
+        let n = unsafe {
+            cube_vision_frame_pixels(frame_id, pixels.as_mut_ptr(), needed, size.as_mut_ptr())
+        };
+        if n < 0 {
+            return Err(ffi_failure("frame_pixels", n));
+        }
+        Ok(n)
+    })?;
+    // The frame can go between the two calls — a tick lands, the camera closes — and then the
+    // second answers 0 with a zero size. That is not an error and not a short frame: it is the same
+    // "no pixels" the first call can give, and reporting it as anything else would turn an ordinary
+    // race into a scan failure.
+    if written == 0 || size[0] <= 0 || size[1] <= 0 {
+        out.extend_from_slice(&0i32.to_le_bytes());
+        out.extend_from_slice(&0i32.to_le_bytes());
+        return Ok(Response::new(out));
+    }
+    let promised = usize::try_from(size[0])
+        .and_then(|w| usize::try_from(size[1]).map(|h| (w, h)))
+        .map(|(w, h)| w.saturating_mul(h).saturating_mul(4))
+        .map_err(|_| format!("a picture of {}x{}", size[0], size[1]))?;
+    let got = usize::try_from(written).map_err(|_| format!("{written} bytes"))?;
+    // The two sides disagreeing about the frame's own size is a bridge fault, not a picture: read
+    // as a frame it would place every sticker box over the wrong pixels, silently.
+    if promised != got {
+        return Err(format!(
+            "frame_pixels: a {}x{} frame is {promised} bytes but {got} were written",
+            size[0], size[1]
+        ));
+    }
+    out.extend_from_slice(&size[0].to_le_bytes());
+    out.extend_from_slice(&size[1].to_le_bytes());
+    out.extend_from_slice(&pixels[..got]);
+    Ok(Response::new(out))
+}
+
 /// Decode and check an `infer_frame` payload into what the Swift ABI takes: the RGBA bytes and
 /// `Int32` dimensions. Everything `crate::frame` guards (positive, `checked_mul`, exact length)
 /// happens there; this adds the one check the C ABI needs on top — a dimension the Swift side
@@ -460,6 +541,7 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             open_camera,
             close_camera,
             next_detection,
+            frame_pixels,
             infer_frame
         ])
         .setup(|app, _api| {
@@ -765,7 +847,7 @@ mod tests {
             .map(str::trim)
             .filter(|n| !n.is_empty())
             .collect();
-        assert_eq!(registered.len(), 8, "the plugin registers eight commands");
+        assert_eq!(registered.len(), 9, "the plugin registers nine commands");
         for plain in PLAIN {
             assert!(
                 registered.contains(plain),

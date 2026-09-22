@@ -65,7 +65,7 @@ import {
   slotOf,
 } from '../src/scheme.js';
 import { stickerLab, toFrameBox } from '../src/sticker-pixels.js';
-import { FACES, type Face } from '../src/types.js';
+import { FACES, type Face, type Frame } from '../src/types.js';
 import { CameraSession } from './camera-session.js';
 import { CentreResolver } from './centres-client.js';
 import { INFERENCE_WORKER_LOST } from './inference-client.js';
@@ -1300,7 +1300,7 @@ export class AiScanPanel extends HTMLElement {
         return;
       }
       this.noFrameSince = null;
-      this.readFrame(output);
+      await this.readFrame(output, epoch);
       this.commitTick({});
       // CLEARED AFTER THE FRAME WAS PROCESSED, NOT BEFORE IT (2026-09-05). `readFrame` runs the
       // whole post-processing tail — decode, NMS, fitFace, and on the sixth side an assemble — and
@@ -1359,7 +1359,7 @@ export class AiScanPanel extends HTMLElement {
   }
 
   /** A frame arrived: decide whether there is a read worth acting on, and hand it on if so. */
-  private readFrame(output: ModelOutput): void {
+  private async readFrame(output: ModelOutput, epoch: number): Promise<void> {
     // Decoded ONCE, and the same boxes go to the fit and the trace. `fitFace` of
     // `detectionsFromOutput` is exactly `fitFromOutput`, so the scan reads the same whether it is
     // being watched or not; the trace only adds what it records beside the verdict.
@@ -1426,17 +1426,57 @@ export class AiScanPanel extends HTMLElement {
     // the read MEANS and where it goes. Separated because the first half is about the
     // camera and the second is about the cube, and only the second can capture anything.
     // The paint, while the frame is still in hand. The assembly uses it only where the detector's own
-    // reading has been refused (`paint-groups.ts`), and a detector that supplies no frame — the native
-    // plugin — simply leaves this undefined and the scan behaves exactly as it did before.
+    // reading has been refused (`paint-groups.ts`).
+    //
+    // NATIVE PARITY (D7, `dev-docs/scan-pipeline-audit-2026-09-23.md` §3). `WebDetector` ships its
+    // frame with every tensor; the native plugin never does, because a 3.7 MB copy per tick across
+    // the bridge is exactly what that design avoids — so the Mac, the primary platform, had one
+    // recovery path fewer than the browser. It is asked for HERE and nowhere else: this line runs
+    // only on a read that has settled, which is six times in a scan against sixteen a second, so
+    // the cost is paid only where it buys something. A runtime that offers neither leaves this
+    // undefined and the scan behaves exactly as it did before.
+    //
+    // ONE implementation of what a sticker's paint IS: both paths end in the same `stickerLab`,
+    // over a frame of the same shape, so the two cannot come to disagree about a colour.
+    const frame = output.frame ?? (await this.framePixels(output, epoch));
     const lab =
-      output.frame && fit.face.boxes
-        ? (stickerLab(output.frame, fit.face.boxes, IMG_SIZE) ?? undefined)
+      frame && fit.face.boxes
+        ? (stickerLab(frame, fit.face.boxes, IMG_SIZE) ?? undefined)
         : undefined;
+    // RE-CHECKED AFTER THE AWAIT. Fetching the pixels crosses a bridge, and a stop, a restart or a
+    // switch to painting in that window leaves this read describing a scan that is over — the same
+    // rule every awaiting path here keeps, and the one the 2026-09-21 audit found missing in four
+    // places at once.
+    if (!this.cam.freshFrame(epoch)) return;
     this.fileSettledRead(
       lab ? { ...fit.face, lab } : fit.face,
       agreedCentre,
       this.still.centreReads(),
     );
+  }
+
+  /**
+   * The pixels of the frame a fit was made on, from a detector that did not ship them (D7).
+   *
+   * Null whenever it cannot be had — no `framePixels` on this runtime, no frame identity to ask by,
+   * or a plugin that no longer holds that frame — and null on a failure, loudly on the console but
+   * not into the scan: the paint path is the assembly's LAST resort before refusing, so losing it
+   * costs a recovery that did not exist here at all until today, while letting the error through
+   * would turn a working scan into a failed tick.
+   *
+   * BY ID, never "the latest": the grid was fitted to one particular picture, and pixels from a
+   * later frame would place every sticker box over paint that has since moved.
+   */
+  private async framePixels(output: ModelOutput, epoch: number): Promise<Frame | null> {
+    const detector = this.cam.chosen;
+    if (!detector?.framePixels || output.frameId === undefined) return null;
+    try {
+      const frame = await detector.framePixels(output.frameId);
+      return this.cam.freshFrame(epoch) ? frame : null;
+    } catch (cause) {
+      console.warn('[ai-scan-panel] the frame behind a settled read could not be read', cause);
+      return null;
+    }
   }
 
   /** Record a decision that is not a frame, for the trace. A no-op with the trace off. */

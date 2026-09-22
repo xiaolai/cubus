@@ -12,6 +12,7 @@
 
 import { type CameraDevice, type CameraOptions, facingOf } from '../src/camera.js';
 import type { Detector, ModelOutput } from '../src/detector.js';
+import type { Frame } from '../src/types.js';
 
 /** The sliver of the Tauri API this needs — typed here so the scanner package takes no Tauri dep. */
 export type Invoke = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
@@ -362,6 +363,21 @@ export class NativeDetector implements Detector {
     );
   }
 
+  /**
+   * The RGBA pixels of the frame with `frameId`, or null when the plugin no longer holds it (D7).
+   *
+   * The wire is `[width, height]` as two little-endian int32s, then `width * height * 4` RGBA
+   * bytes — and the 8-byte header alone, both zero, for "that frame is gone", which is an ordinary
+   * answer rather than a failure: a tick lands or the camera closes between the fit and this call.
+   *
+   * Android's plugin API is JSON only, so the bytes arrive base64-encoded there exactly as the
+   * tensor does; Apple hands back an ArrayBuffer and nothing is copied.
+   */
+  async framePixels(frameId: number): Promise<Frame | null> {
+    const reply = await this.invoke(`${P}frame_pixels`, { frameId });
+    return decodeFramePixels(reply);
+  }
+
   async cameras(): Promise<CameraDevice[]> {
     return nativeCameras(await this.invoke(`${P}list_cameras`));
   }
@@ -546,6 +562,52 @@ function base64ToBuffer(b64: string): ArrayBuffer | null {
  * anchors means "no frame yet" → null, which the panel treats as a tick to skip. Exported so a test
  * can pin the wire format without a plugin.
  */
+/**
+ * A `frame_pixels` reply as a `Frame`, or null for "that frame is gone" (D7).
+ *
+ * CHECKED AT THE BRIDGE, like `decodeTensorResponse`: a reply whose header and payload disagree is
+ * the two sides disagreeing about a picture, and read as a frame it would place every sticker box
+ * over the wrong pixels — silently, and only ever on the path taken when a scan is about to be
+ * refused, which is the worst place for a quiet fault.
+ */
+export function decodeFramePixels(input: unknown): Frame | null {
+  let buf: ArrayBuffer | null;
+  if (input instanceof ArrayBuffer) buf = input;
+  else if (typeof input === 'string') buf = base64ToBuffer(input);
+  else if (input !== null && typeof input === 'object' && 'pixels' in input) {
+    const { pixels } = input as { pixels: unknown };
+    if (typeof pixels !== 'string') {
+      throw new Error(`cube-vision: frame_pixels answered with ${typeof pixels} pixels`);
+    }
+    buf = base64ToBuffer(pixels);
+  } else {
+    throw new Error(
+      `cube-vision: frame_pixels answered with ${input === null ? 'null' : `a ${typeof input}`}`,
+    );
+  }
+  if (buf === null || buf.byteLength < 8) return null;
+  const [width, height] = new Int32Array(buf, 0, 2);
+  // Both zero is "that frame is gone". Anything else with a non-positive side is a disagreement.
+  if (width === 0 && height === 0) return null;
+  if (width! <= 0 || height! <= 0) {
+    throw new Error(`cube-vision: frame_pixels reported a ${width}x${height} picture`);
+  }
+  const need = width! * height! * 4;
+  if (!Number.isSafeInteger(need)) {
+    throw new Error(`cube-vision: a ${width}x${height} frame names a length no buffer has`);
+  }
+  if (buf.byteLength !== 8 + need) {
+    throw new Error(
+      `cube-vision: frame_pixels is ${buf.byteLength} bytes, need ${8 + need} for ${width}x${height}`,
+    );
+  }
+  return {
+    data: new Uint8ClampedArray(buf, 8, need),
+    width: width!,
+    height: height!,
+  };
+}
+
 export function decodeTensorResponse(input: ArrayBuffer | string): ModelOutput | null {
   // TWO shapes, because the two native plugin APIs cannot produce the same one. Tauri's Rust
   // commands can return a raw `Response`, so Apple hands back an ArrayBuffer and nothing is

@@ -8,7 +8,7 @@
 // `PluginHandle.kt` indexes `@Command` methods by the exact `method.name` (`indexMethods`,
 // line 156). A Kotlin method named `next_detection` is therefore one nothing can reach: what
 // arrives is `nextDetection`, and the answer is "No command nextDetection found". Until
-// 2026-09-20 six of the seven commands were declared that way; only `probe`, one word, was
+// 2026-09-20 six of the then seven commands were declared that way; only `probe`, one word, was
 // findable (dev-docs/scanner-audit-2026-09-20.md, 1.6). Dormant while `verifiedOnDevice` is
 // false, fatal the day it is flipped — which is why a source-reading test, not a device, holds it.
 //
@@ -86,12 +86,14 @@ test('lowerCamelCase reproduces heck on the shapes a command name can take', () 
   assert.equal(lowerCamelCase('_open__camera_'), 'openCamera');
 });
 
-test('the TypeScript sends the seven commands the plugin is known for, in snake_case', () => {
+test('the TypeScript sends the eight commands the plugin is known for, in snake_case', () => {
   const sent = sentCommands();
   assert.ok(sent.size > 0, 'no plugin command was read off the TypeScript — the read is broken, not the code');
   assert.deepEqual(
     [...sent].sort(),
-    ['close_camera', 'current_camera', 'list_cameras', 'load_model', 'next_detection', 'open_camera', 'probe'],
+    // `frame_pixels` joined on 2026-09-23 (D7): the assembly's paint path needs the frame, and the
+    // native plugins never shipped one, so the Mac had one recovery path fewer than the browser.
+    ['close_camera', 'current_camera', 'frame_pixels', 'list_cameras', 'load_model', 'next_detection', 'open_camera', 'probe'],
     'the set of commands the page sends changed — the Kotlin plugin, the ACL (crates/cube-vision/build.rs) and this list move together',
   );
   for (const name of sent) {

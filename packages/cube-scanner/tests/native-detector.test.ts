@@ -3,6 +3,7 @@ import { fitFromOutput } from '../src/onnx-detect.js';
 import {
   CLOSE_TIMEOUT_MS,
   CUBE_VISION,
+  decodeFramePixels,
   decodeTensorResponse,
   NativeDetector,
   nativeDevice,
@@ -827,5 +828,66 @@ describe('NativeDetector — the bridge is checked and bounded (2026-09-21)', ()
       warned.mockRestore();
       vi.useRealTimers();
     }
+  });
+});
+
+/**
+ * D7 (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3): the assembly's last resort before refusing
+ * a scan is `recolourByPaint`, which asks which stickers carry the same PAINT — and that needs the
+ * frame. `WebDetector` ships its frame with every tensor; the native plugin never has, because a
+ * 3.7 MB copy per tick across the bridge is exactly what that design avoids. So the Mac, the
+ * primary platform, had one recovery path fewer than the browser.
+ *
+ * The plugin now hands the pixels over BY FRAME ID, once per captured side. The wire is
+ * `[width, height]` then the RGBA bytes, and the 8-byte header alone means "that frame is gone".
+ */
+describe('frame_pixels — the pixels behind a settled read (D7)', () => {
+  const framed = (width: number, height: number, fill = 7): ArrayBuffer => {
+    const buf = new ArrayBuffer(8 + width * height * 4);
+    new Int32Array(buf, 0, 2).set([width, height]);
+    new Uint8Array(buf, 8).fill(fill);
+    return buf;
+  };
+
+  it('reads the size and the pixels, from an ArrayBuffer or from base64', () => {
+    const frame = decodeFramePixels(framed(2, 3));
+    expect([frame?.width, frame?.height]).toEqual([2, 3]);
+    expect(frame?.data).toHaveLength(2 * 3 * 4);
+    expect(Array.from(frame!.data.slice(0, 4))).toEqual([7, 7, 7, 7]);
+    // Android's plugin API is JSON only, so the same bytes arrive base64-encoded there.
+    const bytes = new Uint8Array(framed(2, 3));
+    const b64 = btoa(String.fromCharCode(...bytes));
+    const viaJson = decodeFramePixels(b64);
+    expect([viaJson?.width, viaJson?.height]).toEqual([2, 3]);
+    expect(Array.from(viaJson!.data)).toEqual(Array.from(frame!.data));
+  });
+
+  it('reads "that frame is gone" as no pixels, which is an ordinary answer', () => {
+    // A tick lands or the camera closes between the fit and this call. The assembly then behaves
+    // exactly as it did before D7 existed, which is the whole of the degradation.
+    const gone = new ArrayBuffer(8);
+    new Int32Array(gone, 0, 2).set([0, 0]);
+    expect(decodeFramePixels(gone)).toBeNull();
+    expect(decodeFramePixels(new ArrayBuffer(4))).toBeNull();
+  });
+
+  it('refuses a reply whose header and payload disagree', () => {
+    // Read as a frame it would place every sticker box over the wrong pixels — silently, and only
+    // on the path taken when a scan is about to be refused, which is the worst place for it.
+    const short = new ArrayBuffer(8 + 2 * 3 * 4 - 4);
+    new Int32Array(short, 0, 2).set([2, 3]);
+    expect(() => decodeFramePixels(short)).toThrow(/need 32 for 2x3/);
+    const half = new ArrayBuffer(8 + 8);
+    new Int32Array(half, 0, 2).set([2, 0]);
+    expect(() => decodeFramePixels(half)).toThrow(/2x0 picture/);
+    const negative = new ArrayBuffer(8 + 8);
+    new Int32Array(negative, 0, 2).set([-2, 3]);
+    expect(() => decodeFramePixels(negative)).toThrow(/-2x3 picture/);
+  });
+
+  it('refuses a reply that is not a frame at all', () => {
+    expect(() => decodeFramePixels(null)).toThrow(/answered with null/);
+    expect(() => decodeFramePixels(42)).toThrow(/answered with a number/);
+    expect(() => decodeFramePixels({ pixels: 7 })).toThrow(/number pixels/);
   });
 });

@@ -736,6 +736,27 @@ public final class Camera: NSObject {
     /// the observers `init` installs are the ones that answer.
     var sessionForTests: AVCaptureSession { session }
 
+    /// The pixels of the frame with `id`, or nil when the camera no longer holds that frame.
+    ///
+    /// D7 (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3): the assembly's last resort before
+    /// refusing a scan is `recolourByPaint`, which asks which stickers carry the same PAINT — and
+    /// that needs the frame. The browser detector hands its frame over with every tensor; this
+    /// plugin never has, so the Mac, the primary platform, had one recovery path fewer than the
+    /// browser. Asked for ONCE PER CAPTURED SIDE rather than per tick — six times in a scan against
+    /// sixteen a second — so the 3.7 MB a 720p frame costs crosses the bridge only where it buys
+    /// something.
+    ///
+    /// BY ID, and nil for any other frame. The page fitted its grid to a particular picture, and
+    /// pixels from a later one would place every sticker box over paint that has since moved. There
+    /// is no "closest" frame and no fallback to the latest: the honest answer to "I do not have that
+    /// frame" is nothing, and the assembly then behaves exactly as it did before this existed.
+    public func pixels(ofFrame id: Int) -> (bytes: [UInt8], width: Int, height: Int)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let frame, frame.id == id else { return nil }
+        return (frame.bytes, frame.width, frame.height)
+    }
+
     /// What the camera has for this tick — see `LatestFrame`. A recorded fault outranks a frame in
     /// hand, an interrupted or closed camera has nothing, and a frame older than `frameStaleAfter`
     /// is nothing.

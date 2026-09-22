@@ -372,6 +372,52 @@ private func cameraTick() -> CameraTick {
 /// tell that from a stream of new frames — so one physical frame supplied several reads to a gate
 /// that asks for three identical ones, and any accumulation on top would count it several times.
 /// It is the camera's own publish counter, so it repeats exactly when the picture repeats.
+/// The RGBA pixels of the camera frame with `frameId`, for the assembly's paint path (D7,
+/// dev-docs/scan-pipeline-audit-2026-09-23.md §3).
+///
+/// Returns the byte count written, 0 when the camera no longer holds that frame, or a negative
+/// code: -4 when no camera is open, -7 when the caller's buffer is too small for the frame it asked
+/// for. `outSize` takes TWO Int32s — `[width, height]` — zero on every path that is not a frame,
+/// like `cube_vision_next_detection`'s.
+///
+/// SIZED BEFORE IT IS FILLED. A caller that does not know the frame's dimensions passes `cap` 0 and
+/// reads `outSize`, then calls again with a buffer that fits; a caller that does passes the buffer
+/// straight away. Both are one lock, and neither can overrun — the alternative, allocating for a
+/// maximum plausible frame, is a guess about cameras that a 4K webcam breaks quietly.
+///
+/// BY ID, never "the latest". The page fitted its grid to one particular picture, and pixels from a
+/// later frame would place every sticker box over paint that has since moved. See `Camera.pixels`.
+@_cdecl("cube_vision_frame_pixels")
+public func cube_vision_frame_pixels(_ frameId: Int32, _ out: UnsafeMutablePointer<UInt8>, _ cap: Int32,
+                                     _ outSize: UnsafeMutablePointer<Int32>) -> Int32 {
+    return entry { () -> Int32 in
+        outSize[0] = 0
+        outSize[1] = 0
+        guard let cam = state.camera, cam.current != nil else {
+            LastError.record("no camera is open")
+            return -4
+        }
+        guard let frame = cam.pixels(ofFrame: Int(frameId)) else { return 0 }
+        outSize[0] = Int32(frame.width)
+        outSize[1] = Int32(frame.height)
+        let needed = frame.bytes.count
+        guard let count = Int32(exactly: needed) else {
+            LastError.record("cube_vision_frame_pixels: a frame of \(needed) bytes exceeds the ABI")
+            return -7
+        }
+        // A sizing call: the caller wanted the dimensions and has written no buffer to fill.
+        if cap <= 0 { return count }
+        guard cap >= count else {
+            LastError.record("cube_vision_frame_pixels: \(needed) bytes into a buffer of \(cap)")
+            return -7
+        }
+        frame.bytes.withUnsafeBufferPointer { src in
+            out.update(from: src.baseAddress!, count: needed)
+        }
+        return count
+    }
+}
+
 @_cdecl("cube_vision_next_detection")
 public func cube_vision_next_detection(_ out: UnsafeMutablePointer<Float>, _ cap: Int32,
                                        _ outRows: UnsafeMutablePointer<Int32>, _ outAnchors: UnsafeMutablePointer<Int32>,

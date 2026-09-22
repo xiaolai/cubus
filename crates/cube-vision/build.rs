@@ -10,6 +10,7 @@ const COMMANDS: &[&str] = &[
     "open_camera",
     "close_camera",
     "next_detection",
+    "frame_pixels",
     "infer_frame",
 ];
 

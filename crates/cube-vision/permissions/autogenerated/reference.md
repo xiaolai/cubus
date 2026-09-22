@@ -77,6 +77,32 @@ Denies the current_camera command without any pre-configured scope.
 <tr>
 <td>
 
+`cube-vision:allow-frame-pixels`
+
+</td>
+<td>
+
+Enables the frame_pixels command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`cube-vision:deny-frame-pixels`
+
+</td>
+<td>
+
+Denies the frame_pixels command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `cube-vision:allow-infer-frame`
 
 </td>

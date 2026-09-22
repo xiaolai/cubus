@@ -134,6 +134,28 @@ export interface Detector {
    * Optional because the native detector owns no DOM and resolves its own model.
    */
   retarget?(source: DetectorSource): void;
+  /**
+   * The RGBA pixels of the frame with `frameId`, or null when this runtime cannot supply them or no
+   * longer holds that frame.
+   *
+   * D7 (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3). `recolourByPaint` — the last thing the
+   * assembly tries before refusing a scan — asks which stickers carry the same PAINT, and that
+   * needs the frame. `WebDetector` hands its frame over with every tensor (`ModelOutput.frame`);
+   * the native plugin never has, because a 3.7 MB copy per tick across the bridge is exactly what
+   * that design avoids. So the Mac, the primary platform, had one recovery path fewer than the
+   * browser.
+   *
+   * Asked for ONCE PER CAPTURED SIDE rather than per tick — six times in a scan against sixteen a
+   * second — so the cost is paid only where it buys something.
+   *
+   * BY ID, never "the latest". The caller fitted its grid to one particular picture, and pixels
+   * from a later frame would place every sticker box over paint that has since moved. A runtime
+   * that no longer holds it answers null, and the assembly behaves exactly as it did before this
+   * existed.
+   *
+   * Optional: a detector that already ships its frame with the tensor has no use for it.
+   */
+  framePixels?(frameId: number): Promise<Frame | null>;
   /** Release the camera. The model stays loaded; a later `use()` reopens. Safe to call repeatedly. */
   stop(): void;
   /**

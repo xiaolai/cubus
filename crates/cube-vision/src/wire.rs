@@ -196,7 +196,11 @@ mod tests {
                     .unwrap(),
             )
         };
-        assert_eq!([f(0), f(1)], [1.5, -2.0], "the floats follow the longer header");
+        assert_eq!(
+            [f(0), f(1)],
+            [1.5, -2.0],
+            "the floats follow the longer header"
+        );
         assert_eq!(bytes.len(), HEADER_BYTES_FRAME_ID + 2 * 4);
     }
 
@@ -218,7 +222,11 @@ mod tests {
     fn the_idle_answer_cannot_carry_a_frame_id() {
         let e = tensor_bytes(0, 0, 0, [0, 0], Some(5), &[]).unwrap_err();
         assert!(e.contains("no frame to identify"), "{e}");
-        assert_eq!(no_frame().len(), HEADER_BYTES, "the idle answer is version 2");
+        assert_eq!(
+            no_frame().len(),
+            HEADER_BYTES,
+            "the idle answer is version 2"
+        );
     }
 
     /// Every contract violation the audit named is refused with the value in the message, never

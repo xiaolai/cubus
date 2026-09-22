@@ -4239,6 +4239,20 @@ var NativeDetector = class {
       `cube-vision: next_detection answered with ${reply === null ? "null" : `a ${typeof reply}`}, not a tensor`
     );
   }
+  /**
+   * The RGBA pixels of the frame with `frameId`, or null when the plugin no longer holds it (D7).
+   *
+   * The wire is `[width, height]` as two little-endian int32s, then `width * height * 4` RGBA
+   * bytes — and the 8-byte header alone, both zero, for "that frame is gone", which is an ordinary
+   * answer rather than a failure: a tick lands or the camera closes between the fit and this call.
+   *
+   * Android's plugin API is JSON only, so the bytes arrive base64-encoded there exactly as the
+   * tensor does; Apple hands back an ArrayBuffer and nothing is copied.
+   */
+  async framePixels(frameId) {
+    const reply = await this.invoke(`${P}frame_pixels`, { frameId });
+    return decodeFramePixels(reply);
+  }
   async cameras() {
     return nativeCameras(await this.invoke(`${P}list_cameras`));
   }
@@ -4379,6 +4393,42 @@ function base64ToBuffer(b64) {
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out.buffer;
+}
+function decodeFramePixels(input) {
+  let buf;
+  if (input instanceof ArrayBuffer) buf = input;
+  else if (typeof input === "string") buf = base64ToBuffer(input);
+  else if (input !== null && typeof input === "object" && "pixels" in input) {
+    const { pixels } = input;
+    if (typeof pixels !== "string") {
+      throw new Error(`cube-vision: frame_pixels answered with ${typeof pixels} pixels`);
+    }
+    buf = base64ToBuffer(pixels);
+  } else {
+    throw new Error(
+      `cube-vision: frame_pixels answered with ${input === null ? "null" : `a ${typeof input}`}`
+    );
+  }
+  if (buf === null || buf.byteLength < 8) return null;
+  const [width, height] = new Int32Array(buf, 0, 2);
+  if (width === 0 && height === 0) return null;
+  if (width <= 0 || height <= 0) {
+    throw new Error(`cube-vision: frame_pixels reported a ${width}x${height} picture`);
+  }
+  const need = width * height * 4;
+  if (!Number.isSafeInteger(need)) {
+    throw new Error(`cube-vision: a ${width}x${height} frame names a length no buffer has`);
+  }
+  if (buf.byteLength !== 8 + need) {
+    throw new Error(
+      `cube-vision: frame_pixels is ${buf.byteLength} bytes, need ${8 + need} for ${width}x${height}`
+    );
+  }
+  return {
+    data: new Uint8ClampedArray(buf, 8, need),
+    width,
+    height
+  };
 }
 function decodeTensorResponse(input) {
   const buf = typeof input === "string" ? base64ToBuffer(input) : input;
@@ -7413,7 +7463,7 @@ var AiScanPanel = class extends HTMLElement {
         return;
       }
       this.noFrameSince = null;
-      this.readFrame(output);
+      await this.readFrame(output, epoch);
       this.commitTick({});
       this.tickFailingSince = null;
     } catch (err) {
@@ -7454,15 +7504,15 @@ var AiScanPanel = class extends HTMLElement {
     }
   }
   /** A frame arrived: decide whether there is a read worth acting on, and hand it on if so. */
-  readFrame(output) {
+  async readFrame(output, epoch) {
     const began = performance.now();
     const dets = detectionsFromOutput(output);
     let fit;
     if (this.tracing) {
-      const frame = traceFrame(output, {}, dets);
-      fit = frame.fit;
+      const frame2 = traceFrame(output, {}, dets);
+      fit = frame2.fit;
       this.note({
-        ...frameNote(frame),
+        ...frameNote(frame2),
         traceMs: Math.round((performance.now() - began) * 10) / 10
       });
     } else {
@@ -7489,12 +7539,37 @@ var AiScanPanel = class extends HTMLElement {
     }
     this.note({ outcome: "settled", ...this.readNote(fit.face) });
     const agreedCentre = this.still.centre();
-    const lab = output.frame && fit.face.boxes ? stickerLab(output.frame, fit.face.boxes, IMG_SIZE) ?? void 0 : void 0;
+    const frame = output.frame ?? await this.framePixels(output, epoch);
+    const lab = frame && fit.face.boxes ? stickerLab(frame, fit.face.boxes, IMG_SIZE) ?? void 0 : void 0;
+    if (!this.cam.freshFrame(epoch)) return;
     this.fileSettledRead(
       lab ? { ...fit.face, lab } : fit.face,
       agreedCentre,
       this.still.centreReads()
     );
+  }
+  /**
+   * The pixels of the frame a fit was made on, from a detector that did not ship them (D7).
+   *
+   * Null whenever it cannot be had — no `framePixels` on this runtime, no frame identity to ask by,
+   * or a plugin that no longer holds that frame — and null on a failure, loudly on the console but
+   * not into the scan: the paint path is the assembly's LAST resort before refusing, so losing it
+   * costs a recovery that did not exist here at all until today, while letting the error through
+   * would turn a working scan into a failed tick.
+   *
+   * BY ID, never "the latest": the grid was fitted to one particular picture, and pixels from a
+   * later frame would place every sticker box over paint that has since moved.
+   */
+  async framePixels(output, epoch) {
+    const detector = this.cam.chosen;
+    if (!detector?.framePixels || output.frameId === void 0) return null;
+    try {
+      const frame = await detector.framePixels(output.frameId);
+      return this.cam.freshFrame(epoch) ? frame : null;
+    } catch (cause) {
+      console.warn("[ai-scan-panel] the frame behind a settled read could not be read", cause);
+      return null;
+    }
   }
   /** Record a decision that is not a frame, for the trace. A no-op with the trace off. */
   traceEvent(kind, detail) {

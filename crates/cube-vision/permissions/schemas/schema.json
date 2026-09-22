@@ -319,6 +319,18 @@
           "markdownDescription": "Denies the current_camera command without any pre-configured scope."
         },
         {
+          "description": "Enables the frame_pixels command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-frame-pixels",
+          "markdownDescription": "Enables the frame_pixels command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the frame_pixels command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-frame-pixels",
+          "markdownDescription": "Denies the frame_pixels command without any pre-configured scope."
+        },
+        {
           "description": "Enables the infer_frame command without any pre-configured scope.",
           "type": "string",
           "const": "allow-infer-frame",
