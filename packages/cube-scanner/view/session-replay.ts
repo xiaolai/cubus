@@ -77,17 +77,29 @@ export class RecordedDetector implements Detector {
 
   async load(): Promise<void> {}
 
+  /**
+   * How far through the recording the last call got.
+   *
+   * A CURSOR, not a rescan. Time only moves forward across a replay, so the frame in front of the
+   * camera can only be at or after the last one — scanning from the start on every tick makes a
+   * corpus run quadratic in the session's length, and a session is thousands of frames. The cursor
+   * is reset whenever the clock is seen to go BACKWARDS, so a caller that rewinds gets a correct
+   * answer rather than a silently stale one: this class is public, and "only ever called with
+   * increasing time" is an assumption about callers rather than something it can check once.
+   */
+  private cursor = -1;
+
   async next(): Promise<ModelOutput | null> {
     const now = this.now();
     if (this.t0 === null) this.t0 = now;
     const elapsed = now - this.t0;
-    const first = this.session.frames[0]!;
-    let current: RecordedFrame | null = null;
-    for (const f of this.session.frames) {
-      if (f.t - first.t > elapsed) break;
-      current = f;
-    }
-    if (!current) return null;
+    const frames = this.session.frames;
+    const first = frames[0]!;
+    const due = (i: number): boolean => frames[i]!.t - first.t <= elapsed;
+    if (this.cursor >= 0 && !due(this.cursor)) this.cursor = -1;
+    while (this.cursor + 1 < frames.length && due(this.cursor + 1)) this.cursor += 1;
+    if (this.cursor < 0) return null;
+    const current = frames[this.cursor]!;
     this.served.set(current.id, (this.served.get(current.id) ?? 0) + 1);
     return frameTensor(current);
   }

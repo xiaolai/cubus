@@ -216,3 +216,27 @@ describe('the harness drives the real panel', () => {
     expect(scoreSessions([outcome]).blockingMaxMs).toBeNull();
   });
 });
+
+describe('the detector reads a long session without rescanning it', () => {
+  it('answers correctly when the clock rewinds, not just when it advances', async () => {
+    // The cursor is an optimisation — time only moves forward across a replay, so scanning from the
+    // start on every tick makes a corpus run quadratic in the session's length. This class is
+    // public, so "only ever called with increasing time" is an assumption about callers rather than
+    // something it can check once: a clock that goes backwards must get the right frame, not a
+    // stale one the cursor happened to be parked on.
+    let now = 0;
+    const session = recordedScan(DEEP, 3, 100);
+    const detector = new RecordedDetector(session, () => now);
+    now = 0;
+    await detector.next(); // frame 0
+    now = 250;
+    await detector.next(); // frame 2
+    now = 100; // …and back
+    await detector.next();
+    expect([...detector.served.entries()].sort((a, b) => a[0] - b[0])).toEqual([
+      [0, 1],
+      [1, 1],
+      [2, 1],
+    ]);
+  });
+});
