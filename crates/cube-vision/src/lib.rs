@@ -93,8 +93,10 @@ pub fn init<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
 pub use windows::init;
 
 /// The plugin on the remaining targets: present, named, and empty. The webview probes for a command
-/// and, finding none, falls back to `WebDetector` — the same fallback Windows and Linux use by
-/// design, and since 2026-09-02 that fallback is WebGPU where the WebView has one.
+/// and, finding none, falls back to `WebDetector` — by design on Linux, the one shipped desktop in
+/// this row, and the same fallback the other three reach when their `probe` answers false (Android
+/// does today: `verifiedOnDevice` is false). Since 2026-09-02 that fallback is WebGPU where the
+/// WebView has one.
 #[cfg(not(any(
     target_os = "macos",
     target_os = "ios",

@@ -195,10 +195,13 @@ export async function pickDetector(opts: DetectorSource): Promise<DetectorChoice
       // itself to wasm has to be findable without a debugger. The user sees nothing either way —
       // the scan still works, just slower.
       //
-      // The two get different volumes, because they are different facts. The Windows and Linux
-      // desktop shells deliberately ship WITHOUT this plugin, so an unknown-command rejection
-      // there is the design working, and warning about it on every launch would teach whoever
-      // reads that console to skip the line that matters. Anything else — a registered plugin
+      // The two get different volumes, because they are different facts. The Linux desktop shell
+      // deliberately registers this plugin with NO commands (crates/cube-vision/src/lib.rs), so an
+      // unknown-command rejection there is the design working, and warning about it on every
+      // launch would teach whoever reads that console to skip the line that matters. (Windows and
+      // Android register `probe` and answer it; a false answer falls through above without a
+      // rejection, which is how Android, whose native path is not yet verified on a device, arrives
+      // on the browser runtime today.) Anything else — a registered plugin
       // that threw, a permission the capability file was supposed to grant — is the case worth
       // shouting about, so it stays a warning. See `absentCommand` for where the line is.
       (absentCommand(err) ? console.info : console.warn)(

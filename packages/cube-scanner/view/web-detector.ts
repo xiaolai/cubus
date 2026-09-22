@@ -2,8 +2,10 @@
 //
 // This is today's scan path, unchanged in behaviour, composed behind the seam: it owns the
 // `FrameSource` the camera hands back and the `RunModel` the runtime hands back, and nothing else.
-// It is the implementation every build has — the Tauri shells on Windows and Linux run it too, and
-// the browser build is the dev and test surface for everything downstream of `next()`.
+// It is the implementation every build has — the Tauri shell on Linux runs it by design, Android's
+// runs it until its native path is verified on a device (`verifiedOnDevice` in VisionPlugin.kt),
+// any native shell whose `probe` answers false falls back to it, and the browser build is the dev
+// and test surface for everything downstream of `next()`.
 
 import {
   type CameraOptions,
