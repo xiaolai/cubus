@@ -167,11 +167,34 @@ export function wrongCubeRateBound(wrong: number, sessions: number, alpha = 0.05
   return (lo + hi) / 2;
 }
 
-/** The plain quantile of a complete sample — no censoring involved. Used for blocking spans. */
+/**
+ * The plain quantile of a complete sample — no censoring involved. Used for blocking spans.
+ *
+ * NEAREST-RANK, `ceil(q·n) - 1`, and deliberately not the `floor(q·n)` the scan trace uses: at
+ * q = 0.99 over exactly 100 samples, floor lands on index 99 and reports the MAXIMUM as the p99,
+ * which is the one value a p99 exists to exclude. The trace's copy is diagnostics a person reads;
+ * this one is a number a gate is written on, so it is worth the divergence.
+ */
 function quantile(values: readonly number[], q: number): number | null {
   if (values.length === 0) return null;
   const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))]!;
+  const rank = Math.ceil(q * sorted.length) - 1;
+  return sorted[Math.min(sorted.length - 1, Math.max(0, rank))]!;
+}
+
+/**
+ * The largest of `values`, or null when there are none.
+ *
+ * A fold rather than `Math.max(...values)`: the spread passes every element as an ARGUMENT, and a
+ * corpus run collects one blocking span per tick per session — tens of thousands — which is past
+ * the engine's argument limit and throws a `RangeError`. A measurement that dies on a big corpus
+ * is a measurement that works only where it is not needed.
+ */
+function largest(values: readonly number[]): number | null {
+  if (values.length === 0) return null;
+  let most = Number.NEGATIVE_INFINITY;
+  for (const v of values) if (v > most) most = v;
+  return most;
 }
 
 /** What a corpus run reports. Every field is a number a gate in §4 is written on. */
@@ -229,10 +252,19 @@ export function scoreSessions(outcomes: readonly SessionOutcome[]): CorpusMetric
       censored += 1;
     }
     looks += o.looksAsked;
-    blocking.push(...o.blockingMs);
+    // A loop, not `push(...spans)`, for `largest`'s reason and found the same way: the spread is an
+    // argument list, and one session of a long corpus run already carries more spans than an
+    // engine will accept. The test that pinned `largest` failed HERE first.
+    for (const span of o.blockingMs) blocking.push(span);
   }
   const cubes = new Set(outcomes.map((o) => o.cube)).size;
   const wrong = outcomes.filter(isWrongCube).length;
+  // THE BOUND'S NUMERATOR AND DENOMINATOR MUST COUNT THE SAME THING. The bound is taken over
+  // independent CUBES — sittings of one cube are not independent — so a cube that failed twice is
+  // one failing cube, not two. Counting wrong SESSIONS against distinct cubes can make the
+  // numerator exceed the denominator, which collapses the bound to 1 and reports "we can say
+  // nothing" about a corpus that says plenty.
+  const wrongCubes = new Set(outcomes.filter(isWrongCube).map((o) => o.cube)).size;
   const completed = outcomes.filter((o) => o.completed).length;
   return {
     sessions: outcomes.length,
@@ -240,13 +272,13 @@ export function scoreSessions(outcomes: readonly SessionOutcome[]): CorpusMetric
     completed,
     completionRate: outcomes.length === 0 ? 0 : completed / outcomes.length,
     wrongCubes: wrong,
-    wrongCubeRateUpperBound: wrongCubeRateBound(wrong, cubes),
+    wrongCubeRateUpperBound: wrongCubeRateBound(wrongCubes, cubes),
     timeToSideMedianMs: censoredQuantile(observations, 0.5),
     timeToSideP90Ms: censoredQuantile(observations, 0.9),
     sidesCaptured: captured,
     sidesCensored: censored,
     looksAsked: looks,
-    blockingMaxMs: blocking.length === 0 ? null : Math.max(...blocking),
+    blockingMaxMs: largest(blocking),
     blockingP99Ms: quantile(blocking, 0.99),
   };
 }

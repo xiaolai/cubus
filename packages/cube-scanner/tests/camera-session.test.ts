@@ -2,7 +2,12 @@
 // race, which is exactly the part the panel's DOM tests cannot reach: from outside, an inference
 // that lands one microtask too late and one that lands on time look identical.
 import { afterEach, describe, expect, it } from 'vitest';
-import type { CameraDevice, CameraOptions } from '../src/camera.js';
+import {
+  type CameraDevice,
+  type CameraOptions,
+  type FrameCountable,
+  videoFrameId,
+} from '../src/camera.js';
 import type { Detector, ModelOutput } from '../src/detector.js';
 import { CameraSession } from '../view/camera-session.js';
 
@@ -420,5 +425,51 @@ describe('CameraSession.open', () => {
     await opening.catch(() => {});
     expect(det.device).toBeNull();
     expect(s.device).toBeNull();
+  });
+});
+
+/**
+ * D2's browser half (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3): which frame the element is
+ * showing, so one physical frame cannot supply several reads to the stillness gate.
+ *
+ * Extracted from the frame source so the rule can be tested at all — `camera.ts` needs a real
+ * webcam and is excluded from the coverage gate. What a browser reports for a `MediaStream`-backed
+ * video is still a claim only a device can make; what is held here is the rule.
+ */
+describe('videoFrameId', () => {
+  const video = (over: Partial<FrameCountable> = {}): FrameCountable => ({
+    videoWidth: 1280,
+    videoHeight: 720,
+    getVideoPlaybackQuality: () => ({ totalVideoFrames: 42 }),
+    ...over,
+  });
+
+  it('is the count of frames the element has produced', () => {
+    expect(videoFrameId(video())).toBe(42);
+  });
+
+  it('repeats between paints — the fact the whole of D2 rests on', () => {
+    // A counter, not a clock. Two ticks between two paints must read the SAME value, or the id
+    // says "a new frame" on every tick, which is the belief D2 exists to correct.
+    let produced = 7;
+    const el = video({ getVideoPlaybackQuality: () => ({ totalVideoFrames: produced }) });
+    expect(videoFrameId(el)).toBe(7);
+    expect(videoFrameId(el)).toBe(7);
+    produced = 8;
+    expect(videoFrameId(el)).toBe(8);
+  });
+
+  it('answers null rather than inventing a count it does not have', () => {
+    // A source that cannot identify its frames must SAY so: `Stillness` then counts every tick,
+    // exactly as it did before any of this existed. A fabricated id would read as "always a new
+    // frame" — the belief being corrected, restated as its fix.
+    expect(videoFrameId(video({ getVideoPlaybackQuality: undefined }))).toBeNull();
+    expect(
+      videoFrameId(video({ getVideoPlaybackQuality: () => ({ totalVideoFrames: Number.NaN }) })),
+    ).toBeNull();
+    // No dimensions is no frame, and so no frame to identify. Zero would make "before any frame"
+    // look like a real frame the scan could count.
+    expect(videoFrameId(video({ videoWidth: 0 }))).toBeNull();
+    expect(videoFrameId(video({ videoHeight: 0 }))).toBeNull();
   });
 });

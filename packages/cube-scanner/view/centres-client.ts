@@ -114,7 +114,16 @@ export class CentreResolver {
     const next = this.queued;
     this.queued = null;
     this.running = next;
-    this.worker.postMessage(next.request);
+    try {
+      this.worker.postMessage(next.request);
+    } catch (cause) {
+      // A POST THAT THROWS IS A WORKER THAT CANNOT BE USED, not a request to forget. `postMessage`
+      // raises on a payload the structured clone algorithm will not carry; left here, `running`
+      // would stay occupied for ever and every later resolution would queue behind a question
+      // nobody is holding — a scan stuck at six sides with nothing said. `failed` gives the worker
+      // back and answers the stranded request on this thread, which is what it exists for.
+      this.failed(cause);
+    }
   }
 
   private spawn(): Worker | null {
@@ -139,6 +148,15 @@ export class CentreResolver {
         if (this.worker !== spawned) return;
         this.failed(ev);
       });
+      // A REPLY THAT CANNOT BE READ IS A FAILURE, NOT A SILENCE. `messageerror` fires when the
+      // structured clone of an incoming message cannot be deserialised; without this listener the
+      // resolver would sit on a request whose answer can never arrive, and the scan would stand at
+      // six sides for ever. Routed to the same handler as `error`, so the stranded request is
+      // answered on this thread exactly as it is for a worker that died.
+      spawned.addEventListener('messageerror', (ev: Event) => {
+        if (this.worker !== spawned) return;
+        this.failed(ev);
+      });
       this.worker = spawned;
       return spawned;
     } catch (cause) {
@@ -153,7 +171,11 @@ export class CentreResolver {
 
   private deliver(reply: CentresReply): void {
     const waiting = this.running;
-    // An epoch nothing is waiting for is dropped here rather than guessed at.
+    // An epoch nothing is waiting for is dropped here rather than guessed at — and `running` is
+    // deliberately LEFT standing. The worker echoes the epoch it was posted, so a mismatch is an
+    // unsolicited message and the real answer is still coming; clearing the slot here would make
+    // the resolver drop that answer when it arrives, turning a stray message into the stall this
+    // guard is supposed to prevent.
     if (!waiting || waiting.request.epoch !== reply.epoch) return;
     this.running = null;
     try {
@@ -163,7 +185,7 @@ export class CentreResolver {
     }
   }
 
-  private failed(cause: Event): void {
+  private failed(cause: unknown): void {
     // A worker that never spoke cannot load at all: writing it off is what stops every later
     // resolution building another thread exactly as doomed. One that HAD answered may simply have
     // died, and a session should not lose the thread over it.

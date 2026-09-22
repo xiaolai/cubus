@@ -44,11 +44,15 @@ export const RECORD_KEY = 'cubusScanRecord';
 export const RECORD_CAPACITY = 4000;
 
 /** Whether the switch is on. A storage that throws (a locked-down page) is simply "off". */
-export function recordEnabled(
-  store: Pick<Storage, 'getItem'> | undefined = globalThis.localStorage,
-): boolean {
+export function recordEnabled(store?: Pick<Storage, 'getItem'>): boolean {
   try {
-    return store?.getItem(RECORD_KEY) === '1';
+    // READ INSIDE THE TRY, not as a default argument. A default is evaluated at the call, BEFORE
+    // the body runs, and `globalThis.localStorage` is a getter that THROWS on a page where storage
+    // is denied — a sandboxed iframe, a browser set to block it. So the documented "a storage that
+    // throws is simply off" was not true of the commonest way for one to throw: the exception
+    // escaped this function entirely and took the scan loop with it.
+    const storage = store ?? globalThis.localStorage;
+    return storage?.getItem(RECORD_KEY) === '1';
   } catch {
     return false;
   }
@@ -174,7 +178,12 @@ export class SessionRecorder {
     const supplied = frameId !== undefined && (!last || frameId > last.id);
     if (frameId !== undefined && !supplied) this.renumbered += 1;
     const id = supplied ? (frameId as number) : next;
-    this.lastId = supplied ? (frameId as number) : null;
+    // THE SOURCE'S id IS REMEMBERED EVEN WHEN IT WAS NOT USED. `lastId` answers "is this the frame
+    // I recorded last?", which is a question about the SOURCE's numbering, not about the id this
+    // recorder assigned. Forgetting it on a renumber meant a re-served frame straight after one —
+    // the ordinary case on the native path, sixteen ticks a second — was recorded as a new frame
+    // every time, and `served` never counted past one for the rest of the recording.
+    this.lastId = frameId ?? null;
     this.frames.push({
       id,
       t: Math.round(this.clock() - this.t0),

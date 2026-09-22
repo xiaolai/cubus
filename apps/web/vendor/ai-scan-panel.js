@@ -3388,6 +3388,11 @@ function frameLiveness(stream, track) {
   if (!track || track.readyState === "ended" || stream?.active === false) return "ended";
   return track.muted === true ? "muted" : "live";
 }
+function videoFrameId(video) {
+  if (video.videoWidth === 0 || video.videoHeight === 0) return null;
+  const frames = video.getVideoPlaybackQuality?.().totalVideoFrames;
+  return typeof frames === "number" && Number.isFinite(frames) ? frames : null;
+}
 var IDEAL_WIDTH = 1280;
 var IDEAL_HEIGHT = 720;
 function facingOf(value) {
@@ -3467,27 +3472,32 @@ function frameSourceOf(video, stream, ctx, canvas, release) {
     device,
     ready,
     /**
-     * The video's own presentation time, in whole milliseconds, as this frame's identity.
+     * Which frame the element is showing, as a COUNT of frames it has produced (D2).
      *
-     * `currentTime` advances only when the element PAINTS a new frame, so two ticks between paints
-     * read the same number — which is the fact D2 needs reported. Rounded to a millisecond because
-     * it is a double whose low bits differ between reads of the same painted frame on some engines,
-     * and a "new frame" every tick is the very illusion this replaces.
+     * `getVideoPlaybackQuality().totalVideoFrames` is exactly that: the number of frames created
+     * for this element, dropped ones included. It repeats between paints, which is the fact D2
+     * needs reported, and it is a counter rather than a clock — so a tick between two paints reads
+     * the same value by construction rather than by rounding.
      *
-     * NOT `requestVideoFrameCallback`'s `presentedFrames`, though it is the exact counter this
-     * wants: it does not exist on every engine this ships to (standard WebKitGTK and Android's
-     * WebView), so it would answer on some platforms and not others — and a source that silently
-     * stops answering is how the frozen-camera defect of 2026-09-20 was invisible. One mechanism
-     * that works everywhere beats a better one that works somewhere.
+     * NOT `currentTime`, which was the first attempt and is the wrong instrument: for a
+     * `MediaStream` the element's position advances with the stream in real time, so reading it
+     * per tick would answer "a new frame" on every tick — precisely the false belief D2 exists to
+     * correct, restated as its fix. NOT `requestVideoFrameCallback`'s `presentedFrames` either:
+     * exact, but absent on standard WebKitGTK and Android's WebView, and it needs a registered
+     * callback to read at all.
      *
-     * Null for a video with no dimensions: there is no frame, so there is no frame to identify,
-     * and returning 0 would make "before any frame" look like a real frame the scan could count.
+     * NULL is a first-class answer, and it is the honest one wherever the count cannot be had: an
+     * engine without `getVideoPlaybackQuality`, a video with no dimensions, a non-finite count. A
+     * source that cannot identify its frames must say so — `Stillness` then counts every tick,
+     * exactly as it did before any of this existed — because a fabricated id reads as "always a
+     * new frame", which is the belief being corrected.
+     *
+     * NOT YET VERIFIED ON A REAL CAMERA. The native half of D2 is measured end to end
+     * (`NextDetectionTests`, mutation-checked); this half is reasoned from the specification and
+     * held by unit tests over a stand-in element. What a browser actually reports for a
+     * `MediaStream`-backed video is a claim only a device can make.
      */
-    frameId() {
-      if (video.videoWidth === 0 || video.videoHeight === 0) return null;
-      const t = video.currentTime;
-      return Number.isFinite(t) ? Math.round(t * 1e3) : null;
-    },
+    frameId: () => videoFrameId(video),
     grab() {
       ready();
       const w = video.videoWidth;
@@ -6052,7 +6062,11 @@ var CentreResolver = class {
     const next = this.queued;
     this.queued = null;
     this.running = next;
-    this.worker.postMessage(next.request);
+    try {
+      this.worker.postMessage(next.request);
+    } catch (cause) {
+      this.failed(cause);
+    }
   }
   spawn() {
     if (this.worker) return this.worker;
@@ -6067,6 +6081,10 @@ var CentreResolver = class {
         this.deliver(ev.data);
       });
       spawned.addEventListener("error", (ev) => {
+        if (this.worker !== spawned) return;
+        this.failed(ev);
+      });
+      spawned.addEventListener("messageerror", (ev) => {
         if (this.worker !== spawned) return;
         this.failed(ev);
       });
@@ -6234,9 +6252,10 @@ var MisreadDecoder = class {
 // view/scan-trace.ts
 var TRACE_KEY = "cubusScanTrace";
 var TRACE_CAPACITY = 4e3;
-function traceEnabled(store = globalThis.localStorage) {
+function traceEnabled(store) {
   try {
-    return store?.getItem(TRACE_KEY) === "1";
+    const storage = store ?? globalThis.localStorage;
+    return storage?.getItem(TRACE_KEY) === "1";
   } catch {
     return false;
   }
@@ -6482,9 +6501,10 @@ var NEAR_FLOOR_RECORD = 0.05;
 // view/session-recorder.ts
 var RECORD_KEY = "cubusScanRecord";
 var RECORD_CAPACITY = 4e3;
-function recordEnabled(store = globalThis.localStorage) {
+function recordEnabled(store) {
   try {
-    return store?.getItem(RECORD_KEY) === "1";
+    const storage = store ?? globalThis.localStorage;
+    return storage?.getItem(RECORD_KEY) === "1";
   } catch {
     return false;
   }
@@ -6509,6 +6529,8 @@ var SessionRecorder = class {
   dropped = 0;
   /** The id of the last frame recorded, so a re-served one is counted rather than duplicated. */
   lastId = null;
+  /** Frames whose source id could not be used because it did not increase — see `frame`. */
+  renumbered = 0;
   /** A scan loop started: every frame until the next `begin` belongs to it. */
   begin(start) {
     this.start = start;
@@ -6518,10 +6540,23 @@ var SessionRecorder = class {
     this.decisions.length = 0;
     this.dropped = 0;
     this.lastId = null;
+    this.renumbered = 0;
   }
-  /** How many frames this recording holds, and how many the capacity dropped. */
+  /**
+   * How many frames this recording holds, how many the capacity dropped, and how many carry the
+   * recorder's own ordinal because the source's id did not increase (see `frame`).
+   *
+   * `renumbered` above zero means the recording's ids are not the camera's, so questions about
+   * frame identity — how many DISTINCT frames a decision rested on — are answered about the
+   * recorder's numbering rather than the camera's. Reported rather than hidden, because a silent
+   * substitution here would look exactly like a clean recording.
+   */
   get size() {
-    return { frames: this.frames.length, framesDropped: this.dropped };
+    return {
+      frames: this.frames.length,
+      framesDropped: this.dropped,
+      renumbered: this.renumbered
+    };
   }
   /**
    * Record one tick's detections.
@@ -6540,7 +6575,10 @@ var SessionRecorder = class {
       last.served += 1;
       return;
     }
-    const id = frameId ?? (last ? last.id + 1 : 0);
+    const next = last ? last.id + 1 : 0;
+    const supplied = frameId !== void 0 && (!last || frameId > last.id);
+    if (frameId !== void 0 && !supplied) this.renumbered += 1;
+    const id = supplied ? frameId : next;
     this.lastId = frameId ?? null;
     this.frames.push({
       id,
@@ -6594,7 +6632,12 @@ var SessionRecorder = class {
       conditions: { ...end.conditions },
       model: { ...this.start.model },
       truth: { ...end.truth },
-      frames: this.frames.map((f) => ({ ...f, detections: f.detections.map((d) => ({ ...d })) })),
+      // A DEEP copy, scores included: the session handed out must not alias the recorder's, or a
+      // caller that normalises the scores it was given changes what a later `finish()` reports.
+      frames: this.frames.map((f) => ({
+        ...f,
+        detections: f.detections.map((d) => ({ ...d, scores: [...d.scores ?? []] }))
+      })),
       decisions: this.decisions.filter((d) => ids.has(d.frame)).map((d) => ({ ...d, detail: { ...d.detail } }))
     };
   }
@@ -8687,11 +8730,15 @@ var AiScanPanel = class extends HTMLElement {
         centreConfidence: median2(this.centreSeen.get(capture) ?? [capture.confidence[4] ?? 0])
       }));
       const epoch = this.diagnosisEpoch;
-      const now = this.centres.request({ epoch, named: this.faces, unnamed }, (reply) => {
-        if (reply.epoch !== this.diagnosisEpoch) return;
-        this.applyResolution(reply.resolution, unnamed);
-      });
-      if (now) this.applyResolution(now.resolution, unnamed);
+      try {
+        const now = this.centres.request({ epoch, named: this.faces, unnamed }, (reply) => {
+          if (reply.epoch !== this.diagnosisEpoch) return;
+          this.failableResolution(reply.resolution, unnamed);
+        });
+        if (now) this.failableResolution(now.resolution, unnamed);
+      } catch (err) {
+        this.resolutionFailed(err, unnamed);
+      }
       return;
     }
     this.assembleNamed();
@@ -8703,6 +8750,26 @@ var AiScanPanel = class extends HTMLElement {
    * below are unchanged, and the only new thing is that they can now run a beat later, against a
    * scan the epoch has already agreed is still the current one.
    */
+  /** `applyResolution`, with a throw reported as the scan's failure rather than escaping a timer. */
+  failableResolution(resolution, unnamed) {
+    try {
+      this.applyResolution(resolution, unnamed);
+    } catch (err) {
+      this.resolutionFailed(err, unnamed);
+    }
+  }
+  /**
+   * A centre resolution could not be made, or could not be acted on: let the sides go, record why,
+   * and report it. The `catch` that sat around `resolveCentres` before it moved off this thread.
+   */
+  resolutionFailed(err, unnamed) {
+    for (const side of [...this.unnamed]) this.forgetCapture(side);
+    this.traceEvent("contest-resolved", {
+      sides: unnamed.map((u) => [...u.capture.colors]),
+      error: err instanceof Error ? err.message : String(err)
+    });
+    this.checkFailed(err);
+  }
   applyResolution(resolution, unnamed) {
     {
       const { result: verdict } = resolution;

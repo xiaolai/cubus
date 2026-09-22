@@ -33,7 +33,8 @@ import {
   sessionFps,
   sessionTicks,
 } from '../src/session-record.js';
-import { SessionRecorder, worthRecording } from '../view/session-recorder.js';
+import { traceEnabled } from '../view/scan-trace.js';
+import { recordEnabled, SessionRecorder, worthRecording } from '../view/session-recorder.js';
 
 const SOLVED = new Cube().asString();
 const DEEP = new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString();
@@ -446,5 +447,137 @@ describe('a handed-out session does not alias the recorder', () => {
     first.frames[0]!.detections[0]!.scores![0] = 0.123;
     const second = rec.finish(end)!;
     expect(second.frames[0]!.detections[0]!.scores![0]).toBe(0.9);
+  });
+});
+
+/**
+ * What an independent audit found in this module on 2026-09-23 (Codex, read-only), each pinned so
+ * it cannot come back quietly.
+ */
+describe('the measurements answer correctly at their edges', () => {
+  it('takes a quantile by nearest rank, so a p99 is not the maximum', () => {
+    // `floor(q*n)` lands on index 99 of 100 — the largest value, which is the one thing a p99
+    // exists to exclude. This is a number a gate is written on.
+    const outcome = (blockingMs: number[]): SessionOutcome => ({
+      sessionId: 's',
+      cube: 'worn',
+      deadlineMs: 1000,
+      completed: true,
+      reported: DEEP,
+      truth: DEEP,
+      sides: [],
+      looksAsked: 0,
+      blockingMs,
+    });
+    const spans = Array.from({ length: 100 }, (_, i) => i + 1); // 1…100
+    const m = scoreSessions([outcome(spans)]);
+    expect(m.blockingMaxMs).toBe(100);
+    expect(m.blockingP99Ms).toBe(99);
+  });
+
+  it('takes the largest span without spreading it into an argument list', () => {
+    // A corpus run collects one span per tick per session; spreading tens of thousands of them
+    // into `Math.max(...)` throws a RangeError, so the measurement would die exactly where it is
+    // needed. Driven at a size past the limit rather than argued about.
+    const many = Array.from({ length: 200_000 }, (_, i) => i % 977);
+    const m = scoreSessions([
+      {
+        sessionId: 's',
+        cube: 'worn',
+        deadlineMs: 1000,
+        completed: true,
+        reported: DEEP,
+        truth: DEEP,
+        sides: [],
+        looksAsked: 0,
+        blockingMs: many,
+      },
+    ]);
+    expect(m.blockingMaxMs).toBe(976);
+  });
+
+  it('bounds the wrong-cube rate over CUBES that were wrong, not sessions', () => {
+    // The bound is taken over independent cubes, so a cube that failed twice is one failing cube.
+    // Counting wrong SESSIONS against distinct cubes can make the numerator exceed the
+    // denominator, which collapses the bound to 1 — "we can say nothing" about a corpus that says
+    // plenty.
+    const wrongTwice = (id: string): SessionOutcome => ({
+      sessionId: id,
+      cube: 'logo-white-centre',
+      deadlineMs: 1000,
+      completed: true,
+      reported: SOLVED,
+      truth: DEEP,
+      sides: [],
+      looksAsked: 0,
+      blockingMs: [],
+    });
+    const right = (id: string, cube: string): SessionOutcome => ({
+      ...wrongTwice(id),
+      cube,
+      reported: DEEP,
+    });
+    const m = scoreSessions([
+      wrongTwice('a'),
+      wrongTwice('b'),
+      right('c', 'worn'),
+      right('d', 'stickerless'),
+    ]);
+    expect(m.cubes).toBe(3);
+    expect(m.wrongCubes).toBe(2); // two wrong SESSIONS, reported as such
+    // …but one wrong CUBE of three, so the bound is a real bound rather than the useless 1.
+    expect(m.wrongCubeRateUpperBound).toBeLessThan(1);
+    expect(m.wrongCubeRateUpperBound).toBeCloseTo(wrongCubeRateBound(1, 3), 10);
+  });
+});
+
+describe('the recorder switch and its frame identity at their edges', () => {
+  it('is off, not fatal, on a page where reading storage throws', () => {
+    // The read used to sit in a DEFAULT ARGUMENT, evaluated before the body — so the documented
+    // "a storage that throws is simply off" was untrue of the commonest way for one to throw, and
+    // the exception escaped and took the scan loop with it.
+    const throwing = {
+      getItem() {
+        throw new Error('storage is denied on this page');
+      },
+    };
+    expect(recordEnabled(throwing)).toBe(false);
+    expect(traceEnabled(throwing)).toBe(false);
+  });
+
+  it('still counts a re-served frame after one had to be renumbered', () => {
+    // `lastId` answers "is this the frame I recorded last?", which is a question about the SOURCE's
+    // numbering. Forgetting it on a renumber meant every later re-serve was recorded as a new
+    // frame — the ordinary case on the native path, sixteen ticks a second.
+    let now = 0;
+    const rec = new SessionRecorder(
+      100,
+      () => now,
+      () => '2026-09-23T10:00:00Z',
+    );
+    rec.begin({ id: 's6', model: { hash: 'abc', name: 'cubedet', runtime: 'apple' } });
+    rec.frame([det()], { frameId: 900 });
+    now = 60;
+    rec.frame([det()], { frameId: 5 }); // the source restarted: renumbered to 901
+    now = 120;
+    rec.frame([det()], { frameId: 5 }); // …and the SAME frame served again
+    now = 180;
+    rec.frame([det()], { frameId: 5 });
+    expect(rec.size.frames).toBe(2);
+    expect(rec.size.renumbered).toBe(1);
+    const session = rec.finish({
+      cube: 'worn',
+      conditions: {
+        camera: 'built-in',
+        lighting: 'daylight',
+        handling: 'careful',
+        state: 'scrambled',
+      },
+      truth: { facelets: DEEP, source: 'manual-verified' },
+    })!;
+    expect(session.frames.map((f) => [f.id, f.served])).toEqual([
+      [900, 1],
+      [901, 3],
+    ]);
   });
 });

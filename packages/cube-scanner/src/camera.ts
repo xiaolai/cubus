@@ -112,6 +112,48 @@ export function frameLiveness(
 }
 
 /**
+ * The minimum of a `<video>` this module needs to identify the frame it is showing — so the rule
+ * can be tested without a camera, which this file otherwise cannot be (see the header).
+ */
+export interface FrameCountable {
+  videoWidth: number;
+  videoHeight: number;
+  getVideoPlaybackQuality?: () => { totalVideoFrames: number };
+}
+
+/**
+ * Which frame `video` is showing, as a COUNT of the frames it has produced (D2,
+ * `dev-docs/scan-pipeline-audit-2026-09-23.md` §3).
+ *
+ * `getVideoPlaybackQuality().totalVideoFrames` is exactly that: the number of frames created for
+ * this element, dropped ones included. It repeats between paints, which is the fact D2 needs
+ * reported, and it is a counter rather than a clock — so a tick between two paints reads the same
+ * value by construction rather than by rounding.
+ *
+ * NOT `currentTime`, which was the first attempt and is the wrong instrument: for a `MediaStream`
+ * the element's position advances with the stream in real time, so reading it per tick would answer
+ * "a new frame" on every tick — precisely the false belief D2 exists to correct, restated as its
+ * fix. NOT `requestVideoFrameCallback`'s `presentedFrames` either: exact, but absent on standard
+ * WebKitGTK and Android's WebView, and it needs a registered callback to read at all.
+ *
+ * NULL is a first-class answer, and the honest one wherever the count cannot be had: an engine
+ * without `getVideoPlaybackQuality`, a video with no dimensions, a non-finite count. A source that
+ * cannot identify its frames must say so — `Stillness` then counts every tick, exactly as it did
+ * before any of this existed — because a fabricated id reads as "always a new frame", which is the
+ * belief being corrected.
+ *
+ * NOT YET VERIFIED ON A REAL CAMERA. The native half of D2 is measured end to end
+ * (`NextDetectionTests`, mutation-checked); this half is reasoned from the specification and held
+ * by unit tests over a stand-in element. What a browser actually reports for a `MediaStream`-backed
+ * video is a claim only a device can make.
+ */
+export function videoFrameId(video: FrameCountable): number | null {
+  if (video.videoWidth === 0 || video.videoHeight === 0) return null;
+  const frames = video.getVideoPlaybackQuality?.().totalVideoFrames;
+  return typeof frames === 'number' && Number.isFinite(frames) ? frames : null;
+}
+
+/**
  * The frame size asked for when a caller expresses no preference.
  *
  * `ideal`, not `exact`: a camera that cannot do 720p gives what it has rather than failing. The
@@ -309,27 +351,32 @@ function frameSourceOf(
     device,
     ready,
     /**
-     * The video's own presentation time, in whole milliseconds, as this frame's identity.
+     * Which frame the element is showing, as a COUNT of frames it has produced (D2).
      *
-     * `currentTime` advances only when the element PAINTS a new frame, so two ticks between paints
-     * read the same number — which is the fact D2 needs reported. Rounded to a millisecond because
-     * it is a double whose low bits differ between reads of the same painted frame on some engines,
-     * and a "new frame" every tick is the very illusion this replaces.
+     * `getVideoPlaybackQuality().totalVideoFrames` is exactly that: the number of frames created
+     * for this element, dropped ones included. It repeats between paints, which is the fact D2
+     * needs reported, and it is a counter rather than a clock — so a tick between two paints reads
+     * the same value by construction rather than by rounding.
      *
-     * NOT `requestVideoFrameCallback`'s `presentedFrames`, though it is the exact counter this
-     * wants: it does not exist on every engine this ships to (standard WebKitGTK and Android's
-     * WebView), so it would answer on some platforms and not others — and a source that silently
-     * stops answering is how the frozen-camera defect of 2026-09-20 was invisible. One mechanism
-     * that works everywhere beats a better one that works somewhere.
+     * NOT `currentTime`, which was the first attempt and is the wrong instrument: for a
+     * `MediaStream` the element's position advances with the stream in real time, so reading it
+     * per tick would answer "a new frame" on every tick — precisely the false belief D2 exists to
+     * correct, restated as its fix. NOT `requestVideoFrameCallback`'s `presentedFrames` either:
+     * exact, but absent on standard WebKitGTK and Android's WebView, and it needs a registered
+     * callback to read at all.
      *
-     * Null for a video with no dimensions: there is no frame, so there is no frame to identify,
-     * and returning 0 would make "before any frame" look like a real frame the scan could count.
+     * NULL is a first-class answer, and it is the honest one wherever the count cannot be had: an
+     * engine without `getVideoPlaybackQuality`, a video with no dimensions, a non-finite count. A
+     * source that cannot identify its frames must say so — `Stillness` then counts every tick,
+     * exactly as it did before any of this existed — because a fabricated id reads as "always a
+     * new frame", which is the belief being corrected.
+     *
+     * NOT YET VERIFIED ON A REAL CAMERA. The native half of D2 is measured end to end
+     * (`NextDetectionTests`, mutation-checked); this half is reasoned from the specification and
+     * held by unit tests over a stand-in element. What a browser actually reports for a
+     * `MediaStream`-backed video is a claim only a device can make.
      */
-    frameId(): number | null {
-      if (video.videoWidth === 0 || video.videoHeight === 0) return null;
-      const t = video.currentTime;
-      return Number.isFinite(t) ? Math.round(t * 1000) : null;
-    },
+    frameId: () => videoFrameId(video),
     grab(): Frame {
       ready();
       const w = video.videoWidth;

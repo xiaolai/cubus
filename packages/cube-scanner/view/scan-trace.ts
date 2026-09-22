@@ -30,11 +30,15 @@ export const TRACE_KEY = 'cubusScanTrace';
 export const TRACE_CAPACITY = 4000;
 
 /** Whether the switch is on. A storage that throws (a locked-down page) is simply "off". */
-export function traceEnabled(
-  store: Pick<Storage, 'getItem'> | undefined = globalThis.localStorage,
-): boolean {
+export function traceEnabled(store?: Pick<Storage, 'getItem'>): boolean {
   try {
-    return store?.getItem(TRACE_KEY) === '1';
+    // READ INSIDE THE TRY, not as a default argument. A default is evaluated at the call, BEFORE
+    // the body runs, and `globalThis.localStorage` is a getter that THROWS on a page where storage
+    // is denied — a sandboxed iframe, a browser set to block it. So the documented "a storage that
+    // throws is simply off" was not true of the commonest way for one to throw: the exception
+    // escaped this function entirely and took the scan loop with it.
+    const storage = store ?? globalThis.localStorage;
+    return storage?.getItem(TRACE_KEY) === '1';
   } catch {
     return false;
   }

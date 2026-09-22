@@ -82,7 +82,10 @@ class FakeWorker {
     list.push(fn);
     this.listeners.set(type, list);
   }
+  /** Set to make `postMessage` throw, as it does on a payload structured clone will not carry. */
+  refusePost: Error | null = null;
   postMessage(message: CentresRequest): void {
+    if (this.refusePost) throw this.refusePost;
     // Through the wire, exactly as postMessage does it: anything the structured clone algorithm
     // cannot carry fails HERE rather than in a browser nobody is watching.
     this.posted.push(structuredClone(message));
@@ -100,6 +103,10 @@ class FakeWorker {
   }
   fail(): void {
     for (const fn of this.listeners.get('error') ?? []) fn(new Event('error'));
+  }
+  /** A reply the page cannot deserialise — `messageerror`, not `error`. */
+  unreadable(): void {
+    for (const fn of this.listeners.get('messageerror') ?? []) fn(new Event('messageerror'));
   }
 }
 
@@ -195,6 +202,64 @@ describe('the centre resolution crosses a thread', () => {
     expect(now?.resolution.result.valid).toBe(true);
     // …and it does not keep trying: a worker that cannot be had is written off for this resolver.
     expect(resolver.request(ask(2), () => {})).not.toBeNull();
+  });
+
+  it('answers on this thread when the post itself throws', () => {
+    // `postMessage` raises on a payload structured clone will not carry. Left unhandled, `running`
+    // stays occupied for ever and every later resolution queues behind a question nobody holds —
+    // a scan stuck at six sides with nothing said. Found by audit, 2026-09-23.
+    withWorker();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const resolver = new CentreResolver();
+    const seen: CentresReply[] = [];
+    FakeWorker.refuse = null;
+    const spawn = resolver.request(ask(2, 1), (r) => seen.push(r));
+    // The first request spawned the worker; make its next post throw.
+    expect(spawn).toBeNull();
+    FakeWorker.last().answer(0);
+    seen.length = 0;
+    FakeWorker.last().refusePost = new Error('cannot be cloned');
+    resolver.request(ask(2, 2), (r) => seen.push(r));
+    expect(
+      seen.map((r) => r.epoch),
+      'the request was stranded by a failed post',
+    ).toEqual([2]);
+    // …and the resolver is usable again afterwards rather than wedged: the next ask builds a FRESH
+    // worker and is posted to it, rather than being queued behind the request that failed.
+    const built = FakeWorker.built.length;
+    expect(resolver.request(ask(2, 3), (r) => seen.push(r))).toBeNull();
+    expect(FakeWorker.built.length, 'no new worker was built').toBe(built + 1);
+    FakeWorker.last().answer();
+    expect(seen.map((r) => r.epoch)).toEqual([2, 3]);
+  });
+
+  it('answers on this thread when a reply cannot be deserialised', () => {
+    // `messageerror` fires when the structured clone of an INCOMING message cannot be read. With
+    // no listener the resolver sits on a request whose answer can never arrive, and the scan
+    // stands at six sides for ever. Found by audit, 2026-09-23.
+    withWorker();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const resolver = new CentreResolver();
+    const seen: CentresReply[] = [];
+    resolver.request(ask(2, 5), (r) => seen.push(r));
+    FakeWorker.last().unreadable();
+    expect(seen.map((r) => r.epoch)).toEqual([5]);
+    expect(seen[0]!.resolution.result.valid).toBe(true);
+  });
+
+  it('keeps waiting when a reply arrives for an epoch nobody asked about', () => {
+    // DELIBERATELY NOT cleared: the worker echoes the epoch it was posted, so a mismatch is an
+    // unsolicited message and the real answer is still coming. Clearing the slot would make the
+    // resolver drop that answer when it arrives — turning a stray message into the stall the guard
+    // exists to prevent. (An audit proposed the opposite on 2026-09-23; this is the counter-case.)
+    withWorker();
+    const resolver = new CentreResolver();
+    const seen: CentresReply[] = [];
+    resolver.request(ask(2, 11), (r) => seen.push(r));
+    FakeWorker.last().send({ epoch: 99, resolution: { result: { facelets: '', valid: false } } });
+    expect(seen).toEqual([]);
+    FakeWorker.last().answer();
+    expect(seen.map((r) => r.epoch)).toEqual([11]);
   });
 
   it('gives the worker back on dispose, and forgets what it was holding', () => {
