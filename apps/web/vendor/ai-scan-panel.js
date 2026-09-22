@@ -7658,6 +7658,7 @@ var AiScanPanel = class extends HTMLElement {
       }
       this.noFrameSince = null;
       await this.readFrame(output, epoch);
+      if (!this.cam.freshFrame(epoch)) return;
       this.commitTick({});
       this.tickFailingSince = null;
     } catch (err) {

@@ -149,6 +149,13 @@ export async function replaySession(
 ): Promise<SessionOutcome> {
   const fps = sessionFps(session);
   const tickMs = options.tickMs ?? (fps && fps > 0 ? Math.max(1, Math.round(1000 / fps)) : 60);
+  // CHECKED, because the loop below is bounded by it. A zero or negative tick never advances
+  // `elapsed` and runs for ever; a NaN compares false against the deadline and skips the loop
+  // entirely, reporting a scan that was never driven as one that simply captured nothing. Both
+  // reach here from a caller's argument, and both look like a result.
+  if (!(Number.isFinite(tickMs) && tickMs > 0)) {
+    throw new RangeError(`a replay tick of ${tickMs} ms cannot drive a scan`);
+  }
   const first = session.frames[0]!;
   const last = session.frames[session.frames.length - 1]!;
   const deadlineMs = options.deadlineMs ?? last.t - first.t + 2000;
@@ -184,18 +191,28 @@ export async function replaySession(
     completed = true;
   });
 
-  panel.useDetector(new RecordedDetector(session), 'native');
-  await panel.start();
+  // A `try`/`finally` around everything that runs with the panel mounted: a throw from `start()`
+  // or from the caller's `advance` would otherwise leave it in the document with its detector still
+  // held, and a corpus run would accumulate one dead panel per session that failed.
+  try {
+    panel.useDetector(new RecordedDetector(session), 'native');
+    await panel.start();
 
-  const realNow = options.realNow;
-  while (elapsed < deadlineMs && !completed) {
-    const before = realNow?.();
-    await options.advance(tickMs);
-    if (before !== undefined && realNow) blockingMs.push(realNow() - before);
-    elapsed += tickMs;
+    const realNow = options.realNow;
+    while (elapsed < deadlineMs && !completed) {
+      // THE TICK IS SPENT BEFORE IT IS DRIVEN. A capture fires DURING `advance`, and stamping it
+      // with the elapsed time from before the tick reports every side one tick early. The step is
+      // also clipped to the deadline, or the last tick overshoots it and a scan can complete after
+      // the time every uncaptured side is censored at — a completion the numbers do not admit.
+      const step = Math.min(tickMs, deadlineMs - elapsed);
+      elapsed += step;
+      const before = realNow?.();
+      await options.advance(step);
+      if (before !== undefined && realNow) blockingMs.push(realNow() - before);
+    }
+  } finally {
+    panel.remove();
   }
-
-  panel.remove();
 
   return {
     sessionId: session.id,

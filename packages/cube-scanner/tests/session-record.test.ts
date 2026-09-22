@@ -133,7 +133,7 @@ describe('the recorded-session format refuses what it cannot measure over', () =
     const short = sessionValue({
       frames: [{ id: 0, t: 0, served: 1, detections: [{ ...det(), scores: undefined }] }] as never,
     });
-    expect(() => parseSession(short)).toThrow(/every class score/);
+    expect(() => parseSession(short)).toThrow(/all 6 class scores/);
   });
 
   it('refuses a decision pointing at a frame the session does not hold', () => {
@@ -579,5 +579,81 @@ describe('the recorder switch and its frame identity at their edges', () => {
       [900, 1],
       [901, 3],
     ]);
+  });
+});
+
+/**
+ * The format's and the corpus's edges, from the second audit round (Codex, read-only, 2026-09-23).
+ * Every one is a way an instrument could report a measurement it did not take.
+ */
+describe('the format refuses evidence it would have to invent', () => {
+  it('requires all six class scores, not merely some', () => {
+    // A SHORT vector is worse than a missing one: the replay writes a six-row tensor, so four
+    // scores are silently zero-filled and eight truncated — the session would replay as evidence
+    // nobody recorded.
+    for (const scores of [
+      [0.9, 0, 0, 0],
+      [0.9, 0, 0, 0, 0, 0, 0],
+    ]) {
+      const short = sessionValue({
+        frames: [{ id: 0, t: 0, served: 1, detections: [{ ...det(), scores }] }] as never,
+      });
+      expect(() => parseSession(short)).toThrow(/all 6 class scores/);
+    }
+  });
+
+  it('refuses a decision whose detail is present and is not an object', () => {
+    // Replacing it with `{}` hides a corrupt recording behind a decision that reads as ordinary.
+    const bad = sessionValue({
+      decisions: [{ frame: 1, t: 10, kind: 'captured', detail: 'U' }] as never,
+    });
+    expect(() => parseSession(bad)).toThrow(/detail must be an object/);
+    // An ABSENT detail is a decision that carried none, and is fine.
+    const none = sessionValue({ decisions: [{ frame: 1, t: 10, kind: 'captured' }] as never });
+    expect(parseSession(none).decisions[0]!.detail).toEqual({});
+  });
+
+  it('requires a timestamp that can actually be read as one', () => {
+    // It labels a sitting and is never used for arithmetic — but a corpus that admits "yesterday"
+    // cannot be sorted, filtered by date, or matched against the notes taken beside it.
+    expect(() => parseSession(sessionValue({ startedAt: 'yesterday' }))).toThrow(/ISO 8601/);
+    expect(() => parseSession(sessionValue({ startedAt: '2026-09-23T10:00:00Z' }))).not.toThrow();
+  });
+});
+
+describe('the corpus refuses a split that is not one', () => {
+  it('rejects a held-out fraction that is not between 0 and 1', () => {
+    // NaN compares false against everything and would put every cube in `train`; a negative one
+    // does the same; above 1 holds everything out. All three look like a split and measure nothing.
+    for (const bad of [Number.NaN, -0.1, 1.5, Number.POSITIVE_INFINITY]) {
+      expect(() => splitOf('worn', bad), `${bad}`).toThrow(RangeError);
+    }
+    expect(() => splitOf('worn', 0)).not.toThrow();
+    expect(() => splitOf('worn', 1)).not.toThrow();
+  });
+
+  it('counts a session as pixel-replayable only when EVERY frame has pixels', () => {
+    // A session with pixels on a handful of frames cannot be re-read by another detector, and
+    // counting it would report a corpus as ready for the experiment pixels are kept for.
+    const withPixels = (n: number) =>
+      sessionValue({
+        id: `p${n}`,
+        cube: `cube-${n}`,
+        frames: [
+          { id: 0, t: 0, served: 1, detections: [det()], pixels: 'f0.png' },
+          {
+            id: 1,
+            t: 60,
+            served: 1,
+            detections: [det()],
+            ...(n === 2 ? { pixels: 'f1.png' } : {}),
+          },
+        ] as never,
+      });
+    const corpus = loadCorpus([
+      { source: 'a.json', value: withPixels(1) },
+      { source: 'b.json', value: withPixels(2) },
+    ]);
+    expect(describeCorpus(corpus).withPixels).toBe(1);
   });
 });

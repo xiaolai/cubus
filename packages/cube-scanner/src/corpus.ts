@@ -45,8 +45,18 @@ export function hashCube(cube: string): number {
   return h >>> 0;
 }
 
-/** Which side of the split `cube` falls on — a pure function of its name alone. */
+/**
+ * Which side of the split `cube` falls on — a pure function of its name alone.
+ *
+ * The fraction is CHECKED rather than trusted. A NaN compares false against everything and would
+ * put every cube in `train`; a negative one does the same; one above 1 holds everything out. All
+ * three produce a split that looks like a split and measures nothing, and the number reaches here
+ * from a script's argument.
+ */
 export function splitOf(cube: string, fraction = HELDOUT_FRACTION): Split {
+  if (!(Number.isFinite(fraction) && fraction >= 0 && fraction <= 1)) {
+    throw new RangeError(`a held-out fraction of ${fraction} is not between 0 and 1`);
+  }
   return hashCube(cube) / 0x1_0000_0000 < fraction ? 'heldout' : 'train';
 }
 
@@ -121,7 +131,14 @@ export interface CorpusCoverage {
   lightings: string[];
   handling: string[];
   states: string[];
-  /** Sessions whose frames carry pixels — the only ones a camera or model experiment can replay. */
+  /**
+   * Sessions EVERY frame of which carries pixels — the only ones a camera or model experiment can
+   * replay end to end.
+   *
+   * Every, not some: a session with pixels on a handful of frames cannot be re-read by another
+   * detector, and counting it here would report a corpus as ready for the experiment that is the
+   * whole reason pixels are kept.
+   */
   withPixels: number;
   /** Which of the plan's Stage 0.3 floors this corpus does not yet meet. Empty when it meets them. */
   shortfalls: string[];
@@ -149,7 +166,7 @@ export function describeCorpus(corpus: Corpus, fraction = HELDOUT_FRACTION): Cor
     shortfalls.push('no cube is held out, so nothing can be measured out of sample');
   }
   const withPixels = corpus.sessions.filter((s) =>
-    s.frames.some((f) => f.pixels !== undefined),
+    s.frames.every((f) => f.pixels !== undefined),
   ).length;
   if (withPixels === 0 && corpus.sessions.length > 0) {
     shortfalls.push('no session carries pixels, so camera and model changes cannot be replayed');

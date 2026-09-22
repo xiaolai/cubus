@@ -240,3 +240,63 @@ describe('the detector reads a long session without rescanning it', () => {
     ]);
   });
 });
+
+/**
+ * The harness's own edges, from the second audit round (Codex, read-only, 2026-09-23). Each is a
+ * way a corpus run could report a number about a scan it did not drive.
+ */
+describe('the harness refuses to run a replay it cannot drive', () => {
+  it('rejects a tick that cannot advance the clock', async () => {
+    // Zero or negative never advances `elapsed` and runs for ever; NaN compares false against the
+    // deadline and skips the loop entirely, reporting a scan that was never driven as one that
+    // captured nothing. Both reach here from a caller's argument and both look like a result.
+    const session = recordedScan(DEEP, 4);
+    for (const tickMs of [0, -60, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await expect(replaySession(session, { advance, tickMs })).rejects.toThrow(RangeError);
+    }
+  });
+
+  it('never runs past the deadline every uncaptured side is censored at', async () => {
+    // The last tick used to overshoot, so a scan could complete AFTER the time the censoring is
+    // measured against — a completion the numbers do not admit.
+    const session = recordedScan(DEEP, 24, 60);
+    const steps: number[] = [];
+    const outcome = await replaySession(session, {
+      advance: async (ms) => {
+        steps.push(ms);
+        await vi.advanceTimersByTimeAsync(ms);
+      },
+      tickMs: 250,
+      deadlineMs: 900, // not a whole number of ticks
+    });
+    expect(steps.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(outcome.deadlineMs);
+    for (const side of outcome.sides) expect(side.capturedAt!).toBeLessThanOrEqual(900);
+  });
+
+  it('stamps a capture with the tick it happened on, not the one before it', async () => {
+    // A capture fires DURING `advance`; stamping it with the elapsed time from before the tick
+    // reports every side one tick early — and a side captured on the first tick would read as
+    // captured at 0 ms, before the scan was driven at all.
+    const session = recordedScan(DEEP, 24, 60);
+    const outcome = await replaySession(session, { advance, tickMs: 60 });
+    for (const side of outcome.sides) expect(side.capturedAt!).toBeGreaterThan(0);
+  });
+
+  it('takes the panel out of the document even when the replay throws', async () => {
+    // A throw from `advance` would otherwise leave it mounted with its detector still held, and a
+    // corpus run would accumulate one dead panel per session that failed.
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const session = recordedScan(DEEP, 4);
+    await expect(
+      replaySession(session, {
+        advance: async () => {
+          throw new Error('the driver gave up');
+        },
+        tickMs: 60,
+        host,
+      }),
+    ).rejects.toThrow('the driver gave up');
+    expect(host.children).toHaveLength(0);
+  });
+});

@@ -2410,6 +2410,29 @@ describe('ai-scan-panel — sides whose centres read as the same colour', () => 
     expect(last().phase).not.toBe('checking');
   });
 
+  it('files nothing from a read whose frame arrived after the scan moved on', async () => {
+    // `readFrame` awaits now — it asks the plugin for the frame behind a settled read (D7) — so a
+    // stop in that window leaves the read describing a scan that is over. It must file nothing and
+    // record nothing: the same post-await re-check every other path here keeps.
+    const faces = facesOf(DEEP);
+    const held: Array<() => void> = [];
+    fake.supplyPixels(new Map());
+    fake.framePixels = () =>
+      new Promise<Frame | null>((resolve) => {
+        held.push(() => resolve(null));
+        // Stop the scan while the pixels are still in flight.
+        panel.stop();
+      });
+    for (let i = 0; i < SETTLE_TICKS + 4; i++) {
+      fake.output = { ...tensorFor(faces.U), frameId: i };
+      await vi.advanceTimersByTimeAsync(TICK);
+    }
+    for (const release of held) release();
+    await vi.advanceTimersByTimeAsync(TICK);
+    fake.output = null;
+    expect(last().captured, 'a side was filed into a stopped scan').toHaveLength(0);
+  });
+
   it('sends a correction on a symmetric cube to the side its centre names when its eight fit two sides', async () => {
     // Every side is in and the scan was refused over one misread sticker on the yellow side. Re-shown
     // right, that side's eight are ALSO the white side's eight (U D R L F B), so the eight point to two

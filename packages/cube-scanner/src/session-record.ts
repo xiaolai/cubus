@@ -22,6 +22,7 @@
  */
 
 import { isStructurallyValid } from './facelet-cube.js';
+import { NUM_COLORS } from './nine-of-each.js';
 import type { Detection } from './onnx-postprocess.js';
 
 /**
@@ -68,7 +69,16 @@ export interface SessionTruth {
 
 /** Which model produced a session's detections, so a re-run can tell like from like. */
 export interface ModelIdentity {
-  /** The file's sha256, lower-case hex. The identity; `name` is only for a person reading a listing. */
+  /**
+   * WHICH model this is, as strongly as the runtime can say: the file's sha256 in lower-case hex
+   * where one is available, and the runtime's own identifier for it otherwise.
+   *
+   * Not required to BE a digest, because the native plugin resolves and compiles the bundled model
+   * itself and exposes no hash — a format that demanded one would either refuse every native
+   * recording or be satisfied with a fabricated digest, and the second is worse. What it is
+   * required to be is stable for one model and different for another, which is all a corpus asks
+   * of it: "were these two sessions read by the same thing?".
+   */
   hash: string;
   name: string;
   /** `'web'` (onnxruntime), `'apple'`, `'windows'`, `'android'` — which runtime produced the output. */
@@ -180,6 +190,21 @@ const str = (v: unknown, where: string): string => {
   return v;
 };
 
+/**
+ * An ISO 8601 instant, checked. It labels a sitting for a person reading a listing and is never
+ * used for arithmetic — but a corpus that admits `"yesterday"` cannot be sorted, filtered by date,
+ * or matched against the notes taken beside it, which is most of what a label is for.
+ */
+const timestamp = (v: unknown, where: string): string => {
+  const text = str(v, where);
+  if (Number.isNaN(Date.parse(text))) {
+    throw new SessionFormatError(
+      `${where} must be an ISO 8601 instant, got ${JSON.stringify(text)}`,
+    );
+  }
+  return text;
+};
+
 const num = (v: unknown, where: string): number => {
   if (typeof v !== 'number' || !Number.isFinite(v)) {
     throw new SessionFormatError(`${where} must be a finite number`);
@@ -190,11 +215,17 @@ const num = (v: unknown, where: string): number => {
 function parseDetection(v: unknown, where: string): Detection {
   if (!isRecord(v)) throw new SessionFormatError(`${where} must be an object`);
   const scores = v.scores;
-  if (!Array.isArray(scores) || scores.length === 0) {
-    // A recorded detection without its full score vector is the exact loss this format exists to
-    // prevent (F4/P2): the five non-winning scores are what a whole-cube repair and any soft
-    // accumulation read, and a corpus missing them cannot answer the questions it was built for.
-    throw new SessionFormatError(`${where}.scores must list every class score`);
+  // EXACTLY the six, not merely "some". A recorded detection without its full score vector is the
+  // loss this format exists to prevent (F4/P2) — the five non-winning scores are what a whole-cube
+  // repair and any soft accumulation read. A SHORT vector is worse than a missing one: the replay
+  // writes a six-row tensor, so a four-long vector is silently zero-filled and a longer one
+  // truncated, and the session would replay as evidence nobody recorded.
+  if (!Array.isArray(scores) || scores.length !== NUM_COLORS) {
+    throw new SessionFormatError(
+      `${where}.scores must list all ${NUM_COLORS} class scores, got ${
+        Array.isArray(scores) ? scores.length : typeof scores
+      }`,
+    );
   }
   for (const [i, s] of scores.entries()) num(s, `${where}.scores[${i}]`);
   const classId = num(v.classId, `${where}.classId`);
@@ -322,7 +353,7 @@ export function parseSession(value: unknown): RecordedSession {
   return {
     schema: SESSION_SCHEMA,
     id: str(value.id, 'id'),
-    startedAt: str(value.startedAt, 'startedAt'),
+    startedAt: timestamp(value.startedAt, 'startedAt'),
     cube: str(value.cube, 'cube'),
     conditions: parseConditions(value.conditions, 'conditions'),
     model: {
@@ -354,6 +385,12 @@ export function parseSession(value: unknown): RecordedSession {
         throw new SessionFormatError(
           `${where}.kind ${JSON.stringify(kind)} is not a decision kind`,
         );
+      }
+      // An ABSENT detail is a decision that carried none; a detail that is present and is not an
+      // object is a corrupt recording, and replacing it with `{}` would hide that behind a
+      // decision that reads as ordinary.
+      if (d.detail !== undefined && !isRecord(d.detail)) {
+        throw new SessionFormatError(`${where}.detail must be an object when present`);
       }
       return {
         frame,

@@ -1329,6 +1329,11 @@ export class AiScanPanel extends HTMLElement {
       }
       this.noFrameSince = null;
       await this.readFrame(output, epoch);
+      // RE-CHECKED, because `readFrame` can now await (D7: it asks the plugin for the frame behind
+      // a settled read). A stop, a restart or a switch to painting in that window leaves this tick
+      // describing a scan that is over, and recording it would put a settled read into the trace of
+      // a scan that never filed it. The same guard every other awaiting path here keeps.
+      if (!this.cam.freshFrame(epoch)) return;
       this.commitTick({});
       // CLEARED AFTER THE FRAME WAS PROCESSED, NOT BEFORE IT (2026-09-05). `readFrame` runs the
       // whole post-processing tail — decode, NMS, fitFace, and on the sixth side an assemble — and
