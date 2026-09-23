@@ -1793,6 +1793,17 @@ export interface CentreResolution {
 }
 
 /** A side the scan could not name by its centre, and how surely its centre read the colour it claims. */
+/**
+ * What sits at a capture's centre when NOBODY READ IT — not a colour, and never shown as one.
+ *
+ * A face captured from its eight ring stickers has no centre reading at all: on the logo-centre
+ * cube the detector emits nothing there, so the alternative to this sentinel is inventing a colour
+ * for a sticker no one has seen. `Stillness.centre()` already answers null for a negative centre,
+ * `fileSettledRead` files that as unnamed, and `withCentre` replaces it with the slot's own colour
+ * the moment `resolveCentres` places the side. It must never survive into a cube or onto a tile.
+ */
+export const UNREAD_CENTRE = -1;
+
 export interface UnnamedSide {
   capture: ColorFace;
   /**

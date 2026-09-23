@@ -14,7 +14,7 @@
 // which writes web/vendor/ai-scan-panel.js — refreshes the open tab on its own.
 
 import { createReadStream, realpathSync, watch } from 'node:fs';
-import { readFile, realpath, stat } from 'node:fs/promises';
+import { mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { dirname, extname, join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,6 +34,26 @@ const PORT = Number(process.env.PORT) || 15173;
 // loopback and needs none of this.
 const HOST = process.env.CUBUS_DEV_HOST || '127.0.0.1';
 const RELOAD_PATH = '/__livereload';
+
+/**
+ * Where a scan recording is POSTed (`dev-docs/scan-recording-session-2026-09-23.md`).
+ *
+ * SAME ORIGIN ON PURPOSE. The desktop shell's CSP allows `connect-src 'self'` and nothing else, and
+ * under `tauri dev` this server IS 'self' — so the page can hand a session over without the CSP
+ * being widened for a debugging convenience, and without a Tauri command, which would be a seam the
+ * browser build does not have.
+ *
+ * A RECORDING IS TOO BIG TO READ OUT ANY OTHER WAY: 4,000 frames of every candidate above 0.05 with
+ * all six class scores is tens of megabytes, which is exactly why it goes to a file rather than
+ * through an eval's return value.
+ *
+ * Dev only. `build.mjs` produces `dist/` and never includes this server.
+ */
+const RECORD_PATH = '/__record';
+/** Where recordings land. Fixed, because the client never gets to name a path. */
+const RECORD_DIR = join(ROOT, '..', '..', 'dev-docs', 'recordings');
+/** Refuse a body past this. A stuck session is ~30 MB; 256 MB is a runaway, not a scan. */
+const RECORD_LIMIT = 256 * 1024 * 1024;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -181,6 +201,50 @@ const server = createServer(async (req, res) => {
     res.writeHead(403).end('forbidden: this server answers to localhost and IP literals only');
     return;
   }
+  // A scan recording arriving from the page. POST only, and the name is this server's to choose:
+  // the body is the only thing the client supplies, so there is no path for it to traverse.
+  if (req.url === RECORD_PATH) {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { allow: 'POST' }).end('POST a session here');
+      return;
+    }
+    const chunks = [];
+    let size = 0;
+    let refused = false;
+    req.on('data', (chunk) => {
+      if (refused) return;
+      size += chunk.length;
+      if (size > RECORD_LIMIT) {
+        refused = true;
+        res.writeHead(413).end(`recording past ${RECORD_LIMIT} bytes`);
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', async () => {
+      if (refused) return;
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const file = join(RECORD_DIR, `scan-${stamp}.json`);
+      try {
+        await mkdir(RECORD_DIR, { recursive: true });
+        await writeFile(file, Buffer.concat(chunks));
+        // The path and the size, so the page can SAY what landed. A recording that silently wrote
+        // nothing looks exactly like one that worked.
+        console.log(`[record] ${size} bytes -> ${file}`);
+        res.writeHead(200, { 'content-type': 'application/json' }).end(
+          JSON.stringify({ ok: true, file, bytes: size }),
+        );
+      } catch (cause) {
+        console.error(`[record] could not write ${file}:`, cause);
+        res.writeHead(500, { 'content-type': 'application/json' }).end(
+          JSON.stringify({ ok: false, error: String(cause) }),
+        );
+      }
+    });
+    return;
+  }
+
   // SSE endpoint: keep the connection open and register this client for reload pushes.
   if (req.url === RELOAD_PATH) {
     res.writeHead(200, {

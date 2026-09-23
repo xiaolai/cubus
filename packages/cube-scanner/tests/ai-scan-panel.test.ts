@@ -13,7 +13,7 @@
 import Cube from 'cubejs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AiScanResult, ColorFace } from '../src/ai-assemble.js';
-import { rotateFace } from '../src/ai-assemble.js';
+import { rotateFace, UNREAD_CENTRE } from '../src/ai-assemble.js';
 import type { CameraDevice, CameraOptions } from '../src/camera.js';
 import type { Detector, ModelOutput } from '../src/detector.js';
 import { SOLVED_FACELETS } from '../src/facelet-cube.js';
@@ -376,6 +376,96 @@ afterEach(() => {
   vi.useRealTimers();
   (globalThis as { Worker?: unknown }).Worker = undefined;
   FakeWorker.built = [];
+});
+
+/**
+ * A frame like the ones the blue-logo cube actually produced: a few stickers well above the floor
+ * and the rest of the face scored under it, so nothing fits.
+ *
+ * Built from the recording of 2026-09-23, where across 1,177 stuck ticks the most boxes surviving
+ * isolation was eight and the median was five — and NO confidence floor from 0.25 down to 0.08
+ * yielded a single readable face.
+ */
+function unreadableTensor(): ModelOutput {
+  const anchors = 9;
+  const data = new Float32Array((4 + 6) * anchors);
+  for (let a = 0; a < anchors; a++) {
+    data[0 * anchors + a] = 100 + (a % 3) * 45;
+    data[1 * anchors + a] = 100 + Math.floor(a / 3) * 45;
+    data[2 * anchors + a] = 30;
+    data[3 * anchors + a] = 30;
+    // Three stickers the scan can keep, six it cannot — the shape the real cube produced.
+    data[(4 + 0) * anchors + a] = a < 3 ? 0.9 : 0.15;
+  }
+  return { data, anchors, rows: 4 + 6 };
+}
+
+describe('ai-scan-panel — a scan that reads nothing stops asking for patience', () => {
+  // MEASURED, on a cube this actually happened to: 108 seconds, 1,552 frames, ZERO captures, and
+  // "hold still" on screen throughout. The detector found two or three of the face's nine stickers,
+  // and no threshold recovers the rest — so the fix is not another way to arbitrate readings that do
+  // not exist, it is to stop spending the person's time.
+
+  it('says the cube is not being read, and offers painting, once the bound passes', async () => {
+    fake.output = unreadableTensor();
+    // Well inside the bound: still the ordinary idle line, because a scan that has barely begun is
+    // not stuck and saying so would be wrong far more often than right.
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(last().message).not.toMatch(/isn.t being read/i);
+
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(last().message).toMatch(/isn.t being read/i);
+    expect(last().message.toLowerCase()).toContain('paint');
+    // And nothing was captured on the way — the point is that this fires WITHOUT a capture.
+    expect(last().captured).toHaveLength(0);
+  });
+
+  it('never fires while a scan is making progress', async () => {
+    // THE DIFFERENCE BETWEEN MEASURING PROGRESS AND MEASURING TIME. This scan runs far longer than
+    // the bound in total, but never goes longer than the bound WITHOUT a capture — so it must stay
+    // quiet throughout. A clock that ran from the start of the scan instead of from the last
+    // capture would interrupt a working scan of a slow cube, which is the failure this guards.
+    const shown = facesOf(DEEP);
+    let elapsed = 0;
+    for (const face of FACES.slice(0, 3)) {
+      await show(shown[face]);
+      // Long enough that the total passes the bound several times over, short enough that no single
+      // gap between captures does.
+      fake.output = unreadableTensor();
+      await vi.advanceTimersByTimeAsync(8_000);
+      elapsed += 8_000;
+      expect(last().message, `after ${elapsed} ms of scanning, still making progress`).not.toMatch(
+        /isn.t being read/i,
+      );
+    }
+    expect(elapsed).toBeGreaterThan(20_000);
+  });
+
+  it('keeps quiet when there is nothing in front of the camera', async () => {
+    // An empty frame is not a stall, it is an empty frame. Without this the same sentence fires at
+    // an empty room and tells someone who put the cube down that their cube cannot be read.
+    fake.output = emptyTensor();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(last().message).not.toMatch(/isn.t being read/i);
+  });
+
+  it('retracts nothing on a frame or two of nothing, but stops once the cube is put down', async () => {
+    fake.output = unreadableTensor();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(last().message).toMatch(/isn.t being read/i);
+    // The cube is put down: the claim stops, because there is no longer a cube to make it about.
+    fake.output = emptyTensor();
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(last().message).not.toMatch(/isn.t being read/i);
+  });
+
+  it('says something different about a cube than about a side', async () => {
+    // Nothing captured is a statement about the CUBE. With sides already in, the same sentence
+    // would be false — and discouraging about a scan that is largely done.
+    fake.output = unreadableTensor();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(last().message).toContain('This cube');
+  });
 });
 
 describe('ai-scan-panel — capture and settle', () => {
@@ -2525,23 +2615,45 @@ describe('ai-scan-panel — the scan trace', () => {
     const trace = traceOf();
     expect(trace).toBeDefined();
     const ticks = trace!.dump();
-    const logo = ticks.filter((r) => r.outcome === 'abstain');
+    // A LOGO CENTRE IS NO LONGER AN ABSTENTION (2026-09-23). These are the frames that carry eight
+    // good stickers and a centre the detector scored under the floor, and until today every one was
+    // discarded whole — 204 and 528 of them on two recorded scans of the real cube. They are now
+    // read from the eight, with the centre left unread for `resolveCentres` to settle at six, so
+    // the trace shows them settling rather than abstaining.
+    // The logo frames — eight stickers and an unread centre — are the ones this scan begins with;
+    // the whole-face reads at the end come from `show(ALL_WHITE)` and still carry a real centre.
+    const logo = ticks.filter((r) => r.colors?.[4] === UNREAD_CENTRE);
     expect(logo.length).toBeGreaterThanOrEqual(3);
+    // NOTHING ABSTAINS ANY MORE on this input, which is the whole change: every one of these was
+    // discarded whole until today.
+    expect(ticks.filter((r) => r.outcome === 'abstain')).toEqual([]);
     for (const r of logo) {
-      expect(r.reason).toBe('PARTIAL_FACE');
-      expect(r.kept).toBe(8);
-      // The answer the logo case needs, from the running panel: seen at the centre, as white,
-      // scored too low to keep.
+      expect(r.outcome === 'reading' || r.outcome === 'settled').toBe(true);
+      // The eight ARE read; only the centre is open.
+      expect(r.colors?.filter((c) => c === 0)).toHaveLength(8);
+      // The centre probe still answers, which is what makes the stall explicable at all: seen at
+      // the centre, as white, scored too low to keep.
       expect(r.centre).toMatchObject({ found: true, cls: 0, conf: 0.18, kept: false });
-      // Only the idle line: the side IS in view, so telling the person to frame it would be false.
-      expect(r.line).toBe('Show any side to the camera.');
     }
-    const settled = ticks.find((r) => r.outcome === 'settled');
+    // And a whole-face read is untouched: a real centre, no sentinel.
+    const whole = ticks.filter((r) => r.kept === 9);
+    expect(whole.length).toBeGreaterThan(0);
+    for (const r of whole) expect(r.colors?.[4]).toBe(0);
+    const settled = ticks.find((r) => r.outcome === 'settled' && r.kept === 9);
     expect(settled).toMatchObject({ colors: ALL_WHITE, kept: 9, near: 0 });
-    // A settled read is the tenth identical one, and the run before it says so.
-    expect(ticks.filter((r) => r.outcome === 'reading').map((r) => r.run)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9,
-    ]);
+    // THE LOGO FRAMES NOW COUNT TOWARDS THE SETTLE RATHER THAN RESETTING IT, and the run numbers
+    // are where that is visible. The first three ticks are the eight-sticker reads; the whole-face
+    // reads that follow CONTINUE the same run (4…9) instead of starting over, because `Stillness`
+    // keys on the eight and this face's eight are the same either way. Until today each of those
+    // three abstained and called `reset()`, so the run restarted every time — which on the real
+    // cube meant the side never settled at all.
+    const readingRuns = ticks.filter((r) => r.outcome === 'reading').map((r) => r.run);
+    expect(readingRuns).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 1, 2, 3]);
+    expect(
+      ticks
+        .filter((r) => r.outcome === 'reading' && r.colors?.[4] === UNREAD_CENTRE)
+        .map((r) => r.run),
+    ).toEqual([1, 2, 3]);
     for (const r of ticks) {
       expect(typeof r.inferMs).toBe('number');
       expect(typeof r.line).toBe('string');

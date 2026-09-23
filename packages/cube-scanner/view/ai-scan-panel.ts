@@ -45,6 +45,7 @@ import {
   SAME_SIDE_STICKERS,
   type StickerSuspect,
   sameSide,
+  UNREAD_CENTRE,
   type UnnamedSide,
   withCentre,
 } from '../src/ai-assemble.js';
@@ -53,7 +54,14 @@ import type { Detector, ModelOutput } from '../src/detector.js';
 import { traceFrame } from '../src/fit-trace.js';
 import type { MisreadDiagnosis } from '../src/misread-decode.js';
 import { detectionsFromOutput, IMG_SIZE } from '../src/onnx-detect.js';
-import { type Detection, type FaceFit, type FitResult, fitFace } from '../src/onnx-postprocess.js';
+import {
+  type Detection,
+  type FaceFit,
+  type FitResult,
+  fitFace,
+  MIN_STICKER_CONFIDENCE,
+} from '../src/onnx-postprocess.js';
+import { fitPartial } from '../src/partial-lattice.js';
 import type { Colour } from '../src/scheme.js';
 import {
   colourOf,
@@ -64,6 +72,7 @@ import {
   type Scheme,
   slotOf,
 } from '../src/scheme.js';
+import { NEAR_FLOOR_RECORD } from '../src/session-record.js';
 import { stickerLab, toFrameBox } from '../src/sticker-pixels.js';
 import { FACES, type Face, type Frame } from '../src/types.js';
 import { CameraSession } from './camera-session.js';
@@ -694,6 +703,52 @@ export class AiScanPanel extends HTMLElement {
   /** Each confirmation with the hold it answered: the assembler projects it into every scheme's
    *  frame from `up`, so a capture without its hold is not a confirmation (ADR 0001). */
   private confirmed: Partial<Record<Face, Confirmation[]>> = {};
+  /**
+   * How long the scan may look at a cube and capture NOTHING before it says so and offers the way
+   * out (`dev-docs/scan-recording-session-2026-09-23.md`).
+   *
+   * MEASURED, on a recording of the cube this exists for. Over 108 seconds and 1,552 frames the scan
+   * made ZERO captures and said "hold still" throughout: the detector found two or three of that
+   * face's nine stickers and scattered the rest below the confidence floor, so there was never a
+   * face to read. Lowering the floor to 0.05 recovers nothing — the most boxes surviving isolation
+   * in the whole stretch is eight, median five.
+   *
+   * So the honest thing is not another way to arbitrate readings that do not exist; it is to stop
+   * spending a person's time. Twelve seconds is several times the 2–4 seconds a side takes when the
+   * detector can see it at all, so a slow-but-working scan is never interrupted, and it is far short
+   * of the 108 seconds this cube cost.
+   *
+   * THE BOUND IS ABOUT PROGRESS, NOT ABOUT TIME. It runs from the last capture, so a scan that is
+   * getting somewhere — five sides in, one to go — never trips it.
+   */
+  private static readonly STUCK_AFTER_MS = 12_000;
+
+  /**
+   * How recently the detector must have seen SOMETHING for a stall to be claimed.
+   *
+   * A second and a half — several ticks on either runtime, so a frame or two with nothing on it
+   * does not retract the claim mid-sentence, and a cube actually put down stops it quickly.
+   */
+  private static readonly SIGHTING_FRESH_MS = 1_500;
+
+  /**
+   * When this scan last CAPTURED something, on the monotonic clock — or when the loop began.
+   *
+   * `performance.now()`, like every other duration here: `Date.now()` follows an NTP correction, and
+   * a clock step of twelve seconds would announce a stall that never happened.
+   */
+  private lastProgressAt = 0;
+
+  /**
+   * When the detector last produced ANY candidate, on the monotonic clock.
+   *
+   * The stall claim is "something is in front of the camera and it is not being read". Without this
+   * the same sentence fires at an empty room: a person who puts the cube down for twelve seconds
+   * would be told their cube cannot be read, which is false and is exactly the kind of unmeasured
+   * claim `scan-sentences.test.mjs` exists to refuse.
+   */
+  private lastSightingAt = 0;
+
   private awaiting: ConfirmRequest | null = null;
   /**
    * The cube's colour scheme as the LAST VERDICT established it — `ScanProgress.scheme`. Null
@@ -1250,6 +1305,9 @@ export class AiScanPanel extends HTMLElement {
       });
       (globalThis as { __cubusScanTrace?: ScanTrace }).__cubusScanTrace = this.trace;
     }
+    // The stall bound runs from here when there is nothing captured yet, so a scan that is reopened
+    // after a pause is not immediately declared stuck on the strength of the pause.
+    this.lastProgressAt = performance.now();
     // Read HERE for the trace's reason: a scan must not start recording halfway through a side.
     this.recording = recordEnabled();
     if (this.recording) {
@@ -1397,11 +1455,30 @@ export class AiScanPanel extends HTMLElement {
     // `detectionsFromOutput` is exactly `fitFromOutput`, so the scan reads the same whether it is
     // being watched or not; the trace only adds what it records beside the verdict.
     const began = performance.now();
-    const dets = detectionsFromOutput(output);
+    // WHILE RECORDING, DECODE AT THE RECORDER'S FLOOR AND FILTER BACK — because a recording that
+    // cannot hold the sub-threshold candidates cannot answer the question it exists for.
+    //
+    // `detectionsFromOutput` defaults to MIN_STICKER_CONFIDENCE (0.25), so until 2026-09-23 the
+    // recorder was handed an already-filtered list and `NEAR_FLOOR_RECORD` (0.05) could never keep
+    // anything: every recording said "no candidate below the floor" no matter what the model
+    // emitted. The live trace of §1.2 had seen the logo centre scoring 0.20–0.25, and the one
+    // instrument built to capture that was structurally unable to.
+    //
+    // THE SCAN MUST READ THE SAME WHETHER OR NOT IT IS BEING RECORDED, which is why the fit gets
+    // the filtered list rather than the wide one. That the two are identical is a property of NMS —
+    // it keeps boxes in descending confidence and a lower-scoring candidate can never displace a
+    // higher-scoring one — and it is asserted on the golden frames rather than assumed
+    // (`tests/record-floor.test.ts`).
+    const wide = this.recording
+      ? detectionsFromOutput(output, { confThreshold: NEAR_FLOOR_RECORD })
+      : null;
+    const dets = wide
+      ? wide.filter((d) => d.confidence >= MIN_STICKER_CONFIDENCE)
+      : detectionsFromOutput(output);
     // EVERY candidate this frame produced, unrounded and with all six scores — what a replay needs
     // and what the trace discards (D9). A no-op with recording off.
-    if (this.recording) {
-      this.recorder.frame(dets, {
+    if (wide) {
+      this.recorder.frame(wide, {
         ...(output.frameId === undefined ? {} : { frameId: output.frameId }),
         inferMs: this.lastInferenceMs,
       });
@@ -1417,7 +1494,62 @@ export class AiScanPanel extends HTMLElement {
     } else {
       fit = fitFace(dets);
     }
+    if (dets.length > 0) this.lastSightingAt = performance.now();
     this.seen = seenIn(output, dets, fit.ok ? fit.face.boxes : undefined);
+    // EIGHT STICKERS ARE AN OBSERVATION, NOT A LOST FRAME (Stage 2 item 1, wired 2026-09-23).
+    //
+    // `fitFace` wants nine and throws the frame away at eight. On two recorded scans of the
+    // logo-centre cube that was 204 and 528 frames discarded whole, and in 71 of 72 and 378 of 382
+    // of the readable ones THE MISSING STICKER WAS THE CENTRE — the white cap the detector does not
+    // find. So the side that could not be captured was the side whose ring was perfectly legible.
+    //
+    // The capture path already knows what to do with it. A centre nobody read makes the side
+    // UNNAMED, which is the state `resolveCentres` settles at six: five centres taken, one slot
+    // free, the answer forced and then checked for legality. That is the 2026-09-20 design; the
+    // only thing missing was ever reaching it from a partial frame.
+    //
+    // `-1` at the centre is how "no reading" travels: `Stillness` keys on the eight and reports
+    // `centre()` as null for it, `fileSettledRead` files that as unnamed, and `withCentre`
+    // overwrites the slot's colour when the resolver places the side. It is never a colour anyone
+    // is shown and never a claim — `partial-capture.test.ts` holds both.
+    const partial = !fit.ok && fit.reason === 'PARTIAL_FACE' ? fitPartial(dets) : null;
+    if (partial?.ok && partial.face.cells[4] === null) {
+      const ring = partial.face.cells;
+      const unread = ring.every((c, i) => i === 4 || c !== null);
+      if (unread) {
+        const colors = ring.map((d) => (d ? d.classId : UNREAD_CENTRE));
+        const confidence = ring.map((d) => d?.confidence ?? 0);
+        const settledPartial = this.still.offer(colors, performance.now(), output.frameId);
+        this.showPreview(colors);
+        // EVERY PATH THROUGH `readFrame` NAMES ITS OUTCOME. Returning without a note leaves the
+        // trace with no row for the tick at all — and these are exactly the ticks a stalling scan
+        // is made of, so the one diagnostic that would explain the stall would go quiet precisely
+        // when it is needed. `partialOf` is `readNote` for a face that has no `FaceFit`.
+        const partialNote: Partial<TickNote> = {
+          colors: [...colors],
+          conf: ring.map((d) => Math.round((d?.confidence ?? 0) * 1000) / 1000),
+          run: this.still.status().run,
+          heldMs: Math.round(this.still.status().heldMs),
+        };
+        if (!settledPartial) {
+          this.report(
+            this.awaiting ? 'confirm' : 'scanning',
+            this.stuck() ? this.stuckLine() : 'Reading a side — hold still…',
+          );
+          this.note({ outcome: 'reading', ...partialNote });
+          return;
+        }
+        this.note({ outcome: 'settled', ...partialNote });
+        // No `lab`: the centre has no box, so there is no frame geometry to read its paint from,
+        // and the assembly's paint path is a last resort that simply does not run here.
+        this.fileSettledRead(
+          { colors, confidence, ordering: 'lattice' },
+          null,
+          this.still.centreReads(),
+        );
+        return;
+      }
+    }
     if (!fit.ok) {
       this.still.reset();
       this.showPreview(null);
@@ -1451,7 +1583,11 @@ export class AiScanPanel extends HTMLElement {
       const flicker = this.still.flickering();
       this.report(
         this.awaiting ? 'confirm' : 'scanning',
-        flicker === null ? 'Reading a side — hold still…' : this.flickerLine(flicker),
+        this.stuck()
+          ? this.stuckLine()
+          : flicker === null
+            ? 'Reading a side — hold still…'
+            : this.flickerLine(flicker),
       );
       this.note({ outcome: 'reading', ...this.readNote(fit.face), flicker });
       return;
@@ -1787,6 +1923,9 @@ export class AiScanPanel extends HTMLElement {
     const holder = this.faces[claim];
     if (!holder && !this.unnamed.some((side) => this.claimOf(side) === centre)) {
       this.traceEvent('captured', { face: claim, colors: [...read.colors] });
+      // A capture is the only thing that counts as progress: the bound below measures time spent
+      // with nothing to show for it, not time spent.
+      this.lastProgressAt = performance.now();
       this.capture(claim, read, kind);
       return;
     }
@@ -2676,7 +2815,39 @@ export class AiScanPanel extends HTMLElement {
    * side" for every state was how a finished scan kept being nagged for sides, and how the ask
    * for one SPECIFIC side got contradicted the moment the cube left the frame.
    */
+  /**
+   * Whether this scan has been looking at a cube and capturing nothing for longer than the bound.
+   *
+   * False while a confirm is pending or the scan is finished: neither is a stall, and interrupting
+   * a confirm with "this side is not being read" would be about the wrong side entirely.
+   */
+  private stuck(now: number = performance.now()): boolean {
+    if (this.awaiting || this.finished) return false;
+    // SOMETHING HAS TO BE THERE. An empty frame is not a stall, it is an empty frame.
+    if (now - this.lastSightingAt > AiScanPanel.SIGHTING_FRESH_MS) return false;
+    return now - this.lastProgressAt >= AiScanPanel.STUCK_AFTER_MS;
+  }
+
+  /**
+   * What to say when nothing has been captured for the bound.
+   *
+   * IT NAMES ONLY WHAT WAS MEASURED, which is that this scan has read no side — not a tilt, not a
+   * shake, not the light, none of which anything here observes (`apps/web/test/scan-sentences.test.mjs`
+   * refuses those words by name). And it offers the one thing that always works, because on the cube
+   * this was written for the detector finds two or three of nine stickers and no threshold recovers
+   * the rest: the person can set the colours themselves.
+   */
+  private stuckLine(): string {
+    const painted = this.capturedFaces().length;
+    return painted === 0
+      ? "This cube isn't being read. You can paint it by hand instead."
+      : "This side isn't being read. Show another side, or paint this one by hand.";
+  }
+
   private idleLine(): string {
+    // THE BOUND, ahead of every other idle wording: a scan that has captured nothing for
+    // `STUCK_AFTER_MS` has something to say, and "Show any side to the camera" is not it.
+    if (this.stuck()) return this.stuckLine();
     if (this.awaiting) {
       return `Looking for the ${GUIDE[this.awaiting.face].color} side — hold it with ${GUIDE[this.awaiting.up].color} up.`;
     }
