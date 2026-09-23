@@ -3179,10 +3179,12 @@ function withCentre(capture, colour) {
   if (capture.colors[4] === colour) return capture;
   const colors = [...capture.colors];
   colors[4] = colour;
-  if (!capture.scores) return { ...capture, colors };
+  const confidence = [...capture.confidence];
+  confidence[4] = 1;
+  if (!capture.scores) return { ...capture, colors, confidence };
   const scores = capture.scores.map((row) => [...row]);
   scores[4] = scores[4].map((_, c) => c === colour ? 1 : 0);
-  return { ...capture, colors, scores };
+  return { ...capture, colors, scores, confidence };
 }
 function placedBy(slots) {
   const placed = {};

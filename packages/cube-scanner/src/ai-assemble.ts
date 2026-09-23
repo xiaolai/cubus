@@ -1829,13 +1829,27 @@ export interface UnnamedSide {
 
 /** `capture` filed as the side whose centre is `colour`: that colour at the centre, and certain. */
 export function withCentre(capture: ColorFace, colour: number): ColorFace {
+  // Already that colour: the centre was READ, and its own confidence is the honest number to keep.
   if (capture.colors[4] === colour) return capture;
   const colors = [...capture.colors];
   colors[4] = colour;
-  if (!capture.scores) return { ...capture, colors };
+  // THE CONFIDENCE GOES WITH THE COLOUR, and leaving it behind was a real bug the day a capture
+  // arrived with NO centre reading at all. A centre placed here is placed by ELIMINATION — five
+  // centres taken, one slot free, the filing then checked for legality — so it is not a faint
+  // reading that might be wrong, it is the only colour the slot can hold. `scores[4]` was already
+  // rewritten as that certainty; `confidence[4]` was not, so a side captured from its eight (whose
+  // unread centre carries a confidence of 0) was placed correctly and then reported as "too faint
+  // to trust", asking the user to re-show a side the scanner had already settled.
+  //
+  // BEFORE the `scores` branch, not inside it: a capture without per-class scores is exactly the
+  // one a partial read produces, so putting this after the early return fixed every case but the
+  // one it was written for.
+  const confidence = [...capture.confidence];
+  confidence[4] = 1;
+  if (!capture.scores) return { ...capture, colors, confidence };
   const scores = capture.scores.map((row) => [...row]);
   scores[4] = scores[4]!.map((_, c) => (c === colour ? 1 : 0));
-  return { ...capture, colors, scores };
+  return { ...capture, colors, scores, confidence };
 }
 
 /**

@@ -3242,10 +3242,12 @@ function withCentre(capture, colour) {
   if (capture.colors[4] === colour) return capture;
   const colors = [...capture.colors];
   colors[4] = colour;
-  if (!capture.scores) return { ...capture, colors };
+  const confidence = [...capture.confidence];
+  confidence[4] = 1;
+  if (!capture.scores) return { ...capture, colors, confidence };
   const scores = capture.scores.map((row) => [...row]);
   scores[4] = scores[4].map((_, c) => c === colour ? 1 : 0);
-  return { ...capture, colors, scores };
+  return { ...capture, colors, scores, confidence };
 }
 function placedBy(slots) {
   const placed = {};
@@ -7592,6 +7594,24 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
    * claim `scan-sentences.test.mjs` exists to refuse.
    */
   lastSightingAt = 0;
+  /**
+   * When a WHOLE face last fitted, on the monotonic clock.
+   *
+   * Reading a side from its eight is a FALLBACK, not a first resort: a side whose centre the
+   * detector can see must be captured with it, filed under its own colour and shown on its tile.
+   * Fired eagerly, the eight-sticker path catches any side during the moment its centre flickers
+   * and files it UNNAMED — which has no tile until six resolve, so several sides go quiet at once
+   * and the scan looks like it has lost them. Reported from a live scan on 2026-09-23.
+   */
+  lastWholeFaceAt = 0;
+  /**
+   * How long nine stickers must have been unavailable before eight are read instead.
+   *
+   * Two seconds. A side the detector can read whole settles in well under that, so a working scan
+   * never reaches this path; a side whose centre is simply not there — the blue-logo cube — never
+   * leaves it.
+   */
+  static PARTIAL_AFTER_MS = 2e3;
   awaiting = null;
   /**
    * The cube's colour scheme as the LAST VERDICT established it — `ScanProgress.scheme`. Null
@@ -8030,6 +8050,7 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
       globalThis.__cubusScanTrace = this.trace;
     }
     this.lastProgressAt = performance.now();
+    this.lastWholeFaceAt = performance.now();
     this.recording = recordEnabled();
     if (this.recording) {
       this.recorder.begin({
@@ -8157,7 +8178,12 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     }
     if (dets.length > 0) this.lastSightingAt = performance.now();
     this.seen = seenIn(output, dets, fit.ok ? fit.face.boxes : void 0);
-    const partial = !fit.ok && fit.reason === "PARTIAL_FACE" ? fitPartial(dets) : null;
+    const isolated = dropIsolated(
+      dets.filter((d) => d.confidence >= MIN_STICKER_CONFIDENCE && d.classId >= 0 && d.classId < 6)
+    );
+    if (fit.ok) this.lastWholeFaceAt = performance.now();
+    const mayReadEight = !fit.ok && fit.reason === "PARTIAL_FACE" && performance.now() - this.lastWholeFaceAt >= _AiScanPanel.PARTIAL_AFTER_MS;
+    const partial = mayReadEight ? fitPartial(isolated) : null;
     if (partial?.ok && partial.face.cells[4] === null) {
       const ring = partial.face.cells;
       const unread = ring.every((c, i) => i === 4 || c !== null);
@@ -8181,8 +8207,9 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
           return;
         }
         this.note({ outcome: "settled", ...partialNote });
+        const scores = ring.map((d) => d?.scores ?? new Array(NUM_CLASSES).fill(0));
         this.fileSettledRead(
-          { colors, confidence, ordering: "lattice" },
+          { colors, confidence, scores, ordering: "lattice" },
           null,
           this.still.centreReads()
         );

@@ -50,6 +50,37 @@ describe('the sentinel is not a colour', () => {
   });
 });
 
+describe('a centre placed by elimination is certain, not faint', () => {
+  it('carries a confidence to match its scores', () => {
+    // THE SYMPTOM THIS FIXES, reported from a live scan: the scan settled the cube and then said
+    // "some stickers were too faint to trust — show those sides again". The faint sticker was the
+    // centre NOBODY READ, whose confidence is 0 by construction. `withCentre` rewrote its colour
+    // and its scores as a certainty and left the confidence behind, so a side the scanner had
+    // already settled asked to be shown again.
+    //
+    // Placement here is by ELIMINATION — five centres taken, one slot free, the filing then checked
+    // for legality. That is not a faint reading; it is the only colour the slot can hold.
+    const capture = fromEight([0, 1, 2, 3, 4, 5, 0, 1]);
+    expect(capture.confidence[4]).toBe(0);
+    const placed = withCentre(capture, 2);
+    expect(placed.confidence[4]).toBe(1);
+    expect(placed.scores?.[4]?.[2] ?? 1).toBe(1);
+    // The eight keep their own readings: only the centre was decided here.
+    for (let i = 0; i < 9; i++)
+      if (i !== 4) expect(placed.confidence[i]).toBe(capture.confidence[i]);
+  });
+
+  it('keeps a real reading\u2019s own confidence when the colour is unchanged', () => {
+    // A centre that WAS read and already holds the slot's colour is not being decided by
+    // elimination, so its own number is the honest one to keep.
+    const read: ColorFace = {
+      colors: [0, 1, 2, 3, 2, 5, 0, 1, 2],
+      confidence: [0.9, 0.9, 0.9, 0.9, 0.31, 0.9, 0.9, 0.9, 0.9],
+    };
+    expect(withCentre(read, 2).confidence[4]).toBe(0.31);
+  });
+});
+
 describe('a side with no centre reading is placed by elimination', () => {
   /** Five sides whose centres ARE read, leaving exactly one slot free. */
   function fiveNamed(): Partial<Record<string, ColorFace>> {

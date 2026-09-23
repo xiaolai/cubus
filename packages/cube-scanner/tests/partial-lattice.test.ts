@@ -123,7 +123,7 @@ const TURNS: number[][] = (() => {
 
 /** The cells a fit placed, in the order the detections were given. */
 const readingOf = (face: { cells: (Detection | null)[] }, dets: readonly Detection[]): number[] =>
-  dets.map((d) => face.cells.findIndex((x) => x === d));
+  dets.map((d) => face.cells.indexOf(d));
 
 /** Two readings are one answer when they differ by a quarter turn — the assembly searches all four. */
 const sameReading = (a: readonly number[], b: readonly number[]): boolean =>

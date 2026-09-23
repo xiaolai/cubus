@@ -50,12 +50,14 @@ import {
   withCentre,
 } from '../src/ai-assemble.js';
 import { type CameraDevice, facingOf } from '../src/camera.js';
+import { NUM_CLASSES } from '../src/detect-head.js';
 import type { Detector, ModelOutput } from '../src/detector.js';
 import { traceFrame } from '../src/fit-trace.js';
 import type { MisreadDiagnosis } from '../src/misread-decode.js';
 import { detectionsFromOutput, IMG_SIZE } from '../src/onnx-detect.js';
 import {
   type Detection,
+  dropIsolated,
   type FaceFit,
   type FitResult,
   fitFace,
@@ -749,6 +751,26 @@ export class AiScanPanel extends HTMLElement {
    */
   private lastSightingAt = 0;
 
+  /**
+   * When a WHOLE face last fitted, on the monotonic clock.
+   *
+   * Reading a side from its eight is a FALLBACK, not a first resort: a side whose centre the
+   * detector can see must be captured with it, filed under its own colour and shown on its tile.
+   * Fired eagerly, the eight-sticker path catches any side during the moment its centre flickers
+   * and files it UNNAMED — which has no tile until six resolve, so several sides go quiet at once
+   * and the scan looks like it has lost them. Reported from a live scan on 2026-09-23.
+   */
+  private lastWholeFaceAt = 0;
+
+  /**
+   * How long nine stickers must have been unavailable before eight are read instead.
+   *
+   * Two seconds. A side the detector can read whole settles in well under that, so a working scan
+   * never reaches this path; a side whose centre is simply not there — the blue-logo cube — never
+   * leaves it.
+   */
+  private static readonly PARTIAL_AFTER_MS = 2_000;
+
   private awaiting: ConfirmRequest | null = null;
   /**
    * The cube's colour scheme as the LAST VERDICT established it — `ScanProgress.scheme`. Null
@@ -1308,6 +1330,7 @@ export class AiScanPanel extends HTMLElement {
     // The stall bound runs from here when there is nothing captured yet, so a scan that is reopened
     // after a pause is not immediately declared stuck on the strength of the pause.
     this.lastProgressAt = performance.now();
+    this.lastWholeFaceAt = performance.now();
     // Read HERE for the trace's reason: a scan must not start recording halfway through a side.
     this.recording = recordEnabled();
     if (this.recording) {
@@ -1512,7 +1535,22 @@ export class AiScanPanel extends HTMLElement {
     // `centre()` as null for it, `fileSettledRead` files that as unnamed, and `withCentre`
     // overwrites the slot's colour when the resolver places the side. It is never a colour anyone
     // is shown and never a claim — `partial-capture.test.ts` holds both.
-    const partial = !fit.ok && fit.reason === 'PARTIAL_FACE' ? fitPartial(dets) : null;
+    // THE SAME SET `fitFace` COUNTED, which means isolation applied first. Handing `fitPartial` the
+    // raw detections was a real bug and a silent one: it refuses anything over nine boxes, and a
+    // frame of eight good stickers plus two bits of background clutter has eleven — so on the very
+    // recording this was written for the path fired on NONE of its 91 chances and the scan behaved
+    // exactly as it had before. `fitFace` says PARTIAL_FACE about `dropIsolated(good)`; this has to
+    // ask about the same nine-or-fewer, or the two are answering different questions.
+    const isolated = dropIsolated(
+      dets.filter((d) => d.confidence >= MIN_STICKER_CONFIDENCE && d.classId >= 0 && d.classId < 6),
+    );
+    if (fit.ok) this.lastWholeFaceAt = performance.now();
+    // A FALLBACK, and only once nine have genuinely stopped coming. See `PARTIAL_AFTER_MS`.
+    const mayReadEight =
+      !fit.ok &&
+      fit.reason === 'PARTIAL_FACE' &&
+      performance.now() - this.lastWholeFaceAt >= AiScanPanel.PARTIAL_AFTER_MS;
+    const partial = mayReadEight ? fitPartial(isolated) : null;
     if (partial?.ok && partial.face.cells[4] === null) {
       const ring = partial.face.cells;
       const unread = ring.every((c, i) => i === 4 || c !== null);
@@ -1542,8 +1580,13 @@ export class AiScanPanel extends HTMLElement {
         this.note({ outcome: 'settled', ...partialNote });
         // No `lab`: the centre has no box, so there is no frame geometry to read its paint from,
         // and the assembly's paint path is a last resort that simply does not run here.
+        // THE SIX SCORES PER STICKER TRAVEL TOO. `repairByCounts` is the assembly's only reader of
+        // them and runs after the normal path has refused — exactly the position a partial capture
+        // is most likely to reach. The centre has none, and gets a flat row rather than a guess:
+        // `withCentre` rewrites it as a certainty when the side is placed.
+        const scores = ring.map((d) => d?.scores ?? new Array<number>(NUM_CLASSES).fill(0));
         this.fileSettledRead(
-          { colors, confidence, ordering: 'lattice' },
+          { colors, confidence, scores, ordering: 'lattice' },
           null,
           this.still.centreReads(),
         );

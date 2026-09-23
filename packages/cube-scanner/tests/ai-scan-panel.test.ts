@@ -13,7 +13,7 @@
 import Cube from 'cubejs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AiScanResult, ColorFace } from '../src/ai-assemble.js';
-import { rotateFace, UNREAD_CENTRE } from '../src/ai-assemble.js';
+import { rotateFace } from '../src/ai-assemble.js';
 import type { CameraDevice, CameraOptions } from '../src/camera.js';
 import type { Detector, ModelOutput } from '../src/detector.js';
 import { SOLVED_FACELETS } from '../src/facelet-cube.js';
@@ -399,6 +399,75 @@ function unreadableTensor(): ModelOutput {
   }
   return { data, anchors, rows: 4 + 6 };
 }
+
+/**
+ * Eight good stickers, a centre the detector missed, AND two bits of background clutter — which is
+ * what a real frame looks like, and what broke this the first time.
+ *
+ * `fitFace` applies `dropIsolated` before it counts, so it calls this PARTIAL_FACE about the eight.
+ * `fitPartial` refuses anything over nine boxes. Hand it the raw detections and eight-plus-two is
+ * eleven, so it refuses every frame and the whole path is dead — silently. On the recording this
+ * was written for it fired on none of its 91 chances.
+ */
+function eightPlusClutterTensor(): ModelOutput {
+  const anchors = 11;
+  const data = new Float32Array((4 + 6) * anchors);
+  for (let a = 0; a < 9; a++) {
+    // The face: a clean 3x3, with the CENTRE (a === 4) scored under the floor as a logo reads.
+    data[0 * anchors + a] = 100 + (a % 3) * 45;
+    data[1 * anchors + a] = 100 + Math.floor(a / 3) * 45;
+    data[2 * anchors + a] = 30;
+    data[3 * anchors + a] = 30;
+    data[(4 + 0) * anchors + a] = a === 4 ? 0.18 : 0.9;
+  }
+  // Two boxes far from the cube AND far from each other, so `dropIsolated` removes both. That is
+  // what makes this the real case: after isolation the frame is the eight `fitFace` calls
+  // PARTIAL_FACE about, while the RAW list is ten — over `fitPartial`'s ceiling of nine. A version
+  // of this fixture whose clutter survives isolation proves nothing, because then the frame has ten
+  // boxes and `fitFace` never says PARTIAL_FACE at all.
+  const clutter: [number, number][] = [
+    [520, 470],
+    [40, 460],
+  ];
+  for (const [i, [x, y]] of clutter.entries()) {
+    const a = 9 + i;
+    data[0 * anchors + a] = x;
+    data[1 * anchors + a] = y;
+    data[2 * anchors + a] = 30;
+    data[3 * anchors + a] = 30;
+    data[(4 + 1) * anchors + a] = 0.9;
+  }
+  return { data, anchors, rows: 4 + 6 };
+}
+
+describe('ai-scan-panel — a face is read from its eight even with clutter in frame', () => {
+  it('captures the eight when the centre is missed and the frame is not clean', async () => {
+    // THE REGRESSION. This is the frame shape the real cube produces, and the reason the first
+    // attempt at this feature changed nothing at all.
+    fake.output = eightPlusClutterTensor();
+    await vi.advanceTimersByTimeAsync(TICK * SETTLE_TICKS + 2_500);
+    expect(last().sides).toBeGreaterThan(0);
+  });
+
+  it('waits for nine before settling for eight', async () => {
+    // A FALLBACK, NOT A FIRST RESORT. A side whose centre the detector can see must be captured
+    // WITH it, filed under its own colour and shown on its tile. Firing eagerly, this path catches
+    // any side during the moment its centre flickers and files it unnamed — which has no tile until
+    // six resolve, so several sides go quiet at once and the scan looks like it lost them.
+    fake.output = eightPlusClutterTensor();
+    await vi.advanceTimersByTimeAsync(TICK * SETTLE_TICKS);
+    expect(last().sides).toBe(0);
+  });
+
+  it('files it with the centre unread rather than guessing a colour', async () => {
+    // A centre nobody read must not become a colour. It is filed unnamed, which is what
+    // `resolveCentres` settles by elimination at six.
+    fake.output = eightPlusClutterTensor();
+    await vi.advanceTimersByTimeAsync(TICK * SETTLE_TICKS + 2_500);
+    // Captured lists NAMED sides only; a side held with its centre open raises `sides` without it.
+    expect(last().sides).toBeGreaterThan(last().captured.length);
+  });
+});
 
 describe('ai-scan-panel — a scan that reads nothing stops asking for patience', () => {
   // MEASURED, on a cube this actually happened to: 108 seconds, 1,552 frames, ZERO captures, and
@@ -2615,25 +2684,26 @@ describe('ai-scan-panel — the scan trace', () => {
     const trace = traceOf();
     expect(trace).toBeDefined();
     const ticks = trace!.dump();
-    // A LOGO CENTRE IS NO LONGER AN ABSTENTION (2026-09-23). These are the frames that carry eight
-    // good stickers and a centre the detector scored under the floor, and until today every one was
-    // discarded whole — 204 and 528 of them on two recorded scans of the real cube. They are now
-    // read from the eight, with the centre left unread for `resolveCentres` to settle at six, so
-    // the trace shows them settling rather than abstaining.
-    // The logo frames — eight stickers and an unread centre — are the ones this scan begins with;
-    // the whole-face reads at the end come from `show(ALL_WHITE)` and still carry a real centre.
-    const logo = ticks.filter((r) => r.colors?.[4] === UNREAD_CENTRE);
+    // A LOGO CENTRE STILL ABSTAINS FOR THE FIRST COUPLE OF SECONDS, and that is the design rather
+    // than the old behaviour surviving: reading a side from its EIGHT is a fallback for when nine
+    // have genuinely stopped coming (`PARTIAL_AFTER_MS`), because a side whose centre the detector
+    // can see must be captured with it and shown on its own tile. Firing immediately, that path
+    // caught any side during the moment its centre flickered and filed it unnamed — which has no
+    // tile until six resolve, so several sides went quiet at once on a live scan.
+    //
+    // The eight-sticker capture itself is covered where it can actually be reached: see
+    // "a face is read from its eight even with clutter in frame", which holds the face past the
+    // window. This case is the three ticks before it.
+    const logo = ticks.filter((r) => r.outcome === 'abstain');
     expect(logo.length).toBeGreaterThanOrEqual(3);
-    // NOTHING ABSTAINS ANY MORE on this input, which is the whole change: every one of these was
-    // discarded whole until today.
-    expect(ticks.filter((r) => r.outcome === 'abstain')).toEqual([]);
     for (const r of logo) {
-      expect(r.outcome === 'reading' || r.outcome === 'settled').toBe(true);
-      // The eight ARE read; only the centre is open.
-      expect(r.colors?.filter((c) => c === 0)).toHaveLength(8);
-      // The centre probe still answers, which is what makes the stall explicable at all: seen at
-      // the centre, as white, scored too low to keep.
+      expect(r.reason).toBe('PARTIAL_FACE');
+      expect(r.kept).toBe(8);
+      // The answer the logo case needs, from the running panel: seen at the centre, as white,
+      // scored too low to keep.
       expect(r.centre).toMatchObject({ found: true, cls: 0, conf: 0.18, kept: false });
+      // Only the idle line: the side IS in view, so telling the person to frame it would be false.
+      expect(r.line).toBe('Show any side to the camera.');
     }
     // And a whole-face read is untouched: a real centre, no sentinel.
     const whole = ticks.filter((r) => r.kept === 9);
@@ -2641,19 +2711,10 @@ describe('ai-scan-panel — the scan trace', () => {
     for (const r of whole) expect(r.colors?.[4]).toBe(0);
     const settled = ticks.find((r) => r.outcome === 'settled' && r.kept === 9);
     expect(settled).toMatchObject({ colors: ALL_WHITE, kept: 9, near: 0 });
-    // THE LOGO FRAMES NOW COUNT TOWARDS THE SETTLE RATHER THAN RESETTING IT, and the run numbers
-    // are where that is visible. The first three ticks are the eight-sticker reads; the whole-face
-    // reads that follow CONTINUE the same run (4…9) instead of starting over, because `Stillness`
-    // keys on the eight and this face's eight are the same either way. Until today each of those
-    // three abstained and called `reset()`, so the run restarted every time — which on the real
-    // cube meant the side never settled at all.
-    const readingRuns = ticks.filter((r) => r.outcome === 'reading').map((r) => r.run);
-    expect(readingRuns).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 1, 2, 3]);
-    expect(
-      ticks
-        .filter((r) => r.outcome === 'reading' && r.colors?.[4] === UNREAD_CENTRE)
-        .map((r) => r.run),
-    ).toEqual([1, 2, 3]);
+    // A settled read is the tenth identical one, and the run before it says so.
+    expect(ticks.filter((r) => r.outcome === 'reading').map((r) => r.run)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9,
+    ]);
     for (const r of ticks) {
       expect(typeof r.inferMs).toBe('number');
       expect(typeof r.line).toBe('string');
