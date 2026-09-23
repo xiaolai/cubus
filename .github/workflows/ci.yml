@@ -160,6 +160,7 @@ jobs:
           python ml/test_propose.py
           python ml/test_drop_dataset.py
           python ml/test_drop_eval.py
+          python ml/test_calibrate_scores.py
 
       # THE FAST TIER'S WEB TESTS: every suite under apps/web/test/ except test/browser/, run by
       # apps/web/run-tests.mjs, which refuses a pattern that matches nothing and a test file that
