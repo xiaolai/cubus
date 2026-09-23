@@ -144,12 +144,6 @@ const BUNDLES = [
       '../../../packages/cube-scanner/src/misread-decode.ts',
       '../../../packages/cube-scanner/src/onnx-detect.ts',
       '../../../packages/cube-scanner/src/onnx-postprocess.ts',
-      // Which cell each detection occupies when there are FEWER than nine (2026-09-23). The panel
-      // reads a face from its eight ring stickers where `fitFace` refuses, so this ships with it —
-      // on the logo-centre cube it is the difference between a side being captured and a scan
-      // stalling for the better part of a minute.
-      '../../../packages/cube-scanner/src/partial-lattice.ts',
-      '../../../packages/cube-scanner/src/nine-of-each.ts',
       '../../../packages/cube-scanner/src/scheme.ts',
       '../../../packages/cube-scanner/src/types.ts',
       // The misread decode's client half: the panel spawns the worker below and falls back to
@@ -315,11 +309,6 @@ const BUNDLES = [
       'SOLVED_FACELETS', 'encodeFacelets', 'MAX_REPAIR_COST', 'SAME_SIDE_BY_CENTRE',
       'SAME_SIDE_STICKERS', 'assembleColors', 'assemblePainted', 'buildCentreOwner', 'sameSide',
       'COLOUR_NAMES', 'schemeOfCentres',
-      // `UNREAD_CENTRE` is the panel's sentinel for a side captured from its eight: it travels from
-      // the panel into the filing and `withCentre` replaces it there, so the resolver — which only
-      // ever sees a placed side — never names it. Its being shaken out HERE is the useful fact: the
-      // worker cannot carry the sentinel into a cube because it does not contain it.
-      'UNREAD_CENTRE',
     ],
     treeShakenMessages: [
       'encodeFacelets: not a well-formed cube state',

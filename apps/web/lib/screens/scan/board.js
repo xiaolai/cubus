@@ -271,34 +271,10 @@ export function createScanBoard({
   const paintProgress = (p) => {
     suspects = p.suspects ?? [];
     for (const tile of tiles) paintTileReport(tile, p);
-    paintHeld(p.held ?? []);
     lastCaptured = p.captured;
     refreshCellNames();
   };
 
-  /** The side that has been READ but has no face yet — see `.scan-held` in index.html.
-   *
-   *  A side whose centre nobody could read is held until `resolveCentres` places it at six, and
-   *  `captured` lists only sides WITH a face — so without this the scan says "Got that side" and
-   *  the board shows nothing, which on a logo-centre cube is the first side a person shows.
-   *
-   *  THE UNREAD CENTRE IS DRAWN AS UNKNOWN, never as a colour: nobody has seen it, and the whole
-   *  reason the side is held is that it cannot be named yet. Only the first held side is drawn —
-   *  a second is vanishingly rare and a second cell would cost the net a column. */
-  const paintHeld = (held) => {
-    const slot = $('.scan-held', root);
-    if (!slot) return;
-    const side = held[0];
-    slot.hidden = !side;
-    if (!side) return;
-    const cells = [...slot.querySelectorAll('.cell')];
-    cells.forEach((c, i) => {
-      const colour = side.colors[i];
-      // Negative is UNREAD_CENTRE — the scanner's "nobody read this", not a sixth colour.
-      c.style.backgroundColor = colour >= 0 ? classColor(colour) : 'var(--facelet-off)';
-      c.textContent = colour >= 0 ? '' : '?';
-    });
-  };
 
   /** A finished scan: each tile turns into, or repaints in, the validated layout, and every
    *  sticker is renamed from the same string. */

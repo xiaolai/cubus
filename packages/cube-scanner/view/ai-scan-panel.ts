@@ -45,25 +45,21 @@ import {
   SAME_SIDE_STICKERS,
   type StickerSuspect,
   sameSide,
-  UNREAD_CENTRE,
   type UnnamedSide,
   withCentre,
 } from '../src/ai-assemble.js';
 import { type CameraDevice, facingOf } from '../src/camera.js';
-import { NUM_CLASSES } from '../src/detect-head.js';
 import type { Detector, ModelOutput } from '../src/detector.js';
 import { traceFrame } from '../src/fit-trace.js';
 import type { MisreadDiagnosis } from '../src/misread-decode.js';
 import { detectionsFromOutput, IMG_SIZE } from '../src/onnx-detect.js';
 import {
   type Detection,
-  dropIsolated,
   type FaceFit,
   type FitResult,
   fitFace,
   MIN_STICKER_CONFIDENCE,
 } from '../src/onnx-postprocess.js';
-import { fitPartial } from '../src/partial-lattice.js';
 import type { Colour } from '../src/scheme.js';
 import {
   colourOf,
@@ -478,19 +474,6 @@ export interface ScanProgress {
   /** Sides captured so far, in URFDLB order. */
   captured: CapturedFace[];
   /**
-   * Sides READ but not yet placed — the nine colours of each, centre first-unknown.
-   *
-   * `captured` lists only sides with a FACE, and a side whose centre nobody could read has none
-   * until `resolveCentres` settles it at six. So a scan could announce "Got that side — 1/6" and
-   * draw nothing at all, which is what the logo-centre cube does on the very first side shown:
-   * reported four times as "it recognised it but the white face is not on screen". The side is
-   * read, the scan is right to hold it, and the person is entitled to see that it happened.
-   *
-   * The centre is `UNREAD_CENTRE` where nobody read it — never a guess, and a host must draw it as
-   * unknown rather than as a colour.
-   */
-  held: { colors: number[] }[];
-  /**
    * Every side held, named or not. `captured` lists only NAMED sides, and a side whose centre
    * another side also claims is held unnamed until six are in — so `captured` can shrink while the
    * scan moves forward, and a host counting it would take a collision for a restart (audit,
@@ -763,26 +746,6 @@ export class AiScanPanel extends HTMLElement {
    * claim `scan-sentences.test.mjs` exists to refuse.
    */
   private lastSightingAt = 0;
-
-  /**
-   * When a WHOLE face last fitted, on the monotonic clock.
-   *
-   * Reading a side from its eight is a FALLBACK, not a first resort: a side whose centre the
-   * detector can see must be captured with it, filed under its own colour and shown on its tile.
-   * Fired eagerly, the eight-sticker path catches any side during the moment its centre flickers
-   * and files it UNNAMED — which has no tile until six resolve, so several sides go quiet at once
-   * and the scan looks like it has lost them. Reported from a live scan on 2026-09-23.
-   */
-  private lastWholeFaceAt = 0;
-
-  /**
-   * How long nine stickers must have been unavailable before eight are read instead.
-   *
-   * Two seconds. A side the detector can read whole settles in well under that, so a working scan
-   * never reaches this path; a side whose centre is simply not there — the blue-logo cube — never
-   * leaves it.
-   */
-  private static readonly PARTIAL_AFTER_MS = 2_000;
 
   private awaiting: ConfirmRequest | null = null;
   /**
@@ -1343,7 +1306,6 @@ export class AiScanPanel extends HTMLElement {
     // The stall bound runs from here when there is nothing captured yet, so a scan that is reopened
     // after a pause is not immediately declared stuck on the strength of the pause.
     this.lastProgressAt = performance.now();
-    this.lastWholeFaceAt = performance.now();
     // Read HERE for the trace's reason: a scan must not start recording halfway through a side.
     this.recording = recordEnabled();
     if (this.recording) {
@@ -1532,80 +1494,6 @@ export class AiScanPanel extends HTMLElement {
     }
     if (dets.length > 0) this.lastSightingAt = performance.now();
     this.seen = seenIn(output, dets, fit.ok ? fit.face.boxes : undefined);
-    // EIGHT STICKERS ARE AN OBSERVATION, NOT A LOST FRAME (Stage 2 item 1, wired 2026-09-23).
-    //
-    // `fitFace` wants nine and throws the frame away at eight. On two recorded scans of the
-    // logo-centre cube that was 204 and 528 frames discarded whole, and in 71 of 72 and 378 of 382
-    // of the readable ones THE MISSING STICKER WAS THE CENTRE — the white cap the detector does not
-    // find. So the side that could not be captured was the side whose ring was perfectly legible.
-    //
-    // The capture path already knows what to do with it. A centre nobody read makes the side
-    // UNNAMED, which is the state `resolveCentres` settles at six: five centres taken, one slot
-    // free, the answer forced and then checked for legality. That is the 2026-09-20 design; the
-    // only thing missing was ever reaching it from a partial frame.
-    //
-    // `-1` at the centre is how "no reading" travels: `Stillness` keys on the eight and reports
-    // `centre()` as null for it, `fileSettledRead` files that as unnamed, and `withCentre`
-    // overwrites the slot's colour when the resolver places the side. It is never a colour anyone
-    // is shown and never a claim — `partial-capture.test.ts` holds both.
-    // THE SAME SET `fitFace` COUNTED, which means isolation applied first. Handing `fitPartial` the
-    // raw detections was a real bug and a silent one: it refuses anything over nine boxes, and a
-    // frame of eight good stickers plus two bits of background clutter has eleven — so on the very
-    // recording this was written for the path fired on NONE of its 91 chances and the scan behaved
-    // exactly as it had before. `fitFace` says PARTIAL_FACE about `dropIsolated(good)`; this has to
-    // ask about the same nine-or-fewer, or the two are answering different questions.
-    const isolated = dropIsolated(
-      dets.filter((d) => d.confidence >= MIN_STICKER_CONFIDENCE && d.classId >= 0 && d.classId < 6),
-    );
-    if (fit.ok) this.lastWholeFaceAt = performance.now();
-    // A FALLBACK, and only once nine have genuinely stopped coming. See `PARTIAL_AFTER_MS`.
-    const mayReadEight =
-      !fit.ok &&
-      fit.reason === 'PARTIAL_FACE' &&
-      performance.now() - this.lastWholeFaceAt >= AiScanPanel.PARTIAL_AFTER_MS;
-    const partial = mayReadEight ? fitPartial(isolated) : null;
-    if (partial?.ok && partial.face.cells[4] === null) {
-      const ring = partial.face.cells;
-      const unread = ring.every((c, i) => i === 4 || c !== null);
-      if (unread) {
-        const colors = ring.map((d) => (d ? d.classId : UNREAD_CENTRE));
-        const confidence = ring.map((d) => d?.confidence ?? 0);
-        const settledPartial = this.still.offer(colors, performance.now(), output.frameId);
-        this.showPreview(colors);
-        // EVERY PATH THROUGH `readFrame` NAMES ITS OUTCOME. Returning without a note leaves the
-        // trace with no row for the tick at all — and these are exactly the ticks a stalling scan
-        // is made of, so the one diagnostic that would explain the stall would go quiet precisely
-        // when it is needed. `partialOf` is `readNote` for a face that has no `FaceFit`.
-        const partialNote: Partial<TickNote> = {
-          colors: [...colors],
-          conf: ring.map((d) => Math.round((d?.confidence ?? 0) * 1000) / 1000),
-          run: this.still.status().run,
-          heldMs: Math.round(this.still.status().heldMs),
-        };
-        if (!settledPartial) {
-          this.report(
-            this.awaiting ? 'confirm' : 'scanning',
-            this.stuck() ? this.stuckLine() : 'Reading a side — hold still…',
-          );
-          this.note({ outcome: 'reading', ...partialNote });
-          return;
-        }
-        this.note({ outcome: 'settled', ...partialNote });
-        // No `lab`: the centre has no box, so there is no frame geometry to read its paint from,
-        // and the assembly's paint path is a last resort that simply does not run here.
-        // THE SIX SCORES PER STICKER TRAVEL TOO. `repairByCounts` is the assembly's only reader of
-        // them and runs after the normal path has refused — exactly the position a partial capture
-        // is most likely to reach. The centre has none, and gets a flat row rather than a guess:
-        // `withCentre` rewrites it as a certainty when the side is placed.
-        const scores = ring.map((d) => d?.scores ?? new Array<number>(NUM_CLASSES).fill(0));
-        this.fileSettledRead(
-          { colors, confidence, scores, ordering: 'lattice' },
-          null,
-          this.still.centreReads(),
-        );
-        return;
-      }
-    }
     if (!fit.ok) {
       this.still.reset();
       this.showPreview(null);
@@ -3695,7 +3583,6 @@ export class AiScanPanel extends HTMLElement {
           phase,
           message,
           captured: this.capturedFaces(),
-          held: this.unnamed.map((c) => ({ colors: [...c.colors] })),
           sides: this.sidesHeld(),
           live: this.live,
           settling: this.settling(),

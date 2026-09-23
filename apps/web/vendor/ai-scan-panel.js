@@ -393,9 +393,9 @@ var require_cube = __commonJS({
             return this;
           }
           move(arg) {
-            var face, k, l, len3, move, power, ref, ref1, x;
+            var face, k, l, len, move, power, ref, ref1, x;
             ref = parseAlg(arg);
-            for (k = 0, len3 = ref.length; k < len3; k++) {
+            for (k = 0, len = ref.length; k < len; k++) {
               move = ref[k];
               face = move / 3 | 0;
               power = move % 3;
@@ -451,12 +451,12 @@ var require_cube = __commonJS({
             return result.join(" ");
           }
           static inverse(arg) {
-            var face, k, len3, move, power, result, str;
+            var face, k, len, move, power, result, str;
             result = (function() {
-              var k2, len4, ref, results;
+              var k2, len3, ref, results;
               ref = parseAlg(arg);
               results = [];
-              for (k2 = 0, len4 = ref.length; k2 < len4; k2++) {
+              for (k2 = 0, len3 = ref.length; k2 < len3; k2++) {
                 move = ref[k2];
                 face = move / 3 | 0;
                 power = move % 3;
@@ -467,7 +467,7 @@ var require_cube = __commonJS({
             result.reverse();
             if (typeof arg === "string") {
               str = "";
-              for (k = 0, len3 = result.length; k < len3; k++) {
+              for (k = 0, len = result.length; k < len; k++) {
                 move = result[k];
                 face = move / 3 | 0;
                 power = move % 3;
@@ -1109,11 +1109,11 @@ var require_cube = __commonJS({
           17: "b"
         };
         parseAlg = function(arg) {
-          var k, len3, move, part, power, ref, results;
+          var k, len, move, part, power, ref, results;
           if (typeof arg === "string") {
             ref = arg.split(/\s+/);
             results = [];
-            for (k = 0, len3 = ref.length; k < len3; k++) {
+            for (k = 0, len = ref.length; k < len; k++) {
               part = ref[k];
               if (part.length === 0) {
                 continue;
@@ -1480,7 +1480,7 @@ var require_solve = __commonJS({
         mergeURtoDF: []
       };
       Cube3.computeMoveTables = function(...tables) {
-        var len3, m, name, scope, size, tableName;
+        var len, m, name, scope, size, tableName;
         if (tables.length === 0) {
           tables = (function() {
             var results;
@@ -1491,7 +1491,7 @@ var require_solve = __commonJS({
             return results;
           })();
         }
-        for (m = 0, len3 = tables.length; m < len3; m++) {
+        for (m = 0, len = tables.length; m < len; m++) {
           tableName = tables[m];
           if (this.moveTables[tableName] !== null) {
             continue;
@@ -1538,7 +1538,7 @@ var require_solve = __commonJS({
       })();
       allMoves2 = [0, 1, 2, 4, 7, 9, 10, 11, 13, 16];
       nextMoves2 = (function() {
-        var face, lastFace, len3, m, next, o, p, power, powers, results;
+        var face, lastFace, len, m, next, o, p, power, powers, results;
         results = [];
         for (lastFace = m = 0; m <= 5; lastFace = ++m) {
           next = [];
@@ -1547,7 +1547,7 @@ var require_solve = __commonJS({
               continue;
             }
             powers = face === 0 || face === 3 ? [0, 1, 2] : [1];
-            for (p = 0, len3 = powers.length; p < len3; p++) {
+            for (p = 0, len = powers.length; p < len; p++) {
               power = powers[p];
               next.push(face * 3 + power);
             }
@@ -1570,7 +1570,7 @@ var require_solve = __commonJS({
         }
       };
       computePruningTable = function(phase, size, currentCoords, nextIndex) {
-        var current, depth, done, index, len3, m, move, moves, next, o, ref, table, x;
+        var current, depth, done, index, len, m, move, moves, next, o, ref, table, x;
         table = (function() {
           var m2, ref2, results;
           results = [];
@@ -1593,7 +1593,7 @@ var require_solve = __commonJS({
               continue;
             }
             current = currentCoords(index);
-            for (o = 0, len3 = moves.length; o < len3; o++) {
+            for (o = 0, len = moves.length; o < len; o++) {
               move = moves[o];
               next = nextIndex(current, move);
               if (pruning(table, next) === 15) {
@@ -1702,7 +1702,7 @@ var require_solve = __commonJS({
         ]
       };
       Cube3.computePruningTables = function(...tables) {
-        var len3, m, name, params, tableName;
+        var len, m, name, params, tableName;
         if (tables.length === 0) {
           tables = (function() {
             var results;
@@ -1713,7 +1713,7 @@ var require_solve = __commonJS({
             return results;
           })();
         }
-        for (m = 0, len3 = tables.length; m < len3; m++) {
+        for (m = 0, len = tables.length; m < len; m++) {
           tableName = tables[m];
           if (this.pruningTables[tableName] !== null) {
             continue;
@@ -1865,7 +1865,7 @@ var require_solve = __commonJS({
           return results;
         };
         phase1 = function(state2, depth) {
-          var len3, m, move, next, ref, ref1, results;
+          var len, m, move, next, ref, ref1, results;
           if (depth === 0) {
             if (state2.minDist1() === 0) {
               if (state2.lastMove === null || (ref = state2.lastMove, indexOf.call(allMoves2, ref) < 0)) {
@@ -1876,7 +1876,7 @@ var require_solve = __commonJS({
             if (state2.minDist1() <= depth) {
               ref1 = state2.moves1();
               results = [];
-              for (m = 0, len3 = ref1.length; m < len3; m++) {
+              for (m = 0, len = ref1.length; m < len; m++) {
                 move = ref1[m];
                 next = state2.next1(move);
                 phase1(next, depth - 1);
@@ -1905,7 +1905,7 @@ var require_solve = __commonJS({
           return results;
         };
         phase2 = function(state2, depth) {
-          var len3, m, move, next, ref, results;
+          var len, m, move, next, ref, results;
           if (depth === 0) {
             if (state2.minDist2() === 0) {
               return solution = state2.solution();
@@ -1914,7 +1914,7 @@ var require_solve = __commonJS({
             if (state2.minDist2() <= depth) {
               ref = state2.moves2();
               results = [];
-              for (m = 0, len3 = ref.length; m < len3; m++) {
+              for (m = 0, len = ref.length; m < len; m++) {
                 move = ref[m];
                 next = state2.next2(move);
                 phase2(next, depth - 1);
@@ -1962,7 +1962,7 @@ var require_solve = __commonJS({
         5: "B"
       };
       Cube3.prototype.solve = function(maxDepth = 22) {
-        var clone, len3, m, move, ref, rotation, solution, upright, uprightSolution;
+        var clone, len, m, move, ref, rotation, solution, upright, uprightSolution;
         clone = this.clone();
         upright = clone.upright();
         clone.move(upright);
@@ -1970,7 +1970,7 @@ var require_solve = __commonJS({
         uprightSolution = clone.solveUpright(maxDepth);
         solution = [];
         ref = uprightSolution.split(" ");
-        for (m = 0, len3 = ref.length; m < len3; m++) {
+        for (m = 0, len = ref.length; m < len; m++) {
           move = ref[m];
           solution.push(faceNames[rotation[faceNums[move[0]]]]);
           if (move.length > 1) {
@@ -3237,7 +3237,6 @@ function assembleWithin(faces, threshold, confirmed, options, maxRepairCost, all
     captures: { ...bySlot }
   };
 }
-var UNREAD_CENTRE = -1;
 function withCentre(capture, colour) {
   if (capture.colors[4] === colour) return capture;
   const colors = [...capture.colors];
@@ -4072,376 +4071,6 @@ function traceFrame(output, opts = {}, kept = detectionsFromOutput(output, opts)
     boxes,
     centre: fit.ok ? fittedCentre(fit.face) : centreProbe(kept, nearDets)
   };
-}
-
-// src/partial-lattice.ts
-var MIN_IDENTIFIABLE = 4;
-var MIN_TRUSTED = 8;
-var MAX_RESIDUAL = 0.2;
-var USABLE_MASKS = /* @__PURE__ */ new Set([
-  99,
-  103,
-  107,
-  111,
-  113,
-  115,
-  117,
-  119,
-  121,
-  123,
-  125,
-  127,
-  141,
-  143,
-  149,
-  151,
-  157,
-  159,
-  165,
-  167,
-  173,
-  175,
-  181,
-  183,
-  189,
-  191,
-  205,
-  207,
-  213,
-  215,
-  221,
-  223,
-  225,
-  227,
-  229,
-  231,
-  233,
-  235,
-  237,
-  239,
-  241,
-  243,
-  245,
-  247,
-  249,
-  251,
-  253,
-  255,
-  270,
-  271,
-  284,
-  285,
-  286,
-  287,
-  302,
-  303,
-  316,
-  317,
-  318,
-  319,
-  330,
-  331,
-  334,
-  335,
-  338,
-  339,
-  342,
-  343,
-  346,
-  347,
-  348,
-  349,
-  350,
-  351,
-  354,
-  355,
-  358,
-  359,
-  362,
-  363,
-  366,
-  367,
-  369,
-  370,
-  371,
-  373,
-  374,
-  375,
-  377,
-  378,
-  379,
-  380,
-  381,
-  382,
-  383,
-  396,
-  397,
-  398,
-  399,
-  405,
-  407,
-  412,
-  413,
-  414,
-  415,
-  421,
-  423,
-  428,
-  429,
-  430,
-  431,
-  437,
-  439,
-  444,
-  445,
-  446,
-  447,
-  458,
-  459,
-  460,
-  461,
-  462,
-  463,
-  466,
-  467,
-  469,
-  470,
-  471,
-  474,
-  475,
-  476,
-  477,
-  478,
-  479,
-  481,
-  482,
-  483,
-  485,
-  486,
-  487,
-  489,
-  490,
-  491,
-  492,
-  493,
-  494,
-  495,
-  497,
-  498,
-  499,
-  501,
-  502,
-  503,
-  505,
-  506,
-  507,
-  508,
-  509,
-  510,
-  511
-]);
-var CELL_TOLERANCE = 0.5;
-var PROPOSAL_TOLERANCE = 1;
-function basisFrom(cells, pts) {
-  const [ca, cb, cc] = cells;
-  const at = (c2) => [c2 % 3, Math.floor(c2 / 3)];
-  const [a, b, c] = [at(ca), at(cb), at(cc)];
-  const det = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
-  if (det === 0) return null;
-  const [pa, pb, pc] = pts;
-  const row = [
-    ((pb[0] - pa[0]) * (c[1] - a[1]) - (pc[0] - pa[0]) * (b[1] - a[1])) / det,
-    ((pb[1] - pa[1]) * (c[1] - a[1]) - (pc[1] - pa[1]) * (b[1] - a[1])) / det
-  ];
-  const col = [
-    ((b[0] - a[0]) * (pc[0] - pa[0]) - (c[0] - a[0]) * (pb[0] - pa[0])) / det,
-    ((b[0] - a[0]) * (pc[1] - pa[1]) - (c[0] - a[0]) * (pb[1] - pa[1])) / det
-  ];
-  const origin = [
-    pa[0] - row[0] * a[0] - col[0] * a[1],
-    pa[1] - row[1] * a[0] - col[1] * a[1]
-  ];
-  return { origin, row, col };
-}
-var len = (v) => Math.hypot(v[0], v[1]);
-var place = (basis, c) => [
-  basis.origin[0] + basis.row[0] * (c % 3) + basis.col[0] * Math.floor(c / 3),
-  basis.origin[1] + basis.row[1] * (c % 3) + basis.col[1] * Math.floor(c / 3)
-];
-function assign(basis, pts, tolerance = CELL_TOLERANCE) {
-  const scale = Math.min(len(basis.row), len(basis.col));
-  if (!(scale > 0) || !Number.isFinite(scale)) return null;
-  const reach = tolerance * scale;
-  const centres = [];
-  for (let c = 0; c < 9; c++) centres.push(place(basis, c));
-  const cost = [];
-  for (const p of pts) {
-    const row = [];
-    let nearest = Number.POSITIVE_INFINITY;
-    for (let c = 0; c < 9; c++) {
-      const q = centres[c];
-      const d = Math.hypot(p[0] - q[0], p[1] - q[1]);
-      if (d < nearest) nearest = d;
-      row.push(d);
-    }
-    if (!(nearest <= reach)) return null;
-    cost.push(row);
-  }
-  while (cost.length < 9) cost.push(new Array(9).fill(0));
-  const chosen = hungarian(cost);
-  const out = [];
-  let residual = 0;
-  for (let k = 0; k < pts.length; k++) {
-    const cell = chosen[k];
-    const d = cost[k][cell];
-    if (!(d <= reach)) return null;
-    out.push(cell);
-    residual = Math.max(residual, d / scale);
-  }
-  return { cells: out, residual };
-}
-function refine(cells, pts) {
-  let n = 0;
-  let si = 0;
-  let sj = 0;
-  let sii = 0;
-  let sjj = 0;
-  let sij = 0;
-  const sx = [0, 0, 0];
-  const sy = [0, 0, 0];
-  for (const [k, c] of cells.entries()) {
-    const i = c % 3;
-    const j = Math.floor(c / 3);
-    const [x, y] = pts[k];
-    n += 1;
-    si += i;
-    sj += j;
-    sii += i * i;
-    sjj += j * j;
-    sij += i * j;
-    sx[0] += x;
-    sx[1] += x * i;
-    sx[2] += x * j;
-    sy[0] += y;
-    sy[1] += y * i;
-    sy[2] += y * j;
-  }
-  const m = [
-    [n, si, sj],
-    [si, sii, sij],
-    [sj, sij, sjj]
-  ];
-  const det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
-  if (!Number.isFinite(det) || Math.abs(det) < 1e-9) return null;
-  const inv = [
-    [
-      (m[1][1] * m[2][2] - m[1][2] * m[2][1]) / det,
-      (m[0][2] * m[2][1] - m[0][1] * m[2][2]) / det,
-      (m[0][1] * m[1][2] - m[0][2] * m[1][1]) / det
-    ],
-    [
-      (m[1][2] * m[2][0] - m[1][0] * m[2][2]) / det,
-      (m[0][0] * m[2][2] - m[0][2] * m[2][0]) / det,
-      (m[0][2] * m[1][0] - m[0][0] * m[1][2]) / det
-    ],
-    [
-      (m[1][0] * m[2][1] - m[1][1] * m[2][0]) / det,
-      (m[0][1] * m[2][0] - m[0][0] * m[2][1]) / det,
-      (m[0][0] * m[1][1] - m[0][1] * m[1][0]) / det
-    ]
-  ];
-  const solve = (rhs) => [
-    inv[0][0] * rhs[0] + inv[0][1] * rhs[1] + inv[0][2] * rhs[2],
-    inv[1][0] * rhs[0] + inv[1][1] * rhs[1] + inv[1][2] * rhs[2],
-    inv[2][0] * rhs[0] + inv[2][1] * rhs[1] + inv[2][2] * rhs[2]
-  ];
-  const [ox, rx, cx] = solve(sx);
-  const [oy, ry, cy] = solve(sy);
-  return { origin: [ox, oy], row: [rx, ry], col: [cx, cy] };
-}
-var TURN = (() => {
-  const turns = [];
-  let map = [0, 1, 2, 3, 4, 5, 6, 7, 8];
-  for (let k = 0; k < 4; k++) {
-    turns.push([...map]);
-    const next = new Array(9);
-    for (let c = 0; c < 9; c++) {
-      const i = map[c] % 3;
-      const j = Math.floor(map[c] / 3);
-      next[c] = i * 3 + (2 - j);
-    }
-    map = next;
-  }
-  return turns;
-})();
-function sameReading(a, b) {
-  return TURN.some((turn) => a.every((c, i) => turn[c] === b[i]));
-}
-function fitPartial(dets, { minObserved = MIN_TRUSTED } = {}) {
-  if (minObserved < MIN_IDENTIFIABLE) {
-    throw new RangeError(
-      `fitPartial: minObserved ${minObserved} is below MIN_IDENTIFIABLE ${MIN_IDENTIFIABLE}, where no set of cells determines the grid`
-    );
-  }
-  if (dets.length < minObserved || dets.length > 9) return { ok: false, reason: "too-few" };
-  const pts = dets.map((d) => [d.cx, d.cy]);
-  let tri = null;
-  let widest = 1e-9;
-  for (let a = 0; a < pts.length; a++) {
-    for (let b = a + 1; b < pts.length; b++) {
-      for (let c = b + 1; c < pts.length; c++) {
-        const area = Math.abs(
-          (pts[b][0] - pts[a][0]) * (pts[c][1] - pts[a][1]) - (pts[c][0] - pts[a][0]) * (pts[b][1] - pts[a][1])
-        );
-        if (area > widest) {
-          widest = area;
-          tri = [a, b, c];
-        }
-      }
-    }
-  }
-  if (!tri) return { ok: false, reason: "no-lattice" };
-  const readings = [];
-  for (let x = 0; x < 9; x++) {
-    for (let y = 0; y < 9; y++) {
-      if (y === x) continue;
-      for (let z = 0; z < 9; z++) {
-        if (z === x || z === y) continue;
-        const basis = basisFrom([x, y, z], [pts[tri[0]], pts[tri[1]], pts[tri[2]]]);
-        if (!basis) continue;
-        if (basis.row[0] * basis.col[1] - basis.row[1] * basis.col[0] <= 0) continue;
-        const proposed = assign(basis, pts, PROPOSAL_TOLERANCE);
-        if (!proposed) continue;
-        let fit = proposed;
-        for (let pass = 0; pass < 2; pass++) {
-          const better = refine(fit.cells, pts);
-          const next = better && assign(better, pts, PROPOSAL_TOLERANCE);
-          if (!next) break;
-          fit = next;
-        }
-        const settled = refine(fit.cells, pts);
-        const strict = settled && assign(settled, pts, CELL_TOLERANCE);
-        if (!strict) continue;
-        if (!readings.some((r) => sameReading(r.cells, strict.cells))) readings.push(strict);
-      }
-    }
-  }
-  if (readings.length === 0) return { ok: false, reason: "no-lattice" };
-  readings.sort((a, b) => a.residual - b.residual);
-  const best = readings[0];
-  const cells = best.cells;
-  const mask = cells.reduce((m, c) => m | 1 << c, 0);
-  if (!USABLE_MASKS.has(mask)) {
-    return { ok: false, reason: "mask-not-usable", readings: readings.length };
-  }
-  if (best.residual > MAX_RESIDUAL) {
-    return { ok: false, reason: "poor-fit", readings: readings.length, residual: best.residual };
-  }
-  const grid = new Array(9).fill(null);
-  cells.forEach((c, i) => {
-    grid[c] = dets[i];
-  });
-  return { ok: true, face: { cells: grid, observed: cells.length, mask }, residual: best.residual };
 }
 
 // src/session-record.ts
@@ -7594,24 +7223,6 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
    * claim `scan-sentences.test.mjs` exists to refuse.
    */
   lastSightingAt = 0;
-  /**
-   * When a WHOLE face last fitted, on the monotonic clock.
-   *
-   * Reading a side from its eight is a FALLBACK, not a first resort: a side whose centre the
-   * detector can see must be captured with it, filed under its own colour and shown on its tile.
-   * Fired eagerly, the eight-sticker path catches any side during the moment its centre flickers
-   * and files it UNNAMED — which has no tile until six resolve, so several sides go quiet at once
-   * and the scan looks like it has lost them. Reported from a live scan on 2026-09-23.
-   */
-  lastWholeFaceAt = 0;
-  /**
-   * How long nine stickers must have been unavailable before eight are read instead.
-   *
-   * Two seconds. A side the detector can read whole settles in well under that, so a working scan
-   * never reaches this path; a side whose centre is simply not there — the blue-logo cube — never
-   * leaves it.
-   */
-  static PARTIAL_AFTER_MS = 2e3;
   awaiting = null;
   /**
    * The cube's colour scheme as the LAST VERDICT established it — `ScanProgress.scheme`. Null
@@ -8050,7 +7661,6 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
       globalThis.__cubusScanTrace = this.trace;
     }
     this.lastProgressAt = performance.now();
-    this.lastWholeFaceAt = performance.now();
     this.recording = recordEnabled();
     if (this.recording) {
       this.recorder.begin({
@@ -8178,44 +7788,6 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     }
     if (dets.length > 0) this.lastSightingAt = performance.now();
     this.seen = seenIn(output, dets, fit.ok ? fit.face.boxes : void 0);
-    const isolated = dropIsolated(
-      dets.filter((d) => d.confidence >= MIN_STICKER_CONFIDENCE && d.classId >= 0 && d.classId < 6)
-    );
-    if (fit.ok) this.lastWholeFaceAt = performance.now();
-    const mayReadEight = !fit.ok && fit.reason === "PARTIAL_FACE" && performance.now() - this.lastWholeFaceAt >= _AiScanPanel.PARTIAL_AFTER_MS;
-    const partial = mayReadEight ? fitPartial(isolated) : null;
-    if (partial?.ok && partial.face.cells[4] === null) {
-      const ring = partial.face.cells;
-      const unread = ring.every((c, i) => i === 4 || c !== null);
-      if (unread) {
-        const colors = ring.map((d) => d ? d.classId : UNREAD_CENTRE);
-        const confidence = ring.map((d) => d?.confidence ?? 0);
-        const settledPartial = this.still.offer(colors, performance.now(), output.frameId);
-        this.showPreview(colors);
-        const partialNote = {
-          colors: [...colors],
-          conf: ring.map((d) => Math.round((d?.confidence ?? 0) * 1e3) / 1e3),
-          run: this.still.status().run,
-          heldMs: Math.round(this.still.status().heldMs)
-        };
-        if (!settledPartial) {
-          this.report(
-            this.awaiting ? "confirm" : "scanning",
-            this.stuck() ? this.stuckLine() : "Reading a side \u2014 hold still\u2026"
-          );
-          this.note({ outcome: "reading", ...partialNote });
-          return;
-        }
-        this.note({ outcome: "settled", ...partialNote });
-        const scores = ring.map((d) => d?.scores ?? new Array(NUM_CLASSES).fill(0));
-        this.fileSettledRead(
-          { colors, confidence, scores, ordering: "lattice" },
-          null,
-          this.still.centreReads()
-        );
-        return;
-      }
-    }
     if (!fit.ok) {
       this.still.reset();
       this.showPreview(null);
@@ -9711,7 +9283,6 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
           phase,
           message,
           captured: this.capturedFaces(),
-          held: this.unnamed.map((c) => ({ colors: [...c.colors] })),
           sides: this.sidesHeld(),
           live: this.live,
           settling: this.settling(),
