@@ -126,6 +126,13 @@ export interface RecordedFrame {
 export interface RecordedDecision {
   frame: number;
   t: number;
+  /**
+   * `'held-back'` and `'contest-resolved'` are HISTORICAL and nothing emits them any more: they
+   * belonged to the centre resolution, removed 2026-09-23. They stay in the union because this is
+   * a stored format — a recording made before that date carries them, and a parser that refused
+   * one would make an existing corpus entry unreadable, which is a worse fault than an unused
+   * member. Nothing downstream may treat either as a side.
+   */
   kind: 'captured' | 'held-back' | 'turned-away' | 'contest-resolved' | 'look-asked' | 'finished';
   detail: Record<string, unknown>;
 }

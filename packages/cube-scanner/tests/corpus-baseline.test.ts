@@ -90,11 +90,16 @@ describe('the corpus describes itself before anything is measured over it', () =
 });
 
 describe('the pipeline as it stands, over the corpus as it stands', () => {
-  it('reads this cube, and never reports one that is not the cube', async () => {
-    // THE BASELINE. At the 60 ms tick the desktop app runs, today's pipeline captures all six sides
-    // of the 09-18 sitting and reports no cube — since D1 it asks for one look at the white side
-    // before accepting a repair, and a twenty-second clip holds no frames after the ask to answer
-    // it. What it must never do, and does not, is complete with something that is not the truth.
+  it('reads five of this cube\u2019s six sides, and never reports one that is not the cube', async () => {
+    // THE BASELINE, RE-MEASURED 2026-09-23 after the logo machinery was removed (the owner's call;
+    // `view/ai-scan-panel.ts`, `view/stillness.ts`). It read six sides before, on a mechanism that
+    // filed the white side with its centre UNREAD and placed it by elimination once six were in.
+    // With that gone a side is its centre, and the detector does not read this cube's white centre
+    // as white on any frame of this sitting — so the scan captures FIVE and the sixth is the
+    // person's to paint.
+    //
+    // This number is the price of the decision, stated where a later stage will be compared with
+    // it. What did not change is the property the corpus exists for: no wrong cube, ever.
     const outcomes = await run(60);
     const m = scoreSessions(outcomes);
     expect(m.sessions).toBe(1);
@@ -102,13 +107,16 @@ describe('the pipeline as it stands, over the corpus as it stands', () => {
     for (const o of outcomes) {
       if (o.reported !== null) expect(o.reported).toBe(LOGO_CUBE_TRUTH);
     }
-    // Six sides captured, each with the time it took — the censored time-to-side is computed from
-    // exactly these, and they are what a later stage has to beat.
-    expect(m.sidesCaptured).toBe(6);
-    expect(m.sidesCensored).toBe(0);
+    expect(m.completed).toBe(0);
+    // Five sides captured and one CENSORED — the sixth was never observed, so it is not a slow
+    // capture that can be averaged in, it is an absence the arithmetic has to carry.
+    expect(m.sidesCaptured).toBe(5);
+    expect(m.sidesCensored).toBe(1);
     expect(m.timeToSideMedianMs).not.toBeNull();
-    expect(m.timeToSideP90Ms).not.toBeNull();
-    expect(m.timeToSideP90Ms!).toBeLessThanOrEqual(20_000);
+    // AND THE P90 IS NULL, which is the censoring doing its job: one side of six unobserved puts
+    // the 90th percentile past the last event, and `censoredQuantile` answers null for a quantile
+    // the data cannot reach rather than quoting the largest number it has.
+    expect(m.timeToSideP90Ms).toBeNull();
   });
 
   it('reports a wrong-cube bound of 95%, because one cube cannot say less', async () => {
@@ -125,32 +133,32 @@ describe('the pipeline as it stands, over the corpus as it stands', () => {
     // needs the LONGER run — 4 frames at 5 fps, 9 at 15.7, 16 at 30. A baseline taken only at the
     // cadence of the machine it was written on is not a baseline.
     //
-    // THE BASELINE ITSELF, measured 2026-09-23 and pinned so a later stage is compared with it
-    // rather than with a memory of it:
+    // THE BASELINE ITSELF, re-measured 2026-09-23 after the logo machinery came out, and pinned so
+    // a later stage is compared with it rather than with a memory of it:
     //
-    //   | tick   | six sides | looks asked | median time-to-side | p90      | wrong cubes |
-    //   |--------|-----------|-------------|---------------------|----------|-------------|
-    //   |  60 ms | yes       | 1           | 6,420 ms            | 17,040 ms| 0           |
-    //   | 100 ms | yes       | 1           | 6,500 ms            | 17,100 ms| 0           |
-    //   | 200 ms | yes       | 1           | 6,600 ms            | 17,200 ms| 0           |
+    //   | tick   | sides read | looks asked | median time-to-side | p90       | wrong cubes |
+    //   |--------|------------|-------------|---------------------|-----------|-------------|
+    //   |  60 ms | 5 of 6     | 0           | 10,200 ms           | censored  | 0           |
+    //   | 100 ms | 5 of 6     | 0           | 10,200 ms           | censored  | 0           |
+    //   | 200 ms | 5 of 6     | 0           | 10,200 ms           | censored  | 0           |
     //
-    // The bands below are a tick wide: a capture lands on a tick, so the same scan read at a
-    // different rate moves by at most one, and a band tighter than that would fail on arithmetic
-    // rather than on a regression.
-    for (const [tickMs, median, p90] of [
-      [60, 6420, 17040],
-      [100, 6500, 17100],
-      [200, 6600, 17200],
+    // NO LOOK IS ASKED FOR NOW, at any cadence: the repair D1 asks about was the white side's, and
+    // the white side is never filed. The median is the same at all three because the captures fall
+    // on the same underlying frames; the per-side times move by at most one tick, which is why the
+    // band below is a tick wide rather than exact.
+    for (const [tickMs, median] of [
+      [60, 10_200],
+      [100, 10_200],
+      [200, 10_200],
     ] as const) {
       const m = scoreSessions(await run(tickMs));
       expect(m.wrongCubes, `${tickMs} ms`).toBe(0);
-      expect(m.sidesCaptured, `${tickMs} ms`).toBe(6);
+      expect(m.sidesCaptured, `${tickMs} ms`).toBe(5);
+      expect(m.sidesCensored, `${tickMs} ms`).toBe(1);
       expect(m.timeToSideMedianMs, `${tickMs} ms median`).toBeGreaterThanOrEqual(median - tickMs);
       expect(m.timeToSideMedianMs, `${tickMs} ms median`).toBeLessThanOrEqual(median + tickMs);
-      expect(m.timeToSideP90Ms, `${tickMs} ms p90`).toBeGreaterThanOrEqual(p90 - tickMs);
-      expect(m.timeToSideP90Ms, `${tickMs} ms p90`).toBeLessThanOrEqual(p90 + tickMs);
-      // One look, at every cadence: D1's ask for the white side's repaired sticker.
-      expect(m.looksAsked, `${tickMs} ms looks`).toBe(1);
+      expect(m.timeToSideP90Ms, `${tickMs} ms p90`).toBeNull();
+      expect(m.looksAsked, `${tickMs} ms looks`).toBe(0);
     }
   });
 });

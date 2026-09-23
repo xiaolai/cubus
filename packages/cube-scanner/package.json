@@ -15,7 +15,6 @@
     "check:fast": "npm run typecheck && npm run lint && npm run test",
     "build:panel": "esbuild view/ai-scan-panel.ts --bundle --format=esm --target=es2022 --legal-comments=eof --outfile=../../apps/web/vendor/ai-scan-panel.js",
     "build:misread-worker": "esbuild view/misread-worker.ts --bundle --format=esm --target=es2022 --legal-comments=eof --outfile=../../apps/web/vendor/misread-worker.js",
-    "build:centres-worker": "esbuild view/centres-worker.ts --bundle --format=esm --target=es2022 --legal-comments=eof --outfile=../../apps/web/vendor/centres-worker.js",
     "build:letterbox-worker": "esbuild view/letterbox-worker.ts --bundle --format=esm --target=es2022 --legal-comments=eof --outfile=../../apps/web/vendor/letterbox-worker.js",
     "build:inference-worker": "esbuild view/inference-worker.ts --bundle --format=esm --target=es2022 --legal-comments=eof --outfile=../../apps/web/vendor/inference-worker.js"
   },

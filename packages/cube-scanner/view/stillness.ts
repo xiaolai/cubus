@@ -12,29 +12,22 @@
  * alone would accept a cube that drifted through several different readings during the window.
  * Requiring both is what makes a captured frame a frame somebody actually held.
  *
- * THE RUN IS KEYED ON THE EIGHT, NOT ON ALL NINE (2026-09-20) — see `eightOf`. The centre is
- * reported separately by `centre()`, which answers null when the reads of a run did not agree about
- * it. A logo cap is exactly that case, and it used to mean the side was never captured at all.
+ * THE RUN IS KEYED ON ALL NINE, THE CENTRE INCLUDED. It was keyed on the eight between 2026-09-20
+ * and 2026-09-23, so that a logo cap alternating between two colours could not stop a side being
+ * captured; the side was then filed with its centre UNREAD and placed by elimination at six. That
+ * whole mechanism was removed on the owner's call (see `ai-scan-panel.ts`), and with nothing left
+ * to place an unnamed side, letting the centre disagree inside a run buys nothing and costs the
+ * guard: a centre is fixed to its side, so a run whose centre changed is not one subject.
+ *
+ * What a centre that never settles gets instead is words. It breaks the run alone, so `flickering()`
+ * names it like any other sticker, and a scan that captures nothing for the panel's bound says the
+ * cube is not being read and offers painting. Both are true of what was measured; neither invents a
+ * side.
  */
 /** Positions that must change at once for a read to be a different subject, not a noisy frame. */
 const SUBJECT_CHANGE = 4;
 /** The centre's position. Every side has its own centre colour, so another side always changes it. */
 const CENTRE = 4;
-/** The run's key: the EIGHT around the centre, never the centre itself.
- *
- *  THE CENTRE MUST NOT BE ABLE TO VETO A CAPTURE (2026-09-20). Keyed on all nine, a logo cap reading
- *  blue on one frame and white on the next broke the run on every alternation, so the side never
- *  settled and was never captured at all — the panel said "this sticker keeps changing" for as long
- *  as anyone was willing to hold the cube up. The eight are what identify a side anyway
- *  (`sideByEight`), and the centre is the sticker this package already refuses to trust: its
- *  collisions are settled at six by counting, not by reading.
- *
- *  The guard this does NOT give up is the one that matters: a cube being TURNED through the frame
- *  changes far more than its centre, so eight identical reads over 500 ms still cannot be a face on
- *  its way past. What is given up is only the centre's power to say "not yet". */
-const eightOf = (colors: readonly number[]): string =>
-  colors.filter((_, i) => i !== CENTRE).join(',');
-
 /** Where each position's sticker comes from when a side is turned a quarter in the hand (row-major). */
 const QUARTER_TURN = [6, 3, 0, 7, 4, 1, 8, 5, 2] as const;
 
@@ -71,46 +64,28 @@ export function classify(
   for (let i = 0; i < colors.length; i++) {
     if (colors[i] !== previous[i]) differing.push(i);
   }
-  // The changed stickers OF THE EIGHT. Counting the centre here meant a logo cap alternating beside
-  // one flickering corner was "two changed positions", so the corner was never recorded and never
-  // named — a dead end with no guidance at all.
-  const outer = differing.filter((i) => i !== CENTRE);
   // Most of the face changing is a cube that MOVED — another side, or the same side turned — and
   // what the last subject's stickers did says nothing about this one: without this, a face turned
   // straight into another fully read one was described by the old face's red/orange flicker (audit,
   // 2026-09-19). Two or three positions at once is a noisy frame, not a new subject, and wiping the
   // history there would keep a real flicker from ever being named.
   //
-  // A CENTRE CHANGE IS NOT EVIDENCE OF A NEW SUBJECT ON ITS OWN (2026-09-20). It was, when the run
-  // was keyed on all nine and a centre could not differ inside one. Now it can — that is the logo
-  // fix — so the evidence is the EIGHT: two or more of them changing beside a changed centre is a
-  // different side, and one is a sticker worth naming.
+  // A CHANGED CENTRE BESIDE ANYTHING ELSE IS ANOTHER SIDE, however many of its stickers happen to
+  // match the last one's — a near-solved cube's sides can match in most places. The centre ALONE is
+  // still a flicker, and since 2026-09-23 it is one that breaks the run, so it is exactly the
+  // sticker worth naming: a logo reads as more than one colour and this is how the person is told
+  // which sticker to light better or tap afterwards.
   //
   // And a read that is the last one TURNED is the same side turned in the hand: every sticker the
   // history names has moved, though a side with a near-symmetric pattern changes in only two or
   // three places (round-3 audit). Wiping is the safe direction either way — a flicker named later,
   // never the wrong sticker named now.
-  const anotherSide = differing.includes(CENTRE) && outer.length >= 2;
+  const anotherSide = differing.includes(CENTRE) && differing.length >= 2;
   const turned = differing.length >= 2 && turnedFrom(previous, colors);
   return {
-    only: outer.length === 1 ? outer[0]! : null,
+    only: differing.length === 1 ? differing[0]! : null,
     forget: differing.length >= SUBJECT_CHANGE || anotherSide || turned,
   };
-}
-
-/**
- * The colour(s) a run's centre showed on the most reads — every colour tied for the top count, and
- * nothing for a run that showed none. The only thing a centre that never settled is allowed to say
- * about which side it belongs to: a colour it showed on a minority of frames is the flicker that
- * made it unread in the first place, and a side named by a flicker is the twin taken for the ghost
- * (`Stillness.centreReads`, 2026-09-21). Ties are kept, not broken — a logo that alternated evenly
- * showed both colours as much as each other, and choosing one would be reading a centre this
- * package has already refused to read.
- */
-export function mostShown(reads: ReadonlyMap<number, number>): number[] {
-  let most = 0;
-  for (const n of reads.values()) if (n > most) most = n;
-  return most === 0 ? [] : [...reads].filter(([, n]) => n === most).map(([c]) => c);
 }
 
 export class Stillness {
@@ -125,13 +100,6 @@ export class Stillness {
   private key: string | null = null;
   private count = 0;
   private since = 0;
-  /**
-   * The centre colour each read of the current run showed, in order.
-   *
-   * The run is keyed on the EIGHT (see `offer`), so the centre is free to disagree across a run and
-   * this is where that disagreement is recorded. Emptied with the run.
-   */
-  private centres: number[] = [];
   /** The colours of the run's read, kept so a broken run can be told WHERE it broke. */
   private colors: readonly number[] | null = null;
   /**
@@ -162,8 +130,7 @@ export class Stillness {
   private readonly breakColours = new Map<number, [number, number]>();
 
   /**
-   * @param reads Consecutive reads required with an identical EIGHT-sticker ring. The centre may
-   *   differ between them; whether it agreed is reported separately by `centre()`.
+   * @param reads Identical consecutive reads required — all nine stickers, the centre included.
    * @param ms Wall-clock stillness required, from the first read of the current run.
    */
   constructor(
@@ -172,8 +139,7 @@ export class Stillness {
   ) {}
 
   /**
-   * Offer the latest read. True once its EIGHT-sticker ring has been identical `reads` times AND
-   * still for `ms` — the centre is free to disagree across a run, and `centre()` says whether it did.
+   * Offer the latest read. True once it has been identical `reads` times AND still for `ms`.
    *
    * `now` is injectable because the alternative is a test that sleeps: the timing rule is the whole
    * point of this class, so it has to be drivable without wall-clock waits.
@@ -194,7 +160,7 @@ export class Stillness {
    * reads as "always a new frame", which is the belief this corrects.
    */
   offer(colors: readonly number[], now: number = performance.now(), frameId?: number): boolean {
-    const key = eightOf(colors);
+    const key = colors.join(',');
     // A repeat of the frame the last counted read came from: no new evidence, so nothing moves.
     // Checked before the key comparison, because a repeated frame necessarily has the same key and
     // would otherwise be indistinguishable from a genuine second look at a still cube — which is
@@ -205,11 +171,10 @@ export class Stillness {
     if (frameId !== undefined) this.lastFrame = frameId;
     if (key === this.key) {
       this.count += 1;
-      this.centres.push(colors[CENTRE] ?? -1);
     } else {
       // WHERE the run broke, when it broke in exactly one place.
       //
-      // The gate keys on the eight, so ONE of THEM flickering between red and orange — the
+      // The gate keys on all nine, so ONE sticker flickering between red and orange — the
       // detector's known weak pair — means no run ever completes and the scan simply never
       // captures that side. That is a dead end with no message: the panel says "hold still" for
       // as long as the user is willing to. The settle rule is deliberately NOT relaxed for the
@@ -217,10 +182,6 @@ export class Stillness {
       // what is added is the missing SENTENCE: which sticker keeps changing, so the user can light
       // it better or tap it afterwards. Recorded only for a single-position break, because two
       // positions changing is a cube that moved, which needs no explaining.
-      //
-      // The CENTRE is no longer one of these: since 2026-09-20 it cannot break a run at all, so it
-      // is never named here. A centre that disagrees across a run is reported by `centre()` as
-      // unread, and the side is captured and placed by counting instead of being narrated at.
       const previous = this.colors;
       if (previous && previous.length === colors.length) {
         const { only, forget } = classify(previous, colors);
@@ -236,45 +197,12 @@ export class Stillness {
       this.key = key;
       this.count = 1;
       this.since = now;
-      this.centres = [colors[CENTRE] ?? -1];
     }
-    // The LAST read, not the run's first: a break is described by what changed between two frames,
-    // and with the centre free to differ inside a run those are no longer the same thing.
+    // The LAST read, not the run's first. Identical inside a run now that the key is all nine, and
+    // kept as the last one because that is what a break is described against: what changed between
+    // two consecutive frames.
     this.colors = [...colors];
     return this.count >= this.reads && now - this.since >= this.ms;
-  }
-
-  /**
-   * The centre every read of the run agreed on, or null when they did not.
-   *
-   * UNANIMOUS, not a majority. A logo cap alternates — blue, white, blue — and a majority would pick
-   * one of them and file the side under a colour it may not be, which is the confidently-wrong
-   * answer this package refuses everywhere. No agreement means the centre is UNREAD, and an unread
-   * centre is what `resolveCentres` exists to place: counting, not seeing.
-   */
-  centre(): number | null {
-    const first = this.centres[0];
-    if (first === undefined || first < 0) return null;
-    return this.centres.every((c) => c === first) ? first : null;
-  }
-
-  /**
-   * How many reads of the run showed each colour at the centre — what a side whose centre never
-   * agreed is remembered by (2026-09-20). A read of that side later, its centre settled, names the
-   * colour the run showed MOST; a different side that happens to share its eight (white and yellow
-   * after U D R L F B) names its own centre colour. That is what tells "the same side, held on"
-   * from "its twin", where the eight alone cannot (`dev-docs/scanner-audit-2026-09-20.md` §4).
-   *
-   * COUNTS, NOT A SET (2026-09-21). As a set, one frame was as good as nine: a white side whose
-   * centre flickered yellow on a single frame was remembered as "showed white and yellow", and the
-   * real yellow side — the same eight, its centre yellow on every frame — was then "the same side,
-   * held on" and turned away for good, so the scan could never reach six. A colour the run showed
-   * once is a flicker, and a flicker alone must not name a side (`mostShown`).
-   */
-  centreReads(): ReadonlyMap<number, number> {
-    const reads = new Map<number, number>();
-    for (const c of this.centres) if (c >= 0) reads.set(c, (reads.get(c) ?? 0) + 1);
-    return reads;
   }
 
   /**
@@ -336,7 +264,6 @@ export class Stillness {
     this.colors = null;
     this.count = 0;
     this.since = 0;
-    this.centres = [];
   }
 
   /**

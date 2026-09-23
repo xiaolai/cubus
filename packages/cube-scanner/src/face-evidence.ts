@@ -94,7 +94,7 @@ export const SETTLE_BOUND_MS = 4000;
  * sticker spacing.
  *
  * A fifth of a step. Comfortably above the detector's own positional jitter — 0.039 of a step at the
- * median and 0.085 at the 95th percentile, measured in `partial-lattice.ts` — so a held cube is not
+ * median and 0.085 at the 95th percentile, measured over the golden frames — so a held cube is not
  * mistaken for a moving one by noise alone; and well under the half step at which a sticker is
  * nearer its neighbour's cell, so a real movement is not mistaken for a held one.
  */

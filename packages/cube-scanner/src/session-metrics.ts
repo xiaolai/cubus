@@ -55,9 +55,9 @@ export interface SessionOutcome {
    * Every span the replay spent inside the panel on one tick, in milliseconds.
    *
    * The scan's own work per frame, which on a real page is work the main thread cannot spend
-   * drawing. `A3` — centre resolution at 606 ms with four unnamed sides — is the measurement this
-   * exists to catch, and it is a MAXIMUM question, not a mean one, which is why the spans are kept
-   * rather than summarised here.
+   * drawing. The audit's `A3` — a centre resolution that blocked for 606 ms, since removed — is
+   * the kind of measurement this exists to catch, and it is a MAXIMUM question, not a mean one,
+   * which is why the spans are kept rather than summarised here.
    */
   blockingMs: number[];
 }

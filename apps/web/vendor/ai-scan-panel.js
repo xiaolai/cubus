@@ -3086,11 +3086,11 @@ function repairByCounts(faces, maxCost) {
     //
     // MEASURED AGAINST THE CAPTURE, NOT AGAINST THE SCORES' ARGMAX, and the difference is not a
     // detail. `assignNineOfEach.changed` reports where the assignment differs from each sticker's
-    // top score — which includes every sticker a CALLER had already decided on other evidence.
-    // `resolveCentres` is exactly that caller: `withCentre` overwrites each filed side's centre
-    // with its slot's colour, so the argmax reading counts six centres as "repaired" and D1 would
-    // demand a second look at a colour the repair never touched. What D1 is about is a sticker
-    // whose colour NOBODY observed, so the comparison is with the colour the capture carries.
+    // top score — which includes every sticker a CALLER had already decided on other evidence: a
+    // capture whose centre was rewritten to its slot's colour (`withCentre`) would count as
+    // "repaired" at the argmax and D1 would demand a second look at a colour the repair never
+    // touched. What D1 is about is a sticker whose colour NOBODY observed, so the comparison is
+    // with the colour the capture carries.
     changed: result.changed.flatMap((at) => {
       const face = FACES[Math.floor(at / 9)];
       const index = at % 9;
@@ -3117,16 +3117,19 @@ function recolourByPaint(faces) {
   });
   return out;
 }
-function assembleColors(faces, threshold = LOW_CONFIDENCE_THRESHOLD, confirmed = {}, options = {}) {
-  return assembleWithin(
-    faces,
-    threshold,
-    confirmed,
-    options,
-    options.maxRepairCost ?? MAX_REPAIR_COST
-  );
+function withCentre(capture, colour) {
+  if (capture.colors[4] === colour) return capture;
+  const colors = [...capture.colors];
+  colors[4] = colour;
+  if (!capture.scores) return { ...capture, colors };
+  const scores = capture.scores.map((row) => [...row]);
+  scores[4] = scores[4].map((_, c) => c === colour ? 1 : 0);
+  return { ...capture, colors, scores };
 }
-function assembleWithin(faces, threshold, confirmed, options, maxRepairCost, allowPaint = true, originals) {
+function assembleColors(faces, threshold = LOW_CONFIDENCE_THRESHOLD, confirmed = {}, options = {}) {
+  return assembleWithin(faces, threshold, confirmed, options);
+}
+function assembleWithin(faces, threshold, confirmed, options, allowPaint = true, originals) {
   const bySlot = checkedBySlot(faces);
   if ("valid" in bySlot) return bySlot;
   const asRead = originals ?? bySlot;
@@ -3141,19 +3144,11 @@ function assembleWithin(faces, threshold, confirmed, options, maxRepairCost, all
     if ("valid" in bySlotCandidate) return null;
     const solvable = SCHEMES.flatMap((scheme) => solvableReadings(bySlotCandidate, scheme));
     if (solvable.length === 0) return null;
-    return assembleWithin(
-      candidate,
-      threshold,
-      confirmed,
-      options,
-      maxRepairCost,
-      allowPaint,
-      asRead
-    );
+    return assembleWithin(candidate, threshold, confirmed, options, allowPaint, asRead);
   };
   const all = SCHEMES.flatMap((scheme) => solvableReadings(bySlot, scheme));
   if (all.length === 0) {
-    const repair = repairByCounts(faces, maxRepairCost);
+    const repair = repairByCounts(faces, MAX_REPAIR_COST);
     const unseen = repair ? repair.changed.filter(
       (s) => !reobserved(
         repair.faces[s.face],
@@ -3235,162 +3230,6 @@ function assembleWithin(faces, threshold, confirmed, options, maxRepairCost, all
     // The captures this reading was built from — repaired when a repair ran — so a host settles
     // what was accepted and not what the camera first read. See `AiScanResult.captures`.
     captures: { ...bySlot }
-  };
-}
-function withCentre(capture, colour) {
-  if (capture.colors[4] === colour) return capture;
-  const colors = [...capture.colors];
-  colors[4] = colour;
-  const confidence = [...capture.confidence];
-  confidence[4] = 1;
-  if (!capture.scores) return { ...capture, colors, confidence };
-  const scores = capture.scores.map((row) => [...row]);
-  scores[4] = scores[4].map((_, c) => c === colour ? 1 : 0);
-  return { ...capture, colors, scores, confidence };
-}
-function placedBy(slots) {
-  const placed = {};
-  slots.forEach((slot, i) => {
-    placed[slot] = i;
-  });
-  return placed;
-}
-function orderings(items) {
-  if (items.length <= 1) return [[...items]];
-  return items.flatMap(
-    (item, i) => orderings([...items.slice(0, i), ...items.slice(i + 1)]).map((rest) => [item, ...rest])
-  );
-}
-var MAX_CENTRE_FILINGS = 24;
-function resolveCentres(named, unnamed, threshold = LOW_CONFIDENCE_THRESHOLD, options = {}, confirmed = {}, budget = MAX_CENTRE_FILINGS) {
-  const free = FACES.filter((face) => !named[face]);
-  if (unnamed.length < 1 || unnamed.length !== free.length) {
-    return {
-      result: reject(
-        "a centre resolution needs at least one unnamed side, exactly as many as the slots no side holds"
-      )
-    };
-  }
-  const claimed = [];
-  for (const side of unnamed) {
-    if (side.centreClaim === null) {
-      claimed.push(null);
-      continue;
-    }
-    const centre = side.centreClaim ?? side.capture.colors[4];
-    if (centre === void 0 || !isColour(centre)) {
-      return {
-        result: reject(`an unnamed capture's centre colour ${centre} is not one of the six`)
-      };
-    }
-    claimed.push(centre);
-  }
-  const all = orderings(free);
-  if (all.length > budget) {
-    return {
-      result: reject(
-        `a centre resolution over ${all.length} filings is past the budget of ${budget}`
-      ),
-      assessed: { filings: all.length, budget, truncated: true }
-    };
-  }
-  const filings = all.map((slots) => {
-    const faces = { ...named };
-    slots.forEach((slot, i) => {
-      faces[slot] = withCentre(unnamed[i].capture, colourOfSlot(slot));
-    });
-    return { slots, faces };
-  });
-  const assessed = filings.map((f) => ({
-    ...f,
-    result: assembleWithin(
-      f.faces,
-      threshold,
-      confirmed,
-      { ...options, diagnose: false },
-      Number.POSITIVE_INFINITY,
-      // NO PIXEL PATH HERE. It names its groups from the centres, and this is the one situation
-      // where a centre is already known to be wrong — the filings differ by which centre was
-      // misread. Left on, it makes a WRONG filing assemble too: measured 2026-09-17 on the 140
-      // community sets, it turned one of v3's refusals into a legal cube that was not the user's,
-      // which is the failure this whole file exists to prevent.
-      false
-    )
-  }));
-  const spent = { filings: all.length, budget, truncated: false };
-  if (unnamed.length === 1) {
-    const only = assessed[0];
-    return {
-      result: only.result,
-      faces: only.faces,
-      placed: placedBy(only.slots),
-      decidedBy: "counting",
-      assessed: spent
-    };
-  }
-  const fits = assessed.filter(
-    ({ result }) => result.valid || result.ambiguous === true || result.confirm !== void 0
-  );
-  if (fits.length === 1) {
-    const [fit] = fits;
-    return {
-      result: fit.result,
-      faces: fit.faces,
-      placed: placedBy(fit.slots),
-      decidedBy: "legality",
-      assessed: spent
-    };
-  }
-  const claims2 = claimed.filter((c) => c !== null);
-  const unread = claimed.length - claims2.length;
-  const duplicated = claims2.find((c, i) => claims2.indexOf(c) !== i) ?? (unread === 0 ? claims2[0] : void 0);
-  const conflict = (legalFilings) => {
-    if (duplicated === void 0) {
-      return {
-        result: reject(
-          legalFilings === 0 ? "sides whose centres never settled, and no way of filing them is a legal cube" : "sides whose centres never settled, and more than one way of filing them is a legal cube",
-          { unreadCentres: unread, legalFilings }
-        )
-      };
-    }
-    const shared = slotOf(duplicated);
-    const missing = free.find((slot) => !claims2.includes(colourOfSlot(slot))) ?? free[0];
-    return {
-      result: reject(
-        legalFilings === 0 ? "sides read with the same centre colour, and no way of filing them is a legal cube" : "sides read with the same centre colour, and more than one way of filing them is a legal cube",
-        { centreConflict: { shared, missing, legalFilings } }
-      )
-    };
-  };
-  if (fits.length > 1) return conflict(fits.length);
-  return byConfidence(claimed, claims2, unnamed, free, assessed, conflict);
-}
-function byConfidence(claimed, claims2, unnamed, free, assessed, conflict) {
-  if (claimed.some((c) => c === null)) return conflict(0);
-  const keeps = /* @__PURE__ */ new Map();
-  for (const colour of new Set(claims2)) {
-    const claimants = claims2.flatMap((c, i) => c === colour ? [i] : []);
-    const ranked = [...claimants].sort(
-      (a, b) => unnamed[b].centreConfidence - unnamed[a].centreConfidence
-    );
-    const [top, next] = ranked;
-    if (next !== void 0 && unnamed[top].centreConfidence === unnamed[next].centreConfidence) {
-      return conflict(0);
-    }
-    keeps.set(colour, top);
-  }
-  const movers = unnamed.map((_, i) => i).filter((i) => keeps.get(claims2[i]) !== i);
-  const open = free.filter((slot) => !keeps.has(colourOfSlot(slot)));
-  if (movers.length !== 1 || open.length !== 1) return conflict(0);
-  const chosen = assessed.find(
-    ({ slots }) => slots.every((slot, i) => i === movers[0] ? slot === open[0] : slot === slotOf(claims2[i]))
-  );
-  if (!chosen) return conflict(0);
-  return {
-    result: chosen.result,
-    faces: chosen.faces,
-    placed: placedBy(chosen.slots),
-    decidedBy: "confidence"
   };
 }
 
@@ -6004,154 +5843,6 @@ var CameraSession = class {
   }
 };
 
-// view/centres-protocol.ts
-function handleCentresRequest(request) {
-  return {
-    epoch: request.epoch,
-    resolution: resolveCentres(
-      request.named,
-      request.unnamed,
-      void 0,
-      { diagnose: false },
-      {},
-      request.budget ?? MAX_CENTRE_FILINGS
-    )
-  };
-}
-
-// view/centres-client.ts
-function snapshot(request) {
-  const copyFace = (f) => ({
-    ...f,
-    colors: [...f.colors],
-    confidence: [...f.confidence],
-    ...f.scores ? { scores: f.scores.map((row) => [...row]) } : {},
-    ...f.lab ? { lab: f.lab.map((row) => [...row]) } : {},
-    ...f.locked ? { locked: [...f.locked] } : {}
-  });
-  const named = {};
-  for (const face of FACES) {
-    const side = request.named[face];
-    if (side) named[face] = copyFace(side);
-  }
-  return {
-    epoch: request.epoch,
-    named,
-    unnamed: request.unnamed.map((u) => ({ ...u, capture: copyFace(u.capture) })),
-    ...request.budget === void 0 ? {} : { budget: request.budget }
-  };
-}
-var CentreResolver = class {
-  worker = null;
-  /** Set once a worker has proved it cannot be had at all, so no later request builds another. */
-  broken = false;
-  /** Whether the current worker has ever answered — the test that makes `broken` safe to set. */
-  spoke = false;
-  /** The request the worker is actually resolving, or null when it is idle. */
-  running = null;
-  /** The one request waiting for it to come free. A newer ask REPLACES this. */
-  queued = null;
-  /**
-   * Ask for `request`'s resolution.
-   *
-   * Returns the answer outright when this page has nowhere else to run it — in which case `answer`
-   * is never called and the caller already has everything. Returns null when a worker took the
-   * request, and `answer` runs AT MOST once, later, with the reply for this epoch.
-   *
-   * AT MOST, for `misread-client.ts`'s three reasons, and every one of them means the answer would
-   * have been discarded on arrival for its epoch anyway. So a caller must not treat this callback
-   * as the thing that clears a "checking…" marker on its own.
-   */
-  request(request, answer) {
-    const worker = this.spawn();
-    if (!worker) return handleCentresRequest(request);
-    this.queued = { request: snapshot(request), answer };
-    this.dispatch();
-    return null;
-  }
-  /** Give the worker back. A resolver is usable again afterwards; it simply spawns a new one. */
-  dispose() {
-    this.worker?.terminate();
-    this.worker = null;
-    this.spoke = false;
-    this.running = null;
-    this.queued = null;
-  }
-  /**
-   * Post the waiting ask, if the worker is free to take it.
-   *
-   * Guarded on `running` rather than called only from the idle path, because `answer` may ask for
-   * another resolution re-entrantly — the panel republishes on a reply, and a host may correct a
-   * sticker from that — and two posts in flight is exactly the backlog this avoids.
-   */
-  dispatch() {
-    if (this.running !== null || this.queued === null || this.worker === null) return;
-    const next = this.queued;
-    this.queued = null;
-    this.running = next;
-    try {
-      this.worker.postMessage(next.request);
-    } catch (cause) {
-      this.failed(cause);
-    }
-  }
-  spawn() {
-    if (this.worker) return this.worker;
-    if (this.broken || typeof Worker === "undefined") return null;
-    try {
-      const spawned = new Worker(new URL("./centres-worker.js", import.meta.url), {
-        type: "module"
-      });
-      spawned.addEventListener("message", (ev) => {
-        if (this.worker !== spawned) return;
-        this.spoke = true;
-        this.deliver(ev.data);
-      });
-      spawned.addEventListener("error", (ev) => {
-        if (this.worker !== spawned) return;
-        this.failed(ev);
-      });
-      spawned.addEventListener("messageerror", (ev) => {
-        if (this.worker !== spawned) return;
-        this.failed(ev);
-      });
-      this.worker = spawned;
-      return spawned;
-    } catch (cause) {
-      console.warn(
-        "centres-client: the resolver worker could not be built, so it runs on this thread",
-        cause
-      );
-      this.broken = true;
-      return null;
-    }
-  }
-  deliver(reply) {
-    const waiting = this.running;
-    if (!waiting || waiting.request.epoch !== reply.epoch) return;
-    this.running = null;
-    try {
-      waiting.answer(reply);
-    } finally {
-      this.dispatch();
-    }
-  }
-  failed(cause) {
-    if (!this.spoke) this.broken = true;
-    console.warn(
-      "centres-client: the resolver worker failed, so the sides are placed on this thread",
-      cause
-    );
-    this.worker?.terminate();
-    this.worker = null;
-    this.spoke = false;
-    const stranded = this.queued ?? this.running;
-    this.running = null;
-    this.queued = null;
-    if (stranded) stranded.answer(handleCentresRequest(stranded.request));
-  }
-};
-
 // view/misread-protocol.ts
 function handleMisreadRequest(request) {
   return {
@@ -6161,7 +5852,7 @@ function handleMisreadRequest(request) {
 }
 
 // view/misread-client.ts
-function snapshot2(request) {
+function snapshot(request) {
   const faces = {};
   for (const face of FACES) faces[face] = { colors: [...request.faces[face].colors] };
   return { epoch: request.epoch, faces, fixedRotation: request.fixedRotation };
@@ -6197,7 +5888,7 @@ var MisreadDecoder = class {
   request(request, answer) {
     const worker = this.spawn();
     if (!worker) return handleMisreadRequest(request);
-    this.queued = { request: snapshot2(request), answer };
+    this.queued = { request: snapshot(request), answer };
     this.dispatch();
     return null;
   }
@@ -6299,7 +5990,7 @@ function filedColours(mark) {
   return colors;
 }
 function sideSpeeds(ticks, events) {
-  const marks = events.filter((e) => e.kind === "captured" || e.kind === "held-back");
+  const marks = events.filter((e) => e.kind === "captured");
   const out = [];
   let from = Number.NEGATIVE_INFINITY;
   let previous = null;
@@ -6340,7 +6031,7 @@ function sideSpeeds(ticks, events) {
       }
       const changed = [];
       for (let c = 0; c < cur.colors.length; c++) {
-        if (c !== CENTRE_CELL && cur.colors[c] !== prev.colors[c]) changed.push(c);
+        if (cur.colors[c] !== prev.colors[c]) changed.push(c);
       }
       if (changed.length === 0) continue;
       breaks.total += 1;
@@ -6350,7 +6041,7 @@ function sideSpeeds(ticks, events) {
       } else breaks.moved += 1;
     }
     out.push({
-      side: m.kind === "held-back" ? `held(${String(m.detail.shares)})` : String(m.detail.face),
+      side: String(m.detail.face),
       at: m.t,
       waitMs: seen ? m.t - seen.t : null,
       firstReadMs: firstRead ? m.t - firstRead.t : null,
@@ -6485,7 +6176,6 @@ var ScanTrace = class {
       const sides = sideSpeeds(ticks, events);
       const waits = sides.flatMap((x) => x.waitMs === null ? [] : [x.waitMs]);
       const settles = sides.flatMap((x) => x.firstReadMs === null ? [] : [x.firstReadMs]);
-      const resolved = [...events].reverse().find((e) => e.kind === "contest-resolved");
       return {
         session: s.id,
         startedAt: s.startedAt,
@@ -6504,8 +6194,7 @@ var ScanTrace = class {
           sides,
           waitMs: quantiles(waits),
           firstReadMs: quantiles(settles),
-          firstSideInViewToLastSideMs: sides.length > 0 && sides[0].waitMs !== null ? sides[sides.length - 1].at - (sides[0].at - sides[0].waitMs) : null,
-          resolved: resolved ? { ...resolved.detail } : null
+          firstSideInViewToLastSideMs: sides.length > 0 && sides[0].waitMs !== null ? sides[sides.length - 1].at - (sides[0].at - sides[0].waitMs) : null
         },
         inferMs: quantiles(ticks.map((r) => r.inferMs)),
         traceMs: quantiles(ticks.flatMap((r) => r.traceMs === void 0 ? [] : [r.traceMs])),
@@ -6669,7 +6358,6 @@ var SessionRecorder = class {
 // view/stillness.ts
 var SUBJECT_CHANGE = 4;
 var CENTRE = 4;
-var eightOf = (colors) => colors.filter((_, i) => i !== CENTRE).join(",");
 var QUARTER_TURN = [6, 3, 0, 7, 4, 1, 8, 5, 2];
 function turnedFrom(prev, next) {
   if (prev.length !== QUARTER_TURN.length || next.length !== QUARTER_TURN.length) return false;
@@ -6686,23 +6374,16 @@ function classify(previous, colors) {
   for (let i = 0; i < colors.length; i++) {
     if (colors[i] !== previous[i]) differing.push(i);
   }
-  const outer = differing.filter((i) => i !== CENTRE);
-  const anotherSide = differing.includes(CENTRE) && outer.length >= 2;
+  const anotherSide = differing.includes(CENTRE) && differing.length >= 2;
   const turned = differing.length >= 2 && turnedFrom(previous, colors);
   return {
-    only: outer.length === 1 ? outer[0] : null,
+    only: differing.length === 1 ? differing[0] : null,
     forget: differing.length >= SUBJECT_CHANGE || anotherSide || turned
   };
 }
-function mostShown(reads) {
-  let most = 0;
-  for (const n of reads.values()) if (n > most) most = n;
-  return most === 0 ? [] : [...reads].filter(([, n]) => n === most).map(([c]) => c);
-}
 var Stillness = class {
   /**
-   * @param reads Consecutive reads required with an identical EIGHT-sticker ring. The centre may
-   *   differ between them; whether it agreed is reported separately by `centre()`.
+   * @param reads Identical consecutive reads required — all nine stickers, the centre included.
    * @param ms Wall-clock stillness required, from the first read of the current run.
    */
   constructor(reads, ms) {
@@ -6722,13 +6403,6 @@ var Stillness = class {
   key = null;
   count = 0;
   since = 0;
-  /**
-   * The centre colour each read of the current run showed, in order.
-   *
-   * The run is keyed on the EIGHT (see `offer`), so the centre is free to disagree across a run and
-   * this is where that disagreement is recorded. Emptied with the run.
-   */
-  centres = [];
   /** The colours of the run's read, kept so a broken run can be told WHERE it broke. */
   colors = null;
   /**
@@ -6758,8 +6432,7 @@ var Stillness = class {
    */
   breakColours = /* @__PURE__ */ new Map();
   /**
-   * Offer the latest read. True once its EIGHT-sticker ring has been identical `reads` times AND
-   * still for `ms` — the centre is free to disagree across a run, and `centre()` says whether it did.
+   * Offer the latest read. True once it has been identical `reads` times AND still for `ms`.
    *
    * `now` is injectable because the alternative is a test that sleeps: the timing rule is the whole
    * point of this class, so it has to be drivable without wall-clock waits.
@@ -6780,14 +6453,13 @@ var Stillness = class {
    * reads as "always a new frame", which is the belief this corrects.
    */
   offer(colors, now = performance.now(), frameId) {
-    const key = eightOf(colors);
+    const key = colors.join(",");
     if (frameId !== void 0 && frameId === this.lastFrame) {
       return this.count >= this.reads && now - this.since >= this.ms;
     }
     if (frameId !== void 0) this.lastFrame = frameId;
     if (key === this.key) {
       this.count += 1;
-      this.centres.push(colors[CENTRE] ?? -1);
     } else {
       const previous = this.colors;
       if (previous && previous.length === colors.length) {
@@ -6804,41 +6476,9 @@ var Stillness = class {
       this.key = key;
       this.count = 1;
       this.since = now;
-      this.centres = [colors[CENTRE] ?? -1];
     }
     this.colors = [...colors];
     return this.count >= this.reads && now - this.since >= this.ms;
-  }
-  /**
-   * The centre every read of the run agreed on, or null when they did not.
-   *
-   * UNANIMOUS, not a majority. A logo cap alternates — blue, white, blue — and a majority would pick
-   * one of them and file the side under a colour it may not be, which is the confidently-wrong
-   * answer this package refuses everywhere. No agreement means the centre is UNREAD, and an unread
-   * centre is what `resolveCentres` exists to place: counting, not seeing.
-   */
-  centre() {
-    const first = this.centres[0];
-    if (first === void 0 || first < 0) return null;
-    return this.centres.every((c) => c === first) ? first : null;
-  }
-  /**
-   * How many reads of the run showed each colour at the centre — what a side whose centre never
-   * agreed is remembered by (2026-09-20). A read of that side later, its centre settled, names the
-   * colour the run showed MOST; a different side that happens to share its eight (white and yellow
-   * after U D R L F B) names its own centre colour. That is what tells "the same side, held on"
-   * from "its twin", where the eight alone cannot (`dev-docs/scanner-audit-2026-09-20.md` §4).
-   *
-   * COUNTS, NOT A SET (2026-09-21). As a set, one frame was as good as nine: a white side whose
-   * centre flickered yellow on a single frame was remembered as "showed white and yellow", and the
-   * real yellow side — the same eight, its centre yellow on every frame — was then "the same side,
-   * held on" and turned away for good, so the scan could never reach six. A colour the run showed
-   * once is a flicker, and a flicker alone must not name a side (`mostShown`).
-   */
-  centreReads() {
-    const reads = /* @__PURE__ */ new Map();
-    for (const c of this.centres) if (c >= 0) reads.set(c, (reads.get(c) ?? 0) + 1);
-    return reads;
   }
   /**
    * The one position that keeps breaking the run on its own, or null.
@@ -6896,7 +6536,6 @@ var Stillness = class {
     this.colors = null;
     this.count = 0;
     this.since = 0;
-    this.centres = [];
   }
   /**
    * Forget which sticker was flickering — this is a different subject, or a different scan.
@@ -6924,10 +6563,6 @@ var Stillness = class {
 
 // view/ai-scan-panel.ts
 var RE_READ_LINE = "Show one side to the camera to re-read just that side.";
-function median2(values) {
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.floor(sorted.length / 2)];
-}
 var COUNT_WORDS = [
   "",
   "one",
@@ -7119,7 +6754,6 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
    * One per panel, like the misread decoder and for the same reason: it is a module that parses in
    * about a millisecond and is spawned only by a centre collision, which most scans never reach.
    */
-  centres = new CentreResolver();
   /**
    * The session recorder (D9/P2, `dev-docs/scan-pipeline-audit-2026-09-23.md` §3 and §4 Stage 0.1).
    *
@@ -7275,41 +6909,6 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
    * camera does, and a tap on a sticker changes the reading without touching the camera at all.
    */
   diagnosisEpoch = 0;
-  /**
-   * Sides the scan could not name, because their centres read as the same colour — the second side to
-   * claim a colour, and the side that claimed it first. Any number of them; they count towards six, and
-   * `resolveCentres` decides at check time which slot each fills, by legality first.
-   *
-   * WHY NEITHER IS NAMED (2026-09-18). A logo printed on the white centre reads as whatever colour its
-   * ink and the light make it — blue on one scan, yellow on the next — so the side filed first under a
-   * colour is as likely to be the misread one as the side that arrives second. The design this replaced
-   * kept the first side under the colour and "held back" the second, one contest at a time: it named
-   * the white logo side YELLOW on screen for the whole scan, could not take a second collision, and
-   * ended the scan with "start over" whenever anything else was misread too.
-   */
-  unnamed = [];
-  /**
-   * Every centre confidence seen for each side in hand, in the colour it claims — the side's first read
-   * and each re-showing since. `resolveCentres` uses the typical one, because on a real clip single
-   * frames of a logo centre and of a plain one overlapped while their medians did not.
-   */
-  centreSeen = /* @__PURE__ */ new Map();
-  /**
-   * What each unnamed capture's centre CLAIMS — its colour for a collision, `null` for a centre no
-   * run ever agreed on. Kept beside the capture rather than re-derived from it, because the capture
-   * carries whichever frame happened to be filed and that frame's centre is an accident when the
-   * run never settled (audit, 2026-09-20).
-   */
-  unnamedClaim = /* @__PURE__ */ new Map();
-  /**
-   * How many reads of the settling run showed each colour at the centre, for each side held unnamed
-   * because that centre never agreed — what such a side is recognised by when it is read again with
-   * its centre settled (2026-09-20, `sideInHand`). The eight alone cannot tell it from a twin side
-   * that shares them; and only the colour shown MOST may name it (`mostShown`, 2026-09-21), because
-   * a colour shown once is the flicker that left the side unread, and a twin whose centre IS that
-   * colour was taken for the ghost and turned away for good.
-   */
-  unnamedCentres = /* @__PURE__ */ new Map();
   constructor() {
     super();
     this.root = this.attachShadow({ mode: "open" });
@@ -7330,7 +6929,6 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     this.cam.park();
     this.dropDiagnosis();
     this.misread.dispose();
-    this.centres.dispose();
   }
   /**
    * Everything decided about the current reading is stale from here on.
@@ -7625,10 +7223,6 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     this.settled.clear();
     this.pendingOpening = null;
     for (const f of FACES) delete this.faces[f];
-    this.unnamed = [];
-    this.centreSeen.clear();
-    this.unnamedClaim.clear();
-    this.unnamedCentres.clear();
     this.scheme = null;
     this.buildDots();
   }
@@ -7807,12 +7401,11 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
       return;
     }
     this.note({ outcome: "settled", ...this.readNote(fit.face) });
-    const agreedCentre = this.still.centre();
     const frame = output.frame ?? await this.framePixels(output, epoch);
     const lab = frame && fit.face.boxes ? stickerLab(frame, fit.face.boxes, IMG_SIZE) ?? void 0 : void 0;
     if (!this.cam.freshFrame(epoch)) return;
     const read = fit.face.ordering === "sorted" ? { ...fit.face, ordering: "sorted" } : fit.face;
-    this.fileSettledRead(lab ? { ...read, lab } : read, agreedCentre, this.still.centreReads());
+    this.fileSettledRead(lab ? { ...read, lab } : read);
   }
   /**
    * The pixels of the frame a fit was made on, from a detector that did not ship them (D7).
@@ -7935,22 +7528,22 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
    *
    * A side is NAMED by its centre's colour and RECOGNISED by that colour together with the eight
    * stickers around it (`sameSide`, which forgives one flickering sticker — a side re-shown with one
-   * sticker read differently used to be a stranger with a familiar centre, held back as a collision).
+   * sticker read differently is the same side, not a stranger with a familiar centre).
    * The centre cannot be left out of recognising a side, because different sides can share their eight
    * exactly: after U D R L F B the white and yellow sides are the same eight stickers around different
-   * centres. So a read whose eight match a side in hand but whose centre says another colour is kept as a
-   * new side — it may be that sibling — and `twinToDrop` settles it once six are in.
+   * centres.
+   *
+   * The run that produced this read was identical in all nine positions (`Stillness`), so its centre
+   * is the centre every frame of it showed — there is no such thing here as a side whose centre the
+   * scan could not read, because such a side never settles.
    */
-  fileSettledRead(read, agreedCentre = read.colors[4] ?? null, seenCentres = new Map(
-    agreedCentre === null ? [] : [[agreedCentre, 1]]
-  )) {
-    const centreUnread = agreedCentre === null;
-    const claim = centreUnread ? void 0 : sideClaimed(read.colors);
+  fileSettledRead(read) {
+    const claim = sideClaimed(read.colors);
     if (this.awaiting) {
       this.acceptConfirmation(read, claim);
       return;
     }
-    if (claim === void 0 && !centreUnread) {
+    if (claim === void 0) {
       this.report(
         "scanning",
         this.tinted("err", "Couldn't read this side's centre \u2014 keep showing it.")
@@ -7966,86 +7559,58 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
       return;
     }
     if (this.sidesHeld() >= FACES.length) {
-      this.replaceCapturedSide(read, claim, agreedCentre, seenCentres);
+      this.replaceCapturedSide(read, claim);
       return;
     }
-    const inHand = this.sideInHand(read, centreUnread, seenCentres);
+    const inHand = this.sideInHand(read);
     if (inHand) {
-      this.noteCentre(inHand.side, read);
       this.traceEvent("turned-away", {
-        face: inHand.slot ?? "unnamed",
+        face: inHand.slot,
         colors: [...read.colors],
         why: "the same side again"
       });
       const named = this.missingSides();
-      const which = inHand.slot ? ["the ", this.bold(GUIDE[inHand.slot].color), " side"] : ["that side"];
       this.shownAgain = true;
       this.report(
         "scanning",
-        "Already have ",
-        ...which,
+        "Already have the ",
+        this.bold(GUIDE[inHand.slot].color),
+        " side",
         named ? ` \u2014 still need ${named}.` : " \u2014 show a different one."
       );
       this.still.reset();
       return;
     }
-    this.fileNewSide(read, claim, seenCentres);
+    this.fileNewSide(read, claim);
   }
   /**
-   * File a read the scan has decided is a side it does not have: named by its centre when nothing
-   * else claims that colour, held unnamed otherwise — with the holder withdrawn when one is named
-   * already — and held unnamed on its own account when its centre never settled.
+   * File a read the scan has decided is a side it does not have — under the colour its centre
+   * claims, or not at all.
    *
-   * The tail of `fileSettledRead`, lifted out (2026-09-21) so that a re-shown UNNAMED side can be
-   * let go and filed again through exactly these branches (`replaceCapturedSide`): whatever its
-   * centre says now decides whether it is named this time, and a second copy of the rules here
-   * would be the drift the audit found in `holdUnnamed`'s two callers. `kind` is what the capture
-   * is announced as — `'side'`, or `'reread'` for a side that was already in hand.
+   * The tail of `fileSettledRead`, lifted out (2026-09-21). `kind` is what the capture is announced
+   * as — `'side'`, or `'reread'` for a side that was already in hand.
    */
-  fileNewSide(read, claim, seenCentres, kind = "side") {
-    const centre = read.colors[4];
+  fileNewSide(read, claim, kind = "side") {
     if (claim === void 0) {
-      this.traceEvent("held-back", { shares: null, colors: [...read.colors] });
-      this.holdUnnamed(
-        read,
-        null,
-        seenCentres,
-        (held) => [
-          `Got that side \u2014 ${held}/6. Its middle sticker kept changing colour, so which side it is gets worked out once all six are in. Show another side\u2026`
-        ],
-        kind
+      this.report(
+        "scanning",
+        this.tinted("err", "Couldn't read this side's centre \u2014 keep showing it.")
       );
       return;
     }
     const holder = this.faces[claim];
-    if (!holder && !this.unnamed.some((side) => this.claimOf(side) === centre)) {
-      this.traceEvent("captured", { face: claim, colors: [...read.colors] });
-      this.lastProgressAt = performance.now();
-      this.capture(claim, read, kind);
+    if (holder) {
+      this.report(
+        "scanning",
+        "Two sides are reading as the ",
+        this.bold(GUIDE[claim].color),
+        " side \u2014 show them again, or tap a sticker to fix one."
+      );
       return;
     }
-    this.traceEvent("held-back", {
-      shares: claim,
-      colors: [...read.colors],
-      ...holder ? { withdrawn: [...holder.colors] } : {}
-    });
-    if (holder) {
-      delete this.faces[claim];
-      this.settled.delete(claim);
-      this.unnamed.push(holder);
-      this.unnamedClaim.set(holder, holder.colors[4] ?? null);
-    }
-    this.holdUnnamed(
-      read,
-      centre ?? null,
-      seenCentres,
-      (done) => [
-        `Got that side \u2014 ${done}/6. Two sides look like the `,
-        this.bold(GUIDE[claim].color),
-        " side; which is which is worked out once all six are in. Show another side\u2026"
-      ],
-      kind
-    );
+    this.traceEvent("captured", { face: claim, colors: [...read.colors] });
+    this.lastProgressAt = performance.now();
+    this.capture(claim, read, kind);
   }
   /**
    * A side shown again once all six are in: a CORRECTION, since the loop only runs then because the
@@ -8055,24 +7620,10 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
    * otherwise the one its centre names — a correction is the moment a sticker has changed, so the
    * eight may no longer agree. Lifted out of `fileSettledRead` (audit, 2026-09-20).
    */
-  replaceCapturedSide(read, claim, agreedCentre, seenCentres) {
+  replaceCapturedSide(read, claim) {
     const byEight = this.sideByEight(read);
-    const unnamedByEight = byEight === void 0 ? this.unnamed.filter((side) => sameSide(read.colors, side.colors)) : [];
-    if (byEight === void 0 && unnamedByEight.length === 1) {
-      this.refileUnnamed(unnamedByEight[0], read, claim, agreedCentre, seenCentres);
-      return;
-    }
     const slot = byEight ?? (claim !== void 0 && this.faces[claim] ? claim : void 0);
     if (slot === void 0) {
-      const colour = claim === void 0 ? void 0 : colourOfSlot(claim);
-      const waiting = colour === void 0 ? [] : this.unnamed.filter((side) => {
-        const claims2 = this.claimOf(side);
-        return claims2 === null || claims2 === colour;
-      });
-      if (claim !== void 0 && waiting.length === 1) {
-        this.refileUnnamed(waiting[0], read, claim, agreedCentre, seenCentres);
-        return;
-      }
       this.report("scanning", "Keep showing that side \u2014 its middle sticker keeps changing colour.");
       return;
     }
@@ -8087,7 +7638,7 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
       );
       return;
     }
-    this.replaceFace(slot, fresh);
+    this.faces[slot] = fresh;
     this.settled.delete(slot);
     this.confirmed = {};
     this.mismatches = 0;
@@ -8095,25 +7646,6 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     this.captured("reread", slot);
     this.scheduleCheck(this.tinted("ok", `Re-read the ${GUIDE[slot].color} side \u2014 checking\u2026`));
     return;
-  }
-  /**
-   * A side held UNNAMED shown again once six are in: let the old reading go and file the new one
-   * through the same branches a first showing takes (`fileNewSide`), so what its centre says NOW
-   * decides whether it is named this time. A side that claimed a colour and was left alone on it
-   * by the change is named by that claim (`nameLoners`), as after a dropped twin. Six are held again
-   * when it is done, so the filing schedules the check itself.
-   */
-  refileUnnamed(old, read, claim, agreedCentre, seenCentres) {
-    this.forgetCapture(old);
-    this.confirmed = {};
-    this.mismatches = 0;
-    this.traceEvent("turned-away", {
-      face: "unnamed",
-      colors: [...old.colors],
-      why: "shown again after a refusal \u2014 read fresh"
-    });
-    this.fileNewSide(read, agreedCentre === null ? void 0 : claim, seenCentres, "reread");
-    this.nameLoners();
   }
   /**
    * A read offered while a confirm is standing: take it as that side, or ask again.
@@ -8140,94 +7672,28 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     this.scheduleCheck(this.tinted("ok", "Got it \u2014 checking\u2026"));
   }
   /**
-   * Hold `read` as a side the scan cannot name yet, whatever the reason.
+   * The side in hand that `read` shows again, with its slot — or null for a side not in hand: its
+   * centre claims the same colour and its eight agree (`sameSide`).
    *
-   * ONE TRANSITION, TWO REASONS. A collision (`claim` is a colour: two sides read it) and a centre
-   * that never settled (`claim` is null) end in exactly the same six mutations — trace, append,
-   * record the claim and the confidence, redraw, announce, count, and either check or report. They
-   * were written out twice, and their centre semantics now differ, which is precisely when two
-   * copies start to drift (audit, 2026-09-20). Only the sentence varies, so only the sentence is
-   * passed in.
+   * BOTH HALVES ARE LOAD-BEARING. The centre alone is not enough, because a side re-shown after one
+   * sticker was read differently is the same side; the eight alone are not enough either, because
+   * different sides can share them exactly — after U D R L F B the white and yellow sides are the
+   * same eight around different centres.
+   *
+   * A READ WHOSE CENTRE NAMES A SIDE IN HAND IS THAT SIDE UNLESS ITS EIGHT CONTRADICT IT: five of
+   * eight agreeing under some turn (`SAME_SIDE_BY_CENTRE`), not seven. Two stickers read differently
+   * on a re-show is ordinary; two sides of one cube sharing a centre colour AND five of eight is not
+   * (`dev-docs/scanner-audit-2026-09-20.md` §1.7).
    */
-  holdUnnamed(read, claim, seenCentres, words, kind = "side") {
-    this.unnamed.push(read);
-    this.unnamedClaim.set(read, claim);
-    this.unnamedCentres.set(read, seenCentres);
-    this.centreSeen.set(read, [read.confidence[4] ?? 0]);
-    this.buildDots();
-    this.captured(kind, null);
-    const held = this.sidesHeld();
-    if (held >= FACES.length) {
-      this.scheduleCheck(this.tinted("ok", "All six sides captured \u2014 checking\u2026"));
-      return;
-    }
-    this.report("scanning", ...words(held));
-  }
-  /**
-   * The side in hand that `read` shows again — named, with its slot, or unnamed — or null for a side
-   * not in hand: its centre claims the same colour and its eight agree (`sameSide`).
-   */
-  sideInHand(read, centreUnread = false, seenCentres = /* @__PURE__ */ new Map()) {
-    const eightAgree = (side, atLeast) => sameSide(read.colors, side.colors, atLeast);
-    if (centreUnread) {
-      const hits = [];
-      for (const slot of FACES) {
-        const side = this.faces[slot];
-        if (side && eightAgree(side, SAME_SIDE_STICKERS) && this.centresAllow(seenCentres, slot)) {
-          hits.push({ side, slot });
-        }
-      }
-      for (const side of this.unnamed) {
-        if (eightAgree(side, SAME_SIDE_STICKERS) && this.centresAllow(seenCentres, side)) {
-          hits.push({ side });
-        }
-      }
-      return hits.length === 1 ? hits[0] : null;
-    }
+  sideInHand(read) {
     const centre = read.colors[4];
     for (const slot of FACES) {
       const side = this.faces[slot];
-      if (side && side.colors[4] === centre && eightAgree(side, SAME_SIDE_BY_CENTRE)) {
+      if (side && side.colors[4] === centre && sameSide(read.colors, side.colors, SAME_SIDE_BY_CENTRE)) {
         return { side, slot };
       }
     }
-    const claimed = this.unnamed.find(
-      (side) => this.claimOf(side) === centre && eightAgree(side, SAME_SIDE_BY_CENTRE)
-    );
-    if (claimed) return { side: claimed };
-    const unclaimed = this.unnamed.filter((side) => {
-      if (this.claimOf(side) !== null) return false;
-      const shown = mostShown(this.unnamedCentres.get(side) ?? /* @__PURE__ */ new Map());
-      return shown.length === 1 && shown[0] === centre && eightAgree(side, SAME_SIDE_STICKERS);
-    });
-    return unclaimed.length === 1 ? { side: unclaimed[0] } : null;
-  }
-  /**
-   * Could a read whose centre never settled be `candidate`, on the evidence of what the two runs'
-   * CENTRES showed?
-   *
-   * D5 (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3), and the uncaptured half of the uniqueness
-   * test. The eight alone cannot tell a side from its twin — after U D R L F B the white and yellow
-   * sides are the same eight stickers — and `sideInHand` only ever asked whether the ring matched
-   * one side IN HAND. An uncaptured side can share the ring too, so a yellow side shown after white
-   * was captured matched white uniquely, was turned away as "Already have", and the scan stalled at
-   * five with a perfectly good cube in front of the camera.
-   *
-   * What separates them is what their centres SHOWED, which both runs record even when neither
-   * settled (`Stillness.centreReads`). Two showings of one side overlap in that; a side and its
-   * twin do not. So the rule is DISJOINTNESS, and only disjointness: no overlap means these are
-   * different sides. Anything else — either run having seen nothing, or any colour in common —
-   * leaves the candidate standing, because an absence of evidence must not create a second side.
-   *
-   * A named candidate's centre is the colour it was filed under, and a read that never once showed
-   * that colour is not it.
-   */
-  centresAllow(seenCentres, candidate) {
-    if (seenCentres.size === 0) return true;
-    const theirs = typeof candidate === "string" ? /* @__PURE__ */ new Map([[colourOfSlot(candidate), 1]]) : this.unnamedCentres.get(candidate) ?? /* @__PURE__ */ new Map();
-    if (theirs.size === 0) return true;
-    for (const colour of seenCentres.keys()) if (theirs.has(colour)) return true;
-    return false;
+    return null;
   }
   /**
    * The named side whose eight `read` shows, when exactly one does — however its centre read. For the
@@ -8242,80 +7708,9 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     });
     return matches.length === 1 ? matches[0] : void 0;
   }
-  /**
-   * Of two sides in hand whose eight are the SAME stickers but whose centres claim different colours,
-   * the one to let go — the one whose centre read less surely — or null when there are no such twins.
-   *
-   * Twins are one side read twice, its centre reading differently each time (a logo, seen as yellow
-   * and then as white), or two sides of a symmetric cube that really do share their eight. Only the
-   * six can say which: `assemble` asks this only after the six as they stand have failed to make a
-   * cube, and a cube that is legal with both kept is never second-guessed.
-   */
-  twinToDrop() {
-    const held = [...FACES.flatMap((f) => this.faces[f] ? [this.faces[f]] : []), ...this.unnamed];
-    const exact = (a, b) => [0, 1, 2, 3].some(
-      (k) => rotateFace(b.colors, k).every((c, i) => i === 4 || c === a.colors[i])
-    );
-    const typical = (side) => median2(this.centreSeen.get(side) ?? [side.confidence[4] ?? 0]);
-    for (let i = 0; i < held.length; i++) {
-      for (let j = i + 1; j < held.length; j++) {
-        const [a, b] = [held[i], held[j]];
-        if (a.colors[4] === b.colors[4] || !exact(a, b)) continue;
-        return typical(b) <= typical(a) ? b : a;
-      }
-    }
-    return null;
-  }
-  /**
-   * Let go of a side read twice, and keep scanning: the six were five. Whatever the dropped read had
-   * claimed is claimed again by whoever is left, so an unnamed side left alone on its colour is named.
-   */
-  dropTwin(twin) {
-    this.forgetCapture(twin);
-    this.nameLoners();
-    this.confirmed = {};
-    this.awaiting = null;
-    this.mismatches = 0;
-    this.traceEvent("turned-away", { colors: [...twin.colors], why: "the same side read twice" });
-    this.buildDots();
-    this.loop(
-      "scanning",
-      `One side was read twice, its centre looking different each time \u2014 ${this.sidesHeld()}/6. Show a side you haven't shown yet\u2026`
-    );
-  }
-  /**
-   * Name every unnamed side left alone on the colour it CLAIMS, by that claim — after a side is let
-   * go, whatever it had claimed is claimed again by whoever is left. Never by a filed frame's centre:
-   * a side whose centre never settled claims nothing, and filing it by the accident of its settling
-   * frame is how a white side landed on the blue tile (§4, link 5). It stays unnamed for the six to
-   * place by counting. Lifted out of `dropTwin` (2026-09-21) for the second path that lets a side go,
-   * a re-shown unnamed side (`refileUnnamed`).
-   */
-  nameLoners() {
-    for (const side of [...this.unnamed]) {
-      const centre = this.claimOf(side);
-      if (centre === null) continue;
-      const slot = slotOf(centre);
-      const rivals = this.unnamed.filter((u) => u !== side && this.claimOf(u) === centre);
-      if (!this.faces[slot] && rivals.length === 0) {
-        const seen = this.centreSeen.get(side);
-        this.forgetCapture(side);
-        this.faces[slot] = side;
-        if (seen) this.centreSeen.set(side, seen);
-      }
-    }
-  }
-  /** Add a re-showing's centre confidence to what is known of the side, when it claims the same colour. */
-  noteCentre(side, read) {
-    if (read.colors[4] !== side.colors[4]) return;
-    const seen = this.centreSeen.get(side) ?? [side.confidence[4] ?? 0];
-    seen.push(read.confidence[4] ?? 0);
-    this.centreSeen.set(side, seen);
-  }
   /** File a freshly-recognised face under its own letter, then keep scanning (or finish at six). */
   capture(face, read, kind = "side") {
     this.faces[face] = read;
-    this.centreSeen.set(read, [read.confidence[4] ?? 0]);
     this.settled.delete(face);
     this.buildDots();
     this.captured(kind, face);
@@ -8374,10 +7769,9 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     }
     return out;
   }
-  /** Sides in hand: those named, plus those whose centres collided and are not named yet. Counted
-   *  by the same test `capturedFaces` files by, without copying a side to count it. */
+  /** Sides in hand. Counted by the same test `capturedFaces` files by, without copying a side. */
   sidesHeld() {
-    let held = this.unnamed.length;
+    let held = 0;
     for (const face of FACES) if (this.faces[face]) held += 1;
     return held;
   }
@@ -8538,7 +7932,6 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
    */
   dropUnsettledCaptures() {
     const dropped = FACES.filter((f) => this.faces[f] && !this.settled.has(f));
-    for (const side of [...this.unnamed]) this.forgetCapture(side);
     if (dropped.length === 0) return dropped;
     for (const f of dropped) this.forgetCapture(this.faces[f]);
     this.confirmed = {};
@@ -8739,7 +8132,6 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
   }
   /** "YELLOW and BLUE" — the sides still to show, named once there are few enough to name. */
   missingSides() {
-    if (this.unnamed.length > 0) return null;
     const missing = FACES.filter((f) => !this.faces[f]);
     if (missing.length === 0 || missing.length > 2) return null;
     return missing.map((f) => GUIDE[f].color).join(" and ");
@@ -8810,80 +8202,7 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
       this.finish(checked, "correction");
       return;
     }
-    if (this.unnamed.length > 0) {
-      const unnamed = this.unnamed.map((capture) => ({
-        // THE RECORDED CLAIM, null included (2026-09-21). `get(...) ?? colors[4]` read a stored
-        // null — the sentinel for a centre no run ever agreed on — as "absent" and handed the
-        // resolver whichever colour the filed frame happened to show; two such sides whose frames
-        // showed the same colour were then a COLLISION over it, ranked by confidence where the
-        // resolver refuses to rank an unread centre, and refused in a collision's words.
-        centreClaim: this.claimOf(capture),
-        capture,
-        centreConfidence: median2(this.centreSeen.get(capture) ?? [capture.confidence[4] ?? 0])
-      }));
-      const epoch = this.diagnosisEpoch;
-      try {
-        const now = this.centres.request({ epoch, named: this.faces, unnamed }, (reply) => {
-          if (reply.epoch !== this.diagnosisEpoch) return;
-          this.failableResolution(reply.resolution, unnamed);
-        });
-        if (now) this.failableResolution(now.resolution, unnamed);
-      } catch (err) {
-        this.resolutionFailed(err, unnamed);
-      }
-      return;
-    }
     this.assembleNamed();
-  }
-  /**
-   * What a centre resolution MEANS, once it has arrived — from the worker or from this thread.
-   *
-   * Lifted out of `assemble` when the resolution moved off the page's thread (D3): the branches
-   * below are unchanged, and the only new thing is that they can now run a beat later, against a
-   * scan the epoch has already agreed is still the current one.
-   */
-  /** `applyResolution`, with a throw reported as the scan's failure rather than escaping a timer. */
-  failableResolution(resolution, unnamed) {
-    try {
-      this.applyResolution(resolution, unnamed);
-    } catch (err) {
-      this.resolutionFailed(err, unnamed);
-    }
-  }
-  /**
-   * A centre resolution could not be made, or could not be acted on: let the sides go, record why,
-   * and report it. The `catch` that sat around `resolveCentres` before it moved off this thread.
-   */
-  resolutionFailed(err, unnamed) {
-    for (const side of [...this.unnamed]) this.forgetCapture(side);
-    this.traceEvent("contest-resolved", {
-      sides: unnamed.map((u) => [...u.capture.colors]),
-      error: err instanceof Error ? err.message : String(err)
-    });
-    this.checkFailed(err);
-  }
-  applyResolution(resolution, unnamed) {
-    {
-      const { result: verdict } = resolution;
-      const settled = verdict.valid || verdict.ambiguous === true || verdict.confirm !== void 0;
-      const twin = settled || resolution.decidedBy === "legality" ? null : this.twinToDrop();
-      if (twin) {
-        this.dropTwin(twin);
-        return;
-      }
-      this.traceEvent("contest-resolved", {
-        sides: unnamed.map((u) => [...u.capture.colors]),
-        centreConfidence: unnamed.map((u) => Math.round(u.centreConfidence * 1e3) / 1e3),
-        adopted: resolution.faces !== void 0,
-        decidedBy: resolution.decidedBy ?? null,
-        valid: resolution.result.valid,
-        reason: resolution.result.reason ?? null,
-        ambiguous: resolution.result.ambiguous ?? false
-      });
-      if (resolution.faces) this.adoptFiling(resolution.faces, resolution.placed ?? {}, unnamed);
-      this.buildDots();
-      this.finish(resolution.result, "camera");
-    }
   }
   /**
    * The assembly for a scan whose six sides are all named — the tail of `assemble`, lifted out when
@@ -8907,66 +8226,20 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
       const named = looks?.[result.rereadLook ?? (looks?.length ?? 0) - 1];
       const fresh = named?.capture;
       if (face === void 0 || named === void 0 || fresh === void 0 || round >= FACES.length) {
-        const twin = result.valid || result.ambiguous === true || result.confirm !== void 0 ? null : this.twinToDrop();
-        if (twin) {
-          this.dropTwin(twin);
-          return;
-        }
         this.finish(result, "camera");
         return;
       }
-      this.replaceFace(face, fresh);
+      this.faces[face] = fresh;
       this.confirmed[face] = looks.filter(
         (look) => look === named || matchingRotations(fresh, look.capture).size > 0
       );
     }
   }
   /**
-   * Adopt a centre resolution's filing: every slot takes the capture the filing put there, and the
-   * sides the filing named stop being unnamed. What was recorded about each of those — its centre
-   * confidences — travels to the copy the filing installed, found by the resolver's own account of
-   * where each unnamed side went (`placed`, 2026-09-21). It used to be found by identity, and a
-   * filing REBUILDS a capture whenever its centre changes, so for exactly the reassigned-centre case
-   * this exists for nothing matched: the median stayed on an object nothing held, and the claim and
-   * centre-reads maps kept entries for it for the life of the scan.
-   */
-  adoptFiling(filed, placed, unnamed) {
-    for (const f of FACES) {
-      if (this.faces[f] !== filed[f]) this.settled.delete(f);
-      const index = placed[f];
-      const source = index === void 0 ? void 0 : unnamed[index]?.capture;
-      if (source !== void 0) {
-        const seen = this.centreSeen.get(source);
-        this.forgetCapture(source);
-        if (seen) this.centreSeen.set(filed[f], seen);
-      }
-      this.replaceFace(f, filed[f]);
-    }
-    for (const side of [...this.unnamed]) this.forgetCapture(side);
-  }
-  /**
-   * Put `next` where `slot`'s capture is, carrying across what is recorded ABOUT the capture: the
-   * centre confidences seen for it, and its claim if it is one of the unnamed. Both maps are keyed by
-   * the capture object, so a copy installed in its place — a settle, a repair, a resolution's filing —
-   * used to leave the record on an object nothing held any more (audit, 2026-09-20).
-   */
-  replaceFace(slot, next) {
-    const previous = this.faces[slot];
-    if (previous !== void 0 && previous !== next) {
-      const seen = this.centreSeen.get(previous);
-      if (seen !== void 0) {
-        this.centreSeen.delete(previous);
-        this.centreSeen.set(next, seen);
-      }
-    }
-    this.faces[slot] = next;
-  }
-  /**
-   * Let go of one capture wherever it is held — its slot, or the unnamed list — together with every
-   * record kept ABOUT it, which the three maps key by the object (2026-09-21). Four removal paths
-   * each wrote a subset of this by hand: `rescanFace` and the painting drop left `centreSeen`
-   * behind, the undecided resolution emptied `unnamed` and none of the maps, and a capture nothing
-   * held any more went on being counted — in a median, as a claim — until the scan was restarted.
+   * Let go of one capture and of the settle recorded for it.
+   *
+   * Several removal paths each wrote a subset of this by hand, and a capture nothing held any more
+   * went on being counted until the scan was restarted (2026-09-21).
    */
   forgetCapture(capture) {
     for (const f of FACES) {
@@ -8975,24 +8248,6 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
         this.settled.delete(f);
       }
     }
-    this.unnamed = this.unnamed.filter((u) => u !== capture);
-    this.centreSeen.delete(capture);
-    this.unnamedClaim.delete(capture);
-    this.unnamedCentres.delete(capture);
-  }
-  /**
-   * What an unnamed side CLAIMS its centre is — the record made when it was held back, never the
-   * colour of whichever frame happened to be filed. A side whose centre never settled claims
-   * nothing (null); a named side claims its centre. This is the one reading of a centre every
-   * recognition and collision test goes through (2026-09-20): three of them read `colors[4]` and so
-   * compared against an accident, which is how a white side held a little too long, its centre
-   * reading blue on one frame, was captured a second time and then filed under the blue tile
-   * (`dev-docs/scanner-audit-2026-09-20.md` §4).
-   */
-  claimOf(side) {
-    if (this.unnamedClaim.has(side)) return this.unnamedClaim.get(side) ?? null;
-    const centre = side.colors[4];
-    return centre !== void 0 && isColour(centre) ? centre : null;
   }
   /**
    * A check threw. Six well-formed faces should never throw — but if they do, never freeze on
@@ -9100,7 +8355,7 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     if (accepted) {
       for (const f of FACES) {
         const next = accepted[f];
-        if (next && next !== this.faces[f]) this.replaceFace(f, next);
+        if (next) this.faces[f] = next;
       }
     }
     const rots = result.rotations;
@@ -9109,14 +8364,14 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
         const read = this.faces[f];
         const k = rots[fi] ?? 0;
         if (read && k !== 0) {
-          this.replaceFace(f, {
+          this.faces[f] = {
             ...read,
             colors: rotateFace(read.colors, k),
             confidence: rotateFace(read.confidence, k),
             ...read.scores ? { scores: rotateFace(read.scores, k) } : {},
             ...read.lab ? { lab: rotateFace(read.lab, k) } : {},
             ...read.locked ? { locked: rotateFace(read.locked, k) } : {}
-          });
+          };
         }
       });
     }
@@ -9316,32 +8571,6 @@ function classifyRefusal(result, camera) {
     return {
       notice: camera,
       line: camera.action ? "That isn't a solvable cube yet \u2014 start the scan over, or show one side again." : "That isn't a solvable cube yet \u2014 fix a sticker, or show a side again."
-    };
-  }
-  if (result.unreadCentres !== void 0 && result.unreadCentres > 0) {
-    const many = result.unreadCentres > 1;
-    return {
-      notice: {
-        title: many ? "Some middle stickers kept changing" : "A middle sticker kept changing",
-        tone: "err",
-        body: (result.legalFilings ?? 0) === 0 ? `${many ? "The middle stickers of %1 sides" : "The middle sticker of one side"} kept changing colour, and no way of placing ${many ? "them" : "it"} makes a real cube \u2014 so something else was misread too. Start the scan over in whiter light.` : `${many ? "The middle stickers of %1 sides" : "The middle sticker of one side"} kept changing colour, and more than one way of placing ${many ? "them" : "it"} makes a real cube. Turn any one face a quarter turn, then start the scan over.`,
-        params: [result.unreadCentres],
-        action: { label: "Start over", kind: "restart" }
-      },
-      line: "A middle sticker kept changing colour \u2014 start the scan over."
-    };
-  }
-  if (result.centreConflict) {
-    const { shared, missing, legalFilings } = result.centreConflict;
-    return {
-      notice: {
-        title: "Two sides read the same centre",
-        tone: "err",
-        body: legalFilings === 0 ? "Two sides read with a %1 centre, so one of them must really be the %2 side \u2014 a logo printed on a centre often does this. No way of filing them makes a real cube, and neither centre read more surely than the other, so something else was misread too. Start the scan over in whiter light." : "Two sides read with a %1 centre, so one of them must really be the %2 side \u2014 a logo printed on a centre often does this. More than one way makes a real cube and nothing in the photos says which. Turn any one face a quarter turn, then start the scan over.",
-        params: [GUIDE[shared].color, GUIDE[missing].color],
-        action: { label: "Start over", kind: "restart" }
-      },
-      line: "Two sides read with the same centre colour \u2014 start the scan over."
     };
   }
   if (result.schemeAmbiguous) {

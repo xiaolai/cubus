@@ -234,9 +234,14 @@ describe('ScanTrace — events, the decisions that are not frames', () => {
     at(250);
     trace.record(tick({}));
     at(260);
-    trace.event('held-back', { shares: 'B' });
+    trace.event('turned-away', { face: 'B', why: 'the same side again' });
     expect(trace.events()).toEqual([
-      { session: 1, t: 260, kind: 'held-back', detail: { shares: 'B' } },
+      {
+        session: 1,
+        t: 260,
+        kind: 'turned-away',
+        detail: { face: 'B', why: 'the same side again' },
+      },
     ]);
     expect(trace.dump()[0]!.t).toBe(250);
   });
@@ -267,13 +272,13 @@ describe('ScanTrace — events, the decisions that are not frames', () => {
     trace.event('captured', { face: 'B', colors: [5, 5, 5, 5, 5, 5, 5, 5, 5] });
     trace.begin({ runtime: 'web', phase: 'scanning' });
     at(30);
-    trace.event('contest-resolved', { adopted: true, valid: true });
+    trace.event('turned-away', { face: 'B', why: 'the same side again' });
     const [first, second] = trace.summary() as { events: unknown[] }[];
     expect(first!.events).toEqual([
       { t: 10, kind: 'captured', face: 'B', colors: [5, 5, 5, 5, 5, 5, 5, 5, 5] },
     ]);
     expect(second!.events).toEqual([
-      { t: 20, kind: 'contest-resolved', adopted: true, valid: true },
+      { t: 20, kind: 'turned-away', face: 'B', why: 'the same side again' },
     ]);
   });
 });
@@ -329,12 +334,16 @@ describe('sideSpeeds — how fast a side went from shown to captured, and what c
     });
   });
 
-  it('does not count a centre flip as a break — the gate does not treat it as one (D10)', () => {
-    // `Stillness` has keyed its run on the EIGHT since 2026-09-20, so a logo cap alternating white
-    // and blue breaks nothing. Counting it here inflated every per-side break total on exactly the
-    // cubes the trace was opened to diagnose, and the audit's §1.2 numbers were read off a trace
-    // that did. The flip is still RECORDED, because a flickering centre is the logo cube's
-    // signature and losing it would be the opposite mistake.
+  it('counts a centre flip as the break it is, and tallies it separately as well', () => {
+    // TWICE REVERSED, AND THE RULE IS THE SAME EACH TIME: the trace counts a break where the GATE
+    // breaks a run. `Stillness` keyed on the eight between 2026-09-20 and 2026-09-23 and a centre
+    // flip broke nothing, so counting it here inflated every per-side total on exactly the cubes
+    // the trace was opened to diagnose (D10). The gate keys on all nine again, so not counting it
+    // would now report zero breaks for a session the centre broke on every frame — the same defect
+    // with the sign flipped.
+    //
+    // The separate `centre` tally is kept either way: a flickering centre is a printed logo's
+    // signature, and it should be readable at a glance rather than dug out of the per-cell counts.
     const withCentre = (c: number) => A.map((v, i) => (i === 4 ? c : v));
     const ticks = [
       rec(100, { colors: withCentre(0), kept: 9 }),
@@ -343,7 +352,12 @@ describe('sideSpeeds — how fast a side went from shown to captured, and what c
       rec(400, { outcome: 'settled', colors: withCentre(0), kept: 9 }),
     ];
     const [side] = sideSpeeds(ticks, [ev(400, 'captured', { face: 'F', colors: A })]);
-    expect(side!.breaks).toEqual({ total: 0, abstain: {}, colour: {}, moved: 0 });
+    expect(side!.breaks).toEqual({
+      total: 2,
+      abstain: {},
+      colour: { 'cell4:white>blue': 1, 'cell4:blue>white': 1 },
+      moved: 0,
+    });
     expect(side!.centre).toEqual({ 'white>blue': 1, 'blue>white': 1 });
   });
 
@@ -368,10 +382,10 @@ describe('sideSpeeds — how fast a side went from shown to captured, and what c
     const sides = sideSpeeds(ticks, [
       ev(200, 'captured', { face: 'U', colors: P }),
       ev(250, 'turned-away', { face: 'U', colors: P }), // not a side: does not start a clock
-      ev(2000, 'held-back', { shares: 'B', colors: A2 }),
+      ev(2000, 'captured', { face: 'F', colors: A2 }),
     ]);
     expect(sides[1]).toMatchObject({
-      side: 'held(B)',
+      side: 'F',
       waitMs: 1600, // from 400, when the previous side was last read
       firstReadMs: 600, // from 1400
       otherReads: 2,
@@ -421,7 +435,7 @@ describe('the summary’s rate and speed report', () => {
     expect(s).toMatchObject({ ticks: 3, ticksDropped: 2, seconds: 0.5, ticksPerSecond: 10 });
   });
 
-  it('carries the floor it was given, the sides, and the resolution', () => {
+  it('carries the floor it was given, and the sides', () => {
     const { trace, at } = traced();
     trace.begin({ runtime: 'native', phase: 'scanning', floorMs: 500 });
     at(100);
@@ -430,7 +444,7 @@ describe('the summary’s rate and speed report', () => {
     trace.record(tick({ outcome: 'settled', colors: [0, 0, 0, 0, 0, 0, 0, 0, 0], kept: 9 }));
     trace.event('captured', { face: 'U', colors: [0, 0, 0, 0, 0, 0, 0, 0, 0] });
     at(800);
-    trace.event('contest-resolved', { adopted: true, valid: true });
+    trace.event('turned-away', { face: 'B', why: 'the same side again' });
     const [s] = trace.summary() as { speed: Record<string, unknown> }[];
     expect(s!.speed).toMatchObject({
       floorMs: 500,
@@ -438,7 +452,6 @@ describe('the summary’s rate and speed report', () => {
       waitMs: { median: 600, p90: 600, max: 600 },
       firstReadMs: { median: 600, p90: 600, max: 600 },
       firstSideInViewToLastSideMs: 600,
-      resolved: { adopted: true, valid: true },
     });
   });
 });

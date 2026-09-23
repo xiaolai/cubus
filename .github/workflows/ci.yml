@@ -136,7 +136,6 @@ jobs:
         run: |
           pnpm build:panel
           pnpm --filter cube-scanner build:misread-worker
-          pnpm --filter cube-scanner build:centres-worker
           pnpm --filter cube-scanner build:letterbox-worker
           pnpm --filter cube-scanner build:inference-worker
           pnpm --filter cubus-web build:mcp-guest
