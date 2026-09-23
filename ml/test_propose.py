@@ -120,21 +120,29 @@ def test_a_misread_the_counts_expose_is_repaired_and_outlined(decide: Decide) ->
     print("PASS cube half: a misread that breaks the counts is repaired, and only it is outlined")
 
 
-def test_a_white_centre_read_as_its_logo_is_filed_by_legality(decide: Decide) -> None:
-    # Both orders, because the two photos land in their slots by different branches: the newcomer
-    # (the later photo) is the white side in the first and the true blue side in the second.
+def test_a_white_centre_read_as_its_logo_is_refused_rather_than_placed(decide: Decide) -> None:
+    # WHAT THE REMOVAL COSTS, ON THE TOOL AS WELL AS ON THE APP (2026-09-23, the owner's call).
+    #
+    # This asserted the opposite: a white cap read as its blue logo was FILED AS WHITE, whichever
+    # photo came first, because `resolveCentres` enumerated both ways of filling the two free slots
+    # and took the legal one. That machinery is gone from the app, and this tool exists to be the
+    # app's assembly rather than a second opinion about what a real cube is — so it refuses here too.
+    #
+    # Both orders are still run, because the two photos used to land in their slots by different
+    # branches and a refusal that depended on arrival order would be a different defect.
     for order in (ORDER, (5, 2, 0, 1, 4, 3)):
         truth = truth_of(order=order)
         p = order.index(0)
-        # Confidently wrong, as the real logo caps were: outlined because it was changed, not close.
+        # Confidently wrong, as the real logo caps were.
         logo = [0.05 if k == WHITE else 0.9 if k == BLUE else 0.02 for k in range(6)]
         reads = [read_of(g, {4: logo} if n == p else None) for n, g in enumerate(truth)]
         assert reads[p].colors[4] == BLUE
         (d,) = decide([reads])
-        assert d["legal"] is True, (order, d)
-        assert [q["colors"] for q in d["photos"]] == truth, (order, d)
-        assert [q["uncertain"] for q in d["photos"]] == [[4] if n == p else [] for n in range(6)], (order, d)
-    print("PASS cube half: a white centre read as its blue logo is filed as white, whichever photo came first")
+        # Two centres claim blue and none claims white, so no filing can be made and the set cannot
+        # be called legal. The contributor is asked again rather than shown a cube the app would no
+        # longer produce for the same photographs.
+        assert d["legal"] is False, (order, d)
+    print("PASS cube half: a white centre read as its blue logo is refused, not placed by legality")
 
 
 def test_the_same_side_twice_is_unusable_rather_than_asked(decide: Decide) -> None:
@@ -582,7 +590,7 @@ if __name__ == "__main__":
         lambda _: test_the_cube_half_typechecks_and_lints_as_the_scanner_does(),
         test_a_cube_read_right_is_proposed_as_read_with_close_calls_outlined,
         test_a_misread_the_counts_expose_is_repaired_and_outlined,
-        test_a_white_centre_read_as_its_logo_is_filed_by_legality,
+        test_a_white_centre_read_as_its_logo_is_refused_rather_than_placed,
         test_the_same_side_twice_is_unusable_rather_than_asked,
         test_no_legal_cube_is_still_asked_about_and_says_so,
         test_the_cube_half_refuses_a_malformed_read,

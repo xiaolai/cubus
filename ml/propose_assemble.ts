@@ -18,7 +18,6 @@ import {
   type ColorFace,
   LOW_CONFIDENCE_THRESHOLD,
   matchingRotations,
-  resolveCentres,
 } from '../packages/cube-scanner/src/ai-assemble.js';
 import {
   assignNineOfEach,
@@ -90,62 +89,33 @@ const nineOfEach = (colors: readonly (readonly number[])[]): boolean => {
 };
 
 /**
- * File six sides under their centres' colours, as the panel does — or, when one colour is on two
- * centres and one on none (most often a brand logo on the white cap, read as its ink), let
- * `resolveCentres` decide which of the two is the missing colour: by legality, or — when no filing is
- * legal — by which centre read less surely, exactly as the app does. Null when no filing can be
- * made: two or more collisions, or a collision the resolver refuses to decide.
+ * File six sides under their centres' colours, exactly as the panel does.
+ *
+ * A SIDE IS ITS CENTRE, and a colour on two centres is a filing that cannot be made (2026-09-23,
+ * the owner's call). This used to hand the collision to `resolveCentres`, which enumerated every way
+ * the two could fill the two free slots and took the one legal filing — by legality first, then by
+ * which centre read less surely. That machinery was removed from the app, and this tool exists to be
+ * the app's assembly rather than a second opinion about what a real cube is, so the collision is
+ * refused here too. A contributor whose white cap reads as its logo now gets `null` and is asked
+ * again, where before they got a filing the app itself would no longer produce.
  */
 function fileSides(
   captures: readonly Capture[],
   byCentre: ReadonlyMap<number, number[]>,
 ): Filing | null {
-  if (byCentre.size === FACES.length) {
-    const faces = {} as Record<Face, ColorFace>;
-    const photoOf = {} as Record<Face, number>;
-    captures.forEach((capture, p) => {
-      const slot = slotOf(capture.colors[4] as Colour);
-      faces[slot] = capture;
-      photoOf[slot] = p;
-    });
-    return {
-      faces,
-      photoOf,
-      result: assembleColors(faces, LOW_CONFIDENCE_THRESHOLD, {}, { diagnose: false }),
-    };
-  }
-  const shared = [...byCentre.entries()].filter(([, photos]) => photos.length > 1);
-  if (byCentre.size !== FACES.length - 1 || shared.length !== 1) return null;
-  const [centre, [first, second]] = shared[0] as [number, [number, number]];
-  const named: Partial<Record<Face, ColorFace>> = {};
-  const photoOf: Partial<Record<Face, number>> = {};
+  if (byCentre.size !== FACES.length) return null;
+  const faces = {} as Record<Face, ColorFace>;
+  const photoOf = {} as Record<Face, number>;
   captures.forEach((capture, p) => {
-    if (p === first || p === second) return;
     const slot = slotOf(capture.colors[4] as Colour);
-    named[slot] = capture;
+    faces[slot] = capture;
     photoOf[slot] = p;
   });
-  const newcomer = captures[second]!;
-  const { faces, result } = resolveCentres(
-    named,
-    [captures[first]!, newcomer].map((capture) => ({
-      capture,
-      centreConfidence: capture.confidence[4] ?? 0,
-    })),
-    LOW_CONFIDENCE_THRESHOLD,
-    { diagnose: false },
-  );
-  if (!faces) return null;
-  const sharedSlot = slotOf(centre as Colour);
-  const missingSlot = FACES.find((slot) => slot !== sharedSlot && named[slot] === undefined)!;
-  // Which photo went where. The resolver recolours one of the two and files the other under the
-  // shared colour; whichever holds the shared slot still carries its own read there, and the two
-  // reads differ in at least three stickers (the same-side check has already run), so comparing
-  // them is unambiguous.
-  const newcomerKeptShared = faces[sharedSlot].colors.every((c, i) => c === newcomer.colors[i]);
-  photoOf[sharedSlot] = newcomerKeptShared ? second : first;
-  photoOf[missingSlot] = newcomerKeptShared ? first : second;
-  return { faces, photoOf: photoOf as Record<Face, number>, result };
+  return {
+    faces,
+    photoOf,
+    result: assembleColors(faces, LOW_CONFIDENCE_THRESHOLD, {}, { diagnose: false }),
+  };
 }
 
 export function decide(captures: readonly Capture[]): Decision {
