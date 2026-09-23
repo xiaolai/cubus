@@ -403,10 +403,10 @@
           "markdownDescription": "Denies the probe command without any pre-configured scope."
         },
         {
-          "description": "Allows cube-vision to list cameras, load the model, capture frames and run inference.\n#### This default permission set includes:\n\n- `allow-probe`\n- `allow-list-cameras`\n- `allow-current-camera`\n- `allow-load-model`\n- `allow-open-camera`\n- `allow-close-camera`\n- `allow-next-detection`\n- `allow-infer-frame`",
+          "description": "Allows cube-vision to list cameras, load the model, capture frames and run inference.\n#### This default permission set includes:\n\n- `allow-probe`\n- `allow-list-cameras`\n- `allow-current-camera`\n- `allow-load-model`\n- `allow-open-camera`\n- `allow-close-camera`\n- `allow-next-detection`\n- `allow-infer-frame`\n- `allow-frame-pixels`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Allows cube-vision to list cameras, load the model, capture frames and run inference.\n#### This default permission set includes:\n\n- `allow-probe`\n- `allow-list-cameras`\n- `allow-current-camera`\n- `allow-load-model`\n- `allow-open-camera`\n- `allow-close-camera`\n- `allow-next-detection`\n- `allow-infer-frame`"
+          "markdownDescription": "Allows cube-vision to list cameras, load the model, capture frames and run inference.\n#### This default permission set includes:\n\n- `allow-probe`\n- `allow-list-cameras`\n- `allow-current-camera`\n- `allow-load-model`\n- `allow-open-camera`\n- `allow-close-camera`\n- `allow-next-detection`\n- `allow-infer-frame`\n- `allow-frame-pixels`"
         }
       ]
     }

@@ -289,4 +289,84 @@ final class CameraLifecycleTests: XCTestCase {
         camera.injectForTests(frame)
         guard case .stopped = camera.latestFrame() else { return XCTFail("an interruption un-stopped a stopped camera") }
     }
+
+    /// D7's pixel hand-over has to survive the camera moving on, because the page always asks late.
+    ///
+    /// MEASURED, on a live scan (2026-09-23): the page fits a grid to one frame, runs inference,
+    /// waits for the stillness gate to settle and then asks for that frame's pixels across the
+    /// bridge — by which time one or more newer frames have been published. Answering only for the
+    /// CURRENT frame meant pixels arrived on 0 of 2 settled reads, so `stickerLab` never ran once
+    /// and the assembly's paint recovery had nothing to work from on macOS.
+    func testPixelsAnswerForARecentFrameAfterNewerOnesArrive() {
+        let camera = Camera(orientationSource: nil)
+        _ = camera.openForTests(label: "retention")
+        let bytes: [UInt8] = [1, 2, 3, 4]
+        camera.injectForTests((bytes: bytes, width: 1, height: 1))
+        guard case .frame(_, _, _, let wanted) = camera.latestFrame() else {
+            return XCTFail("the injected frame is not the latest")
+        }
+        // Three newer frames arrive before the page gets round to asking.
+        for _ in 0..<3 { camera.injectForTests((bytes: [9, 9, 9, 9], width: 1, height: 1)) }
+        let got = camera.pixels(ofFrame: wanted)
+        XCTAssertNotNil(got, "a frame three behind the newest is no longer answerable")
+        XCTAssertEqual(got?.bytes, bytes, "the pixels returned are not the ones that frame carried")
+    }
+
+    /// The retention is a race window, NOT a cache: a grid fitted to one picture must never be read
+    /// against another, so a frame past the window is nil rather than "the closest one".
+    ///
+    /// Serving a SECOND frame is what makes this test the right one: `latestFrame()` pins what it
+    /// hands over, so a frame is answerable while it is the served one and stops being answerable
+    /// once another has taken its place and the ring has moved past it.
+    func testAFramePastTheWindowIsNotAnsweredAtAll() {
+        let camera = Camera(orientationSource: nil)
+        _ = camera.openForTests(label: "retention")
+        camera.injectForTests((bytes: [1, 2, 3, 4], width: 1, height: 1))
+        guard case .frame(_, _, _, let old) = camera.latestFrame() else {
+            return XCTFail("the injected frame is not the latest")
+        }
+        XCTAssertNotNil(camera.pixels(ofFrame: old), "the frame just served is not answerable")
+        // Many more arrive, and the page is served a newer one — the old pin is replaced.
+        for _ in 0..<8 { camera.injectForTests((bytes: [9, 9, 9, 9], width: 1, height: 1)) }
+        _ = camera.latestFrame()
+        XCTAssertNil(camera.pixels(ofFrame: old), "a long-gone frame was answered for")
+        XCTAssertNil(camera.pixels(ofFrame: old + 10_000), "a frame that never existed was answered for")
+    }
+
+    /// A closed camera holds no pixels: the buffer goes with the frame it was filled from.
+    func testClosingTheCameraForgetsTheRetainedFrames() {
+        let camera = Camera(orientationSource: nil)
+        _ = camera.openForTests(label: "retention")
+        camera.injectForTests((bytes: [1, 2, 3, 4], width: 1, height: 1))
+        guard case .frame(_, _, _, let id) = camera.latestFrame() else {
+            return XCTFail("the injected frame is not the latest")
+        }
+        XCTAssertNotNil(camera.pixels(ofFrame: id))
+        camera.close()
+        XCTAssertNil(camera.pixels(ofFrame: id), "a closed camera still handed out pixels")
+    }
+
+    /// The frame the page was SERVED stays answerable however many arrive behind it.
+    ///
+    /// The ring alone cannot do this: measured on a live scan (2026-09-23) the camera publishes 30
+    /// frames a second while the scan loop reads about one, so ~30 arrive between the read and the
+    /// ask, and a ring long enough would hold ~110 MB. Pinning the served frame is two.
+    func testTheServedFrameSurvivesManyNewerOnes() {
+        let camera = Camera(orientationSource: nil)
+        _ = camera.openForTests(label: "served")
+        let bytes: [UInt8] = [7, 7, 7, 7]
+        camera.injectForTests((bytes: bytes, width: 1, height: 1))
+        // The page is served this frame — exactly what happens on a tick.
+        guard case .frame(_, _, _, let servedId) = camera.latestFrame() else {
+            return XCTFail("nothing was served")
+        }
+        // Far more than the ring holds.
+        for _ in 0..<40 { camera.injectForTests((bytes: [1, 1, 1, 1], width: 1, height: 1)) }
+        let got = camera.pixels(ofFrame: servedId)
+        XCTAssertNotNil(got, "the frame the page was served is no longer answerable")
+        XCTAssertEqual(got?.bytes, bytes, "the pixels are not the served frame's")
+        // And a frame that was PUBLISHED but never served, long past the ring, is still refused —
+        // this pins one frame, it does not become a cache.
+        XCTAssertNil(camera.pixels(ofFrame: servedId + 1), "an unserved frame was answered for")
+    }
 }

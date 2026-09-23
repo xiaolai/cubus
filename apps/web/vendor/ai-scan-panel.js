@@ -9711,6 +9711,7 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
           phase,
           message,
           captured: this.capturedFaces(),
+          held: this.unnamed.map((c) => ({ colors: [...c.colors] })),
           sides: this.sidesHeld(),
           live: this.live,
           settling: this.settling(),

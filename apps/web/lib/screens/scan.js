@@ -110,7 +110,8 @@ SCREENS.scan = () => {
       <div class="card scanboard">
         <ai-scan-panel headless autostart scheme="${settings.scheme}"${isDesktopHost() ? '' : ' facing="environment"'}></ai-scan-panel>
         <div class="scan-faces">${NET_FACES.map((f) => `<div class="scan-face" role="group" aria-label="${SCAN_FACE_NAME[f]} side" data-face="${f}">
-          <div class="tile" style="border-color:${edgeColors(f, settings.scheme)}"><div class="tgrid">${pending(f)}</div></div><div class="lbl">${SCAN_FACE_NAME[f]}</div></div>`).join('')}</div>
+          <div class="tile" style="border-color:${edgeColors(f, settings.scheme)}"><div class="tgrid">${pending(f)}</div></div><div class="lbl">${SCAN_FACE_NAME[f]}</div></div>`).join('')}<div class="scan-held" role="group" aria-label="A side that has been read but not yet placed" hidden>
+          <div class="tile"><div class="tgrid">${Array.from({ length: 9 }, () => '<div class="cell"></div>').join('')}</div></div><div class="lbl">not placed yet</div></div></div>
         <div class="scan-cam card-tools">
           <button id="scanResetBtn" title="Throw the whole scan away and start again" aria-label="Throw the whole scan away and start again">${icon('refresh', 19)}</button>
           <button id="scanPaintBtn" title="Paint the cube by hand instead of scanning it" aria-label="Paint the cube by hand instead of scanning it">${icon('paint-roller', 19)}</button>

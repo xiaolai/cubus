@@ -478,6 +478,19 @@ export interface ScanProgress {
   /** Sides captured so far, in URFDLB order. */
   captured: CapturedFace[];
   /**
+   * Sides READ but not yet placed — the nine colours of each, centre first-unknown.
+   *
+   * `captured` lists only sides with a FACE, and a side whose centre nobody could read has none
+   * until `resolveCentres` settles it at six. So a scan could announce "Got that side — 1/6" and
+   * draw nothing at all, which is what the logo-centre cube does on the very first side shown:
+   * reported four times as "it recognised it but the white face is not on screen". The side is
+   * read, the scan is right to hold it, and the person is entitled to see that it happened.
+   *
+   * The centre is `UNREAD_CENTRE` where nobody read it — never a guess, and a host must draw it as
+   * unknown rather than as a colour.
+   */
+  held: { colors: number[] }[];
+  /**
    * Every side held, named or not. `captured` lists only NAMED sides, and a side whose centre
    * another side also claims is held unnamed until six are in — so `captured` can shrink while the
    * scan moves forward, and a host counting it would take a collision for a restart (audit,
@@ -3682,6 +3695,7 @@ export class AiScanPanel extends HTMLElement {
           phase,
           message,
           captured: this.capturedFaces(),
+          held: this.unnamed.map((c) => ({ colors: [...c.colors] })),
           sides: this.sidesHeld(),
           live: this.live,
           settling: this.settling(),

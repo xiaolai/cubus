@@ -153,6 +153,35 @@ public final class Camera: NSObject {
     /// as is everything below it down to `opened`: the sink writes it, the observers clear it,
     /// `latestFrame()` judges it.
     private var frame: Frame?
+    /// The last few frames published, newest last — what `pixels(ofFrame:)` can still answer for.
+    ///
+    /// ONE FRAME WAS NOT ENOUGH, and the page could not tell. `pixels(ofFrame:)` answered only for
+    /// the CURRENT frame, but the page asks for the frame its grid was fitted to — after inference,
+    /// after the stillness gate settles, and after a hop back across the bridge. By then the camera
+    /// has published one or more newer frames, so the answer was nil. Measured on a live scan
+    /// (2026-09-23): pixels arrived on 0 of 2 settled reads, so `stickerLab` never ran and the
+    /// assembly's paint recovery never had a frame to work from.
+    ///
+    /// Four, because that is the race and not a cache: at 15–30 frames a second it covers the
+    /// ~100 ms between a frame being read and its capture being filed, and it costs four frames of
+    /// memory while a camera is open. It does NOT make an older frame acceptable — `pixels(ofFrame:)`
+    /// still answers for one id and nothing else, because a grid fitted to one picture must not be
+    /// read against another.
+    private var recent: [Frame] = []
+    /// The frame most recently HANDED TO THE PAGE, kept until the next one is.
+    ///
+    /// THIS, NOT A LONGER RING, IS WHAT MAKES THE PIXEL PATH WORK. The page asks for the pixels of
+    /// the frame its grid was fitted to, which is always a frame `latestFrame()` served it — and it
+    /// asks late, after inference and after the stillness gate settles. Measured on a live scan
+    /// (2026-09-23): the camera publishes 30 frames a second while the scan loop reads about one, so
+    /// roughly thirty frames pass in between. A ring big enough to cover that is ~110 MB of held
+    /// pixels; pinning the one frame actually in play is two.
+    ///
+    /// It is not a fallback to "the closest frame": this answers for exactly the id it served, and
+    /// `pixels(ofFrame:)` still refuses every other.
+    private var served: Frame?
+    /// How many published frames stay answerable. See `recent`.
+    private static let framesKept = 4
     private var lifecycle: Lifecycle = .closed
     /// Counts every `open`; the lifecycle's generation is the latest value.
     private var generations = 0
@@ -425,6 +454,8 @@ public final class Camera: NSObject {
         lock.lock()
         lifecycle = .running(generation)
         frame = nil
+        recent.removeAll()
+        served = nil
         opened = info
         lock.unlock()
         let label = info.label
@@ -636,6 +667,8 @@ public final class Camera: NSObject {
         lock.lock()
         lifecycle = .closed
         frame = nil
+        recent.removeAll()
+        served = nil
         opened = nil
         lock.unlock()
     }
@@ -653,6 +686,8 @@ public final class Camera: NSObject {
         if case .stopped = lifecycle { return }
         lifecycle = .stopped(live, reason)
         frame = nil
+        recent.removeAll()
+        served = nil
     }
 
     /// The device `open` opened went away: the handler of `AVCaptureDeviceWasDisconnected`, with
@@ -677,6 +712,8 @@ public final class Camera: NSObject {
         guard case .running(let generation) = lifecycle else { return }
         lifecycle = .interrupted(generation)
         frame = nil
+        recent.removeAll()
+        served = nil
     }
 
     /// The interruption ended: frames are served again from the next one to arrive.
@@ -702,7 +739,12 @@ public final class Camera: NSObject {
         defer { lock.unlock() }
         guard lifecycle == .running(generation) else { return }
         frames += 1
-        self.frame = (frame.bytes, frame.width, frame.height, frame.at, frames)
+        let published = (frame.bytes, frame.width, frame.height, frame.at, frames)
+        self.frame = published
+        recent.append(published)
+        if recent.count > Camera.framesKept {
+            recent.removeFirst(recent.count - Camera.framesKept)
+        }
     }
 
     /// Tests only: stands in for `open` — a new generation goes live for a camera called `label`,
@@ -717,6 +759,8 @@ public final class Camera: NSObject {
         lock.lock()
         lifecycle = .running(generation)
         frame = nil
+        recent.removeAll()
+        served = nil
         opened = CameraInfo(deviceId: "test", label: label, facing: nil)
         lock.unlock()
         return generation
@@ -753,8 +797,9 @@ public final class Camera: NSObject {
     public func pixels(ofFrame id: Int) -> (bytes: [UInt8], width: Int, height: Int)? {
         lock.lock()
         defer { lock.unlock() }
-        guard let frame, frame.id == id else { return nil }
-        return (frame.bytes, frame.width, frame.height)
+        if let served, served.id == id { return (served.bytes, served.width, served.height) }
+        guard let hit = recent.last(where: { $0.id == id }) else { return nil }
+        return (hit.bytes, hit.width, hit.height)
     }
 
     /// What the camera has for this tick — see `LatestFrame`. A recorded fault outranks a frame in
@@ -770,6 +815,8 @@ public final class Camera: NSObject {
             return .none
         case .running:
             guard let frame, Camera.now() - frame.at < Camera.frameStaleAfter else { return .none }
+            // Pin what the page is about to hold a grid against, so its later ask can be answered.
+            served = frame
             return .frame(bytes: frame.bytes, width: frame.width, height: frame.height, id: frame.id)
         }
     }

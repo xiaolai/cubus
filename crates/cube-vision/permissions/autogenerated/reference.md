@@ -12,6 +12,7 @@ Allows cube-vision to list cameras, load the model, capture frames and run infer
 - `allow-close-camera`
 - `allow-next-detection`
 - `allow-infer-frame`
+- `allow-frame-pixels`
 
 ## Permission Table
 

@@ -662,6 +662,19 @@
       .scan-face[data-face="R"] { grid-area: 2 / 3; }
       .scan-face[data-face="B"] { grid-area: 2 / 4; }
       .scan-face[data-face="D"] { grid-area: 3 / 2; }
+      /* A SIDE THAT HAS BEEN READ BUT NOT PLACED, in a cell the cross leaves empty.
+         A side whose centre nobody could read has no face until `resolveCentres` settles it at six,
+         so it cannot go in the net — and until today it went nowhere at all: the scan announced
+         "Got that side" and drew nothing, which on the logo-centre cube is the FIRST side shown.
+         Reported four times as "it recognised it but the white face is not on screen".
+         Its own class, not `.scan-face`: every query that walks the six — the roving keyboard, the
+         per-tile repaint, the geometry fixtures — must keep finding six and nothing else. And it
+         sits at 1/4, a cell the cross never uses, so the grid's own size is unchanged. */
+      .scan-held { grid-area: 1 / 4; min-width: 0; display: flex; flex-direction: column;
+        align-items: center; gap: 2px; }
+      .scan-held[hidden] { display: none; }
+      .scan-held .tile { border-color: var(--line); border-style: dashed; }
+      .scan-held .lbl { color: var(--ink-3); font-size: var(--fs-micro); }
       .scan-face { min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; }
       /* The four edges are painted in the NEIGHBOURING faces' colours (set inline — they follow the
          chosen palette), which tells the user which way up to hold that side without a caption.
