@@ -669,12 +669,16 @@
          Reported four times as "it recognised it but the white face is not on screen".
          Its own class, not `.scan-face`: every query that walks the six — the roving keyboard, the
          per-tile repaint, the geometry fixtures — must keep finding six and nothing else. And it
-         sits at 1/4, a cell the cross never uses, so the grid's own size is unchanged. */
+         sits at 1/4, a cell the cross never uses, so the grid's own size is unchanged.
+         NO CAPTION. The first version said "not placed yet", which is this scanner's internal state
+         said out loud to a child — the owner's reaction was "这是啥 ux 啊". What the tile has to
+         carry is that the side WAS read and its middle is unknown, and the dashed edge and the `?`
+         say both; the sentence in the sheet says the rest. A label here can only repeat it in
+         worse words. */
       .scan-held { grid-area: 1 / 4; min-width: 0; display: flex; flex-direction: column;
         align-items: center; gap: 2px; }
       .scan-held[hidden] { display: none; }
       .scan-held .tile { border-color: var(--line); border-style: dashed; }
-      .scan-held .lbl { color: var(--ink-3); font-size: var(--fs-micro); }
       .scan-face { min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; }
       /* The four edges are painted in the NEIGHBOURING faces' colours (set inline — they follow the
          chosen palette), which tells the user which way up to hold that side without a caption.
