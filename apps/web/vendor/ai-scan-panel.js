@@ -3177,6 +3177,20 @@ function assembleWithin(faces, threshold, confirmed, options, maxRepairCost, all
     }
     const byPaint = accept(allowPaint ? recolourByPaint(faces) : null);
     if (byPaint) return byPaint;
+    const unproven = FACES.filter((face) => faces[face]?.ordering === "sorted");
+    if (unproven.length > 0) {
+      return reject(
+        // NAMES WHAT WAS MEASURED, and nothing about how the cube was held. "Hold it flatter",
+        // "steadier", "centred" are the sentences `apps/web/test/scan-sentences.test.mjs` refuses,
+        // because the scanner measures none of them; what it DID measure is that the nine boxes fit
+        // no lattice, so their places on the face are not settled.
+        "one side\u2019s stickers could not be placed for certain \u2014 show it again",
+        // NO `suspects` AND NO COUNT. Both are claims about COLOURS, and neither is earned while a
+        // side's stickers may simply be in the wrong places; `misreadFace` names the side to
+        // re-show, which is what a host acts on.
+        { misreadFace: unproven[0], unprovenOrder: unproven }
+      );
+    }
     return reject(
       "no orientation of the faces is solvable \u2014 a colour was misread",
       options.diagnose === false ? { misreadCount: null } : diagnoseAcrossSchemes(bySlot)
@@ -7750,11 +7764,8 @@ var AiScanPanel = class extends HTMLElement {
     const frame = output.frame ?? await this.framePixels(output, epoch);
     const lab = frame && fit.face.boxes ? stickerLab(frame, fit.face.boxes, IMG_SIZE) ?? void 0 : void 0;
     if (!this.cam.freshFrame(epoch)) return;
-    this.fileSettledRead(
-      lab ? { ...fit.face, lab } : fit.face,
-      agreedCentre,
-      this.still.centreReads()
-    );
+    const read = fit.face.ordering === "sorted" ? { ...fit.face, ordering: "sorted" } : fit.face;
+    this.fileSettledRead(lab ? { ...read, lab } : read, agreedCentre, this.still.centreReads());
   }
   /**
    * The pixels of the frame a fit was made on, from a detector that did not ship them (D7).

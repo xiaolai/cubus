@@ -1489,11 +1489,13 @@ export class AiScanPanel extends HTMLElement {
     // rule every awaiting path here keeps, and the one the 2026-09-21 audit found missing in four
     // places at once.
     if (!this.cam.freshFrame(epoch)) return;
-    this.fileSettledRead(
-      lab ? { ...fit.face, lab } : fit.face,
-      agreedCentre,
-      this.still.centreReads(),
-    );
+    // WHETHER THE ORDER WAS PROVEN travels with the capture (D6): a face the fit had to group by
+    // the y-sort may be scrambled, and the assembly must not blame a COLOUR for that. Only marked
+    // where the fit actually guessed — `'lattice'` is left off, so a capture built any other way
+    // reads exactly as it did.
+    const read =
+      fit.face.ordering === 'sorted' ? { ...fit.face, ordering: 'sorted' as const } : fit.face;
+    this.fileSettledRead(lab ? { ...read, lab } : read, agreedCentre, this.still.centreReads());
   }
 
   /**

@@ -141,6 +141,28 @@ export interface ColorFace {
    * holds whatever ceiling a caller passes.
    */
   locked?: boolean[];
+  /**
+   * HOW the fit put this capture's nine stickers in reading order (D6, `FaceFit.ordering`).
+   *
+   *   - `'lattice'`, or absent: the nine fitted a 3×3 lattice, which decides the cells. Proven.
+   *   - `'sorted'`: no lattice fitted and the level-frame sort grouped them by height. That
+   *     grouping is a GUESS whenever a middle box sits far enough off its row's centre to sort into
+   *     the next row.
+   *
+   * ABSENT MEANS PROVEN, so every caller written before this — every test that builds a capture by
+   * hand, every painted cube — reads exactly as it did. A capture is marked only where the fit
+   * actually had to guess.
+   *
+   * WHAT IT IS FOR. The harm §3 names for F3 is "a false misread accusation": a scrambled face is a
+   * GEOMETRY failure, and the assembly can only see it as a colour one — so it points at stickers
+   * that were read correctly and asks a child to fix them. A reading built from a sorted capture
+   * has not earned that accusation, and `assembleColors` asks for the side again instead. SEVEN
+   * measures have now failed to tell a sorted face from a scrambled one at the fit layer (five by
+   * 2026-09-21 and 2026-09-23, plus grouping-uniqueness and an affine ranking on 2026-09-23 — the
+   * ranking picks the wrong grouping on five of the nine no-lattice goldens), so the decision is
+   * taken where evidence for it exists: a fresh frame, which usually does fit a lattice.
+   */
+  ordering?: 'lattice' | 'sorted';
 }
 
 /**
@@ -352,6 +374,15 @@ export type AiScanResult = ScanResult & {
   misreadCount?: number | null;
   /** The one side every minimal repair blames, when they agree on one — a hint for what to re-show. A slot. */
   misreadFace?: Face;
+  /**
+   * The sides whose reading order the fit could not PROVE, on a refusal that names them instead of
+   * accusing a colour (D6, `ColorFace.ordering`).
+   *
+   * Present only on that refusal, and never beside `misreadCount` or `suspects`: those are claims
+   * about colours, and a side whose stickers may be in the wrong PLACES has not earned one. A host
+   * shows these sides again rather than pointing at stickers.
+   */
+  unprovenOrder?: Face[];
   /**
    * The scheme under which `misreadCount` (and any `suspects`) was found, when exactly one scheme
    * produced the smallest floor. Absent when the schemes tie — then the count holds under either
@@ -1636,6 +1667,34 @@ function assembleWithin(
     // Same two gates, so this can turn a refusal into a read and cannot turn a read into anything.
     const byPaint = accept(allowPaint ? recolourByPaint(faces) : null);
     if (byPaint) return byPaint;
+
+    // A SIDE WHOSE ORDER WAS NEVER PROVEN IS NOT ACCUSED OF A COLOUR (D6, 2026-09-23).
+    //
+    // `fitFace` marks a capture `'sorted'` when no lattice fitted and the level-frame sort had to
+    // guess the grouping — and a guessed grouping scrambles a face whose middle box sits far enough
+    // off its row's centre. That is a GEOMETRY failure, and everything below can only see it as a
+    // colour one: it would count misread stickers that were read perfectly, point at them, and ask
+    // a child to correct a cube that is already right. Seven measures have failed to tell a sorted
+    // face from a scrambled one at the fit layer (`ColorFace.ordering`), so the decision is taken
+    // where evidence for it exists — another frame, which usually does fit a lattice.
+    //
+    // ONLY WHEN ONE IS UNPROVEN. A reading whose every capture fitted a lattice is refused exactly
+    // as it always was, with its count and its suspects, because there the geometry is not in doubt
+    // and the colours are the only thing left to blame.
+    const unproven = FACES.filter((face) => faces[face]?.ordering === 'sorted');
+    if (unproven.length > 0) {
+      return reject(
+        // NAMES WHAT WAS MEASURED, and nothing about how the cube was held. "Hold it flatter",
+        // "steadier", "centred" are the sentences `apps/web/test/scan-sentences.test.mjs` refuses,
+        // because the scanner measures none of them; what it DID measure is that the nine boxes fit
+        // no lattice, so their places on the face are not settled.
+        'one side\u2019s stickers could not be placed for certain \u2014 show it again',
+        // NO `suspects` AND NO COUNT. Both are claims about COLOURS, and neither is earned while a
+        // side's stickers may simply be in the wrong places; `misreadFace` names the side to
+        // re-show, which is what a host acts on.
+        { misreadFace: unproven[0]!, unprovenOrder: unproven },
+      );
+    }
 
     // Before refusing, do the diagnosis a refusal makes possible: how many stickers are wrong is
     // always answerable, and when it is exactly one, WHICH one is answerable too. Under every

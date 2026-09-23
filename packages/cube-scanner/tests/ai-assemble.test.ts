@@ -1372,3 +1372,65 @@ describe('a repair is confirmed by one look, at the right sticker (D1)', () => {
     expect(reobserved(repaired, original, [], [])).toBe(true);
   });
 });
+
+/**
+ * D6's closure (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3). The harm §3 names for F3 is "a
+ * false misread accusation": a face the fit had to group by the y-sort may be SCRAMBLED, which is a
+ * geometry failure the assembly can only see as a colour one — so it counts misread stickers that
+ * were read perfectly, points at them, and asks a child to correct a cube that is already right.
+ *
+ * Seven measures have failed to tell a sorted face from a scrambled one at the fit layer, so the
+ * decision is taken where evidence for it exists: another frame.
+ */
+describe('a side whose order was never proven is not accused of a colour (D6)', () => {
+  const LETTER: Record<string, number> = { U: 0, R: 1, F: 2, D: 3, L: 4, B: 5 };
+  /** A refusable reading: a scramble with one sticker turned a colour it is not. */
+  function misread(): Record<Face, ColorFace> {
+    const facelets = scrambleFacelets("R U R' U' F2 L D L'");
+    const out = {} as Record<Face, ColorFace>;
+    FACES.forEach((face, fi) => {
+      const colors = [...facelets.slice(fi * 9, fi * 9 + 9)].map((l) => LETTER[l]!);
+      out[face] = { colors, confidence: Array<number>(9).fill(0.9) };
+    });
+    out.F!.colors[0] = (out.F!.colors[0]! + 1) % 6;
+    return out;
+  }
+
+  it('counts and points when every capture fitted a lattice', () => {
+    // Unchanged: there the geometry is not in doubt and the colours are the only thing to blame.
+    const r = assembleColors(misread());
+    expect(r.valid).toBe(false);
+    expect(r.unprovenOrder).toBeUndefined();
+    expect(r.misreadCount ?? 0).toBeGreaterThan(0);
+  });
+
+  it('names the side to show again, and claims nothing about its colours, when one was sorted', () => {
+    const faces = misread();
+    faces.F = { ...faces.F!, ordering: 'sorted' };
+    const r = assembleColors(faces);
+    expect(r.valid).toBe(false);
+    expect(r.unprovenOrder).toEqual(['F']);
+    expect(r.misreadFace).toBe('F');
+    // NEITHER of the colour claims: both are unearned while the stickers may be in wrong places.
+    expect(r.misreadCount).toBeUndefined();
+    expect(r.suspects).toBeUndefined();
+    // And it says what was measured — never how the cube was held.
+    expect(r.reason).toMatch(/could not be placed for certain/);
+    expect(r.reason).not.toMatch(/flat|steady|steadier|centred|square/i);
+  });
+
+  it('does not fire on a reading that is ACCEPTED, however it was ordered', () => {
+    // The guard sits on the refusal path only: a sorted capture that assembles into a legal cube is
+    // a legal cube, and refusing it would cost every extreme-perspective frame a read.
+    const facelets = scrambleFacelets("R U R' U' F2 L D L'");
+    const out = {} as Record<Face, ColorFace>;
+    FACES.forEach((face, fi) => {
+      const colors = [...facelets.slice(fi * 9, fi * 9 + 9)].map((l) => LETTER[l]!);
+      out[face] = { colors, confidence: Array<number>(9).fill(0.9) };
+    });
+    out.F = { ...out.F!, ordering: 'sorted' };
+    const r = assembleColors(out);
+    expect(r.valid).toBe(true);
+    expect(r.unprovenOrder).toBeUndefined();
+  });
+});
