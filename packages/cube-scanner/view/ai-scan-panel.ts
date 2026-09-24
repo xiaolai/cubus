@@ -721,6 +721,34 @@ export class AiScanPanel extends HTMLElement {
    * does not retract the claim mid-sentence, and a cube actually put down stops it quickly.
    */
   private static readonly SIGHTING_FRESH_MS = 1_500;
+  /**
+   * How long "Reading a side — hold still…" survives a frame the fit refused.
+   *
+   * MEASURED, 2026-09-24. The screen's sentence was changing every 124 ms at the median, and 81% of
+   * the sentences it showed lasted under half a second — unreadable by anyone. The cause was not the
+   * words but the RATE: a fit that succeeds and fails on alternate frames made "Reading a side" and
+   * "Show any side to the camera." alternate at the tick rate, and those two were 77 of the 134
+   * sentences shown across three sessions. They are one situation to the person holding the cube.
+   *
+   * So a fit is remembered for a moment rather than asked of this frame alone. It is the same idiom
+   * `SIGHTING_FRESH_MS` already uses for "an empty frame is not a stall", and it states something
+   * true: a side IS being read, across a run the gate itself measures over several frames. Half a
+   * second is comfortably longer than the dropouts (one or two frames, 60–130 ms) and far shorter
+   * than the time it takes to turn a cube, so putting the cube down still falls back at once.
+   *
+   * IT CONTINUES A READING CAPTION AND NEVER REVIVES ONE, which is the whole of why it is safe.
+   * Unconditionally, it painted "Reading a side" back over whatever the card had just been given —
+   * a side filed, the ask for one more look, a finished scan — because those are all followed by a
+   * frame that fits nothing while the cube is still in view. Requiring the caption to ALREADY be
+   * the reading line makes it hysteresis on one state rather than an override of every other, and
+   * it needs no exception for the no-frame path: a withdrawal writes the idle line first, so there
+   * is nothing left for the grace to continue.
+   */
+  private static readonly READING_GRACE_MS = 500;
+  /** The caption the grace continues. One literal, so the test and the two sites cannot drift. */
+  private static readonly READING_LINE = 'Reading a side — hold still…';
+  /** When a frame last fitted a face — what `READING_GRACE_MS` is measured from. */
+  private lastFitAt = 0;
 
   /**
    * When this scan last CAPTURED something, on the monotonic clock — or when the loop began.
@@ -1460,7 +1488,18 @@ export class AiScanPanel extends HTMLElement {
       // on fingers, because nothing measures a side's angle or a hand's shake. No sentence names a
       // cause the scanner did not measure (`dev-docs/scan-guidance-plan.md` §1;
       // `apps/web/test/scan-sentences.test.mjs` refuses the words).
-      this.report(this.awaiting ? 'confirm' : 'scanning', this.idleLine());
+      // A FIT THAT DROPPED OUT FOR A FRAME IS STILL A SIDE BEING READ (2026-09-24). Falling straight
+      // back to the idle line here is what made the caption flicker: see `READING_GRACE_MS`. The
+      // grace covers only the ordinary caption — a stall, a confirm and every toned verdict are
+      // decided by `idleLine` as before, so nothing that has something to SAY is held back by it.
+      const reading =
+        this.lastLine === AiScanPanel.READING_LINE &&
+        !this.stuck() &&
+        performance.now() - this.lastFitAt < AiScanPanel.READING_GRACE_MS;
+      this.report(
+        this.awaiting ? 'confirm' : 'scanning',
+        reading ? AiScanPanel.READING_LINE : this.idleLine(),
+      );
       this.note({ outcome: 'abstain', reason: fit.reason, geometry: fit.geometry });
       return;
     }
@@ -1469,6 +1508,8 @@ export class AiScanPanel extends HTMLElement {
     // looks at the cube (D2, `dev-docs/scan-pipeline-audit-2026-09-23.md` §3). A runtime that
     // cannot say sends nothing and is counted exactly as it was.
     const settled = this.still.offer(fit.face.colors, performance.now(), output.frameId);
+    // A face fitted on THIS frame, which is what the reading caption's grace is measured from.
+    this.lastFitAt = performance.now();
     this.showPreview(fit.face.colors);
     if (!settled) {
       // WHY it is not settling, when the answer is one sticker. The gate keys on all nine
@@ -1482,7 +1523,7 @@ export class AiScanPanel extends HTMLElement {
         this.stuck()
           ? this.stuckLine()
           : flicker === null
-            ? 'Reading a side — hold still…'
+            ? AiScanPanel.READING_LINE
             : this.flickerLine(flicker),
       );
       this.note({ outcome: 'reading', ...this.readNote(fit.face), flicker });

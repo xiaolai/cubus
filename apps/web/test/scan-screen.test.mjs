@@ -1506,8 +1506,8 @@ test('the opening line is said once, and a capture names the side it saved', asy
   // the very functions under test, so a wrong countdown would have made the actual and the expected
   // wrong together and the case would have passed.
   const SAVED = [
-    'Got the white side! Show me another one.',
-    'Got the red side! Show me another one.',
+    'Got the white side!',
+    'Got the red side!',
   ];
   const { voice, report, saved } = await soundsRig(t);
   const said = voice.said;
@@ -2880,7 +2880,7 @@ test('a line edited in Settings is used by the very next thing said', async (t) 
   report({ device: camera });
   saved('U');
   report({ device: camera, captured: [face('U')], sides: 1 });
-  assert.equal(voice.said.at(-1), 'Got the white side! Show me another one.');
+  assert.equal(voice.said.at(-1), 'Got the white side!');
   settings.spokenLines = { ...settings.spokenLines, savedSide: 'Nice, the %1 one! Keep going.' };
   saved('R', 2);
   report({ device: camera, captured: [face('U'), face('R')], sides: 2 });

@@ -37,6 +37,14 @@ import { SIDES, sidesIn as sidesOf } from './report-sides.js';
  *  wrong where somebody can hear it. A claim the app is already making is better made out loud than
  *  kept to itself.
  *
+ *  AND IT HAS TO FIT BETWEEN TWO CAPTURES, or it is cut off and nobody hears it (2026-09-24).
+ *  Measured on this machine's own voice against the real rhythm of a scan: the median gap between
+ *  captures is 2,153 ms over twelve real ones, and "Got the yellow side! Show me another one." takes
+ *  2,733 ms — so it was cut on ten of those twelve. "Got the yellow side!" takes 1,333 ms and is cut
+ *  by none of them. What was dropped is the INSTRUCTION, which a child learns after the first side
+ *  and which the chime has already marked five times; what was kept is the colour, the only part
+ *  that is news. `savedLast` is left long on purpose: nothing follows it, so it cannot be cut.
+ *
  *  `%1` IS A COLOUR IN ALL THREE, and the keys were RENAMED when it stopped being a number
  *  (`savedMany`/`savedOne`/`lastSaved` -> `savedSide`/`savedPenultimate`/`savedLast`). An edit
  *  stored against an old key is dropped by `spokenLines()` and the default is used, which is what
@@ -44,8 +52,8 @@ import { SIDES, sidesIn as sidesOf } from './report-sides.js';
  *  more sides." and said "Got it! yellow more sides." for the rest of that scan. */
 export const SPOKEN = Object.freeze({
   open: 'Show me any side of your cube.',
-  savedSide: 'Got the %1 side! Show me another one.',
-  savedPenultimate: 'Got the %1 side! One more to go.',
+  savedSide: 'Got the %1 side!',
+  savedPenultimate: 'Got the %1 side! One more.',
   savedLast: 'Got the %1 side! Let me check your cube.',
   again: "I've got that one. Show me a different side.",
   ask: 'Turn your whole cube like the little cube, and show me that side.',

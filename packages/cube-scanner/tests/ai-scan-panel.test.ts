@@ -2843,3 +2843,71 @@ describe('classifyRefusal — the notice and the line say the same thing (2026-0
     expect(say({ schemeAmbiguous: true, ambiguous: true })).not.toMatch(/solvable/);
   });
 });
+
+describe('ai-scan-panel — the card says one thing long enough to read it (2026-09-24)', () => {
+  // MEASURED BEFORE IT WAS BUILT, over seventeen recorded sessions replayed through this panel: the
+  // caption changed 810 times, the median one lasting 120 ms and 83% of them under half a second.
+  // Nobody reads a sentence in 120 ms. The dominant cause was a fit succeeding and failing on
+  // alternate frames, which made "Reading a side" and "Show any side to the camera." alternate at
+  // the tick rate — 532 of those short runs between them, and to the person holding the cube they
+  // are ONE situation. Remembering a fit for half a second took the pair to 62, the run count to
+  // 365 and the median to 360 ms.
+  //
+  // WHAT IS NOT FIXED HERE, and was tried and taken out rather than left half-built: about forty
+  // captions the person most needs to read — "Got the YELLOW side — 1/6…", "Already have the BLUE
+  // side…" — still last under half a second, because the next tick's caption replaces them. Making
+  // the tick defer to those needs `idleLine` split first: it returns ambient commentary AND the
+  // confirm ask, the finished line and the stall, and a blunt hold suppressed all four.
+
+  it('a fit that drops out for one frame does not flip the caption', async () => {
+    const shown = facesOf(DEEP);
+    // Two ticks of a face, then ONE empty frame, then the face again — the dropout that used to
+    // read as "the cube went away" and print the idle line for a single frame.
+    fake.output = tensorFor(shown.U);
+    await vi.advanceTimersByTimeAsync(TICK * 2);
+    const reading = last().message;
+    expect(reading, 'precondition: a fitted face says it is reading').toMatch(/Reading a side/);
+
+    fake.output = emptyTensor();
+    await vi.advanceTimersByTimeAsync(TICK);
+    expect(last().message, 'one dropped frame changed the caption').toBe(reading);
+
+    // …and putting the cube down for longer than the grace DOES fall back, or the caption would be
+    // a claim about a cube nobody is holding.
+    await vi.advanceTimersByTimeAsync(700);
+    expect(last().message).not.toMatch(/Reading a side/);
+  });
+
+  it('continues a reading caption but never revives one over what came after it', async () => {
+    // THE CONDITION THAT MAKES THE GRACE SAFE. Without it the grace painted "Reading a side" back
+    // over the caption a capture had just written: a filed side is followed at once by frames that
+    // fit nothing while the cube is still in view, and every one of them was inside the window. The
+    // same overwrote the ask for one more look and the finished line — four cases in this file.
+    const shown = facesOf(DEEP);
+    await show(shown.U);
+    const said = last().message;
+    expect(said, 'precondition: a capture says which side it got').toMatch(/Got the/i);
+
+    fake.output = emptyTensor();
+    await vi.advanceTimersByTimeAsync(TICK);
+    expect(last().message, 'the grace revived "Reading a side" over a capture').not.toMatch(
+      /Reading a side/,
+    );
+  });
+
+  it('holding the caption never holds the REPORT: the tiles and the count stay current', async () => {
+    // The words are the only thing the grace touches. A report whose side count or captured list
+    // lagged with the sentence would be the fix creating a worse bug than the one it closes.
+    const shown = facesOf(DEEP);
+    await show(shown.U);
+    await show(shown.R);
+    fake.output = emptyTensor();
+    await vi.advanceTimersByTimeAsync(TICK);
+    expect(last().sides).toBe(2);
+    expect(
+      last()
+        .captured.map((c) => c.face)
+        .sort(),
+    ).toEqual(['R', 'U']);
+  });
+});

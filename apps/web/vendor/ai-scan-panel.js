@@ -6842,6 +6842,34 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
    */
   static SIGHTING_FRESH_MS = 1500;
   /**
+   * How long "Reading a side — hold still…" survives a frame the fit refused.
+   *
+   * MEASURED, 2026-09-24. The screen's sentence was changing every 124 ms at the median, and 81% of
+   * the sentences it showed lasted under half a second — unreadable by anyone. The cause was not the
+   * words but the RATE: a fit that succeeds and fails on alternate frames made "Reading a side" and
+   * "Show any side to the camera." alternate at the tick rate, and those two were 77 of the 134
+   * sentences shown across three sessions. They are one situation to the person holding the cube.
+   *
+   * So a fit is remembered for a moment rather than asked of this frame alone. It is the same idiom
+   * `SIGHTING_FRESH_MS` already uses for "an empty frame is not a stall", and it states something
+   * true: a side IS being read, across a run the gate itself measures over several frames. Half a
+   * second is comfortably longer than the dropouts (one or two frames, 60–130 ms) and far shorter
+   * than the time it takes to turn a cube, so putting the cube down still falls back at once.
+   *
+   * IT CONTINUES A READING CAPTION AND NEVER REVIVES ONE, which is the whole of why it is safe.
+   * Unconditionally, it painted "Reading a side" back over whatever the card had just been given —
+   * a side filed, the ask for one more look, a finished scan — because those are all followed by a
+   * frame that fits nothing while the cube is still in view. Requiring the caption to ALREADY be
+   * the reading line makes it hysteresis on one state rather than an override of every other, and
+   * it needs no exception for the no-frame path: a withdrawal writes the idle line first, so there
+   * is nothing left for the grace to continue.
+   */
+  static READING_GRACE_MS = 500;
+  /** The caption the grace continues. One literal, so the test and the two sites cannot drift. */
+  static READING_LINE = "Reading a side \u2014 hold still\u2026";
+  /** When a frame last fitted a face — what `READING_GRACE_MS` is measured from. */
+  lastFitAt = 0;
+  /**
    * When this scan last CAPTURED something, on the monotonic clock — or when the loop began.
    *
    * `performance.now()`, like every other duration here: `Date.now()` follows an NTP correction, and
@@ -7385,17 +7413,22 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     if (!fit.ok) {
       this.still.reset();
       this.showPreview(null);
-      this.report(this.awaiting ? "confirm" : "scanning", this.idleLine());
+      const reading = this.lastLine === _AiScanPanel.READING_LINE && !this.stuck() && performance.now() - this.lastFitAt < _AiScanPanel.READING_GRACE_MS;
+      this.report(
+        this.awaiting ? "confirm" : "scanning",
+        reading ? _AiScanPanel.READING_LINE : this.idleLine()
+      );
       this.note({ outcome: "abstain", reason: fit.reason, geometry: fit.geometry });
       return;
     }
     const settled = this.still.offer(fit.face.colors, performance.now(), output.frameId);
+    this.lastFitAt = performance.now();
     this.showPreview(fit.face.colors);
     if (!settled) {
       const flicker = this.still.flickering();
       this.report(
         this.awaiting ? "confirm" : "scanning",
-        this.stuck() ? this.stuckLine() : flicker === null ? "Reading a side \u2014 hold still\u2026" : this.flickerLine(flicker)
+        this.stuck() ? this.stuckLine() : flicker === null ? _AiScanPanel.READING_LINE : this.flickerLine(flicker)
       );
       this.note({ outcome: "reading", ...this.readNote(fit.face), flicker });
       return;

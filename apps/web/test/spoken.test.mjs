@@ -126,18 +126,22 @@ test('a capture: its line by how many sides are held, nothing for a confirm look
   assert.equal(capturedCue({ kind: 'confirm', face: 'U', sides: 6 }), null);
   assert.equal(capturedCue({ kind: 'side', face: 'U', sides: 6 }).line, 'savedLast');
   assert.equal(capturedCue({ kind: 'reread', face: 'U', sides: 6 }).line, 'savedLast');
-  // IT NAMES THE COLOUR IT SAVED (2026-09-24). The countdown before it fixed the repetition and
-  // left the real defect: "Got it!" never said WHAT it got, which is the one thing a child who
-  // cannot read can check against the cube in their hands. Naming it also makes the five sentences
-  // differ, which is all the count was buying.
+  // IT NAMES THE COLOUR IT SAVED, AND FITS BETWEEN TWO CAPTURES (2026-09-24). The countdown before
+  // it fixed the repetition and left the real defect: "Got it!" never said WHAT it got, which is the
+  // one thing a child who cannot read can check against the cube in their hands. Naming it also
+  // makes the five sentences differ, which is all the count was buying.
+  //
+  // AND THE TRAILING INSTRUCTION WAS DROPPED, measured: the median gap between captures is 2,153 ms
+  // over twelve real ones, "Got the yellow side! Show me another one." takes 2,733 ms and was cut on
+  // ten of the twelve, and "Got the yellow side!" takes 1,333 ms and is cut by none.
   const shown = ['D', 'L', 'R', 'B', 'F'];
   const saved = shown.map((face, i) => spoken(capturedCue({ kind: 'side', face, sides: i + 1 })));
   assert.deepEqual(saved, [
-    'Got the yellow side! Show me another one.',
-    'Got the orange side! Show me another one.',
-    'Got the red side! Show me another one.',
-    'Got the blue side! Show me another one.',
-    'Got the green side! One more to go.',
+    'Got the yellow side!',
+    'Got the orange side!',
+    'Got the red side!',
+    'Got the blue side!',
+    'Got the green side! One more.',
   ]);
   assert.equal(new Set(saved).size, saved.length, 'two captures in one scan said the same words');
   assert.equal(
