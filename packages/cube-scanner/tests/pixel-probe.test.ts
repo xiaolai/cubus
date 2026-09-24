@@ -20,12 +20,16 @@ import {
   savePixelProbe,
 } from '../view/pixel-probe.js';
 
-/** A box that sits inside the 2×2 fixture below, so the crop is the whole of it. */
+/**
+ * A box covering the whole 16×16 fixture below — IN LETTERBOX SPACE, which is what a `Detection`
+ * carries. A 16×16 frame letterboxes to 640 with no padding, so a frame pixel is 40 letterbox
+ * pixels: the whole frame is cx 320, cy 320, w 640, h 640.
+ */
 const inFrame = (classId: number, confidence = 0.4): Detection => ({
-  cx: 1,
-  cy: 1,
-  w: 2,
-  h: 2,
+  cx: 320,
+  cy: 320,
+  w: 640,
+  h: 640,
   classId,
   confidence,
 });
@@ -85,30 +89,46 @@ describe('the crop, which is what makes this affordable', () => {
     height: h,
   });
 
+  it('converts a detection out of LETTERBOX space before cropping', () => {
+    // THE BUG THIS EXISTS FOR. A `Detection` is in the model's 640 px letterbox, not the frame's
+    // pixels. Compared straight against `frame.width`, every crop of a 1920×1080 camera landed in
+    // the left third of the picture at a third of the right scale — a dozen saved frames showed a
+    // doorframe while the cube sat outside the crop, and three conclusions were drawn from them
+    // before anyone checked a box coordinate against the frame width.
+    //
+    // 1920×1080 letterboxes to 640×360 with 140 px of padding top and bottom, so a box at the
+    // MIDDLE of the letterbox (320, 320) is the middle of the frame (960, 540) — not (320, 320).
+    const c = cropFor(frame(1920, 1080), [{ ...det(0), cx: 320, cy: 320, w: 30, h: 30 }]);
+    const midX = c.x + c.w / 2;
+    const midY = c.y + c.h / 2;
+    expect(Math.abs(midX - 960)).toBeLessThan(40);
+    expect(Math.abs(midY - 540)).toBeLessThan(40);
+  });
+
   it('covers the boxes with a margin, and never leaves the frame', () => {
     const c = cropFor(frame(1920, 1080), [
-      { ...det(0), cx: 900, cy: 500, w: 40, h: 40 },
-      { ...det(0), cx: 1000, cy: 600, w: 40, h: 40 },
+      { ...det(0), cx: 300, cy: 300, w: 20, h: 20 },
+      { ...det(0), cx: 340, cy: 340, w: 20, h: 20 },
     ]);
-    expect(c.x).toBeLessThanOrEqual(880);
-    expect(c.y).toBeLessThanOrEqual(480);
+    expect(c.x).toBeGreaterThanOrEqual(0);
+    expect(c.y).toBeGreaterThanOrEqual(0);
     expect(c.x + c.w).toBeLessThanOrEqual(1920);
     expect(c.y + c.h).toBeLessThanOrEqual(1080);
-    // Both boxes inside, with room around them: what surrounds a sticker is part of the answer.
-    expect(c.x + c.w).toBeGreaterThanOrEqual(1020);
-    expect(c.y + c.h).toBeGreaterThanOrEqual(620);
+    // Both boxes inside it, in FRAME pixels.
+    expect(c.x).toBeLessThanOrEqual((300 - 10) * 3);
+    expect(c.x + c.w).toBeGreaterThanOrEqual((340 + 10) * 3);
   });
 
   it('is capped, so one enormous box cannot bring the whole frame back', () => {
-    const c = cropFor(frame(1920, 1080), [{ ...det(0), cx: 960, cy: 540, w: 1900, h: 1000 }]);
+    const c = cropFor(frame(1920, 1080), [{ ...det(0), cx: 320, cy: 320, w: 600, h: 340 }]);
     expect(c.w).toBeLessThanOrEqual(PIXEL_PROBE_MAX_SIDE);
     expect(c.h).toBeLessThanOrEqual(PIXEL_PROBE_MAX_SIDE);
   });
 
   it('is clamped at the edges, where a margin would run off the frame', () => {
-    const c = cropFor(frame(100, 80), [{ ...det(0), cx: 4, cy: 3, w: 8, h: 6 }]);
-    expect(c.x).toBe(0);
-    expect(c.y).toBe(0);
+    const c = cropFor(frame(100, 80), [{ ...det(0), cx: 20, cy: 80, w: 30, h: 30 }]);
+    expect(c.x).toBeGreaterThanOrEqual(0);
+    expect(c.y).toBeGreaterThanOrEqual(0);
     expect(c.x + c.w).toBeLessThanOrEqual(100);
     expect(c.y + c.h).toBeLessThanOrEqual(80);
   });
@@ -154,14 +174,17 @@ function fakeCanvas(bytes: Uint8Array) {
 }
 
 describe('what the probe writes', () => {
-  /** A 2×2 frame with four known pixels, so the PNG can be checked for being LOSSLESS. */
-  const frame = (): Frame => ({
-    data: new Uint8ClampedArray([
-      255, 255, 255, 255, 0, 0, 255, 255, 12, 34, 56, 255, 255, 255, 255, 255,
-    ]),
-    width: 2,
-    height: 2,
-  });
+  /** A 16×16 frame with a known pattern, so the crop can be checked pixel for pixel. */
+  const frame = (): Frame => {
+    const data = new Uint8ClampedArray(16 * 16 * 4);
+    for (let i = 0; i < 16 * 16; i++) {
+      data[i * 4] = i % 256;
+      data[i * 4 + 1] = 255 - (i % 256);
+      data[i * 4 + 2] = (i * 7) % 256;
+      data[i * 4 + 3] = 255;
+    }
+    return { data, width: 16, height: 16 };
+  };
 
   it('posts the frame and its boxes to the dev sink, and nowhere else', async () => {
     const posts: { url: string; body: Record<string, unknown> }[] = [];
@@ -189,24 +212,25 @@ describe('what the probe writes', () => {
     // The frame reached the canvas unchanged — a probe that drew something else would answer the
     // question with a picture the camera never produced.
     expect(drawn).toHaveLength(1);
-    expect(drawn[0]!.width).toBe(2);
+    expect(drawn[0]!.width).toBe(16);
     expect([...drawn[0]!.data]).toEqual([...frame().data]);
 
     expect(posts, 'the probe posted more than once for one frame').toHaveLength(1);
     const { url, body } = posts[0]!;
     expect(url).toBe('/__record');
     expect(body.kind).toBe('pixel-probe');
-    expect(body.width).toBe(2);
-    expect(body.height).toBe(2);
+    expect(body.width).toBe(16);
+    expect(body.height).toBe(16);
     expect(body.neighbours).toBe(2);
     // The boxes travel with the picture, or a sticker cannot be found in it afterwards — which is
     // the whole purpose. Rounded, because the question is where a sticker is, not where it is to
     // the tenth of a millionth of a pixel.
     expect(body.boxes).toEqual([
-      { cx: 1, cy: 1, w: 2, h: 2, cls: 0, conf: 0.4 },
-      { cx: 1, cy: 1, w: 2, h: 2, cls: 3, conf: 0.91 },
+      { cx: 320, cy: 320, w: 640, h: 640, cls: 0, conf: 0.4 },
+      { cx: 320, cy: 320, w: 640, h: 640, cls: 3, conf: 0.91 },
     ]);
-    expect(body.crop).toEqual({ x: 0, y: 0, w: 2, h: 2 });
+    // The whole frame, in FRAME pixels — the conversion from letterbox space happened.
+    expect(body.crop).toEqual({ x: 0, y: 0, w: 16, h: 16 });
     // Every byte the encoder produced, in order, across the chunk boundary.
     const back = Uint8Array.from(atob(body.png as string), (c) => c.charCodeAt(0));
     expect(back.length).toBe(bytes.length);

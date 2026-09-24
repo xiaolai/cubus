@@ -5991,8 +5991,11 @@ var boxesOf = (dets) => dets.map((d) => ({
 }));
 var saved = 0;
 function cropFor(frame, dets) {
-  const xs = dets.flatMap((d) => [d.cx - d.w / 2, d.cx + d.w / 2]);
-  const ys = dets.flatMap((d) => [d.cy - d.h / 2, d.cy + d.h / 2]);
+  const boxes = dets.map(
+    (d) => toFrameBox([d.cx - d.w / 2, d.cy - d.h / 2, d.w, d.h], frame, IMG_SIZE)
+  );
+  const xs = boxes.flatMap((b) => [b[0], b[0] + b[2]]);
+  const ys = boxes.flatMap((b) => [b[1], b[1] + b[3]]);
   if (xs.length === 0) return { x: 0, y: 0, w: frame.width, h: frame.height };
   const pad = 0.25;
   const x0 = Math.min(...xs);

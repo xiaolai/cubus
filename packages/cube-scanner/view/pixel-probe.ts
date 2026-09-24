@@ -18,7 +18,9 @@
 // app the fetch simply fails and is swallowed. Nothing here runs, allocates or reaches the network
 // with the switch off.
 
+import { IMG_SIZE } from './../src/onnx-detect.js';
 import type { Detection } from './../src/onnx-postprocess.js';
+import { toFrameBox } from './../src/sticker-pixels.js';
 import type { Frame } from './../src/types.js';
 
 /** The switch, read the same way the trace's and the recorder's are. */
@@ -107,8 +109,18 @@ export const resetPixelProbe = (): void => {
  * be left on and one that writes a quarter of a gigabyte.
  */
 export function cropFor(frame: Frame, dets: readonly Detection[]) {
-  const xs = dets.flatMap((d) => [d.cx - d.w / 2, d.cx + d.w / 2]);
-  const ys = dets.flatMap((d) => [d.cy - d.h / 2, d.cy + d.h / 2]);
+  // A DETECTION IS IN THE MODEL'S LETTERBOX SPACE, NOT THE FRAME'S (2026-09-24). Comparing `d.cx`
+  // straight against `frame.width` was a real bug and a costly one: on a 1920×1080 camera the
+  // letterbox is 640 wide, so every crop landed in the left third of the picture at a third of the
+  // right scale, and a dozen saved frames showed a doorframe while the cube sat outside the crop.
+  // Three separate conclusions were drawn from those pictures before the box coordinates were
+  // checked against the frame width. `toFrameBox` is the inverse the rest of the package already
+  // uses — `stickerLab` reads its pixels through it — so there is one conversion, not a second copy.
+  const boxes = dets.map((d) =>
+    toFrameBox([d.cx - d.w / 2, d.cy - d.h / 2, d.w, d.h], frame, IMG_SIZE),
+  );
+  const xs = boxes.flatMap((b) => [b[0], b[0] + b[2]]);
+  const ys = boxes.flatMap((b) => [b[1], b[1] + b[3]]);
   if (xs.length === 0) return { x: 0, y: 0, w: frame.width, h: frame.height };
   // A margin, because what surrounds a sticker is part of the answer: a blown-out sticker beside a
   // correctly exposed background says something a tight crop would leave out.
