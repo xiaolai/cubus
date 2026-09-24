@@ -133,7 +133,15 @@ describe('a real scan of a cube with a logo on its white centre', () => {
     ).toEqual(['B', 'D', 'F', 'L', 'R']);
   });
 
-  it('does not finish, because it has five sides and cannot invent the sixth', () => {
+  it('does not finish: the logo face was shown too early for the sixth-side rule', () => {
+    // NOT A LIMIT OF THE RULE — A LIMIT OF THIS RECORDING (2026-09-24). Since the sixth side became
+    // determined, a face whose centre collides IS filed when exactly one slot is free. Traced
+    // against this clip: the logo face settles at 6.4 s with only TWO sides held, so four slots are
+    // free, the sixth is not determined, and refusing is right. The fifth side lands at 17.0 s and
+    // the person never returns to the logo face before the clip ends.
+    //
+    // That is why the scan asks for the missing side BY NAME once five are in ("still need WHITE"):
+    // it is what puts the logo face last in the ordinary flow, where its centre need not be read.
     // The clip is 20 seconds and the scan makes progress throughout it, so the stall bound
     // (12 s without a capture, `ai-scan-panel.test.ts`) is not what ends this — the clip simply runs
     // out. What matters here is that five sides produce no cube: there is no path from an incomplete

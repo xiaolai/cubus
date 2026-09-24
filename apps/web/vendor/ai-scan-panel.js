@@ -5972,7 +5972,7 @@ var PIXEL_PROBE_KEY = "cubusScanPixels";
 var PIXEL_PROBE_MIN_NEIGHBOURS = 6;
 var PIXEL_PROBE_EVERY_MS = 3e3;
 var PIXEL_PROBE_MAX_FRAMES = 40;
-var PIXEL_PROBE_MAX_SIDE = 640;
+var PIXEL_PROBE_SIDE = IMG_SIZE;
 function pixelProbeEnabled(store) {
   try {
     const storage = store ?? globalThis.localStorage;
@@ -5990,30 +5990,9 @@ var boxesOf = (dets) => dets.map((d) => ({
   conf: Math.round(d.confidence * 1e3) / 1e3
 }));
 var saved = 0;
-function cropFor(frame, dets) {
-  const boxes = dets.map(
-    (d) => toFrameBox([d.cx - d.w / 2, d.cy - d.h / 2, d.w, d.h], frame, IMG_SIZE)
-  );
-  const xs = boxes.flatMap((b) => [b[0], b[0] + b[2]]);
-  const ys = boxes.flatMap((b) => [b[1], b[1] + b[3]]);
-  if (xs.length === 0) return { x: 0, y: 0, w: frame.width, h: frame.height };
-  const pad = 0.25;
-  const x0 = Math.min(...xs);
-  const x1 = Math.max(...xs);
-  const y0 = Math.min(...ys);
-  const y1 = Math.max(...ys);
-  const mx = (x1 - x0) * pad;
-  const my = (y1 - y0) * pad;
-  const left = Math.max(0, Math.floor(x0 - mx));
-  const top = Math.max(0, Math.floor(y0 - my));
-  const w = Math.min(frame.width - left, Math.ceil(x1 - x0 + mx * 2), PIXEL_PROBE_MAX_SIDE);
-  const h = Math.min(frame.height - top, Math.ceil(y1 - y0 + my * 2), PIXEL_PROBE_MAX_SIDE);
-  return { x: left, y: top, w: Math.max(1, w), h: Math.max(1, h) };
-}
 async function savePixelProbe(frame, dets) {
   if (saved >= PIXEL_PROBE_MAX_FRAMES) return;
-  const crop = cropFor(frame, dets);
-  const png = await toPng(frame, crop);
+  const png = await toPng(frame);
   if (!png) return;
   saved += 1;
   await fetch("/__record", {
@@ -6022,9 +6001,10 @@ async function savePixelProbe(frame, dets) {
     body: JSON.stringify({
       kind: "pixel-probe",
       capturedAt: (/* @__PURE__ */ new Date()).toISOString(),
-      width: frame.width,
-      height: frame.height,
-      crop,
+      // The CAMERA's size, for the record, and the picture's own size, which is the model's.
+      cameraWidth: frame.width,
+      cameraHeight: frame.height,
+      side: PIXEL_PROBE_SIDE,
       nth: saved,
       neighbours: dets.length,
       boxes: boxesOf(dets),
@@ -6032,19 +6012,23 @@ async function savePixelProbe(frame, dets) {
     })
   });
 }
-async function toPng(frame, crop) {
+async function toPng(frame) {
   const Canvas = globalThis.OffscreenCanvas;
   const Pixels = globalThis.ImageData;
   if (!Canvas || !Pixels) return null;
-  const canvas = new Canvas(crop.w, crop.h);
+  const { data, imgsz } = preprocess(frame, PIXEL_PROBE_SIDE);
+  const plane = imgsz * imgsz;
+  const canvas = new Canvas(imgsz, imgsz);
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
-  const pixels = new Uint8ClampedArray(crop.w * crop.h * 4);
-  for (let row = 0; row < crop.h; row++) {
-    const from = ((crop.y + row) * frame.width + crop.x) * 4;
-    pixels.set(frame.data.subarray(from, from + crop.w * 4), row * crop.w * 4);
+  const pixels = new Uint8ClampedArray(plane * 4);
+  for (let i = 0; i < plane; i++) {
+    pixels[i * 4] = Math.round((data[i] ?? 0) * 255);
+    pixels[i * 4 + 1] = Math.round((data[plane + i] ?? 0) * 255);
+    pixels[i * 4 + 2] = Math.round((data[plane * 2 + i] ?? 0) * 255);
+    pixels[i * 4 + 3] = 255;
   }
-  ctx.putImageData(new Pixels(pixels, crop.w, crop.h), 0, 0);
+  ctx.putImageData(new Pixels(pixels, imgsz, imgsz), 0, 0);
   const blob = await canvas.convertToBlob({ type: "image/png" });
   const bytes = new Uint8Array(await blob.arrayBuffer());
   let binary = "";
@@ -7759,6 +7743,11 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     }
     const holder = this.faces[claim];
     if (holder) {
+      const free = FACES.filter((f) => this.faces[f] === void 0);
+      if (free.length === 1) {
+        this.fileLastSide(free[0], read, kind);
+        return;
+      }
       this.report(
         "scanning",
         "Two sides are reading as the ",
@@ -7770,6 +7759,38 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     this.traceEvent("captured", { face: claim, colors: [...read.colors] });
     this.lastProgressAt = performance.now();
     this.capture(claim, read, kind);
+  }
+  /**
+   * The sixth side, whose centre nobody needs to read.
+   *
+   * WHY A CENTRE CAN BE IGNORED HERE AND NOWHERE ELSE (owner's call, 2026-09-24). A 3×3 has one
+   * centre of each colour, so with five sides held and one colour unclaimed the sixth is DETERMINED:
+   * there is no freedom left for a wrong answer to use. The eight around the centre are what
+   * identify the face and they are read well — on the cube this was built for, the detector got all
+   * eight right and only the middle wrong.
+   *
+   * THE MIDDLE IS WRONG FOR A REASON THAT IS NOT GOING AWAY. Most speedcubes print a logo across the
+   * white centre cap; the app samples the inner 60% of a sticker, and on such a cap that is mostly
+   * ink. Measured on a GAN cube: the cap read BLUE at 0.37 where real blue stickers on the same face
+   * read 0.65–0.78, its pixels a washed-out [105,165,233] against a true blue's [35,117,220]. The
+   * logo's COLOUR cannot be reasoned about either — GAN's is blue, MoYu's is red, others are black —
+   * so the only rule that works for every brand is to not read it at all.
+   *
+   * DELIBERATELY NOT `resolveCentres`, which was removed for never converging: no enumeration of
+   * filings, no pairing of unnamed sides, no contest at six. One slot, already determined, and the
+   * assembler checks the cube exactly as it does for any other capture — a filing that does not
+   * assemble is refused, not shown.
+   *
+   * ITS LIMIT, STATED: this trusts the five already filed. A logo face shown FIRST takes another
+   * colour's slot, and then the real owner of that colour arrives here and is put in the free one —
+   * a swap. Most swaps do not assemble and are refused; a measured ~1.3% of them do. The scan
+   * already asks for the missing side by name once five are in ("still need WHITE"), which is what
+   * makes the logo face the last one in the ordinary flow.
+   */
+  fileLastSide(slot, read, kind) {
+    this.traceEvent("captured", { face: slot, colors: [...read.colors] });
+    this.lastProgressAt = performance.now();
+    this.capture(slot, withCentre(read, colourOfSlot(slot)), kind);
   }
   /**
    * A side shown again once all six are in: a CORRECTION, since the loop only runs then because the

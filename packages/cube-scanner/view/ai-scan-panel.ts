@@ -1885,6 +1885,11 @@ export class AiScanPanel extends HTMLElement {
     // the one already filed, and neither is guessed at.
     const holder = this.faces[claim];
     if (holder) {
+      const free = FACES.filter((f) => this.faces[f] === undefined);
+      if (free.length === 1) {
+        this.fileLastSide(free[0]!, read, kind);
+        return;
+      }
       this.report(
         'scanning',
         'Two sides are reading as the ',
@@ -1898,6 +1903,39 @@ export class AiScanPanel extends HTMLElement {
     // nothing to show for it, not time spent.
     this.lastProgressAt = performance.now();
     this.capture(claim, read, kind);
+  }
+
+  /**
+   * The sixth side, whose centre nobody needs to read.
+   *
+   * WHY A CENTRE CAN BE IGNORED HERE AND NOWHERE ELSE (owner's call, 2026-09-24). A 3×3 has one
+   * centre of each colour, so with five sides held and one colour unclaimed the sixth is DETERMINED:
+   * there is no freedom left for a wrong answer to use. The eight around the centre are what
+   * identify the face and they are read well — on the cube this was built for, the detector got all
+   * eight right and only the middle wrong.
+   *
+   * THE MIDDLE IS WRONG FOR A REASON THAT IS NOT GOING AWAY. Most speedcubes print a logo across the
+   * white centre cap; the app samples the inner 60% of a sticker, and on such a cap that is mostly
+   * ink. Measured on a GAN cube: the cap read BLUE at 0.37 where real blue stickers on the same face
+   * read 0.65–0.78, its pixels a washed-out [105,165,233] against a true blue's [35,117,220]. The
+   * logo's COLOUR cannot be reasoned about either — GAN's is blue, MoYu's is red, others are black —
+   * so the only rule that works for every brand is to not read it at all.
+   *
+   * DELIBERATELY NOT `resolveCentres`, which was removed for never converging: no enumeration of
+   * filings, no pairing of unnamed sides, no contest at six. One slot, already determined, and the
+   * assembler checks the cube exactly as it does for any other capture — a filing that does not
+   * assemble is refused, not shown.
+   *
+   * ITS LIMIT, STATED: this trusts the five already filed. A logo face shown FIRST takes another
+   * colour's slot, and then the real owner of that colour arrives here and is put in the free one —
+   * a swap. Most swaps do not assemble and are refused; a measured ~1.3% of them do. The scan
+   * already asks for the missing side by name once five are in ("still need WHITE"), which is what
+   * makes the logo face the last one in the ordinary flow.
+   */
+  private fileLastSide(slot: Face, read: ColorFace, kind: ScanCapture['kind']): void {
+    this.traceEvent('captured', { face: slot, colors: [...read.colors] });
+    this.lastProgressAt = performance.now();
+    this.capture(slot, withCentre(read, colourOfSlot(slot)), kind);
   }
 
   /**

@@ -2911,3 +2911,61 @@ describe('ai-scan-panel — the card says one thing long enough to read it (2026
     ).toEqual(['R', 'U']);
   });
 });
+
+describe('ai-scan-panel — the sixth side is determined, so its centre is not read (2026-09-24)', () => {
+  // THE OWNER'S CALL, from a photograph rather than a statistic. Most speedcubes print a logo across
+  // the white centre cap, and the app samples a sticker's inner 60% — which on such a cap is mostly
+  // ink. Measured on a GAN cube through the app's own detector: all EIGHT ring stickers read
+  // correctly and the cap read BLUE at 0.37, where real blue stickers on that same face read
+  // 0.65–0.78. So the face is identified by its eight, and the sixth slot is arithmetic: one centre
+  // of each colour means five held leaves the sixth determined.
+
+  it('files a face whose centre collides, when it is the only side left', async () => {
+    const shown = facesOf(DEEP);
+    // Five sides by their own centres, the ordinary way.
+    for (const f of ['R', 'F', 'D', 'L', 'B'] as Face[]) await show(shown[f]);
+    expect(last().sides).toBe(5);
+
+    // The sixth is U, and its centre reads as a colour already held — a logo cap. Its eight stand.
+    const logoCap = [...shown.U];
+    logoCap[4] = colourOfSlot('B'); // the cap's ink, not the cube's colour
+    await show(logoCap);
+
+    expect(last().sides, 'the determined sixth side was refused').toBe(6);
+    expect(
+      last()
+        .captured.map((c) => c.face)
+        .sort(),
+    ).toEqual(['B', 'D', 'F', 'L', 'R', 'U']);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    // And the cube it completes with is the real one: the centre came from the slot, the eight from
+    // the camera, and the assembler checked it as it checks any other reading.
+    expect(completions).toEqual([DEEP]);
+  });
+
+  it('still refuses a collision while more than one side is missing', async () => {
+    // The rule is arithmetic, not a preference: with two slots free the sixth is NOT determined and
+    // nothing here can say which of the two readings is the misread one.
+    const shown = facesOf(DEEP);
+    for (const f of ['R', 'F', 'D', 'L'] as Face[]) await show(shown[f]);
+    expect(last().sides).toBe(4);
+    const logoCap = [...shown.U];
+    logoCap[4] = colourOfSlot('L');
+    await show(logoCap);
+    expect(last().sides, 'a collision was filed with two slots still free').toBe(4);
+    expect(last().message).toMatch(/Two sides are reading as/);
+  });
+
+  it('never invents a cube: a sixth side that does not assemble is still refused', async () => {
+    // The centre is taken from the slot, but everything else is still checked. A face whose EIGHT
+    // are wrong cannot be rescued by knowing which slot it belongs in, and must not be.
+    const shown = facesOf(DEEP);
+    for (const f of ['R', 'F', 'D', 'L', 'B'] as Face[]) await show(shown[f]);
+    const rubbish = [...shown.U];
+    for (const i of [0, 1, 2, 3, 5]) rubbish[i] = (rubbish[i]! + 1) % 6;
+    rubbish[4] = colourOfSlot('B');
+    await show(rubbish);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    expect(completions, 'a cube was completed from eight wrong stickers').toEqual([]);
+  });
+});

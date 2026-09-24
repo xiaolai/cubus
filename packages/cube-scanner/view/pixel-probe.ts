@@ -18,9 +18,8 @@
 // app the fetch simply fails and is swallowed. Nothing here runs, allocates or reaches the network
 // with the switch off.
 
-import { IMG_SIZE } from './../src/onnx-detect.js';
+import { IMG_SIZE, preprocess } from './../src/letterbox.js';
 import type { Detection } from './../src/onnx-postprocess.js';
-import { toFrameBox } from './../src/sticker-pixels.js';
 import type { Frame } from './../src/types.js';
 
 /** The switch, read the same way the trace's and the recorder's are. */
@@ -64,14 +63,21 @@ export const PIXEL_PROBE_EVERY_MS = 3_000;
 export const PIXEL_PROBE_MAX_FRAMES = 40;
 
 /**
- * The longest side of a saved picture, in pixels.
+ * THE PICTURE SAVED IS THE MODEL'S OWN INPUT, not a crop of the camera frame.
  *
- * The question is what the pixel VALUES are on a sticker, which a crop around the boxes answers as
- * well as a whole 1920×1080 frame and in about a fortieth of the bytes. Downscaling is deliberately
- * NOT used to get there — resampling averages a clipped pixel with its neighbours and would hide
- * the very thing being looked for — so this caps the crop by clamping its rectangle instead.
+ * A `Detection` is in the 640 px letterbox the model was handed, and the first version cropped the
+ * FRAME using those numbers — so on a 1920×1080 camera every crop landed in the left third of the
+ * picture at a third of the right scale, and twenty-two saved frames showed a doorframe while the
+ * cube sat outside the crop. Three conclusions were drawn from those pictures before a box
+ * coordinate was checked against the frame width.
+ *
+ * Converting correctly would have fixed that instance. Saving the model's input removes the CLASS:
+ * there is no conversion left to get wrong, because the boxes and the picture are in the same space
+ * by construction. It is also what the question is actually about — not what the camera saw, but
+ * what the detector was given — and it is 640×640 whatever the camera's resolution, so the size
+ * bound comes free instead of from a crop rectangle.
  */
-export const PIXEL_PROBE_MAX_SIDE = 640;
+export const PIXEL_PROBE_SIDE = IMG_SIZE;
 
 /** Whether the switch is on. Storage can throw on a page with it disabled, so this never rethrows. */
 export function pixelProbeEnabled(store?: Pick<Storage, 'getItem'>): boolean {
@@ -103,52 +109,14 @@ export const resetPixelProbe = (): void => {
 };
 
 /**
- * The rectangle worth saving: the boxes, with a margin, clamped to the frame and to a maximum side.
- *
- * Exported to be tested on its own. A crop is the whole difference between an instrument that can
- * be left on and one that writes a quarter of a gigabyte.
- */
-export function cropFor(frame: Frame, dets: readonly Detection[]) {
-  // A DETECTION IS IN THE MODEL'S LETTERBOX SPACE, NOT THE FRAME'S (2026-09-24). Comparing `d.cx`
-  // straight against `frame.width` was a real bug and a costly one: on a 1920×1080 camera the
-  // letterbox is 640 wide, so every crop landed in the left third of the picture at a third of the
-  // right scale, and a dozen saved frames showed a doorframe while the cube sat outside the crop.
-  // Three separate conclusions were drawn from those pictures before the box coordinates were
-  // checked against the frame width. `toFrameBox` is the inverse the rest of the package already
-  // uses — `stickerLab` reads its pixels through it — so there is one conversion, not a second copy.
-  const boxes = dets.map((d) =>
-    toFrameBox([d.cx - d.w / 2, d.cy - d.h / 2, d.w, d.h], frame, IMG_SIZE),
-  );
-  const xs = boxes.flatMap((b) => [b[0], b[0] + b[2]]);
-  const ys = boxes.flatMap((b) => [b[1], b[1] + b[3]]);
-  if (xs.length === 0) return { x: 0, y: 0, w: frame.width, h: frame.height };
-  // A margin, because what surrounds a sticker is part of the answer: a blown-out sticker beside a
-  // correctly exposed background says something a tight crop would leave out.
-  const pad = 0.25;
-  const x0 = Math.min(...xs);
-  const x1 = Math.max(...xs);
-  const y0 = Math.min(...ys);
-  const y1 = Math.max(...ys);
-  const mx = (x1 - x0) * pad;
-  const my = (y1 - y0) * pad;
-  const left = Math.max(0, Math.floor(x0 - mx));
-  const top = Math.max(0, Math.floor(y0 - my));
-  const w = Math.min(frame.width - left, Math.ceil(x1 - x0 + mx * 2), PIXEL_PROBE_MAX_SIDE);
-  const h = Math.min(frame.height - top, Math.ceil(y1 - y0 + my * 2), PIXEL_PROBE_MAX_SIDE);
-  return { x: left, y: top, w: Math.max(1, w), h: Math.max(1, h) };
-}
-
-/**
- * Write the part of a frame the boxes are in, and the boxes.
+ * Write the picture the MODEL was given, and the boxes it found in it.
  *
  * PNG, and LOSSLESS on purpose: the whole question is what the exact pixel values are, and a JPEG
- * would answer it with values the camera never produced. What is NOT saved is the rest of the
- * 1920×1080 frame, which answered nothing and cost 4 MB a shot.
+ * would answer it with values the camera never produced.
  */
 export async function savePixelProbe(frame: Frame, dets: readonly Detection[]): Promise<void> {
   if (saved >= PIXEL_PROBE_MAX_FRAMES) return;
-  const crop = cropFor(frame, dets);
-  const png = await toPng(frame, crop);
+  const png = await toPng(frame);
   if (!png) return;
   saved += 1;
   await fetch('/__record', {
@@ -157,9 +125,10 @@ export async function savePixelProbe(frame: Frame, dets: readonly Detection[]): 
     body: JSON.stringify({
       kind: 'pixel-probe',
       capturedAt: new Date().toISOString(),
-      width: frame.width,
-      height: frame.height,
-      crop,
+      // The CAMERA's size, for the record, and the picture's own size, which is the model's.
+      cameraWidth: frame.width,
+      cameraHeight: frame.height,
+      side: PIXEL_PROBE_SIDE,
       nth: saved,
       neighbours: dets.length,
       boxes: boxesOf(dets),
@@ -168,30 +137,30 @@ export async function savePixelProbe(frame: Frame, dets: readonly Detection[]): 
   });
 }
 
-/** The cropped frame as a base64 PNG, or null where the runtime cannot encode one. */
-async function toPng(
-  frame: Frame,
-  crop: { x: number; y: number; w: number; h: number },
-): Promise<string | null> {
+/** The model's 640×640 input as a base64 PNG, or null where the runtime cannot encode one. */
+async function toPng(frame: Frame): Promise<string | null> {
   // BOTH globals, not just the canvas. They are separate browser APIs and a runtime can have one
   // without the other; reaching for `ImageData` unguarded threw where this function is documented
   // to return null, and the throw was only invisible because the one caller swallows it.
   const Canvas = (globalThis as { OffscreenCanvas?: typeof OffscreenCanvas }).OffscreenCanvas;
   const Pixels = (globalThis as { ImageData?: typeof ImageData }).ImageData;
   if (!Canvas || !Pixels) return null;
-  const canvas = new Canvas(crop.w, crop.h);
+  // THE MODEL'S OWN INPUT, produced by the very function the detector uses, so the picture and the
+  // boxes are in one space and no conversion can drift. `preprocess` returns CHW floats in [0,1];
+  // this is the inverse of its normalize, and nothing else.
+  const { data, imgsz } = preprocess(frame, PIXEL_PROBE_SIDE);
+  const plane = imgsz * imgsz;
+  const canvas = new Canvas(imgsz, imgsz);
   const ctx = canvas.getContext('2d');
   if (!ctx) return null;
-  // COPIED row by row out of the frame, into an array whose buffer is known not to be shared.
-  // `Frame.data` is a `Uint8ClampedArray` over any `ArrayBufferLike`, and `ImageData` will not take
-  // one that might sit on a `SharedArrayBuffer` — which this page has, being cross-origin isolated
-  // for the solver. Copying the crop rather than the frame is also what makes this cheap.
-  const pixels = new Uint8ClampedArray(crop.w * crop.h * 4);
-  for (let row = 0; row < crop.h; row++) {
-    const from = ((crop.y + row) * frame.width + crop.x) * 4;
-    pixels.set(frame.data.subarray(from, from + crop.w * 4), row * crop.w * 4);
+  const pixels = new Uint8ClampedArray(plane * 4);
+  for (let i = 0; i < plane; i++) {
+    pixels[i * 4] = Math.round((data[i] ?? 0) * 255);
+    pixels[i * 4 + 1] = Math.round((data[plane + i] ?? 0) * 255);
+    pixels[i * 4 + 2] = Math.round((data[plane * 2 + i] ?? 0) * 255);
+    pixels[i * 4 + 3] = 255;
   }
-  ctx.putImageData(new Pixels(pixels, crop.w, crop.h), 0, 0);
+  ctx.putImageData(new Pixels(pixels, imgsz, imgsz), 0, 0);
   const blob = await canvas.convertToBlob({ type: 'image/png' });
   const bytes = new Uint8Array(await blob.arrayBuffer());
   let binary = '';

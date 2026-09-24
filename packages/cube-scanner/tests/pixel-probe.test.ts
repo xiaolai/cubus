@@ -9,12 +9,11 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Detection } from '../src/onnx-postprocess.js';
 import type { Frame } from '../src/types.js';
 import {
-  cropFor,
   PIXEL_PROBE_EVERY_MS,
   PIXEL_PROBE_KEY,
   PIXEL_PROBE_MAX_FRAMES,
-  PIXEL_PROBE_MAX_SIDE,
   PIXEL_PROBE_MIN_NEIGHBOURS,
+  PIXEL_PROBE_SIDE,
   pixelProbeEnabled,
   resetPixelProbe,
   savePixelProbe,
@@ -42,6 +41,44 @@ const det = (classId: number, confidence = 0.4): Detection => ({
   classId,
   confidence,
 });
+
+class FakeImageData {
+  constructor(
+    readonly data: Uint8ClampedArray,
+    readonly width: number,
+    readonly height: number,
+  ) {}
+}
+
+/**
+ * A stand-in for the platform's canvas.
+ *
+ * NODE HAS NO `OffscreenCanvas`, so the real PNG encoder cannot run here and these cases do not
+ * pretend to test it — encoding is the platform's, and asserting it against a fake would assert the
+ * fake. What IS this module's own and is tested: that the picture handed to `putImageData` is the
+ * MODEL's input rather than a crop of the camera frame, that the bytes the encoder returns survive
+ * base64 in order and in full, and that the format asked for is lossless.
+ */
+function fakeCanvas(bytes: Uint8Array) {
+  const drawn: { width: number; height: number; data: Uint8ClampedArray }[] = [];
+  class FakeOffscreenCanvas {
+    constructor(
+      readonly width: number,
+      readonly height: number,
+    ) {}
+    getContext() {
+      return {
+        putImageData: (img: { data: Uint8ClampedArray; width: number; height: number }) => {
+          drawn.push({ width: img.width, height: img.height, data: img.data });
+        },
+      };
+    }
+    async convertToBlob({ type }: { type: string }) {
+      return { type, arrayBuffer: async () => bytes.buffer.slice(0) };
+    }
+  }
+  return { FakeOffscreenCanvas, drawn };
+}
 
 describe('the pixel probe switch', () => {
   it('is off unless the key says exactly "1"', () => {
@@ -73,105 +110,73 @@ describe('the pixel probe switch', () => {
     expect(PIXEL_PROBE_EVERY_MS).toBe(3_000);
     expect(PIXEL_PROBE_KEY).toBe('cubusScanPixels');
     expect(PIXEL_PROBE_MAX_FRAMES).toBe(40);
-    expect(PIXEL_PROBE_MAX_SIDE).toBe(640);
+    expect(PIXEL_PROBE_SIDE).toBe(640);
   });
 });
 
-describe('the crop, which is what makes this affordable', () => {
-  // THE BOUND THAT WAS MISSING. The first version saved the whole frame: 4 MB a shot on a 1920×1080
-  // camera, 245 MB in one session, and the page's own thread doing a 3 MB base64 encode every three
-  // seconds — `inferMs` peaked at 608 ms against a 20 ms median and the scan halved in rate. The
-  // question was only ever about the pixels ON a sticker, which a crop answers in a fortieth of the
-  // bytes.
-  const frame = (w: number, h: number): Frame => ({
-    data: new Uint8ClampedArray(w * h * 4),
-    width: w,
-    height: h,
+describe('the picture is the MODEL\u2019s input, which removes a whole class of bug', () => {
+  // WHAT WENT WRONG TWICE. A `Detection` is in the 640 px letterbox the model was handed, not in
+  // camera pixels. The first version cropped the FRAME using those numbers, so on a 1920×1080
+  // camera every crop landed in the left third of the picture at a third of the right scale, and
+  // twenty-two saved frames showed a doorframe while the cube sat outside the crop — three
+  // conclusions were drawn from them before a box coordinate was checked against the frame width.
+  //
+  // Converting correctly fixes the instance. Saving the model's own input removes the class: the
+  // boxes and the picture are then in one space by construction, with no conversion to drift.
+  const frame = (w: number, h: number): Frame => {
+    const data = new Uint8ClampedArray(w * h * 4);
+    for (let i = 0; i < w * h; i++) {
+      data[i * 4] = i % 256;
+      data[i * 4 + 3] = 255;
+    }
+    return { data, width: w, height: h };
+  };
+
+  it('is 640 square whatever the camera is, so one frame cannot be large', async () => {
+    for (const [w, h] of [
+      [1920, 1080],
+      [640, 480],
+      [1280, 720],
+    ] as const) {
+      let drawnW = 0;
+      const { FakeOffscreenCanvas, drawn } = fakeCanvas(new Uint8Array([1, 2, 3]));
+      vi.stubGlobal('OffscreenCanvas', FakeOffscreenCanvas);
+      vi.stubGlobal('ImageData', FakeImageData);
+      vi.stubGlobal('fetch', async () => ({ ok: true }));
+      try {
+        resetPixelProbe();
+        await savePixelProbe(frame(w, h), [inFrame(0)]);
+        drawnW = drawn[0]?.width ?? 0;
+      } finally {
+        vi.unstubAllGlobals();
+      }
+      expect(drawnW, `a ${w}×${h} camera did not letterbox to ${PIXEL_PROBE_SIDE}`).toBe(
+        PIXEL_PROBE_SIDE,
+      );
+    }
   });
 
-  it('converts a detection out of LETTERBOX space before cropping', () => {
-    // THE BUG THIS EXISTS FOR. A `Detection` is in the model's 640 px letterbox, not the frame's
-    // pixels. Compared straight against `frame.width`, every crop of a 1920×1080 camera landed in
-    // the left third of the picture at a third of the right scale — a dozen saved frames showed a
-    // doorframe while the cube sat outside the crop, and three conclusions were drawn from them
-    // before anyone checked a box coordinate against the frame width.
-    //
-    // 1920×1080 letterboxes to 640×360 with 140 px of padding top and bottom, so a box at the
-    // MIDDLE of the letterbox (320, 320) is the middle of the frame (960, 540) — not (320, 320).
-    const c = cropFor(frame(1920, 1080), [{ ...det(0), cx: 320, cy: 320, w: 30, h: 30 }]);
-    const midX = c.x + c.w / 2;
-    const midY = c.y + c.h / 2;
-    expect(Math.abs(midX - 960)).toBeLessThan(40);
-    expect(Math.abs(midY - 540)).toBeLessThan(40);
-  });
-
-  it('covers the boxes with a margin, and never leaves the frame', () => {
-    const c = cropFor(frame(1920, 1080), [
-      { ...det(0), cx: 300, cy: 300, w: 20, h: 20 },
-      { ...det(0), cx: 340, cy: 340, w: 20, h: 20 },
-    ]);
-    expect(c.x).toBeGreaterThanOrEqual(0);
-    expect(c.y).toBeGreaterThanOrEqual(0);
-    expect(c.x + c.w).toBeLessThanOrEqual(1920);
-    expect(c.y + c.h).toBeLessThanOrEqual(1080);
-    // Both boxes inside it, in FRAME pixels.
-    expect(c.x).toBeLessThanOrEqual((300 - 10) * 3);
-    expect(c.x + c.w).toBeGreaterThanOrEqual((340 + 10) * 3);
-  });
-
-  it('is capped, so one enormous box cannot bring the whole frame back', () => {
-    const c = cropFor(frame(1920, 1080), [{ ...det(0), cx: 320, cy: 320, w: 600, h: 340 }]);
-    expect(c.w).toBeLessThanOrEqual(PIXEL_PROBE_MAX_SIDE);
-    expect(c.h).toBeLessThanOrEqual(PIXEL_PROBE_MAX_SIDE);
-  });
-
-  it('is clamped at the edges, where a margin would run off the frame', () => {
-    const c = cropFor(frame(100, 80), [{ ...det(0), cx: 20, cy: 80, w: 30, h: 30 }]);
-    expect(c.x).toBeGreaterThanOrEqual(0);
-    expect(c.y).toBeGreaterThanOrEqual(0);
-    expect(c.x + c.w).toBeLessThanOrEqual(100);
-    expect(c.y + c.h).toBeLessThanOrEqual(80);
+  it('pads a 16:9 camera exactly as the detector does, so the picture is what the model saw', async () => {
+    // 1920×1080 fits as 640×360 with 140 rows of grey 114 above and below. Those grey rows are 44%
+    // of the model's input on a widescreen camera, which is a fact about this pipeline worth
+    // seeing in the picture rather than inferring.
+    const { FakeOffscreenCanvas, drawn } = fakeCanvas(new Uint8Array([1]));
+    vi.stubGlobal('OffscreenCanvas', FakeOffscreenCanvas);
+    vi.stubGlobal('ImageData', FakeImageData);
+    vi.stubGlobal('fetch', async () => ({ ok: true }));
+    try {
+      resetPixelProbe();
+      await savePixelProbe(frame(1920, 1080), [inFrame(0)]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    const px = drawn[0]!.data;
+    const at = (x: number, y: number) => px[(y * PIXEL_PROBE_SIDE + x) * 4]!;
+    expect(at(320, 5), 'the top band should be the pad the model trains with').toBe(114);
+    expect(at(320, 634), 'the bottom band should be the pad too').toBe(114);
+    expect(at(320, 320), 'the middle should be picture, not pad').not.toBe(114);
   });
 });
-
-/**
- * A stand-in for the platform's canvas.
- *
- * NODE HAS NO `OffscreenCanvas`, so the real encoder cannot run here and these cases do not pretend
- * to test it — PNG encoding is the platform's, and asserting it against a fake would assert the
- * fake. What IS this module's own and is tested here: that the frame reaches `putImageData`
- * unchanged, that the bytes the encoder returns survive base64 in order and in full (the chunking
- * exists because `String.fromCharCode(...bytes)` overflows on a whole frame), and that the body
- * carries the boxes beside the picture.
- */
-class FakeImageData {
-  constructor(
-    readonly data: Uint8ClampedArray,
-    readonly width: number,
-    readonly height: number,
-  ) {}
-}
-
-function fakeCanvas(bytes: Uint8Array) {
-  const drawn: { width: number; height: number; data: Uint8ClampedArray }[] = [];
-  class FakeOffscreenCanvas {
-    constructor(
-      readonly width: number,
-      readonly height: number,
-    ) {}
-    getContext() {
-      return {
-        putImageData: (img: { data: Uint8ClampedArray; width: number; height: number }) => {
-          drawn.push({ width: img.width, height: img.height, data: img.data });
-        },
-      };
-    }
-    async convertToBlob({ type }: { type: string }) {
-      return { type, arrayBuffer: async () => bytes.buffer.slice(0) };
-    }
-  }
-  return { FakeOffscreenCanvas, drawn };
-}
 
 describe('what the probe writes', () => {
   /** A 16×16 frame with a known pattern, so the crop can be checked pixel for pixel. */
@@ -209,18 +214,19 @@ describe('what the probe writes', () => {
       vi.unstubAllGlobals();
     }
 
-    // The frame reached the canvas unchanged — a probe that drew something else would answer the
-    // question with a picture the camera never produced.
+    // What reached the canvas is the MODEL's input — 640 square, letterboxed — not the camera
+    // frame. A probe that drew the frame would answer the question in a space the boxes are not in.
     expect(drawn).toHaveLength(1);
-    expect(drawn[0]!.width).toBe(16);
-    expect([...drawn[0]!.data]).toEqual([...frame().data]);
+    expect(drawn[0]!.width).toBe(640);
+    expect(drawn[0]!.height).toBe(640);
 
     expect(posts, 'the probe posted more than once for one frame').toHaveLength(1);
     const { url, body } = posts[0]!;
     expect(url).toBe('/__record');
     expect(body.kind).toBe('pixel-probe');
-    expect(body.width).toBe(16);
-    expect(body.height).toBe(16);
+    expect(body.cameraWidth).toBe(16);
+    expect(body.cameraHeight).toBe(16);
+    expect(body.side).toBe(640);
     expect(body.neighbours).toBe(2);
     // The boxes travel with the picture, or a sticker cannot be found in it afterwards — which is
     // the whole purpose. Rounded, because the question is where a sticker is, not where it is to
@@ -229,8 +235,7 @@ describe('what the probe writes', () => {
       { cx: 320, cy: 320, w: 640, h: 640, cls: 0, conf: 0.4 },
       { cx: 320, cy: 320, w: 640, h: 640, cls: 3, conf: 0.91 },
     ]);
-    // The whole frame, in FRAME pixels — the conversion from letterbox space happened.
-    expect(body.crop).toEqual({ x: 0, y: 0, w: 16, h: 16 });
+
     // Every byte the encoder produced, in order, across the chunk boundary.
     const back = Uint8Array.from(atob(body.png as string), (c) => c.charCodeAt(0));
     expect(back.length).toBe(bytes.length);
