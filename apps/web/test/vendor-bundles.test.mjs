@@ -150,6 +150,11 @@ const BUNDLES = [
       // running the decode here when a page has no `Worker`, so both halves ship in this bundle.
       '../../../packages/cube-scanner/view/misread-client.ts',
       '../../../packages/cube-scanner/view/misread-protocol.ts',
+      // The pixel probe (2026-09-24), off unless `localStorage.cubusScanPixels` is '1'. It saves the
+      // PICTURE behind a frame, which `RecordedFrame.pixels` has had a field for since D9 and
+      // nothing has ever filled — added because two confident diagnoses of an unreadable white face,
+      // both drawn from box counts alone, were both wrong.
+      '../../../packages/cube-scanner/view/pixel-probe.ts',
       // The session recorder (D9, 2026-09-23), off unless `localStorage.cubusScanRecord` is '1':
       // the scan trace could never become a replayable fixture, so a bug report could not become a
       // test. It ships in the panel because the panel is what sees the frames.

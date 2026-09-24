@@ -74,6 +74,12 @@ import { INFERENCE_WORKER_LOST } from './inference-client.js';
 import { MisreadDecoder } from './misread-client.js';
 import type { ScanRuntime } from './pick-detector.js';
 import {
+  PIXEL_PROBE_CLASS,
+  PIXEL_PROBE_EVERY_MS,
+  pixelProbeEnabled,
+  savePixelProbe,
+} from './pixel-probe.js';
+import {
   frameNote,
   ScanTrace,
   type TickNote,
@@ -645,6 +651,22 @@ export class AiScanPanel extends HTMLElement {
   private readonly recorder = new SessionRecorder();
   private recording = false;
   private tracing = false;
+  /**
+   * DEV ONLY, and off unless `localStorage.cubusScanPixels === '1'`.
+   *
+   * WHY IT EXISTS (2026-09-24). A cube's white face was never captured across 3,881 recorded frames.
+   * Everything about that was inferred from BOX COUNTS — white detected 1,026 times but never nine
+   * in one frame, never above the fit's minimum, unchanged by dropping the confidence floor from
+   * 0.25 to 0.06 — and two confident diagnoses drawn from those counts ("white is invisible", "the
+   * floor is discarding it") were both wrong. Counts cannot tell a blown-out sticker from a
+   * shadowed one from a correctly-exposed one the model simply misreads.
+   *
+   * So this saves the PICTURE, which `RecordedFrame.pixels` has always had a field for and nothing
+   * has ever filled. It is the one thing that turns the question from inference into observation.
+   */
+  private pixelProbe = false;
+  /** When the probe last saved, so a scan does not write a frame every tick. */
+  private pixelProbeAt = 0;
   private tickNote: Partial<TickNote> = {};
   /** The words last put on screen, which the trace records as what the person scanning saw. */
   private lastLine = '';
@@ -1288,6 +1310,7 @@ export class AiScanPanel extends HTMLElement {
     this.lastProgressAt = performance.now();
     // Read HERE for the trace's reason: a scan must not start recording halfway through a side.
     this.recording = recordEnabled();
+    this.pixelProbe = pixelProbeEnabled();
     if (this.recording) {
       this.recorder.begin({
         id: `scan-${new Date().toISOString()}`,
@@ -1453,6 +1476,8 @@ export class AiScanPanel extends HTMLElement {
     const dets = wide
       ? wide.filter((d) => d.confidence >= MIN_STICKER_CONFIDENCE)
       : detectionsFromOutput(output);
+    // DEV ONLY: the picture behind a frame that contains the colour under investigation.
+    if (this.pixelProbe) void this.probePixels(output, epoch, wide ?? dets);
     // EVERY candidate this frame produced, unrounded and with all six scores — what a replay needs
     // and what the trace discards (D9). A no-op with recording off.
     if (wide) {
@@ -1588,6 +1613,31 @@ export class AiScanPanel extends HTMLElement {
     } catch (cause) {
       console.warn('[ai-scan-panel] the frame behind a settled read could not be read', cause);
       return null;
+    }
+  }
+
+  /**
+   * DEV ONLY: save the frame behind a read that saw the colour being investigated.
+   *
+   * Rate-limited, because a scan runs at up to sixteen frames a second and the point is a handful of
+   * pictures rather than a film. Everything it does is best-effort and swallowed: a probe that threw
+   * into the scan loop would change the behaviour it exists to observe.
+   */
+  private async probePixels(
+    output: ModelOutput,
+    epoch: number,
+    dets: readonly Detection[],
+  ): Promise<void> {
+    const now = performance.now();
+    if (now - this.pixelProbeAt < PIXEL_PROBE_EVERY_MS) return;
+    if (!dets.some((d) => d.classId === PIXEL_PROBE_CLASS)) return;
+    this.pixelProbeAt = now;
+    try {
+      const frame = await this.framePixels(output, epoch);
+      if (!frame) return;
+      await savePixelProbe(frame, dets);
+    } catch (cause) {
+      console.warn('[ai-scan-panel] the pixel probe could not save a frame', cause);
     }
   }
 

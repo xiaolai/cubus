@@ -5967,6 +5967,62 @@ var MisreadDecoder = class {
   }
 };
 
+// view/pixel-probe.ts
+var PIXEL_PROBE_KEY = "cubusScanPixels";
+var PIXEL_PROBE_CLASS = 0;
+var PIXEL_PROBE_EVERY_MS = 3e3;
+function pixelProbeEnabled(store) {
+  try {
+    const storage = store ?? globalThis.localStorage;
+    return storage?.getItem(PIXEL_PROBE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+var boxesOf = (dets) => dets.map((d) => ({
+  cx: Math.round(d.cx * 10) / 10,
+  cy: Math.round(d.cy * 10) / 10,
+  w: Math.round(d.w * 10) / 10,
+  h: Math.round(d.h * 10) / 10,
+  cls: d.classId,
+  conf: Math.round(d.confidence * 1e3) / 1e3
+}));
+async function savePixelProbe(frame, dets) {
+  const png = await toPng(frame);
+  if (!png) return;
+  await fetch("/__record", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      kind: "pixel-probe",
+      capturedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      width: frame.width,
+      height: frame.height,
+      hunting: PIXEL_PROBE_CLASS,
+      boxes: boxesOf(dets),
+      png
+    })
+  });
+}
+async function toPng(frame) {
+  const Canvas = globalThis.OffscreenCanvas;
+  const Pixels = globalThis.ImageData;
+  if (!Canvas || !Pixels) return null;
+  const canvas = new Canvas(frame.width, frame.height);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  const pixels = new Uint8ClampedArray(frame.data.length);
+  pixels.set(frame.data);
+  ctx.putImageData(new Pixels(pixels, frame.width, frame.height), 0, 0);
+  const blob = await canvas.convertToBlob({ type: "image/png" });
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 32768) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
+  }
+  return btoa(binary);
+}
+
 // view/scan-trace.ts
 var TRACE_KEY = "cubusScanTrace";
 var TRACE_CAPACITY = 4e3;
@@ -6766,6 +6822,22 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
   recorder = new SessionRecorder();
   recording = false;
   tracing = false;
+  /**
+   * DEV ONLY, and off unless `localStorage.cubusScanPixels === '1'`.
+   *
+   * WHY IT EXISTS (2026-09-24). A cube's white face was never captured across 3,881 recorded frames.
+   * Everything about that was inferred from BOX COUNTS — white detected 1,026 times but never nine
+   * in one frame, never above the fit's minimum, unchanged by dropping the confidence floor from
+   * 0.25 to 0.06 — and two confident diagnoses drawn from those counts ("white is invisible", "the
+   * floor is discarding it") were both wrong. Counts cannot tell a blown-out sticker from a
+   * shadowed one from a correctly-exposed one the model simply misreads.
+   *
+   * So this saves the PICTURE, which `RecordedFrame.pixels` has always had a field for and nothing
+   * has ever filled. It is the one thing that turns the question from inference into observation.
+   */
+  pixelProbe = false;
+  /** When the probe last saved, so a scan does not write a frame every tick. */
+  pixelProbeAt = 0;
   tickNote = {};
   /** The words last put on screen, which the trace records as what the person scanning saw. */
   lastLine = "";
@@ -7284,6 +7356,7 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     }
     this.lastProgressAt = performance.now();
     this.recording = recordEnabled();
+    this.pixelProbe = pixelProbeEnabled();
     if (this.recording) {
       this.recorder.begin({
         id: `scan-${(/* @__PURE__ */ new Date()).toISOString()}`,
@@ -7391,6 +7464,7 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     const began = performance.now();
     const wide = this.recording ? detectionsFromOutput(output, { confThreshold: NEAR_FLOOR_RECORD }) : null;
     const dets = wide ? wide.filter((d) => d.confidence >= MIN_STICKER_CONFIDENCE) : detectionsFromOutput(output);
+    if (this.pixelProbe) void this.probePixels(output, epoch, wide ?? dets);
     if (wide) {
       this.recorder.frame(wide, {
         ...output.frameId === void 0 ? {} : { frameId: output.frameId },
@@ -7461,6 +7535,26 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     } catch (cause) {
       console.warn("[ai-scan-panel] the frame behind a settled read could not be read", cause);
       return null;
+    }
+  }
+  /**
+   * DEV ONLY: save the frame behind a read that saw the colour being investigated.
+   *
+   * Rate-limited, because a scan runs at up to sixteen frames a second and the point is a handful of
+   * pictures rather than a film. Everything it does is best-effort and swallowed: a probe that threw
+   * into the scan loop would change the behaviour it exists to observe.
+   */
+  async probePixels(output, epoch, dets) {
+    const now = performance.now();
+    if (now - this.pixelProbeAt < PIXEL_PROBE_EVERY_MS) return;
+    if (!dets.some((d) => d.classId === PIXEL_PROBE_CLASS)) return;
+    this.pixelProbeAt = now;
+    try {
+      const frame = await this.framePixels(output, epoch);
+      if (!frame) return;
+      await savePixelProbe(frame, dets);
+    } catch (cause) {
+      console.warn("[ai-scan-panel] the pixel probe could not save a frame", cause);
     }
   }
   /** Record a decision that is not a frame, for the trace. A no-op with the trace off. */
