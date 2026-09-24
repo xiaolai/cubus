@@ -19,23 +19,34 @@ import { settings } from '../../app-settings.js';
 import { locale, t } from '../../i18n.js';
 import { hush, say } from '../../speech.js';
 // Every side held, named or not — `captured` lists only the named ones and can shrink mid-scan.
+import { COLOUR_NAMES, colourOfSlot, isColour } from '../../scheme.js';
 import { SIDES, sidesIn as sidesOf } from './report-sides.js';
 
 /** The lines, English. Short on purpose: a child listens while holding a cube up.
  *
- *  A SAVED SIDE COUNTS DOWN rather than repeating (owner's call, 2026-09-20). It said
- *  "Got it! Now show me another side." on every accepted capture, so an ordinary scan was that one
- *  sentence five times over a chime that had already marked each one — the chime says a side landed,
- *  and the words after it added nothing but length. The remaining count is a fact the scanner
- *  measures and already passes to `capturedCue`, so the line now carries it: no two captures in a
- *  scan say the same thing, and what a child hears is progress rather than a repeated instruction.
- *  Two keys instead of `plural()` on purpose — these are edited by hand in Settings -> Advanced, and
- *  an editable plural table is a worse thing to hand someone than two plain sentences. */
+ *  A SAVED SIDE NAMES THE COLOUR IT SAVED (owner's call, 2026-09-24). It counted down instead —
+ *  "Got it! 3 more sides." — which replaced an earlier version that said the same sentence five
+ *  times. The count fixed the repetition and left the real defect: "Got it!" never says WHAT it
+ *  got. A number is abstract to a child who cannot read, and it is not something they can check
+ *  against the cube in their hands; a colour is the one thing they can. Naming it also makes the
+ *  sentences differ from each other, which is all the count was ever buying.
+ *
+ *  AND IT MAKES A MISFILING AUDIBLE. The scan names a side by its centre, and a centre it reads
+ *  wrong files the side under the wrong colour — silently, until the scan fails at the end with
+ *  advice that does not fit. Said aloud, "Got the blue side" while a child holds the white one is
+ *  wrong where somebody can hear it. A claim the app is already making is better made out loud than
+ *  kept to itself.
+ *
+ *  `%1` IS A COLOUR IN ALL THREE, and the keys were RENAMED when it stopped being a number
+ *  (`savedMany`/`savedOne`/`lastSaved` -> `savedSide`/`savedPenultimate`/`savedLast`). An edit
+ *  stored against an old key is dropped by `spokenLines()` and the default is used, which is what
+ *  should happen: keeping the names would have fed a colour to someone's hand-written "Got it! %1
+ *  more sides." and said "Got it! yellow more sides." for the rest of that scan. */
 export const SPOKEN = Object.freeze({
   open: 'Show me any side of your cube.',
-  savedMany: 'Got it! %1 more sides.',
-  savedOne: 'Got it! One more side.',
-  lastSaved: 'Got it! Let me check your cube.',
+  savedSide: 'Got the %1 side! Show me another one.',
+  savedPenultimate: 'Got the %1 side! One more to go.',
+  savedLast: 'Got the %1 side! Let me check your cube.',
   again: "I've got that one. Show me a different side.",
   ask: 'Turn your whole cube like the little cube, and show me that side.',
   done: 'All done! Your cube is ready.',
@@ -181,24 +192,31 @@ export function hear(memo, p) {
  * "Show me another side" holds only while the scanner is reading; "let me check" also through the
  * check that follows the sixth side — never into a painting, an error or a finished scan.
  */
-export function capturedCue({ kind, sides }) {
+export function capturedCue({ kind, face, sides }) {
   if (kind === 'confirm') return null;
   // A COUNT THAT IS NOT A COUNT NEVER BECOMES A SENTENCE (audit, 2026-09-20). `scan-progress` is
   // validated by `sidesIn`; this path was not, so a malformed capture event said "NaN more sides" to
   // a child, or "7 more sides", or "4.5". Saying nothing is the honest answer to a number the
   // scanner cannot have meant — the chime still marks the capture.
   if (!Number.isInteger(sides) || sides < 1 || sides > SIDES) return null;
+  // AND A COLOUR THAT IS NOT A COLOUR NEVER BECOMES ONE EITHER, the same rule for the new parameter.
+  // `ScanCapture.face` is typed non-null and every caller passes a slot, but this reads an EVENT
+  // from a custom element — the one boundary where the type is a promise rather than a guarantee —
+  // and a bad slot here would say "Got the undefined side!" out loud to a child.
+  const colour = COLOUR_NAMES[colourOfSlot(face)];
+  if (!isColour(colourOfSlot(face)) || colour === undefined) return null;
   if (sides >= SIDES) {
     return {
-      line: 'lastSaved',
+      line: 'savedLast',
+      params: [colour],
       holds: (q) => (q.phase === 'scanning' || q.phase === 'checking') && sidesOf(q) >= sides,
     };
   }
-  // What is LEFT, which is what changes: five captures in a scan, five different sentences.
-  const left = SIDES - sides;
   return {
-    line: left === 1 ? 'savedOne' : 'savedMany',
-    params: [left],
+    // "One more to go" is kept for the last-but-one, where it is the encouraging thing to say and
+    // cannot be mistaken for the count it replaced: it sits beside a named colour.
+    line: SIDES - sides === 1 ? 'savedPenultimate' : 'savedSide',
+    params: [colour],
     holds: (q) => q.phase === 'scanning' && sidesOf(q) >= sides,
   };
 }

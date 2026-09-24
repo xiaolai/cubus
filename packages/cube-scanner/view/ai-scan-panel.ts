@@ -396,7 +396,13 @@ export interface ScanNotice {
  */
 export interface ScanCapture {
   kind: 'side' | 'reread' | 'confirm';
-  face: Face | null;
+  /**
+   * The side this capture was filed under. NEVER null since 2026-09-23: a side is its centre, so a
+   * capture the panel cannot name is refused rather than held, and every one of the three callers
+   * passes a slot. It was nullable while a colliding centre could be held UNNAMED, and a host that
+   * still branches on null is reading for a state the scan can no longer be in.
+   */
+  face: Face;
   sides: number;
 }
 
@@ -2292,7 +2298,7 @@ export class AiScanPanel extends HTMLElement {
    * scan, stop it, switch to painting or take a side back, and "a side was saved" over any of those
    * is a chime and a "got it" for a moment that is gone (audit, 2026-09-19, round 3).
    */
-  private captured(kind: ScanCapture['kind'], face: Face | null): void {
+  private captured(kind: ScanCapture['kind'], face: Face): void {
     // The read that made this capture is spent, on EVERY path: the confirm and re-read paths did not
     // reset it, so the reports after them carried a finished read's progress (audit, 2026-09-19).
     this.still.reset();

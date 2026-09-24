@@ -1500,12 +1500,15 @@ test('the sticker view draws the scanner\'s boxes in the twin\'s place, only whi
 /** The scan's spoken lines through a rigged panel, with a camera to report from. */
 const CAM = { deviceId: 'cam', label: 'Webcam' };
 
-test('the opening line is said once, and a capture counts down rather than repeating', async (t) => {
+test('the opening line is said once, and a capture names the side it saved', async (t) => {
   const { SPOKEN } = await import('../lib/screens/scan/spoken.js');
   // HARD-CODED, NOT DERIVED (audit, 2026-09-20). This used to build the expected sentence by calling
   // the very functions under test, so a wrong countdown would have made the actual and the expected
   // wrong together and the case would have passed.
-  const SAVED = ['Got it! 5 more sides.', 'Got it! 4 more sides.'];
+  const SAVED = [
+    'Got the white side! Show me another one.',
+    'Got the red side! Show me another one.',
+  ];
   const { voice, report, saved } = await soundsRig(t);
   const said = voice.said;
   report({ device: CAM });
@@ -1514,8 +1517,8 @@ test('the opening line is said once, and a capture counts down rather than repea
   saved('U');
   report({ device: CAM, captured: [face('U')] });
   assert.equal(said.at(-1), SAVED[0], 'a saved side was not announced with what is left');
-  // A SECOND capture, because one sentence proves nothing about a countdown: the whole point is
-  // that consecutive captures differ.
+  // A SECOND capture, because one sentence proves nothing: the whole point is that consecutive
+  // captures differ, and that each names the side it actually saved.
   saved('R', 2);
   report({ device: CAM, captured: [face('U'), face('R')], sides: 2 });
   assert.equal(said.at(-1), SAVED[1], 'the second saved side repeated the first sentence');
@@ -2877,9 +2880,9 @@ test('a line edited in Settings is used by the very next thing said', async (t) 
   report({ device: camera });
   saved('U');
   report({ device: camera, captured: [face('U')], sides: 1 });
-  assert.equal(voice.said.at(-1), 'Got it! 5 more sides.');
-  settings.spokenLines = { ...settings.spokenLines, savedMany: 'Nice! %1 to go.' };
+  assert.equal(voice.said.at(-1), 'Got the white side! Show me another one.');
+  settings.spokenLines = { ...settings.spokenLines, savedSide: 'Nice, the %1 one! Keep going.' };
   saved('R', 2);
   report({ device: camera, captured: [face('U'), face('R')], sides: 2 });
-  assert.equal(voice.said.at(-1), 'Nice! 4 to go.', 'the edit did not reach the voice');
+  assert.equal(voice.said.at(-1), 'Nice, the red one! Keep going.', 'the edit did not reach the voice');
 });

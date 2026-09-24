@@ -22,9 +22,9 @@ import { commitPref, unsavedNote } from './preferences.js';
  *  "undefined" — `spoken-lines.test.mjs` checks the two lists match. */
 export const LINE_LABEL = Object.freeze({
   open: 'The camera opens',
-  savedMany: 'A side saved, more to go',
-  savedOne: 'A side saved, one left',
-  lastSaved: 'The last side saved',
+  savedSide: 'A side saved, more to go',
+  savedPenultimate: 'A side saved, one left',
+  savedLast: 'The last side saved',
   again: 'A side shown that is already in',
   ask: 'A side asked for again',
   done: 'The cube checked out',
@@ -38,7 +38,7 @@ export function refuse(key, text) {
   const line = text.trim();
   if (!line) return 'A line cannot be empty. Use Reset to put the original back.';
   if (line.length > LINE_LIMIT) return 'Too long to be heard as a cue — %1 characters at most.';
-  if (spokenLines({ [key]: line })[key] !== line) return 'Keep %2 in the line: it is where the number of sides goes.';
+  if (spokenLines({ [key]: line })[key] !== line) return 'Keep %2 in the line: it is where the side’s colour goes.';
   return null;
 }
 

@@ -123,18 +123,28 @@ test('overlaps are decided by priority, not by order of arrival: camera, ask, ag
 });
 
 test('a capture: its line by how many sides are held, nothing for a confirm look, cut by painting or a restart', () => {
-  assert.equal(capturedCue({ kind: 'confirm', sides: 6 }), null);
-  assert.equal(capturedCue({ kind: 'side', sides: 6 }).line, 'lastSaved');
-  assert.equal(capturedCue({ kind: 'reread', sides: 6 }).line, 'lastSaved');
-  // THE COUNTDOWN IS THE POINT (2026-09-20): five captures, five different sentences. It said one
-  // sentence five times, over a chime that had already marked each capture.
-  const saved = [1, 2, 3, 4, 5].map((sides) => spoken(capturedCue({ kind: 'side', sides })));
+  assert.equal(capturedCue({ kind: 'confirm', face: 'U', sides: 6 }), null);
+  assert.equal(capturedCue({ kind: 'side', face: 'U', sides: 6 }).line, 'savedLast');
+  assert.equal(capturedCue({ kind: 'reread', face: 'U', sides: 6 }).line, 'savedLast');
+  // IT NAMES THE COLOUR IT SAVED (2026-09-24). The countdown before it fixed the repetition and
+  // left the real defect: "Got it!" never said WHAT it got, which is the one thing a child who
+  // cannot read can check against the cube in their hands. Naming it also makes the five sentences
+  // differ, which is all the count was buying.
+  const shown = ['D', 'L', 'R', 'B', 'F'];
+  const saved = shown.map((face, i) => spoken(capturedCue({ kind: 'side', face, sides: i + 1 })));
   assert.deepEqual(saved, [
-    'Got it! 5 more sides.', 'Got it! 4 more sides.', 'Got it! 3 more sides.',
-    'Got it! 2 more sides.', 'Got it! One more side.',
+    'Got the yellow side! Show me another one.',
+    'Got the orange side! Show me another one.',
+    'Got the red side! Show me another one.',
+    'Got the blue side! Show me another one.',
+    'Got the green side! One more to go.',
   ]);
   assert.equal(new Set(saved).size, saved.length, 'two captures in one scan said the same words');
-  const { holds } = capturedCue({ kind: 'side', sides: 2 });
+  assert.equal(
+    spoken(capturedCue({ kind: 'side', face: 'U', sides: 6 })),
+    'Got the white side! Let me check your cube.',
+  );
+  const { holds } = capturedCue({ kind: 'side', face: 'U', sides: 2 });
   assert.equal(holds(r({ sides: 2 })), true);
   assert.equal(holds(r({ sides: 3 })), true, 'the next side cut the last one off before its own line could');
   assert.equal(holds(r({ sides: 0 })), false);
@@ -143,7 +153,7 @@ test('a capture: its line by how many sides are held, nothing for a confirm look
     assert.equal(holds(r({ phase, sides: 2 })), false, `"show me another side" held in the ${phase} phase`);
   }
   // "Let me check" also through the check the sixth side starts, and no further.
-  const last = capturedCue({ kind: 'side', sides: 6 }).holds;
+  const last = capturedCue({ kind: 'side', face: 'U', sides: 6 }).holds;
   assert.equal(last(r({ phase: 'checking', sides: 6 })), true);
   for (const phase of ['done', 'painting', 'loading', 'error']) {
     assert.equal(last(r({ phase, sides: 6 })), false, `"let me check" held in the ${phase} phase`);
@@ -155,11 +165,18 @@ test('a capture count that is not a count says nothing at all', () => {
   // event spoke "NaN more sides" to a child, or "7 more sides", or "4.5 more sides". The chime still
   // marks the capture; the words are what must not invent a number.
   for (const sides of [undefined, null, Number.NaN, -1, 0, 1.5, 7, 60, '3']) {
-    assert.equal(capturedCue({ kind: 'side', sides }), null, `sides ${String(sides)} spoke anyway`);
+    assert.equal(capturedCue({ kind: 'side', face: 'U', sides }), null, `sides ${String(sides)} spoke anyway`);
+  }
+  // AND A COLOUR THAT IS NOT A COLOUR SAYS NOTHING EITHER (2026-09-24). `ScanCapture.face` is typed
+  // non-null and every caller passes a slot, but this reads an EVENT off a custom element, where the
+  // type is a promise rather than a guarantee — and the failure is "Got the undefined side!" said
+  // out loud to a child.
+  for (const face of [undefined, null, '', 'X', 'u', 0, 7, {}]) {
+    assert.equal(capturedCue({ kind: 'side', face, sides: 2 }), null, `face ${String(face)} spoke anyway`);
   }
   // …and every count a cube can actually reach still speaks.
   for (const sides of [1, 2, 3, 4, 5, 6]) {
-    assert.ok(capturedCue({ kind: 'side', sides }), `sides ${sides} said nothing`);
+    assert.ok(capturedCue({ kind: 'side', face: 'U', sides }), `sides ${sides} said nothing`);
   }
 });
 
@@ -256,7 +273,7 @@ test('a failure arriving for a line already replaced neither brings it back nor 
   capture({ kind: 'side', face: 'U', sides: 1 });
   voice.fail('audio-busy', opening);
   report({ sides: 1, captured: [{}] });
-  const firstSaved = spoken(capturedCue({ kind: 'side', sides: 1 }));
+  const firstSaved = spoken(capturedCue({ kind: 'side', face: 'U', sides: 1 }));
   assert.deepEqual(voice.said, [SPOKEN.open, firstSaved], 'a late failure of a replaced line brought it back');
   // …and the line now being said is still cut off when its own moment passes.
   report({ phase: 'painting', sides: 1, captured: [{}] });
