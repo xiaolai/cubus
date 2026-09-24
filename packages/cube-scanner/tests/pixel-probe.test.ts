@@ -10,11 +10,11 @@ import type { Detection } from '../src/onnx-postprocess.js';
 import type { Frame } from '../src/types.js';
 import {
   cropFor,
-  PIXEL_PROBE_CLASS,
   PIXEL_PROBE_EVERY_MS,
   PIXEL_PROBE_KEY,
   PIXEL_PROBE_MAX_FRAMES,
   PIXEL_PROBE_MAX_SIDE,
+  PIXEL_PROBE_MIN_NEIGHBOURS,
   pixelProbeEnabled,
   resetPixelProbe,
   savePixelProbe,
@@ -65,7 +65,7 @@ describe('the pixel probe switch', () => {
     // Pinned so a change to either is a change somebody made on purpose: the class decides which
     // question is being asked, and the gap is what keeps a 1.2 MB-a-frame probe from becoming a
     // gigabyte a minute on a loop running at sixteen frames a second.
-    expect(PIXEL_PROBE_CLASS).toBe(0); // white
+    expect(PIXEL_PROBE_MIN_NEIGHBOURS).toBe(6);
     expect(PIXEL_PROBE_EVERY_MS).toBe(3_000);
     expect(PIXEL_PROBE_KEY).toBe('cubusScanPixels');
     expect(PIXEL_PROBE_MAX_FRAMES).toBe(40);
@@ -178,7 +178,10 @@ describe('what the probe writes', () => {
     });
     try {
       resetPixelProbe();
-      await savePixelProbe(frame(), [inFrame(PIXEL_PROBE_CLASS), inFrame(3, 0.91)]);
+      await savePixelProbe(frame(), [
+        inFrame(0 /* white, the class the first version wrongly triggered on */),
+        inFrame(3, 0.91),
+      ]);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -195,7 +198,7 @@ describe('what the probe writes', () => {
     expect(body.kind).toBe('pixel-probe');
     expect(body.width).toBe(2);
     expect(body.height).toBe(2);
-    expect(body.hunting).toBe(PIXEL_PROBE_CLASS);
+    expect(body.neighbours).toBe(2);
     // The boxes travel with the picture, or a sticker cannot be found in it afterwards — which is
     // the whole purpose. Rounded, because the question is where a sticker is, not where it is to
     // the tenth of a millionth of a pixel.
@@ -226,7 +229,9 @@ describe('what the probe writes', () => {
     vi.stubGlobal('ImageData', FakeImageData);
     vi.stubGlobal('fetch', async () => ({ ok: true }));
     try {
-      await savePixelProbe(frame(), [det(PIXEL_PROBE_CLASS)]);
+      await savePixelProbe(frame(), [
+        det(0 /* white, the class the first version wrongly triggered on */),
+      ]);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -244,7 +249,9 @@ describe('what the probe writes', () => {
     });
     (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas = undefined;
     try {
-      await savePixelProbe(frame(), [det(PIXEL_PROBE_CLASS)]);
+      await savePixelProbe(frame(), [
+        det(0 /* white, the class the first version wrongly triggered on */),
+      ]);
     } finally {
       (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas = had;
       vi.unstubAllGlobals();

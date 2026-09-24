@@ -52,6 +52,7 @@ import type { MisreadDiagnosis } from '../src/misread-decode.js';
 import { detectionsFromOutput, IMG_SIZE } from '../src/onnx-detect.js';
 import {
   type Detection,
+  dropIsolated,
   type FaceFit,
   type FitResult,
   fitFace,
@@ -74,8 +75,8 @@ import { INFERENCE_WORKER_LOST } from './inference-client.js';
 import { MisreadDecoder } from './misread-client.js';
 import type { ScanRuntime } from './pick-detector.js';
 import {
-  PIXEL_PROBE_CLASS,
   PIXEL_PROBE_EVERY_MS,
+  PIXEL_PROBE_MIN_NEIGHBOURS,
   pixelProbeEnabled,
   savePixelProbe,
 } from './pixel-probe.js';
@@ -1476,7 +1477,7 @@ export class AiScanPanel extends HTMLElement {
     const dets = wide
       ? wide.filter((d) => d.confidence >= MIN_STICKER_CONFIDENCE)
       : detectionsFromOutput(output);
-    // DEV ONLY: the picture behind a frame that contains the colour under investigation.
+    // DEV ONLY: the picture behind a frame that looks like a face and could not be read.
     if (this.pixelProbe) void this.probePixels(output, epoch, wide ?? dets);
     // EVERY candidate this frame produced, unrounded and with all six scores — what a replay needs
     // and what the trace discards (D9). A no-op with recording off.
@@ -1630,12 +1631,15 @@ export class AiScanPanel extends HTMLElement {
   ): Promise<void> {
     const now = performance.now();
     if (now - this.pixelProbeAt < PIXEL_PROBE_EVERY_MS) return;
-    if (!dets.some((d) => d.classId === PIXEL_PROBE_CLASS)) return;
+    // GEOMETRY, NOT COLOUR. See `PIXEL_PROBE_MIN_NEIGHBOURS`: the first version triggered on the
+    // label it was investigating and captured a roomful of doorframes.
+    const clustered = dropIsolated(dets.filter((d) => d.confidence >= NEAR_FLOOR_RECORD));
+    if (clustered.length < PIXEL_PROBE_MIN_NEIGHBOURS) return;
     this.pixelProbeAt = now;
     try {
       const frame = await this.framePixels(output, epoch);
       if (!frame) return;
-      await savePixelProbe(frame, dets);
+      await savePixelProbe(frame, clustered);
     } catch (cause) {
       console.warn('[ai-scan-panel] the pixel probe could not save a frame', cause);
     }

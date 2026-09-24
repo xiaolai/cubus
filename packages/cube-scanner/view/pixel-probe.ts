@@ -25,12 +25,21 @@ import type { Frame } from './../src/types.js';
 export const PIXEL_PROBE_KEY = 'cubusScanPixels';
 
 /**
- * The colour class the probe is hunting. 0 is white — the class under investigation.
+ * How many NEIGHBOURED boxes a frame needs before its picture is worth saving.
  *
- * A constant rather than an argument because this is an instrument for one question at a time, and
- * a knob nobody turns is a knob that rots. Change it here when the question changes.
+ * NEVER A COLOUR, AND THE FIRST VERSION'S MISTAKE WAS EXACTLY THAT (2026-09-24). It fired on any
+ * frame containing a box the model labelled white — the label under investigation — and white is
+ * the class that false-positives on walls, doors and paper. So it captured a roomful of empty
+ * frames, never the white face, and the pixel statistics drawn from them described a wooden door.
+ * Triggering on the unreliable signal to investigate the unreliable signal is circular, and it cost
+ * a whole diagnosis.
+ *
+ * Geometry does not have that problem. `dropIsolated` keeps boxes that have neighbours, which is
+ * what a cube's face looks like and what a doorframe does not, whatever colour anything is called.
+ * Six is below the nine a fit needs, on purpose: the frames worth seeing are the ones the fit
+ * REFUSED.
  */
-export const PIXEL_PROBE_CLASS = 0;
+export const PIXEL_PROBE_MIN_NEIGHBOURS = 6;
 
 /**
  * The least time between two saved frames.
@@ -140,7 +149,7 @@ export async function savePixelProbe(frame: Frame, dets: readonly Detection[]): 
       height: frame.height,
       crop,
       nth: saved,
-      hunting: PIXEL_PROBE_CLASS,
+      neighbours: dets.length,
       boxes: boxesOf(dets),
       png,
     }),

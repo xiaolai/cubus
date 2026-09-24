@@ -5969,7 +5969,7 @@ var MisreadDecoder = class {
 
 // view/pixel-probe.ts
 var PIXEL_PROBE_KEY = "cubusScanPixels";
-var PIXEL_PROBE_CLASS = 0;
+var PIXEL_PROBE_MIN_NEIGHBOURS = 6;
 var PIXEL_PROBE_EVERY_MS = 3e3;
 var PIXEL_PROBE_MAX_FRAMES = 40;
 var PIXEL_PROBE_MAX_SIDE = 640;
@@ -6023,7 +6023,7 @@ async function savePixelProbe(frame, dets) {
       height: frame.height,
       crop,
       nth: saved,
-      hunting: PIXEL_PROBE_CLASS,
+      neighbours: dets.length,
       boxes: boxesOf(dets),
       png
     })
@@ -7575,12 +7575,13 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
   async probePixels(output, epoch, dets) {
     const now = performance.now();
     if (now - this.pixelProbeAt < PIXEL_PROBE_EVERY_MS) return;
-    if (!dets.some((d) => d.classId === PIXEL_PROBE_CLASS)) return;
+    const clustered = dropIsolated(dets.filter((d) => d.confidence >= NEAR_FLOOR_RECORD));
+    if (clustered.length < PIXEL_PROBE_MIN_NEIGHBOURS) return;
     this.pixelProbeAt = now;
     try {
       const frame = await this.framePixels(output, epoch);
       if (!frame) return;
-      await savePixelProbe(frame, dets);
+      await savePixelProbe(frame, clustered);
     } catch (cause) {
       console.warn("[ai-scan-panel] the pixel probe could not save a frame", cause);
     }
