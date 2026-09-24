@@ -217,6 +217,9 @@ const BUNDLES = [
       'setChainTimeoutForTests', 'latticeOf',
       'isRecord', 'num', 'parseConditions', 'parseDetection', 'parseFrame', 'parseTruth',
       'sessionDurationMs', 'sessionFps', 'sessionTicks',
+      // The pixel probe's count-reset: a seam for its own tests and for a developer wanting a second
+      // run without a reload. The panel never calls it, so the bundle correctly drops it.
+      'resetPixelProbe',
     ],
     // encodeFacelets' refusal of a malformed state (2026-09-13) leaves with the function: the
     // message is in facelet-cube.ts and, correctly, nowhere in a bundle that never encodes. The

@@ -9,12 +9,26 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Detection } from '../src/onnx-postprocess.js';
 import type { Frame } from '../src/types.js';
 import {
+  cropFor,
   PIXEL_PROBE_CLASS,
   PIXEL_PROBE_EVERY_MS,
   PIXEL_PROBE_KEY,
+  PIXEL_PROBE_MAX_FRAMES,
+  PIXEL_PROBE_MAX_SIDE,
   pixelProbeEnabled,
+  resetPixelProbe,
   savePixelProbe,
 } from '../view/pixel-probe.js';
+
+/** A box that sits inside the 2×2 fixture below, so the crop is the whole of it. */
+const inFrame = (classId: number, confidence = 0.4): Detection => ({
+  cx: 1,
+  cy: 1,
+  w: 2,
+  h: 2,
+  classId,
+  confidence,
+});
 
 const det = (classId: number, confidence = 0.4): Detection => ({
   cx: 10.26,
@@ -54,6 +68,49 @@ describe('the pixel probe switch', () => {
     expect(PIXEL_PROBE_CLASS).toBe(0); // white
     expect(PIXEL_PROBE_EVERY_MS).toBe(3_000);
     expect(PIXEL_PROBE_KEY).toBe('cubusScanPixels');
+    expect(PIXEL_PROBE_MAX_FRAMES).toBe(40);
+    expect(PIXEL_PROBE_MAX_SIDE).toBe(640);
+  });
+});
+
+describe('the crop, which is what makes this affordable', () => {
+  // THE BOUND THAT WAS MISSING. The first version saved the whole frame: 4 MB a shot on a 1920×1080
+  // camera, 245 MB in one session, and the page's own thread doing a 3 MB base64 encode every three
+  // seconds — `inferMs` peaked at 608 ms against a 20 ms median and the scan halved in rate. The
+  // question was only ever about the pixels ON a sticker, which a crop answers in a fortieth of the
+  // bytes.
+  const frame = (w: number, h: number): Frame => ({
+    data: new Uint8ClampedArray(w * h * 4),
+    width: w,
+    height: h,
+  });
+
+  it('covers the boxes with a margin, and never leaves the frame', () => {
+    const c = cropFor(frame(1920, 1080), [
+      { ...det(0), cx: 900, cy: 500, w: 40, h: 40 },
+      { ...det(0), cx: 1000, cy: 600, w: 40, h: 40 },
+    ]);
+    expect(c.x).toBeLessThanOrEqual(880);
+    expect(c.y).toBeLessThanOrEqual(480);
+    expect(c.x + c.w).toBeLessThanOrEqual(1920);
+    expect(c.y + c.h).toBeLessThanOrEqual(1080);
+    // Both boxes inside, with room around them: what surrounds a sticker is part of the answer.
+    expect(c.x + c.w).toBeGreaterThanOrEqual(1020);
+    expect(c.y + c.h).toBeGreaterThanOrEqual(620);
+  });
+
+  it('is capped, so one enormous box cannot bring the whole frame back', () => {
+    const c = cropFor(frame(1920, 1080), [{ ...det(0), cx: 960, cy: 540, w: 1900, h: 1000 }]);
+    expect(c.w).toBeLessThanOrEqual(PIXEL_PROBE_MAX_SIDE);
+    expect(c.h).toBeLessThanOrEqual(PIXEL_PROBE_MAX_SIDE);
+  });
+
+  it('is clamped at the edges, where a margin would run off the frame', () => {
+    const c = cropFor(frame(100, 80), [{ ...det(0), cx: 4, cy: 3, w: 8, h: 6 }]);
+    expect(c.x).toBe(0);
+    expect(c.y).toBe(0);
+    expect(c.x + c.w).toBeLessThanOrEqual(100);
+    expect(c.y + c.h).toBeLessThanOrEqual(80);
   });
 });
 
@@ -120,7 +177,8 @@ describe('what the probe writes', () => {
       return { ok: true };
     });
     try {
-      await savePixelProbe(frame(), [det(PIXEL_PROBE_CLASS), det(3, 0.91)]);
+      resetPixelProbe();
+      await savePixelProbe(frame(), [inFrame(PIXEL_PROBE_CLASS), inFrame(3, 0.91)]);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -142,9 +200,10 @@ describe('what the probe writes', () => {
     // the whole purpose. Rounded, because the question is where a sticker is, not where it is to
     // the tenth of a millionth of a pixel.
     expect(body.boxes).toEqual([
-      { cx: 10.3, cy: 20.3, w: 8, h: 8, cls: 0, conf: 0.4 },
-      { cx: 10.3, cy: 20.3, w: 8, h: 8, cls: 3, conf: 0.91 },
+      { cx: 1, cy: 1, w: 2, h: 2, cls: 0, conf: 0.4 },
+      { cx: 1, cy: 1, w: 2, h: 2, cls: 3, conf: 0.91 },
     ]);
+    expect(body.crop).toEqual({ x: 0, y: 0, w: 2, h: 2 });
     // Every byte the encoder produced, in order, across the chunk boundary.
     const back = Uint8Array.from(atob(body.png as string), (c) => c.charCodeAt(0));
     expect(back.length).toBe(bytes.length);

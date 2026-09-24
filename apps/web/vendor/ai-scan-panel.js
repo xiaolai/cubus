@@ -5971,6 +5971,8 @@ var MisreadDecoder = class {
 var PIXEL_PROBE_KEY = "cubusScanPixels";
 var PIXEL_PROBE_CLASS = 0;
 var PIXEL_PROBE_EVERY_MS = 3e3;
+var PIXEL_PROBE_MAX_FRAMES = 40;
+var PIXEL_PROBE_MAX_SIDE = 640;
 function pixelProbeEnabled(store) {
   try {
     const storage = store ?? globalThis.localStorage;
@@ -5987,9 +5989,30 @@ var boxesOf = (dets) => dets.map((d) => ({
   cls: d.classId,
   conf: Math.round(d.confidence * 1e3) / 1e3
 }));
+var saved = 0;
+function cropFor(frame, dets) {
+  const xs = dets.flatMap((d) => [d.cx - d.w / 2, d.cx + d.w / 2]);
+  const ys = dets.flatMap((d) => [d.cy - d.h / 2, d.cy + d.h / 2]);
+  if (xs.length === 0) return { x: 0, y: 0, w: frame.width, h: frame.height };
+  const pad = 0.25;
+  const x0 = Math.min(...xs);
+  const x1 = Math.max(...xs);
+  const y0 = Math.min(...ys);
+  const y1 = Math.max(...ys);
+  const mx = (x1 - x0) * pad;
+  const my = (y1 - y0) * pad;
+  const left = Math.max(0, Math.floor(x0 - mx));
+  const top = Math.max(0, Math.floor(y0 - my));
+  const w = Math.min(frame.width - left, Math.ceil(x1 - x0 + mx * 2), PIXEL_PROBE_MAX_SIDE);
+  const h = Math.min(frame.height - top, Math.ceil(y1 - y0 + my * 2), PIXEL_PROBE_MAX_SIDE);
+  return { x: left, y: top, w: Math.max(1, w), h: Math.max(1, h) };
+}
 async function savePixelProbe(frame, dets) {
-  const png = await toPng(frame);
+  if (saved >= PIXEL_PROBE_MAX_FRAMES) return;
+  const crop = cropFor(frame, dets);
+  const png = await toPng(frame, crop);
   if (!png) return;
+  saved += 1;
   await fetch("/__record", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -5998,22 +6021,27 @@ async function savePixelProbe(frame, dets) {
       capturedAt: (/* @__PURE__ */ new Date()).toISOString(),
       width: frame.width,
       height: frame.height,
+      crop,
+      nth: saved,
       hunting: PIXEL_PROBE_CLASS,
       boxes: boxesOf(dets),
       png
     })
   });
 }
-async function toPng(frame) {
+async function toPng(frame, crop) {
   const Canvas = globalThis.OffscreenCanvas;
   const Pixels = globalThis.ImageData;
   if (!Canvas || !Pixels) return null;
-  const canvas = new Canvas(frame.width, frame.height);
+  const canvas = new Canvas(crop.w, crop.h);
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
-  const pixels = new Uint8ClampedArray(frame.data.length);
-  pixels.set(frame.data);
-  ctx.putImageData(new Pixels(pixels, frame.width, frame.height), 0, 0);
+  const pixels = new Uint8ClampedArray(crop.w * crop.h * 4);
+  for (let row = 0; row < crop.h; row++) {
+    const from = ((crop.y + row) * frame.width + crop.x) * 4;
+    pixels.set(frame.data.subarray(from, from + crop.w * 4), row * crop.w * 4);
+  }
+  ctx.putImageData(new Pixels(pixels, crop.w, crop.h), 0, 0);
   const blob = await canvas.convertToBlob({ type: "image/png" });
   const bytes = new Uint8Array(await blob.arrayBuffer());
   let binary = "";
