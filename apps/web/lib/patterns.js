@@ -87,15 +87,15 @@ const PATTERN_SPECS = [
   // 70 inherits that for free.
   {
     id: 'checkerboard', kind: 'state',
-    alg: 'D2 U2 L2 R2 B2 F2', name: 'The Checkerboard', offered: false,
+    alg: 'D2 U2 L2 R2 B2 F2', name: 'The Checkerboard', offered: true,
   },
   {
     id: 'lines', kind: 'state',
-    alg: 'U2 R2 D2 U2 R2 U2', name: 'Lines', offered: false,
+    alg: 'U2 R2 D2 U2 R2 U2', name: 'Lines', offered: true,
   },
   {
     id: 'plus-minus', kind: 'state',
-    alg: 'U2 L2 R2 U2 L2 R2', name: 'Plus/Minus', offered: false,
+    alg: 'U2 L2 R2 U2 L2 R2', name: 'Plus/Minus', offered: true,
   },
 ];
 
@@ -112,7 +112,12 @@ function makePattern(spec) {
   if (spec.kind !== 'state') throw new Error(`patterns: ${spec.id} has no kind "set" or "state"`);
   const look = toFacelets(applyAlg(SOLVED, spec.alg));
   if (!FACELETS.test(look)) throw new Error(`patterns: ${spec.id}'s algorithm does not give 54 facelets`);
-  return Object.freeze({ ...spec, look, target: null });
+  // `picture` IS the marker every reader keys on — `stage-picture.js` returns it instead of
+  // deriving one, `walk-session.js` paints it without re-framing, `walk-resolver.js` takes the
+  // picture route instead of the three-source race, and `walk-live-distance.js` asks nothing. A
+  // boolean `kind` would have worked equally well for any one of them and worse for all of them
+  // together: the thing they each need is the picture, so the field they test is the field they use.
+  return Object.freeze({ ...spec, look, picture: look, target: null });
 }
 
 /** Every picture this file knows, offered or not. */
@@ -132,3 +137,20 @@ export function patternById(id) {
 
 /** What the menu draws. The list the screens read, exactly as `OFFERED_TARGETS` is for the row. */
 export const OFFERED_PATTERNS = Object.freeze(PATTERNS.filter((p) => p.offered));
+
+/**
+ * The state patterns as DESTINATIONS, by id — target-shaped enough for the readers that take one.
+ *
+ * `state.stageTarget` holds an id and `stageTargetNow()` resolves it through `TARGET_BY_ID`, which
+ * knows only stage targets: an id it does not know is reset to `solved`, so without this a state
+ * pattern could not be selected at all (found by a Codex refute pass, 2026-09-26, which also found
+ * that `holdForTarget` threw on one and `targetPicture` threw "projections is not iterable").
+ *
+ * SET patterns are absent on purpose. They are real targets already, so they resolve through
+ * `TARGET_BY_ID` with their projections, their admissible tables and their independently written
+ * `verify` — and shadowing them here would quietly demote them to a picture with no exact engine.
+ */
+export const DESTINATION_BY_ID = Object.freeze(
+  Object.assign(Object.create(null),
+    Object.fromEntries(PATTERNS.filter((p) => p.kind === 'state').map((p) => [p.id, p]))),
+);

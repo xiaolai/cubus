@@ -83,7 +83,10 @@ export function createPatternMenu({ root, signal, chosen }) {
     // menu, because the group's handler is installed over it afterwards and must be the one that
     // runs. Set patterns only: `pattern.target` is null for a state pattern, and an item with no
     // `data-stage` would be a picture that does nothing.
-    if (pattern.target) item.dataset.stage = pattern.target.id;
+    // A SET pattern selects its TARGET; a state pattern selects ITSELF, and `stageTargetNow()`
+    // resolves the id through `DESTINATION_BY_ID`. Both are `data-stage`, so the walk session's one
+    // group wires and paints them together and only one destination can be on.
+    item.dataset.stage = pattern.target ? pattern.target.id : pattern.id;
     menu.el.appendChild(item);
   }
 
@@ -92,7 +95,7 @@ export function createPatternMenu({ root, signal, chosen }) {
     const now = chosen();
     menu.mark((b) => b.dataset.stage === now);
     // The button says what it is aiming at, so the choice is legible with the menu shut.
-    const on = OFFERED_PATTERNS.find((p) => p.target && p.target.id === now);
+    const on = OFFERED_PATTERNS.find((p) => (p.target ? p.target.id : p.id) === now);
     button.title = on ? `${t('Shapes')} — ${on.name}` : t('Shapes');
     button.setAttribute('aria-label', button.title);
     button.classList.toggle('on', Boolean(on));

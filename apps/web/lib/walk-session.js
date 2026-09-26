@@ -24,6 +24,7 @@
 import { t } from './i18n.js';
 import { SCAN_HOLD, fromMethodFrame, holdSentence, renameAlg } from './solving-hold.js';
 import { walkHoldFor } from './hold-presenter.js';
+import { DESTINATION_BY_ID } from './patterns.js';
 import { TARGET_BY_ID } from './stage-targets.js';
 import { targetPicture } from './stage-picture.js';
 import { cancel as optimalCancel, capability as optimalCapability } from './optimal.js';
@@ -113,7 +114,7 @@ export function createWalkSession(screen, app) {
     state, settings, SOLVED, CHIP_NODE_BUDGET, WALK_FAILURES, cubejs, solverReady, loadSolver,
     randomScramble, deriveCube, classifyCube, adoptCube, chainTrusted, markStale, lessonFor,
     stageAsk, stepStates, putInPlay, parkRoll, refreshScreen, go, save, raiseRung, escHtml, icon,
-    lastRoute, sayWalkLength, describeCube,
+    lastRoute, pictureRoute, sayWalkLength, describeCube,
   } = provided(app, 'app');
   const $ = (sel, from) => from.querySelector(sel);
 
@@ -299,7 +300,11 @@ export function createWalkSession(screen, app) {
     if (scrambling) return null;
     const id = state.stageTarget;
     if (!id || id === 'solved') return null;
-    const target = TARGET_BY_ID[id];
+    // A PICTURE DESTINATION resolves here too. `TARGET_BY_ID` holds stage targets and set patterns
+    // (which are targets); the state patterns are pictures, and without this line selecting one
+    // fell through to the warning below and silently reset the choice to `solved` — the child would
+    // press The Checkerboard and be walked to a solved cube (Codex refute pass, 2026-09-26).
+    const target = TARGET_BY_ID[id] ?? DESTINATION_BY_ID[id];
     if (!target) {
       console.warn(`unknown stage target "${id}" — walking the whole cube instead`);
       state.stageTarget = 'solved';
@@ -425,7 +430,7 @@ export function createWalkSession(screen, app) {
   }
   const { resolveWalk } = createWalkResolver({
     state, SOLVED, solverReady, loadSolver, randomScramble, deriveCube, lastRoute, lessonFor, stepStates,
-    setStatus, fallBackToSolution,
+    setStatus, fallBackToSolution, pictureRoute,
   });
 
   /** The turns the cube in hand has made since its last snapshot, adopted where it is trusted to
@@ -577,7 +582,15 @@ export function createWalkSession(screen, app) {
     if (say) say.textContent = t('%1 %2', t('Grey doesn’t matter yet.'), holdSentence(walkHold));
     // The picture is the target in the METHOD frame; the renderer and the net draw the
     // scan frame, so it is turned before it is painted.
-    paintAim(fromMethodFrame(targetPicture(aimingAt)));
+    //
+    // EXCEPT A PICTURE DESTINATION, which is stored in the scan frame already — it is
+    // `toFacelets(applyAlg(SOLVED, alg))`, the frame everything outside the method solver speaks.
+    // Turning it again would draw a child the wrong target while routing them to the right one,
+    // and the three shipped patterns are all tumble-invariant, so no fixture here would have
+    // noticed (Codex refute pass, 2026-09-26; `pattern-route.test.mjs` carries the asymmetric
+    // destination that does).
+    const aimPicture = targetPicture(aimingAt);
+    paintAim(aimingAt.picture ? aimPicture : fromMethodFrame(aimPicture));
   }
 
   /** Which object is on screen, and how long it is — said beside the move list. */

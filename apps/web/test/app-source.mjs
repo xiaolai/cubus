@@ -86,7 +86,7 @@ export const LIBRARY_SOURCES = Object.freeze([
   'lib/script-drive.js', 'lib/script-player.js', 'lib/script-questions.js', 'lib/script-rounds.js', 'lib/script-track.js', 'lib/script-view.js',
   'lib/walk-clock.js', 'lib/walk-script.js',
   'lib/solve-worker.js', 'lib/solved.js', 'lib/solver-engine.js', 'lib/solving-hold.js', 'lib/stage-distance.js',
-  'lib/patterns.js',
+  'lib/pattern-route.js', 'lib/patterns.js',
   'lib/stage-picture.js', 'lib/stage-report.js', 'lib/stage-route.js', 'lib/stage-targets.js',
   'lib/stage.js', 'lib/sticker-palettes.js', 'lib/tauri-mcp-guest-entry.js', 'lib/two-phase.js',
 ]);

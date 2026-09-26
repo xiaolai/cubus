@@ -22,11 +22,14 @@ import { createReconnectAsk } from './cube/reconnect-ask.js';
 // milliseconds is exactly the 723 ms block that was removed from `loadSolver`. The search runs on
 // a worker, through `stageAsk`.
 import { NODE_BUDGET as STAGE_NODE_BUDGET } from '../stage-distance.js';
+import { routeToPicture } from '../pattern-route.js';
+import { solveWithinGodsNumber } from '../solve-target.js';
+import { parseFacelets } from '../two-phase.js';
 
 import { $, SOLVED, escHtml, icon, state } from '../app-state.js';
 import { load, save, settings } from '../app-settings.js';
 import { hooks } from '../screen-slots.js';
-import { CHIP_NODE_BUDGET, Cube, loadSolver, solverReady, stageAsk, warmSolver } from '../solver-service.js';
+import { CHIP_NODE_BUDGET, Cube, loadSolver, solverReady, solverWorker, stageAsk, warmSolver } from '../solver-service.js';
 import { classifyCube, deriveCube, lessonFor, raiseRung, stepStates } from '../cube-subject.js';
 import { applyNetColors, buildNet, describeCube, newCube } from '../cube-drawing.js';
 import { keepAwake } from '../wake-lock.js';
@@ -77,6 +80,11 @@ const WALK_FAILURES = {
   'solver unavailable': 'the solver did not load — reload the app',
   'no scramble': 'a scramble could not be rolled — try again',
   'cross-check': 'the answer did not check out — read the cube again',
+  // A PICTURE ROUTE THAT WAS NOT WORKED OUT. The wording is about the SEARCH, never about the cube:
+  // every legal cube reaches every other in at most 20 moves, so "this shape cannot be reached"
+  // would be false as well as discouraging. And this is a failure rather than a fallback on
+  // purpose — solving the cube instead would arrive somewhere the heading did not name.
+  'no picture route': 'that shape could not be worked out — try again',
 };
 
 /**
@@ -87,6 +95,37 @@ const WALK_FAILURES = {
  */
 const lastRoute = createRouteRace({
   state, cubejs: () => Cube, stageAsk, solveByMethod, STAGE_NODE_BUDGET,
+});
+
+/**
+ * The way to a PICTURE, wired to the app's own solver and its own oracle.
+ *
+ * `solve` is `solveWithinGodsNumber`, not a bare pool call: `solLen` is an EXCLUSIVE bound and the
+ * engine's default is 23, so a raw ask permits 22 moves and quietly drops the promise every other
+ * answer in this app keeps. That wrapper asks at 21, escalates the node budget on a refusal,
+ * continues rather than restarts, and validates what comes back.
+ *
+ * `replay` is CUBEJS — a different implementation from the two-phase engine that produced the
+ * answer, and from the cubie model `lib/patterns.js` drew the picture with. Checking the route with
+ * `cube-pieces` would have all three agreeing by construction, so a wrong move definition would
+ * pass. It returns null when the oracle has not loaded, and a route nothing verified is refused.
+ */
+const pictureRoute = (destination, facelets, signal) => routeToPicture({
+  pattern: destination,
+  facelets,
+  signal,
+  parse: parseFacelets,
+  solve: (relative, opts) => solveWithinGodsNumber(relative, {
+    solve: (f, bounds) => solverWorker().solve(f, bounds), signal: opts?.signal ?? signal,
+  }),
+  replay: (from, alg) => {
+    if (!Cube) return null;
+    try {
+      const c = Cube.fromString(from);
+      if (alg !== '') c.move(alg);
+      return c.asString();
+    } catch { return null; }
+  },
 });
 
 /** Everything a cube screen's walk session reaches for that the APP owns — listed here, once.
@@ -100,7 +139,7 @@ const WALK_APP = Object.freeze({
   solverReady: () => solverReady,
   loadSolver, randomScramble, deriveCube, classifyCube, adoptCube, chainTrusted, markStale,
   lessonFor, stageAsk, stepStates, putInPlay, parkRoll, refreshScreen, go, save, raiseRung,
-  escHtml, icon, lastRoute, sayWalkLength, describeCube,
+  escHtml, icon, lastRoute, pictureRoute, sayWalkLength, describeCube,
 });
 
 /** Solve and Scramble are the same screen walked from opposite ends.

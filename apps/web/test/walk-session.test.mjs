@@ -157,7 +157,7 @@ function world({ subject = {}, omit = [], screen: screenOver = {} } = {}, make =
     settings: { rungs: {}, rungProgress: {}, proveMinimum: false },
     SOLVED,
     CHIP_NODE_BUDGET: 1,
-    WALK_FAILURES: { 'solver unavailable': 'no solver', 'no scramble': 'no scramble', 'cross-check': 'no check' },
+    WALK_FAILURES: { 'solver unavailable': 'no solver', 'no scramble': 'no scramble', 'cross-check': 'no check', 'no picture route': 'no shape route' },
     cubejs: () => Cube,
     solverReady: () => true,
     loadSolver: async () => true,
@@ -184,6 +184,10 @@ function world({ subject = {}, omit = [], screen: screenOver = {} } = {}, make =
     escHtml: (s) => String(s).replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`),
     icon: () => '',
     lastRoute: async () => null,
+    // The way to a PICTURE destination, a service of the app beside `lastRoute`. Refuses by default
+    // the way `lastRoute` does above: a case that wants one overrides it, and every other case gets
+    // the honest "no route was worked out" rather than a picture walk it never asked for.
+    pictureRoute: async () => null,
     sayWalkLength: ({ setStatus, total }) => { setStatus(String(total)); },
     describeCube: (el, c) => { el.setAttribute('aria-label', c.facelets); },
     ...make({ state, log }),
@@ -270,6 +274,54 @@ test('a stage repair that answers calls the whole-cube search off, and does not 
   assert.ok(whole, 'precondition: the whole-cube search was started beside the repair');
   assert.equal(whole.signal.aborted, true, 'the whole-cube search was left holding a worker for nobody');
   assert.deepEqual(w.chips(), ["U'"]);
+});
+
+// A PICTURE DESTINATION NEVER FALLS BACK TO SOLVING THE CUBE.
+//
+// The worst defect a Codex refute pass found in the picture route's design (2026-09-26), and it is
+// the one the route's OWN verifier causes: `walk-resolver` used to start the whole-cube search
+// first and commit its answer whenever `lastRoute` yielded nothing. That is right for a stage —
+// solved sits inside every stage target, so the fallback still arrives where the chip said — and
+// wrong for a picture. Reproduced through the real resolver: a refused Checkerboard route committed
+// a whole-cube walk of `R'` ending at SOLVED, under a heading that still said Checkerboard. Catching
+// a bad answer was the thing that sent the child to the wrong cube.
+//
+// Two assertions, and the second is the one with teeth: the load must FAIL, and the whole-cube
+// search must never have been started — not merely ignored. Started, its improvements write
+// straight into the count, so a child waiting for a picture watches numbers about solving instead.
+test('a picture route that is refused fails the walk — it never solves the cube instead', async () => {
+  let wholeStarted = 0;
+  const w = world({ subject: { facelets: turned('R U') } }, ({ state }) => ({
+    deriveCube: async () => { wholeStarted += 1; solvedBy(state, "U' R'"); },
+    pictureRoute: async () => null, // the verifier refused whatever came back
+  }));
+  w.state.stageTarget = 'checkerboard';
+
+  const loaded = await within(w.session.load());
+  assert.equal(loaded, false, 'a refused picture route committed a walk anyway');
+  assert.deepEqual(w.chips(), [], 'a walk to somewhere the heading did not name reached the screen');
+  assert.equal(wholeStarted, 0,
+    'the whole-cube search ran for a picture destination — its improvements report on solving');
+  // The key reached the table rather than the generic fallback, which is what proves the refusal
+  // travelled as its own failure instead of as "something went wrong". The real wording lives in
+  // `screens/cube.js` and `stage-report`-style copy rules keep it about the SEARCH: every legal
+  // cube reaches every other in at most 20 moves, so "this shape cannot be reached" would be false.
+  assert.equal(w.$('#moveCount').textContent, 'no shape route',
+    'the refusal did not travel as its own failure — it fell through to the generic message');
+});
+
+test('a picture route that answers is the walk, and the cube is never solved beside it', async () => {
+  let wholeStarted = 0;
+  const w = world({ subject: { facelets: turned('R U') } }, ({ state }) => ({
+    deriveCube: async () => { wholeStarted += 1; solvedBy(state, "U' R'"); },
+    pictureRoute: async () => ({ alg: "U'", moves: 1, minimal: false, overshoot: false, source: 'picture' }),
+  }));
+  w.state.stageTarget = 'checkerboard';
+
+  const loaded = await within(w.session.load());
+  assert.equal(loaded, true, 'a verified picture route was not committed');
+  assert.deepEqual(w.chips(), ["U'"]);
+  assert.equal(wholeStarted, 0, 'the whole-cube search was started for a destination that did not need it');
 });
 
 test('turns the cube reported since its last snapshot are adopted before the next search asks about it', async () => {

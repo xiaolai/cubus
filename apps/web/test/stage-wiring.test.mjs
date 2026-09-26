@@ -203,9 +203,17 @@ test('the route says what KIND of answer it is, from the object it came from', (
 test('the target is drawn, with the free pieces ghosted', () => {
   // §6, and it is the part that makes a shortest path acceptable rather than alarming.
   assert.match(code, /id="stageAim"[^>]*hidden/, 'the aim is hidden while the target is the whole cube');
-  // The picture is drawn in the METHOD frame (white cross on D); the net beside it is the scan
+  // A STAGE picture is drawn in the METHOD frame (white cross on D); the net beside it is the scan
   // frame's, so it is turned before it is painted or the white cross would be drawn on the bottom.
-  assert.match(code, /paintAim\(fromMethodFrame\(targetPicture\(aimingAt\)\)\)/, 'and painted from the target picture');
+  // A PICTURE DESTINATION is stored in the scan frame already and must NOT be turned again — it is
+  // toFacelets(applyAlg(SOLVED, alg)), the frame everything outside the method solver speaks.
+  // Turning it would draw a child the wrong target while routing them to the right one, and all
+  // three shipped state patterns are tumble-invariant, so no fixture in this repository would have
+  // caught it (Codex refute pass, 2026-09-26). Both halves are asserted, because matching only the
+  // branch would pass on code that took it for every target.
+  assert.match(code, /paintAim\(aimingAt\.picture \? aimPicture : fromMethodFrame\(aimPicture\)\)/,
+    'a stage picture is turned into the scan frame and a picture destination is left in it');
+  assert.match(code, /const aimPicture = targetPicture\(aimingAt\);/, 'and both come from the one reader');
   assert.match(code, /aim\.hidden = !aimingAt;/, 'a whole-cube target draws no aim — it would say nothing');
   // ONE PICTURE (2026-09-13): the target takes the Initial State net's place, because the card that
   // held both was drawn over the sheet on the small windows — and the next walk gets the net back.

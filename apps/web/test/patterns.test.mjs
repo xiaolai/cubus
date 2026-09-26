@@ -14,6 +14,7 @@ import { test } from 'node:test';
 import { OFFERED_PATTERNS, PATTERNS, patternById } from '../lib/patterns.js';
 import { OFFERED_TARGETS, TARGETS } from '../lib/stage-targets.js';
 import { targetPicture } from '../lib/stage-picture.js';
+import { routeSentence } from '../lib/stage-report.js';
 import { applyAlg, toFacelets } from '../lib/cube-pieces.js';
 import { SOLVED } from '../lib/cube-pieces.js';
 import { STATE_PATTERNS } from './fixtures/pattern-ledger.mjs';
@@ -86,17 +87,20 @@ test('every set pattern names a target the engine can actually answer', () => {
 // EVERY PICTURE MUST DRAW, because the menu is pictures and nothing else — 70 of the ledger's 73 have
 // no name at all, so a thumbnail that fails to render is an entry a child cannot identify or press.
 test('every offered pattern yields a drawable 54-sticker picture', () => {
-  // TWO, and the number is the decision rather than a tally. Both are SET patterns, which are
-  // already stage targets, so choosing one is a `data-stage` press every existing router answers
-  // unchanged. The three state patterns are complete and drawable but wait on a careful pass through
-  // `lastRoute` — plan §9a's "a wrong route cannot reach the screen" path — and so does the rest of
-  // the ledger. Changing this number means deciding, which is what §9.6 asks for.
-  assert.deepEqual(OFFERED_PATTERNS.map((p) => p.id), ['plus-every-face', 'x-every-face'],
+  // FIVE, and the number is the decision rather than a tally — §9.6 asks for exactly that. The rest
+  // of the ledger stays behind `offered: false`, and growing past about a dozen is a different
+  // question: a grid that needs sorting, filtering or scrolling has become the primary region, and
+  // "only a new COMPOSITION is a new screen" makes that a screen rather than a longer menu.
+  assert.deepEqual(OFFERED_PATTERNS.map((p) => p.id),
+    ['plus-every-face', 'x-every-face', 'checkerboard', 'lines', 'plus-minus'],
     'the offered set changed — decide it, do not drift it');
-  // Every offered pattern must be routable TODAY, which for now means it is a target. An offered
-  // state pattern would be a picture the walk cannot be sent to.
+  // EVERY OFFERED PATTERN MUST BE ROUTABLE, by one of the two ways there are. A set pattern names a
+  // target the exact engine answers; a state pattern carries a picture `pattern-route.js` routes to
+  // and `walk-resolver.js` refuses to substitute anything else for. A pattern with neither is a
+  // picture a child can press and never arrive at.
   for (const pattern of OFFERED_PATTERNS) {
-    assert.ok(pattern.target, `${pattern.id} is offered but names no target, so nothing can route to it`);
+    assert.ok(pattern.target || pattern.picture,
+      `${pattern.id} is offered but has neither a target nor a picture, so nothing can route to it`);
   }
   for (const pattern of OFFERED_PATTERNS) {
     const look = pattern.kind === 'state' ? pattern.look : targetPicture(pattern.target.id);
@@ -122,4 +126,40 @@ test('offering more is data: every record is complete whether offered or not', (
     assert.ok(Object.isFrozen(pattern), `${pattern.id}: a caller could rewrite the registry`);
   }
   assert.deepEqual(OFFERED_PATTERNS.map((p) => p.id), PATTERNS.filter((p) => p.offered).map((p) => p.id));
+});
+
+// A PICTURE IS A WAY TO, NEVER A WAY BACK — and it never claims a minimum.
+//
+// Every sentence in STAGE_COPY was written for a stage, where "back" is right: a stage is somewhere
+// the cube WAS and the child has lost. A picture is somewhere it has never been, so "a way back to
+// The Checkerboard" is false, and a child who reads it looks for a mistake they did not make. The
+// first version of this branch also produced "a way to the The Checkerboard", because a picture's
+// name brings its own article where a stage's does not.
+//
+// The claim half matters more than the wording half: two-phase cannot prove a minimum, so no route
+// to a picture may ever reach the "shortest" sentence. `routeToPicture` returns an explicit
+// `minimal: false` rather than leaving the field absent for the copy to read as falsy.
+test('every offered pattern is described as a way TO it, with no minimality claim', () => {
+  for (const pattern of OFFERED_PATTERNS) {
+    const destination = pattern.target ?? { name: pattern.name, picture: pattern.look };
+    const said = routeSentence({ moves: 11, minimal: false, overshoot: false }, destination);
+    assert.doesNotMatch(said, /\bback\b/, `${pattern.id}: a picture is not somewhere the cube has been`);
+    assert.doesNotMatch(said, /shortest/, `${pattern.id}: two-phase cannot prove a minimum`);
+    assert.match(said, /a way to /, `${pattern.id}: ${said}`);
+    assert.doesNotMatch(said, /to the (a|an|The) /, `${pattern.id}: doubled article — ${said}`);
+    assert.ok(said.includes(pattern.name), `${pattern.id}: the sentence does not name the picture`);
+  }
+  // AND A STAGE IS UNTOUCHED, which is the half that proves the branch is a branch and not a
+  // rewrite: deleting the picture arm must not be invisible here.
+  assert.match(routeSentence({ moves: 7, minimal: true }, { name: 'cross' }), /the shortest way back/);
+  assert.match(routeSentence({ moves: 7, minimal: false }, { name: 'cross' }), /a way back/);
+});
+
+test('a cube already showing a picture is told so, not handed a zero-move route', () => {
+  for (const pattern of OFFERED_PATTERNS) {
+    const destination = pattern.target ?? { name: pattern.name, picture: pattern.look };
+    const said = routeSentence({ moves: 0, minimal: false, overshoot: false }, destination);
+    assert.doesNotMatch(said, /move/, `${pattern.id}: a child reads a move count and looks for moves`);
+    assert.ok(said.includes(pattern.name), `${pattern.id}: ${said}`);
+  }
 });
