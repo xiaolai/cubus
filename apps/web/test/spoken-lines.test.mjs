@@ -96,3 +96,27 @@ test('a line is resolved by NAME when it is said, so an edit does not wait for a
   assert.ok(lineFor('savedSide').includes('%1'), 'the named line lost its placeholder');
   assert.equal(settings, undefined, 'this test leaked a global');
 });
+
+test('a refusal never recommends the very token it is rejecting', () => {
+  // CODEX AUDIT, 2026-09-25, finding 14. `placeholdersFit` refuses a line that DROPS a placeholder
+  // the default carries AND one that ADDS a placeholder it does not — and both were answered with
+  // "keep %1 in the line". So "Show %1" typed into a line that has no colour to fill in was told to
+  // keep the token that WAS the fault, and doing as it said could never be accepted.
+  const dropped = refuse('savedSide', 'Got it!');
+  assert.match(dropped ?? '', /Keep %2/, 'a line that lost its colour was not told to keep it');
+  const added = refuse('open', 'Show %1');
+  assert.ok(added, 'a placeholder added to a line that takes none was accepted');
+  assert.doesNotMatch(added ?? '', /Keep %2/, 'the refusal told the user to keep the token it refused');
+  assert.match(added ?? '', /take it out/);
+  // AND THE THIRD CASE, which the first repair still got wrong (Codex audit, 2026-09-26): a line
+  // that KEEPS the placeholder and gains another was told to keep the one it already had.
+  const both = refuse('savedSide', 'Got the %1 side and %2!');
+  assert.ok(both, 'a line that gained a second placeholder was accepted');
+  assert.doesNotMatch(both ?? '', /^Keep /, 'told to keep a placeholder the line already carries');
+  assert.match(both ?? '', /only %2/);
+  assert.equal(spokenLines({ savedSide: 'Got the %1 side and %2!' }).savedSide, SPOKEN.savedSide);
+  // And the rule the messages describe is still the one the voice applies.
+  assert.equal(spokenLines({ open: 'Show %1' }).open, SPOKEN.open);
+  assert.equal(spokenLines({ savedSide: 'Got it!' }).savedSide, SPOKEN.savedSide);
+});
+

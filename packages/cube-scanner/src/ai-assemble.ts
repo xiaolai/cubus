@@ -1433,11 +1433,18 @@ function repairByCounts(faces: Record<Face, ColorFace>, maxCost: number): CountR
     // "repaired" at the argmax and D1 would demand a second look at a colour the repair never
     // touched. What D1 is about is a sticker whose colour NOBODY observed, so the comparison is
     // with the colour the capture carries.
-    changed: result.changed.flatMap((at) => {
+    // ALL 54, not `result.changed` (2026-09-25). That list is where the assignment differs from the
+    // SCORES' ARGMAX, and filtering it against the capture removed the false positives but could
+    // never add the missing ones: a sticker whose capture already disagrees with its own argmax —
+    // a centre rewritten to its slot's colour by `withCentre`, a sticker corrected by hand — is
+    // absent from that list even when the repair assigns something the capture does not say. The
+    // reading then changed a sticker and was accepted as `valid: true` with no look asked for,
+    // which is the precise failure D1 exists to prevent. The comparison D1 wants is over every
+    // position, so it is taken over every position.
+    changed: result.colors.flatMap((to, at) => {
       const face = FACES[Math.floor(at / 9)]!;
       const index = at % 9;
       const from = faces[face]!.colors[index]!;
-      const to = result.colors[at]!;
       return from === to ? [] : [{ face, index, from, to }];
     }),
   };
@@ -1528,7 +1535,6 @@ function assembleWithin(
   threshold: number,
   confirmed: Confirmed,
   options: AssembleOptions,
-  allowPaint = true,
   originals?: BySlot,
 ): AiScanResult {
   const bySlot = checkedBySlot(faces);
@@ -1560,7 +1566,7 @@ function assembleWithin(
     if ('valid' in bySlotCandidate) return null;
     const solvable = SCHEMES.flatMap((scheme) => solvableReadings(bySlotCandidate, scheme));
     if (solvable.length === 0) return null;
-    return assembleWithin(candidate, threshold, confirmed, options, allowPaint, asRead);
+    return assembleWithin(candidate, threshold, confirmed, options, asRead);
   };
 
   const all = SCHEMES.flatMap((scheme) => solvableReadings(bySlot, scheme));
@@ -1584,17 +1590,24 @@ function assembleWithin(
     // PER FACE, because a photograph is of a face: every sticker the repair invented on one side
     // has to be confirmed by ONE look held ONE way up, or the accepted cube rests on an orientation
     // nothing was ever held in (audit, 2026-09-23).
-    const unseen = repair
-      ? repair.changed.filter(
-          (s) =>
-            !reobserved(
-              repair.faces[s.face]!,
-              faces[s.face]!,
-              looksAt(confirmed, s.face),
-              repair.changed.filter((r) => r.face === s.face).map((r) => r.index),
-            ),
+    // GROUPED, because the question is per FACE and the answer used to be recomputed per STICKER:
+    // each repaired sticker re-scanned the whole repair list to rebuild its own face's index set
+    // and then asked `reobserved` the identical question again. Same verdict, O(n²) work and two
+    // places for the face's index set to be built.
+    const byFace = new Map<Face, number[]>();
+    for (const s of repair?.changed ?? []) {
+      const indices = byFace.get(s.face);
+      if (indices) indices.push(s.index);
+      else byFace.set(s.face, [s.index]);
+    }
+    const confirmedFaces = new Set(
+      [...byFace]
+        .filter(([face, indices]) =>
+          reobserved(repair!.faces[face]!, faces[face]!, looksAt(confirmed, face), indices),
         )
-      : [];
+        .map(([face]) => face),
+    );
+    const unseen = repair ? repair.changed.filter((s) => !confirmedFaces.has(s.face)) : [];
     const byCounts = repair && unseen.length === 0 ? accept(repair.faces) : null;
     if (byCounts) return byCounts;
     if (repair && unseen.length > 0 && couldAccept(repair.faces)) {
@@ -1630,7 +1643,9 @@ function assembleWithin(
     // scores answered "what colour is each sticker" and were refused; the pixels answer "which
     // stickers share a paint", which a shared illuminant makes answerable when the other is not.
     // Same two gates, so this can turn a refusal into a read and cannot turn a read into anything.
-    const byPaint = accept(allowPaint ? recolourByPaint(faces) : null);
+    // No `allowPaint` flag: it defaulted to true, was only ever forwarded unchanged, and its false
+    // branch was unreachable — a knob with one setting, which reads as a choice somebody made.
+    const byPaint = accept(recolourByPaint(faces));
     if (byPaint) return byPaint;
 
     // A SIDE WHOSE ORDER WAS NEVER PROVEN IS NOT ACCUSED OF A COLOUR (D6, 2026-09-23).

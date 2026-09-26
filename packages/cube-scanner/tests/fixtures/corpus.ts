@@ -15,9 +15,10 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Detection } from '../../src/onnx-postprocess.js';
+
 import {
   parseSession,
+  type RecordedDetection,
   type RecordedFrame,
   type RecordedSession,
   SESSION_SCHEMA,
@@ -40,7 +41,7 @@ interface Clip {
 export const LOGO_CUBE_TRUTH = 'RLFDUDFBUFLLRRFUBFUULFFULBRDRBRDLUDDBRRLLUBFBDUDDBFRBL';
 
 /** One recorded box as the format wants it: the winner named, every score kept. */
-function detectionOf(row: number[]): Detection {
+function detectionOf(row: number[]): RecordedDetection {
   const scores = row.slice(4, 10);
   let classId = 0;
   for (let c = 1; c < scores.length; c++) if (scores[c]! > scores[classId]!) classId = c;
@@ -86,7 +87,13 @@ export function logoCubeSession(dir: string): RecordedSession {
       note: 'a white centre printed with a blue logo; the cube family six fixes failed on',
     },
     model: { hash: 'cubedet-0.6.0', name: 'cubedet', runtime: 'web' },
-    truth: { facelets: LOGO_CUBE_TRUTH, source: 'manual-verified' },
+    // WESTERN, and measured rather than assumed (2026-09-25): `real-clip.test.ts` asks
+    // `schemeShownIn` of the five sides this sitting captures and gets Western with a clear margin
+    // — a Japanese reading would corrupt every Down and Back sticker, and the best ring agreement
+    // here is 8 of 8. Recorded because a truth with no arrangement cannot say which COLOUR is in
+    // the middle of a side, so a replay's answer policy would abstain on every question (ADR 0001,
+    // and `SessionTruth.scheme` is optional exactly so that an unknown one is not invented).
+    truth: { facelets: LOGO_CUBE_TRUTH, source: 'manual-verified', scheme: 'western' },
     frames,
     decisions: [],
   });

@@ -76,6 +76,36 @@ describe('the recorder can see below the scan floor, without moving it', () => {
     }
   });
 
+  it("refiltering the wide decode is NOT the scan's own decode, so the panel decodes twice", () => {
+    // CODEX AUDIT, 2026-09-26. The case below asserts the two are identical and CANNOT FAIL on the
+    // clip: its rows were themselves decoded at 0.25, so no sub-threshold box exists in it to
+    // trigger this — the same blind spot as the defect, one layer out.
+    //
+    // `dropNested` is not NMS. NMS walks candidates in descending confidence, which is what the old
+    // argument rested on; `dropNested` removes a box when ANY larger box within
+    // `NESTED_MAX_AREA_RATIO` covers `NESTED_INSIDE` of it, and it never looks at confidence at all.
+    // So a junk outer box at 0.1 deletes a real sticker at 0.9 — and the confidence filter then
+    // deletes the junk box as well, leaving NOTHING where an unrecorded scan reads one sticker.
+    // Switching the recorder on changed what the scan saw, which is the one thing a recorder may
+    // never do, and it changed it by deleting the evidence the recorder exists to capture.
+    const classes = 6;
+    const box = (w: number, h: number, p: number): number[] => {
+      const row = [300, 300, w, h];
+      for (let c = 0; c < classes; c++) row.push(c === 0 ? p : 0.001);
+      return row;
+    };
+    // Same centre, 400 px² inside 1225 px²: IoU 0.33 so NMS keeps both, area ratio 3.06 so
+    // `dropNested` fires, overlap 100% of the inner so it fires on the inner.
+    const output = outputOf([box(20, 20, 0.9), box(35, 35, 0.1)]);
+    const narrow = detectionsFromOutput(output);
+    const refiltered = detectionsFromOutput(output, { confThreshold: NEAR_FLOOR_RECORD }).filter(
+      (d) => d.confidence >= MIN_STICKER_CONFIDENCE,
+    );
+    expect(narrow.length, 'the scan on its own reads the confident sticker').toBe(1);
+    expect(refiltered, 'refiltering lost the sticker the scan reads').toEqual([]);
+    expect(refiltered).not.toEqual(narrow);
+  });
+
   it('hands the fit exactly what it had before, box for box', () => {
     // THE SAFETY PROPERTY. A scan must read the same whether or not it is being recorded, so the
     // filtered wide decode has to equal the narrow decode exactly — not nearly. It holds because

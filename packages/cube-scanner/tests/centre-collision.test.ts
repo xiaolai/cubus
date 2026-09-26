@@ -33,9 +33,12 @@
 // measure and are the evidence any such attempt will be judged on.
 
 import { describe, expect, it } from 'vitest';
+import { assembleColors, type ColorFace, withCentre } from '../src/ai-assemble.js';
+import { type Colour, colourOfSlot, slotOf } from '../src/scheme.js';
 import { FACES, type Face } from '../src/types.js';
 import { sideClaimed } from '../view/ai-scan-panel.js';
-import { CENTRE_COLLISIONS } from './fixtures/centre-collisions.js';
+import { schemeShownIn, sideShownIn } from '../view/session-replay.js';
+import { CENTRE_COLLISIONS, type CentreCollisionCase } from './fixtures/centre-collisions.js';
 
 /** Where each position's sticker comes from when a side is turned a quarter in the hand. */
 const QUARTER = [6, 3, 0, 7, 4, 1, 8, 5, 2];
@@ -150,5 +153,137 @@ describe('a centre a second side claims, on the seven collisions measured on rea
     // holding only one kind would not say so.
     expect(CENTRE_COLLISIONS).toHaveLength(7);
     expect(CENTRE_COLLISIONS.filter((c) => c.logo)).toHaveLength(4);
+  });
+});
+
+// ---- §5's question, run over the same seven as a STRUCTURAL experiment ------------------------
+//
+// `dev-docs/asking-which-side-plan.md` §6 asks for the photo drop to go through `assembleColors`
+// SEPARATELY from the replay, and this is why: these are photographs, one side at a time. There is
+// no video, no stillness gate and no camera, so a harness that drove the panel with them would be
+// measuring a stand-in for the thing it wants to know. What a drop CAN answer is structural — given
+// these six readings, in this order, what does the filing rule place where, and does the assembler
+// accept the cube that is actually on the table?
+//
+// THE PERSON IS STOOD IN FOR BY THE CASE'S OWN TRUTH, never by the scan: whether an answer is right
+// is a fact about the cube, and asking the reading under test would be selecting the ground truth
+// with the function being measured.
+
+describe('what asking which side does to the seven, and what it does not', () => {
+  // The person is stood in for by `sideShownIn` — the SAME rule the replay harness answers with
+  // (`view/session-replay.ts`), imported rather than written again: a second copy would make the
+  // two experiments §6 asks for incomparable, and its constants were measured on this very drop.
+  //
+  // WHICH ARRANGEMENT EACH CUBE IS, MEASURED (Codex audit, 2026-09-25). A truth string is
+  // POSITIONAL and a capture holds colour CLASSES; on a Western cube the two map through the
+  // identity and on a Japanese one the Down and Back positions swap their colours, so reading them
+  // as one is ADR 0001's oldest trap. This fixture never recorded an arrangement, so it is taken
+  // from the readings themselves over all six captures, and refused if they do not say clearly.
+  const schemeOf = (kase: CentreCollisionCase) =>
+    schemeShownIn(
+      kase.captures.map((c) => c.colors),
+      kase.truth,
+    ) ?? undefined;
+
+  /**
+   * File six captures the way the panel does since 2026-09-25: by the centre's claim, asking about
+   * a collision, and filling the last slot by elimination.
+   *
+   * WRITTEN OUT HERE ON PURPOSE. The panel's own rules are exercised against it in
+   * `ai-scan-panel.test.ts` and `real-clip.test.ts`, through the real element; what this needs is
+   * the rules applied to a DROP of photographs, which the element cannot be given. Kept to the
+   * three that decide a slot — claim, question, elimination — and nothing else.
+   */
+  function fileWithQuestion(kase: CentreCollisionCase) {
+    const held = new Map<Face, ColorFace>();
+    /** Every question raised, and what the person could say about it. */
+    const asks: { claimed: Face; answer: Colour | null; placed: boolean }[] = [];
+    const leftOver: ColorFace[] = [];
+    for (const capture of kase.captures) {
+      const claim = sideClaimed(capture.colors)!;
+      if (!held.has(claim)) {
+        held.set(claim, capture);
+        continue;
+      }
+      // A COLLISION. §5: keep the capture and ask which side it is, offering the FREE colours. The
+      // answer is a COLOUR (ADR 0001), and its slot is that colour's name; these fixtures record no
+      // arrangement, so `sideShownIn` tries both and answers only where they agree.
+      const free = FACES.filter((f) => !held.has(f));
+      const answer = sideShownIn(capture.colors, kase.truth, schemeOf(kase));
+      const slot = answer === null ? null : slotOf(answer);
+      const placed = slot !== null && free.includes(slot);
+      asks.push({ claimed: claim, answer, placed });
+      if (placed) held.set(slot, withCentre(capture, answer!));
+      else leftOver.push(capture);
+    }
+    // The determined sixth, unchanged: one slot free and one capture unplaced.
+    const free = FACES.filter((f) => !held.has(f));
+    if (free.length === 1 && leftOver.length === 1) {
+      held.set(free[0]!, withCentre(leftOver[0]!, colourOfSlot(free[0]!)));
+    }
+    return { held, asks };
+  }
+
+  it.each(CENTRE_COLLISIONS.map((c) => [c.name, c] as const))(
+    'never assembles a cube that is not the cube — %s',
+    (_name, kase) => {
+      // THE GATE (§6), asked of every case whatever the question did with it. A reading that
+      // assembles must be the cube on the table.
+      const { held } = fileWithQuestion(kase);
+      if (held.size < FACES.length) return;
+      const result = assembleColors(
+        Object.fromEntries(held) as Record<Face, ColorFace>,
+        undefined,
+        {},
+        { diagnose: false },
+      );
+      if (result.valid) expect(result.facelets).toBe(kase.truth);
+    },
+  );
+
+  it('places both sides on the two where the true side was shown first, and on no others', () => {
+    // THE MEASUREMENT, and the reason §5's acceptance was not met on the 09-18 clip. The question
+    // offers the FREE colours. When the TRUE owner of the shared colour arrived first, the colour
+    // of the side in hand is still free and the person can name it; when the misread side arrived
+    // first it took that colour, and the one answer that would be right is not on offer.
+    //
+    // Pinned BY NAME, so a change that rescues any of the other five has to come here and say which.
+    const placed = CENTRE_COLLISIONS.filter((kase) =>
+      fileWithQuestion(kase).asks.every((a) => a.placed),
+    ).map((k) => k.name);
+    expect(placed).toEqual([
+      'cube A, cubedet V6FT: red centre read as orange',
+      'cube E, cubedet V6FT: red centre read as orange',
+    ]);
+    // And those are exactly the two the arrival order already made come out right — which is what
+    // says the question adds no new coverage here, only an earlier and explicit placement.
+    for (const kase of CENTRE_COLLISIONS) {
+      const { asks } = fileWithQuestion(kase);
+      expect(asks, `${kase.name}: no question was raised`).toHaveLength(1);
+      const ask = asks[0]!;
+      // The person can always SAY which side they are holding; whether it can be placed is the
+      // question's limit, not theirs.
+      expect(ask.answer, `${kase.name}: the truth could not name the side in hand`).not.toBeNull();
+      expect(ask.placed).toBe(ask.answer !== colourOfSlot(ask.claimed));
+    }
+  });
+
+  it('every one of the seven says which arrangement it is, clearly enough to read it by', () => {
+    // The precondition the two cases below rest on: an unmeasurable arrangement would make
+    // `sideShownIn` abstain on every capture, and both would pass by measuring nothing.
+    for (const kase of CENTRE_COLLISIONS) {
+      expect(schemeOf(kase), `${kase.name}: the readings do not name an arrangement`).toBeDefined();
+    }
+  });
+
+  it('fills six slots on every case, where the rule alone filled five', () => {
+    // What the question buys structurally, even where the answer cannot be taken: the capture is
+    // kept rather than dropped, so the determined-sixth rule has something to place. Five became
+    // six on all seven — and on five of them the two sides are exchanged, which is why six slots
+    // filled is not the same as a cube, and why the case above this one exists.
+    for (const kase of CENTRE_COLLISIONS) {
+      const { held } = fileWithQuestion(kase);
+      expect(held.size, kase.name).toBe(FACES.length);
+    }
   });
 });

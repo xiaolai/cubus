@@ -452,3 +452,138 @@ test('"Show those sides again" is still the card’s once the camera has reopene
     await leave(state);
   }
 });
+
+// ---- a reading with a side the camera could not NAME (plan §4) --------------------------------
+//
+// Six sides is not six sides the camera could name. A capture filed by elimination (the determined
+// sixth), by a ring match, or by a person answering which side it is has a centre written from its
+// SLOT, and whole-cube legality does not catch a slot that is wrong: the scramble D' F' B D2 L2 U2
+// with the shown L filed as R assembles as a legal cube that is not the one in the hand
+// (reconnect-flow.test.mjs executes that fixture). So such a reading may be SOLVED and may not be
+// used as evidence ABOUT the cube — the painting's treatment, minus its `physical: false`, because
+// here the camera did look at all six sides and only one side's name came from elsewhere.
+//
+// Gated in ONE place, on the panel's own word: cube-trust and cube-selfcheck are handed a facelet
+// string and could not recover a provenance they were never given.
+
+test('a scan with a side it was TOLD the name of is solvable, and is evidence about nothing', async () => {
+  const { state, conn, mac } = await enter();
+  const { chainTrusted } = await import('../lib/cube-trust-state.js');
+  try {
+    const question = { reading: 'no-report', candidate: null, raw: null, seenAt: 0 };
+    state.reconnect = question;
+    deliver(FIRST, { origin: 'camera', assigned: ['U'] });
+    assert.equal(state.cube.facelets, FIRST, 'the reading is still the subject — it is solvable');
+    assert.equal(state.cube.source, 'camera', 'the camera did look at all six sides');
+    // NOT PHYSICAL WHILE A CUBE IS CONNECTED, and that is the half `markStale` cannot do:
+    // cube-reports.js replaces the SUBJECT from any report while `isPhysical`, trusted or not, so
+    // the scan would be overwritten by the cube's own unreconciled belief. With nothing connected
+    // it stays the cube in the hand — the case below this one.
+    assert.equal(state.cube.isPhysical, false, 'the cube’s own reports can still replace this reading');
+    assert.equal($('#scanSolveBtn').disabled, false, 'a solvable cube cannot be solved');
+    assert.equal($('#stageCard').hidden, false, 'and gets its chip row');
+    assert.match(state.cube.staleWhy, /named rather than read/, 'the chain was left claiming it is in step');
+    // …and evidence about nothing: no repair, nothing handed to the checker, the cube's own report
+    // left where it was, no memory written, and the question still open.
+    assert.equal(state.cube.offset, null, 'a reading with a named side repaired the cube’s tracking');
+    assert.equal(chainTrusted(), false, 'and was taken as proof the cube’s own reports are in step');
+    assert.equal(conn.evidence.cameraScans, 0, 'it reached the checker as a camera scan');
+    assert.equal(state.live, R, 'the cube’s own report was corrected by it');
+    assert.notEqual(title(), 'Tracking repaired', 'it was reported as a repair');
+    assert.equal(JSON.parse(win.localStorage.getItem('cubusCubes'))[mac]?.last, undefined,
+      'it was remembered as the cube as the camera last saw it');
+    assert.equal(state.reconnect, question, 'it answered the reconnect question');
+    // And it says why, because something WAS withheld and the person is owed the reason.
+    assert.equal(title(), 'Scanned — a side was named, not read');
+  } finally {
+    await leave(state);
+  }
+});
+
+test('…while the same reading with every centre read repairs, remembers and answers', async () => {
+  // THE CONTROL. One field differs between this case and the one above, so what the gate reacts to
+  // is the provenance and not the reading, the cube or the screen.
+  const { state, conn, mac } = await enter();
+  const { chainTrusted } = await import('../lib/cube-trust-state.js');
+  try {
+    const question = { reading: 'no-report', candidate: null, raw: null, seenAt: 0 };
+    state.reconnect = question;
+    deliver(FIRST, { origin: 'camera', assigned: [] });
+    assert.ok(state.cube.offset, 'an ordinary scan no longer repairs tracking');
+    assert.equal(chainTrusted(), true);
+    assert.equal(conn.evidence.cameraScans, 1);
+    assert.equal(title(), 'Tracking repaired');
+    assert.equal(JSON.parse(win.localStorage.getItem('cubusCubes'))[mac]?.last?.facelets, FIRST,
+      'an ordinary scan is no longer remembered');
+    assert.equal(state.reconnect, null, 'six sides no longer answer the reconnect question outright');
+  } finally {
+    await leave(state);
+  }
+});
+
+test('a panel with no word about provenance is read as an ordinary scan', async () => {
+  // A bundle from before the field, and every existing caller: `assigned` absent is not "unknown",
+  // it is a panel that files every side by its centre — which is what every scan did before the
+  // determined sixth existed. Reading absence as "assigned" would switch the repair off for
+  // everyone; reading it as "none" keeps today's behaviour exactly.
+  const { state, conn } = await enter();
+  try {
+    deliver(FIRST);
+    assert.ok(state.cube.offset, 'a panel with no word about provenance stopped repairing tracking');
+    assert.equal(conn.evidence.cameraScans, 1);
+  } finally {
+    await leave(state);
+  }
+});
+
+test('a named reading is not overwritten by the cube’s next report', async () => {
+  // FOUND BY A CODEX AUDIT of this work, and reproduced. `markStale` takes the CHAIN's trust away
+  // and does nothing about the SUBJECT: cube-reports.js replaces `state.cube.facelets` from any
+  // report while `state.cube.isPhysical`, trusted or not. So the scan was silently overwritten by
+  // the cube's own unreconciled belief while "Solve this cube" stayed lit over it.
+  const { state, conn, mac } = await enter();
+  try {
+    deliver(FIRST, { origin: 'camera', assigned: ['U'] });
+    assert.equal(state.cube.facelets, FIRST, 'precondition: the reading is the subject');
+    assert.equal($('#scanSolveBtn').disabled, false, 'precondition: it is solvable');
+    // The cube reports a turn and then where it is — the ordinary stream.
+    feed().facelets(move(R, 'U'));
+    await tick();
+    assert.equal(state.cube.facelets, FIRST, 'the cube’s own report replaced the scanned cube');
+    assert.equal($('#scanSolveBtn').disabled, false, 'and took the solvable cube with it');
+    assert.equal(conn.evidence.cameraScans, 0, 'it reached the checker after all');
+    assert.equal(JSON.parse(win.localStorage.getItem('cubusCubes'))[mac]?.last, undefined);
+  } finally {
+    await leave(state);
+  }
+});
+
+test('…while with no cube connected a named reading is the cube in the hand', async () => {
+  // Nothing can contradict it there, and calling it non-physical would name the cube the camera
+  // just read "a scrambled cube" for no gain.
+  const { state } = await enter({ cube: false });
+  try {
+    deliver(FIRST, { origin: 'camera', assigned: ['U'] });
+    assert.equal(state.cube.facelets, FIRST);
+    assert.equal(state.cube.isPhysical, true, 'a camera reading with nothing to contradict it was disowned');
+    assert.equal($('#scanSolveBtn').disabled, false);
+  } finally {
+    await leave(state);
+  }
+});
+
+test('the named sides are named, and the way to read them again is the one that exists', async () => {
+  // "Show that side again" promised a recovery the screen does not offer — a finished scan has
+  // released the camera — and said "one side" whatever the count.
+  const { state } = await enter();
+  try {
+    deliver(FIRST, { origin: 'camera', assigned: ['U', 'L'] });
+    assert.equal(title(), 'Scanned — a side was named, not read');
+    const said = $('#scanHow').textContent;
+    assert.match(said, /white, orange/, 'the sides it withheld trust over were not named');
+    assert.match(said, /middle square/, 'the recovery it names is not one the screen offers');
+    assert.doesNotMatch(said, /Show that side again/, 'it still promises a camera that is off');
+  } finally {
+    await leave(state);
+  }
+});

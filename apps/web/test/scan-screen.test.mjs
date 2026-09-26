@@ -1514,9 +1514,14 @@ test('the opening line is said once, and a capture names the side it saved', asy
   report({ device: CAM });
   report({ device: CAM });
   assert.deepEqual(said, [SPOKEN.open], 'the opening line was not said once');
+  // THE OPENING LINE ENDS FIRST, as it does on a real platform. A remark now WAITS for the line
+  // before it instead of cutting it off, so a test that never ends one is testing a voice that
+  // can only ever say its first sentence.
+  voice.finish();
   saved('U');
   report({ device: CAM, captured: [face('U')] });
   assert.equal(said.at(-1), SAVED[0], 'a saved side was not announced with what is left');
+  voice.finish();
   // A SECOND capture, because one sentence proves nothing: the whole point is that consecutive
   // captures differ, and that each names the side it actually saved.
   saved('R', 2);
@@ -1524,21 +1529,38 @@ test('the opening line is said once, and a capture names the side it saved', asy
   assert.equal(said.at(-1), SAVED[1], 'the second saved side repeated the first sentence');
 });
 
-test('a side shown again is said once, and the line is cut when that side goes', async (t) => {
+test('a side shown again is said once, and survives the flag that raised it', async (t) => {
+  // CODEX AUDIT, 2026-09-25, finding 3 — and the last clause of this case USED to assert the defect.
+  // `shownAgain` is consumed by the panel on EVERY report, so requiring the next report to still
+  // carry it cut the line roughly 60 ms in: "I've got that one. Show me a different side." was
+  // spoken on every refusal and finished on none of them. What the sentence claims stays true until
+  // a different side is actually captured, so that is what ends it now.
   const { SPOKEN } = await import('../lib/screens/scan/spoken.js');
   const { voice, report, saved } = await soundsRig(t);
   report({ device: CAM });
+  voice.finish();
   saved('U');
   report({ device: CAM, captured: [face('U')] });
+  voice.finish();
   report({ device: CAM, captured: [face('U')], shownAgain: true });
   report({ device: CAM, captured: [face('U')], shownAgain: true });
   assert.equal(
     voice.said.filter((l) => l === SPOKEN.again).length, 1,
     'the same side again was said on every report',
   );
-  const before = voice.cuts.length;
+  // COUNTED WITHOUT THE NULLS: `cuts` logs every `cancel()` call, and `say()` cancels before every
+  // line whether or not one was being said — so only the non-null entries are lines actually taken
+  // out of the voice's mouth.
+  const cut = () => voice.cuts.filter(Boolean).length;
+  const before = cut();
   report({ device: CAM, captured: [face('U')], shownAgain: false });
-  assert.equal(voice.cuts.length, before + 1, 'a line about a side no longer in view was not cut off');
+  assert.equal(cut(), before, 'the line was cut by its own flag being consumed');
+  // A DIFFERENT side captured is what makes "show me a different side" stop being true. The capture
+  // does not cut it off — it waits — and the report that follows is what ends it.
+  saved('R', 2);
+  assert.equal(cut(), before, 'the capture cut the line off instead of waiting for it');
+  report({ device: CAM, captured: [face('U'), face('R')], sides: 2 });
+  assert.equal(cut(), before + 1, 'the line held after a different side was captured');
 });
 
 test('"all done" waits for the SCREEN to accept the scan, not for the scanner to finish', async (t) => {
@@ -2878,11 +2900,245 @@ test('a line edited in Settings is used by the very next thing said', async (t) 
   t.after(() => { settings.spokenLines = wasLines; });
   const camera = { deviceId: 'cam', label: 'Webcam' };
   report({ device: camera });
+  voice.finish();
   saved('U');
   report({ device: camera, captured: [face('U')], sides: 1 });
   assert.equal(voice.said.at(-1), 'Got the white side!');
+  voice.finish();
   settings.spokenLines = { ...settings.spokenLines, savedSide: 'Nice, the %1 one! Keep going.' };
   saved('R', 2);
   report({ device: camera, captured: [face('U'), face('R')], sides: 2 });
   assert.equal(voice.said.at(-1), 'Nice, the red one! Keep going.', 'the edit did not reach the voice');
+});
+
+// ---- the identity question, drawn (dev-docs/asking-which-side-plan.md §3, §5) -----------------
+//
+// The scanner cannot name the side in hand: two sides read as the same colour, so it keeps the
+// capture and asks which one this is. The screen is a HEADLESS host — it draws everything from
+// `scan-progress` — so without this the question exists and nobody can answer it.
+
+/** A report carrying an open identity question. */
+const asking = (claimed, choices, captured = [], colors = Array(9).fill(claimed), id = 7) =>
+  progress({ phase: 'scanning', complete: false, captured, suspects: [], message: '',
+    identity: { id, colors, claimed, choices } });
+
+test('the question offers the free colours, marks the one both sides are reading as, and hides otherwise', async () => {
+  await enterScan();
+  const box = $('#scanIdentity');
+  assert.ok(box, 'the card has nowhere to ask the question');
+  assert.equal(box.hidden, true, 'the question is drawn over a report that carries none');
+
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')]);
+  assert.equal(box.hidden, false, 'an open question was not drawn');
+  const shown = [...box.querySelectorAll('button.sw')].filter((b) => !b.hidden);
+  assert.deepEqual(shown.map((b) => Number(b.dataset.colour)), [0, 1, 2, 5],
+    'a colour a side already holds was offered, or a free one was withheld');
+  // The colour BOTH sides read as is marked — the one thing the scanner measured about this
+  // capture — and it is not pressable, because nothing evicts a filed side on an answer.
+  const claimed = [...box.querySelectorAll('button.sw')].filter((b) => b.classList.contains('claimed'));
+  assert.deepEqual(claimed.map((b) => Number(b.dataset.colour)), [3]);
+  assert.equal(claimed[0].hidden, true, 'the colour a side already holds was offered as an answer');
+  assert.ok(box.querySelector('.btn'), 'the way out of the question is missing');
+  // SWATCHES AND NAMES (§3), both: the scan guides a child who cannot read, and a colour alone
+  // names nothing for anyone else.
+  assert.deepEqual(shown.map((b) => b.querySelector('span').textContent),
+    ['white', 'red', 'green', 'blue'], 'a colour was offered with no name on it');
+  assert.deepEqual(shown.map((b) => b.querySelector('i').style.backgroundColor.toUpperCase()),
+    [NET_HEX.U, NET_HEX.R, NET_HEX.F, NET_HEX.B], 'a swatch is not painted its own colour class');
+
+  // A report with no question takes it away again: the question is a state of the report, never a
+  // popover the screen remembers having opened.
+  progress({ phase: 'scanning', complete: false, captured: [face('D')], suspects: [], message: '' });
+  assert.equal(box.hidden, true, 'the question outlived the report that carried it');
+});
+
+test('a colour pressed reaches the scanner as an answer, and Skip as a skip', async () => {
+  await enterScan();
+  const answers = [];
+  const skips = [];
+  panel().answerIdentity = (c) => answers.push(c);
+  panel().skipIdentity = () => skips.push(true);
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')]);
+  const box = $('#scanIdentity');
+  box.querySelector('button.sw[data-colour="0"]').click();
+  assert.deepEqual(answers, [0], 'the colour pressed did not reach the scanner');
+  box.querySelector('.btn').click();
+  assert.deepEqual(skips, [true], 'Skip did not reach the scanner');
+  // The scanner decides what an answer does; the screen never files a side itself, and never
+  // guesses that the question is over.
+  assert.equal(box.hidden, false, 'the screen closed the question on its own word rather than the scanner’s');
+});
+
+test('the choices follow the report, so a colour taken while the question stood stops being offered', async () => {
+  // Free order stays: sides go on being filed while a question stands. A frozen list would offer a
+  // colour that is no longer free — a button that does nothing, which is worse than one that is
+  // not there.
+  await enterScan();
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')]);
+  asking(3, [0, 5], [face('D'), face('L'), face('R'), face('F')]);
+  const shown = [...$('#scanIdentity').querySelectorAll('button.sw')].filter((b) => !b.hidden);
+  assert.deepEqual(shown.map((b) => Number(b.dataset.colour)), [0, 5]);
+});
+
+test('an inert scanner is not called into', async () => {
+  // Before the bundle registers, <ai-scan-panel> is a plain unknown element with none of these
+  // methods on it. A press must not throw at the page.
+  await enterScan();
+  asking(3, [0, 1, 2, 5], [face('D')]);
+  const box = $('#scanIdentity');
+  assert.doesNotThrow(() => box.querySelector('button.sw[data-colour="0"]').click());
+  assert.doesNotThrow(() => box.querySelector('.btn').click());
+});
+
+test('the question draws the side it is about, so the person can see what they are naming', async () => {
+  // §3's argument for asking rather than instructing is that the answer labels a capture the scan
+  // is holding AND THE USER CAN SEE. An unplaced capture has no tile, so without this the user can
+  // see every side except the one in question. It is what the scanner READ, never a picture.
+  await enterScan();
+  const read = [0, 1, 2, 3, 3, 5, 0, 1, 2];
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')], read);
+  const cells = [...$('#scanIdentity .id-seen').children];
+  assert.equal(cells.length, 9);
+  assert.deepEqual(
+    cells.map((c) => c.style.backgroundColor.toUpperCase()),
+    read.map((i) => NET_HEX[FACES[i]]),
+    'the nine drawn are not the nine the scanner read',
+  );
+  // Including the middle one: the person is being asked to overrule it, so hiding it would hide
+  // the subject of the question.
+  assert.equal(cells[4].style.backgroundColor.toUpperCase(), NET_HEX.D);
+});
+
+// ---- what a Codex audit of the identity question found (2026-09-25) --------------------------
+
+test('an answer names the capture the person was looking at, not the one that replaced it', async () => {
+  // §3's whole argument for asking rather than instructing is that there is no window in which the
+  // wrong side can be named — and the UI reopened one. These buttons stand while the scan goes on
+  // reading (§5's fourth bullet), so a finger down on one question and a different colliding side
+  // settling under it meant the click answered for the capture that replaced it.
+  await enterScan();
+  const answers = [];
+  const skips = [];
+  panel().answerIdentity = (c, id) => answers.push([c, id]);
+  panel().skipIdentity = (id) => skips.push(id);
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')], [0, 0, 0, 0, 3, 0, 0, 0, 0]);
+  const box = $('#scanIdentity');
+  const white = box.querySelector('button.sw[data-colour="0"]');
+  // The press STARTS on this question…
+  white.dispatchEvent(new win.Event('pointerdown', { bubbles: true }));
+  // …a different capture arrives under it…
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')], [5, 5, 5, 5, 3, 5, 5, 5, 5], 77);
+  // …and the click still carries the question the person was answering.
+  white.click();
+  assert.deepEqual(answers, [[0, 7]], 'the answer named the capture that replaced the one on screen');
+
+  // Skip is the same control with the same hazard.
+  const later = box.querySelector('.btn');
+  later.dispatchEvent(new win.Event('pointerdown', { bubbles: true }));
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')], [1, 1, 1, 1, 3, 1, 1, 1, 1], 99);
+  later.click();
+  assert.deepEqual(skips, [77], 'the skip set aside a question nobody had looked at');
+});
+
+test('a keyboard press answers what is drawn, having no press to arm', async () => {
+  await enterScan();
+  const answers = [];
+  panel().answerIdentity = (c, id) => answers.push([c, id]);
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')], [0, 0, 0, 0, 3, 0, 0, 0, 0], 12);
+  $('#scanIdentity').querySelector('button.sw[data-colour="0"]').click();
+  assert.deepEqual(answers, [[0, 12]]);
+});
+
+test('a side the camera could not NAME is renamed from its centre, not re-read', async () => {
+  // Re-reading it leads back to the same question — its middle sticker is the one the detector
+  // cannot read — and throws away the reading somebody already answered about. The recovery
+  // existed only as an API no screen reached.
+  await enterScan();
+  const reopened = [];
+  const rescans = [];
+  panel().reopenIdentity = (slot) => reopened.push(slot);
+  panel().rescanFace = (slot) => rescans.push(slot);
+  const captured = [face('U'), face('D')];
+  progress({ phase: 'scanning', complete: false, captured, suspects: [], message: '', renameable: ['U'] });
+  const upCentre = $('.scan-face[data-face="U"] .cell:nth-child(5)');
+  assert.equal(upCentre.dataset.action, 'rename', 'the centre offers a re-read over a side nobody read');
+  assert.match(upCentre.getAttribute('aria-label'), /really is/);
+  upCentre.click();
+  assert.deepEqual(reopened, ['U'], 'the press did not reopen the naming decision');
+  assert.deepEqual(rescans, [], 'the press threw the answered reading away instead');
+
+  // …and a side the camera DID name keeps the ordinary re-read.
+  const downCentre = $('.scan-face[data-face="D"] .cell:nth-child(5)');
+  assert.equal(downCentre.dataset.action, 'rescan');
+  downCentre.click();
+  assert.deepEqual(rescans, ['D']);
+});
+
+test('a question that vanishes does not hand its half-made press to the next one', async () => {
+  // THE STALE-PRESS RACE, REOPENED BY THE FIRST FIX (round-3 audit, 2026-09-25). Clearing the armed
+  // id when the question went away meant a press begun on one question fell back to whatever
+  // arrived next, defeating the scanner's stale-id guard entirely. A gesture keeps the id it
+  // started with; if that question has gone the scanner refuses it, which is the point.
+  await enterScan();
+  const answers = [];
+  panel().answerIdentity = (c, id) => answers.push([c, id]);
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')], [0, 0, 0, 0, 3, 0, 0, 0, 0], 7);
+  const white = $('#scanIdentity').querySelector('button.sw[data-colour="0"]');
+  white.dispatchEvent(new win.Event('pointerdown', { bubbles: true }));
+  // The question goes…
+  progress({ phase: 'scanning', complete: false, captured: [face('D')], suspects: [], message: '' });
+  // …and a different one arrives before the click.
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')], [5, 5, 5, 5, 3, 5, 5, 5, 5], 99);
+  white.click();
+  assert.deepEqual(answers, [[0, 7]], 'the press was retargeted at the question that replaced it');
+});
+
+test('a Space press answers the question it was begun on, not the one that replaced it', async () => {
+  // CODEX AUDIT, 2026-09-25, finding 6. Only `pointerdown` armed the gesture, on the argument that a
+  // keyboard press is instantaneous. That is true of Enter, whose click fires on key DOWN, and false
+  // of Space, whose click fires on key UP — so a question replaced between the two was answered for
+  // the capture that arrived in the gap, which is the exact window the id exists to close.
+  await enterScan();
+  const answers = [];
+  panel().answerIdentity = (c, id) => answers.push([c, id]);
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')], [0, 0, 0, 0, 3, 0, 0, 0, 0], 7);
+  const white = $('#scanIdentity').querySelector('button.sw[data-colour="0"]');
+  white.dispatchEvent(new win.KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+  // The question is replaced while the key is still down…
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')], [5, 5, 5, 5, 3, 5, 5, 5, 5], 99);
+  // …and the click only lands on key-up.
+  white.click();
+  assert.deepEqual(answers, [[0, 7]], 'a Space press was retargeted at the question that replaced it');
+});
+
+test('a held key does not re-aim the press at the question that replaced it', async () => {
+  // CODEX AUDIT, 2026-09-26. A key held down fires `keydown` over and over, and re-arming on every
+  // one re-took whichever id was drawn AT THE REPEAT — so a press begun on question 7, held while
+  // the question was replaced, answered for 99. That is the window the id exists to close, reopened
+  // by the guard that was added to close it for Space.
+  await enterScan();
+  const answers = [];
+  panel().answerIdentity = (c, id) => answers.push([c, id]);
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')], [0, 0, 0, 0, 3, 0, 0, 0, 0], 7);
+  const white = $('#scanIdentity').querySelector('button.sw[data-colour="0"]');
+  white.dispatchEvent(new win.KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')], [5, 5, 5, 5, 3, 5, 5, 5, 5], 99);
+  // Still held: the platform repeats the keydown, now while the newer question is on screen.
+  white.dispatchEvent(new win.KeyboardEvent('keydown', { key: ' ', repeat: true, bubbles: true }));
+  white.click();
+  assert.deepEqual(answers, [[0, 7]], 'an autorepeat re-aimed the press at the newer question');
+});
+
+test('a press on one control does not spend a gesture begun on another', async () => {
+  // The armed gesture belongs to its own button: a keyboard activation elsewhere has no gesture and
+  // takes what is drawn, rather than inheriting a stale id and being refused for nothing.
+  await enterScan();
+  const answers = [];
+  panel().answerIdentity = (c, id) => answers.push([c, id]);
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')], [0, 0, 0, 0, 3, 0, 0, 0, 0], 7);
+  const box = $('#scanIdentity');
+  box.querySelector('button.sw[data-colour="0"]').dispatchEvent(new win.Event('pointerdown', { bubbles: true }));
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')], [0, 0, 0, 0, 3, 0, 0, 0, 0], 41);
+  box.querySelector('button.sw[data-colour="1"]').click(); // a different control, no gesture
+  assert.deepEqual(answers, [[1, 41]], 'a keyboard press inherited another control’s stale gesture');
 });

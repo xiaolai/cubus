@@ -276,24 +276,24 @@ var require_cube = __commonJS({
             }
             return result.join("");
           }
-          static fromString(str) {
+          static fromString(str2) {
             var col1, col2, cube, i, j, k, l, m, o, ori, p, q, r, ref;
             cube = new Cube4();
             for (i = k = 0; k <= 5; i = ++k) {
               for (j = l = 0; l <= 5; j = ++l) {
-                if (str[9 * i + 4] === centerColor[j]) {
+                if (str2[9 * i + 4] === centerColor[j]) {
                   cube.center[i] = j;
                 }
               }
             }
             for (i = m = 0; m <= 7; i = ++m) {
               for (ori = o = 0; o <= 2; ori = ++o) {
-                if ((ref = str[cornerFacelet[i][ori]]) === "U" || ref === "D") {
+                if ((ref = str2[cornerFacelet[i][ori]]) === "U" || ref === "D") {
                   break;
                 }
               }
-              col1 = str[cornerFacelet[i][(ori + 1) % 3]];
-              col2 = str[cornerFacelet[i][(ori + 2) % 3]];
+              col1 = str2[cornerFacelet[i][(ori + 1) % 3]];
+              col2 = str2[cornerFacelet[i][(ori + 2) % 3]];
               for (j = p = 0; p <= 7; j = ++p) {
                 if (col1 === cornerColor[j][1] && col2 === cornerColor[j][2]) {
                   cube.cp[i] = j;
@@ -303,12 +303,12 @@ var require_cube = __commonJS({
             }
             for (i = q = 0; q <= 11; i = ++q) {
               for (j = r = 0; r <= 11; j = ++r) {
-                if (str[edgeFacelet[i][0]] === edgeColor[j][0] && str[edgeFacelet[i][1]] === edgeColor[j][1]) {
+                if (str2[edgeFacelet[i][0]] === edgeColor[j][0] && str2[edgeFacelet[i][1]] === edgeColor[j][1]) {
                   cube.ep[i] = j;
                   cube.eo[i] = 0;
                   break;
                 }
-                if (str[edgeFacelet[i][0]] === edgeColor[j][1] && str[edgeFacelet[i][1]] === edgeColor[j][0]) {
+                if (str2[edgeFacelet[i][0]] === edgeColor[j][1] && str2[edgeFacelet[i][1]] === edgeColor[j][0]) {
                   cube.ep[i] = j;
                   cube.eo[i] = 1;
                   break;
@@ -451,7 +451,7 @@ var require_cube = __commonJS({
             return result.join(" ");
           }
           static inverse(arg) {
-            var face, k, len, move, power, result, str;
+            var face, k, len, move, power, result, str2;
             result = (function() {
               var k2, len3, ref, results;
               ref = parseAlg(arg);
@@ -466,20 +466,20 @@ var require_cube = __commonJS({
             })();
             result.reverse();
             if (typeof arg === "string") {
-              str = "";
+              str2 = "";
               for (k = 0, len = result.length; k < len; k++) {
                 move = result[k];
                 face = move / 3 | 0;
                 power = move % 3;
-                str += faceNames[face];
+                str2 += faceNames[face];
                 if (power === 1) {
-                  str += "2";
+                  str2 += "2";
                 } else if (power === 2) {
-                  str += "'";
+                  str2 += "'";
                 }
-                str += " ";
+                str2 += " ";
               }
-              return str.substring(0, str.length - 1);
+              return str2.substring(0, str2.length - 1);
             } else if (arg.length != null) {
               return result;
             } else {
@@ -2707,12 +2707,12 @@ function matchingRotations(original, confirmed) {
   return new Set([0, 1, 2, 3].filter((k) => dist[k] <= CONFIRM_TOLERANCE));
 }
 var SAME_SIDE_STICKERS = 7;
-function sameSide(a, b, atLeast = SAME_SIDE_STICKERS) {
+function sameSide(a, b, atLeast2 = SAME_SIDE_STICKERS) {
   for (let k = 0; k < 4; k++) {
     const turned = rotateFace(b, k);
     let agree = 0;
     for (let i = 0; i < 9; i++) if (i !== 4 && turned[i] === a[i]) agree += 1;
-    if (agree >= atLeast) return true;
+    if (agree >= atLeast2) return true;
   }
   return false;
 }
@@ -3091,11 +3091,18 @@ function repairByCounts(faces, maxCost) {
     // "repaired" at the argmax and D1 would demand a second look at a colour the repair never
     // touched. What D1 is about is a sticker whose colour NOBODY observed, so the comparison is
     // with the colour the capture carries.
-    changed: result.changed.flatMap((at) => {
+    // ALL 54, not `result.changed` (2026-09-25). That list is where the assignment differs from the
+    // SCORES' ARGMAX, and filtering it against the capture removed the false positives but could
+    // never add the missing ones: a sticker whose capture already disagrees with its own argmax —
+    // a centre rewritten to its slot's colour by `withCentre`, a sticker corrected by hand — is
+    // absent from that list even when the repair assigns something the capture does not say. The
+    // reading then changed a sticker and was accepted as `valid: true` with no look asked for,
+    // which is the precise failure D1 exists to prevent. The comparison D1 wants is over every
+    // position, so it is taken over every position.
+    changed: result.colors.flatMap((to, at) => {
       const face = FACES[Math.floor(at / 9)];
       const index = at % 9;
       const from = faces[face].colors[index];
-      const to = result.colors[at];
       return from === to ? [] : [{ face, index, from, to }];
     })
   };
@@ -3129,7 +3136,7 @@ function withCentre(capture, colour) {
 function assembleColors(faces, threshold = LOW_CONFIDENCE_THRESHOLD, confirmed = {}, options = {}) {
   return assembleWithin(faces, threshold, confirmed, options);
 }
-function assembleWithin(faces, threshold, confirmed, options, allowPaint = true, originals) {
+function assembleWithin(faces, threshold, confirmed, options, originals) {
   const bySlot = checkedBySlot(faces);
   if ("valid" in bySlot) return bySlot;
   const asRead = originals ?? bySlot;
@@ -3144,19 +3151,23 @@ function assembleWithin(faces, threshold, confirmed, options, allowPaint = true,
     if ("valid" in bySlotCandidate) return null;
     const solvable = SCHEMES.flatMap((scheme) => solvableReadings(bySlotCandidate, scheme));
     if (solvable.length === 0) return null;
-    return assembleWithin(candidate, threshold, confirmed, options, allowPaint, asRead);
+    return assembleWithin(candidate, threshold, confirmed, options, asRead);
   };
   const all = SCHEMES.flatMap((scheme) => solvableReadings(bySlot, scheme));
   if (all.length === 0) {
     const repair = repairByCounts(faces, MAX_REPAIR_COST);
-    const unseen = repair ? repair.changed.filter(
-      (s) => !reobserved(
-        repair.faces[s.face],
-        faces[s.face],
-        looksAt(confirmed, s.face),
-        repair.changed.filter((r) => r.face === s.face).map((r) => r.index)
-      )
-    ) : [];
+    const byFace = /* @__PURE__ */ new Map();
+    for (const s of repair?.changed ?? []) {
+      const indices = byFace.get(s.face);
+      if (indices) indices.push(s.index);
+      else byFace.set(s.face, [s.index]);
+    }
+    const confirmedFaces = new Set(
+      [...byFace].filter(
+        ([face, indices]) => reobserved(repair.faces[face], faces[face], looksAt(confirmed, face), indices)
+      ).map(([face]) => face)
+    );
+    const unseen = repair ? repair.changed.filter((s) => !confirmedFaces.has(s.face)) : [];
     const byCounts = repair && unseen.length === 0 ? accept(repair.faces) : null;
     if (byCounts) return byCounts;
     if (repair && unseen.length > 0 && couldAccept(repair.faces)) {
@@ -3170,7 +3181,7 @@ function assembleWithin(faces, threshold, confirmed, options, allowPaint = true,
         });
       }
     }
-    const byPaint = accept(allowPaint ? recolourByPaint(faces) : null);
+    const byPaint = accept(recolourByPaint(faces));
     if (byPaint) return byPaint;
     const unproven = FACES.filter((face) => faces[face]?.ordering === "sorted");
     if (unproven.length > 0) {
@@ -3915,6 +3926,289 @@ function traceFrame(output, opts = {}, kept = detectionsFromOutput(output, opts)
 // src/session-record.ts
 var SESSION_SCHEMA = "cubus-scan-session/1";
 var NEAR_FLOOR_RECORD = 0.05;
+var hasFullScores = (d) => Array.isArray(d.scores) && d.scores.length === NUM_COLORS && d.scores.every(Number.isFinite);
+var DECISION_KINDS = [
+  "captured",
+  "held-back",
+  "turned-away",
+  "contest-resolved",
+  "look-asked",
+  "loop-restarted",
+  "finished"
+];
+var isDecisionKind = (v) => typeof v === "string" && DECISION_KINDS.includes(v);
+var SessionFormatError = class extends Error {
+  // `options` so a wrapper can keep what it wrapped: `loadCorpus` adds the source file's name to a
+  // refusal, and without a cause the original — which names the field — was gone.
+  constructor(message, options) {
+    super(message, options);
+    this.name = "SessionFormatError";
+  }
+};
+var isRecord = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var str = (v, where) => {
+  if (typeof v !== "string" || v.length === 0) {
+    throw new SessionFormatError(`${where} must be a non-empty string`);
+  }
+  return v;
+};
+var ISO_INSTANT = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
+var timestamp = (v, where) => {
+  const text = str(v, where);
+  const m = ISO_INSTANT.exec(text);
+  const refuse = () => {
+    throw new SessionFormatError(
+      `${where} must be an ISO 8601 instant with a timezone, got ${JSON.stringify(text)}`
+    );
+  };
+  if (!m) refuse();
+  const [year, month, day, hour, minute, second] = m.slice(1, 7).map(Number);
+  const zone = m[7];
+  const probe = /* @__PURE__ */ new Date(0);
+  probe.setUTCFullYear(year, month - 1, day);
+  const realDate = probe.getUTCFullYear() === year && probe.getUTCMonth() === month - 1 && probe.getUTCDate() === day;
+  const realClock = hour <= 23 && minute <= 59 && second <= 59;
+  const realZone = zone === "Z" || Number(zone.slice(1, 3)) <= 23 && Number(zone.slice(4, 6)) <= 59;
+  if (!(realDate && realClock && realZone)) refuse();
+  return text;
+};
+var num = (v, where) => {
+  if (typeof v !== "number" || !Number.isFinite(v)) {
+    throw new SessionFormatError(`${where} must be a finite number`);
+  }
+  return v;
+};
+var atLeast = (v, where, least) => {
+  const n = num(v, where);
+  if (n < least) throw new SessionFormatError(`${where} ${n} is below ${least}`);
+  return n;
+};
+var positive = (v, where) => {
+  const n = num(v, where);
+  if (n <= 0) throw new SessionFormatError(`${where} ${n} is not a positive length`);
+  return n;
+};
+var whole2 = (v, where, least) => {
+  const n = num(v, where);
+  if (!Number.isSafeInteger(n) || n < least) {
+    throw new SessionFormatError(`${where} must be a whole number of at least ${least}, got ${n}`);
+  }
+  return n;
+};
+function parseDetection(v, where) {
+  if (!isRecord(v)) throw new SessionFormatError(`${where} must be an object`);
+  const scores = v.scores;
+  if (!hasFullScores({ scores })) {
+    throw new SessionFormatError(
+      `${where}.scores must list all ${NUM_COLORS} finite class scores, got ${Array.isArray(scores) ? scores.length : typeof scores}`
+    );
+  }
+  const kept = scores.map((x, i) => num(x, `${where}.scores[${i}]`));
+  const classId = whole2(v.classId, `${where}.classId`, 0);
+  if (classId >= kept.length) {
+    throw new SessionFormatError(`${where}.classId ${classId} is not a class of ${kept.length}`);
+  }
+  let winner = 0;
+  for (let c = 1; c < kept.length; c++) if (kept[c] > kept[winner]) winner = c;
+  if (classId !== winner) {
+    throw new SessionFormatError(
+      `${where}.classId ${classId} is not the class its scores favour (${winner})`
+    );
+  }
+  const confidence = num(v.confidence, `${where}.confidence`);
+  if (confidence !== kept[classId]) {
+    throw new SessionFormatError(
+      `${where}.confidence ${confidence} is not its class's score ${kept[classId]}`
+    );
+  }
+  return {
+    cx: num(v.cx, `${where}.cx`),
+    cy: num(v.cy, `${where}.cy`),
+    // A BOX WITH NO AREA IS NOT EVIDENCE. `decodeDetections` already refuses one at the tensor —
+    // every geometric check downstream compares against a width, and a negative one passes them
+    // the way a NaN does.
+    w: positive(v.w, `${where}.w`),
+    h: positive(v.h, `${where}.h`),
+    classId,
+    confidence,
+    // `kept`, not `scores`: the parsed session owns its evidence. Holding the caller's array meant
+    // mutating the input after parsing changed what had been validated — a probe injected a `NaN`
+    // that way, into numbers the parser had already certified finite.
+    scores: kept
+  };
+}
+function checkChronology(where, id, t, previousId, previousT) {
+  if (id <= previousId) {
+    throw new SessionFormatError(`${where}.id ${id} does not increase on ${previousId}`);
+  }
+  if (t < previousT) throw new SessionFormatError(`${where}.t ${t} goes back before ${previousT}`);
+}
+function parseFrame(v, where, previousId, previousT) {
+  if (!isRecord(v)) throw new SessionFormatError(`${where} must be an object`);
+  const id = whole2(v.id, `${where}.id`, 0);
+  const t = atLeast(v.t, `${where}.t`, 0);
+  checkChronology(where, id, t, previousId, previousT);
+  const served = v.served === void 0 ? 1 : whole2(v.served, `${where}.served`, 1);
+  const lastT = v.lastT === void 0 ? void 0 : atLeast(v.lastT, `${where}.lastT`, t);
+  if (lastT !== void 0 && served === 1) {
+    throw new SessionFormatError(`${where}.lastT is on a frame served once, where it is just .t`);
+  }
+  const dets = v.detections;
+  if (!Array.isArray(dets)) throw new SessionFormatError(`${where}.detections must be an array`);
+  return {
+    id,
+    t,
+    served,
+    ...lastT === void 0 ? {} : { lastT },
+    detections: dets.map((d, i) => parseDetection(d, `${where}.detections[${i}]`)),
+    ...v.inferMs === void 0 ? {} : { inferMs: atLeast(v.inferMs, `${where}.inferMs`, 0) },
+    ...v.pixels === void 0 ? {} : { pixels: str(v.pixels, `${where}.pixels`) }
+  };
+}
+function parseTruth(v, where) {
+  if (!isRecord(v)) throw new SessionFormatError(`${where} must be an object`);
+  const facelets = str(v.facelets, `${where}.facelets`);
+  if (!isStructurallyValid(facelets)) {
+    throw new SessionFormatError(`${where}.facelets is not a well-formed cube`);
+  }
+  const source = str(v.source, `${where}.source`);
+  if (source !== "smart-cube" && source !== "manual-verified") {
+    throw new SessionFormatError(
+      `${where}.source must be 'smart-cube' or 'manual-verified' \u2014 a corpus labelled by the detector measures the detector against itself`
+    );
+  }
+  const scheme = v.scheme;
+  if (scheme !== void 0 && scheme !== "western" && scheme !== "japanese") {
+    throw new SessionFormatError(`${where}.scheme must be 'western' or 'japanese' when present`);
+  }
+  return { facelets, source, ...scheme === void 0 ? {} : { scheme } };
+}
+function parseConditions(v, where) {
+  if (!isRecord(v)) throw new SessionFormatError(`${where} must be an object`);
+  const handling = str(v.handling, `${where}.handling`);
+  if (handling !== "careful" && handling !== "careless") {
+    throw new SessionFormatError(`${where}.handling must be 'careful' or 'careless'`);
+  }
+  const state = str(v.state, `${where}.state`);
+  if (state !== "scrambled" && state !== "near-solved") {
+    throw new SessionFormatError(`${where}.state must be 'scrambled' or 'near-solved'`);
+  }
+  return {
+    camera: str(v.camera, `${where}.camera`),
+    lighting: str(v.lighting, `${where}.lighting`),
+    handling,
+    state,
+    ...v.note === void 0 ? {} : { note: str(v.note, `${where}.note`) }
+  };
+}
+function parseFrames(frames) {
+  const out = [];
+  let lastId = Number.NEGATIVE_INFINITY;
+  let lastT = Number.NEGATIVE_INFINITY;
+  let ticks = 0;
+  for (const [i, f] of frames.entries()) {
+    const frame = parseFrame(f, `frames[${i}]`, lastId, lastT);
+    lastId = frame.id;
+    lastT = frame.lastT ?? frame.t;
+    ticks += frame.served;
+    if (!Number.isSafeInteger(ticks)) {
+      throw new SessionFormatError(
+        `frames[${i}].served takes the session past ${Number.MAX_SAFE_INTEGER} ticks`
+      );
+    }
+    out.push(frame);
+  }
+  return out;
+}
+function parseSession(value) {
+  if (!isRecord(value)) throw new SessionFormatError("a session must be an object");
+  if (value.schema !== SESSION_SCHEMA) {
+    throw new SessionFormatError(
+      `schema ${JSON.stringify(value.schema)} is not ${SESSION_SCHEMA} \u2014 this reader cannot interpret it, and guessing would corrupt the measurement`
+    );
+  }
+  const model = value.model;
+  if (!isRecord(model)) throw new SessionFormatError("model must be an object");
+  const frames = value.frames;
+  if (!Array.isArray(frames) || frames.length === 0) {
+    throw new SessionFormatError("frames must be a non-empty array");
+  }
+  const decisions = value.decisions === void 0 ? [] : value.decisions;
+  if (!Array.isArray(decisions)) throw new SessionFormatError("decisions must be an array");
+  const parsedFrames = parseFrames(frames);
+  return {
+    schema: SESSION_SCHEMA,
+    id: str(value.id, "id"),
+    startedAt: timestamp(value.startedAt, "startedAt"),
+    cube: str(value.cube, "cube"),
+    conditions: parseConditions(value.conditions, "conditions"),
+    model: {
+      name: str(model.name, "model.name"),
+      runtime: str(model.runtime, "model.runtime"),
+      ...model.hash === void 0 ? {} : { hash: str(model.hash, "model.hash") },
+      ...model.source === void 0 ? {} : { source: str(model.source, "model.source") }
+    },
+    truth: parseTruth(value.truth, "truth"),
+    frames: parsedFrames,
+    decisions: parseDecisions(decisions, parsedFrames),
+    ...value.blind === void 0 ? {} : { blind: parseBlind(value.blind) },
+    ...value.recording === void 0 ? {} : { recording: parseLosses(value.recording) }
+  };
+}
+function parseBlind(v) {
+  if (!Array.isArray(v)) throw new SessionFormatError("blind must be an array");
+  const out = v.map((t, i) => whole2(t, `blind[${i}]`, 0));
+  return out.sort((a, b) => a - b);
+}
+function parseLosses(v) {
+  if (!isRecord(v)) throw new SessionFormatError("recording must be an object");
+  return {
+    framesDropped: whole2(v.framesDropped, "recording.framesDropped", 0),
+    renumbered: whole2(v.renumbered, "recording.renumbered", 0),
+    decisionsDropped: whole2(v.decisionsDropped, "recording.decisionsDropped", 0)
+  };
+}
+function cloneDetail(detail, where) {
+  try {
+    return structuredClone(detail);
+  } catch (cause) {
+    throw new SessionFormatError(`${where} holds a value that cannot be recorded`, { cause });
+  }
+}
+function parseDecisions(decisions, frames) {
+  const at = new Map(frames.map((f) => [f.id, f]));
+  let previousT = Number.NEGATIVE_INFINITY;
+  return decisions.map((d, i) => {
+    const where = `decisions[${i}]`;
+    if (!isRecord(d)) throw new SessionFormatError(`${where} must be an object`);
+    const frame = num(d.frame, `${where}.frame`);
+    const on = at.get(frame);
+    if (!on) {
+      throw new SessionFormatError(`${where}.frame ${frame} is not a frame of this session`);
+    }
+    const kind = str(d.kind, `${where}.kind`);
+    if (!isDecisionKind(kind)) {
+      throw new SessionFormatError(`${where}.kind ${JSON.stringify(kind)} is not a decision kind`);
+    }
+    const t = atLeast(d.t, `${where}.t`, 0);
+    if (t < on.t) {
+      throw new SessionFormatError(`${where}.t ${t} is before frame ${frame} at ${on.t}`);
+    }
+    if (t < previousT) {
+      throw new SessionFormatError(`${where}.t ${t} goes back before ${previousT}`);
+    }
+    previousT = t;
+    if (d.detail !== void 0 && !isRecord(d.detail)) {
+      throw new SessionFormatError(`${where}.detail must be an object when present`);
+    }
+    return {
+      frame,
+      t,
+      kind,
+      detail: isRecord(d.detail) ? cloneDetail(d.detail, `${where}.detail`) : {}
+    };
+  });
+}
 
 // src/sticker-pixels.ts
 var INNER = 0.6;
@@ -3984,6 +4278,7 @@ var closesOut = 0;
 var opening = Promise.resolve();
 var opensOut = 0;
 var CLOSE_TIMEOUT_MS = 1e4;
+var OPEN_SETTLE_TIMEOUT_MS = 3e4;
 var newest = null;
 async function awaitClosesLanded(abandoned) {
   while (closesOut > 0) {
@@ -4169,6 +4464,7 @@ var NativeDetector = class {
     trackOpen(sent);
     void sent.then(
       () => {
+        this.repairIfOvertaken(owner.claim);
       },
       (err) => {
         console.warn(
@@ -4190,7 +4486,16 @@ var NativeDetector = class {
     if (!mayClose(claim)) return;
     cameraClaim = 0;
     if (opensOut > 0) {
-      void opening.then(() => {
+      let timer;
+      const gaveUp = new Promise((resolve) => {
+        timer = setTimeout(() => {
+          console.warn(
+            `[cubus] the native camera's open_camera did not answer within ${Math.round(OPEN_SETTLE_TIMEOUT_MS / 1e3)} seconds \u2014 the close it was holding back is being sent anyway`
+          );
+          resolve();
+        }, OPEN_SETTLE_TIMEOUT_MS);
+      });
+      void Promise.race([opening.then(() => clearTimeout(timer)), gaveUp]).then(() => {
         this.sendClose(claim);
       });
       return;
@@ -5407,6 +5712,7 @@ var WebDetector = class {
       }
       throw err;
     }
+    if (superseded()) return null;
     const { frame } = pre;
     return {
       ...output,
@@ -5727,8 +6033,28 @@ var CameraSession = class {
           return detector;
         }
       );
+      const attempt = this.detectorPromise;
+      void attempt.catch(() => {
+        if (this.detectorPromise === attempt) this.detectorPromise = null;
+      });
     }
     return this.detectorPromise;
+  }
+  /**
+   * Forget a detector SELECTION that is still in flight — the probe did not answer in time.
+   *
+   * `ensureDetector` clears the cache when the probe REJECTS, which covers a probe that failed and
+   * not a probe that hung: a timeout on the caller's side leaves the underlying promise pending for
+   * ever, so the cache went on handing every later `start()` the same hung probe and Start could
+   * never genuinely retry (2026-09-25). Bumping `detectorChoice` with it is what keeps a late
+   * landing from installing its detector on a session that has since picked another — the same
+   * reason `park()` bumps it.
+   */
+  forgetPendingDetector() {
+    if (this.detector === null) {
+      this.detectorPromise = null;
+      this.detectorChoice++;
+    }
   }
   /** Release the camera, keeping the detector (and therefore the loaded model). */
   releaseCamera() {
@@ -5989,13 +6315,21 @@ var boxesOf = (dets) => dets.map((d) => ({
   cls: d.classId,
   conf: Math.round(d.confidence * 1e3) / 1e3
 }));
-var saved = 0;
+var attempted = 0;
+var delivered = 0;
+function encoderOf() {
+  const Canvas = globalThis.OffscreenCanvas;
+  const Pixels = globalThis.ImageData;
+  return Canvas && Pixels ? { Canvas, Pixels } : null;
+}
 async function savePixelProbe(frame, dets) {
-  if (saved >= PIXEL_PROBE_MAX_FRAMES) return;
-  const png = await toPng(frame);
-  if (!png) return;
-  saved += 1;
-  await fetch("/__record", {
+  const encoder = encoderOf();
+  if (!encoder) return;
+  if (attempted >= PIXEL_PROBE_MAX_FRAMES) return;
+  attempted += 1;
+  const nth = attempted;
+  const png = await toPng(frame, encoder);
+  const response = await fetch("/__record", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -6005,37 +6339,43 @@ async function savePixelProbe(frame, dets) {
       cameraWidth: frame.width,
       cameraHeight: frame.height,
       side: PIXEL_PROBE_SIDE,
-      nth: saved,
+      nth,
       neighbours: dets.length,
       boxes: boxesOf(dets),
       png
     })
   });
+  if (!response?.ok) {
+    throw new Error(`the pixel sink refused frame ${nth} (HTTP ${response?.status ?? "?"})`);
+  }
+  delivered += 1;
 }
-async function toPng(frame) {
-  const Canvas = globalThis.OffscreenCanvas;
-  const Pixels = globalThis.ImageData;
-  if (!Canvas || !Pixels) return null;
-  const { data, imgsz } = preprocess(frame, PIXEL_PROBE_SIDE);
+function rgbaOf(data, imgsz) {
   const plane = imgsz * imgsz;
-  const canvas = new Canvas(imgsz, imgsz);
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return null;
-  const pixels = new Uint8ClampedArray(plane * 4);
+  const pixels = new Uint8ClampedArray(new ArrayBuffer(plane * 4));
   for (let i = 0; i < plane; i++) {
     pixels[i * 4] = Math.round((data[i] ?? 0) * 255);
     pixels[i * 4 + 1] = Math.round((data[plane + i] ?? 0) * 255);
     pixels[i * 4 + 2] = Math.round((data[plane * 2 + i] ?? 0) * 255);
     pixels[i * 4 + 3] = 255;
   }
-  ctx.putImageData(new Pixels(pixels, imgsz, imgsz), 0, 0);
-  const blob = await canvas.convertToBlob({ type: "image/png" });
-  const bytes = new Uint8Array(await blob.arrayBuffer());
+  return pixels;
+}
+function base64Of(bytes) {
   let binary = "";
   for (let i = 0; i < bytes.length; i += 32768) {
     binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
   }
   return btoa(binary);
+}
+async function toPng(frame, { Canvas, Pixels }) {
+  const { data, imgsz } = preprocess(frame, PIXEL_PROBE_SIDE);
+  const canvas = new Canvas(imgsz, imgsz);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("the pixel probe could not get a 2d context");
+  ctx.putImageData(new Pixels(rgbaOf(data, imgsz), imgsz, imgsz), 0, 0);
+  const blob = await canvas.convertToBlob({ type: "image/png" });
+  return base64Of(new Uint8Array(await blob.arrayBuffer()));
 }
 
 // view/scan-trace.ts
@@ -6060,6 +6400,56 @@ function filedColours(mark) {
   }
   return colors;
 }
+var sameSideAs = (read, other) => read[4] === other[4] && sameSide(read, other);
+function windowFor(win, filed, previous) {
+  let lastOfPrevious;
+  for (let i = win.length - 1; previous !== null && i >= 0; i--) {
+    const colors = win[i].colors;
+    if (colors !== void 0 && sameSideAs(colors, previous)) {
+      lastOfPrevious = win[i];
+      break;
+    }
+  }
+  const after = lastOfPrevious ? win.filter((r) => r.t > lastOfPrevious.t) : [...win];
+  const start = after.findIndex((r) => r.colors !== void 0 && sameSide(r.colors, filed));
+  return {
+    own: start < 0 ? [] : after.slice(start),
+    before: start < 0 ? after : after.slice(0, start),
+    seen: lastOfPrevious ?? win.find((r) => (r.kept ?? 0) >= IN_VIEW_BOXES)
+  };
+}
+function noteBreak(prev, cur, into) {
+  if (prev.colors === void 0) return;
+  if (cur.colors === void 0) {
+    count(into.breaks.abstain, cur.geometry?.rule ?? cur.reason ?? cur.outcome);
+    into.breaks.total += 1;
+    return;
+  }
+  if (cur.colors[CENTRE_CELL] !== prev.colors[CENTRE_CELL]) {
+    count(
+      into.centre,
+      `${colourOf2(prev.colors[CENTRE_CELL])}>${colourOf2(cur.colors[CENTRE_CELL])}`
+    );
+  }
+  const changed = [];
+  for (let c = 0; c < cur.colors.length; c++) {
+    if (cur.colors[c] !== prev.colors[c]) changed.push(c);
+  }
+  if (changed.length === 0) return;
+  into.breaks.total += 1;
+  if (changed.length === 1) {
+    const c = changed[0];
+    count(into.breaks.colour, `cell${c}:${colourOf2(prev.colors[c])}>${colourOf2(cur.colors[c])}`);
+  } else into.breaks.moved += 1;
+}
+function breaksIn(own) {
+  const into = {
+    breaks: { total: 0, abstain: {}, colour: {}, moved: 0 },
+    centre: {}
+  };
+  for (let i = 1; i < own.length; i++) noteBreak(own[i - 1], own[i], into);
+  return into;
+}
 function sideSpeeds(ticks, events) {
   const marks = events.filter((e) => e.kind === "captured");
   const out = [];
@@ -6069,54 +6459,16 @@ function sideSpeeds(ticks, events) {
     const filed = filedColours(m);
     const win = ticks.filter((r) => r.t > from && r.t <= m.t);
     from = m.t;
-    let lastOfPrevious;
-    for (let i = win.length - 1; previous !== null && i >= 0; i--) {
-      const colors = win[i].colors;
-      if (colors !== void 0 && sameSide(colors, previous)) {
-        lastOfPrevious = win[i];
-        break;
-      }
-    }
-    const after = lastOfPrevious ? win.filter((r) => r.t > lastOfPrevious.t) : win;
-    const start = after.findIndex((r) => r.colors !== void 0 && sameSide(r.colors, filed));
-    const own = start < 0 ? [] : after.slice(start);
-    const seen = lastOfPrevious ?? win.find((r) => (r.kept ?? 0) >= IN_VIEW_BOXES);
-    const firstRead = own[0];
+    const { own, before, seen } = windowFor(win, filed, previous);
     previous = filed;
-    const breaks = { total: 0, abstain: {}, colour: {}, moved: 0 };
-    const centre = {};
-    for (let i = 1; i < own.length; i++) {
-      const prev = own[i - 1];
-      const cur = own[i];
-      if (prev.colors === void 0) continue;
-      if (cur.colors === void 0) {
-        count(breaks.abstain, cur.geometry?.rule ?? cur.reason ?? cur.outcome);
-        breaks.total += 1;
-        continue;
-      }
-      if (cur.colors[CENTRE_CELL] !== prev.colors[CENTRE_CELL]) {
-        count(
-          centre,
-          `${colourOf2(prev.colors[CENTRE_CELL])}>${colourOf2(cur.colors[CENTRE_CELL])}`
-        );
-      }
-      const changed = [];
-      for (let c = 0; c < cur.colors.length; c++) {
-        if (cur.colors[c] !== prev.colors[c]) changed.push(c);
-      }
-      if (changed.length === 0) continue;
-      breaks.total += 1;
-      if (changed.length === 1) {
-        const c = changed[0];
-        count(breaks.colour, `cell${c}:${colourOf2(prev.colors[c])}>${colourOf2(cur.colors[c])}`);
-      } else breaks.moved += 1;
-    }
+    const firstRead = own[0];
+    const { breaks, centre } = breaksIn(own);
     out.push({
       side: String(m.detail.face),
       at: m.t,
       waitMs: seen ? m.t - seen.t : null,
       firstReadMs: firstRead ? m.t - firstRead.t : null,
-      otherReads: (start < 0 ? after : after.slice(0, start)).filter((r) => r.colors !== void 0).length,
+      otherReads: before.filter((r) => r.colors !== void 0).length,
       ticks: own.length,
       reads: own.filter((r) => r.colors !== void 0).length,
       breaks,
@@ -6124,6 +6476,44 @@ function sideSpeeds(ticks, events) {
     });
   }
   return out;
+}
+function tallyCentre(probe, into) {
+  into.centre.probed += 1;
+  if (!probe.found) {
+    into.centre.nothingThere += 1;
+    return;
+  }
+  const name = colourOf2(probe.cls);
+  into.centreClasses[name] = (into.centreClasses[name] ?? 0) + 1;
+  if (probe.kept) {
+    into.centre.kept += 1;
+    return;
+  }
+  into.centre.nearMiss += 1;
+  into.nearMissConf.push(probe.conf);
+}
+function tallyTicks(ticks) {
+  const into = {
+    outcomes: {},
+    abstain: {},
+    geometry: {},
+    centreClasses: {},
+    centre: { probed: 0, nothingThere: 0, nearMiss: 0, kept: 0 },
+    nearMissConf: [],
+    lineChanges: 0
+  };
+  let previousLine;
+  for (const r of ticks) {
+    count(into.outcomes, r.outcome);
+    if (r.reason) count(into.abstain, r.reason);
+    if (r.geometry) count(into.geometry, r.geometry.rule);
+    if (r.line !== void 0) {
+      if (previousLine !== void 0 && r.line !== previousLine) into.lineChanges += 1;
+      previousLine = r.line;
+    }
+    if (r.centre) tallyCentre(r.centre, into);
+  }
+  return into;
 }
 var EVENT_CAPACITY = 500;
 function frameNote(frame) {
@@ -6211,34 +6601,7 @@ var ScanTrace = class {
   summary() {
     return this.sessions.map((s) => {
       const ticks = this.records.filter((r) => r.session === s.id);
-      const outcomes = {};
-      const abstain = {};
-      const geometry = {};
-      const centreClasses = {};
-      const centre = { probed: 0, nothingThere: 0, nearMiss: 0, kept: 0 };
-      const nearMissConf = [];
-      let lineChanges = 0;
-      let previousLine;
-      for (const r of ticks) {
-        count(outcomes, r.outcome);
-        if (r.reason) count(abstain, r.reason);
-        if (r.geometry) count(geometry, r.geometry.rule);
-        if (r.line !== void 0 && previousLine !== void 0 && r.line !== previousLine)
-          lineChanges += 1;
-        if (r.line !== void 0) previousLine = r.line;
-        if (r.centre) {
-          centre.probed += 1;
-          if (!r.centre.found) centre.nothingThere += 1;
-          else {
-            centreClasses[colourOf2(r.centre.cls)] = (centreClasses[colourOf2(r.centre.cls)] ?? 0) + 1;
-            if (r.centre.kept) centre.kept += 1;
-            else {
-              centre.nearMiss += 1;
-              nearMissConf.push(r.centre.conf);
-            }
-          }
-        }
-      }
+      const { outcomes, abstain, geometry, centreClasses, centre, nearMissConf, lineChanges } = tallyTicks(ticks);
       const first = ticks[0];
       const last = ticks[ticks.length - 1];
       const seconds = last ? Math.round(last.t / 100) / 10 : 0;
@@ -6284,6 +6647,7 @@ var ScanTrace = class {
 // view/session-recorder.ts
 var RECORD_KEY = "cubusScanRecord";
 var RECORD_CAPACITY = 4e3;
+var DECISION_CAPACITY = 2e3;
 function recordEnabled(store) {
   try {
     const storage = store ?? globalThis.localStorage;
@@ -6293,13 +6657,20 @@ function recordEnabled(store) {
   }
 }
 function worthRecording(dets) {
-  return dets.filter((d) => d.confidence >= NEAR_FLOOR_RECORD && d.scores !== void 0).map((d) => ({ ...d, scores: [...d.scores] }));
+  return dets.filter((d) => d.confidence >= NEAR_FLOOR_RECORD && hasFullScores(d)).map(cloneDetection);
 }
+var cloneDetection = (d) => ({
+  ...d,
+  scores: [...d.scores]
+});
 var SessionRecorder = class {
   constructor(capacity = RECORD_CAPACITY, clock = () => performance.now(), wall = () => (/* @__PURE__ */ new Date()).toISOString()) {
     this.capacity = capacity;
     this.clock = clock;
     this.wall = wall;
+    if (!Number.isSafeInteger(capacity) || capacity < 1) {
+      throw new RangeError(`a recording capacity of ${capacity} is not a whole number of frames`);
+    }
   }
   capacity;
   clock;
@@ -6310,18 +6681,38 @@ var SessionRecorder = class {
   frames = [];
   decisions = [];
   dropped = 0;
+  decisionsDropped = 0;
   /** The id of the last frame recorded, so a re-served one is counted rather than duplicated. */
   lastId = null;
+  /** When a tick got no frame at all. See `blind()`. */
+  blindTicks = [];
   /** Frames whose source id could not be used because it did not increase — see `frame`. */
   renumbered = 0;
-  /** A scan loop started: every frame until the next `begin` belongs to it. */
+  /**
+   * End the sitting without exporting it — the scan was thrown away, so the recording is too.
+   *
+   * Distinct from `begin()`, which starts the next one: a recorder that is neither running nor
+   * holding a finished sitting is what "no scan is being recorded" looks like, and `loop()` reads
+   * `active` to decide whether it is restarting a loop or starting a sitting.
+   */
+  abandon() {
+    this.start = null;
+    this.frames = [];
+    this.decisions = [];
+  }
+  /** Whether a recording is under way — so a caller can restart a loop without restarting one. */
+  get active() {
+    return this.start !== null;
+  }
+  /** A scan SITTING started: every frame until the next `begin` belongs to it. */
   begin(start) {
-    this.start = start;
+    this.start = { id: start.id, model: { ...start.model } };
     this.startedAt = this.wall();
     this.t0 = this.clock();
-    this.frames.length = 0;
-    this.decisions.length = 0;
+    this.frames = [];
+    this.decisions = [];
     this.dropped = 0;
+    this.decisionsDropped = 0;
     this.lastId = null;
     this.renumbered = 0;
   }
@@ -6337,8 +6728,10 @@ var SessionRecorder = class {
   get size() {
     return {
       frames: this.frames.length,
+      decisions: this.decisions.length,
       framesDropped: this.dropped,
-      renumbered: this.renumbered
+      renumbered: this.renumbered,
+      decisionsDropped: this.decisionsDropped
     };
   }
   /**
@@ -6350,30 +6743,79 @@ var SessionRecorder = class {
    * identify its frames passes `undefined`, and then every tick is a frame, because that is
    * genuinely all such a source knows.
    */
+  /**
+   * A tick asked for a frame and got none.
+   *
+   * THE SILENCE IS PART OF THE RECORDING (Codex audit, 2026-09-26). Only frames were written down,
+   * so a stretch where the camera produced nothing left no trace and a replay served the frame
+   * before it straight across the gap — inventing an unbroken run the live scan never had, and
+   * capturing a side the live scan did not. Bounded like the frames, and by the same capacity: a
+   * camera that never delivers must not grow this without limit.
+   */
+  blind() {
+    if (!this.start) return;
+    this.blindTicks.push(Math.round(this.clock() - this.t0));
+    while (this.blindTicks.length > this.capacity) this.blindTicks.shift();
+  }
   frame(dets, options = {}) {
     if (!this.start) return;
     const { frameId, inferMs, pixels } = options;
+    const now = Math.round(this.clock() - this.t0);
     const last = this.frames[this.frames.length - 1];
     if (frameId !== void 0 && last && frameId === this.lastId) {
       last.served += 1;
+      last.lastT = now;
       return;
     }
-    const next = last ? last.id + 1 : 0;
+    this.keep(
+      {
+        id: this.identify(frameId, last),
+        t: now,
+        served: 1,
+        detections: worthRecording(dets),
+        ...inferMs === void 0 ? {} : { inferMs: Math.round(inferMs * 10) / 10 },
+        ...pixels === void 0 ? {} : { pixels }
+      },
+      frameId
+    );
+  }
+  /**
+   * The id this frame will be recorded under.
+   *
+   * The id is the SOURCE's where it has one, and the frame's ordinal where it does not.
+   * `parseSession` requires it to increase, and a source with no identity would otherwise record
+   * every frame as the same one.
+   *
+   * A SOURCE WHOSE IDS GO BACKWARDS STILL PRODUCES A READABLE RECORDING. The browser's identity
+   * is the video's presentation time, which restarts at zero when a stream is replaced; a scan
+   * that switched camera mid-recording would otherwise write a session `parseSession` refuses —
+   * and a recording nobody can load is a recording that did not happen. The frame is kept, with
+   * the recorder's own ordinal standing in for an identity the source contradicted. It is not
+   * silent: `renumbered` counts it, so a session whose ids were not the camera's says so.
+   */
+  identify(frameId, last) {
     const supplied = frameId !== void 0 && (!last || frameId > last.id);
     if (frameId !== void 0 && !supplied) this.renumbered += 1;
-    const id = supplied ? frameId : next;
+    return supplied ? frameId : last ? last.id + 1 : 0;
+  }
+  /**
+   * Put a frame in the bounded buffer, and take out whatever no longer fits — the frame AND the
+   * decisions that rested on it.
+   *
+   * A DECISION OUTLIVING ITS FRAME IS A LEAK, not a tidiness problem: nothing else ever removed
+   * one, so a long sitting grew decisions without bound while its frames stayed at the capacity —
+   * 99 decisions held for 2 frames, measured. `finish()` filtered the EXPORT, which is why the
+   * growth was invisible from outside.
+   */
+  keep(frame, frameId) {
     this.lastId = frameId ?? null;
-    this.frames.push({
-      id,
-      t: Math.round(this.clock() - this.t0),
-      served: 1,
-      detections: worthRecording(dets),
-      ...inferMs === void 0 ? {} : { inferMs: Math.round(inferMs * 10) / 10 },
-      ...pixels === void 0 ? {} : { pixels }
-    });
-    if (this.frames.length > this.capacity) {
-      this.frames.shift();
+    this.frames.push(frame);
+    while (this.frames.length > this.capacity) {
+      const gone = this.frames.shift();
       this.dropped += 1;
+      const kept = this.decisions.filter((d) => d.frame !== gone.id);
+      this.decisionsDropped += this.decisions.length - kept.length;
+      this.decisions = kept;
     }
   }
   /**
@@ -6386,11 +6828,18 @@ var SessionRecorder = class {
   decision(kind, detail = {}) {
     const last = this.frames[this.frames.length - 1];
     if (!this.start || !last) return;
+    if (this.decisions.length >= DECISION_CAPACITY) {
+      this.decisions.shift();
+      this.decisionsDropped += 1;
+    }
     this.decisions.push({
       frame: last.id,
       t: Math.round(this.clock() - this.t0),
       kind,
-      detail: { ...detail }
+      // DEEP. The copy was one level over a value typed `Record<string, unknown>` whose actual
+      // callers supply arrays (`{ face, colors }`), so a caller that reused its array changed
+      // recorded history after the fact.
+      detail: cloneDetail(detail, "decision.detail")
     });
   }
   /**
@@ -6406,8 +6855,8 @@ var SessionRecorder = class {
    */
   finish(end) {
     if (!this.start || this.frames.length === 0) return null;
-    const ids = new Set(this.frames.map((f) => f.id));
-    return {
+    const lost = this.dropped + this.renumbered + this.decisionsDropped;
+    return parseSession({
       schema: SESSION_SCHEMA,
       id: this.start.id,
       startedAt: this.startedAt,
@@ -6415,14 +6864,22 @@ var SessionRecorder = class {
       conditions: { ...end.conditions },
       model: { ...this.start.model },
       truth: { ...end.truth },
-      // A DEEP copy, scores included: the session handed out must not alias the recorder's, or a
-      // caller that normalises the scores it was given changes what a later `finish()` reports.
-      frames: this.frames.map((f) => ({
-        ...f,
-        detections: f.detections.map((d) => ({ ...d, scores: [...d.scores ?? []] }))
-      })),
-      decisions: this.decisions.filter((d) => ids.has(d.frame)).map((d) => ({ ...d, detail: { ...d.detail } }))
-    };
+      frames: this.frames,
+      // Present even when empty, so a recording made by this version says "no silence observed"
+      // rather than "nothing known about silence" — the two are different to a replay.
+      blind: this.blindTicks,
+      decisions: this.decisions,
+      // WHAT THE RECORDING LOST TRAVELS WITH IT. `size` reported these to a developer watching and
+      // the export dropped them, so a recording whose beginning fell off the capacity — or whose
+      // ids are this recorder's ordinals rather than the camera's — arrived looking clean.
+      ...lost === 0 ? {} : {
+        recording: {
+          framesDropped: this.dropped,
+          renumbered: this.renumbered,
+          decisionsDropped: this.decisionsDropped
+        }
+      }
+    });
   }
 };
 
@@ -6474,8 +6931,20 @@ var Stillness = class {
   key = null;
   count = 0;
   since = 0;
-  /** The colours of the run's read, kept so a broken run can be told WHERE it broke. */
-  colors = null;
+  /**
+   * The last read seen, whatever became of the run it belonged to — the baseline a break is
+   * described against.
+   *
+   * IT OUTLIVES `reset()`, AND THAT IS THE POINT (2026-09-25). It used to be cleared there along
+   * with the run, while the flicker history was deliberately kept (D8) — so after a dropout the
+   * next read had nothing to compare against, `classify` never ran, and the history was never told
+   * the subject had changed. Measured: a flicker at position 2 between colours 1 and 4, then a
+   * dropout, then an entirely different face, and the scan went on naming position 2 and those two
+   * colours — a sticker of the side before last. The two fields answer different questions: the RUN
+   * is void after a reset, the SUBJECT is not, and this one is cleared by `forgetFlicker()`, which
+   * is where the caller says the subject really did change.
+   */
+  subject = null;
   /**
    * The frame the last counted read came from, or null when none has been counted or the source
    * cannot identify its frames.
@@ -6526,30 +6995,51 @@ var Stillness = class {
   offer(colors, now = performance.now(), frameId) {
     const key = colors.join(",");
     if (frameId !== void 0 && frameId === this.lastFrame) {
-      return this.count >= this.reads && now - this.since >= this.ms;
+      return this.settled(now);
     }
     if (frameId !== void 0) this.lastFrame = frameId;
     if (key === this.key) {
       this.count += 1;
     } else {
-      const previous = this.colors;
-      if (previous && previous.length === colors.length) {
-        const { only, forget } = classify(previous, colors);
-        if (forget) {
-          this.breaks.clear();
-          this.breakColours.clear();
-        }
-        if (only !== null) {
-          this.breaks.set(only, (this.breaks.get(only) ?? 0) + 1);
-          this.breakColours.set(only, [previous[only], colors[only]]);
-        }
-      }
+      this.noteBreak(colors);
       this.key = key;
       this.count = 1;
       this.since = now;
     }
-    this.colors = [...colors];
+    this.subject = [...colors];
+    return this.settled(now);
+  }
+  /**
+   * The verdict, in ONE place.
+   *
+   * It used to be written out twice — once on the repeated-frame path and once at the end — and two
+   * copies of an acceptance rule are two rules that can come to disagree about what "still" means,
+   * which is the single thing this class exists to say.
+   */
+  settled(now) {
     return this.count >= this.reads && now - this.since >= this.ms;
+  }
+  /**
+   * WHERE the run broke, when it broke in exactly one place.
+   *
+   * The gate keys on all nine, so ONE sticker flickering between red and orange — the detector's
+   * known weak pair — means no run ever completes and the scan simply never captures that side.
+   * That is a dead end with no message: the panel says "hold still" for as long as the user is
+   * willing to. The settle rule is deliberately NOT relaxed for the eight (a majority vote would
+   * let a face still being turned through the frame settle), so what is added is the missing
+   * SENTENCE: which sticker keeps changing, so the user can light it better or tap it afterwards.
+   * Recorded only for a single-position break, because two positions changing is a cube that moved,
+   * which needs no explaining.
+   */
+  noteBreak(colors) {
+    const previous = this.subject;
+    if (!previous || previous.length !== colors.length) return;
+    const { only, forget } = classify(previous, colors);
+    if (forget) this.forgetFlicker();
+    if (only !== null) {
+      this.breaks.set(only, (this.breaks.get(only) ?? 0) + 1);
+      this.breakColours.set(only, [previous[only], colors[only]]);
+    }
   }
   /**
    * The one position that keeps breaking the run on its own, or null.
@@ -6558,9 +7048,9 @@ var Stillness = class {
    * When several positions qualify the noisiest wins — naming one sticker is the whole value, and
    * a list of three is the same "hold still" with more words.
    */
-  flickering(atLeast = 3) {
+  flickering(atLeast2 = 3) {
     let best = null;
-    let most = atLeast - 1;
+    let most = atLeast2 - 1;
     for (const [index, count2] of this.breaks) {
       if (count2 > most) {
         most = count2;
@@ -6596,6 +7086,10 @@ var Stillness = class {
    * about a run: `classify`'s `forget` clears it when the subject actually changes, and
    * `forgetFlicker()` clears it when the caller knows it has.
    *
+   * The comparison baseline does not go either, for the same reason: `classify` needs something to
+   * compare the next read against, or a subject change across the dropout is invisible and the
+   * history it should have cleared keeps naming a sticker of the side before last.
+   *
    * The last counted frame does not go either, and for a related reason (D2). A reset means the run
    * is void, not that the camera delivered something new — so if the very next offer carries the
    * same frame id, it is still the same picture and still not a second look. Clearing it here would
@@ -6604,7 +7098,6 @@ var Stillness = class {
    */
   reset() {
     this.key = null;
-    this.colors = null;
     this.count = 0;
     this.since = 0;
   }
@@ -6618,6 +7111,7 @@ var Stillness = class {
   forgetFlicker() {
     this.breaks.clear();
     this.breakColours.clear();
+    this.subject = null;
   }
   /**
    * Forget which frame was last counted — the camera itself changed, so its ids mean nothing here.
@@ -6661,8 +7155,53 @@ var STABLE = 3;
 var STABLE_MS = 500;
 var TICK_FAIL_MS = 3e3;
 var INFERENCE_TIMEOUT_MS = 15e3;
+var PIXELS_TIMEOUT_MS = 2e3;
+var PROBE_TIMEOUT_MS = 1e4;
+var CONFIRM_ASK = (req) => [
+  "Show the ",
+  { bold: GUIDE[req.face].color },
+  " side again, with ",
+  { bold: GUIDE[req.up].color },
+  " facing up."
+];
 var INFERENCE_TIMEOUT = "InferenceTimeoutError";
 var CHECK_BEAT_MS = 350;
+var identityLine = (displaced) => displaced ? (
+  // NOT "And which…": `idleLine` repeats this on every quiet report, and a line that opens with
+  // a conjunction reads as the back half of a sentence nobody heard the front of.
+  "Which colour is in the middle of the side saved before this one?"
+) : (
+  // "SHOWN HERE", NEVER "the side you are holding" (Codex audit, 2026-09-25). A question stands
+  // while the scan goes on reading — that is the design — so by the time it is read the person
+  // may be holding something else entirely, and the sentence was asserting what is in their
+  // hand. The nine squares beside it are the subject, and they do not move.
+  "Which colour is in the middle of the side shown here?"
+);
+var IDENTITY_TITLE = "Which colour is in the middle?";
+function identityNotice(claimed, displaced) {
+  return {
+    title: IDENTITY_TITLE,
+    // NAMED BY COLOUR, never by position: a capture is a colour, and where that colour sits is the
+    // arrangement's business (ADR 0001). %1 is the colour both sides are reading as.
+    //
+    // A QUESTION MUST OFFER THE ANSWER IT ASKS FOR (owner, 2026-09-25, holding the true blue side
+    // while the logo side sat in blue's slot). This asked "pick the colour in the middle of the
+    // side you are holding" and then left that colour off the list, which reads as the scan calling
+    // the person wrong. The held colour is offered now, so the question is answerable — and the
+    // sentence says what choosing it does, because taking a side back is not something to discover
+    // afterwards.
+    //
+    // NO FIRST PERSON HERE. The scan has two voices and they are not interchangeable: the spoken
+    // cues are the child's ("Got the yellow side!", "Let me check your cube"), and this card is the
+    // one an adult reads. Of the app's card bodies this was the only one that said "I".
+    //
+    // AND IT NAMES A COLOUR, NEVER A SIDE — "the side you just named" said a person had named a
+    // side, which is exactly what they cannot do here (see `IDENTITY_TITLE`).
+    body: displaced ? "%1 has been given to the other side. This is the reading that held %1 before \u2014 pick the colour in the middle of it." : "Another side is already saved as %1, and the middle sticker here reads %1 too \u2014 they cannot both be right. Pick the colour in the middle of the side shown here. Choosing %1 puts the other side back in question instead.",
+    params: [GUIDE[slotOf(claimed)].color],
+    tone: "info"
+  };
+}
 function sideClaimed(colors) {
   const centre = colors[4];
   return centre !== void 0 && isColour(centre) ? slotOf(centre) : void 0;
@@ -6789,6 +7328,45 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
   /** `headless`: draw nothing, and let the host draw from 'scan-progress'. */
   headless = false;
   faces = {};
+  /**
+   * How each held side came by its slot — parallel to `faces`, and dropped with the capture.
+   *
+   * A SEPARATE MAP RATHER THAN A FIELD ON THE CAPTURE. A `ColorFace` is what the detector read;
+   * where it was FILED is a fact about this panel's bookkeeping, and the same reading is handed
+   * to the assembler, rotated, repaired and handed back — so a provenance carried inside it would
+   * have to survive five transformations that have no reason to know about it. Every write goes
+   * through `capture()` or names this map beside the `faces[...] =` it belongs to, and
+   * `forgetCapture` is the one place both are dropped together.
+   */
+  filedBy = {};
+  /**
+   * The capture whose identity is being asked about, and the colour its centre read as.
+   *
+   * Held rather than thrown away, which is the whole design (plan §3): the reading arrived, the
+   * person can see it, and the only thing missing is which side it is. One at a time, and always
+   * the MOST RECENT colliding read — the question is about the side in the hand, and the side in
+   * the hand is the one just shown.
+   */
+  identityAsk = null;
+  /** Serial for the above: every question raised gets the next one, and never reuses one. */
+  identitySerial = 0;
+  /**
+   * Slots filled by an answer to that question, and the colour their centre had READ.
+   *
+   * KEPT SO THE DECISION CAN BE REOPENED (plan §5, last bullet). The filed capture has had its
+   * centre written from the slot, so it can no longer say what was actually read; without this,
+   * `reopenIdentity` could only hand the side back to a camera that will read the same centre
+   * again and arrive at the same question having lost the reading.
+   *
+   * THE COLOUR, NOT THE CAPTURE. Keeping the capture as delivered looked like the careful choice
+   * and is the wrong one: a sticker corrected by hand since then lives on the FILED capture, so a
+   * reopen from a stored copy would silently undo it. `reopenIdentity` restores the read centre
+   * onto whatever is filed now, which is the same reading plus every correction made to it.
+   *
+   * Dropped with the capture in `forgetCapture`, and by `replaceCapturedSide`, whose re-read is a
+   * different reading altogether — there is then no answer left to reopen.
+   */
+  disputed = {};
   /** The 9 colour classes in view right now, or null when no clean side is; rides on every report. */
   live = null;
   /** The latest frame's boxes in picture coordinates, for `ScanProgress.seen`. */
@@ -6819,12 +7397,6 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
    * `onTick` knows the timing — and is committed once per tick, so a record is never half a tick.
    */
   trace = new ScanTrace();
-  /**
-   * The centre resolution's thread (D3, `dev-docs/scan-pipeline-audit-2026-09-23.md` §3).
-   *
-   * One per panel, like the misread decoder and for the same reason: it is a module that parses in
-   * about a millisecond and is spawned only by a centre collision, which most scans never reach.
-   */
   /**
    * The session recorder (D9/P2, `dev-docs/scan-pipeline-audit-2026-09-23.md` §3 and §4 Stage 0.1).
    *
@@ -6875,6 +7447,21 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
    * describing this case while being unreachable from it.
    */
   noFrameSince = null;
+  /**
+   * The floor on the tick period, in milliseconds.
+   *
+   * INJECTABLE FOR ONE REASON: the replay harness advertises a `tickMs` and could not deliver it.
+   * A corpus run advances faked timers in batches of `tickMs` while the panel went on scheduling
+   * itself at this floor, so `tickMs: 60` and `tickMs: 240` both inferred every 60 ms and differed
+   * only in how much simulated time passed per batch — and the cadence sweep the whole harness
+   * exists for was measuring one cadence three times. The stillness gate's required run length is a
+   * function of the frame rate, so a cadence that is not really varied is a sweep that proves
+   * nothing (T1).
+   *
+   * It is a floor, not the period: the live app still ticks as fast as the runtime answers, and
+   * nothing in the app writes to this.
+   */
+  tickFloorMs = TICK_FLOOR_MS;
   /** How long the last inference took, so the tick can follow the runtime — see TICK_FLOOR_MS. */
   lastInferenceMs = 0;
   /**
@@ -7079,6 +7666,11 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     this.notice = null;
     this.suspects = [];
     this.dropDiagnosis();
+    if (this.identityAsk)
+      this.notice = identityNotice(
+        this.identityAsk.claimed,
+        this.identityAsk.refused !== void 0
+      );
   }
   /**
    * Why the camera must not open right now — one answer, consulted by every entry point.
@@ -7152,14 +7744,21 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     this.cam.releaseCamera();
     this.still.forgetFrames();
     this.still.forgetFlicker();
-    const detector = await this.ensureDetector();
-    if (!this.cam.current(gen)) return;
     const slowOpen = setTimeout(() => {
       if (this.cam.current(gen) && this.cam.device === null) {
         this.report("error", this.tinted("err", SLOW_OPEN));
       }
     }, SLOW_OPEN_MS);
     try {
+      const detector = await this.within(
+        this.ensureDetector(),
+        PROBE_TIMEOUT_MS,
+        "the scanner runtime"
+      ).catch((cause) => {
+        if (this.cam.current(gen)) this.cam.forgetPendingDetector();
+        throw cause;
+      });
+      if (!this.cam.current(gen)) return;
       const facing = this.getAttribute("facing");
       const facingMode = facingOf(facing);
       const pinned = this.getAttribute("device-id") || void 0;
@@ -7167,25 +7766,61 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
       if (!this.cam.current(gen)) return;
       this.cam.device = detector.device;
       if (startBtn) startBtn.hidden = true;
-      if (!this.cam.modelLoaded) {
-        this.report("loading", "Camera ready \u2014 loading the model\u2026");
-        await this.loadModel(detector, gen);
-        if (!this.cam.current(gen)) return;
-        this.cam.modelLoaded = true;
-        this.announceRuntime(detector);
-      }
+      if (!await this.ensureModel(detector, gen)) return;
       this.clearCameraFault();
-      const pending = this.pendingOpening;
-      this.pendingOpening = null;
-      const phase = pending?.phase ?? (this.awaiting ? "confirm" : "scanning");
-      const opening2 = pending?.words ?? (this.awaiting ? this.confirmWords(this.awaiting) : [OPENING]);
-      if (fellBack) this.loop(phase, this.tinted("err", PINNED_GONE), " ", ...opening2);
-      else this.loop(phase, ...opening2);
+      this.resumeLoop(fellBack);
     } catch (err) {
       this.startFailed(err, gen, startBtn);
     } finally {
       clearTimeout(slowOpen);
     }
+  }
+  /**
+   * The model, loaded behind the live preview — false where this attempt was superseded.
+   *
+   * Its own unit since 2026-09-25, because it is the half of `start()` that is about the MODEL: a
+   * detector owns it — the browser's runtime, loaded as its own module off the main thread, or the
+   * native plugin — and the panel only waits and reports, with the wasm-path and worker subtleties
+   * behind the `Detector` seam.
+   *
+   * DELIBERATELY NOT SPELLING THE BROWSER RUNTIME'S PACKAGE NAME, for the reason `announceRuntime`
+   * gives: `vendor-bundles.test.mjs` greps the built bundle for that exact string as its marker for
+   * "the runtime got inlined into the panel", which is the regression that quietly puts inference
+   * back on the page's thread. esbuild keeps a JSDoc block attached to a declaration, so this
+   * comment DID reach the bundle and DID trip that guard — which is the guard working.
+   *
+   * THE GENERATION FIRST, THEN THE FLAG. Setting it before the check let a superseded attempt mark
+   * the session's model loaded — and `use()` may have replaced the detector in the meantime, in
+   * which case the flag was about a different model entirely and the next tick called `next()` on
+   * a runtime that had never loaded one.
+   */
+  async ensureModel(detector, gen) {
+    if (this.cam.modelLoaded) return true;
+    this.report("loading", "Camera ready \u2014 loading the model\u2026");
+    await this.loadModel(detector, gen);
+    if (!this.cam.current(gen)) return false;
+    this.cam.modelLoaded = true;
+    this.announceRuntime(detector);
+    return true;
+  }
+  /**
+   * Hand the scan back its words after a camera opened.
+   *
+   * The instruction `loop()` could not give because the camera was dark, given now. A camera
+   * reopening mid-flow (after painting, after a done-scan correction) otherwise resumes where the
+   * scan was: a pending confirm request keeps its phase and its ask.
+   *
+   * Its own unit since 2026-09-25: `start()` measured complexity 18, and three of those branches
+   * were this one decision — which phase, which words, and whether to say the pinned camera is
+   * gone — none of which is about opening anything.
+   */
+  resumeLoop(fellBack) {
+    const pending = this.pendingOpening;
+    this.pendingOpening = null;
+    const phase = pending?.phase ?? (this.awaiting ? "confirm" : "scanning");
+    const opening2 = pending?.words ?? (this.awaiting ? this.confirmWords(this.awaiting) : [OPENING]);
+    if (fellBack) this.loop(phase, this.tinted("err", PINNED_GONE), " ", ...opening2);
+    else this.loop(phase, ...opening2);
   }
   /**
    * Wait for the model, but not forever, and say so while waiting.
@@ -7215,7 +7850,12 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
       this.notice = {
         title: "The model is taking a while",
         tone: "info",
-        body: "The scanner downloads its model once, and this connection is slow. It will start on its own when the download finishes \u2014 or paint the cube by hand instead."
+        // NAMES THE DELAY, NEVER A CAUSE FOR IT (Codex audit, 2026-09-25). This said "this
+        // connection is slow" and "when the download finishes", and nothing here times a
+        // network or knows one is involved: the NATIVE runtime loads a model already on the
+        // machine down this same path, where both claims are simply false. What is measured is
+        // that the model is not ready yet.
+        body: "The scanner is still getting its model ready. It will start on its own when that finishes \u2014 or paint the cube by hand instead."
       };
       this.report("loading", "Still loading the model\u2026");
     }, SLOW_LOAD_MS);
@@ -7242,7 +7882,9 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
         this.cameraFault = {
           title: "The model did not load",
           tone: "err",
-          body: "The scanner could not finish downloading its model. Check the connection and press Start to try again \u2014 or paint the cube by hand, which needs no model."
+          // The same rule: what failed is the model getting ready, and "check the connection"
+          // is an instruction to fix something nobody measured.
+          body: "The scanner could not get its model ready. Press Start to try again \u2014 or paint the cube by hand, which needs no model."
         };
         this.notice = this.cameraFault;
       } else if (waiting) {
@@ -7333,11 +7975,17 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
   }
   reset() {
     this.captureEpoch += 1;
+    this.identityAsk = null;
+    this.recorder.abandon();
     this.forgetObservation();
     this.invalidateReading();
     this.settled.clear();
     this.pendingOpening = null;
-    for (const f of FACES) delete this.faces[f];
+    for (const f of FACES) {
+      delete this.faces[f];
+      delete this.filedBy[f];
+      delete this.disputed[f];
+    }
     this.scheme = null;
     this.buildDots();
   }
@@ -7370,24 +8018,41 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
       globalThis.__cubusScanTrace = this.trace;
     }
     this.lastProgressAt = performance.now();
+    this.beginRecording(phase);
+  }
+  /**
+   * The recorder and the pixel probe, decided once per loop.
+   *
+   * Read HERE for the trace's reason: a scan must not start recording halfway through a side. Its
+   * own unit since 2026-09-25 — `loop()` measured complexity 17, and this is the one part of it
+   * that is about instruments rather than about the camera.
+   */
+  beginRecording(phase) {
     this.recording = recordEnabled();
     this.pixelProbe = pixelProbeEnabled();
-    if (this.recording) {
+    if (this.recording && this.recorder.active) {
+      this.traceEvent("loop-restarted", { phase });
+    } else if (this.recording) {
       this.recorder.begin({
         id: `scan-${(/* @__PURE__ */ new Date()).toISOString()}`,
         // What the scan knows. The cube, the conditions and the TRUTH are a person's to supply at
         // `finish()` — a corpus labelled by the detector measures nothing (§4.1), and one labelled
         // `cube: 'unknown'` is worse than no entry because it looks like a measurement.
+        // NO FABRICATED IDENTITY. `hash` used to be `loadedModel ?? 'unknown'`, so every native
+        // recording — where the plugin compiles the bundled model itself and exposes nothing —
+        // claimed the identity `'unknown'`, which two different models share. What is actually
+        // known is WHERE the model came from, and that is recorded as `source`; `hash` is left
+        // absent until a runtime can answer the question it asks.
         model: {
-          hash: this.cam.chosen?.loadedModel ?? "unknown",
           name: this.cam.chosen?.loadedModel ?? "bundled",
-          runtime: this.cam.runtime ?? "unknown"
+          runtime: this.cam.runtime ?? "unknown",
+          ...this.cam.chosen?.loadedModel ? { source: this.cam.chosen.loadedModel } : {}
         }
       });
       globalThis.__cubusScanRecord = this.recorder;
     }
     this.cam.beginLoop(
-      () => Math.max(TICK_FLOOR_MS, Math.round(this.lastInferenceMs)),
+      () => Math.max(this.tickFloorMs, Math.round(this.lastInferenceMs)),
       () => void this.onTick()
     );
   }
@@ -7404,30 +8069,24 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
    * about the camera, what it shows is a question about the cube.
    */
   async onTick() {
-    if (this.cam.device === null || !this.cam.chosen || !this.cam.modelLoaded) return;
-    const epoch = this.cam.frameEpoch();
-    if (this.busy === epoch) return;
+    const ready = this.tickable();
+    if (ready === null) return;
+    const { detector, epoch } = ready;
     this.busy = epoch;
     const started = performance.now();
-    let deadline;
     try {
-      const output = await Promise.race([
-        this.cam.chosen.next(),
-        new Promise((_resolve, reject2) => {
-          deadline = setTimeout(() => {
-            const timedOut = new Error(
-              `the detector did not answer within ${Math.round(INFERENCE_TIMEOUT_MS / 1e3)} seconds`
-            );
-            timedOut.name = INFERENCE_TIMEOUT;
-            reject2(timedOut);
-          }, INFERENCE_TIMEOUT_MS);
-        })
-      ]);
+      const output = await this.within(
+        detector.next(),
+        INFERENCE_TIMEOUT_MS,
+        "the detector",
+        INFERENCE_TIMEOUT
+      );
       if (!this.cam.freshFrame(epoch)) return;
       this.lastInferenceMs = performance.now() - started;
       this.tickNote = {};
       if (output === null) {
         this.commitTick({ outcome: "no-frame" });
+        this.recorder.blind();
         this.tickFailingSince = null;
         this.noFrameTick();
         return;
@@ -7446,9 +8105,23 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
       });
       this.failingTick(err);
     } finally {
-      clearTimeout(deadline);
       if (this.busy === epoch) this.busy = null;
     }
+  }
+  /**
+   * Whether this tick may run at all, and what it runs against.
+   *
+   * Four conditions that all mean "there is nothing to do": no camera, no detector, no model, and
+   * a tick of this epoch already in flight. Returning the detector with the epoch is what lets the
+   * body use it without re-reading a field that another tick may have changed — and it takes four
+   * branches out of a method ESLint measured at 12.
+   */
+  tickable() {
+    const detector = this.cam.chosen;
+    if (this.cam.device === null || !detector || !this.cam.modelLoaded) return null;
+    const epoch = this.cam.frameEpoch();
+    if (this.busy === epoch) return null;
+    return { detector, epoch };
   }
   /**
    * The tick answered, with no frame.
@@ -7477,8 +8150,33 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
   /** A frame arrived: decide whether there is a read worth acting on, and hand it on if so. */
   async readFrame(output, epoch) {
     const began = performance.now();
+    const dets = this.decodeFrame(output, epoch);
+    const fit = this.fitFrame(output, dets, began);
+    if (dets.length > 0) this.lastSightingAt = performance.now();
+    this.seen = seenIn(output, dets, fit.ok ? fit.face.boxes : void 0);
+    if (!fit.ok) {
+      this.abstain(fit);
+      return;
+    }
+    const settled = this.still.offer(fit.face.colors, performance.now(), output.frameId);
+    this.lastFitAt = performance.now();
+    this.showPreview(fit.face.colors);
+    if (!settled) {
+      this.stillReading(fit);
+      return;
+    }
+    await this.fileFitted(output, epoch, fit);
+  }
+  /**
+   * The tensor as boxes — and, while recording, as the WIDER set a replay needs.
+   *
+   * Lifted out of `readFrame` (2026-09-25), which ESLint measured at cyclomatic complexity 26. The
+   * split follows what each half is about: this one is about the tensor and the instruments, and
+   * nothing in it knows what a cube is.
+   */
+  decodeFrame(output, epoch) {
+    const dets = detectionsFromOutput(output);
     const wide = this.recording ? detectionsFromOutput(output, { confThreshold: NEAR_FLOOR_RECORD }) : null;
-    const dets = wide ? wide.filter((d) => d.confidence >= MIN_STICKER_CONFIDENCE) : detectionsFromOutput(output);
     if (this.pixelProbe) void this.probePixels(output, epoch, wide ?? dets);
     if (wide) {
       this.recorder.frame(wide, {
@@ -7486,48 +8184,58 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
         inferMs: this.lastInferenceMs
       });
     }
+    return dets;
+  }
+  /** The fit, and what the trace records beside it. Unchanged but for being its own unit. */
+  fitFrame(output, dets, began) {
     let fit;
     if (this.tracing) {
-      const frame2 = traceFrame(output, {}, dets);
-      fit = frame2.fit;
+      const frame = traceFrame(output, {}, dets);
+      fit = frame.fit;
       this.note({
-        ...frameNote(frame2),
+        ...frameNote(frame),
         traceMs: Math.round((performance.now() - began) * 10) / 10
       });
     } else {
       fit = fitFace(dets);
     }
-    if (dets.length > 0) this.lastSightingAt = performance.now();
-    this.seen = seenIn(output, dets, fit.ok ? fit.face.boxes : void 0);
-    if (!fit.ok) {
-      this.still.reset();
-      this.showPreview(null);
-      const reading = this.lastLine === _AiScanPanel.READING_LINE && !this.stuck() && performance.now() - this.lastFitAt < _AiScanPanel.READING_GRACE_MS;
-      this.report(
-        this.awaiting ? "confirm" : "scanning",
-        reading ? _AiScanPanel.READING_LINE : this.idleLine()
-      );
-      this.note({ outcome: "abstain", reason: fit.reason, geometry: fit.geometry });
-      return;
-    }
-    const settled = this.still.offer(fit.face.colors, performance.now(), output.frameId);
-    this.lastFitAt = performance.now();
-    this.showPreview(fit.face.colors);
-    if (!settled) {
-      const flicker = this.still.flickering();
-      this.report(
-        this.awaiting ? "confirm" : "scanning",
-        this.stuck() ? this.stuckLine() : flicker === null ? _AiScanPanel.READING_LINE : this.flickerLine(flicker)
-      );
-      this.note({ outcome: "reading", ...this.readNote(fit.face), flicker });
-      return;
-    }
+    return fit;
+  }
+  /** No face in this frame: forget the run and say the one thing there is to say. */
+  abstain(fit) {
+    this.still.reset();
+    this.showPreview(null);
+    const reading = this.lastLine === _AiScanPanel.READING_LINE && !this.stuck() && performance.now() - this.lastFitAt < _AiScanPanel.READING_GRACE_MS;
+    this.report(
+      this.awaiting ? "confirm" : "scanning",
+      reading ? _AiScanPanel.READING_LINE : this.idleLine()
+    );
+    this.note({ outcome: "abstain", reason: fit.reason, geometry: fit.geometry });
+    return;
+  }
+  /** A face, not yet held still: say WHY, when the answer is one sticker. */
+  stillReading(fit) {
+    const flicker = this.still.flickering();
+    this.report(
+      this.awaiting ? "confirm" : "scanning",
+      this.stuck() ? this.stuckLine() : flicker === null ? _AiScanPanel.READING_LINE : this.flickerLine(flicker)
+    );
+    this.note({ outcome: "reading", ...this.readNote(fit.face), flicker });
+    return;
+  }
+  /**
+   * A read that has settled: take the paint while the frame is still in hand, then file it.
+   *
+   * The whole of the second half of `readFrame`, which the comment below already drew the line
+   * under — everything before it is about the camera, everything from here is about the cube.
+   */
+  async fileFitted(output, epoch, fit) {
     this.note({ outcome: "settled", ...this.readNote(fit.face) });
     const frame = output.frame ?? await this.framePixels(output, epoch);
     const lab = frame && fit.face.boxes ? stickerLab(frame, fit.face.boxes, IMG_SIZE) ?? void 0 : void 0;
     if (!this.cam.freshFrame(epoch)) return;
-    const read = fit.face.ordering === "sorted" ? { ...fit.face, ordering: "sorted" } : fit.face;
-    this.fileSettledRead(lab ? { ...read, lab } : read);
+    this.fileSettledRead(lab ? { ...fit.face, lab } : fit.face);
+    this.still.reset();
   }
   /**
    * The pixels of the frame a fit was made on, from a detector that did not ship them (D7).
@@ -7545,11 +8253,46 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     const detector = this.cam.chosen;
     if (!detector?.framePixels || output.frameId === void 0) return null;
     try {
-      const frame = await detector.framePixels(output.frameId);
+      const frame = await this.within(
+        detector.framePixels(output.frameId),
+        PIXELS_TIMEOUT_MS,
+        "the frame behind a settled read"
+      );
       return this.cam.freshFrame(epoch) ? frame : null;
     } catch (cause) {
       console.warn("[ai-scan-panel] the frame behind a settled read could not be read", cause);
       return null;
+    }
+  }
+  /**
+   * `work`, or a rejection once `ms` have passed — the bound every call across the native bridge
+   * needs and this one did not have.
+   *
+   * WHY IT MATTERS HERE SPECIFICALLY (2026-09-25). `onTick`'s own timeout protects the INFERENCE,
+   * and by the time the pixels are asked for that promise has already resolved — so a plugin that
+   * never answered this second request held the tick's `busy` guard for ever. Measured: no further
+   * inference, no capture and no error, sixty seconds after a hung fetch. The scan simply stopped,
+   * with nothing on screen saying it had.
+   *
+   * Losing the pixels costs a recovery path; losing the loop costs the scan. So the timeout
+   * REJECTS and the caller falls back to no pixels, which is exactly how the runtimes that never
+   * had a pixel path behave.
+   */
+  async within(work, ms, what, name) {
+    let timer;
+    try {
+      return await Promise.race([
+        work,
+        new Promise((_, reject2) => {
+          timer = setTimeout(() => {
+            const out = new Error(`${what} did not arrive within ${Math.round(ms / 1e3)} seconds`);
+            if (name !== void 0) out.name = name;
+            reject2(out);
+          }, ms);
+        })
+      ]);
+    } finally {
+      if (timer !== void 0) clearTimeout(timer);
     }
   }
   /**
@@ -7566,7 +8309,7 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     if (clustered.length < PIXEL_PROBE_MIN_NEIGHBOURS) return;
     this.pixelProbeAt = now;
     try {
-      const frame = await this.framePixels(output, epoch);
+      const frame = output.frame ?? await this.framePixels(output, epoch);
       if (!frame) return;
       await savePixelProbe(frame, clustered);
     } catch (cause) {
@@ -7698,7 +8441,6 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
         "scanning",
         "This cube is already scanned \u2014 tap a sticker to fix one, or start the scan over for a different cube."
       );
-      this.still.reset();
       return;
     }
     if (this.sidesHeld() >= FACES.length) {
@@ -7707,8 +8449,12 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     }
     const inHand = this.sideInHand(read);
     if (inHand) {
+      if (this.filedBy[inHand] === "assigned" && read.colors[4] === colourOfSlot(inHand)) {
+        this.filedBy[inHand] = "centre";
+        delete this.disputed[inHand];
+      }
       this.traceEvent("turned-away", {
-        face: inHand.slot,
+        face: inHand,
         colors: [...read.colors],
         why: "the same side again"
       });
@@ -7717,11 +8463,10 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
       this.report(
         "scanning",
         "Already have the ",
-        this.bold(GUIDE[inHand.slot].color),
+        this.bold(GUIDE[inHand].color),
         " side",
         named ? ` \u2014 still need ${named}.` : " \u2014 show a different one."
       );
-      this.still.reset();
       return;
     }
     this.fileNewSide(read, claim);
@@ -7734,31 +8479,34 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
    * as — `'side'`, or `'reread'` for a side that was already in hand.
    */
   fileNewSide(read, claim, kind = "side") {
-    if (claim === void 0) {
-      this.report(
-        "scanning",
-        this.tinted("err", "Couldn't read this side's centre \u2014 keep showing it.")
-      );
-      return;
-    }
     const holder = this.faces[claim];
     if (holder) {
       const free = FACES.filter((f) => this.faces[f] === void 0);
+      const matches = this.heldSidesMatching(read);
+      if (matches.length > 0) {
+        this.shownAgain = true;
+        this.report(
+          "scanning",
+          ...matches.length === 1 ? [
+            "Already have the ",
+            this.bold(GUIDE[matches[0]].color),
+            " side \u2014 its middle sticker read as another colour this time. Show a different one."
+          ] : [
+            "That side reads like more than one side already saved, so it cannot be placed. Show a different one."
+          ]
+        );
+        return;
+      }
       if (free.length === 1) {
         this.fileLastSide(free[0], read, kind);
         return;
       }
-      this.report(
-        "scanning",
-        "Two sides are reading as the ",
-        this.bold(GUIDE[claim].color),
-        " side \u2014 show them again, or tap a sticker to fix one."
-      );
+      this.askIdentity(read, colourOfSlot(claim));
       return;
     }
     this.traceEvent("captured", { face: claim, colors: [...read.colors] });
     this.lastProgressAt = performance.now();
-    this.capture(claim, read, kind);
+    this.capture(claim, read, kind, "centre");
   }
   /**
    * The sixth side, whose centre nobody needs to read.
@@ -7786,11 +8534,159 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
    * a swap. Most swaps do not assemble and are refused; a measured ~1.3% of them do. The scan
    * already asks for the missing side by name once five are in ("still need WHITE"), which is what
    * makes the logo face the last one in the ordinary flow.
+   *
+   * WHAT THE CALLER CHECKS BEFORE REACHING HERE, and why it is not enough: the read's eight must
+   * not already name a side in the set (`sideByEight`), which rules out a filed side being
+   * re-shown with a misread centre — the one failure elimination alone cannot see. It does not
+   * rule out the ordering above, because in a swap the two sides genuinely are different sides;
+   * only the slots are exchanged. That case is the owner's stated limit, not an oversight.
    */
   fileLastSide(slot, read, kind) {
     this.traceEvent("captured", { face: slot, colors: [...read.colors] });
     this.lastProgressAt = performance.now();
-    this.capture(slot, withCentre(read, colourOfSlot(slot)), kind);
+    this.capture(slot, withCentre(read, colourOfSlot(slot)), kind, "assigned");
+  }
+  /**
+   * Raise — or refresh — the open identity question about the capture in hand.
+   *
+   * ONE QUESTION AT A TIME, and always about the latest colliding read. A person shows a side, the
+   * scan cannot name it, and while they turn the cube looking for a way out the same side settles
+   * again and again: stacking those would be a queue of questions about one piece of cardboard.
+   * A DIFFERENT side colliding replaces it for the same reason — the question is about what is in
+   * the hand now, and the reading in hand is the one just settled.
+   *
+   * The notice is what pins it: `message` is overwritten by the next tick, and a question that
+   * disappears within 60 ms is not a question (see `ScanNotice`).
+   */
+  askIdentity(read, claimed) {
+    this.openIdentity(read, claimed);
+    this.report("scanning", identityLine(false));
+  }
+  /**
+   * The question's STATE, without saying anything — the half `reopenIdentity` needs on its own.
+   *
+   * Its two callers differ in how the words get out: from the camera path the loop is already
+   * running and a plain report is right, while a reopen may have to restart the loop (and reopen
+   * the camera) and must set this first so that loop's own report carries the question.
+   */
+  openIdentity(read, claimed, refused) {
+    const standing = this.identityAsk;
+    const same = standing !== null && standing.claimed === claimed && sameSide(read.colors, standing.capture.colors);
+    const carried = same ? standing.refused : refused;
+    if (!same) this.identitySerial += 1;
+    const id = same ? standing.id : this.identitySerial;
+    this.identityAsk = carried === void 0 ? { id, capture: read, claimed } : { id, capture: read, claimed, refused: carried };
+    this.traceEvent("turned-away", {
+      colors: [...read.colors],
+      why: refused === void 0 ? "two sides claim this colour \u2014 asked which side it is" : "displaced by an answer \u2014 asked what the earlier reading is"
+    });
+    this.notice = identityNotice(claimed, refused !== void 0);
+  }
+  /**
+   * The open question as a host draws it, with the free colours taken AS THEY ARE NOW.
+   *
+   * Null once no colour is free: six sides are held, so there is nowhere to put this capture and
+   * the question has nothing it could be answered with. `answerIdentity` refuses on the same
+   * grounds rather than trusting this to have been read first.
+   */
+  identityRequest() {
+    const ask = this.identityAsk;
+    if (!ask) return null;
+    const free = FACES.filter((f) => this.faces[f] === void 0).map((f) => colourOfSlot(f));
+    const choices = free.length > 0 && !free.includes(ask.claimed) && ask.refused !== ask.claimed ? [...free, ask.claimed] : [...free];
+    return choices.length === 0 ? null : {
+      id: ask.id,
+      colors: [...ask.capture.colors],
+      claimed: ask.claimed,
+      displaced: ask.refused !== void 0,
+      choices: choices.sort((a, b) => a - b)
+    };
+  }
+  /**
+   * Answer it: the capture in hand is the side whose centre is `colour`.
+   *
+   * THE DEDICATED IDENTITY-CORRECTION OPERATION (plan §3). `setSticker` refuses index 4, and
+   * correctly — an ordinary sticker edit must not silently become an identity claim — so naming a
+   * side is its own call with its own rules: only while a question stands, only a colour that
+   * question OFFERS — every free one, plus the claimed one, which displaces (see below) — and
+   * always filed `'assigned'`, because the slot came from a person and not from a measurement
+   * (`CaptureBy`).
+   *
+   * NAMING A COLOUR A SIDE ALREADY HOLDS TAKES THAT SIDE BACK (owner's call, 2026-09-25, replacing
+   * the refusal this shipped with). The person holding the true blue side, while the logo side sat
+   * in blue's slot by its own misread centre, had no honest answer on offer and no way to correct
+   * the other side: `disputed` covers only a slot an ANSWER filled, and `setSticker` refuses index
+   * 4. Skipping then left elimination to file the two swapped — five of the seven collisions in
+   * `centre-collision.test.ts`.
+   *
+   * Bounded on every side, so a person's answer can cost an answer but never a side: only the
+   * CLAIMED colour, never some other side's; only while a slot is free for the displaced reading;
+   * never a colour a person has just given away (`refused`); and the displaced capture is KEPT and
+   * asked about rather than dropped.
+   */
+  answerIdentity(colour, id) {
+    const ask = this.identityAsk;
+    if (!ask || !isColour(colour)) return;
+    if (id !== void 0 && id !== ask.id) return;
+    if (this.heldSidesMatching(ask.capture).length > 0) {
+      this.retireIdentity();
+      return;
+    }
+    const slot = slotOf(colour);
+    const held = this.faces[slot];
+    if (held) {
+      if (colour !== ask.claimed || ask.refused === colour) return;
+      if (FACES.every((f) => this.faces[f] !== void 0)) return;
+    }
+    this.identityAsk = null;
+    this.notice = null;
+    this.disputed[slot] = { claimed: ask.claimed };
+    this.traceEvent("captured", { face: slot, colors: [...ask.capture.colors] });
+    this.lastProgressAt = performance.now();
+    this.capture(slot, withCentre(ask.capture, colour), "side", "assigned");
+    if (held) {
+      this.openIdentity(held, colour, colour);
+      this.report("scanning", identityLine(true));
+    }
+  }
+  /**
+   * Set it aside: this capture is not placed, and the scan carries on.
+   *
+   * A WAY OUT IS PART OF THE DESIGN (plan §3). A child who cannot name the colour, or an adult who
+   * would rather show the side again, must not be held at a question — §2's third objection is that
+   * a scan taxed for a fault some cubes have is worse than the fault. The capture is dropped, not
+   * kept: it is the READING that could not be placed, and the camera will settle it again the
+   * moment that side is shown, which is when asking is worth doing again.
+   */
+  skipIdentity(id) {
+    if (!this.identityAsk) return;
+    if (id !== void 0 && id !== this.identityAsk.id) return;
+    this.identityAsk = null;
+    this.notice = null;
+    this.report("scanning", "Left that one for now \u2014 show another side.");
+  }
+  /**
+   * Take back a side placed by an answer, and ask about it again.
+   *
+   * WHY THE CAPTURE IS KEPT (plan §5, last bullet). A wrong answer is recoverable only if the
+   * reading it labelled still exists: handing the side back to the camera instead would read the
+   * same unreadable centre again and arrive at the same question with nothing gained. So the
+   * capture as the camera delivered it is held in `disputed`, and this puts it back in hand.
+   *
+   * Only a slot an ANSWER filled — a side the camera named is corrected by showing it again, and
+   * a side filled by elimination has no question behind it to reopen.
+   */
+  reopenIdentity(slot) {
+    const held = this.faces[slot];
+    const was = this.disputed[slot];
+    if (!held || !was) return;
+    if (this.identityAsk) return;
+    this.captureEpoch += 1;
+    this.forgetCapture(held);
+    this.invalidateReading();
+    this.buildDots();
+    this.openIdentity(withCentre(held, was.claimed), was.claimed);
+    this.loop("scanning", identityLine(false));
   }
   /**
    * A side shown again once all six are in: a CORRECTION, since the loop only runs then because the
@@ -7808,16 +8704,31 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
       return;
     }
     const fresh = withCentre(read, colourOfSlot(slot));
-    if (fresh.colors.join(",") === this.faces[slot].colors.join(",")) {
+    const by = read.colors[4] === colourOfSlot(slot) ? "centre" : "assigned";
+    const sameColours = fresh.colors.join(",") === this.faces[slot].colors.join(",");
+    if (sameColours) {
+      const measuredNow = by === "centre" && this.filedBy[slot] !== "centre";
+      if (measuredNow) {
+        this.filedBy[slot] = "centre";
+        delete this.disputed[slot];
+      }
       this.shownAgain = true;
       this.report(
         "scanning",
-        "The ",
-        this.bold(GUIDE[slot].color),
-        " side reads the same as before \u2014 tap a sticker to fix it, or show another side."
+        ...measuredNow ? [
+          "Read the ",
+          this.bold(GUIDE[slot].color),
+          " side\u2019s middle sticker this time \u2014 the rest reads the same as before."
+        ] : [
+          "The ",
+          this.bold(GUIDE[slot].color),
+          " side reads the same as before \u2014 tap a sticker to fix it, or show another side."
+        ]
       );
       return;
     }
+    this.filedBy[slot] = by;
+    delete this.disputed[slot];
     this.faces[slot] = fresh;
     this.settled.delete(slot);
     this.confirmed = {};
@@ -7841,12 +8752,12 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     const held = this.faces[asked];
     if (claim !== asked && (held === void 0 || this.sideByEight(read) !== asked)) {
       this.report("confirm", ...this.confirmWords(asking));
-      this.still.reset();
       return;
     }
     const looks = this.confirmed[asked] ?? [];
     looks.push({ capture: withCentre(read, colourOfSlot(asked)), up: asking.up });
     this.confirmed[asked] = looks;
+    if (read.colors[4] !== colourOfSlot(asked)) this.filedBy[asked] = "assigned";
     this.awaiting = null;
     this.captured("confirm", asked);
     this.scheduleCheck(this.tinted("ok", "Got it \u2014 checking\u2026"));
@@ -7870,7 +8781,7 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     for (const slot of FACES) {
       const side = this.faces[slot];
       if (side && side.colors[4] === centre && sameSide(read.colors, side.colors, SAME_SIDE_BY_CENTRE)) {
-        return { side, slot };
+        return slot;
       }
     }
     return null;
@@ -7882,15 +8793,49 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
    * symmetric cube), the eight point to neither and the centre decides, as it always did.
    */
   sideByEight(read) {
-    const matches = FACES.filter((f) => {
+    const matches = this.heldSidesMatching(read);
+    return matches.length === 1 ? matches[0] : void 0;
+  }
+  /**
+   * EVERY side in hand whose eight `read` shows — the set, not the verdict.
+   *
+   * `sideByEight` collapses this to a Face only when exactly one matches, and answers `undefined`
+   * for BOTH "none" and "several". That is right for its own question ("which side is this?"), and
+   * it is a trap for anyone who reads the `undefined` as "none": the several case is a read that
+   * matches MORE of the cube than one side, which is the most suspicious answer there is, and it
+   * arrives looking identical to the least suspicious one. `fileNewSide`'s guard read it that way
+   * and accepted exactly the duplicate it was written to refuse — see there.
+   */
+  heldSidesMatching(read) {
+    return FACES.filter((f) => {
       const side = this.faces[f];
       return side !== void 0 && sameSide(read.colors, side.colors);
     });
-    return matches.length === 1 ? matches[0] : void 0;
   }
-  /** File a freshly-recognised face under its own letter, then keep scanning (or finish at six). */
-  capture(face, read, kind = "side") {
+  /**
+   * File a freshly-recognised face under its own letter, then keep scanning (or finish at six).
+   *
+   * `by` is how the slot was arrived at and has no default: every caller knows which of the two it
+   * is, and a default would silently file the derived cases as measured ones — which is the state
+   * this flag exists to make visible (`dev-docs/asking-which-side-plan.md` §4).
+   */
+  /**
+   * End the open question and take its card down — without answering it.
+   *
+   * The card goes only when it IS the question's: a notice set by something else while a question
+   * stood is not this method's to clear.
+   */
+  retireIdentity() {
+    this.identityAsk = null;
+    if (this.notice?.title === IDENTITY_TITLE) this.notice = null;
+  }
+  capture(face, read, kind, by) {
     this.faces[face] = read;
+    this.filedBy[face] = by;
+    if (this.identityAsk && this.heldSidesMatching(this.identityAsk.capture).length > 0) {
+      this.retireIdentity();
+    }
+    if (FACES.every((f) => this.faces[f])) this.retireIdentity();
     this.settled.delete(face);
     this.buildDots();
     this.captured(kind, face);
@@ -7932,12 +8877,14 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     this.notice = null;
     this.suspects = [];
     this.dropDiagnosis();
-    this.report("checking", ...opening2);
     const epoch = this.diagnosisEpoch;
+    const owner = this.captureEpoch;
+    this.report("checking", ...opening2);
+    if (owner !== this.captureEpoch || epoch !== this.diagnosisEpoch) return;
     if (this.checkTimer !== null) clearTimeout(this.checkTimer);
     this.checkTimer = setTimeout(() => {
       this.checkTimer = null;
-      if (epoch === this.diagnosisEpoch) this.assemble();
+      if (epoch === this.diagnosisEpoch && owner === this.captureEpoch) this.assemble();
     }, CHECK_BEAT_MS);
   }
   /** The sides captured so far, in URFDLB order — the shape hosts draw progress from. */
@@ -7945,7 +8892,7 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     const out = [];
     for (const face of FACES) {
       const read = this.faces[face];
-      if (read) out.push({ face, colors: [...read.colors] });
+      if (read) out.push({ face, colors: [...read.colors], by: this.filedBy[face] ?? "centre" });
     }
     return out;
   }
@@ -7963,7 +8910,9 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
    * Only a side already READ can be corrected — there is nothing to overrule otherwise. `index` is
    * into the capture as shown, which is what a host displays, so a click maps straight through.
    * The centre is not correctable: a face's centre colour is its identity, and changing one would
-   * rename the face rather than fix it.
+   * rename the face rather than fix it. Naming a side is a different act with different rules and
+   * has its own call — `answerIdentity`, which only answers a standing question and only with a
+   * colour that question offers (plan §3, and the displacement rule of 2026-09-25).
    *
    * Any confirmations already gathered are dropped, because they were answers about a reading
    * that no longer exists.
@@ -7971,25 +8920,7 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
   setSticker(face, index, colour) {
     if (!Number.isInteger(index) || index < 0 || index > 8 || index === 4) return;
     if (!Number.isInteger(colour) || colour < 0 || colour >= FACES.length) return;
-    let read = this.faces[face];
-    if (read === void 0) {
-      if (!this.painting) return;
-      read = {
-        colors: Array(9).fill(colourOfSlot(face)),
-        confidence: Array(9).fill(1)
-      };
-      this.faces[face] = read;
-      this.settled.add(face);
-      this.buildDots();
-    } else if (read.colors[index] === colour) {
-      return;
-    }
-    read.colors[index] = colour;
-    read.confidence[index] = 1;
-    read.locked ??= Array(9).fill(false);
-    read.locked[index] = true;
-    const row = read.scores?.[index];
-    if (read.scores && row) read.scores[index] = row.map((_, c) => c === colour ? 1 : 0);
+    if (!this.writeSticker(face, index, colour)) return;
     this.invalidateReading();
     const done = this.capturedFaces().length;
     if (this.painting) {
@@ -8004,6 +8935,38 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
       return;
     }
     this.scheduleCheck(this.tinted("ok", "Corrected \u2014 checking\u2026"));
+  }
+  /**
+   * Write one sticker into the side it belongs to, creating the side where painting allows it.
+   *
+   * False when nothing changed — an unread side outside painting, or a sticker that already showed
+   * that colour — so the caller knows not to re-decide a cube nobody edited. Lifted out of
+   * `setSticker` (2026-09-25), which ESLint measured at complexity 17: writing a sticker and
+   * deciding what a written sticker MEANS are two jobs, and only the first of them is about
+   * arrays.
+   */
+  writeSticker(face, index, colour) {
+    let read = this.faces[face];
+    if (read === void 0) {
+      if (!this.painting) return false;
+      read = {
+        colors: Array(9).fill(colourOfSlot(face)),
+        confidence: Array(9).fill(1)
+      };
+      this.faces[face] = read;
+      this.filedBy[face] = "assigned";
+      this.settled.add(face);
+      this.buildDots();
+    } else if (read.colors[index] === colour) {
+      return false;
+    }
+    read.colors[index] = colour;
+    read.confidence[index] = 1;
+    read.locked ??= Array(9).fill(false);
+    read.locked[index] = true;
+    const row = read.scores?.[index];
+    if (read.scores && row) read.scores[index] = row.map((_, c) => c === colour ? 1 : 0);
+    return true;
   }
   /**
    * A stroke landed while the user is authoring the cube: check it, and act only on a
@@ -8032,8 +8995,8 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
   }
   /** A refused painting, said out loud. Called again for each diagnosis that lands for it. */
   publishPaintRefusal(result) {
+    const epoch = this.captureEpoch;
     this.suspects = result.suspects ?? [];
-    this.dispatchEvent(new CustomEvent("scan-invalid", { detail: result }));
     this.notice = this.misreadNotice(result, {
       one: "If it is wrong, tap it and pick the colour you see.",
       many: "Check those sides against the cube in your hand and repaint what does not match."
@@ -8042,6 +9005,7 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
       tone: "info",
       body: `${result.reason ?? "Not a legal cube yet"} \u2014 check the sides against your cube.`
     };
+    this.publish("scan-invalid", result, epoch);
   }
   /**
    * Turn hand-painting on or off. The two are exclusive by nature, not by policy: painting means
@@ -8052,6 +9016,7 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     if (on === this.painting) return;
     this.painting = on;
     this.notice = null;
+    this.identityAsk = null;
     this.suspects = [];
     this.dropDiagnosis();
     if (on) {
@@ -8184,7 +9149,12 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     this.still.reset();
     this.still.forgetFlicker();
     this.flash();
-    const detail = { kind, face, sides: this.sidesHeld() };
+    const detail = {
+      kind,
+      face,
+      by: this.filedBy[face] ?? "centre",
+      sides: this.sidesHeld()
+    };
     const epoch = this.captureEpoch;
     queueMicrotask(() => {
       if (epoch === this.captureEpoch) {
@@ -8225,17 +9195,11 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
   }
   /** "Show the GREEN side again, with WHITE facing up." — the whole instruction, as nodes. */
   confirmWords(req) {
-    return [
-      "Show the ",
-      this.bold(GUIDE[req.face].color),
-      " side again, with ",
-      this.bold(GUIDE[req.up].color),
-      " facing up."
-    ];
+    return CONFIRM_ASK(req).map((part) => typeof part === "string" ? part : this.bold(part.bold));
   }
   /** The same instruction as a plain sentence, for the pinned notice. */
   confirmSentence(req) {
-    return `Show the ${GUIDE[req.face].color} side again, with ${GUIDE[req.up].color} facing up.`;
+    return CONFIRM_ASK(req).map((part) => typeof part === "string" ? part : part.bold).join("");
   }
   /**
    * What an ambiguous scan IS, said before the look that settles it.
@@ -8284,7 +9248,7 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
    * a confirm with "this side is not being read" would be about the wrong side entirely.
    */
   stuck(now = performance.now()) {
-    if (this.awaiting || this.finished) return false;
+    if (this.awaiting || this.finished || this.identityAsk) return false;
     if (now - this.lastSightingAt > _AiScanPanel.SIGHTING_FRESH_MS) return false;
     return now - this.lastProgressAt >= _AiScanPanel.STUCK_AFTER_MS;
   }
@@ -8303,6 +9267,7 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
   }
   idleLine() {
     if (this.stuck()) return this.stuckLine();
+    if (this.identityAsk) return identityLine(this.identityAsk.refused !== void 0);
     if (this.awaiting) {
       return `Looking for the ${GUIDE[this.awaiting.face].color} side \u2014 hold it with ${GUIDE[this.awaiting.up].color} up.`;
     }
@@ -8385,8 +9350,12 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     this.assembleNamed();
   }
   /**
-   * The assembly for a scan whose six sides are all named — the tail of `assemble`, lifted out when
-   * the centre resolution moved off the page's thread (D3). Unchanged but for its name.
+   * The assembly for a scan whose six sides are all named — the tail of `assemble`.
+   *
+   * Its name is the last trace of a distinction that no longer exists: a side could once be held
+   * with its centre UNNAMED, so "all named" was a state the scan had to reach. That machinery was
+   * removed on 2026-09-23 (a side IS its centre), and every scan that reaches an assembly now has
+   * six named sides — this is simply the assembly.
    *
    * A `reread` means a confirmation disagreed with its first capture about colours: adopt the
    * fresh, deliberately-held look as that side's reading and check again. Each adoption pins its
@@ -8401,19 +9370,45 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
         this.checkFailed(err);
         return;
       }
-      const face = result.reread;
-      const looks = face === void 0 ? void 0 : this.confirmed[face];
-      const named = looks?.[result.rereadLook ?? (looks?.length ?? 0) - 1];
-      const fresh = named?.capture;
-      if (face === void 0 || named === void 0 || fresh === void 0 || round >= FACES.length) {
+      const adopt = round >= FACES.length ? null : this.lookToAdopt(result);
+      if (adopt === null) {
         this.finish(result, "camera");
         return;
       }
+      const { face, looks, named, fresh } = adopt;
       this.faces[face] = fresh;
       this.confirmed[face] = looks.filter(
         (look) => look === named || matchingRotations(fresh, look.capture).size > 0
       );
     }
+  }
+  /**
+   * Which photograph a `reread` result is telling the scan to adopt, or null if there is none.
+   *
+   * THE LOOK THE ASSEMBLER NAMED (`rereadLook`, 2026-09-21), never "the latest". With two looks at
+   * one side the disagreeing one can be the EARLIER: adopting the last then changed nothing, the
+   * earlier look went on disagreeing with it, and six rounds of that refused the scan with a
+   * "checking again" that never checked.
+   *
+   * NOT GUESSED WHEN IT IS UNNAMED. The fallback here used to take the LATEST look when the
+   * assembler named none — the exact behaviour the paragraph above records as defective, kept
+   * alive for "older assemblers" that cannot exist: the assembler is statically imported from this
+   * package and names the look on the only path that sets `reread`. So an unnamed look is a broken
+   * invariant, and adopting the wrong photograph on the strength of it would refuse a scan that is
+   * fine. Null is the answer, and the caller does what it does for any result with nothing to
+   * adopt — it reports the refusal.
+   */
+  lookToAdopt(result) {
+    const face = result.reread;
+    if (face === void 0) return null;
+    if (result.rereadLook === void 0) {
+      console.error("[ai-scan-panel] the assembler asked for a re-read without naming the look");
+      return null;
+    }
+    const looks = this.confirmed[face];
+    const named = looks?.[result.rereadLook];
+    if (looks === void 0 || named === void 0) return null;
+    return { face, looks, named, fresh: named.capture };
   }
   /**
    * Let go of one capture and of the settle recorded for it.
@@ -8425,6 +9420,8 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     for (const f of FACES) {
       if (this.faces[f] === capture) {
         delete this.faces[f];
+        delete this.filedBy[f];
+        delete this.disputed[f];
         this.settled.delete(f);
       }
     }
@@ -8563,10 +9560,16 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     if (result.scheme !== void 0) this.scheme = result.scheme;
     this.notice = null;
     this.stop();
+    const epoch = this.captureEpoch;
+    const reading = this.diagnosisEpoch;
     this.report("done", this.tinted("ok", "Scan complete \u2014 solvable cube captured."));
     const { captures: _kept, ...detail } = result;
-    this.dispatchEvent(
-      new CustomEvent("scan-complete", { detail: { ...detail, origin } })
+    const assigned = FACES.filter((f) => this.filedBy[f] === "assigned");
+    this.publish(
+      "scan-complete",
+      { ...detail, origin, assigned },
+      epoch,
+      reading
     );
   }
   /**
@@ -8651,8 +9654,8 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
    * the count when there is one, rather than waiting seconds for either.
    */
   publishRefusal(result, first) {
+    const epoch = this.captureEpoch;
     this.suspects = result.suspects ?? [];
-    this.dispatchEvent(new CustomEvent("scan-invalid", { detail: result }));
     const camera = this.misreadNotice(result, {
       one: "If it is wrong, tap it and pick the colour you see; if it is right, show that side again to re-read it.",
       lead: result.misreadFace ? void 0 : "At least %1 stickers do not fit a real cube \u2014 too many to tell which.",
@@ -8664,6 +9667,37 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
     this.notice = notice;
     if (first) this.loop("scanning", this.tinted("err", line));
     else this.report("scanning", this.tinted("err", line));
+    this.publish("scan-invalid", result, epoch);
+  }
+  /**
+   * Dispatch a PUBLIC event only if the scan that produced it is still the scan on screen.
+   *
+   * EVERY LISTENER IS SYNCHRONOUS AND EVERY LISTENER CAN CHANGE THE SUBJECT (2026-09-25). A host
+   * handling `scan-progress` may call `stop()`, `restart()` or `setPainting(true)` in the middle of
+   * the very report that told it something, and the code that sent the report then carried on
+   * publishing about a scan that no longer exists: stopping during `checking` still ended in a
+   * `scan-complete`; restarting on `done` produced a second, stale one; restarting from
+   * `scan-invalid` left a report claiming 6/6 sides for a scan whose sides had just been thrown
+   * away. `captureEpoch` is bumped by both `stop()` and `reset()`, so it is the one number that
+   * answers "is this still my scan"; the microtask is what lets a synchronous listener change it
+   * before the answer is read.
+   *
+   * AND `reading` FOR A VERDICT, which `captureEpoch` alone cannot guard (Codex audit,
+   * 2026-09-25). A listener to the 'done' report that corrects a sticker re-decides the READING —
+   * `invalidateReading` and `scheduleCheck` both bump `diagnosisEpoch` — while the scan, the
+   * captures and the camera epoch all stay exactly as they were. So the queued `scan-complete`
+   * went out afterwards carrying the facelets and the provenance of the reading that had just been
+   * superseded, over a panel already reporting `checking` with `complete: false`. Passed only where
+   * a caller is publishing a verdict ABOUT a reading; a refusal's refinement deliberately
+   * republishes across a diagnosis change and must not be guarded by it.
+   */
+  publish(type, detail, epoch, reading) {
+    queueMicrotask(() => {
+      if (reading !== void 0 && reading !== this.diagnosisEpoch) return;
+      if (epoch === this.captureEpoch) {
+        this.dispatchEvent(new CustomEvent(type, { detail }));
+      }
+    });
   }
   buildDots() {
     const dots = this.maybe("dots");
@@ -8725,6 +9759,13 @@ var AiScanPanel = class _AiScanPanel extends HTMLElement {
           shownAgain,
           device: this.cam.device,
           confirm: this.awaiting,
+          identity: this.identityRequest(),
+          // EMPTY WHILE A QUESTION STANDS (Codex audit, 2026-09-25). Reopening a tile puts its
+          // capture back in hand, and there is only ever one question — so taking a second side
+          // back would have dropped the reading already waiting on an answer, with nothing on
+          // screen to say a capture had just been thrown away. `reopenIdentity` refuses on the same
+          // grounds rather than trusting this to have been read first.
+          renameable: this.identityAsk ? [] : FACES.filter((f) => this.faces[f] !== void 0 && this.disputed[f]),
           runtime: this.cam.runtime,
           notice: this.notice,
           suspects: [...this.suspects],

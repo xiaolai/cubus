@@ -87,11 +87,11 @@ test('chips are painted only for a scan the app BELIEVED', () => {
   // transaction that adopts the cube (`acceptReading`, since 2026-09-21: the camera's and the
   // painted branch each wrote the acceptance out before), never beside the branch that refuses it.
   // The helper's parameter list opens a brace of its own (a destructuring), which blockAt reads as
-  // the block when anchored on the definition; anchored on the arrow inside the stretch between
-  // the definition and the handler, the first brace is the body's.
-  const start = code.indexOf('const acceptReading = (fl, { physical, source }) => {');
-  assert.ok(start >= 0, 'the acceptance must exist');
-  const accept = blockAt(code.slice(start, code.indexOf("panel.addEventListener('scan-complete'", start)), ') => {');
+  // the block when anchored on the whole definition. Anchored on the TAIL of the signature — past
+  // the destructuring's close — the first brace is the body's, and the anchor is its own. It used
+  // to slice from the definition to the handler and anchor on `') => {'`, which stopped working
+  // the moment a second arrow was declared in that stretch (2026-09-25).
+  const accept = blockAt(code, 'remember = true }) => {');
   assert.match(accept, /adoptCube\(fl,/, 'the acceptance must be the one that adopts the cube');
   assert.match(accept, /paintStageChips\(fl\)/, 'the chips are painted from the acceptance');
   assert.ok(accept.indexOf('adoptCube(fl,') < accept.indexOf('paintStageChips(fl)'),
@@ -100,6 +100,11 @@ test('chips are painted only for a scan the app BELIEVED', () => {
   assert.ok(complete, 'the scan-complete handler must exist');
   const adopted = blockAt(complete, '} else {');
   assert.match(adopted, /acceptReading\(fl,/, 'the adoption branch must exist, and be the one that accepts the reading');
+  // …and the reading with a side the camera could not NAME goes through the same one transaction:
+  // its own body is a policy, not a second door to the chips or the adoption.
+  const named = blockAt(code, 'const acceptNamedReading = (fl, assigned) => {');
+  assert.match(named, /acceptReading\(fl,/, 'a named reading is adopted outside the one acceptance');
+  assert.doesNotMatch(named, /paintStageChips|adoptCube\(/, 'a second door to the chips or the adoption');
   const refusedBranch = blockAt(complete, 'if (!adopted)');
   assert.ok(refusedBranch, 'the refusal branch must exist');
   assert.doesNotMatch(refusedBranch, /paintStageChips|acceptReading|adoptCube/, 'a refused read must produce no numbers at all');

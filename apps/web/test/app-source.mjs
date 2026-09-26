@@ -52,6 +52,8 @@ export const APP_SOURCES = Object.freeze([
   'lib/screens/scan/board.js', 'lib/screens/scan/sticker-picker.js', 'lib/screens/scan/capture-record.js',
   'lib/screens/scan/confirm-hold.js', 'lib/screens/scan/chime.js', 'lib/sound.js',
   'lib/screens/scan/sticker-view.js', 'lib/screens/scan/spoken.js', 'lib/speech.js',
+  // the identity question the scanner raises when it cannot name the side in hand, 2026-09-25
+  'lib/screens/scan/identity-ask.js',
   'lib/screens/scan/report-sides.js',
   // the settings screen's own parts, 2026-09-14
   'lib/screens/settings/smart-cube.js', 'lib/screens/settings/window-orientation.js',
