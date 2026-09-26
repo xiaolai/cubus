@@ -368,10 +368,18 @@ test('python packages that pin each other share a Dependabot group', () => {
 
     // One group whose patterns cover every package in the pair. Separate groups would still split
     // them into separate pull requests, which is the whole defect.
+    //
+    // MATCHED AS GLOBS, because that is what Dependabot does with them. Comparing the strings
+    // literally said "no group covers torch" of a group whose pattern is `*` — a false negative that
+    // would push someone towards re-listing the packages a wildcard already covers.
     const groups = [...pip.matchAll(/^ {6}([\w-]+):\n {8}patterns: \[([^\]]*)\]/gm)].map((m) =>
       m[2].split(',').map((s) => s.trim().replace(/^["']|["']$/g, '')),
     );
-    const together = groups.some((patterns) => packages.every((name) => patterns.includes(name)));
+    const covers = (pattern, name) =>
+      new RegExp(`^${pattern.split('*').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`).test(name);
+    const together = groups.some((patterns) =>
+      packages.every((name) => patterns.some((pattern) => covers(pattern, name))),
+    );
     assert.ok(together,
       `${packages.join(' and ')} pin each other in ${requirements} but no single pip group in ` +
         '.github/dependabot.yml covers both, so Dependabot will propose them separately and the ' +

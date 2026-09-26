@@ -16,13 +16,26 @@ updates:
       actions:
         patterns: ["*"]
 
+  # TWO GROUPS, because a bundled runtime and a test runner are not the same kind of change.
+  #
+  # `three`, `cubejs`, `onnxruntime-web` and `smartcube-web-bluetooth` are COMPILED INTO the
+  # committed bundles and shipped: a bump means rebuilding `apps/web/vendor/`, and it can change what
+  # the app looks like or what the scanner reads. Measured 2026-09-26: `three` 0.185.1 to 0.186.0
+  # moves all 24 renderer appearance goldens (~16,800 pixels past the one-step threshold, worst pixel
+  # 5 of 255). Those goldens live in `apps/web/test/browser/`, which is the FULL tier, and a pull
+  # request runs the fast tier — so grouped with the dev tooling that bump arrives inside a PR
+  # reporting GREEN and turns `main` red on merge. Splitting it out does not add a gate; it makes the
+  # one PR that needs reading with the goldens in hand distinguishable from the eleven that do not.
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
     groups:
+      bundled-runtimes:
+        patterns: ["three", "cubejs", "onnxruntime-web", "smartcube-web-bluetooth"]
       npm-minor-and-patch:
         update-types: [minor, patch]
+        exclude-patterns: ["three", "cubejs", "onnxruntime-web", "smartcube-web-bluetooth"]
 
   - package-ecosystem: cargo
     directory: /
@@ -32,21 +45,29 @@ updates:
       cargo-minor-and-patch:
         update-types: [minor, patch]
 
-  # The golden-harness pins (ml/requirements-golden.txt). A bump here can move a golden read, which
-  # is exactly what the golden jobs exist to say; expected.json is re-pinned only for a change that
-  # has been explained (AGENTS.md). So pip is deliberately UNGROUPED apart from the pair below: a
-  # bump that can move a read has to arrive on its own, or the golden job's verdict stops naming
-  # which package caused it.
+  # THE /ml PINS ARE A BUILD RECORD, NOT A DEPENDENCY LIST, so they move as ONE unit and rarely.
   #
-  # torch AND torchvision, together, because a torchvision wheel pins one exact torch
-  # (torchvision 0.29.0 depends on torch==2.14.0) and ml/requirements-cubedet.txt pins both. Split,
-  # the torchvision PR is a `ResolutionImpossible` that CANNOT be made green — measured on
-  # 2026-09-26, and it would have been reopened every week for as long as the two kept releasing.
-  # Grouping changes no version today; it only makes the next bump a proposal that can pass.
+  # `ml/requirements-cubedet.txt` says it is "pinned to the environment that exported the shipped
+  # model" and `ml/requirements-export.txt` says its pins "are the versions MANIFEST.json `tools`
+  # records" — and they are: `ml/models/MANIFEST.json` `tools` holds torch 2.13.0, onnx 1.22.0,
+  # onnxruntime 1.29.0, coremltools 9.0, tensorflow 2.19.0, onnx2tf 1.28.8, matching pin for pin.
+  # Bumping one of them on its own does not update a dependency; it makes the file claim to be the
+  # environment that exported the shipped artefacts while naming a version that did not.
+  #
+  # So a bump here is only ever correct together with a re-export of the model — the whole set at
+  # once, verified by `ml/golden_frames.py`, with MANIFEST.json rewritten. Weekly per-package PRs
+  # proposed five separately-unmergeable edits to that record every Monday (2026-09-26). One group,
+  # monthly: the PR unit is the record, which is also the unit a re-export moves. `pillow` and
+  # `numpy` are in it deliberately — they are measurement pins too (icon rasters, and the numpy line
+  # the training image ran), not incidental tooling.
+  #
+  # CVEs do not come through here: Dependabot security updates were enabled on 2026-09-26 and open
+  # their own ungrouped PRs, and what SHIPS to a user is gated separately by `pnpm audit --prod`.
+  # Nothing in /ml reaches a user's machine — it builds artefacts on a maintainer's.
   - package-ecosystem: pip
     directory: /ml
     schedule:
-      interval: weekly
+      interval: monthly
     groups:
-      torch-stack:
-        patterns: ["torch", "torchvision"]
+      ml-stack:
+        patterns: ["*"]
