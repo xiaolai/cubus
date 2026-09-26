@@ -7,6 +7,7 @@ import {
   decodeTensorResponse,
   NativeDetector,
   nativeDevice,
+  OPEN_SETTLE_TIMEOUT_MS,
 } from '../view/native-detector.js';
 
 // The wire format the cube-vision plugin returns over the Tauri bridge — int32 rows, int32 anchors
@@ -793,8 +794,78 @@ describe('NativeDetector — the bridge is checked and bounded (2026-09-21)', ()
     ]);
   });
 
-  // LAST in the file on purpose: it leaves one close unanswered, and the module-level count that
-  // close held is released only by the clock this test controls.
+  // LAST TWO in the file on purpose: each leaves one call unanswered, and the module-level count it
+  // holds is released only by the clock these tests control. The OPEN case is last of all, because
+  // an open that never answers leaves `opensOut` above zero for the rest of the module — every
+  // later close then takes the deferred path and waits for a promise that will never settle.
+  // LAST TWO in the file on purpose: each leaves one call unanswered, and the module-level count it
+  // holds is released only by the clock these tests control. The OPEN case is last of all, because
+  // an open that never answers leaves `opensOut` above zero for the rest of the module — every
+  // later close then takes the deferred path and waits for a promise that will never settle.
+  it('a repair that is itself overtaken puts the NEWEST owner back, not the one it was for', async () => {
+    // CODEX AUDIT, 2026-09-26. When an abandoned open lands after a newer one, the lens is on the
+    // abandoned attempt's device and `repairIfOvertaken` re-issues the owner's open to put it back.
+    // That repair is an open like any other — a newer owner can claim and land while it crosses —
+    // and this path was the one place here that did NOT re-ask who owns the camera after its await.
+    // So a repair aimed at B could land last and leave the lens on B while C owned it and every
+    // caller was told C.
+    const opens: { deviceId: string | null; settle: () => void }[] = [];
+    const invoke = async (cmd: string, args?: Record<string, unknown>): Promise<unknown> => {
+      const name = short(cmd);
+      if (name === 'open_camera') {
+        const deviceId = (args?.deviceId ?? null) as string | null;
+        await new Promise<void>((resolve) => opens.push({ deviceId, settle: resolve }));
+        return null;
+      }
+      return name === 'current_camera' ? { deviceId: 'native-1', label: 'Native' } : null;
+    };
+    const det = new NativeDetector(invoke);
+    // A is issued and then superseded by B before it lands.
+    const a = det.use({ deviceId: 'A' }).catch(() => {});
+    await Promise.resolve();
+    const b = det.use({ deviceId: 'B' });
+    await Promise.resolve();
+    expect(opens.map((o) => o.deviceId)).toEqual(['A', 'B']);
+    // B lands and becomes the owner; then A lands late, which triggers the repair for B.
+    opens[1]!.settle();
+    await b;
+    opens[0]!.settle();
+    await a;
+    await Promise.resolve();
+    const repair = opens.length - 1;
+    expect(opens[repair]!.deviceId, 'the repair was not aimed at the owner').toBe('B');
+    // C claims and lands while the repair is still crossing the bridge.
+    const c = det.use({ deviceId: 'C' });
+    await Promise.resolve();
+    const cOpen = opens.length - 1;
+    opens[cOpen]!.settle();
+    await c;
+    // …and only now does the repair land, last of all — so IT is what the lens is on.
+    // ASSERTED AS A NEW OPEN, not as "the last open names C": C's own open already named C, so
+    // reading only the last entry passes whether or not anything was re-issued. What is being
+    // measured is that the repair landing LAST provoked another open for the current owner.
+    const before = opens.length;
+    opens[repair]!.settle();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(
+      opens.length,
+      'nothing was re-issued for the current owner after the repair landed last',
+    ).toBe(before + 1);
+    expect(opens.at(-1)!.deviceId).toBe('C');
+    // LEAVE THE MODULE QUIET. `opensOut` is module state: an open still in flight when this case
+    // ends keeps it above zero for every later test, which sends their closes down the deferred
+    // path to wait on a promise nothing will settle. The repair cascade can issue one more open as
+    // it quiesces, so this settles until no new one appears.
+    for (let n = -1; n !== opens.length; ) {
+      n = opens.length;
+      for (const o of opens) o.settle();
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+    det.stop();
+  });
+
   it('gives up on a close that never answers, so a later open is not held for ever', async () => {
     vi.useFakeTimers();
     const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -829,6 +900,47 @@ describe('NativeDetector — the bridge is checked and bounded (2026-09-21)', ()
       vi.useRealTimers();
     }
   });
+
+  it('gives up on an OPEN that never answers, so a close is not held for ever', async () => {
+    // CODEX AUDIT, 2026-09-26. A close issued while an open is in flight waits behind it, so it
+    // cannot take the lens out from under it — and an open that never answered made that wait
+    // permanent. Worse, `opensOut` never fell, so EVERY later close queued behind the same wedged
+    // promise: the measured shape is zero `close_camera` calls and a camera left live.
+    vi.useFakeTimers();
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const trace: string[] = [];
+      let wedge = true; // only the FIRST open hangs
+      const invoke = async (cmd: string): Promise<unknown> => {
+        const name = short(cmd);
+        trace.push(name);
+        if (name === 'open_camera' && wedge) {
+          wedge = false;
+          await new Promise<void>(() => {});
+        }
+        return name === 'current_camera' ? { deviceId: 'native-1', label: 'Native' } : null;
+      };
+      const stuck = new NativeDetector(invoke);
+      void stuck.use({}).catch(() => {}); // never answers
+      await Promise.resolve();
+      stuck.stop(); // the close that must not be lost behind it
+      expect(trace.filter((c) => c === 'close_camera')).toHaveLength(0); // waiting, rightly
+      await vi.advanceTimersByTimeAsync(OPEN_SETTLE_TIMEOUT_MS - 1);
+      expect(trace.filter((c) => c === 'close_camera')).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(2);
+      expect(
+        trace.filter((c) => c === 'close_camera'),
+        'the close was held for ever behind an open that never answered',
+      ).toHaveLength(1);
+      expect(warned.mock.calls.some((c) => /did not answer within/.test(String(c[0])))).toBe(true);
+    } finally {
+      warned.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  // LAST in the file on purpose: it leaves one close unanswered, and the module-level count that
+  // close held is released only by the clock this test controls.
 });
 
 /**

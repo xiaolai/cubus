@@ -266,8 +266,35 @@ export class CameraSession {
           return detector;
         },
       );
+      // A FAILED PROBE MUST NOT BE CACHED AS THE ANSWER (2026-09-25). The promise was kept whatever
+      // it settled to, so one rejection — a plugin that threw, a module that would not load — was
+      // re-thrown to every later `start()` for the life of the page: pressing Start again could
+      // not re-probe, it could only replay the failure. The rejection is still the caller's to
+      // handle; what is forgotten is the CACHE, and only when this is still the promise on record,
+      // so a `use()` or a `park()` that has since replaced it is left alone.
+      const attempt = this.detectorPromise;
+      void attempt.catch(() => {
+        if (this.detectorPromise === attempt) this.detectorPromise = null;
+      });
     }
     return this.detectorPromise;
+  }
+
+  /**
+   * Forget a detector SELECTION that is still in flight — the probe did not answer in time.
+   *
+   * `ensureDetector` clears the cache when the probe REJECTS, which covers a probe that failed and
+   * not a probe that hung: a timeout on the caller's side leaves the underlying promise pending for
+   * ever, so the cache went on handing every later `start()` the same hung probe and Start could
+   * never genuinely retry (2026-09-25). Bumping `detectorChoice` with it is what keeps a late
+   * landing from installing its detector on a session that has since picked another — the same
+   * reason `park()` bumps it.
+   */
+  forgetPendingDetector(): void {
+    if (this.detector === null) {
+      this.detectorPromise = null;
+      this.detectorChoice++;
+    }
   }
 
   /** Release the camera, keeping the detector (and therefore the loaded model). */

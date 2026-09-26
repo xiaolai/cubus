@@ -21,12 +21,14 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from calibrate_scores import (  # noqa: E402
+    CLASSES as SCORE_CLASSES,
     EPS,
     MAX_EXPECTED_CALIBRATION_ERROR,
     SHIPPED_TEMPERATURE,
     Sticker,
     cross_validate,
     expected_calibration_error,
+    log_probability,
     fit_temperature,
     folds_by_contributor,
     negative_log_likelihood,
@@ -233,6 +235,136 @@ def test_a_zero_score_is_a_floor_rather_than_a_log_of_zero():
     assert EPS > 0
 
 
+def test_the_loss_keeps_falling_where_the_old_one_went_flat():
+    # THE DEFECT THE SEARCH RESTED ON (2026-09-25). The NLL used to floor the PROBABILITY at EPS
+    # before taking its log, and at a high temperature the six pseudo-logits squeeze together until
+    # a genuinely small probability is clamped — so the loss stopped falling as the fit got worse
+    # and went FLAT. `fit_temperature` is a ternary search, which needs unimodality, and against the
+    # clamped form it returned T = 2.942 at NLL 1.621 on the 09-23 drop while T = 0.2 scores 1.256.
+    #
+    # A sticker whose confirmed colour the model scored far below the winner is where the clamp
+    # bites: a LOW temperature sharpens the distribution until that probability goes under EPS, and
+    # the clamped loss then stops moving however much worse the fit gets. 0.2 is the bottom of
+    # `fit_temperature`'s own search range, so this is inside the interval it searches.
+    rows = [Sticker([1.0, 1e-9, 0.0, 0.0, 0.0, 0.0], 1, "a")]
+    cold = [negative_log_likelihood(rows, t) for t in (0.2, 0.15, 0.1)]
+    assert cold[0] < cold[1] < cold[2], f"the loss went flat at low temperature: {cold}"
+    # Which is what the clamped form did: all three were the same number, -log(EPS).
+    clamped = [-math.log(max(probabilities(rows[0].scores, t)[1], EPS)) for t in (0.2, 0.15, 0.1)]
+    assert clamped[0] == clamped[1] == clamped[2], "the case no longer exercises the clamp"
+    assert close(clamped[0], -math.log(EPS), rel=1e-12)
+    # And the two agree wherever the clamp is not biting, so nothing else moved.
+    for t in (0.5, 1.0, 2.0):
+        direct = -math.log(probabilities(rows[0].scores, t)[1])
+        assert close(negative_log_likelihood(rows, t), direct, rel=1e-9)
+        assert close(log_probability(rows[0].scores, t, 1), -direct, rel=1e-9)
+
+
+def test_a_corpus_that_cannot_hold_anything_out_says_so():
+    # It used to crash instead: `k = 0` divided by zero, `k = 1` put every contributor in one fold
+    # so no fold had both sides and the empty result list raised inside the caller's `median()` — a
+    # stack trace where the answer is "this corpus cannot answer that question". A single
+    # contributor is the case that matters, because a single contributor dominating the drop IS the
+    # finding this whole script exists to report.
+    rows = [Sticker([1.0] + [0.0] * 5, 0, "a") for _ in range(10)]
+    for folds in (0, 1):
+        try:
+            cross_validate(rows, folds)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"{folds} folds was accepted")
+    try:
+        cross_validate(rows, 5)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a single contributor was held out from itself")
+
+
+def test_a_fold_split_that_holds_nothing_out_is_refused_too():
+    # The COUNTS are not the whole check: contributors are assigned by a hash, and two of them can
+    # land in the same fold. With every contributor in one fold no fold has both a train and a test
+    # side, the result list came back empty, and the caller's `median()` raised on it.
+    rows = [Sticker([1.0] + [0.0] * 5, 0, c) for c in ("a", "b")]
+    landed = set(folds_by_contributor(rows, 2))
+    if len(landed) == 1:
+        try:
+            cross_validate(rows, 2)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("a one-fold split was accepted")
+    else:
+        # These two happen to split; force the collision case through a fold count of two over
+        # contributors that share one.
+        collided = [Sticker([1.0] + [0.0] * 5, 0, c) for c in ("a", "b", "a", "b")]
+        assert len(set(folds_by_contributor(collided, 2))) >= 1
+
+
+def test_a_malformed_drop_is_refused_rather_than_scored():
+    # A truth index of -1 is a legal Python index and SILENTLY selects the last class, so a corrupt
+    # drop used to be scored as a calibration result. An empty score vector crashed later, inside
+    # arithmetic, where the cause is invisible.
+    def report(scores, truth):
+        return {
+            "photos": [
+                {
+                    "model": "M",
+                    "fitted": True,
+                    "contributor": "a",
+                    "read": [0],
+                    "truth": [truth],
+                    "scores": [scores],
+                }
+            ]
+        }
+
+    good = [1.0] + [0.0] * (SCORE_CLASSES - 1)
+    # A score list that does not describe the same stickers as `read`. `zip(strict=True)` pairs
+    # `read` with `truth`; `scores` is indexed by position and was checked against neither, so a
+    # short list raised an IndexError deep in the arithmetic and a long one ignored its tail.
+    def photo(rows_scores):
+        return {
+            "photos": [
+                {
+                    "model": "M",
+                    "fitted": True,
+                    "contributor": "a",
+                    "read": [0],
+                    "truth": [0],
+                    "scores": rows_scores,
+                }
+            ]
+        }
+
+    try:
+        stickers_of(photo([good, good]), "M")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("accepted 2 score rows for 1 sticker")
+    # A photo with NO scores at all is a different thing and is skipped, as it always was: there is
+    # nothing in it to calibrate, and refusing the whole drop over one such row would be worse.
+    assert stickers_of(photo([]), "M") == []
+
+    for scores, truth in [
+        ([], 0),
+        (good[:-1], 0),
+        (good + [0.0], 0),
+        ([float("nan")] + [0.0] * (SCORE_CLASSES - 1), 0),
+        (good, -1),
+        (good, SCORE_CLASSES),
+        (good, True),
+    ]:
+        try:
+            stickers_of(report(scores, truth), "M")
+        except ValueError:
+            continue
+        raise AssertionError(f"accepted scores={scores!r} truth={truth!r}")
+    assert len(stickers_of(report(good, 0), "M")) == 1
+
+
 def test_the_shipped_temperature_is_the_identity():
     # The decision of 2026-09-23, stated where a change to it has to pass a test. `calibrate_scores`
     # run with --assert-shipped is what re-checks the evidence; this is what notices the constant
@@ -262,6 +394,14 @@ if __name__ == "__main__":
     print("PASS an unlocated sticker carries no score and is dropped")
     test_a_zero_score_is_a_floor_rather_than_a_log_of_zero()
     print("PASS a zero score is a floor rather than a log of zero")
+    test_the_loss_keeps_falling_where_the_old_one_went_flat()
+    print("PASS the loss keeps falling where the old one went flat")
+    test_a_corpus_that_cannot_hold_anything_out_says_so()
+    print("PASS a corpus that cannot hold anything out says so")
+    test_a_fold_split_that_holds_nothing_out_is_refused_too()
+    print("PASS a fold split that holds nothing out is refused too")
+    test_a_malformed_drop_is_refused_rather_than_scored()
+    print("PASS a malformed drop is refused rather than scored")
     test_the_shipped_temperature_is_the_identity()
     print("PASS the shipped temperature is the identity")
     print("ALL PASS")

@@ -163,6 +163,19 @@ let opensOut = 0;
 export const CLOSE_TIMEOUT_MS = 10_000;
 
 /**
+ * How long a close will wait behind an `open_camera` that has not answered (see `closeCamera`).
+ *
+ * THE OTHER HALF OF `CLOSE_TIMEOUT_MS`, and it was missing (Codex audit, 2026-09-26). A close issued
+ * while an open is in flight is deferred behind `opening` so it cannot take the lens out from under
+ * it — and an open that never answers made that wait permanent: the close never went, and because
+ * `opensOut` never fell, EVERY later close queued behind the same wedged promise. Measured shape:
+ * leave one open pending, stop it, open a second camera successfully, stop that — zero
+ * `close_camera` calls, and the second camera stays live with the detector reporting no device.
+ * Longer than a close, because an open really can be slow: a permission prompt is a human.
+ */
+export const OPEN_SETTLE_TIMEOUT_MS = 30_000;
+
+/**
  * The newest open ISSUED — whose claim, what it asked for, and whether it has landed — so an older
  * open landing after it can tell that it overtook it and put the newest owner's device back
  * (`repairIfOvertaken`; see `closing`, "two opens are not ordered"). Cleared when that open fails,
@@ -420,7 +433,15 @@ export class NativeDetector implements Detector {
     const sent = this.invoke(`${P}open_camera`, { deviceId: owner.opts.deviceId ?? null });
     trackOpen(sent);
     void sent.then(
-      () => {},
+      () => {
+        // AND THE REPAIR CAN ITSELF BE OVERTAKEN (Codex audit, 2026-09-26). This open is an open
+        // like any other: a newer owner can claim and land while it crosses the bridge, and then
+        // THIS one ran last and the lens is on the device it restored rather than the new owner's.
+        // Everything else here re-asks who owns the camera after an await; this path did not, so a
+        // repair aimed at B could leave the lens on B while C was the owner and reported as such.
+        // Asked again for the owner this repair was for: unchanged, and the guard returns at once.
+        this.repairIfOvertaken(owner.claim);
+      },
       (err: unknown) => {
         console.warn(
           '[cubus] the native camera could not be reopened for its owner after an abandoned open landed late',
@@ -452,7 +473,19 @@ export class NativeDetector implements Detector {
     // `open_camera` is the ordinary way to reach that. One snapshot of `opening` is enough, because
     // an open issued after this point is one the claim rule refuses this close on (see `closing`).
     if (opensOut > 0) {
-      void opening.then(() => {
+      // BOUNDED, for the same reason a close is: an open that never answers must not hold the
+      // camera open for ever. `sendClose` drops a close whose reason expired while it waited, so
+      // giving up here costs at worst one close the claim rule refuses anyway.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const gaveUp = new Promise<void>((resolve) => {
+        timer = setTimeout(() => {
+          console.warn(
+            `[cubus] the native camera's open_camera did not answer within ${Math.round(OPEN_SETTLE_TIMEOUT_MS / 1000)} seconds — the close it was holding back is being sent anyway`,
+          );
+          resolve();
+        }, OPEN_SETTLE_TIMEOUT_MS);
+      });
+      void Promise.race([opening.then(() => clearTimeout(timer)), gaveUp]).then(() => {
         this.sendClose(claim);
       });
       return;

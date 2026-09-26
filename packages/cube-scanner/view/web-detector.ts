@@ -364,6 +364,12 @@ export class WebDetector implements Detector {
       }
       throw err;
     }
+    // AND AFTER IT SUCCEEDS (Codex audit, 2026-09-26). Every other await in this function re-checks
+    // its owner and this one did not, so a `stop()` or a model swap during the run came back with a
+    // finished reading from a detector nobody was listening to any more. The panel's epoch guard
+    // discards it today, which is why this was never seen — but that makes the caller responsible
+    // for a promise this function is supposed to keep, and a second caller would not know to.
+    if (superseded()) return null;
     // The frame travels with its output because this is the last moment it exists: `grab()` reuses
     // its buffer on the next tick, and the panel needs the pixels under the fitted stickers to let
     // the assembly ask which of them carry the same paint (`paint-groups.ts`). Copied for that

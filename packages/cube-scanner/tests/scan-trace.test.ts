@@ -302,6 +302,34 @@ describe('sideSpeeds — how fast a side went from shown to captured, and what c
     detail,
   });
 
+  it('tells a side from its TWIN, which carries the same eight around a different centre', () => {
+    // CODEX AUDIT, 2026-09-26, and D5 of the 2026-09-23 audit applied here too. `sameSide` leaves
+    // the centre out on purpose — it is the sticker a logo misreads — but the eight alone do not
+    // name a side: after `U D R L F B` the white and yellow sides carry the SAME eight around
+    // different centres. Walking back for "the previous side" on the ring alone therefore stopped
+    // on the TWIN, so one side's window swallowed the other's ticks and the swallowed side reported
+    // zero ticks and a null settling time from a session it had plainly been held up in.
+    const white = [1, 2, 3, 4, 0, 4, 3, 2, 1];
+    const yellow = [1, 2, 3, 4, 3, 4, 3, 2, 1]; // the SAME eight, a different centre
+    const ticks = [
+      rec(100, { colors: white, kept: 9 }),
+      rec(200, { colors: white, kept: 9, outcome: 'settled' }),
+      rec(300, { colors: yellow, kept: 9 }),
+      rec(400, { colors: yellow, kept: 9, outcome: 'settled' }),
+    ];
+    const events = [
+      ev(200, 'captured', { face: 'U', colors: white }),
+      ev(400, 'captured', { face: 'D', colors: yellow }),
+    ];
+    const [first, second] = sideSpeeds(ticks, events);
+    expect(first?.ticks, 'the first side lost its own ticks').toBeGreaterThan(0);
+    expect(
+      second?.ticks,
+      'the twin was mistaken for the side before it, so its ticks went to that one',
+    ).toBeGreaterThan(0);
+    expect(second?.firstReadMs, 'the twin never got a settling time').not.toBeNull();
+  });
+
   it('measures the wait and first-read to capture, and counts each break by its cause', () => {
     const ticks = [
       rec(50, { outcome: 'abstain', reason: 'NO_FACE', kept: 0 }), // nothing shown yet

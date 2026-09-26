@@ -14,10 +14,11 @@
 // which writes web/vendor/ai-scan-panel.js — refreshes the open tab on its own.
 
 import { createReadStream, realpathSync, watch } from 'node:fs';
-import { mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, realpath, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { dirname, extname, join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeRecording } from './record-file.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 // The root with every symlink resolved, because containment is decided on REAL paths (see the
@@ -225,10 +226,12 @@ const server = createServer(async (req, res) => {
     req.on('end', async () => {
       if (refused) return;
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const file = join(RECORD_DIR, `scan-${stamp}.json`);
+      // The name a collision would have taken, for the failure log below; `writeRecording` answers
+      // the one it actually used.
+      let file = join(RECORD_DIR, `scan-${stamp}.json`);
       try {
         await mkdir(RECORD_DIR, { recursive: true });
-        await writeFile(file, Buffer.concat(chunks));
+        file = await writeRecording(RECORD_DIR, stamp, Buffer.concat(chunks));
         // The path and the size, so the page can SAY what landed. A recording that silently wrote
         // nothing looks exactly like one that worked.
         console.log(`[record] ${size} bytes -> ${file}`);

@@ -116,6 +116,14 @@ def test_a_misread_the_counts_expose_is_repaired_and_outlined(decide: Decide) ->
     (d,) = decide([reads])
     assert d["legal"] is True, d
     assert [q["colors"] for q in d["photos"]] == truth, "the repair must restore the white sticker"
+    # AND THAT IS THE WHOLE OF THE `legal` CLAIM (Codex audit, 2026-09-26). It is a claim about the
+    # colours this RETURNS, and the check that guarded it ran them back through `assembleColors` —
+    # which repairs on its way to a verdict, so it mended the reading inside the check and answered
+    # legal about rows that still held the misread. Shown-as-read and `legal: true` at once is the
+    # state that must not exist; dropping the "nothing was repaired" half of `fitsAsShown` puts the
+    # unrepaired blue sticker back on screen under exactly that label, and fails this line.
+    assert reads[p].colors[i] == BLUE, "the fixture stopped carrying the misread"
+    assert d["photos"][p]["colors"][i] == WHITE, "an unrepaired sticker was shown and called legal"
     assert [q["uncertain"] for q in d["photos"]] == [[i] if n == p else [] for n in range(6)], d
     print("PASS cube half: a misread that breaks the counts is repaired, and only it is outlined")
 

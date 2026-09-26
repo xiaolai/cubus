@@ -207,19 +207,23 @@ const BUNDLES = [
     // panel never calls it.
     // `latticeOf` (2026-09-21) is the lattice-only view the package entry and the tests read; the
     // panel reads `fitLattice`, which carries the refusal's reason, so esbuild drops the view.
-    // …and every READER in session-record.ts (2026-09-23): the panel RECORDS, and parsing a
-    // recording is the corpus scripts' and the tests' job, so `parseSession` and its helpers are
-    // dropped along with every refusal message they carry. What survives is the two constants the
-    // recorder needs — `NEAR_FLOOR_RECORD` and `SESSION_SCHEMA` — which is the whole of what
-    // writing a session requires. Same delete-when-used contract as the rest of this list.
+    // …and the READERS in session-record.ts that nothing on this path reaches. The list shrank on
+    // 2026-09-25 and that is the delete-when-used contract doing its job: `SessionRecorder.finish()`
+    // now validates through `parseSession` before handing a session over — a recorder that can emit
+    // what no reader loads is a recorder with a documented check it does not perform — so the
+    // parser and every helper and refusal message it carries are IN the bundle, deliberately. What
+    // is still dropped is the arithmetic OVER a parsed session (`sessionFps`, `sessionTickRate`,
+    // `sessionTicks`, `sessionDurationMs`), which is the corpus scripts' job and not the panel's.
+    // `sessionTickRate` joined them on 2026-09-26: the replay harness asks how often the scan
+    // LOOKED, which is not how often the camera produced (Codex audit, finding 10), and neither
+    // question is one the panel asks.
     treeShaken: [
       'SOLVED_FACELETS', 'encodeFacelets', 'detectFace', 'fitFromOutput',
       'setChainTimeoutForTests', 'latticeOf',
-      'isRecord', 'num', 'parseConditions', 'parseDetection', 'parseFrame', 'parseTruth',
-      'sessionDurationMs', 'sessionFps', 'sessionTicks',
-      // The pixel probe's count-reset: a seam for its own tests and for a developer wanting a second
-      // run without a reload. The panel never calls it, so the bundle correctly drops it.
-      'resetPixelProbe',
+      'sessionDurationMs', 'sessionFps', 'sessionTickRate', 'sessionTicks',
+      // The pixel probe's count-reset and its counts: seams for its own tests and for a developer
+      // wanting a second run without a reload. The panel calls neither.
+      'resetPixelProbe', 'pixelProbeCounts',
     ],
     // encodeFacelets' refusal of a malformed state (2026-09-13) leaves with the function: the
     // message is in facelet-cube.ts and, correctly, nowhere in a bundle that never encodes. The

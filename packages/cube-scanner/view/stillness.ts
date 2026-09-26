@@ -100,8 +100,20 @@ export class Stillness {
   private key: string | null = null;
   private count = 0;
   private since = 0;
-  /** The colours of the run's read, kept so a broken run can be told WHERE it broke. */
-  private colors: readonly number[] | null = null;
+  /**
+   * The last read seen, whatever became of the run it belonged to — the baseline a break is
+   * described against.
+   *
+   * IT OUTLIVES `reset()`, AND THAT IS THE POINT (2026-09-25). It used to be cleared there along
+   * with the run, while the flicker history was deliberately kept (D8) — so after a dropout the
+   * next read had nothing to compare against, `classify` never ran, and the history was never told
+   * the subject had changed. Measured: a flicker at position 2 between colours 1 and 4, then a
+   * dropout, then an entirely different face, and the scan went on naming position 2 and those two
+   * colours — a sticker of the side before last. The two fields answer different questions: the RUN
+   * is void after a reset, the SUBJECT is not, and this one is cleared by `forgetFlicker()`, which
+   * is where the caller says the subject really did change.
+   */
+  private subject: readonly number[] | null = null;
   /**
    * The frame the last counted read came from, or null when none has been counted or the source
    * cannot identify its frames.
@@ -166,34 +178,13 @@ export class Stillness {
     // would otherwise be indistinguishable from a genuine second look at a still cube — which is
     // precisely the confusion that let one frame settle a side.
     if (frameId !== undefined && frameId === this.lastFrame) {
-      return this.count >= this.reads && now - this.since >= this.ms;
+      return this.settled(now);
     }
     if (frameId !== undefined) this.lastFrame = frameId;
     if (key === this.key) {
       this.count += 1;
     } else {
-      // WHERE the run broke, when it broke in exactly one place.
-      //
-      // The gate keys on all nine, so ONE sticker flickering between red and orange — the
-      // detector's known weak pair — means no run ever completes and the scan simply never
-      // captures that side. That is a dead end with no message: the panel says "hold still" for
-      // as long as the user is willing to. The settle rule is deliberately NOT relaxed for the
-      // eight (a majority vote would let a face still being turned through the frame settle), so
-      // what is added is the missing SENTENCE: which sticker keeps changing, so the user can light
-      // it better or tap it afterwards. Recorded only for a single-position break, because two
-      // positions changing is a cube that moved, which needs no explaining.
-      const previous = this.colors;
-      if (previous && previous.length === colors.length) {
-        const { only, forget } = classify(previous, colors);
-        if (forget) {
-          this.breaks.clear();
-          this.breakColours.clear();
-        }
-        if (only !== null) {
-          this.breaks.set(only, (this.breaks.get(only) ?? 0) + 1);
-          this.breakColours.set(only, [previous[only]!, colors[only]!]);
-        }
-      }
+      this.noteBreak(colors);
       this.key = key;
       this.count = 1;
       this.since = now;
@@ -201,8 +192,45 @@ export class Stillness {
     // The LAST read, not the run's first. Identical inside a run now that the key is all nine, and
     // kept as the last one because that is what a break is described against: what changed between
     // two consecutive frames.
-    this.colors = [...colors];
+    this.subject = [...colors];
+    return this.settled(now);
+  }
+
+  /**
+   * The verdict, in ONE place.
+   *
+   * It used to be written out twice — once on the repeated-frame path and once at the end — and two
+   * copies of an acceptance rule are two rules that can come to disagree about what "still" means,
+   * which is the single thing this class exists to say.
+   */
+  private settled(now: number): boolean {
     return this.count >= this.reads && now - this.since >= this.ms;
+  }
+
+  /**
+   * WHERE the run broke, when it broke in exactly one place.
+   *
+   * The gate keys on all nine, so ONE sticker flickering between red and orange — the detector's
+   * known weak pair — means no run ever completes and the scan simply never captures that side.
+   * That is a dead end with no message: the panel says "hold still" for as long as the user is
+   * willing to. The settle rule is deliberately NOT relaxed for the eight (a majority vote would
+   * let a face still being turned through the frame settle), so what is added is the missing
+   * SENTENCE: which sticker keeps changing, so the user can light it better or tap it afterwards.
+   * Recorded only for a single-position break, because two positions changing is a cube that moved,
+   * which needs no explaining.
+   */
+  private noteBreak(colors: readonly number[]): void {
+    const previous = this.subject;
+    if (!previous || previous.length !== colors.length) return;
+    const { only, forget } = classify(previous, colors);
+    // `forgetFlicker()`, not two `clear()` calls: the two used to be written out here as well, so
+    // any diagnostic added to the history had to be remembered in both places or it would survive a
+    // subject change in one of them.
+    if (forget) this.forgetFlicker();
+    if (only !== null) {
+      this.breaks.set(only, (this.breaks.get(only) ?? 0) + 1);
+      this.breakColours.set(only, [previous[only]!, colors[only]!]);
+    }
   }
 
   /**
@@ -253,6 +281,10 @@ export class Stillness {
    * about a run: `classify`'s `forget` clears it when the subject actually changes, and
    * `forgetFlicker()` clears it when the caller knows it has.
    *
+   * The comparison baseline does not go either, for the same reason: `classify` needs something to
+   * compare the next read against, or a subject change across the dropout is invisible and the
+   * history it should have cleared keeps naming a sticker of the side before last.
+   *
    * The last counted frame does not go either, and for a related reason (D2). A reset means the run
    * is void, not that the camera delivered something new — so if the very next offer carries the
    * same frame id, it is still the same picture and still not a second look. Clearing it here would
@@ -261,7 +293,6 @@ export class Stillness {
    */
   reset(): void {
     this.key = null;
-    this.colors = null;
     this.count = 0;
     this.since = 0;
   }
@@ -276,6 +307,9 @@ export class Stillness {
   forgetFlicker(): void {
     this.breaks.clear();
     this.breakColours.clear();
+    // The comparison baseline goes with it: the caller has just said this is a different subject,
+    // so describing the next read against the last one would name the old side's stickers.
+    this.subject = null;
   }
 
   /**

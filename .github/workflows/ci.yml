@@ -160,6 +160,7 @@ jobs:
           python ml/test_drop_dataset.py
           python ml/test_drop_eval.py
           python ml/test_calibrate_scores.py
+          python ml/test_anchor_eval.py
 
       # THE FAST TIER'S WEB TESTS: every suite under apps/web/test/ except test/browser/, run by
       # apps/web/run-tests.mjs, which refuses a pattern that matches nothing and a test file that
@@ -363,10 +364,19 @@ jobs:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
         run: cargo check -p cube-vision -p cubus-desktop --target ${{ matrix.target }}
 
+      # BOTH CRATES, not just cube-vision (2026-09-25). This step linted `cube-vision` alone while
+      # the `check` above compiled `cubus-desktop` for the same target WITHOUT `-D warnings` — so a
+      # warning that exists only on a cross target had nothing to refuse it. Measured: seven
+      # `unreachable_code` warnings in the BLE commands, where a `cfg(android)` block that RETURNS
+      # was followed by an unguarded desktop body, plus ten dead-code warnings behind them. The
+      # workspace clippy below is `-D warnings` but runs on the HOST target and could not see any
+      # of it. The Android half of this step is verified locally; the Windows half is one of the
+      # checks only CI can run — `cubus-desktop` has no windows-only code, and its shared bodies
+      # are already linted clean at `-D warnings` on the host.
       - name: clippy
         env:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
-        run: cargo clippy -p cube-vision --target ${{ matrix.target }} -- -D warnings
+        run: cargo clippy -p cube-vision -p cubus-desktop --target ${{ matrix.target }} -- -D warnings
 
       # Windows can also RUN its unit tests; the Android target cannot execute on the runner.
       - name: test
@@ -407,8 +417,12 @@ jobs:
       # skipped for want of a certificate — so the iOS build script's first run would have been a
       # tag. A check is what a runner without a device can honestly do, and it is what fails when
       # a crate in the tree drops the target.
+      # CLIPPY, NOT `check` (2026-09-25). A plain check compiles the target and refuses nothing, so
+      # a warning that exists only on iOS — the shape the Android target turned out to be full of —
+      # had nothing to catch it. Same standard as every other target in this file: `-D warnings`.
+      # Not `--all-targets`: the crates' test harnesses do not build for a phone.
       - name: check (aarch64-apple-ios)
-        run: cargo check -p cube-vision -p cubus-desktop --target aarch64-apple-ios
+        run: cargo clippy -p cube-vision -p cubus-desktop --target aarch64-apple-ios -- -D warnings
 
   rust:
     name: Rust (fmt · clippy · check · tests)
@@ -453,8 +467,13 @@ jobs:
       # does), so the workspace check above compiles the desktop shell WITHOUT it, and the
       # feature-gated code in lib.rs could rot behind every gate while every dev machine still
       # built it. Compiled here; still never shipped.
+      #
+      # CLIPPY RATHER THAN `check` (2026-09-25), for the reason the cross-target jobs were changed
+      # the same day: a configuration that is compiled but not LINTED refuses nothing, and a
+      # warning reachable only under this feature had nothing to catch it. Verified clean before
+      # the step was tightened, so this is a gate rather than a wish.
       - name: desktop — the `mcp` feature still compiles
-        run: cargo check -p cubus-desktop --features mcp
+        run: cargo clippy -p cubus-desktop --features mcp --all-targets -- -D warnings
 
       # The desktop window's arithmetic (src/stage.rs) is held to the contract document's table,
       # the same rows the web oracle is held to.

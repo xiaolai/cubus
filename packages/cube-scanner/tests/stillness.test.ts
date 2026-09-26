@@ -412,3 +412,58 @@ describe('Stillness and the identity of the frame a read came from', () => {
     expect(s.status(1200).run).toBe(1);
   });
 });
+
+describe('the two paths out of a repeated frame, and the one that was never exercised', () => {
+  it('ACCEPTS on a repeat once the duration is met, without counting it', () => {
+    // The repeated-frame branch has two answers and the suite only ever asked for one of them:
+    // every case above offers a repeat with too few reads behind it, so the branch was only ever
+    // seen returning false. Its true answer is the one that captures a side — and it is the right
+    // answer: the count was earned by three distinct frames, and time passing is real whether or
+    // not the camera delivered anything new.
+    const s = new Stillness(3, 500);
+    expect(s.offer(READ, 1000, 1)).toBe(false);
+    expect(s.offer(READ, 1100, 2)).toBe(false);
+    expect(s.offer(READ, 1200, 3), 'count 3, but only 200 ms of it').toBe(false);
+    expect(s.offer(READ, 1499, 3), 'a repeat settled one millisecond early').toBe(false);
+    expect(s.offer(READ, 1500, 3), 'a repeat refused a run that had earned its count').toBe(true);
+    // And it earned nothing along the way: the run is still the three frames that made it.
+    expect(s.status(1500).run, 'a re-served frame advanced the count').toBe(3);
+  });
+});
+
+describe('a dropout is not a subject change, and does not erase the evidence of one', () => {
+  const FLICKER = [0, 1, 5, 3, 4, 5, 0, 1, 2]; // READ with position 2 reading 5 instead of 2
+
+  it('stops naming a sticker of the side before last after a dropout', () => {
+    // MEASURED, AND A REAL DEFECT (2026-09-25). `reset()` deliberately keeps the flicker history
+    // (D8) but used to clear the baseline the history is compared against — so after a dropout the
+    // next read had nothing to classify against, the subject change was invisible, and position 2
+    // with colours 1 and 4 went on being reported across an entirely different face.
+    const s = new Stillness(3, 500);
+    s.offer(READ, 1000);
+    s.offer(FLICKER, 1100);
+    s.offer(READ, 1200);
+    s.offer(FLICKER, 1300);
+    expect(s.flickering(), 'the flicker was never recorded, so the case proves nothing').toBe(2);
+    expect(s.flickerColours(2)).toEqual([2, 5]);
+
+    s.reset(); // the frame could not be read at all — a dropout, not a new subject
+    s.offer(OTHER, 1400);
+    expect(s.flickering(), 'a sticker of the side before last is still being named').toBe(null);
+    expect(s.flickerColours(2)).toEqual([]);
+  });
+
+  it('still keeps the history across a dropout on the SAME subject, which is why it survives', () => {
+    // The other half, and the reason `reset()` does not simply forget everything: a side that will
+    // not settle abstains constantly, and wiping the history on each abstention meant the three
+    // breaks `flickering()` asks for could never accumulate.
+    const s = new Stillness(3, 500);
+    s.offer(READ, 1000);
+    s.offer(FLICKER, 1100);
+    s.reset();
+    s.offer(READ, 1200);
+    s.reset();
+    s.offer(FLICKER, 1300);
+    expect(s.flickering()).toBe(2);
+  });
+});

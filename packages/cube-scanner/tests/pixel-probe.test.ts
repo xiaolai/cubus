@@ -9,13 +9,16 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Detection } from '../src/onnx-postprocess.js';
 import type { Frame } from '../src/types.js';
 import {
+  base64Of,
   PIXEL_PROBE_EVERY_MS,
   PIXEL_PROBE_KEY,
   PIXEL_PROBE_MAX_FRAMES,
   PIXEL_PROBE_MIN_NEIGHBOURS,
   PIXEL_PROBE_SIDE,
+  pixelProbeCounts,
   pixelProbeEnabled,
   resetPixelProbe,
+  rgbaOf,
   savePixelProbe,
 } from '../view/pixel-probe.js';
 
@@ -286,5 +289,156 @@ describe('what the probe writes', () => {
       vi.unstubAllGlobals();
     }
     expect(posted, 'it posted a frame it could not encode').toBe(0);
+  });
+});
+
+describe('the budget, which is the whole reason this is safe to leave switched on', () => {
+  /** A 4×4 frame — small, because these cases count calls rather than look at pixels. */
+  const tiny = (): Frame => ({
+    data: new Uint8ClampedArray(4 * 4 * 4).fill(200),
+    width: 4,
+    height: 4,
+  });
+
+  /** The fake canvas, a counting sink, and a promise per encode so a test can hold them open. */
+  function harness(respond: () => { ok: boolean; status?: number } = () => ({ ok: true })) {
+    const posts: number[] = [];
+    const { FakeOffscreenCanvas, drawn } = fakeCanvas(new Uint8Array([1, 2, 3]));
+    vi.stubGlobal('OffscreenCanvas', FakeOffscreenCanvas);
+    vi.stubGlobal('ImageData', FakeImageData);
+    vi.stubGlobal('fetch', async (_url: string, init: { body: string }) => {
+      posts.push(JSON.parse(init.body).nth as number);
+      return respond();
+    });
+    resetPixelProbe();
+    return { posts, drawn };
+  }
+
+  it('stops at the limit, and a refused call encodes nothing and posts nothing', async () => {
+    const { posts, drawn } = harness();
+    try {
+      for (let i = 0; i < PIXEL_PROBE_MAX_FRAMES + 5; i++) await savePixelProbe(tiny(), [det(0)]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(posts).toHaveLength(PIXEL_PROBE_MAX_FRAMES);
+    // The refused calls did not merely fail to post — they did not letterbox or encode either,
+    // which is the expensive half and the reason the bound exists at all.
+    expect(drawn, 'a refused call still paid for an encode').toHaveLength(PIXEL_PROBE_MAX_FRAMES);
+    expect(posts[0]).toBe(1);
+    expect(posts.at(-1)).toBe(PIXEL_PROBE_MAX_FRAMES);
+    expect(pixelProbeCounts()).toEqual({
+      attempted: PIXEL_PROBE_MAX_FRAMES,
+      delivered: PIXEL_PROBE_MAX_FRAMES,
+    });
+  });
+
+  it('holds the limit when calls OVERLAP, which a check-then-increment does not', async () => {
+    // THE CASE THAT FAILED, MEASURED: the cap was read before an `await` and the counter raised
+    // after it, so forty-one concurrent calls all read "39 so far" and forty-one frames were
+    // posted against a limit of forty. The caller throttles when a save STARTS and nothing
+    // serialises when one finishes, so overlap is the normal case, not the exotic one.
+    const { posts } = harness();
+    try {
+      await Promise.all(
+        Array.from({ length: PIXEL_PROBE_MAX_FRAMES + 1 }, () => savePixelProbe(tiny(), [det(0)])),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(posts).toHaveLength(PIXEL_PROBE_MAX_FRAMES);
+    expect(new Set(posts).size, 'two calls were handed the same sequence number').toBe(
+      PIXEL_PROBE_MAX_FRAMES,
+    );
+  });
+
+  it('spends the budget on a sink that refuses, and says so rather than counting a save', async () => {
+    // A rejected POST has already cost the letterbox, the encode and the base64, so the budget is
+    // spent; what must NOT happen is the count claiming frames that no file exists for. The throw
+    // is how the caller's warning fires — this used to resolve quietly.
+    const { posts } = harness(() => ({ ok: false, status: 500 }));
+    const failures: unknown[] = [];
+    try {
+      for (let i = 0; i < 3; i++) {
+        await savePixelProbe(tiny(), [det(0)]).catch((e: unknown) => failures.push(e));
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(posts).toHaveLength(3);
+    expect(failures).toHaveLength(3);
+    expect(String(failures[0])).toContain('500');
+    expect(pixelProbeCounts()).toEqual({ attempted: 3, delivered: 0 });
+  });
+
+  it('gives the budget back only on an explicit reset', async () => {
+    const first = harness();
+    try {
+      for (let i = 0; i < PIXEL_PROBE_MAX_FRAMES; i++) await savePixelProbe(tiny(), [det(0)]);
+      await savePixelProbe(tiny(), [det(0)]);
+      expect(first.posts).toHaveLength(PIXEL_PROBE_MAX_FRAMES);
+      resetPixelProbe();
+      expect(pixelProbeCounts()).toEqual({ attempted: 0, delivered: 0 });
+      await savePixelProbe(tiny(), [det(0)]);
+      expect(first.posts).toHaveLength(PIXEL_PROBE_MAX_FRAMES + 1);
+      expect(first.posts.at(-1), 'the sequence did not restart with the budget').toBe(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('spends nothing at all on a runtime that cannot encode', async () => {
+    // The capability check comes BEFORE the reservation: a webview with no `OffscreenCanvas` will
+    // never write a frame, and burning forty slots proving it would hide that with a used-up budget.
+    const had = (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
+    (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas = undefined;
+    vi.stubGlobal('fetch', async () => ({ ok: true }));
+    try {
+      resetPixelProbe();
+      await savePixelProbe(tiny(), [det(0)]);
+      expect(pixelProbeCounts()).toEqual({ attempted: 0, delivered: 0 });
+    } finally {
+      (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas = had;
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('the two pure steps, which are the only conversion this module owns', () => {
+  it('reads the model’s CHW planes into RGBA in the right order and scale', () => {
+    // A 2×2 tensor whose three planes are distinguishable, so a swapped plane or a transposed
+    // index is visible rather than plausible. Plane order is R, G, B; the alpha is opaque.
+    const plane = 4;
+    const data = new Float32Array(3 * plane);
+    for (let i = 0; i < plane; i++) {
+      data[i] = i / 10;
+      data[plane + i] = 0.5;
+      data[plane * 2 + i] = 1;
+    }
+    const px = rgbaOf(data, 2);
+    expect(px).toHaveLength(plane * 4);
+    expect([...px.subarray(0, 4)]).toEqual([0, 128, 255, 255]);
+    expect([...px.subarray(4, 8)]).toEqual([26, 128, 255, 255]);
+    expect([...px.subarray(12, 16)]).toEqual([77, 128, 255, 255]);
+  });
+
+  it('is an 8-BIT VISUALISATION, not the tensor — the claim the doc used to overstate', () => {
+    // `preprocess` resamples bilinearly, so its samples sit off the 1/255 grid and an 8-bit PNG
+    // rounds them. PNG is lossless about the bytes it is HANDED and says nothing about this step.
+    // Enough to see a blown-out sticker or a logo; not enough to recompute a detector score from.
+    const data = new Float32Array([0.5015625, 0, 0, 0, 0, 0]);
+    const px = rgbaOf(data, 1);
+    expect(px[0]).toBe(128);
+    expect(px[0]! / 255).not.toBe(0.5015625);
+  });
+
+  it('carries every byte through base64, in order, across the chunk boundary', () => {
+    const bytes = new Uint8Array(0x8000 + 3);
+    bytes.set([1, 2, 3]);
+    bytes[bytes.length - 1] = 250;
+    const back = Uint8Array.from(atob(base64Of(bytes)), (c) => c.charCodeAt(0));
+    expect(back.length).toBe(bytes.length);
+    expect([...back.subarray(0, 3)]).toEqual([1, 2, 3]);
+    expect(back.at(-1)).toBe(250);
   });
 });

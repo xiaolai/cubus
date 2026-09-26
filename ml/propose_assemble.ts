@@ -82,12 +82,6 @@ const margin = (scores: readonly number[]): number => {
   return best - next;
 };
 
-const nineOfEach = (colors: readonly (readonly number[])[]): boolean => {
-  const counts = new Array<number>(NUM_COLORS).fill(0);
-  for (const row of colors) for (const c of row) counts[c]!++;
-  return counts.every((n) => n === PER_COLOR);
-};
-
 /**
  * File six sides under their centres' colours, exactly as the panel does.
  *
@@ -155,7 +149,30 @@ export function decide(captures: readonly Capture[]): Decision {
   // When none of them is legal the reading is refused anyway, and the nine-of-each colouring is
   // still the likeliest one a physical cube allows, so that is what the page is shown.
   const colors = reads.map((read) => [...read.colors]);
-  if (!(legal && nineOfEach(colors))) {
+  /**
+   * Is this colouring a legal cube EXACTLY AS SHOWN — no repair, nothing invented?
+   *
+   * `legalFit` alone is not that question (Codex audit, 2026-09-26). `assembleColors` REPAIRS on its
+   * way to a verdict, so an impossible colouring is silently mended inside the check and comes back
+   * legal while the rows the page is shown still hold the impossible pair. `repaired` is the
+   * assembler's own report of what it had to invent, and a colouring that needed nothing invented
+   * is the only one this file may call legal.
+   */
+  const fitsAsShown = (rows: number[][]): boolean => {
+    const faces = {} as Record<Face, ColorFace>;
+    rows.forEach((row, p) => {
+      faces[slotOf(row[4] as Colour)] = { ...reads[p]!, colors: row };
+    });
+    if (Object.keys(faces).length !== FACES.length) return false;
+    const result = assembleColors(faces, LOW_CONFIDENCE_THRESHOLD, {}, { diagnose: false });
+    return legalFit(result) && (result.repaired?.length ?? 0) === 0;
+  };
+  // `legal` above is only "a LEGAL CUBE WAS REACHABLE"; this is whether the rows returned are it.
+  let shownLegal = legal;
+  // NOT `nineOfEach`, WHICH TWO SWAPPED STICKERS SATISFY. That was the whole defect: swap one
+  // sticker between two faces of a solved cube and the counts are untouched, so this branch was
+  // skipped, the reads were returned unchanged, and `legal: true` was asserted about them.
+  if (!(legal && fitsAsShown(colors))) {
     const order = filing ? FACES.map((slot) => filing.photoOf[slot]) : captures.map((_, p) => p);
     const scores = order.flatMap((p) => reads[p]!.scores!);
     const lab = order.every((p) => reads[p]!.lab?.length === PER_COLOR)
@@ -177,41 +194,28 @@ export function decide(captures: readonly Capture[]): Decision {
       });
       return out;
     };
-    const fits = (rows: number[][]): boolean => {
-      const faces = {} as Record<Face, ColorFace>;
-      rows.forEach((row, p) => {
-        faces[slotOf(row[4] as Colour)] = { ...reads[p]!, colors: row };
-      });
-      return (
-        Object.keys(faces).length === FACES.length &&
-        legalFit(assembleColors(faces, LOW_CONFIDENCE_THRESHOLD, {}, { diagnose: false }))
-      );
-    };
-    const chosen =
-      candidates.map(apply).find((rows) => !legal || fits(rows)) ?? apply(candidates[0]!);
+    const found = candidates.map(apply).find((rows) => !legal || fitsAsShown(rows));
+    // NOTHING SHOWABLE IS LEGAL AS SHOWN, so the claim is withdrawn rather than made about a
+    // colouring that is not it. The likeliest colouring is still what the page gets — a refused
+    // reading is more useful drawn than blank — it is just no longer called legal.
+    if (legal && found === undefined) shownLegal = false;
+    const chosen = found ?? apply(candidates[0]!);
     chosen.forEach((row, p) => {
       colors[p] = row;
     });
   }
 
-  // `legal` is a claim about the colours this returns, so check exactly those. A failure here is a
-  // bug in the mapping above, never a property of the photographs.
-  if (legal) {
-    const faces = {} as Record<Face, ColorFace>;
-    colors.forEach((row, p) => {
-      faces[slotOf(row[4] as Colour)] = { ...reads[p]!, colors: row };
-    });
-    if (
-      Object.keys(faces).length !== FACES.length ||
-      !legalFit(assembleColors(faces, LOW_CONFIDENCE_THRESHOLD, {}, { diagnose: false }))
-    ) {
-      throw new Error('internal: the proposed colours are not the legal cube the assembly found');
-    }
+  // `shownLegal` is a claim about the colours this returns, so check exactly those — AS SHOWN,
+  // which is what `fitsAsShown` adds over the check that used to stand here and let the assembler
+  // repair its way past the question. A failure is a bug in the mapping above, never a property of
+  // the photographs.
+  if (shownLegal && !fitsAsShown(colors)) {
+    throw new Error('internal: the proposed colours are not the legal cube the assembly found');
   }
 
   return {
     status: 'confirm',
-    legal,
+    legal: shownLegal,
     verdict: filing ? (filing.result.reason ?? 'a legal cube') : 'centres could not be filed',
     photos: colors.map((row, p) => ({
       colors: row,

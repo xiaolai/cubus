@@ -52,6 +52,10 @@ SHIPPED_TEMPERATURE = 1.0
 # Below this a score is treated as zero-probability rather than as a log of zero.
 EPS = 1e-6
 
+# How many colour classes a sticker's score vector must carry. The detector's, and the only length
+# any of the arithmetic below is defined for.
+CLASSES = 6
+
 # The band inside which the winner probability counts as calibrated, from the measurement above:
 # 0.007 measured, and a bound loose enough that a different model is not failed for noise.
 MAX_EXPECTED_CALIBRATION_ERROR = 0.05
@@ -74,12 +78,33 @@ def stickers_of(report: dict, model: str) -> list[Sticker]:
     for row in report["photos"]:
         if row.get("model") != model or not row.get("fitted") or not row.get("scores"):
             continue
+        # ALIGNED, not merely present. `zip(..., strict=True)` pairs `read` with `truth` and would
+        # catch a mismatch between those two, but `scores` is indexed by `i` and was never checked
+        # against either — a short score list raised an IndexError deep inside the arithmetic, and a
+        # long one silently ignored its tail.
+        if len(row["scores"]) != len(row["read"]):
+            raise ValueError(
+                f"{row.get('path', '?')}: {len(row['scores'])} score rows for "
+                f"{len(row['read'])} stickers"
+            )
         for i, (read, truth) in enumerate(zip(row["read"], row["truth"], strict=True)):
             # `read` is None where the strict fit did not locate that sticker; an unlocated sticker
             # carries no score to calibrate, and inventing one is the thing this repository refuses.
             if read is None:
                 continue
-            out.append(Sticker(row["scores"][i], truth, row["contributor"]))
+            # CHECKED AT INGESTION, because everything after this treats it as evidence
+            # (2026-09-25). An empty score vector reaches `max()` on an empty sequence and crashes
+            # the run; a truth index of -1 is a legal Python index and SILENTLY selects the last
+            # class, so a corrupt drop is scored as a calibration result rather than refused. A
+            # measurement that cannot be trusted is a refusal here, not a number.
+            scores = row["scores"][i]
+            if not isinstance(scores, list) or len(scores) != CLASSES:
+                raise ValueError(f"{row.get('path', '?')}[{i}]: {CLASSES} scores expected")
+            if not all(isinstance(v, (int, float)) and math.isfinite(v) for v in scores):
+                raise ValueError(f"{row.get('path', '?')}[{i}]: a score is not a finite number")
+            if not isinstance(truth, int) or isinstance(truth, bool) or not 0 <= truth < CLASSES:
+                raise ValueError(f"{row.get('path', '?')}[{i}]: truth {truth!r} is not a class")
+            out.append(Sticker(scores, truth, row["contributor"]))
     return out
 
 
@@ -97,14 +122,31 @@ def probabilities(scores: list[float], temperature: float) -> list[float]:
     return [v / total for v in ex]
 
 
+def log_probability(scores: list[float], temperature: float, klass: int) -> float:
+    """log P(`klass`) at `temperature`, in LOG SPACE from end to end.
+
+    WHY NOT `log(probabilities(...)[k])`, which is what this used to be (2026-09-25). That form
+    floors the PROBABILITY at EPS before taking its log, and the floor is not a rounding detail: at
+    a high temperature the six pseudo-logits are squeezed together and a genuinely small
+    probability is clamped to 1e-6, so the loss stops falling as the fit gets worse and then goes
+    FLAT. `fit_temperature` is a ternary search, which needs NLL to be unimodal in T — and against
+    the clamped form it is not. Measured on the 09-23 drop: the search returned T = 2.942 at
+    NLL 1.621, while T = 0.2 scores 1.256. The reported "best" temperature was an artefact of the
+    floor, in the one function whose whole output is a temperature.
+
+    Log-sum-exp needs no second floor: the scores are already floored once on their way to
+    pseudo-logits, which is the only place a zero can appear.
+    """
+    z = [math.log(max(v, EPS)) / temperature for v in scores]
+    top = max(z)
+    return z[klass] - top - math.log(sum(math.exp(v - top) for v in z))
+
+
 def negative_log_likelihood(rows: list[Sticker], temperature: float) -> float:
     """Mean NLL of the confirmed colour — the quantity a temperature is fitted to."""
     if not rows:
         raise ValueError("no stickers to score")
-    total = 0.0
-    for s in rows:
-        total -= math.log(max(probabilities(s.scores, temperature)[s.truth], EPS))
-    return total / len(rows)
+    return -sum(log_probability(s.scores, temperature, s.truth) for s in rows) / len(rows)
 
 
 def fit_temperature(rows: list[Sticker], lo: float = 0.2, hi: float = 5.0) -> float:
@@ -150,8 +192,30 @@ def folds_by_contributor(rows: list[Sticker], k: int) -> list[int]:
 
 
 def cross_validate(rows: list[Sticker], k: int) -> list[dict]:
-    """Fit on k-1 folds of contributors, score the held-out one. The whole question, in one table."""
+    """Fit on k-1 folds of contributors, score the held-out one. The whole question, in one table.
+
+    REFUSED RATHER THAN CRASHED when there is nothing to hold out (2026-09-25). `k = 0` divided by
+    zero; `k = 1` put every contributor in one fold, so no fold had both a train and a test side,
+    the result list came back empty and the caller's `median()` raised on an empty sequence — a
+    stack trace in place of "this corpus cannot answer that question". A single contributor does the
+    same thing however many folds are asked for, and so can a hash collision, and that case is the
+    POINT of this script: the whole finding is that one contributor dominates the drop.
+    """
+    if k < 2:
+        raise ValueError(f"{k} folds cannot hold anything out; at least 2 are needed")
+    if len({s.contributor for s in rows}) < 2:
+        raise ValueError("a single contributor cannot be held out from itself")
     assigned = folds_by_contributor(rows, k)
+    # AND THE FOLDS THAT ACTUALLY CAME OUT, which the counts above do not settle: contributors are
+    # assigned by a hash, and two of them can land in the same fold. With every contributor in one
+    # fold no fold has both a train and a test side, the loop below produces nothing, and the
+    # caller's `median()` raised on an empty sequence — a stack trace where the answer is "this
+    # corpus cannot answer that question".
+    if len(set(assigned)) < 2:
+        raise ValueError(
+            "every contributor hashed into one fold, so nothing can be held out; "
+            "try a different --folds"
+        )
     out: list[dict] = []
     for fold in range(k):
         train = [s for s, f in zip(rows, assigned, strict=True) if f != fold]
@@ -159,7 +223,7 @@ def cross_validate(rows: list[Sticker], k: int) -> list[dict]:
         if not train or not test:
             continue
         temperature = fit_temperature(train)
-        before = negative_log_likelihood(test, 1.0)
+        before = negative_log_likelihood(test, SHIPPED_TEMPERATURE)
         after = negative_log_likelihood(test, temperature)
         out.append(
             {
@@ -209,7 +273,14 @@ def main(argv: list[str] | None = None) -> int:
         max(range(len(s.scores)), key=lambda c: s.scores[c]) == s.truth for s in rows
     ) / len(rows)
     print(f"\nat the shipped temperature {SHIPPED_TEMPERATURE}:")
-    print(f"  accuracy {accuracy:.4f}   ECE {ece:.4f}   NLL {negative_log_likelihood(rows, 1.0):.5f}")
+    # THE SHIPPED VALUE, not a hard-coded 1.0 (2026-09-25). They are the same number today and the
+    # line said so twice, which is exactly the kind of agreement that stops holding silently: the
+    # day `SHIPPED_TEMPERATURE` moves, a row headed "at the shipped temperature" would have gone on
+    # printing the identity's NLL, and the folds below would have gone on comparing against it.
+    print(
+        f"  accuracy {accuracy:.4f}   ECE {ece:.4f}   "
+        f"NLL {negative_log_likelihood(rows, SHIPPED_TEMPERATURE):.5f}"
+    )
     print("  reliability (confidence -> accuracy, n):")
     for confidence, acc, n in table:
         print(f"    {confidence:.3f} -> {acc:.3f}  n={n}")
@@ -239,8 +310,18 @@ def main(argv: list[str] | None = None) -> int:
         f"a fitted temperature; shipping T = {SHIPPED_TEMPERATURE}"
     )
     if args.assert_shipped:
-        if supports_a_temperature and SHIPPED_TEMPERATURE == 1.0:
-            print("FAIL: a temperature now pays, and the pipeline still ships the identity")
+        # THE ASSERTION IS ABOUT THE CONFIGURED VALUE, whatever it is. It used to fire only while
+        # `SHIPPED_TEMPERATURE` was exactly 1.0 — so the day it moved, the one check that keeps this
+        # decision true would have stopped checking anything at all, silently and in the direction
+        # of passing. The question is the same either way: does the evidence support a temperature
+        # OTHER than the one being shipped?
+        fitted_beats_shipped = supports_a_temperature and abs(
+            fit_temperature(rows) - SHIPPED_TEMPERATURE
+        ) > 1e-3
+        if fitted_beats_shipped:
+            print(
+                f"FAIL: a temperature now pays, and the pipeline still ships {SHIPPED_TEMPERATURE}"
+            )
             return 3
         if ece > MAX_EXPECTED_CALIBRATION_ERROR:
             print(f"FAIL: ECE {ece:.4f} is past {MAX_EXPECTED_CALIBRATION_ERROR}")
