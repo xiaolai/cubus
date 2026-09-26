@@ -34,8 +34,19 @@ updates:
 
   # The golden-harness pins (ml/requirements-golden.txt). A bump here can move a golden read, which
   # is exactly what the golden jobs exist to say; expected.json is re-pinned only for a change that
-  # has been explained (AGENTS.md).
+  # has been explained (AGENTS.md). So pip is deliberately UNGROUPED apart from the pair below: a
+  # bump that can move a read has to arrive on its own, or the golden job's verdict stops naming
+  # which package caused it.
+  #
+  # torch AND torchvision, together, because a torchvision wheel pins one exact torch
+  # (torchvision 0.29.0 depends on torch==2.14.0) and ml/requirements-cubedet.txt pins both. Split,
+  # the torchvision PR is a `ResolutionImpossible` that CANNOT be made green — measured on
+  # 2026-09-26, and it would have been reopened every week for as long as the two kept releasing.
+  # Grouping changes no version today; it only makes the next bump a proposal that can pass.
   - package-ecosystem: pip
     directory: /ml
     schedule:
       interval: weekly
+    groups:
+      torch-stack:
+        patterns: ["torch", "torchvision"]

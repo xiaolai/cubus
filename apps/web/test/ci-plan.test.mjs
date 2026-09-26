@@ -333,3 +333,48 @@ test('no CI step asks the golden gate for a leg whose artefact was deliberately 
     }
   }
 });
+
+// A DEPENDENCY PAIR THAT MUST MOVE TOGETHER HAS TO BE PROPOSED TOGETHER, or Dependabot opens a pull
+// request that cannot be made green and reopens it every week (2026-09-26).
+//
+// A torchvision wheel depends on ONE exact torch — torchvision 0.29.0 on torch==2.14.0 — and
+// ml/requirements-cubedet.txt pins both. Ungrouped, the torchvision bump is a `ResolutionImpossible`
+// in the cubedet job the moment pip resolves it: not a flake, not a slow runner, and nothing anyone
+// can do to that branch short of editing the other pin by hand. Measured on pull request #25.
+//
+// The assertion is the RELATION rather than the literal group, in the shape ci-plan's own cases use:
+// whichever co-pinned packages this repository declares, each pair must share a Dependabot group.
+// The pair list is here because "torchvision pins torch exactly" is a fact about the wheels that no
+// file in this tree states — so it is named once, with the measurement, instead of being rediscovered
+// from a red pull request.
+const CO_PINNED = [
+  { requirements: 'ml/requirements-cubedet.txt', packages: ['torch', 'torchvision'] },
+];
+
+test('python packages that pin each other share a Dependabot group', () => {
+  const config = readFileSync(`${ROOT}.github/dependabot.yml`, 'utf8');
+  // The pip ecosystem's `groups:` block, as text — enough to ask which patterns share a group, and
+  // it needs no YAML parser in a suite that has none.
+  const pip = config.slice(config.indexOf('package-ecosystem: pip'));
+  assert.ok(pip.length > 0, 'dependabot.yml declares no pip ecosystem — this check went blind');
+
+  for (const { requirements, packages } of CO_PINNED) {
+    // The pins have to actually be here, or the pair moved and this case is asserting about nothing.
+    const reqs = readFileSync(`${ROOT}${requirements}`, 'utf8');
+    const pinned = packages.filter((name) => new RegExp(`^${name}==`, 'm').test(reqs));
+    assert.deepEqual(pinned, packages,
+      `${requirements} no longer pins ${packages.filter((p) => !pinned.includes(p)).join(', ')} — ` +
+        'move or drop the CO_PINNED entry rather than leaving a case that checks nothing');
+
+    // One group whose patterns cover every package in the pair. Separate groups would still split
+    // them into separate pull requests, which is the whole defect.
+    const groups = [...pip.matchAll(/^ {6}([\w-]+):\n {8}patterns: \[([^\]]*)\]/gm)].map((m) =>
+      m[2].split(',').map((s) => s.trim().replace(/^["']|["']$/g, '')),
+    );
+    const together = groups.some((patterns) => packages.every((name) => patterns.includes(name)));
+    assert.ok(together,
+      `${packages.join(' and ')} pin each other in ${requirements} but no single pip group in ` +
+        '.github/dependabot.yml covers both, so Dependabot will propose them separately and the ' +
+        'resulting pull request cannot resolve — see the comment above this test');
+  }
+});
