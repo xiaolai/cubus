@@ -4,7 +4,7 @@
 
 import { isDesktopHost, noteScanReport } from '../host.js';
 import { t } from '../i18n.js';
-import { colourOfSlot, isScheme, positionOf, slotAt, slotOf } from '../scheme.js';
+import { COLOUR_NAMES, colourOfSlot, isScheme, positionOf, slotAt, slotOf } from '../scheme.js';
 
 import { $, escHtml, icon, state } from '../app-state.js';
 import { DEFAULT_PALETTE, SCAN_VIEWS, settings } from '../app-settings.js';
@@ -30,6 +30,7 @@ import { createConfirmHold } from './scan/confirm-hold.js';
 import { createScanChime } from './scan/chime.js';
 import { createStickerView } from './scan/sticker-view.js';
 import { createSpokenScan } from './scan/spoken.js';
+import { createIdentityAsk } from './scan/identity-ask.js';
 
 // Restore — the screen that reads your cube so it can be solved. Its route id stays `scan`, and
 // renaming it is not worth breaking every #/scan link and bookmark already in the wild.
@@ -125,7 +126,12 @@ SCREENS.scan = () => {
         <div class="card"><b style="font-size:var(--fs-body-l)" id="scanHowTitle">How it works</b>
           <div class="sub scan-say" id="scanHow" role="status" aria-live="polite" style="margin-top:4px">${registered ? 'Opening the camera…' : 'Loading the scanner…'}</div>
           <div class="sub scan-hint" id="scanHint" hidden></div>
-          <button class="btn sm outline" id="scanAction" hidden style="margin-top:10px"></button></div>
+          <button class="btn sm outline" id="scanAction" hidden style="margin-top:10px"></button>
+          <!-- The identity question's colours and its way out (lib/screens/scan/identity-ask.js).
+               In the CARD, with the sentence that asks it: a question whose answer sits somewhere
+               else is a sentence, not a question — the same reason a notice's action is here
+               rather than in the toolbar (2026-09-06). -->
+          <div class="id-ask" id="scanIdentity" hidden></div></div>
         <!-- HOW FAR BACK: one chip per named stage, plus the whole cube. Shown after a scan the
              app believed, and never before — a number about a cube nobody has read is a number
              about nothing. §9.2 decided they appear unasked: a chip reading "done" is an
@@ -389,6 +395,7 @@ SCREENS.scan = () => {
           // camera has read of the cube in the hand, or what a painter has authored so far.
           if (!settled) showState(board.partialFacelets(p.captured), { physical: !painting });
           confirmHold.show(p.confirm);
+          identityAsk.show(p);
           stickerView.show(p);
           // What this build's scanner can actually do, learned from what it just did (lib/host.js):
           // the Settings row that offers the study's view follows the scanner, never the platform.
@@ -438,14 +445,49 @@ SCREENS.scan = () => {
        *  on a read the scanner did not accept, plan §9a); and the twin, with the words for what it
        *  shows. What differs between the two — the repair a camera reading makes first and the
        *  reconnect question it answers, and where each goes next — stays with each caller. */
-      const acceptReading = (fl, { physical, source }) => {
+      const acceptReading = (fl, { physical, source, remember = true }) => {
         refusal.accept();
         chime.accepted();
         spoken.accepted();
         adoptCube(fl, { physical, source });
-        if (physical && state.connected && state.reported) rememberLastSeen('camera', { force: true });
+        if (remember && physical && state.connected && state.reported) rememberLastSeen('camera', { force: true });
         void paintStageChips(fl);
         showState(fl, { physical });
+      };
+      /** A finished reading with a side the camera could not NAME: solvable, and evidence about
+       *  nothing. Its own body because it is a policy rather than a step — the completion handler
+       *  orchestrates, and mixing a provenance rule into it was what an audit of this work called
+       *  out (2026-09-25).
+       *
+       *  NOT PHYSICAL WHILE A CUBE IS CONNECTED, and that is the half `markStale` cannot do. With
+       *  no correction derived, the cube goes on reporting where IT thinks it is — and
+       *  `cube-reports.js` replaces the SUBJECT from any report while `state.cube.isPhysical`,
+       *  trusted or not. So the scan was silently overwritten by the cube's own unreconciled belief
+       *  while "Solve this cube" stayed lit over it (found by a Codex audit of this work, and
+       *  reproduced). `isPhysical` means "the subject IS the connected cube, in step" — the painted
+       *  reading's comment says so — and here it is not known to be. With NO cube connected there
+       *  is nothing that could contradict the reading, and calling it non-physical would name the
+       *  cube the camera just read "a scrambled cube" for no gain. */
+      const acceptNamedReading = (fl, assigned) => {
+        const contradictable = state.connected;
+        acceptReading(fl, { physical: !contradictable, source: 'camera', remember: false });
+        if (!contradictable) {
+          if (settings.autosolve) go('home');
+          return;
+        }
+        // The chain cannot be claimed to be in step either: a Follow over this pair would drive
+        // the on-screen cube from the wrong reference.
+        markStale('a side of this scan was named rather than read, so it cannot say where the cube is');
+        // NAMES THE SIDES AND THE ACTION THAT EXISTS. "Show that side again" promised a recovery
+        // the screen does not offer — a finished scan has released the camera — and said "one
+        // side" whatever the count. Pressing a side's middle tile hands it back to the camera,
+        // which reopens it (lib/screens/scan/board.js, `centreActionOf`).
+        const named = assigned.map((slot) => t(COLOUR_NAMES[colourOfSlot(slot)])).join(', ');
+        speak(
+          t('Scanned — a side was named, not read'),
+          `${t('The cube checks out and is ready to solve. The camera could not read the middle sticker of this side, so this scan is not used to say where your smart cube is:')} ${named}. ${t('Press that side’s middle square and the camera will read it again.')}`,
+        );
+        if (settings.autosolve) go('home');
       };
       // Only a validated cube leaves this screen.
       panel.addEventListener('scan-complete', (e) => {
@@ -509,6 +551,22 @@ SCREENS.scan = () => {
           if (settings.autosolve) go('home');
           return;
         }
+        // ONE GATE FOR EVERY CONSUMER OF A COMPLETE STATE (dev-docs/asking-which-side-plan.md §4).
+        // Six sides is not the same as six sides the camera could NAME: a side filed by elimination
+        // (the determined sixth), by a ring match, or by a person answering which side it is has a
+        // centre derived from its slot. Whole-cube legality is not a net for that — the scramble
+        // D' F' B D2 L2 U2 with the shown L filed as R assembles as a legal cube that is not the
+        // one in the hand — so a reading with any such side may be SOLVED but may not be used as
+        // evidence ABOUT the cube: no tracking repair, no "as we last saw it", and no answer to a
+        // reconnect question. That is the painted reading's treatment minus its `physical: false`,
+        // because here the camera did look at all six sides; only one side's NAME came from
+        // somewhere else. Gated here, once, because cube-trust and cube-selfcheck are handed a
+        // facelet string and could not recover a provenance they were never given.
+        const assigned = Array.isArray(e.detail.assigned) ? e.detail.assigned : [];
+        if (assigned.length > 0) {
+          acceptNamedReading(fl, assigned);
+          return;
+        }
         // The camera SAW the cube in the user's hand; nothing was inferred from anywhere else.
         //
         // Order matters: the repair reads what the cube CLAIMED, so it runs before the scan is
@@ -565,6 +623,14 @@ SCREENS.scan = () => {
         root, classColor, slotFor, board,
         paint: (slot, index, colour) => captures.paint(slot, index, colour, () => panel.setSticker?.(slot, index, colour)),
       });
+      // The scanner cannot name the side in hand: the colours it offers, and the way past it
+      // (lib/screens/scan/identity-ask.js). Not a popover — it belongs to the card that asks the
+      // question and stands as long as the question does — so `closePops` leaves it alone.
+      const identityAsk = createIdentityAsk({
+        root, classColor,
+        answer: (colour, id) => panel.answerIdentity?.(colour, id),
+        skip: (id) => panel.skipIdentity?.(id),
+      });
       const closePops = () => { picker.close(); camera.closeMenu(); };
       $('.scan-faces', root).onclick = (ev) => {
         const cellEl = ev.target.closest('.cell');
@@ -583,6 +649,7 @@ SCREENS.scan = () => {
           closePops();
           const action = board.centreActionOf(tile.dataset.face);
           if (action.kind === 'swap') swapPaintScheme();
+          else if (action.kind === 'rename') panel.reopenIdentity?.(slotFor(tile.dataset.face));
           else if (action.kind === 'rescan') rescan(slotFor(tile.dataset.face));
           return;
         }

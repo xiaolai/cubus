@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assembleColors, type ColorFace, resolveCentres } from '../src/ai-assemble';
+import { assembleColors, type ColorFace } from '../src/ai-assemble';
 import { NUM_COLORS } from '../src/nine-of-each';
 import { FACES, type Face } from '../src/types';
 
@@ -36,7 +36,24 @@ describe('nine-of-each repair inside assembleColors', () => {
       j === wrong ? 0.4 : j === truth ? 0.38 : 0.01,
     );
 
-    const withScores = assembleColors(faces);
+    // ASKED FOR, NOT ASSERTED (D1, 2026-09-23). A repaired sticker is a colour nobody observed, so
+    // the repair names it and asks for one look at the side rather than returning a cube. The
+    // repair is still the thing that found the answer — without the scores there is nothing to ask
+    // about at all, which the next case pins.
+    const asked = assembleColors(faces);
+    expect(asked.valid).toBe(false);
+    expect(asked.confirm?.face).toBe('R');
+    expect(asked.repaired).toEqual([{ face: 'R', index: 0, from: wrong, to: truth }]);
+
+    // A second look that agrees settles it, and the cube is the one the detector nearly missed.
+    const look = {
+      capture: {
+        ...faces.R!,
+        colors: [...SOLVED.slice(9, 18)].map((l) => LETTER_CLASS[l as Face]!),
+      },
+      up: asked.confirm!.up,
+    };
+    const withScores = assembleColors(faces, undefined, { R: look });
     expect(withScores.valid).toBe(true);
     expect(withScores.facelets).toBe(SOLVED);
   });
@@ -94,48 +111,6 @@ describe('a sticker a person locked', () => {
     expect(assembleColors(faces).valid).toBe(false);
   });
 
-  describe('under the collision resolver, whose repair has no cost ceiling', () => {
-    // resolveCentres assembles with an INFINITE repair ceiling, so a correction that is only
-    // expensive to overrule would be overruled there. The setup: the newcomer is D's capture with its
-    // centre misread as U -- a collision with U, which leaves both unnamed. The one legal filing puts
-    // the newcomer at D, and that filing ALSO needs R0 repaired.
-    function collision(lockR0: boolean): ReturnType<typeof resolveCentres> {
-      const faces = misread();
-      if (lockR0) {
-        faces.R!.locked = Array<boolean>(9).fill(false);
-        faces.R!.locked[0] = true;
-      }
-      const d = faces.D!;
-      const newcomer: ColorFace = {
-        ...d,
-        colors: d.colors.map((c, k) => (k === 4 ? LETTER_CLASS.U : c)),
-        scores: d.scores!.map((row, k) =>
-          k === 4 ? row.map((_, j) => (j === LETTER_CLASS.U ? 0.95 : 0.01)) : [...row],
-        ),
-      };
-      const named: Partial<Record<Face, ColorFace>> = { ...faces };
-      const white = named.U!;
-      delete named.D;
-      delete named.U;
-      return resolveCentres(
-        named,
-        [white, newcomer].map((capture) => ({ capture, centreConfidence: capture.confidence[4]! })),
-        undefined,
-        { diagnose: false },
-      );
-    }
-
-    it('repairs R0 when nobody locked it -- the control, so the next test means something', () => {
-      const { result } = collision(false);
-      expect(result.valid).toBe(true);
-      expect(result.facelets).toBe(SOLVED);
-    });
-
-    it('refuses rather than move R0 once a person has locked it', () => {
-      expect(collision(true).result.valid).toBe(false);
-    });
-  });
-
   it('does not stop the repair when the lock agrees with it', () => {
     const faces = misread();
     faces.R!.colors[0] = LETTER_CLASS.R; // corrected to the truth...
@@ -147,5 +122,57 @@ describe('a sticker a person locked', () => {
     const result = assembleColors(faces);
     expect(result.valid).toBe(true);
     expect(result.facelets).toBe(SOLVED);
+  });
+
+  it('names a sticker it changed even where the ARGMAX did not move (D1, 2026-09-25)', () => {
+    // THE GAP. `assignNineOfEach.changed` reports where the assignment differs from each sticker's
+    // TOP SCORE, and the repair reported exactly those, filtered against the capture. Filtering
+    // removes false positives; it cannot add the missing ones. A sticker whose capture already
+    // disagrees with its own argmax — a centre rewritten to its slot's colour by `withCentre`, a
+    // sticker a person corrected by hand — is absent from that list even when the accepted reading
+    // does not say what the capture says, so a changed sticker went unnamed and unlooked-at, which
+    // is the one thing D1 exists to prevent.
+    const faces = facesWithScores(SOLVED);
+    const truth = LETTER_CLASS.R;
+    const wrong = LETTER_CLASS.L;
+    // (a) The ordinary repair, exactly as above: visible at the argmax, and always reported.
+    faces.R!.colors[0] = wrong;
+    faces.R!.scores![0] = Array.from({ length: NUM_COLORS }, (_, j) =>
+      j === wrong ? 0.4 : j === truth ? 0.38 : 0.01,
+    );
+    // (b) The invisible one: the CAPTURE says F where this sticker's own scores still say U, so the
+    // repair keeps the argmax and the assignment silently disagrees with what was captured.
+    faces.U!.colors[0] = LETTER_CLASS.F;
+
+    const asked = assembleColors(faces);
+    const named = asked.repaired ?? [];
+    expect(named, 'the argmax-visible repair was not named').toContainEqual({
+      face: 'R',
+      index: 0,
+      from: wrong,
+      to: truth,
+    });
+    expect(named, 'a sticker the reading changed was reported as untouched').toContainEqual({
+      face: 'U',
+      index: 0,
+      from: LETTER_CLASS.F,
+      to: LETTER_CLASS.U,
+    });
+    // And D1 holds over BOTH: a reading with a sticker nobody observed is asked about, not asserted.
+    expect(asked.valid).toBe(false);
+    expect(new Set(named.map((r) => r.face))).toEqual(new Set(['R', 'U']));
+  });
+
+  it('names nothing where the assignment IS the capture, whatever the argmax says', () => {
+    // The other half, and the reason the comparison is with the capture rather than with the
+    // argmax: a centre rewritten to its slot's colour must not be reported as repaired merely
+    // because the detector's top score still says what it read.
+    const faces = facesWithScores(SOLVED);
+    faces.U!.scores![4] = Array.from({ length: NUM_COLORS }, (_, j) =>
+      j === LETTER_CLASS.F ? 0.9 : 0.01,
+    );
+    const r = assembleColors(faces);
+    expect(r.repaired ?? []).toEqual([]);
+    expect(r.valid).toBe(true);
   });
 });

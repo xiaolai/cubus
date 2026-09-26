@@ -1279,14 +1279,16 @@ test('the editable spoken lines: an edit sticks, a bad one is refused out loud, 
 
   // A bad one is refused OUT LOUD and changes nothing — silently reverting would look like an edit
   // that did not take.
-  const why = $('#spokenWhy-savedMany');
-  const count = $('[data-spoken="savedMany"]');
-  count.value = 'Got it! more sides.';
-  count.dispatchEvent(new win.Event('change'));
+  const why = $('#spokenWhy-savedSide');
+  const named = $('[data-spoken="savedSide"]');
+  // An edit that drops `%1` — the side's colour. Kept, it would announce every capture without
+  // saying which side was saved, which is the whole of what the line is for.
+  named.value = 'Got it! Show me another one.';
+  named.dispatchEvent(new win.Event('change'));
   await tick();
   assert.ok(why.textContent.length > 0, 'a refused edit said nothing');
   assert.equal(why.hidden, false, 'the refusal was written but left hidden');
-  assert.equal(settings.spokenLines.savedMany, undefined, 'a refused edit was stored anyway');
+  assert.equal(settings.spokenLines.savedSide, undefined, 'a refused edit was stored anyway');
 
   // Reset puts the default back and stops being an override.
   $('[data-spoken-reset="open"]').click();

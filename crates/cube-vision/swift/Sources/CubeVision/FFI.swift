@@ -335,7 +335,7 @@ public func cube_vision_close_camera() {
 /// 0 when it has nothing fresh.
 private enum CameraTick {
     case answer(Int32)
-    case frame(bytes: [UInt8], width: Int, height: Int)
+    case frame(bytes: [UInt8], width: Int, height: Int, id: Int)
 }
 
 private func cameraTick() -> CameraTick {
@@ -349,8 +349,8 @@ private func cameraTick() -> CameraTick {
         return .answer(-6)
     case .none:
         return .answer(0)
-    case .frame(let bytes, let width, let height):
-        return .frame(bytes: bytes, width: width, height: height)
+    case .frame(let bytes, let width, let height, let id):
+        return .frame(bytes: bytes, width: width, height: height, id: id)
     }
 }
 
@@ -361,32 +361,93 @@ private func cameraTick() -> CameraTick {
 /// from "no frame yet" and used to be reported as the same zero, and -6 when the camera that was
 /// open stopped, with the OS's reason as the message (2026-09-20): the fact the 5 s clock could only
 /// guess at, reported the tick after the OS said it.
-/// Also writes the size of the camera picture the tensor was letterboxed from into `outPicture`, TWO
-/// Int32s — `[width, height]` — zero when there is no frame; the page places each sticker in the
-/// picture with it (dev-docs/scan-guidance-plan.md 5). One value rather than two out-parameters, so the
-/// Rust side hands it on whole and cannot pass the pair in the wrong order (audit, 2026-09-19).
+/// Also writes what the page needs to know ABOUT the frame into `outFrameInfo`, THREE Int32s —
+/// `[width, height, id]` — all zero when there is no frame. `width`x`height` is the camera picture
+/// the tensor was letterboxed from, which the page places each sticker in
+/// (dev-docs/scan-guidance-plan.md 5). One value rather than separate out-parameters, so the Rust
+/// side hands it on whole and cannot pass the members in the wrong order (audit, 2026-09-19).
+///
+/// `id` IDENTIFIES THE FRAME (D2, dev-docs/scan-pipeline-audit-2026-09-23.md §3). `latestFrame()`
+/// serves the same frame on every tick for up to `Camera.frameStaleAfter`, and the page could not
+/// tell that from a stream of new frames — so one physical frame supplied several reads to a gate
+/// that asks for three identical ones, and any accumulation on top would count it several times.
+/// It is the camera's own publish counter, so it repeats exactly when the picture repeats.
+/// The RGBA pixels of the camera frame with `frameId`, for the assembly's paint path (D7,
+/// dev-docs/scan-pipeline-audit-2026-09-23.md §3).
+///
+/// Returns the byte count written, 0 when the camera no longer holds that frame, or a negative
+/// code: -4 when no camera is open, -7 when the caller's buffer is too small for the frame it asked
+/// for. `outSize` takes TWO Int32s — `[width, height]` — zero on every path that is not a frame,
+/// like `cube_vision_next_detection`'s.
+///
+/// SIZED BEFORE IT IS FILLED. A caller that does not know the frame's dimensions passes `cap` 0 and
+/// reads `outSize`, then calls again with a buffer that fits; a caller that does passes the buffer
+/// straight away. Both are one lock, and neither can overrun — the alternative, allocating for a
+/// maximum plausible frame, is a guess about cameras that a 4K webcam breaks quietly.
+///
+/// BY ID, never "the latest". The page fitted its grid to one particular picture, and pixels from a
+/// later frame would place every sticker box over paint that has since moved. See `Camera.pixels`.
+@_cdecl("cube_vision_frame_pixels")
+public func cube_vision_frame_pixels(_ frameId: Int32, _ out: UnsafeMutablePointer<UInt8>, _ cap: Int32,
+                                     _ outSize: UnsafeMutablePointer<Int32>) -> Int32 {
+    return entry { () -> Int32 in
+        outSize[0] = 0
+        outSize[1] = 0
+        guard let cam = state.camera, cam.current != nil else {
+            LastError.record("no camera is open")
+            return -4
+        }
+        guard let frame = cam.pixels(ofFrame: Int(frameId)) else { return 0 }
+        outSize[0] = Int32(frame.width)
+        outSize[1] = Int32(frame.height)
+        let needed = frame.bytes.count
+        guard let count = Int32(exactly: needed) else {
+            LastError.record("cube_vision_frame_pixels: a frame of \(needed) bytes exceeds the ABI")
+            return -7
+        }
+        // A sizing call: the caller wanted the dimensions and has written no buffer to fill.
+        if cap <= 0 { return count }
+        guard cap >= count else {
+            LastError.record("cube_vision_frame_pixels: \(needed) bytes into a buffer of \(cap)")
+            return -7
+        }
+        frame.bytes.withUnsafeBufferPointer { src in
+            out.update(from: src.baseAddress!, count: needed)
+        }
+        return count
+    }
+}
+
 @_cdecl("cube_vision_next_detection")
 public func cube_vision_next_detection(_ out: UnsafeMutablePointer<Float>, _ cap: Int32,
                                        _ outRows: UnsafeMutablePointer<Int32>, _ outAnchors: UnsafeMutablePointer<Int32>,
-                                       _ outPicture: UnsafeMutablePointer<Int32>) -> Int32 {
+                                       _ outFrameInfo: UnsafeMutablePointer<Int32>) -> Int32 {
     return entry { () -> Int32 in
         // Zero before anything can return, so EVERY path that is not a frame — no model, no camera,
-        // no frame yet, a failed inference — leaves the size saying so (audit, 2026-09-19).
-        outPicture[0] = 0
-        outPicture[1] = 0
+        // no frame yet, a failed inference — leaves the size saying so (audit, 2026-09-19). The id
+        // is zeroed with them: the Rust side reads the triple as a unit, and an id left over from
+        // the previous tick beside a zero size would be an identity for a frame that never came.
+        outFrameInfo[0] = 0
+        outFrameInfo[1] = 0
+        outFrameInfo[2] = 0
         guard let model = loadedModel() else { return -3 }
-        let bytes: [UInt8], width: Int, height: Int
+        let bytes: [UInt8], width: Int, height: Int, id: Int
         switch cameraTick() {
         case .answer(let code):
             return code
-        case .frame(let b, let w, let h):
-            (bytes, width, height) = (b, w, h)
+        case .frame(let b, let w, let h, let i):
+            (bytes, width, height, id) = (b, w, h, i)
         }
         let chw = bytes.withUnsafeBufferPointer { Letterbox.chw(rgba: $0.baseAddress!, width: width, height: height) }
         let n = infer(model, chw: chw, into: out, cap: cap, outRows: outRows, outAnchors: outAnchors, what: "cube_vision_next_detection")
         if n > 0 {
-            outPicture[0] = Int32(width)
-            outPicture[1] = Int32(height)
+            outFrameInfo[0] = Int32(width)
+            outFrameInfo[1] = Int32(height)
+            // Truncating, and deliberately so: the id is compared for CHANGE and never ordered, so
+            // the low 32 bits of a counter answer "is this the same frame?" exactly as well. A
+            // camera would have to publish 2^32 frames — over two years at 60 fps — to wrap, and a
+            // wrapped id is still correct.
+            outFrameInfo[2] = Int32(truncatingIfNeeded: id)
         }
         return n
     }

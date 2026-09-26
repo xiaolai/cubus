@@ -150,6 +150,16 @@ const BUNDLES = [
       // running the decode here when a page has no `Worker`, so both halves ship in this bundle.
       '../../../packages/cube-scanner/view/misread-client.ts',
       '../../../packages/cube-scanner/view/misread-protocol.ts',
+      // The pixel probe (2026-09-24), off unless `localStorage.cubusScanPixels` is '1'. It saves the
+      // PICTURE behind a frame, which `RecordedFrame.pixels` has had a field for since D9 and
+      // nothing has ever filled — added because two confident diagnoses of an unreadable white face,
+      // both drawn from box counts alone, were both wrong.
+      '../../../packages/cube-scanner/view/pixel-probe.ts',
+      // The session recorder (D9, 2026-09-23), off unless `localStorage.cubusScanRecord` is '1':
+      // the scan trace could never become a replayable fixture, so a bug report could not become a
+      // test. It ships in the panel because the panel is what sees the frames.
+      '../../../packages/cube-scanner/view/session-recorder.ts',
+      '../../../packages/cube-scanner/src/session-record.ts',
       // The colour repair, which arrived with the permissive detector: the constraint a cube's
       // paint satisfies (`nine-of-each`), the pixels a sticker actually carries, read at the one
       // moment a frame and a fitted grid are both in hand (`sticker-pixels`), and the question
@@ -197,10 +207,51 @@ const BUNDLES = [
     // panel never calls it.
     // `latticeOf` (2026-09-21) is the lattice-only view the package entry and the tests read; the
     // panel reads `fitLattice`, which carries the refusal's reason, so esbuild drops the view.
-    treeShaken: ['SOLVED_FACELETS', 'encodeFacelets', 'detectFace', 'fitFromOutput', 'setChainTimeoutForTests', 'latticeOf'],
+    // …and the READERS in session-record.ts that nothing on this path reaches. The list shrank on
+    // 2026-09-25 and that is the delete-when-used contract doing its job: `SessionRecorder.finish()`
+    // now validates through `parseSession` before handing a session over — a recorder that can emit
+    // what no reader loads is a recorder with a documented check it does not perform — so the
+    // parser and every helper and refusal message it carries are IN the bundle, deliberately. What
+    // is still dropped is the arithmetic OVER a parsed session (`sessionFps`, `sessionTickRate`,
+    // `sessionTicks`, `sessionDurationMs`), which is the corpus scripts' job and not the panel's.
+    // `sessionTickRate` joined them on 2026-09-26: the replay harness asks how often the scan
+    // LOOKED, which is not how often the camera produced (Codex audit, finding 10), and neither
+    // question is one the panel asks.
+    treeShaken: [
+      'SOLVED_FACELETS', 'encodeFacelets', 'detectFace', 'fitFromOutput',
+      'setChainTimeoutForTests', 'latticeOf',
+      'sessionDurationMs', 'sessionFps', 'sessionTickRate', 'sessionTicks',
+      // The pixel probe's count-reset and its counts: seams for its own tests and for a developer
+      // wanting a second run without a reload. The panel calls neither.
+      'resetPixelProbe', 'pixelProbeCounts',
+    ],
     // encodeFacelets' refusal of a malformed state (2026-09-13) leaves with the function: the
-    // message is in facelet-cube.ts and, correctly, nowhere in a bundle that never encodes.
-    treeShakenMessages: ['encodeFacelets: not a well-formed cube state'],
+    // message is in facelet-cube.ts and, correctly, nowhere in a bundle that never encodes. The
+    // session reader's refusals leave with `parseSession`, for the same reason.
+    treeShakenMessages: [
+      'encodeFacelets: not a well-formed cube state',
+      '.detections must be an array',
+      '.facelets is not a well-formed cube',
+      ".handling must be 'careful' or 'careless'",
+      '.id must be an integer',
+      ".scheme must be 'western' or 'japanese' when present",
+      '.scores must list all',
+      '.detail must be an object when present',
+      'must be an ISO 8601 instant, got',
+      '.served must be a whole number of ticks, at least 1',
+      ".state must be 'scrambled' or 'near-solved'",
+      'a session must be an object',
+      'decisions must be an array',
+      'detector measures the detector against itself',
+      'does not increase on',
+      'frames must be a non-empty array',
+      'interpret it, and guessing would corrupt the measurement',
+      'is not a decision kind',
+      'is not a frame of this session',
+      'model must be an object',
+      'must be a finite number',
+      'must be a non-empty string',
+    ],
   },
   {
     // The misread decoder, on its own thread (2026-09-05). A refusal used to spend up to 3.0 s of

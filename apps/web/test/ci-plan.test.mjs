@@ -172,6 +172,42 @@ test('every skippable CI job is gated on an output the plan emits, and the alway
     assert.ok(blocks.has(job), `job ${job} is gone from ci.yml`);
     assert.doesNotMatch(blocks.get(job), /^    if: /m, `${job} must run on every tier`);
   }
+
+  // EVERY CRATE A CROSS-TARGET JOB COMPILES IS ALSO LINTED THERE, AT `-D warnings` (2026-09-25).
+  //
+  // `rust-platforms` used to `cargo check` cube-vision AND cubus-desktop for Windows and Android
+  // while linting cube-vision alone — so a warning that exists only on a cross target had nothing
+  // to refuse it. Measured on the Android target: seven `unreachable_code` warnings in the BLE
+  // commands, where a `cfg(android)` block that RETURNED was followed by an unguarded desktop
+  // body, and ten dead-code warnings behind them. The workspace clippy in the `rust` job IS
+  // `-D warnings` and could not see any of it, because it runs on the host target.
+  //
+  // Asserted as a RELATION rather than as a fixed string: whatever the check step compiles, the
+  // clippy step has to lint. Adding a crate to one and forgetting the other is what this catches,
+  // which is the shape the gap had.
+  {
+    const cross = blocks.get('rust-platforms');
+    assert.ok(cross, 'job rust-platforms is gone from ci.yml');
+    const cratesIn = (re) => {
+      const line = cross.match(re);
+      assert.ok(line, `rust-platforms has no ${re} step`);
+      return [...line[0].matchAll(/-p (\S+)/g)].map((m) => m[1]).sort();
+    };
+    const checked = cratesIn(/cargo check [^\n]*--target \$\{\{ matrix\.target \}\}/);
+    const linted = cratesIn(/cargo clippy [^\n]*--target \$\{\{ matrix\.target \}\}[^\n]*/);
+    assert.ok(checked.length > 0, 'the cross-target check step names no crate');
+    assert.deepEqual(
+      linted,
+      checked,
+      'rust-platforms compiles a crate for a cross target that it does not lint there — a warning ' +
+        'that only exists on that target would have nothing to refuse it',
+    );
+    assert.match(
+      cross,
+      /cargo clippy [^\n]*-- -D warnings/,
+      'the cross-target clippy does not deny warnings, so it refuses nothing',
+    );
+  }
   // Inside the ts job, the full-tier steps are the ones that name the browsers, coverage and
   // icons, and the fast-tier steps are the `:fast` scripts. Steps are split on their `- ` and
   // read with comments stripped, so prose ABOUT a tier does not count as a step of it.

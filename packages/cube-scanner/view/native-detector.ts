@@ -12,6 +12,7 @@
 
 import { type CameraDevice, type CameraOptions, facingOf } from '../src/camera.js';
 import type { Detector, ModelOutput } from '../src/detector.js';
+import type { Frame } from '../src/types.js';
 
 /** The sliver of the Tauri API this needs — typed here so the scanner package takes no Tauri dep. */
 export type Invoke = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
@@ -160,6 +161,19 @@ let opensOut = 0;
  * a wrong guess here is one late close on a camera a later open has already established.
  */
 export const CLOSE_TIMEOUT_MS = 10_000;
+
+/**
+ * How long a close will wait behind an `open_camera` that has not answered (see `closeCamera`).
+ *
+ * THE OTHER HALF OF `CLOSE_TIMEOUT_MS`, and it was missing (Codex audit, 2026-09-26). A close issued
+ * while an open is in flight is deferred behind `opening` so it cannot take the lens out from under
+ * it — and an open that never answers made that wait permanent: the close never went, and because
+ * `opensOut` never fell, EVERY later close queued behind the same wedged promise. Measured shape:
+ * leave one open pending, stop it, open a second camera successfully, stop that — zero
+ * `close_camera` calls, and the second camera stays live with the detector reporting no device.
+ * Longer than a close, because an open really can be slow: a permission prompt is a human.
+ */
+export const OPEN_SETTLE_TIMEOUT_MS = 30_000;
 
 /**
  * The newest open ISSUED — whose claim, what it asked for, and whether it has landed — so an older
@@ -362,6 +376,21 @@ export class NativeDetector implements Detector {
     );
   }
 
+  /**
+   * The RGBA pixels of the frame with `frameId`, or null when the plugin no longer holds it (D7).
+   *
+   * The wire is `[width, height]` as two little-endian int32s, then `width * height * 4` RGBA
+   * bytes — and the 8-byte header alone, both zero, for "that frame is gone", which is an ordinary
+   * answer rather than a failure: a tick lands or the camera closes between the fit and this call.
+   *
+   * Android's plugin API is JSON only, so the bytes arrive base64-encoded there exactly as the
+   * tensor does; Apple hands back an ArrayBuffer and nothing is copied.
+   */
+  async framePixels(frameId: number): Promise<Frame | null> {
+    const reply = await this.invoke(`${P}frame_pixels`, { frameId });
+    return decodeFramePixels(reply);
+  }
+
   async cameras(): Promise<CameraDevice[]> {
     return nativeCameras(await this.invoke(`${P}list_cameras`));
   }
@@ -404,7 +433,15 @@ export class NativeDetector implements Detector {
     const sent = this.invoke(`${P}open_camera`, { deviceId: owner.opts.deviceId ?? null });
     trackOpen(sent);
     void sent.then(
-      () => {},
+      () => {
+        // AND THE REPAIR CAN ITSELF BE OVERTAKEN (Codex audit, 2026-09-26). This open is an open
+        // like any other: a newer owner can claim and land while it crosses the bridge, and then
+        // THIS one ran last and the lens is on the device it restored rather than the new owner's.
+        // Everything else here re-asks who owns the camera after an await; this path did not, so a
+        // repair aimed at B could leave the lens on B while C was the owner and reported as such.
+        // Asked again for the owner this repair was for: unchanged, and the guard returns at once.
+        this.repairIfOvertaken(owner.claim);
+      },
       (err: unknown) => {
         console.warn(
           '[cubus] the native camera could not be reopened for its owner after an abandoned open landed late',
@@ -436,7 +473,19 @@ export class NativeDetector implements Detector {
     // `open_camera` is the ordinary way to reach that. One snapshot of `opening` is enough, because
     // an open issued after this point is one the claim rule refuses this close on (see `closing`).
     if (opensOut > 0) {
-      void opening.then(() => {
+      // BOUNDED, for the same reason a close is: an open that never answers must not hold the
+      // camera open for ever. `sendClose` drops a close whose reason expired while it waited, so
+      // giving up here costs at worst one close the claim rule refuses anyway.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const gaveUp = new Promise<void>((resolve) => {
+        timer = setTimeout(() => {
+          console.warn(
+            `[cubus] the native camera's open_camera did not answer within ${Math.round(OPEN_SETTLE_TIMEOUT_MS / 1000)} seconds — the close it was holding back is being sent anyway`,
+          );
+          resolve();
+        }, OPEN_SETTLE_TIMEOUT_MS);
+      });
+      void Promise.race([opening.then(() => clearTimeout(timer)), gaveUp]).then(() => {
         this.sendClose(claim);
       });
       return;
@@ -546,6 +595,52 @@ function base64ToBuffer(b64: string): ArrayBuffer | null {
  * anchors means "no frame yet" → null, which the panel treats as a tick to skip. Exported so a test
  * can pin the wire format without a plugin.
  */
+/**
+ * A `frame_pixels` reply as a `Frame`, or null for "that frame is gone" (D7).
+ *
+ * CHECKED AT THE BRIDGE, like `decodeTensorResponse`: a reply whose header and payload disagree is
+ * the two sides disagreeing about a picture, and read as a frame it would place every sticker box
+ * over the wrong pixels — silently, and only ever on the path taken when a scan is about to be
+ * refused, which is the worst place for a quiet fault.
+ */
+export function decodeFramePixels(input: unknown): Frame | null {
+  let buf: ArrayBuffer | null;
+  if (input instanceof ArrayBuffer) buf = input;
+  else if (typeof input === 'string') buf = base64ToBuffer(input);
+  else if (input !== null && typeof input === 'object' && 'pixels' in input) {
+    const { pixels } = input as { pixels: unknown };
+    if (typeof pixels !== 'string') {
+      throw new Error(`cube-vision: frame_pixels answered with ${typeof pixels} pixels`);
+    }
+    buf = base64ToBuffer(pixels);
+  } else {
+    throw new Error(
+      `cube-vision: frame_pixels answered with ${input === null ? 'null' : `a ${typeof input}`}`,
+    );
+  }
+  if (buf === null || buf.byteLength < 8) return null;
+  const [width, height] = new Int32Array(buf, 0, 2);
+  // Both zero is "that frame is gone". Anything else with a non-positive side is a disagreement.
+  if (width === 0 && height === 0) return null;
+  if (width! <= 0 || height! <= 0) {
+    throw new Error(`cube-vision: frame_pixels reported a ${width}x${height} picture`);
+  }
+  const need = width! * height! * 4;
+  if (!Number.isSafeInteger(need)) {
+    throw new Error(`cube-vision: a ${width}x${height} frame names a length no buffer has`);
+  }
+  if (buf.byteLength !== 8 + need) {
+    throw new Error(
+      `cube-vision: frame_pixels is ${buf.byteLength} bytes, need ${8 + need} for ${width}x${height}`,
+    );
+  }
+  return {
+    data: new Uint8ClampedArray(buf, 8, need),
+    width: width!,
+    height: height!,
+  };
+}
+
 export function decodeTensorResponse(input: ArrayBuffer | string): ModelOutput | null {
   // TWO shapes, because the two native plugin APIs cannot produce the same one. Tauri's Rust
   // commands can return a raw `Response`, so Apple hands back an ArrayBuffer and nothing is
@@ -566,7 +661,7 @@ export function decodeTensorResponse(input: ArrayBuffer | string): ModelOutput |
   // version 2 header is a bridge disagreement, not the idle "no frame yet" a short version 1 one is.
   const versioned = buf.byteLength >= 4 && new Int32Array(buf, 0, 1)[0]! < 0;
   if (!versioned && buf.byteLength < 8) return null;
-  const { rows, anchors, headerBytes, picture } = tensorHeader(buf);
+  const { rows, anchors, headerBytes, picture, frameId } = tensorHeader(buf);
   // "No frame yet", in either version: both counts zero, and `tensorHeader` has refused every
   // shape between that and a frame.
   if (anchors === 0) return null;
@@ -588,25 +683,47 @@ export function decodeTensorResponse(input: ArrayBuffer | string): ModelOutput |
     );
   }
   const data = new Float32Array(buf, headerBytes, count);
+  // WHICH frame this tensor came from (D2, wire version 3). The native camera re-serves its cached
+  // frame on every tick for up to a second, and nothing on this side could tell that from a stream
+  // of new ones, so one physical frame supplied several reads to a gate that asks for three.
+  // Carried, never inferred: a version 1 or 2 plugin says nothing, and nothing is what is reported.
   // `rows` is CARRIED, not discarded. It was read off the header, used for one length check and
   // thrown away, so the one runtime that crosses a bridge was the one with no assertion that the
   // tensor is this model's detect head: a re-exported or transposed model reached
   // `decodeDetections` and was read off stale offsets. `fitFromOutput` is where that is now
   // refused, for every runtime at once.
-  return picture ? { data, anchors, rows, picture } : { data, anchors, rows };
+  return {
+    data,
+    anchors,
+    rows,
+    ...(picture ? { picture } : {}),
+    ...(frameId === undefined ? {} : { frameId }),
+  };
 }
 
 /**
- * The header of a tensor response, in either wire version. A version 2 header either says "no frame
- * yet" — zero anchors, and no picture — or carries a frame AND the positive size of the picture it
- * came from; a frame with no size, or a size with no frame, is the two sides of the bridge
- * disagreeing, and is refused rather than read as a frame nobody can place (audit, 2026-09-19).
+ * The header of a tensor response, in any of the three wire versions. A version 2 header either says
+ * "no frame yet" — zero anchors, and no picture — or carries a frame AND the positive size of the
+ * picture it came from; a frame with no size, or a size with no frame, is the two sides of the
+ * bridge disagreeing, and is refused rather than read as a frame nobody can place (audit,
+ * 2026-09-19).
+ *
+ * VERSION 3 ADDS THE FRAME'S IDENTITY (D2, 2026-09-23): `-3, rows, anchors, width, height, frameId`,
+ * 24 bytes. It is version 2 plus one word, because the frame a tensor was computed from is a fact
+ * only the plugin holds — it is the plugin that re-serves a cached frame for up to a second
+ * (`Camera.frameStaleAfter`) — and no amount of reasoning on this side can recover it.
+ *
+ * THREE VERSIONS ARE READ AND NONE IS REQUIRED. Apple speaks 3; Windows and Android still speak 1,
+ * and a plugin that says nothing about frame identity has `frameId` absent rather than guessed. A
+ * fabricated id would read as "every tick is a new frame", which is precisely the false belief D2
+ * exists to correct, so the older paths must stay silent rather than be made to look modern.
  */
 function tensorHeader(buf: ArrayBuffer): {
   rows: number;
   anchors: number;
   headerBytes: number;
   picture?: { width: number; height: number };
+  frameId?: number;
 } {
   const first = new Int32Array(buf, 0, 1)[0]!;
   if (first >= 0) {
@@ -621,23 +738,42 @@ function tensorHeader(buf: ArrayBuffer): {
       `cube-vision tensor: a version 1 header of ${rows}×${anchors} is neither a frame nor "no frame"`,
     );
   }
-  if (first !== -2) throw new Error(`cube-vision tensor: unknown wire version ${-first}`);
-  if (buf.byteLength < 20) {
-    throw new Error(`cube-vision tensor: a version 2 header is 20 bytes, got ${buf.byteLength}`);
+  if (first !== -2 && first !== -3) {
+    throw new Error(`cube-vision tensor: unknown wire version ${-first}`);
   }
-  const header = new Int32Array(buf, 0, 5);
+  // Version 3 is version 2 plus the frame's identity, so the two are parsed together: one set of
+  // shape rules, one place they can drift. Splitting them into two readers is how the version 1
+  // reader and the version 2 reader came to disagree about what "no frame yet" looks like.
+  const words = first === -2 ? 5 : 6;
+  const headerBytes = words * 4;
+  if (buf.byteLength < headerBytes) {
+    throw new Error(
+      `cube-vision tensor: a version ${-first} header is ${headerBytes} bytes, got ${buf.byteLength}`,
+    );
+  }
+  const header = new Int32Array(buf, 0, words);
   const [rows, anchors, width, height] = [header[1]!, header[2]!, header[3]!, header[4]!];
   // Exactly two shapes, and nothing between them: a frame, every number positive; or "no frame
   // yet", every number zero. A zero row count beside anchors, a negative anything, a size with no
   // frame or a frame with no size is the two sides disagreeing (audit, 2026-09-19).
   if (rows > 0 && anchors > 0 && width > 0 && height > 0) {
-    return { rows, anchors, headerBytes: 20, picture: { width, height } };
+    // The id is a plain int32 and may be ANY value, negative included: it is an identity, not a
+    // count, and the only thing asked of it is that it differ when the picture differs. Refusing a
+    // negative one would make a plugin whose counter wrapped look like a broken bridge.
+    const frameId = first === -3 ? header[5]! : undefined;
+    return {
+      rows,
+      anchors,
+      headerBytes,
+      picture: { width, height },
+      ...(frameId === undefined ? {} : { frameId }),
+    };
   }
   if (rows === 0 && anchors === 0 && width === 0 && height === 0) {
-    return { rows, anchors, headerBytes: 20 };
+    return { rows, anchors, headerBytes };
   }
   throw new Error(
-    `cube-vision tensor: a version 2 header of ${rows}×${anchors} with a ${width}×${height} picture is neither a frame nor "no frame"`,
+    `cube-vision tensor: a version ${-first} header of ${rows}×${anchors} with a ${width}×${height} picture is neither a frame nor "no frame"`,
   );
 }
 

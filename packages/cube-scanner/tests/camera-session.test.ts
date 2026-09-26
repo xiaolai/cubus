@@ -2,7 +2,12 @@
 // race, which is exactly the part the panel's DOM tests cannot reach: from outside, an inference
 // that lands one microtask too late and one that lands on time look identical.
 import { afterEach, describe, expect, it } from 'vitest';
-import type { CameraDevice, CameraOptions } from '../src/camera.js';
+import {
+  type CameraDevice,
+  type CameraOptions,
+  type FrameCountable,
+  videoFrameId,
+} from '../src/camera.js';
 import type { Detector, ModelOutput } from '../src/detector.js';
 import { CameraSession } from '../view/camera-session.js';
 
@@ -210,6 +215,42 @@ describe('CameraSession — who owns the detector', () => {
     await expect(s.ensureDetector(video, modelUrl)).resolves.toBe(live);
     // Deliberately NOT parked on the way out: `parkDetector` is a page-wide slot, and a detector
     // left in it would be handed to whatever ran next in this file.
+  });
+
+  it('a probe that HUNG is forgotten, so the next ask really probes again', async () => {
+    // A REJECTED probe clears the cache on its own; a HUNG one never rejects, so the cached promise
+    // was handed to every later `start()` and pressing Start could not re-probe — it could only
+    // await the same hang. `forgetPendingDetector` is the caller's way to say the wait is over.
+    const answer: ((v: unknown) => void)[] = [];
+    (globalThis as TauriGlobal).__TAURI__ = {
+      core: { invoke: () => new Promise<unknown>((res) => answer.push(res)) },
+    };
+    const s = new CameraSession();
+    const hung = s.ensureDetector(video, modelUrl);
+    s.forgetPendingDetector();
+    const retry = s.ensureDetector(video, modelUrl);
+    expect(answer.length, 'the retry awaited the hung probe instead of starting one').toBe(2);
+
+    answer[1]!(false); // the retry answers
+    const live = await retry;
+    expect(s.chosen).toBe(live);
+
+    // …and the abandoned probe, landing afterwards, installs nothing — the same rule `park()`
+    // keeps, and the reason forgetting bumps the choice as well as clearing the promise.
+    answer[0]!(false);
+    await expect(hung).resolves.toBe(live);
+    expect(s.chosen).toBe(live);
+  });
+
+  it('forgets nothing once a detector has actually been chosen', async () => {
+    // It is about a selection still IN FLIGHT. Clearing a settled one would throw away a loaded
+    // model — the thing `park()` exists to keep — on a timeout that is no longer about anything.
+    (globalThis as TauriGlobal).__TAURI__ = { core: { invoke: async () => false } };
+    const s = new CameraSession();
+    const live = await s.ensureDetector(video, modelUrl);
+    s.forgetPendingDetector();
+    expect(s.chosen).toBe(live);
+    await expect(s.ensureDetector(video, modelUrl)).resolves.toBe(live);
   });
 });
 
@@ -420,5 +461,51 @@ describe('CameraSession.open', () => {
     await opening.catch(() => {});
     expect(det.device).toBeNull();
     expect(s.device).toBeNull();
+  });
+});
+
+/**
+ * D2's browser half (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3): which frame the element is
+ * showing, so one physical frame cannot supply several reads to the stillness gate.
+ *
+ * Extracted from the frame source so the rule can be tested at all — `camera.ts` needs a real
+ * webcam and is excluded from the coverage gate. What a browser reports for a `MediaStream`-backed
+ * video is still a claim only a device can make; what is held here is the rule.
+ */
+describe('videoFrameId', () => {
+  const video = (over: Partial<FrameCountable> = {}): FrameCountable => ({
+    videoWidth: 1280,
+    videoHeight: 720,
+    getVideoPlaybackQuality: () => ({ totalVideoFrames: 42 }),
+    ...over,
+  });
+
+  it('is the count of frames the element has produced', () => {
+    expect(videoFrameId(video())).toBe(42);
+  });
+
+  it('repeats between paints — the fact the whole of D2 rests on', () => {
+    // A counter, not a clock. Two ticks between two paints must read the SAME value, or the id
+    // says "a new frame" on every tick, which is the belief D2 exists to correct.
+    let produced = 7;
+    const el = video({ getVideoPlaybackQuality: () => ({ totalVideoFrames: produced }) });
+    expect(videoFrameId(el)).toBe(7);
+    expect(videoFrameId(el)).toBe(7);
+    produced = 8;
+    expect(videoFrameId(el)).toBe(8);
+  });
+
+  it('answers null rather than inventing a count it does not have', () => {
+    // A source that cannot identify its frames must SAY so: `Stillness` then counts every tick,
+    // exactly as it did before any of this existed. A fabricated id would read as "always a new
+    // frame" — the belief being corrected, restated as its fix.
+    expect(videoFrameId(video({ getVideoPlaybackQuality: undefined }))).toBeNull();
+    expect(
+      videoFrameId(video({ getVideoPlaybackQuality: () => ({ totalVideoFrames: Number.NaN }) })),
+    ).toBeNull();
+    // No dimensions is no frame, and so no frame to identify. Zero would make "before any frame"
+    // look like a real frame the scan could count.
+    expect(videoFrameId(video({ videoWidth: 0 }))).toBeNull();
+    expect(videoFrameId(video({ videoHeight: 0 }))).toBeNull();
   });
 });

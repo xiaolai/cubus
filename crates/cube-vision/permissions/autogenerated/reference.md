@@ -12,6 +12,7 @@ Allows cube-vision to list cameras, load the model, capture frames and run infer
 - `allow-close-camera`
 - `allow-next-detection`
 - `allow-infer-frame`
+- `allow-frame-pixels`
 
 ## Permission Table
 
@@ -70,6 +71,32 @@ Enables the current_camera command without any pre-configured scope.
 <td>
 
 Denies the current_camera command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`cube-vision:allow-frame-pixels`
+
+</td>
+<td>
+
+Enables the frame_pixels command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`cube-vision:deny-frame-pixels`
+
+</td>
+<td>
+
+Denies the frame_pixels command without any pre-configured scope.
 
 </td>
 </tr>

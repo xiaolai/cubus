@@ -2,7 +2,7 @@
   "name": "cube-scanner",
   "version": "0.1.0",
   "type": "module",
-  "description": "Webcam Rubik's Cube face scanner — pure, tested CV core (framework-agnostic) plus a thin browser shell",
+  "description": "Webcam Rubik's Cube face scanner \u2014 pure, tested CV core (framework-agnostic) plus a thin browser shell",
   "license": "MIT",
   "private": true,
   "scripts": {

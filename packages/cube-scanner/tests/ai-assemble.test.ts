@@ -8,8 +8,9 @@ import {
   type Confirmation,
   type Confirmed,
   matchingRotations,
+  reobserved,
 } from '../src/ai-assemble.js';
-import { SOLVED_FACELETS } from '../src/facelet-cube.js';
+import { rotateFace, SOLVED_FACELETS } from '../src/facelet-cube.js';
 import {
   adjacentIn,
   type Colour,
@@ -1155,27 +1156,71 @@ describe('a confirming look is matched against the capture as READ — audit §1
     };
   }
 
-  it('accepts the true cube, and never sends the misread side back for another read', () => {
-    const shown = {} as Record<Face, ColorFace>;
-    for (const slot of FACES) shown[slot] = readBy(slot, null);
+  /** Drive the look-and-check exchange, answering every ask with `camera`. */
+  function exchange(
+    shown: Record<Face, ColorFace>,
+    camera: (slot: Face, up: Face) => ColorFace,
+  ): { result: AiScanResult; asked: Face[] } {
     let confirmed: Confirmed = {};
     const asked: Face[] = [];
     let result = assembleColors(shown, 0.15, confirmed);
     for (let round = 0; round < 12 && !result.valid && result.confirm; round++) {
-      // Every look is answered by the same camera: F comes back misread again.
       expect(result.mismatch, `round ${round}: a truthful look was refused`).toBeFalsy();
       const { face, up } = result.confirm;
       asked.push(face);
       const given = confirmed[face];
       const before = given === undefined ? [] : Array.isArray(given) ? given : [given];
-      confirmed = { ...confirmed, [face]: [...before, { capture: readBy(face, up), up }] };
+      confirmed = { ...confirmed, [face]: [...before, { capture: camera(face, up), up }] };
       result = assembleColors(shown, 0.15, confirmed);
     }
-    // The misread side WAS asked for — the case is about that look — and the scan finished right.
+    return { result, asked };
+  }
+
+  /** `slot` read WITHOUT the F misread — a second photograph that got the bottom row right. */
+  function trueRead(slot: Face, up: Face | null): ColorFace {
+    const position = positionOf(colourOfSlot(slot), 'western');
+    const fi = FACES.indexOf(position);
+    const colors = [...truth.slice(fi * 9, fi * 9 + 9)].map((l) => paint(l, 'western'));
+    const k = up === null ? 0 : (holdOffset(colourOfSlot(slot), colourOfSlot(up), 'western') ?? 0);
+    const order = rot([0, 1, 2, 3, 4, 5, 6, 7, 8], k);
+    return {
+      colors: order.map((i) => colors[i]!),
+      confidence: order.map(() => 0.9),
+      scores: order.map((i) => [0, 1, 2, 3, 4, 5].map((c) => (c === colors[i] ? 0.9 : 0.02))),
+    };
+  }
+
+  it('asks about the misread side, and takes a second look that reads it right', () => {
+    // The look the repair asks for (D1, 2026-09-23) is answered by a camera that gets F right this
+    // time — a second photograph at another angle, in other light, which is what a second look
+    // physically IS. The repair's answer is confirmed and the scan finishes with the true cube.
+    const shown = {} as Record<Face, ColorFace>;
+    for (const slot of FACES) shown[slot] = readBy(slot, null);
+    const { result, asked } = exchange(shown, (slot, up) =>
+      slot === 'F' ? trueRead(slot, up) : readBy(slot, up),
+    );
     expect(asked).toContain('F');
     expect(result.mismatch).toBeFalsy();
     expect(result.valid).toBe(true);
     expect(result.facelets).toBe(truth);
+  });
+
+  it('refuses rather than assert the cube when every look repeats the same misread', () => {
+    // THE LIMIT OF D1, stated rather than hidden. A repaired sticker is a colour nobody observed,
+    // and a camera that answers every look with the same misread has not observed it either — the
+    // second look is the same measurement taken twice, not independent evidence. The honest answer
+    // is then a refusal naming the sticker, which a person can tap, and NOT a cube built on three
+    // invented colours: this reading sits one repair from the true cube and, on another cube with
+    // the same shape, one repair from a decoy (§3 A2). Nothing in the captures tells the two apart.
+    //
+    // The scan does not loop asking, either: one look per side, then a verdict.
+    const shown = {} as Record<Face, ColorFace>;
+    for (const slot of FACES) shown[slot] = readBy(slot, null);
+    const { result, asked } = exchange(shown, readBy);
+    expect(asked).toContain('F');
+    expect(asked.filter((f) => f === 'F')).toHaveLength(1);
+    expect(result.valid).toBe(false);
+    expect(result.mismatch).toBeFalsy();
   });
 });
 
@@ -1248,5 +1293,144 @@ describe('a repair that cost nothing is not a repair — audit §2.6 (2026-09-20
     const r = assembleColors(f);
     expect(r.valid).toBe(false);
     expect(r.facelets).not.toBe(SOLVED_FACELETS);
+  });
+});
+
+/**
+ * D1's guard, asked about its own mechanics — and about the two ways it failed OPEN, found by an
+ * independent audit on 2026-09-23 (Codex, read-only). Both are the guard admitting a repair no
+ * photograph supports, which is the one thing it exists to prevent.
+ */
+describe('a repair is confirmed by one look, at the right sticker (D1)', () => {
+  const capture = (colors: number[]): ColorFace => ({
+    colors,
+    confidence: Array<number>(9).fill(0.9),
+  });
+  // A side, and the same side turned a quarter in the hand.
+  const base = [0, 1, 2, 3, 4, 5, 0, 1, 2];
+
+  it('accepts a look that shows the repaired colour at the repaired sticker', () => {
+    const repaired = capture(base);
+    const original = capture(base.map((c, i) => (i === 0 ? 5 : c)));
+    const look = { capture: capture(base), up: 'U' as Face };
+    expect(reobserved(repaired, original, [look], [0])).toBe(true);
+  });
+
+  it('refuses a look that shows something else there', () => {
+    const repaired = capture(base);
+    const original = capture(base.map((c, i) => (i === 0 ? 5 : c)));
+    // The look still reads the sticker the way the camera did: it contradicts the repair.
+    const look = { capture: capture(base.map((c, i) => (i === 0 ? 5 : c))), up: 'U' as Face };
+    expect(reobserved(repaired, original, [look], [0])).toBe(false);
+  });
+
+  it('turns a rotated look back before it reads the sticker', () => {
+    // THE FIRST High FINDING. `matchingRotations` says the look is the capture turned by k, so the
+    // look must be turned BACK before position `index` names the same physical sticker in both.
+    // Comparing at the raw index asks about whichever sticker rotated INTO that position — and
+    // since the alignment already requires all but two positions to agree, it usually passed.
+    const repaired = capture(base);
+    const original = capture(base.map((c, i) => (i === 0 ? 5 : c)));
+    // The same side, photographed a quarter turn round. Position 0 of the capture is elsewhere here.
+    const turned = rotateFace(base, 1);
+    const look = { capture: capture(turned), up: 'U' as Face };
+    expect(reobserved(repaired, original, [look], [0])).toBe(true);
+    // …and a turned look that DISAGREES at the repaired sticker is refused, which is what the
+    // wrong-index version could not tell apart.
+    const wrongThere = [...turned];
+    wrongThere[rotateFace([0, 1, 2, 3, 4, 5, 6, 7, 8], 1).indexOf(0)] = 4;
+    expect(reobserved(repaired, original, [{ capture: capture(wrongThere), up: 'U' }], [0])).toBe(
+      false,
+    );
+  });
+
+  it('will not confirm two repaired stickers under two different rotations', () => {
+    // THE SECOND High FINDING. Asked per sticker, a face could have one repair confirmed under
+    // rotation 0 and another under rotation 1 — from the same photograph — so no single physical
+    // orientation supported the cube that was accepted. A photograph is of a face, held one way up.
+    //
+    // A symmetric side, so several rotations align: white everywhere but two positions, each of
+    // which the repair invented, and a look that agrees with one under each of two rotations.
+    const sym = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+    const repaired = capture(sym.map((c, i) => (i === 1 ? 1 : i === 3 ? 2 : c)));
+    const original = capture(sym);
+    // This look reads position 1 as the repair says and position 3 as it does not; turned a
+    // quarter, it reads position 3 as the repair says and position 1 as it does not.
+    const look = capture(sym.map((c, i) => (i === 1 ? 1 : c)));
+    const both = reobserved(repaired, original, [{ capture: look, up: 'U' }], [1, 3]);
+    expect(both, 'two stickers were confirmed under two different holds').toBe(false);
+    // Each ALONE can still be confirmed — which is exactly why asking per sticker was unsound.
+    expect(reobserved(repaired, original, [{ capture: look, up: 'U' }], [1])).toBe(true);
+  });
+
+  it('confirms nothing from no looks, and everything from no repairs', () => {
+    const repaired = capture(base);
+    const original = capture(base);
+    expect(reobserved(repaired, original, [], [0])).toBe(false);
+    // A face with no invented stickers has nothing to confirm; demanding a look would ask for one
+    // about a side the repair never touched.
+    expect(reobserved(repaired, original, [], [])).toBe(true);
+  });
+});
+
+/**
+ * D6's closure (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3). The harm §3 names for F3 is "a
+ * false misread accusation": a face the fit had to group by the y-sort may be SCRAMBLED, which is a
+ * geometry failure the assembly can only see as a colour one — so it counts misread stickers that
+ * were read perfectly, points at them, and asks a child to correct a cube that is already right.
+ *
+ * Seven measures have failed to tell a sorted face from a scrambled one at the fit layer, so the
+ * decision is taken where evidence for it exists: another frame.
+ */
+describe('a side whose order was never proven is not accused of a colour (D6)', () => {
+  const LETTER: Record<string, number> = { U: 0, R: 1, F: 2, D: 3, L: 4, B: 5 };
+  /** A refusable reading: a scramble with one sticker turned a colour it is not. */
+  function misread(): Record<Face, ColorFace> {
+    const facelets = scrambleFacelets("R U R' U' F2 L D L'");
+    const out = {} as Record<Face, ColorFace>;
+    FACES.forEach((face, fi) => {
+      const colors = [...facelets.slice(fi * 9, fi * 9 + 9)].map((l) => LETTER[l]!);
+      out[face] = { colors, confidence: Array<number>(9).fill(0.9) };
+    });
+    out.F!.colors[0] = (out.F!.colors[0]! + 1) % 6;
+    return out;
+  }
+
+  it('counts and points when every capture fitted a lattice', () => {
+    // Unchanged: there the geometry is not in doubt and the colours are the only thing to blame.
+    const r = assembleColors(misread());
+    expect(r.valid).toBe(false);
+    expect(r.unprovenOrder).toBeUndefined();
+    expect(r.misreadCount ?? 0).toBeGreaterThan(0);
+  });
+
+  it('names the side to show again, and claims nothing about its colours, when one was sorted', () => {
+    const faces = misread();
+    faces.F = { ...faces.F!, ordering: 'sorted' };
+    const r = assembleColors(faces);
+    expect(r.valid).toBe(false);
+    expect(r.unprovenOrder).toEqual(['F']);
+    expect(r.misreadFace).toBe('F');
+    // NEITHER of the colour claims: both are unearned while the stickers may be in wrong places.
+    expect(r.misreadCount).toBeUndefined();
+    expect(r.suspects).toBeUndefined();
+    // And it says what was measured — never how the cube was held.
+    expect(r.reason).toMatch(/could not be placed for certain/);
+    expect(r.reason).not.toMatch(/flat|steady|steadier|centred|square/i);
+  });
+
+  it('does not fire on a reading that is ACCEPTED, however it was ordered', () => {
+    // The guard sits on the refusal path only: a sorted capture that assembles into a legal cube is
+    // a legal cube, and refusing it would cost every extreme-perspective frame a read.
+    const facelets = scrambleFacelets("R U R' U' F2 L D L'");
+    const out = {} as Record<Face, ColorFace>;
+    FACES.forEach((face, fi) => {
+      const colors = [...facelets.slice(fi * 9, fi * 9 + 9)].map((l) => LETTER[l]!);
+      out[face] = { colors, confidence: Array<number>(9).fill(0.9) };
+    });
+    out.F = { ...out.F!, ordering: 'sorted' };
+    const r = assembleColors(out);
+    expect(r.valid).toBe(true);
+    expect(r.unprovenOrder).toBeUndefined();
   });
 });

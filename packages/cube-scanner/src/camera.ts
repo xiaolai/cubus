@@ -10,6 +10,27 @@ export interface FrameSource {
   /** The current frame as plain RGBA pixels. */
   grab(): Frame;
   /**
+   * WHICH frame is in front of the camera right now — a value that changes when, and only when, the
+   * picture does. Null from a source that cannot tell.
+   *
+   * ADDED FOR D2 (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3). Nothing downstream could tell a
+   * re-served frame from a new one, on either path: the native camera hands back the same frame on
+   * every tick for up to a second, and a `<video>` ticked faster than its stream paints repeats the
+   * last one just as silently. One physical frame then supplied several "reads" of the stillness
+   * gate — three identical reads spanning 500 ms is satisfiable by ONE frame read three times — and
+   * any design that accumulates evidence would have counted it as several observations.
+   *
+   * IDENTITY, NOT A FILTER, and the distinction is the audit's central finding (§0.2): a stage that
+   * decides and discards is how a weak signal becomes total failure. So this reports which frame
+   * this is and refuses nothing; a consumer that wants distinct frames compares it, one that wants
+   * every tick ignores it, and the recorder counts how often each was served.
+   *
+   * Optional because a source that cannot say must say so rather than invent a counter — a
+   * fabricated id is worse than none, since it would read as "always a new frame", which is exactly
+   * the belief that was wrong.
+   */
+  frameId?(): number | null;
+  /**
    * The liveness half of `grab()` on its own: throws exactly what `grab()` would throw before it
    * read a pixel — `CameraLostError`, `FrameNotReadyError` — and returns when a frame could be read.
    *
@@ -88,6 +109,48 @@ export function frameLiveness(
   // `active === false`, not `!active`: a stand-in stream with no such field is not an inactive one.
   if (!track || track.readyState === 'ended' || stream?.active === false) return 'ended';
   return track.muted === true ? 'muted' : 'live';
+}
+
+/**
+ * The minimum of a `<video>` this module needs to identify the frame it is showing — so the rule
+ * can be tested without a camera, which this file otherwise cannot be (see the header).
+ */
+export interface FrameCountable {
+  videoWidth: number;
+  videoHeight: number;
+  getVideoPlaybackQuality?: () => { totalVideoFrames: number };
+}
+
+/**
+ * Which frame `video` is showing, as a COUNT of the frames it has produced (D2,
+ * `dev-docs/scan-pipeline-audit-2026-09-23.md` §3).
+ *
+ * `getVideoPlaybackQuality().totalVideoFrames` is exactly that: the number of frames created for
+ * this element, dropped ones included. It repeats between paints, which is the fact D2 needs
+ * reported, and it is a counter rather than a clock — so a tick between two paints reads the same
+ * value by construction rather than by rounding.
+ *
+ * NOT `currentTime`, which was the first attempt and is the wrong instrument: for a `MediaStream`
+ * the element's position advances with the stream in real time, so reading it per tick would answer
+ * "a new frame" on every tick — precisely the false belief D2 exists to correct, restated as its
+ * fix. NOT `requestVideoFrameCallback`'s `presentedFrames` either: exact, but absent on standard
+ * WebKitGTK and Android's WebView, and it needs a registered callback to read at all.
+ *
+ * NULL is a first-class answer, and the honest one wherever the count cannot be had: an engine
+ * without `getVideoPlaybackQuality`, a video with no dimensions, a non-finite count. A source that
+ * cannot identify its frames must say so — `Stillness` then counts every tick, exactly as it did
+ * before any of this existed — because a fabricated id reads as "always a new frame", which is the
+ * belief being corrected.
+ *
+ * NOT YET VERIFIED ON A REAL CAMERA. The native half of D2 is measured end to end
+ * (`NextDetectionTests`, mutation-checked); this half is reasoned from the specification and held
+ * by unit tests over a stand-in element. What a browser actually reports for a `MediaStream`-backed
+ * video is a claim only a device can make.
+ */
+export function videoFrameId(video: FrameCountable): number | null {
+  if (video.videoWidth === 0 || video.videoHeight === 0) return null;
+  const frames = video.getVideoPlaybackQuality?.().totalVideoFrames;
+  return typeof frames === 'number' && Number.isFinite(frames) ? frames : null;
 }
 
 /**
@@ -287,6 +350,33 @@ function frameSourceOf(
   return {
     device,
     ready,
+    /**
+     * Which frame the element is showing, as a COUNT of frames it has produced (D2).
+     *
+     * `getVideoPlaybackQuality().totalVideoFrames` is exactly that: the number of frames created
+     * for this element, dropped ones included. It repeats between paints, which is the fact D2
+     * needs reported, and it is a counter rather than a clock — so a tick between two paints reads
+     * the same value by construction rather than by rounding.
+     *
+     * NOT `currentTime`, which was the first attempt and is the wrong instrument: for a
+     * `MediaStream` the element's position advances with the stream in real time, so reading it
+     * per tick would answer "a new frame" on every tick — precisely the false belief D2 exists to
+     * correct, restated as its fix. NOT `requestVideoFrameCallback`'s `presentedFrames` either:
+     * exact, but absent on standard WebKitGTK and Android's WebView, and it needs a registered
+     * callback to read at all.
+     *
+     * NULL is a first-class answer, and it is the honest one wherever the count cannot be had: an
+     * engine without `getVideoPlaybackQuality`, a video with no dimensions, a non-finite count. A
+     * source that cannot identify its frames must say so — `Stillness` then counts every tick,
+     * exactly as it did before any of this existed — because a fabricated id reads as "always a
+     * new frame", which is the belief being corrected.
+     *
+     * NOT YET VERIFIED ON A REAL CAMERA. The native half of D2 is measured end to end
+     * (`NextDetectionTests`, mutation-checked); this half is reasoned from the specification and
+     * held by unit tests over a stand-in element. What a browser actually reports for a
+     * `MediaStream`-backed video is a claim only a device can make.
+     */
+    frameId: () => videoFrameId(video),
     grab(): Frame {
       ready();
       const w = video.videoWidth;

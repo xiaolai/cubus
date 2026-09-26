@@ -27,7 +27,7 @@ const CUT_OFF = new Set(['interrupted', 'canceled']);
  * `onFail(error)` is told the platform's reason, so the caller — which knows whether the moment the
  * line describes still stands — can decide whether to try again (round-3 audit).
  */
-export function say(text, lang = 'en', { onFail } = {}) {
+export function say(text, lang = 'en', { onFail, onEnd } = {}) {
   if (settings.soundMode !== SOUND_MODES.voice) return false;
   const { synth, Utterance } = engine();
   if (!synth || !Utterance) return false;
@@ -38,6 +38,10 @@ export function say(text, lang = 'en', { onFail } = {}) {
   // for a child.
   line.lang = lang;
   line.rate = 0.95;
+  // WHEN THE LINE ACTUALLY ENDS. Without this the caller could never tell a line that FINISHED from
+  // one still being said, so its only way to say anything else was to cut the first off — which is
+  // what made the voice interrupt itself on every capture (owner, 2026-09-25).
+  line.addEventListener('end', () => onEnd?.());
   line.addEventListener('error', (e) => {
     // An event that names no reason is still a line that did not play: reported as `unnamed` rather
     // than as `undefined`, which a caller cannot tell from "nothing was reported" (CI, 2026-09-19).

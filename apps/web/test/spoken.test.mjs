@@ -55,12 +55,20 @@ test('the opening: once, only with a camera open and no side held, and again aft
     'a collision emptied the named list and the voice started the scan over');
 });
 
-test('a side shown again: said on the first refusal of it, not every report, and cut when it goes', () => {
+test('a side shown again: said once per count, and held until a different side is captured', () => {
+  // CODEX AUDIT, 2026-09-25, finding 3 — and this case USED to assert the defect. `shownAgain` is a
+  // one-report flag the panel consumes on every report (`ai-scan-panel.ts`, `buildProgress`), so a
+  // `holds` that asked for the flag was false by the next report and cut the line about 60 ms in:
+  // said every time, heard none of them. It holds by what the sentence CLAIMS instead.
   const said = run(r({ sides: 1 }), r({ sides: 1, shownAgain: true }), r({ sides: 1, shownAgain: true })).said;
-  assert.deepEqual(said.slice(1), [SPOKEN.again, null]);
+  assert.deepEqual(said.slice(1), [SPOKEN.again, null], 'said more than once for one refusal');
   const { cue } = run(r({ sides: 1, shownAgain: true }));
-  assert.equal(cue.holds(r({ sides: 1, shownAgain: true })), true);
-  assert.equal(cue.holds(r({ sides: 1 })), false);
+  assert.equal(cue.holds(r({ sides: 1 })), true, 'cut by the one-report flag being consumed');
+  assert.equal(cue.holds(r({ sides: 2 })), false, '"show me a different side" held after one was');
+  assert.equal(cue.holds(r({ sides: 1, phase: 'painting' })), false, 'held into painting');
+  // The same side settling again at the same count does not start it over.
+  const twice = run(r({ sides: 1, shownAgain: true }), r({ sides: 1 }), r({ sides: 1, shownAgain: true })).said;
+  assert.deepEqual(twice, [SPOKEN.again, null, null]);
 });
 
 test('the ask for a side back: said per ask, not per report, and cut when answered', () => {
@@ -70,6 +78,34 @@ test('the ask for a side back: said per ask, not per report, and cut when answer
   assert.equal(cue.holds(ask('R', 'U')), true);
   assert.equal(cue.holds(ask('D', 'F')), false, 'a line about the old ask held over a new one');
   assert.equal(cue.holds(r({ sides: 6 })), false, 'a line about an answered ask held');
+});
+
+test('the identity question is said, once per question, and the displaced follow-up is its own', () => {
+  // THE ONE MOMENT THE SCAN NEEDS A PERSON, and it had no line at all until 2026-09-25: the card
+  // and the chime went up and the voice said nothing, so a child scanning by ear was never told the
+  // scan had stopped waiting for frames.
+  const q = (id, displaced = false) =>
+    r({ sides: 1, identity: { id, claimed: 3, displaced, colors: [], choices: [0, 1] } });
+  assert.deepEqual(run(q(1), q(1), q(1)).said, [SPOKEN.which, null, null], 'said per report');
+  // THE CASE THAT FAILS IF THE MEMO IS KEYED ON THE COLOUR. Answering with a held colour raises a
+  // SECOND question — about the displaced reading, and about the same `claimed` — so a memo keyed
+  // on the colour would fall silent for exactly the follow-up somebody has to answer.
+  assert.deepEqual(run(q(1), q(2, true)).said, [SPOKEN.which, SPOKEN.whichAgain]);
+  const { cue } = run(q(1));
+  assert.equal(cue.holds(q(1)), true);
+  assert.equal(cue.holds(q(2)), false, 'a line about the old question held over a new one');
+  assert.equal(cue.holds(r({ sides: 1 })), false, 'a line about an answered question held');
+});
+
+test('a question outranks "I have got that one", because only one of them blocks the scan', () => {
+  // Both states can stand in one report: a side turned away as already held, and a question raised
+  // about a different capture. The question is the one a person has to act on.
+  const both = r({
+    sides: 1,
+    shownAgain: true,
+    identity: { id: 7, claimed: 3, displaced: false, colors: [], choices: [0, 1] },
+  });
+  assert.deepEqual(run(both).said, [SPOKEN.which]);
 });
 
 test('the audit case: a mismatch notice beside a standing ask neither repeats the ask nor says "ask a grown-up"', () => {
@@ -123,18 +159,32 @@ test('overlaps are decided by priority, not by order of arrival: camera, ask, ag
 });
 
 test('a capture: its line by how many sides are held, nothing for a confirm look, cut by painting or a restart', () => {
-  assert.equal(capturedCue({ kind: 'confirm', sides: 6 }), null);
-  assert.equal(capturedCue({ kind: 'side', sides: 6 }).line, 'lastSaved');
-  assert.equal(capturedCue({ kind: 'reread', sides: 6 }).line, 'lastSaved');
-  // THE COUNTDOWN IS THE POINT (2026-09-20): five captures, five different sentences. It said one
-  // sentence five times, over a chime that had already marked each capture.
-  const saved = [1, 2, 3, 4, 5].map((sides) => spoken(capturedCue({ kind: 'side', sides })));
+  assert.equal(capturedCue({ kind: 'confirm', face: 'U', sides: 6 }), null);
+  assert.equal(capturedCue({ kind: 'side', face: 'U', sides: 6 }).line, 'savedLast');
+  assert.equal(capturedCue({ kind: 'reread', face: 'U', sides: 6 }).line, 'savedLast');
+  // IT NAMES THE COLOUR IT SAVED, AND FITS BETWEEN TWO CAPTURES (2026-09-24). The countdown before
+  // it fixed the repetition and left the real defect: "Got it!" never said WHAT it got, which is the
+  // one thing a child who cannot read can check against the cube in their hands. Naming it also
+  // makes the five sentences differ, which is all the count was buying.
+  //
+  // AND THE TRAILING INSTRUCTION WAS DROPPED, measured: the median gap between captures is 2,153 ms
+  // over twelve real ones, "Got the yellow side! Show me another one." takes 2,733 ms and was cut on
+  // ten of the twelve, and "Got the yellow side!" takes 1,333 ms and is cut by none.
+  const shown = ['D', 'L', 'R', 'B', 'F'];
+  const saved = shown.map((face, i) => spoken(capturedCue({ kind: 'side', face, sides: i + 1 })));
   assert.deepEqual(saved, [
-    'Got it! 5 more sides.', 'Got it! 4 more sides.', 'Got it! 3 more sides.',
-    'Got it! 2 more sides.', 'Got it! One more side.',
+    'Got the yellow side!',
+    'Got the orange side!',
+    'Got the red side!',
+    'Got the blue side!',
+    'Got the green side! One more.',
   ]);
   assert.equal(new Set(saved).size, saved.length, 'two captures in one scan said the same words');
-  const { holds } = capturedCue({ kind: 'side', sides: 2 });
+  assert.equal(
+    spoken(capturedCue({ kind: 'side', face: 'U', sides: 6 })),
+    'Got the white side! Let me check your cube.',
+  );
+  const { holds } = capturedCue({ kind: 'side', face: 'U', sides: 2 });
   assert.equal(holds(r({ sides: 2 })), true);
   assert.equal(holds(r({ sides: 3 })), true, 'the next side cut the last one off before its own line could');
   assert.equal(holds(r({ sides: 0 })), false);
@@ -143,7 +193,7 @@ test('a capture: its line by how many sides are held, nothing for a confirm look
     assert.equal(holds(r({ phase, sides: 2 })), false, `"show me another side" held in the ${phase} phase`);
   }
   // "Let me check" also through the check the sixth side starts, and no further.
-  const last = capturedCue({ kind: 'side', sides: 6 }).holds;
+  const last = capturedCue({ kind: 'side', face: 'U', sides: 6 }).holds;
   assert.equal(last(r({ phase: 'checking', sides: 6 })), true);
   for (const phase of ['done', 'painting', 'loading', 'error']) {
     assert.equal(last(r({ phase, sides: 6 })), false, `"let me check" held in the ${phase} phase`);
@@ -155,11 +205,18 @@ test('a capture count that is not a count says nothing at all', () => {
   // event spoke "NaN more sides" to a child, or "7 more sides", or "4.5 more sides". The chime still
   // marks the capture; the words are what must not invent a number.
   for (const sides of [undefined, null, Number.NaN, -1, 0, 1.5, 7, 60, '3']) {
-    assert.equal(capturedCue({ kind: 'side', sides }), null, `sides ${String(sides)} spoke anyway`);
+    assert.equal(capturedCue({ kind: 'side', face: 'U', sides }), null, `sides ${String(sides)} spoke anyway`);
+  }
+  // AND A COLOUR THAT IS NOT A COLOUR SAYS NOTHING EITHER (2026-09-24). `ScanCapture.face` is typed
+  // non-null and every caller passes a slot, but this reads an EVENT off a custom element, where the
+  // type is a promise rather than a guarantee — and the failure is "Got the undefined side!" said
+  // out loud to a child.
+  for (const face of [undefined, null, '', 'X', 'u', 0, 7, {}]) {
+    assert.equal(capturedCue({ kind: 'side', face, sides: 2 }), null, `face ${String(face)} spoke anyway`);
   }
   // …and every count a cube can actually reach still speaks.
   for (const sides of [1, 2, 3, 4, 5, 6]) {
-    assert.ok(capturedCue({ kind: 'side', sides }), `sides ${sides} said nothing`);
+    assert.ok(capturedCue({ kind: 'side', face: 'U', sides }), `sides ${sides} said nothing`);
   }
 });
 
@@ -214,6 +271,9 @@ function rig(t) {
   });
   return {
     voice,
+    // Leaving the screen, reachable mid-test: teardown is a state the voice has to survive, not
+    // merely something that happens after the assertions.
+    leave: () => stop.abort(),
     report: (over) => panel.dispatchEvent(new CustomEvent('scan-progress', { detail: r(over) })),
     capture: (detail) => panel.dispatchEvent(new CustomEvent('scan-capture', { detail })),
   };
@@ -222,6 +282,77 @@ function rig(t) {
 // Queued is not heard: "audio busy" or an untouched webview fails a line after it was queued. The voice
 // tries ONCE more at the next report — never for a moment that has passed, never over a newer line,
 // never for a reason that will fail again (round-3 audit).
+test('a line is not cut off by the next thing that happens — it waits its turn', (t) => {
+  // OWNER, 2026-09-25: "the voice is always interrupted by the next action". `say()` in speech.js
+  // cancels whatever is being said, so EVERY cue cut the one before it off mid-word. Captures
+  // arrive about every 2,153 ms and a line takes 1,333-2,733 ms, so the voice talked over itself
+  // for the length of a scan. The earlier answer had been to shorten the sentences, which hid it.
+  const { voice, report, capture } = rig(t);
+  report({});
+  assert.deepEqual(voice.said, [SPOKEN.open]);
+  capture({ kind: 'side', face: 'U', sides: 1 });
+  assert.deepEqual(voice.said, [SPOKEN.open], 'a capture cut the opening line off mid-word');
+  assert.deepEqual(voice.cuts.filter(Boolean), [], 'a remark cut off the line before it');
+  // …and it is said the moment the first line ends, not lost.
+  voice.finish();
+  const saved = spoken(capturedCue({ kind: 'side', face: 'U', sides: 1 }));
+  assert.deepEqual(voice.said, [SPOKEN.open, saved], 'the waiting line was never said');
+});
+
+test('a question still cuts in, because it is the one thing that blocks the scan', (t) => {
+  // WAITING IS FOR REMARKS. A line reporting what just happened must not take the words out of the
+  // mouth of the line before it; a line that stops the scan until a person answers must.
+  //
+  // THE LINE IT CUTS OFF HAS TO STILL BE TRUE, or this measures nothing. The first version of this
+  // case let the opening line go stale first — `cutIfStale` cleared it, so the question was said
+  // whatever its rank, and emptying `URGENT` left the case green. It now cuts off a capture line
+  // that is still perfectly valid at this side count (mutation-checked).
+  const { voice, report, capture } = rig(t);
+  report({});
+  capture({ kind: 'side', face: 'U', sides: 1 });
+  voice.finish(); // the opening ends, so the capture line starts
+  const saved = spoken(capturedCue({ kind: 'side', face: 'U', sides: 1 }));
+  assert.deepEqual(voice.said, [SPOKEN.open, saved]);
+  const standing = { id: 3, claimed: 3, displaced: false, colors: [], choices: [0, 1] };
+  report({ sides: 1, captured: [{}], identity: standing });
+  assert.deepEqual(voice.said, [SPOKEN.open, saved, SPOKEN.which], 'the question waited behind a remark');
+  assert.deepEqual(voice.cuts.filter(Boolean), [saved], 'the question did not cut the remark off');
+});
+
+test('a line that waits past its own moment is dropped rather than said late', (t) => {
+  // A QUEUE OF ONE, AND IT IS STILL CHECKED. The point of waiting is not to say everything — it is
+  // to stop the voice talking over itself. A line whose moment passes while it waits describes a
+  // scan that has moved on, and is thrown away.
+  const { voice, report, capture } = rig(t);
+  report({});
+  capture({ kind: 'side', face: 'U', sides: 1 });
+  report({ phase: 'painting', sides: 1, captured: [{}] });
+  assert.deepEqual(voice.said, [SPOKEN.open], 'a line was said about a scan that had moved on');
+});
+
+test('a scan that has been left cannot speak over the one that replaced it', (t) => {
+  // CODEX AUDIT, 2026-09-26. Leaving the screen used to hush and no more, which was enough while a
+  // line could only ever be CUT OFF — nothing survived teardown to act later. The waiting queue
+  // changed that: the lifecycle now holds a pending line and an `onEnd` handed to a platform
+  // utterance, so a late `end` from the abandoned scan ran flush -> begin -> say, whose first act
+  // is `synth.cancel()`. The old scan reached across and cut off the new screen's opening line.
+  const first = rig(t);
+  first.report({});
+  first.capture({ kind: 'side', face: 'U', sides: 1 }); // waits behind the opening line
+  const stranded = first.voice.utterances.at(-1);
+  first.leave();
+  const cutsAtHandover = first.voice.cuts.filter(Boolean).length;
+  const saidAtHandover = first.voice.said.length;
+  // The platform delivers the abandoned line's `end` afterwards, as it is entitled to.
+  stranded.dispatchEvent(new Event('end'));
+  assert.equal(first.voice.said.length, saidAtHandover, 'a scan that was left spoke after leaving');
+  assert.equal(
+    first.voice.cuts.filter(Boolean).length,
+    cutsAtHandover,
+    'a scan that was left cut off a line after leaving',
+  );
+});
+
 test('a line failed for a passing reason is said once more at the next report, and not a third time', (t) => {
   const { voice, report } = rig(t);
   report({});
@@ -231,6 +362,23 @@ test('a line failed for a passing reason is said once more at the next report, a
   voice.fail('audio-busy');
   report({});
   assert.deepEqual(voice.said, [SPOKEN.open, SPOKEN.open], 'a failing line was tried more than once more');
+});
+
+test('a capture does not talk over a standing question', (t) => {
+  // CODEX AUDIT, 2026-09-25, finding 2. Answering with a held colour files a side AND raises the
+  // displaced reading as the next question, in that order — so the progress report spoke the
+  // question and the capture event that followed cancelled it mid-sentence. The one line a person
+  // had to act on was the only one they never heard, and `identSaid` stopped it being said again.
+  const { voice, report, capture } = rig(t);
+  report({ sides: 1, identity: { id: 4, claimed: 3, displaced: true, colors: [], choices: [0, 1] } });
+  assert.deepEqual(voice.said, [SPOKEN.whichAgain]);
+  capture({ kind: 'side', face: 'D', sides: 2 });
+  assert.deepEqual(voice.said, [SPOKEN.whichAgain], 'a capture spoke over the question');
+  assert.ok(!voice.cuts.includes(SPOKEN.whichAgain), 'the question was cut short by a capture');
+  // Once the question is gone, a capture is announced exactly as before.
+  report({ sides: 2 });
+  capture({ kind: 'side', face: 'D', sides: 2 });
+  assert.ok(voice.said.includes(cueText(capturedCue({ kind: 'side', face: 'D', sides: 2 }))));
 });
 
 test('a failed line whose moment has passed is not said again', (t) => {
@@ -256,7 +404,7 @@ test('a failure arriving for a line already replaced neither brings it back nor 
   capture({ kind: 'side', face: 'U', sides: 1 });
   voice.fail('audio-busy', opening);
   report({ sides: 1, captured: [{}] });
-  const firstSaved = spoken(capturedCue({ kind: 'side', sides: 1 }));
+  const firstSaved = spoken(capturedCue({ kind: 'side', face: 'U', sides: 1 }));
   assert.deepEqual(voice.said, [SPOKEN.open, firstSaved], 'a late failure of a replaced line brought it back');
   // …and the line now being said is still cut off when its own moment passes.
   report({ phase: 'painting', sides: 1, captured: [{}] });

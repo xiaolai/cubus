@@ -9,7 +9,7 @@
 // what must NOT happen.
 
 import Cube from 'cubejs';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { assembleColors, type ColorFace } from '../src/ai-assemble.js';
 import { rotateFace } from '../src/facelet-cube.js';
 import { FACES, type Face } from '../src/types.js';
@@ -505,5 +505,63 @@ describe('the worker answers exactly what the synchronous decoder answers', () =
     const asPainted = handleMisreadRequest({ epoch: 1, faces: painted, fixedRotation: true });
     expect(asShown.diagnosis.misreadCount).toBe(0);
     expect(asPainted.diagnosis.misreadCount).toBeGreaterThan(0);
+  });
+});
+
+describe('the worker ENTRY, driven through a fake scope', () => {
+  // THE FILE THE COVERAGE ALLOWLIST NEVER NAMED (2026-09-24). `view/misread-worker.ts` sat at 0%
+  // statements while this file's other cases exercised `handleMisreadRequest` — the function it
+  // wraps — directly. So the wrapper itself, the two lines that decide whether an answer ever leaves
+  // the thread, was the one part of the decode nothing drove. Its siblings were both already tested
+  // this way: `letterbox-worker.test.ts` installs a fake `self` and imports the entry, and
+  // `inference-worker.test.ts` calls its exported `serveInference`.
+  //
+  // What it is worth asserting, given `handleMisreadRequest` is tested to death above: that the
+  // entry LISTENS, that it posts the reply rather than swallowing it, and that it posts the reply
+  // for the request it was given rather than a fresh one. A worker that computed the right answer
+  // and never posted it would leave the panel pinned on "working out how many stickers are wrong"
+  // for ever — the exact silent failure the rest of this file is about.
+  const posted: unknown[] = [];
+  const scope = Object.assign(new EventTarget(), {
+    postMessage: (message: unknown) => {
+      posted.push(message);
+    },
+  });
+  const g = globalThis as { self?: unknown };
+  const had = g.self;
+
+  beforeAll(async () => {
+    g.self = scope;
+    // The entry registers its listener on `self` at import, once for this file.
+    await import('../view/misread-worker.js');
+  });
+  afterAll(() => {
+    g.self = had;
+  });
+
+  it('answers a request with exactly what the synchronous handler answers, under its own epoch', () => {
+    posted.length = 0;
+    const request: MisreadRequest = { epoch: 41, faces: misread(DEEP, 1), fixedRotation: false };
+    // The handler is pure over its argument, so the expected reply is computed from a CLONE: a
+    // handler that mutated the request would otherwise be compared against its own damage.
+    const expected = handleMisreadRequest(structuredClone(request));
+
+    scope.dispatchEvent(new MessageEvent('message', { data: structuredClone(request) }));
+
+    expect(posted, 'the entry computed an answer and never posted it').toHaveLength(1);
+    const reply = posted[0] as MisreadReply;
+    expect(reply.epoch).toBe(41);
+    expect(reply).toEqual(expected);
+  });
+
+  it('answers every request, so a second reading is not lost behind the first', () => {
+    // A listener registered with `once`, or one that returned early after the first message, would
+    // pass the case above and strand every reading after it.
+    posted.length = 0;
+    for (const epoch of [1, 2, 3]) {
+      const request: MisreadRequest = { epoch, faces: misread(DEEP, 1), fixedRotation: false };
+      scope.dispatchEvent(new MessageEvent('message', { data: request }));
+    }
+    expect(posted.map((r) => (r as MisreadReply).epoch)).toEqual([1, 2, 3]);
   });
 });

@@ -136,11 +136,32 @@ export interface ColorFace {
    *
    * Both fallbacks recolour stickers, and a correction the user typed in has to outrank them
    * unconditionally. Making the correction expensive for the count repair (a one-hot score row) is
-   * not enough on its own: `resolveCentres` lifts the repair's cost ceiling to infinity, so a
-   * finite cost is no barrier there. The flag is checked against the colours, not the costs, and so
-   * holds whatever ceiling a caller passes.
+   * not enough on its own — a cost is a preference, and a person's correction is not. The flag is
+   * checked against the colours, not the costs.
    */
   locked?: boolean[];
+  /**
+   * HOW the fit put this capture's nine stickers in reading order (D6, `FaceFit.ordering`).
+   *
+   *   - `'lattice'`, or absent: the nine fitted a 3×3 lattice, which decides the cells. Proven.
+   *   - `'sorted'`: no lattice fitted and the level-frame sort grouped them by height. That
+   *     grouping is a GUESS whenever a middle box sits far enough off its row's centre to sort into
+   *     the next row.
+   *
+   * ABSENT MEANS PROVEN, so every caller written before this — every test that builds a capture by
+   * hand, every painted cube — reads exactly as it did. A capture is marked only where the fit
+   * actually had to guess.
+   *
+   * WHAT IT IS FOR. The harm §3 names for F3 is "a false misread accusation": a scrambled face is a
+   * GEOMETRY failure, and the assembly can only see it as a colour one — so it points at stickers
+   * that were read correctly and asks a child to fix them. A reading built from a sorted capture
+   * has not earned that accusation, and `assembleColors` asks for the side again instead. SEVEN
+   * measures have now failed to tell a sorted face from a scrambled one at the fit layer (five by
+   * 2026-09-21 and 2026-09-23, plus grouping-uniqueness and an affine ranking on 2026-09-23 — the
+   * ranking picks the wrong grouping on five of the nine no-lattice goldens), so the decision is
+   * taken where evidence for it exists: a fresh frame, which usually does fit a lattice.
+   */
+  ordering?: 'lattice' | 'sorted';
 }
 
 /**
@@ -233,6 +254,20 @@ export type AiScanResult = ScanResult & {
   undetermined?: Face[];
   /** Set when one more look would help — to break a tie, to verify one, or to retry a mis-hold. */
   confirm?: ConfirmRequest;
+  /**
+   * The stickers the count repair had to INVENT to reach a legal cube, and which nobody has looked
+   * at twice — so the cube is not accepted until somebody does (D1,
+   * `dev-docs/scan-pipeline-audit-2026-09-23.md` §3).
+   *
+   * Set beside a `confirm` and never beside a success: once a second look agrees, the repair is
+   * accepted and the stickers it moved are reported through `captures` like any other repair. A
+   * host may point at these and say "this needs another look"; it may NOT say "this one is wrong",
+   * for the same reason `suspects` may not — the repair names the cheapest legal cube, and cheapest
+   * is not the same as the one in the hand. That is the whole defect: two stickers confidently
+   * misread plus a third whose alternative scores 0.7 repairs into a different legal cube, and it
+   * used to come back `valid`.
+   */
+  repaired?: StickerRepair[];
   /** The confirmations contradict each other: one was mis-held, so they all have to be redone. */
   mismatch?: boolean;
   /**
@@ -256,15 +291,6 @@ export type AiScanResult = ScanResult & {
    * is to let a setting choose. See the header's scheme section.
    */
   schemeAmbiguous?: boolean;
-  /**
-   * Sides' centres read as the same colour, so they could not all be filed: `shared` is a slot two of
-   * them claimed and `missing` a slot none did. A 3x3 has one centre of each colour, so one of the
-   * sides claiming `shared` IS a missing colour. Set by `resolveCentres` only when it could not
-   * decide, and `legalFilings` says why: 0 — no filing is a legal cube and the centres' confidence
-   * could not say which was misread; 2 or more — that many are legal, and nothing in the captures
-   * says which.
-   */
-  centreConflict?: { shared: Face; missing: Face; legalFilings: number };
   /**
    * On success: which arrangement the accepted `facelets` are positional in. `'undetermined'`
    * when the surviving readings are the SAME string under both schemes — the solved cube, two
@@ -322,6 +348,15 @@ export type AiScanResult = ScanResult & {
   /** The one side every minimal repair blames, when they agree on one — a hint for what to re-show. A slot. */
   misreadFace?: Face;
   /**
+   * The sides whose reading order the fit could not PROVE, on a refusal that names them instead of
+   * accusing a colour (D6, `ColorFace.ordering`).
+   *
+   * Present only on that refusal, and never beside `misreadCount` or `suspects`: those are claims
+   * about colours, and a side whose stickers may be in the wrong PLACES has not earned one. A host
+   * shows these sides again rather than pointing at stickers.
+   */
+  unprovenOrder?: Face[];
+  /**
    * The scheme under which `misreadCount` (and any `suspects`) was found, when exactly one scheme
    * produced the smallest floor. Absent when the schemes tie — then the count holds under either
    * — or when no count could be given. A host words a count from a scheme its setting does not
@@ -348,16 +383,6 @@ export type AiScanResult = ScanResult & {
    * before it settles (`dev-docs/scanner-audit-2026-09-20.md` §1.4).
    */
   captures?: Record<Face, ColorFace>;
-  /**
-   * With a refusal from `resolveCentres`: how many of the sides could not be placed because their
-   * centres never settled on a colour — none of them CLAIMED a colour, so there is no "shared"
-   * centre to name, which is what `centreConflict` names. Its own field, because the sentence for
-   * the two is different: a collision is two sides reading one colour surely, an unread centre is
-   * a sticker that kept changing (audit, 2026-09-20).
-   */
-  unreadCentres?: number;
-  /** Beside `unreadCentres`: how many filings of those sides were legal — 0, or 2 or more. */
-  legalFilings?: number;
 };
 
 /**
@@ -455,7 +480,7 @@ export function matchingRotations(original: ColorFace, confirmed: ColorFace): Se
  *
  * Seven, not eight: one sticker flickering between orange and yellow is the detector's commonest
  * disagreement with itself, and a side re-shown with one sticker read differently used to count as a
- * DIFFERENT side — held back as a centre collision, or filed twice. Two different sides of a real
+ * DIFFERENT side — turned away as one already in hand, or filed twice. Two different sides of a real
  * cube agreeing in seven of eight places under some quarter turn is not a case worth designing around:
  * a side's eight are mostly its own colour's neighbours, which no other side shares.
  */
@@ -470,9 +495,8 @@ export const SAME_SIDE_STICKERS = 7;
  * on another, measured on the same cap — so this compares only what a logo cannot touch. But the eight
  * alone do not name a side either: different sides can share them exactly (after U D R L F B the white
  * and yellow sides are the same eight stickers around different centres). So the panel recognises a
- * side again only when its centre also claims the same colour, lets the eight alone decide only when
- * they point to one side in hand and no other, and leaves two sides with the same eight under different
- * centres for the six to settle (`twinToDrop`).
+ * side again only when its centre also claims the same colour, and lets the eight alone decide only
+ * when they point to one side in hand and no other.
  */
 export function sameSide(
   a: readonly number[],
@@ -497,9 +521,8 @@ export function sameSide(
  * question is only whether the eight CONTRADICT that — and two different sides of a real cube that
  * agree in five of eight under some turn are rare (about 1 in 600 pairings on a random cube), while a
  * side shown again with two stickers read differently is ordinary. Below this bar the read was held
- * as a collision: the holder left `faces`, both went to `unnamed`, the count reached six with five
- * real sides, and `resolveCentres` filed the duplicate under the never-shown slot
- * (`dev-docs/scanner-audit-2026-09-20.md` §1.7).
+ * back as a second side, the count reached six with five real sides on the cube, and the scan was
+ * refused (`dev-docs/scanner-audit-2026-09-20.md` §1.7).
  */
 export const SAME_SIDE_BY_CENTRE = 5;
 
@@ -1256,8 +1279,10 @@ function symmetricRefusal(
  * Returns null when the detector gave no scores, when the repair changes nothing, or when it would
  * have to overrule the detector so hard that the reading is better refused than rewritten --
  * `MAX_REPAIR_COST` is that line, and a reading past it is not one misread but a bad capture.
- * The one caller that lifts it is `resolveCentres`, which replaces it with a stricter gate
- * of its own — see there.
+ *
+ * SINCE D1 IT IS A HEURISTIC ABOUT WHEN TO BOTHER ASKING, not the thing standing between a bad read
+ * and an accepted cube: no repair is accepted until the stickers it changed have been looked at
+ * again (`AiScanResult.repaired`, `Confirmation`).
  */
 const MAX_REPAIR_COST = 12;
 
@@ -1270,10 +1295,97 @@ function movesALockedSticker(faces: Record<Face, ColorFace>, colors: readonly nu
   );
 }
 
-function repairByCounts(
-  faces: Record<Face, ColorFace>,
-  maxCost: number,
-): Record<Face, ColorFace> | null {
+/**
+ * A sticker the count repair moved: where it sits, what the camera read, and what the repair made it.
+ *
+ * Reported rather than kept private (D1, `dev-docs/scan-pipeline-audit-2026-09-23.md` §3) because a
+ * repaired sticker is a colour NOBODY OBSERVED. `face` is the SLOT and `index` the position in that
+ * capture as shown, so it names a sticker a host can point at and a person can look at again.
+ */
+export interface StickerRepair {
+  face: Face;
+  index: number;
+  from: number;
+  to: number;
+}
+
+/** A repaired reading, and exactly which stickers it had to invent to get there. */
+interface CountRepair {
+  faces: Record<Face, ColorFace>;
+  changed: StickerRepair[];
+}
+
+/**
+ * Have this side's repaired stickers been LOOKED AT AGAIN, and did ONE second look agree about ALL
+ * of them?
+ *
+ * D1, and the whole of it. A second photograph of the side, taken under a known hold, is an
+ * independent observation; a rotation that aligns it with the repaired capture puts its stickers
+ * over the repaired ones, and the question is whether the colours the repair invented are the
+ * colours that photograph actually shows.
+ *
+ * ONE LOOK AND ONE ROTATION FOR THE WHOLE FACE, not one per sticker (audit, 2026-09-23). Asked per
+ * sticker, a face could have its first repair confirmed under rotation 0 and its second under
+ * rotation 1 — from the same photograph — so no single physical orientation supported the cube that
+ * was then accepted. Every repaired sticker of a face has to agree with the SAME look held the SAME
+ * way up, because that is what one photograph of one cube means.
+ *
+ * THE LOOK IS TURNED BACK INTO THE CAPTURE'S FRAME, never compared at the raw index (audit,
+ * 2026-09-23). `matchingRotations` says the look is the capture turned by `k`, so turning the look
+ * by `-k` puts its stickers over the capture's — and only then does position `index` name the same
+ * physical sticker in both. Comparing `rotateFace(repaired, k)[index]` against `look[index]`, as the
+ * first version did, asks about whichever sticker ROTATED INTO that position: an unrelated sticker
+ * could confirm the repair, and since `matchingRotations` already requires all but two positions to
+ * agree, it usually did. That is the guard failing open on the one thing it exists for.
+ *
+ * ALIGNED BY `matchingRotations` — the same tolerance match every confirmation is read through. The
+ * tolerance makes the ALIGNMENT robust to the ordinary one- or two-sticker disagreement between two
+ * reads of a side; it is emphatically not a licence for a repaired sticker itself to disagree, which
+ * is why each is then compared exactly.
+ */
+export function reobserved(
+  repaired: ColorFace,
+  original: ColorFace,
+  looks: readonly Confirmation[],
+  indices: readonly number[],
+): boolean {
+  if (indices.length === 0) return true;
+  for (const look of looks) {
+    // Aligned against the repaired capture AND the one the camera read, exactly as
+    // `allowedByLook` does: inside a repair the two differ, and a look matches whichever of them
+    // it was taken beside.
+    const rotations = new Set([
+      ...matchingRotations(repaired, look.capture),
+      ...matchingRotations(original, look.capture),
+    ]);
+    for (const k of rotations) {
+      const asCaptured = rotateFace(look.capture.colors, -k);
+      if (indices.every((i) => asCaptured[i] === repaired.colors[i])) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The slot carrying the most stickers the repair invented — the one side whose second look settles
+ * the most at once. Ties go to the earlier slot in `FACES` order, so the ask is deterministic: a
+ * request that moved between two equally-good sides would have the person turning the cube back and
+ * forth while the scan changed its mind.
+ */
+function mostRepaired(changed: readonly StickerRepair[]): Face {
+  let best = changed[0]!.face;
+  let most = 0;
+  for (const face of FACES) {
+    const n = changed.filter((s) => s.face === face).length;
+    if (n > most) {
+      most = n;
+      best = face;
+    }
+  }
+  return best;
+}
+
+function repairByCounts(faces: Record<Face, ColorFace>, maxCost: number): CountRepair | null {
   const scores: number[][] = [];
   for (const face of FACES) {
     const s = faces[face]?.scores;
@@ -1310,7 +1422,32 @@ function repairByCounts(
       colors: result.colors.slice(i * 9, i * 9 + 9),
     };
   });
-  return out;
+  return {
+    faces: out,
+    // WHICH stickers were invented, named where a person can find them.
+    //
+    // MEASURED AGAINST THE CAPTURE, NOT AGAINST THE SCORES' ARGMAX, and the difference is not a
+    // detail. `assignNineOfEach.changed` reports where the assignment differs from each sticker's
+    // top score — which includes every sticker a CALLER had already decided on other evidence: a
+    // capture whose centre was rewritten to its slot's colour (`withCentre`) would count as
+    // "repaired" at the argmax and D1 would demand a second look at a colour the repair never
+    // touched. What D1 is about is a sticker whose colour NOBODY observed, so the comparison is
+    // with the colour the capture carries.
+    // ALL 54, not `result.changed` (2026-09-25). That list is where the assignment differs from the
+    // SCORES' ARGMAX, and filtering it against the capture removed the false positives but could
+    // never add the missing ones: a sticker whose capture already disagrees with its own argmax —
+    // a centre rewritten to its slot's colour by `withCentre`, a sticker corrected by hand — is
+    // absent from that list even when the repair assigns something the capture does not say. The
+    // reading then changed a sticker and was accepted as `valid: true` with no look asked for,
+    // which is the precise failure D1 exists to prevent. The comparison D1 wants is over every
+    // position, so it is taken over every position.
+    changed: result.colors.flatMap((to, at) => {
+      const face = FACES[Math.floor(at / 9)]!;
+      const index = at % 9;
+      const from = faces[face]!.colors[index]!;
+      return from === to ? [] : [{ face, index, from, to }];
+    }),
+  };
 }
 
 /**
@@ -1359,18 +1496,35 @@ function recolourByPaint(faces: Record<Face, ColorFace>): Record<Face, ColorFace
  *   each with the `up` it was held with. These only narrow the candidates the search already
  *   validated.
  */
+/**
+ * `capture` with its centre set to `colour` — the side's own colour, once the slot is known.
+ *
+ * A CORRECTION, not a reading: a side re-shown after the scan was refused is filed under the slot
+ * its eight point to, and its centre is that slot's colour by definition. The scores go with it, or
+ * the nine-of-each repair could quietly hand the old colour back.
+ */
+export function withCentre(capture: ColorFace, colour: number): ColorFace {
+  // Already that colour: the centre was READ, and its own confidence is the honest number to keep.
+  if (capture.colors[4] === colour) return capture;
+  const colors = [...capture.colors];
+  colors[4] = colour;
+  if (!capture.scores) return { ...capture, colors };
+  const scores = capture.scores.map((row) => [...row]);
+  scores[4] = scores[4]!.map((_, c) => (c === colour ? 1 : 0));
+  return { ...capture, colors, scores };
+}
+
 export function assembleColors(
   faces: Record<Face, ColorFace>,
   threshold = LOW_CONFIDENCE_THRESHOLD,
   confirmed: Confirmed = {},
   options: AssembleOptions = {},
 ): AiScanResult {
-  return assembleWithin(faces, threshold, confirmed, options, MAX_REPAIR_COST);
+  return assembleWithin(faces, threshold, confirmed, options);
 }
 
 /**
- * `assembleColors` with the repair's cost ceiling as a parameter. Exactly one caller passes anything
- * but MAX_REPAIR_COST: `resolveCentres`, which gates on legality and uniqueness instead.
+ * `assembleColors`'s recursion.
  *
  * `originals` are the captures as the CAMERA read them — the ones this was first called with —
  * carried through the repair recursion so a confirming look can be matched against them as well as
@@ -1381,8 +1535,6 @@ function assembleWithin(
   threshold: number,
   confirmed: Confirmed,
   options: AssembleOptions,
-  maxRepairCost: number,
-  allowPaint = true,
   originals?: BySlot,
 ): AiScanResult {
   const bySlot = checkedBySlot(faces);
@@ -1395,21 +1547,26 @@ function assembleWithin(
    * the next"; anything else is the verdict for the recoloured cube, refusal included -- reaching
    * this point at all means the reading as detected was going to be refused.
    */
+  /**
+   * Could this recolouring be accepted at all — does it still check out by slot, and does some
+   * scheme find it solvable? Lifted out of `accept` (D1) so the count repair can ask the question
+   * WITHOUT accepting: a repair whose stickers nobody has looked at twice must not be returned, and
+   * asking for a second look at a repair that leads nowhere would waste the one thing being spent
+   * here, which is the person's patience.
+   */
+  const couldAccept = (candidate: Record<Face, ColorFace>): boolean => {
+    const bySlotCandidate = checkedBySlot(candidate);
+    if ('valid' in bySlotCandidate) return false;
+    return SCHEMES.some((scheme) => solvableReadings(bySlotCandidate, scheme).length > 0);
+  };
+
   const accept = (candidate: Record<Face, ColorFace> | null): AiScanResult | null => {
     if (!candidate) return null;
     const bySlotCandidate = checkedBySlot(candidate);
     if ('valid' in bySlotCandidate) return null;
     const solvable = SCHEMES.flatMap((scheme) => solvableReadings(bySlotCandidate, scheme));
     if (solvable.length === 0) return null;
-    return assembleWithin(
-      candidate,
-      threshold,
-      confirmed,
-      options,
-      maxRepairCost,
-      allowPaint,
-      asRead,
-    );
+    return assembleWithin(candidate, threshold, confirmed, options, asRead);
   };
 
   const all = SCHEMES.flatMap((scheme) => solvableReadings(bySlot, scheme));
@@ -1419,14 +1576,105 @@ function assembleWithin(
     // here and nowhere else: the cheapest recolouring with nine of each colour. Accepted ONLY if
     // the repaired reading is itself solvable, so this can turn a refusal into a scan and can
     // never turn a scan into something worse.
-    const byCounts = accept(repairByCounts(faces, maxRepairCost));
+    //
+    // AND ONLY ONCE THE STICKERS IT INVENTED HAVE BEEN LOOKED AT AGAIN (D1, 2026-09-23). "Legal and
+    // cheapest" is not "the cube in the hand": two stickers confidently misread plus a third whose
+    // alternative scores 0.7 repairs into a DIFFERENT legal cube and used to come back `valid` —
+    // the one thing the scanner promises never to do (§3, reproduced by the audit's `verify.ts`).
+    // Legality cannot settle it, because both cubes are legal; nothing in the captures can, because
+    // the evidence is a tie the repair broke by cost. The only thing that can is another look, so
+    // the repair now ASKS for one instead of asserting. A look that agrees accepts the repair
+    // exactly as before, which is why this costs the measured gain (80.0% → 98.7% whole cubes)
+    // nothing on a cube the repair had right — it costs it one more showing of one side.
+    const repair = repairByCounts(faces, MAX_REPAIR_COST);
+    // PER FACE, because a photograph is of a face: every sticker the repair invented on one side
+    // has to be confirmed by ONE look held ONE way up, or the accepted cube rests on an orientation
+    // nothing was ever held in (audit, 2026-09-23).
+    // GROUPED, because the question is per FACE and the answer used to be recomputed per STICKER:
+    // each repaired sticker re-scanned the whole repair list to rebuild its own face's index set
+    // and then asked `reobserved` the identical question again. Same verdict, O(n²) work and two
+    // places for the face's index set to be built.
+    const byFace = new Map<Face, number[]>();
+    for (const s of repair?.changed ?? []) {
+      const indices = byFace.get(s.face);
+      if (indices) indices.push(s.index);
+      else byFace.set(s.face, [s.index]);
+    }
+    const confirmedFaces = new Set(
+      [...byFace]
+        .filter(([face, indices]) =>
+          reobserved(repair!.faces[face]!, faces[face]!, looksAt(confirmed, face), indices),
+        )
+        .map(([face]) => face),
+    );
+    const unseen = repair ? repair.changed.filter((s) => !confirmedFaces.has(s.face)) : [];
+    const byCounts = repair && unseen.length === 0 ? accept(repair.faces) : null;
     if (byCounts) return byCounts;
+    if (repair && unseen.length > 0 && couldAccept(repair.faces)) {
+      // A legal cube is one look away. Ask about the side carrying the most invented stickers,
+      // through `permittedHold` — the same function every other request goes through, so the hold
+      // asked for is one the schemes in play actually permit and one this side has not been asked
+      // for already. `repaired` travels with the refusal so a host can point at the stickers it
+      // wants looked at, and `misreadFace` names the side as every other re-show request does.
+      //
+      // ONE LOOK, THEN A VERDICT — never a second ask at the same side. A sticker the detector got
+      // wrong is one it will get wrong again the same way (`Looks`: "a side the detector misreads
+      // the same way every time could never confirm"), so asking until the second look agrees is a
+      // dead end on exactly the cubes the repair exists for. A side already looked at falls through
+      // to the pixel path and then the diagnosis below, which names the sticker as a suspect and
+      // lets a person tap it — an honest refusal instead of an endless question.
+      //
+      // A side with no hold left to ask for falls through the same way: the repair stays
+      // unconfirmed, and an unconfirmed repair is never accepted.
+      const worst = mostRepaired(unseen);
+      const hold =
+        looksAt(confirmed, worst).length === 0
+          ? permittedHold(worst, SCHEMES, confirmed)
+          : undefined;
+      if (hold) {
+        return reject('a colour needs a second look before this cube can be accepted', {
+          confirm: hold,
+          repaired: unseen,
+          misreadFace: worst,
+        });
+      }
+    }
     // Still nothing. One more source of evidence exists and has not been used: the pixels. The
     // scores answered "what colour is each sticker" and were refused; the pixels answer "which
     // stickers share a paint", which a shared illuminant makes answerable when the other is not.
     // Same two gates, so this can turn a refusal into a read and cannot turn a read into anything.
-    const byPaint = accept(allowPaint ? recolourByPaint(faces) : null);
+    // No `allowPaint` flag: it defaulted to true, was only ever forwarded unchanged, and its false
+    // branch was unreachable — a knob with one setting, which reads as a choice somebody made.
+    const byPaint = accept(recolourByPaint(faces));
     if (byPaint) return byPaint;
+
+    // A SIDE WHOSE ORDER WAS NEVER PROVEN IS NOT ACCUSED OF A COLOUR (D6, 2026-09-23).
+    //
+    // `fitFace` marks a capture `'sorted'` when no lattice fitted and the level-frame sort had to
+    // guess the grouping — and a guessed grouping scrambles a face whose middle box sits far enough
+    // off its row's centre. That is a GEOMETRY failure, and everything below can only see it as a
+    // colour one: it would count misread stickers that were read perfectly, point at them, and ask
+    // a child to correct a cube that is already right. Seven measures have failed to tell a sorted
+    // face from a scrambled one at the fit layer (`ColorFace.ordering`), so the decision is taken
+    // where evidence for it exists — another frame, which usually does fit a lattice.
+    //
+    // ONLY WHEN ONE IS UNPROVEN. A reading whose every capture fitted a lattice is refused exactly
+    // as it always was, with its count and its suspects, because there the geometry is not in doubt
+    // and the colours are the only thing left to blame.
+    const unproven = FACES.filter((face) => faces[face]?.ordering === 'sorted');
+    if (unproven.length > 0) {
+      return reject(
+        // NAMES WHAT WAS MEASURED, and nothing about how the cube was held. "Hold it flatter",
+        // "steadier", "centred" are the sentences `apps/web/test/scan-sentences.test.mjs` refuses,
+        // because the scanner measures none of them; what it DID measure is that the nine boxes fit
+        // no lattice, so their places on the face are not settled.
+        'one side\u2019s stickers could not be placed for certain \u2014 show it again',
+        // NO `suspects` AND NO COUNT. Both are claims about COLOURS, and neither is earned while a
+        // side's stickers may simply be in the wrong places; `misreadFace` names the side to
+        // re-show, which is what a host acts on.
+        { misreadFace: unproven[0]!, unprovenOrder: unproven },
+      );
+    }
 
     // Before refusing, do the diagnosis a refusal makes possible: how many stickers are wrong is
     // always answerable, and when it is exactly one, WHICH one is answerable too. Under every
@@ -1490,308 +1738,5 @@ function assembleWithin(
     // The captures this reading was built from — repaired when a repair ran — so a host settles
     // what was accepted and not what the camera first read. See `AiScanResult.captures`.
     captures: { ...bySlot },
-  };
-}
-
-/** What `resolveCentres` decided: the verdict, and the filing it was reached on. */
-export interface CentreResolution {
-  result: AiScanResult;
-  /**
-   * The six captures filed as the resolution decided, every unnamed side now carrying its slot's
-   * centre colour. Present when one filing was chosen — by legality, or by the centres' confidence
-   * when no filing is legal — and absent when nothing decided, where no filing is the right one to keep.
-   */
-  faces?: Record<Face, ColorFace>;
-  /** What chose `faces`: the one legal filing, the centres' confidence when none is legal, or
-   *  `counting` when one unnamed side and one free slot left no choice to make. */
-  decidedBy?: 'legality' | 'confidence' | 'counting';
-  /**
-   * With `faces`: which unnamed side (an index into the `unnamed` given) each formerly free slot now
-   * holds. The filing REBUILDS a capture whenever its centre changes, so a caller matching filed
-   * captures to its own by identity found nothing for exactly the reassigned-centre case (audit,
-   * 2026-09-20); this is the mapping, stated rather than recovered.
-   */
-  placed?: Partial<Record<Face, number>>;
-}
-
-/** A side the scan could not name by its centre, and how surely its centre read the colour it claims. */
-export interface UnnamedSide {
-  capture: ColorFace;
-  /**
-   * The colour this side's centre CLAIMS, or null when no run ever agreed on one.
-   *
-   * THE TWO REASONS A SIDE IS UNNAMED ARE NOT THE SAME (2026-09-20). A collision is two sides
-   * reading the same colour surely — there is a claim, and whose is weaker decides. A centre that
-   * never settled makes no claim at all, and the last frame's colour is an accident of which frame
-   * happened to be filed. Deriving one from the other let an arbitrary colour into the confidence
-   * ranking below, which is the one place a wrong claim picks the wrong cube.
-   *
-   * Absent means "claims its capture's centre" — how every caller before this field behaved.
-   */
-  centreClaim?: Colour | null;
-  /**
-   * The centre's confidence in the colour it reads as — for a side seen many times, typical over its
-   * reads rather than the one frame that happened to be filed. On a real clip (2026-09-18) single
-   * frames of a logo centre and of a plain one overlapped (0.756 to 0.776 read on both), while their
-   * medians did not (0.728 against 0.783).
-   */
-  centreConfidence: number;
-}
-
-/** `capture` filed as the side whose centre is `colour`: that colour at the centre, and certain. */
-export function withCentre(capture: ColorFace, colour: number): ColorFace {
-  if (capture.colors[4] === colour) return capture;
-  const colors = [...capture.colors];
-  colors[4] = colour;
-  if (!capture.scores) return { ...capture, colors };
-  const scores = capture.scores.map((row) => [...row]);
-  scores[4] = scores[4]!.map((_, c) => (c === colour ? 1 : 0));
-  return { ...capture, colors, scores };
-}
-
-/**
- * `CentreResolution.placed` for one filing: `slots[i]` is where `unnamed[i]` went, so the record
- * runs the other way — slot → the index of the side filed there (2026-09-21).
- */
-function placedBy(slots: readonly Face[]): Partial<Record<Face, number>> {
-  const placed: Partial<Record<Face, number>> = {};
-  slots.forEach((slot, i) => {
-    placed[slot] = i;
-  });
-  return placed;
-}
-
-/** Every ordering of `items` — n! of them, for the at most six sides a scan can hold. */
-function orderings<T>(items: readonly T[]): T[][] {
-  if (items.length <= 1) return [[...items]];
-  return items.flatMap((item, i) =>
-    orderings([...items.slice(0, i), ...items.slice(i + 1)]).map((rest) => [item, ...rest]),
-  );
-}
-
-/**
- * Sides whose centres the scan could not name — two or more read as one colour — decided once all
- * six are in: which slot each of them fills, without trying to read those centres again.
- *
- * WHY THIS EXISTS. Brands print their logo on the white centre, and a logo reads as whatever colour
- * its ink and the light make it — blue on one scan, yellow on another. On seven real cubes photographed
- * side by side (2026-09-13), four of the seven centre collisions were a blue logo on a white cap read as
- * blue; the other three were a red centre read as orange. A side is filed under its centre's colour,
- * so the second side claiming that colour has nowhere to go. It used to be turned away while the user
- * held the white side, which would only read as blue again, and the scan could never finish.
- *
- * THE MECHANISM IS COUNTING, NOT SEEING. A 3x3 has exactly one centre of each colour, in either
- * scheme. So the unnamed sides fill exactly the slots no named side holds, one each, and every way of
- * doing that is tried — including the single-side case, where one slot is free and the colour is
- * therefore forced — two for the common case of one pair, more when several centres collided,
- * which the one-contest design this replaces could not take. Each side that changes colour has its
- * centre made certain (`withCentre`), so the nine-of-each repair cannot quietly hand the old colour back.
- *
- * LEGALITY DECIDES FIRST, AND ONLY WHEN IT IS UNIQUE. A real cube is legal, so a filing is kept when it
- * has a legal reading — accepted outright, or legal but needing a look (`confirm`, `ambiguous`). On all
- * seven measured collisions exactly one filing fitted, and it was the cube as it physically was. The
- * cheaper nine-of-each repair was NOT the evidence to use instead: in none of the seven was it the true
- * filing's (six went the other way, one tied). When several filings fit this refuses rather than
- * choosing — two legal colourings of one set of captures do exist near each other (a measured pair
- * stood four stickers apart), and a confident wrong cube is the failure this package treats as the worst.
- *
- * WHEN NO FILING IS LEGAL, THE CENTRES' CONFIDENCE CHOOSES WHICH READING TO FIX (2026-09-18). That is
- * the case where something besides a centre was misread too — on a real clip, the sticker beside a
- * blue logo read blue as well — and it used to end the scan with "start over". But the question left is
- * narrower than the one legality answers: not "which cube is this" but "which of these centres was
- * misread". Of the sides claiming one colour, the one whose centre read it less surely is the misread
- * one. On all seven measured collisions that rule named the misread centre (logos by a wide margin,
- * 0.55-0.71 against 0.90-0.92; red read as orange by 0.014-0.047), and on the clip by 0.728 to 0.783.
- * It chooses a READING, never a cube: what comes back is still refused, and the misread stickers are
- * what the person is then shown. It decides only when it is unambiguous — one side per colour to keep,
- * a strict difference, and exactly one side left over to take the one unclaimed colour. Otherwise it
- * refuses as before.
- *
- * THE REPAIR CEILING IS LIFTED HERE, AND ONLY HERE. MAX_REPAIR_COST refused five of the seven true
- * filings — their costs ran from 13 to 36 — because a misread logo cap rarely comes alone: the cool
- * tint that turned the centre blue turned the white stickers around it blue too. The ceiling guards
- * one reading against being rewritten into a cube nobody held; here that job is done by the rule
- * above, which is stricter — a legal cube required, exactly one allowed.
- *
- * THE LIMIT, stated so it is not rediscovered: when a misread side's OUTER stickers read as another
- * side's too — a near-solved white face read as nine blues — the two captures are the same picture,
- * the panel cannot tell them apart, and nothing here is ever reached.
- */
-export function resolveCentres(
-  named: Partial<Record<Face, ColorFace>>,
-  unnamed: readonly UnnamedSide[],
-  threshold = LOW_CONFIDENCE_THRESHOLD,
-  options: AssembleOptions = {},
-): CentreResolution {
-  const free = FACES.filter((face) => !named[face]);
-  // ONE UNNAMED SIDE IS ENOUGH (2026-09-20). It used to take two, because the only way to be unnamed
-  // was to collide with another side over a colour. Since the panel also holds back a side whose
-  // centre never settled — a logo cap alternating between two colours — the common case is a single
-  // unnamed side and a single free slot, and there the answer is forced: six centres, five taken.
-  // Forced is not the same as unchecked; the filing still has to assemble into a legal cube below,
-  // and a cube that does not is still refused.
-  if (unnamed.length < 1 || unnamed.length !== free.length) {
-    return {
-      result: reject(
-        'a centre resolution needs at least one unnamed side, exactly as many as the slots no side holds',
-      ),
-    };
-  }
-  // What each unnamed side claims: its explicit claim where it has one, its capture's centre where
-  // the field is absent, and null where the run never agreed. A null never becomes a colour here.
-  const claimed: Array<Colour | null> = [];
-  for (const side of unnamed) {
-    if (side.centreClaim === null) {
-      claimed.push(null);
-      continue;
-    }
-    const centre = side.centreClaim ?? side.capture.colors[4];
-    if (centre === undefined || !isColour(centre)) {
-      return {
-        result: reject(`an unnamed capture's centre colour ${centre} is not one of the six`),
-      };
-    }
-    claimed.push(centre);
-  }
-  const filings = orderings(free).map((slots) => {
-    const faces = { ...named } as Record<Face, ColorFace>;
-    slots.forEach((slot, i) => {
-      faces[slot] = withCentre(unnamed[i]!.capture, colourOfSlot(slot));
-    });
-    return { slots, faces };
-  });
-  const assessed = filings.map((f) => ({
-    ...f,
-    result: assembleWithin(
-      f.faces,
-      threshold,
-      {},
-      { ...options, diagnose: false },
-      Number.POSITIVE_INFINITY,
-      // NO PIXEL PATH HERE. It names its groups from the centres, and this is the one situation
-      // where a centre is already known to be wrong — the filings differ by which centre was
-      // misread. Left on, it makes a WRONG filing assemble too: measured 2026-09-17 on the 140
-      // community sets, it turned one of v3's refusals into a legal cube that was not the user's,
-      // which is the failure this whole file exists to prevent.
-      false,
-    ),
-  }));
-  // ONE UNNAMED SIDE MAKES NO CHOICE, SO IT CANNOT FALL INTO CHOOSING LOGIC. With a single free slot
-  // there is exactly one filing; legality has nothing to pick between and the confidence ranking has
-  // nobody to rank. Returning `faces` even when the cube comes back invalid is what keeps the scan at
-  // SIX captures: the panel adopts the filing and reports the refusal against it, where before it
-  // cleared the unnamed side and restored it only if its arbitrary last-frame centre happened to name
-  // a free slot — so a refused scan silently became five sides (audit, 2026-09-20).
-  if (unnamed.length === 1) {
-    const only = assessed[0]!;
-    return {
-      result: only.result,
-      faces: only.faces,
-      placed: placedBy(only.slots),
-      decidedBy: 'counting',
-    };
-  }
-  const fits = assessed.filter(
-    ({ result }) => result.valid || result.ambiguous === true || result.confirm !== undefined,
-  );
-  if (fits.length === 1) {
-    const [fit] = fits;
-    return {
-      result: fit!.result,
-      faces: fit!.faces,
-      placed: placedBy(fit!.slots),
-      decidedBy: 'legality',
-    };
-  }
-  // The pair a refusal names: a colour two sides claimed, and a slot nobody claimed. Only when two
-  // claims actually COINCIDE — with one claim, or none, the sides are unnamed because their
-  // centres never settled, and a sentence about "two sides reading a WHITE centre" would be about
-  // a collision that never happened (audit, 2026-09-20). Those get `unreadCentres` instead, and
-  // their own words in the panel.
-  const claims = claimed.filter((c): c is Colour => c !== null);
-  // How many of the unnamed sides never settled on a colour — the number the refusal below reports.
-  // Not `unnamed.length`: a side that DID claim a colour and merely could not be placed is not one
-  // whose middle sticker kept changing (audit, 2026-09-20). With no unread side at all and no two
-  // claims alike, the sides claimed distinct colours nobody else holds; that is named as a conflict on
-  // the first claim, as it was before the unread branch existed.
-  const unread = claimed.length - claims.length;
-  const duplicated =
-    claims.find((c, i) => claims.indexOf(c) !== i) ?? (unread === 0 ? claims[0] : undefined);
-  const conflict = (legalFilings: number): CentreResolution => {
-    if (duplicated === undefined) {
-      return {
-        result: reject(
-          legalFilings === 0
-            ? 'sides whose centres never settled, and no way of filing them is a legal cube'
-            : 'sides whose centres never settled, and more than one way of filing them is a legal cube',
-          { unreadCentres: unread, legalFilings },
-        ),
-      };
-    }
-    const shared = slotOf(duplicated);
-    const missing = free.find((slot) => !claims.includes(colourOfSlot(slot))) ?? free[0]!;
-    return {
-      result: reject(
-        legalFilings === 0
-          ? 'sides read with the same centre colour, and no way of filing them is a legal cube'
-          : 'sides read with the same centre colour, and more than one way of filing them is a legal cube',
-        { centreConflict: { shared, missing, legalFilings } },
-      ),
-    };
-  };
-  if (fits.length > 1) return conflict(fits.length);
-
-  // No filing is legal. For each colour the unnamed sides claim, the side that read it most surely
-  // keeps it; every other side is a misread centre. Only a unique answer is used.
-  return byConfidence(claimed, claims, unnamed, free, assessed, conflict);
-}
-
-/**
- * No filing is legal: decide WHICH CENTRE was misread, by how surely each was read.
- *
- * The tail of `resolveCentres`, lifted out (audit, 2026-09-20) — that function held validation,
- * enumeration, solver assessment, the forced case, conflict reporting and this ranking, and the
- * single-side bug it had was a direct consequence of one path falling into another's logic. This is
- * the only part that chooses a READING rather than a cube, and it is worth being able to read alone.
- *
- * For each colour the unnamed sides claim, the side that read it most surely keeps it; every other
- * is a misread centre. Only a unique answer is used.
- */
-function byConfidence(
-  claimed: ReadonlyArray<Colour | null>,
-  claims: readonly Colour[],
-  unnamed: readonly UnnamedSide[],
-  free: readonly Face[],
-  assessed: ReadonlyArray<{ slots: Face[]; faces: Record<Face, ColorFace>; result: AiScanResult }>,
-  conflict: (legalFilings: number) => CentreResolution,
-): CentreResolution {
-  // A SIDE THAT CLAIMS NOTHING CANNOT BE RANKED, AND MUST NOT BE GUESSED. Its confidence is a figure
-  // about a colour it never settled on, so feeding it here would let an accident of framing decide
-  // which reading to call misread. Where any side is unread and more than one remains, this refuses.
-  if (claimed.some((c) => c === null)) return conflict(0);
-  const keeps = new Map<Colour, number>(); // colour -> index of the side that keeps it
-  for (const colour of new Set(claims)) {
-    const claimants = claims.flatMap((c, i) => (c === colour ? [i] : []));
-    const ranked = [...claimants].sort(
-      (a, b) => unnamed[b]!.centreConfidence - unnamed[a]!.centreConfidence,
-    );
-    const [top, next] = ranked;
-    if (next !== undefined && unnamed[top!]!.centreConfidence === unnamed[next]!.centreConfidence) {
-      return conflict(0);
-    }
-    keeps.set(colour, top!);
-  }
-  const movers = unnamed.map((_, i) => i).filter((i) => keeps.get(claims[i]!) !== i);
-  const open = free.filter((slot) => !keeps.has(colourOfSlot(slot)));
-  if (movers.length !== 1 || open.length !== 1) return conflict(0);
-  const chosen = assessed.find(({ slots }) =>
-    slots.every((slot, i) => (i === movers[0] ? slot === open[0] : slot === slotOf(claims[i]!))),
-  );
-  if (!chosen) return conflict(0);
-  return {
-    result: chosen.result,
-    faces: chosen.faces,
-    placed: placedBy(chosen.slots),
-    decidedBy: 'confidence',
   };
 }

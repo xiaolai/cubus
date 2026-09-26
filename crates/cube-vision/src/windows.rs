@@ -66,7 +66,7 @@ use tauri::{AppHandle, Manager, Runtime, State};
 use crate::format_policy::{self, Candidate};
 use crate::frame;
 use crate::letterbox::{letterbox, IMG};
-use crate::lifecycle::CaptureLifecycle;
+use crate::lifecycle::{CaptureLifecycle, SessionToken};
 use crate::model_path;
 use crate::wire;
 use crate::worker::{settle_open, CaptureWorker, Joined};
@@ -96,7 +96,24 @@ struct CameraInfo {
 struct Prepared {
     chw: Vec<f32>,
     picture: [i32; 2],
+    /// When the capture thread published it.
+    ///
+    /// A FROZEN CAMERA IS NOT A STILL ONE (Codex audit, 2026-09-26). `STALE_AFTER_FAILURES` drops
+    /// the last good frame after a run of FAILURES — but a `cam.frame()` that simply never returns
+    /// produces no failures at all, so nothing counted, nothing was dropped, and `next_detection`
+    /// went on inferring over the same picture for as long as the app was open. The scanner then
+    /// reports a cube that is no longer in front of the lens, confidently, which is the one thing
+    /// it must never do. Time is the only evidence available here: the read below refuses a frame
+    /// older than `FRAME_FRESH_FOR`, exactly as a run of failures refuses one.
+    at: std::time::Instant,
 }
+
+/// How long a published frame may still be served.
+///
+/// Generous against the capture rate — a camera that is working publishes many times a second, so
+/// this is only ever reached by one that has stopped — and short enough that a scan does not act on
+/// a second-old picture of a cube somebody is turning.
+const FRAME_FRESH_FOR: std::time::Duration = std::time::Duration::from_millis(1_000);
 
 /// The camera runs on its OWN THREAD and nothing else ever touches it.
 ///
@@ -341,6 +358,7 @@ fn open_camera(state: State<'_, CubeVision>, device_id: Option<String>) -> Resul
                 Ok(f) => f,
                 Err(e) => {
                     note_capture_failure(
+                        &session,
                         &capture_error,
                         &latest,
                         &mut consecutive_failures,
@@ -353,6 +371,7 @@ fn open_camera(state: State<'_, CubeVision>, device_id: Option<String>) -> Resul
                 Ok(d) => d,
                 Err(e) => {
                     note_capture_failure(
+                        &session,
                         &capture_error,
                         &latest,
                         &mut consecutive_failures,
@@ -371,6 +390,7 @@ fn open_camera(state: State<'_, CubeVision>, device_id: Option<String>) -> Resul
                 (Ok(w), Ok(h)) if w > 0 && h > 0 => [w, h],
                 _ => {
                     note_capture_failure(
+                        &session,
                         &capture_error,
                         &latest,
                         &mut consecutive_failures,
@@ -392,9 +412,19 @@ fn open_camera(state: State<'_, CubeVision>, device_id: Option<String>) -> Resul
                 if !session.current() {
                     break;
                 }
-                *slot = Some(Prepared { chw, picture });
+                *slot = Some(Prepared {
+                    chw,
+                    picture,
+                    at: std::time::Instant::now(),
+                });
             }
+            // The same rule as the publish above it: a retired worker must not clear the error the
+            // live session is reporting, which would leave `next_detection` answering "no frame yet"
+            // for a camera that had actually failed.
             if let Ok(mut slot) = capture_error.lock() {
+                if !session.current() {
+                    break;
+                }
                 *slot = None;
             }
             // Reset AFTER the frame is published, not after it is decoded (2026-09-21, audit-fix
@@ -510,19 +540,36 @@ fn join_retired(worker: Option<CaptureWorker>) {
 /// one good frame — it left `latest` populated, so inference kept re-reading the same picture and
 /// the scanner looked like it was working on a cube that was no longer in front of it.
 fn note_capture_failure(
+    session: &SessionToken,
     capture_error: &Mutex<Option<String>>,
     latest: &Mutex<Option<Prepared>>,
     consecutive: &mut u32,
     why: String,
 ) {
     *consecutive += 1;
+    // A RETIRED WORKER WRITES NOTHING (Codex audit, 2026-09-26). `latest` and `capture_error` are
+    // the LIVE session's, shared by every worker that has ever run — and a worker is retired while
+    // it is still inside `cam.frame()`, which is exactly where it blocks longest and exactly where
+    // this is reached. The publish path a few lines above has always taken the session check UNDER
+    // the lock, for precisely this reason; the failure path took none at all, so a camera dying as
+    // it was replaced could write its own error over the new session's and then, at
+    // `STALE_AFTER_FAILURES`, clear the frame the new camera had just published.
+    //
+    // Under each lock, not merely on the way in: a close bumps the generation and THEN clears, so a
+    // check made before taking the lock can still be overtaken.
     if let Ok(mut slot) = capture_error.lock() {
+        if !session.current() {
+            return;
+        }
         *slot = Some(why);
     }
     // A handful of dropped frames is normal while a camera settles; a run of them is not, and past
     // that point the last good frame is a lie rather than a stand-in.
     if *consecutive >= STALE_AFTER_FAILURES {
         if let Ok(mut slot) = latest.lock() {
+            if !session.current() {
+                return;
+            }
             *slot = None;
         }
     }
@@ -676,7 +723,33 @@ fn run_inference(
     })?;
     let rows = i32::try_from(rows).map_err(|_| format!("a tensor with {rows} rows"))?;
     let anchors = i32::try_from(anchors).map_err(|_| format!("a tensor with {anchors} anchors"))?;
-    wire::frame_bytes(count, rows, anchors, picture, data)
+    // `None`, and that is the DESIGN rather than a stub: this arm has no frame identity to give,
+    // and a runtime that cannot say must send nothing — a fabricated id reads to the page as "a new
+    // frame every tick", which is the belief D2 exists to correct
+    // (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3). `None` selects the older header, so
+    // Windows goes on speaking the version it always did.
+    //
+    // THIS CALL SITE DID NOT COMPILE AT ALL between `frame_bytes` gaining the parameter
+    // (2026-09-23) and 2026-09-25, and nothing said so: `windows.rs` is `#[cfg(target_os =
+    // "windows")]`, so no host build and no Linux runner ever type-checks it — only the Windows leg
+    // of `rust-platforms` does. Found by running that leg on a real Windows machine.
+    wire::frame_bytes(count, rows, anchors, picture, None, data)
+}
+
+/// The newest published frame, if it is still recent enough to infer over.
+///
+/// ITS OWN FUNCTION SO THE RULE CAN BE TESTED. `next_detection` takes a Tauri `State` and cannot be
+/// built in a unit test, so a freshness check written inline there is a claim nothing can check —
+/// and this one matters: a frame the capture thread stopped replacing is a picture of a cube that
+/// has since been turned, and serving it is worse than serving nothing, because neither the page
+/// nor the person can tell. Windows speaks wire version 1 and carries no frame id (D2), so there is
+/// no way for the page to notice this for itself.
+fn fresh_frame(slot: &Option<Prepared>) -> Option<(Vec<f32>, [i32; 2])> {
+    let frame = slot.as_ref()?;
+    if frame.at.elapsed() >= FRAME_FRESH_FOR {
+        return None;
+    }
+    Some((frame.chw.clone(), frame.picture))
 }
 
 /// `(async)`: one inference is the single most expensive thing this plugin does per tick.
@@ -686,8 +759,8 @@ fn next_detection(state: State<'_, CubeVision>) -> Result<Response, String> {
     // keeps the lock the camera thread needs to publish the next frame.
     let (input, picture) = {
         let slot = state.latest.lock().map_err(|_| "camera state poisoned")?;
-        match slot.as_ref() {
-            Some(frame) => (frame.chw.clone(), frame.picture),
+        match fresh_frame(&slot) {
+            Some(ready) => ready,
             None => {
                 // A RECORDED failure is reported. Without this, a camera that cannot produce a
                 // usable frame is indistinguishable from one that has not produced its first yet,
@@ -764,6 +837,94 @@ pub fn init<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A worker whose session has been retired writes nothing into the live session's state.
+    ///
+    /// CODEX AUDIT, 2026-09-26. `latest` and `capture_error` are the LIVE session's and are shared
+    /// by every worker that has ever run. A worker is retired while it is still inside
+    /// `cam.frame()` — which is exactly where it blocks longest and exactly where the failure path
+    /// is reached — so a camera dying as it was replaced wrote its own error over the new session's
+    /// and then, at `STALE_AFTER_FAILURES`, cleared the frame the new camera had just published.
+    #[test]
+    fn a_retired_worker_does_not_overwrite_the_live_session() {
+        let lifecycle: CaptureLifecycle<()> = CaptureLifecycle::default();
+        let (retired, _) = lifecycle.claim();
+        let (live, _) = lifecycle.claim(); // the first token is now stale
+        assert!(!retired.current() && live.current());
+
+        let capture_error = Mutex::new(Some("the live session's own failure".to_string()));
+        let latest = Mutex::new(Some(Prepared {
+            chw: vec![0.0],
+            picture: [640, 480],
+            at: std::time::Instant::now(),
+        }));
+
+        // Far past the stale threshold, so the retired worker would clear the frame if it could.
+        let mut consecutive = STALE_AFTER_FAILURES + 10;
+        note_capture_failure(
+            &retired,
+            &capture_error,
+            &latest,
+            &mut consecutive,
+            "the retired camera's failure".to_string(),
+        );
+
+        assert_eq!(
+            capture_error.lock().unwrap().as_deref(),
+            Some("the live session's own failure"),
+            "a retired worker wrote its error over the live session's"
+        );
+        assert!(
+            latest.lock().unwrap().is_some(),
+            "a retired worker cleared the live session's frame"
+        );
+
+        // …and the live session's own worker still does both, or this measures nothing.
+        let mut live_failures = STALE_AFTER_FAILURES;
+        note_capture_failure(
+            &live,
+            &capture_error,
+            &latest,
+            &mut live_failures,
+            "the live camera failed".to_string(),
+        );
+        assert_eq!(
+            capture_error.lock().unwrap().as_deref(),
+            Some("the live camera failed")
+        );
+        assert!(latest.lock().unwrap().is_none());
+    }
+
+    /// A frame that stopped being replaced stops being served.
+    ///
+    /// CODEX AUDIT, 2026-09-26. `STALE_AFTER_FAILURES` drops the last good frame after a run of
+    /// FAILURES — and a `cam.frame()` that never returns produces no failures at all, so nothing
+    /// counted and `next_detection` inferred over the same picture indefinitely. Windows speaks
+    /// wire version 1 and carries no frame id (D2), so the page cannot notice this for itself.
+    #[test]
+    fn a_frame_that_stopped_being_replaced_is_no_longer_served() {
+        let at = |ago: std::time::Duration| Prepared {
+            chw: vec![1.0, 2.0],
+            picture: [640, 480],
+            at: std::time::Instant::now() - ago,
+        };
+        assert_eq!(
+            fresh_frame(&Some(at(std::time::Duration::ZERO))),
+            Some((vec![1.0, 2.0], [640, 480])),
+            "a frame just published was refused"
+        );
+        assert_eq!(
+            fresh_frame(&Some(at(
+                FRAME_FRESH_FOR + std::time::Duration::from_millis(1)
+            ))),
+            None,
+            "a frame nothing has replaced was still being served"
+        );
+        assert_eq!(fresh_frame(&None), None);
+        // Generous against a working camera: one that is publishing does so many times a second,
+        // so this bound is only ever reached by one that has stopped.
+        assert!(FRAME_FRESH_FOR >= std::time::Duration::from_millis(500));
+    }
 
     /// Zero dimensions and an oversized pair are rejected before anything indexes the buffer.
     /// `letterbox` itself is only ever reached through `frame::decode_rgba`'s validation or the

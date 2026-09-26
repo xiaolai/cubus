@@ -15,18 +15,20 @@
 import { escHtml } from '../../app-state.js';
 import { settings } from '../../app-settings.js';
 import { t } from '../../i18n.js';
-import { LINE_LIMIT, SPOKEN, spokenLines } from '../scan/spoken.js';
+import { LINE_LIMIT, placeholderFault, SPOKEN, spokenLines } from '../scan/spoken.js';
 import { commitPref, unsavedNote } from './preferences.js';
 
 /** What moment each line belongs to. Every key in SPOKEN needs one, or a row would be headed
  *  "undefined" — `spoken-lines.test.mjs` checks the two lists match. */
 export const LINE_LABEL = Object.freeze({
   open: 'The camera opens',
-  savedMany: 'A side saved, more to go',
-  savedOne: 'A side saved, one left',
-  lastSaved: 'The last side saved',
+  savedSide: 'A side saved, more to go',
+  savedPenultimate: 'A side saved, one left',
+  savedLast: 'The last side saved',
   again: 'A side shown that is already in',
   ask: 'A side asked for again',
+  which: 'Two sides read the same colour',
+  whichAgain: 'The side an answer handed back',
   done: 'The cube checked out',
   help: 'A scan a grown-up has to rescue',
   camera: 'The camera is not working',
@@ -38,7 +40,20 @@ export function refuse(key, text) {
   const line = text.trim();
   if (!line) return 'A line cannot be empty. Use Reset to put the original back.';
   if (line.length > LINE_LIMIT) return 'Too long to be heard as a cue — %1 characters at most.';
-  if (spokenLines({ [key]: line })[key] !== line) return 'Keep %2 in the line: it is where the number of sides goes.';
+  // WHICH WAY THE PLACEHOLDER RULE WAS BROKEN. `placeholdersFit` refuses a line that DROPS the
+  // placeholder the default carries AND one that ADDS a token it does not, and this once answered
+  // both with "keep %1 in the line" (Codex audit, 2026-09-25) — so "Show %1" typed into a line with
+  // no colour to fill in was told to keep the very token that was the fault. The first repair split
+  // it by whether the DEFAULT takes a placeholder, which still mis-advises the third case: a line
+  // that keeps %1 and gains a %2 was told to keep the %1 it already had (Codex audit, 2026-09-26).
+  // `placeholderFault` answers which way it broke, and lives beside the rule that decides it.
+  const fault = placeholderFault(key, line);
+  if (fault === 'missing') return 'Keep %2 in the line: it is where the side’s colour goes.';
+  if (fault === 'extra') {
+    return /%[1-9]/.test(SPOKEN[key])
+      ? 'This line takes only %2 — take the other percent numbers out.'
+      : 'This line has no colour to fill in, so it cannot carry %2 — take it out.';
+  }
   return null;
 }
 
@@ -81,7 +96,16 @@ export function mountSpokenLines(root) {
     // sentence and refuse every half-typed one.
     input.onchange = () => {
       const reason = refuse(key, input.value);
-      if (reason) { complain(key, reason); return; }
+      if (reason) {
+        complain(key, reason);
+        // AND RESET BECOMES PRESSABLE (Codex audit, 2026-09-25). It was enabled only where a SAVED
+        // override existed, so clearing an untouched line put "Use Reset to put the original back"
+        // on screen beside a Reset nobody could press. What makes it the way back is the input
+        // holding something unusable, not the store holding an override.
+        const btn = resetBtn(key);
+        if (btn) btn.disabled = false;
+        return;
+      }
       complain(key, null);
       commitPref(input, () => {
         const line = input.value.trim();

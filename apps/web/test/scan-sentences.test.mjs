@@ -68,6 +68,12 @@ const UNMEASURED = [
     'This usually works well on most cubes with standard colours.', 'a frequency nobody counted'],
   [/nothing\s+more\s+from\s+you/i, 'Hold it there — nothing more from you.',
     'that a hold settles the scan: the assembly never prefers the hold a side was shown in'],
+  // Added after the Codex audit of 2026-09-25 found both model-load notices asserting a network
+  // cause. Nothing here times a connection, and the NATIVE runtime loads a model already on the
+  // machine down the same path — so a slow load is a slow load, and saying why is invention.
+  [/\bconnection\s+is\s+slow\b|\bslow\s+connection\b|\bcheck\s+the\s+connection\b|\bwhen\s+the\s+download\s+finishes\b/i,
+    'The scanner downloads its model once, and this connection is slow. Check the connection.',
+    'a network nobody timed, on a path a local model also takes'],
 ];
 
 /** What a file can put on screen: every sentence, holes and concatenations closed up (`walk`). */

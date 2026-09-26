@@ -1708,3 +1708,92 @@ test('a rename or a forget that storage refuses is said in Settings — and a re
     failWrites = false;
   }
 });
+
+// ---- a side whose IDENTITY was assigned cannot spot-check a cube -----------------------------
+//
+// §4 of dev-docs/asking-which-side-plan.md, executed rather than argued. The two-side check grants
+// the user's Yes on two ADJACENT matching sides and never reaches whole-cube legality, so the only
+// thing between it and the wrong cube is that each side it compares really is the side it claims to
+// be. A capture filed by elimination, by a ring match, or by a person answering which side it is
+// has a centre WRITTEN FROM ITS SLOT: it says "R" because something decided so, not because
+// anything read its middle sticker.
+//
+// THE FIXTURE ISOLATES THE ASSIGNMENT, which an earlier one did not — Codex's correction, recorded
+// in §4: a fixture whose pair confirms with its TRUE centres too demonstrates a spot-check blind
+// spot and says nothing about assignment. Here the ONLY thing that differs between confirming and
+// not is the `by` field on one capture.
+const SWAPPED_SCRAMBLE = "D' F' B D2 L2 U2";
+/** That cube as it physically is. */
+const HELD_CUBE = move(SOLVED, SWAPPED_SCRAMBLE);
+/** One side's nine, with its centre rewritten from the slot it was filed under — `withCentre`. */
+const filedAs = (stickers, slot) => stickers.slice(0, 4) + slot + stickers.slice(5);
+/**
+ * The cube the app REPORTS when the shown L is filed as R and the real R fills L by elimination:
+ * the six true sides with those two slots exchanged, each centre written from its slot.
+ *
+ * It is a LEGAL cube and it is not the cube in the hand — that is §3's "whole-cube legality is not
+ * a net", and it is asserted below rather than taken on trust. Over all 4096 rotations of the six
+ * captures it is the only legal assembly, so this is the cube such a scan settles on.
+ */
+const SWAPPED_CUBE = [...FACES].map((f) => (
+  f === 'R' ? filedAs(sideOf(HELD_CUBE, 'L'), 'R')
+    : f === 'L' ? filedAs(sideOf(HELD_CUBE, 'R'), 'L')
+      : sideOf(HELD_CUBE, f)
+)).join('');
+const SWAPPED_MAC = 'AA:BB:CC:DD:EE:01';
+
+test('a side the scan was told the name of cannot take the Yes — §4’s isolating fixture', async () => {
+  const state = await appState();
+  const { cubes } = await import('../lib/cube-memory.js');
+  // The fixture proves itself: a legal cube, and not the one being held.
+  assert.notEqual(SWAPPED_CUBE, HELD_CUBE, 'the fixture must differ from the cube in the hand');
+  // The app's OWN legality predicate, which is the one `confirmCheck` gates the candidate on —
+  // not `solve()`, whose tables this app deliberately never builds (AGENTS.md, initSolver).
+  const { isCubeState } = await import('../lib/cube-trust.js');
+  assert.equal(isCubeState(SWAPPED_CUBE, Cube), true, 'the swapped cube must be legal, or nothing could confirm against it');
+  feed().useConnection(null);
+  await tick();
+  // A second remembered cube, whose memory is the SWAPPED arrangement — what a previous scan of
+  // this kind would have written down. The registry object is the app's own (cube-memory.js).
+  cubes[SWAPPED_MAC] = {
+    name: 'Swapped', nickname: '', lastSeen: SEEN_AT,
+    last: { facelets: SWAPPED_CUBE, reported: SWAPPED_CUBE, serial: 3, at: SEEN_AT, how: 'cube' },
+  };
+  try {
+    feed().useConnection(fakeConn(), SWAPPED_MAC);
+    feed().facelets(SWAPPED_CUBE, 0);
+    await tick();
+    assert.equal(state.reconnect?.candidate, SWAPPED_CUBE, 'precondition: the question is open on the swapped arrangement');
+    await go('scan');
+    const panel = $('#stage ai-scan-panel');
+    const report = (captured) => panel.dispatchEvent(new win.CustomEvent('scan-progress', {
+      detail: { phase: 'scanning', complete: false, captured, sides: captured.length, suspects: [], message: '' },
+    }));
+    // The two sides the camera has: the true U, read by its own centre, and the true L — filed
+    // under R, because that is the slot something decided it belonged in.
+    const honestU = { face: 'U', colors: colorsOf(sideOf(HELD_CUBE, 'U')), by: 'centre' };
+    const assignedR = { face: 'R', colors: colorsOf(filedAs(sideOf(HELD_CUBE, 'L'), 'R')), by: 'assigned' };
+
+    report([honestU, assignedR]);
+    await tick();
+    assert.ok(state.reconnect, 'a capture whose identity was assigned took the user’s Yes');
+    assert.equal(state.cube.trusted, false, 'and granted trust with it');
+    // PENDING, not mismatch: the assigned side is left out of the judging, so what remains is one
+    // honest side — which is a third of a proof and the check says so. Calling it a mismatch would
+    // cost a six-side scan over evidence that was never gathered.
+    assert.equal($('#scanHowTitle').textContent, 'One more side',
+      'the assigned side was judged instead of set aside');
+
+    // THE CONTROL, and the only difference is one field. The same two captures, both read by their
+    // own centres, confirm exactly as they always did — so what changed the verdict above is the
+    // provenance and nothing else.
+    report([honestU, { ...assignedR, by: 'centre' }]);
+    await tick();
+    assert.equal(state.reconnect, null, 'two adjacent centre-read sides no longer take the Yes');
+    assert.equal(state.cube.trusted, true);
+  } finally {
+    delete cubes[SWAPPED_MAC];
+    feed().useConnection(null);
+    state.reconnect = null;
+  }
+});

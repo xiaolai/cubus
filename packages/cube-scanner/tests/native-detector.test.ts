@@ -3,9 +3,11 @@ import { fitFromOutput } from '../src/onnx-detect.js';
 import {
   CLOSE_TIMEOUT_MS,
   CUBE_VISION,
+  decodeFramePixels,
   decodeTensorResponse,
   NativeDetector,
   nativeDevice,
+  OPEN_SETTLE_TIMEOUT_MS,
 } from '../view/native-detector.js';
 
 // The wire format the cube-vision plugin returns over the Tauri bridge — int32 rows, int32 anchors
@@ -45,6 +47,16 @@ const encode2 = (
   height: number,
   values: number[],
 ): ArrayBuffer => bytes([-2, rows, anchors, width, height], values);
+
+/** Wire version 3: version 2 plus the frame's identity — the Apple plugin's since 2026-09-23 (D2). */
+const encode3 = (
+  rows: number,
+  anchors: number,
+  width: number,
+  height: number,
+  frameId: number,
+  values: number[],
+): ArrayBuffer => bytes([-3, rows, anchors, width, height, frameId], values);
 
 /** A buffer of `size` bytes whose first int32 is `version` — a header that started and stopped. */
 function startedHeader(version: number, size: number): ArrayBuffer {
@@ -105,19 +117,56 @@ describe('decodeTensorResponse — wire version 2, and the camera a plugin repor
         buf: startedHeader(-2, size),
         says: /version 2 header is 20 bytes/,
       })),
-      // A version this build does not speak.
+      // A version this build does not speak. Version 3 is read (D2), so the first unknown is 4.
       {
-        name: 'version 3',
+        name: 'version 4',
         buf: encode2(2, 3, 640, 480, [1, 2, 3, 4, 5, 6]),
-        says: /unknown wire version 3/,
+        says: /unknown wire version 4/,
       },
       // A header whose floats did not all arrive.
       { name: 'two floats of six', buf: encode2(2, 3, 640, 480, [1, 2]), says: /need 44/ },
     ];
-    new DataView(cases.find((c) => c.name === 'version 3')!.buf).setInt32(0, -3, true);
+    new DataView(cases.find((c) => c.name === 'version 4')!.buf).setInt32(0, -4, true);
     for (const { name, buf, says } of cases) {
       expect(() => decodeTensorResponse(buf), name).toThrow(says);
     }
+  });
+
+  // D2 (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3). The native camera serves its cached frame
+  // on every tick for up to a second and the page could not tell that from new frames, so one
+  // physical frame could satisfy the stillness gate's "three identical reads" on its own.
+  it("reads version 3, whose extra word is the frame's identity", () => {
+    const out = decodeTensorResponse(encode3(2, 3, 1280, 720, 4242, [1, 2, 3, 4, 5, 6]));
+    expect(out?.frameId).toBe(4242);
+    // The longer header must not eat a float, nor leave one behind: every other field is read from
+    // its own offset, and an off-by-one-word header would shift the whole tensor silently.
+    expect([out?.rows, out?.anchors]).toEqual([2, 3]);
+    expect(out?.picture).toEqual({ width: 1280, height: 720 });
+    expect(Array.from(out!.data)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it('carries any int32 as an identity, and reports none at all from version 1 or 2', () => {
+    // An identity is compared for CHANGE, never ordered — so a counter that wrapped is still a
+    // correct answer to "is this the same frame?", and refusing it would break a long scan.
+    for (const id of [-2147483648, -1, 0, 1, 2147483647]) {
+      expect(decodeTensorResponse(encode3(1, 1, 8, 8, id, [1]))?.frameId).toBe(id);
+    }
+    // A plugin that cannot identify its frames says NOTHING rather than having an id invented for
+    // it: a fabricated one reads as "every tick is a new frame", the belief D2 exists to correct.
+    expect(decodeTensorResponse(encode2(1, 1, 8, 8, [1]))).not.toHaveProperty('frameId');
+    expect(decodeTensorResponse(encode(1, 1, [1]))).not.toHaveProperty('frameId');
+  });
+
+  it('refuses a version 3 header that started and stopped, and one that is neither frame nor none', () => {
+    expect(() => decodeTensorResponse(startedHeader(-3, 23))).toThrow(
+      /version 3 header is 24 bytes/,
+    );
+    // The same two-shapes rule version 2 has: a frame with every number positive, or all zeroes.
+    expect(() => decodeTensorResponse(encode3(2, 3, 0, 480, 9, [1, 2, 3, 4, 5, 6]))).toThrow(
+      /neither a frame nor "no frame"/,
+    );
+    // All-zero counts in a version 3 header is the idle answer, read as null like version 2's.
+    expect(decodeTensorResponse(encode3(0, 0, 0, 0, 0, []))).toBeNull();
   });
 
   it('checks the camera a plugin reports, keeping a facing only when it names a direction', () => {
@@ -745,8 +794,78 @@ describe('NativeDetector — the bridge is checked and bounded (2026-09-21)', ()
     ]);
   });
 
-  // LAST in the file on purpose: it leaves one close unanswered, and the module-level count that
-  // close held is released only by the clock this test controls.
+  // LAST TWO in the file on purpose: each leaves one call unanswered, and the module-level count it
+  // holds is released only by the clock these tests control. The OPEN case is last of all, because
+  // an open that never answers leaves `opensOut` above zero for the rest of the module — every
+  // later close then takes the deferred path and waits for a promise that will never settle.
+  // LAST TWO in the file on purpose: each leaves one call unanswered, and the module-level count it
+  // holds is released only by the clock these tests control. The OPEN case is last of all, because
+  // an open that never answers leaves `opensOut` above zero for the rest of the module — every
+  // later close then takes the deferred path and waits for a promise that will never settle.
+  it('a repair that is itself overtaken puts the NEWEST owner back, not the one it was for', async () => {
+    // CODEX AUDIT, 2026-09-26. When an abandoned open lands after a newer one, the lens is on the
+    // abandoned attempt's device and `repairIfOvertaken` re-issues the owner's open to put it back.
+    // That repair is an open like any other — a newer owner can claim and land while it crosses —
+    // and this path was the one place here that did NOT re-ask who owns the camera after its await.
+    // So a repair aimed at B could land last and leave the lens on B while C owned it and every
+    // caller was told C.
+    const opens: { deviceId: string | null; settle: () => void }[] = [];
+    const invoke = async (cmd: string, args?: Record<string, unknown>): Promise<unknown> => {
+      const name = short(cmd);
+      if (name === 'open_camera') {
+        const deviceId = (args?.deviceId ?? null) as string | null;
+        await new Promise<void>((resolve) => opens.push({ deviceId, settle: resolve }));
+        return null;
+      }
+      return name === 'current_camera' ? { deviceId: 'native-1', label: 'Native' } : null;
+    };
+    const det = new NativeDetector(invoke);
+    // A is issued and then superseded by B before it lands.
+    const a = det.use({ deviceId: 'A' }).catch(() => {});
+    await Promise.resolve();
+    const b = det.use({ deviceId: 'B' });
+    await Promise.resolve();
+    expect(opens.map((o) => o.deviceId)).toEqual(['A', 'B']);
+    // B lands and becomes the owner; then A lands late, which triggers the repair for B.
+    opens[1]!.settle();
+    await b;
+    opens[0]!.settle();
+    await a;
+    await Promise.resolve();
+    const repair = opens.length - 1;
+    expect(opens[repair]!.deviceId, 'the repair was not aimed at the owner').toBe('B');
+    // C claims and lands while the repair is still crossing the bridge.
+    const c = det.use({ deviceId: 'C' });
+    await Promise.resolve();
+    const cOpen = opens.length - 1;
+    opens[cOpen]!.settle();
+    await c;
+    // …and only now does the repair land, last of all — so IT is what the lens is on.
+    // ASSERTED AS A NEW OPEN, not as "the last open names C": C's own open already named C, so
+    // reading only the last entry passes whether or not anything was re-issued. What is being
+    // measured is that the repair landing LAST provoked another open for the current owner.
+    const before = opens.length;
+    opens[repair]!.settle();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(
+      opens.length,
+      'nothing was re-issued for the current owner after the repair landed last',
+    ).toBe(before + 1);
+    expect(opens.at(-1)!.deviceId).toBe('C');
+    // LEAVE THE MODULE QUIET. `opensOut` is module state: an open still in flight when this case
+    // ends keeps it above zero for every later test, which sends their closes down the deferred
+    // path to wait on a promise nothing will settle. The repair cascade can issue one more open as
+    // it quiesces, so this settles until no new one appears.
+    for (let n = -1; n !== opens.length; ) {
+      n = opens.length;
+      for (const o of opens) o.settle();
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+    det.stop();
+  });
+
   it('gives up on a close that never answers, so a later open is not held for ever', async () => {
     vi.useFakeTimers();
     const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -780,5 +899,107 @@ describe('NativeDetector — the bridge is checked and bounded (2026-09-21)', ()
       warned.mockRestore();
       vi.useRealTimers();
     }
+  });
+
+  it('gives up on an OPEN that never answers, so a close is not held for ever', async () => {
+    // CODEX AUDIT, 2026-09-26. A close issued while an open is in flight waits behind it, so it
+    // cannot take the lens out from under it — and an open that never answered made that wait
+    // permanent. Worse, `opensOut` never fell, so EVERY later close queued behind the same wedged
+    // promise: the measured shape is zero `close_camera` calls and a camera left live.
+    vi.useFakeTimers();
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const trace: string[] = [];
+      let wedge = true; // only the FIRST open hangs
+      const invoke = async (cmd: string): Promise<unknown> => {
+        const name = short(cmd);
+        trace.push(name);
+        if (name === 'open_camera' && wedge) {
+          wedge = false;
+          await new Promise<void>(() => {});
+        }
+        return name === 'current_camera' ? { deviceId: 'native-1', label: 'Native' } : null;
+      };
+      const stuck = new NativeDetector(invoke);
+      void stuck.use({}).catch(() => {}); // never answers
+      await Promise.resolve();
+      stuck.stop(); // the close that must not be lost behind it
+      expect(trace.filter((c) => c === 'close_camera')).toHaveLength(0); // waiting, rightly
+      await vi.advanceTimersByTimeAsync(OPEN_SETTLE_TIMEOUT_MS - 1);
+      expect(trace.filter((c) => c === 'close_camera')).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(2);
+      expect(
+        trace.filter((c) => c === 'close_camera'),
+        'the close was held for ever behind an open that never answered',
+      ).toHaveLength(1);
+      expect(warned.mock.calls.some((c) => /did not answer within/.test(String(c[0])))).toBe(true);
+    } finally {
+      warned.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  // LAST in the file on purpose: it leaves one close unanswered, and the module-level count that
+  // close held is released only by the clock this test controls.
+});
+
+/**
+ * D7 (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3): the assembly's last resort before refusing
+ * a scan is `recolourByPaint`, which asks which stickers carry the same PAINT — and that needs the
+ * frame. `WebDetector` ships its frame with every tensor; the native plugin never has, because a
+ * 3.7 MB copy per tick across the bridge is exactly what that design avoids. So the Mac, the
+ * primary platform, had one recovery path fewer than the browser.
+ *
+ * The plugin now hands the pixels over BY FRAME ID, once per captured side. The wire is
+ * `[width, height]` then the RGBA bytes, and the 8-byte header alone means "that frame is gone".
+ */
+describe('frame_pixels — the pixels behind a settled read (D7)', () => {
+  const framed = (width: number, height: number, fill = 7): ArrayBuffer => {
+    const buf = new ArrayBuffer(8 + width * height * 4);
+    new Int32Array(buf, 0, 2).set([width, height]);
+    new Uint8Array(buf, 8).fill(fill);
+    return buf;
+  };
+
+  it('reads the size and the pixels, from an ArrayBuffer or from base64', () => {
+    const frame = decodeFramePixels(framed(2, 3));
+    expect([frame?.width, frame?.height]).toEqual([2, 3]);
+    expect(frame?.data).toHaveLength(2 * 3 * 4);
+    expect(Array.from(frame!.data.slice(0, 4))).toEqual([7, 7, 7, 7]);
+    // Android's plugin API is JSON only, so the same bytes arrive base64-encoded there.
+    const bytes = new Uint8Array(framed(2, 3));
+    const b64 = btoa(String.fromCharCode(...bytes));
+    const viaJson = decodeFramePixels(b64);
+    expect([viaJson?.width, viaJson?.height]).toEqual([2, 3]);
+    expect(Array.from(viaJson!.data)).toEqual(Array.from(frame!.data));
+  });
+
+  it('reads "that frame is gone" as no pixels, which is an ordinary answer', () => {
+    // A tick lands or the camera closes between the fit and this call. The assembly then behaves
+    // exactly as it did before D7 existed, which is the whole of the degradation.
+    const gone = new ArrayBuffer(8);
+    new Int32Array(gone, 0, 2).set([0, 0]);
+    expect(decodeFramePixels(gone)).toBeNull();
+    expect(decodeFramePixels(new ArrayBuffer(4))).toBeNull();
+  });
+
+  it('refuses a reply whose header and payload disagree', () => {
+    // Read as a frame it would place every sticker box over the wrong pixels — silently, and only
+    // on the path taken when a scan is about to be refused, which is the worst place for it.
+    const short = new ArrayBuffer(8 + 2 * 3 * 4 - 4);
+    new Int32Array(short, 0, 2).set([2, 3]);
+    expect(() => decodeFramePixels(short)).toThrow(/need 32 for 2x3/);
+    const half = new ArrayBuffer(8 + 8);
+    new Int32Array(half, 0, 2).set([2, 0]);
+    expect(() => decodeFramePixels(half)).toThrow(/2x0 picture/);
+    const negative = new ArrayBuffer(8 + 8);
+    new Int32Array(negative, 0, 2).set([-2, 3]);
+    expect(() => decodeFramePixels(negative)).toThrow(/-2x3 picture/);
+  });
+
+  it('refuses a reply that is not a frame at all', () => {
+    expect(() => decodeFramePixels(null)).toThrow(/answered with null/);
+    expect(() => decodeFramePixels(42)).toThrow(/answered with a number/);
+    expect(() => decodeFramePixels({ pixels: 7 })).toThrow(/number pixels/);
   });
 });

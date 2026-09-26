@@ -796,6 +796,35 @@ describe('WebDetector — next() with the letterbox on another thread (2026-09-2
     await expect(next).resolves.toMatchObject({ rows: 10 });
   });
 
+  it('a run that SUCCEEDS after stop() answers null, like every other await here', async () => {
+    // CODEX AUDIT, 2026-09-26. Every other await in `next()` re-checks its owner afterwards and the
+    // success path did not, so a `stop()` landing during the inference came back with a finished
+    // reading from a detector nobody was listening to. The panel's epoch guard throws it away
+    // today — which is exactly why this was never seen, and why it was the caller keeping a promise
+    // this function is supposed to keep itself.
+    withWorker();
+    // A runner whose inference is held open, so `stop()` can land DURING it rather than during the
+    // letterbox — the success path is the one with no owner re-check.
+    let finishRun: (() => void) | null = null;
+    const held = Object.assign(
+      () =>
+        new Promise((resolve) => {
+          finishRun = () => resolve({ data: new Float32Array(0), anchors: 0, rows: 10 });
+        }),
+      { dispose: async (): Promise<void> => {}, providers: ['held'] },
+    );
+    const det = await readyWith(readySource(), held);
+    const tick = det.next();
+    await settle();
+    FakeWorker.built[0]!.answer();
+    await settle();
+    expect(finishRun, 'the inference never started, so this measures nothing').not.toBeNull();
+    det.stop();
+    // The model answers anyway, as a real one is entitled to: the frame was already in flight.
+    finishRun!();
+    await expect(tick).resolves.toBeNull();
+  });
+
   it('dispose() during the snapshot posts nothing to the terminated worker', async () => {
     // The continuation after `createImageBitmap` used to post to a worker `dispose()` had already
     // terminated — which discards its queue — and the request it installed could never settle.
