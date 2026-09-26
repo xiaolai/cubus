@@ -105,7 +105,7 @@ notice files it carries, reproduced in §5. The Rust standard library, staticall
 every binary, is MIT OR Apache-2.0 (<https://github.com/rust-lang/rust>). The project's own
 crates — `cube-ble`, `cube-vision`, `cubus-desktop`, `optimal-solver` — are MIT.
 
-The native shells are [Tauri](https://tauri.app) 2.11.5 (MIT OR Apache-2.0),
+The native shells are [Tauri](https://tauri.app) 2.11.6 (MIT OR Apache-2.0),
 which renders the web app in the platform's own webview (WebKit on Apple platforms, WebView2 on
 Windows, WebKitGTK on Linux, Android System WebView) — a system component, not redistributed.
 
@@ -440,15 +440,15 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **system-configuration-sys** 0.6.0 (MIT OR Apache-2.0) — Mullvad VPN — <https://github.com/mullvad/system-configuration-rs> — [`LICENSE-MIT`](#text-eefdbe714980)
 - **tao-macros** 0.1.4 (MIT OR Apache-2.0) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tao> — [`LICENSE-MIT`](#text-26e6f69cf1f6)
 - **tar** 0.4.46 (MIT OR Apache-2.0) — Alex Crichton — <https://github.com/composefs/tar-rs> — [`LICENSE-MIT`](#text-e6e853531994)
-- **tauri** 2.11.5 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri> — [`LICENSE_MIT`](#text-89ff9689dcf9)
+- **tauri** 2.11.6 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri> — [`LICENSE_MIT`](#text-89ff9689dcf9)
 - **tauri-codegen** 2.6.3 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri> — [`LICENSE_MIT`](#text-89ff9689dcf9)
 - **tauri-macros** 2.6.3 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri> — [`LICENSE_MIT`](#text-89ff9689dcf9)
 - **tauri-plugin-dialog** 2.7.3 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/plugins-workspace> — [`LICENSE_MIT`](#text-89ff9689dcf9)
 - **tauri-plugin-fs** 2.5.2 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/plugins-workspace> — [`LICENSE_MIT`](#text-89ff9689dcf9)
-- **tauri-plugin-log** 2.9.1 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/plugins-workspace> — [`LICENSE_MIT`](#text-89ff9689dcf9)
+- **tauri-plugin-log** 2.9.2 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/plugins-workspace> — [`LICENSE_MIT`](#text-89ff9689dcf9)
 - **tauri-plugin-opener** 2.5.5 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/plugins-workspace> — [`LICENSE_MIT`](#text-89ff9689dcf9)
 - **tauri-plugin-process** 2.3.1 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/plugins-workspace> — [`LICENSE_MIT`](#text-89ff9689dcf9)
-- **tauri-plugin-updater** 2.11.0 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/plugins-workspace> — [`LICENSE_MIT`](#text-89ff9689dcf9)
+- **tauri-plugin-updater** 2.12.0 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/plugins-workspace> — [`LICENSE_MIT`](#text-89ff9689dcf9)
 - **tauri-runtime** 2.11.3 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri> — [`LICENSE_MIT`](#text-89ff9689dcf9)
 - **tauri-runtime-wry** 2.11.4 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri> — [`LICENSE_MIT`](#text-89ff9689dcf9)
 - **tauri-utils** 2.9.3 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri> — [`LICENSE_MIT`](#text-89ff9689dcf9)
@@ -6419,7 +6419,7 @@ SOFTWARE.
 
 ### text-89ff9689dcf9
 
-Carried by tauri 2.11.5 (`LICENSE_MIT`), tauri-codegen 2.6.3 (`LICENSE_MIT`), tauri-macros 2.6.3 (`LICENSE_MIT`), tauri-plugin-dialog 2.7.3 (`LICENSE_MIT`), tauri-plugin-fs 2.5.2 (`LICENSE_MIT`), tauri-plugin-log 2.9.1 (`LICENSE_MIT`), tauri-plugin-opener 2.5.5 (`LICENSE_MIT`), tauri-plugin-process 2.3.1 (`LICENSE_MIT`), tauri-plugin-updater 2.11.0 (`LICENSE_MIT`), tauri-runtime 2.11.3 (`LICENSE_MIT`), tauri-runtime-wry 2.11.4 (`LICENSE_MIT`), tauri-utils 2.9.3 (`LICENSE_MIT`).
+Carried by tauri 2.11.6 (`LICENSE_MIT`), tauri-codegen 2.6.3 (`LICENSE_MIT`), tauri-macros 2.6.3 (`LICENSE_MIT`), tauri-plugin-dialog 2.7.3 (`LICENSE_MIT`), tauri-plugin-fs 2.5.2 (`LICENSE_MIT`), tauri-plugin-log 2.9.2 (`LICENSE_MIT`), tauri-plugin-opener 2.5.5 (`LICENSE_MIT`), tauri-plugin-process 2.3.1 (`LICENSE_MIT`), tauri-plugin-updater 2.12.0 (`LICENSE_MIT`), tauri-runtime 2.11.3 (`LICENSE_MIT`), tauri-runtime-wry 2.11.4 (`LICENSE_MIT`), tauri-utils 2.9.3 (`LICENSE_MIT`).
 
 ```text
 MIT License
