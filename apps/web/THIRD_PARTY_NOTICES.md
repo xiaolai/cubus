@@ -96,7 +96,7 @@ include photographs from Wikimedia Commons:
 
 ## 3. Desktop and mobile binaries — Rust crates
 
-524 third-party crates link into the cubus binary on at least one platform (macOS,
+517 third-party crates link into the cubus binary on at least one platform (macOS,
 Windows, Linux, iOS, Android), resolved from `Cargo.lock` with `cargo tree --target all`; build
 scripts and test-only dependencies are not in the binary and are not listed. Each is listed under
 the licence it is used under, with its full expression, the authors its Cargo metadata names (who
@@ -109,7 +109,7 @@ The native shells are [Tauri](https://tauri.app) 2.11.5 (MIT OR Apache-2.0),
 which renders the web app in the platform's own webview (WebKit on Apple platforms, WebView2 on
 Windows, WebKitGTK on Linux, Android System WebView) — a system component, not redistributed.
 
-### MIT (477 crates)
+### MIT (471 crates)
 
 - **adler2** 2.0.1 (0BSD OR MIT OR Apache-2.0) — Jonas Schievink, oyvindln — <https://github.com/oyvindln/adler2> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
 - **aho-corasick** 1.1.5 (Unlicense OR MIT) — Andrew Gallant — <https://github.com/BurntSushi/aho-corasick> — [`COPYING`](#text-65314a6c9668), [`LICENSE-MIT`](#text-154c1af2b38e)
@@ -139,12 +139,11 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **bitflags** 1.3.2 (MIT/Apache-2.0) — The Rust Project Developers — <https://github.com/bitflags/bitflags> — [`LICENSE-MIT`](#text-14435fbcd271)
 - **bitflags** 2.13.2 (MIT OR Apache-2.0) — The Rust Project Developers — <https://github.com/bitflags/bitflags> — [`LICENSE-MIT`](#text-14435fbcd271)
 - **block-buffer** 0.10.4 (MIT OR Apache-2.0) — RustCrypto Developers — <https://github.com/RustCrypto/utils> — [`LICENSE-MIT`](#text-5ff5253f2cb9)
-- **block2** 0.5.1 (MIT) — Steven Sheldon, Mads Marquart — <https://github.com/madsmtm/objc2> — carries no MIT text of its own ([MIT](#reference-text-mit))
 - **block2** 0.6.2 (MIT) — Mads Marquart — <https://github.com/madsmtm/objc2> — carries no MIT text of its own ([MIT](#reference-text-mit))
 - **blocking** 1.7.0 (Apache-2.0 OR MIT) — <https://github.com/smol-rs/blocking> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
 - **bluez-async** 0.8.2 (MIT OR Apache-2.0) — Andrew Walbran, David Laban — <https://github.com/bluez-rs/bluez-async/> — carries no MIT text of its own ([MIT](#reference-text-mit))
 - **bluez-generated** 0.4.0 (MIT OR Apache-2.0) — Andrew Walbran, David Laban — <https://github.com/bluez-rs/bluez-async/> — carries no MIT text of its own ([MIT](#reference-text-mit))
-- **btleplug** 0.11.8 (MIT/Apache-2.0/BSD-3-Clause) — Nonpolynomial, LLC — <https://github.com/deviceplug/btleplug> — [`LICENSE.md`](#text-2491974314fb)
+- **btleplug** 0.13.2 (MIT/Apache-2.0/BSD-3-Clause) — Nonpolynomial, LLC — <https://github.com/deviceplug/btleplug> — [`LICENSE.md`](#text-2491974314fb)
 - **bumpalo** 3.20.3 (MIT OR Apache-2.0) — Nick Fitzgerald — <https://github.com/fitzgen/bumpalo> — [`LICENSE-MIT`](#text-5662394bebb1)
 - **bytemuck** 1.25.2 (Zlib OR Apache-2.0 OR MIT) — Lokathor — <https://github.com/Lokathor/bytemuck> — [`LICENSE-MIT`](#text-dfbd1c2a36dc)
 - **byteorder** 1.5.0 (Unlicense OR MIT) — Andrew Gallant — <https://github.com/BurntSushi/byteorder> — [`COPYING`](#text-65314a6c9668), [`LICENSE-MIT`](#text-154c1af2b38e)
@@ -178,7 +177,6 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **darling** 0.24.1 (MIT) — Ted Driggs — <https://github.com/TedDriggs/darling> — [`LICENSE`](#text-cc8f3c8ab396)
 - **darling_core** 0.24.1 (MIT) — Ted Driggs — <https://github.com/TedDriggs/darling> — [`LICENSE`](#text-cc8f3c8ab396)
 - **darling_macro** 0.24.1 (MIT) — Ted Driggs — <https://github.com/TedDriggs/darling> — [`LICENSE`](#text-cc8f3c8ab396)
-- **dashmap** 5.5.3 (MIT) — Acrimon — <https://github.com/xacrimon/dashmap> — [`LICENSE`](#text-3ce3cce00b62)
 - **dashmap** 6.2.1 (MIT) — Acrimon — <https://github.com/xacrimon/dashmap> — [`LICENSE`](#text-3ce3cce00b62)
 - **dbus** 0.9.12 (Apache-2.0/MIT) — David Henningsson — <https://github.com/diwic/dbus-rs> — [`LICENSE-MIT`](#text-de3911c2d98c)
 - **dbus-tokio** 0.7.6 (Apache-2.0/MIT) — David Henningsson — <https://github.com/diwic/dbus-rs> — [`LICENSE-MIT`](#text-de3911c2d98c)
@@ -280,7 +278,6 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **itoa** 1.0.18 (MIT OR Apache-2.0) — David Tolnay — <https://github.com/dtolnay/itoa> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
 - **javascriptcore-rs** 1.1.2 (MIT) — <https://github.com/tauri-apps/javascriptcore-rs> — [`LICENSE`](#text-8a08757a7c38)
 - **javascriptcore-rs-sys** 1.1.1 (MIT) — The Gtk-rs Project Developers — <https://github.com/tauri-apps/javascriptcore-rs> — [`LICENSE`](#text-4603441e4a5a)
-- **jni** 0.19.0 (MIT/Apache-2.0) — Josh Chase — <https://github.com/jni-rs/jni-rs> — [`LICENSE-MIT`](#text-6c1dcd86d8ae)
 - **jni** 0.21.1 (MIT/Apache-2.0) — Josh Chase — <https://github.com/jni-rs/jni-rs> — [`LICENSE-MIT`](#text-6c1dcd86d8ae)
 - **jni** 0.22.4 (MIT OR Apache-2.0) — jni team — <https://github.com/jni-rs/jni-rs> — carries no MIT text of its own ([MIT](#reference-text-mit))
 - **jni-macros** 0.22.4 (MIT OR Apache-2.0) — <https://github.com/jni-rs/jni-rs> — carries no MIT text of its own ([MIT](#reference-text-mit))
@@ -314,12 +311,10 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **num_threads** 0.1.7 (MIT OR Apache-2.0) — Jacob Pratt — <https://github.com/jhpratt/num_threads> — [`LICENSE-MIT`](#text-c2c01161ef13)
 - **num-conv** 0.2.2 (MIT OR Apache-2.0) — Jacob Pratt — <https://github.com/jhpratt/num-conv> — [`LICENSE-MIT`](#text-4d83b119f786)
 - **num-traits** 0.2.19 (MIT OR Apache-2.0) — The Rust Project Developers — <https://github.com/rust-num/num-traits> — [`LICENSE-MIT`](#text-14435fbcd271)
-- **objc-sys** 0.3.5 (MIT) — Mads Marquart — <https://github.com/madsmtm/objc2> — carries no MIT text of its own ([MIT](#reference-text-mit))
-- **objc2** 0.5.2 (MIT) — Steven Sheldon, Mads Marquart — <https://github.com/madsmtm/objc2> — carries no MIT text of its own ([MIT](#reference-text-mit))
 - **objc2** 0.6.4 (MIT) — Mads Marquart — <https://github.com/madsmtm/objc2> — carries no MIT text of its own ([MIT](#reference-text-mit))
 - **objc2-app-kit** 0.3.2 (Zlib OR Apache-2.0 OR MIT) — <https://github.com/madsmtm/objc2> — carries no MIT text of its own ([MIT](#reference-text-mit))
 - **objc2-cloud-kit** 0.3.2 (Zlib OR Apache-2.0 OR MIT) — <https://github.com/madsmtm/objc2> — carries no MIT text of its own ([MIT](#reference-text-mit))
-- **objc2-core-bluetooth** 0.2.2 (MIT) — <https://github.com/madsmtm/objc2> — carries no MIT text of its own ([MIT](#reference-text-mit))
+- **objc2-core-bluetooth** 0.3.2 (Zlib OR Apache-2.0 OR MIT) — <https://github.com/madsmtm/objc2> — carries no MIT text of its own ([MIT](#reference-text-mit))
 - **objc2-core-data** 0.3.2 (Zlib OR Apache-2.0 OR MIT) — <https://github.com/madsmtm/objc2> — carries no MIT text of its own ([MIT](#reference-text-mit))
 - **objc2-core-foundation** 0.3.2 (Zlib OR Apache-2.0 OR MIT) — <https://github.com/madsmtm/objc2> — carries no MIT text of its own ([MIT](#reference-text-mit))
 - **objc2-core-graphics** 0.3.2 (Zlib OR Apache-2.0 OR MIT) — <https://github.com/madsmtm/objc2> — carries no MIT text of its own ([MIT](#reference-text-mit))
@@ -329,7 +324,6 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **objc2-core-video** 0.3.2 (Zlib OR Apache-2.0 OR MIT) — <https://github.com/madsmtm/objc2> — carries no MIT text of its own ([MIT](#reference-text-mit))
 - **objc2-encode** 4.1.0 (MIT) — Mads Marquart — <https://github.com/madsmtm/objc2> — carries no MIT text of its own ([MIT](#reference-text-mit))
 - **objc2-exception-helper** 0.1.1 (Zlib OR Apache-2.0 OR MIT) — Mads Marquart — <https://github.com/madsmtm/objc2> — carries no MIT text of its own ([MIT](#reference-text-mit))
-- **objc2-foundation** 0.2.2 (MIT) — <https://github.com/madsmtm/objc2> — carries no MIT text of its own ([MIT](#reference-text-mit))
 - **objc2-foundation** 0.3.2 (MIT) — <https://github.com/madsmtm/objc2> — carries no MIT text of its own ([MIT](#reference-text-mit))
 - **objc2-osa-kit** 0.3.2 (Zlib OR Apache-2.0 OR MIT) — <https://github.com/madsmtm/objc2> — carries no MIT text of its own ([MIT](#reference-text-mit))
 - **objc2-quartz-core** 0.3.2 (Zlib OR Apache-2.0 OR MIT) — <https://github.com/madsmtm/objc2> — carries no MIT text of its own ([MIT](#reference-text-mit))
@@ -620,14 +614,6 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **sync_wrapper** 1.0.2 (Apache-2.0) — Actyx AG — <https://github.com/Actyx/sync_wrapper> — [`LICENSE`](#text-59899c6091b5)
 - **tao** 0.35.3 (Apache-2.0) — Tauri Programme within The Commons Conservancy, The winit contributors — <https://github.com/tauri-apps/tao> — [`LICENSE`](#text-6dc0e068dcf3)
 
-### BSD-3-Clause (5 crates)
-
-- **alloc-no-stdlib** 2.0.4 (BSD-3-Clause) — Daniel Reiter Horn — <https://github.com/dropbox/rust-alloc-no-stdlib> — [`LICENSE`](#text-6c91ec82929f)
-- **alloc-stdlib** 0.2.4 (BSD-3-Clause) — Daniel Reiter Horn — <https://github.com/dropbox/rust-alloc-no-stdlib> — carries no BSD-3-Clause text of its own ([BSD-3-Clause](#reference-text-bsd-3-clause))
-- **brotli-decompressor** 5.0.3 (BSD-3-Clause/MIT) — Daniel Reiter Horn, The Brotli Authors — <https://github.com/dropbox/rust-brotli-decompressor> — [`LICENSE`](#text-6c91ec82929f)
-- **jni-utils** 0.1.1 (BSD-3-Clause) — Gedgy Gedgy, Kyle Machulis — <https://github.com/deviceplug/jni-utils-rs> — [`LICENSE`](#text-bd7f21e1c29a)
-- **subtle** 2.6.1 (BSD-3-Clause) — Isis Lovecruft, Henry de Valence — <https://github.com/dalek-cryptography/subtle> — [`LICENSE`](#text-24fa06d8eae3)
-
 ### MPL-2.0 (5 crates)
 
 - **cssparser** 0.36.0 (MPL-2.0) — Simon Sapin — <https://github.com/servo/rust-cssparser> — [`LICENSE`](#text-4b89d4518bd1)
@@ -635,6 +621,13 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **dtoa-short** 0.3.5 (MPL-2.0) — Xidorn Quan — <https://github.com/upsuper/dtoa-short> — [`LICENSE`](#text-4b89d4518bd1)
 - **option-ext** 0.2.0 (MPL-2.0) — Simon Ochsenreither — <https://github.com/soc/option-ext.git> — [`LICENSE.txt`](#text-86cf9656479f)
 - **selectors** 0.36.1 (MPL-2.0) — The Servo Project Developers — <https://github.com/servo/stylo> — carries no MPL-2.0 text of its own ([MPL-2.0](#reference-text-mpl-20))
+
+### BSD-3-Clause (4 crates)
+
+- **alloc-no-stdlib** 2.0.4 (BSD-3-Clause) — Daniel Reiter Horn — <https://github.com/dropbox/rust-alloc-no-stdlib> — [`LICENSE`](#text-6c91ec82929f)
+- **alloc-stdlib** 0.2.4 (BSD-3-Clause) — Daniel Reiter Horn — <https://github.com/dropbox/rust-alloc-no-stdlib> — carries no BSD-3-Clause text of its own ([BSD-3-Clause](#reference-text-bsd-3-clause))
+- **brotli-decompressor** 5.0.3 (BSD-3-Clause/MIT) — Daniel Reiter Horn, The Brotli Authors — <https://github.com/dropbox/rust-brotli-decompressor> — [`LICENSE`](#text-6c91ec82929f)
+- **subtle** 2.6.1 (BSD-3-Clause) — Isis Lovecruft, Henry de Valence — <https://github.com/dalek-cryptography/subtle> — [`LICENSE`](#text-24fa06d8eae3)
 
 ### ISC (2 crates)
 
@@ -1594,7 +1587,7 @@ SOFTWARE.
 
 ### text-2491974314fb
 
-Carried by btleplug 0.11.8 (`LICENSE.md`).
+Carried by btleplug 0.13.2 (`LICENSE.md`).
 
 ```text
 btleplug is covered under the following BSD-3-Clause license:
@@ -2570,7 +2563,7 @@ THE SOFTWARE.
 
 ### text-3ce3cce00b62
 
-Carried by dashmap 5.5.3 (`LICENSE`), dashmap 6.2.1 (`LICENSE`).
+Carried by dashmap 6.2.1 (`LICENSE`).
 
 ```text
 MIT License
@@ -4603,7 +4596,7 @@ SOFTWARE.
 
 ### text-6c1dcd86d8ae
 
-Carried by jni 0.19.0 (`LICENSE-MIT`), jni 0.21.1 (`LICENSE-MIT`).
+Carried by jni 0.21.1 (`LICENSE-MIT`).
 
 ```text
 The MIT License (MIT)
@@ -8001,39 +7994,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-```
-
-### text-bd7f21e1c29a
-
-Carried by jni-utils 0.1.1 (`LICENSE`).
-
-```text
-Copyright 2021-2022 Gedgy Gedgy, Kyle Machulis <kyle@nonpolynomial.com>
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
-1. Redistributions of source code must retain the above copyright notice, this
-   list of conditions and the following disclaimer.
-
-2. Redistributions in binary form must reproduce the above copyright notice,
-   this list of conditions and the following disclaimer in the documentation
-   and/or other materials provided with the distribution.
-
-3. Neither the name of the copyright holder nor the names of its contributors
-   may be used to endorse or promote products derived from this software
-   without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
-ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
 ### text-bde59a7e336f
