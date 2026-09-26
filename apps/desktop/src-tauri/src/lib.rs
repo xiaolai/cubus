@@ -33,20 +33,32 @@
 // ---- smart-cube BLE bridge (recovered verbatim from v0 — proven against a real GAN16) --------
 
 use std::collections::HashMap;
+#[cfg(not(target_os = "android"))]
 use std::pin::Pin;
 use std::sync::Arc;
+#[cfg(not(target_os = "android"))]
 use std::time::Duration;
 
-use cube_ble::btleplug::api::{
-    Central, CentralEvent, CentralState, Peripheral as _, ValueNotification,
-};
+// THE BTLEPLUG TRANSPORT IS NOT COMPILED ON ANDROID, where `android_ble` relays every command to
+// the Kotlin plugin instead — so everything only that transport uses is dead code there, and
+// `-D warnings` on the Android target refuses it (2026-09-25). `not(target_os = "android")` rather
+// than `desktop`: iOS uses btleplug too. The idiom is the one `tauri::Manager` above already uses.
+#[cfg(not(target_os = "android"))]
+use cube_ble::btleplug::api::ValueNotification;
+#[cfg(not(target_os = "android"))]
+use cube_ble::btleplug::api::{Central, CentralEvent, CentralState, Peripheral as _};
 use cube_ble::btleplug::platform::Peripheral;
 use cube_ble::uuid::Uuid;
-use cube_ble::{
-    default_adapter, find_device, AdvertisedDevice, CharacteristicInfo, RequestOptions,
-};
-use futures::{Stream, StreamExt};
-use tauri::{AppHandle, Emitter, State};
+#[cfg(not(target_os = "android"))]
+use cube_ble::{default_adapter, find_device};
+use cube_ble::{AdvertisedDevice, CharacteristicInfo, RequestOptions};
+#[cfg(not(target_os = "android"))]
+use futures::Stream;
+#[cfg(not(target_os = "android"))]
+use futures::StreamExt;
+#[cfg(not(target_os = "android"))]
+use tauri::Emitter;
+use tauri::{AppHandle, State};
 // Desktop-only: the sole use is `app.path()` in `orientation_path`, and a phone has no window whose
 // orientation could be remembered. Un-gated it is an unused import on mobile.
 #[cfg(desktop)]
@@ -58,6 +70,7 @@ mod android_ble;
 mod optimal;
 
 /// The notification stream btleplug hands back (owned, 'static).
+#[cfg(not(target_os = "android"))]
 type NotifyStream = Pin<Box<dyn Stream<Item = ValueNotification> + Send>>;
 
 /// How long a connect, a service discovery or a notification-stream open may take before the
@@ -66,6 +79,7 @@ type NotifyStream = Pin<Box<dyn Stream<Item = ValueNotification> + Send>>;
 /// that went away, left `peripheral.connect()` pending for as long as the app ran, and the web
 /// side's "Connecting…" with it. Fifteen seconds is longer than any connect a cube on the desk
 /// takes (measured well under two) and short enough that a person still remembers what they did.
+#[cfg(not(target_os = "android"))]
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// One inbound notification, as the web side's bridge expects it.
@@ -117,9 +131,32 @@ struct Subscription {
 #[derive(Default)]
 struct BleSession {
     /// Kept alive for as long as any peripheral it produced is in use.
+    #[cfg(not(target_os = "android"))]
     adapter: Option<cube_ble::btleplug::platform::Adapter>,
+    #[cfg(not(target_os = "android"))]
     discovered: HashMap<String, Peripheral>,
     connected: HashMap<String, Peripheral>,
+    /// Ids with a connect IN FLIGHT — reserved under the same lock that checks `connected`.
+    ///
+    /// WHY THE `connected` CHECK IS NOT ENOUGH (Codex audit, 2026-09-26). `ble_connect` tested
+    /// `connected`, dropped the lock, and then spent seconds awaiting `peripheral.connect()`; only
+    /// afterwards did it insert. Two calls for one id — which the web side's reconnect flow makes
+    /// legitimately — therefore both passed the test and both spawned a forwarding task, and two
+    /// tasks resolving one stream emit every packet twice. That is the exact failure the comment on
+    /// that check already describes; it just guarded the sequential case only. A driver reads a
+    /// doubled packet as a serial that goes backwards.
+    #[cfg(not(target_os = "android"))]
+    connecting: std::collections::HashSet<String>,
+    /// Which connection attempt each id's `connected` entry belongs to.
+    ///
+    /// A WATCHER MUST NOT OUTLIVE ITS OWN CONNECTION (Codex audit, 2026-09-26). The per-connection
+    /// task removed the id and emitted `ble-disconnect` when its stream ended, with nothing tying it
+    /// to the entry it was watching — so a disconnect noticed AFTER a reconnect had already
+    /// succeeded deleted the NEW connection and its subscriptions, and told the webview the cube had
+    /// gone while it was sitting there connected.
+    connections: HashMap<String, u64>,
+    /// Hands out the numbers above; never reused within a session.
+    next_connection: u64,
     /// Live subscriptions by id. The id is what crosses the boundary per packet instead of three
     /// strings that never change within a session.
     subscriptions: HashMap<u32, Subscription>,
@@ -132,6 +169,7 @@ struct BleSession {
 const NOT_CONNECTED: &str = "no connected device with id";
 
 impl CubeState {
+    #[cfg(not(target_os = "android"))]
     async fn get(&self, id: &str) -> Result<Peripheral, String> {
         self.0
             .lock()
@@ -184,7 +222,54 @@ fn subscription_for(
 /// remembered to.
 fn release_device(session: &mut BleSession, device: &str) {
     session.connected.remove(device);
+    session.connections.remove(device);
     session.subscriptions.retain(|_, s| s.device != device);
+}
+
+/// What a `ble_connect` found when it asked for the right to connect.
+#[cfg(not(target_os = "android"))]
+#[derive(Debug, PartialEq, Eq)]
+enum ConnectClaim {
+    /// Already connected. A repeated connect is a SUCCESS, not a second connection.
+    AlreadyConnected,
+    /// Another call is part way through connecting this id.
+    InFlight,
+    /// This call may proceed, and owns the reservation until it releases it.
+    Claimed,
+}
+
+/// Claim the right to connect `id`, under ONE lock.
+///
+/// ITS OWN FUNCTION BECAUSE THE ORDER IS THE WHOLE POINT (Codex audit, 2026-09-26). `ble_connect`
+/// tested `connected`, dropped the lock, and then awaited `peripheral.connect()` for seconds before
+/// inserting — so two calls for one id both passed the test and both spawned a forwarding task, and
+/// two tasks resolving one stream emit every packet twice. The test and the reservation have to be
+/// the same step, and a command taking a Tauri `State` cannot be unit-tested, so the step lives here
+/// where it can be.
+#[cfg(not(target_os = "android"))]
+fn claim_connect(session: &mut BleSession, id: &str) -> ConnectClaim {
+    if session.connected.contains_key(id) {
+        return ConnectClaim::AlreadyConnected;
+    }
+    if !session.connecting.insert(id.to_string()) {
+        return ConnectClaim::InFlight;
+    }
+    ConnectClaim::Claimed
+}
+
+/// Let a device go ONLY IF `generation` is still the live connection for it.
+///
+/// The half `release_device` cannot do: it is also called from paths that mean "whatever is there,
+/// drop it" (an explicit disconnect, a teardown). A per-connection watcher means something narrower
+/// — "drop what I was watching" — and the difference is a false disconnect emitted over a cube that
+/// has since reconnected (Codex audit, 2026-09-26). Answers whether it was still the live one, so
+/// the caller knows whether to tell the webview anything at all.
+fn release_connection(session: &mut BleSession, device: &str, generation: u64) -> bool {
+    if session.connections.get(device) != Some(&generation) {
+        return false;
+    }
+    release_device(session, device);
+    true
 }
 
 /// Book a subscription id BEFORE the transport is asked to subscribe, and hand it back.
@@ -239,6 +324,7 @@ fn drop_subscriptions(session: &mut BleSession, device: &str, service: &str, cha
 /// in the no-device sentence so a permission problem does not keep wearing a hardware problem's
 /// face. Denied access has no state of its own in this btleplug: an unauthorised app sees
 /// `Unknown` forever and then an empty scan, so the sentence for that outcome names both.
+#[cfg(not(target_os = "android"))]
 fn scan_precondition(state: CentralState) -> Result<(), String> {
     match state {
         CentralState::PoweredOn | CentralState::Unknown => Ok(()),
@@ -251,6 +337,7 @@ fn scan_precondition(state: CentralState) -> Result<(), String> {
 }
 
 /// The sentence for an empty scan, given what the adapter said about itself first.
+#[cfg(not(target_os = "android"))]
 fn nothing_found(state: CentralState) -> String {
     match state {
         CentralState::PoweredOn => {
@@ -375,36 +462,45 @@ async fn ble_request_device(
     #[allow(unused_variables)] state: State<'_, CubeState>,
     options: RequestOptions,
 ) -> Result<AdvertisedDevice, String> {
+    // THE TWO BODIES ARE MUTUALLY EXCLUSIVE, not one-then-the-other (2026-09-25). Written as a
+    // cfg'd block that RETURNS followed by an unguarded desktop body, every statement below was
+    // dead code on Android — `unreachable_code` fired on this command and six others, and nothing
+    // refused it: the workspace's `-D warnings` clippy runs on the HOST target, and the Android job
+    // only `cargo check`s. Guarding both halves is the idiom this file already uses for
+    // `ble_subscribe`'s transport, and it leaves each target with exactly one body and no dead code.
     #[cfg(target_os = "android")]
     {
-        return android_ble::call(&app, "ble_request_device", options).await;
+        android_ble::call(&app, "ble_request_device", options).await
     }
-    let central = default_adapter().await.map_err(|e| e.to_string())?;
-    // Asked BEFORE the radio is: a switched-off adapter is refused with its own sentence instead
-    // of staring into a twenty-second window and blaming the cube.
-    let before = central.adapter_state().await.map_err(|e| e.to_string())?;
-    scan_precondition(before.clone())?;
-    let found = find_device(&central, &options, Duration::from_secs(20))
-        .await
-        .map_err(|e| e.to_string())?;
-    match found {
-        Some((peripheral, dev)) => {
-            // Keep BOTH. The peripheral is only usable through the adapter that found it — and
-            // ONLY through it: every entry in `discovered` belongs to whichever adapter was current
-            // when it was found, so swapping the adapter empties the map rather than leaving
-            // peripherals a connect would dispatch to an adapter that no longer exists.
-            let mut session = state.0.lock().await;
-            session.discovered.clear();
-            session.adapter = Some(central);
-            session.discovered.insert(dev.id.clone(), peripheral);
-            Ok(dev)
-        }
-        None => {
-            let after = central
-                .adapter_state()
-                .await
-                .unwrap_or(CentralState::Unknown);
-            Err(nothing_found(after))
+    #[cfg(not(target_os = "android"))]
+    {
+        let central = default_adapter().await.map_err(|e| e.to_string())?;
+        // Asked BEFORE the radio is: a switched-off adapter is refused with its own sentence instead
+        // of staring into a twenty-second window and blaming the cube.
+        let before = central.adapter_state().await.map_err(|e| e.to_string())?;
+        scan_precondition(before.clone())?;
+        let found = find_device(&central, &options, Duration::from_secs(20))
+            .await
+            .map_err(|e| e.to_string())?;
+        match found {
+            Some((peripheral, dev)) => {
+                // Keep BOTH. The peripheral is only usable through the adapter that found it — and
+                // ONLY through it: every entry in `discovered` belongs to whichever adapter was current
+                // when it was found, so swapping the adapter empties the map rather than leaving
+                // peripherals a connect would dispatch to an adapter that no longer exists.
+                let mut session = state.0.lock().await;
+                session.discovered.clear();
+                session.adapter = Some(central);
+                session.discovered.insert(dev.id.clone(), peripheral);
+                Ok(dev)
+            }
+            None => {
+                let after = central
+                    .adapter_state()
+                    .await
+                    .unwrap_or(CentralState::Unknown);
+                Err(nothing_found(after))
+            }
         }
     }
 }
@@ -424,64 +520,58 @@ async fn ble_connect(
 ) -> Result<(), String> {
     #[cfg(target_os = "android")]
     {
-        return android_ble::call(&app, "ble_connect", android_ble::DeviceArgs { id }).await;
+        android_ble::call(&app, "ble_connect", android_ble::DeviceArgs { id }).await
     }
-    // The adapter and peripheral from the scan that produced this id — not a fresh adapter, whose
-    // cache is a different cache and need not contain this device at all.
-    let (central, peripheral) = {
-        let session = state.0.lock().await;
-        // Already connected is a SUCCESS, not a second connection. A repeated connect used to
-        // spawn a second forwarding task over the same peripheral, and two tasks resolving the same
-        // stream emitted every packet twice — a driver reads that as a serial that goes backwards.
-        // The web side's reconnect flow asks this question legitimately after a reload.
-        if session.connected.contains_key(&id) {
-            return Ok(());
-        }
-        let central = session
-            .adapter
-            .clone()
-            .ok_or_else(|| "no scan has run — call ble_request_device first".to_string())?;
-        let peripheral = session
-            .discovered
-            .get(&id)
-            .cloned()
-            .ok_or_else(|| format!("device {id} was not returned by the last scan"))?;
-        (central, peripheral)
-    };
-    // Subscribe to adapter events BEFORE connecting so a fast disconnect cannot slip past.
-    let events = central.events().await.map_err(|e| e.to_string())?;
+    #[cfg(not(target_os = "android"))]
+    {
+        // The adapter and peripheral from the scan that produced this id — not a fresh adapter, whose
+        // cache is a different cache and need not contain this device at all.
+        let (central, peripheral) = {
+            let mut session = state.0.lock().await;
+            // Already connected is a SUCCESS; already CONNECTING is not, because the two calls
+            // would each spawn a forwarding task. One step, one lock — see `claim_connect`.
+            match claim_connect(&mut session, &id) {
+                ConnectClaim::AlreadyConnected => return Ok(()),
+                ConnectClaim::InFlight => {
+                    return Err(format!("a connection to {id} is already being made"));
+                }
+                ConnectClaim::Claimed => {}
+            }
+            let central = session
+                .adapter
+                .clone()
+                .ok_or_else(|| "no scan has run — call ble_request_device first".to_string())?;
+            let peripheral = session
+                .discovered
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| format!("device {id} was not returned by the last scan"))?;
+            (central, peripheral)
+        };
+        // THE RESERVATION IS RELEASED HOWEVER THIS ENDS. Wrapped rather than unwound at each `?`:
+        // this body has a dozen early returns and one of them forgetting would leave an id that can
+        // never be connected again for the rest of the session — a worse failure than the doubled
+        // packets the reservation exists to prevent.
+        let attempt = async {
+        // Subscribe to adapter events BEFORE connecting so a fast disconnect cannot slip past.
+        let events = central.events().await.map_err(|e| e.to_string())?;
 
-    // Each step bounded by CONNECT_TIMEOUT, with a sentence that names the step. btleplug has no
-    // timeout of its own here, and a pending connect was a "Connecting…" that never ended.
-    tokio::time::timeout(CONNECT_TIMEOUT, peripheral.connect())
-        .await
-        .map_err(|_| {
-            format!(
-                "the cube did not answer a connection request within {}s — is it still on and \
+        // Each step bounded by CONNECT_TIMEOUT, with a sentence that names the step. btleplug has no
+        // timeout of its own here, and a pending connect was a "Connecting…" that never ended.
+        tokio::time::timeout(CONNECT_TIMEOUT, peripheral.connect())
+            .await
+            .map_err(|_| {
+                format!(
+                    "the cube did not answer a connection request within {}s — is it still on and \
                  nearby?",
-                CONNECT_TIMEOUT.as_secs()
-            )
-        })?
-        .map_err(|e| e.to_string())?;
-    // Discover up front so notifications can resolve, and so the web side's getPrimaryServices()
-    // does not race the first packet.
-    match tokio::time::timeout(CONNECT_TIMEOUT, peripheral.discover_services()).await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            let _ = peripheral.disconnect().await;
-            return Err(e.to_string());
-        }
-        Err(_) => {
-            let _ = peripheral.disconnect().await;
-            return Err(format!(
-                "connected, but the cube's services did not enumerate within {}s",
-                CONNECT_TIMEOUT.as_secs()
-            ));
-        }
-    }
-    let stream: NotifyStream =
-        match tokio::time::timeout(CONNECT_TIMEOUT, peripheral.notifications()).await {
-            Ok(Ok(s)) => s,
+                    CONNECT_TIMEOUT.as_secs()
+                )
+            })?
+            .map_err(|e| e.to_string())?;
+        // Discover up front so notifications can resolve, and so the web side's getPrimaryServices()
+        // does not race the first packet.
+        match tokio::time::timeout(CONNECT_TIMEOUT, peripheral.discover_services()).await {
+            Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 let _ = peripheral.disconnect().await;
                 return Err(e.to_string());
@@ -489,97 +579,131 @@ async fn ble_connect(
             Err(_) => {
                 let _ = peripheral.disconnect().await;
                 return Err(format!(
-                    "connected, but the notification stream did not open within {}s",
+                    "connected, but the cube's services did not enumerate within {}s",
                     CONNECT_TIMEOUT.as_secs()
                 ));
             }
+        }
+        let stream: NotifyStream =
+            match tokio::time::timeout(CONNECT_TIMEOUT, peripheral.notifications()).await {
+                Ok(Ok(s)) => s,
+                Ok(Err(e)) => {
+                    let _ = peripheral.disconnect().await;
+                    return Err(e.to_string());
+                }
+                Err(_) => {
+                    let _ = peripheral.disconnect().await;
+                    return Err(format!(
+                        "connected, but the notification stream did not open within {}s",
+                        CONNECT_TIMEOUT.as_secs()
+                    ));
+                }
+            };
+
+        // Recorded BEFORE the watcher is spawned. Inserting afterwards left a window in which a fast
+        // disconnect fired, found nothing to remove, and was then overwritten by this insert — leaving
+        // a dead peripheral in the session that every later command would be dispatched to.
+        let generation = {
+            let mut session = state.0.lock().await;
+            session.next_connection += 1;
+            let generation = session.next_connection;
+            session.connected.insert(id.clone(), peripheral.clone());
+            // WHICH ATTEMPT THIS ENTRY IS, so the watcher spawned below can tell its own connection
+            // from the one that replaced it. See `BleSession::connections`.
+            session.connections.insert(id.clone(), generation);
+            generation
         };
 
-    // Recorded BEFORE the watcher is spawned. Inserting afterwards left a window in which a fast
-    // disconnect fired, found nothing to remove, and was then overwritten by this insert — leaving
-    // a dead peripheral in the session that every later command would be dispatched to.
-    state
-        .0
-        .lock()
-        .await
-        .connected
-        .insert(id.clone(), peripheral.clone());
-
-    let app_for_task = app.clone();
-    let pid = peripheral.id();
-    let device_id = id.clone();
-    let state_for_task = state.0.clone();
-    tauri::async_runtime::spawn(async move {
-        let _central = central; // keep the adapter alive so its event stream stays fed
-        let mut stream = stream;
-        let mut events = events;
-        loop {
-            tokio::select! {
-                packet = stream.next() => match packet {
-                    Some(v) => {
-                        // Resolve to the subscription the web side already knows about. This is a
-                        // map lookup on a handful of entries, once per packet, and it replaces
-                        // three strings on the wire with one integer.
-                        //
-                        // No subscription, no delivery — and say so rather than emitting a packet
-                        // the web side will silently drop.
-                        // Exactly one match, or none — never "the first".
-                        //
-                        // A characteristic uuid is unique only WITHIN a service, so a device that
-                        // exposes the same one under two subscribed services makes this ambiguous.
-                        // `find` would have picked whichever the map iterated first, which is
-                        // unspecified, so a stream could be routed to the wrong subscription and
-                        // decoded as the wrong thing. That is the same defect `service_of` refuses
-                        // to commit three functions away, and refusing here keeps the two honest.
-                        let sub = subscription_for(
-                            &state_for_task.lock().await.subscriptions,
-                            &device_id,
-                            v.uuid,
-                        );
-                        match sub {
-                            Some(sub) => {
-                                let _ = app_for_task.emit(
-                                    "ble-notification",
-                                    NotificationPayload {
-                                        sub,
-                                        data: hex::encode(&v.value),
-                                    },
-                                );
-                            }
-                            None => {
-                                // The stream is delivering something nothing asked for. Said out
-                                // loud, because a silently dropped packet is the failure this
-                                // whole path exists to avoid.
-                                log::warn!(
-                                    "cube-ble: notification for characteristic {} matches no live \
-                                     subscription, or more than one — packet dropped",
-                                    v.uuid
-                                );
+        let app_for_task = app.clone();
+        let pid = peripheral.id();
+        let device_id = id.clone();
+        let state_for_task = state.0.clone();
+        tauri::async_runtime::spawn(async move {
+            let _central = central; // keep the adapter alive so its event stream stays fed
+            let mut stream = stream;
+            let mut events = events;
+            loop {
+                tokio::select! {
+                    packet = stream.next() => match packet {
+                        Some(v) => {
+                            // Resolve to the subscription the web side already knows about. This is a
+                            // map lookup on a handful of entries, once per packet, and it replaces
+                            // three strings on the wire with one integer.
+                            //
+                            // No subscription, no delivery — and say so rather than emitting a packet
+                            // the web side will silently drop.
+                            // Exactly one match, or none — never "the first".
+                            //
+                            // A characteristic uuid is unique only WITHIN a service, so a device that
+                            // exposes the same one under two subscribed services makes this ambiguous.
+                            // `find` would have picked whichever the map iterated first, which is
+                            // unspecified, so a stream could be routed to the wrong subscription and
+                            // decoded as the wrong thing. That is the same defect `service_of` refuses
+                            // to commit three functions away, and refusing here keeps the two honest.
+                            let sub = subscription_for(
+                                &state_for_task.lock().await.subscriptions,
+                                &device_id,
+                                v.uuid,
+                            );
+                            match sub {
+                                Some(sub) => {
+                                    let _ = app_for_task.emit(
+                                        "ble-notification",
+                                        NotificationPayload {
+                                            sub,
+                                            data: hex::encode(&v.value),
+                                        },
+                                    );
+                                }
+                                None => {
+                                    // The stream is delivering something nothing asked for. Said out
+                                    // loud, because a silently dropped packet is the failure this
+                                    // whole path exists to avoid.
+                                    log::warn!(
+                                        "cube-ble: notification for characteristic {} matches no live \
+                                         subscription, or more than one — packet dropped",
+                                        v.uuid
+                                    );
+                                }
                             }
                         }
-                    }
-                    None => break,
-                },
-                // A real disconnect comes from the adapter event, NOT from stream exhaustion. On
-                // CoreBluetooth the notification stream can stay open after the cube drops, so
-                // trusting it leaves the UI "Connected" forever and leaks this task.
-                event = events.next() => match event {
-                    Some(CentralEvent::DeviceDisconnected(pid_seen)) if pid_seen == pid => break,
-                    Some(_) => {}
-                    None => break,
-                },
+                        None => break,
+                    },
+                    // A real disconnect comes from the adapter event, NOT from stream exhaustion. On
+                    // CoreBluetooth the notification stream can stay open after the cube drops, so
+                    // trusting it leaves the UI "Connected" forever and leaks this task.
+                    event = events.next() => match event {
+                        Some(CentralEvent::DeviceDisconnected(pid_seen)) if pid_seen == pid => break,
+                        Some(_) => {}
+                        None => break,
+                    },
+                }
             }
-        }
-        // Drop it from the session as well as telling the webview. Emitting alone left a
-        // disconnected peripheral in `connected`, so a later command would be dispatched to a dead
-        // handle and fail with a puzzling error instead of a clear "not connected".
-        {
-            release_device(&mut *state_for_task.lock().await, &device_id);
-        }
-        let _ = app_for_task.emit("ble-disconnect", DisconnectPayload { device: device_id });
-    });
+            // Drop it from the session as well as telling the webview. Emitting alone left a
+            // disconnected peripheral in `connected`, so a later command would be dispatched to a dead
+            // handle and fail with a puzzling error instead of a clear "not connected".
+            //
+            // ONLY IF THIS IS STILL THE LIVE CONNECTION. A disconnect noticed after a reconnect has
+            // already succeeded belongs to a peripheral nobody is using — removing the id then took
+            // the NEW connection and its subscriptions with it, and the `ble-disconnect` told the
+            // webview a cube had gone while it sat there connected.
+            let was_live = release_connection(
+                &mut *state_for_task.lock().await,
+                &device_id,
+                generation,
+            );
+            if was_live {
+                let _ = app_for_task.emit("ble-disconnect", DisconnectPayload { device: device_id });
+            }
+        });
 
-    Ok(())
+        Ok(())
+        }
+        .await;
+        // Whatever the attempt did, this id is no longer being connected.
+        state.0.lock().await.connecting.remove(&id);
+        attempt
+    }
 }
 
 #[tauri::command]
@@ -590,17 +714,20 @@ async fn ble_discover_services(
 ) -> Result<Vec<String>, String> {
     #[cfg(target_os = "android")]
     {
-        return android_ble::call(
+        android_ble::call(
             &app,
             "ble_discover_services",
             android_ble::DeviceArgs { id },
         )
-        .await;
-    }
-    let p = state.get(&id).await?;
-    cube_ble::discover_services(&p)
         .await
-        .map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let p = state.get(&id).await?;
+        cube_ble::discover_services(&p)
+            .await
+            .map_err(|e| e.to_string())
+    }
 }
 
 #[tauri::command]
@@ -612,17 +739,20 @@ async fn ble_discover_characteristics(
 ) -> Result<Vec<CharacteristicInfo>, String> {
     #[cfg(target_os = "android")]
     {
-        return android_ble::call(
+        android_ble::call(
             &app,
             "ble_discover_characteristics",
             android_ble::ServiceArgs { id, service },
         )
-        .await;
-    }
-    let p = state.get(&id).await?;
-    cube_ble::discover_characteristics(&p, &service)
         .await
-        .map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let p = state.get(&id).await?;
+        cube_ble::discover_characteristics(&p, &service)
+            .await
+            .map_err(|e| e.to_string())
+    }
 }
 
 /// Subscribe, and hand back the id that will identify this stream's packets.
@@ -720,13 +850,16 @@ async fn ble_read(
 ) -> Result<String, String> {
     #[cfg(target_os = "android")]
     {
-        return android_ble::read(&app, id, service, characteristic).await;
+        android_ble::read(&app, id, service, characteristic).await
     }
-    let p = state.get(&id).await?;
-    let bytes = cube_ble::read(&p, &service, &characteristic)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(hex::encode(bytes))
+    #[cfg(not(target_os = "android"))]
+    {
+        let p = state.get(&id).await?;
+        let bytes = cube_ble::read(&p, &service, &characteristic)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(hex::encode(bytes))
+    }
 }
 
 #[tauri::command]
@@ -741,7 +874,7 @@ async fn ble_write(
 ) -> Result<(), String> {
     #[cfg(target_os = "android")]
     {
-        return android_ble::call(
+        android_ble::call(
             &app,
             "ble_write",
             android_ble::WriteArgs {
@@ -752,13 +885,16 @@ async fn ble_write(
                 with_response: !without_response,
             },
         )
-        .await;
-    }
-    let p = state.get(&id).await?;
-    let bytes = hex::decode(&data).map_err(|e| e.to_string())?;
-    cube_ble::write(&p, &service, &characteristic, &bytes, without_response)
         .await
-        .map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let p = state.get(&id).await?;
+        let bytes = hex::decode(&data).map_err(|e| e.to_string())?;
+        cube_ble::write(&p, &service, &characteristic, &bytes, without_response)
+            .await
+            .map_err(|e| e.to_string())
+    }
 }
 
 /// Disconnect. On every platform the session forgets the device — peripheral AND subscriptions,
@@ -783,22 +919,25 @@ async fn ble_disconnect(
         )
         .await?;
         release_device(&mut *state.0.lock().await, &id);
-        return Ok(());
+        Ok(())
     }
-    // Looked up, not removed: a disconnect that FAILS leaves the peripheral connected, and having
-    // already dropped it from the map would leave the app unable to reach or release it again.
-    // It is removed below, after the teardown actually succeeds.
-    let peripheral = state.0.lock().await.connected.get(&id).cloned();
-    if let Some(peripheral) = peripheral {
-        // Reported rather than swallowed: a teardown that failed leaves the peripheral held by the
-        // native side, and a cube that is still connected does not advertise — so the NEXT scan
-        // stares into silence for its whole window and reads as a cube that will not reconnect.
-        if let Err(e) = peripheral.disconnect().await {
-            return Err(format!("the cube did not release cleanly: {e}"));
+    #[cfg(not(target_os = "android"))]
+    {
+        // Looked up, not removed: a disconnect that FAILS leaves the peripheral connected, and having
+        // already dropped it from the map would leave the app unable to reach or release it again.
+        // It is removed below, after the teardown actually succeeds.
+        let peripheral = state.0.lock().await.connected.get(&id).cloned();
+        if let Some(peripheral) = peripheral {
+            // Reported rather than swallowed: a teardown that failed leaves the peripheral held by the
+            // native side, and a cube that is still connected does not advertise — so the NEXT scan
+            // stares into silence for its whole window and reads as a cube that will not reconnect.
+            if let Err(e) = peripheral.disconnect().await {
+                return Err(format!("the cube did not release cleanly: {e}"));
+            }
+            release_device(&mut *state.0.lock().await, &id);
         }
-        release_device(&mut *state.0.lock().await, &id);
+        Ok(())
     }
-    Ok(())
 }
 
 // Traffic lights, macOS. `trafficLightPosition` in tauri.conf.json (x:19/y:28 — measured to land
@@ -1333,6 +1472,55 @@ mod subscription_tests {
             "a reconnected cube's packets must still resolve — this is the defect the disconnect \
              paths leaked before they called release_device"
         );
+    }
+
+    /// Two connects for one id: the second is refused rather than spawning a second forwarding task.
+    ///
+    /// CODEX AUDIT, 2026-09-26. The check on `connected` was separated from the insert by seconds of
+    /// awaiting `peripheral.connect()`, so both calls passed it and both spawned a task — and two
+    /// tasks resolving one stream emit every packet twice, which a driver reads as a serial that
+    /// goes backwards. That is the failure the comment on that check already described; it guarded
+    /// the sequential case only.
+    #[test]
+    fn a_second_connect_while_one_is_in_flight_is_refused() {
+        let mut s = BleSession::default();
+        assert_eq!(claim_connect(&mut s, "cube"), ConnectClaim::Claimed);
+        assert_eq!(
+            claim_connect(&mut s, "cube"),
+            ConnectClaim::InFlight,
+            "a second connect was allowed to spawn its own forwarding task"
+        );
+        // A different cube is unaffected: the reservation is per device, not a global gate.
+        assert_eq!(claim_connect(&mut s, "spare"), ConnectClaim::Claimed);
+        // …and once the attempt releases it, connecting again is allowed.
+        s.connecting.remove("cube");
+        assert_eq!(claim_connect(&mut s, "cube"), ConnectClaim::Claimed);
+    }
+
+    /// A watcher whose connection has been replaced releases nothing and says nothing.
+    ///
+    /// CODEX AUDIT, 2026-09-26. The per-connection task removed the id and emitted `ble-disconnect`
+    /// when its stream ended, with nothing tying it to the entry it had been watching. A disconnect
+    /// noticed AFTER a reconnect had already succeeded therefore deleted the NEW connection and its
+    /// subscriptions, and told the webview the cube had gone while it sat there connected.
+    #[test]
+    fn a_stale_watcher_does_not_delete_the_connection_that_replaced_it() {
+        let mut s = session_with(&[(0, "cube", 1)]);
+        s.connections.insert("cube".into(), 7); // the live connection
+        assert!(
+            !release_connection(&mut s, "cube", 6),
+            "a watcher from an earlier connection was treated as the live one"
+        );
+        assert_eq!(
+            subscription_for(&s.subscriptions, "cube", uuid(1)),
+            Some(0),
+            "a stale watcher took the live connection's subscriptions with it"
+        );
+        assert_eq!(s.connections.get("cube"), Some(&7));
+        // …and the live watcher still does release, or this measures nothing.
+        assert!(release_connection(&mut s, "cube", 7));
+        assert!(s.subscriptions.is_empty());
+        assert_eq!(s.connections.get("cube"), None);
     }
 
     #[test]

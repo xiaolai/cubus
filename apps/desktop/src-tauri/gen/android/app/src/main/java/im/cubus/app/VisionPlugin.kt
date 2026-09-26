@@ -323,9 +323,13 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
 
         // Claim this session BEFORE anything async starts, and clear the last camera's frame with
         // it. Whatever was in `latest` belongs to a camera that is about to be unbound.
-        val mine = generation.incrementAndGet()
-        latest.getAndSet(null)?.let(pool::release)
-        lastFrameError.set(null)
+        val mine =
+            synchronized(publishLock) {
+                val claimed = generation.incrementAndGet()
+                latest.getAndSet(null)?.let(pool::release)
+                lastFrameError.set(null)
+                claimed
+            }
 
         val future = ProcessCameraProvider.getInstance(activity)
         future.addListener({
@@ -409,6 +413,20 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
                 }
             }
 
+    /**
+     * Guards "is this session still current" TOGETHER WITH what is done about it.
+     *
+     * TWO ATOMICS ARE NOT ONE TRANSACTION (Codex audit, 2026-09-26). `publishFrame` read the
+     * generation and then published, and `closeCamera` bumped the generation and then cleared — four
+     * steps in two pairs, so a close landing between a publish's check and its `getAndSet` put a
+     * RETIRED camera's pixels back into `latest` after the close had emptied it. The next
+     * `nextDetection` then inferred over a frame from a camera that was no longer open, which is the
+     * one thing the generation exists to prevent. The Windows plugin had the same defect on its
+     * failure path (`note_capture_failure`) and is fixed the same way: the check and the act happen
+     * under one lock.
+     */
+    private val publishLock = Any()
+
     /** Letterbox one frame of session `mine` into a pooled buffer and publish it as [latest]. */
     private fun publishFrame(mine: Int, image: ImageProxy) {
         if (generation.get() != mine) return
@@ -418,21 +436,28 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
         runCatching { letterbox(image, buf) }
             .onSuccess {
                 // Re-checked after the work: a close can land while a frame is being letterboxed,
-                // and publishing it then revives a closed camera's pixels.
-                if (generation.get() == mine) {
-                    lastFrameError.set(null)
-                    latest.getAndSet(buf)?.let(pool::release)
-                } else {
-                    pool.release(buf)
+                // and publishing it then revives a closed camera's pixels. UNDER THE LOCK the close
+                // also takes, so the check and the publish cannot be split by one.
+                synchronized(publishLock) {
+                    if (generation.get() == mine) {
+                        lastFrameError.set(null)
+                        latest.getAndSet(buf)?.let(pool::release)
+                    } else {
+                        pool.release(buf)
+                    }
                 }
             }
             .onFailure { e ->
                 pool.release(buf)
-                if (generation.get() == mine) {
-                    // Recorded AND the stale frame dropped: answering with older pixels would let
-                    // a broken camera read as a working one.
-                    latest.getAndSet(null)?.let(pool::release)
-                    lastFrameError.set(e.message ?: e.toString())
+                // The same transaction as the success path: a retired analyzer must not clear the
+                // live session's frame or overwrite its error either.
+                synchronized(publishLock) {
+                    if (generation.get() == mine) {
+                        // Recorded AND the stale frame dropped: answering with older pixels would
+                        // let a broken camera read as a working one.
+                        latest.getAndSet(null)?.let(pool::release)
+                        lastFrameError.set(e.message ?: e.toString())
+                    }
                 }
             }
     }
@@ -457,13 +482,18 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
 
     /** Retire this session first, so an analyzer mid-frame cannot publish into the next one. */
     private fun closeCamera() {
-        generation.incrementAndGet()
+        // RETIRING AND EMPTYING ARE ONE STEP, under the lock `publishFrame` takes: bumping the
+        // generation and clearing `latest` as two steps let a publish that had already passed its
+        // check land in between and repopulate the slot after it was emptied.
+        synchronized(publishLock) {
+            generation.incrementAndGet()
+            latest.getAndSet(null)?.let(pool::release)
+            lastFrameError.set(null)
+        }
         analysis?.clearAnalyzer()
         provider?.unbindAll()
         analysis = null
         openedId = null
-        latest.getAndSet(null)?.let(pool::release)
-        lastFrameError.set(null)
     }
 
     // ---- model ---------------------------------------------------------------------------------

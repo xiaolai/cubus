@@ -280,11 +280,20 @@ final class NextDetectionTests: XCTestCase {
         let finished = DispatchSemaphore(value: 0)
         var codeOnA: Int32 = 0
         var reasonOnA: String?
+        var pictureOnA: [Int32] = []
         Thread {
             var buf: Float = .nan
             var rows: Int32 = 0, anchors: Int32 = 0
-            var picture: [Int32] = [0, 0]
+            // THREE Int32s, `[width, height, id]` — the size `cube_vision_next_detection` documents
+            // and writes, ZEROING all three before any early return. This was two, so every call
+            // from this test wrote one Int32 past the end of a stack array: harmless in a debug
+            // build, where the slot after it is padding, and `__stack_chk_fail` in a RELEASE one.
+            // `swift test -c release` aborted with signal 6 here (2026-09-25) while the debug run
+            // passed. It went unnoticed because the buffer grew from two to three when the frame id
+            // was added (D2, 2026-09-23) and this call site was not brought along.
+            var picture: [Int32] = [-1, -1, -1]
             codeOnA = picture.withUnsafeMutableBufferPointer { cube_vision_next_detection(&buf, 1, &rows, &anchors, $0.baseAddress!) }
+            pictureOnA = picture
             failedOnA.signal()
             fetchedOnB.wait()
             reasonOnA = self.lastError()
@@ -292,6 +301,11 @@ final class NextDetectionTests: XCTestCase {
         }.start()
         failedOnA.wait()
         XCTAssertEqual(codeOnA, -3, "thread A's call did not fail as expected")
+        // THE WHOLE TRIPLE, and this is the assertion the undersized buffer was hiding: every path
+        // that is not a frame leaves the size AND the id saying so, and a caller that sized for two
+        // could never have checked the third. Asserting it here is what makes a fourth member — or
+        // a path that forgets to zero one — loud rather than a release-only stack smash.
+        XCTAssertEqual(pictureOnA, [0, 0, 0], "a failed call left the frame info unzeroed")
         let bytes = [UInt8](repeating: 0, count: 4)
         var out: Float = .nan
         var rows: Int32 = 0, anchors: Int32 = 0

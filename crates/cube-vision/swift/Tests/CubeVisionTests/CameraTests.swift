@@ -55,12 +55,20 @@ private final class DrivenOrientation: InterfaceOrientationSource {
 
     func observe(_ onChange: @escaping (InterfaceOrientation) -> Void) -> AnyObject {
         handlers.append(onChange)
+        if let turned = turnWhileSubscribing {
+            now = turned
+            turnWhileSubscribing = nil
+        }
         return NSObject()
     }
 
     func turn(_ orientation: InterfaceOrientation) {
         handlers.forEach { $0(orientation) }
     }
+
+    /// Turn to `to` at the moment `observe` is called — the window iOS opens by installing its
+    /// observer asynchronously on the main queue, during which a device can be turned.
+    var turnWhileSubscribing: InterfaceOrientation?
 }
 
 private let frame = (bytes: [UInt8](repeating: 0, count: 2 * 2 * 4), width: 2, height: 2)
@@ -185,7 +193,7 @@ final class CameraRotationTests: XCTestCase {
         let generation = camera.openForTests(label: "iPad")
         let connection = FakeConnection(supporting: [0, 90])
         var applied: [InterfaceOrientation] = []
-        camera.followRotation(from: source, generation: generation) { orientation in
+        camera.followRotation(from: source, generation: generation, applied: source.now) { orientation in
             applied.append(orientation)
             try Camera.rotate(connection, to: orientation.captureAngle)
         }
@@ -199,6 +207,33 @@ final class CameraRotationTests: XCTestCase {
         XCTAssertTrue(reason.contains("180"), "the fault does not name the angle: \(reason)")
     }
 
+    /// A turn that happens WHILE the observer is being installed is still applied.
+    ///
+    /// CODEX AUDIT, 2026-09-26. `open` reads the orientation, applies it, and only then subscribes —
+    /// and on iOS the subscription is installed asynchronously on the main queue. The observer
+    /// recorded the orientation it found as the state it started from, so a device turned in that
+    /// window produced no change to deliver: the camera kept the rotation from before the turn and
+    /// every frame came out sideways for the rest of the session, with nothing to say so.
+    func testATurnDuringSubscriptionIsStillApplied() {
+        let source = DrivenOrientation()
+        source.now = .portrait
+        let camera = Camera(orientationSource: source)
+        let generation = camera.openForTests(label: "iPad")
+        let connection = FakeConnection(supporting: [0, 90, 180, 270])
+        var applied: [InterfaceOrientation] = []
+        // The device turns in the gap between `open`'s read and the observer being installed.
+        source.turnWhileSubscribing = .landscapeRight
+        camera.followRotation(from: source, generation: generation, applied: .portrait) { orientation in
+            applied.append(orientation)
+            try Camera.rotate(connection, to: orientation.captureAngle)
+        }
+        XCTAssertEqual(
+            applied, [.landscapeRight],
+            "a turn during the subscription was absorbed: the camera kept the old rotation"
+        )
+        XCTAssertEqual(connection.videoRotationAngle, InterfaceOrientation.landscapeRight.captureAngle)
+    }
+
     /// A turn reported to an open that has ended — the observation raced the close — says nothing
     /// about the open that replaced it.
     func testATurnReportedAfterTheOpenEndedSaysNothing() {
@@ -206,7 +241,7 @@ final class CameraRotationTests: XCTestCase {
         let camera = Camera(orientationSource: source)
         let first = camera.openForTests(label: "first")
         var applied = 0
-        camera.followRotation(from: source, generation: first) { _ in
+        camera.followRotation(from: source, generation: first, applied: source.now) { _ in
             applied += 1
             throw Refused()
         }

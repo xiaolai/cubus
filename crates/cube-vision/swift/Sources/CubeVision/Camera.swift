@@ -377,7 +377,7 @@ public final class Camera: NSObject {
             try Camera.orient(connection, of: device, to: orientation)
         }
         self.sink = sink
-        activate(generation, CameraInfo(device), device: device, output: output)
+        activate(generation, CameraInfo(device), device: device, output: output, applied: orientation)
     }
 
     private static func resolveDevice(_ deviceId: String?) throws -> AVCaptureDevice {
@@ -450,7 +450,8 @@ public final class Camera: NSObject {
     /// The observer is installed before `startRunning()`, so a device that goes away while the
     /// session starts is still named — by the label captured here, never by a field another
     /// thread may be rewriting (audit finding 43).
-    private func activate(_ generation: Int, _ info: CameraInfo, device: AVCaptureDevice, output: AVCaptureVideoDataOutput) {
+    private func activate(_ generation: Int, _ info: CameraInfo, device: AVCaptureDevice,
+                          output: AVCaptureVideoDataOutput, applied: InterfaceOrientation?) {
         lock.lock()
         lifecycle = .running(generation)
         frame = nil
@@ -465,7 +466,7 @@ public final class Camera: NSObject {
             self?.deviceWasDisconnected(label: label, generation: generation)
         }
         if let orientationSource {
-            followRotation(from: orientationSource, generation: generation) { [weak output] orientation in
+            followRotation(from: orientationSource, generation: generation, applied: applied) { [weak output] orientation in
                 guard let connection = output?.connection(with: .video) else { return }
                 try Camera.orient(connection, of: device, to: orientation)
             }
@@ -583,17 +584,28 @@ public final class Camera: NSObject {
 
     /// A connection's angle before anything set it, remembered so a later rotation on the same
     /// connection reads the sensor's offset and not the last angle set (see `captureAngle`).
-    private static var sensorOffsets: [ObjectIdentifier: CGFloat] = [:]
+    ///
+    /// KEYED WEAKLY ON THE CONNECTION, so an entry dies with the thing it describes (Codex audit,
+    /// 2026-09-26). This was a plain dictionary keyed on `ObjectIdentifier` — which is the object's
+    /// ADDRESS — and nothing ever removed an entry. Two consequences, and the second is the one that
+    /// shows on screen: the table grew for the life of the process, and an address freed by one
+    /// connection and handed to the next made the NEW connection inherit the OLD one's offset.
+    /// Reopening the front and back cameras in turn is exactly how an address gets reused, and a
+    /// cached 180° then stood in for a real 0°: every frame a half-turn wrong, on the pre-iOS-27
+    /// path, for a reason nothing in the app could show. `NSMapTable` with weak keys drops the entry
+    /// when the connection is deallocated, so a reused address finds nothing and reads the sensor.
+    private static let sensorOffsets = NSMapTable<AVCaptureConnection, NSNumber>.weakToStrongObjects()
     private static let sensorOffsetsLock = NSLock()
 
     @available(iOS 17.0, *)
     private static func sensorOffset(of connection: AVCaptureConnection) -> CGFloat {
         sensorOffsetsLock.lock()
         defer { sensorOffsetsLock.unlock() }
-        let id = ObjectIdentifier(connection)
-        if let known = sensorOffsets[id] { return known }
+        if let known = sensorOffsets.object(forKey: connection) {
+            return CGFloat(known.doubleValue)
+        }
         let offset = connection.videoRotationAngle
-        sensorOffsets[id] = offset
+        sensorOffsets.setObject(NSNumber(value: Double(offset)), forKey: connection)
         return offset
     }
     #else
@@ -627,8 +639,9 @@ public final class Camera: NSObject {
     /// a change reported after the open ended says nothing. Internal so the tests can drive it
     /// with a source and an `apply` of their own.
     func followRotation(from source: InterfaceOrientationSource, generation: Int,
+                        applied: InterfaceOrientation?,
                         apply: @escaping (InterfaceOrientation) throws -> Void) {
-        rotationObservation = source.observe { [weak self] orientation in
+        let deliver: (InterfaceOrientation) -> Void = { [weak self] orientation in
             guard let self else { return }
             guard self.isLive(generation) else { return }
             do {
@@ -637,6 +650,18 @@ public final class Camera: NSObject {
                 self.stopped("the frames could not be turned to follow the interface: \(error)", generation: generation)
             }
         }
+        rotationObservation = source.observe(deliver)
+        // THE TURN THAT HAPPENED WHILE WE WERE SUBSCRIBING (Codex audit, 2026-09-26). `open` reads
+        // the orientation, applies it to the connection, and only then subscribes — and on iOS the
+        // subscription is installed asynchronously on the main queue. A device turned in that window
+        // was recorded by the observer as the state it started from and never delivered, so the
+        // camera kept the rotation from before the turn and every frame came out sideways, for the
+        // whole session, with nothing to say so.
+        //
+        // Asked HERE rather than inside the UIKit observer so the rule is in the shared path both
+        // hosts take — and so a test can drive it, which an `#if os(iOS)` observer cannot be.
+        guard let now = try? source.current(), now != applied else { return }
+        deliver(now)
     }
 
     private func isLive(_ generation: Int) -> Bool {
