@@ -14,7 +14,7 @@
 # from PyPI either way. For all four artefacts, install ml/requirements-export.txt instead.
 torch==2.13.0
 torchvision==0.28.0
-timm==1.0.29
+timm==1.0.30
 # 2.1, not the golden harness's 2.3: tensorflow 2.19.0 -- the converter that produced the shipped
 # TFLite, pinned in requirements-export.txt -- requires numpy<2.2, and pip refuses the pair
 # otherwise. It is also the numpy line the training image ran (MANIFEST.json: 2.1.0).
