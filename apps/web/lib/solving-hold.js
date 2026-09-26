@@ -171,10 +171,12 @@ export function holdTable(names, alsoAsScanned = []) {
  * back to the first layer is holding white up, as the course's practice card for it does.
  */
 const TARGET_HOLD = holdTable(
-  ['cross', 'first-layer', 'two-layers', 'top-cross', 'corners-home', 'six-cross', 'solved'],
-  // A pattern rather than a stage, and not offered — symmetric, so the scan's hold says no less —
-  // and the whole cube, which keeps the scan's hold.
-  ['six-cross', 'solved'],
+  ['cross', 'first-layer', 'two-layers', 'top-cross', 'corners-home', 'six-cross', 'x-every-face', 'solved'],
+  // Patterns rather than stages, and not offered as stages — each symmetric under the rotations that
+  // matter, so the scan's hold says no less than any other would — and the whole cube, which keeps
+  // the scan's hold. A pattern is not somewhere the child is sent BACK to, so the rule above it (hold
+  // it the way that stage was built) has nothing to say about one.
+  ['six-cross', 'x-every-face', 'solved'],
 );
 
 /** The hold for a stage target, or the scan's hold for the whole cube (`null`). Loud on an unknown id. */

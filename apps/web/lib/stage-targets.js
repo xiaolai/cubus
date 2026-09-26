@@ -311,6 +311,9 @@ const VERIFY = {
   // No counterpart in the method solver — the app never stops here — so it is spelled from the
   // cubie model: every edge home and oriented, every corner free.
   'six-cross': (s) => s.ep.every((v, i) => v === i) && s.eo.every((v) => v === 0),
+  // The mirror of `six-cross`: every corner home and untwisted, every edge free. Each face is then
+  // its centre plus its four corners in one colour, which is an X.
+  'x-every-face': (s) => s.cp.every((v, i) => v === i) && s.co.every((v) => v === 0),
   solved: eng.wholeCubeSolved,
 };
 
@@ -320,7 +323,11 @@ const TARGET_SPECS = [
   { id: 'two-layers', name: 'two bottom layers', offered: true, parts: ['crossEdges', 'dCorners', 'midEdges'] },
   { id: 'top-cross', name: 'top cross', offered: true, parts: ['crossEdges', 'dCorners', 'midEdges', 'flip'] },
   { id: 'corners-home', name: 'top corners home', offered: true, parts: ['crossEdges', 'dCorners', 'midEdges', 'flip', 'uCornerSlots'] },
+  // TWO PATTERNS, NOT STAGES, and `offered` is false for both because that field is what the Restore
+  // row reads. They are offered through `lib/patterns.js` instead — plan §9.6 says patterns are their
+  // own feature and must not drift into the stage row, where every chip means "how far back am I".
   { id: 'six-cross', name: 'six-sided cross', offered: false, parts: ['crossEdges', 'midEdges', 'topEdges'] },
+  { id: 'x-every-face', name: 'an X on every face', offered: false, parts: ['dCorners', 'uCorners'] },
   { id: 'solved', name: 'solved', offered: true, parts: ['crossEdges', 'midEdges', 'topEdges', 'dCorners', 'uCorners'] },
 ];
 
