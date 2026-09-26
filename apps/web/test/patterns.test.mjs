@@ -86,7 +86,18 @@ test('every set pattern names a target the engine can actually answer', () => {
 // EVERY PICTURE MUST DRAW, because the menu is pictures and nothing else — 70 of the ledger's 73 have
 // no name at all, so a thumbnail that fails to render is an entry a child cannot identify or press.
 test('every offered pattern yields a drawable 54-sticker picture', () => {
-  assert.equal(OFFERED_PATTERNS.length, 5, 'the offered set changed — decide it, do not drift it');
+  // TWO, and the number is the decision rather than a tally. Both are SET patterns, which are
+  // already stage targets, so choosing one is a `data-stage` press every existing router answers
+  // unchanged. The three state patterns are complete and drawable but wait on a careful pass through
+  // `lastRoute` — plan §9a's "a wrong route cannot reach the screen" path — and so does the rest of
+  // the ledger. Changing this number means deciding, which is what §9.6 asks for.
+  assert.deepEqual(OFFERED_PATTERNS.map((p) => p.id), ['plus-every-face', 'x-every-face'],
+    'the offered set changed — decide it, do not drift it');
+  // Every offered pattern must be routable TODAY, which for now means it is a target. An offered
+  // state pattern would be a picture the walk cannot be sent to.
+  for (const pattern of OFFERED_PATTERNS) {
+    assert.ok(pattern.target, `${pattern.id} is offered but names no target, so nothing can route to it`);
+  }
   for (const pattern of OFFERED_PATTERNS) {
     const look = pattern.kind === 'state' ? pattern.look : targetPicture(pattern.target.id);
     assert.equal(look.length, 54, `${pattern.id}: picture is not 54 stickers`);

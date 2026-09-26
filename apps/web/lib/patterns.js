@@ -59,7 +59,18 @@ const PATTERN_SPECS = [
     id: 'x-every-face', kind: 'set', target: 'x-every-face',
     name: 'an X on every face', offered: true,
   },
-  // ---- state patterns: famous, and six moves from solved ----------------------------------------
+  // ---- state patterns: famous, six moves from solved, and NOT OFFERED YET ------------------------
+  //
+  // They are here, complete and drawable, because the route they need is the one thing this file
+  // cannot supply on its own. A set pattern is already a target, so choosing one is a `data-stage`
+  // press and every existing router answers it unchanged. A state pattern is one exact cube, and the
+  // maneuver to it is `solve(compose(inverseOf(S), c))` — VERIFIED against the real engine on four
+  // scrambles, 16, 10, 16 and 16 moves, each landing on the picture exactly. So no new solver is
+  // needed; what is needed is a careful pass through `lastRoute`, which carries plan §9a's
+  // "a wrong route cannot reach the screen" guarantee and its own break-list of tests. Offering them
+  // before that pass would put an unrouted id into the one path that must never yield a wrong route.
+  //
+  // `offered: false` is exactly what `six-cross` did for a fortnight, and what the other 70 do now.
   // The ALGORITHM is what is copied out of `test/fixtures/pattern-ledger.mjs`, and the picture is
   // computed from it below. That is not tidiness, it is a correctness fix the tests found:
   //
@@ -76,15 +87,15 @@ const PATTERN_SPECS = [
   // 70 inherits that for free.
   {
     id: 'checkerboard', kind: 'state',
-    alg: 'D2 U2 L2 R2 B2 F2', name: 'The Checkerboard', offered: true,
+    alg: 'D2 U2 L2 R2 B2 F2', name: 'The Checkerboard', offered: false,
   },
   {
     id: 'lines', kind: 'state',
-    alg: 'U2 R2 D2 U2 R2 U2', name: 'Lines', offered: true,
+    alg: 'U2 R2 D2 U2 R2 U2', name: 'Lines', offered: false,
   },
   {
     id: 'plus-minus', kind: 'state',
-    alg: 'U2 L2 R2 U2 L2 R2', name: 'Plus/Minus', offered: true,
+    alg: 'U2 L2 R2 U2 L2 R2', name: 'Plus/Minus', offered: false,
   },
 ];
 

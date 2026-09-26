@@ -13,6 +13,7 @@ import { createWalkSession } from '../walk-session.js';
 // The route race into a stage target — one of this screen's own parts, built below.
 import { createRouteRace } from './cube/route-race.js';
 // The rest of its own parts: the speed menu, the die and the reconnect question.
+import { createPatternMenu } from './cube/pattern-menu.js';
 import { createSpeedMenu } from './cube/speed-menu.js';
 import { createDie } from './cube/die.js';
 import { createReconnectAsk } from './cube/reconnect-ask.js';
@@ -256,6 +257,24 @@ const cubeScreen = (screenMode) => {
              goes through retarget(), which is exactly what that path is for. -->
         <div class="stage-row one-line" id="stageTargetRow" role="group" aria-label="${escHtml(t('Where to take this cube'))}">
           ${OFFERED_TARGETS.map((tg) => `<button class="pill${state.stageTarget === tg.id ? ' on' : ''}" data-stage="${escHtml(tg.id)}" aria-pressed="${state.stageTarget === tg.id}">${escHtml(tg.id === 'solved' ? t('Solved') : tg.name)}</button>`).join('')}
+          <!-- THE PICTURES THAT ARE NOT STAGES, at the end of the row already labelled "Where to
+               take this cube" - which is what a pattern is, a destination. Two other placements
+               were tried and both were refused by a rule worth keeping:
+                 a row of its own cost 30px of the sheet, and the move list fell to 35px on the
+                 desktop portrait window, under one row of moves (geometry.test.mjs);
+                 the cube card's corner carries EXACTLY ONE control on purpose, and everything
+                 else that ever sat there was saying what the chips or the nav already said
+                 (router-wiring.test.mjs, "the cube screen is the cube, one transport row").
+               Here it costs no height at all: the row is a sideways-scrolling strip.
+               It is a BUTTON and not a chip. Every chip here carries a move count, reads in
+               nesting order and never goes down; a pattern is sideways rather than back, so it
+               has no place in that ordering and no number to show. Opening a menu is a third
+               thing, and it has no data-stage, so the walk session's group never wires it.
+               NO BACKTICK MAY APPEAR IN THIS COMMENT: it is inside the screen's html template
+               literal, and a markdown-style backtick closes that template and stops the module
+               parsing. That happened twice while this was being written, the second time inside
+               the sentence warning about the first. -->
+          <button class="pill" id="patternBtn" type="button" aria-haspopup="menu" aria-expanded="false">${escHtml(t('Shapes'))}</button>
         </div>
         <div class="wrap-row" id="walkKindRow" role="group" aria-label="${escHtml(t('Solution'))} / ${escHtml(t('Lesson'))}" style="gap:6px;padding:2px 18px 6px">
           <button class="pill on" data-walk="solution" aria-pressed="true">${escHtml(t('Solution'))}</button>
@@ -340,6 +359,11 @@ const cubeScreen = (screenMode) => {
       // session whenever the driver changes: tempo DEPENDS on who drives (`following()` in
       // lib/walk-session.js says why).
       const applyTempo = createSpeedMenu({ root, cube, signal, following: () => session?.following() });
+      // The pictures that are not stages. Built here beside the speed menu and for the same reason:
+      // once per MOUNT, because a retarget replaces the walk under these controls rather than the
+      // controls. It needs nothing from the walk session — its items are `[data-stage]`, wired and
+      // painted with the chips, and it keeps its own `aria-checked` in step by watching the group.
+      createPatternMenu({ root, signal, chosen: () => state.stageTarget });
       // Turning a cube and reading the next move is minutes with no input at all, so the same
       // reasoning as the scan screen's: taken only where there IS a walk, because a cube being
       // looked at is not a cube being followed.
