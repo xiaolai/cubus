@@ -76,16 +76,33 @@ const PROBE = `
     const beforeAnyFrame = frameId(video);
 
     video.play().catch(() => {});
+    // TWO BOUNDS, NOT ONE (2026-09-26). This was a single loop of 120 x 20 ms, so the wait for the
+    // element's FIRST frame and the sampling that is actually under test shared 2.4 seconds between
+    // them. Starting a media pipeline is not the thing being measured and on a loaded shared runner
+    // it can take most of that, leaving no samples at all — which arrived as "the video never
+    // received a frame" and was read as an engine that cannot do this. It is not: the same job
+    // passed on the next run. An intermittent failure is a mechanism, not a re-run.
+    let waited = 0;
+    while (video.videoWidth === 0 && waited < 15000) {
+      // Kept drawing while waiting: the stream ticks on its own, but a changing canvas is what makes
+      // each tick a distinct frame rather than a repeat of one colour.
+      ctx.fillStyle = waited % 40 ? '#c00' : '#0c0';
+      ctx.fillRect(0, 0, 64, 64);
+      await wait(20);
+      waited += 20;
+    }
+    if (video.videoWidth === 0) return { error: 'the video never received a frame', supported };
+    // NOW sample, faster than the stream ticks — the case D2 exists for is two ticks landing between
+    // two frames, and 20 ms over a 30 fps stream reproduces that by construction.
     const samples = [];
-    for (let i = 0; i < 120; i++) {
+    for (let i = 0; i < 200 && samples.length < 40; i++) {
       ctx.fillStyle = i % 2 ? '#c00' : '#0c0';
       ctx.fillRect(0, 0, 64, 64);
       await wait(20);
-      if (video.videoWidth > 0) samples.push(frameId(video));
-      if (samples.length >= 40) break;
+      samples.push(frameId(video));
     }
     if (samples.length === 0) return { error: 'the video never received a frame', supported };
-    return { beforeAnyFrame, samples, supported };
+    return { beforeAnyFrame, samples, supported, waitedMs: waited };
   }
 `;
 
@@ -124,9 +141,16 @@ for (const [name, engine] of [
      * NOT AN ENGINE VERDICT, and so not a failure of the rule under test. A `<video>` fed by
      * `canvas.captureStream` needs the engine to decode into it, and a headless build without the
      * media stack does not: this file already records `captureStream(0)` never giving WebKit its
-     * dimensions, and CI's LINUX WebKit does the same for a ticking stream that macOS WebKit drives
-     * fine (found 2026-09-26, on the first CI run this branch ever had). Reporting that as "the
-     * counter is not a per-frame identity" would be a measurement nobody made.
+     * dimensions at all.
+     *
+     * A LAST RESORT, AND IT SHOULD ALMOST NEVER FIRE. The first version of this comment said CI's
+     * Linux WebKit "does the same for a ticking stream", on the evidence of one red run — and the
+     * very next run passed there, which makes that a FLAKE misread as a capability gap. The cause
+     * was the probe's own budget: one loop of 2.4 seconds served both the wait for a first frame and
+     * the sampling, so a slow media start left nothing to sample. The two bounds are separate now
+     * and the startup one is generous. If this still fires, the engine really did deliver nothing in
+     * fifteen seconds, and reporting that as "the counter is not a per-frame identity" would be a
+     * measurement nobody made.
      *
      * SKIPPED, NEVER PASSED — `t.skip`, not a diagnostic, for the reason `scanner-gpu.test.mjs`
      * gives: a diagnostic still tallies under `pass`, and cases counted green where none ran is the
