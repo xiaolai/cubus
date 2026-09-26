@@ -156,6 +156,11 @@ struct BleSession {
     /// gone while it was sitting there connected.
     connections: HashMap<String, u64>,
     /// Hands out the numbers above; never reused within a session.
+    ///
+    /// Desktop only, like the watcher that reads them: Android connects through its own plugin and
+    /// spawns no forwarding task, so nothing there ever issues one. `connections` itself is NOT
+    /// gated — `release_device` clears it on every target.
+    #[cfg(not(target_os = "android"))]
     next_connection: u64,
     /// Live subscriptions by id. The id is what crosses the boundary per packet instead of three
     /// strings that never change within a session.
@@ -259,11 +264,16 @@ fn claim_connect(session: &mut BleSession, id: &str) -> ConnectClaim {
 
 /// Let a device go ONLY IF `generation` is still the live connection for it.
 ///
+/// Desktop only: the per-connection watcher this exists for is spawned by the btleplug arm, and
+/// Android's plugin reports its own disconnects. `-D warnings` on the Android target is what says
+/// so — dead code there is an error, not a remark.
+///
 /// The half `release_device` cannot do: it is also called from paths that mean "whatever is there,
 /// drop it" (an explicit disconnect, a teardown). A per-connection watcher means something narrower
 /// — "drop what I was watching" — and the difference is a false disconnect emitted over a cube that
 /// has since reconnected (Codex audit, 2026-09-26). Answers whether it was still the live one, so
 /// the caller knows whether to tell the webview anything at all.
+#[cfg(not(target_os = "android"))]
 fn release_connection(session: &mut BleSession, device: &str, generation: u64) -> bool {
     if session.connections.get(device) != Some(&generation) {
         return false;
@@ -1481,6 +1491,11 @@ mod subscription_tests {
     /// tasks resolving one stream emit every packet twice, which a driver reads as a serial that
     /// goes backwards. That is the failure the comment on that check already described; it guarded
     /// the sequential case only.
+    // GATED LIKE THE THING IT TESTS. `claim_connect` and `ConnectClaim` are
+    // `cfg(not(target_os = "android"))` — Android connects through its own plugin — so a test that
+    // names them does not compile for that target. Found by CI's android clippy leg, which is the
+    // only thing that compiles this file for it: the host and Windows legs were both green.
+    #[cfg(not(target_os = "android"))]
     #[test]
     fn a_second_connect_while_one_is_in_flight_is_refused() {
         let mut s = BleSession::default();
@@ -1503,6 +1518,8 @@ mod subscription_tests {
     /// when its stream ended, with nothing tying it to the entry it had been watching. A disconnect
     /// noticed AFTER a reconnect had already succeeded therefore deleted the NEW connection and its
     /// subscriptions, and told the webview the cube had gone while it sat there connected.
+    // Gated with `release_connection`, which is desktop-only (the watcher it serves is).
+    #[cfg(not(target_os = "android"))]
     #[test]
     fn a_stale_watcher_does_not_delete_the_connection_that_replaced_it() {
         let mut s = session_with(&[(0, "cube", 1)]);
@@ -1592,6 +1609,12 @@ mod subscription_tests {
     /// Smart-cube C5: an adapter that is off is refused with a sentence about Bluetooth, and an
     /// empty scan on a live adapter is a sentence about the cube — the two remedies are different
     /// and used to share one line.
+    // Gated for the reason the case above it is: `scan_precondition`, `nothing_found` and
+    // btleplug's `CentralState` are all `cfg(not(target_os = "android"))`, so naming them here does
+    // not compile for that target. It had been that way before this line was written; CI's android
+    // clippy leg is the only thing that compiles this file for Android, and it is a compile ERROR
+    // rather than a warning, so nothing on the host or on Windows could see it.
+    #[cfg(not(target_os = "android"))]
     #[test]
     fn bluetooth_off_and_no_cube_advertising_are_told_apart() {
         let off = scan_precondition(CentralState::PoweredOff).unwrap_err();

@@ -118,7 +118,27 @@ for (const [name, engine] of [
       await browser?.close();
     });
 
-    test('the engine reports a frame counter at all', () => {
+    /**
+     * The harness could not get a frame into the element at all, on this engine, on this machine.
+     *
+     * NOT AN ENGINE VERDICT, and so not a failure of the rule under test. A `<video>` fed by
+     * `canvas.captureStream` needs the engine to decode into it, and a headless build without the
+     * media stack does not: this file already records `captureStream(0)` never giving WebKit its
+     * dimensions, and CI's LINUX WebKit does the same for a ticking stream that macOS WebKit drives
+     * fine (found 2026-09-26, on the first CI run this branch ever had). Reporting that as "the
+     * counter is not a per-frame identity" would be a measurement nobody made.
+     *
+     * SKIPPED, NEVER PASSED — `t.skip`, not a diagnostic, for the reason `scanner-gpu.test.mjs`
+     * gives: a diagnostic still tallies under `pass`, and cases counted green where none ran is the
+     * exact failure this repository refuses everywhere else. Chromium still measures the property in
+     * CI, and both engines measure it on a developer's machine.
+     */
+    const unmeasurable = () => result.error === 'the video never received a frame';
+
+    test('the engine reports a frame counter at all', (t) => {
+      if (unmeasurable()) {
+        return t.skip(`${name} here never gave the <video> a frame — the counter was not measured`);
+      }
       assert.ok(!result.error, result.error);
       // If an engine ever drops `getVideoPlaybackQuality`, `frameId()` answers null and the gate
       // counts every tick — the documented degradation. This asserts which world we are in, so the
@@ -126,7 +146,8 @@ for (const [name, engine] of [
       assert.equal(result.supported, true, `${name} no longer exposes getVideoPlaybackQuality`);
     });
 
-    test('there is no identity before the element has a frame', () => {
+    test('there is no identity before the element has a frame', (t) => {
+      if (unmeasurable()) return t.skip(`${name} here never gave the <video> a frame`);
       assert.equal(
         result.beforeAnyFrame,
         null,
@@ -134,7 +155,8 @@ for (const [name, engine] of [
       );
     });
 
-    test('the counter repeats between frames — the whole of D2', () => {
+    test('the counter repeats between frames — the whole of D2', (t) => {
+      if (unmeasurable()) return t.skip(`${name} here never gave the <video> a frame`);
       // The defect this exists to prevent, stated as its measurement: sampled faster than the
       // stream ticks, consecutive reads must sometimes be EQUAL. If every read differed, one
       // physical frame would supply several reads to the stillness gate and a side could settle on
@@ -147,7 +169,8 @@ for (const [name, engine] of [
       );
     });
 
-    test('the counter never goes backwards, and advances as frames arrive', () => {
+    test('the counter never goes backwards, and advances as frames arrive', (t) => {
+      if (unmeasurable()) return t.skip(`${name} here never gave the <video> a frame`);
       // The other half: an id that never changed would make every frame "the same one" and the gate
       // would never count a second read at all. And a counter that went backwards would make a new
       // frame look like one already seen.
