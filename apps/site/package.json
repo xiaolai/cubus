@@ -11,6 +11,6 @@
     "check:fast": "node --test site.test.mjs"
   },
   "devDependencies": {
-    "playwright": "1.62.1"
+    "playwright": "1.63.0"
   }
 }
