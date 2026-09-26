@@ -163,11 +163,20 @@ test('serves .mjs with a JavaScript MIME type', async () => {
 
 // THIRD_PARTY_NOTICES.md links ONNX Runtime's notices as plain-text files; served as
 // application/octet-stream they download instead of opening.
+//
+// THE FILE IS DISCOVERED, not named. This asked for `onnxruntime-1.29.0-ThirdPartyNotices.txt` and
+// so went red the moment onnxruntime-web moved to 1.30.0 and that file was replaced — a failure
+// about a version string, in a test whose subject is a Content-Type header. What is under test is
+// that a `.txt` under notices/ is served as text, which is true of whichever releases ship.
 test('serves the notices .txt files as plain text', async () => {
-  const res = await fetch(`${BASE}/notices/onnxruntime-1.29.0-ThirdPartyNotices.txt`);
-  assert.equal(res.status, 200);
-  assert.match(res.headers.get('content-type') ?? '', /^text\/plain/);
-  await res.text();
+  const files = readdirSync(join(HERE, 'notices')).filter((f) => f.endsWith('.txt'));
+  assert.ok(files.length > 0, 'apps/web/notices/ holds no .txt files — this check went blind');
+  for (const file of files) {
+    const res = await fetch(`${BASE}/notices/${file}`);
+    assert.equal(res.status, 200, file);
+    assert.match(res.headers.get('content-type') ?? '', /^text\/plain/, file);
+    await res.text();
+  }
 });
 
 test('SSE endpoint uses text/event-stream', async () => {
