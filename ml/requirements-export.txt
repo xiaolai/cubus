@@ -6,7 +6,7 @@
 onnx2tf==1.28.8
 # onnx2tf declares no dependencies and imports these unconditionally; without them the TFLite step
 # dies on import. Pinned to the versions of the environment that produced the shipped TFLite.
-tf_keras==2.19.0
+tf_keras==2.21.0
 onnx_graphsurgeon==0.6.1
 sng4onnx==2.0.1
 psutil==7.2.2
