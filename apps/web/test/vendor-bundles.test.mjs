@@ -717,23 +717,43 @@ test('copy-ort leaves the old runtime intact when a copy fails part-way', async 
   assert.deepEqual(readdirSync(dest).filter((f) => f.startsWith('.tmp-')), []);
 });
 
-// The test command must PROVISION what the tests read, and this asserts the wiring rather than the
-// files.
+// EVERY test command must PROVISION what the tests read, and this asserts the wiring rather than
+// the files.
 //
-// The defect it closes ran red in CI for three days. `copy-ort.mjs` produces three gitignored
-// artifacts — the ort loader, and the one wasm variant pair — and only `predev` ran it. CI runs
-// `pnpm --filter cubus-web test`, never `dev`, so on every runner those three files simply did not
-// exist: `serve-reload` died on an ENOENT for the wasm, and both golden-fixture tests died on
-// "Importing a module script failed" for the loader. On a developer's machine all three pass,
-// because `pnpm dev` was run once months ago and the artifacts have been sitting in vendor/ ever
-// since. That is the shape worth guarding: a suite that cannot pass anywhere except where someone
-// happened to run a different command first.
+// The defect it closes ran red in CI for three days. `copy-ort.mjs` produces four gitignored
+// artifacts — the ort loader, its proxied twin, and the one wasm variant pair — and only `predev`
+// ran it. CI runs `pnpm --filter cubus-web test`, never `dev`, so on every runner those files
+// simply did not exist: `serve-reload` died on an ENOENT for the wasm, and both golden-fixture
+// tests died on "Importing a module script failed" for the loader. On a developer's machine all
+// three pass, because `pnpm dev` was run once months ago and the artifacts have been sitting in
+// vendor/ ever since. That is the shape worth guarding: a suite that cannot pass anywhere except
+// where someone happened to run a different command first.
 //
-// Asserting only that the files exist would reproduce exactly that blindness — it passes on the
-// machine that provisioned them and says nothing about the machine that did not. So the assertion
-// is on the SCRIPT GRAPH: whatever `pnpm test` triggers must reach `copy-ort`. Remove the hook and
-// this goes red on the developer's own machine, where the files are still present.
-test('`pnpm test` provisions the onnxruntime files that tests read', () => {
+// AND THEN IT CAME BACK, because the first version of this test named ONE entry point (2026-09-26).
+// It expanded `pretest` and `test` and asserted copy-ort was reachable from those — true, and it
+// stayed true. On 2026-09-05 the gate grew a second tier, and `test:fast` is a DIFFERENT script:
+// npm and pnpm match `pre<name>` against the exact script name, so `pretest` does not fire for
+// `pnpm test:fast` (verified directly, not read off a doc). CI's fast-tier step runs
+// `pnpm --filter cubus-web test:fast`, so from that day the fast tier provisioned nothing — and
+// nothing said so, because the two paths a developer exercises both still did: the pre-push hook
+// runs the root `check:fast`, which reaches apps/web's own `check:fast` and its explicit
+// `vendor:libs`, and `main` runs the full tier. It surfaced only when ten Dependabot pull requests
+// arrived at once — the first `pull_request` events since the tier split — and NINE of the ten
+// failed identically on the ENOENT this test's own last assertion names.
+//
+// The tenth is the control, and it is what makes this a measurement rather than an argument: the
+// pull request bumping the `actions` group TOUCHES `.github/workflows/`, `ci-plan.mjs` promotes
+// that to the full tier, and it therefore ran `cubus-web — test` — hook fires, artifacts arrive,
+// green. Same code, same runner image, same commit base; the only variable is which script the
+// workflow named.
+//
+// So the assertion is a RELATION over the whole manifest rather than a list of blessed scripts,
+// which is the form `ci-plan.test.mjs` settled on for the same class of gap ("whatever a cross job
+// compiles, it must lint"): ANY script that reaches the test runner must also reach the
+// provisioner. Adding a third tier without its hook goes red here, on a developer's machine, with
+// the artifacts still present — a list would have to be remembered, and this one cannot be
+// forgotten into passing.
+test('every script that runs the test runner provisions the onnxruntime files first', () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   const scripts = pkg.scripts ?? {};
 
@@ -746,11 +766,27 @@ test('`pnpm test` provisions the onnxruntime files that tests read', () => {
     const refs = [...body.matchAll(/(?:pnpm(?:\s+run)?|npm\s+run)\s+([\w:.-]+)/g)].map((m) => m[1]);
     return [body, ...refs.map((r) => expand(r, seen))].join(' ');
   };
+  // What `pnpm <name>` actually runs: the pre-hook for THAT EXACT NAME, then the script. This is
+  // the rule the defect above turned on, so it is spelled out here rather than assumed.
+  const invoking = (name) => `${expand(`pre${name}`)} ${expand(name)}`;
 
-  const reached = expand('pretest') + ' ' + expand('test');
-  assert.match(reached, /copy-ort/,
-    'nothing `pnpm test` runs reaches copy-ort, so a clean checkout tests against missing ' +
-      'onnxruntime files — which is exactly how this was red in CI while green locally');
+  // THE TEST RUNNER IS THE TRIGGER, not a name pattern. `run-tests.mjs` is the only thing that
+  // reads the provisioned artifacts, so "reaches the runner" is the exact condition under which
+  // provisioning is required — and it catches a script called something this test never predicted.
+  const entryPoints = Object.keys(scripts).filter(
+    (name) => !name.startsWith('pre') && !name.startsWith('post') && invoking(name).includes('run-tests.mjs'),
+  );
+
+  // A relation over an empty set is vacuously true, and this test would then pass having checked
+  // nothing — the failure mode this whole file exists to refuse.
+  assert.ok(entryPoints.length >= 3,
+    `expected the manifest to expose at least the three test tiers, found ${entryPoints.length}: ${entryPoints.join(', ')}`);
+
+  const unprovisioned = entryPoints.filter((name) => !invoking(name).includes('copy-ort'));
+  assert.deepEqual(unprovisioned, [],
+    `${unprovisioned.join(', ')} run the test suite without reaching copy-ort, so a clean checkout ` +
+      'tests against missing onnxruntime files — which is exactly how the fast tier was red on ' +
+      'every pull request while green locally. Add `pre<script>: pnpm vendor:libs`.');
 
   // And the artifacts themselves, with the command to fix it — because the ENOENT this replaces
   // named a path and no remedy.
@@ -758,4 +794,32 @@ test('`pnpm test` provisions the onnxruntime files that tests read', () => {
     assert.ok(existsSync(new URL(`../vendor/${f}`, import.meta.url)),
       `vendor/${f} is missing — run \`pnpm --filter cubus-web copy-ort\``);
   }
+});
+
+// THE OTHER HALF, and the one the package-level relation above cannot see: CI does not have to go
+// through a manifest script at all.
+//
+// `pnpm --filter cubus-web test:fast` is checked above because `test:fast` is a script. A workflow
+// step that ran `node run-tests.mjs fast` directly, or invoked a script this package does not
+// define, would bypass every hook in the manifest and the relation would stay green. That is not
+// hypothetical: the step that broke was written as a direct tier invocation precisely because the
+// tier split needed one, and the manifest was not consulted.
+test('every web suite CI runs is a script this package provisions', () => {
+  const ci = readFileSync(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const scripts = pkg.scripts ?? {};
+
+  // No workflow step may reach the runner by hand — it has to ask the package, so the hooks apply.
+  assert.ok(!/node\s+(?:\S*\/)?run-tests\.mjs/.test(ci),
+    'a CI step invokes apps/web/run-tests.mjs directly, which bypasses the provisioning hooks in ' +
+      'apps/web/package.json — call the package script instead');
+
+  // Every `--filter cubus-web <script>` CI names must exist here. A renamed script would otherwise
+  // leave CI calling nothing, and `pnpm run` on a missing script is the only thing that would say
+  // so — at which point the tier is gone rather than red for a reason anyone can read.
+  const invoked = [...ci.matchAll(/--filter\s+cubus-web\s+(?:run\s+|exec\s+)?([\w:.-]+)/g)].map((m) => m[1]);
+  assert.ok(invoked.length > 0, 'no cubus-web script invocation found in ci.yml — this check went blind');
+  const missing = [...new Set(invoked)].filter((name) => name !== 'playwright' && !scripts[name]);
+  assert.deepEqual(missing, [],
+    `ci.yml invokes cubus-web scripts that do not exist: ${missing.join(', ')}`);
 });
