@@ -43,7 +43,7 @@ Used under Apache-2.0. Its licence and notice files: [`LICENSE.txt`](#text-a8d80
 Bundled into `vendor/smartcube.js` (the smart-cube protocol layer). Author: Andy Fedotov and Pau Oliva. Source: <https://github.com/xiaolai/smartcube-web-bluetooth>.
 Used under MIT. Its licence and notice files: [`LICENSE.txt`](#text-bd344b1df7d3).
 
-### three 0.185.1 — MIT
+### three 0.186.1 — MIT
 
 Bundled into `vendor/cubus-cube.js` (the cube renderer). Author: mrdoob. Source: <https://github.com/mrdoob/three.js>.
 Used under MIT. Its licence and notice files: [`LICENSE`](#text-e981c93a41a4).
@@ -9840,7 +9840,7 @@ THE SOFTWARE.
 
 ### text-e981c93a41a4
 
-Carried by three 0.185.1 (`LICENSE`).
+Carried by three 0.186.1 (`LICENSE`).
 
 ```text
 The MIT License

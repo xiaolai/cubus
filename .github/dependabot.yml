@@ -20,12 +20,17 @@ updates:
   #
   # `three`, `cubejs`, `onnxruntime-web` and `smartcube-web-bluetooth` are COMPILED INTO the
   # committed bundles and shipped: a bump means rebuilding `apps/web/vendor/`, and it can change what
-  # the app looks like or what the scanner reads. Measured 2026-09-26: `three` 0.185.1 to 0.186.0
-  # moves all 24 renderer appearance goldens (~16,800 pixels past the one-step threshold, worst pixel
-  # 5 of 255). Those goldens live in `apps/web/test/browser/`, which is the FULL tier, and a pull
-  # request runs the fast tier — so grouped with the dev tooling that bump arrives inside a PR
-  # reporting GREEN and turns `main` red on merge. Splitting it out does not add a gate; it makes the
-  # one PR that needs reading with the goldens in hand distinguishable from the eleven that do not.
+  # the app looks like or what the scanner reads. Measured 2026-09-26, `three` 0.185.1 to 0.186.1:
+  # all 27 renderer appearance goldens move, every one of them DARKER by 1.86-1.91 of 255 on the
+  # pixels that shift. Those goldens live in `apps/web/test/browser/`, which is the FULL tier, and a
+  # pull request runs the fast tier — so grouped in with eleven dev-tooling bumps that change arrived
+  # inside a pull request whose checks read GREEN, and `pnpm check` failed 27 cases on the same tree.
+  # Splitting it out adds no gate; it makes the one pull request that has to be read with the goldens
+  # in hand distinguishable from the ones that do not.
+  #
+  # That bump was taken (the shift is upstream's diffuse-BRDF energy-conservation fix, mrdoob/three.js
+  # #33985, and the owner accepted the result), which is exactly why the group stays: the NEXT one
+  # needs the same look, and nothing else here would ask for it.
   - package-ecosystem: npm
     directory: /
     schedule:
