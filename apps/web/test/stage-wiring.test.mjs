@@ -218,7 +218,13 @@ test('the target is drawn, with the free pieces ghosted', () => {
   // ONE PICTURE (2026-09-13): the target takes the Initial State net's place, because the card that
   // held both was drawn over the sheet on the small windows — and the next walk gets the net back.
   assert.match(code, /net\.hidden = Boolean\(aimingAt\);/, 'while a target is shown the Initial State net is not');
-  assert.match(code, /heading\.textContent = t\('Aiming at the %1', aimingAt\.name\)/, 'and the heading says what the picture is');
+  // THE HEADING NAMES THE PICTURE, AND SUPPLIES AN ARTICLE ONLY WHERE THE NAME LACKS ONE. A stage is
+  // named bare ("cross"), a picture brings its own ("The Checkerboard", "a plus on every face"), and
+  // the one template gave "Aiming at the The Checkerboard" (audit, 2026-09-27). Both arms asserted:
+  // matching only the article-free one would pass on code that dropped "the" for every target.
+  assert.match(code, /t\('Aiming at %1', aimingAt\.name\)/, 'a picture is named without an added article');
+  assert.match(code, /t\('Aiming at the %1', aimingAt\.name\)/, 'and a stage keeps the article the template supplies');
+  assert.match(code, /aimingAt\.picture \|\| aimingAt\.sideways/, 'keyed on the same marker the route sentence uses');
   assert.match(code, /if \(oldNet\) oldNet\.hidden = false;/, 'the next walk puts the Initial State back');
   // The renderer has to be able to draw "not fixed" at all.
   assert.match(code, /facelets\[i\] === '\?' \? 'free' : facelets\[i\]/, 'the net must map the unknown mark');

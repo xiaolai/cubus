@@ -25,11 +25,19 @@
 // A press is an ordinary `data-stage` press. The menu does not route, does not touch the walk and
 // does not know what a walk is: `walk-session.js` wires every `[data-stage]` in the screen into one
 // group, so an item here sets `state.stageTarget` and replaces the walk through the same path a chip
-// does, and one-target-at-a-time falls out of the shared group rather than being arranged here. That
-// is also why only SET patterns appear: they are already targets, so every existing router answers
-// them unchanged. `lib/patterns.js` records what the state patterns are still waiting for.
+// does, and one-target-at-a-time falls out of the shared group rather than being arranged here.
+//
+// BOTH KINDS ARE OFFERED. A set pattern selects its TARGET, which the exact engine already answers;
+// a state pattern selects ITSELF, and `stageTargetNow()` resolves it through `DESTINATION_BY_ID` to
+// a picture `lib/pattern-route.js` routes to. The menu cannot tell the difference and does not need
+// to — `dataset.stage` is the only thing it writes.
+//
+// AND THE GROUP'S HANDLER IS ADDED, NOT ASSIGNED, which this module depends on: `wireGroup` used to
+// write `pill.onclick` and so replaced the close-and-focus callback below, leaving the menu open with
+// focus inside it after every choice (audit, 2026-09-27). Both are listeners now.
 
 import { $ } from '../../app-state.js';
+import { settings } from '../../app-settings.js';
 import { netSvg } from '../../cube-flat.js';
 import { t } from '../../i18n.js';
 import { createMenu } from '../../menu-popover.js';
@@ -46,9 +54,10 @@ const THUMB = 72;
  * @param {object} deps `root`, the screen; `signal`, the screen's abort, which every listener
  *   carries so a menu cannot outlive the screen that built it; and `chosen()`, the id that is on —
  *   read as a function because the target changes under this menu without it being rebuilt.
- * @returns {object} `sync()`, which re-ticks the item that is on. The screen calls it after a press
- *   anywhere in the stage group, since choosing a STAGE must untick a pattern and the group's own
- *   painting only knows about `aria-pressed`.
+ * @returns {object} `sync()`, which re-ticks the item that is on — returned for a caller that wants
+ *   to force one, and NOT how it is kept in step: this module watches the group itself with a
+ *   delegated listener, because a menu is not something the walk session should have to know exists.
+ *   The screen discards the return value, and the comment here used to claim it called it.
  */
 export function createPatternMenu({ root, signal, chosen }) {
   const button = $('#patternBtn', root);
@@ -73,16 +82,21 @@ export function createPatternMenu({ root, signal, chosen }) {
     // this module produced. A name is the one field a later row could paste in from anywhere, so it
     // goes in as text and cannot be markup at all, which is stronger than remembering to escape it.
     item.textContent = '';
-    item.insertAdjacentHTML('afterbegin', netSvg(look, { width: THUMB, title: pattern.name }));
+    // THE APP'S OWN COLOURS, because `netSvg` defaults to the muted Western set and a thumbnail is
+    // a picture of the cube in front of the child. On the Japanese scheme the default put yellow
+    // where their cube shows blue — ADR 0001's whole subject, arriving as a menu that disagreed with
+    // the target beside it (audit, 2026-09-27, reproduced on Japanese + classic).
+    item.insertAdjacentHTML('afterbegin', netSvg(look, {
+      width: THUMB, title: pattern.name, palette: settings.palette, scheme: settings.scheme,
+    }));
     const caption = document.createElement('span');
     caption.textContent = pattern.name;
     item.appendChild(caption);
     item.setAttribute('aria-label', pattern.name);
     // THE PRESS IS A STAGE PRESS. `walk-session.js` wires every `[data-stage]` into one group, so
-    // this item retargets the walk exactly as a chip does — and the `onclick` above only closes the
-    // menu, because the group's handler is installed over it afterwards and must be the one that
-    // runs. Set patterns only: `pattern.target` is null for a state pattern, and an item with no
-    // `data-stage` would be a picture that does nothing.
+    // this item retargets the walk exactly as a chip does. BOTH handlers run: the group ADDS a
+    // listener rather than assigning `onclick`, so the close-and-focus above survives it — it used
+    // to be overwritten, which left the menu standing open after every choice.
     // A SET pattern selects its TARGET; a state pattern selects ITSELF, and `stageTargetNow()`
     // resolves the id through `DESTINATION_BY_ID`. Both are `data-stage`, so the walk session's one
     // group wires and paints them together and only one destination can be on.

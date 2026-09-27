@@ -15,9 +15,15 @@
 //             which is what makes it a reward a beginner can actually reach.
 //   'state' — ONE exact cube. Free of tables (§3a's first finding: a target that is one state needs
 //             none of this), but NOT cheap from a scramble: reaching S from c is the distance from
-//             c·S⁻¹ to solved, and c·S⁻¹ is uniform when c is, so it costs about what solving costs.
+//             S⁻¹·c to solved, and S⁻¹·c is uniform when c is, so it costs about what solving costs.
 //             These earn their place by being FAMOUS and SHORT FROM SOLVED (six moves each), not by
 //             being near.
+//             (Written c·S⁻¹ here until 2026-09-27, which is the wrong order and does not name the
+//             cube `lib/pattern-route.js` actually solves. An audit proved it rather than asserting
+//             it: with c = S·R the correct order is one move from solved, and the order written here
+//             was neither solved nor one move away. The argument about cost survives either way —
+//             both are uniform when c is — which is exactly why the error could sit in a comment
+//             next to correct code.)
 //
 // WHY FIVE AND NOT SEVENTY-FIVE. The ledger holds 73 state patterns and 2 set patterns, and the
 // obvious cut — "symmetry order >= 8", the 14 most symmetric — was measured and rejected: those 14
@@ -37,14 +43,16 @@
 // That is a separate decision, and §9.6's rule applies to it exactly as it applied to these five.
 
 import { SOLVED, applyAlg, toFacelets } from './cube-pieces.js';
-import { targetById } from './stage-targets.js';
+import { TARGET_BY_ID, targetById } from './stage-targets.js';
 
 /**
  * The pictures, in the order they are offered.
  *
- * `look` is a full facelet string in the scan frame, straight from the ledger — it goes into
- * `netSvg()` and `<cubus-cube facelets=…>` with no conversion, which is why a state pattern needs no
- * picture derivation the way a target does.
+ * `alg` is what is copied from the ledger. `look` is DERIVED from it below — a full facelet string in
+ * the scan frame, which goes into `netSvg()` and `<cubus-cube facelets=…>` with no conversion, so a
+ * state pattern needs no picture derivation the way a target does. Copying the ledger's own `look`
+ * instead is the trap recorded beside the state patterns: it is a canonical rotation representative
+ * and differs from what the algorithm produces on 68 of the ledger's 73 rows.
  *
  * `target` names a `stage-targets.js` id, and is how a set pattern is answered: the exact engine
  * already routes to it. The picture comes from `targetPicture()`, which draws the free pieces grey.
@@ -59,32 +67,16 @@ const PATTERN_SPECS = [
     id: 'x-every-face', kind: 'set', target: 'x-every-face',
     name: 'an X on every face', offered: true,
   },
-  // ---- state patterns: famous, six moves from solved, and NOT OFFERED YET ------------------------
+  // ---- state patterns: famous, and six moves from solved -----------------------------------------
   //
-  // They are here, complete and drawable, because the route they need is the one thing this file
-  // cannot supply on its own. A set pattern is already a target, so choosing one is a `data-stage`
-  // press and every existing router answers it unchanged. A state pattern is one exact cube, and the
-  // maneuver to it is `solve(compose(inverseOf(S), c))` — VERIFIED against the real engine on four
-  // scrambles, 16, 10, 16 and 16 moves, each landing on the picture exactly. So no new solver is
-  // needed; what is needed is a careful pass through `lastRoute`, which carries plan §9a's
-  // "a wrong route cannot reach the screen" guarantee and its own break-list of tests. Offering them
-  // before that pass would put an unrouted id into the one path that must never yield a wrong route.
+  // OFFERED AND ROUTED since 2026-09-26. A set pattern is already a stage target, so choosing one is
+  // a `data-stage` press every existing router answers unchanged. A state pattern is one exact cube,
+  // and the maneuver to it is whatever solves `compose(inverseOf(S), c)` — so it needs no new engine
+  // either, only its own path: `lib/pattern-route.js` asks the pool through `solveWithinGodsNumber`
+  // and replays the answer through cubejs, and `lib/walk-resolver.js` branches to it BEFORE starting
+  // the whole-cube search, so a refused route fails the walk instead of quietly solving the cube.
   //
-  // `offered: false` is exactly what `six-cross` did for a fortnight, and what the other 70 do now.
-  // The ALGORITHM is what is copied out of `test/fixtures/pattern-ledger.mjs`, and the picture is
-  // computed from it below. That is not tidiness, it is a correctness fix the tests found:
-  //
-  // **The ledger's stored `look` is NOT what its `alg` produces, on 68 of its 73 rows.** The ledger
-  // deduplicates over all 48 symmetries plus inversion (plan §3b), because a picture, its mirror and
-  // its inverse are one pattern to anybody looking — so `look` is the CANONICAL REPRESENTATIVE of a
-  // rotation class while `alg` reaches some other member of that class. Shipping the pair as though
-  // they described one cube draws a target the route does not arrive at: the same picture, the cube
-  // turned. Only five rows coincide, and The Checkerboard is one of them, so a spot check on the
-  // first entry would have said everything was fine.
-  //
-  // Deriving the picture makes the drift unrepresentable rather than merely tested: there is one
-  // fact here, and the cube drawn is by construction the cube routed to. Anyone offering the other
-  // 70 inherits that for free.
+  // The rest of the ledger stays at `offered: false`, which is what this field is for.
   {
     id: 'checkerboard', kind: 'state',
     alg: 'D2 U2 L2 R2 B2 F2', name: 'The Checkerboard', offered: true,
@@ -154,3 +146,21 @@ export const DESTINATION_BY_ID = Object.freeze(
   Object.assign(Object.create(null),
     Object.fromEntries(PATTERNS.filter((p) => p.kind === 'state').map((p) => [p.id, p]))),
 );
+
+/**
+ * `id` as a PICTURE destination — a state pattern, or a target only ever offered as one.
+ *
+ * `screens/cube.js` decides the composition before a walk session exists, so it cannot ask
+ * `stageTargetNow()`. Both lookups, because a SET pattern is selected by its TARGET's id and carries
+ * its marker there (`sideways`), while a state pattern is selected by its own.
+ *
+ * Null rather than a throw: the id arrives from storage and from a dataset, so "not one" is an
+ * ordinary answer, which is also why `targetById` is not used.
+ */
+export function pictureDestination(id) {
+  if (!id) return null;
+  const picture = DESTINATION_BY_ID[id];
+  if (picture) return picture;
+  const target = TARGET_BY_ID[id];
+  return target && target.sideways ? target : null;
+}

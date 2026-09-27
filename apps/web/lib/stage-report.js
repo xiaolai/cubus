@@ -97,6 +97,9 @@ export const STAGE_COPY = Object.freeze({
   wayTo: (name, moves) => t('a way to %1 — %2', name, plural(moves, { one: '%1 move', other: '%1 moves' })),
   /** Already showing it — the picture's own "already there". */
   showing: (name) => t('your cube is already showing %1', name),
+  /** The fallback solved the whole cube instead of reaching the picture. Said, never presented as
+   *  arriving: the article-free name for the reason `wayTo` gives. */
+  overshootTo: (name, moves) => t('couldn’t find a short way to %1; the whole cube in %2', name, moves),
 });
 
 /**
@@ -139,6 +142,12 @@ export function routeSentence(route, target) {
   // engine's `minimal` is the claim. A picture destination has no exact engine and was never there.
   if (target?.picture || target?.sideways) {
     if (route.moves === 0) return STAGE_COPY.showing(name);
+    // OVERSHOOT IS STILL OVERSHOOT. This branch returned before the check below, so a fallback that
+    // had solved the WHOLE CUBE was announced as "a way to a plus on every face — 1 move" (audit,
+    // 2026-09-27, reproduced on SOLVED·R). The set patterns reach the same three-source race every
+    // stage does, and its pool source answers with a whole-cube solution, so the case is live for
+    // them — and a route that did not arrive where the heading says must never read as if it did.
+    if (route.overshoot) return STAGE_COPY.overshootTo(name, route.moves);
     return STAGE_COPY.wayTo(name, route.moves);
   }
   // ZERO IS NOT A LENGTH, it is a different fact. Checked before the claim, so "already there"

@@ -11,7 +11,7 @@
 // therefore ordered and share that one booted app, driving it the way a user would.
 
 import assert from 'node:assert/strict';
-import { isAbsent } from './dom-assert.mjs';
+import { isAbsent, isSame } from './dom-assert.mjs';
 import { test, before } from 'node:test';
 import { readFileSync } from 'node:fs';
 
@@ -556,6 +556,71 @@ test('a solved cube on Home is a cube to look at, not a walk of zero moves', asy
     const net = [...win.document.querySelectorAll('#viewNet .sticker')].map((e) => e.className.split(' ')[1]).join('');
     assert.equal(net, SOLVED_FACELETS, 'the net shows the solved cube');
   } finally { Object.assign(state.cube, prev); }
+});
+
+// A FINISHED CUBE CAN STILL BE TURNED INTO A SHAPE, which is the moment a child most wants one
+// (owner's call, 2026-09-27: "the user may be holding a solved cube and want to turn it into a
+// shape"). The test above pins that a solved cube does not WALK; this pins that it is still offered
+// the pictures, which is a different claim and was missing.
+//
+// Three things, and the middle one is the defect that made the first attempt worse than the bug:
+//
+//   The card exists at all. Shapes used to live only inside the walking composition, and a solved
+//   cube is not walking — so a picture could be chosen only once one had already been chosen.
+//
+//   Choosing one does not put the screen in a rebuild loop. `walking` is "solvable OR a picture is
+//   selected", and TWO places compare eligibility — `compositionGone()` and the live-update path in
+//   this screen. Left comparing `solvable` alone, either decides the composition has gone on every
+//   load: a verify pass reproduced four consecutive rebuilds before its harness stopped it.
+//
+//   And the press reaches something. `wireGroup` lives in the walk session, which is built below
+//   `if (!walking) return`, so the menu's `data-stage` items had no listener on this screen at all.
+test('a solved cube is offered the shapes, and choosing one walks to it without a rebuild loop', async () => {
+  const { state } = await import('../lib/app.js');
+  const prev = { ...state.cube };
+  const prevTarget = state.stageTarget;
+  try {
+    win.location.hash = '#/scramble';
+    await tick();
+    assert.ok(await waitFor(() => win.document.querySelectorAll('#solList .chip-m').length > 0), 'no solver');
+    state.stageTarget = 'solved';
+    Object.assign(state.cube, { facelets: SOLVED_FACELETS, derived: false, setupAlg: '', solution: '', moves: [], stepFacelets: [] });
+    win.location.hash = '#/home';
+    await tick();
+
+    // 1. The way in exists on a cube that is not walking.
+    const card = win.document.querySelector('.shapes-card');
+    assert.ok(card, 'a finished cube is offered no way to make a shape');
+    const button = card.querySelector('#patternBtn');
+    assert.ok(button, 'the shapes card carries no button');
+    assert.ok(!win.document.querySelector('.cols').classList.contains('walking'), 'still not walking yet');
+
+    // 2. The menu opens and offers pictures, drawn rather than named.
+    button.click();
+    await tick();
+    const items = [...win.document.querySelectorAll('.pattern-menu [data-stage]')];
+    assert.ok(items.length >= 5, `the menu offered ${items.length} pictures`);
+    assert.ok(items.every((b) => b.querySelector('svg')), 'a picture was offered as text rather than as a picture');
+
+    // 3. Choosing one walks to it — and the screen settles instead of rebuilding for ever.
+    const checkerboard = items.find((b) => b.dataset.stage === 'checkerboard');
+    assert.ok(checkerboard, 'The Checkerboard was not among the pictures');
+    checkerboard.click();
+    await tick();
+    assert.equal(state.stageTarget, 'checkerboard', 'the press did not take');
+    assert.ok(await waitFor(() => win.document.querySelector('.cols').classList.contains('walking')),
+      'choosing a picture from a solved cube did not open a walk');
+    // THE SCREEN SETTLES. This catches a loop through THIS screen's own live-update path, and it
+    // does NOT catch one through `compositionGone()` — nothing here reports a cube, so that
+    // function never runs, and the assertion below passed with the defect put back. The case that
+    // does catch it is "a solved cube aiming at a picture keeps its composition" in
+    // walk-session.test.mjs, where a load actually reaches it. Said here so the next reader does
+    // not mistake this for the loop guard.
+    const seen = win.document.querySelector('.cols');
+    for (let i = 0; i < 6; i++) await tick();
+    isSame(win.document.querySelector('.cols'), seen,
+      'the screen kept rebuilding itself — the two eligibility expressions disagree');
+  } finally { Object.assign(state.cube, prev); state.stageTarget = prevTarget; }
 });
 
 // The reconnect question on the two screens no case reached (probe, 2026-09-14, before the

@@ -24,18 +24,29 @@ const ASYMMETRIC = Object.freeze({
 });
 
 const parse = (f) => parseFacelets(f);
-/** A stand-in oracle: an INDEPENDENT one is cubejs, and the wiring test uses that. */
-const replay = (facelets, alg) => toFacelets(applyAlg(parseFacelets(facelets), alg));
-/** A solver that actually solves, by construction rather than by searching. */
-const perfectSolve = (relative) => {
-  // The maneuver that solves `relative` is the inverse of whatever produced it.
-  const state = parseFacelets(relative);
-  return toFacelets(inverseOf(state)) === relative ? '' : algThatSolves(state);
-};
-/** Brute force is not needed: the caller knows the alg, so the test hands it back through a closure. */
+/**
+ * The solver, scripted — and it RECORDS WHAT IT WAS ASKED, which is the point.
+ *
+ * The first version ignored its argument entirely, so production could have solved the ORIGINAL
+ * cube instead of the relative one and every case here would still have passed (audit, 2026-09-27).
+ * The whole feature is the transform; a stub that does not look at it tests everything except that.
+ */
 let scripted = null;
-const scriptedSolve = async () => scripted;
-function algThatSolves() { throw new Error('unused'); }
+let asked = [];
+const scriptedSolve = async (relative, opts) => { asked.push({ relative, opts }); return scripted; };
+
+/**
+ * A replay that REFUSES what it cannot read, like the production adapter.
+ *
+ * `apps/web/lib/screens/cube.js` wraps cubejs in a try and answers null on a throw, so a malformed
+ * algorithm reaches `routeToPicture` as "the oracle could not say". The first stub here threw
+ * instead, which meant the malformed cases were testing an exception path production does not have.
+ */
+const replay = (facelets, alg) => {
+  try {
+    return toFacelets(applyAlg(parseFacelets(facelets), alg));
+  } catch { return null; }
+};
 
 test('the shipped state patterns could not catch these mistakes, which is why ASYMMETRIC exists', () => {
   for (const pattern of PATTERNS.filter((p) => p.kind === 'state')) {
@@ -57,6 +68,27 @@ test('the relative cube is the one whose solution is the route, on an asymmetric
     'the relative cube does not have the property the route depends on');
 });
 
+// THE SOLVER IS ASKED ABOUT THE RELATIVE CUBE, AND NOTHING ELSE.
+//
+// The transform is the whole feature, and every other case here would pass if production handed the
+// pool the ORIGINAL cube: the scripted answer reaches the picture either way, because the test
+// supplies it (audit, 2026-09-27). So this asserts the argument, and asserts it against a value
+// computed a second way — the relative cube is the one whose INVERSE state is the route, so solving
+// it must be the same as inverting it.
+test('the pool is asked to solve the relative cube, not the cube in hand', async () => {
+  const start = toFacelets(applyAlg(SOLVED, "L2 D B' R U2"));
+  asked = [];
+  scripted = algFor(start, ASYMMETRIC);
+  await routeToPicture({ pattern: ASYMMETRIC, facelets: start, solve: scriptedSolve, parse, replay });
+  assert.equal(asked.length, 1, 'the pool was asked once');
+  assert.notEqual(asked[0].relative, start, 'the pool was handed the cube in hand, untransformed');
+  assert.equal(asked[0].relative, relativeCube(ASYMMETRIC, start, parse));
+  // And the defining property of what it was handed, checked without the router: the inverse of the
+  // relative cube's state, applied to the cube in hand, is the picture.
+  const undo = inverseOf(parseFacelets(asked[0].relative));
+  assert.equal(toFacelets(compose(parseFacelets(start), undo)), ASYMMETRIC.look);
+});
+
 test('a route is returned only when an independent replay lands exactly on the picture', async () => {
   const start = toFacelets(applyAlg(SOLVED, "L2 D B' R U2"));
   const relative = relativeCube(ASYMMETRIC, start, parse);
@@ -76,7 +108,11 @@ test('a route is returned only when an independent replay lands exactly on the p
 test('a wrong, truncated or malformed algorithm is refused rather than shown', async () => {
   const start = toFacelets(applyAlg(SOLVED, "L2 D B' R U2"));
   const good = algFor(start, ASYMMETRIC);
-  for (const bad of [`${good} R`, good.split(' ').slice(0, -1).join(' '), 'R R R', '']) {
+  // SYNTACTICALLY INVALID ONES TOO. The first list was all well-formed algorithms that simply went
+  // somewhere else, so the refusal path for input the ORACLE cannot read was never exercised — and
+  // production turns that into null rather than a throw (audit, 2026-09-27).
+  for (const bad of [`${good} R`, good.split(' ').slice(0, -1).join(' '), 'R R R', '',
+    'Q2', 'R U <script>', 'M2 U M2', '17', `${good} Z'`]) {
     scripted = bad;
     const route = await routeToPicture({
       pattern: ASYMMETRIC, facelets: start, solve: scriptedSolve, parse, replay,
@@ -116,6 +152,40 @@ test('an aborted walk yields no route and never asks the pool', async () => {
   });
   assert.equal(route, null);
   assert.equal(asked, 0, 'an already-aborted walk still dispatched a search');
+});
+
+// CANCELLATION DURING A SEARCH, which is the case that actually happens: a walk is replaced while
+// the pool is still working. The first version only tested an ALREADY-aborted signal, so removing
+// the post-search abort check passed everything (audit, 2026-09-27). The signal must also REACH the
+// solver, or the abandoned search runs its budget out on a worker nobody is waiting for.
+test('a walk aborted while the search runs is refused, and never replayed', async () => {
+  const ctrl = new AbortController();
+  const start = toFacelets(applyAlg(SOLVED, "L2 D B' R U2"));
+  let release;
+  let replayed = 0;
+  const pending = routeToPicture({
+    pattern: ASYMMETRIC, facelets: start, parse, signal: ctrl.signal,
+    replay: (...a) => { replayed += 1; return replay(...a); },
+    solve: (relative, opts) => { asked.push({ relative, opts }); return new Promise((r) => { release = r; }); },
+  });
+  asked = [];
+  await null; // let the solve be dispatched
+  ctrl.abort();
+  release(algFor(start, ASYMMETRIC)); // a CORRECT answer, arriving too late
+  assert.equal(await pending, null, 'an answer to a superseded walk was accepted');
+  assert.equal(replayed, 0, 'a superseded walk still paid for an oracle replay');
+});
+
+test('the walk\'s signal reaches the solver, so an abandoned search can be called off', async () => {
+  const ctrl = new AbortController();
+  const start = toFacelets(applyAlg(SOLVED, "L2 D B' R U2"));
+  asked = [];
+  scripted = algFor(start, ASYMMETRIC);
+  await routeToPicture({
+    pattern: ASYMMETRIC, facelets: start, solve: scriptedSolve, parse, replay, signal: ctrl.signal,
+  });
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0].opts?.signal, ctrl.signal, 'the search was dispatched with no way to stop it');
 });
 
 test('a search that never answers is a refusal, never a claim about the cube', async () => {

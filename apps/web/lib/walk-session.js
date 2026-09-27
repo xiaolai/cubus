@@ -250,13 +250,19 @@ export function createWalkSession(screen, app) {
    */
   const wireGroup = (key, now, choose) => {
     for (const pill of root.querySelectorAll(`[data-${key}]`)) {
-      pill.onclick = () => {
+      // ADDED, NOT ASSIGNED. `pill.onclick = …` is one slot: the Shapes menu's items are pills of
+      // this group AND carry the menu's own close-and-focus handler, and this ran second and
+      // silently replaced it — choosing a shape retargeted the walk but left the menu standing
+      // open with focus inside it and `aria-expanded="true"` (audit, 2026-09-27, reproduced by
+      // three separate jobs against the real menu). A listener composes where an assignment
+      // overwrites, and the screen's signal takes it away at the same moment as everything else.
+      pill.addEventListener('click', () => {
         const want = pill.dataset[key];
         if (want === now()) return;
         choose(want);
         paintGroup(key, want);
         void loadWalk();
-      };
+      }, { signal });
     }
   };
   // The two objects, and the switch between them (§3).
@@ -486,7 +492,16 @@ export function createWalkSession(screen, app) {
     // branch earns.
     if (scrambling) return false;
     const after = classifyCube();
-    if (after.solvable === walking && after.unsolvable === unsolvable) return false;
+    // JUDGED BY THE SAME RULE THE SCREEN USED, or the screen rebuilds itself for ever. `walking` is
+    // `solvable OR a picture is selected`, because a solved cube has no solve and is still six moves
+    // from The Checkerboard. Comparing it against `solvable` alone meant a screen showing a picture
+    // walk from a solved cube decided its composition had gone on EVERY load — four consecutive
+    // rebuilds, reproduced by a verify pass on 2026-09-27. The two expressions are one rule and have
+    // to stay one; `stageTargetNow()` is how this side reads it without the screen having to pass
+    // anything, which keeps it out of the contract every fake screen implements.
+    const aim = stageTargetNow();
+    const eligible = after.solvable || Boolean(aim && (aim.picture || aim.sideways));
+    if (eligible === walking && after.unsolvable === unsolvable) return false;
     // DEFERRED past any refresh that is already running. `refreshScreen` guards itself with
     // `refreshing`, so calling it from a load that `refreshScreen` ITSELF started is swallowed
     // — and `update()` has already reported success by then, so no rebuild happens at all. A
@@ -575,7 +590,16 @@ export function createWalkSession(screen, app) {
     if (net) net.hidden = Boolean(aimingAt);
     if (!aimingAt) return;
     const heading = root.querySelector('.state-h');
-    if (heading) heading.textContent = t('Aiming at the %1', aimingAt.name);
+    // THE SAME ARTICLE BUG, in the second of its two places. `routeSentence` was fixed for this and
+    // the heading was not, which gave "Aiming at the The Checkerboard" and "Aiming at the a plus on
+    // every face" (audit, 2026-09-27). A stage is named bare — "cross" — so the template supplies
+    // "the"; a picture's name brings its own. Keyed on the same marker the sentence uses, so the
+    // two cannot drift apart again.
+    if (heading) {
+      heading.textContent = aimingAt.picture || aimingAt.sideways
+        ? t('Aiming at %1', aimingAt.name)
+        : t('Aiming at the %1', aimingAt.name);
+    }
     const say = $('#stageAimSay', root);
     // What grey means, and how to hold the cube for the walk under it — named by white,
     // green and position, which are the same on every cube (`holdSentence` says why).

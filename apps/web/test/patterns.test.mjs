@@ -43,6 +43,20 @@ test('every state pattern the app offers is the ledger entry it claims to be', (
 // `lib/patterns.js` computes the picture now, so the two cannot drift. This case guards the property
 // that made that necessary, so nobody "restores" the copy: for a pattern the app offers, the picture
 // must be what the algorithm produces — and it must NOT be assumed equal to the ledger's look.
+// `picture` AND `look` ARE ONE FACT, and nothing said so. Routing verifies against `look` while the
+// target drawing reads `picture`, so replacing every `picture` with solved facelets passed all 77
+// tests — the child would have been shown a target the route was never aiming at (audit, 2026-09-27).
+test('a state pattern\'s picture and its look are the same string, and that is what is drawn', () => {
+  const state = PATTERNS.filter((p) => p.kind === 'state');
+  assert.ok(state.length > 0, 'no state patterns — this check went blind');
+  for (const pattern of state) {
+    assert.equal(pattern.picture, pattern.look,
+      `${pattern.id}: the picture drawn and the picture verified against are different cubes`);
+    assert.equal(targetPicture(pattern), pattern.look,
+      `${pattern.id}: targetPicture does not return the picture the route lands on`);
+  }
+});
+
 test('a state pattern\'s picture is what its algorithm produces, not the ledger\'s canonical look', () => {
   let differed = 0;
   for (const pattern of PATTERNS.filter((p) => p.kind === 'state')) {
@@ -142,12 +156,22 @@ test('offering more is data: every record is complete whether offered or not', (
 test('every offered pattern is described as a way TO it, with no minimality claim', () => {
   for (const pattern of OFFERED_PATTERNS) {
     const destination = pattern.target ?? { name: pattern.name, picture: pattern.look };
-    const said = routeSentence({ moves: 11, minimal: false, overshoot: false }, destination);
-    assert.doesNotMatch(said, /\bback\b/, `${pattern.id}: a picture is not somewhere the cube has been`);
-    assert.doesNotMatch(said, /shortest/, `${pattern.id}: two-phase cannot prove a minimum`);
-    assert.match(said, /a way to /, `${pattern.id}: ${said}`);
-    assert.doesNotMatch(said, /to the (a|an|The) /, `${pattern.id}: doubled article — ${said}`);
-    assert.ok(said.includes(pattern.name), `${pattern.id}: the sentence does not name the picture`);
+    // BOTH MINIMALITY VALUES. A SET pattern is a real target answered by the EXACT engine, so its
+    // route can legitimately arrive with `minimal: true` — and supplying only false meant a mutation
+    // that emitted "shortest" for a shape passed every case (audit, 2026-09-27). The wording is a
+    // property of the DESTINATION, not of how good the answer was.
+    for (const minimal of [false, true]) {
+      const said = routeSentence({ moves: 11, minimal, overshoot: false }, destination);
+      assert.doesNotMatch(said, /\bback\b/, `${pattern.id}: a picture is not somewhere the cube has been`);
+      assert.doesNotMatch(said, /shortest/, `${pattern.id} (minimal=${minimal}): a shape route may not claim a minimum`);
+      assert.match(said, /a way to /, `${pattern.id}: ${said}`);
+      assert.doesNotMatch(said, /to the (a|an|The) /, `${pattern.id}: doubled article — ${said}`);
+      assert.ok(said.includes(pattern.name), `${pattern.id}: the sentence does not name the picture`);
+    }
+    // AND OVERSHOOT IS SAID, never hidden behind the shape's own wording: a fallback that solved the
+    // whole cube did not arrive where the heading says.
+    const over = routeSentence({ moves: 11, minimal: false, overshoot: true }, destination);
+    assert.match(over, /whole cube/, `${pattern.id}: an overshoot read as if it had arrived — ${over}`);
   }
   // AND A STAGE IS UNTOUCHED, which is the half that proves the branch is a branch and not a
   // rewrite: deleting the picture arm must not be invisible here.
