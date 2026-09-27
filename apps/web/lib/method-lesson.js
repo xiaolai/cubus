@@ -23,8 +23,10 @@ import { faceTurnsAlg } from './cube-moves.js';
 import { plural, t } from './i18n.js';
 import { WHITE_UP_STAGES } from './solving-hold.js';
 
-/** The four dials a fine-grained stage name belongs to, and what a learner sees them called. */
-const DIAL_OF = Object.freeze({
+/** The four dials a fine-grained stage name belongs to, and what a learner sees them called.
+ *  Exported for the same reason `SECTION_NAME` is: the Drill catalogue groups the 137 algorithms by
+ *  dial, and a second copy of this mapping would be a second answer to "which stage is this". */
+export const DIAL_OF = Object.freeze({
   cross: 'cross',
   'first-layer': 'pairs',
   'middle-layer': 'pairs',
