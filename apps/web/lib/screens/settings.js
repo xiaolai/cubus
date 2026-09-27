@@ -27,6 +27,12 @@ import { stopAll } from '../sound.js';
 // How the four rungs read on the Settings screen. A rung with no label here would render as
 // "undefined", so solve-tier-wiring.test.mjs checks every TIERS entry has one.
 const TIER_LABEL = { twenty: '≤ 20', nineteen: '≤ 19', eighteen: '≤ 18', shortest: 'shortest' };
+/** The drill clock's row. It STATES ITS COST, the way the prove row does: a drill is a handful of
+ *  turns, so the timer's missing first move is a far larger share of it than of a solve, and the
+ *  number is only ever worth comparing with the same child's own earlier tries. */
+export const DRILL_CLOCK_LABEL = 'Time my drills';
+export const DRILL_CLOCK_BLURB = 'Off, a drill is just practice. On, each try is timed — compare it only with your own earlier tries, never with anyone else';
+
 const TIER_BLURB = {
   twenty: 'Twenty moves or fewer — always possible, and quick. An easy cube still gets its short answer',
   nineteen: 'Nineteen or fewer — a moment longer, and it almost always gets there',
@@ -81,6 +87,11 @@ SCREENS.settings = () => {
           title: PROVE_COPY.settingLabel, blurb: PROVE_COPY.settingBlurb,
           id: 'setToggle-proveMinimum', on: Boolean(settings.proveMinimum), attrs: 'data-toggle="proveMinimum"', label: PROVE_COPY.settingLabel,
         }) : ''}
+        ${switchRow({
+          style: 'padding:13px 0 0;border-top:1px solid var(--line-faint)',
+          title: DRILL_CLOCK_LABEL, blurb: DRILL_CLOCK_BLURB,
+          id: 'setToggle-drillClock', on: Boolean(settings.drillClock), attrs: 'data-toggle="drillClock"', label: DRILL_CLOCK_LABEL,
+        })}
         ${desktopWindow ? `<div class="wrap-row" style="justify-content:space-between;padding:12px 0"><div><div style="font-weight:600">Window</div><div class="sub" style="color:var(--ink-4)">Landscape or portrait — the window takes the shape and keeps it</div></div>
           <div class="wrap-row" style="gap:6px" id="orientationPills">${['landscape', 'portrait'].map((o) => `<button class="pill" id="setOrientation-${o}" data-set-orientation="${o}" aria-pressed="false">${escHtml(t(o))}</button>`).join('')}</div></div>` : ''}
         ${unsavedNote('appearance')}</div>

@@ -249,3 +249,44 @@ test('the bell-only mode makes the SAME chime, note for note, not merely some no
   };
   assert.deepEqual(shape('chime'), shape('voice'), 'the bell differs between the two modes that have one');
 });
+
+// ---- the drill's off-track cue (decision D4 of dev-docs/algorithm-drills-plan.md) ----------------
+//
+// Both sounds above RISE, and both mean something affirmative — a side saved, a cube checked out.
+// A deviation reusing either would make the vocabulary contradictory, so this one is the only
+// falling sound the app makes. The case pins the direction rather than the pitches, because the
+// direction is the claim and the pitches are a choice.
+
+test('the off-track cue falls, where every other sound rises', (t) => {
+  const { made } = audio(t, { state: 'running', unlocked: true });
+  assert.equal(play('off'), true);
+  const off = notesOf(made);
+  assert.equal(off.length, 2, 'the off-track cue is two notes');
+  assert.ok(off[1].hz < off[0].hz, 'the off-track cue rises — it must fall, or it reads as approval');
+  assert.ok(off[1].at > off[0].at, 'its notes are simultaneous rather than one after the other');
+});
+
+test('the off-track cue is not either of the affirmative sounds', (t) => {
+  const { made } = audio(t, { state: 'running', unlocked: true });
+  play('capture');
+  const capture = notesOf(made);
+  play('off');
+  const off = notesOf(made, capture.length);
+  assert.notDeepEqual(off.map((n) => n.hz), capture.map((n) => n.hz), 'the cue is the capture chime');
+  // And it is no LONGER than the affirmative one: an alarm is partly a matter of duration.
+  assert.ok(off.at(-1).at <= capture.at(-1).at + 0.01, 'the cue outlasts the capture chime');
+});
+
+test('the off-track cue obeys the sound setting like every other sound', (t) => {
+  // The shared helper owns the mode and puts it back — written any other way, this case leaks a
+  // setting into whichever test happens to run next, which is the defect its own comment records.
+  const { made } = audio(t, { soundMode: 'off', state: 'running', unlocked: true });
+  assert.equal(play('off'), false, 'the cue sounded with sounds turned off');
+  assert.equal(made.length, 0);
+});
+
+test('the off-track cue sounds on the bell-only setting, where the spoken lines do not', (t) => {
+  const { made } = audio(t, { soundMode: 'chime', state: 'running', unlocked: true });
+  assert.equal(play('off'), true, 'the cue is a bell, so the bell-only setting must keep it');
+  assert.equal(made.length, 2);
+});

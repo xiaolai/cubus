@@ -1032,6 +1032,36 @@ for (const screen of SCREENS) {
   }
 }
 
+// The Drill screen at its WIDEST: every algorithm the app holds, not the learner's eighteen.
+//
+// The loop above opens each screen in its default state, which for Drill is one rung's worth. The
+// list is the whole layout risk here — 137 buttons rather than 18 — and a screen that fits at
+// eighteen tells you nothing about a hundred and thirty-seven (plan item 3.3). Its own case rather
+// than a change to the loop, because only this screen has a control that multiplies its content.
+for (const fixture of FIXTURES) {
+  test(`drill screen, all algorithms shown: ${label(fixture)}`, async () => {
+    const { page, context, errors } = await openAt(fixture, urlFor(fixture, 'drill'));
+    try {
+      await page.waitForSelector('.screen.active');
+      await page.waitForSelector('#scopeAll');
+      await page.click('#scopeAll');
+      await page.waitForFunction(() => document.querySelectorAll('#algGroups .alg-entry').length > 100);
+      const m = await measureScreen(page);
+      assert.deepEqual(errors.map(String), [], 'the page threw');
+      assert.ok(m.overflow.doc <= 0, `the page overflows the viewport by ${m.overflow.doc}px`);
+      assert.ok(m.overflow.screen <= 1, `the screen overflows sideways by ${m.overflow.screen}px`);
+      assert.deepEqual(m.beyond, [], 'drawn beyond the stage');
+      assert.deepEqual(m.collapsed, [], 'a control has no box — squashed by the widened list');
+      if (fixture.touch) {
+        const small = m.controls.filter((c) => c.width < 44 - 0.5 || c.height < 44 - 0.5);
+        assert.deepEqual(small, [], 'touch: controls under 44px once every algorithm is listed');
+      }
+    } finally {
+      await context.close();
+    }
+  });
+}
+
 test('a popover opened on the stage stays inside it', async () => {
   // Scramble, not Home: a fresh Home holds a solved cube, which is a cube to look at and has no
   // speed menu to open. Scramble always walks.

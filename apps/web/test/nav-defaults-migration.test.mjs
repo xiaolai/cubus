@@ -83,3 +83,43 @@ test('every hideable tab the app ships is one the nav knows how to hide', () => 
     assert.ok(hideable.has(id), `${id} is hidden by default but is not in HIDEABLE`);
   }
 });
+
+// ---- publishing the Drill tab (dev-docs/algorithm-drills-plan.md item 4.2) ------------------------
+//
+// WHY THESE ASSERT A NAME. The case above — "the shipped migration hides every default tab on a
+// fresh install" — loops over `DEFAULT_HIDDEN`. Remove an id from that list and it drops out of the
+// loop too, so the check goes green whether or not the tab is actually visible. That is exactly the
+// shape of the gap this feature would have shipped through: changing `DEFAULT_HIDDEN` alone leaves
+// `NAV_ADDED[2]` to put `drill` straight back, and nothing in the old suite could tell.
+
+test('a fresh install SEES the Drill tab', () => {
+  const out = migrateNavDefaults(undefined, DEFAULT_HIDDEN);
+  assert.ok(!out.navHidden.includes('drill'), 'a fresh install still hides Drill');
+  assert.equal(out.navDefaults, NAV_DEFAULTS_VERSION);
+});
+
+test('an install from before any migration sees it too', () => {
+  for (const from of [0, 1, 2]) {
+    assert.ok(!migrateNavDefaults(from, DEFAULT_HIDDEN).navHidden.includes('drill'), `version ${from} hides Drill`);
+  }
+});
+
+test('a deliberate hide survives, whatever the stored version says', () => {
+  // The record cannot tell an inherited default from a choice, which is why no delta removes an id
+  // (decision D5). Someone who hid Drill keeps it hidden and turns it back on in Settings.
+  for (const from of [3, 2, 0, undefined, -1e100, 2.5, 'x']) {
+    const out = migrateNavDefaults(from, ['drill']);
+    assert.ok(out.navHidden.includes('drill'), `version ${JSON.stringify(from)} un-hid a deliberate hide`);
+  }
+});
+
+test('and an install that had Drill visible keeps it visible', () => {
+  for (const from of [3, 2, 0, undefined]) {
+    assert.ok(!migrateNavDefaults(from, []).navHidden.includes('drill'), `version ${JSON.stringify(from)} hid Drill`);
+  }
+});
+
+test('Drill is in neither hiding table, which is what publishing it means', () => {
+  assert.ok(!DEFAULT_HIDDEN.includes('drill'), 'Drill is still a default-hidden tab');
+  assert.ok(HIDEABLE.some(([id]) => id === 'drill'), 'Drill must stay hideable — publishing is not forcing');
+});

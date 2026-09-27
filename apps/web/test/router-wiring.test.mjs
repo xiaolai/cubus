@@ -800,19 +800,22 @@ test('opening Advanced is not remembered', async () => {
   const stored = win.localStorage.getItem('cubusSettings') ?? '';
   assert.ok(!stored.includes('advanced'), `open state must not be persisted, got: ${stored}`);
 
-  // The preference it controls IS saved, which is the distinction being drawn. Drill starts
-  // hidden, so the first click SHOWS it — and the stored hidden list must say so.
-  win.document.querySelector('[data-nav-toggle="drill"]').click();
+  // The preference it controls IS saved, which is the distinction being drawn. The Alg trainer
+  // starts hidden, so the first click SHOWS it — and the stored hidden list must say so. It used to
+  // be Drill; Drill is published now (dev-docs/algorithm-drills-plan.md item 4.2), so it no longer
+  // starts hidden and cannot stand for a tab that does. The subject of this case is the
+  // persistence, never which tab it happens to be demonstrated on.
+  win.document.querySelector('[data-nav-toggle="trainer"]').click();
   await tick();
   const hidden = JSON.parse(win.localStorage.getItem('cubusSettings') ?? '{}').navHidden ?? [];
-  assert.ok(!hidden.includes('drill'), `showing Drill persists, got: ${JSON.stringify(hidden)}`);
-  assert.ok([...win.document.querySelectorAll('#nav [data-nav]')].some((b) => b.dataset.nav === 'drill'));
+  assert.ok(!hidden.includes('trainer'), `showing the trainer persists, got: ${JSON.stringify(hidden)}`);
+  assert.ok([...win.document.querySelectorAll('#nav [data-nav]')].some((b) => b.dataset.nav === 'trainer'));
 
   // Put it back through the UI: clearing localStorage alone would leave the in-memory settings
   // holding a shown entry, and the next test would see a toolbar it did not ask for.
-  win.document.querySelector('[data-nav-toggle="drill"]').click();
+  win.document.querySelector('[data-nav-toggle="trainer"]').click();
   await tick();
-  assert.ok(![...win.document.querySelectorAll('#nav [data-nav]')].some((b) => b.dataset.nav === 'drill'));
+  assert.ok(![...win.document.querySelectorAll('#nav [data-nav]')].some((b) => b.dataset.nav === 'trainer'));
   win.document.dispatchEvent(chord());
   await tick();
   win.localStorage.removeItem('cubusSettings');
@@ -1080,8 +1083,10 @@ test('showing an entry adds it to the toolbar, hiding removes it, and the rest i
   await tick();
   assert.ok(!navIds().includes('lessons'), 'precondition: Lessons starts hidden');
 
-  // Show all three, in the order the toolbar lists them.
-  for (const id of ['trainer', 'drill', 'lessons']) win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
+  // Show the two that start hidden, in the order the toolbar lists them. Drill is NOT among them
+  // any more — it is published (dev-docs/algorithm-drills-plan.md item 4.2) and is already there,
+  // so clicking it would hide it and this case would be testing the opposite of what it says.
+  for (const id of ['trainer', 'lessons']) win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
   await tick();
   assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'trainer', 'drill', 'lessons'], 'shown in toolbar order');
 
@@ -1101,14 +1106,18 @@ test('showing an entry adds it to the toolbar, hiding removes it, and the rest i
   // this file would inherit a toolbar with two extra entries.
   win.location.hash = '#/settings';
   await tick();
-  for (const id of ['trainer', 'drill']) {
+  // Only the trainer: this case SHOWED the trainer and Lessons, and Lessons is already hidden
+  // again above. Drill was never shown by it — it is published now, so it was there from the
+  // start — and clicking it here would HIDE it and hand every later test in this file a toolbar
+  // missing a default tab.
+  for (const id of ['trainer']) {
     win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
     await tick();
   }
   assert.deepEqual(
     navIds().filter((i) => ['trainer', 'drill', 'lessons'].includes(i)),
-    [],
-    'the default toolbar is back before the next test runs',
+    ['drill'],
+    'the default toolbar is back before the next test runs — which now includes Drill',
   );
   win.document.dispatchEvent(chord());
   await tick();
@@ -1137,9 +1146,14 @@ test('the toolbar no longer offers 3D viewer or Smart cube, and Stats is renamed
   assert.ok(!ids.includes('stats'), 'Stats is hidden by default');
   // The placeholder screens are hidden by default IN CODE, not by a stored preference: a wiped
   // localStorage once put all three back in the toolbar. Timer rides on the same rule.
-  for (const id of ['trainer', 'drill', 'lessons', 'timer']) {
+  for (const id of ['trainer', 'lessons', 'timer']) {
     assert.ok(!ids.includes(id), `${id} is hidden by default, whatever storage says`);
   }
+  // And the other direction, named rather than left as an absence: Drill is PUBLISHED, so a wiped
+  // localStorage must show it. Asserted positively because the loop above is over a list — drop an
+  // id from that list and it stops being checked at all, which is exactly how publishing a tab
+  // could otherwise go green while the tab stayed hidden.
+  assert.ok(ids.includes('drill'), 'Drill is published, so a fresh install must show it');
   const labels = [...win.document.querySelectorAll('#nav [data-nav]')].map((b) => b.textContent);
   assert.ok(!labels.some((l) => l.includes('Session stats')), 'and it is not called Session stats');
   // Nothing groups the list any more, so there is no heading left over to point at a screen that
@@ -1196,10 +1210,12 @@ test('drag-to-rotate is off by default, and the toggle reaches the cube as an at
 test('the toolbar is one flat row of tabs, with Settings as its own button', async () => {
   win.location.hash = '#/home';
   await tick();
-  // The default row is the beginner's path and nothing else: Timer and Stats are speedcubing
-  // instruments, Alg trainer, Drill and Lessons are placeholder screens — all five start hidden,
-  // in code, and are one chord away.
-  assert.deepEqual(navLabels(), ['Home', 'Restore', 'Scramble']);
+  // The default row is the beginner's path: Timer and Stats are speedcubing instruments, and Alg
+  // trainer and Lessons are still placeholder screens — those four start hidden, in code, and are
+  // one chord away. DRILL IS NOT among them any more (dev-docs/algorithm-drills-plan.md item 4.2):
+  // it holds every algorithm the app knows and drills a chosen one against a tracked cube, so it
+  // is part of the beginner's path rather than one chord away from it.
+  assert.deepEqual(navLabels(), ['Home', 'Restore', 'Scramble', 'Drill']);
   // Every tab draws a real glyph. icon() falls back to a bare dot for a name it does not know, so
   // a deleted or renamed glyph does not throw — it renders something almost plausible, and in an
   // icons-only row there is no label left to give the game away. Two icons were retired on

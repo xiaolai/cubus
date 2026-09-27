@@ -17,6 +17,13 @@ const SOUNDS = Object.freeze({
   capture: [[659.25, 0], [880, 0.09]],
   // A rising arpeggio, longer and different: "the whole cube checks out".
   done: [[523.25, 0], [659.25, 0.12], [783.99, 0.24], [1046.5, 0.36]],
+  // A drill turn that is not in the algorithm. Decision D4 of
+  // dev-docs/algorithm-drills-plan.md: both sounds above mean something affirmative, so reusing
+  // either for a deviation would make the vocabulary contradictory — and a BUZZER is not what this
+  // app says to an eight-year-old. So: two notes, FALLING and close together, quieter in feel than
+  // `capture` because it is the same length but goes down. Not an alarm, not a rebuke, and not
+  // repeated — `lib/drill-attempt.js` raises it once per excursion, never once per report.
+  off: [[440, 0], [392, 0.09]],
 });
 const NOTE_S = 0.18;
 /** Quiet on purpose: a chime beside a child's ear, not an alarm. */

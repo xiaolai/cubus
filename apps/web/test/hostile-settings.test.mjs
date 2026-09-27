@@ -192,11 +192,21 @@ test('the screens that index a palette draw their colours rather than throwing',
 
   win.location.hash = '#/drill';
   await tick();
-  // The Drill draws a real cube now rather than a colour-well flashcard (plan item 3.2), so what
-  // must survive a hostile palette here is the round: its question and the faces to pick from. The
-  // renderer takes the palette as an ATTRIBUTE and validates it itself.
+  // The Drill opens on the algorithm library now (dev-docs/algorithm-drills-plan.md phase 3), which
+  // draws a real cube for the chosen algorithm's case. What must survive a hostile palette is that
+  // the panel renders at all; the renderer takes the palette as an ATTRIBUTE and validates it.
+  assert.ok(win.document.querySelector('#algMoves')?.textContent, 'the library drew no algorithm');
+  assert.ok(win.document.querySelectorAll('#algGroups .alg-entry').length > 0, 'the library listed nothing');
+
+  // BOTH kinds of drill are probed, because both are still reachable and both index a palette.
+  // Testing only the one the screen happens to open on would leave the other uncovered the day it
+  // stopped being the default — which is exactly what happened to this case.
+  win.document.querySelector('[data-drill-kind="pieces"]').click();
+  await tick();
   assert.ok(win.document.querySelector('#drillAsk')?.textContent, 'drill asked nothing');
   assert.equal(win.document.querySelectorAll('#stage [data-face]').length, 6, 'drill drew no faces to pick');
+  win.document.querySelector('[data-drill-kind="algorithms"]').click();
+  await tick();
 
   win.location.hash = '#/settings';
   await tick();

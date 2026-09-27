@@ -11,6 +11,7 @@ import { settings } from '../app-settings.js';
 import { raiseRung } from '../cube-subject.js';
 import { netPalette } from '../cube-drawing.js';
 import { drillHtml, mountDrill } from './drill/round-play.js';
+import { libraryHtml, mountLibrary } from './drill/library.js';
 import { SCREENS, renderScreen, screenAbort } from '../screen-shell.js';
 
 /** How far along a stage is, in words a learner can act on — never a claim about a thing undone. */
@@ -108,10 +109,41 @@ SCREENS.trainer = () => {
       <div class="num sub" style="margin-top:6px;color:var(--ink-5)">—</div></div>`).join('')}</div></div>`, mount() {} };
 };
 
+/**
+ * The Drill screen: two kinds of practice, and neither replaced the other.
+ *
+ * `algorithms` is the one the Drill tab exists for (dev-docs/algorithm-drills-plan.md phase 3) —
+ * choose one of the algorithms the app holds and perform it, on a tracked cube or on screen.
+ * `pieces` is the recognition drill that was already here and still works: a generated position,
+ * one slot lit, which faces does that piece belong on. They are different activities, so the screen
+ * says which one it is showing rather than stacking both; the algorithm drill is what it opens on.
+ */
+const DRILL_KINDS = Object.freeze([['algorithms', 'Algorithms'], ['pieces', 'Pieces']]);
+let drillKind = 'algorithms';
+
+const kindRow = () => `<div class="wrap-row" role="group" aria-label="${escHtml(t('What to practise'))}" style="flex:none">
+  ${DRILL_KINDS.map(([id, label]) => `<button class="pill ${drillKind === id ? 'on' : ''}" id="drillKind-${id}" data-drill-kind="${id}" aria-pressed="${drillKind === id}">${escHtml(t(label))}</button>`).join('')}
+</div>`;
+
 SCREENS.drill = () => ({
-  html: drillHtml(),
+  html: `<div style="width:100%;height:100%;display:flex;flex-direction:column;gap:12px">
+    ${kindRow()}
+    <div id="drillBody" style="flex:1;min-height:0">${drillKind === 'algorithms' ? libraryHtml() : drillHtml()}</div>
+  </div>`,
   mount(root) {
-    const mounted = mountDrill(root);
+    const signal = screenAbort?.signal;
+    const body = $('#drillBody', root);
+    const mounted = drillKind === 'algorithms' ? mountLibrary(body, { signal }) : mountDrill(body);
+    // The kind is a new COMPOSITION, so it re-enters the screen rather than swapping in place —
+    // and the mount in flight is disposed first, which for the algorithm drill is what releases
+    // the cube's three hook slots.
+    root.addEventListener('click', (e) => {
+      const pick = e.target.closest?.('[data-drill-kind]');
+      if (!pick || pick.dataset.drillKind === drillKind) return;
+      drillKind = pick.dataset.drillKind;
+      mounted.dispose();
+      renderScreen();
+    }, signal ? { signal } : {});
     screenAbort?.signal?.addEventListener('abort', () => mounted.dispose(), { once: true });
   },
 });

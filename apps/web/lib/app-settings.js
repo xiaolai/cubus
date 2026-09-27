@@ -62,6 +62,13 @@ export const DEFAULT_SETTINGS = Object.freeze({
   theme: 'auto', palette: DEFAULT_PALETTE, scheme: 'western', schemeSource: 'default', autosolve: false, cameraId: '',
   navHidden: null, navDefaults: 0, devRandCube: false, language: '', dragRotate: false, solveTier: 'twenty',
   proveMinimum: false, soundMode: SOUND_MODES.chime, devScanView: SCAN_VIEWS.today,
+  // The Drill screen's clock. OFF by default, on `proveMinimum`'s precedent and for a related
+  // reason: a stopwatch turns practice into performance, and this app hides Timer and Stats from a
+  // beginner's tab row on exactly that reasoning (decision D3 of
+  // dev-docs/algorithm-drills-plan.md). A drill rep is 3-14 moves, so its span carries the timer's
+  // documented missing-first-move bias at 10-25% rather than under 1% — which is why the row that
+  // turns it on says what the number can and cannot be compared with.
+  drillClock: false,
   // What the scan says out loud, where a line has been edited in Settings -> Advanced. Keyed by the
   // line's name in lib/screens/scan/spoken.js, which owns the defaults and the repair: this file
   // must not import a screen's module (AGENTS.md, the one-way dependency), so all it promises is
@@ -239,12 +246,16 @@ export const HIDEABLE = [
 /** Hidden unless asked for. Timer and Stats are speedcubing instruments, not part of learning to
  * solve a cube. (Stats used to be hidden because it showed invented numbers; phase 5 replaced
  * every one of them with a computed figure or an em dash, so it is hidden now only because a
- * beginner does not need an ao12 — not because it lies.) Alg trainer, Drill and Lessons are still
- * the other class: representative screens with placeholder content. The default tab row is the beginner's path;
+ * beginner does not need an ao12 — not because it lies.) Alg trainer and Lessons are still
+ * the other class: representative screens with placeholder content. **Drill is no longer among
+ * them** (2026-09-27, dev-docs/algorithm-drills-plan.md item 4.2): it holds every algorithm the app
+ * knows, drills a chosen one against a tracked cube, and says what it measured — so it is published.
+ * Removing it from this list is HALF the change; see `NAV_ADDED` below for the other half, which is
+ * the half that actually decides whether a fresh install sees the tab. The default tab row is the beginner's path;
  * everything else is one chord away. In CODE, not only in a stored preference: the hidden set
  * was once a preference alone, and one wiped localStorage brought five placeholder screens back
  * into the toolbar. Version 2 hides the three once for anyone who already ran the app. */
-export const DEFAULT_HIDDEN = ['timer', 'stats', 'trainer', 'drill', 'lessons', 'course'];
+export const DEFAULT_HIDDEN = ['timer', 'stats', 'trainer', 'lessons', 'course'];
 
 /**
  * What each version ADDED, so a bump applies a delta rather than the whole set.
@@ -256,7 +267,18 @@ export const DEFAULT_HIDDEN = ['timer', 'stats', 'trainer', 'drill', 'lessons', 
  * back". A delta is what makes that sentence true for every version after the first.
  */
 const NAV_ADDED = Object.freeze({
-  2: ['timer', 'stats', 'trainer', 'drill', 'lessons'],
+  // `drill` was here until 2026-09-27 and its removal is what publishes the tab. Changing
+  // `DEFAULT_HIDDEN` alone does NOTHING, including for a fresh install: a fresh record has no
+  // `navDefaults`, so `from` is 0, migration 2 runs, and it would put `drill` straight back.
+  // Measured before the change, and `nav-defaults-migration.test.mjs` now asserts Drill's
+  // VISIBILITY by name — the older case loops over `DEFAULT_HIDDEN` itself, so removing an id from
+  // that list also removes it from the check, and the whole thing would have gone green while the
+  // tab stayed hidden.
+  //
+  // An existing install that has Drill hidden KEEPS it hidden and turns it on in Settings. That is
+  // decision D5, and the reason is that this record cannot tell an inherited default from a
+  // deliberate hide — so a delta that removed an id could not avoid overriding somebody's choice.
+  2: ['timer', 'stats', 'trainer', 'lessons'],
   3: ['course'],
 });
 export const NAV_DEFAULTS_VERSION = 3;
