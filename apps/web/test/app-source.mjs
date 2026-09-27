@@ -76,7 +76,7 @@ export const LIBRARY_SOURCES = Object.freeze([
   'lib/cube-orientation.js', 'lib/cube-pieces.js', 'lib/cube-questions.js',
   'lib/cube-reconnect.js', 'lib/cube-registry.js', 'lib/cube-report.js', 'lib/cube-selfcheck.js',
   'lib/cube-session.js', 'lib/cube-trust.js', 'lib/cube-view.js', 'lib/cubejs-entry.js',
-  'lib/course-source.js',
+  'lib/course-source.js', 'lib/drill-attempt.js',
   'lib/data/case-tables.js', 'lib/drill-rounds.js', 'lib/element-writes.js', 'lib/episode-audio.js', 'lib/host.js', 'lib/i18n.js', 'lib/lesson-format.js',
   'lib/lesson-player.js', 'lib/lesson-schedule.js', 'lib/method-ladder.js', 'lib/method-lesson.js',
   'lib/method-solver.js', 'lib/methods/cross.js', 'lib/methods/engine.js', 'lib/methods/index.js',
