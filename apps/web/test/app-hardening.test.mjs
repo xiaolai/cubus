@@ -339,7 +339,7 @@ const DISCLAIMER = {
   // carries its own note. The recognition drill's note is still real and still checked — by
   // `the Drill disclaims only the half that does not work`, which drives BOTH kinds rather than
   // whichever one the screen happens to open on.
-  drill: /nothing is saved between visits/,
+  drill: /nothing is saved between visits/i,
 };
 
 /**
@@ -470,11 +470,16 @@ test('the Drill disclaims only the half that does not work — on BOTH of its ki
   };
 
   await goDrillKind('algorithms');
-  const library = all('#stage .card').find((c) => /nothing is saved between visits/.test(c.textContent));
+  const library = all('#stage .card').find((c) => /nothing is saved between visits/i.test(c.textContent));
   assert.ok(library, 'precondition: the algorithm library says what it does not keep');
   disclaims(library, 'the algorithm library');
-  assert.match(library.textContent, /Practice is followed once your cube has been scanned/,
-    'it must say which half does work');
+  // WHICH HALF DOES WORK, and the precondition on it. The wording changed when the note was rewritten
+  // for a first-time reader — "Practice is followed" told nobody who was following what — but the
+  // claim being checked is the same one: the note must name tracking AND the scan it depends on, and
+  // must not promise tracking on connection alone.
+  assert.match(library.textContent, /follows your turns/, 'it must say which half does work');
+  assert.match(library.textContent, /scanned and is being tracked/, 'it must name the precondition that really applies');
+  assert.doesNotMatch(library.textContent, /when your cube is connected/, 'it promises tracking on connection alone');
 
   await goDrillKind('pieces');
   const rounds = all('#stage .card').find((c) => /Results are not saved/.test(c.textContent));

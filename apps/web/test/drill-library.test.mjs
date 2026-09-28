@@ -9,8 +9,11 @@ import { before, test } from 'node:test';
 
 import { Window } from 'happy-dom';
 
-import { ALG_ENTRIES, entriesForRungs } from '../lib/alg-catalogue.js';
-import { LIBRARY_NOTE, SCOPES, caseWorthSaying, demoScript, drillLibraryHtml, drillPageHtml, effectWorthSaying, entriesForScope, groupsFor, libraryHtml, OWNED_VIEW, orderLine, statusFor, timingLine } from '../lib/screens/drill/library.js';
+import { ALG_ENTRIES, entriesForRungs, entryById } from '../lib/alg-catalogue.js';
+import { SCOPES, caseWorthSaying, demoScript, drillLibraryHtml, drillPageHtml, effectWorthSaying, entriesForScope, groupsFor, libraryHtml, libraryNote, OWNED_VIEW, setupMoves, statusFor, timingLine, turnWords } from '../lib/screens/drill/library.js';
+import { SOLVED, applyAlg, invert, movesOf, toFacelets } from '../lib/cube-pieces.js';
+import { turnFacelets } from '../lib/cube-orientation.js';
+import { settings } from '../lib/app-settings.js';
 import { caseNameOf } from '../lib/method-lesson.js';
 import { CUBE_VIEW, VIEW_ATTRS } from '../lib/cube-view.js';
 import { newCube } from '../lib/cube-drawing.js';
@@ -87,7 +90,15 @@ test('the detail names what the algorithm does, how to hold it, and its order', 
   assert.ok(out.includes(sune.shown), `the moves are not shown: ${sune.shown}`);
   assert.ok(out.includes(sune.label), 'the computed label is not shown');
   assert.match(out, /white underneath and green at the back/, 'the hold is not said');
-  assert.match(out, /Do it 6 times/, 'the order fact is missing');
+  // THE ORDER LINE IS GONE, by decision. "Do it 6 times and the cube comes back" is a real trainer's
+  // technique, and as a loose sentence beside a numbered drill it was a SECOND, unnumbered route to
+  // practising the same algorithm — so the reader's question became "which of these am I doing?",
+  // which is the confusion the numbering exists to remove. A first-time reader read it as an
+  // instruction and asked why they would want a scrambled cube back (naive-user read, 2026-09-28).
+  // The set-up route replaces it and is universal: 137 of 137 entries, against 92 where repeating is
+  // under sixty turns.
+  assert.ok(!/times and the cube comes back/.test(out), 'the order line is back beside the numbered drill');
+  assert.match(out, /Set the case up with these turns/, 'the route that replaced it is missing');
 });
 
 test('a white-up stage says the other hold', () => {
@@ -96,9 +107,95 @@ test('a white-up stage says the other hold', () => {
 });
 
 
-test('the order line is computed, never a stored sentence', () => {
-  assert.equal(orderLine(3), 'Do it 3 times and the cube comes back.');
-  assert.equal(orderLine(72), 'Do it 72 times and the cube comes back.');
+test('the setup turns put a solved cube into the case the algorithm solves — all 137', () => {
+  // THE STEP THE PAGE NEVER HAD. A drill needs a starting position, and without one the page was an
+  // animation next to a list of letters: a first-time reader asked for "a starting-position picture
+  // and instructions for getting my real cube into that position" and there were neither
+  // (naive-user read, 2026-09-28).
+  //
+  // `invert(entry.shown)` and never `invert(entry.alg)`: `shown` is already renamed into the hold the
+  // drill is performed in, so its inverse is in that same hold. Inverting `alg` would print
+  // method-frame letters under a scan-frame hold — ADR 0004's trap, and a child turning the wrong face.
+  const SOLVED_F = toFacelets(SOLVED);
+  let checked = 0;
+  for (const e of ALG_ENTRIES) {
+    const setup = setupMoves(e);
+    assert.equal(setup, invert(e.shown), `${e.id}: the setup is not the inverse of the turns shown`);
+    const caseState = toFacelets(applyAlg(SOLVED, setup));
+    assert.notEqual(caseState, SOLVED_F, `${e.id}: the setup leaves the cube solved — there is no case to solve`);
+    assert.equal(toFacelets(applyAlg(applyAlg(SOLVED, setup), e.shown)), SOLVED_F,
+      `${e.id}: setting up and then solving does not return to solved — the check the page promises is false`);
+    checked += 1;
+  }
+  assert.equal(checked, 137);
+});
+
+test('and that case is the very one the screen draws, up to how the two frames name it', () => {
+  // The picture and the instruction must be about ONE arrangement. The twin is built from
+  // `entry.setup`, which is scan-frame facelets; the setup TURNS are hold-frame. They therefore
+  // differ by a relabelling and not by a turn — which is the distinction that makes this checkable
+  // rather than a hope. Compared with `turnFacelets` (a relabel), never `heldFacelets` (a view):
+  // using the view on both sides reported 132 of 137 failing and was the checker being wrong.
+  const FACES = 'URFDLB';
+  let matched = 0;
+  for (const e of ALG_ENTRIES) {
+    const reached = toFacelets(applyAlg(SOLVED, setupMoves(e)));
+    let same = false;
+    for (const u of FACES) {
+      for (const f of FACES) {
+        let t;
+        try { t = turnFacelets(reached, u, f); } catch { continue; }
+        if (t === e.setup) { same = true; break; }
+      }
+      if (same) break;
+    }
+    assert.ok(same, `${e.id}: the setup turns reach an arrangement the screen does not draw`);
+    matched += 1;
+  }
+  assert.equal(matched, 137);
+});
+
+test('a turn is described by its POSITION, never by a colour, and an unknown one throws', () => {
+  // ADR 0004: a face letter is a position in the hold in force. "the red face" would be false under
+  // the other colour scheme and false again the moment the cube is held differently.
+  assert.equal(turnWords('R'), 'right-hand face, a quarter turn clockwise');
+  assert.equal(turnWords("R'"), 'right-hand face, a quarter turn anticlockwise');
+  assert.equal(turnWords('U2'), 'top face, a half turn');
+  assert.equal(turnWords('D'), 'bottom face, a quarter turn clockwise');
+  for (const m of ['R', 'L', 'U', 'D', 'F', 'B']) {
+    assert.ok(!/(white|yellow|green|blue|red|orange)/i.test(turnWords(m)), `${m} was described by a colour`);
+  }
+  // Every token the catalogue can put on a chip has words.
+  const tokens = new Set();
+  for (const e of ALG_ENTRIES) {
+    for (const m of movesOf(e.shown)) tokens.add(m);
+    for (const m of movesOf(setupMoves(e))) tokens.add(m);
+  }
+  assert.equal(tokens.size, 18, 'the chip vocabulary changed');
+  for (const m of tokens) assert.ok(turnWords(m).length > 0, m);
+  // A slice or a whole-cube turn must not be silently mis-described.
+  for (const bad of ['M', "M'", 'x', 'y2', 'Rw', '', 'R3']) {
+    assert.throws(() => turnWords(bad), /no words for the turn/, `"${bad}" was given words`);
+  }
+});
+
+test('the drill page is a numbered procedure: hold, set up, solve, and the check', () => {
+  // What a first-time reader could not answer: am I meant to watch this, or do it? Three numbered
+  // steps answer it structurally, which no amount of rewording a loose paragraph does.
+  const html = drillPageHtml(entryById('sune'));
+  assert.match(html, /<ol class="drill-steps"/, 'the steps are not a list — nothing says this is a procedure');
+  assert.equal((html.match(/<li>/g) ?? []).length, 3, 'a drill has three steps: hold it, set it up, solve it');
+  assert.match(html, /Start from a solved cube\./, 'step 1 does not say where to start');
+  assert.match(html, /white underneath and green at the back/, 'step 1 does not say how to hold it');
+  assert.match(html, /Set the case up with these turns/, 'step 2 does not exist');
+  assert.match(html, /id="algSetup"/, 'the setup turns are not on the page');
+  assert.match(html, /Now solve it/, 'step 3 does not exist');
+  assert.match(html, /Your cube ends solved\. That is how you know you got it right\./, 'the check is not stated');
+  // The setup row is NOT pressable: it is an instruction, and a chip that looks like a button and
+  // does nothing is worse than either.
+  const setupRow = html.slice(html.indexOf('id="algSetup"'));
+  const row = setupRow.slice(0, setupRow.indexOf('</div>'));
+  assert.ok(!/<button/.test(row), 'a setup turn is a button — pressing it does nothing');
 });
 
 // ---- 3.3 what the screen may say ------------------------------------------------------------------
@@ -120,12 +217,35 @@ test('losing track never says a turn was wrong, and a wrong turn never says trac
   assert.ok(!/lost track/i.test(off), `a wrong turn was reported as lost tracking: "${off}"`);
 });
 
-test('the note claims no saved results, and no more tracking than happens', () => {
-  assert.match(LIBRARY_NOTE, /nothing is saved between visits/);
-  // "when your cube is connected" promised more than the code applies: a connected cube that is
-  // not trusted is not followed, and trust is the condition the attempt actually checks.
-  assert.ok(!/when your cube is connected/.test(LIBRARY_NOTE), 'the note promises tracking on connection alone');
-  assert.match(LIBRARY_NOTE, /scanned/, 'the note must name the precondition that really applies');
+test('the note is true in the state it is read in, and promises no more tracking than happens', () => {
+  // IT USED TO OPEN "Every algorithm the app knows" IN BOTH STATES, and the default state shows 18
+  // of 137 — read straight past the unpressed "Show all algorithms" button, a first-time reader could
+  // not tell which claim was true (naive-user read, 2026-09-28).
+  const rung = libraryNote('rung');
+  const all = libraryNote('all');
+  assert.notEqual(rung, all, 'one sentence cannot describe both a filtered list and the whole of it');
+  assert.ok(!/Every algorithm the app knows/.test(rung), 'the filtered list claims to be everything');
+  assert.match(all, /Every algorithm the app knows/);
+  assert.match(rung, /Show all algorithms/, 'the filtered note does not say where the rest are');
+  for (const note of [rung, all]) {
+    assert.match(note, /nothing is saved between visits/i);
+    // "when your cube is connected" promised more than the code applies: a connected cube that is
+    // not trusted is not followed, and trust is the condition the attempt actually checks.
+    assert.ok(!/when your cube is connected/.test(note), 'the note promises tracking on connection alone');
+    assert.match(note, /scanned/, 'the note must name the precondition that really applies');
+    // And it must answer the question a reader arrives with: watch, or do?
+    assert.match(note, /set the case up and how to solve it/, 'the note does not say what you will be shown');
+  }
+});
+
+test('the number the note claims is the number the list shows', () => {
+  for (const scope of ['rung', 'all']) {
+    const shown = entriesForScope(scope, settings.rungs).length;
+    const html = libraryHtml({ scope, rungs: settings.rungs });
+    assert.match(html, new RegExp(`${shown} algorithms?`), `${scope}: the count shown is not ${shown}`);
+    if (scope === 'all') assert.equal(shown, ALG_ENTRIES.length, 'showing all is not all of them');
+    else assert.ok(shown < ALG_ENTRIES.length, 'the filtered scope is not filtered');
+  }
 });
 
 test('a measured time is shown, and a refused one says why', () => {
@@ -210,7 +330,9 @@ test('the drill page carries the cube, the transport and the turns', async () =>
   }
   // ONE CHIP PER TURN, which is what a learner reads position off.
   assert.equal($$('#algMoves .chip-m').length, 7, 'the turns are not shown as chips');
-  assert.match($$('#algAt')[0].textContent, /0 \/ 7/, 'the step count does not start at zero');
+  // A COUNTER NEEDS ITS NOUN. "0 / 7" was read as possibly moves played, possibly moves done
+  // correctly — nothing labelled it (naive-user read, 2026-09-28).
+  assert.equal($$('#algAt')[0].textContent, 'turn 0 of 7', 'the turn counter does not name what it counts');
 });
 
 test('a generated case opens a drill led by its picture, not by a missing name', async () => {

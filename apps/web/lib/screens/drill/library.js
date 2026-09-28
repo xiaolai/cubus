@@ -21,7 +21,7 @@
 // none are (decision D1 — the previous time for the same algorithm lives in memory for the session
 // and goes when the screen does).
 import { $, escHtml, icon } from '../../app-state.js';
-import { movesOf } from '../../cube-pieces.js';
+import { invert, movesOf } from '../../cube-pieces.js';
 import { ALG_ENTRIES, entriesForRungs } from '../../alg-catalogue.js';
 import { SECTION_NAME, caseNameOf, purposeFor } from '../../method-lesson.js';
 import { DETAIL_PICTURE, LIST_PICTURE, caseTitle, lastLayer, pictureKind, pictureSvg, readByPicture } from '../../alg-picture.js';
@@ -39,9 +39,21 @@ import { state } from '../../app-state.js';
 import { play } from '../../sound.js';
 import { plural, t } from '../../i18n.js';
 
-/** What this screen still cannot claim. Narrower than the recognition drill's, because more of it
- *  is now measured — and it keeps the one thing that is not: nothing is kept between visits. */
-export const LIBRARY_NOTE = 'Every algorithm the app knows. Practice is followed once your cube has been scanned and is being tracked; nothing is saved between visits.';
+/**
+ * What this list is, what you do with it, and what it cannot claim — in that order.
+ *
+ * SCOPE-DEPENDENT, because the old single sentence opened "Every algorithm the app knows" while the
+ * default filter shows 18 of 137. A first-time reader put that straight next to the unpressed "Show
+ * all algorithms" button and could not tell which was true (naive-user read, 2026-09-28). A sentence
+ * that is false in the state it is usually read in is the thing "never invent data" is about.
+ *
+ * It also answers the question that reader could not answer at all — am I meant to watch this, or do
+ * it? — because the drill page's own answer arrives too late if the list has already lost them.
+ */
+export const libraryNote = (scope) => t('%1 Choose one and the next screen shows how to set the case up and how to solve it — and follows your turns, if your cube has been scanned and is being tracked. Nothing is saved between visits.',
+  scope === 'all'
+    ? t('Every algorithm the app knows.')
+    : t('The algorithms your lessons have reached so far — press Show all algorithms for the rest.'));
 
 /**
  * The view attributes this screen owns, which a script may not write.
@@ -65,7 +77,36 @@ const caseSubject = (facelets) => Object.freeze({
 });
 
 /** The order fact, which is the one thing about an algorithm a child can check with their own hands. */
-export const orderLine = (order) => t('Do it %1 times and the cube comes back.', order);
+/**
+ * The turns that put a solved cube INTO this case — the step the page never had.
+ *
+ * `invert(entry.shown)`, and `shown` rather than `alg` is the whole of the correctness: `shown` is
+ * the algorithm already renamed into the hold this drill is performed in, so its inverse is in that
+ * same hold and needs no frame conversion. Taking the inverse of `alg` instead would print method-
+ * frame letters under a scan-frame hold, which is ADR 0004's trap and would have a child turning
+ * the wrong face.
+ *
+ * Verified over all 137 entries: doing these turns from solved reaches the arrangement `shown`
+ * solves, and it is the same arrangement the twin on screen is drawn in (`drill-library.test.mjs`).
+ */
+export const setupMoves = (entry) => invert(entry.shown);
+
+/** A face letter is a POSITION in the hold in force, never a colour (ADR 0004) — so the words are
+ *  positional too. Throws on anything that is not a plain face turn: the catalogue contains only
+ *  the 18, and a slice or a whole-cube turn reaching here would be a silent mis-description. */
+const FACE_WORD = Object.freeze({ R: 'right-hand', L: 'left-hand', U: 'top', D: 'bottom', F: 'front', B: 'back' });
+export function turnWords(move) {
+  const face = FACE_WORD[move[0]];
+  if (!face || !/^[RLUDFB](2|')?$/.test(move)) throw new Error(`drill: no words for the turn "${move}"`);
+  const how = move.endsWith('2') ? t('a half turn')
+    : move.endsWith("'") ? t('a quarter turn anticlockwise')
+      : t('a quarter turn clockwise');
+  return t('%1 face, %2', t(face), how);
+}
+
+/** The alphabet, once, on the one screen where a learner reads turns off a page. Positional, for
+ *  `turnWords`' reason. */
+export const NOTATION_LINE = 'Each letter is a face in the hold above — R right, L left, U top, D bottom, F front, B back — turned a quarter clockwise. An apostrophe means anticlockwise, a 2 means half a turn.';
 
 /** The two scopes, and what each is called. */
 export const SCOPES = Object.freeze({
@@ -111,7 +152,14 @@ const entryCard = (e) => {
   const face = name
     ? `<div style="font-weight:600">${escHtml(name)}</div>`
     : `<div style="display:flex;justify-content:center">${pictureKind(e) === 'top' ? pictureSvg(e, { palette: settings.palette, scheme: settings.scheme, width: LIST_PICTURE }) : ''}</div>`;
+  // A NAME, THEN ITS TURNS. The two lines are siblings inside the button, so the accessible name was
+  // their text run together — "sune R U R' U R U2 R'" — which a screen reader reads as one phrase.
+  // Named explicitly, and the picture cases say so rather than reading out as bare turns.
+  const spoken = name
+    ? t('%1 — %2 turns: %3', name, movesOf(e.shown).length, e.shown)
+    : t('A case shown as a picture — %1 turns: %2', movesOf(e.shown).length, e.shown);
   return `<button class="card alg-entry" data-alg="${escHtml(e.id)}" id="alg-${escHtml(e.id)}"
+    aria-label="${escHtml(spoken)}"
     style="text-align:center;cursor:pointer;display:flex;flex-direction:column;gap:6px;justify-content:center">
     ${face}
     <div class="num sub" style="font-size:var(--fs-caption);color:var(--ink-4);line-height:1.35">${escHtml(e.shown)}</div>
@@ -136,7 +184,7 @@ export function libraryHtml({ scope = 'rung', rungs = settings.rungs } = {}) {
   <div class="col">
     <div class="card" style="padding:12px 16px;display:flex;gap:10px;align-items:center">
       <span class="ico" style="color:var(--ink-5);flex:none">${icon('book', 16)}</span>
-      <div class="sub" id="libraryNote" style="color:var(--ink-3);line-height:1.5">${escHtml(t(LIBRARY_NOTE))}</div>
+      <div class="sub" id="libraryNote" style="color:var(--ink-3);line-height:1.5">${escHtml(libraryNote(scope))}</div>
     </div>
     <div class="wrap-row" role="group" aria-label="${escHtml(t('How many algorithms'))}">
       <button class="pill" id="scopeRung" aria-pressed="${scope === 'rung'}">${escHtml(t(SCOPES.rung))}</button>
@@ -221,6 +269,7 @@ export function drillPageHtml(entry, { status = '', timing = null } = {}) {
   const name = caseNameOf(entry.id);
   const heading = name ? name.charAt(0).toUpperCase() + name.slice(1) : '';
   const moves = movesOf(entry.shown);
+  const setup = movesOf(setupMoves(entry));
   const picture = readByPicture(entry)
     ? `<div id="algCase" style="display:flex;justify-content:center;padding:2px 0 6px">${pictureSvg(entry, { palette: settings.palette, scheme: settings.scheme, width: DETAIL_PICTURE })}</div>`
     : '';
@@ -229,13 +278,19 @@ export function drillPageHtml(entry, { status = '', timing = null } = {}) {
       <div style="flex:1;min-height:0;width:100%"><div class="cube-slot" id="algCube" style="height:100%"></div></div>
     </div>
     <div class="card aux">
+      <!-- HEADED, so the cube above is unmistakably a DEMONSTRATION. Unlabelled, a reader could not
+           tell whether the on-screen cube was showing them the turns or mirroring the one in their
+           hands, and every control read as ambiguous because of it. "Show me" also says whose turns
+           the counter counts: the demonstration's, not theirs.
+           NO BACKTICK IN THIS COMMENT - it is inside the screen's html template literal. -->
+      <div class="eyebrow" id="algShowMe">${escHtml(t('SHOW ME THE TURNS'))}</div>
       <div class="transport">
         <button class="tbtn" id="algBack" title="${escHtml(t('One turn back'))}" aria-label="${escHtml(t('One turn back'))}">${icon('chevron-left', 20)}</button>
-        <button class="tbtn" id="algReplay" title="${escHtml(t('Start again'))}" aria-label="${escHtml(t('Start again'))}">${icon('refresh', 18)}</button>
+        <button class="tbtn" id="algReplay" title="${escHtml(t('Start again'))}" aria-label="${escHtml(t('Start again: the demonstration from its first turn, and a fresh attempt on your own cube'))}">${icon('refresh', 18)}</button>
         <button class="tbtn" id="algNext" title="${escHtml(t('One turn on'))}" aria-label="${escHtml(t('One turn on'))}">${icon('chevron-right', 20)}</button>
-        <button class="tbtn primary" id="algPlay" title="${escHtml(t('Watch it'))}" aria-label="${escHtml(t('Watch it'))}" aria-pressed="false">${icon('play', 18)}</button>
+        <button class="tbtn primary" id="algPlay" title="${escHtml(t('Watch it'))}" aria-label="${escHtml(t('Watch all the turns'))}" aria-pressed="false">${icon('play', 18)}</button>
         <div class="progress" title="${escHtml(t('How far through the algorithm you are'))}"><span id="algProg"></span></div>
-        <span class="num" id="algAt" role="status" aria-live="polite" style="color:var(--ink-4);min-width:56px;text-align:right">0 / ${moves.length}</span>
+        <span class="num" id="algAt" role="status" aria-live="polite" style="color:var(--ink-4);min-width:96px;text-align:right">${escHtml(t('turn %1 of %2', 0, moves.length))}</span>
       </div>
     </div>
     <div class="aside">
@@ -250,15 +305,34 @@ export function drillPageHtml(entry, { status = '', timing = null } = {}) {
         <div class="eyebrow">${escHtml(SECTION_NAME[entry.dial]())}</div>
         ${heading ? `<div class="alg-title" style="font-size:var(--fs-title);font-weight:600">${escHtml(heading)}</div>` : ''}
         ${picture}
-        <div class="sub" id="algHold" style="color:var(--ink-4)">${escHtml(holdSentence(holdForStage(entry.stage)))}</div>
+        <!-- CAPTIONED, and under the picture on purpose. Loose in the card below, this sentence sat
+             beside the goal sentence with nothing saying which was which, and a reader could not tell
+             whether it described the cube now, the cube after, or the cube they were aiming for. -->
+        ${caseWorthSaying(entry) ? `<div class="sub" id="algCaseSays" style="color:var(--ink-3);line-height:1.4">${escHtml(t('Your cube looks like this after step 2: %1.', caseTitle(entry)))}</div>` : ''}
+        ${effectWorthSaying(entry) ? `<div class="sub" id="algLabel" style="color:var(--ink-3);line-height:1.4">${escHtml(t('This algorithm %1.', entry.label))}</div>` : ''}
       </div>
+      <!-- A DRILL IS NUMBERED. It used to be nine unlabelled facts, and a first-time reader could
+           not tell whether the page wanted them to watch something or to do something with the cube
+           in their hands - the single thing it most needed to say (naive-user read, 2026-09-28). The
+           three steps are the drill a trainer actually sets: get into the case, solve it, and let the
+           cube check you. Step 1 and step 3 were both computable all along and neither was on screen.
+           NO BACKTICK IN THIS COMMENT - it is inside the screen's html template literal. -->
       <div class="card sheet">
-        <div class="sub" id="algPurpose" style="line-height:1.5">${escHtml(purposeFor(entry))}</div>
-        ${caseWorthSaying(entry) ? `<div class="sub" id="algCaseSays" style="color:var(--ink-3);line-height:1.5">${escHtml(caseTitle(entry))}.</div>` : ''}
-        ${effectWorthSaying(entry) ? `<div class="sub" id="algLabel" style="color:var(--ink-3);line-height:1.5">${escHtml(entry.label)}.</div>` : ''}
-        ${lastLayer(entry) ? `<div class="sub" id="algOrder" style="color:var(--ink-4)">${escHtml(orderLine(entry.effect.order))}</div>` : ''}
-        <div class="eyebrow">${escHtml(t('THE TURNS'))}</div>
-        <div class="wrap-row" id="algMoves">${moves.map((m, k) => `<button class="chip-m" data-i="${k}" title="${escHtml(t('Jump to this move'))}">${escHtml(m)}</button>`).join('')}</div>
+        <div class="eyebrow">${escHtml(t('PRACTISE IT'))}</div>
+        <ol class="drill-steps" id="algSteps">
+          <li><span class="sub" id="algStep1">${escHtml(t('Start from a solved cube. %1', holdSentence(holdForStage(entry.stage))))}</span></li>
+          <li>
+            <span class="sub">${escHtml(t('Set the case up with these turns:'))}</span>
+            <div class="wrap-row" id="algSetup">${setup.map((m) => `<span class="chip-m flat" aria-label="${escHtml(turnWords(m))}">${escHtml(m)}</span>`).join('')}</div>
+          </li>
+          <li>
+            <span class="sub">${escHtml(t('Now solve it:'))}</span>
+            <div class="wrap-row" id="algMoves">${moves.map((m, k) => `<button class="chip-m" data-i="${k}" aria-label="${escHtml(t('%1 — turn %2 of %3. Press to jump the demonstration here.', turnWords(m), k + 1, moves.length))}">${escHtml(m)}</button>`).join('')}</div>
+          </li>
+        </ol>
+        <div class="sub" id="algCheck" style="line-height:1.5">${escHtml(t('Your cube ends solved. That is how you know you got it right.'))}</div>
+        <div class="sub" id="algPurpose" style="color:var(--ink-3);line-height:1.5">${escHtml(t('What it is for: %1', purposeFor(entry)))}</div>
+        <div class="sub" id="algNotation" style="color:var(--ink-4);line-height:1.5">${escHtml(t(NOTATION_LINE))}</div>
         <div class="sub" id="algStatus" role="status" aria-live="polite" style="color:var(--ink-3);min-height:1.4em">${escHtml(status)}</div>
         <div class="sub num" id="algTime" style="color:var(--ink-4)">${escHtml(timing ?? '')}</div>
       </div>
@@ -361,7 +435,7 @@ export function mountLibrary(root, { make = createDrillAttempt, signal, go = () 
     const at = demo.position;
     const of = demo.track.states.length - 1;
     const label = $('#algAt', root);
-    if (label) label.textContent = `${at} / ${of}`;
+    if (label) label.textContent = t('turn %1 of %2', at, of);
     const bar = $('#algProg', root);
     if (bar) bar.style.width = `${of > 0 ? Math.round((at / of) * 100) : 0}%`;
     const play = $('#algPlay', root);

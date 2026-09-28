@@ -980,6 +980,17 @@
       .screen { --chip: 36px; }
       .chip-m { font-family: var(--font-num); font-size: var(--fs-body-l); font-weight: 600; border: 1px solid var(--line); background: var(--panel); color: var(--ink-5); border-radius: var(--r-2); width: var(--chip); height: var(--chip); padding: 0; display: inline-flex; align-items: center; justify-content: center; }
       .chip-m.played { background: var(--panel-sunk); color: var(--ink); }
+      /* A SETUP chip is not pressable and must not look it: same size and rhythm as the solve row so
+         the two read as one sequence of turns, but sunk and quiet, because pressing it does nothing.
+         A chip that looks like a button and is not is worse than either. */
+      .chip-m.flat { background: var(--panel-sunk); color: var(--ink-4); border-style: dashed; }
+      /* The drill's three steps. A numbered list, because a drill IS a procedure and the cheapest way
+         to say so is to number it — the page carried nine unlabelled facts before. `decimal` markers
+         sit in the number font so they match the turns beside them. */
+      .drill-steps { margin: 0; padding: 0 0 0 1.35em; display: flex; flex-direction: column; gap: 10px; }
+      .drill-steps > li { padding-left: 2px; }
+      .drill-steps > li::marker { font-family: var(--font-num); font-weight: 600; color: var(--ink-4); }
+      .drill-steps .wrap-row { padding-top: 6px; }
 
       /* ---- touch floors ----------------------------------------------------------------- */
       /* On a coarse pointer every control is at least 44px — Apple's floor, and the contract's
