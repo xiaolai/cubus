@@ -33,8 +33,15 @@ export const REVEAL_BEAT = 900;
 /** The faces a child may pick, in the order they are drawn. */
 const FACES = ['U', 'R', 'F', 'D', 'L', 'B'];
 
-/** What this screen still cannot claim. Its own wording — see the note at the top. */
-export const DRILL_NOTE = 'Practice works. Results are not saved; the queue and averages are still a preview.';
+/**
+ * What this screen still cannot claim. Its own wording — see the note at the top.
+ *
+ * NARROWED WITH THE CARDS IT DESCRIBED. It used to end "…the queue and averages are still a preview",
+ * which pointed at a QUEUE card and an average card that are now gone: a sentence naming furniture
+ * nobody can see leaves a reader hunting for it. Both remain unbuilt, and the honest place to say so
+ * is wherever they are eventually built — not here, over a drill that works.
+ */
+export const DRILL_NOTE = 'Practice works. Results are not saved.';
 
 /** The drill's cube stands for a generated position, and is not claimed to be anyone's cube. */
 const DRILL_SUBJECT = Object.freeze({
@@ -62,6 +69,14 @@ export function drillHtml() {
            measured at 840x682 they overflowed the screen sideways by 113px. -->
       <div class="transport" style="flex-wrap:wrap;justify-content:center" role="group" aria-label="${escHtml(t('Pick the faces this piece belongs on'))}">
         ${FACES.map((f) => `<button class="tbtn" data-face="${f}" aria-pressed="false" aria-label="${escHtml(t('Face %1', f))}">${f}</button>`).join('')}
+        <!-- SHOW ME THAT AGAIN. The reveal plays stop by stop with a beat, and there was no way to
+             see it a second time: Next deals a NEW round, so a child who looked away during the one
+             they got wrong had lost it. Disabled until there is an answer to replay, because before
+             then there is genuinely nothing to replay, and the driver refuses too rather than no-op.
+             There is no ◁ ↺ ▷ ▶ transport here and there should not be: this drill asks a QUESTION
+             about one lit piece, so there is no sequence to step through. One button, for the one
+             thing a learner wants repeated. -->
+        <button class="pill" style="flex:none;min-width:44px" id="drillAgain" disabled>${escHtml(t('Show me again'))}</button>
         <button class="pill" style="flex:none;min-width:44px" id="drillNext">${escHtml(t('Next'))}</button>
       </div>
     </div>
@@ -75,22 +90,18 @@ export function drillHtml() {
         <div class="sub" id="drillAsk" style="color:var(--ink);margin-top:8px;line-height:1.5"></div>
         <div class="sub" id="drillVerdict" role="status" aria-live="polite" style="margin-top:10px;min-height:2.6em;line-height:1.5"></div>
       </div>
-      <div class="card">
-        <div class="eyebrow">${escHtml(t('HOW WELL DID THAT GO'))}</div>
-        <!-- A minimum width per control: in a narrow aside these shrank to 36px wide, under the
-             44px floor a coarse pointer requires. A disabled control is still a touch target the
-             contract measures, and still something a finger lands on. -->
-        <div style="display:flex;gap:10px;padding-top:8px;flex-wrap:wrap" role="group" aria-label="${escHtml(t('How well did that go'))}">
-          <button class="btn outline" style="min-width:44px;flex:1" disabled>${escHtml(t('Again'))}</button>
-          <button class="btn outline" style="min-width:44px;flex:1" disabled>${escHtml(t('Good'))}</button>
-          <button class="btn primary" style="min-width:44px;flex:1" disabled>${escHtml(t('Easy'))}</button>
-        </div>
-      </div>
-      <div class="card"><div class="eyebrow">${escHtml(t('THIS DRILL'))}</div>
-        <div class="num" style="font-size:var(--fs-display);font-weight:600;margin-top:6px">—</div>
-        <div class="sub" style="color:var(--ink-4)">${escHtml(t('nothing is recorded, so there is nothing to average'))}</div></div>
-      <div class="card"><div class="eyebrow">${escHtml(t('QUEUE'))}</div>
-        <div class="sub" style="color:var(--ink-4);margin-top:8px;line-height:1.5">${escHtml(t('A queue needs a schedule, and a schedule needs results this screen does not keep.'))}</div></div>
+      <!-- THREE CARDS WERE HERE, AND ALL THREE WERE ABOUT ABSENCE: a HOW WELL DID THAT GO row whose
+           Again / Good / Easy had no id, no handler and were disabled in the markup itself - they
+           could not be pressed in any state, ever — a THIS DRILL card showing an em dash under
+           "nothing is recorded, so there is nothing to average", and a QUEUE card whose only content
+           explained that there is no queue. Three of the four cards in this aside, apologising.
+           "Never invent data" is honoured by NOT DRAWING the widget, not by drawing it greyed out: a
+           dead grading row teaches a learner the app is broken, and removing it says nothing false.
+           It is the same argument the Lessons ladder's own case makes about a banner that disclaims a
+           screen which works. The banner above still narrows honestly — practice works, results are
+           not kept — which is the one sentence that was doing any work.
+           Reinstate a grading row when something grades; until then this screen is the question, the
+           answer and the reveal, which is all it has. -->
     </div></div>`;
 }
 
@@ -106,6 +117,7 @@ export function mountDrill(root, { make = makeRound } = {}) {
 
   const ask = $('#drillAsk', root);
   const verdict = $('#drillVerdict', root);
+  const again = $('#drillAgain', root);
   const buttons = [...root.querySelectorAll('[data-face]')];
 
   let driver = null;
@@ -136,6 +148,8 @@ export function mountDrill(root, { make = makeRound } = {}) {
     }
     if (verdict) verdict.textContent = '';
     for (const b of buttons) b.disabled = false;
+    // Nothing has been answered, so there is nothing to show again.
+    if (again) again.disabled = true;
     setPressed();
   };
 
@@ -148,12 +162,22 @@ export function mountDrill(root, { make = makeRound } = {}) {
     // recognition round lights the slot the piece lives in and moves nothing.
     revealing = true;
     for (const b of buttons) b.disabled = true;
+    if (again) again.disabled = false;
     if (verdict) verdict.textContent = verdictLine(state.verdict);
     // STOP BY STOP, with a beat between them. `createEventDriver.reveal()` plays one stop per call
     // and says how many are left — "the page owns every delay between them" is its contract — so
     // draining it in a loop would run the whole answer past the child in a single frame, which is
     // the same thing as not showing it. The timer is held so `dispose` can stop it: a screen that
     // is gone must not still be writing to the element it used to own.
+    playReveal();
+  };
+
+  /**
+   * The reveal, stop by stop. ONE implementation, because the replay must play the same reveal the
+   * answer played — a second copy of this loop is how the two would come to differ in their beat or
+   * in when they stop.
+   */
+  const playReveal = () => {
     const step = () => {
       if (!driver) return;
       if (driver.reveal() > 0) timer = setTimeout(step, REVEAL_BEAT);
@@ -167,6 +191,20 @@ export function mountDrill(root, { make = makeRound } = {}) {
   // failure to generate or build the replacement escaped into nothing — with the previous round's
   // timer already cancelled and its buttons already reset, leaving a half-changed screen and no
   // explanation. A drill that cannot deal another round says so and stays usable.
+  // SHOW ME AGAIN. `driver.replay()` puts the reveal back to its start and KEEPS the answer, so this
+  // replays the round the child just got rather than dealing a new one.
+  //
+  // GUARDED ON `locked`, never on `revealing`. `revealing` is set when the answer lands and is only
+  // cleared by the next `load()`, so it is true for the whole time this button is enabled — guarding
+  // on it made the button refuse every press, which is precisely the dead control this replaces. Any
+  // reveal still in flight is cancelled first, so a second press restarts rather than racing.
+  again?.addEventListener('click', () => {
+    if (!driver?.round?.locked) return;
+    if (timer) { clearTimeout(timer); timer = null; }
+    driver.replay();
+    playReveal();
+  });
+
   $('#drillNext', root)?.addEventListener('click', () => {
     try {
       load();

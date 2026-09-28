@@ -14,6 +14,7 @@ import { DRILL_TURNS, drillAlg, makeRound, recognitionScript, unsolvedSlot } fro
 import { CUBE_VIEW } from '../lib/cube-view.js';
 import { checkLesson } from '../lib/lesson-format.js';
 import { answerAt, createRound } from '../lib/script-rounds.js';
+import { blockAt } from './app-source.mjs';
 import { buildScript } from '../lib/script-view.js';
 import { lcg } from './fixtures/seeded-scrambles.mjs';
 
@@ -143,6 +144,21 @@ test('a degenerate source produces a bad alg, never a hang', () => {
 // ---- what the screen may not claim ------------------------------------------------------------
 
 const SCREEN = readFileSync(new URL('../lib/screens/drill/round-play.js', import.meta.url), 'utf8');
+/**
+ * The screen's CODE, with its prose removed — what every "this must not reach a screen" sweep reads.
+ *
+ * A scan of raw source cannot tell a comment from markup, and the comments here name the very things
+ * they explain having removed: the first version of the deletion check below failed on its own note
+ * saying "HOW WELL DID THAT GO row ... THIS DRILL card ... QUEUE card". Same mechanism
+ * `solve-tier-wiring.test.mjs` strips comments for, and it is what lets the history of a removal stay
+ * written down beside it. HTML comments too, because this file's markup is a template literal and its
+ * notes live inside it.
+ */
+const CODE = SCREEN
+  .replace(/<!--[\s\S]*?-->/g, '')
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/^\s*\/\/[^\n]*$/gm, '')
+  .replace(/([^:'"`])\/\/[^\n]*/g, '$1');
 
 test('the Drill screen says results are not saved, in its own words', () => {
   // Its OWN banner: changing the shared `PREVIEW_NOTE` would have re-described the Alg trainer,
@@ -152,21 +168,74 @@ test('the Drill screen says results are not saved, in its own words', () => {
   assert.match(lessons, /PREVIEW_NOTE/, 'the Trainer still needs the shared preview note');
 });
 
-test('the grades stay disabled and the figures stay dashes', () => {
-  // The engine measures which faces were picked. It does not measure a child executing an
-  // algorithm, so an "average execution" built from it would be a number about a different
-  // activity — which is the thing this repository refuses to put on a screen.
-  const grades = [...SCREEN.matchAll(/<button class="btn[^>]*>\$\{escHtml\(t\('(Again|Good|Easy)'\)\)\}/g)];
-  assert.equal(grades.length, 3, 'the three grade buttons are still drawn');
-  for (const m of grades) {
-    assert.match(m[0], /disabled/, `the ${m[1]} grade is no longer disabled, but nothing records it`);
+test('nothing that records nothing is offered at all — not even greyed out', () => {
+  // The engine measures which faces were picked. It does not measure a child executing an algorithm,
+  // so an "average execution" built from it would be a number about a different activity — which is
+  // the thing this repository refuses to put on a screen.
+  //
+  // THIS USED TO ASSERT THE OPPOSITE: that Again / Good / Easy were drawn AND disabled. They had no
+  // id, no handler and `disabled` in the markup, so they could not be pressed in any state, ever, and
+  // a first-time reader had three dead controls, an em dash and a card explaining there was no queue —
+  // three of the four cards in that aside, all about absence (naive-user read, 2026-09-28).
+  // "Never invent data" is honoured by NOT DRAWING the widget: a dead grading row teaches a learner
+  // the app is broken, while removing it says nothing false. The banner still narrows honestly, which
+  // is the one sentence that was doing any work.
+  for (const word of ['Again', 'Good', 'Easy']) {
+    assert.ok(!new RegExp(`escHtml\\(t\\('${word}'\\)\\)`).test(CODE),
+      `a ${word} grade is drawn again, and nothing records it`);
   }
-  assert.match(SCREEN, /nothing is recorded, so there is nothing to average/);
+  assert.ok(!/HOW WELL DID THAT GO/.test(CODE), 'the grading card is back');
+  assert.ok(!/THIS DRILL/.test(CODE), 'the average card is back, and there is still nothing to average');
+  assert.ok(!/QUEUE/.test(CODE), 'the queue card is back, and there is still no queue');
+  assert.ok(!/nothing is recorded, so there is nothing to average/.test(CODE),
+    'a card exists only to say it is empty');
+  // What DOES remain is the honest narrowing, and it is the whole of what this screen disclaims — and
+  // it no longer points at furniture that is gone: the sentence used to end "the queue and averages
+  // are still a preview" while naming a QUEUE card and an average card this change deleted.
+  assert.match(CODE, /Practice works\. Results are not saved\./);
+  assert.ok(!/queue and averages/.test(CODE), 'the banner names cards that are no longer on screen');
+});
+
+test('the reveal can be played again, and the button says so only when there is one', () => {
+  // The only control this drill was genuinely missing. The reveal plays stop by stop with a beat and
+  // Next deals a NEW round, so a child who looked away during the one they got wrong had lost it.
+  assert.match(CODE, /id="drillAgain"/, 'there is no way to see the reveal a second time');
+  const btn = /<button[^>]*id="drillAgain"[^>]*>/.exec(CODE);
+  assert.ok(btn, 'the replay button is not a button');
+  assert.match(btn[0], /disabled/, 'the replay is offered before there is anything to replay');
+  // Enabled when the answer lands, disabled again when a fresh round is loaded.
+  assert.match(CODE, /if \(again\) again\.disabled = false;/, 'answering does not offer the replay');
+  assert.match(CODE, /if \(again\) again\.disabled = true;/, 'a new round still offers a replay of the old one');
+  // GUARDED ON `locked`, not on `revealing`: `revealing` stays true from the answer until the next
+  // load, so guarding on it would refuse every press — an enabled button that does nothing, which is
+  // the very thing the deletion above removes.
+  //
+  // READ FROM THE REPLAY HANDLER'S OWN BLOCK, brace-matched. Scanned over the whole file this check
+  // matched `pick`'s guard, which is guarded on `revealing` correctly and must stay that way — the
+  // assertion was failing on the one use of the flag that is right.
+  const replay = blockAt(CODE, "again?.addEventListener('click', () => {");
+  assert.ok(replay, 'the replay handler is not where this test can find it');
+  assert.ok(!/revealing/.test(replay), 'the replay is guarded on a flag that is always set once answered');
+  assert.match(replay, /if \(!driver\?\.round\?\.locked\) return;/, 'the replay does not check there is an answer');
+  assert.match(replay, /driver\.replay\(\)/, 'the replay does not reset the reveal, so it would play nothing');
+  // ONE reveal loop, so the replay cannot drift from the first playing.
+  assert.equal((CODE.match(/driver\.reveal\(\) > 0/g) ?? []).length, 1, 'the reveal loop is written twice');
+});
+
+test('this drill has no move transport, and that is the design', () => {
+  // A ◁ ↺ ▷ ▶ transport steps through a SEQUENCE. This drill asks a question about one lit piece and
+  // is answered by picking faces; there is no sequence, so a transport would drive nothing. Written
+  // down because the Algorithms tab beside it has one, and an absence that looks like an oversight
+  // gets "fixed" by somebody eventually.
+  assert.ok(!/id="drillPlay"|id="drillBack"|id="drillNextTurn"/.test(CODE), 'a move transport appeared');
+  // The REASON is prose, so it is looked for in the source and not in the comment-stripped code.
+  assert.match(SCREEN, /no sequence to step through/, 'the reason the transport is absent is not written down');
 });
 
 test('the screen never writes a figure it did not compute', () => {
   // A number in this file would have to come from somewhere, and there is nowhere: no store, no
-  // counter, no history. The two places a figure would go both hold an em dash.
+  // counter, no history. The two places a figure would have gone are gone with the cards that held
+  // them — an em dash under an eyebrow is still a card about absence.
   //
   // `style="…"` is stripped first: CSS is full of percentages (`width:100%`) and none of them is a
   // claim about a learner. Reading the raw source flagged the layout and would have forced the
