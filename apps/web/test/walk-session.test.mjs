@@ -26,6 +26,10 @@ import { createFollowTracker } from '../lib/walk-follow.js';
 import { createScriptPlayer } from '../lib/script-player.js';
 import { walkScript } from '../lib/walk-script.js';
 import { createWalkPresenter } from '../lib/walk-presenter.js';
+import { readFileSync } from 'node:fs';
+
+import { APP_SOURCES, blockAt } from './app-source.mjs';
+import { pictureDestination } from '../lib/patterns.js';
 import { createWalkSession } from '../lib/walk-session.js';
 import { lcg, randomAlg } from './fixtures/seeded-scrambles.mjs';
 
@@ -164,6 +168,11 @@ function world({ subject = {}, omit = [], screen: screenOver = {} } = {}, make =
     randomScramble: async () => { throw new Error('this case rolls nothing'); },
     deriveCube: async () => { throw new Error('this case searches for nothing'); },
     classifyCube: () => ({ solvable: true, unsolvable: false }),
+    // MIRRORS `lib/cube-subject.js`'s, and reads `app.classifyCube` at CALL time so a case that
+    // overrides the classification (the spread below wins) overrides the eligibility with it. A
+    // fake that answered a fixed boolean here would leave the picture case asserting nothing.
+    walkEligible: ({ scrambling: sc = false } = {}) =>
+      sc || app.classifyCube().solvable || Boolean(pictureDestination(state.stageTarget)),
     adoptCube: (f) => { log.push(`adopt ${f}`); state.cube.facelets = f; },
     chainTrusted: () => state.cube.trusted && (state.cube.source === 'cube' || state.cube.source === 'camera'),
     markStale: () => {},
@@ -404,6 +413,35 @@ test('a cube that no longer has a walk rebuilds the screen — after the load, n
 // there reports a cube, so `compositionGone()` never runs at all, and its loop assertion passed
 // with the defect put back. A test that cannot fail for the reason it was written is worse than no
 // test, which is the whole lesson of the audit this came from.
+// THE CLASS, not the instance. The rule above ("solvable OR a picture is selected") was written out
+// FOUR times — three in `screens/cube.js`, one here — and two of those carried a comment asserting
+// there were exactly two. The one nobody converted was `cubeScreen`'s `update()`, which omitted the
+// picture clause, so a solved cube aiming at a picture answered `refreshScreen()` with "I cannot show
+// this" and was destroyed and rebuilt on every live report. This scan is what stops a fifth.
+test('walk eligibility is decided in one place, and no screen decides it again', () => {
+  // The ONE definition, cut out brace-matched so the scan below can exempt it by identity rather
+  // than by filename — and `blockAt` throws if the anchor is missing or appears twice, which is
+  // itself the check that the definition has not been moved or copied.
+  const home = readFileSync(new URL('../lib/cube-subject.js', import.meta.url), 'utf8');
+  const definition = blockAt(home, 'export function walkEligible(');
+  assert.ok(/pictureDestination/.test(definition), 'the definition stopped consulting the picture clause');
+
+  const offenders = [];
+  for (const file of APP_SOURCES) {
+    const src = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+    for (const [i, line] of src.split('\n').entries()) {
+      const code = line.replace(/\/\/.*$/, '');
+      // A decision, not a read: `.solvable` next to a picture-destination test is the expression
+      // that belongs in `walkEligible`.
+      if (!/\.solvable\b/.test(code)) continue;
+      if (!/pictureDestination|stageTargetNow\(\)/.test(code)) continue;
+      if (definition.includes(code.trim())) continue;
+      offenders.push(`${file}:${i + 1} ${code.trim()}`);
+    }
+  }
+  assert.deepEqual(offenders, [], 'walk eligibility is being re-derived instead of asked for');
+});
+
 test('a solved cube aiming at a picture keeps its composition — it does not rebuild for ever', async () => {
   const w = world({ subject: { facelets: SOLVED } }, () => ({
     // What a solved cube really answers: no solve, and legal.

@@ -476,7 +476,14 @@
       .solution-card { flex: 1; min-height: 140px; display: flex; flex-direction: column; }
       .primary { grid-area: primary; min-width: 0; min-height: 0; }
       .aux { grid-area: aux; min-width: 0; }
-      .scan-sheet { display: flex; flex-direction: column; gap: 16px; }
+      /* A SHEET THAT STACKS ITS CARDS, rather than one card filling the area. `.sheet` is
+         `grid-area: sheet`, so two `.sheet` siblings do not sit one above the other — CSS grid
+         stacks them in the same cell, and they overlap. The cube screen had three such siblings in
+         its non-walking composition (unsolvable, reconnect, shapes) and two pairs of them could be
+         shown at once: a solved cube with an open reconnect question drew the Shapes card straight
+         over the reconnect controls. One container, many cards, is the answer the scan screen had
+         already found, so it is the same class rather than a second one. */
+      .scan-sheet, .rest-sheet { display: flex; flex-direction: column; gap: 16px; }
       /* The notice can be long — a refusal's explanation is seven lines and its card now carries
          a button — and the sheet is a flex column of a fixed height. Without these two rules the
          column squashed "Solve this cube" to 0px and the stage clipped the rest: a grey sliver at

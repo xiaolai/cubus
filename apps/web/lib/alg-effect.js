@@ -119,6 +119,26 @@ export const CYCLE_SHAPES = Object.freeze({
 
 const KIND_WORD = Object.freeze({ corners: () => t('corners'), edges: () => t('edges') });
 
+/**
+ * The same shapes, said as what is WRONG with a case rather than what an algorithm does to a solved
+ * cube.
+ *
+ * A case is the algorithm undone, so its permutation is the inverse — and an inverse has the same
+ * cycle type and the same orientation counts. The numbers are therefore identical and only the
+ * sentence changes: "cycles three corners" is what the algorithm DOES, "three corners are in the
+ * wrong places" is what the learner is LOOKING AT. Keyed off the same shapes as `CYCLE_SHAPES` and
+ * held to them by a test, so a shape can never be added to one table and forgotten in the other.
+ */
+export const CASE_SHAPES = Object.freeze({
+  '2': (kind) => t('two %1 are swapped', kind),
+  '3': (kind) => t('three %1 are in the wrong places', kind),
+  '4': (kind) => t('four %1 are in the wrong places', kind),
+  '5': (kind) => t('five %1 are in the wrong places', kind),
+  '2,2': (kind) => t('two pairs of %1 are swapped', kind),
+  '3,2': (kind) => t('three %1 are in the wrong places and two more are swapped', kind),
+  '3,3': (kind) => t('two separate sets of three %1 are in the wrong places', kind),
+});
+
 /** The phrase for one kind's cycles, or null when that kind is not permuted at all. Throws by NAME on
  *  a shape the table does not hold, so a new algorithm with an unmet shape fails loudly. */
 function cyclePhrase(lengths, kind, alg) {
@@ -138,15 +158,17 @@ const joinClauses = (parts) => {
 /**
  * What an algorithm does, in words, plus the numbers those words were built from.
  *
- * `parts` exists so exhaustiveness is checkable rather than asserted: `signatureFromParts` rebuilds
- * the signature out of it, and the test demands the two agree for all 137.
+ * `parts` exists so exhaustiveness is checkable rather than asserted. It was checked by rebuilding
+ * the signature out of `parts` and demanding the two agree — which was CIRCULAR, since `parts` is a
+ * copy of the numbers the signature is built from, so it agreed with itself for all 137 and could
+ * not have failed. The check that replaced it decodes the SENTENCE back into an effect
+ * independently, and the rebuilder it made redundant is gone.
  */
 export function describeEffect(effect, alg = '') {
   const clauses = [];
-  const permuted = [];
   for (const kind of ['corners', 'edges']) {
     const phrase = cyclePhrase(effect[kind], kind, alg);
-    if (phrase) { clauses.push(phrase); permuted.push(...effect[kind]); }
+    if (phrase) clauses.push(phrase);
   }
   if (effect.twisted) clauses.push(t('twists %1 corners', word(effect.twisted)));
   if (effect.flipped) clauses.push(t('flips %1 edges', word(effect.flipped)));
@@ -162,6 +184,25 @@ export function describeEffect(effect, alg = '') {
   });
 }
 
-/** The signature rebuilt from a label's own numbers — the exhaustiveness check's other half. */
-export const signatureFromParts = (parts) =>
-  `c[${parts.corners.join(',')}] e[${parts.edges.join(',')}] t${parts.twisted} f${parts.flipped}`;
+/**
+ * What is out of place in the CASE this algorithm answers, in words.
+ *
+ * Same numbers as `describeEffect`, different sentence — see `CASE_SHAPES`. This is what a generated
+ * case gets instead of a name: `oll:02220000` is our key for a position and means nothing to a
+ * learner, but "three corners are turned the wrong way" is the thing they are looking at.
+ */
+export function describeCase(effect, alg = '') {
+  const clauses = [];
+  for (const kind of ['corners', 'edges']) {
+    const lengths = effect[kind];
+    if (!lengths.length) continue;
+    const shape = CASE_SHAPES[lengths.join(',')];
+    if (!shape) throw new Error(`alg-effect: no case phrase for ${kind} shape [${lengths.join(',')}] (${alg})`);
+    clauses.push(shape(KIND_WORD[kind]()));
+  }
+  if (effect.twisted) clauses.push(t('%1 corners are turned the wrong way', word(effect.twisted)));
+  if (effect.flipped) clauses.push(t('%1 edges are flipped', word(effect.flipped)));
+  if (clauses.length === 0) throw new Error(`alg-effect: "${alg}" answers a case with nothing out of place`);
+  return joinClauses(clauses);
+}
+

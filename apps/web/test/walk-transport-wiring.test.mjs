@@ -10,6 +10,7 @@
 // that a press moves the cube; it cannot show that no other line in the module moves it too, and the
 // second transport is exactly the thing that grows back one convenience call at a time.
 
+import { VIEW_ATTRS } from '../lib/cube-view.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -58,13 +59,17 @@ test('the screen declares what it owns, and every entry is an attribute the writ
 });
 
 test('every tuned-view attribute a script could write is owned by the screen', () => {
-  // `VIEW_ATTRS` and `ghosts` in lib/screens/cube.js are read from `cubeView` at mount — the look a
-  // child tuned. A script that wrote any of them back would undo that on every press, which is the
-  // first of the three reasons this screen could not become a driver consumer.
-  const screen = readSource('lib/screens/cube.js');
-  const tuned = [...screen.matchAll(/\[\s*'[A-Za-z]+',\s*'([a-z-]+)'\s*\]/g)].map((m) => m[1]);
+  // The tuned view is read from `cubeView` and applied to every cube the app draws. A script that
+  // wrote any of it back would undo the child's tuning on every press, which is the first of the
+  // three reasons this screen could not become a driver consumer.
+  //
+  // IMPORTED, not matched out of a source file. This used to regex `lib/screens/cube.js` for the
+  // `['key', 'attr']` pairs, which stopped finding anything the day the mapping moved to the file
+  // that owns it (2026-09-27) — and a precondition that can silently read an empty list is one
+  // failure away from a check that passes because it found nothing.
+  const tuned = VIEW_ATTRS.map(([, attr]) => attr);
   assert.ok(tuned.includes('camera-latitude') && tuned.includes('ghost-elevation'),
-    `VIEW_ATTRS was not found in lib/screens/cube.js — read ${tuned.join(', ')}`);
+    `the tuned view no longer names the camera or the ghosts — read ${tuned.join(', ')}`);
 
   const session = readSource('lib/walk-session.js');
   const owned = new Set([...session.matchAll(/'([a-z-]+)'/g)].map((m) => m[1]));

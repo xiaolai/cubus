@@ -656,6 +656,54 @@ test('an open reconnect question stands in its own card over a solved cube, and 
   }
 });
 
+test('a solved cube with an open question stacks its cards — it does not draw one over the other', async () => {
+  // `.sheet` IS `grid-area: sheet`, so two `.sheet` siblings do not sit one above the other: CSS grid
+  // puts them in the SAME cell and they overlap. The non-walking composition had three such siblings
+  // (unsolvable, reconnect, shapes) and two pairs could be shown together — a solved cube with an open
+  // reconnect question drew the Shapes card straight over the reconnect controls in landscape and
+  // desktop portrait. The tests before this one asserted each card was PRESENT, which it was
+  // (found by audit, 2026-09-28).
+  //
+  // STRUCTURAL, not geometric, and deliberately so: happy-dom does no layout, so a rect here would be
+  // zeros. What it forbids is the MECHANISM — a second `.sheet` in the same area — which is the thing
+  // a regression would reintroduce. The measured composition cases live in `test/browser/geometry`.
+  const { state } = await import('../lib/app.js');
+  const prev = { ...state.cube };
+  const seenAt = Date.UTC(2026, 7, 25, 13, 40);
+  try {
+    state.reconnect = { reading: 'unchanged', candidate: SOLVED_FACELETS, raw: SOLVED_FACELETS, seenAt };
+    Object.assign(state.cube, { facelets: SOLVED_FACELETS, derived: false, setupAlg: '', solution: '', moves: [], stepFacelets: [] });
+    win.location.hash = '#/home';
+    await tick();
+
+    const reconnect = win.document.querySelector('.reconnect-card');
+    const shapes = win.document.querySelector('.shapes-card');
+    assert.ok(reconnect && shapes, 'precondition: both cards must be on screen at once for this to mean anything');
+
+    // Neither may be placed in the grid itself.
+    for (const [name, card] of [['reconnect', reconnect], ['shapes', shapes]]) {
+      assert.ok(!card.classList.contains('sheet'), `the ${name} card is placed in the sheet grid area itself`);
+    }
+    // Both inside exactly ONE container that is.
+    const sheets = [...win.document.querySelectorAll('#stage .rest-sheet')];
+    assert.equal(sheets.length, 1, 'the non-walking cards are spread over more than one sheet container');
+    assert.equal(reconnect.parentElement, sheets[0], 'the reconnect card is outside the stacking container');
+    assert.equal(shapes.parentElement, sheets[0], 'the shapes card is outside the stacking container');
+    // In document order, so a reader gets the question first and the offer second.
+    assert.ok(sheets[0].compareDocumentPosition(reconnect) < sheets[0].compareDocumentPosition(shapes)
+      || [...sheets[0].children].indexOf(reconnect) < [...sheets[0].children].indexOf(shapes),
+      'the offer is drawn before the question it interrupts');
+    // And the container really stacks: one `.sheet` holding many cards is only safe as a flex column.
+    assert.match(html, /\.scan-sheet, \.rest-sheet \{[^}]*flex-direction: column/,
+      'the stacking container has no column rule, so its cards would sit side by side');
+  } finally {
+    state.reconnect = null;
+    Object.assign(state.cube, prev);
+    win.location.hash = '#/home';
+    await tick();
+  }
+});
+
 test('an alg that reaches the solved cube does not give it a walk', async () => {
   const { state } = await import('../lib/app.js');
   const { classifyCube, ingestFacelets, takeDerivation } = await import('../lib/cube-subject.js');

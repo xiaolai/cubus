@@ -164,6 +164,83 @@ test('with several stages ready at once, only the one offered first is promised 
   }
 });
 
+test('a save the device refused is said on the card, and survives a repaint', async () => {
+  // Two halves of one rule, and each was a defect in turn.
+  //
+  // THE ORIGINAL: the warning was written into the note element after `renderScreen()`, so the very
+  // next repaint removed it while the rung stayed raised — a screen that told the truth once and then
+  // quietly implied the ladder was saved (found by audit, 2026-09-28).
+  //
+  // THE REGRESSION THE FIRST FIX INTRODUCED: clearing only the raised stage's id. `raiseRung` calls
+  // `save('cubusSettings', settings)`, which writes the WHOLE settings object, so a later successful
+  // raise puts the earlier stage's rung on disk too — and its warning stayed up, now false (found by
+  // the verify pass on that fix).
+  //
+  // THE GLOBAL IS REPLACED, NOT PATCHED. happy-dom's Storage is a Proxy: `store.setItem = fn` stores
+  // an ITEM named "setItem" and leaves the method alone, so two earlier attempts at this test let the
+  // write through and failed for that reason instead of the one they were written for.
+  // `app-settings.js` resolves `localStorage` from the global on every call, so a delegating
+  // stand-in is what a refusal looks like from inside the app; reads go to the real store, so
+  // `stored()` can prove the rung did NOT land.
+  //
+  // AND IT RESTORES THE LADDER IT SPENT: these tests are ordered and share one booted app, so raising
+  // two stages here consumed rungs the focus tests below assert on. Without the restore they failed
+  // with "pairs has a rung left", which reads as a defect in them and was this test's doing.
+  const { settings } = await import('../lib/app-settings.js');
+  const note = (id) => $(`#rungNote-${id}`);
+  const real = globalThis.localStorage;
+  const wasRungs = structuredClone(settings.rungs);
+  const wasProgress = structuredClone(settings.rungProgress);
+  const repaint = async () => {
+    win.location.hash = '#/home';
+    await tick();
+    win.location.hash = '#/lessons';
+    await tick();
+  };
+  const useReal = () => Object.defineProperty(globalThis, 'localStorage', { value: real, writable: true, configurable: true });
+
+  try {
+    const raisable = STAGE_IDS.filter((id) => (stored().rungs?.[id] ?? 0) < TOP_RUNG[id]);
+    assert.ok(raisable.length >= 2, `precondition: two raisable stages, got ${raisable.join(',')}`);
+    const [a, b] = raisable;
+    const wasRung = stored().rungs?.[a] ?? 0;
+
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: {
+        getItem: (k) => real.getItem(k),
+        removeItem: (k) => real.removeItem(k),
+        setItem: () => { throw new Error('quota exceeded (test)'); },
+      },
+      writable: true,
+      configurable: true,
+    });
+    try {
+      $(`[data-raise="${a}"]`).click();
+      await tick();
+      assert.equal(stored().rungs?.[a] ?? 0, wasRung, 'precondition: the refusal must keep the rung off disk');
+      assert.match(note(a).textContent, /did not save that/, `${a}: a refused save said nothing`);
+      assert.equal(note(a).style.color, 'var(--err-ink)', 'the refusal is not drawn as one');
+      await repaint();
+      assert.match(note(a).textContent, /did not save that/, 'the warning did not survive a repaint');
+    } finally {
+      useReal();
+    }
+
+    $(`[data-raise="${b}"]`).click();
+    await tick();
+    assert.equal(stored().rungs[a], wasRung + 1, `precondition: ${a}'s rung reached disk on ${b}'s write`);
+    assert.doesNotMatch(note(a).textContent, /did not save that/,
+      `${a} still says it was not saved, after a write that saved it`);
+    assert.doesNotMatch(note(b).textContent, /did not save that/, `${b} was saved and says otherwise`);
+  } finally {
+    useReal();
+    settings.rungs = wasRungs;
+    settings.rungProgress = wasProgress;
+    real.setItem('cubusSettings', JSON.stringify(settings));
+    await repaint();
+  }
+});
+
 test('a rung raised from the keyboard keeps focus on the button that raised it', async () => {
   const raise = () => $('[data-raise="pairs"]');
   raise().focus();
@@ -244,6 +321,11 @@ test("the Drill hands its cube the scheme, so a Japanese cube is drawn in its ow
   try {
     win.cubusGo('drill');
     await tick();
+    // The Drill opens on the CHOOSER now, which is a grid of cards and draws no cube; the cube
+    // belongs to one algorithm's own page. So the probe opens one, which is also the only place a
+    // learner ever sees a drawn cube here.
+    $$('#stage [data-alg]')[0]?.dispatchEvent(new win.Event('click', { bubbles: true }));
+    await tick(); await tick();
     const cube = $$('#stage cubus-cube')[0];
     assert.ok(cube, 'precondition: the drill draws a cube');
     assert.equal(cube.getAttribute('scheme'), 'japanese');

@@ -195,8 +195,15 @@ test('the screens that index a palette draw their colours rather than throwing',
   // The Drill opens on the algorithm library now (dev-docs/algorithm-drills-plan.md phase 3), which
   // draws a real cube for the chosen algorithm's case. What must survive a hostile palette is that
   // the panel renders at all; the renderer takes the palette as an ATTRIBUTE and validates it.
-  assert.ok(win.document.querySelector('#algMoves')?.textContent, 'the library drew no algorithm');
-  assert.ok(win.document.querySelectorAll('#algGroups .alg-entry').length > 0, 'the library listed nothing');
+  assert.ok(win.document.querySelectorAll('#algGroups .alg-entry').length > 0, 'the chooser listed nothing');
+  // And one algorithm's own page, which is where a palette is actually indexed — the chooser draws
+  // flat case pictures, the drill draws the cube.
+  win.document.querySelector('#algGroups [data-alg]').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  await tick(); await tick();
+  assert.ok(win.document.querySelector('#algMoves')?.textContent, 'the drill drew no turns');
+  assert.ok(win.document.querySelector('#algCube'), 'the drill drew no cube');
+  win.document.querySelector('#algBackToList').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  await tick(); await tick();
 
   // BOTH kinds of drill are probed, because both are still reachable and both index a palette.
   // Testing only the one the screen happens to open on would leave the other uncovered the day it

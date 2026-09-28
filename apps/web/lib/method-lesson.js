@@ -234,6 +234,75 @@ function sentenceFor(step) {
 }
 
 /**
+ * The name a learner would call this algorithm, or null when it has none.
+ *
+ * Null for a GENERATED case, for `caseLabel`'s reason: `oll:1a2b3c4d` is this repository's key for
+ * a position, not a number anybody would find elsewhere, and showing our own as if it were the
+ * world's would be worse than showing none.
+ */
+export const caseNameOf = (id) => (GENERATED_CASE_ID.test(id) ? null : caseText(id));
+
+/**
+ * Which stage's sentence says what an algorithm at that stage is FOR.
+ *
+ * The Drill library needs one line per stage answering "what is this for", and the app had already
+ * written all eight — as the captions a walk puts under a step. Reusing them rather than writing a
+ * ninth set keeps one home for the words and one translation; a second set would drift the day
+ * either was edited, and the library and the walk would then describe the same algorithm two ways.
+ */
+const STAGE_PURPOSE = Object.freeze({
+  cross: 'cross.insert',
+  'first-layer': 'firstLayer.insert',
+  'middle-layer': 'middleLayer.insert',
+  f2l: 'f2l.pair',
+  'top-cross': 'topCross.orient',
+  'top-face': 'topFace.orient',
+  'top-corners': 'topCorners.permute',
+  'top-edges': 'topEdges.permute',
+});
+
+/**
+ * What algorithms at `stage` are for, in the app's own words. Loud on a stage nobody mapped.
+ *
+ * The no-regrip form of every sentence that has one: a library entry is not a step in a route, so
+ * there is no cube to turn first. The white-up/turned-over split, and the refusal on a missing key,
+ * are `sentenceFor`'s — reached by calling it rather than by writing the same dispatch twice, which
+ * is how `WHITE_UP_STAGES` comes to be read two ways.
+ */
+export function purposeForStage(stage) {
+  const key = STAGE_PURPOSE[stage];
+  if (!key) throw new Error(`method-lesson: no purpose for stage "${stage}"`);
+  return sentenceFor({ why: { key }, stage });
+}
+
+/**
+ * What THIS algorithm is for — read off what it measurably does, not off where it is filed.
+ *
+ * `purposeForStage` alone was wrong for full PLL, and wrong in the one direction that matters: the
+ * catalogue files every one-look PLL under `top-corners` (a deliberate choice — the two permutation
+ * stages share a hold and a dial, so `alg-catalogue.js` says the pick "changes nothing a caller can
+ * observe"). Adding a purpose sentence MADE it observable. `pll:01230231` permutes three edges and
+ * no corners, and was captioned "Move the top corners to the places they belong" — a false
+ * instruction in front of a child, which is the class of defect this file's own `lastLayer.permute`
+ * comment already describes for the solver's captions.
+ *
+ * So for the permutation dial the sentence comes from `effect`, which is computed from the move
+ * tables rather than authored: corners and edges both → the whole-layer sentence the app already
+ * has; edges only → the edge sentence; otherwise the corner one. Every other dial's stage IS a
+ * claim about its algorithms, so it keeps answering for them.
+ */
+export function purposeFor(entry) {
+  if (entry.dial !== 'pll') return purposeForStage(entry.stage);
+  const corners = entry.effect.corners.length > 0;
+  const edges = entry.effect.edges.length > 0;
+  const key = corners && edges ? 'lastLayer.permute' : edges ? 'topEdges.permute' : 'topCorners.permute';
+  return sentenceFor({ why: { key }, stage: entry.stage });
+}
+
+/** The stages `purposeForStage` answers for, so a test can hold it to the catalogue's own list. */
+export const PURPOSED_STAGES = Object.freeze(Object.keys(STAGE_PURPOSE));
+
+/**
  * The case name to show after a step's sentence, or null.
  *
  * Only for named algorithms — a searched sequence has no case to name — and never for a GENERATED case
@@ -243,7 +312,9 @@ function sentenceFor(step) {
  */
 function caseLabel(step) {
   if (!(step.kind === 'case' && step.caseName && !step.parts)) return null;
-  return GENERATED_CASE_ID.test(step.caseName) ? null : caseText(step.caseName);
+  // `caseNameOf`, not the test-and-look-up written out again: the generated-id rule had two
+  // maintenance points, and the two must never come to disagree about what counts as ours.
+  return caseNameOf(step.caseName);
 }
 
 /** The sentence for a step, with the case name where the step is a named algorithm. */

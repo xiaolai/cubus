@@ -112,7 +112,7 @@ export function createWalkSession(screen, app) {
   } = provided(screen, 'screen');
   const {
     state, settings, SOLVED, CHIP_NODE_BUDGET, WALK_FAILURES, cubejs, solverReady, loadSolver,
-    randomScramble, deriveCube, classifyCube, adoptCube, chainTrusted, markStale, lessonFor,
+    randomScramble, deriveCube, classifyCube, walkEligible, adoptCube, chainTrusted, markStale, lessonFor,
     stageAsk, stepStates, putInPlay, parkRoll, refreshScreen, go, save, raiseRung, escHtml, icon,
     lastRoute, pictureRoute, sayWalkLength, describeCube,
   } = provided(app, 'app');
@@ -492,15 +492,15 @@ export function createWalkSession(screen, app) {
     // branch earns.
     if (scrambling) return false;
     const after = classifyCube();
-    // JUDGED BY THE SAME RULE THE SCREEN USED, or the screen rebuilds itself for ever. `walking` is
-    // `solvable OR a picture is selected`, because a solved cube has no solve and is still six moves
-    // from The Checkerboard. Comparing it against `solvable` alone meant a screen showing a picture
-    // walk from a solved cube decided its composition had gone on EVERY load — four consecutive
-    // rebuilds, reproduced by a verify pass on 2026-09-27. The two expressions are one rule and have
-    // to stay one; `stageTargetNow()` is how this side reads it without the screen having to pass
-    // anything, which keeps it out of the contract every fake screen implements.
-    const aim = stageTargetNow();
-    const eligible = after.solvable || Boolean(aim && (aim.picture || aim.sideways));
+    // JUDGED BY THE SAME RULE THE SCREEN USED, through the same function — `walkEligible`, which is
+    // where that rule now lives. `walking` is `solvable OR a picture is selected`, because a solved
+    // cube has no solve and is still six moves from The Checkerboard; comparing it against
+    // `solvable` alone meant a screen showing a picture walk from a solved cube decided its
+    // composition had gone on EVERY load (four consecutive rebuilds, a verify pass, 2026-09-27).
+    // This side used to phrase it through `stageTargetNow()`, which reversed the two table lookups
+    // `pictureDestination` makes — so the two were one rule only as long as no id appeared in both
+    // tables. One call, and that question stops needing an answer.
+    const eligible = walkEligible({ scrambling });
     if (eligible === walking && after.unsolvable === unsolvable) return false;
     // DEFERRED past any refresh that is already running. `refreshScreen` guards itself with
     // `refreshing`, so calling it from a load that `refreshScreen` ITSELF started is swallowed

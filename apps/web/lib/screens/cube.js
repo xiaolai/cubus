@@ -23,7 +23,6 @@ import { createReconnectAsk } from './cube/reconnect-ask.js';
 // a worker, through `stageAsk`.
 import { NODE_BUDGET as STAGE_NODE_BUDGET } from '../stage-distance.js';
 import { routeToPicture } from '../pattern-route.js';
-import { pictureDestination } from '../patterns.js';
 import { solveWithinGodsNumber } from '../solve-target.js';
 import { parseFacelets } from '../two-phase.js';
 
@@ -31,7 +30,7 @@ import { $, SOLVED, escHtml, icon, state } from '../app-state.js';
 import { load, save, settings } from '../app-settings.js';
 import { hooks } from '../screen-slots.js';
 import { CHIP_NODE_BUDGET, Cube, loadSolver, solverReady, solverWorker, stageAsk, warmSolver } from '../solver-service.js';
-import { classifyCube, deriveCube, lessonFor, raiseRung, stepStates } from '../cube-subject.js';
+import { classifyCube, deriveCube, lessonFor, raiseRung, stepStates, walkEligible } from '../cube-subject.js';
 import { applyNetColors, buildNet, describeCube, newCube } from '../cube-drawing.js';
 import { keepAwake } from '../wake-lock.js';
 import { adoptCube } from '../cube-connection.js';
@@ -138,7 +137,7 @@ const WALK_APP = Object.freeze({
   state, settings, SOLVED, CHIP_NODE_BUDGET, WALK_FAILURES,
   cubejs: () => Cube,
   solverReady: () => solverReady,
-  loadSolver, randomScramble, deriveCube, classifyCube, adoptCube, chainTrusted, markStale,
+  loadSolver, randomScramble, deriveCube, classifyCube, walkEligible, adoptCube, chainTrusted, markStale,
   lessonFor, stageAsk, stepStates, putInPlay, parkRoll, refreshScreen, go, save, raiseRung,
   escHtml, icon, lastRoute, pictureRoute, sayWalkLength, describeCube,
 });
@@ -182,10 +181,11 @@ const cubeScreen = (screenMode) => {
   // 14-move no-op, so a transport under a solved cube read 0 / 0 with its tick already lit. The
   // picture case is added beside it rather than folded into `solvable`, so that rule is untouched.
   //
-  // `compositionGone()` MUST judge by this same expression. Widening only this one made the screen
-  // decide its composition had gone on every load — four consecutive rebuilds, caught by a verify
-  // pass. The two are one rule.
-  const walking = scrambling || classifyCube().solvable || Boolean(pictureDestination(state.stageTarget));
+  // ONE expression of the rule, in `lib/cube-subject.js`. It used to be written out here and in two
+  // more places in this file and a fourth in `walk-session.js` — with a comment saying "the two are
+  // one rule", which stopped being true the moment a third arrived. `update()` was the one that had
+  // drifted: it omitted the picture clause entirely.
+  const walking = walkEligible({ scrambling });
   // The other reason there is no walk, and the only one worth a sentence. `!solvable` covers both
   // a solved cube (nothing to do, and the picture says so) and an arrangement no turning can
   // produce (nothing to do, and nothing on screen would otherwise explain why).
@@ -202,12 +202,6 @@ const cubeScreen = (screenMode) => {
   let retarget = null;
   /** The load `update()` last started: the die holds its press until that walk is on screen. */
   let loading = null;
-  // Saved key → renderer attribute. Named for what it is now that the sliders it fed are gone.
-  const VIEW_ATTRS = [
-    ['hintElev', 'ghost-elevation'],
-    ['camLat', 'camera-latitude'], ['camLon', 'camera-longitude'],
-    ['facScale', 'facelet-scale'],
-  ];
   // Four regions of the layout contract's grid (index.html, ".cols"): the cube card is
   // `primary`, the transport card `aux`, the state card the `twin` and the solution card the
   // `sheet` — the last two are the aside's children, which the stylesheet hands to the grid
@@ -277,13 +271,22 @@ const cubeScreen = (screenMode) => {
                written into it would make one label silently mean two things (§5.5). -->
           <div class="sub" id="stageLive" role="status" aria-live="polite" style="text-align:center;padding-top:6px;color:var(--ink-4)"></div>
         </div></div>
-      ${unsolvable ? `<div class="card sheet unsolvable-card">
+      <!-- ONE sheet for the non-walking cards, because the sheet class IS a named grid area: two of
+           them as siblings stack in the same grid cell instead of one above the other. Two pairs
+           could be shown together - unsolvable plus a reconnect question, and SOLVED plus a
+           reconnect question - and the second card was drawn straight over the first one's controls
+           in landscape and desktop portrait (found by audit, 2026-09-28; the tests before it checked
+           that both were PRESENT, which they were). Empty when the screen is walking, and an empty
+           flex column occupies nothing.
+           NO BACKTICK IN THIS COMMENT - it is inside the screen's html template literal. -->
+      <div class="sheet rest-sheet">
+      ${unsolvable ? `<div class="card unsolvable-card">
         <div class="follow-note" id="unsolvableNote" style="border-top:0">
           <b>${escHtml(t('This arrangement is not one a cube can be turned into.'))}</b>
           <span class="sub" style="color:var(--ink-4)">${escHtml(t('At least one sticker is somewhere turning a real cube could never put it — a corner twisted in place, an edge flipped, or two pieces swapped — so there is no walk to follow. Read the cube again on Restore, or correct the sticker there.'))}</span>
         </div>
       </div>` : ''}
-      ${!walking && rcNow() ? `<div class="card sheet reconnect-card">${reconnectAsk()}</div>` : ''}
+      ${!walking && rcNow() ? `<div class="card reconnect-card">${reconnectAsk()}</div>` : ''}
       <!-- THE WAY IN, FROM A FINISHED CUBE. Without this the Shapes button lived only inside the
            walking composition, and a solved cube is not walking - so a picture could only be chosen
            once one had already been chosen. A child who has just finished their cube is exactly who
@@ -291,13 +294,14 @@ const cubeScreen = (screenMode) => {
            Only for a cube that is SOLVED and legal: an unsolvable arrangement has its own card and
            nothing to offer, and a scrambled one is walking already and has the row.
            NO BACKTICK IN THIS COMMENT - it is inside the screen's html template literal. -->
-      ${!walking && !unsolvable && state.cube.facelets === SOLVED ? `<div class="card tight sheet shapes-card">
+      ${!walking && !unsolvable && state.cube.facelets === SOLVED ? `<div class="card tight shapes-card">
         <div class="card-h bare"><b>${escHtml(t('Make a shape'))}</b></div>
         <div class="sub" style="padding:0 18px 10px;color:var(--ink-4)">${escHtml(t('Your cube is finished. Turn it into a picture, and the same moves bring it back.'))}</div>
         <div class="stage-row one-line" role="group" aria-label="${escHtml(t('Make a shape'))}">
           <button class="pill" id="patternBtn" type="button" aria-haspopup="menu" aria-expanded="false">${escHtml(t('Shapes'))}</button>
         </div>
       </div>` : ''}
+      </div>
       ${walking ? `<div class="card tight solution-card sheet">
         ${reconnectAsk()}
         <!-- The count carries the auto margin, not the button: with it on the button, the header's
@@ -399,8 +403,9 @@ const cubeScreen = (screenMode) => {
       // cube without them, which is a visibly larger picture than the one that replaces it. It
       // survived only because the element's animation frame happened to run later in the same
       // frame as the mount; that ordering is the engine's to change, and nothing tested it.
-      cube.setAttribute('ghosts', v.ghosts ? 'floating' : 'none');
-      for (const [k, attr] of VIEW_ATTRS) cube.setAttribute(attr, String(v[k]));
+      // The tuned view — ghosts and camera — is `newCube`'s now, applied to every cube the app
+      // draws before it is connected. It was this screen's alone, which is why both drill screens
+      // came out with no ghost faces at all.
       $('#viewCube', root).appendChild(cube);
       applyNetColors();
       const paintNet = buildNet($('#viewNet', root));
@@ -478,12 +483,11 @@ const cubeScreen = (screenMode) => {
         // A composition change is a rebuild, which is precisely the answer refreshScreen() gets
         // from update() on a screen with no walk to replace.
         const now = classifyCube();
-        // THE SAME RULE AS `walking` ABOVE, and this is the second of the two places that compare
-        // it — `compositionGone()` in walk-session.js is the other. Left as `now.solvable` it would
-        // refresh on every live update of a solved cube aiming at a picture, which is the rebuild
-        // loop a verify pass caught in `compositionGone` and this line would have reproduced by a
-        // different path. Grepped for rather than remembered: there were exactly two.
-        const eligibleNow = now.solvable || Boolean(pictureDestination(state.stageTarget));
+        // THE SAME RULE AS `walking` ABOVE, through the same function. Left as `now.solvable` alone
+        // it would refresh on every live update of a solved cube aiming at a picture — the rebuild
+        // loop a verify pass caught once in `compositionGone` and this line would have reproduced by
+        // a different path.
+        const eligibleNow = walkEligible({ scrambling });
         if (eligibleNow !== walking || now.unsolvable !== unsolvable) { refreshScreen(); return; }
         paintNet(f);
         cube.setAttribute('facelets', f);
@@ -523,8 +527,11 @@ const cubeScreen = (screenMode) => {
      * a failure, it is the honest answer to "can you show this without rebuilding".
      */
     update() {
-      if (!retarget) return false;                            // nothing mounted, or nothing to walk
-      if (!(scrambling || classifyCube().solvable)) return false; // and now there is none to show
+      if (!retarget) return false;              // nothing mounted, or nothing to walk
+      // `walkEligible`, not `solvable` alone. This line omitted the picture clause, so a SOLVED cube
+      // aiming at a picture answered "I cannot show this" and was rebuilt from scratch on every
+      // live report — while the two sites above had already been widened for exactly that case.
+      if (!walkEligible({ scrambling })) return false; // and now there is none to show
       loading = retarget();
       return true;
     },

@@ -24,15 +24,27 @@ export const CUBE_VIEW = Object.freeze({
 });
 
 /**
- * The same numbers under the names `<cubus-cube>` calls them.
+ * Saved key to the attribute `<cubus-cube>` reads it under. THE one mapping.
  *
- * Beside the constant on purpose: the mapping was a second copy in the consumer, and a mapping
- * kept away from the thing it maps is how `hintElev` comes to mean two different attributes.
- * `ghosts` is not here — it is a boolean the caller turns into `'on'`/`'none'`, not a number.
+ * It was written out twice — here as attribute-to-default, and again inside `cubeScreen` as
+ * key-to-attribute — which is the shape this file's own comment warns about: a mapping kept away
+ * from the thing it maps is how `hintElev` comes to mean two different attributes. Everything
+ * below is derived from this, and `lib/cube-drawing.js` applies it to every cube the app draws.
+ *
+ * `ghosts` is not here: it is a boolean a caller turns into `'floating'`/`'none'`, not a number.
  */
-export const CUBE_VIEW_ATTRS = Object.freeze({
-  'ghost-elevation': CUBE_VIEW.hintElev,
-  'camera-latitude': CUBE_VIEW.camLat,
-  'camera-longitude': CUBE_VIEW.camLon,
-  'facelet-scale': CUBE_VIEW.facScale,
-});
+export const VIEW_ATTRS = Object.freeze([
+  // Each PAIR is frozen too, not only the array holding them. `Object.freeze` is shallow, so an
+  // outer freeze leaves `VIEW_ATTRS[0][1] = 'whatever'` succeeding silently — and `applyCubeView`
+  // would then write the corrupted attribute while `CUBE_VIEW_ATTRS`, built once at load, kept the
+  // original. Two mappings again, which is the exact failure this file exists to end.
+  Object.freeze(['hintElev', 'ghost-elevation']),
+  Object.freeze(['camLat', 'camera-latitude']),
+  Object.freeze(['camLon', 'camera-longitude']),
+  Object.freeze(['facScale', 'facelet-scale']),
+]);
+
+/** The same numbers under the names `<cubus-cube>` calls them, derived from the one mapping. */
+export const CUBE_VIEW_ATTRS = Object.freeze(
+  Object.fromEntries(VIEW_ATTRS.map(([key, attr]) => [attr, CUBE_VIEW[key]])),
+);

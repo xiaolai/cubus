@@ -1032,7 +1032,43 @@ for (const screen of SCREENS) {
   }
 }
 
-// The Drill screen at its WIDEST: every algorithm the app holds, not the learner's eighteen.
+// THE DRILL PAGE — one algorithm, on the cube screen's composition.
+//
+// The per-screen loop above opens `#/drill`, which is the CHOOSER: a grid of cards and no cube.
+// The drill itself is a second composition reached by choosing one, so the loop never measures it
+// — and it is the one with a locked primary region, a transport and a sheet, which is exactly the
+// shape that can overflow. It did: the way back, crammed into the eyebrow beside the stage name,
+// ran 12px off the stage on every fixture before it was given its own row.
+for (const fixture of FIXTURES) {
+  test(`drill page: ${label(fixture)}`, async () => {
+    const { page, context, errors } = await openAt(fixture, urlFor(fixture, 'drill'));
+    try {
+      await page.waitForSelector('.screen.active');
+      await page.waitForSelector('#algGroups [data-alg]');
+      await page.click('#algGroups [data-alg]');
+      await page.waitForSelector('#algCube');
+      await page.waitForTimeout(250);
+      const m = await measureScreen(page);
+      assert.deepEqual(errors.map(String), [], 'the page threw');
+      assert.ok(m.overflow.doc <= 0, `the page overflows the viewport by ${m.overflow.doc}px`);
+      assert.ok(m.overflow.screen <= 1, `the screen overflows sideways by ${m.overflow.screen}px`);
+      assert.deepEqual(m.beyond, [], 'drawn beyond the stage');
+      assert.deepEqual(m.collapsed, [], 'a control has no box — squashed by its column');
+      if (m.col && m.aside) {
+        assert.ok(!overlaps(m.col, m.aside), 'the sheet draws over the cube');
+        assert.ok(m.col.height > 40 && m.aside.height > 40, 'a region collapsed');
+      }
+      if (fixture.touch) {
+        const small = m.controls.filter((c) => c.width < 44 - 0.5 || c.height < 44 - 0.5);
+        assert.deepEqual(small, [], 'touch: controls under 44px on the drill page');
+      }
+    } finally {
+      await context.close();
+    }
+  });
+}
+
+// The Drill CHOOSER at its widest: every algorithm the app holds, not the learner's eighteen.
 //
 // The loop above opens each screen in its default state, which for Drill is one rung's worth. The
 // list is the whole layout risk here — 137 buttons rather than 18 — and a screen that fits at
