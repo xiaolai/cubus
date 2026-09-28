@@ -57,7 +57,11 @@ const P = {
 };
 // Only its own names: an inherited one — `toString`, `__proto__` — drew native function text or
 // "[object Object]" where a glyph belongs (found by audit, 2026-09-13).
-export const icon = (name, size = 16) => `<svg class="ic" viewBox="0 0 24 24" style="width:${size}px;height:${size}px">${Object.hasOwn(P, name) ? P[name] : '<circle cx="12" cy="12" r="2"/>'}</svg>`;
+// `aria-hidden`, because every one of these sits beside the words it decorates. Without it a screen
+// reader announces an unnamed graphic before each label — measured on the Drill chooser, where the
+// leading icon read out as a picture with no description and told the listener nothing. An icon-only
+// button therefore carries its own `aria-label`; there is no icon in this app that IS the message.
+export const icon = (name, size = 16) => `<svg class="ic" aria-hidden="true" viewBox="0 0 24 24" style="width:${size}px;height:${size}px">${Object.hasOwn(P, name) ? P[name] : '<circle cx="12" cy="12" r="2"/>'}</svg>`;
 
 // ---- navigation model ------------------------------------------------------------------------
 // One flat list. The SOLVE / PRACTICE / LEARN headings were a taxonomy for nine items, which is
