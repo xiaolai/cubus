@@ -342,7 +342,7 @@ test('a drill round reveals stop by stop, and stops the moment the screen goes',
   // writing to a dead element". A reveal that drained in a loop would also pass a check that only
   // looked at the end state — the child would simply never see it happen — so what is asserted is
   // that a stop is still QUEUED after the answer, and that it is gone once the screen is disposed.
-  const { drillHtml, mountDrill } = await import('../lib/screens/drill/round-play.js');
+  const { drillHtml, mountDrill } = await import('../lib/screens/pieces/round-play.js');
   const { answerAt } = await import('../lib/script-rounds.js');
   const { buildScript } = await import('../lib/script-view.js');
   const { makeRound } = await import('../lib/drill-rounds.js');
@@ -396,3 +396,47 @@ test('the Drill screen wires its disposer to the screen going away', () => {
   assert.match(drill, /mounted\.dispose\(\)/, 'the abort listener does not call the disposer');
 });
 
+test('Drill is one activity: no kind to choose, and the algorithm library is the screen', async () => {
+  // IT USED TO BE TWO. A button row offered "Algorithms" and "Pieces", and the pair had no
+  // relationship to state: one is performing a catalogue algorithm, the other is reading a random
+  // stir for where a piece belongs. A first-time reader could not tell what the second even was —
+  // "aren't all these moves already about pieces?" — and neither could the owner (2026-09-29,
+  // option C). Pieces has its own route now, so Drill means one thing.
+  win.location.hash = '#/drill';
+  await tick(); await tick();
+  // SAYS WHAT IT WANTS. The chosen algorithm persists for the life of the page, deliberately — coming
+  // back from a drill lands where you left it — so a probe that navigates and reads whatever is there
+  // inherits whichever test ran before it. This one wants the chooser.
+  if ($$('#algBackToList').length) {
+    $$('#algBackToList')[0].dispatchEvent(new win.Event('click', { bubbles: true }));
+    await tick(); await tick();
+  }
+  assert.equal($$('[data-drill-kind]').length, 0, 'the Drill screen still offers a kind to switch to');
+  assert.ok(!/What to practise/.test($('#stage').textContent), 'the kind row is still drawn');
+  // What IS there: the chooser, and nothing of the other drill.
+  assert.ok(await waitFor(() => $$('#algGroups [data-alg]').length > 0), 'the Drill screen listed no algorithms');
+  assert.equal($$('#drillAsk').length, 0, 'the piece question is still on the Drill screen');
+  assert.equal($$('[data-face]').length, 0, 'the face buttons are still on the Drill screen');
+});
+
+test('Pieces is its own screen, reachable by its own route, and it is the recognition drill', async () => {
+  win.location.hash = '#/pieces';
+  await tick(); await tick();
+  assert.ok(await waitFor(() => $('#drillAsk')?.textContent), 'the Pieces route asked nothing');
+  assert.match($('#drillAsk').textContent, /belong on\?$/, 'the question is not the one this drill asks');
+  assert.equal($$('[data-face]').length, 6, 'six faces to pick is how this drill is answered');
+  // And none of the algorithm drill came with it.
+  assert.equal($$('#algGroups').length, 0, 'the algorithm chooser followed Pieces onto its own screen');
+  assert.equal($$('#algCube').length, 0, 'the algorithm drill followed Pieces onto its own screen');
+});
+
+test('Pieces is a tab the app knows how to hide, and is hidden until asked for', async () => {
+  const { NAV } = await import('../lib/app-state.js');
+  const { DEFAULT_HIDDEN, HIDEABLE } = await import('../lib/app-settings.js');
+  assert.ok(NAV.some(([id]) => id === 'pieces'), 'Pieces is not a tab');
+  assert.ok(HIDEABLE.some(([id]) => id === 'pieces'), 'Pieces cannot be turned on in Settings');
+  assert.ok(DEFAULT_HIDDEN.includes('pieces'), 'Pieces is on the default beginner row');
+  // Beside Drill, because that is where it used to live and where somebody will look for it.
+  const ids = NAV.map(([id]) => id);
+  assert.equal(ids[ids.indexOf('drill') + 1], 'pieces', 'Pieces is not next to the tab it came out of');
+});

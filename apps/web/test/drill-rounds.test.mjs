@@ -143,7 +143,7 @@ test('a degenerate source produces a bad alg, never a hang', () => {
 
 // ---- what the screen may not claim ------------------------------------------------------------
 
-const SCREEN = readFileSync(new URL('../lib/screens/drill/round-play.js', import.meta.url), 'utf8');
+const SCREEN = readFileSync(new URL('../lib/screens/pieces/round-play.js', import.meta.url), 'utf8');
 /**
  * The screen's CODE, with its prose removed — what every "this must not reach a screen" sweep reads.
  *

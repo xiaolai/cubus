@@ -57,6 +57,7 @@ test('every tab has a window title, and the titles that differ from their tab sa
     stats: 'Stats',
     trainer: 'Algorithm trainer',
     drill: 'Drill',
+    pieces: 'Pieces',
     lessons: 'Lessons',
     course: 'Course',
     settings: 'Settings',

@@ -311,7 +311,12 @@ test('the stylesheet answers prefers-reduced-motion, and the renderer reads it t
 // follows and "Try the next rung" permanently raises a dial, so the banner disclaiming both was
 // false. It has its own test below — the rule it has to keep is the same one, and only the banner
 // changed.
-const PREVIEW_SCREENS = ['trainer', 'drill'];
+//
+// NOR IS DRILL, since 2026-09-29. It is the algorithm library and nothing else: it was published at
+// 0.7.3, and the second kind it used to carry — the piece-recognition drill, the half that still
+// disclaims — is its own screen now (option C). The Trainer is the last real preview, so the loop
+// below runs over one id and says so rather than pretending to a set.
+const PREVIEW_SCREENS = ['trainer'];
 
 /** Nothing on this screen may be a measurement of the person using it. */
 const noInventedFigure = (screen, id) => {
@@ -342,24 +347,15 @@ const DISCLAIMER = {
   drill: /nothing is saved between visits/i,
 };
 
-/**
- * The Drill screen, showing the kind you mean.
- *
- * ALWAYS EXPLICIT, never "navigate and assume". The screen has two kinds now, and the choice
- * persists for the life of the page — so a case that reaches `#/drill` and reads whatever is there
- * depends on whichever case ran before it. That is not hypothetical: writing one of these probes
- * without the selection made the very next case in this file fail, on a screen it never touched.
- */
-const goDrillKind = async (kind) => {
-  await go('drill');
-  const pick = document.querySelector(`[data-drill-kind="${kind}"]`);
-  assert.ok(pick, `the Drill screen offers no "${kind}" kind`);
-  if (pick.getAttribute('aria-pressed') !== 'true') { pick.click(); await tick(); }
-};
+// `goDrillKind` IS GONE WITH THE KINDS. The Drill screen had two, chosen from a button row whose
+// selection persisted for the life of the page, so every probe had to state which one it wanted or
+// inherit whatever the previous case left — and one that did not made the NEXT case in this file
+// fail, on a screen it never touched. There is nothing to state now: `#/drill` is the algorithm
+// library, `#/pieces` is the recognition drill, and each is reached by its own route.
 
 test('the preview screens carry no invented figure', async () => {
   for (const id of PREVIEW_SCREENS) {
-    if (id === 'drill') await goDrillKind('algorithms'); else await go(id);
+    await go(id);
     const screen = $('#stage .screen.active');
     assert.match(screen.textContent, DISCLAIMER[id],
       `${id} must say plainly what it does not measure`);
@@ -383,7 +379,7 @@ test('a preview control that would pretend to work is disabled, not silently ine
   for (const b of all('#stage .pill')) {
     assert.equal(b.disabled, true, 'a filter that filters nothing must say so');
   }
-  await goDrillKind('pieces');
+  await go('pieces');
   // The Drill plays real rounds now: its faces and Next DO something and must stay live. What still
   // records nothing is the grade row, and those must not invite a press.
   for (const b of all('#stage [data-face]')) {
@@ -457,19 +453,19 @@ test('every case diagram on the Trainer is the top face its algorithm solves', a
   }
 });
 
-test('the Drill disclaims only the half that does not work — on BOTH of its kinds', async () => {
+test('each practice screen disclaims only the half that does not work', async () => {
   // A banner that disclaims a screen which DOES work teaches a reader to disbelieve the one place
   // the app is telling them something true — the argument the Lessons ladder's own case makes.
   //
-  // BOTH KINDS, because the screen has two now (dev-docs/algorithm-drills-plan.md phase 3) and each
-  // carries its own note. Written against whichever one happens to be the default, this case would
-  // stop covering the other the day the default moved — which is exactly what happened to it.
+  // BOTH SCREENS, because they are two screens now (2026-09-29, option C) and each carries its own
+  // note. This used to drive two KINDS of one screen, and written against whichever was the default it
+  // stopped covering the other the day the default moved — which is exactly what happened to it.
   const disclaims = (banner, what) => {
     assert.doesNotMatch(banner.textContent, /controls do nothing/, `${what}: disclaims something that works`);
     assert.doesNotMatch(banner.textContent, /nothing here is measured/, `${what}: it IS measured`);
   };
 
-  await goDrillKind('algorithms');
+  await go('drill');
   const library = all('#stage .card').find((c) => /nothing is saved between visits/i.test(c.textContent));
   assert.ok(library, 'precondition: the algorithm library says what it does not keep');
   disclaims(library, 'the algorithm library');
@@ -481,7 +477,7 @@ test('the Drill disclaims only the half that does not work — on BOTH of its ki
   assert.match(library.textContent, /scanned and is being tracked/, 'it must name the precondition that really applies');
   assert.doesNotMatch(library.textContent, /when your cube is connected/, 'it promises tracking on connection alone');
 
-  await goDrillKind('pieces');
+  await go('pieces');
   const rounds = all('#stage .card').find((c) => /Results are not saved/.test(c.textContent));
   assert.ok(rounds, 'precondition: the recognition drill says what it does not keep');
   disclaims(rounds, 'the recognition drill');

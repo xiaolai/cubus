@@ -42,7 +42,7 @@ export const APP_SOURCES = Object.freeze([
   // the Course screen's second composition: a lesson playing
   'lib/screens/course/episode-view.js',
   // the Drill screen's rounds
-  'lib/screens/drill/library.js', 'lib/screens/drill/round-play.js',
+  'lib/screens/drill/library.js', 'lib/screens/pieces.js', 'lib/screens/pieces/round-play.js',
   // the cube screen's own parts, 2026-09-14
   'lib/screens/cube/route-race.js', 'lib/screens/cube/speed-menu.js', 'lib/screens/cube/die.js',
   'lib/screens/cube/pattern-menu.js',

@@ -85,6 +85,11 @@ export const NAV = [
   ['stats', 'Stats', 'chart'],
   ['trainer', 'Alg trainer', 'cap'],
   ['drill', 'Drill', 'repeat'],
+  // Beside Drill because that is where it used to live, as a second kind inside it (2026-09-29,
+  // option C): someone who knows the exercise will look for it here. `tag` rather than another grid
+  // or cube silhouette — the question it asks is where a piece BELONGS, which is a labelling of a
+  // place, and no other tab uses it.
+  ['pieces', 'Pieces', 'tag'],
   ['lessons', 'Lessons', 'book'],
   // The narrated course. Hidden by default like the two above it, and for the same reason: the
   // screen is real, what it lists is not part of the app (ADR 0006).

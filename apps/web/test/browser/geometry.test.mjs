@@ -29,6 +29,7 @@ import { webkit } from 'playwright';
 
 import { pace } from '../browser-wait.mjs';
 
+import { NAV } from '../../lib/app-state.js';
 import { fitStage } from '../../lib/stage.js';
 import { freePort } from '../free-port.mjs';
 
@@ -842,7 +843,32 @@ for (const fixture of FIXTURES) {
 // sideways, every control a finger can hit. Stats is seeded with a session: an empty one is a
 // single card and would test nothing.
 
-const SCREENS = ['timer', 'stats', 'trainer', 'drill', 'lessons', 'settings', 'course'];
+const SCREENS = ['timer', 'stats', 'trainer', 'drill', 'pieces', 'lessons', 'settings', 'course'];
+
+/**
+ * Screens measured by a case of their own rather than by the loop below, and why.
+ *
+ * Named so the guard that follows can tell "covered elsewhere" from "forgotten", which is the whole
+ * difference between a list and a relation.
+ */
+const MEASURED_ELSEWHERE = Object.freeze({
+  home: 'the composition and cube-fit cases, which are what the layout contract is about',
+  scan: 'its own fixtures — the live face, the board and the sheet each have a case',
+  scramble: 'the walking composition, measured with the cube screen it shares',
+});
+
+test('every screen the app can route to is measured by some case in this file', () => {
+  // A HAND-MAINTAINED LIST CANNOT NOTICE A NEW SCREEN. `SCREENS` was exactly that, and when Pieces
+  // became a tab of its own (2026-09-29) nothing here would have measured it — the loop would have
+  // gone on passing over seven screens while the eighth overflowed on a phone. Assert the RELATION,
+  // never the list: whatever the app can route to, this file measures or names as measured elsewhere.
+  const routable = [...NAV.map(([id]) => id), 'settings'];
+  const missing = routable.filter((id) => !SCREENS.includes(id) && !Object.hasOwn(MEASURED_ELSEWHERE, id));
+  assert.deepEqual(missing, [], 'a routable screen no geometry case measures');
+  // And the other direction, so a deleted screen does not leave a case navigating to nothing.
+  const stale = SCREENS.filter((id) => !routable.includes(id));
+  assert.deepEqual(stale, [], 'this file measures a screen the app cannot route to');
+});
 const SESSION = JSON.stringify({
   list: Array.from({ length: 14 }, (_, i) => ({ n: 14 - i, time: (12 + ((i * 7) % 9) + i / 10).toFixed(2), scramble: "R U R' U' F2 D L2 B R2 U", at: 1_700_000_000_000 + i * 3_600_000 })),
 });

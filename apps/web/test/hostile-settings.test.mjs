@@ -205,15 +205,14 @@ test('the screens that index a palette draw their colours rather than throwing',
   win.document.querySelector('#algBackToList').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   await tick(); await tick();
 
-  // BOTH kinds of drill are probed, because both are still reachable and both index a palette.
-  // Testing only the one the screen happens to open on would leave the other uncovered the day it
-  // stopped being the default — which is exactly what happened to this case.
-  win.document.querySelector('[data-drill-kind="pieces"]').click();
+  // BOTH PRACTICE SCREENS are probed, because both index a palette. They were two KINDS of the Drill
+  // screen until 2026-09-29 and this case reached the second by clicking its selector; it is its own
+  // route now. Testing only one would leave the other uncovered — which is exactly what happened to
+  // this case when the default kind moved.
+  win.location.hash = '#/pieces';
   await tick();
-  assert.ok(win.document.querySelector('#drillAsk')?.textContent, 'drill asked nothing');
-  assert.equal(win.document.querySelectorAll('#stage [data-face]').length, 6, 'drill drew no faces to pick');
-  win.document.querySelector('[data-drill-kind="algorithms"]').click();
-  await tick();
+  assert.ok(win.document.querySelector('#drillAsk')?.textContent, 'the pieces drill asked nothing');
+  assert.equal(win.document.querySelectorAll('#stage [data-face]').length, 6, 'the pieces drill drew no faces to pick');
 
   win.location.hash = '#/settings';
   await tick();

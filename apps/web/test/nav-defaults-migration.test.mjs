@@ -119,6 +119,37 @@ test('and an install that had Drill visible keeps it visible', () => {
   }
 });
 
+// ---- Pieces became a tab of its own (2026-09-29, option C) ---------------------------------------
+//
+// BY NAME, for the reason above: the loop over `DEFAULT_HIDDEN` cannot tell whether a newly listed id
+// is actually hidden, because adding it to that list also adds it to the loop's own expectation.
+
+test('a fresh install HIDES the Pieces tab', () => {
+  const out = migrateNavDefaults(undefined, DEFAULT_HIDDEN);
+  assert.ok(out.navHidden.includes('pieces'), 'a fresh install shows Pieces — the default row is the beginner path');
+  assert.equal(out.navDefaults, NAV_DEFAULTS_VERSION);
+});
+
+test('an install at any earlier version has Pieces hidden once, and keeps the rest of its choices', () => {
+  // The whole point of a DELTA. Somebody at version 3 who had deliberately brought Timer and Stats
+  // back must not lose them because a Pieces tab was added — applying `DEFAULT_HIDDEN` wholesale is
+  // what that would do, and it is the mistake `NAV_ADDED` exists to prevent.
+  for (const from of [0, 1, 2, 3]) {
+    const out = migrateNavDefaults(from, []);
+    assert.ok(out.navHidden.includes('pieces'), `version ${from} left Pieces visible`);
+  }
+  const brought = migrateNavDefaults(3, []);
+  assert.deepEqual(brought.navHidden, ['pieces'],
+    'the bump re-hid something that had been brought back, instead of adding only what is new');
+});
+
+test('a deliberate choice about Pieces survives the bump', () => {
+  // Nobody can have made one yet — until this version there was no id — but the rule is the rule, and
+  // the day somebody shows the tab a later migration must not take it away.
+  const shown = migrateNavDefaults(4, []);
+  assert.ok(!shown.navHidden.includes('pieces'), 'a record already at 4 was migrated again');
+});
+
 test('Drill is in neither hiding table, which is what publishing it means', () => {
   assert.ok(!DEFAULT_HIDDEN.includes('drill'), 'Drill is still a default-hidden tab');
   assert.ok(HIDEABLE.some(([id]) => id === 'drill'), 'Drill must stay hideable — publishing is not forcing');

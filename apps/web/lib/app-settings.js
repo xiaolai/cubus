@@ -239,6 +239,7 @@ export const HIDEABLE = [
   ['stats', 'Stats'],
   ['trainer', 'Alg trainer'],
   ['drill', 'Drill'],
+  ['pieces', 'Pieces'],
   ['lessons', 'Lessons'],
   ['course', 'Course'],
 ];
@@ -255,7 +256,7 @@ export const HIDEABLE = [
  * everything else is one chord away. In CODE, not only in a stored preference: the hidden set
  * was once a preference alone, and one wiped localStorage brought five placeholder screens back
  * into the toolbar. Version 2 hides the three once for anyone who already ran the app. */
-export const DEFAULT_HIDDEN = ['timer', 'stats', 'trainer', 'lessons', 'course'];
+export const DEFAULT_HIDDEN = ['timer', 'stats', 'trainer', 'pieces', 'lessons', 'course'];
 
 /**
  * What each version ADDED, so a bump applies a delta rather than the whole set.
@@ -280,8 +281,13 @@ const NAV_ADDED = Object.freeze({
   // deliberate hide — so a delta that removed an id could not avoid overriding somebody's choice.
   2: ['timer', 'stats', 'trainer', 'lessons'],
   3: ['course'],
+  // `pieces` left the Drill screen and became a tab of its own (2026-09-29, option C). It is a DELTA
+  // for the same reason `course` was: applying `DEFAULT_HIDDEN` again would re-hide every tab
+  // somebody had deliberately brought back. Nobody has ever chosen to hide or show this id, because
+  // until now there was no id — so hiding it at 4 overrides no choice.
+  4: ['pieces'],
 });
-export const NAV_DEFAULTS_VERSION = 3;
+export const NAV_DEFAULTS_VERSION = 4;
 
 // localStorage is untrusted input: anything in here that is not a hideable id is dropped rather
 // than allowed to silently remove some other nav entry.
