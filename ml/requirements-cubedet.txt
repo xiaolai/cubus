@@ -15,10 +15,16 @@
 torch==2.14.0
 torchvision==0.29.0
 timm==1.0.30
-# 2.1, not the golden harness's 2.3: tensorflow 2.19.0 -- the converter that produced the shipped
-# TFLite, pinned in requirements-export.txt -- requires numpy<2.2, and pip refuses the pair
-# otherwise. It is also the numpy line the training image ran (MANIFEST.json: 2.1.0).
-numpy==2.5.3
+# CAPPED BY PYTHON, not by tensorflow any more. The <2.2 ceiling this pin used to carry was
+# tensorflow 2.19.0's (`numpy<2.2.0,>=1.26.0`); 2.21.0 asks only for `numpy>=1.26.0`, so the pair
+# pip used to refuse now resolves. What still binds is the interpreter: numpy 2.5 requires Python
+# >=3.12 and every ml job here runs 3.11, so 2.4.6 is the newest that installs at all — Dependabot
+# proposed 2.5.3 and the golden harness could not install it.
+#
+# The shipped model was trained under numpy 2.1.0 (MANIFEST.json records it), so a checkpoint
+# produced after this bump records a different environment than the one on disk. That is the point
+# of recording it; it is not a reason to hold the version back.
+numpy==2.4.6
 pillow==12.3.0
 onnx==1.23.0
 onnxruntime==1.30.0
