@@ -13,7 +13,7 @@ import { STICKER_PALETTES } from './sticker-palettes.js';
 import { $, SOLVED, state } from './app-state.js';
 import { DEFAULT_PALETTE, load, save, settings } from './app-settings.js';
 import { classifyCube } from './cube-subject.js';
-import { CUBE_VIEW, VIEW_ATTRS } from './cube-view.js';
+import { CUBE_VIEW, VIEW_ATTRS, WALK_SPEED_KEY, DEFAULT_WALK_SPEED, tempoFor } from './cube-view.js';
 
 // ---- cube element helpers --------------------------------------------------------------------
 //
@@ -107,6 +107,12 @@ export function applyCubeView(el, view = load('cubeView', CUBE_VIEW)) {
   const tuned = tunedView(view);
   el.setAttribute('ghosts', tuned.ghosts ? 'floating' : 'none');
   for (const [key, attr] of VIEW_ATTRS) el.setAttribute(attr, String(tuned[key]));
+  // HOW FAST A TURN IS DRAWN, on EVERY cube rather than on the one screen that has a menu for it.
+  // Left unset, the renderer uses its own 190ms base and a quarter turn is over in a fifth of a
+  // second — the Drill page measured 200ms against 1620ms for the same turn at Normal (2026-09-30).
+  // This is the same shape as the ghosts and the camera above, which this function was written to
+  // end: a look the cube screen owned alone, so every other cube went without.
+  el.setAttribute('tempo-scale', String(tempoFor(load(WALK_SPEED_KEY, { id: DEFAULT_WALK_SPEED }).id)));
   return el;
 }
 

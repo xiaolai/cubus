@@ -15,6 +15,32 @@ import { startBrowserFixture } from './harness.mjs';
 let fixture; let page;
 const errors = [];
 
+/**
+ * Open sune's drill page from scratch.
+ *
+ * A HELPER RATHER THAN JUST A `before`, because one case here navigates to Home to prove that
+ * leaving stops the driver — and anything after it inherits Home, where `#algMoves` does not
+ * exist and a click waits thirty seconds for a selector that is never coming. A case that needs
+ * the drill page says so instead of depending on the order it happens to run in.
+ */
+async function openSuneDrill() {
+  await page.goto(`${fixture.base}/index.html#/drill`);
+  await page.waitForSelector('.screen.active');
+  // THE SCREEN REMEMBERS WHICH ALGORITHM WAS CHOSEN, so re-entering `#/drill` renders the drill
+  // PAGE rather than the chooser — and then waiting for a card waits for something that is never
+  // coming. Go back to the list first when that is where we have landed.
+  if (await page.$('#algBackToList')) {
+    await page.click('#algBackToList');
+    await page.waitForTimeout(150);
+  }
+  await page.waitForSelector('#algGroups [data-alg]');
+  await page.click('#scopeAll');
+  await page.waitForSelector('#algGroups [data-alg="sune"]');
+  await page.click('#algGroups [data-alg="sune"]');
+  await page.waitForSelector('#algCube cubus-cube');
+  await page.waitForTimeout(300);
+}
+
 before(async () => {
   fixture = await startBrowserFixture();
   page = await fixture.browser.newPage();
@@ -191,4 +217,39 @@ test('play runs the demonstration and leaving the screen stops it', async () => 
   await page.waitForTimeout(2000);
   assert.equal(await page.evaluate(() => window.__calls), 0, 'a driver kept driving after the screen was left');
   assert.deepEqual(errors, [], 'playback continued into a screen that had been left');
+});
+
+test('a demonstrated turn is slow enough to WATCH, not just slow enough to count', async () => {
+  // THE ASSERTION THAT WAS MISSING, and the reason the defect shipped past a green suite. The case
+  // above checks that pressing Next drives the element — it counts calls into it, and a call costs
+  // the same whether the turn takes 200ms or 1.6s. So it passed while `tempo-scale` was never set
+  // on this screen's cube at all and the renderer used its own 190ms base: a quarter turn over in a
+  // fifth of a second, which a child reads as the cube having simply changed (measured 2026-09-30,
+  // 200ms here against 1620ms on the cube screen for the same turn).
+  //
+  // Measured as DURATION because that is what "no animation" actually means to the person watching.
+  await openSuneDrill();
+  await page.click('#algMoves button[data-i="0"]');
+  await page.waitForTimeout(400);
+  const el = '#algCube cubus-cube';
+
+  const tempo = await page.evaluate((sel) => document.querySelector(sel)?.getAttribute('tempo-scale'), el);
+  assert.ok(tempo !== null, 'the drill cube carries no tempo-scale, so the renderer picks its own');
+
+  const ms = await page.evaluate(async (sel) => {
+    const cube = document.querySelector(sel);
+    document.querySelector('#algNext').click();
+    let ticks = 0;
+    for (let i = 0; i < 200; i++) {
+      if (cube.animating) ticks += 1;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    return ticks * 20;
+  }, el);
+
+  // 760ms was the complaint that produced the speed menu — the speed a real person called too fast.
+  // Nothing the app draws should turn faster than the thing that was already too fast.
+  assert.ok(ms >= 700, `a demonstrated quarter turn took about ${ms}ms, which reads as a snap`);
+  // And an upper bound, so a future tempo of 0 does not pass this by animating for ever.
+  assert.ok(ms <= 5000, `a demonstrated quarter turn took about ${ms}ms, which is not a turn but a wait`);
 });
