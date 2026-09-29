@@ -253,3 +253,75 @@ test('a demonstrated turn is slow enough to WATCH, not just slow enough to count
   // And an upper bound, so a future tempo of 0 does not pass this by animating for ever.
   assert.ok(ms <= 5000, `a demonstrated quarter turn took about ${ms}ms, which is not a turn but a wait`);
 });
+
+test('the demonstration follows the cube in the child\'s hands', async () => {
+  // THE PAGE'S PROMISE: the cube on screen is the cube you are holding (owner, 2026-09-30). The
+  // demonstration and the live attempt used to be entirely separate, so turning your own cube moved
+  // nothing. Driven through the app's OWN hooks and its own `state`, imported by URL so the page
+  // gets the same module instances the app is running — a second copy would prove nothing.
+  await openSuneDrill();
+  await page.addScriptTag({
+    type: 'module',
+    content: `
+      import { state } from '/lib/app-state.js';
+      import { hooks } from '/lib/screen-slots.js';
+      import { chainTrusted } from '/lib/cube-trust-state.js';
+      import { entryById } from '/lib/alg-catalogue.js';
+      import { SOLVED, applyAlg, invert, movesOf, toFacelets } from '/lib/cube-pieces.js';
+      window.__follow = { state, hooks, chainTrusted, entryById, SOLVED, applyAlg, invert, movesOf, toFacelets };
+    `,
+  });
+  await page.waitForFunction(() => Boolean(window.__follow));
+
+  const said = () => page.evaluate(() => document.querySelector('#algAt')?.textContent?.trim());
+  const tempo = () => page.evaluate(() => document.querySelector('#algCube cubus-cube')?.getAttribute('tempo-scale'));
+
+  // A cube that is connected and believed. Set on the app's own state, because that is what the
+  // screen asks — an unproven radio is refused, and this feature must not bypass that.
+  const trusted = await page.evaluate(() => {
+    const { state, chainTrusted } = window.__follow;
+    state.connected = true;
+    state.cube.trusted = true;
+    state.cube.source = 'cube';
+    return chainTrusted();
+  });
+  assert.equal(trusted, true, 'precondition: the app does not consider this cube trusted');
+
+  // Step 1: a solved cube. The algorithm returns the case to solved, so solved is the LAST
+  // position — the counter proving the mirror moved at all.
+  await page.evaluate(() => {
+    const { hooks, SOLVED, toFacelets } = window.__follow;
+    hooks.liveUpdate(toFacelets(SOLVED), 0);
+  });
+  await page.waitForTimeout(500);
+  assert.match(await said(), /7 of 7/, `a solved cube did not move the demonstration to its end (said "${await said()}")`);
+  assert.equal(await tempo(), '1', 'while following, the demonstration still animates at the watching tempo');
+
+  // Step 2: the printed set-up, which is the algorithm inverted — so the mirror walks backwards.
+  await page.evaluate(() => {
+    const { hooks, entryById, invert, movesOf } = window.__follow;
+    const sune = entryById('sune');
+    movesOf(invert(sune.scanAlg)).forEach((notation, i) => {
+      hooks.liveMove({ notation, serial: i + 1, cubeTimestamp: (i + 1) * 400, timestamp: (i + 1) * 400 });
+    });
+  });
+  await page.waitForTimeout(600);
+  assert.match(await said(), /0 of 7/, `the set-up did not walk the demonstration to the case (said "${await said()}")`);
+
+  // Step 3: three turns of the algorithm move it on by exactly three.
+  await page.evaluate(() => {
+    const { hooks, entryById, movesOf } = window.__follow;
+    const sune = entryById('sune');
+    const n = movesOf(window.__follow.invert(sune.scanAlg)).length;
+    movesOf(sune.scanAlg).slice(0, 3).forEach((notation, i) => {
+      hooks.liveMove({ notation, serial: n + 1 + i, cubeTimestamp: (n + 1 + i) * 400, timestamp: (n + 1 + i) * 400 });
+    });
+  });
+  await page.waitForTimeout(600);
+  assert.match(await said(), /3 of 7/, `three turns did not move the demonstration to 3 (said "${await said()}")`);
+
+  // And taking the transport back restores the watching tempo, so a press is watchable again.
+  await page.click('#algNext');
+  await page.waitForTimeout(200);
+  assert.notEqual(await tempo(), '1', 'pressing the transport left the demonstration at the following tempo');
+});

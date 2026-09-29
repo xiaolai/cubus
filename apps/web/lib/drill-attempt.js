@@ -331,6 +331,15 @@ export function createDrillAttempt({
     get entry() { return entry; },
     /** Which of the page's two numbered steps the cube is on. */
     get phase() { return phase; },
+    /**
+     * WHERE THE CHILD'S CUBE IS, as 54 facelets — or null while tracking is lost.
+     *
+     * Read by the screen so the DEMONSTRATION can mirror the cube in the child's hands. This
+     * attempt already reconstructs the arrangement move by move in order to judge it, so handing
+     * that out is one source of truth being shared; a screen applying the reports itself would be
+     * a second, and two objects that must agree about where a cube is eventually do not.
+     */
+    get cube() { return model; },
     /** Whether this attempt will report a time at all, and why not when it will not. */
     get timing() {
       return Object.freeze({ on: timeable, refusal: timeable ? null : timingRefusal });

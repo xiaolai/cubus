@@ -30,12 +30,13 @@ import { holdForStage, holdSentence } from '../../solving-hold.js';
 import { createDrillAttempt } from '../../drill-attempt.js';
 import { buildScript } from '../../script-view.js';
 import { createStopDriver } from '../../script-drive.js';
+import { DEFAULT_WALK_SPEED, WALK_SPEED_KEY, tempoFor } from '../../cube-view.js';
 import { chainTrusted } from '../../cube-trust-state.js';
 import { liveSerial } from '../../cube-reports.js';
 import { conn } from '../../live-session.js';
 import { newCube, parkCube } from '../../cube-drawing.js';
 import { hooks } from '../../screen-slots.js';
-import { settings } from '../../app-settings.js';
+import { load, settings } from '../../app-settings.js';
 import { state } from '../../app-state.js';
 import { play } from '../../sound.js';
 import { plural, t } from '../../i18n.js';
@@ -446,6 +447,10 @@ let scope = 'rung';
 export function mountLibrary(root, { make = createDrillAttempt, signal, go = () => {} } = {}) {
   let attempt = null;
   let demo = null;
+  /** The demonstration's element, kept so the tempo can be changed while a hand is driving it. */
+  let cubeEl = null;
+  /** True while the demonstration is mirroring a real cube rather than being played. */
+  let following = false;
   let lastEvent = null;
   let gone = false;
   let ticking = null;
@@ -525,9 +530,53 @@ export function mountLibrary(root, { make = createDrillAttempt, signal, go = () 
     showStatus();
   }
 
+  /**
+   * THE DEMONSTRATION FOLLOWS THE CUBE IN THE CHILD'S HANDS, whenever there is one to follow.
+   *
+   * The screen shows two things about one algorithm: a demonstration that can be played, and a
+   * live attempt that judges. They were entirely separate, so a child turning their own cube saw
+   * nothing move on screen — and the page's whole promise is that the cube on screen is the cube
+   * they are holding. `observe` is the driver's own seam for this ("A CUBE IN A HAND OUTRANKS THE
+   * CLOCK") and it already stops any playback that was running underneath.
+   *
+   * IT SELF-GATES ON THE TRACK. The set-up is the algorithm inverted, so a child building the case
+   * walks the demonstration's positions BACKWARDS from the end and the screen mirrors that too;
+   * anything not on the track answers `off` and moves nothing. Verified over a real report stream
+   * rather than assumed: `drill-follow.test.mjs`.
+   *
+   * AND AT THE HAND'S TEMPO, NOT THE WATCHING ONE. A demonstration is drawn slowly on purpose —
+   * 1.9s a quarter turn at Normal — and a child performing seven turns in three seconds would
+   * leave the screen eight seconds behind them. While following, the tempo is the renderer's own
+   * 1 (190ms), which is the same choice the cube screen's speed menu makes for the same reason.
+   */
+  function mirror(mine) {
+    if (!demo || !cubeEl || mine !== attempt) return;
+    const at = mine.cube;
+    if (!at || !chainTrusted()) return;
+    if (!following) {
+      following = true;
+      cubeEl.setAttribute('tempo-scale', '1');
+    }
+    demo.observe(at);
+    showTransport();
+  }
+
+  /** Give the demonstration its watching tempo back — it is being played, not followed. */
+  function unfollow() {
+    if (!following) return;
+    following = false;
+    if (cubeEl) {
+      cubeEl.setAttribute('tempo-scale', String(tempoFor(load(WALK_SPEED_KEY, { id: DEFAULT_WALK_SPEED }).id)));
+    }
+  }
+
   /** One press of the transport. `pause`, never `stay` — the driver has no `stay`. */
   function drive(id, index) {
     if (!demo) return;
+    // PRESSING THE TRANSPORT IS TAKING THE DEMONSTRATION BACK, so it returns to the watching tempo.
+    // Without this a child who turned their cube once would watch every later press fly past at
+    // 190ms, which is the defect this screen already had for a different reason.
+    unfollow();
     if (id === 'algPlay') { if (demo.playing) demo.pause(); else demo.play({ every: REVEAL_GAP }); }
     if (id === 'algNext') demo.next();
     if (id === 'algBack') demo.back();
@@ -566,8 +615,8 @@ export function mountLibrary(root, { make = createDrillAttempt, signal, go = () 
     });
     attempt = mine;
     for (const [slot, fn] of Object.entries({
-      liveMove: (m) => { if (mine === attempt) mine.move(m); },
-      liveUpdate: (f, serial) => { if (mine === attempt) mine.facelets(f, serial); },
+      liveMove: (m) => { if (mine === attempt) { mine.move(m); mirror(mine); } },
+      liveUpdate: (f, serial) => { if (mine === attempt) { mine.facelets(f, serial); mirror(mine); } },
       onTrustLost: () => { if (mine === attempt) mine.trustLost(); },
       liveGap: () => { if (mine === attempt) mine.movesLost(); },
     })) { hooks[slot] = fn; installed.set(slot, fn); }
@@ -597,6 +646,7 @@ export function mountLibrary(root, { make = createDrillAttempt, signal, go = () 
       // had just given them. `owned` is the seam for exactly this ("attributes the host owns are
       // never written"), and the host here owns the whole tuned view: a demonstration is about the
       // turns, not about re-framing the cube.
+      cubeEl = el;
       demo = createStopDriver(demoScript(entry), { cube: el, owned: OWNED_VIEW });
     }
     startAttempt();
