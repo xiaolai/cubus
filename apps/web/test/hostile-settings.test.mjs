@@ -80,7 +80,6 @@ before(async () => {
     solveTier: 'eleven',
     dragRotate: 'no',
     soundMode: 'deafening',
-    spokenLines: 'not an object',
     devScanView: 'preview',
     cameraId: { nope: true },
   }));
@@ -139,11 +138,11 @@ test('an unknown palette is repaired at load, and the repair is saved', async ()
   // A sound mode that does not exist is the default, not a silent app and not a crash.
   assert.equal(settings.soundMode, 'chime', 'a sound mode that does not exist was believed');
   assert.equal(stored.soundMode, 'chime');
-  // And the edited spoken lines are an object, whatever storage held. The fixture supplies a STRING
-  // above: without one these assertions read the default and would have passed against `null` too
-  // (audit, 2026-09-20).
-  assert.deepEqual(settings.spokenLines, {}, 'a hostile spokenLines record was believed');
-  assert.deepEqual(stored.spokenLines, {}, 'the hostile record was not written back as an object');
+  // The edited spoken lines used to be repaired here too. They are gone with the voice (owner,
+  // 2026-09-30), and the key is DROPPED from the record rather than left to rot — a field nothing
+  // reads is a field `save()` keeps rewriting for ever.
+  assert.ok(!('spokenLines' in settings), 'a setting nothing reads is still being kept');
+  assert.ok(!('spokenLines' in stored), 'a dead key was written back to storage');
 });
 
 test('every screen renders over hostile settings, and the stage is actually replaced', async () => {

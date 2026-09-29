@@ -49,7 +49,9 @@ test('a record that is not an object takes the DEFAULT sound mode, not the legac
   }
   // And the two real records either side of it still mean what they always meant.
   assert.equal((await bootOver('{"sounds":false}')).mod.settings.soundMode, 'off', 'a chosen silence was lost');
-  assert.equal((await bootOver('{}')).mod.settings.soundMode, 'voice', 'an install predating the split lost its words');
+  // `{}` predates the soundMode split. It used to land on `voice` — the bell AND the words — and
+  // with the words deleted (2026-09-30) the bell is what is left of that intent.
+  assert.equal((await bootOver('{}')).mod.settings.soundMode, 'chime', 'an install predating the split lost its sounds');
   assert.equal((await bootOver('{"soundMode":"off"}')).mod.settings.soundMode, 'off', 'a modern record was not read');
   assert.equal((await bootOver(null)).mod.settings.soundMode, 'chime', 'a first launch did not take the default');
 });
@@ -60,16 +62,6 @@ test('a stored string does not become numeric settings keys', async () => {
   const { mod } = await bootOver('"text"');
   const numeric = Object.keys(mod.settings).filter((k) => /^[0-9]+$/.test(k));
   assert.deepEqual(numeric, [], `a string record became settings keys: ${numeric.join(',')}`);
-});
-
-test('editing spoken lines does not write through to the defaults', async () => {
-  // The merge is shallow, so on a first launch `settings.spokenLines` WAS the default object.
-  const { mod } = await bootOver(null);
-  assert.notEqual(mod.settings.spokenLines, mod.DEFAULT_SETTINGS.spokenLines, 'settings alias the default object');
-  mod.settings.spokenLines.open = 'edited';
-  assert.deepEqual(mod.DEFAULT_SETTINGS.spokenLines, {}, 'an edit reached the defaults');
-  // And the default is frozen, so a write that escapes the allocation fails rather than lands.
-  assert.ok(Object.isFrozen(mod.DEFAULT_SETTINGS.spokenLines), 'the default spoken lines are not frozen');
 });
 
 test('the stored record is read once, so a store that changes cannot persist the older answer', async () => {
@@ -84,5 +76,5 @@ test('the stored record is read once, so a store that changes cannot persist the
   const mod = await import(`../lib/app-settings.js?record=${seq++}`);
   const settingsReads = reads.filter((k) => k === 'cubusSettings').length;
   assert.equal(settingsReads, 1, `cubusSettings was read ${settingsReads} times during one boot`);
-  assert.equal(mod.settings.soundMode, 'voice', 'the first answer is the one that was used');
+  assert.equal(mod.settings.soundMode, 'chime', 'the first answer is the one that was used');
 });

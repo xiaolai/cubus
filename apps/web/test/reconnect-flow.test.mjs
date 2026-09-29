@@ -450,13 +450,11 @@ test('one mismatched side continues into the full repair scan, sides kept — an
 
   // The scan goes back to the question's screen as it is accepted; "All done" is said as it goes and is
   // not cut off by the jump (round-3 audit; the chime's half is held by test/scan-screen.test.mjs).
-  const speech = await import('../lib/speech.js');
   const sound = await import('../lib/sound.js');
   const { settings } = await import('../lib/app-settings.js');
-  const { SPOKEN } = await import('../lib/screens/scan/spoken.js');
   // The same installation the scan screen's own sound cases use (test/sound-stand-ins.mjs).
-  const stand = installSoundStandIns({ sound, speech, settings });
-  const { made, voice } = stand;
+  const stand = installSoundStandIns({ sound, settings });
+  const { made } = stand;
   // The gesture reaches the listener the app installed at boot; registering the same callback again is
   // ignored by EventTarget (audit, 2026-09-19).
   win.document.dispatchEvent(new win.Event('pointerdown'));
@@ -466,7 +464,7 @@ test('one mismatched side continues into the full repair scan, sides kept — an
       detail: { facelets: W, rotations: [0, 0, 0, 0, 0, 0] },
     }));
     await tick();
-    assertFinishedFeedbackSurvived({ made, voice, done: SPOKEN.done });
+    assertFinishedFeedbackSurvived({ made });
   } finally {
     stand.restore();
   }

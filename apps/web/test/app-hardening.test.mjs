@@ -17,7 +17,7 @@ import { readFileSync } from 'node:fs';
 import { Window } from 'happy-dom';
 import Cube from '../vendor/cubejs.js';
 import { solverLoaded } from './fixtures/app-waits.mjs';
-import { audioStandIn, speechStandIn } from './sound-stand-ins.mjs';
+import { audioStandIn } from './sound-stand-ins.mjs';
 
 const SOLVED_FACELETS = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
@@ -138,9 +138,12 @@ test('every sound mode has a label and a blurb of its own', async () => {
   assert.deepEqual(keysOf('SOUND_BLURB'), modes, 'a mode has no blurb, or a blurb has no mode');
 });
 
-test('Settings offers three sound modes, Chime by default, and a press keeps the choice', async (t) => {
-  // One boolean became three modes on 2026-09-20: the only way to stop a repeated spoken line used
-  // to be silencing the bell a child depends on.
+test('Settings offers two sound modes, Sounds by default, and a press keeps the choice', async (t) => {
+  // One boolean became three modes on 2026-09-20, because the only way to stop a repeated spoken
+  // line was silencing the bell a child depends on — and two on 2026-09-30, when the spoken lines
+  // were deleted and a sound per state replaced them. The pills are built from
+  // `Object.values(SOUND_MODES)`, so a mode removed there removes its button here; the list below
+  // is written out on purpose, as the thing that notices.
   //
   // RESTORED WHATEVER HAPPENS. This mutates a PERSISTED setting, and restoring it on the success
   // path alone meant one failed assertion left every later test — in this file and the next — with a
@@ -155,7 +158,7 @@ test('Settings offers three sound modes, Chime by default, and a press keeps the
   });
   await go('settings');
   const pill = (mode) => $(`[data-set-sound="${mode}"]`);
-  const MODES = ['voice', 'chime', 'off'];
+  const MODES = ['chime', 'off'];
   for (const mode of MODES) assert.ok(pill(mode), `there is no ${mode} choice`);
   /** The modes drawn as chosen — by `aria-pressed` and by the class, which must agree. */
   const pressed = () => MODES.filter((m) => pill(m).getAttribute('aria-pressed') === 'true');
@@ -191,27 +194,19 @@ test('choosing a quieter mode stops a chime and a line already under way', async
     else win.localStorage.setItem('cubusSettings', wasStored);
   });
   const sound = await import('../lib/sound.js');
-  const speech = await import('../lib/speech.js');
   const { ctx, made: oscillators } = audioStandIn({ state: 'running' });
-  const voice = speechStandIn();
   const wasAudio = sound.useAudioContextFactory(() => ctx);
-  const wasVoice = speech.useSpeechEngine(voice.make);
   try {
     await go('settings');
     // The gesture reaches the listener the app installed at boot: registering the same callback again
     // is ignored by EventTarget, so a second call here would prove nothing (audit, 2026-09-19).
     win.document.dispatchEvent(new win.Event('pointerdown'));
-    $('[data-set-sound="voice"]').click();
+    $('[data-set-sound="chime"]').click();
     await tick();
     assert.equal(sound.play('capture'), true, 'precondition: a chime is sounding');
-    speech.say('Got it!');
-    assert.deepEqual(voice.said.at(-1), 'Got it!', 'precondition: a line is being said');
     $('[data-set-sound="off"]').click();
     await tick();
     assert.equal($('[data-set-sound="off"]').getAttribute('aria-pressed'), 'true');
-    // The line CUT OFF is the one that was being said — one synth throughout, so "something was
-    // cancelled" cannot stand in for it (audit, 2026-09-19).
-    assert.equal(voice.cuts.at(-1), 'Got it!', 'the line under way was left speaking');
     // NOT VACUOUS, AND NOT MERELY COUNTED (audit, 2026-09-20). `every` on an empty list is true, so
     // this passed if the chime was never made at all; and counting stops cannot tell a note that was
     // SCHEDULED to end from one cut short. `stopAll()` asks for `stop()` with no time, which the
@@ -221,20 +216,15 @@ test('choosing a quieter mode stops a chime and a line already under way', async
       oscillators.every((o) => o.stops.at(-1) === undefined),
       'a note was left to finish on its own schedule rather than cut off',
     );
-    // LEAVING VOICE FOR THE BELL MUST ALSO CUT THE WORDS — the mode a person picks precisely because
-    // the words were too much. `hush()` runs on every change for this; only `off` stops the bell too.
-    $('[data-set-sound="voice"]').click();
-    await tick();
-    speech.say('Still talking');
-    $('[data-set-sound="chime"]').click();
-    await tick();
-    assert.equal(voice.cuts.at(-1), 'Still talking', 'the bell-only mode left a line speaking');
+    // THE SPOKEN HALF OF THIS CASE IS GONE (owner, 2026-09-30). It also proved that leaving `voice`
+    // for the bell cut a line mid-word — the mode a person picked precisely because the words were
+    // too much. With the words deleted there are two modes and one thing to stop, and `hush()` went
+    // with them.
     // The mode this test changed is put back by `t.after`, which runs however this ends.
   } finally {
-    // Put back what was there, rather than leaving the next test a platform with no audio and no
-    // voice (audit, 2026-09-19).
+    // Put back what was there, rather than leaving the next test a platform with no audio
+    // (audit, 2026-09-19).
     sound.useAudioContextFactory(wasAudio);
-    speech.useSpeechEngine(wasVoice);
   }
 });
 
@@ -1285,49 +1275,3 @@ test('a platform that takes the lock back again and again is asked with a growin
   }
 });
 
-test('the editable spoken lines: an edit sticks, a bad one is refused out loud, Reset puts it back', async (t) => {
-  // The card had no DOM test at all — only its validation helpers were covered — so Advanced
-  // disclosure, the change and reset handlers, persistence and the refusal message were all
-  // unexercised on the one path that speaks to a child (audit, 2026-09-20).
-  const { settings } = await import('../lib/app-settings.js');
-  const { SPOKEN } = await import('../lib/screens/scan/spoken.js');
-  const wasLines = { ...settings.spokenLines };
-  t.after(() => { settings.spokenLines = wasLines; });
-  const chord = () => win.document.dispatchEvent(new win.KeyboardEvent('keydown', {
-    code: 'KeyD', ctrlKey: true, altKey: true, metaKey: true, repeat: false, bubbles: true,
-  }));
-  await go('settings');
-  isAbsent($('[data-spoken="open"]'), 'the lines were editable without opening Advanced');
-  chord();
-  await tick();
-  t.after(async () => { chord(); await tick(); });
-  const field = $('[data-spoken="open"]');
-  assert.ok(field, 'Advanced does not offer the spoken lines');
-  assert.equal(field.value, SPOKEN.open, 'the field did not start at the line in force');
-
-  // An edit is kept, in memory and in storage.
-  field.value = 'Hold up any side.';
-  field.dispatchEvent(new win.Event('change'));
-  await tick();
-  assert.equal(settings.spokenLines.open, 'Hold up any side.');
-  assert.equal(JSON.parse(win.localStorage.getItem('cubusSettings')).spokenLines.open, 'Hold up any side.');
-
-  // A bad one is refused OUT LOUD and changes nothing — silently reverting would look like an edit
-  // that did not take.
-  const why = $('#spokenWhy-savedSide');
-  const named = $('[data-spoken="savedSide"]');
-  // An edit that drops `%1` — the side's colour. Kept, it would announce every capture without
-  // saying which side was saved, which is the whole of what the line is for.
-  named.value = 'Got it! Show me another one.';
-  named.dispatchEvent(new win.Event('change'));
-  await tick();
-  assert.ok(why.textContent.length > 0, 'a refused edit said nothing');
-  assert.equal(why.hidden, false, 'the refusal was written but left hidden');
-  assert.equal(settings.spokenLines.savedSide, undefined, 'a refused edit was stored anyway');
-
-  // Reset puts the default back and stops being an override.
-  $('[data-spoken-reset="open"]').click();
-  await tick();
-  assert.equal($('[data-spoken="open"]').value, SPOKEN.open);
-  assert.ok(!Object.hasOwn(settings.spokenLines, 'open'), 'Reset left the default stored as an override');
-});

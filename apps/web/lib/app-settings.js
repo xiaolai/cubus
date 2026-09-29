@@ -67,7 +67,12 @@ export const SCAN_VIEWS = Object.freeze({ today: 'today', stickers: 'dots' });
  *  it is how a child who cannot read hears a side land -- and it costs a beginner nothing; the
  *  spoken lines are the part that talks over a person who did not ask for them, so they are opt-in.
  *  An install that already stored a mode keeps it; the migration below is unchanged. */
-export const SOUND_MODES = Object.freeze({ voice: 'voice', chime: 'chime', off: 'off' });
+/**
+ * TWO MODES, NOT THREE. `voice` is gone (owner, 2026-09-30): the spoken lines were judged worse
+ * than nothing, and a sound per state says what they said. A stored `'voice'` is simply not a mode
+ * any more, so the repair below lands it on the default — which IS the bell it used to include.
+ */
+export const SOUND_MODES = Object.freeze({ chime: 'chime', off: 'off' });
 /** What a fresh install gets and what every repair below falls back to — one table, so the two
  *  cannot come to disagree about a default. */
 export const DEFAULT_SETTINGS = Object.freeze({
@@ -81,13 +86,6 @@ export const DEFAULT_SETTINGS = Object.freeze({
   // documented missing-first-move bias at 10-25% rather than under 1% — which is why the row that
   // turns it on says what the number can and cannot be compared with.
   drillClock: false,
-  // What the scan says out loud, where a line has been edited in Settings -> Advanced. Keyed by the
-  // line's name in lib/screens/scan/spoken.js, which owns the defaults and the repair: this file
-  // must not import a screen's module (AGENTS.md, the one-way dependency), so all it promises is
-  // that the value is an object.
-  // Frozen like its parent, so a write that escapes the fresh-object allocation below FAILS rather
-  // than silently editing every reader's defaults.
-  spokenLines: Object.freeze({}),
 });
 /** Every setting whose default is a boolean — DERIVED, so a new flag is repaired the moment it has a
  *  default, and no list kept by hand can leave one out (audit, 2026-09-19: the tests' own copies had
@@ -146,21 +144,23 @@ const storedSound = storedSettings;
 //   storage held an unusable one    modern, corrupted       -> the default
 // The middle one is the only place the legacy boolean may speak, and it is recognised by the
 // ABSENCE of the key rather than by the value being unusable.
+// AND THE MIDDLE CASE HAS COLLAPSED, which is worth saying rather than quietly dropping. The
+// legacy boolean meant "the bell AND the words", and it was kept distinct from the default
+// precisely because the two stopped being the same answer. With the words gone there is one
+// affirmative answer left, so `sounds: true` and a fresh install now agree — not because the
+// distinction was abandoned but because the thing it preserved no longer exists. A chosen SILENCE
+// is still a choice and still survives, which is the half that always mattered.
 const preSplit = storedSound !== null && !('soundMode' in storedSound);
 if (!Object.values(SOUND_MODES).includes(storedSound?.soundMode)) {
-  settings.soundMode = preSplit
-    ? (storedSound.sounds === false ? SOUND_MODES.off : SOUND_MODES.voice)
+  settings.soundMode = preSplit && storedSound.sounds === false
+    ? SOUND_MODES.off
     : DEFAULT_SETTINGS.soundMode;
 }
 delete settings.sounds;
-// Edited spoken lines are untrusted input like everything else in this file. Only that it is an
-// object is promised here; WHICH keys are real, and how long a line may be, is
-// lib/screens/scan/spoken.js's to say, because that is where the lines live.
-// A FRESH OBJECT EVERY TIME, not only when the stored one is unusable. The merge above is shallow,
-// so on a first launch `settings.spokenLines` WAS `DEFAULT_SETTINGS.spokenLines` — editing a spoken
-// line wrote through to the defaults, and every later reader of the default got the edit (audit,
-// 2026-09-29). The outer `Object.freeze` does not reach a nested object.
-settings.spokenLines = { ...asRecord(settings.spokenLines) };
+// The edited spoken lines are GONE with the voice they were for (owner, 2026-09-30). Dropped from
+// the record rather than left to rot, on the `inspection` precedent below: a field nothing reads is
+// a field `save()` keeps rewriting for ever.
+delete settings.spokenLines;
 // The inspection flag is gone (it toggled a label, never a behaviour); drop the stored leftover
 // rather than letting save() keep rewriting a field nothing reads — the advancedOpen precedent.
 delete settings.inspection;

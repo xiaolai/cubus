@@ -24,6 +24,27 @@ const SOUNDS = Object.freeze({
   // `capture` because it is the same length but goes down. Not an alarm, not a rebuke, and not
   // repeated — `lib/drill-attempt.js` raises it once per excursion, never once per report.
   off: [[440, 0], [392, 0.09]],
+  // ---- the three the VOICE used to carry (owner, 2026-09-30) ---------------------------------
+  //
+  // The spoken lines are gone: a sound per state is the whole vocabulary now. These three are the
+  // states the scan had words for and no tone at all, so a child scanning by ear was told nothing.
+  // Each is placed against the two affirmative sounds above rather than chosen on its own, because
+  // a vocabulary is only useful if its members cannot be mistaken for one another.
+  //
+  // ALREADY GOT THAT SIDE. Two notes at ONE pitch: it is not a reward and it is not a mistake, it
+  // is "nothing happened, show me another". Flat is what says that — `capture` rises and `off`
+  // falls, so level is the only reading left, and it cannot be confused with either.
+  again: [[523.25, 0], [523.25, 0.11]],
+  // THE SCAN HAS STOPPED AND IS WAITING FOR YOU. The one moment the scan needs a person, and until
+  // the voice was added it went up with a chime a child could not tell from any other. Two rising
+  // PAIRS — a doorbell, asked twice — so it is a summons rather than an event: the rhythm is what
+  // distinguishes it, not the pitch, because `capture` is also a rising interval and a single pair
+  // would have been the same gesture at a different height.
+  ask: [[587.33, 0], [783.99, 0.1], [587.33, 0.26], [783.99, 0.36]],
+  // SOMETHING IS WRONG; FETCH A GROWN-UP. Low and falling, and slower than `off`: a failure a
+  // person has to deal with, not a turn to undo. Still not a buzzer — the lowest note here is an
+  // octave below the others, which is what carries "this is not for you to fix" without a rebuke.
+  help: [[349.23, 0], [261.63, 0.14]],
 });
 const NOTE_S = 0.18;
 /** Quiet on purpose: a chime beside a child's ear, not an alarm. */

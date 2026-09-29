@@ -29,7 +29,7 @@ import { createStickerPicker } from './scan/sticker-picker.js';
 import { createConfirmHold } from './scan/confirm-hold.js';
 import { createScanChime } from './scan/chime.js';
 import { createStickerView } from './scan/sticker-view.js';
-import { createSpokenScan } from './scan/spoken.js';
+import { createScanCues } from './scan/cues.js';
 import { createIdentityAsk } from './scan/identity-ask.js';
 
 // Restore — the screen that reads your cube so it can be solved. Its route id stays `scan`, and
@@ -213,8 +213,10 @@ SCREENS.scan = () => {
       // A chime for each side saved and another when the cube checks out
       // (lib/screens/scan/chime.js); silenced with the screen.
       const chime = createScanChime({ panel, signal });
-      // And the few lines said out loud, where the system has a voice (lib/screens/scan/spoken.js).
-      const spoken = createSpokenScan({ panel, signal });
+      // And the states that get a sound of their own — a side already held, a question waiting on a
+      // person, something a grown-up has to look at (lib/screens/scan/cues.js). The spoken lines
+      // these replace were deleted on 2026-09-30: a sound per state, and no words.
+      createScanCues({ panel, signal });
       // The scan-guidance study's sticker view (lib/screens/scan/sticker-view.js), in the twin's slot
       // while a scan reads — only where the developer setting turns the arm on.
       const stickerView = createStickerView({
@@ -434,10 +436,10 @@ SCREENS.scan = () => {
       }, { signal });
       /** A finished reading this screen BELIEVES, taken as the subject — ONE transaction for a
        *  reading the camera made and one authored by hand, which had each written it out and
-       *  already differed in order (audit-fix, 2026-09-21): the refusal lifted; the chime and
-       *  "All done" — the scan is ACCEPTED here, not when the scanner said complete, since a
-       *  finished scan can still be refused before this, so here is where the child hears it
-       *  (lib/screens/scan/chime.js and spoken.js); the adoption with its source; the memory —
+       *  already differed in order (audit-fix, 2026-09-21): the refusal lifted; the checked-out
+       *  chime — the scan is ACCEPTED here, not when the scanner said complete, since a finished
+       *  scan can still be refused before this, so here is where the child hears it
+       *  (lib/screens/scan/chime.js); the adoption with its source; the memory —
        *  a camera reading over a connected cube that has reported is the moment the chain became
        *  trusted, worth remembering with the cube's own raw claim beside it, and a painting is
        *  remembered nowhere, since nobody looked; the chip row, AFTER the adoption because it is
@@ -448,7 +450,6 @@ SCREENS.scan = () => {
       const acceptReading = (fl, { physical, source, remember = true }) => {
         refusal.accept();
         chime.accepted();
-        spoken.accepted();
         adoptCube(fl, { physical, source });
         if (remember && physical && state.connected && state.reported) rememberLastSeen('camera', { force: true });
         void paintStageChips(fl);

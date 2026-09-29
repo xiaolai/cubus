@@ -6,7 +6,7 @@
 // `sides` (ScanProgress in packages/cube-scanner); a report without it is refused here, loudly, rather
 // than quietly counted the way the count exists to replace (round-3 audit).
 
-/** How many sides a cube has, and so the most a report can hold. Exported because `spoken.js`
+/** How many sides a cube has, and so the most a report can hold. Exported because `cues.js`
  *  counts down from it, and two files each declaring 6 is two places for the cube to change shape. */
 export const SIDES = 6;
 

@@ -32,104 +32,20 @@ for (const engine of ['webkit', 'chromium']) {
       page.on('pageerror', (e) => logged.push(`pageerror: ${e.message}`));
       await page.goto(`${fixture.base}/#/settings`);
       // The sound control, which is how this test knows Settings is drawn. It was a single toggle
-      // until 2026-09-20 and is three pills now (voice / chime / off); this suite is in the BROWSER
-      // tier, which `pnpm check:fast` does not run, so the rename went unnoticed through a green
-      // fast gate. `settings-key-drift.test.mjs` is the guard that makes the next one loud.
-      await page.waitForSelector('[data-set-sound="voice"]');
+      // until 2026-09-20, then three pills (voice / chime / off), and two since 2026-09-30 when the
+      // spoken lines were deleted. This suite is in the BROWSER tier, which `pnpm check:fast` does
+      // not run, so each rename has gone unnoticed through a green fast gate —
+      // `settings-key-drift.test.mjs` is the guard that makes the next one loud, and waiting on the
+      // mode that SURVIVED rather than a named casualty is what stops this line breaking again.
+      await page.waitForSelector('[data-set-sound="chime"]');
       const state = () => page.evaluate(async () => (await import('/lib/sound.js')).audioState());
       assert.equal(await state(), 'none', 'audio existed before anyone touched the page');
       await page.mouse.click(4, 4);
       await page.waitForFunction(async () => (await import('/lib/sound.js')).audioState() === 'running', null, { timeout: 10_000 });
       assert.equal(await page.evaluate(async () => (await import('/lib/sound.js')).play('capture')), true);
-      // The system voice (lib/speech.js): offered where the engine has one, and saying a line raises
-      // nothing. Whether a voice is actually HEARD is not something a headless engine can tell.
-      // Queued is not spoken: the platform fails a line asynchronously, after `say()` has returned and
-      // after this evaluate would have (audit, 2026-09-19). So the failure channel is armed first and
-      // the page is given time to use it, and the line is only called good if nothing came back.
-      const spoke = await page.evaluate(async () => {
-        const speech = await import('/lib/speech.js');
-        // VOICE IS ASKED FOR, NOT INHERITED. The default sound mode became `chime` on 2026-09-21, and
-        // `say()` is gated on the mode — so a test about whether the PLATFORM can speak has to select
-        // the mode that speaks, or it measures the default instead of the engine.
-        (await import('/lib/app-settings.js')).settings.soundMode = 'voice';
-        const can = typeof speechSynthesis === 'object' && typeof SpeechSynthesisUtterance === 'function';
-        if (!can) return { can, said: null, failure: null, settled: null };
-        // Every call, as it arrived: a message saying "null" cannot tell a handler that never ran from
-        // one that reported nothing, and one CI round per guess is too slow (2026-09-19).
-        const failures = [];
-        const calls = [];
-        // The utterance's OWN terminal event, not a fixed wait: a failure arriving a moment after
-        // whatever span this test guessed would go unseen (audit, 2026-09-19). A line that neither
-        // ends nor fails inside the bound is reported as that, rather than as a pass.
-        let settle;
-        const done = new Promise((r) => {
-          settle = r;
-        });
-        let reason = null;
-        let spoken = null;
-        /** Every utterance this engine made, so "which line failed" is answerable. */
-        const made = [];
-        const engine = {
-          synth: speechSynthesis,
-          Utterance: class extends SpeechSynthesisUtterance {
-            constructor(text) {
-              super(text);
-              spoken = this;
-              made.push(text);
-              this.addEventListener('end', () => settle('ended'));
-              this.addEventListener('error', (e) => {
-                // Only the line THIS test asked for: another utterance failing would be a different
-                // claim, and the two channels below are about one line (CI, 2026-09-19).
-                if (this !== spoken) return;
-                reason = e.error ?? 'unnamed';
-                settle('error');
-              });
-            }
-          },
-        };
-        const was = speech.useSpeechEngine(() => engine);
-        const said = speech.say('Got it!', 'en', {
-          onFail: (e) => {
-            calls.push(String(e));
-            failures.push(e);
-          },
-        });
-        const settled = await Promise.race([
-          done,
-          new Promise((r) => setTimeout(() => r('still speaking after 10s'), 10_000)),
-        ]);
-        // LET THE REST OF THE LISTENERS RUN. `done` resolves inside the FIRST listener on the
-        // utterance, and a promise taken there resumes at the microtask checkpoint between listeners —
-        // so reading the app's failure channel here reads it before the app's own listener has run.
-        // On a runner with no voices that looked exactly like a channel that never fires: 0 calls, an
-        // empty page log, and an utterance that had plainly failed (CI, 2026-09-19).
-        await new Promise((r) => setTimeout(r, 50));
-        speech.hush();
-        speech.useSpeechEngine(was);
-        return {
-          can, said, settled, reason, calls,
-          failure: failures[0] ?? null,
-          voices: speechSynthesis.getVoices().length,
-          utterances: made.length,
-        };
-      });
-      assert.equal(spoke.can, true, `${engine} has no speechSynthesis`);
-      assert.equal(spoke.said, true);
-      // A line either FINISHES, or the platform says it cannot speak — a CI runner has the API and no
-      // voices installed, and that is a fact about the machine, not a defect (CI, 2026-09-19). What
-      // must never happen is the one reason that WOULD be ours: `not-allowed`, which is the engine
-      // saying a gesture was needed, after this test has already clicked.
-      assert.notEqual(spoke.reason, 'not-allowed', `${engine} wanted another gesture after the click`);
-      const voiceless = new Set(['canceled', 'interrupted', 'synthesis-failed', 'synthesis-unavailable',
-        'voice-unavailable', 'language-unavailable', 'audio-busy', 'audio-hardware']);
-      assert.ok(spoke.settled === 'ended' || voiceless.has(spoke.reason),
-        `${engine} ended the line as ${spoke.settled} (${spoke.reason}), with ${spoke.voices} voices`);
-      // …and whichever happened, the two channels agree: a failure the caller was told about is a
-      // failure the utterance reported, and a cut-off is not reported as a failure at all.
-      assert.equal(spoke.failure, spoke.reason && !['canceled', 'interrupted'].includes(spoke.reason) ? spoke.reason : null,
-        `${engine}: onFail was called ${spoke.calls.length} time(s) with [${spoke.calls}] and the utterance `
-        + `said ${spoke.reason}, over ${spoke.utterances} line(s) with ${spoke.voices} voices; `
-        + `the page said: ${logged.join(' | ') || '(nothing)'}`);
+      // THE SPOKEN LINES ARE GONE (owner, 2026-09-30), and with them the reason this case also
+      // asked whether the engine could speak. The app has no voice to offer, so there is no
+      // platform capability left to measure here — only whether audio starts, above.
       await context.close();
     } finally {
       await fixture.close();

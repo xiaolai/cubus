@@ -80,7 +80,7 @@ const UNMEASURED = [
 const sentencesOf = (href) => walk(read(new URL(href))).sentences;
 
 test('no sentence the scan can show names a cause the scanner never measured', () => {
-  assert.ok(SOURCES.some((f) => f.endsWith('/spoken.js')), "the import walk found none of the screen's modules");
+  assert.ok(SOURCES.some((f) => f.endsWith('/cues.js')), "the import walk found none of the screen's modules");
   assert.ok(SOURCES.some((f) => f.endsWith('/solving-hold.js')), 'the import walk stopped at the screen’s own folder');
   assert.ok(SOURCES.length > 20, `the import walk reached only ${SOURCES.length} files`);
   const found = [];
