@@ -19,7 +19,7 @@ import { caseNameOf } from '../lib/method-lesson.js';
 import { CUBE_VIEW, VIEW_ATTRS } from '../lib/cube-view.js';
 import { newCube } from '../lib/cube-drawing.js';
 import { SOLVED_FACELETS } from '../lib/solved.js';
-import { MIN_TIMEABLE_REPORTS, TOO_SHORT, UNNUMBERED, UNSOLVED, createDrillAttempt } from '../lib/drill-attempt.js';
+import { ATTEMPT_STATES, MIN_TIMEABLE_REPORTS, TOO_SHORT, UNNUMBERED, UNSOLVED, createDrillAttempt } from '../lib/drill-attempt.js';
 import { showMove } from '../lib/solving-hold.js';
 import { blockAt } from './app-source.mjs';
 
@@ -668,4 +668,76 @@ test('every entry states an order that repetition actually reaches — all 137',
     const line = /<div[^>]*id="algOrder"[^>]*>(.*?)<\/div>/s.exec(drillPageHtml(entry));
     assert.match(line[1], new RegExp(`\\b${repeats}\\b`), `${entry.id}: the page states a different number`);
   }
+});
+
+// ---- what the verify pass of 2026-09-29 found unprotected ------------------------------------
+//
+// Four fixes landed with no test that would notice them being undone. The verify restored all four
+// in memory and watched thirty library tests stay green, which is the only proof that matters here.
+
+test('an ended attempt says what happened and what to do about it', () => {
+  // A trust lapse is terminal: showing the cube again does not revive the attempt, so the sentence
+  // must name the thing that does. It used to fall through to '' and the screen went blank while
+  // the drill looked like it was still running.
+  const said = statusFor({ kind: 'ended', why: 'trust', phase: 'solve' });
+  assert.ok(said.length > 0, 'an ended attempt left the status blank');
+  assert.match(said, /again/i, 'it does not say how to start over');
+  // And it is NOT the lost-tracking sentence, which asks for something that would not help.
+  assert.ok(!/camera again/.test(said), 'an ended attempt asked for the cube like a recoverable one');
+});
+
+test('the algorithm grid declares no list it does not have', () => {
+  // `role="list"` over a grid of buttons describes children that are not there.
+  const html = libraryHtml({ scope: 'all' });
+  assert.match(html, /class="case-grid"/, 'the grid is gone entirely, so this checks nothing');
+  assert.ok(!/case-grid"\s+role="list"/.test(html), 'the grid still claims to be a list');
+  assert.ok(!/role="list"/.test(html), 'a list role is declared somewhere in the chooser');
+});
+
+test('an untimed run clears the comparison, so the next one does not quote a stale time', async () => {
+  // "your last try was 4.00s" after a run that HAD no time: the store kept only successes, so the
+  // sentence named a try that was not the last one (audit, 2026-09-29).
+  const { mountLibrary } = await import('../lib/screens/drill/library.js');
+  await openChooser();
+  $$('[data-alg="sune"]')[0].dispatchEvent(new win.Event('click', { bubbles: true }));
+  await tick(); await tick();
+  win.cubusGo('home');
+  await tick(); await tick();
+
+  let live = null;
+  const make = (opts) => { live = { opts, move() {}, facelets() {}, trustLost() {}, movesLost() {}, dispose() {} }; return live; };
+  const root = win.document.createElement('div');
+  win.document.body.appendChild(root);
+  root.innerHTML = drillLibraryHtml();
+  const mounted = mountLibrary(root, { make, go: () => {} });
+  try {
+    const timeText = () => root.querySelector('#algTime')?.textContent ?? '';
+    live.opts.onEvent({ kind: 'done', state: 'done', time: { ms: 4000, moves: 7, seconds: '4.00' }, refusal: null });
+    await tick();
+    assert.match(timeText(), /4\.00/, 'precondition: the first time was shown');
+
+    live.opts.onEvent({ kind: 'done', state: 'done', time: null, refusal: 'no clock' });
+    await tick();
+
+    live.opts.onEvent({ kind: 'done', state: 'done', time: { ms: 3000, moves: 7, seconds: '3.00' }, refusal: null });
+    await tick();
+    const said = timeText();
+    assert.match(said, /3\.00/, 'the newest time is not shown');
+    assert.ok(!/4\.00/.test(said), `a run with no time left the older number standing: "${said}"`);
+  } finally {
+    mounted.dispose?.();
+    root.remove();
+  }
+});
+
+test('every state the attempt can enter is one ATTEMPT_STATES names', () => {
+  // A SOURCE SWEEP, because the guard inside `go()` cannot be reached from out here: there is no
+  // input that makes the module ask for a state it does not have, so a test driving the attempt
+  // passes whether the guard is there or not (verify, 2026-09-29). What CAN go wrong is someone
+  // adding a `go('paused')` and not the list, and that is what this reads.
+  const src = readFileSync(new URL('../lib/drill-attempt.js', import.meta.url), 'utf8');
+  const asked = [...src.matchAll(/\bgo\(\s*'([a-z-]+)'/g)].map((m) => m[1]);
+  assert.ok(asked.length >= 5, `the sweep found only ${asked.length} transitions, so it is reading nothing`);
+  const unknown = [...new Set(asked)].filter((k) => !ATTEMPT_STATES.includes(k));
+  assert.deepEqual(unknown, [], `the module enters states ATTEMPT_STATES does not name: ${unknown.join(', ')}`);
 });

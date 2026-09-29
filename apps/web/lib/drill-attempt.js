@@ -1,4 +1,4 @@
-// One drill attempt: a chosen algorithm, performed from wherever the cube already is.
+// One drill attempt: a chosen algorithm, set up from a solved cube and then solved.
 //
 // dev-docs/algorithm-drills-plan.md phase 1. ONE owner for the whole attempt — the cube's three
 // report streams, the attempt's identity, the track, the clock and the teardown — because the app
@@ -90,6 +90,17 @@ export const TOO_SHORT = 'too short to time — a span needs two turns, and only
  */
 export const UNNUMBERED = 'this cube does not number its turns, so a drill on it is not timed';
 
+/**
+ * Why a clock-enabled drill has no time when nothing more specific applies.
+ *
+ * `lose()` resets the timer, which erases the timer's OWN reason and leaves it unable to rearm
+ * mid-run. A drill that lost tracking and then finished therefore reported `{time: null, refusal:
+ * null}` — the clock was on, no number came out, and the screen printed an empty string, so it read
+ * as a broken toggle. Snapshot-only completion produced the same silence. A refusal outlives the
+ * timer because it is the ATTEMPT's claim, not the clock's (audit, 2026-09-29).
+ */
+export const NOT_FOLLOWED = 'this run was not followed all the way through, so it was not timed';
+
 /** The states an attempt can be in. `uncertain` is not a failure: it is the app saying it has lost
  *  track, which is a different thing from the child having gone wrong. */
 export const ATTEMPT_STATES = Object.freeze(['waiting', 'ready', 'running', 'off', 'uncertain', 'done', 'ended']);
@@ -115,7 +126,9 @@ export function createDrillAttempt({
   let state = 'waiting';
   /** Which of the page's two numbered steps the cube is on. */
   let phase = /** @type {'setup' | 'solve'} */ ('setup');
-  /** The arrangement the attempt was seeded from, and the one the clock arms on. */
+  /** The arrangement the attempt was seeded from — a SOLVED cube. Not what the clock arms on:
+   *  that is `caseState`, reached when the set-up finishes, because building the case is not part
+   *  of a drill time. */
   let from = null;
   /** Where the cube is, as facelets, rebuilt from the reports. Null until seeded. */
   let model = null;
@@ -127,9 +140,36 @@ export function createDrillAttempt({
    *  are what makes a recovery computable rather than guessed. */
   let lastOn = 0;
   let since = [];
+  /**
+   * The ARRANGEMENT a recovery has to land back on — which is not always a whole track position.
+   *
+   * A midpoint of a half turn is ON the track but is not one of `track.states`, so anchoring the
+   * replay at `track.states[lastOn]` anchored it one whole step too early. Coming back to a
+   * confirmed midpoint and then deviating again therefore produced `recovery: null`: the undo was
+   * correct and the check it was measured against was not, so the child was told they had gone
+   * wrong and offered nothing (audit, 2026-09-29, reproduced on `drop-in` with `B U U' U`).
+   */
+  let anchor = null;
   let lastSerial = null;
   /** True while off the track, so the cue fires once per excursion rather than once per report. */
   let excursion = false;
+  /**
+   * Whether the report stream has been shown CONTINUOUS — one serial validated as following
+   * another.
+   *
+   * A baseline is not continuity, and NEITHER IS AGREEMENT BETWEEN TWO MOVES. Waiting for a second
+   * validated report was the first attempt at this and it was not enough: seeded with no serial,
+   * drop the child's first turn, and reports two and three follow one another perfectly — they
+   * establish continuity between THEMSELVES while the model has already missed a move, so the
+   * fourth report is judged against an arrangement the cube was never in (verify, 2026-09-29).
+   *
+   * Continuity is a claim that the MODEL MATCHES THE CUBE, so it can only start at something
+   * authoritative: a snapshot, which replaces the model outright, and which must carry a serial for
+   * the next move to be placed against it. From there consecutive serials carry it forward, and any
+   * gap ends it. A stream that never numbers its reports never gets here at all — `numbersMoves()`
+   * has already stopped it.
+   */
+  let continuous = false;
   let disposed = false;
   let timer = null;
 
@@ -142,7 +182,14 @@ export function createDrillAttempt({
 
   const emit = (event) => { if (!disposed) onEvent(Object.freeze({ ...event, state })); };
 
-  const go = (next, event = {}) => { state = next; emit({ kind: next, ...event }); };
+  const go = (next, event = {}) => {
+    // `ATTEMPT_STATES` was exported and read by nothing, so it constrained nothing and a typo'd
+    // state would have travelled to the screen as an unknown event kind (audit, 2026-09-29). Now
+    // it is the list this checks against, which is the only thing that makes publishing it honest.
+    if (!ATTEMPT_STATES.includes(next)) throw new Error(`drill-attempt: "${next}" is not an attempt state`);
+    state = next;
+    emit({ kind: next, ...event });
+  };
 
   /** Where the cube is on the track. Every progress-bearing event carries this, from whichever
    *  input produced it — a `running` emitted bare left the screen printing its own placeholders,
@@ -170,6 +217,10 @@ export function createDrillAttempt({
     // "the cube's clock reset mid-solve", which is false — nothing reset, there was simply nothing
     // to subtract from. At two or more, any refusal is the timer's own and is about the span.
     if (timeable && !result && stamped === MIN_TIMEABLE_REPORTS - 1) timingRefusal = TOO_SHORT;
+    // NEVER A SILENT NOTHING. With the clock on, a completion with no time says why — the specific
+    // reason when there is one, and otherwise that the run was not followed all the way. With the
+    // clock OFF there is nothing to explain, and `timeable` is what tells the two apart.
+    if (timeable && !result) timingRefusal ??= timer?.refusal ?? NOT_FOLLOWED;
     // `refusal` is a GETTER on the timer, not a method. Reading it as a call threw a TypeError on
     // exactly the path this feature is about — a drill that finished but could not be timed — and
     // no test caught it, because every case that HAD a refusal had no timer built, so the optional
@@ -183,13 +234,22 @@ export function createDrillAttempt({
     model = null;
     since = [];
     excursion = false;
+    // Continuity is a claim about the stream, and the stream just broke. Re-established the same
+    // way it was established the first time: by two reports that follow one another.
+    continuous = false;
+    // The clock cannot rearm mid-run, so a timed attempt that reaches here will produce no number.
+    // Said now, while the reason is known; `timer.reset()` below is about to erase the clock's own.
+    if (timeable) timingRefusal ??= NOT_FOLLOWED;
     timer?.reset();
     go('uncertain', { why });
   };
 
   /** The attempt is over without a verdict — trust lapsed, or the screen moved on. */
   const end = (why) => {
-    if (state === 'ended') return;
+    // A COMPLETED ATTEMPT IS FINISHED, and a late trust lapse must not take its verdict away.
+    // `move()`, `facelets()` and `movesLost()` all guard `done`; this did not, so `trustLost()`
+    // after a completion replaced the result with `ended` (audit, 2026-09-29).
+    if (state === 'ended' || state === 'done') return;
     timer?.reset();
     go('ended', { why });
   };
@@ -212,6 +272,7 @@ export function createDrillAttempt({
     at = 0;
     lastOn = 0;
     since = [];
+    anchor = model;
     excursion = false;
   }
 
@@ -258,7 +319,7 @@ export function createDrillAttempt({
     // under their hand is B (audit, 2026-09-27) — the same frame confusion ADR 0003 exists to stop,
     // reappearing in a sentence rather than in a track.
     const back = toFacelets(applyAlg(stateFrom(model), undo));
-    if (back !== track.states[lastOn]) return null;
+    if (back !== anchor) return null;
     const hold = String(entry.hold).split(' ');
     return movesOf(undo).map((m) => showMove(m, hold)).join(' ');
   }
@@ -301,12 +362,18 @@ export function createDrillAttempt({
         // Asked at the seed, which is the first instant the answer is both needed and known. The
         // clock itself is not built until the set-up is done; this only settles whether there can
         // be one at all.
+        // The seed is a snapshot: it makes the model true, and its serial is what the first move
+        // is placed against. With no serial there is nothing to place anything against yet.
+        continuous = Number.isFinite(serial);
         if (timeable && !numbersMoves()) { timeable = false; timingRefusal = UNNUMBERED; }
         go('ready', progress());
         return state;
       }
       // A real snapshot re-establishes where the cube is, which is also how an attempt comes back
       // from `uncertain` — the one thing that can answer "show me the cube again".
+      // A snapshot replaces the model, so the model is true again — and continuity resumes from
+      // here exactly when this snapshot can be placed against the moves that follow it.
+      continuous = Number.isFinite(serial);
       const was = at;
       const found = locate(track, f, at);
       if (found.kind === 'off') {
@@ -316,6 +383,8 @@ export function createDrillAttempt({
       at = found.kind === 'step' ? found.idx : at;
       lastOn = at;
       since = [];
+      // The arrangement the snapshot actually showed, which for a `mid` is not `states[at]`.
+      anchor = f;
       // A snapshot that puts the cube back on the track ENDS the excursion. Left standing, its
       // undo instruction described a deviation the cube is no longer in (audit, 2026-09-27).
       const wasOff = excursion;
@@ -371,8 +440,10 @@ export function createDrillAttempt({
 
       if (found.kind === 'off') {
         // Off the track. On a cube that cannot say whether a report went missing, this is not
-        // reportable as a wrong turn — so it is not reported at all.
-        if (!numbersMoves()) return state;
+        // reportable as a wrong turn — so it is not reported at all. The same applies before the
+        // stream has been shown continuous: a numbering cube whose FIRST report we have seen tells
+        // us nothing about the reports we have not.
+        if (!numbersMoves() || !continuous) return state;
         // The SOUND fires once per excursion; the INSTRUCTION follows every turn of it. Frozen at
         // the first, it kept naming an undo that no longer reaches the track once a second wrong
         // turn had been made (audit, 2026-09-27).
@@ -389,13 +460,14 @@ export function createDrillAttempt({
         // Part way through a half turn, which is ON the track — so an excursion that has just
         // come back to one is over. Returning silently left the undo instruction standing over a
         // cube that no longer needed it (audit verify, 2026-09-27).
-        if (excursion) { excursion = false; since = []; go('running', progress()); }
+        if (excursion) { excursion = false; since = []; anchor = model; go('running', progress()); }
         return state;
       }
 
       at = found.idx;
       lastOn = at;
       since = [];
+      anchor = track.states[at];
       excursion = false;
 
       if (atEnd()) {

@@ -31,6 +31,7 @@ import { createDrillAttempt } from '../../drill-attempt.js';
 import { buildScript } from '../../script-view.js';
 import { createStopDriver } from '../../script-drive.js';
 import { chainTrusted } from '../../cube-trust-state.js';
+import { liveSerial } from '../../cube-reports.js';
 import { conn } from '../../live-session.js';
 import { newCube, parkCube } from '../../cube-drawing.js';
 import { hooks } from '../../screen-slots.js';
@@ -168,7 +169,12 @@ const entryCard = (e) => {
 
 const groupBlock = (g) => `<div data-dial="${escHtml(g.dial)}">
   <div class="eyebrow">${escHtml(g.name)} · ${escHtml(plural(g.entries.length, { one: '%1 algorithm', other: '%1 algorithms' }))}</div>
-  <div class="case-grid" role="list">${g.entries.map(entryCard).join('')}</div>
+  <!-- NO LIST ROLE HERE. Its children are buttons, not list items, so declaring one described a
+       structure that was not there (audit, 2026-09-29). The grid is a grid, and the eyebrow above
+       already says how many algorithms it holds. The role attribute is not even spelled in this
+       comment, because this comment SHIPS: it is inside the template literal, and a test that
+       greps the rendered chooser for one would otherwise find it here. -->
+  <div class="case-grid">${g.entries.map(entryCard).join('')}</div>
 </div>`;
 
 /**
@@ -266,6 +272,10 @@ export function statusFor(event) {
       return event.recovery ? t('%1 Undo it with %2.', what, event.recovery) : what;
     }
     case 'uncertain': return t('I lost track of your cube. Show it to the camera again.');
+    // AN ENDED ATTEMPT IS TERMINAL, and saying nothing made it look like the drill was still
+    // running. It is NOT the same as `uncertain`: showing the cube again does not revive it, so the
+    // sentence names the one thing that does (audit, 2026-09-29).
+    case 'ended': return t('The drill stopped because your cube stopped being followed. Choose it again to start over.');
     case 'done': return t('Done.');
     default: return '';
   }
@@ -480,8 +490,11 @@ export function mountLibrary(root, { make = createDrillAttempt, signal, go = () 
     if (next) next.disabled = at >= of;
     // THE CHIP FOR THE TURN JUST MADE, which is what a learner reads position off — the same mark
     // the walk puts on its own chips.
-    for (const chip of root.querySelectorAll('.chip-m')) {
-      chip.classList.toggle('on', Number(chip.dataset.i) === at - 1);
+    // `cur`, WHICH IS THE CLASS THE STYLESHEET DEFINES. `on` matched no rule, so the turn a
+    // learner is meant to be reading had no mark at all — and the selector swept the set-up spans
+    // in as well, whose `data-i` is undefined (audit, 2026-09-29).
+    for (const chip of root.querySelectorAll('#algMoves button[data-i]')) {
+      chip.classList.toggle('cur', Number(chip.dataset.i) === at - 1);
     }
     if (demo.playing && ticking === null) {
       ticking = setInterval(() => {
@@ -541,7 +554,11 @@ export function mountLibrary(root, { make = createDrillAttempt, signal, go = () 
           // be taken: two consecutive attempts both read as a bare time with nothing to beat, which
           // is the one thing a repeated drill is for.
           const prior = seen.get(chosen) ?? null;
-          if (event.time) seen.set(chosen, event.time);
+          // RECORDED WHATEVER HAPPENED, including a completion that could not be timed. Storing
+          // only successes left the older number standing, so 4.00s then an untimed run then
+          // 3.00s said "your last try was 4.00s" — and the last try had no time at all
+          // (audit, 2026-09-29). The sentence is about the last try; so is the record.
+          seen.set(chosen, event.time ?? null);
           showTiming(event, prior);
         }
         if (event.kind === 'off' && event.sound) play('off');
@@ -554,7 +571,11 @@ export function mountLibrary(root, { make = createDrillAttempt, signal, go = () 
       onTrustLost: () => { if (mine === attempt) mine.trustLost(); },
       liveGap: () => { if (mine === attempt) mine.movesLost(); },
     })) { hooks[slot] = fn; installed.set(slot, fn); }
-    if (state.live && chainTrusted()) attempt.facelets(state.live, null);
+    // SEEDED WITH THE STREAM'S OWN SERIAL, not with null. The attempt refuses to call a turn wrong
+    // until it has seen one report follow another, so a seed carrying no number cost the first turn
+    // of every drill its judgment — and before that guard existed, it was worse: the first turn was
+    // judged against a baseline that could already have missed a report (audit, 2026-09-29).
+    if (state.live && chainTrusted()) attempt.facelets(state.live, liveSerial());
   }
 
   // ---- the drill page ------------------------------------------------------------------------
@@ -564,8 +585,12 @@ export function mountLibrary(root, { make = createDrillAttempt, signal, go = () 
       parkCube();
       const el = newCube({ subject: caseSubject(entry.setup) });
       slot.replaceChildren(el);
-      const [up, front] = String(entry.hold).split(' ');
-      if (typeof el.turnTo === 'function') void el.turnTo(up, front);
+      // THE SCRIPT ESTABLISHES THE HOLD, and this screen does not also. `demoScript` declares
+      // `start.hold`, and the driver's first load has no previous hold to tumble from, so it takes
+      // the instant `write('orientation', ...)` branch — which superseded the `turnTo(up, front)`
+      // that used to run on the line above, cancelling its animation mid-flight. Two owners for one
+      // fact, and the loser was doing the work (audit, 2026-09-29). `drill-hold.test.mjs` holds the
+      // hold that actually reaches the element.
       // THE VIEW IS THIS SCREEN'S, NOT THE SCRIPT'S. A driver writes `ghosts`, the camera and the
       // elevation from its script's cues on every position, defaulting `ghosts` to `'none'` — so a
       // demonstration with no cues stripped the ghost faces straight back off the cube `newCube`
@@ -587,8 +612,16 @@ export function mountLibrary(root, { make = createDrillAttempt, signal, go = () 
     if (e.target.closest?.('#algBackToList')) { chosen = null; go(); return; }
     if (e.target.closest?.('#scopeRung')) { scope = 'rung'; go(); return; }
     if (e.target.closest?.('#scopeAll')) { scope = 'all'; go(); return; }
-    const chip = e.target.closest?.('.chip-m');
-    if (chip) { drive(null, Number(chip.dataset.i)); return; }
+    // THE ALGORITHM'S CHIPS ONLY. The set-up turns are `.chip-m` spans too, and they carry no
+    // `data-i` — clicking one passed NaN to `seek`, which threw "script-drive: null is not a
+    // position" and stopped playback (audit, 2026-09-29). Matched by the row that owns them, and
+    // the index is checked rather than trusted, because a chip is markup and markup can change.
+    const chip = e.target.closest?.('#algMoves button[data-i]');
+    if (chip) {
+      const i = Number(chip.dataset.i);
+      if (Number.isInteger(i) && i >= 0) drive(null, i);
+      return;
+    }
     const tbtn = e.target.closest?.('.transport button');
     // The restart is OUTSIDE `drive`, which returns early with no demonstration: a page whose cube
     // slot never mounted still has a live attempt to start again.

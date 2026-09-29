@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { ALG_ENTRIES, entryById } from '../lib/alg-catalogue.js';
-import { MIN_TIMEABLE_REPORTS, TOO_SHORT, UNNUMBERED, UNSOLVED, createDrillAttempt } from '../lib/drill-attempt.js';
+import { ATTEMPT_STATES, MIN_TIMEABLE_REPORTS, NOT_FOLLOWED, TOO_SHORT, UNNUMBERED, UNSOLVED, createDrillAttempt } from '../lib/drill-attempt.js';
 import { SOLVED, applyAlg, invert, movesOf, toFacelets } from '../lib/cube-pieces.js';
 import { METHOD_FRAME, METHOD_TO_SCAN, holdForStage, holdSpec, renameAlg } from '../lib/solving-hold.js';
 
@@ -569,4 +569,110 @@ test('coming back to a midpoint ends the excursion', () => {
   assert.equal(attempt.state, 'off');
   attempt.move({ notation: "U'", serial: 12, cubeTimestamp: 1800 });  // back to the midpoint
   assert.notEqual(attempt.state, 'off', 'the attempt still describes a deviation it has left');
+});
+
+// ---- what the mini audit of 2026-09-29 found -------------------------------------------------
+
+test('a baseline is not continuity: the first report never accuses', () => {
+  // The screen seeded with no serial, so the first report established the baseline AND was judged
+  // against it in the same breath. Drop the child's first turn and the next one arrives describing
+  // an arrangement the model never reached — so a turn they made correctly was called wrong.
+  const { attempt, kinds } = rig({ seedSerial: null, setUp: false });
+  const setup = movesOf(invert(sune.scanAlg));
+  // The report for the child's FIRST set-up turn never arrives; the rest do, perfectly numbered.
+  attempt.move({ notation: setup[1], serial: 12, cubeTimestamp: 5000 });
+  assert.ok(!kinds().includes('off'), 'the first report with nothing behind it accused the child');
+  // AND THE ONES AFTER IT. Two reports that follow one another establish continuity between
+  // THEMSELVES while the model has already missed a move — so waiting for a second validated
+  // report was not enough, and the third report was judged against an arrangement the cube was
+  // never in (verify, 2026-09-29). Continuity can only start at a snapshot, which is authoritative.
+  attempt.move({ notation: setup[2], serial: 13, cubeTimestamp: 5400 });
+  attempt.move({ notation: setup[3], serial: 14, cubeTimestamp: 5800 });
+  assert.ok(!kinds().includes('off'), 'reports agreeing with each other were taken for continuity');
+  // A SNAPSHOT restores it, because a snapshot replaces the model rather than extending it.
+  attempt.facelets(SOLVED_FACELETS, 20);
+  attempt.move({ notation: 'F', serial: 21, cubeTimestamp: 6200 });
+  assert.ok(kinds().includes('off'), 'a snapshot with a serial did not restore judgment');
+  // And a seed that DID carry a serial judges from the very first turn — the guard is not a mute.
+  const armed = rig({ setUp: false });
+  armed.attempt.move({ notation: 'F', serial: 10, cubeTimestamp: 1000 });
+  assert.ok(armed.kinds().includes('off'), 'a wrong first turn on an anchored stream was not caught');
+});
+
+test('a clock that was on never reports a time of nothing with no reason', () => {
+  // `lose()` resets the timer, erasing the clock's own reason and leaving it unable to rearm. A
+  // drill that lost tracking and then finished reported {time: null, refusal: null}; the screen
+  // prints '' for that, so the child turned the clock on and got silence.
+  const lost = rig({ clock: true, now: () => 0 });
+  feed(lost.attempt, 'R D', { from: 10 });
+  lost.attempt.movesLost();
+  const at2 = toFacelets(applyAlg(applyAlg(SOLVED, invert(sune.scanAlg)), 'R D'));
+  lost.attempt.facelets(at2, 20);
+  feed(lost.attempt, movesOf(sune.scanAlg).slice(2).join(' '), { from: 21 });
+  const a = lost.events.at(-1);
+  assert.equal(a.kind, 'done');
+  assert.equal(a.time, null, 'precondition: a run that lost tracking is not timed');
+  assert.equal(a.refusal, NOT_FOLLOWED, 'a clock-enabled run produced neither a time nor a reason');
+
+  // The other silent shape: the cube arrives at the end by snapshot, having been followed by none.
+  const jumped = rig({ clock: true, now: () => 0 });
+  jumped.attempt.facelets(SOLVED_FACELETS, 30);
+  const b = jumped.events.at(-1);
+  assert.equal(b.kind, 'done');
+  assert.ok(b.refusal, 'a snapshot-only completion produced neither a time nor a reason');
+
+  // And with the clock OFF there is nothing to explain, so it must still say nothing.
+  const off = rig({ clock: false });
+  feed(off.attempt, sune.scanAlg);
+  assert.equal(off.events.at(-1).refusal, null, 'the toggle being off became a refusal to explain');
+});
+
+test('a completed attempt keeps its verdict, whatever arrives after', () => {
+  // `move`, `facelets` and `movesLost` all guarded `done`; `end` did not, so a late trust lapse
+  // replaced a finished drill's result with `ended`.
+  const { attempt, kinds } = rig();
+  feed(attempt, sune.scanAlg);
+  assert.equal(attempt.state, 'done');
+  attempt.trustLost();
+  assert.equal(attempt.state, 'done', 'a completed attempt was ended by a late trust lapse');
+  assert.equal(kinds().filter((k) => k === 'ended').length, 0, 'it emitted an ended after done');
+});
+
+test('ATTEMPT_STATES is the list every transition is checked against', () => {
+  // It was exported and read by nothing, so it constrained nothing: a typo'd state would have
+  // reached the screen as an unknown event kind and printed an empty status.
+  const { attempt, events } = rig();
+  feed(attempt, sune.scanAlg);
+  for (const e of events) {
+    assert.ok(ATTEMPT_STATES.includes(e.state), `an attempt reached a state not in the list: ${e.state}`);
+  }
+  assert.ok(ATTEMPT_STATES.includes('waiting') && ATTEMPT_STATES.includes('done'));
+});
+
+test('a deviation AFTER a confirmed midpoint still gets an undo', () => {
+  // A midpoint of a half turn is ON the track but is not one of `track.states`, so the replay was
+  // anchored one whole step too early. Coming back to a midpoint and deviating again produced
+  // `recovery: null` — the child was told they had gone wrong and offered nothing, while `U'` was
+  // sitting right there (audit, 2026-09-29).
+  const dropIn = entryById('drop-in');
+  assert.equal(dropIn.scanAlg, 'B2', 'precondition: one token, two physical turns');
+  const midOf = toFacelets(applyAlg(applyAlg(SOLVED, invert(dropIn.scanAlg)), 'B'));
+
+  // Confirmed by MOVES: B (midpoint), U (off), U' (back to the midpoint), U (off again).
+  const byMoves = rig({ entry: dropIn });
+  feed(byMoves.attempt, "B U U' U", { from: 10 });
+  assert.equal(byMoves.attempt.state, 'off');
+  assert.equal(byMoves.events.at(-1).recovery, "U'", 'the second excursion from a midpoint had no undo');
+
+  // Confirmed by a SNAPSHOT, which reaches the same position down a different path.
+  const bySnapshot = rig({ entry: dropIn });
+  bySnapshot.attempt.move({ notation: 'B', serial: 10, cubeTimestamp: 1000 });
+  bySnapshot.attempt.facelets(midOf, 10);
+  bySnapshot.attempt.move({ notation: 'U', serial: 11, cubeTimestamp: 1800 });
+  assert.equal(bySnapshot.attempt.state, 'off');
+  assert.equal(bySnapshot.events.at(-1).recovery, "U'", 'a snapshot-confirmed midpoint lost its anchor');
+
+  // And the undo REALLY recovers: replaying it lands back on the midpoint, not on the step before.
+  const back = toFacelets(applyAlg(applyAlg(applyAlg(SOLVED, invert(dropIn.scanAlg)), 'B U'), "U'"));
+  assert.equal(back, midOf, 'the offered undo does not reach the arrangement it claims');
 });
