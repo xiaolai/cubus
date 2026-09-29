@@ -670,6 +670,14 @@ jobs:
       # about. The export stack is a ~600 MB install, so the conversion runs where the full tier runs
       # (main, the nightly, a dispatch); on a pull request the check SKIPS, out loud, and never as a
       # pass (audit, 2026-09-19).
+      # RESOLVED ON EVERY RUN, installed only on the full tier. The install below is the ~600 MB one
+      # and skipping it on a pull request is right; RESOLVING the pin set is seconds and downloads no
+      # wheels, and it is the check that was missing. The ml-stack group of 2026-09-29 was green on its
+      # own pull request and failed on main three times running — first numpy, then onnx2tf, then the
+      # conflict between them — because the only step that reads this file ran nowhere else. No
+      # combination of that group's versions installs on 3.11, and a dry run says so in seconds.
+      - name: The export stack's pins resolve at all
+        run: pip install --dry-run --quiet -r ml/requirements-export.txt
       - name: Install the export stack (full tier only)
         if: github.event_name != 'pull_request'
         run: pip install -r ml/requirements-export.txt
