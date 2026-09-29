@@ -3,7 +3,17 @@
 #
 #   ml/venv-cubedet/bin/pip install -r ml/requirements-export.txt
 -r requirements-cubedet.txt
-onnx2tf==2.6.9
+# CAPPED AT THE 1.x LINE BY PYTHON, and this is the newest release that installs at all here:
+# every onnx2tf 2.x version — 2.6.0 through 2.6.9 — declares `requires_python >=3.12`, and every ml
+# job in ci.yml runs 3.11. Dependabot proposed 2.6.9 and the full tier's "Install the export stack"
+# step could find no distribution for it.
+#
+# NOTHING BUT THE FULL TIER COULD HAVE CAUGHT THIS: that step is full-tier-only, so the pull request
+# that proposed the bump went green on a golden job that installs requirements-golden.txt and never
+# touches this file. Moving the ml jobs to 3.12 is what unlocks the 2.x line, and it is a change to
+# the whole export and training toolchain rather than a version bump — worth doing deliberately, not
+# inside a dependency update.
+onnx2tf==1.29.24
 # onnx2tf declares no dependencies and imports these unconditionally; without them the TFLite step
 # dies on import. Pinned to the versions of the environment that produced the shipped TFLite.
 tf_keras==2.21.0
