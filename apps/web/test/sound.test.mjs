@@ -187,6 +187,39 @@ test('a refused first resume is tried again on the next gesture, and a context s
   assert.equal(ctx.resumed, 3);
 });
 
+test('a context parked while its resume is still in flight still chimes', async () => {
+  // THE WEBKIT CASE, and the one `state` alone cannot answer. Measured on the Playwright 1.63
+  // bundle: a fresh context reports `running` on the click, parks back to `suspended` a moment
+  // later, and only THEN resolves the promise `resume()` returned. A chime asked for in that window
+  // used to return false and make no sound — on the engine macOS and iOS ship, so every bell after
+  // a quiet spell was silently dropped.
+  //
+  // A resume IN FLIGHT is counted with a successful one on purpose: the notes are scheduled against
+  // a clock that is not advancing, so they keep their offsets and sound when it runs. Only a REFUSED
+  // resume means nothing will be heard, and that is still false — the case above this one.
+  let settle;
+  const { ctx } = audioStandIn();
+  ctx.resume = () => {
+    ctx.resumed += 1;
+    ctx.state = 'running';           // the engine reports running…
+    return new Promise((res) => { settle = () => { ctx.state = 'running'; res(); }; });
+  };
+  useAudioContextFactory(() => ctx);
+  settings.soundMode = 'chime';
+  const target = page();
+  unlockOnGestures(target);
+  target.dispatchEvent(new Event('pointerdown'));
+  assert.equal(audioState(), 'running', 'precondition: the engine reported running on the gesture');
+
+  ctx.state = 'suspended';           // …and parks it before the promise settles
+  assert.equal(play('capture'), true, 'a chime was dropped while the resume was still in flight');
+  assert.ok(ctx.made.length > 0, 'it returned true without making any note');
+
+  settle();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(play('capture'), true, 'a chime was dropped after the resume succeeded');
+});
+
 test('waking a context suspended mid-chime does not play the rest of the chime', () => {
   // A suspended context keeps its notes scheduled; resuming it would play their tails for a moment
   // that has passed (round-3 audit). They are stopped BEFORE the resume.

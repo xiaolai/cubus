@@ -35,20 +35,38 @@ let makeContext = () => {
   return Context ? new Context() : null;
 };
 let context = null;
+/**
+ * What became of the last `resume()` — the thing `state` alone cannot tell you.
+ *
+ * `'suspended'` covers two situations that need opposite answers: the platform REFUSED (no
+ * activation after all, another app holding the audio session), so nothing will sound; or it
+ * resumed and then PARKED an idle context, so notes scheduled now will sound. `'pending'` is
+ * counted with the second, deliberately: WebKit reports `running`, parks back to `suspended`, and
+ * only THEN resolves the promise — measured on the Playwright 1.63 bundle — so a chime asked for in
+ * that window is a chime that will be heard, and refusing it is the bug this replaces.
+ */
+let resumeState = /** @type {'none' | 'pending' | 'ok' | 'refused'} */ ('none');
 /** Oscillators started and not yet ended, so a screen left can silence them. */
 const sounding = new Set();
 
 /** Create the page's one AudioContext, or wake it. Only ever called from inside a user gesture. */
 function unlock() {
   context ??= makeContext();
-  if (!context || context.state === 'running') return;
+  if (!context) return;
+  if (context.state === 'running') { resumeState = 'ok'; return; }
   // A context suspended mid-chime keeps its notes scheduled, and resuming plays their unfinished
   // tails — a "got it" for a side saved before the page went to the background, heard on the next
   // touch. Whatever was sounding is over; stop it before waking (round-3 audit).
   stopAll();
   // A refused resume (no activation after all, an audio session another app holds) is not an error
   // to raise: the next gesture tries again, which is why the listener stays.
-  context.resume().catch((err) => console.debug('[cubus] audio did not resume; the next gesture tries again', err));
+  resumeState = 'pending';
+  context.resume()
+    .then(() => { resumeState = 'ok'; })
+    .catch((err) => {
+      resumeState = 'refused';
+      console.debug('[cubus] audio did not resume; the next gesture tries again', err);
+    });
 }
 
 /**
@@ -68,11 +86,26 @@ export const audioState = () => context?.state ?? 'none';
 /**
  * Make `name`'s sound now. Returns whether it sounded: not when sounds are off, and not before a
  * gesture has unlocked audio. An unknown name is a programming error and throws.
+ *
+ * A PARKED CONTEXT IS WOKEN; A REFUSED ONE IS STILL REFUSED. The gate used to be
+ * `state !== 'running'`, which gave the same answer to both — and WebKit parks aggressively:
+ * measured on the Playwright 1.63 bundle, a context reaches `running` on the click and is back to
+ * `suspended` a moment later with nothing scheduled, so every chime after a quiet spell returned
+ * false and made no sound on the engine macOS and iOS ship. `resumeState` is what tells the two
+ * apart, and waking goes through `unlock()` rather than a second `resume()` here, because that path
+ * stops notes left scheduled from before the parking — resuming without it plays their tails.
+ *
+ * The resume is not awaited and does not need to be: a suspended context's `currentTime` does not
+ * advance, so notes scheduled at `t0 + at` keep their offsets and sound once it runs.
  */
 export function play(name) {
   const notes = SOUNDS[name];
   if (!notes) throw new Error(`sound: there is no sound called "${name}"`);
-  if (settings.soundMode === SOUND_MODES.off || context?.state !== 'running') return false;
+  if (settings.soundMode === SOUND_MODES.off || !context) return false;
+  if (context.state !== 'running') {
+    if (resumeState === 'refused' || resumeState === 'none') return false;
+    unlock();
+  }
   const t0 = context.currentTime;
   for (const [hz, at] of notes) {
     const osc = context.createOscillator();
