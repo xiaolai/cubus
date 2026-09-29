@@ -9,7 +9,19 @@ import { repairProgress } from './method-ladder.js';
 import { isScheme } from './scheme.js';
 import { STICKER_PALETTES } from './sticker-palettes.js';
 
-export const load = (k, fb) => { try { return { ...fb, ...JSON.parse(localStorage.getItem(k) || '{}') }; } catch { return { ...fb }; } };
+/**
+ * A parsed value is a RECORD or it is nothing.
+ *
+ * JSON.parse answers `null`, `7`, `"text"` and `[]` for perfectly valid JSON, and every one of them
+ * used to flow straight into a spread: `{...7}` and `{...[]}` are silently empty, `{..."text"}`
+ * adds numeric keys, and `'soundMode' in null` THROWS at module scope — which means one hostile or
+ * half-written `cubusSettings` stopped the app booting at all, with no screen to say so (audit,
+ * 2026-09-29). Guarded here rather than at each reader, because `load` has five callers and the
+ * next key added would have had to remember.
+ */
+const asRecord = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : null);
+
+export const load = (k, fb) => { try { return { ...fb, ...asRecord(JSON.parse(localStorage.getItem(k) || '{}')) }; } catch { return { ...fb }; } };
 /** Persist, and say whether it worked. Storage can be full, or disabled outright in a private
  *  window — and the UI used to report "Saved" either way, so a nickname could vanish on reload
  *  with nothing having warned anyone. */
@@ -73,7 +85,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
   // line's name in lib/screens/scan/spoken.js, which owns the defaults and the repair: this file
   // must not import a screen's module (AGENTS.md, the one-way dependency), so all it promises is
   // that the value is an object.
-  spokenLines: {},
+  // Frozen like its parent, so a write that escapes the fresh-object allocation below FAILS rather
+  // than silently editing every reader's defaults.
+  spokenLines: Object.freeze({}),
 });
 /** Every setting whose default is a boolean — DERIVED, so a new flag is repaired the moment it has a
  *  default, and no list kept by hand can leave one out (audit, 2026-09-19: the tests' own copies had
@@ -82,7 +96,17 @@ export const BOOLEAN_SETTINGS = Object.freeze(Object.keys(DEFAULT_SETTINGS).filt
 /** The record exactly as storage held it, so the one write at the end of this file happens only when a
  *  repair or a migration changed something — or on a first launch, when storage held nothing. */
 const storedRecord = (() => { try { return localStorage.getItem('cubusSettings'); } catch { return null; } })();
-export const settings = load('cubusSettings', DEFAULT_SETTINGS);
+/**
+ * The same record PARSED ONCE. Null when storage held nothing, or held something that is not a
+ * record — and those two are different questions answered in the same place, which is the point.
+ *
+ * It used to be read twice: `storedRecord` for the write comparison and the sound migration, and
+ * `load()` going back to storage for the settings themselves. Two reads of one key cannot be
+ * assumed to agree — a store that changed between them loaded one answer and persisted the other,
+ * overwriting a newer preference with an older one (audit, 2026-09-29).
+ */
+const storedSettings = (() => { try { return asRecord(JSON.parse(storedRecord ?? 'null')); } catch { return null; } })();
+export const settings = { ...DEFAULT_SETTINGS, ...storedSettings };
 // localStorage is untrusted input, and `load` merges it raw. The string "false" is truthy, so a
 // hand-edited or half-migrated flag reads as ON: proveMinimum would opt someone in to an operation
 // that runs for hours, and a Settings toggle flips `!settings[k]`, so a stored "false" showed as on
@@ -104,7 +128,10 @@ if (!Object.values(SCAN_VIEWS).includes(settings.devScanView)) settings.devScanV
 // and a test that a chosen silence survives failed against exactly that. What decides is whether
 // STORAGE held a mode: if it did not, this install predates the split and the boolean beside it is
 // the only record of what anyone asked for.
-const storedSound = (() => { try { return JSON.parse(storedRecord || '{}'); } catch { return {}; } })();
+// The validated record from above, under the name this block has always used. A record that did
+// not parse, or parsed to a primitive or an array, is NOT an install that predates the split: it is
+// corruption, and it takes the default rather than the legacy boolean's meaning.
+const storedSound = storedSettings;
 //
 // THE MIGRATION DOES NOT READ THE DEFAULT, and since 2026-09-21 it must not. These are two
 // different questions: "what does a NEW install get" (the default -- `chime`) and "what did THIS
@@ -119,8 +146,8 @@ const storedSound = (() => { try { return JSON.parse(storedRecord || '{}'); } ca
 //   storage held an unusable one    modern, corrupted       -> the default
 // The middle one is the only place the legacy boolean may speak, and it is recognised by the
 // ABSENCE of the key rather than by the value being unusable.
-const preSplit = storedRecord !== null && !('soundMode' in storedSound);
-if (!Object.values(SOUND_MODES).includes(storedSound.soundMode)) {
+const preSplit = storedSound !== null && !('soundMode' in storedSound);
+if (!Object.values(SOUND_MODES).includes(storedSound?.soundMode)) {
   settings.soundMode = preSplit
     ? (storedSound.sounds === false ? SOUND_MODES.off : SOUND_MODES.voice)
     : DEFAULT_SETTINGS.soundMode;
@@ -129,9 +156,11 @@ delete settings.sounds;
 // Edited spoken lines are untrusted input like everything else in this file. Only that it is an
 // object is promised here; WHICH keys are real, and how long a line may be, is
 // lib/screens/scan/spoken.js's to say, because that is where the lines live.
-if (!settings.spokenLines || typeof settings.spokenLines !== 'object' || Array.isArray(settings.spokenLines)) {
-  settings.spokenLines = {};
-}
+// A FRESH OBJECT EVERY TIME, not only when the stored one is unusable. The merge above is shallow,
+// so on a first launch `settings.spokenLines` WAS `DEFAULT_SETTINGS.spokenLines` — editing a spoken
+// line wrote through to the defaults, and every later reader of the default got the edit (audit,
+// 2026-09-29). The outer `Object.freeze` does not reach a nested object.
+settings.spokenLines = { ...asRecord(settings.spokenLines) };
 // The inspection flag is gone (it toggled a label, never a behaviour); drop the stored leftover
 // rather than letting save() keep rewriting a field nothing reads — the advancedOpen precedent.
 delete settings.inspection;
@@ -354,7 +383,11 @@ export function migrateNavDefaults(
   const versions = [...new Set([...Object.keys(added), ...Object.keys(shown)])]
     .map(Number).sort((a, b) => a - b);
   for (const v of versions) {
-    if (v <= from) continue;
+    // BOTH BOUNDS. Skipping only `v <= from` applied every migration ABOVE the requested target as
+    // well, so `migrateNavDefaults(3, [], undefined, 4)` ran version 5's removal and then stamped
+    // the record as 4 — a state no shipped version ever produced. Production always asks for the
+    // latest, which is why no caller noticed (audit, 2026-09-29).
+    if (v <= from || v > to) continue;
     if (added[v]) hidden = [...new Set([...hidden, ...added[v]])];
     if (shown[v]) {
       const back = new Set(shown[v]);

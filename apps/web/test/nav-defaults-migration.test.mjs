@@ -153,6 +153,22 @@ test('every install that had Pieces hidden by 0.7.6 gets it back, and keeps its 
     'walking every migration does not land on the shipped default hidden set');
 });
 
+test('the walk honours its UPPER bound, not only its lower one', () => {
+  // It skipped `v <= from` and applied everything above, including versions past the requested
+  // target: (3, [], undefined, 4) ran version 5's removal and then stamped the record as 4, a state
+  // no shipped version ever produced. Production always asks for the latest, which is exactly why
+  // no caller noticed (audit, 2026-09-29).
+  const toFour = migrateNavDefaults(3, [], undefined, 4);
+  assert.equal(toFour.navDefaults, 4, 'it stamped a version it was not asked for');
+  assert.ok(toFour.navHidden.includes('pieces'), 'version 5 ran while migrating only as far as 4');
+  // The lower bound still holds, and the two together bracket exactly one step.
+  const onlyFive = migrateNavDefaults(4, ['pieces'], undefined, 5);
+  assert.deepEqual(onlyFive.navHidden, [], 'the one step in range did not run');
+  // And asking for less than the record already has changes nothing at all.
+  assert.deepEqual(migrateNavDefaults(5, ['pieces'], undefined, 4).navHidden, ['pieces'],
+    'migrating backwards altered the record');
+});
+
 test('a deliberate hide made from now on survives', () => {
   // The rule D5 protected for `drill`, which `NAV_SHOWN` deliberately spends for `pieces`: this
   // record cannot tell an inherited default from a deliberate hide, so bringing an id back overrides
