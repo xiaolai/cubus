@@ -9,7 +9,7 @@ edition = "2021"
 # tests/no_brand_constants.rs enforces that. See dev-docs/universal-cube-driver.md §3-4.
 
 [dependencies]
-btleplug = "0.11"
+btleplug = "0.13"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 futures = "0.3"
 uuid = "1"
