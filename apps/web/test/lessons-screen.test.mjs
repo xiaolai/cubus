@@ -430,12 +430,16 @@ test('Pieces is its own screen, reachable by its own route, and it is the recogn
   assert.equal($$('#algCube').length, 0, 'the algorithm drill followed Pieces onto its own screen');
 });
 
-test('Pieces is a tab the app knows how to hide, and is hidden until asked for', async () => {
+test('Pieces is a tab on the default row, and one the app still knows how to hide', async () => {
   const { NAV } = await import('../lib/app-state.js');
   const { DEFAULT_HIDDEN, HIDEABLE } = await import('../lib/app-settings.js');
   assert.ok(NAV.some(([id]) => id === 'pieces'), 'Pieces is not a tab');
-  assert.ok(HIDEABLE.some(([id]) => id === 'pieces'), 'Pieces cannot be turned on in Settings');
-  assert.ok(DEFAULT_HIDDEN.includes('pieces'), 'Pieces is on the default beginner row');
+  assert.ok(HIDEABLE.some(([id]) => id === 'pieces'), 'Pieces cannot be turned off in Settings');
+  // SHOWN BY DEFAULT (owner's decision, 2026-09-29). Hiding it at version 4 was argued from the id
+  // being new; the content was already reachable inside Drill, so the argument was about the ID and
+  // the user lives in the ACTIVITY. Hideable is not the same as hidden — publishing a tab is not
+  // forcing it, which is the same pairing Drill has.
+  assert.ok(!DEFAULT_HIDDEN.includes('pieces'), 'Pieces is hidden from the default beginner row');
   // Beside Drill, because that is where it used to live and where somebody will look for it.
   const ids = NAV.map(([id]) => id);
   assert.equal(ids[ids.indexOf('drill') + 1], 'pieces', 'Pieces is not next to the tab it came out of');

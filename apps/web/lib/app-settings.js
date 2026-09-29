@@ -256,7 +256,7 @@ export const HIDEABLE = [
  * everything else is one chord away. In CODE, not only in a stored preference: the hidden set
  * was once a preference alone, and one wiped localStorage brought five placeholder screens back
  * into the toolbar. Version 2 hides the three once for anyone who already ran the app. */
-export const DEFAULT_HIDDEN = ['timer', 'stats', 'trainer', 'pieces', 'lessons', 'course'];
+export const DEFAULT_HIDDEN = ['timer', 'stats', 'trainer', 'lessons', 'course'];
 
 /**
  * What each version ADDED, so a bump applies a delta rather than the whole set.
@@ -281,13 +281,36 @@ const NAV_ADDED = Object.freeze({
   // deliberate hide — so a delta that removed an id could not avoid overriding somebody's choice.
   2: ['timer', 'stats', 'trainer', 'lessons'],
   3: ['course'],
-  // `pieces` left the Drill screen and became a tab of its own (2026-09-29, option C). It is a DELTA
-  // for the same reason `course` was: applying `DEFAULT_HIDDEN` again would re-hide every tab
-  // somebody had deliberately brought back. Nobody has ever chosen to hide or show this id, because
-  // until now there was no id — so hiding it at 4 overrides no choice.
+  // `pieces` left the Drill screen and became a tab of its own (2026-09-29, option C) and was
+  // hidden here, on the reasoning that no id had existed before so no choice was being overridden.
+  // THAT REASONING WAS ABOUT THE ID AND THE USER LIVES IN THE ACTIVITY: the Pieces content was
+  // reachable inside the Drill screen, which shipped two days earlier, so hiding the new tab took
+  // away something people could already get to. Kept here rather than edited out, because 4 is what
+  // 0.7.6 and 0.7.7 actually did and version 5 only makes sense beside it. Reversed by `NAV_SHOWN`
+  // below (owner's decision, 2026-09-29).
   4: ['pieces'],
 });
-export const NAV_DEFAULTS_VERSION = 4;
+
+/**
+ * What each version brought BACK — the other direction, and the reason this walk is no longer
+ * add-only.
+ *
+ * Removing an id from `DEFAULT_HIDDEN` reaches a FRESH install and nobody else: a record that has
+ * already run stores `navHidden` with the id in it, and a stored preference outranks a changed
+ * default forever. So a tab hidden by a shipped version can only be brought back by a migration
+ * that takes it out of the stored set.
+ *
+ * THE COST IS THE ONE DECISION D5 REFUSED TO PAY: this record cannot tell an inherited default from
+ * a deliberate hide, so bringing an id back overrides anyone who chose to hide it. That is
+ * acceptable for `pieces` and was not for `drill` — `pieces` was hidden for two shipped patch
+ * versions, so a deliberate choice about it has had almost no chance to exist. It is NOT a general
+ * licence: an id that has been hideable for long enough to accumulate real choices must be left
+ * alone, exactly as `drill` was.
+ */
+const NAV_SHOWN = Object.freeze({
+  5: ['pieces'],
+});
+export const NAV_DEFAULTS_VERSION = 5;
 
 // localStorage is untrusted input: anything in here that is not a hideable id is dropped rather
 // than allowed to silently remove some other nav entry.
@@ -313,15 +336,30 @@ settings.navHidden = (Array.isArray(settings.navHidden) ? settings.navHidden : D
  * all, and is then stamped as version 3, so the Course tab silently never gets its default.
  * Walking a fixed list cannot do either.
  *
- * A version that is not a whole number ≥ 0 is treated as 0, which applies every migration — the
- * safe direction, since these only ever ADD to the hidden set.
+ * A version that is not a whole number ≥ 0 is treated as 0, which applies every migration. That is
+ * still the safe direction, but NOT because the steps only add any more — they no longer do. It is
+ * safe because applying the whole list in order is exactly how the shipped defaults are defined:
+ * whatever a version hid, a later version may show, and walking all of them lands on today's
+ * intended set rather than on some intermediate one. Applying them twice lands there too.
+ *
+ * WITHIN one version, adds are applied before removals, so a version that both hides and shows an
+ * id ends up showing it. Nothing does that today; it is fixed here so that nothing has to guess.
  */
-export function migrateNavDefaults(navDefaults, navHidden, added = NAV_ADDED, to = NAV_DEFAULTS_VERSION) {
+export function migrateNavDefaults(
+  navDefaults, navHidden, added = NAV_ADDED, to = NAV_DEFAULTS_VERSION, shown = NAV_SHOWN,
+) {
   const from = Number.isInteger(navDefaults) && navDefaults >= 0 ? navDefaults : 0;
   if (from >= to) return { navDefaults, navHidden };
   let hidden = navHidden;
-  for (const v of Object.keys(added).map(Number).sort((a, b) => a - b)) {
-    if (v > from) hidden = [...new Set([...hidden, ...added[v]])];
+  const versions = [...new Set([...Object.keys(added), ...Object.keys(shown)])]
+    .map(Number).sort((a, b) => a - b);
+  for (const v of versions) {
+    if (v <= from) continue;
+    if (added[v]) hidden = [...new Set([...hidden, ...added[v]])];
+    if (shown[v]) {
+      const back = new Set(shown[v]);
+      hidden = hidden.filter((id) => !back.has(id));
+    }
   }
   return { navDefaults: to, navHidden: hidden };
 }

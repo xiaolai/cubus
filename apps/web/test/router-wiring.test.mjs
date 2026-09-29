@@ -1136,13 +1136,13 @@ test('showing an entry adds it to the toolbar, hiding removes it, and the rest i
   // so clicking it would hide it and this case would be testing the opposite of what it says.
   for (const id of ['trainer', 'lessons']) win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
   await tick();
-  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'trainer', 'drill', 'lessons'], 'shown in toolbar order');
+  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'trainer', 'drill', 'pieces', 'lessons'], 'shown in toolbar order');
 
   // Hide one: its neighbours are untouched.
   win.document.querySelector('[data-nav-toggle="lessons"]').click();
   await tick();
   assert.ok(!navIds().includes('lessons'), 'gone from the toolbar');
-  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'trainer', 'drill'], 'and its neighbours are untouched');
+  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'trainer', 'drill', 'pieces'], 'and its neighbours are untouched');
 
   // Hiding is cosmetic: the address still works, which is the escape hatch.
   win.location.hash = '#/lessons';
@@ -1202,6 +1202,7 @@ test('the toolbar no longer offers 3D viewer or Smart cube, and Stats is renamed
   // id from that list and it stops being checked at all, which is exactly how publishing a tab
   // could otherwise go green while the tab stayed hidden.
   assert.ok(ids.includes('drill'), 'Drill is published, so a fresh install must show it');
+  assert.ok(ids.includes('pieces'), 'Pieces is on the default row, so a fresh install must show it');
   const labels = [...win.document.querySelectorAll('#nav [data-nav]')].map((b) => b.textContent);
   assert.ok(!labels.some((l) => l.includes('Session stats')), 'and it is not called Session stats');
   // Nothing groups the list any more, so there is no heading left over to point at a screen that
@@ -1263,7 +1264,10 @@ test('the toolbar is one flat row of tabs, with Settings as its own button', asy
   // one chord away. DRILL IS NOT among them any more (dev-docs/algorithm-drills-plan.md item 4.2):
   // it holds every algorithm the app knows and drills a chosen one against a tracked cube, so it
   // is part of the beginner's path rather than one chord away from it.
-  assert.deepEqual(navLabels(), ['Home', 'Restore', 'Scramble', 'Drill']);
+  // Pieces rejoined the default row on 2026-09-29 (owner's decision): it had been hidden at
+  // version 4 on the reasoning that its ID was new, and the content it holds was already reachable
+  // inside the Drill screen — so hiding the new tab took away something people could get to.
+  assert.deepEqual(navLabels(), ['Home', 'Restore', 'Scramble', 'Drill', 'Pieces']);
   // Every tab draws a real glyph. icon() falls back to a bare dot for a name it does not know, so
   // a deleted or renamed glyph does not throw — it renders something almost plausible, and in an
   // icons-only row there is no label left to give the game away. Two icons were retired on
