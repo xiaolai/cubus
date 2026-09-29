@@ -238,17 +238,41 @@ export function demoScript(entry) {
 /** One sentence per verdict, for the live drill. `unknown` is never "wrong". */
 export function statusFor(event) {
   if (!event) return '';
+  // WHICH NUMBERED STEP THE CHILD IS ON CHANGES EVERY SENTENCE HERE. The page prints two — build the
+  // case, then solve it — and a cue that says "that turn is not in this algorithm" while a child is
+  // building the case names the wrong thing they did wrong. The phase comes from the attempt, which
+  // measured it; nothing here infers it.
+  // THREE WAYS, NOT TWO. An event that did not SAY which step it came from gets wording that is
+  // true in either one — the alternative is a sentence naming a step nothing measured, which is the
+  // same defect as naming a cause. Nothing the attempt emits is phase-less; this is what keeps a
+  // future caller that forgets from being given a confident answer.
+  const phase = event.phase ?? null;
   switch (event.kind) {
-    case 'ready': return t('Turn your cube when you are ready.');
-    case 'running': case 'progress': return t('%1 of %2 turns.', event.at, event.of);
-    case 'off': return event.recovery
-      ? t('That turn is not in this algorithm. Undo it with %1.', event.recovery)
-      : t('That turn is not in this algorithm.');
+    // The one refusal before anything is under way: a drill starts from a solved cube.
+    case 'waiting': return event.why ? t('%1.', capitalise(event.why)) : '';
+    case 'ready':
+      if (phase === 'setup') return t('Your cube is solved. Set the case up with the turns above.');
+      if (phase === 'solve') return t('The case is set up. Now solve it.');
+      return t('Turn your cube when you are ready.');
+    case 'running': case 'progress': return phase === 'setup'
+      ? t('Setting up: %1 of %2 turns.', event.at, event.of)
+      : t('%1 of %2 turns.', event.at, event.of);
+    case 'off': {
+      const what = phase === 'setup'
+        ? t('That turn is not in the set-up.')
+        : phase === 'solve'
+          ? t('That turn is not in this algorithm.')
+          : t('That turn is not in this drill.');
+      return event.recovery ? t('%1 Undo it with %2.', what, event.recovery) : what;
+    }
     case 'uncertain': return t('I lost track of your cube. Show it to the camera again.');
     case 'done': return t('Done.');
     default: return '';
   }
 }
+
+/** A refusal is written as a clause so it can be quoted mid-sentence; a status line starts one. */
+const capitalise = (words) => words.charAt(0).toUpperCase() + words.slice(1);
 
 /**
  * ONE ALGORITHM, ON ITS OWN PAGE — the drill.
@@ -332,6 +356,16 @@ export function drillPageHtml(entry, { status = '', timing = null } = {}) {
         </ol>
         <div class="sub" id="algCheck" style="line-height:1.5">${escHtml(t('Your cube ends solved. That is how you know you got it right.'))}</div>
         <div class="sub" id="algPurpose" style="color:var(--ink-3);line-height:1.5">${escHtml(t('What it is for: %1', purposeFor(entry)))}</div>
+        <!-- THE ORDER, RESTORED AS A FACT AND NOT AS A STEP (plan decision D6, 2026-09-29). It was
+             deleted on 2026-09-28 because, as a loose imperative sentence beside a numbered drill, a
+             first-time reader took it for a SECOND route to practising the same algorithm and asked
+             why they would want a scrambled cube back. D6 is still right that it is worth showing:
+             it is computed, it is checkable by a child with their own hands, and it is the one
+             property of an algorithm that has nothing to do with the app. So it sits with the other
+             properties, phrased as a statement, and never inside the numbered drill-steps list —
+             which a test asserts. NO BACKTICK IN THIS COMMENT: it is inside a template literal, and
+             a backticked word here ends the literal. That is exactly how it was written wrong. -->
+        <div class="sub" id="algOrder" style="color:var(--ink-3);line-height:1.5">${escHtml(t('%1 of these in a row brings your cube back to where it started.', entry.effect.order))}</div>
         <div class="sub" id="algNotation" style="color:var(--ink-4);line-height:1.5">${escHtml(t(NOTATION_LINE))}</div>
         <div class="sub" id="algStatus" role="status" aria-live="polite" style="color:var(--ink-3);min-height:1.4em">${escHtml(status)}</div>
         <div class="sub num" id="algTime" style="color:var(--ink-4)">${escHtml(timing ?? '')}</div>

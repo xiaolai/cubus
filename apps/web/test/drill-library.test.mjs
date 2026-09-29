@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { before, test } from 'node:test';
 
+import Cube from 'cubejs';
 import { Window } from 'happy-dom';
 
 import { ALG_ENTRIES, entriesForRungs, entryById } from '../lib/alg-catalogue.js';
@@ -18,7 +19,8 @@ import { caseNameOf } from '../lib/method-lesson.js';
 import { CUBE_VIEW, VIEW_ATTRS } from '../lib/cube-view.js';
 import { newCube } from '../lib/cube-drawing.js';
 import { SOLVED_FACELETS } from '../lib/solved.js';
-import { MIN_TIMEABLE_REPORTS, TOO_SHORT, UNNUMBERED } from '../lib/drill-attempt.js';
+import { MIN_TIMEABLE_REPORTS, TOO_SHORT, UNNUMBERED, UNSOLVED, createDrillAttempt } from '../lib/drill-attempt.js';
+import { showMove } from '../lib/solving-hold.js';
 import { blockAt } from './app-source.mjs';
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
@@ -95,9 +97,13 @@ test('the detail names what the algorithm does, how to hold it, and its order', 
   // practising the same algorithm — so the reader's question became "which of these am I doing?",
   // which is the confusion the numbering exists to remove. A first-time reader read it as an
   // instruction and asked why they would want a scrambled cube back (naive-user read, 2026-09-28).
-  // The set-up route replaces it and is universal: 137 of 137 entries, against 92 where repeating is
-  // under sixty turns.
-  assert.ok(!/times and the cube comes back/.test(out), 'the order line is back beside the numbered drill');
+  // The set-up route replaces it and is universal: 137 of 137 entries, against 88 where repeating
+  // comes back in under sixty turns and 92 in AT MOST sixty. The boundary matters and this sentence
+  // had it wrong: 92 is the `<= 60` count, written under a `< 60` claim (representative's review,
+  // 2026-09-29). Both figures are recomputed by the case at the foot of this file rather than
+  // authored here — and whether sixty turns is "practical" for a child is a JUDGEMENT that no count
+  // of turns establishes.
+  assert.ok(!/times and the cube comes back/.test(out), 'the old imperative order line is back');
   assert.match(out, /Set the case up with these turns/, 'the route that replaced it is missing');
 });
 
@@ -201,13 +207,24 @@ test('the drill page is a numbered procedure: hold, set up, solve, and the check
 // ---- 3.3 what the screen may say ------------------------------------------------------------------
 
 test('every status sentence names only what the attempt measured', () => {
-  assert.equal(statusFor({ kind: 'ready' }), 'Turn your cube when you are ready.');
-  assert.equal(statusFor({ kind: 'progress', at: 3, of: 7 }), '3 of 7 turns.');
-  assert.equal(statusFor({ kind: 'off', recovery: "R'" }), "That turn is not in this algorithm. Undo it with R'.");
+  // THE PHASE IS SOMETHING THE ATTEMPT MEASURED, so these name it (2026-09-29). The wording held
+  // here is the SOLVE's; the set-up's is in the case further down, and a phase-less event gets a
+  // sentence true in either step rather than a confident guess at one.
+  assert.equal(statusFor({ kind: 'ready', phase: 'solve' }), 'The case is set up. Now solve it.');
+  assert.equal(statusFor({ kind: 'progress', phase: 'solve', at: 3, of: 7 }), '3 of 7 turns.');
+  assert.equal(statusFor({ kind: 'off', phase: 'solve', recovery: "R'" }), "That turn is not in this algorithm. Undo it with R'.");
   // No recovery: the sentence must not promise one.
-  assert.equal(statusFor({ kind: 'off', recovery: null }), 'That turn is not in this algorithm.');
-  assert.equal(statusFor({ kind: 'uncertain' }), 'I lost track of your cube. Show it to the camera again.');
+  assert.equal(statusFor({ kind: 'off', phase: 'solve', recovery: null }), 'That turn is not in this algorithm.');
+  assert.equal(statusFor({ kind: 'uncertain', phase: 'solve' }), 'I lost track of your cube. Show it to the camera again.');
   assert.equal(statusFor(null), '');
+  // An event that did not say which step it came from must not be answered as if it had.
+  assert.equal(statusFor({ kind: 'ready' }), 'Turn your cube when you are ready.');
+  assert.equal(statusFor({ kind: 'off', recovery: null }), 'That turn is not in this drill.');
+  for (const phaseless of [{ kind: 'ready' }, { kind: 'off', recovery: null }, { kind: 'progress', at: 1, of: 7 }]) {
+    const said = statusFor(phaseless);
+    assert.ok(!/set-up|set the case up|case is set up|this algorithm/i.test(said),
+      `a phase-less event named a step nothing measured: "${said}"`);
+  }
 });
 
 test('losing track never says a turn was wrong, and a wrong turn never says track was lost', () => {
@@ -468,5 +485,187 @@ test('Start again builds a NEW live attempt, and disposes the old one', async ()
   } finally {
     mounted.dispose();
     root.remove();
+  }
+});
+
+test('the figures the repetition route was judged on are computed, not authored', () => {
+  // THE NUMBERS IN THE COMMENT ABOVE. They justified deleting a real trainer's technique, and one of
+  // them was wrong by its boundary (representative's review, 2026-09-29) — a figure no test
+  // recomputes is exactly how that survives a review. `cubejs` is the independent oracle here, not
+  // the app's own solver. Turns are counted in MOVE TOKENS, so `F2` is one: that is what a card
+  // prints and therefore what a child reads off it.
+  let under = 0;
+  let atMost = 0;
+  for (const entry of ALG_ENTRIES) {
+    const tokens = entry.shown.trim().split(/\s+/).length;
+    const cube = new Cube();
+    let repeats = 0;
+    do { cube.move(entry.shown); repeats += 1; } while (!cube.isSolved() && repeats < 1000);
+    assert.ok(repeats < 1000, `${entry.id} never came back to solved by repetition`);
+    const turns = repeats * tokens;
+    if (turns < 60) under += 1;
+    if (turns <= 60) atMost += 1;
+  }
+  assert.equal(ALG_ENTRIES.length, 137, 'the catalogue size the comparison was made against has moved');
+  assert.equal(under, 88, 'the count repeating back in UNDER sixty turns has moved');
+  assert.equal(atMost, 92, 'the count repeating back in AT MOST sixty turns has moved');
+});
+
+// ---- the page and the checker are one procedure (2026-09-29) -------------------------------------
+//
+// THE DEFECT THESE EXIST TO STOP LIVED BETWEEN THE TWO MODULES, AND BOTH HAD GREEN TESTS. 0.7.5
+// shipped a page that printed "start solved, build the case, now solve it" beside a controller that
+// tracked the algorithm ALONE from wherever the cube happened to be. Measured over all 137 entries
+// on 2026-09-29: 130 prescribed set-ups were called a wrong turn, 11 declared the drill finished
+// before the solve began, and 0 completed where the page said they would. The page's own suite
+// checked the instructions, the controller's own suite checked the controller, and nothing
+// reconciled them — which is the whole reason these two cases are written as a RELATION rather than
+// as another assertion about either side.
+
+/** The turn letters in one of the page's chip rows, exactly as a child reads them off the screen. */
+function chipRow(html, id) {
+  const row = new RegExp(`id="${id}"[^>]*>(.*?)</div>`, 's').exec(html);
+  assert.ok(row, `the page has no ${id} row`);
+  const found = [...row[1].matchAll(/>([^<>]+)<\/(?:span|button)>/g)]
+    .map((m) => m[1].trim().replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code))));
+  assert.ok(found.length > 0, `the ${id} row printed no turns`);
+  return found;
+}
+
+test('the turns the page PRINTS are the turns the checker tracks — all 137', () => {
+  // Two independent routes to the same letters: the page inverts `entry.shown`, which is already in
+  // the child's hold; the checker tracks `invert(entry.scanAlg)` in the cube's frame. Renaming is a
+  // relabelling, so it commutes with inversion and the two must agree move for move. They would NOT
+  // agree if either side inverted in the wrong frame, which is the ADR 0004 trap.
+  for (const entry of ALG_ENTRIES) {
+    const html = drillPageHtml(entry);
+    const hold = String(entry.hold).split(' ');
+    assert.deepEqual(
+      chipRow(html, 'algSetup'),
+      movesOf(invert(entry.scanAlg)).map((m) => showMove(m, hold)),
+      `${entry.id}: the printed set-up is not the one the checker follows`,
+    );
+    assert.deepEqual(
+      chipRow(html, 'algMoves'),
+      movesOf(entry.scanAlg).map((m) => showMove(m, hold)),
+      `${entry.id}: the printed algorithm is not the one the checker follows`,
+    );
+    // And the page's own route agrees with both, so `setupMoves` cannot drift from either.
+    assert.deepEqual(movesOf(setupMoves(entry)), chipRow(html, 'algSetup'), `${entry.id}: setupMoves disagrees with its own page`);
+  }
+});
+
+test('a child who follows the page is never told they went wrong, and finishes where it says — all 137', () => {
+  for (const entry of ALG_ENTRIES) {
+    const events = [];
+    const attempt = createDrillAttempt({
+      entry, chainTrusted: () => true, numbersMoves: () => true, clock: false,
+      onEvent: (e) => events.push(e),
+    });
+    let serial = 0;
+    attempt.facelets(SOLVED_FACELETS, serial);                     // step 1: a solved cube
+    const perform = (alg) => movesOf(alg).forEach((notation) => {
+      serial += 1;
+      attempt.move({ notation, serial: serial & 0xff, cubeTimestamp: serial * 400, timestamp: serial * 400 });
+    });
+
+    perform(invert(entry.scanAlg));                                // step 2: build the case
+    const duringSetup = events.map((e) => e.kind);
+    assert.ok(!duringSetup.includes('off'), `${entry.id}: the prescribed set-up was called a wrong turn`);
+    assert.ok(!duringSetup.includes('done'), `${entry.id}: the drill finished before the solve began`);
+    assert.ok(!duringSetup.includes('uncertain'), `${entry.id}: the set-up lost tracking`);
+    assert.equal(attempt.phase, 'solve', `${entry.id}: the set-up never handed over to the solve`);
+
+    perform(entry.scanAlg);                                        // step 3: now solve it
+    assert.equal(attempt.state, 'done', `${entry.id}: following the page did not complete the drill`);
+    assert.ok(!events.map((e) => e.kind).includes('off'), `${entry.id}: a correct performance was called wrong`);
+    // "Your cube ends solved. That is how you know you got it right." — the page says it, so it
+    // must be true of every entry, not of the ones that happen to be self-inverse.
+    assert.equal(attempt.view.solvedAtEnd, true, `${entry.id}: the page promises a solved cube; this did not end solved`);
+  }
+});
+
+test('the cue the ATTEMPT emits carries the step, so the sentence is right end to end', () => {
+  // THE HAND-BUILT EVENTS IN THE CASE BELOW CANNOT SEE THIS. They pass a phase in, so they hold
+  // `statusFor` and say nothing about whether anything ever supplies one — and for a while nothing
+  // did: `off` was emitted without a phase and every wrong turn, in either step, read as the
+  // neutral wording. Driven from a real attempt, through the real `statusFor`.
+  const entry = entryById('sune');
+  for (const [step, drive] of [
+    ['setup', (a) => { a.move({ notation: 'F', serial: 1, cubeTimestamp: 400 }); }],
+    ['solve', (a) => {
+      movesOf(invert(entry.scanAlg)).forEach((notation, i) => a.move({ notation, serial: i + 1, cubeTimestamp: (i + 1) * 400 }));
+      const n = movesOf(invert(entry.scanAlg)).length;
+      a.move({ notation: 'F', serial: n + 1, cubeTimestamp: (n + 1) * 400 });
+    }],
+  ]) {
+    const events = [];
+    const attempt = createDrillAttempt({
+      entry, chainTrusted: () => true, numbersMoves: () => true, onEvent: (e) => events.push(e),
+    });
+    attempt.facelets(SOLVED_FACELETS, 0);
+    drive(attempt);
+    const off = events.filter((e) => e.kind === 'off').at(-1);
+    assert.ok(off, `${step}: no cue was raised by a turn that is not on the track`);
+    assert.equal(off.phase, step, `${step}: the cue did not say which step it came from`);
+    const sentence = statusFor(off);
+    if (step === 'setup') assert.match(sentence, /not in the set-up/, `a set-up cue said: "${sentence}"`);
+    else assert.match(sentence, /not in this algorithm/, `a solve cue said: "${sentence}"`);
+    assert.ok(!/not in this drill/.test(sentence), `${step}: the cue fell back to the wording for an unknown step`);
+  }
+});
+
+test('the status line names the step the child is actually on', () => {
+  // A cue must hold on what its SENTENCE claims. "That turn is not in this algorithm" is false while
+  // a child is building the case — they are not in the algorithm yet.
+  assert.match(statusFor({ kind: 'off', phase: 'setup', recovery: "R'" }), /not in the set-up/);
+  assert.match(statusFor({ kind: 'off', phase: 'solve', recovery: "R'" }), /not in this algorithm/);
+  assert.match(statusFor({ kind: 'running', phase: 'setup', at: 3, of: 7 }), /Setting up: 3 of 7/);
+  assert.equal(statusFor({ kind: 'running', phase: 'solve', at: 3, of: 7 }), '3 of 7 turns.');
+  assert.match(statusFor({ kind: 'ready', phase: 'setup' }), /Set the case up/);
+  assert.match(statusFor({ kind: 'ready', phase: 'solve' }), /case is set up/);
+  // The refusal reaches the screen as a sentence rather than being swallowed.
+  const refused = statusFor({ kind: 'waiting', phase: 'setup', why: UNSOLVED });
+  assert.ok(refused.length > 0, 'the drill refused to start and the screen said nothing');
+  assert.match(refused, /solved/);
+  // And every sentence above still goes through the one door, so none of them is a bare string.
+  assert.equal(statusFor({ kind: 'waiting', phase: 'setup' }), '', 'a refusal with no reason invented one');
+});
+
+test('the order is stated as a property of the algorithm, never as a fourth step', () => {
+  // PLAN DECISION D6, RESTORED (2026-09-29). It is computed, a child can check it with their own
+  // hands, and it is the one fact about an algorithm that owes nothing to the app. What made it a
+  // defect the first time was its PLACE and its MOOD: a loose imperative beside a numbered drill
+  // read as a second route to practising the same thing. So the test is about where it sits and how
+  // it is phrased — not about whether the sentence exists.
+  const entry = entryById('sune');
+  const html = drillPageHtml(entry);
+  const line = /<div[^>]*id="algOrder"[^>]*>(.*?)<\/div>/s.exec(html);
+  assert.ok(line, 'the order is not shown at all');
+  assert.equal(entry.effect.order, 6, 'precondition: sune returns in six');
+  assert.match(line[1], new RegExp(`\\b${entry.effect.order}\\b`), 'the line does not name the computed order');
+
+  // NOT A STEP. `drill-steps` is the numbered list, and anything inside it is something the child is
+  // being told to do.
+  const steps = /<ol class="drill-steps"[^>]*>(.*?)<\/ol>/s.exec(html);
+  assert.ok(steps, 'the numbered steps are gone');
+  assert.ok(!/algOrder/.test(steps[1]), 'the order became a fourth instruction');
+  assert.ok(!/in a row brings your cube back/.test(steps[1]), 'the order fact is inside the numbered steps');
+
+  // NOT AN INSTRUCTION. An imperative opener is what a first-time reader took for a second route.
+  assert.ok(!/^\s*(Do|Repeat|Try|Turn|Perform)\b/i.test(line[1].trim()), `the order reads as an instruction: "${line[1].trim()}"`);
+});
+
+test('every entry states an order that repetition actually reaches — all 137', () => {
+  // The number on the card is checkable BY THE CHILD, so it is checked here the same way: repeat the
+  // algorithm and count. Driven through `cubejs`, which is the independent oracle and not the source
+  // the page reads from.
+  for (const entry of ALG_ENTRIES) {
+    const cube = new Cube();
+    let repeats = 0;
+    do { cube.move(entry.shown); repeats += 1; } while (!cube.isSolved() && repeats < 1000);
+    assert.equal(repeats, entry.effect.order, `${entry.id}: the stated order is not the one repetition reaches`);
+    const line = /<div[^>]*id="algOrder"[^>]*>(.*?)<\/div>/s.exec(drillPageHtml(entry));
+    assert.match(line[1], new RegExp(`\\b${repeats}\\b`), `${entry.id}: the page states a different number`);
   }
 });

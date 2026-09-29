@@ -132,7 +132,9 @@ function buildEntries() {
         scanAlg,
         shown: movesOf(scanAlg).map((m) => showMove(m, hold)).join(' '),
         // The case this algorithm answers, in the CUBE's frame: solved, then the sequence undone.
-        // Used by the library's no-cube demo and by nothing else — a drill never builds a setup.
+        // The case this algorithm answers. Used by the library's picture AND, since 2026-09-29, as
+        // the arrangement a drill's set-up phase builds — the page prints the turns that reach it
+        // and `drill-attempt.js` tracks them, so it is no longer demo-only.
         setup: toFacelets(applyAlg(SOLVED, invert(scanAlg))),
         provenance: [{ set: set.id, name: entry.name }],
         rungs: rungsUsing(set.id),

@@ -8,14 +8,25 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { ALG_ENTRIES, entryById } from '../lib/alg-catalogue.js';
-import { MIN_TIMEABLE_REPORTS, TOO_SHORT, UNNUMBERED, createDrillAttempt } from '../lib/drill-attempt.js';
-import { SOLVED, applyAlg, movesOf, toFacelets } from '../lib/cube-pieces.js';
+import { MIN_TIMEABLE_REPORTS, TOO_SHORT, UNNUMBERED, UNSOLVED, createDrillAttempt } from '../lib/drill-attempt.js';
+import { SOLVED, applyAlg, invert, movesOf, toFacelets } from '../lib/cube-pieces.js';
 import { METHOD_FRAME, METHOD_TO_SCAN, holdForStage, holdSpec, renameAlg } from '../lib/solving-hold.js';
 
 const SOLVED_FACELETS = toFacelets(SOLVED);
 const facelets = (alg) => toFacelets(applyAlg(SOLVED, alg));
 const SCRAMBLED = facelets("R U2 F' D B2 L' U");
 const sune = entryById('sune');
+
+/**
+ * Where the cube stands once the page's step 2 is done: the case the algorithm answers, in the
+ * CUBE's frame.
+ *
+ * This is what "the start of the drill" means now, and it is the arrangement a scrambled seed used
+ * to stand in for. Computed from the entry rather than written out, because a hand-written facelet
+ * string is a second source of truth for the same fact.
+ */
+const caseOf = (entry) => toFacelets(applyAlg(SOLVED, invert(entry.scanAlg)));
+const SUNE_CASE = caseOf(sune);
 
 /** A recorder: every event the attempt emitted, in order. */
 function collect() {
@@ -30,8 +41,26 @@ function feed(attempt, alg, { from = 10, stamp = 1000, step = 400 } = {}) {
   });
 }
 
-/** The default rig: trusted, numbered, no clock. */
-function rig({ entry = sune, trusted = true, numbers = true, clock = false, seed = SCRAMBLED, seedSerial = 9, now } = {}) {
+/**
+ * The default rig: trusted, numbered, no clock — seeded SOLVED and SET UP, so it hands back an
+ * attempt standing at the start of the solve.
+ *
+ * THE SET-UP IS PART OF THE RIG BECAUSE IT IS PART OF THE PAGE. Every case below except the ones
+ * named for step 1 is about the solve, and each would otherwise have to perform seven turns of
+ * preamble before saying anything.
+ *
+ * THE SERIALS COUNT BACKWARDS FROM `seedSerial`, so the last set-up report is `seedSerial` and the
+ * solve's first turn is `seedSerial + 1`. That keeps every case's own numbering — reports from 10,
+ * a wrap driven from 253 — meaning exactly what it did when there was no set-up phase, instead of
+ * each one having to know how long its entry's set-up happens to be.
+ *
+ * `setUp: false` hands back an attempt at the START of the set-up, for the cases that drive step 2
+ * themselves or that are about the seed's own numbering.
+ */
+function rig({
+  entry = sune, trusted = true, numbers = true, clock = false,
+  seed = SOLVED_FACELETS, seedSerial = 9, now, setUp = true,
+} = {}) {
   const c = collect();
   let isTrusted = trusted;
   const attempt = createDrillAttempt({
@@ -42,7 +71,17 @@ function rig({ entry = sune, trusted = true, numbers = true, clock = false, seed
     onEvent: c.onEvent,
     ...(now ? { now } : {}),
   });
-  if (seed) attempt.facelets(seed, seedSerial);
+  const steps = setUp ? movesOf(invert(entry.scanAlg)) : [];
+  const first = Number.isFinite(seedSerial) ? (seedSerial - steps.length) & 0xff : seedSerial;
+  if (seed) attempt.facelets(seed, first);
+  steps.forEach((notation, i) => {
+    const serial = Number.isFinite(first) ? (first + 1 + i) & 0xff : undefined;
+    attempt.move({ notation, serial, cubeTimestamp: 100 + i * 50, timestamp: 100 + i * 50 });
+  });
+  // The set-up's own events are dropped so `kinds()` describes what the CASE drove. Conditional on
+  // the phase having actually changed, never on `setUp` being asked for: an untrusted or unsolvable
+  // rig never reaches the solve, and clearing there would hide the refusal the case is checking.
+  if (attempt.phase === 'solve') c.events.length = 0;
   return { attempt, ...c, untrust: () => { isTrusted = false; } };
 }
 
@@ -101,20 +140,40 @@ test('the track accepts the cube frame and REFUSES the same letters unconverted'
   assert.ok(bad.kinds().includes('off'), 'unconverted letters were not even noticed');
 });
 
-test('a drill runs from a solved cube, a scrambled one, and one mid-solve', () => {
-  for (const seed of [SOLVED_FACELETS, SCRAMBLED, facelets("R U R' U' F'")]) {
-    const { attempt } = rig({ seed });
-    assert.equal(attempt.state, 'ready');
-    feed(attempt, sune.scanAlg);
-    assert.equal(attempt.state, 'done', 'a drill did not complete from this state');
+test('a drill arms only from a solved cube, and says why when it will not', () => {
+  // THE PAGE'S STEP 1 IS A PRECONDITION, NOT A SUGGESTION. "Your cube ends solved, that is how you
+  // know you got it right" holds only of a cube that began solved, and set-up turns performed on a
+  // scrambled cube reach no case at all — so arming there judges the child against a premise the
+  // screen never made.
+  const ok = rig({ setUp: false });
+  assert.equal(ok.attempt.state, 'ready');
+  assert.equal(ok.attempt.phase, 'setup');
+
+  for (const seed of [SCRAMBLED, facelets("R U R' U' F'")]) {
+    const { attempt, events } = rig({ seed, setUp: false });
+    assert.notEqual(attempt.state, 'ready', 'an unsolved cube armed a drill');
+    assert.equal(events.at(-1).why, UNSOLVED, 'it refused without saying why');
+    // SAID ONCE. A camera sends a snapshot about once a second and the answer cannot change until
+    // the child turns something, so repeating it would be a screen talking over itself.
+    const said = events.length;
+    attempt.facelets(seed, 10);
+    assert.equal(events.length, said, 'the refusal was repeated for every snapshot');
+    // And a cube solved AFTERWARDS arms the drill, with nothing asked of the screen — which is why
+    // the refusal leaves the seed unset rather than ending the attempt.
+    attempt.facelets(SOLVED_FACELETS, 11);
+    assert.equal(attempt.state, 'ready', 'a cube solved after the refusal never armed');
+    assert.equal(attempt.phase, 'setup');
   }
 });
 
-test('the finish is the attempt\'s own arrangement, not solved', () => {
-  const { attempt } = rig({ seed: SCRAMBLED });
+test('the finish is a SOLVED cube, which is what the page promises', () => {
+  // REVERSED WITH DECISION 1 (owner, 2026-09-29). The drill used to finish wherever the algorithm
+  // landed from an arbitrary seed; it now starts solved and ends solved, which is the one check a
+  // child can make without the app.
+  const { attempt } = rig();
   feed(attempt, sune.scanAlg);
   assert.equal(attempt.state, 'done');
-  assert.equal(attempt.view.solvedAtEnd, false, 'this attempt was expected to finish unsolved');
+  assert.equal(attempt.view.solvedAtEnd, true, 'the drill did not finish on a solved cube');
 });
 
 // ---- 1.4 continuity before judgment --------------------------------------------------------------
@@ -155,7 +214,7 @@ test('a snapshot that puts the cube back on the track ends the excursion', () =>
   const { attempt, events } = rig();
   attempt.move({ notation: 'F', serial: 10, cubeTimestamp: 1000 });
   assert.equal(attempt.state, 'off');
-  attempt.facelets(SCRAMBLED, 11);                       // back where it started, on the track
+  attempt.facelets(SUNE_CASE, 11);                       // back where it started, on the track
   assert.notEqual(attempt.state, 'off', 'the attempt is still describing a deviation it has left');
   assert.equal(events.at(-1).at, 0, 'the transition carried no progress');
 });
@@ -165,7 +224,7 @@ test('every progress-bearing event carries its numbers, from either input', () =
   // "%1 of %2 turns." and there was no %1.
   const { attempt, events } = rig();
   attempt.movesLost();
-  attempt.facelets(SCRAMBLED, 20);
+  attempt.facelets(SUNE_CASE, 20);
   feed(attempt, 'R D', { from: 21 });
   for (const e of events.filter((x) => ['running', 'progress'].includes(x.kind))) {
     assert.equal(typeof e.at, 'number', `a ${e.kind} event carried no position`);
@@ -198,7 +257,17 @@ test('a lost turn the connection reports is uncertainty too', () => {
 
 test('the recovery actually recovers, and undoing only the latest turn would not', () => {
   // Planned `R2`, so a single `R` is a legitimate midpoint — then two turns that are not.
-  const entry = { ...sune, id: 'r2-then-u', alg: 'R2 U', scanAlg: renameAlg('R2 U', METHOD_TO_SCAN), shown: 'R2 U' };
+  //
+  // HELD `U F`, WHICH IS WHY THE REPLAY BELOW IS VALID. A recovery is CHECKED in the cube's frame
+  // and SAID in the child's, so `applyAlg(base, recovery)` only means anything where the two frames
+  // agree: `showMove(m, ['U', 'F'])` is the identity, while sune's own `D B` swaps U with D and F
+  // with B. Replaying held letters against cube-frame arrangements is the ADR 0004 trap, and the
+  // pair of `notEqual`s this case used to end with could not tell that it had fallen in. The
+  // non-identity branch is the case named for the face under the child's hand, further down.
+  const entry = {
+    ...sune, id: 'r2-then-u', alg: 'R2 U', scanAlg: renameAlg('R2 U', METHOD_TO_SCAN), shown: 'R2 U', hold: 'U F',
+  };
+  assert.equal(entry.scanAlg, 'R2 D', 'precondition: this fixture\'s letters in the cube frame');
   const { attempt, events } = rig({ entry });
   attempt.move({ notation: 'R', serial: 10, cubeTimestamp: 1000 });   // midpoint of R2: silent
   assert.notEqual(attempt.state, 'off', 'a midpoint was called a wrong turn');
@@ -208,12 +277,15 @@ test('the recovery actually recovers, and undoing only the latest turn would not
 
   const { recovery } = events.at(-1);
   assert.ok(recovery, 'no recovery was offered');
-  // Verified by REPLAY: applying it must land the cube back where the track says it was.
-  const model = toFacelets(applyAlg(applyAlg(SOLVED, "R U2 F' D B2 L' U"), 'R U F'));
-  const back = toFacelets(applyAlg(applyAlg(SOLVED, "R U2 F' D B2 L' U"), `R U F ${recovery}`));
-  assert.notEqual(back, model, 'the recovery did nothing');
+  // Verified by REPLAY, from where the SET-UP left the cube — and asserted as an EQUALITY. The two
+  // `notEqual`s this replaces were computed from the old scrambled seed, so after the set-up phase
+  // landed the cube somewhere else they compared two arrangements that were both wrong and still
+  // came out unequal: the case passed while proving nothing (representative's review, 2026-09-29).
+  const base = applyAlg(SOLVED, invert(entry.scanAlg));
+  const back = toFacelets(applyAlg(base, `R U F ${recovery}`));
+  assert.equal(back, toFacelets(base), 'the recovery did not land the cube back on the track');
   // And the naive answer — undo the latest turn only — does NOT reach the same place.
-  const naive = toFacelets(applyAlg(applyAlg(SOLVED, "R U2 F' D B2 L' U"), "R U F F'"));
+  const naive = toFacelets(applyAlg(base, "R U F F'"));
   assert.notEqual(naive, back, "undoing only the latest turn recovered, so this case proves nothing");
 });
 
@@ -229,7 +301,7 @@ test('a snapshot brings an uncertain attempt back', () => {
   const { attempt } = rig();
   attempt.movesLost();
   assert.equal(attempt.state, 'uncertain');
-  attempt.facelets(SCRAMBLED, 20);
+  attempt.facelets(SUNE_CASE, 20);
   assert.equal(attempt.state, 'ready');
   feed(attempt, sune.scanAlg, { from: 21 });
   assert.equal(attempt.state, 'done');
@@ -290,13 +362,18 @@ test('with the clock off, no time is computed and none is claimed', () => {
   assert.equal(events.at(-1).refusal, null);
 });
 
-test('with the clock on, a mid-solve algorithm is timed at its own finish', () => {
-  const { attempt, events } = rig({ clock: true, seed: SCRAMBLED, now: () => 0 });
+test('with the clock on, the SOLVE is timed and the set-up is not', () => {
+  const { attempt, events } = rig({ clock: true, now: () => 0 });
   assert.equal(attempt.timing.on, true);
   feed(attempt, sune.scanAlg, { stamp: 1000, step: 400 });
   assert.equal(attempt.state, 'done');
   const { time } = events.at(-1);
   assert.ok(time, 'a timed attempt reported no time');
+  // THE SET-UP IS NOT IN THE TIME. The rig stamps its set-up reports from 100ms and the solve from
+  // 1000ms, so a clock armed at the seed would read about 3.3s here instead of 2.4s, and would
+  // count fourteen turns instead of seven. Building the case is work the child does BEFORE the
+  // thing being timed — the same reason a solve is not timed from the scramble.
+  assert.equal(time.moves, movesOf(sune.scanAlg).length, 'the clock counted the set-up\'s turns');
   // Six gaps of 400ms between sune's seven moves — the first move's own duration is the documented
   // bias, and it is missing here exactly as it is in a solve.
   assert.equal(time.ms, 2400);
@@ -361,7 +438,7 @@ test('selecting another algorithm cannot be completed by the first one\'s report
 test('a duplicated finishing snapshot produces exactly one completion', () => {
   const { attempt, kinds } = rig();
   feed(attempt, sune.scanAlg);
-  const end = toFacelets(applyAlg(applyAlg(SOLVED, "R U2 F' D B2 L' U"), sune.scanAlg));
+  const end = SOLVED_FACELETS;                            // the set-up then the algorithm: back to solved
   attempt.facelets(end, 30);
   attempt.facelets(end, 31);
   assert.equal(kinds().filter((k) => k === 'done').length, 1);
@@ -467,7 +544,7 @@ test('a numbering cube\'s report without a serial cannot be judged', () => {
   // The case the screen actually produces: it seeds with no serial, so `lastSerial` starts null
   // and the first build skipped continuity entirely — an unserialised report could then be called
   // a wrong turn.
-  const { attempt, kinds } = rig({ seed: SCRAMBLED, seedSerial: null });
+  const { attempt, kinds } = rig({ seedSerial: null, setUp: false });
   attempt.move({ notation: 'F', cubeTimestamp: 1000 });        // no serial, on a numbering cube
   assert.equal(attempt.state, 'uncertain');
   assert.ok(!kinds().includes('off'), 'an unplaceable report was called a wrong turn');
@@ -475,7 +552,7 @@ test('a numbering cube\'s report without a serial cannot be judged', () => {
 
 test('a snapshot that moves the cube along the track says so', () => {
   const { attempt, events } = rig();
-  const two = toFacelets(applyAlg(applyAlg(SOLVED, "R U2 F' D B2 L' U"), 'R D'));
+  const two = toFacelets(applyAlg(applyAlg(SOLVED, invert(sune.scanAlg)), 'R D'));
   attempt.facelets(two, 11);
   const last = events.at(-1);
   assert.ok(['running', 'progress'].includes(last.kind), `a snapshot advanced the cube silently (${last.kind})`);

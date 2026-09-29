@@ -6,10 +6,29 @@
 // following and timing both want them. Two objects sharing those slots is two attempts, one of
 // which silently stops receiving anything.
 //
-// NO SETUP IS BUILT, and that is the whole shape of this module. What is drilled is the SEQUENCE,
-// and a sequence can be performed from any arrangement, so the track is the chosen algorithm applied
-// to the SCANNED state and the finish is wherever that lands — never solved. `invert(alg)` appears
-// nowhere here; it belongs to the library's no-cube demonstration.
+// TWO PHASES, BECAUSE THE PAGE PRINTS TWO NUMBERED STEPS. The screen tells a child to start from a
+// solved cube, build the case with the set-up turns, then solve it — and this module follows exactly
+// that, because the alternative is what shipped in 0.7.5: instructions for one procedure beside a
+// checker for another. Measured on 2026-09-29, an attempt tracking the algorithm ALONE called 130 of
+// 137 prescribed set-ups a wrong turn and declared 11 of them finished before the solve had started,
+// while 0 of 137 completed where the page said they would.
+//
+// The owner's decision of 2026-09-27 was the opposite — NO SETUP, a sequence drilled from any state,
+// which is why this module was built that way. A naive-user read on 2026-09-28 found that with no
+// cube in reach a page with no starting position is an animation beside a list of letters, and the
+// owner chose the set-up route on 2026-09-29 in the knowledge that it reverses decision 1.
+//
+// So: phase `setup` tracks `invert(entry.alg)` from a SOLVED cube, phase `solve` tracks `entry.alg`
+// from the case the set-up built, and only the second is timed — building the case is not part of a
+// drill time. The two tracks are separate rather than one track of both halves, because one track
+// would start and end on the same arrangement and `locate`'s fallback resolves a repeated state to
+// its FIRST index: a cube that finished while tracking was lost would have been placed back at the
+// start and the drill would never have completed.
+//
+// `invert` is used HERE and in the library's no-cube demonstration, and the two must agree: the
+// library inverts `entry.shown` (already in the child's hold) for printing, this inverts
+// `entry.alg` (method frame) for tracking. Renaming is a relabelling, so it commutes with
+// inversion and the two describe the same physical turns — asserted, not assumed.
 //
 // THE FRAME CROSSING HAPPENS ONCE, AT THE DOOR. A catalogue string is written in the METHOD frame; a
 // cube reports in its own. The script declares `start.hold` as the method frame and the format's own
@@ -48,6 +67,16 @@ import { createSolveTimer, serialsAhead } from './solve-timer.js';
  */
 export const MIN_TIMEABLE_REPORTS = 2;
 
+/**
+ * Why a drill has not started, in words the screen can use unchanged.
+ *
+ * The page's step 1 is a PRECONDITION, not a suggestion: "your cube ends solved, that is how you
+ * know you got it right" is only true of a cube that began solved, and a set-up performed on a
+ * scrambled cube reaches no case at all. Refusing to arm says so; arming anyway would judge the
+ * child against a premise the screen never claimed.
+ */
+export const UNSOLVED = 'a drill starts from a solved cube, so solve it first';
+
 /** Why a drill reports no time, in words the screen can use unchanged. */
 export const TOO_SHORT = 'too short to time — a span needs two turns, and only one was timed';
 
@@ -84,6 +113,8 @@ export function createDrillAttempt({
   if (!entry || !entry.alg) throw new Error('drill-attempt: needs a catalogue entry with an algorithm');
 
   let state = 'waiting';
+  /** Which of the page's two numbered steps the cube is on. */
+  let phase = /** @type {'setup' | 'solve'} */ ('setup');
   /** The arrangement the attempt was seeded from, and the one the clock arms on. */
   let from = null;
   /** Where the cube is, as facelets, rebuilt from the reports. Null until seeded. */
@@ -116,7 +147,7 @@ export function createDrillAttempt({
   /** Where the cube is on the track. Every progress-bearing event carries this, from whichever
    *  input produced it — a `running` emitted bare left the screen printing its own placeholders,
    *  because the sentence is "%1 of %2 turns." and there was no %1 (audit, 2026-09-27). */
-  const progress = () => ({ at, of: track ? track.states.length - 1 : 0 });
+  const progress = () => ({ at, of: track ? track.states.length - 1 : 0, phase });
 
   /**
    * The attempt is finished: stop the clock and publish the verdict.
@@ -163,6 +194,52 @@ export function createDrillAttempt({
     go('ended', { why });
   };
 
+  /** The arrangement the set-up built — the case itself, and what the clock arms on. */
+  let caseState = null;
+  /** Whether the refusal has been said. A camera sends a snapshot about once a second and the answer
+   *  does not change until the child solves their cube, so saying it once is saying it. */
+  let saidUnsolved = false;
+
+  /** Lay a track of `alg` from where the cube is now, and stand at its start. */
+  function layTrack(alg) {
+    const built = buildScript({
+      schema: 2,
+      start: { facelets: model, hold: holdSpec(METHOD_FRAME) },
+      steps: [{ move: alg }],
+    });
+    track = trackFor(built);
+    endState = track.states[track.states.length - 1];
+    at = 0;
+    lastOn = 0;
+    since = [];
+    excursion = false;
+  }
+
+  /** Whether the cube stands on the last position of the track it is following. */
+  const atEnd = () => model === endState && at === track.states.length - 1;
+
+  /**
+   * The set-up is built; the drill proper starts here.
+   *
+   * THE CLOCK STARTS HERE, NOT AT THE SEED. Building the case is work the child does before the
+   * thing being timed, and a span that includes it describes a performance nobody gave — the same
+   * mistake as timing the walk to the start line. `stamped` restarts with it, so `TOO_SHORT` is a
+   * statement about the SOLVE rather than about however many turns the set-up happened to take.
+   */
+  function beginSolve(serial = lastSerial) {
+    phase = 'solve';
+    caseState = model;
+    layTrack(entry.alg);
+    stamped = 0;
+    if (timeable) {
+      timer = createSolveTimer({ target: () => caseState, trusted: chainTrusted, finish: () => endState, ...(now ? { now } : {}) });
+      timer.facelets(model, serial);
+    }
+    // `ready` rather than `running`: the cube is armed and standing still at the start of a new
+    // track, which is what `ready` has always meant. The phase is what makes the sentence different.
+    go('ready', progress());
+  }
+
   /**
    * The moves that undo everything since the last confirmed position, CHECKED by replay.
    *
@@ -191,6 +268,8 @@ export function createDrillAttempt({
     get at() { return at; },
     get of() { return track ? track.states.length - 1 : 0; },
     get entry() { return entry; },
+    /** Which of the page's two numbered steps the cube is on. */
+    get phase() { return phase; },
     /** Whether this attempt will report a time at all, and why not when it will not. */
     get timing() {
       return Object.freeze({ on: timeable, refusal: timeable ? null : timingRefusal });
@@ -208,25 +287,22 @@ export function createDrillAttempt({
       model = f;
       lastSerial = serial ?? lastSerial;
       if (from === null) {
-        // The seed. Everything the attempt needs is now known: where the cube is, and which
-        // algorithm. No setup has to be reached first, so this is the whole of readiness.
-        from = f;
-        const built = buildScript({
-          schema: 2,
-          start: { facelets: from, hold: holdSpec(METHOD_FRAME) },
-          steps: [{ move: entry.alg }],
-        });
-        track = trackFor(built);
-        endState = track.states[track.states.length - 1];
-        at = 0;
-        lastOn = 0;
-        since = [];
-        if (timeable && !numbersMoves()) { timeable = false; timingRefusal = UNNUMBERED; }
-        if (timeable) {
-          timer = createSolveTimer({ target: () => from, trusted: chainTrusted, finish: () => endState, ...(now ? { now } : {}) });
-          timer.facelets(f, serial);
+        // THE SEED, AND THE PAGE'S STEP 1 IS PART OF IT. A cube that is not solved cannot be armed:
+        // the set-up turns would build no case, and "your cube ends solved" would be false. Said
+        // rather than worked around, and `from` is left null so the NEXT snapshot tries again —
+        // which is how a child who solves their cube gets a drill without touching the screen.
+        if (f !== SOLVED_FACELETS) {
+          if (!saidUnsolved) { saidUnsolved = true; go('waiting', { why: UNSOLVED }); }
+          return state;
         }
-        go('ready');
+        from = f;
+        phase = 'setup';
+        layTrack(invert(entry.alg));
+        // Asked at the seed, which is the first instant the answer is both needed and known. The
+        // clock itself is not built until the set-up is done; this only settles whether there can
+        // be one at all.
+        if (timeable && !numbersMoves()) { timeable = false; timingRefusal = UNNUMBERED; }
+        go('ready', progress());
         return state;
       }
       // A real snapshot re-establishes where the cube is, which is also how an attempt comes back
@@ -244,7 +320,11 @@ export function createDrillAttempt({
       // undo instruction described a deviation the cube is no longer in (audit, 2026-09-27).
       const wasOff = excursion;
       excursion = false;
-      if (model === endState && at === track.states.length - 1) { finish(f, serial); return state; }
+      if (atEnd()) {
+        if (phase === 'setup') { beginSolve(serial); return state; }
+        finish(f, serial);
+        return state;
+      }
       timer?.facelets(f, serial);
       // PUBLISHED WHENEVER THE POSITION MOVED, not only out of uncertainty or an excursion. A
       // snapshot that advanced the cube two steps while `running` told the screen nothing, so the
@@ -298,8 +378,11 @@ export function createDrillAttempt({
         // turn had been made (audit, 2026-09-27).
         const first = !excursion;
         excursion = true;
-        if (first) go('off', { recovery: recovery(), sound: true });
-        else emit({ kind: 'off', recovery: recovery(), sound: false });
+        // THE PHASE TRAVELS WITH THE CUE. "That turn is not in this algorithm" is false while a
+        // child is building the case, and the screen cannot work out which step they are on from
+        // anything else it is given.
+        if (first) go('off', { recovery: recovery(), sound: true, phase });
+        else emit({ kind: 'off', recovery: recovery(), sound: false, phase });
         return state;
       }
       if (found.kind === 'mid') {
@@ -315,7 +398,11 @@ export function createDrillAttempt({
       since = [];
       excursion = false;
 
-      if (model === endState && at === track.states.length - 1) { finish(); return state; }
+      if (atEnd()) {
+        if (phase === 'setup') { beginSolve(); return state; }
+        finish();
+        return state;
+      }
       if (state !== 'running') go('running', progress());
       else emit({ kind: 'progress', ...progress() });
       return state;
