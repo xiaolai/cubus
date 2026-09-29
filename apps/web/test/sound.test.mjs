@@ -15,7 +15,7 @@ globalThis.localStorage ??= {
   getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k),
 };
 const { settings } = await import('../lib/app-settings.js');
-const { audioState, play, stopAll, unlockOnGestures, useAudioContextFactory } = await import('../lib/sound.js');
+const { IDLE_SUSPEND_MS, audioState, play, stopAll, unlockOnGestures, useAudioContextFactory, useAudioSchedule } = await import('../lib/sound.js');
 
 /** A page to gesture on. */
 const page = () => new EventTarget();
@@ -109,12 +109,23 @@ test('leaving a screen silences every note still sounding', (t) => {
 });
 
 test('sounds off makes none, and the bell-only mode still rings', (t) => {
-  const { made } = audio(t, { soundMode: 'off', state: 'running', unlocked: true });
+  const { made, target } = audio(t, { soundMode: 'off', state: 'running', unlocked: true });
   assert.equal(play('capture'), false, 'a sound was made with sounds off');
   assert.equal(made.length, 0, 'a refused sound still built its oscillators');
+  // SOUNDS OFF OPENS NO AUDIO SESSION AT ALL (2026-09-30). The gesture above ran `unlock` — it is
+  // bound to every pointerdown on the document — and with sound off it must not so much as build
+  // a context, because a context that exists and runs holds the platform's audio session for
+  // somebody who has said they do not want to hear anything.
+  assert.equal(audioState(), 'none', 'a gesture with sound off opened an audio context');
+
   // THE BELL IS NOT THE VOICE (2026-09-20). `chime` exists for someone who wanted the tick without
   // the words, so the chime must sound there exactly as it does under `voice`.
+  //
+  // A GESTURE AFTER THE MODE CHANGE, which is what the app has: nothing plays the instant the
+  // setting is turned on — the only callers are the scan's chimes and the drill's cues, both of
+  // them a screen away — so the toggle is always followed by a touch before a sound is asked for.
   settings.soundMode = 'chime';
+  target.dispatchEvent(new Event('pointerdown'));
   assert.equal(play('capture'), true, 'the bell was silent in the mode that is only the bell');
   assert.equal(made.length, 2, 'the bell-only mode made a different number of notes');
 });
@@ -463,4 +474,90 @@ test('a note that the context actually PLAYED is cleaned up by the next suspensi
 
   const left = notes.filter((o) => o.stops.at(-1) !== undefined);
   assert.equal(left.length, 0, `${left.length} of ${notes.length} played notes were left due to sound again`);
+});
+
+// ---- the context does not hold the audio session while nothing plays (2026-09-30) -------------
+//
+// A running AudioContext holds the platform's audio session for as long as it lives: on macOS and
+// iOS that is the "something is playing" indicator and a device that will not idle. Measured on the
+// real page — the context reached `running` on the FIRST GESTURE and was still running ten seconds
+// later with nothing scheduled and nothing ever played.
+
+/** Install a hand-driven clock for the idle suspend, so these cases do not wait in real time. */
+function idleClock(t) {
+  const due = [];
+  const was = useAudioSchedule(Object.assign((fn, ms) => { due.push({ fn, ms }); return due.length - 1; },
+    { cancel: (id) => { if (due[id]) due[id].fn = null; } }));
+  t.after(() => useAudioSchedule(was));
+  return {
+    /** How long the app asked to wait, from the most recent arming that is still live. */
+    get pending() { return due.filter((d) => d.fn).at(-1) ?? null; },
+    /** Fire the live timer, as the platform would when its delay elapses. */
+    fire() {
+      const next = due.filter((d) => d.fn).at(-1);
+      assert.ok(next, 'nothing was scheduled, so the context will never suspend');
+      const { fn } = next;
+      next.fn = null;
+      fn();
+    },
+  };
+}
+
+test('a gesture that is followed by no sound does not leave the context running', async (t) => {
+  const clock = idleClock(t);
+  const { ctx } = audio(t, { soundMode: 'chime', unlocked: true });
+  assert.equal(ctx.state, 'running', 'precondition: the gesture woke the context');
+  // The suspend is armed when the WAKE LANDS, not when it is asked for: until the resume settles
+  // there is nothing to suspend, and arming against a context that may yet be refused would be
+  // scheduling work for a state it might never reach.
+  await new Promise((r) => setTimeout(r, 0));
+  assert.ok(clock.pending, 'waking the context scheduled no suspend at all');
+  clock.fire();
+  assert.equal(ctx.state, 'suspended', 'the context was left running with nothing to play');
+  assert.equal(ctx.suspended, 1, 'it was suspended more than once, or not through suspend()');
+});
+
+test('a chime keeps the context awake until it has finished, then lets it go', (t) => {
+  const clock = idleClock(t);
+  const { ctx } = audio(t, { soundMode: 'chime', state: 'running', unlocked: true });
+  assert.equal(play('done'), true);
+
+  // The wait is measured from the END of the last note, not from now: firing early must find work
+  // still outstanding and re-arm rather than cutting the chime off.
+  const asked = clock.pending.ms;
+  assert.ok(asked > IDLE_SUSPEND_MS, `the suspend was scheduled ${asked}ms out, which is before the chime ends`);
+
+  ctx.advance(0.01);                       // part way through
+  clock.fire();
+  assert.equal(ctx.state, 'running', 'the context was suspended while a note was still due');
+
+  ctx.advance(5);                          // everything has sounded
+  clock.fire();
+  assert.equal(ctx.state, 'suspended', 'the context stayed running after the chime finished');
+});
+
+test('a chime after an idle suspend still sounds', (t) => {
+  // The whole risk of suspending: the next sound must wake it rather than be dropped. `play` goes
+  // through `unlock`, the same path a platform parking takes, so this is that path under our own
+  // suspension.
+  const clock = idleClock(t);
+  const { ctx, made } = audio(t, { soundMode: 'chime', state: 'running', unlocked: true });
+  clock.fire();
+  assert.equal(ctx.state, 'suspended', 'precondition: the context went quiet');
+  const before = made.length;
+  assert.equal(play('capture'), true, 'a chime after an idle suspend was refused');
+  assert.ok(made.length > before, 'it returned true and scheduled nothing');
+  assert.equal(ctx.state, 'running', 'the chime did not wake the context');
+});
+
+test('leaving a screen lets the context go quiet without waiting for cancelled notes', (t) => {
+  const clock = idleClock(t);
+  const { ctx } = audio(t, { soundMode: 'chime', state: 'running', unlocked: true });
+  play('done');
+  stopAll();
+  // `stopAll` cancelled everything, so the wait is measured from now rather than from the end of
+  // notes that will never sound.
+  assert.equal(clock.pending.ms, IDLE_SUSPEND_MS, `it still waited ${clock.pending.ms}ms for cancelled notes`);
+  clock.fire();
+  assert.equal(ctx.state, 'suspended', 'a left screen left the context running');
 });

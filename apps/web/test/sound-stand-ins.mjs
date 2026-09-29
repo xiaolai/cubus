@@ -41,7 +41,7 @@ export function audioStandIn({ state = 'suspended' } = {}) {
     return self;
   };
   const ctx = {
-    state, currentTime: 0, destination: {}, resumed: 0, made, gains,
+    state, currentTime: 0, destination: {}, resumed: 0, suspended: 0, made, gains,
     /**
      * Move the clock on, as a running context's does.
      *
@@ -53,6 +53,9 @@ export function audioStandIn({ state = 'suspended' } = {}) {
      */
     advance(seconds) { ctx.currentTime += seconds; return ctx; },
     resume() { ctx.resumed += 1; ctx.state = 'running'; return Promise.resolve(); },
+    /** Counted as well as performed: the app suspends when nothing is playing, and "it suspended"
+     *  and "it suspended once" are different claims. */
+    suspend() { ctx.suspended += 1; ctx.state = 'suspended'; return Promise.resolve(); },
     createGain() {
       // `into` records the graph: a note connected nowhere reaches no speaker, and a fake that
       // returned its argument without noting it could not tell the difference.

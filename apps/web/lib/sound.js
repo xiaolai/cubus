@@ -71,14 +71,73 @@ let resumeGen = 0;
  */
 const sounding = new Map();
 
+/**
+ * How long the context may sit RUNNING with nothing left to play before it is suspended.
+ *
+ * A running AudioContext holds the platform's audio session for as long as it lives: on macOS and
+ * iOS that is the "something is playing" indicator, a wakelock on the audio hardware, and a device
+ * that will not idle. This app plays chimes a fifth of a second long and then nothing for minutes,
+ * and it never suspended — measured 2026-09-30, the context reached `running` on the FIRST GESTURE
+ * and was still running ten seconds later with nothing scheduled and nothing ever played.
+ *
+ * Two seconds rather than none, because chimes come in runs — a scan captures a side about every
+ * second — and suspending between them would pay a resume for each. Two seconds after the last
+ * note ENDS, not after it starts.
+ */
+export const IDLE_SUSPEND_MS = 2000;
+
+/** The pending idle suspend, and the timer seam tests drive it through. */
+let idleTimer = null;
+let schedule = Object.assign((fn, ms) => setTimeout(fn, ms), { cancel: (t) => clearTimeout(t) });
+
+const cancelIdle = () => { if (idleTimer !== null) { schedule.cancel(idleTimer); idleTimer = null; } };
+
+/** Seconds until the last scheduled note has finished, or 0 when nothing is due. */
+function untilQuiet() {
+  let last = 0;
+  for (const { end } of sounding.values()) last = Math.max(last, end - context.currentTime);
+  return Math.max(0, last);
+}
+
+/**
+ * Suspend once the last note has finished and the grace has passed.
+ *
+ * Re-armed rather than fired blind: a note scheduled after this was armed would otherwise be cut
+ * off by a suspend that was measured for an earlier one. The check is against the note END TIMES
+ * and not against `sounding` being empty, because `onended` is the platform's to fire and a
+ * context that is already suspended will never fire it — which would leave the timer re-arming for
+ * ever on the one path it exists to handle.
+ */
+function armIdle() {
+  cancelIdle();
+  if (!context || typeof context.suspend !== 'function') return;
+  idleTimer = schedule(() => {
+    idleTimer = null;
+    if (!context || context.state !== 'running') return;
+    if (untilQuiet() > 0) { armIdle(); return; }
+    // `resumeState` is deliberately left as it is: this suspension is OURS, the permission is still
+    // granted, and `play()` waking it through `unlock()` is the same path a platform parking takes.
+    void Promise.resolve(context.suspend()).catch(() => {});
+  }, untilQuiet() * 1000 + IDLE_SUSPEND_MS);
+}
+
 /** Create the page's one AudioContext, or wake it. Only ever called from inside a user gesture. */
 function unlock() {
+  // NOT WITH SOUND OFF. This runs on every pointerdown, keydown and touchend on the document, so
+  // it used to open an audio session — and hold it — for a person who had turned sound off and
+  // would never hear anything from it. Nothing plays the instant the setting is turned back on
+  // (the only callers are the scan's chimes and the drill's cues, both of them screens away), so
+  // the next gesture is soon enough to unlock.
+  if (settings.soundMode === SOUND_MODES.off) return;
   context ??= makeContext();
   if (!context) return;
+  // Any wake cancels a pending suspend: the two are opposite answers to the same question, and the
+  // timer was measured against a silence this gesture may be about to end.
+  cancelIdle();
   // Taken BEFORE the running branch as well: that branch answers for the context as it is now, so
   // any wake still in flight is stale and must not be allowed to answer after it.
   const gen = ++resumeGen;
-  if (context.state === 'running') { resumeState = 'ok'; return; }
+  if (context.state === 'running') { resumeState = 'ok'; armIdle(); return; }
   // A context suspended mid-chime keeps its notes scheduled, and resuming plays their unfinished
   // tails — a "got it" for a side saved before the page went to the background, heard on the next
   // touch. Whatever was sounding is over; stop it before waking (round-3 audit).
@@ -88,7 +147,7 @@ function unlock() {
   // to raise: the next gesture tries again, which is why the listener stays.
   resumeState = 'pending';
   context.resume()
-    .then(() => { if (gen === resumeGen) resumeState = 'ok'; })
+    .then(() => { if (gen === resumeGen) { resumeState = 'ok'; armIdle(); } })
     .catch((err) => {
       if (gen !== resumeGen) return;
       resumeState = 'refused';
@@ -158,8 +217,15 @@ export function play(name) {
     osc.onended = () => sounding.delete(osc);
     osc.start(t0 + at);
     osc.stop(t0 + at + NOTE_S + 0.02);
-    sounding.set(osc, t0);
+    // BOTH TIMES. `at` is what `stopRan` compares the clock against; `end` is what the idle
+    // suspend waits for. Keeping only the first made "is anything still due?" unanswerable without
+    // `onended`, which a suspended context never fires — so the timer would have re-armed for ever
+    // on exactly the path it exists to serve.
+    sounding.set(osc, { at: t0, end: t0 + at + NOTE_S + 0.02 });
   }
+  // Nothing is playing a moment after this finishes, and a context nobody is listening to must not
+  // hold the platform's audio session.
+  armIdle();
   return true;
 }
 
@@ -169,9 +235,9 @@ export function play(name) {
  * alone, because it has not sounded and still keeps its offset.
  */
 function stopRan() {
-  for (const [osc, scheduledAt] of sounding) {
+  for (const [osc, { at }] of sounding) {
     // The clock has not moved since this note was scheduled, so its moment has not arrived.
-    if (context.currentTime <= scheduledAt) continue;
+    if (context.currentTime <= at) continue;
     osc.stop();
     sounding.delete(osc);
   }
@@ -181,6 +247,9 @@ function stopRan() {
 export function stopAll() {
   for (const osc of sounding.keys()) osc.stop();
   sounding.clear();
+  // There is nothing left to wait for, so the suspend is re-measured from now rather than from
+  // the end of notes that have just been cancelled.
+  armIdle();
 }
 
 /** Tests only: make contexts with `factory` from now on, forgetting the current one. Returns the
@@ -188,8 +257,20 @@ export function stopAll() {
  *  platform with no audio at all (audit, 2026-09-19). */
 export function useAudioContextFactory(factory) {
   const was = makeContext;
+  cancelIdle();
   makeContext = factory;
   context = null;
   sounding.clear();
+  return was;
+}
+
+/** Tests only: drive the idle suspend on `fn` instead of `setTimeout`. Returns what it replaced,
+ *  for the same reason the factory above does — a suite that leaves a stand-in installed hands the
+ *  next one a timer that never fires. Shaped like `script-drive`'s `schedule`: callable, with a
+ *  `cancel`. */
+export function useAudioSchedule(fn) {
+  const was = schedule;
+  cancelIdle();
+  schedule = fn;
   return was;
 }
