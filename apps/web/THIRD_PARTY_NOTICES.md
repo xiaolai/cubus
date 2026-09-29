@@ -24,14 +24,14 @@ Used under MIT. Its licence and notice files: [`LICENSE.txt`](#text-c815ea383ced
 Bundled into `vendor/ai-scan-panel.js` (the scanner), `vendor/cubejs.js` (the cube-state model and the solver's independent oracle), `vendor/misread-worker.js` (the misread decoder's worker). Author: akheron. Source: <https://github.com/ldez/cubejs>.
 Used under MIT. Its licence and notice files: [`LICENSE`](#text-3cb161c4314d).
 
-### onnxruntime-web 1.29.0 — MIT
+### onnxruntime-web 1.30.0 — MIT
 
 Copied unmodified into `vendor/`: `ort.mjs`, `ort.proxied.mjs`, `ort-wasm-simd-threaded.asyncify.mjs`, `ort-wasm-simd-threaded.asyncify.wasm`. Author: fs-eire. Source: <https://github.com/Microsoft/onnxruntime>.
 Used under MIT. The package carries no licence file; its project publishes it at <https://github.com/microsoft/onnxruntime/blob/main/LICENSE>: [`LICENSE`](#text-e9861036987e).
 
-Its WebAssembly runtime is a build of ONNX Runtime 1.29.0, which compiles in third-party code of its own.
-Microsoft's notices for that release are reproduced unmodified in [`notices/onnxruntime-1.29.0-ThirdPartyNotices.txt`](notices/onnxruntime-1.29.0-ThirdPartyNotices.txt)
-(from <https://github.com/microsoft/onnxruntime/blob/v1.29.0/ThirdPartyNotices.txt>).
+Its WebAssembly runtime is a build of ONNX Runtime 1.30.0, which compiles in third-party code of its own.
+Microsoft's notices for that release are reproduced unmodified in [`notices/onnxruntime-1.30.0-ThirdPartyNotices.txt`](notices/onnxruntime-1.30.0-ThirdPartyNotices.txt)
+(from <https://github.com/microsoft/onnxruntime/blob/v1.30.0/ThirdPartyNotices.txt>).
 
 ### rxjs 7.8.2 — Apache-2.0
 
@@ -9828,7 +9828,7 @@ THE SOFTWARE.
 
 ### text-e9861036987e
 
-Carried by onnxruntime-web 1.29.0 (`https://github.com/microsoft/onnxruntime/blob/main/LICENSE`).
+Carried by onnxruntime-web 1.30.0 (`https://github.com/microsoft/onnxruntime/blob/main/LICENSE`).
 
 ```text
 MIT License

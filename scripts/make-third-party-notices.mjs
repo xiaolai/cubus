@@ -566,7 +566,10 @@ function modelAttribution(root) {
  */
 export const ORT_NOTICE_PINS = Object.freeze({
   '1.28.0': '0e07b95f3a8d6230037707c5c4a2b554d12c4cb67369669ac255635528ffcee2',
-  '1.29.0': '53d3fa5821ac016ac24dd35775c996efec86e2ae0841e9a3a5e146c0ae916845',
+  // 1.30.0 replaces 1.29.0 here, not joins it: `checkOrtNotices` refuses a notices file for a
+  // release nothing ships, so the old one is deleted in the same change as the bump. Fetched from
+  // the raw file at the v1.30.0 tag, which is what this digest is of.
+  '1.30.0': '143764b952fdb1a7c69ce653bfba74a7744d6a8a573bfb73e235fba356c83de3',
 });
 export const ORT_NOTICES_DIR = 'apps/web/notices';
 export const ortNoticesFile = (release) => `onnxruntime-${release}-ThirdPartyNotices.txt`;
