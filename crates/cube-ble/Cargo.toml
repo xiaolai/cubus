@@ -8,6 +8,14 @@ edition = "2021"
 # Tauri backend and mirrored by apps/web/lib/ble-polyfill.js. No cube brand appears in this crate;
 # tests/no_brand_constants.rs enforces that. See dev-docs/universal-cube-driver.md §3-4.
 
+# WHAT NO GATE HERE PROVES, stated because the version below floats (2026-09-29). `cargo test -p
+# cube-ble` in CI runs ten unit tests and six no-brand-constants rules; nothing in this repository
+# touches a radio. So discovery, connection, subscriptions, sustained turns, disconnect and
+# reconnect are unverified on every btleplug version this crate has ever resolved to — the gap is
+# the ABSENT HARDWARE GATE, not any particular bump. 0.13.1 was no better verified than 0.13.2,
+# which is why reverting a patch inside this caret range would buy nothing; it would pick a
+# different unverified version and give up future patch fixes. Closing this properly means one
+# manual pass on real hardware per minor version, recorded, on a machine with a cube in reach.
 [dependencies]
 btleplug = "0.13"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

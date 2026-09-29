@@ -818,7 +818,22 @@ jobs:
       #
       #   RUSTSEC-2024-0411 … 0420  gtk-rs GTK3 bindings, unmaintained. Tauri's Linux backend is
       #                             webkit2gtk on GTK3; leaving it is Tauri's migration, not ours.
-      #   RUSTSEC-2024-0429         glib 0.18 `VariantStrIter` unsoundness — same tree, same owner.
+      #   RUSTSEC-2024-0429         glib 0.18 `VariantStrIter` unsoundness — same tree, same owner,
+      #                             and MEASURED UNREACHABLE rather than assumed so (2026-09-29).
+      #                             "A version bump cannot resolve this chain" establishes that the
+      #                             fix is unavailable; it does NOT establish that the exposure is
+      #                             acceptable, and those are different claims. The evidence for
+      #                             the second: the unsound iterator has exactly ONE public entry
+      #                             point, `Variant::array_iter_str`, and of the 712 registry
+      #                             crates in Cargo.lock only glib itself contains that string —
+      #                             plus zero hits across the four workspace crates and the one
+      #                             git-sourced crate. `FromVariant for Vec<T>` takes the
+      #                             `child_value(i).get()` path, so `get::<Vec<String>>()` does not
+      #                             reach it either. No backport exists to take: 0.18.5 is the last
+      #                             of its line and the fix landed in 0.20.0, while gtk 0.18.2 pins
+      #                             glib 0.18 and tauri 2.11.6 pins gtk 0.18. Re-run the grep when
+      #                             this entry is reviewed — a new CALLER, not a new version, is
+      #                             what would change the answer.
       #   RUSTSEC-2024-0436, -0370  paste, proc-macro-error: proc-macro helpers reached only
       #                             through tauri's and its plugins' trees; nothing here calls them.
       #   RUSTSEC-2025-0075/0080/0081/0098/0100  unic-*: via tauri-utils' identifier validation.
