@@ -228,6 +228,10 @@ test('a demonstrated turn is slow enough to WATCH, not just slow enough to count
   // 200ms here against 1620ms on the cube screen for the same turn).
   //
   // Measured as DURATION because that is what "no animation" actually means to the person watching.
+  // REDUCED MOTION LEGITIMATELY SHORTENS A TURN (AGENTS.md §7), so a runner that prefers it would
+  // make this case assert something false. Stated rather than inherited from whatever the machine
+  // happens to want.
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
   await openSuneDrill();
   await page.click('#algMoves button[data-i="0"]');
   await page.waitForTimeout(400);
@@ -236,15 +240,24 @@ test('a demonstrated turn is slow enough to WATCH, not just slow enough to count
   const tempo = await page.evaluate((sel) => document.querySelector(sel)?.getAttribute('tempo-scale'), el);
   assert.ok(tempo !== null, 'the drill cube carries no tempo-scale, so the renderer picks its own');
 
+  // MEASURED AS ELAPSED TIME, NOT AS A COUNT OF SAMPLES. The first version of this counted how
+  // many 20ms polls saw `animating` and multiplied by 20 — which silently measures the RUNNER as
+  // well as the turn: on a loaded CI machine each iteration takes longer than the 20ms it assumes,
+  // so fewer polls land inside the turn and a real 1620ms turn was reported as 600ms. It failed on
+  // CI and passed here, which is the signature of a measurement that depends on the machine.
+  // Timestamps at the two edges do not care how often they are taken.
   const ms = await page.evaluate(async (sel) => {
     const cube = document.querySelector(sel);
     document.querySelector('#algNext').click();
-    let ticks = 0;
-    for (let i = 0; i < 200; i++) {
-      if (cube.animating) ticks += 1;
-      await new Promise((r) => setTimeout(r, 20));
+    let began = null;
+    const deadline = performance.now() + 8000;
+    while (performance.now() < deadline) {
+      const turning = Boolean(cube.animating);
+      if (turning && began === null) began = performance.now();
+      else if (!turning && began !== null) return performance.now() - began;
+      await new Promise((r) => requestAnimationFrame(r));
     }
-    return ticks * 20;
+    return began === null ? 0 : performance.now() - began;
   }, el);
 
   // 760ms was the complaint that produced the speed menu — the speed a real person called too fast.
