@@ -231,6 +231,10 @@ test('waking a context suspended mid-chime does not play the rest of the chime',
   target.dispatchEvent(new Event('pointerdown'));
   assert.equal(play('done'), true);
   const notes = ctx.made.slice();
+  // TIME PASSES WHILE IT PLAYS, which is the half a frozen clock could not say. The notes are
+  // scheduled against a clock that then advances; that is what makes their moment a PAST one, and
+  // it is the difference between this case and a chime scheduled into a suspended context.
+  ctx.advance(0.05);
   ctx.state = 'suspended'; // the page went to the background mid-chime
   const stoppedAtResume = [];
   const resume = ctx.resume;
@@ -386,4 +390,77 @@ test('an earlier wake settling late does not answer for a later one', async (t) 
   inflight[0].res();
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(play('capture'), false, 'a stale wake re-enabled sound after a later refusal');
+});
+
+test('a chime asked for during a pending wake survives the next gesture', (t) => {
+  // THE WEBKIT WINDOW, AND WHAT USED TO CLOSE IT. `unlock()` stops notes before waking, because a
+  // context suspended mid-chime would otherwise play their tails. Applied to every note, that also
+  // killed the bell asked for DURING a pending wake - the exact window `play()` exists to schedule
+  // into - so a second touch, or a second sound, silenced the first before it ever sounded
+  // (audit, 2026-09-29). The discriminator is the state the note was SCHEDULED under: a suspended
+  // context's clock does not advance, so those notes are still due.
+  const { ctx } = audioStandIn();
+  ctx.resume = () => { ctx.resumed += 1; return new Promise(() => {}); };   // stays pending, stays suspended
+  const wasFactory = useAudioContextFactory(() => ctx);
+  const wasMode = settings.soundMode;
+  settings.soundMode = 'chime';
+  t.after(() => { stopAll(); useAudioContextFactory(wasFactory); settings.soundMode = wasMode; });
+  const target = page();
+  unlockOnGestures(target);
+  target.dispatchEvent(new Event('pointerdown'));
+  assert.equal(ctx.state, 'suspended', 'precondition: the wake has not settled');
+  assert.equal(play('done'), true, 'precondition: the chime was scheduled into the pending window');
+  const scheduled = ctx.made.slice();
+  assert.ok(scheduled.length > 0, 'precondition: notes were made');
+
+  target.dispatchEvent(new Event('touchend'));
+  const cut = scheduled.filter((o) => o.stops.at(-1) === undefined);
+  assert.equal(cut.length, 0, `${cut.length} of ${scheduled.length} notes were cut by the next gesture`);
+  // A second sound asked for in the same window must not cancel the first either.
+  play('capture');
+  assert.equal(scheduled.filter((o) => o.stops.at(-1) === undefined).length, 0,
+    'a later chime cancelled the one still waiting');
+});
+
+test('an unknown sound is refused even when the name is on Object.prototype', (t) => {
+  // `SOUNDS.toString` is a function, so a truthy lookup let it through and the failure arrived
+  // later as "notes is not iterable" - an error about iteration for what is a plain typo.
+  const { ctx } = audio(t, { state: 'running', unlocked: true });
+  for (const name of ['toString', 'constructor', 'hasOwnProperty', '__proto__']) {
+    assert.throws(() => play(name), /there is no sound called/, `${name} was not refused`);
+  }
+  assert.equal(ctx.made.length, 0, 'a refused name still built oscillators');
+});
+
+test('a note that the context actually PLAYED is cleaned up by the next suspension', (t) => {
+  // THE REGRESSION THE FIRST FIX INTRODUCED (verify, 2026-09-29). Labelling each note with the
+  // state it was scheduled under kept the pending-wake chime alive, and made that label permanent:
+  // a note scheduled while suspended, then played by a context that really ran, then caught by a
+  // second suspension, was never cleaned up and its tail waited for the next resume. The clock
+  // reading answers both cases, because it is the thing that actually moves.
+  let settle;
+  const { ctx } = audioStandIn();
+  ctx.resume = () => { ctx.resumed += 1; return new Promise((res) => { settle = res; }); };
+  const wasFactory = useAudioContextFactory(() => ctx);
+  const wasMode = settings.soundMode;
+  settings.soundMode = 'chime';
+  t.after(() => { stopAll(); useAudioContextFactory(wasFactory); settings.soundMode = wasMode; });
+  const target = page();
+  unlockOnGestures(target);
+
+  target.dispatchEvent(new Event('pointerdown'));            // wake 1: pending, still suspended
+  assert.equal(play('done'), true, 'precondition: scheduled into the pending window');
+  const notes = ctx.made.slice();
+  assert.ok(notes.length > 0, 'precondition: notes were made');
+
+  // The platform lets it run, and the clock moves: these notes have now had their moment.
+  ctx.state = 'running';
+  settle?.();
+  ctx.advance(0.05);
+  // And then it is suspended again, mid-chime.
+  ctx.state = 'suspended';
+  target.dispatchEvent(new Event('touchend'));
+
+  const left = notes.filter((o) => o.stops.at(-1) !== undefined);
+  assert.equal(left.length, 0, `${left.length} of ${notes.length} played notes were left due to sound again`);
 });

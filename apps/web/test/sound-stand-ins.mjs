@@ -42,6 +42,16 @@ export function audioStandIn({ state = 'suspended' } = {}) {
   };
   const ctx = {
     state, currentTime: 0, destination: {}, resumed: 0, made, gains,
+    /**
+     * Move the clock on, as a running context's does.
+     *
+     * A FIXED `currentTime` IS AN UNFAITHFUL FAKE, and it hid a whole class: `lib/sound.js` decides
+     * whether a scheduled note's moment has passed by asking whether the clock has moved since it
+     * was scheduled, which on a stand-in frozen at 0 is never. A wrong answer there is a chime cut
+     * before it sounds, or a tail played into the next screen (verify, 2026-09-29). Kept at 0 by
+     * default so every existing case still reads note offsets against a known origin.
+     */
+    advance(seconds) { ctx.currentTime += seconds; return ctx; },
     resume() { ctx.resumed += 1; ctx.state = 'running'; return Promise.resolve(); },
     createGain() {
       // `into` records the graph: a note connected nowhere reaches no speaker, and a fake that

@@ -54,8 +54,22 @@ let resumeState = /** @type {'none' | 'pending' | 'ok' | 'refused'} */ ('none');
  * answers only for its own (representative's review, 2026-09-29).
  */
 let resumeGen = 0;
-/** Oscillators started and not yet ended, so a screen left can silence them. */
-const sounding = new Set();
+/**
+ * Oscillators started and not yet ended, against the CLOCK READING they were scheduled at.
+ *
+ * What decides whether a note is stale is not where it was scheduled but whether the clock has
+ * MOVED since — because a suspended context's `currentTime` does not advance, so a note scheduled
+ * into one keeps its offset and is still due, while a note the clock has run past has already had
+ * its moment.
+ *
+ * Two wrong answers preceded this one. Cancelling everything cut the bell asked for during a
+ * pending wake, before it ever sounded. Labelling each note with the STATE it was scheduled under
+ * fixed that and broke the original case: the label is permanent, so a note scheduled while
+ * suspended, then played by a context that actually ran, then caught by a second suspension, was
+ * never cleaned up and its tail waited for the next resume (verify, 2026-09-29). A clock reading
+ * answers all three, and it is observable rather than inferred.
+ */
+const sounding = new Map();
 
 /** Create the page's one AudioContext, or wake it. Only ever called from inside a user gesture. */
 function unlock() {
@@ -68,7 +82,8 @@ function unlock() {
   // A context suspended mid-chime keeps its notes scheduled, and resuming plays their unfinished
   // tails — a "got it" for a side saved before the page went to the background, heard on the next
   // touch. Whatever was sounding is over; stop it before waking (round-3 audit).
-  stopAll();
+  //
+  stopRan();
   // A refused resume (no activation after all, an audio session another app holds) is not an error
   // to raise: the next gesture tries again, which is why the listener stays.
   resumeState = 'pending';
@@ -120,8 +135,11 @@ export const audioState = () => context?.state ?? 'none';
  * advance, so notes scheduled at `t0 + at` keep their offsets and sound once it runs.
  */
 export function play(name) {
+  // `Object.hasOwn`, not a truthy lookup: `SOUNDS.toString` is a function, so `play('toString')`
+  // sailed past the guard and died later on `for (const [hz, at] of notes)` with a TypeError about
+  // iteration — a confusing error for a plain programming mistake the next line names exactly.
+  if (!Object.hasOwn(SOUNDS, name)) throw new Error(`sound: there is no sound called "${name}"`);
   const notes = SOUNDS[name];
-  if (!notes) throw new Error(`sound: there is no sound called "${name}"`);
   if (settings.soundMode === SOUND_MODES.off || !context) return false;
   if (context.state !== 'running') {
     if (resumeState === 'refused' || resumeState === 'none') return false;
@@ -140,14 +158,28 @@ export function play(name) {
     osc.onended = () => sounding.delete(osc);
     osc.start(t0 + at);
     osc.stop(t0 + at + NOTE_S + 0.02);
-    sounding.add(osc);
+    sounding.set(osc, t0);
   }
   return true;
 }
 
+/**
+ * Silence the notes whose moment has PASSED — those the context's clock has run beyond. Called
+ * before a wake, so resuming does not play their tails; a note the clock has not reached is left
+ * alone, because it has not sounded and still keeps its offset.
+ */
+function stopRan() {
+  for (const [osc, scheduledAt] of sounding) {
+    // The clock has not moved since this note was scheduled, so its moment has not arrived.
+    if (context.currentTime <= scheduledAt) continue;
+    osc.stop();
+    sounding.delete(osc);
+  }
+}
+
 /** Silence every sound still sounding: a screen left, a scan thrown away. */
 export function stopAll() {
-  for (const osc of sounding) osc.stop();
+  for (const osc of sounding.keys()) osc.stop();
   sounding.clear();
 }
 
