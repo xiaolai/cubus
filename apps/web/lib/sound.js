@@ -46,6 +46,14 @@ let context = null;
  * that window is a chime that will be heard, and refusing it is the bug this replaces.
  */
 let resumeState = /** @type {'none' | 'pending' | 'ok' | 'refused'} */ ('none');
+/**
+ * Which wake `resumeState` is about. A resume's callbacks carry no identity of their own, so an
+ * EARLIER attempt settling late used to overwrite a later one's answer: refuse, wake again, and the
+ * first promise resolves `ok` over the second's `refused` — audio then reads as available on a
+ * platform that has just refused it twice. Every attempt takes a number and a settled promise
+ * answers only for its own (representative's review, 2026-09-29).
+ */
+let resumeGen = 0;
 /** Oscillators started and not yet ended, so a screen left can silence them. */
 const sounding = new Set();
 
@@ -53,6 +61,9 @@ const sounding = new Set();
 function unlock() {
   context ??= makeContext();
   if (!context) return;
+  // Taken BEFORE the running branch as well: that branch answers for the context as it is now, so
+  // any wake still in flight is stale and must not be allowed to answer after it.
+  const gen = ++resumeGen;
   if (context.state === 'running') { resumeState = 'ok'; return; }
   // A context suspended mid-chime keeps its notes scheduled, and resuming plays their unfinished
   // tails — a "got it" for a side saved before the page went to the background, heard on the next
@@ -62,9 +73,14 @@ function unlock() {
   // to raise: the next gesture tries again, which is why the listener stays.
   resumeState = 'pending';
   context.resume()
-    .then(() => { resumeState = 'ok'; })
+    .then(() => { if (gen === resumeGen) resumeState = 'ok'; })
     .catch((err) => {
+      if (gen !== resumeGen) return;
       resumeState = 'refused';
+      // The notes `play()` scheduled while this wake was pending are on a context that never ran, so
+      // they sound at no point. Dropping them keeps `sounding` a record of notes that can still be
+      // heard, which is what `stopAll` is asked to silence.
+      stopAll();
       console.debug('[cubus] audio did not resume; the next gesture tries again', err);
     });
 }
@@ -84,8 +100,13 @@ export function unlockOnGestures(target = globalThis.document) {
 export const audioState = () => context?.state ?? 'none';
 
 /**
- * Make `name`'s sound now. Returns whether it sounded: not when sounds are off, and not before a
- * gesture has unlocked audio. An unknown name is a programming error and throws.
+ * Make `name`'s sound now. Returns whether the notes were SCHEDULED: nothing is scheduled when
+ * sounds are off, nor before a gesture has unlocked audio. **It is not a measurement of audible
+ * output**, and the gap is one case — a wake still `pending` may reject afterwards, and those notes
+ * are then dropped by the refusal rather than heard. Nothing in the app branches on the answer, so
+ * a TEST asserting it has established scheduling and nothing more; the audible path is the
+ * stand-in's `audible()` (representative's review, 2026-09-29).
+ * An unknown name is a programming error and throws.
  *
  * A PARKED CONTEXT IS WOKEN; A REFUSED ONE IS STILL REFUSED. The gate used to be
  * `state !== 'running'`, which gave the same answer to both — and WebKit parks aggressively:

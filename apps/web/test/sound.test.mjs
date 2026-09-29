@@ -323,3 +323,67 @@ test('the off-track cue sounds on the bell-only setting, where the spoken lines 
   assert.equal(play('off'), true, 'the cue is a bell, so the bell-only setting must keep it');
   assert.equal(made.length, 2);
 });
+
+test('a wake that rejects drops the notes scheduled while it was pending', async (t) => {
+  // THE GAP IN `play()`'s ANSWER, and why its return now says SCHEDULED rather than sounded
+  // (representative's review, 2026-09-29). `pending` covers two futures: the WebKit parking above,
+  // where the notes keep their offsets and are heard; and a wake the platform refuses, where they
+  // are heard at no point. `play` cannot tell them apart at the instant it is asked, so the refusal
+  // is what clears up after it — otherwise `sounding` holds notes nobody can ever hear and
+  // `stopAll` is asked to silence a context that never ran.
+  let reject;
+  const { ctx } = audioStandIn();
+  ctx.resume = () => {
+    ctx.resumed += 1;
+    ctx.state = 'running';
+    return new Promise((res, rej) => { reject = () => { ctx.state = 'suspended'; rej(new Error('not allowed')); }; });
+  };
+  const wasFactory = useAudioContextFactory(() => ctx);
+  const wasMode = settings.soundMode;
+  settings.soundMode = 'chime';
+  t.after(() => { stopAll(); useAudioContextFactory(wasFactory); settings.soundMode = wasMode; });
+  const target = page();
+  unlockOnGestures(target);
+  target.dispatchEvent(new Event('pointerdown'));
+  ctx.state = 'suspended';
+  assert.equal(play('capture'), true, 'precondition: a chime is scheduled while the wake is pending');
+  const scheduled = ctx.made.slice();
+  assert.ok(scheduled.length > 0, 'precondition: the scheduled chime made notes');
+
+  reject();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.ok(scheduled.every((o) => o.stops.at(-1) === undefined),
+    'a note on a context that never ran was left due to sound');
+  assert.equal(play('capture'), false, 'a chime was scheduled after the wake was refused');
+});
+
+test('an earlier wake settling late does not answer for a later one', async (t) => {
+  // A resume's callbacks carry no identity of their own. Refuse, gesture again, and the FIRST
+  // promise can settle after the second — `ok` written over `refused`, so audio reads as available
+  // on a platform that has just refused it, and every chime afterwards is scheduled on a context
+  // that never runs (representative's review, 2026-09-29). Whether a real engine settles them out
+  // of order is not what this holds: the model must not DEPEND on the order.
+  const inflight = [];
+  const { ctx } = audioStandIn();
+  ctx.resume = () => {
+    ctx.resumed += 1;
+    return new Promise((res, rej) => inflight.push({ res, rej }));
+  };
+  const wasFactory = useAudioContextFactory(() => ctx);
+  const wasMode = settings.soundMode;
+  settings.soundMode = 'chime';
+  t.after(() => { stopAll(); useAudioContextFactory(wasFactory); settings.soundMode = wasMode; });
+  const target = page();
+  unlockOnGestures(target);
+  target.dispatchEvent(new Event('pointerdown'));
+  target.dispatchEvent(new Event('pointerdown'));
+  assert.equal(inflight.length, 2, 'precondition: two wakes are in flight');
+
+  inflight[1].rej(new Error('not allowed'));
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(play('capture'), false, 'precondition: the later, refused wake makes no sound');
+
+  inflight[0].res();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(play('capture'), false, 'a stale wake re-enabled sound after a later refusal');
+});
