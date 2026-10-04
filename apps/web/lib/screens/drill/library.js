@@ -30,6 +30,7 @@ import { holdForStage, holdSentence } from '../../solving-hold.js';
 import { createDrillAttempt } from '../../drill-attempt.js';
 import { buildScript } from '../../script-view.js';
 import { createStopDriver } from '../../script-drive.js';
+import { createWalkClock } from '../../walk-clock.js';
 import { DEFAULT_WALK_SPEED, WALK_SPEED_KEY, tempoFor } from '../../cube-view.js';
 import { chainTrusted } from '../../cube-trust-state.js';
 import { liveSerial } from '../../cube-reports.js';
@@ -451,6 +452,10 @@ export function mountLibrary(root, { make = createDrillAttempt, signal, go = () 
   let cubeEl = null;
   /** True while the demonstration is mirroring a real cube rather than being played. */
   let following = false;
+  /** True while ONE wait for the renderer tag to upgrade is outstanding. */
+  let awaitingUpgrade = false;
+  /** The attempt whose mirror that wait should apply — the LATEST asked for, never the first. */
+  let pendingMirror = null;
   let lastEvent = null;
   let gone = false;
   let ticking = null;
@@ -461,6 +466,12 @@ export function mountLibrary(root, { make = createDrillAttempt, signal, go = () 
   const disposeAttempt = () => {
     attempt?.dispose();
     attempt = null;
+    // AND THE MIRROR IT WAS WAITING TO APPLY. The shared upgrade wait is left alone — a later request
+    // will want it — but the request itself is this attempt's, and an upgrade that never settles would
+    // otherwise keep a disposed attempt reachable from the slot for the life of the screen (verify pass,
+    // round 3, 2026-10-04). The callback's own guards already refuse to apply it; this is about not
+    // holding it.
+    pendingMirror = null;
     for (const [slot, fn] of [...installed]) if (hooks[slot] === fn) hooks[slot] = null;
     installed.clear();
   };
@@ -551,6 +562,37 @@ export function mountLibrary(root, { make = createDrillAttempt, signal, go = () 
    */
   function mirror(mine) {
     if (!demo || !cubeEl || mine !== attempt) return;
+    // CAN THIS ELEMENT BE DRIVEN AT ALL? `vendor/cubus-cube.js` may not have upgraded the tag yet,
+    // which this repo has shipped more than once — the same guard `walk-presenter`'s `shows()` makes.
+    // It did not matter while mirroring only ever happened on a live report, long after the bundle has
+    // loaded; the seed below mirrors at MOUNT, which is exactly that window, and `observe` reaches
+    // `seek` on an element that has none.
+    //
+    // A REFUSAL HERE IS DEFERRED, NOT DROPPED. Returning bare left the defect the seed exists to fix
+    // alive in exactly the guarded case: a cube sitting still sends no further report, so the screen
+    // stayed mismatched until the child happened to turn something (verify pass, 2026-10-04). The same
+    // shape `createHoldCube` already has — wait for the tag, then apply, and only if this is still the
+    // attempt being shown.
+    //
+    // ONE WAIT, BUT THE LATEST REQUEST. The first version let the first request own the wait, so
+    // pressing Start again before the upgrade lost BOTH: the new attempt's mirror returned because a
+    // wait was already outstanding, and the wait then rejected the old attempt as no longer current and
+    // applied nothing (verify pass, round 2). The request is held in a slot the next one overwrites,
+    // which is `createHoldCube`'s rule too — only the LAST hold asked for is applied when the tag
+    // arrives.
+    if (typeof cubeEl.stepStop !== 'function') {
+      pendingMirror = mine;
+      if (awaitingUpgrade) return;
+      awaitingUpgrade = true;
+      const apply = () => {
+        awaitingUpgrade = false;
+        const latest = pendingMirror;
+        pendingMirror = null;
+        if (!gone && latest && latest === attempt) mirror(latest);
+      };
+      globalThis.customElements?.whenDefined?.('cubus-cube').then(apply, apply);
+      return;
+    }
     const at = mine.cube;
     if (!at || !chainTrusted()) return;
     if (!following) {
@@ -614,9 +656,31 @@ export function mountLibrary(root, { make = createDrillAttempt, signal, go = () 
       },
     });
     attempt = mine;
+    /**
+     * Is this attempt still TAKING reports — asked before the report is handed to it?
+     *
+     * `createDrillAttempt` is terminal by design: `move()` and `facelets()` return early once the
+     * state is `done` or `ended`, leaving `attempt.cube` frozen at the arrangement the drill finished
+     * on. `mirror` was called regardless, so every turn made after a completion handed the
+     * demonstration that frozen arrangement as if it were the cube now — finish sune, press Back to
+     * 6/7, turn one face, and the demonstration jumped to 7/7 and dropped to the following tempo
+     * (Codex audit, 2026-10-04). Read BEFORE the report, so the report that COMPLETES the attempt is
+     * still mirrored — that one is the cube as it really is, and it is the end of the drill.
+     */
+    const taking = (a) => a.state !== 'done' && a.state !== 'ended';
     for (const [slot, fn] of Object.entries({
-      liveMove: (m) => { if (mine === attempt) { mine.move(m); mirror(mine); } },
-      liveUpdate: (f, serial) => { if (mine === attempt) { mine.facelets(f, serial); mirror(mine); } },
+      liveMove: (m) => {
+        if (mine !== attempt) return;
+        const live = taking(mine);
+        mine.move(m);
+        if (live) mirror(mine);
+      },
+      liveUpdate: (f, serial) => {
+        if (mine !== attempt) return;
+        const live = taking(mine);
+        mine.facelets(f, serial);
+        if (live) mirror(mine);
+      },
       onTrustLost: () => { if (mine === attempt) mine.trustLost(); },
       liveGap: () => { if (mine === attempt) mine.movesLost(); },
     })) { hooks[slot] = fn; installed.set(slot, fn); }
@@ -624,7 +688,18 @@ export function mountLibrary(root, { make = createDrillAttempt, signal, go = () 
     // until it has seen one report follow another, so a seed carrying no number cost the first turn
     // of every drill its judgment — and before that guard existed, it was worse: the first turn was
     // judged against a baseline that could already have missed a report (audit, 2026-09-29).
-    if (state.live && chainTrusted()) attempt.facelets(state.live, liveSerial());
+    //
+    // AND THE SEED IS MIRRORED, like every later report. The demonstration follows the cube in the
+    // child's hands, and the set-up is the algorithm inverted — so a tracked cube that is still solved
+    // belongs at the demonstration's END, and building the case walks it backwards from there. Seeding
+    // without mirroring left the status saying "Your cube is solved. Set the case up…" beside a
+    // demonstration sitting at 0/7 on the case already built (Codex audit, 2026-10-04): the one screen
+    // whose promise is that the cube on screen is the cube in your hands, opening with the two
+    // disagreeing. Anything off the track still answers `off` and moves nothing.
+    if (state.live && chainTrusted()) {
+      attempt.facelets(state.live, liveSerial());
+      mirror(attempt);
+    }
   }
 
   // ---- the drill page ------------------------------------------------------------------------
@@ -647,7 +722,26 @@ export function mountLibrary(root, { make = createDrillAttempt, signal, go = () 
       // never written"), and the host here owns the whole tuned view: a demonstration is about the
       // turns, not about re-framing the cube.
       cubeEl = el;
-      demo = createStopDriver(demoScript(entry), { cube: el, owned: OWNED_VIEW });
+      // PACED BY THE CUBE, NOT BY A METRONOME — the same clock the cube screen plays on
+      // (`lib/walk-clock.js`). `play({ every })` asks for the next stop `every` ms after the last was
+      // ISSUED, which was right while this cube animated at the renderer's bare 190ms and became wrong
+      // the day `applyCubeView` put `tempo-scale` on it (2026-09-30): a turn at Normal takes 1.9s, the
+      // 900ms tick arrived with it still in flight, and `stepStop` settles whatever is in flight at
+      // once. Measured 2026-10-04 — the seven turns of sune played in 7.3s instead of 13.3s, every one
+      // of them snapped short. That is the third time one screen has owned a fact about how every
+      // cube is drawn; the clock is a service for the same reason `applyCubeView` is.
+      //
+      // The gap is still honoured for the FIRST stop, where nothing is in flight — the clock's own rule.
+      const clock = createWalkClock(el);
+      demo = createStopDriver(demoScript(entry), { cube: el, owned: OWNED_VIEW, schedule: clock.schedule });
+      // THE SCREEN'S ONE STEP LISTENER, which tells the clock a turn has landed and repaints the
+      // transport from the position that just arrived. Signalled, because `<cubus-cube>` is parked and
+      // re-used: an unscoped listener would arrive at the next screen still driving this one.
+      el.addEventListener('cubus-step', () => {
+        if (gone) return;
+        clock.landed();
+        showTransport();
+      }, signal ? { signal } : undefined);
     }
     startAttempt();
     showTransport();

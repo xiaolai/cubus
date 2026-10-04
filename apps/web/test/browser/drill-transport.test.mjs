@@ -267,6 +267,58 @@ test('a demonstrated turn is slow enough to WATCH, not just slow enough to count
   assert.ok(ms <= 5000, `a demonstrated quarter turn took about ${ms}ms, which is not a turn but a wait`);
 });
 
+test('an AUTOPLAYED turn lasts as long as a stepped one — Play is not a metronome', async () => {
+  // THE DEFECT THE CASE ABOVE CANNOT SEE. It measures a turn the tester asked for, one press at a
+  // time. `play({ every })` asks for the next stop `every` ms after the last was ISSUED, so the drill's
+  // 900ms tick arrived with a 1.9s turn still in flight and `stepStop` settles whatever is in flight at
+  // once: every turn of a Play run was cut to the length of the gap. Measured 2026-10-04 — sune's seven
+  // turns played in 7.3s rather than 16.2s, and the manual case stayed green throughout because a
+  // single press is not on the clock at all.
+  //
+  // ASSERTED AS A RELATION, not against 1900ms: an autoplayed turn and a stepped turn are the same turn
+  // at the same tempo, so they must take the same time. A floor in milliseconds would not have caught
+  // this — the truncated turns were about 1040ms, comfortably past any "is it a snap" threshold.
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await openSuneDrill();
+  const el = '#algCube cubus-cube';
+
+  /** How long one STEPPED quarter turn takes, from the press to the element reporting it. */
+  const stepped = await page.evaluate(async (sel) => {
+    const cube = document.querySelector(sel);
+    const landed = new Promise((resolve) => {
+      cube.addEventListener('cubus-step', () => resolve(performance.now()), { once: true });
+    });
+    const t0 = performance.now();
+    document.querySelector('#algNext').click();
+    return (await landed) - t0;
+  }, el);
+  assert.ok(stepped > 300, `precondition: a stepped turn took ${Math.round(stepped)}ms, too short to compare against`);
+
+  // `#algReplay` seeks to the start AND plays — "start again" is one affordance, not two — so the
+  // listener goes on BEFORE the press or the first turns land unobserved. The first landing carries the
+  // lead-in gap, so the turns compared are the ones AFTER it.
+  const gaps = await page.evaluate(async (sel) => {
+    const cube = document.querySelector(sel);
+    const at = [];
+    const onStep = () => at.push(performance.now());
+    cube.addEventListener('cubus-step', onStep);
+    document.querySelector('#algReplay').click();
+    const deadline = performance.now() + 15000;
+    while (at.length < 4 && performance.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    cube.removeEventListener('cubus-step', onStep);
+    document.querySelector('#algPlay').click();   // pause, so the rest of the run is not left turning
+    return at.slice(1).map((t, i) => t - at[i]);
+  }, el);
+
+  assert.ok(gaps.length >= 2, `only ${gaps.length} autoplayed turns landed inside the budget`);
+  // Sune opens `R U R'`, three quarter turns, so every gap here is one quarter turn at the same tempo
+  // the stepped measurement used.
+  for (const [i, gap] of gaps.entries()) {
+    assert.ok(gap >= stepped * 0.8,
+      `autoplayed turn ${i + 2} took ${Math.round(gap)}ms against ${Math.round(stepped)}ms stepped — Play is cutting its turns short`);
+  }
+});
+
 test('the demonstration follows the cube in the child\'s hands', async () => {
   // THE PAGE'S PROMISE: the cube on screen is the cube you are holding (owner, 2026-09-30). The
   // demonstration and the live attempt used to be entirely separate, so turning your own cube moved

@@ -22,6 +22,9 @@ import { SOLVED_FACELETS } from '../lib/solved.js';
 import { ATTEMPT_STATES, MIN_TIMEABLE_REPORTS, TOO_SHORT, UNNUMBERED, UNSOLVED, createDrillAttempt } from '../lib/drill-attempt.js';
 import { showMove } from '../lib/solving-hold.js';
 import { blockAt } from './app-source.mjs';
+import { groupsOf } from '../lib/script-view.js';
+import { parse } from '../lib/cube-notation.js';
+import { t } from '../lib/i18n.js';
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -416,6 +419,286 @@ test('the screen owns every view attribute a script would otherwise overwrite', 
   assert.ok(viewish.length >= 4, 'no view attributes found — re-read this case');
   for (const attr of new Set(viewish)) {
     assert.ok(OWNED_VIEW.includes(attr), `the drill does not own "${attr}", so a demonstration will overwrite it`);
+  }
+});
+
+/** `library.js` as text, for the wiring a node mount cannot reach. */
+const LIBRARY_SRC = readFileSync(new URL('../lib/screens/drill/library.js', import.meta.url), 'utf8');
+
+test('the demonstration is paced by the CUBE, not by a number', () => {
+  // THE THIRD TIME ONE SCREEN HAS OWNED A FACT ABOUT HOW EVERY CUBE IS DRAWN. `play({ every })` asks
+  // for the next stop `every` ms after the last was ISSUED. That was right while this cube animated at
+  // the renderer's bare 190ms, and became wrong the day `applyCubeView` put `tempo-scale` on it
+  // (2026-09-30): a turn at Normal takes 1.9s, the 900ms tick arrived with it still in flight, and
+  // `stepStop` settles whatever is in flight at once. Measured in WebKit on 2026-10-04 — the seven
+  // turns of sune played in 7.3s rather than 13.3s, every one of them cut short.
+  //
+  // `lib/walk-clock.js` is the answer the cube screen already had, and it is a service, not that
+  // screen's: it fires when the element says a turn has landed. Asserted as a RELATION — this screen's
+  // driver must be given a schedule, and the clock must be told by a step listener — because a
+  // behavioural test here cannot see it: happy-dom never upgrades the tag, so nothing ever animates
+  // and a 900ms metronome looks identical to a completion-paced one. `test/browser/` is where the
+  // duration is measured; this is what stops the wiring being removed.
+  assert.match(LIBRARY_SRC, /createWalkClock/, 'the drill no longer builds a walk clock');
+  const driver = blockAt(LIBRARY_SRC, 'demo = createStopDriver(');
+  assert.match(driver, /schedule:\s*clock\.schedule/, 'the demonstration is back on a metronome');
+  assert.match(LIBRARY_SRC, /clock\.landed\(\)/, 'nothing tells the clock a turn has landed, so it never fires');
+  assert.match(LIBRARY_SRC, /addEventListener\('cubus-step'/, 'the clock is told by nothing');
+});
+
+test('a report that arrives after the drill is over moves the demonstration nowhere', () => {
+  // `createDrillAttempt` is terminal by design — `move()` and `facelets()` return early once the state
+  // is `done` or `ended` — and `attempt.cube` then stays frozen at the arrangement the drill finished
+  // on. The hooks mirrored regardless, so every turn made after a completion handed the demonstration
+  // that frozen arrangement as the cube NOW: finish sune, press Back to 6/7, turn one face, and the
+  // demonstration jumped to 7/7 at the following tempo (Codex audit, 2026-10-04).
+  //
+  // The state is read BEFORE the report is handed over, so the report that COMPLETES the attempt is
+  // still mirrored — that one is the cube as it really is. A test that read it after would be asserting
+  // the opposite and would have to drop the last frame of every drill.
+  //
+  // Structural for the reason above it: the live path needs a trusted cube AND an upgraded renderer,
+  // and the node tier has neither (the file already says so where `Start again` is tested).
+  // A one-line predicate, so it is matched as a line — `blockAt` wants a brace to balance.
+  const [, gate = ''] = LIBRARY_SRC.match(/^\s*const taking = \(a\) =>(.*)$/m) ?? [];
+  assert.ok(gate, 'the gate that asks whether the attempt is still taking reports is gone');
+  assert.match(gate, /'done'/, 'the terminal states the gate reads are no longer named');
+  assert.match(gate, /'ended'/, 'the terminal states the gate reads are no longer named');
+  for (const hook of ['liveMove', 'liveUpdate']) {
+    const fn = blockAt(LIBRARY_SRC, `${hook}: (`);
+    assert.match(fn, /const live = taking\(mine\);/, `${hook} does not ask whether the attempt is still taking reports`);
+    assert.match(fn, /if \(live\) mirror\(mine\);/, `${hook} mirrors a terminal attempt`);
+    // THE ORDER IS THE WHOLE FIX: asked before the report, mirrored after it.
+    assert.ok(fn.indexOf('const live =') < fn.indexOf('mine.'), `${hook} reads the state after handing over the report`);
+  }
+});
+
+test('the trusted seed is mirrored, like every later report', () => {
+  // The demonstration follows the cube in the child's hands, and the set-up is the algorithm inverted —
+  // so a tracked cube that is still solved belongs at the demonstration's END, and building the case
+  // walks it backwards from there (`drill-follow.test.mjs` measures that over all 137). Seeding the
+  // attempt without mirroring it left the status saying "Your cube is solved. Set the case up…" beside
+  // a demonstration sitting at 0/7 on the case already built (Codex audit, 2026-10-04) — the one screen
+  // whose promise is that the cube on screen is the cube in your hands, opening with the two disagreeing.
+  const seed = blockAt(LIBRARY_SRC, 'if (state.live && chainTrusted())');
+  assert.match(seed, /attempt\.facelets\(state\.live, liveSerial\(\)\)/, 'the seed no longer seeds');
+  assert.match(seed, /mirror\(attempt\)/, 'the seeded attempt is not mirrored, so the screen opens disagreeing with itself');
+});
+
+test('mirroring waits for the renderer rather than dropping the report', () => {
+  // The seed mirrors at MOUNT, which is the one window where `vendor/cubus-cube.js` may not have
+  // upgraded the tag — and `observe` reaches `seek` on an element that has none. So the guard is
+  // needed; returning BARE from it is not enough, and that was the first fix: a cube sitting still
+  // sends no further report, so the screen stayed mismatched in exactly the guarded case until the
+  // child happened to turn something (verify pass, 2026-10-04).
+  const fn = blockAt(LIBRARY_SRC, 'function mirror(mine)');
+  assert.match(fn, /typeof cubeEl\.stepStop !== 'function'/, 'mirroring no longer checks it has a renderer');
+  assert.match(fn, /whenDefined/, 'a mirror refused before the upgrade is dropped instead of deferred');
+  assert.match(fn, /latest === attempt/, 'the deferred mirror does not re-check which attempt is showing');
+  assert.match(fn, /if \(awaitingUpgrade\) return;/, 'nothing stops a wait being queued on every report');
+  // THE WAIT IS SHARED, THE REQUEST IS THE LATEST. Letting the first request own the wait lost both
+  // when Start again came before the upgrade: the new attempt's mirror returned because a wait was
+  // outstanding, and the wait then rejected the old attempt and applied nothing (verify pass, round 2).
+  assert.match(fn, /pendingMirror = mine;/, 'a later mirror does not supersede the one already waiting');
+  assert.ok(fn.indexOf('pendingMirror = mine;') < fn.indexOf('if (awaitingUpgrade) return;'),
+    'the request is recorded after the early return, so a superseding request is dropped');
+});
+
+/**
+ * A `<cubus-cube>` the drill's mount will adopt, recording every transport call.
+ *
+ * THE INJECTION POINT IS `parkCube`. The mount builds its cube with `newCube()`, which re-uses the
+ * PARKED element — and `parkCube()` takes whatever `#stage` holds, provided `isRenderer` recognises it
+ * (`recycle` and `dispose`). So an element with the manifest's transport surface placed on the stage
+ * becomes the screen's cube, and what the demonstration is told becomes readable without a browser.
+ *
+ * This is what makes the hook-ordering contract testable here after all: the contract is about which
+ * reports reach the driver, and a recording element answers that. Nothing about ANIMATION is asserted
+ * through it — that stays in `test/browser/` (verify pass, round 2, 2026-10-04).
+ */
+function stageRecorder(doc) {
+  const el = doc.createElement('cubus-cube');
+  const calls = [];
+  el.recycle = () => {};
+  el.dispose = () => {};
+  for (const m of ['step', 'stepBack', 'stepStop', 'stepBackStop', 'seek', 'playTo']) {
+    el[m] = (...a) => { calls.push([m, ...a]); };
+  }
+  el.turnTo = () => Promise.resolve(true);
+  Object.defineProperty(el, 'animating', { get: () => false });
+  Object.defineProperty(el, 'stops', {
+    get() {
+      const out = [0];
+      let n = 0;
+      for (const g of groupsOf(parse(el.getAttribute('alg') || ''))) { n += g.length; out.push(n); }
+      return out;
+    },
+  });
+  el.calls = calls;
+  return el;
+}
+
+test('a report that lands after the drill is over moves the demonstration nowhere — driven', async () => {
+  // THE BEHAVIOURAL HALF of the gate above. The structural case says the gate is written; this says what
+  // it does, through the REAL attempt, the REAL driver and the app's own hooks and state, with a
+  // recording element standing in for the renderer (route suggested by the verify pass, round 2).
+  const { mountLibrary, drillPageHtml } = await import('../lib/screens/drill/library.js');
+  const { hooks } = await import('../lib/screen-slots.js');
+  const { state } = await import('../lib/app-state.js');
+  const { chainTrusted } = await import('../lib/cube-trust-state.js');
+
+  // Choose sune through the app so the module's `chosen` is set, then leave so this case owns the hooks.
+  await openChooser();
+  $$('[data-alg="sune"]')[0].dispatchEvent(new win.Event('click', { bubbles: true }));
+  await tick(); await tick();
+  assert.ok(onDrillPage(), 'precondition: an algorithm is chosen');
+  win.cubusGo('home');
+  await tick(); await tick();
+
+  // A cube that is connected and believed — set on the app's own state, because that is what the screen
+  // asks. An unproven radio is refused and this must not bypass that.
+  const before = { connected: state.connected, trusted: state.cube.trusted, source: state.cube.source, live: state.live };
+  state.connected = true;
+  state.cube.trusted = true;
+  state.cube.source = 'cube';
+  state.live = '';
+  assert.equal(chainTrusted(), true, 'precondition: the chain must be trusted for the drill to follow');
+
+  const sune = entryById('sune');
+  const recorder = stageRecorder(win.document);
+  // THE ONLY CUBE ON THE STAGE. `parkCube` takes the FIRST `cubus-cube` it finds there, so a screen
+  // still holding one of its own gets parked instead and the mount builds a plain element — which then
+  // throws inside `observe` rather than recording anything.
+  for (const old of [...win.document.querySelectorAll('#stage cubus-cube')]) old.remove();
+  win.document.querySelector('#stage').appendChild(recorder);
+  const root = win.document.createElement('div');
+  win.document.body.appendChild(root);
+  root.innerHTML = drillPageHtml(sune);
+  const mounted = mountLibrary(root, { go: () => {} });
+  try {
+    // `assert.ok` on an identity comparison, never `assert.equal` on two DOM nodes: a failing
+    // `assert.equal` builds a diff by inspecting both values, and inspecting a happy-dom element walks
+    // the whole document behind it — the run hangs instead of failing (found while writing this).
+    assert.ok(root.querySelector('#algCube cubus-cube') === recorder, 'the mount did not adopt the recorder');
+    const at = () => root.querySelector('#algAt').textContent.trim();
+    const turns = () => recorder.calls.length;
+
+    // Step 1 and 2: a solved cube is the demonstration's END, and the set-up walks it backwards to the
+    // case (`drill-follow.test.mjs` measures that over all 137).
+    let cube = SOLVED;
+    let serial = 10;
+    hooks.liveUpdate(toFacelets(cube), serial);
+    assert.equal(at(), t('turn %1 of %2', 7, 7), 'a solved cube is not at the demonstration\'s end');
+    for (const m of movesOf(invert(sune.scanAlg))) {
+      cube = applyAlg(cube, m);
+      hooks.liveUpdate(toFacelets(cube), ++serial);
+    }
+    assert.equal(at(), t('turn %1 of %2', 0, 7), 'the set-up did not walk the demonstration back to the case');
+
+    // Step 3: the algorithm, to the end. The attempt completes on the last turn.
+    for (const m of movesOf(sune.scanAlg)) {
+      cube = applyAlg(cube, m);
+      hooks.liveUpdate(toFacelets(cube), ++serial);
+    }
+    assert.equal(at(), t('turn %1 of %2', 7, 7), 'the completing report was NOT mirrored — the drill lost its last frame');
+
+    // NOW THE DEFECT. The attempt is terminal and holds a frozen arrangement. Press Back, then send
+    // another report: the demonstration must stay where the child put it.
+    root.querySelector('#algBack').dispatchEvent(new win.Event('click', { bubbles: true }));
+    assert.equal(at(), t('turn %1 of %2', 6, 7), 'precondition: Back moved the demonstration');
+    const settled = turns();
+    hooks.liveUpdate(toFacelets(applyAlg(cube, 'F')), ++serial);
+    hooks.liveMove({ notation: 'F', serial: ++serial, cubeTimestamp: 9000, timestamp: 9000 });
+    assert.equal(at(), t('turn %1 of %2', 6, 7),
+      'a report after the drill was over was mirrored, so the frozen arrangement moved the demonstration');
+    assert.equal(turns(), settled, 'a report after the drill was over reached the element');
+  } finally {
+    mounted.dispose();
+    root.remove();
+    recorder.remove();
+    Object.assign(state, { connected: before.connected, live: before.live });
+    state.cube.trusted = before.trusted;
+    state.cube.source = before.source;
+  }
+});
+
+test('an ENDED attempt is just as terminal — a report after trust lapsed moves nothing', async () => {
+  // `taking()` reads BOTH terminal states, and only `done` was driven. `ended` arrives by a different
+  // door — the trust-loss hook — and it is the one a child actually hits: the radio drops mid-drill.
+  // Chain trust is then RESTORED without restarting the attempt, because `mirror` returns early on
+  // `!chainTrusted()` and an un-restored chain would mask a missing terminal-state guard entirely: the
+  // test would pass with the gate deleted (verify pass, round 3, 2026-10-04).
+  //
+  // Completion here is driven through `liveMove` rather than `liveUpdate`, so both hooks are covered on
+  // a real path and not only on the one that happened to be convenient.
+  const { mountLibrary, drillPageHtml } = await import('../lib/screens/drill/library.js');
+  const { hooks } = await import('../lib/screen-slots.js');
+  const { state } = await import('../lib/app-state.js');
+  const { chainTrusted } = await import('../lib/cube-trust-state.js');
+
+  await openChooser();
+  $$('[data-alg="sune"]')[0].dispatchEvent(new win.Event('click', { bubbles: true }));
+  await tick(); await tick();
+  win.cubusGo('home');
+  await tick(); await tick();
+
+  const before = { connected: state.connected, trusted: state.cube.trusted, source: state.cube.source, live: state.live };
+  const trust = () => { state.connected = true; state.cube.trusted = true; state.cube.source = 'cube'; };
+  trust();
+  state.live = '';
+  assert.equal(chainTrusted(), true, 'precondition: the chain must be trusted for the drill to follow');
+
+  const sune = entryById('sune');
+  const recorder = stageRecorder(win.document);
+  for (const old of [...win.document.querySelectorAll('#stage cubus-cube')]) old.remove();
+  win.document.querySelector('#stage').appendChild(recorder);
+  const root = win.document.createElement('div');
+  win.document.body.appendChild(root);
+  root.innerHTML = drillPageHtml(sune);
+  const mounted = mountLibrary(root, { go: () => {} });
+  try {
+    const at = () => root.querySelector('#algAt').textContent.trim();
+    const turns = () => recorder.calls.length;
+
+    // Into the solve: a solved cube is the end, the inverted set-up walks back to the case.
+    let cube = SOLVED;
+    let serial = 10;
+    hooks.liveUpdate(toFacelets(cube), serial);
+    for (const m of movesOf(invert(sune.scanAlg))) {
+      cube = applyAlg(cube, m);
+      hooks.liveUpdate(toFacelets(cube), ++serial);
+    }
+    assert.equal(at(), t('turn %1 of %2', 0, 7), 'precondition: the set-up reached the case');
+
+    // A few turns of the algorithm through the MOVE hook, then the radio drops.
+    const algorithm = movesOf(sune.scanAlg);
+    for (const m of algorithm.slice(0, 3)) {
+      cube = applyAlg(cube, m);
+      hooks.liveMove({ notation: m, serial: ++serial, cubeTimestamp: 1000 + serial * 400, timestamp: 1000 + serial * 400 });
+    }
+    assert.equal(at(), t('turn %1 of %2', 3, 7), 'precondition: liveMove walked the demonstration');
+
+    // TRUST LAPSES. The attempt ends; the chain is then put back, which is what a reconnect does.
+    hooks.onTrustLost();
+    trust();
+    assert.equal(chainTrusted(), true, 'precondition: the chain is trusted again, so mirror is not masked');
+
+    // The child moves the demonstration themselves, and then reports arrive for an ENDED attempt.
+    root.querySelector('#algBack').dispatchEvent(new win.Event('click', { bubbles: true }));
+    assert.equal(at(), t('turn %1 of %2', 2, 7), 'precondition: Back moved the demonstration');
+    const settled = turns();
+    hooks.liveUpdate(toFacelets(applyAlg(cube, 'F')), ++serial);
+    hooks.liveMove({ notation: 'F', serial: ++serial, cubeTimestamp: 9000, timestamp: 9000 });
+    assert.equal(at(), t('turn %1 of %2', 2, 7),
+      'a report after the attempt ENDED was mirrored, so a frozen arrangement moved the demonstration');
+    assert.equal(turns(), settled, 'a report after the attempt ENDED reached the element');
+  } finally {
+    mounted.dispose();
+    root.remove();
+    recorder.remove();
+    Object.assign(state, { connected: before.connected, live: before.live });
+    state.cube.trusted = before.trusted;
+    state.cube.source = before.source;
   }
 });
 
