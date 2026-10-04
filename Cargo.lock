@@ -1020,7 +1020,7 @@ dependencies = [
 
 [[package]]
 name = "cubus-desktop"
-version = "0.7.9"
+version = "0.7.10"
 dependencies = [
  "cube-ble",
  "cube-vision",
