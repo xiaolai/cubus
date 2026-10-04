@@ -23,6 +23,7 @@
 
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { readFileSync, readdirSync } from 'node:fs';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { webkit } from 'playwright';
@@ -843,7 +844,33 @@ for (const fixture of FIXTURES) {
 // sideways, every control a finger can hit. Stats is seeded with a session: an empty one is a
 // single card and would test nothing.
 
-const SCREENS = ['timer', 'stats', 'trainer', 'drill', 'pieces', 'lessons', 'settings', 'course'];
+const SCREENS = ['timer', 'stats', 'trainer', 'drill', 'pieces', 'lessons', 'settings', 'course', 'shapes'];
+
+/**
+ * Every id the app REGISTERS as a screen, read off the modules that register it.
+ *
+ * `[...NAV.map(([id]) => id), 'settings']` was what this used, and it is a hand-kept list wearing a
+ * derivation's clothes: it finds a new TAB, and it cannot find a new screen that is not a tab —
+ * which is how `settings` came to be written in by hand beside it. `shapes` is the second such
+ * screen (2026-10-04, reached from the cube screen's Shapes menu rather than from the row), and it
+ * would have been measured by nothing here while the guard below went on passing. The registry is
+ * `SCREENS.<id> = …` in `lib/screens/*.js`, so that is what is read.
+ *
+ * Anchored at the start of a line, which is where every registration sits. A match inside a comment
+ * or a string would ADD an id and so can only make this stricter; a registration this misses is the
+ * failure that matters, and the count assertion below is what refuses to let the list go empty or
+ * quietly shrink.
+ */
+const registeredScreens = () => {
+  const dir = new URL('../../lib/screens/', import.meta.url);
+  const ids = new Set();
+  for (const name of readdirSync(dir).filter((f) => f.endsWith('.js'))) {
+    for (const m of readFileSync(new URL(name, dir), 'utf8').matchAll(/^SCREENS\.([A-Za-z]\w*)\s*=/gm)) {
+      ids.add(m[1]);
+    }
+  }
+  return [...ids];
+};
 
 /**
  * Screens measured by a case of their own rather than by the loop below, and why.
@@ -862,7 +889,19 @@ test('every screen the app can route to is measured by some case in this file', 
   // became a tab of its own (2026-09-29) nothing here would have measured it — the loop would have
   // gone on passing over seven screens while the eighth overflowed on a phone. Assert the RELATION,
   // never the list: whatever the app can route to, this file measures or names as measured elsewhere.
-  const routable = [...NAV.map(([id]) => id), 'settings'];
+  //
+  // THE RELATION IS THE REGISTRY, not the tab row. Deriving it from `NAV` was half a derivation:
+  // it noticed a new tab and could not notice a new screen, which is why `settings` sat beside it
+  // as a literal — one hand-kept entry is all it takes for the next one to look normal.
+  const routable = registeredScreens();
+  // The guard's own floor. A regex that stopped matching would answer an empty list and every
+  // assertion below would pass over nothing — the silent pass this file's own comments keep warning
+  // about. Every tab must be in there too, which is the independent cross-check: `NAV` and the
+  // registry are written in different files for different reasons.
+  assert.ok(routable.length >= SCREENS.length, `the registry scan found only ${routable.length} screens`);
+  for (const [id] of NAV) {
+    assert.ok(routable.includes(id), `the ${id} tab is not in the screen registry the scan read`);
+  }
   const missing = routable.filter((id) => !SCREENS.includes(id) && !Object.hasOwn(MEASURED_ELSEWHERE, id));
   assert.deepEqual(missing, [], 'a routable screen no geometry case measures');
   // And the other direction, so a deleted screen does not leave a case navigating to nothing.
@@ -897,6 +936,23 @@ const measureScreen = (page) =>
       flow: Boolean(document.querySelector('.cols.flow')),
       colSlack: col && col.lastElementChild ? rect(col).bottom - rect(col.lastElementChild).bottom : 0,
       overflow: { screen: screen.scrollWidth - screen.clientWidth, doc: document.documentElement.scrollWidth - innerWidth },
+      // THE VERTICAL HALF, which nothing here measured until 2026-10-04. The screen's root must fit
+      // the screen's own box: beyond it the stage CLIPS (\`overflow: hidden\`), and whatever is past
+      // the fold cannot be scrolled to because no ancestor scrolls either. Found on the new Shapes
+      // screen — at 430x932 its root was 2019px inside an 805px screen and twelve of twenty
+      // pictures were unreachable — and the whole browser tier passed, because \`beyond\` above reads
+      // LEFT and RIGHT only and \`overflow.doc\` is a width.
+      //
+      // The ROOT and not its descendants, which is what makes this safe for a scrolling grid: the
+      // Drill library draws a hundred cards below the fold ON PURPOSE, inside a \`.case-grid\` that
+      // scrolls. Those are reachable. A root taller than its screen is the case where nothing is.
+      rootOverflowsDown: Math.round(rect(root).bottom - rect(screen).bottom),
+      // And the scroll the content needs is somewhere INSIDE the root, so "it fits" cannot be
+      // bought by clipping: a root that fits with content past its own bottom and nothing
+      // scrollable between is the same failure wearing a passing number.
+      scrollableInside: [...screen.querySelectorAll('*')]
+        .some((el) => el.scrollHeight > el.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(el).overflowY)),
+      rootContentOverflows: root.scrollHeight > root.clientHeight + 1,
       // Anything drawn beyond the stage sideways — including inside a scrolling column, where it
       // would be clipped rather than seen.
       beyond: [...screen.querySelectorAll('*')].filter(visible).map((el) => ({ what: el.id || el.className || el.tagName, ...rect(el) })).filter((r) => r.left < s.left - 1 || r.right > s.right + 1).slice(0, 4),
@@ -1023,6 +1079,16 @@ for (const screen of SCREENS) {
         assert.deepEqual(m.beyond, [], 'drawn beyond the stage');
         assert.deepEqual(m.collapsed, [], 'a control on the page has no box — squashed by its column');
         assert.ok(m.root.width >= m.content * 0.9, `the screen's root is ${m.root.width}px wide in a ${m.content}px stage — it shrank to its content`);
+        // DOWNWARDS TOO. The stage clips, and nothing above it scrolls, so a root taller than its
+        // screen puts content where no gesture can reach it — see `rootOverflowsDown`, added after
+        // the Shapes screen shipped twelve of twenty pictures below an unreachable fold and this
+        // whole file passed. A screen whose CONTENT is taller must put the scroll inside itself.
+        assert.ok(m.rootOverflowsDown <= 1,
+          `${screen}: the root hangs ${m.rootOverflowsDown}px below the screen, where the stage clips it and nothing scrolls`);
+        if (m.rootContentOverflows) {
+          assert.ok(m.scrollableInside,
+            `${screen}: the root's content is taller than the root and nothing inside it scrolls — that content cannot be reached`);
+        }
         // The fourth composition variant: a list screen's `.cols.flow` spans the stage's content
         // box on both axes too (amended 2026-09-06). Before that date the portrait box was clamped
         // to --ref-w, so Stats, Drill, Lessons and Settings letterboxed on an iPad in portrait

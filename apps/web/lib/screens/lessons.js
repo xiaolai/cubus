@@ -141,7 +141,18 @@ SCREENS.trainer = () => {
   // What went are the per-case percentages and the colour that ranked them.
   // width:100% — the screen centres its child (see the timer). The case grid wraps as many
   // 140px cards as fit rather than dividing the width into five.
-  return { html: `<div style="width:100%;height:100%;display:flex;flex-direction:column;gap:16px">
+  // `min-height: 0` IS LOAD-BEARING, and it was missing until 2026-10-04. `.screen` is
+  // `display: grid; place-items: center`, so this root is a centred grid item whose automatic
+  // minimum is its CONTENT — `height: 100%` alone does not stop it growing past the stage, and
+  // `.case-grid` below (`flex: 1; min-height: 0; overflow-y: auto`) then has no bound to scroll
+  // within. Measured on the iPhone 16 and iPhone SE fixtures: the root hung 222px below the screen,
+  // the stage clipped it, and nothing anywhere scrolled — so the bottom row of cases could not be
+  // reached at all. It passed on every iPad, where six cards fit, which is why it shipped.
+  //
+  // Found while building the Shapes screen, which copied this root and has twenty cards rather than
+  // six. Two screens with one defect is one defect; `geometry.test.mjs` now asserts the root fits
+  // its screen, and that a root whose content does not fit has something inside it that scrolls.
+  return { html: `<div style="width:100%;height:100%;min-height:0;display:flex;flex-direction:column;gap:16px">
     ${previewBanner(t('this screen is a design in progress. The layout is real; the figures are placeholders shown as dashes, and the controls do nothing yet.'))}
     <div class="wrap-row" role="group" aria-label="${escHtml(t('Case filters'))}">${['OLL', 'PLL', 'F2L', t('Weak first')].map((f, i) => `<button class="pill" aria-pressed="${i === 0}" disabled>${escHtml(f)}</button>`).join('')}<span class="sub" style="margin-left:auto;color:var(--ink-4)">${escHtml(t('Recall is not recorded yet'))}</span></div>
     <div class="case-grid">
