@@ -24,9 +24,6 @@ import { locate, trackFor } from './script-track.js';
  * `focus` and `highlight` repaint 108 materials when written, and `scramble` rebuilds the cube, so a
  * write that changes nothing is not free — the rule `lesson-player.js` learned the hard way, kept here.
  */
-/** A segment's tokens, as the view carries them: `alg` is what the element was written. */
-const segmentTokens = (view) => String(view.alg ?? '').split(' ').filter(Boolean);
-
 export function createElementWriter(cube, { owned = [] } = {}) {
   // The cache is `lib/element-writes.js`'s, shared with the episode runtime's player: the rule "write only
   // what changed" was written out in both, and they had drifted.
@@ -61,8 +58,25 @@ export function createElementWriter(cube, { owned = [] } = {}) {
     if (tumble) {
       const [up, front] = String(view.orientation).split(/\s+/);
       cube.turnTo(up, front);
-    } else {
-      write('orientation', view.orientation);
+    } else if (held === null || how !== 'stop') {
+      // A CUT STATES THE POSE; A STEP NEVER DOES. A tumble moves the cube through `turnTo` and
+      // deliberately writes no attribute, so the writer's cache keeps whatever was written BEFORE it —
+      // and the cache is what decides whether a write is skipped. Two failures came out of that, in
+      // opposite directions, and both are why this branch is shaped the way it is:
+      //
+      //   · SKIPPED WHEN IT WAS NEEDED. Tumble to `D B`, then scrub back: the view's `U F` matched the
+      //     cached `U F`, the write was skipped as unchanged, and the cube stayed upside down under a
+      //     position that is the right way up (Codex audit, 2026-10-04). So a cut FORCES the write.
+      //   · WRITTEN WHEN IT WAS NOT. `orientation` arrives instantly and cancels an animation in
+      //     flight, so any write landing while a tumble is still running snaps the one turn ADR 0003
+      //     exists to show. Forcing on every arrival did it, and so did leaving an unforced write in
+      //     place: after a tumble the cache is stale, so `hold D B` then a `setup` step wrote
+      //     `orientation="D B"` precisely because the cache still said `U F` (verify pass, same day).
+      //
+      // So a STOP writes nothing at all once the cube has a hold: it has either just tumbled, or it is
+      // already where the view says. `held === null` is the opening load, where there is no hold to
+      // tumble from and the cube has to start somewhere.
+      write('orientation', view.orientation, { force: true });
     }
     // Recorded whichever way it was said, because the NEXT hold change is measured against it. The first
     // load is never a tumble: there is no hold to turn from, and the cube has to start somewhere.
@@ -91,27 +105,25 @@ export function createElementWriter(cube, { owned = [] } = {}) {
    * re-seat even when the count is unchanged if a turn is still in flight, or the element finishes a
    * turn the listener has scrubbed away from.
    */
-  const transport = (moves, how, tokens = []) => {
+  const transport = (moves, how) => {
     if (how === 'stop' && moves !== applied) {
       const stops = cube.stops;
       const after = stops.find((p) => p > applied);
       const before = [...stops].reverse().find((p) => p < applied);
-      // A script position need not be one of the element's stops: the element groups the concatenated
-      // sequence — `x y R` is one group, because a regrip belongs to the turn it leads into — while a
-      // script gives every STEP a position, so a step that only regrips ends INSIDE a group. Those used
-      // to arrive by `seek`, which snaps the very turn D4's sentence is about.
-      void tokens;
       if (moves === after) cube.stepStop();
       else if (moves === before) cube.stepBackStop();
       // A SCRIPT POSITION NEED NOT BE ONE OF THE ELEMENT'S STOPS. The element groups the concatenated
       // sequence — `x R` is one group, because a regrip belongs to the turn it leads into — while a
       // script gives every STEP its own position, so a step that is only a regrip ends inside the
       // element's group. Its arrival was a jump, which snapped the very turn D4's "turn the whole cube
-      // so the gap is in front" exists to show (Codex audit, 2026-09-16). One or two tokens are walked
-      // instead, animated, in the direction of travel; anything further is a scrub and stays a jump.
+      // so the gap is in front" exists to show (Codex audit, 2026-09-16).
       // `playTo` is the element's own answer to that (plan item 2.3's stops, extended 2026-09-16): it
       // walks to any token the way a group plays, one at a time, fed from each completion — which is
       // what the driver could not do from outside without queueing a batch the backlog rule would snap.
+      // IT TAKES NO TOKEN LIST. An earlier draft walked one or two tokens by hand and was handed the
+      // segment's tokens to do it; `playTo` made that unnecessary and the argument was left behind,
+      // computed on every `show()` and discarded by a `void` (Codex audit, 2026-10-04). A parameter
+      // nothing reads is a parameter the next reader will try to use.
       else cube.playTo(moves);
     } else if (how === 'clock' && moves === applied + 1) {
       cube.step();
@@ -133,7 +145,7 @@ export function createElementWriter(cube, { owned = [] } = {}) {
       // and its transport is a jump whatever kind of arrival the driver meant.
       const cold = view.segment !== segment;
       if (cold) load(view, how);
-      transport(moves, cold ? 'jump' : how, segmentTokens(view));
+      transport(moves, cold ? 'jump' : how);
       const { cues } = view;
       write('highlight', cues.hl ?? 'none');
       write('focus', cues.focus ?? null);
@@ -172,7 +184,17 @@ export function createStopDriver(built, { cube = null, owned = [], schedule = de
   const last = built.positions.length - 1;
   let position = 0;
   let timer = null;
-  const stop = () => { if (timer !== null) { schedule.cancel(timer); timer = null; } };
+  /**
+   * Which run of `play` is current. Bumped by every `stop()`, and checked by `tick` AFTER it has moved.
+   *
+   * `go()` writes the element, the element reports a step synchronously, and a host may `pause()` or
+   * `halt()` from inside that report — after which `tick` went on to `timer = schedule(...)` and the
+   * walk it had just been told to stop carried on playing, with `playing` back to true (Codex audit,
+   * 2026-10-04). The same shape the element guards with `_era`: the press that started this tick is
+   * about a walk that is no longer the one being played.
+   */
+  let run = 0;
+  const stop = () => { run += 1; if (timer !== null) { schedule.cancel(timer); timer = null; } };
   const go = (k, how) => {
     // A POSITION IS A WHOLE NUMBER. `viewAtPosition` rounds what it is asked for, so a fractional seek
     // stored 0.6 here and showed position 1 — the driver and the picture disagreeing about where the
@@ -220,10 +242,15 @@ export function createStopDriver(built, { cube = null, owned = [], schedule = de
      */
     play({ every = 900, repeat = false } = {}) {
       stop();
+      const mine = run;
       const tick = () => {
+        if (mine !== run) return;
         if (position < last) go(position + 1, 'stop');
         else if (repeat) go(0, 'jump');
         else { timer = null; return; }
+        // CHECKED AFTER THE MOVE, not only before it. `go` writes the element, which reports
+        // synchronously, and a host listener may stop this playback from inside that report.
+        if (mine !== run) return;
         timer = schedule(tick, every);
       };
       timer = schedule(tick, every);
@@ -304,6 +331,27 @@ export function timelineOf(built) {
       );
     }
   });
+  // WHAT THIS CHECK STILL DOES NOT COVER, written down because it was attempted and withdrawn.
+  //
+  // The rule above is per SEGMENT, and a hold change or a `setup` opens a new one — so two timings that
+  // contradict each other across a segment boundary are both accepted. Two costs, measured:
+  //
+  //   · A SHADOWED POSITION. `createClockDriver.paint` takes the LAST position whose time has come, so a
+  //     position timed behind the one in front of it can never be landed on at any `t`, and whatever it
+  //     says is never shown. `[{move:'R U',at:0,secs:8},{hold:'D B',at:1},{move:'F',at:2}]` is accepted
+  //     and the position at 4s is the unreachable one.
+  //   · A TURN CUT AWAY. `[{move:'y x R',at:0,secs:6},{hold:'D B',at:1},{move:'U',at:2}]` is accepted
+  //     with token times [0, 2, 4]: at 1s the new segment loads a cube that already contains the R
+  //     scheduled for 4s, so the turn being taught is skipped and the state jumps early.
+  //
+  // A guard on `positionTimes` monotonicity was written for the first of those and REVERTED (verify
+  // pass, 2026-10-04): it also refuses `[{move:'R U',at:0,secs:8},{setup:'F',at:1},{move:'L',at:2}]`,
+  // which is a deliberate cut to a new cube that `checkLesson` permits — a cut is ALLOWED to discard the
+  // turns the segment before it had pending. Telling a contradiction from a cut needs the distinction
+  // between a step's token spacing, the renderer's animation duration, and an intentional jump, and it
+  // has to be checked against the real course (ADR 0006 keeps that out of this repository, and this
+  // build reports NO COURSE INSTALLED). A validator that falsely refuses an authored lesson is worse
+  // than one that lets a mistimed one through, so this stays stated rather than half-enforced.
   const ends = tokenTimes.flatMap((times, s) => times.map((at) => at + QUARTER_GAP)).concat(stepTimes);
   return Object.freeze({ positionTimes, tokenTimes, duration: Math.max(0, ...ends) + 0.6 });
 }

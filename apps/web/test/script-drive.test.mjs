@@ -150,6 +150,107 @@ test('a hold change tumbles on a press and cuts on a seek, and loads the cube ei
     'a cold landing past the start of a segment was not a seek');
 });
 
+test('a cube that TUMBLED is told how it is held again when the walk comes back', () => {
+  // A tumble turns the object through `turnTo` and deliberately writes no `orientation`. The writer's
+  // cache, which is what decides whether a write is skipped, therefore still held the hold from before
+  // the tumble — so walking into `D B` and then seeking back to the start wrote nothing, the "unchanged"
+  // check being satisfied by a value the element had long since turned away from. The cube stayed upside
+  // down under a position that is the right way up (Codex audit, 2026-10-04).
+  const built = script([{ move: 'R' }, { hold: 'D B' }, { move: 'U' }]);
+  const cube = recordingCube();
+  const walk = createStopDriver(built, { cube });
+  walk.next();
+  walk.next();
+  assert.deepEqual(transport(cube).filter(([c]) => c === 'turnTo').at(-1), ['turnTo', 'D', 'B'],
+    'precondition: the press tumbled the cube');
+  const sofar = cube.calls.filter(([c, n]) => c === 'set' && n === 'orientation').length;
+  walk.seek(0);
+  const holds = cube.calls.filter(([c, n]) => c === 'set' && n === 'orientation').map(([, , v]) => v);
+  assert.ok(holds.length > sofar, 'seeking back after a tumble never told the element how the cube is held');
+  assert.equal(holds.at(-1), 'U F', `the cube was left tumbled; last orientation written was ${holds.at(-1)}`);
+});
+
+test('a cold STOP load does not state the pose over a tumble still in flight', () => {
+  // The other half of the case above, and the regression the first fix for it introduced: forcing the
+  // next `orientation` write whenever a tumble had happened also fired on a cold STOP load, and writing
+  // that attribute arrives instantly and cancels an animation in flight. Two hold changes then a new
+  // segment on the third press snapped the return tumble (verify pass, 2026-10-04).
+  const orientations = (cube) => cube.calls.filter(([c, n]) => c === 'set' && n === 'orientation').map(([, , v]) => v);
+
+  // The two-tumble route: the cube goes over and comes back, then a new segment arrives as a step.
+  const there = script([{ hold: 'D B' }, { hold: 'U F' }, { setup: 'F' }, { move: 'R' }]);
+  const cube = recordingCube();
+  const walk = createStopDriver(there, { cube });
+  walk.next();
+  walk.next();
+  const sofar = orientations(cube).length;
+  walk.next();
+  assert.equal(orientations(cube).length, sofar, 'a stop load wrote the pose, which cancels a tumble that is still running');
+
+  // AND THE ONE-TUMBLE ROUTE, which the case above cannot see: its destination happened to equal the
+  // cached value, so an UNFORCED write was skipped for the wrong reason. Here the cache still says
+  // `U F` while the cube is tumbling to `D B`, so an unforced write fires — and cancels the tumble
+  // (verify pass, round 2, 2026-10-04).
+  const back = script([{ hold: 'D B' }, { setup: 'F' }, { move: 'R' }]);
+  const once = recordingCube();
+  const alone = createStopDriver(back, { cube: once });
+  const opening = orientations(once).length;
+  assert.equal(opening, 1, 'precondition: the opening load states the pose once');
+  alone.next();
+  assert.deepEqual(orientations(once).slice(opening), [], 'precondition: the tumble wrote no attribute');
+  alone.next();
+  assert.deepEqual(orientations(once).slice(opening), [],
+    'a stop load wrote the pose over a tumble in flight, because the cache was stale rather than equal');
+});
+
+test('a host that stops playback from inside a step report is not overridden', () => {
+  // `go()` writes the element, the element reports synchronously, and a host may pause from inside that
+  // report — after which `tick` went on to schedule the next stop anyway and the walk it had just been
+  // told to stop carried on, with `playing` back to true (Codex audit, 2026-10-04).
+  const built = script([{ move: "R U R' U" }]);
+  const cube = recordingCube();
+  let driver = null;
+  let pressed = 0;
+  // The schedule seam stands in for the clock: `fire()` is the tick the host would have waited for.
+  const due = [];
+  const schedule = Object.assign((fn) => { due.push(fn); return { fn }; }, {
+    cancel: (h) => { const i = due.indexOf(h?.fn); if (i >= 0) due.splice(i, 1); },
+  });
+  const fire = () => { const fn = due.shift(); if (fn) fn(); };
+  // The report: the element tells the host a turn landed, and this host pauses on the first one.
+  cube.stepStop = () => { pressed += 1; if (pressed === 1) driver.pause(); };
+  driver = createStopDriver(built, { cube, schedule });
+  driver.play({ every: 10 });
+  fire();
+  assert.equal(pressed, 1, 'precondition: the first stop was asked for');
+  assert.equal(driver.playing, false, 'a pause from inside the step report left the driver playing');
+  assert.equal(due.length, 0, 'the paused walk still had its next stop scheduled');
+  fire();
+  assert.equal(pressed, 1, 'the paused walk asked for another stop');
+});
+
+test('the timings this driver accepts and cannot yet refuse are written down', () => {
+  // A guard on position-time monotonicity was written for the shadowed-position case and withdrawn: it
+  // also refused a deliberate `setup` cut, which `checkLesson` permits and which is ALLOWED to discard
+  // the turns before it (verify pass, 2026-10-04). Telling a contradiction from a cut has to be checked
+  // against the real course, which ADR 0006 keeps out of this repository.
+  //
+  // These three cases are what the driver does TODAY. The test exists so the gap cannot be rediscovered
+  // from scratch, and so that whoever closes it has the cases in hand — and it FAILS the day any of
+  // them starts behaving differently, which is the only way a written-down limitation stays true.
+  const shadowed = timelineOf(script([{ move: 'R U', at: 0, secs: 8 }, { hold: 'D B', at: 1 }, { move: 'F', at: 2 }]));
+  const reachable = shadowed.positionTimes.filter((at) => Number.isFinite(at));
+  assert.ok(reachable.some((at, i) => i > 0 && at < reachable[i - 1]),
+    'the shadowed-position case stopped producing a position behind the one in front of it');
+
+  const cutAway = timelineOf(script([{ move: 'y x R', at: 0, secs: 6 }, { hold: 'D B', at: 1 }, { move: 'U', at: 2 }]));
+  assert.deepEqual(cutAway.tokenTimes[0], [0, 2, 4], 'the cut-away-turn case no longer schedules a token past the cut');
+
+  // AND A LEGITIMATE CUT MUST KEEP BUILDING — the reason the guard was withdrawn.
+  assert.ok(timelineOf(script([{ move: 'R U', at: 0, secs: 8 }, { setup: 'F', at: 1 }, { move: 'L', at: 2 }])),
+    'a deliberate cut to a new cube was refused');
+});
+
 test('the writer touches nothing the manifest omits', () => {
   const cube = recordingCube();
   assert.throws(() => cube._anim, /no member "_anim"/);
