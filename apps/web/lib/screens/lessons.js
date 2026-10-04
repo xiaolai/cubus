@@ -2,29 +2,56 @@
 //
 // Lifted out of app.js on 2026-09-13, when that file was split into modules.
 
-import { TOP_RUNG } from '../method-solver.js';
+import { STAGE_IDS, TOP_RUNG } from '../method-solver.js';
 import { followsUntilOffer, ladderRows, nextOffer } from '../method-ladder.js';
 import { plural, t } from '../i18n.js';
 
 import { escHtml, icon } from '../app-state.js';
-import { settings } from '../app-settings.js';
+import { repairRungs, settings } from '../app-settings.js';
 import { raiseRung } from '../cube-subject.js';
 import { netPalette } from '../cube-drawing.js';
 import { drillLibraryHtml, mountLibrary } from './drill/library.js';
 import { SCREENS, renderScreen, screenAbort } from '../screen-shell.js';
 
 /**
- * Stages whose raise storage REFUSED — so the ladder is true for this session only.
+ * Stages whose rung is in MEMORY but not on DISK — so the ladder is true for this session only.
  *
- * Module state, and the note is RENDERED from it. The warning used to be written straight into the
- * note element after `renderScreen()`, which meant any later repaint removed it while leaving the
- * rung raised: the screen went from telling the learner the truth to silently implying the ladder
- * had been saved. Rendered, it survives every repaint until a save actually succeeds.
+ * ASKED, NOT REMEMBERED (2026-10-04). The note is rendered from this rather than written into the
+ * element after `renderScreen()`, because a warning patched in afterwards is removed by the next
+ * repaint while the rung stays raised — the screen going from telling the learner the truth to
+ * silently implying the ladder had been saved.
+ *
+ * It was a module-level Set, populated when a raise's write was refused and cleared only by a LATER
+ * SUCCESSFUL RAISE. That is the wrong trigger, because `save()` writes the WHOLE settings record:
+ * any other successful write — a preference toggle, a shape chosen on another screen — persists the
+ * raised rung too, and the Set knew nothing about it. The warning then stood over a rung that was
+ * on disk, which is this screen saying something false about the learner, the one thing it must not
+ * do. Reproduced through the new `rememberShape()` path: storage held cross rung 1 while Lessons
+ * still said the device had not saved it.
+ *
+ * Derived from storage, the question answers itself for every writer there will ever be, and no
+ * caller has to remember to clear anything. Read once per render rather than per row.
+ *
+ * A record that is missing, unparseable or not an object reads as "nothing is on disk", which is
+ * the honest answer: in a private window where storage is disabled outright, nothing IS saved.
  */
-const unsaved = new Set();
+function unsavedRungs() {
+  let stored = null;
+  try { stored = JSON.parse(localStorage.getItem('cubusSettings') ?? 'null'); } catch { stored = null; }
+  const held = stored && typeof stored === 'object' && !Array.isArray(stored) ? stored.rungs : null;
+  // THROUGH `repairRungs`, AND THAT IS THE WHOLE POINT. The first version of this asked its own
+  // question of the stored record — "is it an integer?" — while `app-settings.js` also bounds the
+  // value by the stage's top. A stored `cross: 99` was repaired to 0 in memory and read as 99 here,
+  // so the two disagreed and the screen warned that the device had not saved a raise nobody made
+  // (verify pass, 2026-10-04). A comparison is only meaningful between two records normalised the
+  // same way, so both sides go through the one function that defines what a rung is. It also
+  // handles the hostile keys for free, which the hand-rolled version had to remember to.
+  const onDisk = repairRungs(held);
+  return new Set(STAGE_IDS.filter((id) => settings.rungs[id] !== onDisk[id]));
+}
 
 /** How far along a stage is, in words a learner can act on — never a claim about a thing undone. */
-function rungNote(row) {
+function rungNote(row, unsaved) {
   // FIRST, because it is the one thing on this card that is not about progress: a rung the device
   // would not keep is the fact a learner needs before any countdown to the next one.
   if (unsaved.has(row.id)) return t('This device did not save that. The rung is raised for now; a reload may put it back.');
@@ -67,10 +94,10 @@ function rungLine(r) {
  * the event wiring — and the thing it is easiest to get wrong in there is the one thing this
  * screen must not get wrong, which is saying something true about a learner.
  */
-function ladderCard(row) {
+function ladderCard(row, unsaved) {
   return `<div class="card tight" id="ladder-${escHtml(row.id)}" tabindex="-1"><div class="card-h"><div><div class="eyebrow">${escHtml(t('STAGE'))} · ${row.rungs.length} ${escHtml(t('RUNGS'))}</div><div class="num" style="font-size:var(--fs-title);font-weight:600;margin-top:2px">${escHtml(row.name)}</div></div><div class="num sub" style="color:var(--ink-4)">${escHtml(t('rung %1', row.at))}</div></div>
     ${row.rungs.map(rungLine).join('')}
-    <div class="sub" id="rungNote-${escHtml(row.id)}" style="color:var(--${unsaved.has(row.id) ? 'err-ink' : 'ink-4'});padding:8px 0 2px">${escHtml(rungNote(row))}</div>
+    <div class="sub" id="rungNote-${escHtml(row.id)}" style="color:var(--${unsaved.has(row.id) ? 'err-ink' : 'ink-4'});padding:8px 0 2px">${escHtml(rungNote(row, unsaved))}</div>
     ${row.at < row.top ? `<div class="wrap-row" style="gap:6px;padding-top:6px"><button class="pill" id="raise-${escHtml(row.id)}" data-raise="${escHtml(row.id)}">${escHtml(t('Try the next rung'))}</button></div>` : ''}</div>`;
 }
 
@@ -161,6 +188,9 @@ SCREENS.lessons = () => {
   // says "Done" about a thing nobody has done — the failure the placeholder was written to avoid,
   // and it survives.
   const rows = ladderRows(settings.rungs, settings.rungProgress);
+  // Read ONCE per render, not once per card: four rows would otherwise be four reads and four
+  // parses of the same record, and — worse — four chances to disagree with each other.
+  const unsaved = unsavedRungs();
   // NO PREVIEW BANNER. This screen used to carry one saying the figures are placeholders and the
   // controls do nothing — and both halves are now false: the counts are this learner's own
   // follows, and "Try the next rung" permanently raises a dial. A banner that disclaims a screen
@@ -169,7 +199,7 @@ SCREENS.lessons = () => {
   // screen is still a design; Drill lost the right to one when its algorithm library started
   // measuring real attempts.
   return { html: `<div class="cols flow"><div class="col">
-    ${rows.map(ladderCard).join('')}</div>
+    ${rows.map((row) => ladderCard(row, unsaved)).join('')}</div>
     <div class="aside"><div class="card"><div class="eyebrow">${escHtml(t('HOW THIS MOVES'))}</div><div class="sub" style="color:var(--ink-3);margin-top:8px;line-height:1.5">${escHtml(t('Nothing here changes on its own. Follow a lesson to the end a few times and the next rung is offered once, on the cube screen; saying no costs nothing and it comes back later.'))}</div></div>
       <div class="card"><div class="eyebrow">${escHtml(t('COACH VIEW'))}</div><div class="sub" style="color:var(--ink-3);margin-top:8px;line-height:1.5">${escHtml(t('The idea: share a read-only link so a parent or coach can follow progress. Nothing to share yet.'))}</div></div></div></div>`,
     mount(root) {
@@ -181,18 +211,13 @@ SCREENS.lessons = () => {
           const id = b.dataset.raise;
           const at = settings.rungs[id] ?? 0;
           if (at >= TOP_RUNG[id]) return;
-          const saved = raiseRung({ id, to: at + 1 });
-          // raiseRung answers whether storage took the rung. Recorded BEFORE the repaint and read by
-          // `rungNote`, so the warning is part of the screen rather than a patch applied to it — it
-          // used to be written in afterwards and vanished on the next repaint, leaving a raised rung
-          // with nothing on screen saying it had not been saved.
-          //
-          // A SUCCESS CLEARS EVERY STAGE, not just this one: `raiseRung` calls
-          // `save('cubusSettings', settings)`, which writes the WHOLE settings object — so the write
-          // that just succeeded persisted the earlier stage's rung too, and leaving its warning up
-          // would be the screen claiming something unsaved that is now on disk. Clearing only `id`
-          // was the first fix for this and a verify pass reproduced the stale warning (2026-09-28).
-          if (saved) unsaved.clear(); else unsaved.add(id);
+          // NOT READ, and deliberately so. `raiseRung` answers whether storage took the rung, and
+          // this used to record that answer in a Set the note was rendered from. The rebuild below
+          // asks STORAGE instead (`unsavedRungs`), which is the same question answered by the thing
+          // that actually knows — so a write that lands anywhere, by any caller, is seen. Called
+          // for its effect, and its answer is left to the render rather than cached beside it,
+          // because two records of one fact is how the stale warning happened.
+          raiseRung({ id, to: at + 1 });
           // The shell puts focus back on this button by its id. A stage just raised to its top has
           // no button left, and the shell lands focus on the stage's card, which carries an id and
           // a tabindex for it, rather than dropping it to the page (found by audit, 2026-09-13).

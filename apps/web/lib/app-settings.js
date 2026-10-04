@@ -205,7 +205,17 @@ delete settings.teachLevel;
  * an integer inside the ladder falls back to 0. A stored 9 would otherwise throw out of
  * `methodFor` on the first solve and take the screen with it — the `language: 7` failure again.
  */
-function repairRungs(stored) {
+/**
+ * Exported since 2026-10-04 so that there is ONE rung-normalisation policy in the app.
+ *
+ * The Lessons screen compares the rungs in memory with the rungs on disk to decide whether to warn
+ * that the device did not save a raise. It did that comparison with a rule of its own — "an integer
+ * is a rung" — while this one also bounds the value by the stage's top. A stored `cross: 99` was
+ * therefore repaired to 0 here and read as 99 there, so the two disagreed and the screen warned
+ * about a raise that had never happened (verify pass, 2026-10-04). The comparison has to be between
+ * two records normalised by the same function, which means this one.
+ */
+export function repairRungs(stored) {
   const out = { ...DEFAULT_RUNGS };
   for (const id of STAGE_IDS) {
     const want = stored?.[id];

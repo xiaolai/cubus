@@ -241,6 +241,130 @@ test('a save the device refused is said on the card, and survives a repaint', as
   }
 });
 
+// THE SECOND REGRESSION, and the one that outlived both fixes above: `save('cubusSettings', …)`
+// writes the WHOLE record, so a successful write by ANY OTHER caller persists a raised rung too.
+// The warning was cleared only by a later successful RAISE, so a rung that reached disk through a
+// preference toggle or a shape chosen on another screen kept its "this device did not save that"
+// standing over it — the screen saying something false about the learner, which is the one thing it
+// must not do. Found by audit 2026-10-04 and reproduced through `rememberShape()`.
+//
+// `lib/screens/lessons.js` asks STORAGE now (`unsavedRungs`) instead of remembering a Set, so every
+// writer that will ever exist is covered without having to know about this screen. This case is
+// what holds that: the write it makes is deliberately NOT a raise.
+test('a rung that reaches disk through someone else\'s write stops being called unsaved', async () => {
+  const { settings } = await import('../lib/app-settings.js');
+  const { rememberShape } = await import('../lib/shape-recency.js');
+  const { OFFERED_PATTERNS, selectionOf } = await import('../lib/patterns.js');
+  const note = (id) => $(`#rungNote-${id}`);
+  const real = globalThis.localStorage;
+  const wasRungs = structuredClone(settings.rungs);
+  const wasProgress = structuredClone(settings.rungProgress);
+  const wasRecent = [...settings.shapesRecent];
+  const stored = () => JSON.parse(real.getItem('cubusSettings') ?? '{}');
+  const repaint = async () => {
+    win.location.hash = '#/home';
+    await tick();
+    win.location.hash = '#/lessons';
+    await tick();
+  };
+  const useReal = () => Object.defineProperty(globalThis, 'localStorage', { value: real, writable: true, configurable: true });
+
+  try {
+    const id = STAGE_IDS.find((s) => (stored().rungs?.[s] ?? 0) < TOP_RUNG[s]);
+    assert.ok(id, 'precondition: a stage with a rung left to raise');
+    const wasRung = stored().rungs?.[id] ?? 0;
+
+    // A raise the device refuses. Reads still go to the real store, so the rung provably stays off disk.
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: {
+        getItem: (k) => real.getItem(k),
+        removeItem: (k) => real.removeItem(k),
+        setItem: () => { throw new Error('quota exceeded (test)'); },
+      },
+      writable: true,
+      configurable: true,
+    });
+    try {
+      $(`[data-raise="${id}"]`).click();
+      await tick();
+      assert.equal(stored().rungs?.[id] ?? 0, wasRung, 'precondition: the refusal kept the rung off disk');
+      assert.match(note(id).textContent, /did not save that/, 'a refused raise said nothing');
+    } finally {
+      useReal();
+    }
+
+    // NOT A RAISE. A completely unrelated writer of the same record — this is the whole point of the
+    // case, and the old Set-based warning could not see it.
+    const shape = selectionOf(OFFERED_PATTERNS.at(-1));
+    assert.equal(rememberShape(shape), true, 'precondition: the unrelated write must succeed');
+    assert.equal(stored().rungs?.[id], wasRung + 1,
+      'precondition: that write carried the raised rung to disk — if not, this case proves nothing');
+
+    await repaint();
+    assert.doesNotMatch(note(id).textContent, /did not save that/,
+      `${id} is on disk and the screen still says the device did not save it`);
+    assert.notEqual(note(id).parentElement.querySelector(`#rungNote-${id}`).style.color, 'var(--err-ink)',
+      'the note is still drawn as a refusal');
+  } finally {
+    useReal();
+    settings.rungs = wasRungs;
+    settings.rungProgress = wasProgress;
+    settings.shapesRecent = wasRecent;
+    real.setItem('cubusSettings', JSON.stringify(settings));
+    await repaint();
+  }
+});
+
+// AND THE DEFECT THE DERIVED WARNING INTRODUCED, caught by the verify pass on it (2026-10-04).
+//
+// The warning compares the rungs in memory with the rungs on disk. The first derived version asked
+// its own question of the stored record — "is it an integer?" — while `app-settings.js` also bounds
+// a rung by its stage's top. A stored `cross: 99` is therefore REPAIRED TO 0 in memory and was read
+// as 99 here, so the two disagreed and Lessons said the device had not saved a raise that nobody
+// ever made. Both sides go through `repairRungs` now; this is what holds that.
+//
+// It needs no refused write and no raise: the whole failure is two readings of one stored record.
+test('a stored rung the repair rejects is not reported as an unsaved raise', async () => {
+  const { settings } = await import('../lib/app-settings.js');
+  const note = (id) => $(`#rungNote-${id}`);
+  const real = globalThis.localStorage;
+  const wasRecord = real.getItem('cubusSettings');
+  const wasRungs = structuredClone(settings.rungs);
+  const repaint = async () => {
+    win.location.hash = '#/home';
+    await tick();
+    win.location.hash = '#/lessons';
+    await tick();
+  };
+
+  try {
+    // Every way a stored rung can be unusable: past the stage's top, negative, and not a number.
+    // Each one is repaired to 0 in memory, so each one must read as "nothing outstanding" here.
+    for (const bad of [99, -1, 1.5, '1', null]) {
+      const id = STAGE_IDS[0];
+      settings.rungs = { ...wasRungs, [id]: 0 };
+      const record = { ...JSON.parse(wasRecord), rungs: { ...wasRungs, [id]: bad } };
+      real.setItem('cubusSettings', JSON.stringify(record));
+      await repaint();
+      assert.doesNotMatch(note(id).textContent, /did not save that/,
+        `a stored rung of ${JSON.stringify(bad)} was read as an unsaved raise — the screen and the repair disagree about what a rung is`);
+    }
+
+    // AND THE WARNING STILL WORKS, which is the half that proves the case above is not simply
+    // asserting that nothing ever warns: a rung genuinely ahead of disk is still reported.
+    const id = STAGE_IDS[0];
+    settings.rungs = { ...wasRungs, [id]: 1 };
+    real.setItem('cubusSettings', JSON.stringify({ ...JSON.parse(wasRecord), rungs: { ...wasRungs, [id]: 0 } }));
+    await repaint();
+    assert.match(note(id).textContent, /did not save that/,
+      'a rung that really is ahead of disk is no longer reported — the check has gone blind');
+  } finally {
+    settings.rungs = wasRungs;
+    real.setItem('cubusSettings', wasRecord);
+    await repaint();
+  }
+});
+
 test('a rung raised from the keyboard keeps focus on the button that raised it', async () => {
   const raise = () => $('[data-raise="pairs"]');
   raise().focus();
