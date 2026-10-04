@@ -244,3 +244,55 @@ test('the screen never writes a figure it did not compute', () => {
   assert.ok(!/\b\d+\s*%/.test(text), 'a percentage appeared on a screen that measures nothing');
   assert.ok(!/\bao\d+\b/i.test(text), 'an average-of-N appeared on a screen that records nothing');
 });
+
+/**
+ * The draws that make `drillAlg` return a sequence which cancels to a SOLVED cube.
+ *
+ * Derived from the generator's own arithmetic rather than hunted for with a seed: the first turn
+ * picks from six faces, every later one picks from the five that are not the last face and bumps the
+ * index past it, and each turn then draws a suffix. Alternating U and D — which commute, being
+ * opposite faces — with a half turn of each at the end gives eight quarter turns of U and eight of
+ * D: `U D U D U D U D U D U D U2 D2`, which is the identity and has no face repeated in a row.
+ *
+ * A seeded stream cannot be used for this. A solved 14-turn stir is vanishingly rare, which is
+ * precisely why the retry path had no coverage.
+ */
+const SOLVED_DRAWS = Object.freeze([
+  0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 2, 2, 2,
+]);
+
+/** A source that hands back `values` in order, then falls through to a seeded stream. */
+const thenSeeded = (values, seed) => {
+  const rest = seeded(seed);
+  let i = 0;
+  return () => (i < values.length ? values[i++] : rest());
+};
+
+test('the draws used below really do produce a solved cube — the premise, checked', () => {
+  // Without this the two tests under it could be passing for the wrong reason: a draw list that
+  // stopped cancelling would leave them exercising the ordinary path while still going green.
+  const alg = drillAlg(thenSeeded(SOLVED_DRAWS, 1));
+  assert.equal(alg, "U D U D U D U D U D U D U2 D2", 'the derived draws no longer produce the cancelling sequence');
+  assert.deepEqual(applyAlg(SOLVED, alg), SOLVED, 'the sequence does not cancel');
+  assert.equal(unsolvedSlot(applyAlg(SOLVED, alg), seeded(1)), null, 'a solved cube must offer nothing to ask about');
+});
+
+test('a position with nothing to ask about is drawn again, and the next one is used', () => {
+  // THE RETRY IS THE BEHAVIOUR, and nothing exercised it: every seeded stir has something to ask
+  // about, so the loop ran exactly once in every test there was (Codex audit, 2026-10-04). Here the
+  // first draw is spent on a solved cube and the round must come from the second.
+  const round = makeRound(thenSeeded(SOLVED_DRAWS, 29));
+  assert.ok(round.slot, 'the retry produced no round');
+  assert.notDeepEqual(applyAlg(SOLVED, round.alg), SOLVED, 'the round was built on the solved position');
+  assert.notEqual(round.alg, 'U D U D U D U D U D U D U2 D2', 'the rejected position was used anyway');
+});
+
+test('a budget spent entirely on unusable positions is reported, never looped on', () => {
+  // The exact budget, not "eventually": `tries` draws are made and the (tries + 1)th is never
+  // attempted. Asserted by counting the draws, because a retry loop that quietly ran once more
+  // would still throw and still look right.
+  let draws = 0;
+  const stuck = () => { draws += 1; return SOLVED_DRAWS[(draws - 1) % SOLVED_DRAWS.length]; };
+  assert.throws(() => makeRound(stuck, 3), /3 positions in a row/, 'exhaustion must be named, not retried for ever');
+  assert.equal(draws, 3 * SOLVED_DRAWS.length, `the budget of 3 cost ${draws} draws, not ${3 * SOLVED_DRAWS.length}`);
+});
