@@ -39,6 +39,8 @@ export const APP_SOURCES = Object.freeze([
   'lib/menu-popover.js', 'lib/scroll-strip.js',
   'lib/screens/scan.js', 'lib/screens/cube.js', 'lib/screens/timer.js', 'lib/screens/settings.js',
   'lib/screens/stats.js', 'lib/screens/lessons.js', 'lib/screens/course.js',
+  // the whole picture catalogue as a grid, and the two services behind it, 2026-10-04
+  'lib/screens/shapes.js', 'lib/shape-recency.js', 'lib/shape-thumb.js',
   // the Course screen's second composition: a lesson playing
   'lib/screens/course/episode-view.js',
   // the Drill screen's rounds

@@ -61,6 +61,17 @@ test('every tab has a window title, and the titles that differ from their tab sa
     lessons: 'Lessons',
     course: 'Course',
     settings: 'Settings',
+    // Neither of these has a tab, and the table holds both for the same reason: a screen with no
+    // entry here is titled "Cubus" and the window stops saying where you are. Settings is the
+    // toolbar's trailing button; Shapes is reached from the cube screen's Shapes menu, because the
+    // tab row is the beginner's path to a solved cube and the pictures are the game beside it.
+    shapes: 'Shapes',
   });
   for (const [id] of NAV) assert.ok(typeof TITLES[id] === 'string', `the ${id} tab has no window title`);
+  // THE OTHER DIRECTION, for the screens that are not tabs — the loop above cannot see them, and a
+  // title table is exactly where a non-tab screen gets forgotten.
+  for (const id of ['settings', 'shapes']) {
+    assert.ok(typeof TITLES[id] === 'string' && TITLES[id] !== 'Cubus',
+      `the ${id} screen has no window title of its own`);
+  }
 });

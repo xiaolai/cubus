@@ -34,6 +34,7 @@ import { readToken } from './cube-notation.js';
 import { ORIENTATIONS, orientationPerm, orientationRelabel, turnFacelets } from './cube-orientation.js';
 import { SOLVED, movesOf } from './cube-pieces.js';
 import { t } from './i18n.js';
+import { OFFERED_PATTERNS, selectionOf } from './patterns.js';
 
 /** A hold is `[up, front]`: which SCAN-frame face points up, and which faces the child. */
 const hold = (up, front) => Object.freeze([up, front]);
@@ -170,14 +171,29 @@ export function holdTable(names, alsoAsScanned = []) {
  * A target sends the child BACK to a stage, so it is held the way that stage was built: a child sent
  * back to the first layer is holding white up, as the course's practice card for it does.
  */
+/**
+ * The PICTURE destinations, DERIVED from the catalogue rather than typed out here.
+ *
+ * It was two hand-kept copies of the same five ids — once to be held at all, once to be held as
+ * scanned — and `holdForTarget` throws on an id it does not know, so a picture missing from them is
+ * not a wrong hold but a thrown walk the moment a child presses it. That is exactly what happened
+ * when the catalogue went from five pictures to twenty (2026-10-04): fifteen presses would each have
+ * taken the screen down, and the only reason it was caught before shipping is that
+ * `solving-hold.test.mjs` already held this list against `TARGETS` and `DESTINATION_BY_ID` instead
+ * of against itself. Derived, a picture appended to `lib/patterns.js` arrives here with it.
+ *
+ * `selectionOf`, because a SET pattern is reached by its TARGET's id — which is the id a press
+ * carries and therefore the id `holdForTarget` is asked about.
+ */
+const PICTURE_IDS = OFFERED_PATTERNS.map((pattern) => selectionOf(pattern));
+
 const TARGET_HOLD = holdTable(
-  ['cross', 'first-layer', 'two-layers', 'top-cross', 'corners-home', 'six-cross', 'x-every-face',
-    'checkerboard', 'lines', 'plus-minus', 'solved'],
+  ['cross', 'first-layer', 'two-layers', 'top-cross', 'corners-home', ...PICTURE_IDS, 'solved'],
   // Patterns rather than stages, and not offered as stages — each symmetric under the rotations that
   // matter, so the scan's hold says no less than any other would — and the whole cube, which keeps
   // the scan's hold. A pattern is not somewhere the child is sent BACK to, so the rule above it (hold
   // it the way that stage was built) has nothing to say about one.
-  ['six-cross', 'x-every-face', 'checkerboard', 'lines', 'plus-minus', 'solved'],
+  [...PICTURE_IDS, 'solved'],
 );
 
 /** The hold for a stage target, or the scan's hold for the whole cube (`null`). Loud on an unknown id. */

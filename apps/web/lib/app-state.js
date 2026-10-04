@@ -106,6 +106,10 @@ export const TITLES = Object.freeze({
   home: 'Cube',
   trainer: 'Algorithm trainer',
   settings: 'Settings',
+  // Reached from the cube screen's Shapes menu, not from the tab row — so it has a title here and
+  // no entry in NAV. The pictures are the game beside the method; a tab would file them as a stop
+  // on the way to a solved cube (lib/screens/shapes.js).
+  shapes: 'Shapes',
 });
 export const state = {
   screen: 'home',

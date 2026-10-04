@@ -22,6 +22,18 @@
 //   the same picture" — and already draws a free sticker faint, which is exactly what a set pattern
 //   needs: a plus on every face is a picture ABOUT the edges, and its corners must not look decided.
 //
+//   Both of those are `lib/shape-thumb.js`'s now, because the Shapes screen draws the same pictures
+//   in a grid and a second copy of "which look, in whose palette, with the name as text" is a
+//   second copy free to drift.
+//
+// IT HOLDS FIVE, AND THE CATALOGUE HOLDS TWENTY (owner, 2026-10-04). The five are the ones last
+// chosen — `recentShapes()`, computed rather than curated, and seeded with the catalogue's own first
+// five so a fresh install opens on the menu that shipped before any of this. The rest are on the
+// Shapes screen, which this menu's last item leads to. The bound is the point: this is a popover
+// dropped under a corner button, capped to the stage's height by the shared popover rule, and a menu
+// of twenty pictures that scrolls inside that cap is a grid wearing a menu's clothes — which is
+// exactly the thing `dev-docs/solve-to-state-plan.md` §9.6 said should become a screen instead.
+//
 // A press is an ordinary `data-stage` press. The menu does not route, does not touch the walk and
 // does not know what a walk is: `walk-session.js` wires every `[data-stage]` in the screen into one
 // group, so an item here sets `state.stageTarget` and replaces the walk through the same path a chip
@@ -37,13 +49,12 @@
 // focus inside it after every choice (audit, 2026-09-27). Both are listeners now.
 
 import { $ } from '../../app-state.js';
-import { settings } from '../../app-settings.js';
-import { netSvg } from '../../cube-flat.js';
 import { t } from '../../i18n.js';
 import { createMenu } from '../../menu-popover.js';
-import { OFFERED_PATTERNS } from '../../patterns.js';
-import { placeMenuUnder } from '../../screen-shell.js';
-import { targetPicture } from '../../stage-picture.js';
+import { patternBySelection, selectionOf } from '../../patterns.js';
+import { go, placeMenuUnder } from '../../screen-shell.js';
+import { recentShapes, rememberShape } from '../../shape-recency.js';
+import { shapeThumb } from '../../shape-thumb.js';
 
 /** The thumbnail's drawn width. Small enough for a grid, large enough that a 3x3 face reads. */
 const THUMB = 72;
@@ -70,25 +81,35 @@ export function createPatternMenu({ root, signal, chosen }) {
   });
   menu.el.classList.add('pattern-menu');
 
-  for (const pattern of OFFERED_PATTERNS) {
+  // THE FIVE THIS PERSON LAST CHOSE, resolved through the catalogue here rather than carried as
+  // patterns by the recency store: what is stored is a selection id, and the picture to draw is a
+  // fact about the catalogue at the moment the menu is built.
+  for (const id of recentShapes()) {
+    const pattern = patternBySelection(id);
+    // `recentShapes()` only ever answers ids it resolved, so this cannot miss — and it is checked
+    // rather than asserted because a null here would be `insertAdjacentHTML` on undefined, which
+    // is a thrown mount and a screen replaced by the "did not open" card.
+    if (!pattern) continue;
     // `radio` sets the accessible name from the text; the picture replaces the text below, so the
     // name is put back explicitly. Both channels say the same thing, which is the rule the pill
     // groups follow — the picture for the eye, the label for the reader that cannot see it.
-    const item = menu.radio(pattern.name, () => { menu.close(); button.focus(); });
-    const look = pattern.kind === 'state' ? pattern.look : targetPicture(pattern.target.id);
-    // THE NAME IS NEVER INTERPOLATED, and that is about the 70 rows this file is built to have
-    // appended rather than about the five here. `netSvg` escapes its own title — the one place a
-    // flat view escapes anything — and `look` is `[UDLRFB?]` by construction, so the SVG is markup
-    // this module produced. A name is the one field a later row could paste in from anywhere, so it
-    // goes in as text and cannot be markup at all, which is stronger than remembering to escape it.
+    // RECORDED HERE, and here only for this menu. The press also reaches the walk session's
+    // `[data-stage]` group — which is where the retarget happens — but that group is every stage
+    // chip as well, so recording there would push the pictures out of the menu with `cross` and
+    // `solved`. This callback fires for a PICTURE and nothing else.
+    //
+    // The open menu does not reorder itself: its items were built from `recentShapes()` at mount,
+    // and a list that rearranged under the finger that just pressed it would move every other
+    // picture at the worst possible moment. The new order is the next mount's.
+    const item = menu.radio(pattern.name, () => {
+      rememberShape(selectionOf(pattern));
+      menu.close();
+      button.focus();
+    });
+    // The name goes in as TEXT and the picture as markup from `shape-thumb.js`, which is the one
+    // owner of both; `item.textContent = ''` clears the name `radio` put there as the item's text.
     item.textContent = '';
-    // THE APP'S OWN COLOURS, because `netSvg` defaults to the muted Western set and a thumbnail is
-    // a picture of the cube in front of the child. On the Japanese scheme the default put yellow
-    // where their cube shows blue — ADR 0001's whole subject, arriving as a menu that disagreed with
-    // the target beside it (audit, 2026-09-27, reproduced on Japanese + classic).
-    item.insertAdjacentHTML('afterbegin', netSvg(look, {
-      width: THUMB, title: pattern.name, palette: settings.palette, scheme: settings.scheme,
-    }));
+    item.insertAdjacentHTML('afterbegin', shapeThumb(pattern, THUMB));
     const caption = document.createElement('span');
     caption.textContent = pattern.name;
     item.appendChild(caption);
@@ -100,16 +121,33 @@ export function createPatternMenu({ root, signal, chosen }) {
     // A SET pattern selects its TARGET; a state pattern selects ITSELF, and `stageTargetNow()`
     // resolves the id through `DESTINATION_BY_ID`. Both are `data-stage`, so the walk session's one
     // group wires and paints them together and only one destination can be on.
-    item.dataset.stage = pattern.target ? pattern.target.id : pattern.id;
+    item.dataset.stage = selectionOf(pattern);
     menu.el.appendChild(item);
   }
+
+  // THE WAY THROUGH TO THE REST. A `menuitem` and NOT a `menuitemradio`, so `menu.mark` passes over
+  // it: the whole catalogue is not a sixth thing to be aiming at, and a tick that can never be on is
+  // a control that lies about what it does. It carries NO `data-stage` for the same reason the
+  // Shapes button itself does not — the walk session's group must not see a navigation as a target
+  // press, which would set `state.stageTarget` to the string "more".
+  menu.el.appendChild(menu.divider());
+  menu.el.appendChild(menu.item(t('All shapes…'), () => {
+    menu.close();
+    // No `button.focus()` before leaving: the screen this press navigates to is about to replace
+    // the whole stage, and `installScreen` moves focus onto the new screen's region. Focusing a
+    // button that is being torn down is how focus ends up on <body> after the swap.
+    go('shapes');
+  }));
 
   /** Tick the item whose target is the one on, and untick the rest — including when a STAGE is on. */
   const sync = () => {
     const now = chosen();
     menu.mark((b) => b.dataset.stage === now);
-    // The button says what it is aiming at, so the choice is legible with the menu shut.
-    const on = OFFERED_PATTERNS.find((p) => (p.target ? p.target.id : p.id) === now);
+    // The button says what it is aiming at, so the choice is legible with the menu shut — and it
+    // says so for EVERY picture in the catalogue, not only the five drawn here: a shape chosen on
+    // the Shapes screen is the one on, and a button reading a bare "Shapes" over it would be the
+    // control disowning the choice the person just made.
+    const on = patternBySelection(now);
     button.title = on ? `${t('Shapes')} — ${on.name}` : t('Shapes');
     button.setAttribute('aria-label', button.title);
     button.classList.toggle('on', Boolean(on));

@@ -86,6 +86,11 @@ export const DEFAULT_SETTINGS = Object.freeze({
   // documented missing-first-move bias at 10-25% rather than under 1% — which is why the row that
   // turns it on says what the number can and cannot be compared with.
   drillClock: false,
+  // Which pictures were last chosen, newest first — what the cube screen's Shapes menu draws
+  // (lib/shape-recency.js). A HISTORY and not a preference: nobody sets it, it is written by
+  // choosing a shape, and what the menu shows is computed from it. Empty on a fresh install, which
+  // is why `recentShapes()` pads from the catalogue rather than treating empty as a failure.
+  shapesRecent: [],
 });
 /** Every setting whose default is a boolean — DERIVED, so a new flag is repaired the moment it has a
  *  default, and no list kept by hand can leave one out (audit, 2026-09-19: the tests' own copies had
@@ -117,6 +122,24 @@ for (const flag of BOOLEAN_SETTINGS) {
 }
 // The study's arm: anything but one of its two values is today's screen.
 if (!Object.values(SCAN_VIEWS).includes(settings.devScanView)) settings.devScanView = DEFAULT_SETTINGS.devScanView;
+/**
+ * The shapes history, repaired as a RECORD and not as a catalogue.
+ *
+ * Type and size only: an array, of non-empty strings, each seen once, bounded. Whether an id names
+ * a picture this build offers is `lib/shape-recency.js`'s question and is asked there, at the
+ * moment the menu is drawn — asking it here would put the pattern catalogue into the module every
+ * other module's settings come from, and would silently ERASE a shape's place in the menu on any
+ * build where it was temporarily unoffered.
+ *
+ * The bound is about hostile input rather than about the menu: localStorage is writable by anything
+ * on the origin, and without it a blob could park an unbounded array in the record that `save()`
+ * then rewrites in full on every preference change. The app's own writes are already bounded to
+ * five by `rememberShape`, which is why this number is larger than five and means something else.
+ */
+const RECENT_STORED_CAP = 32;
+settings.shapesRecent = Array.isArray(settings.shapesRecent)
+  ? [...new Set(settings.shapesRecent.filter((id) => typeof id === 'string' && id !== ''))].slice(0, RECENT_STORED_CAP)
+  : [...DEFAULT_SETTINGS.shapesRecent];
 // The sound mode, repaired and MIGRATED in one place. A stored `sounds: false` is a person who
 // asked for silence and must keep it; anything else -- true, absent, or the string "false" that the
 // boolean repair above used to catch -- becomes the default.

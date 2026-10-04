@@ -1,13 +1,19 @@
 // The way to a picture, and the four mistakes the shipped patterns could not have caught.
 //
-// A Codex refute pass (2026-09-26) checked the three state patterns this app offers and found that
-// ALL THREE are unchanged by the method-frame tumble AND are their own inverse. So a route that
-// omitted `inverseOf`, composed in the wrong order, tumbled one of its inputs, or renamed its answer
-// on the way out would still have landed on every one of them, and a suite built only on the shipped
-// set would have called it correct.
+// A Codex refute pass (2026-09-26) checked the three state patterns this app offered at the time and
+// found that ALL THREE are unchanged by the method-frame tumble AND are their own inverse. So a
+// route that omitted `inverseOf`, composed in the wrong order, tumbled one of its inputs, or renamed
+// its answer on the way out would still have landed on every one of them, and a suite built only on
+// the shipped set would have called it correct.
 //
 // `ASYMMETRIC` is the answer to that: the cube after `R U F`, which is none of those things. Every
 // case below that could be fooled runs on it, and the mutation list at the bottom is the evidence.
+//
+// THE CATALOGUE HAS SINCE GROWN OUT OF THAT BLIND SPOT — eighteen state patterns as of 2026-10-04,
+// of which four are not self-inverse and two are not tumble-invariant. `ASYMMETRIC` stays, because
+// one named fixture that is neither is what keeps these cases legible, and because nothing stops the
+// catalogue drifting back to an all-symmetric set. The first case below measures that rather than
+// assuming it either way.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -16,6 +22,7 @@ import { SOLVED, applyAlg, compose, inverseOf, toFacelets } from '../lib/cube-pi
 import { parseFacelets } from '../lib/two-phase.js';
 import { pictureState, relativeCube, routeToPicture } from '../lib/pattern-route.js';
 import { PATTERNS } from '../lib/patterns.js';
+import { toMethodFrame } from '../lib/solving-hold.js';
 
 /** A destination that is NOT self-inverse and NOT tumble-invariant — the whole point of it. */
 const ASYMMETRIC = Object.freeze({
@@ -48,14 +55,37 @@ const replay = (facelets, alg) => {
   } catch { return null; }
 };
 
-test('the shipped state patterns could not catch these mistakes, which is why ASYMMETRIC exists', () => {
-  for (const pattern of PATTERNS.filter((p) => p.kind === 'state')) {
-    const s = pictureState(pattern);
-    assert.equal(toFacelets(inverseOf(s)), pattern.look,
-      `${pattern.id} is NOT self-inverse any more — the premise of this file changed, re-read it`);
-  }
+// THE PREMISE, RE-MEASURED 2026-10-04, when the catalogue went from three state patterns to
+// eighteen. It had asserted that EVERY shipped state pattern is self-inverse — which was the 2026-09-26
+// finding and the whole reason `ASYMMETRIC` was written — and the new rows broke it, correctly: four
+// of the eighteen are not self-inverse and two are not tumble-invariant, so the shipped set is no
+// longer the blind spot it was. That is a better place to be and it does NOT retire `ASYMMETRIC`:
+// one fixture that is neither, named and explained, is what keeps the cases below readable, and
+// nothing stops the catalogue drifting back to an all-symmetric set.
+//
+// So the claim is inverted. Instead of pinning that the real patterns CANNOT catch these mistakes, it
+// measures how many can, and fails if that number reaches zero in either dimension — because that
+// is the state in which the suite is leaning on `ASYMMETRIC` alone and nobody would be told.
+test('ASYMMETRIC is still neither self-inverse nor tumble-invariant, and the catalogue is no longer blind', () => {
+  const state = PATTERNS.filter((p) => p.kind === 'state');
+  assert.ok(state.length > 0, 'no state patterns — this check went blind');
+
+  // THE FIXTURE'S OWN PROPERTIES, which every case below depends on. Without these two it is just
+  // another cube and the mutation list at the bottom stops being evidence of anything.
   assert.notEqual(toFacelets(inverseOf(pictureState(ASYMMETRIC))), ASYMMETRIC.look,
     'ASYMMETRIC became self-inverse, so it can no longer catch a missing inverseOf');
+  assert.notEqual(toMethodFrame(ASYMMETRIC.look), ASYMMETRIC.look,
+    'ASYMMETRIC became tumble-invariant, so it can no longer catch an input tumbled on the way in');
+
+  // AND THE CATALOGUE'S. Reported by name, so a reader sees which rows carry the weight rather than
+  // a bare count — and so the day this fails, the message says what the catalogue became.
+  const notSelfInverse = state.filter((p) => toFacelets(inverseOf(pictureState(p))) !== p.look).map((p) => p.id);
+  const notTumbleInvariant = state.filter((p) => toMethodFrame(p.look) !== p.look).map((p) => p.id);
+  assert.ok(notSelfInverse.length > 0,
+    'every shipped state pattern is self-inverse again — the catalogue is back to the 2026-09-26 blind spot, '
+      + 'and these cases now rest on ASYMMETRIC alone. That is survivable; it is not something to discover by accident.');
+  assert.ok(notTumbleInvariant.length > 0,
+    `every shipped state pattern is tumble-invariant again — see above. Self-inverse exceptions: ${notSelfInverse.join(', ')}`);
 });
 
 test('the relative cube is the one whose solution is the route, on an asymmetric destination', () => {

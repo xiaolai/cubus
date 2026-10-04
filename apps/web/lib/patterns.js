@@ -4,7 +4,8 @@
 // are the game. From any state, solve to a picture.** §9.6 then held the door shut — "which patterns
 // beyond the five stages" was left STILL OPEN so that patterns would be decided as their own feature
 // rather than drifting in because the mechanism allowed them. `six-cross` sat at `offered: false` for
-// a fortnight on exactly that rule. This file is that decision, taken: FIVE, chosen below.
+// a fortnight on exactly that rule. This file is that decision, taken: TWENTY, chosen below — five
+// of them from 2026-09-26, the rest when the Shapes screen §9.6 asked for arrived (2026-10-04).
 //
 // TWO KINDS, because they are two different things arithmetically and two different games.
 //
@@ -16,8 +17,11 @@
 //   'state' — ONE exact cube. Free of tables (§3a's first finding: a target that is one state needs
 //             none of this), but NOT cheap from a scramble: reaching S from c is the distance from
 //             S⁻¹·c to solved, and S⁻¹·c is uniform when c is, so it costs about what solving costs.
-//             These earn their place by being FAMOUS and SHORT FROM SOLVED (six moves each), not by
-//             being near.
+//             These earn their place by being SHORT FROM SOLVED rather than by being near — four
+//             moves or six, by the cuts below. Three of the eighteen are famous enough for the
+//             ledger to name (The Checkerboard, Lines, Plus/Minus); the rest are not named anywhere
+//             and are described by what they draw, which is a decision rather than a shortage —
+//             see THE NAMES ARE DESCRIPTIONS below.
 //             (Written c·S⁻¹ here until 2026-09-27, which is the wrong order and does not name the
 //             cube `lib/pattern-route.js` actually solves. An audit proved it rather than asserting
 //             it: with c = S·R the correct order is one move from solved, and the order written here
@@ -25,22 +29,50 @@
 //             both are uniform when c is — which is exactly why the error could sit in a comment
 //             next to correct code.)
 //
-// WHY FIVE AND NOT SEVENTY-FIVE. The ledger holds 73 state patterns and 2 set patterns, and the
-// obvious cut — "symmetry order >= 8", the 14 most symmetric — was measured and rejected: those 14
-// carry only SIX distinct face-shape signatures between them, so at least eight differ from a sibling
-// only in which colour sits where, which in a grid of thumbnails reads as the same picture twice. Six
-// of the 73 are two moves or fewer from solved (`U`, `U2`, `D U`, `D U'`, `D U2`, `D2 U2`) — one face
-// turn is not a picture. And all 73 collapse into 34 distinct signatures, not 73. So the number here
-// is small because the ledger says it should be, not because shipping more would be hard.
+// TWENTY, AND THE SCREEN §9.6 SAID WOULD BE NEEDED (owner, 2026-10-04). It was five until this
+// change, and what the five were waiting for is exactly what arrived: "a grid you sort, filter or
+// scroll has become the primary region, and 'only a new COMPOSITION is a new screen' makes that a
+// screen of its own". That screen is `lib/screens/shapes.js`; the cube screen's menu is the RECENT
+// five and a way through to it (`lib/shape-recency.js`). So the menu is still five pictures long and
+// the catalogue is no longer five, which is the only reason this number could move at all.
 //
-// AND THE OPTION FOR THE REST IS THE SHAPE OF THIS FILE, not a plugin point. Every record below is
-// exactly what a ledger row already is, so offering more is appending rows and flipping a boolean —
-// the same `offered` idiom `stage-targets.js` uses, and the reason `six-cross` could wait in the open
-// without a branch. `test/patterns.test.mjs` pins each state pattern here against the generated
-// ledger, so the copies cannot drift from the thing that proved them. What growing past about a dozen
-// would need is NOT a longer menu: a grid you sort, filter or scroll has become the primary region,
-// and "only a new COMPOSITION is a new screen" makes that a screen of its own, sibling to Lessons.
-// That is a separate decision, and §9.6's rule applies to it exactly as it applied to these five.
+// WHY EIGHTEEN STATE PATTERNS AND NOT SEVENTY-THREE. Two cuts, both measured, neither a tally.
+//
+//   EVERY FACE FIGURE IS CENTRED — its mask is unchanged by a half-turn of its own face. 51 of the
+//   ledger's 73 rows pass, and they use exactly SIX masks between them: plain (511), an H (381), an
+//   X (341), a plus (186), a bar (56), a dot (16). The 22 rows cut are the ones carrying an
+//   edge-anchored figure (`### / ### / ...`, `#.# / ### / ...`, `.#. / .#. / ...` and five more),
+//   and an off-centre figure does not read as a design at thumbnail size — it reads as a face
+//   somebody stopped halfway through. That is also what makes every name below sayable: the six
+//   masks that survive are the six a child can point at.
+//
+//   ONE PER FACE-SHAPE SIGNATURE — the multiset of the six masks, which is what a whole-cube
+//   rotation permutes and so is the honest notion of "the same picture" in a grid. The 51 collapse
+//   to 18. The earlier note here measured 34 over all 73 and that figure still stands; it is not
+//   the offering, because 16 of those 34 hold an off-centre figure. The representative is the
+//   SHORTEST row of its signature at three moves or more, and a row the ledger NAMES wins a tie —
+//   which is the whole reason `lines` is still `U2 R2 D2 U2 R2 U2` and not the equally short
+//   `U2 R2 D2 U2 R2 D2` beside it.
+//
+//   The "symmetry order >= 8" cut is still rejected, and for the reason it always was: those 14
+//   rows carry only SIX signatures between them. Six of the 73 are two moves or fewer from solved
+//   (`U`, `U2`, `D U`, `D U'`, `D U2`, `D2 U2`) — one face turn is not a picture — and the three
+//   moves or more floor above is what keeps them out while keeping their signatures, which deeper
+//   rows also reach.
+//
+// AND THE OPTION FOR THE REST IS STILL THE SHAPE OF THIS FILE, not a plugin point. Every record
+// below is exactly what a ledger row already is, so offering more is appending rows and flipping a
+// boolean — the same `offered` idiom `stage-targets.js` uses, and the reason `six-cross` could wait
+// in the open without a branch. `test/patterns.test.mjs` pins each state pattern here against the
+// generated ledger and RE-DERIVES both cuts from it, so widening the offering is editing one
+// predicate and not arguing with prose.
+//
+// THE NAMES ARE DESCRIPTIONS, and that is a decision rather than a shortage. 70 of the ledger's 73
+// rows have no name at all, and inventing folklore for fifteen of them would be inventing data; the
+// two set patterns above already show the house style, which is to say what the picture IS ("a plus
+// on every face"). So an unnamed row is named for its signature, in that style, and
+// `patterns.test.mjs` derives every one of those names from the picture the row actually draws —
+// a name here cannot come to describe a different cube. The three the ledger names keep its names.
 
 import { SOLVED, applyAlg, toFacelets } from './cube-pieces.js';
 import { TARGET_BY_ID, targetById } from './stage-targets.js';
@@ -89,6 +121,30 @@ const PATTERN_SPECS = [
     id: 'plus-minus', kind: 'state',
     alg: 'U2 L2 R2 U2 L2 R2', name: 'Plus/Minus', offered: true,
   },
+  // ---- the rest of the eighteen, 2026-10-04 ------------------------------------------------------
+  //
+  // THE FIRST THREE STAY FIRST so the recent-five seed is the menu that shipped before this screen
+  // existed: somebody who has chosen nothing yet opens the same menu they had. These are in order of
+  // what they COST from a finished cube — the ledger's proved minimum, four moves then six — and
+  // that number is deliberately NOT drawn anywhere. It is the distance from SOLVED, and the cube in
+  // the child's hands is almost never solved, so showing it beside the picture would be a true
+  // figure answering a question nobody asked. The route's own sentence says the real count once a
+  // picture is chosen.
+  { id: 'bar4-dot2', kind: 'state', alg: 'D U L2 R2', name: 'a bar on four faces and a dot on two', offered: true },
+  { id: 'bar4-h2', kind: 'state', alg: 'U2 L2 R2 U2', name: 'a bar on four faces and an H on two', offered: true },
+  { id: 'bar4-x2', kind: 'state', alg: 'D2 U2 L2 R2', name: 'a bar on four faces and an X on two', offered: true },
+  { id: 'plain2-bar2-dot2', kind: 'state', alg: 'U2 L2 R2 D2', name: 'plain on two faces, a bar on two and a dot on two', offered: true },
+  { id: 'bar6', kind: 'state', alg: "U R2 D2 U2 R2 U'", name: 'a bar on every face', offered: true },
+  { id: 'dot4-bar2', kind: 'state', alg: 'D U R2 B2 F2 L2', name: 'a dot on four faces and a bar on two', offered: true },
+  { id: 'dot4-h2', kind: 'state', alg: 'D U R2 B2 F2 R2', name: 'a dot on four faces and an H on two', offered: true },
+  { id: 'dot4-plain2', kind: 'state', alg: "L2 R2 D U' B2 F2", name: 'a dot on four faces and plain on two', offered: true },
+  { id: 'dot4-x2', kind: 'state', alg: 'U2 L2 R2 B2 F2 U2', name: 'a dot on four faces and an X on two', offered: true },
+  { id: 'h2-bar2-dot2', kind: 'state', alg: 'U2 R2 B2 F2 R2 U2', name: 'an H on two faces, a bar on two and a dot on two', offered: true },
+  { id: 'h2-plus2-bar2', kind: 'state', alg: "D U' L2 R2 D' U", name: 'an H on two faces, a plus on two and a bar on two', offered: true },
+  { id: 'h4-x2', kind: 'state', alg: 'U2 L2 R2 B2 F2 D2', name: 'an H on four faces and an X on two', offered: true },
+  { id: 'plain4-h2', kind: 'state', alg: 'U2 R2 D2 U2 L2 D2', name: 'plain on four faces and an H on two', offered: true },
+  { id: 'x2-bar2-dot2', kind: 'state', alg: 'U2 R2 B2 F2 L2 U2', name: 'an X on two faces, a bar on two and a dot on two', offered: true },
+  { id: 'x4-h2', kind: 'state', alg: 'U2 L2 R2 U2 B2 F2', name: 'an X on four faces and an H on two', offered: true },
 ];
 
 /** A facelet string is 54 stickers of the six face letters, and nothing else may reach a renderer. */
@@ -127,8 +183,31 @@ export function patternById(id) {
   return pattern;
 }
 
-/** What the menu draws. The list the screens read, exactly as `OFFERED_TARGETS` is for the row. */
+/** What the screens draw. The list they read, exactly as `OFFERED_TARGETS` is for the row. */
 export const OFFERED_PATTERNS = Object.freeze(PATTERNS.filter((p) => p.offered));
+
+/**
+ * The id a PRESS carries for this pattern — what goes in `data-stage` and into `state.stageTarget`.
+ *
+ * A set pattern is selected by its TARGET, because the exact engine already answers that id; a
+ * state pattern is selected by itself. The ternary was written out at four call sites across the
+ * menu and the recency store, which is four places for one rule about what a press means. Both the
+ * grid and the menu tick by comparing this with `state.stageTarget`, so the two cannot disagree
+ * about which picture is on.
+ */
+export const selectionOf = (pattern) => (pattern.target ? pattern.target.id : pattern.id);
+
+/**
+ * The offered pattern a selection id names, or null.
+ *
+ * Null rather than a throw, for `pictureDestination`'s reason: the id arrives from storage and from
+ * a dataset, so "that is not one of the pictures" is an ordinary answer — a stage is on, or a
+ * remembered choice names a row that is no longer offered.
+ */
+export function patternBySelection(id) {
+  if (!id) return null;
+  return OFFERED_PATTERNS.find((p) => selectionOf(p) === id) ?? null;
+}
 
 /**
  * The state patterns as DESTINATIONS, by id — target-shaped enough for the readers that take one.

@@ -31,6 +31,8 @@ import './screens/stats.js';
 import './screens/lessons.js';
 import './screens/pieces.js';
 import './screens/course.js';
+// The whole picture catalogue, reached from the cube screen's Shapes menu rather than from a tab.
+import './screens/shapes.js';
 
 // The names the test suites read off the app, from the modules that own them.
 export { DEFAULT_PALETTE } from './app-settings.js';
