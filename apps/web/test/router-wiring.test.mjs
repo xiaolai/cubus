@@ -24,6 +24,10 @@ const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
 let win;
+/** What the deep-linked Timer said at the instant it was on the paper, before any promise its mount
+ *  started could settle — and a solve was started right then, as a person reloading at #/timer can.
+ *  Read by the test straight after the boot test; null if the Timer never mounted at boot. */
+let timerAtBoot = null;
 
 before(async () => {
   win = new Window({
@@ -57,10 +61,24 @@ before(async () => {
     Object.defineProperty(globalThis, k, { value: win[k], writable: true, configurable: true });
   }
 
+  // A reload at #/timer mounts the Timer before the solver lands, and its first scramble lands
+  // later still — long before any test could click. So the click happens here, observed rather than
+  // raced: happy-dom tells a mutation observer about the mount before any promise it started settles.
+  const stage = win.document.querySelector('#stage');
+  const opening = new win.MutationObserver(() => {
+    const clock = stage.querySelector('#clock');
+    if (timerAtBoot || !clock) return;
+    timerAtBoot = { scr: stage.querySelector('#scr').textContent };
+    clock.click(); // a solve begins while the first scramble is still being worked out
+  });
+  opening.observe(stage, { childList: true, subtree: true });
+
   // Boots on import. loadSolver() reaches for an https: specifier, which Node refuses outright;
   // app.js already try/catches that, so the shell renders without a solver — exactly what an
   // offline launch does today.
-  await import('../lib/app.js');
+  try {
+    await import('../lib/app.js');
+  } finally { opening.disconnect(); }
   await tick();
 });
 
@@ -77,6 +95,29 @@ test('boot honours a deep link instead of falling back to home', () => {
   // is what says where you are. That a hidden screen still ROUTES is the property being checked.
   assert.equal(screenTitle(), 'Timer');
   assert.ok(win.document.querySelector('#stage .screen.active'), 'the deep-linked screen mounted');
+});
+
+// A reload at #/timer mounts the Timer before the solver lands, so it says it is working out a
+// scramble. A solve started before that scramble arrived left the sentence standing through the
+// solve and after it, with no search out (found by audit, 2026-09-15). This file boots on #/timer,
+// which makes it the one place that order happens: the solve was started in `before`, at the mount.
+test('a solve started before the first scramble lands does not leave "working out a scramble…" behind', async () => {
+  const WAITING = 'working out a scramble…';
+  const scr = win.document.querySelector('#scr');
+  const clock = win.document.querySelector('#clock');
+  const hint = win.document.querySelector('#timerHint');
+  assert.equal(timerAtBoot?.scr, WAITING, 'precondition: the Timer opened before its first scramble');
+  assert.equal(clock.getAttribute('aria-label'), 'Stop the timer', 'precondition: the solve started then is still running');
+
+  const t0 = Date.now();
+  while (Date.now() - t0 < 30000 && scr.textContent === WAITING) await new Promise((r) => setTimeout(r, 50));
+  assert.notEqual(scr.textContent, WAITING, 'the scramble line still says a search is out, under a running solve');
+  assert.doesNotMatch(scr.textContent, /^[URFDLB]/, 'a scramble was put on the line under a running solve');
+  assert.equal(hint.textContent, 'Running — click or press space to stop', 'and the status line stopped saying how to stop');
+
+  clock.click(); // the solve ends
+  await tick();
+  assert.notEqual(scr.textContent, WAITING, 'the scramble line says a search is out after the solve, with none running');
 });
 
 test('the stage actually rendered that screen', () => {
@@ -2539,16 +2580,52 @@ test('phase 4: the Timer arms on the scramble, starts on a turn, and stops on so
 
 test('phase 4: the Timer releases the cube stream when the screen goes away', async () => {
   // A torn-down closure that keeps timing is the bug the cleanup exists to prevent — and the same
-  // class of leak that phase 4 fixed for the animation frame.
-  win.cubusGo('timer');
-  await tick();
-  win.cubusGo('home');
-  await tick();
-  // Feeding after teardown must not throw: the screen's handlers are detached, not dangling.
-  assert.doesNotThrow(() => {
-    win.cubusFeed.move({ notation: 'R', serial: 1, cubeTimestamp: 1000, timestamp: Date.now() });
-    win.cubusFeed.facelets(SOLVED_FACELETS, 1);
-  });
+  // class of leak that phase 4 fixed for the animation frame. This used to assert only that feeding
+  // after teardown did not throw, which it passed with the Timer's cleanup deleted: the shell clears
+  // the stream hooks itself, and a frame loop left running throws nothing (audit, 2026-09-15). So it
+  // leaves in the middle of a solve the cube started — the one state in which there is a loop to
+  // stop and a stream that could still finish the solve — and asserts both came to an end.
+  const { state } = await import('../lib/app.js');
+  const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url).href)).default;
+  const solves = () => JSON.parse(win.localStorage.getItem('cubusSolves') || '{"list":[]}').list.length;
+  resetCubeModel(state);
+  try {
+    state.connected = true;
+    state.cubeName = 'GAN-test';
+    state.cube.trusted = true;
+    state.cube.source = 'cube';
+    state.cube.staleWhy = '';
+    win.cubusGo('timer');
+    await tick();
+    const clock = win.document.querySelector('#clock');
+    const scrEl = win.document.querySelector('#scr');
+    const t0 = Date.now();
+    while (Date.now() - t0 < 30000 && !/^[URFDLB]/.test(scrEl.textContent || '')) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.match(scrEl.textContent || '', /^[URFDLB]/, 'precondition: a scramble was generated');
+    const c = Cube.fromString(SOLVED_FACELETS);
+    for (const m of scrEl.textContent.trim().split(/\s+/)) c.move(m);
+    win.cubusFeed.facelets(c.asString(), 2);
+    await tick();
+    win.cubusFeed.move({ notation: 'R', serial: 3, cubeTimestamp: 1000, timestamp: Date.now() });
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(clock.getAttribute('aria-label'), 'Stop the timer', 'precondition: the cube started the clock');
+    const before = solves();
+
+    win.cubusGo('home');
+    await tick();
+    // The loop: a clock that keeps writing its figure onto a screen nobody can see.
+    const left = clock.textContent;
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(clock.textContent, left, 'the Timer\'s frame loop outlived its screen — the clock is still counting');
+    // The stream: the turn and the snapshot that would have finished the solve reach nothing.
+    win.cubusFeed.move({ notation: "R'", serial: 4, cubeTimestamp: 4200, timestamp: Date.now() });
+    win.cubusFeed.facelets(SOLVED_FACELETS, 4);
+    await tick();
+    assert.equal(solves(), before, 'a torn-down Timer recorded a solve from the cube stream');
+    assert.notEqual(clock.textContent, '3.20', 'a torn-down Timer stopped its clock on the cube\'s word');
+  } finally { resetCubeModel(state); }
 });
 
 

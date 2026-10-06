@@ -9,7 +9,7 @@ import { $, escHtml, state } from '../app-state.js';
 import { hooks } from '../screen-slots.js';
 import { loadSolver, solverReady, warmSolver } from '../solver-service.js';
 import { conn } from '../live-session.js';
-import { chainTrusted } from '../cube-trust-state.js';
+import { chainTrusted, cubeTracking } from '../cube-trust-state.js';
 import {
   dropLastSolve, parkRoll, pushSolve, putInPlay, randomScramble, recentSolves, schedulePreroll, takeOutOfPlay,
 } from '../scramble-roll.js';
@@ -40,10 +40,21 @@ SCREENS.timer = () => {
       const tick = () => { if (!running) return; clock.textContent = fmt(performance.now() - t0); raf = requestAnimationFrame(tick); };
       const hint = $('#timerHint', root);
       const MANUAL = t('Click or hold space to start');
-      const say = (text) => { if (hint) hint.textContent = text; };
-      /** What pressing the clock will do next. Kept in step with `running` in one place, so the
-       *  name a screen reader announces cannot describe the opposite of what the press does. */
-      const nameClock = () => clock.setAttribute('aria-label', running ? t('Stop the timer') : t('Start the timer'));
+      /** Whether the line is promising something of the cube — that the clock starts itself, or
+       *  that a turn starts it now — which is taken back the moment the cube cannot keep it. A
+       *  result, a warning or a running solve's line promises nothing, and is left standing. */
+      let promising = false;
+      const say = (text) => { if (hint) hint.textContent = text; promising = false; };
+      const newScr = $('#newScr', root);
+      /** What pressing the clock will do next, and whether New scramble can be pressed at all. Kept
+       *  in step with `running` in one place, so the name a screen reader announces cannot describe
+       *  the opposite of what the press does. New scramble is unavailable during a solve because a
+       *  press there rolls nothing — the scramble on screen is the one the time is filed under — and
+       *  an enabled button that did nothing and said nothing was the lie (found by audit, 2026-09-15). */
+      const showRunning = () => {
+        clock.setAttribute('aria-label', running ? t('Stop the timer') : t('Start the timer'));
+        newScr.disabled = running;
+      };
 
       // ---- cube-driven timing (PRD phase 4) ------------------------------------------------
       // The arrangement the current scramble produces — what the auto timer arms on: the one
@@ -71,15 +82,32 @@ SCREENS.timer = () => {
       // timing to decline — `conn` and `state.connected` move together — and refusing on a fact
       // nobody asserted would be inventing the answer rather than asking for it.
       const cubeCanTime = () => !conn || conn.numbersMoves();
-
-      // A lost turn means the span cannot be vouched for, and this is the only path that says so
-      // on a cube that does not number its moves — which is three of the brands the app speaks to.
-      // The clock keeps running: a solve in progress is still a solve. It is the RESULT that is
-      // refused, and solve-timer already owns those words.
-      hooks.liveGap = () => auto.interrupted();
+      /**
+       * What the line says of a clock that is not running: what the cube can do for it NOW. Armed,
+       * a turn starts it; a tracking cube with a scramble to reach starts it on reaching it;
+       * otherwise it is the hand's clock. Said wherever that can change — a roll landing, the cube
+       * arming, an arming lapsing — because the line used to be corrected only when trust lapsed
+       * under a RUNNING solve, and "Ready" or "the clock starts itself" stood over a cube that
+       * could no longer do either (found by audit, 2026-09-15). Tracking, not merely a trusted
+       * chain: a camera scan is trusted knowledge of a cube nobody may be connected to.
+       */
+      const sayIdle = () => {
+        if (auto.state === 'armed') say(t('Ready — turn to start'));
+        else if (scrTarget && !untimeable && cubeTracking()) say(t('Scramble your cube — the clock starts itself'));
+        else { say(MANUAL); return; }
+        promising = true;
+      };
 
       warmSolver();      // New scramble is one press away here; see cubeScreen's mount
       schedulePreroll(); // and it should never be the press that waits for a search
+      /** Whether the scramble line shows a scramble this screen put in play, rather than a sentence. */
+      let showingScramble = false;
+      /** The scramble line once no search is out for it: a scramble on it stays, and a line showing
+       *  none goes back to the prompt. "working out a scramble…" stood through and after a solve
+       *  with no search out, because nothing ever took it back (found by audit, 2026-09-15). */
+      const scrambleLineAtRest = () => {
+        if (!showingScramble) $('#scr', root).textContent = t('press New scramble');
+      };
       /** Put a roll in play. The CALLER puts it in play, so a roll that arrives at a bad moment
        *  changes nothing the solve history is recorded against. */
       const commitRoll = (rolled) => {
@@ -88,9 +116,10 @@ SCREENS.timer = () => {
         auto.reset();
         untimeable = false;
         $('#scr', root).textContent = rolled.alg;
+        showingScramble = true;
         // Said on EVERY roll that lands: the line described the attempt before this one, and a
         // failure sentence beside a fresh scramble is a lie (found by audit, 2026-09-13).
-        say(scrTarget && chainTrusted() ? t('Scramble your cube — the clock starts itself') : MANUAL);
+        sayIdle();
       };
       // A press asks for a scramble, and the newest press is the one shown: an older or abandoned
       // search is called off, and a roll that lands on a running solve is parked for the next
@@ -110,7 +139,10 @@ SCREENS.timer = () => {
         // audit, 2026-09-04).
         onLoadFailed: () => {
           $('#scr', root).textContent = t('the solver did not load — reload the app');
-          say(t('Scrambles need the solver, and it did not load. Reloading the app is the fix; the clock below still times by hand.'));
+          showingScramble = false;
+          // Not over a running solve: that line says how to stop the clock, and the scramble line
+          // above has already said what went wrong.
+          if (!running) say(t('Scrambles need the solver, and it did not load. Reloading the app is the fix; the clock below still times by hand.'));
         },
         onRolled: commitRoll,
         // A roll that THREW says what an empty one says: there is no scramble, and the button is
@@ -118,7 +150,15 @@ SCREENS.timer = () => {
         // record a solve against, and blanking it would lose that too.
         onFailed: (err) => {
           if (err) console.error('scramble could not be rolled', err);
+          scrambleLineAtRest();
           say(t('A scramble could not be worked out — press New scramble to try again.'));
+        },
+        // A solve is being timed, and the press shows nothing under it: refused, parked, or failed.
+        // The status line is the solve's, so nothing is said there; the scramble line stops saying
+        // that a search is out. A roll kept for the next press, or a retry, is what that press gets.
+        onHeld: (err) => {
+          if (err) console.error('scramble could not be rolled', err);
+          scrambleLineAtRest();
         },
       });
       /** Record a finished solve, and say so when the browser refused to keep it.
@@ -138,7 +178,7 @@ SCREENS.timer = () => {
         running = false;
         cancelAnimationFrame(raf);
         clock.style.color = 'var(--ink)';
-        nameClock();
+        showRunning();
         byCube = false;
       };
       /** A finished solve, said. The clock's own text is a button's content, which a screen reader
@@ -169,7 +209,7 @@ SCREENS.timer = () => {
         running = true;
         t0 = performance.now();
         clock.style.color = 'var(--accent)';
-        nameClock();
+        showRunning();
         say(message);
         tick();
       };
@@ -217,8 +257,8 @@ SCREENS.timer = () => {
         renderLast();
       };
       clock.onclick = toggle;
-      nameClock();
-      $('#newScr', root).onclick = () => requests.request();
+      showRunning();
+      newScr.onclick = () => requests.request();
       // escHtml: solve times come from localStorage, which is untrusted input, and they were
       // going into innerHTML raw — a stored-XSS hole reachable by anything that can write to the
       // origin's storage.
@@ -250,6 +290,20 @@ SCREENS.timer = () => {
           };
         }
       };
+      // The button a MOUSE CLICK left focused, until focus moves or the keyboard presses it.
+      // Chromium and WebView2 focus a button on a click (WebKit does not), so a keyboard rule that
+      // hands Space to the focused control handed it to the button just clicked: after New scramble,
+      // Space rolled another scramble instead of starting the clock, and after one click of Undo,
+      // which arms in place, Space confirmed it and deleted a solve (found by audit, 2026-09-15).
+      // A click made by a pointer carries its click count in `detail`; one made by a key carries 0,
+      // and every keyboard move of focus fires focusin — so a button the keyboard reached, or last
+      // pressed, is never this one, and keeps Space as its own activation key.
+      let clicked = null;
+      const listen = { capture: true, signal: screenAbort?.signal };
+      document.addEventListener('click', (e) => {
+        clicked = e.detail > 0 ? e.target.closest?.('button') ?? null : null;
+      }, listen);
+      document.addEventListener('focusin', () => { clicked = null; }, listen);
       // e.repeat: holding the key down fires keydown continuously, which start/stopped the clock
       // dozens of times a second and wrote a run of nonsense times into the solve history.
       const onKey = (e) => {
@@ -258,10 +312,14 @@ SCREENS.timer = () => {
         // Space is every control's own activation key, and this handler cancels the keydown. A
         // focused New scramble, Undo or toolbar button was silenced and the clock toggled in its
         // place (found by audit, 2026-09-13); on the clock itself, the press arrived twice and
-        // started and stopped it in one instant. A control owns its own press; only a Space on
-        // the screen itself runs the clock from here.
+        // started and stopped it in one instant. A control the keyboard is on owns its own press;
+        // only a Space on the screen itself, or on a button a mouse click left focused, runs the
+        // clock from here — cancelled, so that button is not pressed a second time.
         const on = document.activeElement;
-        if (on && on !== document.body && on.closest?.('button, a, input, select, textarea, [contenteditable]')) return;
+        const control = on && on !== document.body && on.closest?.('button, a, input, select, textarea, [contenteditable]');
+        // A DISABLED control has no press of its own to protect: New scramble is taken away when a
+        // solve starts, and a keyboard left on it would otherwise lose the Space that stops it.
+        if (control && control !== clicked && !control.disabled) return;
         e.preventDefault();
         toggle();
       };
@@ -274,7 +332,11 @@ SCREENS.timer = () => {
       hooks.liveMove = (m) => {
         if (untimeable) return;
         const before = auto.state;
-        if (auto.move(m) === 'running' && before === 'armed' && !running) startFromCube();
+        const now = auto.move(m);
+        if (now === 'running' && before === 'armed' && !running) startFromCube();
+        // An arming that lapsed on this very turn (solve-timer's READY_LAPSE_MS) started nothing,
+        // and "Ready" stood over the untimed solve that followed.
+        else if (before === 'armed' && now === 'idle' && !running) sayIdle();
       };
       hooks.liveUpdate = (f, serial) => {
         if (untimeable) return;
@@ -293,18 +355,30 @@ SCREENS.timer = () => {
             say(t('This cube does not number its turns, so cubus cannot tell a clean solve from one that dropped a turn — it will not time it. Use the clock or the space bar and time it by hand.'));
             return;
           }
-          say(t('Ready — turn to start'));
+          sayIdle();
         }
-        if (before === 'armed' && now === 'idle' && !running) say(t('Scramble your cube — the clock starts itself'));
+        if (before === 'armed' && now === 'idle' && !running) sayIdle();
         if (before === 'running' && now === 'stopped' && byCube) stopFromCube();
       };
 
       // Trust lapsing is not a stop: nothing measured the span, so nothing is recorded. But a clock
       // the cube started can no longer be stopped by it, and the line beside it said the cube would
-      // — so it says how to stop it by hand instead (found by audit, 2026-09-13).
+      // — so it says how to stop it by hand instead (found by audit, 2026-09-13). And a clock that
+      // is not running can no longer be STARTED by it: a line promising that was left standing for
+      // the rest of the visit (found by audit, 2026-09-15).
+      //
+      // A turn the cube lost arrives HERE, and this screen installs no `liveGap`: onMovesLost marks
+      // the chain stale before it calls that hook, so the cube timer is already reset and there is
+      // no cube-timed solve left for a "moves were dropped" refusal to be about. The hook this
+      // screen had called a refusal on an idle timer every time (audit, 2026-09-15). On an already
+      // stale chain nothing lapses, and nothing needs to: the cube timer arms only while trusted.
       hooks.onTrustLost = () => {
         auto.reset();
-        if (!running || !byCube) return;
+        if (!running) {
+          if (promising) say(t('The cube can no longer be vouched for, so it will not start the clock. Click or hold space to start.'));
+          return;
+        }
+        if (!byCube) return;
         byCube = false;
         say(t('The cube can no longer be vouched for, so it will not stop this clock. Click or press space to stop.'));
       };

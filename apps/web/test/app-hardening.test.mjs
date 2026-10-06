@@ -660,6 +660,13 @@ const onTrustedTimer = async (fn) => {
     await go('home');
   }
 };
+const waitForScramble = async () => {
+  for (let i = 0; i < 200 && !/^[URFDLB]/.test($('#scr').textContent || ''); i++) await settle(50);
+  assert.match($('#scr').textContent, /^[URFDLB]/, 'precondition: a scramble is on screen');
+};
+const stopClockIfRunning = async () => {
+  if ($('#clock')?.getAttribute('aria-label') === 'Stop the timer') { $('#clock').click(); await tick(); }
+};
 
 test('a cube whose trust lapses mid-solve stops promising that it will stop the clock', async () => {
   await onTrustedTimer(async (target) => {
@@ -677,6 +684,42 @@ test('a cube whose trust lapses mid-solve stops promising that it will stop the 
   });
 });
 
+// A turn the cube lost reaches the Timer as trust lapsing, and only as that: onMovesLost marks the
+// chain stale before anything else, so the clock the cube started is handed to the hand at once and
+// the cube can neither stop it nor have a time recorded for it. There is no cube-timed result left
+// for a "moves were dropped" refusal to be about (audit, 2026-09-15).
+test('a turn lost under a cube-started solve hands the clock to the hand, and the cube cannot stop it', async () => {
+  const { recentSolves, dropLastSolve } = await import('../lib/scramble-roll.js');
+  const newest = () => recentSolves().find((s) => s.time)?.n;
+  const before = newest();
+  try {
+    await onTrustedTimer(async (target) => {
+      win.cubusFeed.facelets(target, 2);
+      await tick();
+      win.cubusFeed.move({ notation: 'R', serial: 3, cubeTimestamp: 1000, timestamp: Date.now() });
+      await tick();
+      assert.match($('#timerHint').textContent, /cube stops the clock/, 'precondition: the cube started it');
+      const { hooks } = await import('../lib/screen-slots.js');
+      assert.equal(hooks.liveGap, null,
+        'the Timer installs a lost-turn hook again — onMovesLost can only ever hand it a timer trust has already reset');
+
+      win.cubusFeed.movesLost();
+      await tick();
+      assert.match($('#timerHint').textContent, /will not stop this clock/,
+        'a lost turn left the line promising that the cube would stop the clock');
+      assert.equal($('#clock').getAttribute('aria-label'), 'Stop the timer', 'a solve in progress is still a solve');
+
+      win.cubusFeed.move({ notation: "R'", serial: 4, cubeTimestamp: 4200, timestamp: Date.now() });
+      win.cubusFeed.facelets(SOLVED_FACELETS, 4);
+      await tick();
+      assert.equal($('#clock').getAttribute('aria-label'), 'Stop the timer', 'the cube stopped a clock after a turn went missing');
+      assert.equal(newest(), before, 'a solve was recorded from the cube across a lost turn');
+    });
+  } finally {
+    while (newest() !== before && dropLastSolve()); // the hand stop in onTrustedTimer records one
+  }
+});
+
 test('a cube reaching the scramble under a hand-started clock does not say the clock is ready', async () => {
   await onTrustedTimer(async (target) => {
     $('#clock').click(); // started by hand
@@ -688,6 +731,84 @@ test('a cube reaching the scramble under a hand-started clock does not say the c
   });
 });
 
+// The idle line makes two promises about the cube — "the clock starts itself" and "Ready — turn to
+// start" — and it was corrected only when trust lapsed under a RUNNING solve. Every other way the
+// cube stops being able to keep them left the promise standing (found by audit, 2026-09-15).
+const PROMISE = /starts itself|Ready — turn to start/;
+
+test('a cube whose trust lapses while armed stops saying Ready', async () => {
+  await onTrustedTimer(async (target) => {
+    win.cubusFeed.facelets(target, 2);
+    await tick();
+    assert.equal($('#timerHint').textContent, 'Ready — turn to start', 'precondition: the cube armed the clock');
+
+    win.cubusFeed.disconnect();
+    await tick();
+    assert.doesNotMatch($('#timerHint').textContent, PROMISE,
+      'the line still says a turn will start a clock the cube can no longer start');
+    win.cubusFeed.move({ notation: 'R', serial: 3, cubeTimestamp: 1000, timestamp: Date.now() });
+    await tick();
+    assert.equal($('#clock').getAttribute('aria-label'), 'Start the timer', 'precondition: and a turn does not start it');
+  });
+});
+
+test('a cube whose trust lapses before it is armed stops saying the clock starts itself', async () => {
+  await onTrustedTimer(async () => {
+    assert.match($('#timerHint').textContent, /the clock starts itself/, 'precondition: the rolled scramble promised it');
+
+    win.cubusFeed.disconnect();
+    await tick();
+    assert.doesNotMatch($('#timerHint').textContent, PROMISE,
+      'the line still promises the cube will start a clock it can no longer start, for the rest of the visit');
+  });
+});
+
+test('a turn that comes after the arming has lapsed does not leave Ready on the line', async () => {
+  await onTrustedTimer(async (target) => {
+    win.cubusFeed.facelets(target, 2);
+    await tick();
+    assert.equal($('#timerHint').textContent, 'Ready — turn to start', 'precondition: the cube armed the clock');
+
+    // Past solve-timer's READY_LAPSE_MS: the cube sat at the scramble long enough to be furniture.
+    const perf = globalThis.performance;
+    const own = Object.hasOwn(perf, 'now');
+    const real = perf.now;
+    perf.now = function now() { return real.call(perf) + 11 * 60 * 1000; };
+    try {
+      win.cubusFeed.move({ notation: 'R', serial: 3, cubeTimestamp: 1000, timestamp: Date.now() });
+      await tick();
+    } finally {
+      if (own) perf.now = real; else delete perf.now;
+    }
+    assert.equal($('#clock').getAttribute('aria-label'), 'Start the timer', 'precondition: the lapsed arming did not start the clock');
+    assert.doesNotMatch($('#timerHint').textContent, /Ready/, 'the line says Ready over a turn that started nothing');
+    assert.match($('#timerHint').textContent, /Scramble your cube/, 'and it does not say what would start it now');
+  });
+});
+
+test('with no cube connected, a trusted camera scan does not promise that the clock starts itself', async () => {
+  const { state } = await import('../lib/app.js');
+  const before = { connected: state.connected, trusted: state.cube.trusted, source: state.cube.source };
+  try {
+    // The camera is first-class and most people have no smart cube: a scan is trusted knowledge of
+    // the cube in the hand, and nothing at all is listening to that cube turn.
+    state.connected = false;
+    state.cube.trusted = true;
+    state.cube.source = 'camera';
+    state.cube.staleWhy = '';
+    await go('home');
+    await go('timer');
+    await waitForScramble();
+    assert.equal($('#timerHint').textContent, 'Click or hold space to start',
+      'the line promised a cube nobody is connected to would start the clock');
+  } finally {
+    state.connected = before.connected;
+    state.cube.trusted = before.trusted;
+    state.cube.source = before.source;
+    await go('home');
+  }
+});
+
 test('Space on New scramble presses New scramble, and leaves the clock alone', async () => {
   await go('timer');
   const button = $('#newScr');
@@ -697,6 +818,94 @@ test('Space on New scramble presses New scramble, and leaves the clock alone', a
   await tick();
   assert.equal($('#clock').getAttribute('aria-label'), 'Start the timer', 'Space on a button started the clock instead');
   assert.equal(ev.defaultPrevented, false, "the button's own activation was cancelled");
+});
+
+// Chromium and WebView2 FOCUS a button on a mouse click (WebKit does not), so the button a person
+// just clicked is the focused element when they next press Space — and the keyboard rule above,
+// which hands Space to a focused control, handed it to that button: after clicking New scramble,
+// Space rolled another scramble instead of starting the clock, and after one click of Undo (which
+// arms it in place, on the same element) Space confirmed the removal and deleted a solve.
+//
+// The two helpers are the platform, modelled: happy-dom neither focuses on a click nor activates a
+// button on Space, and a test that skipped either half would pass against the defect.
+/** A mouse click as Chromium delivers it: focus first (on mousedown), then a click whose `detail`
+ *  is the click count — never 0, which is what a click made by a key carries. */
+const mouseClick = (el) => {
+  el.focus();
+  el.dispatchEvent(new win.MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+};
+/** Space on whatever has focus, as a browser handles it: the keydown, and then — unless that was
+ *  cancelled — a focused button's own activation, which is a click with `detail` 0. */
+const pressSpace = () => {
+  const on = win.document.activeElement;
+  const ev = new win.KeyboardEvent('keydown', { code: 'Space', key: ' ', bubbles: true, cancelable: true });
+  on.dispatchEvent(ev);
+  if (!ev.defaultPrevented && on.tagName === 'BUTTON') on.click();
+  return ev;
+};
+
+test('Space after a mouse click on New scramble runs the clock, and does not press the button again', async () => {
+  await go('timer');
+  try {
+    await waitForScramble();
+    const shown = $('#scr').textContent;
+    mouseClick($('#newScr'));
+    const ev = pressSpace();
+    await settle(300);
+    assert.equal($('#clock').getAttribute('aria-label'), 'Stop the timer',
+      'Space after clicking New scramble did not start the clock');
+    assert.equal(ev.defaultPrevented, true, 'the clicked button was left to take the Space as a second press');
+    assert.equal($('#scr').textContent, shown, 'a scramble replaced the one the running solve is timed against');
+  } finally { await stopClockIfRunning(); }
+});
+
+test('Space after a mouse click on Undo does not confirm the removal', async () => {
+  const { recentSolves, dropLastSolve } = await import('../lib/scramble-roll.js');
+  await go('timer');
+  const newest = () => recentSolves().find((s) => s.time)?.n;
+  const before = newest();
+  try {
+    $('#clock').click();
+    await tick();
+    $('#clock').click(); // a solve to undo
+    await tick();
+    const top = newest();
+    assert.notEqual(top, before, 'precondition: a solve was recorded');
+    mouseClick($('#undoLast'));
+    await tick();
+    assert.equal($('#undoLast').textContent, 'Remove it?', 'precondition: one click asked to confirm');
+
+    pressSpace();
+    await tick();
+    assert.equal(newest(), top, 'Space after one click of Undo confirmed it, and a solve was deleted');
+    assert.equal($('#clock').getAttribute('aria-label'), 'Stop the timer', 'and the clock did not start');
+  } finally {
+    await stopClockIfRunning();
+    while (newest() !== before && dropLastSolve()); // leave the history as it was found
+  }
+});
+
+test('a button the keyboard reached or pressed after a mouse click still takes its own Space', async () => {
+  await go('timer');
+  const button = $('#newScr');
+  try {
+    // Tabbed away and back: focus the keyboard put there, whoever clicked it before.
+    mouseClick(button);
+    $('#clock').focus();
+    button.focus();
+    let ev = pressSpace();
+    await tick();
+    assert.equal(ev.defaultPrevented, false, 'a button the keyboard focused lost its own Space');
+    assert.equal($('#clock').getAttribute('aria-label'), 'Start the timer', 'and Space ran the clock instead');
+
+    // Pressed from the keyboard since the click: the last thing done to it was a key.
+    mouseClick(button);
+    button.click();
+    ev = pressSpace();
+    await tick();
+    assert.equal(ev.defaultPrevented, false, 'a button last pressed from the keyboard lost its own Space');
+    assert.equal($('#clock').getAttribute('aria-label'), 'Start the timer', 'and Space ran the clock instead');
+  } finally { await stopClockIfRunning(); }
 });
 
 test('Space on the Timer itself still runs the clock', async () => {
@@ -730,6 +939,43 @@ test('a finished solve is said on the status line, not only painted on the clock
     await tick();
     assert.equal($('#clock').textContent, '3.20', 'precondition: the cube timed the solve');
     assert.match($('#timerHint').textContent, /3\.20/, 'a cube-timed result went unsaid as well');
+  });
+});
+
+// A press of New scramble under a running solve rolls nothing — the scramble on screen is the one
+// the time is filed under — and it used to do exactly that in silence: no roll, no word, a button
+// that looked pressable and was not (found by audit, 2026-09-15).
+test('New scramble cannot be pressed while a solve is being timed, and can again once it stops', async () => {
+  await go('timer');
+  try {
+    assert.equal($('#newScr').disabled, false, 'precondition: New scramble is offered on an idle Timer');
+    $('#clock').click();
+    await tick();
+    assert.equal($('#newScr').disabled, true,
+      'New scramble was offered under a running solve, where a press does nothing and says nothing');
+    $('#clock').click();
+    await tick();
+    assert.equal($('#newScr').disabled, false, 'New scramble stayed unavailable after the solve stopped');
+  } finally { await stopClockIfRunning(); }
+});
+
+test('a cube-started solve takes New scramble away too, and Space still stops it from where the keyboard was', async () => {
+  await onTrustedTimer(async (target) => {
+    $('#newScr').focus(); // the keyboard was on New scramble when the cube started the clock
+    win.cubusFeed.facelets(target, 2);
+    await tick();
+    win.cubusFeed.move({ notation: 'R', serial: 3, cubeTimestamp: 1000, timestamp: Date.now() });
+    await tick();
+    assert.equal($('#clock').getAttribute('aria-label'), 'Stop the timer', 'precondition: the cube started the clock');
+    assert.equal($('#newScr').disabled, true, 'New scramble was offered under a solve the cube started');
+
+    win.cubusFeed.disconnect(); // trust lapses, and the line hands the stop to Space
+    await tick();
+    assert.match($('#timerHint').textContent, /press space to stop/, 'precondition: the line says Space stops it');
+    pressSpace();
+    await tick();
+    assert.equal($('#clock').getAttribute('aria-label'), 'Start the timer',
+      'the line says Space stops the clock, and Space went to a button that cannot be pressed');
   });
 });
 

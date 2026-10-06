@@ -34,6 +34,17 @@ export const chainTrusted = () =>
   state.connected && state.cube.trusted
   && (state.cube.source === 'cube' || state.cube.source === 'camera') && !cubeRefused();
 
+/** Is a connected cube TRACKING: connected, its chain trusted, and its session not refused? What
+ *  the title-bar indicator calls "tracking", and the only state in which that cube's own reports
+ *  drive anything — with no connection nothing reports, and a refused session's reports and turns
+ *  are dropped at the door (cube-reports.js) — so it is what the Timer asks before promising that
+ *  the cube will start its clock. A trusted chain alone is not that: a camera scan is trusted
+ *  knowledge of a cube nobody may be connected to. */
+// A connected cube that is actually following along. `&& !cubeRefused()` was written here too and is
+// dropped: `chainTrusted` already carries it (line 35), and a second copy is the duplication the
+// 2026-09-21 change removed one line below. Verified rather than assumed — read that line.
+export const cubeTracking = () => state.connected && chainTrusted();
+
 /** Throw the correction away. NOT called on `gap`: a serial skip means moves were missed, not
  *  that the reference moved — what was lost is the moves in between, not the relationship. */
 export function clearOffset() {
@@ -159,6 +170,10 @@ function paintTrust(el) {
   // The CHAIN's trust, not the subject's: a generated scramble is perfectly known and says nothing
   // about where the connected cube is, and a refused cube is followed by nothing at all — both
   // of which the predicate says, so nothing is added to it here (2026-09-21).
+  //
+  // THE TIMER BRANCH WROTE `cubeTracking()` HERE, which is the same predicate: `state.connected` is
+  // already true (the early return above) and `!cubeRefused()` is inside `chainTrusted` itself
+  // (line 35). Taking main's line keeps the one that says why.
   const ok = chainTrusted();
   el.classList.toggle('stale', !ok);
   const who = liveCubeLabel();
