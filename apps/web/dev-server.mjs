@@ -372,13 +372,80 @@ export function createDevServer({
    * `pipeline` destroys the response, and a clean end after a partial body is exactly the silent
    * truncation this is about.
    */
-  const streamFile = (res, fh, size, headers) => {
-    res.writeHead(200, { ...headers, 'Content-Length': size });
-    if (size === 0) {
+  /**
+   * The one byte range a `Range:` header asks for, or null for "send the whole thing".
+   *
+   * ONLY the single-range forms, which is what a media element sends: `bytes=START-`, `bytes=START-END`
+   * and the suffix `bytes=-N`. A multi-range request is answered with the whole file, which is what the
+   * spec allows and what no client here ever asks for. `false` means the range cannot be met and the
+   * answer is 416 — never a 200, which would hand a player bytes it did not ask for and let it believe
+   * they came from the offset it wanted.
+   */
+  const rangeOf = (header, size) => {
+    if (typeof header !== 'string') return null;
+    const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+    if (!m || (m[1] === '' && m[2] === '')) return null;
+    if (m[1] === '') {                                   // the last N bytes
+      const n = Number(m[2]);
+      return n === 0 ? false : { start: Math.max(0, size - n), end: size - 1 };
+    }
+    const start = Number(m[1]);
+    const end = m[2] === '' ? size - 1 : Math.min(Number(m[2]), size - 1);
+    if (start > end || start >= size) return false;
+    return { start, end };
+  };
+
+  /**
+   * Streamed, with an explicit Content-Length, and neither half is cosmetic. (See the note above
+   * `rangeOf` for the range half, added 2026-10-07.)
+   *
+   * RANGE REQUESTS ARE ANSWERED, because a media element makes them. This server used to reply 200 with
+   * the whole file however the request was framed, and never said `Accept-Ranges` — which is a contract
+   * a browser's media stack is entitled to rely on. On the Linux CI runner a lesson's recording reached
+   * `readyState` 2 with `currentTime` 0 and no error, intermittently, and the lesson stopped on it; macOS
+   * WebKit and Chromium tolerate the plain 200, which is the platform split that made it look like an app
+   * bug. Serving ranges is right whatever that turns out to be: seeking in a recording needs it too.
+   *
+   * [The original note, which still holds:] This used to `readFile` the whole file and `res.end(buffer)`.
+   * With no Content-Length, Node sends HTTP/1.1 chunked — and a chunked body that stops early looks
+   * COMPLETE to the client, which is how a truncated 26.8 MB wasm reached WebKit and failed as
+   * "WebAssembly.Module doesn't parse at byte 24666430". The file on disk was byte-identical to its
+   * source the whole time; the delivery was short. It surfaced as threads-do-not-change-output failing,
+   * i.e. as a MODEL regression — the most expensive possible disguise for a dev-server bug.
+   *
+   * Content-Length makes a short read an error the client raises instead of a corrupt asset it parses.
+   * Streaming removes the cause: the suite runs at --test-concurrency=6 and several files each spawn
+   * their own server, so buffering ~27 MB per request multiplied by concurrent requests, and a socket
+   * write under that memory pressure is where the bytes went.
+   *
+   * The read is BOUNDED to the span declared, so a file that grows while it is sent cannot put more on
+   * the wire than the header promised. And it goes through `pipeline`, not `pipe`: `pipe` leaves its
+   * source open when the DESTINATION closes, so every download a client abandoned — a navigation, a
+   * closed tab — held a paused stream, 64 KiB of buffer and a descriptor for the life of the process
+   * (audit, 2026-09-21). A read that dies mid-flight still breaks the connection rather than ending it
+   * tidily: `pipeline` destroys the response, and a clean end after a partial body is exactly the silent
+   * truncation this is about.
+   */
+  const streamFile = (res, fh, size, headers, rangeHeader) => {
+    const want = rangeOf(rangeHeader, size);
+    if (want === false) {
+      res.writeHead(416, { ...headers, 'Accept-Ranges': 'bytes', 'Content-Range': `bytes */${size}`, 'Content-Length': 0 });
       res.end();
       return fh.close();
     }
-    pipeline(fh.createReadStream({ start: 0, end: size - 1 }), res, (err) => {
+    const { start, end } = want ?? { start: 0, end: size - 1 };
+    const length = size === 0 ? 0 : end - start + 1;
+    res.writeHead(want ? 206 : 200, {
+      ...headers,
+      'Accept-Ranges': 'bytes',
+      'Content-Length': length,
+      ...(want ? { 'Content-Range': `bytes ${start}-${end}/${size}` } : {}),
+    });
+    if (length === 0) {
+      res.end();
+      return fh.close();
+    }
+    pipeline(fh.createReadStream({ start, end }), res, (err) => {
       if (err && !CLIENT_GONE.has(err.code)) log.error('serve: a file stopped mid-send', err);
     });
     return null;
@@ -403,7 +470,7 @@ export function createDevServer({
       }
       const { fh, stat } = held;
       held = null; // the stream owns it now, and closes it however the send ends
-      await streamFile(res, fh, stat.size, headersFor(ext));
+      await streamFile(res, fh, stat.size, headersFor(ext), req.headers.range);
     } catch (err) {
       const answer = answerFor(err);
       if (answer.log) log.error(`serve: ${req.url} → ${answer.status}`, err);

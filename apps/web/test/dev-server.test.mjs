@@ -73,6 +73,58 @@ function requestRaw(base, path) {
   });
 }
 
+/** One request with headers of our own; resolves with the status, every header, and the body. */
+function fetchWith(url, headers) {
+  return new Promise((resolve, reject) => {
+    get(url, { agent: false, headers }, (res) => {
+      const parts = [];
+      res.on('data', (d) => parts.push(d));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(parts) }));
+      res.on('error', reject);
+    }).on('error', reject);
+  });
+}
+
+test('a byte range is answered as one, and the whole file still says ranges are allowed', async () => {
+  // A MEDIA ELEMENT ASKS BY RANGE. This server answered 200 with the whole file however the request was
+  // framed, and never said `Accept-Ranges` — a contract a browser's media stack is entitled to rely on.
+  // On the Linux CI runner a lesson's recording sat at `readyState` 2 with `currentTime` 0 and no error,
+  // and the lesson stopped on it; macOS WebKit and Chromium accept the plain 200, which is the platform
+  // split that made it read as an app bug (2026-10-07).
+  const dir = rootWithFiles();
+  writeFileSync(join(dir, 'clip.wav'), 'ABCDEFGHIJ');
+  const { base, stop } = await start(dir);
+  try {
+    const whole = await fetchWith(`${base}/clip.wav`, {});
+    assert.equal(whole.status, 200);
+    assert.equal(whole.headers['accept-ranges'], 'bytes', 'nothing told the client ranges were possible');
+    assert.equal(whole.body.toString(), 'ABCDEFGHIJ');
+
+    const middle = await fetchWith(`${base}/clip.wav`, { Range: 'bytes=2-4' });
+    assert.equal(middle.status, 206, 'a range request was answered with the whole file');
+    assert.equal(middle.headers['content-range'], 'bytes 2-4/10');
+    assert.equal(middle.headers['content-length'], '3');
+    assert.equal(middle.body.toString(), 'CDE', 'the bytes sent are not the bytes asked for');
+
+    // The open-ended form a player actually sends first, and the suffix form.
+    const rest = await fetchWith(`${base}/clip.wav`, { Range: 'bytes=7-' });
+    assert.deepEqual([rest.status, rest.headers['content-range'], rest.body.toString()], [206, 'bytes 7-9/10', 'HIJ']);
+    const tail = await fetchWith(`${base}/clip.wav`, { Range: 'bytes=-3' });
+    assert.deepEqual([tail.status, tail.headers['content-range'], tail.body.toString()], [206, 'bytes 7-9/10', 'HIJ']);
+
+    // Past the end is REFUSED, never quietly answered with the whole file: a player handed bytes it did
+    // not ask for would place them at the offset it wanted.
+    const past = await fetchWith(`${base}/clip.wav`, { Range: 'bytes=99-' });
+    assert.equal(past.status, 416);
+    assert.equal(past.headers['content-range'], 'bytes */10');
+    assert.equal(past.body.length, 0);
+
+    // A form this server does not serve falls back to the whole file, which the spec allows.
+    const multi = await fetchWith(`${base}/clip.wav`, { Range: 'bytes=0-1,5-6' });
+    assert.deepEqual([multi.status, multi.body.toString()], [200, 'ABCDEFGHIJ']);
+  } finally { await stop(); }
+});
+
 test('a download the client abandons lets go of its file', async () => {
   const dir = rootWithFiles();
   const s = await start(dir);
