@@ -784,6 +784,26 @@ const chord = (over = {}) =>
   new win.KeyboardEvent('keydown', {
     code: 'KeyD', key: '∂', ctrlKey: true, altKey: true, metaKey: true, bubbles: true, ...over,
   });
+// Advanced is SHARED state: the chord is a page-level toggle, so a failure anywhere between
+// opening the section and the line that closes it leaves it on screen for every case after this
+// one — one defect reported as three failures (2026-10-06). So every case that opens it registers
+// this through `t.after`, which runs however the case ends. It CLOSES rather than toggles — a
+// failure before the section was found would otherwise open it — and it puts the nav defaults back
+// through the module rather than by wiping storage: `settings` is a live object, so clearing
+// localStorage alone leaves it holding whatever ids the case showed.
+const restoreAdvanced = async () => {
+  const { settings, save, DEFAULT_HIDDEN } = await import('../lib/app-settings.js');
+  if (win.document.querySelector('[data-nav-toggle]')) {
+    win.document.dispatchEvent(chord());
+    await tick();
+  }
+  settings.navHidden = [...DEFAULT_HIDDEN];
+  save('cubusSettings', settings);
+  win.localStorage.removeItem('cubusSettings');
+  // Loud rather than hopeful: if the chord ever stops closing the section, the case that opened it
+  // fails here instead of handing a quietly wrong screen to everything after it.
+  isAbsent(win.document.querySelector('[data-nav-toggle]'), 'Advanced was left open for the next case');
+};
 const navIds = () => [...win.document.querySelectorAll('#nav [data-nav]')].map((b) => b.dataset.nav);
 // The toolbar is one flat row of tabs, so there are no group headings to name.
 // A tab's name is read from its aria-label, not from the drawn span: the word is drawn in the
@@ -794,7 +814,8 @@ const navIds = () => [...win.document.querySelectorAll('#nav [data-nav]')].map((
 // announces, and an icon-only row that lost its names would still look right.
 const navLabels = () => [...win.document.querySelectorAll('#nav [data-nav]')].map((e) => e.getAttribute('aria-label'));
 
-test('the Advanced section is hidden until the chord asks for it', async () => {
+test('the Advanced section is hidden until the chord asks for it', async (t) => {
+  t.after(restoreAdvanced);
   const { state } = await import('../lib/app.js');
   win.location.hash = '#/settings';
   await tick();
@@ -851,8 +872,10 @@ test('a press on a Settings control that rebuilds the screen leaves focus on tha
     }
     settings.schemeSource = was.source;
     save('cubusSettings', settings);
-    win.document.dispatchEvent(chord()); // Advanced shut again
-    await tick();
+    // Closed, never toggled: a failure before the section opened would otherwise open it here.
+    // Not `restoreAdvanced` — that clears the stored record, and this case has just written the
+    // scheme source it must leave behind.
+    if (win.document.querySelector('[data-nav-toggle]')) win.document.dispatchEvent(chord());
   }
 });
 
@@ -886,7 +909,8 @@ test('every control Settings draws carries an id, and a switch row cannot be dra
 // The disclosure must not be sticky. Persisting it meant that once you pressed the chord, the
 // section stayed on screen forever — an undocumented developer surface leaking into normal use.
 // What it CONTROLS is still saved; only the fact that you opened it is per-page.
-test('opening Advanced is not remembered', async () => {
+test('opening Advanced is not remembered', async (t) => {
+  t.after(restoreAdvanced);
   win.location.hash = '#/settings';
   await tick();
   win.document.dispatchEvent(chord());
@@ -1092,7 +1116,8 @@ test('every manifest carries the same version the app displays', async () => {
 // The random-cube die on the solve screen is a developer shortcut (the cube it loads is not the
 // one in anyone's hand), so it hides behind the same Advanced section — and, unlike the
 // disclosure itself, the preference is saved.
-test('the Advanced toggle brings the dev die back, and turning it off takes it away', async () => {
+test('the Advanced toggle brings the dev die back, and turning it off takes it away', async (t) => {
+  t.after(restoreAdvanced);
   win.location.hash = '#/settings';
   await tick();
   win.document.dispatchEvent(chord());
@@ -1172,7 +1197,8 @@ test('the Advanced section holds the sticker-view switch, off by default, and a 
   }
 });
 
-test('showing an entry adds it to the toolbar, hiding removes it, and the rest is untouched', async () => {
+test('showing an entry adds it to the toolbar, hiding removes it, and the rest is untouched', async (t) => {
+  t.after(restoreAdvanced);
   win.location.hash = '#/settings';
   await tick();
   win.document.dispatchEvent(chord());
@@ -1358,7 +1384,8 @@ test('the toolbar is one flat row of tabs, with Settings as its own button', asy
 // Timer and Stats are speedcubing instruments, not part of learning to solve a cube — and Stats
 // still shows representative numbers rather than yours, which is worse than showing nothing. They
 // start hidden and are one chord away. Hiding stays cosmetic: the routes keep working.
-test('Timer and Stats start hidden, but remain reachable and re-showable', async () => {
+test('Timer and Stats start hidden, but remain reachable and re-showable', async (t) => {
+  t.after(restoreAdvanced);
   win.location.hash = '#/home';
   await tick();
   const ids = () => [...win.document.querySelectorAll('#nav [data-nav]')].map((b) => b.dataset.nav);
@@ -2427,7 +2454,11 @@ const stepTo = (i, total) => win.document.querySelector('cubus-cube')
 
 test('finishing a scramble offers to solve it — on a press, and as a generated subject without a cube', async () => {
   const { state } = await import('../lib/app.js');
-  const prev = { facelets: state.cube.facelets, physical: state.cube.isPhysical, source: state.cube.source, trusted: state.cube.trusted };
+  // THE WHOLE SUBJECT, not four fields somebody remembered. Adoption also writes `setupAlg`,
+  // `solution` and `derived`, so the named-field restore left a solved cube carrying a scramble
+  // setup and `derived: true` for every later case (audit, 2026-10-06). Five cases above already
+  // snapshot the object; these three had not been brought over.
+  const prev = { ...state.cube };
   try {
     const { moves, target } = await mountScramble();
     const btn = () => win.document.querySelector('#solveItBtn');
@@ -2446,8 +2477,7 @@ test('finishing a scramble offers to solve it — on a press, and as a generated
     assert.equal(state.cube.isPhysical, false, 'not claimed to be the cube in anyone\'s hand');
     assert.equal(state.cube.source, 'generated');
   } finally {
-    state.cube.facelets = prev.facelets; state.cube.isPhysical = prev.physical;
-    state.cube.source = prev.source; state.cube.trusted = prev.trusted;
+    Object.assign(state.cube, prev);
   }
 });
 
@@ -2459,7 +2489,11 @@ test('finishing a scramble offers to solve it — on a press, and as a generated
 // already drifted: the flag denied a check cubejs had just performed and passed.
 test('a carried solution arrives CHECKED, committed once, with its steps already built', async () => {
   const { state } = await import('../lib/app.js');
-  const prev = { facelets: state.cube.facelets, physical: state.cube.isPhysical, source: state.cube.source, trusted: state.cube.trusted };
+  // THE WHOLE SUBJECT, not four fields somebody remembered. Adoption also writes `setupAlg`,
+  // `solution` and `derived`, so the named-field restore left a solved cube carrying a scramble
+  // setup and `derived: true` for every later case (audit, 2026-10-06). Five cases above already
+  // snapshot the object; these three had not been brought over.
+  const prev = { ...state.cube };
   try {
     const { moves, target } = await mountScramble();
     stepTo(moves.length, moves.length);
@@ -2476,14 +2510,17 @@ test('a carried solution arrives CHECKED, committed once, with its steps already
     assert.equal(state.cube.unsolvable, false, 'an arrangement a real alg reaches is a real arrangement');
     await tick();
   } finally {
-    state.cube.facelets = prev.facelets; state.cube.isPhysical = prev.physical;
-    state.cube.source = prev.source; state.cube.trusted = prev.trusted;
+    Object.assign(state.cube, prev);
   }
 });
 
 test('with a trusted cube at the target, the hand-off solves the cube itself and adopts nothing', async () => {
   const { state } = await import('../lib/app.js');
-  const prev = { facelets: state.cube.facelets, physical: state.cube.isPhysical, source: state.cube.source };
+  // THE WHOLE SUBJECT, not four fields somebody remembered. Adoption also writes `setupAlg`,
+  // `solution` and `derived`, so the named-field restore left a solved cube carrying a scramble
+  // setup and `derived: true` for every later case (audit, 2026-10-06). Five cases above already
+  // snapshot the object; these three had not been brought over.
+  const prev = { ...state.cube };
   try {
     const { moves, target } = await mountScramble();
     state.connected = true;
@@ -2503,7 +2540,7 @@ test('with a trusted cube at the target, the hand-off solves the cube itself and
     assert.equal(state.cube.facelets, target);
   } finally {
     resetCubeModel(state);
-    state.cube.facelets = prev.facelets; state.cube.isPhysical = prev.physical; state.cube.source = prev.source;
+    Object.assign(state.cube, prev);
   }
 });
 

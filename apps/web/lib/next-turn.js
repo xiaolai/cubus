@@ -24,10 +24,14 @@ import { readToken } from './cube-notation.js';
  *
  * What comes back:
  *
- * - `token` — the move in the child's own letters, as the walk spells it. The renderer's `arrow`
- *   takes exactly this.
- * - `face` — the letter of the face that moves, or **null for a rotation**, which turns no single
- *   face. Derived from the token rather than carried beside it: two fields that could disagree about
+ * - `token` — the move as the WALK spells it, which is the scan frame (`lessonFor` converts every
+ *   step into it). **It is not relabelled by `hold`**: with a hold of `['D', 'B']` the token `U` is
+ *   the face the child calls `D`. The renderer's `arrow` takes it as-is because the element is drawn
+ *   in the same frame; anything that shows a LETTER to a child must convert it first. The first
+ *   draft of this comment said "the child's own letters", which would have had a caller spell the
+ *   wrong face with complete confidence (audit, 2026-10-06).
+ * - `face` — the letter of the face that moves, in the same frame as `token`, or **null for a
+ *   rotation**, which turns no single face. Derived from the token rather than carried beside it: two fields that could disagree about
  *   which face is turning is one field too many.
  * - `kind` — `'face'`, `'wide'`, `'slice'` or `'rotation'`. **A rotation is not a turn of a face**:
  *   the child picks the whole cube up and turns it over, and a loop that drew an arrow on a face for
@@ -44,10 +48,14 @@ import { readToken } from './cube-notation.js';
  */
 export function nextTurn(lesson, done = 0) {
   if (!lesson || !Array.isArray(lesson.moves)) return null;
-  // A NUMBER, and a whole one in range. `done` arrives from a caller holding a count across presses,
-  // and a fractional or negative one would index the array to `undefined` and read as "nothing to do"
-  // — the same answer a solved cube gives, which is the one answer that must not be returned wrongly.
-  if (!Number.isInteger(done) || done < 0) return null;
+  // A COUNT THAT IS NOT A COUNT IS A REFUSAL, never `null`. `done` arrives from a caller holding a
+  // number across presses, and a fractional, negative or non-numeric one would index the array to
+  // `undefined` and read as "nothing to do" — the same answer a finished walk gives, which this
+  // file's own contract calls the one answer that must not be returned wrongly. It said that and
+  // then returned it anyway (audit, 2026-10-06). `null` now means only what the contract says.
+  if (!Number.isInteger(done) || done < 0) {
+    throw new Error(`next-turn: a walk is ${lesson.moves.length} moves and "${done}" is not a count of them`);
+  }
   if (done >= lesson.moves.length) return null;
 
   const token = lesson.moves[done];
@@ -72,7 +80,3 @@ export function nextTurn(lesson, done = 0) {
     remaining: lesson.moves.length - done,
   });
 }
-
-/** Is there anything at all to do? `nextTurn(...) !== null`, named, so a caller does not spell the
- *  comparison itself and quietly treat a thrown refusal as "done". */
-export const hasATurn = (lesson, done = 0) => nextTurn(lesson, done) !== null;

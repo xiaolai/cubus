@@ -13,7 +13,7 @@ import { before, test } from 'node:test';
 import { Window } from 'happy-dom';
 import Cube from '../vendor/cubejs.js';
 
-import { hasATurn, nextTurn } from '../lib/next-turn.js';
+import { nextTurn } from '../lib/next-turn.js';
 
 const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
 const move = (from, alg) => { const c = Cube.fromString(from); c.move(alg); return c.asString(); };
@@ -34,16 +34,20 @@ test('no walk, no turn — and the three reasons look alike on purpose', () => {
   assert.equal(nextTurn({}), null, 'a lesson with no moves array is not a walk');
   assert.equal(nextTurn({ moves: [] }), null, 'an empty walk has no next turn');
   assert.equal(nextTurn(LESSON, 3), null, 'a walk at its end has no next turn');
-  assert.equal(hasATurn(LESSON, 3), false);
-  assert.equal(hasATurn(LESSON, 0), true);
+  // …and PAST the end, not merely at it: `>=` reduced to `===` survives a test that only ever
+  // asks about the endpoint, and then throws one move later (audit, 2026-10-06).
+  assert.equal(nextTurn(LESSON, 4), null);
+  assert.equal(nextTurn(LESSON, 99), null);
 });
 
-test('a count that is not a whole number in range is refused, not indexed', () => {
+test('a count that is not a count is refused LOUDLY, never as "nothing to do"', () => {
   // THE ANSWER THAT MUST NOT BE RETURNED WRONGLY. `moves[1.5]` and `moves[-1]` are both `undefined`,
-  // which would read as "nothing to do" — the same answer a solved cube gives. A child shown that is
-  // told they are finished.
+  // which would read as "nothing to do" — the same answer a finished walk gives, so a child would be
+  // told they had finished. Returning `null` for it was the same conflation one layer up, and the
+  // first version of this test enforced it (audit, 2026-10-06).
   for (const bad of [-1, 1.5, NaN, Infinity, '0', null, {}, []]) {
-    assert.equal(nextTurn(LESSON, bad), null, `done=${JSON.stringify(bad)} was indexed rather than refused`);
+    assert.throws(() => nextTurn(LESSON, bad), /is not a count of them/,
+      `done=${JSON.stringify(bad)} was answered rather than refused`);
   }
   // …and the honest zero still works, so the guard above is not simply refusing everything.
   assert.equal(nextTurn(LESSON, 0).token, 'F2');
@@ -70,8 +74,10 @@ test('a half turn, a quarter turn and a regrip are told apart', () => {
   // caller drawing an arrow on it would point at a layer nobody is being asked to turn.
   assert.equal(nextTurn(LESSON, 2).face, null, 'a whole-cube turn was given a face to turn');
   // An outer block keeps its face, with the count off the front.
-  assert.equal(nextTurn({ moves: ["2Rw'"] }, 0).face, 'R');
-  assert.equal(nextTurn({ moves: ['M'] }, 0).face, null, 'a slice is not a face of the cube');
+  // The KIND travels with the face, or a wide move reported as a plain face turn would have the
+  // screen draw one layer where two move.
+  assert.deepEqual([nextTurn({ moves: ["2Rw'"] }, 0).face, nextTurn({ moves: ["2Rw'"] }, 0).kind], ['R', 'wide']);
+  assert.deepEqual([nextTurn({ moves: ['M'] }, 0).face, nextTurn({ moves: ['M'] }, 0).kind], [null, 'slice']);
 });
 
 // --- against a real walk ---
@@ -127,5 +133,4 @@ test('a solved cube has no next turn, which is the null beside the measurement a
   // Either there is no walk at all, or there is one with nothing in it; both are "nothing to do", and
   // neither may produce a turn.
   assert.equal(nextTurn(lesson, 0), null, 'a solved cube was given something to do');
-  assert.equal(hasATurn(lesson, 0), false);
 });

@@ -151,3 +151,37 @@ test('a fresh install starts with no shapes history at all', async () => {
   assert.deepEqual(mod.settings.shapesRecent, [],
     'a first launch arrived with a history nobody made — the menu must be seeded from the catalogue, not from storage');
 });
+
+test('storage that cannot be READ is left alone, not overwritten with defaults', async () => {
+  // `getItem` throwing and `getItem` returning null are the same `null` to the loader, and only one
+  // of them is a licence to write: what the other would overwrite is exactly what could not be read.
+  // A private window, a storage proxy or a SecurityError in an embedded webview produces this, and it
+  // cost a stored theme and sound preference (audit, 2026-10-06).
+  const kept = JSON.stringify({ theme: 'night', soundMode: 'off' });
+  const held = new Map([['cubusSettings', kept]]);
+  const store = {
+    writes: 0,
+    getItem: () => { throw new DOMException('read blocked', 'SecurityError'); },
+    setItem: (k, v) => { store.writes += 1; held.set(k, String(v)); },
+    removeItem: (k) => held.delete(k),
+  };
+  Object.defineProperty(globalThis, 'localStorage', { value: store, configurable: true, writable: true });
+  loads += 1;
+  const mod = await import(`${MODULE}?case=${loads}`);
+
+  assert.equal(store.writes, 0, 'a record that could not be read was written over anyway');
+  assert.equal(held.get('cubusSettings'), kept, 'the stored preferences did not survive an unreadable read');
+  // …and the app still runs, on defaults, for this launch.
+  assert.equal(mod.settings.theme, 'auto');
+});
+
+test('a scheme nobody stored cannot keep a scan\'s verdict', async () => {
+  // THE PROVENANCE IS ABOUT THE SCHEME IN FORCE. A record holding a source and no scheme leaves the
+  // DEFAULT scheme — which is a valid one, so a check asked of the merged value passes it — wearing a
+  // verdict no scan ever produced. ADR 0001 §8.3: a repaired scheme is a default, never a scan's.
+  const { mod, store } = await loadOver({ schemeSource: 'scan' });
+  assert.equal(mod.settings.scheme, 'western', 'the scheme should be the default');
+  assert.equal(mod.settings.schemeSource, 'default',
+    'a default scheme kept a source claiming a scan decided it');
+  assert.equal(store.stored().schemeSource, 'default', 'and the repair is written back');
+});

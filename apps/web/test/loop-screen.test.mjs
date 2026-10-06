@@ -21,6 +21,7 @@ import { Window } from 'happy-dom';
 // browser globals, not a browser, so nothing here asserts what the renderer DOES.
 let turnWords;
 let SCREENS;
+let registeredByApp = false;
 before(async () => {
   const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
   const win = new Window({
@@ -36,16 +37,22 @@ before(async () => {
     'HTMLElement', 'CustomEvent', 'requestAnimationFrame', 'cancelAnimationFrame', 'performance',
   ]) Object.defineProperty(globalThis, k, { value: win[k], writable: true, configurable: true });
   await import('../lib/app.js');
-  ({ turnWords } = await import('../lib/screens/loop.js'));
   ({ SCREENS } = await import('../lib/screen-shell.js'));
+  // REGISTRATION IS READ BEFORE THIS FILE IMPORTS THE SCREEN ITSELF. Importing `loop.js` registers
+  // it as a side effect, so asking afterwards asks whether THIS FILE imported it — and removing the
+  // import from `app.js`, which is what makes the route exist for a user, still passed (audit,
+  // 2026-10-06). A test must not repair the thing it is testing.
+  registeredByApp = typeof SCREENS.loop === 'function';
+  ({ turnWords } = await import('../lib/screens/loop.js'));
 }, { timeout: 120_000 });
 
 const face = (over) => ({ token: 'F', face: 'F', kind: 'face', turns: 1, hold: ['U', 'F'], stepIndex: 0, remaining: 9, ...over });
 
-test('the loop is registered, so it is routable', () => {
+test('the loop is registered BY THE APP, so it is routable', () => {
   // The router resolves a hash against `SCREENS`; an id it does not hold falls to home, which is how
-  // a screen can exist as a file and be unreachable.
-  assert.equal(typeof SCREENS.loop, 'function', 'the loop screen is not registered');
+  // a screen can exist as a file and be unreachable. Read from the boot, not from this file's own
+  // import — see the note in `before`.
+  assert.equal(registeredByApp, true, 'app.js does not import the loop screen, so the route does not exist');
 });
 
 test('the screen has the three parts its mount wires, and nothing it cannot explain', () => {
@@ -57,8 +64,18 @@ test('the screen has the three parts its mount wires, and nothing it cannot expl
   }
   // NO SHELF, NO PROGRESS, NO STAGE NAME (ADR 0008 decision 2). The screen asks the child nothing
   // about their cube's state, and a count of what is left is a progress bar by another name.
+  //
+  // CHECKED IN THE WORDS AS WELL AS THE MARKUP. This looked only for markup keywords, so
+  // `<h2>White cross</h2><div>9 moves left</div>` — a stage name and a move count, both forbidden
+  // above — passed (audit, 2026-10-06).
   assert.doesNotMatch(spec.html, /progress|<ol|<ul|data-lesson|data-stage/i,
     'the loop grew a shelf, a list or a progress indicator');
+  const words = spec.html.replace(/<[^>]*>/g, ' ');
+  assert.doesNotMatch(words, /\b\d+\s*(moves?|turns?|steps?)\b|\bstep\s*\d|\b\d+\s*(of|\/)\s*\d+\b/i,
+    'the loop shows a count of what is left, which is a progress bar by another name');
+  for (const stage of ['cross', 'first layer', 'middle layer', 'top layer', 'last layer', 'F2L', 'OLL', 'PLL']) {
+    assert.doesNotMatch(words, new RegExp(`\\b${stage}\\b`, 'i'), `the loop names the stage "${stage}"`);
+  }
 });
 
 test('a half turn, a quarter turn, a whole-cube turn and no turn each get their own words', () => {
@@ -76,4 +93,10 @@ test('a half turn, a quarter turn, a whole-cube turn and no turn each get their 
   // And a half turn says how many, because that is the whole of the difference.
   assert.match(half, /twice/i);
   assert.doesNotMatch(quarter, /twice/i);
+  // NO TURN MEANS NO TURN. Distinctness alone let `Nothing to do.` be replaced by
+  // `Follow the arrow once more.` — four different strings, one of them instructing a turn that does
+  // not exist (audit, 2026-10-06).
+  assert.doesNotMatch(none, /\barrow\b|\bturn\b|\btwice\b|\bpick\b/i,
+    'the no-turn line instructs a turn');
+  assert.match(none, /\bnothing\b|\bdone\b|\bfinished\b/i, 'the no-turn line does not say there is nothing to do');
 });

@@ -124,6 +124,21 @@ test('and an install that had Drill visible keeps it visible', () => {
 // BY NAME, for the reason above: the loop over `DEFAULT_HIDDEN` cannot tell whether a newly listed id
 // is actually hidden, because adding it to that list also adds it to the loop's own expectation.
 
+test('the loop is hideable and hidden by default, and a version-5 install gets it that way', () => {
+  // ADR 0008's nav treatment, asserted on its own. Every other case here is about Pieces or Timer, so
+  // removing `loop` from BOTH `DEFAULT_HIDDEN` and `NAV_ADDED` left 18 of 18 passing — the screen
+  // would simply have appeared in a beginner's tab row with nothing to say so (audit, 2026-10-06).
+  assert.ok(HIDEABLE.some(([id]) => id === 'loop'), 'the loop cannot be turned on in Settings');
+  assert.ok(DEFAULT_HIDDEN.includes('loop'), 'the loop is not hidden by default');
+  // And the half that reaches somebody who has already run the app: a record at 5 with nothing
+  // hidden must come out with the loop hidden and its own choices untouched.
+  const out = migrateNavDefaults(5, []);
+  assert.ok(out.navHidden.includes('loop'), 'an existing install never hides the new screen');
+  for (const shown of ['timer', 'stats', 'trainer', 'lessons', 'course', 'pieces']) {
+    assert.ok(!out.navHidden.includes(shown), `${shown} was showing at version 5 and the migration hid it`);
+  }
+});
+
 test('a fresh install SEES the Pieces tab', () => {
   // REVERSED AT VERSION 5 (owner's decision, 2026-09-29). Hiding it at 4 was argued from the id
   // being new, and the user lives in the ACTIVITY: the Pieces content was already reachable inside
@@ -162,7 +177,10 @@ test('every install that had Pieces hidden by 0.7.6 gets it back, and keeps its 
   }
   // And a record starting from nothing lands exactly on the shipped defaults, not on an
   // intermediate set — adds and removals walked in version order.
-  assert.deepEqual(migrateNavDefaults(0, []).navHidden, DEFAULT_HIDDEN,
+  // AS A SET. Visibility depends on membership, so reordering `DEFAULT_HIDDEN` — which changes no
+  // behaviour at all — failed this (audit, 2026-10-06). Chronological order is asserted by the
+  // mechanism case above, where it is the actual subject.
+  assert.deepEqual([...migrateNavDefaults(0, []).navHidden].sort(), [...DEFAULT_HIDDEN].sort(),
     'walking every migration does not land on the shipped default hidden set');
 });
 

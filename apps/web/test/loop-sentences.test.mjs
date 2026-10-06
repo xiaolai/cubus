@@ -56,13 +56,34 @@ function copyIn(sources) {
 const REFUSED = [
   [/(?<![A-Za-z])[UDFBLR](?![A-Za-z])/, 'Turn F twice.',
     'a face letter: the referent needs a viewpoint change, 39% at age five against 25% chance'],
-  [/\banti-?\s?clock\s?wise\b|\bclock\s?wise\b|\bwiddershins\b/i, 'Turn the front face clockwise.',
+  // `\bclock` cannot match inside "counterclockwise" — there is no word boundary after "counter" —
+  // so the commonest American spelling walked straight through the rule that exists to refuse it
+  // (audit, 2026-10-06). The alternation now begins at the prefix.
+  [/\b(anti|counter)-?\s?clock\s?wise\b|\bclock\s?wise\b|\bwiddershins\b/i, 'Turn the front face clockwise.',
     'face-relative direction: 25% on a two-way choice at 5-7, which is below chance'],
-  [/\bif\b/i, 'If the white is underneath, turn it twice.',
+  [/\bif\b|\bunless\b|\botherwise\b/i, 'If the white is underneath, turn it twice.',
     'a conditional: the antecedent is a state-check, and this screen can see the state'],
   [/\bblue\b|\byellow\b/i, 'Turn until the yellow is on top.',
     'a colour that swaps between the two schemes (ADR 0001): true on one cube, false on another'],
 ];
+
+/**
+ * Sentences this screen must never be able to show, kept OUTSIDE the table above.
+ *
+ * THE TABLE AND ITS OWN EXAMPLES DISAPPEAR TOGETHER. Deleting a rule deletes the sentence that
+ * proved it, and `REFUSED = []` passed all three cases — in a file written to stop exactly that
+ * class (audit, 2026-10-06). These are the contract; the table is the implementation of it, and the
+ * last case drives these through the real sweep so a deleted rule leaves a fixture nothing catches.
+ */
+const MUST_BE_REFUSED = Object.freeze([
+  'Turn F twice.',
+  'Turn the front face clockwise.',
+  'Turn it counterclockwise.',
+  'If the white is underneath, turn it twice.',
+  'Unless the white is underneath, turn it twice.',
+  'Turn until the yellow is on top.',
+  'Put the blue face at the back.',
+]);
 
 const SOURCES = screenSources('../lib/screens/loop.js');
 
@@ -85,7 +106,16 @@ test('no sentence the loop can show names a face letter, a direction, a conditio
 test('each refusal would catch the sentence it was written for', () => {
   // THE SWEEP ABOVE PASSES ON AN EMPTY SET AND ON A PATTERN THAT MATCHES NOTHING. Each refusal
   // carries the sentence that produced it, and must still catch it.
+  assert.ok(REFUSED.length >= 4, 'the refusal table has been emptied, so the sweep checks nothing');
   for (const [pattern, sentence, why] of REFUSED) {
     assert.ok(pattern.test(sentence), `the refusal for "${why}" no longer catches ${JSON.stringify(sentence)}`);
   }
+});
+
+test('every sentence the contract forbids is caught by the table as it stands', () => {
+  // The half that does not vanish with a rule. Each of these is refused by the CONTRACT; if the
+  // table stops catching one, the table is wrong — and deleting the rule cannot delete the fixture,
+  // because the fixture does not live in the table.
+  const missed = MUST_BE_REFUSED.filter((line) => !REFUSED.some(([pattern]) => pattern.test(line)));
+  assert.deepEqual(missed, [], `the loop could now show these:\n  ${missed.join('\n  ')}`);
 });

@@ -27,7 +27,7 @@ import { newCube, parkCube } from '../cube-drawing.js';
 import { lessonFor } from '../cube-subject.js';
 import { t } from '../i18n.js';
 import { nextTurn } from '../next-turn.js';
-import { SCREENS } from '../screen-shell.js';
+import { SCREENS, screenAbort } from '../screen-shell.js';
 
 /**
  * What to say about this turn — and the whole of what this screen says about one.
@@ -77,31 +77,46 @@ SCREENS.loop = () => {
       // picture cannot drift from the turn that will actually be played — which is the defect a
       // lesson shipped with when its arrow spelled a quarter turn for a half one.
       cube.setAttribute('arrow', 'next');
-      if (lesson) {
-        cube.setAttribute('facelets', state.cube.facelets);
-        cube.setAttribute('alg', lesson.alg);
-      }
+      // Only the walk. `newCube` has already written the subject's facelets, and writing them again
+      // re-runs the element's own reset on a REUSED renderer for no change (`cube-drawing.js`).
+      if (lesson) cube.setAttribute('alg', lesson.alg);
       slot.appendChild(cube);
 
       const paint = () => {
         const turn = nextTurn(lesson, done);
         // A cube the method cannot finish is not a cube with nothing to do, and saying so is the
         // scan's own rule: never a sentence about a cause nobody measured.
+        // NOT "this cube cannot be read". `lessonFor` answers null for a parse failure AND for a
+        // method-solver failure (`cube-subject.js`), and a perfectly readable cube can hit the second.
+        // Saying which would be naming a cause nothing measured — the rule the scan is already held to.
         say.textContent = lesson === null
-          ? t('This cube cannot be read.')
+          ? t('This turn could not be prepared.')
           : turnWords(turn);
         doneBtn.disabled = turn === null;
         doneBtn.hidden = turn === null;
       };
 
+      // THE COUNT FOLLOWS THE DRAWING, never the press. `step()` QUEUES a turn and returns; the
+      // element dispatches `cubus-step` when that turn has actually landed. Advancing `done` on the
+      // click instead replaced the words for the turn being watched with the words for the next one
+      // while the first was still turning — and on a half turn that is the difference between
+      // "Twice" and a quarter-turn instruction (audit, 2026-10-06).
+      //
+      // `detail.index` is how many of the walk's moves have been applied, so it IS the count: taking
+      // it rather than incrementing locally means the drawing and the words cannot drift apart, and a
+      // second press while one is in flight cannot queue a turn the child was never shown.
+      cube.addEventListener('cubus-step', (e) => {
+        const applied = Number(e.detail?.index);
+        if (!Number.isInteger(applied)) return;
+        done = applied;
+        paint();
+      }, { signal: screenAbort?.signal });
+
       doneBtn.onclick = () => {
         if (nextTurn(lesson, done) === null) return;
-        // The element plays the move; the count moves with it. One press, one turn — the element's
-        // own `step` rather than a sequence this screen keeps, so the drawing and the count cannot
-        // disagree about how far along the walk they are.
+        // Disabled until the turn lands, so a second press cannot run ahead of what is on screen.
+        doneBtn.disabled = true;
         cube.step();
-        done += 1;
-        paint();
       };
 
       paint();

@@ -98,7 +98,24 @@ export const DEFAULT_SETTINGS = Object.freeze({
 export const BOOLEAN_SETTINGS = Object.freeze(Object.keys(DEFAULT_SETTINGS).filter((k) => typeof DEFAULT_SETTINGS[k] === 'boolean'));
 /** The record exactly as storage held it, so the one write at the end of this file happens only when a
  *  repair or a migration changed something — or on a first launch, when storage held nothing. */
-const storedRecord = (() => { try { return localStorage.getItem('cubusSettings'); } catch { return null; } })();
+/** Whether the read itself FAILED, as opposed to finding nothing. The two are the same `null` and were
+ *  treated as the same thing: a `getItem` that throws while `setItem` works — a private window, a
+ *  storage proxy, a SecurityError in an embedded webview — produced the defaults, which then did not
+ *  match `storedRecord`, which then overwrote a perfectly good record with them. Reproduced with a
+ *  failing read and a working write: a stored Night theme and sound-off were lost (audit, 2026-10-06). */
+let storedUnreadable = false;
+const storedRecord = (() => {
+  try { return localStorage.getItem('cubusSettings'); }
+  catch (e) {
+    storedUnreadable = true;
+    // NO STORAGE AT ALL IS NOT A STORAGE THAT REFUSED. A node test without a DOM has no
+    // `localStorage` to ask, which is not a failure worth a line in anybody's output; a read that
+    // threw while the object exists is. Either way nothing is written, because either way we cannot
+    // know what we would be overwriting.
+    if (typeof localStorage !== 'undefined') console.warn('could not read cubusSettings — leaving it alone', e);
+    return null;
+  }
+})();
 /**
  * The same record PARSED ONCE. Null when storage held nothing, or held something that is not a
  * record — and those two are different questions answered in the same place, which is the point.
@@ -273,7 +290,11 @@ const repairs = [
   // The cube's colour arrangement, and WHERE THAT BELIEF CAME FROM (ADR 0001 §8.3). A stored
   // value replaced by the fallback carries no evidence, so the source falls back with it — a
   // repaired scheme is a default, never a scan's verdict.
-  [() => isScheme(settings.scheme), () => {
+  // ASKED OF THE STORED RECORD, not of the merged value. `settings` already carries the default
+  // scheme, which is a valid one — so a record holding `{"schemeSource":"scan"}` and no scheme at all
+  // passed this check untouched and kept a scan's verdict on a scheme no scan ever produced, which is
+  // the one thing the comment above forbids (audit, 2026-10-06).
+  [() => isScheme(storedSettings?.scheme), () => {
     settings.scheme = DEFAULT_SETTINGS.scheme; settings.schemeSource = DEFAULT_SETTINGS.schemeSource;
   }],
   [() => SCHEME_SOURCES.includes(settings.schemeSource), () => { settings.schemeSource = DEFAULT_SETTINGS.schemeSource; }],
@@ -448,7 +469,11 @@ export function migrateNavDefaults(
 // coercion changed the record in memory and left storage as it was, so a hand-edited value was
 // re-read and re-repaired on every launch — the opposite of what the repair table promised. Compared
 // with what storage held, so a clean record is not rewritten each launch (found by audit, 2026-09-13).
-if (JSON.stringify(settings) !== storedRecord) save('cubusSettings', settings);
+// NOT WHEN THE READ FAILED. `storedRecord` is null both for "storage held nothing" and for "storage
+// could not be asked", and only the first is a licence to write: what the second would overwrite is
+// exactly what could not be read. An app that cannot read its settings runs on defaults for this
+// launch and leaves the record alone.
+if (!storedUnreadable && JSON.stringify(settings) !== storedRecord) save('cubusSettings', settings);
 // Checked per call, not just once at load: a stored id that is not hideable must never be able to
 // hide some OTHER nav entry (a stray "home" in there would take Home out of the toolbar).
 export const navHidden = (id) => HIDEABLE_IDS.has(id) && settings.navHidden.includes(id);

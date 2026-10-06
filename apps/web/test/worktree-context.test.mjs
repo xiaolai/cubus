@@ -23,11 +23,17 @@ import { fileURLToPath } from 'node:url';
 
 const REPO = fileURLToPath(new URL('../../../', import.meta.url));
 
-/** Every worktree git knows about, or null when git cannot be asked. */
+/**
+ * Every worktree git knows about, or null when git cannot be asked.
+ *
+ * NUL-delimited, because a path may legally contain a newline and splitting on one truncates it —
+ * which `realpathSync` then rejects for a worktree that is perfectly well shared. Git's own
+ * documentation recommends `-z` for exactly this.
+ */
 function worktrees() {
   try {
-    const out = execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: REPO, encoding: 'utf8' });
-    return out.split('\n').filter((l) => l.startsWith('worktree ')).map((l) => l.slice('worktree '.length));
+    const out = execFileSync('git', ['worktree', 'list', '--porcelain', '-z'], { cwd: REPO, encoding: 'utf8' });
+    return out.split('\0').filter((r) => r.startsWith('worktree ')).map((r) => r.slice('worktree '.length));
   } catch {
     return null;
   }
@@ -39,8 +45,20 @@ const SHARED = ['dev-docs', 'AGENTS.md'];
 test('every other worktree shares this checkout\'s ignored context rather than copying it', (t) => {
   const trees = worktrees();
   if (trees === null) return t.skip('git could not be asked for the worktree list');
-  const others = trees.filter((dir) => realpathSync(dir) !== realpathSync(REPO));
-  if (others.length === 0) return t.skip('only one worktree, so there is no second copy to compare');
+  assert.ok(trees.length > 0, 'the worktree list parsed to nothing, so this check went blind');
+
+  // THE CLEAN-CLONE RUN HIDES EXACTLY WHAT THIS READS. `scripts/check-on-clone.sh` moves `dev-docs`
+  // and `AGENTS.md` aside so the suite sees what a clone sees, then runs these tests — and an
+  // unconditional `realpathSync` threw ENOENT and took that run down with it (audit, 2026-10-06).
+  // Absent context is a reason to say nothing, not a failure.
+  const missing = SHARED.filter((name) => !existsSync(join(REPO, name)));
+  if (missing.length) return t.skip(`this checkout has no ${missing.join(' or ')} to compare — hidden, as a clean-clone run hides it`);
+
+  // A worktree git still lists but that is no longer on disk is PRUNABLE, not a finding about
+  // sharing: resolving it would throw before any live checkout had been looked at.
+  const live = trees.filter((dir) => existsSync(dir));
+  const others = live.filter((dir) => realpathSync(dir) !== realpathSync(REPO));
+  if (others.length === 0) return t.skip('only one live worktree, so there is no second copy to compare');
 
   const mine = Object.fromEntries(SHARED.map((name) => [name, realpathSync(join(REPO, name))]));
   const wrong = [];
