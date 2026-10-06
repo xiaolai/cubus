@@ -12,39 +12,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { walk } from './app-source.mjs';
+import { reachable, walk } from './app-source.mjs';
 
 const read = (url) => readFileSync(url, 'utf8');
 
 /**
  * Every file whose words can reach the scan screen: the scanner's panel, the scan screen, and every
- * module either of them imports, followed onwards.
- *
- * Read from the imports rather than from a folder: a sentence moved one module further away — into a
- * service, a shared helper, the notices — is the same sentence on screen, and a folder read stopped
- * at the screen's own parts (audit, 2026-09-19). Package imports are not followed: a dependency's
- * words are not ours to hold to this, and the scanner's own tree is reached through its entry.
+ * module either of them imports, followed onwards — through the shared walk in `app-source.mjs`, so
+ * the two copy guards cannot drift apart about what "reaches a screen" means.
  */
-function reachable(entries) {
-  const seen = new Set();
-  const queue = entries.map((rel) => new URL(rel, import.meta.url));
-  while (queue.length) {
-    const url = queue.pop();
-    if (seen.has(url.href)) continue;
-    let src;
-    try { src = read(url); } catch { continue; }
-    seen.add(url.href);
-    // Every shape an import can take: a `from` clause however many lines its names span, a
-    // side-effect import with no names at all, and a dynamic one inside a call — a one-line `from`
-    // pattern saw only the first of the three (audit, 2026-09-19). Written without an example path,
-    // because a relative path in a comment is a pointer the repository checks (no-dangling-pointers).
-    for (const m of src.matchAll(/from\s*['"](\.[^'"]+)['"]|\bimport\s*\(?\s*['"](\.[^'"]+)['"]/g)) {
-      queue.push(new URL(m[1] ?? m[2], url));
-    }
-  }
-  return [...seen];
-}
-
 const SOURCES = [
   // The bundle the app actually loads, as well as the sources it was built from: a bundle that has
   // drifted from them ships words nobody scanned (audit, 2026-09-19). `vendor-bundles.test.mjs`
@@ -106,6 +82,12 @@ test('the guard sees every sentence it exists to refuse — written whole, split
   assert.equal(hits('const line = `the ${cell} sticker will settle it`;').length, 1);
   assert.equal(hits('const line = `it will ${adverb} settle now`;').length, 1, 'a claim split by a hole was read as two');
   assert.equal(hits("const line = 'hold it ' + how + ' flatter';").length, 1, 'a claim added up from pieces was read as two');
+  // ACROSS THE JOIN, which the line above does not prove: its refused word sits whole in the second
+  // piece, so it matches once whether the pieces were joined or left apart. Here neither piece
+  // carries the wording and only the joined sentence does — and `+ a + b +` is the shape that used
+  // to defeat the join outright (audit, 2026-10-06).
+  assert.equal(hits("const line = 'more ' + a + 'light on it';").length, 1, 'a claim split BY the join was missed');
+  assert.equal(hits("const line = 'more ' + a + b + 'light on it';").length, 1, 'two names between the pieces split the claim');
   assert.equal(hits("const line = t('hold it') + ' flatter';").length, 1, 'a claim added to a translated piece was read as two');
   // …and neither a comment nor two unrelated neighbours is a sentence.
   assert.equal(hits('// held flat and centred\nconst ok = "Show any side of your cube to the camera.";').length, 0);

@@ -55,22 +55,24 @@ export const DEFAULT_PALETTE = 'classic';
  *  screen, and the sticker view beside it. A developer setting; its default, its repair, the Settings
  *  switch and the scan screen all read these. */
 export const SCAN_VIEWS = Object.freeze({ today: 'today', stickers: 'dots' });
-/** How the scan sounds, as three exclusive choices rather than one on/off (owner's call,
- *  2026-09-20). `sounds` was a single boolean covering the chime and the voice together, so the only
- *  way to stop a spoken line repeating was to silence the chime a child depends on. `voice` is both
- *  — the chime marks the capture at once and the line follows, because speech has latency and a tick
- *  that lands immediately is what says "it heard me". `chime` is the bell alone. `off` is silent.
- *  One value, so the two cannot come to disagree about what "sounds on" meant.
- *
- *  THE DEFAULT IS `chime`, not `voice` (owner's call, 2026-09-21). A fresh install ticks when a
- *  side is saved and says nothing. The tick is the affordance scan-guidance-plan D3 argues for --
- *  it is how a child who cannot read hears a side land -- and it costs a beginner nothing; the
- *  spoken lines are the part that talks over a person who did not ask for them, so they are opt-in.
- *  An install that already stored a mode keeps it; the migration below is unchanged. */
 /**
- * TWO MODES, NOT THREE. `voice` is gone (owner, 2026-09-30): the spoken lines were judged worse
- * than nothing, and a sound per state says what they said. A stored `'voice'` is simply not a mode
- * any more, so the repair below lands it on the default — which IS the bell it used to include.
+ * HOW THE SCAN SOUNDS: `chime` is the bell, `off` is silent, and there is no third choice.
+ *
+ * ONE VALUE RATHER THAN TWO BOOLEANS (owner's call, 2026-09-20). `sounds` was a single boolean
+ * covering the chime and the spoken lines together, so the only way to stop a line repeating was to
+ * silence the chime a child depends on. Splitting it into two flags would have let them come to
+ * disagree about what "sounds on" meant, so it became one exclusive mode.
+ *
+ * `voice` WAS A MODE AND IS GONE (owner, 2026-09-30). The spoken lines were judged worse than
+ * nothing; a different sound per state says what they said (AGENTS.md §6). A stored `'voice'` is
+ * therefore not a mode any more, and the repair below lands it on the DEFAULT rather than on quiet —
+ * someone who chose `voice` was asking to hear something. `'sounds': false` is the migration that
+ * still has to mean silence.
+ *
+ * THE DEFAULT IS `chime`. A fresh install ticks when a side is saved. The tick is the affordance
+ * dev-docs/scan-guidance-plan.md D3 argues for — it is how a child who cannot read hears a side
+ * land — and it costs a beginner nothing. `sound-mode.test.mjs` pins the mode set to exactly these
+ * two, so a third cannot reappear in a comment's wake.
  */
 export const SOUND_MODES = Object.freeze({ chime: 'chime', off: 'off' });
 /** What a fresh install gets and what every repair below falls back to — one table, so the two

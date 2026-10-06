@@ -212,6 +212,23 @@ test('a deliberate hide made from now on survives', () => {
     'a record ahead of this build was migrated backwards');
 });
 
+test('no migration ships above the version anyone will ever migrate to', () => {
+  // THE SILENT NO-OP. `NAV_ADDED` and `NAV_SHOWN` are keyed by version and the walk honours
+  // `NAV_DEFAULTS_VERSION` as its upper bound, so an entry added without bumping that constant is
+  // dead code that reads exactly like a shipped default: every case in this file passes, and the tab
+  // it was written for is visible to everybody for ever. Nothing can catch that from the inside —
+  // the tables are module-private, and the walk cannot report a step it is forbidden to take.
+  //
+  // So it is asked from the outside: walking far past the shipped version must reach the same place
+  // as walking to it. Anything beyond is a migration no install will ever run.
+  const shipped = [...migrateNavDefaults(0, []).navHidden].sort();
+  const beyond = [...migrateNavDefaults(0, [], undefined, NAV_DEFAULTS_VERSION + 50).navHidden].sort();
+  assert.deepEqual(beyond, shipped,
+    'a migration is keyed above NAV_DEFAULTS_VERSION, so no install will ever run it');
+  // The one dead entry this cannot see is one that hides an id `DEFAULT_HIDDEN` already holds — and
+  // that entry changes nothing for anybody, which is why it is not worth a second mechanism.
+});
+
 test('Drill is in neither hiding table, which is what publishing it means', () => {
   assert.ok(!DEFAULT_HIDDEN.includes('drill'), 'Drill is still a default-hidden tab');
   assert.ok(HIDEABLE.some(([id]) => id === 'drill'), 'Drill must stay hideable — publishing is not forcing');

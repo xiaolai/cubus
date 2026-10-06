@@ -20,37 +20,14 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
+import { reachable, translatedSentences } from './app-source.mjs';
 
 const read = (url) => readFileSync(url, 'utf8');
 
-/** The screen's own tree, followed through its relative imports. A sentence moved one module away is
- *  the same sentence on screen; a sentence in a shared SERVICE is not this screen's to hold. */
-function screenSources(entry) {
-  const seen = new Set();
-  const queue = [new URL(entry, import.meta.url)];
-  while (queue.length) {
-    const url = queue.pop();
-    if (seen.has(url.href) || !url.href.includes('/lib/screens/')) continue;
-    let src;
-    try { src = read(url); } catch { continue; }
-    seen.add(url.href);
-    for (const m of src.matchAll(/from\s*['"](\.[^'"]+)['"]|\bimport\s*\(?\s*['"](\.[^'"]+)['"]/g)) {
-      queue.push(new URL(m[1] ?? m[2], url));
-    }
-  }
-  return [...seen];
-}
-
-/** Every string handed to `t(...)`: the app's one door for words a person reads. */
-function copyIn(sources) {
-  const out = [];
-  for (const href of sources) {
-    for (const m of read(new URL(href)).matchAll(/\bt\(\s*(['"])((?:\\.|(?!\1)[^\\])*)\1/g)) {
-      out.push({ href, text: m[2] });
-    }
-  }
-  return out;
-}
+/** Every string handed to `t(...)`: the app's one door for words a person reads. Through the shared
+ *  reader, which closes a template's holes, joins a concatenation and skips comments — the regex this
+ *  file used to carry saw none of the three (audit, 2026-10-06). */
+const copyIn = (sources) => sources.flatMap((href) => translatedSentences(read(new URL(href))).map((text) => ({ href, text })));
 
 /** Each refused wording, a sentence that carries it, and what the child cannot do with it. */
 const REFUSED = [
@@ -85,11 +62,34 @@ const MUST_BE_REFUSED = Object.freeze([
   'Put the blue face at the back.',
 ]);
 
-const SOURCES = screenSources('../lib/screens/loop.js');
+// The screen's own tree only: a sentence moved one module away is the same sentence on screen, and a
+// sentence in a shared SERVICE is not this screen's to hold.
+const SOURCES = reachable(['../lib/screens/loop.js'], { within: '/lib/screens/' });
 
 test('the loop screen has copy to check at all', () => {
   assert.ok(SOURCES.length >= 1, 'no source was reached, so the sweep below checks nothing');
   assert.ok(copyIn(SOURCES).length >= 5, 'fewer than five lines of copy found — the extractor is broken');
+});
+
+test('the copy reader sees a sentence however it is written, and reads no comment as copy', () => {
+  // THE EXTRACTOR IS THE WHOLE GUARD. Three shapes walked straight past the regex this file used to
+  // carry — a template, a sentence added up from pieces, and one split across a hole — so a refused
+  // wording written in any of them passed a case whose name says it cannot (audit, 2026-10-06). And
+  // the other direction, which is how a guard goes quietly false: a commented-out line is not copy
+  // the screen can show, and counting it would make the refusals fire on words nobody can read.
+  const seen = (src) => translatedSentences(src);
+  assert.deepEqual(seen("t('Turn it once.')"), ['Turn it once.'], 'a plain literal');
+  assert.deepEqual(seen('t(`Turn it once.`)'), ['Turn it once.'], 'a template literal was invisible');
+  // The hole itself joins as a space, so the two parts keep their own: what is read is what stays
+  // FIXED in the sentence, never the value that fills the gap.
+  assert.deepEqual(seen('t(`Turn the ${side} face.`)'), ['Turn the   face.'], 'a hole split the sentence in two');
+  assert.deepEqual(seen("t('Turn the ' + side + ' face.')"), ['Turn the   face.'], 'an addition was read as two');
+  assert.deepEqual(seen("t('Turn the ' + a + b + ' face.')"), ['Turn the   face.'], 'two names between the pieces split it');
+  assert.deepEqual(seen("// t('Turn F twice.')\nconst x = 1;"), [], 'a commented-out line counted as copy');
+  assert.deepEqual(seen("const sel = '[data-nav=\"loop\"]';"), [], 'a string the code holds is not copy');
+  // And the refusals must fire on what the reader returns, not only on what a regex returned: the
+  // two halves are useless apart.
+  assert.ok(REFUSED.some(([p]) => p.test(seen('t(`Turn the F face.`)')[0])), 'a refused word inside a template got through');
 });
 
 test('no sentence the loop can show names a face letter, a direction, a condition or a swapping colour', () => {

@@ -7,7 +7,6 @@
 // indexing claims (which hold a move is made in, which step it belongs to) are claims ABOUT THAT
 // SHAPE, and a hand-made fixture would agree with whatever this file believed when it was written.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { before, test } from 'node:test';
 
 import { Window } from 'happy-dom';
@@ -83,22 +82,23 @@ test('a half turn, a quarter turn and a regrip are told apart', () => {
 // --- against a real walk ---
 
 let app = null;
+// JUST THE SUBJECT, NOT THE APP. This used to write `index.html` into a happy-dom window and import
+// `lib/app.js` — the whole SPA, every screen with it — to reach one function. `lessonFor` reads
+// `state` from `lib/app-state.js`, never from the shell, so the boot bought nothing and coupled a
+// pure function's test to every module the app loads: a failure in any screen failed this file, and
+// the case cost sixteen seconds of module graph (audit, 2026-10-06). What the subject's own tree does
+// need is a storage and a window to exist, which is all that is stood up here.
 before(async () => {
-  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-  const win = new Window({
-    url: 'http://localhost/#/timer',
-    settings: {
-      disableJavaScriptFileLoading: true, disableCSSFileLoading: true,
-      disableComputedStyleRendering: true, fetch: { disableSameOriginPolicy: true },
-    },
-  });
-  win.document.write(html);
-  for (const k of [
-    'window', 'document', 'navigator', 'location', 'history', 'localStorage', 'customElements',
-    'HTMLElement', 'CustomEvent', 'requestAnimationFrame', 'cancelAnimationFrame', 'performance',
-  ]) Object.defineProperty(globalThis, k, { value: win[k], writable: true, configurable: true });
-  await import('../lib/app.js');
-  const state = (await import('../lib/app.js')).state;
+  const win = new Window({ url: 'http://localhost/' });
+  for (const k of ['window', 'document', 'navigator', 'location', 'localStorage', 'performance']) {
+    Object.defineProperty(globalThis, k, { value: win[k], writable: true, configurable: true });
+  }
+  const { state } = await import('../lib/app-state.js');
+  // The solver is loaded ON PURPOSE and awaited: `lessonFor` reads `Cube` from the solver service,
+  // which is null until something asks for it — and its failure is a CAUGHT one, so skipping this
+  // step does not throw. It returns null, which reads exactly like "this cube needs no lesson".
+  // That is why the case below refuses a null walk rather than passing over it.
+  await (await import('../lib/solver-service.js')).loadSolver();
   const subject = await import('../lib/cube-subject.js');
   app = { state, subject };
 }, { timeout: 120_000 });

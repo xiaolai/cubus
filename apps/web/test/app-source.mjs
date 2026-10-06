@@ -230,39 +230,106 @@ export function walk(src, { from = 0, balanced = false } = {}) {
       const closed = modes.pop();
       i += 1;
       if (closed === 'expr') partAt = i;
-      if (balanced && modes.length === 0) return { literals, sentences: sentencesOf(src, pieces), end: i };
+      if (balanced && modes.length === 0) return { literals, ...reading(src, pieces), end: i };
       continue;
     }
     i += 1;
   }
   if (modes.length > 0) throw new Error(`scan: ended inside a ${modes[modes.length - 1]}`);
   if (balanced) throw new Error('scan: the block never closed');
-  return { literals, sentences: sentencesOf(src, pieces), end: i };
+  return { literals, ...reading(src, pieces), end: i };
 }
 
 /**
- * Whether what sits between two literals makes them ONE expression. `+` and whitespace do, with at
- * most one plain name or call between them, so `'a' + b + 'c'` and `t('a') + ' b'` are each one
+ * Whether what sits between two literals makes them ONE expression. `+` and whitespace do, with any
+ * number of plain names or calls between them, so `'a' + b + 'c'` and `t('a') + ' b'` are each one
  * sentence. A comma, a new statement or an argument list does not — array elements and a call's
  * arguments are separate sentences however close together they are written.
+ *
+ * ONE `+` WAS NOT ENOUGH (audit, 2026-10-06). A single alternative matched `' + x + '` only when one
+ * name sat between the literals, so `'a' + x + y + 'b'` was read as two sentences and a refused
+ * wording could be split across the join. The case that claimed to cover this passed either way: its
+ * refused word sat entirely in the second piece, so the halves matched once whether joined or not.
  */
-const JOINS = /^\s*\)*\s*\+\s*(?:[A-Za-z_$][\w$.]*\s*\(?\s*)?$/;
+const JOINS = /^\s*\)*\s*(?:\+\s*(?:[A-Za-z_$][\w$.]*\s*(?:\([^()]*\))?\s*)?)+$/;
 
-/** The pieces of one expression joined back into the sentence they make, holes closed up as spaces. */
+/**
+ * The pieces of one expression joined back into the sentence they make, holes closed up as spaces.
+ *
+ * Each run also keeps WHERE IT BEGAN, so a caller can ask what the sentence was handed to — which is
+ * how `translatedSentences` tells the app's copy from the strings its code happens to hold. The
+ * positions are a second reading of the same runs, never a second walk: two walks of one file can
+ * disagree about where a sentence starts, and then a caller filters on the wrong offsets.
+ */
 function sentencesOf(src, pieces) {
   const out = [];
   let run = null;
+  const close = () => { if (run) out.push({ text: run.parts.join(' '), start: run.start }); };
   for (const p of pieces) {
     const joins = run && (p.hole || JOINS.test(src.slice(run.end, p.start)));
     if (joins) run.parts.push(p.text);
     else {
-      if (run) out.push(run.parts.join(' '));
-      run = { parts: [p.text] };
+      close();
+      run = { parts: [p.text], start: p.start };
     }
     run.end = p.end;
   }
-  if (run) out.push(run.parts.join(' '));
+  close();
   return out;
+}
+
+/**
+ * Every file whose words can reach a screen: the entries, and every module they import, followed
+ * onwards.
+ *
+ * Read from the IMPORTS rather than from a folder: a sentence moved one module away — into a
+ * service, a shared helper, the notices — is the same sentence on screen, and a folder read stopped
+ * at the screen's own parts (audit, 2026-09-19). Package imports are not followed: a dependency's
+ * words are not ours to hold to this. `within` narrows the walk to files whose path carries it, for
+ * a question that is one screen's rather than the app's. Entry paths are relative to this file, which
+ * is the directory every caller sits in.
+ *
+ * Shared, because two copy guards had each hand-rolled this walk and they had already drifted: one
+ * followed every import shape, the other was a weaker copy of it (audit, 2026-10-06).
+ */
+export function reachable(entries, { within = '' } = {}) {
+  const seen = new Set();
+  const queue = entries.map((rel) => new URL(rel, import.meta.url));
+  while (queue.length) {
+    const url = queue.pop();
+    if (seen.has(url.href) || !url.href.includes(within)) continue;
+    let src;
+    try { src = readFileSync(url, 'utf8'); } catch { continue; }
+    seen.add(url.href);
+    // Every shape an import can take: a `from` clause however many lines its names span, a
+    // side-effect import with no names at all, and a dynamic one inside a call — a one-line `from`
+    // pattern saw only the first of the three (audit, 2026-09-19).
+    for (const m of src.matchAll(/from\s*['"](\.[^'"]+)['"]|\bimport\s*\(?\s*['"](\.[^'"]+)['"]/g)) {
+      queue.push(new URL(m[1] ?? m[2], url));
+    }
+  }
+  return [...seen];
+}
+
+/**
+ * Every sentence the app's ONE COPY DOOR carries: the argument of a `t(...)` call, with a template's
+ * holes closed up, a concatenation joined, and comments skipped.
+ *
+ * This replaced a regex for `t('…')` that saw none of those three (audit, 2026-10-06): a sentence
+ * written as a template walked past the guard that exists to refuse it, and so did one added up from
+ * pieces, while a commented-out line counted as copy the screen could show. Asking `walk` means the
+ * copy guards and the source scans agree about what a literal IS.
+ */
+export function translatedSentences(src) {
+  return walk(src).spans
+    .filter(({ start }) => /\bt\(\s*$/.test(src.slice(Math.max(0, start - 32), start)))
+    .map(({ text }) => text);
+}
+
+/** `sentences` as the text alone, with `spans` keeping each one's start — one walk, two readings. */
+function reading(src, pieces) {
+  const spans = sentencesOf(src, pieces);
+  return { sentences: spans.map((s) => s.text), spans };
 }
 
 /**
