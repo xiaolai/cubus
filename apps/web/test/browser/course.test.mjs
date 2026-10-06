@@ -493,10 +493,37 @@ async function openScript(docs = { 'a-script': SCRIPT }) {
   return opened;
 }
 
+/**
+ * Wait for a control to be on show — and SAY WHAT THE LESSON WAS DOING when it never is.
+ *
+ * A bare timeout here names the selector and nothing else, which is all CI had to offer when two of
+ * these failed on Linux and every one of them passed on macOS (2026-10-06): same message, same line,
+ * no way to tell a lesson stopped on a refused recording from one still waiting on a turn. The
+ * lesson already publishes everything needed to tell those apart, so the wait reports it rather than
+ * leaving the next person to guess from a stack trace.
+ */
 const visible = (page, sel) => page.waitForFunction((s) => {
   const el = document.querySelector(s);
   return el !== null && !el.hidden;
-}, sel, { timeout: 20_000 });
+}, sel, { timeout: 20_000 }).catch(async (cause) => {
+  const seen = await page.evaluate(() => {
+    const text = (s) => document.querySelector(s)?.textContent?.trim() ?? null;
+    const audio = document.querySelector('audio');
+    return {
+      count: text('#slCount'),
+      status: text('#slStatus'),
+      words: text('#slWords'),
+      controls: ['#slPlay', '#slNext', '#slYours', '#slAsk', '#slLeave']
+        .filter((id) => document.querySelector(id) && !document.querySelector(id).hidden),
+      audio: audio && {
+        src: (audio.getAttribute('src') ?? '').split('/').pop(),
+        paused: audio.paused, ended: audio.ended, readyState: audio.readyState,
+        currentTime: audio.currentTime, error: audio.error?.code ?? null,
+      },
+    };
+  }).catch((e) => ({ unreadable: String(e) }));
+  throw new Error(`${sel} never showed. The lesson was: ${JSON.stringify(seen)}`, { cause });
+});
 
 test('a script opens into the step player, and does not start talking because it was opened', async () => {
   const { page, context, errors } = await openScript();
