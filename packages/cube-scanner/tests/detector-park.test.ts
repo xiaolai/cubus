@@ -22,7 +22,12 @@ import type { Detector, ModelOutput } from '../src/detector.js';
 import { AiScanPanel } from '../view/ai-scan-panel.js';
 import { CameraSession } from '../view/camera-session.js';
 import { CUBE_VISION, NativeDetector } from '../view/native-detector.js';
-import { disposeParkedDetector, parkedDetector, pickDetector } from '../view/pick-detector.js';
+import {
+  disposeParkedDetector,
+  PARKED_RELEASE_MS,
+  parkedDetector,
+  pickDetector,
+} from '../view/pick-detector.js';
 import { WebDetector } from '../view/web-detector.js';
 
 /**
@@ -365,6 +370,74 @@ describe('the page-level detector park', () => {
     expect(parkedDetector()).toBeNull();
     await flush();
     expect(released()).toBe(1);
+  });
+});
+
+describe('the park lets a browser model go once the scan screen has been left a while (2026-09-22)', () => {
+  // Parking keeps a model so the scan screen can be come back to without a reload — and on the
+  // browser runtime it used to keep it for the life of the page, which is the most memory the app
+  // holds (+210–390 MB, measured). A scan starts a session and solving is the rest of it, so the
+  // model is released after `PARKED_RELEASE_MS` off the scan screen: what must NOT happen is a
+  // release a moment early, a release of a detector a panel has taken back, or a release of the
+  // native runtime's, which gives nothing back.
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('releases a parked web detector after PARKED_RELEASE_MS — model and all — and not a moment before', async () => {
+    const session = new CameraSession();
+    const detector = await session.ensureDetector(videoFor('a'), () => MODEL_URL);
+    await detector.load();
+    vi.useFakeTimers();
+    session.park();
+    await vi.advanceTimersByTimeAsync(PARKED_RELEASE_MS - 1);
+    expect(parkedDetector()?.detector).toBe(detector);
+    expect(released()).toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(parkedDetector()).toBeNull();
+    vi.useRealTimers();
+    await flush();
+    expect(released()).toBe(1);
+    expect((detector as WebDetector).loadedModel).toBeNull();
+  });
+
+  it('a panel that takes it back first keeps the model, and the release never fires', async () => {
+    const first = new CameraSession();
+    const detector = await first.ensureDetector(videoFor('a'), () => MODEL_URL);
+    await detector.load();
+    vi.useFakeTimers();
+    first.park();
+    await vi.advanceTimersByTimeAsync(PARKED_RELEASE_MS - 1);
+    const second = new CameraSession();
+    expect(await second.ensureDetector(videoFor('b'), () => MODEL_URL)).toBe(detector);
+    // Taken is taken: no release is left pending over a detector in use — the timer's own guard
+    // would refuse to fire it, and this is the cancel that means there is nothing left to refuse.
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(PARKED_RELEASE_MS * 3);
+    vi.useRealTimers();
+    await flush();
+    expect(released()).toBe(0);
+    expect((detector as WebDetector).loadedModel).toBe(MODEL_URL);
+    // Parked again, the count starts again from this park.
+    vi.useFakeTimers();
+    second.park();
+    await vi.advanceTimersByTimeAsync(PARKED_RELEASE_MS - 1);
+    expect(parkedDetector()?.detector).toBe(detector);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(parkedDetector()).toBeNull();
+  });
+
+  it('never releases a native detector — its plugin holds the model whatever this side does', async () => {
+    const plugin = fakePlugin();
+    (globalThis as TauriGlobal).__TAURI__ = { core: { invoke: plugin.invoke } };
+    const session = new CameraSession();
+    const detector = await session.ensureDetector(videoFor('a'), () => MODEL_URL);
+    expect(detector).toBeInstanceOf(NativeDetector);
+    await detector.load();
+    vi.useFakeTimers();
+    session.park();
+    await vi.advanceTimersByTimeAsync(PARKED_RELEASE_MS * 10);
+    expect(parkedDetector()?.detector).toBe(detector);
   });
 });
 

@@ -110,7 +110,7 @@
          progress bar's width). design-discipline.test.mjs holds this list against the sheet's
          :hover selectors: a new hoverable control joins it or the test names it. */
       :is(.btn, .pill, .nav-item, .tb-ctl, .tbtn, .tb-cap, .menu > button, .card-tools > button,
-          .eyebrow-row > button, .chip-m, .stage-chip, .swatches > button, .field, .link, .toggle,
+          .eyebrow-row > button, .chip-m, .stage-chip, .swatches > button, .id-ask > button.sw, .field, .link, .toggle,
           .scan-face .tgrid > .cell) {
         transition: background var(--fade), color var(--fade), border-color var(--fade),
           box-shadow var(--fade), opacity var(--fade), transform var(--fade);
@@ -476,7 +476,14 @@
       .solution-card { flex: 1; min-height: 140px; display: flex; flex-direction: column; }
       .primary { grid-area: primary; min-width: 0; min-height: 0; }
       .aux { grid-area: aux; min-width: 0; }
-      .scan-sheet { display: flex; flex-direction: column; gap: 16px; }
+      /* A SHEET THAT STACKS ITS CARDS, rather than one card filling the area. `.sheet` is
+         `grid-area: sheet`, so two `.sheet` siblings do not sit one above the other — CSS grid
+         stacks them in the same cell, and they overlap. The cube screen had three such siblings in
+         its non-walking composition (unsolvable, reconnect, shapes) and two pairs of them could be
+         shown at once: a solved cube with an open reconnect question drew the Shapes card straight
+         over the reconnect controls. One container, many cards, is the answer the scan screen had
+         already found, so it is the same class rather than a second one. */
+      .scan-sheet, .rest-sheet { display: flex; flex-direction: column; gap: 16px; }
       /* The notice can be long — a refusal's explanation is seven lines and its card now carries
          a button — and the sheet is a flex column of a fixed height. Without these two rules the
          column squashed "Solve this cube" to 0px and the stage clipped the rest: a grey sliver at
@@ -785,6 +792,25 @@
       /* When the picker opens on a suspect sticker, the colour that would make the cube legal is
          ringed in the same error colour the suspect pulses in — the suggestion, not a selection. */
       .swatches > button.suggest { box-shadow: inset 0 0 0 1px var(--sticker-edge), 0 0 0 2px var(--err); }
+      /* The identity question's colours (lib/screens/scan/identity-ask.js). The same chips as the
+         sticker picker's and deliberately NOT the same surface: this is not a popover. It stands
+         in the card beside the sentence that asks it, for as long as the question is open, so it
+         is laid out in flow and wraps where the card is narrow. */
+      .id-ask { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; }
+      /* The nine the scanner read off the side it cannot place — what the question is ABOUT. A
+         sticker grid, so it wears the sticker corner and hairline rather than the control radius
+         the chips beside it take. */
+      .id-seen { display: grid; grid-template-columns: repeat(3, 14px); gap: 2px; margin-right: 6px; }
+      .id-seen > i { width: 14px; height: 14px; border-radius: var(--r-sticker); box-shadow: inset 0 0 0 1px var(--sticker-edge); }
+      /* A swatch AND its name: the scan guides a child who cannot read, so the colour has to be
+         shown — and a colour alone names nothing for anyone else. */
+      .id-ask > button.sw { display: grid; justify-items: center; gap: 3px; padding: 2px; border-radius: var(--r-3); }
+      .id-ask > button.sw > i { width: 30px; height: 30px; border-radius: var(--r-3); box-shadow: inset 0 0 0 1px var(--sticker-edge); }
+      .id-ask > button.sw > span { font-size: var(--fs-micro); letter-spacing: .04em; color: var(--ink-3); }
+      .id-ask > button.sw:hover { transform: scale(1.08); }
+      /* The colour BOTH sides are reading as — the one thing measured about this capture, marked
+         so the person can see whether it agrees with the cube in their hand. */
+      .id-ask > button.sw.claimed > i { box-shadow: inset 0 0 0 1px var(--sticker-edge), 0 0 0 2px var(--warn); }
       .scan-face.done .tgrid > .cell { opacity: 1; }
       .scan-face.done .lbl { color: var(--ok-ink); }
       /* The side the scanner is waiting to be shown again, to settle a reading it cannot settle
@@ -954,6 +980,17 @@
       .screen { --chip: 36px; }
       .chip-m { font-family: var(--font-num); font-size: var(--fs-body-l); font-weight: 600; border: 1px solid var(--line); background: var(--panel); color: var(--ink-5); border-radius: var(--r-2); width: var(--chip); height: var(--chip); padding: 0; display: inline-flex; align-items: center; justify-content: center; }
       .chip-m.played { background: var(--panel-sunk); color: var(--ink); }
+      /* A SETUP chip is not pressable and must not look it: same size and rhythm as the solve row so
+         the two read as one sequence of turns, but sunk and quiet, because pressing it does nothing.
+         A chip that looks like a button and is not is worse than either. */
+      .chip-m.flat { background: var(--panel-sunk); color: var(--ink-4); border-style: dashed; }
+      /* The drill's three steps. A numbered list, because a drill IS a procedure and the cheapest way
+         to say so is to number it — the page carried nine unlabelled facts before. `decimal` markers
+         sit in the number font so they match the turns beside them. */
+      .drill-steps { margin: 0; padding: 0 0 0 1.35em; display: flex; flex-direction: column; gap: 10px; }
+      .drill-steps > li { padding-left: 2px; }
+      .drill-steps > li::marker { font-family: var(--font-num); font-weight: 600; color: var(--ink-4); }
+      .drill-steps .wrap-row { padding-top: 6px; }
 
       /* ---- touch floors ----------------------------------------------------------------- */
       /* On a coarse pointer every control is at least 44px — Apple's floor, and the contract's
@@ -964,8 +1001,8 @@
          geometry is fixed numbers — and grows a 44px hit area around it instead. */
       @media (pointer: coarse) {
         .screen { --chip: 44px; }
-        .btn, .tbtn, .tb-ctl, .card-tools > button, .pill, .menu > button, .nav-item, .swatches > button, .field { min-height: 44px; }
-        .tbtn, .tb-ctl, .card-tools > button, .swatches > button, .nav-item { min-width: 44px; }
+        .btn, .tbtn, .tb-ctl, .card-tools > button, .pill, .menu > button, .nav-item, .swatches > button, .id-ask > button.sw, .field { min-height: 44px; }
+        .tbtn, .tb-ctl, .card-tools > button, .swatches > button, .id-ask > button.sw, .nav-item { min-width: 44px; }
         .eyebrow-row > button { width: 44px; height: 44px; margin: -14px -12px -14px 0; }
         .toggle::before { content: ''; position: absolute; inset: -11px -2px; }
         .transport { gap: 4px; }

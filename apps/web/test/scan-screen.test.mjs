@@ -1274,24 +1274,24 @@ test('a confirm ask turns the twin to the asked hold, and the twin turns back wh
 });
 
 // The scan's sounds (lib/screens/scan/chime.js, lib/sound.js; dev-docs/scan-guidance-plan.md 3.2) and
-// its spoken lines (lib/screens/scan/spoken.js, lib/speech.js; Phase 6), against stand-ins for both —
-// happy-dom has neither. Each case below is one claim about them, so a failure names itself rather
-// than arriving as "the sounds test failed" (audit, 2026-09-19).
+// its state cues (lib/screens/scan/cues.js), against a stand-in for the platform's audio —
+// happy-dom has none. Each case below is one claim about them, so a failure names itself rather
+// than arriving as "the sounds test failed" (audit, 2026-09-19). The spoken lines these cases used
+// to cover were deleted on 2026-09-30: a sound per state, and no words.
 
 /** A cube that checks out, for the scan-complete events below. */
 const SOLVED_CUBE = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
 
 /**
- * The scan screen with stand-in sound and voice, entered fresh. Everything it changes — the two
- * platform seams and the sounds setting — goes back when the test ends, so no case here can leave the
- * next one a platform it did not ask for.
+ * The scan screen with stand-in sound, entered fresh. Everything it changes — the platform seam and
+ * the sounds setting — goes back when the test ends, so no case here can leave the next one a
+ * platform it did not ask for.
  */
-async function soundsRig(t, { soundMode = 'voice', autosolve = false } = {}) {
+async function soundsRig(t, { soundMode = 'chime', autosolve = false } = {}) {
   const sound = await import('../lib/sound.js');
-  const speech = await import('../lib/speech.js');
   const { settings } = await import('../lib/app-settings.js');
-  const stand = installSoundStandIns({ sound, speech, settings, soundMode });
-  const { made, voice } = stand;
+  const stand = installSoundStandIns({ sound, settings, soundMode });
+  const { made } = stand;
   const wasAutosolve = settings.autosolve;
   settings.autosolve = autosolve;
   // The gesture reaches the listener the app installed at boot; a second registration of the same
@@ -1305,7 +1305,6 @@ async function soundsRig(t, { soundMode = 'voice', autosolve = false } = {}) {
   const scanner = panel();
   return {
     made,
-    voice,
     scanner,
     /** The scanner saved a side. */
     saved: (face, sides = 1) => scanner.dispatchEvent(new win.CustomEvent('scan-capture', { detail: { kind: 'side', face, sides } })),
@@ -1373,32 +1372,30 @@ test('with sounds off a scan is silent and unspoken, and finishes exactly as a s
   // The whole path, acceptance included: the earlier version stopped at the scanner's own report, so
   // a silent acceptance could have been broken without this noticing (audit, 2026-09-19).
   const { state } = await import('../lib/app.js');
-  const { made, voice, report, saved, complete } = await soundsRig(t, { soundMode: 'off' });
+  const { made, report, saved, complete } = await soundsRig(t, { soundMode: 'off' });
   report({});
   saved('U');
   report({ phase: 'done', message: 'Scan complete — solvable cube captured.', captured: FACES.map(face), device: null, notice: null, complete: true });
   complete();
   await tick();
   assert.equal(made.length, 0, 'a sound was made with sounds off');
-  assert.deepEqual(voice.said, [], 'a line was said with sounds off');
   assert.equal($('#scanSolveBtn').disabled, false, 'a silent scan did not finish as a sounding one does');
   assert.equal(state.cube.facelets, SOLVED_CUBE, 'a silent scan was not adopted');
   assert.equal(state.cube.source, 'camera');
 });
 
 // An accepted scan can leave the screen at once — auto-solve, here; a scan answering a reconnect
-// question, in test/reconnect-flow.test.mjs — and leaving silences the screen. The checked-out sound and
-// "All done" are the exception: what they say is still true where the app went, and cut at the jump
-// they were never heard (round-3 audit).
-test('auto-solve leaves at acceptance, and the checked-out sound and "All done" finish over the jump', async (t) => {
-  const { SPOKEN } = await import('../lib/screens/scan/spoken.js');
-  const { made, voice, report, complete } = await soundsRig(t, { autosolve: true });
+// question, in test/reconnect-flow.test.mjs — and leaving silences the screen. The checked-out sound
+// is the exception: what it says is still true where the app went, and cut at the jump it was never
+// heard (round-3 audit).
+test('auto-solve leaves at acceptance, and the checked-out sound finishes over the jump', async (t) => {
+  const { made, report, complete } = await soundsRig(t, { autosolve: true });
   report({ phase: 'done', captured: FACES.map(face), complete: true });
   complete();
   await tick();
   assert.equal(win.location.hash, '#/home', 'precondition: auto-solve took the accepted scan home');
   assert.equal(panel(), null, 'precondition: the scan screen is gone');
-  assertFinishedFeedbackSurvived({ made, voice, done: SPOKEN.done });
+  assertFinishedFeedbackSurvived({ made });
 });
 
 // What this build's scanner can do is learned from what it DOES (lib/host.js): the Settings row that
@@ -1489,98 +1486,157 @@ test('the sticker view draws the scanner\'s boxes in the twin\'s place, only whi
   }
 });
 
-// What the scan says out loud (lib/screens/scan/spoken.js, lib/speech.js; dev-docs/scan-guidance-plan.md
-// Phase 6): a line for each moment a child meets, heard from structured reports only, each cut off
-// the instant the state it describes is gone, nothing after the screen is left, nothing with sounds
-// off — and a scan that finishes the same whether or not anything was said.
-// SPLIT INTO THREE (audit, 2026-09-20). One case drove the opening, the capture countdown, the
-// duplicate-side rule, the cut-off, the confirm ask, the premature completion and the acceptance —
-// so every failure arrived coupled to six behaviours it had nothing to do with.
+// WHICH SOUND EACH SCAN STATE GETS (lib/screens/scan/cues.js). This section read eleven spoken
+// lines: the owner's judgement on 2026-09-30 was that they were worse than nothing, so the words
+// are gone and a different sound says each state instead.
+//
+// WHAT IS ACTUALLY HARD HERE IS THE TIMING, NOT THE TONE. `scan-progress` arrives about once a
+// second and mostly repeats itself, so the claim under test is that a state sounds ONCE when it is
+// entered and becomes soundable again only when it is news again. That is what the old spoken cases
+// held too, and it is the part of the deleted spoken module that survived into `cues.js`.
 
-/** The scan's spoken lines through a rigged panel, with a camera to report from. */
+/** The camera every report below comes from. */
 const CAM = { deviceId: 'cam', label: 'Webcam' };
 
-test('the opening line is said once, and a capture counts down rather than repeating', async (t) => {
-  const { SPOKEN } = await import('../lib/screens/scan/spoken.js');
-  // HARD-CODED, NOT DERIVED (audit, 2026-09-20). This used to build the expected sentence by calling
-  // the very functions under test, so a wrong countdown would have made the actual and the expected
-  // wrong together and the case would have passed.
-  const SAVED = ['Got it! 5 more sides.', 'Got it! 4 more sides.'];
-  const { voice, report, saved } = await soundsRig(t);
-  const said = voice.said;
+/**
+ * The sounds in `made`, by name, from index `from`.
+ *
+ * NAMED FROM A HARD-CODED SIGNATURE, never by asking `lib/sound.js` what it would have played: a
+ * table derived from the module under test makes the actual and the expected wrong together, which
+ * is the mistake the deleted cases above this one were careful to call out. Each pair below is
+ * (how many notes, the first note's pitch), and no two sounds share one.
+ */
+const SOUND_BY_SIGNATURE = new Map([
+  ['2@659.25', 'capture'],
+  ['4@523.25', 'done'],
+  ['2@523.25', 'again'],
+  ['4@587.33', 'ask'],
+  ['2@349.23', 'help'],
+  ['2@440', 'off'],
+]);
+function soundsIn(made, from = 0) {
+  const notes = made.slice(from).map((o) => o.frequency.value);
+  const names = [];
+  let i = 0;
+  while (i < notes.length) {
+    // Longest first: `done` and `again` both begin on 523.25 and differ only in length, so trying
+    // two notes first would read every `done` as an `again` with two spare notes after it.
+    const four = SOUND_BY_SIGNATURE.get(`4@${notes[i]}`);
+    const two = SOUND_BY_SIGNATURE.get(`2@${notes[i]}`);
+    if (four && notes.length - i >= 4) { names.push(four); i += 4; continue; }
+    if (two && notes.length - i >= 2) { names.push(two); i += 2; continue; }
+    names.push(`unknown@${notes[i]}`);
+    i += 1;
+  }
+  return names;
+}
+
+test('the signature table names every sound the app can play, and nothing twice', async () => {
+  // The table above is only honest if it covers the module and collides nowhere. Read off the
+  // source rather than the export, because `SOUNDS` is private — and a table that silently stopped
+  // covering a sound would make every case below pass by reading `unknown`.
+  const src = readFileSync(new URL('../lib/sound.js', import.meta.url), 'utf8');
+  const block = src.slice(src.indexOf('const SOUNDS'), src.indexOf('const NOTE_S'));
+  const declared = [...block.matchAll(/^\s{2}([a-z]+):\s*\[\[([\d.]+)/gm)]
+    // EACH NOTE, not each bracket: `[[659.25, 0], [880, 0.09]]` opens three brackets and holds two
+    // notes, so counting `[` read every sound as one note longer than it is.
+    .map((m) => ({
+      name: m[1],
+      first: m[2],
+      notes: (block.split(`${m[1]}:`)[1].split(']]')[0].match(/\[\s*[\d.]+\s*,/g) || []).length,
+    }));
+  assert.ok(declared.length >= 6, `the source read gave ${declared.length} sounds, so it is reading nothing`);
+  for (const { name, first, notes } of declared) {
+    assert.equal(SOUND_BY_SIGNATURE.get(`${notes}@${first}`), name,
+      `${name} (${notes} notes from ${first}) is not in the signature table, or is under another name`);
+  }
+  assert.equal(new Set(SOUND_BY_SIGNATURE.values()).size, SOUND_BY_SIGNATURE.size, 'two signatures share a name');
+});
+
+test('a side already held sounds once, and again only when it is news again', async (t) => {
+  const { made, report, saved } = await soundsRig(t);
   report({ device: CAM });
-  report({ device: CAM });
-  assert.deepEqual(said, [SPOKEN.open], 'the opening line was not said once');
-  saved('U');
-  report({ device: CAM, captured: [face('U')] });
-  assert.equal(said.at(-1), SAVED[0], 'a saved side was not announced with what is left');
-  // A SECOND capture, because one sentence proves nothing about a countdown: the whole point is
-  // that consecutive captures differ.
+  const from = made.length;
+  report({ device: CAM, captured: [face('U')], shownAgain: true });
+  report({ device: CAM, captured: [face('U')], shownAgain: true });
+  report({ device: CAM, captured: [face('U')], shownAgain: true });
+  assert.deepEqual(soundsIn(made, from), ['again'], 'the same held side sounded more than once');
+
+  // A CAPTURE MAKES IT NEWS AGAIN, because the count changed: showing a held side after saving a
+  // different one is a new mistake, not the same one still standing.
+  const before = made.length;
   saved('R', 2);
-  report({ device: CAM, captured: [face('U'), face('R')], sides: 2 });
-  assert.equal(said.at(-1), SAVED[1], 'the second saved side repeated the first sentence');
+  report({ device: CAM, captured: [face('U'), face('R')], sides: 2, shownAgain: true });
+  assert.deepEqual(soundsIn(made, before), ['capture', 'again'], 'a held side after a capture stayed silent');
 });
 
-test('a side shown again is said once, and the line is cut when that side goes', async (t) => {
-  const { SPOKEN } = await import('../lib/screens/scan/spoken.js');
-  const { voice, report, saved } = await soundsRig(t);
+test('a question waiting on a person sounds, and outranks a side already held', async (t) => {
+  // THE LADDER, and the reason it is ordered: a question blocks the scan on a person, where "I have
+  // that one" only reports on a side they can simply turn. Both are true in this report.
+  const { made, report } = await soundsRig(t);
   report({ device: CAM });
-  saved('U');
-  report({ device: CAM, captured: [face('U')] });
-  report({ device: CAM, captured: [face('U')], shownAgain: true });
-  report({ device: CAM, captured: [face('U')], shownAgain: true });
-  assert.equal(
-    voice.said.filter((l) => l === SPOKEN.again).length, 1,
-    'the same side again was said on every report',
-  );
-  const before = voice.cuts.length;
-  report({ device: CAM, captured: [face('U')], shownAgain: false });
-  assert.equal(voice.cuts.length, before + 1, 'a line about a side no longer in view was not cut off');
+  const from = made.length;
+  report({
+    device: CAM,
+    captured: [face('U')],
+    shownAgain: true,
+    identity: { id: 'q1', colours: ['white', 'red'] },
+  });
+  assert.deepEqual(soundsIn(made, from), ['ask'], 'the question did not outrank the held side');
+
+  // Once per question, not per report — the stream repeats the same question about once a second.
+  const before = made.length;
+  report({ device: CAM, captured: [face('U')], identity: { id: 'q1', colours: ['white', 'red'] } });
+  assert.deepEqual(soundsIn(made, before), [], 'the same question sounded twice');
+
+  // AND A SECOND QUESTION IS A SECOND SOUND, keyed on the question rather than on the colour: an
+  // answer naming a held colour raises a follow-up about the SAME colour, and that is the one a
+  // person has to act on.
+  report({ device: CAM, captured: [face('U')], identity: { id: 'q2', colours: ['white', 'red'], displaced: true } });
+  assert.deepEqual(soundsIn(made, before), ['ask'], 'the follow-up question was silent');
 });
 
-test('"all done" waits for the SCREEN to accept the scan, not for the scanner to finish', async (t) => {
-  const { SPOKEN } = await import('../lib/screens/scan/spoken.js');
-  const { voice, report, complete } = await soundsRig(t);
+test('a camera in trouble sounds once on entering the error, and nothing else sounds under it', async (t) => {
+  const { made, report } = await soundsRig(t);
   report({ device: CAM });
-  report({ phase: 'confirm', device: CAM, captured: FACES.map(face), confirm: { face: 'R', up: 'U' } });
-  assert.equal(voice.said.at(-1), SPOKEN.ask);
-  report({ phase: 'done', device: CAM, captured: FACES.map(face), complete: true });
-  assert.notEqual(voice.said.at(-1), SPOKEN.done, '"All done" was said before the screen accepted the scan');
-  complete();
-  assert.equal(voice.said.at(-1), SPOKEN.done, 'the screen accepted the scan and nothing said so');
+  const from = made.length;
+  report({ device: CAM, phase: 'error' });
+  report({ device: CAM, phase: 'error' });
+  assert.deepEqual(soundsIn(made, from), ['help'], 'the camera error sounded per message rather than on entering');
+
+  // Nothing else speaks under it: every other state asks for something the scanner cannot see.
+  const before = made.length;
+  report({ device: CAM, phase: 'error', captured: [face('U')], shownAgain: true });
+  assert.deepEqual(soundsIn(made, before), [], 'a held side sounded while the camera was in trouble');
 });
 
-test('a refusal is said once per CHECK, and a camera in trouble says so instead', async (t) => {
-  // `scan-invalid` is dispatched again when the refusal's diagnosis lands, and a confirm mismatch
-  // carries an error tone of its own — neither may put the line twice.
-  const { SPOKEN } = await import('../lib/screens/scan/spoken.js');
-  const { voice, report, scanner } = await soundsRig(t);
-  const said = voice.said;
-  const camera = { deviceId: 'cam', label: 'Webcam' };
-  const refused = () => scanner.dispatchEvent(new win.CustomEvent('scan-invalid', { detail: { valid: false } }));
-  report({ phase: 'checking', device: camera, captured: FACES.map(face), sides: 6 });
-  const beforeRefusal = said.length;
-  refused();
-  refused();
-  assert.deepEqual(said.slice(beforeRefusal), [SPOKEN.help], 'a refusal was not said, or said twice');
-  // A correction starts a NEW check; if it is refused too, at the same count, that is said again.
-  report({ phase: 'checking', device: camera, captured: FACES.map(face), sides: 6 });
-  report({ device: camera, captured: FACES.map(face), sides: 6 });
-  refused();
-  assert.equal(said.slice(beforeRefusal).filter((l) => l === SPOKEN.help).length, 2, 'a second refusal after a correction went unsaid');
-  report({ phase: 'error', captured: [], message: 'The camera did not open', notice: { title: 'The camera did not open', tone: 'err', body: 'x' } });
-  assert.equal(said.at(-1), SPOKEN.camera, 'a camera in trouble was told to check the stickers');
+test('a refusal sounds once per CHECK, and a new check may sound again', async (t) => {
+  const { made, report } = await soundsRig(t);
+  report({ device: CAM, captured: [face('U')], sides: 1 });
+  const from = made.length;
+  // `panel()` is this file's own accessor for the scanner on screen. Destructuring a `panel` from
+  // the rig shadowed it with undefined, which is a mistake that reads as the rig's fault.
+  const refuse = () => panel().dispatchEvent(new win.CustomEvent('scan-invalid', { detail: {} }));
+  refuse();
+  refuse();
+  assert.deepEqual(soundsIn(made, from), ['help'], 'one refused check sounded more than once');
+
+  // A NEW CHECK is news again — a sticker corrected, a side read a second time.
+  const before = made.length;
+  report({ device: CAM, captured: [face('U')], sides: 1, phase: 'checking' });
+  refuse();
+  assert.deepEqual(soundsIn(made, before), ['help'], 'a second check could not sound');
 });
 
-test('leaving the screen cuts the line being said, and a scanner left behind says nothing', async (t) => {
-  const { voice, report, saved } = await soundsRig(t);
-  report({ device: { deviceId: 'cam', label: 'Webcam' } });
-  assert.equal(voice.said.length, 1, 'precondition: a line is being said');
-  const cutsBeforeLeaving = voice.cuts.length;
-  await leaveScan();
-  assert.equal(voice.cuts.length, cutsBeforeLeaving + 1, 'leaving the screen did not cut off the line being said');
-  saved('U', 2);
-  assert.equal(voice.said.length, 1, 'a scan left behind still spoke');
+test('the state a scan OPENS in has no sound of its own', async (t) => {
+  // It is the state the screen appears in, so a chime for it fires as the page is drawn — noise
+  // rather than news. The old voice had a line here ("Show me any side of your cube"); the card
+  // still says it, in writing, which is where an instruction belongs.
+  const { made, report } = await soundsRig(t);
+  const from = made.length;
+  report({ device: CAM });
+  report({ device: CAM });
+  assert.deepEqual(soundsIn(made, from), [], 'opening the scan made a sound');
 });
 
 // The sticker view's accessible name is a sentence like any other on the screen: translated, so a
@@ -2850,36 +2906,247 @@ test('painting chosen before the scanner registers is the mode the scanner start
     'the scanner registered and opened its camera under a board that says it is painting, or the arrangement asked of it was dropped');
 });
 
-test('the bell-only mode chimes for a saved side and says nothing', async (t) => {
-  // The middle mode had no end-to-end coverage at all: every caller used `voice` or `off`, so the
-  // one the owner asked for — the bell without the words — was never driven through a real scan
-  // (audit, 2026-09-20).
-  const { made, voice, report, saved, complete } = await soundsRig(t, { soundMode: 'chime' });
+test('sounds on: a saved side chimes, and so does the cube checking out', async (t) => {
+  // This was the MIDDLE of three modes and had no end-to-end coverage at all, because every caller
+  // used `voice` or `off` (audit, 2026-09-20). It is now the only sounding mode there is, so the
+  // case is about the two sounds a whole scan makes rather than about what it does not say.
+  const { made, report, saved, complete } = await soundsRig(t, { soundMode: 'chime' });
   report({});
   saved('U');
-  assert.ok(made.length > 0, 'the bell-only mode made no chime for a saved side');
-  assert.deepEqual(voice.said, [], 'the bell-only mode spoke');
+  assert.ok(made.length > 0, 'a saved side made no chime');
   const before = made.length;
   complete();
-  assert.ok(made.length > before, 'the cube checking out made no sound in the bell-only mode');
-  assert.deepEqual(voice.said, [], 'the bell-only mode spoke when the cube checked out');
+  assert.ok(made.length > before, 'the cube checking out made no sound');
 });
 
-test('a line edited in Settings is used by the very next thing said', async (t) => {
-  // The promise the editable list rests on. `spoken-lines.test.mjs` proves `lineFor` reads the live
-  // record; this proves the SPEAKING PATH does — a cue could have cached its words when it was made
-  // and every unit test would still pass (audit, 2026-09-20).
-  const { settings } = await import('../lib/app-settings.js');
-  const { voice, report, saved } = await soundsRig(t);
-  const wasLines = { ...settings.spokenLines };
-  t.after(() => { settings.spokenLines = wasLines; });
-  const camera = { deviceId: 'cam', label: 'Webcam' };
-  report({ device: camera });
-  saved('U');
-  report({ device: camera, captured: [face('U')], sides: 1 });
-  assert.equal(voice.said.at(-1), 'Got it! 5 more sides.');
-  settings.spokenLines = { ...settings.spokenLines, savedMany: 'Nice! %1 to go.' };
-  saved('R', 2);
-  report({ device: camera, captured: [face('U'), face('R')], sides: 2 });
-  assert.equal(voice.said.at(-1), 'Nice! 4 to go.', 'the edit did not reach the voice');
+// ---- the identity question, drawn (dev-docs/asking-which-side-plan.md §3, §5) -----------------
+//
+// The scanner cannot name the side in hand: two sides read as the same colour, so it keeps the
+// capture and asks which one this is. The screen is a HEADLESS host — it draws everything from
+// `scan-progress` — so without this the question exists and nobody can answer it.
+
+/** A report carrying an open identity question. */
+const asking = (claimed, choices, captured = [], colors = Array(9).fill(claimed), id = 7) =>
+  progress({ phase: 'scanning', complete: false, captured, suspects: [], message: '',
+    identity: { id, colors, claimed, choices } });
+
+test('the question offers the free colours, marks the one both sides are reading as, and hides otherwise', async () => {
+  await enterScan();
+  const box = $('#scanIdentity');
+  assert.ok(box, 'the card has nowhere to ask the question');
+  assert.equal(box.hidden, true, 'the question is drawn over a report that carries none');
+
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')]);
+  assert.equal(box.hidden, false, 'an open question was not drawn');
+  const shown = [...box.querySelectorAll('button.sw')].filter((b) => !b.hidden);
+  assert.deepEqual(shown.map((b) => Number(b.dataset.colour)), [0, 1, 2, 5],
+    'a colour a side already holds was offered, or a free one was withheld');
+  // The colour BOTH sides read as is marked — the one thing the scanner measured about this
+  // capture — and it is not pressable, because nothing evicts a filed side on an answer.
+  const claimed = [...box.querySelectorAll('button.sw')].filter((b) => b.classList.contains('claimed'));
+  assert.deepEqual(claimed.map((b) => Number(b.dataset.colour)), [3]);
+  assert.equal(claimed[0].hidden, true, 'the colour a side already holds was offered as an answer');
+  assert.ok(box.querySelector('.btn'), 'the way out of the question is missing');
+  // SWATCHES AND NAMES (§3), both: the scan guides a child who cannot read, and a colour alone
+  // names nothing for anyone else.
+  assert.deepEqual(shown.map((b) => b.querySelector('span').textContent),
+    ['white', 'red', 'green', 'blue'], 'a colour was offered with no name on it');
+  assert.deepEqual(shown.map((b) => b.querySelector('i').style.backgroundColor.toUpperCase()),
+    [NET_HEX.U, NET_HEX.R, NET_HEX.F, NET_HEX.B], 'a swatch is not painted its own colour class');
+
+  // A report with no question takes it away again: the question is a state of the report, never a
+  // popover the screen remembers having opened.
+  progress({ phase: 'scanning', complete: false, captured: [face('D')], suspects: [], message: '' });
+  assert.equal(box.hidden, true, 'the question outlived the report that carried it');
+});
+
+test('a colour pressed reaches the scanner as an answer, and Skip as a skip', async () => {
+  await enterScan();
+  const answers = [];
+  const skips = [];
+  panel().answerIdentity = (c) => answers.push(c);
+  panel().skipIdentity = () => skips.push(true);
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')]);
+  const box = $('#scanIdentity');
+  box.querySelector('button.sw[data-colour="0"]').click();
+  assert.deepEqual(answers, [0], 'the colour pressed did not reach the scanner');
+  box.querySelector('.btn').click();
+  assert.deepEqual(skips, [true], 'Skip did not reach the scanner');
+  // The scanner decides what an answer does; the screen never files a side itself, and never
+  // guesses that the question is over.
+  assert.equal(box.hidden, false, 'the screen closed the question on its own word rather than the scanner’s');
+});
+
+test('the choices follow the report, so a colour taken while the question stood stops being offered', async () => {
+  // Free order stays: sides go on being filed while a question stands. A frozen list would offer a
+  // colour that is no longer free — a button that does nothing, which is worse than one that is
+  // not there.
+  await enterScan();
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')]);
+  asking(3, [0, 5], [face('D'), face('L'), face('R'), face('F')]);
+  const shown = [...$('#scanIdentity').querySelectorAll('button.sw')].filter((b) => !b.hidden);
+  assert.deepEqual(shown.map((b) => Number(b.dataset.colour)), [0, 5]);
+});
+
+test('an inert scanner is not called into', async () => {
+  // Before the bundle registers, <ai-scan-panel> is a plain unknown element with none of these
+  // methods on it. A press must not throw at the page.
+  await enterScan();
+  asking(3, [0, 1, 2, 5], [face('D')]);
+  const box = $('#scanIdentity');
+  assert.doesNotThrow(() => box.querySelector('button.sw[data-colour="0"]').click());
+  assert.doesNotThrow(() => box.querySelector('.btn').click());
+});
+
+test('the question draws the side it is about, so the person can see what they are naming', async () => {
+  // §3's argument for asking rather than instructing is that the answer labels a capture the scan
+  // is holding AND THE USER CAN SEE. An unplaced capture has no tile, so without this the user can
+  // see every side except the one in question. It is what the scanner READ, never a picture.
+  await enterScan();
+  const read = [0, 1, 2, 3, 3, 5, 0, 1, 2];
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')], read);
+  const cells = [...$('#scanIdentity .id-seen').children];
+  assert.equal(cells.length, 9);
+  assert.deepEqual(
+    cells.map((c) => c.style.backgroundColor.toUpperCase()),
+    read.map((i) => NET_HEX[FACES[i]]),
+    'the nine drawn are not the nine the scanner read',
+  );
+  // Including the middle one: the person is being asked to overrule it, so hiding it would hide
+  // the subject of the question.
+  assert.equal(cells[4].style.backgroundColor.toUpperCase(), NET_HEX.D);
+});
+
+// ---- what a Codex audit of the identity question found (2026-09-25) --------------------------
+
+test('an answer names the capture the person was looking at, not the one that replaced it', async () => {
+  // §3's whole argument for asking rather than instructing is that there is no window in which the
+  // wrong side can be named — and the UI reopened one. These buttons stand while the scan goes on
+  // reading (§5's fourth bullet), so a finger down on one question and a different colliding side
+  // settling under it meant the click answered for the capture that replaced it.
+  await enterScan();
+  const answers = [];
+  const skips = [];
+  panel().answerIdentity = (c, id) => answers.push([c, id]);
+  panel().skipIdentity = (id) => skips.push(id);
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')], [0, 0, 0, 0, 3, 0, 0, 0, 0]);
+  const box = $('#scanIdentity');
+  const white = box.querySelector('button.sw[data-colour="0"]');
+  // The press STARTS on this question…
+  white.dispatchEvent(new win.Event('pointerdown', { bubbles: true }));
+  // …a different capture arrives under it…
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')], [5, 5, 5, 5, 3, 5, 5, 5, 5], 77);
+  // …and the click still carries the question the person was answering.
+  white.click();
+  assert.deepEqual(answers, [[0, 7]], 'the answer named the capture that replaced the one on screen');
+
+  // Skip is the same control with the same hazard.
+  const later = box.querySelector('.btn');
+  later.dispatchEvent(new win.Event('pointerdown', { bubbles: true }));
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')], [1, 1, 1, 1, 3, 1, 1, 1, 1], 99);
+  later.click();
+  assert.deepEqual(skips, [77], 'the skip set aside a question nobody had looked at');
+});
+
+test('a keyboard press answers what is drawn, having no press to arm', async () => {
+  await enterScan();
+  const answers = [];
+  panel().answerIdentity = (c, id) => answers.push([c, id]);
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')], [0, 0, 0, 0, 3, 0, 0, 0, 0], 12);
+  $('#scanIdentity').querySelector('button.sw[data-colour="0"]').click();
+  assert.deepEqual(answers, [[0, 12]]);
+});
+
+test('a side the camera could not NAME is renamed from its centre, not re-read', async () => {
+  // Re-reading it leads back to the same question — its middle sticker is the one the detector
+  // cannot read — and throws away the reading somebody already answered about. The recovery
+  // existed only as an API no screen reached.
+  await enterScan();
+  const reopened = [];
+  const rescans = [];
+  panel().reopenIdentity = (slot) => reopened.push(slot);
+  panel().rescanFace = (slot) => rescans.push(slot);
+  const captured = [face('U'), face('D')];
+  progress({ phase: 'scanning', complete: false, captured, suspects: [], message: '', renameable: ['U'] });
+  const upCentre = $('.scan-face[data-face="U"] .cell:nth-child(5)');
+  assert.equal(upCentre.dataset.action, 'rename', 'the centre offers a re-read over a side nobody read');
+  assert.match(upCentre.getAttribute('aria-label'), /really is/);
+  upCentre.click();
+  assert.deepEqual(reopened, ['U'], 'the press did not reopen the naming decision');
+  assert.deepEqual(rescans, [], 'the press threw the answered reading away instead');
+
+  // …and a side the camera DID name keeps the ordinary re-read.
+  const downCentre = $('.scan-face[data-face="D"] .cell:nth-child(5)');
+  assert.equal(downCentre.dataset.action, 'rescan');
+  downCentre.click();
+  assert.deepEqual(rescans, ['D']);
+});
+
+test('a question that vanishes does not hand its half-made press to the next one', async () => {
+  // THE STALE-PRESS RACE, REOPENED BY THE FIRST FIX (round-3 audit, 2026-09-25). Clearing the armed
+  // id when the question went away meant a press begun on one question fell back to whatever
+  // arrived next, defeating the scanner's stale-id guard entirely. A gesture keeps the id it
+  // started with; if that question has gone the scanner refuses it, which is the point.
+  await enterScan();
+  const answers = [];
+  panel().answerIdentity = (c, id) => answers.push([c, id]);
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')], [0, 0, 0, 0, 3, 0, 0, 0, 0], 7);
+  const white = $('#scanIdentity').querySelector('button.sw[data-colour="0"]');
+  white.dispatchEvent(new win.Event('pointerdown', { bubbles: true }));
+  // The question goes…
+  progress({ phase: 'scanning', complete: false, captured: [face('D')], suspects: [], message: '' });
+  // …and a different one arrives before the click.
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')], [5, 5, 5, 5, 3, 5, 5, 5, 5], 99);
+  white.click();
+  assert.deepEqual(answers, [[0, 7]], 'the press was retargeted at the question that replaced it');
+});
+
+test('a Space press answers the question it was begun on, not the one that replaced it', async () => {
+  // CODEX AUDIT, 2026-09-25, finding 6. Only `pointerdown` armed the gesture, on the argument that a
+  // keyboard press is instantaneous. That is true of Enter, whose click fires on key DOWN, and false
+  // of Space, whose click fires on key UP — so a question replaced between the two was answered for
+  // the capture that arrived in the gap, which is the exact window the id exists to close.
+  await enterScan();
+  const answers = [];
+  panel().answerIdentity = (c, id) => answers.push([c, id]);
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')], [0, 0, 0, 0, 3, 0, 0, 0, 0], 7);
+  const white = $('#scanIdentity').querySelector('button.sw[data-colour="0"]');
+  white.dispatchEvent(new win.KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+  // The question is replaced while the key is still down…
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')], [5, 5, 5, 5, 3, 5, 5, 5, 5], 99);
+  // …and the click only lands on key-up.
+  white.click();
+  assert.deepEqual(answers, [[0, 7]], 'a Space press was retargeted at the question that replaced it');
+});
+
+test('a held key does not re-aim the press at the question that replaced it', async () => {
+  // CODEX AUDIT, 2026-09-26. A key held down fires `keydown` over and over, and re-arming on every
+  // one re-took whichever id was drawn AT THE REPEAT — so a press begun on question 7, held while
+  // the question was replaced, answered for 99. That is the window the id exists to close, reopened
+  // by the guard that was added to close it for Space.
+  await enterScan();
+  const answers = [];
+  panel().answerIdentity = (c, id) => answers.push([c, id]);
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')], [0, 0, 0, 0, 3, 0, 0, 0, 0], 7);
+  const white = $('#scanIdentity').querySelector('button.sw[data-colour="0"]');
+  white.dispatchEvent(new win.KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')], [5, 5, 5, 5, 3, 5, 5, 5, 5], 99);
+  // Still held: the platform repeats the keydown, now while the newer question is on screen.
+  white.dispatchEvent(new win.KeyboardEvent('keydown', { key: ' ', repeat: true, bubbles: true }));
+  white.click();
+  assert.deepEqual(answers, [[0, 7]], 'an autorepeat re-aimed the press at the newer question');
+});
+
+test('a press on one control does not spend a gesture begun on another', async () => {
+  // The armed gesture belongs to its own button: a keyboard activation elsewhere has no gesture and
+  // takes what is drawn, rather than inheriting a stale id and being refused for nothing.
+  await enterScan();
+  const answers = [];
+  panel().answerIdentity = (c, id) => answers.push([c, id]);
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')], [0, 0, 0, 0, 3, 0, 0, 0, 0], 7);
+  const box = $('#scanIdentity');
+  box.querySelector('button.sw[data-colour="0"]').dispatchEvent(new win.Event('pointerdown', { bubbles: true }));
+  asking(3, [0, 1, 2, 5], [face('D'), face('L')], [0, 0, 0, 0, 3, 0, 0, 0, 0], 41);
+  box.querySelector('button.sw[data-colour="1"]').click(); // a different control, no gesture
+  assert.deepEqual(answers, [[1, 41]], 'a keyboard press inherited another control’s stale gesture');
 });

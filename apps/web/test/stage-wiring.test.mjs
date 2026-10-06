@@ -87,11 +87,11 @@ test('chips are painted only for a scan the app BELIEVED', () => {
   // transaction that adopts the cube (`acceptReading`, since 2026-09-21: the camera's and the
   // painted branch each wrote the acceptance out before), never beside the branch that refuses it.
   // The helper's parameter list opens a brace of its own (a destructuring), which blockAt reads as
-  // the block when anchored on the definition; anchored on the arrow inside the stretch between
-  // the definition and the handler, the first brace is the body's.
-  const start = code.indexOf('const acceptReading = (fl, { physical, source }) => {');
-  assert.ok(start >= 0, 'the acceptance must exist');
-  const accept = blockAt(code.slice(start, code.indexOf("panel.addEventListener('scan-complete'", start)), ') => {');
+  // the block when anchored on the whole definition. Anchored on the TAIL of the signature — past
+  // the destructuring's close — the first brace is the body's, and the anchor is its own. It used
+  // to slice from the definition to the handler and anchor on `') => {'`, which stopped working
+  // the moment a second arrow was declared in that stretch (2026-09-25).
+  const accept = blockAt(code, 'remember = true }) => {');
   assert.match(accept, /adoptCube\(fl,/, 'the acceptance must be the one that adopts the cube');
   assert.match(accept, /paintStageChips\(fl\)/, 'the chips are painted from the acceptance');
   assert.ok(accept.indexOf('adoptCube(fl,') < accept.indexOf('paintStageChips(fl)'),
@@ -100,6 +100,11 @@ test('chips are painted only for a scan the app BELIEVED', () => {
   assert.ok(complete, 'the scan-complete handler must exist');
   const adopted = blockAt(complete, '} else {');
   assert.match(adopted, /acceptReading\(fl,/, 'the adoption branch must exist, and be the one that accepts the reading');
+  // …and the reading with a side the camera could not NAME goes through the same one transaction:
+  // its own body is a policy, not a second door to the chips or the adoption.
+  const named = blockAt(code, 'const acceptNamedReading = (fl, assigned) => {');
+  assert.match(named, /acceptReading\(fl,/, 'a named reading is adopted outside the one acceptance');
+  assert.doesNotMatch(named, /paintStageChips|adoptCube\(/, 'a second door to the chips or the adoption');
   const refusedBranch = blockAt(complete, 'if (!adopted)');
   assert.ok(refusedBranch, 'the refusal branch must exist');
   assert.doesNotMatch(refusedBranch, /paintStageChips|acceptReading|adoptCube/, 'a refused read must produce no numbers at all');
@@ -198,14 +203,28 @@ test('the route says what KIND of answer it is, from the object it came from', (
 test('the target is drawn, with the free pieces ghosted', () => {
   // §6, and it is the part that makes a shortest path acceptable rather than alarming.
   assert.match(code, /id="stageAim"[^>]*hidden/, 'the aim is hidden while the target is the whole cube');
-  // The picture is drawn in the METHOD frame (white cross on D); the net beside it is the scan
+  // A STAGE picture is drawn in the METHOD frame (white cross on D); the net beside it is the scan
   // frame's, so it is turned before it is painted or the white cross would be drawn on the bottom.
-  assert.match(code, /paintAim\(fromMethodFrame\(targetPicture\(aimingAt\)\)\)/, 'and painted from the target picture');
+  // A PICTURE DESTINATION is stored in the scan frame already and must NOT be turned again — it is
+  // toFacelets(applyAlg(SOLVED, alg)), the frame everything outside the method solver speaks.
+  // Turning it would draw a child the wrong target while routing them to the right one, and all
+  // three shipped state patterns are tumble-invariant, so no fixture in this repository would have
+  // caught it (Codex refute pass, 2026-09-26). Both halves are asserted, because matching only the
+  // branch would pass on code that took it for every target.
+  assert.match(code, /paintAim\(aimingAt\.picture \? aimPicture : fromMethodFrame\(aimPicture\)\)/,
+    'a stage picture is turned into the scan frame and a picture destination is left in it');
+  assert.match(code, /const aimPicture = targetPicture\(aimingAt\);/, 'and both come from the one reader');
   assert.match(code, /aim\.hidden = !aimingAt;/, 'a whole-cube target draws no aim — it would say nothing');
   // ONE PICTURE (2026-09-13): the target takes the Initial State net's place, because the card that
   // held both was drawn over the sheet on the small windows — and the next walk gets the net back.
   assert.match(code, /net\.hidden = Boolean\(aimingAt\);/, 'while a target is shown the Initial State net is not');
-  assert.match(code, /heading\.textContent = t\('Aiming at the %1', aimingAt\.name\)/, 'and the heading says what the picture is');
+  // THE HEADING NAMES THE PICTURE, AND SUPPLIES AN ARTICLE ONLY WHERE THE NAME LACKS ONE. A stage is
+  // named bare ("cross"), a picture brings its own ("The Checkerboard", "a plus on every face"), and
+  // the one template gave "Aiming at the The Checkerboard" (audit, 2026-09-27). Both arms asserted:
+  // matching only the article-free one would pass on code that dropped "the" for every target.
+  assert.match(code, /t\('Aiming at %1', aimingAt\.name\)/, 'a picture is named without an added article');
+  assert.match(code, /t\('Aiming at the %1', aimingAt\.name\)/, 'and a stage keeps the article the template supplies');
+  assert.match(code, /aimingAt\.picture \|\| aimingAt\.sideways/, 'keyed on the same marker the route sentence uses');
   assert.match(code, /if \(oldNet\) oldNet\.hidden = false;/, 'the next walk puts the Initial State back');
   // The renderer has to be able to draw "not fixed" at all.
   assert.match(code, /facelets\[i\] === '\?' \? 'free' : facelets\[i\]/, 'the net must map the unknown mark');

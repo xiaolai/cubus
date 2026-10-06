@@ -18,7 +18,6 @@ import {
   type ColorFace,
   LOW_CONFIDENCE_THRESHOLD,
   matchingRotations,
-  resolveCentres,
 } from '../packages/cube-scanner/src/ai-assemble.js';
 import {
   assignNineOfEach,
@@ -83,69 +82,34 @@ const margin = (scores: readonly number[]): number => {
   return best - next;
 };
 
-const nineOfEach = (colors: readonly (readonly number[])[]): boolean => {
-  const counts = new Array<number>(NUM_COLORS).fill(0);
-  for (const row of colors) for (const c of row) counts[c]!++;
-  return counts.every((n) => n === PER_COLOR);
-};
-
 /**
- * File six sides under their centres' colours, as the panel does — or, when one colour is on two
- * centres and one on none (most often a brand logo on the white cap, read as its ink), let
- * `resolveCentres` decide which of the two is the missing colour: by legality, or — when no filing is
- * legal — by which centre read less surely, exactly as the app does. Null when no filing can be
- * made: two or more collisions, or a collision the resolver refuses to decide.
+ * File six sides under their centres' colours, exactly as the panel does.
+ *
+ * A SIDE IS ITS CENTRE, and a colour on two centres is a filing that cannot be made (2026-09-23,
+ * the owner's call). This used to hand the collision to `resolveCentres`, which enumerated every way
+ * the two could fill the two free slots and took the one legal filing — by legality first, then by
+ * which centre read less surely. That machinery was removed from the app, and this tool exists to be
+ * the app's assembly rather than a second opinion about what a real cube is, so the collision is
+ * refused here too. A contributor whose white cap reads as its logo now gets `null` and is asked
+ * again, where before they got a filing the app itself would no longer produce.
  */
 function fileSides(
   captures: readonly Capture[],
   byCentre: ReadonlyMap<number, number[]>,
 ): Filing | null {
-  if (byCentre.size === FACES.length) {
-    const faces = {} as Record<Face, ColorFace>;
-    const photoOf = {} as Record<Face, number>;
-    captures.forEach((capture, p) => {
-      const slot = slotOf(capture.colors[4] as Colour);
-      faces[slot] = capture;
-      photoOf[slot] = p;
-    });
-    return {
-      faces,
-      photoOf,
-      result: assembleColors(faces, LOW_CONFIDENCE_THRESHOLD, {}, { diagnose: false }),
-    };
-  }
-  const shared = [...byCentre.entries()].filter(([, photos]) => photos.length > 1);
-  if (byCentre.size !== FACES.length - 1 || shared.length !== 1) return null;
-  const [centre, [first, second]] = shared[0] as [number, [number, number]];
-  const named: Partial<Record<Face, ColorFace>> = {};
-  const photoOf: Partial<Record<Face, number>> = {};
+  if (byCentre.size !== FACES.length) return null;
+  const faces = {} as Record<Face, ColorFace>;
+  const photoOf = {} as Record<Face, number>;
   captures.forEach((capture, p) => {
-    if (p === first || p === second) return;
     const slot = slotOf(capture.colors[4] as Colour);
-    named[slot] = capture;
+    faces[slot] = capture;
     photoOf[slot] = p;
   });
-  const newcomer = captures[second]!;
-  const { faces, result } = resolveCentres(
-    named,
-    [captures[first]!, newcomer].map((capture) => ({
-      capture,
-      centreConfidence: capture.confidence[4] ?? 0,
-    })),
-    LOW_CONFIDENCE_THRESHOLD,
-    { diagnose: false },
-  );
-  if (!faces) return null;
-  const sharedSlot = slotOf(centre as Colour);
-  const missingSlot = FACES.find((slot) => slot !== sharedSlot && named[slot] === undefined)!;
-  // Which photo went where. The resolver recolours one of the two and files the other under the
-  // shared colour; whichever holds the shared slot still carries its own read there, and the two
-  // reads differ in at least three stickers (the same-side check has already run), so comparing
-  // them is unambiguous.
-  const newcomerKeptShared = faces[sharedSlot].colors.every((c, i) => c === newcomer.colors[i]);
-  photoOf[sharedSlot] = newcomerKeptShared ? second : first;
-  photoOf[missingSlot] = newcomerKeptShared ? first : second;
-  return { faces, photoOf: photoOf as Record<Face, number>, result };
+  return {
+    faces,
+    photoOf,
+    result: assembleColors(faces, LOW_CONFIDENCE_THRESHOLD, {}, { diagnose: false }),
+  };
 }
 
 export function decide(captures: readonly Capture[]): Decision {
@@ -185,7 +149,30 @@ export function decide(captures: readonly Capture[]): Decision {
   // When none of them is legal the reading is refused anyway, and the nine-of-each colouring is
   // still the likeliest one a physical cube allows, so that is what the page is shown.
   const colors = reads.map((read) => [...read.colors]);
-  if (!(legal && nineOfEach(colors))) {
+  /**
+   * Is this colouring a legal cube EXACTLY AS SHOWN — no repair, nothing invented?
+   *
+   * `legalFit` alone is not that question (Codex audit, 2026-09-26). `assembleColors` REPAIRS on its
+   * way to a verdict, so an impossible colouring is silently mended inside the check and comes back
+   * legal while the rows the page is shown still hold the impossible pair. `repaired` is the
+   * assembler's own report of what it had to invent, and a colouring that needed nothing invented
+   * is the only one this file may call legal.
+   */
+  const fitsAsShown = (rows: number[][]): boolean => {
+    const faces = {} as Record<Face, ColorFace>;
+    rows.forEach((row, p) => {
+      faces[slotOf(row[4] as Colour)] = { ...reads[p]!, colors: row };
+    });
+    if (Object.keys(faces).length !== FACES.length) return false;
+    const result = assembleColors(faces, LOW_CONFIDENCE_THRESHOLD, {}, { diagnose: false });
+    return legalFit(result) && (result.repaired?.length ?? 0) === 0;
+  };
+  // `legal` above is only "a LEGAL CUBE WAS REACHABLE"; this is whether the rows returned are it.
+  let shownLegal = legal;
+  // NOT `nineOfEach`, WHICH TWO SWAPPED STICKERS SATISFY. That was the whole defect: swap one
+  // sticker between two faces of a solved cube and the counts are untouched, so this branch was
+  // skipped, the reads were returned unchanged, and `legal: true` was asserted about them.
+  if (!(legal && fitsAsShown(colors))) {
     const order = filing ? FACES.map((slot) => filing.photoOf[slot]) : captures.map((_, p) => p);
     const scores = order.flatMap((p) => reads[p]!.scores!);
     const lab = order.every((p) => reads[p]!.lab?.length === PER_COLOR)
@@ -207,41 +194,28 @@ export function decide(captures: readonly Capture[]): Decision {
       });
       return out;
     };
-    const fits = (rows: number[][]): boolean => {
-      const faces = {} as Record<Face, ColorFace>;
-      rows.forEach((row, p) => {
-        faces[slotOf(row[4] as Colour)] = { ...reads[p]!, colors: row };
-      });
-      return (
-        Object.keys(faces).length === FACES.length &&
-        legalFit(assembleColors(faces, LOW_CONFIDENCE_THRESHOLD, {}, { diagnose: false }))
-      );
-    };
-    const chosen =
-      candidates.map(apply).find((rows) => !legal || fits(rows)) ?? apply(candidates[0]!);
+    const found = candidates.map(apply).find((rows) => !legal || fitsAsShown(rows));
+    // NOTHING SHOWABLE IS LEGAL AS SHOWN, so the claim is withdrawn rather than made about a
+    // colouring that is not it. The likeliest colouring is still what the page gets — a refused
+    // reading is more useful drawn than blank — it is just no longer called legal.
+    if (legal && found === undefined) shownLegal = false;
+    const chosen = found ?? apply(candidates[0]!);
     chosen.forEach((row, p) => {
       colors[p] = row;
     });
   }
 
-  // `legal` is a claim about the colours this returns, so check exactly those. A failure here is a
-  // bug in the mapping above, never a property of the photographs.
-  if (legal) {
-    const faces = {} as Record<Face, ColorFace>;
-    colors.forEach((row, p) => {
-      faces[slotOf(row[4] as Colour)] = { ...reads[p]!, colors: row };
-    });
-    if (
-      Object.keys(faces).length !== FACES.length ||
-      !legalFit(assembleColors(faces, LOW_CONFIDENCE_THRESHOLD, {}, { diagnose: false }))
-    ) {
-      throw new Error('internal: the proposed colours are not the legal cube the assembly found');
-    }
+  // `shownLegal` is a claim about the colours this returns, so check exactly those — AS SHOWN,
+  // which is what `fitsAsShown` adds over the check that used to stand here and let the assembler
+  // repair its way past the question. A failure is a bug in the mapping above, never a property of
+  // the photographs.
+  if (shownLegal && !fitsAsShown(colors)) {
+    throw new Error('internal: the proposed colours are not the legal cube the assembly found');
   }
 
   return {
     status: 'confirm',
-    legal,
+    legal: shownLegal,
     verdict: filing ? (filing.result.reason ?? 'a legal cube') : 'centres could not be filed',
     photos: colors.map((row, p) => ({
       colors: row,

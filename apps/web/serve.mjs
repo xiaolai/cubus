@@ -12,7 +12,7 @@
 // which writes web/vendor/ai-scan-panel.js — refreshes the open tab on its own.
 
 import { realpathSync, statSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { createDevServer } from './dev-server.mjs';
@@ -61,6 +61,21 @@ const COURSE_REAL = COURSE_ROOT ? realpathSync(COURSE_ROOT) : null;
 // `course/index.json` — a packaged build answers a missing file with index.html, not a 404.
 const COURSE_META = `<meta name="cubus-course" content="${COURSE_MOUNT}/">`;
 
+// Where a scan recording is POSTed (`dev-docs/scan-recording-session-2026-09-23.md`).
+//
+// SAME ORIGIN ON PURPOSE. The desktop shell's CSP allows `connect-src 'self'` and nothing else, and under
+// `tauri dev` this server IS 'self' — so the page can hand a session over without the CSP being widened
+// for a debugging convenience, and without a Tauri command, which would be a seam the browser build does
+// not have. A recording is too big to read out any other way: 4,000 frames of every candidate above 0.05
+// with all six class scores is tens of megabytes.
+//
+// The DIRECTORY is decided here and the handling is in `dev-server.mjs`, which is this file's whole
+// division of labour: a path read off the environment is this file's, and a request is not. It also makes
+// the endpoint reachable by a test, which it was not while it lived in the listener.
+//
+// Dev only. `build.mjs` produces `dist/` and never includes this server.
+const RECORD_DIR = join(ROOT, '..', '..', 'dev-docs', 'recordings');
+
 // Live-reload is for a human with an editor open, and it is actively hostile to a test.
 //
 // The watcher is recursive over the whole web directory, so ANY write under it — a save, a
@@ -86,6 +101,7 @@ const dev = createDevServer({
   courseMeta: COURSE_META,
   liveReload: LIVE_RELOAD,
   host: HOST,
+  recordDir: RECORD_DIR,
 });
 
 // Fail with a clear, actionable message instead of an unhandled-error stack trace when the port

@@ -95,7 +95,7 @@ export function buildChrome(platform) {
   // smart-cube card stopped being announced as a control at all, and a keyboard user had no way
   // to know it could be pressed (found by audit, 2026-09-04). The live text belongs to a status
   // region, so it has one of its own: an off-screen sibling nobody has to be able to click.
-  const cubeLive = `<button class="tb-ctl tb-live" id="cubeLive" hidden data-nav="settings">${icon('bluetooth', 17)}</button>`
+  const cubeLive = `<button class="tb-ctl tb-live" id="cubeLive" hidden data-nav="settings" title="Smart cube" aria-label="Smart cube">${icon('bluetooth', 17)}</button>`
     + '<span class="sr-only" id="cubeLiveSay" role="status" aria-live="polite"></span>';
   // The shortcut hint is drawn only where the shortcut is guaranteed to arrive: under the desktop
   // shell. A browser on macOS keeps ⌘, for itself, and a phone has no keyboard to promise.

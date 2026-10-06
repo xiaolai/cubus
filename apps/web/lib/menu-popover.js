@@ -75,14 +75,41 @@ export function createMenu({ root, button, label, signal, place, closeFirst = nu
     ev.stopPropagation();
   };
 
-  /** An item the menu ticks, not yet placed in it. Its role is what `mark` reads. */
-  const radio = (text, choose) => {
+  /**
+   * One menu item. The ROLE is the only thing that differs between the two kinds, so it is the only
+   * thing the two wrappers below pass — a second copy of "make a button, name it, wire it" is a
+   * second place for the type, the text channel or the handler style to drift, and this menu's own
+   * history is of exactly that (the camera menu had the keyboard affordances and the speed menu did
+   * not, which is why this module exists at all).
+   *
+   * `textContent`, never markup: an item's text is a caller's string, and the pattern menu replaces
+   * it with a picture afterwards rather than interpolating one in.
+   */
+  const itemWithRole = (role, text, choose) => {
     const b = document.createElement('button');
     b.type = 'button';
     b.textContent = text;
-    b.setAttribute('role', 'menuitemradio');
+    b.setAttribute('role', role);
     b.onclick = choose;
     return b;
+  };
+  /** An item the menu ticks, not yet placed in it. Its role is what `mark` reads. */
+  const radio = (text, choose) => itemWithRole('menuitemradio', text, choose);
+  /**
+   * An item the menu does NOT tick: a command rather than a choice.
+   *
+   * `menuitem`, not `menuitemradio`, which is what makes `mark` pass over it — a way through to
+   * another screen is not one of the things this menu is choosing between, and ticking rules would
+   * have to treat it as a sixth option that is never on. The arrow keys still reach it: the keydown
+   * handler above collects `[role^="menuitem"]`, which was written for exactly this.
+   */
+  const item = (text, choose) => itemWithRole('menuitem', text, choose);
+  /** A rule between groups of items. `role="separator"`, because a bare <hr> inside a menu is
+   *  announced as nothing and leaves the groups it divides sounding like one list. */
+  const divider = () => {
+    const hr = document.createElement('hr');
+    hr.setAttribute('role', 'separator');
+    return hr;
   };
   /** Tick every item `isChosen` picks, and untick the rest. */
   const mark = (isChosen) => {
@@ -97,5 +124,5 @@ export function createMenu({ root, button, label, signal, place, closeFirst = nu
     if (isOpen() && !el.contains(target) && !button.contains(target)) close();
   };
 
-  return Object.freeze({ el, radio, mark, isOpen, close, closeUnless, focusIn });
+  return Object.freeze({ el, radio, item, divider, mark, isOpen, close, closeUnless, focusIn });
 }

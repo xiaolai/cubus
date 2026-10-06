@@ -136,7 +136,13 @@ export function createScanVoice({ root, restart, closePops }) {
         return;
       }
     }
-    if (p.complete) {
+    // `p.phase !== 'error'` — A CAMERA IN TROUBLE OUTRANKS A FINISHED SCAN (Codex audit,
+    // 2026-09-25). Reopening the camera over a completed scan reaches `complete: true` WITH
+    // `phase: 'error'` (slowOpen, a permission prompt still pending), and this branch answered
+    // first: the camera's own failure vanished and the screen said "checked and solvable — press
+    // Solve this cube". Falling through renders it properly, since `SAY_TITLE` and `PHASE_TONE`
+    // both already carry 'error'.
+    if (p.complete && p.phase !== 'error') {
       // A finished scan answers "what do I do now?", and only this file can: the next action
       // is THIS screen's button. The scanner says the scan is complete; the words naming
       // "Solve this cube" belong to the screen the button lives on.

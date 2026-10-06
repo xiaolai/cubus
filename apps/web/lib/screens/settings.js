@@ -20,13 +20,17 @@ import { SCREENS, advancedChordWords, advancedOpen, go, renderNav, renderScreen 
 import { mountSmartCube, smartCubeCard } from './settings/smart-cube.js';
 import { wireOrientation } from './settings/window-orientation.js';
 import { bindChoice, bindSwitch, commitPref, switchRow, unsavedNote } from './settings/preferences.js';
-import { mountSpokenLines, spokenLinesCard } from './settings/spoken-lines.js';
-import { hush } from '../speech.js';
 import { stopAll } from '../sound.js';
 
 // How the four rungs read on the Settings screen. A rung with no label here would render as
 // "undefined", so solve-tier-wiring.test.mjs checks every TIERS entry has one.
 const TIER_LABEL = { twenty: '≤ 20', nineteen: '≤ 19', eighteen: '≤ 18', shortest: 'shortest' };
+/** The drill clock's row. It STATES ITS COST, the way the prove row does: a drill is a handful of
+ *  turns, so the timer's missing first move is a far larger share of it than of a solve, and the
+ *  number is only ever worth comparing with the same child's own earlier tries. */
+export const DRILL_CLOCK_LABEL = 'Time my drills';
+export const DRILL_CLOCK_BLURB = 'Off, a drill is just practice. On, each try is timed — compare it only with your own earlier tries, never with anyone else';
+
 const TIER_BLURB = {
   twenty: 'Twenty moves or fewer — always possible, and quick. An easy cube still gets its short answer',
   nineteen: 'Nineteen or fewer — a moment longer, and it almost always gets there',
@@ -37,10 +41,12 @@ const TIER_BLURB = {
 // The three sound modes, as they read on the Settings screen. `voice` is the chime AND the words:
 // the chime lands at once and the line follows, so a scan never loses the immediate tick that says a
 // side went in. A mode with no label here would render as "undefined", the TIER_LABEL precedent.
-const SOUND_LABEL = { voice: 'Voice', chime: 'Bell', off: 'Off' };
+// TWO MODES SINCE 2026-09-30: `voice` is gone, and with it a mode whose whole description was a
+// promise about spoken lines. The pills below are built from `Object.values(SOUND_MODES)`, so
+// removing the mode removed its button — a list written out here would have left a dead one.
+const SOUND_LABEL = { chime: 'Sounds', off: 'Off' };
 const SOUND_BLURB = {
-  voice: 'A bell when a side is saved, and a spoken line with it where this device has a voice',
-  chime: 'A bell when a side is saved, and when the cube checks out — no spoken lines',
+  chime: 'A different sound for each thing that happens — a side saved, the cube checked out, a question waiting for you',
   off: 'Silent. The tiles and the small cube still show what the scan needs',
 };
 
@@ -81,6 +87,11 @@ SCREENS.settings = () => {
           title: PROVE_COPY.settingLabel, blurb: PROVE_COPY.settingBlurb,
           id: 'setToggle-proveMinimum', on: Boolean(settings.proveMinimum), attrs: 'data-toggle="proveMinimum"', label: PROVE_COPY.settingLabel,
         }) : ''}
+        ${switchRow({
+          style: 'padding:13px 0 0;border-top:1px solid var(--line-faint)',
+          title: DRILL_CLOCK_LABEL, blurb: DRILL_CLOCK_BLURB,
+          id: 'setToggle-drillClock', on: Boolean(settings.drillClock), attrs: 'data-toggle="drillClock"', label: DRILL_CLOCK_LABEL,
+        })}
         ${desktopWindow ? `<div class="wrap-row" style="justify-content:space-between;padding:12px 0"><div><div style="font-weight:600">Window</div><div class="sub" style="color:var(--ink-4)">Landscape or portrait — the window takes the shape and keeps it</div></div>
           <div class="wrap-row" style="gap:6px" id="orientationPills">${['landscape', 'portrait'].map((o) => `<button class="pill" id="setOrientation-${o}" data-set-orientation="${o}" aria-pressed="false">${escHtml(t(o))}</button>`).join('')}</div></div>` : ''}
         ${unsavedNote('appearance')}</div>
@@ -125,8 +136,7 @@ SCREENS.settings = () => {
           id: 'setToggle-devScanView', on: settings.devScanView === SCAN_VIEWS.stickers, attrs: 'data-scan-view', label: 'Sticker view while scanning',
         }) : ''}
         <div class="sub" style="color:var(--ink-5);margin-top:12px">${escHtml(t('%1 hides this section again.', advancedChordWords()))}</div>
-        ${unsavedNote('advanced')}</div>
-        ${spokenLinesCard()}` : ''}
+        ${unsavedNote('advanced')}</div>` : ''}
       <div class="card"><div class="eyebrow">ABOUT</div>
         <div class="about-brand"><img src="./icons/icon.svg" alt="" width="22" height="22" /><b>Cubus</b></div>
         <div class="about-row">${icon('tag', 15)}<span class="k">${t('Version')}</span><span class="num">${VERSION}</span></div>
@@ -146,7 +156,6 @@ SCREENS.settings = () => {
       mountCubeColours(root);
       mountCamera(root);
       mountAdvanced(root);
-      mountSpokenLines(root);
       mountSmartCube(root);
     },
   };
@@ -197,15 +206,14 @@ function mountCubeColours(root) {
   });
 }
 
-/** The sound mode. Choosing a quieter one means quieter NOW: a chime or a line already under way is
- *  stopped rather than left to finish after the choice said otherwise (audit, 2026-09-19, kept
- *  through the move from a boolean to three modes). `hush()` on every change, because leaving
- *  `voice` for either other mode must cut a line mid-word; `stopAll()` only for `off`, since
- *  `chime` keeps the bell that may be sounding. */
+/** The sound mode. Choosing silence means silence NOW: a chime already under way is stopped rather
+ *  than left to finish after the choice said otherwise (audit, 2026-09-19, kept through a boolean,
+ *  then three modes, then two). There were two calls here while `voice` existed — `hush()` on every
+ *  change to cut a line mid-word, and `stopAll()` for `off` alone — and with the words gone the
+ *  bell is the only thing there is to stop. */
 function mountCamera(root) {
   bindChoice(root, 'data-set-sound', 'setSound', (v) => {
     settings.soundMode = v;
-    hush();
     if (settings.soundMode === SOUND_MODES.off) stopAll();
   }, renderScreen);
 }

@@ -21,8 +21,14 @@ import { t } from './i18n.js';
  */
 export function createWalkResolver({
   state, SOLVED, solverReady, loadSolver, randomScramble, deriveCube, lastRoute, lessonFor, stepStates,
-  setStatus, fallBackToSolution,
+  setStatus, fallBackToSolution, pictureRoute,
 }) {
+  // INJECTED LIKE EVERY OTHER SOURCE, and refused here rather than at the first press: the branch
+  // below throws a walk failure when a picture route cannot be worked out, so a `pictureRoute` that
+  // was quietly undefined would fail every picture walk with the same message a real refusal gives.
+  if (typeof pictureRoute !== 'function') {
+    throw new TypeError('walk resolver: `pictureRoute` must be a function');
+  }
   /** The record a load commits. Whatever this walk did not produce is left empty. */
   const walkRecord = (fields) => Object.freeze({
     setup: '', alg: '', moves: [], steps: [], target: null, roll: null, lesson: null, route: null,
@@ -195,6 +201,35 @@ export function createWalkResolver({
     // start, never whatever the subject has become. An audit reproduced the alternative: the walk
     // described `R` while the 3D cube was handed `R F`.
     const startedFrom = state.cube.facelets;
+
+    // A PICTURE DESTINATION TAKES ITS OWN ROUTE, AND NO OTHER — before the whole-cube search is
+    // started, which is the whole point of putting this here rather than beside the race below.
+    //
+    // Two findings of a Codex refute pass (2026-09-26), and the first is the reason this branch is
+    // shaped like a return rather than a source:
+    //
+    //   A REFUSED PICTURE ROUTE MUST NOT BECOME A ROUTE SOMEWHERE ELSE. The code below starts the
+    //   whole-cube search first and falls back to its answer when `lastRoute` yields nothing. That
+    //   is right for a stage — solved is inside every stage target, so the fallback still arrives
+    //   somewhere the chip named — and WRONG for a picture: reproduced through this resolver, a
+    //   refused Checkerboard route committed a whole-cube walk of `R'` ending at solved, under a
+    //   heading that still said Checkerboard. The route's own verifier catching a bad answer would
+    //   have been the thing that sent the child to the wrong cube.
+    //
+    //   AND THE SEARCH IT DOES NOT NEED IS NEVER STARTED. `startWholeSearch` writes its
+    //   improvements straight into the count, so a child waiting for a picture would watch numbers
+    //   and escalation notices about solving the cube instead. Not starting it is stronger than
+    //   ignoring it, and it leaves the pool free for the search that IS wanted.
+    //
+    // A refusal throws rather than returning null: null here means "no repair, use the solve", and
+    // that is exactly the fallback this branch exists to refuse. `WALK_FAILURES` names the key.
+    if (stageTarget?.picture) {
+      const route = await pictureRoute(stageTarget, startedFrom, signal);
+      if (!fresh()) return null;
+      if (!route) throw new Error('no picture route');
+      return repairWalk(route, startedFrom);
+    }
+
     const whole = startWholeSearch({ fresh, signal });
     try {
       // The repair first, because it is the one that can answer while the whole-cube search runs.

@@ -138,6 +138,26 @@ function sixCrossStates(scrambles) {
   return scrambles.map((x) => applyAlg(SOLVED, `${x} ${C} ${invert(x)}`));
 }
 
+/**
+ * The mirror: every CORNER home and untwisted, the edges anywhere — an X on every face.
+ *
+ * Same construction and for the same reason. `C` here is a pure edge three-cycle (the Ua perm), so it
+ * fixes every corner; conjugating by a scramble `x` gives `x C x'`, which is conjugate to `C` and
+ * therefore fixes every corner too, while moving edges the scramble chooses. The method solver cannot
+ * produce these states — nothing it teaches stops with the corners done and the edges loose — so
+ * filtering a sample finds only whatever it happened to contain.
+ *
+ * NOT a slice algorithm, though `M2 U M2 U2 M2 U M2` is the usual spelling of an edge-only cycle:
+ * `cube-pieces.js` parses face turns only and refuses `M2` outright, which is worth knowing here
+ * rather than discovering as a generator that silently produced nothing.
+ */
+function xEveryFaceStates(scrambles) {
+  const C = "R U' R U R U R U' R' U' R2";
+  const invert = (alg) => alg.trim().split(/\s+/).reverse()
+    .map((m) => (m.endsWith('2') ? m : m.endsWith("'") ? m[0] : `${m}'`)).join(' ');
+  return scrambles.map((x) => applyAlg(SOLVED, `${x} ${C} ${invert(x)}`));
+}
+
 // ---- 1. the conjunction is the app's own target ---------------------------------------------------
 
 test("every target's conjunction of projected goals is the app's own predicate", () => {
@@ -217,12 +237,16 @@ test('every table a target uses has a goal set containing that target’s projec
   // deduplicates correctly can never meet it. Every other target is a set of millions.
   const MIN_IN_TARGET = {
     cross: 8, 'first-layer': 8, 'two-layers': 8, 'top-cross': 8, 'corners-home': 8,
-    'six-cross': 8, solved: 1,
+    'six-cross': 8, 'x-every-face': 8, solved: 1,
   };
   let totalChecked = 0;
   for (const target of TARGETS) {
-    const inTarget = target.id === 'six-cross'
-      ? sixCrossStates(seededScrambles(12, 0x4a11, 8))
+    const GENERATED = {
+      'six-cross': () => sixCrossStates(seededScrambles(12, 0x4a11, 8)),
+      'x-every-face': () => xEveryFaceStates(seededScrambles(12, 0x4a11, 8)),
+    };
+    const inTarget = GENERATED[target.id]
+      ? GENERATED[target.id]()
       : statesSatisfying(INDEPENDENT[target.id]);
     assert.ok(inTarget.length >= MIN_IN_TARGET[target.id],
       `${target.id}: only ${inTarget.length} independently generated target states — too few to mean anything`);

@@ -112,6 +112,56 @@ function recordingCube() {
   return new Proxy(target, { get(t, n) { if (typeof n === 'string' && !allowed.has(n)) throw new Error(`no member "${n}"`); return t[n]; } });
 }
 
+test('replay plays the SAME reveal again, and keeps the answer that earned it', () => {
+  // `seek(position)` cannot do this: it builds a fresh round, which is unlocked, so the next
+  // `reveal()` throws and the child has lost the answer they just gave. `replay()` drops the memoised
+  // reveal and the segment it loaded onto the element, and touches the round itself not at all.
+  const cube = recordingCube();
+  const doc = predictionScript(PREDICTION[1]);
+  const drill = createEventDriver(buildScript(doc), { cube });
+  drill.seek(ROUND);
+
+  // Before an answer there is nothing to replay, and it refuses rather than quietly doing nothing —
+  // a silent no-op behind an enabled button is indistinguishable from a broken one.
+  assert.throws(() => drill.replay(), /replayed after it is answered/);
+
+  for (const f of 'DF') drill.select(f);
+  assert.equal(drill.round.verdict, 'right');
+  assert.equal(drill.reveal(), 0, 'precondition: the reveal drained in one call');
+
+  const before = { locked: drill.round.locked, verdict: drill.round.verdict, picked: [...drill.round.picked], at: drill.position };
+  const loadsBefore = cube.calls.filter(([c, n]) => c === 'set' && (n === 'facelets' || n === 'scramble')).length;
+
+  drill.replay();
+
+  // THE ANSWER SURVIVES. This is the whole difference from seeking back.
+  assert.equal(drill.round.locked, before.locked, 'the replay unlocked the round');
+  assert.equal(drill.round.verdict, before.verdict, 'the replay lost the verdict');
+  assert.deepEqual([...drill.round.picked], before.picked, 'the replay lost what was picked');
+  assert.equal(drill.position, before.at, 'the replay moved off the round');
+
+  // The cube was re-loaded, because the first reveal had replaced what the writer last wrote.
+  const loadsAfter = cube.calls.filter(([c, n]) => c === 'set' && (n === 'facelets' || n === 'scramble')).length;
+  assert.ok(loadsAfter > loadsBefore, 'the replay did not put the asking view back — it would play from the revealed cube');
+
+  // AND IT PLAYS AGAIN — observed on the CUBE, not on the return value.
+  //
+  // `reveal()` answers 0 both when it has just rebuilt and played its one stop AND when the memoised
+  // reveal is exhausted and it did nothing at all. Asserting 0 therefore passed with `reveal = null`
+  // deleted from `replay()` — the mutation survived, and the finding was about this assertion rather
+  // than about the code. What separates the two is whether the element was driven.
+  const drove = () => cube.calls.filter(([c]) => c === 'step' || c === 'stepStop' || c === 'stepBack' || c === 'stepBackStop').length;
+  const beforeStops = drove();
+  assert.equal(drill.reveal(), 0, 'the replayed reveal reported stops it could not have');
+  assert.ok(drove() > beforeStops, 'the replayed reveal drove nothing — the memoised reveal was never reset');
+
+  // Twice more, to prove it is not a one-shot.
+  const twice = drove();
+  drill.replay();
+  assert.equal(drill.reveal(), 0);
+  assert.ok(drove() > twice, 'a second replay drove nothing');
+});
+
 test('the event driver: answered, then revealed, then on — and never revealed before it is answered', () => {
   const cube = recordingCube();
   const doc = predictionScript(PREDICTION[1]);

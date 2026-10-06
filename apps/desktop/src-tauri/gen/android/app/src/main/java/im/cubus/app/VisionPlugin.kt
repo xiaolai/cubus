@@ -323,9 +323,13 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
 
         // Claim this session BEFORE anything async starts, and clear the last camera's frame with
         // it. Whatever was in `latest` belongs to a camera that is about to be unbound.
-        val mine = generation.incrementAndGet()
-        latest.getAndSet(null)?.let(pool::release)
-        lastFrameError.set(null)
+        val mine =
+            synchronized(publishLock) {
+                val claimed = generation.incrementAndGet()
+                latest.getAndSet(null)?.let(pool::release)
+                lastFrameError.set(null)
+                claimed
+            }
 
         val future = ProcessCameraProvider.getInstance(activity)
         future.addListener({
@@ -409,6 +413,20 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
                 }
             }
 
+    /**
+     * Guards "is this session still current" TOGETHER WITH what is done about it.
+     *
+     * TWO ATOMICS ARE NOT ONE TRANSACTION (Codex audit, 2026-09-26). `publishFrame` read the
+     * generation and then published, and `closeCamera` bumped the generation and then cleared — four
+     * steps in two pairs, so a close landing between a publish's check and its `getAndSet` put a
+     * RETIRED camera's pixels back into `latest` after the close had emptied it. The next
+     * `nextDetection` then inferred over a frame from a camera that was no longer open, which is the
+     * one thing the generation exists to prevent. The Windows plugin had the same defect on its
+     * failure path (`note_capture_failure`) and is fixed the same way: the check and the act happen
+     * under one lock.
+     */
+    private val publishLock = Any()
+
     /** Letterbox one frame of session `mine` into a pooled buffer and publish it as [latest]. */
     private fun publishFrame(mine: Int, image: ImageProxy) {
         if (generation.get() != mine) return
@@ -418,21 +436,28 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
         runCatching { letterbox(image, buf) }
             .onSuccess {
                 // Re-checked after the work: a close can land while a frame is being letterboxed,
-                // and publishing it then revives a closed camera's pixels.
-                if (generation.get() == mine) {
-                    lastFrameError.set(null)
-                    latest.getAndSet(buf)?.let(pool::release)
-                } else {
-                    pool.release(buf)
+                // and publishing it then revives a closed camera's pixels. UNDER THE LOCK the close
+                // also takes, so the check and the publish cannot be split by one.
+                synchronized(publishLock) {
+                    if (generation.get() == mine) {
+                        lastFrameError.set(null)
+                        latest.getAndSet(buf)?.let(pool::release)
+                    } else {
+                        pool.release(buf)
+                    }
                 }
             }
             .onFailure { e ->
                 pool.release(buf)
-                if (generation.get() == mine) {
-                    // Recorded AND the stale frame dropped: answering with older pixels would let
-                    // a broken camera read as a working one.
-                    latest.getAndSet(null)?.let(pool::release)
-                    lastFrameError.set(e.message ?: e.toString())
+                // The same transaction as the success path: a retired analyzer must not clear the
+                // live session's frame or overwrite its error either.
+                synchronized(publishLock) {
+                    if (generation.get() == mine) {
+                        // Recorded AND the stale frame dropped: answering with older pixels would
+                        // let a broken camera read as a working one.
+                        latest.getAndSet(null)?.let(pool::release)
+                        lastFrameError.set(e.message ?: e.toString())
+                    }
                 }
             }
     }
@@ -457,13 +482,18 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
 
     /** Retire this session first, so an analyzer mid-frame cannot publish into the next one. */
     private fun closeCamera() {
-        generation.incrementAndGet()
+        // RETIRING AND EMPTYING ARE ONE STEP, under the lock `publishFrame` takes: bumping the
+        // generation and clearing `latest` as two steps let a publish that had already passed its
+        // check land in between and repopulate the slot after it was emptied.
+        synchronized(publishLock) {
+            generation.incrementAndGet()
+            latest.getAndSet(null)?.let(pool::release)
+            lastFrameError.set(null)
+        }
         analysis?.clearAnalyzer()
         provider?.unbindAll()
         analysis = null
         openedId = null
-        latest.getAndSet(null)?.let(pool::release)
-        lastFrameError.set(null)
     }
 
     // ---- model ---------------------------------------------------------------------------------
@@ -536,6 +566,33 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
      * sees "no frame yet" and skips, which is also one fewer inference of a picture the model has
      * already answered.
      */
+    /**
+     * The pixels of the frame with the given id — which this plugin never has (D7,
+     * dev-docs/scan-pipeline-audit-2026-09-23.md §3).
+     *
+     * IMPLEMENTED AS THE HONEST NEGATIVE, not omitted. The page asks for a frame's pixels so the
+     * assembly can ask which stickers carry the same PAINT before it refuses a scan
+     * (`recolourByPaint`), and it asks BY ID — the grid was fitted to one particular picture.
+     * This plugin speaks wire version 1, so it attaches no identity to a frame and keeps none to
+     * hand back; it also releases every frame into its buffer pool the moment the tensor is made
+     * (`nextDetection`), so there is nothing to return even in principle.
+     *
+     * The reply is the 8-byte header alone, both zero, which `decodeFramePixels` reads as "that
+     * frame is gone" — an ordinary answer, the same one Apple gives when a frame has aged out, and
+     * the page then behaves exactly as it did before any of this existed. It is here rather than
+     * absent because every command the page can send must be declared, or the call fails as "No
+     * command framePixels found" instead of as a plain "no pixels"
+     * (`apps/web/test/native-plugin-commands.test.mjs`, and `VisionPluginCommandsTest` on the
+     * compiled class). A real implementation waits on the frame identity Android does not yet send.
+     */
+    @Command
+    fun framePixels(invoke: Invoke) {
+        val header = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
+        header.putInt(0).putInt(0)
+        val empty = android.util.Base64.encodeToString(header.array(), android.util.Base64.NO_WRAP)
+        invoke.resolve(JSObject().apply { put("pixels", empty) })
+    }
+
     @Command
     fun nextDetection(invoke: Invoke) {
         modelExecutor.execute {

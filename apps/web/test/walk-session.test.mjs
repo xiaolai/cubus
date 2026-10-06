@@ -26,6 +26,10 @@ import { createFollowTracker } from '../lib/walk-follow.js';
 import { createScriptPlayer } from '../lib/script-player.js';
 import { walkScript } from '../lib/walk-script.js';
 import { createWalkPresenter } from '../lib/walk-presenter.js';
+import { readFileSync } from 'node:fs';
+
+import { APP_SOURCES, blockAt } from './app-source.mjs';
+import { pictureDestination } from '../lib/patterns.js';
 import { createWalkSession } from '../lib/walk-session.js';
 import { lcg, randomAlg } from './fixtures/seeded-scrambles.mjs';
 
@@ -157,13 +161,18 @@ function world({ subject = {}, omit = [], screen: screenOver = {} } = {}, make =
     settings: { rungs: {}, rungProgress: {}, proveMinimum: false },
     SOLVED,
     CHIP_NODE_BUDGET: 1,
-    WALK_FAILURES: { 'solver unavailable': 'no solver', 'no scramble': 'no scramble', 'cross-check': 'no check' },
+    WALK_FAILURES: { 'solver unavailable': 'no solver', 'no scramble': 'no scramble', 'cross-check': 'no check', 'no picture route': 'no shape route' },
     cubejs: () => Cube,
     solverReady: () => true,
     loadSolver: async () => true,
     randomScramble: async () => { throw new Error('this case rolls nothing'); },
     deriveCube: async () => { throw new Error('this case searches for nothing'); },
     classifyCube: () => ({ solvable: true, unsolvable: false }),
+    // MIRRORS `lib/cube-subject.js`'s, and reads `app.classifyCube` at CALL time so a case that
+    // overrides the classification (the spread below wins) overrides the eligibility with it. A
+    // fake that answered a fixed boolean here would leave the picture case asserting nothing.
+    walkEligible: ({ scrambling: sc = false } = {}) =>
+      sc || app.classifyCube().solvable || Boolean(pictureDestination(state.stageTarget)),
     adoptCube: (f) => { log.push(`adopt ${f}`); state.cube.facelets = f; },
     chainTrusted: () => state.cube.trusted && (state.cube.source === 'cube' || state.cube.source === 'camera'),
     markStale: () => {},
@@ -184,6 +193,10 @@ function world({ subject = {}, omit = [], screen: screenOver = {} } = {}, make =
     escHtml: (s) => String(s).replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`),
     icon: () => '',
     lastRoute: async () => null,
+    // The way to a PICTURE destination, a service of the app beside `lastRoute`. Refuses by default
+    // the way `lastRoute` does above: a case that wants one overrides it, and every other case gets
+    // the honest "no route was worked out" rather than a picture walk it never asked for.
+    pictureRoute: async () => null,
     sayWalkLength: ({ setStatus, total }) => { setStatus(String(total)); },
     describeCube: (el, c) => { el.setAttribute('aria-label', c.facelets); },
     ...make({ state, log }),
@@ -272,6 +285,77 @@ test('a stage repair that answers calls the whole-cube search off, and does not 
   assert.deepEqual(w.chips(), ["U'"]);
 });
 
+// A PICTURE DESTINATION NEVER FALLS BACK TO SOLVING THE CUBE.
+//
+// The worst defect a Codex refute pass found in the picture route's design (2026-09-26), and it is
+// the one the route's OWN verifier causes: `walk-resolver` used to start the whole-cube search
+// first and commit its answer whenever `lastRoute` yielded nothing. That is right for a stage —
+// solved sits inside every stage target, so the fallback still arrives where the chip said — and
+// wrong for a picture. Reproduced through the real resolver: a refused Checkerboard route committed
+// a whole-cube walk of `R'` ending at SOLVED, under a heading that still said Checkerboard. Catching
+// a bad answer was the thing that sent the child to the wrong cube.
+//
+// Two assertions, and the second is the one with teeth: the load must FAIL, and the whole-cube
+// search must never have been started — not merely ignored. Started, its improvements write
+// straight into the count, so a child waiting for a picture watches numbers about solving instead.
+test('a picture route that is refused fails the walk — it never solves the cube instead', async () => {
+  let wholeStarted = 0;
+  const w = world({ subject: { facelets: turned('R U') } }, ({ state }) => ({
+    deriveCube: async () => { wholeStarted += 1; solvedBy(state, "U' R'"); },
+    pictureRoute: async () => null, // the verifier refused whatever came back
+  }));
+  w.state.stageTarget = 'checkerboard';
+
+  const loaded = await within(w.session.load());
+  assert.equal(loaded, false, 'a refused picture route committed a walk anyway');
+  assert.deepEqual(w.chips(), [], 'a walk to somewhere the heading did not name reached the screen');
+  assert.equal(wholeStarted, 0,
+    'the whole-cube search ran for a picture destination — its improvements report on solving');
+  // The key reached the table rather than the generic fallback, which is what proves the refusal
+  // travelled as its own failure instead of as "something went wrong". The real wording lives in
+  // `screens/cube.js` and `stage-report`-style copy rules keep it about the SEARCH: every legal
+  // cube reaches every other in at most 20 moves, so "this shape cannot be reached" would be false.
+  assert.equal(w.$('#moveCount').textContent, 'no shape route',
+    'the refusal did not travel as its own failure — it fell through to the generic message');
+});
+
+test('a picture route that answers is the walk, and the cube is never solved beside it', async () => {
+  let wholeStarted = 0;
+  // THE STUB IS ASKED ABOUT SOMETHING, and it records what. The first version ignored its arguments
+  // and returned `U'`, which takes this fixture's cube to `R` rather than to The Checkerboard — so
+  // passing a NULL destination and a SOLVED starting cube passed every assertion here (audit,
+  // 2026-09-27). A stub that does not look at the question tests only that a route is committed.
+  const asked = [];
+  const w = world({ subject: { facelets: turned('R U') } }, ({ state }) => ({
+    deriveCube: async () => { wholeStarted += 1; solvedBy(state, "U' R'"); },
+    pictureRoute: async (destination, facelets, signal) => {
+      asked.push({ id: destination?.id, facelets, signal });
+      // AN ALGORITHM THAT ACTUALLY REACHES THE CHECKERBOARD from this fixture's cube: undo the
+      // scramble, then the pattern's own moves. The first version returned `U'`, which takes `R U`
+      // to `R` — so the committed walk ended nowhere near the destination and nothing noticed
+      // (verify pass, 2026-09-27). A stub for a verified route has to be verifiable.
+      return {
+        alg: "U' R' D2 U2 L2 R2 B2 F2", moves: 8, minimal: false, overshoot: false, source: 'picture',
+      };
+    },
+  }));
+  w.state.stageTarget = 'checkerboard';
+
+  const loaded = await within(w.session.load());
+  assert.equal(loaded, true, 'a verified picture route was not committed');
+  assert.equal(wholeStarted, 0, 'the whole-cube search was started for a destination that did not need it');
+  assert.equal(asked.length, 1, 'the picture route was not asked exactly once');
+  assert.equal(asked[0].id, 'checkerboard', 'the route was asked about the wrong destination');
+  assert.equal(asked[0].facelets, turned('R U'), 'the route was asked about the wrong cube');
+  // THE WALK'S OWN SIGNAL, not merely something defined: `{}` passed a presence check, which would
+  // let a superseded load's search run on regardless (verify pass, 2026-09-27).
+  assert.ok(asked[0].signal instanceof AbortSignal, 'the route was dispatched with no way to call it off');
+  // AND THE COMMITTED WALK ENDS ON THE PICTURE. This is the assertion the stub's algorithm exists
+  // for: the chips are what the screen will play, and their last state must be the destination.
+  assert.deepEqual(w.chips(), ["U'", "R'", 'D2', 'U2', 'L2', 'R2', 'B2', 'F2']);
+  assert.equal(w.$('#stepLbl').textContent, '0 / 8');
+});
+
 test('turns the cube reported since its last snapshot are adopted before the next search asks about it', async () => {
   // Scan R, turn U, choose a target: the follow model knows about the U and the subject does not
   // until a snapshot arrives. Asked about the subject, the app offered R' for a cube that is R U.
@@ -316,6 +400,65 @@ test('a cube that no longer has a walk rebuilds the screen — after the load, n
   assert.deepEqual(w.log, ['refreshScreen']);
   assert.equal(searched, false, 'a cube with no walk was searched for one');
   assert.equal(w.$('#moveCount').textContent, '—', 'the screen was reset for a walk that cannot exist');
+});
+
+// A SOLVED CUBE AIMING AT A PICTURE KEEPS ITS COMPOSITION, and this is the case the test above
+// cannot reach. `compositionGone()` asks whether the screen still matches the cube, and it used to
+// compare `classifyCube().solvable` against `walking` — but `walking` is "solvable OR a picture is
+// selected", so a solved cube walking to The Checkerboard disagreed with itself and rebuilt on
+// EVERY load. A verify pass reproduced four consecutive rebuilds before its harness stopped it
+// (2026-09-27).
+//
+// WRITTEN HERE because the mounted-screen test in `router-wiring.test.mjs` cannot catch it: nothing
+// there reports a cube, so `compositionGone()` never runs at all, and its loop assertion passed
+// with the defect put back. A test that cannot fail for the reason it was written is worse than no
+// test, which is the whole lesson of the audit this came from.
+// THE CLASS, not the instance. The rule above ("solvable OR a picture is selected") was written out
+// FOUR times — three in `screens/cube.js`, one here — and two of those carried a comment asserting
+// there were exactly two. The one nobody converted was `cubeScreen`'s `update()`, which omitted the
+// picture clause, so a solved cube aiming at a picture answered `refreshScreen()` with "I cannot show
+// this" and was destroyed and rebuilt on every live report. This scan is what stops a fifth.
+test('walk eligibility is decided in one place, and no screen decides it again', () => {
+  // The ONE definition, cut out brace-matched so the scan below can exempt it by identity rather
+  // than by filename — and `blockAt` throws if the anchor is missing or appears twice, which is
+  // itself the check that the definition has not been moved or copied.
+  const home = readFileSync(new URL('../lib/cube-subject.js', import.meta.url), 'utf8');
+  const definition = blockAt(home, 'export function walkEligible(');
+  assert.ok(/pictureDestination/.test(definition), 'the definition stopped consulting the picture clause');
+
+  const offenders = [];
+  for (const file of APP_SOURCES) {
+    const src = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+    for (const [i, line] of src.split('\n').entries()) {
+      const code = line.replace(/\/\/.*$/, '');
+      // A decision, not a read: `.solvable` next to a picture-destination test is the expression
+      // that belongs in `walkEligible`.
+      if (!/\.solvable\b/.test(code)) continue;
+      if (!/pictureDestination|stageTargetNow\(\)/.test(code)) continue;
+      if (definition.includes(code.trim())) continue;
+      offenders.push(`${file}:${i + 1} ${code.trim()}`);
+    }
+  }
+  assert.deepEqual(offenders, [], 'walk eligibility is being re-derived instead of asked for');
+});
+
+test('a solved cube aiming at a picture keeps its composition — it does not rebuild for ever', async () => {
+  const w = world({ subject: { facelets: SOLVED } }, () => ({
+    // What a solved cube really answers: no solve, and legal.
+    classifyCube: () => ({ solvable: false, unsolvable: false }),
+    pictureRoute: async () => ({ alg: "D2 U2 L2 R2 B2 F2", moves: 6, minimal: false, overshoot: false, source: 'picture' }),
+  }));
+  w.state.stageTarget = 'checkerboard';
+
+  assert.equal(await w.session.load(), true, 'the picture walk was not committed from a solved cube');
+  assert.deepEqual(w.log.filter((e) => e === 'refreshScreen'), [],
+    'the screen asked to be rebuilt while showing exactly the composition it should');
+  assert.deepEqual(w.chips(), ['D2', 'U2', 'L2', 'R2', 'B2', 'F2']);
+
+  // And a second load settles the same way: the loop was one rebuild per load, so one load can
+  // look clean while the screen churns.
+  assert.equal(await w.session.load(), true);
+  assert.deepEqual(w.log.filter((e) => e === 'refreshScreen'), [], 'the second load rebuilt the screen');
 });
 
 test('the screen\'s teardown calls off the search in flight', async () => {

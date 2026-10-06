@@ -164,6 +164,207 @@ test('with several stages ready at once, only the one offered first is promised 
   }
 });
 
+test('a save the device refused is said on the card, and survives a repaint', async () => {
+  // Two halves of one rule, and each was a defect in turn.
+  //
+  // THE ORIGINAL: the warning was written into the note element after `renderScreen()`, so the very
+  // next repaint removed it while the rung stayed raised — a screen that told the truth once and then
+  // quietly implied the ladder was saved (found by audit, 2026-09-28).
+  //
+  // THE REGRESSION THE FIRST FIX INTRODUCED: clearing only the raised stage's id. `raiseRung` calls
+  // `save('cubusSettings', settings)`, which writes the WHOLE settings object, so a later successful
+  // raise puts the earlier stage's rung on disk too — and its warning stayed up, now false (found by
+  // the verify pass on that fix).
+  //
+  // THE GLOBAL IS REPLACED, NOT PATCHED. happy-dom's Storage is a Proxy: `store.setItem = fn` stores
+  // an ITEM named "setItem" and leaves the method alone, so two earlier attempts at this test let the
+  // write through and failed for that reason instead of the one they were written for.
+  // `app-settings.js` resolves `localStorage` from the global on every call, so a delegating
+  // stand-in is what a refusal looks like from inside the app; reads go to the real store, so
+  // `stored()` can prove the rung did NOT land.
+  //
+  // AND IT RESTORES THE LADDER IT SPENT: these tests are ordered and share one booted app, so raising
+  // two stages here consumed rungs the focus tests below assert on. Without the restore they failed
+  // with "pairs has a rung left", which reads as a defect in them and was this test's doing.
+  const { settings } = await import('../lib/app-settings.js');
+  const note = (id) => $(`#rungNote-${id}`);
+  const real = globalThis.localStorage;
+  const wasRungs = structuredClone(settings.rungs);
+  const wasProgress = structuredClone(settings.rungProgress);
+  const repaint = async () => {
+    win.location.hash = '#/home';
+    await tick();
+    win.location.hash = '#/lessons';
+    await tick();
+  };
+  const useReal = () => Object.defineProperty(globalThis, 'localStorage', { value: real, writable: true, configurable: true });
+
+  try {
+    const raisable = STAGE_IDS.filter((id) => (stored().rungs?.[id] ?? 0) < TOP_RUNG[id]);
+    assert.ok(raisable.length >= 2, `precondition: two raisable stages, got ${raisable.join(',')}`);
+    const [a, b] = raisable;
+    const wasRung = stored().rungs?.[a] ?? 0;
+
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: {
+        getItem: (k) => real.getItem(k),
+        removeItem: (k) => real.removeItem(k),
+        setItem: () => { throw new Error('quota exceeded (test)'); },
+      },
+      writable: true,
+      configurable: true,
+    });
+    try {
+      $(`[data-raise="${a}"]`).click();
+      await tick();
+      assert.equal(stored().rungs?.[a] ?? 0, wasRung, 'precondition: the refusal must keep the rung off disk');
+      assert.match(note(a).textContent, /did not save that/, `${a}: a refused save said nothing`);
+      assert.equal(note(a).style.color, 'var(--err-ink)', 'the refusal is not drawn as one');
+      await repaint();
+      assert.match(note(a).textContent, /did not save that/, 'the warning did not survive a repaint');
+    } finally {
+      useReal();
+    }
+
+    $(`[data-raise="${b}"]`).click();
+    await tick();
+    assert.equal(stored().rungs[a], wasRung + 1, `precondition: ${a}'s rung reached disk on ${b}'s write`);
+    assert.doesNotMatch(note(a).textContent, /did not save that/,
+      `${a} still says it was not saved, after a write that saved it`);
+    assert.doesNotMatch(note(b).textContent, /did not save that/, `${b} was saved and says otherwise`);
+  } finally {
+    useReal();
+    settings.rungs = wasRungs;
+    settings.rungProgress = wasProgress;
+    real.setItem('cubusSettings', JSON.stringify(settings));
+    await repaint();
+  }
+});
+
+// THE SECOND REGRESSION, and the one that outlived both fixes above: `save('cubusSettings', …)`
+// writes the WHOLE record, so a successful write by ANY OTHER caller persists a raised rung too.
+// The warning was cleared only by a later successful RAISE, so a rung that reached disk through a
+// preference toggle or a shape chosen on another screen kept its "this device did not save that"
+// standing over it — the screen saying something false about the learner, which is the one thing it
+// must not do. Found by audit 2026-10-04 and reproduced through `rememberShape()`.
+//
+// `lib/screens/lessons.js` asks STORAGE now (`unsavedRungs`) instead of remembering a Set, so every
+// writer that will ever exist is covered without having to know about this screen. This case is
+// what holds that: the write it makes is deliberately NOT a raise.
+test('a rung that reaches disk through someone else\'s write stops being called unsaved', async () => {
+  const { settings } = await import('../lib/app-settings.js');
+  const { rememberShape } = await import('../lib/shape-recency.js');
+  const { OFFERED_PATTERNS, selectionOf } = await import('../lib/patterns.js');
+  const note = (id) => $(`#rungNote-${id}`);
+  const real = globalThis.localStorage;
+  const wasRungs = structuredClone(settings.rungs);
+  const wasProgress = structuredClone(settings.rungProgress);
+  const wasRecent = [...settings.shapesRecent];
+  const stored = () => JSON.parse(real.getItem('cubusSettings') ?? '{}');
+  const repaint = async () => {
+    win.location.hash = '#/home';
+    await tick();
+    win.location.hash = '#/lessons';
+    await tick();
+  };
+  const useReal = () => Object.defineProperty(globalThis, 'localStorage', { value: real, writable: true, configurable: true });
+
+  try {
+    const id = STAGE_IDS.find((s) => (stored().rungs?.[s] ?? 0) < TOP_RUNG[s]);
+    assert.ok(id, 'precondition: a stage with a rung left to raise');
+    const wasRung = stored().rungs?.[id] ?? 0;
+
+    // A raise the device refuses. Reads still go to the real store, so the rung provably stays off disk.
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: {
+        getItem: (k) => real.getItem(k),
+        removeItem: (k) => real.removeItem(k),
+        setItem: () => { throw new Error('quota exceeded (test)'); },
+      },
+      writable: true,
+      configurable: true,
+    });
+    try {
+      $(`[data-raise="${id}"]`).click();
+      await tick();
+      assert.equal(stored().rungs?.[id] ?? 0, wasRung, 'precondition: the refusal kept the rung off disk');
+      assert.match(note(id).textContent, /did not save that/, 'a refused raise said nothing');
+    } finally {
+      useReal();
+    }
+
+    // NOT A RAISE. A completely unrelated writer of the same record — this is the whole point of the
+    // case, and the old Set-based warning could not see it.
+    const shape = selectionOf(OFFERED_PATTERNS.at(-1));
+    assert.equal(rememberShape(shape), true, 'precondition: the unrelated write must succeed');
+    assert.equal(stored().rungs?.[id], wasRung + 1,
+      'precondition: that write carried the raised rung to disk — if not, this case proves nothing');
+
+    await repaint();
+    assert.doesNotMatch(note(id).textContent, /did not save that/,
+      `${id} is on disk and the screen still says the device did not save it`);
+    assert.notEqual(note(id).parentElement.querySelector(`#rungNote-${id}`).style.color, 'var(--err-ink)',
+      'the note is still drawn as a refusal');
+  } finally {
+    useReal();
+    settings.rungs = wasRungs;
+    settings.rungProgress = wasProgress;
+    settings.shapesRecent = wasRecent;
+    real.setItem('cubusSettings', JSON.stringify(settings));
+    await repaint();
+  }
+});
+
+// AND THE DEFECT THE DERIVED WARNING INTRODUCED, caught by the verify pass on it (2026-10-04).
+//
+// The warning compares the rungs in memory with the rungs on disk. The first derived version asked
+// its own question of the stored record — "is it an integer?" — while `app-settings.js` also bounds
+// a rung by its stage's top. A stored `cross: 99` is therefore REPAIRED TO 0 in memory and was read
+// as 99 here, so the two disagreed and Lessons said the device had not saved a raise that nobody
+// ever made. Both sides go through `repairRungs` now; this is what holds that.
+//
+// It needs no refused write and no raise: the whole failure is two readings of one stored record.
+test('a stored rung the repair rejects is not reported as an unsaved raise', async () => {
+  const { settings } = await import('../lib/app-settings.js');
+  const note = (id) => $(`#rungNote-${id}`);
+  const real = globalThis.localStorage;
+  const wasRecord = real.getItem('cubusSettings');
+  const wasRungs = structuredClone(settings.rungs);
+  const repaint = async () => {
+    win.location.hash = '#/home';
+    await tick();
+    win.location.hash = '#/lessons';
+    await tick();
+  };
+
+  try {
+    // Every way a stored rung can be unusable: past the stage's top, negative, and not a number.
+    // Each one is repaired to 0 in memory, so each one must read as "nothing outstanding" here.
+    for (const bad of [99, -1, 1.5, '1', null]) {
+      const id = STAGE_IDS[0];
+      settings.rungs = { ...wasRungs, [id]: 0 };
+      const record = { ...JSON.parse(wasRecord), rungs: { ...wasRungs, [id]: bad } };
+      real.setItem('cubusSettings', JSON.stringify(record));
+      await repaint();
+      assert.doesNotMatch(note(id).textContent, /did not save that/,
+        `a stored rung of ${JSON.stringify(bad)} was read as an unsaved raise — the screen and the repair disagree about what a rung is`);
+    }
+
+    // AND THE WARNING STILL WORKS, which is the half that proves the case above is not simply
+    // asserting that nothing ever warns: a rung genuinely ahead of disk is still reported.
+    const id = STAGE_IDS[0];
+    settings.rungs = { ...wasRungs, [id]: 1 };
+    real.setItem('cubusSettings', JSON.stringify({ ...JSON.parse(wasRecord), rungs: { ...wasRungs, [id]: 0 } }));
+    await repaint();
+    assert.match(note(id).textContent, /did not save that/,
+      'a rung that really is ahead of disk is no longer reported — the check has gone blind');
+  } finally {
+    settings.rungs = wasRungs;
+    real.setItem('cubusSettings', wasRecord);
+    await repaint();
+  }
+});
+
 test('a rung raised from the keyboard keeps focus on the button that raised it', async () => {
   const raise = () => $('[data-raise="pairs"]');
   raise().focus();
@@ -244,6 +445,11 @@ test("the Drill hands its cube the scheme, so a Japanese cube is drawn in its ow
   try {
     win.cubusGo('drill');
     await tick();
+    // The Drill opens on the CHOOSER now, which is a grid of cards and draws no cube; the cube
+    // belongs to one algorithm's own page. So the probe opens one, which is also the only place a
+    // learner ever sees a drawn cube here.
+    $$('#stage [data-alg]')[0]?.dispatchEvent(new win.Event('click', { bubbles: true }));
+    await tick(); await tick();
     const cube = $$('#stage cubus-cube')[0];
     assert.ok(cube, 'precondition: the drill draws a cube');
     assert.equal(cube.getAttribute('scheme'), 'japanese');
@@ -260,7 +466,7 @@ test('a drill round reveals stop by stop, and stops the moment the screen goes',
   // writing to a dead element". A reveal that drained in a loop would also pass a check that only
   // looked at the end state — the child would simply never see it happen — so what is asserted is
   // that a stop is still QUEUED after the answer, and that it is gone once the screen is disposed.
-  const { drillHtml, mountDrill } = await import('../lib/screens/drill/round-play.js');
+  const { drillHtml, mountDrill } = await import('../lib/screens/pieces/round-play.js');
   const { answerAt } = await import('../lib/script-rounds.js');
   const { buildScript } = await import('../lib/script-view.js');
   const { makeRound } = await import('../lib/drill-rounds.js');
@@ -314,3 +520,51 @@ test('the Drill screen wires its disposer to the screen going away', () => {
   assert.match(drill, /mounted\.dispose\(\)/, 'the abort listener does not call the disposer');
 });
 
+test('Drill is one activity: no kind to choose, and the algorithm library is the screen', async () => {
+  // IT USED TO BE TWO. A button row offered "Algorithms" and "Pieces", and the pair had no
+  // relationship to state: one is performing a catalogue algorithm, the other is reading a random
+  // stir for where a piece belongs. A first-time reader could not tell what the second even was —
+  // "aren't all these moves already about pieces?" — and neither could the owner (2026-09-29,
+  // option C). Pieces has its own route now, so Drill means one thing.
+  win.location.hash = '#/drill';
+  await tick(); await tick();
+  // SAYS WHAT IT WANTS. The chosen algorithm persists for the life of the page, deliberately — coming
+  // back from a drill lands where you left it — so a probe that navigates and reads whatever is there
+  // inherits whichever test ran before it. This one wants the chooser.
+  if ($$('#algBackToList').length) {
+    $$('#algBackToList')[0].dispatchEvent(new win.Event('click', { bubbles: true }));
+    await tick(); await tick();
+  }
+  assert.equal($$('[data-drill-kind]').length, 0, 'the Drill screen still offers a kind to switch to');
+  assert.ok(!/What to practise/.test($('#stage').textContent), 'the kind row is still drawn');
+  // What IS there: the chooser, and nothing of the other drill.
+  assert.ok(await waitFor(() => $$('#algGroups [data-alg]').length > 0), 'the Drill screen listed no algorithms');
+  assert.equal($$('#drillAsk').length, 0, 'the piece question is still on the Drill screen');
+  assert.equal($$('[data-face]').length, 0, 'the face buttons are still on the Drill screen');
+});
+
+test('Pieces is its own screen, reachable by its own route, and it is the recognition drill', async () => {
+  win.location.hash = '#/pieces';
+  await tick(); await tick();
+  assert.ok(await waitFor(() => $('#drillAsk')?.textContent), 'the Pieces route asked nothing');
+  assert.match($('#drillAsk').textContent, /belong on\?$/, 'the question is not the one this drill asks');
+  assert.equal($$('[data-face]').length, 6, 'six faces to pick is how this drill is answered');
+  // And none of the algorithm drill came with it.
+  assert.equal($$('#algGroups').length, 0, 'the algorithm chooser followed Pieces onto its own screen');
+  assert.equal($$('#algCube').length, 0, 'the algorithm drill followed Pieces onto its own screen');
+});
+
+test('Pieces is a tab on the default row, and one the app still knows how to hide', async () => {
+  const { NAV } = await import('../lib/app-state.js');
+  const { DEFAULT_HIDDEN, HIDEABLE } = await import('../lib/app-settings.js');
+  assert.ok(NAV.some(([id]) => id === 'pieces'), 'Pieces is not a tab');
+  assert.ok(HIDEABLE.some(([id]) => id === 'pieces'), 'Pieces cannot be turned off in Settings');
+  // SHOWN BY DEFAULT (owner's decision, 2026-09-29). Hiding it at version 4 was argued from the id
+  // being new; the content was already reachable inside Drill, so the argument was about the ID and
+  // the user lives in the ACTIVITY. Hideable is not the same as hidden — publishing a tab is not
+  // forcing it, which is the same pairing Drill has.
+  assert.ok(!DEFAULT_HIDDEN.includes('pieces'), 'Pieces is hidden from the default beginner row');
+  // Beside Drill, because that is where it used to live and where somebody will look for it.
+  const ids = NAV.map(([id]) => id);
+  assert.equal(ids[ids.indexOf('drill') + 1], 'pieces', 'Pieces is not next to the tab it came out of');
+});

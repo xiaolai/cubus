@@ -102,6 +102,18 @@ export function createLiveDistance({
     // are about this one arrangement, and the session's model moves on with the next turn.
     const liveModel = modelNow();
     if (!aimingAt || !liveModel || !chainTrusted()) { dropLiveDistance(); return; }
+    // A PICTURE DESTINATION IS NOT ASKED ABOUT AT ALL, and saying nothing is the honest answer.
+    //
+    // Both questions below are STAGE questions: `bounds` reads the projection tables, and the exact
+    // search wants a target id the worker knows. A state pattern has neither — it is one exact cube
+    // with no projection and no table — so the pair went out unanswerable and the line simply
+    // stayed blank, including when the cube HAD arrived (reproduced by a Codex refute pass,
+    // 2026-09-26). Blank either way, but this is blank without two wasted messages a turn.
+    //
+    // What could honestly be shown here instead is arrival — facelet equality decides that exactly
+    // — but a two-phase route's LENGTH is not a distance and must not be labelled one, so the
+    // advice a stage gets has no counterpart here yet. Left undone rather than approximated.
+    if (aimingAt.picture) { dropLiveDistance(); return; }
     const mine = ++liveGen;
     liveStop?.abort();
     const stop = new AbortController();

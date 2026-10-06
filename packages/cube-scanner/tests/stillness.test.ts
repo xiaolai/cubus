@@ -4,7 +4,7 @@
 // onTick, so reaching it meant driving the entire scan loop, and the timing half — the part most
 // likely to be wrong — could only be exercised by advancing fake timers through a fake detector.
 import { describe, expect, it } from 'vitest';
-import { classify, mostShown, Stillness } from '../view/stillness.js';
+import { classify, Stillness } from '../view/stillness.js';
 
 const READ = [0, 1, 2, 3, 4, 5, 0, 1, 2];
 const OTHER = [5, 4, 3, 2, 1, 0, 5, 4, 3];
@@ -92,7 +92,7 @@ describe('Stillness', () => {
     return { gate: s, a, b };
   };
 
-  it('says which colours a lone flickering sticker changes between, and forgets them on reset', () => {
+  it('says which colours a lone flickering sticker changes between, and forgets them with the subject', () => {
     // The panel's sentence names the pair, and adds the light remark only for a pair the light
     // is known to confuse — so the pair has to be what the sticker actually showed, not a guess.
     const { gate: s } = flickering(2);
@@ -102,11 +102,43 @@ describe('Stillness', () => {
     // Two positions changing at once is a cube that moved: it names no pair.
     s.offer([5, 0, 1, 5, 0, 0, 0, 0, 0], 700);
     expect(s.flickerColours(0)).toEqual([]);
+
+    // A RESET NO LONGER FORGETS IT (D8, `dev-docs/scan-pipeline-audit-2026-09-23.md` §3). The panel
+    // resets on every abstaining frame, and a side that will not settle abstains constantly — so
+    // wiping the history there meant the count could never reach the three breaks `flickering()`
+    // asks for, and the one specific thing the scan can tell a person was replaced by "hold still"
+    // for as long as they were willing to hold it. The history is about a SUBJECT, not a run.
     s.reset();
+    expect(s.flickerColours(2)).toEqual([1, 4]);
+    expect(s.flickering()).toBe(2);
+
+    // The caller says when the subject really changed — a side captured, a camera switched, the
+    // scan restarted — and then it is forgotten, count and colours together. Kept across that, it
+    // would go on naming a sticker of a cube the gate has never seen (audit, 2026-09-19).
+    s.forgetFlicker();
     expect(s.flickerColours(2)).toEqual([]);
-    // …and the COUNT is forgotten with the colours: kept, it would go on naming that sticker for a
-    // cube the gate has never seen (audit, 2026-09-19).
     expect(s.flickering()).toBeNull();
+  });
+
+  it('names the pair a sticker is swapping between NOW, not every colour it ever showed', () => {
+    // With the history surviving resets, a set would accumulate: a sticker that alternated
+    // yellow/orange early and white/blue later would be reported as all four, and the light remark
+    // — added only for a pair the light is known to confuse — would attach itself to a sticker that
+    // never showed that pair.
+    const base = [0, 1, 2, 3, 4, 5, 0, 1, 2];
+    const at = (i: number, c: number) => base.map((v, k) => (k === i ? c : v));
+    const s = new Stillness(3, 500);
+    for (let n = 0; n < 4; n++) {
+      s.offer(at(2, n % 2 === 0 ? 3 : 4), 1000 + n * 100);
+    }
+    expect(s.flickerColours(2)).toEqual([3, 4]);
+    s.reset();
+    for (let n = 0; n < 4; n++) {
+      s.offer(at(2, n % 2 === 0 ? 0 : 5), 2000 + n * 100);
+    }
+    expect(s.flickerColours(2)).toEqual([0, 5]);
+    // …and the COUNT accumulated across the reset, which is the whole point of D8.
+    expect(s.flickering()).toBe(2);
   });
 
   it('forgets a flicker when the subject changes, and keeps it through a noisy frame', () => {
@@ -174,53 +206,42 @@ describe('Stillness', () => {
   });
 });
 
-describe('Stillness — a centre that will not settle (the logo cube, 2026-09-20)', () => {
+describe('Stillness — the centre is one of the nine (2026-09-23)', () => {
   const W = 0;
   const B = 5;
   /** A white side whose middle sticker reads `centre` on this frame. */
   const white = (centre: number) => [W, W, W, W, centre, W, W, W, W];
 
-  it('a face whose centre alternates still settles, and settles when a plain one would', () => {
-    // THE BUG THIS FIXES. Keyed on all nine, a white cap with a blue logo broke the run on every
-    // alternation, so the side was never captured at all — the panel asked for stillness the user
-    // was already giving it, forever. Reported from a real cube: five sides read, the white one
-    // never taken.
+  it('a centre that alternates breaks the run, exactly as any other sticker does', () => {
+    // WHAT CHANGED, AND WHY. Between 2026-09-20 and 2026-09-23 the run was keyed on the EIGHT so
+    // that a white cap with a blue logo could still be captured: the side was filed with its centre
+    // unread and placed by elimination once six were in. The owner took that machinery out — it
+    // never converged on the cube it was written for — and with nowhere left to put a side that
+    // names no colour, a centre that will not settle must stop the capture again rather than
+    // produce one nobody can place.
     const logo = new Stillness(3, 500);
+    for (const [i, c] of [B, W, B, W, B, W].entries()) {
+      expect(logo.offer(white(c), 1000 + i * 200)).toBe(false);
+    }
+    // And a plain white centre settles over the same frames, so it is the alternation that stops
+    // it and not the duration or the count.
     const plain = new Stillness(3, 500);
-    const alternating = [B, W, B, W, B];
-    const settledLogo = alternating.map((c, i) => logo.offer(white(c), 1000 + i * 200));
-    const settledPlain = alternating.map((_, i) => plain.offer(white(W), 1000 + i * 200));
-    expect(settledLogo).toEqual(settledPlain);
-    expect(settledLogo).toContain(true);
+    const settled = [B, W, B, W, B, W].map((_, i) => plain.offer(white(W), 1000 + i * 200));
+    expect(settled).toContain(true);
   });
 
-  it('the centre is reported as UNREAD when the run disagreed, and as its colour when it did not', () => {
-    const logo = new Stillness(3, 500);
-    // A MAJORITY, NOT A TIE. `[B, W, B, W]` is two of each, so an implementation that took the
-    // majority would also answer null here and the case would pass while testing nothing (audit,
-    // 2026-09-20). Three reads, two of them blue: a majority rule answers BLUE and fails.
-    const run = [B, W, B];
-    let settled = false;
-    for (const [i, c] of run.entries()) settled = logo.offer(white(c), 1000 + i * 250);
-    expect(settled).toBe(true);
-    expect(logo.centre()).toBe(null);
-    const plain = new Stillness(3, 500);
-    for (let i = 0; i < 4; i++) plain.offer(white(W), 1000 + i * 200);
-    expect(plain.centre()).toBe(W);
-  });
-
-  it('a centre alone never names a flickering sticker, because it can no longer break a run', () => {
-    // `flickering()` exists to name ONE of the eight the user can light better or tap. A centre is
-    // neither — it is placed by counting — so it must not be narrated at, which is all the old code
-    // did with it.
+  it('names the centre as the flickering sticker, because that is what it measured', () => {
+    // The one thing the scan can honestly say about this cube: which sticker keeps changing. It is
+    // not a diagnosis of a logo — nothing here can see a logo — it is the position that broke the
+    // run and the two colours it broke between.
     const s = new Stillness(3, 500);
     for (const [i, c] of [B, W, B, W, B, W].entries()) s.offer(white(c), 1000 + i * 200);
-    expect(s.flickering(1)).toBe(null);
+    expect(s.flickering(2)).toBe(4);
+    expect(s.flickerColours(4)).toEqual([W, B].sort((a, b) => a - b));
   });
 
-  it('what it does NOT give up: a cube being turned through the frame still cannot settle', () => {
-    // The guard the old comment worried about. Relaxing the centre does not relax this: a face on
-    // its way past changes far more than its middle sticker.
+  it('a cube being turned through the frame cannot settle', () => {
+    // The guard the key exists for: a face on its way past changes far more than one sticker.
     const s = new Stillness(3, 500);
     const faces = [
       [0, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -233,13 +254,12 @@ describe('Stillness — a centre that will not settle (the logo cube, 2026-09-20
     });
   });
 
-  it.each([0, 1, 2, 3, 5, 6, 7, 8])(
-    'position %i is in the key: flickering there still blocks the capture, and is still named',
+  it.each([0, 1, 2, 3, 4, 5, 6, 7, 8])(
+    'position %i is in the key: flickering there blocks the capture, and is named',
     (position) => {
-      // EVERY outer position, not just the first. The key is built by filtering the centre out, so
-      // dropping one of the other eight by accident would leave a sticker that cannot stop a
-      // capture — a side filed on a colour nobody saw twice — and a suite testing position 0 alone
-      // would stay green through it (audit, 2026-09-20).
+      // EVERY position, the centre among them. A position dropped from the key by accident would
+      // leave a sticker that cannot stop a capture — a side filed on a colour nobody saw twice —
+      // and a suite testing position 0 alone would stay green through it (audit, 2026-09-20).
       const s = new Stillness(3, 500);
       const ring = (colour: number) => {
         const face = [W, W, W, W, W, W, W, W, W];
@@ -254,15 +274,16 @@ describe('Stillness — a centre that will not settle (the logo cube, 2026-09-20
   );
 });
 
-describe('Stillness — a logo centre beside a flickering outer sticker (audit, 2026-09-20)', () => {
+describe('Stillness — a flickering centre beside a flickering outer sticker', () => {
   const W = 0;
   const B = 5;
 
-  it('names the outer sticker: a changed centre is not proof the subject changed', () => {
-    // THE REGRESSION THE EIGHT-KEY INTRODUCED. `anotherSide` counted the centre, so an alternating
-    // logo cap beside one flickering corner looked like a new side on every frame and cleared the
-    // flicker history each time. The run could never settle (the corner) and the corner could never
-    // be named (the wipe): the scan sat there with "hold still" and nothing to act on.
+  it('calls it another side, and so names neither', () => {
+    // A CHANGED CENTRE BESIDE ANYTHING ELSE IS A DIFFERENT SIDE. A centre is fixed to its side, so
+    // this is the honest reading of two frames that disagree about one; what it costs is a sentence
+    // on the cube whose centre AND one corner are both unreliable, where the scan can say only that
+    // it is reading nothing (the panel's stall bound). Recorded rather than argued: this was the
+    // regression the eight-key was introduced to fix, and taking the eight-key out brings it back.
     const s = new Stillness(3, 500);
     const read = (corner: number, centre: number) => [corner, W, W, W, centre, W, W, W, W];
     const frames: Array<[number, number]> = [
@@ -276,66 +297,19 @@ describe('Stillness — a logo centre beside a flickering outer sticker (audit, 
     frames.forEach(([corner, centre], i) => {
       expect(s.offer(read(corner, centre), 1000 + i * 200)).toBe(false);
     });
-    expect(s.flickering(2)).toBe(0);
-    expect(s.flickerColours(0)).toEqual([1, 2]);
+    expect(s.flickering(2)).toBe(null);
   });
 
   it('still calls it another side when the eight change with the centre', () => {
-    // The case `anotherSide` exists for is kept: a near-solved cube's sides can share most stickers,
-    // so a changed centre beside TWO or more changed outer stickers is a different side, and the
-    // last side's flicker history says nothing about this one.
+    // The case `anotherSide` exists for: a near-solved cube's sides can share most stickers, so a
+    // changed centre beside other changed stickers is a different side, and the last side's flicker
+    // history says nothing about this one.
     const s = new Stillness(3, 500);
     s.offer([1, 1, W, W, W, W, W, W, W], 1000);
-    s.offer([2, 1, W, W, W, W, W, W, W], 1200); // one outer sticker: a flicker, recorded
+    s.offer([2, 1, W, W, W, W, W, W, W], 1200); // one sticker: a flicker, recorded
     expect(s.flickering(1)).toBe(0);
     s.offer([3, 3, W, W, B, W, W, W, W], 1400); // two outer + the centre: another side, wiped
     expect(s.flickering(1)).toBe(null);
-  });
-});
-
-describe('Stillness — what a run remembers of a centre that never settled (2026-09-21)', () => {
-  const W = 0;
-  const Y = 3;
-  const B = 5;
-  const white = (centre: number) => [W, W, W, W, centre, W, W, W, W];
-
-  it('counts how many reads showed each colour, and names only the colour shown most', () => {
-    // As a SET, one frame was as good as nine: a white side whose centre flickered yellow once was
-    // "showed white and yellow", and the real yellow side — the same eight on a symmetric cube —
-    // was then the same side, turned away for good. The count is what tells a flicker from a side.
-    const s = new Stillness(3, 500);
-    for (const [i, c] of [W, W, W, Y, W, B, W].entries()) s.offer(white(c), 1000 + i * 100);
-    expect([...s.centreReads()]).toEqual([
-      [W, 5],
-      [Y, 1],
-      [B, 1],
-    ]);
-    expect(mostShown(s.centreReads())).toEqual([W]);
-  });
-
-  it('a tie names every colour tied for the top, and a run that showed none names nothing', () => {
-    // An evenly alternating logo showed both colours as much as each other: choosing one would be
-    // reading a centre this package has already refused to read.
-    expect(
-      mostShown(
-        new Map([
-          [W, 2],
-          [B, 2],
-          [Y, 1],
-        ]),
-      ),
-    ).toEqual([W, B]);
-    expect(mostShown(new Map())).toEqual([]);
-    expect(mostShown(new Stillness(3, 500).centreReads())).toEqual([]);
-  });
-
-  it('the reads belong to the run: a new run and a reset both start the count afresh', () => {
-    const s = new Stillness(3, 500);
-    for (let i = 0; i < 4; i++) s.offer(white(B), 1000 + i * 100);
-    s.offer([1, 1, 1, 1, W, 1, 1, 1, 1], 1400); // another side: a new run
-    expect([...s.centreReads()]).toEqual([[W, 1]]);
-    s.reset();
-    expect(s.centreReads().size).toBe(0);
   });
 });
 
@@ -347,19 +321,17 @@ describe('classify — the transition rule, read on its own', () => {
   };
   const still = [0, 0, 0, 0, 0, 0, 0, 0, 0];
 
-  it('one ring sticker is a flicker worth naming; the centre riding along does not change that', () => {
+  it('one sticker is a flicker worth naming, wherever it is', () => {
     expect(classify(still, ring(2))).toEqual({ only: 2, forget: false });
-    // The logo case: the corner AND the centre differ, and the corner is still the one to name.
-    expect(classify(still, ring(2, 4))).toEqual({ only: 2, forget: false });
+    // The centre included: it is the sticker a printed logo makes unreliable, and naming it is the
+    // one specific thing the scan can say about that cube.
+    expect(classify(still, ring(4))).toEqual({ only: 4, forget: false });
   });
 
-  it('the centre alone is neither a flicker nor a subject change', () => {
-    // It cannot break a run at all now, so this combination never reaches the gate — asked of the
-    // rule directly so the answer is recorded rather than inferred from the gate's silence.
-    expect(classify(still, ring(4))).toEqual({ only: null, forget: false });
-  });
-
-  it('two ring stickers beside a changed centre is another side, and the history goes', () => {
+  it('one sticker beside a changed centre is another side, not a flicker', () => {
+    // A centre is fixed to its side, so two frames that disagree about it are two sides — however
+    // few of the other stickers changed, which on a near-solved cube can be one.
+    expect(classify(still, ring(2, 4))).toEqual({ only: null, forget: true });
     expect(classify(still, ring(2, 5, 4)).forget).toBe(true);
   });
 
@@ -373,5 +345,125 @@ describe('classify — the transition rule, read on its own', () => {
       (_, i) => before[[6, 3, 0, 7, 4, 1, 8, 5, 2][i]!]!,
     );
     expect(classify(before, quarter).forget).toBe(true);
+  });
+});
+
+/**
+ * D2 (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3): one physical frame is one observation,
+ * however many ticks it is served to.
+ *
+ * The defect these pin is not hypothetical. `Camera.latestFrame()` re-serves its cached frame for
+ * up to `frameStaleAfter` — a full second, sixteen ticks at the native rate — and the browser's
+ * `<video>` repeats its last painted frame whenever the loop outruns the stream. The gate asks for
+ * three identical reads spanning 500 ms, and ONE frame re-served satisfies both halves on its own:
+ * the count because the reads are identical by construction, the duration because wall-clock time
+ * passes regardless. A side could therefore be captured, and reported as a run of three, on a
+ * single look at the cube.
+ */
+describe('Stillness and the identity of the frame a read came from', () => {
+  it('will not settle on one frame re-served, however long it is offered', () => {
+    const s = new Stillness(3, 500);
+    // Sixteen ticks over a second — the native path's behaviour exactly — all one frame.
+    for (let t = 0; t <= 1000; t += 60) {
+      expect(s.offer(READ, 1000 + t, 7), `tick at ${t} ms settled on one frame`).toBe(false);
+    }
+    expect(s.status(2000).run).toBe(1);
+  });
+
+  it('settles on three DISTINCT frames spanning the duration', () => {
+    const s = new Stillness(3, 500);
+    expect(s.offer(READ, 1000, 1)).toBe(false);
+    expect(s.offer(READ, 1300, 2)).toBe(false);
+    expect(s.offer(READ, 1600, 3)).toBe(true);
+  });
+
+  it('counts a repeat once, not once per tick, and resumes on the next real frame', () => {
+    const s = new Stillness(3, 500);
+    s.offer(READ, 1000, 1);
+    for (let i = 0; i < 9; i++) s.offer(READ, 1000 + i * 10, 1);
+    expect(s.status(1100).run, 'a re-served frame was counted more than once').toBe(1);
+    s.offer(READ, 1200, 2);
+    expect(s.status(1200).run).toBe(2);
+    expect(s.offer(READ, 1600, 3)).toBe(true);
+  });
+
+  it('counts every read when the source cannot identify its frames', () => {
+    // A runtime that does not know must not have an answer invented for it, and must behave
+    // exactly as it did before this existed — Windows and Android still speak wire version 1.
+    const s = new Stillness(3, 500);
+    expect(s.offer(READ, 1000)).toBe(false);
+    expect(s.offer(READ, 1300)).toBe(false);
+    expect(s.offer(READ, 1600)).toBe(true);
+  });
+
+  it('keeps refusing a repeat across a reset, and accepts it again after forgetFrames', () => {
+    // A reset says the RUN is void; it does not say the camera delivered something new. Forgetting
+    // the numbering there would hand a re-served frame a fresh vote after every abstention — on
+    // the native path, sixteen votes a second.
+    const s = new Stillness(3, 500);
+    s.offer(READ, 1000, 5);
+    s.reset();
+    s.offer(READ, 1100, 5);
+    expect(s.status(1100).run, 'a reset let the same frame count again').toBe(0);
+    // A camera change DOES reset the numbering: its ids mean nothing here, and a new frame that
+    // happened to reuse the last id would otherwise be discarded as a repeat.
+    s.forgetFrames();
+    s.offer(READ, 1200, 5);
+    expect(s.status(1200).run).toBe(1);
+  });
+});
+
+describe('the two paths out of a repeated frame, and the one that was never exercised', () => {
+  it('ACCEPTS on a repeat once the duration is met, without counting it', () => {
+    // The repeated-frame branch has two answers and the suite only ever asked for one of them:
+    // every case above offers a repeat with too few reads behind it, so the branch was only ever
+    // seen returning false. Its true answer is the one that captures a side — and it is the right
+    // answer: the count was earned by three distinct frames, and time passing is real whether or
+    // not the camera delivered anything new.
+    const s = new Stillness(3, 500);
+    expect(s.offer(READ, 1000, 1)).toBe(false);
+    expect(s.offer(READ, 1100, 2)).toBe(false);
+    expect(s.offer(READ, 1200, 3), 'count 3, but only 200 ms of it').toBe(false);
+    expect(s.offer(READ, 1499, 3), 'a repeat settled one millisecond early').toBe(false);
+    expect(s.offer(READ, 1500, 3), 'a repeat refused a run that had earned its count').toBe(true);
+    // And it earned nothing along the way: the run is still the three frames that made it.
+    expect(s.status(1500).run, 'a re-served frame advanced the count').toBe(3);
+  });
+});
+
+describe('a dropout is not a subject change, and does not erase the evidence of one', () => {
+  const FLICKER = [0, 1, 5, 3, 4, 5, 0, 1, 2]; // READ with position 2 reading 5 instead of 2
+
+  it('stops naming a sticker of the side before last after a dropout', () => {
+    // MEASURED, AND A REAL DEFECT (2026-09-25). `reset()` deliberately keeps the flicker history
+    // (D8) but used to clear the baseline the history is compared against — so after a dropout the
+    // next read had nothing to classify against, the subject change was invisible, and position 2
+    // with colours 1 and 4 went on being reported across an entirely different face.
+    const s = new Stillness(3, 500);
+    s.offer(READ, 1000);
+    s.offer(FLICKER, 1100);
+    s.offer(READ, 1200);
+    s.offer(FLICKER, 1300);
+    expect(s.flickering(), 'the flicker was never recorded, so the case proves nothing').toBe(2);
+    expect(s.flickerColours(2)).toEqual([2, 5]);
+
+    s.reset(); // the frame could not be read at all — a dropout, not a new subject
+    s.offer(OTHER, 1400);
+    expect(s.flickering(), 'a sticker of the side before last is still being named').toBe(null);
+    expect(s.flickerColours(2)).toEqual([]);
+  });
+
+  it('still keeps the history across a dropout on the SAME subject, which is why it survives', () => {
+    // The other half, and the reason `reset()` does not simply forget everything: a side that will
+    // not settle abstains constantly, and wiping the history on each abstention meant the three
+    // breaks `flickering()` asks for could never accumulate.
+    const s = new Stillness(3, 500);
+    s.offer(READ, 1000);
+    s.offer(FLICKER, 1100);
+    s.reset();
+    s.offer(READ, 1200);
+    s.reset();
+    s.offer(FLICKER, 1300);
+    expect(s.flickering()).toBe(2);
   });
 });

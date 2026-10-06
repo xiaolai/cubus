@@ -166,6 +166,9 @@ export function createScanBoard({
 
   /** The captures the tiles show — the last report's, or a finished scan's, rebuilt from it. */
   let lastCaptured = [];
+  /** Slots the scanner says were named by an ANSWER, so their centre offers naming them again
+   *  rather than throwing the reading away (`ScanProgress.renameable`). */
+  let lastRenameable = [];
   /** The capture on show for the tile at position `f`, if any. */
   const captureAt = (f) => lastCaptured.find((c) => c.face === slotFor(f));
 
@@ -185,6 +188,14 @@ export function createScanBoard({
       return swapsArrangement(f)
         ? { kind: 'swap', name: `${SCAN_FACE_NAME[f]} side centre — press to swap which of blue and yellow is under white`, icon: 'repeat' }
         : names;
+    }
+    // A SIDE THE CAMERA COULD NOT NAME IS RENAMED, NOT RE-READ. Re-reading it leads back to the
+    // same question — its middle sticker is the one the detector cannot read — and throws away the
+    // reading somebody already answered about. So where the scanner says a slot was filled by an
+    // answer, the centre reopens that answer with the capture still in hand (Codex audit,
+    // 2026-09-25: the recovery existed only as an API no screen reached).
+    if (got && lastRenameable.includes(slotFor(f))) {
+      return { kind: 'rename', name: `Say which side the ${SCAN_FACE_NAME[f]} tile really is`, icon: 'tag' };
     }
     return got ? { kind: 'rescan', name: `Scan the ${SCAN_FACE_NAME[f]} side again`, icon: 'refresh' } : names;
   };
@@ -272,8 +283,10 @@ export function createScanBoard({
     suspects = p.suspects ?? [];
     for (const tile of tiles) paintTileReport(tile, p);
     lastCaptured = p.captured;
+    lastRenameable = p.renameable ?? [];
     refreshCellNames();
   };
+
 
   /** A finished scan: each tile turns into, or repaints in, the validated layout, and every
    *  sticker is renamed from the same string. */

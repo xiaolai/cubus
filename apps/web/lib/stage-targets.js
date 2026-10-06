@@ -311,6 +311,9 @@ const VERIFY = {
   // No counterpart in the method solver — the app never stops here — so it is spelled from the
   // cubie model: every edge home and oriented, every corner free.
   'six-cross': (s) => s.ep.every((v, i) => v === i) && s.eo.every((v) => v === 0),
+  // The mirror of `six-cross`: every corner home and untwisted, every edge free. Each face is then
+  // its centre plus its four corners in one colour, which is an X.
+  'x-every-face': (s) => s.cp.every((v, i) => v === i) && s.co.every((v) => v === 0),
   solved: eng.wholeCubeSolved,
 };
 
@@ -320,7 +323,16 @@ const TARGET_SPECS = [
   { id: 'two-layers', name: 'two bottom layers', offered: true, parts: ['crossEdges', 'dCorners', 'midEdges'] },
   { id: 'top-cross', name: 'top cross', offered: true, parts: ['crossEdges', 'dCorners', 'midEdges', 'flip'] },
   { id: 'corners-home', name: 'top corners home', offered: true, parts: ['crossEdges', 'dCorners', 'midEdges', 'flip', 'uCornerSlots'] },
-  { id: 'six-cross', name: 'six-sided cross', offered: false, parts: ['crossEdges', 'midEdges', 'topEdges'] },
+  // TWO PATTERNS, NOT STAGES, and `offered` is false for both because that field is what the Restore
+  // row reads. They are offered through `lib/patterns.js` instead — plan §9.6 says patterns are their
+  // own feature and must not drift into the stage row, where every chip means "how far back am I".
+  // `sideways: true` — a destination the cube has NEVER BEEN AT. Every stage above is somewhere it
+  // was and the child has lost, which is why the copy for one says "back"; a picture is somewhere
+  // new, so "a way back to a plus on every face" is false. The flag lives here rather than in
+  // `lib/patterns.js` because `stageTargetNow()` hands the TARGET to the copy for a set pattern,
+  // and the target is the only thing the sentence ever sees.
+  { id: 'six-cross', name: 'a plus on every face', offered: false, sideways: true, parts: ['crossEdges', 'midEdges', 'topEdges'] },
+  { id: 'x-every-face', name: 'an X on every face', offered: false, sideways: true, parts: ['dCorners', 'uCorners'] },
   { id: 'solved', name: 'solved', offered: true, parts: ['crossEdges', 'midEdges', 'topEdges', 'dCorners', 'uCorners'] },
 ];
 
@@ -334,6 +346,7 @@ function makeTarget(spec) {
     id: spec.id,
     name: spec.name,
     offered: spec.offered,
+    sideways: spec.sideways === true,
     parts: Object.freeze([...spec.parts]),
     projections: Object.freeze(projections),
     /** The codes this target reads off a cube, in `parts` order. */

@@ -1,9 +1,12 @@
-// `Detector` for the browser: getUserMedia + the pure `preprocess()` + onnxruntime-web (wasm).
+// `Detector` for the browser: getUserMedia + the pure `preprocess()` + onnxruntime-web, which runs in
+// a worker of the page's own (`inference-client.ts`) so that releasing the model returns its memory.
 //
 // This is today's scan path, unchanged in behaviour, composed behind the seam: it owns the
 // `FrameSource` the camera hands back and the `RunModel` the runtime hands back, and nothing else.
-// It is the implementation every build has — the Tauri shells on Windows and Linux run it too, and
-// the browser build is the dev and test surface for everything downstream of `next()`.
+// It is the implementation every build has — the Tauri shell on Linux runs it by design, Android's
+// runs it until its native path is verified on a device (`verifiedOnDevice` in VisionPlugin.kt),
+// any native shell whose `probe` answers false falls back to it, and the browser build is the dev
+// and test surface for everything downstream of `next()`.
 
 import {
   type CameraOptions,
@@ -13,8 +16,21 @@ import {
   openCamera,
 } from '../src/camera.js';
 import type { Detector, DetectorSource, ModelOutput } from '../src/detector.js';
+import { INFERENCE_WORKER_LOST, InferenceOffload } from './inference-client.js';
 import { LetterboxOffload, type Prepared } from './letterbox-client.js';
-import { createModelRunner, type ModelRunner } from './onnx-runtime.js';
+import type { ModelRunner } from './onnx-runtime.js';
+
+/**
+ * Where every browser detector's model is loaded: a worker of the page's own where it can be
+ * (2026-09-22), so that `dispose()` — which a parked detector gets once the scan screen has been left
+ * a while (`PARKED_RELEASE_MS`) — terminates it and the runtime's memory goes with it.
+ *
+ * ONE FOR THE PAGE, not one per detector, because its one piece of state is a verdict about the
+ * PLATFORM: a worker path written off because the page could load a model the worker could not. A
+ * released detector is replaced by a new one on the next visit, and a write-off kept per detector
+ * would have made every visit pay the failed worker load again.
+ */
+const inference = new InferenceOffload();
 
 export class WebDetector implements Detector {
   private source: FrameSource | null = null;
@@ -27,6 +43,14 @@ export class WebDetector implements Detector {
    * the same tensor either way, because both run `handleLetterboxRequest`.
    */
   private readonly letterbox = new LetterboxOffload();
+  /** Aborted by `dispose()`, so a load in flight terminates its worker at once. */
+  private loadAbort: AbortController | null = null;
+  /**
+   * The error the installed runner's worker was lost with, once it has been — see `next`. Kept so
+   * EVERY later tick fails with it rather than with "model not loaded": the panel reads the name of
+   * the failure its ticks end on (`tickFail`), and only this one tells it to rebuild the model.
+   */
+  private lostWith: Error | null = null;
   /** The model URL `run` was built for — see `load`. */
   private loadedUrl: string | null = null;
   /** A `load()` still in flight, so a second caller waits on it rather than building a rival. */
@@ -238,7 +262,23 @@ export class WebDetector implements Detector {
     // make that worker load the panel — which registers a custom element and dies in a worker,
     // taking inference back onto the main thread with it.
     const ortUrl = `${wasmPaths}ort.mjs`;
-    const run = await createModelRunner(modelUrl, { wasmPaths, ortUrl });
+    const abort = new AbortController();
+    this.loadAbort = abort;
+    let run: ModelRunner;
+    try {
+      run = await inference.createRunner(modelUrl, {
+        wasmPaths,
+        ortUrl,
+        signal: abort.signal,
+      });
+    } catch (err) {
+      // Disposed while this was out — the abort below, or a failure that arrived after it. Either way
+      // the caller of a disposed detector is owed what `dispose()` left: nothing installed, no error.
+      if (generation !== this.loadGeneration) return;
+      throw err;
+    } finally {
+      if (this.loadAbort === abort) this.loadAbort = null;
+    }
     if (generation !== this.loadGeneration) {
       // Disposed while this was out. Installing the runner now would put a live InferenceSession on
       // a detector nobody holds, which is the leak with no way back — so it is released here and
@@ -250,6 +290,7 @@ export class WebDetector implements Detector {
     }
     this.run = run;
     this.loadedUrl = modelUrl;
+    this.lostWith = null;
   }
 
   /**
@@ -268,11 +309,16 @@ export class WebDetector implements Detector {
    */
   async next(): Promise<ModelOutput | null> {
     if (!this.source) throw new Error('no camera open — call use() first');
-    if (!this.run) throw new Error('model not loaded — call load() first');
+    if (!this.run) throw this.lostWith ?? new Error('model not loaded — call load() first');
     const source = this.source;
     const run = this.run;
     const superseded = (): boolean => this.source !== source || this.run !== run;
     let pre: Prepared;
+    // WHICH frame this is, read BEFORE the picture is taken and not after the model answers (D2).
+    // Inference is awaited, and the `<video>` paints while it runs, so an id read on the way out
+    // would name a frame the tensor was not computed from — the identity would be worse than
+    // useless, because it would look right and be wrong exactly when the camera is fastest.
+    const frameId = source.frameId?.() ?? null;
     try {
       if (source.ready) {
         // The source's own liveness verdict first, whichever way the picture is then taken: the
@@ -301,7 +347,29 @@ export class WebDetector implements Detector {
       throw err;
     }
     if (superseded()) return null;
-    const output = await run(pre.data, pre.imgsz);
+    let output: ModelOutput;
+    try {
+      output = await run(pre.data, pre.imgsz);
+    } catch (err) {
+      // A run the world moved under answers null, as above: `dispose()` terminates the worker, and
+      // the frame it was holding is rejected on its way out.
+      if (superseded()) return null;
+      // THE WORKER IS GONE, and so is the model in it. The runner is dropped so this detector stops
+      // claiming a model it no longer holds (`loadedModel`, which the park hands on as permission to
+      // skip a load), and the loss is kept so every tick after this one says the same thing.
+      if (err instanceof Error && err.name === INFERENCE_WORKER_LOST && this.run === run) {
+        this.run = null;
+        this.loadedUrl = null;
+        this.lostWith = err;
+      }
+      throw err;
+    }
+    // AND AFTER IT SUCCEEDS (Codex audit, 2026-09-26). Every other await in this function re-checks
+    // its owner and this one did not, so a `stop()` or a model swap during the run came back with a
+    // finished reading from a detector nobody was listening to any more. The panel's epoch guard
+    // discards it today, which is why this was never seen — but that makes the caller responsible
+    // for a promise this function is supposed to keep, and a second caller would not know to.
+    if (superseded()) return null;
     // The frame travels with its output because this is the last moment it exists: `grab()` reuses
     // its buffer on the next tick, and the panel needs the pixels under the fitted stickers to let
     // the assembly ask which of them carry the same paint (`paint-groups.ts`). Copied for that
@@ -311,6 +379,7 @@ export class WebDetector implements Detector {
     const { frame } = pre;
     return {
       ...output,
+      ...(frameId === null ? {} : { frameId }),
       frame: pre.owned
         ? frame
         : { data: new Uint8ClampedArray(frame.data), width: frame.width, height: frame.height },
@@ -348,6 +417,11 @@ export class WebDetector implements Detector {
     this.loadGeneration++;
     this.loading = null;
     this.loadingUrl = null;
+    // A load still out is called off, which terminates its worker now rather than whenever the
+    // load would have finished — and a load that never finishes would otherwise hold it for good.
+    this.loadAbort?.abort();
+    this.loadAbort = null;
+    this.lostWith = null;
     const run = this.run;
     this.run = null;
     this.loadedUrl = null;

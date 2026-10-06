@@ -13,6 +13,7 @@ import { createWalkSession } from '../walk-session.js';
 // The route race into a stage target — one of this screen's own parts, built below.
 import { createRouteRace } from './cube/route-race.js';
 // The rest of its own parts: the speed menu, the die and the reconnect question.
+import { createPatternMenu } from './cube/pattern-menu.js';
 import { createSpeedMenu } from './cube/speed-menu.js';
 import { createDie } from './cube/die.js';
 import { createReconnectAsk } from './cube/reconnect-ask.js';
@@ -21,12 +22,15 @@ import { createReconnectAsk } from './cube/reconnect-ask.js';
 // milliseconds is exactly the 723 ms block that was removed from `loadSolver`. The search runs on
 // a worker, through `stageAsk`.
 import { NODE_BUDGET as STAGE_NODE_BUDGET } from '../stage-distance.js';
+import { routeToPicture } from '../pattern-route.js';
+import { solveWithinGodsNumber } from '../solve-target.js';
+import { parseFacelets } from '../two-phase.js';
 
 import { $, SOLVED, escHtml, icon, state } from '../app-state.js';
 import { load, save, settings } from '../app-settings.js';
 import { hooks } from '../screen-slots.js';
-import { CHIP_NODE_BUDGET, Cube, loadSolver, solverReady, stageAsk, warmSolver } from '../solver-service.js';
-import { classifyCube, deriveCube, lessonFor, raiseRung, stepStates } from '../cube-subject.js';
+import { CHIP_NODE_BUDGET, Cube, loadSolver, solverReady, solverWorker, stageAsk, warmSolver } from '../solver-service.js';
+import { classifyCube, deriveCube, lessonFor, raiseRung, stepStates, walkEligible } from '../cube-subject.js';
 import { applyNetColors, buildNet, describeCube, newCube } from '../cube-drawing.js';
 import { keepAwake } from '../wake-lock.js';
 import { adoptCube } from '../cube-connection.js';
@@ -76,6 +80,11 @@ const WALK_FAILURES = {
   'solver unavailable': 'the solver did not load — reload the app',
   'no scramble': 'a scramble could not be rolled — try again',
   'cross-check': 'the answer did not check out — read the cube again',
+  // A PICTURE ROUTE THAT WAS NOT WORKED OUT. The wording is about the SEARCH, never about the cube:
+  // every legal cube reaches every other in at most 20 moves, so "this shape cannot be reached"
+  // would be false as well as discouraging. And this is a failure rather than a fallback on
+  // purpose — solving the cube instead would arrive somewhere the heading did not name.
+  'no picture route': 'that shape could not be worked out — try again',
 };
 
 /**
@@ -88,6 +97,37 @@ const lastRoute = createRouteRace({
   state, cubejs: () => Cube, stageAsk, solveByMethod, STAGE_NODE_BUDGET,
 });
 
+/**
+ * The way to a PICTURE, wired to the app's own solver and its own oracle.
+ *
+ * `solve` is `solveWithinGodsNumber`, not a bare pool call: `solLen` is an EXCLUSIVE bound and the
+ * engine's default is 23, so a raw ask permits 22 moves and quietly drops the promise every other
+ * answer in this app keeps. That wrapper asks at 21, escalates the node budget on a refusal,
+ * continues rather than restarts, and validates what comes back.
+ *
+ * `replay` is CUBEJS — a different implementation from the two-phase engine that produced the
+ * answer, and from the cubie model `lib/patterns.js` drew the picture with. Checking the route with
+ * `cube-pieces` would have all three agreeing by construction, so a wrong move definition would
+ * pass. It returns null when the oracle has not loaded, and a route nothing verified is refused.
+ */
+const pictureRoute = (destination, facelets, signal) => routeToPicture({
+  pattern: destination,
+  facelets,
+  signal,
+  parse: parseFacelets,
+  solve: (relative, opts) => solveWithinGodsNumber(relative, {
+    solve: (f, bounds) => solverWorker().solve(f, bounds), signal: opts?.signal ?? signal,
+  }),
+  replay: (from, alg) => {
+    if (!Cube) return null;
+    try {
+      const c = Cube.fromString(from);
+      if (alg !== '') c.move(alg);
+      return c.asString();
+    } catch { return null; }
+  },
+});
+
 /** Everything a cube screen's walk session reaches for that the APP owns — listed here, once.
  *
  *  A frozen object rather than a longer argument list at the mount, because none of it varies by
@@ -97,9 +137,9 @@ const WALK_APP = Object.freeze({
   state, settings, SOLVED, CHIP_NODE_BUDGET, WALK_FAILURES,
   cubejs: () => Cube,
   solverReady: () => solverReady,
-  loadSolver, randomScramble, deriveCube, classifyCube, adoptCube, chainTrusted, markStale,
+  loadSolver, randomScramble, deriveCube, classifyCube, walkEligible, adoptCube, chainTrusted, markStale,
   lessonFor, stageAsk, stepStates, putInPlay, parkRoll, refreshScreen, go, save, raiseRung,
-  escHtml, icon, lastRoute, sayWalkLength, describeCube,
+  escHtml, icon, lastRoute, pictureRoute, sayWalkLength, describeCube,
 });
 
 /** Solve and Scramble are the same screen walked from opposite ends.
@@ -133,7 +173,19 @@ const cubeScreen = (screenMode) => {
   // search. The composition is decided before the first frame is composited, so a screen with no
   // walk never briefly draws a transport over one, and a screen with a walk never draws an empty
   // solution card while a search runs.
-  const walking = scrambling || classifyCube().solvable;
+  // A SOLVED CUBE HAS NO SOLVE, AND A PICTURE IS STILL A WALK IT COULD TAKE (owner's call,
+  // 2026-09-27: "the user may be holding a solved cube and want to turn it into a shape"). That is
+  // the natural moment for one — the cube is finished and six moves from The Checkerboard.
+  //
+  // `solvable` stays false for the solved state on purpose: cubejs answers the identity with a
+  // 14-move no-op, so a transport under a solved cube read 0 / 0 with its tick already lit. The
+  // picture case is added beside it rather than folded into `solvable`, so that rule is untouched.
+  //
+  // ONE expression of the rule, in `lib/cube-subject.js`. It used to be written out here and in two
+  // more places in this file and a fourth in `walk-session.js` — with a comment saying "the two are
+  // one rule", which stopped being true the moment a third arrived. `update()` was the one that had
+  // drifted: it omitted the picture clause entirely.
+  const walking = walkEligible({ scrambling });
   // The other reason there is no walk, and the only one worth a sentence. `!solvable` covers both
   // a solved cube (nothing to do, and the picture says so) and an arrangement no turning can
   // produce (nothing to do, and nothing on screen would otherwise explain why).
@@ -150,12 +202,6 @@ const cubeScreen = (screenMode) => {
   let retarget = null;
   /** The load `update()` last started: the die holds its press until that walk is on screen. */
   let loading = null;
-  // Saved key → renderer attribute. Named for what it is now that the sliders it fed are gone.
-  const VIEW_ATTRS = [
-    ['hintElev', 'ghost-elevation'],
-    ['camLat', 'camera-latitude'], ['camLon', 'camera-longitude'],
-    ['facScale', 'facelet-scale'],
-  ];
   // Four regions of the layout contract's grid (index.html, ".cols"): the cube card is
   // `primary`, the transport card `aux`, the state card the `twin` and the solution card the
   // `sheet` — the last two are the aside's children, which the stylesheet hands to the grid
@@ -225,13 +271,37 @@ const cubeScreen = (screenMode) => {
                written into it would make one label silently mean two things (§5.5). -->
           <div class="sub" id="stageLive" role="status" aria-live="polite" style="text-align:center;padding-top:6px;color:var(--ink-4)"></div>
         </div></div>
-      ${unsolvable ? `<div class="card sheet unsolvable-card">
+      <!-- ONE sheet for the non-walking cards, because the sheet class IS a named grid area: two of
+           them as siblings stack in the same grid cell instead of one above the other. Two pairs
+           could be shown together - unsolvable plus a reconnect question, and SOLVED plus a
+           reconnect question - and the second card was drawn straight over the first one's controls
+           in landscape and desktop portrait (found by audit, 2026-09-28; the tests before it checked
+           that both were PRESENT, which they were). Empty when the screen is walking, and an empty
+           flex column occupies nothing.
+           NO BACKTICK IN THIS COMMENT - it is inside the screen's html template literal. -->
+      <div class="sheet rest-sheet">
+      ${unsolvable ? `<div class="card unsolvable-card">
         <div class="follow-note" id="unsolvableNote" style="border-top:0">
           <b>${escHtml(t('This arrangement is not one a cube can be turned into.'))}</b>
           <span class="sub" style="color:var(--ink-4)">${escHtml(t('At least one sticker is somewhere turning a real cube could never put it — a corner twisted in place, an edge flipped, or two pieces swapped — so there is no walk to follow. Read the cube again on Restore, or correct the sticker there.'))}</span>
         </div>
       </div>` : ''}
-      ${!walking && rcNow() ? `<div class="card sheet reconnect-card">${reconnectAsk()}</div>` : ''}
+      ${!walking && rcNow() ? `<div class="card reconnect-card">${reconnectAsk()}</div>` : ''}
+      <!-- THE WAY IN, FROM A FINISHED CUBE. Without this the Shapes button lived only inside the
+           walking composition, and a solved cube is not walking - so a picture could only be chosen
+           once one had already been chosen. A child who has just finished their cube is exactly who
+           wants a shape, and they had no way to ask (owner's call, 2026-09-27).
+           Only for a cube that is SOLVED and legal: an unsolvable arrangement has its own card and
+           nothing to offer, and a scrambled one is walking already and has the row.
+           NO BACKTICK IN THIS COMMENT - it is inside the screen's html template literal. -->
+      ${!walking && !unsolvable && state.cube.facelets === SOLVED ? `<div class="card tight shapes-card">
+        <div class="card-h bare"><b>${escHtml(t('Make a shape'))}</b></div>
+        <div class="sub" style="padding:0 18px 10px;color:var(--ink-4)">${escHtml(t('Your cube is finished. Turn it into a picture, and the same moves bring it back.'))}</div>
+        <div class="stage-row one-line" role="group" aria-label="${escHtml(t('Make a shape'))}">
+          <button class="pill" id="patternBtn" type="button" aria-haspopup="menu" aria-expanded="false">${escHtml(t('Shapes'))}</button>
+        </div>
+      </div>` : ''}
+      </div>
       ${walking ? `<div class="card tight solution-card sheet">
         ${reconnectAsk()}
         <!-- The count carries the auto margin, not the button: with it on the button, the header's
@@ -256,6 +326,24 @@ const cubeScreen = (screenMode) => {
              goes through retarget(), which is exactly what that path is for. -->
         <div class="stage-row one-line" id="stageTargetRow" role="group" aria-label="${escHtml(t('Where to take this cube'))}">
           ${OFFERED_TARGETS.map((tg) => `<button class="pill${state.stageTarget === tg.id ? ' on' : ''}" data-stage="${escHtml(tg.id)}" aria-pressed="${state.stageTarget === tg.id}">${escHtml(tg.id === 'solved' ? t('Solved') : tg.name)}</button>`).join('')}
+          <!-- THE PICTURES THAT ARE NOT STAGES, at the end of the row already labelled "Where to
+               take this cube" - which is what a pattern is, a destination. Two other placements
+               were tried and both were refused by a rule worth keeping:
+                 a row of its own cost 30px of the sheet, and the move list fell to 35px on the
+                 desktop portrait window, under one row of moves (geometry.test.mjs);
+                 the cube card's corner carries EXACTLY ONE control on purpose, and everything
+                 else that ever sat there was saying what the chips or the nav already said
+                 (router-wiring.test.mjs, "the cube screen is the cube, one transport row").
+               Here it costs no height at all: the row is a sideways-scrolling strip.
+               It is a BUTTON and not a chip. Every chip here carries a move count, reads in
+               nesting order and never goes down; a pattern is sideways rather than back, so it
+               has no place in that ordering and no number to show. Opening a menu is a third
+               thing, and it has no data-stage, so the walk session's group never wires it.
+               NO BACKTICK MAY APPEAR IN THIS COMMENT: it is inside the screen's html template
+               literal, and a markdown-style backtick closes that template and stops the module
+               parsing. That happened twice while this was being written, the second time inside
+               the sentence warning about the first. -->
+          <button class="pill" id="patternBtn" type="button" aria-haspopup="menu" aria-expanded="false">${escHtml(t('Shapes'))}</button>
         </div>
         <div class="wrap-row" id="walkKindRow" role="group" aria-label="${escHtml(t('Solution'))} / ${escHtml(t('Lesson'))}" style="gap:6px;padding:2px 18px 6px">
           <button class="pill on" data-walk="solution" aria-pressed="true">${escHtml(t('Solution'))}</button>
@@ -315,8 +403,9 @@ const cubeScreen = (screenMode) => {
       // cube without them, which is a visibly larger picture than the one that replaces it. It
       // survived only because the element's animation frame happened to run later in the same
       // frame as the mount; that ordering is the engine's to change, and nothing tested it.
-      cube.setAttribute('ghosts', v.ghosts ? 'floating' : 'none');
-      for (const [k, attr] of VIEW_ATTRS) cube.setAttribute(attr, String(v[k]));
+      // The tuned view — ghosts and camera — is `newCube`'s now, applied to every cube the app
+      // draws before it is connected. It was this screen's alone, which is why both drill screens
+      // came out with no ghost faces at all.
       $('#viewCube', root).appendChild(cube);
       applyNetColors();
       const paintNet = buildNet($('#viewNet', root));
@@ -340,6 +429,24 @@ const cubeScreen = (screenMode) => {
       // session whenever the driver changes: tempo DEPENDS on who drives (`following()` in
       // lib/walk-session.js says why).
       const applyTempo = createSpeedMenu({ root, cube, signal, following: () => session?.following() });
+      // The pictures that are not stages. Built here beside the speed menu and for the same reason:
+      // once per MOUNT, because a retarget replaces the walk under these controls rather than the
+      // controls. It needs nothing from the walk session — its items are `[data-stage]`, wired and
+      // painted with the chips, and it keeps its own `aria-checked` in step by watching the group.
+      createPatternMenu({ root, signal, chosen: () => state.stageTarget });
+      // WIRED HERE WHEN THERE IS NO WALK SESSION TO DO IT. `wireGroup` lives in the session, and the
+      // session is built below the `if (!walking) return` — so on a solved cube the menu's items
+      // carried `data-stage` that nothing listened to, and choosing a shape did nothing at all.
+      // Setting the target makes `walking` true, and the refresh rebuilds into the walk composition
+      // with the picture route already selected.
+      if (!walking) {
+        for (const item of root.querySelectorAll('.pattern-menu [data-stage]')) {
+          item.addEventListener('click', () => {
+            state.stageTarget = item.dataset.stage;
+            refreshScreen();
+          }, { signal });
+        }
+      }
       // Turning a cube and reading the next move is minutes with no input at all, so the same
       // reasoning as the scan screen's: taken only where there IS a walk, because a cube being
       // looked at is not a cube being followed.
@@ -376,7 +483,12 @@ const cubeScreen = (screenMode) => {
         // A composition change is a rebuild, which is precisely the answer refreshScreen() gets
         // from update() on a screen with no walk to replace.
         const now = classifyCube();
-        if (now.solvable !== walking || now.unsolvable !== unsolvable) { refreshScreen(); return; }
+        // THE SAME RULE AS `walking` ABOVE, through the same function. Left as `now.solvable` alone
+        // it would refresh on every live update of a solved cube aiming at a picture — the rebuild
+        // loop a verify pass caught once in `compositionGone` and this line would have reproduced by
+        // a different path.
+        const eligibleNow = walkEligible({ scrambling });
+        if (eligibleNow !== walking || now.unsolvable !== unsolvable) { refreshScreen(); return; }
         paintNet(f);
         cube.setAttribute('facelets', f);
       };
@@ -415,8 +527,11 @@ const cubeScreen = (screenMode) => {
      * a failure, it is the honest answer to "can you show this without rebuilding".
      */
     update() {
-      if (!retarget) return false;                            // nothing mounted, or nothing to walk
-      if (!(scrambling || classifyCube().solvable)) return false; // and now there is none to show
+      if (!retarget) return false;              // nothing mounted, or nothing to walk
+      // `walkEligible`, not `solvable` alone. This line omitted the picture clause, so a SOLVED cube
+      // aiming at a picture answered "I cannot show this" and was rebuilt from scratch on every
+      // live report — while the two sites above had already been widened for exactly that case.
+      if (!walkEligible({ scrambling })) return false; // and now there is none to show
       loading = retarget();
       return true;
     },

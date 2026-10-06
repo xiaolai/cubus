@@ -33,7 +33,21 @@ class VisionPluginCommandsTest {
     @Test
     fun `every command is spelled the way tauri's mobile fallback delivers it`() {
         assertEquals(
-            setOf("probe", "listCameras", "openCamera", "currentCamera", "closeCamera", "loadModel", "nextDetection"),
+            // `framePixels` is D7's ninth command (2026-09-23): the page asks for the pixels behind a
+            // captured frame BY ID, so the native and browser paths end in the same `stickerLab` and
+            // cannot come to disagree about a colour. Android implements it as the honest negative.
+            // It was added to the plugin and not to this list, so this case had been red on the
+            // branch ever since — found by running the Kotlin tests, which `pnpm check` does not.
+            setOf(
+                "probe",
+                "listCameras",
+                "openCamera",
+                "currentCamera",
+                "closeCamera",
+                "loadModel",
+                "framePixels",
+                "nextDetection",
+            ),
             commandNames(),
         )
     }

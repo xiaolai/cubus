@@ -45,8 +45,10 @@ public struct CameraInfo: Codable {
 /// What the camera has for the tick that asks. One answer under one lock, so the order of
 /// precedence — stopped, then fresh, then nothing — is decided here and nowhere else.
 public enum LatestFrame {
-    /// A frame younger than `Camera.frameStaleAfter`, as straight RGBA8.
-    case frame(bytes: [UInt8], width: Int, height: Int)
+    /// A frame younger than `Camera.frameStaleAfter`, as straight RGBA8. `id` identifies it: the
+    /// same value across every tick this one frame is served to, a different one for the next
+    /// frame the camera actually delivers (D2).
+    case frame(bytes: [UInt8], width: Int, height: Int, id: Int)
     /// Nothing fresh: no frame has arrived, the last one is older than the window, or the session
     /// is interrupted. The per-tick entry answers 0 and the Rust side's no-frame clock runs.
     case none
@@ -137,7 +139,12 @@ public final class Camera: NSObject {
         }
     }
 
-    typealias Frame = (bytes: [UInt8], width: Int, height: Int, at: TimeInterval)
+    /// `id` is D2's frame identity (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3): it changes
+    /// when, and only when, the picture does. `latestFrame()` serves the SAME frame on every tick
+    /// for up to `frameStaleAfter`, and the page could not tell that from a stream of new frames —
+    /// so one physical frame supplied several reads to a gate that asks for three identical ones.
+    /// Assigned where a frame is PUBLISHED, so a re-served frame keeps the id it was published with.
+    typealias Frame = (bytes: [UInt8], width: Int, height: Int, at: TimeInterval, id: Int)
 
     private let session = AVCaptureSession()
     private let queue = DispatchQueue(label: "im.cubus.cube-vision.frames")
@@ -146,9 +153,42 @@ public final class Camera: NSObject {
     /// as is everything below it down to `opened`: the sink writes it, the observers clear it,
     /// `latestFrame()` judges it.
     private var frame: Frame?
+    /// The last few frames published, newest last — what `pixels(ofFrame:)` can still answer for.
+    ///
+    /// ONE FRAME WAS NOT ENOUGH, and the page could not tell. `pixels(ofFrame:)` answered only for
+    /// the CURRENT frame, but the page asks for the frame its grid was fitted to — after inference,
+    /// after the stillness gate settles, and after a hop back across the bridge. By then the camera
+    /// has published one or more newer frames, so the answer was nil. Measured on a live scan
+    /// (2026-09-23): pixels arrived on 0 of 2 settled reads, so `stickerLab` never ran and the
+    /// assembly's paint recovery never had a frame to work from.
+    ///
+    /// Four, because that is the race and not a cache: at 15–30 frames a second it covers the
+    /// ~100 ms between a frame being read and its capture being filed, and it costs four frames of
+    /// memory while a camera is open. It does NOT make an older frame acceptable — `pixels(ofFrame:)`
+    /// still answers for one id and nothing else, because a grid fitted to one picture must not be
+    /// read against another.
+    private var recent: [Frame] = []
+    /// The frame most recently HANDED TO THE PAGE, kept until the next one is.
+    ///
+    /// THIS, NOT A LONGER RING, IS WHAT MAKES THE PIXEL PATH WORK. The page asks for the pixels of
+    /// the frame its grid was fitted to, which is always a frame `latestFrame()` served it — and it
+    /// asks late, after inference and after the stillness gate settles. Measured on a live scan
+    /// (2026-09-23): the camera publishes 30 frames a second while the scan loop reads about one, so
+    /// roughly thirty frames pass in between. A ring big enough to cover that is ~110 MB of held
+    /// pixels; pinning the one frame actually in play is two.
+    ///
+    /// It is not a fallback to "the closest frame": this answers for exactly the id it served, and
+    /// `pixels(ofFrame:)` still refuses every other.
+    private var served: Frame?
+    /// How many published frames stay answerable. See `recent`.
+    private static let framesKept = 4
     private var lifecycle: Lifecycle = .closed
     /// Counts every `open`; the lifecycle's generation is the latest value.
     private var generations = 0
+    /// Counts every frame PUBLISHED, across opens — the id `latestFrame()` hands out (D2). It never
+    /// restarts, so two frames are never confusable even across a camera switch, where a per-open
+    /// counter would hand the first frame of camera B the id the last frame of camera A had.
+    private var frames = 0
     /// The device the current open opened.
     private var opened: CameraInfo?
     private let orientationSource: InterfaceOrientationSource?
@@ -337,7 +377,7 @@ public final class Camera: NSObject {
             try Camera.orient(connection, of: device, to: orientation)
         }
         self.sink = sink
-        activate(generation, CameraInfo(device), device: device, output: output)
+        activate(generation, CameraInfo(device), device: device, output: output, applied: orientation)
     }
 
     private static func resolveDevice(_ deviceId: String?) throws -> AVCaptureDevice {
@@ -410,10 +450,13 @@ public final class Camera: NSObject {
     /// The observer is installed before `startRunning()`, so a device that goes away while the
     /// session starts is still named — by the label captured here, never by a field another
     /// thread may be rewriting (audit finding 43).
-    private func activate(_ generation: Int, _ info: CameraInfo, device: AVCaptureDevice, output: AVCaptureVideoDataOutput) {
+    private func activate(_ generation: Int, _ info: CameraInfo, device: AVCaptureDevice,
+                          output: AVCaptureVideoDataOutput, applied: InterfaceOrientation?) {
         lock.lock()
         lifecycle = .running(generation)
         frame = nil
+        recent.removeAll()
+        served = nil
         opened = info
         lock.unlock()
         let label = info.label
@@ -423,7 +466,7 @@ public final class Camera: NSObject {
             self?.deviceWasDisconnected(label: label, generation: generation)
         }
         if let orientationSource {
-            followRotation(from: orientationSource, generation: generation) { [weak output] orientation in
+            followRotation(from: orientationSource, generation: generation, applied: applied) { [weak output] orientation in
                 guard let connection = output?.connection(with: .video) else { return }
                 try Camera.orient(connection, of: device, to: orientation)
             }
@@ -541,17 +584,28 @@ public final class Camera: NSObject {
 
     /// A connection's angle before anything set it, remembered so a later rotation on the same
     /// connection reads the sensor's offset and not the last angle set (see `captureAngle`).
-    private static var sensorOffsets: [ObjectIdentifier: CGFloat] = [:]
+    ///
+    /// KEYED WEAKLY ON THE CONNECTION, so an entry dies with the thing it describes (Codex audit,
+    /// 2026-09-26). This was a plain dictionary keyed on `ObjectIdentifier` — which is the object's
+    /// ADDRESS — and nothing ever removed an entry. Two consequences, and the second is the one that
+    /// shows on screen: the table grew for the life of the process, and an address freed by one
+    /// connection and handed to the next made the NEW connection inherit the OLD one's offset.
+    /// Reopening the front and back cameras in turn is exactly how an address gets reused, and a
+    /// cached 180° then stood in for a real 0°: every frame a half-turn wrong, on the pre-iOS-27
+    /// path, for a reason nothing in the app could show. `NSMapTable` with weak keys drops the entry
+    /// when the connection is deallocated, so a reused address finds nothing and reads the sensor.
+    private static let sensorOffsets = NSMapTable<AVCaptureConnection, NSNumber>.weakToStrongObjects()
     private static let sensorOffsetsLock = NSLock()
 
     @available(iOS 17.0, *)
     private static func sensorOffset(of connection: AVCaptureConnection) -> CGFloat {
         sensorOffsetsLock.lock()
         defer { sensorOffsetsLock.unlock() }
-        let id = ObjectIdentifier(connection)
-        if let known = sensorOffsets[id] { return known }
+        if let known = sensorOffsets.object(forKey: connection) {
+            return CGFloat(known.doubleValue)
+        }
         let offset = connection.videoRotationAngle
-        sensorOffsets[id] = offset
+        sensorOffsets.setObject(NSNumber(value: Double(offset)), forKey: connection)
         return offset
     }
     #else
@@ -585,8 +639,9 @@ public final class Camera: NSObject {
     /// a change reported after the open ended says nothing. Internal so the tests can drive it
     /// with a source and an `apply` of their own.
     func followRotation(from source: InterfaceOrientationSource, generation: Int,
+                        applied: InterfaceOrientation?,
                         apply: @escaping (InterfaceOrientation) throws -> Void) {
-        rotationObservation = source.observe { [weak self] orientation in
+        let deliver: (InterfaceOrientation) -> Void = { [weak self] orientation in
             guard let self else { return }
             guard self.isLive(generation) else { return }
             do {
@@ -595,6 +650,18 @@ public final class Camera: NSObject {
                 self.stopped("the frames could not be turned to follow the interface: \(error)", generation: generation)
             }
         }
+        rotationObservation = source.observe(deliver)
+        // THE TURN THAT HAPPENED WHILE WE WERE SUBSCRIBING (Codex audit, 2026-09-26). `open` reads
+        // the orientation, applies it to the connection, and only then subscribes — and on iOS the
+        // subscription is installed asynchronously on the main queue. A device turned in that window
+        // was recorded by the observer as the state it started from and never delivered, so the
+        // camera kept the rotation from before the turn and every frame came out sideways, for the
+        // whole session, with nothing to say so.
+        //
+        // Asked HERE rather than inside the UIKit observer so the rule is in the shared path both
+        // hosts take — and so a test can drive it, which an `#if os(iOS)` observer cannot be.
+        guard let now = try? source.current(), now != applied else { return }
+        deliver(now)
     }
 
     private func isLive(_ generation: Int) -> Bool {
@@ -625,6 +692,8 @@ public final class Camera: NSObject {
         lock.lock()
         lifecycle = .closed
         frame = nil
+        recent.removeAll()
+        served = nil
         opened = nil
         lock.unlock()
     }
@@ -642,6 +711,8 @@ public final class Camera: NSObject {
         if case .stopped = lifecycle { return }
         lifecycle = .stopped(live, reason)
         frame = nil
+        recent.removeAll()
+        served = nil
     }
 
     /// The device `open` opened went away: the handler of `AVCaptureDeviceWasDisconnected`, with
@@ -666,6 +737,8 @@ public final class Camera: NSObject {
         guard case .running(let generation) = lifecycle else { return }
         lifecycle = .interrupted(generation)
         frame = nil
+        recent.removeAll()
+        served = nil
     }
 
     /// The interruption ended: frames are served again from the next one to arrive.
@@ -679,11 +752,24 @@ public final class Camera: NSObject {
     /// A frame from the sink of `generation`: kept only while that generation is running. A
     /// callback still queued from the last camera, or one that arrives during an interruption,
     /// is dropped here, under the same lock the lifecycle changes under.
-    fileprivate func publish(_ frame: Frame, generation: Int) {
+    ///
+    /// THE IDENTITY IS ASSIGNED HERE, and the caller does not supply one (D2). Publishing is the
+    /// one place a NEW picture enters, so a counter incremented here cannot be forgotten by a
+    /// caller or advanced by a tick that merely READ the frame — which is the whole distinction
+    /// the id exists to make. A dropped frame takes no number: a callback from a dead generation
+    /// returns before the increment, so the ids the page sees count frames it was actually served.
+    fileprivate func publish(_ frame: (bytes: [UInt8], width: Int, height: Int, at: TimeInterval),
+                             generation: Int) {
         lock.lock()
         defer { lock.unlock() }
         guard lifecycle == .running(generation) else { return }
-        self.frame = frame
+        frames += 1
+        let published = (frame.bytes, frame.width, frame.height, frame.at, frames)
+        self.frame = published
+        recent.append(published)
+        if recent.count > Camera.framesKept {
+            recent.removeFirst(recent.count - Camera.framesKept)
+        }
     }
 
     /// Tests only: stands in for `open` — a new generation goes live for a camera called `label`,
@@ -698,6 +784,8 @@ public final class Camera: NSObject {
         lock.lock()
         lifecycle = .running(generation)
         frame = nil
+        recent.removeAll()
+        served = nil
         opened = CameraInfo(deviceId: "test", label: label, facing: nil)
         lock.unlock()
         return generation
@@ -717,6 +805,28 @@ public final class Camera: NSObject {
     /// the observers `init` installs are the ones that answer.
     var sessionForTests: AVCaptureSession { session }
 
+    /// The pixels of the frame with `id`, or nil when the camera no longer holds that frame.
+    ///
+    /// D7 (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3): the assembly's last resort before
+    /// refusing a scan is `recolourByPaint`, which asks which stickers carry the same PAINT — and
+    /// that needs the frame. The browser detector hands its frame over with every tensor; this
+    /// plugin never has, so the Mac, the primary platform, had one recovery path fewer than the
+    /// browser. Asked for ONCE PER CAPTURED SIDE rather than per tick — six times in a scan against
+    /// sixteen a second — so the 3.7 MB a 720p frame costs crosses the bridge only where it buys
+    /// something.
+    ///
+    /// BY ID, and nil for any other frame. The page fitted its grid to a particular picture, and
+    /// pixels from a later one would place every sticker box over paint that has since moved. There
+    /// is no "closest" frame and no fallback to the latest: the honest answer to "I do not have that
+    /// frame" is nothing, and the assembly then behaves exactly as it did before this existed.
+    public func pixels(ofFrame id: Int) -> (bytes: [UInt8], width: Int, height: Int)? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let served, served.id == id { return (served.bytes, served.width, served.height) }
+        guard let hit = recent.last(where: { $0.id == id }) else { return nil }
+        return (hit.bytes, hit.width, hit.height)
+    }
+
     /// What the camera has for this tick — see `LatestFrame`. A recorded fault outranks a frame in
     /// hand, an interrupted or closed camera has nothing, and a frame older than `frameStaleAfter`
     /// is nothing.
@@ -730,7 +840,9 @@ public final class Camera: NSObject {
             return .none
         case .running:
             guard let frame, Camera.now() - frame.at < Camera.frameStaleAfter else { return .none }
-            return .frame(bytes: frame.bytes, width: frame.width, height: frame.height)
+            // Pin what the page is about to hold a grid against, so its later ask can be answered.
+            served = frame
+            return .frame(bytes: frame.bytes, width: frame.width, height: frame.height, id: frame.id)
         }
     }
 }

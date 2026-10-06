@@ -11,8 +11,9 @@ import { isScheme, paletteFor } from './scheme.js';
 import { STICKER_PALETTES } from './sticker-palettes.js';
 
 import { $, SOLVED, state } from './app-state.js';
-import { DEFAULT_PALETTE, save, settings } from './app-settings.js';
+import { DEFAULT_PALETTE, load, save, settings } from './app-settings.js';
 import { classifyCube } from './cube-subject.js';
+import { CUBE_VIEW, VIEW_ATTRS, WALK_SPEED_KEY, DEFAULT_WALK_SPEED, tempoFor } from './cube-view.js';
 
 // ---- cube element helpers --------------------------------------------------------------------
 //
@@ -88,6 +89,54 @@ export function describeCube(el, subject = state.cube) {
   el.setAttribute('aria-label', cubeLabelWords(subject));
 }
 
+/**
+ * The tuned view every cube in this app is drawn at — ghosts floating at elevation 9, the camera
+ * at 35/45, stickers full-bleed — or whatever the owner has tuned it to.
+ *
+ * APPLIED HERE, so it cannot be forgotten. It used to be the caller's job and exactly one caller
+ * did it: the cube screen. Every other cube the app drew — both drill screens — came out with the
+ * renderer's own defaults, which means NO GHOST FACES and a camera fitted to a cube without them.
+ * That is not a smaller picture of the same thing; the back faces are how this app shows a cube.
+ *
+ * Set before the element is connected, because `connectedCallback` draws immediately and a cube
+ * described after `appendChild` leaves its first drawing framed for the wrong view (AGENTS.md).
+ * `newCube` returns an unconnected element, so calling it from here is that ordering by
+ * construction rather than by every caller remembering.
+ */
+export function applyCubeView(el, view = load('cubeView', CUBE_VIEW)) {
+  const tuned = tunedView(view);
+  el.setAttribute('ghosts', tuned.ghosts ? 'floating' : 'none');
+  for (const [key, attr] of VIEW_ATTRS) el.setAttribute(attr, String(tuned[key]));
+  // HOW FAST A TURN IS DRAWN, on EVERY cube rather than on the one screen that has a menu for it.
+  // Left unset, the renderer uses its own 190ms base and a quarter turn is over in a fifth of a
+  // second — the Drill page measured 200ms against 1620ms for the same turn at Normal (2026-09-30).
+  // This is the same shape as the ghosts and the camera above, which this function was written to
+  // end: a look the cube screen owned alone, so every other cube went without.
+  el.setAttribute('tempo-scale', String(tempoFor(load(WALK_SPEED_KEY, { id: DEFAULT_WALK_SPEED }).id)));
+  return el;
+}
+
+/**
+ * The stored view, with every value it cannot have replaced by the tuned default.
+ *
+ * `load` is `{ ...fallback, ...JSON.parse(storage) }`, so localStorage decides the TYPE as well as
+ * the value, and neither line above checked one. Two measured consequences: `ghosts: "false"` is a
+ * non-empty string, so it turned ghost faces ON — the opposite of what it says — and
+ * `hintElev: "bad"` reached the element as `ghost-elevation="bad"`, where the renderer falls back
+ * to ITS default rather than the app's tuned 9. A tuning silently replaced by the renderer's own
+ * is the failure `CUBE_VIEW`'s comment already describes; this is the door it comes through.
+ *
+ * Validated here rather than at the `load` call, because this is the one place the values become
+ * attributes, and a caller passing a view of its own (the tuning screen) needs the same floor.
+ */
+function tunedView(view) {
+  const ok = { ghosts: typeof view.ghosts === 'boolean' ? view.ghosts : CUBE_VIEW.ghosts };
+  for (const [key] of VIEW_ATTRS) {
+    ok[key] = Number.isFinite(view[key]) ? view[key] : CUBE_VIEW[key];
+  }
+  return ok;
+}
+
 export function newCube({ animate = false, subject = state.cube } = {}) {
   const el = reuseCube();
   describeCube(el, subject);
@@ -103,6 +152,7 @@ export function newCube({ animate = false, subject = state.cube } = {}) {
   // Off by default: every cube in the app is set up at a chosen angle (the ghost faces depend on
   // it), and a stray drag on a touch screen or a trackpad swung it away with no way back.
   el.setAttribute('orbit', settings.dragRotate ? 'free' : 'locked');
+  applyCubeView(el);
   const c = subject;
   // A walk is animated only when the alg it would animate is KNOWN — which now means the pool has
   // answered and `reaches()` has agreed the alg builds this very cube (takeSetupAlg). The setup
@@ -113,7 +163,11 @@ export function newCube({ animate = false, subject = state.cube } = {}) {
   //
   // So an unknown alg draws the ARRANGEMENT instead, with no animation, and loadWalk swaps the
   // attributes the moment the answer lands. Nothing waits, and nothing lies in the meantime.
-  if (animate && classifyCube().solvable && c.setupAlg) {
+  // `classifyCube(c)` and not `classifyCube()`: this call both ASKS about a cube and MUTATES it
+  // (a solved one has its `setupAlg` cleared), so on the bare form a caller passing its own
+  // subject got the global cube's verdict and the global cube's `setupAlg` wiped. Measured: a
+  // solved global suppressed the animation of a perfectly good scrambled subject.
+  if (animate && classifyCube(c).solvable && c.setupAlg) {
     el.setAttribute('scramble', c.setupAlg);
     el.setAttribute('alg', c.solution || '');
   } else el.setAttribute('facelets', c.facelets);

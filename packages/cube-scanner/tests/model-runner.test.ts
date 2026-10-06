@@ -190,6 +190,40 @@ describe('createModelRunner — the GPU verdict', () => {
     expect(instances()[0]?.runs).toBe(0);
   });
 
+  it('off the page’s thread, takes wasm on ONE module with no proxy and no query identity', async () => {
+    // The inference worker's case (2026-09-22). onnxruntime proxies only where there is a
+    // `document`, so in a worker the proxied identity buys nothing — and costs a second module, a
+    // second wasm heap, and a query string a host might not serve.
+    const runner = await createModelRunner('model.onnx', {
+      ortUrl: freshOrtUrl(),
+      numThreads: 1,
+      offPageThread: true,
+    });
+    // ONE module, not proxied: on the page this same case is one module WITH the proxy (the case
+    // "takes the proxied wasm path when there is no adapter at all"), so the flag is the difference.
+    expect(runner.providers).toEqual(['wasm']);
+    expect(instances()).toHaveLength(1);
+    expect(instances()[0]?.proxy).toBe(false);
+  });
+
+  it('off the page’s thread, a GPU that declines is rebuilt on the SAME module, released once', async () => {
+    // On the page the rebuild lands on the proxied module, a second instance; in the worker there
+    // is one mode, so it shares the module — and the abandoned GPU session is still released
+    // exactly once, before the wasm one is built.
+    withAdapter(true);
+    registry().model = { webgpuDeclines: true };
+    const runner = await createModelRunner('model.onnx', {
+      ortUrl: freshOrtUrl(),
+      numThreads: 1,
+      offPageThread: true,
+    });
+    expect(runner.providers).toEqual(['wasm']);
+    expect(instances()).toHaveLength(1);
+    expect(instances()[0]?.proxy).toBe(false);
+    expect(instances()[0]?.sessions).toBe(2);
+    expect(instances()[0]?.released).toBe(1);
+  });
+
   it('keeps the GPU for a SECOND healthy session sharing the runtime’s one device', async () => {
     // THE REGRESSION A DEVICE TRANSITION CAUSED. The check was "this create put a device where
     // there was none", and the shipped runtime publishes `env.webgpu.device` from its EP
@@ -495,6 +529,77 @@ describe('createModelRunner — the GPU verdict', () => {
     } finally {
       g.document = priorDocument;
     }
+  });
+
+  it('hears the page through an injected visibility — the inference worker has no document', async () => {
+    // The worker's case (2026-09-22). With no `document` at all, the default source reads every
+    // sample as watched, so the page's word has to be passed in; a source that says hidden must be
+    // heard exactly as a hidden document is, or a backgrounded tab costs a healthy GPU for good.
+    withAdapter(true);
+    registry().nextRunMs = 5;
+    const g = globalThis as { document?: unknown };
+    const prior = g.document;
+    g.document = undefined;
+    const watchers = new Set<() => void>();
+    try {
+      const runner = await createModelRunner('model.onnx', {
+        ortUrl: freshOrtUrl(),
+        gpuBudgetMs: 1, // a budget every run misses — and which must not be consulted here
+        numThreads: 1,
+        visibility: {
+          hidden: () => true,
+          watch: (fn) => {
+            watchers.add(fn);
+            return () => {
+              watchers.delete(fn);
+            };
+          },
+        },
+      });
+      expect(runner.providers).toEqual(['webgpu', 'wasm']);
+      expect(instances()).toHaveLength(1);
+    } finally {
+      g.document = prior;
+    }
+  });
+
+  it('discards the verdict when an injected visibility says the page blinked, and stops listening', async () => {
+    // The event half of the same seam: the worker forwards `visibilitychange`, and a blink inside a
+    // timed sample must discard the verdict as the document's own event does.
+    withAdapter(true);
+    let hidden = false;
+    const watchers = new Set<() => void>();
+    let runs = 0;
+    Object.defineProperty(registry(), 'nextRunMs', {
+      configurable: true,
+      get: () => {
+        runs++;
+        if (runs === 2) {
+          hidden = true;
+          for (const fn of [...watchers]) fn();
+          hidden = false;
+          for (const fn of [...watchers]) fn();
+        }
+        return 5;
+      },
+    });
+    const runner = await createModelRunner('model.onnx', {
+      ortUrl: freshOrtUrl(),
+      gpuBudgetMs: 1,
+      numThreads: 1,
+      visibility: {
+        hidden: () => hidden,
+        watch: (fn) => {
+          watchers.add(fn);
+          return () => {
+            watchers.delete(fn);
+          };
+        },
+      },
+    });
+    expect(runner.providers).toEqual(['webgpu', 'wasm']);
+    expect(runs).toBeGreaterThan(1);
+    expect(watchers.size).toBe(0);
   });
 
   it('releases the GPU session and rebuilds on wasm when the GPU is too slow', async () => {

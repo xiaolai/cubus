@@ -17,7 +17,7 @@ import { readFileSync } from 'node:fs';
 import { Window } from 'happy-dom';
 import Cube from '../vendor/cubejs.js';
 import { solverLoaded } from './fixtures/app-waits.mjs';
-import { audioStandIn, speechStandIn } from './sound-stand-ins.mjs';
+import { audioStandIn } from './sound-stand-ins.mjs';
 
 const SOLVED_FACELETS = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
@@ -138,9 +138,12 @@ test('every sound mode has a label and a blurb of its own', async () => {
   assert.deepEqual(keysOf('SOUND_BLURB'), modes, 'a mode has no blurb, or a blurb has no mode');
 });
 
-test('Settings offers three sound modes, Chime by default, and a press keeps the choice', async (t) => {
-  // One boolean became three modes on 2026-09-20: the only way to stop a repeated spoken line used
-  // to be silencing the bell a child depends on.
+test('Settings offers two sound modes, Sounds by default, and a press keeps the choice', async (t) => {
+  // One boolean became three modes on 2026-09-20, because the only way to stop a repeated spoken
+  // line was silencing the bell a child depends on — and two on 2026-09-30, when the spoken lines
+  // were deleted and a sound per state replaced them. The pills are built from
+  // `Object.values(SOUND_MODES)`, so a mode removed there removes its button here; the list below
+  // is written out on purpose, as the thing that notices.
   //
   // RESTORED WHATEVER HAPPENS. This mutates a PERSISTED setting, and restoring it on the success
   // path alone meant one failed assertion left every later test — in this file and the next — with a
@@ -155,7 +158,7 @@ test('Settings offers three sound modes, Chime by default, and a press keeps the
   });
   await go('settings');
   const pill = (mode) => $(`[data-set-sound="${mode}"]`);
-  const MODES = ['voice', 'chime', 'off'];
+  const MODES = ['chime', 'off'];
   for (const mode of MODES) assert.ok(pill(mode), `there is no ${mode} choice`);
   /** The modes drawn as chosen — by `aria-pressed` and by the class, which must agree. */
   const pressed = () => MODES.filter((m) => pill(m).getAttribute('aria-pressed') === 'true');
@@ -191,27 +194,19 @@ test('choosing a quieter mode stops a chime and a line already under way', async
     else win.localStorage.setItem('cubusSettings', wasStored);
   });
   const sound = await import('../lib/sound.js');
-  const speech = await import('../lib/speech.js');
   const { ctx, made: oscillators } = audioStandIn({ state: 'running' });
-  const voice = speechStandIn();
   const wasAudio = sound.useAudioContextFactory(() => ctx);
-  const wasVoice = speech.useSpeechEngine(voice.make);
   try {
     await go('settings');
     // The gesture reaches the listener the app installed at boot: registering the same callback again
     // is ignored by EventTarget, so a second call here would prove nothing (audit, 2026-09-19).
     win.document.dispatchEvent(new win.Event('pointerdown'));
-    $('[data-set-sound="voice"]').click();
+    $('[data-set-sound="chime"]').click();
     await tick();
     assert.equal(sound.play('capture'), true, 'precondition: a chime is sounding');
-    speech.say('Got it!');
-    assert.deepEqual(voice.said.at(-1), 'Got it!', 'precondition: a line is being said');
     $('[data-set-sound="off"]').click();
     await tick();
     assert.equal($('[data-set-sound="off"]').getAttribute('aria-pressed'), 'true');
-    // The line CUT OFF is the one that was being said — one synth throughout, so "something was
-    // cancelled" cannot stand in for it (audit, 2026-09-19).
-    assert.equal(voice.cuts.at(-1), 'Got it!', 'the line under way was left speaking');
     // NOT VACUOUS, AND NOT MERELY COUNTED (audit, 2026-09-20). `every` on an empty list is true, so
     // this passed if the chime was never made at all; and counting stops cannot tell a note that was
     // SCHEDULED to end from one cut short. `stopAll()` asks for `stop()` with no time, which the
@@ -221,20 +216,15 @@ test('choosing a quieter mode stops a chime and a line already under way', async
       oscillators.every((o) => o.stops.at(-1) === undefined),
       'a note was left to finish on its own schedule rather than cut off',
     );
-    // LEAVING VOICE FOR THE BELL MUST ALSO CUT THE WORDS — the mode a person picks precisely because
-    // the words were too much. `hush()` runs on every change for this; only `off` stops the bell too.
-    $('[data-set-sound="voice"]').click();
-    await tick();
-    speech.say('Still talking');
-    $('[data-set-sound="chime"]').click();
-    await tick();
-    assert.equal(voice.cuts.at(-1), 'Still talking', 'the bell-only mode left a line speaking');
+    // THE SPOKEN HALF OF THIS CASE IS GONE (owner, 2026-09-30). It also proved that leaving `voice`
+    // for the bell cut a line mid-word — the mode a person picked precisely because the words were
+    // too much. With the words deleted there are two modes and one thing to stop, and `hush()` went
+    // with them.
     // The mode this test changed is put back by `t.after`, which runs however this ends.
   } finally {
-    // Put back what was there, rather than leaving the next test a platform with no audio and no
-    // voice (audit, 2026-09-19).
+    // Put back what was there, rather than leaving the next test a platform with no audio
+    // (audit, 2026-09-19).
     sound.useAudioContextFactory(wasAudio);
-    speech.useSpeechEngine(wasVoice);
   }
 });
 
@@ -311,7 +301,12 @@ test('the stylesheet answers prefers-reduced-motion, and the renderer reads it t
 // follows and "Try the next rung" permanently raises a dial, so the banner disclaiming both was
 // false. It has its own test below — the rule it has to keep is the same one, and only the banner
 // changed.
-const PREVIEW_SCREENS = ['trainer', 'drill'];
+//
+// NOR IS DRILL, since 2026-09-29. It is the algorithm library and nothing else: it was published at
+// 0.7.3, and the second kind it used to carry — the piece-recognition drill, the half that still
+// disclaims — is its own screen now (option C). The Trainer is the last real preview, so the loop
+// below runs over one id and says so rather than pretending to a set.
+const PREVIEW_SCREENS = ['trainer'];
 
 /** Nothing on this screen may be a measurement of the person using it. */
 const noInventedFigure = (screen, id) => {
@@ -335,8 +330,18 @@ const noInventedFigure = (screen, id) => {
  */
 const DISCLAIMER = {
   trainer: /Preview — nothing here is measured yet/,
-  drill: /Results are not saved/,
+  // The Drill opens on the algorithm library now (dev-docs/algorithm-drills-plan.md phase 3), which
+  // carries its own note. The recognition drill's note is still real and still checked — by
+  // `the Drill disclaims only the half that does not work`, which drives BOTH kinds rather than
+  // whichever one the screen happens to open on.
+  drill: /nothing is saved between visits/i,
 };
+
+// `goDrillKind` IS GONE WITH THE KINDS. The Drill screen had two, chosen from a button row whose
+// selection persisted for the life of the page, so every probe had to state which one it wanted or
+// inherit whatever the previous case left — and one that did not made the NEXT case in this file
+// fail, on a screen it never touched. There is nothing to state now: `#/drill` is the algorithm
+// library, `#/pieces` is the recognition drill, and each is reached by its own route.
 
 test('the preview screens carry no invented figure', async () => {
   for (const id of PREVIEW_SCREENS) {
@@ -364,7 +369,7 @@ test('a preview control that would pretend to work is disabled, not silently ine
   for (const b of all('#stage .pill')) {
     assert.equal(b.disabled, true, 'a filter that filters nothing must say so');
   }
-  await go('drill');
+  await go('pieces');
   // The Drill plays real rounds now: its faces and Next DO something and must stay live. What still
   // records nothing is the grade row, and those must not invite a press.
   for (const b of all('#stage [data-face]')) {
@@ -438,15 +443,35 @@ test('every case diagram on the Trainer is the top face its algorithm solves', a
   }
 });
 
-test('the Drill disclaims only the half that does not work', async () => {
-  await go('drill');
-  const banner = all('#stage .card').find((c) => /Results are not saved/.test(c.textContent));
-  assert.ok(banner, 'precondition: the Drill says what it does not keep');
+test('each practice screen disclaims only the half that does not work', async () => {
   // A banner that disclaims a screen which DOES work teaches a reader to disbelieve the one place
   // the app is telling them something true — the argument the Lessons ladder's own case makes.
-  assert.doesNotMatch(banner.textContent, /controls do nothing/, 'the banner disclaims rounds that work');
-  assert.doesNotMatch(banner.textContent, /nothing here is measured/, 'the rounds are real; only the history is not');
-  assert.match(banner.textContent, /Practice works/, 'it must say which half does work');
+  //
+  // BOTH SCREENS, because they are two screens now (2026-09-29, option C) and each carries its own
+  // note. This used to drive two KINDS of one screen, and written against whichever was the default it
+  // stopped covering the other the day the default moved — which is exactly what happened to it.
+  const disclaims = (banner, what) => {
+    assert.doesNotMatch(banner.textContent, /controls do nothing/, `${what}: disclaims something that works`);
+    assert.doesNotMatch(banner.textContent, /nothing here is measured/, `${what}: it IS measured`);
+  };
+
+  await go('drill');
+  const library = all('#stage .card').find((c) => /nothing is saved between visits/i.test(c.textContent));
+  assert.ok(library, 'precondition: the algorithm library says what it does not keep');
+  disclaims(library, 'the algorithm library');
+  // WHICH HALF DOES WORK, and the precondition on it. The wording changed when the note was rewritten
+  // for a first-time reader — "Practice is followed" told nobody who was following what — but the
+  // claim being checked is the same one: the note must name tracking AND the scan it depends on, and
+  // must not promise tracking on connection alone.
+  assert.match(library.textContent, /follows your turns/, 'it must say which half does work');
+  assert.match(library.textContent, /scanned and is being tracked/, 'it must name the precondition that really applies');
+  assert.doesNotMatch(library.textContent, /when your cube is connected/, 'it promises tracking on connection alone');
+
+  await go('pieces');
+  const rounds = all('#stage .card').find((c) => /Results are not saved/.test(c.textContent));
+  assert.ok(rounds, 'precondition: the recognition drill says what it does not keep');
+  disclaims(rounds, 'the recognition drill');
+  assert.match(rounds.textContent, /Practice works/, 'it must say which half does work');
 });
 
 test('the Trainer filter "Weak first" reaches the reader in their language', async () => {
@@ -1250,47 +1275,3 @@ test('a platform that takes the lock back again and again is asked with a growin
   }
 });
 
-test('the editable spoken lines: an edit sticks, a bad one is refused out loud, Reset puts it back', async (t) => {
-  // The card had no DOM test at all — only its validation helpers were covered — so Advanced
-  // disclosure, the change and reset handlers, persistence and the refusal message were all
-  // unexercised on the one path that speaks to a child (audit, 2026-09-20).
-  const { settings } = await import('../lib/app-settings.js');
-  const { SPOKEN } = await import('../lib/screens/scan/spoken.js');
-  const wasLines = { ...settings.spokenLines };
-  t.after(() => { settings.spokenLines = wasLines; });
-  const chord = () => win.document.dispatchEvent(new win.KeyboardEvent('keydown', {
-    code: 'KeyD', ctrlKey: true, altKey: true, metaKey: true, repeat: false, bubbles: true,
-  }));
-  await go('settings');
-  isAbsent($('[data-spoken="open"]'), 'the lines were editable without opening Advanced');
-  chord();
-  await tick();
-  t.after(async () => { chord(); await tick(); });
-  const field = $('[data-spoken="open"]');
-  assert.ok(field, 'Advanced does not offer the spoken lines');
-  assert.equal(field.value, SPOKEN.open, 'the field did not start at the line in force');
-
-  // An edit is kept, in memory and in storage.
-  field.value = 'Hold up any side.';
-  field.dispatchEvent(new win.Event('change'));
-  await tick();
-  assert.equal(settings.spokenLines.open, 'Hold up any side.');
-  assert.equal(JSON.parse(win.localStorage.getItem('cubusSettings')).spokenLines.open, 'Hold up any side.');
-
-  // A bad one is refused OUT LOUD and changes nothing — silently reverting would look like an edit
-  // that did not take.
-  const why = $('#spokenWhy-savedMany');
-  const count = $('[data-spoken="savedMany"]');
-  count.value = 'Got it! more sides.';
-  count.dispatchEvent(new win.Event('change'));
-  await tick();
-  assert.ok(why.textContent.length > 0, 'a refused edit said nothing');
-  assert.equal(why.hidden, false, 'the refusal was written but left hidden');
-  assert.equal(settings.spokenLines.savedMany, undefined, 'a refused edit was stored anyway');
-
-  // Reset puts the default back and stops being an override.
-  $('[data-spoken-reset="open"]').click();
-  await tick();
-  assert.equal($('[data-spoken="open"]').value, SPOKEN.open);
-  assert.ok(!Object.hasOwn(settings.spokenLines, 'open'), 'Reset left the default stored as an override');
-});

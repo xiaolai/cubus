@@ -15,7 +15,7 @@ globalThis.localStorage ??= {
   getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k),
 };
 const { settings } = await import('../lib/app-settings.js');
-const { audioState, play, stopAll, unlockOnGestures, useAudioContextFactory } = await import('../lib/sound.js');
+const { IDLE_SUSPEND_MS, audioState, play, stopAll, unlockOnGestures, useAudioContextFactory, useAudioSchedule } = await import('../lib/sound.js');
 
 /** A page to gesture on. */
 const page = () => new EventTarget();
@@ -109,12 +109,23 @@ test('leaving a screen silences every note still sounding', (t) => {
 });
 
 test('sounds off makes none, and the bell-only mode still rings', (t) => {
-  const { made } = audio(t, { soundMode: 'off', state: 'running', unlocked: true });
+  const { made, target } = audio(t, { soundMode: 'off', state: 'running', unlocked: true });
   assert.equal(play('capture'), false, 'a sound was made with sounds off');
   assert.equal(made.length, 0, 'a refused sound still built its oscillators');
+  // SOUNDS OFF OPENS NO AUDIO SESSION AT ALL (2026-09-30). The gesture above ran `unlock` — it is
+  // bound to every pointerdown on the document — and with sound off it must not so much as build
+  // a context, because a context that exists and runs holds the platform's audio session for
+  // somebody who has said they do not want to hear anything.
+  assert.equal(audioState(), 'none', 'a gesture with sound off opened an audio context');
+
   // THE BELL IS NOT THE VOICE (2026-09-20). `chime` exists for someone who wanted the tick without
   // the words, so the chime must sound there exactly as it does under `voice`.
+  //
+  // A GESTURE AFTER THE MODE CHANGE, which is what the app has: nothing plays the instant the
+  // setting is turned on — the only callers are the scan's chimes and the drill's cues, both of
+  // them a screen away — so the toggle is always followed by a touch before a sound is asked for.
   settings.soundMode = 'chime';
+  target.dispatchEvent(new Event('pointerdown'));
   assert.equal(play('capture'), true, 'the bell was silent in the mode that is only the bell');
   assert.equal(made.length, 2, 'the bell-only mode made a different number of notes');
 });
@@ -187,6 +198,39 @@ test('a refused first resume is tried again on the next gesture, and a context s
   assert.equal(ctx.resumed, 3);
 });
 
+test('a context parked while its resume is still in flight still chimes', async () => {
+  // THE WEBKIT CASE, and the one `state` alone cannot answer. Measured on the Playwright 1.63
+  // bundle: a fresh context reports `running` on the click, parks back to `suspended` a moment
+  // later, and only THEN resolves the promise `resume()` returned. A chime asked for in that window
+  // used to return false and make no sound — on the engine macOS and iOS ship, so every bell after
+  // a quiet spell was silently dropped.
+  //
+  // A resume IN FLIGHT is counted with a successful one on purpose: the notes are scheduled against
+  // a clock that is not advancing, so they keep their offsets and sound when it runs. Only a REFUSED
+  // resume means nothing will be heard, and that is still false — the case above this one.
+  let settle;
+  const { ctx } = audioStandIn();
+  ctx.resume = () => {
+    ctx.resumed += 1;
+    ctx.state = 'running';           // the engine reports running…
+    return new Promise((res) => { settle = () => { ctx.state = 'running'; res(); }; });
+  };
+  useAudioContextFactory(() => ctx);
+  settings.soundMode = 'chime';
+  const target = page();
+  unlockOnGestures(target);
+  target.dispatchEvent(new Event('pointerdown'));
+  assert.equal(audioState(), 'running', 'precondition: the engine reported running on the gesture');
+
+  ctx.state = 'suspended';           // …and parks it before the promise settles
+  assert.equal(play('capture'), true, 'a chime was dropped while the resume was still in flight');
+  assert.ok(ctx.made.length > 0, 'it returned true without making any note');
+
+  settle();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(play('capture'), true, 'a chime was dropped after the resume succeeded');
+});
+
 test('waking a context suspended mid-chime does not play the rest of the chime', () => {
   // A suspended context keeps its notes scheduled; resuming it would play their tails for a moment
   // that has passed (round-3 audit). They are stopped BEFORE the resume.
@@ -198,6 +242,10 @@ test('waking a context suspended mid-chime does not play the rest of the chime',
   target.dispatchEvent(new Event('pointerdown'));
   assert.equal(play('done'), true);
   const notes = ctx.made.slice();
+  // TIME PASSES WHILE IT PLAYS, which is the half a frozen clock could not say. The notes are
+  // scheduled against a clock that then advances; that is what makes their moment a PAST one, and
+  // it is the difference between this case and a chime scheduled into a suspended context.
+  ctx.advance(0.05);
   ctx.state = 'suspended'; // the page went to the background mid-chime
   const stoppedAtResume = [];
   const resume = ctx.resume;
@@ -248,4 +296,268 @@ test('the bell-only mode makes the SAME chime, note for note, not merely some no
     return seq;
   };
   assert.deepEqual(shape('chime'), shape('voice'), 'the bell differs between the two modes that have one');
+});
+
+// ---- the drill's off-track cue (decision D4 of dev-docs/algorithm-drills-plan.md) ----------------
+//
+// Both sounds above RISE, and both mean something affirmative — a side saved, a cube checked out.
+// A deviation reusing either would make the vocabulary contradictory, so this one is the only
+// falling sound the app makes. The case pins the direction rather than the pitches, because the
+// direction is the claim and the pitches are a choice.
+
+test('the off-track cue falls, where every other sound rises', (t) => {
+  const { made } = audio(t, { state: 'running', unlocked: true });
+  assert.equal(play('off'), true);
+  const off = notesOf(made);
+  assert.equal(off.length, 2, 'the off-track cue is two notes');
+  assert.ok(off[1].hz < off[0].hz, 'the off-track cue rises — it must fall, or it reads as approval');
+  assert.ok(off[1].at > off[0].at, 'its notes are simultaneous rather than one after the other');
+});
+
+test('the off-track cue is not either of the affirmative sounds', (t) => {
+  const { made } = audio(t, { state: 'running', unlocked: true });
+  play('capture');
+  const capture = notesOf(made);
+  play('off');
+  const off = notesOf(made, capture.length);
+  assert.notDeepEqual(off.map((n) => n.hz), capture.map((n) => n.hz), 'the cue is the capture chime');
+  // And it is no LONGER than the affirmative one: an alarm is partly a matter of duration.
+  assert.ok(off.at(-1).at <= capture.at(-1).at + 0.01, 'the cue outlasts the capture chime');
+});
+
+test('the off-track cue obeys the sound setting like every other sound', (t) => {
+  // The shared helper owns the mode and puts it back — written any other way, this case leaks a
+  // setting into whichever test happens to run next, which is the defect its own comment records.
+  const { made } = audio(t, { soundMode: 'off', state: 'running', unlocked: true });
+  assert.equal(play('off'), false, 'the cue sounded with sounds turned off');
+  assert.equal(made.length, 0);
+});
+
+test('the off-track cue sounds on the bell-only setting, where the spoken lines do not', (t) => {
+  const { made } = audio(t, { soundMode: 'chime', state: 'running', unlocked: true });
+  assert.equal(play('off'), true, 'the cue is a bell, so the bell-only setting must keep it');
+  assert.equal(made.length, 2);
+});
+
+test('a wake that rejects drops the notes scheduled while it was pending', async (t) => {
+  // THE GAP IN `play()`'s ANSWER, and why its return now says SCHEDULED rather than sounded
+  // (representative's review, 2026-09-29). `pending` covers two futures: the WebKit parking above,
+  // where the notes keep their offsets and are heard; and a wake the platform refuses, where they
+  // are heard at no point. `play` cannot tell them apart at the instant it is asked, so the refusal
+  // is what clears up after it — otherwise `sounding` holds notes nobody can ever hear and
+  // `stopAll` is asked to silence a context that never ran.
+  let reject;
+  const { ctx } = audioStandIn();
+  ctx.resume = () => {
+    ctx.resumed += 1;
+    ctx.state = 'running';
+    return new Promise((res, rej) => { reject = () => { ctx.state = 'suspended'; rej(new Error('not allowed')); }; });
+  };
+  const wasFactory = useAudioContextFactory(() => ctx);
+  const wasMode = settings.soundMode;
+  settings.soundMode = 'chime';
+  t.after(() => { stopAll(); useAudioContextFactory(wasFactory); settings.soundMode = wasMode; });
+  const target = page();
+  unlockOnGestures(target);
+  target.dispatchEvent(new Event('pointerdown'));
+  ctx.state = 'suspended';
+  assert.equal(play('capture'), true, 'precondition: a chime is scheduled while the wake is pending');
+  const scheduled = ctx.made.slice();
+  assert.ok(scheduled.length > 0, 'precondition: the scheduled chime made notes');
+
+  reject();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.ok(scheduled.every((o) => o.stops.at(-1) === undefined),
+    'a note on a context that never ran was left due to sound');
+  assert.equal(play('capture'), false, 'a chime was scheduled after the wake was refused');
+});
+
+test('an earlier wake settling late does not answer for a later one', async (t) => {
+  // A resume's callbacks carry no identity of their own. Refuse, gesture again, and the FIRST
+  // promise can settle after the second — `ok` written over `refused`, so audio reads as available
+  // on a platform that has just refused it, and every chime afterwards is scheduled on a context
+  // that never runs (representative's review, 2026-09-29). Whether a real engine settles them out
+  // of order is not what this holds: the model must not DEPEND on the order.
+  const inflight = [];
+  const { ctx } = audioStandIn();
+  ctx.resume = () => {
+    ctx.resumed += 1;
+    return new Promise((res, rej) => inflight.push({ res, rej }));
+  };
+  const wasFactory = useAudioContextFactory(() => ctx);
+  const wasMode = settings.soundMode;
+  settings.soundMode = 'chime';
+  t.after(() => { stopAll(); useAudioContextFactory(wasFactory); settings.soundMode = wasMode; });
+  const target = page();
+  unlockOnGestures(target);
+  target.dispatchEvent(new Event('pointerdown'));
+  target.dispatchEvent(new Event('pointerdown'));
+  assert.equal(inflight.length, 2, 'precondition: two wakes are in flight');
+
+  inflight[1].rej(new Error('not allowed'));
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(play('capture'), false, 'precondition: the later, refused wake makes no sound');
+
+  inflight[0].res();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(play('capture'), false, 'a stale wake re-enabled sound after a later refusal');
+});
+
+test('a chime asked for during a pending wake survives the next gesture', (t) => {
+  // THE WEBKIT WINDOW, AND WHAT USED TO CLOSE IT. `unlock()` stops notes before waking, because a
+  // context suspended mid-chime would otherwise play their tails. Applied to every note, that also
+  // killed the bell asked for DURING a pending wake - the exact window `play()` exists to schedule
+  // into - so a second touch, or a second sound, silenced the first before it ever sounded
+  // (audit, 2026-09-29). The discriminator is the state the note was SCHEDULED under: a suspended
+  // context's clock does not advance, so those notes are still due.
+  const { ctx } = audioStandIn();
+  ctx.resume = () => { ctx.resumed += 1; return new Promise(() => {}); };   // stays pending, stays suspended
+  const wasFactory = useAudioContextFactory(() => ctx);
+  const wasMode = settings.soundMode;
+  settings.soundMode = 'chime';
+  t.after(() => { stopAll(); useAudioContextFactory(wasFactory); settings.soundMode = wasMode; });
+  const target = page();
+  unlockOnGestures(target);
+  target.dispatchEvent(new Event('pointerdown'));
+  assert.equal(ctx.state, 'suspended', 'precondition: the wake has not settled');
+  assert.equal(play('done'), true, 'precondition: the chime was scheduled into the pending window');
+  const scheduled = ctx.made.slice();
+  assert.ok(scheduled.length > 0, 'precondition: notes were made');
+
+  target.dispatchEvent(new Event('touchend'));
+  const cut = scheduled.filter((o) => o.stops.at(-1) === undefined);
+  assert.equal(cut.length, 0, `${cut.length} of ${scheduled.length} notes were cut by the next gesture`);
+  // A second sound asked for in the same window must not cancel the first either.
+  play('capture');
+  assert.equal(scheduled.filter((o) => o.stops.at(-1) === undefined).length, 0,
+    'a later chime cancelled the one still waiting');
+});
+
+test('an unknown sound is refused even when the name is on Object.prototype', (t) => {
+  // `SOUNDS.toString` is a function, so a truthy lookup let it through and the failure arrived
+  // later as "notes is not iterable" - an error about iteration for what is a plain typo.
+  const { ctx } = audio(t, { state: 'running', unlocked: true });
+  for (const name of ['toString', 'constructor', 'hasOwnProperty', '__proto__']) {
+    assert.throws(() => play(name), /there is no sound called/, `${name} was not refused`);
+  }
+  assert.equal(ctx.made.length, 0, 'a refused name still built oscillators');
+});
+
+test('a note that the context actually PLAYED is cleaned up by the next suspension', (t) => {
+  // THE REGRESSION THE FIRST FIX INTRODUCED (verify, 2026-09-29). Labelling each note with the
+  // state it was scheduled under kept the pending-wake chime alive, and made that label permanent:
+  // a note scheduled while suspended, then played by a context that really ran, then caught by a
+  // second suspension, was never cleaned up and its tail waited for the next resume. The clock
+  // reading answers both cases, because it is the thing that actually moves.
+  let settle;
+  const { ctx } = audioStandIn();
+  ctx.resume = () => { ctx.resumed += 1; return new Promise((res) => { settle = res; }); };
+  const wasFactory = useAudioContextFactory(() => ctx);
+  const wasMode = settings.soundMode;
+  settings.soundMode = 'chime';
+  t.after(() => { stopAll(); useAudioContextFactory(wasFactory); settings.soundMode = wasMode; });
+  const target = page();
+  unlockOnGestures(target);
+
+  target.dispatchEvent(new Event('pointerdown'));            // wake 1: pending, still suspended
+  assert.equal(play('done'), true, 'precondition: scheduled into the pending window');
+  const notes = ctx.made.slice();
+  assert.ok(notes.length > 0, 'precondition: notes were made');
+
+  // The platform lets it run, and the clock moves: these notes have now had their moment.
+  ctx.state = 'running';
+  settle?.();
+  ctx.advance(0.05);
+  // And then it is suspended again, mid-chime.
+  ctx.state = 'suspended';
+  target.dispatchEvent(new Event('touchend'));
+
+  const left = notes.filter((o) => o.stops.at(-1) !== undefined);
+  assert.equal(left.length, 0, `${left.length} of ${notes.length} played notes were left due to sound again`);
+});
+
+// ---- the context does not hold the audio session while nothing plays (2026-09-30) -------------
+//
+// A running AudioContext holds the platform's audio session for as long as it lives: on macOS and
+// iOS that is the "something is playing" indicator and a device that will not idle. Measured on the
+// real page — the context reached `running` on the FIRST GESTURE and was still running ten seconds
+// later with nothing scheduled and nothing ever played.
+
+/** Install a hand-driven clock for the idle suspend, so these cases do not wait in real time. */
+function idleClock(t) {
+  const due = [];
+  const was = useAudioSchedule(Object.assign((fn, ms) => { due.push({ fn, ms }); return due.length - 1; },
+    { cancel: (id) => { if (due[id]) due[id].fn = null; } }));
+  t.after(() => useAudioSchedule(was));
+  return {
+    /** How long the app asked to wait, from the most recent arming that is still live. */
+    get pending() { return due.filter((d) => d.fn).at(-1) ?? null; },
+    /** Fire the live timer, as the platform would when its delay elapses. */
+    fire() {
+      const next = due.filter((d) => d.fn).at(-1);
+      assert.ok(next, 'nothing was scheduled, so the context will never suspend');
+      const { fn } = next;
+      next.fn = null;
+      fn();
+    },
+  };
+}
+
+test('a gesture that is followed by no sound does not leave the context running', async (t) => {
+  const clock = idleClock(t);
+  const { ctx } = audio(t, { soundMode: 'chime', unlocked: true });
+  assert.equal(ctx.state, 'running', 'precondition: the gesture woke the context');
+  // The suspend is armed when the WAKE LANDS, not when it is asked for: until the resume settles
+  // there is nothing to suspend, and arming against a context that may yet be refused would be
+  // scheduling work for a state it might never reach.
+  await new Promise((r) => setTimeout(r, 0));
+  assert.ok(clock.pending, 'waking the context scheduled no suspend at all');
+  clock.fire();
+  assert.equal(ctx.state, 'suspended', 'the context was left running with nothing to play');
+  assert.equal(ctx.suspended, 1, 'it was suspended more than once, or not through suspend()');
+});
+
+test('a chime keeps the context awake until it has finished, then lets it go', (t) => {
+  const clock = idleClock(t);
+  const { ctx } = audio(t, { soundMode: 'chime', state: 'running', unlocked: true });
+  assert.equal(play('done'), true);
+
+  // The wait is measured from the END of the last note, not from now: firing early must find work
+  // still outstanding and re-arm rather than cutting the chime off.
+  const asked = clock.pending.ms;
+  assert.ok(asked > IDLE_SUSPEND_MS, `the suspend was scheduled ${asked}ms out, which is before the chime ends`);
+
+  ctx.advance(0.01);                       // part way through
+  clock.fire();
+  assert.equal(ctx.state, 'running', 'the context was suspended while a note was still due');
+
+  ctx.advance(5);                          // everything has sounded
+  clock.fire();
+  assert.equal(ctx.state, 'suspended', 'the context stayed running after the chime finished');
+});
+
+test('a chime after an idle suspend still sounds', (t) => {
+  // The whole risk of suspending: the next sound must wake it rather than be dropped. `play` goes
+  // through `unlock`, the same path a platform parking takes, so this is that path under our own
+  // suspension.
+  const clock = idleClock(t);
+  const { ctx, made } = audio(t, { soundMode: 'chime', state: 'running', unlocked: true });
+  clock.fire();
+  assert.equal(ctx.state, 'suspended', 'precondition: the context went quiet');
+  const before = made.length;
+  assert.equal(play('capture'), true, 'a chime after an idle suspend was refused');
+  assert.ok(made.length > before, 'it returned true and scheduled nothing');
+  assert.equal(ctx.state, 'running', 'the chime did not wake the context');
+});
+
+test('leaving a screen lets the context go quiet without waiting for cancelled notes', (t) => {
+  const clock = idleClock(t);
+  const { ctx } = audio(t, { soundMode: 'chime', state: 'running', unlocked: true });
+  play('done');
+  stopAll();
+  // `stopAll` cancelled everything, so the wait is measured from now rather than from the end of
+  // notes that will never sound.
+  assert.equal(clock.pending.ms, IDLE_SUSPEND_MS, `it still waited ${clock.pending.ms}ms for cancelled notes`);
+  clock.fire();
+  assert.equal(ctx.state, 'suspended', 'a left screen left the context running');
 });

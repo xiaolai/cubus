@@ -126,6 +126,107 @@ test('a hold that waited for the renderer does nothing on a screen that has been
   assert.deepEqual(turns, [], 'a parked cube belongs to the next screen, and must not be turned for this one');
 });
 
+test('an UPGRADED renderer is not turned either, once the screen has been replaced', () => {
+  // The staleness guard covered the deferred path only, so the common case — the bundle has long
+  // since loaded — turned a parked cube for a screen that is gone, and stamped `data-hold` on it.
+  // The element is re-used between screens, so that is the NEXT screen's cube (Codex audit,
+  // 2026-10-04). Asserts what must NOT happen: no turn, and no stamp either.
+  const { el, turns } = renderer();
+  let stale = false;
+  const holdCube = createHoldCube({ cube: el, isStale: () => stale, registry: registry() });
+  holdCube(TUMBLED);
+  assert.deepEqual(turns, ['D B'], 'precondition: a live screen turns the cube');
+  stale = true;
+  holdCube(SCAN_HOLD);
+  assert.deepEqual(turns, ['D B'], 'a replaced screen must not turn the cube it no longer owns');
+  assert.equal(el.dataset.hold, 'D B', 'and must not restamp data-hold either');
+});
+
+test('a turn that FAILS is not remembered as applied, so the next ask is a real one', async () => {
+  // `heldSpec` doubles as the dedupe, and it was recorded before the turn was attempted — so a
+  // `turnTo` that threw left the hold filed as done, and the ordinary repaint that asks for it again
+  // returned early. The cube then stayed the wrong way up for the rest of the walk, silently
+  // (Codex audit, 2026-10-04).
+  const turns = [];
+  let fail = true;
+  const el = {
+    dataset: {},
+    setAttribute(name) { throw new Error(`no attribute may name a pose — got "${name}"`); },
+    turnTo(up, front) {
+      if (fail) throw new Error('the renderer refused');
+      turns.push(`${up} ${front}`);
+      return Promise.resolve(true);
+    },
+  };
+  const holdCube = createHoldCube({ cube: el, isStale: () => false, registry: registry() });
+  holdCube(TUMBLED);
+  assert.deepEqual(turns, [], 'precondition: the first attempt failed');
+  fail = false;
+  holdCube(TUMBLED);
+  assert.deepEqual(turns, ['D B'], 'the same hold asked for again after a failure must be attempted');
+});
+
+test('a REJECTED turn is caught, and is not remembered as applied', async () => {
+  // Same rule, the asynchronous half. `void cube.turnTo(...)` sent a rejection nowhere: on the
+  // deferred path it was an unhandled rejection, and on both paths the hold stayed filed as applied.
+  const turns = [];
+  let reject = true;
+  const el = {
+    dataset: {},
+    setAttribute(name) { throw new Error(`no attribute may name a pose — got "${name}"`); },
+    turnTo(up, front) {
+      if (reject) return Promise.reject(new Error('the renderer gave up mid-turn'));
+      turns.push(`${up} ${front}`);
+      return Promise.resolve(true);
+    },
+  };
+  const unhandled = [];
+  const onUnhandled = (err) => unhandled.push(err);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const holdCube = createHoldCube({ cube: el, isStale: () => false, registry: registry() });
+    holdCube(TUMBLED);
+    await flush();
+    assert.deepEqual(unhandled, [], 'a refused turn must not escape as an unhandled rejection');
+    reject = false;
+    holdCube(TUMBLED);
+    assert.deepEqual(turns, ['D B'], 'and the hold must not be filed as applied after a rejection');
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
+
+test('a SUPERSEDED turn failing does not undo the one that replaced it', () => {
+  // The cleanup belongs to the REQUEST, not to the hold value. Ask for A, then B, then A again: when
+  // the first A's turn finally rejects, clearing the dedupe on a value match cleared the slate for the
+  // third A — which had already succeeded — so the next ask for A turned the cube a second time
+  // (verify pass, 2026-10-04). Asserts what must NOT happen: no extra turn.
+  const turns = [];
+  const settle = [];
+  const el = {
+    dataset: {},
+    setAttribute(name) { throw new Error(`no attribute may name a pose — got "${name}"`); },
+    turnTo(up, front) {
+      turns.push(`${up} ${front}`);
+      let reject;
+      const p = new Promise((_, rj) => { reject = rj; });
+      settle.push(reject);
+      return p;
+    },
+  };
+  const holdCube = createHoldCube({ cube: el, isStale: () => false, registry: registry() });
+  holdCube(SCAN_HOLD);              // A
+  holdCube(TUMBLED);                // B
+  holdCube(SCAN_HOLD);              // A again — this is the request that stands
+  assert.deepEqual(turns, ['U F', 'D B', 'U F'], 'precondition: three turns were asked for');
+  settle[0](new Error('the first turn was superseded and then failed'));
+  return Promise.resolve().then(() => {
+    holdCube(SCAN_HOLD);
+    assert.deepEqual(turns, ['U F', 'D B', 'U F'],
+      'a superseded failure released the dedupe, so the current hold was turned to twice');
+  });
+});
+
 /** A lesson as the walk session gets one: worked in the method frame from `alg` applied to
  *  solved. */
 const lessonOf = (alg) => {

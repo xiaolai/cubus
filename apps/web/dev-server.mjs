@@ -8,12 +8,22 @@
 // ES-module imports and WebAssembly streaming instantiation fail.
 
 import { constants, watch as fsWatch } from 'node:fs';
-import { open as fsOpen, realpath as fsRealpath } from 'node:fs/promises';
+import { mkdir, open as fsOpen, realpath as fsRealpath } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { extname, join, normalize, sep } from 'node:path';
 import { pipeline } from 'node:stream';
 
+import { writeRecording } from './record-file.mjs';
+
 export const RELOAD_PATH = '/__livereload';
+/** Where a scan recording is POSTed. The client supplies the BODY and never a name, so there is no path
+ *  for it to traverse; `serve.mjs` decides the directory. */
+export const RECORD_PATH = '/__record';
+/** Refuse a body past this. A stuck session is ~30 MB; 256 MB is a runaway, not a scan.
+ *  It is also the DEFAULT of a `recordLimit` option rather than a fixed number, because a guard that can
+ *  only be exercised by posting 256 MB is a guard nobody runs — and this one refuses mid-stream, which is
+ *  the part worth holding. */
+export const RECORD_LIMIT = 256 * 1024 * 1024;
 
 export const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -218,6 +228,8 @@ export function createDevServer({
   log = console,
   io = { realpath: fsRealpath, open: fsOpen },
   watch = fsWatch,
+  recordDir = null,
+  recordLimit = RECORD_LIMIT,
 }) {
   const roots = { root, rootReal, course };
 
@@ -416,6 +428,53 @@ export function createDevServer({
     req.on('close', () => clients.delete(res));
   };
 
+  /**
+   * A scan recording arriving from the page: POST only, and this server chooses the name.
+   *
+   * It answers with the path it WROTE rather than the one it meant to, and logs the size, because a
+   * recording that silently wrote nothing looks exactly like one that worked. With no `recordDir` the
+   * endpoint is not there at all — a 404 from `serveFile`, which is what a built app should look like.
+   */
+  const serveRecord = (req, res) => {
+    if (recordDir === null) { void serveFile(req, res); return; }
+    if (req.method !== 'POST') {
+      res.writeHead(405, { allow: 'POST' }).end('POST a session here');
+      return;
+    }
+    const chunks = [];
+    let size = 0;
+    let refused = false;
+    req.on('data', (chunk) => {
+      if (refused) return;
+      size += chunk.length;
+      if (size > recordLimit) {
+        refused = true;
+        res.writeHead(413).end(`recording past ${recordLimit} bytes`);
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', async () => {
+      if (refused) return;
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      // The name a collision would have taken, for the failure log below; `writeRecording` answers the
+      // one it actually used.
+      let file = join(recordDir, `scan-${stamp}.json`);
+      try {
+        await mkdir(recordDir, { recursive: true });
+        file = await writeRecording(recordDir, stamp, Buffer.concat(chunks));
+        log.log(`[record] ${size} bytes -> ${file}`);
+        res.writeHead(200, { 'content-type': 'application/json' })
+          .end(JSON.stringify({ ok: true, file, bytes: size }));
+      } catch (cause) {
+        log.error(`[record] could not write ${file}:`, cause);
+        res.writeHead(500, { 'content-type': 'application/json' })
+          .end(JSON.stringify({ ok: false, error: String(cause) }));
+      }
+    });
+  };
+
   const server = createServer((req, res) => {
     ignoreClientLoss(req, log);
     ignoreClientLoss(res, log);
@@ -429,6 +488,10 @@ export function createDevServer({
     }
     if (!hostAllowed(hostname, host)) {
       res.writeHead(403).end('forbidden: this server answers to localhost and IP literals only');
+      return;
+    }
+    if (req.url === RECORD_PATH) {
+      serveRecord(req, res);
       return;
     }
     if (req.url === RELOAD_PATH) {

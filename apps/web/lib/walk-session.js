@@ -24,6 +24,7 @@
 import { t } from './i18n.js';
 import { SCAN_HOLD, fromMethodFrame, holdSentence, renameAlg } from './solving-hold.js';
 import { walkHoldFor } from './hold-presenter.js';
+import { DESTINATION_BY_ID } from './patterns.js';
 import { TARGET_BY_ID } from './stage-targets.js';
 import { targetPicture } from './stage-picture.js';
 import { cancel as optimalCancel, capability as optimalCapability } from './optimal.js';
@@ -111,9 +112,9 @@ export function createWalkSession(screen, app) {
   } = provided(screen, 'screen');
   const {
     state, settings, SOLVED, CHIP_NODE_BUDGET, WALK_FAILURES, cubejs, solverReady, loadSolver,
-    randomScramble, deriveCube, classifyCube, adoptCube, chainTrusted, markStale, lessonFor,
+    randomScramble, deriveCube, classifyCube, walkEligible, adoptCube, chainTrusted, markStale, lessonFor,
     stageAsk, stepStates, putInPlay, parkRoll, refreshScreen, go, save, raiseRung, escHtml, icon,
-    lastRoute, sayWalkLength, describeCube,
+    lastRoute, pictureRoute, sayWalkLength, describeCube,
   } = provided(app, 'app');
   const $ = (sel, from) => from.querySelector(sel);
 
@@ -249,13 +250,19 @@ export function createWalkSession(screen, app) {
    */
   const wireGroup = (key, now, choose) => {
     for (const pill of root.querySelectorAll(`[data-${key}]`)) {
-      pill.onclick = () => {
+      // ADDED, NOT ASSIGNED. `pill.onclick = …` is one slot: the Shapes menu's items are pills of
+      // this group AND carry the menu's own close-and-focus handler, and this ran second and
+      // silently replaced it — choosing a shape retargeted the walk but left the menu standing
+      // open with focus inside it and `aria-expanded="true"` (audit, 2026-09-27, reproduced by
+      // three separate jobs against the real menu). A listener composes where an assignment
+      // overwrites, and the screen's signal takes it away at the same moment as everything else.
+      pill.addEventListener('click', () => {
         const want = pill.dataset[key];
         if (want === now()) return;
         choose(want);
         paintGroup(key, want);
         void loadWalk();
-      };
+      }, { signal });
     }
   };
   // The two objects, and the switch between them (§3).
@@ -299,7 +306,11 @@ export function createWalkSession(screen, app) {
     if (scrambling) return null;
     const id = state.stageTarget;
     if (!id || id === 'solved') return null;
-    const target = TARGET_BY_ID[id];
+    // A PICTURE DESTINATION resolves here too. `TARGET_BY_ID` holds stage targets and set patterns
+    // (which are targets); the state patterns are pictures, and without this line selecting one
+    // fell through to the warning below and silently reset the choice to `solved` — the child would
+    // press The Checkerboard and be walked to a solved cube (Codex refute pass, 2026-09-26).
+    const target = TARGET_BY_ID[id] ?? DESTINATION_BY_ID[id];
     if (!target) {
       console.warn(`unknown stage target "${id}" — walking the whole cube instead`);
       state.stageTarget = 'solved';
@@ -425,7 +436,7 @@ export function createWalkSession(screen, app) {
   }
   const { resolveWalk } = createWalkResolver({
     state, SOLVED, solverReady, loadSolver, randomScramble, deriveCube, lastRoute, lessonFor, stepStates,
-    setStatus, fallBackToSolution,
+    setStatus, fallBackToSolution, pictureRoute,
   });
 
   /** The turns the cube in hand has made since its last snapshot, adopted where it is trusted to
@@ -481,7 +492,16 @@ export function createWalkSession(screen, app) {
     // branch earns.
     if (scrambling) return false;
     const after = classifyCube();
-    if (after.solvable === walking && after.unsolvable === unsolvable) return false;
+    // JUDGED BY THE SAME RULE THE SCREEN USED, through the same function — `walkEligible`, which is
+    // where that rule now lives. `walking` is `solvable OR a picture is selected`, because a solved
+    // cube has no solve and is still six moves from The Checkerboard; comparing it against
+    // `solvable` alone meant a screen showing a picture walk from a solved cube decided its
+    // composition had gone on EVERY load (four consecutive rebuilds, a verify pass, 2026-09-27).
+    // This side used to phrase it through `stageTargetNow()`, which reversed the two table lookups
+    // `pictureDestination` makes — so the two were one rule only as long as no id appeared in both
+    // tables. One call, and that question stops needing an answer.
+    const eligible = walkEligible({ scrambling });
+    if (eligible === walking && after.unsolvable === unsolvable) return false;
     // DEFERRED past any refresh that is already running. `refreshScreen` guards itself with
     // `refreshing`, so calling it from a load that `refreshScreen` ITSELF started is swallowed
     // — and `update()` has already reported success by then, so no rebuild happens at all. A
@@ -570,14 +590,31 @@ export function createWalkSession(screen, app) {
     if (net) net.hidden = Boolean(aimingAt);
     if (!aimingAt) return;
     const heading = root.querySelector('.state-h');
-    if (heading) heading.textContent = t('Aiming at the %1', aimingAt.name);
+    // THE SAME ARTICLE BUG, in the second of its two places. `routeSentence` was fixed for this and
+    // the heading was not, which gave "Aiming at the The Checkerboard" and "Aiming at the a plus on
+    // every face" (audit, 2026-09-27). A stage is named bare — "cross" — so the template supplies
+    // "the"; a picture's name brings its own. Keyed on the same marker the sentence uses, so the
+    // two cannot drift apart again.
+    if (heading) {
+      heading.textContent = aimingAt.picture || aimingAt.sideways
+        ? t('Aiming at %1', aimingAt.name)
+        : t('Aiming at the %1', aimingAt.name);
+    }
     const say = $('#stageAimSay', root);
     // What grey means, and how to hold the cube for the walk under it — named by white,
     // green and position, which are the same on every cube (`holdSentence` says why).
     if (say) say.textContent = t('%1 %2', t('Grey doesn’t matter yet.'), holdSentence(walkHold));
     // The picture is the target in the METHOD frame; the renderer and the net draw the
     // scan frame, so it is turned before it is painted.
-    paintAim(fromMethodFrame(targetPicture(aimingAt)));
+    //
+    // EXCEPT A PICTURE DESTINATION, which is stored in the scan frame already — it is
+    // `toFacelets(applyAlg(SOLVED, alg))`, the frame everything outside the method solver speaks.
+    // Turning it again would draw a child the wrong target while routing them to the right one,
+    // and the three shipped patterns are all tumble-invariant, so no fixture here would have
+    // noticed (Codex refute pass, 2026-09-26; `pattern-route.test.mjs` carries the asymmetric
+    // destination that does).
+    const aimPicture = targetPicture(aimingAt);
+    paintAim(aimingAt.picture ? aimPicture : fromMethodFrame(aimPicture));
   }
 
   /** Which object is on screen, and how long it is — said beside the move list. */

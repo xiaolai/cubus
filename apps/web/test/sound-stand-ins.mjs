@@ -1,9 +1,12 @@
-// Stand-ins for the platform's sound and voice — the ONE pair every node suite uses (happy-dom has
-// neither). Between them they record exactly what the app's sounds and lines are asserted on: every
-// note made, when it was started and every time it was stopped; every line said, in which language,
-// and which line was being said at each cut-off. One implementation of each, because two fakes of one
-// platform API drift apart and then two suites disagree about what the platform does (audit,
-// 2026-09-19).
+// A stand-in for the platform's audio — the ONE every node suite uses (happy-dom has none). It
+// records exactly what the app's sounds are asserted on: every note made, when it was started,
+// every time it was stopped, and whether each reaches the destination through a gain that was
+// actually opened. ONE implementation, because two fakes of one platform API drift apart and then
+// two suites disagree about what the platform does (audit, 2026-09-19).
+//
+// There were two until 2026-09-30: the scan read eleven lines aloud through `speechSynthesis` and
+// this stood in for that too. The spoken prompts are gone — a sound per state replaced them — so
+// there is one platform left to imitate.
 
 /**
  * An AudioContext. Suspended until a gesture resumes it, as a real one is, and counting its resumes;
@@ -41,8 +44,21 @@ export function audioStandIn({ state = 'suspended' } = {}) {
     return self;
   };
   const ctx = {
-    state, currentTime: 0, destination: {}, resumed: 0, made, gains,
+    state, currentTime: 0, destination: {}, resumed: 0, suspended: 0, made, gains,
+    /**
+     * Move the clock on, as a running context's does.
+     *
+     * A FIXED `currentTime` IS AN UNFAITHFUL FAKE, and it hid a whole class: `lib/sound.js` decides
+     * whether a scheduled note's moment has passed by asking whether the clock has moved since it
+     * was scheduled, which on a stand-in frozen at 0 is never. A wrong answer there is a chime cut
+     * before it sounds, or a tail played into the next screen (verify, 2026-09-29). Kept at 0 by
+     * default so every existing case still reads note offsets against a known origin.
+     */
+    advance(seconds) { ctx.currentTime += seconds; return ctx; },
     resume() { ctx.resumed += 1; ctx.state = 'running'; return Promise.resolve(); },
+    /** Counted as well as performed: the app suspends when nothing is playing, and "it suspended"
+     *  and "it suspended once" are different claims. */
+    suspend() { ctx.suspended += 1; ctx.state = 'suspended'; return Promise.resolve(); },
     createGain() {
       // `into` records the graph: a note connected nowhere reaches no speaker, and a fake that
       // returned its argument without noting it could not tell the difference.
@@ -75,79 +91,38 @@ export function audioStandIn({ state = 'suspended' } = {}) {
 }
 
 /**
- * A speech engine for `useSpeechEngine`. `log` is every call in order (`['speak', text, lang]`,
- * `['cancel']`), `said` the lines alone, `cuts` the line being said at each cancel (null when the
- * platform was already silent), and `fail(error)` has the platform fail the line under way — as its
- * `error` event would — or a named earlier one, for a failure that arrives after its line was replaced.
- */
-export function speechStandIn() {
-  const log = [];
-  const said = [];
-  const cuts = [];
-  const utterances = [];
-  /** The line the platform is saying, as it sees it: set by `speak`, cleared by `cancel` and by a failure. */
-  let speaking = null;
-  // An EventTarget, because that is what a platform utterance is: the app listens for `error` rather
-  // than assigning `onerror`, which anything else touching the utterance could replace (2026-09-19).
-  class Utterance extends EventTarget {
-    constructor(text) {
-      super();
-      this.text = text;
-    }
-  }
-  const synth = {
-    speak: (u) => { utterances.push(u); said.push(u.text); speaking = u; log.push(['speak', u.text, u.lang]); },
-    cancel: () => { cuts.push(speaking?.text ?? null); speaking = null; log.push(['cancel']); },
-  };
-  const fail = (error, utterance = speaking) => {
-    if (!utterance) throw new Error('speechStandIn: no line is being said, so none can fail');
-    if (utterance === speaking) speaking = null;
-    utterance.dispatchEvent(Object.assign(new Event('error'), { error }));
-  };
-  /** The platform finished saying a line. Nothing is being said afterwards, so a cancel that follows
-   *  is attributed to no line — a finished line is not one anybody cut off (audit, 2026-09-19). */
-  const finish = (utterance = speaking) => {
-    if (!utterance) throw new Error('speechStandIn: no line is being said, so none can finish');
-    if (utterance === speaking) speaking = null;
-    utterance.dispatchEvent(new Event('end'));
-  };
-  return { log, said, cuts, utterances, fail, finish, make: () => ({ synth, Utterance }) };
-}
-
-/**
- * Install both stand-ins over the app's platform seams, and hand back what they record and a way to
- * put back what was there.
+ * Install the audio stand-in over the app's platform seam, and hand back what it records and a way
+ * to put back what was there.
  *
- * Every suite that drives the scan's sounds needs the same four lines and the same teardown, and each
+ * Every suite that drives the scan's sounds needs the same lines and the same teardown, and each
  * writing its own is how one of them came to leave the next suite a platform with no audio at all
- * (audit, 2026-09-19). The gesture that unlocks audio stays with the caller: it belongs to the
- * caller's own document.
+ * (audit, 2026-09-19).
  *
- * @param {object} deps the `lib/sound.js` and `lib/speech.js` modules, the `settings` object, and
- *   `soundMode` for this test — 'voice' (bell and words), 'chime' (bell alone) or 'off'.
+ * THE SPEECH HALF IS GONE (owner, 2026-09-30). This installed a speech engine too, because the
+ * scan read eleven lines aloud; the spoken prompts were judged worse than nothing and replaced by
+ * a sound per state, so there is one platform left to stand in for. The gesture that unlocks audio
+ * stays with the caller: it belongs to the caller's own document.
+ *
+ * @param {object} deps the `lib/sound.js` module, the `settings` object, and `soundMode` for this
+ *   test — 'chime' (sounds) or 'off'.
  */
-export function installSoundStandIns({ sound, speech, settings, soundMode = 'voice' }) {
-  // A typo, or the boolean this replaced, would otherwise install a configuration the app cannot be
-  // in — chimes on and speech off, or both off while the caller believed otherwise — and the test
-  // would pass for the wrong reason (audit, 2026-09-20).
-  if (!['voice', 'chime', 'off'].includes(soundMode)) {
-    throw new TypeError(`installSoundStandIns: soundMode ${JSON.stringify(soundMode)} is not voice, chime or off`);
+export function installSoundStandIns({ sound, settings, soundMode = 'chime' }) {
+  // A typo, or the `voice` that no longer exists, would otherwise install a configuration the app
+  // cannot be in and the test would pass for the wrong reason (audit, 2026-09-20).
+  if (!['chime', 'off'].includes(soundMode)) {
+    throw new TypeError(`installSoundStandIns: soundMode ${JSON.stringify(soundMode)} is not chime or off`);
   }
-  const { ctx, made } = audioStandIn();
-  const voice = speechStandIn();
+  const { ctx, made, audible } = audioStandIn();
   const wasAudio = sound.useAudioContextFactory(() => ctx);
-  const wasVoice = speech.useSpeechEngine(voice.make);
   const wasMode = settings.soundMode;
   settings.soundMode = soundMode;
   return {
     ctx,
     made,
-    voice,
+    audible,
     restore() {
       settings.soundMode = wasMode;
       sound.useAudioContextFactory(wasAudio);
-      speech.useSpeechEngine(wasVoice);
     },
   };
 }
-

@@ -180,6 +180,27 @@ export function createEventDriver(built, { cube = null } = {}) {
       if (reveal.position < last) reveal.next();
       return last - reveal.position;
     },
+    /**
+     * Put the reveal back to its start, KEEPING the answer — so it can be played again.
+     *
+     * `seek(position)` cannot do this: `go` builds a fresh round, which is unlocked, so the next
+     * `reveal()` would throw "a round is revealed after it is answered, not before" and the child
+     * would have lost the answer they just gave. The two things a replay has to undo are the
+     * memoised reveal driver and the segment it loaded onto the element — the same two `go` undoes —
+     * without touching the round itself.
+     *
+     * Refuses before an answer, for `reveal()`'s reason: there is nothing to replay yet, and a
+     * silent no-op would read as a broken button.
+     */
+    replay() {
+      if (!round) throw new Error(`script-rounds: position ${position} has nothing to reveal`);
+      if (!round.state.locked) throw new Error('script-rounds: a reveal is replayed after it is answered, not before');
+      if (cube) writer = createElementWriter(cube);
+      reveal = null;
+      const view = viewAtPosition(built, position);
+      if (writer) writer.show(view, { how: 'jump' });
+      return view;
+    },
     next: () => go(position + 1),
     seek: (k) => go(k),
   });

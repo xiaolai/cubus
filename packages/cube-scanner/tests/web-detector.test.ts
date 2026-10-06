@@ -9,22 +9,26 @@
 // after the model URL changed — and both are silent when they go wrong, which is why the
 // assertions are about what must NOT have happened.
 //
-// The runtime is stubbed at `createModelRunner`, deliberately: what is under test is when this
-// class installs a runner and when it refuses to, and a real 25 MB wasm load would answer neither
-// question while making the test a browser test. `tests/model-runner.test.ts` owns the runtime.
+// The runtime is stubbed at `InferenceOffload.createRunner`, the one door this class loads a model
+// through, deliberately: what is under test is when this class installs a runner and when it refuses
+// to, and a real 25 MB wasm load would answer neither question while making the test a browser test.
+// `tests/model-runner.test.ts` owns the runtime and `tests/inference-worker.test.ts` the worker it
+// runs in. (It was stubbed at `createModelRunner` until 2026-09-22, when the load moved behind the
+// worker: a stub there is skipped whenever a case gives the page a `Worker`, as the letterbox cases do.)
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CameraLostError, FrameNotReadyError } from '../src/camera.js';
 import { IMG_SIZE, preprocess } from '../src/onnx-detect.js';
 import type { Frame } from '../src/types.js';
+import { INFERENCE_WORKER_LOST, InferenceWorkerLostError } from '../view/inference-client.js';
 import { handleLetterboxRequest, type LetterboxReply } from '../view/letterbox-protocol.js';
 import type { LetterboxJob } from '../view/letterbox-worker.js';
 import { WebDetector } from '../view/web-detector.js';
 
-/** One `createModelRunner` call, held open so the test decides when the model "arrives". */
+/** One `createRunner` call, held open so the test decides when the model "arrives". */
 interface PendingLoad {
   modelUrl: string;
-  opts: { wasmPaths?: string; ortUrl?: string };
+  opts: { wasmPaths?: string; ortUrl?: string; signal?: AbortSignal };
   resolve: (runner: unknown) => void;
   reject: (err: unknown) => void;
 }
@@ -32,7 +36,7 @@ interface PendingLoad {
 const seam = vi.hoisted(() => ({
   pending: [] as {
     modelUrl: string;
-    opts: { wasmPaths?: string; ortUrl?: string };
+    opts: { wasmPaths?: string; ortUrl?: string; signal?: AbortSignal };
     resolve: (runner: unknown) => void;
     reject: (err: unknown) => void;
   }[],
@@ -46,12 +50,22 @@ const seam = vi.hoisted(() => ({
   stopped: [] as string[],
 }));
 
-vi.mock('../view/onnx-runtime.js', () => ({
-  createModelRunner: (modelUrl: string, opts: { wasmPaths?: string; ortUrl?: string }) =>
-    new Promise((resolve, reject) => {
-      seam.pending.push({ modelUrl, opts, resolve, reject });
-    }),
-}));
+vi.mock('../view/inference-client.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../view/inference-client.js')>();
+  return {
+    ...real,
+    InferenceOffload: class {
+      createRunner(
+        modelUrl: string,
+        opts: { wasmPaths?: string; ortUrl?: string; signal?: AbortSignal },
+      ): Promise<unknown> {
+        return new Promise((resolve, reject) => {
+          seam.pending.push({ modelUrl, opts, resolve, reject });
+        });
+      }
+    },
+  };
+});
 
 vi.mock('../src/camera.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../src/camera.js')>();
@@ -782,6 +796,35 @@ describe('WebDetector — next() with the letterbox on another thread (2026-09-2
     await expect(next).resolves.toMatchObject({ rows: 10 });
   });
 
+  it('a run that SUCCEEDS after stop() answers null, like every other await here', async () => {
+    // CODEX AUDIT, 2026-09-26. Every other await in `next()` re-checks its owner afterwards and the
+    // success path did not, so a `stop()` landing during the inference came back with a finished
+    // reading from a detector nobody was listening to. The panel's epoch guard throws it away
+    // today — which is exactly why this was never seen, and why it was the caller keeping a promise
+    // this function is supposed to keep itself.
+    withWorker();
+    // A runner whose inference is held open, so `stop()` can land DURING it rather than during the
+    // letterbox — the success path is the one with no owner re-check.
+    let finishRun: (() => void) | null = null;
+    const held = Object.assign(
+      () =>
+        new Promise((resolve) => {
+          finishRun = () => resolve({ data: new Float32Array(0), anchors: 0, rows: 10 });
+        }),
+      { dispose: async (): Promise<void> => {}, providers: ['held'] },
+    );
+    const det = await readyWith(readySource(), held);
+    const tick = det.next();
+    await settle();
+    FakeWorker.built[0]!.answer();
+    await settle();
+    expect(finishRun, 'the inference never started, so this measures nothing').not.toBeNull();
+    det.stop();
+    // The model answers anyway, as a real one is entitled to: the frame was already in flight.
+    finishRun!();
+    await expect(tick).resolves.toBeNull();
+  });
+
   it('dispose() during the snapshot posts nothing to the terminated worker', async () => {
     // The continuation after `createImageBitmap` used to post to a worker `dispose()` had already
     // terminated — which discards its queue — and the request it installed could never settle.
@@ -817,5 +860,82 @@ describe('WebDetector — where the runtime is fetched from', () => {
     void det.load();
     await Promise.resolve();
     expect(pending()[0]?.opts.wasmPaths).toBe(new URL('./vendor/', document.baseURI).href);
+  });
+});
+
+describe('WebDetector — a model in a worker the page can release, and can lose (2026-09-22)', () => {
+  /** A detector with its camera open and `runner` installed. */
+  async function scanning(runner: unknown): Promise<WebDetector> {
+    const det = new WebDetector(videoEl, () => './model-a.onnx');
+    const opening = det.use({});
+    await Promise.resolve();
+    seam.cameras[0]!.settle(sourceNamed('cam-1'));
+    await opening;
+    const loading = det.load();
+    pending()[0]!.resolve(runner);
+    await loading;
+    return det;
+  }
+
+  it('dispose() during the load calls it off — the worker goes now — and the load still resolves with nothing installed', async () => {
+    // A detector released while its model is loading (the scan screen left mid-download, and the
+    // park's release firing) must not leave a worker loading for nobody: the load's signal is the
+    // cancellation, and the caller of a disposed detector is owed "finished, nothing installed".
+    const det = new WebDetector(videoEl, () => './model-a.onnx');
+    const loading = det.load();
+    await Promise.resolve();
+    const { signal } = pending()[0]!.opts;
+    expect(signal?.aborted).toBe(false);
+    det.dispose();
+    expect(signal?.aborted).toBe(true);
+    pending()[0]!.reject(new DOMException('the model load was cancelled', 'AbortError'));
+    await expect(loading).resolves.toBeUndefined();
+    expect(det.loadedModel).toBeNull();
+  });
+
+  it('a lost worker drops its model, every later tick says so BY NAME, and a load builds another', async () => {
+    // By name, because the panel decides what Start does from the error its failing ticks END on:
+    // "model not loaded" there would read as a broken frame, and Start would skip the load.
+    const lost = Object.assign(
+      async () => {
+        throw new InferenceWorkerLostError('the inference worker failed: out of memory');
+      },
+      { dispose: async (): Promise<void> => {}, providers: ['A'] },
+    );
+    const det = await scanning(lost);
+    expect(det.loadedModel).toBe('./model-a.onnx');
+    await expect(det.next()).rejects.toMatchObject({ name: INFERENCE_WORKER_LOST });
+    expect(det.loadedModel).toBeNull(); // it no longer claims a model it does not hold
+    await expect(det.next()).rejects.toMatchObject({ name: INFERENCE_WORKER_LOST });
+
+    const reloading = det.load();
+    expect(pending()).toHaveLength(2); // a new load, not "already loaded"
+    pending()[1]!.resolve(runnerFor('A2'));
+    await reloading;
+    expect(det.providers).toEqual(['A2']);
+    await expect(det.next()).resolves.toMatchObject({ rows: 10 });
+  });
+
+  it('a frame rejected because dispose() ended its worker answers null, not an error', async () => {
+    // Terminating the worker rejects the frame it was holding. That frame belongs to a detector
+    // that has been told to stop, so it is a superseded tick — the contract's null — and not a
+    // failure that would start the panel's clock over a detector doing exactly what it was told.
+    let reject!: (err: unknown) => void;
+    const holding = Object.assign(
+      () =>
+        new Promise((_resolve, rej) => {
+          reject = rej;
+        }),
+      {
+        dispose: async (): Promise<void> => {
+          reject(new InferenceWorkerLostError('the model was released'));
+        },
+        providers: ['A'],
+      },
+    );
+    const det = await scanning(holding);
+    const tick = det.next();
+    det.dispose();
+    await expect(tick).resolves.toBeNull();
   });
 });

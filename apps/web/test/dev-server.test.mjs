@@ -4,11 +4,11 @@
 // holds the server as a whole — host guard, traversal, types, the course mount — through a real spawn.
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { appendFileSync, chmodSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { open as fsOpen, realpath as fsRealpath } from 'node:fs/promises';
 import { get, request } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 
 import { createDevServer } from '../dev-server.mjs';
@@ -244,5 +244,112 @@ test('a course that cannot be watched leaves the app watched, and says which one
     assert.match((await fetchWhole(`${s.base}/`)).body.toString(), /EventSource/, 'the app is still watched, so its pages still reload');
   } finally {
     await s.stop();
+  }
+});
+
+// --- the scan recording endpoint ---
+//
+// It lived in `serve.mjs`'s listener until the server was split, where no test could reach it: a POST
+// route, a size guard and a write, all of them unexercised. They are here now because the split put them
+// somewhere a test can call (dev-docs/scan-recording-session-2026-09-23.md).
+
+/** POST `body` to `path`, resolving with the status and the parsed answer. */
+function post(base, path, body) {
+  return new Promise((resolve, reject) => {
+    const req = request(`${base}${path}`, { method: 'POST', agent: false }, (res) => {
+      const parts = [];
+      res.on('data', (d) => parts.push(d));
+      res.on('end', () => {
+        const text = Buffer.concat(parts).toString();
+        let json = null;
+        try { json = JSON.parse(text); } catch { /* not every answer is JSON, and that is a finding */ }
+        resolve({ status: res.statusCode, headers: res.headers, text, json });
+      });
+    });
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
+test('a recording is written, and the answer names the file that was actually written', async () => {
+  const dir = rootWithFiles();
+  const into = mkdtempSync(join(tmpdir(), 'cubus-recordings-'));
+  made.push(into);
+  const s = await start(dir, { recordDir: into });
+  try {
+    const body = Buffer.from(JSON.stringify({ frames: [1, 2, 3] }));
+    const answer = await post(s.base, '/__record', body);
+    assert.equal(answer.status, 200);
+    assert.equal(answer.json?.ok, true);
+    assert.equal(answer.json?.bytes, body.length);
+    // THE FILE IT NAMES IS THE FILE ON DISK. A write that silently landed somewhere else, or did not land
+    // at all, answers exactly like one that worked — so the path is read back rather than trusted.
+    assert.ok(existsSync(answer.json.file), `answered ${answer.json.file}, which is not there`);
+    assert.equal(readFileSync(answer.json.file).toString(), body.toString());
+    // Both sides resolved: on macOS the temp dir is reached through /var, a symlink to /private/var, so
+    // comparing one resolved path with one unresolved fails on a file that is exactly where it should be.
+    assert.equal(realpathSync(dirname(answer.json.file)), realpathSync(into), 'written outside the directory it was given');
+    assert.match(s.log.lines.map(([, line]) => line).join('\n'), /\[record\] \d+ bytes ->/);
+  } finally {
+    await s.stop();
+  }
+});
+
+test('a second recording in the same second does not overwrite the first', async () => {
+  const dir = rootWithFiles();
+  const into = mkdtempSync(join(tmpdir(), 'cubus-recordings-'));
+  made.push(into);
+  const s = await start(dir, { recordDir: into });
+  try {
+    const first = await post(s.base, '/__record', Buffer.from('{"n":1}'));
+    const second = await post(s.base, '/__record', Buffer.from('{"n":2}'));
+    assert.equal(first.json?.ok, true);
+    assert.equal(second.json?.ok, true);
+    assert.notEqual(first.json.file, second.json.file, 'the second session was written over the first');
+    assert.equal(readFileSync(first.json.file).toString(), '{"n":1}');
+    assert.equal(readFileSync(second.json.file).toString(), '{"n":2}');
+  } finally {
+    await s.stop();
+  }
+});
+
+test('a recording past the limit is refused mid-stream, and nothing is written', async () => {
+  const dir = rootWithFiles();
+  const into = mkdtempSync(join(tmpdir(), 'cubus-recordings-'));
+  made.push(into);
+  // The real limit is 256 MB, which is why this one is an option: a guard that can only be exercised by
+  // posting a quarter of a gigabyte is a guard nobody runs.
+  const s = await start(dir, { recordDir: into, recordLimit: 64 });
+  try {
+    const answer = await post(s.base, '/__record', Buffer.alloc(4096, 7)).catch((err) => ({ status: null, err }));
+    // The connection is destroyed on refusal, so a client may see the 413 or may see the socket go. What
+    // must hold either way is that nothing landed.
+    if (answer.status !== null) assert.equal(answer.status, 413);
+    assert.deepEqual(readdirSync(into), [], 'an over-size body was written anyway');
+  } finally {
+    await s.stop();
+  }
+});
+
+test('the endpoint takes POST only, and is not there at all without a directory to write to', async () => {
+  const dir = rootWithFiles();
+  const into = mkdtempSync(join(tmpdir(), 'cubus-recordings-'));
+  made.push(into);
+  const withDir = await start(dir, { recordDir: into });
+  try {
+    const got = await fetchWhole(`${withDir.base}/__record`);
+    assert.equal(got.status, 405, 'a GET was answered as though it were a session');
+  } finally {
+    await withDir.stop();
+  }
+  // No directory is the SHAPE A BUILT APP HAS: the route is not special, so it 404s like any other path
+  // rather than existing and failing.
+  const without = await start(dir);
+  try {
+    const got = await fetchWhole(`${without.base}/__record`);
+    assert.equal(got.status, 404);
+    assert.deepEqual(readdirSync(into), [], 'a server with no recordDir wrote into one anyway');
+  } finally {
+    await without.stop();
   }
 });

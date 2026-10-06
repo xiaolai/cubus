@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  cryptoUint32, permutationParity, randomBelow, randomCube, randomState,
+  MAX_REJECTIONS, cryptoUint32, permutationParity, randomBelow, randomCube, randomState,
 } from '../lib/random-state.js';
 
 const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url))).default;
@@ -27,6 +27,36 @@ test('the draw is unbiased: the tail that would skew it is rejected', () => {
   assert.throws(() => randomBelow(0), RangeError);
   assert.throws(() => randomBelow(-3), RangeError);
   assert.throws(() => randomBelow(2.5), RangeError);
+});
+
+test('a source stuck in the rejected tail THROWS rather than spinning for ever', () => {
+  // THE FAILURE THIS REPLACES IS A HANG, which is why it is asserted and not merely hoped for: the
+  // rejection loop had no bound, so a source that keeps answering one value in the tail never
+  // returned. `drillAlg` runs this synchronously on the UI thread and `makeRound`'s retry budget
+  // cannot help, because the loop never gets back to it (Codex audit, 2026-10-04).
+  //
+  // `0xffffffff` is in the rejected tail for every n this module uses except the powers of two.
+  assert.throws(
+    () => randomBelow(6, () => 0xffffffff),
+    /not varying/,
+    'a constant source in the tail must be reported, not waited on',
+  );
+
+  // AND THE BOUND IS NOT A CAP ON BAD LUCK. A source that rejects a few times and then answers must
+  // still get its answer — a bound set too tight would turn ordinary rejection into a refusal.
+  const limit = Math.floor(0x1_0000_0000 / 6) * 6;
+  let left = 8;
+  assert.equal(randomBelow(6, () => (left-- > 0 ? limit : 5)), 5, 'eight rejections then a draw is a draw');
+
+  // THE BOUND IS THE NUMBER IT IS NAMED FOR. The first draw counts as a rejection, so the budget is
+  // spent after exactly that many rejected draws — one fewer still answers, one more throws. Asserted
+  // because the first version spent 33 draws under a constant called 32 (verify pass, 2026-10-04).
+  const after = (rejections) => { let n = rejections; return () => (n-- > 0 ? limit : 4); };
+  assert.equal(randomBelow(6, after(MAX_REJECTIONS - 1)), 4, `${MAX_REJECTIONS - 1} rejections must still answer`);
+  assert.throws(() => randomBelow(6, after(MAX_REJECTIONS)), /not varying/, `${MAX_REJECTIONS} rejections must be refused`);
+
+  // A power of two has NO rejected tail, so no source can be stuck for it: every draw is in range.
+  assert.equal(randomBelow(2, () => 0xffffffff), 1, 'n = 2 rejects nothing and cannot hang');
 });
 
 test('the draw covers its whole range', () => {

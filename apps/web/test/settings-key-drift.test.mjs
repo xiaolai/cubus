@@ -2,7 +2,7 @@
 //
 // THE FAILURE THIS EXISTS FOR, because it stayed green the whole time it was happening. `sounds`
 // became `soundMode` on 2026-09-20. The fast tier's callers were updated; three others were not —
-// `test/browser/sound.test.mjs` waited for a control that no longer existed, and `spoken.test.mjs`'s
+// `test/browser/sound.test.mjs` waited for a control that no longer existed, and a deleted spoken-lines suite's
 // rig went on saving and restoring `settings.sounds`, a property production had stopped reading. The
 // rig's own comment promised isolation it no longer provided, and every test in that file ran at
 // whatever mode the previous one left behind. Nothing went red: reading a property that does not

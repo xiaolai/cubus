@@ -55,6 +55,14 @@ const NON_U_EDGE_SLOTS = [4, 5, 6, 7, 8, 9, 10, 11];
  *                  picture instead of a wrong one.
  */
 export function targetPicture(targetOrId) {
+  // A PICTURE DESTINATION already IS the answer: it names one exact cube, so there is nothing to
+  // derive and nothing to leave grey. Derivation would throw here anyway — a state pattern has no
+  // projections to iterate — which is how a Codex refute pass found this reader (2026-09-26).
+  // Returned in the SCAN frame, like the stored look; the caller that re-frames a derived picture
+  // must not re-frame this one, and `walk-session.js` says so where it paints.
+  if (targetOrId && typeof targetOrId === 'object' && typeof targetOrId.picture === 'string') {
+    return targetOrId.picture;
+  }
   const target = typeof targetOrId === 'string' ? targetById(targetOrId) : targetOrId;
   const out = new Array(54).fill(UNKNOWN);
 

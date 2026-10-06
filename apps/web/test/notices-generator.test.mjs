@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 
 import {
-  androidLockedModules, bundleBuilds, checkOrtNotices, chooseLicences, identifyLicences, licensePackage,
+  ORT_NOTICE_PINS, androidLockedModules, bundleBuilds, checkOrtNotices, chooseLicences, identifyLicences, licensePackage,
   ortNoticesFile, packagesInBundle, parseSpdx, selectLicenceFiles, textTable,
 } from '../../../scripts/make-third-party-notices.mjs';
 import { licencesOf, readPom } from '../../../scripts/android-licences.mjs';
@@ -202,7 +202,17 @@ test('the shipped app carries ONNX Runtime\'s notices for both releases, and the
     const text = readFileSync(new URL(`../notices/${release}`, import.meta.url), 'utf8');
     assert.match(text, /^THIRD PARTY SOFTWARE NOTICES AND INFORMATION/, `${release} is not Microsoft's notices file`);
   }
-  assert.match(notices, /onnxruntime-1\.29\.0-ThirdPartyNotices\.txt/, 'the web runtime\'s notices are not linked');
+  // EVERY PINNED RELEASE, derived rather than named. This asserted the literal string
+  // `onnxruntime-1.29.0` and so went red on the bump to 1.30.0, reporting a missing link where the
+  // link had merely been renamed. `checkOrtNotices` already refuses a pin for a release nothing
+  // ships and a shipped release with no pin, so ORT_NOTICE_PINS' keys ARE the shipped set — which
+  // makes "every pin is linked" the same claim, and one no version bump can falsify.
+  const pinned = Object.keys(ORT_NOTICE_PINS);
+  assert.ok(pinned.length >= 2, `expected a pin per shipped runtime, found ${pinned.length}`);
+  for (const release of pinned) {
+    assert.ok(notices.includes(`notices/${ortNoticesFile(release)}`),
+      `ONNX Runtime ${release} is pinned as shipping, but THIRD_PARTY_NOTICES.md does not link its notices`);
+  }
 });
 
 // ---- Android ------------------------------------------------------------------------------------

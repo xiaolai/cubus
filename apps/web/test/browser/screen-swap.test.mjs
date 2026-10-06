@@ -129,8 +129,24 @@ async function openHome({ solveTier = 'twenty' } = {}) {
 
 /** Press the die and settle on the screen it produces. */
 async function press(page) {
+  // WAIT FOR THE CHANGE, NOT FOR A CONDITION ALREADY TRUE (found by the full gate, 2026-09-25).
+  // This waited only for move chips to exist — and after the FIRST press they already do, so every
+  // later press returned immediately, before the new cube had landed. The retarget usually won that
+  // race and the suite passed; under a loaded gate it lost, and `pressing Random does not rebuild
+  // the screen` failed with the two scrambles identical, which reads as "the press did nothing"
+  // when in fact the assertion simply ran too early. Pressing Random always draws a different state
+  // (uniformly, from 4.3e19), so the scramble changing IS the signal that the press took effect.
+  const scramble = () =>
+    page.evaluate(() => document.querySelector('#viewCube cubus-cube')?.getAttribute('scramble') ?? null);
+  const before = await scramble();
   await page.click('#randCube');
-  await page.waitForFunction(() => document.querySelectorAll('.chip-m').length > 0, null);
+  await page.waitForFunction(
+    (prev) => {
+      const el = document.querySelector('#viewCube cubus-cube');
+      return document.querySelectorAll('.chip-m').length > 0 && el !== null && el.getAttribute('scramble') !== prev;
+    },
+    before,
+  );
 }
 
 /** Record, once per animation frame, exactly what a composited frame would show. A rAF callback

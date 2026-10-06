@@ -84,20 +84,61 @@ export function holdChangeAt(lesson, walkHold, i, shown) {
  * then stayed behind naming a pose the renderer had since turned away from.
  */
 export function createHoldCube({ cube, isStale, registry = globalThis.customElements, tag = 'cubus-cube' }) {
+  /** The hold last ASKED for — the dedupe, so three asks for one hold turn the cube once. */
   let heldSpec = null;
   let asked = 0;
+  /**
+   * Turn the cube, now that this request is known to still be the current one.
+   *
+   * THE STALENESS CHECK COVERS BOTH PATHS. It used to guard only the deferred one, so a screen that
+   * had already been replaced still turned an UPGRADED renderer and still stamped `data-hold` on it —
+   * and the element is parked and re-used, so that is the next screen's cube being turned by the last
+   * screen's presenter (Codex audit, 2026-10-04). The guard belongs to the WRITE, not to the waiting.
+   *
+   * AND THE DEDUPE IS RELEASED WHEN THE TURN FAILS. `heldSpec` was recorded before the turn was
+   * attempted, so a `turnTo` that threw left the hold recorded as applied: asking for the same hold
+   * again — the ordinary thing a repaint does — returned early and the cube stayed where it was,
+   * silently (same audit). A refusal puts the slate back so the next ask is a real one.
+   *
+   * A rejected promise is caught rather than `void`ed. `turnTo` settles its own promise when a later
+   * turn supersedes it, which is normal and resolves `false`; what must not happen is a rejection
+   * reaching nothing, which on the deferred path was an unhandled rejection with no screen told.
+   *
+   * THE CLEANUP BELONGS TO THE REQUEST, NOT TO THE VALUE. The first draft cleared the dedupe whenever
+   * the failed hold matched the current one, which is not the same question: ask for A, then B, then A
+   * again, and when the FIRST A's turn finally rejects it cleared the slate for the third A that had
+   * already succeeded — so the next ask for A turned the cube a second time (verify pass, 2026-10-04).
+   * Guarded on the generation, the same thing the turn itself is guarded on.
+   */
+  const turn = (h, spec, mine) => {
+    if (mine !== asked || isStale()) return;
+    const refused = (err) => {
+      // Only if THIS request is still the current one: a superseded request's failure says nothing
+      // about where the cube is now, and its own successor has already recorded that.
+      if (mine === asked) heldSpec = null;
+      console.warn(`hold-presenter: the cube could not be turned to ${spec}`, err);
+    };
+    try {
+      const turning = cube.turnTo(h[0], h[1]);
+      if (typeof turning?.catch === 'function') turning.catch(refused);
+    } catch (err) {
+      refused(err);
+    }
+  };
   return function holdCube(h) {
     const spec = holdSpec(h);
     if (spec === heldSpec) return;
+    // A REPLACED SCREEN ASKS FOR NOTHING. Checked before `data-hold` as well as before the turn: the
+    // element is parked and re-used, so both the stamp and the turn would land on the next screen's cube.
+    if (isStale()) return;
     heldSpec = spec;
     const mine = ++asked;
+    // What was ASKED for, recorded at once and whether or not the tag has upgraded yet — the renderer's
+    // pose is private, and this is what a browser test and a person debugging read.
     cube.dataset.hold = spec;
-    if (typeof cube.turnTo === 'function') {
-      void cube.turnTo(h[0], h[1]);
-      return;
-    }
+    if (typeof cube.turnTo === 'function') { turn(h, spec, mine); return; }
     registry.whenDefined(tag).then(() => {
-      if (mine === asked && !isStale() && typeof cube.turnTo === 'function') void cube.turnTo(h[0], h[1]);
+      if (typeof cube.turnTo === 'function') turn(h, spec, mine);
     });
   };
 }

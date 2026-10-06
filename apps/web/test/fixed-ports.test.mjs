@@ -17,6 +17,11 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const WEB = fileURLToPath(new URL('../', import.meta.url));
+/** This file, as `testFiles()` labels it. A rule does not police itself: it quotes every name it looks
+ *  for, so it matches its own detector and passes only because it also quotes `freePort` — which would
+ *  turn a rename of that helper into a failure in the rule rather than in the thing it guards. Derived
+ *  rather than written down, so moving this file does not quietly re-admit it. */
+const SELF = fileURLToPath(import.meta.url).slice(WEB.length);
 
 /** Every test file under apps/web, wherever it sits. */
 const testFiles = () => {
@@ -27,7 +32,7 @@ const testFiles = () => {
       const path = `${dir}${entry.name}`;
       const label = `${prefix}${entry.name}`;
       if (entry.isDirectory()) walk(`${path}/`, `${label}/`);
-      else if (entry.name.endsWith('.test.mjs')) out.push({ label, text: readFileSync(path, 'utf8') });
+      else if (entry.name.endsWith('.test.mjs') && label !== SELF) out.push({ label, text: readFileSync(path, 'utf8') });
     }
   };
   walk(WEB, '');
@@ -56,11 +61,23 @@ test('no test picks its own port — they all ask the OS', () => {
   );
 });
 
-test('the files that spawn a server actually use freePort', () => {
+/** Does this file START a server, as opposed to talking about one? Comments do not count — a line of
+ *  prose that names `serve.mjs` is not a spawn, and classifying by a bare `includes` over the whole text
+ *  made every file that MENTIONED the server a spawner (audit, 2026-10-06). `dev-server.test.mjs` was
+ *  failed by its own header sentence while listening on a port the OS chose. */
+const startsAServer = (text) => text.split('\n')
+  .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+  .some((line) => line.includes('serve.mjs') || /\.listen\s*\(/.test(line));
+
+/** Does it ASK for a port, by either of the two ways that are safe? `listen(0)` hands the choice to the
+ *  OS exactly as `freePort()` does — the rule is about a NUMBER nobody can release, not about one helper. */
+const asksForAPort = (text) => text.includes('freePort') || /\.listen\s*\(\s*0\s*[,)]/.test(text);
+
+test('the files that start a server actually ask the OS for a port', () => {
   // The other half: the check above passes for a file that spawns a server on a literal, and it
   // passes for one that spawns nothing at all. This one names the requirement positively.
-  const spawners = testFiles().filter(({ text }) => text.includes('serve.mjs'));
-  assert.ok(spawners.length >= 5, `only ${spawners.length} server-spawning tests found`);
-  const missing = spawners.filter(({ text }) => !text.includes('freePort')).map((f) => f.label);
-  assert.deepEqual(missing.sort(), [], 'a test spawns serve.mjs without asking the OS for a port');
+  const spawners = testFiles().filter(({ text }) => startsAServer(text));
+  assert.ok(spawners.length >= 5, `only ${spawners.length} server-starting tests found`);
+  const missing = spawners.filter(({ text }) => !asksForAPort(text)).map((f) => f.label);
+  assert.deepEqual(missing.sort(), [], 'a test starts a server without asking the OS for a port');
 });

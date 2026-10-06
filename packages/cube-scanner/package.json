@@ -2,7 +2,7 @@
   "name": "cube-scanner",
   "version": "0.1.0",
   "type": "module",
-  "description": "Webcam Rubik's Cube face scanner — pure, tested CV core (framework-agnostic) plus a thin browser shell",
+  "description": "Webcam Rubik's Cube face scanner \u2014 pure, tested CV core (framework-agnostic) plus a thin browser shell",
   "license": "MIT",
   "private": true,
   "scripts": {
@@ -15,26 +15,27 @@
     "check:fast": "npm run typecheck && npm run lint && npm run test",
     "build:panel": "esbuild view/ai-scan-panel.ts --bundle --format=esm --target=es2022 --legal-comments=eof --outfile=../../apps/web/vendor/ai-scan-panel.js",
     "build:misread-worker": "esbuild view/misread-worker.ts --bundle --format=esm --target=es2022 --legal-comments=eof --outfile=../../apps/web/vendor/misread-worker.js",
-    "build:letterbox-worker": "esbuild view/letterbox-worker.ts --bundle --format=esm --target=es2022 --legal-comments=eof --outfile=../../apps/web/vendor/letterbox-worker.js"
+    "build:letterbox-worker": "esbuild view/letterbox-worker.ts --bundle --format=esm --target=es2022 --legal-comments=eof --outfile=../../apps/web/vendor/letterbox-worker.js",
+    "build:inference-worker": "esbuild view/inference-worker.ts --bundle --format=esm --target=es2022 --legal-comments=eof --outfile=../../apps/web/vendor/inference-worker.js"
   },
   "peerDependencies": {
     "cubejs": "^1.3.2"
   },
   "dependencies": {
-    "onnxruntime-web": "^1.29.0"
+    "onnxruntime-web": "^1.30.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.12",
-    "@types/node": "^24.13.3",
-    "@vitest/coverage-v8": "^5.0.0",
+    "@biomejs/biome": "^2.5.14",
+    "@types/node": "^26.6.3",
+    "@vitest/coverage-v8": "^5.0.2",
     "cubejs": "^1.3.2",
     "esbuild": "^0.28.2",
-    "eslint": "^10.10.0",
-    "happy-dom": "^20.14.0",
+    "eslint": "^10.11.0",
+    "happy-dom": "^20.14.5",
     "typescript": "^6.0.3",
     "typescript-7": "npm:typescript@^7.0.2",
-    "typescript-eslint": "^8.69.0",
-    "vite": "^8.2.2",
-    "vitest": "^5.0.0"
+    "typescript-eslint": "^8.70.1",
+    "vite": "^8.3.1",
+    "vitest": "^5.0.2"
   }
 }

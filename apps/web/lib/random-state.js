@@ -36,17 +36,47 @@ export function cryptoUint32() {
 }
 
 /**
+ * How many rejected draws are a broken source rather than bad luck.
+ *
+ * The rejected tail is at most `n` values out of 2^32, so for every `n` this module uses the chance
+ * of one rejection is under one in 350 million and the chance of thirty-two in a row is zero for any
+ * practical purpose. Reaching this number does not mean the loop was unlucky; it means the source
+ * stopped varying.
+ */
+export const MAX_REJECTIONS = 32;
+
+/**
  * A uniform integer in [0, n), with the modulo bias removed.
  *
  * Taking `rng() % n` directly is biased towards the low values whenever n does not divide 2^32.
  * The bias is small — for n = 12 it is about one part in 350 million — but it is a bias in
  * exactly the place the whole module is about, so the tail is rejected instead.
+ *
+ * **THE REJECTION IS BOUNDED, AND EXHAUSTION THROWS.** A source that keeps answering the same
+ * value in the rejected tail — a stub, a fake in a test, a broken entropy seam — left
+ * `while (draw >= limit)` spinning for ever: a HANG rather than a wrong answer, on the UI thread,
+ * which is the worse of the two. `drillAlg` in `lib/drill-rounds.js` already names this hazard in
+ * its own comment and avoids it in the one place it is visible, then delegated straight into it
+ * here (Codex audit, 2026-10-04); `makeRound`'s retry budget cannot help, because the loop never
+ * returns to it. Throwing is the same stance `cryptoUint32` takes about a missing source: a random
+ * generator that cannot produce a uniform value says so rather than stalling.
  */
 export function randomBelow(n, rng = cryptoUint32) {
   if (!Number.isInteger(n) || n <= 0) throw new RangeError(`randomBelow: ${n} is not a positive integer`);
   const limit = Math.floor(0x1_0000_0000 / n) * n;
   let draw = rng();
-  while (draw >= limit) draw = rng();
+  // `rejected` starts at ONE, because reaching the loop means the first draw was itself rejected.
+  // Starting at zero spent 33 draws under a constant called 32 — a number in a name that the code
+  // does not keep (verify pass, 2026-10-04).
+  for (let rejected = 1; draw >= limit; rejected += 1) {
+    if (rejected >= MAX_REJECTIONS) {
+      throw new Error(
+        `random-state: ${MAX_REJECTIONS} draws in a row fell in the rejected tail for n = ${n} — `
+        + 'the random source is not varying, and a uniform value cannot be drawn from it',
+      );
+    }
+    draw = rng();
+  }
   return draw % n;
 }
 

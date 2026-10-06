@@ -11,7 +11,7 @@
 // therefore ordered and share that one booted app, driving it the way a user would.
 
 import assert from 'node:assert/strict';
-import { isAbsent } from './dom-assert.mjs';
+import { isAbsent, isSame } from './dom-assert.mjs';
 import { test, before } from 'node:test';
 import { readFileSync } from 'node:fs';
 
@@ -558,6 +558,71 @@ test('a solved cube on Home is a cube to look at, not a walk of zero moves', asy
   } finally { Object.assign(state.cube, prev); }
 });
 
+// A FINISHED CUBE CAN STILL BE TURNED INTO A SHAPE, which is the moment a child most wants one
+// (owner's call, 2026-09-27: "the user may be holding a solved cube and want to turn it into a
+// shape"). The test above pins that a solved cube does not WALK; this pins that it is still offered
+// the pictures, which is a different claim and was missing.
+//
+// Three things, and the middle one is the defect that made the first attempt worse than the bug:
+//
+//   The card exists at all. Shapes used to live only inside the walking composition, and a solved
+//   cube is not walking — so a picture could be chosen only once one had already been chosen.
+//
+//   Choosing one does not put the screen in a rebuild loop. `walking` is "solvable OR a picture is
+//   selected", and TWO places compare eligibility — `compositionGone()` and the live-update path in
+//   this screen. Left comparing `solvable` alone, either decides the composition has gone on every
+//   load: a verify pass reproduced four consecutive rebuilds before its harness stopped it.
+//
+//   And the press reaches something. `wireGroup` lives in the walk session, which is built below
+//   `if (!walking) return`, so the menu's `data-stage` items had no listener on this screen at all.
+test('a solved cube is offered the shapes, and choosing one walks to it without a rebuild loop', async () => {
+  const { state } = await import('../lib/app.js');
+  const prev = { ...state.cube };
+  const prevTarget = state.stageTarget;
+  try {
+    win.location.hash = '#/scramble';
+    await tick();
+    assert.ok(await waitFor(() => win.document.querySelectorAll('#solList .chip-m').length > 0), 'no solver');
+    state.stageTarget = 'solved';
+    Object.assign(state.cube, { facelets: SOLVED_FACELETS, derived: false, setupAlg: '', solution: '', moves: [], stepFacelets: [] });
+    win.location.hash = '#/home';
+    await tick();
+
+    // 1. The way in exists on a cube that is not walking.
+    const card = win.document.querySelector('.shapes-card');
+    assert.ok(card, 'a finished cube is offered no way to make a shape');
+    const button = card.querySelector('#patternBtn');
+    assert.ok(button, 'the shapes card carries no button');
+    assert.ok(!win.document.querySelector('.cols').classList.contains('walking'), 'still not walking yet');
+
+    // 2. The menu opens and offers pictures, drawn rather than named.
+    button.click();
+    await tick();
+    const items = [...win.document.querySelectorAll('.pattern-menu [data-stage]')];
+    assert.ok(items.length >= 5, `the menu offered ${items.length} pictures`);
+    assert.ok(items.every((b) => b.querySelector('svg')), 'a picture was offered as text rather than as a picture');
+
+    // 3. Choosing one walks to it — and the screen settles instead of rebuilding for ever.
+    const checkerboard = items.find((b) => b.dataset.stage === 'checkerboard');
+    assert.ok(checkerboard, 'The Checkerboard was not among the pictures');
+    checkerboard.click();
+    await tick();
+    assert.equal(state.stageTarget, 'checkerboard', 'the press did not take');
+    assert.ok(await waitFor(() => win.document.querySelector('.cols').classList.contains('walking')),
+      'choosing a picture from a solved cube did not open a walk');
+    // THE SCREEN SETTLES. This catches a loop through THIS screen's own live-update path, and it
+    // does NOT catch one through `compositionGone()` — nothing here reports a cube, so that
+    // function never runs, and the assertion below passed with the defect put back. The case that
+    // does catch it is "a solved cube aiming at a picture keeps its composition" in
+    // walk-session.test.mjs, where a load actually reaches it. Said here so the next reader does
+    // not mistake this for the loop guard.
+    const seen = win.document.querySelector('.cols');
+    for (let i = 0; i < 6; i++) await tick();
+    isSame(win.document.querySelector('.cols'), seen,
+      'the screen kept rebuilding itself — the two eligibility expressions disagree');
+  } finally { Object.assign(state.cube, prev); state.stageTarget = prevTarget; }
+});
+
 // The reconnect question on the two screens no case reached (probe, 2026-09-14, before the
 // question became its own unit). Over a SOLVED cube Home has no walk, so the question stands in a
 // card of its own, asks whether the cube is solved, and the heading wears the memory with its
@@ -588,6 +653,54 @@ test('an open reconnect question stands in its own card over a solved cube, and 
   } finally {
     state.reconnect = null;
     Object.assign(state.cube, prev);
+  }
+});
+
+test('a solved cube with an open question stacks its cards — it does not draw one over the other', async () => {
+  // `.sheet` IS `grid-area: sheet`, so two `.sheet` siblings do not sit one above the other: CSS grid
+  // puts them in the SAME cell and they overlap. The non-walking composition had three such siblings
+  // (unsolvable, reconnect, shapes) and two pairs could be shown together — a solved cube with an open
+  // reconnect question drew the Shapes card straight over the reconnect controls in landscape and
+  // desktop portrait. The tests before this one asserted each card was PRESENT, which it was
+  // (found by audit, 2026-09-28).
+  //
+  // STRUCTURAL, not geometric, and deliberately so: happy-dom does no layout, so a rect here would be
+  // zeros. What it forbids is the MECHANISM — a second `.sheet` in the same area — which is the thing
+  // a regression would reintroduce. The measured composition cases live in `test/browser/geometry`.
+  const { state } = await import('../lib/app.js');
+  const prev = { ...state.cube };
+  const seenAt = Date.UTC(2026, 7, 25, 13, 40);
+  try {
+    state.reconnect = { reading: 'unchanged', candidate: SOLVED_FACELETS, raw: SOLVED_FACELETS, seenAt };
+    Object.assign(state.cube, { facelets: SOLVED_FACELETS, derived: false, setupAlg: '', solution: '', moves: [], stepFacelets: [] });
+    win.location.hash = '#/home';
+    await tick();
+
+    const reconnect = win.document.querySelector('.reconnect-card');
+    const shapes = win.document.querySelector('.shapes-card');
+    assert.ok(reconnect && shapes, 'precondition: both cards must be on screen at once for this to mean anything');
+
+    // Neither may be placed in the grid itself.
+    for (const [name, card] of [['reconnect', reconnect], ['shapes', shapes]]) {
+      assert.ok(!card.classList.contains('sheet'), `the ${name} card is placed in the sheet grid area itself`);
+    }
+    // Both inside exactly ONE container that is.
+    const sheets = [...win.document.querySelectorAll('#stage .rest-sheet')];
+    assert.equal(sheets.length, 1, 'the non-walking cards are spread over more than one sheet container');
+    assert.equal(reconnect.parentElement, sheets[0], 'the reconnect card is outside the stacking container');
+    assert.equal(shapes.parentElement, sheets[0], 'the shapes card is outside the stacking container');
+    // In document order, so a reader gets the question first and the offer second.
+    assert.ok(sheets[0].compareDocumentPosition(reconnect) < sheets[0].compareDocumentPosition(shapes)
+      || [...sheets[0].children].indexOf(reconnect) < [...sheets[0].children].indexOf(shapes),
+      'the offer is drawn before the question it interrupts');
+    // And the container really stacks: one `.sheet` holding many cards is only safe as a flex column.
+    assert.match(html, /\.scan-sheet, \.rest-sheet \{[^}]*flex-direction: column/,
+      'the stacking container has no column rule, so its cards would sit side by side');
+  } finally {
+    state.reconnect = null;
+    Object.assign(state.cube, prev);
+    win.location.hash = '#/home';
+    await tick();
   }
 });
 
@@ -650,7 +763,7 @@ test('the Advanced section is hidden until the chord asks for it', async () => {
   assert.equal(state.screen, 'settings');
   assert.deepEqual(
     [...win.document.querySelectorAll('[data-nav-toggle]')].map((b) => b.dataset.navToggle),
-    ['timer', 'stats', 'trainer', 'drill', 'lessons', 'course'],
+    ['timer', 'stats', 'trainer', 'drill', 'pieces', 'lessons', 'course'],
   );
 
   win.document.dispatchEvent(chord());
@@ -735,19 +848,22 @@ test('opening Advanced is not remembered', async () => {
   const stored = win.localStorage.getItem('cubusSettings') ?? '';
   assert.ok(!stored.includes('advanced'), `open state must not be persisted, got: ${stored}`);
 
-  // The preference it controls IS saved, which is the distinction being drawn. Drill starts
-  // hidden, so the first click SHOWS it — and the stored hidden list must say so.
-  win.document.querySelector('[data-nav-toggle="drill"]').click();
+  // The preference it controls IS saved, which is the distinction being drawn. The Alg trainer
+  // starts hidden, so the first click SHOWS it — and the stored hidden list must say so. It used to
+  // be Drill; Drill is published now (dev-docs/algorithm-drills-plan.md item 4.2), so it no longer
+  // starts hidden and cannot stand for a tab that does. The subject of this case is the
+  // persistence, never which tab it happens to be demonstrated on.
+  win.document.querySelector('[data-nav-toggle="trainer"]').click();
   await tick();
   const hidden = JSON.parse(win.localStorage.getItem('cubusSettings') ?? '{}').navHidden ?? [];
-  assert.ok(!hidden.includes('drill'), `showing Drill persists, got: ${JSON.stringify(hidden)}`);
-  assert.ok([...win.document.querySelectorAll('#nav [data-nav]')].some((b) => b.dataset.nav === 'drill'));
+  assert.ok(!hidden.includes('trainer'), `showing the trainer persists, got: ${JSON.stringify(hidden)}`);
+  assert.ok([...win.document.querySelectorAll('#nav [data-nav]')].some((b) => b.dataset.nav === 'trainer'));
 
   // Put it back through the UI: clearing localStorage alone would leave the in-memory settings
   // holding a shown entry, and the next test would see a toolbar it did not ask for.
-  win.document.querySelector('[data-nav-toggle="drill"]').click();
+  win.document.querySelector('[data-nav-toggle="trainer"]').click();
   await tick();
-  assert.ok(![...win.document.querySelectorAll('#nav [data-nav]')].some((b) => b.dataset.nav === 'drill'));
+  assert.ok(![...win.document.querySelectorAll('#nav [data-nav]')].some((b) => b.dataset.nav === 'trainer'));
   win.document.dispatchEvent(chord());
   await tick();
   win.localStorage.removeItem('cubusSettings');
@@ -1015,16 +1131,18 @@ test('showing an entry adds it to the toolbar, hiding removes it, and the rest i
   await tick();
   assert.ok(!navIds().includes('lessons'), 'precondition: Lessons starts hidden');
 
-  // Show all three, in the order the toolbar lists them.
-  for (const id of ['trainer', 'drill', 'lessons']) win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
+  // Show the two that start hidden, in the order the toolbar lists them. Drill is NOT among them
+  // any more — it is published (dev-docs/algorithm-drills-plan.md item 4.2) and is already there,
+  // so clicking it would hide it and this case would be testing the opposite of what it says.
+  for (const id of ['trainer', 'lessons']) win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
   await tick();
-  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'trainer', 'drill', 'lessons'], 'shown in toolbar order');
+  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'trainer', 'drill', 'pieces', 'lessons'], 'shown in toolbar order');
 
   // Hide one: its neighbours are untouched.
   win.document.querySelector('[data-nav-toggle="lessons"]').click();
   await tick();
   assert.ok(!navIds().includes('lessons'), 'gone from the toolbar');
-  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'trainer', 'drill'], 'and its neighbours are untouched');
+  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'trainer', 'drill', 'pieces'], 'and its neighbours are untouched');
 
   // Hiding is cosmetic: the address still works, which is the escape hatch.
   win.location.hash = '#/lessons';
@@ -1036,14 +1154,18 @@ test('showing an entry adds it to the toolbar, hiding removes it, and the rest i
   // this file would inherit a toolbar with two extra entries.
   win.location.hash = '#/settings';
   await tick();
-  for (const id of ['trainer', 'drill']) {
+  // Only the trainer: this case SHOWED the trainer and Lessons, and Lessons is already hidden
+  // again above. Drill was never shown by it — it is published now, so it was there from the
+  // start — and clicking it here would HIDE it and hand every later test in this file a toolbar
+  // missing a default tab.
+  for (const id of ['trainer']) {
     win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
     await tick();
   }
   assert.deepEqual(
     navIds().filter((i) => ['trainer', 'drill', 'lessons'].includes(i)),
-    [],
-    'the default toolbar is back before the next test runs',
+    ['drill'],
+    'the default toolbar is back before the next test runs — which now includes Drill',
   );
   win.document.dispatchEvent(chord());
   await tick();
@@ -1072,9 +1194,15 @@ test('the toolbar no longer offers 3D viewer or Smart cube, and Stats is renamed
   assert.ok(!ids.includes('stats'), 'Stats is hidden by default');
   // The placeholder screens are hidden by default IN CODE, not by a stored preference: a wiped
   // localStorage once put all three back in the toolbar. Timer rides on the same rule.
-  for (const id of ['trainer', 'drill', 'lessons', 'timer']) {
+  for (const id of ['trainer', 'lessons', 'timer']) {
     assert.ok(!ids.includes(id), `${id} is hidden by default, whatever storage says`);
   }
+  // And the other direction, named rather than left as an absence: Drill is PUBLISHED, so a wiped
+  // localStorage must show it. Asserted positively because the loop above is over a list — drop an
+  // id from that list and it stops being checked at all, which is exactly how publishing a tab
+  // could otherwise go green while the tab stayed hidden.
+  assert.ok(ids.includes('drill'), 'Drill is published, so a fresh install must show it');
+  assert.ok(ids.includes('pieces'), 'Pieces is on the default row, so a fresh install must show it');
   const labels = [...win.document.querySelectorAll('#nav [data-nav]')].map((b) => b.textContent);
   assert.ok(!labels.some((l) => l.includes('Session stats')), 'and it is not called Session stats');
   // Nothing groups the list any more, so there is no heading left over to point at a screen that
@@ -1131,10 +1259,15 @@ test('drag-to-rotate is off by default, and the toggle reaches the cube as an at
 test('the toolbar is one flat row of tabs, with Settings as its own button', async () => {
   win.location.hash = '#/home';
   await tick();
-  // The default row is the beginner's path and nothing else: Timer and Stats are speedcubing
-  // instruments, Alg trainer, Drill and Lessons are placeholder screens — all five start hidden,
-  // in code, and are one chord away.
-  assert.deepEqual(navLabels(), ['Home', 'Restore', 'Scramble']);
+  // The default row is the beginner's path: Timer and Stats are speedcubing instruments, and Alg
+  // trainer and Lessons are still placeholder screens — those four start hidden, in code, and are
+  // one chord away. DRILL IS NOT among them any more (dev-docs/algorithm-drills-plan.md item 4.2):
+  // it holds every algorithm the app knows and drills a chosen one against a tracked cube, so it
+  // is part of the beginner's path rather than one chord away from it.
+  // Pieces rejoined the default row on 2026-09-29 (owner's decision): it had been hidden at
+  // version 4 on the reasoning that its ID was new, and the content it holds was already reachable
+  // inside the Drill screen — so hiding the new tab took away something people could get to.
+  assert.deepEqual(navLabels(), ['Home', 'Restore', 'Scramble', 'Drill', 'Pieces']);
   // Every tab draws a real glyph. icon() falls back to a bare dot for a name it does not know, so
   // a deleted or renamed glyph does not throw — it renders something almost plausible, and in an
   // icons-only row there is no label left to give the game away. Two icons were retired on

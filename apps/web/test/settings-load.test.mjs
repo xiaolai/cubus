@@ -114,3 +114,40 @@ test('a clean record is not rewritten on every launch', async () => {
   assert.equal(again.store.writes, 0, 'an unchanged record was written again');
   assert.equal(again.store.raw(), clean, 'and what storage holds is exactly what it held');
 });
+
+// The shapes history — `settings.shapesRecent`, which the cube screen's Shapes menu is computed
+// from (lib/shape-recency.js). This file's subject is the RECORD, so these are the type and size
+// repairs only; which ids name a picture this build offers is `shape-recency.test.mjs`'s question
+// and is asked where the menu is drawn, deliberately not here.
+test('a shapes history that is not a list of names cannot reach the menu', async () => {
+  for (const stored of [null, 7, 'checkerboard', { 0: 'checkerboard' }, true]) {
+    const { mod } = await loadOver({ shapesRecent: stored });
+    assert.deepEqual(mod.settings.shapesRecent, [],
+      `a stored ${JSON.stringify(stored)} was kept as a history`);
+  }
+  // Inside a real array, the entries are filtered rather than the whole list refused: a history
+  // with one bad entry is still a history, and dropping all of it would silently reset a menu.
+  const { mod, store } = await loadOver({ shapesRecent: ['lines', 7, '', null, 'lines', { x: 1 }, 'checkerboard'] });
+  assert.deepEqual(mod.settings.shapesRecent, ['lines', 'checkerboard'],
+    'the entries that are names were not the ones kept, in order, once each');
+  assert.deepEqual(store.stored().shapesRecent, ['lines', 'checkerboard'], 'the repair was not written back');
+});
+
+test('a hostile shapes history cannot grow the record without bound', async () => {
+  // localStorage is writable by anything on the origin, and `save()` rewrites the WHOLE record on
+  // every preference change — so an unbounded array here would be rewritten in full for ever.
+  const cap = Number(/RECENT_STORED_CAP = (\d+)/.exec(
+    readFileSync(new URL('../lib/app-settings.js', import.meta.url), 'utf8'))?.[1]);
+  assert.ok(Number.isInteger(cap) && cap > 0, 'the stored cap is no longer a constant this case can read');
+  const { mod } = await loadOver({ shapesRecent: Array.from({ length: cap * 4 }, (_, i) => `shape-${i}`) });
+  assert.equal(mod.settings.shapesRecent.length, cap, `a history of ${cap * 4} names was kept at ${mod.settings.shapesRecent.length}`);
+  // The cap is NOT the menu's five, and saying so here is the point: the app's own writes are
+  // bounded to the menu's length by `rememberShape`, and this number answers a different question.
+  assert.ok(cap > 5, 'the storage cap has collapsed onto the menu length — they are two different bounds');
+});
+
+test('a fresh install starts with no shapes history at all', async () => {
+  const { mod } = await loadOver(undefined);
+  assert.deepEqual(mod.settings.shapesRecent, [],
+    'a first launch arrived with a history nobody made — the menu must be seeded from the catalogue, not from storage');
+});

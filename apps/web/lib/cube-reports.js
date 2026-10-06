@@ -78,6 +78,16 @@ let standingScan = null;
  */
 export const reportIsCurrent = () => reportedAtTurns === turnsReported();
 
+/**
+ * The serial the latest report carried, or null when it carried none.
+ *
+ * Exported so a consumer seeding itself from `state.live` can seed its CONTINUITY too. A seed with
+ * no serial leaves the reader with no baseline, and a reader with no baseline cannot tell a wrong
+ * turn from a report that went missing before it started listening — which is how a dropped first
+ * turn became an accusation (audit, 2026-09-29).
+ */
+export const liveSerial = () => lastSerialSeen;
+
 /** Remember the arrangement the app is sure of (lib/cube-memory.js) with this connection's serial,
  *  and repaint Settings when the write's health flipped — which the memory, beneath the screens,
  *  does not do itself. */

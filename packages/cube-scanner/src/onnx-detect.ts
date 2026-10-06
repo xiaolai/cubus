@@ -3,6 +3,7 @@
 // INJECTED by the panel (which owns onnxruntime-web). That way cube-scanner never imports
 // a heavy wasm runtime, and the whole path is exercised in tests with a fake `run`.
 
+import { DETECT_ROWS, NUM_CLASSES } from './detect-head.js';
 import type { ModelOutput } from './detector.js';
 // `IMG_SIZE`, `preprocess` and `Preprocessed` live in `letterbox.ts` since 2026-09-20, beside the
 // arithmetic they are built on, so the letterbox worker's bundle carries the letterbox and nothing
@@ -19,21 +20,10 @@ import {
 } from './onnx-postprocess.js';
 import type { Frame } from './types.js';
 
-export { IMG_SIZE, type Preprocessed, preprocess };
-
-/**
- * How many colour classes the detector distinguishes — one per cube face, 0 white … 5 blue, matching
- * `ml/data.yaml`. Named here because it was a bare `6` default below, which meant the ONE number
- * that decides how the output tensor is indexed had no name to be checked against anywhere else.
- */
-export const NUM_CLASSES = 6;
-
-/**
- * Rows in a detector detect head: four box coordinates, then one score per class. This is the exact
- * height the output tensor must have, and `createModelRunner` refuses anything else — a tensor with
- * a different row count is a different model, and decoding it would read the cube off stale offsets.
- */
-export const DETECT_ROWS = 4 + NUM_CLASSES;
+// And `NUM_CLASSES` and `DETECT_ROWS` live in `detect-head.ts` since 2026-09-22, so the inference
+// worker's bundle can check a model's output shape without carrying this module's decoder. All five
+// are re-exported here because this is where every caller has always found them.
+export { DETECT_ROWS, IMG_SIZE, NUM_CLASSES, type Preprocessed, preprocess };
 
 /** The injected model call: input CHW tensor → flat output tensor + its anchor count. */
 export type RunModel = (input: Float32Array, imgsz: number) => Promise<ModelOutput>;

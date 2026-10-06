@@ -3,6 +3,20 @@
 #
 #   ml/venv-cubedet/bin/pip install -r ml/requirements-export.txt
 -r requirements-cubedet.txt
+# ONNX2TF STAYS ON THE 1.x LINE, AND PYTHON IS NOT THE REASON. 1.28.8 declares NO dependencies at
+# all, which is why it was chosen: it lets this repository pin numpy and onnx itself, as the comments
+# below and in requirements-cubedet.txt do. Every 2.x release pins them EXACTLY instead
+# (2.6.9 -> numpy==2.2.6, onnx==1.20.1), so taking 2.x means surrendering that control.
+#
+# Measured 2026-09-29 with a pip dry-run on both interpreters, because the revert of the ml-stack
+# group (a20e537) said "moving the ml jobs to Python 3.12 is what would let this group in" and that
+# is FALSE:
+#   * python 3.11.16 - onnx2tf 2.x declares requires_python >=3.12, so it cannot install at all;
+#   * python 3.12.13 - it installs, and then conflicts twice with the same group's own pins,
+#     numpy==2.4.6 against its numpy==2.2.6 and onnx==1.23.0 against its onnx==1.20.1.
+# So a 3.12 migration would not admit this group, and the open item that said it would is closed.
+# The real question is pin control, and this file's answer is no. The CI step "The export stack's
+# pins resolve at all" runs this dry-run on every push, so a future 2.x bump fails before merge.
 onnx2tf==1.28.8
 # onnx2tf declares no dependencies and imports these unconditionally; without them the TFLite step
 # dies on import. Pinned to the versions of the environment that produced the shipped TFLite.

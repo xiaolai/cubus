@@ -61,9 +61,17 @@ export const SOLVED = Object.freeze({
   eo: Object.freeze([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
 });
 
-/** `a` then `b`. Orientation adds in the destination's frame, which is why the lookup is by
- *  `b`'s permutation and not by the slot index. */
-function compose(a, b) {
+/**
+ * `a` then `b`. Orientation adds in the destination's frame, which is why the lookup is by `b`'s
+ * permutation and not by the slot index.
+ *
+ * EXPORTED 2026-09-26, for the one identity a state pattern is routed by: `applyAlg(a, m)` is
+ * `compose(a, applyAlg(SOLVED, m))`, so the maneuver from cube `c` to picture `S` is the inverse of
+ * whatever solves `compose(inverseOf(c), S)`. It was already the single implementation of this
+ * arithmetic — `inverseOf` below records what happened the last time there were two — so exporting
+ * it is cheaper than letting `lib/patterns.js` spell a third.
+ */
+export function compose(a, b) {
   const cp = new Array(8);
   const co = new Array(8);
   for (let i = 0; i < 8; i++) {

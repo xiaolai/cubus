@@ -10,6 +10,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { SOLVED, applyAlg } from '../lib/cube-pieces.js';
+import { STICKER_PALETTES } from '../lib/sticker-palettes.js';
 import { toFacelets } from '../lib/two-phase.js';
 import { ROTATIONS, symmetryOrder } from './cube-look.mjs';
 import { SET_PATTERNS, STATE_PATTERNS, LEDGER_DEPTH } from '../test/fixtures/pattern-ledger.mjs';
@@ -157,11 +158,10 @@ for (const p of phases) {
 
 const DATA = { depth: LEDGER_DEPTH, census, state, named: NAMED, sets, phases, methodNotes: METHOD_NOTES };
 
-const PALETTES = {
-  muted: { U: '#E8E3D6', D: '#D8B84A', F: '#4E8C6A', B: '#3C6E9E', R: '#B8503F', L: '#C87A3C' },
-  classic: { U: '#F4F2EC', D: '#F0C000', F: '#00A651', B: '#0051BA', R: '#C41E3A', L: '#FF6C00' },
-  colorsafe: { U: '#EFEAE0', D: '#E9C46A', F: '#6A9FB5', B: '#20405C', R: '#D1495B', L: '#8C5E8A' },
-};
+// THE APP'S OWN TABLE, not a copy of it. These eighteen colours were written out again here, so a
+// page whose whole claim is "these are the app's colours" had a second source that could drift from
+// the first in silence — and the page would go on making the claim (found by audit, 2026-09-28).
+const PALETTES = STICKER_PALETTES;
 
 const html = `<!DOCTYPE html>
 <html lang="en">
@@ -468,6 +468,14 @@ function netCube(f, cell = 6, sets = null) {
    names from a fixed list — so nothing untrusted reaches the page, and escaping costs one function. */
 const esc = (v) => String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// The two attributes the filter reads, written ONCE. The summary tables used to carry neither, so
+// filtering hid the cards and left every row of the tables standing: searching for one pattern
+// reported "1 showing" above a table still listing all of them (found by audit, 2026-09-28).
+function filterData(o) {
+  return ' data-order="' + (o.order ?? '') + '" data-q="'
+    + esc(((o.name || '') + ' ' + (o.alg || '')).toLowerCase()) + '"';
+}
+
 function card(o) {
   const badges = [];
   if (o.order !== undefined) badges.push('<span class="badge' + (o.order >= 8 ? ' hi' : '') + '">order ' + o.order + '</span>');
@@ -477,8 +485,10 @@ function card(o) {
   // page said "6 moves" over a 14-move maneuver.
   if (o.bookMoves !== undefined) badges.push('<span class="badge">book ' + o.bookMoves + '</span>');
   if (o.best !== undefined) {
-    // "shortest" is a MINIMALITY CLAIM and the two-phase engine cannot make one — AGENTS.md:54 names
-    // the only sources that can. Above ten moves this is the best the engine found under its budget
+    // "shortest" is a MINIMALITY CLAIM and the two-phase engine cannot make one — AGENTS.md's
+    // optimal-solver seam ("a minimality claim has exactly three sources") names the only sources
+    // that can, and a line number is not one of them: this citation used to point at line 54,
+    // which had drifted onto an unrelated sentence. Above ten moves this is the best the engine found under its budget
     // and nothing more, so it says so. An audit caught the badge reading "shortest 15" over a length
     // the bench itself reports as an upper bound.
     const label = o.proved ? 'shortest ' + o.best : 'best found ' + o.best;
@@ -486,7 +496,6 @@ function card(o) {
   }
   if (o.proved) badges.push('<span class="badge hi">proved</span>');
   if (o.size) badges.push('<span class="badge">' + o.size.toLocaleString() + ' cubes</span>');
-  if (o.method) badges.push('<span class="badge">' + esc(o.method) + '</span>');
   if (o.notARelaxation) badges.push('<span class="badge hi">not a partial solve</span>');
   const meta = [];
   if (o.wrong !== undefined) meta.push(o.wrong + ' stickers wrong');
@@ -500,8 +509,7 @@ function card(o) {
   if (o.notARelaxation) meta.push('a solved cube does NOT satisfy this one');
   if (o.stats) meta.push(o.stats);
   if (o.meanMoves) meta.push(o.meanMoves + ' moves from a scramble, against ' + o.meanSolve + ' to solve');
-  return '<article class="card" data-order="' + (o.order ?? '') + '" data-q="'
-    + esc(((o.name || '') + ' ' + (o.alg || '')).toLowerCase()) + '">'
+  return '<article class="card"' + filterData(o) + '>'
     + '<div class="art">' + isoCube(o.f, 108, o.sets) + netCube(o.f, 6, o.sets) + '</div>'
     + (o.name ? '<div class="name">' + esc(o.name) + '</div>' : '')
     + '<div class="badges">' + badges.join('') + '</div>'
@@ -524,7 +532,7 @@ function render() {
   })).join('');
   document.getElementById('settable').innerHTML = '<thead><tr><th>picture</th><th>what it leaves free</th>'
     + '<th class="num">cubes in the set</th><th class="num">from a scramble</th><th class="num">to solve</th></tr></thead><tbody>'
-    + DATA.sets.map((s) => '<tr><td>' + esc(s.name) + '</td><td>' + esc(s.free) + '</td><td class="num">'
+    + DATA.sets.map((s) => '<tr' + filterData(s) + '><td>' + esc(s.name) + '</td><td>' + esc(s.free) + '</td><td class="num">'
       + s.size.toLocaleString() + '</td><td class="num">' + (s.meanMoves ?? '&mdash;') + '</td><td class="num">'
       + (s.meanSolve ?? '&mdash;') + '</td></tr>').join('') + '</tbody>';
 
@@ -549,7 +557,7 @@ function render() {
   document.getElementById('n-phases').textContent = DATA.phases.length;
   document.getElementById('phasetable').innerHTML = '<thead><tr><th>method</th><th>phase</th>'
     + '<th class="num">certain</th><th class="num">two or three colours</th><th class="num">anything</th></tr></thead><tbody>'
-    + DATA.phases.map((p) => '<tr><td>' + esc(p.method) + '</td><td>' + esc(p.name) + '</td><td class="num">'
+    + DATA.phases.map((p) => '<tr' + filterData(p) + '><td>' + esc(p.method) + '</td><td>' + esc(p.name) + '</td><td class="num">'
       + p.settled + '</td><td class="num">' + (p.narrowed || '&mdash;') + '</td><td class="num">' + p.free
       + '</td></tr>').join('') + '</tbody>';
 
@@ -570,14 +578,18 @@ function render() {
 function filter() {
   const want = document.querySelector('.controls button[aria-pressed=true]').dataset.order;
   const q = document.getElementById('q').value.trim().toLowerCase();
+  // ONE predicate for a card and for a summary row, over the attributes filterData writes for both.
+  const keep = (el) => (want === 'all' || el.dataset.order === want)
+    && (!q || (el.dataset.q || '').includes(q));
   let shown = 0;
   for (const el of document.querySelectorAll('.card')) {
-    const okOrder = want === 'all' || el.dataset.order === want;
-    const okQ = !q || el.dataset.q.includes(q);
-    const show = okOrder && okQ;
+    const show = keep(el);
     el.classList.toggle('hidden', !show);
     if (show) shown++;
   }
+  // The tables say the same thing in fewer words, so they answer to the same filter. Not counted in
+  // "N showing": that number is about patterns, and a pattern has one card and one row.
+  for (const row of document.querySelectorAll('tbody tr')) row.classList.toggle('hidden', !keep(row));
   // A whole section goes away when nothing in it survives the filter. Sections are real elements
   // rather than a run of siblings, because walking siblings to find where a heading's block ends is
   // the kind of thing that breaks the next time a paragraph is added.

@@ -26,6 +26,8 @@ const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const STEM = 'cubedet';
 /** The forbidden word, never written whole. */
 const FORBIDDEN = ['yo', 'lo'].join('');
+/** The vendor of the removed trainer, never written whole either. */
+const VENDOR = ['ultra', 'lytics'].join('');
 /** Roboflow's export-format value, assembled the same way `ml/fetch_roboflow.py` assembles it. */
 const ROBOFLOW_FORMAT = ['yo', 'lo', 'v8'].join('');
 
@@ -74,6 +76,36 @@ test('the word appears nowhere in the repository', () => {
     });
   }
   assert.deepEqual(stray, [], 'the removed model family is named again — the tree disagrees with the provenance record');
+});
+
+test('the vendor of the removed trainer is named nowhere in the repository', () => {
+  const stray = [];
+  for (const file of REPO_FILES) {
+    if (!TEXT.test(file)) continue;
+    const text = readFileSync(ROOT + file, 'utf8');
+    text.split('\n').forEach((line, i) => {
+      if (line.toLowerCase().includes(VENDOR)) stray.push(`${file}:${i + 1} — ${line.trim().slice(0, 100)}`);
+    });
+  }
+  assert.deepEqual(stray, [], 'the removed trainer is named again');
+});
+
+test('no shipped artefact carries the removed trainer inside its bytes', () => {
+  // WHERE IT ACTUALLY HID (2026-09-21). A third-party exporter writes its own name into a model's
+  // metadata, and three such binaries survived a history rewrite by sitting STAGED in two stale
+  // worktrees, where no text scan and no `git log -S` could see them — pickaxe does not search
+  // binary blobs. So the bytes of every artefact this repository ships are read here, whole.
+  for (const path of ARTEFACTS) {
+    const artefact = path.endsWith('Manifest.json') ? path.replace('Manifest.json', '') : path;
+    const files = artefact.endsWith('/')
+      ? REPO_FILES.filter((f) => f.startsWith(artefact))
+      : [artefact];
+    assert.ok(files.length > 0, `${artefact} holds nothing to read`);
+    for (const file of files) {
+      const bytes = readFileSync(ROOT + file).toString('latin1').toLowerCase();
+      assert.ok(!bytes.includes(VENDOR), `${file} carries the removed trainer's name in its bytes`);
+    }
+  }
 });
 
 test('the one value an external API demands is assembled, never spelled', () => {

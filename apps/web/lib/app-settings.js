@@ -9,7 +9,19 @@ import { repairProgress } from './method-ladder.js';
 import { isScheme } from './scheme.js';
 import { STICKER_PALETTES } from './sticker-palettes.js';
 
-export const load = (k, fb) => { try { return { ...fb, ...JSON.parse(localStorage.getItem(k) || '{}') }; } catch { return { ...fb }; } };
+/**
+ * A parsed value is a RECORD or it is nothing.
+ *
+ * JSON.parse answers `null`, `7`, `"text"` and `[]` for perfectly valid JSON, and every one of them
+ * used to flow straight into a spread: `{...7}` and `{...[]}` are silently empty, `{..."text"}`
+ * adds numeric keys, and `'soundMode' in null` THROWS at module scope — which means one hostile or
+ * half-written `cubusSettings` stopped the app booting at all, with no screen to say so (audit,
+ * 2026-09-29). Guarded here rather than at each reader, because `load` has five callers and the
+ * next key added would have had to remember.
+ */
+const asRecord = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : null);
+
+export const load = (k, fb) => { try { return { ...fb, ...asRecord(JSON.parse(localStorage.getItem(k) || '{}')) }; } catch { return { ...fb }; } };
 /** Persist, and say whether it worked. Storage can be full, or disabled outright in a private
  *  window — and the UI used to report "Saved" either way, so a nickname could vanish on reload
  *  with nothing having warned anyone. */
@@ -55,18 +67,30 @@ export const SCAN_VIEWS = Object.freeze({ today: 'today', stickers: 'dots' });
  *  it is how a child who cannot read hears a side land -- and it costs a beginner nothing; the
  *  spoken lines are the part that talks over a person who did not ask for them, so they are opt-in.
  *  An install that already stored a mode keeps it; the migration below is unchanged. */
-export const SOUND_MODES = Object.freeze({ voice: 'voice', chime: 'chime', off: 'off' });
+/**
+ * TWO MODES, NOT THREE. `voice` is gone (owner, 2026-09-30): the spoken lines were judged worse
+ * than nothing, and a sound per state says what they said. A stored `'voice'` is simply not a mode
+ * any more, so the repair below lands it on the default — which IS the bell it used to include.
+ */
+export const SOUND_MODES = Object.freeze({ chime: 'chime', off: 'off' });
 /** What a fresh install gets and what every repair below falls back to — one table, so the two
  *  cannot come to disagree about a default. */
 export const DEFAULT_SETTINGS = Object.freeze({
   theme: 'auto', palette: DEFAULT_PALETTE, scheme: 'western', schemeSource: 'default', autosolve: false, cameraId: '',
   navHidden: null, navDefaults: 0, devRandCube: false, language: '', dragRotate: false, solveTier: 'twenty',
   proveMinimum: false, soundMode: SOUND_MODES.chime, devScanView: SCAN_VIEWS.today,
-  // What the scan says out loud, where a line has been edited in Settings -> Advanced. Keyed by the
-  // line's name in lib/screens/scan/spoken.js, which owns the defaults and the repair: this file
-  // must not import a screen's module (AGENTS.md, the one-way dependency), so all it promises is
-  // that the value is an object.
-  spokenLines: {},
+  // The Drill screen's clock. OFF by default, on `proveMinimum`'s precedent and for a related
+  // reason: a stopwatch turns practice into performance, and this app hides Timer and Stats from a
+  // beginner's tab row on exactly that reasoning (decision D3 of
+  // dev-docs/algorithm-drills-plan.md). A drill rep is 3-14 moves, so its span carries the timer's
+  // documented missing-first-move bias at 10-25% rather than under 1% — which is why the row that
+  // turns it on says what the number can and cannot be compared with.
+  drillClock: false,
+  // Which pictures were last chosen, newest first — what the cube screen's Shapes menu draws
+  // (lib/shape-recency.js). A HISTORY and not a preference: nobody sets it, it is written by
+  // choosing a shape, and what the menu shows is computed from it. Empty on a fresh install, which
+  // is why `recentShapes()` pads from the catalogue rather than treating empty as a failure.
+  shapesRecent: [],
 });
 /** Every setting whose default is a boolean — DERIVED, so a new flag is repaired the moment it has a
  *  default, and no list kept by hand can leave one out (audit, 2026-09-19: the tests' own copies had
@@ -75,7 +99,17 @@ export const BOOLEAN_SETTINGS = Object.freeze(Object.keys(DEFAULT_SETTINGS).filt
 /** The record exactly as storage held it, so the one write at the end of this file happens only when a
  *  repair or a migration changed something — or on a first launch, when storage held nothing. */
 const storedRecord = (() => { try { return localStorage.getItem('cubusSettings'); } catch { return null; } })();
-export const settings = load('cubusSettings', DEFAULT_SETTINGS);
+/**
+ * The same record PARSED ONCE. Null when storage held nothing, or held something that is not a
+ * record — and those two are different questions answered in the same place, which is the point.
+ *
+ * It used to be read twice: `storedRecord` for the write comparison and the sound migration, and
+ * `load()` going back to storage for the settings themselves. Two reads of one key cannot be
+ * assumed to agree — a store that changed between them loaded one answer and persisted the other,
+ * overwriting a newer preference with an older one (audit, 2026-09-29).
+ */
+const storedSettings = (() => { try { return asRecord(JSON.parse(storedRecord ?? 'null')); } catch { return null; } })();
+export const settings = { ...DEFAULT_SETTINGS, ...storedSettings };
 // localStorage is untrusted input, and `load` merges it raw. The string "false" is truthy, so a
 // hand-edited or half-migrated flag reads as ON: proveMinimum would opt someone in to an operation
 // that runs for hours, and a Settings toggle flips `!settings[k]`, so a stored "false" showed as on
@@ -88,6 +122,24 @@ for (const flag of BOOLEAN_SETTINGS) {
 }
 // The study's arm: anything but one of its two values is today's screen.
 if (!Object.values(SCAN_VIEWS).includes(settings.devScanView)) settings.devScanView = DEFAULT_SETTINGS.devScanView;
+/**
+ * The shapes history, repaired as a RECORD and not as a catalogue.
+ *
+ * Type and size only: an array, of non-empty strings, each seen once, bounded. Whether an id names
+ * a picture this build offers is `lib/shape-recency.js`'s question and is asked there, at the
+ * moment the menu is drawn — asking it here would put the pattern catalogue into the module every
+ * other module's settings come from, and would silently ERASE a shape's place in the menu on any
+ * build where it was temporarily unoffered.
+ *
+ * The bound is about hostile input rather than about the menu: localStorage is writable by anything
+ * on the origin, and without it a blob could park an unbounded array in the record that `save()`
+ * then rewrites in full on every preference change. The app's own writes are already bounded to
+ * five by `rememberShape`, which is why this number is larger than five and means something else.
+ */
+const RECENT_STORED_CAP = 32;
+settings.shapesRecent = Array.isArray(settings.shapesRecent)
+  ? [...new Set(settings.shapesRecent.filter((id) => typeof id === 'string' && id !== ''))].slice(0, RECENT_STORED_CAP)
+  : [...DEFAULT_SETTINGS.shapesRecent];
 // The sound mode, repaired and MIGRATED in one place. A stored `sounds: false` is a person who
 // asked for silence and must keep it; anything else -- true, absent, or the string "false" that the
 // boolean repair above used to catch -- becomes the default.
@@ -97,7 +149,10 @@ if (!Object.values(SCAN_VIEWS).includes(settings.devScanView)) settings.devScanV
 // and a test that a chosen silence survives failed against exactly that. What decides is whether
 // STORAGE held a mode: if it did not, this install predates the split and the boolean beside it is
 // the only record of what anyone asked for.
-const storedSound = (() => { try { return JSON.parse(storedRecord || '{}'); } catch { return {}; } })();
+// The validated record from above, under the name this block has always used. A record that did
+// not parse, or parsed to a primitive or an array, is NOT an install that predates the split: it is
+// corruption, and it takes the default rather than the legacy boolean's meaning.
+const storedSound = storedSettings;
 //
 // THE MIGRATION DOES NOT READ THE DEFAULT, and since 2026-09-21 it must not. These are two
 // different questions: "what does a NEW install get" (the default -- `chime`) and "what did THIS
@@ -112,19 +167,23 @@ const storedSound = (() => { try { return JSON.parse(storedRecord || '{}'); } ca
 //   storage held an unusable one    modern, corrupted       -> the default
 // The middle one is the only place the legacy boolean may speak, and it is recognised by the
 // ABSENCE of the key rather than by the value being unusable.
-const preSplit = storedRecord !== null && !('soundMode' in storedSound);
-if (!Object.values(SOUND_MODES).includes(storedSound.soundMode)) {
-  settings.soundMode = preSplit
-    ? (storedSound.sounds === false ? SOUND_MODES.off : SOUND_MODES.voice)
+// AND THE MIDDLE CASE HAS COLLAPSED, which is worth saying rather than quietly dropping. The
+// legacy boolean meant "the bell AND the words", and it was kept distinct from the default
+// precisely because the two stopped being the same answer. With the words gone there is one
+// affirmative answer left, so `sounds: true` and a fresh install now agree — not because the
+// distinction was abandoned but because the thing it preserved no longer exists. A chosen SILENCE
+// is still a choice and still survives, which is the half that always mattered.
+const preSplit = storedSound !== null && !('soundMode' in storedSound);
+if (!Object.values(SOUND_MODES).includes(storedSound?.soundMode)) {
+  settings.soundMode = preSplit && storedSound.sounds === false
+    ? SOUND_MODES.off
     : DEFAULT_SETTINGS.soundMode;
 }
 delete settings.sounds;
-// Edited spoken lines are untrusted input like everything else in this file. Only that it is an
-// object is promised here; WHICH keys are real, and how long a line may be, is
-// lib/screens/scan/spoken.js's to say, because that is where the lines live.
-if (!settings.spokenLines || typeof settings.spokenLines !== 'object' || Array.isArray(settings.spokenLines)) {
-  settings.spokenLines = {};
-}
+// The edited spoken lines are GONE with the voice they were for (owner, 2026-09-30). Dropped from
+// the record rather than left to rot, on the `inspection` precedent below: a field nothing reads is
+// a field `save()` keeps rewriting for ever.
+delete settings.spokenLines;
 // The inspection flag is gone (it toggled a label, never a behaviour); drop the stored leftover
 // rather than letting save() keep rewriting a field nothing reads — the advancedOpen precedent.
 delete settings.inspection;
@@ -146,7 +205,17 @@ delete settings.teachLevel;
  * an integer inside the ladder falls back to 0. A stored 9 would otherwise throw out of
  * `methodFor` on the first solve and take the screen with it — the `language: 7` failure again.
  */
-function repairRungs(stored) {
+/**
+ * Exported since 2026-10-04 so that there is ONE rung-normalisation policy in the app.
+ *
+ * The Lessons screen compares the rungs in memory with the rungs on disk to decide whether to warn
+ * that the device did not save a raise. It did that comparison with a rule of its own — "an integer
+ * is a rung" — while this one also bounds the value by the stage's top. A stored `cross: 99` was
+ * therefore repaired to 0 here and read as 99 there, so the two disagreed and the screen warned
+ * about a raise that had never happened (verify pass, 2026-10-04). The comparison has to be between
+ * two records normalised by the same function, which means this one.
+ */
+export function repairRungs(stored) {
   const out = { ...DEFAULT_RUNGS };
   for (const id of STAGE_IDS) {
     const want = stored?.[id];
@@ -232,6 +301,7 @@ export const HIDEABLE = [
   ['stats', 'Stats'],
   ['trainer', 'Alg trainer'],
   ['drill', 'Drill'],
+  ['pieces', 'Pieces'],
   ['lessons', 'Lessons'],
   ['course', 'Course'],
 ];
@@ -239,12 +309,16 @@ export const HIDEABLE = [
 /** Hidden unless asked for. Timer and Stats are speedcubing instruments, not part of learning to
  * solve a cube. (Stats used to be hidden because it showed invented numbers; phase 5 replaced
  * every one of them with a computed figure or an em dash, so it is hidden now only because a
- * beginner does not need an ao12 — not because it lies.) Alg trainer, Drill and Lessons are still
- * the other class: representative screens with placeholder content. The default tab row is the beginner's path;
+ * beginner does not need an ao12 — not because it lies.) Alg trainer and Lessons are still
+ * the other class: representative screens with placeholder content. **Drill is no longer among
+ * them** (2026-09-27, dev-docs/algorithm-drills-plan.md item 4.2): it holds every algorithm the app
+ * knows, drills a chosen one against a tracked cube, and says what it measured — so it is published.
+ * Removing it from this list is HALF the change; see `NAV_ADDED` below for the other half, which is
+ * the half that actually decides whether a fresh install sees the tab. The default tab row is the beginner's path;
  * everything else is one chord away. In CODE, not only in a stored preference: the hidden set
  * was once a preference alone, and one wiped localStorage brought five placeholder screens back
  * into the toolbar. Version 2 hides the three once for anyone who already ran the app. */
-export const DEFAULT_HIDDEN = ['timer', 'stats', 'trainer', 'drill', 'lessons', 'course'];
+export const DEFAULT_HIDDEN = ['timer', 'stats', 'trainer', 'lessons', 'course'];
 
 /**
  * What each version ADDED, so a bump applies a delta rather than the whole set.
@@ -256,10 +330,49 @@ export const DEFAULT_HIDDEN = ['timer', 'stats', 'trainer', 'drill', 'lessons', 
  * back". A delta is what makes that sentence true for every version after the first.
  */
 const NAV_ADDED = Object.freeze({
-  2: ['timer', 'stats', 'trainer', 'drill', 'lessons'],
+  // `drill` was here until 2026-09-27 and its removal is what publishes the tab. Changing
+  // `DEFAULT_HIDDEN` alone does NOTHING, including for a fresh install: a fresh record has no
+  // `navDefaults`, so `from` is 0, migration 2 runs, and it would put `drill` straight back.
+  // Measured before the change, and `nav-defaults-migration.test.mjs` now asserts Drill's
+  // VISIBILITY by name — the older case loops over `DEFAULT_HIDDEN` itself, so removing an id from
+  // that list also removes it from the check, and the whole thing would have gone green while the
+  // tab stayed hidden.
+  //
+  // An existing install that has Drill hidden KEEPS it hidden and turns it on in Settings. That is
+  // decision D5, and the reason is that this record cannot tell an inherited default from a
+  // deliberate hide — so a delta that removed an id could not avoid overriding somebody's choice.
+  2: ['timer', 'stats', 'trainer', 'lessons'],
   3: ['course'],
+  // `pieces` left the Drill screen and became a tab of its own (2026-09-29, option C) and was
+  // hidden here, on the reasoning that no id had existed before so no choice was being overridden.
+  // THAT REASONING WAS ABOUT THE ID AND THE USER LIVES IN THE ACTIVITY: the Pieces content was
+  // reachable inside the Drill screen, which shipped two days earlier, so hiding the new tab took
+  // away something people could already get to. Kept here rather than edited out, because 4 is what
+  // 0.7.6 and 0.7.7 actually did and version 5 only makes sense beside it. Reversed by `NAV_SHOWN`
+  // below (owner's decision, 2026-09-29).
+  4: ['pieces'],
 });
-export const NAV_DEFAULTS_VERSION = 3;
+
+/**
+ * What each version brought BACK — the other direction, and the reason this walk is no longer
+ * add-only.
+ *
+ * Removing an id from `DEFAULT_HIDDEN` reaches a FRESH install and nobody else: a record that has
+ * already run stores `navHidden` with the id in it, and a stored preference outranks a changed
+ * default forever. So a tab hidden by a shipped version can only be brought back by a migration
+ * that takes it out of the stored set.
+ *
+ * THE COST IS THE ONE DECISION D5 REFUSED TO PAY: this record cannot tell an inherited default from
+ * a deliberate hide, so bringing an id back overrides anyone who chose to hide it. That is
+ * acceptable for `pieces` and was not for `drill` — `pieces` was hidden for two shipped patch
+ * versions, so a deliberate choice about it has had almost no chance to exist. It is NOT a general
+ * licence: an id that has been hideable for long enough to accumulate real choices must be left
+ * alone, exactly as `drill` was.
+ */
+const NAV_SHOWN = Object.freeze({
+  5: ['pieces'],
+});
+export const NAV_DEFAULTS_VERSION = 5;
 
 // localStorage is untrusted input: anything in here that is not a hideable id is dropped rather
 // than allowed to silently remove some other nav entry.
@@ -285,15 +398,34 @@ settings.navHidden = (Array.isArray(settings.navHidden) ? settings.navHidden : D
  * all, and is then stamped as version 3, so the Course tab silently never gets its default.
  * Walking a fixed list cannot do either.
  *
- * A version that is not a whole number ≥ 0 is treated as 0, which applies every migration — the
- * safe direction, since these only ever ADD to the hidden set.
+ * A version that is not a whole number ≥ 0 is treated as 0, which applies every migration. That is
+ * still the safe direction, but NOT because the steps only add any more — they no longer do. It is
+ * safe because applying the whole list in order is exactly how the shipped defaults are defined:
+ * whatever a version hid, a later version may show, and walking all of them lands on today's
+ * intended set rather than on some intermediate one. Applying them twice lands there too.
+ *
+ * WITHIN one version, adds are applied before removals, so a version that both hides and shows an
+ * id ends up showing it. Nothing does that today; it is fixed here so that nothing has to guess.
  */
-export function migrateNavDefaults(navDefaults, navHidden, added = NAV_ADDED, to = NAV_DEFAULTS_VERSION) {
+export function migrateNavDefaults(
+  navDefaults, navHidden, added = NAV_ADDED, to = NAV_DEFAULTS_VERSION, shown = NAV_SHOWN,
+) {
   const from = Number.isInteger(navDefaults) && navDefaults >= 0 ? navDefaults : 0;
   if (from >= to) return { navDefaults, navHidden };
   let hidden = navHidden;
-  for (const v of Object.keys(added).map(Number).sort((a, b) => a - b)) {
-    if (v > from) hidden = [...new Set([...hidden, ...added[v]])];
+  const versions = [...new Set([...Object.keys(added), ...Object.keys(shown)])]
+    .map(Number).sort((a, b) => a - b);
+  for (const v of versions) {
+    // BOTH BOUNDS. Skipping only `v <= from` applied every migration ABOVE the requested target as
+    // well, so `migrateNavDefaults(3, [], undefined, 4)` ran version 5's removal and then stamped
+    // the record as 4 — a state no shipped version ever produced. Production always asks for the
+    // latest, which is why no caller noticed (audit, 2026-09-29).
+    if (v <= from || v > to) continue;
+    if (added[v]) hidden = [...new Set([...hidden, ...added[v]])];
+    if (shown[v]) {
+      const back = new Set(shown[v]);
+      hidden = hidden.filter((id) => !back.has(id));
+    }
   }
   return { navDefaults: to, navHidden: hidden };
 }

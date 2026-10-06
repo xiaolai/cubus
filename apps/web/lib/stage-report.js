@@ -73,6 +73,33 @@ export const STAGE_COPY = Object.freeze({
   unknown: () => t('couldn’t work one out'),
   /** The offer that stands in for an answer nobody could compute. */
   offerSolve: () => t('solve the whole cube instead'),
+  /**
+   * A PICTURE, which is a way TO somewhere rather than a way BACK.
+   *
+   * Every sentence above is written for a stage: "back" is right there, because a stage is where
+   * the cube already was and the child has lost it. A fun shape is somewhere the cube has never
+   * been, so "a way back to the Checkerboard" is simply false, and a child who reads it looks for
+   * a mistake they did not make.
+   *
+   * IT MAKES NO CLAIM, and this is the region's whole obligation. Two-phase cannot prove a minimum,
+   * so a picture route can never be the "shortest" sentence, and `routeToPicture` returns an
+   * explicit `minimal: false` rather than leaving the field absent for this to read as falsy.
+   */
+  /**
+   * NO ARTICLE, unlike every stage sentence above, because a picture's name brings its own.
+   *
+   * A stage is named bare — "cross", "first layer" — so the copy supplies "the". A picture is named
+   * as a thing: "The Checkerboard", "Lines", "a plus on every face". Reusing the stage phrasing gave
+   * "a way to the The Checkerboard", which is the kind of seam a child reads as the app being
+   * broken. Adding an article per name would be the other way round and worse: it puts English
+   * grammar in a data table that gets translated.
+   */
+  wayTo: (name, moves) => t('a way to %1 — %2', name, plural(moves, { one: '%1 move', other: '%1 moves' })),
+  /** Already showing it — the picture's own "already there". */
+  showing: (name) => t('your cube is already showing %1', name),
+  /** The fallback solved the whole cube instead of reaching the picture. Said, never presented as
+   *  arriving: the article-free name for the reason `wayTo` gives. */
+  overshootTo: (name, moves) => t('couldn’t find a short way to %1; the whole cube in %2', name, moves),
 });
 
 /**
@@ -109,10 +136,24 @@ export function chipFor({ target, bound = null, answer = null, atTarget = false 
  */
 export function routeSentence(route, target) {
   if (!route || route.moves === null) return STAGE_COPY.unknown();
+  const name = target?.name ?? '';
+  // A PICTURE IS A WAY TO, NEVER A WAY BACK, and it never claims a minimum. Branched before
+  // everything below because all of it is written for a stage: "back" is the word, and the exact
+  // engine's `minimal` is the claim. A picture destination has no exact engine and was never there.
+  if (target?.picture || target?.sideways) {
+    if (route.moves === 0) return STAGE_COPY.showing(name);
+    // OVERSHOOT IS STILL OVERSHOOT. This branch returned before the check below, so a fallback that
+    // had solved the WHOLE CUBE was announced as "a way to a plus on every face — 1 move" (audit,
+    // 2026-09-27, reproduced on SOLVED·R). The set patterns reach the same three-source race every
+    // stage does, and its pool source answers with a whole-cube solution, so the case is live for
+    // them — and a route that did not arrive where the heading says must never read as if it did.
+    if (route.overshoot) return STAGE_COPY.overshootTo(name, route.moves);
+    return STAGE_COPY.wayTo(name, route.moves);
+  }
   // ZERO IS NOT A LENGTH, it is a different fact. Checked before the claim, so "already there"
   // can never come out as a minimality claim about no moves at all.
-  if (route.moves === 0) return STAGE_COPY.already(target?.name ?? '');
-  if (route.overshoot) return STAGE_COPY.overshoot(target?.name ?? '', route.moves);
+  if (route.moves === 0) return STAGE_COPY.already(name);
+  if (route.overshoot) return STAGE_COPY.overshoot(name, route.moves);
   return route.minimal ? STAGE_COPY.shortest(route.moves) : STAGE_COPY.route(route.moves);
 }
 

@@ -30,11 +30,15 @@ export const TRACE_KEY = 'cubusScanTrace';
 export const TRACE_CAPACITY = 4000;
 
 /** Whether the switch is on. A storage that throws (a locked-down page) is simply "off". */
-export function traceEnabled(
-  store: Pick<Storage, 'getItem'> | undefined = globalThis.localStorage,
-): boolean {
+export function traceEnabled(store?: Pick<Storage, 'getItem'>): boolean {
   try {
-    return store?.getItem(TRACE_KEY) === '1';
+    // READ INSIDE THE TRY, not as a default argument. A default is evaluated at the call, BEFORE
+    // the body runs, and `globalThis.localStorage` is a getter that THROWS on a page where storage
+    // is denied — a sandboxed iframe, a browser set to block it. So the documented "a storage that
+    // throws is simply off" was not true of the commonest way for one to throw: the exception
+    // escaped this function entirely and took the scan loop with it.
+    const storage = store ?? globalThis.localStorage;
+    return storage?.getItem(TRACE_KEY) === '1';
   } catch {
     return false;
   }
@@ -93,8 +97,19 @@ export interface SessionMeta {
  * They come in three kinds, which need three different fixes, so they are counted apart:
  *   - abstain  a frame that read no face (`PARTIAL_FACE`, a geometry rule…) — detection;
  *   - colour   exactly one sticker read a different colour than the frame before — colour, keyed
- *              `cell<i>:<from>><to>` with cells in reading order (cell4 is the centre);
+ *              `cell<i>:<from>><to>` with cells in reading order;
  *   - moved    two or more stickers changed at once — the cube was turned or moved, not misread.
+ *
+ * A BREAK IS COUNTED WHERE THE GATE BREAKS A RUN, and the centre has been on both sides of that
+ * line. `Stillness` keyed its run on the EIGHT between 2026-09-20 and 2026-09-23 so that a logo cap
+ * alternating white and blue could not veto a capture; a centre change broke nothing then, and
+ * counting it here inflated every per-side total on exactly the cubes the trace was opened to
+ * diagnose (D10, `dev-docs/scan-pipeline-audit-2026-09-23.md` §3 — the audit's §1.2 numbers were
+ * read off a trace that did). The gate keys on all nine again, so the centre counts again: not
+ * counting it now would report zero breaks for a session the centre broke on every frame, which is
+ * the same defect with its sign flipped. Centre changes are ALSO tallied on their own, under
+ * `centre`, because a flickering centre is a printed logo's signature and should be readable at a
+ * glance rather than dug out of the per-cell counts.
  *
  * WHICH FRAMES BELONG TO THE SIDE (2026-09-18). A side is measured from its own first read — a read
  * that is the filed side by `sameSide` (seven of the eight around the centre, under some turn) — and only after
@@ -105,9 +120,9 @@ export interface SessionMeta {
  * counts below are the cost of settling THIS side.
  */
 export interface SideSpeed {
-  /** The face it was filed under, or `held(B)` for a side left unnamed because its centre read as B, like another side's. */
+  /** The face it was filed under. */
   side: string;
-  /** When it was captured or held back, in milliseconds since the session began. */
+  /** When it was captured, in milliseconds since the session began. */
   at: number;
   /**
    * From the previous side's last read — for the first side, from the first frame showing five or
@@ -127,10 +142,18 @@ export interface SideSpeed {
     colour: Record<string, number>;
     moved: number;
   };
+  /**
+   * How many frame-to-frame changes were the CENTRE alone — not breaks (the gate ignores them),
+   * and the logo cube's signature, keyed `<from>><to>` by colour name.
+   */
+  centre: Record<string, number>;
 }
 
 /** Frames that show a side: enough boxes that a face is plausibly in front of the camera. */
 const IN_VIEW_BOXES = 5;
+
+/** The centre's position in a read, in reading order — the one cell the stillness gate ignores. */
+const CENTRE_CELL = 4;
 
 /** The colours a side was filed with. Every capture and hold the panel records carries them. */
 function filedColours(mark: TraceEvent): readonly number[] {
@@ -144,14 +167,128 @@ function filedColours(mark: TraceEvent): readonly number[] {
 }
 
 /**
- * One SideSpeed per side captured or held back, in order, for ONE session's ticks and events.
+ * One SideSpeed per side captured, in order, for ONE session's ticks and events.
  * Pure, so the arithmetic is testable without a scan.
  */
+/**
+ * Is `read` the same side as `other` — its CENTRE and its ring, never the ring alone?
+ *
+ * D5, APPLIED HERE TOO (Codex audit, 2026-09-26). `sameSide` compares the eight around the centre
+ * and deliberately leaves the centre out, because that is the sticker a logo misreads. But the eight
+ * alone do not name a side: after `U D R L F B` the white and yellow sides carry the SAME eight
+ * around different centres. This file measures per-side timing by walking back through the ticks
+ * until it finds "the previous side", so on that scramble one side's window swallowed the other's
+ * ticks — the swallowed side reported zero ticks and a null settling time, from a session in which
+ * it had plainly been held up. The panel has always asked both questions (`sideInHand`); this asked
+ * one.
+ *
+ * USED FOR THE BOUNDARY BETWEEN TWO SIDES, AND NOWHERE ELSE. Where this side's own window STARTS is
+ * still decided on the ring alone, because inside a window a flickering centre is this side with a
+ * flickering centre — and D10 requires that flip to be COUNTED as the break it is, which it cannot
+ * be if the ticks carrying it fall outside the window. What the ring alone cannot do is tell this
+ * side from the PREVIOUS one, which is the question asked below.
+ *
+ * The traced colours are the reading AS READ — `traceEvent('captured', …)` records `read.colors`
+ * before `withCentre` rewrites anything — so the centre here is a measurement and comparing it is
+ * comparing like with like.
+ */
+const sameSideAs = (read: readonly number[], other: readonly number[]): boolean =>
+  read[4] === other[4] && sameSide(read, other);
+
+/** Which ticks belong to one captured side, and the two instants its timings are measured from. */
+interface SideWindow {
+  /** The ticks of this side itself: from its first read to the capture. */
+  own: TickRecord[];
+  /** Ticks in the window before this side's own reading began — the fumbling before it settled. */
+  before: TickRecord[];
+  /** The first tick that showed the cube at all, which `waitMs` is measured from. */
+  seen: TickRecord | undefined;
+}
+
+/**
+ * Split one capture's ticks into the side's own run and what came before it.
+ *
+ * LIFTED OUT OF `sideSpeeds` (Codex audit, 2026-09-26, the complexity half). Choosing the window and
+ * scoring the run are two jobs: the first is about which side a tick belongs to, the second about
+ * what broke a run of them. They were one function of complexity 23, and the ONE place they touch —
+ * the boundary rule below — is exactly where a defect had been hiding.
+ */
+function windowFor(
+  win: readonly TickRecord[],
+  filed: readonly number[],
+  previous: readonly number[] | null,
+): SideWindow {
+  // The last tick that still showed the PREVIOUS side: everything after it is this side's window.
+  let lastOfPrevious: TickRecord | undefined;
+  for (let i = win.length - 1; previous !== null && i >= 0; i--) {
+    const colors = win[i]!.colors;
+    if (colors !== undefined && sameSideAs(colors, previous)) {
+      lastOfPrevious = win[i];
+      break;
+    }
+  }
+  const after = lastOfPrevious ? win.filter((r) => r.t > lastOfPrevious.t) : [...win];
+  const start = after.findIndex((r) => r.colors !== undefined && sameSide(r.colors, filed));
+  return {
+    own: start < 0 ? [] : after.slice(start),
+    before: start < 0 ? after : after.slice(0, start),
+    seen: lastOfPrevious ?? win.find((r) => (r.kept ?? 0) >= IN_VIEW_BOXES),
+  };
+}
+
+/** What broke this side's run, by cause — and the centre's own tally beside it. */
+interface RunBreaks {
+  breaks: SideSpeed['breaks'];
+  centre: SideSpeed['centre'];
+}
+
+/** Compare one pair of consecutive ticks and record what, if anything, broke the run. */
+function noteBreak(prev: TickRecord, cur: TickRecord, into: RunBreaks): void {
+  if (prev.colors === undefined) return; // only a run that existed can be broken
+  if (cur.colors === undefined) {
+    count(into.breaks.abstain, cur.geometry?.rule ?? cur.reason ?? cur.outcome);
+    into.breaks.total += 1;
+    return;
+  }
+  // The centre's own tally, kept as well as counted: a flickering centre is a printed logo's
+  // signature, and the per-cell `colour` breakdown does not make it easy to see at a glance.
+  if (cur.colors[CENTRE_CELL] !== prev.colors[CENTRE_CELL]) {
+    count(
+      into.centre,
+      `${colourOf(prev.colors[CENTRE_CELL]!)}>${colourOf(cur.colors[CENTRE_CELL]!)}`,
+    );
+  }
+  // COUNTED LIKE ANY OTHER CELL (2026-09-23). It was excluded while `Stillness` keyed its run
+  // on the eight, because a break the gate does not treat as one is not a break — D10. The
+  // gate keys on all nine again, so excluding it here would report zero breaks for a session
+  // whose every run the centre broke, which is exactly the session this trace is opened for.
+  const changed: number[] = [];
+  for (let c = 0; c < cur.colors.length; c++) {
+    if (cur.colors[c] !== prev.colors[c]) changed.push(c);
+  }
+  if (changed.length === 0) return;
+  into.breaks.total += 1;
+  if (changed.length === 1) {
+    const c = changed[0]!;
+    count(into.breaks.colour, `cell${c}:${colourOf(prev.colors[c]!)}>${colourOf(cur.colors[c]!)}`);
+  } else into.breaks.moved += 1;
+}
+
+/** Walk a side's run and tally every break in it. */
+function breaksIn(own: readonly TickRecord[]): RunBreaks {
+  const into: RunBreaks = {
+    breaks: { total: 0, abstain: {}, colour: {}, moved: 0 },
+    centre: {},
+  };
+  for (let i = 1; i < own.length; i++) noteBreak(own[i - 1]!, own[i]!, into);
+  return into;
+}
+
 export function sideSpeeds(
   ticks: readonly TickRecord[],
   events: readonly TraceEvent[],
 ): SideSpeed[] {
-  const marks = events.filter((e) => e.kind === 'captured' || e.kind === 'held-back');
+  const marks = events.filter((e) => e.kind === 'captured');
   const out: SideSpeed[] = [];
   let from = Number.NEGATIVE_INFINITY;
   let previous: readonly number[] | null = null;
@@ -159,50 +296,20 @@ export function sideSpeeds(
     const filed = filedColours(m);
     const win = ticks.filter((r) => r.t > from && r.t <= m.t);
     from = m.t;
-    let lastOfPrevious: TickRecord | undefined;
-    for (let i = win.length - 1; previous !== null && i >= 0; i--) {
-      const colors = win[i]!.colors;
-      if (colors !== undefined && sameSide(colors, previous)) {
-        lastOfPrevious = win[i];
-        break;
-      }
-    }
-    const after = lastOfPrevious ? win.filter((r) => r.t > lastOfPrevious.t) : win;
-    const start = after.findIndex((r) => r.colors !== undefined && sameSide(r.colors, filed));
-    const own = start < 0 ? [] : after.slice(start);
-    const seen = lastOfPrevious ?? win.find((r) => (r.kept ?? 0) >= IN_VIEW_BOXES);
-    const firstRead = own[0];
+    const { own, before, seen } = windowFor(win, filed, previous);
     previous = filed;
-    const breaks: SideSpeed['breaks'] = { total: 0, abstain: {}, colour: {}, moved: 0 };
-    for (let i = 1; i < own.length; i++) {
-      const prev = own[i - 1]!;
-      const cur = own[i]!;
-      if (prev.colors === undefined) continue; // only a run that existed can be broken
-      if (cur.colors === undefined) {
-        count(breaks.abstain, cur.geometry?.rule ?? cur.reason ?? cur.outcome);
-        breaks.total += 1;
-        continue;
-      }
-      const changed: number[] = [];
-      for (let c = 0; c < cur.colors.length; c++)
-        if (cur.colors[c] !== prev.colors[c]) changed.push(c);
-      if (changed.length === 0) continue;
-      breaks.total += 1;
-      if (changed.length === 1) {
-        const c = changed[0]!;
-        count(breaks.colour, `cell${c}:${colourOf(prev.colors[c]!)}>${colourOf(cur.colors[c]!)}`);
-      } else breaks.moved += 1;
-    }
+    const firstRead = own[0];
+    const { breaks, centre } = breaksIn(own);
     out.push({
-      side: m.kind === 'held-back' ? `held(${String(m.detail.shares)})` : String(m.detail.face),
+      side: String(m.detail.face),
       at: m.t,
       waitMs: seen ? m.t - seen.t : null,
       firstReadMs: firstRead ? m.t - firstRead.t : null,
-      otherReads: (start < 0 ? after : after.slice(0, start)).filter((r) => r.colors !== undefined)
-        .length,
+      otherReads: before.filter((r) => r.colors !== undefined).length,
       ticks: own.length,
       reads: own.filter((r) => r.colors !== undefined).length,
       breaks,
+      centre,
     });
   }
   return out;
@@ -216,17 +323,76 @@ interface Session extends SessionMeta {
 /** What a tick contributes before the recorder stamps it. */
 export type TickNote = Omit<TickRecord, 'session' | 'seq' | 't'>;
 
+/** Everything one session's ticks add up to, before any of it is shaped into a report. */
+interface TickTally {
+  outcomes: Partial<Record<Outcome, number>>;
+  abstain: Partial<Record<FitReason, number>>;
+  geometry: Partial<Record<GeometryFailure['rule'], number>>;
+  centreClasses: Record<string, number>;
+  centre: { probed: number; nothingThere: number; nearMiss: number; kept: number };
+  nearMissConf: number[];
+  lineChanges: number;
+}
+
+/** What the CENTRE probe made of one tick, folded into the running tally. */
+function tallyCentre(probe: NonNullable<TickRecord['centre']>, into: TickTally): void {
+  into.centre.probed += 1;
+  if (!probe.found) {
+    into.centre.nothingThere += 1;
+    return;
+  }
+  const name = colourOf(probe.cls);
+  into.centreClasses[name] = (into.centreClasses[name] ?? 0) + 1;
+  if (probe.kept) {
+    into.centre.kept += 1;
+    return;
+  }
+  into.centre.nearMiss += 1;
+  into.nearMissConf.push(probe.conf);
+}
+
 /**
- * Something the scan decided that is not a frame: a side filed, held back, turned away, or a held-back
- * side resolved at check time. Kept apart from the ticks because the resolution does not happen on a
- * tick at all — it runs from the check timer after the sixth side — and because these are the steps a
- * logo on the white centre goes through, which a list of frames cannot show.
+ * Add one session's ticks up.
+ *
+ * LIFTED OUT OF `summary` (Codex audit, 2026-09-26, the complexity half — this one it did not
+ * report, and it is the same shape as `sideSpeeds` at 23: counting and reporting in one function).
+ * Counting is what this does; shaping the numbers into a report is `summary`'s, and the centre
+ * probe's four-way split is its own again.
+ */
+function tallyTicks(ticks: readonly TickRecord[]): TickTally {
+  const into: TickTally = {
+    outcomes: {},
+    abstain: {},
+    geometry: {},
+    centreClasses: {},
+    centre: { probed: 0, nothingThere: 0, nearMiss: 0, kept: 0 },
+    nearMissConf: [],
+    lineChanges: 0,
+  };
+  let previousLine: string | undefined;
+  for (const r of ticks) {
+    count(into.outcomes, r.outcome);
+    if (r.reason) count(into.abstain, r.reason);
+    if (r.geometry) count(into.geometry, r.geometry.rule);
+    if (r.line !== undefined) {
+      if (previousLine !== undefined && r.line !== previousLine) into.lineChanges += 1;
+      previousLine = r.line;
+    }
+    if (r.centre) tallyCentre(r.centre, into);
+  }
+  return into;
+}
+
+/**
+ * Something the scan decided that is not a frame: a side filed, or a side turned away as one
+ * already in hand. Kept apart from the ticks because a decision is not a frame's property, and
+ * because these are the steps a scan goes through that a list of frames cannot show.
  */
 export interface TraceEvent {
   session: number;
   /** Milliseconds since the session began, on the same clock as the ticks. */
   t: number;
-  kind: 'captured' | 'held-back' | 'turned-away' | 'contest-resolved';
+  kind: 'captured' | 'turned-away' | 'loop-restarted';
   detail: Record<string, unknown>;
 }
 
@@ -329,35 +495,8 @@ export class ScanTrace {
   summary(): object[] {
     return this.sessions.map((s) => {
       const ticks = this.records.filter((r) => r.session === s.id);
-      const outcomes: Partial<Record<Outcome, number>> = {};
-      const abstain: Partial<Record<FitReason, number>> = {};
-      const geometry: Partial<Record<GeometryFailure['rule'], number>> = {};
-      const centreClasses: Record<string, number> = {};
-      const centre = { probed: 0, nothingThere: 0, nearMiss: 0, kept: 0 };
-      const nearMissConf: number[] = [];
-      let lineChanges = 0;
-      let previousLine: string | undefined;
-      for (const r of ticks) {
-        count(outcomes, r.outcome);
-        if (r.reason) count(abstain, r.reason);
-        if (r.geometry) count(geometry, r.geometry.rule);
-        if (r.line !== undefined && previousLine !== undefined && r.line !== previousLine)
-          lineChanges += 1;
-        if (r.line !== undefined) previousLine = r.line;
-        if (r.centre) {
-          centre.probed += 1;
-          if (!r.centre.found) centre.nothingThere += 1;
-          else {
-            centreClasses[colourOf(r.centre.cls)] =
-              (centreClasses[colourOf(r.centre.cls)] ?? 0) + 1;
-            if (r.centre.kept) centre.kept += 1;
-            else {
-              centre.nearMiss += 1;
-              nearMissConf.push(r.centre.conf);
-            }
-          }
-        }
-      }
+      const { outcomes, abstain, geometry, centreClasses, centre, nearMissConf, lineChanges } =
+        tallyTicks(ticks);
       const first = ticks[0];
       const last = ticks[ticks.length - 1];
       const seconds = last ? Math.round(last.t / 100) / 10 : 0;
@@ -369,7 +508,6 @@ export class ScanTrace {
       const sides = sideSpeeds(ticks, events);
       const waits = sides.flatMap((x) => (x.waitMs === null ? [] : [x.waitMs]));
       const settles = sides.flatMap((x) => (x.firstReadMs === null ? [] : [x.firstReadMs]));
-      const resolved = [...events].reverse().find((e) => e.kind === 'contest-resolved');
       return {
         session: s.id,
         startedAt: s.startedAt,
@@ -392,7 +530,6 @@ export class ScanTrace {
             sides.length > 0 && sides[0]!.waitMs !== null
               ? sides[sides.length - 1]!.at - (sides[0]!.at - sides[0]!.waitMs)
               : null,
-          resolved: resolved ? { ...resolved.detail } : null,
         },
         inferMs: quantiles(ticks.map((r) => r.inferMs)),
         traceMs: quantiles(ticks.flatMap((r) => (r.traceMs === undefined ? [] : [r.traceMs]))),

@@ -57,7 +57,11 @@ const P = {
 };
 // Only its own names: an inherited one — `toString`, `__proto__` — drew native function text or
 // "[object Object]" where a glyph belongs (found by audit, 2026-09-13).
-export const icon = (name, size = 16) => `<svg class="ic" viewBox="0 0 24 24" style="width:${size}px;height:${size}px">${Object.hasOwn(P, name) ? P[name] : '<circle cx="12" cy="12" r="2"/>'}</svg>`;
+// `aria-hidden`, because every one of these sits beside the words it decorates. Without it a screen
+// reader announces an unnamed graphic before each label — measured on the Drill chooser, where the
+// leading icon read out as a picture with no description and told the listener nothing. An icon-only
+// button therefore carries its own `aria-label`; there is no icon in this app that IS the message.
+export const icon = (name, size = 16) => `<svg class="ic" aria-hidden="true" viewBox="0 0 24 24" style="width:${size}px;height:${size}px">${Object.hasOwn(P, name) ? P[name] : '<circle cx="12" cy="12" r="2"/>'}</svg>`;
 
 // ---- navigation model ------------------------------------------------------------------------
 // One flat list. The SOLVE / PRACTICE / LEARN headings were a taxonomy for nine items, which is
@@ -81,6 +85,11 @@ export const NAV = [
   ['stats', 'Stats', 'chart'],
   ['trainer', 'Alg trainer', 'cap'],
   ['drill', 'Drill', 'repeat'],
+  // Beside Drill because that is where it used to live, as a second kind inside it (2026-09-29,
+  // option C): someone who knows the exercise will look for it here. `tag` rather than another grid
+  // or cube silhouette — the question it asks is where a piece BELONGS, which is a labelling of a
+  // place, and no other tab uses it.
+  ['pieces', 'Pieces', 'tag'],
   ['lessons', 'Lessons', 'book'],
   // The narrated course. Hidden by default like the two above it, and for the same reason: the
   // screen is real, what it lists is not part of the app (ADR 0006).
@@ -97,6 +106,10 @@ export const TITLES = Object.freeze({
   home: 'Cube',
   trainer: 'Algorithm trainer',
   settings: 'Settings',
+  // Reached from the cube screen's Shapes menu, not from the tab row — so it has a title here and
+  // no entry in NAV. The pictures are the game beside the method; a tab would file them as a stop
+  // on the way to a solved cube (lib/screens/shapes.js).
+  shapes: 'Shapes',
 });
 export const state = {
   screen: 'home',

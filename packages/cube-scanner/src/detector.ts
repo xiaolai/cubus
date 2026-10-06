@@ -39,6 +39,26 @@ export interface ModelOutput {
    */
   picture?: { width: number; height: number };
   /**
+   * WHICH camera frame this output was computed from — a value that changes when, and only when,
+   * the picture does. Absent from a runtime that cannot say.
+   *
+   * D2 (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3), and it crosses the seam because both
+   * runtimes re-serve frames and neither could say so. The native camera returns its cached frame
+   * on every tick for up to a second (`Camera.frameStaleAfter`); a `<video>` ticked faster than its
+   * stream paints repeats the last one. One physical frame therefore supplied several reads to a
+   * gate that requires "three identical reads spanning 500 ms" — a condition ONE frame can satisfy
+   * on its own — and any accumulation built on top would weight it as several observations.
+   *
+   * Comparable only WITHIN one camera session: it is the source's own counter or clock, not a
+   * global one, and a reopened camera may restart it. Every consumer here compares consecutive
+   * values inside a session, which is all it needs.
+   *
+   * Absent rather than fabricated. A runtime that cannot identify its frames must say nothing —
+   * a made-up counter would read as "always a new frame", which is precisely the false belief this
+   * exists to correct.
+   */
+  frameId?: number;
+  /**
    * The tensor's ROW count, carried so `fitFromOutput` can refuse a head that is not this model's.
    *
    * Required, not optional, and that is the whole value of it. The web runtime already checked
@@ -114,6 +134,28 @@ export interface Detector {
    * Optional because the native detector owns no DOM and resolves its own model.
    */
   retarget?(source: DetectorSource): void;
+  /**
+   * The RGBA pixels of the frame with `frameId`, or null when this runtime cannot supply them or no
+   * longer holds that frame.
+   *
+   * D7 (`dev-docs/scan-pipeline-audit-2026-09-23.md` §3). `recolourByPaint` — the last thing the
+   * assembly tries before refusing a scan — asks which stickers carry the same PAINT, and that
+   * needs the frame. `WebDetector` hands its frame over with every tensor (`ModelOutput.frame`);
+   * the native plugin never has, because a 3.7 MB copy per tick across the bridge is exactly what
+   * that design avoids. So the Mac, the primary platform, had one recovery path fewer than the
+   * browser.
+   *
+   * Asked for ONCE PER CAPTURED SIDE rather than per tick — six times in a scan against sixteen a
+   * second — so the cost is paid only where it buys something.
+   *
+   * BY ID, never "the latest". The caller fitted its grid to one particular picture, and pixels
+   * from a later frame would place every sticker box over paint that has since moved. A runtime
+   * that no longer holds it answers null, and the assembly behaves exactly as it did before this
+   * existed.
+   *
+   * Optional: a detector that already ships its frame with the tensor has no use for it.
+   */
+  framePixels?(frameId: number): Promise<Frame | null>;
   /** Release the camera. The model stays loaded; a later `use()` reopens. Safe to call repeatedly. */
   stop(): void;
   /**

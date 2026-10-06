@@ -35,6 +35,16 @@ export default defineConfig({
     // figure ever measured here (40 s, in the slow regime under coverage). The cost of the headroom is
     // a couple of extra minutes before a slow test is reported, once.
     //
+    // THE BINDING CASE HAS MOVED AGAIN (re-measured 2026-09-22). `ai-scan-panel.test.ts`'s "a second
+    // look read wrong by four stickers ends in a refusal…" (added 2026-09-21) drives a real
+    // four-sticker misread decode on the test's own thread — happy-dom has no `Worker` — and costs
+    // 35.9 s in CI's nightly full tier, 37.8 s alone on the dev Mac, and 79.5 s alone there under
+    // coverage. So 180 s is ~2.3x its local coverage cost and ~5x its CI cost, not the 30x above. It
+    // crossed 180 s once, under coverage with other vitest runs and bundle builds sharing the machine
+    // (184 s); alone it has not. The bound stands on this file's own rule — a quiet laptop does not
+    // cross it — but the margin is now thin: the next slowdown of the decoder or of that case is to
+    // be met by making the case cheaper, not by raising this number.
+    //
     // NO AUTOMATIC GUARD ON THE MARGIN, deliberately. What rots is the relationship between the bound
     // and the cost, and any check on it would be a wall-clock assertion on a machine that varies by
     // 1.8x — it would fail for the reason this bound did. The figures above are the guard: they say
@@ -43,41 +53,29 @@ export default defineConfig({
     testTimeout: 180_000,
     coverage: {
       provider: 'v8',
-      // Everything that can be driven without a webcam. camera.ts (getUserMedia) and the two files
-      // that own a real runtime — web-detector and onnx-runtime, which need a browser or 25 MB of
-      // wasm — stay out, so the threshold means something rather than being dragged to a number
-      // nobody would defend. This list once named the removed OpenCV pipeline's files, so
-      // `coverage` measured nothing while still passing; it then omitted misread-decode.ts, which
-      // decides what the app may CLAIM about a bad scan, and every pure file under view/.
-      include: [
-        'src/facelet-cube.ts',
-        'src/ai-assemble.ts',
-        'src/misread-decode.ts',
-        'src/onnx-postprocess.ts',
-        'src/onnx-detect.ts',
-        'view/stillness.ts',
-        'view/camera-session.ts',
-        // The misread decode's client half and its wire. Included because nothing about them needs
-        // a camera or a model — a fake `Worker` reaches every branch — and because the branches
-        // that matter are the failure ones: a worker that will not build, and one that builds and
-        // then cannot load. Those are the paths a page in the wild takes and a developer never
-        // does, so leaving them unmeasured would leave them untested.
-        'view/misread-client.ts',
-        'view/misread-protocol.ts',
-        // The letterbox's client half and its wire (2026-09-20), for the same reason: a fake
-        // `Worker` and a fake `createImageBitmap` reach every branch, and the branches that matter
-        // are the ones a page in the wild takes — no worker, a worker that cannot load, one that
-        // dies holding a frame — and a developer's browser never does.
-        'view/letterbox-client.ts',
-        'view/letterbox-protocol.ts',
-        'view/pick-detector.ts',
-        'view/native-detector.ts',
-        // The scan trace (2026-09-18). Both halves are pure — a frame in, a record out; ticks in, a
-        // summary out — and a diagnostic is only worth reading if it is itself measured: a trace
-        // that misreports a scan sends whoever reads it after a fault that is not there.
-        'src/fit-trace.ts',
-        'view/scan-trace.ts',
-      ],
+      // EVERY SOURCE FILE, BY GLOB — never a list of names (2026-09-24).
+      //
+      // THIS LIST FAILED THE SAME WAY THREE TIMES. It once named the removed OpenCV pipeline's
+      // files, so `coverage` measured nothing while still passing. It then omitted
+      // `misread-decode.ts`, which decides what the app may CLAIM about a bad scan, and every pure
+      // file under `view/`. And on 2026-09-24, deleting two 500-line modules left the totals
+      // unchanged to the statement (2055/2100 before and after) — they had never been named, so 985
+      // lines had carried 29 passing tests under no threshold at all. An allowlist makes the
+      // DEFAULT for a new file "unmeasured, silently", which is the defect generator this repo
+      // refuses everywhere else: prefer the loud default over the quiet one.
+      //
+      // A glob inverts it. A new file is measured the day it lands; one no test imports is reported
+      // at 0% and drags the totals, so it is visible rather than absent. There is no list to drift,
+      // and no stale entry can point at a file that no longer exists.
+      //
+      // WHAT THIS COST, measured before it was changed: nothing. With every file in, the package
+      // stands at 95.67% statements, 89.21% branches, 96.53% functions, 97.29% lines — against
+      // thresholds of 85. The old comment justified the allowlist by saying `camera.ts`,
+      // `web-detector.ts` and `onnx-runtime.ts` would drag the threshold "to a number nobody would
+      // defend". That was true once and is not now: they are driven by fakes and are measured with
+      // the rest. The three worker ENTRIES are in too — `misread-worker.ts` was the one file at 0%,
+      // and it got the test its two siblings already had rather than an exemption.
+      include: ['src/**/*.ts', 'view/**/*.ts'],
       reporter: ['text', 'html'],
       thresholds: {
         lines: 85,

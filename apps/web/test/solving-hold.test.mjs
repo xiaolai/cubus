@@ -43,6 +43,7 @@ import {
   undoHold,
 } from '../lib/solving-hold.js';
 import { COLOUR_NAMES, SCHEMES, colourOf } from '../lib/scheme.js';
+import { DESTINATION_BY_ID } from '../lib/patterns.js';
 import { TARGETS, targetById } from '../lib/stage-targets.js';
 import Cube from '../vendor/cubejs.js';
 import { lcg, randomAlg } from './fixtures/seeded-scrambles.mjs';
@@ -135,8 +136,17 @@ test('the stages are held the way the owner decided, and every target has a hold
   }
   assert.deepEqual([...holdForTarget('solved')], [...SCAN_HOLD], 'the whole cube keeps the scan\'s hold');
   assert.deepEqual([...holdForTarget(null)], [...SCAN_HOLD], 'and so does no target at all');
-  assert.deepEqual([...HELD_TARGETS].sort(), TARGETS.map((target) => target.id).sort(),
-    'a target added without a hold would be held however a default happened to say');
+  // EVERY DESTINATION, not merely every target. A picture destination is chosen the same way, drawn
+  // the same way and walked to the same way, so it is held the same way — and `holdForTarget` is
+  // loud on an id it does not know, which is the property this pins. Widened when the state
+  // patterns became selectable; before that the hold table and `TARGETS` were the same list.
+  const destinations = [...TARGETS.map((target) => target.id), ...Object.keys(DESTINATION_BY_ID)];
+  assert.deepEqual([...HELD_TARGETS].sort(), destinations.sort(),
+    'a destination added without a hold would be held however a default happened to say');
+  for (const id of Object.keys(DESTINATION_BY_ID)) {
+    assert.deepEqual([...holdForTarget(id)], [...SCAN_HOLD],
+      `${id} is a picture rather than a stage, so it keeps the scan's hold`);
+  }
   assert.throws(() => holdForTarget('nope'), /no hold for target "nope"/);
 
   // THE FLIP POINT IS DECLARED ONCE. The two vocabularies share three names, and each is one stage:

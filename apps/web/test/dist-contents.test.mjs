@@ -206,7 +206,7 @@ test('a loader that names no runtime asset is a loud failure, not a green one', 
 test("the scanner's bundles are read off its build scripts, and a manifest that names none is refused", () => {
   const bundles = scannerBundles(MANIFEST);
   const files = bundles.map((b) => b.file).sort();
-  for (const f of ['vendor/ai-scan-panel.js', 'vendor/misread-worker.js', 'vendor/letterbox-worker.js']) {
+  for (const f of ['vendor/ai-scan-panel.js', 'vendor/misread-worker.js', 'vendor/letterbox-worker.js', 'vendor/inference-worker.js']) {
     assert.ok(files.includes(f), `${f} is built by the scanner package and the registry does not know it`);
   }
   for (const { file, script } of bundles) {

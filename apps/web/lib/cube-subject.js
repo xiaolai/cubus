@@ -15,6 +15,7 @@ import { methodFor, solveByMethod } from './method-solver.js';
 import { lessonCues, lessonSections, moveStepIndex, rungSummary } from './method-lesson.js';
 import { acceptOffer } from './method-ladder.js';
 import { isCubeState } from './cube-trust.js';
+import { pictureDestination } from './patterns.js';
 // How the cube is held while it is solved, and the renamings between the scan frame, the method
 // frame and the hold (ADR 0003). Every crossing between those frames in this file goes through it.
 import { METHOD_TO_SCAN, renameSelectors, scanFrameWalk, toMethodFrame } from './solving-hold.js';
@@ -154,8 +155,10 @@ export function lessonFor(c = state.cube) {
  * went walking, the engine refused the state, and eight budget escalations later `failWalk` said
  * "could not work it out" — blaming a search for something parity had already settled.
  */
-export function classifyCube() {
-  const c = state.cube;
+export function classifyCube(c = state.cube) {
+  // Takes the cube it is asked about. It used to read `state.cube` unconditionally while every
+  // branch below WRITES to what it read, so a caller with a subject of its own got the global
+  // cube's answer and the global cube's fields changed under it.
   if (c.derived) return c;
   // A solved cube has no walk, and needs no library to say so. Asked for one anyway, cubejs's
   // two-phase search answers the identity with a 14-move no-op ("R L U2 R L F2 R2 U2 R2 F2 R2 U2
@@ -178,6 +181,29 @@ export function classifyCube() {
   c.unsolvable = !isCubeState(c.facelets, Cube);
   c.solvable = !c.unsolvable;
   return c;
+}
+
+/**
+ * Whether this subject has a walk to show — THE one statement of it.
+ *
+ * It was written four times, and not even identically. `screens/cube.js` had it three times (the
+ * composition at mount, the live-update check, and `update()`), `walk-session.js`'s
+ * `compositionGone()` a fourth, phrased through `stageTargetNow()` instead. Two of those sites carry
+ * a comment claiming "there were exactly two" and "the two are one rule" — written when there were
+ * two, and left standing when a third and fourth arrived. That is this repository's own rule about
+ * the second instance of a shape, and the class was never swept.
+ *
+ * What it cost: `update()` omitted the picture clause, so a SOLVED cube aiming at The Checkerboard
+ * answered "I cannot show this" to `refreshScreen()` and was destroyed and rebuilt on every live
+ * report — the rebuild loop two of those comments describe having already fixed twice, arriving by
+ * the one path nobody had converted. Reproduced against the running app by an audit.
+ *
+ * A picture destination counts because a solved cube has no solve and is still six turns from The
+ * Checkerboard. `scrambling` short-circuits: a scramble always has its own walk.
+ */
+export function walkEligible({ scrambling = false, stageTarget = state.stageTarget } = {}) {
+  if (scrambling) return true;
+  return classifyCube().solvable || Boolean(pictureDestination(stageTarget));
 }
 
 /**

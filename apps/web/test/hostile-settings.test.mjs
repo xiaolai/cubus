@@ -80,7 +80,6 @@ before(async () => {
     solveTier: 'eleven',
     dragRotate: 'no',
     soundMode: 'deafening',
-    spokenLines: 'not an object',
     devScanView: 'preview',
     cameraId: { nope: true },
   }));
@@ -139,11 +138,11 @@ test('an unknown palette is repaired at load, and the repair is saved', async ()
   // A sound mode that does not exist is the default, not a silent app and not a crash.
   assert.equal(settings.soundMode, 'chime', 'a sound mode that does not exist was believed');
   assert.equal(stored.soundMode, 'chime');
-  // And the edited spoken lines are an object, whatever storage held. The fixture supplies a STRING
-  // above: without one these assertions read the default and would have passed against `null` too
-  // (audit, 2026-09-20).
-  assert.deepEqual(settings.spokenLines, {}, 'a hostile spokenLines record was believed');
-  assert.deepEqual(stored.spokenLines, {}, 'the hostile record was not written back as an object');
+  // The edited spoken lines used to be repaired here too. They are gone with the voice (owner,
+  // 2026-09-30), and the key is DROPPED from the record rather than left to rot — a field nothing
+  // reads is a field `save()` keeps rewriting for ever.
+  assert.ok(!('spokenLines' in settings), 'a setting nothing reads is still being kept');
+  assert.ok(!('spokenLines' in stored), 'a dead key was written back to storage');
 });
 
 test('every screen renders over hostile settings, and the stage is actually replaced', async () => {
@@ -192,11 +191,27 @@ test('the screens that index a palette draw their colours rather than throwing',
 
   win.location.hash = '#/drill';
   await tick();
-  // The Drill draws a real cube now rather than a colour-well flashcard (plan item 3.2), so what
-  // must survive a hostile palette here is the round: its question and the faces to pick from. The
-  // renderer takes the palette as an ATTRIBUTE and validates it itself.
-  assert.ok(win.document.querySelector('#drillAsk')?.textContent, 'drill asked nothing');
-  assert.equal(win.document.querySelectorAll('#stage [data-face]').length, 6, 'drill drew no faces to pick');
+  // The Drill opens on the algorithm library now (dev-docs/algorithm-drills-plan.md phase 3), which
+  // draws a real cube for the chosen algorithm's case. What must survive a hostile palette is that
+  // the panel renders at all; the renderer takes the palette as an ATTRIBUTE and validates it.
+  assert.ok(win.document.querySelectorAll('#algGroups .alg-entry').length > 0, 'the chooser listed nothing');
+  // And one algorithm's own page, which is where a palette is actually indexed — the chooser draws
+  // flat case pictures, the drill draws the cube.
+  win.document.querySelector('#algGroups [data-alg]').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  await tick(); await tick();
+  assert.ok(win.document.querySelector('#algMoves')?.textContent, 'the drill drew no turns');
+  assert.ok(win.document.querySelector('#algCube'), 'the drill drew no cube');
+  win.document.querySelector('#algBackToList').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  await tick(); await tick();
+
+  // BOTH PRACTICE SCREENS are probed, because both index a palette. They were two KINDS of the Drill
+  // screen until 2026-09-29 and this case reached the second by clicking its selector; it is its own
+  // route now. Testing only one would leave the other uncovered — which is exactly what happened to
+  // this case when the default kind moved.
+  win.location.hash = '#/pieces';
+  await tick();
+  assert.ok(win.document.querySelector('#drillAsk')?.textContent, 'the pieces drill asked nothing');
+  assert.equal(win.document.querySelectorAll('#stage [data-face]').length, 6, 'the pieces drill drew no faces to pick');
 
   win.location.hash = '#/settings';
   await tick();

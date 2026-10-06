@@ -10,16 +10,12 @@ import { load, save } from '../../app-settings.js';
 import { t } from '../../i18n.js';
 import { createMenu } from '../../menu-popover.js';
 import { placeMenuUnder } from '../../screen-shell.js';
-
-/** The three walking speeds, as renderer tempo-scale values. The renderer divides a 190ms base by
- * this, so a LARGER number is faster. None of them is quick: Fast is 0.95s per quarter turn, still
- * slower than the 760ms that used to be the only speed and was the complaint that prompted this. */
-const SPEEDS = [
-  { id: 'slow', label: 'Slow', tempo: 0.05 },     // 3.8s per quarter turn
-  { id: 'normal', label: 'Normal', tempo: 0.1 },  // 1.9s
-  { id: 'fast', label: 'Fast', tempo: 0.2 },      // 0.95s
-];
-const DEFAULT_SPEED = 'normal';
+// THE TABLE IS NOT THIS MENU'S. It was defined here, and written to this screen's cube only, so
+// every other cube the app draws animated at the renderer's raw 190ms — the Drill page measured
+// 200ms per turn against 1620ms at Normal (2026-09-30). It now lives beside the rest of the cube's
+// look in `lib/cube-view.js` and `applyCubeView` puts it on every cube; this menu CHOOSES and
+// overrides, which is all a screen should do with a look every screen shares.
+import { WALK_SPEEDS, DEFAULT_WALK_SPEED, WALK_SPEED_KEY, tempoFor } from '../../cube-view.js';
 
 /**
  * The speed menu of one mounted cube screen: wired, with the saved speed applied.
@@ -34,23 +30,27 @@ const DEFAULT_SPEED = 'normal';
 export function createSpeedMenu({ root, cube, signal, following }) {
   const speedBtn = $('#speedBtn', root);
   if (!speedBtn) return () => {};
-  let speedId = DEFAULT_SPEED;
-  // localStorage is untrusted input: an id no longer in SPEEDS must not reach setAttribute.
-  const saved = load('walkSpeed', { id: DEFAULT_SPEED }).id;
-  if (SPEEDS.some((o) => o.id === saved)) speedId = saved;
+  let speedId = DEFAULT_WALK_SPEED;
+  // localStorage is untrusted input: an id no longer in WALK_SPEEDS must not reach setAttribute.
+  const saved = load(WALK_SPEED_KEY, { id: DEFAULT_WALK_SPEED }).id;
+  if (WALK_SPEEDS.some((o) => o.id === saved)) speedId = saved;
   const menu = createMenu({ root, button: speedBtn, label: t('Animation speed'), signal, place: placeMenuUnder });
 
   const applySpeed = () => {
-    const chosen = SPEEDS.find((o) => o.id === speedId);
-    // The ONE place tempo is written. While the cube drives, the choice is stored but not
-    // applied — it takes effect the moment the user takes over.
-    cube.setAttribute('tempo-scale', String(following() ? 1 : chosen.tempo));
+    const chosen = WALK_SPEEDS.find((o) => o.id === speedId);
+    // AN OVERRIDE, NOT THE ONLY WRITE. `applyCubeView` has already put the saved tempo on this cube
+    // and on every other cube the app draws; what is special here is the FOLLOWING case — while a
+    // cube in a hand drives the walk, the child's own turn must appear as they make it, so tempo
+    // goes to 1 and the choice is stored but not applied until they hand it back.
+    // Through `tempoFor`, not `chosen.tempo`: one resolver, so this menu and `applyCubeView`
+    // cannot come to disagree about what "normal" means.
+    cube.setAttribute('tempo-scale', String(following() ? 1 : tempoFor(speedId)));
     speedBtn.title = `Animation speed — ${chosen.label}`;
     speedBtn.setAttribute('aria-label', speedBtn.title);
     menu.mark((b) => b.dataset.speed === speedId);
   };
-  for (const o of SPEEDS) {
-    const b = menu.radio(t(o.label), () => { speedId = o.id; save('walkSpeed', { id: o.id }); applySpeed(); menu.close(); speedBtn.focus(); });
+  for (const o of WALK_SPEEDS) {
+    const b = menu.radio(t(o.label), () => { speedId = o.id; save(WALK_SPEED_KEY, { id: o.id }); applySpeed(); menu.close(); speedBtn.focus(); });
     b.dataset.speed = o.id;
     menu.el.appendChild(b);
   }

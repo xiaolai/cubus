@@ -69,11 +69,24 @@ export function createReconnectCheck({ speak, tileOf, tileSchemeNow, go, capture
   }
 
   /** The captured sides this check may judge, as positions: all but those read before the report
-   *  in force. The remembered state is positional, so both halves of each side are translated out
-   *  of colour: which position the capture sits at, and which position each sticker colour
-   *  belongs to. */
+   *  in force, and none whose IDENTITY was derived rather than measured.
+   *
+   *  WHY AN ASSIGNED SIDE CANNOT SPOT-CHECK A CUBE (`dev-docs/asking-which-side-plan.md` §4). This
+   *  check grants the user's Yes on TWO adjacent sides matching a prediction — it never reaches
+   *  whole-cube legality, so the only thing standing between it and the wrong cube is that each
+   *  side it compares is the side it says it is. A capture filed by elimination, by a ring match or
+   *  by a person answering which side it is has a centre DERIVED from the slot: it says "this is
+   *  the R side" because something decided so, not because anything read its middle sticker.
+   *  Measured on `D' F' B D2 L2 U2` with the shown L filed as R: `confirmed` when the assigned
+   *  capture is judged, `mismatch` when its measured identity is kept, `pending` when it is left
+   *  out — and `pending` is the honest one, because the evidence for it was never gathered. It is
+   *  dropped rather than handed back to the camera: there is nothing stale about it, and the sides
+   *  `readAgain` takes back are the ones the cube has spoken since.
+   *
+   *  The remembered state is positional, so both halves of each side are translated out of colour:
+   *  which position the capture sits at, and which position each sticker colour belongs to. */
   const judgeable = (captured, readBefore) => captured
-    .filter((c) => !readBefore.includes(c.face))
+    .filter((c) => c.by !== 'assigned' && !readBefore.includes(c.face))
     .map((c) => ({
       face: tileOf(c.face),
       stickers: c.colors.map((ci) => (isColour(ci) ? positionOf(ci, tileSchemeNow()) : '?')).join(''),

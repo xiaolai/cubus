@@ -109,6 +109,9 @@ test('transitions and animations take their time from the motion tokens', () => 
 const EASED = [
   '.btn', '.pill', '.nav-item', '.tb-ctl', '.tbtn', '.tb-cap', '.menu > button',
   '.card-tools > button', '.eyebrow-row > button', '.chip-m', '.stage-chip', '.swatches > button',
+  // the identity question's colours (lib/screens/scan/identity-ask.js) — the picker's chips, in
+  // the card rather than in a popover
+  '.id-ask > button.sw',
   '.field', '.link', '.toggle', '.tgrid > .cell',
 ];
 

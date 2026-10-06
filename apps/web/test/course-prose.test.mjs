@@ -19,6 +19,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
+import { ALG_ENTRIES } from '../lib/alg-catalogue.js';
+import { describeEffect, effectOf } from '../lib/alg-effect.js';
 import { PREDICTION, predictionScript, RECOGNITION, recognitionScript } from './fixtures/cubus-im-drills.mjs';
 
 /**
@@ -101,4 +103,32 @@ test('the gate can tell a placeholder from a sentence', () => {
     /carries authored prose at \$\.cues\[0\]\.section/);
   noProse({ steps: [{ say: 'line 0' }, { say: '' }] }, 'placeholders'); // does not throw
   noProse({ cues: [{ section: 'section at 3' }] }, 'placeholders');
+});
+
+// ---- the other half of the boundary: a sentence this repository is allowed to hold ---------------
+//
+// Every rule above holds an AUTHORED field to a placeholder. The algorithm catalogue breaks that
+// shape without breaking the boundary: `label` is a real sentence — "cycles three corners and twists
+// two" — and it is allowed here for one reason only, that it is COMPUTED. So the gate for it is not
+// "is this a placeholder" but "is this what the algorithm produces": a sentence a person wrote
+// cannot survive being recomputed.
+//
+// Without this case the catalogue would be the one artefact in the repository where authored text
+// could sit in plain sight, in a field the walker above does not name and whose contents look
+// exactly like the thing it is meant to stop.
+
+test('no algorithm carries a hand-written explanation — every label is recomputed', () => {
+  for (const e of ALG_ENTRIES) {
+    assert.equal(
+      e.label,
+      describeEffect(effectOf(e.alg), e.id).label,
+      `${e.id}: its label is not what its algorithm computes — an authored sentence cannot live here`,
+    );
+  }
+});
+
+test('and the gate would catch one: an edited label fails the recomputation', () => {
+  // The mutation, run rather than asserted: this is what a pasted explanation looks like.
+  const pasted = { ...ALG_ENTRIES[0], label: 'the one you learn first — every beginner starts here' };
+  assert.notEqual(pasted.label, describeEffect(effectOf(pasted.alg), pasted.id).label);
 });

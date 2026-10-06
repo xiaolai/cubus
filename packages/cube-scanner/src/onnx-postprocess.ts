@@ -55,6 +55,27 @@ export interface FaceFit {
    * Whoever still holds the frame can map these back onto it (`sticker-pixels.ts`) and read the paint.
    */
   boxes?: [number, number, number, number][];
+  /**
+   * HOW the nine were put in reading order, and so how much the order can be trusted (D6,
+   * `dev-docs/scan-pipeline-audit-2026-09-23.md` §3).
+   *
+   *   - `'lattice'`: the nine fitted a 3×3 lattice, which decides the cells. Proven.
+   *   - `'sorted'`: no lattice fitted and the level-frame sort grouped them by `cy`. That grouping
+   *     is a GUESS whenever a middle box sits far enough off its row's centre to sort into the
+   *     next row, and `gridOf` records the three geometric measures built to catch it — none
+   *     separates an extreme render from a scrambled grid, because at box-centre level they are
+   *     the same shape. Two more were measured on 2026-09-23 and do not separate either: the
+   *     worst residual of a least-squares AFFINE lattice fit to the ordered nine (true grids reach
+   *     1.48, scrambles about 1.0) and of a HOMOGRAPHY fit, which a planar face under a pinhole
+   *     camera satisfies exactly (true grids reach 13.07 on `render-08`, scrambles start at 0.76).
+   *
+   * So the order is not refused — refusing every sorted face costs NINE of the twenty goldens,
+   * measured — and it is reported instead, because the harm §3 names for F3 is "a false misread
+   * accusation": a scrambled face is a GEOMETRY failure that the assembly can only see as a colour
+   * one. A reading built from a sorted face has not earned that accusation, and a caller that
+   * knows which is which can ask for the side again rather than point at a sticker.
+   */
+  ordering?: 'lattice' | 'sorted';
 }
 
 export type FitResult =
@@ -637,12 +658,19 @@ function rowsByY(nine: readonly Detection[]): Detection[][] {
  * that used to reach it scrambled (`antipodalDirs`); the residue, a middle box drawn more than a
  * third of a step off-centre, is measured there and is open.
  */
-function gridOf(nine: Detection[]): { grid: Detection[] } | { fail: GeometryFailure } {
+function gridOf(
+  nine: Detection[],
+): { grid: Detection[]; ordering: 'lattice' | 'sorted' } | { fail: GeometryFailure } {
   const fit = fitLattice(nine);
   if (fit.ok) {
     const level = rowsByY(nine).flat();
     const ordered = latticeOrder(nine, fit.lattice);
-    if (level.every((d, k) => d === ordered[k])) return rulesOn(nine);
+    if (level.every((d, k) => d === ordered[k])) {
+      const agreed = rulesOn(nine);
+      // The sort and the lattice AGREE on the order, so it is the lattice's order too — proven,
+      // even though the level-frame rules are what produced it.
+      return 'fail' in agreed ? agreed : { ...agreed, ordering: 'lattice' };
+    }
     const phi = Math.atan2(fit.lattice.row[1], fit.lattice.row[0]);
     const cos = Math.cos(-phi);
     const sin = Math.sin(-phi);
@@ -654,12 +682,18 @@ function gridOf(nine: Detection[]): { grid: Detection[] } | { fail: GeometryFail
     }));
     const fitted = rulesOn(turned);
     if ('fail' in fitted) return fitted;
-    return { grid: fitted.grid.map((t) => nine[turned.indexOf(t)]!) };
+    return {
+      grid: fitted.grid.map((t) => nine[turned.indexOf(t)]!),
+      ordering: 'lattice',
+    };
   }
   if (fit.reason === 'roll-tie') {
     return { fail: { rule: 'roll-tie', value: fit.gap, bound: 2 * ROLL_TIE_BAND_DEG } };
   }
-  return rulesOn(nine);
+  // No lattice: the sort decides, and says so. See `FaceFit.ordering` for why it is reported rather
+  // than refused, and for the five measures that cannot tell this case from a scrambled grid.
+  const sorted = rulesOn(nine);
+  return 'fail' in sorted ? sorted : { ...sorted, ordering: 'sorted' };
 }
 
 /** The level-frame rules, on whatever coordinates they are handed. See `gridOf`. */
@@ -711,6 +745,40 @@ function rulesOn(nine: Detection[]): { grid: Detection[] } | { fail: GeometryFai
  * abstain. The front face's stickers are the largest (adjacent faces foreshorten to
  * slivers), so we take the 9 biggest and require them to form a real 3x3 grid.
  */
+/**
+ * How many boxes may be set aside, one at a time, when the nine largest do not form a face
+ * (D4, `dev-docs/scan-pipeline-audit-2026-09-23.md` §3).
+ *
+ * `dropIsolated` catches a LONE false box, and two false boxes near each other defeat it: each is
+ * the other's neighbour, so both survive, and being large they take two real stickers' places among
+ * "the nine largest". The audit's reproduction is a clean grid of 20 px stickers plus two 60 px
+ * boxes 45 px apart — refused `BAD_GEOMETRY` at an area ratio of 9. Persistent clutter of that kind
+ * — objects on a shelf behind the cube — then blocks every frame, and a side never settles.
+ *
+ * Three, because that is where the cost stops being free: each attempt is one `gridOf`, and a room
+ * with four large false boxes clustered together is a room the isolation rule was never going to
+ * save. It is a bound on wasted work, not a claim about rooms.
+ */
+const MAX_CLUTTER_SET_ASIDE = 3;
+
+/**
+ * How many times the median box's area a box must exceed before it may be set aside as clutter.
+ *
+ * THE BOUND EXISTS BECAUSE THE RETRY WITHOUT IT MANUFACTURES FACES, and the golden gate said so
+ * before this shipped. An unconstrained "drop the largest and try again" read a face on
+ * `ml/golden/frames/abstain-00.png` — a fixture that exists precisely to be REFUSED — on all four
+ * runtimes: given enough boxes and three attempts, some nine of them satisfy the geometry rules.
+ * Turning a refusal into a read is only safe when the thing set aside is independently identifiable
+ * as not-a-sticker, and size is what identifies it here: the audit's clutter is 9x a sticker's
+ * area, while `MAX_AREA_RATIO` already records that the largest and smallest stickers of a real
+ * face measured over the 20 goldens sit within 3.42x of each other.
+ *
+ * So the same 5 the grid rule uses, against the MEDIAN rather than the smallest: a box bigger than
+ * that is not a sticker of the face the median describes. On a frame of uniform noise nothing
+ * qualifies, no attempt is made, and the abstention stands.
+ */
+const CLUTTER_AREA_RATIO = MAX_AREA_RATIO;
+
 export function fitFace(dets: Detection[], minConf = MIN_STICKER_CONFIDENCE): FitResult {
   const good = dets.filter((d) => d.confidence >= minConf && d.classId >= 0 && d.classId < 6);
   if (good.length === 0) return { ok: false, reason: 'NO_FACE' };
@@ -718,10 +786,49 @@ export function fitFace(dets: Detection[], minConf = MIN_STICKER_CONFIDENCE): Fi
   // usually the LARGEST box in the frame, so it is exactly the one "the nine largest" would pick first.
   const neighboured = dropIsolated(good);
   if (neighboured.length < 9) return { ok: false, reason: 'PARTIAL_FACE' };
-  const nine = [...neighboured].sort((a, b) => b.w * b.h - a.w * a.h).slice(0, 9);
-  const fitted = gridOf(nine);
-  if ('fail' in fitted) return { ok: false, reason: 'BAD_GEOMETRY', geometry: fitted.fail };
-  const { grid } = fitted;
+  const bySize = [...neighboured].sort((a, b) => b.w * b.h - a.w * a.h);
+  // THE FIRST ATTEMPT IS EXACTLY WHAT IT ALWAYS WAS, and its refusal is the one reported (D4).
+  // Every later attempt sets aside one more box that is CLUTTER BY SIZE — see CLUTTER_AREA_RATIO,
+  // and the golden fixture that fails without that condition. So a frame that reads today reads
+  // identically tomorrow (an attempt is made only because the one before it failed), a frame of
+  // uniform noise is refused exactly as it was, and a frame refused after every attempt reports the
+  // reason the unmodified rule gave it, leaving the scan trace's diagnosis unchanged.
+  //
+  // THE SCALE COMES FROM THE CANDIDATE FACE, NOT FROM EVERY SURVIVING BOX (audit, 2026-09-23). Over
+  // all of `neighboured`, a frame carrying many SMALL false boxes — a textured surface, a patterned
+  // cloth — drags the median down until real stickers stand above the threshold, and the retry then
+  // sets aside the face itself and fits whatever is left. Measured against the nine largest, the
+  // median is a sticker's own area whenever most of those nine are stickers, which is the only case
+  // in which any of this is worth attempting.
+  const nine = bySize
+    .slice(0, 9)
+    .map((d) => d.w * d.h)
+    .sort((a, b) => a - b);
+  const clutterAbove = CLUTTER_AREA_RATIO * nine[Math.floor(nine.length / 2)]!;
+  let first: GeometryFailure | undefined;
+  let fitted: ReturnType<typeof gridOf> | undefined;
+  let grid: Detection[] | undefined;
+  let ordering: 'lattice' | 'sorted' = 'lattice';
+  for (let aside = 0; aside <= MAX_CLUTTER_SET_ASIDE; aside++) {
+    if (bySize.length - aside < 9) break;
+    // Only a box big enough to be clutter may be the one set aside. `bySize` is descending, so once
+    // a box is small enough to be a sticker every box after it is too, and there is nothing left to
+    // try — which is also what keeps a frame of similar boxes on exactly its old path.
+    if (aside > 0 && !(bySize[aside - 1]!.w * bySize[aside - 1]!.h > clutterAbove)) break;
+    const attempt = gridOf(bySize.slice(aside, aside + 9));
+    if (!('fail' in attempt)) {
+      fitted = attempt;
+      grid = attempt.grid;
+      ordering = attempt.ordering;
+      break;
+    }
+    if (aside === 0) first = attempt.fail;
+  }
+  if (!fitted || !grid) {
+    return first === undefined
+      ? { ok: false, reason: 'PARTIAL_FACE' }
+      : { ok: false, reason: 'BAD_GEOMETRY', geometry: first };
+  }
   return {
     ok: true,
     face: {
@@ -735,6 +842,7 @@ export function fitFace(dets: Detection[], minConf = MIN_STICKER_CONFIDENCE): Fi
       boxes: grid.map(
         (d) => [d.cx - d.w / 2, d.cy - d.h / 2, d.w, d.h] as [number, number, number, number],
       ),
+      ordering,
     },
   };
 }
