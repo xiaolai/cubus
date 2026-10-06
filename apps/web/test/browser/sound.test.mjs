@@ -88,6 +88,19 @@ for (const engine of ['webkit', 'chromium']) {
       const grace = await page.evaluate(() => window.__audio.IDLE_SUSPEND_MS);
       /** Wait out the idle grace with room for the engine to act on it. */
       const settle = () => page.waitForTimeout(grace + 1500);
+      /**
+       * Wait for a state the engine must REACH, rather than sleeping and hoping it already has.
+       *
+       * `waitForTimeout(200)` then `assert.equal(..., 'running')` is a performance assertion wearing a
+       * wait's clothes: it passes alone and fails under a loaded full-tier run, where WebKit needs
+       * longer than 200ms to start an audio session. Measured 2026-10-07 — this case failed at its
+       * precondition inside `pnpm check` after 4.4s, and passed on its own in 10.2s, having asserted
+       * nothing different. The bound here is LIVENESS: the engine must get there, and fifteen seconds
+       * is not a claim about how fast.
+       */
+      const reach = (want, why) => page
+        .waitForFunction((w) => window.__audio.audioState() === w, want, { timeout: 15_000 })
+        .catch(async (cause) => { throw new Error(`${why} — it was "${await state()}"`, { cause }); });
 
       // SOUNDS OFF OPENS NOTHING. `unlock` is bound to every pointerdown on the document, so this
       // is the case where a person who wants silence was given an audio session anyway.
@@ -99,12 +112,13 @@ for (const engine of ['webkit', 'chromium']) {
       // Sound on: one real click wakes it, and a chime is played.
       await page.evaluate(() => { window.__audio.settings.soundMode = 'chime'; });
       await page.mouse.click(200, 300);
-      await page.waitForTimeout(200);
-      assert.equal(await state(), 'running', 'precondition: a click did not start audio');
+      await reach('running', 'precondition: a click did not start audio');
       assert.equal(await page.evaluate(() => window.__audio.play('capture')), true, 'precondition: the chime was refused');
 
+      // The grace is slept through first — the claim is about what happens AFTER it — and only then is
+      // the engine given time to act on it.
       await settle();
-      assert.equal(await state(), 'suspended', 'the context was left running with nothing to play');
+      await reach('suspended', 'the context was left running with nothing to play');
 
       // THE HALF THAT MAKES SUSPENDING SAFE. No gesture here on purpose: a scan capture is the
       // camera's doing, and this is the resume that follows it.
@@ -114,7 +128,7 @@ for (const engine of ['webkit', 'chromium']) {
 
       // And it goes quiet again afterwards, so this is a cycle rather than a one-off.
       await settle();
-      assert.equal(await state(), 'suspended', 'the context stayed running after the second chime');
+      await reach('suspended', 'the context stayed running after the second chime');
     } finally {
       await fixture.close();
       fixtures.delete(fixture);

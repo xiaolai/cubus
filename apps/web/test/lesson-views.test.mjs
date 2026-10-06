@@ -218,6 +218,46 @@ function fakeAudio() {
 }
 const voiceOver = (el, resolve = (ref) => `https://course.test/${ref}`) => createLessonVoice({ doc: { createElement: () => el }, resolve });
 
+test('a recording that neither ends nor fails is not waited on for ever', async (t) => {
+  // THE STATE THAT HUNG THE LESSON, measured on CI 2026-10-06 and reproduced here: `play()` resolved,
+  // `paused` false, `readyState` 2, `currentTime` 0, `error` null. The element believes it is playing,
+  // so no `ended` and no `error` will ever come — and `speak` settles on exactly those three things.
+  // The lesson waited for ever, with no problem shown, no progress, and a Play button already pressed.
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const el = fakeAudio();
+  el.paused = false;
+  el.currentTime = 0;
+  const voice = voiceOver(el);
+  const said = voice.speak('a.m4a');
+  el.plays[0].resolve();               // the start succeeded, which is what makes this a stall
+  await flush();
+  t.mock.timers.tick(9000);
+  assert.equal(await said, 'stalled', 'a stalled recording never gave the lesson an answer');
+  assert.ok(el.pauses > 0, 'the stalled element was left playing');
+});
+
+test('a recording that is making progress, or paused, is left alone', async (t) => {
+  // The bound is on PROGRESS, not on length: the watchdog must not cut a recording short just because
+  // it is long, and a lesson the child paused is not a lesson that stalled.
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const el = fakeAudio();
+  el.paused = false;
+  el.currentTime = 0;
+  const voice = voiceOver(el);
+  let result = 'pending';
+  voice.speak('a.m4a').then((r) => { result = r; });
+  el.plays[0].resolve();
+  await flush();
+  for (let i = 0; i < 30; i++) { el.currentTime += 0.5; t.mock.timers.tick(1000); }
+  await flush();
+  assert.equal(result, 'pending', 'a recording that was playing normally was called a stall');
+
+  el.paused = true;
+  t.mock.timers.tick(60_000);
+  await flush();
+  assert.equal(result, 'pending', 'a paused lesson was called a stall');
+});
+
 test('a play() that throws at once is a recording that failed, by name', async () => {
   const el = fakeAudio();
   el.throwOnPlay = Object.assign(new Error('blocked'), { name: 'NotAllowedError' });

@@ -56,12 +56,48 @@ export function problemLine(reason) {
  * through, or the media's own error name — and a `resume` the platform refuses resolves the recording it
  * was continuing with that refusal, so a lesson is never left waiting on a promise nothing will settle.
  */
+/**
+ * How long a recording may make NO PROGRESS before the lesson stops waiting on it.
+ *
+ * A bound on progress, never on length: a long recording advances `currentTime` and is left alone,
+ * while a stalled one sits at the same instant however long it is. Measured against what stalling
+ * actually looks like (CI, 2026-10-06): `play()` resolved, `paused` false, `readyState` 2,
+ * `currentTime` 0, `error` null — the element believes it is playing and no event will ever come.
+ * Eight seconds is far past a local recording's first frames and far short of the twenty a person
+ * would spend wondering whether the app is broken.
+ */
+const STALL_MS = 8000;
+
 export function createLessonVoice({ doc, resolve }) {
   const audio = doc.createElement('audio');
   audio.preload = 'auto';
   audio.hidden = true;
   let pending = null;
-  const finish = (result) => { const p = pending; pending = null; p?.(result); };
+  let watchdog = null;
+  const stopWatching = () => { if (watchdog !== null) { clearInterval(watchdog); watchdog = null; } };
+  /**
+   * A RECORDING THAT NEITHER ENDS NOR FAILS used to leave the lesson waiting for ever: `speak`'s promise
+   * settles on `ended`, on `error`, or on a refused start, and a stall is none of the three. The screen
+   * then showed no problem, no progress and a Play button that had already been pressed — the app simply
+   * stopped, which is the one thing AGENTS.md says a wait may not do.
+   *
+   * Paused time does not count: the lesson pauses deliberately, and a pause is not a stall.
+   */
+  const watch = () => {
+    stopWatching();
+    if (typeof setInterval !== 'function') return;
+    let last = -1;
+    let still = 0;
+    watchdog = setInterval(() => {
+      if (!pending) { stopWatching(); return; }
+      if (audio.paused) { still = 0; return; }
+      if (audio.currentTime !== last) { last = audio.currentTime; still = 0; return; }
+      still += 1000;
+      if (still >= STALL_MS) { audio.pause(); finish('stalled'); }
+    }, 1000);
+    watchdog.unref?.();
+  };
+  const finish = (result) => { stopWatching(); const p = pending; pending = null; p?.(result); };
   const onEnded = () => finish('ended');
   // MEDIA_ERR_SRC_NOT_SUPPORTED is also what a missing file reports — the element cannot tell a 404 from
   // an undecodable file, so neither can this.
@@ -88,6 +124,7 @@ export function createLessonVoice({ doc, resolve }) {
         // Assigned only when it differs: the same recording again ("say it again") restarts it instead.
         if (audio.getAttribute('src') !== url) audio.src = url;
         else audio.currentTime = 0;
+        watch();
         start().then((r) => { if (r !== true && pending === settle) finish(r); });
       });
     },
@@ -101,6 +138,7 @@ export function createLessonVoice({ doc, resolve }) {
     dispose() {
       audio.pause();
       finish('stopped');
+      stopWatching();
       audio.removeEventListener('ended', onEnded);
       audio.removeEventListener('error', onError);
       // `removeAttribute`, never `src = ''`, which resolves against the page and fetches it.
