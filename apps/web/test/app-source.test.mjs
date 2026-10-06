@@ -10,7 +10,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 
-import { APP_SOURCES, LIBRARY_SOURCES, blockAt, readAppSource } from './app-source.mjs';
+import { APP_SOURCES, HOLE, LIBRARY_SOURCES, blockAt, readAppSource, walk } from './app-source.mjs';
 
 const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8');
 /** Every relative module a file names — static, side-effect, re-export and dynamic — resolved against it. */
@@ -134,6 +134,22 @@ test('no test reads a block with a lazy regex — blockAt reads it, and refuses 
     .sort()
     .flatMap((f) => read(`test/${f}`).split('\n').flatMap((line, i) => (standIn.test(line) ? [`test/${f}:${i + 1}`] : [])));
   assert.deepEqual(found, [], `a lazy regex stands in for brace matching — read the block with blockAt: ${found.join(', ')}`);
+});
+
+test('a value a template interpolated is not an empty attribute, and `markup` is where the two differ', () => {
+  // WHY THIS READING EXISTS. `literals.join('')` drops a hole, so `id="${id}"` arrives as `id=""` —
+  // identical to an id nobody wrote. A source scan asking for a NON-EMPTY id then reported every
+  // interpolated one as missing (measured on `switchRow`, which is the one control in Settings whose
+  // id is computed), and a scan that accepted the empty form could not be tightened at all
+  // (audit, 2026-10-06). `markup` leaves a stand-in, so the question is answerable in both
+  // directions — which is the whole point: one of these must match and the other must not.
+  const idIsReal = /\sid="[^"]/;
+  assert.match(walk('const a = `<button id="${id}" class="x">`;').markup, idIsReal, 'an interpolated id read as no id');
+  assert.doesNotMatch(walk('const a = \'<button id="" class="x">\';').markup, idIsReal, 'an empty id was accepted');
+  assert.match(walk('const a = \'<button id="setSound" class="x">\';').markup, idIsReal, 'a written id was not seen');
+  // The stand-in is one character no source holds, so it cannot be mistaken for content.
+  assert.ok(walk('const a = `x${y}z`;').markup.includes(HOLE));
+  assert.ok(!readAppSource().includes(HOLE), 'the stand-in character appears in the app, so it is not a safe one');
 });
 
 test('a number rounded to be compared never keeps the sign of a zero', () => {

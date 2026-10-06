@@ -161,25 +161,48 @@ test('every screen renders without throwing', async () => {
   // while thirteen were registered, so `course`, `pieces`, `shapes` and `loop` were covered by
   // nothing at all — in a case whose whole point is that EVERY screen renders (2026-10-06).
   const { SCREENS: REGISTERED } = await import('../lib/screen-shell.js');
+  const { state } = await import('../lib/app.js');
   const SCREENS = Object.keys(REGISTERED);
   assert.ok(SCREENS.length >= 9, `only ${SCREENS.length} screens registered — the registry is not loaded`);
+  // TWO CHANNELS, because the one this watched is the one the shell never uses. A build or a mount
+  // that throws is CAUGHT: `screen-shell.js` logs it and puts its broken card up instead, so the
+  // window raises no `error` event and the stage is far from empty — this case passed for a screen
+  // that threw on every render (audit, 2026-10-06). So the console is captured as well, and the card
+  // is refused by its marker rather than by its words, which are translated.
   const errors = [];
   const onError = (e) => errors.push(`${e.message ?? e}`);
   win.addEventListener('error', onError);
+  const logged = [];
+  const realError = console.error;
+  console.error = (...args) => { logged.push(args.map((a) => `${a?.message ?? a}`).join(' ')); };
 
   const listed = () => [...win.document.querySelectorAll('#nav [data-nav]')].map((b) => b.dataset.nav);
-  for (const id of SCREENS) {
-    win.location.hash = `#/${id}`;
-    await tick();
-    // A hidden screen has nothing in the toolbar to highlight; it must still route and render.
-    if (listed().includes(id)) assert.equal(activeNav(), id, `${id} should be the active screen`);
-    const stage = win.document.querySelector('#stage .screen.active');
-    assert.ok(stage, `${id} rendered no screen element`);
-    assert.ok(stage.innerHTML.trim().length > 0, `${id} rendered an empty stage`);
+  try {
+    for (const id of SCREENS) {
+      win.location.hash = `#/${id}`;
+      await tick();
+      // A hidden screen has nothing in the toolbar to highlight; it must still route and render.
+      if (listed().includes(id)) assert.equal(activeNav(), id, `${id} should be the active screen`);
+      const stage = win.document.querySelector('#stage .screen.active');
+      assert.ok(stage, `${id} rendered no screen element`);
+      assert.ok(stage.innerHTML.trim().length > 0, `${id} rendered an empty stage`);
+      isAbsent(stage.querySelector('[data-screen-broken]'), `${id} put up the shell's broken card`);
+      // AND IT IS THAT SCREEN. `buildScreen` falls back to `SCREENS.home` for an id it does not
+      // hold, so a route that silently landed on the cube screen drew content, highlighted nothing
+      // for a hidden entry, and passed every assertion above it.
+      assert.equal(state.screen, id, `${id} is not the screen the shell thinks it is on`);
+      // ON THE PAPER, not only in the shell's variable: a hidden screen has no tab to highlight, so
+      // for four of these routes the assertion above was the only identity evidence and it is the
+      // shell agreeing with itself.
+      assert.equal(stage.dataset.screen, id, `${id} drew a screen that says it is ${stage.dataset.screen}`);
+    }
+  } finally {
+    console.error = realError;
+    win.removeEventListener('error', onError);
   }
-
-  win.removeEventListener('error', onError);
   assert.deepEqual(errors, [], 'no screen should raise while rendering');
+  assert.deepEqual(logged.filter((l) => /could not be built|mount failed/.test(l)), [],
+    'the shell caught a screen failing and carried on');
 });
 
 // The bar draws no screen name — the filled tab is the name — so the document/window title is the
@@ -762,18 +785,70 @@ test('an alg that reaches the solved cube does not give it a walk', async () => 
   } finally { Object.assign(state.cube, prev); }
 });
 
-// An async mount outliving its screen is invisible until it writes: cubeScreen awaits a solver
-// load and a Kociemba search, and on the far side installs liveUpdate and paints a cube that may
-// belong to a screen the user already left. The generation counter is what makes it notice.
-test('a screen navigated away from mid-mount does not clobber the next one', async () => {
+// WHAT THIS MEASURES, now that it has been measured: leaving Home for Scan leaves no cube card
+// behind and Scan is the screen on the paper. It does NOT reach the in-flight window it was named
+// for. Measured 2026-10-06 in this harness: the cube screen's mount completes inside one macrotask
+// because the solver fails fast with no network, and happy-dom does not even create the stage's
+// children until that macrotask — so there is no yield a test can take between the mount starting
+// and finishing. Asserting the pendency failed outright. The generation fence has its own case
+// below, which makes the race rather than hoping to catch one.
+test('leaving a screen takes its card with it, and the next screen is the one on the paper', async () => {
   win.location.hash = '#/home';
   await tick();
-  win.location.hash = '#/scan'; // leave immediately, while the cube mount is still awaiting
+  win.location.hash = '#/scan';
   await tick();
   await new Promise((r) => setTimeout(r, 400));
   assert.equal(win.document.querySelector('.nav-item.active')?.dataset.nav, 'scan');
   assert.ok(win.document.querySelector('ai-scan-panel'), 'the scan screen is the one mounted');
   isAbsent(win.document.querySelector('#viewCube'), 'no cube card left behind');
+});
+
+/**
+ * THE GENERATION FENCE, made rather than waited for.
+ *
+ * `screen-shell.js` numbers each install and an async mount compares against it, so a mount that
+ * lands after the user moved on knows it is obsolete. The dangerous half is not a late PAINT — a
+ * detached root cannot reach the document anyway — it is a late FAILURE: `mountFailed` tears the
+ * screen down and installs its broken card, and without the fence it would do that to whichever
+ * screen is on the paper now, cutting the listeners of a screen that never failed.
+ *
+ * So the mount is held open on a promise this case resolves, which makes the window deterministic
+ * instead of depending on how long a `tick()` happens to be.
+ */
+test('a mount that fails after its screen is gone does not tear down the screen that replaced it', async () => {
+  const { SCREENS } = await import('../lib/screen-shell.js');
+  let release;
+  const held = new Promise((r) => { release = r; });
+  SCREENS.racer = () => ({
+    html: '<div id="racerRoot">racer</div>',
+    mount: async () => { await held; throw new Error('a mount that failed long after it lost its screen'); },
+  });
+  const realError = console.error;
+  const logged = [];
+  console.error = (...a) => { logged.push(a.map((x) => `${x?.message ?? x}`).join(' ')); };
+  try {
+    win.location.hash = '#/racer';
+    await tick();
+    assert.ok(win.document.querySelector('#racerRoot'), 'precondition: the racer screen mounted');
+    win.location.hash = '#/scan';
+    await tick();
+    assert.ok(win.document.querySelector('ai-scan-panel'), 'precondition: Scan took the paper');
+
+    release();
+    await tick();
+    await tick();
+    isAbsent(win.document.querySelector('[data-screen-broken]'),
+      "a dead screen's failure put the broken card over the screen that replaced it");
+    assert.ok(win.document.querySelector('ai-scan-panel'), 'and it tore down a screen that never failed');
+    assert.equal(win.document.querySelector('#stage .screen.active')?.dataset.screen, 'scan');
+    // The failure is still REPORTED — the fence stops it acting, never stops it being heard.
+    assert.ok(logged.some((l) => /mount failed/.test(l)), 'the late failure was swallowed entirely');
+  } finally {
+    console.error = realError;
+    delete SCREENS.racer;
+    win.location.hash = '#/home';
+    await tick();
+  }
 });
 
 // ⌃⌥⌘D reveals an Advanced section in Settings that can take the placeholder screens out of the
@@ -888,10 +963,14 @@ test('every control Settings draws carries an id, and a switch row cannot be dra
   for (const path of ['lib/screens/settings.js', 'lib/screens/settings/smart-cube.js', 'lib/screens/settings/preferences.js']) {
     assert.ok(APP_SOURCES.includes(path), `${path} is not one of the app's sources`);
     const src = readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
-    // The markup is the literals' text: comments left out, and every `${}` walked as code.
-    const tags = [...walk(src).literals.join('').matchAll(/<(?:button|a|input|select|textarea)\b[^>]*>/g)].map((m) => m[0]);
+    // The markup is the literals' text: comments left out, every `${}` walked as code, and a HOLE
+    // left where one stood — `id="${id}"` joined to `id=""` otherwise, so an interpolated id read as
+    // no id at all and the check below could not ask for a non-empty one (audit, 2026-10-06).
+    const tags = [...walk(src).markup.matchAll(/<(?:button|a|input|select|textarea)\b[^>]*>/g)].map((m) => m[0]);
     assert.ok(tags.length > 0, `${path}: no control was found, so nothing was checked`);
-    for (const tag of tags) if (!/\sid="/.test(tag)) missing.push(`${path}: ${tag.slice(0, 90)}`);
+    // A NON-EMPTY id. `id=""` satisfied `\sid="` and is exactly as useless as no id at all: the shell
+    // puts focus back BY id, and `#` matches nothing (audit, 2026-10-06).
+    for (const tag of tags) if (!/\sid="[^"]/.test(tag)) missing.push(`${path}: ${tag.slice(0, 90)}`);
     for (const m of src.matchAll(/switchRow\(\{/g)) {
       const open = m.index + 'switchRow('.length;
       const row = src.slice(open, walk(src, { from: open, balanced: true }).end);
@@ -1347,7 +1426,13 @@ test('the toolbar is one flat row of tabs, with Settings as its own button', asy
   // icons-only row there is no label left to give the game away. Two icons were retired on
   // 2026-08-30; this is what makes the next retirement safe.
   const FALLBACK = '<circle cx="12" cy="12" r="2"></circle>';
-  for (const svg of win.document.querySelectorAll('#nav [data-nav] svg.ic')) {
+  // ONE ICON PER TAB, counted before the loop. A `for` over an empty collection runs no body and
+  // reports nothing, so a row that had lost its glyphs entirely — or a renamed `svg.ic` class the
+  // selector no longer matches — passed a case about every tab drawing a real one (audit,
+  // 2026-10-06).
+  const icons = win.document.querySelectorAll('#nav [data-nav] svg.ic');
+  assert.equal(icons.length, navIds().length, `${navIds().length} tabs drew ${icons.length} icons`);
+  for (const svg of icons) {
     assert.notEqual(svg.innerHTML.trim(), FALLBACK, `a tab fell back to the placeholder dot: ${svg.closest('[data-nav]').dataset.nav}`);
     assert.ok(svg.innerHTML.length > 0, 'a tab icon is empty');
   }
@@ -1951,12 +2036,17 @@ test('an undo made inside the animation window is drawn back, not dropped', asyn
   } finally { resetCubeModel(state); }
 });
 
-test('a half turn advances through a silent midpoint, and undoes through one too', async () => {
+test('a half turn advances through a silent midpoint, and undoes through one too', async (t) => {
   const { state } = await import('../lib/app.js');
   try {
     const moves = await followSetup(state);
     const h = moves.findIndex((m) => m.endsWith('2'));
-    if (h === -1) return; // this scramble happens to carry no half turn — nothing to pin
+    // SKIPPED, NEVER PASSED. The scramble is drawn random-state, so about one run in three thousand
+    // carries no half turn at all — and a bare `return` reported that run as a pass of a case about
+    // half turns (audit, 2026-10-06). `t.skip` is the shape AGENTS.md §7 requires of a check that
+    // could not run: the tally says so out loud, and a draw that stopped carrying half turns
+    // ENTIRELY would show as a wall of skips rather than as green.
+    if (h === -1) { t.skip('this scramble carries no half turn, so there is no midpoint to pin'); return; }
     const calls = spyCube();
     for (let i = 0; i < h; i++) feedQ(quarters(moves[i]));
     const before = drawnSteps(calls);
@@ -2040,12 +2130,13 @@ test('a snapshot from off the plan is named, and clears once the cube rejoins', 
   } finally { resetCubeModel(state); }
 });
 
-test('a distant midpoint is a wrong position, not silent progress', async () => {
+test('a distant midpoint is a wrong position, not silent progress', async (t) => {
   const { state } = await import('../lib/app.js');
   try {
     const moves = await followSetup(state);
     const h = moves.findIndex((m, i) => i >= 2 && m.endsWith('2'));
-    if (h === -1) return; // no half turn far enough from the start in this scramble
+    // Skipped rather than passed, for the reason given on the case above.
+    if (h === -1) { t.skip('no half turn far enough from the start in this scramble'); return; }
     const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url).href)).default;
     const c = new Cube();
     for (let i = 0; i < h; i++) c.move(moves[i]);

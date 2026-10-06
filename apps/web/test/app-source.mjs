@@ -326,10 +326,26 @@ export function translatedSentences(src) {
     .map(({ text }) => text);
 }
 
-/** `sentences` as the text alone, with `spans` keeping each one's start — one walk, two readings. */
+/** A hole's stand-in in `markup`: one character no source contains, so a value that was
+ *  interpolated is visibly NOT an empty string. */
+export const HOLE = '\u0001';
+
+/**
+ * `sentences` as the text alone, `spans` keeping each one's start, and `markup` the literals run
+ * together with a stand-in where a template had a hole — one walk, three readings.
+ *
+ * `markup` exists because `literals.join('')` turns `id="${id}"` into `id=""`, which is
+ * indistinguishable from an id nobody wrote. A check for a NON-EMPTY id then reported every
+ * interpolated one as missing, and a check that accepted `id=""` could not be tightened at all
+ * (audit, 2026-10-06).
+ */
 function reading(src, pieces) {
   const spans = sentencesOf(src, pieces);
-  return { sentences: spans.map((s) => s.text), spans };
+  return {
+    sentences: spans.map((s) => s.text),
+    spans,
+    markup: pieces.map((p) => (p.hole ? HOLE : '') + p.text).join(''),
+  };
 }
 
 /**

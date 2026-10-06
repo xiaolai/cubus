@@ -223,7 +223,12 @@ export function refreshScreen() {
  *  than an error: it is an app that quietly shows you the wrong thing. Deliberately a plain
  *  spec with no mount, so nothing about the failing screen is re-entered here. */
 const brokenScreen = () => ({
-  html: `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center">
+  // MARKED, so a test can tell the card from a screen. The shell catches a build or a mount that
+  // throws and puts this in its place, which means a broken screen renders CONTENT and raises no
+  // window error — so `every screen renders without throwing` passed for a screen that threw
+  // (audit, 2026-10-06). The attribute is the shell's failure state made observable; the words are
+  // translated and cannot be matched on.
+  html: `<div data-screen-broken="1" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center">
     <div class="card" style="max-width:460px;text-align:center;padding:34px">
       <div class="eyebrow">${escHtml(t('THIS SCREEN DID NOT OPEN'))}</div>
       <div style="font-size:var(--fs-title);font-weight:600;margin-top:10px">${escHtml(t('Something went wrong drawing this screen'))}</div>
@@ -299,7 +304,11 @@ function installScreen(spec, { navigated, typing = null }) {
   const stage = $('#stage');
   const moving = navigated || focusedScreen !== state.screen;
   parkCube(); // lift the renderer clear of the wipe on the next line
-  stage.innerHTML = `<div class="screen active" tabindex="-1" role="region" aria-label="${escHtml(screenTitle())}">${spec.html}</div>`;
+  // WHICH SCREEN IS ON THE PAPER, written where it can be read. The filled tab is the only other
+  // answer, and a hidden screen has no tab — so for four of the thirteen routes nothing said what
+  // had been drawn, and a route that drew the wrong composition would have looked right (audit,
+  // 2026-10-06). It is the route's id, so the broken card below carries the id it failed for.
+  stage.innerHTML = `<div class="screen active" data-screen="${escHtml(state.screen)}" tabindex="-1" role="region" aria-label="${escHtml(screenTitle())}">${spec.html}</div>`;
   const root = stage.firstElementChild;
   for (const b of root.querySelectorAll('[data-go]')) b.onclick = () => go(b.dataset.go);
   // Moved only when the SCREEN changed. `preventScroll`, because the stage is a fixed box under
