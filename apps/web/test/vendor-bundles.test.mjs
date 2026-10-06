@@ -803,6 +803,39 @@ test('every script that runs the test runner provisions the onnxruntime files fi
 // step that ran `node run-tests.mjs fast` directly, or invoked a script this package does not
 // define, would bypass every hook in the manifest and the relation would stay green. That is not
 // hypothetical: the step that broke was written as a direct tier invocation precisely because the
+/**
+ * A VENDORED BUNDLE CARRIES ITS DEPENDENCIES' CODE, AND NOTHING ABOVE CHECKS WHICH VERSION.
+ *
+ * The checks above compare the bundle with the REPO's sources and skip every `node_modules` input by
+ * design, so a bundle built against a different three.js than the one this repo installs is invisible
+ * to all of them: every declared name is present, every message is present, every source is listed.
+ *
+ * It happened. The 110-commit player merge (2026-10-06) resolved `apps/web/vendor/cubus-cube.js` by
+ * taking the side built against three r185, while package.json asks for ^0.186.0 and the lockfile
+ * installs 0.186.1 — so the app would have SHIPPED a renderer one minor version behind what the
+ * repository claims, with the whole suite green. The only thing that caught it was the appearance
+ * goldens, which run in the full tier alone: r185 and r186 rasterise the same scene a few channel
+ * steps apart, so all 22 fixtures failed at once with nothing structural to see. That was luck —
+ * a dependency bump that changed BEHAVIOUR rather than pixels would have shipped in silence.
+ *
+ * The revision is the minor: three 0.186.1 writes `REVISION = "186"`.
+ */
+test('the renderer bundle was built against the three.js this repo installs', () => {
+  const bundle = read('../vendor/cubus-cube.js');
+  const built = /\bREVISION\s*=\s*"(\d+)"/.exec(bundle)?.[1];
+  assert.ok(built, 'no three REVISION found in the renderer bundle, so nothing was compared');
+  // Read rather than resolved: three's `exports` refuses a `package.json` subpath, and a check that
+  // cannot find the dependency must say so rather than pass.
+  const installed = ['../../../packages/cubus-cube/node_modules/three/package.json',
+    '../../../node_modules/three/package.json']
+    .map((rel) => new URL(rel, import.meta.url))
+    .find((url) => existsSync(url));
+  assert.ok(installed, 'three is not installed where this check looks, so it checked nothing');
+  const version = JSON.parse(readFileSync(installed, 'utf8')).version;
+  assert.equal(built, version.split('.')[1],
+    `the bundle carries three r${built} and this repo installs ${version} — rebuild it with \`pnpm --filter cubus-cube build\``);
+});
+
 // tier split needed one, and the manifest was not consulted.
 test('every web suite CI runs is a script this package provisions', () => {
   const ci = readFileSync(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8');
