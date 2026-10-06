@@ -40,7 +40,7 @@ export const APP_SOURCES = Object.freeze([
   'lib/screens/scan.js', 'lib/screens/cube.js', 'lib/screens/timer.js', 'lib/screens/settings.js',
   'lib/screens/stats.js', 'lib/screens/lessons.js', 'lib/screens/course.js',
   // the whole picture catalogue as a grid, and the two services behind it, 2026-10-04
-  'lib/screens/shapes.js', 'lib/shape-recency.js', 'lib/shape-thumb.js',
+  'lib/screens/loop.js', 'lib/screens/shapes.js', 'lib/shape-recency.js', 'lib/shape-thumb.js',
   // the Course screen's second composition: a lesson playing
   'lib/screens/course/episode-view.js',
   'lib/screens/course/lesson-chrome.js',
@@ -83,7 +83,8 @@ export const LIBRARY_SOURCES = Object.freeze([
   'lib/course-source.js', 'lib/drill-attempt.js',
   'lib/data/case-tables.js', 'lib/drill-rounds.js', 'lib/element-writes.js', 'lib/episode-audio.js', 'lib/host.js', 'lib/i18n.js', 'lib/lesson-format.js',
   'lib/lesson-player.js', 'lib/lesson-schedule.js', 'lib/method-ladder.js', 'lib/method-lesson.js',
-  'lib/method-solver.js', 'lib/methods/cross.js', 'lib/methods/engine.js', 'lib/methods/index.js',
+  'lib/method-solver.js', 'lib/methods/cross.js',
+  'lib/next-turn.js', 'lib/methods/engine.js', 'lib/methods/index.js',
   'lib/methods/last-layer.js', 'lib/methods/pairs.js', 'lib/optimal-challenges.js', 'lib/optimal.js',
   'lib/os-insets.js', 'lib/random-state.js', 'lib/router.js', 'lib/scheme.js', 'lib/smartcube-entry.js',
   'lib/solve-client.js', 'lib/solve-stats.js', 'lib/solve-target.js', 'lib/solve-timer.js',

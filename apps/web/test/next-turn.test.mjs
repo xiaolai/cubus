@@ -63,9 +63,15 @@ test('a half turn, a quarter turn and a regrip are told apart', () => {
   // A half turn has no wrong way round and a quarter turn does, which is the property the first
   // solving lesson is built on. And a ROTATION is not a turn of a face: an arrow drawn on one would
   // point at a layer nobody is being asked to move.
-  assert.deepEqual({ ...nextTurn(LESSON, 0) }, { token: 'F2', kind: 'face', turns: 2, hold: ['U', 'F'], stepIndex: 0, remaining: 3 });
-  assert.deepEqual({ ...nextTurn(LESSON, 1) }, { token: "R'", kind: 'face', turns: 1, hold: ['U', 'F'], stepIndex: 0, remaining: 2 });
+  assert.deepEqual({ ...nextTurn(LESSON, 0) }, { token: 'F2', face: 'F', kind: 'face', turns: 2, hold: ['U', 'F'], stepIndex: 0, remaining: 3 });
+  assert.deepEqual({ ...nextTurn(LESSON, 1) }, { token: "R'", face: 'R', kind: 'face', turns: 1, hold: ['U', 'F'], stepIndex: 0, remaining: 2 });
   assert.equal(nextTurn(LESSON, 2).kind, 'rotation', 'a whole-cube turn was reported as a face turn');
+  // A ROTATION NAMES NO FACE. `y` would otherwise answer "Y", which is not a face of anything, and a
+  // caller drawing an arrow on it would point at a layer nobody is being asked to turn.
+  assert.equal(nextTurn(LESSON, 2).face, null, 'a whole-cube turn was given a face to turn');
+  // An outer block keeps its face, with the count off the front.
+  assert.equal(nextTurn({ moves: ["2Rw'"] }, 0).face, 'R');
+  assert.equal(nextTurn({ moves: ['M'] }, 0).face, null, 'a slice is not a face of the cube');
 });
 
 // --- against a real walk ---

@@ -844,7 +844,7 @@ for (const fixture of FIXTURES) {
 // sideways, every control a finger can hit. Stats is seeded with a session: an empty one is a
 // single card and would test nothing.
 
-const SCREENS = ['timer', 'stats', 'trainer', 'drill', 'pieces', 'lessons', 'settings', 'course', 'shapes'];
+const SCREENS = ['timer', 'stats', 'trainer', 'drill', 'pieces', 'lessons', 'settings', 'course', 'shapes', 'loop'];
 
 /**
  * Every id the app REGISTERS as a screen, read off the modules that register it.

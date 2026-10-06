@@ -116,10 +116,12 @@ test('an unknown hash falls back to home rather than rendering nothing', async (
 // reference to a field that does not exist — produces a blank stage, and nothing else here would
 // notice, because the other tests only visit four of them.
 test('every screen renders without throwing', async () => {
-  const SCREENS = [
-    'home', 'scan', 'scramble', 'timer', 'stats',
-    'trainer', 'drill', 'lessons', 'settings',
-  ];
+  // FROM THE REGISTRY, because a list goes stale silently and this one had: it named nine screens
+  // while thirteen were registered, so `course`, `pieces`, `shapes` and `loop` were covered by
+  // nothing at all — in a case whose whole point is that EVERY screen renders (2026-10-06).
+  const { SCREENS: REGISTERED } = await import('../lib/screen-shell.js');
+  const SCREENS = Object.keys(REGISTERED);
+  assert.ok(SCREENS.length >= 9, `only ${SCREENS.length} screens registered — the registry is not loaded`);
   const errors = [];
   const onError = (e) => errors.push(`${e.message ?? e}`);
   win.addEventListener('error', onError);
@@ -761,9 +763,14 @@ test('the Advanced section is hidden until the chord asks for it', async () => {
   win.document.dispatchEvent(chord());
   await tick();
   assert.equal(state.screen, 'settings');
+  // THE VOCABULARY, NOT A COPY OF IT. This spelled the seven ids out, so adding a hideable screen
+  // failed a case about the CHORD — and the two cases after it, which then found the section in the
+  // state this one's abort had left it (2026-10-06). What the case is about is that Advanced shows a
+  // toggle for every hideable screen and for nothing else.
+  const { HIDEABLE } = await import('../lib/app-settings.js');
   assert.deepEqual(
     [...win.document.querySelectorAll('[data-nav-toggle]')].map((b) => b.dataset.navToggle),
-    ['timer', 'stats', 'trainer', 'drill', 'pieces', 'lessons', 'course'],
+    HIDEABLE.map(([id]) => id),
   );
 
   win.document.dispatchEvent(chord());

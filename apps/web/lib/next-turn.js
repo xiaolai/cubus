@@ -26,6 +26,9 @@ import { readToken } from './cube-notation.js';
  *
  * - `token` — the move in the child's own letters, as the walk spells it. The renderer's `arrow`
  *   takes exactly this.
+ * - `face` — the letter of the face that moves, or **null for a rotation**, which turns no single
+ *   face. Derived from the token rather than carried beside it: two fields that could disagree about
+ *   which face is turning is one field too many.
  * - `kind` — `'face'`, `'wide'`, `'slice'` or `'rotation'`. **A rotation is not a turn of a face**:
  *   the child picks the whole cube up and turns it over, and a loop that drew an arrow on a face for
  *   one would be pointing at a layer nobody is being asked to move.
@@ -55,8 +58,13 @@ export function nextTurn(lesson, done = 0) {
 
   const holds = Array.isArray(lesson.moveHolds) ? lesson.moveHolds : [];
   const steps = Array.isArray(lesson.moveStep) ? lesson.moveStep : [];
+  // The letter the token begins with, once an outer-block count is off the front (`2Rw'`). A rotation
+  // and a slice name no face of the cube the child is being asked to turn, so they answer null.
+  const letter = /^\d?([A-Za-z])/.exec(read.move.token)?.[1] ?? null;
+  const face = read.move.kind === 'face' || read.move.kind === 'wide' ? letter.toUpperCase() : null;
   return Object.freeze({
     token: read.move.token,
+    face,
     kind: read.move.kind,
     turns: read.move.turns,
     hold: holds[done] ?? null,

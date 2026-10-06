@@ -144,9 +144,22 @@ test('every install that had Pieces hidden by 0.7.6 gets it back, and keeps its 
   }
   // Somebody at 4 who had deliberately brought Timer and Stats back keeps them: the walk skips every
   // version at or below theirs, so the only thing that moves is what version 5 says.
+  //
+  // ASSERTED AS A RELATION, NOT AS THE WHOLE SET. This pinned `navHidden` to exactly `['course']`,
+  // which made it fail the day a LATER version shipped a new tab hidden — a change that disturbs no
+  // choice at all, because an id that did not exist at version 4 was never chosen. The claim this
+  // case defends is about what the user had decided, so it is written about that (2026-10-06).
   const brought = migrateNavDefaults(4, ['pieces', 'course']);
-  assert.deepEqual(brought.navHidden, ['course'],
-    'bringing Pieces back disturbed a choice that had nothing to do with it');
+  assert.ok(brought.navHidden.includes('course'),
+    'a tab the user had chosen to hide came back on its own');
+  assert.ok(!brought.navHidden.includes('pieces'), 'version 5 did not reach an install at 4');
+  // THE DEFECT THIS IS REALLY ABOUT: a bump applying `DEFAULT_HIDDEN` wholesale and re-hiding the
+  // tabs somebody deliberately brought back. At version 4 a stored set of `['pieces', 'course']`
+  // means these four were SHOWN, so none of them may be hidden now.
+  for (const shown of ['timer', 'stats', 'trainer', 'lessons']) {
+    assert.ok(!brought.navHidden.includes(shown),
+      `${shown} was showing at version 4 and the migration hid it again`);
+  }
   // And a record starting from nothing lands exactly on the shipped defaults, not on an
   // intermediate set — adds and removals walked in version order.
   assert.deepEqual(migrateNavDefaults(0, []).navHidden, DEFAULT_HIDDEN,
