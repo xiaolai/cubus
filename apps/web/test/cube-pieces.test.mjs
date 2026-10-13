@@ -177,3 +177,26 @@ test('one tokenizer: what counts as a move is the same answer everywhere', () =>
   assert.equal(invert('  R  U2   '), "U2 R'", 'the tokenizer disagreed about spacing');
   assert.deepEqual(applyAlg(SOLVED, '  R   U  '), applyAlg(applyAlg(SOLVED, 'R'), 'U'));
 });
+
+test('invert undoes EVERY token the notation reads, not only the face turns', async () => {
+  // The oracle is the interpreter, which shares no code with `invert`: a token followed by its inverse
+  // must leave the pieces solved AND the hold where it started, because a wide move, a slice and a
+  // rotation all move the centres. Rebuilt from its first character, `Rw'` inverted to `R` and `R2'` to
+  // `R` — so this enumerates every base and every amount rather than listing the two that broke.
+  const { run } = await import('../lib/cube-moves.js');
+  const bases = ['U', 'R', 'F', 'D', 'L', 'B', 'Uw', 'Rw', 'Fw', 'Dw', 'Lw', 'Bw',
+    'u', 'r', 'f', 'd', 'l', 'b', 'M', 'E', 'S', 'x', 'y', 'z'];
+  let checked = 0;
+  for (const base of bases) {
+    for (const amount of ['', "'", '2', "2'"]) {
+      const token = `${base}${amount}`;
+      const back = run(`${token} ${invert(token)}`, ['U', 'F'], SOLVED);
+      assert.deepEqual(back.state, applyAlg(SOLVED, ''), `${token} then ${invert(token)} is not the identity`);
+      assert.deepEqual([...back.hold], ['U', 'F'], `${token} then ${invert(token)} leaves the cube turned`);
+      assert.equal(invert(invert(token)).replace(/2'$/, '2'), token.replace(/2'$/, '2'), `${token} is not an involution`);
+      checked += 1;
+    }
+  }
+  assert.equal(checked, 96);
+  assert.equal(invert("Rw' R2' x M"), "M' x' R2 Rw");
+});

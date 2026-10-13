@@ -295,9 +295,16 @@ export function rotateState(state, k) {
 
 /** The alg that undoes `alg`: the same turns, backwards, each reversed. An involution on every
  *  face-turn form (R->R'->R, R2->R2), which is what lets one function turn a solution into a setup
- *  alg and a setup alg back into a solution. */
+ *  alg and a setup alg back into a solution.
+ *
+ *  THE AMOUNT IS WHAT FLIPS, NEVER THE LETTER. Every token `lib/cube-notation.js` reads ends in its
+ *  amount — none, `'`, `2` or `2'` — so dropping or adding the trailing apostrophe is the whole
+ *  inverse, whatever the base is. The first version rebuilt a primed token from its FIRST CHARACTER,
+ *  which is right for `R'` and wrong for everything longer: `Rw'` came back as `R` and `R2'` as `R`,
+ *  a face turn in place of a wide move and a quarter in place of a half. No caller had a wide move
+ *  then; the human-speed algorithms are full of them. */
 export function invert(alg) {
   return movesOf(alg).reverse()
-    .map((m) => (m.endsWith('2') ? m : m.endsWith("'") ? m[0] : `${m}'`))
+    .map((m) => (m.endsWith("'") ? m.slice(0, -1) : m.endsWith('2') ? m : `${m}'`))
     .join(' ');
 }
