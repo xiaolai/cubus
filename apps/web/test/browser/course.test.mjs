@@ -512,6 +512,7 @@ const visible = (page, sel) => page.waitForFunction((s) => {
     return {
       count: text('#slCount'),
       status: text('#slStatus'),
+      notice: document.querySelector('#slNotice')?.hidden === false ? text('#slNoticeText') : null,
       words: text('#slWords'),
       controls: ['#slPlay', '#slNext', '#slYours', '#slAsk', '#slLeave']
         .filter((id) => document.querySelector(id) && !document.querySelector(id).hidden),

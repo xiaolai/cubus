@@ -128,9 +128,14 @@ export function createLessonVoice({ doc, resolve }) {
       if (!url) return Promise.resolve('refused');
       return new Promise((settle) => {
         pending = settle;
-        // Assigned only when it differs: the same recording again ("say it again") restarts it instead.
+        // The same recording again is LOADED again, never rewound. Rewinding an element that had ended
+        // (`currentTime = 0`, then play) left Linux WebKit under load at `paused` true, `currentTime` 0,
+        // with no `ended` and no `error`: every CI course failure from 2026-10-10 on was a step replaying
+        // the file the step before it had just played. Measured in a container, the course suite three
+        // copies at once: 8 of 12 runs failed rewinding, 0 of 12 loading. WHY WebKitGTK stalls there is
+        // not established. `load()` runs the same algorithm a new `src` does.
         if (audio.getAttribute('src') !== url) audio.src = url;
-        else audio.currentTime = 0;
+        else audio.load();
         watch();
         start().then((r) => { if (r !== true && pending === settle) finish(r); });
       });

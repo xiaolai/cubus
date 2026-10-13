@@ -325,6 +325,31 @@ test('a resume the platform refuses ends the recording it was continuing, with t
   assert.equal(await spoken, 'NotAllowedError');
 });
 
+test('the same recording again is loaded again, never rewound', async () => {
+  // Linux WebKit, loaded, 2026-10-13: an element that had ENDED, rewound with `currentTime = 0` and
+  // played, sat at `paused` true, `currentTime` 0, with no `ended` and no `error` -- in 8 of 12 runs of
+  // the course suite three-wide. Loading it again instead: 0 of 12. A script whose steps share a file
+  // ("say it again", or two lines on one recording) is that path, every time.
+  const el = fakeAudio();
+  let loads = 0;
+  el.load = () => { loads += 1; };
+  let rewound = 0;
+  Object.defineProperty(el, 'currentTime', { set() { rewound += 1; }, get() { return 0; } });
+  const voice = voiceOver(el);
+  const first = voice.speak('a.m4a');
+  el.plays[0].resolve();
+  el.dispatchEvent(new Event('ended'));
+  assert.equal(await first, 'ended');
+  assert.equal(loads, 0, 'a first recording was loaded twice -- assigning src already loads it');
+  voice.speak('a.m4a');
+  assert.equal(loads, 1, 'the same recording again was not loaded again');
+  assert.equal(rewound, 0, 'the same recording again was rewound, the path that stalled Linux WebKit');
+  assert.equal(el.plays.length, 2);
+  voice.speak('b.m4a');
+  assert.equal(loads, 1, 'a different recording was loaded twice');
+  assert.equal(el.getAttribute('src'), 'https://course.test/b.m4a');
+});
+
 test('disposal during a pending recording ends it and leaves nothing listening', async () => {
   const el = fakeAudio();
   const voice = voiceOver(el);
