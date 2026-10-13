@@ -444,7 +444,7 @@ export function drillPageHtml(entry, { status = '', timing = null } = {}) {
              at anything over 1px — and a back affordance squeezed against a heading is not one a
              thumb finds anyway. -->
         <div class="wrap-row" style="padding-bottom:2px">
-          <button class="pill" id="algBackToList">${icon('chevron-left', 14)} ${escHtml(t('All algorithms'))}</button>
+          <button class="pill" id="algBackToList" style="display:inline-flex;align-items:center;gap:4px">${icon('chevron-left', 14)}${escHtml(t('All algorithms'))}</button>
         </div>
         <div class="eyebrow">${escHtml(SECTION_NAME[entry.dial]())}</div>
         ${heading ? `<div class="alg-title" style="font-size:var(--fs-title);font-weight:600">${escHtml(heading)}</div>` : ''}
@@ -514,7 +514,7 @@ export function otherWayHtml(entry) {
     ? t('Fewer turns: %1 instead of %2.', entry.fewer.turns, entry.turns)
     : t('Fewer turns: %1 instead of %2, counting %3 to line the case up.', entry.fewer.turns, entry.turns,
       plural(entry.fewer.align, { one: 'one turn of the top', other: '%1 turns of the top' })))}
-      <button class="chip-m flat" data-alg="${escHtml(other.id)}" aria-label="${escHtml(t('Open the algorithm with fewer turns: %1', other.shown))}">${escHtml(other.shown)}</button>
+      <button class="pill num alg-link" data-alg="${escHtml(other.id)}" aria-label="${escHtml(t('Open the algorithm with fewer turns: %1', other.shown))}">${escHtml(other.shown)}</button>
     </div>`;
   }
   if (entry.usual) {
@@ -522,7 +522,7 @@ export function otherWayHtml(entry) {
     const name = caseNameOf(usual.id) ?? usual.shown;
     return `<div class="sub" id="algUsual" style="color:var(--ink-3);line-height:1.5">
       ${escHtml(t('The lessons teach this case as %1.', name))}
-      <button class="chip-m flat" data-alg="${escHtml(usual.id)}" aria-label="${escHtml(t('Open %1', name))}">${escHtml(usual.shown)}</button>
+      <button class="pill num alg-link" data-alg="${escHtml(usual.id)}" aria-label="${escHtml(t('Open %1', name))}">${escHtml(usual.shown)}</button>
     </div>`;
   }
   return '';

@@ -139,7 +139,12 @@ SCREENS.stats = () => {
         ${turnRateCard(s)}
       </div>
       ${sessionChart(view)}
-      <div class="card tight" style="flex:1;min-height:0;display:flex;flex-direction:column">
+      <!-- A FLOOR, not min-height 0. The card takes what the column has LEFT and scrolls its rows in
+           it - and on the landscape window the cards above it leave nothing, so with a floor of zero
+           it was drawn 0px tall: every recorded solve on the screen named for them, invisible, with
+           nothing to say so (found 2026-10-14). 240px is the heading and four rows; past that the
+           column scrolls to it, which a column of cards already does. -->
+      <div class="card tight" style="flex:1;min-height:240px;display:flex;flex-direction:column">
         <div class="card-h"><b>Recent solves</b><span class="num sub">${s.count}</span></div>
         <div class="list" style="overflow-y:auto">${recentRows(view.rows)}</div></div>
     </div>

@@ -402,7 +402,12 @@
          starves the primary of its width. */
       .cols:not(.flow) > .aside { display: contents; }
       .twin { grid-area: twin; min-width: 0; min-height: 0; }
-      .sheet { grid-area: sheet; min-width: 0; min-height: 0; }
+      /* `overflow-y: auto` because the stage CLIPS and the sheet is the flexible region: whatever
+         it holds past its 1fr row must scroll, never be cut. Without it the Drill page lost the
+         foot of its sheet on both desktop windows — 138px of every drill in portrait, the check,
+         the purpose and the notation lines, with nothing to scroll (found 2026-10-14). A sheet that
+         scrolls inside itself (`.card.tight` clips) is unchanged: that rule is the more specific. */
+      .sheet { grid-area: sheet; min-width: 0; min-height: 0; overflow-y: auto; }
       @container stage (orientation: portrait) {
         .cols {
           /* Portrait: the cube and its twin share the top row, 3:2; the sheet is the bottom row
@@ -513,13 +518,17 @@
          simply unreachable — clipped off the bottom with no way to scroll to them. */
       .col { grid-area: primary; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 18px; overflow-y: auto; }
       .aside { grid-area: sheet; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; }
-      /* Nothing in a sheet squashes. The sheet is a flex column that SCROLLS, and a flex item is
-         shrunk before its container scrolls — so a 40px button at the foot of an overfull sheet
-         was shrunk to 0px: the Restore screen's "Solve this cube" vanished in every portrait
-         fixture, while the notice beside it said to press it. A card is protected by its content's
-         minimum height; a button is not. The geometry test now counts a zero-height control as a
-         failure instead of filtering it out as "not visible". */
-      .aside > * { flex-shrink: 0; }
+      /* Nothing in a scrolling column squashes. Both columns are flex columns that SCROLL, and a
+         flex item is shrunk before its container scrolls — so a 40px button at the foot of an
+         overfull sheet was shrunk to 0px: the Restore screen's "Solve this cube" vanished in every
+         portrait fixture, while the notice beside it said to press it. The geometry test now counts
+         a zero-height control as a failure instead of filtering it out as "not visible".
+         `.col` TOO, and a card is NOT protected by its content: a `.card.tight` clips
+         (`overflow: hidden`), and a box that clips has an automatic minimum height of zero. The
+         rule was written for `.aside` alone, so on Lessons in the landscape window every stage card
+         was crushed to its header and first rung — the other rungs, the progress note and "Try the
+         next rung" cut off mid-sentence and unreachable (found 2026-10-14). */
+      .col > *, .aside > * { flex-shrink: 0; }
 
       /* ---- primitives ----------------------------------------------------- */
       /* Flat on purpose: no fill, no outline. The leading pane is the only raised surface; a card
@@ -984,6 +993,12 @@
          the two read as one sequence of turns, but sunk and quiet, because pressing it does nothing.
          A chip that looks like a button and is not is worse than either. */
       .chip-m.flat { background: var(--panel-sunk); color: var(--ink-4); border-style: dashed; }
+      /* A WHOLE ALGORITHM AS ONE PRESS — the drill page's way to the case's other algorithm. A pill,
+         because every action is one, on its own line under the sentence that names it, and allowed
+         to wrap: a fifteen-turn algorithm is wider than the sheet. It was a `.chip-m.flat`, which is
+         a SINGLE turn's 36px square and a non-pressable one at that, so the moves stood in a column
+         one per line, drawn over the notation sentence below (owner's screenshot, 2026-10-14). */
+      .alg-link { display: block; width: fit-content; max-width: 100%; margin-top: 6px; text-align: left; line-height: 1.45; }
       /* The drill's three steps. A numbered list, because a drill IS a procedure and the cheapest way
          to say so is to number it — the page carried nine unlabelled facts before. `decimal` markers
          sit in the number font so they match the turns beside them. */

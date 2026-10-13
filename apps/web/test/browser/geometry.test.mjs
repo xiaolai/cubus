@@ -30,6 +30,7 @@ import { webkit } from 'playwright';
 
 import { pace } from '../browser-wait.mjs';
 
+import { ALG_ENTRIES } from '../../lib/alg-catalogue.js';
 import { NAV } from '../../lib/app-state.js';
 import { fitStage } from '../../lib/stage.js';
 import { freePort } from '../free-port.mjs';
@@ -206,6 +207,54 @@ async function open(fixture, route = 'home', settings = null) {
 const rect = (el) => {
   const b = el.getBoundingClientRect();
   return { top: b.top, right: b.right, bottom: b.bottom, left: b.left, width: b.width, height: b.height };
+};
+
+/**
+ * Every piece of TEXT on the active screen that cannot be read where it is drawn, as readable names.
+ * Inlined into page.evaluate source below, so keep it self-contained.
+ *
+ * Two ways for text to be lost that no box-edge assertion in this file could see, because in both the
+ * box itself is exactly where it should be — it is what is INSIDE it that is wrong:
+ *
+ *   - `spills`: a box whose own text is bigger than it, drawn over whatever is next to it. A whole
+ *     algorithm in a `.chip-m`, a single turn's 36px square, stood in a column one move per line over
+ *     the notation sentence below it (owner's screenshot, 2026-10-14).
+ *   - `cut`: text outside an ancestor that CLIPS and does not scroll, so no gesture reaches it. The
+ *     Drill page lost the foot of its sheet to the stage on both desktop windows, and every Lessons
+ *     card in the landscape window was crushed to its first rung by a column that shrank it rather
+ *     than scrolling — found the same day by the first run of this measurement.
+ *
+ * TEXT-BEARING elements only, judged by their own text nodes: a cube canvas, an svg and a toggle's
+ * 44px hit area are drawn past their boxes on purpose and carry no text. A clipping ancestor that
+ * SCROLLS hands the question up to itself: content past a scroller's edge is reachable, so it is the
+ * scroller that must then be reachable. `display: contents` boxes have no rect and are skipped.
+ */
+const contentFits = (root) => {
+  const spills = [];
+  const cut = [];
+  const named = (el) => `${el.id ? `#${el.id}` : `${el.tagName.toLowerCase()}.${String(el.className).trim().replace(/\s+/g, '.')}`} "${el.textContent.trim().slice(0, 40)}"`;
+  for (const el of root.querySelectorAll('*')) {
+    if (el.closest('svg, [hidden], [aria-hidden="true"]')) continue;
+    if (![...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim())) continue;
+    const cs = getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) continue; // the visually-hidden clip-rect pattern
+    if (cs.display !== 'inline') {
+      if (cs.overflowX === 'visible' && el.scrollWidth > el.clientWidth + 1) spills.push(`${named(el)} by ${el.scrollWidth - el.clientWidth}px across`);
+      if (cs.overflowY === 'visible' && el.scrollHeight > el.clientHeight + 1) spills.push(`${named(el)} by ${el.scrollHeight - el.clientHeight}px down`);
+    }
+    let box = r;
+    for (let a = el.parentElement; a && a !== document.documentElement; a = a.parentElement) {
+      const acs = getComputedStyle(a);
+      if (acs.display === 'contents' || (acs.overflowX === 'visible' && acs.overflowY === 'visible')) continue;
+      const b = a.getBoundingClientRect();
+      if (/auto|scroll/.test(acs.overflowX + acs.overflowY)) { box = b; continue; }
+      const out = Math.max(b.top - box.top, box.bottom - b.bottom, b.left - box.left, box.right - b.right);
+      if (out > 1) { cut.push(`${named(el)} cut ${Math.round(out)}px by ${a.id ? `#${a.id}` : a.className}`); break; }
+    }
+  }
+  return { spills, cut };
 };
 
 /** Everything the foundation assertions need, read in one round trip. The probe is a throwaway
@@ -448,6 +497,7 @@ const measureCube = (page) =>
         } catch (e) { return { error: String(e) }; }
       })(),
       chips, overflow: { cols: cols.scrollWidth - cols.clientWidth, colsV: cols.scrollHeight - cols.clientHeight, doc: document.documentElement.scrollWidth - innerWidth },
+      fits: (${contentFits.toString()})(screen),
     };
   })()`);
 
@@ -678,6 +728,7 @@ for (const fixture of FIXTURES) {
       // Every chip on the sheet, horizontally; nothing wider than the stage.
       for (const c of m.chips) assert.ok(c.left >= m.sheet.left - 1 && c.right <= m.sheet.right + 1, `a chip leaves the sheet: ${JSON.stringify(c)}`);
       assert.ok(m.overflow.cols <= 1, `the composition overflows its box by ${m.overflow.cols}px`);
+      assert.deepEqual(m.fits, { spills: [], cut: [] }, 'text that cannot be read where it is drawn — see contentFits');
       assert.ok(m.overflow.doc <= 0, `the page overflows the viewport by ${m.overflow.doc}px`);
 
       // The renderer sized its canvas to the slot the composition gave it.
@@ -728,6 +779,7 @@ const measureScan = (page) =>
       cols: rect($('.cols')), stage: { w: $('#stage').clientWidth, h: $('#stage').clientHeight },
       solve: rect($('#scanSolveBtn')),
       overflow: { board: board.scrollHeight - board.clientHeight, doc: document.documentElement.scrollWidth - innerWidth },
+      fits: (${contentFits.toString()})(document.querySelector('.screen.active')),
     };
   })()`);
 
@@ -759,6 +811,7 @@ for (const fixture of FIXTURES) {
       }
       for (const t of m.tiles) assert.ok(inside(t.tile, m.primary), `${t.face} tile ${JSON.stringify(t.tile)} leaves the primary region ${JSON.stringify(m.primary)}`);
       assert.ok(m.overflow.board <= 1, `the scan board overflows by ${m.overflow.board}px`);
+      assert.deepEqual(m.fits, { spills: [], cut: [] }, 'text that cannot be read where it is drawn — see contentFits');
       assert.ok(m.overflow.doc <= 0, `the page overflows the viewport by ${m.overflow.doc}px`);
       // The screen's one action keeps its size whatever the sheet holds. A sheet that overflows
       // scrolls; it must not squash the button at its foot — which is exactly what a flex column
@@ -789,6 +842,7 @@ for (const fixture of FIXTURES) {
         }));
       });
       const long = await measureScan(page);
+      assert.deepEqual(long.fits, { spills: [], cut: [] }, 'with a long notice: text that cannot be read where it is drawn — see contentFits');
       const card = await page.evaluate(() => {
         const c = document.querySelector('.scan-sheet > .card');
         const b = c.getBoundingClientRect();
@@ -936,6 +990,7 @@ const measureScreen = (page) =>
       flow: Boolean(document.querySelector('.cols.flow')),
       colSlack: col && col.lastElementChild ? rect(col).bottom - rect(col.lastElementChild).bottom : 0,
       overflow: { screen: screen.scrollWidth - screen.clientWidth, doc: document.documentElement.scrollWidth - innerWidth },
+      fits: (${contentFits.toString()})(screen),
       // THE VERTICAL HALF, which nothing here measured until 2026-10-04. The screen's root must fit
       // the screen's own box: beyond it the stage CLIPS (\`overflow: hidden\`), and whatever is past
       // the fold cannot be scrolled to because no ancestor scrolls either. Found on the new Shapes
@@ -1022,6 +1077,7 @@ for (const fixture of FIXTURES) {
       assert.ok(m.overflow.screen <= 1, `the screen overflows sideways by ${m.overflow.screen}px`);
       assert.deepEqual(m.beyond, [], 'drawn beyond the stage');
       assert.deepEqual(m.collapsed, [], 'a control on the page has no box — squashed by its column');
+      assert.deepEqual(m.fits, { spills: [], cut: [] }, 'text that cannot be read where it is drawn — see contentFits');
       if (fixture.touch) {
         const small = m.controls.filter((c) => c.width < 44 - 0.5 || c.height < 44 - 0.5);
         assert.deepEqual(small, [], 'touch: controls under 44px');
@@ -1113,6 +1169,7 @@ for (const fixture of FIXTURES) {
       assert.ok(m.overflow.screen <= 1, `the screen overflows sideways by ${m.overflow.screen}px`);
       assert.deepEqual(m.beyond, [], 'drawn beyond the stage');
       assert.deepEqual(m.collapsed, [], 'a control on the page has no box — squashed by its column');
+      assert.deepEqual(m.fits, { spills: [], cut: [] }, 'text that cannot be read where it is drawn — see contentFits');
       if (fixture.touch) {
         const small = m.controls.filter((c) => c.width < 44 - 0.5 || c.height < 44 - 0.5);
         assert.deepEqual(small, [], 'touch: controls under 44px');
@@ -1175,6 +1232,7 @@ for (const screen of SCREENS) {
         assert.ok(m.overflow.screen <= 1, `the screen overflows sideways by ${m.overflow.screen}px`);
         assert.deepEqual(m.beyond, [], 'drawn beyond the stage');
         assert.deepEqual(m.collapsed, [], 'a control on the page has no box — squashed by its column');
+        assert.deepEqual(m.fits, { spills: [], cut: [] }, 'text that cannot be read where it is drawn — see contentFits');
         assert.ok(m.root.width >= m.content * 0.9, `the screen's root is ${m.root.width}px wide in a ${m.content}px stage — it shrank to its content`);
         // DOWNWARDS TOO. The stage clips, and nothing above it scrolls, so a root taller than its
         // screen puts content where no gesture can reach it — see `rootOverflowsDown`, added after
@@ -1228,28 +1286,60 @@ for (const screen of SCREENS) {
 // — and it is the one with a locked primary region, a transport and a sheet, which is exactly the
 // shape that can overflow. It did: the way back, crammed into the eyebrow beside the stage name,
 // ran 12px off the stage on every fixture before it was given its own row.
+//
+// AND NOT ONLY THE FIRST PAGE. Measuring whichever algorithm the chooser lists first measured a page
+// with no link to a second algorithm and a short sheet, so the two pages that broke were never drawn:
+// the case's other algorithm, printed as one press, stood in a column one turn per line over the
+// sentence below it; and the foot of every longer sheet was cut off by the stage with nothing to
+// scroll (owner's screenshot, 2026-10-14). The pages are CHOSEN BY WHAT THEY HOLD, from the catalogue,
+// never by name: the longest algorithm, the longest "fewer turns" link and the longest "the lessons
+// teach this case as" link — whatever those are the day this runs.
+const longestBy = (entries, size) => entries.reduce((a, b) => (size(b) > size(a) ? b : a));
+const byId = (id) => ALG_ENTRIES.find((e) => e.id === id);
+const DRILL_PAGES = [
+  ['the longest algorithm', longestBy(ALG_ENTRIES, (e) => e.shown.length)],
+  ['the longest link to fewer turns', longestBy(ALG_ENTRIES.filter((e) => e.fewer), (e) => byId(e.fewer.id).shown.length)],
+  ['the longest link to the taught algorithm', longestBy(ALG_ENTRIES.filter((e) => e.usual), (e) => byId(e.usual).shown.length)],
+];
+test('the drill pages measured below are the ones they say they are', () => {
+  // Each must exist, or its case would measure an empty selection and pass over nothing.
+  for (const [what, entry] of DRILL_PAGES) assert.ok(entry, `no algorithm in the catalogue is ${what}`);
+  assert.ok(DRILL_PAGES[1][1].fewer && DRILL_PAGES[2][1].usual, 'a link page was chosen without its link');
+});
 for (const fixture of FIXTURES) {
   test(`drill page: ${label(fixture)}`, async () => {
     const { page, context, errors } = await openAt(fixture, urlFor(fixture, 'drill'));
     try {
       await page.waitForSelector('.screen.active');
-      await page.waitForSelector('#algGroups [data-alg]');
-      await page.click('#algGroups [data-alg]');
-      await page.waitForSelector('#algCube');
-      await page.waitForTimeout(250);
-      const m = await measureScreen(page);
-      assert.deepEqual(errors.map(String), [], 'the page threw');
-      assert.ok(m.overflow.doc <= 0, `the page overflows the viewport by ${m.overflow.doc}px`);
-      assert.ok(m.overflow.screen <= 1, `the screen overflows sideways by ${m.overflow.screen}px`);
-      assert.deepEqual(m.beyond, [], 'drawn beyond the stage');
-      assert.deepEqual(m.collapsed, [], 'a control has no box — squashed by its column');
-      if (m.col && m.aside) {
-        assert.ok(!overlaps(m.col, m.aside), 'the sheet draws over the cube');
-        assert.ok(m.col.height > 40 && m.aside.height > 40, 'a region collapsed');
-      }
-      if (fixture.touch) {
-        const small = m.controls.filter((c) => c.width < 44 - 0.5 || c.height < 44 - 0.5);
-        assert.deepEqual(small, [], 'touch: controls under 44px on the drill page');
+      const pages = [['the first algorithm listed', null], ...DRILL_PAGES];
+      for (const [what, entry] of pages) {
+        if (await page.$('#algBackToList')) await page.click('#algBackToList');
+        await page.waitForSelector('#algGroups [data-alg]');
+        if (entry) {
+          await page.click('#scopeAll');
+          await page.click(`#algGroups [data-alg="${entry.id}"]`);
+        } else {
+          await page.click('#algGroups [data-alg]');
+        }
+        await page.waitForSelector('#algCube');
+        if (entry?.fewer) await page.waitForSelector('#algFewer [data-alg]');
+        if (entry?.usual) await page.waitForSelector('#algUsual [data-alg]');
+        await page.waitForTimeout(250);
+        const m = await measureScreen(page);
+        assert.deepEqual(errors.map(String), [], `${what}: the page threw`);
+        assert.ok(m.overflow.doc <= 0, `${what}: the page overflows the viewport by ${m.overflow.doc}px`);
+        assert.ok(m.overflow.screen <= 1, `${what}: the screen overflows sideways by ${m.overflow.screen}px`);
+        assert.deepEqual(m.beyond, [], `${what}: drawn beyond the stage`);
+        assert.deepEqual(m.collapsed, [], `${what}: a control has no box — squashed by its column`);
+        assert.deepEqual(m.fits, { spills: [], cut: [] }, `${what}: text that cannot be read where it is drawn — see contentFits`);
+        if (m.col && m.aside) {
+          assert.ok(!overlaps(m.col, m.aside), `${what}: the sheet draws over the cube`);
+          assert.ok(m.col.height > 40 && m.aside.height > 40, `${what}: a region collapsed`);
+        }
+        if (fixture.touch) {
+          const small = m.controls.filter((c) => c.width < 44 - 0.5 || c.height < 44 - 0.5);
+          assert.deepEqual(small, [], `${what}: touch: controls under 44px on the drill page`);
+        }
       }
     } finally {
       await context.close();
@@ -1277,6 +1367,7 @@ for (const fixture of FIXTURES) {
       assert.ok(m.overflow.screen <= 1, `the screen overflows sideways by ${m.overflow.screen}px`);
       assert.deepEqual(m.beyond, [], 'drawn beyond the stage');
       assert.deepEqual(m.collapsed, [], 'a control has no box — squashed by the widened list');
+      assert.deepEqual(m.fits, { spills: [], cut: [] }, 'text that cannot be read where it is drawn — see contentFits');
       if (fixture.touch) {
         const small = m.controls.filter((c) => c.width < 44 - 0.5 || c.height < 44 - 0.5);
         assert.deepEqual(small, [], 'touch: controls under 44px once every algorithm is listed');
