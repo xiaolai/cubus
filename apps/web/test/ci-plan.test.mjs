@@ -402,3 +402,17 @@ test('the onnx2tf line the export record holds is one Dependabot does not propos
   assert.match(pip, /ignore:\n(?: {6}.*\n)*? {6}- dependency-name: onnx2tf\n {8}update-types: \["version-update:semver-major"\]/,
     'onnx2tf is held on 1.x but Dependabot is free to propose 2.x in the ml-stack group');
 });
+
+// THE ML STACK IS HELD (owner, 2026-10-14). The /ml pins are the record of the environment that
+// exported the shipped model, so they move when the owner re-exports it and not on Dependabot's
+// calendar: both monthly groups (#39, #46) failed to install and were closed unmerged. Lifting the
+// hold is deleting the limit line AND this case, in the change that decides to re-export.
+test('Dependabot opens no version pull requests for the held /ml stack', () => {
+  const config = readFileSync(`${ROOT}.github/dependabot.yml`, 'utf8');
+  const start = config.indexOf('package-ecosystem: pip');
+  assert.ok(start >= 0, 'dependabot.yml declares no pip ecosystem — this check went blind');
+  const next = config.indexOf('package-ecosystem:', start + 1);
+  const pip = config.slice(start, next < 0 ? undefined : next);
+  assert.match(pip, /^ {4}directory: \/ml$/m, 'the pip block no longer covers /ml');
+  assert.match(pip, /^ {4}open-pull-requests-limit: 0$/m, 'the /ml stack is held, but Dependabot may open version PRs for it');
+});
