@@ -57,7 +57,17 @@ async function open({ entries = null, docs = {} } = {}) {
   pace(page);
   const errors = [];
   page.on('pageerror', (e) => errors.push(e));
-  await page.goto(`${fixture.base}/#/home`);
+  // A LOAD THAT NEVER FINISHED, said with what it was waiting on. The release gate saw two of these on
+  // 2026-10-13 — `page.goto` past 120 s, waiting for `load` — and nothing else: not which request, or
+  // whether any was left at all. None since, in 24 loaded runs here, so the next one has to explain itself.
+  const inFlight = new Set();
+  page.on('request', (r) => inFlight.add(r));
+  page.on('requestfinished', (r) => inFlight.delete(r));
+  page.on('requestfailed', (r) => inFlight.delete(r));
+  await page.goto(`${fixture.base}/#/home`).catch((cause) => {
+    const waiting = [...inFlight].map((r) => r.url().replace(fixture.base, '')).join(', ');
+    throw new Error(`the app never finished loading. Still in flight: ${waiting || 'nothing -- every request had answered'}`, { cause });
+  });
   await page.waitForSelector('.screen.active');
 
   if (entries) {
