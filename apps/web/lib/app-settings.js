@@ -338,11 +338,13 @@ export const HIDEABLE = [
  * them** (2026-09-27, dev-docs/algorithm-drills-plan.md item 4.2): it holds every algorithm the app
  * knows, drills a chosen one against a tracked cube, and says what it measured — so it is published.
  * Removing it from this list is HALF the change; see `NAV_ADDED` below for the other half, which is
- * the half that actually decides whether a fresh install sees the tab. The default tab row is the beginner's path;
+ * the half that actually decides whether a fresh install sees the tab. **Drill and Pieces are hidden
+ * again** (owner's decision, 2026-10-14): the default row is Home, Restore and Scramble — solve,
+ * scan, scramble — and nothing else; see version 7 below. The default tab row is the beginner's path;
  * everything else is one chord away. In CODE, not only in a stored preference: the hidden set
  * was once a preference alone, and one wiped localStorage brought five placeholder screens back
  * into the toolbar. Version 2 hides the three once for anyone who already ran the app. */
-export const DEFAULT_HIDDEN = ['timer', 'stats', 'trainer', 'lessons', 'course', 'loop'];
+export const DEFAULT_HIDDEN = ['timer', 'stats', 'trainer', 'drill', 'pieces', 'lessons', 'course', 'loop'];
 
 /**
  * What each version ADDED, so a bump applies a delta rather than the whole set.
@@ -381,6 +383,13 @@ const NAV_ADDED = Object.freeze({
   // which is the test `pieces` failed at version 4 and this one passes: nothing was reachable
   // inside another screen first.
   6: ['loop'],
+  // THE DEFAULT ROW IS SOLVE, SCAN AND SCRAMBLE (owner's decision, 2026-10-14): Drill and Pieces go
+  // back behind the Advanced section, where every other screen already is. An ADD, so it reaches
+  // existing installs too — which is the point, and it is the cost D5 named: a record cannot tell an
+  // inherited default from a deliberate choice, so anyone who had them showing loses the tabs and
+  // turns them back on in Advanced. The owner asked for the row everywhere, not on fresh installs
+  // only. Their routes keep working, so a link to #/drill still lands.
+  7: ['drill', 'pieces'],
 });
 
 /**
@@ -402,7 +411,7 @@ const NAV_ADDED = Object.freeze({
 const NAV_SHOWN = Object.freeze({
   5: ['pieces'],
 });
-export const NAV_DEFAULTS_VERSION = 6;
+export const NAV_DEFAULTS_VERSION = 7;
 
 // localStorage is untrusted input: anything in here that is not a hideable id is dropped rather
 // than allowed to silently remove some other nav entry.

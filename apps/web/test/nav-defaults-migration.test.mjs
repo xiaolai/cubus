@@ -92,15 +92,19 @@ test('every hideable tab the app ships is one the nav knows how to hide', () => 
 // shape of the gap this feature would have shipped through: changing `DEFAULT_HIDDEN` alone leaves
 // `NAV_ADDED[2]` to put `drill` straight back, and nothing in the old suite could tell.
 
-test('a fresh install SEES the Drill tab', () => {
-  const out = migrateNavDefaults(undefined, DEFAULT_HIDDEN);
-  assert.ok(!out.navHidden.includes('drill'), 'a fresh install still hides Drill');
-  assert.equal(out.navDefaults, NAV_DEFAULTS_VERSION);
+//
+// HIDDEN AGAIN AT VERSION 7 (owner's decision, 2026-10-14): the default row is solve, scan and
+// scramble. The cases about publishing it are kept as they were up to version 6, which is what
+// 0.7.x shipped until then, and version 7 is asserted by name below them.
+
+test('up to version 6, a fresh install SAW the Drill tab', () => {
+  const out = migrateNavDefaults(undefined, DEFAULT_HIDDEN.filter((id) => id !== 'drill' && id !== 'pieces'), undefined, 6);
+  assert.ok(!out.navHidden.includes('drill'), 'version 6 hid Drill on a fresh install');
 });
 
-test('an install from before any migration sees it too', () => {
+test('up to version 6, an install from before any migration saw it too', () => {
   for (const from of [0, 1, 2]) {
-    assert.ok(!migrateNavDefaults(from, DEFAULT_HIDDEN).navHidden.includes('drill'), `version ${from} hides Drill`);
+    assert.ok(!migrateNavDefaults(from, [], undefined, 6).navHidden.includes('drill'), `version ${from} hides Drill`);
   }
 });
 
@@ -113,10 +117,43 @@ test('a deliberate hide survives, whatever the stored version says', () => {
   }
 });
 
-test('and an install that had Drill visible keeps it visible', () => {
+test('up to version 6, an install that had Drill visible kept it visible', () => {
   for (const from of [3, 2, 0, undefined]) {
-    assert.ok(!migrateNavDefaults(from, []).navHidden.includes('drill'), `version ${JSON.stringify(from)} hid Drill`);
+    assert.ok(!migrateNavDefaults(from, [], undefined, 6).navHidden.includes('drill'), `version ${JSON.stringify(from)} hid Drill`);
   }
+});
+
+// ---- version 7: the default row is solve, scan and scramble (owner's decision, 2026-10-14) ----------
+//
+// BY NAME, and asserted on the WHOLE row rather than on the hidden list: a check that loops over
+// `DEFAULT_HIDDEN` agrees with whatever that list says, so it cannot notice a tab that should be gone.
+
+test('a fresh install shows exactly Home, Restore and Scramble', async () => {
+  const { NAV } = await import('../lib/app-state.js');
+  for (const stored of [undefined, DEFAULT_HIDDEN]) {
+    const { navHidden } = migrateNavDefaults(undefined, stored ?? []);
+    const row = NAV.map(([id]) => id).filter((id) => !navHidden.includes(id));
+    assert.deepEqual(row, ['home', 'scan', 'scramble'], `a fresh install shows ${row.join(', ')}`);
+  }
+});
+
+test('an existing install loses Drill and Pieces, and keeps every other choice it made', () => {
+  // A record at 6 with only the loop hidden had Drill, Pieces and Timer showing — Timer by choice.
+  // Version 7 is about Drill and Pieces; the user's Timer is not its business.
+  for (const from of [2, 4, 5, 6]) {
+    const out = migrateNavDefaults(from, ['loop']);
+    assert.ok(out.navHidden.includes('drill') && out.navHidden.includes('pieces'),
+      `an install at version ${from} still shows Drill or Pieces`);
+    assert.ok(!out.navHidden.includes('timer'), `version ${from}: a tab the user had turned on was hidden`);
+  }
+});
+
+test('Drill and Pieces stay one switch away, and a record already at 7 is not re-hidden', () => {
+  const hideable = new Set(HIDEABLE.map(([id]) => id));
+  assert.ok(hideable.has('drill') && hideable.has('pieces'), 'Drill or Pieces cannot be turned back on in Advanced');
+  // Somebody who turns Drill back on after the migration keeps it: the walk skips every version at
+  // or below theirs, so version 7 runs once.
+  assert.ok(!migrateNavDefaults(7, ['pieces']).navHidden.includes('drill'), 'version 7 re-hid a tab turned back on');
 });
 
 // ---- Pieces became a tab of its own (2026-09-29, option C) ---------------------------------------
@@ -132,20 +169,19 @@ test('the loop is hideable and hidden by default, and a version-5 install gets i
   assert.ok(DEFAULT_HIDDEN.includes('loop'), 'the loop is not hidden by default');
   // And the half that reaches somebody who has already run the app: a record at 5 with nothing
   // hidden must come out with the loop hidden and its own choices untouched.
-  const out = migrateNavDefaults(5, []);
+  const out = migrateNavDefaults(5, [], undefined, 6);
   assert.ok(out.navHidden.includes('loop'), 'an existing install never hides the new screen');
   for (const shown of ['timer', 'stats', 'trainer', 'lessons', 'course', 'pieces']) {
     assert.ok(!out.navHidden.includes(shown), `${shown} was showing at version 5 and the migration hid it`);
   }
 });
 
-test('a fresh install SEES the Pieces tab', () => {
+test('up to version 6, a fresh install SAW the Pieces tab', () => {
   // REVERSED AT VERSION 5 (owner's decision, 2026-09-29). Hiding it at 4 was argued from the id
   // being new, and the user lives in the ACTIVITY: the Pieces content was already reachable inside
-  // the Drill screen, published two days earlier.
-  const out = migrateNavDefaults(undefined, DEFAULT_HIDDEN);
-  assert.ok(!out.navHidden.includes('pieces'), 'a fresh install hides Pieces');
-  assert.equal(out.navDefaults, NAV_DEFAULTS_VERSION);
+  // the Drill screen, published two days earlier. Hidden again at 7 with Drill, by the owner's call.
+  const out = migrateNavDefaults(undefined, [], undefined, 6);
+  assert.ok(!out.navHidden.includes('pieces'), 'version 6 hid Pieces on a fresh install');
 });
 
 test('every install that had Pieces hidden by 0.7.6 gets it back, and keeps its other choices', () => {
@@ -153,8 +189,9 @@ test('every install that had Pieces hidden by 0.7.6 gets it back, and keeps its 
   // `DEFAULT_HIDDEN` does nothing for them: their record stores `navHidden` with it in, and a stored
   // preference outranks a changed default forever. Only a REMOVAL delta reaches them, which is why
   // `NAV_SHOWN` exists — and 4 is the version 0.7.6 and 0.7.7 shipped, so it is the one that matters.
+  // Up to version 6, which is the walk this case is about; version 7 hides it again on purpose.
   for (const from of [0, 1, 2, 3, 4]) {
-    const out = migrateNavDefaults(from, ['pieces']);
+    const out = migrateNavDefaults(from, ['pieces'], undefined, 6);
     assert.ok(!out.navHidden.includes('pieces'), `version ${from} left Pieces hidden`);
   }
   // Somebody at 4 who had deliberately brought Timer and Stats back keeps them: the walk skips every
@@ -164,7 +201,7 @@ test('every install that had Pieces hidden by 0.7.6 gets it back, and keeps its 
   // which made it fail the day a LATER version shipped a new tab hidden — a change that disturbs no
   // choice at all, because an id that did not exist at version 4 was never chosen. The claim this
   // case defends is about what the user had decided, so it is written about that (2026-10-06).
-  const brought = migrateNavDefaults(4, ['pieces', 'course']);
+  const brought = migrateNavDefaults(4, ['pieces', 'course'], undefined, 6);
   assert.ok(brought.navHidden.includes('course'),
     'a tab the user had chosen to hide came back on its own');
   assert.ok(!brought.navHidden.includes('pieces'), 'version 5 did not reach an install at 4');
@@ -229,7 +266,8 @@ test('no migration ships above the version anyone will ever migrate to', () => {
   // that entry changes nothing for anybody, which is why it is not worth a second mechanism.
 });
 
-test('Drill is in neither hiding table, which is what publishing it means', () => {
-  assert.ok(!DEFAULT_HIDDEN.includes('drill'), 'Drill is still a default-hidden tab');
-  assert.ok(HIDEABLE.some(([id]) => id === 'drill'), 'Drill must stay hideable — publishing is not forcing');
+test('Drill is hidden by default again, and still one switch away', () => {
+  // It was published at version 3 and taken back to Advanced at 7 (owner's decision, 2026-10-14).
+  assert.ok(DEFAULT_HIDDEN.includes('drill'), 'Drill is on the default row');
+  assert.ok(HIDEABLE.some(([id]) => id === 'drill'), 'Drill cannot be turned on in Advanced');
 });

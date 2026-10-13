@@ -1284,18 +1284,18 @@ test('showing an entry adds it to the toolbar, hiding removes it, and the rest i
   await tick();
   assert.ok(!navIds().includes('lessons'), 'precondition: Lessons starts hidden');
 
-  // Show the two that start hidden, in the order the toolbar lists them. Drill is NOT among them
-  // any more — it is published (dev-docs/algorithm-drills-plan.md item 4.2) and is already there,
-  // so clicking it would hide it and this case would be testing the opposite of what it says.
-  for (const id of ['trainer', 'lessons']) win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
+  // Show three that start hidden, in the order the toolbar lists them. Drill is among them again:
+  // it was published from version 3 to 6 and went back to Advanced at 7 (owner's decision,
+  // 2026-10-14), so a default row is solve, scan and scramble and nothing else.
+  for (const id of ['trainer', 'drill', 'lessons']) win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
   await tick();
-  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'trainer', 'drill', 'pieces', 'lessons'], 'shown in toolbar order');
+  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'trainer', 'drill', 'lessons'], 'shown in toolbar order');
 
   // Hide one: its neighbours are untouched.
   win.document.querySelector('[data-nav-toggle="lessons"]').click();
   await tick();
   assert.ok(!navIds().includes('lessons'), 'gone from the toolbar');
-  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'trainer', 'drill', 'pieces'], 'and its neighbours are untouched');
+  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'trainer', 'drill'], 'and its neighbours are untouched');
 
   // Hiding is cosmetic: the address still works, which is the escape hatch.
   win.location.hash = '#/lessons';
@@ -1304,22 +1304,14 @@ test('showing an entry adds it to the toolbar, hiding removes it, and the rest i
 
   // Restore the DEFAULT through the UI, not by wiping localStorage. `settings` is a live
   // module-level object: clearing storage leaves it holding the shown ids, so every later test in
-  // this file would inherit a toolbar with two extra entries.
+  // this file would inherit a toolbar with extra entries. Lessons is already hidden again above.
   win.location.hash = '#/settings';
   await tick();
-  // Only the trainer: this case SHOWED the trainer and Lessons, and Lessons is already hidden
-  // again above. Drill was never shown by it — it is published now, so it was there from the
-  // start — and clicking it here would HIDE it and hand every later test in this file a toolbar
-  // missing a default tab.
-  for (const id of ['trainer']) {
+  for (const id of ['trainer', 'drill']) {
     win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
     await tick();
   }
-  assert.deepEqual(
-    navIds().filter((i) => ['trainer', 'drill', 'lessons'].includes(i)),
-    ['drill'],
-    'the default toolbar is back before the next test runs — which now includes Drill',
-  );
+  assert.deepEqual(navIds(), ['home', 'scan', 'scramble'], 'the default toolbar is back before the next test runs');
   win.document.dispatchEvent(chord());
   await tick();
   win.localStorage.removeItem('cubusSettings');
@@ -1350,12 +1342,11 @@ test('the toolbar no longer offers 3D viewer or Smart cube, and Stats is renamed
   for (const id of ['trainer', 'lessons', 'timer']) {
     assert.ok(!ids.includes(id), `${id} is hidden by default, whatever storage says`);
   }
-  // And the other direction, named rather than left as an absence: Drill is PUBLISHED, so a wiped
-  // localStorage must show it. Asserted positively because the loop above is over a list — drop an
-  // id from that list and it stops being checked at all, which is exactly how publishing a tab
-  // could otherwise go green while the tab stayed hidden.
-  assert.ok(ids.includes('drill'), 'Drill is published, so a fresh install must show it');
-  assert.ok(ids.includes('pieces'), 'Pieces is on the default row, so a fresh install must show it');
+  // Drill and Pieces too, since version 7 (owner's decision, 2026-10-14): the default row is solve,
+  // scan and scramble, and the rest are one switch away in Advanced. The whole row is asserted
+  // POSITIVELY below, so a tab that should be gone cannot hide behind a list nobody updated.
+  for (const id of ['drill', 'pieces']) assert.ok(!ids.includes(id), `${id} is on a fresh install's row`);
+  assert.deepEqual(ids, ['home', 'scan', 'scramble'], 'a fresh install shows exactly solve, scan and scramble');
   const labels = [...win.document.querySelectorAll('#nav [data-nav]')].map((b) => b.textContent);
   assert.ok(!labels.some((l) => l.includes('Session stats')), 'and it is not called Session stats');
   // Nothing groups the list any more, so there is no heading left over to point at a screen that
@@ -1420,7 +1411,9 @@ test('the toolbar is one flat row of tabs, with Settings as its own button', asy
   // Pieces rejoined the default row on 2026-09-29 (owner's decision): it had been hidden at
   // version 4 on the reasoning that its ID was new, and the content it holds was already reachable
   // inside the Drill screen — so hiding the new tab took away something people could get to.
-  assert.deepEqual(navLabels(), ['Home', 'Restore', 'Scramble', 'Drill', 'Pieces']);
+  // BOTH LEFT IT AGAIN on 2026-10-14 (owner's decision, nav version 7): the default row is solve,
+  // scan and scramble, and Drill and Pieces are switches in Advanced like every other screen.
+  assert.deepEqual(navLabels(), ['Home', 'Restore', 'Scramble']);
   // Every tab draws a real glyph. icon() falls back to a bare dot for a name it does not know, so
   // a deleted or renamed glyph does not throw — it renders something almost plausible, and in an
   // icons-only row there is no label left to give the game away. Two icons were retired on
