@@ -76,7 +76,8 @@ test('a pull request runs a platform job when it touches that platform', () => {
   const only = (job) => ({ ...nothingExtra, [job]: true });
   const cases = [
     ['crates/optimal-solver/src/search.rs', only('rust')],
-    ['Cargo.lock', { ...only('rust'), deps: true }],
+    // The Gradle build includes tauri's and its plugins' Android projects from the cargo registry.
+    ['Cargo.lock', { ...only('rust'), android: true, deps: true }],
     ['apps/desktop/src-tauri/src/lib.rs', { ...only('rust'), android: true }],
     ['apps/desktop/src-tauri/gen/android/app/src/main/res/mipmap-hdpi/ic_launcher.png', { ...only('rust'), android: true, icons: true }],
     ['ml/golden/expected.json', only('ml')],

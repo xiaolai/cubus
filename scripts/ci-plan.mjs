@@ -40,7 +40,11 @@ export const FILTERS = Object.freeze({
   // scanner: that letterbox's parity with the pinned bytes is the browser tier's
   // threads-do-not-change-output suite, which runs with the full tier.
   ml: Object.freeze(['ml/', 'crates/cube-vision/']),
-  android: Object.freeze(['apps/desktop/', 'ml/models/cubedet.tflite', 'scripts/tauri-android.mjs']),
+  // Cargo.lock IS an Android input: tauri.settings.gradle includes Gradle projects straight out of
+  // the cargo registry (tauri's mobile/android, each plugin's android/) at the versions it pins. A
+  // Tauri bump that touched nothing else (#44, 2026-10-10) skipped this job, read green, and
+  // reached `main` with a release classpath its gradle.lockfile did not list.
+  android: Object.freeze(['apps/desktop/', 'ml/models/cubedet.tflite', 'scripts/tauri-android.mjs', 'Cargo.lock']),
   icons: Object.freeze([
     'apps/desktop/src-tauri/icons/',
     'apps/desktop/src-tauri/gen/apple/Assets.xcassets/',
