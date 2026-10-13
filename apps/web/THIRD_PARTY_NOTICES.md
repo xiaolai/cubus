@@ -752,6 +752,7 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
   - `com.fasterxml.jackson.core:jackson-annotations:2.15.3` — Apache-2.0 — <https://www.apache.org/licenses/LICENSE-2.0.txt> — [`LICENSE`](#text-43070e2d4e53), [`NOTICE`](#text-ae9f252069f0)
   - `com.fasterxml.jackson.core:jackson-core:2.15.3` — Apache-2.0 — <https://www.apache.org/licenses/LICENSE-2.0.txt> — [`LICENSE`](#text-43070e2d4e53), [`NOTICE`](#text-481c60df0c31)
   - `com.fasterxml.jackson.core:jackson-databind:2.15.3` — Apache-2.0 — <https://www.apache.org/licenses/LICENSE-2.0.txt> — [`LICENSE`](#text-43070e2d4e53), [`NOTICE`](#text-ae9f252069f0)
+  - `com.fasterxml.jackson.datatype:jackson-datatype-json-org:2.15.3` — Apache-2.0 — <https://www.apache.org/licenses/LICENSE-2.0.txt> — [`LICENSE`](#text-c095eb713655), [`NOTICE`](#text-da5301b68390), carries no Apache-2.0 text of its own ([Apache-2.0](#reference-text-apache-20))
   - `com.fasterxml.jackson:jackson-bom:2.15.3` — Apache-2.0 — <http://www.apache.org/licenses/LICENSE-2.0.txt> — nothing of it is packaged: a BOM, a multiplatform module whose code is its variant listed here, or a relocation
   - `com.google.ai.edge.litert:litert-api:1.0.1` — Apache-2.0 — <http://www.apache.org/licenses/LICENSE-2.0.txt> — [`LICENSE`](#text-71c6915d0426)
   - `com.google.ai.edge.litert:litert:1.0.1` — Apache-2.0 — <http://www.apache.org/licenses/LICENSE-2.0.txt> — [`LICENSE`](#text-71c6915d0426)
@@ -8036,6 +8037,21 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
+### text-c095eb713655
+
+Carried by com.fasterxml.jackson.datatype:jackson-datatype-json-org:2.15.3 (`META-INF/LICENSE`).
+
+```text
+This copy of Jackson JSON-org extension module is licensed under the
+Apache (Software) License, version 2.0 ("the License").
+See the License for details about distribution rights, and the
+specific rights regarding derivative works.
+
+You may obtain a copy of the License at:
+
+http://www.apache.org/licenses/LICENSE-2.0
+```
+
 ### text-c0fdcda1a4ff
 
 Carried by tokio-macros 2.7.2 (`LICENSE`).
@@ -9270,6 +9286,30 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+```
+
+### text-da5301b68390
+
+Carried by com.fasterxml.jackson.datatype:jackson-datatype-json-org:2.15.3 (`META-INF/NOTICE`).
+
+```text
+# Jackson JSON processor
+
+Jackson is a high-performance, Free/Open Source JSON processing library.
+It was originally written by Tatu Saloranta (tatu.saloranta@iki.fi), and has
+been in development since 2007.
+It is currently developed by a community of developers.
+
+## Licensing
+
+Jackson components are licensed under Apache (Software) License, version 2.0,
+as per accompanying LICENSE file.
+
+## Credits
+
+A list of contributors may be found from CREDITS file, which is included
+in some artifacts (usually source distributions); but is always available
+from the source code management (SCM) system project uses.
 ```
 
 ### text-da6b30502bad
