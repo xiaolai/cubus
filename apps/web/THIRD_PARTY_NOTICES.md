@@ -96,7 +96,7 @@ include photographs from Wikimedia Commons:
 
 ## 3. Desktop and mobile binaries — Rust crates
 
-517 third-party crates link into the cubus binary on at least one platform (macOS,
+503 third-party crates link into the cubus binary on at least one platform (macOS,
 Windows, Linux, iOS, Android), resolved from `Cargo.lock` with `cargo tree --target all`; build
 scripts and test-only dependencies are not in the binary and are not listed. Each is listed under
 the licence it is used under, with its full expression, the authors its Cargo metadata names (who
@@ -105,11 +105,11 @@ notice files it carries, reproduced in §5. The Rust standard library, staticall
 every binary, is MIT OR Apache-2.0 (<https://github.com/rust-lang/rust>). The project's own
 crates — `cube-ble`, `cube-vision`, `cubus-desktop`, `optimal-solver` — are MIT.
 
-The native shells are [Tauri](https://tauri.app) 2.11.6 (MIT OR Apache-2.0),
+The native shells are [Tauri](https://tauri.app) 2.12.1 (MIT OR Apache-2.0),
 which renders the web app in the platform's own webview (WebKit on Apple platforms, WebView2 on
 Windows, WebKitGTK on Linux, Android System WebView) — a system component, not redistributed.
 
-### MIT (471 crates)
+### MIT (457 crates)
 
 - **adler2** 2.0.1 (0BSD OR MIT OR Apache-2.0) — Jonas Schievink, oyvindln — <https://github.com/oyvindln/adler2> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
 - **aho-corasick** 1.1.5 (Unlicense OR MIT) — Andrew Gallant — <https://github.com/BurntSushi/aho-corasick> — [`COPYING`](#text-65314a6c9668), [`LICENSE-MIT`](#text-154c1af2b38e)
@@ -143,7 +143,7 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **blocking** 1.7.0 (Apache-2.0 OR MIT) — <https://github.com/smol-rs/blocking> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
 - **bluez-async** 0.8.2 (MIT OR Apache-2.0) — Andrew Walbran, David Laban — <https://github.com/bluez-rs/bluez-async/> — carries no MIT text of its own ([MIT](#reference-text-mit))
 - **bluez-generated** 0.4.0 (MIT OR Apache-2.0) — Andrew Walbran, David Laban — <https://github.com/bluez-rs/bluez-async/> — carries no MIT text of its own ([MIT](#reference-text-mit))
-- **btleplug** 0.13.2 (MIT/Apache-2.0/BSD-3-Clause) — Nonpolynomial, LLC — <https://github.com/deviceplug/btleplug> — [`LICENSE.md`](#text-2491974314fb)
+- **btleplug** 0.13.4 (MIT/Apache-2.0/BSD-3-Clause) — Nonpolynomial, LLC — <https://github.com/deviceplug/btleplug> — [`LICENSE.md`](#text-2491974314fb)
 - **bumpalo** 3.20.3 (MIT OR Apache-2.0) — Nick Fitzgerald — <https://github.com/fitzgen/bumpalo> — [`LICENSE-MIT`](#text-5662394bebb1)
 - **bytemuck** 1.25.2 (Zlib OR Apache-2.0 OR MIT) — Lokathor — <https://github.com/Lokathor/bytemuck> — [`LICENSE-MIT`](#text-dfbd1c2a36dc)
 - **byteorder** 1.5.0 (Unlicense OR MIT) — Andrew Gallant — <https://github.com/BurntSushi/byteorder> — [`COPYING`](#text-65314a6c9668), [`LICENSE-MIT`](#text-154c1af2b38e)
@@ -155,7 +155,7 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **cargo_metadata** 0.19.2 (MIT) — Oliver Schneider — <https://github.com/oli-obk/cargo_metadata> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
 - **cargo-platform** 0.1.9 (MIT OR Apache-2.0) — <https://github.com/rust-lang/cargo> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
 - **cesu8** 1.1.0 (Apache-2.0/MIT) — Eric Kidd — <https://github.com/emk/cesu8-rs> — [`COPYRIGHT-RUST.txt`](#text-9691fb0518c7), carries no MIT text of its own ([MIT](#reference-text-mit))
-- **cfb** 0.7.3 (MIT) — Matthew D. Steele — <https://github.com/mdsteele/rust-cfb> — [`LICENSE`](#text-3ce3e2561c6a)
+- **cfb** 0.14.0 (MIT) — Matthew D. Steele — <https://github.com/mdsteele/rust-cfb> — [`LICENSE`](#text-3ce3e2561c6a)
 - **cfg-if** 1.0.4 (MIT OR Apache-2.0) — Alex Crichton — <https://github.com/rust-lang/cfg-if> — [`LICENSE-MIT`](#text-84e1bbfebd74)
 - **combine** 4.6.8 (MIT) — Markus Westerlind — <https://github.com/Marwes/combine> — [`LICENSE`](#text-a8d7d8157c71)
 - **concurrent-queue** 2.5.0 (Apache-2.0 OR MIT) — Stjepan Glavina, Taiki Endo, John Nunley — <https://github.com/smol-rs/concurrent-queue> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
@@ -172,8 +172,7 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **crossbeam-epoch** 0.9.21 (MIT OR Apache-2.0) — <https://github.com/crossbeam-rs/crossbeam> — [`LICENSE-MIT`](#text-5a7d13c6710c)
 - **crossbeam-utils** 0.8.23 (MIT OR Apache-2.0) — <https://github.com/crossbeam-rs/crossbeam> — [`LICENSE-MIT`](#text-5a7d13c6710c)
 - **crypto-common** 0.1.7 (MIT OR Apache-2.0) — RustCrypto Developers — <https://github.com/RustCrypto/traits> — [`LICENSE-MIT`](#text-692b1604961d)
-- **ctor** 0.8.0 (Apache-2.0 OR MIT) — Matt Mastracci — <https://github.com/mmastrac/rust-ctor> — [`LICENSE-MIT`](#text-bccaa8b6c09f)
-- **ctor-proc-macro** 0.0.7 (Apache-2.0 OR MIT) — Matt Mastracci — <https://github.com/mmastrac/rust-ctor> — [`LICENSE-MIT`](#text-bccaa8b6c09f)
+- **ctor** 1.0.13 (Apache-2.0 OR MIT) — Matt Mastracci — <https://github.com/mmastrac/linktime> — [`LICENSE-MIT`](#text-bccaa8b6c09f)
 - **darling** 0.24.1 (MIT) — Ted Driggs — <https://github.com/TedDriggs/darling> — [`LICENSE`](#text-cc8f3c8ab396)
 - **darling_core** 0.24.1 (MIT) — Ted Driggs — <https://github.com/TedDriggs/darling> — [`LICENSE`](#text-cc8f3c8ab396)
 - **darling_macro** 0.24.1 (MIT) — Ted Driggs — <https://github.com/TedDriggs/darling> — [`LICENSE`](#text-cc8f3c8ab396)
@@ -185,13 +184,13 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **derive_more** 2.1.1 (MIT) — Jelte Fennema — <https://github.com/JelteF/derive_more> — [`LICENSE`](#text-4a4d43f3f90d)
 - **derive_more-impl** 2.1.1 (MIT) — Jelte Fennema — <https://github.com/JelteF/derive_more> — [`LICENSE`](#text-4a4d43f3f90d)
 - **digest** 0.10.7 (MIT OR Apache-2.0) — RustCrypto Developers — <https://github.com/RustCrypto/traits> — [`LICENSE-MIT`](#text-9c5127ab88e8)
-- **dirs** 6.0.0 (MIT OR Apache-2.0) — Simon Ochsenreither — <https://github.com/soc/dirs-rs> — [`LICENSE-MIT`](#text-f25a5b606859)
+- **dirs** 7.0.0 (MIT OR Apache-2.0) — Simon Ochsenreither — <https://codeberg.org/dirs/dirs-rs> — [`LICENSE-MIT`](#text-f25a5b606859)
 - **dirs-sys** 0.5.0 (MIT OR Apache-2.0) — Simon Ochsenreither — <https://github.com/dirs-dev/dirs-sys-rs> — [`LICENSE-MIT`](#text-f25a5b606859)
 - **dispatch2** 0.3.1 (Zlib OR Apache-2.0 OR MIT) — Mads Marquart, Mary — <https://github.com/madsmtm/objc2> — carries no MIT text of its own ([MIT](#reference-text-mit))
 - **displaydoc** 0.2.7 (MIT OR Apache-2.0) — Jane Lusby — <https://github.com/yaahc/displaydoc> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
 - **dlopen2** 0.8.2 (MIT) — Szymon Wieloch, Ahmed Masud, OpenByte — <https://github.com/OpenByteDev/dlopen2> — carries no MIT text of its own ([MIT](#reference-text-mit))
 - **dlopen2_derive** 0.4.3 (MIT) — Szymon Wieloch, OpenByte — <https://github.com/OpenByteDev/dlopen2> — carries no MIT text of its own ([MIT](#reference-text-mit))
-- **dom_query** 0.27.0 (MIT) — niklak, importcjj — <https://github.com/niklak/dom_query> — [`LICENSE`](#text-8f8eade124ab)
+- **dom_query** 0.28.0 (MIT) — niklak, importcjj — <https://github.com/niklak/dom_query> — [`LICENSE`](#text-8f8eade124ab)
 - **dtoa** 1.0.11 (MIT OR Apache-2.0) — David Tolnay — <https://github.com/dtolnay/dtoa> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
 - **dyn-clone** 1.0.20 (MIT OR Apache-2.0) — David Tolnay — <https://github.com/dtolnay/dyn-clone> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
 - **either** 1.18.0 (MIT OR Apache-2.0) — <https://github.com/rayon-rs/either> — [`LICENSE-MIT`](#text-fdd1c2117bcf)
@@ -255,7 +254,7 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **heck** 0.5.0 (MIT OR Apache-2.0) — <https://github.com/withoutboats/heck> — [`LICENSE-MIT`](#text-033a9383ff21)
 - **hermit-abi** 0.5.3 (MIT OR Apache-2.0) — <https://github.com/hermit-os/hermit-rs> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
 - **hex** 0.4.3 (MIT OR Apache-2.0) — KokaKiwi — <https://github.com/KokaKiwi/rust-hex> — [`LICENSE-MIT`](#text-9dde4a6ad496)
-- **html5ever** 0.38.0 (MIT OR Apache-2.0) — The html5ever Project Developers — <https://github.com/servo/html5ever> — [`LICENSE-MIT`](#text-35af0fd88338)
+- **html5ever** 0.39.0 (MIT OR Apache-2.0) — The html5ever Project Developers — <https://github.com/servo/html5ever> — [`LICENSE-MIT`](#text-35af0fd88338)
 - **http** 1.5.0 (MIT OR Apache-2.0) — Alex Crichton, Carl Lerche, Sean McArthur — <https://github.com/hyperium/http> — [`LICENSE-MIT`](#text-f47894ff9c86)
 - **http-body** 1.1.0 (MIT) — Carl Lerche, Lucio Franco, Sean McArthur — <https://github.com/hyperium/http-body> — [`LICENSE`](#text-57f841bc9767)
 - **http-body-util** 0.1.5 (MIT) — Carl Lerche, Lucio Franco, Sean McArthur — <https://github.com/hyperium/http-body> — [`LICENSE`](#text-57f841bc9767)
@@ -270,7 +269,7 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **image** 0.25.10 (MIT OR Apache-2.0) — The image-rs Developers — <https://github.com/image-rs/image> — [`LICENSE-MIT`](#text-77949ead506e)
 - **indexmap** 1.9.3 (Apache-2.0 OR MIT) — <https://github.com/bluss/indexmap> — [`LICENSE-MIT`](#text-4f2ac128e429)
 - **indexmap** 2.14.2 (Apache-2.0 OR MIT) — <https://github.com/indexmap-rs/indexmap> — [`LICENSE-MIT`](#text-4f2ac128e429)
-- **infer** 0.19.0 (MIT) — Bojan — <https://github.com/bojand/infer> — [`LICENSE`](#text-7804ded9273b)
+- **infer** 0.22.0 (MIT) — Bojan — <https://github.com/bojand/infer> — [`LICENSE`](#text-7804ded9273b)
 - **ipnet** 2.12.2 (MIT OR Apache-2.0) — Kris Price — <https://github.com/krisprice/ipnet> — [`LICENSE-MIT`](#text-c935506fff2e)
 - **is-docker** 0.2.0 (MIT) — Sean Larkin — <https://github.com/TheLarkInn/is-docker> — [`LICENSE`](#text-d9da1a97dd07)
 - **is-wsl** 0.4.0 (MIT) — Sean Larkin — <https://github.com/TheLarkInn/is-wsl> — [`LICENSE`](#text-d9da1a97dd07)
@@ -285,16 +284,16 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **jni-sys** 0.4.1 (MIT OR Apache-2.0) — Steven Fackler, Robert Bragg — <https://github.com/jni-rs/jni-sys> — [`LICENSE-MIT`](#text-3a771adcf280)
 - **jni-sys-macros** 0.4.1 (MIT OR Apache-2.0) — Robert Bragg — <https://github.com/jni-rs/jni-sys> — carries no MIT text of its own ([MIT](#reference-text-mit))
 - **js-sys** 0.3.105 (MIT OR Apache-2.0) — The wasm-bindgen Developers — <https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys> — [`LICENSE-MIT`](#text-84e1bbfebd74)
-- **json-patch** 3.0.1 (MIT/Apache-2.0) — Ivan Dubrov — <https://github.com/idubrov/json-patch> — [`LICENSE-MIT`](#text-19328c46c44f)
-- **jsonptr** 0.6.3 (MIT OR Apache-2.0) — chance dinkins, André Sá de Mello — <https://github.com/chanced/jsonptr> — [`LICENSE-MIT`](#text-055a17110636)
-- **keyboard-types** 0.7.0 (MIT OR Apache-2.0) — Pyfisch — <https://github.com/pyfisch/keyboard-types> — [`LICENSE-MIT`](#text-31dbbab009f1)
+- **json-patch** 4.2.0 (MIT/Apache-2.0) — Ivan Dubrov — <https://github.com/idubrov/json-patch> — [`LICENSE-MIT`](#text-19328c46c44f)
+- **jsonptr** 0.7.1 (MIT OR Apache-2.0) — chance dinkins, André Sá de Mello, Oliver Wangler — <https://github.com/chanced/jsonptr> — [`LICENSE-MIT`](#text-055a17110636)
+- **keyboard-types** 0.8.3 (MIT OR Apache-2.0) — Pyfisch — <https://github.com/rust-windowing/keyboard-types> — [`LICENSE-MIT`](#text-31dbbab009f1)
 - **libc** 0.2.189 (MIT OR Apache-2.0) — <https://github.com/rust-lang/libc> — [`LICENSE-MIT`](#text-c96302294382)
 - **libdbus-sys** 0.2.7 (Apache-2.0/MIT) — David Henningsson — <https://github.com/diwic/dbus-rs> — [`LICENSE-MIT`](#text-de3911c2d98c)
 - **libredox** 0.1.24 (MIT) — 4lDO2 — <https://gitlab.redox-os.org/redox-os/libredox.git> — [`LICENSE`](#text-7dbbefcddfaa)
 - **linux-raw-sys** 0.12.1 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT) — Dan Gohman — <https://github.com/sunfishcode/linux-raw-sys> — [`COPYRIGHT`](#text-7813bacdaa2b), [`LICENSE-MIT`](#text-30fefc3a7d6a)
 - **lock_api** 0.4.14 (MIT OR Apache-2.0) — Amanieu d'Antras — <https://github.com/Amanieu/parking_lot> — [`LICENSE-MIT`](#text-8d1f81ea4e87)
 - **log** 0.4.34 (MIT OR Apache-2.0) — The Rust Project Developers — <https://github.com/rust-lang/log> — [`LICENSE-MIT`](#text-14435fbcd271)
-- **markup5ever** 0.38.0 (MIT OR Apache-2.0) — The html5ever Project Developers — <https://github.com/servo/html5ever> — [`LICENSE-MIT`](#text-35af0fd88338)
+- **markup5ever** 0.39.0 (MIT OR Apache-2.0) — The html5ever Project Developers — <https://github.com/servo/html5ever> — [`LICENSE-MIT`](#text-35af0fd88338)
 - **memchr** 2.8.3 (Unlicense OR MIT) — Andrew Gallant, bluss — <https://github.com/BurntSushi/memchr> — [`COPYING`](#text-65314a6c9668), [`LICENSE-MIT`](#text-154c1af2b38e)
 - **memoffset** 0.9.1 (MIT) — Gilad Naaman — <https://github.com/Gilnaa/memoffset> — [`LICENSE`](#text-3234ac558162)
 - **mime** 0.3.17 (MIT OR Apache-2.0) — Sean McArthur — <https://github.com/hyperium/mime> — [`LICENSE-MIT`](#text-a302dc760d97)
@@ -302,8 +301,9 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **miniz_oxide** 0.8.9 (MIT OR Zlib OR Apache-2.0) — Frommi, oyvindln, Rich Geldreich richgel99@gmail.com — <https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide> — [`LICENSE`](#text-7427abc63036), [`LICENSE-MIT.md`](#text-ac9859ce4e9a)
 - **miniz_oxide** 0.9.1 (MIT OR Zlib OR Apache-2.0) — Frommi, oyvindln, Rich Geldreich richgel99@gmail.com — <https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide> — [`LICENSE`](#text-7427abc63036), [`LICENSE-MIT.md`](#text-ac9859ce4e9a)
 - **mio** 1.2.3 (MIT) — Carl Lerche, Thomas de Zeeuw, Tokio Contributors — <https://github.com/tokio-rs/mio> — [`LICENSE`](#text-c804065b0956)
-- **muda** 0.19.3 (Apache-2.0 OR MIT) — <https://github.com/tauri-apps/muda> — [`LICENSE-MIT`](#text-859a90323b68)
+- **muda** 0.20.0 (Apache-2.0 OR MIT) — <https://github.com/tauri-apps/muda> — [`LICENSE-MIT`](#text-859a90323b68)
 - **ndk** 0.9.0 (MIT OR Apache-2.0) — The Rust Mobile contributors — <https://github.com/rust-mobile/ndk> — carries no MIT text of its own ([MIT](#reference-text-mit))
+- **ndk-context** 0.1.1 (MIT OR Apache-2.0) — The Rust Windowing contributors — <https://github.com/rust-windowing/android-ndk-rs> — carries no MIT text of its own ([MIT](#reference-text-mit))
 - **ndk-sys** 0.6.0+11769913 (MIT OR Apache-2.0) — The Rust Windowing contributors — <https://github.com/rust-mobile/ndk> — carries no MIT text of its own ([MIT](#reference-text-mit))
 - **new_debug_unreachable** 1.0.6 (MIT) — Matt Brubeck, Jonathan Reem — <https://github.com/mbrubeck/rust-debug-unreachable> — [`LICENSE-MIT`](#text-42d8a095dbff)
 - **num_enum** 0.7.6 (BSD-3-Clause OR MIT OR Apache-2.0) — Daniel Wagner-Hall, Daniel Henry-Mantilla, Vincent Esche — <https://github.com/illicitonion/num_enum> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
@@ -434,18 +434,18 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **system-configuration-sys** 0.6.0 (MIT OR Apache-2.0) — Mullvad VPN — <https://github.com/mullvad/system-configuration-rs> — [`LICENSE-MIT`](#text-eefdbe714980)
 - **tao-macros** 0.1.4 (MIT OR Apache-2.0) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tao> — [`LICENSE-MIT`](#text-26e6f69cf1f6)
 - **tar** 0.4.46 (MIT OR Apache-2.0) — Alex Crichton — <https://github.com/composefs/tar-rs> — [`LICENSE-MIT`](#text-e6e853531994)
-- **tauri** 2.11.6 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri> — [`LICENSE_MIT`](#text-89ff9689dcf9)
-- **tauri-codegen** 2.6.3 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri> — [`LICENSE_MIT`](#text-89ff9689dcf9)
-- **tauri-macros** 2.6.3 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri> — [`LICENSE_MIT`](#text-89ff9689dcf9)
-- **tauri-plugin-dialog** 2.7.3 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/plugins-workspace> — [`LICENSE_MIT`](#text-89ff9689dcf9)
-- **tauri-plugin-fs** 2.5.2 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/plugins-workspace> — [`LICENSE_MIT`](#text-89ff9689dcf9)
-- **tauri-plugin-log** 2.9.2 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/plugins-workspace> — [`LICENSE_MIT`](#text-89ff9689dcf9)
-- **tauri-plugin-opener** 2.5.5 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/plugins-workspace> — [`LICENSE_MIT`](#text-89ff9689dcf9)
-- **tauri-plugin-process** 2.3.1 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/plugins-workspace> — [`LICENSE_MIT`](#text-89ff9689dcf9)
-- **tauri-plugin-updater** 2.12.0 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/plugins-workspace> — [`LICENSE_MIT`](#text-89ff9689dcf9)
-- **tauri-runtime** 2.11.3 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri> — [`LICENSE_MIT`](#text-89ff9689dcf9)
-- **tauri-runtime-wry** 2.11.4 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri> — [`LICENSE_MIT`](#text-89ff9689dcf9)
-- **tauri-utils** 2.9.3 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri> — [`LICENSE_MIT`](#text-89ff9689dcf9)
+- **tauri** 2.12.1 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri> — [`LICENSE-MIT`](#text-89ff9689dcf9)
+- **tauri-codegen** 2.7.1 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri> — [`LICENSE-MIT`](#text-89ff9689dcf9)
+- **tauri-macros** 2.7.1 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri> — [`LICENSE-MIT`](#text-89ff9689dcf9)
+- **tauri-plugin-dialog** 2.8.1 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/plugins-workspace> — [`LICENSE_MIT`](#text-89ff9689dcf9)
+- **tauri-plugin-fs** 2.6.0 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/plugins-workspace> — [`LICENSE_MIT`](#text-89ff9689dcf9)
+- **tauri-plugin-log** 2.10.0 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/plugins-workspace> — [`LICENSE_MIT`](#text-89ff9689dcf9)
+- **tauri-plugin-opener** 2.7.0 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/plugins-workspace> — [`LICENSE_MIT`](#text-89ff9689dcf9)
+- **tauri-plugin-process** 2.4.0 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/plugins-workspace> — [`LICENSE_MIT`](#text-89ff9689dcf9)
+- **tauri-plugin-updater** 2.13.1 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/plugins-workspace> — [`LICENSE_MIT`](#text-89ff9689dcf9)
+- **tauri-runtime** 2.12.1 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri> — [`LICENSE-MIT`](#text-89ff9689dcf9)
+- **tauri-runtime-wry** 2.12.1 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri> — [`LICENSE-MIT`](#text-89ff9689dcf9)
+- **tauri-utils** 2.10.1 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri> — [`LICENSE-MIT`](#text-89ff9689dcf9)
 - **tempfile** 3.27.0 (MIT OR Apache-2.0) — Steven Allen, The Rust Project Developers, Ashley Mannix, Jason White — <https://github.com/Stebalien/tempfile> — [`LICENSE-MIT`](#text-7bdd5c5e8ad0)
 - **tendril** 0.5.1 (MIT OR Apache-2.0) — Keegan McAllister, Simon Sapin, Chris Morgan — <https://github.com/servo/html5ever> — [`LICENSE-MIT`](#text-dfa7fbad0178)
 - **thiserror** 1.0.69 (MIT OR Apache-2.0) — David Tolnay — <https://github.com/dtolnay/thiserror> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
@@ -455,7 +455,7 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **time** 0.3.55 (MIT OR Apache-2.0) — Jacob Pratt, Time contributors — <https://github.com/time-rs/time> — [`LICENSE-MIT`](#text-7fdbca77dec6)
 - **time-core** 0.1.9 (MIT OR Apache-2.0) — Jacob Pratt, Time contributors — <https://github.com/time-rs/time> — [`LICENSE-MIT`](#text-7fdbca77dec6)
 - **time-macros** 0.2.32 (MIT OR Apache-2.0) — Jacob Pratt, Time contributors — <https://github.com/time-rs/time> — [`LICENSE-MIT`](#text-7fdbca77dec6)
-- **tokio** 1.53.1 (MIT) — Tokio Contributors — <https://github.com/tokio-rs/tokio> — [`LICENSE`](#text-3e1bef82aa0d)
+- **tokio** 1.53.2 (MIT) — Tokio Contributors — <https://github.com/tokio-rs/tokio> — [`LICENSE`](#text-3e1bef82aa0d)
 - **tokio-macros** 2.7.2 (MIT) — Tokio Contributors — <https://github.com/tokio-rs/tokio> — [`LICENSE`](#text-c0fdcda1a4ff)
 - **tokio-rustls** 0.26.5 (MIT OR Apache-2.0) — <https://github.com/rustls/tokio-rustls> — [`LICENSE-MIT`](#text-1b0258c48739)
 - **tokio-stream** 0.1.19 (MIT) — Tokio Contributors — <https://github.com/tokio-rs/tokio> — [`LICENSE`](#text-3e1bef82aa0d)
@@ -479,16 +479,11 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **typeid** 1.0.3 (MIT OR Apache-2.0) — David Tolnay — <https://github.com/dtolnay/typeid> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
 - **typenum** 1.20.1 (MIT OR Apache-2.0) — <https://github.com/paholg/typenum> — [`LICENSE`](#text-db11fec99467), [`LICENSE-MIT`](#text-87ebb37988ef)
 - **uds_windows** 1.2.1 (MIT) — Azure IoT Edge Devs, Harald Hoyer — <https://github.com/haraldh/rust_uds_windows> — [`LICENSE`](#text-a096a435e19b)
-- **unic-char-property** 0.9.0 (MIT/Apache-2.0) — The UNIC Project Developers — <https://github.com/open-i18n/rust-unic/> — carries no MIT text of its own ([MIT](#reference-text-mit))
-- **unic-char-range** 0.9.0 (MIT/Apache-2.0) — The UNIC Project Developers — <https://github.com/open-i18n/rust-unic/> — carries no MIT text of its own ([MIT](#reference-text-mit))
-- **unic-common** 0.9.0 (MIT/Apache-2.0) — The UNIC Project Developers — <https://github.com/open-i18n/rust-unic/> — carries no MIT text of its own ([MIT](#reference-text-mit))
-- **unic-ucd-ident** 0.9.0 (MIT/Apache-2.0) — The UNIC Project Developers — <https://github.com/open-i18n/rust-unic/> — carries no MIT text of its own ([MIT](#reference-text-mit))
-- **unic-ucd-version** 0.9.0 (MIT/Apache-2.0) — The UNIC Project Developers — <https://github.com/open-i18n/rust-unic/> — carries no MIT text of its own ([MIT](#reference-text-mit))
 - **unicode-segmentation** 1.13.3 (MIT OR Apache-2.0) — kwantam, Manish Goregaokar — <https://github.com/unicode-rs/unicode-segmentation> — [`COPYRIGHT`](#text-20cec30ad778), [`LICENSE-MIT`](#text-033a9383ff21)
 - **url** 2.5.8 (MIT OR Apache-2.0) — The rust-url developers — <https://github.com/servo/rust-url> — [`LICENSE-MIT`](#text-7a8093fb4a93)
-- **urlpattern** 0.3.0 (MIT) — the Deno authors, crowlKats — <https://github.com/denoland/rust-urlpattern> — [`LICENSE`](#text-f2459c4b106b)
+- **urlpattern** 0.6.0 (MIT) — the Deno authors, crowlKats — <https://github.com/denoland/rust-urlpattern> — [`LICENSE`](#text-f2459c4b106b)
 - **utf8_iter** 1.0.4 (Apache-2.0 OR MIT) — Henri Sivonen — <https://github.com/hsivonen/utf8_iter> — [`COPYRIGHT`](#text-76c0e37c107d), [`LICENSE-MIT`](#text-7dc2f6402447)
-- **uuid** 1.26.1 (Apache-2.0 OR MIT) — Ashley Mannix, Dylan DPC, Hunar Roop Kahlon — <https://github.com/uuid-rs/uuid> — [`LICENSE-MIT`](#text-11cd7e6caed4)
+- **uuid** 1.27.0 (Apache-2.0 OR MIT) — Ashley Mannix, Dylan DPC, Hunar Roop Kahlon — <https://github.com/uuid-rs/uuid> — [`LICENSE-MIT`](#text-11cd7e6caed4)
 - **walkdir** 2.5.0 (Unlicense/MIT) — Andrew Gallant — <https://github.com/BurntSushi/walkdir> — [`COPYING`](#text-65314a6c9668), [`LICENSE-MIT`](#text-154c1af2b38e)
 - **want** 0.3.1 (MIT) — Sean McArthur — <https://github.com/seanmonstar/want> — [`LICENSE`](#text-f7dfffe03f9f)
 - **wasi** 0.11.1+wasi-snapshot-preview1 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT) — The Cranelift Project Developers — <https://github.com/bytecodealliance/wasi> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
@@ -501,17 +496,17 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **wasm-streams** 0.5.0 (MIT OR Apache-2.0) — Mattias Buelens — <https://github.com/MattiasBuelens/wasm-streams/> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
 - **web_atoms** 0.2.6 (MIT OR Apache-2.0) — The html5ever Project Developers — <https://github.com/servo/html5ever> — [`LICENSE-MIT`](#text-35af0fd88338)
 - **web-sys** 0.3.105 (MIT OR Apache-2.0) — The wasm-bindgen Developers — <https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys> — [`LICENSE-MIT`](#text-84e1bbfebd74)
+- **web-time** 1.1.0 (MIT OR Apache-2.0) — <https://github.com/daxpedda/web-time> — [`LICENSE-MIT`](#text-32ae0b6c9e4c)
 - **webkit2gtk** 2.0.2 (MIT) — <https://github.com/tauri-apps/webkit2gtk-rs> — [`LICENSE`](#text-2b446734be0c)
 - **webkit2gtk-sys** 2.0.2 (MIT) — <https://github.com/tauri-apps/webkit2gtk-rs> — [`LICENSE`](#text-2d964b247876)
-- **webview2-com** 0.38.2 (MIT) — <https://github.com/wravery/webview2-rs> — carries no MIT text of its own ([MIT](#reference-text-mit))
+- **webview2-com** 0.39.1 (MIT) — <https://github.com/wravery/webview2-rs> — carries no MIT text of its own ([MIT](#reference-text-mit))
 - **webview2-com-macros** 0.8.1 (MIT) — <https://github.com/wravery/webview2-rs> — carries no MIT text of its own ([MIT](#reference-text-mit))
-- **webview2-com-sys** 0.38.2 (MIT) — <https://github.com/wravery/webview2-rs> — carries no MIT text of its own ([MIT](#reference-text-mit))
+- **webview2-com-sys** 0.39.1 (MIT) — <https://github.com/wravery/webview2-rs> — carries no MIT text of its own ([MIT](#reference-text-mit))
 - **winapi** 0.3.9 (MIT/Apache-2.0) — Peter Atashian — <https://github.com/retep998/winapi-rs> — [`LICENSE-MIT`](#text-2d0114559617)
 - **winapi-i686-pc-windows-gnu** 0.4.0 (MIT/Apache-2.0) — Peter Atashian — <https://github.com/retep998/winapi-rs> — carries no MIT text of its own ([MIT](#reference-text-mit))
 - **winapi-util** 0.1.11 (Unlicense OR MIT) — Andrew Gallant — <https://github.com/BurntSushi/winapi-util> — [`COPYING`](#text-65314a6c9668), [`LICENSE-MIT`](#text-739620ea44ad)
 - **winapi-x86_64-pc-windows-gnu** 0.4.0 (MIT/Apache-2.0) — Peter Atashian — <https://github.com/retep998/winapi-rs> — carries no MIT text of its own ([MIT](#reference-text-mit))
-- **window-vibrancy** 0.6.0 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri-plugin-vibrancy> — [`LICENSE-MIT`](#text-b46700117441)
-- **windows** 0.61.3 (MIT OR Apache-2.0) — Microsoft — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
+- **window-vibrancy** 0.8.1 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri-plugin-vibrancy> — [`LICENSE-MIT`](#text-b46700117441)
 - **windows** 0.62.2 (MIT OR Apache-2.0) — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows_aarch64_gnullvm** 0.42.2 (MIT OR Apache-2.0) — Microsoft — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows_aarch64_gnullvm** 0.52.6 (MIT OR Apache-2.0) — Microsoft — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
@@ -536,38 +531,29 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **windows_x86_64_msvc** 0.42.2 (MIT OR Apache-2.0) — Microsoft — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows_x86_64_msvc** 0.52.6 (MIT OR Apache-2.0) — Microsoft — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows_x86_64_msvc** 0.53.1 (MIT OR Apache-2.0) — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
-- **windows-collections** 0.2.0 (MIT OR Apache-2.0) — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows-collections** 0.3.2 (MIT OR Apache-2.0) — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
-- **windows-core** 0.61.2 (MIT OR Apache-2.0) — Microsoft — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows-core** 0.62.2 (MIT OR Apache-2.0) — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
-- **windows-future** 0.2.1 (MIT OR Apache-2.0) — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows-future** 0.3.2 (MIT OR Apache-2.0) — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows-implement** 0.60.2 (MIT OR Apache-2.0) — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows-interface** 0.59.3 (MIT OR Apache-2.0) — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
-- **windows-link** 0.1.3 (MIT OR Apache-2.0) — Microsoft — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows-link** 0.2.1 (MIT OR Apache-2.0) — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
-- **windows-numerics** 0.2.0 (MIT OR Apache-2.0) — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows-numerics** 0.3.1 (MIT OR Apache-2.0) — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows-registry** 0.6.1 (MIT OR Apache-2.0) — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
-- **windows-result** 0.3.4 (MIT OR Apache-2.0) — Microsoft — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows-result** 0.4.1 (MIT OR Apache-2.0) — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
-- **windows-strings** 0.4.2 (MIT OR Apache-2.0) — Microsoft — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows-strings** 0.5.1 (MIT OR Apache-2.0) — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows-sys** 0.45.0 (MIT OR Apache-2.0) — Microsoft — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows-sys** 0.52.0 (MIT OR Apache-2.0) — Microsoft — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
-- **windows-sys** 0.59.0 (MIT OR Apache-2.0) — Microsoft — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows-sys** 0.60.2 (MIT OR Apache-2.0) — Microsoft — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows-sys** 0.61.2 (MIT OR Apache-2.0) — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows-targets** 0.42.2 (MIT OR Apache-2.0) — Microsoft — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows-targets** 0.52.6 (MIT OR Apache-2.0) — Microsoft — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows-targets** 0.53.5 (MIT OR Apache-2.0) — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
-- **windows-threading** 0.1.0 (MIT OR Apache-2.0) — Microsoft — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows-threading** 0.2.1 (MIT OR Apache-2.0) — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows-version** 0.1.7 (MIT OR Apache-2.0) — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **winnow** 0.5.40 (MIT) — <https://github.com/winnow-rs/winnow> — [`LICENSE-MIT`](#text-8793aa4141de)
 - **winnow** 1.0.4 (MIT) — <https://github.com/winnow-rs/winnow> — [`LICENSE-MIT`](#text-8793aa4141de)
 - **wit-bindgen** 0.57.1 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT) — Alex Crichton — <https://github.com/bytecodealliance/wit-bindgen> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
-- **wry** 0.55.1 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/wry> — [`LICENSE-MIT`](#text-86eb6a41ef64)
+- **wry** 0.57.0 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/wry> — [`LICENSE-MIT`](#text-86eb6a41ef64)
 - **x11** 2.21.0 (MIT) — daggerbot, Erle Pereira, AltF02 — <https://github.com/AltF02/x11-rs.git> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
 - **x11-dl** 2.21.0 (MIT) — daggerbot, Erle Pereira, AltF02 — <https://github.com/AltF02/x11-rs.git> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
 - **xattr** 1.6.1 (MIT OR Apache-2.0) — Steven Allen — <https://github.com/Stebalien/xattr> — [`LICENSE-MIT`](#text-7bdd5c5e8ad0)
@@ -612,21 +598,21 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **nokhwa-core** 0.1.9 (Apache-2.0) — l1npengtul — <https://github.com/l1npengtul/nokhwa> — carries no Apache-2.0 text of its own ([Apache-2.0](#reference-text-apache-20))
 - **pxfm** 0.1.30 (BSD-3-Clause OR Apache-2.0) — Radzivon Bartoshyk — <https://github.com/awxkee/pxfm> — [`LICENSE-APACHE.md`](#text-5fef7bba6620)
 - **sync_wrapper** 1.0.2 (Apache-2.0) — Actyx AG — <https://github.com/Actyx/sync_wrapper> — [`LICENSE`](#text-59899c6091b5)
-- **tao** 0.35.3 (Apache-2.0) — Tauri Programme within The Commons Conservancy, The winit contributors — <https://github.com/tauri-apps/tao> — [`LICENSE`](#text-6dc0e068dcf3)
+- **tao** 0.37.1 (Apache-2.0) — Tauri Programme within The Commons Conservancy, The winit contributors — <https://github.com/tauri-apps/tao> — [`LICENSE`](#text-6dc0e068dcf3)
 
 ### MPL-2.0 (5 crates)
 
-- **cssparser** 0.36.0 (MPL-2.0) — Simon Sapin — <https://github.com/servo/rust-cssparser> — [`LICENSE`](#text-4b89d4518bd1)
-- **cssparser-macros** 0.6.1 (MPL-2.0) — Simon Sapin — <https://github.com/servo/rust-cssparser> — [`LICENSE`](#text-4b89d4518bd1)
+- **cssparser** 0.37.0 (MPL-2.0) — Simon Sapin — <https://github.com/servo/rust-cssparser> — [`LICENSE`](#text-4b89d4518bd1)
+- **cssparser-macros** 0.7.1 (MPL-2.0) — Simon Sapin — <https://github.com/servo/rust-cssparser> — [`LICENSE`](#text-4b89d4518bd1)
 - **dtoa-short** 0.3.5 (MPL-2.0) — Xidorn Quan — <https://github.com/upsuper/dtoa-short> — [`LICENSE`](#text-4b89d4518bd1)
 - **option-ext** 0.2.0 (MPL-2.0) — Simon Ochsenreither — <https://github.com/soc/option-ext.git> — [`LICENSE.txt`](#text-86cf9656479f)
-- **selectors** 0.36.1 (MPL-2.0) — The Servo Project Developers — <https://github.com/servo/stylo> — carries no MPL-2.0 text of its own ([MPL-2.0](#reference-text-mpl-20))
+- **selectors** 0.38.0 (MPL-2.0) — The Servo Project Developers — <https://github.com/servo/stylo> — carries no MPL-2.0 text of its own ([MPL-2.0](#reference-text-mpl-20))
 
 ### BSD-3-Clause (4 crates)
 
-- **alloc-no-stdlib** 2.0.4 (BSD-3-Clause) — Daniel Reiter Horn — <https://github.com/dropbox/rust-alloc-no-stdlib> — [`LICENSE`](#text-6c91ec82929f)
-- **alloc-stdlib** 0.2.4 (BSD-3-Clause) — Daniel Reiter Horn — <https://github.com/dropbox/rust-alloc-no-stdlib> — carries no BSD-3-Clause text of its own ([BSD-3-Clause](#reference-text-bsd-3-clause))
-- **brotli-decompressor** 5.0.3 (BSD-3-Clause/MIT) — Daniel Reiter Horn, The Brotli Authors — <https://github.com/dropbox/rust-brotli-decompressor> — [`LICENSE`](#text-6c91ec82929f)
+- **alloc-no-stdlib** 3.0.0 (BSD-3-Clause) — Daniel Reiter Horn — <https://github.com/dropbox/rust-alloc-no-stdlib> — [`LICENSE`](#text-6c91ec82929f)
+- **alloc-stdlib** 0.3.0 (BSD-3-Clause) — Daniel Reiter Horn — <https://github.com/dropbox/rust-alloc-no-stdlib> — carries no BSD-3-Clause text of its own ([BSD-3-Clause](#reference-text-bsd-3-clause))
+- **brotli-decompressor** 6.0.1 (BSD-3-Clause/MIT) — Daniel Reiter Horn, The Brotli Authors — <https://github.com/dropbox/rust-brotli-decompressor> — [`LICENSE`](#text-6c91ec82929f)
 - **subtle** 2.6.1 (BSD-3-Clause) — Isis Lovecruft, Henry de Valence — <https://github.com/dalek-cryptography/subtle> — [`LICENSE`](#text-24fa06d8eae3)
 
 ### ISC (2 crates)
@@ -649,7 +635,7 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 
 ### BSD-3-Clause AND MIT (1 crate)
 
-- **brotli** 8.0.4 (BSD-3-Clause AND MIT) — Daniel Reiter Horn, The Brotli Authors — <https://github.com/dropbox/rust-brotli> — [`LICENSE.BSD-3-Clause`](#text-6c91ec82929f), [`LICENSE.MIT`](#text-2a57418d6b10)
+- **brotli** 9.0.0 (BSD-3-Clause AND MIT) — Daniel Reiter Horn, The Brotli Authors — <https://github.com/dropbox/rust-brotli> — [`LICENSE.BSD-3-Clause`](#text-6c91ec82929f), [`LICENSE.MIT`](#text-2a57418d6b10)
 
 ### CC0-1.0 (1 crate)
 
@@ -857,7 +843,7 @@ licences; see files named LICENSE.*.txt for details.
 
 ### text-055a17110636
 
-Carried by jsonptr 0.6.3 (`LICENSE-MIT`).
+Carried by jsonptr 0.7.1 (`LICENSE-MIT`).
 
 ```text
 MIT License
@@ -1036,7 +1022,7 @@ SOFTWARE.
 
 ### text-11cd7e6caed4
 
-Carried by uuid 1.26.1 (`LICENSE-MIT`).
+Carried by uuid 1.27.0 (`LICENSE-MIT`).
 
 ```text
 Copyright (c) 2014 The Rust Project Developers
@@ -1277,7 +1263,7 @@ SOFTWARE.
 
 ### text-19328c46c44f
 
-Carried by json-patch 3.0.1 (`LICENSE-MIT`).
+Carried by json-patch 4.2.0 (`LICENSE-MIT`).
 
 ```text
 MIT License
@@ -1587,7 +1573,7 @@ SOFTWARE.
 
 ### text-2491974314fb
 
-Carried by btleplug 0.13.2 (`LICENSE.md`).
+Carried by btleplug 0.13.4 (`LICENSE.md`).
 
 ```text
 btleplug is covered under the following BSD-3-Clause license:
@@ -1986,7 +1972,7 @@ of these licenses, at your option.
 
 ### text-2a57418d6b10
 
-Carried by brotli 8.0.4 (`LICENSE.MIT`).
+Carried by brotli 9.0.0 (`LICENSE.MIT`).
 
 ```text
 Copyright (c) 2009, 2010, 2013-2016 by the Brotli Authors.
@@ -2148,7 +2134,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### text-31dbbab009f1
 
-Carried by keyboard-types 0.7.0 (`LICENSE-MIT`).
+Carried by keyboard-types 0.8.3 (`LICENSE-MIT`).
 
 ```text
 Copyright (c) 2017 Pyfisch
@@ -2226,6 +2212,34 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+### text-32ae0b6c9e4c
+
+Carried by web-time 1.1.0 (`LICENSE-MIT`).
+
+```text
+MIT License
+
+Copyright (c) 2023 dAxpeDDa
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ### text-33ed9a8ecf55
 
 Carried by form_urlencoded 1.2.2 (`LICENSE-MIT`).
@@ -2260,7 +2274,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### text-35af0fd88338
 
-Carried by html5ever 0.38.0 (`LICENSE-MIT`), markup5ever 0.38.0 (`LICENSE-MIT`), web_atoms 0.2.6 (`LICENSE-MIT`).
+Carried by html5ever 0.39.0 (`LICENSE-MIT`), markup5ever 0.39.0 (`LICENSE-MIT`), web_atoms 0.2.6 (`LICENSE-MIT`).
 
 ```text
 Copyright (c) 2014 The html5ever Project Developers
@@ -2591,7 +2605,7 @@ SOFTWARE.
 
 ### text-3ce3e2561c6a
 
-Carried by cfb 0.7.3 (`LICENSE`).
+Carried by cfb 0.14.0 (`LICENSE`).
 
 ```text
 MIT License
@@ -2619,7 +2633,7 @@ SOFTWARE.
 
 ### text-3e1bef82aa0d
 
-Carried by tokio 1.53.1 (`LICENSE`), tokio-stream 0.1.19 (`LICENSE`), tokio-util 0.7.19 (`LICENSE`).
+Carried by tokio 1.53.2 (`LICENSE`), tokio-stream 0.1.19 (`LICENSE`), tokio-util 0.7.19 (`LICENSE`).
 
 ```text
 MIT License
@@ -3189,7 +3203,7 @@ SOFTWARE.
 
 ### text-4b89d4518bd1
 
-Carried by cssparser 0.36.0 (`LICENSE`), cssparser-macros 0.6.1 (`LICENSE`), dtoa-short 0.3.5 (`LICENSE`).
+Carried by cssparser 0.37.0 (`LICENSE`), cssparser-macros 0.7.1 (`LICENSE`), dtoa-short 0.3.5 (`LICENSE`).
 
 ```text
 Mozilla Public License Version 2.0
@@ -4624,7 +4638,7 @@ SOFTWARE.
 
 ### text-6c91ec82929f
 
-Carried by alloc-no-stdlib 2.0.4 (`LICENSE`), brotli 8.0.4 (`LICENSE.BSD-3-Clause`), brotli-decompressor 5.0.3 (`LICENSE`).
+Carried by alloc-no-stdlib 3.0.0 (`LICENSE`), brotli 9.0.0 (`LICENSE.BSD-3-Clause`), brotli-decompressor 6.0.1 (`LICENSE`).
 
 ```text
 Copyright (c) 2016 Dropbox, Inc.
@@ -4803,7 +4817,7 @@ express Statement of Purpose.
 
 ### text-6dc0e068dcf3
 
-Carried by dpi 0.1.2 (`LICENSE`), tao 0.35.3 (`LICENSE`).
+Carried by dpi 0.1.2 (`LICENSE`), tao 0.37.1 (`LICENSE`).
 
 ```text
 Apache License
@@ -5523,7 +5537,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### text-7804ded9273b
 
-Carried by infer 0.19.0 (`LICENSE`).
+Carried by infer 0.22.0 (`LICENSE`).
 
 ```text
 MIT License
@@ -5923,7 +5937,7 @@ THE SOFTWARE.
 
 ### text-859a90323b68
 
-Carried by muda 0.19.3 (`LICENSE-MIT`).
+Carried by muda 0.20.0 (`LICENSE-MIT`).
 
 ```text
 MIT License
@@ -6331,7 +6345,7 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
 
 ### text-86eb6a41ef64
 
-Carried by wry 0.55.1 (`LICENSE-MIT`).
+Carried by wry 0.57.0 (`LICENSE-MIT`).
 
 ```text
 MIT License
@@ -6412,7 +6426,7 @@ SOFTWARE.
 
 ### text-89ff9689dcf9
 
-Carried by tauri 2.11.6 (`LICENSE_MIT`), tauri-codegen 2.6.3 (`LICENSE_MIT`), tauri-macros 2.6.3 (`LICENSE_MIT`), tauri-plugin-dialog 2.7.3 (`LICENSE_MIT`), tauri-plugin-fs 2.5.2 (`LICENSE_MIT`), tauri-plugin-log 2.9.2 (`LICENSE_MIT`), tauri-plugin-opener 2.5.5 (`LICENSE_MIT`), tauri-plugin-process 2.3.1 (`LICENSE_MIT`), tauri-plugin-updater 2.12.0 (`LICENSE_MIT`), tauri-runtime 2.11.3 (`LICENSE_MIT`), tauri-runtime-wry 2.11.4 (`LICENSE_MIT`), tauri-utils 2.9.3 (`LICENSE_MIT`).
+Carried by tauri 2.12.1 (`LICENSE-MIT`), tauri-codegen 2.7.1 (`LICENSE-MIT`), tauri-macros 2.7.1 (`LICENSE-MIT`), tauri-plugin-dialog 2.8.1 (`LICENSE_MIT`), tauri-plugin-fs 2.6.0 (`LICENSE_MIT`), tauri-plugin-log 2.10.0 (`LICENSE_MIT`), tauri-plugin-opener 2.7.0 (`LICENSE_MIT`), tauri-plugin-process 2.4.0 (`LICENSE_MIT`), tauri-plugin-updater 2.13.1 (`LICENSE_MIT`), tauri-runtime 2.12.1 (`LICENSE-MIT`), tauri-runtime-wry 2.12.1 (`LICENSE-MIT`), tauri-utils 2.10.1 (`LICENSE-MIT`).
 
 ```text
 MIT License
@@ -6501,7 +6515,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### text-8f8eade124ab
 
-Carried by dom_query 0.27.0 (`LICENSE`).
+Carried by dom_query 0.28.0 (`LICENSE`).
 
 ```text
 MIT License
@@ -7929,7 +7943,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### text-b46700117441
 
-Carried by window-vibrancy 0.6.0 (`LICENSE-MIT`).
+Carried by window-vibrancy 0.8.1 (`LICENSE-MIT`).
 
 ```text
 MIT License
@@ -7957,7 +7971,7 @@ SOFTWARE.
 
 ### text-bccaa8b6c09f
 
-Carried by ctor 0.8.0 (`LICENSE-MIT`), ctor-proc-macro 0.0.7 (`LICENSE-MIT`).
+Carried by ctor 1.0.13 (`LICENSE-MIT`).
 
 ```text
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
@@ -9204,7 +9218,7 @@ insights.
 
 ### text-d9a1b1e30d63
 
-Carried by windows 0.61.3 (`license-mit`), windows 0.62.2 (`license-mit`), windows_aarch64_gnullvm 0.42.2 (`license-mit`), windows_aarch64_gnullvm 0.52.6 (`license-mit`), windows_aarch64_gnullvm 0.53.1 (`license-mit`), windows_aarch64_msvc 0.42.2 (`license-mit`), windows_aarch64_msvc 0.52.6 (`license-mit`), windows_aarch64_msvc 0.53.1 (`license-mit`), windows_i686_gnu 0.42.2 (`license-mit`), windows_i686_gnu 0.52.6 (`license-mit`), windows_i686_gnu 0.53.1 (`license-mit`), windows_i686_gnullvm 0.52.6 (`license-mit`), windows_i686_gnullvm 0.53.1 (`license-mit`), windows_i686_msvc 0.42.2 (`license-mit`), windows_i686_msvc 0.52.6 (`license-mit`), windows_i686_msvc 0.53.1 (`license-mit`), windows_x86_64_gnu 0.42.2 (`license-mit`), windows_x86_64_gnu 0.52.6 (`license-mit`), windows_x86_64_gnu 0.53.1 (`license-mit`), windows_x86_64_gnullvm 0.42.2 (`license-mit`), windows_x86_64_gnullvm 0.52.6 (`license-mit`), windows_x86_64_gnullvm 0.53.1 (`license-mit`), windows_x86_64_msvc 0.42.2 (`license-mit`), windows_x86_64_msvc 0.52.6 (`license-mit`), windows_x86_64_msvc 0.53.1 (`license-mit`), windows-collections 0.2.0 (`license-mit`), windows-collections 0.3.2 (`license-mit`), windows-core 0.61.2 (`license-mit`), windows-core 0.62.2 (`license-mit`), windows-future 0.2.1 (`license-mit`), windows-future 0.3.2 (`license-mit`), windows-implement 0.60.2 (`license-mit`), windows-interface 0.59.3 (`license-mit`), windows-link 0.1.3 (`license-mit`), windows-link 0.2.1 (`license-mit`), windows-numerics 0.2.0 (`license-mit`), windows-numerics 0.3.1 (`license-mit`), windows-registry 0.6.1 (`license-mit`), windows-result 0.3.4 (`license-mit`), windows-result 0.4.1 (`license-mit`), windows-strings 0.4.2 (`license-mit`), windows-strings 0.5.1 (`license-mit`), windows-sys 0.45.0 (`license-mit`), windows-sys 0.52.0 (`license-mit`), windows-sys 0.59.0 (`license-mit`), windows-sys 0.60.2 (`license-mit`), windows-sys 0.61.2 (`license-mit`), windows-targets 0.42.2 (`license-mit`), windows-targets 0.52.6 (`license-mit`), windows-targets 0.53.5 (`license-mit`), windows-threading 0.1.0 (`license-mit`), windows-threading 0.2.1 (`license-mit`), windows-version 0.1.7 (`license-mit`).
+Carried by windows 0.62.2 (`license-mit`), windows_aarch64_gnullvm 0.42.2 (`license-mit`), windows_aarch64_gnullvm 0.52.6 (`license-mit`), windows_aarch64_gnullvm 0.53.1 (`license-mit`), windows_aarch64_msvc 0.42.2 (`license-mit`), windows_aarch64_msvc 0.52.6 (`license-mit`), windows_aarch64_msvc 0.53.1 (`license-mit`), windows_i686_gnu 0.42.2 (`license-mit`), windows_i686_gnu 0.52.6 (`license-mit`), windows_i686_gnu 0.53.1 (`license-mit`), windows_i686_gnullvm 0.52.6 (`license-mit`), windows_i686_gnullvm 0.53.1 (`license-mit`), windows_i686_msvc 0.42.2 (`license-mit`), windows_i686_msvc 0.52.6 (`license-mit`), windows_i686_msvc 0.53.1 (`license-mit`), windows_x86_64_gnu 0.42.2 (`license-mit`), windows_x86_64_gnu 0.52.6 (`license-mit`), windows_x86_64_gnu 0.53.1 (`license-mit`), windows_x86_64_gnullvm 0.42.2 (`license-mit`), windows_x86_64_gnullvm 0.52.6 (`license-mit`), windows_x86_64_gnullvm 0.53.1 (`license-mit`), windows_x86_64_msvc 0.42.2 (`license-mit`), windows_x86_64_msvc 0.52.6 (`license-mit`), windows_x86_64_msvc 0.53.1 (`license-mit`), windows-collections 0.3.2 (`license-mit`), windows-core 0.62.2 (`license-mit`), windows-future 0.3.2 (`license-mit`), windows-implement 0.60.2 (`license-mit`), windows-interface 0.59.3 (`license-mit`), windows-link 0.2.1 (`license-mit`), windows-numerics 0.3.1 (`license-mit`), windows-registry 0.6.1 (`license-mit`), windows-result 0.4.1 (`license-mit`), windows-strings 0.5.1 (`license-mit`), windows-sys 0.45.0 (`license-mit`), windows-sys 0.52.0 (`license-mit`), windows-sys 0.60.2 (`license-mit`), windows-sys 0.61.2 (`license-mit`), windows-targets 0.42.2 (`license-mit`), windows-targets 0.52.6 (`license-mit`), windows-targets 0.53.5 (`license-mit`), windows-threading 0.2.1 (`license-mit`), windows-version 0.1.7 (`license-mit`).
 
 ```text
     MIT License
@@ -9963,7 +9977,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### text-f2459c4b106b
 
-Carried by urlpattern 0.3.0 (`LICENSE`).
+Carried by urlpattern 0.6.0 (`LICENSE`).
 
 ```text
 MIT License
@@ -9991,7 +10005,7 @@ SOFTWARE.
 
 ### text-f25a5b606859
 
-Carried by dirs 6.0.0 (`LICENSE-MIT`), dirs-sys 0.5.0 (`LICENSE-MIT`).
+Carried by dirs 7.0.0 (`LICENSE-MIT`), dirs-sys 0.5.0 (`LICENSE-MIT`).
 
 ```text
 Copyright (c) 2018-2019 dirs-rs contributors
@@ -10499,7 +10513,7 @@ Apache License
 
 ### Reference text: BSD-3-Clause
 
-From alloc-no-stdlib 2.0.4 (`LICENSE`):
+From alloc-no-stdlib 3.0.0 (`LICENSE`):
 
 ```text
 Copyright (c) 2016 Dropbox, Inc.
@@ -10544,7 +10558,7 @@ the following restrictions:
 
 ### Reference text: MPL-2.0
 
-From cssparser 0.36.0 (`LICENSE`):
+From cssparser 0.37.0 (`LICENSE`):
 
 ```text
 Mozilla Public License Version 2.0
