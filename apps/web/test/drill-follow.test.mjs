@@ -26,14 +26,18 @@ import { createDrillAttempt } from '../lib/drill-attempt.js';
 import { demoScript } from '../lib/screens/drill/library.js';
 import { createStopDriver } from '../lib/script-drive.js';
 import { SOLVED, applyAlg, invert, movesOf, toFacelets } from '../lib/cube-pieces.js';
+import { isRotation, reportStream, reportsOf } from './fixtures/cube-reports.mjs';
 
 /** A driver with no element: only its verdicts about where a cube is are wanted. */
 const watcher = (entry) => createStopDriver(demoScript(entry), {});
 
-test('a child performing the printed procedure walks the demonstration — all 137', () => {
+test('a child performing the printed procedure walks the demonstration — the whole catalogue', () => {
+  // The cube is driven by what it REPORTS (`fixtures/cube-reports.mjs`): a slice arrives as two face turns
+  // and a turn of the whole cube as nothing, which is what a real cube sends for the human-speed table.
+  let withRegrips = 0;
   for (const entry of ALG_ENTRIES) {
     const demo = watcher(entry);
-    const algorithm = movesOf(entry.scanAlg);
+    const algorithm = reportsOf(entry.scanAlg);
     let cube = SOLVED;
 
     // Step 1 is a solved cube. The algorithm returns the case to solved, so solved IS the LAST
@@ -42,19 +46,32 @@ test('a child performing the printed procedure walks the demonstration — all 1
     assert.equal(start.kind, 'step', `${entry.id}: a solved cube is not on the demonstration at all`);
 
     // Step 2, the set-up: the algorithm inverted, so it walks the positions in reverse to the case.
-    for (const m of movesOf(invert(entry.scanAlg))) cube = applyAlg(cube, m);
+    for (const m of reportStream(invert(entry.scanAlg))) cube = applyAlg(cube, m);
     const atCase = demo.observe(toFacelets(cube));
     assert.equal(atCase.kind, 'step', `${entry.id}: the case the set-up builds is off the demonstration`);
     assert.equal(atCase.position, 0, `${entry.id}: the case is not the demonstration's first position`);
 
-    // Step 3: each turn of the algorithm moves the demonstration on by exactly one.
-    for (const [i, m] of algorithm.entries()) {
-      cube = applyAlg(cube, m);
+    // Step 3: each turn a cube reports moves the demonstration on to the stop that turn makes. A turn of
+    // the whole cube has no stop of its own unless it ends the sequence (ADR 0004 decision 9) and no cube
+    // reports one, so the expectation is read off the script's own turn count per position: the LAST
+    // stop made before the next turn a cube can report — which passes through a closing `y'` or `x'`.
+    const { positions } = demoScript(entry);
+    if (algorithm.some((t) => isRotation(t.token))) withRegrips += 1;
+    for (const [i, { token, reports }] of algorithm.entries()) {
+      if (isRotation(token)) continue;
+      for (const m of reports) cube = applyAlg(cube, m);
       const seen = demo.observe(toFacelets(cube));
-      assert.equal(seen.kind, 'step', `${entry.id}: turn ${i + 1} left the demonstration`);
-      assert.equal(seen.position, i + 1, `${entry.id}: turn ${i + 1} put the demonstration at ${seen.position}`);
+      const next = algorithm.findIndex((t, j) => j > i && !isRotation(t.token));
+      const before = next < 0 ? Infinity : next;
+      const expected = positions.findLastIndex((p) => p.moves <= before);
+      assert.equal(seen.kind, 'step', `${entry.id}: turn ${i + 1} (${token}) left the demonstration`);
+      assert.equal(seen.position, expected, `${entry.id}: turn ${i + 1} (${token}) put the demonstration at ${seen.position}, not ${expected}`);
     }
+    assert.equal(demo.observe(toFacelets(cube)).position, positions.length - 1, `${entry.id}: the demonstration did not end where the cube did`);
   }
+  // Precondition: the regrip rule above was actually exercised.
+  // Eight measured: F2L 13, 18, 20 and Aa, Ab, E, Ja, V.
+  assert.ok(withRegrips >= 8, `only ${withRegrips} entries turn the whole cube`);
 });
 
 test('a cube that is NOT doing this algorithm moves the demonstration nowhere', () => {

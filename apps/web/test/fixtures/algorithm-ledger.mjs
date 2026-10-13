@@ -130,6 +130,45 @@ export const ALGORITHM_SETS = Object.freeze([
     "moves": 0
   },
   {
+    "id": "f2l-human",
+    "name": "F2L, human-speed",
+    "kind": "sourced",
+    "provenance": "SpeedCubeDB's top-voted Front Right algorithm per case; what the pairs stage's top rung teaches since 2026-10-13",
+    "verified": "`human-algs.test.mjs`: cubejs finds each answers exactly its proved case, and the 41 cover the 41 once each",
+    "count": 41,
+    "distinct": 41,
+    "shortest": 3,
+    "longest": 12,
+    "mean": 7.98,
+    "moves": 327
+  },
+  {
+    "id": "oll-human",
+    "name": "Full OLL, human-speed",
+    "kind": "sourced",
+    "provenance": "J Perm's first-listed algorithm per case; what full OLL teaches since 2026-10-13",
+    "verified": "same cubejs check, 57 to 57",
+    "count": 57,
+    "distinct": 57,
+    "shortest": 6,
+    "longest": 15,
+    "mean": 10.04,
+    "moves": 572
+  },
+  {
+    "id": "pll-human",
+    "name": "Full PLL, human-speed",
+    "kind": "sourced",
+    "provenance": "J Perm's first-listed algorithm per case; what full PLL teaches since 2026-10-13",
+    "verified": "same cubejs check, 21 to 21",
+    "count": 21,
+    "distinct": 21,
+    "shortest": 9,
+    "longest": 21,
+    "mean": 13.95,
+    "moves": 293
+  },
+  {
     "id": "f2l-full",
     "name": "F2L, all cases",
     "kind": "proved",
@@ -216,7 +255,7 @@ export const METHOD_ALGORITHMS = Object.freeze([
             "rung": 2,
             "label": "the F2L cases",
             "held": [
-              "f2l-full",
+              "f2l-human",
               "f1l-inserts",
               "middle-inserts"
             ]
@@ -238,7 +277,7 @@ export const METHOD_ALGORITHMS = Object.freeze([
             "rung": 1,
             "label": "full OLL",
             "held": [
-              "oll-full"
+              "oll-human"
             ]
           }
         ]
@@ -258,7 +297,7 @@ export const METHOD_ALGORITHMS = Object.freeze([
             "rung": 1,
             "label": "full PLL",
             "held": [
-              "pll-full"
+              "pll-human"
             ]
           }
         ]
@@ -269,18 +308,18 @@ export const METHOD_ALGORITHMS = Object.freeze([
       "f1l-inserts",
       "middle-inserts",
       "f2l-triggers",
-      "f2l-full",
+      "f2l-human",
       "eoll",
       "ocll",
-      "oll-full",
+      "oll-human",
       "cpll",
       "epll",
-      "pll-full"
+      "pll-human"
     ],
     "held": 18,
     "heldMoves": 140,
-    "heldTop": 124,
-    "heldTopMoves": 1087,
+    "heldTop": 121,
+    "heldTopMoves": 1208,
     "missing": []
   },
   {
@@ -293,26 +332,26 @@ export const METHOD_ALGORITHMS = Object.freeze([
       },
       {
         "phase": "F2L",
-        "held": "f2l-full"
+        "held": "f2l-human"
       },
       {
         "phase": "OLL",
-        "held": "oll-full"
+        "held": "oll-human"
       },
       {
         "phase": "PLL",
-        "held": "pll-full"
+        "held": "pll-human"
       }
     ],
     "sets": [
-      "f2l-full",
-      "oll-full",
-      "pll-full"
+      "f2l-human",
+      "oll-human",
+      "pll-human"
     ],
     "held": 119,
-    "heldMoves": 1058,
+    "heldMoves": 1192,
     "heldTop": 119,
-    "heldTopMoves": 1058,
+    "heldTopMoves": 1192,
     "missing": []
   },
   {

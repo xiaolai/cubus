@@ -23,7 +23,9 @@
 // part of what they are taught. So a step records the HOLD it is made in and may regrip; it is written in
 // the child's letters for that hold, replayed through the interpreter (`run` in `lib/cube-moves.js`), and
 // the hold it leaves is the next step's. The method frame is the solver's own: the cross on D, and every
-// regrip about the vertical axis, because every stage's questions are asked with the cross underneath.
+// step BOUNDARY with it underneath, because every stage's questions are asked there. A regrip a stage
+// makes is about the vertical axis; only inside a named algorithm (`kind: 'case'`) may the cube tip, and it
+// must be upright again when the algorithm ends (`adopt`).
 //
 // Two kinds of step, because there are two kinds of "why":
 //   'goal'  — an intuitive stage. The reason is what the move ACHIEVES: this brings the piece
@@ -267,33 +269,62 @@ function adopt(steps, stage, before, hold) {
   let state = before;
   let held = hold;
   const adopted = steps.map((step, i) => {
-    if (!step || typeof step !== 'object') refuse(i, `is ${step === null ? 'null' : typeof step}, not a step`);
-    if (typeof step.alg !== 'string') refuse(i, 'carries no algorithm');
-    if (typeof step.stage !== 'string' || !step.stage) refuse(i, 'names no stage');
-    // The hold is the REPLAY's to record. One a stage wrote itself could disagree with the moves before
-    // it, and every chip after it would be named for a cube held some other way.
-    if (step.hold !== undefined) refuse(i, 'carries a hold of its own — the hold a step is made in is the replay\'s to record');
-    // MOVE BY MOVE, because the cross must stay underneath THROUGHOUT: a step that tips the cube and
-    // rights it again — `x U x'` — ends upright while every question the stages ask in between is about a
-    // cube on its side, and checking only the end let that through.
-    let played = { state, hold: held };
-    try {
-      for (const move of parse(step.alg)) {
-        played = run([move], played.hold, played.state);
-        if (played.hold[0] !== 'U') {
-          refuse(i, `puts ${played.hold[0]} on top — a method turns the cube about its vertical axis only, so the cross stays underneath`);
-        }
-      }
-    } catch (err) {
-      if (err.name === 'MethodSolverError') throw err;
-      refuse(i, err.message);
-    }
+    const why = shapeFault(step);
+    if (why) refuse(i, why);
+    const played = playStep(step, { state, hold: held }, (fault) => refuse(i, fault));
     const record = snapshot({ ...step, hold: [...held] });
     state = played.state;
     held = played.hold;
     return record;
   });
   return { steps: adopted, state, hold: Object.freeze([...held]) };
+}
+
+/** What is wrong with a step's SHAPE, or null. */
+function shapeFault(step) {
+  if (!step || typeof step !== 'object') return `is ${step === null ? 'null' : typeof step}, not a step`;
+  if (typeof step.alg !== 'string') return 'carries no algorithm';
+  if (typeof step.stage !== 'string' || !step.stage) return 'names no stage';
+  // The hold is the REPLAY's to record. One a stage wrote itself could disagree with the moves before
+  // it, and every chip after it would be named for a cube held some other way.
+  if (step.hold !== undefined) return 'carries a hold of its own — the hold a step is made in is the replay\'s to record';
+  return null;
+}
+
+/**
+ * Play one step from `from` (`{ state, hold }`) and return where it leaves the cube, calling `refuse` with
+ * the reason if it cannot be played or breaks the hold rule.
+ *
+ * MOVE BY MOVE, because the cross must stay underneath THROUGHOUT: a step that tips the cube and rights it
+ * again — `x U x'` — ends upright while every question the stages ask in between is about a cube on its
+ * side, and checking only the end let that through.
+ *
+ * EXCEPT INSIDE A NAMED ALGORITHM, which is one thing the child does with their hands and is asked nothing
+ * in the middle of. The algorithms speedcubers learn tip the cube as a matter of course: Aa is
+ * `x L2 D2 … x'`, and a wide turn or a slice moves the centres, so `r U R' U' r' F R F'` has the white
+ * centre facing the child for five of its eight turns. Such a step must still END with the cross
+ * underneath — that is the stage boundary the next stage reads — and anything that is not a named
+ * algorithm keeps the rule as it was, so the `x U x'` a stage might emit on its own is still refused.
+ */
+function playStep(step, from, refuse) {
+  const named = step.kind === 'case';
+  let played = from;
+  try {
+    for (const move of parse(step.alg)) {
+      played = run([move], played.hold, played.state);
+      if (!named && played.hold[0] !== 'U') {
+        refuse(`puts ${played.hold[0]} on top — a method turns the cube about its vertical axis only, so the cross stays underneath`);
+      }
+    }
+  } catch (err) {
+    // The interpreter's own refusal, said again with the stage and the step; ours passes through as it is.
+    if (err.name === 'MethodSolverError') throw err;
+    refuse(err.message);
+  }
+  if (named && played.hold[0] !== 'U') {
+    refuse(`leaves ${played.hold[0]} on top — a named algorithm may tip the cube while it runs, but must end with the cross underneath`);
+  }
+  return played;
 }
 
 /** Does this look like a cube at all? Shape only; `checkedCopy` is the boundary that checks

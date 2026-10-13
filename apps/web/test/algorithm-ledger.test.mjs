@@ -11,12 +11,18 @@
 // it twice would be two gates that fail together and tell you the same thing.
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { SOLVED, applyAlg, movesOf } from '../lib/cube-pieces.js';
 import { ALGORITHM_SETS, METHOD_ALGORITHMS } from './fixtures/algorithm-ledger.mjs';
 import { LEDGER, MEASURED_SETS } from '../bench/algorithm-ledger.mjs';
 import { LADDER, STAGE_IDS } from '../lib/methods/index.js';
+import { SET_IDS as CATALOGUE_SETS } from '../lib/alg-catalogue.js';
+import Cube from 'cubejs';
 
 test('the frozen ledger is what regenerating it produces', () => {
   // Same shape as case-tables.test.mjs's first case, and for the same reason: a fixture that drifted
@@ -43,6 +49,15 @@ test('every algorithm in every set is a real algorithm', () => {
       assert.ok(name && typeof name === 'string', `${set.id}: an entry has no name`);
       assert.ok(!names.has(name), `${set.id}: two entries are called ${name}`);
       names.add(name);
+      if (set.kind === 'sourced') {
+        // The speedcubing community's algorithms are wide turns, slices and whole-cube turns as often as
+        // face turns, so they are read by CUBEJS here — from outside the generator AND from outside this
+        // repository's interpreter, which the generator uses to measure them.
+        const c = new Cube();
+        c.move(alg);
+        assert.equal(c.isSolved(), false, `${set.id}/${name} leaves a solved cube solved, so it does nothing`);
+        continue;
+      }
       for (const m of movesOf(alg)) {
         assert.match(m, FACE_TURN, `${set.id}/${name}: "${m}" is not a face turn the renderer can animate`);
       }
@@ -95,8 +110,17 @@ test('every method names sets that exist, and every set is named by some method'
   }
   // A set nothing needs is a set we would claim to teach and never show — the same rule
   // `CASE_NAMES` already enforces one level down. `align` is exempt: it is not taught.
+  //
+  // So are the PROVED tables, since 2026-10-13, and only because they are SHOWN: no rung teaches them any
+  // more (the human-speed tables replaced them), but they are the reference every sourced row is checked
+  // against and the Drill offers each one second, after its case's human-speed algorithm. "Held and never
+  // shown" is the defect, so that is what is asserted for them instead.
   for (const id of ids) {
     if (id === 'align') continue;
+    if (ALGORITHM_SETS.find((s) => s.id === id).kind === 'proved') {
+      assert.ok(CATALOGUE_SETS.includes(id), `"${id}" is taught by no method and shown by no screen`);
+      continue;
+    }
     assert.ok(used.has(id), `no method needs "${id}" — it is held and never taught`);
   }
 });
@@ -106,11 +130,14 @@ test("the ladder's ends are what the app actually needs at them", () => {
   const app = byName["The app's method"];
   assert.equal(app.ladder, true, "the app's method must be modelled as a ladder or the range is a lie");
   assert.equal(app.held, 18, 'the bottom rung is 2 + 3 + 2 + 1 + 5 + 3 + 2');
-  // 124, not 119. An audit found the tidier version — "the top rung is exactly CFOP's set" — was
+  // Not 119. An audit found the tidier version — "the top rung is exactly CFOP's set" — was
   // false: the top rung still needs the beginner inserts whenever a pair is BURIED, because
   // `pairsFrom` falls back to `placeSeparately`. Measured over 25 seeded scrambles at TOP_RUNG,
   // `solveByMethod` emits steps named facing-up, insert-left, insert-right, left-hand and right-hand.
-  assert.equal(app.heldTop, 124, 'the top rung is 41 + 3 + 2 + 57 + 21');
+  // And not 124 since the top rung teaches the human-speed F2L (2026-10-13): three of its cases ARE
+  // corner inserts the fallback already teaches — F2L 3 is `F' U' F`, F2L 4 is `R U R'`, F2L 17 is
+  // `R U2 R' U' R U R'` — and a learner memorises a sequence once, so the cost counts it once.
+  assert.equal(app.heldTop, 121, 'the top rung is 41 + 3 + 2 + 57 + 21, less the three F2L cases that are corner inserts');
   assert.notEqual(app.heldTop, byName.CFOP.held,
     'if these are equal again the fallback has gone, and the comment above needs rewriting');
   const cross = app.phases.find((p) => p.phase === 'Cross');
@@ -137,8 +164,10 @@ test('the headline counts are what the sets add up to', () => {
   const total = ALGORITHM_SETS.reduce((a, s) => a + s.count, 0);
   const proved = ALGORITHM_SETS.filter((s) => s.kind === 'proved').reduce((a, s) => a + s.count, 0);
   const hand = ALGORITHM_SETS.filter((s) => s.kind === 'hand-written').reduce((a, s) => a + s.count, 0);
-  assert.equal(proved + hand + 1, total, 'the kinds do not partition the ledger (the +1 is the alignment)');
+  const sourced = ALGORITHM_SETS.filter((s) => s.kind === 'sourced').reduce((a, s) => a + s.count, 0);
+  assert.equal(proved + hand + sourced + 1, total, 'the kinds do not partition the ledger (the +1 is the alignment)');
   assert.equal(proved, 119, 'the proved tables are 41 + 57 + 21');
+  assert.equal(sourced, 119, 'the human-speed tables are 41 + 57 + 21, one row per proved case');
   assert.equal(hand, 24, 'the hand-written repertoires are 2 + 3 + 2 + 6 + 1 + 5 + 3 + 2');
 
   // The contrast the ledger exists to make: a beginner method costs a fraction of CFOP, and the two
@@ -163,3 +192,22 @@ test('a method with nothing held says what it is missing', () => {
       `${m.method} holds nothing, is missing nothing and is not a search method — one of those is wrong`);
   }
 });
+
+test('importing the ledger prints nothing, even from a file whose name ends the same way', () => {
+  // The guard compared a SUFFIX of argv[1], so any importer whose name ended the same way printed the whole
+  // report and armed the --emit write. Run in a child, because the guard reads the process's own argv.
+  const dir = mkdtempSync(join(tmpdir(), 'ledger-import-'));
+  try {
+    const importer = join(dir, 'unrelated-algorithm-ledger.mjs');
+    writeFileSync(importer, `import ${JSON.stringify(new URL('../bench/algorithm-ledger.mjs', import.meta.url).href)};\n`);
+    const ran = spawnSync(process.execPath, [importer], { encoding: 'utf8' });
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.equal(ran.stdout, '', 'an import printed the report');
+    // And run directly, it still reports — the guard must not be fixed by never running.
+    const direct = spawnSync(process.execPath, [new URL('../bench/algorithm-ledger.mjs', import.meta.url).pathname], { encoding: 'utf8' });
+    assert.match(direct.stdout, /distinct algorithms/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+

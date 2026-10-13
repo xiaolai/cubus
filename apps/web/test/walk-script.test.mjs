@@ -16,6 +16,7 @@ import { trackFor } from '../lib/script-track.js';
 import { scanFrameWalk, toMethodFrame } from '../lib/solving-hold.js';
 import { allRungCombinations, methodFor, solveByMethod } from '../lib/method-solver.js';
 import { fromCube } from '../lib/cube-pieces.js';
+import { faceTurnsAlg } from '../lib/cube-moves.js';
 
 const require = createRequire(import.meta.url);
 const Cube = require('cubejs');
@@ -176,7 +177,11 @@ test('a lesson the method solver produced round-trips, states and alg, over ever
       const replay = new Cube();
       replay.move(scramble);
       const walked = [replay.asString()];
-      for (const m of moves) { if (!isRegrip(m)) replay.move(m); walked.push(replay.asString()); }
+      // A move goes in as the FACE TURNS it is relative to the centres, which is what a track position
+      // is: cubejs moves its centres on a slice or a wide turn (`M` carries the white centre to the
+      // front), and the app's positions never do — a smart cube reports `M` as `R` and `L'` for the
+      // same reason. Face turns are what cubejs then plays, with its own code.
+      for (const m of moves) { if (!isRegrip(m)) replay.move(faceTurnsAlg(m)); walked.push(replay.asString()); }
       assert.deepEqual(trackFor(built).states, walked, `${where}: the script and the walk part company`);
     }
   }

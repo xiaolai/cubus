@@ -11,7 +11,7 @@ import Cube from 'cubejs';
 import { Window } from 'happy-dom';
 
 import { ALG_ENTRIES, entriesForRungs, entryById } from '../lib/alg-catalogue.js';
-import { SCOPES, caseWorthSaying, demoScript, drillLibraryHtml, drillPageHtml, effectWorthSaying, entriesForScope, groupsFor, libraryHtml, libraryNote, OWNED_VIEW, setupMoves, statusFor, timingLine, turnWords } from '../lib/screens/drill/library.js';
+import { MORE_NOTATION_LINE, SCOPES, caseWorthSaying, demoScript, drillLibraryHtml, drillPageHtml, effectWorthSaying, entriesForScope, groupsFor, libraryHtml, libraryNote, needsMoreNotation, OWNED_VIEW, otherWayHtml, positionOfTurn, setupMoves, statusFor, timingLine, transportView, turnAt, turnWords } from '../lib/screens/drill/library.js';
 import { SOLVED, applyAlg, invert, movesOf, toFacelets } from '../lib/cube-pieces.js';
 import { turnFacelets } from '../lib/cube-orientation.js';
 import { settings } from '../lib/app-settings.js';
@@ -25,6 +25,7 @@ import { blockAt } from './app-source.mjs';
 import { groupsOf } from '../lib/script-view.js';
 import { parse } from '../lib/cube-notation.js';
 import { t } from '../lib/i18n.js';
+import { reportStream } from './fixtures/cube-reports.mjs';
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -60,17 +61,30 @@ before(async () => {
 
 test('the four stages are the ladder\'s own names, and an empty one is not drawn', () => {
   const groups = groupsFor(ALG_ENTRIES);
-  assert.deepEqual(groups.map((g) => g.dial), ['cross', 'pairs', 'oll', 'pll']);
-  assert.deepEqual(groups.map((g) => g.name), ['Cross', 'First two layers', 'Top face', 'Last layer']);
+  // Each stage the lessons have taught algorithms for, then that stage's OTHER WAYS — the proved
+  // fewest-turn sequences for cases the lessons teach another way (owner, 2026-10-13: human-speed
+  // first, fewer turns second). The cross has no other ways: it has no numbered cases.
+  assert.deepEqual(groups.map((g) => g.dial), ['cross', 'pairs', 'pairs', 'oll', 'oll', 'pll', 'pll']);
+  assert.deepEqual(groups.map((g) => g.name), [
+    'Cross', 'First two layers', 'First two layers — other ways', 'Top face', 'Top face — other ways',
+    'Last layer', 'Last layer — other ways',
+  ]);
+  assert.deepEqual(groups.map((g) => g.other), [false, false, true, false, true, false, true]);
+  for (const g of groups) {
+    assert.ok(g.entries.every((e) => e.primary === !g.other), `${g.name} holds an entry of the other kind`);
+  }
   assert.equal(groupsFor([]).length, 0, 'an empty stage was drawn as a heading with nothing under it');
   assert.equal(groups.reduce((n, g) => n + g.entries.length, 0), ALG_ENTRIES.length, 'an entry fell out of every group');
+  // The learner's own scope holds no other ways at all: no rung teaches a proved table any more.
+  const top = entriesForRungs({ cross: 1, pairs: 2, oll: 1, pll: 1 });
+  assert.deepEqual(groupsFor(top).filter((g) => g.other), [], 'a rung scope listed an algorithm no lesson teaches');
 });
 
 test('the default scope is the learner\'s rungs, and widening shows everything', () => {
   const rungs = { cross: 0, pairs: 0, oll: 0, pll: 0 };
   assert.deepEqual(entriesForScope('rung', rungs).map((e) => e.id), entriesForRungs(rungs).map((e) => e.id));
   assert.equal(entriesForScope('rung', rungs).length, 18);
-  assert.equal(entriesForScope('all', rungs).length, 137);
+  assert.equal(entriesForScope('all', rungs).length, ALG_ENTRIES.length);
   assert.equal(SCOPES.all, 'Show all algorithms');
 });
 
@@ -116,7 +130,7 @@ test('a white-up stage says the other hold', () => {
 });
 
 
-test('the setup turns put a solved cube into the case the algorithm solves — all 137', () => {
+test('the setup turns put a solved cube into the case the algorithm solves — the whole catalogue', () => {
   // THE STEP THE PAGE NEVER HAD. A drill needs a starting position, and without one the page was an
   // animation next to a list of letters: a first-time reader asked for "a starting-position picture
   // and instructions for getting my real cube into that position" and there were neither
@@ -125,18 +139,21 @@ test('the setup turns put a solved cube into the case the algorithm solves — a
   // `invert(entry.shown)` and never `invert(entry.alg)`: `shown` is already renamed into the hold the
   // drill is performed in, so its inverse is in that same hold. Inverting `alg` would print
   // method-frame letters under a scan-frame hold — ADR 0004's trap, and a child turning the wrong face.
-  const SOLVED_F = toFacelets(SOLVED);
+  //
+  // Played by CUBEJS, which reads a slice, a wide turn and a turn of the whole cube — the human-speed
+  // table has all three — and shares no code with the app's interpreter.
   let checked = 0;
   for (const e of ALG_ENTRIES) {
     const setup = setupMoves(e);
     assert.equal(setup, invert(e.shown), `${e.id}: the setup is not the inverse of the turns shown`);
-    const caseState = toFacelets(applyAlg(SOLVED, setup));
-    assert.notEqual(caseState, SOLVED_F, `${e.id}: the setup leaves the cube solved — there is no case to solve`);
-    assert.equal(toFacelets(applyAlg(applyAlg(SOLVED, setup), e.shown)), SOLVED_F,
-      `${e.id}: setting up and then solving does not return to solved — the check the page promises is false`);
+    const cube = new Cube();
+    cube.move(setup);
+    assert.ok(!cube.isSolved(), `${e.id}: the setup leaves the cube solved — there is no case to solve`);
+    cube.move(e.shown);
+    assert.ok(cube.isSolved(), `${e.id}: setting up and then solving does not return to solved — the check the page promises is false`);
     checked += 1;
   }
-  assert.equal(checked, 137);
+  assert.equal(checked, ALG_ENTRIES.length);
 });
 
 test('and that case is the very one the screen draws, up to how the two frames name it', () => {
@@ -148,7 +165,10 @@ test('and that case is the very one the screen draws, up to how the two frames n
   const FACES = 'URFDLB';
   let matched = 0;
   for (const e of ALG_ENTRIES) {
-    const reached = toFacelets(applyAlg(SOLVED, setupMoves(e)));
+    // cubejs, for the reason above. Every set-up ends held as it began, so its stickers are the case.
+    const played = new Cube();
+    played.move(setupMoves(e));
+    const reached = played.asString();
     let same = false;
     for (const u of FACES) {
       for (const f of FACES) {
@@ -161,7 +181,7 @@ test('and that case is the very one the screen draws, up to how the two frames n
     assert.ok(same, `${e.id}: the setup turns reach an arrangement the screen does not draw`);
     matched += 1;
   }
-  assert.equal(matched, 137);
+  assert.equal(matched, ALG_ENTRIES.length);
 });
 
 test('a turn is described by its POSITION, never by a colour, and an unknown one throws', () => {
@@ -180,10 +200,27 @@ test('a turn is described by its POSITION, never by a colour, and an unknown one
     for (const m of movesOf(e.shown)) tokens.add(m);
     for (const m of movesOf(setupMoves(e))) tokens.add(m);
   }
-  assert.equal(tokens.size, 18, 'the chip vocabulary changed');
-  for (const m of tokens) assert.ok(turnWords(m).length > 0, m);
-  // A slice or a whole-cube turn must not be silently mis-described.
-  for (const bad of ['M', "M'", 'x', 'y2', 'Rw', '', 'R3']) {
+  // 30 since the human-speed table: the 18 face turns, `M` three ways, `r` three ways, `l` two, and
+  // `x` and `y` two each.
+  assert.equal(tokens.size, 30, 'the chip vocabulary changed');
+  for (const m of tokens) {
+    assert.ok(turnWords(m).length > 0, m);
+    assert.ok(!/(white|yellow|green|blue|red|orange)/i.test(turnWords(m)), `${m} was described by a colour`);
+  }
+  // Each kind is said as the kind it is, and by the face the notation defines it by.
+  assert.equal(turnWords('M2'), 'the middle layer, turned like the left-hand face, a half turn');
+  assert.equal(turnWords("r'"), 'right-hand face and the middle layer next to it, a quarter turn anticlockwise');
+  assert.equal(turnWords('Rw'), 'right-hand face and the middle layer next to it, a quarter turn clockwise');
+  assert.equal(turnWords("y'"), 'the whole cube, turned like the top face, a quarter turn anticlockwise');
+  assert.equal(turnWords('S'), 'the middle layer, turned like the front face, a quarter turn clockwise');
+  // Every spelling the notation's reader accepts has words — a second grammar here once threw on `2Rw` — and
+  // what it refuses has none.
+  assert.equal(turnWords('2Rw'), turnWords('Rw'));
+  assert.equal(turnWords("R2'"), turnWords('R2'));
+  for (const bad of ['Q', 'Mw', '3Rw', 'xw']) assert.throws(() => turnWords(bad), /no words for the turn/, bad);
+  // Nothing the notation does not read is given words: a wide slice or rotation does not exist, and a
+  // lower-case letter is already wide.
+  for (const bad of ['', 'R3', 'Mw', 'xw', 'rw', 'Q', 'R2x']) {
     assert.throws(() => turnWords(bad), /no words for the turn/, `"${bad}" was given words`);
   }
 });
@@ -380,9 +417,10 @@ test('leaving the drill releases every hook slot it installed', async () => {
 
 test('the widest scope lists every algorithm as a card', async () => {
   await openChooser('all');
-  assert.equal(groups().length, 137, 'the widest scope does not list everything');
+  assert.equal(groups().length, ALG_ENTRIES.length, 'the widest scope does not list everything');
   const longest = [...ALG_ENTRIES].sort((a, b) => b.effect.moves - a.effect.moves)[0];
-  assert.equal(longest.effect.moves, 17, 'the longest entry moved — this case pins the widest card');
+  // Na, J Perm's, since the human-speed table: the widest card is now a taught algorithm.
+  assert.equal(longest.effect.moves, 21, 'the longest entry moved — this case pins the widest card');
   assert.ok($$(`[data-alg="${longest.id}"]`).length === 1, 'the longest algorithm is not listed');
 });
 
@@ -476,7 +514,7 @@ test('a report that arrives after the drill is over moves the demonstration nowh
 test('the trusted seed is mirrored, like every later report', () => {
   // The demonstration follows the cube in the child's hands, and the set-up is the algorithm inverted —
   // so a tracked cube that is still solved belongs at the demonstration's END, and building the case
-  // walks it backwards from there (`drill-follow.test.mjs` measures that over all 137). Seeding the
+  // walks it backwards from there (`drill-follow.test.mjs` measures that over the whole catalogue). Seeding the
   // attempt without mirroring it left the status saying "Your cube is solved. Set the case up…" beside
   // a demonstration sitting at 0/7 on the case already built (Codex audit, 2026-10-04) — the one screen
   // whose promise is that the cube on screen is the cube in your hands, opening with the two disagreeing.
@@ -538,6 +576,82 @@ function stageRecorder(doc) {
   return el;
 }
 
+test('a mirror asked for before the renderer upgrades is applied once it does — and only for the attempt still showing', async () => {
+  // THE BEHAVIOURAL HALF of 'mirroring waits for the renderer rather than dropping the report'. The seed
+  // mirrors at MOUNT, the one window where the tag may not be upgraded yet, and two races live there:
+  // Start again before the upgrade (only the LATEST attempt may be mirrored), and leaving the page before
+  // it (nothing may reach the element). Driven through the real attempt and hooks, with a recording element
+  // that has no transport until `upgrade()` and a `whenDefined` this case resolves.
+  const { mountLibrary, drillPageHtml } = await import('../lib/screens/drill/library.js');
+  const { state } = await import('../lib/app-state.js');
+  const { chainTrusted } = await import('../lib/cube-trust-state.js');
+  await openChooser();
+  $$('[data-alg="sune"]')[0].dispatchEvent(new win.Event('click', { bubbles: true }));
+  await tick(); await tick();
+  assert.ok(onDrillPage(), 'precondition: an algorithm is chosen');
+  win.cubusGo('home');
+  await tick(); await tick();
+
+  const before = { connected: state.connected, trusted: state.cube.trusted, source: state.cube.source, live: state.live };
+  const registry = globalThis.customElements;
+  const realWhenDefined = registry.whenDefined;
+  state.connected = true;
+  state.cube.trusted = true;
+  state.cube.source = 'cube';
+  // A tracked cube that is still SOLVED: mirrored, it puts the demonstration at its end.
+  state.live = toFacelets(SOLVED);
+  assert.equal(chainTrusted(), true, 'precondition: the chain must be trusted for the drill to follow');
+  const sune = entryById('sune');
+
+  /** Mount sune's page on a not-yet-upgraded recorder, with a `whenDefined` this case controls. */
+  const mountUnupgraded = () => {
+    const recorder = stageRecorder(win.document);
+    const transport = {};
+    for (const m of ['step', 'stepBack', 'stepStop', 'stepBackStop', 'seek', 'playTo']) { transport[m] = recorder[m]; delete recorder[m]; }
+    let define;
+    const defined = new Promise((resolve) => { define = resolve; });
+    registry.whenDefined = () => defined;
+    for (const old of [...win.document.querySelectorAll('#stage cubus-cube')]) old.remove();
+    win.document.querySelector('#stage').appendChild(recorder);
+    const root = win.document.createElement('div');
+    win.document.body.appendChild(root);
+    root.innerHTML = drillPageHtml(sune);
+    const mounted = mountLibrary(root, { go: () => {} });
+    const upgrade = async () => { Object.assign(recorder, transport); define(); await tick(); await tick(); };
+    return { recorder, root, mounted, upgrade, at: () => root.querySelector('#algAt').textContent.trim() };
+  };
+
+  const pages = [];
+  try {
+    // 1. Start again before the upgrade: the request in the slot is the NEW attempt's, and it is applied.
+    const a = mountUnupgraded();
+    pages.push(a);
+    assert.ok(a.root.querySelector('#algCube cubus-cube') === a.recorder, 'the mount did not adopt the recorder');
+    assert.equal(a.at(), t('turn %1 of %2', 0, 7), 'precondition: nothing is mirrored before the renderer exists');
+    a.root.querySelector('#algReplay').dispatchEvent(new win.Event('click', { bubbles: true }));
+    await tick();
+    await a.upgrade();
+    assert.equal(a.at(), t('turn %1 of %2', 7, 7), 'Start again before the upgrade lost the mirror — the cube in the hands is not on screen');
+    assert.ok(a.recorder.calls.length > 0, 'the deferred mirror never reached the element');
+    a.mounted.dispose();
+    a.root.remove();
+    a.recorder.remove();
+
+    // 2. Leaving before the upgrade: the wait resolves into a page that is gone, and nothing is driven.
+    const b = mountUnupgraded();
+    pages.push(b);
+    b.mounted.dispose();
+    await b.upgrade();
+    assert.deepEqual(b.recorder.calls, [], 'a deferred mirror drove the element of a page that had been left');
+  } finally {
+    for (const page of pages) { page.root.remove(); page.recorder.remove(); }
+    registry.whenDefined = realWhenDefined;
+    Object.assign(state, { connected: before.connected, live: before.live });
+    state.cube.trusted = before.trusted;
+    state.cube.source = before.source;
+  }
+});
+
 test('a report that lands after the drill is over moves the demonstration nowhere — driven', async () => {
   // THE BEHAVIOURAL HALF of the gate above. The structural case says the gate is written; this says what
   // it does, through the REAL attempt, the REAL driver and the app's own hooks and state, with a
@@ -584,7 +698,7 @@ test('a report that lands after the drill is over moves the demonstration nowher
     const turns = () => recorder.calls.length;
 
     // Step 1 and 2: a solved cube is the demonstration's END, and the set-up walks it backwards to the
-    // case (`drill-follow.test.mjs` measures that over all 137).
+    // case (`drill-follow.test.mjs` measures that over the whole catalogue).
     let cube = SOLVED;
     let serial = 10;
     hooks.liveUpdate(toFacelets(cube), serial);
@@ -777,9 +891,13 @@ test('the figures the repetition route was judged on are computed, not authored'
   // recomputes is exactly how that survives a review. `cubejs` is the independent oracle here, not
   // the app's own solver. Turns are counted in MOVE TOKENS, so `F2` is one: that is what a card
   // prints and therefore what a child reads off it.
+  // THE CATALOGUE THE DECISION WAS MADE ON: the 137 entries that predate the human-speed table
+  // (2026-10-13). A figure that justified a decision is a fact about the population it was measured on,
+  // so it is held there; a catalogue that grew is a different population and was never the argument.
+  const judged = ALG_ENTRIES.filter((e) => e.provenance.some((p) => !p.set.endsWith('-human')));
   let under = 0;
   let atMost = 0;
-  for (const entry of ALG_ENTRIES) {
+  for (const entry of judged) {
     const tokens = entry.shown.trim().split(/\s+/).length;
     const cube = new Cube();
     let repeats = 0;
@@ -789,7 +907,7 @@ test('the figures the repetition route was judged on are computed, not authored'
     if (turns < 60) under += 1;
     if (turns <= 60) atMost += 1;
   }
-  assert.equal(ALG_ENTRIES.length, 137, 'the catalogue size the comparison was made against has moved');
+  assert.equal(judged.length, 137, 'the catalogue the comparison was made against has moved');
   assert.equal(under, 88, 'the count repeating back in UNDER sixty turns has moved');
   assert.equal(atMost, 92, 'the count repeating back in AT MOST sixty turns has moved');
 });
@@ -815,7 +933,7 @@ function chipRow(html, id) {
   return found;
 }
 
-test('the turns the page PRINTS are the turns the checker tracks — all 137', () => {
+test('the turns the page PRINTS are the turns the checker tracks — the whole catalogue', () => {
   // Two independent routes to the same letters: the page inverts `entry.shown`, which is already in
   // the child's hold; the checker tracks `invert(entry.scanAlg)` in the cube's frame. Renaming is a
   // relabelling, so it commutes with inversion and the two must agree move for move. They would NOT
@@ -838,7 +956,7 @@ test('the turns the page PRINTS are the turns the checker tracks — all 137', (
   }
 });
 
-test('a child who follows the page is never told they went wrong, and finishes where it says — all 137', () => {
+test('a child who follows the page is never told they went wrong, and finishes where it says — the whole catalogue', () => {
   for (const entry of ALG_ENTRIES) {
     const events = [];
     const attempt = createDrillAttempt({
@@ -847,7 +965,9 @@ test('a child who follows the page is never told they went wrong, and finishes w
     });
     let serial = 0;
     attempt.facelets(SOLVED_FACELETS, serial);                     // step 1: a solved cube
-    const perform = (alg) => movesOf(alg).forEach((notation) => {
+    // What a cube REPORTS, not the printed tokens: a slice is two face turns and a turn of the whole cube
+    // is nothing, and the attempt is fed what a cube sends (`fixtures/cube-reports.mjs`).
+    const perform = (alg) => reportStream(alg).forEach((notation) => {
       serial += 1;
       attempt.move({ notation, serial: serial & 0xff, cubeTimestamp: serial * 400, timestamp: serial * 400 });
     });
@@ -939,7 +1059,7 @@ test('the order is stated as a property of the algorithm, never as a fourth step
   assert.ok(!/^\s*(Do|Repeat|Try|Turn|Perform)\b/i.test(line[1].trim()), `the order reads as an instruction: "${line[1].trim()}"`);
 });
 
-test('every entry states an order that repetition actually reaches — all 137', () => {
+test('every entry states an order that repetition actually reaches — the whole catalogue', () => {
   // The number on the card is checkable BY THE CHILD, so it is checked here the same way: repeat the
   // algorithm and count. Driven through `cubejs`, which is the independent oracle and not the source
   // the page reads from.
@@ -1023,4 +1143,96 @@ test('every state the attempt can enter is one ATTEMPT_STATES names', () => {
   assert.ok(asked.length >= 5, `the sweep found only ${asked.length} transitions, so it is reading nothing`);
   const unknown = [...new Set(asked)].filter((k) => !ATTEMPT_STATES.includes(k));
   assert.deepEqual(unknown, [], `the module enters states ATTEMPT_STATES does not name: ${unknown.join(', ')}`);
+});
+
+// ---- the human-speed table on the page (2026-10-13) ----------------------------------------------
+
+test('the lit chip is the turn the demonstration just made, through a turn of the whole cube', () => {
+  // A turn of the whole cube has no stop of its own unless it ends the sequence (ADR 0004 decision 9),
+  // so positions and printed turns part company the moment an algorithm opens with one. Read as the
+  // chip index, the position lit `y'` while the cube showed `U` on F2L 13, one chip behind to the end.
+  const f2l13 = entryById('f2l-13');
+  assert.equal(f2l13.shown.split(' ')[0], "y'", 'precondition: F2L 13 opens with a turn of the whole cube');
+  const script = demoScript(f2l13);
+  const turns = movesOf(f2l13.shown);
+  assert.equal(script.positions.length, turns.length, 'precondition: one fewer stop than turns, plus the start');
+  assert.equal(turnAt(script, 0), -1, 'nothing is made at the start');
+  assert.equal(turnAt(script, 1), 1, 'the first stop makes the y\' AND the U, and the U is the turn just made');
+  assert.equal(turnAt(script, script.positions.length - 1), turns.length - 1, 'the last stop is the last turn');
+  // Pressing a chip lands where that turn is made: the y' and the U are made at the same stop.
+  assert.equal(positionOfTurn(script, 0), 1);
+  assert.equal(positionOfTurn(script, 1), 1);
+  assert.equal(positionOfTurn(script, turns.length - 1), script.positions.length - 1);
+  // Round trip, over the whole catalogue: the stop a chip lands on has made that chip's turn, and the
+  // chip it lights is that turn or — where a turn of the whole cube was folded into the next — the next.
+  for (const e of ALG_ENTRIES) {
+    const sc = demoScript(e);
+    movesOf(e.shown).forEach((tok, i) => {
+      const lit = turnAt(sc, positionOfTurn(sc, i));
+      assert.ok(lit === i || (/^[xyz]/.test(tok) && lit > i), `${e.id}: chip ${i} (${tok}) lands on a stop that lights ${lit}`);
+    });
+  }
+  // And a face-turn algorithm is unchanged: there, positions and turns coincide.
+  const sune = demoScript(entryById('sune'));
+  for (let k = 0; k < sune.positions.length; k += 1) assert.equal(turnAt(sune, k), k - 1);
+  // WHAT THE TRANSPORT SHOWS, by behaviour: a driver stood at each stop of F2L 13 reads as the printed turn
+  // that stop has made, never as the stop's own index.
+  const at = (position) => transportView({ position, playing: false, track: { states: script.positions } }, script, f2l13);
+  assert.deepEqual(at(0), { made: 0, turns: turns.length, playing: false, atStart: true, atEnd: false });
+  assert.equal(at(1).made, 2, 'the first stop has made two printed turns, the y\' and the U');
+  assert.deepEqual(at(script.positions.length - 1), { made: turns.length, turns: turns.length, playing: false, atStart: false, atEnd: true });
+  // THE SCREEN USES IT. The transport drives the renderer, which the node harness cannot run, so the last
+  // link is asserted as structure: the page draws `transportView`, the chip lit is the turn just made, and
+  // a chip press seeks by the same map. The Aa case in test/browser/drill-transport.test.mjs is the page.
+  const src = readFileSync(new URL('../lib/screens/drill/library.js', import.meta.url), 'utf8');
+  assert.match(blockAt(src, 'function showTransport()'), /drawTransport\(root, transportView\(demo, script, entry\)\)/,
+    'the transport no longer draws what transportView reads');
+  const draw = blockAt(src, 'function drawTransport(');
+  assert.match(draw, /Number\(chip\.dataset\.i\) === made - 1/, 'the lit chip is not the turn just made');
+  assert.match(draw, /t\('turn %1 of %2', made, turns\)/, 'the label counts something other than turns');
+  assert.match(blockAt(src, 'function drive(id, index)'), /demo\.seek\(positionOfTurn\(script, index\)\)/,
+    'a chip press seeks a position by its index');
+});
+
+test('a case taught the human-speed way offers its fewer-turn sequence only when it is fewer on THIS case', () => {
+  // "Fewer turns" is printed, so it must be true of the case the page draws — counting any turn of the
+  // top the proved sequence needs first, because it was searched at its own alignment.
+  const t = entryById('pll-T');
+  assert.equal(caseNameOf(t.id), 'T perm');
+  assert.deepEqual({ ...t.fewer }, { id: 'pll:01320321', turns: 11, align: 1 });
+  const text = readable(otherWayHtml(t));
+  assert.match(text, /^Fewer turns: 11 instead of 14, counting one turn of the top to line the case up\./);
+  // The button opens the other entry, and that entry sends the learner back by the community's name.
+  const alternative = entryById(t.fewer.id);
+  assert.match(otherWayHtml(t), new RegExp(`data-alg="${alternative.id}"`));
+  assert.equal(alternative.primary, false);
+  assert.equal(alternative.usual, 'pll-T');
+  assert.match(readable(otherWayHtml(alternative)), /^The lessons teach this case as T perm\./);
+  // F2L 3 is `F' U' F`, three turns; its proved case needs a turn of the top first, so it is NOT fewer
+  // and nothing is offered — the comparison counted that turn.
+  const f2l3 = ALG_ENTRIES.find((e) => e.provenance.some((p) => p.name === 'f2l-3'));
+  assert.equal(f2l3.turns, 3);
+  assert.equal(f2l3.fewer, null, 'a proved sequence that is not fewer on this case was offered as fewer');
+  // Over the whole catalogue: every offer is strictly fewer, and never claims a minimum.
+  for (const e of ALG_ENTRIES.filter((x) => x.fewer)) {
+    assert.ok(e.fewer.turns < e.turns, `${e.id}: offered ${e.fewer.turns} against its own ${e.turns}`);
+    assert.ok(!/shortest|the minimum|proved|fewest/i.test(readable(otherWayHtml(e))), `${e.id}: the offer claims a minimum`);
+  }
+  // A hand-written algorithm with no case has neither link.
+  assert.equal(otherWayHtml(entryById('insert-right')), '');
+});
+
+test('the rest of the alphabet is said only on a page that uses it', () => {
+  // A learner on Sune is not handed three kinds of turn they will not meet; a learner on the H perm
+  // (`M2 U M2 U2 M2 U M2`) is not left with an `M` the page never explains.
+  assert.equal(needsMoreNotation(entryById('sune')), false);
+  assert.doesNotMatch(drillPageHtml(entryById('sune')), /middle layer alone/);
+  const h = entryById('pll-H');
+  assert.equal(needsMoreNotation(h), true);
+  assert.match(readable(drillPageHtml(h)), new RegExp(MORE_NOTATION_LINE.slice(0, 40).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  // Every page whose turns or set-up hold anything but the eighteen face turns says it.
+  for (const e of ALG_ENTRIES) {
+    const exotic = [...movesOf(e.shown), ...movesOf(setupMoves(e))].some((m) => !/^[URFDLB](2|')?$/.test(m));
+    assert.equal(needsMoreNotation(e), exotic, `${e.id}: the extra notation line disagrees with its turns`);
+  }
 });

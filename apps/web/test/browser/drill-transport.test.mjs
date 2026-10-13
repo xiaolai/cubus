@@ -16,14 +16,14 @@ let fixture; let page;
 const errors = [];
 
 /**
- * Open sune's drill page from scratch.
+ * Open one algorithm's drill page from scratch.
  *
  * A HELPER RATHER THAN JUST A `before`, because one case here navigates to Home to prove that
  * leaving stops the driver — and anything after it inherits Home, where `#algMoves` does not
  * exist and a click waits thirty seconds for a selector that is never coming. A case that needs
  * the drill page says so instead of depending on the order it happens to run in.
  */
-async function openSuneDrill() {
+async function openDrill(id) {
   await page.goto(`${fixture.base}/index.html#/drill`);
   await page.waitForSelector('.screen.active');
   // THE SCREEN REMEMBERS WHICH ALGORITHM WAS CHOSEN, so re-entering `#/drill` renders the drill
@@ -35,11 +35,12 @@ async function openSuneDrill() {
   }
   await page.waitForSelector('#algGroups [data-alg]');
   await page.click('#scopeAll');
-  await page.waitForSelector('#algGroups [data-alg="sune"]');
-  await page.click('#algGroups [data-alg="sune"]');
+  await page.waitForSelector(`#algGroups [data-alg="${id}"]`);
+  await page.click(`#algGroups [data-alg="${id}"]`);
   await page.waitForSelector('#algCube cubus-cube');
   await page.waitForTimeout(300);
 }
+const openSuneDrill = () => openDrill('sune');
 
 before(async () => {
   fixture = await startBrowserFixture();
@@ -389,4 +390,39 @@ test('the demonstration follows the cube in the child\'s hands', async () => {
   await page.click('#algNext');
   await page.waitForTimeout(200);
   assert.notEqual(await tempo(), '1', 'pressing the transport left the demonstration at the following tempo');
+});
+
+test('a turn of the WHOLE cube keeps the chips and the counter on the turn the cube is showing', async () => {
+  // Every case above is Sune, which is face turns only, and there a stop and a printed turn are the same
+  // thing. A turn of the whole cube has no stop of its own (ADR 0004 decision 9) — it plays with the turn
+  // after it — so the Aa perm's eleven printed turns are ten stops, and reading a stop as a chip lit `x`
+  // while the cube showed `x L2`, one chip behind for the rest of the algorithm. `drill-library.test.mjs`
+  // checks the mapping as arithmetic; this checks the page a learner reads.
+  await openDrill('pll-Aa');
+  const chips = await page.evaluate(() => [...document.querySelectorAll('#algMoves button[data-i]')].map((b) => b.textContent.trim()));
+  assert.equal(chips.length, 11, `precondition: Aa prints eleven turns, got ${chips.length}`);
+  assert.match(chips[0], /^x/, `precondition: Aa opens with a turn of the whole cube, got "${chips[0]}"`);
+  const lit = () => page.evaluate(() => {
+    const cur = document.querySelectorAll('#algMoves button.cur');
+    return cur.length === 1 ? Number(cur[0].dataset.i) : cur.length;
+  });
+
+  // One press makes `x` AND `L2`: the second chip is lit and the counter says two turns.
+  await page.click('#algNext');
+  await page.waitForTimeout(300);
+  assert.equal(await lit(), 1, 'one press made two printed turns, and the chip lit is not the second');
+  assert.match(await shown(), /^turn 2 of 11$/, `the counter says "${await shown()}" after x L2`);
+
+  // Pressing a chip seeks to the stop that has made it, and lights THAT chip.
+  await page.click('#algMoves button[data-i="5"]');
+  await page.waitForTimeout(300);
+  assert.equal(await lit(), 5, 'seeking to the sixth turn lit some other chip');
+  assert.match(await shown(), /^turn 6 of 11$/);
+
+  // And the closing `x'`, which ends the sequence, does get a stop of its own: the last chip, the last turn.
+  await page.click('#algMoves button[data-i="10"]');
+  await page.waitForTimeout(300);
+  assert.equal(await lit(), 10, 'the closing turn of the whole cube is not the chip lit at the end');
+  assert.match(await shown(), /^turn 11 of 11$/);
+  assert.equal(await page.evaluate(() => document.querySelector('#algNext').disabled), true, 'the end is not the end');
 });

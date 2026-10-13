@@ -312,15 +312,26 @@ test('a hold table refuses a name it does not hold, in either list', () => {
 });
 
 test('a lesson walk is the scan-frame moves, every chip named for the hold its move is made in — a regrip too', () => {
-  // With face turns only — every rung today — the walk is exactly the renaming it replaced, and each move
-  // is held the way its stage is.
+  let tipped = 0;
+  // The walk is exactly the renaming it replaced, and each step is held the way its stage is. Since the
+  // human-speed tables (2026-10-13) a NAMED algorithm may tip the cube while it runs — Aa is `x … x'`, and
+  // a slice or a wide turn moves the centres — so "white underneath" is asserted at every move of every
+  // other step, and at the start and end of a named one, which is the stage boundary the next step reads.
   for (const [n, rungs] of allRungCombinations().entries()) {
     const scan = Cube.fromString(SOLVED);
     scan.move(randomAlg(lcg(n + 7), 25));
     const { steps, alg } = solveByMethod(cubie(toMethodFrame(scan.asString())), methodFor(rungs));
     const walk = scanFrameWalk(steps);
     const where = `rungs ${JSON.stringify(rungs)}`;
-    assert.equal(faceTurnsAlg(walk.moves), renameAlg(alg, METHOD_TO_SCAN), `${where}: the walk turns the faces the method's alg does`);
+    // Compared as the CUBE each produces, by cubejs, not as strings: a slice is two opposite faces, and
+    // which of the two is written first is arbitrary — `F2 B2` and `B2 F2` are one move — so the two
+    // derivations legitimately disagree on spelling once a lesson can carry an `M`.
+    const byWalk = Cube.fromString(SOLVED);
+    byWalk.move(faceTurnsAlg(walk.moves));
+    const byMethod = Cube.fromString(SOLVED);
+    byMethod.move(renameAlg(alg, METHOD_TO_SCAN));
+    assert.equal(byWalk.asString(), byMethod.asString(), `${where}: the walk turns the faces the method's alg does`);
+    assert.equal(faceTurnsAlg(walk.moves).split(' ').length, alg.split(' ').length, `${where}: the walk and the alg differ in length`);
     assert.equal(walk.holds.length, walk.moves.length + 1, 'one hold more than moves: the hold after the last');
     let k = 0;
     for (const step of steps) {
@@ -332,11 +343,20 @@ test('a lesson walk is the scan-frame moves, every chip named for the hold its m
         // Tumbled, the child's hands and the method's frame agree — through every regrip — so each chip is
         // the method's own letter.
         assert.deepEqual(tokens.map((m, j) => renameAlg(m, walk.holds[k + j])), step.alg.split(' '), `${where}: ${step.stage}`);
-        tokens.forEach((_, j) => assert.equal(walk.holds[k + j][0], 'D', `${where}: white underneath at move ${k + j}`));
+        if (step.kind === 'case') {
+          assert.equal(walk.holds[k][0], 'D', `${where}: white not underneath where ${step.caseName} begins`);
+          assert.equal(walk.holds[k + tokens.length][0], 'D', `${where}: white not underneath where ${step.caseName} ends`);
+          if (tokens.some((_, j) => walk.holds[k + j][0] !== 'D')) tipped += 1;
+        } else {
+          tokens.forEach((_, j) => assert.equal(walk.holds[k + j][0], 'D', `${where}: white underneath at move ${k + j}`));
+        }
       }
       k += tokens.length;
     }
   }
+
+  // Precondition: the relaxation above was exercised — some named algorithm really did tip the cube.
+  assert.ok(tipped > 0, 'no lesson tipped the cube inside a named algorithm, so the boundary rule went untested');
 
   // A regrip in the middle layer. The chips after it are the letters the method wrote — the child's
   // hands and the method's frame agree once tumbled — and the drawing reaches the cube the steps do.

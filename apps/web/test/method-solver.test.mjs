@@ -224,13 +224,14 @@ test('every algorithm in the repertoire is one some cube actually needs', () => 
       }
     }
   }
-  // The HAND-WRITTEN repertoire. The generated tables are excluded, and the reason is not that
+  // The HAND-WRITTEN repertoire. The one-look tables are excluded, and the reason is not that
   // they are hard to cover — it is that sampling is the wrong instrument for them. 57 OLL cases,
-  // 21 PLL and 41 F2L are complete BY CONSTRUCTION, and completeness is the one property a sample
+  // 21 PLL and 41 F2L are complete BY CONSTRUCTION — one row per proved case, which
+  // `human-algs.test.mjs` establishes as a bijection — and completeness is the one property a sample
   // cannot establish: it is the enumeration or it is nothing. `bench/method-solver-profile.mjs
   // exhaustive` is that enumeration — all 62,208 reachable last-layer states, at every last-layer
   // rung, with the per-algorithm counts printed — and it runs nightly in CI.
-  const GENERATED = /^(?:oll|pll|f2l):[0-9a-f]+$/;
+  const GENERATED = /^(?:oll|pll|f2l)-/;
   const handWritten = CASE_NAMES.filter((n) => !GENERATED.test(n));
   const unused = handWritten.filter((name) => !seen.has(name));
   assert.deepEqual(unused, [], `repertoire entries no state needed: ${unused.join(', ')}`);
@@ -250,8 +251,8 @@ test('every algorithm in the repertoire is one some cube actually needs', () => 
     }
   }
   for (const kind of ['oll', 'pll', 'f2l']) {
-    assert.ok([...generatedSeen].some((n) => n.startsWith(`${kind}:`)),
-      `no ${kind} case from the generated table was used — the rung is not reading it`);
+    assert.ok([...generatedSeen].some((n) => n.startsWith(`${kind}-`)),
+      `no ${kind} case from the one-look table was used — the rung is not reading it`);
   }
 });
 
@@ -892,6 +893,9 @@ test('a step that is not a step is refused by name, not by TypeError', () => {
     [(steps) => steps.push({ stage: 'only', alg: 'R x U' }), /step 0: puts F on top/],
     [(steps) => steps.push({ stage: 'only', alg: "x U x'" }), /step 0: puts F on top/],
     [(steps) => steps.push({ stage: 'only', alg: 'M2' }), /step 0: puts D on top/],
+    // A named algorithm may tip the cube WHILE it runs — and still may not leave it tipped.
+    [(steps) => steps.push({ stage: 'only', kind: 'case', alg: 'x U' }), /step 0: leaves F on top — a named algorithm/],
+    [(steps) => steps.push({ stage: 'only', kind: 'case', alg: 'M2' }), /step 0: leaves D on top — a named algorithm/],
     [(steps) => steps.push({ stage: 'only', alg: 'R', hold: ['U', 'F'] }), /step 0: carries a hold of its own/],
     [(steps) => steps.push({ alg: 'R' }), /step 0: names no stage/],
   ];
@@ -902,6 +906,28 @@ test('a step that is not a step is refused by name, not by TypeError', () => {
       String(message),
     );
   }
+});
+
+test('a named algorithm may tip the cube while it runs, and is adopted when it ends upright', () => {
+  // The speedcubers' algorithms tip the cube as a matter of course — Aa is `x L2 D2 … x'` — and the child
+  // is asked nothing in the middle of one. The same sequence NOT named as a case is still refused above.
+  const state = applyAlg(SOLVED, "F'");
+  const stage = (kind) => ({
+    id: 'only',
+    keep: () => true,
+    contract: () => true,
+    run: (cube, steps) => { steps.push({ stage: 'only', kind, alg: "x U x'" }); return applyAlg(cube, 'F'); },
+  });
+  const solved = solveByMethod(state, { id: 'test', rungs: {}, stages: [stage('case')] });
+  // The step keeps what the child DOES; the solve's whole-cube line is the face turn that amounts to.
+  assert.equal(solved.steps[0].alg, "x U x'");
+  assert.equal(solved.alg, 'F');
+  assert.deepEqual([...solved.steps[0].hold], ['U', 'F'], 'the step was made in the hold the solve began in');
+  assert.throws(
+    () => solveByMethod(state, { id: 'test', rungs: {}, stages: [stage(undefined)] }),
+    (e) => e.name === 'MethodSolverError' && /step 0: puts F on top/.test(e.target),
+    'the exemption reached a step that is not a named algorithm',
+  );
 });
 
 test('a predicate cannot edit the cube it is asked about', () => {

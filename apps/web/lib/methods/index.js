@@ -18,7 +18,7 @@
 // @property {string} why                           the stage's reason key, for the move list heading
 // @property {(state, steps) => object} run         the stage itself
 
-import { F2L_CASES, FULL_OLL, FULL_PLL } from '../data/case-tables.js';
+import { HUMAN_F2L, HUMAN_OLL, HUMAN_PLL } from '../data/human-algs.js';
 import { CROSS_ALGS, CROSS_RUNGS } from './cross.js';
 import { LAST_LAYER_EXTRAS, OLL_ALGS, OLL_RUNGS, PLL_ALGS, PLL_RUNGS } from './last-layer.js';
 import { PAIRS_ALGS, PAIRS_EXTRAS, PAIRS_RUNGS } from './pairs.js';
@@ -91,12 +91,13 @@ export const CASE_NAMES = Object.freeze(
   // something outside this list is the defect the check exists to catch. It is NOT in `PLL_ALGS`,
   // because that is the set of algorithms a learner memorises and an alignment is not one.
   //
-  // The generated tables are here too, for the same reason and with one difference: their entries
-  // are KEYS rather than names — `oll:00120011` — so they can be emitted on a step and must be
-  // accounted for, but they are never shown. `method-lesson.js` carries the distinction, and its
-  // display table is held against exactly the non-generated part of this list.
+  // The one-look tables are here too, for the same reason and with one difference: they are the
+  // algorithms speedcubers learn (`lib/data/human-algs.js`), named `oll-27`, `pll-T`, `f2l-1`, and their
+  // display name is the community's — "OLL 27", "T perm" — carried by the table, not by `CASE_TEXT`.
+  // The proved fewest-turn tables are NOT here: no rung emits them any more (owner's decision,
+  // 2026-10-13), so a name from them on a step would be the defect this list exists to catch.
   [
     ...CROSS_ALGS, ...PAIRS_ALGS, ...PAIRS_EXTRAS, ...OLL_ALGS, ...PLL_ALGS, ...LAST_LAYER_EXTRAS,
-    ...FULL_OLL, ...FULL_PLL, ...F2L_CASES,
+    ...HUMAN_OLL, ...HUMAN_PLL, ...HUMAN_F2L,
   ].map((entry) => entry.name),
 );

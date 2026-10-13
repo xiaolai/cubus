@@ -22,7 +22,8 @@
 // and goes when the screen does).
 import { $, escHtml, icon } from '../../app-state.js';
 import { invert, movesOf } from '../../cube-pieces.js';
-import { ALG_ENTRIES, entriesForRungs } from '../../alg-catalogue.js';
+import { readToken } from '../../cube-notation.js';
+import { ALG_ENTRIES, entriesForRungs, entryById } from '../../alg-catalogue.js';
 import { SECTION_NAME, caseNameOf, purposeFor } from '../../method-lesson.js';
 import { DETAIL_PICTURE, LIST_PICTURE, caseTitle, lastLayer, pictureKind, pictureSvg, readByPicture } from '../../alg-picture.js';
 import { STAGE_IDS } from '../../method-solver.js';
@@ -89,27 +90,51 @@ const caseSubject = (facelets) => Object.freeze({
  * frame letters under a scan-frame hold, which is ADR 0004's trap and would have a child turning
  * the wrong face.
  *
- * Verified over all 137 entries: doing these turns from solved reaches the arrangement `shown`
+ * Verified over the whole catalogue: doing these turns from solved reaches the arrangement `shown`
  * solves, and it is the same arrangement the twin on screen is drawn in (`drill-library.test.mjs`).
  */
 export const setupMoves = (entry) => invert(entry.shown);
 
 /** A face letter is a POSITION in the hold in force, never a colour (ADR 0004) — so the words are
- *  positional too. Throws on anything that is not a plain face turn: the catalogue contains only
- *  the 18, and a slice or a whole-cube turn reaching here would be a silent mis-description. */
+ *  positional too. Throws on anything the notation does not read: a token reaching here unread would be
+ *  a silent mis-description.
+ *
+ *  FOUR KINDS OF TURN, since the human-speed algorithms (2026-10-13): a face; a WIDE turn, the face and
+ *  the middle layer next to it (`r`, `Rw`); a SLICE, a middle layer alone, which the notation defines by
+ *  the face it turns like (`M` like L, `E` like D, `S` like F); and the WHOLE CUBE (`x` like R, `y` like U,
+ *  `z` like F). The direction is always said of the face it is named after, which is how the notation
+ *  itself defines it — "clockwise" of a middle layer has no face to be seen from. */
 const FACE_WORD = Object.freeze({ R: 'right-hand', L: 'left-hand', U: 'top', D: 'bottom', F: 'front', B: 'back' });
+const SLICE_LIKE = Object.freeze({ M: 'L', E: 'D', S: 'F' });
+const ROTATION_LIKE = Object.freeze({ x: 'R', y: 'U', z: 'F' });
 export function turnWords(move) {
-  const face = FACE_WORD[move[0]];
-  if (!face || !/^[RLUDFB](2|')?$/.test(move)) throw new Error(`drill: no words for the turn "${move}"`);
-  const how = move.endsWith('2') ? t('a half turn')
-    : move.endsWith("'") ? t('a quarter turn anticlockwise')
+  // READ BY THE NOTATION'S OWN READER, so every spelling it accepts (`2Rw`, `R2'`) has words and nothing it
+  // refuses does. A second grammar here had already drifted: it threw on `2Rw`, which the reader accepts.
+  const read = readToken(move).move;
+  if (!read) throw new Error(`drill: no words for the turn "${move}"`);
+  const letter = read.token.replace(/^\d/, '')[0];
+  const how = read.turns === 2 ? t('a half turn')
+    : read.token.endsWith("'") ? t('a quarter turn anticlockwise')
       : t('a quarter turn clockwise');
-  return t('%1 face, %2', t(face), how);
+  if (read.kind === 'slice') return t('the middle layer, turned like the %1 face, %2', t(FACE_WORD[SLICE_LIKE[letter]]), how);
+  if (read.kind === 'rotation') return t('the whole cube, turned like the %1 face, %2', t(FACE_WORD[ROTATION_LIKE[letter]]), how);
+  const face = t(FACE_WORD[letter.toUpperCase()]);
+  return read.kind === 'wide'
+    ? t('%1 face and the middle layer next to it, %2', face, how)
+    : t('%1 face, %2', face, how);
 }
 
 /** The alphabet, once, on the one screen where a learner reads turns off a page. Positional, for
  *  `turnWords`' reason. */
 export const NOTATION_LINE = 'Each letter is a face in the hold above — R right, L left, U top, D bottom, F front, B back — turned a quarter clockwise. An apostrophe means anticlockwise, a 2 means half a turn.';
+
+/** The rest of the alphabet, said only on a page whose turns use it — a learner on Sune is not handed
+ *  three kinds of turn they will not meet. */
+export const MORE_NOTATION_LINE = 'A small letter turns that face and the middle layer next to it together. M, E and S turn a middle layer alone — M the way L turns, E the way D turns, S the way F turns. x, y and z turn the whole cube the way R, U and F turn.';
+
+/** Whether a page's turns need `MORE_NOTATION_LINE`: any turn that is not one of a face's eighteen. */
+export const needsMoreNotation = (entry) => [...movesOf(entry.shown), ...movesOf(setupMoves(entry))]
+  .some((m) => !/^[URFDLB](2|')?$/.test(m));
 
 /** The two scopes, and what each is called. */
 export const SCOPES = Object.freeze({
@@ -123,11 +148,20 @@ export function entriesForScope(scope, rungs = settings.rungs) {
 }
 
 /** The list, grouped into the four dials in walking order. Empty dials are dropped rather than drawn
- *  as a heading with nothing under it. */
+ *  as a heading with nothing under it.
+ *
+ *  WITHIN A DIAL, THE TAUGHT ALGORITHMS FIRST AND THE OTHER WAYS AFTER (owner, 2026-10-13: human-speed
+ *  first, fewer turns second). An alternative is a proved fewest-turn sequence for a case the lessons
+ *  teach another way; it is its own group, after its dial's, so the list a learner scans is the one their
+ *  lessons use and the rest is plainly marked as something else. */
 export function groupsFor(entries) {
-  return STAGE_IDS
-    .map((dial) => ({ dial, name: SECTION_NAME[dial](), entries: entries.filter((e) => e.dial === dial) }))
-    .filter((g) => g.entries.length > 0);
+  return STAGE_IDS.flatMap((dial) => {
+    const mine = entries.filter((e) => e.dial === dial);
+    return [
+      { dial, name: SECTION_NAME[dial](), entries: mine.filter((e) => e.primary), other: false },
+      { dial, name: t('%1 — other ways', SECTION_NAME[dial]()), entries: mine.filter((e) => !e.primary), other: true },
+    ];
+  }).filter((g) => g.entries.length > 0);
 }
 
 /**
@@ -152,9 +186,15 @@ export function groupsFor(entries) {
  */
 const entryCard = (e) => {
   const name = caseNameOf(e.id);
+  // A HUMAN-SPEED CASE HAS BOTH: the community's name, which is what a learner searches a sheet for, and
+  // the picture, which is what they recognise on the cube. A hand-written algorithm has a name and no
+  // case to draw; a proved alternative has a picture and no name.
+  const picture = pictureKind(e) === 'top'
+    ? `<div style="display:flex;justify-content:center">${pictureSvg(e, { palette: settings.palette, scheme: settings.scheme, width: LIST_PICTURE })}</div>`
+    : '';
   const face = name
-    ? `<div style="font-weight:600">${escHtml(name)}</div>`
-    : `<div style="display:flex;justify-content:center">${pictureKind(e) === 'top' ? pictureSvg(e, { palette: settings.palette, scheme: settings.scheme, width: LIST_PICTURE }) : ''}</div>`;
+    ? `<div style="font-weight:600">${escHtml(name)}</div>${picture}`
+    : picture || '<div style="display:flex;justify-content:center"></div>';
   // A NAME, THEN ITS TURNS. The two lines are siblings inside the button, so the accessible name was
   // their text run together — "sune R U R' U R U2 R'" — which a screen reader reads as one phrase.
   // Named explicitly, and the picture cases say so rather than reading out as bare turns.
@@ -169,7 +209,7 @@ const entryCard = (e) => {
   </button>`;
 };
 
-const groupBlock = (g) => `<div data-dial="${escHtml(g.dial)}">
+const groupBlock = (g) => `<div data-dial="${escHtml(g.dial)}"${g.other ? ' data-other="true"' : ''}>
   <div class="eyebrow">${escHtml(g.name)} · ${escHtml(plural(g.entries.length, { one: '%1 algorithm', other: '%1 algorithms' }))}</div>
   <!-- NO LIST ROLE HERE. Its children are buttons, not list items, so declaring one described a
        structure that was not there (audit, 2026-09-29). The grid is a grid, and the eyebrow above
@@ -232,7 +272,7 @@ export const caseWorthSaying = (entry) => readByPicture(entry) && lastLayer(entr
  * The algorithm acting on its own case, as a script the player can drive.
  *
  * The letters are the ones on the card, in the hold the card names, so what a child watches is what
- * they are asked to turn. Verified over all 137: every demonstration ends SOLVED, because a case is
+ * they are asked to turn. Verified over the whole catalogue: every demonstration ends SOLVED, because a case is
  * its algorithm undone from solved.
  */
 export function demoScript(entry) {
@@ -243,43 +283,111 @@ export function demoScript(entry) {
   });
 }
 
+/**
+ * Which printed turn the demonstration has just made at `position` — an index into the chips, or -1
+ * before the first.
+ *
+ * A POSITION IS NOT A TURN. A turn of the whole cube has no stop of its own unless it ends the
+ * sequence (ADR 0004 decision 9): it plays with the turn after it. So `y' U R' …` (F2L 13) has a stop
+ * after `U` and none after `y'`, and reading the position as the chip index lit `y'` while the cube
+ * showed `U` — one chip behind for the rest of the algorithm. Every face-turn algorithm hid this,
+ * because there positions and turns coincide. The script records how many turns each position has
+ * made, which is the answer.
+ */
+export const turnAt = (script, position) => (script.positions[position]?.moves ?? 0) - 1;
+
+/** The demonstration position at which printed turn `i` has just been made: the first stop that has made
+ *  it, so pressing a `y'` chip lands where the `y'` is done, which is the stop of the turn after it. */
+export function positionOfTurn(script, i) {
+  const at = script.positions.findIndex((p) => p.moves >= i + 1);
+  if (at < 0) throw new Error(`drill: no position makes turn ${i + 1}`);
+  return at;
+}
+
 /** One sentence per verdict, for the live drill. `unknown` is never "wrong". */
 export function statusFor(event) {
   if (!event) return '';
-  // WHICH NUMBERED STEP THE CHILD IS ON CHANGES EVERY SENTENCE HERE. The page prints two — build the
-  // case, then solve it — and a cue that says "that turn is not in this algorithm" while a child is
-  // building the case names the wrong thing they did wrong. The phase comes from the attempt, which
-  // measured it; nothing here infers it.
-  // THREE WAYS, NOT TWO. An event that did not SAY which step it came from gets wording that is
-  // true in either one — the alternative is a sentence naming a step nothing measured, which is the
-  // same defect as naming a cause. Nothing the attempt emits is phase-less; this is what keeps a
-  // future caller that forgets from being given a confident answer.
-  const phase = event.phase ?? null;
-  switch (event.kind) {
-    // The one refusal before anything is under way: a drill starts from a solved cube.
-    case 'waiting': return event.why ? t('%1.', capitalise(event.why)) : '';
-    case 'ready':
-      if (phase === 'setup') return t('Your cube is solved. Set the case up with the turns above.');
-      if (phase === 'solve') return t('The case is set up. Now solve it.');
-      return t('Turn your cube when you are ready.');
-    case 'running': case 'progress': return phase === 'setup'
-      ? t('Setting up: %1 of %2 turns.', event.at, event.of)
-      : t('%1 of %2 turns.', event.at, event.of);
-    case 'off': {
-      const what = phase === 'setup'
-        ? t('That turn is not in the set-up.')
-        : phase === 'solve'
-          ? t('That turn is not in this algorithm.')
-          : t('That turn is not in this drill.');
-      return event.recovery ? t('%1 Undo it with %2.', what, event.recovery) : what;
-    }
-    case 'uncertain': return t('I lost track of your cube. Show it to the camera again.');
-    // AN ENDED ATTEMPT IS TERMINAL, and saying nothing made it look like the drill was still
-    // running. It is NOT the same as `uncertain`: showing the cube again does not revive it, so the
-    // sentence names the one thing that does (audit, 2026-09-29).
-    case 'ended': return t('The drill stopped because your cube stopped being followed. Choose it again to start over.');
-    case 'done': return t('Done.');
-    default: return '';
+  // `hasOwn`, never `STATUS[kind]` alone: a kind of `constructor` would resolve to a function.
+  return Object.hasOwn(STATUS, event.kind) ? STATUS[event.kind](event, event.phase ?? null) : '';
+}
+
+/**
+ * One sentence per event kind, given the event and its PHASE.
+ *
+ * WHICH NUMBERED STEP THE CHILD IS ON CHANGES EVERY SENTENCE HERE. The page prints two — build the case,
+ * then solve it — and a cue that says "that turn is not in this algorithm" while a child is building the
+ * case names the wrong thing they did wrong. The phase comes from the attempt, which measured it; nothing
+ * here infers it.
+ * THREE WAYS, NOT TWO. An event that did not SAY which step it came from (phase null) gets wording that is
+ * true in either one — the alternative is a sentence naming a step nothing measured, which is the same
+ * defect as naming a cause. Nothing the attempt emits is phase-less; this is what keeps a future caller
+ * that forgets from being given a confident answer.
+ */
+const byPhase = (phase, { setup, solve, either }) => (phase === 'setup' ? setup() : phase === 'solve' ? solve() : either());
+const counting = (event, phase) => (phase === 'setup'
+  ? t('Setting up: %1 of %2 turns.', event.at, event.of)
+  : t('%1 of %2 turns.', event.at, event.of));
+const STATUS = Object.freeze({
+  // The one refusal before anything is under way: a drill starts from a solved cube.
+  waiting: (event) => (event.why ? t('%1.', capitalise(event.why)) : ''),
+  ready: (_, phase) => byPhase(phase, {
+    setup: () => t('Your cube is solved. Set the case up with the turns above.'),
+    solve: () => t('The case is set up. Now solve it.'),
+    either: () => t('Turn your cube when you are ready.'),
+  }),
+  running: counting,
+  progress: counting,
+  off: (event, phase) => {
+    const what = byPhase(phase, {
+      setup: () => t('That turn is not in the set-up.'),
+      solve: () => t('That turn is not in this algorithm.'),
+      either: () => t('That turn is not in this drill.'),
+    });
+    return event.recovery ? t('%1 Undo it with %2.', what, event.recovery) : what;
+  },
+  uncertain: () => t('I lost track of your cube. Show it to the camera again.'),
+  // AN ENDED ATTEMPT IS TERMINAL, and saying nothing made it look like the drill was still running. It is
+  // NOT the same as `uncertain`: showing the cube again does not revive it, so the sentence names the one
+  // thing that does (audit, 2026-09-29).
+  ended: () => t('The drill stopped because your cube stopped being followed. Choose it again to start over.'),
+  done: () => t('Done.'),
+});
+
+/**
+ * What the transport shows, read off the driver: `{ made, turns, playing, atStart, atEnd }`.
+ *
+ * Counted in PRINTED TURNS, the same unit as the chips the label sits above — not in positions, which a
+ * turn of the whole cube does not get one of (`turnAt`).
+ */
+export function transportView(demo, script, entry) {
+  const at = demo.position;
+  return {
+    made: turnAt(script, at) + 1,
+    turns: movesOf(entry.shown).length,
+    playing: demo.playing,
+    atStart: at <= 0,
+    atEnd: at >= demo.track.states.length - 1,
+  };
+}
+
+/** Put a `transportView` on the page. Each control is optional, because a screen torn down mid-tick has
+ *  none of them. */
+function drawTransport(root, { made, turns, playing, atStart, atEnd }) {
+  const label = $('#algAt', root);
+  if (label) label.textContent = t('turn %1 of %2', made, turns);
+  const bar = $('#algProg', root);
+  if (bar) bar.style.width = `${turns > 0 ? Math.round((made / turns) * 100) : 0}%`;
+  $('#algPlay', root)?.setAttribute('aria-pressed', String(playing));
+  const back = $('#algBack', root);
+  if (back) back.disabled = atStart;
+  const next = $('#algNext', root);
+  if (next) next.disabled = atEnd;
+  // THE CHIP FOR THE TURN JUST MADE, which is what a learner reads position off — the same mark the walk
+  // puts on its own chips. `cur`, WHICH IS THE CLASS THE STYLESHEET DEFINES. `on` matched no rule, so the
+  // turn a learner is meant to be reading had no mark at all — and the selector swept the set-up spans in
+  // as well, whose `data-i` is undefined (audit, 2026-09-29).
+  for (const chip of root.querySelectorAll('#algMoves button[data-i]')) {
+    chip.classList.toggle('cur', Number(chip.dataset.i) === made - 1);
   }
 }
 
@@ -378,12 +486,46 @@ export function drillPageHtml(entry, { status = '', timing = null } = {}) {
              which a test asserts. NO BACKTICK IN THIS COMMENT: it is inside a template literal, and
              a backticked word here ends the literal. That is exactly how it was written wrong. -->
         <div class="sub" id="algOrder" style="color:var(--ink-3);line-height:1.5">${escHtml(t('%1 of these in a row brings your cube back to where it started.', entry.effect.order))}</div>
-        <div class="sub" id="algNotation" style="color:var(--ink-4);line-height:1.5">${escHtml(t(NOTATION_LINE))}</div>
+        ${otherWayHtml(entry)}
+        <div class="sub" id="algNotation" style="color:var(--ink-4);line-height:1.5">${escHtml(t(NOTATION_LINE))}${needsMoreNotation(entry) ? ` ${escHtml(t(MORE_NOTATION_LINE))}` : ''}</div>
         <div class="sub" id="algStatus" role="status" aria-live="polite" style="color:var(--ink-3);min-height:1.4em">${escHtml(status)}</div>
         <div class="sub num" id="algTime" style="color:var(--ink-4)">${escHtml(timing ?? '')}</div>
       </div>
     </div>
   </div>`;
+}
+
+/**
+ * The case's OTHER algorithm, as a link — or nothing.
+ *
+ * On a taught algorithm: the proved one, but only where `alg-catalogue.js` measured it strictly fewer
+ * turns on THIS page's case, counting any turn of the top it needs first. The sentence says "fewer
+ * turns" and nothing else about it — not "the shortest", which is a claim only three places in the app
+ * may make (AGENTS.md §1), and not "harder", which nothing here measured.
+ *
+ * On a proved alternative: the way back to the algorithm the lessons teach, by its community name.
+ * Both are `data-alg` buttons, so the chooser's own click rule opens them.
+ */
+export function otherWayHtml(entry) {
+  if (entry.fewer) {
+    const other = entryById(entry.fewer.id);
+    return `<div class="sub" id="algFewer" style="color:var(--ink-3);line-height:1.5">
+      ${escHtml(entry.fewer.align === 0
+    ? t('Fewer turns: %1 instead of %2.', entry.fewer.turns, entry.turns)
+    : t('Fewer turns: %1 instead of %2, counting %3 to line the case up.', entry.fewer.turns, entry.turns,
+      plural(entry.fewer.align, { one: 'one turn of the top', other: '%1 turns of the top' })))}
+      <button class="chip-m flat" data-alg="${escHtml(other.id)}" aria-label="${escHtml(t('Open the algorithm with fewer turns: %1', other.shown))}">${escHtml(other.shown)}</button>
+    </div>`;
+  }
+  if (entry.usual) {
+    const usual = entryById(entry.usual);
+    const name = caseNameOf(usual.id) ?? usual.shown;
+    return `<div class="sub" id="algUsual" style="color:var(--ink-3);line-height:1.5">
+      ${escHtml(t('The lessons teach this case as %1.', name))}
+      <button class="chip-m flat" data-alg="${escHtml(usual.id)}" aria-label="${escHtml(t('Open %1', name))}">${escHtml(usual.shown)}</button>
+    </div>`;
+  }
+  return '';
 }
 
 /**
@@ -448,6 +590,8 @@ let scope = 'rung';
 export function mountLibrary(root, { make = createDrillAttempt, signal, go = () => {} } = {}) {
   let attempt = null;
   let demo = null;
+  /** The demonstration's built script, kept for its positions' turn counts (`turnAt`). */
+  let script = null;
   /** The demonstration's element, kept so the tempo can be changed while a hand is driving it. */
   let cubeEl = null;
   /** True while the demonstration is mirroring a real cube rather than being played. */
@@ -489,29 +633,11 @@ export function mountLibrary(root, { make = createDrillAttempt, signal, go = () 
   }
 
   /** The transport, the progress bar, the step count and which chip is lit — all from the driver,
-   *  which emits nothing, so they are asked for rather than pushed. */
+   *  which emits nothing, so they are asked for rather than pushed. Drawn, then kept polled while the
+   *  demonstration plays. */
   function showTransport() {
     if (!demo || gone) return;
-    const at = demo.position;
-    const of = demo.track.states.length - 1;
-    const label = $('#algAt', root);
-    if (label) label.textContent = t('turn %1 of %2', at, of);
-    const bar = $('#algProg', root);
-    if (bar) bar.style.width = `${of > 0 ? Math.round((at / of) * 100) : 0}%`;
-    const play = $('#algPlay', root);
-    if (play) play.setAttribute('aria-pressed', String(demo.playing));
-    const back = $('#algBack', root);
-    if (back) back.disabled = at <= 0;
-    const next = $('#algNext', root);
-    if (next) next.disabled = at >= of;
-    // THE CHIP FOR THE TURN JUST MADE, which is what a learner reads position off — the same mark
-    // the walk puts on its own chips.
-    // `cur`, WHICH IS THE CLASS THE STYLESHEET DEFINES. `on` matched no rule, so the turn a
-    // learner is meant to be reading had no mark at all — and the selector swept the set-up spans
-    // in as well, whose `data-i` is undefined (audit, 2026-09-29).
-    for (const chip of root.querySelectorAll('#algMoves button[data-i]')) {
-      chip.classList.toggle('cur', Number(chip.dataset.i) === at - 1);
-    }
+    drawTransport(root, transportView(demo, script, entry));
     if (demo.playing && ticking === null) {
       ticking = setInterval(() => {
         if (gone || !demo) { stopTicking(); return; }
@@ -623,7 +749,7 @@ export function mountLibrary(root, { make = createDrillAttempt, signal, go = () 
     if (id === 'algNext') demo.next();
     if (id === 'algBack') demo.back();
     if (id === 'algReplay') { demo.seek(0); demo.play({ every: REVEAL_GAP }); }
-    if (index !== undefined) demo.seek(index + 1);
+    if (index !== undefined) demo.seek(positionOfTurn(script, index));
     showTransport();
   }
 
@@ -733,7 +859,8 @@ export function mountLibrary(root, { make = createDrillAttempt, signal, go = () 
       //
       // The gap is still honoured for the FIRST stop, where nothing is in flight — the clock's own rule.
       const clock = createWalkClock(el);
-      demo = createStopDriver(demoScript(entry), { cube: el, owned: OWNED_VIEW, schedule: clock.schedule });
+      script = demoScript(entry);
+      demo = createStopDriver(script, { cube: el, owned: OWNED_VIEW, schedule: clock.schedule });
       // THE SCREEN'S ONE STEP LISTENER, which tells the clock a turn has landed and repaints the
       // transport from the position that just arrived. Signalled, because `<cubus-cube>` is parked and
       // re-used: an unscoped listener would arrive at the next screen still driving this one.
@@ -749,27 +876,41 @@ export function mountLibrary(root, { make = createDrillAttempt, signal, go = () 
   }
 
   const opts = signal ? { signal } : {};
+  /** The presses that change WHICH page is drawn: each sets the screen's choice, and the page is redrawn. */
+  const NAVIGATION = [
+    ['[data-alg]', (el) => { chosen = el.dataset.alg; }],
+    ['#algBackToList', () => { chosen = null; }],
+    ['#scopeRung', () => { scope = 'rung'; }],
+    ['#scopeAll', () => { scope = 'all'; }],
+  ];
+
+  /** A press on one of the algorithm's chips. THE ALGORITHM'S CHIPS ONLY. The set-up turns are `.chip-m`
+   *  spans too, and they carry no `data-i` — clicking one passed NaN to `seek`, which threw "script-drive:
+   *  null is not a position" and stopped playback (audit, 2026-09-29). Matched by the row that owns them,
+   *  and the index is checked rather than trusted, because a chip is markup and markup can change. */
+  const pressChip = (chip) => {
+    const i = Number(chip.dataset.i);
+    if (Number.isInteger(i) && i >= 0) drive(null, i);
+  };
+
+  /** A press on the transport. The restart is OUTSIDE `drive`, which returns early with no demonstration: a
+   *  page whose cube slot never mounted still has a live attempt to start again. */
+  const pressTransport = (button) => {
+    if (button.id === 'algReplay') restart();
+    drive(button.id);
+  };
+
   root.addEventListener('click', (e) => {
     if (gone) return;
-    const card = e.target.closest?.('[data-alg]');
-    if (card) { chosen = card.dataset.alg; go(); return; }
-    if (e.target.closest?.('#algBackToList')) { chosen = null; go(); return; }
-    if (e.target.closest?.('#scopeRung')) { scope = 'rung'; go(); return; }
-    if (e.target.closest?.('#scopeAll')) { scope = 'all'; go(); return; }
-    // THE ALGORITHM'S CHIPS ONLY. The set-up turns are `.chip-m` spans too, and they carry no
-    // `data-i` — clicking one passed NaN to `seek`, which threw "script-drive: null is not a
-    // position" and stopped playback (audit, 2026-09-29). Matched by the row that owns them, and
-    // the index is checked rather than trusted, because a chip is markup and markup can change.
-    const chip = e.target.closest?.('#algMoves button[data-i]');
-    if (chip) {
-      const i = Number(chip.dataset.i);
-      if (Number.isInteger(i) && i >= 0) drive(null, i);
-      return;
+    const at = (selector) => e.target.closest?.(selector) ?? null;
+    for (const [selector, choose] of NAVIGATION) {
+      const el = at(selector);
+      if (el) { choose(el); go(); return; }
     }
-    const tbtn = e.target.closest?.('.transport button');
-    // The restart is OUTSIDE `drive`, which returns early with no demonstration: a page whose cube
-    // slot never mounted still has a live attempt to start again.
-    if (tbtn) { if (tbtn.id === 'algReplay') restart(); drive(tbtn.id); }
+    const chip = at('#algMoves button[data-i]');
+    if (chip) { pressChip(chip); return; }
+    const button = at('.transport button');
+    if (button) pressTransport(button);
   }, opts);
 
   return {

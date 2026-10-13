@@ -7,8 +7,9 @@
 // is the length of an array, and the engine never learns which it got.
 //
 //   OLL rung 0  two-look: orient the edges, then the corners. 6 algs, 2 steps.
-//   OLL rung 1  full OLL — 57 algs, 1 step. The table is generated and proved; see
-//               lib/data/case-tables.js and crates/optimal-solver.
+//   OLL rung 1  full OLL — 57 algs, 1 step. The algorithms speedcubers learn, sourced in
+//               lib/data/human-algs.js. The proved fewest-turn table (lib/data/case-tables.js,
+//               crates/optimal-solver) is what each of them is checked against, not what is taught.
 //   PLL rung 0  two-look: permute the corners, then the edges. 5 algs, 2 steps.
 //   PLL rung 1  full PLL — 21 algs, 1 step. Likewise.
 //
@@ -20,7 +21,7 @@
 // 62,208 reachable last-layer states and every one of them is reached by these tables.
 
 import { applyAlg } from '../cube-pieces.js';
-import { FULL_OLL, FULL_PLL } from '../data/case-tables.js';
+import { HUMAN_OLL, HUMAN_PLL } from '../data/human-algs.js';
 import {
   AUF, MethodSolverError, U_CORNERS, U_EDGES, firstTwoLayers, fromRepertoire, repertoire,
   topCornersHome, topCornersOriented, topEdgesOriented, wholeCubeSolved,
@@ -29,8 +30,9 @@ import {
 /** Orienting the last-layer edges. One alg, applied up to three times. */
 const EOLL = [{ name: 'edge-orient', alg: "F R U R' U' F'" }];
 
-/** Orienting the last-layer corners — the seven cases of two-look OLL, in face turns only
- *  (no wide or slice moves, because the renderer and the move list only speak face turns). */
+/** Orienting the last-layer corners — the seven cases of two-look OLL, in face turns only. The beginner
+ *  table keeps to face turns by choice, so the first algorithms a child meets need no notation beyond the
+ *  six faces; the one-look table below is where wide turns and slices come in. */
 const OCLL = [
   { name: 'sune', alg: "R U R' U R U2 R'" },
   { name: 'antisune', alg: "R U2 R' U' R U' R'" },
@@ -169,7 +171,7 @@ const runLooks = (looks) => (state, steps) => {
     let cursor = state;
     for (const used of found.used) {
       const names = l.names(cursor);
-      cursor = applyAlg(cursor, used.alg);
+      cursor = applyAlg(cursor, used.pieces ?? used.alg);
       // Only the LAST application reaches the look's goal. Captioning the first of three
       // edge-orient steps "make a cross on the top face" describes a thing that will not have
       // happened when it finishes, and "this finishes the cube" on a step that does not is the
@@ -192,6 +194,10 @@ const runLooks = (looks) => (state, steps) => {
 /** Everything the first two layers hold, plus whatever else this look demands. */
 const guard = (extra) => (s) => firstTwoLayers(s) && extra(s);
 
+/** The whole top face one colour — what both OLL rungs are for, asked of the cube. ONE definition, which the
+ *  two-look goal, the one-look goal and the stage contract all read. */
+const topOriented = (s) => topCornersOriented(s) && topEdgesOriented(s);
+
 const TWO_LOOK_OLL = Object.freeze([
   // 1. Orient the edges — the cross on top. Up to three applications; each one is its own step.
   look({
@@ -203,7 +209,7 @@ const TWO_LOOK_OLL = Object.freeze([
   look({
     stage: 'top-face', target: 'corners', algs: OCLL, plies: 2,
     reached: topCornersOriented,
-    goal: guard((s) => topCornersOriented(s) && topEdgesOriented(s)),
+    goal: guard(topOriented),
     why: 'topFace.orient',
     names: focus({ corners: namedCorners((st, slot) => st.co[slot] !== 0) }),
   }),
@@ -224,24 +230,22 @@ const TWO_LOOK_PLL = Object.freeze([
   }),
 ]);
 
-/** The whole top face one colour — what both OLL rungs are for, asked of the cube. */
-const topOriented = (s) => topCornersOriented(s) && topEdgesOriented(s);
-
 /** One look, 57 algorithms: recognise the case and finish the top face in one go.
  *
- *  The algorithms are proved minimal, so this rung is not merely fewer STEPS than two-look — it is
- *  fewer moves as well, which is the thing a flat ladder would fail (§10). */
+ *  THE ALGORITHMS SPEEDCUBERS LEARN, not the proved fewest-turn ones (owner's decision, 2026-10-13:
+ *  human-speed first, fewer turns second). Of the 57 proved answers, 43 turn the back, bottom or left
+ *  face — a sequence nobody's hands are taught. What this rung gives up is a few turns a case; what it
+ *  gets is the algorithm a learner will find on every sheet and video, under the same number. */
 const FULL_OLL_LOOK = Object.freeze([
   look({
-    stage: 'top-face', target: 'corners', algs: FULL_OLL, plies: 1,
-    // ALL FOUR ROTATIONS, and the argument against them was about the wrong thing. The table is
-    // complete, so a rotated variant of an entry is indeed another entry's case — coverage needs
-    // no rotations. LENGTH does: the case's own entry is minimal for the alignment the generator
-    // chose, and reaching that alignment costs a pre-AUF, while a y-rotated sibling may reach the
-    // same case needing none. Measured over 60 cubes: 22.45 moves per last layer without them and
-    // 21.22 with, for 2.3 ms a solve. The repertoire is built once at module load, so the four
-    // copies cost search time and nothing else.
-    options: {},
+    stage: 'top-face', target: 'corners', algs: HUMAN_OLL, plies: 1,
+    // NO ROTATED COPIES, and this reverses a measured choice on purpose. With the proved table, the four
+    // y-relabelled copies of each entry shortened a last layer from 22.45 to 21.22 moves by reaching a
+    // case without its pre-AUF. A relabelled copy of a human algorithm is the same hands moved to the
+    // back and left — `R U R'` becoming `B U B'` — which is the exact thing this table exists to stop
+    // teaching. The table is complete without them; the top is turned to line the case up instead.
+    // (And `repertoire` refuses to relabel a wide turn or a slice at all: it relabels face letters only.)
+    options: { rotations: [0] },
     reached: topOriented, goal: guard(topOriented), why: 'topFace.orient',
     // Both kinds, because a one-look OLL is about both — an edge that needs flipping and a corner
     // that needs twisting are the same step here, and pointing at only the corners would leave the
@@ -253,14 +257,15 @@ const FULL_OLL_LOOK = Object.freeze([
   }),
 ]);
 
-/** One look, 21 algorithms: the whole last layer into place, plus the turn that lines it up. */
+/** One look, 21 algorithms: the whole last layer into place, plus the turn that lines it up. The
+ *  human-speed table, for full OLL's reason above. */
 const FULL_PLL_LOOK = Object.freeze([
   look({
-    stage: 'top-edges', target: 'permute', algs: [...FULL_PLL, ...ALIGN], plies: 1,
-    // Rotations for the same reason as full OLL above: they do not widen the coverage a complete
-    // table already has, they shorten the answer. The inverse of `B2 U L' R B2 L R' U B2` came out
-    // at 11 moves without them and 9 with, using a rotated entry of the table it already had.
-    options: { post: AUF },
+    stage: 'top-edges', target: 'permute', algs: [...HUMAN_PLL, ...ALIGN], plies: 1,
+    // No rotated copies, for full OLL's reason: a relabelled T-perm is a T-perm done with the left hand
+    // at the back. The proved table's rotations bought 2 moves on the inverse of `B2 U L' R B2 L R' U B2`;
+    // turning the top before and after is what a learner does instead.
+    options: { rotations: [0], post: AUF },
     reached: wholeCubeSolved, goal: wholeCubeSolved, why: 'lastLayer.permute',
     names: focus({
       corners: namedCorners((st, slot) => st.cp[slot] !== slot),
@@ -270,7 +275,7 @@ const FULL_PLL_LOOK = Object.freeze([
 ]);
 
 /** The top face one colour, with the first two layers still there. OLL's contract, PLL's keep. */
-export const topFaceOriented = (s) => firstTwoLayers(s) && topEdgesOriented(s) && topCornersOriented(s);
+export const topFaceOriented = guard(topOriented);
 
 /** @type {ReadonlyArray<import('./index.js').Stage>} */
 export const OLL_RUNGS = Object.freeze([
@@ -289,7 +294,7 @@ export const OLL_RUNGS = Object.freeze([
     id: 'oll',
     rung: 1,
     label: 'full OLL',
-    blurb: 'The whole top face in one algorithm — 57 of them, each the shortest there is',
+    blurb: 'The whole top face in one algorithm — 57 of them, the ones speedcubers learn',
     targets: Object.freeze({ edges: Object.freeze([]), corners: Object.freeze([]) }),
     keep: firstTwoLayers,
     contract: topFaceOriented,
@@ -315,7 +320,7 @@ export const PLL_RUNGS = Object.freeze([
     id: 'pll',
     rung: 1,
     label: 'full PLL',
-    blurb: 'The whole last layer in one algorithm — 21 of them, each the shortest there is',
+    blurb: 'The whole last layer in one algorithm — 21 of them, the ones speedcubers learn',
     targets: Object.freeze({ edges: Object.freeze([]), corners: Object.freeze([]) }),
     keep: topFaceOriented,
     contract: wholeCubeSolved,

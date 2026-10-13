@@ -5,9 +5,11 @@
 //
 //   rung 0  the corner, then the edge that belongs beside it. Two separate journeys per slot.
 //   rung 1  the pair, joined and inserted together, built out of six triggers.
-//   rung 2  the 41-case F2L table, generated and proved (lib/data/case-tables.js). It cannot be
-//           complete (§7a finding F1), so rung 1's fallback stays the floor beneath it — rung 2
-//           reaches exactly the same 150 configurations, in fewer moves.
+//   rung 2  the 41-case F2L table speedcubers learn (lib/data/human-algs.js — sourced, and each row's
+//           case re-derived by cubejs). It cannot be complete (§7a finding F1), so rung 1's fallback
+//           stays the floor beneath it — rung 2 reaches exactly the same 150 configurations, as ONE
+//           recalled algorithm per pair rather than a chain of triggers. Not in fewer moves: a learnable
+//           algorithm is often longer than the triggers it replaces.
 //
 // Rung 0 is where rung 1 falls back to when no trigger sequence reaches a pair, which is why
 // `placeCorner` and `placeEdge` live here rather than inside either rung.
@@ -16,7 +18,7 @@ import {
   applyAlg, applyMove, cornerSlot, cornerSolved, edgeSlot, edgeSolved, rotateAlg, rotateState,
   CORNERS, EDGES, CORNER, EDGE,
 } from '../cube-pieces.js';
-import { F2L_CASES } from '../data/case-tables.js';
+import { HUMAN_F2L } from '../data/human-algs.js';
 import { edgesInLayerWithout } from '../cube-questions.js';
 import {
   AUF, CROSS, F1L, F2L_PAIRS, MIDDLE, MethodSolverError, REGRIPS, U_CORNERS, U_EDGES,
@@ -95,15 +97,17 @@ const protectedEdges = (pair) => [...CROSS, ...MIDDLE.filter((e) => e !== pair.e
 const FRONT_RIGHT_TRIGGERS = rotatedInto(F2L_TRIGGERS, F2L_PAIRS[0], 0);
 
 /**
- * The 41 generated cases, in the front-right slot's frame — rung 2's whole repertoire.
+ * The 41 cases, in the front-right slot's frame — rung 2's whole repertoire.
  *
- * Checked for slot-safety exactly as the triggers are, and that check is not a formality here: the
- * table was searched in a projection that ignores the top layer, and "reaches the goal in that
- * projection" and "leaves the other slots alone" being the same statement is the argument the
- * whole table rests on. It is proved in `f2l.rs`, asserted by the generator, replayed by
- * `f2l-table.test.mjs` — and asked once more here, on the algorithms this rung will actually run.
+ * THE ALGORITHMS SPEEDCUBERS LEARN (`lib/data/human-algs.js`), not the proved fewest-turn table: half
+ * of those turn the back or the left. The proved table is still what each one is checked against
+ * (`human-algs.test.mjs`), and still what `f2lAlignment` names a case by.
+ *
+ * Checked for slot-safety exactly as the triggers are, and that check is not a formality here: a
+ * sourced algorithm is somebody else's claim, and this rung runs it on a child's cube. A row that
+ * disturbed another pair's slot fails here, at load, naming itself.
  */
-const FRONT_RIGHT_CASES = rotatedInto(F2L_CASES, F2L_PAIRS[0], 0);
+const FRONT_RIGHT_CASES = rotatedInto(HUMAN_F2L, F2L_PAIRS[0], 0);
 
 /** A table of algorithms in one slot's frame, refused if any of them disturbs a protected slot. */
 function rotatedInto(algs, pair, slot) {
@@ -297,7 +301,7 @@ function cornerThenEdge(state, steps) {
 // No memorised case list at this rung. The moves are the same triggers the rung below already
 // uses, and the step is whichever short sequence of them provably places the pair. That keeps the
 // reason intact — pair them up, then insert the pair — and keeps the table from being a list of
-// 41 algorithms nobody checked. Rung 2 is that list, generated and proved; it is Phase C.
+// 41 algorithms nobody checked. Rung 2 is that list, sourced and checked case by case.
 //
 // **There used to be an ejection branch here, and it could never run.** When the direct search
 // failed it tried to lift the pair loose first, then place it. `f2l-configurations.test.mjs`
@@ -362,7 +366,7 @@ export const f2lCaseName = (state, turns) => f2lAlignment(state, turns).name;
  * Place every pair, from a repertoire and a ply budget.
  *
  * ONE function for both rungs, because the difference between them is genuinely only those two
- * arguments: rung 1 composes up to three triggers, rung 2 applies one generated algorithm. A
+ * arguments: rung 1 composes up to three triggers, rung 2 applies one recalled algorithm. A
  * second copy of this loop would be two places for the fallback rule, the naming and the
  * slot-safety contract to drift apart.
  */
@@ -488,7 +492,7 @@ function placeSeparately(view, pair, turns, regrip, named, steps, edgesAt, corne
  * Place every pair, from a repertoire and a ply budget.
  *
  * ONE function for both rungs, because the difference between them is genuinely only those two
- * arguments: rung 1 composes up to three triggers, rung 2 applies one generated algorithm. A
+ * arguments: rung 1 composes up to three triggers, rung 2 applies one recalled algorithm. A
  * second copy of this loop would be two places for the fallback rule, the naming and the
  * slot-safety contract to drift apart.
  *
@@ -560,7 +564,7 @@ export const PAIRS_RUNGS = Object.freeze([
     id: 'pairs',
     rung: 2,
     label: 'the F2L cases',
-    blurb: 'One algorithm per case — 41 of them, each the shortest maneuver that places the pair',
+    blurb: 'One algorithm per case — 41 of them, the ones speedcubers learn',
     targets: Object.freeze({ edges: MIDDLE, corners: F1L }),
     keep: crossSolved,
     contract: firstTwoLayers,

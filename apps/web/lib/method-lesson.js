@@ -22,6 +22,7 @@ import { CORNERS, EDGES, moveCount } from './cube-pieces.js';
 import { faceTurnsAlg } from './cube-moves.js';
 import { plural, t } from './i18n.js';
 import { WHITE_UP_STAGES } from './solving-hold.js';
+import { HUMAN_ALGS } from './data/human-algs.js';
 
 /** The four dials a fine-grained stage name belongs to, and what a learner sees them called.
  *  Exported for the same reason `SECTION_NAME` is: the Drill catalogue groups the 137 algorithms by
@@ -193,6 +194,21 @@ const CASE_TEXT = Object.freeze({
  *  and still fails loudly. */
 const GENERATED_CASE_ID = /^(?:oll|pll|f2l):[0-9a-f]+$/;
 
+/** The human-speed table's rows, by their ids — `oll-27`, `pll-T`, `f2l-1`. */
+const HUMAN_ROW = new Map(HUMAN_ALGS.map((row) => [row.name, row]));
+
+/**
+ * The name the speedcubing community gives a row of the human-speed table — the name a learner will find
+ * on every sheet and video, which is the whole reason to show it. NOT translated as a word: "OLL 27" and
+ * "T" are proper names. Only the frame around them goes through `t()`, so a language can say "T perm" its
+ * own way. An OLL case's nickname (`Sune`) rides beside its number, never in place of it: the number is
+ * what the sheets are ordered by.
+ */
+export function humanCaseName(row) {
+  if (row.name.startsWith('pll-')) return t('%1 perm', row.label);
+  return row.nickname ? t('%1 · %2', row.label, row.nickname) : row.label;
+}
+
 /** Every name this module can put on screen — held against the solver's own list by test. */
 export const CASE_TEXT_KEYS = Object.freeze(Object.keys(CASE_TEXT));
 
@@ -238,9 +254,14 @@ function sentenceFor(step) {
  *
  * Null for a GENERATED case, for `caseLabel`'s reason: `oll:1a2b3c4d` is this repository's key for
  * a position, not a number anybody would find elsewhere, and showing our own as if it were the
- * world's would be worse than showing none.
+ * world's would be worse than showing none. A row of the human-speed table has the world's name, and
+ * gets it.
  */
-export const caseNameOf = (id) => (GENERATED_CASE_ID.test(id) ? null : caseText(id));
+export const caseNameOf = (id) => {
+  if (GENERATED_CASE_ID.test(id)) return null;
+  const row = HUMAN_ROW.get(id);
+  return row ? humanCaseName(row) : caseText(id);
+};
 
 /**
  * Which stage's sentence says what an algorithm at that stage is FOR.

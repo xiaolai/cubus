@@ -16,8 +16,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { CORNER, CORNERS, EDGE, EDGES, SOLVED, allSolved, applyAlg, cornerSolved, edgeSolved, toFacelets } from '../lib/cube-pieces.js';
-import { fromRepertoire } from '../lib/methods/engine.js';
-import { identityFace } from '../lib/cube-moves.js';
+import { fromRepertoire, piecesOf, repertoire, simplify } from '../lib/methods/engine.js';
+import { identityFace, run } from '../lib/cube-moves.js';
 import {
   LADDER, MethodSolverError, STAGE_IDS, allRungCombinations, methodFor, rungKey, solveByMethod,
 } from '../lib/method-solver.js';
@@ -456,4 +456,55 @@ test('routes are ordered by length as a NUMBER', () => {
   const goal = reaches(applyAlg(SOLVED, 'U'));
   assert.equal(fromRepertoire(SOLVED, [{ alg: thirteen }, { alg: nine }], goal, 1).alg, nine);
   assert.equal(fromRepertoire(SOLVED, [{ alg: nine }, { alg: thirteen }], goal, 1).alg, nine);
+});
+
+// ---- an algorithm that is not face turns ---------------------------------------------------------
+//
+// The human-speed tables (`lib/data/human-algs.js`) brought slices, wide turns and whole-cube turns into
+// a search whose piece model reads the eighteen face turns and nothing else. Two guards stand between
+// them, and each is asked here directly rather than trusted to show up as a failed solve.
+
+test('piecesOf is what the interpreter says the algorithm does, and refuses one that leaves the cube turned', () => {
+  // The interpreter is the oracle: it is the one place a letter becomes a move, and `piecesOf` is only
+  // allowed to hand its answer on.
+  const algs = ['M2 U M2 U2 M2 U M2', "x L2 D2 L' U' L D2 L' U L' x'", "r U R' U' r' F R F'", "y R U R' y'", "R U R'"];
+  for (const alg of algs) {
+    assert.deepEqual(applyAlg(SOLVED, piecesOf(alg)), run(alg, ['U', 'F'], SOLVED).state, `${alg}: the pieces disagree`);
+    assert.match(piecesOf(alg), /^(?:[URFDLB][2']?(?: |$))+$/, `${alg}: handed the piece model a move it cannot read`);
+  }
+  assert.equal(piecesOf("R U R'"), "R U R'", 'face turns are handed on as they stand');
+  // What must NOT happen: a candidate that leaves the cube on its side, or turned about the vertical, is
+  // a question answered for one hold and read in another. `y` alone is refused too — the next stage would
+  // be asking about a different front.
+  for (const open of ['x U', 'y', "r U r' x"]) {
+    assert.throws(() => piecesOf(open), /leaves the cube held .* must end as it began/, `${open} was let through`);
+  }
+});
+
+test('a repertoire relabels face turns for every rotation, and refuses to relabel anything else', () => {
+  // `rotateAlg` renames the six face letters. `M2` has none, so after a relabel for rotation 1 it would
+  // still be M2 — a slice about the wrong axis, silently answering a different case.
+  const slices = [{ name: 'h', alg: 'M2 U M2 U2 M2 U M2' }];
+  assert.throws(() => repertoire(slices, { rotations: [0, 1] }), /"h" .* cannot be relabelled for rotation 1/);
+  const upright = repertoire(slices, { rotations: [0] });
+  assert.equal(upright.length, 4, 'one rotation, four AUFs');
+  for (const c of upright) {
+    assert.deepEqual(applyAlg(SOLVED, c.pieces), run(c.alg, ['U', 'F'], SOLVED).state, `${c.alg}: pieces drifted from the algorithm`);
+  }
+  // Face turns relabel safely, so the same call over a face-turn algorithm is allowed at every rotation.
+  const faces = repertoire([{ name: 's', alg: "R U R' U R U2 R'" }]);
+  assert.equal(faces.length, 16, 'four rotations, four AUFs');
+  assert.ok(faces.every((c) => c.pieces === c.alg), 'a face-turn candidate is its own pieces');
+  // A face turn in a spelling the piece model does not use is still a face turn, and relabels: the guard asks
+  // the notation's reader what a token is rather than keeping its own list of spellings.
+  const primedHalf = repertoire([{ name: 'half', alg: "R2'" }], { rotations: [0, 1], auf: [''] });
+  const plainHalf = repertoire([{ name: 'half', alg: 'R2' }], { rotations: [0, 1], auf: [''] });
+  assert.deepEqual(primedHalf.map((c) => c.pieces), plainHalf.map((c) => c.pieces), "R2' relabelled unlike R2");
+});
+
+test('simplify reads moves with the shared tokenizer, so no moves is no moves', () => {
+  // It split the text itself, and `String(null)` made the algorithm "null".
+  assert.equal(simplify(null), '');
+  assert.equal(simplify(undefined), '');
+  assert.equal(simplify("  R  R  U U' "), 'R2');
 });

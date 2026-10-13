@@ -24,8 +24,10 @@
 // slot" and "the cubie that belongs there".
 
 import {
-  CORNER, CORNERS, EDGE, EDGES, MOVE_NAMES, SOLVED, allSolved, applyAlg, applyMove, moveCount, rotateAlg,
+  CORNER, CORNERS, EDGE, EDGES, MOVE_NAMES, SOLVED, allSolved, applyAlg, applyMove, moveCount, movesOf, rotateAlg,
 } from '../cube-pieces.js';
+import { faceTurnsAlg, run } from '../cube-moves.js';
+import { readToken } from '../cube-notation.js';
 
 /** U-layer slots. "In the top layer" is the staging area every stage lifts pieces into. */
 export const U_EDGES = Object.freeze([EDGE.UR, EDGE.UF, EDGE.UL, EDGE.UB]);
@@ -98,6 +100,35 @@ export const turnedCorner = (corner, turns) => CORNER_BY_LETTERS.get(lettersKey(
 /** How many moves an algorithm is — `cube-pieces.js`'s tokenizer, not a fourth copy of it. */
 export const algLength = moveCount;
 
+/** An algorithm the piece model applies as it stands: its own eighteen spellings of a face turn. */
+const PIECE_MODEL_ONLY = /^\s*(?:[URFDLB][2']?(?:\s+|$))*$/;
+
+/** An algorithm of face turns in ANY spelling the notation reads (`R2'` included) — what `rotateAlg` can
+ *  relabel. Asked of the notation's own reader, so the two cannot disagree about what a face turn is. */
+const faceTurnsOnly = (alg) => movesOf(alg).every((m) => readToken(m).move?.kind === 'face');
+
+/**
+ * What an algorithm does to the pieces, as face turns relative to the centres.
+ *
+ * The search and the slot-safety check ask a question about PIECES, and the piece model applies the
+ * eighteen face turns and nothing else. The algorithms speedcubers learn are full of wide turns, slices
+ * and whole-cube turns (`lib/data/human-algs.js`), so those are read through the interpreter — the one
+ * place a letter becomes a move — and handed to the piece model as the face turns they amount to. The
+ * algorithm a step SHOWS is never this: a learner is taught `M2 U M2`, not the face turns it equals.
+ *
+ * REFUSED unless the cube ends held the way it began. The stages hand each other the cube AS HELD, and
+ * a candidate that left it turned would answer a question about one hold and leave the next stage
+ * reading another. The human table closes every rotation it opens for this reason.
+ */
+export function piecesOf(alg) {
+  if (PIECE_MODEL_ONLY.test(alg)) return alg;
+  const played = run(alg, ['U', 'F'], SOLVED);
+  if (played.hold[0] !== 'U' || played.hold[1] !== 'F') {
+    throw new Error(`method engine: "${alg}" leaves the cube held ${played.hold.join(' ')} — a repertoire algorithm must end as it began`);
+  }
+  return faceTurnsAlg(played.drawn);
+}
+
 /**
  * Merge consecutive turns of the same face.
  *
@@ -112,7 +143,7 @@ export const algLength = moveCount;
  */
 export function simplify(alg) {
   const runs = [];
-  for (const move of String(alg).trim().split(/\s+/).filter(Boolean)) {
+  for (const move of movesOf(alg)) {
     // Only a plain face turn merges. Anything else a step may carry since plan item 6.1 — a regrip, a slice, a
     // wide move — is kept as written and breaks the run. Read by its first letter, `R Rw` became `R2`: a wide
     // move is not a turn of the face it is named after.
@@ -171,38 +202,6 @@ function descend(state, goal, depth, lastFace) {
  * over raw moves, so whatever it finds is still a sequence of things a learner was taught.
  */
 export function fromRepertoire(state, candidates, goal, plies = 1, keyOf = stateKey, rank = (alg) => alg) {
-  // Shortest first, then by the caller's rank. Compared NUMERICALLY: the length used to be
-  // stringified and zero-padded to three digits, so a 1,000-move route sorted ahead of a 104-move
-  // one. Nothing here produces four-digit algorithms today, which is what made it a defect worth
-  // fixing rather than a bug worth waiting for.
-  // ...and then by the algorithm ITSELF, which is the only tie-break that cannot depend on the order the
-  // frontier was built in. Length and rank alone left equal routes in arrival order, so reversing the
-  // candidate list turned `U D R` into `D U R` — exactly the order-dependence the note below says this
-  // comparison exists to end (Codex audit, 2026-09-16).
-  const precedes = (a, b) => {
-    if (a.length !== b.length) return a.length < b.length;
-    if (a.rank !== b.rank) return a.rank < b.rank;
-    return a.alg < b.alg;
-  };
-  // The comparison values are computed ONCE per route. They used to be recomputed inside a
-  // comparator, so `rank` — which rotates a whole algorithm into a common frame — ran O(n log n)
-  // times over a list from which exactly one element was ever read.
-  const route = (node, candidate, after, alg) => ({
-    state: after,
-    alg,
-    used: [...node.used, candidate],
-    length: algLength(alg),
-    rank: rank(alg),
-  });
-
-  /** Keep the better of two routes to one state. THE BEST ROUTE, not the first one found: deduplicating
-   *  on arrival kept whichever route the candidate order happened to produce first, so reordering two
-   *  equally-ranked candidates changed what the NEXT ply was expanded from. */
-  const retain = (into, key, route) => {
-    const held = into.get(key);
-    if (held === undefined || precedes(route, held)) into.set(key, route);
-  };
-
   let frontier = [{ state, alg: '', used: [] }];
   // Different runs of triggers land on the same cube constantly — `R U R'` then `R U' R'` is
   // where it started. Without this the frontier squares every ply and the budget is spent
@@ -211,37 +210,80 @@ export function fromRepertoire(state, candidates, goal, plies = 1, keyOf = state
   const seen = new Set([keyOf(state, '')]);
   for (let ply = 0; ply < plies; ply++) {
     // On the last permitted ply neither collection is read again, so nothing is put in them.
-    const lastPly = ply === plies - 1;
-    const next = new Map();
-    let best = null;
-    for (const node of frontier) {
-      for (const candidate of candidates) {
-        const after = applyAlg(node.state, candidate.alg);
-        const alg = joinAlg(node.alg, candidate.alg);
-        if (goal(after, alg)) {
-          // Finish the ply before choosing, and choose by the algorithm rather than by whichever
-          // branch happened to be reached first. Returning the first hit made the answer depend on
-          // the order the frontier was built in — which is not the same order in every working
-          // slot, so one F2L case came out with a different algorithm depending on which slot it
-          // turned up in. `rank` is what lets the caller compare candidates in ONE frame; the
-          // default compares them as written.
-          const hit = route(node, candidate, after, alg);
-          if (best === null || precedes(hit, best)) best = hit;
-          continue;
-        }
-        if (lastPly) continue;
-        const key = keyOf(after, alg);
-        if (seen.has(key)) continue;
-        // `U D` and `D U` reach the same cube, and which one is retained decides between `U D R` and
-        // `D U R` under a ranking function that cannot tell them apart — see `retain` above.
-        retain(next, key, route(node, candidate, after, alg));
-      }
-    }
+    const { best, next } = expandPly(frontier, candidates, goal, { lastPly: ply === plies - 1, seen, keyOf, rank });
     if (best !== null) return { state: best.state, alg: best.alg, used: best.used };
     for (const key of next.keys()) seen.add(key);
     frontier = [...next.values()];
   }
   return null;
+}
+
+/**
+ * Does route `a` come before route `b`? Shortest first, then by the caller's rank. Compared NUMERICALLY:
+ * the length used to be stringified and zero-padded to three digits, so a 1,000-move route sorted ahead of
+ * a 104-move one. Nothing here produces four-digit algorithms today, which is what made it a defect worth
+ * fixing rather than a bug worth waiting for.
+ *
+ * ...and then by the algorithm ITSELF, which is the only tie-break that cannot depend on the order the
+ * frontier was built in. Length and rank alone left equal routes in arrival order, so reversing the
+ * candidate list turned `U D R` into `D U R` — exactly the order-dependence this comparison exists to end
+ * (Codex audit, 2026-09-16).
+ */
+function precedes(a, b) {
+  if (a.length !== b.length) return a.length < b.length;
+  if (a.rank !== b.rank) return a.rank < b.rank;
+  return a.alg < b.alg;
+}
+
+/** One route, its comparison values computed ONCE. They used to be recomputed inside a comparator, so
+ *  `rank` — which rotates a whole algorithm into a common frame — ran O(n log n) times over a list from
+ *  which exactly one element was ever read. */
+const route = (node, candidate, after, alg, rank) => ({
+  state: after,
+  alg,
+  used: [...node.used, candidate],
+  length: algLength(alg),
+  rank: rank(alg),
+});
+
+/** Keep the better of two routes to one state. THE BEST ROUTE, not the first one found: deduplicating on
+ *  arrival kept whichever route the candidate order happened to produce first, so reordering two
+ *  equally-ranked candidates changed what the NEXT ply was expanded from. */
+function retain(into, key, candidateRoute) {
+  const held = into.get(key);
+  if (held === undefined || precedes(candidateRoute, held)) into.set(key, candidateRoute);
+}
+
+/**
+ * One ply: every candidate from every frontier node. Returns the best route that meets the goal on this
+ * ply (or null) and, unless this is the last ply, the unseen states to expand next.
+ *
+ * Finish the ply before choosing, and choose by the algorithm rather than by whichever branch happened to
+ * be reached first. Returning the first hit made the answer depend on the order the frontier was built in
+ * — which is not the same order in every working slot, so one F2L case came out with a different algorithm
+ * depending on which slot it turned up in. `rank` is what lets the caller compare candidates in ONE frame;
+ * the default compares them as written.
+ */
+function expandPly(frontier, candidates, goal, { lastPly, seen, keyOf, rank }) {
+  const next = new Map();
+  let best = null;
+  for (const node of frontier) {
+    for (const candidate of candidates) {
+      // `pieces`, which `repertoire` computes once, so a slice or a wide turn costs nothing per node.
+      const after = applyAlg(node.state, candidate.pieces ?? piecesOf(candidate.alg));
+      const alg = joinAlg(node.alg, candidate.alg);
+      if (goal(after, alg)) {
+        const hit = route(node, candidate, after, alg, rank);
+        if (best === null || precedes(hit, best)) best = hit;
+      } else if (!lastPly) {
+        const key = keyOf(after, alg);
+        // `U D` and `D U` reach the same cube, and which one is retained decides between `U D R` and
+        // `D U R` under a ranking function that cannot tell them apart — see `retain` above.
+        if (!seen.has(key)) retain(next, key, route(node, candidate, after, alg, rank));
+      }
+    }
+  }
+  return { best, next };
 }
 
 /** A cube as one string, for the visited set. Permutation and orientation both matter, so all
@@ -265,20 +307,27 @@ export const repertoiresBuilt = () => built;
 
 export function repertoire(algs, { rotations = [0, 1, 2, 3], auf = AUF, post = [''] } = {}) {
   built += 1;
-  const out = [];
-  for (const entry of algs) {
-    for (const k of rotations) {
-      const body = rotateAlg(entry.alg, k);
-      for (const pre of auf) {
-        for (const tail of post) {
-          out.push({ name: entry.name, alg: joinAlg(pre, body, tail), rotation: k, auf: pre });
-        }
-      }
-    }
-  }
+  const out = algs.flatMap((entry) => rotations.flatMap((k) => {
+    const body = relabelled(entry, k);
+    return auf.flatMap((pre) => post.map((tail) => candidate(entry.name, joinAlg(pre, body, tail), k, pre)));
+  }));
   // Shortest first, so a step that needs no setup is preferred over one that does.
   return out.sort((a, b) => algLength(a.alg) - algLength(b.alg));
 }
+
+/** `entry`'s algorithm relabelled for rotation `k`. `rotateAlg` relabels the six face letters and nothing
+ *  else, so a wide turn, a slice or a whole-cube turn would come out of it as a move about the wrong axis.
+ *  Only the identity is safe for those; a table of them reaches another slot by turning the cube, never by
+ *  relabelling (plan item 6.3). */
+function relabelled(entry, k) {
+  if (k !== 0 && !faceTurnsOnly(entry.alg)) {
+    throw new Error(`method engine: "${entry.name}" ("${entry.alg}") cannot be relabelled for rotation ${k}`);
+  }
+  return rotateAlg(entry.alg, k);
+}
+
+/** One searchable candidate, with the face turns it amounts to worked out once. */
+const candidate = (name, alg, rotation, auf) => ({ name, alg, pieces: piecesOf(alg), rotation, auf });
 
 /**
  * Does this algorithm leave every slot but one exactly as it found it?
@@ -302,7 +351,7 @@ export function slotSafe(alg, keepCorners, keepEdges, cacheKey) {
   if (cached !== undefined) return cached;
   // `allSolved` asks exactly this question and is what every other predicate here is built from;
   // the two loops that used to sit here were a third spelling of `edgeSolved` and `cornerSolved`.
-  const safe = allSolved(applyAlg(SOLVED_STATE, alg), { corners: keepCorners, edges: keepEdges });
+  const safe = allSolved(applyAlg(SOLVED_STATE, piecesOf(alg)), { corners: keepCorners, edges: keepEdges });
   slotSafeCache.set(key, safe);
   return safe;
 }

@@ -17,6 +17,11 @@ import { CASE_SHAPES, CYCLE_SHAPES, describeCase, describeEffect, effectOf, sign
 import { SOLVED, applyAlg, toFacelets } from '../lib/cube-pieces.js';
 import { stateFrom } from '../lib/script-view.js';
 import { CATALOGUE_CENSUS } from './fixtures/alg-catalogue.mjs';
+import { F2L_CASES, FULL_OLL, FULL_PLL } from '../lib/data/case-tables.js';
+import { HUMAN_ALGS } from '../lib/data/human-algs.js';
+import { CROSS_ALGS } from '../lib/methods/cross.js';
+import { OLL_ALGS, PLL_ALGS } from '../lib/methods/last-layer.js';
+import { PAIRS_ALGS } from '../lib/methods/pairs.js';
 import { METHOD_ALGORITHMS } from './fixtures/algorithm-ledger.mjs';
 
 const SOLVED_FACELETS = toFacelets(SOLVED);
@@ -49,11 +54,20 @@ const oracleEffect = (alg) => {
 };
 
 test('the catalogue holds every distinct algorithm, and the count is derived', () => {
-  assert.equal(ALG_ENTRIES.length, 137);
+  // 244 since the human-speed table (2026-10-13): 22 hand-written + 119 human-speed + 119 proved, less
+  // the 16 sequences two of those pools share. Recounted here from the repertoires themselves, so the
+  // number is a consequence and not a claim.
+  const distinct = new Set([...CROSS_ALGS, ...PAIRS_ALGS, ...OLL_ALGS, ...PLL_ALGS, ...HUMAN_ALGS, ...F2L_CASES, ...FULL_OLL, ...FULL_PLL]
+    .map((e) => e.alg).filter(Boolean));
+  assert.equal(ALG_ENTRIES.length, distinct.size);
+  assert.equal(ALG_ENTRIES.length, 244);
   // Derived, never written: the number must not appear in the module that produces it.
-  assert.ok(!/\b137\b/.test(source('alg-catalogue.js')), 'the count is written into alg-catalogue.js');
-  assert.equal(new Set(ALG_ENTRIES.map((e) => e.alg)).size, 137, 'an algorithm is filed twice');
-  assert.equal(new Set(ALG_ENTRIES.map((e) => e.id)).size, 137, 'two entries share an id');
+  assert.ok(!/\b244\b/.test(source('alg-catalogue.js')), 'the count is written into alg-catalogue.js');
+  assert.equal(new Set(ALG_ENTRIES.map((e) => e.alg)).size, 244, 'an algorithm is filed twice');
+  assert.equal(new Set(ALG_ENTRIES.map((e) => e.id)).size, 244, 'two entries share an id');
+  // Taught first, other ways second: 133 a lesson teaches, 111 proved sequences offered after them.
+  assert.equal(ALG_ENTRIES.filter((e) => e.primary).length, 133);
+  assert.equal(ALG_ENTRIES.filter((e) => !e.primary).length, 111);
 });
 
 test('the two non-algorithms are excluded, and named', () => {
@@ -62,34 +76,128 @@ test('the two non-algorithms are excluded, and named', () => {
 });
 
 test('every entry round-trips: its case, then its sequence, is solved', () => {
+  // Played by cubejs, which reads slices, wide turns and turns of the whole cube without the app's
+  // interpreter — the catalogue built `setup` WITH that interpreter, so it cannot also be the judge.
   for (const e of ALG_ENTRIES) {
     assert.notEqual(e.setup, SOLVED_FACELETS, `${e.id}: its case is already solved`);
-    const back = toFacelets(applyAlg(stateFrom(e.setup), e.scanAlg));
-    assert.equal(back, SOLVED_FACELETS, `${e.id}: its sequence does not answer its own case`);
+    const c = Cube.fromString(e.setup);
+    c.move(e.scanAlg);
+    assert.equal(c.asString(), SOLVED_FACELETS, `${e.id}: its sequence does not answer its own case`);
   }
+});
+
+test('every one-look case has its human-speed entry and its proved one, joined both ways', () => {
+  const cases = new Map();
+  for (const e of ALG_ENTRIES.filter((x) => x.caseId)) cases.set(e.caseId, [...(cases.get(e.caseId) ?? []), e]);
+  assert.equal(cases.size, 119, 'the one-look cases are not all in the catalogue');
+  for (const [caseId, entries] of cases) {
+    // One entry when the two pools share the sequence (Sune), two otherwise — never more.
+    assert.ok(entries.length === 1 || entries.length === 2, `${caseId} is filed ${entries.length} times`);
+    if (entries.length === 2) {
+      const human = entries.find((e) => e.provenance.some((p) => p.set.endsWith('-human')));
+      const other = entries.find((e) => e !== human);
+      assert.ok(human && other.provenance.some((p) => p.set.endsWith('-full')), `${caseId}: not one human-speed and one proved entry`);
+      assert.equal(human.primary, true, `${caseId}: the human-speed entry is not taught`);
+      // Untaught UNLESS a lesson teaches the very same sequence on its own account: the proved answer to
+      // F2L 2's case is `F' U F`, which is also the hand-written left trigger back.
+      const handWritten = other.provenance.some((p) => !p.set.endsWith('-full'));
+      assert.equal(other.primary, handWritten, `${caseId}: the proved entry is taught by nothing and still listed first`);
+      assert.equal(other.usual, human.id, `${caseId}: the proved entry does not lead back to the taught one`);
+      if (human.fewer) assert.equal(human.fewer.id, other.id, `${caseId}: offers another case's sequence`);
+    }
+  }
+  // 39 cases are measured strictly fewer on the taught entry's own case; pinned so a re-fetch that moved
+  // it is seen.
+  assert.equal(ALG_ENTRIES.filter((e) => e.fewer).length, 39);
+});
+
+test('every "fewer turns" offer, and every withheld one, is what cubejs measures from the source tables', () => {
+  // THE ORACLE SHARES NOTHING WITH `costOn`: the pairs come from the two source tables by case key, not from
+  // the catalogue's links; the cube is cubejs's; the goals are read off its stickers; the turns are counted
+  // from the tokens. Only the entries are looked up in the catalogue, by their move string, to read what the
+  // page will print. A wrong cost, a wrong count of top turns, or an offer that should have been withheld
+  // fails here by name.
+  const PROVED = { f2l: F2L_CASES, oll: FULL_OLL, pll: FULL_PLL };
+  const AUF = ['', 'U', 'U2', "U'"];
+  const faces = (c) => { const x = c.asString(); return Object.fromEntries([...'URFDLB'].map((f, i) => [f, x.slice(i * 9, i * 9 + 9)])); };
+  const lowerTwo = (f) => [...f.D].every((c) => c === 'D') && [...'RFLB'].every((x) => [...f[x].slice(3)].every((c) => c === x));
+  const GOAL = {
+    f2l: (c) => lowerTwo(faces(c)),
+    oll: (c) => lowerTwo(faces(c)) && [...faces(c).U].every((x) => x === 'U'),
+    pll: (c) => c.isSolved(),
+  };
+  // Face turns: a slice is two, a turn of the whole cube none, anything else one.
+  const turnsOf = (alg) => alg.trim().split(/\s+/).filter(Boolean).reduce((n, m) => n + (/^[MES]/.test(m) ? 2 : /^[xyz]/.test(m) ? 0 : 1), 0);
+  const invertText = (alg) => alg.trim().split(/\s+/).reverse().map((m) => (m.endsWith("'") ? m.slice(0, -1) : m.endsWith('2') ? m : `${m}'`)).join(' ');
+  let offered = 0;
+  for (const row of HUMAN_ALGS) {
+    const set = row.name.split('-')[0];
+    const proved = PROVED[set].find((e) => e.name === row.case);
+    const human = ALG_ENTRIES.find((e) => e.alg === row.alg);
+    assert.ok(proved && human, `${row.name}: no proved case or no catalogue entry`);
+    if (proved.alg === row.alg) { assert.equal(human.fewer, null, `${row.name}: offered itself`); continue; }
+    let best = null;
+    for (const pre of AUF) {
+      for (const post of AUF) {
+        const c = new Cube();
+        c.move(invertText(row.alg));
+        for (const m of [pre, proved.alg, post]) if (m) c.move(m);
+        if (!GOAL[set](c)) continue;
+        const cost = turnsOf(proved.alg) + (pre ? 1 : 0) + (post ? 1 : 0);
+        if (best === null || cost < best.cost) best = { cost, align: (pre ? 1 : 0) + (post ? 1 : 0) };
+      }
+    }
+    assert.ok(best, `${row.name}: the proved algorithm does not answer the human row's own case at any alignment`);
+    if (best.cost < turnsOf(row.alg)) {
+      offered += 1;
+      assert.ok(human.fewer, `${row.name}: ${best.cost} < ${turnsOf(row.alg)} and nothing is offered`);
+      assert.equal(human.fewer.id, ALG_ENTRIES.find((e) => e.alg === proved.alg).id, `${row.name}: offers another sequence`);
+      assert.equal(human.fewer.turns, best.cost, `${row.name}: the offered count`);
+      assert.equal(human.fewer.align, best.align, `${row.name}: the turns of the top counted`);
+      assert.equal(human.turns, turnsOf(row.alg), `${row.name}: the taught count`);
+    } else {
+      assert.equal(human.fewer, null, `${row.name}: offered at ${best.cost} against ${turnsOf(row.alg)}, which is not fewer`);
+    }
+  }
+  assert.equal(offered, ALG_ENTRIES.filter((e) => e.fewer).length, 'an offer exists that no source pair accounts for');
 });
 
 test('every algorithm filed twice keeps both provenances', () => {
   const shared = ALG_ENTRIES.filter((e) => e.provenance.length > 1);
-  // SIX, not four. Four are the same move string in the taught and the generated pool; the other two
-  // are filed twice WITHIN the taught pool — `R U R'` is both the righty insert and the right
-  // trigger, and `F' U' F` likewise. The merge is equally responsible for those, and an expectation
-  // of four would have hidden them.
-  assert.equal(shared.length, 6, 'the number of algorithms filed under more than one set moved');
+  // THIRTEEN since the human-speed table (2026-10-13), and each is a fact about the sources: J Perm's
+  // OLL 45 is `edge-orient`, OLL 22/26/27 are pi, antisune and sune, PLL Y is `diagonal`; SpeedCubeDB's
+  // F2L 3, 4 and 17 are the three corner inserts; and four of J Perm's OLL are the proved sequence for
+  // their case. Before it: six — four shared between the taught and the generated pool, and two
+  // WITHIN the taught pool (`R U R'` is the righty insert and the right trigger, `F' U' F` likewise).
+  assert.equal(shared.length, 13, 'the number of algorithms filed under more than one set moved');
   for (const e of shared) {
     // Both NAMES survive — a set id alone would not say which case it answers under.
     assert.equal(new Set(e.provenance.map((p) => p.name)).size, e.provenance.length, `${e.id}: a name was lost`);
     assert.equal(new Set(e.provenance.map((p) => p.set)).size, e.provenance.length, `${e.id}: a set was lost`);
   }
   const acrossPools = shared.filter((e) => e.provenance.some((p) => p.set.endsWith('-full')));
-  assert.equal(acrossPools.length, 4, 'the two pools overlap in four places');
+  assert.equal(acrossPools.length, 8, 'the proved pool overlaps the others in eight places');
   for (const e of acrossPools) {
     const sets = e.provenance.map((p) => p.set);
     assert.ok(sets.some((s) => !s.endsWith('-full')), `${e.id}: lost its taught provenance`);
     assert.ok(sets.some((s) => s.endsWith('-full')), `${e.id}: lost its generated provenance`);
   }
   const withinTaught = shared.filter((e) => e.provenance.every((p) => !p.set.endsWith('-full')));
-  assert.deepEqual(withinTaught.map((e) => e.id).sort(), ['left-hand', 'right-hand']);
+  assert.deepEqual(withinTaught.map((e) => e.id).sort(), ['diagonal', 'edge-orient', 'facing-up', 'left-hand', 'right-hand']);
+});
+
+test('an algorithm that leaves the cube turned has no effect to measure, and one that closes its turn does', () => {
+  // A repetition of an open rotation is read in a different hold, so its "order" would be of something nobody
+  // performs. Refused by name — and the refusal must not reach a sequence that tips the cube and rights it.
+  for (const open of ['x U', 'y', "r U r' x", "x L2 D2 L' U' L D2 L' U L'"]) {
+    assert.throws(() => effectOf(open), /leaves the cube held .* so it has no order/, `${open} was measured`);
+  }
+  const pieces = ({ corners, edges, twisted, flipped, order }) => ({ corners, edges, twisted, flipped, order });
+  // Each closed sequence measures as the face turns it amounts to (`x U x'` is `F`; the H perm's slices are the
+  // face turns the interpreter reads them as). These quantities are frame-free, so this checks the guard
+  // lets them through and measures them — which face is turned is cubejs's to check, above and below.
+  assert.deepEqual(pieces(effectOf("x U x'")), pieces(effectOf('F')));
+  assert.deepEqual(pieces(effectOf('M2 U M2 U2 M2 U M2')), pieces(effectOf("R2 L2 D R2 L2 U2 R2 L2 D R2 L2")));
 });
 
 test('every effect matches cubejs, which computed it differently', () => {
@@ -298,7 +406,9 @@ test('the fixture is what the generator would write — emitting twice changes n
 test('the fixture records the catalogue that is actually built', () => {
   assert.deepEqual(JSON.parse(JSON.stringify(census())), JSON.parse(JSON.stringify(CATALOGUE_CENSUS)));
   assert.equal(CATALOGUE_CENSUS.count, ALG_ENTRIES.length);
-  assert.equal(CATALOGUE_CENSUS.signatures, 62, 'the measured signature count moved');
+  // 86 since the human-speed table: a human algorithm for a case can leave the top layer permuted
+  // differently from the proved one, which is a different effect with a different signature.
+  assert.equal(CATALOGUE_CENSUS.signatures, 86, 'the measured signature count moved');
 });
 
 test('the digest notices a change no census column would', () => {

@@ -116,8 +116,11 @@ export function caseTitle(entry) {
   return lastLayer(entry) ? describeCase(entry.effect, entry.id) : GENERIC_TITLE;
 }
 
-/** Whether this entry is read by a picture rather than by a name. */
-export const readByPicture = (entry) => /^(?:oll|pll|f2l):/.test(entry.id);
+/** Whether this entry answers a numbered one-look case, and so has a case to draw: a proved one
+ *  (`oll:00120000`, read by its picture alone) or a human-speed one (`oll-27`, read by its community
+ *  name AND its picture). A hand-written algorithm is filed under its own name — `sune` — and draws
+ *  nothing, even where its sequence is also a one-look case. */
+export const readByPicture = (entry) => /^(?:oll|pll|f2l)[:-]/.test(entry.id);
 
 /**
  * Whether this entry's case lives wholly in the last layer.

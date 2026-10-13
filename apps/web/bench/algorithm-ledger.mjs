@@ -21,68 +21,68 @@
 //      with a number is worth more than a list of the sets we happen to have.
 
 import { writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SOLVED, applyAlg, movesOf } from '../lib/cube-pieces.js';
-import { F2L_CASES, FULL_OLL, FULL_PLL } from '../lib/data/case-tables.js';
-import { CROSS_ALGS } from '../lib/methods/cross.js';
-import { PAIRS_ALGS } from '../lib/methods/pairs.js';
-import { LAST_LAYER_EXTRAS, OLL_ALGS, PLL_ALGS } from '../lib/methods/last-layer.js';
+import { SOLVED, movesOf } from '../lib/cube-pieces.js';
+import { faceTurnsAlg, run } from '../lib/cube-moves.js';
+import { LAST_LAYER_EXTRAS } from '../lib/methods/last-layer.js';
+import { RUNG_TABLE, SET_ENTRIES } from '../lib/alg-catalogue.js';
 
-// The hand-written repertoires are exported as flat lists, so the sub-groups are reconstructed by
-// name here rather than re-exported. Names, not indices: a reordering inside those files must not
-// silently change what this ledger says a learner memorises.
-const pick = (list, names) => names.map((n) => {
-  const hit = list.find((a) => a.name === n);
-  if (!hit) throw new Error(`the ledger names an algorithm "${n}" that no repertoire has any more`);
-  return hit;
-});
+// WHICH ALGORITHM IS IN WHICH SET is the catalogue's to say (`SET_ENTRIES`), and this ledger reads it by
+// set id. It used to pick the hand-written sub-groups out of the repertoires by name a second time, and
+// the two copies were held together only by their totals — an equal-sized swap would have passed.
+const setEntries = (id) => {
+  const entries = SET_ENTRIES[id];
+  if (!entries) throw new Error(`the ledger names a set "${id}" that the catalogue does not hold`);
+  return entries;
+};
 
 const SETS = [
   {
     id: 'cross-inserts', name: 'Cross inserts', kind: 'hand-written',
-    entries: CROSS_ALGS,
+    entries: setEntries('cross-inserts'),
     provenance: 'written for teaching, not searched. Two ways to drop a cross edge in from the top.',
     verified: 'every entry must be reachable and used — `method-solver` refuses a step naming anything outside CASE_NAMES',
   },
   {
     id: 'f1l-inserts', name: 'First-layer corner inserts', kind: 'hand-written',
-    entries: pick(PAIRS_ALGS, ['right-hand', 'left-hand', 'facing-up']),
+    entries: setEntries('f1l-inserts'),
     provenance: 'the beginner trigger and its repeat, in the three orientations a corner can be in',
     verified: 'same as above',
   },
   {
     id: 'middle-inserts', name: 'Middle-layer edge inserts', kind: 'hand-written',
-    entries: pick(PAIRS_ALGS, ['insert-right', 'insert-left']),
+    entries: setEntries('middle-inserts'),
     provenance: 'one pair that both inserts a correct edge and ejects a wrong one, which is how it is taught',
     verified: 'same as above',
   },
   {
     id: 'f2l-triggers', name: 'F2L triggers', kind: 'hand-written',
-    entries: pick(PAIRS_ALGS, ['right', 'right-back', 'right-half', 'left', 'left-back', 'left-half']),
+    entries: setEntries('f2l-triggers'),
     provenance: 'rung 1 of the pairs stage: six triggers a pair is built out of, rather than 41 cases',
     verified: 'same as above',
   },
   {
     id: 'eoll', name: 'Two-look OLL, first look', kind: 'hand-written',
-    entries: pick(OLL_ALGS, ['edge-orient']),
+    entries: setEntries('eoll'),
     provenance: 'one algorithm, applied up to three times, to orient the last-layer edges',
     verified: 'same as above',
   },
   {
     id: 'ocll', name: 'Two-look OLL, second look', kind: 'hand-written',
-    entries: pick(OLL_ALGS, ['sune', 'antisune', 'headlights', 'double-sune', 'pi']),
+    entries: setEntries('ocll'),
     provenance: 'the corner-orientation cases in FACE TURNS ONLY, because the renderer and the move list speak nothing else',
     verified: 'same as above',
   },
   {
     id: 'cpll', name: 'Two-look PLL, corners', kind: 'hand-written',
-    entries: pick(PLL_ALGS, ['corner-cycle', 'corner-cycle-back', 'diagonal']),
+    entries: setEntries('cpll'),
     provenance: 'adjacent swap both ways round, plus the diagonal',
     verified: 'same as above',
   },
   {
     id: 'epll', name: 'Two-look PLL, edges', kind: 'hand-written',
-    entries: pick(PLL_ALGS, ['u-perm-a', 'u-perm-b']),
+    entries: setEntries('epll'),
     provenance: 'two U-perms; Z and H fall out of applying two of them',
     verified: 'same as above',
   },
@@ -93,20 +93,38 @@ const SETS = [
     verified: 'its absence once made a one-turn cube get a nineteen-move lesson (audit, 2026-09-09)',
   },
   {
+    id: 'f2l-human', name: 'F2L, human-speed', kind: 'sourced',
+    entries: setEntries('f2l-human'),
+    provenance: 'SpeedCubeDB\'s top-voted Front Right algorithm per case; what the pairs stage\'s top rung teaches since 2026-10-13',
+    verified: '`human-algs.test.mjs`: cubejs finds each answers exactly its proved case, and the 41 cover the 41 once each',
+  },
+  {
+    id: 'oll-human', name: 'Full OLL, human-speed', kind: 'sourced',
+    entries: setEntries('oll-human'),
+    provenance: 'J Perm\'s first-listed algorithm per case; what full OLL teaches since 2026-10-13',
+    verified: 'same cubejs check, 57 to 57',
+  },
+  {
+    id: 'pll-human', name: 'Full PLL, human-speed', kind: 'sourced',
+    entries: setEntries('pll-human'),
+    provenance: 'J Perm\'s first-listed algorithm per case; what full PLL teaches since 2026-10-13',
+    verified: 'same cubejs check, 21 to 21',
+  },
+  {
     id: 'f2l-full', name: 'F2L, all cases', kind: 'proved',
-    entries: F2L_CASES,
+    entries: setEntries('f2l-full'),
     provenance: 'searched in `crates/optimal-solver`, proven minimal in the half-turn metric, certified',
     verified: '`f2l-cross-check` refutes every case by brute force with no heuristic; `case-tables.test.mjs` re-runs the generator and diffs the shipped module',
   },
   {
     id: 'oll-full', name: 'Full OLL', kind: 'proved',
-    entries: FULL_OLL,
+    entries: setEntries('oll-full'),
     provenance: 'same search; one algorithm per case so the top face is one look',
     verified: 'certified over all 1,152 (alignment, goal) pairs; same generator diff',
   },
   {
     id: 'pll-full', name: 'Full PLL', kind: 'proved',
-    entries: FULL_PLL,
+    entries: setEntries('pll-full'),
     provenance: 'same search; the 288-state goal set checked against the published Cube Explorer distribution',
     verified: 'the distribution matched Cube Explorer entry for entry, mean 11.642361; same generator diff',
   },
@@ -131,34 +149,35 @@ const METHODS = [
     // set — the bottom rung of the pairs stage is a corner insert and an edge insert — which the
     // first version of this file could not express, and it came out 24 at the bottom instead of 18.
     { phase: 'Cross', rungs: [
-      { rung: 0, label: 'edge by edge', held: ['cross-inserts'] },
+      { rung: 0, label: 'edge by edge', held: RUNG_TABLE.cross[0] },
       { rung: 1, label: 'planned whole', intuitive: 'an exact distance table is descended — no algorithm at all' },
     ] },
     { phase: 'Pairs', rungs: [
-      { rung: 0, label: 'corner, then edge', held: ['f1l-inserts', 'middle-inserts'] },
-      { rung: 1, label: 'trigger pairs', held: ['f2l-triggers', 'f1l-inserts', 'middle-inserts'] },
+      { rung: 0, label: 'corner, then edge', held: RUNG_TABLE.pairs[0] },
+      { rung: 1, label: 'trigger pairs', held: RUNG_TABLE.pairs[1] },
       // **The top rung still needs the beginner inserts, and the first version of this ledger said it
       // did not.** `pairsFrom` falls back to `placeSeparately` when a pair is BURIED — a piece of it
       // sitting in another slot — and that fallback is the beginner corner and edge inserts. Measured:
       // over 25 seeded scrambles at TOP_RUNG, `solveByMethod` emits steps named `facing-up`,
       // `insert-left`, `insert-right`, `left-hand` and `right-hand`. So the top is 124, not 119, and
       // the tidy claim that it lands exactly on CFOP's set was false.
-      { rung: 2, label: 'the F2L cases', held: ['f2l-full', 'f1l-inserts', 'middle-inserts'] },
+      // The human-speed table since 2026-10-13, not the proved one: what a ladder costs is what it TEACHES.
+      { rung: 2, label: 'the F2L cases', held: RUNG_TABLE.pairs[2] },
     ] },
     { phase: 'OLL', rungs: [
-      { rung: 0, label: 'two-look', held: ['eoll', 'ocll'] },
-      { rung: 1, label: 'full OLL', held: ['oll-full'] },
+      { rung: 0, label: 'two-look', held: RUNG_TABLE.oll[0] },
+      { rung: 1, label: 'full OLL', held: RUNG_TABLE.oll[1] },
     ] },
     { phase: 'PLL', rungs: [
-      { rung: 0, label: 'two-look', held: ['cpll', 'epll'] },
-      { rung: 1, label: 'full PLL', held: ['pll-full'] },
+      { rung: 0, label: 'two-look', held: RUNG_TABLE.pll[0] },
+      { rung: 1, label: 'full PLL', held: RUNG_TABLE.pll[1] },
     ] },
   ] },
   { method: 'CFOP', phases: [
     { phase: 'Cross', intuitive: 'planned, not memorised' },
-    { phase: 'F2L', held: 'f2l-full' },
-    { phase: 'OLL', held: 'oll-full' },
-    { phase: 'PLL', held: 'pll-full' },
+    { phase: 'F2L', held: 'f2l-human' },
+    { phase: 'OLL', held: 'oll-human' },
+    { phase: 'PLL', held: 'pll-human' },
   ] },
   { method: 'Roux', phases: [
     { phase: 'First block', intuitive: 'block building' },
@@ -202,20 +221,29 @@ const METHODS = [
 
 const FACE_TURN = /^[URFDLB][2']?$/;
 
+/** An algorithm's length in face turns: a slice two, a turn of the whole cube none. */
+const turnsOf = (alg) => movesOf(faceTurnsAlg(run(alg, ['U', 'F'], SOLVED).drawn)).length;
+
 function measure(set) {
   const lengths = [];
   const seen = new Set();
   for (const { name, alg } of set.entries) {
-    for (const m of movesOf(alg)) {
-      if (!FACE_TURN.test(m)) throw new Error(`${set.id}/${name}: "${m}" is not a face turn`);
+    // Face turns only, except in a SOURCED set: the algorithms speedcubers learn are full of wide turns,
+    // slices and whole-cube turns, and those are read by the interpreter, which refuses what it cannot read.
+    if (set.kind !== 'sourced') {
+      for (const m of movesOf(alg)) {
+        if (!FACE_TURN.test(m)) throw new Error(`${set.id}/${name}: "${m}" is not a face turn`);
+      }
     }
-    // Every algorithm must actually do something, except the alignment, which is empty on purpose.
-    const moves = movesOf(alg).length;
+    // Every algorithm must actually do something, except the alignment, which is empty on purpose. Its
+    // length is in FACE TURNS — a slice two, a turn of the whole cube none — the count the lessons give.
+    const played = run(alg, ['U', 'F'], SOLVED);
+    const moves = turnsOf(alg);
     if (moves === 0 && set.kind !== 'not an algorithm') {
       throw new Error(`${set.id}/${name} is empty, and only the alignment may be`);
     }
     if (moves > 0) {
-      const after = applyAlg(SOLVED, alg);
+      const after = played.state;
       const same = ['cp', 'co', 'ep', 'eo'].every((k) => after[k].every((v, i) => v === SOLVED[k][i]));
       if (same) throw new Error(`${set.id}/${name} leaves the cube unchanged, so it is not an algorithm`);
     }
@@ -262,8 +290,14 @@ function cost(m) {
     for (const id of setsOf(rungs[rungs.length - 1])) top.add(id);
     for (const r of rungs) if (r.missing) missing.push(r.missing);
   }
-  const sum = (ids) => [...ids].reduce((a, id) => a + byId[id].stats.count, 0);
-  const moves = (ids) => [...ids].reduce((a, id) => a + byId[id].stats.moves, 0);
+  // DISTINCT ALGORITHMS, not the sum of the set sizes. A learner memorises a sequence once, whichever sets
+  // file it: since the top F2L rung teaches the human-speed table, F2L 3 is `F' U' F` and F2L 4 is
+  // `R U R'` — the very corner inserts the same rung keeps as its fallback. Summing counted those twice;
+  // the proved table it replaced happened to share nothing with the inserts, so the sum and the distinct
+  // count agreed until then and nobody had to choose.
+  const distinct = (ids) => [...new Set([...ids].flatMap((id) => byId[id].algs.map((a) => a.alg)))];
+  const sum = (ids) => distinct(ids).length;
+  const moves = (ids) => distinct(ids).reduce((a, alg) => a + turnsOf(alg), 0);
   return {
     sets: [...all], held: sum(bottom), heldMoves: moves(bottom),
     heldTop: sum(top), heldTopMoves: moves(top), missing,
@@ -298,7 +332,8 @@ const num = (s, n) => String(s).padStart(n);
 // Run only when invoked directly. `test/algorithm-ledger.test.mjs` imports the measurements, and
 // without this guard that import printed a full report into somebody else's test output — the same
 // import side effect `solve-to-state-oracle.mjs` had and for the same reason.
-const RUN_DIRECTLY = Boolean(process.argv[1]?.endsWith('algorithm-ledger.mjs'));
+// The resolved path, not a suffix: another file whose name merely ends the same way is not this one.
+const RUN_DIRECTLY = Boolean(process.argv[1]) && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (RUN_DIRECTLY) {
 
 console.log('=== the sets this repository holds ==========================================\n');
@@ -306,11 +341,16 @@ console.log(`${pad('set', 30)} ${pad('kind', 16)} ${num('algs', 5)} ${num('disti
 for (const s of measured) {
   console.log(`${pad(s.name, 30)} ${pad(s.kind, 16)} ${num(s.stats.count, 5)} ${num(s.stats.distinct, 9)} ${num(s.stats.shortest, 9)} ${num(s.stats.mean, 6)} ${num(s.stats.longest, 8)}`);
 }
-const totals = measured.reduce((a, s) => ({ n: a.n + s.stats.count, moves: a.moves + s.stats.moves }), { n: 0, moves: 0 });
-console.log(`\n${totals.n} algorithms in all, ${totals.moves} moves of material.`);
+// ENTRIES, not algorithms: the alignment is an entry and not an algorithm, and a sequence two sets share is
+// one algorithm in two entries. Both numbers are printed so neither is read as the other.
+const algorithmSets = measured.filter((s) => s.kind !== 'not an algorithm');
+const totals = algorithmSets.reduce((a, s) => ({ n: a.n + s.stats.count, moves: a.moves + s.stats.moves }), { n: 0, moves: 0 });
+const distinctAlgs = new Set(algorithmSets.flatMap((s) => s.algs.map((e) => e.alg))).size;
+console.log(`\n${totals.n} entries across the sets, ${totals.moves} moves of material; ${distinctAlgs} distinct algorithms.`);
 const proved = measured.filter((s) => s.kind === 'proved').reduce((a, s) => a + s.stats.count, 0);
 const hand = measured.filter((s) => s.kind === 'hand-written').reduce((a, s) => a + s.stats.count, 0);
-console.log(`${proved} are proven minimal and certified; ${hand} are hand-written for teaching.`);
+const sourced = measured.filter((s) => s.kind === 'sourced').reduce((a, s) => a + s.stats.count, 0);
+console.log(`${proved} are proven minimal and certified; ${hand} are hand-written for teaching; ${sourced} are the speedcubing community's, sourced and checked.`);
 
 console.log('\n=== what each method costs, and what is missing =============================\n');
 console.log(`${pad('method', 20)} ${num('bottom', 7)} ${num('top', 5)} ${num('moves', 6)}  missing`);

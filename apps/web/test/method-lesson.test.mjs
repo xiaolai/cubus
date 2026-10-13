@@ -15,8 +15,9 @@ import { test } from 'node:test';
 import { CORNERS, EDGES, SOLVED, applyAlg } from '../lib/cube-pieces.js';
 import { registerLocale, setLocale } from '../lib/i18n.js';
 import { parseHighlight } from '../lib/cube-highlight.js';
+import { HUMAN_ALGS } from '../lib/data/human-algs.js';
 import {
-  CASE_TEXT_KEYS, WHY_KEYS, caseText, lessonCues, lessonSections, moveStepIndex, namedPieces, turnsIn,
+  CASE_TEXT_KEYS, WHY_KEYS, caseNameOf, caseText, lessonCues, lessonSections, moveStepIndex, namedPieces, turnsIn,
   stepAtMove,
   rungSummary, whyText,
 } from '../lib/method-lesson.js';
@@ -90,21 +91,28 @@ test('every algorithm the solver can name has a name in the reader\'s language',
   // English however the app was set — the one untranslated fragment inside a translated caption.
   // Both directions, because both are defects: a name with no entry throws where a learner would
   // have seen it, and an entry for a name no table holds is a word nobody will ever read.
-  // The NAMED half of the repertoire. The generated tables are keys rather than names — a case
-  // this repository numbered itself, which is not the number a learner would find anywhere else —
-  // so they are carried on a step and never shown, and a display entry for one would be a word
-  // nobody could read.
-  const GENERATED = /^(?:oll|pll|f2l):[0-9a-f]+$/;
-  const named = CASE_NAMES.filter((n) => !GENERATED.test(n));
-  assert.ok(named.length > 20 && named.length < CASE_NAMES.length, 'the split is not what it was');
+  // TWO KINDS OF NAME, and the split is by WHERE THE NAME COMES FROM. The hand-written repertoire is
+  // named by this app (`corner-cycle-back`), so `CASE_TEXT` translates each one. The one-look tables are
+  // the human-speed rows, named by the speedcubing community ("OLL 27", "T perm"): the table carries the
+  // name, `humanCaseName` frames it, and `CASE_TEXT` must hold none of them — a second spelling of "T"
+  // there would be a name for the same case that could drift from the sheets it is copied from.
+  const human = new Set(HUMAN_ALGS.map((row) => row.name));
+  const named = CASE_NAMES.filter((n) => !human.has(n));
+  assert.equal(CASE_NAMES.length - named.length, 119, 'the one-look tables are not all in the repertoire');
+  assert.ok(named.length > 20, 'the split is not what it was');
   assert.deepEqual([...CASE_TEXT_KEYS].sort(), [...named].sort(),
     'the case-name table and the solver\'s named repertoire have drifted apart');
   for (const name of named) {
     assert.ok(caseText(name).length > 0, `${name} renders as nothing`);
   }
-  for (const key of CASE_NAMES.filter((n) => GENERATED.test(n))) {
-    assert.throws(() => caseText(key), /no name for case/, `${key} is a key and must not be shown`);
+  for (const name of human) {
+    assert.throws(() => caseText(name), /no name for case/, `${name} is named by its table, not by CASE_TEXT`);
+    const row = HUMAN_ALGS.find((r) => r.name === name);
+    // The community's label is IN the name a learner sees, verbatim — it is what they will search for.
+    assert.ok(caseNameOf(name).includes(row.label), `${name} is shown without its label "${row.label}"`);
   }
+  // The generated keys are still never shown, wherever one turns up.
+  assert.equal(caseNameOf('oll:00120000'), null);
   // And it really is `t()`, not a lookup that happens to return English. A catalog is registered
   // over the rendered names and each one asked for again — a name that never reached `t()` comes
   // back unchanged, and the assertion says which.
@@ -115,6 +123,17 @@ test('every algorithm the solver can name has a name in the reader\'s language',
     for (const [name, was] of english) {
       assert.notEqual(caseText(name), was, `the name for ${name} did not go through t()`);
     }
+  } finally {
+    setLocale('en');
+  }
+  // The FRAME around a community name goes through `t()` too, so a language can say "T perm" its own
+  // way; the label inside it is a proper name and is not translated.
+  registerLocale('qa-frames', { '%1 perm': '«%1»', '%1 · %2': '%2 «%1»' });
+  try {
+    setLocale('qa-frames');
+    assert.equal(caseNameOf('pll-T'), '«T»');
+    assert.equal(caseNameOf('oll-27'), 'Sune «OLL 27»');
+    assert.equal(caseNameOf('f2l-1'), 'F2L 1');
   } finally {
     setLocale('en');
   }
@@ -219,6 +238,7 @@ const dialsSeen = new Set();
     for (const state of seededStates(5, 31337)) {
       const { steps, moveCount } = solveByMethod(state, method);
       const sections = lessonSections(steps);
+      const tokens = steps.flatMap((st) => st.alg.trim().split(/\s+/).filter(Boolean));
       assert.ok(sections.length > 0, 'a scrambled cube produced no sections at all');
       // Contiguous, gapless, and covering exactly the moves in the solution. A section boundary
       // that drifted would put a chip under the wrong heading, which is the invented structure
@@ -228,7 +248,13 @@ const dialsSeen = new Set();
       assert.equal(sections.reduce((n, s) => n + s.moves, 0), moveCount, 'the headings count the lesson\'s face turns, no more and no fewer');
       for (const [i, s] of sections.entries()) {
         if (i > 0) assert.equal(s.from, sections[i - 1].to, 'a gap between sections');
-        assert.ok(s.to - s.from >= s.moves, 'a section holds fewer positions than it counts face turns');
+        // THE EXACT RELATION between a section's positions and the face turns its heading counts, which the
+        // old `positions >= turns` only bounded — and wrongly, once a lesson could carry a slice: `M` is one
+        // position and two face turns. Counted per token by kind, independently of `turnsIn`: a face or
+        // wide turn moves one outer face relative to the centres, a slice two, a whole-cube turn none.
+        const turnsOfToken = (tok) => (/^[MES]/.test(tok) ? 2 : /^[xyz]/.test(tok) ? 0 : 1);
+        assert.equal(tokens.slice(s.from, s.to).reduce((n, tok) => n + turnsOfToken(tok), 0), s.moves,
+          'a section heading counts face turns its own positions do not make');
         assert.ok(s.steps > 0 && s.name.length > 0);
       }
       assert.equal(sections.reduce((n, s) => n + s.steps, 0), steps.length);

@@ -5,25 +5,28 @@
 // keeps authored prose out, and a description that is COMPUTED is a fact about a cube rather than
 // content. A hand-written "Sune twists three corners" would be both.
 //
-// TEMPLATES OVER A SIGNATURE, never one label per algorithm. Measured over the 137 algorithms this
-// repository holds: 62 distinct signatures, built from eight cycle shapes per piece kind, five twist
-// counts and three flip counts. So the words come from a small table of SHAPES, and a shape the table
+// TEMPLATES OVER A SIGNATURE, never one label per algorithm. The catalogue's signatures are built from a
+// handful of cycle shapes per piece kind, a few twist counts and a few flip counts — counted, not stated
+// here, by `alg-catalogue.test.mjs`. So the words come from a small table of SHAPES, and a shape the table
 // does not know THROWS and names the case. A vague fallback — "moves several pieces" — would turn a
 // missing shape into a sentence nobody can check, which is the failure this whole module exists to
 // avoid.
 //
 // THE LABEL IS EXHAUSTIVE, and it is declared rather than implied. Every quantity the signature
 // measures appears in the words: the permutation cycles of both kinds, the corners twisted, the edges
-// flipped. `describeEffect` returns `parts` — the numbers the label was built from — so a test can
-// reproduce the signature from them and refuse a label that quietly drops a piece. A "selected fact"
-// label would read exactly the same and be unfalsifiable.
+// flipped. `alg-catalogue.test.mjs` reads those quantities back OUT OF THE SENTENCE and refuses a label
+// that quietly drops a piece. A "selected fact" label would read exactly the same and be unfalsifiable.
 //
 // WHY "TWISTS n CORNERS" AND NOT "IN PLACE": `co[i] !== 0` says corner i is turned relative to its
 // slot, which a corner that also MOVED can be. The obvious wording adds "in place" and is then false
-// for every algorithm that permutes and orients at once — 52 of the 137. The count is what was
-// measured, so the count is what is said.
-import { CORNERS, EDGES, SOLVED, applyAlg, compose, movesOf, toFacelets } from './cube-pieces.js';
+// for every algorithm that permutes and orients at once, which is most of the catalogue. The count is
+// what was measured, so the count is what is said.
+import { CORNERS, EDGES, SOLVED, compose, movesOf, toFacelets } from './cube-pieces.js';
+import { run } from './cube-moves.js';
 import { t } from './i18n.js';
+
+/** The hold whose letters are the cube's own — what an algorithm is read in when only its effect matters. */
+const IDENTITY_HOLD = Object.freeze(['U', 'F']);
 
 /** The solved arrangement, once — `order` compares against it on every repetition. */
 const SOLVED_FACELETS = toFacelets(SOLVED);
@@ -48,7 +51,7 @@ export function cycleLengths(perm) {
   return out.sort((a, b) => b - a);
 }
 
-/** How many repetitions bring the cube back. Bounded loudly: the largest over the 137 is 72, and the
+/** How many repetitions bring the cube back. Bounded loudly: the largest in the catalogue is 72, and the
  *  largest any single cube move sequence can have is 1260, so a run past that is a broken state
  *  rather than a slow answer. */
 export const ORDER_CEILING = 1260;
@@ -61,7 +64,18 @@ export const ORDER_CEILING = 1260;
  * a closed orbit of exactly this length (plan decision D6).
  */
 export function effectOf(alg) {
-  const state = applyAlg(SOLVED, alg);
+  // THROUGH THE INTERPRETER, so a slice, a wide move and a whole-cube turn are read as what they do to
+  // the pieces relative to the centres. The letters are read in their own frame: any hold would do,
+  // because the four quantities below are frame-free, so the identity hold is the honest one.
+  const after = run(alg, IDENTITY_HOLD, SOLVED);
+  // AN ALGORITHM THAT LEAVES THE CUBE TURNED HAS NO ORDER AS A PIECE EFFECT. Its letters name
+  // positions, so a second repetition is read in a different hold and is not the same permutation
+  // again — `compose` below would compute the order of something nobody performs. Refused by name;
+  // the human-speed table closes every rotation it opens for exactly this reason.
+  if (after.hold[0] !== IDENTITY_HOLD[0] || after.hold[1] !== IDENTITY_HOLD[1]) {
+    throw new Error(`alg-effect: "${alg}" leaves the cube held ${after.hold.join(' ')}, so it has no order`);
+  }
+  const { state } = after;
   const corners = cycleLengths(state.cp);
   const edges = cycleLengths(state.ep);
   const twisted = state.co.filter((v) => v !== 0).length;
@@ -104,8 +118,9 @@ const word = (n) => (NUMBER_WORD[n] ? NUMBER_WORD[n]() : String(n));
 /**
  * One phrase per cycle SHAPE, keyed by the lengths joined.
  *
- * Eight shapes cover all 137 — measured, not assumed. `%1` is the piece kind, so the same eight
- * shapes serve corners and edges and there is no second table to drift from this one.
+ * These shapes cover the whole catalogue — measured, not assumed: an algorithm with a shape missing here
+ * throws when the catalogue loads. `%1` is the piece kind, so the same shapes serve corners and edges and
+ * there is no second table to drift from this one.
  */
 export const CYCLE_SHAPES = Object.freeze({
   '2': (kind) => t('swaps two %1', kind),
@@ -139,16 +154,6 @@ export const CASE_SHAPES = Object.freeze({
   '3,3': (kind) => t('two separate sets of three %1 are in the wrong places', kind),
 });
 
-/** The phrase for one kind's cycles, or null when that kind is not permuted at all. Throws by NAME on
- *  a shape the table does not hold, so a new algorithm with an unmet shape fails loudly. */
-function cyclePhrase(lengths, kind, alg) {
-  if (lengths.length === 0) return null;
-  const key = lengths.join(',');
-  const shape = CYCLE_SHAPES[key];
-  if (!shape) throw new Error(`alg-effect: no phrase for ${kind} cycle shape [${key}] (${alg})`);
-  return shape(KIND_WORD[kind]());
-}
-
 /** English list joining, kept in one place so a two-clause and a three-clause label read the same. */
 const joinClauses = (parts) => {
   if (parts.length <= 1) return parts[0] ?? '';
@@ -156,33 +161,58 @@ const joinClauses = (parts) => {
 };
 
 /**
- * What an algorithm does, in words, plus the numbers those words were built from.
+ * The clauses one effect is said in, by one VOICE — a table of cycle shapes, the twist and flip sentences,
+ * and the refusals. ONE walk over the effect for both sentences a learner reads, so what an algorithm DOES
+ * and what is wrong with its CASE cannot come to count the pieces differently.
  *
- * `parts` exists so exhaustiveness is checkable rather than asserted. It was checked by rebuilding
- * the signature out of `parts` and demanding the two agree — which was CIRCULAR, since `parts` is a
- * copy of the numbers the signature is built from, so it agreed with itself for all 137 and could
- * not have failed. The check that replaced it decodes the SENTENCE back into an effect
- * independently, and the rebuilder it made redundant is gone.
+ * Throws by NAME on a shape the voice's table does not hold, so a new algorithm with an unmet shape fails
+ * loudly, and on an effect with nothing to say, because a label that says nothing is not a label.
  */
-export function describeEffect(effect, alg = '') {
+function clausesIn(voice, effect, alg) {
   const clauses = [];
   for (const kind of ['corners', 'edges']) {
-    const phrase = cyclePhrase(effect[kind], kind, alg);
-    if (phrase) clauses.push(phrase);
+    const lengths = effect[kind];
+    if (lengths.length === 0) continue;
+    const key = lengths.join(',');
+    const shape = voice.shapes[key];
+    if (!shape) throw new Error(`alg-effect: no ${voice.what} for ${kind} cycle shape [${key}] (${alg})`);
+    clauses.push(shape(KIND_WORD[kind]()));
   }
-  if (effect.twisted) clauses.push(t('twists %1 corners', word(effect.twisted)));
-  if (effect.flipped) clauses.push(t('flips %1 edges', word(effect.flipped)));
-  // Cannot happen for a real algorithm — a sequence that moves nothing is the identity, and no entry
-  // in the catalogue is one (every setup is checked non-solved). A guard rather than a branch, so a
-  // future table of patterns cannot quietly produce a label that says nothing.
-  if (clauses.length === 0) throw new Error(`alg-effect: "${alg}" disturbs nothing, so it has no effect to describe`);
-  return Object.freeze({
-    label: joinClauses(clauses),
-    parts: Object.freeze({
-      corners: effect.corners, edges: effect.edges, twisted: effect.twisted, flipped: effect.flipped,
-    }),
-  });
+  if (effect.twisted) clauses.push(voice.twisted(word(effect.twisted)));
+  if (effect.flipped) clauses.push(voice.flipped(word(effect.flipped)));
+  if (clauses.length === 0) throw new Error(`alg-effect: "${alg}" ${voice.empty}`);
+  return joinClauses(clauses);
 }
+
+/** What an algorithm DOES to a solved cube. */
+const DOES = Object.freeze({
+  what: 'phrase',
+  shapes: CYCLE_SHAPES,
+  twisted: (n) => t('twists %1 corners', n),
+  flipped: (n) => t('flips %1 edges', n),
+  // Cannot happen for a real algorithm — a sequence that moves nothing is the identity, and no entry in the
+  // catalogue is one (every setup is checked non-solved). A guard rather than a branch, so a future table
+  // of patterns cannot quietly produce a label that says nothing.
+  empty: 'disturbs nothing, so it has no effect to describe',
+});
+
+/** What is WRONG with the case an algorithm answers. */
+const LOOKS = Object.freeze({
+  what: 'case phrase',
+  shapes: CASE_SHAPES,
+  twisted: (n) => t('%1 corners are turned the wrong way', n),
+  flipped: (n) => t('%1 edges are flipped', n),
+  empty: 'answers a case with nothing out of place',
+});
+
+/**
+ * What an algorithm does, in words.
+ *
+ * Exhaustiveness is checked by decoding the SENTENCE back into an effect (`alg-catalogue.test.mjs`). It
+ * was once checked against a `parts` copy of the numbers the sentence was built from — which was
+ * CIRCULAR, agreeing with itself for every algorithm — and `parts` is gone with it.
+ */
+export const describeEffect = (effect, alg = '') => Object.freeze({ label: clausesIn(DOES, effect, alg) });
 
 /**
  * What is out of place in the CASE this algorithm answers, in words.
@@ -191,18 +221,4 @@ export function describeEffect(effect, alg = '') {
  * case gets instead of a name: `oll:02220000` is our key for a position and means nothing to a
  * learner, but "three corners are turned the wrong way" is the thing they are looking at.
  */
-export function describeCase(effect, alg = '') {
-  const clauses = [];
-  for (const kind of ['corners', 'edges']) {
-    const lengths = effect[kind];
-    if (!lengths.length) continue;
-    const shape = CASE_SHAPES[lengths.join(',')];
-    if (!shape) throw new Error(`alg-effect: no case phrase for ${kind} shape [${lengths.join(',')}] (${alg})`);
-    clauses.push(shape(KIND_WORD[kind]()));
-  }
-  if (effect.twisted) clauses.push(t('%1 corners are turned the wrong way', word(effect.twisted)));
-  if (effect.flipped) clauses.push(t('%1 edges are flipped', word(effect.flipped)));
-  if (clauses.length === 0) throw new Error(`alg-effect: "${alg}" answers a case with nothing out of place`);
-  return joinClauses(clauses);
-}
-
+export const describeCase = (effect, alg = '') => clausesIn(LOOKS, effect, alg);

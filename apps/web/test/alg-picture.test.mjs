@@ -69,17 +69,21 @@ test('a last-layer case is WHOLLY in the picture; an F2L case is not', () => {
     for (let i = 0; i < 54; i += 1) if (!DRAWN.includes(i) && view[i] !== solved[i]) n += 1;
     return n;
   };
-  for (const e of [...family('oll:'), ...family('pll:')]) {
+  // Both kinds of one-look entry: the proved (`oll:…`) and the human-speed (`oll-…`). A human algorithm
+  // is somebody else's sequence, so "it leaves the first two layers alone" is measured on it too.
+  for (const e of [...family('oll:'), ...family('pll:'), ...family('oll-'), ...family('pll-')]) {
     assert.equal(below(e), 0, `${e.id}: a last-layer case disturbs something the top diagram cannot show`);
   }
-  const f2l = family('f2l:').map(below);
+  const f2l = [...family('f2l:'), ...family('f2l-')].map(below);
   assert.ok(Math.min(...f2l) >= 1, 'an F2L case now fits in a top diagram — re-read pictureKind');
   assert.equal(family('f2l:').length, 40);
+  // 38 human-speed F2L entries draw: F2L 3, 4 and 17 are the corner inserts, filed under their own names.
+  assert.equal(family('f2l-').length, 38);
 });
 
 test('the picture a case gets follows that measurement', () => {
   for (const e of generated) {
-    const wanted = e.id.startsWith('f2l:') ? 'net' : 'top';
+    const wanted = e.id.startsWith('f2l') ? 'net' : 'top';
     assert.equal(pictureKind(e), wanted, `${e.id}: drawn by the wrong kind of picture`);
   }
   for (const e of ALG_ENTRIES.filter((x) => !readByPicture(x))) {
@@ -87,7 +91,7 @@ test('the picture a case gets follows that measurement', () => {
   }
 });
 
-test('no two generated cases share a DRAWN picture', () => {
+test('no two DIFFERENT cases share a DRAWN picture', () => {
   // Not sufficient on its own — see above — but still necessary: a picture two cases share
   // identifies neither.
   //
@@ -100,17 +104,27 @@ test('no two generated cases share a DRAWN picture', () => {
   // measuring the wrong thing).
   const drawn = (e) => pictureSvg(e, { palette: 'muted', scheme: 'western' })
     .replace(/ aria-label="[^"]*"/g, '');
+  //
+  // DIFFERENT CASES, since the human-speed table: a case now has two entries, its taught sequence and
+  // its proved one, and both may draw the very same picture because they ARE the same case. That is
+  // what a picture is for. Two different cases drawn alike is the defect, so the key is the case.
   const seen = new Map();
   for (const e of generated) {
     const key = `${pictureKind(e)}:${drawn(e)}`;
-    seen.set(key, [...(seen.get(key) ?? []), e.id]);
+    seen.set(key, new Set([...(seen.get(key) ?? []), e.caseId]));
   }
-  const shared = [...seen.values()].filter((v) => v.length > 1);
+  const shared = [...seen.values()].filter((v) => v.size > 1).map((v) => [...v]);
   assert.deepEqual(shared, [], 'two cases are drawn the same');
-  // The label really is what was hiding behind the old key — without stripping it nothing can ever
-  // collide, so the assertion above would hold whatever the pictures looked like.
+  // And the relaxation is not vacuous: some taught/proved pairs really do share a picture.
+  assert.ok([...seen.values()].some((v) => v.size === 1) && generated.length > seen.size,
+    'precondition: no case draws its two entries alike, so the case key above is untested');
+  // The label really is what was hiding behind the old key — it carries the effect SENTENCE, which
+  // separates pictures that DRAW the same, so comparing with it left in would hold whatever the pictures
+  // looked like. Measured as: stripping it merges pictures the label kept apart. (It no longer makes
+  // every picture unique, as it did before the human-speed table: a case's two entries can have the
+  // same effect, and then the same label too.)
   const withLabel = new Set(generated.map((e) => pictureSvg(e, { palette: 'muted', scheme: 'western' })));
-  assert.equal(withLabel.size, generated.length, 'the labels stopped being unique; the strip above is now load-bearing differently');
+  assert.ok(withLabel.size > seen.size, 'the label hides no collision, so stripping it is not load-bearing');
 });
 
 test('every generated case draws, and a named one draws nothing', () => {

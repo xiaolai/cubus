@@ -16,7 +16,8 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 import { SOLVER_PHASES } from '../bench/solver-phases.mjs';
-import { ALGORITHM_SETS } from './fixtures/algorithm-ledger.mjs';
+import { ALGORITHM_SETS, METHOD_ALGORITHMS } from './fixtures/algorithm-ledger.mjs';
+import { ALG_ENTRIES } from '../lib/alg-catalogue.js';
 
 const ROOT = new URL('../../../', import.meta.url);
 const NOTE = fileURLToPath(new URL('dev-docs/solving-method-phases.md', ROOT));
@@ -141,13 +142,19 @@ test('the note\'s prose counts match too', (t) => {
   // ledger. An audit found "999 entries, 999 moves" passing both cases, because nothing was reading
   // the sentence that states them.
   assert.equal(prose(/(\d+) algorithms at the bottom, (?:\d+) at the top/, "the ladder's bottom"), 18);
-  assert.equal(prose(/\d+ algorithms at the bottom, (\d+) at the top/, "the ladder's top"), 124);
-  const entries = ALGORITHM_SETS.reduce((a, x) => a + x.count, 0);
+  assert.equal(prose(/\d+ algorithms at the bottom, (\d+) at the top/, "the ladder's top"),
+    METHOD_ALGORITHMS.find((m) => m.method === "The app's method").heldTop);
+  // ENTRIES are counted without the alignment, which is an entry and not an algorithm; DISTINCT algorithms
+  // are the catalogue's, because a sequence two sets share is one algorithm.
+  const entries = ALGORITHM_SETS.filter((x) => x.kind !== 'not an algorithm').reduce((a, x) => a + x.count, 0);
   const moves = ALGORITHM_SETS.reduce((a, x) => a + x.moves, 0);
-  assert.equal(prose(/(\d+) entries, [\d,]+ moves of material/, "the algorithm ledger's entry count"), entries);
-  assert.equal(prose(/\d+ entries, ([\d,]+) moves of material/, "the ledger's move total"), moves);
+  assert.equal(prose(/(\d+) entries — \d+ distinct algorithms/, "the algorithm ledger's entry count"), entries);
+  assert.equal(prose(/\d+ entries — (\d+) distinct algorithms/, 'the distinct algorithm count'), ALG_ENTRIES.length);
+  assert.equal(prose(/([\d,]+) moves of material/, "the ledger's move total"), moves);
   const proved = ALGORITHM_SETS.filter((x) => x.kind === 'proved').reduce((a, x) => a + x.count, 0);
   const hand = ALGORITHM_SETS.filter((x) => x.kind === 'hand-written').reduce((a, x) => a + x.count, 0);
   assert.equal(prose(/\*\*(\d+) are proven minimal and certified\*\*/, 'the proved count'), proved);
   assert.equal(prose(/\*\*(\d+) are hand-written\*\*/, 'the hand-written count'), hand);
+  const sourced = ALGORITHM_SETS.filter((x) => x.kind === 'sourced').reduce((a, x) => a + x.count, 0);
+  assert.equal(prose(/\*\*(\d+) are\s+the speedcubing community's\*\*/, 'the sourced count'), sourced);
 });
