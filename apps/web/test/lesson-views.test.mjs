@@ -252,10 +252,37 @@ test('a recording that is making progress, or paused, is left alone', async (t) 
   await flush();
   assert.equal(result, 'pending', 'a recording that was playing normally was called a stall');
 
+  // Paused BY THE LESSON — its own `pause()`, which is what a child's pause is.
+  voice.pause();
   el.paused = true;
   t.mock.timers.tick(60_000);
   await flush();
   assert.equal(result, 'pending', 'a paused lesson was called a stall');
+  // And resumed, the bound applies again: a recording that resumed and then never moved is a stall.
+  voice.resume();
+  el.paused = false;
+  t.mock.timers.tick(9000);
+  await flush();
+  assert.equal(result, 'stalled', 'a resumed recording that never moved again was waited on for ever');
+});
+
+test('an element that pauses ITSELF is not a lesson that paused — it is a stall', async (t) => {
+  // CI's Linux WebKit, 2026-10-12: `paused` TRUE, `readyState` 2, `currentTime` 0, `error` null, and the
+  // lesson's status still empty twenty seconds on. The watchdog read the element's `paused` as the
+  // lesson's pause, reset its count every second, and waited for ever. Two shapes of it: play() that
+  // resolved and was stopped by the media stack, and play() that never answered at all.
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  for (const answered of [true, false]) {
+    const el = fakeAudio();
+    el.paused = true;
+    el.currentTime = 0;
+    const voice = voiceOver(el);
+    const said = voice.speak('a.m4a');
+    if (answered) el.plays[0].resolve();
+    await flush();
+    t.mock.timers.tick(9000);
+    assert.equal(await said, 'stalled', `an element paused by nobody in the lesson (play() ${answered ? 'resolved' : 'pending'}) was waited on for ever`);
+  }
 });
 
 test('a play() that throws at once is a recording that failed, by name', async () => {

@@ -74,6 +74,8 @@ export function createLessonVoice({ doc, resolve }) {
   audio.hidden = true;
   let pending = null;
   let watchdog = null;
+  // Whether the LESSON paused the recording — its own `pause()`, undone by `resume()` or a new `speak()`.
+  let held = false;
   const stopWatching = () => { if (watchdog !== null) { clearInterval(watchdog); watchdog = null; } };
   /**
    * A RECORDING THAT NEITHER ENDS NOR FAILS used to leave the lesson waiting for ever: `speak`'s promise
@@ -81,7 +83,11 @@ export function createLessonVoice({ doc, resolve }) {
    * then showed no problem, no progress and a Play button that had already been pressed — the app simply
    * stopped, which is the one thing AGENTS.md says a wait may not do.
    *
-   * Paused time does not count: the lesson pauses deliberately, and a pause is not a stall.
+   * Time the LESSON paused does not count: the lesson pauses deliberately, and that pause is not a stall.
+   * The ELEMENT'S `paused` is not that question. It read as one, and so a recording the element never
+   * started — or stopped on its own — was "paused", reset the count every second, and was waited on for
+   * ever: CI's Linux WebKit, 2026-10-12, `paused` true, `readyState` 2, `currentTime` 0, `error` null,
+   * the lesson's status empty twenty seconds on. Only the lesson knows whether IT paused, so it says.
    */
   const watch = () => {
     stopWatching();
@@ -90,7 +96,7 @@ export function createLessonVoice({ doc, resolve }) {
     let still = 0;
     watchdog = setInterval(() => {
       if (!pending) { stopWatching(); return; }
-      if (audio.paused) { still = 0; return; }
+      if (held) { still = 0; return; }
       if (audio.currentTime !== last) { last = audio.currentTime; still = 0; return; }
       still += 1000;
       if (still >= STALL_MS) { audio.pause(); finish('stalled'); }
@@ -117,6 +123,7 @@ export function createLessonVoice({ doc, resolve }) {
       // on (audit, 2026-09-21). The result is now true of the element, not only of its caller's intent.
       audio.pause();
       finish('stopped');
+      held = false;
       const url = resolve(ref);
       if (!url) return Promise.resolve('refused');
       return new Promise((settle) => {
@@ -128,8 +135,9 @@ export function createLessonVoice({ doc, resolve }) {
         start().then((r) => { if (r !== true && pending === settle) finish(r); });
       });
     },
-    pause() { audio.pause(); },
+    pause() { held = true; audio.pause(); },
     resume() {
+      held = false;
       const mine = pending;
       if (!mine) return;
       start().then((r) => { if (r !== true && pending === mine) finish(r); });
