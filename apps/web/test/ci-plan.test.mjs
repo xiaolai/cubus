@@ -386,3 +386,18 @@ test('python packages that pin each other share a Dependabot group', () => {
         'resulting pull request cannot resolve — see the comment above this test');
   }
 });
+
+// ONNX2TF IS HELD ON ITS 1.x LINE (AGENTS.md §9), and a held line Dependabot is not told about rides
+// into every month's ml-stack group and makes the whole group unmergeable: #39 asked for onnx2tf 2.6.9
+// beside numpy 2.5.3, which no Python 3.11 can install, and every ml job went red. The relation: while
+// the export record pins a 1.x onnx2tf, the pip block ignores onnx2tf's majors.
+test('the onnx2tf line the export record holds is one Dependabot does not propose leaving', () => {
+  const reqs = readFileSync(`${ROOT}ml/requirements-export.txt`, 'utf8');
+  const pin = /^onnx2tf==(\d+)\./m.exec(reqs);
+  assert.ok(pin, 'ml/requirements-export.txt no longer pins onnx2tf — move or drop this case');
+  if (pin[1] !== '1') return;
+  const config = readFileSync(`${ROOT}.github/dependabot.yml`, 'utf8');
+  const pip = config.slice(config.indexOf('package-ecosystem: pip'));
+  assert.match(pip, /ignore:\n(?: {6}.*\n)*? {6}- dependency-name: onnx2tf\n {8}update-types: \["version-update:semver-major"\]/,
+    'onnx2tf is held on 1.x but Dependabot is free to propose 2.x in the ml-stack group');
+});

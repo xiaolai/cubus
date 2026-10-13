@@ -69,10 +69,18 @@ updates:
   # CVEs do not come through here: Dependabot security updates were enabled on 2026-09-26 and open
   # their own ungrouped PRs, and what SHIPS to a user is gated separately by `pnpm audit --prod`.
   # Nothing in /ml reaches a user's machine — it builds artefacts on a maintainer's.
+  #
+  # ONNX2TF STAYS ON 1.x (AGENTS.md §9, measured 2026-09-29): every 2.x release pins numpy and onnx
+  # EXACTLY, which takes away the control these files exist to keep. Left un-ignored it rode in every
+  # month's group and made the whole group unmergeable — #39 (2026-10-01) asked for onnx2tf 2.6.9
+  # beside numpy 2.5.3, which no Python 3.11 interpreter can install, and every ml job went red.
   - package-ecosystem: pip
     directory: /ml
     schedule:
       interval: monthly
+    ignore:
+      - dependency-name: onnx2tf
+        update-types: ["version-update:semver-major"]
     groups:
       ml-stack:
         patterns: ["*"]
