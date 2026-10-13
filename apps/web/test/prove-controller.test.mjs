@@ -17,6 +17,9 @@ import { readFileSync } from 'node:fs';
 
 import { Window } from 'happy-dom';
 import { solverLoaded } from './fixtures/app-waits.mjs';
+import { lcg, randomAlg } from './fixtures/seeded-scrambles.mjs';
+
+const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url))).default;
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -34,7 +37,7 @@ const deferred = () => {
 let win;
 const $ = (sel) => win.document.querySelector(sel);
 
-/** Poll until `fn()` is true. A press of the die is a real search, on this thread. */
+/** Poll until `fn()` is true. */
 const waitFor = async (fn, ms = 30000) => {
   const t0 = Date.now();
   while (Date.now() - t0 < ms) {
@@ -86,21 +89,38 @@ const invoke = (cmd, args) => {
 const proveBtn = () => $('#proveBtn');
 const cancelBtn = () => $('#proveCancel');
 
-/** Roll a new subject on Home and wait until its walk offers a proof.
+/**
+ * Put a new subject on Home — a SEEDED scramble, adopted with its own alg — and return its facelets.
  *
- *  The DIE's own release is waited for, not only the button. One press produces TWO walk loads —
- *  adopting the cube refreshes the screen, and the press's own solve refreshes it again — and the
- *  second one issues a cancel that lands wherever it lands. Returning at the first proof button
- *  put that cancel between the next proof's request and the native side, which the queue then
- *  correctly refused: a test that raced the app instead of driving it. */
+ * NOT THE DIE. The die draws a cryptographically random cube and SEARCHES for it on this thread (there
+ * is no worker in this harness), and then rolls the next one ahead, also here; how long that takes is a
+ * fact about the cube drawn and the machine's load. A full-tier run on a loaded machine spent the whole
+ * thirty-second wait on one press (2026-10-13), which is the rule `fixtures/solver-cubes.mjs` states: a
+ * test that waits on a search must not draw its state. Adopting a scramble WITH its alg is the path a
+ * roll itself takes (`takeDerivation`) — the solution is that alg inverted, checked by cubejs, and no
+ * search runs at all. The die has its own suite (`cube-die.test.mjs`).
+ */
+const seeded = lcg(20261013);
+const adoptSeeded = async () => {
+  const [{ adoptCube }, { deriveCube }, { refreshScreen }] = await Promise.all([
+    import('../lib/cube-connection.js'), import('../lib/cube-subject.js'), import('../lib/screen-shell.js'),
+  ]);
+  const alg = randomAlg(seeded, 18);
+  const facelets = new Cube().move(alg).asString();
+  adoptCube(facelets, { physical: false, source: 'generated', setupAlg: alg });
+  await deriveCube();
+  refreshScreen();
+  return { alg, facelets };
+};
+
+/** Put a new subject on Home and wait until its walk offers a proof. The screen refreshes more than once
+ *  for one new subject, and the later refresh issues a cancel that lands wherever it lands — so the wait is
+ *  for the button AND a settled screen, or the next proof's request races that cancel. */
 const newWalkWithProof = async () => {
-  const die = $('#randCube');
-  assert.ok(die, 'precondition: the dev die is on the solve screen');
-  die.click();
-  const ready = await waitFor(() =>
-    !$('#randCube').disabled && proveBtn() && !proveBtn().hidden && !proveBtn().disabled);
-  assert.ok(ready, 'no walk offered a proof — the capability gate or the die is not wired here');
-  await settle(60); // and let the press's last refresh finish before anything else is asked for
+  const { alg } = await adoptSeeded();
+  const ready = await waitFor(() => proveBtn() && !proveBtn().hidden && !proveBtn().disabled);
+  assert.ok(ready, `no walk offered a proof for the seeded scramble ${alg} — the capability gate is not wired here`);
+  await settle(300);
 };
 
 before(async () => {
@@ -130,7 +150,7 @@ before(async () => {
   }
   await import('../lib/app.js');
   await tick();
-  await solverLoaded(); // the die ignores a press made before the solver has loaded
+  await solverLoaded(); // a subject is derived by the solver, so nothing is adopted before it has loaded
   win.__TAURI__ = {
     core: { invoke },
     event: {
@@ -401,8 +421,8 @@ test('a proof already held is still said when the offer to prove is turned off',
     assert.equal(proveBtn().hidden, true, 'and the offer came back while it was turned off');
     // And a cube with no proof held is not offered one while the offer is off.
     const before = state.cube.facelets;
-    $('#randCube').click();
-    assert.ok(await waitFor(() => state.cube.facelets !== before && !$('#randCube').disabled), 'precondition: a new cube was rolled');
+    const { facelets } = await adoptSeeded();
+    assert.ok(facelets !== before && state.cube.facelets === facelets, 'precondition: a new cube is the subject');
     await settle(300);
     assert.equal(proveBtn().hidden, true, 'a cube with no proof held was offered one while the offer was off');
   } finally {
