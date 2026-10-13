@@ -105,7 +105,7 @@ notice files it carries, reproduced in §5. The Rust standard library, staticall
 every binary, is MIT OR Apache-2.0 (<https://github.com/rust-lang/rust>). The project's own
 crates — `cube-ble`, `cube-vision`, `cubus-desktop`, `optimal-solver` — are MIT.
 
-The native shells are [Tauri](https://tauri.app) 2.12.1 (MIT OR Apache-2.0),
+The native shells are [Tauri](https://tauri.app) 2.12.2 (MIT OR Apache-2.0),
 which renders the web app in the platform's own webview (WebKit on Apple platforms, WebView2 on
 Windows, WebKitGTK on Linux, Android System WebView) — a system component, not redistributed.
 
@@ -425,7 +425,7 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **static_assertions** 1.1.0 (MIT OR Apache-2.0) — Nikolai Vazquez — <https://github.com/nvzqz/static-assertions-rs> — [`LICENSE-MIT`](#text-95a6a71a30f3)
 - **string_cache** 0.9.0 (MIT OR Apache-2.0) — The Servo Project Developers — <https://github.com/servo/string-cache> — [`LICENSE-MIT`](#text-3bfacc197ff2)
 - **strsim** 0.11.1 (MIT) — Danny Guo, maxbachmann — <https://github.com/rapidfuzz/strsim-rs> — [`LICENSE`](#text-8fd8980cab89)
-- **swift-rs** 1.0.8 (MIT OR Apache-2.0) — The swift-rs contributors — <https://github.com/Brendonovich/swift-rs> — [`LICENSE-MIT`](#text-7593ea50d2d4)
+- **swift-rs** 1.0.9 (MIT OR Apache-2.0) — The swift-rs contributors — <https://github.com/Brendonovich/swift-rs> — [`LICENSE-MIT`](#text-7593ea50d2d4)
 - **syn** 1.0.109 (MIT OR Apache-2.0) — David Tolnay — <https://github.com/dtolnay/syn> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
 - **syn** 2.0.119 (MIT OR Apache-2.0) — David Tolnay — <https://github.com/dtolnay/syn> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
 - **syn** 3.0.5 (MIT OR Apache-2.0) — David Tolnay — <https://github.com/dtolnay/syn> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
@@ -434,7 +434,7 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **system-configuration-sys** 0.6.0 (MIT OR Apache-2.0) — Mullvad VPN — <https://github.com/mullvad/system-configuration-rs> — [`LICENSE-MIT`](#text-eefdbe714980)
 - **tao-macros** 0.1.4 (MIT OR Apache-2.0) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tao> — [`LICENSE-MIT`](#text-26e6f69cf1f6)
 - **tar** 0.4.46 (MIT OR Apache-2.0) — Alex Crichton — <https://github.com/composefs/tar-rs> — [`LICENSE-MIT`](#text-e6e853531994)
-- **tauri** 2.12.1 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri> — [`LICENSE-MIT`](#text-89ff9689dcf9)
+- **tauri** 2.12.2 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri> — [`LICENSE-MIT`](#text-89ff9689dcf9)
 - **tauri-codegen** 2.7.1 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri> — [`LICENSE-MIT`](#text-89ff9689dcf9)
 - **tauri-macros** 2.7.1 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri> — [`LICENSE-MIT`](#text-89ff9689dcf9)
 - **tauri-plugin-dialog** 2.8.1 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/plugins-workspace> — [`LICENSE_MIT`](#text-89ff9689dcf9)
@@ -442,7 +442,7 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **tauri-plugin-log** 2.10.0 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/plugins-workspace> — [`LICENSE_MIT`](#text-89ff9689dcf9)
 - **tauri-plugin-opener** 2.7.0 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/plugins-workspace> — [`LICENSE_MIT`](#text-89ff9689dcf9)
 - **tauri-plugin-process** 2.4.0 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/plugins-workspace> — [`LICENSE_MIT`](#text-89ff9689dcf9)
-- **tauri-plugin-updater** 2.13.1 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/plugins-workspace> — [`LICENSE_MIT`](#text-89ff9689dcf9)
+- **tauri-plugin-updater** 2.13.2 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/plugins-workspace> — [`LICENSE_MIT`](#text-89ff9689dcf9)
 - **tauri-runtime** 2.12.1 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri> — [`LICENSE-MIT`](#text-89ff9689dcf9)
 - **tauri-runtime-wry** 2.12.1 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri> — [`LICENSE-MIT`](#text-89ff9689dcf9)
 - **tauri-utils** 2.10.1 (Apache-2.0 OR MIT) — Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/tauri> — [`LICENSE-MIT`](#text-89ff9689dcf9)
@@ -483,7 +483,7 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **url** 2.5.8 (MIT OR Apache-2.0) — The rust-url developers — <https://github.com/servo/rust-url> — [`LICENSE-MIT`](#text-7a8093fb4a93)
 - **urlpattern** 0.6.0 (MIT) — the Deno authors, crowlKats — <https://github.com/denoland/rust-urlpattern> — [`LICENSE`](#text-f2459c4b106b)
 - **utf8_iter** 1.0.4 (Apache-2.0 OR MIT) — Henri Sivonen — <https://github.com/hsivonen/utf8_iter> — [`COPYRIGHT`](#text-76c0e37c107d), [`LICENSE-MIT`](#text-7dc2f6402447)
-- **uuid** 1.27.0 (Apache-2.0 OR MIT) — Ashley Mannix, Dylan DPC, Hunar Roop Kahlon — <https://github.com/uuid-rs/uuid> — [`LICENSE-MIT`](#text-11cd7e6caed4)
+- **uuid** 1.28.0 (Apache-2.0 OR MIT) — Ashley Mannix, Dylan DPC, Hunar Roop Kahlon — <https://github.com/uuid-rs/uuid> — [`LICENSE-MIT`](#text-11cd7e6caed4)
 - **walkdir** 2.5.0 (Unlicense/MIT) — Andrew Gallant — <https://github.com/BurntSushi/walkdir> — [`COPYING`](#text-65314a6c9668), [`LICENSE-MIT`](#text-154c1af2b38e)
 - **want** 0.3.1 (MIT) — Sean McArthur — <https://github.com/seanmonstar/want> — [`LICENSE`](#text-f7dfffe03f9f)
 - **wasi** 0.11.1+wasi-snapshot-preview1 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT) — The Cranelift Project Developers — <https://github.com/bytecodealliance/wasi> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
@@ -1023,7 +1023,7 @@ SOFTWARE.
 
 ### text-11cd7e6caed4
 
-Carried by uuid 1.27.0 (`LICENSE-MIT`).
+Carried by uuid 1.28.0 (`LICENSE-MIT`).
 
 ```text
 Copyright (c) 2014 The Rust Project Developers
@@ -5403,7 +5403,7 @@ SOFTWARE.
 
 ### text-7593ea50d2d4
 
-Carried by swift-rs 1.0.8 (`LICENSE-MIT`).
+Carried by swift-rs 1.0.9 (`LICENSE-MIT`).
 
 ```text
 Copyright (c) 2023 The swift-rs Developers
@@ -6427,7 +6427,7 @@ SOFTWARE.
 
 ### text-89ff9689dcf9
 
-Carried by tauri 2.12.1 (`LICENSE-MIT`), tauri-codegen 2.7.1 (`LICENSE-MIT`), tauri-macros 2.7.1 (`LICENSE-MIT`), tauri-plugin-dialog 2.8.1 (`LICENSE_MIT`), tauri-plugin-fs 2.6.0 (`LICENSE_MIT`), tauri-plugin-log 2.10.0 (`LICENSE_MIT`), tauri-plugin-opener 2.7.0 (`LICENSE_MIT`), tauri-plugin-process 2.4.0 (`LICENSE_MIT`), tauri-plugin-updater 2.13.1 (`LICENSE_MIT`), tauri-runtime 2.12.1 (`LICENSE-MIT`), tauri-runtime-wry 2.12.1 (`LICENSE-MIT`), tauri-utils 2.10.1 (`LICENSE-MIT`).
+Carried by tauri 2.12.2 (`LICENSE-MIT`), tauri-codegen 2.7.1 (`LICENSE-MIT`), tauri-macros 2.7.1 (`LICENSE-MIT`), tauri-plugin-dialog 2.8.1 (`LICENSE_MIT`), tauri-plugin-fs 2.6.0 (`LICENSE_MIT`), tauri-plugin-log 2.10.0 (`LICENSE_MIT`), tauri-plugin-opener 2.7.0 (`LICENSE_MIT`), tauri-plugin-process 2.4.0 (`LICENSE_MIT`), tauri-plugin-updater 2.13.2 (`LICENSE_MIT`), tauri-runtime 2.12.1 (`LICENSE-MIT`), tauri-runtime-wry 2.12.1 (`LICENSE-MIT`), tauri-utils 2.10.1 (`LICENSE-MIT`).
 
 ```text
 MIT License
