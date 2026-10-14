@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict';
 import {
-  copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync,
+  copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync,
   symlinkSync, utimesSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -766,4 +766,74 @@ test('a build with no course has none, and one pointed at something that is not 
       assert.throws(() => build({ freshness: false, course: empty }), /links back into itself/);
     });
   } finally { rmSync(empty, { recursive: true, force: true }); }
+});
+
+test('a course reached through the destination is read before the destination is emptied, and ships', () => {
+  // Codex audit and verify, 2026-10-14: `dist` was emptied first and the course copied after, so a course
+  // living in `dist` — named there, linked there file by file, or through a link that lives there — was
+  // destroyed by the build that was to ship it. Each case ships the course, and every case must.
+  const shipsFrom = (prepare) => {
+    const { dir, cleanup } = makeCourse();
+    try {
+      withRoot(({ root, dist, build }) => {
+        writeFileSync(join(root, 'index.html'), '<!doctype html><html><head><link rel="stylesheet" href="./tokens.css"></head><body><script type="module" src="./lib/app.js"></script></body></html>');
+        const course = prepare({ dir, dist });
+        build({ freshness: false, course });
+        assert.equal(readFileSync(join(dist, COURSE_MOUNT, 'take.m4a'), 'utf8'), 'take', 'the course lost what it read through dist');
+        assert.ok(existsSync(join(dist, COURSE_MOUNT, 'index.json')), 'the shelf did not ship');
+      });
+    } finally { cleanup(); }
+  };
+  // Named inside dist.
+  shipsFrom(({ dir, dist }) => {
+    const inside = join(dist, 'old-course');
+    cpSync(dir, inside, { recursive: true, dereference: true });
+    writeFileSync(join(inside, 'take.m4a'), 'take');
+    return inside;
+  });
+  // A link to one file in dist.
+  shipsFrom(({ dir, dist }) => {
+    writeFileSync(join(dist, 'take.m4a'), 'take');
+    symlinkSync(join(dist, 'take.m4a'), join(dir, 'take.m4a'));
+    return dir;
+  });
+  // The course itself named through a link that lives in dist, pointing out of it.
+  shipsFrom(({ dir, dist }) => {
+    writeFileSync(join(dir, 'take.m4a'), 'take');
+    symlinkSync(dir, join(dist, 'course-link'));
+    return join(dist, 'course-link');
+  });
+});
+
+test('a staging directory inside the destination is refused before the delete, not found missing after it', () => {
+  // Codex verify, 2026-10-14: the copy is staged under the temporary directory, and a TMPDIR inside `dist`
+  // would be emptied with it. `os.tmpdir()` reads TMPDIR on every call, so the case sets it for one build.
+  const { dir, cleanup } = makeCourse();
+  const was = process.env.TMPDIR;
+  const restore = () => { if (was === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = was; };
+  try {
+    withRoot(({ dist, build }) => {
+      const inside = join(dist, 'tmp');
+      mkdirSync(inside);
+      process.env.TMPDIR = inside;
+      try {
+        assert.throws(() => build({ freshness: false, course: dir }), /refusing to stage the course/);
+      } finally { restore(); }
+      assert.ok(existsSync(inside), 'the destination was emptied by a build that refused to run');
+    });
+  } finally { restore(); cleanup(); }
+});
+
+test('a course that holds the destination is refused, and nothing is deleted', () => {
+  const { dir, cleanup } = makeCourse();
+  try {
+    const dist = join(dir, 'dist');
+    mkdirSync(dist);
+    writeFileSync(join(dist, 'keep'), 'kept');
+    const root = makeRoot();
+    try {
+      assert.throws(() => assembleDist({ root, dist, freshness: false, course: dir }), /holds the destination/);
+      assert.ok(existsSync(join(dist, 'keep')), 'the destination was emptied by a build that refused to run');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { cleanup(); }
 });
