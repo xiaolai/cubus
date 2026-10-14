@@ -63,7 +63,8 @@ export { MethodSolverError } from './methods/engine.js';
 export const warmCross = () => warmCrossTable();
 
 export {
-  CASE_NAMES, DEFAULT_RUNGS, LADDER, STAGE_IDS, TOP_RUNG, allRungCombinations, methodFor, rungKey,
+  CASE_NAMES, DEFAULT_RUNGS, LADDER, LAST_LAYER_ROUTES, STAGE_IDS, TOP_RUNG, allMethods, allRungCombinations, dialsOf,
+  methodFor, rungKey,
 } from './methods/index.js';
 
 /**

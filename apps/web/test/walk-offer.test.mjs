@@ -25,14 +25,14 @@ const windows = [];
 after(async () => { for (const win of windows) await win.happyDOM.close(); });
 
 /** A mounted offer row with a rung offer on it. `saves` and `raises` record what reached storage. */
-function rig({ saveOk = true, raiseOk = true } = {}) {
+function rig({ saveOk = true, raiseOk = true, lastLayer = 'app', progress = almost() } = {}) {
   const win = new Window();
   windows.push(win);
   const root = win.document.createElement('div');
   root.innerHTML = '<div id="rungOffer" hidden><span id="rungOfferMsg"></span>'
     + '<button id="rungYes"></button><button id="rungNot"></button></div>';
   win.document.body.appendChild(root);
-  const settings = { rungs: { ...BOTTOM }, rungProgress: almost() };
+  const settings = { rungs: { ...BOTTOM }, rungProgress: progress, lastLayer };
   const saves = [];
   const raises = [];
   let raised = 0;
@@ -48,8 +48,8 @@ function rig({ saveOk = true, raiseOk = true } = {}) {
   });
   const $ = (sel) => root.querySelector(sel);
   /** Step the head forward one move at a time from `from` to `to`. */
-  const stepThrough = (from, to, walkGen) => {
-    for (let k = from; k < to; k += 1) offer.onHead(k, k + 1, { lesson: LESSON, total: to, walkGen, jumped: false });
+  const stepThrough = (from, to, walkGen, lesson = LESSON) => {
+    for (let k = from; k < to; k += 1) offer.onHead(k, k + 1, { lesson, total: to, walkGen, jumped: false });
   };
   return { offer, settings, saves, raises, raisedCount: () => raised, $, stepThrough };
 }
@@ -168,4 +168,23 @@ test('replacing the walk hides an offer, but not the warning that progress is no
   assert.equal(saving.$('#rungOffer').hidden, false, 'precondition: an offer is on screen');
   saving.offer.hide();
   assert.equal(saving.$('#rungOffer').hidden, true, 'an offer about the old walk outlived it');
+});
+
+test('on the course\'s route, its last layer is not practice at the app\'s top-face or last-layer rung (ADR 0009)', () => {
+  // The course's last-layer steps are headed with the `oll` and `pll` sections, and the route ignores both
+  // dials. Counting a follow there would end in an offer to raise a rung that changes nothing.
+  const LAST = Object.freeze({ sections: [{ id: 'cross' }, { id: 'pairs' }, { id: 'oll' }, { id: 'pll' }] });
+  const r = rig({ lastLayer: 'course', progress: repairProgress(NO_PROGRESS) });
+  for (let walk = 1; walk <= FOLLOWS_TO_OFFER; walk += 1) {
+    r.offer.newWalk();
+    r.stepThrough(0, 2, walk, LAST);
+  }
+  assert.equal(r.settings.rungProgress.follows.cross, FOLLOWS_TO_OFFER, 'the stages the route reads were not credited');
+  assert.equal(r.settings.rungProgress.follows.oll ?? 0, 0, 'a course follow was counted as top-face practice');
+  assert.equal(r.settings.rungProgress.follows.pll ?? 0, 0, 'a course follow was counted as last-layer practice');
+  // And with the last-layer dials ripe from an earlier spell on the app's route, nothing offers them here.
+  const ripe = { follows: { oll: FOLLOWS_TO_OFFER, pll: FOLLOWS_TO_OFFER }, declined: {}, nextAt: {} };
+  assert.equal(nextOffer(BOTTOM, repairProgress(ripe), { lastLayer: 'course' }), null,
+    'the course\'s route offered a rung of a dial it does not read');
+  assert.equal(nextOffer(BOTTOM, repairProgress(ripe), { lastLayer: 'app' })?.id, 'oll', 'and the app\'s route still does');
 });

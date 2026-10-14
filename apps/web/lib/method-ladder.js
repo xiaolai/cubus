@@ -22,7 +22,7 @@
 // Pure: no DOM, no storage, no solver. What the app does with an offer is the app's business; what
 // counts as an offer is here, where it can be tested.
 
-import { LADDER, STAGE_IDS, TOP_RUNG } from './method-solver.js';
+import { LADDER, STAGE_IDS, TOP_RUNG, dialsOf } from './method-solver.js';
 // The stage names are the LESSON's, not a second set. The two screens sit next to each other,
 // and a stage called one thing on the move list and another on the ladder reads as two stages.
 import { SECTION_NAME } from './method-lesson.js';
@@ -126,8 +126,9 @@ export function recordCleanFollow(progress, stages) {
  * again, and the lowest first is the order the stages are met in — a learner who cannot yet plan
  * the cross has no use for full OLL.
  */
-export function nextOffer(rungs, progress) {
-  for (const id of STAGE_IDS) {
+export function nextOffer(rungs, progress, { lastLayer = 'app' } = {}) {
+  // Only a dial the learner's route reads (ADR 0009): an offer to raise one it ignores is an offer of nothing.
+  for (const id of dialsOf(lastLayer)) {
     const at = rungs?.[id] ?? 0;
     if (at >= TOP_RUNG[id]) continue; // nothing above this one yet
     if ((progress.follows?.[id] ?? 0) < offerAt(progress, id)) continue;

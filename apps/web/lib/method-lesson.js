@@ -36,6 +36,9 @@ export const DIAL_OF = Object.freeze({
   'top-face': 'oll',
   'top-corners': 'pll',
   'top-edges': 'pll',
+  // The course's route (ADR 0009): its edges go home in the top-face half, its corners turn in the last.
+  'edges-home': 'oll',
+  'corners-turned': 'pll',
 });
 
 /**
@@ -143,6 +146,24 @@ const WHY_TEXT = Object.freeze({
   // "Move the top edges home" over an algorithm that is mostly about corners is the same defect
   // the middle-layer captions had: a sentence describing something other than what is happening.
   'lastLayer.permute': () => t('Move the whole top layer into place — this finishes the cube.'),
+  // The course's own last layer (`COURSE_LAST_LAYER`, lib/methods/last-layer.js; ADR 0009): edges home
+  // first, then the corners put in place, then each corner turned up. Every one of these is made turned
+  // over, so each says one thing; the course's lessons 14–16 are the sentences these shorten.
+  'topEdges.place': () => t('Put the top edges home, each one next to the centre of its own colour.'),
+  'topEdges.place.step': () => t('Swap two top edges; they are not all home yet.'),
+  'topCorners.place': () => t('Move the top corners to the places they belong — some may still be turned the wrong way.'),
+  'topCorners.place.step': () => t('Move three top corners round; they are not all in place yet.'),
+  // The twist takes the first two layers apart while it runs. Saying so is the lesson's own warning, and
+  // a child who sees the bottom scrambled with no warning undoes the work to "fix" it.
+  // `topTurn` (never `turn`, which is the whole cube's elsewhere in this table): the step begins by
+  // turning the top to bring the corner to the front right, and says so — otherwise the first move a
+  // child makes is one the sentence never mentioned.
+  'topCorners.twist': ({ topTurn } = {}) => (topTurn
+    ? t('Turn the top to bring the last wrong-way corner to the front right, then turn it up. The layers underneath come back as it finishes.')
+    : t('Turn the last wrong-way corner up at the front right. The layers underneath come back as it finishes.')),
+  'topCorners.twist.step': ({ topTurn } = {}) => (topTurn
+    ? t('Turn the top until a wrong-way corner is at the front right, then turn it up. The layers underneath come apart for now, and come back when every corner is up.')
+    : t('Turn the corner at the front right until it faces up. The layers underneath come apart for now, and come back when every corner is up.')),
 });
 
 /** Every reason key the solver can emit. A step whose key is missing here would caption as
@@ -192,6 +213,11 @@ const CASE_TEXT = Object.freeze({
   'u-perm-b': () => t('U perm b'),
   align: () => t('align'),
   turn: () => t('turn the cube'),
+  'course-cross': () => t('course cross'),
+  'course-edge-swap': () => t('course edge swap'),
+  'course-corner-cycle': () => t('course corner cycle'),
+  'course-corner-twist': () => t('course corner twist'),
+  'course-corner-twist-back': () => t('course corner twist back'),
 });
 
 /** A key from a generated table rather than a name — `oll:00120011`, `f2l:0c10`. Matched

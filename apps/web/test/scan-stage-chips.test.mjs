@@ -32,8 +32,8 @@ after(async () => { for (const win of windows) await win.happyDOM.close(); });
 /** What a chip says for `fact`, in the report's own words rather than a copy of them. */
 const says = (id, fact) => chipFor({ target: OFFERED_TARGETS.find((x) => x.id === id), ...fact }).text;
 const WAITING = OFFERED_TARGETS.map(() => '…');
-/** One cube's bounds: a target already reached, one never searched, four at different depths. */
-const BOUNDS = { cross: 2, 'first-layer': 0, 'two-layers': 5, 'top-cross': 3, 'corners-home': 4, solved: 7 };
+/** One cube's bounds: a target already reached, one never searched, five at different depths. */
+const BOUNDS = { cross: 2, 'first-layer': 0, 'two-layers': 5, 'top-cross': 3, 'top-edges': 6, 'corners-home': 4, solved: 7 };
 
 /** A mounted chip row. Every question waits for the case; `state` is the cube in hand, and `env`
  *  holds the screen's verdict. */
@@ -85,15 +85,16 @@ test('bounds land together, then the searches run cheapest first — never for a
     'first-layer': says('first-layer', { bound: 0, atTarget: true }),
     'two-layers': says('two-layers', { bound: 5 }),
     'top-cross': says('top-cross', { bound: 3 }),
+    'top-edges': says('top-edges', { bound: 6 }),
     'corners-home': says('corners-home', { bound: 4 }),
     solved: says('solved', { bound: 7 }),
   }, 'every chip its bound, and a target already reached says so');
-  for (let i = 1; i <= 4; i += 1) {
+  for (let i = 1; i <= 5; i += 1) {
     assert.equal(r.asked.length, i + 1, `search ${i} was never asked`);
     r.replies[i].resolve({ moves: BOUNDS[r.asked[i].target], alg: 'x' });
     await settle();
   }
-  assert.deepEqual(r.asked.slice(1).map((q) => q.target), ['cross', 'top-cross', 'corners-home', 'two-layers'],
+  assert.deepEqual(r.asked.slice(1).map((q) => q.target), ['cross', 'top-cross', 'corners-home', 'two-layers', 'top-edges'],
     'the searches were not cheapest first, or searched a target they should not');
   assert.ok(r.asked.slice(1).every((q) => q.want === 'route' && q.facelets === 'A' && q.nodeBudget === 7 && q.maxDepth === 12),
     'each is a budgeted route search about the cube the row is for');

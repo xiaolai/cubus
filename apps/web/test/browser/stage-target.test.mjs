@@ -35,6 +35,7 @@ import { turnFacelets } from '../../lib/cube-orientation.js';
 import { fromCube } from '../../lib/cube-pieces.js';
 import { moveStepIndex, stepAtMove } from '../../lib/method-lesson.js';
 import { methodFor, solveByMethod } from '../../lib/method-solver.js';
+import { OFFERED_TARGETS } from '../../lib/stage-targets.js';
 import { TUMBLED, holdForStage, holdSpec, renameAlg, scanFrameWalk, toMethodFrame } from '../../lib/solving-hold.js';
 import Cube from '../../vendor/cubejs.js';
 import { pace } from '../browser-wait.mjs';
@@ -264,7 +265,8 @@ test('the Restore chips appear after a scan, and press through to a walk', async
     }, SCANNED);
 
     await page.waitForFunction(() => document.querySelector('#stageCard')?.hidden === false, null);
-    assert.equal(await page.locator('.stage-chip').count(), 6, 'five stages and the whole cube (§6)');
+    assert.equal(await page.locator('.stage-chip').count(), OFFERED_TARGETS.length, 'every stage and the whole cube (§6; ADR 0009)');
+    assert.equal(OFFERED_TARGETS.length, 7, 'six stages and the whole cube');
 
     // Every chip must settle on something a person can read. `…` is the waiting state and must not
     // survive: a chip that never resolves is worse than a dash, because a dash says so.
@@ -651,7 +653,11 @@ test('a lesson builds its white cross and first layer white up, then turns the c
 
     // The hold of every move, worked out the way the app works it out — from the method solver's own
     // steps, fed the method frame — so this also proves the lesson on screen IS that solver's lesson.
-    const { steps } = solveByMethod(fromCube(Cube.fromString(toMethodFrame(walk.start))), methodFor());
+    // ON THE PAGE'S OWN ROUTE (ADR 0009): a fresh install walks the course's last layer, and rebuilding the
+    // app's instead indexed holds past the end of a lesson that is not on screen (Codex refute, 2026-10-14).
+    const lastLayer = await page.evaluate(() => JSON.parse(localStorage.getItem('cubusSettings') ?? '{}').lastLayer);
+    assert.ok(lastLayer === 'course' || lastLayer === 'app', `the page holds no last-layer route: ${lastLayer}`);
+    const { steps } = solveByMethod(fromCube(Cube.fromString(toMethodFrame(walk.start))), methodFor(undefined, { lastLayer }));
     const index = moveStepIndex(steps);
     const heldAt = moves.map((_, k) => holdSpec(holdForStage(steps[stepAtMove(index, k)].stage)));
     const stages = new Set(steps.map((s) => s.stage));

@@ -19,7 +19,7 @@ import { CORNER, CORNERS, EDGE, EDGES, SOLVED, allSolved, applyAlg, cornerSolved
 import { fromRepertoire, piecesOf, repertoire, simplify } from '../lib/methods/engine.js';
 import { identityFace, run } from '../lib/cube-moves.js';
 import {
-  LADDER, MethodSolverError, STAGE_IDS, allRungCombinations, methodFor, rungKey, solveByMethod,
+  LADDER, MethodSolverError, STAGE_IDS, allMethods, allRungCombinations, solveByMethod,
 } from '../lib/method-solver.js';
 import { seededScrambles } from './fixtures/seeded-scrambles.mjs';
 import { turnsOf } from './fixtures/method-replay.mjs';
@@ -53,6 +53,18 @@ const CONTRACT = {
     [CORNER.URF, CORNER.UFL, CORNER.ULB, CORNER.UBR].every((c) => s.co[c] === 0),
   pll: (s) => allSolved(s, { edges: [...Array(12).keys()], corners: [...Array(8).keys()] }),
 };
+/** The course's route (ADR 0009) ends its first last-layer stage with the top EDGES home, the right way
+ *  up, and the corners anyhow — not with the top face one colour. Written from the cube, not imported. */
+const COURSE_CONTRACT = {
+  ...CONTRACT,
+  oll: (s) => CONTRACT.pairs(s) && allSolved(s, { edges: [EDGE.UR, EDGE.UF, EDGE.UL, EDGE.UB] }),
+};
+const contractsOf = (method) => (method.lastLayer === 'course' ? COURSE_CONTRACT : CONTRACT);
+/** The course twists each top corner up with lesson 9's four moves, and they take the first two layers
+ *  apart until the last corner is up — lesson 16 warns the child about exactly that. So a run of
+ *  `corners-turned` steps may break an earlier contract IN BETWEEN, and must have mended it by the run's
+ *  end. Nothing else may, and no other route's steps may. */
+const tornOf = (method) => new Set(method.lastLayer === 'course' ? ['corners-turned'] : []);
 
 /** Which of the four dials a step's fine-grained stage name belongs to. */
 const DIAL_OF = {
@@ -64,24 +76,27 @@ const DIAL_OF = {
   'top-face': 'oll',
   'top-corners': 'pll',
   'top-edges': 'pll',
+  'edges-home': 'oll',
+  'corners-turned': 'pll',
 };
 
-test('every rung combination solves the same cubes, and cubejs agrees', () => {
+test('every rung combination, on both last-layer routes, solves the same cubes, and cubejs agrees', () => {
   const combinations = allRungCombinations();
   assert.equal(combinations.length, STAGE_IDS.reduce((n, id) => n * LADDER[id].length, 1));
   assert.ok(combinations.length >= 4, `only ${combinations.length} combinations — the ladder is not a ladder`);
+  const methods = allMethods();
+  assert.ok(methods.some((m) => m.lastLayer === 'course'), 'the sweep never walks the course\'s route');
 
   const failures = [];
   const report = [];
 
-  for (const rungs of combinations) {
-    const method = methodFor(rungs);
+  for (const method of methods) {
     let fallbacks = 0;
     let pairSteps = 0;
     let steps = 0;
 
     for (const [i, state] of STATES.entries()) {
-      const where = `${rungKey(rungs)} on ${SCRAMBLES[i]}`;
+      const where = `${method.id} on ${SCRAMBLES[i]}`;
       let result;
       try {
         result = solveByMethod(state, method);
@@ -98,7 +113,7 @@ test('every rung combination solves the same cubes, and cubejs agrees', () => {
 
       // 2. Each dial's contract holds at the boundary where its last step lands, and nothing a
       //    later dial does breaks it. This is the composition claim itself.
-      const problem = walkContracts(state, result.steps, where);
+      const problem = walkContracts(state, result.steps, where, contractsOf(method), tornOf(method));
       if (problem) { failures.push(problem); continue; }
 
       // 3. Every pair is accounted for: either the pairing rung reached it (a step carrying
@@ -111,18 +126,18 @@ test('every rung combination solves the same cubes, and cubejs agrees', () => {
     }
 
     report.push({
-      key: rungKey(rungs),
+      key: method.id,
       steps: (steps / N).toFixed(1),
       fallback: pairSteps + fallbacks ? `${((fallbacks / (pairSteps + fallbacks)) * 100).toFixed(0)}%` : '—',
     });
   }
 
   assert.deepEqual(failures, [],
-    `${failures.length} of ${combinations.length * N} solves failed:\n  ${failures.slice(0, 10).join('\n  ')}`);
+    `${failures.length} of ${methods.length * N} solves failed:\n  ${failures.slice(0, 10).join('\n  ')}`);
 
   // Printed, not asserted: the rate is a fact this suite is the right place to observe, and
   // §7a finding F1 says a non-zero pair fallback is structural rather than a defect.
-  console.log(`    composition: ${combinations.length} combinations x n=${N}, 0 failures`);
+  console.log(`    composition: ${methods.length} methods x n=${N}, 0 failures`);
   for (const row of report) console.log(`      ${row.key}  ${row.steps} steps  fallback ${row.fallback}`);
 });
 
@@ -142,7 +157,7 @@ function faceletsOf(state) {
  *
  * Returns a message, or null when everything held.
  */
-function walkContracts(start, steps, where) {
+function walkContracts(start, steps, where, contracts, torn) {
   let state = start;
   const held = [];
   let current = steps.length ? DIAL_OF[steps[0].stage] : null;
@@ -150,16 +165,17 @@ function walkContracts(start, steps, where) {
     const dial = DIAL_OF[step.stage];
     if (dial === undefined) return `${where}: step ${i} has an unknown stage "${step.stage}"`;
     if (dial !== current) {
-      if (!CONTRACT[current](state)) return `${where}: the ${current} stage ended without meeting its contract`;
+      if (!contracts[current](state)) return `${where}: the ${current} stage ended without meeting its contract`;
       held.push(current);
       current = dial;
     }
     state = applyAlg(state, turnsOf(step));
+    if (torn.has(step.stage) && torn.has(steps[i + 1]?.stage)) continue;
     for (const done of held) {
-      if (!CONTRACT[done](state)) return `${where}: step ${i} (${step.stage}) broke the ${done} contract`;
+      if (!contracts[done](state)) return `${where}: step ${i} (${step.stage}) broke the ${done} contract`;
     }
   }
-  if (current && !CONTRACT[current](state)) return `${where}: the ${current} stage ended without meeting its contract`;
+  if (current && !contracts[current](state)) return `${where}: the ${current} stage ended without meeting its contract`;
   return null;
 }
 

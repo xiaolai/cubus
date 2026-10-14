@@ -155,7 +155,7 @@ export function judgeRung(states, criterion, { wider = null, measure = rungDelta
 // ---- the command line -------------------------------------------------------------------------
 
 const COMMANDS = ['profile', 'ladder', 'exhaustive', 'all'];
-const USAGE = `usage: node bench/method-solver-profile.mjs [${COMMANDS.join('|')}] [n | <oll> <pll>]`;
+const USAGE = `usage: node bench/method-solver-profile.mjs [${COMMANDS.join('|')}] [n | <oll> <pll> | course course]`;
 
 class UsageError extends Error {}
 
@@ -169,11 +169,17 @@ function sampleCount(text, fallback) {
   return n;
 }
 
-/** A last-layer rung pair, checked against the rungs that exist. */
+/** A last-layer rung pair, checked against the rungs that exist — or `course course`, the course's route
+ *  (ADR 0009), which stands in both last-layer stages at once and so is named in both places, the way the
+ *  CI matrix names a shard. */
 function rungSelector(rest) {
   if (rest.length === 0) return null;
   if (rest.length !== 2) {
     throw new UsageError('exhaustive takes either no selector or both: <oll rung> <pll rung>');
+  }
+  if (rest[0] === 'course' || rest[1] === 'course') {
+    if (rest[0] !== rest[1]) throw new UsageError('the course route is both last-layer stages: exhaustive course course');
+    return { route: 'course' };
   }
   const [oll, pll] = rest.map(Number);
   const known = (dial, rung) => LADDER[dial].some((s) => s.rung === rung);
@@ -444,10 +450,12 @@ async function exhaustive(selector) {
   const combinations = [];
   for (const oll of LADDER.oll) {
     for (const pll of LADDER.pll) {
-      if (selector && (oll.rung !== selector.oll || pll.rung !== selector.pll)) continue;
+      if (selector && (selector.route || oll.rung !== selector.oll || pll.rung !== selector.pll)) continue;
       combinations.push({ cross: 0, pairs: 0, oll: oll.rung, pll: pll.rung });
     }
   }
+  // The course's route is a pair of its own, not a rung combination — and as unsampled a claim.
+  if (!selector || selector.route === 'course') combinations.push({ cross: 0, pairs: 0, oll: 0, pll: 0, lastLayer: 'course' });
   if (combinations.length === 0) throw new UsageError('no such last-layer rung combination');
   for (const rungs of combinations) await exhaustiveAt(rungs);
 }
@@ -463,7 +471,7 @@ const FAILURES_SHOWN = 5;
  * the place a reader looks and the parent must be the one that decides the sweep passed.
  */
 export function sweepPart(rungs, part = 0, parts = 1) {
-  const method = methodFor(rungs);
+  const method = methodFor(rungs, { lastLayer: rungs.lastLayer ?? 'app' });
   let index = -1;
   let total = 0;
   let moves = 0;
@@ -591,7 +599,7 @@ async function exhaustiveAt(rungs) {
     console.log(`       ${JSON.stringify(f.state)}`);
   }
 
-  console.log(`\n[exhaustive ${rungKey(rungs)}] every reachable last-layer state, ${((Date.now() - t0) / 1000).toFixed(0)}s on ${parts} thread${parts === 1 ? '' : 's'}`);
+  console.log(`\n[exhaustive ${methodFor(rungs, { lastLayer: rungs.lastLayer ?? 'app' }).id}] every reachable last-layer state, ${((Date.now() - t0) / 1000).toFixed(0)}s on ${parts} thread${parts === 1 ? '' : 's'}`);
   console.log(`  states ${total} | failures ${failed} | mean ${(moves / (total - failed)).toFixed(1)} moves`);
   console.log('  each algorithm, and how many of those states needed it:');
   // Ties broken by name, so the table reads the same whatever order the slices were merged in.

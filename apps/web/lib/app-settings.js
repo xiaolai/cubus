@@ -4,7 +4,7 @@
 // Lifted out of app.js on 2026-09-13, when that file was split into modules.
 
 import { TIERS } from './solve-target.js';
-import { DEFAULT_RUNGS, STAGE_IDS, TOP_RUNG } from './method-solver.js';
+import { DEFAULT_RUNGS, LAST_LAYER_ROUTES, STAGE_IDS, TOP_RUNG } from './method-solver.js';
 import { repairProgress } from './method-ladder.js';
 import { isScheme } from './scheme.js';
 import { STICKER_PALETTES } from './sticker-palettes.js';
@@ -93,6 +93,11 @@ export const DEFAULT_SETTINGS = Object.freeze({
   // choosing a shape, and what the menu shows is computed from it. Empty on a fresh install, which
   // is why `recentShapes()` pads from the catalogue rather than treating empty as a failure.
   shapesRecent: [],
+  // Which order the last layer is taught in (ADR 0009): `course` — the beginner course's, edges home and
+  // then corners — or `app`, the ladder's own, which orients the whole top before it permutes it. The
+  // course's is the default (decision I, 2026-10-14). An install from before it existed is MIGRATED below,
+  // not defaulted, because a learner who has already climbed the last-layer ladder is on the app's.
+  lastLayer: 'course',
 });
 /** Every setting whose default is a boolean — DERIVED, so a new flag is repaired the moment it has a
  *  default, and no list kept by hand can leave one out (audit, 2026-09-19: the tests' own copies had
@@ -234,6 +239,28 @@ delete settings.teachLevel;
  * about a raise that had never happened (verify pass, 2026-10-04). The comparison has to be between
  * two records normalised by the same function, which means this one.
  */
+/**
+ * The last-layer route this install walks — repaired AND migrated, from the STORED record rather than the
+ * merged one, for `soundMode`'s reason: the merge always supplies the default, which would make every
+ * existing install look as if it had chosen it.
+ *
+ *   a valid stored route                     a choice                     -> kept
+ *   storage held nothing                     a first launch               -> the default, the course's
+ *   no usable route, last-layer rungs at 0   predates the route, or bad   -> the default, the course's
+ *   no usable route, an oll or pll rung up   has climbed the app's ladder -> `app`
+ *
+ * The last line is the migration. A learner who raised the top-face or last-layer dial has been learning
+ * the app's algorithms, and the course's route ignores both dials: moving them to it would take away what
+ * they chose and show them a last layer they never asked for. Everyone else has chosen nothing about the
+ * last layer, so the new default reaches them — which a stored record outranking a changed default would
+ * otherwise never let it do.
+ */
+export function repairLastLayer(stored, rungs) {
+  const want = stored?.lastLayer;
+  if (typeof want === 'string' && LAST_LAYER_ROUTES.includes(want)) return want;
+  return rungs.oll > 0 || rungs.pll > 0 ? 'app' : DEFAULT_SETTINGS.lastLayer;
+}
+
 export function repairRungs(stored) {
   const out = { ...DEFAULT_RUNGS };
   for (const id of STAGE_IDS) {
@@ -243,6 +270,7 @@ export function repairRungs(stored) {
   return out;
 }
 settings.rungs = repairRungs(settings.rungs);
+settings.lastLayer = repairLastLayer(storedSettings, settings.rungs);
 // How many times each stage has been followed to the end at its current rung, and how often its
 // next rung has been declined. §3 rule 3 — "offer, never ask" — is a rule about counting, so the
 // counts are stored; repaired on load for the same reason the rungs are.

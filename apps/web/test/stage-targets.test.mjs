@@ -33,7 +33,7 @@ import { test } from 'node:test';
 import { SOLVED, applyAlg } from '../lib/cube-pieces.js';
 import { parseFacelets } from '../lib/two-phase.js';
 import * as eng from '../lib/methods/engine.js';
-import { solveByMethod } from '../lib/method-solver.js';
+import { methodFor, solveByMethod } from '../lib/method-solver.js';
 import { NESTING, OFFERED_TARGETS, PROJECTIONS, TARGETS, TARGET_BY_ID, targetById } from '../lib/stage-targets.js';
 import { CONTRACT_CUBES, ENGINE_CONTRACT_CUBES, WORKER_CUBES } from './fixtures/solver-cubes.mjs';
 import { seededScrambles, seededStates } from './fixtures/seeded-scrambles.mjs';
@@ -84,14 +84,14 @@ const FROZEN = STAGE_TARGET_CASES.map((row) => applyAlg(SOLVED, row.scramble));
  * route is built by the method solver against `methods/engine.js`'s predicates, and no goal code
  * takes part.
  */
-function methodRouteStates(scrambles) {
+function methodRouteStates(scrambles, method) {
   const out = [];
   const seen = new Set();
   const key = (s) => `${s.cp.join('')}|${s.co.join('')}|${s.ep.join(',')}|${s.eo.join('')}`;
   for (const scramble of scrambles) {
     let s = applyAlg(SOLVED, scramble);
     let lesson;
-    try { lesson = solveByMethod(s); } catch { continue; }
+    try { lesson = solveByMethod(s, method); } catch { continue; }
     for (const step of lesson.steps) {
       s = applyAlg(s, turnsOf(step));
       const k = key(s);
@@ -104,7 +104,12 @@ function methodRouteStates(scrambles) {
 }
 
 /** Built once: every case below that needs cubes INSIDE a target reads this. */
-const ROUTE = methodRouteStates(seededScrambles(24, 0x4a11, 12));
+/** Both last-layer routes (ADR 0009): the app's own orients the top before permuting it, so only the
+ *  course's passes through `top-edges` and through `corners-home` short of solved. */
+const ROUTE = [...new Map([
+  ...methodRouteStates(seededScrambles(24, 0x4a11, 12), methodFor()),
+  ...methodRouteStates(seededScrambles(24, 0x4a11, 12), methodFor(undefined, { lastLayer: 'course' })),
+].map((s) => [`${s.cp.join('')}|${s.co.join('')}|${s.ep.join(',')}|${s.eo.join('')}`, s])).values()];
 const ALL = [...DEEP, ...SHALLOW, ...RELEASE, ...FROZEN, ...ROUTE, SOLVED];
 
 /** SOLVED with two U corners twisted against each other. Legal (1 + 2 = 3) and the fixture §0's
@@ -178,8 +183,8 @@ test("every target's conjunction of projected goals is the app's own predicate",
   }
 });
 
-test('the offered chips are the five stages and solved, in nesting order', () => {
-  // Plan §6: six chips. `six-cross` is a PATTERN and §9.6 says patterns are a separate product
+test('the offered chips are the six stages and solved, in nesting order', () => {
+  // Plan §6: six chips, and `top-edges` since ADR 0009. `six-cross` is a PATTERN and §9.6 says patterns are a separate product
   // decision that must not drift in because the mechanism allows them — so it is a target the
   // engine can answer and not a chip the screen offers, and that distinction is asserted rather
   // than left to whoever next reads the list.
@@ -236,7 +241,7 @@ test('every table a target uses has a goal set containing that target’s projec
   // satisfied only by eight copies of the same state, which is not more evidence, and a pool that
   // deduplicates correctly can never meet it. Every other target is a set of millions.
   const MIN_IN_TARGET = {
-    cross: 8, 'first-layer': 8, 'two-layers': 8, 'top-cross': 8, 'corners-home': 8,
+    cross: 8, 'first-layer': 8, 'two-layers': 8, 'top-cross': 8, 'top-edges': 8, 'corners-home': 8,
     'six-cross': 8, 'x-every-face': 8, solved: 1,
   };
   let totalChecked = 0;
@@ -389,9 +394,22 @@ test('the stage projections cannot see a U-corner twist, so they may never be as
   assert.equal(targetById('solved').parts.includes('uCorners'), true,
     '`solved` must be built on the projection that can see a U-corner twist');
   // And no stage target reads it, so no stage target can be confused for `solved`.
-  for (const id of ['cross', 'first-layer', 'two-layers', 'top-cross', 'corners-home']) {
+  for (const id of ['cross', 'first-layer', 'two-layers', 'top-cross', 'top-edges', 'corners-home']) {
     assert.equal(TARGET_BY_ID[id].parts.includes('uCorners'), false, `${id} must not read the U-corner twist`);
   }
+});
+
+test('`corners-home` asks the top edges HOME, not only up — a cube with them cycled is short of it (ADR 0009)', () => {
+  // A U perm cycles three top edges and leaves every corner in its own slot, every piece the right way up.
+  // Before ADR 0009 that cube WAS corners-home, which is why `top-edges` could not nest inside it: the
+  // course reaches lesson 15's end only with its edges already put home in lesson 14.
+  const cycled = applyAlg(SOLVED, "R U' R U R U R U' R' U' R2");
+  assert.equal(eng.topCornersPlaced(cycled), true, 'the U perm must leave the corners placed, or this proves nothing');
+  assert.equal(targetById('top-cross').predicate(cycled), true);
+  assert.equal(targetById('top-edges').predicate(cycled), false);
+  assert.equal(targetById('corners-home').predicate(cycled), false,
+    'corners in place over top edges that are not home must NOT count as corners-home');
+  assert.equal(targetById('corners-home').verify(cycled), false);
 });
 
 test('`corners-home` is strictly weaker than the app\'s `topCornersHome`, and the twisted cube is the gap', () => {

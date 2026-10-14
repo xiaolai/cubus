@@ -10,6 +10,7 @@
 
 import { t } from './i18n.js';
 import { declineOffer, nextOffer, recordCleanFollow } from './method-ladder.js';
+import { dialsOf } from './method-solver.js';
 
 /**
  * The rung offer of one mounted cube screen, its answers wired.
@@ -54,7 +55,7 @@ export function createRungOffer({ root, settings, save, raiseRung, onRaised }) {
       root.querySelector('#rungNot').hidden = true;
       return;
     }
-    shownOffer = nextOffer(settings.rungs, settings.rungProgress);
+    shownOffer = nextOffer(settings.rungs, settings.rungProgress, { lastLayer: settings.lastLayer });
     offerRow.hidden = !shownOffer;
     if (!shownOffer) return;
     root.querySelector('#rungYes').hidden = false;
@@ -108,9 +109,12 @@ export function createRungOffer({ root, settings, save, raiseRung, onRaised }) {
     if (jumped === false && to === from + 1) followed.add(from);
     if (lesson && total > 0 && to >= total && followed.size >= total && creditedWalk !== walkGen) {
       creditedWalk = walkGen;
+      // Only the dials this route reads: the course's last layer is headed with the top-face and
+      // last-layer sections, and following it is not practice at either of the app's rungs (ADR 0009).
+      const dials = dialsOf(settings.lastLayer);
       settings.rungProgress = recordCleanFollow(
         settings.rungProgress,
-        lesson.sections.map((sec) => sec.id),
+        lesson.sections.map((sec) => sec.id).filter((id) => dials.includes(id)),
       );
       noteWrite(save('cubusSettings', settings));
       showOffer();

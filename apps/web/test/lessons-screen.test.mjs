@@ -52,6 +52,10 @@ before(async () => {
   ]) {
     Object.defineProperty(globalThis, k, { value: win[k], writable: true, configurable: true });
   }
+  // THE APP'S ROUTE, stored before boot: this suite is about the ladder, and only on that route is every
+  // dial read and every rung raisable. A fresh install walks the course's (ADR 0009), which ignores the
+  // last two dials — the case that holds that sets the route itself and puts this one back.
+  win.localStorage.setItem('cubusSettings', JSON.stringify({ lastLayer: 'app' }));
   await import('../lib/app.js');
   await tick();
 });
@@ -382,6 +386,34 @@ test('a stage raised to its top leaves focus on its own card, not on the page', 
   await tick();
   isAbsent(card().querySelector('[data-raise]'), 'precondition: pairs is at its top');
   assert.ok(win.document.activeElement === card(), 'the button went, and the focus went with it to the page');
+});
+
+test('on the course\'s route, the two last-layer cards say their rungs are not used, and never count down (ADR 0009)', async () => {
+  const { settings } = await import('../lib/app-settings.js');
+  const was = settings.lastLayer;
+  const note = (id) => $(`#rungNote-${id}`).textContent;
+  const repaint = async () => { win.location.hash = '#/home'; await tick(); win.location.hash = '#/lessons'; await tick(); };
+  try {
+    settings.lastLayer = 'course';
+    await repaint();
+    for (const id of ['oll', 'pll']) {
+      assert.match(note(id), /does not use these rungs/, `${id}: the course\'s route said nothing about a dial it ignores`);
+      assert.doesNotMatch(note(id), /more solve|Ready for the next rung/, `${id}: a countdown to an offer the route never makes`);
+    }
+    for (const id of ['oll', 'pll']) {
+      isAbsent($(`[data-raise="${id}"]`), `${id}: a raise the course\'s lesson cannot show was offered`);
+    }
+    for (const id of ['cross', 'pairs']) assert.doesNotMatch(note(id), /does not use these rungs/, `${id} is read on both routes`);
+    settings.lastLayer = 'app';
+    await repaint();
+    for (const id of ['oll', 'pll']) {
+      assert.doesNotMatch(note(id), /does not use these rungs/, `${id}: the app\'s route reads it`);
+      assert.ok($(`[data-raise="${id}"]`), `${id}: the app\'s route offers no raise`);
+    }
+  } finally {
+    settings.lastLayer = was;
+    await repaint();
+  }
 });
 
 test('the offer lives on the cube screen and is answerable both ways', async () => {

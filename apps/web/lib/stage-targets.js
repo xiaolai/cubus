@@ -274,8 +274,8 @@ export const PROJECTIONS = Object.freeze({
  * `parts` is the definition. `predicate` is derived from it below and is not a second statement of
  * the same thing — writing one by hand is how a target acquires a clause its projections cannot see.
  *
- * `offered` is whether the app puts a chip on the Restore screen for it. The five stages and
- * `solved` are offered (plan §6, six chips). `six-cross` is not: it is a PATTERN rather than a
+ * `offered` is whether the app puts a chip on the Restore screen for it. The six stages and
+ * `solved` are offered (plan §6's six chips, and `top-edges` since ADR 0009). `six-cross` is not: it is a PATTERN rather than a
  * stage, plan §9.6 says patterns are a separate product decision and must not drift in because the
  * mechanism allows them, and it stays here because it is in the frozen oracle corpus and grades the
  * engine on a target whose free pieces are a different shape from every stage's.
@@ -305,9 +305,13 @@ const VERIFY = {
   'first-layer': eng.keeping(eng.CROSS, eng.F1L),
   'two-layers': eng.firstTwoLayers,
   'top-cross': (s) => eng.firstTwoLayers(s) && eng.topEdgesOriented(s),
+  // Where the course's lesson 14 ends: the top edges home and the right way up, the corners anyhow.
+  'top-edges': (s) => eng.firstTwoLayers(s) && eng.topEdgesHome(s),
   // `topCornersPlaced`, NOT `topCornersHome`: the owner's stage 5 is corners in their own slots,
-  // possibly still twisted, which is the other order from the one this app teaches. Plan §0.
-  'corners-home': (s) => eng.firstTwoLayers(s) && eng.topEdgesOriented(s) && eng.topCornersPlaced(s),
+  // possibly still twisted, which is the course's order (lesson 15's end). Plan §0. The top edges are
+  // HOME as well as up since ADR 0009: "corners home" is what the course says once its edges are, and
+  // without them `top-edges` would not nest inside it.
+  'corners-home': (s) => eng.firstTwoLayers(s) && eng.topEdgesHome(s) && eng.topCornersPlaced(s),
   // No counterpart in the method solver — the app never stops here — so it is spelled from the
   // cubie model: every edge home and oriented, every corner free.
   'six-cross': (s) => s.ep.every((v, i) => v === i) && s.eo.every((v) => v === 0),
@@ -322,7 +326,10 @@ const TARGET_SPECS = [
   { id: 'first-layer', name: 'first layer', offered: true, parts: ['crossEdges', 'dCorners'] },
   { id: 'two-layers', name: 'two bottom layers', offered: true, parts: ['crossEdges', 'dCorners', 'midEdges'] },
   { id: 'top-cross', name: 'top cross', offered: true, parts: ['crossEdges', 'dCorners', 'midEdges', 'flip'] },
-  { id: 'corners-home', name: 'top corners home', offered: true, parts: ['crossEdges', 'dCorners', 'midEdges', 'flip', 'uCornerSlots'] },
+  // `topEdges` rather than `flip`: home AND up is the stronger goal, and `flip`'s other eight edges are
+  // already home in the first two layers, so it adds nothing `topEdges` does not.
+  { id: 'top-edges', name: 'top edges home', offered: true, parts: ['crossEdges', 'dCorners', 'midEdges', 'topEdges'] },
+  { id: 'corners-home', name: 'top corners home', offered: true, parts: ['crossEdges', 'dCorners', 'midEdges', 'topEdges', 'uCornerSlots'] },
   // TWO PATTERNS, NOT STAGES, and `offered` is false for both because that field is what the Restore
   // row reads. They are offered through `lib/patterns.js` instead — plan §9.6 says patterns are their
   // own feature and must not drift into the stage row, where every chip means "how far back am I".
@@ -363,7 +370,7 @@ function makeTarget(spec) {
   return Object.freeze(target);
 }
 
-/** Every target this mechanism can answer, in nesting order for the five stages. */
+/** Every target this mechanism can answer, in nesting order for the six stages. */
 export const TARGETS = Object.freeze(TARGET_SPECS.map(makeTarget));
 
 /**
@@ -387,7 +394,7 @@ export function targetById(id) {
 }
 
 /**
- * The chips the Restore screen offers, in order: the five stages, then `solved` (plan §6).
+ * The chips the Restore screen offers, in order: the six stages, then `solved` (plan §6; ADR 0009).
  *
  * Nesting order, and it is load-bearing rather than cosmetic — `d(cross) <= d(first-layer) <= …`
  * holds for every cube, so a row read left to right never goes down. A chip reading a smaller
@@ -403,5 +410,20 @@ export const OFFERED_TARGETS = Object.freeze(TARGETS.filter((t) => t.offered));
  * anybody from adding it to a monotonicity check and being surprised.
  */
 export const NESTING = Object.freeze([
-  'cross', 'first-layer', 'two-layers', 'top-cross', 'corners-home', 'solved',
+  'cross', 'first-layer', 'two-layers', 'top-cross', 'top-edges', 'corners-home', 'solved',
 ]);
+
+/**
+ * Which chips a lesson's walk STOPS at, per last-layer route (ADR 0009) — the per-route half of the
+ * nesting. The chain above holds for every cube on either route, so the row is one row; what differs is
+ * which of its states the method passes through — at the beginner's cross and pairs rungs, because a
+ * pairs rung that joins each corner to its edge never stops at `first-layer` on either route. The course's
+ * route reaches each in turn. The app's own
+ * orients the whole top before it permutes anything, so it passes neither `top-edges` nor `corners-home`
+ * on its way: those two chips are destinations on that route, never a stage of it.
+ * `test/course-route.test.mjs` walks both routes and holds each list to the states the walk reaches.
+ */
+export const ROUTE_STOPS = Object.freeze({
+  app: Object.freeze(['cross', 'first-layer', 'two-layers', 'top-cross', 'solved']),
+  course: NESTING,
+});

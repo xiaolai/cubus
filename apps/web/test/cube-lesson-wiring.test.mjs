@@ -188,7 +188,8 @@ test('the rungs are stored as four dials, repaired on load, and defaulted to the
   assert.match(repair, /DEFAULT_RUNGS/, 'the default is the bottom rung everywhere');
   assert.match(repair, /Number\.isInteger\(want\)/, 'localStorage is untrusted input');
   assert.match(repair, /TOP_RUNG\[id\]/, 'a rung above the ladder must not be believed');
-  assert.match(code, /methodFor\(settings\.rungs\)/, 'and the solver must actually read them');
+  assert.match(code, /methodFor\(settings\.rungs, \{ lastLayer: settings\.lastLayer \}\)/,
+    'and the solver must actually read them, with the last-layer route the settings hold (ADR 0009)');
   // Four dials, and the defaults really are the bottom rung of each.
   assert.deepEqual(Object.keys(DEFAULT_RUNGS).sort(), [...STAGE_IDS].sort());
   for (const id of STAGE_IDS) {

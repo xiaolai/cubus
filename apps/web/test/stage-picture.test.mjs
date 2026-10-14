@@ -103,7 +103,8 @@ test('the pictures pin what each target is actually about', () => {
     'first-layer': 26,   // the whole D face and the bottom row of every side
     'two-layers': 34,    // and the middle row of every side
     'top-cross': 38,     // and the four U-face cross stickers — the flip precondition earning its keep
-    'corners-home': 38,  // the same: a corner in its own slot with a free twist shows no fixed sticker
+    'top-edges': 42,     // and the side sticker of every top edge — home, not only up (ADR 0009)
+    'corners-home': 42,  // the same: a corner in its own slot with a free twist shows no fixed sticker
     'six-cross': 30,     // six centres and all 24 edge stickers — a plus on every face
     'x-every-face': 30,  // six centres and all 24 CORNER stickers — the mirror of the line above
     solved: 54,

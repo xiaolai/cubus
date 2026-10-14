@@ -77,7 +77,9 @@ export function ingestFacelets(f) {
  * rather than swallowed.
  */
 export function lessonFor(c = state.cube) {
-  const method = methodFor(settings.rungs);
+  // The route goes in with the rungs: the course's last layer is the default (ADR 0009), and a lesson
+  // built without it would teach the app's own order to a learner the settings say is on the course's.
+  const method = methodFor(settings.rungs, { lastLayer: settings.lastLayer });
   if (c.lesson && c.lesson.facelets === c.facelets && c.lesson.method === method.id) return c.lesson;
   let result;
   try {

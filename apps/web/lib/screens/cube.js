@@ -3,7 +3,7 @@
 // Lifted out of app.js on 2026-09-13, when that file was split into modules.
 
 import { CUBE_VIEW } from '../cube-view.js';
-import { solveByMethod } from '../method-solver.js';
+import { methodFor, solveByMethod } from '../method-solver.js';
 import { t } from '../i18n.js';
 import { OFFERED_TARGETS } from '../stage-targets.js';
 import { oneLineStrip } from '../scroll-strip.js';
@@ -95,6 +95,9 @@ const WALK_FAILURES = {
  */
 const lastRoute = createRouteRace({
   state, cubejs: () => Cube, stageAsk, solveByMethod, STAGE_NODE_BUDGET,
+  // The beginner's rungs, as before, on the learner's last-layer route: a stop is reached in the order
+  // that route takes, and only the beginner's rungs stop at every chip (`ROUTE_STOPS`).
+  methodNow: () => methodFor(undefined, { lastLayer: settings.lastLayer }),
 });
 
 /**

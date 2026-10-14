@@ -406,10 +406,15 @@ test('a rung the browser refused to store says so on the ladder', async () => {
   const { settings, save } = await import('../lib/app-settings.js');
   const was = { rungs: structuredClone(settings.rungs), progress: structuredClone(settings.rungProgress) };
   await go('lessons');
+  // A dial this install's route READS, with a rung left: the course's route draws no raise for the last
+  // two (ADR 0009), and which route a fresh install is on is the settings' business, not this test's.
+  const { TOP_RUNG, dialsOf } = await import('../lib/method-solver.js');
+  const id = dialsOf(settings.lastLayer).findLast((d) => settings.rungs[d] < TOP_RUNG[d]);
+  assert.ok(id, 'precondition: a stage with a rung left to raise');
   try {
     failWrites = true;
     try {
-      $('[data-raise="pll"]').click();
+      $(`[data-raise="${id}"]`).click();
       await tick();
     } finally { failWrites = false; }
     assert.match($('#stage').textContent, /did not save that/,

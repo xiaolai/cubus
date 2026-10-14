@@ -89,6 +89,13 @@ export const WHY_KEYS = Object.freeze({
   'topEdges.permute': ['face-turns', 'highlight-position', 'trail'],
   'topEdges.permute.step': ['face-turns', 'highlight-position', 'trail'],
   'lastLayer.permute': ['face-turns', 'highlight-position', 'trail'],
+  // The course's last layer (ADR 0009): edges swapped home, corners cycled into place, each corner turned up.
+  'topEdges.place': ['face-turns', 'highlight-position', 'trail'],
+  'topEdges.place.step': ['face-turns', 'highlight-position', 'trail'],
+  'topCorners.place': ['face-turns', 'highlight-position', 'trail'],
+  'topCorners.place.step': ['face-turns', 'highlight-position', 'trail'],
+  'topCorners.twist': ['face-turns', 'highlight-position', 'highlight-sticker'],
+  'topCorners.twist.step': ['face-turns', 'highlight-position', 'highlight-sticker'],
 });
 
 /** The named states a walk can aim at (`TARGETS` in `lib/stage-targets.js`): each is drawn as a
@@ -98,6 +105,7 @@ export const TARGET_IDS = Object.freeze({
   'first-layer': ['painted-picture', 'stop-playback', 'hold-set'],
   'two-layers': ['painted-picture', 'stop-playback', 'hold-set'],
   'top-cross': ['painted-picture', 'stop-playback', 'hold-set'],
+  'top-edges': ['painted-picture', 'stop-playback', 'hold-set'],
   'corners-home': ['painted-picture', 'stop-playback', 'hold-set'],
   'six-cross': ['painted-picture'],
   // A pattern like six-cross above: a picture the app can draw, and nothing it plays or holds,

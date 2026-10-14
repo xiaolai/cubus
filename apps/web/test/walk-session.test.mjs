@@ -158,7 +158,7 @@ function world({ subject = {}, omit = [], screen: screenOver = {} } = {}, make =
   };
   const app = {
     state,
-    settings: { rungs: {}, rungProgress: {}, proveMinimum: false },
+    settings: { rungs: {}, rungProgress: {}, proveMinimum: false, lastLayer: 'app' },
     SOLVED,
     CHIP_NODE_BUDGET: 1,
     WALK_FAILURES: { 'solver unavailable': 'no solver', 'no scramble': 'no scramble', 'cross-check': 'no check', 'no picture route': 'no shape route' },
@@ -1464,7 +1464,7 @@ test('the done tick is for a walk that exists — not a search, not a failure, b
 async function lessonWalk(over = {}) {
   let progress = repairProgress(NO_PROGRESS);
   for (let i = 0; i < FOLLOWS_TO_OFFER - 1; i += 1) progress = recordCleanFollow(progress, ['cross']);
-  const settings = { rungs: { cross: 0, pairs: 0, oll: 0, pll: 0 }, rungProgress: progress, proveMinimum: false };
+  const settings = { rungs: { cross: 0, pairs: 0, oll: 0, pll: 0 }, rungProgress: progress, proveMinimum: false, lastLayer: 'app' };
   const saves = [];
   const w = world({}, ({ state }) => ({
     settings,

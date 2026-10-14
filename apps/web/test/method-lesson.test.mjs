@@ -23,16 +23,15 @@ import {
 } from '../lib/method-lesson.js';
 import { wholeCubeSolved } from '../lib/methods/engine.js';
 import {
-  CASE_NAMES, allRungCombinations, methodFor, rungKey, solveByMethod,
+  CASE_NAMES, allMethods, allRungCombinations, methodFor, rungKey, solveByMethod,
 } from '../lib/method-solver.js';
 import { seededStates } from './fixtures/seeded-scrambles.mjs';
 
-/** Every step every rung combination can produce, over a fixed sample. */
+/** Every step every method can produce, on both last-layer routes, over a fixed sample. */
 function everyStep(n = 12, seed = 4242) {
   const steps = [];
   for (const state of seededStates(n, seed)) {
-    for (const rungs of allRungCombinations()) {
-      const method = methodFor(rungs);
+    for (const method of allMethods()) {
       for (const step of solveByMethod(state, method).steps) steps.push(step);
     }
   }
@@ -237,10 +236,11 @@ const SECTION_OF = {
   'top-face': 'oll',
   'top-corners': 'pll',
   'top-edges': 'pll',
+  'edges-home': 'oll',
+  'corners-turned': 'pll',
 };
 const dialsSeen = new Set();
-  for (const rungs of allRungCombinations()) {
-    const method = methodFor(rungs);
+  for (const method of allMethods()) {
     for (const state of seededStates(5, 31337)) {
       const { steps, moveCount } = solveByMethod(state, method);
       const sections = lessonSections(steps);
@@ -281,7 +281,7 @@ const dialsSeen = new Set();
   }
   // Absent SOMEWHERE is correct; absent everywhere would mean a dial that never renders.
   assert.deepEqual([...dialsSeen].sort(), ['cross', 'oll', 'pairs', 'pll'],
-    'a dial produced no section in any of the 24 rung combinations');
+    'a dial produced no section in any method on either route');
 });
 
 test('a stage with no heading is a stage with no work, and the cube is still solved', () => {

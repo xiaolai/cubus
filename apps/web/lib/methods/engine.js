@@ -383,6 +383,10 @@ export const topCornersHome = (s) => U_CORNERS.every((c) => s.cp[c] === c && s.c
  * done that the child's own check calls wrong.
  */
 export const topCornersPlaced = (s) => U_CORNERS.every((c) => s.cp[c] === c);
+/** The top edges in their own slots, any way round. */
+export const topEdgesPlaced = (s) => U_EDGES.every((e) => s.ep[e] === e);
+/** The top edges home and the right way up — where the course's lesson 14 ends. */
+export const topEdgesHome = (s) => topEdgesPlaced(s) && topEdgesOriented(s);
 /** The whole cube. */
 export const wholeCubeSolved = (s) => allSolved(s, { edges: ALL_EDGES, corners: ALL_CORNERS });
 /** Cross solved; first two layers solved. The stage contracts of §2, as predicates. */

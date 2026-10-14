@@ -16,6 +16,7 @@ import Cube from '../vendor/cubejs.js';
 import { METHOD_FRAME, renameAlg } from '../lib/solving-hold.js';
 import { targetById } from '../lib/stage-targets.js';
 import { createRouteRace } from '../lib/screens/cube/route-race.js';
+import { methodFor, solveByMethod } from '../lib/method-solver.js';
 
 const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
 const OFF_BY_U = (() => { const c = Cube.fromString(SOLVED); c.move('U'); return c.asString(); })();
@@ -37,6 +38,7 @@ function race(make = () => ({})) {
       methodRuns.push(cubie);
       throw new Error('this case has no method route');
     },
+    methodNow: () => ({ id: 'the learner\'s method' }),
     STAGE_NODE_BUDGET: 4_000_000,
     ...make({ asked, methodRuns }),
   });
@@ -116,7 +118,7 @@ test('a walk already called off asks the worker nothing and solves nothing', asy
 test('a race missing a service refuses when it is built, not by answering nothing', () => {
   const whole = {
     state: { cube: {} }, cubejs: () => Cube, stageAsk: async () => null,
-    solveByMethod: () => ({ alg: '' }), STAGE_NODE_BUDGET: 1,
+    solveByMethod: () => ({ alg: '' }), methodNow: () => ({}), STAGE_NODE_BUDGET: 1,
   };
   assert.doesNotThrow(() => createRouteRace(whole),
     'precondition: a whole set of services is accepted');
@@ -124,4 +126,23 @@ test('a race missing a service refuses when it is built, not by answering nothin
     assert.throws(() => createRouteRace({ ...whole, [name]: undefined }), new RegExp(name),
       `a race with no \`${name}\` was built`);
   }
+});
+
+test('the method route walks the learner\'s last-layer route, read when it runs (ADR 0009)', async () => {
+  // Codex's case: a cube whose top edges are out and whose corners are not. The app's own order has no
+  // `top-edges` stop, so walked on it the prefix to that chip was the whole solve, an overshoot; the
+  // course reaches the chip on the way and stops there.
+  const scrambled = (() => { const c = Cube.fromString(SOLVED); c.move("B R D R' D' B'"); return c.asString(); })();
+  let route = 'app';
+  const r = race(({ methodRuns }) => ({
+    solveByMethod: (cubie, method) => { methodRuns.push(method.id); return solveByMethod(cubie, method); },
+    methodNow: () => methodFor(undefined, { lastLayer: route }),
+  }));
+  const onApp = await r.lastRoute(targetById('top-edges'), scrambled, null, Promise.resolve());
+  route = 'course'; // switched in Settings after the race was built
+  const onCourse = await r.lastRoute(targetById('top-edges'), scrambled, null, Promise.resolve());
+  assert.deepEqual(r.methodRuns, ['0,0,0,0', '0,0,0,0,course'], 'the fallback did not ask for the route chosen at the time');
+  assert.equal(onCourse.source, 'method');
+  assert.equal(onCourse.overshoot, false, 'on the course\'s route the fallback overshot a stop the course reaches');
+  assert.ok(onCourse.moves < onApp.moves, `the course's way to top-edges (${onCourse.moves}) is not shorter than a whole app solve (${onApp.moves})`);
 });

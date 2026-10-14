@@ -15,7 +15,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { FILTERS, FULL_TIER_LABEL, format, plan } from '../../../scripts/ci-plan.mjs';
-import { LADDER } from '../lib/method-solver.js';
+import { LADDER, LAST_LAYER_ROUTES } from '../lib/method-solver.js';
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const CI = readFileSync(`${ROOT}.github/workflows/ci.yml`, 'utf8');
@@ -268,6 +268,13 @@ test('the 62,208-state sweep has a job of its own, sized for what it costs', () 
     const rungs = LADDER[dial].map((r) => r.rung);
     assert.match(sweep, new RegExp(`${dial}: \\[${rungs.join(', ')}\\]`),
       `the sweep matrix does not cover every ${dial} rung (${rungs.join(', ')})`);
+  }
+  // AND THE COURSE'S ROUTE (ADR 0009), whatever its shard is called: the app's default learner walks it,
+  // so a sweep that proved every app combination and not the course would leave the default unproved.
+  // The relation, not a list: every route `methodFor` accepts besides the ladder's own is a shard.
+  for (const route of LAST_LAYER_ROUTES.filter((r) => r !== 'app')) {
+    assert.match(sweep, new RegExp(`include:\\n\\s+- oll: ${route}\\n\\s+pll: ${route}\\n`),
+      `the sweep has no shard for the ${route} last-layer route`);
   }
   // fail-fast off: one combination failing must not cancel the others, because WHICH combinations
   // fail is the finding.

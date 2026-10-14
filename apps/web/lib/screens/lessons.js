@@ -2,7 +2,7 @@
 //
 // Lifted out of app.js on 2026-09-13, when that file was split into modules.
 
-import { STAGE_IDS, TOP_RUNG } from '../method-solver.js';
+import { STAGE_IDS, TOP_RUNG, dialsOf } from '../method-solver.js';
 import { followsUntilOffer, ladderRows, nextOffer } from '../method-ladder.js';
 import { plural, t } from '../i18n.js';
 
@@ -55,6 +55,10 @@ function rungNote(row, unsaved) {
   // FIRST, because it is the one thing on this card that is not about progress: a rung the device
   // would not keep is the fact a learner needs before any countdown to the next one.
   if (unsaved.has(row.id)) return t('This device did not save that. The rung is raised for now; a reload may put it back.');
+  // On the course's route this stage's rungs are not used, so no count leads anywhere (ADR 0009).
+  if (!dialsOf(settings.lastLayer).includes(row.id)) {
+    return t('Lessons use the course’s last layer now, which does not use these rungs. Settings switches it.');
+  }
   const left = followsUntilOffer(settings.rungs, settings.rungProgress, row.id);
   if (left === null) return t('This is the highest rung there is.');
   // Not a countdown: the follow count has stopped rising, so no number of solves reaches the
@@ -64,7 +68,7 @@ function rungNote(row, unsaved) {
   // the stage nextOffer would pick is promised it. Every ready card said "after your next solve",
   // and only one of them could ever be offered (found by audit, 2026-09-13).
   if (left === 0) {
-    return nextOffer(settings.rungs, settings.rungProgress)?.id === row.id
+    return nextOffer(settings.rungs, settings.rungProgress, { lastLayer: settings.lastLayer })?.id === row.id
       ? t('Ready for the next rung — it will be offered when you next follow a lesson to its end.')
       : t('Ready for the next rung — rungs are offered one at a time, and an earlier stage goes first.');
   }
@@ -98,7 +102,7 @@ function ladderCard(row, unsaved) {
   return `<div class="card tight" id="ladder-${escHtml(row.id)}" tabindex="-1"><div class="card-h"><div><div class="eyebrow">${escHtml(t('STAGE'))} · ${row.rungs.length} ${escHtml(t('RUNGS'))}</div><div class="num" style="font-size:var(--fs-title);font-weight:600;margin-top:2px">${escHtml(row.name)}</div></div><div class="num sub" style="color:var(--ink-4)">${escHtml(t('rung %1', row.at))}</div></div>
     ${row.rungs.map(rungLine).join('')}
     <div class="sub" id="rungNote-${escHtml(row.id)}" style="color:var(--${unsaved.has(row.id) ? 'err-ink' : 'ink-4'});padding:8px 0 2px">${escHtml(rungNote(row, unsaved))}</div>
-    ${row.at < row.top ? `<div class="wrap-row" style="gap:6px;padding-top:6px"><button class="pill" id="raise-${escHtml(row.id)}" data-raise="${escHtml(row.id)}">${escHtml(t('Try the next rung'))}</button></div>` : ''}</div>`;
+    ${row.at < row.top && dialsOf(settings.lastLayer).includes(row.id) ? `<div class="wrap-row" style="gap:6px;padding-top:6px"><button class="pill" id="raise-${escHtml(row.id)}" data-raise="${escHtml(row.id)}">${escHtml(t('Try the next rung'))}</button></div>` : ''}</div>`;
 }
 
 const PREVIEW_NOTE = 'Preview — nothing here is measured yet';
@@ -222,6 +226,9 @@ SCREENS.lessons = () => {
           const id = b.dataset.raise;
           const at = settings.rungs[id] ?? 0;
           if (at >= TOP_RUNG[id]) return;
+          // Nor a dial the route does not read (ADR 0009): a raise the lesson cannot show is a rung
+          // spent, its practice reset, for nothing. The button is not drawn; this refuses a stale one.
+          if (!dialsOf(settings.lastLayer).includes(id)) return;
           // NOT READ, and deliberately so. `raiseRung` answers whether storage took the rung, and
           // this used to record that answer in a Set the note was rendered from. The rebuild below
           // asks STORAGE instead (`unsavedRungs`), which is the same question answered by the thing

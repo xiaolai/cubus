@@ -284,6 +284,11 @@ jobs:
       matrix:
         oll: [0, 1]
         pll: [0, 1]
+        # The course's last-layer route (ADR 0009) is a fifth shard, not a rung: it replaces both stages
+        # and ignores their dials, so the bench names it twice. Measured 2026-10-14: 538 s on 10 threads.
+        include:
+          - oll: course
+            pll: course
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -297,19 +302,6 @@ jobs:
         working-directory: apps/web
         run: node bench/method-solver-profile.mjs exhaustive ${{ matrix.oll }} ${{ matrix.pll }}
 
-  # THE PLATFORM BRANCHES THE LINUX JOB CANNOT SEE.
-  #
-  # `cargo check` on ubuntu compiles cube-vision's INERT branch — the one that registers no
-  # commands. So `windows.rs` and the Android `android_ble.rs` could break, drift, or (as happened)
-  # be dead on arrival, and every gate stayed green: a cfg'd-out module is not compiled, and code
-  # that is not compiled cannot fail. Windows' native path was in fact unreachable in every build
-  # for as long as it existed, because nothing bundled its model, and nothing here would have said
-  # so.
-  #
-  # Compile-only, deliberately. These runners have no camera, no cube and no GPU, so they cannot
-  # tell whether the paths WORK — only that they still build and that their command surfaces still
-  # typecheck against the seam. That is the honest limit of what CI can assert here, and it is
-  # strictly more than zero.
   # THE PLATFORM BRANCHES THE LINUX JOB CANNOT SEE.
   #
   # `cargo check` on ubuntu compiles cube-vision's INERT branch — the one that registers no

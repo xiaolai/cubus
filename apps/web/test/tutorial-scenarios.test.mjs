@@ -15,7 +15,7 @@ import * as kit from '../lib/cube-kit.js';
 import { SOLVED, applyAlg } from '../lib/cube-pieces.js';
 import { WHY_KEYS as EMITTABLE_WHY_KEYS } from '../lib/method-lesson.js';
 import { solveByMethod } from '../lib/method-solver.js';
-import { allRungCombinations, methodFor } from '../lib/methods/index.js';
+import { allMethods } from '../lib/methods/index.js';
 import { TARGETS } from '../lib/stage-targets.js';
 import {
   CAPABILITIES, CUE_VERBS, SCENARIOS, SOURCES, STEP_KINDS, TARGET_IDS, WHY_KEYS,
@@ -89,7 +89,7 @@ test('every reason key the method solver can emit has a row, and no row is for a
   assert.deepEqual(unmapped(Object.keys(WHY_KEYS), Object.fromEntries(EMITTABLE_WHY_KEYS.map((k) => [k, 1]))), []);
 });
 
-test('every step kind and reason key real solves emit, over every rung combination, has a row', () => {
+test('every step kind and reason key real solves emit, over every method on both routes, has a row', () => {
   const kinds = [];
   const keys = [];
   // Three cubes that exercise every stage: a scramble, a cube with only the last layer left, and one
@@ -99,9 +99,9 @@ test('every step kind and reason key real solves emit, over every rung combinati
     applyAlg(SOLVED, "R U R' U R U2 R' U2"),
     applyAlg(SOLVED, "F R U R' U' F'"),
   ];
-  for (const rungs of allRungCombinations()) {
+  for (const method of allMethods()) {
     for (const cube of cubes) {
-      for (const step of solveByMethod(cube, methodFor(rungs)).steps) {
+      for (const step of solveByMethod(cube, method).steps) {
         kinds.push(step.kind);
         keys.push(step.why.key);
       }

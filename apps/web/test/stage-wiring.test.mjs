@@ -76,9 +76,9 @@ test('the chip row exists, is hidden until there is a cube, and offers every tar
   assert.match(code, /id="stageChips"/, 'and there must be somewhere to put the chips');
   assert.match(code, /OFFERED_TARGETS\.map\(\(target\) =>/, 'the chips are drawn from the target list');
   assert.match(code, /data-target="\$\{escHtml\(target\.id\)\}"/, 'each chip must name the target it is about');
-  // Six of them: the five stages and the whole cube (§6). Read from the module rather than counted
-  // in the markup, so adding a target adds a chip.
-  assert.equal(OFFERED_TARGETS.length, 6);
+  // Seven of them: the six stages and the whole cube (§6; `top-edges` since ADR 0009). Read from the
+  // module rather than counted in the markup, so adding a target adds a chip.
+  assert.equal(OFFERED_TARGETS.length, 7);
 });
 
 test('chips are painted only for a scan the app BELIEVED', () => {

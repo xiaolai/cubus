@@ -30,7 +30,9 @@ Cube.initSolver();
 /** The two methods that existed before the split, by the rungs they are now made of. */
 const BEGINNER = methodFor({ cross: 0, pairs: 0, oll: 0, pll: 0 });
 const INTERMEDIATE = methodFor({ cross: 1, pairs: 1, oll: 0, pll: 0 });
-const NAMED = [['beginner', BEGINNER], ['intermediate', INTERMEDIATE]];
+/** The course's last layer on the beginner's first two rungs (ADR 0009) — the method the app teaches by default. */
+const COURSE = methodFor({ cross: 0, pairs: 0, oll: 0, pll: 0 }, { lastLayer: 'course' });
+const NAMED = [['beginner', BEGINNER], ['intermediate', INTERMEDIATE], ['course', COURSE]];
 
 /** What each last-layer look's completing caption CLAIMS, so the claim can be checked. */
 const U_EDGES = [EDGE.UR, EDGE.UF, EDGE.UL, EDGE.UB];
@@ -94,7 +96,11 @@ function assertStepsAreHonest(start, steps, label) {
     assert.deepEqual([...step.hold], [...hold], `${label}: step ${i} records a hold the step before it did not leave`);
     ({ state, hold } = run(step.alg, step.hold, state));
 
-    // The load-bearing check: nothing a later step does may undo an earlier stage.
+    // The load-bearing check: nothing a later step does may undo an earlier stage — with ONE exception,
+    // named rather than general. The course twists each top corner up with lesson 9's four moves, which
+    // take the first two layers apart until the last corner is up (lesson 16 warns the child of it). So
+    // inside a run of `corners-turned` steps they may be apart, and the step that ends the run is checked.
+    if (step.stage === 'corners-turned' && steps[i + 1]?.stage === 'corners-turned') continue;
     for (const e of finished.edges) {
       assert.ok(edgeSolved(state, e),
         `${label}: step ${i} (${step.stage}/${step.caseName ?? 'goal'}) broke edge ${e}`);

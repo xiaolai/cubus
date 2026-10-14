@@ -24,8 +24,8 @@ import { routeToTarget } from '../../stage-route.js';
  *   the exact search's budget.
  * @returns {Function} `lastRoute(target, facelets, signal, wholeDone)`.
  */
-export function createRouteRace({ state, cubejs, stageAsk, solveByMethod, STAGE_NODE_BUDGET }) {
-  for (const [name, fn] of Object.entries({ cubejs, stageAsk, solveByMethod })) {
+export function createRouteRace({ state, cubejs, stageAsk, solveByMethod, methodNow, STAGE_NODE_BUDGET }) {
+  for (const [name, fn] of Object.entries({ cubejs, stageAsk, solveByMethod, methodNow })) {
     if (typeof fn !== 'function') throw new TypeError(`route race: \`${name}\` must be a function`);
   }
   if (state === null || typeof state !== 'object') {
@@ -98,7 +98,10 @@ export function createRouteRace({ state, cubejs, stageAsk, solveByMethod, STAGE_
         // abort lands, and `solveByMethod` takes no signal: run then, it solves a cube nobody is
         // waiting for, on the thread that draws.
         if (signal?.aborted) return null;
-        return solveByMethod(cubie).alg;
+        // ON THE LEARNER'S ROUTE (ADR 0009), asked at the moment it runs: the app's own order passes no
+        // `top-edges` stop, so walked on it the prefix for that chip was a whole solve flagged as an
+        // overshoot — 41 moves where the course reaches it in 19 (Codex refute, 2026-10-14).
+        return solveByMethod(cubie, methodNow()).alg;
       },
     };
     const last = await routeToTarget(target, cubie, deps);

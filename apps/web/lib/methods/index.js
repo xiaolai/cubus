@@ -20,7 +20,7 @@
 
 import { HUMAN_F2L, HUMAN_OLL, HUMAN_PLL } from '../data/human-algs.js';
 import { CROSS_ALGS, CROSS_RUNGS } from './cross.js';
-import { LAST_LAYER_EXTRAS, OLL_ALGS, OLL_RUNGS, PLL_ALGS, PLL_RUNGS } from './last-layer.js';
+import { COURSE_ALGS, COURSE_LAST_LAYER, LAST_LAYER_EXTRAS, OLL_ALGS, OLL_RUNGS, PLL_ALGS, PLL_RUNGS } from './last-layer.js';
 import { PAIRS_ALGS, PAIRS_EXTRAS, PAIRS_RUNGS } from './pairs.js';
 
 /** The stages, in the order a solve walks them. The order IS the method — everything else is
@@ -57,13 +57,39 @@ export function allRungCombinations() {
 export const rungKey = (rungs) => STAGE_IDS.map((id) => rungs[id] ?? DEFAULT_RUNGS[id]).join(',');
 
 /**
+ * The two last-layer routes (ADR 0009). `app` is the ladder's own: orient the top, then permute it, at
+ * whichever oll and pll rungs the learner is on. `course` is the beginner course's order — edges turned
+ * up and put home, then corners put home and turned up — a PAIR that replaces both last-layer stages and
+ * ignores their dials, because neither half of it composes with a rung of the other route.
+ */
+export const LAST_LAYER_ROUTES = Object.freeze(['app', 'course']);
+
+/**
+ * The dials a route actually reads. The course's pair stands in for the last two stages and ignores their
+ * rungs, so on that route they are not dials at all: practising its last layer is not practice at an
+ * oll or pll rung, and raising one would change nothing a learner could see.
+ */
+export function dialsOf(lastLayer) {
+  if (!LAST_LAYER_ROUTES.includes(lastLayer)) throw new Error(`unknown last-layer route: "${lastLayer}"`);
+  return Object.freeze(STAGE_IDS.filter((id) => lastLayer !== 'course' || !Object.hasOwn(COURSE_LAST_LAYER, id)));
+}
+
+/**
  * The method a rung record names: one stage descriptor per stage, in walking order.
  *
  * A rung that does not exist is refused rather than clamped. Silently handing back rung 1 when
  * rung 2 was asked for would show a learner a method they did not choose and label it with the
  * one they did — and every count on the screen would then be about a different solve.
+ *
+ * `lastLayer` picks the route. ITS DEFAULT HERE IS `app`, and that is not the app's default: the app's
+ * is the course (decision I, 2026-10-14), held by `settings.lastLayer` and passed in by every caller
+ * that solves for a learner. A library default that moved with it would quietly change what every
+ * bench and every method test measures; a caller that means the course says so.
  */
-export function methodFor(rungs = DEFAULT_RUNGS) {
+export function methodFor(rungs = DEFAULT_RUNGS, { lastLayer = 'app' } = {}) {
+  if (!LAST_LAYER_ROUTES.includes(lastLayer)) {
+    throw new Error(`unknown last-layer route: "${lastLayer}" — the routes are ${LAST_LAYER_ROUTES.join(', ')}`);
+  }
   const chosen = {};
   const stages = STAGE_IDS.map((id) => {
     const want = rungs?.[id] ?? DEFAULT_RUNGS[id];
@@ -74,9 +100,29 @@ export function methodFor(rungs = DEFAULT_RUNGS) {
       );
     }
     chosen[id] = want;
-    return stage;
+    // The course's pair stands where the last two stages stand. The learner's oll and pll dials are
+    // still checked above — a stored rung that does not exist is refused on either route — and kept in
+    // the record, so switching back to the app's route finds them where they were.
+    return lastLayer === 'course' && Object.hasOwn(COURSE_LAST_LAYER, id) ? COURSE_LAST_LAYER[id] : stage;
   });
-  return Object.freeze({ id: rungKey(chosen), rungs: Object.freeze(chosen), stages: Object.freeze(stages) });
+  // The route is part of the id: a lesson cached against `0,0,0,0` must not be served for the course.
+  const id = lastLayer === 'course' ? `${rungKey(chosen)},course` : rungKey(chosen);
+  return Object.freeze({ id, lastLayer, rungs: Object.freeze(chosen), stages: Object.freeze(stages) });
+}
+
+/**
+ * Every method the app can walk: each rung combination on the app's route, and each cross and pairs
+ * rung on the course's (whose last layer ignores the oll and pll dials, so those stay at rung 0).
+ *
+ * A test that sweeps `allRungCombinations()` alone never sees the course's route, and the default
+ * learner walks it.
+ */
+export function allMethods() {
+  const app = allRungCombinations().map((rungs) => methodFor(rungs));
+  const course = allRungCombinations()
+    .filter((rungs) => rungs.oll === DEFAULT_RUNGS.oll && rungs.pll === DEFAULT_RUNGS.pll)
+    .map((rungs) => methodFor(rungs, { lastLayer: 'course' }));
+  return [...app, ...course];
 }
 
 /**
@@ -98,6 +144,6 @@ export const CASE_NAMES = Object.freeze(
   // 2026-10-13), so a name from them on a step would be the defect this list exists to catch.
   [
     ...CROSS_ALGS, ...PAIRS_ALGS, ...PAIRS_EXTRAS, ...OLL_ALGS, ...PLL_ALGS, ...LAST_LAYER_EXTRAS,
-    ...HUMAN_OLL, ...HUMAN_PLL, ...HUMAN_F2L,
+    ...HUMAN_OLL, ...HUMAN_PLL, ...HUMAN_F2L, ...COURSE_ALGS,
   ].map((entry) => entry.name),
 );

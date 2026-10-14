@@ -20,11 +20,11 @@
 // Completeness at rung 0 is PROVED, not sampled: bench/method-solver-profile.mjs enumerates all
 // 62,208 reachable last-layer states and every one of them is reached by these tables.
 
-import { applyAlg } from '../cube-pieces.js';
+import { CORNER, applyAlg } from '../cube-pieces.js';
 import { HUMAN_OLL, HUMAN_PLL } from '../data/human-algs.js';
 import {
   AUF, MethodSolverError, U_CORNERS, U_EDGES, firstTwoLayers, fromRepertoire, repertoire,
-  topCornersHome, topCornersOriented, topEdgesOriented, wholeCubeSolved,
+  topCornersHome, topCornersOriented, topCornersPlaced, topEdgesHome, topEdgesOriented, wholeCubeSolved,
 } from './engine.js';
 
 /** Orienting the last-layer edges. One alg, applied up to three times. */
@@ -96,14 +96,14 @@ export const LAST_LAYER_EXTRAS = detach(ALIGN);
  * "make a cross on the top face" and point at nothing — and dev-docs/method-solver-return-plan.md
  * §5.2 is the claim that pointing is the load-bearing channel and the sentence is the assistant.
  */
-const look = ({ stage, target, algs, plies, options, reached, goal, why, names }) =>
+const look = ({ stage, target, algs, plies, options, reached, goal, why, names, afterSetup = false }) =>
   // The repertoire is built ONCE, here, not on every solve. `repertoire` rotates and prefixes
   // every entry, so at rung 0 that was 5 algorithms turned into 80 candidates per look per solve —
   // wasteful but invisible. At rung 1 it is 57 turned into 912, and it stopped being invisible:
   // a full-OLL-and-PLL solve measured 869 ms against 484 ms for the beginner's method, which is
   // the wrong way round and a second of silence on the screen. Hoisted, it is 6 ms.
   Object.freeze({
-    stage, target, plies, reached, goal, why, names,
+    stage, target, plies, reached, goal, why, names, afterSetup,
     candidates: Object.freeze(repertoire(algs, options ?? {})),
   });
 
@@ -170,7 +170,11 @@ const runLooks = (looks) => (state, steps) => {
     // get those two facts; they come from either side of the same step.
     let cursor = state;
     for (const used of found.used) {
-      const names = l.names(cursor);
+      // A look that begins each step by turning the top (`afterSetup`) is about the piece that turn BRINGS
+      // to where the work is done, so its pieces are read after the turn — read before it, the course's
+      // corner twist pointed at every twisted corner and at none in particular (Codex refute, 2026-10-14).
+      const setup = l.afterSetup && used.auf ? used.auf : '';
+      const names = { ...l.names(setup ? applyAlg(cursor, setup) : cursor), ...(setup ? { topTurn: true } : {}) };
       cursor = applyAlg(cursor, used.pieces ?? used.alg);
       // Only the LAST application reaches the look's goal. Captioning the first of three
       // edge-orient steps "make a cross on the top face" describes a thing that will not have
@@ -328,3 +332,118 @@ export const PLL_RUNGS = Object.freeze([
     run: runLooks(FULL_PLL_LOOK),
   }),
 ]);
+
+// ---- the course's order ------------------------------------------------------------------------
+//
+// THE LAST LAYER AS THE BEGINNER COURSE TEACHES IT (cubus-courses lessons 13–16; ADR 0009): the top
+// edges turned up, then put home; the top corners put home, then each turned up. The app's own order
+// orients everything before it permutes anything, and the two orders cross at the oll/pll line — the
+// course places the edges BEFORE it turns the corners — so neither of its halves composes with a rung
+// of the other route. It is a PAIR, chosen whole by `settings.lastLayer` (`methodFor`'s `lastLayer`),
+// never by the rung dials.
+//
+// Every algorithm is the lesson's own, named with the lesson it comes from. The course does each from
+// whichever side it is needed (its `rotateAlg`), so the swap and the cycle are relabelled for all four
+// sides as the app's two-look tables are; the corner twist is never relabelled, because the course does
+// it at the front-right only and turns the TOP to bring each corner there.
+//
+// Two of its looks have STAGE NAMES OF THEIR OWN, `edges-home` and `corners-turned`. A step's stage name
+// is what files it under a heading (`DIAL_OF`, lib/method-lesson.js), and the app's `top-edges` is a
+// last-layer stage while its `top-face` is a top-face one: borrowed here, the course's edges would be
+// headed "Last layer" in the middle of its top-face section and its corner twists "Top face" after it.
+//
+// Completeness is PROVED as rung 0's is: `bench/method-solver-profile.mjs exhaustive course course`
+// walks every one of the 62,208 reachable last-layer states through this pair — 0 failures, 2026-10-14 —
+// and CI's nightly `last-layer-sweep` re-proves it in a shard of its own (`ci-plan.test.mjs` holds that
+// the shard exists).
+
+/** Lesson 13: the cross on top — the same six moves as the app's edge orientation. */
+const COURSE_CROSS = [{ name: 'course-cross', alg: "F R U R' U' F'" }];
+/** Lesson 14: swaps two top edges. It moves and twists the top corners as it goes — lesson 15 and 16
+ *  put them right — and leaves the first two layers and the other two edges where they were. */
+const COURSE_SWAP = [{ name: 'course-edge-swap', alg: "R U R' U R U2 R' U" }];
+/** Lesson 15: moves three top corners round, leaving the front-right one where it is. */
+const COURSE_CYCLE = [{ name: 'course-corner-cycle', alg: "U R U' L' U R' U' L" }];
+/** Lesson 16: lesson 9's four moves, done twice or four times until the front-right corner turns up.
+ *  The first two layers come apart while it runs and come back when every corner is up — which is what
+ *  the lesson warns the child about, and why each application is one step. */
+const TWIST = "R' D' R D";
+const COURSE_TWIST = [
+  { name: 'course-corner-twist', alg: `${TWIST} ${TWIST}` },
+  { name: 'course-corner-twist-back', alg: `${TWIST} ${TWIST} ${TWIST} ${TWIST}` },
+];
+
+/** The whole cube solved once the top is turned to line up — what the twisting leaves. */
+const solvedButTheTop = (s) => AUF.some((u) => wholeCubeSolved(applyAlg(s, u)));
+
+/** The top edges home, the right way up, with the first two layers there: the course's lesson 14. */
+export const topEdgesSolved = guard(topEdgesHome);
+
+/** Every algorithm the course's route can name on a step — in `CASE_NAMES` for the reason the app's are. */
+export const COURSE_ALGS = detach([...COURSE_CROSS, ...COURSE_SWAP, ...COURSE_CYCLE, ...COURSE_TWIST]);
+
+const COURSE_EDGES = Object.freeze([
+  // 1. The cross on top — the app's own edge-orientation look, under the course's name for its algorithm.
+  look({
+    stage: 'top-cross', target: 'edges', algs: COURSE_CROSS, plies: 3,
+    reached: topEdgesOriented, goal: guard(topEdgesOriented), why: 'topCross.orient',
+    names: focus({ edges: namedEdges((st, slot) => st.eo[slot] !== 0) }),
+  }),
+  // 2. The top edges home: turn the top to line up as many as will, swap two, again if need be.
+  look({
+    stage: 'edges-home', target: 'place', algs: [...COURSE_SWAP, ...ALIGN], plies: 2, options: { post: AUF },
+    reached: topEdgesHome, goal: topEdgesSolved, why: 'topEdges.place',
+    names: focus({ edges: namedEdges((st, slot) => st.ep[slot] !== slot) }),
+  }),
+]);
+
+const COURSE_CORNERS = Object.freeze([
+  // 3. The top corners into their own places, any way round. NO turn of the top before the cycle: the
+  //    edges are home, and turning the top would take them away again.
+  look({
+    stage: 'top-corners', target: 'place', algs: COURSE_CYCLE, plies: 2, options: { auf: [''] },
+    reached: (s) => topEdgesHome(s) && topCornersPlaced(s),
+    goal: guard((s) => topEdgesHome(s) && topCornersPlaced(s)), why: 'topCorners.place',
+    names: focus({ corners: namedCorners((st, slot) => st.cp[slot] !== slot) }),
+  }),
+  // 4. Each top corner turned up, one at a time at the front-right, turning only the top between them.
+  //    Each step names the ONE corner it turns: the one at the front right once the top has been turned.
+  look({
+    stage: 'corners-turned', target: 'twist', algs: COURSE_TWIST, plies: 4, options: { rotations: [0] },
+    reached: solvedButTheTop, goal: solvedButTheTop, why: 'topCorners.twist', afterSetup: true,
+    names: focus({ corners: namedCorners((st, slot) => slot === CORNER.URF && st.co[slot] !== 0) }),
+  }),
+  // 5. The top turned to line up — the moment lesson 16 is written around.
+  look({
+    stage: 'corners-turned', target: 'align', algs: ALIGN, plies: 1, options: { post: AUF },
+    reached: wholeCubeSolved, goal: wholeCubeSolved, why: 'lastLayer.align',
+    names: focus({ corners: () => [], edges: () => [] }),
+  }),
+]);
+
+/** The course's last layer, as the two stages a method has: its edges half where `oll` stands, its corners
+ *  half where `pll` does. Not rungs of either — `methodFor` puts both in together or neither. */
+export const COURSE_LAST_LAYER = Object.freeze({
+  oll: Object.freeze({
+    id: 'oll',
+    rung: 'course',
+    label: 'edges first',
+    blurb: 'The top edges turned up and put home — lessons 13 and 14 of the course',
+    targets: Object.freeze({ edges: Object.freeze([]), corners: Object.freeze([]) }),
+    keep: firstTwoLayers,
+    contract: topEdgesSolved,
+    why: 'stage.oll',
+    run: runLooks(COURSE_EDGES),
+  }),
+  pll: Object.freeze({
+    id: 'pll',
+    rung: 'course',
+    label: 'corners home, then turned',
+    blurb: 'The top corners put home, then each one turned up — lessons 15 and 16 of the course',
+    targets: Object.freeze({ edges: Object.freeze([]), corners: Object.freeze([]) }),
+    keep: topEdgesSolved,
+    contract: wholeCubeSolved,
+    why: 'stage.pll',
+    run: runLooks(COURSE_CORNERS),
+  }),
+});
