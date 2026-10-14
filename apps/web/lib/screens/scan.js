@@ -142,9 +142,9 @@ SCREENS.scan = () => {
              finished stage or from somebody's opening scramble (§1).
              (No backticks in here: this comment lives inside a template literal, and one would
              end the template two hundred lines early.) -->
-        <div class="card tight" id="stageCard" hidden style="margin-top:12px">
+        <div class="card tight" id="stageCard" hidden>
           <div class="card-h bare"><b>${escHtml(t('How far back'))}</b><span class="sub" id="stageSay" role="status" aria-live="polite" style="margin-left:auto;color:var(--ink-4)"></span></div>
-          <div class="stage-row" id="stageChips" style="padding:2px 18px 12px"></div>
+          <div class="stage-row one-line" id="stageChips" role="group" aria-label="${escHtml(t('How far back'))}"></div>
         </div>
         <button class="btn primary block" id="scanSolveBtn" data-go="home" style="margin-top:auto" disabled>Solve this cube</button>
       </div>

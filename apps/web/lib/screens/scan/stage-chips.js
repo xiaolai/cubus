@@ -10,6 +10,7 @@
 
 import { $, escHtml } from '../../app-state.js';
 import { t } from '../../i18n.js';
+import { oneLineStrip } from '../../scroll-strip.js';
 import { OFFERED_TARGETS } from '../../stage-targets.js';
 import { chipFor, chipLabel, STAGE_COPY } from '../../stage-report.js';
 
@@ -36,6 +37,10 @@ export function createStageChips({ root, signal, state, stageAsk, CHIP_NODE_BUDG
    * cube's. Same defect the cube screen's `walkGen` exists for, one screen along.
    */
   let stageGen = 0;
+  /** The row is ONE sideways line (lib/scroll-strip.js): wrapped, seven chips took the height the scan's
+   *  notice needs on both desktop windows (ADR 0009; geometry.test.mjs). */
+  const rowEl = $('#stageChips', root);
+  const strip = rowEl ? oneLineStrip(rowEl, { signal }) : null;
   /** Stop believing anything in flight, and take the row away. One helper, three callers. */
   function dropStageChips() {
     stageGen += 1;
@@ -55,6 +60,8 @@ export function createStageChips({ root, signal, state, stageAsk, CHIP_NODE_BUDG
       data-target="${escHtml(target.id)}" title="${escHtml(t('Take this cube back to the %1', named(target).name))}">
       <span class="who">${escHtml(named(target).name)}</span><span class="howfar">…</span></button>`).join('');
     card.hidden = false;
+    // Measured only now: a hidden row has no width, so its edge fades were decided against nothing.
+    strip?.reveal(row.firstElementChild);
     if (say) say.textContent = '';
   }
 

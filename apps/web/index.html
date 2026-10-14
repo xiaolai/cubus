@@ -502,6 +502,12 @@
          where the eye finds them; a long explanation scrolls under them. */
       .scan-sheet > .card > .scan-say { flex: 0 1 auto; min-height: 0; overflow-y: auto; }
       .scan-sheet > .card > .scan-hint, .scan-sheet > .card > .btn { flex: none; }
+      /* The Restore row's card is NOT one that gives. Shrunk like the notice card, its chips — which
+         have no body to scroll — were cut by the card's own clip: on both desktop windows the third
+         chip of six already lost 5px, and the seventh (ADR 0009) lost 147 (measured 2026-10-14,
+         geometry.test.mjs "the Restore row after a scan"). It keeps its height; the notice's body
+         scrolls instead, which is what that body is for. */
+      .scan-sheet > #stageCard { flex: none; }
       .scan-sheet > .btn { flex: none; }
       .state-card .net { margin: 30px auto 0; }
       #scanCube { height: 230px; margin-top: 6px; }
@@ -966,8 +972,9 @@
       .stage-chip.on { background: var(--invert-bg); border-color: var(--invert-bg); }
       .stage-chip.on .who, .stage-chip.on .howfar { color: var(--invert-fg); }
       .stage-row { display: flex; flex-wrap: wrap; gap: 6px; }
-      /* The cube screen's stage targets: ONE line that scrolls sideways (lib/scroll-strip.js says
-         why — wrapped, they took the moves' height on both desktop windows). The scrollbar is
+      /* The cube screen's stage targets, and the scan screen's Restore row: ONE line that scrolls
+         sideways (lib/scroll-strip.js says why — wrapped, they took the moves' height on both
+         desktop windows; on the scan screen seven wrapped chips took the notice's, ADR 0009). The scrollbar is
          hidden as every scroller's is (`:root` above), because the fade and the wheel do its job;
          `flex: none` so no button is squeezed to fit instead of scrolled to. An edge with more
          beyond it fades over 32px: the helper sets the class, the class sets that edge's width,
@@ -975,7 +982,7 @@
          A scroller clips at its padding edge, so the padding holds a focused button's ring: WebKit
          draws it 3px beyond the button, and 2px on top cut a flat line through it. */
       .stage-row.one-line { flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-x: contain; padding: 3px 18px 5px; --fade-left: 0px; --fade-right: 0px; }
-      .stage-row.one-line > .pill { flex: none; white-space: nowrap; }
+      .stage-row.one-line > :is(.pill, .stage-chip) { flex: none; white-space: nowrap; }
       .stage-row.one-line.more-left { --fade-left: 32px; }
       .stage-row.one-line.more-right { --fade-right: 32px; }
       .stage-row.one-line:is(.more-left, .more-right) { mask-image: linear-gradient(to right, transparent, #000 var(--fade-left) calc(100% - var(--fade-right)), transparent); }

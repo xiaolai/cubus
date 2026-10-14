@@ -787,6 +787,56 @@ const overlaps = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bot
 
 const inside = (r, box, tol = 1) => r.left >= box.left - tol && r.right <= box.right + tol && r.top >= box.top - tol && r.bottom <= box.bottom + tol;
 
+/** A scanned cube the app adopts — `test/browser/stage-target.test.mjs`'s, generated there, not typed. */
+const SCANNED_CUBE = 'DDDUURFDURDRRRLBBULLFUFFFLLDUUFDDDLRBBUBLRBULFFLFBRBBR';
+
+// THE RESTORE ROW AFTER A SCAN, which no case above enters: its card is hidden until a cube is read. Seven
+// chips since ADR 0009, in a card that may shrink and clip (Codex refute, 2026-10-14) — so every fixture
+// completes a scan, waits for every chip to settle, and measures what a child would then see.
+for (const fixture of FIXTURES) {
+  test(`scan screen with the Restore row after a scan: ${label(fixture)}`, async () => {
+    const { page, context } = await open(fixture, 'scan');
+    try {
+      await page.waitForSelector('#stageCard', { state: 'attached' });
+      await page.evaluate((facelets) => {
+        document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-complete', {
+          detail: { facelets, rotations: [0, 0, 0, 0, 0, 0] },
+        }));
+      }, SCANNED_CUBE);
+      await page.waitForFunction(() => document.querySelector('#stageCard')?.hidden === false, null);
+      await page.waitForFunction(
+        () => [...document.querySelectorAll('.stage-chip .howfar')].every((el) => el.textContent !== '…'),
+        null, { timeout: 90_000 },
+      );
+      const m = await page.evaluate(`(() => {
+        const screen = document.querySelector('.screen.active');
+        const chips = [...document.querySelectorAll('.stage-chip')].map((c) => {
+          const b = c.getBoundingClientRect();
+          return { id: c.dataset.target, width: b.width, height: b.height, top: b.top, bottom: b.bottom, left: b.left, right: b.right };
+        });
+        const row = document.querySelector('#stageChips');
+        const rb = row.getBoundingClientRect();
+        return {
+          chips, vw: innerWidth, fits: (${contentFits.toString()})(screen),
+          row: { left: rb.left, right: rb.right, scrolls: row.scrollWidth > row.clientWidth + 1, overflowX: getComputedStyle(row).overflowX },
+        };
+      })()`);
+      assert.equal(m.chips.length, 7, 'six stages and the whole cube');
+      assert.deepEqual(m.fits, { spills: [], cut: [] }, 'with the Restore row showing: text that cannot be read where it is drawn — see contentFits');
+      const least = fixture.touch ? 44 : 40;
+      for (const c of m.chips) {
+        assert.ok(c.height >= least - 0.5 && c.width >= least - 0.5, `the ${c.id} chip is ${c.width}×${c.height} — under ${least}px`);
+      }
+      // ONE LINE that scrolls (lib/scroll-strip.js): a chip past the edge is scrolled to, never lost —
+      // so the STRIP is what must sit inside the window, and a strip with more than it shows must scroll.
+      assert.ok(m.row.left >= -0.5 && m.row.right <= m.vw + 0.5, `the Restore row leaves the window: ${JSON.stringify(m.row)}`);
+      if (m.row.scrolls) assert.match(m.row.overflowX, /auto|scroll/, 'a Restore row wider than its card does not scroll — its last chips are unreachable');
+    } finally {
+      await context.close();
+    }
+  });
+}
+
 for (const fixture of FIXTURES) {
   test(`scan screen composition: ${label(fixture)}`, async () => {
     const { page, context } = await open(fixture, 'scan');
