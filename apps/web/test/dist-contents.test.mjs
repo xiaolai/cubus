@@ -805,7 +805,7 @@ test('a course reached through the destination is read before the destination is
   });
 });
 
-test('a staging directory inside the destination is refused before the delete, not found missing after it', () => {
+test('a staging directory inside the destination or the course is refused before the delete', () => {
   // Codex verify, 2026-10-14: the copy is staged under the temporary directory, and a TMPDIR inside `dist`
   // would be emptied with it. `os.tmpdir()` reads TMPDIR on every call, so the case sets it for one build.
   const { dir, cleanup } = makeCourse();
@@ -820,6 +820,14 @@ test('a staging directory inside the destination is refused before the delete, n
         assert.throws(() => build({ freshness: false, course: dir }), /refusing to stage the course/);
       } finally { restore(); }
       assert.ok(existsSync(inside), 'the destination was emptied by a build that refused to run');
+    });
+    // Inside the COURSE, the copy would read its own output for ever (Codex audit, 2026-10-14).
+    withRoot(({ dist, build }) => {
+      process.env.TMPDIR = dir;
+      try {
+        assert.throws(() => build({ freshness: false, course: dir }), /inside the course .*would copy itself/);
+      } finally { restore(); }
+      assert.ok(existsSync(dist), 'the destination was emptied by a build that refused to run');
     });
   } finally { restore(); cleanup(); }
 });

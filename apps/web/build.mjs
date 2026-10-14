@@ -623,9 +623,12 @@ function stageCourse(course, out) {
     throw new Error(`build: refusing to bundle ${course} — it holds the destination ${out}, so the course would ship the last build inside it`);
   }
   const stage = mkdtempSync(join(tmpdir(), 'cubus-course-stage-'));
-  if (beneath(stage, out)) {
-    rmSync(stage, { recursive: true, force: true });
-    throw new Error(`build: refusing to stage the course in ${stage} — it is inside the destination ${out}, which is deleted next`);
+  // Inside the destination it is emptied with it; inside the course the copy reads its own output for ever.
+  for (const [tree, why] of [[out, `the destination ${out}, which is deleted next`], [dir, `the course ${dir}, which would copy itself`]]) {
+    if (beneath(stage, tree)) {
+      rmSync(stage, { recursive: true, force: true });
+      throw new Error(`build: refusing to stage the course in ${stage} — it is inside ${why}`);
+    }
   }
   try {
     copyFollowingLinks(dir, join(stage, COURSE_MOUNT));
