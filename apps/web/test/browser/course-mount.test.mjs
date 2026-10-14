@@ -76,3 +76,51 @@ test('a mounted course is found through the page, listed from its index, and pla
   assert.equal(await page.$eval('#slNotice', (e) => e.hidden), true, 'a recording failed');
   assert.deepEqual(errors.map(String), []);
 });
+
+test('a lesson reloaded part way through opens again where it rested (plan Phase 6)', async () => {
+  const context = await fixture.browser.newContext({ viewport: { width: 1024, height: 768 } });
+  contexts.push(context);
+  const page = await context.newPage();
+  pace(page);
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e));
+  const open = async () => {
+    await page.waitForFunction(() => document.querySelector('[data-open="a-script"]') !== null, null, { timeout: 20_000 });
+    await page.click('[data-open="a-script"]');
+    await page.waitForFunction(() => document.querySelector('#slPlay') !== null);
+  };
+
+  await page.goto(`${fixture.base}/#/course`);
+  await open();
+  const fresh = await page.textContent('#slCount');
+  await page.click('#slPlay');
+  // Played to the move that is the child's — the third of three steps — and left there.
+  await page.waitForFunction(() => document.querySelector('#slYours')?.hidden === false, null, { timeout: 20_000 });
+  assert.equal(await page.textContent('#slCount'), '3 / 3');
+  assert.notEqual(fresh, '3 / 3', 'precondition: a lesson opened fresh does not start where this one rests');
+  assert.equal(await page.$eval('#slUnsaved', (e) => e.hidden), true, 'the device said it could not save where the lesson is');
+
+  // A RELOAD, not a visit elsewhere: no disposer runs, so only a record written as the lesson moved survives.
+  await page.reload();
+  await open();
+  assert.equal(await page.textContent('#slCount'), '3 / 3', 'the reloaded lesson started again instead of resuming');
+  assert.equal(await page.$eval('#slYours', (e) => e.hidden), false, 'it resumed, but not at the move that was the child\'s');
+  assert.deepEqual(errors.map(String), []);
+});
+
+test('a resting place the device will not keep is said on the lesson, never dropped', async () => {
+  const context = await fixture.browser.newContext({ viewport: { width: 1024, height: 768 } });
+  contexts.push(context);
+  const page = await context.newPage();
+  pace(page);
+  await page.goto(`${fixture.base}/#/course`);
+  await page.waitForFunction(() => document.querySelector('[data-open="a-script"]') !== null, null, { timeout: 20_000 });
+  await page.click('[data-open="a-script"]');
+  await page.waitForFunction(() => document.querySelector('#slPlay') !== null);
+  assert.equal(await page.$eval('#slUnsaved', (e) => e.hidden), true, 'precondition: nothing has failed yet');
+  // Storage full, from here on: every write the lesson makes as it moves is refused.
+  await page.evaluate(() => { Storage.prototype.setItem = () => { throw new Error('quota exceeded (test)'); }; });
+  await page.click('#slPlay');
+  await page.waitForFunction(() => document.querySelector('#slUnsaved')?.hidden === false, null, { timeout: 20_000 });
+  assert.match(await page.textContent('#slUnsaved'), /not saving where you are/);
+});

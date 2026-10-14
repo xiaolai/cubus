@@ -15,7 +15,8 @@
 // different grid — and `lib/screens/course/episode-view.js` is the second one.
 
 import { $, escHtml, icon, state } from '../app-state.js';
-import { pageCourseSession } from '../course-session.js';
+import { courseLocation, pageCourseSession } from '../course-session.js';
+import { save, settings } from '../app-settings.js';
 import { resolveCourseAudio, resolveCourseRef } from '../course-source.js';
 import { t } from '../i18n.js';
 import { SCREENS, refreshScreen, screenAbort } from '../screen-shell.js';
@@ -99,15 +100,38 @@ const titleOf = (id, view) => view.entries.find((e) => e.id === id)?.title ?? id
  */
 let rested = null;
 
-/** Where `id` rested in `source`, if it did and the record still fits the lesson as it now is. */
+/**
+ * Where `id` rested in `source`, if it did and the record still fits the lesson as it now is — from this
+ * page's memory, or, after a reload, from the settings store (plan Phase 6). The saved record is the page's
+ * COURSE's, by its location: a course installed some other way has no name a reload could find it by.
+ */
 function restedAt(source, id, built) {
-  if (!rested || rested.source !== source || rested.id !== id) return null;
-  const refusal = progressRefusal(built, rested.progress);
-  if (!refusal) return rested.progress;
+  const kept = settings.courseRested;
+  const progress = rested?.source === source && rested.id === id ? rested.progress
+    : courseLocation !== null && kept?.course === courseLocation && kept.id === id ? kept.progress
+      : null;
+  if (!progress) return null;
+  const refusal = progressRefusal(built, progress);
+  if (!refusal) return progress;
   // Loud, and then the lesson from its start: the lesson changed under the record, which is a fact about
   // the course's content, not a reason to refuse the child the lesson.
   console.warn(`course: where "${id}" rested no longer fits it — ${refusal}; it starts from the beginning`);
   return null;
+}
+
+/**
+ * Keep where `id` rests: in memory always, and in the settings store for the page's course. Answers
+ * whether a write that was needed LANDED — false is said on the lesson, never dropped, because a child
+ * who reloads expecting to go on and starts again has been told nothing. Unchanged records are not
+ * rewritten: the lesson reports every change, most of which leave it where it was.
+ */
+function rest(source, id, progress) {
+  rested = { source, id, progress };
+  if (courseLocation === null) return true;
+  const record = { course: courseLocation, id, progress };
+  if (JSON.stringify(record) === JSON.stringify(settings.courseRested)) return true;
+  settings.courseRested = record;
+  return save('cubusSettings', settings);
 }
 
 /**
@@ -173,16 +197,22 @@ SCREENS.course = () => {
   if (showing && first.episode.schema === 2) {
     const built = buildScript(first.episode);
     return lessonScreen(scriptLessonHtml({ title: titleOf(showing, first), sections: scriptSections(built) }), (root, onBack) => {
+      const unsaved = $('#slUnsaved', root);
+      const keep = (progress) => {
+        const landed = rest(source, showing, progress);
+        if (unsaved) unsaved.hidden = landed;
+      };
       const mounted = mountScriptLessonView(root, {
         built,
         from: restedAt(source, showing, built),
         resolveFile: (ref) => resolveCourseRef(source, ref),
         onBack,
+        onRest: keep,
       });
       return {
         dispose() {
           // Taken BEFORE disposing, which cancels what the lesson was waiting on and so forgets it.
-          rested = { source, id: showing, progress: mounted.lesson.progress() };
+          rest(source, showing, mounted.lesson.progress());
           mounted.dispose();
         },
       };

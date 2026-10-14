@@ -32,9 +32,18 @@ import { CourseRefusal, EMPTY_COURSE, createCourseSource, episodeIdRefusal, fetc
  */
 export let courseSource = EMPTY_COURSE;
 
+/**
+ * WHERE the page's course is — the tag's own directory, `course/` — or null for a course installed any
+ * other way. The one name for a course that survives a reload: a source is an object made at boot, so two
+ * loads of one course are two sources, and a lesson's resting place saved against one could never be found
+ * by the next. Only a located course has its resting places saved (`lib/screens/course.js`).
+ */
+export let courseLocation = null;
+
 /** Install a course. The seam a delivery mechanism lands on, and the seam a test drives. */
 export function useCourse(source) {
   courseSource = source ?? EMPTY_COURSE;
+  courseLocation = null;
   // The selected lesson belonged to the course being replaced. Left standing, the new session reported
   // `showing` an id with no episode, and the shelf's loading state keyed on it (audit, 2026-09-21). Boot
   // installs the course before the first route, so a deep link is not yet read when this runs.
@@ -100,6 +109,7 @@ export function installCourseFromPage(doc = globalThis.document, {
     return true;
   }
   useCourse(make(content, doc.baseURI));
+  courseLocation = content;
   return true;
 }
 

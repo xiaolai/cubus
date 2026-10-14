@@ -98,6 +98,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
   // course's is the default (decision I, 2026-10-14). An install from before it existed is MIGRATED below,
   // not defaulted, because a learner who has already climbed the last-layer ladder is on the app's.
   lastLayer: 'course',
+  // Where the last lesson of the page's course rested, so a reload resumes it (plan Phase 6):
+  // `{ course, id, progress }`, or null. Shape-checked below; whether `progress` still fits the lesson is
+  // `progressRefusal`'s question, asked when the lesson is opened, because only then is the lesson there.
+  courseRested: null,
 });
 /** Every setting whose default is a boolean — DERIVED, so a new flag is repaired the moment it has a
  *  default, and no list kept by hand can leave one out (audit, 2026-09-19: the tests' own copies had
@@ -255,6 +259,15 @@ delete settings.teachLevel;
  * last layer, so the new default reaches them — which a stored record outranking a changed default would
  * otherwise never let it do.
  */
+/** A resting place as a record, or null: two non-empty strings and a progress RECORD, nothing more. */
+export function repairCourseRested(stored) {
+  const r = asRecord(stored);
+  if (!r) return null;
+  const { course, id, progress } = r;
+  if (typeof course !== 'string' || !course || typeof id !== 'string' || !id || !asRecord(progress)) return null;
+  return { course, id, progress };
+}
+
 export function repairLastLayer(stored, rungs) {
   const want = stored?.lastLayer;
   if (typeof want === 'string' && LAST_LAYER_ROUTES.includes(want)) return want;
@@ -271,6 +284,7 @@ export function repairRungs(stored) {
 }
 settings.rungs = repairRungs(settings.rungs);
 settings.lastLayer = repairLastLayer(storedSettings, settings.rungs);
+settings.courseRested = repairCourseRested(settings.courseRested);
 // How many times each stage has been followed to the end at its current rung, and how often its
 // next rung has been declined. §3 rule 3 — "offer, never ask" — is a rule about counting, so the
 // counts are stored; repaired on load for the same reason the rungs are.

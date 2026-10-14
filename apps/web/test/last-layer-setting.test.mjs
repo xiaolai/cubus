@@ -6,6 +6,8 @@
 // one would take the app's own last layer away from a learner who has been climbing it. The rule is in
 // `repairLastLayer`; these cases hold it, including the ones that must NOT move.
 //
+// The last case is the other record the course plan added to the same store: where a lesson rested.
+//
 // The settings module reads storage AT IMPORT, so each case prepares a store and imports a fresh copy
 // with a cache-busting query, as `sound-mode.test.mjs` does.
 
@@ -66,3 +68,16 @@ test('a route that is not one is repaired, never believed — and a rung that is
   assert.equal(hostile.settings.lastLayer, 'course', 'a corrupted rung decided the route');
 });
 
+// ---- where a lesson rested (plan Phase 6) — the same store, the same rule: repaired, never believed ----
+
+test('a lesson\'s resting place survives a reload as a record, and anything else is dropped', async () => {
+  const kept = { course: 'course/', id: '13-a-cross-on-top', progress: { step: 4 } };
+  assert.deepEqual((await loadWith({ courseRested: kept })).settings.courseRested, kept);
+  assert.equal((await loadWith(undefined)).settings.courseRested, null, 'a first launch rests nowhere');
+  // Whether `progress` fits the lesson is asked when the lesson opens; here only the SHAPE is held.
+  for (const bad of [7, 'course/', [], { course: 'course/', id: 'x' }, { course: '', id: 'x', progress: {} },
+    { course: 'course/', id: 9, progress: {} }, { course: 'course/', id: 'x', progress: [] }]) {
+    assert.equal((await loadWith({ courseRested: bad })).settings.courseRested, null,
+      `a stored resting place of ${JSON.stringify(bad)} was believed`);
+  }
+});

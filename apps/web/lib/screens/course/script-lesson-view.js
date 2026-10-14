@@ -193,6 +193,9 @@ export function scriptLessonHtml({ title, sections }) {
       </div>
       ${captionCardHtml('slCaptionBox', 'slCaption')}
       ${sectionsHtml('slSections', sections, 'step', (s) => s.step)}
+      <div class="card" id="slUnsaved" hidden>
+        <div class="sub" style="color:var(--err-ink);line-height:1.5">${escHtml(t('This device is not saving where you are in this lesson, so a reload will start it again.'))}</div>
+      </div>
       <div class="card" id="slNotice" hidden>
         <div class="sub" style="color:var(--err-ink);line-height:1.5" id="slNoticeText"></div>
         <div class="sub num" style="color:var(--ink-5);margin-top:6px;font-size:var(--fs-caption)" id="slNoticeDetail"></div>
@@ -369,7 +372,9 @@ export function bindScriptControls(root, { lesson, onBack, signal, caption }) {
  * `from` is where the lesson last rested (`progress()`), restored paused. Returns a disposer, which the
  * screen runs when it goes away, and the lesson, whose progress the screen keeps.
  */
-export function mountScriptLessonView(root, { built, from = null, resolveFile = () => '', onBack = () => {} } = {}) {
+export function mountScriptLessonView(root, {
+  built, from = null, resolveFile = () => '', onBack = () => {}, onRest = () => {},
+} = {}) {
   const doc = root.ownerDocument ?? globalThis.document;
   const win = doc?.defaultView ?? null;
   const cube = newCube({ subject: LESSON_SUBJECT });
@@ -393,7 +398,16 @@ export function mountScriptLessonView(root, { built, from = null, resolveFile = 
     reducedMotion: () => Boolean(win?.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches),
   });
   const paint = (view) => { if (!gone) draw(view); };
-  const lesson = createScriptLesson(built, { cube, voice, settle: settling.settle, onChange: paint, from });
+  // EVERY CHANGE IS A RESTING PLACE to the screen, which keeps it: a reload runs no disposer, so a record
+  // taken only on the way out would be a record no reload ever leaves behind. Null until the lesson exists,
+  // because restoring `from` changes it during construction.
+  let made = null;
+  const changed = (view) => {
+    paint(view);
+    if (made && !gone) onRest(made.progress());
+  };
+  const lesson = createScriptLesson(built, { cube, voice, settle: settling.settle, onChange: changed, from });
+  made = lesson;
 
   // DISPOSAL REMOVES EVERY LISTENER. Left installed, a retained or re-mounted root's controls could restart
   // the disposed lesson: a Replay press after disposal set it playing again (audit, 2026-09-21).
