@@ -537,3 +537,46 @@ test('a picture that will not load is said too', () => {
   m.last().listeners.error();
   assert.deepEqual(m.failures, [{ kind: 'image', src: 'media/missing.jpg', reason: 'unreadable' }]);
 });
+
+test('a lesson does not settle while the cube is turning over, or while a move waits on that turn', async () => {
+  // Audit 2026-10-14, plan item 1.2: `animating` is about face turns only. A move held back until a hold
+  // turn lands left the cube neither animating nor (once the turn ended) turning, and a lesson reached its
+  // end before the move it was waiting for had begun.
+  const { createStopDriver } = await import('../lib/script-drive.js');
+  const { buildScript } = await import('../lib/script-view.js');
+  const frames = [];
+  const win = {
+    requestAnimationFrame: (fn) => { frames.push(fn); return frames.length; },
+    cancelAnimationFrame() {},
+    setTimeout: () => 0,                 // the bound never elapses here: only the cube may end the wait
+    clearTimeout() {},
+  };
+  const runFrames = () => { const due = frames.splice(0); due.forEach((fn) => fn()); };
+  const due = [];
+  const schedule = Object.assign((fn) => { const h = { fn }; due.push(h); return h; }, {
+    cancel: (h) => { const i = due.indexOf(h); if (i >= 0) due.splice(i, 1); },
+  });
+  const attrs = new Map();
+  const cube = {
+    animating: false, turning: false, stops: [0, 1, 2],
+    setAttribute: (k, v) => attrs.set(k, v), removeAttribute: (k) => attrs.delete(k), getAttribute: (k) => attrs.get(k) ?? null,
+    turnTo: () => Promise.resolve(true), seek() {}, stepStop() {}, stepBackStop() {}, playTo() {}, step() {},
+  };
+  const built = buildScript({ schema: 2, start: {}, steps: [{ move: 'R' }, { hold: 'D B' }, { move: 'U' }] });
+  const walk = createStopDriver(built, { cube, schedule });
+  walk.next();
+  walk.next();
+  cube.turning = true;
+  walk.next();                           // held back: the cube is still going over
+  const settling = createSettle({ cube, win });
+  let landed = false;
+  settling.settle().then(() => { landed = true; });
+  runFrames(); await flush();
+  assert.equal(landed, false, 'the lesson settled while the cube was turning over');
+  cube.turning = false;                  // the tumble has landed; the move has not started yet
+  runFrames(); await flush();
+  assert.equal(landed, false, 'the lesson settled while a move was still waiting on the turn');
+  due.shift().fn();                      // the wait notices, and the move begins
+  runFrames(); await flush();
+  assert.equal(landed, true, 'the lesson never settled once everything had landed');
+});

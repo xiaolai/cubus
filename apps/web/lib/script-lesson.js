@@ -354,7 +354,7 @@ export function createScriptLesson(built, {
   const span = stepSpans(built);
   const sections = sectionsOf(built);
 
-  let driver = createStopDriver(built, { cube });
+  let driver = createStopDriver(built, { cube, schedule });
   let at = 0;                  // the step the lesson is at: about to play, playing, or waiting in
   let phase = 'ready';         // ready | playing | yours | asking | revealing | waiting | ended
   let playing = false;         // whether the lesson goes on by itself
@@ -430,7 +430,7 @@ export function createScriptLesson(built, {
    * draw the next position over the reveal's cube. A fresh one lands cold (the event driver's own rule).
    */
   const own = () => {
-    if (revealed) { driver = createStopDriver(built, { cube }); revealed = false; }
+    if (revealed) { driver = createStopDriver(built, { cube, schedule }); revealed = false; }
     return driver;
   };
 
@@ -634,7 +634,7 @@ export function createScriptLesson(built, {
     if (!alive(mine)) return;
     const rbuilt = buildScript(revealScript(built, span.first[s]));
     const spans = stepSpans(rbuilt);
-    let rdriver = createStopDriver(rbuilt, { cube });
+    let rdriver = createStopDriver(rbuilt, { cube, schedule });
     shown = rdriver;
     // Position 1 is the round as it was asked — its first synthesised step — which is on screen already.
     rdriver.seek(spans.last[0]);

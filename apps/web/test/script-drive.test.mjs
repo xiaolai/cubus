@@ -29,6 +29,8 @@ function recordingCube() {
       return out;
     },
     animating: false,
+    // `turnTo` in flight — a test sets it to stand in for a cube still going over (lesson-holds plan 1.2).
+    turning: false,
   };
   // `turnTo` records like the rest, and answers a promise as the element does: a hold change between two
   // adjacent positions is an animated tumble now (ADR 0003), so it has to be observable here.
@@ -127,7 +129,7 @@ test('a hold change tumbles on a press and cuts on a seek, and loads the cube ei
   const before = transport(cube).length;
   walk.next();
   const sets = cube.calls.filter(([c]) => c === 'set').map(([, n, v]) => `${n}=${v}`);
-  assert.deepEqual(transport(cube).filter(([c]) => c === 'turnTo').at(-1), ['turnTo', 'D', 'B'],
+  assert.deepEqual(transport(cube).filter(([c]) => c === 'turnTo').at(-1).slice(0, 3), ['turnTo', 'D', 'B'],
     'walking into a new hold did not turn the cube over in front of the child');
   assert.equal(sets.includes('orientation=D B'), false,
     'the hold was also written as an attribute, which states the end of the turn and cancels it');
@@ -161,7 +163,7 @@ test('a cube that TUMBLED is told how it is held again when the walk comes back'
   const walk = createStopDriver(built, { cube });
   walk.next();
   walk.next();
-  assert.deepEqual(transport(cube).filter(([c]) => c === 'turnTo').at(-1), ['turnTo', 'D', 'B'],
+  assert.deepEqual(transport(cube).filter(([c]) => c === 'turnTo').at(-1).slice(0, 3), ['turnTo', 'D', 'B'],
     'precondition: the press tumbled the cube');
   const sofar = cube.calls.filter(([c, n]) => c === 'set' && n === 'orientation').length;
   walk.seek(0);
@@ -227,6 +229,102 @@ test('a host that stops playback from inside a step report is not overridden', (
   assert.equal(due.length, 0, 'the paused walk still had its next stop scheduled');
   fire();
   assert.equal(pressed, 1, 'the paused walk asked for another stop');
+});
+
+// dev-docs/lesson-holds-plan.md item 1.2. A hold change is a `turnTo` that takes as long as the face turns
+// beside it, and nothing paced on it: a press or a clock tick during a tumble started the next face turn on a
+// cube still going over. The element's `turning` says so, and an animated arrival waits for it.
+const manualSchedule = () => {
+  const due = [];
+  const schedule = Object.assign((fn) => { const h = { fn }; due.push(h); return h; }, {
+    cancel: (h) => { const i = due.indexOf(h); if (i >= 0) due.splice(i, 1); },
+  });
+  const fire = () => { const h = due.shift(); if (h) h.fn(); };
+  return { due, schedule, fire };
+};
+
+test('a press made while the cube is turning over waits for it to land, and two presses walk two stops once', () => {
+  const built = script([{ move: 'R' }, { hold: 'D B' }, { move: 'U' }, { move: 'F' }]);
+  const cube = recordingCube();
+  const { due, schedule, fire } = manualSchedule();
+  const walk = createStopDriver(built, { cube, schedule });
+  walk.next();
+  walk.next();
+  assert.deepEqual(transport(cube).filter(([c]) => c === 'turnTo').at(-1).slice(0, 3), ['turnTo', 'D', 'B'],
+    'precondition: the walk tumbled');
+  cube.turning = true;
+  const before = transport(cube).length;
+  walk.next();
+  assert.equal(transport(cube).length, before, 'a face turn started while the cube was still turning over');
+  fire();
+  assert.equal(transport(cube).length, before, 'the wait gave up while the cube was still turning');
+  walk.next();
+  assert.equal(due.length, 1, 'a second press during the tumble left two moves waiting');
+  cube.turning = false;
+  fire();
+  const moved = transport(cube).slice(before);
+  assert.equal(moved.length, 1, `the landed tumble released ${moved.length} element calls, not one`);
+  assert.deepEqual(moved[0], ['playTo', 2], 'the two presses did not walk to the second stop');
+  assert.equal(walk.position, 4);
+});
+
+test('a seek during a tumble is not held back, and drops a press that was', () => {
+  const built = script([{ move: 'R' }, { hold: 'D B' }, { move: 'U' }, { move: 'F' }]);
+  const cube = recordingCube();
+  const { due, schedule } = manualSchedule();
+  const walk = createStopDriver(built, { cube, schedule });
+  walk.next();
+  walk.next();
+  cube.turning = true;
+  walk.next();
+  assert.equal(due.length, 1, 'precondition: the press is waiting');
+  const before = transport(cube).length;
+  walk.seek(4);
+  assert.equal(due.length, 0, 'the superseded press was still waiting');
+  assert.deepEqual(transport(cube).slice(before), [['seek', 2]], 'a seek waited on the tumble');
+});
+
+test('the clock does not run on while the cube is turning over', () => {
+  const built = script([{ move: 'R' }, { hold: 'D B' }, { move: 'U' }, { move: 'F' }]);
+  const cube = recordingCube();
+  const { schedule, fire } = manualSchedule();
+  const walk = createStopDriver(built, { cube, schedule });
+  walk.play({ every: 10 });
+  fire();
+  fire();
+  assert.equal(walk.position, 2, 'precondition: the clock walked into the new hold');
+  cube.turning = true;
+  for (let i = 0; i < 5; i++) fire();
+  assert.equal(walk.position, 2, 'the clock moved on while the cube was turning over');
+  assert.equal(walk.playing, true, 'the clock stopped instead of waiting');
+  cube.turning = false;
+  fire();
+  assert.equal(walk.position, 2, 'the clock moved on the instant the tumble landed, with no gap after it');
+  fire();
+  assert.equal(walk.position, 3, 'the clock did not resume once the tumble landed');
+});
+
+test('after a tumble the clock waits its whole gap before the next stop', () => {
+  // Audit 2026-10-14: the gap was spent while the cube turned over, so the next stop came the instant it landed.
+  const built = script([{ move: 'R' }, { hold: 'D B' }, { move: 'U' }]);
+  const cube = recordingCube();
+  const asked = [];
+  const due = [];
+  const schedule = Object.assign((fn, ms) => { const h = { fn }; asked.push(ms); due.push(h); return h; }, {
+    cancel: (h) => { const i = due.indexOf(h); if (i >= 0) due.splice(i, 1); },
+  });
+  const fire = () => { const h = due.shift(); if (h) h.fn(); };
+  const walk = createStopDriver(built, { cube, schedule });
+  walk.play({ every: 900 });
+  fire();
+  fire();
+  cube.turning = true;
+  fire();
+  cube.turning = false;
+  asked.length = 0;
+  fire();
+  assert.deepEqual(asked, [900], 'the landed tumble was not followed by the whole gap');
+  assert.equal(walk.position, 2, 'the clock moved on before the gap');
 });
 
 test('the timings this driver accepts and cannot yet refuse are written down', () => {
@@ -499,4 +597,51 @@ test('describe(k) draws position k\'s cues on the cube as it stands, and moves n
     `describing a step turned or reloaded the cube: ${since.join(', ')}`);
   assert.notEqual(cube.attrs.get('arrow') ?? 'none', 'none', 'the arrow was not drawn');
   assert.notEqual(cube.attrs.get('highlight') ?? 'none', 'none', 'the highlight was not drawn');
+});
+
+test('a move waiting on a tumble is called off when another driver takes the cube', () => {
+  // Audit 2026-10-14: the waiting move lived in the writer, so replacing the writer (a reveal, a replay)
+  // left its timer to play the old walk's move against the new walk's segment.
+  const built = script([{ move: 'R' }, { hold: 'D B' }, { move: 'U' }, { move: 'F' }]);
+  const cube = recordingCube();
+  const { due, schedule, fire } = manualSchedule();
+  const walk = createStopDriver(built, { cube, schedule });
+  walk.next();
+  walk.next();
+  cube.turning = true;
+  walk.next();
+  assert.equal(due.length, 1, 'precondition: a move is waiting on the tumble');
+  createStopDriver(script([{ move: 'L' }]), { cube, schedule });
+  assert.equal(due.length, 0, 'the replaced walk\'s move was still waiting');
+  cube.turning = false;
+  const before = transport(cube).length;
+  fire();
+  assert.deepEqual(transport(cube).slice(before), [], 'the replaced walk\'s move played on the new walk');
+});
+
+test('a tumble shorter than the gap still leaves the whole gap after it lands', () => {
+  // Audit 2026-10-14, round 3: the gap started when the stop was asked for, so a short tumble ate part of it.
+  const built = script([{ move: 'R' }, { hold: 'D B' }, { move: 'U' }]);
+  const cube = recordingCube();
+  const asked = [];
+  const due = [];
+  const schedule = Object.assign((fn, ms) => { const h = { fn, ms }; asked.push(ms); due.push(h); return h; }, {
+    cancel: (h) => { const i = due.indexOf(h); if (i >= 0) due.splice(i, 1); },
+  });
+  const fire = () => { const h = due.shift(); if (h) h.fn(); };
+  // The element starts its tumble the moment the hold is loaded, and the test lands it when it likes.
+  const turnTo = cube.turnTo;
+  cube.turnTo = (...a) => { cube.turning = true; return turnTo(...a); };
+  const walk = createStopDriver(built, { cube, schedule });
+  walk.play({ every: 900 });
+  fire();                                   // stop 1: R
+  asked.length = 0;
+  fire();                                   // stop 2: into the new hold — the cube starts turning over
+  assert.equal(walk.position, 2, 'precondition: the clock walked into the new hold');
+  assert.deepEqual(asked, [50], 'the gap began while the cube was still turning over');
+  cube.turning = false;                     // a short tumble lands
+  asked.length = 0;
+  fire();
+  assert.deepEqual(asked, [900], 'the landed tumble was not followed by the whole gap');
+  assert.equal(walk.position, 2, 'the clock moved on before the gap');
 });

@@ -287,7 +287,8 @@ test('the stylesheet answers prefers-reduced-motion, and the renderer reads it t
   // of positions, and the turn is the thing being taught. That decision lives in the renderer.
   const cube = readFileSync(new URL('../../../packages/cubus-cube/src/cubus-cube.js', import.meta.url), 'utf8');
   assert.match(cube, /prefers-reduced-motion/, 'the renderer must ask too');
-  assert.match(cube, /Math\.min\(dur,/, 'and shorten the turn rather than removing it');
+  // A CAP, never a removal — one rule for face and hold turns (`_motionMs`), measured in browser/hold-turn.test.mjs.
+  assert.match(cube, /Math\.min\(\w+, 120 \* \w+\)/, 'and shorten the turn rather than removing it');
 });
 
 // ---- Never invent data -----------------------------------------------------------------------

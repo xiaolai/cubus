@@ -981,3 +981,58 @@ test('the picture on show is the one set last, and the cube comes back when it i
   await ctx.clock.advance(450);
   assert.equal(ctx.lesson.view.media, null, 'the cube never came back');
 });
+
+test('a lesson does not end while its cube is turning over, and asks for no face turn until it has landed', async () => {
+  // Audit 2026-10-14 (finding 5, the lesson-level case): a move held back until a hold turn landed left the
+  // cube neither animating nor turning, and the lesson's settle — reading `animating` alone — let it reach
+  // `ended` while the cube was still going over, before the last move had begun. Everything here runs on the
+  // lesson's manual clock (the stop driver's wait included), so no case depends on how fast the machine is.
+  const { createSettle } = await import('../lib/screens/course/script-lesson-view.js');
+  const cube = recordingCube();
+  const raw = cube.calls;
+  let turning = false;
+  Object.defineProperty(cube, 'turning', { get: () => turning, configurable: true });
+  cube.turnTo = (...a) => { raw.push(['turnTo', ...a]); turning = true; return Promise.resolve(true); };
+  const frames = [];
+  const win = {
+    requestAnimationFrame: (fn) => { frames.push(fn); return frames.length; },
+    cancelAnimationFrame() {},
+    setTimeout: () => 0, // the bound never elapses: only the cube may end a wait here
+    clearTimeout() {},
+  };
+  const runFrames = () => { for (let i = 0; i < 5; i++) frames.splice(0).forEach((fn) => fn()); };
+  const settling = createSettle({ cube, win });
+  const settle = () => settling.settle().then(() => { raw.push(['settled']); });
+  const ctx = lessonOver({ schema: 2, start: {}, steps: [{ move: 'R' }, { hold: 'D B' }, { move: 'U' }] }, { cube, settle });
+  // Frames only: the clock is held, so the driver's wait for the turn (TURN_POLL_MS on this clock) cannot
+  // fire until the test moves it.
+  const spin = async () => { for (let i = 0; i < 10; i++) { runFrames(); await ctx.clock.flush(); } };
+  try {
+    ctx.lesson.play();
+    for (let i = 0; i < 10 && !turning; i++) { runFrames(); await ctx.clock.advance(1000); }
+    assert.equal(turning, true, 'precondition: the lesson turned the cube over');
+    for (let i = 0; i < 10; i++) { runFrames(); await ctx.clock.advance(1000); }
+    assert.notEqual(ctx.lesson.view.phase, 'ended', 'the lesson ended while the cube was still turning over');
+    const landedAt = raw.length;
+    turning = false;                                   // landed; the move waiting on it has not begun
+    await spin();
+    assert.notEqual(ctx.lesson.view.phase, 'ended', 'the lesson ended before the move that waited on the turn');
+    for (let i = 0; i < 10 && ctx.lesson.view.phase !== 'ended'; i++) { runFrames(); await ctx.clock.advance(1000); }
+    assert.equal(ctx.lesson.view.phase, 'ended', 'the lesson never ended once everything had landed');
+    // While the cube was going over, no face turn was asked for: the lesson's settle held the next step
+    // until the turn had landed, so in a lesson the move never has to wait on it at all. (A move that DOES
+    // wait — a press during the turn — is held by the driver, and `createSettle` counts it as motion; that
+    // half is pinned in `lesson-views.test.mjs`, where it can be reached.)
+    const tumbledAt = raw.findIndex(([c]) => c === 'turnTo');
+    const during = raw.slice(tumbledAt, landedAt).map(([c]) => c);
+    assert.deepEqual(during.filter((c) => c === 'stepStop' || c === 'playTo'), [],
+      `a face turn was asked for while the cube was still turning over: ${during.join(', ')}`);
+    assert.ok(raw.slice(landedAt).some(([c]) => c === 'stepStop' || c === 'playTo'), 'the last move was never asked for');
+  } finally {
+    // A FAILED assertion must not leave the cube "turning": the driver's wait would poll for ever and hold
+    // the process open, which is how a mutation of this fix hung the run instead of failing it.
+    turning = false;
+    ctx.lesson.dispose();
+    await ctx.clock.advance(10000);
+  }
+});

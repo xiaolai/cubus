@@ -16,6 +16,7 @@ import { $, escHtml, icon } from '../../app-state.js';
 import { newCube } from '../../cube-drawing.js';
 import { t } from '../../i18n.js';
 import { hooks } from '../../screen-slots.js';
+import { moveWaiting } from '../../script-drive.js';
 import { createScriptLesson } from '../../script-lesson.js';
 import {
   LESSON_SUBJECT, bindCaptions, captionButtonHtml, captionCardHtml, captionsShown, createMediaSlot, createNumberSlot, createPlayLabel, createTextSlot, lessonCubeHtml, mediaLayerHtml, numberOverlayHtml, sectionsHtml, titleCardHtml,
@@ -225,7 +226,9 @@ export function createSettle({ cube, win }) {
     const bound = later(done, SETTLE_BOUND_MS);
     const check = () => {
       handle = null;
-      if (!cube.animating) done();
+      // A hold turn and a move waiting on one are motion too: `animating` is about face turns only, and
+      // reading it alone let a lesson reach its end while the cube was still going over (audit 2026-10-14).
+      if (!cube.animating && !cube.turning && !moveWaiting(cube)) done();
       else handle = frame(check);
     };
     waits.add(done);

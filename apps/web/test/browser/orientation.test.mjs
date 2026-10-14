@@ -31,8 +31,8 @@ let fixture; let page;
 
 before(async () => {
   fixture = await startBrowserFixture();
-  // NOT reduced-motion: `turnTo` lands instantly under that preference (deliberately — the turn is
-  // decoration, the destination is the content), and half this file is about the journey.
+  // NOT reduced-motion: `turnTo` is cut to 120ms a quarter under that preference (lesson-holds plan
+  // item 1.3), and half this file is about the journey.
   page = await fixture.browser.newPage();
   await page.goto(`${fixture.base}/index.html`);
   await page.waitForFunction(() => !!customElements.get('cubus-cube'));

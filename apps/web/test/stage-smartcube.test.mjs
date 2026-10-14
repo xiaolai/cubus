@@ -225,7 +225,7 @@ test('the cube is turned over by the renderer, never by the camera, and the engi
   assert.match(code, /const holdCube = createHoldCube\(\{ cube, isStale: stale \}\);/,
     'the cube screen turns its cube through the hold presenter');
   const presenter = readFileSync(new URL('../lib/hold-presenter.js', import.meta.url), 'utf8');
-  assert.match(presenter, /cube\.turnTo\(h\[0\], h\[1\]\)/, 'the renderer turns the OBJECT');
+  assert.match(presenter, /cube\.turnTo\(h\[0\], h\[1\][,)]/, 'the renderer turns the OBJECT');
   assert.match(code, /walkHold = walkHoldFor\(gotRoute, stageTarget\);/,
     'a walk is held by the one tested rule — a repair the way its target is built, anything else as scanned');
   // The live path still asks about the cube AS HELD — the corrected scan-frame model — and never

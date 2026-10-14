@@ -24,7 +24,22 @@ import { locate, trackFor } from './script-track.js';
  * `focus` and `highlight` repaint 108 materials when written, and `scramble` rebuilds the cube, so a
  * write that changes nothing is not free — the rule `lesson-player.js` learned the hard way, kept here.
  */
-export function createElementWriter(cube, { owned = [] } = {}) {
+/** How often a move waiting on a whole-cube turn asks whether the turn is over. */
+export const TURN_POLL_MS = 50;
+
+/**
+ * The move waiting on each cube's hold turn, as the function that calls it off — kept PER CUBE, not per
+ * writer. A reveal's writer is replaced while its move still waits, and the old timer then played that move
+ * against the replacement's segment (audit 2026-10-14); keyed by the element, any writer that drives the cube
+ * next calls the old one off. And what waits for a cube to settle must count a waiting move as motion, or a
+ * lesson reached its end during the tumble, before the move it was waiting for had begun.
+ */
+const WAITING = new WeakMap();
+
+/** Is a move on `cube` held back until it has finished turning over? */
+export const moveWaiting = (cube) => WAITING.has(cube);
+
+export function createElementWriter(cube, { owned = [], schedule = defaultSchedule } = {}) {
   // The cache is `lib/element-writes.js`'s, shared with the episode runtime's player: the rule "write only
   // what changed" was written out in both, and they had drifted.
   const writeAny = createAttributeWriter(cube);
@@ -57,7 +72,9 @@ export function createElementWriter(cube, { owned = [] } = {}) {
       && !ownedSet.has('orientation');
     if (tumble) {
       const [up, front] = String(view.orientation).split(/\s+/);
-      cube.turnTo(up, front);
+      // At the walk's pace, worked out by the renderer from where the cube is: a flat 400ms made the
+      // tumble the fastest thing on the screen.
+      cube.turnTo(up, front, { pace: 'tempo' });
     } else if (held === null || how !== 'stop') {
       // A CUT STATES THE POSE; A STEP NEVER DOES. A tumble moves the cube through `turnTo` and
       // deliberately writes no attribute, so the writer's cache keeps whatever was written BEFORE it —
@@ -138,14 +155,38 @@ export function createElementWriter(cube, { owned = [] } = {}) {
     applied = moves;
   };
 
+  /**
+   * A MOVE WAITS FOR THE CUBE TO FINISH TURNING OVER (dev-docs/lesson-holds-plan.md item 1.2).
+   *
+   * A hold change is a `turnTo`, and at the walk's pace it takes as long as the face turns beside it — so
+   * a press, or the clock, arriving while the cube is still going over started the next face turn on a
+   * cube in mid-air. `animating` could not say so: it is about face turns. An animated arrival (`stop`,
+   * `clock`) now waits until `turning` is false; a jump or a halt is instant by definition and does not,
+   * and any new arrival replaces a waiting one — two presses during a tumble walk two stops, once.
+   */
+  const stopWaiting = () => { WAITING.get(cube)?.(); };
+  const transportWhenStill = (moves, how) => {
+    if ((how !== 'stop' && how !== 'clock') || !cube.turning) { transport(moves, how); return; }
+    let handle = null;
+    const cancel = () => { schedule.cancel(handle); if (WAITING.get(cube) === cancel) WAITING.delete(cube); };
+    const check = () => {
+      if (cube.turning) { handle = schedule(check, TURN_POLL_MS); return; }
+      WAITING.delete(cube);
+      transport(moves, how);
+    };
+    handle = schedule(check, TURN_POLL_MS);
+    WAITING.set(cube, cancel);
+  };
+
   return Object.freeze({
     /** Show `view` with `moves` tokens of its segment applied, arriving `how`. */
     show(view, { moves = view.moves, how = 'jump' } = {}) {
+      stopWaiting();
       // Asked BEFORE loading, because loading changes the answer: a segment just loaded is a cold landing,
       // and its transport is a jump whatever kind of arrival the driver meant.
       const cold = view.segment !== segment;
       if (cold) load(view, how);
-      transport(moves, cold ? 'jump' : how);
+      transportWhenStill(moves, cold ? 'jump' : how);
       const { cues } = view;
       write('highlight', cues.hl ?? 'none');
       write('focus', cues.focus ?? null);
@@ -180,7 +221,7 @@ export function createStopDriver(built, { cube = null, owned = [], schedule = de
   // Handed out rather than kept private: the player built a SECOND one for the same script — every
   // state converted to facelets and every midpoint generated twice, and two objects that must agree
   // about where the cube is (Codex audit, 2026-09-16).
-  const writer = cube ? createElementWriter(cube, { owned }) : null;
+  const writer = cube ? createElementWriter(cube, { owned, schedule }) : null;
   const last = built.positions.length - 1;
   let position = 0;
   let timer = null;
@@ -254,14 +295,23 @@ export function createStopDriver(built, { cube = null, owned = [], schedule = de
     play({ every = 900, repeat = false } = {}) {
       stop();
       const mine = run;
+      let heldByTurn = false;
       const tick = () => {
         if (mine !== run) return;
+        // The clock does not run on while the cube is turning over, and the gap BETWEEN stops starts again
+        // once the tumble has landed: spent during the turn, it left no pause after a 7.6s tumble at all
+        // (audit 2026-10-14).
+        if (cube?.turning) { heldByTurn = true; timer = schedule(tick, TURN_POLL_MS); return; }
+        if (heldByTurn) { heldByTurn = false; timer = schedule(tick, every); return; }
         if (position < last) go(position + 1, 'stop');
         else if (repeat) go(0, 'jump');
         else { timer = null; return; }
         // CHECKED AFTER THE MOVE, not only before it. `go` writes the element, which reports
         // synchronously, and a host listener may stop this playback from inside that report.
         if (mine !== run) return;
+        // A stop that turned the cube over starts its gap when the cube lands, however short the turn: a
+        // 240ms tumble inside a 900ms gap otherwise left 660ms after it (audit 2026-10-14, round 3).
+        if (cube?.turning) { heldByTurn = true; timer = schedule(tick, TURN_POLL_MS); return; }
         timer = schedule(tick, every);
       };
       timer = schedule(tick, every);

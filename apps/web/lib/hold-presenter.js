@@ -119,7 +119,10 @@ export function createHoldCube({ cube, isStale, registry = globalThis.customElem
       console.warn(`hold-presenter: the cube could not be turned to ${spec}`, err);
     };
     try {
-      const turning = cube.turnTo(h[0], h[1]);
+      // At the walk's pace — a flat 400ms made the tumble the fastest thing on the screen. The renderer
+      // works the time out from where the cube actually is, which this presenter cannot know: a hold it
+      // asked for may never have reached an element that had not upgraded, or was turned away from mid-turn.
+      const turning = cube.turnTo(h[0], h[1], { pace: 'tempo' });
       if (typeof turning?.catch === 'function') turning.catch(refused);
     } catch (err) {
       refused(err);

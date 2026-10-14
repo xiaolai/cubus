@@ -2,7 +2,7 @@
   "schema": 2,
   "tag": "cubus-cube",
   "bundle": "cubus-cube.js",
-  "digest": "sha256:ba5bbde7d864cffe636dd4d6a88e4f14a95733de3c11a9eecc93934361d19240",
+  "digest": "sha256:864edefe054aaa9d455d19599717f476bf69abad2374d27ac4051c4ca9b1787b",
   "attributes": [
     "alg",
     "arrow",
@@ -138,6 +138,11 @@
       "name": "tempoScale",
       "read": false,
       "write": true
+    },
+    {
+      "name": "turning",
+      "read": true,
+      "write": false
     }
   ],
   "events": [

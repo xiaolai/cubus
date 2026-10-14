@@ -111,3 +111,38 @@ test('the tempo numbers live in ONE module, and no screen keeps a copy', () => {
   const own = readFileSync(new URL(`../${owner}`, import.meta.url), 'utf8');
   for (const tempo of shipped) assert.ok(own.includes(String(tempo)), `${owner} does not hold ${tempo}`);
 });
+
+// A WHOLE-CUBE TURN AT THE WALK'S PACE (dev-docs/lesson-holds-plan.md item 1.1). `turnTo` defaulted to a
+// flat 400ms whatever the speed, so at Normal — 1,900ms a face quarter turn — the tumble, the biggest turn
+// in the solve and the one ADR 0003 exists to show, was the fastest thing on the screen. The DURATION is the
+// renderer's (`pace: 'tempo'`, one rule with its face turns, from the pose it actually starts at) and is
+// measured in `test/browser/hold-turn.test.mjs`; what is pinned here is that the app ASKS for it.
+const { createHoldCube } = await import('../lib/hold-presenter.js');
+const { APP_SOURCES, LIBRARY_SOURCES } = await import('./app-source.mjs');
+
+test('the hold presenter asks the renderer to turn at the walk\'s pace', () => {
+  const asked = [];
+  const el = fakeCube();
+  el.dataset = {};
+  el.turnTo = (up, front, opts) => { asked.push({ to: `${up} ${front}`, opts }); return Promise.resolve(true); };
+  const holdCube = createHoldCube({ cube: el, isStale: () => false });
+  holdCube(['U', 'F']);
+  holdCube(['D', 'B']);
+  assert.equal(asked.at(-1).to, 'D B');
+  assert.deepEqual(asked.at(-1).opts, { pace: 'tempo' }, 'the tumble did not ask for the walk\'s pace');
+});
+
+test('nothing in the app turns a whole cube without saying how long it takes', () => {
+  // THE RELATION, not a list of callers: every `.turnTo(` in the app's sources passes a duration or the
+  // walk's pace, so a new caller cannot quietly fall back to the renderer's 400ms.
+  let calls = 0;
+  for (const rel of [...APP_SOURCES, ...LIBRARY_SOURCES]) {
+    const src = readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    for (const m of src.matchAll(/\.turnTo\(([^;]*?)\)\s*[;.]/g)) {
+      calls++;
+      assert.match(m[1], /\bms\b|\bpace\b/, `${rel}: \`.turnTo(${m[1]})\` names no duration, so it turns at the renderer's flat 400ms`);
+    }
+  }
+  assert.ok(calls >= 3, `found ${calls} turnTo calls; the sweep is reading nothing`);
+});

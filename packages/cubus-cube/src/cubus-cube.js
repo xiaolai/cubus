@@ -528,6 +528,16 @@ class CubusCube extends HTMLElement {
   get animating() { return this._anim != null; }
 
   /**
+   * Is the whole cube being turned to a new hold right now (`turnTo`)?
+   *
+   * A separate word from `animating`, which is about face turns: a host that paces its next move on
+   * `animating` alone started it over the top of a tumble, because nothing told it the cube was still
+   * going over (dev-docs/lesson-holds-plan.md item 1.2). Public for the reason `animating` is — a host
+   * reading `_turning` is a consumer reaching past the contract (ADR 0005 decision 4).
+   */
+  get turning() { return this._turning != null; }
+
+  /**
    * Where `alg` stops, as token positions — `seek(el.stops[k])` is the cube at stop `k`.
    *
    * A walk's step `k` is stop `k` (ADR 0004 decision 9), so a host that drives by stops never has to
@@ -1865,13 +1875,48 @@ class CubusCube extends HTMLElement {
   }
 
   /**
+   * What a quarter turn takes at this element's `tempo-scale` — face turns and hold turns alike.
+   *
+   * The floor is a guard, not a speed policy: at tempo <= 0 the duration is Infinity (or negative) and
+   * the turn never completes, freezing the cube mid-move. It used to sit at 0.25, which silently
+   * doubled as the slowest speed anyone could ask for — 760ms per quarter turn, and a smaller
+   * tempo-scale was clamped away with nothing said. 0.05 is 3.8s per quarter turn.
+   */
+  _quarterMs() {
+    return 190 / Math.max(0.05, this._num('tempo-scale', 1));
+  }
+
+  /**
+   * A turn's duration as drawn: `ms`, or under reduced motion no more than 120ms a quarter. ONE rule for
+   * face turns and hold turns — it was written out in both, free to drift (audit 2026-10-14).
+   */
+  _motionMs(ms, quarters) {
+    return reducedMotion() ? Math.min(ms, 120 * quarters) : ms;
+  }
+
+  /** The angle between two named orientations, in quarter turns — a tumble is 2, a corner turn 4/3. */
+  _quartersBetween(from, to) {
+    const a = this._pose(from);
+    const b = this._pose(to);
+    if (!a || !b) return 0;
+    const dot = Math.min(1, Math.abs(a.q.dot(b.q)));
+    return (2 * Math.acos(dot)) / (Math.PI / 2);
+  }
+
+  /**
    * Turn the cube to `up`/`front` over `ms`, resolving when it settles. Sugar over `showTurn`.
+   *
+   * `pace: 'tempo'` instead of a duration: the turn costs what a face quarter turn costs at this
+   * element's `tempo-scale`, per quarter of the angle it actually turns from where the cube actually
+   * is — the rule face turns keep, from the one place that keeps it (`_quarterMs`). A host that worked
+   * the duration out itself had to guess the starting pose and copy the tempo rule, and got both wrong
+   * (dev-docs/lesson-holds-plan.md item 1.1, audit 2026-10-14).
    *
    * Resolves rather than rejects when it is superseded, recycled or disposed: the caller asked to
    * be told when the turn is over, and a promise left pending forever is the leak. Callers that
    * need to know whether they were interrupted get `false`.
    */
-  turnTo(up, front, { ms = 400 } = {}) {
+  turnTo(up, front, { ms = 400, pace = null } = {}) {
     const to = `${up} ${front}`;
     if (!this._pose(to)) {
       console.warn(`<cubus-cube> refusing turnTo("${up}", "${front}") — expected two perpendicular faces of URFDLB`);
@@ -1888,12 +1933,21 @@ class CubusCube extends HTMLElement {
     // A non-finite duration is not a long turn, it is a turn that never ends: `(now - t0) / NaN`
     // is NaN, `NaN >= 1` is false forever, and the promise stays pending until something else
     // cancels it. Treated as "no animation" rather than accepted.
-    if (!Number.isFinite(ms) || reducedMotion() || ms <= 0) {
+    // Reduced motion SHORTENS the turn, the rule face turns already keep (`_startNext`): 120ms per
+    // quarter of the angle turned. It used to snap, and a hold change is the one turn ADR 0003 exists
+    // to show — a cube that is upside down from one frame to the next reads as a different cube
+    // (dev-docs/lesson-holds-plan.md item 1.3).
+    const quarters = this._quartersBetween(from, to);
+    const asked = pace === 'tempo' ? this._quarterMs() * quarters : ms;
+    // Validated BEFORE the reduced-motion cut: `Math.min(Infinity, 240)` is 240, which turned a
+    // duration the contract refuses into an animation under one motion setting only (audit 2026-10-14).
+    const span = Number.isFinite(asked) && asked > 0 ? this._motionMs(asked, quarters) : asked;
+    if (!Number.isFinite(span) || span <= 0) {
       this.showTurn(to, to, 1);
       return Promise.resolve(true);
     }
     return new Promise((resolve) => {
-      this._turning = { from, to, t0: this._now(), ms, settle: resolve };
+      this._turning = { from, to, t0: this._now(), ms: span, settle: resolve };
       // `_setTurn`, not `showTurn`: the public one cancels an animation in flight, and the one in
       // flight is the one this line just created.
       this._setTurn(from, to, 0);
@@ -2611,19 +2665,13 @@ class CubusCube extends HTMLElement {
     // While playing, pull the next solution move so pause() can stop cleanly between moves.
     if (!m && this._playing && this._cursor < this._sol.length) m = this._sol[this._cursor++];
     if (!m) { this._playing = false; return; }
-    // The floor is a guard, not a speed policy: at tempo <= 0 the duration is Infinity (or
-    // negative) and the turn never completes, freezing the cube mid-move. It used to sit at 0.25,
-    // which silently doubled as the slowest speed anyone could ask for — 760ms per quarter turn,
-    // and a smaller tempo-scale was clamped away with nothing said. 0.05 is 3.8s per quarter turn.
-    const tempo = Math.max(0.05, this._num('tempo-scale', 1));
+    // The tempo and its floor are `_quarterMs`'s, shared with a hold turn's `pace: 'tempo'`.
     // Reduced motion SHORTENS the turn; it does not remove it. Everything else the app animates is
     // decoration whose job something else also does, so the stylesheet simply stops it — but a
     // solve guide with no turn is a slideshow of positions, and the turn is the thing being
     // taught. 120ms per quarter is quick enough not to be a sweep and long enough to see which
     // layer moved; at the Slow setting this is a 32x cut, which is the point.
-    const reduced = reducedMotion();
-    const dur = (190 / tempo) * m.turns;
-    this._anim = { m, t0: this._now(), dur: reduced ? Math.min(dur, 120 * m.turns) : dur };
+    this._anim = { m, t0: this._now(), dur: this._motionMs(this._quarterMs() * m.turns, m.turns) };
   }
 
   reset() {
