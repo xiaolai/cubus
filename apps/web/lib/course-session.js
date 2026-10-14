@@ -33,8 +33,11 @@ import { CourseRefusal, EMPTY_COURSE, createCourseSource, episodeIdRefusal, fetc
 export let courseSource = EMPTY_COURSE;
 
 /**
- * WHERE the page's course is — the tag's own directory, `course/` — or null for a course installed any
- * other way. The one name for a course that survives a reload: a source is an object made at boot, so two
+ * WHERE the page's course is — the tag's directory resolved against the page, as a PATH (`/course/`) — or
+ * null for a course installed any other way. A path and not the tag's text, because the store it keys is
+ * shared by every page of the origin: two pages at different paths both naming `course/` are two courses
+ * (Codex audit, 2026-10-14). A path and not the whole URL, because the origin already partitions the store,
+ * and a dev server's port is not part of what the course is. The one name for a course that survives a reload: a source is an object made at boot, so two
  * loads of one course are two sources, and a lesson's resting place saved against one could never be found
  * by the next. Only a located course has its resting places saved (`lib/screens/course.js`).
  */
@@ -90,6 +93,12 @@ const COURSE_BASE = /^(?:(?!\.{1,2}\/)[A-Za-z0-9._-]+\/)+$/;
  * installed is one whose catalogue fails with the reason, so the Course screen says the lessons did not
  * load, and why — where the person who wrote the tag will look.
  */
+/** The course's directory as a path on this origin, or null when the page has no address to resolve it by
+ *  — then nothing is saved against it, which costs a resumed lesson and never restores another course's. */
+function locate(content, baseURI) {
+  try { return new URL(content, baseURI).pathname; } catch { return null; }
+}
+
 export function installCourseFromPage(doc = globalThis.document, {
   // THE DOCUMENT'S OWN ADDRESS. The base is read from `doc`, so it is resolved against `doc` too: resolving
   // against the global document fetched from the wrong place whenever the two differed, and failed outright
@@ -109,7 +118,7 @@ export function installCourseFromPage(doc = globalThis.document, {
     return true;
   }
   useCourse(make(content, doc.baseURI));
-  courseLocation = content;
+  courseLocation = locate(content, doc.baseURI);
   return true;
 }
 

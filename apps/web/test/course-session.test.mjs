@@ -12,7 +12,7 @@ import test from 'node:test';
 
 import { state } from '../lib/app-state.js';
 import {
-  courseSource, createCourseSession, installCourseFromPage, pageCourseSession, resetCourseSession, useCourse,
+  courseLocation, courseSource, createCourseSession, installCourseFromPage, pageCourseSession, resetCourseSession, useCourse,
 } from '../lib/course-session.js';
 import { createCourseSource } from '../lib/course-source.js';
 
@@ -447,4 +447,21 @@ test('a failure opening one lesson is reported against THAT lesson, not the one 
   await session.open('a-lesson');
   await session.open('b-lesson');
   assert.equal(session.view().refusal?.episode, 'b-lesson');
+});
+
+test('a located course is named by its path on the page, so two pages naming `course/` are two courses', (t) => {
+  // Codex audit, 2026-10-14: the record of where a lesson rested is keyed by this name, and the store is the
+  // ORIGIN's. Keyed by the tag's text, a page at /a/ restored a lesson of the same id from the course at /b/.
+  t.after(() => useCourse(null));
+  const make = () => createCourseSource({ list: async () => [], read: async () => null });
+  installCourseFromPage({ ...pageWith('course/'), baseURI: 'https://app.test/a/index.html' }, { make });
+  assert.equal(courseLocation, '/a/course/');
+  installCourseFromPage({ ...pageWith('course/'), baseURI: 'https://app.test/b/' }, { make });
+  assert.equal(courseLocation, '/b/course/', 'two pages naming the same directory got one name');
+  // The port is not part of the course: a dev server restarted on another port keeps its places.
+  installCourseFromPage({ ...pageWith('course/'), baseURI: 'http://localhost:5174/' }, { make });
+  assert.equal(courseLocation, '/course/');
+  // No address to resolve by is no name, never the bare text another page would also use.
+  installCourseFromPage({ ...pageWith('course/'), baseURI: undefined }, { make });
+  assert.equal(courseLocation, null);
 });
