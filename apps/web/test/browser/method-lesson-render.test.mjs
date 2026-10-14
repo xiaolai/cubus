@@ -202,14 +202,21 @@ test('a step focuses exactly the pieces its why payload names, and nothing else'
   }
 });
 
-test('the highlight pulses exactly the named pieces, and never the centres', async () => {
+test('the highlight pulses exactly the named pieces, and never a centre but the one a turn brings round', async () => {
+  // ONE EXCEPTION (dev-docs/lesson-holds-plan.md item 2.2): a step that turns the whole cube pulses the
+  // centre the turn brings to the front — there the centre is the subject. WHICH centre is checked against
+  // the walk's own holds in `cube-subject.test.mjs`; here, that the renderer lights one and only then.
+  let turning = 0;
   for (const [i, step] of SAMPLE.lesson.steps.entries()) {
     await showStep(step, SAMPLE.startOf[i]);
     const lit = await litPieces();
-    const wanted = piecesNamed(step).sort();
-    assert.deepEqual(lit, wanted, `step ${i} (${step.why.key}) lit the wrong pieces`);
-    assert.ok(!lit.some((p) => p.length === 1), 'a centre was pulsed; focus keeps them, the pulse does not');
+    const centres = lit.filter((p) => p.length === 1);
+    assert.deepEqual(lit.filter((p) => p.length > 1), piecesNamed(step).sort(), `step ${i} (${step.why.key}) lit the wrong pieces`);
+    assert.equal(centres.length, step.why.turn ? 1 : 0,
+      `step ${i} (${step.why.key}) pulsed ${centres.length} centres; focus keeps them, the pulse does not`);
+    if (step.why.turn) turning += 1;
   }
+  assert.ok(turning > 0, 'precondition: the sample lesson turns the whole cube at least once');
 });
 
 test('a U-layer step leaves U-face stickers on BOTH sides of the focus divide', async () => {

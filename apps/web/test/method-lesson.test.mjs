@@ -164,10 +164,16 @@ test('focus keeps the centres, highlight does not', () => {
     const { focus, highlight } = lessonCues(step);
     assert.ok(focus.startsWith('centers,'), `${step.why.key}: focus drops the centres`);
     assert.ok(!highlight.includes('centers'), `${step.why.key}: the pulse should not be on the centres`);
+    // ONE EXCEPTION, and only one: a step that turns the whole cube pulses the centre the turn brings to the
+    // front (dev-docs/lesson-holds-plan.md item 2.2) — there the centre IS the subject, not the context.
+    const lit = highlight.split(',');
+    const centres = lit.filter((p) => /^piece:[URFDLB]$/.test(p));
+    assert.equal(centres.length, step.why.turn ? 1 : 0, `${step.why.key}: ${centres.length} centres pulse`);
+    const subject = lit.filter((p) => !centres.includes(p));
     // Plus what the child looks for before the move, where a step names it (plan item 6.2) — the top
     // edges with none of the top colour — and nothing else.
-    const looked = (step.why.look ?? []).map((i) => `piece:${EDGES[i]}`).filter((p) => !highlight.split(',').includes(p));
-    assert.equal(focus, ['centers', highlight, ...looked].join(','), 'focus is the highlight set plus context, nothing else');
+    const looked = (step.why.look ?? []).map((i) => `piece:${EDGES[i]}`).filter((p) => !subject.includes(p));
+    assert.equal(focus, ['centers', ...subject, ...looked].join(','), 'focus is the highlight set plus context, nothing else');
     assert.equal(parseHighlight(focus).invalid, null);
     assert.equal(parseHighlight(highlight).invalid, null);
   }
@@ -394,4 +400,25 @@ test('a regrip is a position on the walk, but not a move the lesson costs', () =
   assert.deepEqual(moveStepIndex(steps), [0, 1, 1, 1, 1, 1, 1, 1, 1]);
   assert.equal(turnsIn("y R U R' U' M2"), 6, 'a regrip none, a slice two');
   assert.equal(turnsIn(''), 0);
+});
+
+// dev-docs/lesson-holds-plan.md item 2.1. A turning sentence that names only where the gap ends up fixes
+// the front and nothing else: four holds pass a front check, so a child could do what it says with the cube
+// on its side. A hold is said by top AND front, in white, green and positions (AGENTS §4) — and never with a
+// direction word, the left/right mirror a young child is measured worst at (teaching-a-five-year-old §1.2).
+test('every whole-cube turn a lesson asks for says where white stays, and names no direction or scheme colour', () => {
+  const turning = new Set();
+  for (const key of WHY_KEYS) {
+    for (const stage of ['cross', 'first-layer', 'middle-layer', 'f2l', 'top-cross']) {
+      let sentence = '';
+      try { sentence = whyText({ stage, kind: 'goal', why: { key, turn: true, moves: 3 } }); } catch { continue; }
+      if (/whole cube/i.test(sentence)) turning.add(sentence);
+    }
+  }
+  assert.ok(turning.size >= 5, `found ${turning.size} turning sentences; the sweep is reading nothing`);
+  for (const s of turning) {
+    assert.match(s, /\bwhite underneath\b/, `"${s}" does not say where white stays`);
+    assert.doesNotMatch(s, /\b(left|right|clockwise|anticlockwise|counterclockwise|quarter)\b/i, `"${s}" names a direction`);
+    assert.doesNotMatch(s, /\b(blue|yellow)\b/i, `"${s}" names a colour the scheme decides`);
+  }
 });

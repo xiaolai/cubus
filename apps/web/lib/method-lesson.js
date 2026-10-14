@@ -18,8 +18,8 @@
 // browser test that proves the focus divide lands where it should needs to ask it without
 // mounting a screen.
 
-import { CORNERS, EDGES, moveCount } from './cube-pieces.js';
-import { faceTurnsAlg } from './cube-moves.js';
+import { CORNERS, EDGES, SOLVED, moveCount } from './cube-pieces.js';
+import { faceTurnsAlg, heldFace, identityFace, run } from './cube-moves.js';
 import { plural, t } from './i18n.js';
 import { WHITE_UP_STAGES } from './solving-hold.js';
 import { HUMAN_ALGS } from './data/human-algs.js';
@@ -94,33 +94,38 @@ const WHY_TEXT = Object.freeze({
   },
   // Turned over, the joined-pairs rung's fallback may begin by turning the whole cube so the slot is in
   // front (plan item 6.3). Those sentences were approved by the owner as D4, 2026-09-16.
+  // EVERY TURNING SENTENCE NAMES WHITE'S PLACE as well as the destination (dev-docs/lesson-holds-plan.md
+  // item 2.1). "Until the gap is in front of you" fixes the front and nothing else: a child can satisfy it
+  // holding the cube on its side or upside down — four holds pass a front check — and a hold is said by top
+  // AND front (AGENTS §4). White stays underneath through every one of these turns, so that is the anchor.
+  // A DRAFT that changes D4's approved wording; it ships only once the owner has approved it.
   'firstLayer.lift': {
     up: () => t('Bring this corner down to the bottom, where you can work with it.'),
     over: ({ turn } = {}) => (turn
-      ? t('Turn the whole cube so the slot is in front of you, then bring this corner up to the top.')
+      ? t('Keep white underneath and turn the whole cube until the slot is in front of you, then bring this corner up to the top.')
       : t('Bring this corner up to the top, where you can work with it.')),
   },
   'firstLayer.insert': {
     up: () => t('Turn the corner up into its slot above.'),
     over: ({ turn } = {}) => (turn
-      ? t('Turn the whole cube so the slot is in front of you, then drop the corner into it.')
+      ? t('Keep white underneath and turn the whole cube until the slot is in front of you, then drop the corner into it.')
       : t('Drop the corner into its slot underneath.')),
   },
   // A middle-layer step may begin by turning the whole cube so the gap is in front (plan item 6.2),
   // and then says so. The two turning sentences were approved by the owner as D4 of
   // dev-docs/tutorial-capability-plan.md, 2026-09-16.
   'middleLayer.insert': ({ turn } = {}) => (turn
-    ? t('Turn the whole cube so the gap is in front of you, then send this edge down into it.')
+    ? t('Keep white underneath and turn the whole cube until the gap is in front of you, then send this edge down into it.')
     : t('Send this edge down into the middle layer.')),
   // The same algorithm ejects a wrong edge and inserts the right one. Captioning an ejection
   // "send this edge down" describes the opposite of what is about to happen on screen.
   'middleLayer.eject': ({ turn } = {}) => (turn
-    ? t('Turn the whole cube so the wrong edge is in front of you, then lift it out.')
+    ? t('Keep white underneath and turn the whole cube until the wrong edge is in front of you, then lift it out.')
     : t('Lift the wrong edge out of the slot first.')),
   // One sentence, not two. The second described an ejection first, and `pairs.js` proves that
   // branch of the search could never run — so the caption was for a step nothing could produce.
   'f2l.pair': ({ turn } = {}) => (turn
-    ? t('Turn the whole cube so the slot is in front of you, then join the corner to its edge and put the pair in.')
+    ? t('Keep white underneath and turn the whole cube until the slot is in front of you, then join the corner to its edge and put the pair in.')
     : t('Join the corner to its edge, then put the pair in together.')),
   // A look may take several applications, and only the last one reaches its goal. The `.step`
   // forms are what the ones before it say — the difference between describing a step and
@@ -399,7 +404,28 @@ export function lessonCues(step) {
   // What the child looks for before the move — the top edges with none of the top colour (plan item
   // 6.2) — stays in colour beside the piece the step is about, and only that piece pulses.
   const looked = asList(step.why?.look).map((i) => `piece:${edgeName(i)}`).filter((p) => !pieces.includes(p));
-  return { highlight: pieces.join(','), focus: ['centers', ...pieces, ...looked].join(',') };
+  const toward = turnedToward(step);
+  const pulse = toward ? [...pieces, toward] : pieces;
+  return { highlight: pulse.join(','), focus: ['centers', ...pieces, ...looked].join(',') };
+}
+
+/**
+ * The centre a step's whole-cube turn brings to face the child, as a PIECE in the step's starting hold —
+ * or null for a step that does not turn the cube (dev-docs/lesson-holds-plan.md item 2.2).
+ *
+ * A piece, not `slot:F`. One step carries the turn AND the moves after it, so a positional front would
+ * pulse the OLD front centre all the while the sentence says to turn away from it; the centre named by
+ * identity is the destination before the turn ("until this one faces you") and the front after it. It
+ * names no colour — the renderer draws whatever that centre is — so it holds under either scheme.
+ */
+function turnedToward(step) {
+  if (!step?.why?.turn || !Array.isArray(step.hold)) return null;
+  const regrip = String(step.alg ?? '').trim().split(/\s+/)[0];
+  const after = run(regrip, step.hold, SOLVED).hold;
+  if (after[0] === step.hold[0] && after[1] === step.hold[1]) {
+    throw new Error(`method-lesson: a step that says it turns the cube begins "${regrip}", which turns nothing`);
+  }
+  return `piece:${heldFace(identityFace('F', after), step.hold)}`;
 }
 
 /** How many moves are in an alg — the shared tokenizer, not a third spelling of it. A regrip is one:

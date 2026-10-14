@@ -210,7 +210,10 @@ test('a lesson step made after a regrip lights the edge it sends home, on the cu
     for (const step of lesson.steps) {
       const n = step.alg.split(' ').filter(Boolean).length;
       if (step.why.key === 'middleLayer.insert' && step.hold.join(' ') !== 'D B') {
-        const pieces = step.highlight.split(',').filter((t) => t.startsWith('piece:')).map((t) => t.slice('piece:'.length));
+        // Edges only: a turning step also lights the centre it turns to the front (lesson-holds plan 2.2),
+        // which the next test checks.
+        const pieces = step.highlight.split(',').filter((t) => t.startsWith('piece:')).map((t) => t.slice('piece:'.length))
+          .filter((letters) => letters.length > 1);
         assert.equal(pieces.length, 1, `seed ${seed}: an insert lights one edge — "${step.highlight}"`);
         const slot = Object.keys(HOME).find((name) => sorted(name) === sorted(pieces[0]));
         assert.ok(slot, `seed ${seed}: ${pieces[0]} is not a middle-layer edge`);
@@ -258,4 +261,32 @@ test('an answer the oracle refutes is put down, and the next ask searches instea
       assert.equal(state.cube.crossChecked, true);
     });
   } finally { svc.Cube.fromString = real; }
+});
+
+test('a step that turns the whole cube lights the centre that ends up facing the child, and only then', async () => {
+  // dev-docs/lesson-holds-plan.md item 2.2. Checked against the HOLD the walk records once the turn is made,
+  // never with the renaming that produced the cue: the lit centre must be the scan-frame face in front after
+  // the regrip — and must not be the one in front before it, or the cue says "stay" while the words say "turn".
+  const { subject } = await app();
+  let turning = 0; let plain = 0;
+  for (let seed = 1; seed < 40 && turning < 6; seed += 1) {
+    const lesson = subject.lessonFor({ facelets: move(SOLVED, randomAlg(lcg(seed), 25)), lesson: null });
+    assert.ok(lesson, `seed ${seed}: the method solved the cube`);
+    let at = 0;
+    for (const step of lesson.steps) {
+      const n = step.alg.split(' ').filter(Boolean).length;
+      const centres = (step.highlight ?? '').split(',').filter((t) => /^piece:[URFDLB]$/.test(t)).map((t) => t.slice(6));
+      if (step.why?.turn) {
+        assert.equal(centres.length, 1, `seed ${seed}: a turning step lit ${centres.length} centres — "${step.highlight}"`);
+        assert.equal(centres[0], lesson.moveHolds[at + 1][1], `seed ${seed}: the lit centre is not the one in front after the turn`);
+        assert.notEqual(centres[0], lesson.moveHolds[at][1], `seed ${seed}: the lit centre was already in front`);
+        turning += 1;
+      } else {
+        assert.deepEqual(centres, [], `seed ${seed}: a step that turns nothing lit a centre — "${step.highlight}"`);
+        plain += 1;
+      }
+      at += n;
+    }
+  }
+  assert.ok(turning >= 6 && plain > 0, `precondition: ${turning} turning and ${plain} other steps were checked`);
 });
