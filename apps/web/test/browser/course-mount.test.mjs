@@ -123,4 +123,10 @@ test('a resting place the device will not keep is said on the lesson, never drop
   await page.click('#slPlay');
   await page.waitForFunction(() => document.querySelector('#slUnsaved')?.hidden === false, null, { timeout: 20_000 });
   assert.match(await page.textContent('#slUnsaved'), /not saving where you are/);
+  // And it STAYS said: the lesson reports every change, most of which leave it where it was, and a report
+  // equal to the record that failed is not one that landed (Codex audit, 2026-10-14).
+  await page.waitForFunction(() => document.querySelector('#slYours')?.hidden === false, null, { timeout: 20_000 });
+  await page.click('#slPlay').catch(() => {});
+  await page.waitForTimeout(300);
+  assert.equal(await page.$eval('#slUnsaved', (e) => e.hidden), false, 'a later report of the same place hid the note while the place was still unsaved');
 });

@@ -99,6 +99,8 @@ const titleOf = (id, view) => view.entries.find((e) => e.id === id)?.title ?? id
  * course's lesson of the same name starts from its own beginning.
  */
 let rested = null;
+/** Whether the store holds `settings.courseRested` — false after a write that did not land, until one does. */
+let restLanded = true;
 
 /**
  * Where `id` rested in `source`, if it did and the record still fits the lesson as it now is — from this
@@ -129,9 +131,12 @@ function rest(source, id, progress) {
   rested = { source, id, progress };
   if (courseLocation === null) return true;
   const record = { course: courseLocation, id, progress };
-  if (JSON.stringify(record) === JSON.stringify(settings.courseRested)) return true;
+  // Unchanged is only "landed" if the last write DID land: after a failed one the record in memory is
+  // ahead of the store, and answering true for it hid the note over a reload that would lose the place.
+  if (restLanded && JSON.stringify(record) === JSON.stringify(settings.courseRested)) return true;
   settings.courseRested = record;
-  return save('cubusSettings', settings);
+  restLanded = save('cubusSettings', settings);
+  return restLanded;
 }
 
 /**
