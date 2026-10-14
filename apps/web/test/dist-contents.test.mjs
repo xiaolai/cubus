@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict';
 import {
-  copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync,
+  copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync,
   symlinkSync, utimesSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,6 +17,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { FILES, NEVER_SHIPPED, assembleDist, assertScannerBundlesFresh, bundleInputs, scannerBundles } from '../build.mjs';
+import { COURSE_META, COURSE_MOUNT } from '../course-tag.mjs';
 
 const WEB = new URL('../', import.meta.url);
 /** The scanner package's real manifest: the synthetic roots below have no package beside them, and
@@ -705,3 +706,64 @@ test('a scanner bundle that differs from its sources by one byte is a refused di
   }
 });
 
+
+// ---- a course bundled beside the app (plan Phase 7) ----------------------------------------------
+
+/** A built course, as cubus-courses' release writes one: a shelf, a lesson, a recording behind a link. */
+function makeCourse() {
+  const dir = mkdtempSync(join(tmpdir(), 'cubus-built-course-'));
+  writeFileSync(join(dir, 'index.json'), JSON.stringify([{ id: 'a', title: 'A' }]));
+  writeFileSync(join(dir, 'a.json'), '{}');
+  const real = mkdtempSync(join(tmpdir(), 'cubus-course-voice-'));
+  writeFileSync(join(real, 'l0.m4a'), 'audio');
+  symlinkSync(real, join(dir, 'voice'));
+  return { dir, cleanup: () => { rmSync(dir, { recursive: true, force: true }); rmSync(real, { recursive: true, force: true }); } };
+}
+
+test('a course handed to the build ships beside the app, with the one tag that says so, and its links as files', () => {
+  const { dir, cleanup } = makeCourse();
+  try {
+    withRoot(({ root, dist, build }) => {
+      writeFileSync(join(root, 'index.html'), '<!doctype html><html><head><link rel="stylesheet" href="./tokens.css"></head><body><script type="module" src="./lib/app.js"></script></body></html>');
+      build({ freshness: false, course: dir });
+      assert.ok(existsSync(join(dist, COURSE_MOUNT, 'index.json')), 'the shelf did not ship');
+      assert.ok(existsSync(join(dist, COURSE_MOUNT, 'a.json')), 'a lesson did not ship');
+      assert.equal(lstatSync(join(dist, COURSE_MOUNT, 'voice')).isSymbolicLink(), false, 'a link into a checkout shipped as a link');
+      assert.equal(readFileSync(join(dist, COURSE_MOUNT, 'voice', 'l0.m4a'), 'utf8'), 'audio');
+      const html = readFileSync(join(dist, 'index.html'), 'utf8');
+      assert.equal(html.split(COURSE_META).length - 1, 1, 'the page must name its course exactly once');
+      assert.ok(html.indexOf(COURSE_META) < html.indexOf('</head>'), 'the tag must be in the head, where the page reads it');
+    });
+  } finally { cleanup(); }
+});
+
+test('the page the build writes is one the app installs its course from, at the directory the build wrote', async () => {
+  const { installCourseFromPage } = await import('../lib/course-session.js');
+  const { Window } = await import('happy-dom');
+  const win = new Window({ url: 'https://app.invalid/' });
+  try {
+    win.document.head.innerHTML = COURSE_META;
+    let made = null;
+    assert.equal(installCourseFromPage(win.document, { make: (base) => { made = base; return { catalogue: async () => [], episode: async () => null }; } }), true);
+    assert.equal(made, `${COURSE_MOUNT}/`, 'the app looked for the course somewhere other than where the build put it');
+  } finally { await win.happyDOM.close(); }
+});
+
+test('a build with no course has none, and one pointed at something that is not a built course refuses', () => {
+  withRoot(({ dist, build }) => {
+    build({ freshness: false });
+    assert.equal(existsSync(join(dist, COURSE_MOUNT)), false, 'a build with no course shipped a course directory');
+    assert.equal(readFileSync(join(dist, 'index.html'), 'utf8').includes('cubus-course'), false, 'a build with no course names one');
+  });
+  const empty = mkdtempSync(join(tmpdir(), 'cubus-not-a-course-'));
+  try {
+    withRoot(({ build }) => {
+      assert.throws(() => build({ freshness: false, course: join(empty, 'nowhere') }), /is not a directory/);
+      assert.throws(() => build({ freshness: false, course: empty }), /has no index\.json/);
+      // A link back up the tree would be copied for ever.
+      writeFileSync(join(empty, 'index.json'), '[]');
+      symlinkSync(empty, join(empty, 'again'));
+      assert.throws(() => build({ freshness: false, course: empty }), /links back into itself/);
+    });
+  } finally { rmSync(empty, { recursive: true, force: true }); }
+});

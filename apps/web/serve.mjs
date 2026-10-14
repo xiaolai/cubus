@@ -15,6 +15,7 @@ import { realpathSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { COURSE_META, COURSE_MOUNT } from './course-tag.mjs';
 import { createDevServer } from './dev-server.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
@@ -42,7 +43,6 @@ const HOST = process.env.CUBUS_DEV_HOST || '127.0.0.1';
 // stay inside it, and so must its real location once every link is followed. A variable naming something
 // that is not a directory stops the server here, by name — serving the app with no course, while the author
 // believes a course is mounted, is the silent failure this refuses.
-const COURSE_MOUNT = 'course';
 const COURSE_ROOT = (() => {
   const named = process.env.CUBUS_COURSE_DIR;
   if (!named) return null;
@@ -59,7 +59,6 @@ const COURSE_ROOT = (() => {
 const COURSE_REAL = COURSE_ROOT ? realpathSync(COURSE_ROOT) : null;
 // What tells the page it has a course: the app installs one only when this is present. Not a probe for
 // `course/index.json` — a packaged build answers a missing file with index.html, not a 404.
-const COURSE_META = `<meta name="cubus-course" content="${COURSE_MOUNT}/">`;
 
 // Where a scan recording is POSTed (`dev-docs/scan-recording-session-2026-09-23.md`).
 //
