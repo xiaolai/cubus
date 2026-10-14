@@ -33,6 +33,7 @@ import * as scriptTrack from '../lib/script-track.js';
 import * as scriptRounds from '../lib/script-rounds.js';
 import * as scriptPlayer from '../lib/script-player.js';
 import * as scriptLesson from '../lib/script-lesson.js';
+import * as holdProbes from '../lib/hold-probes.js';
 import * as flat from '../lib/cube-flat.js';
 import * as gallery from '../lib/cube-gallery.js';
 import * as view from '../lib/cube-view.js';
@@ -66,11 +67,13 @@ const PROMISED = [
   'answerAt', 'createEventDriver', 'createRound', 'revealScript', 'ROUND_QUESTIONS', 'createScriptPlayer',
   // A script played as a lesson (ADR 0007).
   'createScriptLesson',
+  // "Match my cube" (lesson-holds plan Phase 4).
+  'PRACTISED_HOLDS', 'holdFromReports', 'probeRound', 'reportedFace', 'separatingProbes',
   'TOP_RING', 'faceletsOf', 'netSvg', 'topFaceSvg', 'CONTEXT_CAP', 'LIVE_BUDGET', 'flatGallery', 'galleryKind',
 ];
 
 /** The modules whose names the kit re-exports. A new owning module is added here with its first name. */
-const SOURCES = [pieces, frame, highlight, moves, notation, questions, orientation, view, format, schedule, player, scriptQuestions, scriptView, scriptDrive, scriptTrack, scriptRounds, scriptPlayer, scriptLesson, flat, gallery];
+const SOURCES = [pieces, frame, highlight, moves, notation, questions, orientation, view, format, schedule, player, scriptQuestions, scriptView, scriptDrive, scriptTrack, scriptRounds, scriptPlayer, scriptLesson, holdProbes, flat, gallery];
 
 /** Promised names the kit does not export. */
 export const missingFrom = (exports, promised) => promised.filter((n) => !Object.hasOwn(exports, n)).sort();

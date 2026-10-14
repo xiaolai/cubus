@@ -146,6 +146,11 @@ export { createScriptPlayer } from './script-player.js';
 // a course's build can play every lesson to its end before a child ever opens one.
 export { createScriptLesson } from './script-lesson.js';
 
+// "Match my cube" (dev-docs/lesson-holds-plan.md Phase 4): which of the child's turns tell the holds a lesson
+// asks for apart, and the round that asks them and puts the cube back — so a course can check its practice
+// segment against the same arithmetic the app uses, rather than a copy.
+export { PRACTISED_HOLDS, holdFromReports, probeRound, reportedFace, separatingProbes } from './hold-probes.js';
+
 // Flat views from the same model: the net and the top-face case diagram, as SVG text (plan item 4.5).
 export { TOP_RING, faceletsOf, netSvg, topFaceSvg } from './cube-flat.js';
 
