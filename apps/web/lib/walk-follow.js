@@ -11,7 +11,10 @@
 
 import { t } from './i18n.js';
 import { locate as locateOnTrack, trackOf } from './script-track.js';
-import { showMove } from './solving-hold.js';
+import { holdSentence, sameHold, showMove } from './solving-hold.js';
+
+/** A turn of one outer face and nothing else — the one kind of move that cannot change a hold. */
+const PLAIN_FACE_TURN = /^[URFDLB](2|')?$/;
 
 /**
  * The follow tracker of one mounted cube screen, its buttons wired.
@@ -49,7 +52,12 @@ export function createFollowTracker({
   // them would have made a cube turned in your hand move a walk you were stepping through by hand.
   let cubePos = 0;
   const cubePosNow = () => cubePos;
-  const moveTo = (k) => { cubePos = k; };
+  // The position a whole-cube turn was last shown again at, so it is replayed once per arrival (plan 3.1), and
+  // the number of the replay request in flight: a completion that is not the current request's changes
+  // nothing — owned by position alone, an older completion unlocked a newer replay (audit 2026-10-14).
+  let replayedAt = null;
+  let replayReq = 0;
+  const moveTo = (k) => { cubePos = k; replayedAt = null; };
   let liveModel = null; // cubejs cube in truth frame; made by seed() or a snapshot, on a trusted chain
   /**
    * Has `liveModel` advanced past the snapshot it was seeded from?
@@ -187,6 +195,73 @@ export function createFollowTracker({
     if (idx === player.position) player.halt(); else player.seek(idx);
   };
 
+  /**
+   * The hold the walk turned the cube into, when the cube stands right after a whole-cube turn — else null.
+   *
+   * A whole-cube turn cannot be observed (`script-track.js`), so reaching the position before one carries
+   * the walk past it, and the child's next face turn is the first thing that can disagree. Nothing here
+   * may say WHY it disagrees: after `y` every U and D turn lands the same whether the cube was turned or
+   * not, and a distinguishable one is equally a wrong face (dev-docs/lesson-holds-plan.md §1, rules 1–2).
+   */
+  const justTurned = () => {
+    const k = cubePosNow();
+    if (k < 1) return null;
+    const now = moveHoldAt(k);
+    return sameHold(now, moveHoldAt(k - 1)) ? null : now;
+  };
+
+  /**
+   * Which replay the turn into position `k` can have: `'token'` when it is a position of the walk — a
+   * rotation, a wide turn or a slice, which move the frame as well as pieces — `'tumble'` when the hold
+   * changed across a PLAIN face turn, which is a stage's tumble and no position at all, or null when it
+   * cannot be shown honestly: a tumble is replayed only on a renderer that IS in the hold the walk says
+   * (`data-hold`), so a replay can never leave it anywhere the hold presenter did not put it.
+   */
+  const replayKind = (k, held) => {
+    if (drawable() && !PLAIN_FACE_TURN.test(String(walkNow().moves[k - 1] ?? ''))) return 'token';
+    if (typeof cube?.turnTo === 'function' && cube.dataset?.hold === held.join(' ')) return 'tumble';
+    return null;
+  };
+
+  /** A replay request that did not show its turn: the guard comes down for it, so the next wrong turn tries
+   *  again — only if it is still the CURRENT request, and loudly only for a fault (being superseded is not). */
+  const replayMissed = (req, err) => {
+    if (req === replayReq) replayedAt = null;
+    if (err) console.warn('walk-follow: the turn over could not be shown again', err);
+  };
+
+  /** The tumble again, on the renderer: put back where it was, and turned at the walk's pace. */
+  const replayTumble = (k, held, req) => {
+    const before = moveHoldAt(k - 1);
+    cube.turnTo(before[0], before[1], { ms: 0 })?.catch?.((err) => replayMissed(req, err));
+    cube.turnTo(held[0], held[1], { pace: 'tempo' })
+      ?.then?.((shown) => { if (shown === false) replayMissed(req); }, (err) => replayMissed(req, err));
+  };
+
+  /** Show the turn into `k` again, once per arrival. Any throw is this request's miss, never the live handler's. */
+  const replayTurn = (k, held) => {
+    if (replayedAt === k) return;
+    const kind = replayKind(k, held);
+    if (!kind) return;
+    replayedAt = k;
+    const req = ++replayReq;
+    try {
+      if (kind === 'token') { player.seek(k - 1); player.next(); } else replayTumble(k, held, req);
+    } catch (err) {
+      replayMissed(req, err);
+    }
+  };
+
+  /**
+   * Off the walk right after a whole-cube turn: show the turn again and say how the cube is held, and that
+   * this cube does not match — never that the child forgot or missed anything (plan item 3.1; plan §1
+   * rules 1–2: a whole-cube turn cannot be observed, and a mismatch is not a diagnosis).
+   */
+  const offAfterTurn = (held) => {
+    replayTurn(cubePosNow(), held);
+    showNote(t('Your cube does not match this one. %1', holdSentence(held)));
+  };
+
   /** ONE reaction to every accepted reading, move or snapshot. */
   const act = (loc, offMsg) => {
     if (loc.kind === 'step') {
@@ -195,7 +270,8 @@ export function createFollowTracker({
     } else if (loc.kind === 'mid') {
       if (mode === 'cube') clearNote(); // half a half-turn: legal, silent, position held
     } else if (mode === 'cube') {
-      showNote(offMsg);
+      const held = justTurned();
+      if (held) offAfterTurn(held); else showNote(offMsg);
     }
   };
 

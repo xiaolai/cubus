@@ -1763,3 +1763,225 @@ test('a failure while the reporter puts the cube down is still a failure the scr
   assert.equal(answered, false);
   assert.equal(w.$('#moveCount').textContent, 'no solver', 'the reason was lost when the cube could not be put down');
 });
+
+// ---- off the walk right after a whole-cube turn (dev-docs/lesson-holds-plan.md item 3.1) -------------
+
+const { SOLVED: SOLVED_PIECES } = await import('../lib/cube-pieces.js');
+const { identityFace, run: runHeld } = await import('../lib/cube-moves.js');
+
+/**
+ * A tracker on the walk `R y <the child's R>`, with the trust and the element it needs. The third move is
+ * worked out from the hold rather than written down: it is whichever face the child's R names once the cube
+ * has been turned.
+ */
+function turnedWalkWorld({ trusted = true, stage = null, token = 'y', face = 'R', turnTo = null, seek = null } = {}) {
+  const win = new Window();
+  windows.push(win);
+  const root = win.document.createElement('div');
+  root.innerHTML = MARKUP;
+  win.document.body.appendChild(root);
+  // `stage`: the hold changes between two FACE turns, as the tumble does — the presenter turns the
+  // renderer to it, and it is no position of the walk.
+  // `token`: the move that turns the hold — a rotation, or a wide turn or slice, which move pieces too.
+  // `face`: the child's face the move after it turns, named for the new hold.
+  const after = stage ?? runHeld(token, SCAN_HOLD, SOLVED_PIECES).hold;
+  const third = identityFace(face, after);
+  const moves = stage ? ['R', third] : ['R', token, third];
+  const steps = stage ? [SOLVED, turned('R'), turned(`R ${third}`)]
+    : [SOLVED, turned('R'), turned(`R ${faceTurnsAlg(token)}`), turned(`R ${faceTurnsAlg(token)} ${third}`)];
+  const holds = stage ? [SCAN_HOLD, after, after] : [SCAN_HOLD, SCAN_HOLD, after, after];
+  const walk = { moves, steps };
+  const calls = [];
+  const attrs = new Map();
+  const cube = {
+    stops: [0, 1, 2, 3],
+    setAttribute: (k, v) => attrs.set(k, v),
+    removeAttribute: (k) => attrs.delete(k),
+    getAttribute: (k) => attrs.get(k) ?? null,
+    seek: seek ?? ((k) => calls.push(`seek ${k}`)),
+    stepStop: () => calls.push('step'),
+    stepBackStop: () => calls.push('stepBack'),
+    playTo: (k) => calls.push(`playTo ${k}`),
+    turnTo: turnTo ?? ((up, front, opts) => { calls.push(['turnTo', `${up} ${front}`, opts]); return Promise.resolve(true); }),
+    dataset: { hold: after.join(' ') },
+  };
+  const state = { cube: { facelets: SOLVED, trusted, isPhysical: true, source: 'cube', staleWhy: '' }, live: SOLVED };
+  const player = createScriptPlayer({ cube });
+  void player.load(walkScript({ moves, from: SOLVED }));
+  const follow = createFollowTracker({
+    root, player, cube, state, cubejs: () => Cube,
+    applyTempo: () => {}, setPlaying: () => {}, moveHoldAt: (k) => holds[Math.min(k, holds.length - 1)],
+    markStale: () => {}, adoptCube: () => {}, go: () => {}, scrambling: false,
+    refreshLiveDistance: async () => {}, dropLiveDistance: () => {},
+    chainTrusted: () => state.cube.trusted && state.cube.source === 'cube',
+    walkNow: () => walk,
+  });
+  follow.rebase(walk);
+  const note = () => (root.querySelector('#followNote').hidden ? '' : root.querySelector('#followMsg').textContent);
+  return { follow, calls, note, after, third, cube };
+}
+
+test('off the walk right after a whole-cube turn, the turn is shown again with the hold — and no cause', () => {
+  const w = turnedWalkWorld();
+  assert.equal(w.follow.following(), true, 'precondition: the cube leads');
+  assert.notEqual(w.third, 'R', 'precondition: the turn changed what the child\'s R names');
+  w.follow.liveMove({ notation: 'R', serial: 1 });
+  assert.equal(w.note(), '', 'precondition: the first move was on the walk');
+  const before = w.calls.length;
+  // The child's own R again — the face it named BEFORE the turn. Off the walk.
+  w.follow.liveMove({ notation: 'R', serial: 2 });
+  assert.equal(w.note(), `Your cube does not match this one. ${holdSentence(w.after)}`);
+  assert.deepEqual(w.calls.slice(before), ['seek 1', 'step'], 'the whole-cube turn was not shown again');
+  // Claims nothing it did not measure: the same report is a missed turn OR a wrong face.
+  assert.doesNotMatch(w.note(), /forg[eo]t|didn.t|did not turn|missed|you skipped/i);
+  // A second wrong turn says it again, but the turn is replayed once per arrival.
+  const again = w.calls.length;
+  w.follow.liveMove({ notation: 'U', serial: 3 });
+  assert.match(w.note(), /^Your cube does not match this one\./);
+  assert.deepEqual(w.calls.slice(again), [], 'the turn was replayed on every wrong move');
+});
+
+test('off the walk anywhere else keeps the ordinary sentence', () => {
+  const w = turnedWalkWorld();
+  w.follow.liveMove({ notation: 'U', serial: 1 });
+  assert.match(w.note(), /^That was /, `off the walk before any turn said: ${w.note()}`);
+});
+
+test('an untrusted chain is told nothing about holds', () => {
+  const w = turnedWalkWorld({ trusted: false });
+  w.follow.liveMove({ notation: 'R', serial: 1 });
+  w.follow.liveMove({ notation: 'R', serial: 2 });
+  assert.doesNotMatch(w.note(), /does not match/, `an untrusted cube was told: ${w.note()}`);
+});
+
+test('off the walk right after the stage tumble, the renderer turns over again — once, and only from where it is', () => {
+  // Audit 2026-10-14: a stage tumble changes the hold between two FACE turns, so there was no token to
+  // replay and the recovery said the hold with nothing turning.
+  const w = turnedWalkWorld({ stage: TUMBLED });
+  w.follow.liveMove({ notation: 'R', serial: 1 });
+  assert.equal(w.note(), '', 'precondition: the first move was on the walk');
+  const before = w.calls.length;
+  // Not R: after the tumble the child's R is still the cube's R, so R would be ON the walk (plan §1 rule 2).
+  w.follow.liveMove({ notation: 'F', serial: 2 });
+  assert.equal(w.note(), `Your cube does not match this one. ${holdSentence(TUMBLED)}`);
+  assert.deepEqual(w.calls.slice(before), [['turnTo', 'U F', { ms: 0 }], ['turnTo', 'D B', { pace: 'tempo' }]],
+    'the tumble was not shown again, from the hold before it to the one the presenter recorded');
+  const again = w.calls.length;
+  w.follow.liveMove({ notation: 'U', serial: 3 });
+  assert.deepEqual(w.calls.slice(again), [], 'the tumble was replayed on every wrong move');
+
+  // A renderer that is NOT in the hold the walk says is never turned by this: the replay would leave it
+  // somewhere the presenter did not put it.
+  const elsewhere = turnedWalkWorld({ stage: TUMBLED });
+  elsewhere.cube.dataset.hold = 'U F';
+  elsewhere.follow.liveMove({ notation: 'R', serial: 1 });
+  const from = elsewhere.calls.length;
+  elsewhere.follow.liveMove({ notation: 'F', serial: 2 });
+  assert.deepEqual(elsewhere.calls.slice(from).filter((c) => Array.isArray(c)), [], 'a renderer in another hold was turned');
+  assert.match(elsewhere.note(), /^Your cube does not match this one\./, 'the sentence was lost with the replay');
+});
+
+test('a wide turn or a slice that turned the hold is replayed like a rotation', () => {
+  // Audit 2026-10-14: only a literal x/y/z replayed; after \`Rw\` the hold was said with nothing shown.
+  for (const token of ['Rw', 'M']) {
+    const w = turnedWalkWorld({ token, face: 'F' });
+    assert.notDeepEqual(w.after, SCAN_HOLD, `precondition: ${token} turns the hold`);
+    w.follow.liveMove({ notation: 'R', serial: 1 });
+    for (const [i, m] of faceTurnsAlg(token).split(' ').filter((x) => /^[URFDLB]/.test(x)).entries()) {
+      w.follow.liveMove({ notation: m, serial: 2 + i });
+    }
+    assert.equal(w.note(), '', `${token}: precondition — the turn itself was on the walk`);
+    const before = w.calls.length;
+    // The child's F named for the hold BEFORE the turn: off the walk once the hold has moved.
+    w.follow.liveMove({ notation: 'F', serial: 9 });
+    assert.match(w.note(), /^Your cube does not match this one\./, `${token}: ${w.note()}`);
+    assert.deepEqual(w.calls.slice(before), ['seek 1', 'step'], `${token}: the turn that moved the hold was not shown again`);
+  }
+});
+
+test('a replay the renderer refuses is reported, and the next wrong turn tries again', async () => {
+  // Audit 2026-10-14: both promises were dropped, so a rejecting renderer raised unhandled rejections, and
+  // the once-per-arrival guard then stopped the replay being tried ever again.
+  let asked = 0;
+  const warned = [];
+  const warn = console.warn;
+  console.warn = (...a) => { warned.push(a[0]); };
+  const unhandled = [];
+  const onUnhandled = (e) => { unhandled.push(e); };
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const w = turnedWalkWorld({ stage: TUMBLED, turnTo: () => { asked += 1; return Promise.reject(new Error('no GL')); } });
+    w.follow.liveMove({ notation: 'R', serial: 1 });
+    w.follow.liveMove({ notation: 'F', serial: 2 });
+    await settle(); await settle();
+    assert.equal(asked, 2, 'precondition: the replay was tried');
+    assert.deepEqual(unhandled, [], 'a refused replay raised an unhandled rejection');
+    assert.ok(warned.some((m) => /could not be shown again/.test(String(m))), 'a refused replay was silent');
+    w.follow.liveMove({ notation: 'U', serial: 3 });
+    assert.equal(asked, 4, 'after a refused replay the next wrong turn did not try again');
+    assert.match(w.note(), /^Your cube does not match this one\./, 'the sentence was lost with the replay');
+  } finally {
+    console.warn = warn;
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
+
+test('a replay another turn interrupts lets the next wrong turn try again', async () => {
+  // Audit 2026-10-14, round 2: a superseded \`turnTo\` resolves false rather than rejecting, and the guard
+  // stayed up over a turn that was never shown.
+  let asked = 0;
+  const w = turnedWalkWorld({ stage: TUMBLED, turnTo: () => { asked += 1; return Promise.resolve(false); } });
+  w.follow.liveMove({ notation: 'R', serial: 1 });
+  w.follow.liveMove({ notation: 'F', serial: 2 });
+  await settle(); await settle();
+  assert.equal(asked, 2, 'precondition: the replay was tried');
+  w.follow.liveMove({ notation: 'U', serial: 3 });
+  assert.equal(asked, 4, 'after an interrupted replay the next wrong turn did not try again');
+});
+
+test('an older replay finishing cannot release the guard of a newer one at the same position', async () => {
+  // Audit 2026-10-14, round 3: completions were owned by position alone. Leave the position, come back, and
+  // the first replay's late \`false\` unlocked the second, so one arrival was replayed twice.
+  const pending = [];
+  let asked = 0;
+  const w = turnedWalkWorld({
+    stage: TUMBLED,
+    turnTo: () => { asked += 1; return new Promise((resolve) => { pending.push(resolve); }); },
+  });
+  w.follow.liveMove({ notation: 'R', serial: 1 });
+  w.follow.liveMove({ notation: 'F', serial: 2 });        // off: replay #1, still in flight
+  assert.equal(asked, 2, 'precondition: the first replay was asked for');
+  w.follow.liveMove({ notation: "F'", serial: 3 });       // undone: back on the walk at the same position
+  w.follow.liveMove({ notation: w.third, serial: 4 });    // on to the next position…
+  w.follow.liveMove({ notation: `${w.third}'`, serial: 5 }); // …and back to the one after the tumble
+  w.follow.liveMove({ notation: 'F', serial: 6 });        // off again: replay #2
+  assert.equal(asked, 4, 'precondition: a second arrival replays again');
+  for (const resolve of pending.splice(0, 2)) resolve(false); // replay #1 reports it was superseded
+  await settle(); await settle();
+  w.follow.liveMove({ notation: 'U', serial: 7 });
+  assert.equal(asked, 4, 'the first replay\'s late answer released the second\'s guard, and the arrival replayed twice');
+});
+
+test('a replay that throws stays this request\'s failure, never the live handler\'s', () => {
+  // Audit 2026-10-14, round 3: the token replay set its guard and then called the player unprotected.
+  let tried = 0;
+  const warned = [];
+  const warn = console.warn;
+  console.warn = (...a) => { warned.push(String(a[0])); };
+  try {
+    let armed = false; // the walk is drawn with seeks before anything goes wrong; only a replay may fail
+    const w = turnedWalkWorld({ seek: () => { if (!armed) return; tried += 1; throw new Error('renderer gone'); } });
+    w.follow.liveMove({ notation: 'R', serial: 1 });
+    armed = true;
+    const before = tried;
+    assert.doesNotThrow(() => w.follow.liveMove({ notation: 'R', serial: 2 }), 'a failed replay escaped the live handler');
+    assert.ok(tried > before, 'precondition: the replay was tried');
+    assert.ok(warned.some((m) => /could not be shown again/.test(m)), 'a failed replay was silent');
+    assert.match(w.note(), /^Your cube does not match this one\./, 'the sentence was lost with the replay');
+    const again = tried;
+    w.follow.liveMove({ notation: 'U', serial: 3 });
+    assert.ok(tried > again, 'after a failed replay the next wrong turn did not try again');
+  } finally {
+    console.warn = warn;
+  }
+});
