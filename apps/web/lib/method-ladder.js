@@ -10,9 +10,9 @@
 //
 //   1. **The default path is the bottom rung everywhere.** A new learner chooses nothing and is
 //      shown the beginner's method — the discipline `DEFAULT_HIDDEN` already applies to the nav.
-//   2. **Raising a rung lives on the Lessons screen.** Each stage shows its whole ladder, and a
-//      rung not yet reached is DESCRIBED rather than hidden: a ladder you can see is a goal, a
-//      dropdown is a chore.
+//   2. **Raising a rung lived on the Lessons screen**, which drew each stage's whole ladder. That
+//      screen was removed (ADR 0010): a rung is now raised only by the offer below, and put back
+//      only by Settings' reset.
 //   3. **Offer, never ask.** After a stage has been followed cleanly a few times, offer its next
 //      rung, once, in one tap. Declining costs nothing and it re-offers later. Nothing is ever
 //      silently raised.
@@ -23,8 +23,8 @@
 // counts as an offer is here, where it can be tested.
 
 import { LADDER, STAGE_IDS, TOP_RUNG, dialsOf } from './method-solver.js';
-// The stage names are the LESSON's, not a second set. The two screens sit next to each other,
-// and a stage called one thing on the move list and another on the ladder reads as two stages.
+// The stage names are the LESSON's, not a second set: a stage called one thing on the move list
+// and another in Settings reads as two stages.
 import { SECTION_NAME } from './method-lesson.js';
 
 /**
@@ -172,11 +172,10 @@ export function declineOffer(progress, offer) {
 }
 
 /**
- * The whole ladder, as the Lessons screen draws it.
+ * The whole ladder, stage by stage — what Settings reads to say which levels are raised.
  *
- * Every rung of every stage, including the ones this learner has not reached — DESCRIBED, not
- * hidden. `reached` says which ones are behind them, `at` marks where they are, and `blurb` is
- * what the rung above is FOR, which is the whole reason a visible ladder beats a dropdown.
+ * Every rung of every stage, including the ones this learner has not reached. `reached` says which
+ * ones are behind them, `at` marks where they are, and `blurb` is what each rung is FOR.
  */
 export function ladderRows(rungs, progress = NO_PROGRESS) {
   return STAGE_IDS.map((id) => {
@@ -196,30 +195,4 @@ export function ladderRows(rungs, progress = NO_PROGRESS) {
       })),
     };
   });
-}
-
-/**
- * How far a stage is from its next offer, in follows — for the ladder's "not yet" line.
- *
- * Three answers, because the screen has three things to say. `null`: there is nothing above this
- * rung. A count: that many more solves. `Infinity`: the offer is not coming on its own.
- *
- * The last one is not a curiosity. Above the count ceiling the postponement watermark is
- * DELIBERATELY unreachable — that is what `NEXT_AT_LIMIT` is for, and "not again" is the right
- * answer for a record that has stopped counting. But a countdown cannot say it: subtracting a
- * count that can no longer rise from a target above it gives a number that never falls, so the
- * screen said "1,000,000 more solves at this rung" and would have said it forever. Wrong in both
- * directions — it is not a wait, and it does not end.
- *
- * Deliberately a COUNT and not a percentage: "two more solves" is a thing a learner can hold, and
- * a progress bar over a number this small is decoration.
- */
-export function followsUntilOffer(rungs, progress, id) {
-  const at = rungs?.[id] ?? 0;
-  if (at >= TOP_RUNG[id]) return null;
-  // `offerAt` and nothing else — when this had its own copy of the threshold formula, the
-  // countdown on the Lessons screen could disagree with when the offer actually fired.
-  const target = offerAt(progress, id);
-  if (target > COUNT_LIMIT) return Infinity;
-  return Math.max(0, target - (progress.follows?.[id] ?? 0));
 }

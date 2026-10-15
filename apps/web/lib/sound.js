@@ -17,12 +17,12 @@ const SOUNDS = Object.freeze({
   capture: [[659.25, 0], [880, 0.09]],
   // A rising arpeggio, longer and different: "the whole cube checks out".
   done: [[523.25, 0], [659.25, 0.12], [783.99, 0.24], [1046.5, 0.36]],
-  // A drill turn that is not in the algorithm. Decision D4 of
-  // dev-docs/algorithm-drills-plan.md: both sounds above mean something affirmative, so reusing
-  // either for a deviation would make the vocabulary contradictory — and a BUZZER is not what this
-  // app says to an eight-year-old. So: two notes, FALLING and close together, quieter in feel than
-  // `capture` because it is the same length but goes down. Not an alarm, not a rebuke, and not
-  // repeated — `lib/drill-attempt.js` raises it once per excursion, never once per report.
+  // A turn that leaves the walk. Decision D4 of dev-docs/algorithm-drills-plan.md, made for the
+  // drill that first used it: both sounds above mean something affirmative, so reusing either for a
+  // deviation would make the vocabulary contradictory — and a BUZZER is not what this app says to a
+  // child. So: two notes, FALLING and close together, quieter in feel than `capture` because it is
+  // the same length but goes down. Not an alarm, not a rebuke, and not repeated —
+  // `lib/walk-follow.js` raises it once per excursion, never once per report.
   off: [[440, 0], [392, 0.09]],
   // ---- the three the VOICE used to carry (owner, 2026-09-30) ---------------------------------
   //
@@ -147,7 +147,7 @@ function unlock() {
   // NOT WITH SOUND OFF. This runs on every pointerdown, keydown and touchend on the document, so
   // it used to open an audio session — and hold it — for a person who had turned sound off and
   // would never hear anything from it. Nothing plays the instant the setting is turned back on
-  // (the only callers are the scan's chimes and the drill's cues, both of them screens away), so
+  // (the callers are the scan's chimes and the walk's cues, each a screen away from Settings), so
   // the next gesture is soon enough to unlock.
   if (settings.soundMode === SOUND_MODES.off) return;
   context ??= makeContext();

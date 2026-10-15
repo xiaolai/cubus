@@ -101,11 +101,9 @@ function serialOf(v) {
  * How far `to` is ahead of `from` on the driver's 8-bit rolling serials, or null when either is
  * unusable. 1..127 is ahead; 128..255 reads as behind and is not a gap.
  *
- * Exported because the drill needs the SAME rule move by move (`lib/drill-attempt.js`), and a plain
- * `>` misses every gap that crosses the wrap. Two implementations of this would be two answers to
- * "were turns dropped", which is the question a wrong-turn accusation rests on.
+ * A plain `>` misses every gap that crosses the wrap.
  */
-export function serialsAhead(from, to) {
+function serialsAhead(from, to) {
   const a = serialOf(from);
   const b = serialOf(to);
   if (a === null || b === null) return null;
@@ -123,24 +121,18 @@ export function serialsAhead(from, to) {
  *
  *     idle  --facelets === target-->  armed
  *     armed --first move----------->  running
- *     running --facelets === finish()->  stopped   (elapsed from the move stamps)
+ *     running --facelets === SOLVED--->  stopped   (elapsed from the move stamps)
  *
  * @param {object} opts
  * @param {() => string|null} opts.target  the scramble's arrangement, or null when there is none
  * @param {() => boolean} opts.trusted     whether the cube's reports may be believed at all
- * @param {() => string} [opts.finish]     the arrangement that STOPS the clock. Defaults to SOLVED,
- *   which is every caller but the drill: a solve ends solved, and the Timer screen passes nothing.
- *   A drill does not — a chosen algorithm performed from wherever the cube is ends at its own
- *   arrangement (dev-docs/algorithm-drills-plan.md item 1.7). Injected rather than copied, because a
- *   second timer for the drill would duplicate the cube-clock choice, the dropped-serial refusal and
- *   the trust gating — three facts that must not come to have two answers.
  * @param {() => number} [opts.now]        host clock, injectable so staleness is testable.
  *   Defaults to performance.now() because that is the clock the transports stamp move
  *   arrivals with (ble-polyfill.js) — ready.at and move.timestamp MUST share a clock, or
  *   the inspection span compares an epoch number against a monotonic one and is silently
  *   never reported. That was the shipped bug this default replaces.
  */
-export function createSolveTimer({ target, trusted, now = () => performance.now(), finish = () => SOLVED }) {
+export function createSolveTimer({ target, trusted, now = () => performance.now() }) {
   let state = 'idle';
   /** The recorded ready instant: { at, serial } on the host clock, since no move has stamped yet. */
   let ready = null;
@@ -186,12 +178,9 @@ export function createSolveTimer({ target, trusted, now = () => performance.now(
       reset();
       return state;
     }
-    if (state === 'running' && f === finish()) {
-      // THE SHARED RULE, not a second copy of it. `serialsAhead` is this file's own export and the
-      // drill's only source for the same question; leaving the arithmetic written out again here
-      // made the comment above that export false the day it was written (audit, 2026-09-27). Its
-      // null covers both "unusable" and "behind", which is what the old `? … : 0` fallthrough
-      // meant — verified identical over all 65,536 serial pairs.
+    if (state === 'running' && f === SOLVED) {
+      // `serialsAhead`'s null covers both "unusable" and "behind", which is what the old `? … : 0`
+      // fallthrough meant — verified identical over all 65,536 serial pairs.
       const ahead = serialsAhead(last?.serial, serial);
       if (ahead !== null && ahead >= 1) {
         // The snapshot is ahead of the last move we hold: moves were dropped, so `last` is not

@@ -279,7 +279,7 @@ const FULL_PLL_LOOK = Object.freeze([
 ]);
 
 /** The top face one colour, with the first two layers still there. OLL's contract, PLL's keep. */
-export const topFaceOriented = guard(topOriented);
+const topFaceOriented = guard(topOriented);
 
 /** @type {ReadonlyArray<import('./index.js').Stage>} */
 export const OLL_RUNGS = Object.freeze([

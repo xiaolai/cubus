@@ -84,51 +84,14 @@ test('every hideable tab the app ships is one the nav knows how to hide', () => 
   }
 });
 
-// ---- publishing the Drill tab (dev-docs/algorithm-drills-plan.md item 4.2) ------------------------
+// ---- by NAME, not by the list ---------------------------------------------------------------------
 //
-// WHY THESE ASSERT A NAME. The case above — "the shipped migration hides every default tab on a
-// fresh install" — loops over `DEFAULT_HIDDEN`. Remove an id from that list and it drops out of the
-// loop too, so the check goes green whether or not the tab is actually visible. That is exactly the
-// shape of the gap this feature would have shipped through: changing `DEFAULT_HIDDEN` alone leaves
-// `NAV_ADDED[2]` to put `drill` straight back, and nothing in the old suite could tell.
-
-//
-// HIDDEN AGAIN AT VERSION 7 (owner's decision, 2026-10-14): the default row is solve, scan and
-// scramble. The cases about publishing it are kept as they were up to version 6, which is what
-// 0.7.x shipped until then, and version 7 is asserted by name below them.
-
-test('up to version 6, a fresh install SAW the Drill tab', () => {
-  const out = migrateNavDefaults(undefined, DEFAULT_HIDDEN.filter((id) => id !== 'drill' && id !== 'pieces'), undefined, 6);
-  assert.ok(!out.navHidden.includes('drill'), 'version 6 hid Drill on a fresh install');
-});
-
-test('up to version 6, an install from before any migration saw it too', () => {
-  for (const from of [0, 1, 2]) {
-    assert.ok(!migrateNavDefaults(from, [], undefined, 6).navHidden.includes('drill'), `version ${from} hides Drill`);
-  }
-});
-
-test('a deliberate hide survives, whatever the stored version says', () => {
-  // The record cannot tell an inherited default from a choice, which is why no delta removes an id
-  // (decision D5). Someone who hid Drill keeps it hidden and turns it back on in Settings.
-  for (const from of [3, 2, 0, undefined, -1e100, 2.5, 'x']) {
-    const out = migrateNavDefaults(from, ['drill']);
-    assert.ok(out.navHidden.includes('drill'), `version ${JSON.stringify(from)} un-hid a deliberate hide`);
-  }
-});
-
-test('up to version 6, an install that had Drill visible kept it visible', () => {
-  for (const from of [3, 2, 0, undefined]) {
-    assert.ok(!migrateNavDefaults(from, [], undefined, 6).navHidden.includes('drill'), `version ${JSON.stringify(from)} hid Drill`);
-  }
-});
-
-// ---- version 7: the default row is solve, scan and scramble (owner's decision, 2026-10-14) ----------
-//
-// BY NAME, and asserted on the WHOLE row rather than on the hidden list: a check that loops over
-// `DEFAULT_HIDDEN` agrees with whatever that list says, so it cannot notice a tab that should be gone.
+// The case above — "the shipped migration hides every default tab on a fresh install" — loops over
+// `DEFAULT_HIDDEN`. Remove an id from that list and it drops out of the loop too, so the check goes green
+// whether or not the tab is actually visible. So the row a fresh install sees is asserted WHOLE.
 
 test('a fresh install shows exactly Home, Restore and Scramble', async () => {
+  // The owner's decision, 2026-10-14: the default row is solve, scan and scramble.
   const { NAV } = await import('../lib/app-state.js');
   for (const stored of [undefined, DEFAULT_HIDDEN]) {
     const { navHidden } = migrateNavDefaults(undefined, stored ?? []);
@@ -137,101 +100,62 @@ test('a fresh install shows exactly Home, Restore and Scramble', async () => {
   }
 });
 
-test('an existing install loses Drill and Pieces, and keeps every other choice it made', () => {
-  // A record at 6 with only Course hidden had Drill, Pieces and Timer showing — Timer by choice.
-  // Version 7 is about Drill and Pieces; the user's Timer is not its business.
-  for (const from of [2, 4, 5, 6]) {
-    const out = migrateNavDefaults(from, ['course']);
-    assert.ok(out.navHidden.includes('drill') && out.navHidden.includes('pieces'),
-      `an install at version ${from} still shows Drill or Pieces`);
-    assert.ok(!out.navHidden.includes('timer'), `version ${from}: a tab the user had turned on was hidden`);
+test('a deliberate hide survives, whatever the stored version says', () => {
+  // The record cannot tell an inherited default from a choice, which is why no delta removes an id
+  // (decision D5). Someone who hid the Timer keeps it hidden and turns it back on in Settings.
+  for (const from of [3, 2, 0, undefined, -1e100, 2.5, 'x', NAV_DEFAULTS_VERSION, NAV_DEFAULTS_VERSION + 1]) {
+    const out = migrateNavDefaults(from, ['timer']);
+    assert.ok(out.navHidden.includes('timer'), `version ${JSON.stringify(from)} un-hid a deliberate hide`);
   }
 });
 
-test('Drill and Pieces stay one switch away, and a record already at 7 is not re-hidden', () => {
+test('a tab brought back is not hidden again by a later bump', () => {
+  // Somebody at version 2 who turned Timer and Stats back on: version 3 is about the Course tab alone.
+  const out = migrateNavDefaults(2, []);
+  assert.ok(!out.navHidden.includes('timer') && !out.navHidden.includes('stats'),
+    'a bump re-hid a tab the user had turned on');
+  // And at the current version nothing moves at all.
+  assert.deepEqual(migrateNavDefaults(NAV_DEFAULTS_VERSION, []).navHidden, [],
+    'a record already at the current version was migrated again');
+});
+
+test('no migration writes the id of a screen that was removed', async () => {
+  // Alg trainer, Drill, Pieces, Lessons and One turn were removed (ADR 0010), and their entries in the
+  // migration tables with them. An entry left behind would write a dead id into every record it reached,
+  // which the load filter then throws away — a write that changes nothing, on every launch it runs.
+  const { NAV } = await import('../lib/app-state.js');
+  const REMOVED = ['trainer', 'drill', 'pieces', 'lessons', 'loop'];
+  const tabs = new Set(NAV.map(([id]) => id));
   const hideable = new Set(HIDEABLE.map(([id]) => id));
-  assert.ok(hideable.has('drill') && hideable.has('pieces'), 'Drill or Pieces cannot be turned back on in Advanced');
-  // Somebody who turns Drill back on after the migration keeps it: the walk skips every version at
-  // or below theirs, so version 7 runs once.
-  assert.ok(!migrateNavDefaults(7, ['pieces']).navHidden.includes('drill'), 'version 7 re-hid a tab turned back on');
-});
-
-// ---- Pieces became a tab of its own (2026-09-29, option C) ---------------------------------------
-//
-// BY NAME, for the reason above: the loop over `DEFAULT_HIDDEN` cannot tell whether a newly listed id
-// is actually hidden, because adding it to that list also adds it to the loop's own expectation.
-
-test('up to version 6, a fresh install SAW the Pieces tab', () => {
-  // REVERSED AT VERSION 5 (owner's decision, 2026-09-29). Hiding it at 4 was argued from the id
-  // being new, and the user lives in the ACTIVITY: the Pieces content was already reachable inside
-  // the Drill screen, published two days earlier. Hidden again at 7 with Drill, by the owner's call.
-  const out = migrateNavDefaults(undefined, [], undefined, 6);
-  assert.ok(!out.navHidden.includes('pieces'), 'version 6 hid Pieces on a fresh install');
-});
-
-test('every install that had Pieces hidden by 0.7.6 gets it back, and keeps its other choices', () => {
-  // THE HALF THAT REACHES SOMEBODY WHO HAS ALREADY RUN THE APP. Taking `pieces` out of
-  // `DEFAULT_HIDDEN` does nothing for them: their record stores `navHidden` with it in, and a stored
-  // preference outranks a changed default forever. Only a REMOVAL delta reaches them, which is why
-  // `NAV_SHOWN` exists — and 4 is the version 0.7.6 and 0.7.7 shipped, so it is the one that matters.
-  // Up to version 6, which is the walk this case is about; version 7 hides it again on purpose.
-  for (const from of [0, 1, 2, 3, 4]) {
-    const out = migrateNavDefaults(from, ['pieces'], undefined, 6);
-    assert.ok(!out.navHidden.includes('pieces'), `version ${from} left Pieces hidden`);
+  for (const id of REMOVED) {
+    assert.ok(!tabs.has(id) && !hideable.has(id), `${id} is still a tab`);
+    for (let from = 0; from <= NAV_DEFAULTS_VERSION; from++) {
+      assert.ok(!migrateNavDefaults(from, []).navHidden.includes(id), `version ${from} writes the removed id ${id}`);
+    }
   }
-  // Somebody at 4 who had deliberately brought Timer and Stats back keeps them: the walk skips every
-  // version at or below theirs, so the only thing that moves is what version 5 says.
-  //
-  // ASSERTED AS A RELATION, NOT AS THE WHOLE SET. This pinned `navHidden` to exactly `['course']`,
-  // which made it fail the day a LATER version shipped a new tab hidden — a change that disturbs no
-  // choice at all, because an id that did not exist at version 4 was never chosen. The claim this
-  // case defends is about what the user had decided, so it is written about that (2026-10-06).
-  const brought = migrateNavDefaults(4, ['pieces', 'course'], undefined, 6);
-  assert.ok(brought.navHidden.includes('course'),
-    'a tab the user had chosen to hide came back on its own');
-  assert.ok(!brought.navHidden.includes('pieces'), 'version 5 did not reach an install at 4');
-  // THE DEFECT THIS IS REALLY ABOUT: a bump applying `DEFAULT_HIDDEN` wholesale and re-hiding the
-  // tabs somebody deliberately brought back. At version 4 a stored set of `['pieces', 'course']`
-  // means these four were SHOWN, so none of them may be hidden now.
-  for (const shown of ['timer', 'stats', 'trainer', 'lessons']) {
-    assert.ok(!brought.navHidden.includes(shown),
-      `${shown} was showing at version 4 and the migration hid it again`);
-  }
-  // And a record starting from nothing lands exactly on the shipped defaults, not on an
-  // intermediate set — adds and removals walked in version order.
-  // AS A SET. Visibility depends on membership, so reordering `DEFAULT_HIDDEN` — which changes no
-  // behaviour at all — failed this (audit, 2026-10-06). Chronological order is asserted by the
-  // mechanism case above, where it is the actual subject.
-  assert.deepEqual([...migrateNavDefaults(0, []).navHidden].sort(), [...DEFAULT_HIDDEN].sort(),
-    'walking every migration does not land on the shipped default hidden set');
 });
 
 test('the walk honours its UPPER bound, not only its lower one', () => {
   // It skipped `v <= from` and applied everything above, including versions past the requested
   // target: (3, [], undefined, 4) ran version 5's removal and then stamped the record as 4, a state
   // no shipped version ever produced. Production always asks for the latest, which is exactly why
-  // no caller noticed (audit, 2026-09-29).
-  const toFour = migrateNavDefaults(3, [], undefined, 4);
+  // no caller noticed (audit, 2026-09-29). Its own tables, because the shipped ones no longer show
+  // anything back.
+  const added = { 4: ['p'] };
+  const shown = { 5: ['p'] };
+  const toFour = migrateNavDefaults(3, [], added, 4, shown);
   assert.equal(toFour.navDefaults, 4, 'it stamped a version it was not asked for');
-  assert.ok(toFour.navHidden.includes('pieces'), 'version 5 ran while migrating only as far as 4');
+  assert.ok(toFour.navHidden.includes('p'), 'version 5 ran while migrating only as far as 4');
   // The lower bound still holds, and the two together bracket exactly one step.
-  const onlyFive = migrateNavDefaults(4, ['pieces'], undefined, 5);
-  assert.deepEqual(onlyFive.navHidden, [], 'the one step in range did not run');
+  assert.deepEqual(migrateNavDefaults(4, ['p'], added, 5, shown).navHidden, [], 'the one step in range did not run');
   // And asking for less than the record already has changes nothing at all.
-  assert.deepEqual(migrateNavDefaults(5, ['pieces'], undefined, 4).navHidden, ['pieces'],
+  assert.deepEqual(migrateNavDefaults(5, ['p'], added, 4, shown).navHidden, ['p'],
     'migrating backwards altered the record');
 });
 
-test('a deliberate hide made from now on survives', () => {
-  // The rule D5 protected for `drill`, which `NAV_SHOWN` deliberately spends for `pieces`: this
-  // record cannot tell an inherited default from a deliberate hide, so bringing an id back overrides
-  // anyone who chose to hide it. That is payable exactly once, while the choice has had two patch
-  // versions to exist in — and the guard that stops it being spent twice is the version check.
-  const chose = migrateNavDefaults(NAV_DEFAULTS_VERSION, ['pieces']);
-  assert.deepEqual(chose.navHidden, ['pieces'], 'a record already at the current version was migrated again');
-  // The same for any later version, so a future bump cannot silently re-run version 5's removal.
-  assert.deepEqual(migrateNavDefaults(NAV_DEFAULTS_VERSION + 1, ['pieces']).navHidden, ['pieces'],
-    'a record ahead of this build was migrated backwards');
+test('within one version, a show outranks a hide', () => {
+  // Fixed in the walk so that nothing has to guess: adds first, then removals.
+  assert.deepEqual(migrateNavDefaults(0, [], { 1: ['p'] }, 1, { 1: ['p'] }).navHidden, []);
 });
 
 test('no migration ships above the version anyone will ever migrate to', () => {
@@ -247,12 +171,8 @@ test('no migration ships above the version anyone will ever migrate to', () => {
   const beyond = [...migrateNavDefaults(0, [], undefined, NAV_DEFAULTS_VERSION + 50).navHidden].sort();
   assert.deepEqual(beyond, shipped,
     'a migration is keyed above NAV_DEFAULTS_VERSION, so no install will ever run it');
-  // The one dead entry this cannot see is one that hides an id `DEFAULT_HIDDEN` already holds — and
-  // that entry changes nothing for anybody, which is why it is not worth a second mechanism.
-});
-
-test('Drill is hidden by default again, and still one switch away', () => {
-  // It was published at version 3 and taken back to Advanced at 7 (owner's decision, 2026-10-14).
-  assert.ok(DEFAULT_HIDDEN.includes('drill'), 'Drill is on the default row');
-  assert.ok(HIDEABLE.some(([id]) => id === 'drill'), 'Drill cannot be turned on in Advanced');
+  // And walking every migration lands exactly on the shipped defaults — AS A SET, because visibility
+  // depends on membership and reordering `DEFAULT_HIDDEN` changes no behaviour (audit, 2026-10-06).
+  assert.deepEqual(shipped, [...DEFAULT_HIDDEN].sort(),
+    'walking every migration does not land on the shipped default hidden set');
 });

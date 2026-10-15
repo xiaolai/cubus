@@ -28,9 +28,6 @@ import { stopAll } from '../sound.js';
 // How the four rungs read on the Settings screen. A rung with no label here would render as
 // "undefined", so solve-tier-wiring.test.mjs checks every TIERS entry has one.
 const TIER_LABEL = { twenty: '≤ 20', nineteen: '≤ 19', eighteen: '≤ 18', shortest: 'shortest' };
-/** The drill clock's row. It STATES ITS COST, the way the prove row does: a drill is a handful of
- *  turns, so the timer's missing first move is a far larger share of it than of a solve, and the
- *  number is only ever worth comparing with the same child's own earlier tries. */
 /**
  * The learner's rungs, said and reset — the one place they can be seen or lowered since the Lessons
  * screen was removed (ADR 0010 decision 4). The button is DISABLED with nothing raised: a press that
@@ -48,8 +45,6 @@ function learningLevelsRow() {
 
 export const TURN_ARROWS_LABEL = 'Turn arrows';
 export const TURN_ARROWS_BLURB = 'An arrow on the cube shows the next turn of a solve or a scramble — and the way back when your cube is off it';
-export const DRILL_CLOCK_LABEL = 'Time my drills';
-export const DRILL_CLOCK_BLURB = 'Off, a drill is just practice. On, each try is timed — compare it only with your own earlier tries, never with anyone else';
 
 const TIER_BLURB = {
   twenty: 'Twenty moves or fewer — always possible, and quick. An easy cube still gets its short answer',
@@ -68,7 +63,7 @@ const TIER_BLURB = {
 export const LAST_LAYER_LABEL = { course: 'The course’s', app: 'The app’s' };
 export const LAST_LAYER_BLURB = {
   course: 'Lessons finish the top as the course does: its edges home first, then the corners put in place and turned',
-  app: 'Lessons finish the top as the Lessons ladder does: the whole top one colour first, then every piece moved home',
+  app: 'Lessons finish the top the way speedcubers learn it: the whole top one colour first, then every piece moved home',
 };
 
 const SOUND_LABEL = { chime: 'Sounds', off: 'Off' };
@@ -122,11 +117,6 @@ SCREENS.settings = () => {
           title: PROVE_COPY.settingLabel, blurb: PROVE_COPY.settingBlurb,
           id: 'setToggle-proveMinimum', on: Boolean(settings.proveMinimum), attrs: 'data-toggle="proveMinimum"', label: PROVE_COPY.settingLabel,
         }) : ''}
-        ${switchRow({
-          style: 'padding:13px 0 0;border-top:1px solid var(--line-faint)',
-          title: DRILL_CLOCK_LABEL, blurb: DRILL_CLOCK_BLURB,
-          id: 'setToggle-drillClock', on: Boolean(settings.drillClock), attrs: 'data-toggle="drillClock"', label: DRILL_CLOCK_LABEL,
-        })}
         ${desktopWindow ? `<div class="wrap-row" style="justify-content:space-between;padding:12px 0"><div><div style="font-weight:600">Window</div><div class="sub" style="color:var(--ink-4)">Landscape or portrait — the window takes the shape and keeps it</div></div>
           <div class="wrap-row" style="gap:6px" id="orientationPills">${['landscape', 'portrait'].map((o) => `<button class="pill" id="setOrientation-${o}" data-set-orientation="${o}" aria-pressed="false">${escHtml(t(o))}</button>`).join('')}</div></div>` : ''}
         ${unsavedNote('appearance')}</div>

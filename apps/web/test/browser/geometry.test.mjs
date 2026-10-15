@@ -30,7 +30,6 @@ import { webkit } from 'playwright';
 
 import { pace } from '../browser-wait.mjs';
 
-import { ALG_ENTRIES } from '../../lib/alg-catalogue.js';
 import { NAV } from '../../lib/app-state.js';
 import { fitStage } from '../../lib/stage.js';
 import { freePort } from '../free-port.mjs';
@@ -943,12 +942,12 @@ for (const fixture of FIXTURES) {
 
 // ---- every other routable screen ---------------------------------------------------------------
 //
-// Timer, Stats, Trainer, Drill, Lessons, Settings: no region contract of their own beyond the
+// Timer, Stats, Settings, Course, Shapes: no region contract of their own beyond the
 // grid every screen shares, but the same floor — nothing wider than the stage, nothing clipped
 // sideways, every control a finger can hit. Stats is seeded with a session: an empty one is a
 // single card and would test nothing.
 
-const SCREENS = ['timer', 'stats', 'trainer', 'drill', 'pieces', 'lessons', 'settings', 'course', 'shapes'];
+const SCREENS = ['timer', 'stats', 'settings', 'course', 'shapes'];
 
 /**
  * Every id the app REGISTERS as a screen, read off the modules that register it.
@@ -1048,9 +1047,9 @@ const measureScreen = (page) =>
       // pictures were unreachable — and the whole browser tier passed, because \`beyond\` above reads
       // LEFT and RIGHT only and \`overflow.doc\` is a width.
       //
-      // The ROOT and not its descendants, which is what makes this safe for a scrolling grid: the
-      // Drill library draws a hundred cards below the fold ON PURPOSE, inside a \`.case-grid\` that
-      // scrolls. Those are reachable. A root taller than its screen is the case where nothing is.
+      // The ROOT and not its descendants, which is what makes this safe for a scrolling grid: a
+      // \`.case-grid\` may draw cards below the fold ON PURPOSE, because it scrolls. Those are
+      // reachable. A root taller than its screen is the case where nothing is.
       rootOverflowsDown: Math.round(rect(root).bottom - rect(screen).bottom),
       // And the scroll the content needs is somewhere INSIDE the root, so "it fits" cannot be
       // bought by clipping: a root that fits with content past its own bottom and nothing
@@ -1327,105 +1326,6 @@ for (const screen of SCREENS) {
       }
     });
   }
-}
-
-// THE DRILL PAGE — one algorithm, on the cube screen's composition.
-//
-// The per-screen loop above opens `#/drill`, which is the CHOOSER: a grid of cards and no cube.
-// The drill itself is a second composition reached by choosing one, so the loop never measures it
-// — and it is the one with a locked primary region, a transport and a sheet, which is exactly the
-// shape that can overflow. It did: the way back, crammed into the eyebrow beside the stage name,
-// ran 12px off the stage on every fixture before it was given its own row.
-//
-// AND NOT ONLY THE FIRST PAGE. Measuring whichever algorithm the chooser lists first measured a page
-// with no link to a second algorithm and a short sheet, so the two pages that broke were never drawn:
-// the case's other algorithm, printed as one press, stood in a column one turn per line over the
-// sentence below it; and the foot of every longer sheet was cut off by the stage with nothing to
-// scroll (owner's screenshot, 2026-10-14). The pages are CHOSEN BY WHAT THEY HOLD, from the catalogue,
-// never by name: the longest algorithm, the longest "fewer turns" link and the longest "the lessons
-// teach this case as" link — whatever those are the day this runs.
-const longestBy = (entries, size) => entries.reduce((a, b) => (size(b) > size(a) ? b : a));
-const byId = (id) => ALG_ENTRIES.find((e) => e.id === id);
-const DRILL_PAGES = [
-  ['the longest algorithm', longestBy(ALG_ENTRIES, (e) => e.shown.length)],
-  ['the longest link to fewer turns', longestBy(ALG_ENTRIES.filter((e) => e.fewer), (e) => byId(e.fewer.id).shown.length)],
-  ['the longest link to the taught algorithm', longestBy(ALG_ENTRIES.filter((e) => e.usual), (e) => byId(e.usual).shown.length)],
-];
-test('the drill pages measured below are the ones they say they are', () => {
-  // Each must exist, or its case would measure an empty selection and pass over nothing.
-  for (const [what, entry] of DRILL_PAGES) assert.ok(entry, `no algorithm in the catalogue is ${what}`);
-  assert.ok(DRILL_PAGES[1][1].fewer && DRILL_PAGES[2][1].usual, 'a link page was chosen without its link');
-});
-for (const fixture of FIXTURES) {
-  test(`drill page: ${label(fixture)}`, async () => {
-    const { page, context, errors } = await openAt(fixture, urlFor(fixture, 'drill'));
-    try {
-      await page.waitForSelector('.screen.active');
-      const pages = [['the first algorithm listed', null], ...DRILL_PAGES];
-      for (const [what, entry] of pages) {
-        if (await page.$('#algBackToList')) await page.click('#algBackToList');
-        await page.waitForSelector('#algGroups [data-alg]');
-        if (entry) {
-          await page.click('#scopeAll');
-          await page.click(`#algGroups [data-alg="${entry.id}"]`);
-        } else {
-          await page.click('#algGroups [data-alg]');
-        }
-        await page.waitForSelector('#algCube');
-        if (entry?.fewer) await page.waitForSelector('#algFewer [data-alg]');
-        if (entry?.usual) await page.waitForSelector('#algUsual [data-alg]');
-        await page.waitForTimeout(250);
-        const m = await measureScreen(page);
-        assert.deepEqual(errors.map(String), [], `${what}: the page threw`);
-        assert.ok(m.overflow.doc <= 0, `${what}: the page overflows the viewport by ${m.overflow.doc}px`);
-        assert.ok(m.overflow.screen <= 1, `${what}: the screen overflows sideways by ${m.overflow.screen}px`);
-        assert.deepEqual(m.beyond, [], `${what}: drawn beyond the stage`);
-        assert.deepEqual(m.collapsed, [], `${what}: a control has no box — squashed by its column`);
-        assert.deepEqual(m.fits, { spills: [], cut: [] }, `${what}: text that cannot be read where it is drawn — see contentFits`);
-        if (m.col && m.aside) {
-          assert.ok(!overlaps(m.col, m.aside), `${what}: the sheet draws over the cube`);
-          assert.ok(m.col.height > 40 && m.aside.height > 40, `${what}: a region collapsed`);
-        }
-        if (fixture.touch) {
-          const small = m.controls.filter((c) => c.width < 44 - 0.5 || c.height < 44 - 0.5);
-          assert.deepEqual(small, [], `${what}: touch: controls under 44px on the drill page`);
-        }
-      }
-    } finally {
-      await context.close();
-    }
-  });
-}
-
-// The Drill CHOOSER at its widest: every algorithm the app holds, not the learner's eighteen.
-//
-// The loop above opens each screen in its default state, which for Drill is one rung's worth. The
-// list is the whole layout risk here — 137 buttons rather than 18 — and a screen that fits at
-// eighteen tells you nothing about a hundred and thirty-seven (plan item 3.3). Its own case rather
-// than a change to the loop, because only this screen has a control that multiplies its content.
-for (const fixture of FIXTURES) {
-  test(`drill screen, all algorithms shown: ${label(fixture)}`, async () => {
-    const { page, context, errors } = await openAt(fixture, urlFor(fixture, 'drill'));
-    try {
-      await page.waitForSelector('.screen.active');
-      await page.waitForSelector('#scopeAll');
-      await page.click('#scopeAll');
-      await page.waitForFunction(() => document.querySelectorAll('#algGroups .alg-entry').length > 100);
-      const m = await measureScreen(page);
-      assert.deepEqual(errors.map(String), [], 'the page threw');
-      assert.ok(m.overflow.doc <= 0, `the page overflows the viewport by ${m.overflow.doc}px`);
-      assert.ok(m.overflow.screen <= 1, `the screen overflows sideways by ${m.overflow.screen}px`);
-      assert.deepEqual(m.beyond, [], 'drawn beyond the stage');
-      assert.deepEqual(m.collapsed, [], 'a control has no box — squashed by the widened list');
-      assert.deepEqual(m.fits, { spills: [], cut: [] }, 'text that cannot be read where it is drawn — see contentFits');
-      if (fixture.touch) {
-        const small = m.controls.filter((c) => c.width < 44 - 0.5 || c.height < 44 - 0.5);
-        assert.deepEqual(small, [], 'touch: controls under 44px once every algorithm is listed');
-      }
-    } finally {
-      await context.close();
-    }
-  });
 }
 
 test('a popover opened on the stage stays inside it', async () => {

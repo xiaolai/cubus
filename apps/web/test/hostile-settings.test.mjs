@@ -101,7 +101,7 @@ before(async () => {
 test('the screen list is the app\'s own, and carries the newest screen', () => {
   // The guard on the guard: a derived list that silently came back empty would make every case
   // below pass over nothing.
-  assert.ok(SCREENS.length >= 9, `only ${SCREENS.length} screens were discovered`);
+  assert.ok(SCREENS.length >= 8, `only ${SCREENS.length} screens were discovered`);
   assert.ok(SCREENS.includes('settings') && SCREENS.includes('course'), 'a registered screen is missing');
 });
 
@@ -183,36 +183,8 @@ test('every screen renders over hostile settings, and the stage is actually repl
 });
 
 test('the screens that index a palette draw their colours rather than throwing', async () => {
-  // Trainer and Drill read NET_COLORS[palette] for their diagram fills, and Settings paints a
-  // six-swatch row from it. These three were the crash sites.
-  win.location.hash = '#/trainer';
-  await tick();
-  assert.ok(win.document.querySelectorAll('#stage .case-grid > *').length > 0, 'trainer drew no cases');
-
-  win.location.hash = '#/drill';
-  await tick();
-  // The Drill opens on the algorithm library now (dev-docs/algorithm-drills-plan.md phase 3), which
-  // draws a real cube for the chosen algorithm's case. What must survive a hostile palette is that
-  // the panel renders at all; the renderer takes the palette as an ATTRIBUTE and validates it.
-  assert.ok(win.document.querySelectorAll('#algGroups .alg-entry').length > 0, 'the chooser listed nothing');
-  // And one algorithm's own page, which is where a palette is actually indexed — the chooser draws
-  // flat case pictures, the drill draws the cube.
-  win.document.querySelector('#algGroups [data-alg]').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
-  await tick(); await tick();
-  assert.ok(win.document.querySelector('#algMoves')?.textContent, 'the drill drew no turns');
-  assert.ok(win.document.querySelector('#algCube'), 'the drill drew no cube');
-  win.document.querySelector('#algBackToList').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
-  await tick(); await tick();
-
-  // BOTH PRACTICE SCREENS are probed, because both index a palette. They were two KINDS of the Drill
-  // screen until 2026-09-29 and this case reached the second by clicking its selector; it is its own
-  // route now. Testing only one would leave the other uncovered — which is exactly what happened to
-  // this case when the default kind moved.
-  win.location.hash = '#/pieces';
-  await tick();
-  assert.ok(win.document.querySelector('#drillAsk')?.textContent, 'the pieces drill asked nothing');
-  assert.equal(win.document.querySelectorAll('#stage [data-face]').length, 6, 'the pieces drill drew no faces to pick');
-
+  // Settings paints a six-swatch row from NET_COLORS[palette]. The Trainer and the Drill read it for
+  // their diagram fills too, and were the other two crash sites, until they were removed (ADR 0010).
   win.location.hash = '#/settings';
   await tick();
   const swatches = [...win.document.querySelectorAll('#palSwatch > div')];

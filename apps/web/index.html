@@ -55,7 +55,7 @@
        *
        * WHAT IT COSTS, because it is a real cost and not a free win: the scrollbar is the only
        * signal that a region continues past its edge. The places that scroll here — Settings,
-       * Lessons, the case grid, the popovers — all show a partial row or card at the fold, so the
+       * the case grid, the popovers — all show a partial row or card at the fold, so the
        * content says it continues even when nothing else does. A future screen where the fold
        * lands cleanly between items would need its own affordance.
        *
@@ -336,7 +336,7 @@
          It stays because it is this cell's alignment rule for whatever root a screen puts in it,
          not the paper rule: dropping it would switch every screen root from centred to stretched,
          which is a different change and one nothing asked for. The roots that are not a .cols —
-         Timer's and Trainer's plain divs — were measured on 2026-09-06 and already fill the cell
+         Timer's plain div, and others since removed — were measured on 2026-09-06 and fill the cell
          on both axes, so this is conservatism about a rule outside the amendment's subject rather
          than a dependency on it. */
       .screen.active { display: grid; place-items: center; }
@@ -448,7 +448,7 @@
            whole box; the bottom row splits 2:3 between the cube and the notice-plus-button. */
         .cols.twin-low { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); grid-template-areas: "primary primary" "twin sheet"; }
         .cols.twin-low .twin .cube-slot { flex: 1; min-height: 0; height: auto; margin: 6px 0 0; }
-        /* List screens (Settings, Stats, Lessons): there is no primary to lock — the first
+        /* List screens (Settings, Stats): there is no primary to lock — the first
            column is a list — so the rows take their content's height and the whole box scrolls
            as one, instead of two scroll regions stacked on a phone. Landscape is unchanged: two
            columns, each scrolling. */
@@ -547,11 +547,11 @@
       /* Intrinsic wrapping, not a breakpoint: as many 150px stat cards as fit, three on the
          desktop reference, two on a phone. A `.v` at --fs-display needs ~130px. */
       .grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }
-      /* Trainer cases: as many 140px cards as the width holds — five at the reference, two on a
-         phone. */
+      /* Picture cards (Shapes): as many 140px cards as the width holds — five at the reference, two
+         on a phone. */
       .case-grid { flex: 1; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 14px; align-content: start; }
       /* A row of controls that wraps rather than overflows — the theme pills beside their
-         description, the trainer's filters beside their caption, the timer's last five. */
+         description, the timer's last five. */
       .wrap-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
       /* The timer's clock: 150px at the reference, and never wider than the stage — "12.34" in
          the mono stack is ~3.6 characters of width, so 24cqw keeps it inside a phone. */
@@ -996,23 +996,6 @@
       .screen { --chip: 36px; }
       .chip-m { font-family: var(--font-num); font-size: var(--fs-body-l); font-weight: 600; border: 1px solid var(--line); background: var(--panel); color: var(--ink-5); border-radius: var(--r-2); width: var(--chip); height: var(--chip); padding: 0; display: inline-flex; align-items: center; justify-content: center; }
       .chip-m.played { background: var(--panel-sunk); color: var(--ink); }
-      /* A SETUP chip is not pressable and must not look it: same size and rhythm as the solve row so
-         the two read as one sequence of turns, but sunk and quiet, because pressing it does nothing.
-         A chip that looks like a button and is not is worse than either. */
-      .chip-m.flat { background: var(--panel-sunk); color: var(--ink-4); border-style: dashed; }
-      /* A WHOLE ALGORITHM AS ONE PRESS — the drill page's way to the case's other algorithm. A pill,
-         because every action is one, on its own line under the sentence that names it, and allowed
-         to wrap: a fifteen-turn algorithm is wider than the sheet. It was a `.chip-m.flat`, which is
-         a SINGLE turn's 36px square and a non-pressable one at that, so the moves stood in a column
-         one per line, drawn over the notation sentence below (owner's screenshot, 2026-10-14). */
-      .alg-link { display: block; width: fit-content; max-width: 100%; margin-top: 6px; text-align: left; line-height: 1.45; }
-      /* The drill's three steps. A numbered list, because a drill IS a procedure and the cheapest way
-         to say so is to number it — the page carried nine unlabelled facts before. `decimal` markers
-         sit in the number font so they match the turns beside them. */
-      .drill-steps { margin: 0; padding: 0 0 0 1.35em; display: flex; flex-direction: column; gap: 10px; }
-      .drill-steps > li { padding-left: 2px; }
-      .drill-steps > li::marker { font-family: var(--font-num); font-weight: 600; color: var(--ink-4); }
-      .drill-steps .wrap-row { padding-top: 6px; }
 
       /* ---- touch floors ----------------------------------------------------------------- */
       /* On a coarse pointer every control is at least 44px — Apple's floor, and the contract's

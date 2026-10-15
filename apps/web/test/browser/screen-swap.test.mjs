@@ -284,7 +284,7 @@ test('no press and no navigation builds a second WebGL context', async () => {
 
     // Away to screens with no cube at all and back: the parked one must outlive them, or coming
     // home from Settings pays for a context every time.
-    for (const id of ['lessons', 'stats', 'home', 'scramble', 'home']) {
+    for (const id of ['timer', 'stats', 'home', 'scramble', 'home']) {
       await page.click(`[data-nav="${id}"]`);
       await page.waitForTimeout(700);
     }

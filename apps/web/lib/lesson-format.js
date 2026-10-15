@@ -7,7 +7,7 @@
 // self-contained page carrying its own copy of the renderer.
 //
 // EPISODE, not "lesson", everywhere in the app's own code. The app already has a `lesson`: a step
-// of a solve with a reason attached (`lib/method-lesson.js`, and the ladder on the Lessons screen).
+// of a solve with a reason attached (`lib/method-lesson.js`).
 // A narrated seven-minute episode is a different thing, and the two would otherwise meet on one
 // screen wearing one word. The FILES keep the course's spelling because they are the course's
 // files; the boundary is here.

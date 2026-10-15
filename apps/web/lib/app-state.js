@@ -28,7 +28,6 @@ const P = {
   scan: '<path d="M3 8V5a2 2 0 0 1 2-2h3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M21 16v3a2 2 0 0 1-2 2h-3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/><rect x="8.5" y="8.5" width="7" height="7" rx="1.5"/>',
   timer: '<line x1="10" y1="2" x2="14" y2="2"/><line x1="12" y1="14" x2="15" y2="11"/><circle cx="12" cy="14" r="8"/>',
   chart: '<path d="M3 3v18h18"/><rect x="7" y="10" width="3" height="7"/><rect x="12" y="6" width="3" height="11"/><rect x="17" y="13" width="3" height="4"/>',
-  cap: '<path d="M22 10 12 5 2 10l10 5 10-5Z"/><path d="M6 12v5c0 1 3 2 6 2s6-1 6-2v-5"/>',
   repeat: '<path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/>',
   box: '<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>',
   book: '<path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2Z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7Z"/>',
@@ -50,7 +49,6 @@ const P = {
   'paint-roller': '<rect width="16" height="6" x="2" y="2" rx="2"/><path d="M10 16v-2a2 2 0 0 1 2-2h8a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect width="4" height="6" x="8" y="16" rx="1"/>',
   // The About card's three row markers, drawn by hand in the same 24×24 stroke grammar as the
   // rest of this map — no icon library behind them, same as everything above.
-  tag: '<path d="M12.6 2.6 21 11a2 2 0 0 1 0 2.8l-7.2 7.2a2 2 0 0 1-2.8 0L2.6 12.6A2 2 0 0 1 2 11.2V4a2 2 0 0 1 2-2h7.2a2 2 0 0 1 1.4.6Z"/><circle cx="7.5" cy="7.5" r="1.3"/>',
   bluetooth: '<path d="m7 7 10 10-5 5V2l5 5L7 17"/>',
   globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.3 4 5.6 4 9s-1.5 6.7-4 9c-2.5-2.3-4-5.6-4-9s1.5-6.7 4-9Z"/>',
   user: '<circle cx="12" cy="7.5" r="3.5"/><path d="M5 20.5c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5"/>',
@@ -58,8 +56,9 @@ const P = {
 // Only its own names: an inherited one — `toString`, `__proto__` — drew native function text or
 // "[object Object]" where a glyph belongs (found by audit, 2026-09-13).
 // `aria-hidden`, because every one of these sits beside the words it decorates. Without it a screen
-// reader announces an unnamed graphic before each label — measured on the Drill chooser, where the
-// leading icon read out as a picture with no description and told the listener nothing. An icon-only
+// reader announces an unnamed graphic before each label — measured on a chooser screen since
+// removed, where the leading icon read out as a picture with no description and told the listener
+// nothing. An icon-only
 // button therefore carries its own `aria-label`; there is no icon in this app that IS the message.
 export const icon = (name, size = 16) => `<svg class="ic" aria-hidden="true" viewBox="0 0 24 24" style="width:${size}px;height:${size}px">${Object.hasOwn(P, name) ? P[name] : '<circle cx="12" cy="12" r="2"/>'}</svg>`;
 
@@ -68,9 +67,9 @@ export const icon = (name, size = 16) => `<svg class="ic" aria-hidden="true" vie
 // fewer than the number of rows a person can scan at a glance — the labels cost three lines of
 // chrome and a level of hierarchy to sort a list short enough not to need sorting.
 // The tabs, in order. Settings is not among them: it is the toolbar's trailing button, drawn by
-// buildChrome, because it is not a stop on the way to a solved cube. The counts that used to sit
-// beside Alg trainer, Drill and Lessons (78, 12, 9) were fixed numbers describing nothing; a tab
-// carries no badge until there is something real to count.
+// buildChrome, because it is not a stop on the way to a solved cube. A tab carries no badge until
+// there is something real to count: the counts that once sat beside three tabs were fixed numbers
+// describing nothing.
 export const NAV = [
   ['home', 'Home', 'box'],
   // Two 3x3 grids differing only in which cells were filled read as one picture at 22px, which is
@@ -83,28 +82,19 @@ export const NAV = [
   ['scramble', 'Scramble', 'dice'],
   ['timer', 'Timer', 'timer'],
   ['stats', 'Stats', 'chart'],
-  ['trainer', 'Alg trainer', 'cap'],
-  ['drill', 'Drill', 'repeat'],
-  // Beside Drill because that is where it used to live, as a second kind inside it (2026-09-29,
-  // option C): someone who knows the exercise will look for it here. `tag` rather than another grid
-  // or cube silhouette — the question it asks is where a piece BELONGS, which is a labelling of a
-  // place, and no other tab uses it.
-  ['pieces', 'Pieces', 'tag'],
-  ['lessons', 'Lessons', 'book'],
-  // The narrated course. Hidden by default like the two above it, and for the same reason: the
-  // screen is real, what it lists is not part of the app (ADR 0006).
+  // The narrated course. Hidden by default: the screen is real, what it lists is not part of the
+  // app (ADR 0006).
   ['course', 'Course', 'play'],
 ];
 // Each screen's name. It is shown in the title bar rather than in a bar of its own, so there is no
 // second line of chrome restating what the nav already highlights. The subtitles that used to sit
 // under these were restatements of what each screen says itself, and went with the bar.
 // Built from NAV, so a tab added or renamed there brings its title with it; only the names that
-// differ from their tab's label are written here — Home is the cube, the trainer's tab is short,
-// and Settings has no tab (it is the toolbar's trailing button).
+// differ from their tab's label are written here — Home is the cube, and Settings has no tab (it
+// is the toolbar's trailing button).
 export const TITLES = Object.freeze({
   ...Object.fromEntries(NAV.map(([id, label]) => [id, label])),
   home: 'Cube',
-  trainer: 'Algorithm trainer',
   settings: 'Settings',
   // Reached from the cube screen's Shapes menu, not from the tab row — so it has a title here and
   // no entry in NAV. The pictures are the game beside the method; a tab would file them as a stop

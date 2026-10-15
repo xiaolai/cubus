@@ -10,9 +10,9 @@
 // wiring rather than about behaviour, and the behaviour half runs in
 // browser/method-lesson-render.test.mjs where a real renderer can answer it.
 //
-// Named for the CUBE screen. Its sibling  is about the Lessons screen and
-// the rung ladder; the two were briefly "lesson-wiring" and "lessons-wiring", one letter apart,
-// which is a filename nobody can grep for with confidence.
+// Named for the CUBE screen. Its sibling `rung-offer-wiring.test.mjs` is about the rung offer; the
+// two were once "lesson-wiring" and "lessons-wiring", one letter apart, which is a filename nobody
+// can grep for with confidence.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

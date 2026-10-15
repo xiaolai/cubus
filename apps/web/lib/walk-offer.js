@@ -21,8 +21,8 @@ import { dialsOf } from './method-solver.js';
  * seek, and a learner who scrubs back and forth would otherwise be credited with a dozen solves.
  *
  * @param {object} deps `root`, the screen holding `#rungOffer`; `settings`, whose `rungProgress`
- *   this writes; `save`; `raiseRung`, the one operation both the offer and the Lessons ladder go
- *   through; and `onRaised()`, what the screen does once a rung has gone up.
+ *   this writes; `save`; `raiseRung`, the one operation that raises a rung; and `onRaised()`, what
+ *   the screen does once a rung has gone up.
  */
 export function createRungOffer({ root, settings, save, raiseRung, onRaised }) {
   let creditedWalk = -1;

@@ -5,19 +5,31 @@
 // looks like nagging; one that raises a rung without being answered looks like the app deciding.
 // So this file is mostly about WHEN an offer exists and what answering it does.
 //
-// The screen half is `lessons-wiring.test.mjs`; this is the logic, which is where the rules live.
+// The screen half is `rung-offer-wiring.test.mjs`; this is the logic, which is where the rules live.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { LADDER, STAGE_IDS, TOP_RUNG } from '../lib/method-solver.js';
 import {
-  FOLLOWS_TO_OFFER, NO_PROGRESS, RE_OFFER_GAP, acceptOffer, declineOffer, followsUntilOffer,
-  ladderRows, nextOffer, recordCleanFollow, repairProgress,
+  FOLLOWS_TO_OFFER, NO_PROGRESS, RE_OFFER_GAP, acceptOffer, declineOffer, ladderRows, nextOffer,
+  recordCleanFollow, repairProgress,
 } from '../lib/method-ladder.js';
 
 const BOTTOM = Object.freeze({ cross: 0, pairs: 0, oll: 0, pll: 0 });
 const fresh = () => repairProgress(NO_PROGRESS);
+/**
+ * How many more clean follows until the cross is offered — counted by FOLLOWING, never computed, so
+ * the wait a test reads is the one a learner would live through.
+ */
+const followsUntilCross = (progress, most = 100) => {
+  let p = progress;
+  for (let n = 0; n <= most; n++) {
+    if (nextOffer(BOTTOM, p)?.id === 'cross') return n;
+    p = recordCleanFollow(p, STAGE_IDS);
+  }
+  return Infinity;
+};
 /** Follow every stage `n` times. */
 const followAll = (n, progress = fresh()) => {
   let p = progress;
@@ -93,7 +105,7 @@ test('declining postpones THAT stage, and never decides anything about the rung'
   // WHAT A DECLINE DOES NOT DO is govern the other three stages. Written as a test first and
   // found to be wrong: declining the cross put the pairs offer up in the same breath, which is
   // nagging wearing the costume of a different question. The postponement is per stage, and
-  // "at most one offer per completed lesson" is the app's half — `lessons-wiring.test.mjs` pins
+  // "at most one offer per completed lesson" is the app's half — `rung-offer-wiring.test.mjs` pins
   // that the screen computes an offer once per walk and hides it once answered.
   let p = followAll(FOLLOWS_TO_OFFER);
   const offer = nextOffer(BOTTOM, p);
@@ -101,7 +113,7 @@ test('declining postpones THAT stage, and never decides anything about the rung'
   p = declineOffer(p, offer);
 
   // The declined stage goes quiet for RE_OFFER_GAP more follows.
-  assert.equal(followsUntilOffer(BOTTOM, p, 'cross'), RE_OFFER_GAP);
+  assert.equal(followsUntilCross(p), RE_OFFER_GAP);
   assert.notEqual(nextOffer(BOTTOM, p)?.id, 'cross', 'the declined stage must not come straight back');
   // And the rung is untouched: declining decides nothing about what is being taught.
   assert.equal(nextOffer(BOTTOM, p)?.from ?? 0, 0);
@@ -130,7 +142,7 @@ test('an OVERDUE offer is postponed from where the learner is, not from the thre
   assert.equal(offer.id, 'cross', 'the setup is only meaningful if the offer is overdue');
   p = declineOffer(p, offer);
   assert.notEqual(nextOffer(BOTTOM, p)?.id, 'cross', 'an overdue offer came straight back');
-  assert.equal(followsUntilOffer(BOTTOM, p, 'cross'), RE_OFFER_GAP,
+  assert.equal(followsUntilCross(p), RE_OFFER_GAP,
     'the wait is measured from the follow count at decline time');
   // And it does come back, after exactly that wait.
   for (let i = 0; i < RE_OFFER_GAP - 1; i++) p = recordCleanFollow(p, STAGE_IDS);
@@ -148,32 +160,12 @@ test('each decline waits longer than the last', () => {
     const offer = nextOffer(BOTTOM, p);
     assert.equal(offer?.id, 'cross', `decline ${n}: the cross should be on offer`);
     p = declineOffer(p, offer);
-    const gap = followsUntilOffer(BOTTOM, p, 'cross');
+    const gap = followsUntilCross(p);
     gaps.push(gap);
     for (let i = 0; i < gap; i++) p = recordCleanFollow(p, STAGE_IDS);
   }
   assert.deepEqual(gaps, [RE_OFFER_GAP, RE_OFFER_GAP * 2, RE_OFFER_GAP * 3]);
   for (let i = 1; i < gaps.length; i++) assert.ok(gaps[i] > gaps[i - 1], 'the wait must grow');
-});
-
-test('the countdown on the screen and the moment the offer fires are one formula', () => {
-  // They were two, and two copies of a threshold are how a screen comes to say "2 more solves"
-  // about an offer that is already due.
-  for (const declines of [0, 1, 2]) {
-    let p = followAll(FOLLOWS_TO_OFFER);
-    for (let n = 0; n < declines; n++) {
-      const o = nextOffer(BOTTOM, p);
-      if (o) p = declineOffer(p, o);
-      for (let i = 0; i < RE_OFFER_GAP * (n + 1); i++) p = recordCleanFollow(p, STAGE_IDS);
-    }
-    for (let step = 0; step < 4; step++) {
-      const left = followsUntilOffer(BOTTOM, p, 'cross');
-      const offered = nextOffer(BOTTOM, p)?.id === 'cross';
-      assert.equal(offered, left === 0,
-        `declines=${declines}: the countdown says ${left} while the offer is ${offered ? 'up' : 'down'}`);
-      p = recordCleanFollow(p, STAGE_IDS);
-    }
-  }
 });
 
 test('a counter at its stored limit stops rising rather than being thrown away on reload', () => {
@@ -210,7 +202,6 @@ test('a decline still postpones at the count ceiling, where it matters most', ()
 test('a stage at the top of its ladder is never offered anything', () => {
   const top = Object.fromEntries(STAGE_IDS.map((id) => [id, TOP_RUNG[id]]));
   assert.equal(nextOffer(top, followAll(100)), null);
-  for (const id of STAGE_IDS) assert.equal(followsUntilOffer(top, fresh(), id), null);
 });
 
 test('the ladder shows every rung, including the ones not yet reached', () => {
@@ -258,6 +249,5 @@ test('nothing is ever raised without an answer', () => {
   const snapshot = JSON.stringify({ r: BOTTOM, p: before });
   for (let i = 0; i < 5; i++) nextOffer(BOTTOM, before);
   ladderRows(BOTTOM, before);
-  followsUntilOffer(BOTTOM, before, 'cross');
   assert.equal(JSON.stringify({ r: BOTTOM, p: before }), snapshot);
 });

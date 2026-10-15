@@ -22,7 +22,7 @@ import {
   LESSON_SUBJECT, bindCaptions, captionButtonHtml, captionCardHtml, captionsShown, createMediaSlot, createNumberSlot, createPlayLabel, createTextSlot, lessonCubeHtml, mediaLayerHtml, numberOverlayHtml, sectionsHtml, titleCardHtml,
 } from './lesson-chrome.js';
 
-/** The faces a child may pick, in the order they are drawn — the Drill screen's order. */
+/** The faces a child may pick, in the order they are drawn. */
 const FACES = ['U', 'R', 'F', 'D', 'L', 'B'];
 
 /**

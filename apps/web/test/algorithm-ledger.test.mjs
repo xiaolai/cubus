@@ -12,7 +12,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -21,7 +21,6 @@ import { SOLVED, applyAlg, movesOf } from '../lib/cube-pieces.js';
 import { ALGORITHM_SETS, METHOD_ALGORITHMS } from './fixtures/algorithm-ledger.mjs';
 import { LEDGER, MEASURED_SETS } from '../bench/algorithm-ledger.mjs';
 import { LADDER, STAGE_IDS } from '../lib/methods/index.js';
-import { SET_IDS as CATALOGUE_SETS } from '../lib/alg-catalogue.js';
 import Cube from 'cubejs';
 
 test('the frozen ledger is what regenerating it produces', () => {
@@ -111,14 +110,20 @@ test('every method names sets that exist, and every set is named by some method'
   // A set nothing needs is a set we would claim to teach and never show — the same rule
   // `CASE_NAMES` already enforces one level down. `align` is exempt: it is not taught.
   //
-  // So are the PROVED tables, since 2026-10-13, and only because they are SHOWN: no rung teaches them any
-  // more (the human-speed tables replaced them), but they are the reference every sourced row is checked
-  // against and the Drill offers each one second, after its case's human-speed algorithm. "Held and never
-  // shown" is the defect, so that is what is asserted for them instead.
+  // So are the PROVED tables, and only because they are the ORACLE: no rung teaches them since 2026-10-13
+  // (the human-speed tables replaced them) and no screen shows them since the Drill went (ADR 0010), but
+  // `human-algs.test.mjs` checks every sourced row against them. "Held and used by nothing" is the
+  // defect, so for them the use asserted is that one — read off the test's own import, which is where it
+  // would stop.
+  const ORACLE_OF = { 'f2l-full': 'F2L_CASES', 'oll-full': 'FULL_OLL', 'pll-full': 'FULL_PLL' };
+  const humanAlgsTest = readFileSync(new URL('./human-algs.test.mjs', import.meta.url), 'utf8');
+  const oracleImport = humanAlgsTest.match(/import \{([^}]*)\} from '\.\.\/lib\/data\/case-tables\.js'/)?.[1] ?? '';
   for (const id of ids) {
     if (id === 'align') continue;
     if (ALGORITHM_SETS.find((s) => s.id === id).kind === 'proved') {
-      assert.ok(CATALOGUE_SETS.includes(id), `"${id}" is taught by no method and shown by no screen`);
+      assert.ok(ORACLE_OF[id], `"${id}" is a proved set with no oracle named for it here`);
+      assert.ok(oracleImport.split(',').map((n) => n.trim()).includes(ORACLE_OF[id]),
+        `"${id}" is taught by no method, and human-algs.test.mjs no longer checks anything against it`);
       continue;
     }
     assert.ok(used.has(id), `no method needs "${id}" — it is held and never taught`);

@@ -1,6 +1,6 @@
 // The rung offer on its own — lib/walk-offer.js.
 //
-// lessons-wiring.test.mjs holds the offer to its shape in the source: answered both ways, through the
+// rung-offer-wiring.test.mjs holds the offer to its shape in the source: answered both ways, through the
 // one rung-raising operation, crediting once per walk and only the stages the lesson contained. This
 // file holds it to what a learner sees: which moves count as followed, when a follow is credited, what
 // the row says, and which offer an answer is about.

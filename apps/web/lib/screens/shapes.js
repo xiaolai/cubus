@@ -12,9 +12,9 @@
 // drift §9.6 spent a fortnight refusing, one level up. It is reached from the cube screen's Shapes
 // menu and addressable as `#/shapes` like every other screen, so a reload lands back here.
 //
-// NOTHING HERE IS A NEW LAYOUT. It is the TRAINER's composition — a full-width flex column whose
-// last child is `.case-grid`, the wrapping grid the Trainer and the Drill library already use: as
-// many 140px cards as the width holds, which is container-driven and so needs no viewport query
+// NOTHING HERE IS A NEW LAYOUT. It is a full-width flex column whose last child is `.case-grid`,
+// the wrapping grid the removed Trainer and Drill library used (ADR 0010): as many 140px cards as
+// the width holds, which is container-driven and so needs no viewport query
 // (`test/layout-queries.test.mjs`).
 //
 // AND DELIBERATELY NOT `.cols.flow`, which is what this screen was written with first. That is the
@@ -22,8 +22,7 @@
 // `sheet` area for an aside. This screen has no aside, so half a landscape stage was simply blank:
 // measured at 1180×820, the grid fitted THREE cards across and scrolled, against six with the
 // column removed. A list is a column by nature and a catalogue is not — twenty pictures want the
-// width. (The Drill library has the same shape and the same empty half; that is its own call to
-// make, and is not changed here.)
+// width.
 //
 // AND NO MOVE COUNT IS DRAWN. The ledger proves a minimum for each picture FROM SOLVED, and the
 // cube in a child's hands is almost never solved — so a number here would be a true figure
@@ -93,8 +92,8 @@ SCREENS.shapes = () => {
         <span class="sub" style="margin-left:auto;color:var(--ink-4)">${escHtml(t('%1 shapes', OFFERED_PATTERNS.length))}</span>
       </div>
       <!-- NO LIST ROLE. Its children are buttons rather than list items, so declaring one would
-           describe a structure that is not there — the same note the Drill library carries, and
-           for the same reason. The count above already says how many there are.
+           describe a structure that is not there. The count above already says how many there
+           are.
            NO BACKTICK IN THIS COMMENT: it ships inside the screen's template literal. -->
       <div class="case-grid" id="shapeGrid">${OFFERED_PATTERNS.map((p) => shapeCard(p, chosen)).join('')}</div>
     </div>`,

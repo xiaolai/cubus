@@ -71,8 +71,8 @@ export function createFollowTracker({
   // ---- off the walk, as a SOUND ---------------------------------------------------------------
   //
   // The screen's sentence is read by nobody this app is for, so leaving the walk and coming back to it
-  // are each heard ONCE — the drill's `off` (lib/drill-attempt.js raises it once per excursion, never
-  // per report), and `capture`, its rising twin, for being back. `capture` says "got it" during a scan;
+  // are each heard ONCE — `off` once per excursion, never per report, and `capture`, its rising twin,
+  // for being back. `capture` says "got it" during a scan;
   // being back on the walk is the same news, and a third sound would be one more to learn.
   let off = false;
   const wentOff = () => { if (off) return; off = true; sound('off'); };

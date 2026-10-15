@@ -81,13 +81,6 @@ export const DEFAULT_SETTINGS = Object.freeze({
   theme: 'auto', palette: DEFAULT_PALETTE, scheme: 'western', schemeSource: 'default', autosolve: false, cameraId: '',
   navHidden: null, navDefaults: 0, devRandCube: false, language: '', dragRotate: false, solveTier: 'twenty',
   proveMinimum: false, soundMode: SOUND_MODES.chime, devScanView: SCAN_VIEWS.today,
-  // The Drill screen's clock. OFF by default, on `proveMinimum`'s precedent and for a related
-  // reason: a stopwatch turns practice into performance, and this app hides Timer and Stats from a
-  // beginner's tab row on exactly that reasoning (decision D3 of
-  // dev-docs/algorithm-drills-plan.md). A drill rep is 3-14 moves, so its span carries the timer's
-  // documented missing-first-move bias at 10-25% rather than under 1% — which is why the row that
-  // turns it on says what the number can and cannot be compared with.
-  drillClock: false,
   // An arrow on the cube showing the turn to make, wherever the app walks a cube through a solve or a
   // scramble — and, off the walk, the turn back onto it. ON by default (owner, 2026-10-15): the app is
   // for children first, a child who cannot read follows a picture, and an adult can turn it off.
@@ -224,6 +217,8 @@ delete settings.inspection;
 // not a preference, and four dropdowns would be a configuration screen inside a children's app.
 // The stored leftover goes the same way `inspection` did.
 delete settings.teachLevel;
+// `drillClock` timed the Drill screen's reps, and went with the screen (ADR 0010).
+delete settings.drillClock;
 
 /**
  * Which rung of each stage this learner is on — dev-docs/method-solver-return-plan.md §2/§3.
@@ -237,16 +232,15 @@ delete settings.teachLevel;
  * an integer inside the ladder falls back to 0. A stored 9 would otherwise throw out of
  * `methodFor` on the first solve and take the screen with it — the `language: 7` failure again.
  */
-/**
- * Exported since 2026-10-04 so that there is ONE rung-normalisation policy in the app.
- *
- * The Lessons screen compares the rungs in memory with the rungs on disk to decide whether to warn
- * that the device did not save a raise. It did that comparison with a rule of its own — "an integer
- * is a rung" — while this one also bounds the value by the stage's top. A stored `cross: 99` was
- * therefore repaired to 0 here and read as 99 there, so the two disagreed and the screen warned
- * about a raise that had never happened (verify pass, 2026-10-04). The comparison has to be between
- * two records normalised by the same function, which means this one.
- */
+function repairRungs(stored) {
+  const out = { ...DEFAULT_RUNGS };
+  for (const id of STAGE_IDS) {
+    const want = stored?.[id];
+    if (Number.isInteger(want) && want >= 0 && want <= TOP_RUNG[id]) out[id] = want;
+  }
+  return out;
+}
+
 /**
  * The last-layer route this install walks — repaired AND migrated, from the STORED record rather than the
  * merged one, for `soundMode`'s reason: the merge always supplies the default, which would make every
@@ -263,6 +257,12 @@ delete settings.teachLevel;
  * last layer, so the new default reaches them — which a stored record outranking a changed default would
  * otherwise never let it do.
  */
+export function repairLastLayer(stored, rungs) {
+  const want = stored?.lastLayer;
+  if (typeof want === 'string' && LAST_LAYER_ROUTES.includes(want)) return want;
+  return rungs.oll > 0 || rungs.pll > 0 ? 'app' : DEFAULT_SETTINGS.lastLayer;
+}
+
 /** A resting place as a record, or null: two non-empty strings and a progress RECORD, nothing more. */
 export function repairCourseRested(stored) {
   const r = asRecord(stored);
@@ -272,20 +272,6 @@ export function repairCourseRested(stored) {
   return { course, id, progress };
 }
 
-export function repairLastLayer(stored, rungs) {
-  const want = stored?.lastLayer;
-  if (typeof want === 'string' && LAST_LAYER_ROUTES.includes(want)) return want;
-  return rungs.oll > 0 || rungs.pll > 0 ? 'app' : DEFAULT_SETTINGS.lastLayer;
-}
-
-export function repairRungs(stored) {
-  const out = { ...DEFAULT_RUNGS };
-  for (const id of STAGE_IDS) {
-    const want = stored?.[id];
-    if (Number.isInteger(want) && want >= 0 && want <= TOP_RUNG[id]) out[id] = want;
-  }
-  return out;
-}
 settings.rungs = repairRungs(settings.rungs);
 settings.lastLayer = repairLastLayer(storedSettings, settings.rungs);
 settings.courseRested = repairCourseRested(settings.courseRested);
@@ -368,28 +354,19 @@ delete settings.advanced;
 export const HIDEABLE = [
   ['timer', 'Timer'],
   ['stats', 'Stats'],
-  ['trainer', 'Alg trainer'],
-  ['drill', 'Drill'],
-  ['pieces', 'Pieces'],
-  ['lessons', 'Lessons'],
   ['course', 'Course'],
 ];
 
-/** Hidden unless asked for. Timer and Stats are speedcubing instruments, not part of learning to
- * solve a cube. (Stats used to be hidden because it showed invented numbers; phase 5 replaced
- * every one of them with a computed figure or an em dash, so it is hidden now only because a
- * beginner does not need an ao12 — not because it lies.) Alg trainer and Lessons are still
- * the other class: representative screens with placeholder content. **Drill is no longer among
- * them** (2026-09-27, dev-docs/algorithm-drills-plan.md item 4.2): it holds every algorithm the app
- * knows, drills a chosen one against a tracked cube, and says what it measured — so it is published.
- * Removing it from this list is HALF the change; see `NAV_ADDED` below for the other half, which is
- * the half that actually decides whether a fresh install sees the tab. **Drill and Pieces are hidden
- * again** (owner's decision, 2026-10-14): the default row is Home, Restore and Scramble — solve,
- * scan, scramble — and nothing else; see version 7 below. The default tab row is the beginner's path;
- * everything else is one chord away. In CODE, not only in a stored preference: the hidden set
- * was once a preference alone, and one wiped localStorage brought five placeholder screens back
- * into the toolbar. Version 2 hides the three once for anyone who already ran the app. */
-export const DEFAULT_HIDDEN = ['timer', 'stats', 'trainer', 'drill', 'pieces', 'lessons', 'course'];
+/** Hidden unless asked for. The default row is Home, Restore and Scramble — solve, scan,
+ * scramble — and nothing else (owner's decision, 2026-10-14); everything else is one chord away.
+ * Timer and Stats are speedcubing instruments, not part of learning to solve a cube. (Stats used to
+ * be hidden because it showed invented numbers; phase 5 replaced every one of them with a computed
+ * figure or an em dash, so it is hidden now only because a beginner does not need an ao12 — not
+ * because it lies.) In CODE, not only in a stored preference: the hidden set was once a preference
+ * alone, and one wiped localStorage brought five placeholder screens back into the toolbar.
+ * Changing this list is HALF a change: see `NAV_ADDED` below for the half that reaches a record
+ * that has already run. */
+export const DEFAULT_HIDDEN = ['timer', 'stats', 'course'];
 
 /**
  * What each version ADDED, so a bump applies a delta rather than the whole set.
@@ -401,42 +378,24 @@ export const DEFAULT_HIDDEN = ['timer', 'stats', 'trainer', 'drill', 'pieces', '
  * back". A delta is what makes that sentence true for every version after the first.
  */
 const NAV_ADDED = Object.freeze({
-  // `drill` was here until 2026-09-27 and its removal is what publishes the tab. Changing
-  // `DEFAULT_HIDDEN` alone does NOTHING, including for a fresh install: a fresh record has no
-  // `navDefaults`, so `from` is 0, migration 2 runs, and it would put `drill` straight back.
-  // Measured before the change, and `nav-defaults-migration.test.mjs` now asserts Drill's
-  // VISIBILITY by name — the older case loops over `DEFAULT_HIDDEN` itself, so removing an id from
-  // that list also removes it from the check, and the whole thing would have gone green while the
-  // tab stayed hidden.
+  // Changing `DEFAULT_HIDDEN` alone does NOTHING, including for a fresh install: a fresh record has
+  // no `navDefaults`, so `from` is 0, this migration runs, and it would hide whatever it names.
+  // `nav-defaults-migration.test.mjs` asserts visibility by name for that reason — a case that loops
+  // over `DEFAULT_HIDDEN` itself stops checking an id the moment the id leaves the list.
   //
-  // An existing install that has Drill hidden KEEPS it hidden and turns it on in Settings. That is
-  // decision D5, and the reason is that this record cannot tell an inherited default from a
-  // deliberate hide — so a delta that removed an id could not avoid overriding somebody's choice.
-  2: ['timer', 'stats', 'trainer', 'lessons'],
+  // An install that has a tab hidden KEEPS it hidden: this record cannot tell an inherited default
+  // from a deliberate hide, so a delta that removed an id could not avoid overriding somebody's
+  // choice (decision D5).
+  2: ['timer', 'stats'],
   3: ['course'],
-  // `pieces` left the Drill screen and became a tab of its own (2026-09-29, option C) and was
-  // hidden here, on the reasoning that no id had existed before so no choice was being overridden.
-  // THAT REASONING WAS ABOUT THE ID AND THE USER LIVES IN THE ACTIVITY: the Pieces content was
-  // reachable inside the Drill screen, which shipped two days earlier, so hiding the new tab took
-  // away something people could already get to. Kept here rather than edited out, because 4 is what
-  // 0.7.6 and 0.7.7 actually did and version 5 only makes sense beside it. Reversed by `NAV_SHOWN`
-  // below (owner's decision, 2026-09-29).
-  4: ['pieces'],
-  // Version 6 hid `loop`, the One turn screen (ADR 0008). The screen was removed on 2026-10-15, and
-  // so was its entry: an id that names no screen is dropped from the stored record at load (the
-  // `HIDEABLE_IDS` filter below), so hiding it again would only write an id that is then thrown away.
-  // THE DEFAULT ROW IS SOLVE, SCAN AND SCRAMBLE (owner's decision, 2026-10-14): Drill and Pieces go
-  // back behind the Advanced section, where every other screen already is. An ADD, so it reaches
-  // existing installs too — which is the point, and it is the cost D5 named: a record cannot tell an
-  // inherited default from a deliberate choice, so anyone who had them showing loses the tabs and
-  // turns them back on in Advanced. The owner asked for the row everywhere, not on fresh installs
-  // only. Their routes keep working, so a link to #/drill still lands.
-  7: ['drill', 'pieces'],
+  // Versions 2 and 4 to 7 also hid or showed the Alg trainer, Drill, Pieces, Lessons and One turn
+  // screens. All five were removed on 2026-10-15 (ADR 0010), and so were their entries: an id that
+  // names no screen is dropped from the stored record at load (the `HIDEABLE_IDS` filter below), so
+  // hiding one again would only write an id that is then thrown away.
 });
 
 /**
- * What each version brought BACK — the other direction, and the reason this walk is no longer
- * add-only.
+ * What each version brought BACK — the other direction.
  *
  * Removing an id from `DEFAULT_HIDDEN` reaches a FRESH install and nobody else: a record that has
  * already run stores `navHidden` with the id in it, and a stored preference outranks a changed
@@ -445,14 +404,10 @@ const NAV_ADDED = Object.freeze({
  *
  * THE COST IS THE ONE DECISION D5 REFUSED TO PAY: this record cannot tell an inherited default from
  * a deliberate hide, so bringing an id back overrides anyone who chose to hide it. That is
- * acceptable for `pieces` and was not for `drill` — `pieces` was hidden for two shipped patch
- * versions, so a deliberate choice about it has had almost no chance to exist. It is NOT a general
- * licence: an id that has been hideable for long enough to accumulate real choices must be left
- * alone, exactly as `drill` was.
+ * acceptable only for an id hidden too briefly for a deliberate choice about it to exist. Version 5
+ * did it once, for a screen since removed; nothing is brought back today.
  */
-const NAV_SHOWN = Object.freeze({
-  5: ['pieces'],
-});
+const NAV_SHOWN = Object.freeze({});
 export const NAV_DEFAULTS_VERSION = 7;
 
 // localStorage is untrusted input: anything in here that is not a hideable id is dropped rather

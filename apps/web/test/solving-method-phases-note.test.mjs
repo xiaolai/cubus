@@ -17,7 +17,7 @@ import { test } from 'node:test';
 
 import { SOLVER_PHASES } from '../bench/solver-phases.mjs';
 import { ALGORITHM_SETS, METHOD_ALGORITHMS } from './fixtures/algorithm-ledger.mjs';
-import { ALG_ENTRIES } from '../lib/alg-catalogue.js';
+import { SETS } from '../bench/algorithm-ledger.mjs';
 
 const ROOT = new URL('../../../', import.meta.url);
 const NOTE = fileURLToPath(new URL('dev-docs/solving-method-phases.md', ROOT));
@@ -145,11 +145,12 @@ test('the note\'s prose counts match too', (t) => {
   assert.equal(prose(/\d+ algorithms at the bottom, (\d+) at the top/, "the ladder's top"),
     METHOD_ALGORITHMS.find((m) => m.method === "The app's method").heldTop);
   // ENTRIES are counted without the alignment, which is an entry and not an algorithm; DISTINCT algorithms
-  // are the catalogue's, because a sequence two sets share is one algorithm.
+  // are distinct sequences, because a sequence two sets share is one algorithm.
+  const distinct = new Set(SETS.flatMap((x) => x.entries.map((e) => e.alg)).filter(Boolean)).size;
   const entries = ALGORITHM_SETS.filter((x) => x.kind !== 'not an algorithm').reduce((a, x) => a + x.count, 0);
   const moves = ALGORITHM_SETS.reduce((a, x) => a + x.moves, 0);
   assert.equal(prose(/(\d+) entries — \d+ distinct algorithms/, "the algorithm ledger's entry count"), entries);
-  assert.equal(prose(/\d+ entries — (\d+) distinct algorithms/, 'the distinct algorithm count'), ALG_ENTRIES.length);
+  assert.equal(prose(/\d+ entries — (\d+) distinct algorithms/, 'the distinct algorithm count'), distinct);
   assert.equal(prose(/([\d,]+) moves of material/, "the ledger's move total"), moves);
   const proved = ALGORITHM_SETS.filter((x) => x.kind === 'proved').reduce((a, x) => a + x.count, 0);
   const hand = ALGORITHM_SETS.filter((x) => x.kind === 'hand-written').reduce((a, x) => a + x.count, 0);

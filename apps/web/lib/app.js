@@ -29,8 +29,6 @@ import './screens/cube.js';
 import './screens/timer.js';
 import './screens/settings.js';
 import './screens/stats.js';
-import './screens/lessons.js';
-import './screens/pieces.js';
 import './screens/course.js';
 // The whole picture catalogue, reached from the cube screen's Shapes menu rather than from a tab.
 import './screens/shapes.js';

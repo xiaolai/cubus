@@ -55,10 +55,6 @@ test('every tab has a window title, and the titles that differ from their tab sa
     scramble: 'Scramble',
     timer: 'Timer',
     stats: 'Stats',
-    trainer: 'Algorithm trainer',
-    drill: 'Drill',
-    pieces: 'Pieces',
-    lessons: 'Lessons',
     course: 'Course',
     settings: 'Settings',
     // Neither of these has a tab, and the table holds both for the same reason: a screen with no

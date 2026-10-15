@@ -13,6 +13,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
+import { APP_SOURCES, LIBRARY_SOURCES } from './app-source.mjs';
 
 const store = new Map();
 globalThis.localStorage ??= {
@@ -94,17 +95,24 @@ test('the tempo numbers live in ONE module, and no screen keeps a copy', () => {
   // the only copy, and the only cube it was written to was the menu's own.
   const owner = 'lib/cube-view.js';
   const shipped = WALK_SPEEDS.map((o) => o.tempo);
-  const suspects = [
-    'lib/screens/cube/speed-menu.js', 'lib/screens/cube.js', 'lib/screens/drill/library.js',
-    'lib/screens/pieces/round-play.js', 'lib/cube-drawing.js', 'lib/walk-presenter.js',
-    'lib/script-drive.js', 'lib/drill-rounds.js',
-  ];
+  // EVERY module, not a list of the ones that drew a cube when this was written: a hand list named three
+  // files that no longer exist, and would have said nothing about a fourth that started drawing one.
+  // A number is matched whole, so `0.12` is not `0.1`. `sound.js` is the one exemption — `0.1` is a note's
+  // start in seconds there — and it holds only while the module touches no cube at all.
+  const EXEMPT = { 'lib/sound.js': 'a note starts 0.1 s in; nothing in it reaches a cube' };
   const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const spelled = (src, tempo) => new RegExp(`(?<![\\d.])${String(tempo).replace('.', '\\.')}(?!\\d)`).test(src);
+  const suspects = [...APP_SOURCES, ...LIBRARY_SOURCES].filter((rel) => rel !== owner);
+  assert.ok(suspects.length > 50, `the sweep read ${suspects.length} modules — the list it is built from is empty`);
   for (const rel of suspects) {
-    const src = strip(readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8'));
+    const raw = readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8');
+    if (EXEMPT[rel]) {
+      assert.doesNotMatch(raw, /tempo|cubus-cube|applyCubeView/, `${rel} is exempt because it draws no cube (${EXEMPT[rel]}), and it now touches one`);
+      continue;
+    }
+    const src = strip(raw);
     for (const tempo of shipped) {
-      assert.ok(!src.includes(String(tempo)),
-        `${rel} spells the tempo ${tempo} itself; the numbers belong to ${owner} alone`);
+      assert.ok(!spelled(src, tempo), `${rel} spells the tempo ${tempo} itself; the numbers belong to ${owner} alone`);
     }
   }
   // And the owner really does hold them, so the sweep above is not passing on an empty set.
@@ -118,7 +126,6 @@ test('the tempo numbers live in ONE module, and no screen keeps a copy', () => {
 // renderer's (`pace: 'tempo'`, one rule with its face turns, from the pose it actually starts at) and is
 // measured in `test/browser/hold-turn.test.mjs`; what is pinned here is that the app ASKS for it.
 const { createHoldCube } = await import('../lib/hold-presenter.js');
-const { APP_SOURCES, LIBRARY_SOURCES } = await import('./app-source.mjs');
 
 test('the hold presenter asks the renderer to turn at the walk\'s pace', () => {
   const asked = [];

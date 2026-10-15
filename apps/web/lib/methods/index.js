@@ -10,8 +10,8 @@
 // @typedef {object} Stage
 // @property {'cross'|'pairs'|'oll'|'pll'} id       which stage this is a rung of
 // @property {number} rung                          which rung — REPORTING ONLY; never branched on
-// @property {string} label                         the rung's name on the Lessons ladder
-// @property {string} blurb                         one sentence describing it, for a rung not yet reached
+// @property {string} label                         the rung's name, in the offer and in Settings
+// @property {string} blurb                         one sentence describing it, for the offer to raise it
 // @property {{edges: number[], corners: number[]}} targets  the pieces this stage places
 // @property {(state) => boolean} keep              what must already hold when the stage starts
 // @property {(state) => boolean} contract          the state the stage must reach
@@ -38,8 +38,8 @@ export const LADDER = Object.freeze({
 /** The bottom rung everywhere — what a new learner is shown, having chosen nothing (§3 rule 1). */
 export const DEFAULT_RUNGS = Object.freeze({ cross: 0, pairs: 0, oll: 0, pll: 0 });
 
-/** The highest rung each stage currently has. The Lessons screen reads this to draw the ladder,
- *  and it grows by adding a rung file — never by editing a number here. */
+/** The highest rung each stage currently has. It grows by adding a rung file — never by editing a
+ *  number here. */
 export const TOP_RUNG = Object.freeze(
   Object.fromEntries(STAGE_IDS.map((id) => [id, LADDER[id].length - 1])),
 );

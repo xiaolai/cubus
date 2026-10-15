@@ -5,7 +5,7 @@
 // vanishes teaches nothing, and it does not apologise or promise, because neither is a fact.
 //
 // What must never happen here: nav visibility consulting the catalogue. The tab's default is FIXED
-// (`DEFAULT_HIDDEN`, like Trainer and Drill), so nothing anywhere asks "is there a course" to
+// (`DEFAULT_HIDDEN`, like Timer and Stats), so nothing anywhere asks "is there a course" to
 // decide what to draw in the toolbar. The moment it does, "has the course" is an axis every screen
 // has to answer, and that is the failure the smart-cube removal was about.
 //
@@ -36,7 +36,7 @@ const emptyShelf = () => `<div class="card" style="text-align:center;padding:28p
   <div class="eyebrow">${escHtml(t('NO COURSE INSTALLED'))}</div>
   <div class="sub" style="color:var(--ink-3);margin-top:10px;line-height:1.6;max-width:44ch;margin-inline:auto">
     ${escHtml(t('This build has no lessons in it. The course is written and recorded separately, and it is not part of the app.'))}
-    ${escHtml(t('Everything else — scanning a cube, solving it, the stage ladder and the drills — works without it.'))}
+    ${escHtml(t('Everything else — scanning a cube and solving it — works without it.'))}
   </div>
 </div>`;
 

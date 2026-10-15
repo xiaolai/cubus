@@ -103,7 +103,7 @@ function weekChart(week, busiest) {
 }
 
 // Data-driven screens. Stats is now computed entirely from recorded solves — the representative
-// numbers it once carried are gone. Trainer, Drill and Lessons still show design-layout content.
+// numbers it once carried are gone.
 // Stats — the session dashboard. This absorbed the old Home screen when Home became the cube:
 // the headline numbers, the recent-solve list and the week chart were never a landing page, they
 // were this screen's content sitting one nav entry too far to the left.

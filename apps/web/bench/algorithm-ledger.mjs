@@ -25,64 +25,68 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SOLVED, movesOf } from '../lib/cube-pieces.js';
 import { faceTurnsAlg, run } from '../lib/cube-moves.js';
-import { LAST_LAYER_EXTRAS } from '../lib/methods/last-layer.js';
-import { RUNG_TABLE, SET_ENTRIES } from '../lib/alg-catalogue.js';
+import { CROSS_ALGS } from '../lib/methods/cross.js';
+import { PAIRS_ALGS } from '../lib/methods/pairs.js';
+import { LAST_LAYER_EXTRAS, OLL_ALGS, PLL_ALGS } from '../lib/methods/last-layer.js';
+import { HUMAN_F2L, HUMAN_OLL, HUMAN_PLL } from '../lib/data/human-algs.js';
+import { F2L_CASES, FULL_OLL, FULL_PLL } from '../lib/data/case-tables.js';
 
-// WHICH ALGORITHM IS IN WHICH SET is the catalogue's to say (`SET_ENTRIES`), and this ledger reads it by
-// set id. It used to pick the hand-written sub-groups out of the repertoires by name a second time, and
-// the two copies were held together only by their totals — an equal-sized swap would have passed.
-const setEntries = (id) => {
-  const entries = SET_ENTRIES[id];
-  if (!entries) throw new Error(`the ledger names a set "${id}" that the catalogue does not hold`);
-  return entries;
-};
+// WHICH ALGORITHM IS IN WHICH SET is said here once. The app's algorithm catalogue said it too, and the
+// ledger read it from there; the catalogue went with the Drill (ADR 0010), so the sets are picked here
+// again — BY NAME, never by index, so a reordering inside a repertoire cannot silently move an algorithm
+// into another set.
+const pick = (list, names) => names.map((n) => {
+  const hit = list.find((a) => a.name === n);
+  if (!hit) throw new Error(`the ledger names an algorithm "${n}" that no repertoire holds any more`);
+  return hit;
+});
 
 const SETS = [
   {
     id: 'cross-inserts', name: 'Cross inserts', kind: 'hand-written',
-    entries: setEntries('cross-inserts'),
+    entries: CROSS_ALGS,
     provenance: 'written for teaching, not searched. Two ways to drop a cross edge in from the top.',
     verified: 'every entry must be reachable and used — `method-solver` refuses a step naming anything outside CASE_NAMES',
   },
   {
     id: 'f1l-inserts', name: 'First-layer corner inserts', kind: 'hand-written',
-    entries: setEntries('f1l-inserts'),
+    entries: pick(PAIRS_ALGS, ['right-hand', 'left-hand', 'facing-up']),
     provenance: 'the beginner trigger and its repeat, in the three orientations a corner can be in',
     verified: 'same as above',
   },
   {
     id: 'middle-inserts', name: 'Middle-layer edge inserts', kind: 'hand-written',
-    entries: setEntries('middle-inserts'),
+    entries: pick(PAIRS_ALGS, ['insert-right', 'insert-left']),
     provenance: 'one pair that both inserts a correct edge and ejects a wrong one, which is how it is taught',
     verified: 'same as above',
   },
   {
     id: 'f2l-triggers', name: 'F2L triggers', kind: 'hand-written',
-    entries: setEntries('f2l-triggers'),
+    entries: pick(PAIRS_ALGS, ['right', 'right-back', 'right-half', 'left', 'left-back', 'left-half']),
     provenance: 'rung 1 of the pairs stage: six triggers a pair is built out of, rather than 41 cases',
     verified: 'same as above',
   },
   {
     id: 'eoll', name: 'Two-look OLL, first look', kind: 'hand-written',
-    entries: setEntries('eoll'),
+    entries: pick(OLL_ALGS, ['edge-orient']),
     provenance: 'one algorithm, applied up to three times, to orient the last-layer edges',
     verified: 'same as above',
   },
   {
     id: 'ocll', name: 'Two-look OLL, second look', kind: 'hand-written',
-    entries: setEntries('ocll'),
+    entries: pick(OLL_ALGS, ['sune', 'antisune', 'headlights', 'double-sune', 'pi']),
     provenance: 'the corner-orientation cases in FACE TURNS ONLY, because the renderer and the move list speak nothing else',
     verified: 'same as above',
   },
   {
     id: 'cpll', name: 'Two-look PLL, corners', kind: 'hand-written',
-    entries: setEntries('cpll'),
+    entries: pick(PLL_ALGS, ['corner-cycle', 'corner-cycle-back', 'diagonal']),
     provenance: 'adjacent swap both ways round, plus the diagonal',
     verified: 'same as above',
   },
   {
     id: 'epll', name: 'Two-look PLL, edges', kind: 'hand-written',
-    entries: setEntries('epll'),
+    entries: pick(PLL_ALGS, ['u-perm-a', 'u-perm-b']),
     provenance: 'two U-perms; Z and H fall out of applying two of them',
     verified: 'same as above',
   },
@@ -94,37 +98,37 @@ const SETS = [
   },
   {
     id: 'f2l-human', name: 'F2L, human-speed', kind: 'sourced',
-    entries: setEntries('f2l-human'),
+    entries: HUMAN_F2L,
     provenance: 'SpeedCubeDB\'s top-voted Front Right algorithm per case; what the pairs stage\'s top rung teaches since 2026-10-13',
     verified: '`human-algs.test.mjs`: cubejs finds each answers exactly its proved case, and the 41 cover the 41 once each',
   },
   {
     id: 'oll-human', name: 'Full OLL, human-speed', kind: 'sourced',
-    entries: setEntries('oll-human'),
+    entries: HUMAN_OLL,
     provenance: 'J Perm\'s first-listed algorithm per case; what full OLL teaches since 2026-10-13',
     verified: 'same cubejs check, 57 to 57',
   },
   {
     id: 'pll-human', name: 'Full PLL, human-speed', kind: 'sourced',
-    entries: setEntries('pll-human'),
+    entries: HUMAN_PLL,
     provenance: 'J Perm\'s first-listed algorithm per case; what full PLL teaches since 2026-10-13',
     verified: 'same cubejs check, 21 to 21',
   },
   {
     id: 'f2l-full', name: 'F2L, all cases', kind: 'proved',
-    entries: setEntries('f2l-full'),
+    entries: F2L_CASES,
     provenance: 'searched in `crates/optimal-solver`, proven minimal in the half-turn metric, certified',
     verified: '`f2l-cross-check` refutes every case by brute force with no heuristic; `case-tables.test.mjs` re-runs the generator and diffs the shipped module',
   },
   {
     id: 'oll-full', name: 'Full OLL', kind: 'proved',
-    entries: setEntries('oll-full'),
+    entries: FULL_OLL,
     provenance: 'same search; one algorithm per case so the top face is one look',
     verified: 'certified over all 1,152 (alignment, goal) pairs; same generator diff',
   },
   {
     id: 'pll-full', name: 'Full PLL', kind: 'proved',
-    entries: setEntries('pll-full'),
+    entries: FULL_PLL,
     provenance: 'same search; the 288-state goal set checked against the published Cube Explorer distribution',
     verified: 'the distribution matched Cube Explorer entry for entry, mean 11.642361; same generator diff',
   },
@@ -149,12 +153,12 @@ const METHODS = [
     // set — the bottom rung of the pairs stage is a corner insert and an edge insert — which the
     // first version of this file could not express, and it came out 24 at the bottom instead of 18.
     { phase: 'Cross', rungs: [
-      { rung: 0, label: 'edge by edge', held: RUNG_TABLE.cross[0] },
+      { rung: 0, label: 'edge by edge', held: ['cross-inserts'] },
       { rung: 1, label: 'planned whole', intuitive: 'an exact distance table is descended — no algorithm at all' },
     ] },
     { phase: 'Pairs', rungs: [
-      { rung: 0, label: 'corner, then edge', held: RUNG_TABLE.pairs[0] },
-      { rung: 1, label: 'trigger pairs', held: RUNG_TABLE.pairs[1] },
+      { rung: 0, label: 'corner, then edge', held: ['f1l-inserts', 'middle-inserts'] },
+      { rung: 1, label: 'trigger pairs', held: ['f2l-triggers', 'f1l-inserts', 'middle-inserts'] },
       // **The top rung still needs the beginner inserts, and the first version of this ledger said it
       // did not.** `pairsFrom` falls back to `placeSeparately` when a pair is BURIED — a piece of it
       // sitting in another slot — and that fallback is the beginner corner and edge inserts. Measured:
@@ -162,15 +166,15 @@ const METHODS = [
       // `insert-left`, `insert-right`, `left-hand` and `right-hand`. So the top is 124, not 119, and
       // the tidy claim that it lands exactly on CFOP's set was false.
       // The human-speed table since 2026-10-13, not the proved one: what a ladder costs is what it TEACHES.
-      { rung: 2, label: 'the F2L cases', held: RUNG_TABLE.pairs[2] },
+      { rung: 2, label: 'the F2L cases', held: ['f2l-human', 'f1l-inserts', 'middle-inserts'] },
     ] },
     { phase: 'OLL', rungs: [
-      { rung: 0, label: 'two-look', held: RUNG_TABLE.oll[0] },
-      { rung: 1, label: 'full OLL', held: RUNG_TABLE.oll[1] },
+      { rung: 0, label: 'two-look', held: ['eoll', 'ocll'] },
+      { rung: 1, label: 'full OLL', held: ['oll-human'] },
     ] },
     { phase: 'PLL', rungs: [
-      { rung: 0, label: 'two-look', held: RUNG_TABLE.pll[0] },
-      { rung: 1, label: 'full PLL', held: RUNG_TABLE.pll[1] },
+      { rung: 0, label: 'two-look', held: ['cpll', 'epll'] },
+      { rung: 1, label: 'full PLL', held: ['pll-human'] },
     ] },
   ] },
   { method: 'CFOP', phases: [

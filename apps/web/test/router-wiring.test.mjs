@@ -163,7 +163,7 @@ test('every screen renders without throwing', async () => {
   const { SCREENS: REGISTERED } = await import('../lib/screen-shell.js');
   const { state } = await import('../lib/app.js');
   const SCREENS = Object.keys(REGISTERED);
-  assert.ok(SCREENS.length >= 9, `only ${SCREENS.length} screens registered — the registry is not loaded`);
+  assert.ok(SCREENS.length >= 8, `only ${SCREENS.length} screens registered — the registry is not loaded`);
   // TWO CHANNELS, because the one this watched is the one the shell never uses. A build or a mount
   // that throws is CAUGHT: `screen-shell.js` logs it and puts its broken card up instead, so the
   // window raises no `error` event and the stage is far from empty — this case passed for a screen
@@ -928,7 +928,7 @@ test('a press on a Settings control that rebuilds the screen leaves focus on tha
   await tick();
   const other = was.lastLayer === 'course' ? 'app' : 'course';
   const controls = ['[data-pal="muted"]', '[data-set-theme="night"]', '[data-set-tier="nineteen"]', '[data-scheme]',
-    '[data-nav-toggle="drill"]', `[data-set-last-layer="${other}"]`];
+    '[data-nav-toggle="timer"]', `[data-set-last-layer="${other}"]`];
   try {
     const lost = [];
     for (const sel of controls) {
@@ -944,7 +944,7 @@ test('a press on a Settings control that rebuilds the screen leaves focus on tha
     assert.equal(settings.lastLayer, other, 'the last-layer pill did not change the route');
   } finally {
     // Back through the same controls, so what is stored and drawn is what it was.
-    for (const sel of [`[data-set-last-layer="${was.lastLayer}"]`, '[data-nav-toggle="drill"]', '[data-scheme]', `[data-set-tier="${was.tier}"]`,
+    for (const sel of [`[data-set-last-layer="${was.lastLayer}"]`, '[data-nav-toggle="timer"]', '[data-scheme]', `[data-set-tier="${was.tier}"]`,
       `[data-set-theme="${was.theme}"]`, `[data-pal="${was.palette}"]`]) {
       win.document.querySelector(sel)?.click();
       await tick();
@@ -1003,22 +1003,20 @@ test('opening Advanced is not remembered', async (t) => {
   const stored = win.localStorage.getItem('cubusSettings') ?? '';
   assert.ok(!stored.includes('advanced'), `open state must not be persisted, got: ${stored}`);
 
-  // The preference it controls IS saved, which is the distinction being drawn. The Alg trainer
-  // starts hidden, so the first click SHOWS it — and the stored hidden list must say so. It used to
-  // be Drill; Drill is published now (dev-docs/algorithm-drills-plan.md item 4.2), so it no longer
-  // starts hidden and cannot stand for a tab that does. The subject of this case is the
-  // persistence, never which tab it happens to be demonstrated on.
-  win.document.querySelector('[data-nav-toggle="trainer"]').click();
+  // The preference it controls IS saved, which is the distinction being drawn. The Timer starts
+  // hidden, so the first click SHOWS it — and the stored hidden list must say so. The subject of this
+  // case is the persistence, never which tab it happens to be demonstrated on.
+  win.document.querySelector('[data-nav-toggle="timer"]').click();
   await tick();
   const hidden = JSON.parse(win.localStorage.getItem('cubusSettings') ?? '{}').navHidden ?? [];
-  assert.ok(!hidden.includes('trainer'), `showing the trainer persists, got: ${JSON.stringify(hidden)}`);
-  assert.ok([...win.document.querySelectorAll('#nav [data-nav]')].some((b) => b.dataset.nav === 'trainer'));
+  assert.ok(!hidden.includes('timer'), `showing the timer persists, got: ${JSON.stringify(hidden)}`);
+  assert.ok([...win.document.querySelectorAll('#nav [data-nav]')].some((b) => b.dataset.nav === 'timer'));
 
   // Put it back through the UI: clearing localStorage alone would leave the in-memory settings
   // holding a shown entry, and the next test would see a toolbar it did not ask for.
-  win.document.querySelector('[data-nav-toggle="trainer"]').click();
+  win.document.querySelector('[data-nav-toggle="timer"]').click();
   await tick();
-  assert.ok(![...win.document.querySelectorAll('#nav [data-nav]')].some((b) => b.dataset.nav === 'trainer'));
+  assert.ok(![...win.document.querySelectorAll('#nav [data-nav]')].some((b) => b.dataset.nav === 'timer'));
   win.document.dispatchEvent(chord());
   await tick();
   win.localStorage.removeItem('cubusSettings');
@@ -1286,32 +1284,31 @@ test('showing an entry adds it to the toolbar, hiding removes it, and the rest i
   await tick();
   win.document.dispatchEvent(chord());
   await tick();
-  assert.ok(!navIds().includes('lessons'), 'precondition: Lessons starts hidden');
+  assert.ok(!navIds().includes('stats'), 'precondition: Stats starts hidden');
 
-  // Show three that start hidden, in the order the toolbar lists them. Drill is among them again:
-  // it was published from version 3 to 6 and went back to Advanced at 7 (owner's decision,
-  // 2026-10-14), so a default row is solve, scan and scramble and nothing else.
-  for (const id of ['trainer', 'drill', 'lessons']) win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
+  // Show all three that start hidden, in the order the toolbar lists them. The default row is solve,
+  // scan and scramble and nothing else (owner's decision, 2026-10-14).
+  for (const id of ['timer', 'stats', 'course']) win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
   await tick();
-  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'trainer', 'drill', 'lessons'], 'shown in toolbar order');
+  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'timer', 'stats', 'course'], 'shown in toolbar order');
 
-  // Hide one: its neighbours are untouched.
-  win.document.querySelector('[data-nav-toggle="lessons"]').click();
+  // Hide the middle one: its neighbours are untouched.
+  win.document.querySelector('[data-nav-toggle="stats"]').click();
   await tick();
-  assert.ok(!navIds().includes('lessons'), 'gone from the toolbar');
-  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'trainer', 'drill'], 'and its neighbours are untouched');
+  assert.ok(!navIds().includes('stats'), 'gone from the toolbar');
+  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'timer', 'course'], 'and its neighbours are untouched');
 
   // Hiding is cosmetic: the address still works, which is the escape hatch.
-  win.location.hash = '#/lessons';
+  win.location.hash = '#/stats';
   await tick();
   assert.ok(win.document.querySelector('#stage .screen'), 'a hidden screen is still reachable');
 
   // Restore the DEFAULT through the UI, not by wiping localStorage. `settings` is a live
   // module-level object: clearing storage leaves it holding the shown ids, so every later test in
-  // this file would inherit a toolbar with extra entries. Lessons is already hidden again above.
+  // this file would inherit a toolbar with extra entries. Stats is already hidden again above.
   win.location.hash = '#/settings';
   await tick();
-  for (const id of ['trainer', 'drill']) {
+  for (const id of ['timer', 'course']) {
     win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
     await tick();
   }
@@ -1341,15 +1338,12 @@ test('the toolbar no longer offers 3D viewer or Smart cube, and Stats is renamed
   // Stats is hidden by default now (it shows representative numbers, not yours), so what matters
   // is that when it IS shown it carries the shorter name.
   assert.ok(!ids.includes('stats'), 'Stats is hidden by default');
-  // The placeholder screens are hidden by default IN CODE, not by a stored preference: a wiped
-  // localStorage once put all three back in the toolbar. Timer rides on the same rule.
-  for (const id of ['trainer', 'lessons', 'timer']) {
+  // Hidden by default IN CODE, not by a stored preference: a wiped localStorage once put five
+  // placeholder screens back in the toolbar. The whole row is asserted POSITIVELY below, so a tab that
+  // should be gone cannot hide behind a list nobody updated.
+  for (const id of ['timer', 'course']) {
     assert.ok(!ids.includes(id), `${id} is hidden by default, whatever storage says`);
   }
-  // Drill and Pieces too, since version 7 (owner's decision, 2026-10-14): the default row is solve,
-  // scan and scramble, and the rest are one switch away in Advanced. The whole row is asserted
-  // POSITIVELY below, so a tab that should be gone cannot hide behind a list nobody updated.
-  for (const id of ['drill', 'pieces']) assert.ok(!ids.includes(id), `${id} is on a fresh install's row`);
   assert.deepEqual(ids, ['home', 'scan', 'scramble'], 'a fresh install shows exactly solve, scan and scramble');
   const labels = [...win.document.querySelectorAll('#nav [data-nav]')].map((b) => b.textContent);
   assert.ok(!labels.some((l) => l.includes('Session stats')), 'and it is not called Session stats');
@@ -1379,6 +1373,19 @@ test('the shell no longer carries a permanent connection box', async () => {
 // Dragging the 3D cube around is off by default: every cube in the app is set up at a chosen
 // angle that the ghost faces depend on, and a stray drag swung it away with no way back. The
 // preference is a Settings toggle, saved, and reaches every cube through the `orbit` attribute.
+// THE OFFER IS MADE WHERE A SOLVE ENDS (§3 rule 3), on the cube screen, and both answers exist as real
+// elements — an offer with no way to decline is an ask, and that is the rule it would break. What the
+// row DOES is `walk-offer.test.mjs`'s; this is that the real screen carries it.
+test('the offer lives on the cube screen and is answerable both ways', async () => {
+  // A cube with a solution first: the row is part of the solve view, and an empty Home is the cube
+  // viewer and nothing else — which is how this case first passed while proving nothing.
+  await scrambledHome();
+  assert.ok(await waitFor(() => win.document.querySelector('#rungOffer')), 'the cube screen carries no offer row');
+  assert.equal(win.document.querySelector('#rungOffer').hidden, true, 'the offer is showing before anything was followed');
+  assert.ok(win.document.querySelector('#rungYes'), 'the offer cannot be accepted');
+  assert.ok(win.document.querySelector('#rungNot'), 'the offer cannot be declined, which makes it an ask');
+});
+
 // LEARNING LEVELS CAN BE RESET (ADR 0010 decision 4). With the Lessons screen gone this is the one way down
 // the ladder, so a raise accepted by mistake is not for ever — and with nothing raised, the button must not
 // look like it would do something.
@@ -1483,16 +1490,9 @@ test('drag-to-rotate is off by default, and the toggle reaches the cube as an at
 test('the toolbar is one flat row of tabs, with Settings as its own button', async () => {
   win.location.hash = '#/home';
   await tick();
-  // The default row is the beginner's path: Timer and Stats are speedcubing instruments, and Alg
-  // trainer and Lessons are still placeholder screens — those four start hidden, in code, and are
-  // one chord away. DRILL IS NOT among them any more (dev-docs/algorithm-drills-plan.md item 4.2):
-  // it holds every algorithm the app knows and drills a chosen one against a tracked cube, so it
-  // is part of the beginner's path rather than one chord away from it.
-  // Pieces rejoined the default row on 2026-09-29 (owner's decision): it had been hidden at
-  // version 4 on the reasoning that its ID was new, and the content it holds was already reachable
-  // inside the Drill screen — so hiding the new tab took away something people could get to.
-  // BOTH LEFT IT AGAIN on 2026-10-14 (owner's decision, nav version 7): the default row is solve,
-  // scan and scramble, and Drill and Pieces are switches in Advanced like every other screen.
+  // The default row is the beginner's path — solve, scan and scramble (owner's decision, 2026-10-14).
+  // Timer and Stats are speedcubing instruments and Course plays lessons the app does not ship, so
+  // all three start hidden, in code, one chord away.
   assert.deepEqual(navLabels(), ['Home', 'Restore', 'Scramble']);
   // Every tab draws a real glyph. icon() falls back to a bare dot for a name it does not know, so
   // a deleted or renamed glyph does not throw — it renders something almost plausible, and in an

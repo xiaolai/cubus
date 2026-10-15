@@ -241,7 +241,7 @@ function wholeCross(state, steps) {
 }
 
 // ---- the rungs, as data ----------------------------------------------------------------------
-// `rung` is here for reporting and for the Lessons ladder. Nothing in the engine reads it — that
+// `rung` is here for reporting and for the learning levels. Nothing in the engine reads it — that
 // is the property that makes a new rung a new entry in this array rather than an engine change.
 
 /** @type {ReadonlyArray<import('./index.js').Stage>} */

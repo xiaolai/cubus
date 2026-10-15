@@ -55,11 +55,10 @@ export const MAX_REJECTIONS = 32;
  * **THE REJECTION IS BOUNDED, AND EXHAUSTION THROWS.** A source that keeps answering the same
  * value in the rejected tail — a stub, a fake in a test, a broken entropy seam — left
  * `while (draw >= limit)` spinning for ever: a HANG rather than a wrong answer, on the UI thread,
- * which is the worse of the two. `drillAlg` in `lib/drill-rounds.js` already names this hazard in
- * its own comment and avoids it in the one place it is visible, then delegated straight into it
- * here (Codex audit, 2026-10-04); `makeRound`'s retry budget cannot help, because the loop never
- * returns to it. Throwing is the same stance `cryptoUint32` takes about a missing source: a random
- * generator that cannot produce a uniform value says so rather than stalling.
+ * which is the worse of the two (Codex audit, 2026-10-04). A caller's own retry budget cannot help,
+ * because the loop never returns to it. Throwing is the same stance `cryptoUint32` takes about a
+ * missing source: a random generator that cannot produce a uniform value says so rather than
+ * stalling.
  */
 export function randomBelow(n, rng = cryptoUint32) {
   if (!Number.isInteger(n) || n <= 0) throw new RangeError(`randomBelow: ${n} is not a positive integer`);

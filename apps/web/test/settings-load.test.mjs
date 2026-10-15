@@ -190,7 +190,7 @@ test('a scheme nobody stored cannot keep a scan\'s verdict', async () => {
 // install that ran the app before the removal stores it in `navHidden`; at every version it could have been
 // stored at, the load drops it and writes the record back without it, and the ids that are still screens
 // survive. Every screen removed is listed here, so the next removal is checked by adding a name.
-const REMOVED_SCREENS = ['loop'];
+const REMOVED_SCREENS = ['loop', 'trainer', 'drill', 'pieces', 'lessons'];
 
 test('a stored record naming a removed screen comes back without it, at every version', async () => {
   for (const navDefaults of [0, 2, 5, 6, 7]) {

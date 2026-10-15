@@ -15,7 +15,7 @@
 //     walk a child is halfway through.
 //   * a stage route wearing whole-cube furniture: the Lesson switch, the prove button.
 //
-// Source-text assertions, the same shape as `solve-tier-wiring.test.mjs` and `lessons-wiring.test.mjs`
+// Source-text assertions, the same shape as `solve-tier-wiring.test.mjs` and `rung-offer-wiring.test.mjs`
 // and for the same reason: these are questions about wiring, and a DOM harness answers them more
 // slowly and less exactly.
 
