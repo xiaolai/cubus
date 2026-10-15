@@ -13,8 +13,11 @@ import { after, test } from 'node:test';
 import { Window } from 'happy-dom';
 
 import Cube from '../vendor/cubejs.js';
-import { fromCube, invert } from '../lib/cube-pieces.js';
-import { faceTurnsAlg } from '../lib/cube-moves.js';
+// STATIC, every one. A top-level `await import` between two tests registers the tests below it only once it
+// resolves — after a filtered run has already finished the ones above and run the file's `after`, which closes
+// every window while the later tests are still using theirs. Every case below the await failed when run alone.
+import { SOLVED as SOLVED_PIECES, fromCube, invert } from '../lib/cube-pieces.js';
+import { faceTurnsAlg, identityFace, run as runHeld } from '../lib/cube-moves.js';
 import { registerLocale, setLocale } from '../lib/i18n.js';
 import { FOLLOWS_TO_OFFER, NO_PROGRESS, recordCleanFollow, repairProgress } from '../lib/method-ladder.js';
 import { lessonSections, moveStepIndex } from '../lib/method-lesson.js';
@@ -1766,8 +1769,6 @@ test('a failure while the reporter puts the cube down is still a failure the scr
 
 // ---- off the walk right after a whole-cube turn (dev-docs/lesson-holds-plan.md item 3.1) -------------
 
-const { SOLVED: SOLVED_PIECES } = await import('../lib/cube-pieces.js');
-const { identityFace, run: runHeld } = await import('../lib/cube-moves.js');
 
 /**
  * A tracker on the walk `R y <the child's R>`, with the trust and the element it needs. The third move is
