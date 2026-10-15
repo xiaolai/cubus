@@ -42,6 +42,7 @@ export {
   movesOf,
   rotateAlg,
   rotateState,
+  toFacelets,
 } from './cube-pieces.js';
 
 // The camera's own geometry — where the eye is, what the cube's outline is, and how far back the
@@ -84,7 +85,10 @@ export { formatMoves, parse } from './cube-notation.js';
 
 // The interpreter: the child's moves, read in the hold in force as each is made, applied to a cube —
 // the pieces, the hold after, and the identity-frame tokens that draw it (ADR 0004 decision 5).
-export { convertSelectors, heldFace, identityFace, run } from './cube-moves.js';
+export { convertSelectors, heldFace, heldToken, identityFace, relabelSelectors, run } from './cube-moves.js';
+
+// The two holds a lesson is built in: the scan's (white up, green facing you) and the one after the tumble.
+export { SCAN_HOLD, TUMBLED } from './solving-hold.js';
 
 // Questions a tutorial asks of one cube — a piece state or a painted picture with unknown stickers.
 // They read and never move (dev-docs/adr/0005-the-renderer-plays-scripts-methods-choose.md, decision 2).
@@ -102,7 +106,8 @@ export {
 
 // The view the app draws its own cubes at, so a consumer's cubes can look like the app's without
 // keeping a hand-copied set of numbers that goes stale in silence.
-export { CUBE_VIEW, CUBE_VIEW_ATTRS } from './cube-view.js';
+// …and the colours it wears by default, so a consumer's cube is the cube a new install shows.
+export { CUBE_VIEW, CUBE_VIEW_ATTRS, DEFAULT_PALETTE, DEFAULT_WALK_SPEED, tempoFor } from './cube-view.js';
 
 // The episode runtime. cubus-im authors the scores, measures the speech and builds the artifacts;
 // the RUNTIME — what the cube is doing at time `t`, and writing that onto an element — is the same
@@ -129,7 +134,7 @@ export { askAt, buildScript, groupsOf, stateFrom, viewAtPosition } from './scrip
 
 // The drivers: a clock (a narrated lesson), stops (a walk a cube follows), and the one writer both hand
 // their views to — plus the matcher that finds a turned cube on a walk (plan item 3.3).
-export { createClockDriver, createElementWriter, createStopDriver, timelineOf } from './script-drive.js';
+export { createClockDriver, createElementWriter, createStopDriver, defaultSchedule, moveWaiting, timelineOf } from './script-drive.js';
 export { locate, trackFor, trackOf } from './script-track.js';
 
 // The event driver: a drill round's answer worked out from the cube, its picks and verdict, and its reveal

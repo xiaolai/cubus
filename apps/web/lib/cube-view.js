@@ -96,3 +96,24 @@ export function tempoFor(id) {
 export const CUBE_VIEW_ATTRS = Object.freeze(
   Object.fromEntries(VIEW_ATTRS.map(([key, attr]) => [attr, CUBE_VIEW[key]])),
 );
+
+/**
+ * The cube colours a new install gets: CLASSIC, the saturated set (owner's call, 2026-09-07).
+ * It was `muted`, the warm-paper set the design kit was drawn around — which sits beautifully in
+ * the app's own palette and is not what a child's cube looks like. The first thing this app has
+ * to do is let someone match what is on screen to the plastic in their hand, and `classic` is the
+ * set that names those colours the way a cube does.
+ *
+ * ONE spelling, exported, because it was seven: the settings default, the repair's fallback, and
+ * five `NET_COLORS[…] || NET_COLORS.muted` reads, each free to drift from the others. A default
+ * written down seven times is a default that eventually disagrees with itself.
+ *
+ * It changes nothing for anyone already using the app: `load` merges storage over these defaults
+ * and `save` writes the whole object, so a stored palette — including a `muted` nobody ever chose
+ * deliberately — is kept. This is the value for a fresh install and for a repaired one.
+ * `hostile-settings.test.mjs` pins the repair against this constant rather than a copy of it. It lives
+ * here, with the rest of how the app's cubes look, so the kit can offer it without reaching into the
+ * app's settings — and not beside the palettes, which are compiled into the renderer, where an app
+ * default has no business.
+ */
+export const DEFAULT_PALETTE = 'classic';

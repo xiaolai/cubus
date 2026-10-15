@@ -7,6 +7,7 @@ import { TIERS } from './solve-target.js';
 import { DEFAULT_RUNGS, LAST_LAYER_ROUTES, STAGE_IDS, TOP_RUNG } from './method-solver.js';
 import { repairProgress } from './method-ladder.js';
 import { isScheme } from './scheme.js';
+import { DEFAULT_PALETTE } from './cube-view.js';
 import { STICKER_PALETTES } from './sticker-palettes.js';
 
 /**
@@ -34,23 +35,9 @@ export const save = (k, v) => {
 };
 
 // ---- app state -------------------------------------------------------------------------------
-/**
- * The cube colours a new install gets: CLASSIC, the saturated set (owner's call, 2026-09-07).
- * It was `muted`, the warm-paper set the design kit was drawn around — which sits beautifully in
- * the app's own palette and is not what a child's cube looks like. The first thing this app has
- * to do is let someone match what is on screen to the plastic in their hand, and `classic` is the
- * set that names those colours the way a cube does.
- *
- * ONE spelling, exported, because it was seven: the settings default, the repair's fallback, and
- * five `NET_COLORS[…] || NET_COLORS.muted` reads, each free to drift from the others. A default
- * written down seven times is a default that eventually disagrees with itself.
- *
- * It changes nothing for anyone already using the app: `load` merges storage over these defaults
- * and `save` writes the whole object, so a stored palette — including a `muted` nobody ever chose
- * deliberately — is kept. This is the value for a fresh install and for a repaired one.
- * `hostile-settings.test.mjs` pins the repair against this constant rather than a copy of it.
- */
-export const DEFAULT_PALETTE = 'classic';
+// The cube colours a new install gets — declared with the rest of how the app's cubes look
+// (lib/cube-view.js), so a cube drawn outside the app can wear the same default.
+export { DEFAULT_PALETTE };
 /** The scan-guidance study's two arms (dev-docs/scan-guidance-plan.md 4.1), declared once: today's scan
  *  screen, and the sticker view beside it. A developer setting; its default, its repair, the Settings
  *  switch and the scan screen all read these. */

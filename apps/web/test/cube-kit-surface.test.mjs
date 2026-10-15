@@ -37,6 +37,7 @@ import * as holdProbes from '../lib/hold-probes.js';
 import * as flat from '../lib/cube-flat.js';
 import * as gallery from '../lib/cube-gallery.js';
 import * as view from '../lib/cube-view.js';
+import * as solvingHold from '../lib/solving-hold.js';
 import { CUBE_VIEW, CUBE_VIEW_ATTRS } from '../lib/cube-view.js';
 
 /** Every name a consumer is entitled to find. Sorted, so a diff reads as one line per change. */
@@ -45,13 +46,18 @@ const PROMISED = [
   'MOVES', 'MOVE_NAMES', 'ORIENTATIONS', 'SOLVED',
   'allSolved', 'applyAlg', 'applyMove', 'cameraAxes', 'cornerSlot', 'cornerSolved', 'determinant',
   'edgeSlot', 'edgeSolved', 'eyeDirection', 'fitDistance', 'fitDistanceStable', 'fromCube',
-  'invert', 'moveCount', 'movesOf', 'orientationMatrix', 'orientationPerm', 'orientationRelabel',
+  'invert', 'moveCount', 'movesOf', 'toFacelets', 'orientationMatrix', 'orientationPerm', 'orientationRelabel',
   'parseHighlight', 'pieceKey', 'project', 'resolveHighlight', 'rotateAlg', 'rotateState',
   'sameAxis', 'selects', 'silhouette', 'slotVector', 'turnFacelets',
   // Notation (plan item 1.1).
   'formatMoves', 'parse',
   // The interpreter (plan items 1.2 and 1.3).
   'convertSelectors', 'run',
+  // What the lesson player in cubus-courses builds on (ADR 0010): a held token, a selector relabelled for a
+  // hold, the two holds a lesson is built in, the stop driver's own clock, and whether a move is waiting.
+  'heldToken', 'relabelSelectors', 'SCAN_HOLD', 'TUMBLED', 'defaultSchedule', 'moveWaiting',
+  // …and the cube it draws, the app's own: its colours, and how fast it turns by default.
+  'DEFAULT_PALETTE', 'DEFAULT_WALK_SPEED', 'tempoFor',
   // Questions about one cube (plan item 1.4).
   'edgesInLayerWithout', 'inLayerWithout', 'isHome', 'layerSlots', 'pairOf', 'pieceIn', 'piecesAway',
   'readCube', 'whereIs',
@@ -73,7 +79,7 @@ const PROMISED = [
 ];
 
 /** The modules whose names the kit re-exports. A new owning module is added here with its first name. */
-const SOURCES = [pieces, frame, highlight, moves, notation, questions, orientation, view, format, schedule, player, scriptQuestions, scriptView, scriptDrive, scriptTrack, scriptRounds, scriptPlayer, scriptLesson, holdProbes, flat, gallery];
+const SOURCES = [pieces, frame, highlight, moves, notation, questions, orientation, view, format, schedule, player, scriptQuestions, scriptView, scriptDrive, scriptTrack, scriptRounds, scriptPlayer, scriptLesson, holdProbes, flat, gallery, solvingHold];
 
 /** Promised names the kit does not export. */
 export const missingFrom = (exports, promised) => promised.filter((n) => !Object.hasOwn(exports, n)).sort();
