@@ -379,7 +379,7 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **rgb** 0.8.53 (MIT) — Kornel Lesiński, James Forster — <https://github.com/kornelski/rust-rgb> — [`LICENSE`](#text-c7d50fa44b04)
 - **rustc-hash** 2.1.3 (Apache-2.0 OR MIT) — The Rust Project Developers — <https://github.com/rust-lang/rustc-hash> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
 - **rustix** 1.1.4 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT) — Dan Gohman, Jakub Konka — <https://github.com/bytecodealliance/rustix> — [`COPYRIGHT`](#text-fde2a68c47d2), [`LICENSE-MIT`](#text-30fefc3a7d6a)
-- **rustls** 0.23.45 (Apache-2.0 OR ISC OR MIT) — <https://github.com/rustls/rustls> — [`LICENSE-MIT`](#text-a3320aa8d192)
+- **rustls** 0.23.46 (Apache-2.0 OR ISC OR MIT) — <https://github.com/rustls/rustls> — [`LICENSE-MIT`](#text-a3320aa8d192)
 - **rustls-native-certs** 0.8.4 (Apache-2.0 OR ISC OR MIT) — <https://github.com/rustls/rustls-native-certs> — [`LICENSE`](#text-29fbc81a3f88), [`LICENSE-MIT`](#text-a3320aa8d192)
 - **rustls-pki-types** 1.15.1 (MIT OR Apache-2.0) — <https://github.com/rustls/pki-types> — [`LICENSE-MIT`](#text-c5e7f780f961)
 - **rustls-platform-verifier** 0.7.0 (MIT OR Apache-2.0) — <https://github.com/rustls/rustls-platform-verifier> — [`LICENSE-MIT`](#text-6205904d5539)
@@ -7383,7 +7383,7 @@ THE SOFTWARE.
 
 ### text-a3320aa8d192
 
-Carried by hyper-rustls 0.27.9 (`LICENSE-MIT`), rustls 0.23.45 (`LICENSE-MIT`), rustls-native-certs 0.8.4 (`LICENSE-MIT`).
+Carried by hyper-rustls 0.27.9 (`LICENSE-MIT`), rustls 0.23.46 (`LICENSE-MIT`), rustls-native-certs 0.8.4 (`LICENSE-MIT`).
 
 ```text
 Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
