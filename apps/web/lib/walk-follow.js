@@ -17,19 +17,66 @@ import { holdSentence, sameHold, showMove } from './solving-hold.js';
 const PLAIN_FACE_TURN = /^[URFDLB](2|')?$/;
 
 /**
+ * How many turns off the walk a child is shown the way back, rather than given a new walk (owner,
+ * 2026-10-15). Counted from the ARRANGEMENT — the fewest face turns back onto the walk — never from the
+ * turns that led off it: two wrong turns that cancel are no turns off at all. Past this, the walk is
+ * worked out again from the cube in the child's hands, because a child who cannot read cannot be asked
+ * to press Re-solve, and three turns undone in reverse is more than a five-year-old holds in their head.
+ */
+export const WAY_BACK_MOST = 2;
+
+/**
  * The follow tracker of one mounted cube screen, its buttons wired.
  *
  * @param {object} deps `root`; the renderer `cube`; shared `state`; `cubejs()`; the speed menu's
  *   `applyTempo()`; the transport's `setPlaying(on)`; `moveHoldAt(k)`, the hold move `k` is made in;
- *   `markStale`; `adoptCube`; `go`; `scrambling`; the live distance's `refreshLiveDistance` and
- *   `dropLiveDistance`; `chainTrusted()`, the one predicate for trust in the live chain; and
- *   `walkNow()`, the walk on screen as `{ moves, steps }`.
+ *   `markStale`; `adoptCube`; `go`; `refreshScreen()`, which takes a new subject in place;
+ *   `scrambling`; the live distance's `refreshLiveDistance` and `dropLiveDistance`; `chainTrusted()`,
+ *   the one predicate for trust in the live chain; `walkNow()`, the walk on screen as
+ *   `{ moves, steps }`; `turnArrows()`, whether the cube shows the turn to make; `sound(name)`, the
+ *   app's `play`; and `signal`, the screen's abort.
  */
 export function createFollowTracker({
   root, cube, player, state, cubejs, applyTempo, setPlaying, moveHoldAt, markStale, adoptCube, go,
-  scrambling, refreshLiveDistance, dropLiveDistance, chainTrusted, walkNow,
+  refreshScreen, scrambling, refreshLiveDistance, dropLiveDistance, chainTrusted, walkNow, turnArrows,
+  sound, signal,
 }) {
+  // Checked here, not at the first wrong turn: the three are reached only once a child is off the walk,
+  // which is the one moment a missing one must not be the first anybody hears of it.
+  for (const [name, fn] of Object.entries({ refreshScreen, turnArrows, sound })) {
+    if (typeof fn !== 'function') throw new TypeError(`walk-follow: "${name}" is not a function`);
+  }
   const $ = (sel, from) => from.querySelector(sel);
+
+  // ---- the turn arrow ---------------------------------------------------------------------
+  //
+  // ONE OWNER FOR `arrow` ON THIS SCREEN, which is why the walk session declares it host-owned: the
+  // script writer would otherwise put `none` back on every position. It is `next` — the element's own
+  // next turn, so the arrow cannot drift from the turn that will be played — except while the cube in
+  // the child's hands is OFF the walk, when the walk's next turn is the one thing it must not show.
+  // Then it is the first turn of the way back, or nothing when there is no short one.
+  //
+  // THE WAY BACK NEEDS NO RENAMING. The element reads every token in the cube's own letters, named by
+  // centres — `run()` in lib/cube-moves.js hands it identity-frame tokens whatever the hold — and so do
+  // the cube's reports and the model. A turn found on the model is drawn on the face with that centre.
+  let arrowNow = null;
+  const pointArrow = (want) => {
+    const value = turnArrows() ? want : 'none';
+    if (value === arrowNow) return;
+    arrowNow = value;
+    cube?.setAttribute?.('arrow', value);
+  };
+  pointArrow('next');
+
+  // ---- off the walk, as a SOUND ---------------------------------------------------------------
+  //
+  // The screen's sentence is read by nobody this app is for, so leaving the walk and coming back to it
+  // are each heard ONCE — the drill's `off` (lib/drill-attempt.js raises it once per excursion, never
+  // per report), and `capture`, its rising twin, for being back. `capture` says "got it" during a scan;
+  // being back on the walk is the same news, and a third sound would be one more to learn.
+  let off = false;
+  const wentOff = () => { if (off) return; off = true; sound('off'); };
+  const cameBack = () => { if (!off) return; off = false; sound('capture'); };
 
   // Who drives the guide: 'slow' = the transport buttons, 'cube' = the physical cube.
   // Read by the screen's speed menu through `following()`, because tempo DEPENDS on the driver:
@@ -262,17 +309,68 @@ export function createFollowTracker({
     showNote(t('Your cube does not match this one. %1', holdSentence(held)));
   };
 
-  /** ONE reaction to every accepted reading, move or snapshot. */
-  const act = (loc, offMsg) => {
-    if (loc.kind === 'step') {
-      moveTo(loc.idx);
-      if (mode === 'cube') { clearNote(); drawTo(cubePosNow()); }
-    } else if (loc.kind === 'mid') {
-      if (mode === 'cube') clearNote(); // half a half-turn: legal, silent, position held
-    } else if (mode === 'cube') {
-      const held = justTurned();
-      if (held) offAfterTurn(held); else showNote(offMsg);
+  /**
+   * ONE reaction to every accepted reading, move or snapshot: the arrangement `f`, the sentence for a cube
+   * with no short way back, and the turn `did` that got it there — null for a snapshot.
+   */
+  const act = (f, offMsg, did = null) => {
+    const loc = locate(f);
+    if (loc.kind !== 'off') {
+      // A step moves the cube on the walk; a midpoint — half a half turn — holds its position, silently.
+      if (loc.kind === 'step') moveTo(loc.idx);
+      if (mode === 'cube') {
+        clearNote();
+        if (loc.kind === 'step') drawTo(cubePosNow());
+        cameBack();
+        pointArrow('next');
+      }
+      return;
     }
+    if (mode !== 'cube') return;
+    wentOff();
+    const held = justTurned();
+    const heldNow = moveHoldAt(cubePosNow());
+    const way = player.wayBack(f, cubePosNow(), WAY_BACK_MOST);
+    pointArrow(way ? way[0] : 'none');
+    if (held) offAfterTurn(held);
+    else if (!way) showNote(offMsg);
+    else {
+      // Named in the child's hold, like every chip; DRAWN in the cube's own letters, above.
+      const back = way.map((m) => showMove(m, heldNow)).join(' ');
+      showNote(did
+        ? t('That was %1 — turn %2 to get back on the plan.', showMove(did, heldNow), back)
+        : t('Turn %1 to get back on the plan.', back));
+    }
+    // A scramble has no walk to work out again from here: it is a walk FROM solved, and the screen that
+    // solves the cube in your hands is Home, which Re-solve goes to.
+    if (!way && !scrambling) replanSoon();
+  };
+
+  /**
+   * Work the walk out again from the cube as it is — what Re-solve does, without anybody pressing it.
+   *
+   * NOT FROM INSIDE THE REPORT. Taking the new subject reloads the walk in place, and the load stands this
+   * tracker down; doing that inside `act` pulled the walk out from under the handler still running it. So
+   * it waits a task, and asks again then: the screen may have gone, the cube may have been turned back, or
+   * following may have stopped.
+   */
+  let replanning = false;
+  /** A re-plan was started, and the walk it loads is greeted as being back on the walk. */
+  let replanned = false;
+  const replanSoon = () => {
+    if (replanning || !player.loaded) return;
+    replanning = true;
+    setTimeout(() => {
+      replanning = false;
+      if (signal?.aborted || mode !== 'cube' || !liveModel) return;
+      // The same question `act` asked, asked again: back on the walk, or back within reach of it, is a
+      // child the walk can still guide — and working it out again would throw that walk away.
+      const f = liveModel.asString();
+      if (locate(f).kind !== 'off' || player.wayBack(f, cubePosNow(), WAY_BACK_MOST)) return;
+      if (!takeCubeAsItIs()) return;
+      replanned = true;
+      refreshScreen();
+    }, 0);
   };
 
   /** The FIFO tripwire. Moves and snapshots ride one ordered channel and share one counter;
@@ -309,8 +407,13 @@ export function createFollowTracker({
         setPlaying(false);
         // Say at once whether the cube is still on the plan, rather than waiting up to a
         // second for its next report to say it.
-        if (liveModel) act(locate(liveModel.asString()), t('This cube is not on the plan any more.'));
+        if (liveModel) act(liveModel.asString(), t('This cube is not on the plan any more.'));
         else clearNote();
+      } else {
+        // Nobody is following, so nobody is off the walk: the arrow goes back to the walk's next turn,
+        // and coming back later is not news.
+        off = false;
+        pointArrow('next');
       }
     }
     paintFollow();
@@ -352,8 +455,8 @@ export function createFollowTracker({
     // which is the scan frame, and the child is holding it the way the chips say.
     const heldNow = moveHoldAt(cubePosNow());
     const { moves } = walkNow();
-    act(locate(liveModel.asString()), t('That was %1 — the next move is %2.',
-      showMove(m.notation, heldNow), cubePosNow() < moves.length ? showMove(moves[cubePosNow()], heldNow) : '—'));
+    act(liveModel.asString(), t('That was %1 — the next move is %2.',
+      showMove(m.notation, heldNow), cubePosNow() < moves.length ? showMove(moves[cubePosNow()], heldNow) : '—'), m.notation);
     tripwire(m.serial);
     rejudge();
     void refreshLiveDistance();
@@ -369,7 +472,7 @@ export function createFollowTracker({
     // knowledge of the cube, and a model made of one was carried into the next connection.
     liveModel = chainTrusted() ? cubejs().fromString(f) : null;
     liveMoved = false; // a snapshot IS the truth, so the model is no longer ahead of anything
-    act(locate(f), t('This cube is not on the plan any more.'));
+    act(f, t('This cube is not on the plan any more.'));
     tripwire(serial);
     rejudge();
     void refreshLiveDistance();
@@ -386,6 +489,7 @@ export function createFollowTracker({
     // Before anything else, because standing follow down turns the renderer, which can throw, and
     // a throw ahead of this left the model and its number standing (found by audit, 2026-09-13).
     forget();
+    replanned = false; // the cube a re-plan was asked about is not one anybody can vouch for now
     // Disabled, not merely un-highlighted: following matches your turns against an arrangement
     // we have just said we cannot vouch for.
     refuseFollow(t('Your cube missed a turn — read it again before following'));
@@ -410,27 +514,36 @@ export function createFollowTracker({
     // which can throw: markStale says so and carries on, and a throw ahead of this left the model
     // and its number standing (found by audit, 2026-09-13).
     forget();
+    replanned = false; // the cube a re-plan was asked about is not one anybody can vouch for now
     refuseFollow(t('Read the cube first — %1', unverifiedWhy()));
   };
 
-  $('#resolveBtn', root).onclick = () => {
-    // Re-solve starts from the cube as it IS. The model can be ahead of the last adopted
-    // snapshot by whatever was turned in the past second — remounting from the stale global
-    // would build a walk for a cube that no longer exists.
-    // On the CHAIN's trust: a rolled scramble is `trusted` as well, and a model adopted on its word
-    // was a guess filed as the cube in hand. Unlike a load's adoption, a press takes the model
-    // whether or not it is ahead: this is someone asking for the cube as it is.
+  /**
+   * The cube in hand, taken as the subject — what Re-solve and the re-plan both start from. False when
+   * there is no model on a trusted chain to take.
+   *
+   * Re-solve starts from the cube as it IS. The model can be ahead of the last adopted snapshot by
+   * whatever was turned in the past second — remounting from the stale global would build a walk for a
+   * cube that no longer exists. On the CHAIN's trust: a rolled scramble is `trusted` as well, and a model
+   * adopted on its word was a guess filed as the cube in hand. Unlike a load's adoption, this takes the
+   * model whether or not it is ahead: it is asking for the cube as it is.
+   */
+  function takeCubeAsItIs() {
     const model = seed();
-    if (model && chainTrusted()) {
-      const f = model.asString();
-      if (f !== state.cube.facelets) adoptCube(f, { physical: true, source: 'cube' });
-      // `live` too, or the next mount's "starts where the cube is" precondition compares the
-      // fresh walk against a snapshot from before those turns and refuses to follow — for
-      // the whole visit, since the precondition runs once. The model IS the corrected
-      // report stream carried forward, so this stays true to what `live` means; `reported`
-      // (the raw stream) is deliberately untouched.
-      state.live = f;
-    }
+    if (!model || !chainTrusted()) return false;
+    const f = model.asString();
+    if (f !== state.cube.facelets) adoptCube(f, { physical: true, source: 'cube' });
+    // `live` too, or the next mount's "starts where the cube is" precondition compares the
+    // fresh walk against a snapshot from before those turns and refuses to follow — for
+    // the whole visit, since the precondition runs once. The model IS the corrected
+    // report stream carried forward, so this stays true to what `live` means; `reported`
+    // (the raw stream) is deliberately untouched.
+    state.live = f;
+    return true;
+  }
+
+  $('#resolveBtn', root).onclick = () => {
+    takeCubeAsItIs();
     // Scramble ignores the subject — it always walks from solved — so "Re-solve this cube"
     // must go where the cube in hand is actually solved from: the solve walk on Home.
     go(scrambling ? 'home' : state.screen);
@@ -498,10 +611,19 @@ export function createFollowTracker({
     // the new walk is judged — otherwise setFollow(true) below sees `mode` already 'cube',
     // returns early, and never re-bases the drawing on the new plan.
     setFollow(false);
+    // A new walk starts nobody off it; a re-plan's walk, followed from where the cube is, is the child
+    // back on a walk — unless the cube was turned off this one too while it was being worked out.
+    off = false;
+    pointArrow('next');
+    const greet = replanned;
+    replanned = false;
     void walk;
     if (!followBtn) return;
     refusal = judge(walk);
-    if (refusal === null) lead(); else paintFollow();
+    if (refusal === null) {
+      lead();
+      if (greet && !off) sound('capture');
+    } else paintFollow();
   }
 
   return Object.freeze({
@@ -518,7 +640,8 @@ export function createFollowTracker({
       refuseFollow(t('Needs a solve worked out on this screen'));
       clearNote();
     },
-    refuse: refuseFollow,
+    /** The walk could not be worked out: nothing to follow, and a re-plan that asked for it is over. */
+    refuse: (why) => { replanned = false; refuseFollow(why); },
     rebase,
     /** The model's arrangement when it holds turns no snapshot has confirmed, or null. */
     aheadOfSnapshot: () => (liveMoved && liveModel ? liveModel.asString() : null),

@@ -19,7 +19,7 @@
 // the player cannot be the thing that applies a stale answer.
 import { buildScript } from './script-view.js';
 import { createStopDriver, defaultSchedule } from './script-drive.js';
-import { locate } from './script-track.js';
+import { locate, wayBack } from './script-track.js';
 
 const thenable = (x) => typeof x?.then === 'function';
 
@@ -120,6 +120,12 @@ export function createScriptPlayer({
     /** Where an arrangement is on the current route, without moving to it: `{ kind, idx }`. */
     locate(facelets, from = route?.driver.position ?? 0) {
       return route ? locate(route.track, facelets, from) : Object.freeze({ kind: 'off' });
+    },
+
+    /** The fewest face turns from an arrangement back onto the current route, or null — none loaded, or
+     *  more than `most` turns away (`wayBack` in lib/script-track.js). */
+    wayBack(facelets, from = route?.driver.position ?? 0, most = 2) {
+      return route ? wayBack(route.track, facelets, from, most) : null;
     },
 
     /**

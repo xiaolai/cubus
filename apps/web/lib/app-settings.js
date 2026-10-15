@@ -88,6 +88,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
   // documented missing-first-move bias at 10-25% rather than under 1% — which is why the row that
   // turns it on says what the number can and cannot be compared with.
   drillClock: false,
+  // An arrow on the cube showing the turn to make, wherever the app walks a cube through a solve or a
+  // scramble — and, off the walk, the turn back onto it. ON by default (owner, 2026-10-15): the app is
+  // for children first, a child who cannot read follows a picture, and an adult can turn it off.
+  turnArrows: true,
   // Which pictures were last chosen, newest first — what the cube screen's Shapes menu draws
   // (lib/shape-recency.js). A HISTORY and not a preference: nobody sets it, it is written by
   // choosing a shape, and what the menu shows is computed from it. Empty on a fresh install, which

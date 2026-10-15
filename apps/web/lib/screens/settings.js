@@ -29,6 +29,8 @@ const TIER_LABEL = { twenty: '≤ 20', nineteen: '≤ 19', eighteen: '≤ 18', s
 /** The drill clock's row. It STATES ITS COST, the way the prove row does: a drill is a handful of
  *  turns, so the timer's missing first move is a far larger share of it than of a solve, and the
  *  number is only ever worth comparing with the same child's own earlier tries. */
+export const TURN_ARROWS_LABEL = 'Turn arrows';
+export const TURN_ARROWS_BLURB = 'An arrow on the cube shows the next turn of a solve or a scramble — and the way back when your cube is off it';
 export const DRILL_CLOCK_LABEL = 'Time my drills';
 export const DRILL_CLOCK_BLURB = 'Off, a drill is just practice. On, each try is timed — compare it only with your own earlier tries, never with anyone else';
 
@@ -87,6 +89,11 @@ SCREENS.settings = () => {
           title: 'Rotate the cube by dragging',
           blurb: 'Off, the 3D cube keeps the angle its ghost faces are set up for',
           id: 'setToggle-dragRotate', on: Boolean(settings.dragRotate), attrs: 'data-toggle="dragRotate"', label: 'Rotate the cube by dragging',
+        })}
+        ${switchRow({
+          style: 'padding:13px 0 0;border-top:1px solid var(--line-faint)',
+          title: TURN_ARROWS_LABEL, blurb: TURN_ARROWS_BLURB,
+          id: 'setToggle-turnArrows', on: Boolean(settings.turnArrows), attrs: 'data-toggle="turnArrows"', label: TURN_ARROWS_LABEL,
         })}
         <div class="wrap-row" style="justify-content:space-between;padding:13px 0 0;border-top:1px solid var(--line-faint)"><div><div style="font-weight:600">How short a solution</div><div class="sub" style="color:var(--ink-4)">${TIER_BLURB[settings.solveTier] ?? TIER_BLURB.twenty}</div></div>
           <div class="wrap-row" style="gap:6px">${TIERS.map((tier) => `<button class="pill ${settings.solveTier === tier.name ? 'on' : ''}" id="setTier-${tier.name}" data-set-tier="${tier.name}" aria-pressed="${settings.solveTier === tier.name}">${escHtml(TIER_LABEL[tier.name])}</button>`).join('')}</div></div>

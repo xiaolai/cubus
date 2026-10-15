@@ -45,7 +45,7 @@ import { createFollowTracker } from './walk-follow.js';
  */
 const HOST_OWNED = Object.freeze([
   'ghosts', 'ghost-elevation', 'camera-latitude', 'camera-longitude', 'camera-up',
-  'orientation', 'focus', 'highlight',
+  'orientation', 'focus', 'highlight', 'arrow',
 ]);
 
 /** The transport calls the driver makes on an element, and the shape each answers with when the tag
@@ -114,7 +114,7 @@ export function createWalkSession(screen, app) {
     state, settings, SOLVED, CHIP_NODE_BUDGET, WALK_FAILURES, cubejs, solverReady, loadSolver,
     randomScramble, deriveCube, classifyCube, walkEligible, adoptCube, chainTrusted, markStale, lessonFor,
     stageAsk, stepStates, putInPlay, parkRoll, refreshScreen, go, save, raiseRung, escHtml, icon,
-    lastRoute, pictureRoute, sayWalkLength, describeCube,
+    lastRoute, pictureRoute, sayWalkLength, describeCube, play,
   } = provided(app, 'app');
   const $ = (sel, from) => from.querySelector(sel);
 
@@ -191,6 +191,9 @@ export function createWalkSession(screen, app) {
    *   focus, highlight  a lesson's cues. Position 0 carries none — a cue on the first move step is
    *       in force from position 1 — and this screen shows the first step's cue at head 0, before
    *       anything is pressed. See lib/walk-script.js; moving these needs that answered first.
+   *   arrow  the turn to make, which depends on WHO DRIVES and not on the position: the walk's next
+   *       turn, or — while the cube in the child's hands is off the walk — the way back. The follow
+   *       tracker (lib/walk-follow.js) is its one writer; a script has no idea the child has wandered.
    *
    * With no renderer — the vendored bundle has not upgraded the tag, which this repo has shipped more
    * than once — the element is still handed over, guarded per call by `drivable`: the route and the
@@ -283,7 +286,12 @@ export function createWalkSession(screen, app) {
   // (lib/walk-follow.js). It reads the walk when it acts.
   const follow = createFollowTracker({
     root, cube, player, state, cubejs, applyTempo, setPlaying, moveHoldAt, markStale, adoptCube, go,
-    scrambling, refreshLiveDistance, dropLiveDistance, chainTrusted, walkNow: () => ({ moves, steps }),
+    refreshScreen, scrambling, refreshLiveDistance, dropLiveDistance, chainTrusted,
+    walkNow: () => ({ moves, steps }),
+    // Read when the arrow is written, never captured: Settings is another screen, and the next mount
+    // of this one is what a change there reaches.
+    turnArrows: () => settings.turnArrows === true,
+    sound: play, signal,
   });
 
   /**

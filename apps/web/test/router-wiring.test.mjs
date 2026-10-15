@@ -1379,6 +1379,38 @@ test('the shell no longer carries a permanent connection box', async () => {
 // Dragging the 3D cube around is off by default: every cube in the app is set up at a chosen
 // angle that the ghost faces depend on, and a stray drag swung it away with no way back. The
 // preference is a Settings toggle, saved, and reaches every cube through the `orbit` attribute.
+// Turn arrows are ON by default (owner, 2026-10-15): a child who cannot read follows a picture. The walk's
+// cube is the one that carries it — Scramble always walks — and the switch reaches the next walk mounted.
+test('turn arrows are on by default, and the switch takes them off the next walk\'s cube', async () => {
+  const arrowOnWalk = async () => {
+    win.location.hash = '#/timer';
+    await tick();
+    win.location.hash = '#/scramble';
+    await tick();
+    const t0 = Date.now();
+    while (Date.now() - t0 < 5000 && !win.document.querySelector('#viewCube cubus-cube')?.hasAttribute('arrow')) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    return win.document.querySelector('#viewCube cubus-cube')?.getAttribute('arrow') ?? null;
+  };
+  assert.equal(await arrowOnWalk(), 'next', 'a walk opened without its arrow');
+  win.location.hash = '#/settings';
+  await tick();
+  const toggle = () => win.document.querySelector('[data-toggle="turnArrows"]');
+  assert.ok(toggle(), 'the option lives in Settings');
+  assert.ok(toggle().classList.contains('on'), 'and starts on');
+  toggle().click();
+  await tick();
+  assert.match(win.localStorage.getItem('cubusSettings') ?? '', /turnArrows.:false/, 'the choice is saved');
+  assert.equal(await arrowOnWalk(), 'none', 'the walk still drew an arrow with the switch off');
+  // Back to the default through the UI, so later tests see the arrow.
+  win.location.hash = '#/settings';
+  await tick();
+  toggle().click();
+  await tick();
+  assert.equal(await arrowOnWalk(), 'next');
+});
+
 test('drag-to-rotate is off by default, and the toggle reaches the cube as an attribute', async () => {
   win.location.hash = '#/home';
   await tick();
@@ -2005,12 +2037,17 @@ test('turns advance the guide immediately, one drawn step each — never an extr
     assert.equal(win.document.querySelector('#followNote').hidden, true, 'neither was refused');
     assert.equal(drawnSteps(calls), 2, 'two turns draw exactly two steps');
     assert.equal(calls.filter((c) => c[0] === 'seek').length, 0, 'and no panic jump');
-    // And the position really moved: a deliberately wrong turn names move 3 as the expected one.
-    feedQ([wrongFaceFor(moves[1], moves[2])]);
+    // And the position really moved: a deliberately wrong turn is surfaced, and once undone, move 3 is
+    // the one the guide takes — which it could not be if the first two had not been.
+    const wrong = wrongFaceFor(moves[1], moves[2]);
+    feedQ([wrong]);
     const note = win.document.querySelector('#followNote');
     assert.equal(note.hidden, false, 'a wrong turn is surfaced');
-    assert.ok(win.document.querySelector('#followMsg').textContent.includes(`the next move is ${moves[2]}`),
-      `the guide is waiting on move 3 (${moves[2]}), so the first two were taken`);
+    feedQ([invQ(wrong)]);
+    assert.equal(note.hidden, true, 'undoing the wrong turn put the cube back on the walk');
+    feedQ(quarters(moves[2]));
+    assert.equal(note.hidden, true, `the guide is waiting on move 3 (${moves[2]}), so the first two were taken`);
+    assert.equal(drawnSteps(calls), 3, 'move 3 was drawn as the third step');
   } finally { resetCubeModel(state); }
 });
 
@@ -2026,10 +2063,11 @@ test('an undo made inside the animation window is drawn back, not dropped', asyn
     feedQ(quarters(moves[0]).map(invQ).reverse());
     assert.equal(win.document.querySelector('#followNote').hidden, true, 'the undo was accepted');
     assert.deepEqual(calls[calls.length - 1], ['stepBack'], 'and drawn back immediately');
-    // The position is back at 0: a wrong move now names move 1 as the expected one again.
-    feedQ([wrongFaceFor(moves[0], moves[1])]);
-    assert.ok(win.document.querySelector('#followMsg').textContent.includes(`the next move is ${moves[0]}`),
-      'after the undo, the guide expects the first move again');
+    // The position is back at 0: the first move is the one the guide takes again.
+    const before = drawnSteps(calls);
+    feedQ(quarters(moves[0]));
+    assert.equal(win.document.querySelector('#followNote').hidden, true, 'after the undo, the first move was refused');
+    assert.equal(drawnSteps(calls), before + 1, 'after the undo, the guide expects the first move again');
   } finally { resetCubeModel(state); }
 });
 
@@ -2141,7 +2179,9 @@ test('a distant midpoint is a wrong position, not silent progress', async (t) =>
     feed().facelets(c.asString());
     const note = win.document.querySelector('#followNote');
     assert.equal(note.hidden, false, 'a midpoint only counts beside its own half turn');
-    assert.match(win.document.querySelector('#followMsg').textContent, /not on the plan/);
+    assert.match(win.document.querySelector('#followMsg').textContent, /get back on the plan/);
+    assert.notEqual(win.document.querySelector('cubus-cube').getAttribute('arrow'), 'next',
+      'off the walk, the arrow still showed the walk\'s next turn');
   } finally { resetCubeModel(state); }
 });
 
@@ -2159,9 +2199,10 @@ test('an unchanged snapshot still corrects the guide after a lost move packet', 
     // …but its UNDO's packets are lost. Only the ~1Hz snapshot knows the cube is back at solved.
     feed().facelets(SOLVED_FACELETS);
     assert.deepEqual(calls[calls.length - 1], ['stepBack'], 'the swallowed correction now lands');
-    feedQ([wrongFaceFor(moves[0], moves[1])]);
-    assert.ok(win.document.querySelector('#followMsg').textContent.includes(`the next move is ${moves[0]}`),
-      'and the guide expects move 1 again');
+    const before = drawnSteps(calls);
+    feedQ(quarters(moves[0]));
+    assert.equal(win.document.querySelector('#followNote').hidden, true, 'move 1 was refused after the correction');
+    assert.equal(drawnSteps(calls), before + 1, 'and the guide expects move 1 again');
   } finally {
     state.cube.facelets = prevFacelets;
     resetCubeModel(state);

@@ -140,6 +140,50 @@ export function locate(track, facelets, from) {
   return idx >= 0 ? { kind: 'step', idx: passRegrips(idx) } : { kind: 'off' };
 }
 
+/** The eighteen turns of one outer face, in the piece model's names — every turn a cube in a hand can make. */
+const FACE_TURNS = Object.freeze(['U', 'R', 'F', 'D', 'L', 'B'].flatMap((f) => [f, `${f}'`, `${f}2`]));
+
+/**
+ * The fewest face turns that put `facelets` back on `track`, for a cube last known to be at `from` — the
+ * turns as identity-frame letters, or null when it takes more than `most`.
+ *
+ * FOUND BY ARRANGEMENT, like `locate`, never by inverting the turns that led off. A snapshot can move the
+ * cube with no turn reported at all, and the turns that WERE reported are quarter turns while the way back
+ * may be a half turn — an undo list read off the reports names a path, where this names the shortest one.
+ *
+ * Any position of the walk counts as back on it, and a midpoint beside the cube counts as the cube's own
+ * position, because both are what `locate` accepts. At the same length the furthest position wins: when the
+ * child made a turn the walk makes a little later — two commuting turns in the other order — finishing it is
+ * progress, and undoing it would be a turn taken back for nothing.
+ */
+export function wayBack(track, facelets, from, most = 2) {
+  const reached = (f) => {
+    const at = locate(track, f, from);
+    if (at.kind === 'mid') return from;
+    return at.kind === 'step' ? at.idx : null;
+  };
+  let layer = [{ state: stateFrom(facelets), turns: [] }];
+  for (let depth = 1; depth <= most; depth++) {
+    const next = [];
+    let best = null;
+    for (const { state, turns } of layer) {
+      // Two turns of one face in a row are one turn, and shorter paths have already been tried.
+      const last = turns.at(-1)?.[0];
+      for (const turn of FACE_TURNS) {
+        if (turn[0] === last) continue;
+        const after = applyMove(state, turn);
+        const path = [...turns, turn];
+        const at = reached(toFacelets(after));
+        if (at !== null && (best === null || at > best.at)) best = { at, turns: path };
+        next.push({ state: after, turns: path });
+      }
+    }
+    if (best) return Object.freeze(best.turns);
+    layer = next;
+  }
+  return null;
+}
+
 /**
  * The track of a built script (`buildScript` in `lib/script-view.js`): every position's arrangement,
  * with a painted picture unmatchable, and the identity-frame moves between neighbours in one segment.

@@ -8,6 +8,7 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 
+import { readToken } from '../../lib/cube-notation.js';
 import { startBrowserFixture } from './harness.mjs';
 
 let fixture;
@@ -60,9 +61,9 @@ async function world({ stage }) {
     const follow = createFollowTracker({
       root, player, cube, state, cubejs: () => Cube,
       applyTempo: () => {}, setPlaying: () => {}, moveHoldAt: (k) => holds[Math.min(k, holds.length - 1)],
-      markStale: () => {}, adoptCube: () => {}, go: () => {}, scrambling: false,
+      markStale: () => {}, adoptCube: () => {}, go: () => {}, refreshScreen: () => {}, scrambling: false,
       refreshLiveDistance: async () => {}, dropLiveDistance: () => {},
-      chainTrusted: () => true, walkNow: () => walk,
+      chainTrusted: () => true, walkNow: () => walk, turnArrows: () => true, sound: () => {},
     });
     follow.rebase(walk);
     const settle = async () => {
@@ -105,3 +106,120 @@ for (const stage of [false, true]) {
     assert.equal(got.endHold, got.restHold, 'the replay changed the hold the presenter recorded');
   });
 }
+
+// ---- the turn arrow while following (owner, 2026-10-15) ---------------------------------------------
+//
+// `walk-session.test.mjs` pins the `arrow` ATTRIBUTE the tracker writes. Here the real element draws it, and
+// the case reads the drawing: the walk's next turn, the way back while off the walk — on the face with that
+// centre, turning that way — and nothing at all with the setting off.
+
+/** A page following the walk `R U` from solved on a real cube, with turn arrows `on` or off. */
+async function arrowWorld({ on }) {
+  const page = await fixture.browser.newPage();
+  await page.goto(`${fixture.base}/index.html`);
+  await page.waitForFunction(() => !!customElements.get('cubus-cube'));
+  await page.evaluate(async (arrowsOn) => {
+    const { createFollowTracker } = await import('/lib/walk-follow.js');
+    const { createScriptPlayer } = await import('/lib/script-player.js');
+    const { walkScript } = await import('/lib/walk-script.js');
+    const { SCAN_HOLD } = await import('/lib/solving-hold.js');
+    const Cube = (await import('/vendor/cubejs.js')).default;
+    const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
+    const turned = (alg) => { const c = Cube.fromString(SOLVED); if (alg) c.move(alg); return c.asString(); };
+
+    const root = document.createElement('div');
+    root.innerHTML = '<button data-mode="cube"></button><div id="followNote" hidden><span id="followMsg"></span><button id="resolveBtn"></button><button id="turnBackBtn"></button></div>';
+    document.body.appendChild(root);
+    const cube = document.createElement('cubus-cube');
+    cube.style.cssText = 'position:fixed;left:0;top:0;width:320px;height:240px';
+    document.body.appendChild(cube);
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+    const moves = ['R', 'U'];
+    const walk = { moves, steps: [SOLVED, turned('R'), turned('R U')] };
+    // `arrow` is the screen's, as on the cube screen (HOST_OWNED in lib/walk-session.js).
+    const player = createScriptPlayer({ cube, owned: ['orientation', 'arrow'] });
+    await player.load(walkScript({ moves, from: SOLVED }));
+    const state = { cube: { facelets: SOLVED, trusted: true, isPhysical: true, source: 'cube', staleWhy: '' }, live: SOLVED };
+    const follow = createFollowTracker({
+      root, player, cube, state, cubejs: () => Cube,
+      applyTempo: () => {}, setPlaying: () => {}, moveHoldAt: () => SCAN_HOLD,
+      markStale: () => {}, adoptCube: () => {}, go: () => {}, refreshScreen: () => {}, scrambling: false,
+      refreshLiveDistance: async () => {}, dropLiveDistance: () => {},
+      chainTrusted: () => true, walkNow: () => walk, turnArrows: () => arrowsOn, sound: () => {},
+    });
+    follow.rebase(walk);
+    const settle = async () => {
+      for (let i = 0; i < 600 && (cube.animating || cube.turning); i++) await new Promise((r) => requestAnimationFrame(r));
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    };
+    // The arrow AS DRAWN: shown or not, the axis it turns about and which way, and the layers its bands sit on.
+    const drawn = () => {
+      const a = cube._arrow;
+      const { axis = null, angle = null, points = [] } = a.userData;
+      const on = axis ? [...new Set(points.map((p) => Math.round(p.reduce((s, v, i) => s + v * axis[i], 0)) + 0))] : [];
+      return { attr: cube.getAttribute('arrow'), visible: a.visible, axis, angle, on };
+    };
+    window.__a = { follow, settle, drawn };
+  }, on);
+  return page;
+}
+
+/** What `<cubus-cube>` should draw for `token`: its axis as a vector, its angle, and its one layer. */
+const expected = (token) => {
+  const { move } = readToken(token);
+  return {
+    axis: [move.axis === 'x' ? 1 : 0, move.axis === 'y' ? 1 : 0, move.axis === 'z' ? 1 : 0],
+    angle: move.angle,
+    on: [...move.layers],
+  };
+};
+
+test('following, the real cube draws the walk\'s next turn, the way back while off the walk, then the next turn again', async () => {
+  const page = await arrowWorld({ on: true });
+  const seen = await page.evaluate(async () => {
+    const { follow, settle, drawn } = window.__a;
+    const out = [];
+    await settle();
+    out.push(drawn());
+    follow.liveMove({ notation: 'F', serial: 1 });        // off the walk: the way back is F'
+    await settle();
+    out.push(drawn());
+    follow.liveMove({ notation: "F'", serial: 2 });       // back: the walk's next turn, R, again
+    await settle();
+    out.push(drawn());
+    follow.liveMove({ notation: 'R', serial: 3 });        // on along it: U
+    await settle();
+    out.push(drawn());
+    return out;
+  });
+  await page.close();
+  const [start, off, back, along] = seen;
+  assert.deepEqual({ ...start, attr: undefined, visible: undefined }, { ...expected('R'), attr: undefined, visible: undefined });
+  assert.equal(start.visible, true, 'no arrow was drawn for the walk\'s first turn');
+  assert.equal(off.attr, "F'");
+  assert.equal(off.visible, true, 'off the walk, the way back was not drawn');
+  assert.deepEqual({ axis: off.axis, angle: off.angle, on: off.on }, expected("F'"),
+    'off the walk, the arrow was not F\' on the front layer — the walk\'s next turn, or another face, was drawn');
+  assert.deepEqual({ axis: back.axis, angle: back.angle, on: back.on }, expected('R'), 'back on the walk, the arrow was not the walk\'s next turn');
+  assert.deepEqual({ axis: along.axis, angle: along.angle, on: along.on }, expected('U'));
+});
+
+test('with turn arrows off, the real cube draws no arrow — on the walk, off it, or back on it', async () => {
+  const page = await arrowWorld({ on: false });
+  const seen = await page.evaluate(async () => {
+    const { follow, settle, drawn } = window.__a;
+    const out = [];
+    await settle();
+    out.push(drawn().visible);
+    follow.liveMove({ notation: 'F', serial: 1 });
+    await settle();
+    out.push(drawn().visible);
+    follow.liveMove({ notation: "F'", serial: 2 });
+    await settle();
+    out.push(drawn().visible);
+    return out;
+  });
+  await page.close();
+  assert.deepEqual(seen, [false, false, false]);
+});

@@ -7,7 +7,8 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import test from 'node:test';
 
-import { locate, trackFor, trackOf } from '../lib/script-track.js';
+import { locate, trackFor, trackOf, wayBack } from '../lib/script-track.js';
+import { lcg, randomAlg } from './fixtures/seeded-scrambles.mjs';
 import { buildScript } from '../lib/script-view.js';
 import { parse } from '../lib/cube-notation.js';
 
@@ -168,4 +169,61 @@ test('narration after a turn is a position the walk stops at, not one it passes 
   const regrip = trackFor(script([{ move: 'R x2' }]));
   assert.deepEqual(regrip.observable, [true, true, false]);
   assert.deepEqual(locate(regrip, cube.asString(), 0), { kind: 'step', idx: 2 });
+});
+
+// ---- the way back onto a walk (owner, 2026-10-15) ---------------------------------------------------
+//
+// The cube screen shows a child who has turned off the walk the turn that puts them back, and works the
+// walk out again when there is no short one. Every arrangement here is cubejs's; the way back is checked
+// by applying it with cubejs too, so the search is never its own judge.
+
+/** The arrangement after `alg` from solved, by cubejs. */
+const cubeAfter = (alg) => { const c = new Cube(); if (alg) c.move(alg); return c.asString(); };
+/** Where `way` takes the cube at `facelets`, by cubejs. */
+const takeWay = (facelets, way) => { const c = Cube.fromString(facelets); c.move(way.join(' ')); return c.asString(); };
+
+test('one wrong turn is undone by its inverse, and a wrong half turn by itself', () => {
+  const track = trackFor(script([{ move: 'R U F' }]));
+  assert.deepEqual(wayBack(track, cubeAfter('R D'), 1), ["D'"]);
+  assert.deepEqual(wayBack(track, cubeAfter('R D2'), 1), ['D2'], 'a wrong half turn was undone as two turns');
+  assert.deepEqual(wayBack(track, cubeAfter("R B'"), 1), ['B']);
+});
+
+test('a turn the walk makes a little later is finished, not taken back', () => {
+  // R and L commute: a child who turns L before R has made the walk's third position's arrangement minus R.
+  // Undoing the L would be a turn taken back for nothing — R reaches position 2.
+  const track = trackFor(script([{ move: 'R L U' }]));
+  const f = cubeAfter('L');
+  assert.equal(locate(track, f, 0).kind, 'off', 'precondition: L alone is off the walk');
+  const way = wayBack(track, f, 0);
+  assert.deepEqual(way, ['R']);
+  assert.deepEqual(locate(track, takeWay(f, way), 0), { kind: 'step', idx: 2 });
+});
+
+test('the way back always lands on the walk, is never longer than the turns off it, and stops at two', () => {
+  const rnd = lcg(20261015);
+  const QUARTERS = ['U', "U'", 'R', "R'", 'F', "F'", 'D', "D'", 'L', "L'", 'B', "B'"];
+  const tally = { 1: 0, 2: 0, 3: 0, none3: 0 };
+  for (let i = 0; i < 120; i++) {
+    const alg = randomAlg(rnd, 8);
+    const track = trackFor(script([{ move: alg }]));
+    const k = Math.floor(rnd() * 9);
+    const at = cubeAfter(alg.split(' ').slice(0, k).join(' '));
+    for (const n of [1, 2, 3]) {
+      const wrong = Array.from({ length: n }, () => QUARTERS[Math.floor(rnd() * QUARTERS.length)]);
+      const f = takeWay(at, wrong);
+      if (locate(track, f, k).kind !== 'off') continue; // turns that cancel, or that ARE the walk
+      tally[n] += 1;
+      const way = wayBack(track, f, k);
+      if (n < 3) assert.ok(way, `${n} turn(s) ${wrong.join(' ')} off "${alg}" at ${k} had no way back`);
+      if (way === null) { tally.none3 += 1; continue; }
+      assert.ok(way.length <= Math.min(n, 2), `"${way.join(' ')}" is longer than the ${n} turn(s) off the walk`);
+      // WHAT MUST NOT HAPPEN: a way back that does not get back. Checked by cubejs, not by the search.
+      assert.notEqual(locate(track, takeWay(f, way), k).kind, 'off',
+        `"${way.join(' ')}" from ${wrong.join(' ')} off "${alg}" at ${k} did not land on the walk`);
+    }
+  }
+  // A sample that never left the walk, or never went past two, would pass every assertion above.
+  assert.ok(tally[1] > 50 && tally[2] > 50 && tally[3] > 50, `too few cases off the walk: ${JSON.stringify(tally)}`);
+  assert.ok(tally.none3 > 0, 'three turns off the walk always had a way of two: the bound was never tested');
 });

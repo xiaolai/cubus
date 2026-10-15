@@ -131,7 +131,11 @@ test('the smart cube\'s off-plan line names both moves for the hold the walk is 
     const msg = $('#followMsg')?.textContent ?? '';
     assert.ok(msg.includes(`That was ${renameAlg(wrong, TUMBLED)} — `),
       `the move just made must be named for the hold the child is in (${wrong} is ${renameAlg(wrong, TUMBLED)} held tumbled): "${msg}"`);
-    assert.ok(msg.includes(`the next move is ${chips[0]}.`), `and the move to make must be the chip on screen, ${chips[0]}: "${msg}"`);
+    // The way back is NAMED for the hold, like the chips — and DRAWN in the cube's own letters, which is
+    // what the arrow reads whatever the hold: the same turn, said two ways.
+    assert.ok(msg.includes(`turn ${renameAlg(`${wrong}'`, TUMBLED)} to get back on the plan.`),
+      `and the way back must be named for the hold too (${wrong}' is ${renameAlg(`${wrong}'`, TUMBLED)} held tumbled): "${msg}"`);
+    assert.equal(cube.getAttribute('arrow'), `${wrong}'`, 'the arrow was not the way back, in the cube\'s own letters');
     assert.equal(cube.getAttribute('orientation'), null,
       'a hold asked for before the renderer exists must leave no attribute naming a pose behind');
   } finally {

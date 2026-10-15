@@ -161,7 +161,7 @@ function world({ subject = {}, omit = [], screen: screenOver = {} } = {}, make =
   };
   const app = {
     state,
-    settings: { rungs: {}, rungProgress: {}, proveMinimum: false, lastLayer: 'app' },
+    settings: { rungs: {}, rungProgress: {}, proveMinimum: false, lastLayer: 'app', turnArrows: true },
     SOLVED,
     CHIP_NODE_BUDGET: 1,
     WALK_FAILURES: { 'solver unavailable': 'no solver', 'no scramble': 'no scramble', 'cross-check': 'no check', 'no picture route': 'no shape route' },
@@ -202,6 +202,7 @@ function world({ subject = {}, omit = [], screen: screenOver = {} } = {}, make =
     pictureRoute: async () => null,
     sayWalkLength: ({ setStatus, total }) => { setStatus(String(total)); },
     describeCube: (el, c) => { el.setAttribute('aria-label', c.facelets); },
+    play: (name) => { log.push(`play ${name}`); },
     ...make({ state, log }),
   };
   for (const name of omit) { delete app[name]; delete screen[name]; }
@@ -1031,10 +1032,10 @@ function followRig() {
   const follow = createFollowTracker({
     root, player, cube: { seek: () => {}, step: () => {}, stepBack: () => {} }, state, cubejs: () => Cube,
     applyTempo: () => {}, setPlaying: () => {}, moveHoldAt: () => SCAN_HOLD, markStale: () => {},
-    adoptCube: () => {}, go: () => {}, scrambling: false,
+    adoptCube: () => {}, go: () => {}, refreshScreen: () => {}, scrambling: false,
     refreshLiveDistance: async () => {}, dropLiveDistance: () => { drops.count += 1; },
     chainTrusted: () => state.cube.trusted && state.cube.source === 'cube',
-    walkNow: () => walk,
+    walkNow: () => walk, turnArrows: () => true, sound: () => {},
   });
   follow.rebase(walk);
   return { follow, state, drops };
@@ -1093,10 +1094,10 @@ test('a turn that cancels the one before it is the walk\'s next move, not an und
     root, player, cube,
     state, cubejs: () => Cube,
     applyTempo: () => {}, setPlaying: () => {}, moveHoldAt: () => SCAN_HOLD, markStale: () => {},
-    adoptCube: () => {}, go: () => {}, scrambling: false,
+    adoptCube: () => {}, go: () => {}, refreshScreen: () => {}, scrambling: false,
     refreshLiveDistance: async () => {}, dropLiveDistance: () => {},
     chainTrusted: () => state.cube.trusted && state.cube.source === 'cube',
-    walkNow: () => walk,
+    walkNow: () => walk, turnArrows: () => true, sound: () => {},
   });
   follow.rebase(walk);
   assert.equal(follow.following(), true, 'precondition: the walk starts where the cube is, so the cube leads');
@@ -1521,6 +1522,7 @@ test('what following and the transport say goes through t(), sentence by sentenc
   const sentences = [
     'Needs a solve worked out on this screen', 'Turn your smart cube and the guide keeps up',
     'Play from here to the end', 'Pause', 'That was %1 — the next move is %2.',
+    'That was %1 — turn %2 to get back on the plan.', 'Turn %1 to get back on the plan.',
     'This cube is not on the plan any more.', 'You took over — click to let the cube drive again',
     'Paused — you are driving. Switch Cube leads back on and your cube sets the pace.',
     'Your cube missed a turn — read it again before following', 'A turn went unrecorded — checking the cube…',
@@ -1812,10 +1814,10 @@ function turnedWalkWorld({ trusted = true, stage = null, token = 'y', face = 'R'
   const follow = createFollowTracker({
     root, player, cube, state, cubejs: () => Cube,
     applyTempo: () => {}, setPlaying: () => {}, moveHoldAt: (k) => holds[Math.min(k, holds.length - 1)],
-    markStale: () => {}, adoptCube: () => {}, go: () => {}, scrambling: false,
+    markStale: () => {}, adoptCube: () => {}, go: () => {}, refreshScreen: () => {}, scrambling: false,
     refreshLiveDistance: async () => {}, dropLiveDistance: () => {},
     chainTrusted: () => state.cube.trusted && state.cube.source === 'cube',
-    walkNow: () => walk,
+    walkNow: () => walk, turnArrows: () => true, sound: () => {},
   });
   follow.rebase(walk);
   const note = () => (root.querySelector('#followNote').hidden ? '' : root.querySelector('#followMsg').textContent);
@@ -1985,4 +1987,115 @@ test('a replay that throws stays this request\'s failure, never the live handler
   } finally {
     console.warn = warn;
   }
+});
+
+// ---- off the walk: the arrow, the sounds, and working the walk out again (owner, 2026-10-15) ---------
+
+/** A followed walk of `R' U'` over the cube in hand at `R` — the cube leads from the first report. */
+async function followedWorld({ settings = {}, solutions = {} } = {}) {
+  const R = turned('R');
+  const w = world({ subject: { facelets: R, trusted: true, isPhysical: true, source: 'cube' } }, ({ state }) => ({
+    settings: { rungs: {}, rungProgress: {}, proveMinimum: false, lastLayer: 'app', turnArrows: true, ...settings },
+    deriveCube: async () => { solvedBy(state, solutions[state.cube.facelets] ?? "R' U'"); },
+  }));
+  w.state.live = R;
+  assert.equal(await w.session.load(), true);
+  assert.equal(w.$('[data-mode="cube"]').getAttribute('aria-pressed'), 'true', 'precondition: the cube leads');
+  const arrow = () => w.cube.getAttribute('arrow');
+  const sounds = () => w.log.filter((line) => line.startsWith('play '));
+  const note = () => (w.$('#followNote').hidden ? '' : w.$('#followMsg').textContent);
+  return { ...w, arrow, sounds, note };
+}
+
+test('off the walk the arrow is the way back and never the walk\'s next turn, and each way is heard once', async () => {
+  const w = await followedWorld();
+  assert.equal(w.arrow(), 'next', 'a followed walk opened without its arrow');
+  w.session.liveMove({ notation: 'F', serial: 1 });
+  assert.equal(w.arrow(), "F'", 'one wrong turn: the arrow was not its undo');
+  assert.equal(w.note(), "That was F — turn F' to get back on the plan.");
+  w.session.liveMove({ notation: 'D', serial: 2 });
+  assert.equal(w.arrow(), "D'", 'two wrong turns: the arrow was not the first turn back');
+  assert.equal(w.note(), "That was D — turn D' F' to get back on the plan.");
+  assert.deepEqual(w.sounds(), ['play off'], 'leaving the walk was not heard exactly once');
+  w.session.liveMove({ notation: "D'", serial: 3 });
+  assert.equal(w.arrow(), "F'", 'half way back, the arrow did not move on to the next turn back');
+  w.session.liveMove({ notation: "F'", serial: 4 });
+  assert.equal(w.arrow(), 'next', 'back on the walk, the arrow did not go back to the walk\'s next turn');
+  assert.equal(w.note(), '', 'back on the walk, the note stayed');
+  assert.deepEqual(w.sounds(), ['play off', 'play capture'], 'coming back was not heard exactly once');
+  // On the walk, a turn of it changes nothing that is heard.
+  w.session.liveMove({ notation: "R'", serial: 5 });
+  assert.equal(w.arrow(), 'next');
+  assert.deepEqual(w.sounds(), ['play off', 'play capture'], 'a turn of the walk made a sound');
+  assert.equal(w.log.includes('refreshScreen'), false, 'two turns off the walk worked it out again');
+});
+
+test('a snapshot off the walk points the way back too, and taking over puts the walk\'s arrow back silently', async () => {
+  const w = await followedWorld();
+  w.session.liveUpdate(turned('R B'), 1);
+  assert.equal(w.arrow(), "B'");
+  assert.equal(w.note(), "Turn B' to get back on the plan.");
+  w.$('#nextBtn').click(); // the transport takes the walk back from the cube — one step, so nothing plays on
+  assert.equal(w.arrow(), 'next', 'with nobody following, the arrow still pointed the way back');
+  assert.deepEqual(w.sounds(), ['play off'], 'taking over was heard as coming back');
+});
+
+test('with turn arrows off, no arrow is drawn on the walk, off it, or back on it — and the note still names the way', async () => {
+  const w = await followedWorld({ settings: { turnArrows: false } });
+  const seen = [w.arrow()];
+  w.session.liveMove({ notation: 'F', serial: 1 });
+  seen.push(w.arrow());
+  assert.equal(w.note(), "That was F — turn F' to get back on the plan.");
+  w.session.liveMove({ notation: "F'", serial: 2 });
+  seen.push(w.arrow());
+  assert.deepEqual(seen, ['none', 'none', 'none']);
+  assert.deepEqual(w.sounds(), ['play off', 'play capture'], 'the sounds belong to the sound setting, not this one');
+});
+
+test('three turns off the walk work it out again from the cube in hand — once, and the new walk is heard as being back', async () => {
+  const lost = turned('R F D B');
+  const w = await followedWorld({ solutions: { [lost]: "B' D' F' R'" } });
+  for (const [i, notation] of ['F', 'D'].entries()) w.session.liveMove({ notation, serial: i + 1 });
+  await settle();
+  assert.equal(w.log.includes('refreshScreen'), false, 'two turns off the walk worked it out again');
+  w.session.liveMove({ notation: 'B', serial: 3 });
+  assert.equal(w.arrow(), 'none', 'with no short way back, the arrow still pointed somewhere');
+  assert.equal(w.log.includes('refreshScreen'), false, 'the walk was replaced from inside the report');
+  w.session.liveMove({ notation: 'U', serial: 4 }); // a fourth turn before the task runs asks again
+  w.session.liveMove({ notation: "U'", serial: 5 });
+  await settle();
+  assert.deepEqual(w.log.filter((l) => l === 'refreshScreen'), ['refreshScreen'], 'not worked out again exactly once');
+  assert.ok(w.log.includes(`adopt ${lost}`), 'the walk was not worked out from the cube in hand');
+  assert.equal(w.state.live, lost);
+  assert.deepEqual(w.sounds(), ['play off'], 'the new walk was greeted before it existed');
+  // What `refreshScreen` does on this screen: `update()` loads the walk for the new subject in place.
+  assert.equal(await w.session.load(), true);
+  assert.equal(w.$('[data-mode="cube"]').getAttribute('aria-pressed'), 'true', 'the new walk was not followed');
+  assert.equal(w.arrow(), 'next');
+  assert.deepEqual(w.sounds(), ['play off', 'play capture']);
+  // And the walk that loads next for any other reason is not greeted.
+  assert.equal(await w.session.load(), true);
+  assert.deepEqual(w.sounds(), ['play off', 'play capture'], 'an ordinary reload was greeted as a return');
+});
+
+test('a cube turned back before the re-plan runs keeps its walk', async () => {
+  const w = await followedWorld();
+  for (const [i, notation] of ['F', 'D', 'B', "B'"].entries()) w.session.liveMove({ notation, serial: i + 1 });
+  await settle();
+  assert.equal(w.log.includes('refreshScreen'), false, 'a cube back within two turns lost its walk anyway');
+  assert.equal(w.arrow(), "D'");
+});
+
+test('the scramble screen never works its walk out again: it walks from solved, not from the cube in hand', async () => {
+  const w = world({ screen: { scrambling: true } }, () => ({
+    randomScramble: async () => ({ facelets: turned('F'), alg: 'F' }),
+  }));
+  Object.assign(w.state.cube, { facelets: SOLVED, trusted: true, isPhysical: true, source: 'cube' });
+  w.state.live = SOLVED;
+  assert.equal(await w.session.load(), true);
+  assert.equal(w.$('[data-mode="cube"]').getAttribute('aria-pressed'), 'true', 'precondition: the cube leads the scramble');
+  for (const [i, notation] of ['U', 'D', 'B'].entries()) w.session.liveMove({ notation, serial: i + 1 });
+  await settle();
+  assert.equal(w.log.includes('refreshScreen'), false, 'the scramble was replaced by a solve of the cube in hand');
+  assert.equal(w.cube.getAttribute('arrow'), 'none', 'with no short way back, the scramble still drew an arrow');
 });

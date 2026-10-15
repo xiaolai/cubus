@@ -33,6 +33,7 @@ import { CHIP_NODE_BUDGET, Cube, loadSolver, solverReady, solverWorker, stageAsk
 import { classifyCube, deriveCube, lessonFor, raiseRung, stepStates, walkEligible } from '../cube-subject.js';
 import { applyNetColors, buildNet, describeCube, newCube } from '../cube-drawing.js';
 import { keepAwake } from '../wake-lock.js';
+import { play } from '../sound.js';
 import { adoptCube } from '../cube-connection.js';
 import { wireReconnectAnswers } from '../reconnect-answer.js';
 import { chainTrusted, markStale } from '../cube-trust-state.js';
@@ -142,7 +143,7 @@ const WALK_APP = Object.freeze({
   solverReady: () => solverReady,
   loadSolver, randomScramble, deriveCube, classifyCube, walkEligible, adoptCube, chainTrusted, markStale,
   lessonFor, stageAsk, stepStates, putInPlay, parkRoll, refreshScreen, go, save, raiseRung,
-  escHtml, icon, lastRoute, pictureRoute, sayWalkLength, describeCube,
+  escHtml, icon, lastRoute, pictureRoute, sayWalkLength, describeCube, play,
 });
 
 /** Solve and Scramble are the same screen walked from opposite ends.
