@@ -113,9 +113,15 @@ test('nothing is raised without an answer, and nothing is stored unrepaired', ()
   // the Lessons ladder each carried their own copy of "take the offer, write both halves, throw
   // the cached lesson away, persist", which is four steps in two places and four chances to
   // forget the third.
+  //
+  // A THIRD WRITER SINCE ADR 0010: Settings' reset, and it can only LOWER — every stage to its default
+  // rung, never to one nobody accepted. It is held here by what it writes, not trusted by name.
   const writes = [...code.matchAll(/settings\.rungs = ([^;]+);/g)].map((m) => m[1].trim());
-  assert.deepEqual(writes.sort(), ['next.rungs', 'repairRungs(settings.rungs)'].sort(),
+  assert.deepEqual(writes.sort(), ['next.rungs', 'repairRungs(settings.rungs)', '{ ...DEFAULT_RUNGS }'].sort(),
     `settings.rungs is written from somewhere else: ${writes.join(' | ')}`);
+  const reset = blockAt(code, 'function resetRungs()');
+  assert.match(reset, /settings\.rungs = \{ \.\.\.DEFAULT_RUNGS \};/, 'the reset writes something other than the first rungs');
+  assert.match(reset, /state\.cube\.lesson = null/, 'a reset must throw away a lesson worked out at the old rungs');
   // And that one function is reached from both answers, so neither screen grew its own again.
   const raise = blockAt(code, 'function raiseRung(offer)');
   assert.ok(raise, 'the shared rung-raising operation is gone');

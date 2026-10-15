@@ -1379,6 +1379,50 @@ test('the shell no longer carries a permanent connection box', async () => {
 // Dragging the 3D cube around is off by default: every cube in the app is set up at a chosen
 // angle that the ghost faces depend on, and a stray drag swung it away with no way back. The
 // preference is a Settings toggle, saved, and reaches every cube through the `orbit` attribute.
+// LEARNING LEVELS CAN BE RESET (ADR 0010 decision 4). With the Lessons screen gone this is the one way down
+// the ladder, so a raise accepted by mistake is not for ever — and with nothing raised, the button must not
+// look like it would do something.
+test('learning levels show what is raised, reset to the first rung, and the reset is kept', async () => {
+  const { settings } = await import('../lib/app-settings.js');
+  const { state } = await import('../lib/app.js');
+  const before = { rungs: settings.rungs, rungProgress: settings.rungProgress };
+  try {
+    win.location.hash = '#/settings';
+    await tick();
+    const reset = () => win.document.querySelector('#resetRungs');
+    assert.ok(reset(), 'Settings has no way to reset learning levels');
+    settings.rungs = { cross: 0, pairs: 0, oll: 0, pll: 0 };
+    win.location.hash = '#/timer';
+    await tick();
+    win.location.hash = '#/settings';
+    await tick();
+    assert.equal(reset().disabled, true, 'with nothing raised, Reset still offered to do something');
+
+    settings.rungs = { cross: 1, pairs: 0, oll: 0, pll: 0 };
+    settings.rungProgress = { follows: { cross: 3, pairs: 2, oll: 0, pll: 0 }, declined: { cross: 1, pairs: 0, oll: 0, pll: 0 }, nextAt: { cross: 5, pairs: 0, oll: 0, pll: 0 } };
+    state.cube.lesson = { stale: true };
+    win.location.hash = '#/timer';
+    await tick();
+    win.location.hash = '#/settings';
+    await tick();
+    assert.equal(reset().disabled, false);
+    assert.match(win.document.querySelector('#learningLevels').textContent, /Cross — planned whole/, 'the raised rung is not named');
+    reset().click();
+    await tick();
+    assert.deepEqual(settings.rungs, { cross: 0, pairs: 0, oll: 0, pll: 0 }, 'a stage was left above its first rung');
+    for (const count of ['follows', 'declined', 'nextAt']) {
+      assert.ok(Object.values(settings.rungProgress[count]).every((n) => n === 0), `${count} still counts toward an offer`);
+    }
+    assert.equal(state.cube.lesson, null, 'the lesson cached at the old rungs would still be taught');
+    const stored = JSON.parse(win.localStorage.getItem('cubusSettings') ?? '{}');
+    assert.deepEqual(stored.rungs, { cross: 0, pairs: 0, oll: 0, pll: 0 }, 'the reset was not kept');
+    assert.equal(reset().disabled, true, 'after the reset, Reset still offered to do something');
+  } finally {
+    settings.rungs = before.rungs;
+    settings.rungProgress = before.rungProgress;
+  }
+});
+
 // Turn arrows are ON by default (owner, 2026-10-15): a child who cannot read follows a picture. The walk's
 // cube is the one that carries it — Scramble always walks — and the switch reaches the next walk mounted.
 test('turn arrows are on by default, and the switch takes them off the next walk\'s cube', async () => {

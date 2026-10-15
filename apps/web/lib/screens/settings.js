@@ -11,6 +11,8 @@ import { VERSION } from '../version.js';
 import { $, escHtml, icon, state } from '../app-state.js';
 import { HIDEABLE, PALETTES, SCAN_VIEWS, SOUND_MODES, THEMES, navHidden, settings } from '../app-settings.js';
 import { LAST_LAYER_ROUTES } from '../method-solver.js';
+import { ladderRows } from '../method-ladder.js';
+import { resetRungs } from '../cube-subject.js';
 import { applyNetColors, applyTheme, netPalette } from '../cube-drawing.js';
 import { isTauri } from '../window-chrome.js';
 import { PROVE_COPY } from '../prove-affordance.js';
@@ -29,6 +31,21 @@ const TIER_LABEL = { twenty: '≤ 20', nineteen: '≤ 19', eighteen: '≤ 18', s
 /** The drill clock's row. It STATES ITS COST, the way the prove row does: a drill is a handful of
  *  turns, so the timer's missing first move is a far larger share of it than of a solve, and the
  *  number is only ever worth comparing with the same child's own earlier tries. */
+/**
+ * The learner's rungs, said and reset — the one place they can be seen or lowered since the Lessons
+ * screen was removed (ADR 0010 decision 4). The button is DISABLED with nothing raised: a press that
+ * changes nothing must not look like one that does.
+ */
+function learningLevelsRow() {
+  const raised = ladderRows(settings.rungs).filter((row) => row.at > 0);
+  const blurb = raised.length
+    ? t('Raised: %1. Reset puts every stage back to its first level.',
+      raised.map((row) => `${row.name} — ${row.rungs.find((r) => r.rung === row.at)?.label ?? row.at}`).join(', '))
+    : t('Every stage is at its first level. The solve page offers the next one after enough followed solves.');
+  return `<div class="wrap-row" style="justify-content:space-between;padding:13px 0 0;border-top:1px solid var(--line-faint)"><div><div style="font-weight:600">${escHtml(t('Learning levels'))}</div><div class="sub" style="color:var(--ink-4)" id="learningLevels">${escHtml(blurb)}</div></div>
+          <button class="pill" id="resetRungs"${raised.length ? '' : ' disabled'}>${escHtml(t('Reset'))}</button></div>`;
+}
+
 export const TURN_ARROWS_LABEL = 'Turn arrows';
 export const TURN_ARROWS_BLURB = 'An arrow on the cube shows the next turn of a solve or a scramble — and the way back when your cube is off it';
 export const DRILL_CLOCK_LABEL = 'Time my drills';
@@ -99,6 +116,7 @@ SCREENS.settings = () => {
           <div class="wrap-row" style="gap:6px">${TIERS.map((tier) => `<button class="pill ${settings.solveTier === tier.name ? 'on' : ''}" id="setTier-${tier.name}" data-set-tier="${tier.name}" aria-pressed="${settings.solveTier === tier.name}">${escHtml(TIER_LABEL[tier.name])}</button>`).join('')}</div></div>
         <div class="wrap-row" style="justify-content:space-between;padding:13px 0 0;border-top:1px solid var(--line-faint)"><div><div style="font-weight:600">${escHtml(t('The last layer'))}</div><div class="sub" style="color:var(--ink-4)">${escHtml(t(LAST_LAYER_BLURB[settings.lastLayer]))}</div></div>
           <div class="wrap-row" style="gap:6px">${LAST_LAYER_ROUTES.map((r) => `<button class="pill ${settings.lastLayer === r ? 'on' : ''}" id="setLastLayer-${r}" data-set-last-layer="${r}" aria-pressed="${settings.lastLayer === r}">${escHtml(t(LAST_LAYER_LABEL[r]))}</button>`).join('')}</div></div>
+        ${learningLevelsRow()}
         ${optimalCapability() ? switchRow({
           style: 'padding:13px 0 0;border-top:1px solid var(--line-faint)',
           title: PROVE_COPY.settingLabel, blurb: PROVE_COPY.settingBlurb,
@@ -199,6 +217,8 @@ function mountAppearance(root) {
     settings.lastLayer = v;
   }, renderScreen);
   wireOrientation($('#orientationPills', root));
+  const reset = $('#resetRungs', root);
+  if (reset) reset.onclick = () => commitPref(reset, resetRungs, renderScreen);
   for (const b of root.querySelectorAll('[data-toggle]')) {
     const k = b.dataset.toggle;
     bindSwitch(b, { isOn: () => settings[k], flip: () => { settings[k] = !settings[k]; } });
