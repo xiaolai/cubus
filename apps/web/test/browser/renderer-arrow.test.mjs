@@ -12,6 +12,8 @@ import { readToken } from '../../lib/cube-notation.js';
 import { installPublicCube } from './public-cube.mjs';
 import { startBrowserFixture } from './harness.mjs';
 
+const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
+
 let fixture; let page;
 
 before(async () => {
@@ -53,10 +55,14 @@ test('an arrow turns the way its move does, on its move\'s layer, for every kind
     // The turn that carries start to end, about the move's axis, has the sign of the move's angle.
     const turn = dot(cross(drawn.start, drawn.end), drawn.axis);
     assert.equal(Math.sign(turn), Math.sign(move.angle), `${token}: the arrow points the other way round`);
-    // ONE LINE PER LAYER THE MOVE TURNS, each ON its layer. One rule for every kind of move, which is the
+    // ONE BAND PER LAYER THE MOVE TURNS, each ON its layer. One rule for every kind of move, which is the
     // point of the change: the old rule had a branch for face turns, because they alone were drawn as an arc
     // on their own face while everything else got a straight line across a face it crossed.
     assert.equal(drawn.lanes, move.layers.length, `${token}: ${drawn.lanes} lines for ${move.layers.length} layers`);
+    // And DRAWN, not only planned: a wide move once planned three bands and drew one (2026-10-15). Each band
+    // is a shadow and a body.
+    const bands = await page.evaluate(() => window.__cube._arrow.children.filter((m) => m.userData.part === 'band').length);
+    assert.equal(bands, 2 * move.layers.length, `${token}: ${bands / 2} bands drawn for ${move.layers.length} layers`);
     // `+ 0` and a NUMERIC sort, both load-bearing: a middle layer rounds to -0, which deep-equals nothing,
     // and a default sort compares numbers as text. Every slice in this list has a layer at 0.
     const up = (a, b) => a - b;
@@ -70,11 +76,10 @@ test('an arrow turns the way its move does, on its move\'s layer, for every kind
   }
 });
 
-// THE TWO THINGS A STRAIGHT LINE CANNOT SAY BY ITSELF, and how each is said instead.
+// THE TWO THINGS A BAND CANNOT SAY BY ITSELF, and how each is said instead.
 //
-// 180°: a line says which layer and which way, never how far, because 90° and 180° move the same layer the
-// same way. The arc this replaced could sweep further — the one thing it could say that a line cannot — so a
-// half turn carries a DOT past its head, the way the stem of an `i` does.
+// 180°: a band says which layer and which way, never how far, because 90° and 180° move the same layer the
+// same way. So a half turn carries a DOT behind its tail, the way the stem of an `i` does.
 //
 // TOGETHER: two lines pointing the same way are two instructions unless something joins them, so a move
 // wider than one layer has a bar TIED across its lines near their tails. One line never gets one; a tie
@@ -149,7 +154,7 @@ test('next follows the sequence: the move about to be made, and nothing once it 
 // every palette. What IS assertable is that the mark has two parts, which way round they are drawn, and that
 // the body is the lighter of the two — the exact thing that was wrong.
 const parts = () => page.evaluate(() => window.__cube._arrow.children.map((m) => ({
-  kind: m.geometry.type, order: m.renderOrder, colour: m.material.color.getHexString(),
+  kind: m.userData.part, order: m.renderOrder, colour: m.material.color.getHexString(),
   light: m.material.color.r + m.material.color.g + m.material.color.b,
 })));
 
@@ -157,8 +162,8 @@ test('an arrow is a light body carried by a dark shadow, and the shadow is drawn
   await build({ arrow: 'R' });
   const drawn = await parts();
   const shadow = drawn.filter((p) => p.order === 2); const body = drawn.filter((p) => p.order === 3);
-  assert.deepEqual(shadow.map((p) => p.kind), ['TubeGeometry', 'ConeGeometry'], 'the arrow has no shadow');
-  assert.deepEqual(body.map((p) => p.kind), ['TubeGeometry', 'ConeGeometry'], 'the arrow has no body');
+  assert.deepEqual(shadow.map((p) => p.kind), ['band', 'head'], 'the arrow has no shadow');
+  assert.deepEqual(body.map((p) => p.kind), ['band', 'head'], 'the arrow has no body');
   // The shadow UNDER the body. Drawn the other way round it covers the mark it exists to carry, and nothing
   // else in this file would notice: the geometry, the layer and the direction are all still right.
   assert.ok(Math.max(...shadow.map((p) => p.order)) < Math.min(...body.map((p) => p.order)));
@@ -189,4 +194,97 @@ test('the arrow is drawn: the canvas changes when one is asked for', async () =>
   const withArrow = await shoot();
   const changed = plain.filter((v, i) => Math.abs(v - withArrow[i]) > 8).length;
   assert.ok(changed > 400, `an arrow on U changed only ${changed} channel values — it is not being drawn`);
+});
+
+// THE THREE WAYS IT WAS BROKEN (owner, 2026-10-15: "very ugly, and buggy"), each asserted as what must NOT
+// happen.
+
+/** Every vertex the arrow draws, in the cube's own frame (the arrow group's frame, before its pose). */
+const vertices = () => page.evaluate(() => window.__cube._arrow.children.flatMap((m) => {
+  m.updateMatrix();
+  const p = m.geometry.attributes.position; const V = m.position.constructor; const out = [];
+  for (let i = 0; i < p.count; i++) out.push(new V().fromBufferAttribute(p, i).applyMatrix4(m.matrix).toArray());
+  return out;
+}));
+
+test('no part of an arrow lies under the stickers\' surface', async () => {
+  // The stickers' faces are at 1.51 from the centre. The tube this replaced was centred at 1.53 with a radius
+  // and a shadow reaching to 1.46, so a third of it was drawn into the stickers and hidden by them.
+  for (const token of ['U', "R'", 'F2', 'B', 'D', 'L', 'M', 'Rw2', 'x']) {
+    await build({ arrow: token });
+    const sunk = (await vertices()).filter((q) => Math.max(...q.map(Math.abs)) < 1.515);
+    assert.deepEqual(sunk, [], `${token}: ${sunk.length} of the arrow's vertices are under the stickers' surface`);
+  }
+});
+
+/** Start the cube's next move, and pin the clock `frac` of the way through it. */
+const midTurn = (frac) => page.evaluate(async (f) => {
+  const el = window.__cube;
+  const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+  el.step();
+  for (let i = 0; i < 10 && !el._anim; i++) await frame();
+  if (!el._anim) throw new Error('no move started');
+  el.clock = el._anim.t0 + el._anim.dur * f;
+  await frame(); await frame();
+}, frac);
+
+/** The arrow, and how far its rotation agrees with a cubie of the top layer (1 = the same rotation). */
+const againstTopLayer = () => page.evaluate(() => {
+  const el = window.__cube; const a = el._arrow;
+  const top = el.cubies.find((c) => Math.abs(c.position.y - 1) < 1e-6 && Math.hypot(c.position.x, c.position.z) > 0.5);
+  return { visible: a.visible, agree: Math.abs(a.quaternion.dot(top.quaternion)), turned: 1 - Math.abs(a.quaternion.w) };
+});
+
+test('an arrow turns WITH its layer while that turn plays, and steps aside for any other turn', async () => {
+  // Standing still while its layer turned, the layer's corners swept out through it and it drew in pieces in
+  // every lesson that played a turn with an arrow on (the owner's screenshot of a U turn, 2026-10-15).
+  for (const frac of [0.25, 0.5, 0.75]) {
+    await build({ facelets: SOLVED, alg: 'U', arrow: 'next' });
+    await midTurn(frac);
+    const seen = await againstTopLayer();
+    assert.equal(seen.visible, true, `at ${frac} of its turn the arrow was hidden`);
+    assert.ok(seen.turned > 1e-3, `at ${frac} of its turn the arrow had not turned at all`);
+    assert.ok(seen.agree > 1 - 1e-6, `at ${frac} of its turn the arrow and its layer disagree (${seen.agree})`);
+  }
+  // An arrow for one turn while ANOTHER plays is hidden until it lands, never drawn still over moving cubies.
+  await build({ facelets: SOLVED, alg: 'U', arrow: 'R' });
+  await midTurn(0.5);
+  assert.equal((await againstTopLayer()).visible, false, 'the arrow for R stood over a U turn in flight');
+  await page.evaluate(async () => {
+    const el = window.__cube;
+    el.clock = el._anim.t0 + el._anim.dur * 2;
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+  });
+  assert.equal((await arrow()).visible, true, 'the arrow for R did not come back once the U turn landed');
+});
+
+test('an arrow is drawn on faces the eye can see, however the cube is held', async () => {
+  // A fixed preference for the front and the top drew every arrow on the BACK of a cube turned over — the
+  // course's hold after its tumble, from lesson 11 on — and none of them showed (2026-10-15).
+  for (const orientation of ['U F', 'D B', 'F D', 'R U', 'B L']) {
+    for (const token of ['U', 'D', 'R', 'L', 'F', 'B', 'M', 'x']) {
+      await build({ orientation, arrow: token });
+      const facing = await page.evaluate(() => {
+        const el = window.__cube; const a = el._arrow;
+        a.updateMatrixWorld(true);
+        const V = a.position.constructor; const q = a.getWorldQuaternion(new a.quaternion.constructor());
+        const eye = el.camera.position.clone().normalize();
+        // The faces it is drawn on, read off the geometry rather than the arrow's own record of them: each
+        // vertex lies on the face its largest coordinate points out of.
+        const faces = new Set();
+        for (const m of a.children) {
+          m.updateMatrix();
+          const p = m.geometry.attributes.position;
+          for (let i = 0; i < p.count; i++) {
+            const v = new V().fromBufferAttribute(p, i).applyMatrix4(m.matrix).toArray();
+            const k = v.reduce((best, c, j) => (Math.abs(c) > Math.abs(v[best]) ? j : best), 0);
+            if (Math.abs(Math.abs(v[k]) - Math.max(...v.map(Math.abs).filter((_, j) => j !== k))) < 1e-6) continue; // on an edge
+            faces.add([0, 1, 2].map((j) => (j === k ? Math.sign(v[k]) : 0)).join(','));
+          }
+        }
+        return [...faces].map((f) => new V(...f.split(',').map(Number)).applyQuaternion(q).dot(eye));
+      });
+      for (const f of facing) assert.ok(f > 0.15, `${orientation} ${token}: the arrow is on a face turned ${f.toFixed(2)} toward the eye`);
+    }
+  }
 });

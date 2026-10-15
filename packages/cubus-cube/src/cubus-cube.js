@@ -350,20 +350,45 @@ const NUMERAL_LIFT = 0.26;
 /** How much of each end of a leg the `steps` style gives up, in arc points, to leave a gap at every stop. */
 const STEP_GAP = 2;
 
+/**
+ * The turn arrow's measurements, in the cube's own units (owner, 2026-10-15: "very ugly, and buggy").
+ *
+ * A FLAT BAND PAINTED ON THE LAYER, bent round the edge between the two faces of it the eye sees best. It
+ * was a thin tube along one face (0.044 thick, its centre at 1.53), which read as "slide this row" rather
+ * than "turn this layer", sank a third of itself under the stickers' surface at 1.51, and vanished on the
+ * white face. A band lies ON the surface, so it reads as a mark on the cube rather than a wire in front of it,
+ * and going round the corner is what says the layer turns rather than slides.
+ *
+ * `lift` is the band's distance from the centre: clear of the stickers' surface (1.51) and still so close
+ * that it is painted, not floating. `bend` is the corner's radius — small, because the band must clear the
+ * cube's edge at 45°, where a radius of 0.05 puts it at 1.52, outside everything the cubies draw (the body
+ * rounds away inside 1.47; a sticker stops 0.11 short of the edge). `tail` and `base` are where the band
+ * starts and its head begins, measured along each face from its centre line, so the arrow spans most of both
+ * faces. A layer the eye sees only one face of gets a straight band across that face instead (`straight`).
+ */
+const ARROW = Object.freeze({
+  lift: 1.535, bend: 0.05, halfWidth: 0.1, headLength: 0.42, headHalfWidth: 0.25,
+  tail: -0.8, base: -0.5, straight: Object.freeze({ tail: -1.0, base: 0.55 }),
+  // How squarely the second face must face the eye before the band bends onto it: below this it is seen so
+  // edge-on that the half of the arrow on it would be a sliver.
+  bendFacing: 0.2,
+});
+
 /** A half turn's dot: its radius, and how far behind the line's TAIL its centre sits (owner's call,
  *  2026-09-16). It sat past the HEAD first, which is the one part of the line already carrying a job — the
  *  head says which way, and a mark beyond it competes with the thing a reader looks at first. The tail is
  *  empty, and a dot over the start of a stem is where an `i` keeps its own. */
-const HALF_TURN_DOT = 0.078;
-const HALF_TURN_GAP = 0.30;
-/** The bar tying the lines of a wide move or a rotation together: where along them it crosses, as a fraction
- *  of half their length back from the middle, and how far past the outermost line it reaches. */
-const TIE_ALONG = 0.74;
-const TIE_OVERHANG = 0.30;
+const HALF_TURN_DOT = 0.1;
+const HALF_TURN_GAP = 0.3;
+/** The bar tying the bands of a wide move or a rotation together: how far along from their tails it crosses,
+ *  how far past the outermost band it reaches, and how wide it is. */
+const TIE_ALONG = 0.22;
+const TIE_OVERHANG = 0.3;
+const TIE_HALF_WIDTH = 0.045;
 
-/** Which face a slice's, a wide move's or a regrip's arrow is drawn across, in order of preference: the first
- *  its layer crosses. The front and the top are the faces the default eye sees squarely. */
-const ARROW_FACE_PREFERENCE = Object.freeze(['F', 'U', 'R', 'B', 'D', 'L']);
+/** Whether two moves are the same turn — the one an arrow describes and the one in flight. */
+const sameTurn = (a, b) => !!a && !!b && a.axis === b.axis && a.angle === b.angle
+  && a.layers.length === b.layers.length && a.layers.every((l, i) => l === b.layers[i]);
 
 /** A move's axis letter as the unit vector the renderer turns about. */
 const AXIS_VECTOR = Object.freeze({ x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] });
@@ -932,29 +957,26 @@ class CubusCube extends HTMLElement {
     this._buildArrow(root);
   }
 
-  /**
-   * Draw the turn arrow `arrow` asks for, or none.
+  /*
+   * THE TURN ARROW: what it says, and the history of how it says it.
    *
    * WHICH LAYER AND WHICH WAY is the whole content of an arrow, so the geometry is computed from the move's
    * own descriptor — the axis, the layers, the signed angle — rather than from a table of pictures.
    *
-   * ONE STRAIGHT LINE PER LAYER TURNED (owner's call, 2026-09-16). A face turn used to get an ARC on its own
-   * face while a slice, a wide move and a rotation got a straight line, because a ring round a slice's layer
-   * passes through the cube at every corner and drew as fragments. That left the app teaching two pictures
-   * for one instruction. Straight everywhere is one picture — and it says more than the arc could: the cube
-   * is shown FUR-corner-on, its nine layers read as nine lines across the three visible faces, and the
-   * number of lines IS the move's width. `R` is one line, `Rw` two, `x` three. An arc cannot say that at all.
+   * ONE MARK PER LAYER TURNED (owner's call, 2026-09-16), so the number of marks IS the move's width: `R` is
+   * one band, `Rw` two, `x` three. 180° is not drawn but written — a dot at the tail.
    *
-   * What it cannot say is 180°, so that is written rather than drawn — see the `×2` below.
-   *
-   * Its start, end and axis are kept on the group (`userData`), in the cube's own frame, so a test can check
-   * the direction without judging the look.
+   * A BAND ROUND THE CORNER, not a line across one face (owner, 2026-10-15). The straight line kept the width
+   * rule and lost the turn: it read as "slide this row", sat half under the stickers, and was drawn on faces
+   * fixed by name, which a cube turned over points away from the child. The band keeps the width rule, bends
+   * round the layer's best-seen edge, lies on the surface, and RIDES ITS LAYER while the turn plays
+   * (`_poseArrow`) — standing still, the turning cubies swept through it and left it in pieces.
    */
   /**
    * A directed curve: a tube along `points` with a cone on the end, pointing the way the path goes.
    *
-   * Both things this element draws as a path are this — the turn arrow and a piece's trail — and they
-   * were built twice, differing only in their dimensions and their material (Codex audit, 2026-09-16).
+   * A piece's trail is this. The turn arrow was too, until it became a flat band on the surface
+   * (2026-10-15, `_arrowPlan`) — a trail floats on a shell outside the cube, where a tube is the right shape.
    * The TANGENT is what makes it directed, and it is taken from the last two points rather than from the
    * curve's own derivative: a Catmull-Rom curve through settled positions is smooth enough that the two
    * agree, and the last segment is what a child sees the arrow leaving from.
@@ -1039,30 +1061,126 @@ class CubusCube extends HTMLElement {
   }
 
   /**
-   * WHERE the lines of `move` go — pure arithmetic over the move's own descriptor, no meshes.
+   * The eye's direction in the ARROW's own frame — which way is "toward the viewer" for the faces it may be
+   * drawn on.
    *
-   * One straight line per layer the move turns, across a face that layer crosses, pointing the way that
-   * face's stickers travel: a point on a face with normal `n` moves along `axis x n` when the layer turns
-   * the positive way. A face whose normal is PARALLEL to the axis cannot host the line — the layer is
-   * parallel to it — so the candidates are the four it crosses and the preference picks the one the default
-   * eye sees best.
+   * The arrow is held in the sequence's frame under a root that carries the hold, so the faces a fixed
+   * preference called the front ones are the BACK ones on a cube turned over: after the course's tumble every
+   * arrow was drawn on faces pointing away from the child, and none of them showed (2026-10-15). The eye is the
+   * direction the camera was last put in (`_eyeWritten`, which a hand's orbit also updates on refit), through
+   * the hold the cube is settled at or nearest to, then the sequence's frame. The autorotate spin is left out:
+   * it changes every frame, and a band rebuilt sixty times a second to chase it would be the wrong fix.
    */
-  static _arrowPlan(move) {
+  _arrowEye() {
+    const eye = new THREE.Vector3(...(this._eyeWritten ?? CubusCube._tunedEye()));
+    const hold = this._turn ? this._pose(this._nearestSpec())?.q : null;
+    if (hold) eye.applyQuaternion(hold.clone().invert());
+    const m = (this._m4e ||= new THREE.Matrix4());
+    setBasis(m, this._seq ?? UPRIGHT);
+    eye.applyQuaternion(new THREE.Quaternion().setFromRotationMatrix(m).invert());
+    return eye.normalize();
+  }
+
+  /** The default camera's eye, for a cube that has not placed its camera yet. */
+  static _tunedEye() {
+    return eyeDirection(Number(CubusCube.DEFAULTS['camera-latitude']), Number(CubusCube.DEFAULTS['camera-longitude']));
+  }
+
+  /**
+   * WHERE the bands of `move` go — pure arithmetic over the move's own descriptor and the eye, no meshes.
+   *
+   * One band per layer the move turns, on the faces that layer crosses. `first` is the crossing face the eye
+   * sees most squarely and `second` the better-seen of its two neighbours round the layer; the band runs across
+   * `first`, round the edge they share, and on across `second`, pointing the way the stickers travel — a point
+   * on a face with normal `n` moves along `axis x n` when the layer turns the positive way. So the band starts on
+   * whichever of the two faces the turn carries stickers OFF, toward the edge. When `second` is too edge-on to
+   * carry half an arrow, the band is straight across `first` alone.
+   *
+   * Returns the lanes as point lists with each point's surface normal, which is all a flat band needs: its
+   * width always lies along the axis, because the whole path lies in a plane perpendicular to it.
+   */
+  static _arrowPlan(move, eye = new THREE.Vector3(...CubusCube._tunedEye())) {
     const axis = new THREE.Vector3(...AXIS_VECTOR[move.axis]);
+    const sign = Math.sign(move.angle);
     const across = FACES.map((f) => new THREE.Vector3(...f.n)).filter((v) => Math.abs(v.dot(axis)) < 1e-9);
-    const n = ARROW_FACE_PREFERENCE
-      .map((key) => new THREE.Vector3(...FACES.find((f) => f.key === key).n))
-      .find((c) => across.some((a) => a.equals(c)));
-    const d = axis.clone().cross(n).multiplyScalar(Math.sign(move.angle));
-    const half = 0.92;
-    const centreOf = (layer) => n.clone().multiplyScalar(1.53).add(axis.clone().multiplyScalar(layer));
-    const lanes = move.layers.map((layer) => Array.from({ length: 9 }, (_, i) => centreOf(layer)
-      .add(d.clone().multiplyScalar(-half + (i / 8) * 2 * half))));
+    const facing = (v) => v.dot(eye);
+    const best = (list) => list.reduce((x, y) => (facing(y) > facing(x) + 1e-9 ? y : x));
+    const first = best(across);
+    const second = best(across.filter((v) => Math.abs(v.dot(first)) < 1e-9));
+    const bent = facing(second) >= ARROW.bendFacing;
+    const R = ARROW.lift;
+    // The direction the turn carries a sticker across face `n`.
+    const travel = (n) => axis.clone().cross(n).multiplyScalar(sign);
+    let path; let faces;
+    if (bent) {
+      // Start on the face the turn carries stickers off, toward the edge it shares with the other.
+      const [u, v] = travel(first).dot(second) > 0 ? [first, second] : [second, first];
+      faces = [u, v];
+      const rc = ARROW.bend;
+      const corner = u.clone().add(v).multiplyScalar(R - rc);
+      path = (layer) => {
+        const off = axis.clone().multiplyScalar(layer);
+        const pts = [];
+        const onU = (c) => ({ p: u.clone().multiplyScalar(R).addScaledVector(v, c).add(off), n: u.clone() });
+        const onV = (c) => ({ p: v.clone().multiplyScalar(R).addScaledVector(u, c).add(off), n: v.clone() });
+        for (let i = 0; i <= 8; i++) pts.push(onU(ARROW.tail + ((R - rc - ARROW.tail) * i) / 8));
+        for (let i = 1; i < 6; i++) {
+          const t = (i / 6) * (Math.PI / 2);
+          const n = u.clone().multiplyScalar(Math.cos(t)).addScaledVector(v, Math.sin(t));
+          pts.push({ p: corner.clone().addScaledVector(n, rc).add(off), n });
+        }
+        for (let i = 0; i <= 8; i++) pts.push(onV(R - rc - ((R - rc - ARROW.base) * i) / 8));
+        return pts;
+      };
+    } else {
+      faces = [first];
+      const d = travel(first);
+      path = (layer) => Array.from({ length: 9 }, (_, i) => ({
+        p: first.clone().multiplyScalar(R).addScaledVector(d, ARROW.straight.tail + ((ARROW.straight.base - ARROW.straight.tail) * i) / 8)
+          .addScaledVector(axis, layer),
+        n: first.clone(),
+      }));
+    }
+    const lanes = move.layers.map((layer) => path(layer));
     return {
-      axis, n, d, half, lanes, centreOf,
+      axis, faces, bent, lanes,
+      key: faces.map((f) => f.toArray().join(',')).join('|'),
       layers: move.layers,
       quarters: Math.min(2, Math.abs(Math.round(move.angle / (Math.PI / 2)))),
     };
+  }
+
+  /**
+   * A flat strip along `points`, `halfWidth` either side of the line along `side`, as one geometry. The band, a
+   * tie and the head are all this: a mark painted on a surface is a flat shape lying in it.
+   */
+  static _strip(points, side, halfWidth) {
+    const pos = [];
+    for (const p of points) {
+      pos.push(...p.clone().addScaledVector(side, -halfWidth).toArray(), ...p.clone().addScaledVector(side, halfWidth).toArray());
+    }
+    const index = [];
+    for (let i = 0; i + 1 < points.length; i++) {
+      const a = 2 * i;
+      index.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setIndex(index);
+    return g;
+  }
+
+  /** The arrowhead: a flat triangle in the face the band ends on, its base across the band's end. */
+  static _head(end, tangent, side, { length, halfWidth }) {
+    const pos = [
+      ...end.clone().addScaledVector(side, -halfWidth).toArray(),
+      ...end.clone().addScaledVector(side, halfWidth).toArray(),
+      ...end.clone().addScaledVector(tangent, length).toArray(),
+    ];
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setIndex([0, 1, 2]);
+    return g;
   }
 
   /**
@@ -1077,63 +1195,104 @@ class CubusCube extends HTMLElement {
     yield [0, this._arrowMat, ORDER.mark];
   }
 
-  /** A half turn's dot, behind the tail of the first lane — see HALF_TURN_GAP for why it is not at the head. */
-  _addHalfTurnDot(plan, tail) {
+  /** One mark mesh of the arrow, tagged with what it is for the tests that count parts. */
+  _arrowMesh(geometry, material, order, tag) {
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.renderOrder = order;
+    mesh.userData = { ...tag };
+    this._arrow.add(mesh);
+    return mesh;
+  }
+
+  /** One lane: its band and its head, each as shadow then body. The shadow reaches `swell` past the body all
+   *  round — past its tail too, and past the head's three edges — so the body has an edge on every side. */
+  _addLane(lane, axis) {
+    const pts = lane.map((q) => q.p);
+    const end = pts[pts.length - 1];
+    const tangent = end.clone().sub(pts[pts.length - 2]).normalize();
+    const back = pts[1].clone().sub(pts[0]).normalize();
     for (const [swell, mat, order] of this._markPasses()) {
-      const dot = new THREE.Mesh(new THREE.SphereGeometry(HALF_TURN_DOT + swell, 16, 12), mat);
-      dot.position.copy(tail).sub(plan.d.clone().multiplyScalar(HALF_TURN_GAP));
-      dot.renderOrder = order;
-      dot.userData.halfTurn = true;
-      this._arrow.add(dot);
+      const band = swell ? [pts[0].clone().addScaledVector(back, -swell), ...pts] : pts;
+      this._arrowMesh(CubusCube._strip(band, axis, ARROW.halfWidth + swell), mat, order, { part: 'band' });
+      const head = CubusCube._head(end.clone().addScaledVector(tangent, -swell), tangent, axis, {
+        length: ARROW.headLength + swell * 3.2, halfWidth: ARROW.headHalfWidth + swell * 1.8,
+      });
+      this._arrowMesh(head, mat, order, { part: 'head' });
+    }
+    return { start: pts[0], end: end.clone().addScaledVector(tangent, ARROW.headLength) };
+  }
+
+  /** A half turn's dot, behind the tail of the first lane — see HALF_TURN_GAP for why it is not at the head.
+   *  A disc lying in the face, like the band it belongs to. */
+  _addHalfTurnDot(plan) {
+    const [{ p, n }, next] = plan.lanes[0];
+    const back = p.clone().sub(next.p).normalize();
+    for (const [swell, mat, order] of this._markPasses()) {
+      const dot = this._arrowMesh(new THREE.CircleGeometry(HALF_TURN_DOT + swell, 28), mat, order, { halfTurn: true });
+      dot.position.copy(p).addScaledVector(back, HALF_TURN_GAP);
+      dot.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
     }
   }
 
-  /** The bar tying a wide move's lines together, so they read as one grip rather than two instructions. */
+  /** The bar tying a wide move's bands together, so they read as one grip rather than two instructions. Flat,
+   *  across the bands near their tails, on the face they start on. */
   _addTie(plan) {
-    const at = (layer) => plan.centreOf(layer).add(plan.d.clone().multiplyScalar(-plan.half * TIE_ALONG));
-    const from = at(Math.min(...plan.layers) - TIE_OVERHANG);
-    const to = at(Math.max(...plan.layers) + TIE_OVERHANG);
+    const [a, b] = [plan.lanes[0][0].p, plan.lanes[0][1].p];
+    const travel = b.clone().sub(a).normalize();
+    const along = a.clone().addScaledVector(travel, TIE_ALONG).addScaledVector(plan.axis, -plan.axis.dot(a));
+    const from = along.clone().addScaledVector(plan.axis, Math.min(...plan.layers) - TIE_OVERHANG);
+    const to = along.clone().addScaledVector(plan.axis, Math.max(...plan.layers) + TIE_OVERHANG);
     for (const [swell, mat, order] of this._markPasses()) {
-      const bar = new THREE.Mesh(new THREE.TubeGeometry(new THREE.LineCurve3(from, to), 1, 0.034 + swell, 8, false), mat);
-      bar.renderOrder = order;
-      bar.userData.tie = true;
-      this._arrow.add(bar);
+      this._arrowMesh(CubusCube._strip([from, to], travel, TIE_HALF_WIDTH + swell), mat, order, { tie: true });
     }
   }
 
+  /**
+   * Draw the turn arrow `arrow` asks for, or none, on the faces the eye sees best (`_arrowPlan`).
+   *
+   * Its start, end and axis are kept on the group (`userData`), in the cube's own frame, so a test can check
+   * the direction without judging the look; `faces` records which faces it is on, so a hold or a camera that
+   * changes which faces are seen redraws it (`_refreshArrowFaces`) and nothing else does.
+   */
   _placeArrow() {
     if (!this._arrow) return;
     for (const child of [...this._arrow.children]) { child.geometry.dispose(); this._arrow.remove(child); }
     const move = this._arrowMove();
+    this._arrowShown = move;
     this._arrow.visible = move !== null;
     this._arrow.userData = {};
     this._dirty = true;
     if (!move) return;
 
-    const plan = CubusCube._arrowPlan(move);
-    let end = null;
+    const plan = CubusCube._arrowPlan(move, this._arrowEye());
+    let first = null;
     for (const lane of plan.lanes) {
-      const made = CubusCube._directedCurve(lane, {
-        radius: 0.044, segments: 24, headRadius: 0.155, headLength: 0.36, headSides: 20, lift: 0.10,
-        material: this._arrowMat, rim: { grow: RIM.grow, material: this._arrowRimMat },
-      });
-      end ??= made.end;
-      this._arrow.add(...made.meshes);
+      const drawn = this._addLane(lane, plan.axis);
+      first ??= drawn;
     }
-    if (plan.quarters === 2) this._addHalfTurnDot(plan, plan.lanes[0][0]);
+    if (plan.quarters === 2) this._addHalfTurnDot(plan);
     if (plan.lanes.length > 1) this._addTie(plan);
 
-    const points = plan.lanes.flat();
     this._arrow.userData = {
       axis: plan.axis.toArray(),
-      start: plan.lanes[0][0].toArray(),
-      end: end.toArray(),
+      start: first.start.toArray(),
+      end: first.end.toArray(),
       angle: move.angle,
       layers: [...plan.layers],
       lanes: plan.lanes.length,
-      points: points.map((q) => q.toArray()),
+      faces: plan.key,
+      bent: plan.bent,
+      points: plan.lanes.flat().map((q) => q.p.toArray()),
     };
     this._placeArrowFrame();
+  }
+
+  /** Redraw the arrow if the faces it should be on are no longer the ones it is on — after the hold, the
+   *  camera or the sequence's frame changed. A few dot products when nothing changed. */
+  _refreshArrowFaces() {
+    const move = this._arrowShown;
+    if (!this._arrow || !move) return;
+    if (CubusCube._arrowPlan(move, this._arrowEye()).key !== this._arrow.userData.faces) this._placeArrow();
   }
 
   /**
@@ -1456,13 +1615,33 @@ class CubusCube extends HTMLElement {
     return { meshes, body: made.tube };
   }
 
-  /** Hold the arrow in the sequence's frame, so the next move is drawn about the axis it will turn. */
+  /** Hold the arrow in the sequence's frame, so the next move is drawn about the axis it will turn — at rest,
+   *  and on the faces the eye now sees best, since a regrip in the sequence changes which those are. */
   _placeArrowFrame() {
     if (!this._arrow) return;
-    const m = this._seq ?? UPRIGHT;
+    this._poseArrow();
+    this._refreshArrowFaces();
+  }
+
+  /**
+   * Pose the arrow for this instant: in the sequence's frame, and turned with its layer while the move it
+   * describes is in flight — the cubie pose is `frame · turning · settled`, and the arrow is the same
+   * `frame · turning`. A move in flight that the arrow does NOT describe hides it until it lands: the arrow
+   * stands for the next turn, and drawn still over a different layer turning, the cubies sweep through it.
+   */
+  _poseArrow(inFlight = null, phase = 0) {
+    if (!this._arrow) return;
     this._m4a ||= new THREE.Matrix4();
-    setBasis(this._m4a, m);
+    setBasis(this._m4a, this._seq ?? UPRIGHT);
     this._arrow.quaternion.setFromRotationMatrix(this._m4a);
+    const shown = this._arrowShown ?? null;
+    if (!inFlight || !shown) { this._arrow.visible = shown !== null; return; }
+    const riding = sameTurn(inFlight, shown);
+    this._arrow.visible = riding;
+    if (!riding) return;
+    const turn = (this._qa ||= new THREE.Quaternion());
+    turn.setFromAxisAngle((this._va ||= new THREE.Vector3()).set(...AXIS_VECTOR[inFlight.axis]), inFlight.angle * phase);
+    this._arrow.quaternion.multiply(turn);
   }
 
   /** The walk's starting state, with every attribute read in: `_set()` skips an unbuilt cube. */
@@ -1563,6 +1742,7 @@ class CubusCube extends HTMLElement {
       const a = this._anim;
       const k = Math.min(1, (this._now() - a.t0) / a.dur);
       this._writePose(a.m, EASE(k));
+      this._poseArrow(a.m, EASE(k));
       if (k >= 1) {
         this._completeMove(a);
         // `_completeMove` dispatches `cubus-step`, and a listener is the host's code: a screen that
@@ -1871,6 +2051,8 @@ class CubusCube extends HTMLElement {
     // silhouette and refits, and calling it once per frame of a turn spent that work sixty times a
     // second to arrive at the same distance.
     this._refitIfTurned();
+    // A hold decides which faces the eye sees, so it decides which faces the arrow is on.
+    this._refreshArrowFaces();
     return true;
   }
 
@@ -2106,6 +2288,8 @@ class CubusCube extends HTMLElement {
     this._eyeWritten = [...dir];
     this.camera.position.set(d * dir[0], d * dir[1], d * dir[2]);
     this.camera.lookAt(0, 0, 0);
+    // Where the eye is decides which faces the arrow is on.
+    this._refreshArrowFaces();
     // OrbitControls builds the quaternion that maps `object.up` onto +Y ONCE, in its constructor
     // (three r185, OrbitControls.js line 406). Changing the camera's up afterwards would leave it
     // orbiting in the old frame while the renderer drew in the new one — dragging up would move
