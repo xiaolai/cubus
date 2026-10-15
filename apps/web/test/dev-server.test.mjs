@@ -1,7 +1,7 @@
 // The dev server's request handling, in-process (`dev-server.mjs`), where a test can see what a spawned
 // server hides: a descriptor closing when a download is abandoned, the length declared against the bytes
 // sent when a file is replaced mid-request, and the status a failure is answered with. `serve.test.mjs`
-// holds the server as a whole — host guard, traversal, types, the course mount — through a real spawn.
+// holds the server as a whole — host guard, traversal, types — through a real spawn.
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { appendFileSync, chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -166,7 +166,7 @@ test('a file replaced between being found and being opened is sent whole, under 
   const dir = rootWithFiles();
   const path = join(dir, 'small.txt');
   const io = {
-    // The course rebuild's move: a new file renamed over the old, right after the path was resolved.
+    // A rebuild's move: a new file renamed over the old, right after the path was resolved.
     realpath: async (p) => {
       const real = await fsRealpath(p);
       if (p.endsWith('small.txt')) { writeFileSync(`${path}.new`, 'the second, longer version'); renameSync(`${path}.new`, path); }
@@ -283,17 +283,16 @@ test('a watcher that fails later takes only live-reload with it, and the page st
   }
 });
 
-test('a course that cannot be watched leaves the app watched, and says which one is not', async () => {
+test('a root that cannot be watched is still served, says so, and offers no reload client', async () => {
   const dir = rootWithFiles();
-  const courseDir = mkdtempSync(join(tmpdir(), 'cubus-dev-course-'));
-  made.push(courseDir);
-  const watched = fakeWatch({ refuse: [courseDir] });
-  const course = { mount: 'course', root: courseDir, real: realpathSync(courseDir) };
-  const s = await start(dir, { liveReload: true, watch: watched.watch, course, courseMeta: '<meta name="cubus-course" content="course/">' });
+  const watched = fakeWatch({ refuse: [dir] });
+  const s = await start(dir, { liveReload: true, watch: watched.watch });
   try {
-    assert.deepEqual(s.dev.watching(), ['web/'], 'the app watcher was either dropped or not reported');
-    assert.match(s.log.lines.map(([, line]) => line).join('\n'), /cannot watch the course/);
-    assert.match((await fetchWhole(`${s.base}/`)).body.toString(), /EventSource/, 'the app is still watched, so its pages still reload');
+    assert.deepEqual(s.dev.watching(), []);
+    assert.match(s.log.lines.map(([, line]) => line).join('\n'), /cannot watch web\//);
+    const page = await fetchWhole(`${s.base}/`);
+    assert.equal(page.status, 200, 'a watcher that would not start took serving with it');
+    assert.doesNotMatch(page.body.toString(), /EventSource/, 'a page was handed a reload client nothing will ever push to');
   } finally {
     await s.stop();
   }

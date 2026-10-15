@@ -13,29 +13,29 @@ import test from 'node:test';
 
 import { DEFAULT_HIDDEN, HIDEABLE, migrateNavDefaults, NAV_DEFAULTS_VERSION } from '../lib/app-settings.js';
 
-const ADDED = Object.freeze({ 2: ['timer', 'stats'], 3: ['course'] });
+const ADDED = Object.freeze({ 2: ['timer', 'stats'], 3: ['later'] });
 const run = (version, hidden = []) => migrateNavDefaults(version, hidden, ADDED, 3);
 
 test('a fresh record gets every default', () => {
-  assert.deepEqual(run(0), { navDefaults: 3, navHidden: ['timer', 'stats', 'course'] });
+  assert.deepEqual(run(0), { navDefaults: 3, navHidden: ['timer', 'stats', 'later'] });
 });
 
 test('a bump applies only what is new, and never re-hides what was brought back', () => {
   // THE DELTA PROPERTY. Applying the whole set again would take Timer away from someone who had
   // deliberately turned it on — which is what the comment in app-settings.js promises it will not do.
-  assert.deepEqual(run(2, []), { navDefaults: 3, navHidden: ['course'] });
-  assert.deepEqual(run(2, ['stats']), { navDefaults: 3, navHidden: ['stats', 'course'] });
+  assert.deepEqual(run(2, []), { navDefaults: 3, navHidden: ['later'] });
+  assert.deepEqual(run(2, ['stats']), { navDefaults: 3, navHidden: ['stats', 'later'] });
 });
 
 test('a record already at the current version is left alone', () => {
-  assert.deepEqual(run(3, ['course']), { navDefaults: 3, navHidden: ['course'] });
+  assert.deepEqual(run(3, ['later']), { navDefaults: 3, navHidden: ['later'] });
   assert.deepEqual(run(9, []), { navDefaults: 9, navHidden: [] }, 'a version from the future is not rolled back');
 });
 
 test('a version that is not a whole number cannot skip a migration', () => {
-  // 2.5 counted from 3.5, ran nothing, and was stamped 3 — so the Course tab never got its default
-  // and nothing would ever apply it again.
-  assert.deepEqual(run(2.5), { navDefaults: 3, navHidden: ['timer', 'stats', 'course'] });
+  // 2.5 counted from 3.5, ran nothing, and was stamped 3 — so the tab version 3 hid never got its
+  // default and nothing would ever apply it again.
+  assert.deepEqual(run(2.5), { navDefaults: 3, navHidden: ['timer', 'stats', 'later'] });
 });
 
 test('a hostile version terminates instead of hanging the boot', () => {
@@ -44,7 +44,7 @@ test('a hostile version terminates instead of hanging the boot', () => {
   for (const bad of [-1e100, -1, Number.NaN, Infinity, -Infinity, '3', null, undefined, {}]) {
     const out = migrateNavDefaults(bad, [], ADDED, 3);
     assert.equal(out.navDefaults, 3, `version ${String(bad)} was not migrated`);
-    assert.deepEqual(out.navHidden, ['timer', 'stats', 'course']);
+    assert.deepEqual(out.navHidden, ['timer', 'stats', 'later']);
   }
 });
 
@@ -56,14 +56,13 @@ test('a later version cannot be applied before an earlier one', () => {
 // ---- THE PRODUCTION TABLE, not a substitute -----------------------------------------------------
 //
 // Every case above supplies its own table and version, which tests the MECHANISM and says nothing
-// about what the app actually ships. An audit removed Course from the real migration list and all
-// six passed: the mechanism was perfect and the app would have shipped the Course tab visible to
-// every existing installation. These call `migrateNavDefaults` with its real defaults.
+// about what the app actually ships. An audit once removed a tab from the real migration list and all
+// six passed: the mechanism was perfect and the app would have shipped that tab visible to every
+// existing installation. These call `migrateNavDefaults` with its real defaults.
 
-test('the shipped migration hides the Course tab for someone already at version 2', () => {
-  const out = migrateNavDefaults(2, ['timer']);
-  assert.ok(out.navHidden.includes('course'), 'an existing install would see the Course tab');
-  assert.ok(out.navHidden.includes('timer'), 'and it took away a tab they had turned on');
+test('the shipped migration hides Timer and Stats for someone from before version 2, and keeps a hide', () => {
+  const out = migrateNavDefaults(1, ['stats']);
+  assert.deepEqual(out.navHidden, ['stats', 'timer']);
   assert.equal(out.navDefaults, NAV_DEFAULTS_VERSION);
 });
 
@@ -110,7 +109,7 @@ test('a deliberate hide survives, whatever the stored version says', () => {
 });
 
 test('a tab brought back is not hidden again by a later bump', () => {
-  // Somebody at version 2 who turned Timer and Stats back on: version 3 is about the Course tab alone.
+  // Somebody at version 2 who turned Timer and Stats back on: no later version hides either again.
   const out = migrateNavDefaults(2, []);
   assert.ok(!out.navHidden.includes('timer') && !out.navHidden.includes('stats'),
     'a bump re-hid a tab the user had turned on');
@@ -120,11 +119,11 @@ test('a tab brought back is not hidden again by a later bump', () => {
 });
 
 test('no migration writes the id of a screen that was removed', async () => {
-  // Alg trainer, Drill, Pieces, Lessons and One turn were removed (ADR 0010), and their entries in the
+  // Alg trainer, Drill, Pieces, Lessons, Course and One turn were removed (ADR 0010), and their entries in the
   // migration tables with them. An entry left behind would write a dead id into every record it reached,
   // which the load filter then throws away — a write that changes nothing, on every launch it runs.
   const { NAV } = await import('../lib/app-state.js');
-  const REMOVED = ['trainer', 'drill', 'pieces', 'lessons', 'loop'];
+  const REMOVED = ['trainer', 'drill', 'pieces', 'lessons', 'course', 'loop'];
   const tabs = new Set(NAV.map(([id]) => id));
   const hideable = new Set(HIDEABLE.map(([id]) => id));
   for (const id of REMOVED) {

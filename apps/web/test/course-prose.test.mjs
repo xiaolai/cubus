@@ -2,7 +2,8 @@
 //
 // ADR 0006 decision 7, and the first risk the plan names. The boundary is NOT "episodes are closed
 // and drills are open" — that discriminator was refuted by reading what a drill actually contains.
-// A drill is facts PLUS writing: `test/fixtures/cubus-im-drills.mjs` carried
+// A drill is facts PLUS writing: `test/fixtures/cubus-im-drills.mjs` (removed when the rounds moved to
+// cubus-courses, ADR 0010) carried
 // `say: 'Where does this piece live?'` and `say: 'It lives here.'`, and cubus-im's own
 // `build-predict.py` carries "Called it. Watch." in the course's voice. The line is **the authored
 // words, not the artefact**: a round's scramble, slot, piece, turn and computed answer are facts
@@ -19,7 +20,6 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-import { PREDICTION, predictionScript, RECOGNITION, recognitionScript } from './fixtures/cubus-im-drills.mjs';
 
 /**
  * What a `say` in this repo may be: a numbered placeholder, or nothing at all.
@@ -73,18 +73,6 @@ test('the episode fixture carries structure, not narration', () => {
     readFileSync(new URL('./fixtures/episode-structure.json', import.meta.url), 'utf8'),
   );
   noProse(episode, 'episode-structure.json');
-});
-
-test('the drill records carry no authored words', () => {
-  noProse(RECOGNITION, 'cubus-im-drills.mjs RECOGNITION');
-  noProse(PREDICTION, 'cubus-im-drills.mjs PREDICTION');
-});
-
-test('the drill SCRIPTS carry no authored words', () => {
-  // The scripts are where the prose actually lives: the records are facts, and the builders wrap
-  // them in prompts and reveal lines. A gate that read only the records would pass over the leak.
-  for (const r of RECOGNITION) noProse(recognitionScript(r), 'recognitionScript');
-  for (const r of PREDICTION) noProse(predictionScript(r), 'predictionScript');
 });
 
 test('the gate can tell a placeholder from a sentence', () => {

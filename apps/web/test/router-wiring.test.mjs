@@ -158,12 +158,14 @@ test('an unknown hash falls back to home rather than rendering nothing', async (
 // notice, because the other tests only visit four of them.
 test('every screen renders without throwing', async () => {
   // FROM THE REGISTRY, because a list goes stale silently and this one had: it named nine screens
-  // while thirteen were registered, so `course`, `pieces`, `shapes` and `loop` were covered by
-  // nothing at all — in a case whose whole point is that EVERY screen renders (2026-10-06).
+  // while thirteen were registered, so four of them were covered by nothing at all — in a case whose
+  // whole point is that EVERY screen renders (2026-10-06).
   const { SCREENS: REGISTERED } = await import('../lib/screen-shell.js');
   const { state } = await import('../lib/app.js');
   const SCREENS = Object.keys(REGISTERED);
-  assert.ok(SCREENS.length >= 8, `only ${SCREENS.length} screens registered — the registry is not loaded`);
+  const { NAV } = await import('../lib/app-state.js');
+  const unregistered = [...NAV.map(([id]) => id), 'settings', 'shapes'].filter((id) => !SCREENS.includes(id));
+  assert.deepEqual(unregistered, [], 'the registry is not loaded, or a routed screen is missing from it');
   // TWO CHANNELS, because the one this watched is the one the shell never uses. A build or a mount
   // that throws is CAUGHT: `screen-shell.js` logs it and puts its broken card up instead, so the
   // window raises no `error` event and the stage is far from empty — this case passed for a screen
@@ -1286,29 +1288,29 @@ test('showing an entry adds it to the toolbar, hiding removes it, and the rest i
   await tick();
   assert.ok(!navIds().includes('stats'), 'precondition: Stats starts hidden');
 
-  // Show all three that start hidden, in the order the toolbar lists them. The default row is solve,
-  // scan and scramble and nothing else (owner's decision, 2026-10-14).
-  for (const id of ['timer', 'stats', 'course']) win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
+  // Show both that start hidden, in reverse, to show the toolbar keeps its own order. The default row is
+  // solve, scan and scramble and nothing else (owner's decision, 2026-10-14).
+  for (const id of ['stats', 'timer']) win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
   await tick();
-  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'timer', 'stats', 'course'], 'shown in toolbar order');
+  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'timer', 'stats'], 'shown in toolbar order');
 
   // Hide the middle one: its neighbours are untouched.
-  win.document.querySelector('[data-nav-toggle="stats"]').click();
+  win.document.querySelector('[data-nav-toggle="timer"]').click();
   await tick();
-  assert.ok(!navIds().includes('stats'), 'gone from the toolbar');
-  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'timer', 'course'], 'and its neighbours are untouched');
+  assert.ok(!navIds().includes('timer'), 'gone from the toolbar');
+  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'stats'], 'and its neighbours are untouched');
 
   // Hiding is cosmetic: the address still works, which is the escape hatch.
-  win.location.hash = '#/stats';
+  win.location.hash = '#/timer';
   await tick();
   assert.ok(win.document.querySelector('#stage .screen'), 'a hidden screen is still reachable');
 
   // Restore the DEFAULT through the UI, not by wiping localStorage. `settings` is a live
   // module-level object: clearing storage leaves it holding the shown ids, so every later test in
-  // this file would inherit a toolbar with extra entries. Stats is already hidden again above.
+  // this file would inherit a toolbar with extra entries. Timer is already hidden again above.
   win.location.hash = '#/settings';
   await tick();
-  for (const id of ['timer', 'course']) {
+  for (const id of ['stats']) {
     win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
     await tick();
   }
@@ -1341,7 +1343,7 @@ test('the toolbar no longer offers 3D viewer or Smart cube, and Stats is renamed
   // Hidden by default IN CODE, not by a stored preference: a wiped localStorage once put five
   // placeholder screens back in the toolbar. The whole row is asserted POSITIVELY below, so a tab that
   // should be gone cannot hide behind a list nobody updated.
-  for (const id of ['timer', 'course']) {
+  for (const id of ['timer', 'stats']) {
     assert.ok(!ids.includes(id), `${id} is hidden by default, whatever storage says`);
   }
   assert.deepEqual(ids, ['home', 'scan', 'scramble'], 'a fresh install shows exactly solve, scan and scramble');

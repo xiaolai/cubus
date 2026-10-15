@@ -350,14 +350,11 @@ function boundFocus(built, cue) {
 }
 
 /**
- * A selector spec BOUND to `cube`: the pieces it names there, as `piece:` tokens.
- *
- * Exported because the episode runtime needs the same answer (`lesson-player.js`) and a second
- * implementation of "which piece is that" is how the two runtimes come to light different pieces for
- * one lesson. A cube here is a piece state or a painted picture, in the cube's own letters — whatever
- * renaming the caller's frame needs has happened before this is asked.
+ * A selector spec BOUND to `cube`: the pieces it names there, as `piece:` tokens. A cube here is a piece
+ * state or a painted picture, in the cube's own letters — whatever renaming the caller's frame needs has
+ * happened before this is asked.
  */
-export function bindSelectors(spec, cube) {
+function bindSelectors(spec, cube) {
   const { selectors } = parseHighlight(spec);
   if (!selectors.length) return spec;
   const cubies = selectablesOf(cube);

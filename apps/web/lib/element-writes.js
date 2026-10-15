@@ -1,7 +1,8 @@
 // Writing attributes onto a `<cubus-cube>`, and only what changed.
 //
 // ONE CACHE, because there were two. The script runtime's writer (`lib/script-drive.js`) and the episode
-// runtime's player (`lib/lesson-player.js`) each kept their own map of what they had last written, with
+// runtime's player (`lib/lesson-player.js`, since removed with the Course screen, ADR 0010) each kept
+// their own map of what they had last written, with
 // the same rule spelled out twice — and they had already drifted: clearing a stale `facelets` before
 // loading a segment was in one and not the other, which is a re-used element drawing the last screen's
 // cube for a whole lesson (Codex audit, 2026-09-16, and it took two fixes on one day to see it).

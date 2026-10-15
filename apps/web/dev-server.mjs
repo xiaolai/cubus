@@ -1,5 +1,5 @@
 // The dev server's parts, importable without starting anything. `serve.mjs` is the entry: it reads the
-// environment, refuses a bad course directory, and listens. Everything a request meets is here, split by
+// environment and listens. Everything a request meets is here, split by
 // what it decides — the host, the route, the file, the answer — because it was one 131-line handler whose
 // branches shared a catch-all that answered every failure 404 (audit, 2026-09-21). In-process, a test can
 // see what a spawned server hides: a descriptor closing, a status chosen for a failure.
@@ -37,23 +37,6 @@ export const MIME = {
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
   '.webmanifest': 'application/manifest+json',
-  // Audio, because a course is narration: without these a lesson's track is served as
-  // application/octet-stream and the element refuses to decode it. The dev server could not serve
-  // a course at all until this was here (found by audit, 2026-09-20).
-  '.m4a': 'audio/mp4',
-  '.mp3': 'audio/mpeg',
-  '.wav': 'audio/wav',
-  '.ogg': 'audio/ogg',
-  // Pictures and silent clips, because a course may show one where the cube is (ADR 0007). A `<video>`
-  // refuses a stream served as application/octet-stream; an `<img>` mostly sniffs, and is given its type
-  // anyway rather than left to guess.
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp',
-  '.gif': 'image/gif',
-  '.avif': 'image/avif',
-  '.mp4': 'video/mp4',
-  '.webm': 'video/webm',
   '.md': 'text/markdown; charset=utf-8', // THIRD_PARTY_NOTICES.md, linked from the About card
   '.txt': 'text/plain; charset=utf-8', // notices/*.txt, linked from THIRD_PARTY_NOTICES.md
 };
@@ -150,18 +133,6 @@ export function requestPath(requestUrl) {
   return rel.replace(/^\/+/, '') || 'index.html';
 }
 
-/**
- * Which root a decoded request path is under, and the path inside it.
- *
- * Decided on the DECODED path, so `/course%2F..` is a course request that then fails the course root's own
- * containment check, rather than slipping past it.
- */
-export function routeOf(rel, { root, rootReal, course = null }) {
-  if (course === null || !(rel === course.mount || rel.startsWith(`${course.mount}/`))) {
-    return { root, rootReal, rel, course: false };
-  }
-  return { root: course.root, rootReal: course.real, rel: rel.slice(course.mount.length + 1), course: true };
-}
 
 /** Cross-origin isolation and no caching — see `headersFor`. */
 const ISOLATED = Object.freeze({
@@ -213,7 +184,7 @@ const RELOAD_SNIPPET =
   ' es.onmessage = () => location.reload(); })();</script>\n';
 
 /**
- * The dev server over `root` (and a course, when one is mounted), not yet listening.
+ * The dev server over `root`, not yet listening.
  *
  * `io` and `watch` are the file system, replaceable so a test can put a failure exactly where it wants
  * one: a file replaced between being found and being opened, a watcher that errors after it started.
@@ -221,8 +192,6 @@ const RELOAD_SNIPPET =
 export function createDevServer({
   root,
   rootReal = root,
-  course = null,
-  courseMeta = '',
   liveReload = true,
   host = '127.0.0.1',
   log = console,
@@ -231,7 +200,6 @@ export function createDevServer({
   recordDir = null,
   recordLimit = RECORD_LIMIT,
 }) {
-  const roots = { root, rootReal, course };
 
   // --- live-reload plumbing (SSE) ---
   // Open SSE connections; each is an http response we keep writing to.
@@ -259,16 +227,14 @@ export function createDevServer({
   };
 
   /**
-   * EACH ROOT IS WATCHED ON ITS OWN, and each watcher keeps an error handler. Both were missing: a watcher
-   * that errored after it started had no listener, so the error ended the process a comment promised would
-   * degrade gracefully; and a course watcher failing to start left the app's running while the log said
-   * live-reload was disabled (audit, 2026-09-21). What is watched is now a fact the log and the HTML both
-   * read — live-reload is a convenience, and losing it must never take serving with it.
+   * THE WATCHER KEEPS AN ERROR HANDLER. It was missing: a watcher that errored after it started had no
+   * listener, so the error ended the process a comment promised would degrade gracefully (audit,
+   * 2026-09-21). What is watched is a fact the log and the HTML both read — live-reload is a convenience,
+   * and losing it must never take serving with it.
    */
   const watchers = new Map();
   if (liveReload) {
-    const wanted = [['web/', root], ...(course ? [['the course', course.root]] : [])];
-    for (const [label, dir] of wanted) {
+    for (const [label, dir] of [['web/', root]]) {
       try {
         const watcher = watch(dir, { recursive: true }, onChange);
         watcher.on('error', (err) => {
@@ -289,7 +255,7 @@ export function createDevServer({
   /**
    * Open what `target` names, or refuse. ONE DESCRIPTOR from here on: the size is read from it and the
    * bytes streamed from it. The size used to come from a stat of the PATH, and the bytes from opening the
-   * path again later, so a file replaced in between — a course rebuild writes new files over old — went
+   * path again later, so a file replaced in between — a rebuilt bundle writes new files over old — went
    * out under the old one's Content-Length (audit, 2026-09-21).
    *
    * SYMLINKS RESOLVED, and checked again. `normalize` reasons about the TEXT of a path, and a
@@ -332,15 +298,12 @@ export function createDevServer({
     return opened;
   };
 
-  /** An app page, with the course's tag and the reload client written in. */
+  /** An app page, with the reload client written in. */
   const sendHtml = async (res, fh, headers) => {
     // Inject the live-reload client just before </body> (or append if there is none) — unless
     // nothing is watched, in which case the page must not even open the EventSource: a client
     // that is merely never pushed to is one broadcastReload away from a reload nobody wanted.
     let html = await fh.readFile('utf8');
-    if (course) {
-      html = html.includes('</head>') ? html.replace('</head>', `${courseMeta}\n</head>`) : courseMeta + html;
-    }
     if (watchers.size) {
       html = html.includes('</body>') ? html.replace('</body>', `${RELOAD_SNIPPET}</body>`) : html + RELOAD_SNIPPET;
     }
@@ -460,11 +423,10 @@ export function createDevServer({
     res.once('close', () => { closed = true; });
     let held = null;
     try {
-      const route = routeOf(requestPath(req.url), roots);
-      held = await openRequested(route);
+      held = await openRequested({ root, rootReal, rel: requestPath(req.url) });
       if (closed) return;
       const ext = extname(held.target);
-      if (ext === '.html' && !route.course) {
+      if (ext === '.html') {
         await sendHtml(res, held.fh, headersFor(ext));
         return;
       }
@@ -572,7 +534,7 @@ export function createDevServer({
 
   return {
     server,
-    /** What is being watched for live-reload, by name: `web/`, `the course`. */
+    /** What is being watched for live-reload, by name: `web/`. */
     watching: () => [...watchers.keys()],
     /** How many descriptors requests hold open right now. */
     openFiles: () => openFiles.size,

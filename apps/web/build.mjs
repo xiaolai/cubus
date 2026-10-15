@@ -19,9 +19,8 @@
 // The assembly is a function so a test can run it into a throwaway directory
 // and look at what came out; `node build.mjs` runs it into dist/.
 
-import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import path, { basename, join, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
-import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 // The same bundler that BUILDS vendor/cubus-cube.js, asked which files went into it. It is
@@ -30,7 +29,6 @@ import { fileURLToPath } from 'node:url';
 import { buildSync } from 'esbuild';
 
 import { isOwnedAsset, ownedAssetsIn } from './copy-ort.mjs';
-import { COURSE_META, COURSE_MOUNT } from './course-tag.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -575,87 +573,8 @@ function assertBundleFresh(root, entry) {
  *   comparing content — which is the better message for it.
  * @returns {{ dist: string, referenced: number }}
  */
-/**
- * Copy a tree as FILES, following every link. Not `cpSync(…, { dereference: true })`: that follows the
- * link it is handed and copies a link found INSIDE the tree as a link — measured 2026-10-14 on this
- * repository's Node, a course's `voice/` pointing into a checkout shipped as a pointer to that checkout.
- * A link that leads back up the path being copied is refused rather than followed for ever.
- */
-function copyFollowingLinks(from, to, above = new Set()) {
-  const real = realpathSync(from);
-  if (above.has(real)) throw new Error(`build: ${from} links back into itself`);
-  const trail = new Set(above).add(real);
-  mkdirSync(to, { recursive: true });
-  for (const name of readdirSync(from)) {
-    const src = join(from, name);
-    const dst = join(to, name);
-    if (statSync(src).isDirectory()) copyFollowingLinks(src, dst, trail);
-    else copyFileSync(src, dst);
-  }
-}
-
-/** The course directory, resolved, once it is shown to be a BUILT course. Refused by name rather than
- *  half-done: a path that is not a directory, or one with no shelf in it, would ship a page whose tag
- *  promises a course and whose Course screen says the lessons did not load. */
-function assertCourseBuilt(course) {
-  const dir = resolve(course);
-  let isDir = false;
-  try { isDir = statSync(dir).isDirectory(); } catch { /* not there at all */ }
-  if (!isDir) throw new Error(`build: the course to bundle, ${course}, is not a directory`);
-  if (!existsSync(join(dir, 'index.json'))) {
-    throw new Error(`build: ${course} has no index.json — point CUBUS_COURSE_DIR at a BUILT course (cubus-courses' dist/course/)`);
-  }
-  return dir;
-}
-
-/**
- * Read the course BEFORE the assembly deletes anything: copied, links followed, into a staging directory
- * the caller removes. The course used to be copied after `dist` was emptied, so a course reached through
- * `dist` — named inside it, linked into it file by file, or through a chain of links one of which lives
- * there — was destroyed before it was read (Codex audit and verify, 2026-10-14). A guard asking which paths
- * the copy would touch was answered three ways and missed a fourth; reading first makes the order the
- * proof. What stays refused is the other direction: a course that HOLDS `dist` would ship the build's own
- * last output inside the course.
- */
-function stageCourse(course, out) {
-  const dir = assertCourseBuilt(course);
-  if (beneath(out, dir)) {
-    throw new Error(`build: refusing to bundle ${course} — it holds the destination ${out}, so the course would ship the last build inside it`);
-  }
-  const stage = mkdtempSync(join(tmpdir(), 'cubus-course-stage-'));
-  // Inside the destination it is emptied with it; inside the course the copy reads its own output for ever.
-  for (const [tree, why] of [[out, `the destination ${out}, which is deleted next`], [dir, `the course ${dir}, which would copy itself`]]) {
-    if (beneath(stage, tree)) {
-      rmSync(stage, { recursive: true, force: true });
-      throw new Error(`build: refusing to stage the course in ${stage} — it is inside ${why}`);
-    }
-  }
-  try {
-    copyFollowingLinks(dir, join(stage, COURSE_MOUNT));
-  } catch (err) {
-    rmSync(stage, { recursive: true, force: true });
-    throw err;
-  }
-  return stage;
-}
-
-/**
- * Put a BUILT course beside the app — `staged` holds the copy `stageCourse` took of the directory
- * cubus-courses' `npm run release` writes (`dist/course/`) — and tell the page it is there (plan Phase 7;
- * ADR 0007). The course is closed content and is never in this repository (ADR 0006 decision 1), so it
- * arrives by path, from the build's caller. The staged copy is files only: its links were followed.
- */
-function bundleCourse(staged, out) {
-  cpSync(join(staged, COURSE_MOUNT), join(out, COURSE_MOUNT), { recursive: true });
-  const page = join(out, 'index.html');
-  const html = readFileSync(page, 'utf8');
-  if (!html.includes('</head>')) throw new Error('build: index.html has no </head> to put the course tag before');
-  if (html.includes('name="cubus-course"')) throw new Error('build: index.html already names a course; a build must not name two');
-  writeFileSync(page, html.replace('</head>', `${COURSE_META}\n</head>`));
-}
-
 export function assembleDist({
-  root = here, dist = join(root, 'dist'), freshness = true, cubeEntry, scannerManifest, scannerBuild, course = null,
+  root = here, dist = join(root, 'dist'), freshness = true, cubeEntry, scannerManifest, scannerBuild,
 } = {}) {
   // Absolute from here down, so "is the destination inside the source" is a question about
   // directories rather than about whoever's cwd this ran under — and so the walk up to the
@@ -667,21 +586,12 @@ export function assembleDist({
   const entry = cubeEntry ? resolve(cubeEntry) : resolve(src, CUBE_ENTRY);
   const manifest = scannerManifest ? resolve(scannerManifest) : resolve(src, SCANNER_MANIFEST);
   assertDistIsDisposable(src, out, entry);
-  const staged = course === null ? null : stageCourse(course, out);
-  let referenced;
-  try {
-    rmSync(out, { recursive: true, force: true });
-    mkdirSync(out, { recursive: true });
-    copyWebAssets(src, out);
-    referenced = assertReferencedAssets(out);
-    assertSolverAssets(out);
-    assertScannerAssets(src, out, manifest);
-    // After the asset checks, which are about the APP: a course's files are its own, and index.html's
-    // references are checked before the tag is written into it.
-    if (staged) bundleCourse(staged, out);
-  } finally {
-    if (staged) rmSync(staged, { recursive: true, force: true });
-  }
+  rmSync(out, { recursive: true, force: true });
+  mkdirSync(out, { recursive: true });
+  copyWebAssets(src, out);
+  const referenced = assertReferencedAssets(out);
+  assertSolverAssets(out);
+  assertScannerAssets(src, out, manifest);
   if (freshness) {
     assertBundleFresh(src, entry);
     // `scannerBuild` is the in-memory bundler seam `assertScannerBundlesFresh` documents.
@@ -691,9 +601,6 @@ export function assembleDist({
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  // The same variable the dev server mounts a course from. Unset, the build has no course — the public
-  // build, which says so on its Course screen (ADR 0006 decision 3).
-  const course = process.env.CUBUS_COURSE_DIR || null;
-  const { referenced } = assembleDist({ course });
-  console.log(`build: dist/ assembled — ${referenced} referenced assets verified present${course ? `, course from ${course}` : ', no course'}`);
+  const { referenced } = assembleDist();
+  console.log(`build: dist/ assembled — ${referenced} referenced assets verified present`);
 }

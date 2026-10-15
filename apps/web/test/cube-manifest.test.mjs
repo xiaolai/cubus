@@ -76,13 +76,13 @@ test('the manifest is exactly what the bundle registers, name for name', async (
 });
 
 // A consumer touches more than attributes and methods, and every one of those was outside the contract
-// while being used: `lesson-player.js` read `_anim` because "is a turn animating" was not in it, and a
-// host listens for `cubus-step` and writes attributes with no rule saying it may
+// while being used: the since-removed `lesson-player.js` read `_anim` because "is a turn animating" was not
+// in it, and a host listens for `cubus-step` and writes attributes with no rule saying it may
 // (dev-docs/adr/0005-the-renderer-plays-scripts-methods-choose.md decision 4).
 test('it lists the properties, events and DOM operations a consumer uses', () => {
   const byName = new Map(manifest.properties.map((p) => [p.name, p]));
   assert.deepEqual(byName.get('animating'), { name: 'animating', read: true, write: false },
-    'the public read that replaces lesson-player.js\'s `cube._anim` is missing');
+    'the public read that replaced the removed episode player\'s `cube._anim` is missing');
   assert.deepEqual(byName.get('stops'), { name: 'stops', read: true, write: false });
   assert.deepEqual(byName.get('alg'), { name: 'alg', read: false, write: true });
   assert.deepEqual(manifest.properties.filter((p) => p.name.startsWith('_')), [],

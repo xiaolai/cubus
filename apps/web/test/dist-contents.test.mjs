@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict';
 import {
-  copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync,
+  copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync,
   symlinkSync, utimesSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,7 +17,6 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { FILES, NEVER_SHIPPED, assembleDist, assertScannerBundlesFresh, bundleInputs, scannerBundles } from '../build.mjs';
-import { COURSE_META, COURSE_MOUNT } from '../course-tag.mjs';
 
 const WEB = new URL('../', import.meta.url);
 /** The scanner package's real manifest: the synthetic roots below have no package beside them, and
@@ -706,142 +705,15 @@ test('a scanner bundle that differs from its sources by one byte is a refused di
   }
 });
 
-
-// ---- a course bundled beside the app (plan Phase 7) ----------------------------------------------
-
-/** A built course, as cubus-courses' release writes one: a shelf, a lesson, a recording behind a link. */
-function makeCourse() {
-  const dir = mkdtempSync(join(tmpdir(), 'cubus-built-course-'));
-  writeFileSync(join(dir, 'index.json'), JSON.stringify([{ id: 'a', title: 'A' }]));
-  writeFileSync(join(dir, 'a.json'), '{}');
-  const real = mkdtempSync(join(tmpdir(), 'cubus-course-voice-'));
-  writeFileSync(join(real, 'l0.m4a'), 'audio');
-  symlinkSync(real, join(dir, 'voice'));
-  return { dir, cleanup: () => { rmSync(dir, { recursive: true, force: true }); rmSync(real, { recursive: true, force: true }); } };
-}
-
-test('a course handed to the build ships beside the app, with the one tag that says so, and its links as files', () => {
-  const { dir, cleanup } = makeCourse();
-  try {
-    withRoot(({ root, dist, build }) => {
-      writeFileSync(join(root, 'index.html'), '<!doctype html><html><head><link rel="stylesheet" href="./tokens.css"></head><body><script type="module" src="./lib/app.js"></script></body></html>');
-      build({ freshness: false, course: dir });
-      assert.ok(existsSync(join(dist, COURSE_MOUNT, 'index.json')), 'the shelf did not ship');
-      assert.ok(existsSync(join(dist, COURSE_MOUNT, 'a.json')), 'a lesson did not ship');
-      assert.equal(lstatSync(join(dist, COURSE_MOUNT, 'voice')).isSymbolicLink(), false, 'a link into a checkout shipped as a link');
-      assert.equal(readFileSync(join(dist, COURSE_MOUNT, 'voice', 'l0.m4a'), 'utf8'), 'audio');
-      const html = readFileSync(join(dist, 'index.html'), 'utf8');
-      assert.equal(html.split(COURSE_META).length - 1, 1, 'the page must name its course exactly once');
-      assert.ok(html.indexOf(COURSE_META) < html.indexOf('</head>'), 'the tag must be in the head, where the page reads it');
-    });
-  } finally { cleanup(); }
-});
-
-test('the page the build writes is one the app installs its course from, at the directory the build wrote', async () => {
-  const { installCourseFromPage } = await import('../lib/course-session.js');
-  const { Window } = await import('happy-dom');
-  const win = new Window({ url: 'https://app.invalid/' });
-  try {
-    win.document.head.innerHTML = COURSE_META;
-    let made = null;
-    assert.equal(installCourseFromPage(win.document, { make: (base) => { made = base; return { catalogue: async () => [], episode: async () => null }; } }), true);
-    assert.equal(made, `${COURSE_MOUNT}/`, 'the app looked for the course somewhere other than where the build put it');
-  } finally { await win.happyDOM.close(); }
-});
-
-test('a build with no course has none, and one pointed at something that is not a built course refuses', () => {
+// ---- no course beside the app ---------------------------------------------------------------------
+//
+// The build bundled a course from `CUBUS_COURSE_DIR` beside the app and named it in the page, for the
+// Course screen. Both went with the screen (ADR 0010). What must NOT come back is a release that ships a
+// course directory, or a page that names one.
+test('a build ships no course and names none', () => {
   withRoot(({ dist, build }) => {
     build({ freshness: false });
-    assert.equal(existsSync(join(dist, COURSE_MOUNT)), false, 'a build with no course shipped a course directory');
-    assert.equal(readFileSync(join(dist, 'index.html'), 'utf8').includes('cubus-course'), false, 'a build with no course names one');
+    assert.equal(existsSync(join(dist, 'course')), false, 'a build shipped a course directory');
+    assert.equal(readFileSync(join(dist, 'index.html'), 'utf8').includes('cubus-course'), false, 'a build named a course');
   });
-  const empty = mkdtempSync(join(tmpdir(), 'cubus-not-a-course-'));
-  try {
-    withRoot(({ build }) => {
-      assert.throws(() => build({ freshness: false, course: join(empty, 'nowhere') }), /is not a directory/);
-      assert.throws(() => build({ freshness: false, course: empty }), /has no index\.json/);
-      // A link back up the tree would be copied for ever.
-      writeFileSync(join(empty, 'index.json'), '[]');
-      symlinkSync(empty, join(empty, 'again'));
-      assert.throws(() => build({ freshness: false, course: empty }), /links back into itself/);
-    });
-  } finally { rmSync(empty, { recursive: true, force: true }); }
-});
-
-test('a course reached through the destination is read before the destination is emptied, and ships', () => {
-  // Codex audit and verify, 2026-10-14: `dist` was emptied first and the course copied after, so a course
-  // living in `dist` — named there, linked there file by file, or through a link that lives there — was
-  // destroyed by the build that was to ship it. Each case ships the course, and every case must.
-  const shipsFrom = (prepare) => {
-    const { dir, cleanup } = makeCourse();
-    try {
-      withRoot(({ root, dist, build }) => {
-        writeFileSync(join(root, 'index.html'), '<!doctype html><html><head><link rel="stylesheet" href="./tokens.css"></head><body><script type="module" src="./lib/app.js"></script></body></html>');
-        const course = prepare({ dir, dist });
-        build({ freshness: false, course });
-        assert.equal(readFileSync(join(dist, COURSE_MOUNT, 'take.m4a'), 'utf8'), 'take', 'the course lost what it read through dist');
-        assert.ok(existsSync(join(dist, COURSE_MOUNT, 'index.json')), 'the shelf did not ship');
-      });
-    } finally { cleanup(); }
-  };
-  // Named inside dist.
-  shipsFrom(({ dir, dist }) => {
-    const inside = join(dist, 'old-course');
-    cpSync(dir, inside, { recursive: true, dereference: true });
-    writeFileSync(join(inside, 'take.m4a'), 'take');
-    return inside;
-  });
-  // A link to one file in dist.
-  shipsFrom(({ dir, dist }) => {
-    writeFileSync(join(dist, 'take.m4a'), 'take');
-    symlinkSync(join(dist, 'take.m4a'), join(dir, 'take.m4a'));
-    return dir;
-  });
-  // The course itself named through a link that lives in dist, pointing out of it.
-  shipsFrom(({ dir, dist }) => {
-    writeFileSync(join(dir, 'take.m4a'), 'take');
-    symlinkSync(dir, join(dist, 'course-link'));
-    return join(dist, 'course-link');
-  });
-});
-
-test('a staging directory inside the destination or the course is refused before the delete', () => {
-  // Codex verify, 2026-10-14: the copy is staged under the temporary directory, and a TMPDIR inside `dist`
-  // would be emptied with it. `os.tmpdir()` reads TMPDIR on every call, so the case sets it for one build.
-  const { dir, cleanup } = makeCourse();
-  const was = process.env.TMPDIR;
-  const restore = () => { if (was === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = was; };
-  try {
-    withRoot(({ dist, build }) => {
-      const inside = join(dist, 'tmp');
-      mkdirSync(inside);
-      process.env.TMPDIR = inside;
-      try {
-        assert.throws(() => build({ freshness: false, course: dir }), /refusing to stage the course/);
-      } finally { restore(); }
-      assert.ok(existsSync(inside), 'the destination was emptied by a build that refused to run');
-    });
-    // Inside the COURSE, the copy would read its own output for ever (Codex audit, 2026-10-14).
-    withRoot(({ dist, build }) => {
-      process.env.TMPDIR = dir;
-      try {
-        assert.throws(() => build({ freshness: false, course: dir }), /inside the course .*would copy itself/);
-      } finally { restore(); }
-      assert.ok(existsSync(dist), 'the destination was emptied by a build that refused to run');
-    });
-  } finally { restore(); cleanup(); }
-});
-
-test('a course that holds the destination is refused, and nothing is deleted', () => {
-  const { dir, cleanup } = makeCourse();
-  try {
-    const dist = join(dir, 'dist');
-    mkdirSync(dist);
-    writeFileSync(join(dist, 'keep'), 'kept');
-    const root = makeRoot();
-    try {
-      assert.throws(() => assembleDist({ root, dist, freshness: false, course: dir }), /holds the destination/);
-      assert.ok(existsSync(join(dist, 'keep')), 'the destination was emptied by a build that refused to run');
-    } finally { rmSync(root, { recursive: true, force: true }); }
-  } finally { cleanup(); }
 });

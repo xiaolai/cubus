@@ -11,11 +11,10 @@
 // when a change is broadcast. So editing index.html — or running `npm run build:panel`,
 // which writes web/vendor/ai-scan-panel.js — refreshes the open tab on its own.
 
-import { realpathSync, statSync } from 'node:fs';
+import { realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { COURSE_META, COURSE_MOUNT } from './course-tag.mjs';
 import { createDevServer } from './dev-server.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
@@ -32,33 +31,6 @@ const PORT = Number(process.env.PORT) || 15173;
 // exactly why the web fallback must not be relied on silently. The iOS simulator shares the host's
 // loopback and needs none of this.
 const HOST = process.env.CUBUS_DEV_HOST || '127.0.0.1';
-
-// A COURSE, mounted beside the app for authoring (ADR 0007; dev-docs/course-and-drills-plan.md §10,
-// item 1). The course is not in this repository and may never be (ADR 0006 decision 1), so it is
-// served from wherever `CUBUS_COURSE_DIR` points — at `/course/`, SAME ORIGIN as the app, which is what
-// lets the release CSP's `connect-src 'self'` and `media-src 'self'` cover it with no change.
-//
-// It is a SECOND ROOT on a server whose every guard exists because something once leaked through it, so
-// the request handling (`dev-server.mjs`) asks each of them again of this root: the text of the path must
-// stay inside it, and so must its real location once every link is followed. A variable naming something
-// that is not a directory stops the server here, by name — serving the app with no course, while the author
-// believes a course is mounted, is the silent failure this refuses.
-const COURSE_ROOT = (() => {
-  const named = process.env.CUBUS_COURSE_DIR;
-  if (!named) return null;
-  const dir = resolve(named);
-  let isDir = false;
-  try { isDir = statSync(dir).isDirectory(); } catch { /* not there at all */ }
-  if (!isDir) {
-    console.error(`CUBUS_COURSE_DIR=${named} is not a directory, so there is no course to serve.`);
-    console.error('  Point it at a built course (the folder holding index.json), or unset it.');
-    process.exit(1);
-  }
-  return dir;
-})();
-const COURSE_REAL = COURSE_ROOT ? realpathSync(COURSE_ROOT) : null;
-// What tells the page it has a course: the app installs one only when this is present. Not a probe for
-// `course/index.json` — a packaged build answers a missing file with index.html, not a 404.
 
 // Where a scan recording is POSTed (`dev-docs/scan-recording-session-2026-09-23.md`).
 //
@@ -96,8 +68,6 @@ if (!LIVE_RELOAD) console.log('live-reload off (CUBUS_LIVE_RELOAD=0)');
 const dev = createDevServer({
   root: ROOT,
   rootReal: ROOT_REAL,
-  course: COURSE_ROOT ? { mount: COURSE_MOUNT, root: COURSE_ROOT, real: COURSE_REAL } : null,
-  courseMeta: COURSE_META,
   liveReload: LIVE_RELOAD,
   host: HOST,
   recordDir: RECORD_DIR,
@@ -117,7 +87,6 @@ dev.server.on('error', (err) => {
 
 dev.server.listen(PORT, HOST, () => {
   console.log(`Cubus SPA → http://localhost:${PORT}`);
-  if (COURSE_ROOT) console.log(`  course: ${COURSE_ROOT} → /${COURSE_MOUNT}/`);
   // Say what is actually true — read from what IS watched, not from what was asked for. This line
   // printed unconditionally, so a server started with live-reload off announced that it was watching;
   // and a watcher that failed to start was reported as live-reload disabled while another still ran.

@@ -12,7 +12,6 @@ import {
   STEP_CUES, STEP_KINDS, STEP_MARKS, checkEpisode, checkLesson, checkScript,
 } from '../lib/lesson-format.js';
 import { buildScript } from '../lib/script-view.js';
-import { revealScript } from '../lib/script-rounds.js';
 import { QUESTIONS, ask, readAsk } from '../lib/script-questions.js';
 import { SOLVED, applyAlg } from '../lib/cube-pieces.js';
 import { targetPicture } from '../lib/stage-picture.js';
@@ -376,17 +375,15 @@ test('an undefined move, a hole, or a value that only LOOKS like text is refused
 });
 
 test("a reveal is timed on its round's clock, because that is the timeline it is played on", () => {
-  // `revealScript` plays the cues in force at the round -- its `at` among them -- before the reveal's own
-  // steps, so a reveal step timed before its round passed here and then threw when it was built.
+  // A round's reveal plays the cues in force at the round -- its `at` among them -- before the reveal's own
+  // steps, so a reveal step timed before its round passed here and then threw when it was built. That the
+  // accepted one then builds as a reveal is asked where rounds now live: cubus-courses' player (ADR 0010).
   const doc = (revealAt) => script([
     { say: 'look', at: 0 },
     { round: { ask: 'pieceIn:FR', choose: 2, reveal: [{ say: 'here', at: revealAt }] }, at: 10 },
   ], { start: { scramble: "R U R' U'" } });
   assert.match(refusal(doc(0)) ?? '', /reveal step 0: is at 0, before the step before it at 10/);
-  const built = buildScript(checkScript(doc(12)));
-  const at = built.positions.findIndex((position) => built.script.steps[position.step]?.round);
-  assert.ok(at >= 0, 'the fixture has no round');
-  assert.doesNotThrow(() => buildScript(checkScript(revealScript(built, at))));
+  assert.equal(refusal(doc(12)), null);
 });
 
 // A lesson may show a PICTURE where the cube is — a photograph of the first wooden prototype, the box it

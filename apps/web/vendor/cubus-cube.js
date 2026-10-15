@@ -31406,7 +31406,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
    *
    * The one question a host asks that is about the element's own timing rather than about the cube:
    * a scrubber that jumps while a turn is in flight has to say so, or the cube finishes a turn the
-   * listener has already scrubbed away from. `lesson-player.js` read `_anim` for this, which is a
+   * listener has already scrubbed away from. The since-removed `lesson-player.js` read `_anim` for this, a
    * private field — a consumer reaching past the contract because the contract was missing a word
    * (ADR 0005 decision 4).
    */

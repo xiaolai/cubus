@@ -4,7 +4,8 @@
 // inside a build script's template string: every interesting rule in it — where a segment starts,
 // when a turn lands, where the camera is halfway through a swing, how far a count has rolled — is
 // arithmetic on the cue list, and arithmetic is testable in a millisecond without a browser.
-// `lesson-player.js` is the thin part that writes the answer onto an element.
+// The thin part that wrote the answer onto an element, `lesson-player.js`, was removed with the Course
+// screen (ADR 0010); a host that plays an episode writes `viewAt`'s answer onto its own element.
 //
 // WHY PURE MATTERS HERE. An episode is an audio track plus a cube, and the cube must agree with
 // the audio wherever the listener drops the needle. Seeking backwards, seeking forwards and

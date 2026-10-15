@@ -24,16 +24,12 @@ import * as questions from '../lib/cube-questions.js';
 import * as orientation from '../lib/cube-orientation.js';
 import * as pieces from '../lib/cube-pieces.js';
 import * as format from '../lib/lesson-format.js';
-import * as player from '../lib/lesson-player.js';
 import * as schedule from '../lib/lesson-schedule.js';
 import * as scriptQuestions from '../lib/script-questions.js';
 import * as scriptView from '../lib/script-view.js';
 import * as scriptDrive from '../lib/script-drive.js';
 import * as scriptTrack from '../lib/script-track.js';
-import * as scriptRounds from '../lib/script-rounds.js';
 import * as scriptPlayer from '../lib/script-player.js';
-import * as scriptLesson from '../lib/script-lesson.js';
-import * as holdProbes from '../lib/hold-probes.js';
 import * as flat from '../lib/cube-flat.js';
 import * as gallery from '../lib/cube-gallery.js';
 import * as view from '../lib/cube-view.js';
@@ -61,25 +57,23 @@ const PROMISED = [
   // Questions about one cube (plan item 1.4).
   'edgesInLayerWithout', 'inLayerWithout', 'isHome', 'layerSlots', 'pairOf', 'pieceIn', 'piecesAway',
   'readCube', 'whereIs',
-  // The episode runtime.
+  // The episode schedule.
   'CAM_DEFAULT', 'CAM_EASE', 'GHOST_ELEV', 'GHOST_REVEAL', 'MIN_PER_MOVE', 'QUARTER_GAP',
-  'SPAN_LEAD', 'buildSchedule', 'cameraAt', 'checkEpisode', 'createLessonPlayer', 'lineAt',
+  'SPAN_LEAD', 'buildSchedule', 'cameraAt', 'checkEpisode', 'lineAt',
   'numberAt', 'resolveSpanning', 'segmentAt', 'viewAt',
   // The script runtime (plan item 3.1): the format both drivers read, and the questions a cue names.
   'STEP_CUES', 'STEP_KINDS', 'STEP_MARKS', 'checkLesson', 'checkScript', 'heldFace', 'identityFace',
   'QUESTIONS', 'TAKES_ARGUMENT', 'ask', 'readAsk',
   'askAt', 'buildScript', 'groupsOf', 'stateFrom', 'viewAtPosition',
   'createClockDriver', 'createElementWriter', 'createStopDriver', 'timelineOf', 'locate', 'trackFor', 'trackOf',
-  'answerAt', 'createEventDriver', 'createRound', 'revealScript', 'ROUND_QUESTIONS', 'createScriptPlayer',
-  // A script played as a lesson (ADR 0007).
-  'createScriptLesson',
-  // "Match my cube" (lesson-holds plan Phase 4).
-  'PRACTISED_HOLDS', 'holdFromReports', 'probeRound', 'reportedFace', 'separatingProbes',
+  'ROUND_QUESTIONS', 'createScriptPlayer',
+  // The lesson host, its rounds and "Match my cube" (createScriptLesson, createRound, answerAt,
+  // createEventDriver, revealScript, PRACTISED_HOLDS…) left with the player for cubus-courses (ADR 0010).
   'TOP_RING', 'faceletsOf', 'netSvg', 'topFaceSvg', 'CONTEXT_CAP', 'LIVE_BUDGET', 'flatGallery', 'galleryKind',
 ];
 
 /** The modules whose names the kit re-exports. A new owning module is added here with its first name. */
-const SOURCES = [pieces, frame, highlight, moves, notation, questions, orientation, view, format, schedule, player, scriptQuestions, scriptView, scriptDrive, scriptTrack, scriptRounds, scriptPlayer, scriptLesson, holdProbes, flat, gallery, solvingHold];
+const SOURCES = [pieces, frame, highlight, moves, notation, questions, orientation, view, format, schedule, scriptQuestions, scriptView, scriptDrive, scriptTrack, scriptPlayer, flat, gallery, solvingHold];
 
 /** Promised names the kit does not export. */
 export const missingFrom = (exports, promised) => promised.filter((n) => !Object.hasOwn(exports, n)).sort();

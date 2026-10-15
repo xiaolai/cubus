@@ -55,7 +55,6 @@ test('every tab has a window title, and the titles that differ from their tab sa
     scramble: 'Scramble',
     timer: 'Timer',
     stats: 'Stats',
-    course: 'Course',
     settings: 'Settings',
     // Neither of these has a tab, and the table holds both for the same reason: a screen with no
     // entry here is titled "Cubus" and the window stops saying where you are. Settings is the

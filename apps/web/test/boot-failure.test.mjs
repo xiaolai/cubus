@@ -3,9 +3,9 @@
 // The layout guard's version of this is `boot-guard.test.mjs`. This is the failure the 2026-09-21 audit
 // reproduced one step later: navigation was wired after the guard but before the chrome, so a native window
 // API that threw while the toolbar was being built left the hash listener and `window.cubusGo` live — and
-// the next navigation to #/course painted "NO COURSE INSTALLED" over the failure's sentence, despite a
-// valid course tag, because boot never reached the line that installs the course. app.js boots on import,
-// once per process, so this file holds this one scenario.
+// the next navigation painted a screen over the failure's sentence (then the Course screen, since removed,
+// saying NO COURSE INSTALLED). app.js boots on import, once per process, so this file holds this one
+// scenario.
 
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
@@ -13,8 +13,7 @@ import { readFileSync } from 'node:fs';
 
 import { Window } from 'happy-dom';
 
-const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8')
-  .replace('</head>', '<meta name="cubus-course" content="course/">\n</head>');
+const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const tick = () => new Promise((r) => setTimeout(r, 0));
 const FAILED = /could not start/;
 
@@ -62,7 +61,8 @@ test('a chrome build that throws leaves its sentence on the stage', () => {
 });
 
 test('a navigation after that failure paints nothing over the sentence', async () => {
-  win.location.hash = '#/course';
+  // A screen that renders on its own, with nothing to load: if navigation were live, this is what it paints.
+  win.location.hash = '#/settings';
   await tick();
   await tick();
   const said = win.document.querySelector('#stage').textContent;

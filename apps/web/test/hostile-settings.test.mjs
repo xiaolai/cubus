@@ -28,8 +28,8 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 /**
  * Every screen the router will resolve, taken from the APP rather than listed here.
  *
- * The hand-written copy had already drifted: `course` registers itself in `lib/screens/course.js`
- * and was never added, so the newest routable screen — the one most likely to mishandle a hostile
+ * The hand-written copy had already drifted: the Course screen (since removed, ADR 0010) registered
+ * itself and was never added, so the newest routable screen — the one most likely to mishandle a hostile
  * setting — was the one screen this file never opened (audit, 2026-09-20). A list kept by hand of
  * things the app registers itself is a list that goes stale silently.
  */
@@ -98,11 +98,13 @@ before(async () => {
   await tick();
 });
 
-test('the screen list is the app\'s own, and carries the newest screen', () => {
+test('the screen list is the app\'s own, and carries every tab and both tab-less screens', async () => {
   // The guard on the guard: a derived list that silently came back empty would make every case
-  // below pass over nothing.
-  assert.ok(SCREENS.length >= 8, `only ${SCREENS.length} screens were discovered`);
-  assert.ok(SCREENS.includes('settings') && SCREENS.includes('course'), 'a registered screen is missing');
+  // below pass over nothing. A RELATION rather than a floor, because a count goes stale the day a
+  // screen is removed: every toolbar tab is a screen, and so are Settings and Shapes, which have none.
+  const { NAV } = await import('../lib/app-state.js');
+  const missing = [...NAV.map(([id]) => id), 'settings', 'shapes'].filter((id) => !SCREENS.includes(id));
+  assert.deepEqual(missing, [], 'a screen the app routes to was not discovered');
 });
 
 test('an unknown palette is repaired at load, and the repair is saved', async () => {

@@ -36,14 +36,12 @@ export const RENDERER = Object.freeze([
   'apps/web/lib/script-view.js',
   'apps/web/lib/script-track.js',
   'apps/web/lib/script-drive.js',
-  'apps/web/lib/script-rounds.js',
   'apps/web/lib/script-player.js',
   'apps/web/lib/cube-flat.js',
   'apps/web/lib/cube-gallery.js',
   'apps/web/lib/lesson-schedule.js',
-  'apps/web/lib/lesson-player.js',
-  // Writing an attribute onto the element, and only what changed — the one rule both runtimes' writers
-  // had a copy of until 2026-09-16. It imports nothing.
+  // Writing an attribute onto the element, and only what changed — the one rule two writers had a copy
+  // of until 2026-09-16. It imports nothing.
   'apps/web/lib/element-writes.js',
   'packages/cubus-cube/src/cubus-cube.js',
   'packages/cubus-cube/src/pose.js',
@@ -187,7 +185,7 @@ test('the renderer and the cube-domain modules import only each other and three.
 test('the rule can fail: a renderer module importing a solver is refused', () => {
   const fixture = { path: 'apps/web/lib/cube-moves.js', source: "import { solve } from './two-phase.js';\nexport const x = solve;" };
   assert.deepEqual(violations([fixture]), ['apps/web/lib/cube-moves.js: imports apps/web/lib/two-phase.js, which is not a renderer or cube-domain module']);
-  const screen = { path: 'apps/web/lib/lesson-player.js', source: "export { state } from './app-state.js';" };
+  const screen = { path: 'apps/web/lib/script-player.js', source: "export { state } from './app-state.js';" };
   assert.equal(violations([screen]).length, 1, 'a re-export is an import');
 });
 

@@ -82,10 +82,6 @@ export const DEFAULT_SETTINGS = Object.freeze({
   // course's is the default (decision I, 2026-10-14). An install from before it existed is MIGRATED below,
   // not defaulted, because a learner who has already climbed the last-layer ladder is on the app's.
   lastLayer: 'course',
-  // Where the last lesson of the page's course rested, so a reload resumes it (plan Phase 6):
-  // `{ course, id, progress }`, or null. Shape-checked below; whether `progress` still fits the lesson is
-  // `progressRefusal`'s question, asked when the lesson is opened, because only then is the lesson there.
-  courseRested: null,
 });
 /** Every setting whose default is a boolean — DERIVED, so a new flag is repaired the moment it has a
  *  default, and no list kept by hand can leave one out (audit, 2026-09-19: the tests' own copies had
@@ -250,18 +246,11 @@ export function repairLastLayer(stored, rungs) {
   return rungs.oll > 0 || rungs.pll > 0 ? 'app' : DEFAULT_SETTINGS.lastLayer;
 }
 
-/** A resting place as a record, or null: two non-empty strings and a progress RECORD, nothing more. */
-export function repairCourseRested(stored) {
-  const r = asRecord(stored);
-  if (!r) return null;
-  const { course, id, progress } = r;
-  if (typeof course !== 'string' || !course || typeof id !== 'string' || !id || !asRecord(progress)) return null;
-  return { course, id, progress };
-}
-
 settings.rungs = repairRungs(settings.rungs);
 settings.lastLayer = repairLastLayer(storedSettings, settings.rungs);
-settings.courseRested = repairCourseRested(settings.courseRested);
+// `courseRested` was where the Course screen's last lesson rested, and went with the screen (ADR 0010);
+// the lesson player in cubus-courses keeps its own.
+delete settings.courseRested;
 // How many times each stage has been followed to the end at its current rung, and how often its
 // next rung has been declined. §3 rule 3 — "offer, never ask" — is a rule about counting, so the
 // counts are stored; repaired on load for the same reason the rungs are.
@@ -341,7 +330,6 @@ delete settings.advanced;
 export const HIDEABLE = [
   ['timer', 'Timer'],
   ['stats', 'Stats'],
-  ['course', 'Course'],
 ];
 
 /** Hidden unless asked for. The default row is Home, Restore and Scramble — solve, scan,
@@ -353,7 +341,7 @@ export const HIDEABLE = [
  * alone, and one wiped localStorage brought five placeholder screens back into the toolbar.
  * Changing this list is HALF a change: see `NAV_ADDED` below for the half that reaches a record
  * that has already run. */
-export const DEFAULT_HIDDEN = ['timer', 'stats', 'course'];
+export const DEFAULT_HIDDEN = ['timer', 'stats'];
 
 /**
  * What each version ADDED, so a bump applies a delta rather than the whole set.
@@ -374,9 +362,8 @@ const NAV_ADDED = Object.freeze({
   // from a deliberate hide, so a delta that removed an id could not avoid overriding somebody's
   // choice (decision D5).
   2: ['timer', 'stats'],
-  3: ['course'],
-  // Versions 2 and 4 to 7 also hid or showed the Alg trainer, Drill, Pieces, Lessons and One turn
-  // screens. All five were removed on 2026-10-15 (ADR 0010), and so were their entries: an id that
+  // Versions 2 to 7 also hid or showed the Alg trainer, Drill, Pieces, Lessons, Course and One turn
+  // screens. All six were removed on 2026-10-15 (ADR 0010), and so were their entries: an id that
   // names no screen is dropped from the stored record at load (the `HIDEABLE_IDS` filter below), so
   // hiding one again would only write an id that is then thrown away.
 });
@@ -418,7 +405,7 @@ settings.navHidden = (Array.isArray(settings.navHidden) ? settings.navHidden : D
  * like every other field here, and counting from it fails two ways, both reproduced: a stored
  * `-1e100` never increments — `-1e100 + 1 === -1e100` in floating point — so the loop never
  * terminates and THE APP NEVER STARTS; and a stored `2.5` starts at `3.5`, runs no migration at
- * all, and is then stamped as version 3, so the Course tab silently never gets its default.
+ * all, and is then stamped as version 3, so a tab that version hid silently never gets its default.
  * Walking a fixed list cannot do either.
  *
  * A version that is not a whole number ≥ 0 is treated as 0, which applies every migration. That is

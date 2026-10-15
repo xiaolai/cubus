@@ -28,8 +28,6 @@ export const APP_SOURCES = Object.freeze([
   'lib/version.js', 'lib/app-state.js', 'lib/app-settings.js', 'lib/screen-slots.js', 'lib/solver-service.js',
   'lib/cube-subject.js', 'lib/cube-drawing.js', 'lib/wake-lock.js', 'lib/window-chrome.js',
   'lib/cube-memory.js', 'lib/cube-trust-state.js',
-  // the course's own state: which episode is showing, and surviving the load that fetches it
-  'lib/course-session.js',
   'lib/reconnect-answer.js',
   'lib/live-session.js',
   'lib/cube-reports.js',
@@ -38,13 +36,9 @@ export const APP_SOURCES = Object.freeze([
   // the menu both screens' corner menus are built on, 2026-09-14
   'lib/menu-popover.js', 'lib/scroll-strip.js',
   'lib/screens/scan.js', 'lib/screens/cube.js', 'lib/screens/timer.js', 'lib/screens/settings.js',
-  'lib/screens/stats.js', 'lib/screens/course.js',
+  'lib/screens/stats.js',
   // the whole picture catalogue as a grid, and the two services behind it, 2026-10-04
   'lib/screens/shapes.js', 'lib/shape-recency.js', 'lib/shape-thumb.js',
-  // the Course screen's second composition: a lesson playing
-  'lib/screens/course/episode-view.js',
-  'lib/screens/course/lesson-chrome.js',
-  'lib/screens/course/script-lesson-view.js',
   // the cube screen's own parts, 2026-09-14
   'lib/screens/cube/route-race.js', 'lib/screens/cube/speed-menu.js', 'lib/screens/cube/die.js',
   'lib/screens/cube/pattern-menu.js',
@@ -74,19 +68,18 @@ export const APP_SOURCES = Object.freeze([
  *  refused, because that is app code filed where the scans cannot see it. */
 export const LIBRARY_SOURCES = Object.freeze([
   'lib/annotation-inks.js', 'lib/app-update.js', 'lib/ble-bridge.js', 'lib/ble-polyfill.js', 'lib/cube-flat.js', 'lib/cube-frame.js', 'lib/cube-gallery.js',
-  'lib/cube-highlight.js', 'lib/hold-probes.js', 'lib/cube-kit.js', 'lib/cube-layout.js', 'lib/cube-moves.js', 'lib/cube-notation.js',
+  'lib/cube-highlight.js', 'lib/cube-kit.js', 'lib/cube-layout.js', 'lib/cube-moves.js', 'lib/cube-notation.js',
   'lib/cube-orientation.js', 'lib/cube-pieces.js', 'lib/cube-questions.js',
   'lib/cube-reconnect.js', 'lib/cube-registry.js', 'lib/cube-report.js', 'lib/cube-selfcheck.js',
   'lib/cube-session.js', 'lib/cube-trust.js', 'lib/cube-view.js', 'lib/cubejs-entry.js',
-  'lib/course-source.js',
-  'lib/data/case-tables.js', 'lib/data/human-algs.js', 'lib/element-writes.js', 'lib/episode-audio.js', 'lib/host.js', 'lib/i18n.js', 'lib/lesson-format.js',
-  'lib/lesson-player.js', 'lib/lesson-schedule.js', 'lib/method-ladder.js', 'lib/method-lesson.js',
+  'lib/data/case-tables.js', 'lib/data/human-algs.js', 'lib/element-writes.js', 'lib/host.js', 'lib/i18n.js', 'lib/lesson-format.js',
+  'lib/lesson-schedule.js', 'lib/method-ladder.js', 'lib/method-lesson.js',
   'lib/method-solver.js', 'lib/methods/cross.js',
   'lib/methods/engine.js', 'lib/methods/index.js',
   'lib/methods/last-layer.js', 'lib/methods/pairs.js', 'lib/optimal-challenges.js', 'lib/optimal.js',
   'lib/os-insets.js', 'lib/random-state.js', 'lib/router.js', 'lib/scheme.js', 'lib/smartcube-entry.js',
   'lib/solve-client.js', 'lib/solve-stats.js', 'lib/solve-target.js', 'lib/solve-timer.js',
-  'lib/script-drive.js', 'lib/script-lesson.js', 'lib/script-player.js', 'lib/script-questions.js', 'lib/script-rounds.js', 'lib/script-track.js', 'lib/script-view.js',
+  'lib/script-drive.js', 'lib/script-player.js', 'lib/script-questions.js', 'lib/script-track.js', 'lib/script-view.js',
   'lib/walk-clock.js', 'lib/walk-script.js',
   'lib/solve-worker.js', 'lib/solved.js', 'lib/solver-engine.js', 'lib/solving-hold.js', 'lib/stage-distance.js',
   'lib/pattern-route.js', 'lib/patterns.js',

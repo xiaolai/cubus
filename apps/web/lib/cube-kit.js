@@ -109,11 +109,11 @@ export {
 // …and the colours it wears by default, so a consumer's cube is the cube a new install shows.
 export { CUBE_VIEW, CUBE_VIEW_ATTRS, DEFAULT_PALETTE, DEFAULT_WALK_SPEED, tempoFor } from './cube-view.js';
 
-// The episode runtime. cubus-im authors the scores, measures the speech and builds the artifacts;
-// the RUNTIME — what the cube is doing at time `t`, and writing that onto an element — is the same
-// question the app has to answer, so it is answered once here. `spanning` resolution is part of it
-// rather than part of a build script, because a schedule that resolves it differently is a
-// different schedule with nothing to say so.
+// The episode schedule. cubus-im authors the scores, measures the speech and builds the artifacts;
+// the SCHEDULE — what the cube is doing at time `t` — is answered once here. (The player that wrote it
+// onto an element went with the Course screen, ADR 0010: nothing in cubus plays an episode now.)
+// `spanning` resolution is part of it rather than part of a build script, because a schedule that
+// resolves it differently is a different schedule with nothing to say so.
 export { checkEpisode, MIN_PER_MOVE, resolveSpanning, SPAN_LEAD } from './lesson-format.js';
 
 // A SCRIPT is the same tutorial with no clock attached: steps in the child's frame, cues that take
@@ -137,24 +137,17 @@ export { askAt, buildScript, groupsOf, stateFrom, viewAtPosition } from './scrip
 export { createClockDriver, createElementWriter, createStopDriver, defaultSchedule, moveWaiting, timelineOf } from './script-drive.js';
 export { locate, trackFor, trackOf } from './script-track.js';
 
-// The event driver: a drill round's answer worked out from the cube, its picks and verdict, and its reveal
-// as a script segment (plan item 3.4). The page keeps its controls; a round never reads the DOM.
-export { answerAt, createEventDriver, createRound, revealScript } from './script-rounds.js';
+// The questions a drill round may ask (plan item 3.4). The round itself — its answer, picks, verdict and
+// reveal — moved to cubus-courses' lesson player with the Course screen (ADR 0010).
 export { ROUND_QUESTIONS } from './lesson-format.js';
 
 // The load contract: one route at a time, nothing from a superseded one applied, and the connection's
 // live model kept across loads and located on each (plan item 3.5).
 export { createScriptPlayer } from './script-player.js';
 
-// A script played as a LESSON (ADR 0007): a recording per step, a question the child answers, a move the
-// child makes — and the lesson waiting for each. The same host the Course screen plays a script with, so
-// a course's build can play every lesson to its end before a child ever opens one.
-export { createScriptLesson } from './script-lesson.js';
-
-// "Match my cube" (dev-docs/lesson-holds-plan.md Phase 4): which of the child's turns tell the holds a lesson
-// asks for apart, and the round that asks them and puts the cube back — so a course can check its practice
-// segment against the same arithmetic the app uses, rather than a copy.
-export { PRACTISED_HOLDS, holdFromReports, probeRound, reportedFace, separatingProbes } from './hold-probes.js';
+// A script played as a LESSON (ADR 0007) — the lesson host, its rounds and "Match my cube" — is
+// cubus-courses' since ADR 0010 moved its player there. It stands on the names above: the format's door,
+// the script's positions, the stop driver, the interpreter and the holds.
 
 // Flat views from the same model: the net and the top-face case diagram, as SVG text (plan item 4.5).
 export { TOP_RING, faceletsOf, netSvg, topFaceSvg } from './cube-flat.js';
@@ -174,4 +167,3 @@ export {
   segmentAt,
   viewAt,
 } from './lesson-schedule.js';
-export { createLessonPlayer } from './lesson-player.js';

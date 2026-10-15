@@ -449,8 +449,8 @@ export function startNavigation() {
  *
  * A failed boot used to write its sentence and leave everything else running (audit, 2026-09-21): the hash
  * listener and `cubusGo` were already installed, so the next navigation rendered a screen over the
- * sentence — a Course screen saying NO COURSE INSTALLED beside a valid course tag, because boot never
- * reached the line that installs it — and a screen already mounted kept its listeners and its camera under
+ * sentence — the Course screen (since removed) saying NO COURSE INSTALLED beside a valid course tag,
+ * because boot never reached the line that installs it — and a screen already mounted kept its listeners and its camera under
  * the text that replaced it. Every route back to a screen is shut here, the rebuilds a background service
  * can ask for included.
  */

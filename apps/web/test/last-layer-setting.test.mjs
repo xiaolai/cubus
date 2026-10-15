@@ -68,16 +68,11 @@ test('a route that is not one is repaired, never believed — and a rung that is
   assert.equal(hostile.settings.lastLayer, 'course', 'a corrupted rung decided the route');
 });
 
-// ---- where a lesson rested (plan Phase 6) — the same store, the same rule: repaired, never believed ----
+// ---- where a lesson rested: gone with the Course screen (ADR 0010) ----
 
-test('a lesson\'s resting place survives a reload as a record, and anything else is dropped', async () => {
-  const kept = { course: 'course/', id: '13-a-cross-on-top', progress: { step: 4 } };
-  assert.deepEqual((await loadWith({ courseRested: kept })).settings.courseRested, kept);
-  assert.equal((await loadWith(undefined)).settings.courseRested, null, 'a first launch rests nowhere');
-  // Whether `progress` fits the lesson is asked when the lesson opens; here only the SHAPE is held.
-  for (const bad of [7, 'course/', [], { course: 'course/', id: 'x' }, { course: '', id: 'x', progress: {} },
-    { course: 'course/', id: 9, progress: {} }, { course: 'course/', id: 'x', progress: [] }]) {
-    assert.equal((await loadWith({ courseRested: bad })).settings.courseRested, null,
-      `a stored resting place of ${JSON.stringify(bad)} was believed`);
-  }
+test('a stored lesson resting place is dropped on load and not written back', async () => {
+  // The lesson player in cubus-courses keeps its own; a record left here would be a field nothing reads.
+  const r = await loadWith({ courseRested: { course: 'course/', id: '13-a-cross-on-top', progress: { step: 4 } } });
+  assert.equal(Object.hasOwn(r.settings, 'courseRested'), false, 'kept in memory');
+  assert.equal(Object.hasOwn(r.written ?? {}, 'courseRested'), false, 'written back');
 });

@@ -18,7 +18,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
-  checkLesson, createScriptLesson, MIN_PER_MOVE, resolveSpanning, SPAN_LEAD, STEP_CUES, STEP_KINDS, STEP_MARKS,
+  checkLesson, MIN_PER_MOVE, resolveSpanning, SPAN_LEAD, STEP_CUES, STEP_KINDS, STEP_MARKS, viewAt,
 } from '../lib/cube-kit.js';
 // Not through the kit: `EPISODE_CUE_FIELDS` and `ROUND_QUESTIONS` are the format module's own
 // vocabularies and are not part of the promised public surface. ADR 0005 decision 4 makes every
@@ -26,10 +26,8 @@ import {
 // made for the wrong reason.
 import { EPISODE_CUE_FIELDS, ROUND_QUESTIONS } from '../lib/lesson-format.js';
 import { buildScript } from '../lib/script-view.js';
-import { createClockDriver, timelineOf } from '../lib/script-drive.js';
+import { createClockDriver, createStopDriver, timelineOf } from '../lib/script-drive.js';
 import { buildSchedule } from '../lib/lesson-schedule.js';
-import { answerAt } from '../lib/script-rounds.js';
-import { courseAudioRef, courseRef } from '../lib/course-source.js';
 import { CORNERS, EDGES, SOLVED, applyAlg } from '../lib/cube-pieces.js';
 
 /**
@@ -98,10 +96,10 @@ test('the spec states that validation is necessary and not sufficient', (t) => {
   assert.match(SPEC, /necessary and not sufficient/i);
   // TWO pipelines, named separately. One combined line implied an episode is driven by
   // `createClockDriver`, which throws — the documented route did not run.
-  assert.match(SPEC, /EPISODE\s+resolveSpanning\(cues\)\s*→\s*checkLesson\(doc\)\s*→\s*buildSchedule\(doc\)\s*→\s*createLessonPlayer/);
+  assert.match(SPEC, /EPISODE\s+resolveSpanning\(cues\)\s*→\s*checkLesson\(doc\)\s*→\s*buildSchedule\(doc\)\s*→\s*viewAt\(schedule, t\)/);
   assert.match(SPEC, /SCRIPT\s+checkLesson\(doc\)\s*→\s*buildScript\(doc\)\s*→\s*createClockDriver\(built\)/);
-  // And the lesson the Course screen plays: the same script, played a step at a time on its recordings.
-  assert.match(SPEC, /LESSON\s+checkLesson\(doc\)\s*→\s*buildScript\(doc\)\s*→\s*createScriptLesson\(built/);
+  // And a lesson: the same script, carried from stop to stop while a host waits on its recordings.
+  assert.match(SPEC, /LESSON\s+checkLesson\(doc\)\s*→\s*buildScript\(doc\)\s*→\s*createStopDriver\(built\)/);
   // And the order that catches people: resolve before check, never after.
   assert.match(SPEC, /resolveSpanning` runs BEFORE validation/);
 });
@@ -134,8 +132,8 @@ test('THE PUBLISHED EPISODE runs the pipeline the document prescribes', (t) => {
   const episode = checkLesson({ ...raw, cues: resolveSpanning(raw.cues) });
   const schedule = buildSchedule(episode);
   assert.ok(schedule, 'the published episode does not schedule');
-  // And the audio reference it publishes is one the app will actually accept.
-  assert.ok(courseAudioRef(raw), `the published audio reference is refused: ${JSON.stringify(raw.audio)}`);
+  // And read the way the document says: the whole picture at a time, from the schedule alone.
+  assert.ok(viewAt(schedule, 0), 'the published episode has no picture at t = 0');
 });
 
 test('THE PUBLISHED SCRIPT runs the pipeline the document prescribes', (t) => {
@@ -145,36 +143,17 @@ test('THE PUBLISHED SCRIPT runs the pipeline the document prescribes', (t) => {
   assert.ok(createClockDriver(built), 'the published script does not drive');
 });
 
-test('THE PUBLISHED LESSON plays to its end on the host the Course screen plays it with', async (t) => {
+test('THE PUBLISHED LESSON builds, and the stop driver reaches every one of its stops', (t) => {
   if (!SPEC) return t.skip(NO_SPEC);
-  const doc = EXAMPLES[2];
-  const built = buildScript(checkLesson(doc));
-  // Every recording it names is one the course door lets through — a refused one is a line that says
-  // nothing on screen.
-  const refs = [...doc.steps.map((s) => s.voice), ...doc.steps.map((s) => s.round?.voice)].filter(Boolean);
-  assert.ok(refs.length > 0);
-  for (const ref of refs) assert.ok(courseRef(ref), `the published recording ${JSON.stringify(ref)} is refused`);
-
-  // Played the way a child plays it: each recording ends, the move handed over is made, the question is
-  // answered from the cube. A voice that ends every recording at once, and a clock with no waiting in it.
-  let finish = null;
-  const voice = {
-    speak: () => new Promise((resolve) => { finish = resolve; }),
-    stop: () => { finish?.('stopped'); finish = null; },
-  };
-  const schedule = Object.assign((fn) => { queueMicrotask(fn); return 0; }, { cancel: () => {} });
-  const lesson = createScriptLesson(built, { voice, schedule });
-  lesson.play();
-  for (let guard = 0; guard < 200 && lesson.view.phase !== 'ended'; guard++) {
-    const v = lesson.view;
-    if (v.phase === 'yours') lesson.done();
-    else if (v.phase === 'asking' && !v.round.locked) {
-      const at = built.positions.find((p) => p.step === v.step).index;
-      for (const face of answerAt(built, at).faces) lesson.select(face);
-    } else if (finish) { const f = finish; finish = null; f('ended'); }
-    await new Promise((r) => setImmediate(r));
-  }
-  assert.equal(lesson.view.phase, 'ended', `the published lesson stopped at step ${lesson.view.step} (${lesson.view.phase})`);
+  // What the library promises a host. Playing the lesson to its END is the host's own check, and the host
+  // is not in this repository since the Course screen came out (ADR 0010): the lesson player in
+  // cubus-courses plays this same published example to its end, from this document, in its own tests.
+  const built = buildScript(checkLesson(EXAMPLES[2]));
+  const driver = createStopDriver(built);
+  const last = built.positions.length - 1;
+  assert.ok(last > 0, 'the published lesson has no positions');
+  for (let k = 0; k <= last; k++) driver.seek(k);
+  assert.equal(driver.position, last, 'the stop driver did not reach the published lesson\'s last position');
 });
 
 test("THE PUBLISHED DRILL's reveal points where its piece actually lives", (t) => {
@@ -192,12 +171,7 @@ test("THE PUBLISHED DRILL's reveal points where its piece actually lives", (t) =
   assert.deepEqual(step.round.reveal.map((r) => r.hl), [`slot:${home}`],
     'the published reveal points where the piece does not live');
   assert.equal(step.round.choose, slot.length);
-
-  // And the engine agrees, reached the way a player reaches it.
-  const built = buildScript(checkLesson(script));
-  const at = built.positions.findIndex((pos) => built.script.steps[pos?.step]?.round);
-  const { faces } = answerAt(built, at);
-  assert.equal([...faces].sort().join(''), [...home].sort().join(''));
+  // The round's own answer agreeing with this is asked where the round now lives: cubus-courses' player.
 });
 
 test('a script that validates but turns out of order is refused by the pipeline', (t) => {

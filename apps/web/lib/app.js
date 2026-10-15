@@ -15,7 +15,6 @@ import { setFacelets } from './cube-subject.js';
 import { applyNetColors, applyTheme } from './cube-drawing.js';
 import { buildChrome, detectPlatform, isTauri } from './window-chrome.js';
 import { reparseRegistry } from './cube-memory.js';
-import { installCourseFromPage } from './course-session.js';
 import { schedulePreroll } from './scramble-roll.js';
 import { appUpdater, runLaunchCheck } from './update-ui.js';
 import {
@@ -29,7 +28,6 @@ import './screens/cube.js';
 import './screens/timer.js';
 import './screens/settings.js';
 import './screens/stats.js';
-import './screens/course.js';
 // The whole picture catalogue, reached from the cube screen's Shapes menu rather than from a tab.
 import './screens/shapes.js';
 
@@ -123,9 +121,6 @@ async function boot() {
       .then((m) => m.setupPluginListeners?.())
       .catch((e) => console.debug('tauri-mcp guest not loaded', e));
   }
-  // The course the page says it has (ADR 0007), before the first route: a deep link to #/course must
-  // find it installed, since the Course screen builds its session on mount.
-  installCourseFromPage(document);
   applyTheme(); applyNetColors();
   // NAVIGATION ON ONLY NOW, with everything a screen stands on built. Installed when the module loaded,
   // a hash change after the layout guard had stopped boot rendered a screen over the guard's sentence

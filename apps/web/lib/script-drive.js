@@ -22,7 +22,8 @@ import { locate, trackFor } from './script-track.js';
  * Write views onto one element, and only what changed.
  *
  * `focus` and `highlight` repaint 108 materials when written, and `scramble` rebuilds the cube, so a
- * write that changes nothing is not free — the rule `lesson-player.js` learned the hard way, kept here.
+ * write that changes nothing is not free — the rule the since-removed `lesson-player.js` learned the hard
+ * way, kept here.
  */
 /** How often a move waiting on a whole-cube turn asks whether the turn is over. */
 export const TURN_POLL_MS = 50;
@@ -40,8 +41,8 @@ const WAITING = new WeakMap();
 export const moveWaiting = (cube) => WAITING.has(cube);
 
 export function createElementWriter(cube, { owned = [], schedule = defaultSchedule } = {}) {
-  // The cache is `lib/element-writes.js`'s, shared with the episode runtime's player: the rule "write only
-  // what changed" was written out in both, and they had drifted.
+  // The cache is `lib/element-writes.js`'s, once shared with the episode runtime's player (since removed):
+  // the rule "write only what changed" was written out in both, and they had drifted.
   const writeAny = createAttributeWriter(cube);
   /**
    * ATTRIBUTES THE HOST OWNS ARE NEVER WRITTEN (plan item 6.5, owner's decision 2026-09-17).

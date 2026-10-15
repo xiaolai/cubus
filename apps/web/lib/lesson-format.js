@@ -498,8 +498,9 @@ function checkFields(rules, step, i, where) {
   }
 }
 
-/** A recording's reference, or the reason it is not one. Where it may POINT is the course door's
- *  business (`courseRef` in `course-source.js`), exactly as it is for an episode's `audio`. */
+/** A recording's reference, or the reason it is not one. Where it may POINT is the host's business: the
+ *  course door (`courseRef`) left `course-source.js`, removed with the Course screen, for the lesson player
+ *  in cubus-courses (ADR 0010). */
 const badRecording = (v) => notText(v) ?? (v.trim() ? null : 'must name a recording');
 
 /**
@@ -643,7 +644,8 @@ function checkSteps(steps, where, { rounds = true, painted: startPainted = false
 /** The questions a round may be answered by: each names one slot or one piece, so its answer is faces. */
 export const ROUND_QUESTIONS = Object.freeze(['whereIs', 'pieceIn']);
 
-/** A drill round's shape; `lib/script-rounds.js` gives it its behaviour (plan item 3.4). */
+/** A drill round's shape. Its behaviour (plan item 3.4) was `lib/script-rounds.js`, removed with the Course
+ *  screen and now the lesson player's in cubus-courses (ADR 0010). */
 function checkRound(round, where, { painted = false, at = -Infinity } = {}) {
   if (!round || typeof round !== 'object') where('`round` must be an object');
   const known = new Set(['say', 'voice', 'turn', 'ask', 'choose', 'reveal']);
