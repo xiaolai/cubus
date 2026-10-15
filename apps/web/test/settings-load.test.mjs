@@ -185,3 +185,21 @@ test('a scheme nobody stored cannot keep a scan\'s verdict', async () => {
     'a default scheme kept a source claiming a scan decided it');
   assert.equal(store.stored().schemeSource, 'default', 'and the repair is written back');
 });
+
+// A REMOVED SCREEN LEAVES NOTHING BEHIND IN A STORED RECORD (2026-10-15). Its id was hideable once, so an
+// install that ran the app before the removal stores it in `navHidden`; at every version it could have been
+// stored at, the load drops it and writes the record back without it, and the ids that are still screens
+// survive. Every screen removed is listed here, so the next removal is checked by adding a name.
+const REMOVED_SCREENS = ['loop'];
+
+test('a stored record naming a removed screen comes back without it, at every version', async () => {
+  for (const navDefaults of [0, 2, 5, 6, 7]) {
+    const { mod, store } = await loadOver({ navDefaults, navHidden: ['timer', ...REMOVED_SCREENS] });
+    for (const id of REMOVED_SCREENS) {
+      assert.ok(!mod.settings.navHidden.includes(id), `version ${navDefaults}: "${id}" was kept in memory`);
+      assert.ok(!store.stored().navHidden.includes(id), `version ${navDefaults}: "${id}" was written back`);
+      assert.ok(!mod.HIDEABLE.some(([hid]) => hid === id), `"${id}" can still be switched on in Advanced`);
+    }
+    assert.ok(mod.settings.navHidden.includes('timer'), `version ${navDefaults}: a choice about a real tab was lost`);
+  }
+});

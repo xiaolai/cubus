@@ -138,10 +138,10 @@ test('a fresh install shows exactly Home, Restore and Scramble', async () => {
 });
 
 test('an existing install loses Drill and Pieces, and keeps every other choice it made', () => {
-  // A record at 6 with only the loop hidden had Drill, Pieces and Timer showing — Timer by choice.
+  // A record at 6 with only Course hidden had Drill, Pieces and Timer showing — Timer by choice.
   // Version 7 is about Drill and Pieces; the user's Timer is not its business.
   for (const from of [2, 4, 5, 6]) {
-    const out = migrateNavDefaults(from, ['loop']);
+    const out = migrateNavDefaults(from, ['course']);
     assert.ok(out.navHidden.includes('drill') && out.navHidden.includes('pieces'),
       `an install at version ${from} still shows Drill or Pieces`);
     assert.ok(!out.navHidden.includes('timer'), `version ${from}: a tab the user had turned on was hidden`);
@@ -160,21 +160,6 @@ test('Drill and Pieces stay one switch away, and a record already at 7 is not re
 //
 // BY NAME, for the reason above: the loop over `DEFAULT_HIDDEN` cannot tell whether a newly listed id
 // is actually hidden, because adding it to that list also adds it to the loop's own expectation.
-
-test('the loop is hideable and hidden by default, and a version-5 install gets it that way', () => {
-  // ADR 0008's nav treatment, asserted on its own. Every other case here is about Pieces or Timer, so
-  // removing `loop` from BOTH `DEFAULT_HIDDEN` and `NAV_ADDED` left 18 of 18 passing — the screen
-  // would simply have appeared in a beginner's tab row with nothing to say so (audit, 2026-10-06).
-  assert.ok(HIDEABLE.some(([id]) => id === 'loop'), 'the loop cannot be turned on in Settings');
-  assert.ok(DEFAULT_HIDDEN.includes('loop'), 'the loop is not hidden by default');
-  // And the half that reaches somebody who has already run the app: a record at 5 with nothing
-  // hidden must come out with the loop hidden and its own choices untouched.
-  const out = migrateNavDefaults(5, [], undefined, 6);
-  assert.ok(out.navHidden.includes('loop'), 'an existing install never hides the new screen');
-  for (const shown of ['timer', 'stats', 'trainer', 'lessons', 'course', 'pieces']) {
-    assert.ok(!out.navHidden.includes(shown), `${shown} was showing at version 5 and the migration hid it`);
-  }
-});
 
 test('up to version 6, a fresh install SAW the Pieces tab', () => {
   // REVERSED AT VERSION 5 (owner's decision, 2026-09-29). Hiding it at 4 was argued from the id

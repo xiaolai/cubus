@@ -373,7 +373,6 @@ export const HIDEABLE = [
   ['pieces', 'Pieces'],
   ['lessons', 'Lessons'],
   ['course', 'Course'],
-  ['loop', 'One turn'],
 ];
 
 /** Hidden unless asked for. Timer and Stats are speedcubing instruments, not part of learning to
@@ -390,7 +389,7 @@ export const HIDEABLE = [
  * everything else is one chord away. In CODE, not only in a stored preference: the hidden set
  * was once a preference alone, and one wiped localStorage brought five placeholder screens back
  * into the toolbar. Version 2 hides the three once for anyone who already ran the app. */
-export const DEFAULT_HIDDEN = ['timer', 'stats', 'trainer', 'drill', 'pieces', 'lessons', 'course', 'loop'];
+export const DEFAULT_HIDDEN = ['timer', 'stats', 'trainer', 'drill', 'pieces', 'lessons', 'course'];
 
 /**
  * What each version ADDED, so a bump applies a delta rather than the whole set.
@@ -423,12 +422,9 @@ const NAV_ADDED = Object.freeze({
   // 0.7.6 and 0.7.7 actually did and version 5 only makes sense beside it. Reversed by `NAV_SHOWN`
   // below (owner's decision, 2026-09-29).
   4: ['pieces'],
-  // The loop (ADR 0008): a screen for a child who does not read, hidden for the reason the Shapes
-  // screen is not a tab at all — `NAV` is the beginner's path to a solved cube and this is a
-  // different path for a different child. No id existed before, so no choice is being overridden,
-  // which is the test `pieces` failed at version 4 and this one passes: nothing was reachable
-  // inside another screen first.
-  6: ['loop'],
+  // Version 6 hid `loop`, the One turn screen (ADR 0008). The screen was removed on 2026-10-15, and
+  // so was its entry: an id that names no screen is dropped from the stored record at load (the
+  // `HIDEABLE_IDS` filter below), so hiding it again would only write an id that is then thrown away.
   // THE DEFAULT ROW IS SOLVE, SCAN AND SCRAMBLE (owner's decision, 2026-10-14): Drill and Pieces go
   // back behind the Advanced section, where every other screen already is. An ADD, so it reaches
   // existing installs too — which is the point, and it is the cost D5 named: a record cannot tell an
