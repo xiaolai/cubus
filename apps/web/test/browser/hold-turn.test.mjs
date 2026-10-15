@@ -45,22 +45,36 @@ for (const engine of ['webkit', 'chromium']) {
   };
 
   /** Ask the hold presenter for a tumble at `tempo`; resolve with how long the element said it was turning. */
-  const timedTumble = (page, tempo) => page.evaluate(async (t) => {
+  /**
+   * Whether a tumble started, and whether it is still turning at each of `at` ms of the ELEMENT's time.
+   *
+   * On a pinned clock, never the wall's: this measured `performance.now()` across animation frames, and a page
+   * sharing the machine with the rest of `pnpm check` gets its frames late — a 240ms reduced-motion tumble read
+   * as 1363ms there and failed, while passing alone (2026-10-15). What these tests claim is the duration the
+   * element gives the turn, and its own clock is where that is decided. Pinned BEFORE the turn starts, so the
+   * turn's start time is the pinned one.
+   */
+  const probeTumble = (page, tempo, at) => page.evaluate(async ({ t, at }) => {
     const { createHoldCube } = await import('/lib/hold-presenter.js');
     const el = window.__cube;
+    const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
     el.setAttribute('tempo-scale', String(t));
     el.turnTo('U', 'F', { ms: 0 });
     const holdCube = createHoldCube({ cube: el, isStale: () => false });
     holdCube(['U', 'F']);
-    const t0 = performance.now();
+    const T0 = 1_000_000;
+    el.clock = T0;
     holdCube(['D', 'B']);
     const started = el.turning;
-    while (el.turning) {
-      await new Promise((r) => requestAnimationFrame(r));
-      if (performance.now() - t0 > 20000) break;
+    const turning = [];
+    for (const ms of at) {
+      el.clock = T0 + ms;
+      await frame(); await frame();
+      turning.push(el.turning);
     }
-    return { started, ms: performance.now() - t0 };
-  }, tempo);
+    el.clock = null;
+    return { started, turning };
+  }, { t: tempo, at });
 
   before(async () => { fixture = await startBrowserFixture({ engine }); });
   after(async () => {
@@ -72,11 +86,10 @@ for (const engine of ['webkit', 'chromium']) {
     const page = await cubePage();
     for (const id of ['fast', 'slow']) {
       const want = 2 * QUARTER_AT(tempoOf(id));
-      const got = await timedTumble(page, tempoOf(id));
+      // Still turning just before its time is up, and landed just after: the element's own clock, so exact.
+      const got = await probeTumble(page, tempoOf(id), [want - 5, want + 5]);
       assert.equal(got.started, true, `${id}: the tumble never started turning`);
-      // A frame either side, plus a loaded runner's slack — and never anywhere near the old 400ms.
-      assert.ok(got.ms > want * 0.9 && got.ms < want + 1500,
-        `${id}: the tumble took ${Math.round(got.ms)}ms, want about ${Math.round(want)}ms`);
+      assert.deepEqual(got.turning, [true, false], `${id}: the tumble did not take ${Math.round(want)}ms (turning just before and after: ${got.turning})`);
     }
   });
 
@@ -232,9 +245,10 @@ for (const engine of ['webkit', 'chromium']) {
 
   test(`${engine}: under reduced motion the tumble is shortened, not snapped`, async () => {
     const page = await cubePage({ reducedMotion: 'reduce' });
-    const got = await timedTumble(page, tempoOf('normal'));
     const unreduced = 2 * QUARTER_AT(tempoOf('normal'));
+    const got = await probeTumble(page, tempoOf('normal'), [1, unreduced / 4]);
     assert.equal(got.started, true, 'the tumble snapped: the cube was never turning');
-    assert.ok(got.ms < unreduced / 4, `the reduced tumble took ${Math.round(got.ms)}ms of ${Math.round(unreduced)}ms`);
+    assert.deepEqual(got.turning, [true, false],
+      `the reduced tumble was ${got.turning[0] ? '' : 'not '}turning after 1ms and ${got.turning[1] ? 'still' : 'no longer'} turning at a quarter of ${Math.round(unreduced)}ms`);
   });
 }
