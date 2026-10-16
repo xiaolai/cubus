@@ -812,10 +812,17 @@ for (const fixture of FIXTURES) {
           return { id: el.dataset.method, width: b.width, height: b.height, pressed: el.getAttribute('aria-pressed'),
             covered: Boolean(hit && hit !== el && !el.contains(hit)) };
         });
+        const more = row.querySelector('#moreMethodsBtn');
+        if (more) {
+          const b = more.getBoundingClientRect();
+          const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+          pills.push({ id: 'more', width: b.width, height: b.height, pressed: null, covered: Boolean(hit && hit !== more && !more.contains(hit)) });
+        }
         return { visible: !row.hidden && row.getBoundingClientRect().height > 0, pills, fits: (${contentFits.toString()})(screen) };
       })()`);
       assert.ok(m.visible, 'the method row is not on screen over a whole-cube walk');
-      assert.deepEqual(m.pills.map((p) => [p.id, p.pressed]), [['quick', 'false'], ['beginner', 'true']]);
+      // FOUR methods since CFOP (ADR 0011 Phase 7), so the row is the chosen method's pill and a menu.
+      assert.deepEqual(m.pills.map((p) => [p.id, p.pressed]), [['beginner', 'true'], ['more', null]]);
       assert.deepEqual(m.fits, { spills: [], cut: [] }, 'with the method row and its note: text that cannot be read where it is drawn — see contentFits');
       for (const p of m.pills) {
         // A finger's floor is 44px (the stylesheet's coarse-pointer rule for every .pill); with a mouse a
@@ -823,6 +830,21 @@ for (const fixture of FIXTURES) {
         if (fixture.touch) assert.ok(p.height >= 43.5 && p.width >= 43.5, `the ${p.id} pill is ${p.width}×${p.height} — under 44px`);
         else assert.equal(p.covered, false, `the ${p.id} pill is drawn under something else`);
       }
+      // THE MENU, OPEN: every method by level, nothing cut — the measurement the ADR's refute pass left
+      // unchecked ("the menu's geometry").
+      await page.click('#moreMethodsBtn');
+      const menu = await page.evaluate(`(() => {
+        const el = document.querySelector('.method-menu');
+        const r = el.getBoundingClientRect();
+        const items = [...el.querySelectorAll('[data-method]')].map((i) => i.dataset.method);
+        const heads = [...el.querySelectorAll('.menu-h')].map((h) => h.textContent);
+        const inView = r.top >= 0 && r.left >= 0 && r.bottom <= innerHeight + 1 && r.right <= innerWidth + 1;
+        return { items, heads, inView, fits: (${contentFits.toString()})(el) };
+      })()`);
+      assert.deepEqual(menu.items, ['quick', 'beginner', 'cfop-4lll', 'cfop']);
+      assert.deepEqual(menu.heads, ['First steps', 'Getting faster', 'Competition']);
+      assert.ok(menu.inView, 'the open "More methods" menu runs off the window');
+      assert.deepEqual(menu.fits, { spills: [], cut: [] }, 'the open menu: text that cannot be read where it is drawn');
     } finally {
       await context.close();
     }

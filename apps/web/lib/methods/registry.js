@@ -109,8 +109,145 @@ const BEGINNER = Object.freeze({
   ]),
 });
 
+// ---- CFOP, two entries (ADR 0011 decision 6; plan Phase 7) ---------------------------------------
+//
+// Not a dial: the two-look last layer and the full one are two methods with names a cuber recognises,
+// and a learner grows by choosing the next. Both are the engine's higher rungs on the APP's last-layer
+// route — orient the whole top, then permute it — which is what CFOP is; the course's route is the
+// beginner's alone.
+
+/** CFOP with the two-look last layer: the cross planned whole, the corner joined to its edge and the pair
+ *  put in together, two looks to orient the top (6 algorithms) and two to permute it (5). */
+const CFOP_EASY_METHOD = methodFor({ cross: 1, pairs: 1, oll: 0, pll: 0 }, { lastLayer: 'app' });
+/** Full CFOP: the cross planned whole, the 41 F2L cases, full OLL (57) and full PLL (21) — the sourced
+ *  table of lib/data/human-algs.js. */
+const CFOP_FULL_METHOD = methodFor({ cross: 1, pairs: 2, oll: 1, pll: 1 }, { lastLayer: 'app' });
+
+// THE HOLD STORY IS THE BEGINNER'S, KEPT (owner's call Q5): white up while the white side is built, the
+// tumble, then white underneath. CFOP has no first-layer stage of its own — F2L builds the bottom layer
+// together with the middle, and each pair goes in from the top — so the flip point is after the CROSS.
+const CFOP_HOLDS = Object.freeze({
+  frame: Object.freeze(['D', 'B']),
+  executable: Object.freeze([Object.freeze({ up: 'U', turns: 'vertical' })]),
+  displayed: Object.freeze({ whiteUpStages: Object.freeze(['cross']) }),
+});
+
+// The chips a CFOP walk stops at (owner's call Q8): the cross, the first two layers, the top oriented
+// (OLL's end, its own target), and solved.
+const CFOP_STOPS = Object.freeze(['cross', 'two-layers', 'top-oriented', 'solved']);
+
+// The headings are the beginner's words, and deliberately so: they name what each section ACHIEVES —
+// "Top face" is what OLL makes, "Last layer" what PLL finishes — and a learner moving up from Beginner
+// meets the same four words over the same four parts of the cube.
+const CFOP_WORDS = Object.freeze({ dials: STAGE_IDS, sections: BEGINNER_SECTIONS });
+
+const CFOP_CROSS_PROOF = Object.freeze({
+  scope: 'cross (planned whole)',
+  kind: 'exhaustive',
+  domain: 'all 190,080 positions of the four cross edges',
+  check: 'lib/methods/cross.js builds the exact distance table by breadth-first search over every position; test/cfop-proof.test.mjs replays planned crosses with cubejs',
+  oracle: 'cubejs',
+});
+
+const CFOP_EASY = Object.freeze({
+  id: 'cfop-4lll',
+  label: 'CFOP (easy)',
+  level: 'getting-faster',
+  engine: 'method',
+  method: CFOP_EASY_METHOD,
+  stages: CFOP_EASY_METHOD.stages,
+  holds: CFOP_HOLDS,
+  stops: CFOP_STOPS,
+  words: CFOP_WORDS,
+  algorithms: Object.freeze([
+    Object.freeze({ set: 'planned cross', source: 'exact distance table — found by search, no table of algorithms', rederived: 'test/cfop-proof.test.mjs (cubejs)' }),
+    Object.freeze({ set: 'trigger pairs', source: 'lib/methods/pairs.js PAIRS_ALGS, the six triggers', rederived: 'test/f2l-configurations.test.mjs' }),
+    Object.freeze({ set: 'two-look OLL and PLL', source: 'lib/methods/last-layer.js OLL_ALGS, PLL_ALGS', rederived: 'test/cfop-proof.test.mjs (cubejs)' }),
+  ]),
+  proof: Object.freeze([
+    CFOP_CROSS_PROOF,
+    Object.freeze({
+      scope: 'first two layers (trigger pairs)',
+      kind: 'exhaustive',
+      domain: 'all 384 placements of a pair\'s corner and edge with the cross solved',
+      check: 'test/f2l-configurations.test.mjs',
+      oracle: 'the cubie model, each answer replayed',
+    }),
+    Object.freeze({
+      scope: 'each last-layer look',
+      kind: 'exhaustive',
+      domain: 'OLL: all 216 top orientations; PLL: all 288 top permutations with the top oriented',
+      check: 'test/cfop-proof.test.mjs',
+      oracle: 'cubejs',
+    }),
+    Object.freeze({
+      scope: 'last layer',
+      kind: 'exhaustive',
+      domain: 'all 62,208 last-layer states with the first two layers solved',
+      check: 'node bench/method-solver-profile.mjs exhaustive 0 0 (a nightly CI shard)',
+      // The sweep's check is the solver's own contract replay on the cubie model, not cubejs.
+      oracle: 'the stage contracts and a whole-cube replay (lib/method-solver.js)',
+    }),
+    Object.freeze({
+      scope: 'whole method',
+      kind: 'regression sampling',
+      domain: 'seeded and frozen cubes',
+      check: 'test/cfop-proof.test.mjs',
+      oracle: 'cubejs',
+    }),
+  ]),
+});
+
+const CFOP_FULL = Object.freeze({
+  id: 'cfop',
+  label: 'CFOP (full)',
+  level: 'competition',
+  engine: 'method',
+  method: CFOP_FULL_METHOD,
+  stages: CFOP_FULL_METHOD.stages,
+  holds: CFOP_HOLDS,
+  stops: CFOP_STOPS,
+  words: CFOP_WORDS,
+  algorithms: Object.freeze([
+    Object.freeze({ set: 'planned cross', source: 'exact distance table — found by search, no table of algorithms', rederived: 'test/cfop-proof.test.mjs (cubejs)' }),
+    Object.freeze({ set: 'F2L, OLL, PLL (119)', source: 'lib/data/human-algs.js — J Perm (OLL, PLL), SpeedCubeDB (F2L)', rederived: 'test/human-algs.test.mjs (cubejs)' }),
+  ]),
+  proof: Object.freeze([
+    CFOP_CROSS_PROOF,
+    Object.freeze({
+      scope: 'first two layers (the 41 cases)',
+      kind: 'exhaustive',
+      domain: 'all 384 placements of a pair, which are the 41 cases',
+      check: 'test/f2l-configurations.test.mjs, test/human-algs.test.mjs (bijection with the 41 proved cases)',
+      oracle: 'cubejs',
+    }),
+    Object.freeze({
+      scope: 'each last-layer look',
+      kind: 'exhaustive',
+      domain: 'OLL: all 216 top orientations; PLL: all 288 top permutations with the top oriented',
+      check: 'test/cfop-proof.test.mjs',
+      oracle: 'cubejs',
+    }),
+    Object.freeze({
+      scope: 'last layer',
+      kind: 'exhaustive',
+      domain: 'all 62,208 last-layer states with the first two layers solved',
+      check: 'node bench/method-solver-profile.mjs exhaustive 1 1 (a nightly CI shard)',
+      // The sweep's check is the solver's own contract replay on the cubie model, not cubejs.
+      oracle: 'the stage contracts and a whole-cube replay (lib/method-solver.js)',
+    }),
+    Object.freeze({
+      scope: 'whole method',
+      kind: 'regression sampling',
+      domain: 'seeded and frozen cubes',
+      check: 'test/cfop-proof.test.mjs',
+      oracle: 'cubejs',
+    }),
+  ]),
+});
+
 /** Every method the app offers, in the order the pills show them. */
-export const METHODS = Object.freeze([QUICK, BEGINNER]);
+export const METHODS = Object.freeze([QUICK, BEGINNER, CFOP_EASY, CFOP_FULL]);
 
 /** The method a new install walks (owner's call Q1, 2026-10-16). */
 export const DEFAULT_METHOD = 'quick';

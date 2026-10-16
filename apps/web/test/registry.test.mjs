@@ -15,9 +15,11 @@ import * as hold from '../lib/solving-hold.js';
 import * as lessonWords from '../lib/method-lesson.js';
 import * as targets from '../lib/stage-targets.js';
 
-test('the first release offers exactly Quick and Beginner, and a new install walks Quick', () => {
-  assert.deepEqual(METHODS.map((m) => m.id), ['quick', 'beginner']);
-  assert.deepEqual(METHODS.map((m) => m.label), ['Quick', 'Beginner']);
+test('the methods are Quick, Beginner and CFOP twice, under the owner\'s words and levels, and a new install walks Quick', () => {
+  assert.deepEqual(METHODS.map((m) => m.id), ['quick', 'beginner', 'cfop-4lll', 'cfop']);
+  // Owner's calls Q2 and Q6–Q7 (2026-10-16): the words, and the level each is grouped under.
+  assert.deepEqual(METHODS.map((m) => m.label), ['Quick', 'Beginner', 'CFOP (easy)', 'CFOP (full)']);
+  assert.deepEqual(METHODS.map((m) => m.level), ['first-steps', 'first-steps', 'getting-faster', 'competition']);
   assert.equal(DEFAULT_METHOD, 'quick', 'owner\'s call Q1: Quick is the default');
   assert.ok(isMethodId(DEFAULT_METHOD));
 });
@@ -70,6 +72,26 @@ test('Beginner IS rung 0 everywhere on the course\'s last layer, and the globals
   for (const stop of beginner.stops) assert.ok(TARGET_BY_ID[stop], `the stop "${stop}" is no target descriptor`);
   // Every dial the method walks has a section heading.
   for (const stage of beginner.stages) assert.equal(typeof beginner.words.sections[stage.id], 'function', stage.id);
+});
+
+test('the two CFOP entries are the higher rungs on the app\'s route, stop at four chips, and tumble after the cross', () => {
+  // Plan Phase 7: easy = planned cross, trigger pairs, two-look OLL and PLL; full = planned cross, the 41
+  // F2L cases, full OLL and PLL. Both on the app's last-layer route — orient the whole top, then permute.
+  const easy = methodById('cfop-4lll');
+  const full = methodById('cfop');
+  assert.equal(easy.method.id, methodFor({ cross: 1, pairs: 1, oll: 0, pll: 0 }).id);
+  assert.equal(full.method.id, methodFor({ cross: 1, pairs: 2, oll: 1, pll: 1 }).id);
+  for (const entry of [easy, full]) {
+    assert.equal(entry.method.lastLayer, 'app', `${entry.id}: CFOP is not on the course's route`);
+    assert.deepEqual([...entry.stops], ['cross', 'two-layers', 'top-oriented', 'solved']);
+    for (const stop of entry.stops) assert.ok(TARGET_BY_ID[stop]?.offered, `${entry.id}: "${stop}" is no offered target`);
+    // Owner's call Q5: Beginner's hold story, with the flip after the CROSS — CFOP has no first layer.
+    assert.deepEqual([...entry.holds.displayed.whiteUpStages], ['cross']);
+    for (const stage of entry.stages) assert.equal(typeof entry.words.sections[stage.id], 'function', `${entry.id}: ${stage.id} has no heading`);
+    // Every last-layer table is proved over its whole domain, and the proof says so.
+    assert.ok(entry.proof.some((p) => p.kind === 'exhaustive' && /each last-layer look/.test(p.scope)), `${entry.id}: no per-look proof`);
+    assert.ok(entry.proof.some((p) => p.kind === 'regression sampling'), `${entry.id}: the sample is not labelled as one`);
+  }
 });
 
 test('every entry\'s proof is labelled with what it is, and a sample is never called complete', () => {

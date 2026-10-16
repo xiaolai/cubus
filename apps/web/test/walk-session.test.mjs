@@ -1140,6 +1140,43 @@ test('a pill already on does nothing, and a new target replaces the walk in plac
   assert.deepEqual(w.log, [], 'a new target rebuilt the screen instead of replacing the walk');
 });
 
+test('choosing a method shows ITS stops — a chip the new method does not stop at is hidden, and a walk aimed at it goes back to solved', async () => {
+  // Owner's call Q8 (ADR 0011 Phase 7): the Restore row is the CHOSEN method's stops. A learner on
+  // Beginner aimed at "first layer" who picks CFOP (full) must not keep walking to a chip that is no
+  // longer on the row, out of sight.
+  const w = world({ subject: { facelets: turned('R U') }, settings: { solveMethod: 'beginner' } }, ({ state }) => ({
+    deriveCube: async () => { solvedBy(state, "U' R'"); },
+  }));
+  const doc = w.$('#methodRow').ownerDocument;
+  const firstLayer = doc.createElement('button');
+  firstLayer.dataset.stage = 'first-layer';
+  w.$('#stageRow').appendChild(firstLayer);
+  const oriented = doc.createElement('button');
+  oriented.dataset.stage = 'top-oriented';
+  w.$('#stageRow').appendChild(oriented);
+  const cfop = doc.createElement('button');
+  cfop.dataset.method = 'cfop';
+  w.$('#methodRow').appendChild(cfop);
+  w.state.stageTarget = 'first-layer';
+
+  cfop.click();
+  for (let i = 0; i < 3; i += 1) await settle();
+  assert.equal(w.settings.solveMethod, 'cfop');
+  assert.ok(w.log.includes('stops cfop'), 'the row was not repainted for the new method');
+  assert.equal(firstLayer.hidden, true, 'a chip CFOP does not stop at is still on the row');
+  assert.equal(oriented.hidden, false, 'CFOP\'s own stop is not on the row');
+  assert.equal(w.state.stageTarget, 'solved', 'the walk still aims at a chip that is no longer on the row');
+  assert.equal(w.$('[data-stage="solved"]').getAttribute('aria-pressed'), 'true');
+  // And what must NOT happen: a chip the new method DOES stop at is kept.
+  w.$('[data-method="beginner"]').click();
+  for (let i = 0; i < 3; i += 1) await settle();
+  w.$('[data-stage="cross"]').click();
+  for (let i = 0; i < 3; i += 1) await settle();
+  cfop.click();
+  for (let i = 0; i < 3; i += 1) await settle();
+  assert.equal(w.state.stageTarget, 'cross', 'a chip both methods stop at was thrown away');
+});
+
 // ---- step 0 of the follow tracker: turns that are ahead of a snapshot ------------------------------------
 //
 // stage-wiring.test.mjs and stage-smartcube.test.mjs check these as lines inside the four live hooks and

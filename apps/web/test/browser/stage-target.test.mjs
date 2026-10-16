@@ -119,6 +119,13 @@ async function scrambled(page) {
   }, null);
 }
 
+/** Choose a method the way a learner does: past three methods the row is the chosen one's pill and a
+ *  "More methods" menu (lib/screens/cube/method-row.js), so every method but the chosen one is in the menu. */
+async function chooseMethod(page, id) {
+  await page.click('#moreMethodsBtn');
+  await page.click(`.method-menu [data-method="${id}"]`);
+}
+
 /** Press a target pill and wait for the count to become a repair sentence. */
 async function aimAt(page, id) {
   await page.click(`[data-stage="${id}"]`);
@@ -645,7 +652,7 @@ test('with Beginner chosen, a chip is walked by the beginner lesson cut where th
   const { page, context, errors } = await openHome();
   try {
     await scrambled(page);
-    await page.click('[data-method="beginner"]');
+    await chooseMethod(page, 'beginner');
     await page.waitForFunction(() => document.querySelectorAll('#solList .move-chips').length > 1, null, { timeout: 30_000 });
     await page.click('[data-stage="two-layers"]');
     await page.waitForFunction(() => {
@@ -666,11 +673,44 @@ test('with Beginner chosen, a chip is walked by the beginner lesson cut where th
   }
 });
 
+test('with CFOP chosen from the menu, the row is CFOP\'s stops and "top oriented" is walked by the CFOP lesson cut there (ADR 0011 Phase 7)', async () => {
+  const { page, context, errors } = await openHome();
+  try {
+    await scrambled(page);
+    await chooseMethod(page, 'cfop');
+    await page.waitForFunction(() => document.querySelectorAll('#solList .move-chips').length > 1, null, { timeout: 30_000 });
+    assert.equal(await page.textContent('#solLabel'), 'CFOP (full)');
+    // The row is the chosen method's (owner's call Q8): its four stops shown, the beginner-only chips not.
+    const shown = await page.evaluate(() => [...document.querySelectorAll('#stageTargetRow > [data-stage]')]
+      .filter((el) => !el.hidden && el.getBoundingClientRect().width > 0).map((el) => el.dataset.stage));
+    assert.deepEqual(shown, ['cross', 'two-layers', 'top-oriented', 'solved']);
+    // One pill names the method on screen; the rest are in the menu.
+    assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('#methodRow > [data-method]')].map((el) => el.dataset.method)), ['cfop']);
+    await page.click('[data-stage="top-oriented"]');
+    await page.waitForFunction(() => {
+      const heads = [...document.querySelectorAll('#solList .move-chips')].map((s) => s.previousElementSibling?.textContent ?? '');
+      return heads.length > 0 && heads.every((h) => /^(Cross|First two layers|Top face)/.test(h)) && heads.some((h) => /^Top face/.test(h));
+    }, null, { timeout: 30_000 });
+    const walk = await walkOnScreen(page);
+    const end = applyMoves(walk.start, faceTurnsAlg(walk.alg));
+    const verify = (id, f) => TARGET_BY_ID[id].verify(fromCube(Cube.fromString(toMethodFrame(f))));
+    assert.ok(verify('top-oriented', end), 'the walk does not end with the top oriented');
+    assert.ok(!verify('solved', end), 'the cut walked past its chip to a solved cube');
+    // Back on Beginner, the CFOP-only chip leaves the row and the walk goes back to the whole cube.
+    await chooseMethod(page, 'beginner');
+    await page.waitForFunction(() => document.querySelector('[data-stage="top-oriented"]')?.hidden === true, null);
+    assert.equal(await page.getAttribute('#stageTargetRow > [data-stage="solved"]', 'aria-pressed'), 'true');
+  } finally {
+    assert.deepEqual(errors.map(String), [], 'the page must raise nothing');
+    await context.close();
+  }
+});
+
 test('a lesson builds its white cross and first layer white up, then turns the cube over once and says how to hold it', async () => {
   const { page, context, errors } = await openHome();
   try {
     await scrambled(page);
-    await page.click('[data-method="beginner"]');
+    await chooseMethod(page, 'beginner');
     await page.waitForFunction(() => document.querySelectorAll('#solList .move-chips').length > 1, null, { timeout: 30_000 });
     const walk = await walkOnScreen(page);
     const moves = walk.alg.split(' ');

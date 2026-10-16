@@ -28,7 +28,7 @@ before(async () => {
 });
 after(async () => { await win?.happyDOM.close(); });
 
-/** `n` methods, spread over the levels in order, the first two being the real ones. */
+/** `n` methods, spread over the levels in order, the real ones first. */
 function methods(n) {
   const real = registry.METHODS;
   const extra = Array.from({ length: Math.max(0, n - real.length) }, (_, i) => ({
@@ -56,13 +56,15 @@ test('one method is one pill, and no menu', () => {
 });
 
 test('three methods are three pills, the chosen one pressed in both channels, and no menu', () => {
+  const three = methods(3).map((m) => m.id);
   const { root, built, pills } = mount(methods(3), 'beginner');
-  assert.deepEqual(pills().map((p) => p.dataset.method), ['quick', 'beginner', 'm0']);
+  assert.deepEqual(pills().map((p) => p.dataset.method), three);
+  assert.deepEqual(three.slice(0, 2), ['quick', 'beginner']);
   assert.deepEqual(pills().map((p) => p.getAttribute('aria-pressed')), ['false', 'true', 'false']);
   assert.deepEqual(pills().map((p) => p.classList.contains('on')), [false, true, false]);
   isAbsent(root.querySelector('#moreMethodsBtn'), 'three methods must not need a menu');
   assert.equal(built.menu, null);
-  built.paint('m0');
+  built.paint(three[2]);
   assert.deepEqual(pills().map((p) => p.getAttribute('aria-pressed')), ['false', 'false', 'true'], 'the painter did not move the press');
 });
 
