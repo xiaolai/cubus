@@ -228,8 +228,9 @@ const rect = (el) => {
  * SCROLLS hands the question up to itself: content past a scroller's edge is reachable, so it is the
  * scroller that must then be reachable. `display: contents` boxes have no rect and are skipped.
  *
- * The text's own box first (audit, 2026-10-17): a box that clips its OWN text (`overflow: hidden` and a
- * fixed height) loses it as surely as an ancestor does.
+ * EACH AXIS ON ITS OWN, and the text's own box first (audit, 2026-10-17): a box that clips its OWN text
+ * (`overflow: hidden` and a fixed height) loses it as surely as an ancestor does, and a scroller that
+ * scrolls across but clips down reaches nothing that is cut off below.
  */
 const contentFits = (root) => {
   const spills = [];
@@ -260,14 +261,20 @@ const contentFits = (root) => {
       if (down > 1 && cs.overflowY === 'visible') spills.push(`${named(el)} by ${down}px down`);
       else if (down > 1 && !scrolls(cs.overflowY)) cut.push(`${named(el)} cut ${down}px down by its own box`);
     }
-    let box = r;
+    // The text's extent on each axis, handed up to a scroller on THAT axis only.
+    let x = { lo: r.left, hi: r.right };
+    let y = { lo: r.top, hi: r.bottom };
     for (let a = el.parentElement; a && a !== document.documentElement; a = a.parentElement) {
       const acs = getComputedStyle(a);
       if (acs.display === 'contents' || (acs.overflowX === 'visible' && acs.overflowY === 'visible')) continue;
       const b = a.getBoundingClientRect();
-      if (/auto|scroll/.test(acs.overflowX + acs.overflowY)) { box = b; continue; }
-      const out = Math.max(b.top - box.top, box.bottom - b.bottom, b.left - box.left, box.right - b.right);
-      if (out > 1) { cut.push(`${named(el)} cut ${Math.round(out)}px by ${a.id ? `#${a.id}` : a.className}`); break; }
+      const outX = Math.max(b.left - x.lo, x.hi - b.right);
+      const outY = Math.max(b.top - y.lo, y.hi - b.bottom);
+      const lost = Math.max(acs.overflowX === 'visible' || scrolls(acs.overflowX) ? 0 : outX,
+        acs.overflowY === 'visible' || scrolls(acs.overflowY) ? 0 : outY);
+      if (lost > 1) { cut.push(`${named(el)} cut ${Math.round(lost)}px by ${a.id ? `#${a.id}` : a.className}`); break; }
+      if (scrolls(acs.overflowX)) x = { lo: b.left, hi: b.right };
+      if (scrolls(acs.overflowY)) y = { lo: b.top, hi: b.bottom };
     }
   }
   return { spills, cut };
