@@ -22,6 +22,7 @@ import { CORNERS, EDGES, SOLVED, moveCount } from './cube-pieces.js';
 import { faceTurnsAlg, heldFace, identityFace, run } from './cube-moves.js';
 import { plural, t } from './i18n.js';
 import { WHITE_UP_STAGES } from './solving-hold.js';
+import { BEGINNER_ENTRY } from './methods/registry.js';
 import { HUMAN_ALGS } from './data/human-algs.js';
 
 /** The four dials a fine-grained stage name belongs to: the heading a step is filed under. */
@@ -47,12 +48,10 @@ const DIAL_OF = Object.freeze({
  * lib/method-ladder.js). Two copies of a name are two names as soon as one of them is edited, and a
  * stage called "Top face" in one place and something else in another reads as two stages.
  */
-export const SECTION_NAME = Object.freeze({
-  cross: () => t('Cross'),
-  pairs: () => t('First two layers'),
-  oll: () => t('Top face'),
-  pll: () => t('Last layer'),
-});
+//
+// The names themselves are the beginner method's WORDS, declared in its registry entry (ADR 0011
+// decision 5); this name stays while its readers move.
+export const SECTION_NAME = BEGINNER_ENTRY.words.sections;
 
 /**
  * A step's reason, in words.

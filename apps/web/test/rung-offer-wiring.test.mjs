@@ -75,29 +75,10 @@ test('nothing is raised without an answer, and nothing is stored unrepaired', ()
     'localStorage is untrusted input');
 });
 
-test('the cross table is warmed for a learner who raised the rung LATER', () => {
-  // The bug verification caught: `warmSolver` returns early once the two-phase worker is warm, and
-  // the cross warm-up was called after that return. A learner on rung 0 at first warm who is later
-  // offered rung 1 would therefore never warm the table, and their first lesson at the new rung
-  // would pay the 804 ms the warm-up exists to move. The call has to come BEFORE the early return.
-  const fn = blockAt(code, 'function warmSolver()');
-  assert.ok(fn, 'warmSolver is gone');
-  const warm = fn.indexOf('warmCrossTable()');
-  const bail = fn.indexOf('if (solverWarmed) return;');
-  assert.ok(warm >= 0, 'warmSolver must warm the cross table');
-  assert.ok(bail >= 0, 'warmSolver still has its early return');
-  assert.ok(warm < bail,
-    'warmCrossTable() is after the early return, so a rung raised later never warms the table');
-  // And it only builds for a learner who is actually on that rung.
-  const table = blockAt(code, 'function warmCrossTable()');
-  assert.match(table, /settings\.rungs\?\.cross \?\? 0\) < 1/, 'rung 0 must not pay for rung 1');
-  assert.match(table, /setTimeout\(/, 'the build must not run in the turn that triggered it');
-  // And it is not ONE task once it starts. `warmCross` expands a bounded number of positions per
-  // slice and yields between them; deferring a 114 ms block by one turn only moves which turn
-  // freezes.
-  assert.match(table, /warmCross\(\)\)?\s*\)?/, 'the build must go through warmCross');
-  assert.match(table, /\.catch\(/, 'a sliced build is a promise, and its failure must be caught');
-  // And a build that failed is tried again, like the solver's own warm-up (found by audit,
-  // 2026-09-13).
-  assert.match(table, /crossTableWarmed = false;/, 'a cross warm-up that failed is never tried again');
+test('no shipped method uses the planned cross, so nothing warms its table (ADR 0011)', () => {
+  // The warm-up was gated on `settings.rungs.cross >= 1`, which no method in the registry reaches: Beginner
+  // is rung 0 everywhere. A warm-up nobody can trigger is code that only looks like it does something, so
+  // it is gone; a future method that plans its cross whole warms the table from its own entry.
+  assert.doesNotMatch(code, /warmCrossTable|crossTableWarmed/, 'the cross table is still warmed');
+  assert.doesNotMatch(code, /settings\.rungs\?\.cross/, 'the solver service still reads the cross rung');
 });

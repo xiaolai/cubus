@@ -76,7 +76,7 @@ export const LIBRARY_SOURCES = Object.freeze([
   'lib/lesson-schedule.js', 'lib/method-ladder.js', 'lib/method-lesson.js',
   'lib/method-solver.js', 'lib/methods/cross.js',
   'lib/methods/engine.js', 'lib/methods/index.js',
-  'lib/methods/last-layer.js', 'lib/methods/pairs.js', 'lib/optimal-challenges.js', 'lib/optimal.js',
+  'lib/methods/last-layer.js', 'lib/methods/pairs.js', 'lib/methods/registry.js', 'lib/optimal-challenges.js', 'lib/optimal.js',
   'lib/os-insets.js', 'lib/random-state.js', 'lib/router.js', 'lib/scheme.js', 'lib/smartcube-entry.js',
   'lib/solve-client.js', 'lib/solve-stats.js', 'lib/solve-target.js', 'lib/solve-timer.js',
   'lib/script-drive.js', 'lib/script-player.js', 'lib/script-questions.js', 'lib/script-track.js', 'lib/script-view.js',

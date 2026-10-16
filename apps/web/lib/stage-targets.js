@@ -35,6 +35,7 @@
 
 import { CORNER, EDGE, MOVES, MOVE_NAMES } from './cube-pieces.js';
 import * as eng from './methods/engine.js';
+import { BEGINNER_ENTRY } from './methods/registry.js';
 
 // ---- the cell tables: how one tracked piece moves ----------------------------------------------
 //
@@ -425,5 +426,7 @@ export const NESTING = Object.freeze([
  */
 export const ROUTE_STOPS = Object.freeze({
   app: Object.freeze(['cross', 'first-layer', 'two-layers', 'top-cross', 'solved']),
-  course: NESTING,
+  // The beginner method's declared stops (lib/methods/registry.js); `course-route.test.mjs` holds them
+  // to NESTING and to the stage ends the walk reaches.
+  course: BEGINNER_ENTRY.stops,
 });

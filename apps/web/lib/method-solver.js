@@ -41,26 +41,12 @@ import {
   MethodSolverError, algLength, fromRepertoire, repertoire, repertoiresBuilt, shortestTo,
   simplify, slotSafe, wholeCubeSolved,
 } from './methods/engine.js';
-import { crossTable, solveCrossWhole, warmCrossTable } from './methods/cross.js';
+import { crossTable, solveCrossWhole } from './methods/cross.js';
 import { f2lCaseName } from './methods/pairs.js';
 // `methodFor` alone: everything else from the ladder is re-exported below without being read here.
 import { methodFor } from './methods/index.js';
 
 export { MethodSolverError } from './methods/engine.js';
-
-/**
- * Build the cross rung's distance table now, rather than during the first lesson that needs it.
- *
- * Exported so the app can pay 800 ms somewhere nobody is waiting. It is idempotent — the table is
- * built once and kept — so calling it early costs nothing and calling it twice costs nothing.
- *
- * **Asynchronous, and in slices.** The build explores 190,081 positions and measured 114 ms as one
- * task; `setTimeout` moved when that task ran and not that it was one task, so it still landed as
- * a single block of dropped frames. This yields between slices, so a warm-up is spread across the
- * event loop instead of wedged into one turn of it. Nothing waits on the result: a solve that
- * arrives first finishes the table synchronously and is no worse off than before.
- */
-export const warmCross = () => warmCrossTable();
 
 export {
   CASE_NAMES, DEFAULT_RUNGS, LADDER, LAST_LAYER_ROUTES, STAGE_IDS, TOP_RUNG, allMethods, allRungCombinations, dialsOf,

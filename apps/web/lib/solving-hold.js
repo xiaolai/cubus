@@ -35,6 +35,8 @@ import { ORIENTATIONS, orientationPerm, orientationRelabel, turnFacelets } from 
 import { SOLVED, movesOf } from './cube-pieces.js';
 import { t } from './i18n.js';
 import { OFFERED_PATTERNS, selectionOf } from './patterns.js';
+// The flip point is the beginner method's DISPLAYED hold (ADR 0011 decision 5), declared in its entry.
+import { BEGINNER_ENTRY } from './methods/registry.js';
 
 /** A hold is `[up, front]`: which SCAN-frame face points up, and which faces the child. */
 const hold = (up, front) => Object.freeze([up, front]);
@@ -141,7 +143,7 @@ export function renameSelectors(spec, hold) {
  * the flip point again. The lesson's sentences for these stages are written for the white-up hold
  * (`method-lesson.js`), and `solving-hold.test.mjs` holds its list of those sentences to this one.
  */
-export const WHITE_UP_STAGES = Object.freeze(['cross', 'first-layer']);
+export const WHITE_UP_STAGES = BEGINNER_ENTRY.holds.displayed.whiteUpStages;
 
 /**
  * A hold for every name in `names`: white up for the white-up stages and for any name in

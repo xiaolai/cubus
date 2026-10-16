@@ -11,7 +11,8 @@ import { provenAnswer } from './optimal-challenges.js';
 // other was. That rule is what the first attempt broke; §3 of the plan is about it.
 import { fromCube, movesOf } from './cube-pieces.js';
 import { convertSelectors, faceTurnsAlg } from './cube-moves.js';
-import { DEFAULT_RUNGS, methodFor, solveByMethod } from './method-solver.js';
+import { DEFAULT_RUNGS, solveByMethod } from './method-solver.js';
+import { methodById } from './methods/registry.js';
 import { lessonCues, lessonSections, moveStepIndex, rungSummary } from './method-lesson.js';
 import { NO_PROGRESS, acceptOffer, repairProgress } from './method-ladder.js';
 import { isCubeState } from './cube-trust.js';
@@ -56,30 +57,26 @@ export function ingestFacelets(f) {
 // solver's own `algLength` all have to agree on what a move is, and they were three functions.
 
 /**
- * The lesson for the current arrangement, at the rungs this learner is on.
+ * The lesson for the current arrangement, in the method the learner chose (ADR 0011).
  *
- * Synchronous, and on this thread on purpose: it needs no search worth moving off it, and it runs
- * inside the "working…" the two-phase solve is already showing. **Measured on this machine,
- * 2026-09-09** — the earlier "~13 ms" in this comment was the plan's 2026-08 figure for the
- * removed solver and was not true of this code on this hardware:
+ * `entry` is a registry entry (lib/methods/registry.js) that runs the method engine — today Beginner,
+ * which is fixed: every stage at rung 0, the course's last layer. It is never built from a rung record
+ * or a route setting; a method is a definition, not a learner.
  *
- *   rung 0 everywhere      33 ms
- *   cross rung 1, warm     97 ms
- *   cross rung 1, first   804 ms  — the 331,776-entry cross distance table, built once
+ * Synchronous, and on this thread on purpose: it needs no search worth moving off it. **Measured on this
+ * machine, 2026-09-09**: 33 ms at rung 0 everywhere, which is the beginner's method.
  *
- * The first-call figure is why `warmCrossTable` exists. Cached against the arrangement AND the
- * rung record, so raising a rung produces a new lesson rather than showing the old one under a
- * new name.
+ * Cached against the arrangement AND the method, so a lesson built for one method is never served for
+ * another.
  *
- * Returns null rather than throwing on a cube the method cannot finish: the Solution is still
- * there, and a screen that lost both objects because one of them failed would be worse than one
- * that quietly offers the other. `MethodSolverError` carries the stage, so the reason is logged
- * rather than swallowed.
+ * Returns null rather than throwing on a cube the method cannot finish: the Quick walk is still
+ * there, and a screen that lost both because one of them failed would be worse than one that quietly
+ * offers the other. `MethodSolverError` carries the stage, so the reason is logged rather than
+ * swallowed.
  */
-export function lessonFor(c = state.cube) {
-  // The route goes in with the rungs: the course's last layer is the default (ADR 0009), and a lesson
-  // built without it would teach the app's own order to a learner the settings say is on the course's.
-  const method = methodFor(settings.rungs, { lastLayer: settings.lastLayer });
+export function lessonFor(c = state.cube, entry = methodById('beginner')) {
+  if (entry.engine !== 'method') throw new Error(`lessonFor: "${entry.id}" is not a method with stages`);
+  const method = entry.method;
   if (c.lesson && c.lesson.facelets === c.facelets && c.lesson.method === method.id) return c.lesson;
   let result;
   try {

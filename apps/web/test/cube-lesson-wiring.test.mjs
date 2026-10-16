@@ -148,9 +148,9 @@ test('the lesson is thrown away with the arrangement it was about', () => {
   const forget = blockAt(code, 'function forgetAnswer(c)');
   assert.match(forget, /c\.lesson = null/, 'a new arrangement must not keep the old cube\'s lesson');
   assert.match(forget, /c\.solution = ''/, 'and it must not keep the old cube\'s solution');
-  // And the cache key is the arrangement AND the rungs, so raising a rung produces a new lesson
-  // rather than the old one under a new name.
-  const fn = blockAt(code, 'function lessonFor(');
+  // And the cache key is the arrangement AND the method, so a lesson built for one method is never
+  // served for another.
+  const fn = blockAt(code, 'function lessonFor(c = state.cube, entry = methodById(\'beginner\'))');
   assert.match(fn, /c\.lesson\.facelets === c\.facelets/);
   assert.match(fn, /c\.lesson\.method === method\.id/);
 });
@@ -160,7 +160,7 @@ test('every step points at something, and the cue is cleared when there is nothi
   assert.ok(point, 'the screen must have a function that applies a step\'s cues');
   // Worked out once, when the lesson is built, and renamed into the frame the renderer draws — then
   // applied from the step under the head.
-  const build = blockAt(code, 'function lessonFor(');
+  const build = blockAt(code, 'function lessonFor(c = state.cube, entry = methodById(\'beginner\'))');
   assert.match(build, /lessonCues\(step\)/, 'every step\'s cues are worked out when the lesson is built');
   assert.match(point, /step\?\.focus/);
   assert.match(point, /step\?\.highlight/);
@@ -188,8 +188,12 @@ test('the rungs are stored as four dials, repaired on load, and defaulted to the
   assert.match(repair, /DEFAULT_RUNGS/, 'the default is the bottom rung everywhere');
   assert.match(repair, /Number\.isInteger\(want\)/, 'localStorage is untrusted input');
   assert.match(repair, /TOP_RUNG\[id\]/, 'a rung above the ladder must not be believed');
-  assert.match(code, /methodFor\(settings\.rungs, \{ lastLayer: settings\.lastLayer \}\)/,
-    'and the solver must actually read them, with the last-layer route the settings hold (ADR 0009)');
+  // ADR 0011 decision 3 SUPERSEDES the assertion that stood here (the solver reading
+  // `methodFor(settings.rungs, { lastLayer: settings.lastLayer })`): a method is fixed, so the lesson is
+  // built from the chosen registry entry and NEVER from the learner's rungs or route setting.
+  const lesson = blockAt(code, 'function lessonFor(c = state.cube, entry = methodById(\'beginner\'))');
+  assert.match(lesson, /const method = entry\.method;/, 'the lesson must be built from the registry entry');
+  assert.doesNotMatch(lesson, /settings\.(rungs|lastLayer)/, 'a lesson built from the rung ladder or the route setting');
   // Four dials, and the defaults really are the bottom rung of each.
   assert.deepEqual(Object.keys(DEFAULT_RUNGS).sort(), [...STAGE_IDS].sort());
   for (const id of STAGE_IDS) {

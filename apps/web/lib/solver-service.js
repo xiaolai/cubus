@@ -1,16 +1,14 @@
 // The solvers, loaded and warmed: cubejs (the independent oracle and facelet parser), the two-phase
-// worker pool, the stage engine's worker door (`stageAsk`), and the pre-built cross table.
+// worker pool, and the stage engine's worker door (`stageAsk`).
 //
 // Lifted out of app.js on 2026-09-13, when that file was split into modules.
 
 import { createParallelSolveClient, createSolveClient, spawnSolveWorker } from './solve-client.js';
 import { LOOSEST_BOUND, VIEW_COUNT } from './solver-engine.js';
 import { loadIndex, NO_CHALLENGES } from './optimal-challenges.js';
-import { warmCross } from './method-solver.js';
 import { toMethodFrame } from './solving-hold.js';
 
 import { SOLVED } from './app-state.js';
-import { settings } from './app-settings.js';
 
 // ---- solver pipeline (cubejs oracle + the two-phase engine in a worker), lazy-loaded ----------
 export let Cube = null, solverReady = false;
@@ -204,12 +202,6 @@ let solverWarmed = false;
  * that opens neither.
  */
 export function warmSolver() {
-  // BEFORE the early return, and that is the whole point. `solverWarmed` is about the two-phase
-  // worker, which only ever needs warming once; the cross table is about a RUNG, and a learner who
-  // was on rung 0 the first time this ran and has since been offered rung 1 would otherwise never
-  // warm it — the early return swallowed the call, and the first lesson at the new rung paid the
-  // 804 ms this function exists to move. Found in verification, 2026-09-09.
-  warmCrossTable();
   if (solverWarmed) return;
   solverWarmed = true;
   // A warm-up that FAILED is not a warm pool, so the guard is lifted and the next screen that warms
@@ -229,43 +221,3 @@ export function warmSolver() {
   }
 }
 
-/**
- * Build the whole-cross distance table off the critical path, if this learner will need it.
- *
- * Cross rung 1 solves the cross by descending an exact BFS distance table over 24^4 = 331,776
- * codes, built lazily on first use. **Measured 2026-09-09: the first lesson at that rung costs
- * 804 ms against 97 ms warm** — the table is nearly the whole of it. That happens on the main
- * thread, inside `lessonFor`, during the "working…" a learner is already watching, so it is a
- * slower wait rather than a frozen screen; it is still most of a second nobody needs to spend.
- *
- * Only when the rung is actually in play: a learner on rung 0 never touches the table, and
- * building it for them would be paying the cost to avoid it.
- *
- * **It is still main-thread work, and now it is main-thread work IN SLICES.** `setTimeout(0)`
- * deferred the build to a later turn of the event loop and left it a single 114 ms task there —
- * so the turn that triggered the warm completed and the next one froze instead. `warmCross` now
- * expands a bounded number of positions per slice and yields between them, so the browser gets its
- * turn back regularly and the build competes with rendering rather than blocking it.
- *
- * Moving it off the thread entirely still means a worker, and the solver is synchronous by design
- * (`stage.run` has nowhere to await), so that is a larger change than this warm-up is. What is
- * bought here is that no single task is long. The cost is still paid once per session, and only by
- * a learner on the rung that needs it. A failure here is never allowed to break a screen, same as
- * above.
- */
-function warmCrossTable() {
-  if (crossTableWarmed || (settings.rungs?.cross ?? 0) < 1) return;
-  crossTableWarmed = true;
-  // `setTimeout`, not a microtask: a microtask runs before the browser gets its turn at all, so
-  // the first slice would land inside the turn that triggered the warm. The slices after it yield
-  // on their own.
-  setTimeout(() => {
-    void Promise.resolve()
-      .then(() => warmCross())
-      .catch((err) => {
-        crossTableWarmed = false; // lifted, as the pool's is: a later screen tries again
-        console.warn('cross table warm-up failed; a later screen or the first lesson will build it', err);
-      });
-  }, 0);
-}
-let crossTableWarmed = false;
