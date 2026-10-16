@@ -863,8 +863,26 @@ for (const fixture of FIXTURES) {
         const items = [...el.querySelectorAll('[data-method]')].map((i) => i.dataset.method);
         const heads = [...el.querySelectorAll('.menu-h')].map((h) => h.textContent);
         const inView = r.top >= 0 && r.left >= 0 && r.bottom <= innerHeight + 1 && r.right <= innerWidth + 1;
-        return { items, heads, inView, fits: (${contentFits.toString()})(el) };
+        // SHOWN, not merely present: a menu at display:none has a zero box inside the window, keeps its
+        // items' text, and leaves contentFits nothing to measure — every line above would pass it.
+        const cs = getComputedStyle(el);
+        const shown = cs.display !== 'none' && cs.visibility !== 'hidden' && Number(cs.opacity) > 0 && r.width > 0 && r.height > 0;
+        const name = (n) => (n ? n.id ? '#' + n.id : n.tagName.toLowerCase() + '.' + String(n.className).trim().replace(/\\s+/g, '.') : 'nothing');
+        const fits = (${contentFits.toString()})(el);
+        // Reachable means pressable once the MENU is scrolled to it (the menu scrolls when the space under
+        // its button is short — index.html's popover rule), measured after everything above was read.
+        const blocked = [...el.querySelectorAll('[data-method]')].flatMap((i) => {
+          i.scrollIntoView({ block: 'nearest' });
+          const b = i.getBoundingClientRect();
+          const hit = b.width > 0 && b.height > 0 ? document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2) : null;
+          return hit && (hit === i || i.contains(hit)) ? [] : [i.dataset.method + ' under ' + name(hit)
+            + ' at ' + [b.left, b.top, b.width, b.height].map(Math.round).join(',') + ' in ' + innerWidth + 'x' + innerHeight
+            + ', menu ' + [r.left, r.top, r.width, r.height].map(Math.round).join(',')];
+        });
+        return { items, heads, inView, shown, blocked, fits };
       })()`);
+      assert.ok(menu.shown, 'the "More methods" menu is not on screen after its button was pressed');
+      assert.deepEqual(menu.blocked, [], 'an item of the open menu cannot be pressed where it is drawn');
       assert.deepEqual(menu.items, ['quick', 'beginner', 'cfop-4lll', 'cfop']);
       assert.deepEqual(menu.heads, ['First steps', 'Getting faster', 'Competition']);
       assert.ok(menu.inView, 'the open "More methods" menu runs off the window');
