@@ -787,6 +787,47 @@ const overlaps = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bot
 const inside = (r, box, tol = 1) => r.left >= box.left - tol && r.right <= box.right + tol && r.top >= box.top - tol && r.bottom <= box.bottom + tol;
 
 /** A scanned cube the app adopts — `test/browser/stage-target.test.mjs`'s, generated there, not typed. */
+// THE METHOD ROW (ADR 0011): one pill per method under the move count, and beside it the note a fallback
+// writes. Measured on Home with a Beginner lesson on screen — sections, the longest move list — and with
+// the note at its real longest, written through the app's own sentence, on every fixture.
+for (const fixture of FIXTURES) {
+  test(`cube screen with the method row and its note: ${label(fixture)}`, async () => {
+    const { page, context } = await open(fixture, 'home', { devRandCube: true, solveMethod: 'beginner' });
+    try {
+      await page.click('#randCube');
+      await page.waitForFunction(() => document.querySelectorAll('#solList .move-chips').length > 1, null, { timeout: 90_000 });
+      // The fallback's sentence, as the walk session words it, shown where the session shows it.
+      await page.evaluate(() => {
+        const note = document.querySelector('#methodNote');
+        note.textContent = 'Beginner could not be worked out for this cube — showing Quick. This choice could not be saved, so it lasts until you leave.';
+        note.hidden = false;
+      });
+      const m = await page.evaluate(`(() => {
+        const screen = document.querySelector('.screen.active');
+        const row = document.querySelector('#methodRow');
+        const pills = [...row.querySelectorAll('[data-method]')].map((el) => {
+          const b = el.getBoundingClientRect();
+          const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+          return { id: el.dataset.method, width: b.width, height: b.height, pressed: el.getAttribute('aria-pressed'),
+            covered: Boolean(hit && hit !== el && !el.contains(hit)) };
+        });
+        return { visible: !row.hidden && row.getBoundingClientRect().height > 0, pills, fits: (${contentFits.toString()})(screen) };
+      })()`);
+      assert.ok(m.visible, 'the method row is not on screen over a whole-cube walk');
+      assert.deepEqual(m.pills.map((p) => [p.id, p.pressed]), [['quick', 'false'], ['beginner', 'true']]);
+      assert.deepEqual(m.fits, { spills: [], cut: [] }, 'with the method row and its note: text that cannot be read where it is drawn — see contentFits');
+      for (const p of m.pills) {
+        // A finger's floor is 44px (the stylesheet's coarse-pointer rule for every .pill); with a mouse a
+        // pill keeps the design system's own pill height, which this row did not change.
+        if (fixture.touch) assert.ok(p.height >= 43.5 && p.width >= 43.5, `the ${p.id} pill is ${p.width}×${p.height} — under 44px`);
+        else assert.equal(p.covered, false, `the ${p.id} pill is drawn under something else`);
+      }
+    } finally {
+      await context.close();
+    }
+  });
+}
+
 const SCANNED_CUBE = 'DDDUURFDURDRRRLBBULLFUFFFLLDUUFDDDLRBBUBLRBULFFLFBRBBR';
 
 // THE RESTORE ROW AFTER A SCAN, which no case above enters: its card is hidden until a cube is read. Seven

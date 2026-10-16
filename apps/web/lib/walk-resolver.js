@@ -1,6 +1,6 @@
 // The walk's search on the cube screen: what one load asks for, and how the answers to it race — a
-// scramble rolled, or the whole-cube solve raced against a stage repair, and the lesson built from
-// that answer when one is asked for.
+// scramble rolled; a method's lesson, built straight from the cube when the learner's method has stages;
+// or the whole-cube solve raced against a stage repair.
 //
 // Its own unit because it keeps nothing between loads and writes nothing but the count beside the
 // walk: it works a walk out into a record and hands it back, and the session commits it only once
@@ -15,13 +15,13 @@ import { t } from './i18n.js';
  *
  * @param {object} services `state`; `SOLVED`; `solverReady()` and `loadSolver()`;
  *   `randomScramble({ signal })`; `deriveCube(opts)`;
- *   `lastRoute(target, from, signal, wholeDone)`; `lessonFor(cube)`; `stepStates(from, moves)`;
- *   `setStatus(words)`, the count beside the walk; and `fallBackToSolution()`, what the screen does
- *   when a lesson cannot be built.
+ *   `lastRoute(target, from, signal, wholeDone)`; `lessonFor(cube, entry)`; `stepStates(from, moves)`;
+ *   `setStatus(words)`, the count beside the walk; and `fallBackToQuick()`, what the screen does
+ *   when the chosen method cannot be worked out for this cube.
  */
 export function createWalkResolver({
   state, SOLVED, solverReady, loadSolver, randomScramble, deriveCube, lastRoute, lessonFor, stepStates,
-  setStatus, fallBackToSolution, pictureRoute,
+  setStatus, fallBackToQuick, pictureRoute,
 }) {
   // INJECTED LIKE EVERY OTHER SOURCE, and refused here rather than at the first press: the branch
   // below throws a walk failure when a picture route cannot be worked out, so a `pictureRoute` that
@@ -29,9 +29,11 @@ export function createWalkResolver({
   if (typeof pictureRoute !== 'function') {
     throw new TypeError('walk resolver: `pictureRoute` must be a function');
   }
-  /** The record a load commits. Whatever this walk did not produce is left empty. */
+  /** The record a load commits. Whatever this walk did not produce is left empty. `method` is the registry
+   *  id of the method the walk IS — `quick` for a two-phase answer, null for a scramble or a repair — so the
+   *  screen shows the method on screen, which after a fallback is not the one stored. */
   const walkRecord = (fields) => Object.freeze({
-    setup: '', alg: '', moves: [], steps: [], target: null, roll: null, lesson: null, route: null,
+    setup: '', alg: '', moves: [], steps: [], target: null, roll: null, lesson: null, route: null, method: null,
     ...fields,
   });
 
@@ -161,24 +163,19 @@ export function createWalkResolver({
   }
 
   /**
-   * The Lesson in the Solution's place, when it is the object asked for.
+   * The chosen method's lesson, built from the cube as it is — WITHOUT the whole-cube search.
    *
-   * Built from the arrangement the search just answered, and with its setup alg, so the two walks
-   * start from the same cube and nothing is searched twice. Built ONLY when it is asked for — a
-   * Solution never pays for a lesson — and `lessonFor` caches it on the subject, keyed on the
-   * arrangement and the rungs. A cube the method cannot finish DEGRADES to the solution rather than
-   * failing the screen: losing both objects because one could not be built would be the worst
-   * outcome, and the switch goes back to Solution so the screen and the switch agree.
+   * dev-docs/solve-methods-plan.md Phase 0 (2): the lesson takes nothing from the two-phase answer but the
+   * alg the renderer opens on, and `walkScript` opens on the walk's own first arrangement when there is
+   * none. So a learner who chose Beginner is never made to wait for a search whose answer is not shown.
+   * Built ONLY for a method with stages — a Quick walk never pays for a lesson — and `lessonFor` caches it
+   * on the subject, keyed on the arrangement and the method. Null when the method cannot finish this cube.
    */
-  function lessonWalk(solution) {
-    const lesson = lessonFor(state.cube);
-    if (!lesson) {
-      fallBackToSolution();
-      return solution;
-    }
+  function methodWalk(entry) {
+    const lesson = lessonFor(state.cube, entry);
+    if (!lesson) return null;
     return walkRecord({
-      setup: solution.setup, alg: lesson.alg, moves: lesson.moves.slice(),
-      steps: lesson.stepFacelets.slice(), lesson,
+      alg: lesson.alg, moves: lesson.moves.slice(), steps: lesson.stepFacelets.slice(), lesson, method: entry.id,
     });
   }
 
@@ -194,7 +191,7 @@ export function createWalkResolver({
    * A repair that threw once left it running with its reports still reaching the count, so a late
    * improvement replaced the failure with "7" (reproduced by an audit, 2026-09-13).
    */
-  async function solveWalk({ stageTarget, walkKind, fresh, signal }) {
+  async function solveWalk({ stageTarget, method, fresh, signal }) {
     // The cube this load is about, captured once: the session commits the walk well after the
     // search, and a live snapshot can change the subject between them without a new load — which is
     // deliberate, since a snapshot is not a new question — so the renderer is handed the walk's own
@@ -230,6 +227,16 @@ export function createWalkResolver({
       return repairWalk(route, startedFrom);
     }
 
+    // THE CHOSEN METHOD, FIRST AND ALONE, when it has stages and the walk is to the whole cube. A cube it
+    // cannot finish DEGRADES to the Quick walk rather than failing the screen — losing both because one
+    // could not be built would be the worst outcome — and the screen says so beside the walk without
+    // changing the stored choice (ADR 0011; `fallBackToQuick`).
+    if (!stageTarget && method.engine === 'method') {
+      const taught = methodWalk(method);
+      if (taught) return taught;
+      fallBackToQuick();
+    }
+
     const whole = startWholeSearch({ fresh, signal });
     try {
       // The repair first, because it is the one that can answer while the whole-cube search runs.
@@ -244,11 +251,9 @@ export function createWalkResolver({
       // No repair: the whole-cube answer IS the walk, and its failure is the screen's.
       await whole.done;
       if (!fresh()) return null;
-      const solution = walkRecord({ ...whole.result(), route });
-      // A STAGE ROUTE HAS NO LESSON, and that is §9.4's finding rather than an omission: the app
-      // orients the top corners before permuting them, so it cannot resume a lesson at "corners
-      // home". The session hides the switch to match.
-      return !stageTarget && walkKind === 'lesson' ? lessonWalk(solution) : solution;
+      // A STAGE ROUTE HAS NO LESSON yet: a beginner walk to a chip is the cut of plan Phase 4, and until
+      // then a stage answer is the two-phase walk the race fell back on. The session hides the row to match.
+      return walkRecord({ ...whole.result(), route, method: route ? null : 'quick' });
     } finally {
       whole.stop();
     }
@@ -257,18 +262,18 @@ export function createWalkResolver({
   /**
    * Work out the walk a load asked for, into the record the session commits.
    *
-   * `scrambling`; `stageTarget`, the target or null; `walkKind`; `fresh()`, whether this load is
-   * still the current one; and `signal`, the walk's own abort.
+   * `scrambling`; `stageTarget`, the target or null; `method`, the registry entry the learner chose;
+   * `fresh()`, whether this load is still the current one; and `signal`, the walk's own abort.
    *
    * Resolves to null when the load was overtaken while it searched, having committed nothing, and
    * throws what failed — a search this screen called off included, which the session tells apart
    * by its signal.
    */
-  async function resolveWalk({ scrambling, stageTarget, walkKind, fresh, signal }) {
+  async function resolveWalk({ scrambling, stageTarget, method, fresh, signal }) {
     // ONE READINESS RULE for both sides, before either rolls or searches anything. It was written
     // out once per side, and two copies of one rule are how one of them stops being checked.
     if (!solverReady() && !(await loadSolver())) throw new Error('solver unavailable');
-    return scrambling ? rollWalk({ signal }) : solveWalk({ stageTarget, walkKind, fresh, signal });
+    return scrambling ? rollWalk({ signal }) : solveWalk({ stageTarget, method, fresh, signal });
   }
   return Object.freeze({ resolveWalk });
 }

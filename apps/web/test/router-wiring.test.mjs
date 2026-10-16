@@ -597,7 +597,8 @@ test('scramble starts solved and lands exactly where the net says', async () => 
 test('solve mode still names its own end of the walk', async () => {
   await scrambledHome();
   assert.equal(win.document.querySelector('.aside .eyebrow-row .state-h').textContent, 'Initial State');
-  assert.equal(win.document.querySelector('.card-h b').textContent, 'Solution');
+  // The heading names the METHOD on screen (ADR 0011), and a new install walks Quick.
+  assert.equal(win.document.querySelector('.card-h b').textContent, 'Quick');
 });
 
 // A solved cube has nothing to walk. cubejs's search answers the identity with a fourteen-move

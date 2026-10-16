@@ -82,7 +82,7 @@ const MARKUP = `
   <div class="solution-card">
     <b id="solLabel">Solution</b><span id="moveCount">—</span><button id="proveBtn" hidden></button><button id="proveCancel" hidden></button>
     <div id="stageRow"><button data-stage="solved" class="on" aria-pressed="true"></button><button data-stage="cross" aria-pressed="false"></button></div>
-    <div id="walkKindRow"><button data-walk="solution"></button><button data-walk="lesson"></button><span id="rungLine" hidden></span></div>
+    <div id="methodRow"><button data-method="quick"></button><button data-method="beginner"></button><span id="methodNote" hidden></span></div>
     <div id="solList"></div><div id="whyLine" hidden></div>
     <div id="followNote" hidden><span id="followMsg"></span><button id="resolveBtn"></button><button id="turnBackBtn"></button></div>
   </div>`;
@@ -97,7 +97,7 @@ after(async () => { for (const win of windows) await win.happyDOM.close(); });
  * stand-in. `screen` replaces what the screen hands the session (its composition, or a painter a case
  * wants to watch). `omit` removes names from the app or the screen, for the construction check.
  */
-function world({ subject = {}, omit = [], screen: screenOver = {} } = {}, make = () => ({})) {
+function world({ subject = {}, omit = [], screen: screenOver = {}, settings: settingsOver = {} } = {}, make = () => ({})) {
   const win = new Window();
   windows.push(win);
   const doc = win.document;
@@ -157,11 +157,18 @@ function world({ subject = {}, omit = [], screen: screenOver = {} } = {}, make =
     root, cube, scrambling: false, walking: true, unsolvable: false, label: 'Solution',
     stateHeading: () => 'Initial State', stale: () => false, signal: screenAbort.signal,
     paintNet: () => {}, paintAim: () => {}, syncReconnectAsk: () => {}, applyTempo: () => {},
+    // The method row's painter, as lib/screens/cube/method-row.js paints an all-pills row.
+    paintMethods: (shown) => {
+      for (const pill of root.querySelectorAll('[data-method]')) {
+        pill.classList.toggle('on', pill.dataset.method === shown);
+        pill.setAttribute('aria-pressed', String(pill.dataset.method === shown));
+      }
+    },
     ...screenOver,
   };
   const app = {
     state,
-    settings: { rungs: {}, rungProgress: {}, proveMinimum: false, lastLayer: 'app', turnArrows: true },
+    settings: { rungs: {}, rungProgress: {}, proveMinimum: false, lastLayer: 'app', turnArrows: true, solveMethod: 'quick', ...settingsOver },
     SOLVED,
     CHIP_NODE_BUDGET: 1,
     WALK_FAILURES: { 'solver unavailable': 'no solver', 'no scramble': 'no scramble', 'cross-check': 'no check', 'no picture route': 'no shape route' },
@@ -211,6 +218,7 @@ function world({ subject = {}, omit = [], screen: screenOver = {} } = {}, make =
   return {
     session,
     state,
+    settings: app.settings,
     log,
     win,
     cube,
@@ -674,23 +682,100 @@ test('leaving while a repair is still being worked out leaves no unhandled rejec
   }
 });
 
-test('a cube the method cannot teach falls back to its solution, and the switch stays there for the next load', async () => {
+test('a cube the method cannot teach falls back to Quick WITHOUT changing the stored method, and says so', async () => {
   let lessonAsks = 0;
+  let searches = 0;
+  const saved = [];
   const w = world({}, ({ state }) => ({
-    deriveCube: async () => { solvedBy(state, "R'"); },
+    deriveCube: async () => { searches += 1; solvedBy(state, "R'"); },
     lessonFor: () => { lessonAsks += 1; return null; },
+    save: (key, value) => { saved.push(value.solveMethod); return true; },
   }));
   assert.equal(await w.session.load(), true);
-  const lessonPill = w.$('[data-walk="lesson"]');
-  const solutionPill = w.$('[data-walk="solution"]');
-  lessonPill.click();
+  const beginner = w.$('[data-method="beginner"]');
+  const quick = w.$('[data-method="quick"]');
+  beginner.click();
   for (let i = 0; i < 3; i += 1) await settle();
   assert.equal(lessonAsks, 1, 'precondition: the lesson was asked for');
-  assert.equal(solutionPill.getAttribute('aria-pressed'), 'true', 'the switch still said Lesson over a Solution');
-  assert.equal(lessonPill.getAttribute('aria-pressed'), 'false');
+  assert.deepEqual(saved, ['beginner'], 'the press did not store the method');
+  assert.equal(w.state.cube.solution, "R'", 'precondition: the Quick walk was searched for as the fallback');
+  // What must NOT happen: the stored choice switched silently.
+  assert.equal(w.settings.solveMethod, 'beginner', 'a fallback changed the stored method');
+  assert.equal(quick.getAttribute('aria-pressed'), 'true', 'the row still said Beginner over a Quick walk');
+  assert.equal(beginner.getAttribute('aria-pressed'), 'false');
+  assert.equal(w.$('#solLabel').textContent, 'Quick', 'the heading named a method the walk is not');
+  assert.equal(w.$('#methodNote').hidden, false, 'the fallback was not said beside the walk');
+  assert.match(w.$('#methodNote').textContent, /Beginner could not be worked out for this cube — showing Quick/);
 
+  // After a fallback, pressing Beginner DOES start a new attempt — the press is compared with the method
+  // on screen, not the stored one, which already says Beginner.
+  beginner.click();
+  for (let i = 0; i < 3; i += 1) await settle();
+  assert.equal(lessonAsks, 2, 'pressing the stored method after a fallback did nothing');
+  // And the next load is a fresh attempt at the stored method, not a remembered fallback.
   assert.equal(await w.session.load(), true);
-  assert.equal(lessonAsks, 1, 'the next load asked again for a lesson the switch says is not showing');
+  assert.equal(lessonAsks, 3, 'the next cube was not tried in the stored method');
+  assert.ok(searches >= 3, 'each fallback must search for its Quick walk');
+});
+
+test('the Quick walk shown after a fallback, pressed, only stores Quick — it reloads nothing', async () => {
+  let loads = 0;
+  const saved = [];
+  const w = world({ settings: { solveMethod: 'beginner' } }, ({ state }) => ({
+    deriveCube: async () => { loads += 1; solvedBy(state, "R'"); },
+    lessonFor: () => null,
+    save: (key, value) => { saved.push(value.solveMethod); return true; },
+  }));
+  assert.equal(await w.session.load(), true);
+  assert.equal(w.$('#methodNote').hidden, false, 'precondition: the fallback is on screen');
+  const before = loads;
+  w.$('[data-method="quick"]').click();
+  await settle();
+  assert.equal(loads, before, 'a press of the method already on screen searched again');
+  assert.deepEqual(saved, ['quick']);
+  assert.equal(w.settings.solveMethod, 'quick');
+  assert.equal(w.$('#methodNote').hidden, true, 'the fallback note outlived the choice it described');
+});
+
+test('a stored Beginner is the walk of the NEXT mount: leaving and coming back does not reset the method', async () => {
+  let searches = 0;
+  let lessons = 0;
+  const w = world({ settings: { solveMethod: 'beginner' } }, ({ state }) => ({
+    deriveCube: async () => { searches += 1; solvedBy(state, "R'"); },
+    lessonFor: (cube, entry) => {
+      lessons += 1;
+      assert.equal(entry.id, 'beginner', 'the lesson was built for another method');
+      return {
+        alg: "R'", moves: ["R'"], moveHolds: [SCAN_HOLD, SCAN_HOLD], stepFacelets: [cube.facelets, turned("R'", cube.facelets)],
+        steps: [], moveStep: [], sections: [{ id: 'cross', name: 'Cross', steps: 1, moves: 1, from: 0, to: 1 }],
+      };
+    },
+  }));
+  assert.equal(await w.session.load(), true);
+  assert.equal(lessons, 1, 'the stored method was not the walk of a fresh mount');
+  // Phase 0 (2): a method with stages needs nothing from the two-phase search, so none is started.
+  assert.equal(searches, 0, 'a Beginner walk waited for a whole-cube search it does not show');
+  assert.equal(w.$('[data-method="beginner"]').getAttribute('aria-pressed'), 'true');
+  assert.equal(w.$('#solLabel').textContent, 'Beginner');
+  assert.equal(w.$('#methodNote').hidden, true, 'a walk in the chosen method said it fell back');
+});
+
+test('a choice of method that storage refused is said beside the row, and still applies to this visit', async () => {
+  const w = world({}, () => ({
+    deriveCube: async () => {},
+    lessonFor: (cube) => ({
+      alg: "R'", moves: ["R'"], moveHolds: [SCAN_HOLD, SCAN_HOLD], stepFacelets: [cube.facelets, turned("R'", cube.facelets)],
+      steps: [], moveStep: [], sections: [{ id: 'cross', name: 'Cross', steps: 1, moves: 1, from: 0, to: 1 }],
+    }),
+    save: () => false,
+  }));
+  solvedBy(w.state, "R'"); // the Quick walk's answer, standing in for the search
+  assert.equal(await w.session.load(), true);
+  w.$('[data-method="beginner"]').click();
+  for (let i = 0; i < 3; i += 1) await settle();
+  assert.equal(w.settings.solveMethod, 'beginner', 'the choice did not apply to this visit');
+  assert.equal(w.$('#methodNote').hidden, false, 'a choice that was not saved was not said');
+  assert.match(w.$('#methodNote').textContent, /could not be saved/);
 });
 
 // ---- step 0 of the resolver: the search leaving loadWalk -------------------------------------------------
@@ -860,7 +945,7 @@ test('a pill already on does nothing, and a new target replaces the walk in plac
   const loads = searches;
 
   w.$('[data-stage="solved"]').click();
-  w.$('[data-walk="solution"]').click();
+  w.$('[data-method="quick"]').click();
   await settle();
   assert.equal(searches, loads, 'pressing the pill already on searched again, throwing away the transport position');
 
@@ -1468,7 +1553,7 @@ test('the done tick is for a walk that exists — not a search, not a failure, b
 async function lessonWalk(over = {}) {
   let progress = repairProgress(NO_PROGRESS);
   for (let i = 0; i < FOLLOWS_TO_OFFER - 1; i += 1) progress = recordCleanFollow(progress, ['cross']);
-  const settings = { rungs: { cross: 0, pairs: 0, oll: 0, pll: 0 }, rungProgress: progress, proveMinimum: false, lastLayer: 'app' };
+  const settings = { rungs: { cross: 0, pairs: 0, oll: 0, pll: 0 }, rungProgress: progress, proveMinimum: false, lastLayer: 'app', solveMethod: 'quick' };
   const saves = [];
   const w = world({}, ({ state }) => ({
     settings,
@@ -1477,7 +1562,7 @@ async function lessonWalk(over = {}) {
       const moves = ["R'", "U'"];
       const stepFacelets = [cube.facelets, turned("R'", cube.facelets), turned("R' U'", cube.facelets)];
       return {
-        alg: moves.join(' '), moves, moveHolds: [SCAN_HOLD, SCAN_HOLD, SCAN_HOLD], stepFacelets, summary: 'Cross', steps: [], moveStep: [],
+        alg: moves.join(' '), moves, moveHolds: [SCAN_HOLD, SCAN_HOLD, SCAN_HOLD], stepFacelets, steps: [], moveStep: [],
         sections: [{ id: 'cross', name: 'Cross', steps: 1, moves: 2, from: 0, to: 2 }],
       };
     },
@@ -1485,9 +1570,11 @@ async function lessonWalk(over = {}) {
     ...over,
   }));
   assert.equal(await w.session.load(), true);
-  w.$('[data-walk="lesson"]').click();
+  w.$('[data-method="beginner"]').click();
   for (let i = 0; i < 3; i += 1) await settle();
-  assert.equal(w.$('#solLabel').textContent, 'Lesson', 'precondition: the lesson is the walk on screen');
+  assert.equal(w.$('#solLabel').textContent, 'Beginner', 'precondition: the lesson is the walk on screen');
+  // The press stored the method through the same `save`; only the follows counted after it are asked about.
+  saves.length = 0;
   return { w, saves };
 }
 
@@ -1615,7 +1702,7 @@ function scanFrameLesson(facelets) {
   const c = Cube.fromString(facelets);
   // As face turns, the way `lessonFor` builds them: a regrip moves no piece, and cubejs reads no rotation.
   for (const m of moves) { c.move(faceTurnsAlg(m)); stepFacelets.push(c.asString()); }
-  return { facelets, steps, sections: lessonSections(steps), moveStep: moveStepIndex(steps), alg, moves, moveHolds: walk.holds, stepFacelets, summary: '' };
+  return { facelets, steps, sections: lessonSections(steps), moveStep: moveStepIndex(steps), alg, moves, moveHolds: walk.holds, stepFacelets };
 }
 
 /** A walking screen on the Lesson for `scramble`, loaded and switched to. */
@@ -1625,7 +1712,7 @@ async function turnedLessonWorld(scramble) {
     lessonFor: (c) => scanFrameLesson(c.facelets),
   }));
   assert.equal(await w.session.load(), true);
-  w.$('[data-walk="lesson"]').click();
+  w.$('[data-method="beginner"]').click();
   for (let i = 0; i < 5; i += 1) await settle();
   return w;
 }
@@ -1995,7 +2082,7 @@ test('a replay that throws stays this request\'s failure, never the live handler
 async function followedWorld({ settings = {}, solutions = {} } = {}) {
   const R = turned('R');
   const w = world({ subject: { facelets: R, trusted: true, isPhysical: true, source: 'cube' } }, ({ state }) => ({
-    settings: { rungs: {}, rungProgress: {}, proveMinimum: false, lastLayer: 'app', turnArrows: true, ...settings },
+    settings: { rungs: {}, rungProgress: {}, proveMinimum: false, lastLayer: 'app', turnArrows: true, solveMethod: 'quick', ...settings },
     deriveCube: async () => { solvedBy(state, solutions[state.cube.facelets] ?? "R' U'"); },
   }));
   w.state.live = R;

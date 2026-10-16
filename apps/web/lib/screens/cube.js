@@ -4,7 +4,8 @@
 
 import { CUBE_VIEW } from '../cube-view.js';
 import { solveByMethod } from '../method-solver.js';
-import { methodById } from '../methods/registry.js';
+import { METHODS, methodById } from '../methods/registry.js';
+import { createMethodRow, methodRowHtml } from './cube/method-row.js';
 import { t } from '../i18n.js';
 import { OFFERED_TARGETS } from '../stage-targets.js';
 import { oneLineStrip } from '../scroll-strip.js';
@@ -314,17 +315,7 @@ const cubeScreen = (screenMode) => {
              count is the heading's ANSWER and belongs at the right edge whether or not anything
              follows it; the buttons then sit beside it, each with a margin of its own. -->
         <div class="card-h bare"><b id="solLabel">${label}</b><span class="sub" id="moveCount" role="status" aria-live="polite" style="margin-left:auto">—</span><button class="pill" id="proveBtn" hidden style="margin-left:12px">${PROVE_COPY.button}</button><button class="pill" id="proveCancel" hidden style="margin-left:6px">stop</button></div>
-        ${scrambling ? '' : `<!-- Two objects, both reachable — dev-docs/method-solver-return-plan.md §3.
-             The first attempt at the explaining solver REPLACED the solution with the lesson: a
-             93-move "Lesson" appeared exactly where 20 moves used to be printed, and it read as a
-             solver that had broken. They are different questions with different answers, so they
-             are two labelled things you switch between, and the count beside the heading changes
-             with the label so the two numbers can never be mistaken for each other. -->
-        <!-- aria-pressed, not only the "on" class. Which of the two is showing was carried by a
-             CSS class alone, so a screen reader announced two identical buttons and no way to tell
-             which object was on screen — and the whole point of the pair is that they are two
-             different answers to two different questions. -->
-        <!-- WHERE THIS WALK IS GOING. Not a setting and not in Settings: the target is a fact
+        ${scrambling ? '' : `<!-- WHERE THIS WALK IS GOING. Not a setting and not in Settings: the target is a fact
              about this cube right now, which is the same argument the ladder makes about rungs
              (dev-docs/solve-to-state-plan.md §6). The default stays "solved", so nothing changes
              for somebody who only wants their cube solved. Changing it is a WALK REPLACEMENT and
@@ -350,10 +341,15 @@ const cubeScreen = (screenMode) => {
                the sentence warning about the first. -->
           <button class="pill" id="patternBtn" type="button" aria-haspopup="menu" aria-expanded="false">${escHtml(t('Shapes'))}</button>
         </div>
-        <div class="wrap-row" id="walkKindRow" role="group" aria-label="${escHtml(t('Solution'))} / ${escHtml(t('Lesson'))}" style="gap:6px;padding:2px 18px 6px">
-          <button class="pill on" data-walk="solution" aria-pressed="true">${escHtml(t('Solution'))}</button>
-          <button class="pill" data-walk="lesson" aria-pressed="false">${escHtml(t('Lesson'))}</button>
-          <span class="sub" id="rungLine" style="color:var(--ink-4);margin-left:auto;text-align:right" hidden></span>
+        <!-- HOW TO SOLVE IT: one pill per METHOD, generated from the registry (ADR 0011 decision 1), the
+             learner's choice stored as a setting and applied to the next cube too. aria-pressed as
+             well as the class, so a screen reader can tell which method is on screen. The note beside
+             them says when the method chosen could not be worked out for this cube and the Quick walk
+             is shown instead - the stored choice is never switched silently.
+             NO BACKTICK IN THIS COMMENT - it is inside the screen's html template literal. -->
+        <div class="wrap-row" id="methodRow" role="group" aria-label="${escHtml(t('How to solve it'))}" style="gap:6px;padding:2px 18px 6px">
+          ${methodRowHtml({ methods: METHODS, chosen: settings.solveMethod, escHtml })}
+          <span class="sub" id="methodNote" role="status" aria-live="polite" style="color:var(--ink-4);margin-left:auto;text-align:right" hidden></span>
         </div>`}
         <div class="list" id="solList" style="padding:6px 0"></div>
         ${scrambling ? '' : '<div class="sub" id="whyLine" style="padding:0 18px 10px;color:var(--ink-4)" hidden></div>'}
@@ -512,9 +508,13 @@ const cubeScreen = (screenMode) => {
       // live hooks are installed HERE, before the first load, which is where the closure assigned
       // them: a turn reported during that load's search has to reach this walk's model, because the
       // load keeps turns the model is ahead by rather than rewinding past them.
+      // The method row's menu, when the registry is long enough to need one, and the one way the row is
+      // painted for the method on screen (lib/screens/cube/method-row.js). The session decides WHICH
+      // method is on screen; this screen owns how the row says so.
+      const methodRow = createMethodRow({ root, signal, methods: METHODS });
       session = createWalkSession({
         root, cube, scrambling, walking, unsolvable, label, stateHeading, stale, signal,
-        paintNet, paintAim, syncReconnectAsk, applyTempo,
+        paintNet, paintAim, syncReconnectAsk, applyTempo, paintMethods: methodRow.paint,
       }, WALK_APP);
       hooks.liveMove = session.liveMove;
       hooks.liveUpdate = session.liveUpdate;

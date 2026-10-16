@@ -83,12 +83,17 @@ const code = app
   .replace(/^\s*\/\/[^\n]*$/gm, '')
   .replace(/([^:'"`])\/\/[^\n]*/g, '$1');
 
-test('both objects are offered, and neither stands where the other was', () => {
-  assert.match(code, /data-walk="solution"/, 'the Solution must stay reachable');
-  assert.match(code, /data-walk="lesson"/, 'and the Lesson must be reachable beside it');
-  // The label follows the object. Without this the two are one heading with two different
-  // numbers under it, which is the 2026-08-29 failure exactly.
-  assert.match(code, /solLabelEl\.textContent = lesson \?/, 'the heading must say which object this is');
+test('the pills name METHODS from the registry, and the heading names the method on screen (ADR 0011)', () => {
+  // The Solution / Lesson pair named two OBJECTS; the row is one pill per method now, generated from the
+  // registry, so no method is spelled in the markup.
+  assert.doesNotMatch(code, /data-walk=/, 'the Solution / Lesson pills are back');
+  assert.match(code, /methodRowHtml\(\{ methods: METHODS, chosen: settings\.solveMethod, escHtml \}\)/,
+    'the row must be generated from the registry, with the stored method on');
+  assert.match(code, /data-method="\$\{escHtml\(m\.id\)\}"/);
+  // The label follows the method. Without this the two are one heading with two different numbers under
+  // it, which is the 2026-08-29 failure exactly.
+  assert.match(code, /solLabelEl\.textContent = !scrambling && !route \? t\(methodById\(shownMethod\)\.label\)/,
+    'the heading must say which method this is');
   // And the count changes SHAPE, not just value: "93" and "20" are indistinguishable, "93 moves ·
   // 20 steps" cannot be mistaken for a solution length. Both numbers go through `plural`, because
   // both can be 1 — a one-move lesson read "1 moves · 1 steps".
@@ -101,42 +106,32 @@ test('both objects are offered, and neither stands where the other was', () => {
     'the step count must be pluralised');
 });
 
-test('the lesson is worked out beside the solution, never instead of it', () => {
-  // If the lesson replaced the search, switching back to Solution would need a new one — and a
-  // cube whose lesson failed would have no walk at all.
-  const lesson = blockAt(code, 'function lessonWalk(solution)');
-  assert.match(lesson, /const lesson = lessonFor\(state\.cube\);/, 'the walk resolver must build a lesson');
-  // The fallback is the screen's to make — the walk kind and its switch are the session's — so the
-  // resolver asks for it by name (lib/walk-resolver.js), and the session's helper moves the switch
-  // back.
-  assert.match(lesson, /fallBackToSolution\(\)/, 'a cube with no lesson must fall back rather than fail the screen');
-  assert.match(blockAt(code, 'function fallBackToSolution()'), /walkKind = 'solution'/,
-    'and falling back must put the walk kind back to the solution');
-  // The search runs first, unconditionally: the lesson is built from the solution it produced. Both
-  // landmarks are read inside the one function, so neither can be found somewhere else in the app.
+test('a method with stages is taught WITHOUT the whole-cube search, and a cube it cannot finish falls back', () => {
+  // dev-docs/solve-methods-plan.md Phase 0 (2): the lesson needs nothing from the two-phase answer, so the
+  // search that used to run first, unconditionally, is not started for it. This supersedes the
+  // search-first wiring assertion that stood here.
+  const taught = blockAt(code, 'function methodWalk(entry)');
+  assert.match(taught, /const lesson = lessonFor\(state\.cube, entry\);/, 'the lesson must be built for the chosen entry');
   const solve = blockAt(code, 'async function solveWalk(');
-  const searched = solve.indexOf('await whole.done;');
-  const taught = solve.indexOf('lessonWalk(solution)');
-  assert.ok(searched > 0 && searched < taught,
-    'the two-phase search must run before the lesson branch, so both objects exist');
+  const methodFirst = solve.indexOf('const taught = methodWalk(method);');
+  const searched = solve.indexOf('startWholeSearch(');
+  assert.ok(methodFirst > 0 && methodFirst < searched, 'the chosen method must be tried before any search starts');
+  // The fallback is the session's to make, and it never touches the stored choice.
+  assert.match(solve, /fallBackToQuick\(\);/, 'a cube with no lesson must fall back rather than fail the screen');
+  const fallback = blockAt(code, 'function fallBackToQuick()');
+  assert.doesNotMatch(fallback, /solveMethod/, 'a fallback must not change the stored method');
 });
 
-test('a STAGE route has no lesson, and the switch goes with it', () => {
-  // dev-docs/solve-to-state-plan.md §9.4, and it is a product fact rather than a shortcut: the app
-  // orients the top corners before permuting them, so it cannot resume a lesson at "corners home".
-  // The screen offers the repair and then the solve, never the next lesson step.
-  //
-  // Two halves, and only together do they mean anything. The lesson must not be COMPUTED for a
-  // stage target — it would overwrite the route, since the branch runs after it — and the pair of
-  // pills must not be SHOWN, or the switch would point at an object the screen cannot produce.
-  assert.match(code, /return !stageTarget && walkKind === 'lesson' \? lessonWalk\(solution\) : solution;/,
-    'the lesson branch must be skipped for a stage target, or it overwrites the repair');
+test('a STAGE route has no lesson, and the method row goes with it', () => {
+  // dev-docs/solve-to-state-plan.md §9.4. Two halves, and only together do they mean anything: the lesson
+  // must not be COMPUTED for a stage target, and the row must not be SHOWN over a repair.
   const solve = blockAt(code, 'async function solveWalk(');
+  assert.match(solve, /if \(!stageTarget && method\.engine === 'method'\)/,
+    'the lesson branch must be skipped for a stage target, or it overwrites the repair');
   const repaired = solve.indexOf('return repairWalk(');
-  assert.ok(repaired > 0 && repaired < solve.indexOf('lessonWalk(solution)'),
-    'and a repair that answered returns before the lesson is ever considered');
-  assert.match(code, /kindRow\.hidden = Boolean\(route\)/,
-    'the Solution / Lesson switch must be hidden while a repair is showing');
+  assert.ok(repaired > 0, 'a repair that answered returns its own walk');
+  assert.match(code, /methodRow\.hidden = Boolean\(route\)/,
+    'the method row must be hidden while a repair is showing');
 });
 
 test('the lesson is thrown away with the arrangement it was about', () => {
@@ -213,11 +208,11 @@ test('the deleted teaching setting stays deleted, and its leftover is dropped', 
   assert.doesNotMatch(code, /solveByMethod\([^)]*level:/, 'the level parameter is gone');
 });
 
-test('the rungs in play are named on the cube screen', () => {
-  // §3 rule 4, so it is never a mystery why today's solve has more steps than yesterday's.
-  assert.match(code, /id="rungLine"/);
-  assert.match(code, /rungLine\.textContent = lesson \? lesson\.summary/);
-  assert.match(code, /rungSummary\(method\)/);
+test('the line naming the rungs in play is gone: the method pill names the method (ADR 0011)', () => {
+  // A method is fixed, so a line spelling out its rungs has nothing to say that the pill does not.
+  assert.doesNotMatch(code, /rungLine|rungSummary|lesson\.summary/, 'the rung line is back');
+  assert.match(code, /solLabelEl\.textContent = !scrambling && !route \? t\(methodById\(shownMethod\)\.label\) : label/,
+    'the heading must name the method on screen');
 });
 
 test('every sentence the lesson can say goes through t()', () => {
@@ -251,10 +246,13 @@ test('every sentence the lesson can say goes through t()', () => {
   // Back to English, so the rest of the process is unaffected.
   assert.equal(whyText(stepFor('cross.insert')), english.get('cross.insert'));
   // And the screen's own new strings.
-  for (const phrase of ['Solution', 'Lesson', 'Step %1 of %2 — %3', '%1 · %2', '%1 steps · %2 moves']) {
+  for (const phrase of ['How to solve it', 'Step %1 of %2 — %3', '%1 · %2', '%1 steps · %2 moves']) {
     assert.match(code, new RegExp(`t\\('${phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`),
       `"${phrase}" reaches the screen without t()`);
   }
+  // A method's NAME is the registry's, and reaches the pill and the heading through t() (ADR 0011).
+  assert.match(code, /escHtml\(t\(m\.label\)\)/, 'a method pill\'s name reaches the screen without t()');
+  assert.match(code, /t\(methodById\(shownMethod\)\.label\)/, 'the heading\'s method name reaches the screen without t()');
 });
 
 test('the reason line assists the cube rather than carrying it alone', () => {

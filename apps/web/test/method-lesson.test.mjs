@@ -19,7 +19,7 @@ import { HUMAN_ALGS } from '../lib/data/human-algs.js';
 import {
   CASE_TEXT_KEYS, WHY_KEYS, caseNameOf, caseText, lessonCues, lessonSections, moveStepIndex, namedPieces, turnsIn,
   stepAtMove,
-  rungSummary, whyText,
+  whyText,
 } from '../lib/method-lesson.js';
 import { wholeCubeSolved } from '../lib/methods/engine.js';
 import {
@@ -339,15 +339,6 @@ test('every move knows which step it belongs to', () => {
     assert.equal(map[0], 0);
     assert.equal(map[map.length - 1], steps.length - 1);
   }
-});
-
-test('the rungs in play are named, in plain words', () => {
-  const summary = rungSummary(methodFor({ cross: 1, pairs: 1, oll: 0, pll: 0 }));
-  assert.equal(summary,
-    'Cross: planned whole · First two layers: trigger pairs · Top face: two-look · Last layer: two-look');
-  assert.equal(rungSummary(methodFor({ cross: 0, pairs: 0, oll: 0, pll: 0 })),
-    'Cross: edge by edge · First two layers: corner, then edge · Top face: two-look · Last layer: two-look');
-  assert.equal(rungSummary(null), '', 'no method is no sentence, not "undefined"');
 });
 
 test('an empty solve has no sections and no cues', () => {

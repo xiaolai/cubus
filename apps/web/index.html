@@ -886,6 +886,8 @@
       .menu > button.now { font-weight: 700; color: var(--ink); }
       .menu > button.now::before { content: '✓ '; color: var(--ok-ink); }
       .menu > hr { height: 1px; border: 0; margin: 5px 6px; background: var(--line); }
+      /* A group heading inside a menu: the "More methods" menu's levels (ADR 0011). Not a button, so not an item. */
+      .menu > .menu-h { padding: 8px 10px 2px; font-size: var(--fs-body-s); font-weight: 600; color: var(--ink-4); }
 
       /* Transport on the cube screen, all on one line: four buttons (back, repeat, next, play), the
          progress bar, and the step count.

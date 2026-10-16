@@ -34,7 +34,8 @@ import { webkit } from 'playwright';
 import { turnFacelets } from '../../lib/cube-orientation.js';
 import { fromCube } from '../../lib/cube-pieces.js';
 import { moveStepIndex, stepAtMove } from '../../lib/method-lesson.js';
-import { methodFor, solveByMethod } from '../../lib/method-solver.js';
+import { solveByMethod } from '../../lib/method-solver.js';
+import { methodById } from '../../lib/methods/registry.js';
 import { OFFERED_TARGETS } from '../../lib/stage-targets.js';
 import { TUMBLED, holdForStage, holdSpec, renameAlg, scanFrameWalk, toMethodFrame } from '../../lib/solving-hold.js';
 import Cube from '../../vendor/cubejs.js';
@@ -211,22 +212,22 @@ test('the target is drawn beside the cube, and goes away with the whole-cube wal
   }
 });
 
-test('a repair wears no whole-cube furniture, and the switch comes back with the solve', async () => {
+test('a repair wears no whole-cube furniture, and the method row comes back with the solve', async () => {
   const { page, context, errors } = await openHome();
   try {
     await scrambled(page);
-    assert.equal(await page.locator('#walkKindRow').isVisible(), true,
-      'the Solution / Lesson switch belongs to the whole-cube walk');
+    assert.equal(await page.locator('#methodRow').isVisible(), true,
+      'the method row belongs to the whole-cube walk');
 
     await aimAt(page, 'first-layer');
-    assert.equal(await page.locator('#walkKindRow').isVisible(), false,
-      'a repair has no lesson to switch to (§9.4), so the switch must go with it');
+    assert.equal(await page.locator('#methodRow').isVisible(), false,
+      'a repair is no method\'s walk (§9.4), so the row must go with it');
     assert.equal(await page.locator('#proveBtn').isVisible(), false,
       'and the native prover proves a WHOLE cube — there is nothing here to ask it about');
 
     await page.click('[data-stage="solved"]');
-    await page.waitForFunction(() => document.querySelector('#walkKindRow')?.hidden === false, null);
-    assert.equal(await page.locator('#walkKindRow').isVisible(), true, 'and it comes back with the solve');
+    await page.waitForFunction(() => document.querySelector('#methodRow')?.hidden === false, null);
+    assert.equal(await page.locator('#methodRow').isVisible(), true, 'and it comes back with the solve');
   } finally {
     assert.deepEqual(errors.map(String), [], 'the page must raise nothing');
     await context.close();
@@ -641,7 +642,7 @@ test('a lesson builds its white cross and first layer white up, then turns the c
   const { page, context, errors } = await openHome();
   try {
     await scrambled(page);
-    await page.click('[data-walk="lesson"]');
+    await page.click('[data-method="beginner"]');
     await page.waitForFunction(() => document.querySelectorAll('#solList .move-chips').length > 1, null, { timeout: 30_000 });
     const walk = await walkOnScreen(page);
     const moves = walk.alg.split(' ');
@@ -653,11 +654,12 @@ test('a lesson builds its white cross and first layer white up, then turns the c
 
     // The hold of every move, worked out the way the app works it out — from the method solver's own
     // steps, fed the method frame — so this also proves the lesson on screen IS that solver's lesson.
-    // ON THE PAGE'S OWN ROUTE (ADR 0009): a fresh install walks the course's last layer, and rebuilding the
-    // app's instead indexed holds past the end of a lesson that is not on screen (Codex refute, 2026-10-14).
-    const lastLayer = await page.evaluate(() => JSON.parse(localStorage.getItem('cubusSettings') ?? '{}').lastLayer);
-    assert.ok(lastLayer === 'course' || lastLayer === 'app', `the page holds no last-layer route: ${lastLayer}`);
-    const { steps } = solveByMethod(fromCube(Cube.fromString(toMethodFrame(walk.start))), methodFor(undefined, { lastLayer }));
+    // IN THE METHOD THE PAGE CHOSE (ADR 0011): Beginner, the registry's entry — rung 0 on the course's last
+    // layer. Rebuilding any other method instead indexed holds past the end of a lesson that is not on
+    // screen (Codex refute, 2026-10-14).
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('cubusSettings') ?? '{}').solveMethod);
+    assert.equal(stored, 'beginner', 'the press did not store the method');
+    const { steps } = solveByMethod(fromCube(Cube.fromString(toMethodFrame(walk.start))), methodById('beginner').method);
     const index = moveStepIndex(steps);
     const heldAt = moves.map((_, k) => holdSpec(holdForStage(steps[stepAtMove(index, k)].stage)));
     const stages = new Set(steps.map((s) => s.stage));

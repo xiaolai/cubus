@@ -36,6 +36,7 @@ import { createWalkClock } from './walk-clock.js';
 import { createWalkResolver } from './walk-resolver.js';
 import { createWalkPresenter } from './walk-presenter.js';
 import { createFollowTracker } from './walk-follow.js';
+import { isMethodId, methodById } from './methods/registry.js';
 
 /**
  * The attributes of `<cubus-cube>` this SCREEN owns, which the script writer must never write.
@@ -100,7 +101,8 @@ const provided = (from, what) => new Proxy(from, {
  * @param {object} screen what the SCREEN owns and a walk writes to: `root`; the renderer `cube`;
  *   `scrambling`, `walking`, `unsolvable` and `label`, as the screen was composed;
  *   `stateHeading()`; `stale()`, its generation check; `signal`, its abort; `paintNet` and
- *   `paintAim`; `syncReconnectAsk()`; and `applyTempo()`, the speed menu's.
+ *   `paintAim`; `syncReconnectAsk()`; `applyTempo()`, the speed menu's; and `paintMethods(id)`, how
+ *   the method row says which method is on screen.
  * @param {object} app what the APP owns: shared `state` and `settings`, and every service a walk
  *   reaches for — listed once, as `WALK_APP` in lib/screens/cube.js. `cubejs()` and
  *   `solverReady()` are functions because `loadSolver` assigns both long after that object exists.
@@ -108,7 +110,7 @@ const provided = (from, what) => new Proxy(from, {
 export function createWalkSession(screen, app) {
   const {
     root, cube, scrambling, walking, unsolvable, label, stateHeading, stale, signal,
-    paintNet, paintAim, syncReconnectAsk, applyTempo,
+    paintNet, paintAim, syncReconnectAsk, applyTempo, paintMethods,
   } = provided(screen, 'screen');
   const {
     state, settings, SOLVED, CHIP_NODE_BUDGET, WALK_FAILURES, cubejs, solverReady, loadSolver,
@@ -149,11 +151,19 @@ export function createWalkSession(screen, app) {
    * derived from the same object the moves came from and the two cannot drift.
    */
   let route = null;
-  // Which of the two objects this screen is showing. `let`, and deliberately NOT a setting:
-  // it is a view of this screen, not a preference about every cube, so it lives as long as
-  // the screen does and is never written to storage. A learner who wants the lesson wants it
-  // for the next cube too, so it survives a retarget; it does not survive leaving.
-  let walkKind = 'solution';
+  // WHICH METHOD, in two states kept apart (ADR 0011 decision 2). The STORED one is
+  // `settings.solveMethod`: a choice of method is a preference about every cube, which is what a setting
+  // is, so it is written to storage, survives leaving the screen and applies to the next cube. (It was a
+  // `let` here, deliberately not a setting, while the pills named two OBJECTS on one screen; a METHOD is
+  // not that.) The DISPLAYED one is this: the method the walk on screen IS. The two differ only after a
+  // fallback — a cube the chosen method cannot finish shows the Quick walk — and a press is compared with
+  // the DISPLAYED one, so pressing the stored method after a fallback starts a new attempt rather than
+  // being swallowed as "already on".
+  let shownMethod = settings.solveMethod;
+  /** Whether the walk on screen is the Quick walk standing in for a method that could not be worked out. */
+  let fellBack = false;
+  /** Whether the last choice of method failed to reach storage, so it will not outlive this visit. */
+  let unsaved = false;
   /** The lesson on screen, or null while the Solution is showing. Read by sync(). */
   let lesson = null;
   // Which load is current. `screenGen` cannot answer this any more: it counts SCREENS, and a
@@ -229,7 +239,7 @@ export function createWalkSession(screen, app) {
       // stays on screen; the raised rung applies to the next cube, which is the one it is for.
       // `state.cube.lesson` is cleared by raising the rung either way, so that next lesson is
       // built at the new rungs rather than served from a cache made at the old ones.
-      if (walkKind === 'lesson' && state.cube.facelets !== SOLVED) void loadWalk();
+      if (lesson && state.cube.facelets !== SOLVED) void loadWalk();
     },
   });
 
@@ -268,8 +278,29 @@ export function createWalkSession(screen, app) {
       }, { signal });
     }
   };
-  // The two objects, and the switch between them (§3).
-  wireGroup('walk', () => walkKind, (want) => { walkKind = want; });
+  // THE METHOD ROW (ADR 0011). Delegated from the root rather than wired per pill: when the registry is
+  // long enough to need a "More methods" menu, its items are `[data-method]` too and the row's one pill is
+  // rewritten in place, and a listener per element would miss both.
+  root.addEventListener('click', (ev) => {
+    // Duck-typed rather than `instanceof Element`: the target may come from another realm's DOM.
+    const pill = typeof ev.target?.closest === 'function' ? ev.target.closest('[data-method]') : null;
+    if (!pill || !isMethodId(pill.dataset.method)) return;
+    const want = pill.dataset.method;
+    // Compared with the DISPLAYED method. The Quick walk shown after a fallback, pressed, only makes the
+    // stored choice match what is on screen — there is nothing to reload.
+    if (want === shownMethod) {
+      if (want !== settings.solveMethod) {
+        remember(want);
+        fellBack = false;
+        sayMethodNote();
+      }
+      return;
+    }
+    remember(want);
+    shownMethod = want;
+    paintMethods(want);
+    void loadWalk();
+  }, { signal });
   // WHERE THIS WALK IS GOING — which is exactly what `retarget()` exists for.
   wireGroup('stage', () => state.stageTarget, (want) => { state.stageTarget = want; });
 
@@ -356,8 +387,6 @@ export function createWalkSession(screen, app) {
     lesson = null;
     pointAtStep(0);
     offer.hide();
-    const rungLine = $('#rungLine', root);
-    if (rungLine) { rungLine.hidden = true; rungLine.textContent = ''; }
     solList.innerHTML = '';
     // The previous walk's prove button must not survive into the gap: its closure guards
     // itself with fresh(), but a click would still flip it to "preparing…" and disable it
@@ -436,15 +465,37 @@ export function createWalkSession(screen, app) {
     }
   }
 
-  /** A cube the method cannot teach falls back to its solution, and the switch says so. The walk
-   *  kind and the pills are this screen's, so the resolver asks for the fallback, not makes it. */
-  function fallBackToSolution() {
-    walkKind = 'solution';
-    paintGroup('walk', 'solution');
+  /** The learner's method, stored. `save` says whether the write landed; one that did not is said beside
+   *  the row, because a choice that silently fails to stick reads as the app forgetting it. */
+  function remember(id) {
+    settings.solveMethod = id;
+    unsaved = !save('cubusSettings', settings);
+  }
+
+  /** The sentence beside the method row: a fallback, a choice that was not kept, or nothing. */
+  function sayMethodNote() {
+    const note = $('#methodNote', root);
+    if (!note) return;
+    const words = [];
+    if (fellBack) {
+      // About the SEARCH, never the cube: every legal cube can be solved by every method, and this one
+      // could not be worked out here.
+      words.push(t('%1 could not be worked out for this cube — showing %2.',
+        t(methodById(settings.solveMethod).label), t(methodById('quick').label)));
+    }
+    if (unsaved) words.push(t('This choice could not be saved, so it lasts until you leave.'));
+    note.textContent = words.join(' ');
+    note.hidden = words.length === 0;
+  }
+
+  /** A cube the chosen method cannot finish falls back to the Quick walk, and the row says so — WITHOUT
+   *  changing the stored choice. The resolver asks for the fallback; the session makes it. */
+  function fallBackToQuick() {
+    fellBack = true;
   }
   const { resolveWalk } = createWalkResolver({
     state, SOLVED, solverReady, loadSolver, randomScramble, deriveCube, lastRoute, lessonFor, stepStates,
-    setStatus, fallBackToSolution, pictureRoute,
+    setStatus, fallBackToQuick, pictureRoute,
   });
 
   /** The turns the cube in hand has made since its last snapshot, adopted where it is trusted to
@@ -531,6 +582,9 @@ export function createWalkSession(screen, app) {
     setup = gotSetup; alg = gotAlg; moves = gotMoves; steps = gotSteps; target = gotTarget;
     lesson = gotLesson;
     route = gotRoute;
+    // The method the walk IS, which the row shows — a scramble or a repair is no method's walk, and
+    // leaves the row as it was (the row is hidden for a repair).
+    if (got.method) shownMethod = got.method;
     // HOW THIS WALK IS HELD (ADR 0003), by the one tested rule. A route that answered is held the
     // way its target is built — including one that overshot to the whole cube, since the child is
     // holding the cube for the stage they aimed at. A route that found nothing, no target, and a
@@ -627,10 +681,12 @@ export function createWalkSession(screen, app) {
 
   /** Which object is on screen, and how long it is — said beside the move list. */
   function labelWalk(fresh) {
-    // The pair of pills belongs to the whole-cube walk. A repair has no lesson to switch to
-    // (§9.4), so the switch is taken away rather than left pointing at nothing.
-    const kindRow = $('#walkKindRow', root);
-    if (kindRow) kindRow.hidden = Boolean(route);
+    // The method row belongs to the whole-cube walk. A repair is no method's walk (§9.4), so the row is
+    // taken away rather than left pointing at a method the walk under it is not.
+    const methodRow = $('#methodRow', root);
+    if (methodRow) methodRow.hidden = Boolean(route);
+    if (!scrambling) paintMethods(shownMethod);
+    sayMethodNote();
     // The heading and the count belong to the OBJECT on screen. A lesson under the heading
     // "Solution" with a bare "93" beside it is the failure of 2026-08-29: it read as a solver
     // that had broken, because it was standing exactly where a 20 used to be. So the label
@@ -638,14 +694,9 @@ export function createWalkSession(screen, app) {
     // compare — with the steps beside it, which is the number the ladder is actually measured
     // in. Two shapes, and they cannot be mistaken for each other.
     const solLabelEl = $('#solLabel', root);
-    if (solLabelEl) solLabelEl.textContent = lesson ? t('Lesson') : label;
-    const rungLine = $('#rungLine', root);
-    // The rungs in play, named on the cube screen (§3 rule 4), so it is never a mystery why
-    // today's solve has more steps than yesterday's.
-    if (rungLine) {
-      rungLine.hidden = !lesson;
-      rungLine.textContent = lesson ? lesson.summary : '';
-    }
+    // NAMED FOR THE METHOD on screen (ADR 0011): "Quick" or "Beginner". A scramble and a repair keep the
+    // screen's own word. The line that named the rungs in play is gone with the rungs: the pill says it.
+    if (solLabelEl) solLabelEl.textContent = !scrambling && !route ? t(methodById(shownMethod).label) : label;
     // The count beside the heading and the offer to prove it are the APP's to say: a minimality
     // claim has three sanctioned sources, and two of them are found by name in
     // lib/prove-affordance.js. `signal` is this walk's: it aborts when the walk is replaced or the
@@ -744,7 +795,11 @@ export function createWalkSession(screen, app) {
     // screen itself called off is not a failure to report — the subject it was about is gone, and the
     // walk that replaced it owns the screen now — which is why the reporter above checks the signal
     // before it says anything.
-    const got = await resolveWalk({ scrambling, stageTarget, walkKind, fresh, signal: abort.signal });
+    // A fresh attempt at the STORED method on every load: a fallback is about the cube it happened on.
+    fellBack = false;
+    const got = await resolveWalk({
+      scrambling, stageTarget, method: methodById(settings.solveMethod), fresh, signal: abort.signal,
+    });
     if (!got) return false; // overtaken while it searched: a newer load owns the screen
     if (!fresh()) { parkRoll(got.roll); return false; } // navigated away, or a newer load took over
     commitWalk(got, stageTarget);

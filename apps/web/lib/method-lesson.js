@@ -462,17 +462,3 @@ export function stepAtMove(map, made) {
   if (!map?.length) return undefined;
   return map[Math.min(Math.max(made, 0), map.length - 1)];
 }
-
-/**
- * "Cross planned whole · pairs joined" — the rungs in play, named on the cube screen (§3 rule 4).
- *
- * So it is never a mystery why today's solve has more steps than yesterday's. Reads the method's
- * own stage list rather than a setting, because the method is what produced the solve on screen.
- */
-export function rungSummary(method) {
-  if (!method?.stages) return '';
-  // `t('%1: %2', …)` rather than a template literal with a colon in it. The colon and the order
-  // are both the sentence's, not the program's: a language that puts the rung first, or that
-  // spaces its punctuation differently, has nothing to edit if the two halves are glued here.
-  return method.stages.map((s) => t('%1: %2', SECTION_NAME[s.id](), t(s.label))).join(' · ');
-}

@@ -16,8 +16,7 @@
 //   3. **Offer, never ask.** After a stage has been followed cleanly a few times, offer its next
 //      rung, once, in one tap. Declining costs nothing and it re-offers later. Nothing is ever
 //      silently raised.
-//   4. **The cube screen names the rungs in play** — that one is `method-lesson.js`'s
-//      `rungSummary`, because it is about the solve on screen rather than about progression.
+//   4. **The cube screen named the rungs in play** — gone with ADR 0011: the method pill names the method.
 //
 // Pure: no DOM, no storage, no solver. What the app does with an offer is the app's business; what
 // counts as an offer is here, where it can be tested.

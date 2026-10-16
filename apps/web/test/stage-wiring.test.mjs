@@ -183,10 +183,10 @@ test('the target is a fact about this cube, not a setting', () => {
 });
 
 test('a stage route wears no whole-cube furniture', () => {
-  // The Lesson switch and the prove button are both about a whole-cube solution. Left on, the
-  // first offers an object the screen cannot produce and the second offers a whole-cube proof of
+  // The method row and the prove button are both about a whole-cube walk. Left on, the
+  // first offers a method the screen is not walking and the second offers a whole-cube proof of
   // a stage route.
-  assert.match(code, /kindRow\.hidden = Boolean\(route\)/, 'the Solution / Lesson switch goes with the repair');
+  assert.match(code, /methodRow\.hidden = Boolean\(route\)/, 'the method row goes with the repair');
   // Read off the prove gate's own condition, whatever else it holds.
   assert.match(code, /if \(proveBtn && optimalCapability\(\)[^{\n]*&& !route\) \{/, 'the prove button must be off for a repair');
 });

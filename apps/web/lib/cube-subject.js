@@ -13,7 +13,7 @@ import { fromCube, movesOf } from './cube-pieces.js';
 import { convertSelectors, faceTurnsAlg } from './cube-moves.js';
 import { DEFAULT_RUNGS, solveByMethod } from './method-solver.js';
 import { methodById } from './methods/registry.js';
-import { lessonCues, lessonSections, moveStepIndex, rungSummary } from './method-lesson.js';
+import { lessonCues, lessonSections, moveStepIndex } from './method-lesson.js';
 import { NO_PROGRESS, acceptOffer, repairProgress } from './method-ladder.js';
 import { isCubeState } from './cube-trust.js';
 import { pictureDestination } from './patterns.js';
@@ -114,7 +114,6 @@ export function lessonFor(c = state.cube, entry = methodById('beginner')) {
     facelets: c.facelets,
     method: method.id,
     rungs: result.rungs,
-    summary: rungSummary(method),
     steps,
     sections: lessonSections(steps),
     // Which step each move belongs to, so the walk can point at what the move you are on is for.
