@@ -70,7 +70,9 @@ export function ingestFacelets(f) {
  * question is called off and answered null.
  *
  * Cached against the arrangement AND the method, so a lesson built for one method is never served for
- * another — and only if the subject is still the arrangement it was asked about when the answer lands.
+ * another. The lesson is about the arrangement it was ASKED for: a live snapshot that moves the subject
+ * while the worker answers does not turn it into a failure — the walk is about the cube the load started
+ * from, as the whole-cube solve's is — but it is cached only if the subject is still that arrangement.
  *
  * Resolves null rather than rejecting on a cube the method cannot finish: the Quick walk is still there,
  * and a screen that lost both because one of them failed would be worse than one that quietly offers the
@@ -89,16 +91,17 @@ export async function lessonFor(c = state.cube, entry = methodById('beginner'), 
     console.warn('method solver: no lesson for this cube', err);
     return null;
   }
-  // Called off, or answered about an arrangement the subject has since left.
-  if (result === null || c.facelets !== facelets) return null;
-  return lessonFrom(c, entry, result);
+  if (result === null) return null; // called off: a newer walk owns the screen
+  const lesson = lessonFrom(facelets, entry, result);
+  if (c.facelets === facelets) c.lesson = lesson;
+  return lesson;
 }
 
 /**
- * The solver's answer for `c`'s arrangement, as the lesson the screen walks — and cached on `c`. Pure
- * conversion: no search. Exported for the test that holds a worker's answer to the frozen baseline.
+ * The solver's answer for the arrangement `facelets`, as the lesson the screen walks. Pure conversion: no
+ * search, and nothing written anywhere.
  */
-export function lessonFrom(c, entry, result) {
+export function lessonFrom(facelets, entry, result) {
   // …and the walk lives in the scan frame, like every other walk: the renderer, `follow` and the
   // smart cube all compare against scan-frame states. SO DOES EVERY STEP, converted once, here: its
   // moves played in its hold and renamed, the hold each move is made in worked out beside them, and
@@ -122,8 +125,8 @@ export function lessonFrom(c, entry, result) {
       highlight: cue(cues.highlight),
     });
   }));
-  c.lesson = {
-    facelets: c.facelets,
+  return {
+    facelets,
     // The ENTRY's id: one entry is one method, and the cache must never serve one method's lesson for another.
     method: entry.id,
     rungs: result.rungs,
@@ -138,9 +141,8 @@ export function lessonFrom(c, entry, result) {
     moveHolds: walk.holds,
     // A regrip leaves the pieces where they were, so the cube after one is the cube before it: the
     // walk's states are about the pieces, which is what a smart cube reports and `follow` compares.
-    stepFacelets: stepStates(c.facelets, moves.map(faceTurnsAlg)),
+    stepFacelets: stepStates(facelets, moves.map(faceTurnsAlg)),
   };
-  return c.lesson;
 }
 
 /**

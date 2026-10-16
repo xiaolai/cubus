@@ -157,7 +157,7 @@ test('the lesson is thrown away with the arrangement it was about', () => {
   assert.match(fn, /c\.lesson\.facelets === c\.facelets/);
   assert.match(fn, /c\.lesson\.method === entry\.id/);
   // And an answer that lands after the subject moved on is not cached on it.
-  assert.match(fn, /if \(result === null \|\| c\.facelets !== facelets\) return null;/);
+  assert.match(fn, /if \(c\.facelets === facelets\) c\.lesson = lesson;/);
 });
 
 test('every step points at something, and the cue is cleared when there is nothing to point at', () => {
@@ -165,7 +165,7 @@ test('every step points at something, and the cue is cleared when there is nothi
   assert.ok(point, 'the screen must have a function that applies a step\'s cues');
   // Worked out once, when the lesson is built, and renamed into the frame the renderer draws — then
   // applied from the step under the head.
-  const build = blockAt(code, 'function lessonFrom(c, entry, result)');
+  const build = blockAt(code, 'function lessonFrom(facelets, entry, result)');
   assert.match(build, /lessonCues\(step\)/, 'every step\'s cues are worked out when the lesson is built');
   assert.match(point, /step\?\.focus/);
   assert.match(point, /step\?\.highlight/);

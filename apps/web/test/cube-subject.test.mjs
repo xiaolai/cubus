@@ -290,3 +290,38 @@ test('a step that turns the whole cube lights the centre that ends up facing the
   }
   assert.ok(turning >= 6 && plain > 0, `precondition: ${turning} turning and ${plain} other steps were checked`);
 });
+
+test('a lesson answered after the subject moved on is the asked cube\'s lesson, and is not cached on the subject', async () => {
+  // The lesson is worked out on the lesson worker (lib/lesson-client.js), so a live snapshot can move the
+  // subject while it is out. That must not read as "the method could not finish this cube" — the walk is
+  // about the cube the load started from — and the answer must not be cached as the NEW arrangement's.
+  const { subject } = await app();
+  const asked = move(SOLVED, "R U F' D2 L B U'");
+  const c = { facelets: asked, lesson: null };
+  const pending = subject.lessonFor(c);
+  c.facelets = move(asked, 'R'); // a snapshot lands while the worker answers
+  const lesson = await pending;
+  assert.ok(lesson, 'a moved subject was taken for a cube the method cannot finish');
+  assert.equal(lesson.facelets, asked, 'the lesson is not about the cube it was asked for');
+  assert.equal(lesson.stepFacelets[0], asked);
+  assert.equal(c.lesson, null, 'another arrangement\'s lesson was cached on the subject');
+  // Asked again with the subject unchanged, it is cached, and the cache serves it.
+  const settled = { facelets: asked, lesson: null };
+  const first = await subject.lessonFor(settled);
+  assert.equal(settled.lesson, first);
+  assert.equal(await subject.lessonFor(settled), first);
+});
+
+test('a lesson whose walk is called off resolves null and caches nothing — through the cut too', async () => {
+  const { subject } = await app();
+  const { TARGET_BY_ID } = await import('../lib/stage-targets.js');
+  const { methodById } = await import('../lib/methods/registry.js');
+  const walk = new AbortController();
+  const c = { facelets: move(SOLVED, "F R U' L2 D B'"), lesson: null };
+  const whole = subject.lessonFor(c, methodById('cfop'), { signal: walk.signal });
+  const cut = subject.stageLessonFor(c, methodById('cfop'), TARGET_BY_ID['two-layers'], { signal: walk.signal });
+  walk.abort();
+  assert.equal(await whole, null);
+  assert.equal(await cut, null);
+  assert.equal(c.lesson, null, 'a called-off lesson was cached');
+});
