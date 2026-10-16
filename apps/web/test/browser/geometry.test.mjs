@@ -227,6 +227,9 @@ const rect = (el) => {
  * 44px hit area are drawn past their boxes on purpose and carry no text. A clipping ancestor that
  * SCROLLS hands the question up to itself: content past a scroller's edge is reachable, so it is the
  * scroller that must then be reachable. `display: contents` boxes have no rect and are skipped.
+ *
+ * The text's own box first (audit, 2026-10-17): a box that clips its OWN text (`overflow: hidden` and a
+ * fixed height) loses it as surely as an ancestor does.
  */
 const contentFits = (root) => {
   const spills = [];
@@ -238,10 +241,24 @@ const contentFits = (root) => {
     const cs = getComputedStyle(el);
     if (cs.display === 'none' || cs.visibility === 'hidden') continue;
     const r = el.getBoundingClientRect();
-    if (r.width < 2 || r.height < 2) continue; // the visually-hidden clip-rect pattern
+    // The visually-hidden pattern (`.sr-only`: a clip-path over a 1px box) is text for a screen reader
+    // and drawn nowhere, so it is skipped BY ITS CLIP — never by its size, which a box that crushes its own
+    // text to a pixel also has (audit, 2026-10-17).
+    // Exactly that pattern — a half inset or an empty clip rect — and not any clip at all: `inset(0px)` over a
+    // crushed box hides nothing from the check (audit, 2026-10-17).
+    // `clip` applies only to an absolutely positioned box (CSS 2.1 §11.1.2), so an empty clip rect exempts only
+    // such a box; on a static one it clips nothing and exempts nothing.
+    const emptyClip = /^(absolute|fixed)$/.test(cs.position) && /^rect\(0(px)?,? 0(px)?,? 0(px)?,? 0(px)?\)$/.test(cs.clip);
+    if (/^inset\(50%\)$/.test(cs.clipPath) || emptyClip) continue;
+    if (r.width === 0 && r.height === 0) continue;
+    const scrolls = (v) => v === 'auto' || v === 'scroll';
     if (cs.display !== 'inline') {
-      if (cs.overflowX === 'visible' && el.scrollWidth > el.clientWidth + 1) spills.push(`${named(el)} by ${el.scrollWidth - el.clientWidth}px across`);
-      if (cs.overflowY === 'visible' && el.scrollHeight > el.clientHeight + 1) spills.push(`${named(el)} by ${el.scrollHeight - el.clientHeight}px down`);
+      const across = el.scrollWidth - el.clientWidth;
+      const down = el.scrollHeight - el.clientHeight;
+      if (across > 1 && cs.overflowX === 'visible') spills.push(`${named(el)} by ${across}px across`);
+      else if (across > 1 && !scrolls(cs.overflowX)) cut.push(`${named(el)} cut ${across}px across by its own box`);
+      if (down > 1 && cs.overflowY === 'visible') spills.push(`${named(el)} by ${down}px down`);
+      else if (down > 1 && !scrolls(cs.overflowY)) cut.push(`${named(el)} cut ${down}px down by its own box`);
     }
     let box = r;
     for (let a = el.parentElement; a && a !== document.documentElement; a = a.parentElement) {

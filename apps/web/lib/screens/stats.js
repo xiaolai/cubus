@@ -66,9 +66,12 @@ function averageCard(label, value, note) {
 }
 
 function recentRows(rows) {
+  // The scramble WRAPS at its spaces rather than ending in an ellipsis: cut short, it is a scramble nobody
+  // can set up again, and AGENTS.md §2 draws no text where it cannot be read (geometry.test.mjs measured
+  // it cut by 11 to 28px on every phone width, 2026-10-17). `min-width: 0` lets the 1fr track shrink to wrap.
   return rows.map((so) => `<div class="row" style="grid-template-columns:34px 1fr 74px;gap:12px">
       <div class="num" style="color:var(--ink-5)">${escHtml(so.n || '')}</div>
-      <div class="num" style="color:var(--ink-3);overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${escHtml(so.scramble)}</div>
+      <div class="num" style="color:var(--ink-3);min-width:0">${escHtml(so.scramble)}</div>
       <div class="num" style="font-size:var(--fs-title-s);font-weight:600;text-align:right">${escHtml(so.time)}</div></div>`).join('');
 }
 
