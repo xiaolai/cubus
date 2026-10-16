@@ -23,7 +23,7 @@ import { readFileSync } from 'node:fs';
 export const APP_SOURCES = Object.freeze([
   'lib/app.js',
   // lifted out of app.js, 2026-09-13
-  'lib/walk-session.js', 'lib/walk-live-distance.js', 'lib/walk-offer.js', 'lib/walk-resolver.js',
+  'lib/walk-session.js', 'lib/walk-live-distance.js', 'lib/walk-resolver.js',
   'lib/walk-follow.js', 'lib/walk-presenter.js', 'lib/hold-presenter.js',
   'lib/version.js', 'lib/app-state.js', 'lib/app-settings.js', 'lib/screen-slots.js', 'lib/solver-service.js',
   'lib/cube-subject.js', 'lib/cube-drawing.js', 'lib/wake-lock.js', 'lib/window-chrome.js',
@@ -75,7 +75,7 @@ export const LIBRARY_SOURCES = Object.freeze([
   'lib/cube-reconnect.js', 'lib/cube-registry.js', 'lib/cube-report.js', 'lib/cube-selfcheck.js',
   'lib/cube-session.js', 'lib/cube-trust.js', 'lib/cube-view.js', 'lib/cubejs-entry.js',
   'lib/data/case-tables.js', 'lib/data/human-algs.js', 'lib/element-writes.js', 'lib/host.js', 'lib/i18n.js', 'lib/lesson-cut.js', 'lib/lesson-format.js',
-  'lib/lesson-schedule.js', 'lib/method-ladder.js', 'lib/method-lesson.js',
+  'lib/lesson-schedule.js', 'lib/method-lesson.js',
   'lib/method-solver.js', 'lib/methods/cross.js',
   'lib/methods/engine.js', 'lib/methods/index.js',
   'lib/methods/last-layer.js', 'lib/methods/pairs.js', 'lib/methods/registry.js', 'lib/optimal-challenges.js', 'lib/optimal.js',

@@ -3,7 +3,7 @@
 // A walk SESSION is everything one mounted cube screen owns about its walk, and it outlives every
 // single walk shown on that screen: the walk itself (the moves, the state after each, the target, a
 // lesson or a stage route), the transport that steps through it, following a physical cube along
-// it, the live distance to a stage, the rung offer at its end, and the load that replaces the walk
+// it, the live distance to a stage, and the load that replaces the walk
 // when the subject changes. The SCREEN keeps its composition — the markup, the renderer element,
 // the two nets, the speed menu, the die, the reconnect question — and hands this module the parts
 // of it a walk writes to.
@@ -29,7 +29,6 @@ import { TARGET_BY_ID } from './stage-targets.js';
 import { targetPicture } from './stage-picture.js';
 import { cancel as optimalCancel, capability as optimalCapability } from './optimal.js';
 import { createLiveDistance } from './walk-live-distance.js';
-import { createRungOffer } from './walk-offer.js';
 import { createScriptPlayer } from './script-player.js';
 import { walkScript } from './walk-script.js';
 import { createWalkClock } from './walk-clock.js';
@@ -115,7 +114,7 @@ export function createWalkSession(screen, app) {
   const {
     state, settings, SOLVED, CHIP_NODE_BUDGET, WALK_FAILURES, cubejs, solverReady, loadSolver,
     randomScramble, deriveCube, classifyCube, walkEligible, adoptCube, chainTrusted, markStale, lessonFor, stageLessonFor,
-    stageAsk, stepStates, putInPlay, parkRoll, refreshScreen, go, save, raiseRung, escHtml, icon,
+    stageAsk, stepStates, putInPlay, parkRoll, refreshScreen, go, save, escHtml, icon,
     lastRoute, pictureRoute, sayWalkLength, describeCube, play,
   } = provided(app, 'app');
   const $ = (sel, from) => from.querySelector(sel);
@@ -215,8 +214,7 @@ export function createWalkSession(screen, app) {
 
   // The walk's view — the transport head, the chips' marks, the play and step buttons, the
   // renderer's step event and the scramble hand-off — is its own unit (lib/walk-presenter.js). It
-  // reads the walk when it paints, and reaches the follow tracker and the rung offer only once both
-  // exist.
+  // reads the walk when it paints, and reaches the follow tracker only once it exists.
   const {
     holdAt, moveHoldAt, holdCube, pointAtStep, sync, setPlaying, clearChips, takeChips, resetHead,
   } = createWalkPresenter({
@@ -225,22 +223,6 @@ export function createWalkSession(screen, app) {
     adoptCube, go,
     walkNow: () => ({ total, target, alg, lesson, walkHold, walkGen, walkLoaded }),
     takeOver: () => follow.takeOver(),
-    onHead: (from, to, walk) => offer.onHead(from, to, walk),
-  });
-  // ---- the rung offer: its own unit (lib/walk-offer.js) ---------------------------------------
-  const offer = createRungOffer({
-    root, settings, save, raiseRung,
-    onRaised: () => {
-      // **Not when there is nothing left to solve.** The offer arrives at the END of a walk, and
-      // a learner following on a physical cube has by then actually solved it — so `state.cube`
-      // is the solved arrangement. Reloading asked the solver for a walk from solved to solved,
-      // got nothing, and replaced the lesson the learner had just finished with "could not work
-      // it out" — blaming the cube for a question nobody should have asked. The finished walk
-      // stays on screen; the raised rung applies to the next cube, which is the one it is for.
-      // `state.cube.lesson` is cleared by raising the rung either way, so that next lesson is
-      // built at the new rungs rather than served from a cache made at the old ones.
-      if (lesson && state.cube.facelets !== SOLVED) void loadWalk();
-    },
   });
 
   /** A group of pills with one on, said in both channels — the class for the eye, `aria-pressed`
@@ -386,7 +368,6 @@ export function createWalkSession(screen, app) {
     // a piece on a cube that has just changed is worse than pointing at nothing.
     lesson = null;
     pointAtStep(0);
-    offer.hide();
     solList.innerHTML = '';
     // The previous walk's prove button must not survive into the gap: its closure guards
     // itself with fresh(), but a click would still flip it to "preparing…" and disable it
@@ -745,10 +726,6 @@ export function createWalkSession(screen, app) {
    *  Returns false when it was overtaken and wrote nothing. */
   async function loadWalk() {
     const mine = ++walkGen;
-    // A new walk has been followed nowhere yet. Without this, switching Solution → Lesson
-    // would inherit the moves the previous walk had stepped through and credit the new one on
-    // the strength of them.
-    offer.newWalk();
     // Two ways to become obsolete: the screen was replaced (screenGen), or another press
     // started a newer walk on this same screen (walkGen). Both must stop this one writing.
     const fresh = () => !stale() && mine === walkGen;

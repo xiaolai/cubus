@@ -28,21 +28,17 @@ import { SCAN_HOLD } from './solving-hold.js';
  * @param {object} deps `root`; the renderer `cube`; shared `state`; the screen's abort `signal`;
  *   `scrambling`; `stale()`; the move list `solList`; `icon`; `adoptCube` and `go`, for the
  *   hand-off; `walkNow()`, the walk on screen as
- *   `{ total, target, alg, lesson, walkHold, walkGen, walkLoaded }`; `takeOver()`, the follow
- *   tracker's; and `onHead(from, to, walk)`, the rung offer's. The last two are called, never read
- *   at construction, because both are built after this.
+ *   `{ total, target, alg, lesson, walkHold, walkGen, walkLoaded }`; and `takeOver()`, the follow
+ *   tracker's, called and never read at construction, because it is built after this.
  */
 export function createWalkPresenter({
   root, cube, player, afterTurn, turnLanded, state, signal, scrambling, stale, solList, icon, adoptCube,
-  go, walkNow, takeOver, onHead,
+  go, walkNow, takeOver,
 }) {
   const $ = (sel, from) => from.querySelector(sel);
   let chips = [];
   let at = 0;
   let playing = false;
-  /** True while the head moves without a move being shown: a seek, or bookkeeping with no
-    *  renderer. */
-  let jumping = false;
 
   // ---- Scramble → Solve hand-off ---------------------------------------------------------
   // The loop a beginner actually wants: scramble it by following the guide, then solve THAT.
@@ -160,8 +156,7 @@ export function createWalkPresenter({
   }
 
   function sync(i) {
-    const { total, target, lesson, walkGen, walkLoaded } = walkNow();
-    const from = at;
+    const { total, target, walkLoaded } = walkNow();
     at = i;
     // The filled chip is the move just shown — the one you are on. At 0 / 22 nothing has been
     // shown, so nothing is filled. It used to mark the NEXT move, and a black first chip before
@@ -183,10 +178,6 @@ export function createWalkPresenter({
     // cube, saying "done" where the count beside it already read 22 / 22. Only on a walk that
     // exists: while one is searched for, and after one failed, `total` is 0 and so is `i`.
     $('#doneMark', root).hidden = !walkLoaded || i < total;
-    // Where the head went, for the rung offer: it counts the moves stepped through, one at a time
-    // and forwards, and credits a lesson followed to its end once per walk (lib/walk-offer.js). A
-    // jump is never a step, however short: pressing chips in order moves the head one at a time.
-    onHead(from, i, { lesson, total, walkGen, jumped: jumping });
     // And, on Scramble, the way onward — labelled for what is actually known at that moment.
     // Gated on the TARGET, not on the count: between beginWalk() and the roll landing, and
     // after a roll that failed, `total` is 0 and `i >= total` is trivially true — so the
@@ -241,14 +232,10 @@ export function createWalkPresenter({
     play.setAttribute('aria-label', play.title);
   };
 
-  /** Move the head to `k` without showing the moves between. Marked as a jump, because nothing was
-   *  watched — which is what the rung offer counts, and it counts only steps. */
+  /** Move the head to `k` without showing the moves between. */
   const jumpTo = (k) => {
-    jumping = true;
-    try {
-      player.seek(Math.max(0, Math.min(k, walkNow().total)));
-      syncNow();
-    } finally { jumping = false; }
+    player.seek(Math.max(0, Math.min(k, walkNow().total)));
+    syncNow();
   };
   /** Every transport press starts the same way — the cube stops leading, playback stops — and then
    *  makes its own move. */

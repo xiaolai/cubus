@@ -10,9 +10,9 @@
 // wiring rather than about behaviour, and the behaviour half runs in
 // browser/method-lesson-render.test.mjs where a real renderer can answer it.
 //
-// Named for the CUBE screen. Its sibling `rung-offer-wiring.test.mjs` is about the rung offer; the
-// two were once "lesson-wiring" and "lessons-wiring", one letter apart, which is a filename nobody
-// can grep for with confidence.
+// Named for the CUBE screen. It once had a sibling about the rung offer, removed with the ladder (ADR
+// 0011); the two were "lesson-wiring" and "lessons-wiring", one letter apart, which is a filename nobody
+// could grep for with confidence.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -181,19 +181,26 @@ test('the move list is cut by the lesson\'s own stages, never by a proportion', 
   assert.match(code, /%1 steps · %2 moves/);
 });
 
-test('the rungs are stored as four dials, repaired on load, and defaulted to the bottom', () => {
-  assert.match(code, /settings\.rungs = repairRungs\(settings\.rungs\)/, 'the stored record must be repaired');
-  const repair = blockAt(code, 'function repairRungs(stored)');
-  assert.match(repair, /DEFAULT_RUNGS/, 'the default is the bottom rung everywhere');
-  assert.match(repair, /Number\.isInteger\(want\)/, 'localStorage is untrusted input');
-  assert.match(repair, /TOP_RUNG\[id\]/, 'a rung above the ladder must not be believed');
+test('the rung ladder is gone: nothing stores, offers, raises or resets a rung, and the lesson reads the entry', () => {
+  // ADR 0011 decision 3, swept by name so none of it can come back unnoticed.
+  for (const gone of [
+    'rungOffer', 'createRungOffer', 'raiseRung', 'resetRungs', 'nextOffer', 'acceptOffer', 'declineOffer',
+    'recordCleanFollow', 'repairProgress', 'ladderRows', 'repairRungs', 'repairLastLayer', 'LAST_LAYER_LABEL',
+    'data-set-last-layer', 'warmCrossTable', 'settings\\.rungs\\b', 'settings\\.rungProgress', 'settings\\.lastLayer',
+  ]) {
+    assert.doesNotMatch(code.replace(/^delete settings\.\w+;$/gm, ''), new RegExp(gone), `${gone} is back in the app`);
+  }
+  // The three stored records are dropped at load, on the `drillClock` precedent.
+  for (const key of ['rungs', 'rungProgress', 'lastLayer']) {
+    assert.match(code, new RegExp(`delete settings\\.${key};`), `a stored ${key} is not dropped at load`);
+  }
   // ADR 0011 decision 3 SUPERSEDES the assertion that stood here (the solver reading
   // `methodFor(settings.rungs, { lastLayer: settings.lastLayer })`): a method is fixed, so the lesson is
   // built from the chosen registry entry and NEVER from the learner's rungs or route setting.
   const lesson = blockAt(code, 'function lessonFor(c = state.cube, entry = methodById(\'beginner\'))');
   assert.match(lesson, /const method = entry\.method;/, 'the lesson must be built from the registry entry');
   assert.doesNotMatch(lesson, /settings\.(rungs|lastLayer)/, 'a lesson built from the rung ladder or the route setting');
-  // Four dials, and the defaults really are the bottom rung of each.
+  // The higher rungs STAY as a library (decision 4): four dials, each defaulting to its bottom rung.
   assert.deepEqual(Object.keys(DEFAULT_RUNGS).sort(), [...STAGE_IDS].sort());
   for (const id of STAGE_IDS) {
     assert.equal(DEFAULT_RUNGS[id], 0, `${id} does not default to its bottom rung`);

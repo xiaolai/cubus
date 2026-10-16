@@ -32,7 +32,7 @@ import { $, SOLVED, escHtml, icon, state } from '../app-state.js';
 import { load, save, settings } from '../app-settings.js';
 import { hooks } from '../screen-slots.js';
 import { CHIP_NODE_BUDGET, Cube, loadSolver, solverReady, solverWorker, stageAsk, warmSolver } from '../solver-service.js';
-import { classifyCube, deriveCube, lessonFor, raiseRung, stageLessonFor, stepStates, walkEligible } from '../cube-subject.js';
+import { classifyCube, deriveCube, lessonFor, stageLessonFor, stepStates, walkEligible } from '../cube-subject.js';
 import { applyNetColors, buildNet, describeCube, newCube } from '../cube-drawing.js';
 import { keepAwake } from '../wake-lock.js';
 import { play } from '../sound.js';
@@ -144,7 +144,7 @@ const WALK_APP = Object.freeze({
   cubejs: () => Cube,
   solverReady: () => solverReady,
   loadSolver, randomScramble, deriveCube, classifyCube, walkEligible, adoptCube, chainTrusted, markStale,
-  lessonFor, stageLessonFor, stageAsk, stepStates, putInPlay, parkRoll, refreshScreen, go, save, raiseRung,
+  lessonFor, stageLessonFor, stageAsk, stepStates, putInPlay, parkRoll, refreshScreen, go, save,
   escHtml, icon, lastRoute, pictureRoute, sayWalkLength, describeCube, play,
 });
 
@@ -353,17 +353,6 @@ const cubeScreen = (screenMode) => {
         </div>`}
         <div class="list" id="solList" style="padding:6px 0"></div>
         ${scrambling ? '' : '<div class="sub" id="whyLine" style="padding:0 18px 10px;color:var(--ink-4)" hidden></div>'}
-        ${scrambling ? '' : `<!-- Offer, never ask (§3 rule 3). Shown only after a lesson has been followed to the
-             end enough times, once, in one tap. Declining costs nothing: it postpones the offer
-             rather than disabling it, so nothing is ever silently raised and nothing is ever
-             permanently refused on a learner's behalf. -->
-        <div class="follow-note info" id="rungOffer" hidden>
-          <span id="rungOfferMsg" role="status" aria-live="polite"></span>
-          <div class="acts">
-            <button class="btn sm accent-outline" id="rungYes">${escHtml(t('Show me'))}</button>
-            <button class="btn sm outline" id="rungNot">${escHtml(t('Not yet'))}</button>
-          </div>
-        </div>`}
         <div class="follow-note" id="followNote" hidden>
           <span id="followMsg" role="status" aria-live="polite"></span>
           <div class="acts">

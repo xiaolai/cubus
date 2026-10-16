@@ -11,7 +11,19 @@ import { test } from 'node:test';
 import { CORNER, EDGE, SOLVED, allSolved, applyAlg } from '../lib/cube-pieces.js';
 import * as eng from '../lib/methods/engine.js';
 import { __testing, allMethods, methodFor, solveByMethod } from '../lib/method-solver.js';
-import { NESTING, ROUTE_STOPS, targetById } from '../lib/stage-targets.js';
+import { NESTING, targetById } from '../lib/stage-targets.js';
+import { BEGINNER_ENTRY } from '../lib/methods/registry.js';
+
+/**
+ * Which chips each last-layer route's walk STOPS at. The course's are the Beginner entry's declared stops
+ * (ADR 0011). The app's route orients the whole top before it permutes anything, so it passes neither
+ * `top-edges` nor `corners-home`: written here as what this file holds that library route to, until a
+ * CFOP entry declares it as its own stops.
+ */
+const ROUTE_STOPS = Object.freeze({
+  course: BEGINNER_ENTRY.stops,
+  app: Object.freeze(['cross', 'first-layer', 'two-layers', 'top-cross', 'solved']),
+});
 import { seededStates } from './fixtures/seeded-scrambles.mjs';
 import { turnsOf } from './fixtures/method-replay.mjs';
 

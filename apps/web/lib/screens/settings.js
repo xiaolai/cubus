@@ -10,9 +10,6 @@ import { VERSION } from '../version.js';
 
 import { $, escHtml, icon, state } from '../app-state.js';
 import { HIDEABLE, PALETTES, SCAN_VIEWS, SOUND_MODES, THEMES, navHidden, settings } from '../app-settings.js';
-import { LAST_LAYER_ROUTES } from '../method-solver.js';
-import { ladderRows } from '../method-ladder.js';
-import { resetRungs } from '../cube-subject.js';
 import { applyNetColors, applyTheme, netPalette } from '../cube-drawing.js';
 import { isTauri } from '../window-chrome.js';
 import { PROVE_COPY } from '../prove-affordance.js';
@@ -28,21 +25,6 @@ import { stopAll } from '../sound.js';
 // How the four rungs read on the Settings screen. A rung with no label here would render as
 // "undefined", so solve-tier-wiring.test.mjs checks every TIERS entry has one.
 const TIER_LABEL = { twenty: '≤ 20', nineteen: '≤ 19', eighteen: '≤ 18', shortest: 'shortest' };
-/**
- * The learner's rungs, said and reset — the one place they can be seen or lowered since the Lessons
- * screen was removed (ADR 0010 decision 4). The button is DISABLED with nothing raised: a press that
- * changes nothing must not look like one that does.
- */
-function learningLevelsRow() {
-  const raised = ladderRows(settings.rungs).filter((row) => row.at > 0);
-  const blurb = raised.length
-    ? t('Raised: %1. Reset puts every stage back to its first level.',
-      raised.map((row) => `${row.name} — ${row.rungs.find((r) => r.rung === row.at)?.label ?? row.at}`).join(', '))
-    : t('Every stage is at its first level. The solve page offers the next one after enough followed solves.');
-  return `<div class="wrap-row" style="justify-content:space-between;padding:13px 0 0;border-top:1px solid var(--line-faint)"><div><div style="font-weight:600">${escHtml(t('Learning levels'))}</div><div class="sub" style="color:var(--ink-4)" id="learningLevels">${escHtml(blurb)}</div></div>
-          <button class="pill" id="resetRungs"${raised.length ? '' : ' disabled'}>${escHtml(t('Reset'))}</button></div>`;
-}
-
 export const TURN_ARROWS_LABEL = 'Turn arrows';
 export const TURN_ARROWS_BLURB = 'An arrow on the cube shows the next turn of a solve or a scramble — and the way back when your cube is off it';
 
@@ -59,13 +41,6 @@ const TIER_BLURB = {
 // TWO MODES SINCE 2026-09-30: `voice` is gone, and with it a mode whose whole description was a
 // promise about spoken lines. The pills below are built from `Object.values(SOUND_MODES)`, so
 // removing the mode removed its button — a list written out here would have left a dead one.
-/** The last-layer route (ADR 0009) — the course's order by default, the app's own one setting away. */
-export const LAST_LAYER_LABEL = { course: 'The course’s', app: 'The app’s' };
-export const LAST_LAYER_BLURB = {
-  course: 'Lessons finish the top as the course does: its edges home first, then the corners put in place and turned',
-  app: 'Lessons finish the top the way speedcubers learn it: the whole top one colour first, then every piece moved home',
-};
-
 const SOUND_LABEL = { chime: 'Sounds', off: 'Off' };
 const SOUND_BLURB = {
   chime: 'A different sound for each thing that happens — a side saved, the cube checked out, a question waiting for you',
@@ -109,9 +84,6 @@ SCREENS.settings = () => {
         })}
         <div class="wrap-row" style="justify-content:space-between;padding:13px 0 0;border-top:1px solid var(--line-faint)"><div><div style="font-weight:600">How short a solution</div><div class="sub" style="color:var(--ink-4)">${TIER_BLURB[settings.solveTier] ?? TIER_BLURB.twenty}</div></div>
           <div class="wrap-row" style="gap:6px">${TIERS.map((tier) => `<button class="pill ${settings.solveTier === tier.name ? 'on' : ''}" id="setTier-${tier.name}" data-set-tier="${tier.name}" aria-pressed="${settings.solveTier === tier.name}">${escHtml(TIER_LABEL[tier.name])}</button>`).join('')}</div></div>
-        <div class="wrap-row" style="justify-content:space-between;padding:13px 0 0;border-top:1px solid var(--line-faint)"><div><div style="font-weight:600">${escHtml(t('The last layer'))}</div><div class="sub" style="color:var(--ink-4)">${escHtml(t(LAST_LAYER_BLURB[settings.lastLayer]))}</div></div>
-          <div class="wrap-row" style="gap:6px">${LAST_LAYER_ROUTES.map((r) => `<button class="pill ${settings.lastLayer === r ? 'on' : ''}" id="setLastLayer-${r}" data-set-last-layer="${r}" aria-pressed="${settings.lastLayer === r}">${escHtml(t(LAST_LAYER_LABEL[r]))}</button>`).join('')}</div></div>
-        ${learningLevelsRow()}
         ${optimalCapability() ? switchRow({
           style: 'padding:13px 0 0;border-top:1px solid var(--line-faint)',
           title: PROVE_COPY.settingLabel, blurb: PROVE_COPY.settingBlurb,
@@ -200,15 +172,7 @@ function mountAppearance(root) {
     state.cube.solution = '';
     state.cube.solveResult = null;
   }, renderScreen);
-  // The next lesson is built for the route chosen: a lesson is cached against its method's id, and the
-  // route is part of that id, so nothing here has to clear it.
-  bindChoice(root, 'data-set-last-layer', 'setLastLayer', (v) => {
-    if (!LAST_LAYER_ROUTES.includes(v)) throw new Error(`settings: no last-layer route "${v}"`);
-    settings.lastLayer = v;
-  }, renderScreen);
   wireOrientation($('#orientationPills', root));
-  const reset = $('#resetRungs', root);
-  if (reset) reset.onclick = () => commitPref(reset, resetRungs, renderScreen);
   for (const b of root.querySelectorAll('[data-toggle]')) {
     const k = b.dataset.toggle;
     bindSwitch(b, { isOn: () => settings[k], flip: () => { settings[k] = !settings[k]; } });

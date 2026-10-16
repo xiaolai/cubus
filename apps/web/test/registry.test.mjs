@@ -9,9 +9,10 @@ import {
   BEGINNER_ENTRY, DEFAULT_METHOD, ENTRY_FIELDS, LEVELS, METHODS, checkEntry, isMethodId, methodById,
 } from '../lib/methods/registry.js';
 import { DEFAULT_RUNGS, methodFor } from '../lib/method-solver.js';
-import { NESTING, ROUTE_STOPS, TARGET_BY_ID } from '../lib/stage-targets.js';
-import { WHITE_UP_STAGES } from '../lib/solving-hold.js';
-import { SECTION_NAME } from '../lib/method-lesson.js';
+import { NESTING, TARGET_BY_ID } from '../lib/stage-targets.js';
+import * as hold from '../lib/solving-hold.js';
+import * as lessonWords from '../lib/method-lesson.js';
+import * as targets from '../lib/stage-targets.js';
 
 test('the first release offers exactly Quick and Beginner, and a new install walks Quick', () => {
   assert.deepEqual(METHODS.map((m) => m.id), ['quick', 'beginner']);
@@ -55,10 +56,10 @@ test('Beginner IS rung 0 everywhere on the course\'s last layer, and the globals
   assert.equal(beginner.method.id, methodFor(DEFAULT_RUNGS, { lastLayer: 'course' }).id);
   assert.equal(beginner.method.lastLayer, 'course');
   assert.deepEqual(beginner.stages, beginner.method.stages);
-  // The tables that were global now READ the entry — the same object, not an equal copy.
-  assert.equal(WHITE_UP_STAGES, beginner.holds.displayed.whiteUpStages);
-  assert.equal(ROUTE_STOPS.course, beginner.stops);
-  assert.equal(SECTION_NAME, beginner.words.sections);
+  // The tables that were global are the entry's alone now: no module exports a second spelling of them.
+  assert.ok(!('WHITE_UP_STAGES' in hold), 'solving-hold still exports its own flip point');
+  assert.ok(!('SECTION_NAME' in lessonWords), 'method-lesson still exports its own section names');
+  assert.ok(!('ROUTE_STOPS' in targets), 'stage-targets still exports its own route stops');
   assert.deepEqual([...beginner.stops], [...NESTING]);
   for (const stop of beginner.stops) assert.ok(TARGET_BY_ID[stop], `the stop "${stop}" is no target descriptor`);
   // Every dial the method walks has a section heading.

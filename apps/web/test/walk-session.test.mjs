@@ -19,7 +19,6 @@ import Cube from '../vendor/cubejs.js';
 import { SOLVED as SOLVED_PIECES, fromCube, invert } from '../lib/cube-pieces.js';
 import { faceTurnsAlg, identityFace, run as runHeld } from '../lib/cube-moves.js';
 import { registerLocale, setLocale } from '../lib/i18n.js';
-import { FOLLOWS_TO_OFFER, NO_PROGRESS, recordCleanFollow, repairProgress } from '../lib/method-ladder.js';
 import { lessonSections, moveStepIndex } from '../lib/method-lesson.js';
 import { methodFor, solveByMethod } from '../lib/method-solver.js';
 import {
@@ -78,7 +77,6 @@ const MARKUP = `
     <div class="progress"><span id="progBar"></span></div><span id="doneMark" hidden></span><span id="stepLbl">0 / 0</span>
     <button class="pill" data-mode="cube"></button><button id="solveItBtn" hidden></button>
   </div>
-  <div id="rungOffer" hidden><span id="rungOfferMsg"></span><button id="rungYes"></button><button id="rungNot"></button></div>
   <div class="solution-card">
     <b id="solLabel">Solution</b><span id="moveCount">—</span><button id="proveBtn" hidden></button><button id="proveCancel" hidden></button>
     <div id="stageRow"><button data-stage="solved" class="on" aria-pressed="true"></button><button data-stage="cross" aria-pressed="false"></button></div>
@@ -168,7 +166,7 @@ function world({ subject = {}, omit = [], screen: screenOver = {}, settings: set
   };
   const app = {
     state,
-    settings: { rungs: {}, rungProgress: {}, proveMinimum: false, lastLayer: 'app', turnArrows: true, solveMethod: 'quick', ...settingsOver },
+    settings: { proveMinimum: false, turnArrows: true, solveMethod: 'quick', ...settingsOver },
     SOLVED,
     CHIP_NODE_BUDGET: 1,
     WALK_FAILURES: { 'solver unavailable': 'no solver', 'no scramble': 'no scramble', 'cross-check': 'no check', 'no picture route': 'no shape route' },
@@ -200,7 +198,6 @@ function world({ subject = {}, omit = [], screen: screenOver = {}, settings: set
     refreshScreen: () => { log.push('refreshScreen'); },
     go: () => {},
     save: () => true,
-    raiseRung: () => true,
     escHtml: (s) => String(s).replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`),
     icon: () => '',
     lastRoute: async () => null,
@@ -240,9 +237,9 @@ test('a walk that cannot be built still describes the cube it is drawn over', as
 });
 
 test('a service the app does not provide fails the mount, by name — not the rare press that would first call it', () => {
-  // `raiseRung` is reached only by answering a rung offer, which arrives only at the end of a
-  // followed lesson: a typo in WALK_APP would otherwise surface there and nowhere else.
-  assert.throws(() => world({ omit: ['raiseRung'] }), { name: 'TypeError', message: /app does not provide "raiseRung"/ });
+  // `stageLessonFor` is reached only when a learner on a method with stages presses a chip: a typo in
+  // WALK_APP would otherwise surface there and nowhere else.
+  assert.throws(() => world({ omit: ['stageLessonFor'] }), { name: 'TypeError', message: /app does not provide "stageLessonFor"/ });
   assert.throws(() => world({ omit: ['applyTempo'] }), { name: 'TypeError', message: /screen does not provide "applyTempo"/ });
 });
 
@@ -1314,7 +1311,7 @@ function presenterRig(head) {
     state: { connected: false, cube: {} }, signal: new AbortController().signal, scrambling: false,
     stale: () => false, solList, icon: () => '', adoptCube: () => {}, go: () => {},
     walkNow: () => ({ total: 2, target: null, alg: '', lesson: null, walkHold: SCAN_HOLD, walkGen: 1, walkLoaded: true }),
-    takeOver: () => { takeOvers.count += 1; }, onHead: () => {},
+    takeOver: () => { takeOvers.count += 1; },
   });
   presenter.takeChips();
   presenter.sync(head);
@@ -1546,62 +1543,6 @@ test('the done tick is for a walk that exists — not a search, not a failure, b
   reached.state.stageTarget = 'cross';
   assert.equal(await within(reached.session.load()), true, 'precondition: a route of no moves is a walk');
   assert.equal(reached.$('#doneMark').hidden, false, 'a stage already reached lost its tick');
-});
-
-// ---- the rung offer, through the session: what counts as followed, and a reload's warning -------
-
-/** A lesson walk of `R' U'` in one cross section, one follow of the cross short of a rung offer. */
-async function lessonWalk(over = {}) {
-  let progress = repairProgress(NO_PROGRESS);
-  for (let i = 0; i < FOLLOWS_TO_OFFER - 1; i += 1) progress = recordCleanFollow(progress, ['cross']);
-  const settings = { rungs: { cross: 0, pairs: 0, oll: 0, pll: 0 }, rungProgress: progress, proveMinimum: false, lastLayer: 'app', solveMethod: 'quick' };
-  const saves = [];
-  const w = world({}, ({ state }) => ({
-    settings,
-    deriveCube: async () => { solvedBy(state, "R' U'"); },
-    lessonFor: (cube) => {
-      const moves = ["R'", "U'"];
-      const stepFacelets = [cube.facelets, turned("R'", cube.facelets), turned("R' U'", cube.facelets)];
-      return {
-        alg: moves.join(' '), moves, moveHolds: [SCAN_HOLD, SCAN_HOLD, SCAN_HOLD], stepFacelets, steps: [], moveStep: [],
-        sections: [{ id: 'cross', name: 'Cross', steps: 1, moves: 2, from: 0, to: 2 }],
-      };
-    },
-    save: (key, value) => { saves.push(value.rungProgress.follows.cross); return true; },
-    ...over,
-  }));
-  assert.equal(await w.session.load(), true);
-  w.$('[data-method="beginner"]').click();
-  for (let i = 0; i < 3; i += 1) await settle();
-  assert.equal(w.$('#solLabel').textContent, 'Beginner', 'precondition: the lesson is the walk on screen');
-  // The press stored the method through the same `save`; only the follows counted after it are asked about.
-  saves.length = 0;
-  return { w, saves };
-}
-
-test('pressing a lesson\'s chips one after another shows no turn, and earns no follow', async () => {
-  const { w, saves } = await lessonWalk();
-  // The renderer's seek is instant and reports where it landed, as the real one does.
-  w.cube.seek = (k) => { w.cube.dispatchEvent(new w.win.CustomEvent('cubus-step', { detail: { index: k } })); };
-  const chip = (k) => w.$('#solList').querySelectorAll('.chip-m')[k];
-  chip(0).click();
-  chip(1).click();
-  assert.equal(w.$('#stepLbl').textContent, '2 / 2', 'precondition: the chips took the head to the end');
-  assert.deepEqual(saves, [], 'a lesson pressed through chip by chip was credited as followed');
-  // Stepped through, one shown move at a time, it still is.
-  for (const index of [0, 1, 2]) w.cube.dispatchEvent(new w.win.CustomEvent('cubus-step', { detail: { index } }));
-  assert.equal(saves.length, 1, 'a lesson stepped through was not credited');
-});
-
-test('a rung raised but not saved stays said through the reload the raise starts', async () => {
-  const { w } = await lessonWalk({ raiseRung: () => false });
-  for (const index of [1, 2]) w.cube.dispatchEvent(new w.win.CustomEvent('cubus-step', { detail: { index } }));
-  assert.equal(w.$('#rungYes').hidden, false, 'precondition: the offer is on screen');
-  w.$('#rungYes').click(); // accepting reloads the lesson at the new rung, in the same task
-  assert.equal(w.$('#rungOffer').hidden, false, 'the reload hid the warning before it could be painted');
-  assert.match(w.$('#rungOfferMsg').textContent, /not saving your progress/);
-  for (let i = 0; i < 3; i += 1) await settle();
-  assert.equal(w.$('#rungOffer').hidden, false, 'the reloaded walk hid the warning');
 });
 
 // ---- every sentence following and the transport say goes through t() ----------------------------
@@ -2083,7 +2024,7 @@ test('a replay that throws stays this request\'s failure, never the live handler
 async function followedWorld({ settings = {}, solutions = {} } = {}) {
   const R = turned('R');
   const w = world({ subject: { facelets: R, trusted: true, isPhysical: true, source: 'cube' } }, ({ state }) => ({
-    settings: { rungs: {}, rungProgress: {}, proveMinimum: false, lastLayer: 'app', turnArrows: true, solveMethod: 'quick', ...settings },
+    settings: { proveMinimum: false, turnArrows: true, solveMethod: 'quick', ...settings },
     deriveCube: async () => { solvedBy(state, solutions[state.cube.facelets] ?? "R' U'"); },
   }));
   w.state.live = R;

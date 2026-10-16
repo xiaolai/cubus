@@ -11,11 +11,10 @@ import { provenAnswer } from './optimal-challenges.js';
 // other was. That rule is what the first attempt broke; §3 of the plan is about it.
 import { fromCube, movesOf } from './cube-pieces.js';
 import { convertSelectors, faceTurnsAlg } from './cube-moves.js';
-import { DEFAULT_RUNGS, solveByMethod } from './method-solver.js';
+import { solveByMethod } from './method-solver.js';
 import { methodById } from './methods/registry.js';
 import { cutLesson } from './lesson-cut.js';
 import { lessonCues, lessonSections, moveStepIndex } from './method-lesson.js';
-import { NO_PROGRESS, acceptOffer, repairProgress } from './method-ladder.js';
 import { isCubeState } from './cube-trust.js';
 import { pictureDestination } from './patterns.js';
 // How the cube is held while it is solved, and the renamings between the scan frame, the method
@@ -23,7 +22,7 @@ import { pictureDestination } from './patterns.js';
 import { METHOD_TO_SCAN, renameSelectors, scanFrameWalk, toMethodFrame } from './solving-hold.js';
 
 import { SOLVED, state } from './app-state.js';
-import { save, settings } from './app-settings.js';
+import { settings } from './app-settings.js';
 import { Cube, challenges, invertAlg, solverWorker } from './solver-service.js';
 
 // Record a scanned/known facelet state. Ingesting a state and DERIVING from it are separate
@@ -528,40 +527,4 @@ export function stepStates(facelets, moves) {
     console.warn('per-step facelets unavailable; the move list will jump rather than step', err);
   }
   return sf;
-}
-
-/**
- * Raise one dial, and everything that has to follow from it.
- *
- * Two screens raise a rung — the offer on the cube screen and the ladder on Lessons — and both
- * had their own copy of the same four steps: take the offer, write both halves back, throw the
- * cached lesson away, persist. Four steps in two places is four chances for one of them to be
- * forgotten, and the one most easily forgotten is the third: a lesson worked out at the OLD rungs
- * is no longer what this learner is being taught, and relabelling it would be worse than
- * rebuilding it.
- *
- * Returns whether the write stuck, because a rung that is not persisted is one the next launch
- * silently takes back.
- */
-export function raiseRung(offer) {
-  const next = acceptOffer(settings.rungs, settings.rungProgress, offer);
-  settings.rungs = next.rungs;
-  settings.rungProgress = next.progress;
-  state.cube.lesson = null;
-  return save('cubusSettings', settings);
-}
-
-/**
- * Every stage back to its first rung, and the follows counted toward each next offer cleared — the one
- * way DOWN the ladder (ADR 0010 decision 4). The end-of-walk offer raises a rung and nothing lowered
- * one, so with the Lessons screen gone a raise accepted by mistake would have been for ever.
- *
- * It changes the record and does not save it: Settings saves through `commitPref`, which is what says
- * so in the card when the browser will not keep it. The lesson cached for the old rungs goes too, or
- * the next walk would be taught at the rungs just reset — the same reason `raiseRung` drops it.
- */
-export function resetRungs() {
-  settings.rungs = { ...DEFAULT_RUNGS };
-  settings.rungProgress = repairProgress(NO_PROGRESS);
-  state.cube.lesson = null;
 }

@@ -923,15 +923,13 @@ test('the Advanced section is hidden until the chord asks for it', async (t) => 
 // nickname fields (verification, 2026-09-14), and the same on every control here that repaints.
 test('a press on a Settings control that rebuilds the screen leaves focus on that control', async () => {
   const { settings, save } = await import('../lib/app-settings.js');
-  const was = { palette: settings.palette, theme: settings.theme, tier: settings.solveTier, source: settings.schemeSource,
-    lastLayer: settings.lastLayer };
+  const was = { palette: settings.palette, theme: settings.theme, tier: settings.solveTier, source: settings.schemeSource };
   win.location.hash = '#/settings';
   await tick();
   win.document.dispatchEvent(chord());
   await tick();
-  const other = was.lastLayer === 'course' ? 'app' : 'course';
   const controls = ['[data-pal="muted"]', '[data-set-theme="night"]', '[data-set-tier="nineteen"]', '[data-scheme]',
-    '[data-nav-toggle="timer"]', `[data-set-last-layer="${other}"]`];
+    '[data-nav-toggle="timer"]'];
   try {
     const lost = [];
     for (const sel of controls) {
@@ -943,11 +941,9 @@ test('a press on a Settings control that rebuilds the screen leaves focus on tha
       if (!win.document.activeElement?.matches?.(sel)) lost.push(sel);
     }
     assert.deepEqual(lost, [], 'focus fell off these controls when Settings rebuilt');
-    // The route row is a choice that lands in settings, not only a pill that keeps its focus (ADR 0009).
-    assert.equal(settings.lastLayer, other, 'the last-layer pill did not change the route');
   } finally {
     // Back through the same controls, so what is stored and drawn is what it was.
-    for (const sel of [`[data-set-last-layer="${was.lastLayer}"]`, '[data-nav-toggle="timer"]', '[data-scheme]', `[data-set-tier="${was.tier}"]`,
+    for (const sel of ['[data-nav-toggle="timer"]', '[data-scheme]', `[data-set-tier="${was.tier}"]`,
       `[data-set-theme="${was.theme}"]`, `[data-pal="${was.palette}"]`]) {
       win.document.querySelector(sel)?.click();
       await tick();
@@ -1376,60 +1372,19 @@ test('the shell no longer carries a permanent connection box', async () => {
 // Dragging the 3D cube around is off by default: every cube in the app is set up at a chosen
 // angle that the ghost faces depend on, and a stray drag swung it away with no way back. The
 // preference is a Settings toggle, saved, and reaches every cube through the `orbit` attribute.
-// THE OFFER IS MADE WHERE A SOLVE ENDS (§3 rule 3), on the cube screen, and both answers exist as real
-// elements — an offer with no way to decline is an ask, and that is the rule it would break. What the
-// row DOES is `walk-offer.test.mjs`'s; this is that the real screen carries it.
-test('the offer lives on the cube screen and is answerable both ways', async () => {
-  // A cube with a solution first: the row is part of the solve view, and an empty Home is the cube
-  // viewer and nothing else — which is how this case first passed while proving nothing.
+// THE RUNG LADDER IS GONE (ADR 0011 decision 3): no offer where a solve ends, and no "Learning levels" or
+// last-layer rows in Settings. Asserted on the real screens, so neither can come back unnoticed.
+test('neither the cube screen nor Settings carries any part of the rung ladder', async (t) => {
+  // The chord opens Advanced; the shared restore closes it again, or the next case finds it open.
+  t.after(restoreAdvanced);
   await scrambledHome();
-  assert.ok(await waitFor(() => win.document.querySelector('#rungOffer')), 'the cube screen carries no offer row');
-  assert.equal(win.document.querySelector('#rungOffer').hidden, true, 'the offer is showing before anything was followed');
-  assert.ok(win.document.querySelector('#rungYes'), 'the offer cannot be accepted');
-  assert.ok(win.document.querySelector('#rungNot'), 'the offer cannot be declined, which makes it an ask');
-});
-
-// LEARNING LEVELS CAN BE RESET (ADR 0010 decision 4). With the Lessons screen gone this is the one way down
-// the ladder, so a raise accepted by mistake is not for ever — and with nothing raised, the button must not
-// look like it would do something.
-test('learning levels show what is raised, reset to the first rung, and the reset is kept', async () => {
-  const { settings } = await import('../lib/app-settings.js');
-  const { state } = await import('../lib/app.js');
-  const before = { rungs: settings.rungs, rungProgress: settings.rungProgress };
-  try {
-    win.location.hash = '#/settings';
-    await tick();
-    const reset = () => win.document.querySelector('#resetRungs');
-    assert.ok(reset(), 'Settings has no way to reset learning levels');
-    settings.rungs = { cross: 0, pairs: 0, oll: 0, pll: 0 };
-    win.location.hash = '#/timer';
-    await tick();
-    win.location.hash = '#/settings';
-    await tick();
-    assert.equal(reset().disabled, true, 'with nothing raised, Reset still offered to do something');
-
-    settings.rungs = { cross: 1, pairs: 0, oll: 0, pll: 0 };
-    settings.rungProgress = { follows: { cross: 3, pairs: 2, oll: 0, pll: 0 }, declined: { cross: 1, pairs: 0, oll: 0, pll: 0 }, nextAt: { cross: 5, pairs: 0, oll: 0, pll: 0 } };
-    state.cube.lesson = { stale: true };
-    win.location.hash = '#/timer';
-    await tick();
-    win.location.hash = '#/settings';
-    await tick();
-    assert.equal(reset().disabled, false);
-    assert.match(win.document.querySelector('#learningLevels').textContent, /Cross — planned whole/, 'the raised rung is not named');
-    reset().click();
-    await tick();
-    assert.deepEqual(settings.rungs, { cross: 0, pairs: 0, oll: 0, pll: 0 }, 'a stage was left above its first rung');
-    for (const count of ['follows', 'declined', 'nextAt']) {
-      assert.ok(Object.values(settings.rungProgress[count]).every((n) => n === 0), `${count} still counts toward an offer`);
-    }
-    assert.equal(state.cube.lesson, null, 'the lesson cached at the old rungs would still be taught');
-    const stored = JSON.parse(win.localStorage.getItem('cubusSettings') ?? '{}');
-    assert.deepEqual(stored.rungs, { cross: 0, pairs: 0, oll: 0, pll: 0 }, 'the reset was not kept');
-    assert.equal(reset().disabled, true, 'after the reset, Reset still offered to do something');
-  } finally {
-    settings.rungs = before.rungs;
-    settings.rungProgress = before.rungProgress;
+  isAbsent(win.document.querySelector('#rungOffer'), 'the cube screen still carries an offer row');
+  win.location.hash = '#/settings';
+  await tick();
+  win.document.dispatchEvent(chord());
+  await tick();
+  for (const sel of ['#resetRungs', '#learningLevels', '[data-set-last-layer]']) {
+    isAbsent(win.document.querySelector(sel), `Settings still carries ${sel}`);
   }
 });
 

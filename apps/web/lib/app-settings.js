@@ -4,8 +4,6 @@
 // Lifted out of app.js on 2026-09-13, when that file was split into modules.
 
 import { TIERS } from './solve-target.js';
-import { DEFAULT_RUNGS, LAST_LAYER_ROUTES, STAGE_IDS, TOP_RUNG } from './method-solver.js';
-import { repairProgress } from './method-ladder.js';
 import { isScheme } from './scheme.js';
 import { DEFAULT_METHOD, isMethodId } from './methods/registry.js';
 import { DEFAULT_PALETTE } from './cube-view.js';
@@ -82,11 +80,6 @@ export const DEFAULT_SETTINGS = Object.freeze({
   // about every cube, so it is stored and applied to the next one. A new install walks Quick (owner's
   // call Q1, 2026-10-16).
   solveMethod: DEFAULT_METHOD,
-  // Which order the last layer is taught in (ADR 0009): `course` — the beginner course's, edges home and
-  // then corners — or `app`, the ladder's own, which orients the whole top before it permutes it. The
-  // course's is the default (decision I, 2026-10-14). An install from before it existed is MIGRATED below,
-  // not defaulted, because a learner who has already climbed the last-layer ladder is on the app's.
-  lastLayer: 'course',
 });
 /** Every setting whose default is a boolean — DERIVED, so a new flag is repaired the moment it has a
  *  default, and no list kept by hand can leave one out (audit, 2026-09-19: the tests' own copies had
@@ -208,58 +201,20 @@ delete settings.teachLevel;
 // `drillClock` timed the Drill screen's reps, and went with the screen (ADR 0010).
 delete settings.drillClock;
 
-/**
- * Which rung of each stage this learner is on — dev-docs/method-solver-return-plan.md §2/§3.
- *
- * Four independent dials, not one level: you learn to plan the cross long before you learn 57
- * OLLs, and the removed design forced those onto one axis. The default is the bottom rung
- * everywhere, so a new learner chooses nothing and is shown the beginner's method — the same
- * discipline `DEFAULT_HIDDEN` already applies to the nav.
- *
- * localStorage is untrusted input, so this is repaired rather than believed: anything that is not
- * an integer inside the ladder falls back to 0. A stored 9 would otherwise throw out of
- * `methodFor` on the first solve and take the screen with it — the `language: 7` failure again.
- */
-function repairRungs(stored) {
-  const out = { ...DEFAULT_RUNGS };
-  for (const id of STAGE_IDS) {
-    const want = stored?.[id];
-    if (Number.isInteger(want) && want >= 0 && want <= TOP_RUNG[id]) out[id] = want;
-  }
-  return out;
-}
-
-/**
- * The last-layer route this install walks — repaired AND migrated, from the STORED record rather than the
- * merged one, for `soundMode`'s reason: the merge always supplies the default, which would make every
- * existing install look as if it had chosen it.
- *
- *   a valid stored route                     a choice                     -> kept
- *   storage held nothing                     a first launch               -> the default, the course's
- *   no usable route, last-layer rungs at 0   predates the route, or bad   -> the default, the course's
- *   no usable route, an oll or pll rung up   has climbed the app's ladder -> `app`
- *
- * The last line is the migration. A learner who raised the top-face or last-layer dial has been learning
- * the app's algorithms, and the course's route ignores both dials: moving them to it would take away what
- * they chose and show them a last layer they never asked for. Everyone else has chosen nothing about the
- * last layer, so the new default reaches them — which a stored record outranking a changed default would
- * otherwise never let it do.
- */
-export function repairLastLayer(stored, rungs) {
-  const want = stored?.lastLayer;
-  if (typeof want === 'string' && LAST_LAYER_ROUTES.includes(want)) return want;
-  return rungs.oll > 0 || rungs.pll > 0 ? 'app' : DEFAULT_SETTINGS.lastLayer;
-}
-
-settings.rungs = repairRungs(settings.rungs);
-settings.lastLayer = repairLastLayer(storedSettings, settings.rungs);
+// THE RUNG LADDER IS GONE (ADR 0011 decision 3): a method is fixed, so a learner has no rungs to store, no
+// progress toward an offer, and no last-layer route to choose — Beginner is always rung 0 on the course's
+// last layer. A record from before carries all three; they are dropped here rather than left for `save()`
+// to keep rewriting, the `drillClock` precedent. A learner who had raised a rung or chosen the app's route
+// chose more than Beginner, and there is nowhere to put that choice until a CFOP method exists; the ADR and
+// the release notes say so.
+delete settings.rungs;
+// …the follows counted toward the next offer, and how often each was declined;
+delete settings.rungProgress;
+// …and the last-layer route of ADR 0009, whose route is now the Beginner entry's last stages.
+delete settings.lastLayer;
 // `courseRested` was where the Course screen's last lesson rested, and went with the screen (ADR 0010);
 // the lesson player in cubus-courses keeps its own.
 delete settings.courseRested;
-// How many times each stage has been followed to the end at its current rung, and how often its
-// next rung has been declined. §3 rule 3 — "offer, never ask" — is a rule about counting, so the
-// counts are stored; repaired on load for the same reason the rungs are.
-settings.rungProgress = repairProgress(settings.rungProgress);
 
 /** The themes, as stored. Auto is a policy rather than a theme: white while the system is light,
  * night while it is dark (tokens.css). Cream is the warm option you choose, not the default you

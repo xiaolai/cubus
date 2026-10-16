@@ -35,7 +35,6 @@
 
 import { CORNER, EDGE, MOVES, MOVE_NAMES } from './cube-pieces.js';
 import * as eng from './methods/engine.js';
-import { BEGINNER_ENTRY } from './methods/registry.js';
 
 // ---- the cell tables: how one tracked piece moves ----------------------------------------------
 //
@@ -413,20 +412,3 @@ export const OFFERED_TARGETS = Object.freeze(TARGETS.filter((t) => t.offered));
 export const NESTING = Object.freeze([
   'cross', 'first-layer', 'two-layers', 'top-cross', 'top-edges', 'corners-home', 'solved',
 ]);
-
-/**
- * Which chips a lesson's walk STOPS at, per last-layer route (ADR 0009) — the per-route half of the
- * nesting. The chain above holds for every cube on either route, so the row is one row; what differs is
- * which of its states the method passes through — at the beginner's cross and pairs rungs, because a
- * pairs rung that joins each corner to its edge never stops at `first-layer` on either route. The course's
- * route reaches each in turn. The app's own
- * orients the whole top before it permutes anything, so it passes neither `top-edges` nor `corners-home`
- * on its way: those two chips are destinations on that route, never a stage of it.
- * `test/course-route.test.mjs` walks both routes and holds each list to the states the walk reaches.
- */
-export const ROUTE_STOPS = Object.freeze({
-  app: Object.freeze(['cross', 'first-layer', 'two-layers', 'top-cross', 'solved']),
-  // The beginner method's declared stops (lib/methods/registry.js); `course-route.test.mjs` holds them
-  // to NESTING and to the stage ends the walk reaches.
-  course: BEGINNER_ENTRY.stops,
-});

@@ -23,13 +23,16 @@ import { SOLVED as SOLVED_PIECES, fromCube } from '../lib/cube-pieces.js';
 import { whyText } from '../lib/method-lesson.js';
 import { methodFor, solveByMethod } from '../lib/method-solver.js';
 import { allRungCombinations } from '../lib/methods/index.js';
+import { BEGINNER_ENTRY } from '../lib/methods/registry.js';
+
+/** The flip point, as the Beginner entry declares it (ADR 0011 decision 5). */
+const WHITE_UP_STAGES = BEGINNER_ENTRY.holds.displayed.whiteUpStages;
 import {
   HELD_TARGETS,
   METHOD_FRAME,
   METHOD_TO_SCAN,
   SCAN_HOLD,
   TUMBLED,
-  WHITE_UP_STAGES,
   fromMethodFrame,
   holdTable,
   holdForStage,

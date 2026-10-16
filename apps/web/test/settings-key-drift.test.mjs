@@ -36,7 +36,7 @@ const defaulted = () => {
   const block = blockAt(settingsSource, 'export const DEFAULT_SETTINGS = Object.freeze(');
   return [...block.matchAll(/(\w+):/g)].map((m) => m[1]);
 };
-/** Keys it repairs in place — real settings that carry no literal default (`rungs`, `rungProgress`). */
+/** Keys it repairs in place — real settings that carry no literal default. */
 const repaired = () => [...settingsSource.matchAll(/^settings\.(\w+)\s*=/gm)].map((m) => m[1]);
 /** Keys it deliberately drops. A stored leftover nothing reads, kept impossible rather than unlikely. */
 const deleted = () => [...settingsSource.matchAll(/^delete settings\.(\w+);/gm)].map((m) => m[1]);

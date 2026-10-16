@@ -135,15 +135,16 @@ export function renameSelectors(spec, hold) {
 }
 
 /**
- * WHERE THE CUBE IS TURNED OVER — declared once, here. These stages are built white up; every stage
- * after them, tumbled.
+ * WHERE THE CUBE IS TURNED OVER — declared once, in the Beginner entry's DISPLAYED holds
+ * (lib/methods/registry.js, ADR 0011 decision 5). These stages are built white up; every stage after
+ * them, tumbled.
  *
  * Both vocabularies below — the stage targets' ids and the method solver's stage names — call these
  * two stages by these two words, so both tables are DERIVED from this list rather than each stating
  * the flip point again. The lesson's sentences for these stages are written for the white-up hold
  * (`method-lesson.js`), and `solving-hold.test.mjs` holds its list of those sentences to this one.
  */
-export const WHITE_UP_STAGES = BEGINNER_ENTRY.holds.displayed.whiteUpStages;
+const WHITE_UP_STAGES = BEGINNER_ENTRY.holds.displayed.whiteUpStages;
 
 /**
  * A hold for every name in `names`: white up for the white-up stages and for any name in

@@ -21,7 +21,6 @@
 import { CORNERS, EDGES, SOLVED, moveCount } from './cube-pieces.js';
 import { faceTurnsAlg, heldFace, identityFace, run } from './cube-moves.js';
 import { plural, t } from './i18n.js';
-import { WHITE_UP_STAGES } from './solving-hold.js';
 import { BEGINNER_ENTRY } from './methods/registry.js';
 import { HUMAN_ALGS } from './data/human-algs.js';
 
@@ -41,17 +40,15 @@ const DIAL_OF = Object.freeze({
 });
 
 /**
- * Plain words, not CFOP jargon: this app's reader is eight. The rung's own label rides beside
- * these on the screen, which is where "two-look" and "trigger pairs" belong.
- *
- * Exported because the learning levels name the same four stages (`ladderRows` in
- * lib/method-ladder.js). Two copies of a name are two names as soon as one of them is edited, and a
- * stage called "Top face" in one place and something else in another reads as two stages.
+ * Plain words, not CFOP jargon: this app's reader starts at five. ONE copy of each name, because two
+ * copies of a name are two names as soon as one of them is edited, and a stage called "Top face" in one
+ * place and something else in another reads as two stages.
  */
 //
 // The names themselves are the beginner method's WORDS, declared in its registry entry (ADR 0011
-// decision 5); this name stays while its readers move.
-export const SECTION_NAME = BEGINNER_ENTRY.words.sections;
+// decision 5), and so is where the cube is turned over.
+const SECTION_NAME = BEGINNER_ENTRY.words.sections;
+const WHITE_UP_STAGES = BEGINNER_ENTRY.holds.displayed.whiteUpStages;
 
 /**
  * A step's reason, in words.
@@ -65,7 +62,7 @@ export const SECTION_NAME = BEGINNER_ENTRY.words.sections;
  */
 const WHY_TEXT = Object.freeze({
   // WHITE UP OR TURNED OVER, AND THE WORDS DIFFER. The solver builds the cross on its own D and lifts
-  // pieces to its own U. Held white up (`WHITE_UP_STAGES`, lib/solving-hold.js; ADR 0003) that U layer
+  // pieces to its own U. Held white up (the Beginner entry's `holds.displayed.whiteUpStages`; ADR 0003) that U layer
   // is the BOTTOM of the cube in the child's hands; turned over, it is the top. So each sentence that
   // says where a piece goes comes in both holds, and `whyText` picks by the step's STAGE — never by
   // its reason key. `firstLayer.*` is emitted by the layer-by-layer first layer (white up) AND by the

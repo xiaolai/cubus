@@ -99,10 +99,10 @@ test('every stored preference flag is a real boolean', async () => {
 
 test('a repair made only in memory is still written back', async () => {
   // Nothing the repair table checks is wrong here, and the nav migration has already run — so
-  // before, nothing was saved, and the out-of-range rung and the leftover key stayed in storage.
-  const { mod, store } = await loadOver({ navDefaults: 2, navHidden: [], rungs: { cross: 99 }, inspection: true });
-  assert.equal(mod.settings.rungs.cross, 0, 'precondition: the rung is repaired in memory');
-  assert.deepEqual(store.stored().rungs, mod.settings.rungs, 'the repaired rungs were not written back');
+  // before, nothing was saved, and the unknown method and the leftover key stayed in storage.
+  const { mod, store } = await loadOver({ navDefaults: 2, navHidden: [], solveMethod: 'lesson', inspection: true });
+  assert.equal(mod.settings.solveMethod, 'quick', 'precondition: the method is repaired in memory');
+  assert.equal(store.stored().solveMethod, 'quick', 'the repaired method was not written back');
   assert.ok(!('inspection' in store.stored()), 'a dropped leftover key was left in storage');
 });
 
@@ -220,4 +220,30 @@ test('a stored method that is not a method is repaired to the default and writte
     assert.equal(mod.settings.solveMethod, 'quick', `a stored ${JSON.stringify(hostile)} was believed`);
     assert.equal(store.stored().solveMethod, 'quick', `a stored ${JSON.stringify(hostile)} was not repaired in storage`);
   }
+});
+
+// ADR 0011 decision 3: the rung ladder is gone, and so are the three records it kept. The `courseRested`
+// case is the template — assert the ABSENCE, in memory and in storage.
+test('a stored record carrying the rung ladder\'s settings comes back WITHOUT them, in memory and in storage', async () => {
+  const ladder = {
+    rungs: { cross: 1, pairs: 1, oll: 1, pll: 0 },
+    rungProgress: { follows: { cross: 3, pairs: 0, oll: 0, pll: 0 }, declined: { cross: 0, pairs: 0, oll: 0, pll: 0 }, nextAt: { cross: 0, pairs: 0, oll: 0, pll: 0 } },
+    lastLayer: 'app',
+  };
+  for (const [key, value] of Object.entries(ladder)) {
+    const { mod, store } = await loadOver({ [key]: value });
+    assert.equal(Object.hasOwn(mod.settings, key), false, `${key} was kept in memory`);
+    assert.equal(Object.hasOwn(store.stored() ?? {}, key), false, `${key} was written back`);
+  }
+  // All three at once, beside a method choice that must survive the drop.
+  const { mod, store } = await loadOver({ ...ladder, solveMethod: 'beginner' });
+  for (const key of Object.keys(ladder)) assert.equal(Object.hasOwn(store.stored(), key), false, `${key} survived beside the others`);
+  assert.equal(mod.settings.solveMethod, 'beginner', 'dropping the ladder took the method choice with it');
+});
+
+test('a stored lesson resting place is dropped on load and not written back', async () => {
+  // The lesson player in cubus-courses keeps its own; a record left here would be a field nothing reads.
+  const { mod, store } = await loadOver({ courseRested: { course: 'course/', id: '13-a-cross-on-top', progress: { step: 4 } } });
+  assert.equal(Object.hasOwn(mod.settings, 'courseRested'), false, 'kept in memory');
+  assert.equal(Object.hasOwn(store.stored() ?? {}, 'courseRested'), false, 'written back');
 });
