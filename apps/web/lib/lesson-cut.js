@@ -16,6 +16,7 @@
 
 import { moveCount } from './cube-pieces.js';
 import { lessonSections } from './method-lesson.js';
+import { holdAfter } from './solving-hold.js';
 
 /**
  * `lesson` cut at the first stage end where `holds` is true, or null when there is nothing to teach:
@@ -48,7 +49,9 @@ export function cutLesson(lesson, holds) {
       moveStep: moveStep.slice(0, position),
       moves: cutMoves,
       alg: cutMoves.join(' '),
-      moveHolds: moveHolds.slice(0, position + 1),
+      // The hold AFTER the last kept move — never the next record's, which is the following stage's hold
+      // (the tumble after the first layer, say): a walk cut there must end held as its last move left it.
+      moveHolds: Object.freeze([...moveHolds.slice(0, position), holdAfter(moves[position - 1], moveHolds[position - 1])]),
       stepFacelets: stepFacelets.slice(0, position + 1),
       cutAt: i,
     });

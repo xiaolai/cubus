@@ -10,7 +10,7 @@ import { cutLesson } from '../lib/lesson-cut.js';
 import { fromCube, moveCount } from '../lib/cube-pieces.js';
 import { lessonSections } from '../lib/method-lesson.js';
 import { BEGINNER_ENTRY } from '../lib/methods/registry.js';
-import { toMethodFrame } from '../lib/solving-hold.js';
+import { TUMBLED, holdAfter, sameHold, toMethodFrame } from '../lib/solving-hold.js';
 import { TARGET_BY_ID } from '../lib/stage-targets.js';
 import Cube from '../vendor/cubejs.js';
 import { baselineCubes, bootLesson } from './fixtures/beginner-lesson.mjs';
@@ -58,7 +58,13 @@ test('every record of the walk agrees at the cut, and each is the full lesson\'s
       // Each a PREFIX of the full lesson: the cut drops, it never rewrites. Cues ride on the steps.
       assert.deepEqual(cut.steps, full.steps.slice(0, cut.steps.length), `${where}: steps, cues included`);
       assert.deepEqual(cut.moves, full.moves.slice(0, n), `${where}: moves`);
-      assert.deepEqual(cut.moveHolds, full.moveHolds.slice(0, n + 1), `${where}: holds`);
+      assert.deepEqual(cut.moveHolds.slice(0, n), full.moveHolds.slice(0, n), `${where}: holds`);
+      // The FINAL hold is the one the last kept move leaves — never the next stage's (audit-fix: a cut
+      // after the first layer used to end on the tumbled hold of the stage it had cut away).
+      assert.deepEqual(cut.moveHolds[n], holdAfter(cut.moves[n - 1], cut.moveHolds[n - 1]), `${where}: final hold`);
+      if (chip === 'cross' || chip === 'first-layer') {
+        assert.ok(!sameHold(cut.moveHolds[n], TUMBLED), `${where}: a white-up walk ends on the tumble it cut away`);
+      }
       assert.deepEqual(cut.stepFacelets, full.stepFacelets.slice(0, n + 1), `${where}: replay states`);
       assert.deepEqual(cut.moveStep, full.moveStep.slice(0, n), `${where}: move indices`);
       assert.deepEqual(cut.sections, lessonSections(cut.steps), `${where}: sections are not the cut steps\' own`);

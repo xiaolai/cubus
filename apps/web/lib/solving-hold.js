@@ -233,6 +233,13 @@ export function holdForStage(stage) {
 /** The hold the method solver begins in and writes every stage for: its own frame, upright. */
 const METHOD_UPRIGHT = hold('U', 'F');
 
+/** The hold a scan-frame walk token leaves a cube held `shown` in: the same hold unless it turns the whole
+ *  cube. One rule for the walk and for a lesson CUT after a token (lib/lesson-cut.js). */
+export function holdAfter(token, shown) {
+  const after = applyIdentity(readToken(token).move, shown, SOLVED).hold;
+  return sameHold(after, shown) ? shown : hold(after[0], after[1]);
+}
+
 /**
  * A method's steps as the walk a screen shows: every move in the SCAN frame, and how the child is
  * holding the cube when they make it.
@@ -274,8 +281,7 @@ export function scanFrameWalk(steps) {
     for (const token of tokens) {
       holds.push(shown);
       moves.push(token);
-      const after = applyIdentity(readToken(token).move, shown, SOLVED).hold;
-      shown = sameHold(after, shown) ? shown : hold(after[0], after[1]);
+      shown = holdAfter(token, shown);
     }
     algs.push(tokens.join(' '));
   }
