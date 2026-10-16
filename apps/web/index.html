@@ -479,6 +479,15 @@
          portrait rule above turns both off). A class, not an inline style: an inline `flex:1`
          outranks every stylesheet rule, and the portrait sheet could not un-flex it. */
       .solution-card { flex: 1; min-height: 140px; display: flex; flex-direction: column; }
+      /* Only the move list gives way. The rows above and below it — the heading, the target strip, the method
+         row and its note, the reason line — are text in a clipping card, and a flex item shrunk below its
+         content spills that text out of its own box (the target strip by 14px on the desktop portrait
+         window under a Beginner lesson, geometry.test.mjs). The list flexes and scrolls instead. */
+      .solution-card > :not(.list) { flex-shrink: 0; }
+      /* And when those rows and a list of even two rows of moves are more than the card's height, the CARD
+         scrolls: a sheet scrolls (AGENTS.md §2), and a clipping card cut the reason line off unread. */
+      .card.tight.solution-card { overflow-y: auto; overscroll-behavior: contain; }
+      .solution-card > .list { min-height: 76px; }
       .primary { grid-area: primary; min-width: 0; min-height: 0; }
       .aux { grid-area: aux; min-width: 0; }
       /* A SHEET THAT STACKS ITS CARDS, rather than one card filling the area. `.sheet` is
