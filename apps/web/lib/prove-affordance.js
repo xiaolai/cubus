@@ -9,6 +9,7 @@ import {
 } from './optimal.js';
 import { plural, t } from './i18n.js';
 import { routeSentence } from './stage-report.js';
+import { isCutLesson } from './lesson-cut.js';
 import { turnsIn } from './method-lesson.js';
 
 import { $, state } from './app-state.js';
@@ -333,7 +334,9 @@ export function sayWalkLength({ root, setStatus, scrambling, route, stageTargetN
   // `!route`: the native prover proves a WHOLE CUBE minimal. A repair is a route into a set of
   // millions of cubes, so there is nothing here for it to be asked about, and offering it
   // would put a whole-cube claim under a stage-route count.
-  if (proveBtn && optimalCapability() && !scrambling && !proved && !route) {
+  // `!isCutLesson(lesson)`: the same for a method's lesson CUT at a chip — its moves stop short of solved,
+  // so they are no whole-cube solution and their count is no bound on one (audit-fix round 3).
+  if (proveBtn && optimalCapability() && !scrambling && !proved && !isCutLesson(lesson) && !route) {
     // The pair being proved is the WALK's, captured at wiring: steps[0] IS the start
     // state this walk displays and total IS its length. Reading state.cube at click
     // time would race live ingestion (a snapshot can swap the subject or zero the move

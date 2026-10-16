@@ -6,7 +6,8 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 
-import { cutLesson } from '../lib/lesson-cut.js';
+import { cutLesson, isCutLesson } from '../lib/lesson-cut.js';
+import { readFileSync } from 'node:fs';
 import { fromCube, moveCount } from '../lib/cube-pieces.js';
 import { lessonSections } from '../lib/method-lesson.js';
 import { BEGINNER_ENTRY } from '../lib/methods/registry.js';
@@ -100,4 +101,18 @@ test('the app cuts the chosen method\'s lesson through the chip\'s own predicate
   // Not a stop of the method (a set pattern), and the whole cube: no cut, the caller's other routes.
   assert.equal(stageLessonFor({ facelets, lesson: null }, BEGINNER_ENTRY, TARGET_BY_ID['six-cross']), null);
   assert.equal(stageLessonFor({ facelets, lesson: null }, BEGINNER_ENTRY, TARGET_BY_ID.solved), null);
+});
+
+test('a cut lesson is told from a whole one, and no proof of a whole cube is offered for it', () => {
+  // Audit-fix round 3: a cut walk has no route, so the prove gate's \`!route\` let the native prover be
+  // offered for a walk that stops short of solved, with its length as the bound on a whole-cube proof.
+  const full = booted.lessonFor({ facelets: baselineCubes()[0], lesson: null });
+  assert.equal(isCutLesson(full), false, 'a whole lesson read as cut');
+  assert.equal(isCutLesson(null), false);
+  const cut = cutLesson(full, holdsFor('cross'));
+  assert.ok(cut, 'precondition: the cross chip cuts this lesson');
+  assert.equal(isCutLesson(cut), true, 'a cut lesson read as whole');
+  const gate = readFileSync(new URL('../lib/prove-affordance.js', import.meta.url), 'utf8');
+  assert.match(gate, /if \(proveBtn && optimalCapability\(\)[^{\n]*&& !isCutLesson\(lesson\)[^{\n]*\) \{/,
+    'the prove offer must refuse a cut lesson');
 });

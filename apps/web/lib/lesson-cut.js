@@ -18,6 +18,10 @@ import { moveCount } from './cube-pieces.js';
 import { lessonSections } from './method-lesson.js';
 import { holdAfter } from './solving-hold.js';
 
+/** Whether `lesson` is a CUT one — a walk to a stage chip, not to a solved cube. Such a walk is no
+ *  whole-cube solution, so nothing may offer to prove it minimal or use its length as a bound. */
+export const isCutLesson = (lesson) => lesson != null && Object.hasOwn(lesson, 'cutAt');
+
 /**
  * `lesson` cut at the first stage end where `holds` is true, or null when there is nothing to teach:
  * the chip already holds on the cube the lesson starts from, or no stage end reaches it.
