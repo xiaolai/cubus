@@ -68,16 +68,6 @@ export const rungKey = (rungs) => STAGE_IDS.map((id) => rungs[id] ?? DEFAULT_RUN
 export const LAST_LAYER_ROUTES = Object.freeze(['app', 'course']);
 
 /**
- * The dials a route actually reads. The course's pair stands in for the last two stages and ignores their
- * rungs, so on that route they are not dials at all: practising its last layer is not practice at an
- * oll or pll rung, and raising one would change nothing a learner could see.
- */
-export function dialsOf(lastLayer) {
-  if (!LAST_LAYER_ROUTES.includes(lastLayer)) throw new Error(`unknown last-layer route: "${lastLayer}"`);
-  return Object.freeze(STAGE_IDS.filter((id) => lastLayer !== 'course' || !Object.hasOwn(COURSE_LAST_LAYER, id)));
-}
-
-/**
  * The method a rung record names: one stage descriptor per stage, in walking order.
  *
  * A rung that does not exist is refused rather than clamped. Silently handing back rung 1 when
