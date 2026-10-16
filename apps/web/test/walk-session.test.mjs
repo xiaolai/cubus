@@ -824,6 +824,91 @@ test('a choice from the "More methods" menu is stored and walked by the session\
   assert.equal(w.$('#solLabel').textContent, 'Beginner');
 });
 
+/** A one-move Beginner lesson for \`cube\`, as \`lessonFor\` returns it. */
+const oneMoveLesson = (cube) => ({
+  alg: "R'", moves: ["R'"], moveHolds: [SCAN_HOLD, SCAN_HOLD], stepFacelets: [cube.facelets, turned("R'", cube.facelets)],
+  steps: [], moveStep: [], sections: [{ id: 'cross', name: 'Cross', steps: 1, moves: 1, from: 0, to: 1 }],
+});
+
+test('an overtaken load\'s fallback lands on no walk, even when the newer load commits AFTER it fell back', async () => {
+  // The interleaving that defeated the old wiring (5b6ac98): the older load falls back while the newer
+  // one is still waiting for the solver, after the newer one had cleared the flag — and the newer walk,
+  // committing last, then said "could not be worked out" over a Beginner walk. Measured to FAIL on
+  // 5b6ac98^'s walk-resolver.js and walk-session.js, and to pass on the record-carried fallback.
+  const solver = [deferred(), deferred()];
+  let asks = 0;
+  let lessonAsks = 0;
+  const w = world({ settings: { solveMethod: 'beginner' } }, ({ state }) => ({
+    solverReady: () => false,
+    loadSolver: () => solver[asks++].promise,
+    deriveCube: async (opts) => { if (opts?.signal?.aborted) throw new Error('solve: superseded'); solvedBy(state, "R'"); },
+    // No lesson until the newer load's turn: the older one, if it gets as far as asking, falls back.
+    lessonFor: (cube) => { lessonAsks += 1; return newersTurn ? oneMoveLesson(cube) : null; },
+  }));
+  let newersTurn = false;
+  const older = w.session.load();
+  await settle();
+  const newer = w.session.load();
+  await settle();
+  assert.equal(asks, 2, 'precondition: both loads are waiting for the solver');
+  solver[0].resolve(true); // the OLDER load resumes first: no lesson for its cube
+  await older;
+  await settle();
+  newersTurn = true;
+  solver[1].resolve(true); // then the newer one, whose cube Beginner can teach
+  assert.equal(await newer, true, 'the newer load did not land');
+  assert.equal(w.$('#solLabel').textContent, 'Beginner', `precondition: the newer walk is Beginner (lessons asked: ${lessonAsks}, note: ${w.$('#methodNote').textContent})`);
+  // What must NOT happen: the older load's fallback said beside the Beginner walk.
+  assert.equal(w.$('#methodNote').hidden, true, `an overtaken fallback was said: "${w.$('#methodNote').textContent}"`);
+});
+
+test('an overtaken fallback\'s whole-cube search is called off the moment the newer load starts, and one overtaken before it starts never searches', async () => {
+  // Audit question (2026-10-16): does a replaced Beginner walk that fell back to Quick keep its search
+  // running? The chain is: the session aborts the walk's controller when a newer load starts
+  // (\`walkAbort?.abort()\`), \`startWholeSearch\` relays that abort to the search's own signal,
+  // \`deriveCube\` -> \`solve\` -> \`refine\` hand that signal to every request, and the solve client turns it
+  // into STOP_NOW in the shared word (solve-client.test.mjs holds that last step). This pins the first two
+  // links, which are this module's.
+  const searches = [];
+  let lessonAsks = 0;
+  const w = world({ settings: { solveMethod: 'beginner' } }, () => ({
+    deriveCube: (opts) => {
+      searches.push(opts.signal);
+      return new Promise((_, reject) => {
+        opts.signal.addEventListener('abort', () => reject(new Error('solve: superseded')), { once: true });
+      });
+    },
+    lessonFor: (cube) => { lessonAsks += 1; return lessonAsks === 1 ? null : oneMoveLesson(cube); },
+  }));
+  const older = w.session.load();
+  await settle();
+  assert.equal(searches.length, 1, 'precondition: the fallback started its search');
+  assert.equal(searches[0].aborted, false);
+  assert.equal(await w.session.load(), true);
+  assert.equal(searches[0].aborted, true, 'the overtaken fallback\'s search was left running');
+  assert.equal(await older, false);
+  assert.equal(searches.length, 1, 'the newer Beginner walk started a search it does not need');
+
+  // Overtaken while the solver was still loading: no search is started at all for it.
+  const solver = deferred();
+  let ready = false;
+  lessonAsks = 0;
+  const v = world({ settings: { solveMethod: 'beginner' } }, () => ({
+    solverReady: () => ready,
+    loadSolver: () => solver.promise,
+    deriveCube: (opts) => { searches.push(opts.signal); return Promise.resolve(); },
+    lessonFor: (cube) => { lessonAsks += 1; return lessonAsks === 1 ? oneMoveLesson(cube) : null; },
+  }));
+  const before = searches.length;
+  const stale = v.session.load();
+  await settle();
+  ready = true;
+  assert.equal(await v.session.load(), true);
+  solver.resolve(true);
+  assert.equal(await stale, false);
+  assert.equal(searches.length, before, 'a load overtaken while the solver loaded still started a search');
+});
+
 test('a choice storage refused is said even when the walk for it then fails to load', async () => {
   // Audit-fix: the note used to be painted only by a load that succeeded, so a refused save followed by a
   // failed walk left the learner with a choice that silently would not stick.
