@@ -15,7 +15,7 @@ import { test } from 'node:test';
 
 import {
   DONE, FAILED, PENDING, UNCHECKED,
-  assetReport, caskVersion, exitCodeFor, expectedAssets, expectedPlatformKeys, manifestReport,
+  assetReport, caskVersion, describesRelease, exitCodeFor, expectedAssets, expectedPlatformKeys, manifestReport,
 } from '../../../scripts/release-status.mjs';
 
 const V = '0.6.0';
@@ -97,4 +97,27 @@ test('the exit code never calls an unfinished release finished', () => {
 
   // A failure outranks a pending one: there is no point reporting "nearly there" over a red step.
   assert.equal(exitCodeFor([step(PENDING), step(FAILED), step(UNCHECKED)]), 1);
+});
+
+test('notes that are only what GitHub generated do not describe the release', () => {
+  // The bodies v0.8.0 and v0.9.0 were published with, verbatim.
+  assert.equal(describesRelease('**Full Changelog**: https://github.com/xiaolai/cubus/compare/v0.7.18...v0.8.0'), false);
+  assert.equal(describesRelease('**Full Changelog**: https://github.com/xiaolai/cubus/compare/v0.8.0...v0.9.0\n'), false);
+  // What GitHub adds when merged pull requests exist is still a list of titles, not a description.
+  assert.equal(describesRelease([
+    "## What's Changed",
+    '* Bump foo from 1 to 2 by @dependabot in https://github.com/xiaolai/cubus/pull/12',
+    '',
+    '## New Contributors',
+    '* @someone made their first contribution in https://github.com/xiaolai/cubus/pull/13',
+    '',
+    '**Full Changelog**: https://github.com/xiaolai/cubus/compare/v0.1.0...v0.2.0',
+  ].join('\n')), false);
+  assert.equal(describesRelease(''), false);
+  assert.equal(describesRelease(null), false);
+
+  // One sentence of our own is a description, with or without the generated lines around it.
+  assert.equal(describesRelease('CFOP is offered as two methods.'), true);
+  assert.equal(describesRelease(
+    'CFOP is offered as two methods.\n\n**Full Changelog**: https://github.com/xiaolai/cubus/compare/v0.8.0...v0.9.0'), true);
 });

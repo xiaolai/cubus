@@ -97,6 +97,29 @@ export function manifestReport(version, manifest) {
   return problems;
 }
 
+// What GitHub writes by itself (`generate_release_notes: true` in release.yml): the compare link,
+// and — only when merged pull requests exist — their headings and one bullet per PR or newcomer.
+// None of it says what a person installing the version gets.
+const GENERATED_NOTE_LINE = [
+  /^\*\*Full Changelog\*\*: \S+$/,
+  /^## (What's Changed|New Contributors)$/,
+  /^\* .+ (in|made their first contribution in) https:\/\/github\.com\/\S+\/pull\/\d+$/,
+];
+
+/**
+ * Whether a release's notes describe it, beyond what GitHub generated.
+ *
+ * Every installed copy is pointed at this page: the manifest's `notes` default is "See the release
+ * notes at …/tag/vX.Y.Z" (`make-updater-manifest.mjs`). v0.8.0 and v0.9.0 were published with
+ * the compare link and nothing else, while the description lived in the release commit's message —
+ * where a person deciding whether to update never looks, and where it made a version bump's
+ * message describe changes the commit does not contain.
+ */
+export function describesRelease(body) {
+  return String(body ?? '').split('\n').map((l) => l.trim())
+    .some((l) => l !== '' && !GENERATED_NOTE_LINE.some((re) => re.test(l)));
+}
+
 /** The version a cask states, or null when the text does not state one. */
 export function caskVersion(text) {
   return /^\s*version\s+"([^"]+)"/m.exec(String(text))?.[1] ?? null;
@@ -185,9 +208,9 @@ function collect(version) {
 
   // 5, 6, 7, 8. The release itself: that it exists, carries what it should, says the right version
   // in the file the updater reads, and whether it is still a draft.
-  const view = ghUsable ? gh(['release', 'view', tag, '--json', 'isDraft,assets']) : null;
+  const view = ghUsable ? gh(['release', 'view', tag, '--json', 'isDraft,assets,body']) : null;
   if (view === null) {
-    for (const what of ['release exists', 'assets', 'latest.json', 'published']) {
+    for (const what of ['release exists', 'assets', 'latest.json', 'release notes', 'published']) {
       steps.push(ghUsable
         ? step(what, PENDING, what === 'release exists' ? `no release or draft for ${tag}` : 'no release to inspect')
         : noGh(what));
@@ -199,6 +222,7 @@ function collect(version) {
       steps.push(step('release exists', UNCHECKED, 'gh returned something that is not JSON'));
       steps.push(step('assets', UNCHECKED, 'release could not be read'));
       steps.push(step('latest.json', UNCHECKED, 'release could not be read'));
+      steps.push(step('release notes', UNCHECKED, 'release could not be read'));
       steps.push(step('published', UNCHECKED, 'release could not be read'));
     } else {
       steps.push(step('release exists', DONE, parsed.isDraft ? 'a draft exists' : 'a published release exists'));
@@ -222,6 +246,11 @@ function collect(version) {
           ? step('latest.json', FAILED, problems.join('; '))
           : step('latest.json', DONE, `version ${version}, ${expectedPlatformKeys(version).length} platform keys`));
       }
+
+      steps.push(describesRelease(parsed.body)
+        ? step('release notes', DONE, 'they say what the release changes')
+        : step('release notes', PENDING, 'only what GitHub generated — write what a person gets, and publish with '
+          + `\`gh release edit ${tag} --notes-file <file>\` (runbook §3)`));
 
       steps.push(parsed.isDraft
         ? step('published', PENDING, 'still a DRAFT — nobody is offered this, and the tap cannot update until it is published')
