@@ -48,6 +48,11 @@ test('the net paints every sticker its colour, in its face\'s block, and an uncl
   const wells = rects(netSvg(picture)).filter((r) => r.free);
   assert.equal(wells.length, 45);
   assert.ok(wells.every((r) => r.fill === FREE));
+  // A well follows the theme where the token exists, and a coloured sticker never does.
+  const svg = netSvg(picture);
+  assert.equal(svg.match(/style="fill:var\(--facelet-off, #3A332A\)"/g)?.length, 45, 'a well does not follow --facelet-off');
+  assert.equal(FREE, '#3A332A', 'the fallback this test spells out has moved');
+  assert.ok(!netSvg(SOLVED).includes('--facelet-off'), 'a coloured sticker took the well colour');
   assert.match(netSvg(SOLVED), new RegExp(`stroke="${EDGE.replace(/[().]/g, '\\$&')}"`));
 });
 

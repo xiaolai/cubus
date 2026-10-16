@@ -19,7 +19,11 @@ import { pieceStateError, toFacelets } from './cube-pieces.js';
 import { STICKER_PALETTES } from './sticker-palettes.js';
 import { isScheme, paletteFor } from './scheme.js';
 
-/** The empty well a sticker nobody claims is drawn as — `--facelet-off` in the light theme. */
+/** The empty well a sticker nobody claims is drawn as — `--facelet-off` in the light theme.
+ *  A well also carries `style="fill: var(--facelet-off, FREE)"`, because `--facelet-off` INVERTS: on a
+ *  Night page this light-theme value at 35% sat at 1.1:1 on the window, so every well of a Shapes
+ *  thumbnail vanished while the app's own net (`.net .sticker.free`) drew them. Inside the app the token
+ *  wins; an SVG shown anywhere without the token falls back to this. */
 export const FREE = '#3A332A';
 /** A sticker's hairline edge — `--sticker-edge`. */
 export const EDGE = 'rgba(0,0,0,.28)';
@@ -102,7 +106,7 @@ function coloursFor({ palette = 'muted', scheme = 'western' } = {}) {
 
 // The radius is the rect's own, never the caller's: it is a property of the sticker, and a caller that
 // could pass one is a caller that could pass a different one for two stickers of the same size.
-const rect = ({ x, y, w, h, fill, facelet, free }) => `<rect data-facelet="${facelet}" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${w.toFixed(2)}" height="${h.toFixed(2)}" rx="${(w * CORNER).toFixed(2)}" ry="${(h * CORNER).toFixed(2)}" fill="${fill}"${free ? ' fill-opacity="0.35"' : ''} stroke="${EDGE}" stroke-width="1"/>`;
+const rect = ({ x, y, w, h, fill, facelet, free }) => `<rect data-facelet="${facelet}" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${w.toFixed(2)}" height="${h.toFixed(2)}" rx="${(w * CORNER).toFixed(2)}" ry="${(h * CORNER).toFixed(2)}" fill="${fill}"${free ? ` fill-opacity="0.35" style="fill:var(--facelet-off, ${FREE})"` : ''} stroke="${EDGE}" stroke-width="1"/>`;
 
 /**
  * The document every flat view is: a viewBox, a size, a label, and the stickers.
