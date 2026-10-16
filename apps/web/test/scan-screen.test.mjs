@@ -1692,7 +1692,9 @@ const believedScan = async (alg = 'R U') => {
 };
 
 test('a believed scan draws the chip row; with nothing to ask, every chip is a dash and the row offers the whole solve', async () => {
-  const { OFFERED_TARGETS } = await import('../lib/stage-targets.js');
+  // The CHOSEN method's stops (owner's call Q8); this screen is on the default method, Quick.
+  const { stopTargets } = await import('../lib/method-stops.js');
+  const OFFERED_TARGETS = stopTargets('quick');
   const { STAGE_COPY } = await import('../lib/stage-report.js');
   await enterScan();
   assert.equal($('#stageCard').hidden, true, 'no row before a scan: a number about a cube nobody has read is about nothing');

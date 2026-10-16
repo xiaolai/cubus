@@ -9,6 +9,7 @@ import { COLOUR_NAMES, colourOfSlot, isScheme, positionOf, slotAt, slotOf } from
 import { $, escHtml, icon, state } from '../app-state.js';
 import { DEFAULT_PALETTE, SCAN_VIEWS, settings } from '../app-settings.js';
 import { hooks } from '../screen-slots.js';
+import { stopTargets } from '../method-stops.js';
 import { CHIP_NODE_BUDGET, stageAsk, warmSolver } from '../solver-service.js';
 import { NET_COLORS, NET_FACES, adoptScheme, describeCube, netPalette, newCube } from '../cube-drawing.js';
 import { keepAwake } from '../wake-lock.js';
@@ -344,6 +345,7 @@ SCREENS.scan = () => {
       // whether the scan under the row was refused.
       const { paintStageChips, dropStageChips, dropIfStale } = createStageChips({
         root, signal, state, stageAsk, CHIP_NODE_BUDGET, go, isRefused: () => refusal.isRefused(),
+        stops: () => stopTargets(settings.solveMethod),
       });
       // Whether this screen refused the scan in front of it — the Solve button, the chip row and
       // the words that said why, moved together — is its own unit (lib/screens/scan/refusal.js).

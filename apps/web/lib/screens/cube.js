@@ -8,6 +8,7 @@ import { METHODS, methodById } from '../methods/registry.js';
 import { createMethodRow, methodRowHtml } from './cube/method-row.js';
 import { t } from '../i18n.js';
 import { OFFERED_TARGETS } from '../stage-targets.js';
+import { stopTargets } from '../method-stops.js';
 import { oneLineStrip } from '../scroll-strip.js';
 // Everything one cube screen's walk owns, from the load to the smart cube following it — the screen
 // keeps its composition and hands the walk the parts of it the walk writes to.
@@ -98,9 +99,13 @@ const WALK_FAILURES = {
  */
 const lastRoute = createRouteRace({
   state, cubejs: () => Cube, stageAsk, solveByMethod, STAGE_NODE_BUDGET,
-  // The beginner method's definition (lib/methods/registry.js): its walk stops at every chip in the
-  // row (its declared `stops`), so a stop is reached in the order that method takes.
-  methodNow: () => methodById('beginner').method,
+  // The CHOSEN method when it has stages — its walk passes every chip of its own row (its declared
+  // `stops`), so a stop is reached in the order that method takes; CFOP's `top-oriented` is on no other
+  // route. Quick has no stages of its own, and its row is the beginner's, so it races the beginner's.
+  methodNow: () => {
+    const entry = methodById(settings.solveMethod);
+    return entry.engine === 'method' ? entry.method : methodById('beginner').method;
+  },
 });
 
 /**
@@ -197,6 +202,9 @@ const cubeScreen = (screenMode) => {
   // produce (nothing to do, and nothing on screen would otherwise explain why).
   const unsolvable = !scrambling && state.cube.unsolvable;
   const label = scrambling ? 'Scramble' : 'Solution';
+  // The Restore row shows the CHOSEN method's stops (owner's call Q8). Every offered chip is drawn and the
+  // rest are hidden, so the walk session's per-pill wiring survives a change of method (`paintStops`).
+  const rowStops = stopTargets(settings.solveMethod).map((tg) => tg.id);
   const walked = scrambling ? 'scramble' : 'solution';
   // The open reconnect question — the heading it dresses the state card in, the question itself,
   // and putting it back into a sheet already standing — is its own unit
@@ -321,7 +329,7 @@ const cubeScreen = (screenMode) => {
              for somebody who only wants their cube solved. Changing it is a WALK REPLACEMENT and
              goes through retarget(), which is exactly what that path is for. -->
         <div class="stage-row one-line" id="stageTargetRow" role="group" aria-label="${escHtml(t('Where to take this cube'))}">
-          ${OFFERED_TARGETS.map((tg) => `<button class="pill${state.stageTarget === tg.id ? ' on' : ''}" data-stage="${escHtml(tg.id)}" aria-pressed="${state.stageTarget === tg.id}">${escHtml(tg.id === 'solved' ? t('Solved') : tg.name)}</button>`).join('')}
+          ${OFFERED_TARGETS.map((tg) => `<button class="pill${state.stageTarget === tg.id ? ' on' : ''}" data-stage="${escHtml(tg.id)}" aria-pressed="${state.stageTarget === tg.id}"${rowStops.includes(tg.id) ? '' : ' hidden'}>${escHtml(tg.id === 'solved' ? t('Solved') : tg.name)}</button>`).join('')}
           <!-- THE PICTURES THAT ARE NOT STAGES, at the end of the row already labelled "Where to
                take this cube" - which is what a pattern is, a destination. Two other placements
                were tried and both were refused by a rule worth keeping:
@@ -501,9 +509,16 @@ const cubeScreen = (screenMode) => {
       // painted for the method on screen (lib/screens/cube/method-row.js). The session decides WHICH
       // method is on screen; this screen owns how the row says so.
       const methodRow = createMethodRow({ root, signal, methods: METHODS, shown: settings.solveMethod });
+      // The Restore row for a newly chosen method: its stops shown, the rest hidden. Returns the ids shown;
+      // what to do with a chosen chip that is now hidden is the walk session's, which owns the target.
+      const paintStops = (methodId) => {
+        const ids = stopTargets(methodId).map((tg) => tg.id);
+        for (const chip of root.querySelectorAll('#stageTargetRow > [data-stage]')) chip.hidden = !ids.includes(chip.dataset.stage);
+        return ids;
+      };
       session = createWalkSession({
         root, cube, scrambling, walking, unsolvable, label, stateHeading, stale, signal,
-        paintNet, paintAim, syncReconnectAsk, applyTempo, paintMethods: methodRow.paint,
+        paintNet, paintAim, syncReconnectAsk, applyTempo, paintMethods: methodRow.paint, paintStops,
       }, WALK_APP);
       hooks.liveMove = session.liveMove;
       hooks.liveUpdate = session.liveUpdate;

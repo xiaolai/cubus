@@ -191,7 +191,7 @@ export function holdTable(names, alsoAsScanned = []) {
 const PICTURE_IDS = OFFERED_PATTERNS.map((pattern) => selectionOf(pattern));
 
 const TARGET_HOLD = holdTable(
-  ['cross', 'first-layer', 'two-layers', 'top-cross', 'top-edges', 'corners-home', ...PICTURE_IDS, 'solved'],
+  ['cross', 'first-layer', 'two-layers', 'top-cross', 'top-edges', 'corners-home', 'top-oriented', ...PICTURE_IDS, 'solved'],
   // Patterns rather than stages, and not offered as stages — each symmetric under the rotations that
   // matter, so the scan's hold says no less than any other would — and the whole cube, which keeps
   // the scan's hold. A pattern is not somewhere the child is sent BACK to, so the rule above it (hold

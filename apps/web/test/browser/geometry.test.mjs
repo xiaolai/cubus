@@ -531,7 +531,8 @@ for (const fixture of FIXTURES) {
         // strip is used, it moves nothing but its buttons, and the boxes around it are compared
         // before and after to prove it.
         const strip = $('#stageTargetRow');
-        const stageButtons = [...strip.querySelectorAll('[data-stage]')];
+        // The chips the chosen method shows; the rest of the offered chips are drawn hidden (lib/method-stops.js).
+        const stageButtons = [...strip.querySelectorAll('[data-stage]')].filter((el) => !el.hidden);
         const chosen = strip.querySelector('.on');
         const stripBox = strip.getBoundingClientRect();
         const chosenBox = chosen.getBoundingClientRect();

@@ -30,7 +30,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { SOLVED, applyAlg } from '../lib/cube-pieces.js';
+import { MOVE_NAMES, SOLVED, applyAlg } from '../lib/cube-pieces.js';
 import { parseFacelets } from '../lib/two-phase.js';
 import * as eng from '../lib/methods/engine.js';
 import { methodFor, solveByMethod } from '../lib/method-solver.js';
@@ -188,7 +188,12 @@ test('the offered chips are the six stages and solved, in nesting order', () => 
   // decision that must not drift in because the mechanism allows them — so it is a target the
   // engine can answer and not a chip the screen offers, and that distinction is asserted rather
   // than left to whoever next reads the list.
-  assert.deepEqual(OFFERED_TARGETS.map((t) => t.id), NESTING);
+  // Plus CFOP's `top-oriented` (ADR 0011 Phase 7), which nests with neither `top-edges` nor
+  // `corners-home` and so sits OUTSIDE `NESTING`: it is offered because a method stops there, and which
+  // chips a row shows is the chosen method's (`lib/method-stops.js`), never this list read whole.
+  assert.deepEqual(OFFERED_TARGETS.map((t) => t.id).filter((id) => id !== 'top-oriented'), NESTING);
+  assert.ok(OFFERED_TARGETS.some((t) => t.id === 'top-oriented'));
+  assert.equal(NESTING.includes('top-oriented'), false);
   assert.equal(TARGET_BY_ID['six-cross'].offered, false);
   assert.throws(() => targetById('no-such-target'), /no target named/);
 });
@@ -242,7 +247,7 @@ test('every table a target uses has a goal set containing that target’s projec
   // deduplicates correctly can never meet it. Every other target is a set of millions.
   const MIN_IN_TARGET = {
     cross: 8, 'first-layer': 8, 'two-layers': 8, 'top-cross': 8, 'top-edges': 8, 'corners-home': 8,
-    'six-cross': 8, 'x-every-face': 8, solved: 1,
+    'top-oriented': 8, 'six-cross': 8, 'x-every-face': 8, solved: 1,
   };
   let totalChecked = 0;
   for (const target of TARGETS) {
@@ -355,6 +360,51 @@ test('under its precondition the flip coordinate IS "the top edges are oriented"
   }
   assert.ok(withPrecondition >= 5,
     `only ${withPrecondition} cubes in the sample satisfy the precondition — the equivalence was barely tested`);
+});
+
+test('under its precondition the twist coordinate IS "the top corners are oriented", and not without it', () => {
+  // `twist` is `flip`'s twin for corners (ADR 0011 Phase 7, `top-oriented`): all eight twists, because
+  // four chosen ones are not closed under the moves. Under "the four bottom corners home" the two
+  // statements coincide; without it a twisted bottom corner pair hides behind an oriented top.
+  const twist = PROJECTIONS.twist;
+  const bottomHome = (s) => eng.F1L.every((c) => s.cp[c] === c && s.co[c] === 0);
+  let withPrecondition = 0;
+  for (const state of ALL) {
+    if (!bottomHome(state)) continue;
+    withPrecondition++;
+    assert.equal(twist.codeOf(state) === 0, eng.topCornersOriented(state));
+  }
+  assert.ok(withPrecondition >= 5, `only ${withPrecondition} cubes satisfy the precondition`);
+  // Two bottom corners twisted against each other, the top untouched: oriented on top, twist code not zero.
+  const broken = { ...SOLVED, co: [0, 0, 0, 0, 1, 2, 0, 0] };
+  assert.equal(eng.topCornersOriented(broken), true);
+  assert.notEqual(twist.codeOf(broken), 0);
+});
+
+test('the twist projection steps with the cube, for every move from many cubes', () => {
+  // The cell table is derived, never typed; this is the check that the derivation composes as
+  // `cube-pieces.js` composes whole states — a wrong step table would build a well-formed distance
+  // table about some other puzzle.
+  const twist = PROJECTIONS.twist;
+  for (const state of ALL.slice(0, 60)) {
+    for (const [m, name] of MOVE_NAMES.entries()) {
+      assert.equal(twist.stepCode(twist.codeOf(state), m), twist.codeOf(applyAlg(state, name)), `twist after ${name}`);
+    }
+  }
+});
+
+test('`top-oriented` nests with neither `top-edges` nor `corners-home` — which is why it is not in the row\'s nesting', () => {
+  const oriented = TARGET_BY_ID['top-oriented'];
+  // Every top piece home, two corners twisted in place: `corners-home` (and so `top-edges`) holds,
+  // `top-oriented` does not.
+  const twisted = { ...SOLVED, co: [1, 2, 0, 0, 0, 0, 0, 0] };
+  assert.equal(TARGET_BY_ID['corners-home'].predicate(twisted), true);
+  assert.equal(oriented.predicate(twisted), false);
+  // Oriented but permuted: a U turn of a solved cube.
+  const turned = applyAlg(SOLVED, 'U');
+  assert.equal(oriented.predicate(turned), true);
+  assert.equal(TARGET_BY_ID['top-edges'].predicate(turned), false);
+  assert.equal(TARGET_BY_ID['top-cross'].predicate(turned), true, 'oriented implies the top cross');
 });
 
 test('without its precondition the flip equivalence is false, and here is a cube that shows it', () => {

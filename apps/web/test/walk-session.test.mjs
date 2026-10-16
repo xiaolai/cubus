@@ -33,6 +33,7 @@ import { readFileSync } from 'node:fs';
 import { APP_SOURCES, blockAt } from './app-source.mjs';
 import { pictureDestination } from '../lib/patterns.js';
 import { createWalkSession } from '../lib/walk-session.js';
+import { stopTargets } from '../lib/method-stops.js';
 import { lcg, randomAlg } from './fixtures/seeded-scrambles.mjs';
 
 const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
@@ -161,6 +162,13 @@ function world({ subject = {}, omit = [], screen: screenOver = {}, settings: set
         pill.classList.toggle('on', pill.dataset.method === shown);
         pill.setAttribute('aria-pressed', String(pill.dataset.method === shown));
       }
+    },
+    // The Restore row's painter, as lib/screens/cube.js paints it: the chosen method's stops shown.
+    paintStops: (id) => {
+      const ids = stopTargets(id).map((tg) => tg.id);
+      for (const chip of root.querySelectorAll('#stageRow > [data-stage]')) chip.hidden = !ids.includes(chip.dataset.stage);
+      log.push(`stops ${id}`);
+      return ids;
     },
     ...screenOver,
   };

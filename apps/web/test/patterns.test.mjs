@@ -228,9 +228,10 @@ test('a state pattern\'s picture is what its algorithm produces, not the ledger\
 // The rule plan §9.6 spent a fortnight holding: patterns are their own feature, and every chip in the
 // Restore row means "how far back am I" with a move count beside it. A pattern is not back, it is
 // sideways, and a pattern that reached that row would be read as a stage of the method.
-test('no pattern is offered as a stage, and the Restore row is exactly the seven', () => {
+test('no pattern is offered as a stage, and the offered stops are exactly the seven and CFOP\'s top oriented', () => {
+  // Which of them a row SHOWS is the chosen method's (lib/method-stops.js); offered is "a method stops here".
   assert.deepEqual(OFFERED_TARGETS.map((t) => t.id),
-    ['cross', 'first-layer', 'two-layers', 'top-cross', 'top-edges', 'corners-home', 'solved'],
+    ['cross', 'first-layer', 'two-layers', 'top-cross', 'top-edges', 'corners-home', 'top-oriented', 'solved'],
     'the Restore row changed — a pattern has drifted into the stage row, or a stage has left it');
   for (const pattern of PATTERNS) {
     if (pattern.kind !== 'set') continue;

@@ -105,6 +105,7 @@ test('the pictures pin what each target is actually about', () => {
     'top-cross': 38,     // and the four U-face cross stickers — the flip precondition earning its keep
     'top-edges': 42,     // and the side sticker of every top edge — home, not only up (ADR 0009)
     'corners-home': 42,  // the same: a corner in its own slot with a free twist shows no fixed sticker
+    'top-oriented': 42,  // two layers and the whole U face — the twist precondition earning its keep (CFOP)
     'six-cross': 30,     // six centres and all 24 edge stickers — a plus on every face
     'x-every-face': 30,  // six centres and all 24 CORNER stickers — the mirror of the line above
     solved: 54,
@@ -117,6 +118,10 @@ test('the pictures pin what each target is actually about', () => {
   // would still pass the over-claim case above on these targets, so the gap is asserted here.
   assert.equal(pinnedCount('top-cross') - pinnedCount('two-layers'), 4,
     'the top cross must show its four U stickers, or the picture is a `two-layers` picture');
+  // And `top-oriented` four more than `top-cross`: the four U corner stickers, pinned only because the
+  // twist goal's precondition (the bottom corners home) holds.
+  assert.equal(pinnedCount('top-oriented') - pinnedCount('top-cross'), 4,
+    'the oriented top must show its four U corner stickers, or the picture is a top-cross picture');
 });
 
 test('the flip pin is refused where its precondition does not hold', () => {
@@ -141,6 +146,20 @@ test('the flip pin is refused where its precondition does not hold', () => {
   // the precondition and not about the rule being dead.
   const tight = targetPicture('top-cross');
   for (const at of U_PRIMARY) assert.equal(tight[at], 'U');
+});
+
+test('the twist pin is refused where its precondition does not hold', () => {
+  // `twist`'s twin of the case above: without the four bottom corners pinned home a top slot may hold a
+  // bottom corner, and "untwisted" says nothing about which colour faces up there.
+  const twist = targetById('top-oriented').projections.find((p) => p.kind === 'twist');
+  assert.ok(twist, 'top-oriented must read the twist projection, or this case is about nothing');
+  const twoLayersNoCorners = targetById('cross');
+  const loose = { id: 'twist-without-precondition', projections: [...twoLayersNoCorners.projections, twist], verify: twoLayersNoCorners.verify };
+  const U_CORNER_PRIMARY = [8, 6, 0, 2]; // CORNER_FACELETS[0..3][0] — the U-facing sticker of each U corner slot
+  const picture = targetPicture(loose);
+  for (const at of U_CORNER_PRIMARY) assert.equal(picture[at], UNKNOWN);
+  const tight = targetPicture('top-oriented');
+  for (const at of U_CORNER_PRIMARY) assert.equal(tight[at], 'U');
 });
 
 test('a picture is a legal facelet string the renderer can take', () => {

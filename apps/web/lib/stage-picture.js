@@ -29,6 +29,10 @@ const SOLVED_FACELETS = toFacelets(SOLVED);
 
 /** The U-layer edge slots, whose four cubies all carry `U` as their first sticker. */
 const U_EDGE_SLOTS = [0, 1, 2, 3];
+/** The U-layer corner slots (URF, UFL, ULB, UBR), whose four cubies all carry `U` as their first sticker. */
+const U_CORNER_SLOTS = [0, 1, 2, 3];
+/** The D-layer corner slots — the four `twist`'s precondition is about. */
+const D_CORNER_SLOTS = [4, 5, 6, 7];
 /** Every edge slot that is not in the U layer — the eight `flip`'s precondition is about. */
 const NON_U_EDGE_SLOTS = [4, 5, 6, 7, 8, 9, 10, 11];
 
@@ -94,6 +98,18 @@ export function targetPicture(targetOrId) {
     // FIRST facelet of the slot carries the cubie's first letter — and all four U edges are named
     // `U*`, so that letter is `U` whichever of them is standing there.
     for (const slot of U_EDGE_SLOTS) out[SLOT_FACELETS.edges[slot][0]] = 'U';
+  }
+
+  // THE TWIST PROJECTION, BY THE SAME RULE. `twist` says every corner is untwisted; that pins a top
+  // slot's U-facing sticker to `U` only when the occupant must be one of the four top corners, which
+  // follows from the four bottom corners being pinned home and from nothing else.
+  const readsTwist = target.projections.some((p) => p.kind === 'twist' && isSolvedGoal(p));
+  const bottomCornersPinned = target.projections.some((p) => p.kind === 'corner' && isHomeGoal(p)
+    && D_CORNER_SLOTS.every((slot) => p.cubies.includes(slot)));
+  if (readsTwist && bottomCornersPinned) {
+    // With co === 0 the FIRST facelet of a corner slot carries the cubie's first letter, and all four
+    // top corners are named `U**`.
+    for (const slot of U_CORNER_SLOTS) out[SLOT_FACELETS.corners[slot][0]] = 'U';
   }
 
   return out.join('');

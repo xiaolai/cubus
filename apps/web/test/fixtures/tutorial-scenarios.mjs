@@ -107,6 +107,7 @@ export const TARGET_IDS = Object.freeze({
   'top-cross': ['painted-picture', 'stop-playback', 'hold-set'],
   'top-edges': ['painted-picture', 'stop-playback', 'hold-set'],
   'corners-home': ['painted-picture', 'stop-playback', 'hold-set'],
+  'top-oriented': ['painted-picture', 'stop-playback', 'hold-set'],
   'six-cross': ['painted-picture'],
   // A pattern like six-cross above: a picture the app can draw, and nothing it plays or holds,
   // because neither is offered as a stage. Both are offered as PATTERNS instead (lib/patterns.js).

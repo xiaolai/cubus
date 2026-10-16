@@ -25,7 +25,7 @@ import { t } from './i18n.js';
 import { SCAN_HOLD, fromMethodFrame, holdSentence, renameAlg } from './solving-hold.js';
 import { walkHoldFor } from './hold-presenter.js';
 import { DESTINATION_BY_ID } from './patterns.js';
-import { TARGET_BY_ID } from './stage-targets.js';
+import { OFFERED_TARGETS, TARGET_BY_ID } from './stage-targets.js';
 import { targetPicture } from './stage-picture.js';
 import { cancel as optimalCancel, capability as optimalCapability } from './optimal.js';
 import { createLiveDistance } from './walk-live-distance.js';
@@ -100,8 +100,9 @@ const provided = (from, what) => new Proxy(from, {
  * @param {object} screen what the SCREEN owns and a walk writes to: `root`; the renderer `cube`;
  *   `scrambling`, `walking`, `unsolvable` and `label`, as the screen was composed;
  *   `stateHeading()`; `stale()`, its generation check; `signal`, its abort; `paintNet` and
- *   `paintAim`; `syncReconnectAsk()`; `applyTempo()`, the speed menu's; and `paintMethods(id)`, how
- *   the method row says which method is on screen.
+ *   `paintAim`; `syncReconnectAsk()`; `applyTempo()`, the speed menu's; `paintMethods(id)`, how
+ *   the method row says which method is on screen; and `paintStops(id)`, which shows the Restore row's
+ *   chips for a newly chosen method and returns their ids.
  * @param {object} app what the APP owns: shared `state` and `settings`, and every service a walk
  *   reaches for — listed once, as `WALK_APP` in lib/screens/cube.js. `cubejs()` and
  *   `solverReady()` are functions because `loadSolver` assigns both long after that object exists.
@@ -109,7 +110,7 @@ const provided = (from, what) => new Proxy(from, {
 export function createWalkSession(screen, app) {
   const {
     root, cube, scrambling, walking, unsolvable, label, stateHeading, stale, signal,
-    paintNet, paintAim, syncReconnectAsk, applyTempo, paintMethods,
+    paintNet, paintAim, syncReconnectAsk, applyTempo, paintMethods, paintStops,
   } = provided(screen, 'screen');
   const {
     state, settings, SOLVED, CHIP_NODE_BUDGET, WALK_FAILURES, cubejs, solverReady, loadSolver,
@@ -281,6 +282,13 @@ export function createWalkSession(screen, app) {
     remember(want);
     shownMethod = want;
     paintMethods(want);
+    // The Restore row is the chosen method's stops (owner's call Q8). A chip the new method does not stop
+    // at cannot stay chosen out of sight: the walk goes back to the whole cube, the row's own default.
+    const shownStops = paintStops(want);
+    if (OFFERED_TARGETS.some((tg) => tg.id === state.stageTarget) && !shownStops.includes(state.stageTarget)) {
+      state.stageTarget = 'solved';
+      paintGroup('stage', 'solved');
+    }
     // Said NOW, not after the load: a choice storage refused must be said even if the walk then fails.
     fellBack = false;
     sayMethodNote();

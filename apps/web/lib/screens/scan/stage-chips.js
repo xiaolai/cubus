@@ -11,7 +11,6 @@
 import { $, escHtml } from '../../app-state.js';
 import { t } from '../../i18n.js';
 import { oneLineStrip } from '../../scroll-strip.js';
-import { OFFERED_TARGETS } from '../../stage-targets.js';
 import { chipFor, chipLabel, STAGE_COPY } from '../../stage-report.js';
 
 /**
@@ -21,7 +20,11 @@ import { chipFor, chipLabel, STAGE_COPY } from '../../stage-report.js';
  *   door, and `CHIP_NODE_BUDGET`, the row's share of it; `go`, for the press; and `isRefused()`,
  *   asked at the press, because a refusal is the screen's verdict about the scan and not the row's.
  */
-export function createStageChips({ root, signal, state, stageAsk, CHIP_NODE_BUDGET, go, isRefused }) {
+export function createStageChips({ root, signal, state, stageAsk, CHIP_NODE_BUDGET, go, isRefused, stops }) {
+  // THE CHOSEN METHOD'S CHIPS (owner's call Q8): `stops()` is asked at every paint, never once at mount,
+  // because the scan screen has no walk session and the method can change between two scans. A chip
+  // pressed here walks the method's own stop on the cube screen.
+  if (typeof stops !== 'function') throw new Error('stage chips: no list of stops to draw');
   /**
    * The chip row, painted from the cube a scan just established.
    *
@@ -54,9 +57,9 @@ export function createStageChips({ root, signal, state, stageAsk, CHIP_NODE_BUDG
 
   /** The row drawn once, every chip in its waiting state, so the layout does not move under the
    *  user as answers land — and the cube it is about recorded on the card. */
-  function drawRow(card, row, say, facelets) {
+  function drawRow(card, row, say, facelets, targets) {
     card.dataset.about = facelets;
-    row.innerHTML = OFFERED_TARGETS.map((target) => `<button type="button" class="stage-chip bound"
+    row.innerHTML = targets.map((target) => `<button type="button" class="stage-chip bound"
       data-target="${escHtml(target.id)}" title="${escHtml(t('Take this cube back to the %1', named(target).name))}">
       <span class="who">${escHtml(named(target).name)}</span><span class="howfar">…</span></button>`).join('');
     card.hidden = false;
@@ -67,6 +70,7 @@ export function createStageChips({ root, signal, state, stageAsk, CHIP_NODE_BUDG
 
   async function paintStageChips(facelets) {
     const mine = ++stageGen;
+    const targets = stops();
     const card = $('#stageCard', root);
     const row = $('#stageChips', root);
     const say = $('#stageSay', root);
@@ -97,11 +101,11 @@ export function createStageChips({ root, signal, state, stageAsk, CHIP_NODE_BUDG
     const presentBounds = (bounds) => {
       if (!bounds) {
         // No pool, no tables, no numbers. A dash each, and the offer that stands in for them.
-        for (const target of OFFERED_TARGETS) draw(target, chipFor({ target: named(target), answer: { moves: null } }));
+        for (const target of targets) draw(target, chipFor({ target: named(target), answer: { moves: null } }));
         if (say) say.textContent = STAGE_COPY.offerSolve();
         return false;
       }
-      for (const target of OFFERED_TARGETS) {
+      for (const target of targets) {
         const bound = bounds.bounds?.[target.id] ?? null;
         draw(target, chipFor({ target: named(target), bound, atTarget: bound === 0 }));
       }
@@ -113,7 +117,7 @@ export function createStageChips({ root, signal, state, stageAsk, CHIP_NODE_BUDG
      *  distance" state and §9.5 leaves the whole-cube minimum an open decision for the owner. The
      *  pool answers that one when the child presses it. */
     const refineRoutes = async (bounds) => {
-      const ordered = OFFERED_TARGETS
+      const ordered = targets
         .filter((target) => target.id !== 'solved' && (bounds.bounds?.[target.id] ?? 0) > 0)
         .sort((a, b) => (bounds.bounds[a.id] ?? 0) - (bounds.bounds[b.id] ?? 0));
       for (const target of ordered) {
@@ -139,7 +143,7 @@ export function createStageChips({ root, signal, state, stageAsk, CHIP_NODE_BUDG
       }
     };
 
-    drawRow(card, row, say, facelets);
+    drawRow(card, row, say, facelets, targets);
     const bounds = await stageAsk({ want: 'bounds', facelets });
     if (!stillOurs()) return;
     if (presentBounds(bounds)) await refineRoutes(bounds);

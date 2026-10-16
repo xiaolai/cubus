@@ -24,6 +24,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import { OFFERED_TARGETS } from '../lib/stage-targets.js';
+import { stopTargets } from '../lib/method-stops.js';
 import { NODE_BUDGET } from '../lib/stage-distance.js';
 import { blockAt, readAppSource } from './app-source.mjs';
 
@@ -74,11 +75,16 @@ test('the two budgets are the measured ones, and the chip row uses the cheaper',
 test('the chip row exists, is hidden until there is a cube, and offers every target', () => {
   assert.match(code, /id="stageCard"[^>]*hidden/, 'the row must not be on screen before a scan');
   assert.match(code, /id="stageChips"/, 'and there must be somewhere to put the chips');
-  assert.match(code, /OFFERED_TARGETS\.map\(\(target\) =>/, 'the chips are drawn from the target list');
+  // The CHOSEN method's stops (owner's call Q8), asked at every paint because the scan screen has no
+  // walk session and the method can change between two scans.
+  assert.match(code, /stops: \(\) => stopTargets\(settings\.solveMethod\)/, 'the scan screen hands the row the chosen method\'s stops');
+  assert.match(code, /const targets = stops\(\);/, 'the row asks for its stops at every paint');
+  assert.match(code, /targets\.map\(\(target\) =>/, 'the chips are drawn from the stop list');
   assert.match(code, /data-target="\$\{escHtml\(target\.id\)\}"/, 'each chip must name the target it is about');
-  // Seven of them: the six stages and the whole cube (§6; `top-edges` since ADR 0009). Read from the
-  // module rather than counted in the markup, so adding a target adds a chip.
-  assert.equal(OFFERED_TARGETS.length, 7);
+  // Seven on the default row: the six stages and the whole cube (§6; `top-edges` since ADR 0009). Read
+  // from the module rather than counted in the markup, so adding a stop adds a chip.
+  assert.equal(stopTargets('quick').length, 7);
+  assert.equal(OFFERED_TARGETS.length, 8, 'and CFOP\'s top oriented, offered because a method stops there');
 });
 
 test('chips are painted only for a scan the app BELIEVED', () => {

@@ -37,7 +37,8 @@ import { faceTurnsAlg } from '../../lib/cube-moves.js';
 import { moveStepIndex, stepAtMove } from '../../lib/method-lesson.js';
 import { solveByMethod } from '../../lib/method-solver.js';
 import { methodById } from '../../lib/methods/registry.js';
-import { OFFERED_TARGETS, TARGET_BY_ID } from '../../lib/stage-targets.js';
+import { TARGET_BY_ID } from '../../lib/stage-targets.js';
+import { stopTargets } from '../../lib/method-stops.js';
 import { TUMBLED, holdForStage, holdSpec, renameAlg, scanFrameWalk, toMethodFrame } from '../../lib/solving-hold.js';
 import Cube from '../../vendor/cubejs.js';
 import { pace } from '../browser-wait.mjs';
@@ -267,8 +268,9 @@ test('the Restore chips appear after a scan, and press through to a walk', async
     }, SCANNED);
 
     await page.waitForFunction(() => document.querySelector('#stageCard')?.hidden === false, null);
-    assert.equal(await page.locator('.stage-chip').count(), OFFERED_TARGETS.length, 'every stage and the whole cube (§6; ADR 0009)');
-    assert.equal(OFFERED_TARGETS.length, 7, 'six stages and the whole cube');
+    // The CHOSEN method's stops (owner's call Q8): a new install is on Quick, whose row is the beginner's.
+    assert.equal(await page.locator('.stage-chip').count(), stopTargets('quick').length, 'every stage and the whole cube (§6; ADR 0009)');
+    assert.equal(stopTargets('quick').length, 7, 'six stages and the whole cube');
 
     // Every chip must settle on something a person can read. `…` is the waiting state and must not
     // survive: a chip that never resolves is worse than a dash, because a dash says so.

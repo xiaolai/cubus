@@ -227,6 +227,54 @@ function flipProjection() {
   });
 }
 
+/**
+ * All eight corner twists at once — `flip`'s twin for corners, and closed under the move set for the same
+ * reason: a move's effect on a slot's twist depends on which slot fed it, so only the whole set steps.
+ *
+ * Packed as eight base-3 digits, so 6,561 codes of which 2,187 are reachable (the eighth twist follows
+ * from the other seven). The unreachable third is never entered by a breadth-first build from the goal,
+ * which is cheaper to carry than a seven-digit decode that recomputes the eighth.
+ *
+ * Under the precondition that the four bottom corners are home, "the top corners are oriented" and "the
+ * twist code is zero" are the same statement — and, as for `flip`, ONLY under it. `top-oriented` is the
+ * one target that reads this, and it pins the bottom corners through `dCorners`.
+ */
+function twistProjection() {
+  const CP = MOVE_NAMES.map((m) => MOVES[m].cp);
+  const CO = MOVE_NAMES.map((m) => MOVES[m].co);
+  const POW = [1, 3, 9, 27, 81, 243, 729, 2187];
+  const digit = (code, i) => Math.floor(code / POW[i]) % 3;
+  const codeOf = (s) => {
+    let c = 0;
+    for (let i = 0; i < 8; i++) c += s.co[i] * POW[i];
+    return c;
+  };
+  // A cube after move m has, in slot i, the corner that was in slot cp[i], turned by co[i] more —
+  // the same composition `cube-pieces.js` applies to whole states.
+  const stepCode = (code, m) => {
+    const cp = CP[m];
+    const co = CO[m];
+    let nc = 0;
+    for (let i = 0; i < 8; i++) nc += ((digit(code, cp[i]) + co[i]) % 3) * POW[i];
+    return nc;
+  };
+  const expand = (code, out) => {
+    for (let m = 0; m < MOVE_NAMES.length; m++) out[m] = stepCode(code, m);
+    return out;
+  };
+  return Object.freeze({
+    id: 'twist',
+    kind: 'twist',
+    cubies: Object.freeze([...Array(8).keys()]),
+    codeSpace: 6561,
+    codeOf,
+    stepCode,
+    expand,
+    goals: Object.freeze([0]),
+    isGoal: (code) => code === 0,
+  });
+}
+
 // ---- the seven projections ----------------------------------------------------------------------
 
 /** The four cross edges, in the order the beginner method places them. */
@@ -264,6 +312,7 @@ export const PROJECTIONS = Object.freeze({
   uCorners: packedProjection({ id: 'uCorners', kind: 'corner', cubies: U_CORNERS, goals: homeGoal('corner', U_CORNERS) }),
   uCornerSlots: packedProjection({ id: 'uCornerSlots', kind: 'cornerSlot', cubies: U_CORNERS, goals: ownSlotGoal(U_CORNERS) }),
   flip: flipProjection(),
+  twist: twistProjection(),
 });
 
 // ---- the targets ---------------------------------------------------------------------------------
@@ -318,6 +367,11 @@ const VERIFY = {
   // The mirror of `six-cross`: every corner home and untwisted, every edge free. Each face is then
   // its centre plus its four corners in one colour, which is an X.
   'x-every-face': (s) => s.cp.every((v, i) => v === i) && s.co.every((v) => v === 0),
+  // CFOP's stop after OLL (ADR 0011 Phase 7): the first two layers, and every top piece the right way up
+  // wherever it stands. Not nested with `top-edges` or `corners-home` — it says nothing about places,
+  // they say nothing about the corners' twist — so it is a stop of the CFOP entries only, never of the
+  // beginner's row.
+  'top-oriented': (s) => eng.firstTwoLayers(s) && eng.topEdgesOriented(s) && eng.topCornersOriented(s),
   solved: eng.wholeCubeSolved,
 };
 
@@ -330,6 +384,9 @@ const TARGET_SPECS = [
   // already home in the first two layers, so it adds nothing `topEdges` does not.
   { id: 'top-edges', name: 'top edges home', offered: true, parts: ['crossEdges', 'dCorners', 'midEdges', 'topEdges'] },
   { id: 'corners-home', name: 'top corners home', offered: true, parts: ['crossEdges', 'dCorners', 'midEdges', 'topEdges', 'uCornerSlots'] },
+  // CFOP's stop (ADR 0011 Phase 7). `offered` is true because a method stops here, so the worker bounds
+  // it and a chip can be drawn for it; WHICH chips a row shows is the chosen method's (`stopTargets`).
+  { id: 'top-oriented', name: 'top oriented', offered: true, parts: ['crossEdges', 'dCorners', 'midEdges', 'flip', 'twist'] },
   // TWO PATTERNS, NOT STAGES, and `offered` is false for both because that field is what the Restore
   // row reads. They are offered through `lib/patterns.js` instead — plan §9.6 says patterns are their
   // own feature and must not drift into the stage row, where every chip means "how far back am I".

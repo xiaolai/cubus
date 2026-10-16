@@ -14,7 +14,11 @@ import { after, test } from 'node:test';
 
 import { Window } from 'happy-dom';
 
-import { OFFERED_TARGETS } from '../lib/stage-targets.js';
+import { stopTargets } from '../lib/method-stops.js';
+import { TARGET_BY_ID } from '../lib/stage-targets.js';
+
+/** The row a Beginner (or Quick) learner sees — the cases below are about that row. */
+const OFFERED_TARGETS = stopTargets('beginner');
 import { STAGE_COPY, chipFor } from '../lib/stage-report.js';
 import { createStageChips } from '../lib/screens/scan/stage-chips.js';
 
@@ -48,7 +52,7 @@ function rig() {
   const replies = [];
   const went = [];
   const state = { cube: { facelets: 'A' }, stageTarget: 'solved' };
-  const env = { refused: false };
+  const env = { refused: false, stops: OFFERED_TARGETS };
   const chips = createStageChips({
     root,
     signal: abort.signal,
@@ -57,6 +61,7 @@ function rig() {
     stageAsk: (q) => { asked.push(q); const d = deferred(); replies.push(d); return d.promise; },
     go: (to) => { went.push(to); },
     isRefused: () => env.refused,
+    stops: () => env.stops,
   });
   const card = root.querySelector('#stageCard');
   const texts = () => Object.fromEntries([...root.querySelectorAll('[data-target]')]
@@ -223,4 +228,29 @@ test("the press goes with the screen's signal", () => {
   r.abort.abort();
   r.press('cross');
   assert.deepEqual(r.went, [], "a press after the screen's signal was cut still walked");
+});
+
+test('the row is the CHOSEN method\'s stops, asked at every paint — a method changed between scans changes the row', async () => {
+  const { chips, env, root, state } = rig();
+  void chips.paintStageChips('A');
+  await settle();
+  assert.deepEqual([...root.querySelectorAll('[data-target]')].map((el) => el.dataset.target), OFFERED_TARGETS.map((x) => x.id));
+  // The learner chose another method on the cube screen and came back to scan again.
+  env.stops = ['cross', 'two-layers', 'top-oriented', 'solved'].map((id) => TARGET_BY_ID[id]);
+  state.cube.facelets = 'B';
+  void chips.paintStageChips('B');
+  await settle();
+  const ids = [...root.querySelectorAll('[data-target]')].map((el) => el.dataset.target);
+  assert.deepEqual(ids, ['cross', 'two-layers', 'top-oriented', 'solved']);
+  assert.equal(ids.includes('first-layer'), false, 'a chip the method does not stop at is not drawn');
+});
+
+test('a row with no list of stops is refused at mount, never drawn from some default', () => {
+  const win = new Window();
+  windows.push(win);
+  const root = win.document.createElement('div');
+  assert.throws(() => createStageChips({
+    root, signal: new win.AbortController().signal, state: {}, CHIP_NODE_BUDGET: 1,
+    stageAsk: async () => null, go: () => {}, isRefused: () => false,
+  }), /no list of stops/);
 });
