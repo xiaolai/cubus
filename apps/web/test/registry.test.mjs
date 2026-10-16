@@ -99,6 +99,9 @@ test('every entry\'s proof is labelled with what it is, and a sample is never ca
     for (const p of entry.proof) {
       assert.ok(['exhaustive', 'regression sampling', 'contract'].includes(p.kind), `${entry.id}: proof kind ${p.kind}`);
       if (p.kind === 'regression sampling') assert.doesNotMatch(p.domain, /all |every /i, `${entry.id}: a sample claims completeness`);
+      // The 62,208-state sweep checks each answer with the solver's own contract replay; it never asks
+      // cubejs, so a proof naming it may not claim cubejs as its oracle.
+      if (/method-solver-profile\.mjs exhaustive/.test(p.check)) assert.doesNotMatch(p.oracle, /cubejs/, `${entry.id}: the sweep is credited to an oracle it never asks`);
     }
   }
 });

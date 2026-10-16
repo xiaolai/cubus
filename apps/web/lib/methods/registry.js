@@ -96,7 +96,8 @@ const BEGINNER = Object.freeze({
       kind: 'exhaustive',
       domain: 'all 62,208 last-layer states with the first two layers solved',
       check: 'node bench/method-solver-profile.mjs exhaustive course course (a nightly CI shard)',
-      oracle: 'cubejs',
+      // The sweep's check is the solver's own contract replay on the cubie model, not cubejs.
+      oracle: 'the stage contracts and a whole-cube replay (lib/method-solver.js)',
     }),
     Object.freeze({
       scope: 'cross, first layer, middle layer',
