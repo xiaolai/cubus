@@ -141,6 +141,13 @@ export function checkEntry(entry) {
   if (entry.engine === 'method' && (!entry.method || entry.stages.length === 0)) {
     throw new Error(`methods: entry "${entry.id}" runs the method engine with no stages`);
   }
+  // The DECLARED stages are the ones that run: a second list beside the method's would be free to drift.
+  if (entry.engine === 'method' && entry.stages !== entry.method.stages) {
+    throw new Error(`methods: entry "${entry.id}" declares stages that are not its method's own`);
+  }
+  if (entry.engine === 'two-phase' && (entry.method !== null || entry.stages.length !== 0)) {
+    throw new Error(`methods: entry "${entry.id}" runs the two-phase solver but declares a method or stages`);
+  }
   if (entry.engine === 'method' && entry.proof.length === 0) {
     throw new Error(`methods: entry "${entry.id}" declares no proof`);
   }

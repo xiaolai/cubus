@@ -8,7 +8,8 @@ import { test } from 'node:test';
 import {
   BEGINNER_ENTRY, DEFAULT_METHOD, ENTRY_FIELDS, LEVELS, METHODS, checkEntry, isMethodId, methodById,
 } from '../lib/methods/registry.js';
-import { DEFAULT_RUNGS, methodFor } from '../lib/method-solver.js';
+import { DEFAULT_RUNGS, DRIVER_HOLDS, methodFor } from '../lib/method-solver.js';
+import { METHOD_FRAME } from '../lib/solving-hold.js';
 import { NESTING, TARGET_BY_ID } from '../lib/stage-targets.js';
 import * as hold from '../lib/solving-hold.js';
 import * as lessonWords from '../lib/method-lesson.js';
@@ -41,6 +42,11 @@ test('an entry missing a field, with an unknown level, or a method engine with n
   assert.throws(() => checkEntry({ ...BEGINNER_ENTRY, level: 'expert' }), /unknown level/);
   assert.throws(() => checkEntry({ ...BEGINNER_ENTRY, stages: [] }), /no stages/);
   assert.throws(() => checkEntry({ ...BEGINNER_ENTRY, proof: [] }), /no proof/);
+  assert.throws(() => checkEntry({ ...BEGINNER_ENTRY, stages: [...BEGINNER_ENTRY.stages] }), /not its method's own/,
+    'a method entry whose declared stages are a copy, not the method that runs, was accepted');
+  const quick = methodById('quick');
+  assert.throws(() => checkEntry({ ...quick, stages: BEGINNER_ENTRY.stages }), /two-phase solver but declares/);
+  assert.throws(() => checkEntry({ ...quick, method: BEGINNER_ENTRY.method }), /two-phase solver but declares/);
   assert.throws(() => checkEntry({ ...BEGINNER_ENTRY, holds: { frame: [], displayed: {} } }), /holds declare no "executable"/);
 });
 
@@ -93,4 +99,15 @@ test('a method is spelled in the registry only — no other module builds the be
   };
   walk('lib');
   assert.deepEqual(offenders, [], 'a method spelled outside the registry');
+});
+
+test('every method\'s DECLARED holds are ones the driver can execute, in the frame the solver is fed', () => {
+  // Declaring a hold is not executing it (ADR 0011 decision 5): an entry's executable holds must be the
+  // driver's own contract, and its solver frame the one `lib/solving-hold.js` turns the cube into.
+  for (const entry of METHODS.filter((m) => m.engine === 'method')) {
+    assert.deepEqual([...entry.holds.frame], [...METHOD_FRAME], `${entry.id}: the declared frame is not the one the solver is fed`);
+    for (const h of entry.holds.executable) {
+      assert.deepEqual({ ...h }, { ...DRIVER_HOLDS }, `${entry.id}: declares a hold the driver refuses`);
+    }
+  }
 });

@@ -49,7 +49,7 @@ import { methodFor } from './methods/index.js';
 export { MethodSolverError } from './methods/engine.js';
 
 export {
-  CASE_NAMES, DEFAULT_RUNGS, LADDER, LAST_LAYER_ROUTES, STAGE_IDS, TOP_RUNG, allMethods, allRungCombinations, dialsOf,
+  CASE_NAMES, DEFAULT_RUNGS, LADDER, LAST_LAYER_ROUTES, STAGE_IDS, TOP_RUNG, allMethods, allRungCombinations,
   methodFor, rungKey,
 } from './methods/index.js';
 
@@ -229,6 +229,14 @@ const snapshot = (value) => {
 const UPRIGHT = Object.freeze(['U', 'F']);
 
 /**
+ * The driver's hold contract, said once so a method's DECLARED executable holds can be checked against
+ * it (lib/methods/registry.js, `registry.test.mjs`): the cross underneath — this face on top — and an
+ * intuitive step turning the cube about the vertical axis only. A method that needs anything else needs
+ * this driver generalised first (ADR 0011 decision 5).
+ */
+export const DRIVER_HOLDS = Object.freeze({ up: UPRIGHT[0], turns: 'vertical' });
+
+/**
  * The cube as a child holding it `hold` sees it: the same pieces, each slot named by where it now is.
  *
  * Upright holds only — the cross underneath — so this is a quarter turn about U, and `rotateState`'s
@@ -236,7 +244,7 @@ const UPRIGHT = Object.freeze(['U', 'F']);
  * face to the front, found by asking `rotateAlg` rather than written down.
  */
 function asHeld(state, [up, front]) {
-  if (up !== 'U') throw new Error(`solveByMethod: a method holds the cube with its cross underneath, not with ${up} on top`);
+  if (up !== DRIVER_HOLDS.up) throw new Error(`solveByMethod: a method holds the cube with its cross underneath, not with ${up} on top`);
   return rotateState(state, [0, 1, 2, 3].find((k) => rotateAlg(front, k) === 'F'));
 }
 
@@ -299,7 +307,7 @@ function playStep(step, from, refuse) {
   try {
     for (const move of parse(step.alg)) {
       played = run([move], played.hold, played.state);
-      if (!named && played.hold[0] !== 'U') {
+      if (!named && played.hold[0] !== DRIVER_HOLDS.up) {
         refuse(`puts ${played.hold[0]} on top — a method turns the cube about its vertical axis only, so the cross stays underneath`);
       }
     }
@@ -308,7 +316,7 @@ function playStep(step, from, refuse) {
     if (err.name === 'MethodSolverError') throw err;
     refuse(err.message);
   }
-  if (named && played.hold[0] !== 'U') {
+  if (named && played.hold[0] !== DRIVER_HOLDS.up) {
     refuse(`leaves ${played.hold[0]} on top — a named algorithm may tip the cube while it runs, but must end with the cross underneath`);
   }
   return played;
