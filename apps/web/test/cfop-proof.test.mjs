@@ -24,9 +24,12 @@ import { faceTurnsAlg, run } from '../lib/cube-moves.js';
 import { SCAN_HOLD, holdForStage, sameHold } from '../lib/solving-hold.js';
 import { whyText } from '../lib/method-lesson.js';
 import { seededStates } from './fixtures/seeded-scrambles.mjs';
+import { EVERY_CONFIGURATION, configuration } from './fixtures/f2l-positions.mjs';
 
 const CFOP = ['cfop-4lll', 'cfop'];
 const ORIENT_STAGES = new Set(['top-cross', 'top-face']);
+/** The stage names a pairs-dial step can carry (lib/method-lesson.js DIAL_OF). */
+const PAIR_STAGES = new Set(['first-layer', 'middle-layer', 'f2l']);
 
 /** cubejs's faces, URFDLB, nine stickers each. */
 const faces = (cube) => {
@@ -93,6 +96,28 @@ test('the enumerations are the whole domains they claim: 216 orientations, 288 p
 });
 
 for (const id of CFOP) {
+  test(`${id}: every one of the 384 placements of a pair is put in by its F2L stage — checked by cubejs`, () => {
+    // The pairs stage's whole domain (test/f2l-configurations.test.mjs): one pair's corner in any of 8
+    // slots and 3 twists, its edge in any of 8 slots and 2 flips, the cross solved. Full CFOP's 41-case
+    // rung and the easy entry's trigger rung are each replayed over all of it, not over a sample.
+    let n = 0;
+    for (const c of EVERY_CONFIGURATION) {
+      const state = configuration(c.cornerAt, c.twist, c.edgeAt, c.flip);
+      const result = solveByMethod(state, methodById(id).method);
+      const cube = Cube.fromString(toFacelets(state));
+      let afterPairs = faces(cube);
+      for (const step of result.steps) {
+        const alg = turns(step);
+        if (alg) cube.move(alg);
+        if (PAIR_STAGES.has(step.stage)) afterPairs = faces(cube);
+      }
+      assert.ok(firstTwoLayers(afterPairs), `${id}: the pair at corner ${c.cornerAt}.${c.twist}, edge ${c.edgeAt}.${c.flip} was not put in`);
+      assert.ok(cube.isSolved(), `${id}: not solved from configuration ${JSON.stringify(c)}`);
+      n++;
+    }
+    assert.equal(n, 384);
+  });
+
   test(`${id}: every one of the 216 top orientations is oriented by its OLL looks, then solved — checked by cubejs`, () => {
     let n = 0;
     for (const state of orientations()) {

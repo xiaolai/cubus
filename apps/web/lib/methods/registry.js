@@ -91,14 +91,7 @@ const BEGINNER = Object.freeze({
     Object.freeze({ set: 'the course\'s last layer', source: 'lib/methods/last-layer.js COURSE_ALGS, from the beginner course', rederived: 'test/course-route.test.mjs (cubejs)' }),
   ]),
   proof: Object.freeze([
-    Object.freeze({
-      scope: 'last layer',
-      kind: 'exhaustive',
-      domain: 'all 62,208 last-layer states with the first two layers solved',
-      check: 'node bench/method-solver-profile.mjs exhaustive course course (a nightly CI shard)',
-      // The sweep's check is the solver's own contract replay on the cubie model, not cubejs.
-      oracle: 'the stage contracts and a whole-cube replay (lib/method-solver.js)',
-    }),
+    lastLayerSweep('course', 'course'),
     Object.freeze({
       scope: 'cross, first layer, middle layer',
       // Not completeness: a sample can show a failure, never that none exists.
@@ -142,109 +135,90 @@ const CFOP_STOPS = Object.freeze(['cross', 'two-layers', 'top-oriented', 'solved
 // meets the same four words over the same four parts of the cube.
 const CFOP_WORDS = Object.freeze({ dials: STAGE_IDS, sections: BEGINNER_SECTIONS });
 
-const CFOP_CROSS_PROOF = Object.freeze({
+const record = (fields) => Object.freeze(fields);
+
+/** What both CFOP entries share in their algorithm sources and their proof. */
+const PLANNED_CROSS_ALGS = record({ set: 'planned cross', source: 'exact distance table — found by search, no table of algorithms', rederived: 'test/cfop-proof.test.mjs (cubejs)' });
+const CFOP_CROSS_PROOF = record({
   scope: 'cross (planned whole)',
   kind: 'exhaustive',
   domain: 'all 190,080 positions of the four cross edges',
   check: 'lib/methods/cross.js builds the exact distance table by breadth-first search over every position; test/cfop-proof.test.mjs replays planned crosses with cubejs',
   oracle: 'cubejs',
 });
+const CFOP_PAIRS_PROOF = (rung) => record({
+  scope: `first two layers (${rung})`,
+  kind: 'exhaustive',
+  domain: 'all 384 placements of a pair\'s corner and edge with the cross solved',
+  check: 'test/cfop-proof.test.mjs (every placement, through the whole method), test/f2l-configurations.test.mjs',
+  oracle: 'cubejs',
+});
+const CFOP_LOOKS_PROOF = record({
+  scope: 'each last-layer look',
+  kind: 'exhaustive',
+  domain: 'OLL: all 216 top orientations; PLL: all 288 top permutations with the top oriented',
+  check: 'test/cfop-proof.test.mjs',
+  oracle: 'cubejs',
+});
+/** The nightly 62,208-state sweep at one pair of last-layer rungs — Beginner's course route included. */
+function lastLayerSweep(oll, pll) {
+  return Object.freeze({
+  scope: 'last layer',
+  kind: 'exhaustive',
+  domain: 'all 62,208 last-layer states with the first two layers solved',
+  check: `node bench/method-solver-profile.mjs exhaustive ${oll} ${pll} (a nightly CI shard)`,
+  // The sweep's check is the solver's own contract replay on the cubie model, not cubejs.
+  oracle: 'the stage contracts and a whole-cube replay (lib/method-solver.js)',
+  });
+}
+const CFOP_SAMPLE_PROOF = record({
+  scope: 'whole method',
+  kind: 'regression sampling',
+  domain: 'seeded and frozen cubes',
+  check: 'test/cfop-proof.test.mjs',
+  oracle: 'cubejs',
+});
 
-const CFOP_EASY = Object.freeze({
+/** One CFOP entry: everything but its method, its name, its level, its F2L and its last-layer tables. */
+function cfopEntry({ id, label, level, method, pairs, algorithms, sweep }) {
+  return Object.freeze({
+    id,
+    label,
+    level,
+    engine: 'method',
+    method,
+    stages: method.stages,
+    holds: CFOP_HOLDS,
+    stops: CFOP_STOPS,
+    words: CFOP_WORDS,
+    algorithms: Object.freeze([PLANNED_CROSS_ALGS, ...algorithms]),
+    proof: Object.freeze([CFOP_CROSS_PROOF, CFOP_PAIRS_PROOF(pairs), CFOP_LOOKS_PROOF, lastLayerSweep(...sweep), CFOP_SAMPLE_PROOF]),
+  });
+}
+
+const CFOP_EASY = cfopEntry({
   id: 'cfop-4lll',
   label: 'CFOP (easy)',
   level: 'getting-faster',
-  engine: 'method',
   method: CFOP_EASY_METHOD,
-  stages: CFOP_EASY_METHOD.stages,
-  holds: CFOP_HOLDS,
-  stops: CFOP_STOPS,
-  words: CFOP_WORDS,
-  algorithms: Object.freeze([
-    Object.freeze({ set: 'planned cross', source: 'exact distance table — found by search, no table of algorithms', rederived: 'test/cfop-proof.test.mjs (cubejs)' }),
-    Object.freeze({ set: 'trigger pairs', source: 'lib/methods/pairs.js PAIRS_ALGS, the six triggers', rederived: 'test/f2l-configurations.test.mjs' }),
-    Object.freeze({ set: 'two-look OLL and PLL', source: 'lib/methods/last-layer.js OLL_ALGS, PLL_ALGS', rederived: 'test/cfop-proof.test.mjs (cubejs)' }),
-  ]),
-  proof: Object.freeze([
-    CFOP_CROSS_PROOF,
-    Object.freeze({
-      scope: 'first two layers (trigger pairs)',
-      kind: 'exhaustive',
-      domain: 'all 384 placements of a pair\'s corner and edge with the cross solved',
-      check: 'test/f2l-configurations.test.mjs',
-      oracle: 'the cubie model, each answer replayed',
-    }),
-    Object.freeze({
-      scope: 'each last-layer look',
-      kind: 'exhaustive',
-      domain: 'OLL: all 216 top orientations; PLL: all 288 top permutations with the top oriented',
-      check: 'test/cfop-proof.test.mjs',
-      oracle: 'cubejs',
-    }),
-    Object.freeze({
-      scope: 'last layer',
-      kind: 'exhaustive',
-      domain: 'all 62,208 last-layer states with the first two layers solved',
-      check: 'node bench/method-solver-profile.mjs exhaustive 0 0 (a nightly CI shard)',
-      // The sweep's check is the solver's own contract replay on the cubie model, not cubejs.
-      oracle: 'the stage contracts and a whole-cube replay (lib/method-solver.js)',
-    }),
-    Object.freeze({
-      scope: 'whole method',
-      kind: 'regression sampling',
-      domain: 'seeded and frozen cubes',
-      check: 'test/cfop-proof.test.mjs',
-      oracle: 'cubejs',
-    }),
-  ]),
+  pairs: 'trigger pairs',
+  algorithms: [
+    record({ set: 'trigger pairs', source: 'lib/methods/pairs.js PAIRS_ALGS, the six triggers', rederived: 'test/f2l-configurations.test.mjs' }),
+    record({ set: 'two-look OLL and PLL', source: 'lib/methods/last-layer.js OLL_ALGS, PLL_ALGS', rederived: 'test/cfop-proof.test.mjs (cubejs)' }),
+  ],
+  sweep: [0, 0],
 });
 
-const CFOP_FULL = Object.freeze({
+const CFOP_FULL = cfopEntry({
   id: 'cfop',
   label: 'CFOP (full)',
   level: 'competition',
-  engine: 'method',
   method: CFOP_FULL_METHOD,
-  stages: CFOP_FULL_METHOD.stages,
-  holds: CFOP_HOLDS,
-  stops: CFOP_STOPS,
-  words: CFOP_WORDS,
-  algorithms: Object.freeze([
-    Object.freeze({ set: 'planned cross', source: 'exact distance table — found by search, no table of algorithms', rederived: 'test/cfop-proof.test.mjs (cubejs)' }),
-    Object.freeze({ set: 'F2L, OLL, PLL (119)', source: 'lib/data/human-algs.js — J Perm (OLL, PLL), SpeedCubeDB (F2L)', rederived: 'test/human-algs.test.mjs (cubejs)' }),
-  ]),
-  proof: Object.freeze([
-    CFOP_CROSS_PROOF,
-    Object.freeze({
-      scope: 'first two layers (the 41 cases)',
-      kind: 'exhaustive',
-      domain: 'all 384 placements of a pair, which are the 41 cases',
-      check: 'test/f2l-configurations.test.mjs, test/human-algs.test.mjs (bijection with the 41 proved cases)',
-      oracle: 'cubejs',
-    }),
-    Object.freeze({
-      scope: 'each last-layer look',
-      kind: 'exhaustive',
-      domain: 'OLL: all 216 top orientations; PLL: all 288 top permutations with the top oriented',
-      check: 'test/cfop-proof.test.mjs',
-      oracle: 'cubejs',
-    }),
-    Object.freeze({
-      scope: 'last layer',
-      kind: 'exhaustive',
-      domain: 'all 62,208 last-layer states with the first two layers solved',
-      check: 'node bench/method-solver-profile.mjs exhaustive 1 1 (a nightly CI shard)',
-      // The sweep's check is the solver's own contract replay on the cubie model, not cubejs.
-      oracle: 'the stage contracts and a whole-cube replay (lib/method-solver.js)',
-    }),
-    Object.freeze({
-      scope: 'whole method',
-      kind: 'regression sampling',
-      domain: 'seeded and frozen cubes',
-      check: 'test/cfop-proof.test.mjs',
-      oracle: 'cubejs',
-    }),
-  ]),
+  pairs: 'the 41 cases',
+  algorithms: [
+    record({ set: 'F2L, OLL, PLL (119)', source: 'lib/data/human-algs.js — J Perm (OLL, PLL), SpeedCubeDB (F2L)', rederived: 'test/human-algs.test.mjs (cubejs)' }),
+  ],
+  sweep: [1, 1],
 });
 
 /** Every method the app offers, in the order the pills show them. */
