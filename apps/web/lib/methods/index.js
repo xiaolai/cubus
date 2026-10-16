@@ -4,14 +4,17 @@
 // a beginner — you learn to plan the cross long before you learn 57 OLLs — so progression is PER
 // STAGE and not one `level`. Four independent dials, and a method is one reading of all four.
 //
+// Since ADR 0011 the dials are not a learner's: a METHOD the app offers is a fixed reading of them,
+// declared as an entry in lib/methods/registry.js, and no learner raises one.
+//
 // Adding a rung is adding an entry to one of the four arrays imported below. Nothing in
 // `method-solver.js` reads `rung`, so nothing there changes.
 //
 // @typedef {object} Stage
 // @property {'cross'|'pairs'|'oll'|'pll'} id       which stage this is a rung of
 // @property {number} rung                          which rung — REPORTING ONLY; never branched on
-// @property {string} label                         the rung's name, in the offer and in Settings
-// @property {string} blurb                         one sentence describing it, for the offer to raise it
+// @property {string} label                         the rung's name
+// @property {string} blurb                         one sentence describing it
 // @property {{edges: number[], corners: number[]}} targets  the pieces this stage places
 // @property {(state) => boolean} keep              what must already hold when the stage starts
 // @property {(state) => boolean} contract          the state the stage must reach
@@ -82,8 +85,8 @@ export function dialsOf(lastLayer) {
  * one they did — and every count on the screen would then be about a different solve.
  *
  * `lastLayer` picks the route. ITS DEFAULT HERE IS `app`, and that is not the app's default: the app's
- * is the course (decision I, 2026-10-14), held by `settings.lastLayer` and passed in by every caller
- * that solves for a learner. A library default that moved with it would quietly change what every
+ * is the course (decision I, 2026-10-14), which the Beginner entry of lib/methods/registry.js names
+ * (ADR 0011) — the one app caller. A library default that moved with it would quietly change what every
  * bench and every method test measures; a caller that means the course says so.
  */
 export function methodFor(rungs = DEFAULT_RUNGS, { lastLayer = 'app' } = {}) {
