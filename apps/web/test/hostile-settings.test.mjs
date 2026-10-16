@@ -59,6 +59,7 @@ before(async () => {
   //               proveMinimum
   //   navHidden — a string where a list belongs, and a nav id that is not hideable
   //   solveTier — a rung that does not exist
+  //   solveMethod — an inherited property name, not a method (ADR 0011)
   //   language  — a number
   // Every boolean the app HAS, read from the defaults' own source rather than from the list the app
   // derives at runtime: a flag added there arrives here as a hostile string, where a list taken from
@@ -78,6 +79,7 @@ before(async () => {
     devRandCube: 1,
     language: 7,
     solveTier: 'eleven',
+    solveMethod: 'toString',
     dragRotate: 'no',
     soundMode: 'deafening',
     devScanView: 'preview',
@@ -140,6 +142,9 @@ test('an unknown palette is repaired at load, and the repair is saved', async ()
   // A sound mode that does not exist is the default, not a silent app and not a crash.
   assert.equal(settings.soundMode, 'chime', 'a sound mode that does not exist was believed');
   assert.equal(stored.soundMode, 'chime');
+  // A method name that is an inherited property is not a method (ADR 0011): the default, in both places.
+  assert.equal(settings.solveMethod, 'quick', 'a method that does not exist was believed');
+  assert.equal(stored.solveMethod, 'quick');
   // The edited spoken lines used to be repaired here too. They are gone with the voice (owner,
   // 2026-09-30), and the key is DROPPED from the record rather than left to rot — a field nothing
   // reads is a field `save()` keeps rewriting for ever.

@@ -203,3 +203,21 @@ test('a stored record naming a removed screen comes back without it, at every ve
     assert.ok(mod.settings.navHidden.includes('timer'), `version ${navDefaults}: a choice about a real tab was lost`);
   }
 });
+
+// ADR 0011 decision 2: the solve tab's method is a stored choice, and storage is untrusted.
+test('a fresh install walks Quick, and a stored method is kept', async () => {
+  const fresh = await loadOver(undefined);
+  assert.equal(fresh.mod.settings.solveMethod, 'quick');
+  assert.equal(fresh.store.stored().solveMethod, 'quick', 'the first launch did not write the method down');
+  const chosen = await loadOver({ solveMethod: 'beginner' });
+  assert.equal(chosen.mod.settings.solveMethod, 'beginner', 'a chosen method was not kept');
+  assert.equal(chosen.store.stored().solveMethod, 'beginner');
+});
+
+test('a stored method that is not a method is repaired to the default and written back, never believed', async () => {
+  for (const hostile of ['lesson', 'solution', 'toString', '__proto__', '', 7, null, { id: 'beginner' }, ['beginner']]) {
+    const { mod, store } = await loadOver({ solveMethod: hostile });
+    assert.equal(mod.settings.solveMethod, 'quick', `a stored ${JSON.stringify(hostile)} was believed`);
+    assert.equal(store.stored().solveMethod, 'quick', `a stored ${JSON.stringify(hostile)} was not repaired in storage`);
+  }
+});

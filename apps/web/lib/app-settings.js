@@ -7,6 +7,7 @@ import { TIERS } from './solve-target.js';
 import { DEFAULT_RUNGS, LAST_LAYER_ROUTES, STAGE_IDS, TOP_RUNG } from './method-solver.js';
 import { repairProgress } from './method-ladder.js';
 import { isScheme } from './scheme.js';
+import { DEFAULT_METHOD, isMethodId } from './methods/registry.js';
 import { DEFAULT_PALETTE } from './cube-view.js';
 import { STICKER_PALETTES } from './sticker-palettes.js';
 
@@ -77,6 +78,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
   // choosing a shape, and what the menu shows is computed from it. Empty on a fresh install, which
   // is why `recentShapes()` pads from the catalogue rather than treating empty as a failure.
   shapesRecent: [],
+  // Which METHOD the solve tab walks (ADR 0011 decision 2): an id from lib/methods/registry.js. A choice
+  // about every cube, so it is stored and applied to the next one. A new install walks Quick (owner's
+  // call Q1, 2026-10-16).
+  solveMethod: DEFAULT_METHOD,
   // Which order the last layer is taught in (ADR 0009): `course` — the beginner course's, edges home and
   // then corners — or `app`, the ladder's own, which orients the whole top before it permutes it. The
   // course's is the default (decision I, 2026-10-14). An install from before it existed is MIGRATED below,
@@ -309,6 +314,9 @@ const repairs = [
   }],
   [() => SCHEME_SOURCES.includes(settings.schemeSource), () => { settings.schemeSource = DEFAULT_SETTINGS.schemeSource; }],
   [() => TIERS.some((tier) => tier.name === settings.solveTier), () => { settings.solveTier = DEFAULT_SETTINGS.solveTier; }],
+  // A method name or the default — never believed: an unknown id (or an inherited one like `toString`)
+  // would otherwise reach `methodById`, which throws by contract.
+  [() => isMethodId(settings.solveMethod), () => { settings.solveMethod = DEFAULT_SETTINGS.solveMethod; }],
   [() => typeof settings.language === 'string', () => { settings.language = DEFAULT_SETTINGS.language; }],
   [() => typeof settings.cameraId === 'string', () => { settings.cameraId = DEFAULT_SETTINGS.cameraId; }],
   [() => Number.isFinite(settings.navDefaults), () => { settings.navDefaults = DEFAULT_SETTINGS.navDefaults; }],
