@@ -743,6 +743,26 @@ test('the Quick walk shown after a fallback, pressed, only stores Quick — it r
   assert.equal(w.$('#methodNote').hidden, true, 'the fallback note outlived the choice it described');
 });
 
+test('accepting Quick after a CFOP fallback shows Quick\'s stops, not CFOP\'s (audit 2026-10-16)', async () => {
+  // The fallback press stores Quick without a reload; the Restore row must follow the STORED method
+  // anyway, or CFOP's top-oriented stays on a Quick row and the beginner's chips stay hidden.
+  const w = world({ settings: { solveMethod: 'cfop' } }, ({ state }) => ({
+    deriveCube: async () => { solvedBy(state, "R'"); },
+    lessonFor: () => null,
+  }));
+  const doc = w.$('#methodRow').ownerDocument;
+  const chip = (id, hidden) => { const b = doc.createElement('button'); b.dataset.stage = id; b.hidden = hidden; w.$('#stageRow').appendChild(b); return b; };
+  const firstLayer = chip('first-layer', true);
+  const oriented = chip('top-oriented', false);
+  assert.equal(await w.session.load(), true);
+  assert.equal(w.$('#methodNote').hidden, false, 'precondition: the fallback is on screen');
+  w.$('[data-method="quick"]').click();
+  await settle();
+  assert.equal(w.settings.solveMethod, 'quick');
+  assert.equal(firstLayer.hidden, false, 'a chip of Quick\'s row stayed hidden');
+  assert.equal(oriented.hidden, true, 'CFOP\'s own stop stayed on a Quick row');
+});
+
 test('a stored Beginner is the walk of the NEXT mount: leaving and coming back does not reset the method', async () => {
   let searches = 0;
   let lessons = 0;

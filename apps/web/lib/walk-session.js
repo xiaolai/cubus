@@ -264,31 +264,40 @@ export function createWalkSession(screen, app) {
   // THE METHOD ROW (ADR 0011). Delegated from the root rather than wired per pill: when the registry is
   // long enough to need a "More methods" menu, its items are `[data-method]` too and the row's one pill is
   // rewritten in place, and a listener per element would miss both.
+  /**
+   * The Restore row for the STORED method (owner's call Q8): its stops shown, the rest hidden. A chip the
+   * method does not stop at cannot stay chosen out of sight, so the walk goes back to the whole cube, the
+   * row's own default. Asked on EVERY change of the stored method — accepting Quick after a fallback
+   * included, which changes the stored method without a reload. Says whether the target was moved.
+   */
+  function showStopsOf(id) {
+    const shownStops = paintStops(id);
+    if (!OFFERED_TARGETS.some((tg) => tg.id === state.stageTarget) || shownStops.includes(state.stageTarget)) return false;
+    state.stageTarget = 'solved';
+    paintGroup('stage', 'solved');
+    return true;
+  }
   root.addEventListener('click', (ev) => {
     // Duck-typed rather than `instanceof Element`: the target may come from another realm's DOM.
     const pill = typeof ev.target?.closest === 'function' ? ev.target.closest('[data-method]') : null;
     if (!pill || !isMethodId(pill.dataset.method)) return;
     const want = pill.dataset.method;
     // Compared with the DISPLAYED method. The Quick walk shown after a fallback, pressed, only makes the
-    // stored choice match what is on screen — there is nothing to reload.
+    // stored choice match what is on screen — there is nothing to reload, unless the row's change of
+    // stops moved the target.
     if (want === shownMethod) {
       if (want !== settings.solveMethod) {
         remember(want);
         fellBack = false;
         sayMethodNote();
+        if (showStopsOf(want)) void loadWalk();
       }
       return;
     }
     remember(want);
     shownMethod = want;
     paintMethods(want);
-    // The Restore row is the chosen method's stops (owner's call Q8). A chip the new method does not stop
-    // at cannot stay chosen out of sight: the walk goes back to the whole cube, the row's own default.
-    const shownStops = paintStops(want);
-    if (OFFERED_TARGETS.some((tg) => tg.id === state.stageTarget) && !shownStops.includes(state.stageTarget)) {
-      state.stageTarget = 'solved';
-      paintGroup('stage', 'solved');
-    }
+    showStopsOf(want);
     // Said NOW, not after the load: a choice storage refused must be said even if the walk then fails.
     fellBack = false;
     sayMethodNote();
