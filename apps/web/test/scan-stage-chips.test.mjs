@@ -254,3 +254,30 @@ test('a row with no list of stops is refused at mount, never drawn from some def
     stageAsk: async () => null, go: () => {}, isRefused: () => false,
   }), /no list of stops/);
 });
+
+test('a search in flight is called off when its row stops being believed: a newer scan, a drop, the screen leaving', async () => {
+  // A discarded reply is not a stopped search: without the signal, each of these left a route search
+  // running out its budget on the pool the next question waits for (AGENTS.md §3, the stop word).
+  const inFlight = async (r, facelets) => {
+    void r.chips.paintStageChips(facelets);
+    r.replies.at(-1).resolve({ bounds: BOUNDS });
+    await settle();
+    const q = r.asked.at(-1);
+    assert.equal(q.want, 'route', 'precondition: a route search is in flight');
+    assert.ok(q.signal && q.signal.aborted === false, 'a route search went with no signal to call it off');
+    return q.signal;
+  };
+  const r = rig();
+  const first = await inFlight(r, 'A');
+  r.state.cube.facelets = 'B';
+  void r.chips.paintStageChips('B');
+  assert.equal(first.aborted, true, 'a newer scan left the older scan\'s search running');
+
+  const dropped = await inFlight(r, 'B');
+  r.chips.dropStageChips();
+  assert.equal(dropped.aborted, true, 'dropping the row left its search running');
+
+  const leaving = await inFlight(r, 'B');
+  r.abort.abort();
+  assert.equal(leaving.aborted, true, 'leaving the screen left its search running');
+});

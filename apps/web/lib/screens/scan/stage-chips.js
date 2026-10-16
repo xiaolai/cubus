@@ -44,9 +44,16 @@ export function createStageChips({ root, signal, state, stageAsk, CHIP_NODE_BUDG
    *  notice needs on both desktop windows (ADR 0009; geometry.test.mjs). */
   const rowEl = $('#stageChips', root);
   const strip = rowEl ? oneLineStrip(rowEl, { signal }) : null;
+  /** The paint whose searches are in flight. Its abort goes WITH each route question, so a superseded
+   *  paint's search hands its worker back through the stop word (AGENTS.md §3) rather than running out
+   *  its budget on the pool the next scan, or "Solve this cube", is waiting for — the reply was already
+   *  discarded; the search was not. */
+  let paintAbort = null;
+  signal?.addEventListener('abort', () => paintAbort?.abort(), { once: true });
   /** Stop believing anything in flight, and take the row away. One helper, three callers. */
   function dropStageChips() {
     stageGen += 1;
+    paintAbort?.abort();
     const card = $('#stageCard', root);
     if (card) card.hidden = true;
   }
@@ -70,6 +77,9 @@ export function createStageChips({ root, signal, state, stageAsk, CHIP_NODE_BUDG
 
   async function paintStageChips(facelets) {
     const mine = ++stageGen;
+    paintAbort?.abort();
+    const paint = new AbortController();
+    paintAbort = paint;
     const targets = stops();
     const card = $('#stageCard', root);
     const row = $('#stageChips', root);
@@ -123,6 +133,7 @@ export function createStageChips({ root, signal, state, stageAsk, CHIP_NODE_BUDG
       for (const target of ordered) {
         const answer = await stageAsk({
           want: 'route', target: target.id, facelets, nodeBudget: CHIP_NODE_BUDGET, maxDepth: 12,
+          signal: paint.signal,
         });
         // NOT MERELY "STOP ANSWERING" — TAKE THE ROW AWAY. Discarding later replies left the
         // distances already painted standing over a cube that has since been turned: the cross
