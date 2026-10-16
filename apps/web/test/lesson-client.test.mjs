@@ -116,3 +116,13 @@ test('the piece state the app sends is the method frame\'s, read by cubejs', () 
   const state = fromCube(Cube.fromString(new Cube().asString()));
   assert.deepEqual(state, { ...SOLVED, cp: [...SOLVED.cp], co: [...SOLVED.co], ep: [...SOLVED.ep], eo: [...SOLVED.eo] });
 });
+
+test('methodOf builds by entry, so a second entry under an id already built is checked and built itself', () => {
+  const beginner = methodById('beginner');
+  assert.equal(methodOf(beginner).id, '0,0,0,0,course');
+  const sameIdOtherSpec = { ...methodById('cfop'), id: 'beginner' };
+  assert.equal(methodOf(sameIdOtherSpec).id, '1,2,1,1', 'an entry sharing an id was handed another entry\'s method');
+  assert.throws(() => methodOf({ ...beginner, stages: ['cross', 'pairs', 'pll', 'oll'] }), /declares the stages/,
+    'an entry sharing an id skipped the stage check');
+  assert.equal(methodOf(beginner), methodOf(beginner), 'the same entry is built once');
+});

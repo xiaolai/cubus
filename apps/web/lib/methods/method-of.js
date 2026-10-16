@@ -6,22 +6,24 @@
 
 import { methodFor } from './index.js';
 
-const built = new Map();
+/** By the ENTRY OBJECT, never its id: two entries sharing an id are two definitions, and the second must
+ *  be checked and built on its own rather than handed the first one's method. */
+const built = new WeakMap();
 
 /**
- * The method `entry` declares, as `methodFor` builds it — once per entry. Throws for an entry with no
+ * The method `entry` declares, as `methodFor` builds it — once per entry object. Throws for an entry with no
  * stages, and for one whose built stages are not the ones it declares: a second list beside the method's
  * own would be free to drift, so the two are compared where the method is made.
  */
 export function methodOf(entry) {
   if (entry?.engine !== 'method') throw new Error(`methodOf: "${entry?.id}" is not a method with stages`);
-  const held = built.get(entry.id);
+  const held = built.get(entry);
   if (held) return held;
   const method = methodFor(entry.method.rungs, { lastLayer: entry.method.lastLayer });
   const ids = method.stages.map((stage) => stage.id);
   if (ids.length !== entry.stages.length || ids.some((id, i) => id !== entry.stages[i])) {
     throw new Error(`methodOf: "${entry.id}" declares the stages ${entry.stages.join(', ')} and builds ${ids.join(', ')}`);
   }
-  built.set(entry.id, method);
+  built.set(entry, method);
   return method;
 }
