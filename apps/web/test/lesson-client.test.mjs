@@ -117,6 +117,32 @@ test('the piece state the app sends is the method frame\'s, read by cubejs', () 
   assert.deepEqual(state, { ...SOLVED, cp: [...SOLVED.cp], co: [...SOLVED.co], ep: [...SOLVED.ep], eo: [...SOLVED.eo] });
 });
 
+test('an inline engine that fails to load fails every question loudly — none is left hanging', async () => {
+  const { inlineLessonWorker } = await import('../lib/lesson-client.js');
+  const client = createLessonClient({ spawn: () => inlineLessonWorker(() => Promise.reject(new Error('import failed (test)'))) });
+  await assert.rejects(client.solve(SCRAMBLED, 'beginner'), /lesson worker failed: import failed/);
+});
+
+test('a page whose worker cannot be built gets a DEAD worker, never a solve on its own thread', async () => {
+  // A fresh copy of the module, so its "this page's worker is broken" memory starts clean.
+  const fresh = await import(`../lib/lesson-client.js?dead=${Date.now()}`);
+  const prior = globalThis.Worker;
+  globalThis.Worker = class { constructor() { throw new Error('worker-src refused (test)'); } };
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    const worker = fresh.spawnLessonWorker();
+    const client = fresh.createLessonClient({ spawn: () => worker });
+    await assert.rejects(client.solve(SCRAMBLED, 'cfop'), (err) => err.workerFailure === true && /could not be built/.test(err.message));
+    // And the next spawn remembers it rather than building another.
+    const again = fresh.createLessonClient({ spawn: fresh.spawnLessonWorker });
+    await assert.rejects(again.solve(SCRAMBLED, 'cfop'), /could not be loaded/);
+  } finally {
+    globalThis.Worker = prior;
+    console.warn = warn;
+  }
+});
+
 test('methodOf builds by entry, so a second entry under an id already built is checked and built itself', () => {
   const beginner = methodById('beginner');
   assert.equal(methodOf(beginner).id, '0,0,0,0,course');

@@ -138,28 +138,49 @@ export function createLessonClient({ spawn, makeShared = null } = {}) {
 }
 
 /**
- * This thread, standing in for a worker where the platform has none — node's tests, a page that
- * refused the worker. Loud, because every lesson then blocks the page; and every message is
- * structured-cloned both ways, so what a lesson built here receives is exactly what a worker would
- * have sent, and nothing the clone drops can pass a test here and fail in a browser.
+ * This thread, standing in for a worker where the PLATFORM HAS NONE — node's tests, which have no
+ * `Worker` at all. Never a browser's fallback: a page whose worker could not be built or loaded gets
+ * `deadWorker` instead, because solving here is the very block this module exists to remove. Every
+ * message is structured-cloned both ways, so what a lesson built here receives is exactly what a worker
+ * would have sent. A failure to load the engine fails every question loudly, never leaves one hanging.
  */
-function inlineLessonWorker() {
-  console.warn('lesson-client: no worker for the method solver, so lessons are worked out on this thread');
+export function inlineLessonWorker(load = loadEngine) {
   const listeners = { message: [], error: [], messageerror: [] };
-  const engine = (async () => {
-    const [{ solveByMethod }, { methodById }, { methodOf }] = await Promise.all([
-      import('./method-solver.js'), import('./methods/registry.js'), import('./methods/method-of.js'),
-    ]);
-    return { solveByMethod, methodById, methodOf };
-  })();
+  const engine = load();
+  const fail = (err) => { for (const fn of listeners.error) fn({ message: String(err?.message ?? err), preventDefault() {} }); };
   return {
     addEventListener: (type, fn) => listeners[type]?.push(fn),
     postMessage(message) {
       const request = structuredClone(message);
-      void engine.then((e) => setTimeout(() => {
-        const data = structuredClone(handleMethodSolve(e, request));
+      engine.then((e) => setTimeout(() => {
+        let data;
+        try { data = structuredClone(handleMethodSolve(e, request)); } catch (err) { fail(err); return; }
         for (const fn of listeners.message) fn({ data });
-      }, 0));
+      }, 0), fail);
+    },
+    terminate() {},
+  };
+}
+
+/** The engine the inline stand-in solves with, loaded only when it is first asked for. */
+async function loadEngine() {
+  const [{ solveByMethod }, { methodById }, { methodOf }] = await Promise.all([
+    import('./method-solver.js'), import('./methods/registry.js'), import('./methods/method-of.js'),
+  ]);
+  return { solveByMethod, methodById, methodOf };
+}
+
+/**
+ * A worker that could not be had, in a page that should have one. Every question fails as a WORKER
+ * failure — `lessonFor` resolves null and the walk falls back to Quick and says so — rather than being
+ * solved on this thread.
+ */
+export function deadWorker(reason) {
+  const listeners = { message: [], error: [], messageerror: [] };
+  return {
+    addEventListener: (type, fn) => listeners[type]?.push(fn),
+    postMessage() {
+      setTimeout(() => { for (const fn of listeners.error) fn({ message: reason, preventDefault() {} }); }, 0);
     },
     terminate() {},
   };
@@ -167,10 +188,12 @@ function inlineLessonWorker() {
 
 let workerBroken = false;
 
-/** A real module worker where one can be had, and this thread where one cannot. A worker that fails to
- *  LOAD (it never speaks) is remembered, so the next lesson does not build another one just as doomed. */
+/** A real module worker where the platform has workers; a dead one where it has them and this one failed
+ *  to build or to LOAD (it never spoke, and is remembered so the next lesson does not build another just
+ *  as doomed); and this thread only where the platform has no workers at all. */
 export const spawnLessonWorker = () => {
-  if (workerBroken || typeof Worker === 'undefined') return inlineLessonWorker();
+  if (typeof Worker === 'undefined') return inlineLessonWorker();
+  if (workerBroken) return deadWorker('the lesson worker could not be loaded on this page');
   try {
     const spawned = new Worker(new URL('./lesson-worker.js', import.meta.url), { type: 'module' });
     let spoke = false;
@@ -178,9 +201,9 @@ export const spawnLessonWorker = () => {
     spawned.addEventListener('error', () => { if (!spoke) workerBroken = true; }, { once: true });
     return spawned;
   } catch (cause) {
-    console.warn('lesson-client: the lesson worker could not be built, so lessons run on this thread', cause);
+    console.warn('lesson-client: the lesson worker could not be built; no lesson will be worked out on this thread', cause);
     workerBroken = true;
-    return inlineLessonWorker();
+    return deadWorker(`the lesson worker could not be built: ${cause?.message ?? cause}`);
   }
 };
 
