@@ -24,9 +24,9 @@ test('the frozen record covers the cubes it claims to, and every stage of the co
   for (const stage of ['top-face', 'oll', 'pll']) assert.ok(!stages.has(stage), `the baseline walks "${stage}"`);
 });
 
-test('the beginner lesson is what it was before the registry, on every frozen cube', () => {
+test('the beginner lesson is what it was before the registry, on every frozen cube', async () => {
   for (const [n, { facelets, lesson }] of frozen.cases.entries()) {
-    const now = booted.lessonFor({ facelets, lesson: null });
+    const now = await booted.lessonFor({ facelets, lesson: null });
     assert.ok(now, `cube ${n} (${facelets}): no lesson`);
     assert.deepEqual(lessonRecord(now, booted.whyText), lesson, `cube ${n} (${facelets}): the beginner lesson changed`);
   }

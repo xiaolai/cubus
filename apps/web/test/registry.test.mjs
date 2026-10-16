@@ -11,6 +11,7 @@ import {
 import { DEFAULT_RUNGS, DRIVER_HOLDS, methodFor } from '../lib/method-solver.js';
 import { METHOD_FRAME } from '../lib/solving-hold.js';
 import { NESTING, TARGET_BY_ID } from '../lib/stage-targets.js';
+import { methodOf } from '../lib/methods/method-of.js';
 import * as hold from '../lib/solving-hold.js';
 import * as lessonWords from '../lib/method-lesson.js';
 import * as targets from '../lib/stage-targets.js';
@@ -44,8 +45,12 @@ test('an entry missing a field, with an unknown level, or a method engine with n
   assert.throws(() => checkEntry({ ...BEGINNER_ENTRY, level: 'expert' }), /unknown level/);
   assert.throws(() => checkEntry({ ...BEGINNER_ENTRY, stages: [] }), /no stages/);
   assert.throws(() => checkEntry({ ...BEGINNER_ENTRY, proof: [] }), /no proof/);
-  assert.throws(() => checkEntry({ ...BEGINNER_ENTRY, stages: [...BEGINNER_ENTRY.stages] }), /not its method's own/,
-    'a method entry whose declared stages are a copy, not the method that runs, was accepted');
+  // A spec the engine cannot build is refused here; a spec that builds OTHER stages than it declares is
+  // refused where it is built (`methodOf`, below).
+  assert.throws(() => checkEntry({ ...BEGINNER_ENTRY, method: { ...BEGINNER_ENTRY.method, lastLayer: 'nope' } }), /unknown last-layer route/);
+  assert.throws(() => checkEntry({ ...BEGINNER_ENTRY, method: { ...BEGINNER_ENTRY.method, rungs: { cross: 0 } } }), /names no rung/);
+  assert.throws(() => methodOf({ ...BEGINNER_ENTRY, id: 'drifted', stages: ['cross', 'pairs', 'pll', 'oll'] }), /declares the stages/,
+    'a method entry whose declared stages are not the ones that run was accepted');
   const quick = methodById('quick');
   assert.throws(() => checkEntry({ ...quick, stages: BEGINNER_ENTRY.stages }), /two-phase solver but declares/);
   assert.throws(() => checkEntry({ ...quick, method: BEGINNER_ENTRY.method }), /two-phase solver but declares/);
@@ -61,9 +66,9 @@ test('a name that is not a method resolves to nothing — the prototype chain in
 
 test('Beginner IS rung 0 everywhere on the course\'s last layer, and the globals read its entry', () => {
   const beginner = methodById('beginner');
-  assert.equal(beginner.method.id, methodFor(DEFAULT_RUNGS, { lastLayer: 'course' }).id);
+  assert.equal(methodOf(beginner).id, methodFor(DEFAULT_RUNGS, { lastLayer: 'course' }).id);
   assert.equal(beginner.method.lastLayer, 'course');
-  assert.deepEqual(beginner.stages, beginner.method.stages);
+  assert.deepEqual([...beginner.stages], methodOf(beginner).stages.map((stage) => stage.id));
   // The tables that were global are the entry's alone now: no module exports a second spelling of them.
   assert.ok(!('WHITE_UP_STAGES' in hold), 'solving-hold still exports its own flip point');
   assert.ok(!('SECTION_NAME' in lessonWords), 'method-lesson still exports its own section names');
@@ -71,7 +76,7 @@ test('Beginner IS rung 0 everywhere on the course\'s last layer, and the globals
   assert.deepEqual([...beginner.stops], [...NESTING]);
   for (const stop of beginner.stops) assert.ok(TARGET_BY_ID[stop], `the stop "${stop}" is no target descriptor`);
   // Every dial the method walks has a section heading.
-  for (const stage of beginner.stages) assert.equal(typeof beginner.words.sections[stage.id], 'function', stage.id);
+  for (const stage of beginner.stages) assert.equal(typeof beginner.words.sections[stage], 'function', stage);
 });
 
 test('the two CFOP entries are the higher rungs on the app\'s route, stop at four chips, and tumble after the cross', () => {
@@ -79,15 +84,15 @@ test('the two CFOP entries are the higher rungs on the app\'s route, stop at fou
   // F2L cases, full OLL and PLL. Both on the app's last-layer route — orient the whole top, then permute.
   const easy = methodById('cfop-4lll');
   const full = methodById('cfop');
-  assert.equal(easy.method.id, methodFor({ cross: 1, pairs: 1, oll: 0, pll: 0 }).id);
-  assert.equal(full.method.id, methodFor({ cross: 1, pairs: 2, oll: 1, pll: 1 }).id);
+  assert.equal(methodOf(easy).id, methodFor({ cross: 1, pairs: 1, oll: 0, pll: 0 }).id);
+  assert.equal(methodOf(full).id, methodFor({ cross: 1, pairs: 2, oll: 1, pll: 1 }).id);
   for (const entry of [easy, full]) {
     assert.equal(entry.method.lastLayer, 'app', `${entry.id}: CFOP is not on the course's route`);
     assert.deepEqual([...entry.stops], ['cross', 'two-layers', 'top-oriented', 'solved']);
     for (const stop of entry.stops) assert.ok(TARGET_BY_ID[stop]?.offered, `${entry.id}: "${stop}" is no offered target`);
     // Owner's call Q5: Beginner's hold story, with the flip after the CROSS — CFOP has no first layer.
     assert.deepEqual([...entry.holds.displayed.whiteUpStages], ['cross']);
-    for (const stage of entry.stages) assert.equal(typeof entry.words.sections[stage.id], 'function', `${entry.id}: ${stage.id} has no heading`);
+    for (const stage of entry.stages) assert.equal(typeof entry.words.sections[stage], 'function', `${entry.id}: ${stage} has no heading`);
     // Every last-layer table is proved over its whole domain, and the proof says so.
     assert.ok(entry.proof.some((p) => p.kind === 'exhaustive' && /each last-layer look/.test(p.scope)), `${entry.id}: no per-look proof`);
     assert.ok(entry.proof.some((p) => p.kind === 'regression sampling'), `${entry.id}: the sample is not labelled as one`);
@@ -106,9 +111,19 @@ test('every entry\'s proof is labelled with what it is, and a sample is never ca
   }
 });
 
+test('the UI thread never loads the method library: the registry is data, and building is methodOf\'s', () => {
+  // lib/methods/index.js builds every rung's repertoire when it loads. The registry, read on the UI thread,
+  // must reach nothing that does — so it imports neither the library nor anything beneath it but the
+  // constants module (lib/lesson-client.js says why the build belongs to the lesson worker).
+  const code = readFileSync(new URL('../lib/methods/registry.js', import.meta.url), 'utf8');
+  const imports = [...code.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1]);
+  assert.deepEqual(imports.sort(), ['../i18n.js', './stage-ids.js']);
+});
+
 test('a method is spelled in the registry only — no other module builds the beginner method itself', () => {
-  // The method library (lib/methods/index.js) defines `methodFor`; the registry is its one app caller.
-  const LIBRARY = new Set(['lib/methods/index.js', 'lib/method-solver.js', 'lib/methods/registry.js']);
+  // The method library (lib/methods/index.js) defines `methodFor`; `methodOf` builds a registry entry's spec
+  // with it, off the UI thread, and is its one app caller.
+  const LIBRARY = new Set(['lib/methods/index.js', 'lib/method-solver.js', 'lib/methods/registry.js', 'lib/methods/method-of.js']);
   const offenders = [];
   const walk = (dir) => {
     for (const e of readdirSync(new URL(`../${dir}`, import.meta.url), { withFileTypes: true })) {

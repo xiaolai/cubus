@@ -20,12 +20,13 @@ import { routeToTarget } from '../../stage-route.js';
  *
  * @param {object} deps `state`, whose whole-cube solution the pool source reads; `cubejs()`, the
  *   cubejs class, a function because `loadSolver` assigns it long after the screen module loads;
- *   `stageAsk`, the pool's door for stage questions; `solveByMethod`; and `STAGE_NODE_BUDGET`,
- *   the exact search's budget.
+ *   `stageAsk`, the pool's door for stage questions; `methodSolve(state, methodId, { signal })`, the
+ *   lesson worker's door (lib/lesson-client.js); `methodNow()`, the id of the method to race; and
+ *   `STAGE_NODE_BUDGET`, the exact search's budget.
  * @returns {Function} `lastRoute(target, facelets, signal, wholeDone)`.
  */
-export function createRouteRace({ state, cubejs, stageAsk, solveByMethod, methodNow, STAGE_NODE_BUDGET }) {
-  for (const [name, fn] of Object.entries({ cubejs, stageAsk, solveByMethod, methodNow })) {
+export function createRouteRace({ state, cubejs, stageAsk, methodSolve, methodNow, STAGE_NODE_BUDGET }) {
+  for (const [name, fn] of Object.entries({ cubejs, stageAsk, methodSolve, methodNow })) {
     if (typeof fn !== 'function') throw new TypeError(`route race: \`${name}\` must be a function`);
   }
   if (state === null || typeof state !== 'object') {
@@ -78,14 +79,10 @@ export function createRouteRace({ state, cubejs, stageAsk, solveByMethod, method
         return state.cube.solution ? renameAlg(state.cube.solution, METHOD_FRAME) : null;
       },
       /**
-       * The method route — SCHEDULED, not called inline, and the yield is the point.
-       *
-       * `solveByMethod` is synchronous and unbounded: 0.45 to 24 ms measured, median 6.6.
-       * Called straight from the race it runs before anything awaits, so it blocked this
-       * thread between the exact request being built and it being sent — the one source that
-       * leaves the machine, delayed by the one that cannot. A macrotask first puts it behind
-       * the worker message and the pool's already-known answer, which costs it a tick and
-       * costs the other two nothing.
+       * The method route, asked of the LESSON WORKER (lib/lesson-client.js), never solved here. It was
+       * solved on this thread, behind a macrotask so the exact request left first — 0.45 to 24 ms for
+       * the beginner's method, and the first CFOP route of a session built CFOP's repertoires here too,
+       * for most of a second. The walk's signal goes with the question and calls a superseded one off.
        *
        * §4 keeps it in the race even so, and the measurement is why it is worth saying: over
        * the 156 corpus states where the fallback actually fires it was shorter in ZERO of
@@ -93,15 +90,12 @@ export function createRouteRace({ state, cubejs, stageAsk, solveByMethod, method
        * `state.cube.solution`, and when that search failed there is nothing else.
        */
       method: async () => {
-        await new Promise((resolve) => { setTimeout(resolve, 0); });
-        // AND THE WALK IS ASKED ABOUT AGAIN AFTER IT. The tick is exactly where a superseded walk's
-        // abort lands, and `solveByMethod` takes no signal: run then, it solves a cube nobody is
-        // waiting for, on the thread that draws.
         if (signal?.aborted) return null;
         // ON THE LEARNER'S ROUTE (ADR 0009), asked at the moment it runs: the app's own order passes no
         // `top-edges` stop, so walked on it the prefix for that chip was a whole solve flagged as an
         // overshoot — 41 moves where the course reaches it in 19 (Codex refute, 2026-10-14).
-        return solveByMethod(cubie, methodNow()).alg;
+        const answer = await methodSolve(cubie, methodNow(), { signal });
+        return answer === null ? null : answer.alg;
       },
     };
     const last = await routeToTarget(target, cubie, deps);

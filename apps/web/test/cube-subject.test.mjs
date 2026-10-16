@@ -204,7 +204,7 @@ test('a lesson step made after a regrip lights the edge it sends home, on the cu
   const sorted = (letters) => [...letters].sort().join('');
   let checked = 0;
   for (let seed = 1; seed < 60 && checked < 4; seed += 1) {
-    const lesson = subject.lessonFor({ facelets: move(SOLVED, randomAlg(lcg(seed), 25)), lesson: null });
+    const lesson = await subject.lessonFor({ facelets: move(SOLVED, randomAlg(lcg(seed), 25)), lesson: null });
     assert.ok(lesson, `seed ${seed}: the method solved the cube`);
     let at = 0;
     for (const step of lesson.steps) {
@@ -270,7 +270,7 @@ test('a step that turns the whole cube lights the centre that ends up facing the
   const { subject } = await app();
   let turning = 0; let plain = 0;
   for (let seed = 1; seed < 40 && turning < 6; seed += 1) {
-    const lesson = subject.lessonFor({ facelets: move(SOLVED, randomAlg(lcg(seed), 25)), lesson: null });
+    const lesson = await subject.lessonFor({ facelets: move(SOLVED, randomAlg(lcg(seed), 25)), lesson: null });
     assert.ok(lesson, `seed ${seed}: the method solved the cube`);
     let at = 0;
     for (const step of lesson.steps) {

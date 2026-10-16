@@ -35,10 +35,10 @@ function stageEnds(lesson) {
   return ends;
 }
 
-test('every record of the walk agrees at the cut, and each is the full lesson\'s own prefix', () => {
+test('every record of the walk agrees at the cut, and each is the full lesson\'s own prefix', async () => {
   let cuts = 0;
   for (const facelets of baselineCubes()) {
-    const full = booted.lessonFor({ facelets, lesson: null });
+    const full = await booted.lessonFor({ facelets, lesson: null });
     for (const chip of CHIPS) {
       const cut = cutLesson(full, holdsFor(chip));
       if (!cut) continue;
@@ -82,9 +82,9 @@ test('every record of the walk agrees at the cut, and each is the full lesson\'s
   assert.ok(cuts >= baselineCubes().length * 5, `only ${cuts} cuts were checked — the sample is not cutting`);
 });
 
-test('a chip that already holds, or a lesson whose records disagree, is refused — never a walk of nothing', () => {
+test('a chip that already holds, or a lesson whose records disagree, is refused — never a walk of nothing', async () => {
   const facelets = baselineCubes()[0];
-  const full = booted.lessonFor({ facelets, lesson: null });
+  const full = await booted.lessonFor({ facelets, lesson: null });
   assert.equal(cutLesson(full, () => true), null, 'a chip already held produced a cut');
   assert.equal(cutLesson(full, () => false), null, 'a chip no stage end reaches produced a cut');
   assert.throws(() => cutLesson({ ...full, moveHolds: full.moveHolds.slice(1) }, () => false), /disagree/);
@@ -94,19 +94,19 @@ test('the app cuts the chosen method\'s lesson through the chip\'s own predicate
   const { stageLessonFor } = await import('../lib/cube-subject.js');
   const facelets = baselineCubes()[1];
   for (const chip of CHIPS) {
-    const want = cutLesson(booted.lessonFor({ facelets, lesson: null }), holdsFor(chip));
-    const got = stageLessonFor({ facelets, lesson: null }, BEGINNER_ENTRY, TARGET_BY_ID[chip]);
+    const want = cutLesson(await booted.lessonFor({ facelets, lesson: null }), holdsFor(chip));
+    const got = await stageLessonFor({ facelets, lesson: null }, BEGINNER_ENTRY, TARGET_BY_ID[chip]);
     assert.deepEqual(got, want, `${chip}: the app's cut is not the cut of its own lesson at the chip's predicate`);
   }
   // Not a stop of the method (a set pattern), and the whole cube: no cut, the caller's other routes.
-  assert.equal(stageLessonFor({ facelets, lesson: null }, BEGINNER_ENTRY, TARGET_BY_ID['six-cross']), null);
-  assert.equal(stageLessonFor({ facelets, lesson: null }, BEGINNER_ENTRY, TARGET_BY_ID.solved), null);
+  assert.equal(await stageLessonFor({ facelets, lesson: null }, BEGINNER_ENTRY, TARGET_BY_ID['six-cross']), null);
+  assert.equal(await stageLessonFor({ facelets, lesson: null }, BEGINNER_ENTRY, TARGET_BY_ID.solved), null);
 });
 
-test('a cut lesson is told from a whole one, and no proof of a whole cube is offered for it', () => {
+test('a cut lesson is told from a whole one, and no proof of a whole cube is offered for it', async () => {
   // Audit-fix round 3: a cut walk has no route, so the prove gate's \`!route\` let the native prover be
   // offered for a walk that stops short of solved, with its length as the bound on a whole-cube proof.
-  const full = booted.lessonFor({ facelets: baselineCubes()[0], lesson: null });
+  const full = await booted.lessonFor({ facelets: baselineCubes()[0], lesson: null });
   assert.equal(isCutLesson(full), false, 'a whole lesson read as cut');
   assert.equal(isCutLesson(null), false);
   const cut = cutLesson(full, holdsFor('cross'));

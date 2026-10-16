@@ -3,7 +3,7 @@
 // Lifted out of app.js on 2026-09-13, when that file was split into modules.
 
 import { CUBE_VIEW } from '../cube-view.js';
-import { solveByMethod } from '../method-solver.js';
+import { methodSolve } from '../lesson-client.js';
 import { METHODS, methodById } from '../methods/registry.js';
 import { createMethodRow, methodRowHtml } from './cube/method-row.js';
 import { t } from '../i18n.js';
@@ -98,14 +98,11 @@ const WALK_FAILURES = {
  * function because `loadSolver` assigns `Cube` long after this module has loaded.
  */
 const lastRoute = createRouteRace({
-  state, cubejs: () => Cube, stageAsk, solveByMethod, STAGE_NODE_BUDGET,
+  state, cubejs: () => Cube, stageAsk, methodSolve, STAGE_NODE_BUDGET,
   // The CHOSEN method when it has stages — its walk passes every chip of its own row (its declared
   // `stops`), so a stop is reached in the order that method takes; CFOP's `top-oriented` is on no other
   // route. Quick has no stages of its own, and its row is the beginner's, so it races the beginner's.
-  methodNow: () => {
-    const entry = methodById(settings.solveMethod);
-    return entry.engine === 'method' ? entry.method : methodById('beginner').method;
-  },
+  methodNow: () => (methodById(settings.solveMethod).engine === 'method' ? settings.solveMethod : 'beginner'),
 });
 
 /**

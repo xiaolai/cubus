@@ -173,8 +173,11 @@ export function createWalkResolver({
    * Built ONLY for a method with stages — a Quick walk never pays for a lesson — and `lessonFor` caches it
    * on the subject, keyed on the arrangement and the method. Null when the method cannot finish this cube.
    */
-  function methodWalk(entry, stageTarget = null) {
-    const lesson = stageTarget ? stageLessonFor(state.cube, entry, stageTarget) : lessonFor(state.cube, entry);
+  async function methodWalk(entry, stageTarget, signal) {
+    // Worked out on the lesson worker (lib/lesson-client.js); the walk's signal calls a superseded one off.
+    const lesson = stageTarget
+      ? await stageLessonFor(state.cube, entry, stageTarget, { signal })
+      : await lessonFor(state.cube, entry, { signal });
     if (!lesson) return null;
     return walkRecord({
       alg: lesson.alg, moves: lesson.moves.slice(), steps: lesson.stepFacelets.slice(), lesson, method: entry.id,
@@ -236,7 +239,8 @@ export function createWalkResolver({
     // session from here: a load overtaken by a newer one must not write its fallback over the newer walk.
     let fellBack = false;
     if (!stageTarget && method.engine === 'method') {
-      const taught = methodWalk(method);
+      const taught = await methodWalk(method, null, signal);
+      if (!fresh()) return null;
       if (taught) return taught;
       fellBack = true;
     }
@@ -247,7 +251,8 @@ export function createWalkResolver({
     // has no lesson" guard alone would have done nothing. A cube already at the chip, or one the method
     // cannot finish, has no cut, and takes the repair route below, which says so in its own words.
     if (stageTarget && method.engine === 'method' && method.stops.includes(stageTarget.id)) {
-      const taught = methodWalk(method, stageTarget);
+      const taught = await methodWalk(method, stageTarget, signal);
+      if (!fresh()) return null;
       if (taught) return taught;
     }
 

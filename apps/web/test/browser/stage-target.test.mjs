@@ -37,6 +37,7 @@ import { faceTurnsAlg } from '../../lib/cube-moves.js';
 import { moveStepIndex, stepAtMove } from '../../lib/method-lesson.js';
 import { solveByMethod } from '../../lib/method-solver.js';
 import { methodById } from '../../lib/methods/registry.js';
+import { methodOf } from '../../lib/methods/method-of.js';
 import { TARGET_BY_ID } from '../../lib/stage-targets.js';
 import { stopTargets } from '../../lib/method-stops.js';
 import { TUMBLED, holdForStage, holdSpec, renameAlg, scanFrameWalk, toMethodFrame } from '../../lib/solving-hold.js';
@@ -727,7 +728,7 @@ test('a lesson builds its white cross and first layer white up, then turns the c
     // screen (Codex refute, 2026-10-14).
     const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('cubusSettings') ?? '{}').solveMethod);
     assert.equal(stored, 'beginner', 'the press did not store the method');
-    const { steps } = solveByMethod(fromCube(Cube.fromString(toMethodFrame(walk.start))), methodById('beginner').method);
+    const { steps } = solveByMethod(fromCube(Cube.fromString(toMethodFrame(walk.start))), methodOf(methodById('beginner')));
     const index = moveStepIndex(steps);
     const heldAt = moves.map((_, k) => holdSpec(holdForStage(steps[stepAtMove(index, k)].stage)));
     const stages = new Set(steps.map((s) => s.stage));

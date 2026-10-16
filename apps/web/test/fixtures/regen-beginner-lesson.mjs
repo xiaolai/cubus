@@ -8,11 +8,12 @@ import { writeFileSync } from 'node:fs';
 import { COMMENT, baselineCubes, bootLesson, lessonRecord } from './beginner-lesson.mjs';
 
 const { lessonFor, whyText, win } = await bootLesson();
-const cases = baselineCubes().map((facelets) => {
-  const lesson = lessonFor({ facelets, lesson: null });
+const cases = [];
+for (const facelets of baselineCubes()) {
+  const lesson = await lessonFor({ facelets, lesson: null });
   if (!lesson) throw new Error(`no beginner lesson for ${facelets}`);
-  return { facelets, lesson: lessonRecord(lesson, whyText) };
-});
+  cases.push({ facelets, lesson: lessonRecord(lesson, whyText) });
+}
 const out = new URL('./beginner-lesson.json', import.meta.url);
 const json = `${JSON.stringify({ _comment: COMMENT, cases })}\n`;
 writeFileSync(out, json);

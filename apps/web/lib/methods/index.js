@@ -26,9 +26,11 @@ import { CROSS_ALGS, CROSS_RUNGS } from './cross.js';
 import { COURSE_ALGS, COURSE_LAST_LAYER, LAST_LAYER_EXTRAS, OLL_ALGS, OLL_RUNGS, PLL_ALGS, PLL_RUNGS } from './last-layer.js';
 import { PAIRS_ALGS, PAIRS_EXTRAS, PAIRS_RUNGS } from './pairs.js';
 
-/** The stages, in the order a solve walks them. The order IS the method — everything else is
- *  which rung of each. */
-export const STAGE_IDS = Object.freeze(['cross', 'pairs', 'oll', 'pll']);
+// The stage order and the bottom rung, from the module that builds nothing (the registry reads them on
+// the UI thread, which must never load this one).
+import { DEFAULT_RUNGS, STAGE_IDS } from './stage-ids.js';
+
+export { DEFAULT_RUNGS, STAGE_IDS };
 
 /** Every rung of every stage. `LADDER.cross[1]` is the cross planned whole. */
 export const LADDER = Object.freeze({
@@ -38,8 +40,6 @@ export const LADDER = Object.freeze({
   pll: PLL_RUNGS,
 });
 
-/** The bottom rung everywhere — what a new learner is shown, having chosen nothing (§3 rule 1). */
-export const DEFAULT_RUNGS = Object.freeze({ cross: 0, pairs: 0, oll: 0, pll: 0 });
 
 /** The highest rung each stage currently has. It grows by adding a rung file — never by editing a
  *  number here. */

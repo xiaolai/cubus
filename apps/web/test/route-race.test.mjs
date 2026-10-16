@@ -16,7 +16,9 @@ import Cube from '../vendor/cubejs.js';
 import { METHOD_FRAME, renameAlg } from '../lib/solving-hold.js';
 import { targetById } from '../lib/stage-targets.js';
 import { createRouteRace } from '../lib/screens/cube/route-race.js';
-import { methodFor, solveByMethod } from '../lib/method-solver.js';
+import { solveByMethod } from '../lib/method-solver.js';
+import { methodById } from '../lib/methods/registry.js';
+import { methodOf } from '../lib/methods/method-of.js';
 
 const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
 const OFF_BY_U = (() => { const c = Cube.fromString(SOLVED); c.move('U'); return c.asString(); })();
@@ -34,11 +36,11 @@ function race(make = () => ({})) {
     state,
     cubejs: () => Cube,
     stageAsk: async (q) => { asked.push(q); return null; },
-    solveByMethod: (cubie) => {
+    methodSolve: async (cubie) => {
       methodRuns.push(cubie);
       throw new Error('this case has no method route');
     },
-    methodNow: () => ({ id: 'the learner\'s method' }),
+    methodNow: () => 'beginner',
     STAGE_NODE_BUDGET: 4_000_000,
     ...make({ asked, methodRuns }),
   });
@@ -83,27 +85,28 @@ test('the pool source waits for the whole-cube search and renames its solution',
     "the scan-frame solution was scanned on the method frame's cube without being renamed");
 });
 
-test('the method route waits a tick, then solves the method frame\'s cube', async () => {
+test('the method route asks the lesson worker about the method frame\'s cube, with the walk\'s signal', async () => {
+  const walk = new AbortController();
+  const asked = [];
   const r = race(({ methodRuns }) => ({
-    solveByMethod: (cubie) => { methodRuns.push(cubie); return { alg: REPAIR_IN_METHOD_FRAME }; },
+    methodSolve: async (cubie, method, opts) => { methodRuns.push(cubie); asked.push([method, opts.signal]); return { alg: REPAIR_IN_METHOD_FRAME }; },
   }));
-  const racing = r.lastRoute(CROSS, OFF_BY_U, null, Promise.resolve());
-  assert.equal(r.methodRuns.length, 0,
-    'the method solver ran before the race yielded, on the thread the worker message leaves from');
-  const got = await racing;
+  const got = await r.lastRoute(CROSS, OFF_BY_U, walk.signal, Promise.resolve());
+  assert.deepEqual(asked, [['beginner', walk.signal]], 'the method route was not asked by method id, with a way to call it off');
   assert.equal(got.source, 'method');
   assert.equal(got.alg, "U'",
     "the method route's answer was not renamed back to the scan frame");
 });
 
-test('a walk called off during the method route\'s tick runs no method solver', async () => {
+test('a method question called off by its walk is no route', async () => {
   const walk = new AbortController();
-  const r = race();
+  const r = race(() => ({
+    // As the lesson client answers a question its signal called off: null, at once.
+    methodSolve: (cubie, method, { signal }) => new Promise((resolve) => { signal.addEventListener('abort', () => resolve(null)); }),
+  }));
   const racing = r.lastRoute(CROSS, OFF_BY_U, walk.signal, Promise.resolve());
-  walk.abort(); // superseded — a newer load, or the screen left — before the tick came round
+  walk.abort(); // superseded — a newer load, or the screen left
   const got = await racing;
-  assert.equal(r.methodRuns.length, 0,
-    'a superseded walk ran the method solver for a cube nobody is waiting for');
   assert.equal(got.alg, null, 'a called-off race produced a route');
 });
 
@@ -118,7 +121,7 @@ test('a walk already called off asks the worker nothing and solves nothing', asy
 test('a race missing a service refuses when it is built, not by answering nothing', () => {
   const whole = {
     state: { cube: {} }, cubejs: () => Cube, stageAsk: async () => null,
-    solveByMethod: () => ({ alg: '' }), methodNow: () => ({}), STAGE_NODE_BUDGET: 1,
+    methodSolve: async () => ({ alg: '' }), methodNow: () => 'beginner', STAGE_NODE_BUDGET: 1,
   };
   assert.doesNotThrow(() => createRouteRace(whole),
     'precondition: a whole set of services is accepted');
@@ -133,15 +136,15 @@ test('the method route walks the learner\'s last-layer route, read when it runs 
   // `top-edges` stop, so walked on it the prefix to that chip was the whole solve, an overshoot; the
   // course reaches the chip on the way and stops there.
   const scrambled = (() => { const c = Cube.fromString(SOLVED); c.move("B R D R' D' B'"); return c.asString(); })();
-  let route = 'app';
+  let chosen = 'cfop-4lll'; // the app's last-layer route
   const r = race(({ methodRuns }) => ({
-    solveByMethod: (cubie, method) => { methodRuns.push(method.id); return solveByMethod(cubie, method); },
-    methodNow: () => methodFor(undefined, { lastLayer: route }),
+    methodSolve: async (cubie, id) => { methodRuns.push(id); return solveByMethod(cubie, methodOf(methodById(id))); },
+    methodNow: () => chosen,
   }));
   const onApp = await r.lastRoute(targetById('top-edges'), scrambled, null, Promise.resolve());
-  route = 'course'; // switched in Settings after the race was built
+  chosen = 'beginner'; // chosen after the race was built: the course's route
   const onCourse = await r.lastRoute(targetById('top-edges'), scrambled, null, Promise.resolve());
-  assert.deepEqual(r.methodRuns, ['0,0,0,0', '0,0,0,0,course'], 'the fallback did not ask for the route chosen at the time');
+  assert.deepEqual(r.methodRuns, ['cfop-4lll', 'beginner'], 'the fallback did not ask for the method chosen at the time');
   assert.equal(onCourse.source, 'method');
   assert.equal(onCourse.overshoot, false, 'on the course\'s route the fallback overshot a stop the course reaches');
   assert.ok(onCourse.moves < onApp.moves, `the course's way to top-edges (${onCourse.moves}) is not shorter than a whole app solve (${onApp.moves})`);

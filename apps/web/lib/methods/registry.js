@@ -16,11 +16,14 @@
 //               (ADR 0003). `WHITE_UP_STAGES` in lib/solving-hold.js is read from here.
 // Declaring a hold is not executing it. A method with no cross needs the driver generalised first.
 //
-// This module is data, and imports only the method library beneath it — never a hold, a screen or a
-// target module — so those can read it without a cycle.
+// This module is DATA, and is read on the UI thread, so it imports nothing that builds: a method is
+// declared as a SPEC — its rungs and its last-layer route — and turned into the engine's stage
+// descriptors by `methodOf` (lib/methods/method-of.js), which only the lesson worker and the tests load.
+// lib/methods/index.js builds every rung's repertoire when it loads; this module once imported it, and
+// that build ran on the UI thread at boot (ADR 0011 Phase 7 audit, 2026-10-16).
 
 import { t } from '../i18n.js';
-import { DEFAULT_RUNGS, STAGE_IDS, methodFor } from './index.js';
+import { DEFAULT_RUNGS, STAGE_IDS } from './stage-ids.js';
 
 /** The levels the "More methods" menu groups by, in the order a learner meets them. */
 export const LEVELS = Object.freeze(['first-steps', 'getting-faster', 'competition']);
@@ -30,8 +33,11 @@ export const ENTRY_FIELDS = Object.freeze([
   'id', 'label', 'level', 'engine', 'method', 'stages', 'holds', 'stops', 'words', 'algorithms', 'proof',
 ]);
 
+/** A method as the engine will build it: which rung of each stage, and which last-layer route. */
+const spec = (rungs, lastLayer) => Object.freeze({ rungs: Object.freeze({ ...rungs }), lastLayer });
+
 /** The beginner's method: every stage at rung 0, and the course's last layer (ADR 0009's route). */
-const BEGINNER_METHOD = methodFor(DEFAULT_RUNGS, { lastLayer: 'course' });
+const BEGINNER_METHOD = spec(DEFAULT_RUNGS, 'course');
 
 /**
  * The section headings of a lesson, keyed by the dial a fine stage belongs to. Plain words, not CFOP
@@ -73,8 +79,8 @@ const BEGINNER = Object.freeze({
   level: 'first-steps',
   engine: 'method',
   method: BEGINNER_METHOD,
-  /** The engine's stage descriptors, in walking order — one per dial, the course's pair in the last two. */
-  stages: BEGINNER_METHOD.stages,
+  /** Its stages, by dial, in walking order — the course's pair stands in the last two (`methodOf` builds them). */
+  stages: STAGE_IDS,
   holds: Object.freeze({
     // The solver works white-down (lib/solving-hold.js `METHOD_FRAME`): the scan frame tumbled.
     frame: Object.freeze(['D', 'B']),
@@ -112,10 +118,10 @@ const BEGINNER = Object.freeze({
 
 /** CFOP with the two-look last layer: the cross planned whole, the corner joined to its edge and the pair
  *  put in together, two looks to orient the top (6 algorithms) and two to permute it (5). */
-const CFOP_EASY_METHOD = methodFor({ cross: 1, pairs: 1, oll: 0, pll: 0 }, { lastLayer: 'app' });
+const CFOP_EASY_METHOD = spec({ cross: 1, pairs: 1, oll: 0, pll: 0 }, 'app');
 /** Full CFOP: the cross planned whole, the 41 F2L cases, full OLL (57) and full PLL (21) — the sourced
  *  table of lib/data/human-algs.js. */
-const CFOP_FULL_METHOD = methodFor({ cross: 1, pairs: 2, oll: 1, pll: 1 }, { lastLayer: 'app' });
+const CFOP_FULL_METHOD = spec({ cross: 1, pairs: 2, oll: 1, pll: 1 }, 'app');
 
 // THE HOLD STORY IS THE BEGINNER'S, KEPT (owner's call Q5): white up while the white side is built, the
 // tumble, then white underneath. CFOP has no first-layer stage of its own — F2L builds the bottom layer
@@ -187,7 +193,7 @@ function cfopEntry({ id, label, level, method, pairs, algorithms, sweep }) {
     level,
     engine: 'method',
     method,
-    stages: method.stages,
+    stages: STAGE_IDS,
     holds: CFOP_HOLDS,
     stops: CFOP_STOPS,
     words: CFOP_WORDS,
@@ -253,9 +259,14 @@ export function checkEntry(entry) {
   if (entry.engine === 'method' && (!entry.method || entry.stages.length === 0)) {
     throw new Error(`methods: entry "${entry.id}" runs the method engine with no stages`);
   }
-  // The DECLARED stages are the ones that run: a second list beside the method's would be free to drift.
-  if (entry.engine === 'method' && entry.stages !== entry.method.stages) {
-    throw new Error(`methods: entry "${entry.id}" declares stages that are not its method's own`);
+  // A method is a spec the engine can build: rungs for every declared stage, and a known route. That the
+  // BUILT stages are the declared ones is `methodOf`'s check, where they are built.
+  if (entry.engine === 'method') {
+    const { rungs, lastLayer } = entry.method;
+    if (!['app', 'course'].includes(lastLayer)) throw new Error(`methods: entry "${entry.id}" has unknown last-layer route "${lastLayer}"`);
+    for (const stage of entry.stages) {
+      if (!Number.isInteger(rungs?.[stage])) throw new Error(`methods: entry "${entry.id}" names no rung for its "${stage}" stage`);
+    }
   }
   if (entry.engine === 'two-phase' && (entry.method !== null || entry.stages.length !== 0)) {
     throw new Error(`methods: entry "${entry.id}" runs the two-phase solver but declares a method or stages`);

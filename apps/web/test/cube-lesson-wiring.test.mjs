@@ -110,10 +110,10 @@ test('a method with stages is taught WITHOUT the whole-cube search, and a cube i
   // dev-docs/solve-methods-plan.md Phase 0 (2): the lesson needs nothing from the two-phase answer, so the
   // search that used to run first, unconditionally, is not started for it. This supersedes the
   // search-first wiring assertion that stood here.
-  const taught = blockAt(code, 'function methodWalk(entry, stageTarget = null)');
-  assert.match(taught, /lessonFor\(state\.cube, entry\)/, 'the lesson must be built for the chosen entry');
+  const taught = blockAt(code, 'async function methodWalk(entry, stageTarget, signal)');
+  assert.match(taught, /await lessonFor\(state\.cube, entry, \{ signal \}\)/, 'the lesson must be built for the chosen entry, with the walk\'s signal');
   const solve = blockAt(code, 'async function solveWalk(');
-  const methodFirst = solve.indexOf('const taught = methodWalk(method);');
+  const methodFirst = solve.indexOf('const taught = await methodWalk(method, null, signal);');
   const searched = solve.indexOf('startWholeSearch(');
   assert.ok(methodFirst > 0 && methodFirst < searched, 'the chosen method must be tried before any search starts');
   // The fallback is CARRIED in the walk record, and the session commits it only after its freshness check:
@@ -135,9 +135,9 @@ test('a chip the chosen method stops at gets that method\'s lesson CUT there, on
   const cut = solve.indexOf('method.stops.includes(stageTarget.id)');
   const race = solve.indexOf('startWholeSearch(');
   assert.ok(cut > 0 && cut < race, 'the cut must be tried before the repair race starts');
-  assert.match(blockAt(code, 'function methodWalk(entry, stageTarget = null)'), /stageLessonFor\(state\.cube, entry, stageTarget\)/);
+  assert.match(blockAt(code, 'async function methodWalk(entry, stageTarget, signal)'), /await stageLessonFor\(state\.cube, entry, stageTarget, \{ signal \}\)/);
   // The cut itself is ONE function over every record (lib/lesson-cut.js), never truncated at the caller.
-  assert.match(blockAt(code, 'function stageLessonFor(c, entry, target)'), /return cutLesson\(lesson, holds\);/);
+  assert.match(blockAt(code, 'async function stageLessonFor(c, entry, target, '), /return cutLesson\(lesson, holds\);/);
   // And the row is still hidden over a REPAIR, which is no method's walk.
   assert.match(code, /methodRow\.hidden = Boolean\(route\)/, 'the method row must be hidden while a repair is showing');
 });
@@ -153,9 +153,11 @@ test('the lesson is thrown away with the arrangement it was about', () => {
   assert.match(forget, /c\.solution = ''/, 'and it must not keep the old cube\'s solution');
   // And the cache key is the arrangement AND the method, so a lesson built for one method is never
   // served for another.
-  const fn = blockAt(code, 'function lessonFor(c = state.cube, entry = methodById(\'beginner\'))');
+  const fn = blockAt(code, 'async function lessonFor(c = state.cube, entry = methodById(\'beginner\'), ');
   assert.match(fn, /c\.lesson\.facelets === c\.facelets/);
-  assert.match(fn, /c\.lesson\.method === method\.id/);
+  assert.match(fn, /c\.lesson\.method === entry\.id/);
+  // And an answer that lands after the subject moved on is not cached on it.
+  assert.match(fn, /if \(result === null \|\| c\.facelets !== facelets\) return null;/);
 });
 
 test('every step points at something, and the cue is cleared when there is nothing to point at', () => {
@@ -163,7 +165,7 @@ test('every step points at something, and the cue is cleared when there is nothi
   assert.ok(point, 'the screen must have a function that applies a step\'s cues');
   // Worked out once, when the lesson is built, and renamed into the frame the renderer draws — then
   // applied from the step under the head.
-  const build = blockAt(code, 'function lessonFor(c = state.cube, entry = methodById(\'beginner\'))');
+  const build = blockAt(code, 'function lessonFrom(c, entry, result)');
   assert.match(build, /lessonCues\(step\)/, 'every step\'s cues are worked out when the lesson is built');
   assert.match(point, /step\?\.focus/);
   assert.match(point, /step\?\.highlight/);
@@ -201,8 +203,8 @@ test('the rung ladder is gone: nothing stores, offers, raises or resets a rung, 
   // ADR 0011 decision 3 SUPERSEDES the assertion that stood here (the solver reading
   // `methodFor(settings.rungs, { lastLayer: settings.lastLayer })`): a method is fixed, so the lesson is
   // built from the chosen registry entry and NEVER from the learner's rungs or route setting.
-  const lesson = blockAt(code, 'function lessonFor(c = state.cube, entry = methodById(\'beginner\'))');
-  assert.match(lesson, /const method = entry\.method;/, 'the lesson must be built from the registry entry');
+  const lesson = blockAt(code, 'async function lessonFor(c = state.cube, entry = methodById(\'beginner\'), ');
+  assert.match(lesson, /await methodSolve\(.*, entry\.id, \{ signal \}\)/, 'the lesson must be built from the registry entry');
   assert.doesNotMatch(lesson, /settings\.(rungs|lastLayer)/, 'a lesson built from the rung ladder or the route setting');
   // The higher rungs STAY as a library (decision 4): four dials, each defaulting to its bottom rung.
   assert.deepEqual(Object.keys(DEFAULT_RUNGS).sort(), [...STAGE_IDS].sort());

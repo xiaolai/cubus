@@ -252,7 +252,7 @@ test('the engine is asked about the WHITE cross, and every answer comes back in 
     'the pool\'s scan-frame solution is renamed before its prefix is scanned on the method frame');
   assert.match(race, /renameAlg\(last\.alg, METHOD_TO_SCAN\)/, 'and the answer leaves in the scan frame');
   // The lesson crosses the same two lines.
-  assert.match(code, /solveByMethod\(fromCube\(Cube\.fromString\(toMethodFrame\(c\.facelets\)\)\), method\)/,
+  assert.match(code, /methodSolve\(fromCube\(Cube\.fromString\(toMethodFrame\(facelets\)\)\), entry\.id, \{ signal \}\)/,
     'the lesson is built white-first too');
   assert.match(code, /const walk = scanFrameWalk\(result\.steps\);/, 'and walked in the scan frame, each step played in its hold');
   assert.match(code, /renameSelectors\(convertSelectors\(spec, step\.hold\), METHOD_TO_SCAN\)/, 'its cues name pieces the renderer can find');

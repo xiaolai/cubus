@@ -11,7 +11,7 @@ import { provenAnswer } from './optimal-challenges.js';
 // other was. That rule is what the first attempt broke; §3 of the plan is about it.
 import { fromCube, movesOf } from './cube-pieces.js';
 import { convertSelectors, faceTurnsAlg } from './cube-moves.js';
-import { solveByMethod } from './method-solver.js';
+import { methodSolve } from './lesson-client.js';
 import { methodById } from './methods/registry.js';
 import { cutLesson } from './lesson-cut.js';
 import { lessonCues, lessonSections, moveStepIndex } from './method-lesson.js';
@@ -59,34 +59,46 @@ export function ingestFacelets(f) {
 /**
  * The lesson for the current arrangement, in the method the learner chose (ADR 0011).
  *
- * `entry` is a registry entry (lib/methods/registry.js) that runs the method engine — today Beginner,
- * which is fixed: every stage at rung 0, the course's last layer. It is never built from a rung record
- * or a route setting; a method is a definition, not a learner.
+ * `entry` is a registry entry (lib/methods/registry.js) that runs the method engine. It is never built
+ * from a rung record or a route setting; a method is a definition, not a learner.
  *
- * Synchronous, and on this thread on purpose: it needs no search worth moving off it. **Measured on this
- * machine, 2026-09-09**: 33 ms at rung 0 everywhere, which is the beginner's method.
+ * WORKED OUT OFF THIS THREAD (lib/lesson-client.js). It was synchronous here while the beginner's method
+ * was the only one — 33 ms measured on 2026-09-09 — and CFOP's first lesson, which builds 119 algorithms'
+ * repertoires and the cross table, blocked the page for a median 836 ms (WebKit, 2026-10-16). The solve
+ * goes to the lesson worker; turning its steps into a lesson stays here (`lessonFrom`), because that half
+ * needs the translator and the subject, and costs little. `signal` is the walk's: a superseded walk's
+ * question is called off and answered null.
  *
  * Cached against the arrangement AND the method, so a lesson built for one method is never served for
- * another.
+ * another — and only if the subject is still the arrangement it was asked about when the answer lands.
  *
- * Returns null rather than throwing on a cube the method cannot finish: the Quick walk is still
- * there, and a screen that lost both because one of them failed would be worse than one that quietly
- * offers the other. `MethodSolverError` carries the stage, so the reason is logged rather than
- * swallowed.
+ * Resolves null rather than rejecting on a cube the method cannot finish: the Quick walk is still there,
+ * and a screen that lost both because one of them failed would be worse than one that quietly offers the
+ * other. The solver's error carries the stage, so the reason is logged rather than swallowed.
  */
-export function lessonFor(c = state.cube, entry = methodById('beginner')) {
+export async function lessonFor(c = state.cube, entry = methodById('beginner'), { signal } = {}) {
   if (entry.engine !== 'method') throw new Error(`lessonFor: "${entry.id}" is not a method with stages`);
-  const method = entry.method;
-  if (c.lesson && c.lesson.facelets === c.facelets && c.lesson.method === method.id) return c.lesson;
+  if (c.lesson && c.lesson.facelets === c.facelets && c.lesson.method === entry.id) return c.lesson;
+  const facelets = c.facelets;
   let result;
   try {
     // IN THE METHOD FRAME, so the cross it builds is the WHITE one (ADR 0003). The solver puts the
     // cross on its own D; handed the scan frame, where D is yellow, it taught a yellow cross first.
-    result = solveByMethod(fromCube(Cube.fromString(toMethodFrame(c.facelets))), method);
+    result = await methodSolve(fromCube(Cube.fromString(toMethodFrame(facelets))), entry.id, { signal });
   } catch (err) {
     console.warn('method solver: no lesson for this cube', err);
     return null;
   }
+  // Called off, or answered about an arrangement the subject has since left.
+  if (result === null || c.facelets !== facelets) return null;
+  return lessonFrom(c, entry, result);
+}
+
+/**
+ * The solver's answer for `c`'s arrangement, as the lesson the screen walks — and cached on `c`. Pure
+ * conversion: no search. Exported for the test that holds a worker's answer to the frozen baseline.
+ */
+export function lessonFrom(c, entry, result) {
   // …and the walk lives in the scan frame, like every other walk: the renderer, `follow` and the
   // smart cube all compare against scan-frame states. SO DOES EVERY STEP, converted once, here: its
   // moves played in its hold and renamed, the hold each move is made in worked out beside them, and
@@ -112,7 +124,8 @@ export function lessonFor(c = state.cube, entry = methodById('beginner')) {
   }));
   c.lesson = {
     facelets: c.facelets,
-    method: method.id,
+    // The ENTRY's id: one entry is one method, and the cache must never serve one method's lesson for another.
+    method: entry.id,
     rungs: result.rungs,
     steps,
     sections: lessonSections(steps),
@@ -138,11 +151,11 @@ export function lessonFor(c = state.cube, entry = methodById('beginner')) {
  *
  * The chip is judged by its own independent predicate (`verify`), in the method frame, on the walk's
  * states — never by a stage name: a chip can first hold at an earlier stage end than the one it is named
- * for (plan Phase 0 (1)).
+ * for (plan Phase 0 (1)). Off this thread as `lessonFor` is; the cut itself is a replay, not a search.
  */
-export function stageLessonFor(c, entry, target) {
+export async function stageLessonFor(c, entry, target, { signal } = {}) {
   if (!entry.stops.includes(target.id) || target.id === 'solved') return null;
-  const lesson = lessonFor(c, entry);
+  const lesson = await lessonFor(c, entry, { signal });
   if (!lesson) return null;
   const holds = (facelets) => target.verify(fromCube(Cube.fromString(toMethodFrame(facelets))));
   return cutLesson(lesson, holds);

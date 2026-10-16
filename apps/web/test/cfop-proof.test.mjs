@@ -18,6 +18,7 @@ import { test } from 'node:test';
 import Cube from 'cubejs';
 
 import { methodById } from '../lib/methods/registry.js';
+import { methodOf } from '../lib/methods/method-of.js';
 import { solveByMethod } from '../lib/method-solver.js';
 import { SOLVED, applyAlg, toFacelets } from '../lib/cube-pieces.js';
 import { faceTurnsAlg, run } from '../lib/cube-moves.js';
@@ -47,7 +48,7 @@ const turns = (step) => faceTurnsAlg(run(step.alg, step.hold, SOLVED).drawn);
 /** Solve `state` with `id`'s method and replay it on cubejs: the cube after the orientation looks, and
  *  after everything. */
 function replay(id, state) {
-  const result = solveByMethod(state, methodById(id).method);
+  const result = solveByMethod(state, methodOf(methodById(id)));
   const cube = Cube.fromString(toFacelets(state));
   let afterOrient = null;
   let oriented = false;
@@ -103,7 +104,7 @@ for (const id of CFOP) {
     let n = 0;
     for (const c of EVERY_CONFIGURATION) {
       const state = configuration(c.cornerAt, c.twist, c.edgeAt, c.flip);
-      const result = solveByMethod(state, methodById(id).method);
+      const result = solveByMethod(state, methodOf(methodById(id)));
       const cube = Cube.fromString(toFacelets(state));
       let afterPairs = faces(cube);
       for (const step of result.steps) {
@@ -154,7 +155,7 @@ for (const id of CFOP) {
     const entry = methodById(id);
     assert.deepEqual([...entry.holds.displayed.whiteUpStages], ['cross']);
     for (const state of seededStates(12, 0xcf0c, 25)) {
-      for (const step of solveByMethod(state, entry.method).steps) {
+      for (const step of solveByMethod(state, methodOf(entry)).steps) {
         const words = whyText(step);
         assert.ok(typeof words === 'string' && words.length > 0, `${id}: a ${step.stage} step has no words`);
         assert.equal(sameHold(holdForStage(step.stage), SCAN_HOLD), entry.holds.displayed.whiteUpStages.includes(step.stage),
@@ -171,7 +172,7 @@ for (const id of CFOP) {
 
 test('the planned cross is a real cross: replayed by cubejs, the white cross is home after the first step', () => {
   for (const state of seededStates(20, 0xc055, 25)) {
-    const { steps } = solveByMethod(state, methodById('cfop').method);
+    const { steps } = solveByMethod(state, methodOf(methodById('cfop')));
     const cube = Cube.fromString(toFacelets(state));
     cube.move(turns(steps[0]));
     const f = faces(cube);
