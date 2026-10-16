@@ -325,3 +325,35 @@ test('a lesson whose walk is called off resolves null and caches nothing — thr
   assert.equal(await cut, null);
   assert.equal(c.lesson, null, 'a called-off lesson was cached');
 });
+
+test('a called-off walk is answered null even when its lesson is already cached — whole and cut', async () => {
+  // The empty-cache case above passes on its own; a warmed cache returned the lesson to a walk that had gone.
+  const { subject } = await app();
+  const { TARGET_BY_ID } = await import('../lib/stage-targets.js');
+  const { methodById } = await import('../lib/methods/registry.js');
+  const c = { facelets: move(SOLVED, "F R U' L2 D B'"), lesson: null };
+  const cached = await subject.lessonFor(c, methodById('cfop'));
+  assert.ok(cached && c.lesson === cached, 'precondition: the lesson is cached');
+  const gone = AbortSignal.abort();
+  assert.equal(await subject.lessonFor(c, methodById('cfop'), { signal: gone }), null, 'a gone walk was served the cached lesson');
+  assert.equal(await subject.stageLessonFor(c, methodById('cfop'), TARGET_BY_ID['two-layers'], { signal: gone }), null,
+    'a gone walk was served a cut of the cached lesson');
+  assert.equal(c.lesson, cached, 'calling a walk off threw away a lesson that is still right for the cube');
+});
+
+test('the lesson cache is keyed on the arrangement AND the method: neither alone serves it', async () => {
+  const { subject } = await app();
+  const { methodById } = await import('../lib/methods/registry.js');
+  const asked = move(SOLVED, "R U F' D2 L B U'");
+  const c = { facelets: asked, lesson: null };
+  const beginner = await subject.lessonFor(c, methodById('beginner'));
+  // Same arrangement, another method: not the beginner lesson.
+  const cfop = await subject.lessonFor(c, methodById('cfop'));
+  assert.notEqual(cfop, beginner, 'one method\'s lesson was served for another');
+  assert.equal(cfop.method, 'cfop');
+  // Same method, another arrangement: not the cached lesson.
+  c.facelets = move(asked, 'R');
+  const moved = await subject.lessonFor(c, methodById('cfop'));
+  assert.notEqual(moved, cfop, 'another arrangement\'s lesson was served');
+  assert.equal(moved.facelets, c.facelets);
+});

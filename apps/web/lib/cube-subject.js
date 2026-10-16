@@ -80,6 +80,8 @@ export function ingestFacelets(f) {
  */
 export async function lessonFor(c = state.cube, entry = methodById('beginner'), { signal } = {}) {
   if (entry.engine !== 'method') throw new Error(`lessonFor: "${entry.id}" is not a method with stages`);
+  // Called off is null whether or not the lesson is cached: the answer is about the walk, not the cube.
+  if (signal?.aborted) return null;
   if (c.lesson && c.lesson.facelets === c.facelets && c.lesson.method === entry.id) return c.lesson;
   const facelets = c.facelets;
   let result;
