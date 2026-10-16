@@ -32,7 +32,7 @@ import { $, SOLVED, escHtml, icon, state } from '../app-state.js';
 import { load, save, settings } from '../app-settings.js';
 import { hooks } from '../screen-slots.js';
 import { CHIP_NODE_BUDGET, Cube, loadSolver, solverReady, solverWorker, stageAsk, warmSolver } from '../solver-service.js';
-import { classifyCube, deriveCube, lessonFor, raiseRung, stepStates, walkEligible } from '../cube-subject.js';
+import { classifyCube, deriveCube, lessonFor, raiseRung, stageLessonFor, stepStates, walkEligible } from '../cube-subject.js';
 import { applyNetColors, buildNet, describeCube, newCube } from '../cube-drawing.js';
 import { keepAwake } from '../wake-lock.js';
 import { play } from '../sound.js';
@@ -144,7 +144,7 @@ const WALK_APP = Object.freeze({
   cubejs: () => Cube,
   solverReady: () => solverReady,
   loadSolver, randomScramble, deriveCube, classifyCube, walkEligible, adoptCube, chainTrusted, markStale,
-  lessonFor, stageAsk, stepStates, putInPlay, parkRoll, refreshScreen, go, save, raiseRung,
+  lessonFor, stageLessonFor, stageAsk, stepStates, putInPlay, parkRoll, refreshScreen, go, save, raiseRung,
   escHtml, icon, lastRoute, pictureRoute, sayWalkLength, describeCube, play,
 });
 

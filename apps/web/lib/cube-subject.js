@@ -13,6 +13,7 @@ import { fromCube, movesOf } from './cube-pieces.js';
 import { convertSelectors, faceTurnsAlg } from './cube-moves.js';
 import { DEFAULT_RUNGS, solveByMethod } from './method-solver.js';
 import { methodById } from './methods/registry.js';
+import { cutLesson } from './lesson-cut.js';
 import { lessonCues, lessonSections, moveStepIndex } from './method-lesson.js';
 import { NO_PROGRESS, acceptOffer, repairProgress } from './method-ladder.js';
 import { isCubeState } from './cube-trust.js';
@@ -128,6 +129,24 @@ export function lessonFor(c = state.cube, entry = methodById('beginner')) {
     stepFacelets: stepStates(c.facelets, moves.map(faceTurnsAlg)),
   };
   return c.lesson;
+}
+
+/**
+ * The chosen method's lesson for this cube, CUT where `target` — a stage chip the method stops at — first
+ * holds (ADR 0011; dev-docs/solve-methods-plan.md Phase 4). Null when there is nothing to teach on the way
+ * there: the method cannot finish this cube, the cube is already at the chip, or the entry does not stop
+ * at it. A null is the caller's cue to take the repair route instead, and say so.
+ *
+ * The chip is judged by its own independent predicate (`verify`), in the method frame, on the walk's
+ * states — never by a stage name: a chip can first hold at an earlier stage end than the one it is named
+ * for (plan Phase 0 (1)).
+ */
+export function stageLessonFor(c, entry, target) {
+  if (!entry.stops.includes(target.id) || target.id === 'solved') return null;
+  const lesson = lessonFor(c, entry);
+  if (!lesson) return null;
+  const holds = (facelets) => target.verify(fromCube(Cube.fromString(toMethodFrame(facelets))));
+  return cutLesson(lesson, holds);
 }
 
 /**

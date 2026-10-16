@@ -114,7 +114,7 @@ export function createWalkSession(screen, app) {
   } = provided(screen, 'screen');
   const {
     state, settings, SOLVED, CHIP_NODE_BUDGET, WALK_FAILURES, cubejs, solverReady, loadSolver,
-    randomScramble, deriveCube, classifyCube, walkEligible, adoptCube, chainTrusted, markStale, lessonFor,
+    randomScramble, deriveCube, classifyCube, walkEligible, adoptCube, chainTrusted, markStale, lessonFor, stageLessonFor,
     stageAsk, stepStates, putInPlay, parkRoll, refreshScreen, go, save, raiseRung, escHtml, icon,
     lastRoute, pictureRoute, sayWalkLength, describeCube, play,
   } = provided(app, 'app');
@@ -494,7 +494,7 @@ export function createWalkSession(screen, app) {
     fellBack = true;
   }
   const { resolveWalk } = createWalkResolver({
-    state, SOLVED, solverReady, loadSolver, randomScramble, deriveCube, lastRoute, lessonFor, stepStates,
+    state, SOLVED, solverReady, loadSolver, randomScramble, deriveCube, lastRoute, lessonFor, stageLessonFor, stepStates,
     setStatus, fallBackToQuick, pictureRoute,
   });
 

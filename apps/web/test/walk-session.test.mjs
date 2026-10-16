@@ -187,6 +187,7 @@ function world({ subject = {}, omit = [], screen: screenOver = {}, settings: set
     chainTrusted: () => state.cube.trusted && (state.cube.source === 'cube' || state.cube.source === 'camera'),
     markStale: () => {},
     lessonFor: () => null,
+    stageLessonFor: () => null,
     stageAsk: async () => null,
     stepStates: (from, moves) => {
       const out = [from];
@@ -2185,4 +2186,58 @@ test('the scramble screen never works its walk out again: it walks from solved, 
   await settle();
   assert.equal(w.log.includes('refreshScreen'), false, 'the scramble was replaced by a solve of the cube in hand');
   assert.equal(w.cube.getAttribute('arrow'), 'none', 'with no short way back, the scramble still drew an arrow');
+});
+
+// ---- a chip in the chosen method: the lesson cut at the chip (ADR 0011, plan Phase 4) --------------------
+
+/** A one-move lesson cut at a chip, as `stageLessonFor` hands one back. */
+const cutAt = (cube) => ({
+  alg: "R'", moves: ["R'"], moveHolds: [SCAN_HOLD, SCAN_HOLD], stepFacelets: [cube.facelets, turned("R'", cube.facelets)],
+  steps: [], moveStep: [0], sections: [{ id: 'cross', name: 'Cross', steps: 1, moves: 1, from: 0, to: 1 }], cutAt: 0,
+});
+
+test('Beginner and a chip it stops at: the walk is the beginner lesson CUT at the chip, with no repair race', async () => {
+  const asked = [];
+  let races = 0;
+  let searches = 0;
+  const w = world({ settings: { solveMethod: 'beginner' } }, ({ state }) => ({
+    deriveCube: async () => { searches += 1; solvedBy(state, "R'"); },
+    lastRoute: async () => { races += 1; return { kind: 'exact', alg: "U'", moves: 1, minimal: true, overshoot: false }; },
+    stageLessonFor: (cube, entry, target) => { asked.push(`${entry.id} ${target.id}`); return cutAt(cube); },
+  }));
+  w.state.stageTarget = 'cross';
+  assert.equal(await within(w.session.load()), true);
+  assert.deepEqual(asked, ['beginner cross'], 'the cut was not asked for, for this method and this chip');
+  assert.equal(races, 0, 'a repair race ran for a chip the method teaches');
+  assert.equal(searches, 0, 'a whole-cube search ran for a chip the method teaches');
+  assert.deepEqual(w.chips(), ["R'"], 'the cut lesson is not the walk on screen');
+  assert.equal(w.$('#methodRow').hidden, false, 'the method row was hidden over the method\'s own walk');
+  assert.equal(w.$('#solLabel').textContent, 'Beginner');
+});
+
+test('a chip with nothing to teach on the way — the cube already there — takes the repair route, said as such', async () => {
+  let races = 0;
+  const w = world({ settings: { solveMethod: 'beginner' } }, ({ state }) => ({
+    deriveCube: async () => { solvedBy(state, "R'"); },
+    lastRoute: async () => { races += 1; return { kind: 'exact', alg: '', moves: 0, minimal: true, overshoot: false }; },
+    stageLessonFor: () => null,
+  }));
+  w.state.stageTarget = 'cross';
+  assert.equal(await within(w.session.load()), true);
+  assert.equal(races, 1, 'with no cut, the repair route was not asked');
+  assert.match(w.$('#solList').textContent, /Nothing to do here/, 'the repair did not say the cube is already there');
+  assert.equal(w.$('#methodRow').hidden, true, 'a repair wore the method row');
+});
+
+test('Quick keeps the repair race for every chip, and never asks for a cut', async () => {
+  let cuts = 0;
+  const w = world({}, ({ state }) => ({
+    deriveCube: async () => { solvedBy(state, "R' U'"); },
+    lastRoute: async () => ({ kind: 'exact', alg: "U'", moves: 1, minimal: true, overshoot: false }),
+    stageLessonFor: () => { cuts += 1; return null; },
+  }));
+  w.state.stageTarget = 'cross';
+  assert.equal(await within(w.session.load()), true);
+  assert.equal(cuts, 0, 'Quick asked for a lesson cut');
+  assert.deepEqual(w.chips(), ["U'"]);
 });

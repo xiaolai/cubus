@@ -110,8 +110,8 @@ test('a method with stages is taught WITHOUT the whole-cube search, and a cube i
   // dev-docs/solve-methods-plan.md Phase 0 (2): the lesson needs nothing from the two-phase answer, so the
   // search that used to run first, unconditionally, is not started for it. This supersedes the
   // search-first wiring assertion that stood here.
-  const taught = blockAt(code, 'function methodWalk(entry)');
-  assert.match(taught, /const lesson = lessonFor\(state\.cube, entry\);/, 'the lesson must be built for the chosen entry');
+  const taught = blockAt(code, 'function methodWalk(entry, stageTarget = null)');
+  assert.match(taught, /lessonFor\(state\.cube, entry\)/, 'the lesson must be built for the chosen entry');
   const solve = blockAt(code, 'async function solveWalk(');
   const methodFirst = solve.indexOf('const taught = methodWalk(method);');
   const searched = solve.indexOf('startWholeSearch(');
@@ -122,16 +122,20 @@ test('a method with stages is taught WITHOUT the whole-cube search, and a cube i
   assert.doesNotMatch(fallback, /solveMethod/, 'a fallback must not change the stored method');
 });
 
-test('a STAGE route has no lesson, and the method row goes with it', () => {
-  // dev-docs/solve-to-state-plan.md §9.4. Two halves, and only together do they mean anything: the lesson
-  // must not be COMPUTED for a stage target, and the row must not be SHOWN over a repair.
+test('a chip the chosen method stops at gets that method\'s lesson CUT there, on its own path ahead of the repair race', () => {
+  // Plan Phase 4 SUPERSEDES "a stage route has no lesson" (§9.4): that was true of the app's last-layer
+  // route, which cannot stop at "corners home"; the beginner's method stops at every chip (its declared
+  // `stops`, held to the walk by course-route.test.mjs). Deleting the old guard alone would have done
+  // nothing — a repair that answered returns before it — so the cut is its own branch, BEFORE the race.
   const solve = blockAt(code, 'async function solveWalk(');
-  assert.match(solve, /if \(!stageTarget && method\.engine === 'method'\)/,
-    'the lesson branch must be skipped for a stage target, or it overwrites the repair');
-  const repaired = solve.indexOf('return repairWalk(');
-  assert.ok(repaired > 0, 'a repair that answered returns its own walk');
-  assert.match(code, /methodRow\.hidden = Boolean\(route\)/,
-    'the method row must be hidden while a repair is showing');
+  const cut = solve.indexOf('method.stops.includes(stageTarget.id)');
+  const race = solve.indexOf('startWholeSearch(');
+  assert.ok(cut > 0 && cut < race, 'the cut must be tried before the repair race starts');
+  assert.match(blockAt(code, 'function methodWalk(entry, stageTarget = null)'), /stageLessonFor\(state\.cube, entry, stageTarget\)/);
+  // The cut itself is ONE function over every record (lib/lesson-cut.js), never truncated at the caller.
+  assert.match(blockAt(code, 'function stageLessonFor(c, entry, target)'), /return cutLesson\(lesson, holds\);/);
+  // And the row is still hidden over a REPAIR, which is no method's walk.
+  assert.match(code, /methodRow\.hidden = Boolean\(route\)/, 'the method row must be hidden while a repair is showing');
 });
 
 test('the lesson is thrown away with the arrangement it was about', () => {

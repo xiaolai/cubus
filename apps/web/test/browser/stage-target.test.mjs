@@ -33,10 +33,11 @@ import { webkit } from 'playwright';
 
 import { turnFacelets } from '../../lib/cube-orientation.js';
 import { fromCube } from '../../lib/cube-pieces.js';
+import { faceTurnsAlg } from '../../lib/cube-moves.js';
 import { moveStepIndex, stepAtMove } from '../../lib/method-lesson.js';
 import { solveByMethod } from '../../lib/method-solver.js';
 import { methodById } from '../../lib/methods/registry.js';
-import { OFFERED_TARGETS } from '../../lib/stage-targets.js';
+import { OFFERED_TARGETS, TARGET_BY_ID } from '../../lib/stage-targets.js';
 import { TUMBLED, holdForStage, holdSpec, renameAlg, scanFrameWalk, toMethodFrame } from '../../lib/solving-hold.js';
 import Cube from '../../vendor/cubejs.js';
 import { pace } from '../browser-wait.mjs';
@@ -632,6 +633,31 @@ test('a tumbled stage turns the CUBE over, and every chip is named for how it is
     for (const [at, face] of WHITE_CROSS) {
       assert.equal(crossEnd[at], face, `sticker ${at}: the cross the chips build is the WHITE one, on top`);
     }
+  } finally {
+    assert.deepEqual(errors.map(String), [], 'the page must raise nothing');
+    await context.close();
+  }
+});
+
+test('with Beginner chosen, a chip is walked by the beginner lesson cut where the chip first holds (ADR 0011)', async () => {
+  const { page, context, errors } = await openHome();
+  try {
+    await scrambled(page);
+    await page.click('[data-method="beginner"]');
+    await page.waitForFunction(() => document.querySelectorAll('#solList .move-chips').length > 1, null, { timeout: 30_000 });
+    await page.click('[data-stage="two-layers"]');
+    await page.waitForFunction(() => {
+      const heads = [...document.querySelectorAll('#solList .move-chips')].map((s) => s.previousElementSibling?.textContent ?? '');
+      return heads.length > 0 && heads.every((h) => /^(Cross|First two layers)/.test(h));
+    }, null, { timeout: 30_000 });
+    assert.equal(await page.locator('#methodRow').isVisible(), true, 'the beginner walk to a chip is the method\'s walk, and wears its row');
+    assert.equal(await page.textContent('#solLabel'), 'Beginner');
+    const walk = await walkOnScreen(page);
+    // As FACE TURNS: a regrip (the tumble) turns the child's hold, not the pieces — the lesson's own rule.
+    const end = applyMoves(walk.start, faceTurnsAlg(walk.alg));
+    const verify = (id, f) => TARGET_BY_ID[id].verify(fromCube(Cube.fromString(toMethodFrame(f))));
+    assert.ok(verify('two-layers', end), 'the walk does not end with the two bottom layers done');
+    assert.ok(!verify('two-layers', walk.start), 'precondition: the cube was not already there');
   } finally {
     assert.deepEqual(errors.map(String), [], 'the page must raise nothing');
     await context.close();

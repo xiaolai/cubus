@@ -15,12 +15,13 @@ import { t } from './i18n.js';
  *
  * @param {object} services `state`; `SOLVED`; `solverReady()` and `loadSolver()`;
  *   `randomScramble({ signal })`; `deriveCube(opts)`;
- *   `lastRoute(target, from, signal, wholeDone)`; `lessonFor(cube, entry)`; `stepStates(from, moves)`;
+ *   `lastRoute(target, from, signal, wholeDone)`; `lessonFor(cube, entry)`; `stageLessonFor(cube, entry,
+ *   target)`, a lesson cut at a chip; `stepStates(from, moves)`;
  *   `setStatus(words)`, the count beside the walk; and `fallBackToQuick()`, what the screen does
  *   when the chosen method cannot be worked out for this cube.
  */
 export function createWalkResolver({
-  state, SOLVED, solverReady, loadSolver, randomScramble, deriveCube, lastRoute, lessonFor, stepStates,
+  state, SOLVED, solverReady, loadSolver, randomScramble, deriveCube, lastRoute, lessonFor, stageLessonFor, stepStates,
   setStatus, fallBackToQuick, pictureRoute,
 }) {
   // INJECTED LIKE EVERY OTHER SOURCE, and refused here rather than at the first press: the branch
@@ -171,8 +172,8 @@ export function createWalkResolver({
    * Built ONLY for a method with stages — a Quick walk never pays for a lesson — and `lessonFor` caches it
    * on the subject, keyed on the arrangement and the method. Null when the method cannot finish this cube.
    */
-  function methodWalk(entry) {
-    const lesson = lessonFor(state.cube, entry);
+  function methodWalk(entry, stageTarget = null) {
+    const lesson = stageTarget ? stageLessonFor(state.cube, entry, stageTarget) : lessonFor(state.cube, entry);
     if (!lesson) return null;
     return walkRecord({
       alg: lesson.alg, moves: lesson.moves.slice(), steps: lesson.stepFacelets.slice(), lesson, method: entry.id,
@@ -237,6 +238,16 @@ export function createWalkResolver({
       fallBackToQuick();
     }
 
+    // A CHIP THE CHOSEN METHOD STOPS AT gets that method's walk TO it: the whole lesson for this cube, cut
+    // at the stage end where the chip first holds (plan Phase 4). Its own path, ahead of the repair race,
+    // because a repair that answered returns before any lesson is reached — deleting the old "a stage route
+    // has no lesson" guard alone would have done nothing. A cube already at the chip, or one the method
+    // cannot finish, has no cut, and takes the repair route below, which says so in its own words.
+    if (stageTarget && method.engine === 'method' && method.stops.includes(stageTarget.id)) {
+      const taught = methodWalk(method, stageTarget);
+      if (taught) return taught;
+    }
+
     const whole = startWholeSearch({ fresh, signal });
     try {
       // The repair first, because it is the one that can answer while the whole-cube search runs.
@@ -251,8 +262,9 @@ export function createWalkResolver({
       // No repair: the whole-cube answer IS the walk, and its failure is the screen's.
       await whole.done;
       if (!fresh()) return null;
-      // A STAGE ROUTE HAS NO LESSON yet: a beginner walk to a chip is the cut of plan Phase 4, and until
-      // then a stage answer is the two-phase walk the race fell back on. The session hides the row to match.
+      // A REPAIR IS NO METHOD'S WALK: every chip the chosen method stops at was offered its cut above, so a
+      // stage answer here is Quick's, or a cube with nothing left to teach on the way to the chip, or a chip
+      // no method stops at. The session hides the method row to match.
       return walkRecord({ ...whole.result(), route, method: route ? null : 'quick' });
     } finally {
       whole.stop();
