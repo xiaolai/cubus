@@ -17,11 +17,13 @@
  *   the arrow keys' listener carries; `place(button, menu)`, the shell's placement, handed in so
  *   that nothing here reaches for the shell; `closeFirst()`, what a press on the button closes
  *   before it opens anything (this menu, unless the screen has other popovers to close with it);
- *   and `beforeOpen()`, run as the menu is about to open.
+ *   `beforeOpen()`, run as the menu is about to open; and `dismiss`, which when true closes the menu on a
+ *   press anywhere outside it and on Escape (focus back to the button) — the dismissal the cube screen's
+ *   pattern and method menus share, written once here rather than once per menu.
  * @returns {object} `el`, the menu; `radio(text, choose)`, an item it ticks; `mark(isChosen)`;
  *   `isOpen()`; `close()`; `closeUnless(target)`; and `focusIn()`.
  */
-export function createMenu({ root, button, label, signal, place, closeFirst = null, beforeOpen = null }) {
+export function createMenu({ root, button, label, signal, place, closeFirst = null, beforeOpen = null, dismiss = false }) {
   const el = document.createElement('div');
   el.className = 'menu';
   // A menu, said as one: without a role it is a div of buttons, and a screen reader gives no
@@ -52,8 +54,8 @@ export function createMenu({ root, button, label, signal, place, closeFirst = nu
 
   const isOpen = () => !el.hidden;
   const close = () => { setOpen(false); };
-  /** Focus into the menu: onto the ticked item, or the first. */
-  const focusIn = () => { (el.querySelector('.now') ?? el.firstElementChild)?.focus(); };
+  /** Focus into the menu: onto the ticked item, or the first ITEM — never a group heading. */
+  const focusIn = () => { (el.querySelector('.now') ?? el.querySelector('[role^="menuitem"]'))?.focus(); };
   // An open menu is placed for what it holds NOW. The clamp is worked out from the menu's size, and
   // what it holds changes after the open: a list that lands late, a notice that it could not be
   // read, a tick that moves. Each of those had to place the menu again itself, and two did not
@@ -123,6 +125,13 @@ export function createMenu({ root, button, label, signal, place, closeFirst = nu
   const closeUnless = (target) => {
     if (isOpen() && !el.contains(target) && !button.contains(target)) close();
   };
+
+  if (dismiss) {
+    document.addEventListener('pointerdown', (ev) => { closeUnless(ev.target); }, { signal });
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape' && isOpen()) { close(); button.focus(); }
+    }, { signal });
+  }
 
   return Object.freeze({ el, radio, item, divider, mark, isOpen, close, closeUnless, focusIn });
 }

@@ -77,7 +77,7 @@ export function createPatternMenu({ root, signal, chosen }) {
   if (!button) return { sync: () => {} };
 
   const menu = createMenu({
-    root, button, label: t('Shapes'), signal, place: placeMenuUnder,
+    root, button, label: t('Shapes'), signal, place: placeMenuUnder, dismiss: true,
   });
   menu.el.classList.add('pattern-menu');
 
@@ -168,10 +168,6 @@ export function createPatternMenu({ root, signal, chosen }) {
     if (ev.target instanceof Element && ev.target.closest('[data-stage]')) sync();
   }, { signal });
 
-  const onAway = (ev) => { menu.closeUnless(ev.target); };
-  const onEsc = (ev) => { if (ev.key === 'Escape' && menu.isOpen()) { menu.close(); button.focus(); } };
-  document.addEventListener('pointerdown', onAway, { signal });
-  document.addEventListener('keydown', onEsc, { signal });
 
   return { sync };
 }

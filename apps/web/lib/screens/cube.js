@@ -500,7 +500,7 @@ const cubeScreen = (screenMode) => {
       // The method row's menu, when the registry is long enough to need one, and the one way the row is
       // painted for the method on screen (lib/screens/cube/method-row.js). The session decides WHICH
       // method is on screen; this screen owns how the row says so.
-      const methodRow = createMethodRow({ root, signal, methods: METHODS });
+      const methodRow = createMethodRow({ root, signal, methods: METHODS, shown: settings.solveMethod });
       session = createWalkSession({
         root, cube, scrambling, walking, unsolvable, label, stateHeading, stale, signal,
         paintNet, paintAim, syncReconnectAsk, applyTempo, paintMethods: methodRow.paint,

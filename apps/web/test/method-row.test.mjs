@@ -7,7 +7,7 @@ import { after, before, test } from 'node:test';
 
 import { Window } from 'happy-dom';
 
-import { isAbsent } from './dom-assert.mjs';
+import { isAbsent, isSame } from './dom-assert.mjs';
 
 let win;
 let row;
@@ -19,6 +19,10 @@ before(async () => {
   for (const k of ['window', 'document', 'navigator', 'location', 'localStorage', 'HTMLElement', 'CustomEvent', 'requestAnimationFrame', 'cancelAnimationFrame']) {
     Object.defineProperty(globalThis, k, { value: win[k], writable: true, configurable: true });
   }
+  // The shell places a popover inside the app's stage, as the mounted app has one.
+  const stage = document.createElement('div');
+  stage.id = 'stage';
+  document.body.appendChild(stage);
   row = await import('../lib/screens/cube/method-row.js');
   registry = await import('../lib/methods/registry.js');
 });
@@ -39,7 +43,7 @@ function mount(list, chosen) {
   root.innerHTML = `<div id="methodRow">${row.methodRowHtml({ methods: list, chosen, escHtml: esc })}</div>`;
   document.body.appendChild(root);
   const abort = new AbortController();
-  const built = row.createMethodRow({ root, signal: abort.signal, methods: list });
+  const built = row.createMethodRow({ root, signal: abort.signal, methods: list, shown: chosen });
   const pills = () => [...root.querySelectorAll('#methodRow [data-method]')];
   return { root, built, pills, abort };
 }
@@ -88,4 +92,45 @@ test('the row\'s words are escaped, and no pill claims a minimum (AGENTS.md §1)
   const html = row.methodRowHtml({ methods: [{ ...registry.BEGINNER_ENTRY, id: 'x"y', label: '<b>' }], chosen: 'x"y', escHtml: esc });
   assert.doesNotMatch(html, /<b>/, 'a label reached the markup unescaped');
   for (const m of registry.METHODS) assert.doesNotMatch(m.label, /short|fewest|minim|optimal/i, `${m.id} claims a minimum`);
+});
+
+test('the menu, used: it opens on the method on screen, a choice reaches the screen\'s one press handler, and it closes', () => {
+  // Audit-fix: the menu was only ever painted, never pressed. A choice must travel as a press on a
+  // \`[data-method]\` inside the screen root — the walk session's one delegated handler, which stores and
+  // reloads (walk-session.test.mjs) — and the menu must close and give the focus back.
+  const { root, built } = mount(methods(9), 'm4');
+  const pressed = [];
+  root.addEventListener('click', (ev) => {
+    const hit = ev.target.closest?.('[data-method]');
+    if (hit) pressed.push(hit.dataset.method);
+  });
+  const button = root.querySelector('#moreMethodsBtn');
+  button.click();
+  assert.equal(built.menu.isOpen(), true, 'the button did not open the menu');
+  assert.equal(button.getAttribute('aria-expanded'), 'true');
+  // Ticked before any paint: the focus lands on the method on screen, never on a level heading.
+  assert.equal(document.activeElement?.dataset.method, 'm4', 'the menu opened on something other than the method on screen');
+  const item = built.menu.el.querySelector('[data-method="m1"]');
+  item.click();
+  assert.deepEqual(pressed, ['m1'], 'a menu choice never reached the screen\'s press handler');
+  assert.equal(built.menu.isOpen(), false, 'choosing did not close the menu');
+  isSame(document.activeElement, button, 'the focus was not given back to the button');
+
+  // Dismissal: Escape closes it, and so does a press outside — neither is a choice.
+  button.click();
+  assert.equal(built.menu.isOpen(), true);
+  built.menu.el.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(built.menu.isOpen(), false, 'Escape did not close the menu');
+  button.click();
+  document.body.dispatchEvent(new window.MouseEvent('pointerdown', { bubbles: true }));
+  document.body.click();
+  assert.equal(built.menu.isOpen(), false, 'a press outside did not close the menu');
+  assert.deepEqual(pressed, ['m1'], 'a dismissal was taken as a choice');
+});
+
+test('a menu with no method on screen focuses its first ITEM, never a level heading', () => {
+  const { root, built } = mount(methods(9), 'nothing-shown');
+  root.querySelector('#moreMethodsBtn').click();
+  assert.equal(document.activeElement?.getAttribute('role'), 'menuitemradio', 'the focus landed on a heading');
+  built.menu.close();
 });

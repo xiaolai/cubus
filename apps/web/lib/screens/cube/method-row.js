@@ -51,17 +51,19 @@ export function methodRowHtml({ methods, chosen, escHtml }) {
  * The row of one mounted cube screen: its "More methods" menu when the row has one, and the one way the
  * row is painted for the method ON SCREEN.
  *
- * @param {object} deps `root`, the screen; `signal`, its abort; and `methods`, the registry's list.
+ * @param {object} deps `root`, the screen; `signal`, its abort; `methods`, the registry's list; and
+ *   `shown`, the method on screen when the row is built — ticked in the menu at once, so a menu opened
+ *   before the first walk lands focuses the method that is on rather than its first heading.
  * @returns {object} `paint(shown)`: every `[data-method]` said on or off in both channels (the class for
  *   the eye, `aria-pressed` for the reader that cannot see it), and — when the row is one pill and a menu
  *   — that one pill rewritten to name the method on screen, and the menu's tick moved to it.
  */
-export function createMethodRow({ root, signal, methods }) {
+export function createMethodRow({ root, signal, methods, shown: initial }) {
   const row = root.querySelector('#methodRow');
   const button = root.querySelector('#moreMethodsBtn');
   let menu = null;
   if (button && methods.length > MAX_PILLS) {
-    menu = createMenu({ root, button, label: t('More methods'), signal, place: placeMenuUnder });
+    menu = createMenu({ root, button, label: t('More methods'), signal, place: placeMenuUnder, dismiss: true });
     menu.el.classList.add('method-menu');
     for (const level of LEVELS) {
       const here = methods.filter((m) => m.level === level);
@@ -79,10 +81,6 @@ export function createMethodRow({ root, signal, methods }) {
         menu.el.appendChild(item);
       }
     }
-    const onAway = (ev) => { menu.closeUnless(ev.target); };
-    const onEsc = (ev) => { if (ev.key === 'Escape' && menu.isOpen()) { menu.close(); button.focus(); } };
-    document.addEventListener('pointerdown', onAway, { signal });
-    document.addEventListener('keydown', onEsc, { signal });
   }
 
   function paint(shown) {
@@ -104,5 +102,6 @@ export function createMethodRow({ root, signal, methods }) {
       pill.setAttribute('aria-pressed', String(on));
     }
   }
+  if (menu) menu.mark((b) => b.dataset.method === initial);
   return Object.freeze({ paint, menu });
 }
