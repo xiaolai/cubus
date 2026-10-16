@@ -116,10 +116,14 @@ test('a method with stages is taught WITHOUT the whole-cube search, and a cube i
   const methodFirst = solve.indexOf('const taught = methodWalk(method);');
   const searched = solve.indexOf('startWholeSearch(');
   assert.ok(methodFirst > 0 && methodFirst < searched, 'the chosen method must be tried before any search starts');
-  // The fallback is the session's to make, and it never touches the stored choice.
-  assert.match(solve, /fallBackToQuick\(\);/, 'a cube with no lesson must fall back rather than fail the screen');
-  const fallback = blockAt(code, 'function fallBackToQuick()');
-  assert.doesNotMatch(fallback, /solveMethod/, 'a fallback must not change the stored method');
+  // The fallback is CARRIED in the walk record, and the session commits it only after its freshness check:
+  // a resolver that set it on the session directly let an overtaken load stamp the newer walk (audit-fix).
+  assert.match(solve, /fellBack = true;/, 'a cube with no lesson must fall back rather than fail the screen');
+  assert.match(solve, /walkRecord\(\{ \.\.\.whole\.result\(\), route, method: route \? null : 'quick', fellBack \}\)/);
+  assert.doesNotMatch(code, /fallBackToQuick/, 'the resolver must not reach into the session to set a fallback');
+  const commit = blockAt(code, 'function commitWalk(got, stageTarget)');
+  assert.match(commit, /fellBack = got\.fellBack === true;/, 'the session must take the fallback from the committed record');
+  assert.doesNotMatch(commit, /solveMethod/, 'a fallback must not change the stored method');
 });
 
 test('a chip the chosen method stops at gets that method\'s lesson CUT there, on its own path ahead of the repair race', () => {

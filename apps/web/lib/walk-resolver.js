@@ -16,13 +16,13 @@ import { t } from './i18n.js';
  * @param {object} services `state`; `SOLVED`; `solverReady()` and `loadSolver()`;
  *   `randomScramble({ signal })`; `deriveCube(opts)`;
  *   `lastRoute(target, from, signal, wholeDone)`; `lessonFor(cube, entry)`; `stageLessonFor(cube, entry,
- *   target)`, a lesson cut at a chip; `stepStates(from, moves)`;
- *   `setStatus(words)`, the count beside the walk; and `fallBackToQuick()`, what the screen does
- *   when the chosen method cannot be worked out for this cube.
+ *   target)`, a lesson cut at a chip; `stepStates(from, moves)`; and `setStatus(words)`, the count
+ *   beside the walk. A walk that is the Quick walk standing in for a method that could not be worked out
+ *   says so in its record (`fellBack`), committed only by a load that is still current.
  */
 export function createWalkResolver({
   state, SOLVED, solverReady, loadSolver, randomScramble, deriveCube, lastRoute, lessonFor, stageLessonFor, stepStates,
-  setStatus, fallBackToQuick, pictureRoute,
+  setStatus, pictureRoute,
 }) {
   // INJECTED LIKE EVERY OTHER SOURCE, and refused here rather than at the first press: the branch
   // below throws a walk failure when a picture route cannot be worked out, so a `pictureRoute` that
@@ -35,6 +35,7 @@ export function createWalkResolver({
    *  screen shows the method on screen, which after a fallback is not the one stored. */
   const walkRecord = (fields) => Object.freeze({
     setup: '', alg: '', moves: [], steps: [], target: null, roll: null, lesson: null, route: null, method: null,
+    fellBack: false,
     ...fields,
   });
 
@@ -231,11 +232,13 @@ export function createWalkResolver({
     // THE CHOSEN METHOD, FIRST AND ALONE, when it has stages and the walk is to the whole cube. A cube it
     // cannot finish DEGRADES to the Quick walk rather than failing the screen — losing both because one
     // could not be built would be the worst outcome — and the screen says so beside the walk without
-    // changing the stored choice (ADR 0011; `fallBackToQuick`).
+    // changing the stored choice (ADR 0011). The fallback is CARRIED in the record, never set on the
+    // session from here: a load overtaken by a newer one must not write its fallback over the newer walk.
+    let fellBack = false;
     if (!stageTarget && method.engine === 'method') {
       const taught = methodWalk(method);
       if (taught) return taught;
-      fallBackToQuick();
+      fellBack = true;
     }
 
     // A CHIP THE CHOSEN METHOD STOPS AT gets that method's walk TO it: the whole lesson for this cube, cut
@@ -265,7 +268,7 @@ export function createWalkResolver({
       // A REPAIR IS NO METHOD'S WALK: every chip the chosen method stops at was offered its cut above, so a
       // stage answer here is Quick's, or a cube with nothing left to teach on the way to the chip, or a chip
       // no method stops at. The session hides the method row to match.
-      return walkRecord({ ...whole.result(), route, method: route ? null : 'quick' });
+      return walkRecord({ ...whole.result(), route, method: route ? null : 'quick', fellBack });
     } finally {
       whole.stop();
     }
@@ -285,6 +288,8 @@ export function createWalkResolver({
     // ONE READINESS RULE for both sides, before either rolls or searches anything. It was written
     // out once per side, and two copies of one rule are how one of them stops being checked.
     if (!solverReady() && !(await loadSolver())) throw new Error('solver unavailable');
+    // Overtaken while the solver loaded: build nothing for a load nobody is waiting on.
+    if (!fresh()) return null;
     return scrambling ? rollWalk({ signal }) : solveWalk({ stageTarget, method, fresh, signal });
   }
   return Object.freeze({ resolveWalk });

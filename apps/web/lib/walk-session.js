@@ -281,6 +281,9 @@ export function createWalkSession(screen, app) {
     remember(want);
     shownMethod = want;
     paintMethods(want);
+    // Said NOW, not after the load: a choice storage refused must be said even if the walk then fails.
+    fellBack = false;
+    sayMethodNote();
     void loadWalk();
   }, { signal });
   // WHERE THIS WALK IS GOING — which is exactly what `retarget()` exists for.
@@ -469,14 +472,9 @@ export function createWalkSession(screen, app) {
     note.hidden = words.length === 0;
   }
 
-  /** A cube the chosen method cannot finish falls back to the Quick walk, and the row says so — WITHOUT
-   *  changing the stored choice. The resolver asks for the fallback; the session makes it. */
-  function fallBackToQuick() {
-    fellBack = true;
-  }
   const { resolveWalk } = createWalkResolver({
     state, SOLVED, solverReady, loadSolver, randomScramble, deriveCube, lastRoute, lessonFor, stageLessonFor, stepStates,
-    setStatus, fallBackToQuick, pictureRoute,
+    setStatus, pictureRoute,
   });
 
   /** The turns the cube in hand has made since its last snapshot, adopted where it is trusted to
@@ -566,6 +564,10 @@ export function createWalkSession(screen, app) {
     // The method the walk IS, which the row shows — a scramble or a repair is no method's walk, and
     // leaves the row as it was (the row is hidden for a repair).
     if (got.method) shownMethod = got.method;
+    // A cube the chosen method could not finish shows the Quick walk, and the row says so — WITHOUT
+    // changing the stored choice. Read off the record, after the freshness check, so an overtaken load's
+    // fallback never lands on the walk that replaced it.
+    fellBack = got.fellBack === true;
     // HOW THIS WALK IS HELD (ADR 0003), by the one tested rule. A route that answered is held the
     // way its target is built — including one that overshot to the whole cube, since the child is
     // holding the cube for the stage they aimed at. A route that found nothing, no target, and a
@@ -772,8 +774,7 @@ export function createWalkSession(screen, app) {
     // screen itself called off is not a failure to report — the subject it was about is gone, and the
     // walk that replaced it owns the screen now — which is why the reporter above checks the signal
     // before it says anything.
-    // A fresh attempt at the STORED method on every load: a fallback is about the cube it happened on.
-    fellBack = false;
+    // A fresh attempt at the STORED method on every load; whether it fell back comes back in the record.
     const got = await resolveWalk({
       scrambling, stageTarget, method: methodById(settings.solveMethod), fresh, signal: abort.signal,
     });

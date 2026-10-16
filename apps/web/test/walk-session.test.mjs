@@ -776,6 +776,98 @@ test('a choice of method that storage refused is said beside the row, and still 
   assert.match(w.$('#methodNote').textContent, /could not be saved/);
 });
 
+test('a choice from the "More methods" menu is stored and walked by the session\'s one press handler', async () => {
+  // Audit-fix: the menu's items are built AFTER the session wires the screen, inside the screen root, and
+  // carry \`data-method\` — so the session's delegated handler must take them exactly as it takes a pill.
+  const { METHODS, BEGINNER_ENTRY, LEVELS } = await import('../lib/methods/registry.js');
+  let lessons = 0;
+  const saved = [];
+  const w = world({}, () => ({
+    deriveCube: async () => {},
+    lessonFor: (cube) => {
+      lessons += 1;
+      return {
+        alg: "R'", moves: ["R'"], moveHolds: [SCAN_HOLD, SCAN_HOLD], stepFacelets: [cube.facelets, turned("R'", cube.facelets)],
+        steps: [], moveStep: [], sections: [{ id: 'cross', name: 'Cross', steps: 1, moves: 1, from: 0, to: 1 }],
+      };
+    },
+    save: (key, value) => { saved.push(value.solveMethod); return true; },
+  }));
+  solvedBy(w.state, "R'");
+  assert.equal(await w.session.load(), true);
+  const doc = w.$('#methodRow').ownerDocument;
+  const button = doc.createElement('button');
+  button.id = 'moreMethodsBtn';
+  w.$('#methodRow').appendChild(button);
+  const stage = doc.createElement('div');
+  stage.id = 'stage';
+  doc.body.appendChild(stage);
+  const prior = { document: globalThis.document, window: globalThis.window };
+  Object.assign(globalThis, { document: doc, window: doc.defaultView });
+  try {
+    // Imported with the globals in place: the shell beneath the row reads the window as it loads.
+    const { createMethodRow } = await import('../lib/screens/cube/method-row.js');
+    // Four methods, so the row is one pill and a menu: the real two and two copies of Beginner's shape.
+    const many = [...METHODS, { ...BEGINNER_ENTRY, id: 'x1', label: 'X1', level: LEVELS[1] }, { ...BEGINNER_ENTRY, id: 'x2', label: 'X2', level: LEVELS[2] }];
+    const root = w.$('#methodRow').parentElement;
+    const built = createMethodRow({ root, signal: new AbortController().signal, methods: many, shown: 'quick' });
+    button.click();
+    built.menu.el.querySelector('[data-method="beginner"]').click();
+    for (let i = 0; i < 3; i += 1) await settle();
+    assert.equal(built.menu.isOpen(), false, 'the menu stayed open after a choice');
+  } finally {
+    Object.assign(globalThis, prior);
+  }
+  assert.deepEqual(saved, ['beginner'], 'a menu choice was not stored');
+  assert.equal(w.settings.solveMethod, 'beginner');
+  assert.equal(lessons, 1, 'a menu choice did not walk the chosen method');
+  assert.equal(w.$('#solLabel').textContent, 'Beginner');
+});
+
+test('a choice storage refused is said even when the walk for it then fails to load', async () => {
+  // Audit-fix: the note used to be painted only by a load that succeeded, so a refused save followed by a
+  // failed walk left the learner with a choice that silently would not stick.
+  const w = world({}, () => ({
+    deriveCube: async () => { throw new Error('solver unavailable'); },
+    lessonFor: () => null,
+    save: () => false,
+  }));
+  w.$('[data-method="beginner"]').click();
+  for (let i = 0; i < 3; i += 1) await settle();
+  assert.equal(w.settings.solveMethod, 'beginner');
+  assert.equal(w.$('#methodNote').hidden, false, 'a refused save was not said because the walk failed');
+  assert.match(w.$('#methodNote').textContent, /could not be saved/);
+  assert.doesNotMatch(w.$('#methodNote').textContent, /could not be worked out/, 'a fallback that never landed was said');
+});
+
+test('a Beginner load overtaken by a newer one never stamps its fallback on the newer walk', async () => {
+  // Audit-fix: the resolver used to set the session's fallback flag itself, BEFORE the freshness check, so
+  // a superseded load that fell back marked the walk that replaced it as a fallback.
+  const firstSearch = deferred();
+  let lessonAsks = 0;
+  const w = world({ settings: { solveMethod: 'beginner' } }, ({ state }) => ({
+    deriveCube: async () => { await firstSearch.promise; solvedBy(state, "R'"); },
+    lessonFor: (cube) => {
+      lessonAsks += 1;
+      if (lessonAsks === 1) return null; // the first cube: no lesson, so it falls back and searches
+      return {
+        alg: "R'", moves: ["R'"], moveHolds: [SCAN_HOLD, SCAN_HOLD], stepFacelets: [cube.facelets, turned("R'", cube.facelets)],
+        steps: [], moveStep: [], sections: [{ id: 'cross', name: 'Cross', steps: 1, moves: 1, from: 0, to: 1 }],
+      };
+    },
+  }));
+  const overtaken = w.session.load();
+  await settle();
+  assert.equal(await w.session.load(), true, 'the newer load did not land');
+  assert.equal(w.$('#methodNote').hidden, true, 'precondition: the newer walk is the chosen method');
+  firstSearch.resolve();
+  await overtaken;
+  for (let i = 0; i < 3; i += 1) await settle();
+  // What must NOT happen: the stale load's fallback said beside a walk that is Beginner.
+  assert.equal(w.$('#methodNote').hidden, true, 'an overtaken load stamped its fallback on the newer walk');
+  assert.equal(w.$('#solLabel').textContent, 'Beginner');
+});
+
 // ---- step 0 of the resolver: the search leaving loadWalk -------------------------------------------------
 //
 // stage-wiring.test.mjs checks the order of the whole-cube search and the repair as positions inside
