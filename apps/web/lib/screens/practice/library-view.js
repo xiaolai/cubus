@@ -37,12 +37,15 @@ export function casePicture(row, { palette, scheme, scale = 1 } = {}) {
   });
 }
 
-/** One row as the button that opens it. `data-alg`, never an `id`: a set taught by two methods is listed twice. */
-function card(row, look, esc) {
-  return `<button class="card alg-entry" type="button" data-alg="${esc(row.id)}" aria-label="${esc(t('Practise %1', rowName(row)))}">
+/** One row as the button that opens it. `data-alg`, never an `id`: a set taught by two methods is listed twice.
+ *  NAMED by what pressing it does and DESCRIBED by the row's sentence: the label replaces the name the content would
+ *  give, so the sentence is tied back by `aria-describedby`, under `sayId` — unique on the page, which `data-alg`
+ *  cannot be. */
+function card(row, look, esc, sayId) {
+  return `<button class="card alg-entry" type="button" data-alg="${esc(row.id)}" aria-label="${esc(t('Practise %1', rowName(row)))}" aria-describedby="${esc(sayId)}">
     ${casePicture(row, look)}
     <b class="alg-name">${esc(rowName(row))}</b>
-    <span class="sub alg-say">${esc(row.says)}</span>
+    <span class="sub alg-say" id="${esc(sayId)}">${esc(row.says)}</span>
   </button>`;
 }
 
@@ -53,9 +56,10 @@ function card(row, look, esc) {
  * @param {Awaited<ReturnType<typeof import('../../drill/library-client.js').catalogueOf>>} catalogue
  * @param {{ palette: string, scheme: string }} look  the colours the pictures are painted in
  * @param {(v: unknown) => string} esc
+ * @param {string|number} block  the set block's own number (`data-block`), which makes each card's ids unique
  */
-export function cardsHtml(set, catalogue, look, esc) {
-  return set.ids.map((id) => card(catalogue.rows[id], look, esc)).join('');
+export function cardsHtml(set, catalogue, look, esc, block) {
+  return set.ids.map((id, k) => card(catalogue.rows[id], look, esc, `alg-say-${block}-${k}`)).join('');
 }
 
 /** One set: a disclosure, closed until asked for, so a list of three hundred pictures is a list of headings —
@@ -64,8 +68,8 @@ export function cardsHtml(set, catalogue, look, esc) {
  *  ITS GRID IS EMPTY until then. Every card of every closed set — 319 pictures, 10,593 stickers, 1.8 MB of markup —
  *  was built and inserted on the UI thread at every visit to the library, for headings nobody had opened (measured
  *  2026-10-18 in WebKit: 208 ms a visit). The screen fills a grid when its set is first opened. */
-function setBlock(set, esc) {
-  return `<details class="alg-set" data-set="${esc(set.id)}">
+function setBlock(set, esc, n) {
+  return `<details class="alg-set" data-set="${esc(set.id)}" data-block="${n}">
     <summary><b>${esc(t(set.name))}</b> <span class="sub">${esc(plural(set.ids.length, { one: '%1 algorithm', other: '%1 algorithms' }))}</span>
       ${set.purpose ? `<span class="sub alg-set-purpose">${esc(set.purpose)}</span>` : ''}</summary>
     <div class="alg-grid"></div>
@@ -79,11 +83,12 @@ function setBlock(set, esc) {
  * @param {(v: unknown) => string} esc
  */
 export function libraryHtml(catalogue, esc) {
+  let n = 0;
   const groups = catalogue.groups.map((g) => `<section class="alg-method" data-method="${esc(g.method ?? '')}">
     <div class="eyebrow">${esc(g.label === null ? t('Not taught by any method') : t(g.label))}</div>
     ${g.phases.map((p) => `<div class="alg-phase">
       ${p.phase === null ? '' : `<div class="alg-phase-h">${esc(t(p.phase))}</div>`}
-      ${p.sets.map((id) => setBlock(catalogue.sets[id], esc)).join('')}
+      ${p.sets.map((id) => setBlock(catalogue.sets[id], esc, n++)).join('')}
     </div>`).join('')}
   </section>`).join('');
   const pending = catalogue.pending.length

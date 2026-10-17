@@ -397,6 +397,40 @@ test('the library draws no card or picture until a set is opened, and then that 
   }
 });
 
+// ---- a card's description (round 2, row 19) ------------------------------------------------------------------
+
+test('a card opened on the screen is described by its own sentence, under an id no other card on the page uses', async () => {
+  const { page, context, errors } = await openPractice(fixture, { connect: false });
+  try {
+    // A set taught by two methods is drawn twice: open BOTH listings, so their cards are on the page together.
+    const blocks = await page.evaluate(() => {
+      const by = new Map();
+      for (const el of document.querySelectorAll('#practiceList details.alg-set')) by.set(el.dataset.set, [...(by.get(el.dataset.set) ?? []), el]);
+      const twice = [...by.values()].find((els) => els.length > 1);
+      for (const el of twice) el.open = true;
+      return { set: twice[0].dataset.set, n: twice.length };
+    });
+    assert.ok(blocks.n > 1, 'precondition: a set listed twice');
+    await page.waitForFunction((id) => [...document.querySelectorAll(`details.alg-set[data-set="${id}"]`)].every((el) => el.querySelector('[data-alg]')), blocks.set, { timeout: LIVENESS_MS });
+    const cards = await page.evaluate(() => [...document.querySelectorAll('#practiceList [data-alg]')].map((card) => {
+      const id = card.getAttribute('aria-describedby');
+      const found = id ? document.querySelectorAll(`[id="${id}"]`) : [];
+      return { alg: card.dataset.alg, id, found: found.length, onCard: found.length === 1 && card.contains(found[0]), text: found[0]?.textContent ?? null };
+    }));
+    const catalogue = await page.evaluate(() => window.__p.rows());
+    assert.ok(cards.length >= 2 * catalogue.sets[blocks.set].ids.length, 'precondition: both listings drew their cards');
+    for (const c of cards) {
+      assert.ok(c.id, `${c.alg}: no description`);
+      assert.equal(c.found, 1, `${c.alg}: its description id "${c.id}" names ${c.found} elements`);
+      assert.ok(c.onCard, `${c.alg}: its description is not on the card`);
+      assert.equal(c.text, catalogue.rows[c.alg].says, `${c.alg}: described by another sentence`);
+    }
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
 // ---- the Settings row (row 29) -----------------------------------------------------------------------------
 
 test('the Settings stepper keeps keyboard focus on a control when a press reaches either bound', async () => {

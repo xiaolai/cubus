@@ -38,7 +38,7 @@ const libraryDoc = (() => {
   const box = win.document.createElement('div');
   box.innerHTML = libraryHtml(catalogue, esc);
   for (const block of box.querySelectorAll('details.alg-set')) {
-    block.querySelector('.alg-grid').innerHTML = cardsHtml(catalogue.sets[block.dataset.set], catalogue, { palette: 'classic', scheme: 'western' }, esc);
+    block.querySelector('.alg-grid').innerHTML = cardsHtml(catalogue.sets[block.dataset.set], catalogue, { palette: 'classic', scheme: 'western' }, esc, block.dataset.block);
   }
   return box;
 })();
@@ -109,6 +109,26 @@ test('a set says its purpose once, under its heading; each card says its own row
   }
   // The ledger now gives every set a purpose; a library that showed none would pass the loop above vacuously.
   assert.ok(doc.querySelectorAll('.alg-set-purpose').length > 10, 'no set purposes were drawn');
+});
+
+test('a card is named by what pressing it does, and DESCRIBED by its own sentence — one description per card, a set listed twice included', () => {
+  // An `aria-label` replaces the name a button would take from its content, so the row's sentence was not read at
+  // all (audit round 2, row 19). It is the card's description: `aria-describedby` naming the sentence on the card.
+  const cards = [...libraryDoc.querySelectorAll('[data-alg]')];
+  const ids = cards.map((card) => card.getAttribute('aria-describedby'));
+  assert.ok(ids.every(Boolean), 'a card has no description');
+  // What must NOT happen: two cards pointing at one id — a set taught by two methods is drawn twice.
+  assert.equal(new Set(ids).size, ids.length, 'two cards share a description id');
+  const twice = Object.values(catalogue.sets).filter((set) => libraryDoc.querySelectorAll(`details.alg-set[data-set="${set.id}"]`).length > 1);
+  assert.ok(twice.length > 0, 'precondition: some set is listed under two methods');
+  for (const [i, card] of cards.entries()) {
+    const row = catalogue.rows[card.dataset.alg];
+    assert.equal(card.getAttribute('aria-label'), `Practise ${rowName(row)}`, `${row.id}: the name is not what pressing it does`);
+    const described = libraryDoc.querySelectorAll(`[id="${ids[i]}"]`);
+    assert.equal(described.length, 1, `${row.id}: its description id names ${described.length} elements`);
+    assert.ok(card.contains(described[0]), `${row.id}: its description is not on the card`);
+    assert.equal(described[0].textContent, row.says, `${row.id}: described by something other than its own sentence`);
+  }
 });
 
 test('every card draws its own row\'s case: one picture, its stickers in the colours they are, net or top face by what the row keeps', () => {

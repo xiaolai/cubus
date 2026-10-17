@@ -91,7 +91,7 @@ function libraryScreen() {
         const block = e.target;
         if (!block.open || !block.matches?.('details.alg-set')) return;
         const grid = block.querySelector('.alg-grid');
-        if (grid.childElementCount === 0) grid.innerHTML = cardsHtml(catalogue.sets[block.dataset.set], catalogue, look, escHtml);
+        if (grid.childElementCount === 0) grid.innerHTML = cardsHtml(catalogue.sets[block.dataset.set], catalogue, look, escHtml, block.dataset.block);
       }, { capture: true });
       list.addEventListener('click', (e) => {
         const card = e.target.closest?.('[data-alg]');
