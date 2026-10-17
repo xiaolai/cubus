@@ -171,6 +171,10 @@ test('scrollbars are hidden with the standard property, never ::-webkit-scrollba
   // is the owner's call rather than a measurement — recorded here so the next reader knows it was
   // a decision and not a drift.
   //
+  // This sweep reads TEXT, so it cannot tell whether the rule reaches a scroller: a `:root` rule
+  // passed it for weeks while every inner scroller kept its bar, because the property is not
+  // inherited. What the engine COMPUTES is asked in `test/browser/scroll-strip.test.mjs`.
+  //
   // Comments stripped before the sweep: the measurement above is worth keeping in the
   // stylesheet next to the rule, and a sweep that cannot tell a comment from a selector would
   // forbid recording the very reason the rule exists. (It caught this file's own comment first.)

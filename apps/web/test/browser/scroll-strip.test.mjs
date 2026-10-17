@@ -1,6 +1,6 @@
-// The one-line target strip's three duties (lib/scroll-strip.js), each where it could fail: the
-// chosen button in view on mount, the edges marked when there is more beyond them, and a vertical
-// mouse wheel moving the strip sideways — without swallowing the wheel once the strip cannot move.
+// The one-line target strip's two duties (lib/scroll-strip.js), each where it could fail: the
+// chosen button in view on mount, and the edges marked when there is more beyond them. And what it
+// must NOT do: take a vertical mouse wheel and turn it sideways (owner, 2026-10-17).
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 
@@ -69,19 +69,23 @@ test('a strip too narrow for its buttons stays one line, with the chosen last bu
   assert.match(s.mask, /gradient/, 'an edge is marked but nothing fades it');
 });
 
-test('a vertical wheel scrolls the strip sideways, and hands the wheel back at the end', async () => {
+test('a vertical wheel is left alone: it neither moves the strip nor is taken from the page', async () => {
   await strip(300, 6, 0);
-  let s = await read();
+  const s = await read();
   assert.deepEqual([s.scrollLeft, s.left, s.right], [0, false, true], 'precondition: at the start, more on the right');
-  assert.equal(await wheel(120), true, 'the strip did not take a wheel it could move by');
-  s = await read();
-  assert.ok(s.scrollLeft > 0, 'the wheel did not move the strip');
+  assert.equal(await wheel(120), false, 'the strip took a vertical wheel');
+  assert.equal((await read()).scrollLeft, 0, 'a vertical wheel moved the strip sideways');
+});
+
+test('scrolling the strip by any other means marks both edges part-way along', async () => {
+  await strip(300, 6, 0);
+  await page.evaluate(() => {
+    const row = document.querySelector('#strip-under-test');
+    row.scrollLeft = 40;
+    row.dispatchEvent(new Event('scroll'));
+  });
+  const s = await read();
   assert.deepEqual([s.left, s.right], [true, true], 'part-way along, both edges have more');
-  for (let i = 0; i < 40; i++) await wheel(120);
-  s = await read();
-  assert.ok(Math.abs(s.scrollLeft - s.max) <= 1, 'many wheels did not reach the end');
-  assert.equal(await wheel(120), false, 'at the end the strip still swallowed the wheel');
-  assert.equal(await wheel(0, 50), false, 'a sideways gesture is the browser\'s to scroll, not the handler\'s');
 });
 
 test('a strip that fits marks nothing and leaves the wheel alone', async () => {
@@ -141,9 +145,33 @@ test('a focused button keeps its whole focus ring inside the strip', async () =>
   assert.deepEqual(await reach(''), unclipped, 'the strip cut the focused button\'s ring');
 });
 
+test('no scroller draws a bar: the strip, and any other element that scrolls', async () => {
+  // `scrollbar-width` is NOT inherited. Set on `:root` it hid the page's bar and left the strip's,
+  // a grey bar under the pills with a mouse (2026-10-17) — while the stylesheet sweep in
+  // design-discipline.test.mjs passed, because it reads the rule's text, not what it reaches.
+  await strip(300, 6, 0);
+  const widths = await page.evaluate(() => {
+    const other = document.createElement('div');
+    other.style.cssText = 'overflow:auto;width:50px;height:50px';
+    other.innerHTML = '<div style="width:400px;height:400px"></div>';
+    document.body.appendChild(other);
+    const out = {
+      strip: getComputedStyle(document.querySelector('#strip-under-test')).scrollbarWidth,
+      other: getComputedStyle(other).scrollbarWidth,
+    };
+    other.remove();
+    return out;
+  });
+  assert.deepEqual(widths, { strip: 'none', other: 'none' }, 'a scroller draws its own scrollbar');
+});
+
 test('its listeners go with the screen', async () => {
   await strip(300, 6, 0);
-  await page.evaluate(() => window.__stripAbort.abort());
-  assert.equal(await wheel(120), false, 'an aborted strip still handled the wheel');
-  assert.equal((await read()).scrollLeft, 0);
+  await page.evaluate(() => {
+    window.__stripAbort.abort();
+    const row = document.querySelector('#strip-under-test');
+    row.scrollLeft = 40;
+    row.dispatchEvent(new Event('scroll'));
+  });
+  assert.equal((await read()).left, false, 'an aborted strip still marked its edges on scroll');
 });

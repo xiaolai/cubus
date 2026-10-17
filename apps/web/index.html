@@ -64,8 +64,11 @@
        * recent WebKitGTK), and reaching for the pseudo-element is what started the gutter problem
        * in the first place.
        *
-       * Inherited, so `:root` reaches every scroller including the popovers. */
-      :root { scrollbar-width: none; }
+       * On EVERY element, not `:root`: `scrollbar-width` is NOT inherited (CSS Scrollbars 1), so a
+       * `:root` rule hid the page's bar and left every inner scroller its own — the cube screen's
+       * target strip drew a grey bar under its pills with a mouse (a user's screenshot, 2026-10-17).
+       * `scroll-strip.test.mjs` asks the engine what the strip and a fresh scroller compute. */
+      * { scrollbar-width: none; }
       /* Chrome is not a document. Clicking a sticker, a nav item or a button placed a real text
          caret (getSelection().type === 'Caret') inside it; Chrome does not paint one, but the
          WKWebView the desktop app runs in does, so clicking a cube face blinked an insertion point
@@ -993,7 +996,7 @@
       /* The cube screen's stage targets, and the scan screen's Restore row: ONE line that scrolls
          sideways (lib/scroll-strip.js says why — wrapped, they took the moves' height on both
          desktop windows; on the scan screen seven wrapped chips took the notice's, ADR 0009). The scrollbar is
-         hidden as every scroller's is (`:root` above), because the fade and the wheel do its job;
+         hidden as every scroller's is (`*` above), because the fade does its job;
          `flex: none` so no button is squeezed to fit instead of scrolled to. An edge with more
          beyond it fades over 32px: the helper sets the class, the class sets that edge's width,
          and one mask draws both. Unprefixed, on the same engine floors as `scrollbar-width`.
