@@ -45,6 +45,18 @@
 // A WRITE THAT DID NOT LAND SURFACES. `add` returns `{ saved: false, error }` when `setItem` throws (a full
 // quota, a private window) or when the text read back afterwards is not the text written — the same
 // contract as `pushSolve` in lib/scramble-roll.js, whose caller says so on screen.
+//
+// TWO WINDOWS, ONE RECORD. Two instances in one page share one thread, and `add` is synchronous, so their
+// adds cannot interleave. Two WINDOWS of the origin can (measured 2026-10-18, two pages in WebKit and
+// Chromium): each reads its own copy of the storage, which the other's write reaches a few milliseconds later
+// — or, while its thread is busy, only when it is free — so a rep added in that gap is written over by the
+// other window's add, and both said saved. No read can see a write that has not arrived, so the loss is not
+// prevented; it is REPAIRED. Each instance keeps a journal of the reps it wrote that are on record, and puts
+// back any that another window's write dropped — at its own next `add`, and at once on the window's `storage`
+// event when `changes` is given. Putting back is the union of the two writes, capped as every write is, so a
+// rep the cap drops is not called lost. A rep that cannot be put back without guessing an order — the other
+// window wrote a rep in the same millisecond — is said, through `onLost` or the `add` result's `lost`, never
+// dropped quietly. A record removed in another window is not put back: a removal is deliberate.
 import { TIME_REFUSAL } from './timing.js';
 
 /** The storage key, in the app's `cubus…` style beside `cubusSettings` and `cubusSolves`. */
@@ -81,7 +93,7 @@ const REFUSALS = new Set(Object.values(TIME_REFUSAL));
 /** Why a record was refused or a write did not land — `code` is the whole vocabulary a screen words. */
 export class PracticeRecordError extends Error {
   /**
-   * @param {'unreadable'|'not-json'|'foreign'|'corrupt'|'clock-behind'|'write-failed'|'did-not-land'} code
+   * @param {'unreadable'|'not-json'|'foreign'|'corrupt'|'clock-behind'|'write-failed'|'did-not-land'|'overwritten'} code
    * @param {string} message
    * @param {unknown} [cause]
    */
@@ -277,6 +289,21 @@ export function statsOf(reps) {
   });
 }
 
+/** One rep of one algorithm as a comparable string: the same rep, written by any window, is the same text. */
+const repKey = (id, rep) => `${id}\u0000${JSON.stringify(toStored(rep))}`;
+
+/** `entries` (`[{ id, rep }]`) that `algs` holds, each counted once against what it holds. */
+function heldIn(algs, entries) {
+  const count = new Map();
+  for (const [id, reps] of algs) for (const r of reps) count.set(repKey(id, r), (count.get(repKey(id, r)) ?? 0) + 1);
+  return entries.filter(({ id, rep }) => {
+    const k = repKey(id, rep);
+    if (!count.get(k)) return false;
+    count.set(k, count.get(k) - 1);
+    return true;
+  });
+}
+
 /**
  * The practice record over an injected storage and clock.
  *
@@ -284,11 +311,98 @@ export function statsOf(reps) {
  * @param {{ getItem(k: string): string|null, setItem(k: string, v: string): void }} o.storage
  * @param {() => number} o.now  epoch milliseconds, stamped on each rep as it is added
  * @param {string} [o.key]
+ * @param {{ addEventListener: Function }|null} [o.changes]  where the window's `storage` events arrive (the
+ *   page's `window`): another window's write is then checked for this instance's reps as soon as it arrives
+ * @param {AbortSignal} [o.signal]  stops listening to `changes`
+ * @param {(error: PracticeRecordError) => void} [o.onLost]  told of reps another window wrote over that could
+ *   not be put back; required with `changes`, because an event has no caller to return it to
  */
-export function openPracticeRecord({ storage, now, key = RECORD_KEY }) {
+export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = null, signal, onLost }) {
   if (!storage || typeof storage.getItem !== 'function' || typeof storage.setItem !== 'function' || typeof now !== 'function') {
     throw new Error('practice record: storage and now are injected, never assumed');
   }
+  if (changes !== null && (typeof changes?.addEventListener !== 'function' || typeof onLost !== 'function')) {
+    throw new Error('practice record: watching another window\'s writes needs `changes` with addEventListener, and `onLost` to say what could not be put back');
+  }
+
+  /** The reps this instance wrote that were on record after its last write, in the order it wrote them. */
+  let journal = [];
+
+  /**
+   * The stored record with every journaled rep another window's write dropped put back, where that can be
+   * done without guessing an order: `{ algs, restored, lost }`. A dropped rep whose millisecond the record
+   * already holds a rep of someone else's at is LOST — putting it back would make a tie nobody can order.
+   */
+  const withJournal = (algs) => {
+    const present = new Set(heldIn(algs, journal));
+    const mine = new Set(journal.map(({ id, rep }) => repKey(id, rep)));
+    const othersAt = new Set();
+    for (const [id, reps] of algs) for (const r of reps) if (!mine.has(repKey(id, r))) othersAt.add(r.at);
+    const lists = new Map([...algs].map(([id, reps]) => [id, [...reps]]));
+    const restored = [];
+    const lost = [];
+    for (const entry of journal) {
+      if (present.has(entry)) continue;
+      if (othersAt.has(entry.rep.at)) { lost.push(entry); continue; }
+      const list = lists.get(entry.id) ?? [];
+      let i = list.length;
+      while (i > 0 && list[i - 1].at > entry.rep.at) i -= 1;
+      list.splice(i, 0, entry.rep);
+      lists.set(entry.id, list);
+      restored.push(entry);
+    }
+    return { algs: lists, restored, lost };
+  };
+
+  /** The reps that could not be put back, said once and then forgotten. */
+  const lostError = (lost) => {
+    journal = journal.filter((e) => !lost.includes(e));
+    const what = lost.map(({ id, rep }) => `${id}'s rep at ${rep.at}`).join(', ');
+    return new PracticeRecordError('overwritten', `another window wrote over ${what} in the same millisecond, so it could not be put back`);
+  };
+
+  /** Write `algs` and read it back. Null when it landed, otherwise the error. */
+  const write = (algs) => {
+    const text = serialize(algs);
+    try { storage.setItem(key, text); } catch (e) {
+      return new PracticeRecordError('write-failed', `${key} could not be written`, e);
+    }
+    let back;
+    try { back = storage.getItem(key); } catch (e) {
+      return new PracticeRecordError('did-not-land', `${key} could not be read back after writing`, e);
+    }
+    return back === text ? null : new PracticeRecordError('did-not-land', `${key} read back differently from what was written`);
+  };
+
+  /** Another window wrote the record: put back what it dropped. A record that is refused is left as found —
+   *  the next read says so. */
+  const reconcile = () => {
+    let algs;
+    try { algs = read(); } catch (e) {
+      if (e instanceof PracticeRecordError) return;
+      throw e;
+    }
+    const merged = withJournal(algs);
+    if (merged.lost.length) onLost(lostError(merged.lost));
+    if (!merged.restored.length) return;
+    const next = capped(merged.algs);
+    // Put back only what the cap keeps: a rep the other window's newer reps pushed out is not lost.
+    if (!heldIn(next, merged.restored).length) { journal = heldIn(next, journal); return; }
+    const failed = write(next);
+    if (failed) {
+      onLost(new PracticeRecordError(failed.code, `reps another window wrote over could not be written back: ${failed.message}`, failed));
+      return;
+    }
+    journal = heldIn(next, journal);
+  };
+
+  changes?.addEventListener('storage', (event) => {
+    if (event.storageArea != null && event.storageArea !== storage) return;
+    if (event.key !== null && event.key !== key) return;
+    // Removed or cleared: deliberate, so nothing is put back, now or at the next add.
+    if (event.key === null || event.newValue === null) { journal = []; return; }
+    reconcile();
+  }, signal ? { signal } : undefined);
 
   /** The record as stored now. Throws `PracticeRecordError` when it cannot be read or is refused. */
   const read = () => {
@@ -320,7 +434,8 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY }) {
      * Returns `{ saved: true }`, or `{ saved: false, error }` when the record was refused (and so left
      * untouched), the clock is behind the record (`clock-behind`, also untouched), the write threw, or the
      * text read back is not the text written. A rep that breaks the format THROWS: that is the caller's
-     * defect, not the device's.
+     * defect, not the device's. Either result also carries `lost` — an `overwritten` error — when an earlier
+     * rep of this instance's was written over by another window and could not be put back (header).
      */
     add(id, rep) {
       if (!isId(id)) throw new Error(`practice record: ${JSON.stringify(id)} is not a ledger id`);
@@ -328,11 +443,15 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY }) {
       const full = Object.freeze({ ...rep, at });
       const problem = repProblem(full);
       if (problem) throw new Error(`practice record: the rep for ${id} ${problem}`);
-      let algs;
-      try { algs = read(); } catch (e) {
+      let stored;
+      try { stored = read(); } catch (e) {
         if (e instanceof PracticeRecordError) return Object.freeze({ saved: false, error: e });
         throw e;
       }
+      // Another window's write may have dropped a rep this instance wrote: put back with this one.
+      const merged = withJournal(stored);
+      const algs = merged.algs;
+      const lost = merged.lost.length ? { lost: lostError(merged.lost) } : {};
       const prior = algs.get(id) ?? [];
       // THE STAMPS ARE THE WRITE ORDER, across the whole record — the cap drops the oldest rep of all, so a stamp
       // is only an age if each is later than every one before it. A clock that went backwards (the device's
@@ -347,6 +466,7 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY }) {
         return Object.freeze({
           saved: false,
           error: new PracticeRecordError('clock-behind', `the clock reads earlier than the newest rep on record (${whose}'s), so the rep was not saved`),
+          ...lost,
         });
       }
       // Two reps in one millisecond are ordered by their place in the list — but only within ONE algorithm;
@@ -357,21 +477,14 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY }) {
         return Object.freeze({
           saved: false,
           error: new PracticeRecordError('clock-behind', `the clock reads the same time as ${tied.other}'s newest rep, so which came first could not be kept and the rep was not saved`),
+          ...lost,
         });
       }
       const next = capped(new Map([...algs, [id, [...prior, full]]]));
-      const text = serialize(next);
-      try { storage.setItem(key, text); } catch (e) {
-        return Object.freeze({ saved: false, error: new PracticeRecordError('write-failed', `${key} could not be written`, e) });
-      }
-      let back;
-      try { back = storage.getItem(key); } catch (e) {
-        return Object.freeze({ saved: false, error: new PracticeRecordError('did-not-land', `${key} could not be read back after writing`, e) });
-      }
-      if (back !== text) {
-        return Object.freeze({ saved: false, error: new PracticeRecordError('did-not-land', `${key} read back differently from what was written`) });
-      }
-      return Object.freeze({ saved: true });
+      const failed = write(next);
+      if (failed) return Object.freeze({ saved: false, error: failed, ...lost });
+      journal = heldIn(next, [...journal, { id, rep: full }]);
+      return Object.freeze({ saved: true, ...lost });
     },
   });
 }

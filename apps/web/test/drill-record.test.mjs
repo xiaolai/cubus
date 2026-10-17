@@ -487,3 +487,149 @@ test('the storage key and the caps are what the format says', () => {
   const text = storedText(Array.from({ length: TOTAL_CAP / PER_ALG_CAP }, (_, i) => [`cmll-case-${i}`, PER_ALG_CAP]));
   assert.ok(text.length < 500_000, `a full record is ${text.length} characters`);
 });
+
+// ---- two instances, one storage ------------------------------------------------------------------------
+//
+// Measured 2026-10-18, two pages of one origin in WebKit and Chromium: each page reads its OWN copy of
+// localStorage, which another page's write reaches a few milliseconds later as a `storage` event — or, while
+// the page's thread is busy, only when it is free again. So a rep added in one window within that gap is
+// written over the other's: WebKit lost one of two reps in 20 of 20 trials 0 ms apart, 14 at 1 ms, 5 at 2 ms,
+// none at 5 ms; and in 20 of 20 at every gap up to 50 ms while one page was busy. Two instances in ONE page
+// share one thread and one copy, and `add` is synchronous, so their adds cannot interleave at all.
+
+/** Windows over one origin's storage, as measured: each reads its own copy, which another window's write
+ *  reaches only when `deliver()` runs — and then as a `storage` event, never to the writer itself. A write
+ *  that arrives after the window has written the key itself does not overwrite its copy (the stored value is
+ *  the later write), as the browsers' copies ignore a remote change under a newer local one. */
+function windows(n) {
+  const backend = new Map();
+  const queue = [];
+  let seq = 0;
+  const tabs = Array.from({ length: n }, (_, i) => {
+    const cache = new Map();
+    const ownAt = new Map();
+    const events = new EventTarget();
+    const own = (k, v) => {
+      if (v === null) { cache.delete(k); backend.delete(k); } else { cache.set(k, v); backend.set(k, v); }
+      seq += 1;
+      ownAt.set(k, seq);
+      queue.push({ from: i, k, v, seq });
+    };
+    const storage = {
+      getItem: (k) => (cache.has(k) ? cache.get(k) : null),
+      setItem: (k, v) => own(k, String(v)),
+      removeItem: (k) => own(k, null),
+    };
+    return { storage, events, cache, ownAt };
+  });
+  const deliver = () => {
+    while (queue.length) {
+      const { from, k, v, seq: at } = queue.shift();
+      tabs.forEach((t, i) => {
+        if (i === from) return;
+        const oldValue = t.cache.has(k) ? t.cache.get(k) : null;
+        if (!(t.ownAt.get(k) > at)) { if (v === null) t.cache.delete(k); else t.cache.set(k, v); }
+        t.events.dispatchEvent(Object.assign(new Event('storage'), { key: k, oldValue, newValue: v, storageArea: t.storage }));
+      });
+    }
+  };
+  const stored = () => (backend.has(RECORD_KEY) ? parseRecord(backend.get(RECORD_KEY)) : new Map());
+  return { tabs, deliver, stored };
+}
+const msOf = (algs) => Object.fromEntries([...algs].map(([id, reps]) => [id, reps.map((r) => r.ms)]));
+
+test('two instances in one page cannot interleave: every rep either adds is kept', () => {
+  const storage = fakeStorage();
+  const clock = clockFrom();
+  const a = openPracticeRecord({ storage, now: clock });
+  const b = openPracticeRecord({ storage, now: clock });
+  for (let i = 1; i <= 5; i++) {
+    assert.equal(a.add('x', rep({ ms: 100 + i })).saved, true);
+    assert.equal(b.add('y', rep({ ms: 200 + i })).saved, true);
+  }
+  assert.deepEqual(msOf(a.read()), { x: [101, 102, 103, 104, 105], y: [201, 202, 203, 204, 205] });
+});
+
+test('a rep another window wrote over is put back as soon as that write arrives', () => {
+  const w = windows(2);
+  const clock = clockFrom();
+  const lost = [];
+  const open2 = (t) => openPracticeRecord({ storage: t.storage, now: clock, changes: t.events, onLost: (e) => lost.push(e) });
+  const [a, b] = w.tabs.map(open2);
+  assert.equal(a.add('x', rep({ ms: 111 })).saved, true);
+  // The other window has not heard of it yet, and writes from its own copy: the rep is written over.
+  assert.equal(b.add('y', rep({ ms: 222 })).saved, true);
+  assert.deepEqual(msOf(w.stored()), { y: [222] });
+  w.deliver();
+  assert.deepEqual(msOf(w.stored()), { x: [111], y: [222] }, 'the rep written over was not put back');
+  assert.deepEqual(lost, []);
+  // Both windows read the same record afterwards.
+  assert.deepEqual(msOf(a.read()), msOf(b.read()));
+});
+
+test('without storage events, a window puts its rep back at its next add', () => {
+  const w = windows(2);
+  const clock = clockFrom();
+  const [a, b] = w.tabs.map((t) => openPracticeRecord({ storage: t.storage, now: clock }));
+  assert.equal(a.add('x', rep({ ms: 111 })).saved, true);
+  assert.equal(b.add('y', rep({ ms: 222 })).saved, true);
+  w.deliver();
+  const out = a.add('x', rep({ ms: 333 }));
+  assert.deepEqual([out.saved, out.lost], [true, undefined]);
+  assert.deepEqual(msOf(w.stored()), { x: [111, 333], y: [222] });
+});
+
+test('a rep that cannot be put back without guessing an order is said, never dropped quietly', () => {
+  // Two windows' reps in the same millisecond, on two algorithms: putting the first back would make a tie the
+  // reader refuses. Said through onLost; the record stays one the reader takes.
+  const w = windows(2);
+  const lost = [];
+  const [a, b] = w.tabs.map((t) => openPracticeRecord({ storage: t.storage, now: () => 5_000, changes: t.events, onLost: (e) => lost.push(e) }));
+  assert.equal(a.add('x', rep({ ms: 111 })).saved, true);
+  assert.equal(b.add('y', rep({ ms: 222 })).saved, true);
+  w.deliver();
+  assert.equal(lost.length, 1);
+  assert.ok(lost[0] instanceof PracticeRecordError && lost[0].code === 'overwritten');
+  assert.match(lost[0].message, /x's rep at 5000/);
+  assert.deepEqual(msOf(w.stored()), { y: [222] });
+  // The same is said by an add when there is no event to hear it on.
+  const v = windows(2);
+  const [c, d] = v.tabs.map((t) => openPracticeRecord({ storage: t.storage, now: () => 5_000 }));
+  c.add('x', rep({ ms: 111 }));
+  d.add('y', rep({ ms: 222 }));
+  v.deliver();
+  let t = 5_000;
+  const later = openPracticeRecord({ storage: v.tabs[0].storage, now: () => (t += 1) });
+  assert.equal(later.add('z', rep()).lost, undefined, 'another instance claimed a rep it never wrote');
+  const out = c.add('x', rep({ ms: 333 }));
+  assert.equal(out.saved, false, 'the clock stands still in this window, so its own rep is refused');
+  assert.equal(out.lost?.code, 'overwritten', 'the rep that could not be put back was not said');
+});
+
+test('a record removed in another window is not put back, and a rep the cap dropped is not called lost', () => {
+  const w = windows(2);
+  const clock = clockFrom();
+  const lost = [];
+  const [a, b] = w.tabs.map((t) => openPracticeRecord({ storage: t.storage, now: clock, changes: t.events, onLost: (e) => lost.push(e) }));
+  assert.equal(a.add('x', rep({ ms: 111 })).saved, true);
+  w.deliver();
+  w.tabs[1].storage.removeItem(RECORD_KEY);
+  w.deliver();
+  assert.equal(w.tabs[0].storage.getItem(RECORD_KEY), null, 'a deliberate removal was undone');
+  assert.equal(a.add('x', rep({ ms: 222 })).saved, true);
+  assert.deepEqual(msOf(w.stored()), { x: [222] }, 'a removed rep came back at the next add');
+  // The other window fills the record with newer reps; the cap drops this window's old one, as it must.
+  w.deliver();
+  const full = { v: 1, algs: {} };
+  let u = clock() + 1;
+  for (let i = 0, room = TOTAL_CAP; room > 0; i++) {
+    const n = Math.min(PER_ALG_CAP, room);
+    full.algs[`fill-${i}`] = Array.from({ length: n }, () => ({ ...GOOD, t: (u += 1) }));
+    room -= n;
+  }
+  w.tabs[1].storage.setItem(RECORD_KEY, JSON.stringify(full));
+  w.deliver();
+  assert.deepEqual(lost, [], 'a rep the cap dropped was called lost');
+  assert.equal(w.stored().has('x'), false, 'a rep older than every one the cap keeps was put back');
+  assert.throws(() => openPracticeRecord({ storage: fakeStorage(), now: Date.now, changes: new EventTarget() }), /onLost/);
+});
