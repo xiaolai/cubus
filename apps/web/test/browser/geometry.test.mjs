@@ -31,6 +31,7 @@ import { webkit } from 'playwright';
 import { pace } from '../browser-wait.mjs';
 
 import { NAV } from '../../lib/app-state.js';
+import { NAV_DEFAULTS_VERSION } from '../../lib/app-settings.js';
 import { LEVELS, METHODS } from '../../lib/methods/registry.js';
 import { fitStage } from '../../lib/stage.js';
 import { freePort } from '../free-port.mjs';
@@ -1388,6 +1389,46 @@ for (const fixture of FIXTURES) {
       await context.close();
     }
   });
+}
+
+// ---- Settings: the "in the fingers" stepper, in both places it can be drawn ---------------------------------
+//
+// With the Practice tab shown the stepper is a card of its own; with the tab hidden (the default, ADR 0010) it sits
+// in Advanced (lib/screens/settings/practice-target.js). The screen loop above measures Settings as a fresh install
+// draws it — Practice hidden, Advanced closed — where the stepper is in NEITHER place, so neither was measured.
+
+const STEPPER_PLACES = [
+  { where: 'Practice shown, its own card', settings: { navHidden: [], navDefaults: NAV_DEFAULTS_VERSION }, card: 'PRACTICE' },
+  { where: 'Practice hidden, in Advanced', settings: null, card: 'ADVANCED' },
+];
+
+for (const place of STEPPER_PLACES) {
+  for (const fixture of FIXTURES) {
+    test(`settings stepper (${place.where}): ${label(fixture)}`, async () => {
+      const { page, context, errors } = await open(fixture, 'settings', place.settings);
+      try {
+        if (place.card === 'ADVANCED') {
+          // The developer chord, as a keyboard sends it: Advanced opens on the Settings screen it is pressed on.
+          await page.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyD', ctrlKey: true, altKey: true, metaKey: true })));
+        }
+        await page.waitForSelector('#setFingers-more');
+        const drawn = await page.evaluate(() => ({
+          count: ['setFingers-less', 'fingersN', 'setFingers-more'].map((id) => document.querySelectorAll(`#${id}`).length),
+          card: document.querySelector('#fingersN').closest('.card')?.querySelector('.eyebrow')?.textContent,
+        }));
+        assert.deepEqual(drawn.count, [1, 1, 1], 'not exactly one stepper on the screen');
+        assert.equal(drawn.card, place.card, `the stepper is in the ${drawn.card} card`);
+        practiceFloor(await measureScreen(page), fixture, `settings, stepper ${place.where}`);
+        // And it works where it is drawn: one press up is one more clean rep.
+        const before = Number(await page.evaluate(() => document.querySelector('#fingersN').textContent));
+        await page.click('#setFingers-more');
+        await page.waitForFunction((n) => document.querySelector('#fingersN')?.textContent === String(n), before + 1);
+        assert.deepEqual(errors.map(String), [], 'the page threw');
+      } finally {
+        await context.close();
+      }
+    });
+  }
 }
 
 test('a popover opened on the stage stays inside it', async () => {
