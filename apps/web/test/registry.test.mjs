@@ -44,6 +44,13 @@ test('an entry missing a field, with an unknown level, or a method engine with n
     assert.throws(() => checkEntry(broken), new RegExp(`declares no "${field}"`), `an entry without ${field} was accepted`);
   }
   assert.throws(() => checkEntry({ ...BEGINNER_ENTRY, level: 'expert' }), /unknown level/);
+  // The engines are a lookup table, so a name every object answers — `toString`, `constructor` — is the
+  // case a table with a prototype would have taken for an engine's check.
+  // …and so is a value that only BECOMES an engine's name when used as a key: `['method']` and
+  // `Object('method')` both convert to "method" (verify pass, 2026-10-17).
+  for (const engine of ['kociemba', 'toString', 'constructor', '__proto__', ['method'], Object('method'), null]) {
+    assert.throws(() => checkEntry({ ...BEGINNER_ENTRY, engine }), /unknown engine/, `engine "${engine}" was accepted`);
+  }
   assert.throws(() => checkEntry({ ...BEGINNER_ENTRY, stages: [] }), /no stages/);
   assert.throws(() => checkEntry({ ...BEGINNER_ENTRY, proof: [] }), /no proof/);
   // A spec the engine cannot build is refused here; a spec that builds OTHER stages than it declares is
