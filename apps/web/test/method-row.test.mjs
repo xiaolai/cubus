@@ -93,6 +93,13 @@ test('nine methods are ONE pill naming the learner\'s method, and a menu holding
 test('the row\'s words are escaped, and no pill claims a minimum (AGENTS.md §1)', () => {
   const html = row.methodRowHtml({ methods: [{ ...registry.BEGINNER_ENTRY, id: 'x"y', label: '<b>' }], chosen: 'x"y', escHtml: esc });
   assert.doesNotMatch(html, /<b>/, 'a label reached the markup unescaped');
+  // The id is escaped too: parsed, the pill carries exactly the id it was given, and no attribute or
+  // element the quote could have opened.
+  const host = document.createElement('div');
+  host.innerHTML = html;
+  const pill = host.querySelector('[data-method]');
+  assert.equal(pill.getAttribute('data-method'), 'x"y', 'the id did not survive as one attribute');
+  assert.equal(host.querySelectorAll('b, [y]').length, 0, 'the quote in the id opened markup of its own');
   for (const m of registry.METHODS) assert.doesNotMatch(m.label, /short|fewest|minim|optimal/i, `${m.id} claims a minimum`);
 });
 
