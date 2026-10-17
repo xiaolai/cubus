@@ -29,9 +29,9 @@ import { hooks } from '../screen-slots.js';
 import { newCube } from '../cube-drawing.js';
 import { conn, cubeRefused } from '../live-session.js';
 import { play } from '../sound.js';
-import { run } from '../cube-moves.js';
+import { faceTurnsOf, run, toIdentity } from '../cube-moves.js';
 import { parse } from '../cube-notation.js';
-import { SOLVED, invert, toFacelets } from '../cube-pieces.js';
+import { SOLVED, applyMove, invert, toFacelets } from '../cube-pieces.js';
 import { stateFrom } from '../script-view.js';
 import { holdSentence, holdSpec } from '../solving-hold.js';
 import { library } from '../drill/library-client.js';
@@ -106,6 +106,38 @@ function caseOf(row) {
 
 /** The algorithm as the element draws it from `facelets` held `hold`: identity-frame tokens (`run().drawn`). */
 const drawnFrom = (row, hold, facelets) => run(parse(row.alg), hold, stateFrom(facelets)).drawn.join(' ');
+
+/** A face turned `q` quarters, in the piece model's names (`R`, `R2`, `R'`), or null for none. */
+const quarterName = (face, q) => ({ 1: face, 2: `${face}2`, 3: `${face}'` })[((q % 4) + 4) % 4] ?? null;
+
+/**
+ * The turns still to make to finish the identity-frame move `identity` from the pieces `from`, for a cube now at
+ * `now` part way through it — as the cube's own face turns — or null when `now` is not part way through it.
+ *
+ * The faces of one move lie on one axis and commute, so each is part way through its own turn independently, and a
+ * half turn can be part way either way round (undoing `R2` passes through `R'`): the reading `between` in
+ * lib/script-track.js makes of a midpoint, which is what the engine accepted.
+ */
+function stillToTurn(identity, from, now) {
+  const faces = faceTurnsOf(identity).turns.filter((x) => x.name)
+    .map((x) => ({ face: x.face, quarters: x.name.endsWith('2') ? 2 : x.name.endsWith("'") ? -1 : 1 }));
+  const pick = (done) => {
+    if (done.length < faces.length) {
+      for (const q of Math.abs(faces[done.length].quarters) === 1 ? [0, faces[done.length].quarters] : [0, 1, -1, 2]) {
+        const found = pick([...done, q]);
+        if (found) return found;
+      }
+      return null;
+    }
+    const left = faces.map((f, k) => (((f.quarters - done[k]) % 4) + 4) % 4);
+    // None made, or all of them, is a position — not a point part way through the move.
+    if (done.every((q) => q === 0) || left.every((q) => q === 0)) return null;
+    let state = from;
+    done.forEach((q, k) => { const name = quarterName(faces[k].face, q); if (name) state = applyMove(state, name); });
+    return toFacelets(state) === now ? left.map((q, k) => quarterName(faces[k].face, q)).filter(Boolean) : null;
+  };
+  return faces.length ? pick([]) : null;
+}
 
 const PAGE_HTML = `<div class="cols practice-page" data-composition="practice">
   <div class="card primary" style="display:flex;flex-direction:column;align-items:center;position:relative">
@@ -392,7 +424,37 @@ function mountPage({ root, page, catalogue, signal, stale }) {
       };
     }
     const hold = st.holds[0];
-    return { facelets: startFacelets, hold, alg: drawnFrom(row, hold, startFacelets), at: st.position, arrow: 'next', chips: st.position };
+    return midway(st, hold)
+      ?? { facelets: startFacelets, hold, alg: drawnFrom(row, hold, startFacelets), at: st.position, arrow: 'next', chips: st.position };
+  };
+
+  /**
+   * The cube PART WAY through a move — one quarter of a half turn, one face of a slice — drawn as it is NOW, with
+   * the turns still to make and the rest of the algorithm after them; null when the cube stands at its position.
+   *
+   * The engine accepts such a midpoint and keeps its position, because nothing has been completed. Drawn at that
+   * position, the picture showed the cube before a turn the child had half made, and the arrow asked for the whole
+   * half turn where a quarter was left. Looked for in the move from the position, and in the move that led into it
+   * through any regrips — the two the engine accepts a midpoint beside (`locate` in lib/script-track.js).
+   */
+  const midway = (st, hold) => {
+    const moves = parse(row.alg);
+    const start = stateFrom(startFacelets);
+    const now = engine.facelets;
+    for (let k = st.position; k >= 0; k -= 1) {
+      const at = run(moves.slice(0, k), hold, start);
+      if (k === st.position && toFacelets(at.state) === now) return null;
+      if (k === moves.length) continue;
+      const identity = toIdentity(moves[k], at.hold);
+      const rest = stillToTurn(identity, at.state, now);
+      if (rest) {
+        const after = run(moves, hold, start).drawn.slice(k + 1);
+        return { facelets: now, hold: at.hold, alg: [...rest, ...after].join(' '), at: 0, arrow: 'next', chips: st.position };
+      }
+      // Back through regrips only: a move that turns a face is the last one a midpoint can belong to.
+      if (k < st.position && faceTurnsOf(identity).turns.some((x) => x.name)) break;
+    }
+    return null;
   };
 
   const paint = () => {

@@ -13,9 +13,10 @@ import { after, before, test } from 'node:test';
 import { ORIENTATIONS } from '../../lib/cube-orientation.js';
 import { SOLVED as PIECES, applyAlg, toFacelets } from '../../lib/cube-pieces.js';
 import { lcg } from '../fixtures/seeded-scrambles.mjs';
+import { toWorld } from './drawn-cube.mjs';
 import { LIVENESS_MS, startBrowserFixture } from './harness.mjs';
 import {
-  AXIS, MAC, PAST_WINDOW_MS, axesNear, feedRep, openPractice, randomStart, reportsPerToken, show,
+  AXIS, MAC, PAST_WINDOW_MS, after_, axesNear, feedRep, openPractice, randomStart, reportsPerToken, show,
 } from './practice-page.mjs';
 
 let fixture;
@@ -218,6 +219,94 @@ test('the page speaks of an arrow only where one is drawn — before the hold is
     const running = await seen();
     assert.deepEqual([running.data.status, running.data.settled], ['running', 'true'], 'precondition: running, the hold known');
     truthful(running, 'running, with turn arrows off');
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
+// ---- part way through a turn (row 21) ----------------------------------------------------------------------
+
+/** What the cube in `window.__cube` shows, as a child sees it: the colour at every world facelet (its face letter). */
+const shown = async (page) => toWorld(await page.evaluate(() => {
+  const el = window.__cube;
+  el.root.updateMatrixWorld(true);
+  const letterOf = Object.fromEntries(Object.entries(el.drawnColours()).map(([face, hex]) => [hex.slice(1).toLowerCase(), face]));
+  const V = el.stickers[0].position.constructor;
+  return el.stickers.map((m) => {
+    const s = m.getWorldPosition(new V());
+    const c = m.parent.getWorldPosition(new V());
+    return { face: letterOf[m.material.color.getHexString()] ?? '?', cubie: [c.x, c.y, c.z], offset: [s.x - c.x, s.y - c.y, s.z - c.z] };
+  });
+}));
+
+/** What a fresh cube shows, drawn from `facelets` held `orientation`: the arrangement, with no sequence played. */
+async function shownFresh(page, facelets, orientation) {
+  await page.evaluate(({ f, o }) => {
+    const el = document.createElement('cubus-cube');
+    el.setAttribute('orientation', o);
+    el.setAttribute('facelets', f);
+    el.style.cssText = 'position:fixed;left:0;top:0;width:120px;height:120px';
+    document.body.append(el);
+    window.__cube = el;
+  }, { f: facelets, o: orientation });
+  await page.waitForFunction(() => window.__cube.stickers?.length > 0, null, { timeout: LIVENESS_MS });
+  const out = await shown(page);
+  await page.evaluate(() => window.__cube.remove());
+  return out;
+}
+
+test('part way through a half turn or a slice the cube on screen is the cube as it is, with the turn still to make', async () => {
+  const { page, context, errors } = await openPractice(fixture);
+  try {
+    const rnd = lcg(211);
+    const rows = Object.values((await page.evaluate(() => window.__p.rows())).rows).sort((a, b) => a.id.localeCompare(b.id));
+    const picture = async () => {
+      await page.evaluate(() => { window.__cube = window.__p.cube(); });
+      return { drawn: await shown(page), orientation: await page.evaluate(() => window.__p.cube().getAttribute('orientation')) };
+    };
+    /**
+     * The first move of `kind` that a cube reports as two turns — a half turn as two quarters of one face, a slice as
+     * its two faces — and that comes after reports on two axes, when the hold is known: as `{ row, per, k }`.
+     */
+    const find = (kind) => {
+      for (const row of rows) {
+        const per = reportsPerToken(row.alg, ORIENTATIONS[7], rnd);
+        const k = per.findIndex((qs, i) => qs.length === 2 && (kind === 'half turn' ? qs[0][0] === qs[1][0] : AXIS[qs[0][0]] === AXIS[qs[1][0]] && qs[0][0] !== qs[1][0])
+          && new Set(per.slice(0, i).flat().map((q) => AXIS[q[0]])).size >= 2);
+        if (k >= 0) return { row, per, k };
+      }
+      throw new Error(`no ledger row has a ${kind} after the hold is known`);
+    };
+    for (const kind of ['half turn', 'slice']) {
+      const { row, per, k } = find(kind);
+      const what = `${row.id}, ${kind} at move ${k + 1}`;
+      await show(page, row.id);
+      await page.keyboard.press('Escape');
+      let state = randomStart(rnd);
+      await page.evaluate((f) => window.__p.facelets(f), toFacelets(state));
+      const lead = [...per.slice(0, k).flat(), per[k][0]];
+      await page.evaluate((qs) => { for (const q of qs) window.__p.move(q); }, lead);
+      state = after_(state, lead);
+      const data = await page.evaluate(() => window.__p.data());
+      assert.deepEqual([data.status, data.settled], ['running', 'true'], `${what}: precondition: running, the hold known`);
+      const mid = await picture();
+      assert.equal(mid.drawn, await shownFresh(page, toFacelets(state), mid.orientation), `${what}: part way through, the cube on screen is not the cube as it is`);
+      // The arrow points the turn still to make — the move's second report, in the cube's own letters.
+      const cube = await page.evaluate(() => ({ arrow: window.__p.arrow(), alg: window.__p.cube().getAttribute('alg') }));
+      assert.equal(cube.arrow, 'next');
+      assert.equal(cube.alg.split(' ')[0], per[k][1], `${what}: the next turn drawn is ${cube.alg.split(' ')[0]}, not the one still to make`);
+      // The second report lands the move — the picture is the cube as it is again — and the rep finishes at its
+      // last report, which may be that one.
+      const before = await page.evaluate(() => window.__p.count('done'));
+      await page.evaluate((q) => window.__p.move(q), per[k][1]);
+      state = after_(state, [per[k][1]]);
+      const whole = await picture();
+      assert.equal(whole.drawn, await shownFresh(page, toFacelets(state), whole.orientation), `${what}: after the move, the cube on screen is not the cube as it is`);
+      const rest = per.slice(k + 1).flat();
+      const dones = await page.evaluate(({ qs, b }) => [window.__p.count('done') - b, ...qs.map((q) => { window.__p.move(q); return window.__p.count('done') - b; })], { qs: rest, b: before });
+      assert.deepEqual(dones, atLast(rest.length + 1), `${what}: the rep did not finish at its last report`);
+    }
     assert.deepEqual(errors, []);
   } finally {
     await context.close();
