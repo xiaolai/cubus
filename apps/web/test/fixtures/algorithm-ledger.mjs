@@ -4,9 +4,11 @@
 //   re-verify:  node --test apps/web/test/algorithm-ledger.test.mjs
 //
 // What this repository holds, per set and per method, and what it does not. The sets themselves are
-// NOT copied here — they live in lib/data/case-tables.js and lib/methods/, and copying them would
-// make a second place for an algorithm to be wrong. This records the shape: sizes, lengths,
-// provenance, which method needs which, and what is missing.
+// NOT copied here — they live in lib/methods/ (the hand-written tables), lib/data/human-algs.js and
+// lib/data/cmll-algs.js (the sourced ones) and lib/data/case-tables.js (the proved ones), and copying
+// them would make a second place for an algorithm to be wrong. This records the shape: sizes,
+// lengths, provenance, which method needs which, and what is missing. A method the solve tab offers
+// carries its registry id (lib/methods/registry.js); one it does not carries `id: null`.
 //
 // `unmeasured: true` marks a size taken from the cubing community rather than measured here, the
 // same way cubus-im-solving-methods.md marks the one CFOP figure nothing in either repo has measured.
@@ -55,7 +57,7 @@ export const ALGORITHM_SETS = Object.freeze([
     "id": "f2l-triggers",
     "name": "F2L triggers",
     "kind": "hand-written",
-    "provenance": "rung 1 of the pairs stage: six triggers a pair is built out of, rather than 41 cases",
+    "provenance": "CFOP (easy)'s first two layers: six triggers a pair is built out of, rather than 41 cases",
     "verified": "same as above",
     "count": 6,
     "distinct": 6,
@@ -81,7 +83,7 @@ export const ALGORITHM_SETS = Object.freeze([
     "id": "ocll",
     "name": "Two-look OLL, second look",
     "kind": "hand-written",
-    "provenance": "the corner-orientation cases in FACE TURNS ONLY, because the renderer and the move list speak nothing else",
+    "provenance": "the corner-orientation cases in face turns only, by choice: the first algorithms a learner meets need no notation beyond the six faces. The renderer and the interpreter read wide turns and slices too; the sourced sets use them",
     "verified": "same as above",
     "count": 5,
     "distinct": 5,
@@ -117,6 +119,32 @@ export const ALGORITHM_SETS = Object.freeze([
     "moves": 22
   },
   {
+    "id": "course-edges",
+    "name": "The course's top edges",
+    "kind": "hand-written",
+    "provenance": "the beginner course's lessons 13 and 14 (cubus-courses): the cross on top, then a swap of two top edges",
+    "verified": "same as above; and `bench/method-solver-profile.mjs exhaustive course course` walks all 62,208 last-layer states through the course's route (a nightly CI shard)",
+    "count": 2,
+    "distinct": 2,
+    "shortest": 6,
+    "longest": 8,
+    "mean": 7,
+    "moves": 14
+  },
+  {
+    "id": "course-corners",
+    "name": "The course's top corners",
+    "kind": "hand-written",
+    "provenance": "the beginner course's lessons 15 and 16: three corners moved round, then lesson 9's four moves done twice or four times to turn one corner up",
+    "verified": "same as above",
+    "count": 3,
+    "distinct": 3,
+    "shortest": 8,
+    "longest": 16,
+    "mean": 10.67,
+    "moves": 32
+  },
+  {
     "id": "align",
     "name": "Alignment",
     "kind": "not an algorithm",
@@ -130,10 +158,23 @@ export const ALGORITHM_SETS = Object.freeze([
     "moves": 0
   },
   {
+    "id": "turn",
+    "name": "Turning a slot to the front",
+    "kind": "not an algorithm",
+    "provenance": "an EMPTY body, named so a pairs step's parts add up to its algorithm: the turn of the whole cube that brings a slot to the front right. A regrip, not something anyone memorises",
+    "verified": "a part a pairs step names, so it is in CASE_NAMES; held here so that every name a step can carry is filed somewhere",
+    "count": 1,
+    "distinct": 1,
+    "shortest": 0,
+    "longest": 0,
+    "mean": 0,
+    "moves": 0
+  },
+  {
     "id": "f2l-human",
     "name": "F2L, human-speed",
     "kind": "sourced",
-    "provenance": "SpeedCubeDB's top-voted Front Right algorithm per case; what the pairs stage's top rung teaches since 2026-10-13",
+    "provenance": "SpeedCubeDB's top-voted Front Right algorithm per case; what CFOP (full) teaches for its first two layers",
     "verified": "`human-algs.test.mjs`: cubejs finds each answers exactly its proved case, and the 41 cover the 41 once each",
     "count": 41,
     "distinct": 41,
@@ -146,7 +187,7 @@ export const ALGORITHM_SETS = Object.freeze([
     "id": "oll-human",
     "name": "Full OLL, human-speed",
     "kind": "sourced",
-    "provenance": "J Perm's first-listed algorithm per case; what full OLL teaches since 2026-10-13",
+    "provenance": "J Perm's first-listed algorithm per case; what CFOP (full) teaches for the top face",
     "verified": "same cubejs check, 57 to 57",
     "count": 57,
     "distinct": 57,
@@ -159,7 +200,7 @@ export const ALGORITHM_SETS = Object.freeze([
     "id": "pll-human",
     "name": "Full PLL, human-speed",
     "kind": "sourced",
-    "provenance": "J Perm's first-listed algorithm per case; what full PLL teaches since 2026-10-13",
+    "provenance": "J Perm's first-listed algorithm per case; what CFOP (full) teaches for the last layer",
     "verified": "same cubejs check, 21 to 21",
     "count": 21,
     "distinct": 21,
@@ -167,6 +208,19 @@ export const ALGORITHM_SETS = Object.freeze([
     "longest": 21,
     "mean": 13.95,
     "moves": 293
+  },
+  {
+    "id": "cmll",
+    "name": "CMLL",
+    "kind": "sourced",
+    "provenance": "SpeedCubeDB's top-voted algorithm per case, fetched 2026-10-17 from the page's markup and taught exactly as written; what Roux teaches for the top corners",
+    "verified": "`cmll-algs.test.mjs`: cubejs finds every row keeps both blocks and the centres, the 42 rows answer the 42 cases once each, and no row solves the arrangement none is for",
+    "count": 42,
+    "distinct": 42,
+    "shortest": 7,
+    "longest": 17,
+    "mean": 10.79,
+    "moves": 453
   },
   {
     "id": "f2l-full",
@@ -211,95 +265,50 @@ export const ALGORITHM_SETS = Object.freeze([
 
 export const METHOD_ALGORITHMS = Object.freeze([
   {
-    "method": "The app's method",
-    "ladder": true,
+    "id": "quick",
+    "method": "Quick",
     "phases": [
       {
+        "phase": "Whole cube",
+        "intuitive": "NONE. The two-phase search (`lib/two-phase.js`) answers; there is nothing to memorise"
+      }
+    ],
+    "sets": [],
+    "held": 0,
+    "heldMoves": 0,
+    "missing": []
+  },
+  {
+    "id": "beginner",
+    "method": "Beginner",
+    "phases": [
+      {
+        "stage": "cross",
         "phase": "Cross",
-        "rungs": [
-          {
-            "rung": 0,
-            "label": "edge by edge",
-            "held": [
-              "cross-inserts"
-            ]
-          },
-          {
-            "rung": 1,
-            "label": "planned whole",
-            "intuitive": "an exact distance table is descended — no algorithm at all"
-          }
+        "held": [
+          "cross-inserts"
         ]
       },
       {
-        "phase": "Pairs",
-        "rungs": [
-          {
-            "rung": 0,
-            "label": "corner, then edge",
-            "held": [
-              "f1l-inserts",
-              "middle-inserts"
-            ]
-          },
-          {
-            "rung": 1,
-            "label": "trigger pairs",
-            "held": [
-              "f2l-triggers",
-              "f1l-inserts",
-              "middle-inserts"
-            ]
-          },
-          {
-            "rung": 2,
-            "label": "the F2L cases",
-            "held": [
-              "f2l-human",
-              "f1l-inserts",
-              "middle-inserts"
-            ]
-          }
+        "stage": "pairs",
+        "phase": "First two layers",
+        "held": [
+          "f1l-inserts",
+          "middle-inserts"
         ]
       },
       {
-        "phase": "OLL",
-        "rungs": [
-          {
-            "rung": 0,
-            "label": "two-look",
-            "held": [
-              "eoll",
-              "ocll"
-            ]
-          },
-          {
-            "rung": 1,
-            "label": "full OLL",
-            "held": [
-              "oll-human"
-            ]
-          }
+        "stage": "oll",
+        "phase": "Top face",
+        "held": [
+          "course-edges"
         ]
       },
       {
-        "phase": "PLL",
-        "rungs": [
-          {
-            "rung": 0,
-            "label": "two-look",
-            "held": [
-              "cpll",
-              "epll"
-            ]
-          },
-          {
-            "rung": 1,
-            "label": "full PLL",
-            "held": [
-              "pll-human"
-            ]
-          }
+        "stage": "pll",
+        "phase": "Last layer",
+        "held": [
+          "course-corners"
         ]
       }
     ],
@@ -307,91 +316,142 @@ export const METHOD_ALGORITHMS = Object.freeze([
       "cross-inserts",
       "f1l-inserts",
       "middle-inserts",
-      "f2l-triggers",
-      "f2l-human",
-      "eoll",
-      "ocll",
-      "oll-human",
-      "cpll",
-      "epll",
-      "pll-human"
+      "course-edges",
+      "course-corners"
     ],
-    "held": 18,
-    "heldMoves": 140,
-    "heldTop": 121,
-    "heldTopMoves": 1208,
+    "held": 12,
+    "heldMoves": 80,
     "missing": []
   },
   {
-    "method": "CFOP",
-    "ladder": false,
+    "id": "cfop-4lll",
+    "method": "CFOP (easy)",
     "phases": [
       {
+        "stage": "cross",
         "phase": "Cross",
-        "intuitive": "planned, not memorised"
+        "intuitive": "planned whole: an exact distance table is descended — no algorithm at all"
       },
       {
-        "phase": "F2L",
-        "held": "f2l-human"
+        "stage": "pairs",
+        "phase": "First two layers",
+        "held": [
+          "f2l-triggers",
+          "f1l-inserts",
+          "middle-inserts"
+        ]
       },
       {
-        "phase": "OLL",
-        "held": "oll-human"
+        "stage": "oll",
+        "phase": "Top face",
+        "held": [
+          "eoll",
+          "ocll"
+        ]
       },
       {
-        "phase": "PLL",
-        "held": "pll-human"
+        "stage": "pll",
+        "phase": "Last layer",
+        "held": [
+          "cpll",
+          "epll"
+        ]
+      }
+    ],
+    "sets": [
+      "f2l-triggers",
+      "f1l-inserts",
+      "middle-inserts",
+      "eoll",
+      "ocll",
+      "cpll",
+      "epll"
+    ],
+    "held": 20,
+    "heldMoves": 147,
+    "missing": []
+  },
+  {
+    "id": "cfop",
+    "method": "CFOP (full)",
+    "phases": [
+      {
+        "stage": "cross",
+        "phase": "Cross",
+        "intuitive": "planned whole: an exact distance table is descended — no algorithm at all"
+      },
+      {
+        "stage": "pairs",
+        "phase": "First two layers",
+        "held": [
+          "f2l-human",
+          "f1l-inserts",
+          "middle-inserts"
+        ]
+      },
+      {
+        "stage": "oll",
+        "phase": "Top face",
+        "held": [
+          "oll-human"
+        ]
+      },
+      {
+        "stage": "pll",
+        "phase": "Last layer",
+        "held": [
+          "pll-human"
+        ]
       }
     ],
     "sets": [
       "f2l-human",
+      "f1l-inserts",
+      "middle-inserts",
       "oll-human",
       "pll-human"
     ],
-    "held": 119,
-    "heldMoves": 1192,
-    "heldTop": 119,
-    "heldTopMoves": 1192,
+    "held": 121,
+    "heldMoves": 1208,
     "missing": []
   },
   {
+    "id": "roux",
     "method": "Roux",
-    "ladder": false,
     "phases": [
       {
-        "phase": "First block",
-        "intuitive": "block building"
+        "stage": "first-block",
+        "phase": "Left block",
+        "intuitive": "block building, found by search: a shipped exact distance table is descended — no table of algorithms"
       },
       {
-        "phase": "Second block",
-        "intuitive": "block building"
+        "stage": "second-block",
+        "phase": "Right block",
+        "intuitive": "block building, found by search: a shipped exact distance table"
       },
       {
-        "phase": "CMLL",
-        "missing": "CMLL",
-        "size": 42,
-        "unmeasured": true
+        "stage": "cmll",
+        "phase": "Top corners",
+        "held": [
+          "cmll"
+        ]
       },
       {
-        "phase": "LSE",
-        "missing": "LSE, largely intuitive with a handful of cases",
-        "size": null,
-        "unmeasured": true
+        "stage": "lse",
+        "phase": "Last six edges",
+        "intuitive": "found by search with the middle slice: exact distance tables, no table of algorithms"
       }
     ],
-    "sets": [],
-    "held": 0,
-    "heldMoves": 0,
-    "heldTop": 0,
-    "heldTopMoves": 0,
-    "missing": [
-      "CMLL",
-      "LSE, largely intuitive with a handful of cases"
-    ]
+    "sets": [
+      "cmll"
+    ],
+    "held": 42,
+    "heldMoves": 453,
+    "missing": []
   },
   {
+    "id": null,
     "method": "Petrus",
-    "ladder": false,
     "phases": [
       {
         "phase": "2x2x2 and 2x2x3",
@@ -422,13 +482,11 @@ export const METHOD_ALGORITHMS = Object.freeze([
     ],
     "held": 10,
     "heldMoves": 100,
-    "heldTop": 10,
-    "heldTopMoves": 100,
     "missing": []
   },
   {
+    "id": null,
     "method": "ZZ",
-    "ladder": false,
     "phases": [
       {
         "phase": "EOLine",
@@ -455,13 +513,11 @@ export const METHOD_ALGORITHMS = Object.freeze([
     ],
     "held": 10,
     "heldMoves": 100,
-    "heldTop": 10,
-    "heldTopMoves": 100,
     "missing": []
   },
   {
+    "id": null,
     "method": "Corners first",
-    "ladder": false,
     "phases": [
       {
         "phase": "Corners",
@@ -479,16 +535,14 @@ export const METHOD_ALGORITHMS = Object.freeze([
     "sets": [],
     "held": 0,
     "heldMoves": 0,
-    "heldTop": 0,
-    "heldTopMoves": 0,
     "missing": [
       "a corner-only set",
       "an edge-only set"
     ]
   },
   {
+    "id": null,
     "method": "Mehta",
-    "ladder": false,
     "phases": [
       {
         "phase": "First block",
@@ -522,8 +576,6 @@ export const METHOD_ALGORITHMS = Object.freeze([
     "sets": [],
     "held": 0,
     "heldMoves": 0,
-    "heldTop": 0,
-    "heldTopMoves": 0,
     "missing": [
       "EOLE",
       "6CO",
@@ -532,8 +584,8 @@ export const METHOD_ALGORITHMS = Object.freeze([
     ]
   },
   {
+    "id": null,
     "method": "Thistlethwaite",
-    "ladder": false,
     "phases": [
       {
         "phase": "G1 to G4",
@@ -543,13 +595,11 @@ export const METHOD_ALGORITHMS = Object.freeze([
     "sets": [],
     "held": 0,
     "heldMoves": 0,
-    "heldTop": 0,
-    "heldTopMoves": 0,
     "missing": []
   },
   {
+    "id": null,
     "method": "The app's solver",
-    "ladder": false,
     "phases": [
       {
         "phase": "Both phases",
@@ -559,8 +609,6 @@ export const METHOD_ALGORITHMS = Object.freeze([
     "sets": [],
     "held": 0,
     "heldMoves": 0,
-    "heldTop": 0,
-    "heldTopMoves": 0,
     "missing": []
   }
 ]);

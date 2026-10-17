@@ -141,9 +141,19 @@ test('the note\'s prose counts match too', (t) => {
   // The algorithm section's headline numbers, read back out of the prose and compared with the
   // ledger. An audit found "999 entries, 999 moves" passing both cases, because nothing was reading
   // the sentence that states them.
-  assert.equal(prose(/(\d+) algorithms at the bottom, (?:\d+) at the top/, "the ladder's bottom"), 18);
-  assert.equal(prose(/\d+ algorithms at the bottom, (\d+) at the top/, "the ladder's top"),
-    METHOD_ALGORITHMS.find((m) => m.method === "The app's method").heldTop);
+  // The cost table, row by row against the ledger and in BOTH directions: a method the ledger holds and the
+  // note leaves out is as stale as a number that drifted. It replaced a sentence about the rung ladder's two
+  // ends, which ADR 0011 took away as a learner's choice.
+  const header = '| method | registry id | algorithms | missing |';
+  assert.ok(text.includes(header), `the note no longer has the cost table this test reads ("${header}")`);
+  const costRows = [];
+  for (const line of text.slice(text.indexOf(header)).split('\n').slice(2)) {
+    if (!line.trim().startsWith('|')) break;
+    const [method, id, held, missing] = line.trim().split('|').slice(1, -1).map((c) => c.trim());
+    costRows.push({ method, id: id === '—' ? null : id, held: Number(held), missing: missing === '—' ? [] : missing.split('; ') });
+  }
+  assert.deepEqual(costRows, METHOD_ALGORITHMS.map((m) => ({ method: m.method, id: m.id, held: m.held, missing: m.missing })),
+    "the note's cost table is not the ledger's methods, ids, costs and gaps, in the ledger's order");
   // ENTRIES are counted without the alignment, which is an entry and not an algorithm; DISTINCT algorithms
   // are distinct sequences, because a sequence two sets share is one algorithm.
   const distinct = new Set(SETS.flatMap((x) => x.entries.map((e) => e.alg)).filter(Boolean)).size;
