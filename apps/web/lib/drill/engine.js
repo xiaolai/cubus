@@ -283,6 +283,13 @@ export function createDrillEngine({
     });
   };
 
+  /**
+   * The candidate the cube has finished: at its last position AND in its last arrangement. The position
+   * alone is not enough — a midpoint keeps the position it was beside, so a cube at the end that turns a
+   * quarter of the last half turn back is still "at" the last position while it has left the end.
+   */
+  const finishedOn = (f) => live.find((e) => e.idx === e.c.track.states.length - 1 && e.c.track.states[e.idx] === f);
+
   /** Judge the arrangement against every candidate. `quiet` judges without cue or sound (`uncertain`). */
   const judge = (quiet) => {
     const f = facelets();
@@ -336,7 +343,7 @@ export function createDrillEngine({
     } else {
       emit('progress', from, { position: live[0].idx });
     }
-    const finished = live.find((e) => e.idx === e.c.track.states.length - 1);
+    const finished = finishedOn(f);
     if (finished) complete(finished);
   };
 
@@ -445,7 +452,7 @@ export function createDrillEngine({
         return k === undefined ? e : { ...e, idx: passRegrips(e.c.track, k) };
       });
       emit('resync', status, { position: live[0].idx });
-      const finished = live.find((e) => e.idx === e.c.track.states.length - 1 && rep.firstMatched !== null);
+      const finished = rep.firstMatched === null ? null : finishedOn(f);
       if (finished) complete(finished);
     },
 

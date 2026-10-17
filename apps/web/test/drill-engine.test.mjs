@@ -501,6 +501,30 @@ test('after a lost turn, the reconciled arrangement resumes tracking silently, a
   assert.deepEqual(h.sounds, ['done'], 'only the completion sounded');
 });
 
+test('a rep is done only where the cube IS at the end — a turn away from it after a resync is not done', () => {
+  // `R U R' U2`, a lost turn, and the snapshot puts the cube at the end. A `U` then takes it to the midpoint
+  // of the last half turn: `locate` keeps the position it had, the last one, but the cube has LEFT the end
+  // (audit-fix 2026-10-18 #6).
+  const alg = "R U R' U2";
+  const h = harness({ alg });
+  startAt(h, SOLVED);
+  h.engine.gap();
+  h.engine.resync(toFacelets(applyAlg(SOLVED, alg)));
+  assert.equal(h.count('done'), 0, 'a resync with no turn matched completed the rep');
+  h.turn('U');
+  assert.equal(h.count('done'), 0, 'a turn away from the end completed the rep');
+  assert.equal(h.engine.state.status, STATUS.UNCERTAIN);
+  // Back to R U R', then the half turn made again, the other way round (four Us in a row would be the
+  // start-over gesture): the cube is at the end, and only now is the rep done.
+  h.turn('U');
+  assert.equal(h.engine.state.position, 3);
+  h.turn("U'");
+  assert.equal(h.count('done'), 0, 'the half turn\'s first quarter completed the rep');
+  h.turn("U'");
+  assert.equal(h.count('done'), 1);
+  assert.equal(h.events.find((e) => e.type === 'done').result.refused, TIME_REFUSAL.STREAM_GAP);
+});
+
 test('a gesture after a lost turn is refused until the arrangement is known again', () => {
   const h = harness({ alg: "R U R' U'" });
   startAt(h, SOLVED);
