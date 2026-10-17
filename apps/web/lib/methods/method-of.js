@@ -19,11 +19,16 @@ export function methodOf(entry) {
   if (entry?.engine !== 'method') throw new Error(`methodOf: "${entry?.id}" is not a method with stages`);
   const held = built.get(entry);
   if (held) return held;
-  const method = methodFor(entry.method.rungs, { lastLayer: entry.method.lastLayer });
-  const ids = method.stages.map((stage) => stage.id);
+  const made = methodFor(entry.method.rungs, { lastLayer: entry.method.lastLayer });
+  const ids = made.stages.map((stage) => stage.id);
   if (ids.length !== entry.stages.length || ids.some((id, i) => id !== entry.stages[i])) {
     throw new Error(`methodOf: "${entry.id}" declares the stages ${entry.stages.join(', ')} and builds ${ids.join(', ')}`);
   }
+  // THE HOLD RULE TRAVELS WITH THE METHOD: the driver reads it off what it is handed (`solveByMethod`), so a
+  // rule declared in the entry and never carried would be a hold nobody executes. One rule per method.
+  const { executable } = entry.holds;
+  if (executable.length !== 1) throw new Error(`methodOf: "${entry.id}" declares ${executable.length} executable holds; the driver takes one`);
+  const method = Object.freeze({ ...made, turns: executable[0].turns });
   built.set(entry, method);
   return method;
 }

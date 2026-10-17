@@ -9,12 +9,12 @@
 //
 // THE HOLDS ARE THREE THINGS, declared apart (ADR 0011 decision 5):
 //   frame       the coordinate frame the method's solver works in, as `[up, front]` of the scan frame;
-//   executable  the holds the DRIVER may execute — today's driver is cross-first: it refuses any hold but
-//               U on top, and an intuitive step may turn the cube about the vertical axis only
-//               (`solveByMethod`, lib/method-solver.js);
+//   executable  the hold rule the DRIVER executes (`solveByMethod`, lib/method-solver.js): U on top at every
+//               stage boundary, and inside a stage either `vertical` (an intuitive step turns the cube about
+//               the vertical axis only) or `slice` (the middle slice may tilt the hold — ADR 0012);
 //   displayed   how the screen shows the cube: the stages built white up, and the tumble after them
 //               (ADR 0003). `WHITE_UP_STAGES` in lib/solving-hold.js is read from here.
-// Declaring a hold is not executing it. A method with no cross needs the driver generalised first.
+// Declaring a hold is not executing it: `methodOf` carries the rule to the driver, which refuses the rest.
 //
 // This module is DATA, and is read on the UI thread, so it imports nothing that builds: a method is
 // declared as a SPEC — its rungs and its last-layer route — and turned into the engine's stage

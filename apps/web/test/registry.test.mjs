@@ -171,8 +171,17 @@ test('every method\'s DECLARED holds are ones the driver can execute, in the fra
   // driver's own contract, and its solver frame the one `lib/solving-hold.js` turns the cube into.
   for (const entry of METHODS.filter((m) => m.engine === 'method')) {
     assert.deepEqual([...entry.holds.frame], [...METHOD_FRAME], `${entry.id}: the declared frame is not the one the solver is fed`);
+    assert.equal(entry.holds.executable.length, 1, `${entry.id}: the driver takes one hold rule`);
     for (const h of entry.holds.executable) {
-      assert.deepEqual({ ...h }, { ...DRIVER_HOLDS }, `${entry.id}: declares a hold the driver refuses`);
+      assert.deepEqual(Object.keys(h).sort(), ['turns', 'up'], `${entry.id}: a hold rule says its top and its turns, nothing else`);
+      assert.equal(h.up, DRIVER_HOLDS.up, `${entry.id}: declares a top the driver refuses`);
+      assert.ok(DRIVER_HOLDS.turns.includes(h.turns), `${entry.id}: declares turns "${h.turns}" the driver refuses`);
     }
+    // And the rule is CARRIED: what the driver reads off the built method is what the entry declared.
+    assert.equal(methodOf(entry).turns, entry.holds.executable[0].turns, `${entry.id}: the built method carries another hold rule`);
+  }
+  // The cross-first methods keep their cross underneath.
+  for (const entry of METHODS.filter((m) => m.engine === 'method')) {
+    assert.equal(entry.holds.executable[0].turns, 'vertical', entry.id);
   }
 });

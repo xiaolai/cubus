@@ -35,7 +35,7 @@
 //             would be inventing them.
 
 import { SOLVED, applyAlg, rotateAlg, rotateState } from './cube-pieces.js';
-import { faceTurnsAlg, run } from './cube-moves.js';
+import { faceTurnsAlg, run, tokenOf } from './cube-moves.js';
 import { parse } from './cube-notation.js';
 import {
   MethodSolverError, algLength, fromRepertoire, repertoire, repertoiresBuilt, shortestTo,
@@ -116,6 +116,11 @@ export function solveByMethod(state, method = methodFor()) {
   if (!method || !Array.isArray(method.stages)) {
     throw new Error('solveByMethod needs a method — build one with methodFor(rungs)');
   }
+  // The hold rule the method's entry declares (lib/methods/registry.js `holds.executable`), carried on the
+  // built method by `methodOf`. A method built without one is the cross-first ladder's, which turns the cube
+  // about its vertical axis only.
+  const turns = method.turns ?? 'vertical';
+  if (!DRIVER_HOLDS.turns.includes(turns)) throw new Error(`solveByMethod: no hold rule "${turns}" — the rules are ${DRIVER_HOLDS.turns.join(', ')}`);
   const steps = [];
   const start = checkedCopy(state);
   let s = clone(start);
@@ -160,7 +165,13 @@ export function solveByMethod(state, method = methodFor()) {
     // renderer cannot animate surfaced as a `TypeError` from inside `applyAlg` — an incidental
     // error that throws away the stage name, the step index and the state the replay started
     // from, which are the three things anyone debugging it needs.
-    const played = adopt(mine, stage, before, hold);
+    const played = adopt(mine, stage, before, hold, turns);
+    // EVERY STAGE ENDS UPRIGHT. A step inside a stage may leave the hold tilted by the slice (a Roux step, under
+    // the `slice` rule), and the next step goes on from it; the next STAGE is handed the cube as held, which is
+    // a turn about the vertical axis or nothing, and its questions are asked of a cube the right way up.
+    if (played.hold[0] !== DRIVER_HOLDS.up) {
+      throw new MethodSolverError(stage.id, `ends held ${played.hold.join(' ')} — a stage must end with ${DRIVER_HOLDS.up} on top`, before);
+    }
     // **The contract is checked on the REPLAY, not on what the stage handed back.** Those are two
     // different claims, and only one of them is about the lesson: a stage could return a state its
     // own steps do not reach, and the assembly guard would not notice as long as a later stage's
@@ -230,11 +241,18 @@ const UPRIGHT = Object.freeze(['U', 'F']);
 
 /**
  * The driver's hold contract, said once so a method's DECLARED executable holds can be checked against
- * it (lib/methods/registry.js, `registry.test.mjs`): the cross underneath — this face on top — and an
- * intuitive step turning the cube about the vertical axis only. A method that needs anything else needs
- * this driver generalised first (ADR 0011 decision 5).
+ * it (lib/methods/registry.js, `registry.test.mjs`): this face on top at every stage boundary, and one of
+ * two rules for what an intuitive step may do in between (ADR 0011 decision 5; ADR 0012):
+ *
+ *   vertical  turn the whole cube about the vertical axis, and nothing else — the cross-first methods, whose
+ *             cross stays underneath throughout;
+ *   slice     turn the middle slice, which moves the centres and so the hold (`M` is `R L'` with the cube
+ *             turned, lib/cube-moves.js) — Roux, whose blocks stay where they are while the centre on top
+ *             changes. Never a rotation or a wide turn, and the stage still ends upright.
+ *
+ * A named algorithm is under neither: it may tip the cube while it runs, and must end upright.
  */
-export const DRIVER_HOLDS = Object.freeze({ up: UPRIGHT[0], turns: 'vertical' });
+export const DRIVER_HOLDS = Object.freeze({ up: UPRIGHT[0], turns: Object.freeze(['vertical', 'slice']) });
 
 /**
  * The cube as a child holding it `hold` sees it: the same pieces, each slot named by where it now is.
@@ -257,7 +275,7 @@ function asHeld(state, [up, front]) {
  * learner a move the cube will not make, and the interpreter reports it without the stage name, the
  * step index and the state the replay started from, which are what anyone debugging it needs.
  */
-function adopt(steps, stage, before, hold) {
+function adopt(steps, stage, before, hold, turns) {
   const refuse = (i, why) => {
     throw new MethodSolverError(stage.id, `step ${i}: ${why}`, before);
   };
@@ -266,7 +284,7 @@ function adopt(steps, stage, before, hold) {
   const adopted = steps.map((step, i) => {
     const why = shapeFault(step);
     if (why) refuse(i, why);
-    const played = playStep(step, { state, hold: held }, (fault) => refuse(i, fault));
+    const played = playStep(step, { state, hold: held }, turns, (fault) => refuse(i, fault));
     const record = snapshot({ ...step, hold: [...held] });
     state = played.state;
     held = played.hold;
@@ -301,13 +319,21 @@ function shapeFault(step) {
  * underneath — that is the stage boundary the next stage reads — and anything that is not a named
  * algorithm keeps the rule as it was, so the `x U x'` a stage might emit on its own is still refused.
  */
-function playStep(step, from, refuse) {
+function playStep(step, from, turns, refuse) {
   const named = step.kind === 'case';
   let played = from;
   try {
     for (const move of parse(step.alg)) {
+      const tilts = played.hold;
       played = run([move], played.hold, played.state);
-      if (!named && played.hold[0] !== DRIVER_HOLDS.up) {
+      if (named || played.hold[0] === tilts[0]) continue;
+      // The hold's top changed. Under `slice` a slice may do that — the centres moved, the hands did not —
+      // and nothing else may: a rotation or a wide turn is the child turning the cube over.
+      // M itself: the one layer between L and R. E and S are slices too, and turn the cube about another axis.
+      const slice = move.axis === 'x' && move.layers.length === 1 && move.layers[0] === 0;
+      if (turns === 'slice' && !slice) {
+        refuse(`turns the cube over with ${tokenOf(move)} — a step of this method moves the hold only by its middle slice`);
+      } else if (turns === 'vertical') {
         refuse(`puts ${played.hold[0]} on top — a method turns the cube about its vertical axis only, so the cross stays underneath`);
       }
     }
@@ -316,7 +342,7 @@ function playStep(step, from, refuse) {
     if (err.name === 'MethodSolverError') throw err;
     refuse(err.message);
   }
-  if (named && played.hold[0] !== DRIVER_HOLDS.up) {
+  if (named && played.hold[0] !== from.hold[0]) {
     refuse(`leaves ${played.hold[0]} on top — a named algorithm may tip the cube while it runs, but must end with the cross underneath`);
   }
   return played;
