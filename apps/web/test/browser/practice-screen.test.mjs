@@ -230,6 +230,32 @@ test('a turn lost right after the snapshot a rep was armed from is caught — th
   }
 });
 
+test('a turn lost right after the algorithm changes is caught — the carried arrangement keeps its serial count', async () => {
+  // A new row on the same cube carries the engine's model across (`makeEngine`). Carried with no serial, the next
+  // report compared with nothing, and a turn lost straight after the switch went unseen (audit round 3, row 15).
+  const { page, context, errors } = await openPractice(fixture);
+  try {
+    const rnd = lcg(315);
+    await show(page, 'sune');
+    await page.evaluate(() => window.__p.serialFrom(40));
+    const flat = reportsPerToken(SUNE, ORIENTATIONS[0], rnd).flat();
+    assert.equal((await feedRep(page, randomStart(rnd), flat)).at(-1), 1, 'precondition: a rep completed');
+    // Another algorithm, in place: the cube is the same, and so is its stream.
+    const rows = Object.values((await page.evaluate(() => window.__p.rows())).rows);
+    const other = rows.find((r) => r.id !== 'sune' && r.alg.startsWith('R U '));
+    await show(page, other.id);
+    assert.equal((await page.evaluate(() => window.__p.data())).status, 'armed', 'precondition: armed from the carried arrangement');
+    // Its first turn is lost; its second arrives one serial past.
+    const per = reportsPerToken(other.alg, ORIENTATIONS[0], rnd);
+    await page.evaluate((q) => window.__p.move(q, { skip: 1 }), per[1][0]);
+    const got = await page.evaluate(() => ({ status: window.__p.data().status, say: window.__p.say() }));
+    assert.equal(got.status, 'uncertain', `a turn lost right after the switch went unseen (${got.status}: ${got.say})`);
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
 // ---- the hold line (row 24) --------------------------------------------------------------------------------
 
 test('the hold line follows the cube: "any way you like" only while a cube is followed', async () => {

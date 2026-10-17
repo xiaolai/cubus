@@ -258,6 +258,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   let caseNow = null;
   let engine = null;
   let engineConn = null;      // the session the engine judges — a new one is a new stream (`presenceChanged`)
+  let modelCount;             // the serial of the last report or arrangement that set the engine's model (`makeEngine`)
   let token = null;
   let startFacelets = null;   // the arrangement the current rep was armed from (the engine's start event)
   let turnsSinceArm = 0;
@@ -359,7 +360,8 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   const startFromReport = () => {
     const now = reportedArrangement();
     if (!now) return false;
-    engine.start({ facelets: now.facelets, serial: countOf(now.serial) });
+    modelCount = countOf(now.serial);
+    engine.start({ facelets: now.facelets, serial: modelCount });
     return true;
   };
   const live = () => Boolean(engine) && engine.state.status !== STATUS.IDLE && cubeHere();
@@ -369,6 +371,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     // — and only from an engine that was following: an idle one hears no turns, so its model is where the cube WAS.
     const st0 = engine?.state;
     const carry = st0 && engineConn === conn && st0.status !== STATUS.IDLE && st0.trusted ? engine.facelets : null;
+    const carryCount = modelCount;
     engine?.stop();
     const mine = {};
     const session = conn;
@@ -400,9 +403,11 @@ function mountPage({ root, page, catalogue, signal, stale }) {
         if (e.type === 'off') paint();
       },
     });
-    // A carried model is the reports' own, and its count stays with the engine it came from: none is invented here.
+    // A carried model goes on with the serial count it was built under — the last report's, or the arrangement's it
+    // was handed — so the next report is compared with it. Carried with none, the next report was compared with
+    // nothing, and a turn lost straight after the switch was read as a turn made.
     if (cubeHere()) {
-      if (carry) engine.start({ facelets: carry });
+      if (carry) engine.start({ facelets: carry, serial: carryCount });
       else startFromReport();
     }
   };
@@ -737,6 +742,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     // as the engine was made (`makeEngine`), and a turn on top of no report is a turn on an arrangement nobody knows.
     turnsSinceArm += 1;
     engine.report(m);
+    modelCount = countOf(m.serial);
     paint();
   };
   /** A snapshot from the cube — `live`, or one the reconnect question holds back from being `live` — with the serial
@@ -746,12 +752,21 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     presenceChanged();
     const st = engine.state.status;
     const serial = countOf(reportSerial);
-    if (st === STATUS.IDLE) { if (cubeHere()) engine.start({ facelets: f, serial }); }
+    // Whether the engine takes this arrangement — and with it the snapshot's count — or keeps its own model and count.
+    let takes = true;
+    if (st === STATUS.IDLE) { if (cubeHere()) engine.start({ facelets: f, serial }); else takes = false; }
     else if (waitingForReport) engine.restart({ facelets: f, serial });
     // A cube whose arrangement changed before any turn of the rep (a first report, a cube picked up and set
     // down) is a new start, not a contradiction: there is nothing to judge yet.
-    else if (st === STATUS.ARMED && turnsSinceArm === 0) { if (engine.facelets !== f) engine.restart({ facelets: f, serial }); }
-    else engine.resync(f, { serial });
+    else if (st === STATUS.ARMED && turnsSinceArm === 0) {
+      if (engine.facelets !== f) engine.restart({ facelets: f, serial });
+      else takes = false;
+    } else {
+      // An arrangement the engine already holds changes nothing, its count included (`resync`).
+      takes = !(engine.state.trusted && engine.facelets === f);
+      engine.resync(f, { serial });
+    }
+    if (takes) modelCount = serial;
     paint();
   };
   hooks.liveUpdate = (f, serial) => onSnapshot(f, serial);
