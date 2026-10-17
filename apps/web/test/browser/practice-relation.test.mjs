@@ -52,8 +52,13 @@ test('every ledger row completes exactly at its last report — never before —
       assert.equal(printed.chips.join(' '), row.alg.trim().replace(/\s+/g, ' '), `${row.id}: the page prints something else`);
       assert.equal(printed.data.judging, row.alg, `${row.id}: the engine was given something other than the row`);
       // The record is emptied for each row, so the reps of all of them never reach its total cap and every one made
-      // can be counted on it below.
-      await page.evaluate(() => localStorage.removeItem('cubusDrillRecord'));
+      // can be counted on it below — emptied as another window would empty it, with the storage event that says so.
+      // A removal the record is not told of reads as another window's write over its reps, and it puts them back
+      // (lib/drill/record.js, the journal).
+      await page.evaluate(() => {
+        localStorage.removeItem('cubusDrillRecord');
+        window.dispatchEvent(new StorageEvent('storage', { key: 'cubusDrillRecord', oldValue: null, newValue: null, storageArea: localStorage }));
+      });
       // Every hold, with reports built from the PRINTED chips.
       for (const hold of ORIENTATIONS) {
         const flat = reportsPerToken(printed.chips.join(' '), hold, rnd).flat();
