@@ -28,11 +28,20 @@ export function practiceTargetRow({ style = '' } = {}) {
     </div></div>`;
 }
 
-/** Wire the stepper, wherever it was drawn; `show` repaints afterwards. */
+/** Wire the stepper, wherever it was drawn; `show` repaints afterwards.
+ *
+ *  A press that REACHES a bound repaints its own button disabled, and a disabled button cannot take focus: the
+ *  shell's focus restore found the button by its id and focus fell to the page, so a keyboard user lost their place
+ *  at 3 and at 30. Focus moves to the other button instead, which a bound always leaves enabled — and only when the
+ *  pressed button had focus to lose: a click WebKit never focused moves nothing. */
 export function mountPracticeTarget(root, show) {
-  for (const [id, step] of [['#setFingers-less', -1], ['#setFingers-more', 1]]) {
-    const b = root.querySelector(id);
+  for (const [id, step, other] of [['setFingers-less', -1, 'setFingers-more'], ['setFingers-more', 1, 'setFingers-less']]) {
+    const b = root.querySelector(`#${id}`);
     if (!b) continue;
-    b.onclick = () => commitPref(b, () => { settings.fingersN = fingersTarget(fingersTarget(settings.fingersN) + step); }, show);
+    b.onclick = () => {
+      const focused = document.activeElement === b;
+      commitPref(b, () => { settings.fingersN = fingersTarget(fingersTarget(settings.fingersN) + step); }, show);
+      if (focused && document.getElementById(id)?.disabled) document.getElementById(other)?.focus({ preventScroll: true });
+    };
   }
 }

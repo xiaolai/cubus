@@ -10,8 +10,10 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 
+import { NAV_DEFAULTS_VERSION } from '../../lib/app-settings.js';
 import { ORIENTATIONS } from '../../lib/cube-orientation.js';
 import { SOLVED as PIECES, applyAlg, toFacelets } from '../../lib/cube-pieces.js';
+import { pace } from '../browser-wait.mjs';
 import { lcg } from '../fixtures/seeded-scrambles.mjs';
 import { toWorld } from './drawn-cube.mjs';
 import { LIVENESS_MS, startBrowserFixture } from './harness.mjs';
@@ -389,6 +391,42 @@ test('the library draws no card or picture until a set is opened, and then that 
     const id = await page.evaluate((sel) => document.querySelector(sel).querySelector('[data-alg]').dataset.alg, block);
     await page.click(`${block} [data-alg="${id}"]`);
     await page.waitForFunction((x) => window.__p.ready(x), id, { timeout: LIVENESS_MS });
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
+// ---- the Settings row (row 29) -----------------------------------------------------------------------------
+
+test('the Settings stepper keeps keyboard focus on a control when a press reaches either bound', async () => {
+  const context = await fixture.browser.newContext({ viewport: { width: 1280, height: 1012 } });
+  try {
+    // Practice shown, so the stepper is in a card of its own; one press short of the maximum.
+    await context.addInitScript((v) => localStorage.setItem('cubusSettings', JSON.stringify({ navHidden: [], navDefaults: v, fingersN: 29 })), NAV_DEFAULTS_VERSION);
+    const page = pace(await context.newPage());
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    await page.goto(`${fixture.base}/index.html#/settings`);
+    await page.waitForSelector('#setFingers-more', { timeout: LIVENESS_MS });
+    const press = async (id, want) => {
+      await page.focus(`#${id}`);
+      await page.keyboard.press('Enter');
+      await page.waitForFunction((n) => document.querySelector('#fingersN')?.textContent === n, want, { timeout: LIVENESS_MS });
+      return page.evaluate((pressed) => ({ focus: document.activeElement?.id || document.activeElement?.tagName, disabled: document.getElementById(pressed).disabled }), id);
+    };
+    const top = await press('setFingers-more', '30');
+    assert.equal(top.disabled, true, 'precondition: "more" is disabled at the maximum');
+    assert.equal(top.focus, 'setFingers-less', 'reaching the maximum dropped keyboard focus');
+    await page.evaluate(async () => {
+      const { settings } = await import('/lib/app-settings.js');
+      const { renderScreen } = await import('/lib/screen-shell.js');
+      settings.fingersN = 4;
+      renderScreen();
+    });
+    const bottom = await press('setFingers-less', '3');
+    assert.equal(bottom.disabled, true, 'precondition: "fewer" is disabled at the minimum');
+    assert.equal(bottom.focus, 'setFingers-more', 'reaching the minimum dropped keyboard focus');
     assert.deepEqual(errors, []);
   } finally {
     await context.close();
