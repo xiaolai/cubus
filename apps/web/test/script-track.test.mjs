@@ -272,3 +272,24 @@ test('the way back always lands on the walk, is never longer than the turns off 
   assert.ok(tally[1] > 50 && tally[2] > 50 && tally[3] > 50, `too few cases off the walk: ${JSON.stringify(tally)}`);
   assert.ok(tally.none3 > 0, 'three turns off the walk always had a way of two: the bound was never tested');
 });
+
+// audit-fix 2026-10-18 r3 #18. `near` decides WHERE the way back may lead, and nothing told the two apart: a way
+// back to anywhere on the walk passed every case above. The drill's walk repeats a sequence, so an arrangement
+// near the cube is also reached far along it — and a way back to that far place is a shortcut past most of the
+// algorithm.
+test('near: the way back leads to a place near the cube, never a shortcut to a distant one', () => {
+  // (R U R' U') six times is the identity, so the arrangement one `U` from the start is position 23's. From
+  // the start, U then F is ONE turn from position 23 and two from the start.
+  const track = trackFor(script([{ move: Array(6).fill("R U R' U'").join(' ') }]));
+  const f = cubeAfter('U F');
+  assert.deepEqual(wayBack(track, f, 0), ["F'"], 'precondition: anywhere on the walk, one turn is a way back');
+  assert.deepEqual(locate(track, takeWay(f, ["F'"]), 0), { kind: 'step', idx: 23 }, 'precondition: and it leads to 23');
+  const near = wayBack(track, f, 0, 2, { near: true });
+  assert.ok(near, 'near, there was no way back within two turns');
+  assert.notDeepEqual([...near], ["F'"], 'near, the way back was the shortcut to position 23');
+  assert.equal(near.length, 2);
+  // Checked by cubejs: it lands within two turns of the start.
+  const at = locate(track, takeWay(f, near), 0, { near: true });
+  assert.notEqual(at.kind, 'off', `"${near.join(' ')}" did not land near the start`);
+  assert.ok(at.idx <= 2, `"${near.join(' ')}" landed at ${at.idx}`);
+});
