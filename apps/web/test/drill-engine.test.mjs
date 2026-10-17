@@ -520,6 +520,39 @@ test('after a lost turn, the reconciled arrangement resumes tracking silently, a
   assert.deepEqual(h.sounds, ['done'], 'only the completion sounded');
 });
 
+test('a resync after an unnoticed lost turn looks again at the holds the false reports ruled out', () => {
+  // `R U R' U'` on a cube that does not number its turns: R's report never arrives, U's does, and U as a first
+  // turn is R in the holds where the cube's U is the child's R — so the hold the child really holds was ruled
+  // out by a report that was not the turn it seemed. The snapshot shows R U, on no track still standing, and
+  // the rep could never finish (audit-fix 2026-10-18 r3 #3).
+  const h = harness({ alg: "R U R' U'", numbersMoves: false });
+  startAt(h, SOLVED);
+  h.turn('U');
+  assert.ok(!h.engine.state.holds.some((x) => holdKey(x) === 'UF'), 'precondition: U as a first turn rules out [U, F]');
+  h.engine.resync(toFacelets(applyAlg(SOLVED, 'R U')));
+  assert.equal(h.engine.state.status, STATUS.UNCERTAIN);
+  assert.ok(h.engine.state.holds.some((x) => holdKey(x) === 'UF'), 'the hold the child holds was not looked at again');
+  assert.equal(h.engine.state.position, 2);
+  h.turn("R'");
+  h.turn("U'");
+  const done = h.events.find((e) => e.type === 'done');
+  assert.ok(done, 'the rep could not finish after the snapshot');
+  assert.equal(done.result.refused, TIME_REFUSAL.STREAM_GAP);
+  assert.ok(done.result.holds.some((x) => holdKey(x) === 'UF'));
+  // And where the holds still standing can place the snapshot, they are kept as they are: nothing ruled out by
+  // reports that WERE the turns comes back.
+  const kept = harness({ alg: "R U R' U'" });
+  startAt(kept, SOLVED);
+  kept.turn('R');
+  kept.turn('U');
+  assert.deepEqual(kept.engine.state.holds.map(holdKey), ['UF']);
+  kept.engine.gap();
+  // Back where the rep began — an arrangement EVERY hold's track holds, so only keeping what stands keeps [U, F].
+  kept.engine.resync(toFacelets(SOLVED));
+  assert.deepEqual(kept.engine.state.holds.map(holdKey), ['UF'], 'a snapshot the hold could place brought ruled-out holds back');
+  assert.equal(kept.engine.state.position, 0);
+});
+
 test('a rep is done only where the cube IS at the end — a turn away from it after a resync is not done', () => {
   // `R U R' U2`, a lost turn, and the snapshot puts the cube at the end. A `U` then takes it to the midpoint
   // of the last half turn: `locate` keeps the position it had, the last one, but the cube has LEFT the end

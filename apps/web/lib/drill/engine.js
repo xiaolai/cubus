@@ -537,13 +537,28 @@ export function createDrillEngine({
       // than two turns. Nearest first, ahead before behind, so a repeated sequence is placed where the
       // cube most plausibly is — and a rep resumed this way is `uncertain` and untimed whatever happens.
       // A cube that is nowhere on the track stays where it was, uncertain, until it starts over.
-      live = live.map((e) => {
-        const { states } = e.c.track;
-        const order = [];
-        for (let d = 0; d < states.length; d++) for (const k of d ? [e.idx + d, e.idx - d] : [e.idx]) order.push(k);
-        const k = order.find((i) => i >= 0 && i < states.length && states[i] === f);
-        return k === undefined ? e : { ...e, idx: passRegrips(e.c.track, k) };
-      });
+      const nearest = (track, from) => {
+        const { states } = track;
+        for (let d = 0; d < states.length; d++) {
+          const k = (d ? [from + d, from - d] : [from]).find((i) => i >= 0 && i < states.length && states[i] === f);
+          if (k !== undefined) return passRegrips(track, k);
+        }
+        return null;
+      };
+      const placed = live.map((e) => ({ e, k: nearest(e.c.track, e.idx) }));
+      live = placed.map(({ e, k }) => (k === null ? e : { ...e, idx: k }));
+      // When NO hold still standing can place the cube, the reports that ruled holds out are suspect: a lost turn
+      // the stream did not show makes the next report look like a different turn, so the hold the child holds
+      // can be ruled out by a turn it never made. Every hold is asked again, from the rep's start, and those that
+      // place the cube come back; if none does, the cube stays where it was, as before.
+      if (placed.every(({ k }) => k === null)) {
+        const from = live[0]?.idx ?? 0;
+        const again = candidatesFrom(plans, stateFrom(rep.start)).flatMap((c) => {
+          const k = nearest(c.track, from);
+          return k === null ? [] : [{ c, idx: k, reach: new Map(), landed: new Set(), firstFrom: passRegrips(c.track, 0) }];
+        });
+        if (again.length) live = again;
+      }
       emit('resync', status, { position: live[0].idx });
       const finished = rep.firstMatched === null ? null : finishedOn(f);
       if (finished) complete(finished);
