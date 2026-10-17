@@ -1209,6 +1209,35 @@ test('choosing a method shows ITS stops — a chip the new method does not stop 
   assert.equal(w.state.stageTarget, 'cross', 'a chip both methods stop at was thrown away');
 });
 
+test('a chip the method stops at but has no cut for takes the race, and is not said to fall back', async () => {
+  // Only a walk to the WHOLE cube falls back to Quick: a cube already at the chip, or one the method cannot
+  // finish, has no cut, and the race's answer says what it is in its own words.
+  let cuts = 0;
+  const w = world({ settings: { solveMethod: 'beginner' } }, ({ state }) => ({
+    deriveCube: async () => { solvedBy(state, "R'"); },
+    stageLessonFor: () => { cuts += 1; return null; },
+  }));
+  w.state.stageTarget = 'cross';
+  assert.equal(await w.session.load(), true);
+  assert.equal(cuts, 1, 'precondition: the method was asked for its cut');
+  assert.equal(w.state.cube.solution, "R'", 'precondition: the race answered');
+  assert.equal(w.$('#methodNote').hidden, true, `a chip with no cut was said to fall back: "${w.$('#methodNote').textContent}"`);
+});
+
+test('a chip the chosen method does not stop at is never asked of the method — it is a repair', async () => {
+  let cuts = 0;
+  const routes = [];
+  const w = world({ settings: { solveMethod: 'cfop' } }, ({ state }) => ({
+    deriveCube: async () => { solvedBy(state, "R'"); },
+    stageLessonFor: () => { cuts += 1; return null; },
+    lastRoute: async (target) => { routes.push(target.id); return null; },
+  }));
+  w.state.stageTarget = 'first-layer';
+  assert.equal(await w.session.load(), true);
+  assert.deepEqual(routes, ['first-layer'], 'precondition: the walk was aimed at the chip');
+  assert.equal(cuts, 0, 'a method was asked to cut its lesson at a chip it does not stop at');
+});
+
 // ---- step 0 of the follow tracker: turns that are ahead of a snapshot ------------------------------------
 //
 // stage-wiring.test.mjs and stage-smartcube.test.mjs check these as lines inside the four live hooks and
