@@ -29,6 +29,8 @@ import { EVERY_CONFIGURATION, configuration } from './fixtures/f2l-positions.mjs
 
 const CFOP = ['cfop-4lll', 'cfop'];
 const ORIENT_STAGES = new Set(['top-cross', 'top-face']);
+/** The stage names a permutation look's step can carry. */
+const PERMUTE_STAGES = new Set(['top-corners', 'top-edges']);
 /** The stage names a pairs-dial step can carry (lib/method-lesson.js DIAL_OF). */
 const PAIR_STAGES = new Set(['first-layer', 'middle-layer', 'f2l']);
 
@@ -141,7 +143,8 @@ for (const id of CFOP) {
     for (const state of placements()) {
       const { result, end } = replay(id, state);
       assert.ok(end.isSolved(), `${id}: not solved from ${JSON.stringify(state)}`);
-      assert.ok(result.steps.every((s) => !ORIENT_STAGES.has(s.stage)), `${id}: an oriented top was oriented again`);
+      assert.ok(result.steps.every((s) => PERMUTE_STAGES.has(s.stage)),
+        `${id}: an oriented top was solved by something other than its PLL looks: ${result.steps.map((s) => s.stage)}`);
       n++;
     }
     assert.equal(n, 288);
