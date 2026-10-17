@@ -601,6 +601,12 @@ test('L2: the effect, the regions kept and the order — re-derived by cubejs', 
     assert.deepEqual(row.effect.twistedInPlace.map((p) => p.position).sort(), [...e.corners.inPlace].sort(), `${row.id}: twisted`);
     assert.deepEqual(row.effect.flippedInPlace.map((p) => p.position).sort(), [...e.edges.inPlace].sort(), `${row.id}: flipped`);
     assert.equal(row.effect.keepsHold, e.centres.every((v, i) => v === i), `${row.id}: the hold`);
+    // The hold it ends in, read from the hold it is declared in: cubejs tumbles a solved cube to the method frame
+    // (`x2`, asserted in the case test) and plays the algorithm; the centres then on top and in front name the
+    // end hold in the scan frame's letters. A row that keeps the hold ends exactly where it began.
+    const after = played('x2', row.alg).asString();
+    assert.deepEqual(row.effect.endHold, [after[4], after[22]], `${row.id}: the hold it ends in`);
+    if (row.effect.keepsHold) assert.deepEqual(row.effect.endHold, row.hold, `${row.id}: keeps the hold, yet ends in another`);
     const kept = keptByCubejs(row.alg);
     for (const r of Object.keys(cells)) assert.equal(row.keeps.includes(r), kept.has(r), `${row.id}: keeps ${r}`);
     // The order: the fewest repeats cubejs needs to bring the cube back, counted here one at a time.

@@ -916,7 +916,9 @@ function buildRow(id, { byId, byMoves }) {
   const { set, entry } = byId.get(id);
   const { alg } = entry;
   const { hold } = ALG_SOURCES[set.from[0]];
-  const effect = effectOf(alg);
+  // Read from the hold the letters are written in, so `endHold` names the hold the learner ends in — the
+  // declared one whenever the algorithm keeps it. The piece fields are the same from any hold.
+  const effect = effectOf(alg, { hold });
   const { facelets, viewHold } = caseOf(alg, hold);
   const keepsF2L = effect.keeps.includes('first-two-layers');
   const picture = !keepsF2L ? 'net' : set.goal.does === 'orient' ? 'top-orientation' : 'top-colours';
