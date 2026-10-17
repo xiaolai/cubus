@@ -15,8 +15,7 @@ import { OFFERED_PATTERNS, PATTERNS, patternById, patternBySelection, selectionO
 import { OFFERED_TARGETS, TARGETS } from '../lib/stage-targets.js';
 import { targetPicture } from '../lib/stage-picture.js';
 import { routeSentence } from '../lib/stage-report.js';
-import { applyAlg, toFacelets } from '../lib/cube-pieces.js';
-import { SOLVED } from '../lib/cube-pieces.js';
+import Cube from 'cubejs';
 import { STATE_PATTERNS } from './fixtures/pattern-ledger.mjs';
 
 // ---- the two cuts, re-derived here from the ledger ----------------------------------------------
@@ -214,8 +213,12 @@ test('a state pattern\'s picture and its look are the same string, and that is w
 test('a state pattern\'s picture is what its algorithm produces, not the ledger\'s canonical look', () => {
   let differed = 0;
   for (const pattern of PATTERNS.filter((p) => p.kind === 'state')) {
-    assert.equal(pattern.look, toFacelets(applyAlg(SOLVED, pattern.alg)),
-      `${pattern.id}: the picture is not what "${pattern.alg}" produces`);
+    // Played by CUBEJS, which shares no code with the app's pieces or its facelet writer: the app's own
+    // pipeline on both sides would agree with itself through any bug in either (a U/D swap in
+    // `toFacelets` passed every case here — audit, 2026-10-17).
+    const played = new Cube();
+    played.move(pattern.alg);
+    assert.equal(pattern.look, played.asString(), `${pattern.id}: the picture is not what "${pattern.alg}" produces`);
     const row = STATE_PATTERNS.find((r) => r.name === pattern.name);
     if (row && row.look !== pattern.look) differed += 1;
   }
