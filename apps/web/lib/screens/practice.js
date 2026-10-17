@@ -265,6 +265,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   let waitingForReport = false;
   let lastResult = null;
   let drawnKey = null;        // what the cube was last given, so a repaint does not reset it for nothing
+  let drewFollowed = false;   // whether the cube shows a followed cube's picture rather than the case (`paint`)
   let mixed = null;           // { order, at } while practising mixed
   let advanceTicket = null;   // the mixed-practice step on a `done` queued, until it runs or a start over calls it off
   let watch = { t0: null, timer: null, laps: [] };
@@ -604,7 +605,14 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     say.textContent = sentence(arrow !== 'none');
     paintHold();
     paintClock();
-    if (!picture) return;
+    if (!picture) {
+      // Not following — the cube gone, or a new one that has said nothing yet. A picture of the cube that was followed
+      // would stand under "waiting" with its walk, its place and its arrow, so the page goes back to the case. Only on
+      // the way out of following: a demo being played is not reset by every paint.
+      if (drewFollowed) drawCase();
+      return;
+    }
+    drewFollowed = true;
     draw({ facelets: picture.facelets, hold: picture.hold, alg: picture.alg, arrow });
     if (picture.alg) seek(picture.at);
     markChips(picture.chips);
@@ -612,6 +620,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
 
   // ---- the demo, with no cube ---------------------------------------------------------------------------
   const drawCase = () => {
+    drewFollowed = false;
     draw({ facelets: caseNow.facelets, hold: caseNow.hold, alg: drawnFrom(row, caseNow.hold, caseNow.facelets), arrow: 'none' });
     seek(0);
     shownAt = 0;

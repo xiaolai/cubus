@@ -88,6 +88,33 @@ test('an `off` whose cue window outlives its cube is never heard — the cube le
   }
 });
 
+test('a cube replaced before its first report leaves no picture of the cube before it — the page shows the case and points nowhere', async () => {
+  const { page, context, errors } = await openPractice(fixture);
+  try {
+    const rnd = lcg(316);
+    await show(page, 'sune');
+    const drawn = () => page.evaluate(() => ({ cube: ['facelets', 'alg', 'orientation', 'arrow'].map((a) => window.__p.cube().getAttribute(a)), data: window.__p.data(), say: window.__p.say() }));
+    const demo = (await drawn()).cube;
+    // Followed, part way through a rep: the walk and its arrow.
+    const per = reportsPerToken(SUNE, ORIENTATIONS[0], rnd);
+    await page.evaluate((f) => window.__p.facelets(f), toFacelets(randomStart(rnd)));
+    await page.evaluate((qs) => { for (const q of qs) window.__p.move(q); }, [...per[0], ...per[1]]);
+    const followed = await drawn();
+    assert.equal(followed.cube[3], 'next', 'precondition: the walk points at the next turn');
+    // Another cube takes its place in one task, and says nothing yet.
+    await page.evaluate(() => { window.__p.disconnect(); window.__p.connect({ mac: 'AA:BB:CC:DD:EE:02', name: 'Second cube' }); });
+    await page.waitForFunction(() => window.__p.data().status === 'idle', null, { timeout: LIVENESS_MS });
+    const replaced = await drawn();
+    assert.match(replaced.say, /Waiting for your cube/, 'precondition: the page waits for the new cube');
+    // What must NOT happen: the old cube's walk, position and arrow standing under "waiting".
+    assert.deepEqual(replaced.cube, demo, `the page waits for a new cube and still draws the old one: ${JSON.stringify(replaced.cube)}`);
+    assert.equal(replaced.data.mode, 'demo');
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
 // ---- the reconnect question (row 17) -----------------------------------------------------------------------
 
 test('a remembered cube is followed while the reconnect question is open — and Practice neither answers it nor takes the report as where the cube is', async () => {
