@@ -254,6 +254,42 @@ test('the hold is settled only when ONE hold is left — an algorithm on one axi
   }
 });
 
+test('turns on a second axis settle the hold — unless every turn reads alike in more than one hold', () => {
+  // H perm turns two axes and never settles: an M2 names an axis and not a side, and a U turn reads the same
+  // held either way round, so [U, F] and [U, B] read every report alike to the end (audit-fix 2026-10-18 r3 #5).
+  const hPerm = byName('pll-H');
+  const h = harness({ alg: hPerm });
+  startAt(h, SOLVED);
+  const reports = reportsFor(hPerm, ['U', 'F'], () => 0);
+  for (const q of reports.slice(0, 5)) h.turn(q);              // M2 U: the first turn on a second axis
+  assert.deepEqual(h.engine.state.holds.map(holdKey).sort(), ['UB', 'UF']);
+  for (const q of reports.slice(5, -1)) h.turn(q);
+  assert.deepEqual(h.engine.state.holds.map(holdKey).sort(), ['UB', 'UF']);
+  assert.equal(h.engine.state.settled, false, 'H perm settled a hold no report can tell');
+  // The relation, for every ledger row: a rep leaves exactly the holds that read every one of its turns alike —
+  // found here by comparing the reports each hold would make, never by asking the engine.
+  const readsAs = (alg, hold) => {
+    let now = [...hold];
+    return parse(alg).map((move) => {
+      const identity = toIdentity(move, now);
+      now = applyIdentity(identity, now, SOLVED).hold;
+      return reportWays(identity).map((w) => w.join(' ')).sort().join('|');
+    }).join(' / ');
+  };
+  let symmetric = 0;
+  for (const row of ALL) {
+    const own = readsAs(row.alg, ['U', 'F']);
+    const alike = ORIENTATIONS.filter((o) => readsAs(row.alg, o) === own).map(holdKey).sort();
+    if (alike.length > 1) symmetric += 1;
+    const g = harness({ alg: row.alg });
+    startAt(g, SOLVED);
+    for (const q of reportsFor(row.alg, ['U', 'F'], () => 0)) g.turn(q);
+    const { result } = g.events.find((e) => e.type === 'done');
+    assert.deepEqual(result.holds.map(holdKey).sort(), alike, `${row.name}: the holds left are not the holds that read it alike`);
+  }
+  assert.ok(symmetric >= 2, `only ${symmetric} ledger rows read alike in two holds: the relation checks little`);
+});
+
 test('the first turn\'s direction is checked before any hold is known; its face cannot be', () => {
   for (const q of QUARTERS) {
     const h = harness({ alg: "R U R' U'" });

@@ -11,13 +11,15 @@
 //
 // THE HOLD IS INFERRED (§3.2). A cube cannot say how it is held, so all 24 holds are candidates, each with
 // its own track (`lib/drill/candidates.js`), and a reported turn removes every candidate that does not
-// accept it. The first turn's DIRECTION is already checkable — clockwise is intrinsic to a face — and the
-// first turn on a second axis settles the hold. A turn NO candidate accepts is off the plan whether or not
-// the hold is settled. Limits a cube cannot lift: the first turn's FACE is never wrong (any face is `R` in
-// some hold), and before the hold settles a wrong turn that some other hold would accept is read as that
-// hold — nothing in the reports could tell the two apart. And an algorithm that turns one axis only never
-// settles it: the four holds about that axis trace one track, so the turns are judged and the hold stays
-// unknown.
+// accept it. The first turn's DIRECTION is already checkable — clockwise is intrinsic to a face — and turns
+// on a second axis settle the hold, unless every turn of the algorithm reads alike in more than one hold: a
+// half turn or a slice names an axis and not a side, so H perm (`M2 U M2 U2 M2 U M2`) keeps [U, F] and [U, B]
+// to its end, and an algorithm on one axis keeps four holds (F2) or eight (M2). Such an algorithm's turns are
+// judged all the same; only its hold stays unknown, and a rep leaves exactly the holds that read it alike. A
+// turn NO candidate accepts is off the plan whether or not the hold is settled. Limits a cube cannot lift:
+// the first turn's FACE is never wrong (any face is `R` in some hold), and before the hold settles a wrong
+// turn that some other hold would accept is read as that hold — nothing in the reports could tell the two
+// apart.
 //
 // TRACKING IS NEAR-ONLY (§3.3): within two turns of where the cube is (`locate(…, { near: true })`), a run of
 // regrips counting as one place because no report could move the cube along it.
