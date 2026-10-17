@@ -45,6 +45,24 @@ function statesIn(target) {
     }
     return out;
   }
+  if (target.id === 'corners-home' || target.id === 'top-edges') {
+    // The route reaches these two late — corners-home only at solved, top-edges at five distinct cubes — so
+    // a sample of route states could not catch a picture that pinned a top corner's colour. TWIST twists
+    // two top corners in place and CYCLE (the A perm, face turns only) moves three top corners untwisted;
+    // neither touches anything else (each state is asserted in-target below). Conjugated by each turn of
+    // the top and composed, they reach the corners twisted every way corners-home allows and, for
+    // top-edges, out of their slots as well.
+    const TWIST = "R' D' R D R' D' R D U R' D' R D R' D' R D R' D' R D R' D' R D U'";
+    const CYCLE = "R' F R' B2 R F' R' B2 R2";
+    const turns = ['', 'U', 'U2', "U'"];
+    const at = (alg, u) => `${u} ${alg} ${invert(u)}`;
+    const algs = target.id === 'corners-home' ? [TWIST] : [TWIST, CYCLE];
+    for (const first of algs) for (const a of turns) {
+      out.push(applyAlg(SOLVED, at(first, a)));
+      for (const second of algs) for (const b of turns) if (b !== a) out.push(applyAlg(SOLVED, `${at(first, a)} ${at(second, b)}`));
+    }
+    return [...out, ...ROUTE.filter((s) => target.verify(s))];
+  }
   return ROUTE.filter((s) => target.verify(s));
 }
 
@@ -77,8 +95,10 @@ test('no picture ever claims a sticker its target leaves free', () => {
   for (const target of TARGETS) {
     const picture = targetPicture(target);
     const states = statesIn(target);
-    assert.ok(states.length >= (target.id === 'solved' ? 1 : 8),
-      `${target.id}: only ${states.length} states to check the picture against`);
+    // DISTINCT states: twenty copies of one cube are one piece of evidence, not twenty.
+    const distinct = new Set(states.map((s) => toFacelets(s))).size;
+    assert.ok(distinct >= (target.id === 'solved' ? 1 : 8),
+      `${target.id}: only ${distinct} distinct states to check the picture against`);
     for (const state of states) {
       assert.ok(target.verify(state), `${target.id}: the generator produced a cube outside the target`);
       const facelets = toFacelets(state);
