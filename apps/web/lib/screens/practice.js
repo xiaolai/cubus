@@ -465,8 +465,12 @@ function mountPage({ root, page, catalogue, signal, stale }) {
       };
     }
     const hold = st.holds[0];
-    return midway(st, hold)
-      ?? { facelets: startFacelets, hold, alg: drawnFrom(row, hold, startFacelets), at: st.position, arrow: 'next', chips: st.position };
+    const walk = { facelets: startFacelets, hold, alg: drawnFrom(row, hold, startFacelets), at: st.position, arrow: 'next', chips: st.position };
+    // A turn went missing and nothing has said where the cube is since: the position is the last one it was KNOWN at,
+    // so the cube stands there, and no next turn is pointed at — that turn is from an arrangement the cube may not
+    // be in. Nor is the engine's model read for a midpoint: it is missing a turn. A snapshot mends it (`resync`).
+    if (!st.trusted) return { ...walk, arrow: 'none' };
+    return midway(st, hold) ?? walk;
   };
 
   /**

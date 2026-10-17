@@ -325,6 +325,37 @@ test('the page speaks of an arrow only where one is drawn — before the hold is
   }
 });
 
+// ---- an engine that lost a turn (round 2, row 14) ------------------------------------------------------------
+
+test('after a lost turn no next turn is pointed at until the cube says where it is — and then the arrow comes back', async () => {
+  const { page, context, errors } = await openPractice(fixture);
+  try {
+    const rnd = lcg(141);
+    await show(page, 'sune');
+    const seen = () => page.evaluate(() => ({ say: window.__p.say(), arrow: window.__p.arrow(), data: window.__p.data() }));
+    const start = randomStart(rnd);
+    const per = reportsPerToken(SUNE, ORIENTATIONS[4], rnd);
+    await page.evaluate((f) => window.__p.facelets(f), toFacelets(start));
+    await page.evaluate((qs) => { for (const q of qs) window.__p.move(q); }, [...per[0], ...per[1]]);
+    assert.equal((await seen()).arrow, 'next', 'precondition: the walk points at the next turn');
+    // The third turn never reaches the app; the fourth arrives one serial past it.
+    await page.evaluate(({ qs, skip }) => qs.forEach((q, i) => window.__p.move(q, { skip: i === 0 ? skip : 0 })), { qs: per[3], skip: per[2].length });
+    const lost = await seen();
+    assert.equal(lost.data.status, 'uncertain', 'precondition: the lost turn was noticed');
+    // What must NOT happen: an arrow at the next turn of a position the cube may not be at.
+    assert.equal(lost.arrow, 'none', `an arrow drawn for an arrangement nobody knows (${lost.say})`);
+    assert.doesNotMatch(lost.say, /arrow/, 'the page points the child at an arrow');
+    // The cube says where it is: the walk resumes from there, and so does the arrow.
+    await page.evaluate((f) => window.__p.facelets(f), toFacelets(after_(start, per.slice(0, 4).flat())));
+    const back = await seen();
+    assert.equal(back.arrow, 'next', `the arrow did not come back once the cube said where it is (${back.data.status}: ${back.say})`);
+    assert.equal(back.data.position, '4', 'the walk did not resume where the cube is');
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
 // ---- part way through a turn (row 21) ----------------------------------------------------------------------
 
 /** What the cube in `window.__cube` shows, as a child sees it: the colour at every world facelet (its face letter). */
