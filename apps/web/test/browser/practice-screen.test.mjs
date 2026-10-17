@@ -13,7 +13,7 @@ import { after, before, test } from 'node:test';
 import { ORIENTATIONS } from '../../lib/cube-orientation.js';
 import { SOLVED as PIECES, applyAlg, toFacelets } from '../../lib/cube-pieces.js';
 import { lcg } from '../fixtures/seeded-scrambles.mjs';
-import { startBrowserFixture } from './harness.mjs';
+import { LIVENESS_MS, startBrowserFixture } from './harness.mjs';
 import {
   AXIS, MAC, PAST_WINDOW_MS, axesNear, feedRep, openPractice, randomStart, reportsPerToken, show,
 } from './practice-page.mjs';
@@ -121,6 +121,33 @@ test('a remembered cube is followed while the reconnect question is open — and
     assert.equal(later.subject, asked.subject, 'the subject moved while the question was open');
     const stored = await page.evaluate((mac) => JSON.parse(localStorage.getItem('cubusCubes'))[mac]?.last, MAC);
     assert.deepEqual(stored, memory[MAC].last, 'the remembered arrangement was rewritten from a cube nobody confirmed');
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
+// ---- the hold line (row 24) --------------------------------------------------------------------------------
+
+test('the hold line follows the cube: "any way you like" only while a cube is followed', async () => {
+  const { page, context, errors } = await openPractice(fixture);
+  try {
+    const rnd = lcg(241);
+    await show(page, 'sune');
+    const holdLine = () => page.evaluate(() => [...document.querySelectorAll('#practiceAbout .sub')]
+      .map((e) => e.textContent).find((text) => /The letters are written/.test(text)));
+    await page.evaluate((f) => window.__p.facelets(f), toFacelets(randomStart(rnd)));
+    assert.equal((await page.evaluate(() => window.__p.data())).mode, 'cube', 'precondition: the cube is followed');
+    assert.match(await holdLine(), /any way you like/);
+    await page.evaluate(() => window.__p.disconnect());
+    await page.waitForFunction(() => window.__p.data().mode === 'demo', null, { timeout: LIVENESS_MS });
+    const gone = await holdLine();
+    assert.doesNotMatch(gone, /any way you like/, 'with no cube, the page still says to hold it any way you like');
+    assert.match(gone, /written for this hold/);
+    await page.evaluate(() => window.__p.connect());
+    await page.evaluate((f) => window.__p.facelets(f), toFacelets(randomStart(rnd)));
+    await page.waitForFunction(() => window.__p.data().mode === 'cube', null, { timeout: LIVENESS_MS });
+    assert.match(await holdLine(), /any way you like/);
     assert.deepEqual(errors, []);
   } finally {
     await context.close();

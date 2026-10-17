@@ -373,6 +373,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     page.dataset.settled = String(st.settled);
     page.dataset.position = String(st.position ?? 0);
     say.textContent = sentence();
+    paintHold();
     paintClock();
     if (!following) return;
     if (st.status === STATUS.OFF || !st.settled || !startFacelets) {
@@ -558,6 +559,17 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   };
 
   // ---- the row, taken in place --------------------------------------------------------------------------
+  /** How to hold the cube: any way at all while a cube is followed (the engine infers the hold, plan §3.2), the
+   *  hold the letters are written for otherwise. Painted with the rest of the page, because a cube comes and goes
+   *  while the row stays — drawn only with the row, "hold it any way you like" outlived the cube it was about. */
+  const holdWords = () => (cubeHere()
+    ? t('The letters are written for a cube held one way; with a smart cube, hold it any way you like.')
+    : t('The letters are written for this hold. %1', holdSentence(caseNow.hold)));
+  const paintHold = () => {
+    const line = $('#practiceHold', root);
+    const words = holdWords();
+    if (line && line.textContent !== words) line.textContent = words;
+  };
   const paintCase = () => {
     const set = catalogue.sets[row.set];
     // What the algorithm is FOR, then what this one does: the page is about one row, so it says both.
@@ -565,9 +577,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     const lines = [
       purpose ? `<div class="practice-purpose">${escHtml(purpose)}</div>` : '',
       `<div class="sub practice-says">${escHtml(row.says)}</div>`,
-      `<div class="sub" style="color:var(--ink-4)">${escHtml(cubeHere()
-        ? t('The letters are written for a cube held one way; with a smart cube, hold it any way you like.')
-        : t('The letters are written for this hold. %1', holdSentence(caseNow.hold)))}</div>`,
+      `<div class="sub" id="practiceHold" style="color:var(--ink-4)">${escHtml(holdWords())}</div>`,
       orderWords(row.order) ? `<div class="sub" style="color:var(--ink-4)">${escHtml(orderWords(row.order))}</div>` : '',
     ];
     // The twin holds the picture and the name only: in portrait it shares the cube's locked row, so words of
