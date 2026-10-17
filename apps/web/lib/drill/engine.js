@@ -364,11 +364,16 @@ export function createDrillEngine({
     emit('off', from, { about: rep.about, wayBack: rep.wayBack });
   };
 
+  /**
+   * The LATEST four reports, when they are one quarter turn of one face, made within the limit. Only their
+   * times are kept: a slow turn of the same face before them is not part of the gesture, and counting the
+   * whole run of one face would let it reach four too slowly and never reach four again.
+   */
   const isGesture = (report) => {
     const t = Number.isFinite(report.timestamp) ? report.timestamp : now();
-    const run = rep.run;
-    rep.run = run && run.notation === report.notation ? { ...run, count: run.count + 1 } : { notation: report.notation, count: 1, t0: t };
-    return rep.run.count === GESTURE_TURNS && t - rep.run.t0 <= GESTURE_MS;
+    const times = rep.run?.notation === report.notation ? [...rep.run.times, t].slice(-GESTURE_TURNS) : [t];
+    rep.run = { notation: report.notation, times };
+    return times.length === GESTURE_TURNS && t - times[0] <= GESTURE_MS;
   };
 
   const restartFrom = (from, cause, given) => {

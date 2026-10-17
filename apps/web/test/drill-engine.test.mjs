@@ -681,6 +681,22 @@ test('a gesture slower than the window still restarts — and the off it sounded
   assert.equal(h.events.at(-1).type, 'gesture');
 });
 
+test('the gesture is the LATEST four identical turns: a slow one before them does not hide it', () => {
+  // One F, five seconds, then four quick Fs. Counting the whole run of Fs reached four at the third quick one,
+  // too slow, and never reached four again — no number of further Fs could restart (audit-fix 2026-10-18 #5).
+  const h = harness({ alg: "R U R' U'" });
+  startAt(h, SOLVED);
+  h.turn('R');
+  h.turn('F');
+  h.advance(5000);
+  for (let i = 0; i < 3; i++) h.turn('F', { gap: 100 });
+  assert.ok(!h.types().includes('gesture'), 'the slow F counted towards the gesture');
+  h.turn('F', { gap: 100 });
+  assert.equal(h.types().filter((t) => t === 'gesture').length, 1, 'four quick Fs after a slow one did not restart');
+  assert.equal(h.engine.state.status, STATUS.ARMED);
+  assert.equal(h.events.at(-1).type, 'gesture');
+});
+
 test('four identical turns slower than the gesture limit are not a restart', () => {
   const h = harness({ alg: "R U R' U'" });
   startAt(h, SOLVED);
