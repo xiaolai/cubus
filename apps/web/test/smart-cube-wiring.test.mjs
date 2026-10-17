@@ -310,6 +310,41 @@ test('a turn between the scan and the first report leaves the held scan stale, a
   await tick();
 });
 
+// A report a held scan could not be reconciled with goes no further — but `onFacelets` has already
+// counted it, so the report and its serial stood beside a `live` from before it. Practice arms from
+// `reportedArrangement()`, which put the OLD arrangement together with the NEW serial and turn count
+// (audit-fix 2026-10-18, round 3, row 2): a clean rep from there is contradicted by the next snapshot.
+test('a report a held scan could not be reconciled with leaves no arrangement for Practice to arm from', async () => {
+  const state = await appState();
+  const { reportedArrangement } = await import('../lib/cube-reports.js');
+  // A checker that can establish no correction from the pair: what makes the held scan's reconciliation fail.
+  const conn = fakeConn({ cameraScan: () => null });
+  feed().useConnection(conn, '12:34:56:78:9A:BC'); // an address with nothing remembered
+  await tick();
+  feed().facelets(SOLVED, 0);
+  await tick();
+  assert.deepEqual(reportedArrangement(), { facelets: SOLVED, serial: 0 }, 'precondition: the first report stands');
+  // A turn, and then the camera, before the snapshot of that turn: the scan is held for the next report. Counted by
+  // the checker first and then delivered, as the real session does.
+  conn.countTurn('R');
+  feed().move({ notation: 'R', serial: 1, timestamp: Date.now() });
+  await tick();
+  assert.equal(reportedArrangement(), null, 'precondition: a report the cube has turned away from is none');
+  await go('scan');
+  const scanned = move(SOLVED, 'F2 D');
+  $('#stage ai-scan-panel').dispatchEvent(new win.CustomEvent('scan-complete', { detail: { facelets: scanned, valid: true } }));
+  await tick();
+  const turned = move(SOLVED, 'R');
+  feed().facelets(turned, 1);
+  await tick();
+  assert.equal(state.reported, turned, 'precondition: the report was recorded');
+  assert.equal(state.live, SOLVED, 'precondition: the report could not be reconciled, so it went no further');
+  // What must NOT happen: the arrangement before the turn, offered as the cube now, with the report's serial.
+  assert.equal(reportedArrangement(), null, `an arrangement was offered from a report that went no further: ${JSON.stringify(reportedArrangement())}`);
+  feed().useConnection(null);
+  await tick();
+});
+
 // The same rule, asked of the cube's own record rather than of what reached us. A MOVE the session
 // counted while nothing here delivered it would leave the hold looking untouched, and "nothing
 // turned in between" would be a fact about our attention instead of about the cube.
