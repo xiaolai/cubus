@@ -24,6 +24,10 @@
 // column removed. A list is a column by nature and a catalogue is not — thirty-nine pictures want the
 // width.
 //
+// ONE PICTURE A ROW ON A PHONE (owner, 2026-10-17): where the grid holds fewer than three cards, each
+// net fills its card instead of staying at `THUMB` — the stylesheet's `.shapes-screen` container says
+// why and where the line is.
+//
 // AND NO MOVE COUNT IS DRAWN. The ledger proves a minimum for each picture FROM SOLVED, and the
 // cube in a child's hands is almost never solved — so a number here would be a true figure
 // answering a question nobody asked, and a child comparing it with the count the walk then shows
@@ -82,7 +86,7 @@ SCREENS.shapes = () => {
     // six cards, and `geometry.test.mjs`'s "drawn beyond the stage" check reads LEFT and RIGHT only
     // — so the whole browser tier passed over it. The assertion added there is the other half of
     // this fix.
-    html: `<div style="width:100%;height:100%;min-height:0;display:flex;flex-direction:column;gap:14px">
+    html: `<div class="shapes-screen" style="width:100%;height:100%;min-height:0;display:flex;flex-direction:column;gap:14px">
       <div class="card" style="padding:12px 16px;display:flex;gap:10px;align-items:center;flex:none">
         <span class="ico" style="color:var(--ink-5);flex:none">${icon('box', 16)}</span>
         <div class="sub" style="color:var(--ink-3);line-height:1.5">${escHtml(t('Pick a picture and the app walks your cube to it. The same moves backwards bring it home again.'))}</div>

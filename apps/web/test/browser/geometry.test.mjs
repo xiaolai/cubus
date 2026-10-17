@@ -646,6 +646,50 @@ for (const fixture of FIXTURES) {
   });
 }
 
+// THE SHAPES GRID ON A PHONE (owner, 2026-10-17). Two 132px nets across a phone are 11px stickers, and
+// twenty of them read as one block of small squares. Where the grid holds fewer than three cards it shows
+// ONE picture a row, scaled to its card; where it holds three or more it is the grid it was. Both sides
+// of the line are held on every fixture, and the line is a property of the GRID's width — so this reads
+// the width the stylesheet keys on, not the fixture's name.
+for (const fixture of FIXTURES) {
+  test(`shapes grid: ${label(fixture)}`, async () => {
+    const { page, context } = await open(fixture, 'shapes');
+    try {
+      await page.waitForSelector('#shapeGrid [data-shape] svg');
+      const m = await page.evaluate(() => {
+        const grid = document.querySelector('#shapeGrid');
+        const cards = [...grid.querySelectorAll('[data-shape]')];
+        const svgs = cards.map((c) => c.querySelector('svg').getBoundingClientRect());
+        const card = cards[0].getBoundingClientRect();
+        const cs = getComputedStyle(cards[0]);
+        return {
+          screen: document.querySelector('.shapes-screen').getBoundingClientRect().width,
+          perRow: cards.filter((c) => Math.round(c.getBoundingClientRect().top) === Math.round(card.top)).length,
+          svgWidths: [...new Set(svgs.map((r) => Math.round(r.width) + 0))],
+          aspect: svgs[0].height / svgs[0].width,
+          cardInner: card.width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight),
+          inside: svgs.every((r, i) => r.left >= cards[i].getBoundingClientRect().left - 0.5 && r.right <= cards[i].getBoundingClientRect().right + 0.5),
+        };
+      });
+      assert.ok(m.inside, 'a picture is drawn past its own card');
+      assert.equal(m.svgWidths.length, 1, `the pictures are drawn at different sizes: ${m.svgWidths}`);
+      // The net is twelve stickers across and nine down; scaling must not stretch it.
+      assert.ok(Math.abs(m.aspect - 0.75) < 0.02, `the net is drawn at ${m.aspect.toFixed(3)} tall per wide, not 3:4`);
+      if (m.screen < 460) {
+        assert.equal(m.perRow, 1, `${m.screen}px holds fewer than three cards, so one picture a row — not ${m.perRow}`);
+        assert.ok(m.svgWidths[0] >= Math.min(m.cardInner, 360) - 1,
+          `one picture a row, but drawn ${m.svgWidths[0]}px in a card ${Math.round(m.cardInner)}px wide`);
+        assert.ok(m.svgWidths[0] / 12 >= 20, `a sticker is ${(m.svgWidths[0] / 12).toFixed(1)}px — still too small to read on a phone`);
+      } else {
+        assert.ok(m.perRow >= 3, `${m.screen}px is the grid, but it shows ${m.perRow} a row`);
+        assert.equal(m.svgWidths[0], 132, 'in the grid a picture keeps its thumbnail size');
+      }
+    } finally {
+      await context.close();
+    }
+  });
+}
+
 for (const fixture of FIXTURES) {
   test(`cube screen composition: ${label(fixture)}`, async () => {
     const { page, context } = await open(fixture, 'scramble');
