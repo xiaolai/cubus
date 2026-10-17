@@ -41,10 +41,16 @@ test('every record of the walk agrees at the cut, and each is the full lesson\'s
     const full = await booted.lessonFor({ facelets, lesson: null });
     for (const chip of CHIPS) {
       const cut = cutLesson(full, holdsFor(chip));
-      if (!cut) continue;
+      const where = `${chip} on ${facelets}`;
+      // Whether there IS a cut, decided here from the full lesson and the chip's predicate, never by the
+      // cutter: none when the chip holds on the starting cube, else at the first stage end where it holds.
+      const startsThere = holdsFor(chip)(full.stepFacelets[0]);
+      const expected = startsThere ? undefined : stageEnds(full).find(([, position]) => holdsFor(chip)(full.stepFacelets[position]));
+      if (!expected) { assert.equal(cut, null, `${where}: a cut where none is due`); continue; }
+      assert.ok(cut, `${where}: no cut, though the chip first holds after step ${expected[0]}`);
+      assert.equal(cut.cutAt, expected[0], `${where}: cut at the wrong stage end`);
       cuts += 1;
       const n = cut.moves.length;
-      const where = `${chip} on ${facelets}`;
       assert.ok(n > 0, `${where}: an empty cut was returned rather than null`);
       // The lengths, all at the one position.
       assert.equal(cut.alg.split(' ').length, n, `${where}: alg`);
