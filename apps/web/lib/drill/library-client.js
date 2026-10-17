@@ -31,6 +31,19 @@ const isRecord = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v)
 const isText = (v) => typeof v === 'string' && v.length > 0;
 const isTextOrNull = (v) => v === null || typeof v === 'string';
 
+/**
+ * A value from a reply, for a message: a string quoted, anything else by its kind. Never coerced — a reply is
+ * structured-cloned data, and a cloned object can refuse to become a string (`{ toString: null }` throws in a
+ * template, in `String()`, and as a property key), so every name a reply holds is checked to BE a string
+ * before it is used as one.
+ */
+const shown = (v) => {
+  if (typeof v === 'string') return JSON.stringify(v.length > 60 ? `${v.slice(0, 60)}…` : v);
+  if (v === null) return 'null';
+  if (Array.isArray(v)) return 'a list';
+  return /^[aeiou]/.test(typeof v) ? `an ${typeof v}` : `a ${typeof v}`;
+};
+
 /** A hold the demo cube can be put in: `[up, front]`, two faces on different axes (ADR 0004). */
 const OPPOSITE = Object.freeze({ U: 'D', D: 'U', R: 'L', L: 'R', F: 'B', B: 'F' });
 const isHold = (h) => Array.isArray(h) && h.length === 2 && h.every((f) => Object.hasOwn(OPPOSITE, f))
@@ -50,7 +63,7 @@ function chunksProblem(row, triggers) {
   for (const [k, chunk] of row.chunks.entries()) {
     if (!isRecord(chunk) || !Number.isInteger(chunk.from) || !Number.isInteger(chunk.to)) return `has a chunk ${k} that is not a run of turns`;
     if (!(after <= chunk.from && chunk.from < chunk.to && chunk.to <= count)) return `has a chunk ${k} outside its ${count} turns, or overlapping another`;
-    if (!Object.hasOwn(triggers, chunk.trigger)) return `has a chunk ${k} naming a trigger the catalogue does not hold`;
+    if (!isText(chunk.trigger) || !Object.hasOwn(triggers, chunk.trigger)) return `has a chunk ${k} naming a trigger the catalogue does not hold (${shown(chunk.trigger)})`;
     after = chunk.to;
   }
   return null;
@@ -81,6 +94,7 @@ export function catalogueProblem(c) {
     for (const p of g.phases) {
       if (!isRecord(p) || !isTextOrNull(p.stage) || !isTextOrNull(p.phase) || !Array.isArray(p.sets)) return `group ${i} has a phase that is not a stage, a name and its sets`;
       for (const id of p.sets) {
+        if (!isText(id)) return `group ${i} names a set by something that is not a name (${shown(id)})`;
         if (!Object.hasOwn(c.sets, id)) return `group ${i} names a set "${id}" the catalogue does not hold`;
         grouped.add(id);
       }
@@ -88,16 +102,17 @@ export function catalogueProblem(c) {
   }
   const listed = new Set();
   for (const [id, set] of Object.entries(c.sets)) {
-    if (!isRecord(set) || set.id !== id) return `set "${id}" says it is "${set?.id}"`;
+    if (!isRecord(set) || set.id !== id) return `set "${id}" says it is ${shown(isRecord(set) ? set.id : set)}`;
     if (!isText(set.name) || !isText(set.kind) || !isTextOrNull(set.purpose) || !Array.isArray(set.ids)) return `set "${id}" is not a name, a kind, a purpose and its rows`;
     for (const rowId of set.ids) {
+      if (!isText(rowId)) return `set "${id}" names a row by something that is not a name (${shown(rowId)})`;
       if (!Object.hasOwn(c.rows, rowId)) return `set "${id}" names a row "${rowId}" the catalogue does not hold`;
       listed.add(rowId);
     }
     if (!grouped.has(id)) return `set "${id}" is in no group, so no screen would show it`;
   }
   for (const [id, row] of Object.entries(c.rows)) {
-    if (!isRecord(row) || row.id !== id) return `row "${id}" says it is "${row?.id}"`;
+    if (!isRecord(row) || row.id !== id) return `row "${id}" says it is ${shown(isRecord(row) ? row.id : row)}`;
     if (!isText(row.alg)) return `row "${id}" has no moves`;
     const chunks = chunksProblem(row, c.triggers);
     if (chunks !== null) return `row "${id}" ${chunks}`;
@@ -108,7 +123,7 @@ export function catalogueProblem(c) {
       return `row "${id}" is not a sentence, a label, a nickname and a purpose`;
     }
     if (!listed.has(id)) return `row "${id}" is in no set`;
-    if (!Object.hasOwn(c.sets, row.set) || !c.sets[row.set].ids.includes(id)) return `row "${id}" is filed in "${row.set}", which does not list it`;
+    if (!isText(row.set) || !Object.hasOwn(c.sets, row.set) || !c.sets[row.set].ids.includes(id)) return `row "${id}" is filed in ${shown(row.set)}, which does not list it`;
   }
   return null;
 }
@@ -261,12 +276,11 @@ export function createLibraryClient({
     if (worker) return worker;
     const spawned = spawn();
     worker = spawned;
-    spawned.addEventListener('message', (event) => {
-      if (worker !== spawned) return;
-      const data = event.data ?? {};
+    /** One reply, read: resolved when it is the answer to a waiting question, otherwise the worker is retired. */
+    const receive = (data) => {
       const waiting = pending.get(data.id);
       if (!waiting) return;
-      if (data.kind !== LIBRARY_ASK) { retire(new Error(`library worker answered with a "${String(data.kind)}" reply`)); return; }
+      if (data.kind !== LIBRARY_ASK) { retire(new Error(`library worker answered with a reply of another kind (${shown(data.kind)})`)); return; }
       if (data.ok === true) {
         const problem = data.result === undefined ? 'it holds no result' : ANSWER_PROBLEM[waiting.what](data.result);
         if (problem === null) settle(data.id, 'resolve', data.result);
@@ -274,10 +288,18 @@ export function createLibraryClient({
         return;
       }
       if (data.ok === false && typeof data.error?.message === 'string') {
-        retire(Object.assign(new Error(data.error.message), { name: data.error.name }));
+        retire(Object.assign(new Error(data.error.message), { name: typeof data.error.name === 'string' ? data.error.name : 'Error' }));
         return;
       }
       retire(new Error('library worker sent a malformed reply'));
+    };
+    spawned.addEventListener('message', (event) => {
+      if (worker !== spawned) return;
+      // A reply that even CHECKING throws on is a reply nobody can use: the worker is given up now, with every
+      // question waiting on it, never left to the deadline while the exception goes to the console.
+      try { receive(event.data ?? {}); } catch (err) {
+        retire(new Error(`library worker sent a reply that could not be checked: ${typeof err?.message === 'string' ? err.message : 'unknown'}`));
+      }
     });
     spawned.addEventListener('messageerror', () => {
       if (worker !== spawned) return;

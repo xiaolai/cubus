@@ -163,7 +163,7 @@ test('the deadline is measured, not tight: it is far above what the whole catalo
 const FAILURES = [
   ['an error event', (w) => w.say('error', { message: 'SyntaxError in library-worker.js', preventDefault() {} }), /library worker failed: SyntaxError/],
   ['a reply that could not be read', (w) => w.say('messageerror', {}), /could not be read/],
-  ['a reply of another protocol', (w) => w.say('message', { data: { kind: 'solver', id: w.asked[0].id, ok: true, result: 1 } }), /"solver" reply/],
+  ['a reply of another protocol', (w) => w.say('message', { data: { kind: 'solver', id: w.asked[0].id, ok: true, result: 1 } }), /a reply of another kind \("solver"\)/],
   ['a success with no result', (w) => w.say('message', { data: { kind: LIBRARY_ASK, id: w.asked[0].id, ok: true } }), /malformed reply/],
   ['ids that are not a list', (w) => w.say('message', { data: { kind: LIBRARY_ASK, id: w.asked[1].id, ok: true, result: { sune: true } } }), /malformed reply/],
   ['a catalogue that is a list', (w) => w.say('message', { data: { kind: LIBRARY_ASK, id: w.asked[0].id, ok: true, result: [] } }), /malformed reply/],
@@ -180,6 +180,18 @@ const FAILURES = [
     c.rows.sune.chunks = [null];
     w.say('message', { data: { kind: LIBRARY_ASK, id: w.asked[0].id, ok: true, result: c } });
   }, /malformed reply: row "sune" has a chunk 0 that is not a run of turns/],
+  // Round 3, row 7: a name that cannot become a string — structured clone carries `{ toString: null }` as it is —
+  // threw inside the message handler, so the questions waited the whole minute on a worker nobody retired.
+  ['a set named by an object that is no string', (w) => {
+    const c = copy(CATALOGUE);
+    c.groups[0].phases[0].sets = [{ toString: null }];
+    w.say('message', { data: { kind: LIBRARY_ASK, id: w.asked[0].id, ok: true, result: copy(c) } });
+  }, /malformed reply: group 0 names a set by something that is not a name \(an object\)/],
+  ['a reply of a kind that is no string', (w) => w.say('message', { data: { kind: { toString: null }, id: w.asked[0].id, ok: true, result: 1 } }), /a reply of another kind \(an object\)/],
+  ['a refusal whose name is no string', (w) => w.say('message', { data: { kind: LIBRARY_ASK, id: w.asked[0].id, ok: false, error: { name: { toString: null }, message: 'cross.js could not be fetched' } } }), (e) => e.name === 'Error' && /cross\.js/.test(String(e))],
+  // And whatever else checking a reply could throw on — here a getter, which a real worker's clone never holds:
+  // the worker is retired at once, never left to the deadline.
+  ['a reply the check throws on', (w) => w.say('message', { data: { kind: LIBRARY_ASK, id: w.asked[0].id, ok: true, result: { get groups() { throw new TypeError('no groups here'); } } } }), /could not be checked: no groups here/],
 ];
 
 for (const [what, fail, said] of FAILURES) {
@@ -274,6 +286,13 @@ test('the real catalogue passes the check, and every way of breaking it is named
     [(c) => { c.rows.sune.chunks = [{ from: 2, to: 2, trigger: 'sexy-move' }]; }, /chunk 0 outside its 7 turns/],
     [(c) => { c.rows.sune.chunks = [{ from: 0, to: 2, trigger: 'sledgehammer' }]; }, /chunk 0 naming a trigger the catalogue does not hold/],
     [(c) => { c.rows.sune.set = 'eoll'; }, /row "sune" is filed in "eoll", which does not list it/],
+    // Names that cannot become strings (round 3, row 7): each is named by its kind, never coerced.
+    [(c) => { c.groups[0].phases[0].sets = [{ toString: null }]; }, /group 0 names a set by something that is not a name \(an object\)/],
+    [(c) => { c.sets.ocll.ids = [{ toString: null }]; }, /set "ocll" names a row by something that is not a name \(an object\)/],
+    [(c) => { c.sets.ocll.id = { toString: null }; }, /set "ocll" says it is an object/],
+    [(c) => { c.rows.sune.id = { toString: null }; }, /row "sune" says it is an object/],
+    [(c) => { c.rows.sune.set = { toString: null }; }, /row "sune" is filed in an object, which does not list it/],
+    [(c) => { c.rows.sune.chunks = [{ from: 0, to: 2, trigger: { toString: null } }]; }, /chunk 0 naming a trigger the catalogue does not hold \(an object\)/],
     [(c) => { c.rows.antisune = drawable('antisune', "R U2 R' U' R U' R'"); }, /row "antisune" is in no set/],
     [(c) => { c.sets.cpll = { id: 'cpll', name: 'Two-look PLL', kind: 'hand-written', purpose: null, ids: [] }; }, /set "cpll" is in no group/],
   ];
