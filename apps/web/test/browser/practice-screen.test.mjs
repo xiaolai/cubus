@@ -573,6 +573,51 @@ test('a rep that was not saved stays said as mixed practice moves on — until a
   }
 });
 
+// ---- start over in mixed practice (round 2, row 15) ----------------------------------------------------------
+
+test('in mixed practice, starting over as a rep ends keeps the algorithm — by Escape, by Next, and by the cube\'s own gesture', async () => {
+  const { page, context, errors } = await openPractice(fixture);
+  try {
+    const catalogue = await page.evaluate(() => window.__p.rows());
+    const set = Object.values(catalogue.sets).find((x) => x.ids.length >= 3 && x.ids.length <= 6);
+    assert.ok(set, 'precondition: a set of three to six algorithms');
+    const rnd = lcg(151);
+    await show(page, set.ids[0]);
+    await page.click('#practiceMixed');
+    // The rep's last report and then, in the SAME task — before the advance its `done` queued can run — a start over.
+    for (const how of ['escape', 'gesture', 'next']) {
+      const was = await page.evaluate(() => window.__p.data().alg);
+      const chips = await page.evaluate(() => window.__p.chips());
+      const flat = reportsPerToken(chips.join(' '), ORIENTATIONS[0], rnd).flat();
+      const wanted = await page.evaluate(({ f, qs, h, face }) => {
+        const before = window.__p.count('done');
+        window.__p.facelets(f);
+        for (const q of qs) window.__p.move(q);
+        const done = window.__p.count('done') - before;
+        if (h === 'escape') document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        if (h === 'gesture') for (let i = 0; i < 4; i += 1) window.__p.move(face, { dt: 100 });
+        if (h === 'next') document.querySelector('#practiceNext').click();
+        return { done, now: window.__p.data().alg };
+      }, { f: toFacelets(randomStart(rnd)), qs: flat, h: how, face: 'URFDLB'[Math.floor(rnd() * 6)] });
+      assert.equal(wanted.done, 1, `${how}: precondition: the rep completed`);
+      await page.evaluate((ms) => window.__p.wait(ms), 100);
+      const after = await page.evaluate(() => window.__p.data().alg);
+      if (how === 'next') {
+        // One press of Next is ONE step on: the queued advance must not take a second.
+        const order = await page.evaluate(() => window.__p.data().alg);
+        assert.notEqual(order, was, 'next: Next did not move on');
+        assert.equal(after, wanted.now, `next: the queued advance moved on again after Next (${wanted.now} then ${after})`);
+      } else {
+        // What must NOT happen: the start over carried out, and then the algorithm switched under it.
+        assert.equal(after, was, `${how}: started over on ${was}, and the page moved on to ${after}`);
+      }
+    }
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
 // ---- the library (row 26) ----------------------------------------------------------------------------------
 
 test('the library draws no card or picture until a set is opened, and then that set\'s, once', async () => {

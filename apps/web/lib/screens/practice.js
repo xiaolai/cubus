@@ -246,6 +246,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   let lastResult = null;
   let drawnKey = null;        // what the cube was last given, so a repaint does not reset it for nothing
   let mixed = null;           // { order, at } while practising mixed
+  let advanceTicket = null;   // the mixed-practice step on a `done` queued, until it runs or a start over calls it off
   let watch = { t0: null, timer: null, laps: [] };
   let shownAt = 0;            // the demo's position, from the element's own report
 
@@ -381,11 +382,19 @@ function mountPage({ root, page, catalogue, signal, stale }) {
       waitingForReport = false;
     }
     if (e.type === 'refused') waitingForReport = true;
+    // A start over — the button, Escape, the cube's own gesture — is a request for THIS algorithm again: a step on
+    // queued by the rep that just ended is called off, or the page would switch under the rep it had just re-armed.
+    if (e.type === 'restart' || e.type === 'gesture') advanceTicket = null;
     if (e.type === 'done') {
       lastResult = e.result;
       // Mixed practice moves on once this rep is filed — after the engine has finished arming the next one,
-      // so the engine being replaced is never stopped from inside its own `done`.
-      if (mixed) setTimeout(() => { if (token === mine && !stale()) advance(); }, 0);
+      // so the engine being replaced is never stopped from inside its own `done`. Its own ticket, because a
+      // start over keeps the engine and so its token: only the ticket says the step was called off.
+      if (mixed) {
+        const ticket = {};
+        advanceTicket = ticket;
+        setTimeout(() => { if (advanceTicket === ticket && token === mine && !stale()) advance(); }, 0);
+      }
     }
   };
 
@@ -607,6 +616,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
 
   // ---- start over ---------------------------------------------------------------------------------------
   const startOver = () => {
+    advanceTicket = null;
     if (live()) {
       if (!engine.restart()) waitingForReport = true;
       paint();
@@ -646,6 +656,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     }
   };
   const advance = () => {
+    advanceTicket = null;   // one step on, however it was asked for
     if (!mixed) return;
     mixed.at += 1;
     if (mixed.at >= mixed.order.length) {
