@@ -1,8 +1,12 @@
 // The Practice screen's LIBRARY composition: every ledger row, by method, then stage, then set — as markup.
 //
 // Pure over the catalogue the library worker sends (`catalogueOf` in lib/drill/library-client.js): no DOM, no
-// state, so what a card says is a function of the row and nothing else. Every word goes through `t()`, and
-// every string from the ledger is escaped — a row is data, never markup.
+// state, so what a card says is a function of the row and nothing else. Every word the library writes goes through
+// `t()`, and so does every FIXED sentence the ledger declares — a set's name and its purpose. A row's own sentence
+// (`says`) does not: the ledger assembles it in the library worker, in English, and a catalogue keyed by whole
+// sentences cannot translate an assembled one. No locale ships (nothing outside the tests calls `registerLocale`), so
+// that waits for the first one; test/practice-view.test.mjs holds the rest to a locale made for the test. Every
+// string from the ledger is escaped — a row is data, never markup.
 //
 // WHAT IS SAID WHERE. The set's `purpose` — what every algorithm in it is FOR, one sentence shared by the set — is
 // said ONCE, under the set's heading. A card says what is particular to its row: the case picture (`solves`), the
@@ -24,8 +28,12 @@ export const rowName = (row) => {
   return row.nickname ? t('%1 · %2', name, row.nickname) : name;
 };
 
-/** What a set is FOR: the ledger's purpose, the set's where the row carries none of its own. */
-export const purposeOf = (row, set) => row.purpose ?? set?.purpose ?? null;
+/** What a set is FOR: the ledger's purpose, the set's where the row carries none of its own — a fixed sentence,
+ *  so it is said in the active language. */
+export const purposeOf = (row, set) => {
+  const purpose = row.purpose ?? set?.purpose ?? null;
+  return purpose === null ? null : t(purpose);
+};
 
 /** The row's case, drawn: a top face where the algorithm keeps the first two layers, the net otherwise. */
 export function casePicture(row, { palette, scheme, scale = 1 } = {}) {
@@ -71,7 +79,7 @@ export function cardsHtml(set, catalogue, look, esc, block) {
 function setBlock(set, esc, n) {
   return `<details class="alg-set" data-set="${esc(set.id)}" data-block="${n}">
     <summary><b>${esc(t(set.name))}</b> <span class="sub">${esc(plural(set.ids.length, { one: '%1 algorithm', other: '%1 algorithms' }))}</span>
-      ${set.purpose ? `<span class="sub alg-set-purpose">${esc(set.purpose)}</span>` : ''}</summary>
+      ${set.purpose ? `<span class="sub alg-set-purpose">${esc(t(set.purpose))}</span>` : ''}</summary>
     <div class="alg-grid"></div>
   </details>`;
 }

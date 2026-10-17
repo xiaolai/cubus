@@ -14,7 +14,8 @@ import { parse } from '../lib/cube-notation.js';
 import { PAUSE_FACTOR, TIME_REFUSAL } from '../lib/drill/timing.js';
 import { statsOf } from '../lib/drill/record.js';
 import { catalogueOf, pendingName } from '../lib/drill/library-client.js';
-import { cardsHtml, libraryHtml, rowName } from '../lib/screens/practice/library-view.js';
+import { registerLocale, setLocale } from '../lib/i18n.js';
+import { cardsHtml, libraryHtml, purposeOf, rowName } from '../lib/screens/practice/library-view.js';
 import { paletteFor } from '../lib/scheme.js';
 import { STICKER_PALETTES } from '../lib/sticker-palettes.js';
 import {
@@ -128,6 +129,31 @@ test('a card is named by what pressing it does, and DESCRIBED by its own sentenc
     assert.equal(described.length, 1, `${row.id}: its description id names ${described.length} elements`);
     assert.ok(card.contains(described[0]), `${row.id}: its description is not on the card`);
     assert.equal(described[0].textContent, row.says, `${row.id}: described by something other than its own sentence`);
+  }
+});
+
+test('a set\'s name and purpose are said in the active language; a row\'s own sentence is the ledger\'s English', () => {
+  // No locale ships today (nothing outside the tests calls registerLocale), so this is the claim in library-view.js's
+  // header held to a locale made for the test: every FIXED sentence the ledger declares goes through t(). A row's
+  // `says` is assembled by the ledger, which a catalogue keyed by whole sentences cannot translate, and stays English.
+  const sets = Object.values(catalogue.sets).filter((set) => set.purpose);
+  // Keyed by the sentence, as a catalogue is: two sets that share a purpose share its translation.
+  registerLocale('qa-library', Object.fromEntries(sets.flatMap((set) => [set.name, set.purpose]).map((en) => [en, `«${en}»`])));
+  try {
+    setLocale('qa-library');
+    const box = win.document.createElement('div');
+    box.innerHTML = libraryHtml(catalogue, esc);
+    for (const block of box.querySelectorAll('details.alg-set')) {
+      const set = catalogue.sets[block.dataset.set];
+      if (!set.purpose) continue;
+      assert.equal(block.querySelector('summary b').textContent, `«${set.name}»`, `${set.id}: its name is not translated`);
+      assert.equal(block.querySelector('.alg-set-purpose').textContent, `«${set.purpose}»`, `${set.id}: its purpose is not translated`);
+    }
+    // The page says the purpose through the same door.
+    const row = catalogue.rows[sets[0].ids[0]];
+    assert.equal(purposeOf(row, sets[0]), `«${row.purpose ?? sets[0].purpose}»`, 'the page\'s purpose is not translated');
+  } finally {
+    setLocale('en');
   }
 });
 
