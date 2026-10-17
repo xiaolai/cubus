@@ -473,6 +473,65 @@ test('"in the fingers" appears at the 7th clean rep in a row — not the 6th —
   }
 });
 
+// ---- WI-13 on the screen: mixed practice, weakest first, each algorithm once a round, none twice running ----
+
+test('mixed practice goes through the whole set weakest first, each once a round, and never one twice in a row', async () => {
+  const { page, context, errors } = await openPractice();
+  try {
+    const catalogue = await page.evaluate(() => window.__p.rows());
+    const set = Object.values(catalogue.sets).find((s) => s.ids.length >= 3 && s.ids.length <= 6);
+    assert.ok(set, 'no set of three to six algorithms');
+    const n = set.ids.length;
+    const rnd = lcg(13);
+    const rep = async (id) => {
+      const chips = await page.evaluate(() => window.__p.chips());
+      const dones = await feedRep(page, randomStart(rnd), reportsPerToken(chips.join(' '), ORIENTATIONS[0], rnd).flat());
+      assert.equal(dones.at(-1), 1, `${id}: the rep did not complete`);
+    };
+    /** The page once it is ready on an algorithm other than `was`. */
+    const movedOn = async (was) => {
+      await page.waitForFunction((w) => {
+        const d = document.querySelector('.practice-page')?.dataset;
+        return d?.ready === '1' && d.alg !== w;
+      }, was, { timeout: LIVENESS_MS });
+      return page.evaluate(() => window.__p.data().alg);
+    };
+    // One clean rep of the set's first algorithm: it now has a record and no other has, so it is the one
+    // mixing must put LAST — an algorithm with nothing on record comes first (lib/drill/mix.js, step 1).
+    const practised = set.ids[0];
+    await show(page, practised);
+    await rep(practised);
+    await page.click('#practiceMixed');
+    assert.equal(await page.evaluate(() => document.querySelector('#practiceMixed').getAttribute('aria-pressed')), 'true');
+    assert.equal(await page.evaluate(() => document.querySelector('#practiceNext').hidden), false, 'mixed shows no way to the next algorithm');
+    // Each rep is filed, then the page moves on by itself; waiting for a DIFFERENT algorithm is the check that
+    // none comes twice in a row, across the end of the round as well.
+    const seen = [await movedOn(practised)];
+    for (let i = 0; i < n; i++) {
+      await rep(seen.at(-1));
+      seen.push(await movedOn(seen.at(-1)));
+    }
+    const round = seen.slice(0, n);
+    assert.deepEqual([...round].sort(), [...set.ids].sort(), `a round of ${set.id} was ${round.join(', ')}`);
+    assert.equal(round.at(-1), practised, `the practised algorithm came at ${round.indexOf(practised) + 1} of ${n}, not last`);
+    // Every rep is on record under the algorithm it was made on: the first, then one each in the round.
+    const record = await page.evaluate(() => window.__p.record());
+    for (const id of set.ids) {
+      const want = id === practised ? 2 : 1;
+      assert.equal((record.algs[id] ?? []).length, want, `${id}: ${(record.algs[id] ?? []).length} reps on record, not ${want}`);
+    }
+    // One at a time again: the next rep stays on the algorithm it was made on.
+    await page.click('#practiceBlocked');
+    const here = seen.at(-1);
+    await rep(here);
+    await page.evaluate((ms) => window.__p.wait(ms), PAST_WINDOW_MS);
+    assert.equal(await page.evaluate(() => window.__p.data().alg), here, 'one at a time moved on after a rep');
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
 // ---- D6: no cube — the demo plays, the stopwatch works, and nothing is judged or timed by the app ----------
 
 test('with no cube the demo plays part by part and the stopwatch runs — and no verdict or measured time appears', async () => {
