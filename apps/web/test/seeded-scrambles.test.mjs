@@ -21,7 +21,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { SOLVED, applyAlg } from '../lib/cube-pieces.js';
@@ -42,7 +42,9 @@ function sources(dir = '', out = []) {
   for (const entry of readdirSync(WEB + dir, { withFileTypes: true })) {
     if (NOT_OURS.has(entry.name)) continue;
     const rel = dir ? `${dir}/${entry.name}` : entry.name;
-    if (statSync(`${WEB}${rel}`).isDirectory()) sources(rel, out);
+    // The entry's own type, never a stat after the listing: another suite's scratch file can be listed
+    // and deleted before a stat reaches it (serve-reload.test.mjs, run alongside; flake hunt, 2026-10-17).
+    if (entry.isDirectory()) sources(rel, out);
     else if (SOURCE_EXT.test(entry.name)) out.push(rel);
   }
   return out;
