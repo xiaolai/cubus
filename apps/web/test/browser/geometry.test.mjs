@@ -593,6 +593,8 @@ for (const fixture of FIXTURES) {
           aimNet: rect($('#stageAimNet')), primary: rect($('.cols > .primary')), sheet: rect($('.cols .sheet')),
           asideBox: getComputedStyle($('.cols > .aside')).display !== 'contents',
           colsV: cols.scrollHeight - cols.clientHeight, covered,
+          solLabel: rect($('#solLabel')), moveCount: rect($('#moveCount')),
+          countLine: parseFloat(getComputedStyle($('#moveCount')).lineHeight) || 0,
         };
       })()`);
       assert.ok(m.aimShown, 'the target picture is shown');
@@ -627,6 +629,17 @@ for (const fixture of FIXTURES) {
       assert.ok(m.list.chip > 0, 'precondition: the move list holds move chips');
       const oneRow = Math.min(m.list.scroll, m.list.chip + m.list.padding);
       assert.ok(m.list.client >= oneRow - 1, `the move list shows ${m.list.client}px — less than one row of moves (${oneRow}px)`);
+      // THE SENTENCE BESIDE THE HEADING (2026-10-17). "couldn't find a short way back to …" is the
+      // longest thing #moveCount says, and it was drawn glued to the heading ("Solutioncouldn't") and
+      // wrapped into a column hanging off its right edge. Either it shares the heading's row — with a
+      // gap, on ONE line — or it starts a row of its own at the heading's left edge. Never between.
+      const beside = m.moveCount.top < m.solLabel.bottom - 1;
+      if (beside) {
+        assert.ok(m.moveCount.left - m.solLabel.right >= 8, `the count is ${m.moveCount.left - m.solLabel.right}px from the heading — glued to it`);
+        assert.ok(m.countLine > 0 && m.moveCount.height <= m.countLine * 1.5, `the count wraps beside the heading (${m.moveCount.height}px tall, line ${m.countLine}px) — a hanging column`);
+      } else {
+        near(m.moveCount.left, m.solLabel.left, 'a count on its own row starts under the heading', 1);
+      }
     } finally {
       await context.close();
     }

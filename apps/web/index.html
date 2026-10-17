@@ -608,6 +608,13 @@
          header tops a list of borderless rows (Recent solves) keep the divider. */
       .card-h.bare { border-bottom: 0; }
       .card-h b { font-size: var(--fs-body-l); font-weight: 700; }
+      /* The solution card's count is sometimes a SENTENCE ("couldn't find a short way back to …").
+         Without a gap it was glued to the heading ("Solutioncouldn't"), and without wrap it was
+         squeezed into a narrow column hanging beside the heading. Wrapping drops a long line under
+         the heading; a short count still sits at the right edge on the same row. The auto margin is
+         the HEADING's, so a wrapped line starts at the left edge rather than being pushed right. */
+      .solution-card > .card-h { flex-wrap: wrap; column-gap: 12px; row-gap: 4px; }
+      .solution-card > .card-h > b { margin-right: auto; }
       /* An eyebrow with a tool on the same line. align-items:center is what makes the icon line up
          with the label; the negative margin keeps a 28px button from inflating an 15px row. */
       .eyebrow-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }

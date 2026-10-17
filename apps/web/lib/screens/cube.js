@@ -315,11 +315,12 @@ const cubeScreen = (screenMode) => {
       </div>
       ${walking ? `<div class="card tight solution-card sheet">
         ${reconnectAsk()}
-        <!-- The count carries the auto margin, not the button: with it on the button, the header's
-             space-between left the number stranded midway between the heading and the pill. The
-             count is the heading's ANSWER and belongs at the right edge whether or not anything
-             follows it; the buttons then sit beside it, each with a margin of its own. -->
-        <div class="card-h bare"><b id="solLabel">${label}</b><span class="sub" id="moveCount" role="status" aria-live="polite" style="margin-left:auto">—</span><button class="pill" id="proveBtn" hidden style="margin-left:12px">${PROVE_COPY.button}</button><button class="pill" id="proveCancel" hidden style="margin-left:6px">stop</button></div>
+        <!-- The HEADING carries the auto margin (on its right, in index.html), not the button: with it
+             on the button, the header's space-between left the number stranded midway between the
+             heading and the pill. The count and the buttons sit together at the right edge, spaced
+             by the header's column gap; and a count too long for the row wraps onto its own and
+             starts under the heading, which an auto margin on the count's LEFT would push right. -->
+        <div class="card-h bare"><b id="solLabel">${label}</b><span class="sub" id="moveCount" role="status" aria-live="polite">—</span><button class="pill" id="proveBtn" hidden>${PROVE_COPY.button}</button><button class="pill" id="proveCancel" hidden>stop</button></div>
         ${scrambling ? '' : `<!-- WHERE THIS WALK IS GOING. Not a setting and not in Settings: the target is a fact
              about this cube right now, which is the same argument the ladder makes about rungs
              (dev-docs/solve-to-state-plan.md §6). The default stays "solved", so nothing changes
