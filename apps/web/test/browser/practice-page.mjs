@@ -58,11 +58,12 @@ export const axesNear = (per, k) => new Set([k - 1, k, k + 1].flatMap((i) => (pe
 /**
  * A page on the Practice library, a stand-in cube connected unless `connect` is false, and the sound stand-in
  * installed. `prepare(context)` runs before the page does — anything a case stores in localStorage goes in there,
- * because the app reads its storage at module scope.
+ * because the app reads its storage at module scope. Given a `context`, the page is another window in it.
  */
-export async function openPractice(fixture, { numbered = true, connect = true, prepare = async () => {} } = {}) {
-  const context = await fixture.browser.newContext({ viewport: { width: 1280, height: 1012 } });
-  await prepare(context);
+export async function openPractice(fixture, { numbered = true, connect = true, prepare = async () => {}, context: shared = null } = {}) {
+  // `context`: a second window of the same origin — the same storage, and each other's `storage` events.
+  const context = shared ?? await fixture.browser.newContext({ viewport: { width: 1280, height: 1012 } });
+  if (!shared) await prepare(context);
   const page = pace(await context.newPage());
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));

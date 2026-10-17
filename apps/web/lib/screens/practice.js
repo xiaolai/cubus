@@ -23,7 +23,7 @@
 
 import { $, escHtml, state } from '../app-state.js';
 import { fingersTarget, settings } from '../app-settings.js';
-import { t } from '../i18n.js';
+import { plural, t } from '../i18n.js';
 import { SCREENS, renderScreen, screenAbort, screenGen } from '../screen-shell.js';
 import { hooks } from '../screen-slots.js';
 import { newCube } from '../cube-drawing.js';
@@ -247,11 +247,13 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   const clockBtn = $('#practiceClock', root);
   const demoRow = $('#practiceDemo', root);
   const recordSay = $('#practiceRecordSay', root);
-  // Watching the window's `storage` events, so a rep another window wrote over is put back as soon as that write
-  // arrives — and one that cannot be put back is said, here, with the other notices (`trouble.lost` below).
+  // Watching the window's `storage` events: another window's write is looked at as it arrives (reps of this page's it
+  // dropped are put back), and then the record on screen may be another — reps added there, the record deleted there,
+  // or one this page cannot read — so the figures, the history and the notice are read again. Under the screen's
+  // signal, so a page that has gone is never painted.
   const record = openPracticeRecord({
     storage: localStorage, now: () => Date.now(), changes: window, signal,
-    onLost: (err) => { if (!stale()) sayLost(err); },
+    onChange: () => { if (!stale() && row) paintRecord(); },
   });
 
   let row = null;
@@ -309,20 +311,26 @@ function mountPage({ root, page, catalogue, signal, stale }) {
    * What the page says about the record: a READ that failed and a WRITE that did not land, each standing until what it
    * said stops being true — a read that works, a rep that is saved. They are about the record, never about the row on
    * screen, so taking another row in place clears neither: mixed practice moved on right after the rep that was not
-   * saved, and the only sign of the loss went with it. And the reps another window wrote over that the record could
-   * not put back (`lost`): a rep gone stays gone, so they stand for as long as the page does — the record says each
-   * once and forgets it, so nothing else will.
+   * saved, and the only sign of the loss went with it.
+   *
+   * And what another window's writes did, read from the record's own STATE at every paint (`record.status()`), never
+   * kept here: reps of this page's that another window's write dropped and that are not back yet, and why. A later
+   * write that puts them back clears it, so the notice goes when it stops being true. Reps that went with a record
+   * removed elsewhere are not said: a removal is somebody's decision, and the history on screen already shows it.
    */
-  const trouble = { read: null, write: null, lost: [] };
+  const trouble = { read: null, write: null };
   const sayRecord = () => {
-    const text = [trouble.write, ...trouble.lost, trouble.read].filter(Boolean).join(' ');
+    const { missing, error } = record.status();
+    const elsewhere = missing
+      ? `${plural(missing, {
+        one: '%1 rep saved here was written over by another window and is not back on record yet',
+        other: '%1 reps saved here were written over by another window and are not back on record yet',
+      })}${error ? t(' (%1).', error.message) : '.'}`
+      // A look that failed with nothing missing: the record could not be read, which the read below says itself.
+      : error && !trouble.read ? t('A change another window made to your practice record could not be taken in: %1', error.message) : null;
+    const text = [trouble.write, elsewhere, trouble.read].filter(Boolean).join(' ');
     recordSay.hidden = !text;
     recordSay.textContent = text;
-  };
-  const sayLost = (err) => {
-    console.error('practice: a rep was written over by another window', err);
-    trouble.lost = [...trouble.lost, t('A rep is missing from your record: %1.', err.message)];
-    sayRecord();
   };
   const paintRecord = () => {
     let reps = null;    // null until the record is read: a read that fails leaves the history unknown, never empty
@@ -342,8 +350,6 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   const saveRep = (id, rep) => {
     const done = record.add(id, rep);
     trouble.write = done.saved ? null : t('That rep was not saved: %1', done.error.message);
-    // Saved or not, the write may have found an earlier rep another window wrote over and could not put back.
-    if (done.lost) sayLost(done.lost);
     sayRecord();
     if (row?.id === id) paintRecord();
   };

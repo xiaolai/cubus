@@ -671,42 +671,48 @@ test('in mixed practice, starting over as a rep ends keeps the algorithm — by 
   }
 });
 
-// ---- a rep another window wrote over (round 2, the record's journal) -----------------------------------------
+// ---- a rep another window wrote over (round 2, the record's journal; round 3, its status) ------------------
 
-test('a rep another window wrote over and the record could not put back is said on the page — at the next rep, and as the other window writes', async () => {
+test('a rep another window wrote over is said on the page while it is not back on record — and the notice goes once it is', async () => {
+  // The record puts back a rep of this page's that another window's write dropped (lib/drill/record.js, TWO
+  // WINDOWS); only a put-back that cannot be written leaves it missing, and `status()` says so as a state.
   const { page, context, errors } = await openPractice(fixture);
   try {
     const rnd = lcg(81);
     await show(page, 'sune');
-    const notice = () => page.evaluate(() => { const n = document.querySelector('#practiceRecordSay'); return n.hidden ? '' : n.textContent; });
+    const shown = () => page.evaluate(() => {
+      const n = document.querySelector('#practiceRecordSay');
+      return { notice: n.hidden ? '' : n.textContent, reps: document.querySelectorAll('#practiceReps li').length };
+    });
     const rep = async () => {
       const flat = reportsPerToken(SUNE, ORIENTATIONS[0], rnd).flat();
       assert.equal((await feedRep(page, randomStart(rnd), flat)).at(-1), 1, 'precondition: a rep completed');
     };
-    /** Another window's write: this page's newest rep gone, and a rep of its own in the same millisecond, which the
-     *  record cannot order against the one it dropped, so it cannot put that one back (lib/drill/record.js). */
-    const overwrite = () => page.evaluate(() => {
+    await rep();
+    await rep();
+    assert.deepEqual(await shown(), { notice: '', reps: 2 }, 'precondition: two reps, nothing to say');
+    // Another window's write, in the same generation, without this page's newest rep — and this page's storage
+    // refusing the write that would put it back.
+    await page.evaluate(() => {
       const r = JSON.parse(localStorage.getItem('cubusDrillRecord'));
-      const mine = r.algs.sune.at(-1);
-      r.algs.sune = [...r.algs.sune.slice(0, -1), { ...mine, ms: mine.ms + 1 }];
+      r.algs.sune = r.algs.sune.slice(0, -1);
       const text = JSON.stringify(r);
       localStorage.setItem('cubusDrillRecord', text);
-      return { at: mine.t, text };   // stored in short keys: `t` is the rep's time (lib/drill/record.js, SHORT)
+      const write = Storage.prototype.setItem;
+      window.__refuse = true;
+      Storage.prototype.setItem = function setItem(k, v) {
+        if (window.__refuse && k === 'cubusDrillRecord') throw new Error('quota exceeded (test)');
+        return write.call(this, k, v);
+      };
+      window.dispatchEvent(new StorageEvent('storage', { key: 'cubusDrillRecord', newValue: text, storageArea: localStorage }));
     });
+    const missing = await shown();
+    // What must NOT happen: a rep gone from the record, and nothing on the page to say so.
+    assert.match(missing.notice, /1 rep saved here was written over by another window/, `the missing rep is not said: "${missing.notice}"`);
+    // The next rep's write puts it back: the notice goes, because what it said is no longer true.
+    await page.evaluate(() => { window.__refuse = false; });
     await rep();
-    assert.equal(await notice(), '', 'precondition: nothing to say yet');
-    // At the next rep: the record finds the loss as it writes, and says so in what it returns.
-    const first = await overwrite();
-    await rep();
-    const atAdd = await notice();
-    assert.match(atAdd, /could not be put back/, `a rep lost to another window was not said on the page: "${atAdd}"`);
-    assert.match(atAdd, new RegExp(String(first.at)), 'the notice does not name the rep that was lost');
-    // As the other window writes: its storage event reaches the record, which says what it could not put back.
-    await rep();
-    const second = await overwrite();
-    await page.evaluate((text) => window.dispatchEvent(new StorageEvent('storage', { key: 'cubusDrillRecord', newValue: text, storageArea: localStorage })), second.text);
-    const atEvent = await notice();
-    assert.match(atEvent, new RegExp(String(second.at)), `a rep lost as another window wrote was not said on the page: "${atEvent}"`);
+    assert.deepEqual(await shown(), { notice: '', reps: 3 }, 'the rep was not put back, or the notice outlived it');
     assert.deepEqual(errors, []);
   } finally {
     await context.close();
@@ -806,6 +812,42 @@ test('the page\'s cube is connected already holding the row it draws — its cas
     } finally {
       await context.close();
     }
+  }
+});
+
+// ---- another window's reps (round 3, row 17) ----------------------------------------------------------------
+
+test('what another window does to the record is shown here as it happens — a rep it adds, and the record it deletes', async () => {
+  const first = await openPractice(fixture);
+  const { page, context, errors } = first;
+  try {
+    const rnd = lcg(317);
+    // A second window of the same origin: the same storage, and a real `storage` event in each for the other's writes.
+    const second = await openPractice(fixture, { context });
+    const shown = () => page.evaluate(() => ({
+      reps: document.querySelectorAll('#practiceReps li').length,
+      empty: /No reps yet/.test(document.querySelector('#practiceReps').textContent),
+      count: document.querySelector('.practice-figures dd')?.textContent,
+    }));
+    await show(page, 'sune');
+    assert.equal((await feedRep(page, randomStart(rnd), reportsPerToken(SUNE, ORIENTATIONS[0], rnd).flat())).at(-1), 1, 'precondition: a rep here');
+    assert.deepEqual(await shown(), { reps: 1, empty: false, count: '1' }, 'precondition: this window shows its rep');
+    // The other window makes a rep of the same algorithm.
+    await show(second.page, 'sune');
+    assert.equal((await feedRep(second.page, randomStart(rnd), reportsPerToken(SUNE, ORIENTATIONS[1], rnd).flat())).at(-1), 1, 'precondition: a rep there');
+    await page.waitForFunction(() => document.querySelectorAll('#practiceReps li').length === 2, null, { timeout: LIVENESS_MS })
+      .catch(() => {});
+    // What must NOT happen: this window's figures and history standing as they were before the other's write.
+    assert.deepEqual(await shown(), { reps: 2, empty: false, count: '2' }, 'another window\'s rep is not shown here');
+    // The other window deletes the record.
+    await second.page.evaluate(() => localStorage.removeItem('cubusDrillRecord'));
+    await page.waitForFunction(() => /No reps yet/.test(document.querySelector('#practiceReps').textContent), null, { timeout: LIVENESS_MS })
+      .catch(() => {});
+    // No reps on record is a count of zero, measured — a dash would say the record could not be read.
+    assert.deepEqual(await shown(), { reps: 0, empty: true, count: '0' }, 'a record another window deleted is still shown here');
+    assert.deepEqual([...errors, ...second.errors], []);
+  } finally {
+    await context.close();
   }
 });
 
