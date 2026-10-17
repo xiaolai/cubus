@@ -30,11 +30,11 @@ import { newCube } from '../cube-drawing.js';
 import { conn, cubeRefused } from '../live-session.js';
 import { reportedArrangement } from '../cube-reports.js';
 import { play } from '../sound.js';
-import { faceTurnsOf, run, toIdentity } from '../cube-moves.js';
+import { applyIdentity, faceTurnsOf, run, toIdentity } from '../cube-moves.js';
 import { parse } from '../cube-notation.js';
 import { SOLVED, applyMove, invert, toFacelets } from '../cube-pieces.js';
 import { stateFrom } from '../script-view.js';
-import { holdSentence, holdSpec } from '../solving-hold.js';
+import { holdSentence, holdSpec, sameHold } from '../solving-hold.js';
 import { library } from '../drill/library-client.js';
 import { STATUS, createDrillEngine } from '../drill/engine.js';
 import { PracticeRecordError, openPracticeRecord, statsOf, watchReps } from '../drill/record.js';
@@ -445,9 +445,45 @@ function mountPage({ root, page, catalogue, signal, stale }) {
       // and with no arrow on the cube, starting over is the way that needs no letters.
       return arrowShown ? t('%1 Follow the arrow back.', lead) : t('%1 Press Start over, or turn one face four times.', lead);
     }
-    if (!st.settled) return t('Hold the cube any way you like and start: its first turns tell cubus how you are holding it.');
+    // Not "its first turns tell cubus how you are holding it": for drop-in and the H perm no turn ever does.
+    if (!drawHold(st)) return t('Hold the cube any way you like and start: cubus follows from your first turns.');
     if (!arrowShown) return st.status === STATUS.ARMED ? t('Go: start the algorithm.') : t('Keep going.');
     return st.status === STATUS.ARMED ? t('Go: the arrow shows the first turn.') : t('Keep going: the arrow shows the next turn.');
+  };
+
+  /** Each hold's track — the arrangement at every position of the whole algorithm, from solved — which two holds must
+   *  share for one picture to stand for both. Worked out once per hold for the row on the page (`show` empties it). */
+  let tracks = new Map();
+  const trackIn = (hold) => {
+    const key = holdSpec(hold);
+    if (!tracks.has(key)) {
+      let now = { state: SOLVED, hold: [...hold] };
+      const states = [toFacelets(SOLVED)];
+      for (const move of parse(row.alg)) {
+        now = applyIdentity(toIdentity(move, now.hold), now.hold, now.state);
+        states.push(toFacelets(now.state));
+      }
+      tracks.set(key, states.join('|'));
+    }
+    return tracks.get(key);
+  };
+
+  /**
+   * The hold the walk is drawn in, or null while it cannot be drawn: the one hold left (`settled`) — or, where the
+   * holds left can never be told apart, one of them. drop-in (F2) keeps the four holds about its axis for the whole rep
+   * and the H perm two, end to end (lib/drill/engine.js), and no report ever settles them. Those holds pass the cube
+   * through the same arrangement at every position — checked here over the whole algorithm, never assumed, because
+   * holds left part way through settling (flip-in after one turn) do not — so the walk shows the same cube in each,
+   * and its next turn is the same turn, though a half turn may be drawn the other way round. What they cannot agree
+   * on is the camera, which no report can settle; the cube's own frame is taken when it is one of them, so the
+   * picture does not turn as the rep begins.
+   */
+  const drawHold = (st) => {
+    if (st.settled) return st.holds[0];
+    if (st.holds.length < 2) return null;
+    const one = trackIn(st.holds[0]);
+    if (!st.holds.every((h) => trackIn(h) === one)) return null;
+    return st.holds.find((h) => sameHold(h, ['U', 'F'])) ?? st.holds[0];
   };
 
   /**
@@ -455,16 +491,17 @@ function mountPage({ root, page, catalogue, signal, stale }) {
    * `arrow`, with the chips marked to `chips`.
    */
   const pictureOf = (st) => {
-    if (st.status === STATUS.OFF || !st.settled || !startFacelets) {
+    const drawn = drawHold(st);
+    if (st.status === STATUS.OFF || !drawn || !startFacelets) {
       // Off the algorithm, or before the hold is known: the cube as it is NOW, and an arrow only for the way back —
       // in the cube's OWN letters, which is what the element reads, so it needs no hold to point the way.
       return {
-        facelets: engine.facelets, hold: st.settled ? st.holds[0] : ['U', 'F'], alg: '', at: 0,
+        facelets: engine.facelets, hold: drawn ?? ['U', 'F'], alg: '', at: 0,
         arrow: st.status === STATUS.OFF && st.wayBack ? st.wayBack.turns[0] : 'none',
         chips: st.status === STATUS.OFF ? -1 : st.position ?? 0,
       };
     }
-    const hold = st.holds[0];
+    const hold = drawn;
     const walk = { facelets: startFacelets, hold, alg: drawnFrom(row, hold, startFacelets), at: st.position, arrow: 'next', chips: st.position };
     // A turn went missing and nothing has said where the cube is since: the position is the last one it was KNOWN at,
     // so the cube stands there, and no next turn is pointed at — that turn is from an arrangement the cube may not
@@ -510,6 +547,8 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     page.dataset.status = st.status;
     page.dataset.settled = String(st.settled);
     page.dataset.position = String(st.position ?? 0);
+    // The hold the walk is drawn from, which the cube's `orientation` is not once a midpoint redraws it from part way.
+    page.dataset.hold = following && drawHold(st) ? holdSpec(drawHold(st)) : '';
     const picture = following ? pictureOf(st) : null;
     // The arrow the cube really draws — the picture's, unless Turn arrows is off — and the sentence written from it.
     const arrow = picture && settings.turnArrows ? picture.arrow : 'none';
@@ -726,6 +765,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     row = catalogue.rows[id];
     state.practiceAlg = id;
     caseNow = caseOf(row);
+    tracks = new Map();
     // THE ONE STRING: printed as the chips, and handed to the engine. Nothing re-spells it in between.
     const judged = row.alg;
     page.dataset.alg = row.id;

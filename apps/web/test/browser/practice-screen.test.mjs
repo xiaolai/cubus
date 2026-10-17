@@ -13,6 +13,8 @@ import { after, before, test } from 'node:test';
 import { NAV_DEFAULTS_VERSION } from '../../lib/app-settings.js';
 import { ORIENTATIONS } from '../../lib/cube-orientation.js';
 import { SOLVED as PIECES, applyAlg, toFacelets } from '../../lib/cube-pieces.js';
+import { applyIdentity, toIdentity } from '../../lib/cube-moves.js';
+import { parse } from '../../lib/cube-notation.js';
 import { pace } from '../browser-wait.mjs';
 import { lcg } from '../fixtures/seeded-scrambles.mjs';
 import { toWorld } from './drawn-cube.mjs';
@@ -350,6 +352,55 @@ test('after a lost turn no next turn is pointed at until the cube says where it 
     const back = await seen();
     assert.equal(back.arrow, 'next', `the arrow did not come back once the cube said where it is (${back.data.status}: ${back.say})`);
     assert.equal(back.data.position, '4', 'the walk did not resume where the cube is');
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
+// ---- the holds no report can tell apart (round 2, coordinator) -----------------------------------------------
+
+/** The arrangement at every position of `alg` from solved, in the cube's own frame, held `hold` — worked out here
+ *  from the notation's interpreter, never from the page. Two holds with one track pass the cube through the same
+ *  arrangements, so one walk stands for both. */
+const trackIn = (alg, hold) => {
+  let now = { state: PIECES, hold: [...hold] };
+  const out = [toFacelets(PIECES)];
+  for (const m of parse(alg)) { now = applyIdentity(toIdentity(m, now.hold), now.hold, now.state); out.push(toFacelets(now.state)); }
+  return out.join('|');
+};
+
+test('an algorithm whose hold no report settles still gets its walk and its arrow — drawn in a hold the cube may be in', async () => {
+  // drop-in (F2) keeps the four holds about its axis to the end, the H perm two, end to end: the engine never
+  // settles either (lib/drill/engine.js). The page drew no arrow and said the first turns would tell it the hold.
+  const { page, context, errors } = await openPractice(fixture);
+  try {
+    const rnd = lcg(511);
+    const rows = Object.values((await page.evaluate(() => window.__p.rows())).rows);
+    for (const [id, from] of [['drop-in', 1], ['pll-H', 5]]) {
+      const row = rows.find((r) => r.id === id);
+      assert.ok(row, `precondition: the ledger holds ${id}`);
+      await show(page, id);
+      const hold = ORIENTATIONS[Math.floor(rnd() * 24)];
+      const alike = ORIENTATIONS.filter((h) => trackIn(row.alg, h) === trackIn(row.alg, hold)).map((h) => h.join(' '));
+      assert.ok(alike.length > 1, `precondition: ${id} has holds no report tells apart`);
+      const flat = reportsPerToken(row.alg, hold, rnd).flat();
+      const seen = await page.evaluate(({ f, qs }) => {
+        const before = window.__p.count('done');
+        window.__p.facelets(f);
+        return qs.map((q) => {
+          window.__p.move(q);
+          return { arrow: window.__p.arrow(), say: window.__p.say(), data: window.__p.data(), done: window.__p.count('done') - before };
+        });
+      }, { f: toFacelets(randomStart(rnd)), qs: flat });
+      assert.equal(seen.at(-1).done, 1, `${id}: precondition: the rep completed`);
+      for (const [i, s] of seen.slice(from - 1, -1).entries()) {
+        assert.equal(s.data.settled, 'false', `${id}: precondition: the hold is still not settled`);
+        assert.notEqual(s.arrow, 'none', `${id} after report ${i + from}: no arrow (${s.say})`);
+        assert.ok(alike.includes(s.data.hold), `${id} after report ${i + from}: the walk is drawn held ${s.data.hold}, which is not a hold the cube can be in`);
+        assert.doesNotMatch(s.say, /how you are holding it/, `${id}: the page says the turns will tell it the hold`);
+      }
+    }
     assert.deepEqual(errors, []);
   } finally {
     await context.close();
