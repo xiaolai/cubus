@@ -148,8 +148,10 @@ const fromStored = (s) => (isRecordObject(s)
   : s);
 
 /**
- * The stored text as a record: a frozen Map from ledger id to its reps, oldest first. Throws
- * `PracticeRecordError` for anything that is not exactly this format — the whole record is refused.
+ * The stored text as a record: a Map from ledger id to its reps, oldest first. The Map is a fresh snapshot,
+ * parsed anew on every call, so a caller that edits it changes nothing stored and nothing another read sees;
+ * each rep list and each rep in it is frozen. Throws `PracticeRecordError` for anything that is not exactly
+ * this format — the whole record is refused.
  *
  * @param {string|null} text  what `getItem` returned; null is "never written", an empty record
  * @returns {Map<string, ReadonlyArray<object>>}
@@ -292,7 +294,7 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY }) {
 
   return Object.freeze({
     key,
-    /** Every algorithm's reps. Throws when the stored record is refused. */
+    /** Every algorithm's reps: a fresh snapshot each call (`parseRecord`). Throws when the stored record is refused. */
     read,
     reps,
     /** One algorithm's derived figures. Throws when the record is refused. */

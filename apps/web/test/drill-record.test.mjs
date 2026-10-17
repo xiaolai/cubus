@@ -411,6 +411,25 @@ test('two algorithms never share a time on record, so the oldest-first cap drops
   assert.equal(later.reps('x').length, 1);
 });
 
+test('a read is a fresh snapshot: its lists and reps are frozen, and editing its Map changes nothing stored', () => {
+  const storage = fakeStorage();
+  const record = open(storage);
+  assert.equal(record.add('a', rep()).saved, true);
+  const text = storage.raw();
+  const first = record.read();
+  // The Map is the caller's own copy, so it is an ordinary Map...
+  first.set('b', Object.freeze([]));
+  first.delete('a');
+  // ...and what it held is frozen, so nothing read can be edited under another holder of the same read.
+  const again = record.read();
+  assert.notEqual(again, first, 'two reads handed out one Map');
+  assert.deepEqual([...again.keys()], ['a'], 'editing one read changed the next');
+  assert.equal(storage.raw(), text, 'editing a read changed what is stored');
+  assert.ok(Object.isFrozen(again.get('a')) && Object.isFrozen(again.get('a')[0]), 'a rep list or a rep can be edited');
+  assert.throws(() => again.get('a').push({}), TypeError);
+  assert.ok(Object.isFrozen(record.reps('none')), 'an algorithm with no reps hands out an editable list');
+});
+
 test('a malformed rep from the caller throws, and a hostile id is a key like any other', () => {
   const storage = fakeStorage();
   const record = open(storage);
