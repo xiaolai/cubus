@@ -22,12 +22,14 @@
 // faces registered in one millisecond is not measured here. Nothing marks such a move. A report reaches
 // this module as notation, host time, cube time and serial, and in those a substituted interval looks like a
 // measured one: even an exact match of the two clocks' deltas is no tell, since 4 of the 87 measured
-// intervals in the vendored Gen2 captures (test/fixtures/smartcube/) have one. So a span holding such an
-// interval is timed, partly on the host's clock. The fix belongs in the protocol layer, which lives in a
-// fork outside this repository: give a move whose interval was substituted a null `cubeTimestamp`, as the
-// Gen3/Gen4 drivers do for a recovered move, and this module refuses the span as no-cube-clock.
-// test/drill-engine.test.mjs fails the day the bundle stops substituting, so this paragraph cannot
-// outlive the defect (audit-fix 2026-10-18 #14).
+// intervals in the vendored Gen2 captures (test/fixtures/smartcube/) have one, and both clocks are whole
+// milliseconds (the bundle's host clock is `Math.floor(performance.now())`). So a span holding such an
+// interval is timed, partly on the host's clock. The fix belongs in the protocol layer, which lives in the
+// owner's fork this repository pins and rebuilds (xiaolai/smartcube-web-bluetooth, `GanGen2ProtocolDriver` in
+// its gan-protocol-drivers source): give a move whose interval was substituted a null `cubeTimestamp`, as the
+// Gen3/Gen4 drivers do for a recovered move, and this module refuses the span as no-cube-clock with no change
+// here. test/drill-engine.test.mjs fails the day the bundle stops substituting, so this paragraph cannot
+// outlive the defect (audit-fix 2026-10-18 #14, r2 #11).
 //
 // TPS is in the half-turn metric, counting only the turns the span holds — every one that ENDS after the
 // first report — and names its metric, because "turns per second" in an unnamed metric is a different
