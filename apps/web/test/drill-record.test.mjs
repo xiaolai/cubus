@@ -209,6 +209,17 @@ test('with no timed rep there is no best, median or pace — null, never zero', 
   assert.deepEqual([none.reps, none.errorRate, none.streak, none.best, none.median, none.pace], [0, null, 0, null, null, null]);
 });
 
+test('the median of two times is their midpoint, never a sum that overflows', () => {
+  // Every time the record accepts is a finite number, so every figure it derives is one: two of the largest
+  // made `Infinity` when the midpoint was taken as a sum first.
+  const big = Number.MAX_VALUE;
+  const s = statsOf([{ ...rep({ ms: big }), at: 1 }, { ...rep({ ms: big }), at: 2 }]);
+  assert.equal(s.median, big);
+  assert.equal(statsOf([{ ...rep({ ms: big / 2 }), at: 1 }, { ...rep({ ms: big }), at: 2 }]).median, big * 0.75);
+  assert.equal(statsOf([{ ...rep({ ms: 900 }), at: 1 }, { ...rep({ ms: 1300 }), at: 2 }]).median, 1100);
+  for (const k of ['best', 'median', 'pace']) assert.ok(Number.isFinite(s[k]), `${k} is ${s[k]}`);
+});
+
 test('the streak counts clean reps from the newest back, stops at an unclean one, and steps over a lost turn', () => {
   const r = (o) => ({ ...rep(o), at: 1 });
   const lost = r({ ms: null, refused: TIME_REFUSAL.STREAM_GAP, clean: false, lostTurn: true });

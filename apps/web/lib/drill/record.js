@@ -214,10 +214,14 @@ function capped(algs) {
   return out;
 }
 
+/** The median. Of an even count, the midpoint of the two middle values taken as `lower + (upper − lower) / 2`:
+ *  sorted ascending, the difference of two finite numbers of one sign is finite, where their sum can overflow. */
 function median(values) {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = sorted.length >> 1;
-  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  if (sorted.length % 2) return sorted[mid];
+  const [lower, upper] = [sorted[mid - 1], sorted[mid]];
+  return lower + (upper - lower) / 2;
 }
 
 /**
