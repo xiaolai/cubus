@@ -525,6 +525,34 @@ test('a rep is done only where the cube IS at the end — a turn away from it af
   assert.equal(h.events.find((e) => e.type === 'done').result.refused, TIME_REFUSAL.STREAM_GAP);
 });
 
+test('a stop, or a start, forgets the last serial; the next rep, armed by itself, keeps it', () => {
+  // A cube away from the app — disconnected, or simply not being drilled — goes on numbering its turns, so
+  // the first report after a fresh start is compared with nothing (audit-fix 2026-10-18 #4).
+  for (const fresh of [
+    (h) => { h.engine.stop(); startAt(h, SOLVED); },
+    (h) => startAt(h, SOLVED),
+    // A stopped engine re-armed from the screen, with the cube as it is now — no `start` on the way.
+    (h) => { h.engine.stop(); h.engine.restart({ facelets: toFacelets(SOLVED) }); },
+  ]) {
+    const h = harness({ alg: "R U R' U'" });
+    startAt(h, SOLVED);
+    h.turn('R');
+    h.turn('U');
+    fresh(h);
+    h.turn('R', { skip: 5 });
+    assert.equal(h.engine.state.status, STATUS.RUNNING, 'a fresh start compared its first serial with the last session\'s');
+    h.turn('U', { skip: 1 });
+    assert.equal(h.engine.state.status, STATUS.UNCERTAIN, 'a jump after the first report of a fresh start was missed');
+  }
+  // The next rep arms itself in the same stream: a turn lost between two reps is still a lost turn.
+  const h = harness({ alg: "R U R' U'" });
+  startAt(h, SOLVED);
+  for (const q of ['R', 'U', "R'", "U'"]) h.turn(q);
+  assert.equal(h.events.at(-1).type, 'next');
+  h.turn('R', { skip: 1 });
+  assert.equal(h.engine.state.status, STATUS.UNCERTAIN, 'a turn lost between two reps went unnoticed');
+});
+
 test('a gesture after a lost turn is refused until the arrangement is known again', () => {
   const h = harness({ alg: "R U R' U'" });
   startAt(h, SOLVED);

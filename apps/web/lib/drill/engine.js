@@ -381,9 +381,17 @@ export function createDrillEngine({
   };
 
   return Object.freeze({
-    /** Arm the first rep from the arrangement the cube reports now (54 facelets, its own frame). */
+    /**
+     * Arm the first rep from the arrangement the cube reports now (54 facelets, its own frame).
+     *
+     * The serial count starts again here: the first report after a start is compared with nothing. A cube
+     * nobody was drilling — disconnected, or simply away from this engine — went on numbering its turns, and
+     * those turns are in the arrangement given, not lost from the rep. The next rep that arms itself after a
+     * `done` keeps the count: that is one unbroken stream.
+     */
     start({ facelets: given }) {
       if (typeof given !== 'string') throw new Error('drill: start needs the cube\'s arrangement');
+      lastSerial = null;
       arm(status, 'start', given);
     },
 
@@ -466,7 +474,7 @@ export function createDrillEngine({
       return restartFrom(status, 'restart', given);
     },
 
-    /** Stop drilling: nothing armed, every timer dead. */
+    /** Stop drilling: nothing armed, every timer dead, and the serial count forgotten (see `start`). */
     stop() {
       cancelPending();
       const from = status;
@@ -474,6 +482,7 @@ export function createDrillEngine({
       status = STATUS.IDLE;
       live = [];
       rep = null;
+      lastSerial = null;
       emit('stop', from);
     },
 
