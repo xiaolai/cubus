@@ -15,7 +15,9 @@
 // first turn on a second axis settles the hold. A turn NO candidate accepts is off the plan whether or not
 // the hold is settled. Limits a cube cannot lift: the first turn's FACE is never wrong (any face is `R` in
 // some hold), and before the hold settles a wrong turn that some other hold would accept is read as that
-// hold — nothing in the reports could tell the two apart.
+// hold — nothing in the reports could tell the two apart. And an algorithm that turns one axis only never
+// settles it: the four holds about that axis trace one track, so the turns are judged and the hold stays
+// unknown.
 //
 // TRACKING IS NEAR-ONLY (§3.3): within two turns of where the cube is (`locate(…, { near: true })`), a run of
 // regrips counting as one place because no report could move the cube along it.
@@ -511,7 +513,9 @@ export function createDrillEngine({
         position: live[0]?.idx ?? null,
         length: moves.length,
         holds: Object.freeze(holds),
-        settled: live.length === 1,
+        // ONE HOLD left, not one track: the holds about one axis share a track on an algorithm that turns only
+        // that axis (`drop-in`, F2), and nothing a cube reports tells them apart, so its hold is never known.
+        settled: holds.length === 1,
         pending: pending !== null,
         wayBack: rep?.wayBack ?? null,
         about: rep?.about ?? null,

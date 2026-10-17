@@ -238,6 +238,22 @@ test('the hold: the first turn leaves the holds about its axis, the first turn o
   }
 });
 
+test('the hold is settled only when ONE hold is left — an algorithm on one axis never settles it', () => {
+  // `drop-in` is F2: one candidate track, carried by the four holds about the cube's F axis, which no report can
+  // tell apart. One track left is not one hold known, and Practice draws the cube in `holds[0]` once settled —
+  // an arbitrary one of four (audit-fix 2026-10-18 r2 #5). (M2 is the same in eight holds: half turns have no
+  // direction, so turning the slice's axis end over end changes nothing either.)
+  for (const [alg, left] of [[byName('drop-in'), 4], ["R L'", 4], ['M2', 8], ['R2 L2', 4]]) {
+    const h = harness({ alg });
+    startAt(h, SOLVED);
+    for (const q of reportsFor(alg, ['U', 'F'], () => 0).slice(0, -1)) {
+      h.turn(q);
+      assert.equal(h.engine.state.holds.length, left, `${alg}: the holds about one axis were told apart`);
+      assert.equal(h.engine.state.settled, false, `${alg}: settled with ${left} holds left`);
+    }
+  }
+});
+
 test('the first turn\'s direction is checked before any hold is known; its face cannot be', () => {
   for (const q of QUARTERS) {
     const h = harness({ alg: "R U R' U'" });
