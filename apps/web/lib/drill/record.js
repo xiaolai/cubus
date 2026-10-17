@@ -63,21 +63,37 @@
 // other window's add, and both said saved. No read can see a write that has not arrived, so the loss is not
 // prevented; it is REPAIRED. Each instance keeps its reps that were on record at its last look, by id, and the
 // generation they are in; and every repair is a look at the record AS STORED NOW — at each `add`, and on each
-// `storage` event when `changes` is given — never at what an event says happened, which can arrive late:
+// `storage` event when `changes` is given:
 //
-//   * the generation they were written under: every one of them missing is put back — the union by id, then
-//     the caps, as every write is, so a rep the caps drop goes as it would have had the writes not crossed;
-//   * no record stored, or any other generation: the record they were written under was removed, whatever
-//     happened after, and a removal is deliberate — so they are dropped, never put back into a record they
-//     were not written under, and nothing is said. `status().removed` counts them.
+//   * any record standing: every one of them it is missing is put back — the union by id, then the caps, as
+//     every write is, so a rep the caps drop goes as it would have had the writes not crossed. In their own
+//     generation, another window wrote over them; in another, a window that had not yet seen theirs started a
+//     record in the same gap — the first-rep race, which lost a rep in every crossed pair from an empty record
+//     (165 of 165, both engines, 2026-10-18) while any other generation counted as a removal, and now keeps
+//     both reps in 356 of 356 such pairs, and in 173 of 173 crossed on a record already stored (both engines,
+//     idle and busy, one algorithm and two);
+//   * dropped, and never put back, only when this window SAW the record they were written under disappear:
+//     a look of its own found no record stored, or a removal event's `oldValue` named their generation — so a
+//     late removal event, naming a generation this window has since left, touches nothing. The app never
+//     removes the record, so a removal is an outside wipe, and deliberate: nothing is said, and
+//     `status().removed` counts them.
+//
+// WHAT A WIPE TELLS ANOTHER WINDOW, measured 2026-10-18 with a second window open: `removeItem` from another
+// window (both engines) and Chromium's DevTools key delete (`DOMStorage.removeDOMStorageItem`) deliver an
+// event whose `oldValue` is the removed record. `clear()` from another window (both engines), Chromium's
+// DevTools clear-all (`DOMStorage.clear`) and `Storage.clearDataForOrigin` (the protocol call behind DevTools'
+// "Clear site data") deliver one with no key and no `oldValue`, and the window reads no record when its handler
+// runs — a look it sees as the disappearance. Not measurable headless: the browsers' own clear-browsing-data
+// settings, WebKit's clear-website-data, and clearing the Tauri webview's data store — assume they deliver
+// nothing. THE GAP that leaves, where a wipe's reps come back rather than any being lost: a wipe
+// with no `oldValue` (or none delivered at all) whose window next looks only after another window has started
+// a new record — its thread busy past that write, or no event — takes that window's reps into the new record.
 //
 // What a look could not finish is a STATE, never an event to remember: `status()` says how many reps are
 // missing and not yet put back, how many went with a removed record, and why the last look failed, and a look
 // that succeeds clears what an earlier one said. `onChange` tells the screen another window's write was looked
-// at, so its figures can be read again. NOT REPAIRED, because nothing stored can tell it apart from a removal:
-// two windows that each START a record in the same gap — the first rep on a device, or the first after a
-// removal — leave the later write's generation, and the earlier window's reps are counted removed. And a
-// window that writes before another window's removal reaches it writes the removed record back, with its rep.
+// at, so its figures can be read again. NOT REPAIRED: a window that writes before another window's removal
+// reaches it writes the removed record back, with its rep.
 import { cryptoUint32 } from '../random-state.js';
 import { TIME_REFUSAL } from './timing.js';
 
@@ -295,6 +311,18 @@ function capped(algs) {
   return out;
 }
 
+/** The generation stored text names, or null — read without refusing anything, because a removal event's old
+ *  value is only ever compared, never kept. */
+function generationOf(text) {
+  if (typeof text !== 'string') return null;
+  try {
+    const raw = JSON.parse(text);
+    return isRecordObject(raw) && typeof raw.gen === 'string' && GENERATION.test(raw.gen) ? raw.gen : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The ids of every rep in `algs`. */
 const idsIn = (algs) => new Set([...algs.values()].flatMap((reps) => reps.map((r) => r.repId)));
 
@@ -417,11 +445,21 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = n
     };
   };
 
+  /** This window saw the record its reps were written under disappear (header, TWO WINDOWS): they are dropped,
+   *  never put back, and counted. */
+  const forget = () => {
+    removed += mine.length;
+    mine = [];
+    gen = null;
+    missing = 0;
+  };
+
   /**
    * The record as stored now, `{ found, failed }`: `found` null when none is stored, and a version-1 record
    * migrated and written back — `failed` the write-back's error, or null. A write-back that failed still reads:
-   * the reps are the stored ones, and the next look migrates them again. Throws `PracticeRecordError` when the
-   * record cannot be read or is refused.
+   * the reps are the stored ones, and the next look migrates them again. Finding none is seeing this window's
+   * record disappear, whichever reader looked (`forget`). Throws `PracticeRecordError` when the record cannot
+   * be read or is refused.
    */
   const look = () => {
     let text;
@@ -430,6 +468,7 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = n
       throw new PracticeRecordError('unreadable', `${key} could not be read, so nothing will be written over it`, e);
     }
     const found = parseStored(text);
+    if (found === null) forget();
     if (found === null || found.version === RECORD_VERSION) return { found, failed: null };
     const migrated = migrate(found.algs);
     return { found: migrated, failed: write(migrated) };
@@ -463,12 +502,9 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = n
     }
     const stored = found ?? { gen: null, algs: new Map() };
     const on = idsIn(stored.algs);
-    const away = mine.filter(({ rep }) => !on.has(rep.repId));
-    // Put back only into the generation they were written under: any other record, or none, means that one was
-    // removed, whatever happened after.
-    const cleared = found === null || found.gen !== gen;
-    if (cleared) removed += away.length;
-    const back = cleared ? [] : away;
+    // Into whatever record stands — theirs written over, or one started in the first-rep race. A record this
+    // window saw disappear left nothing here to put back (`forget`).
+    const back = mine.filter(({ rep }) => !on.has(rep.repId));
     let algs = stored.algs;
     if (back.length) {
       const lists = new Map([...algs].map(([id, reps]) => [id, [...reps]]));
@@ -494,7 +530,10 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = n
   changes?.addEventListener('storage', (event) => {
     if (event.storageArea != null && event.storageArea !== storage) return;
     if (event.key !== null && event.key !== key) return;
-    // What the event says (its `newValue`) may already be stale; the look reads what is stored now.
+    // A removal names what it removed (its `oldValue`): the record this window's reps are in, or one it has
+    // since left, which touches nothing. Anything else an event says may already be stale; the look reads what is
+    // stored now — and a record gone by then is seen gone there.
+    if (event.key === key && event.newValue === null && mine.length && generationOf(event.oldValue) === gen) forget();
     try { settle(); } catch (e) {
       if (!(e instanceof PracticeRecordError)) throw e;
     }
@@ -527,9 +566,10 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = n
      * that succeeds clears, never an event to remember:
      *
      *   missing   reps another window's write dropped that could not be put back yet (`error` says why)
-     *   removed   reps that went with the record they were written under, since it opened: removed in another
-     *             window or in this one, or written over by a record another window started in the same moment
-     *             (header, NOT REPAIRED). Never put back, and not a failure to show: a removal is deliberate
+     *   removed   reps that went with the record they were written under, since it opened, which this window
+     *             SAW disappear: a look found no record, or a removal event named it (header, TWO WINDOWS).
+     *             Never put back, and not a failure to show: the app never removes the record, so a removal is
+     *             an outside wipe, and deliberate
      *   error     why the last look could not finish (the record cannot be read, is refused, the reps put back
      *             did not land, or a version-1 record could not be written back as version 2), or null
      */
