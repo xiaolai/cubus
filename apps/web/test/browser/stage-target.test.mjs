@@ -194,6 +194,11 @@ test('a target change repaints in place — it does not rebuild the screen', asy
     // Identity, not appearance. A rebuilt screen looks the same a frame later; what it cannot fake
     // is being the SAME element. The cube is tagged, and the tag survives only a repaint.
     await page.evaluate(() => { document.querySelector('#viewCube cubus-cube').dataset.mark = 'before'; });
+    // AND THE SCREEN'S OWN ELEMENTS. The cube alone cannot tell: it is parked and re-used across a rebuild
+    // (parkCube), keeping its tag and its WebGL context. The transport, the walk list and the stage row
+    // are the screen's template, so a rebuilt screen has new ones and the tags are gone.
+    const SCREEN_PARTS = ['#prevBtn', '#solList', '#stageTargetRow'];
+    await page.evaluate((parts) => { for (const sel of parts) document.querySelector(sel).dataset.mark = 'before'; }, SCREEN_PARTS);
     const glBefore = await page.evaluate(() => window.__gl);
 
     await aimAt(page, 'two-layers');
@@ -207,6 +212,8 @@ test('a target change repaints in place — it does not rebuild the screen', asy
       'and no new WebGL context: one per render is the defect screen-swap.test.mjs was written for');
     // And the transport is still the transport, rather than a fresh screen's.
     assert.equal(await page.locator('#prevBtn').count(), 1);
+    assert.deepEqual(await page.evaluate((parts) => parts.map((sel) => document.querySelector(sel)?.dataset.mark ?? 'gone'), SCREEN_PARTS),
+      SCREEN_PARTS.map(() => 'before'), 'the screen was rebuilt around a re-used cube');
   } finally {
     assert.deepEqual(errors.map(String), [], 'the page must raise nothing');
     await context.close();
