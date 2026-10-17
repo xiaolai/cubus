@@ -18,9 +18,18 @@
 // first report — and names its metric, because "turns per second" in an unnamed metric is a different
 // number in each. It is withheld from a rep that was not the algorithm alone (it left the algorithm, or
 // took a turn back), whose span holds turns the algorithm does not.
+//
+// A PAUSE is a gap between two reports over PAUSE_FACTOR times the rep's usual gap BETWEEN TURNS: the median
+// of the gaps that follow a report ending a turn. A gap inside one turn — between a slice's two faces, or a
+// half turn's two quarters — is part of a turn, not time between turns, and it is short: a GAN 16 ui
+// stamped both faces of 29 of its 75 recorded slices on one millisecond (test/fixtures/hardware/
+// gan16ui-2026-10-17.mjs). Counted in, those gaps made a slice algorithm's median zero, so no gap was ever
+// marked; a few milliseconds instead of none made every ordinary gap between turns a "pause" (audit-fix
+// 2026-10-18 #15). A zero gap between turns is two turns stamped at one instant, which says nothing about how
+// long a hand waits, so it is left out too. A rep with no gap between turns has nothing to stand out from.
 
 /**
- * How many times a rep's median gap a gap must exceed to be marked as a pause. A plan decision
+ * How many times a rep's usual gap between turns a gap must exceed to be marked as a pause. A plan decision
  * (dev-docs/algorithm-drill-v2-plan.md §3.5, after csTimer's 2–3× of the mean), not a measurement.
  */
 export const PAUSE_FACTOR = 3;
@@ -50,9 +59,12 @@ function median(values) {
  * `htm` is the algorithm's length in the half-turn metric; `turnsTimed` how many of those end after the
  * first report. `streamBroken` says a turn was lost during the rep; `clean` that the reports were the
  * algorithm's own and no others. `splits` are `[{ from, to, start, end }]`: token ranges and the indices into `reports`
- * of the report that reached each boundary (null when none did).
+ * of the report that reached each boundary (null when none did). `moveEnds` are the indices into `reports` of
+ * the reports that ended a turn — that left the cube on a position of the algorithm rather than part way
+ * through one — which is what separates a gap between turns from a gap inside one.
  */
-export function timeRep({ reports, htm, turnsTimed, streamBroken, clean, splits = [] }) {
+export function timeRep({ reports, htm, turnsTimed, streamBroken, clean, splits = [], moveEnds }) {
+  if (!Array.isArray(moveEnds)) throw new Error('timing: which reports end a turn is given, never assumed');
   const refuse = (reason) => Object.freeze({
     ms: null,
     refused: reason,
@@ -70,10 +82,13 @@ export function timeRep({ reports, htm, turnsTimed, streamBroken, clean, splits 
   const ms = stamps.at(-1) - stamps[0];
   if (!(ms > 0)) return refuse(TIME_REFUSAL.NO_SPAN);
 
-  const typical = median(gaps);
-  const pauses = gaps
+  // `gaps[i]` follows report i, so it is a gap between turns exactly when report i ended one.
+  const ends = new Set(moveEnds);
+  const between = gaps.filter((g, i) => ends.has(i) && g > 0);
+  const typical = between.length ? median(between) : null;
+  const pauses = typical === null ? [] : gaps
     .map((g, i) => ({ afterReport: i, ms: g }))
-    .filter(({ ms: g }) => typical > 0 && g > PAUSE_FACTOR * typical);
+    .filter(({ ms: g }) => g > PAUSE_FACTOR * typical);
 
   const at = (i) => (i === null || i === undefined ? null : stamps[i]);
   const timedSplits = splits.map(({ from, to, start, end }) => {

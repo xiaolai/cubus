@@ -53,21 +53,24 @@ const randomStart = (rnd) => applyAlg(SOLVED, randomAlg(rnd, 40));
  * The quarter turns a cube held `hold` reports while a hand executes `alg`: every half turn as two quarters
  * in a direction drawn from `rnd`, every slice's two faces in an order drawn from `rnd`, rotations as nothing.
  */
-function reportsFor(alg, hold, rnd) {
+const reportsFor = (alg, hold, rnd) => reportGroups(alg, hold, rnd).flat();
+
+/** `reportsFor`, one array per token of `alg` — a rotation's is empty. */
+function reportGroups(alg, hold, rnd) {
   let now = [...hold];
-  const out = [];
-  for (const move of parse(alg)) {
+  return parse(alg).map((move) => {
     const identity = toIdentity(move, now);
     now = applyIdentity(identity, now, SOLVED).hold;
     const names = faceTurnsOf(identity).turns.map((t) => t.name).filter(Boolean);
     const ordered = names.length === 2 && rnd() < 0.5 ? [names[1], names[0]] : names;
+    const out = [];
     for (const name of ordered) {
       if (!name.endsWith('2')) { out.push(name); continue; }
       const q = rnd() < 0.5 ? name[0] : `${name[0]}'`;
       out.push(q, q);
     }
-  }
-  return out;
+    return out;
+  });
 }
 
 /** cubejs's whole-cube turn that puts identity face `up` on top and `front` in front — found, not typed. */
@@ -582,7 +585,8 @@ test('a known feed is timed to the millisecond on the cube\'s clock, first turn 
   assert.deepEqual({ ...result.tps }, { value: 6 / 1.5, metric: 'HTM', turns: 6 });
   // Splits: R U R' U (from the first report to the fourth), then R U2 R' (fourth to eighth).
   assert.deepEqual(result.splits.map((s) => ({ ...s })), [{ from: 0, to: 4, ms: 500 }, { from: 4, to: 7, ms: 1000 }]);
-  // Gaps 180 150 170 140 160 150 550: median 160, and only 550 is over three times it.
+  // Gaps 180 150 170 140 160 150 550. The 150 after report 5 is inside U2, between its two quarters, so the
+  // usual gap between turns is the median of the other six, 165 — and only 550 is over three times it.
   assert.deepEqual(result.pauses.map((p) => ({ ...p })), [{ afterReport: 6, ms: 550 }]);
   assert.equal(PAUSE_FACTOR, 3);
 });
@@ -616,6 +620,59 @@ test('a first report that is a quarter of a LATER half turn ends no turn, so eve
   assert.equal(result.clean, true);
   assert.equal(result.ms, 300);
   assert.deepEqual({ ...result.tps }, { value: 3 / 0.3, metric: 'HTM', turns: 3 });
+});
+
+/** Reports for `alg` held [U, F], stamped: `between` ms before each move's first report, and inside a move
+ *  `slice` ms between two faces and `quarter` ms between a half turn's two quarters. */
+function pacedReports(alg, { between, slice, quarter }) {
+  let t = 1000;
+  const out = [];
+  for (const group of reportGroups(alg, ['U', 'F'], () => 0)) {
+    group.forEach((q, i) => {
+      t += i === 0 ? (out.length ? between : 0) : q === out.at(-1).q ? quarter : slice;
+      out.push({ q, t });
+    });
+  }
+  return out;
+}
+
+test('a pause is measured against the usual gap BETWEEN turns, never the gaps inside one', () => {
+  // A real GAN 16 ui stamped both faces of 29 of 75 slices on one millisecond (gan16ui-2026-10-17), so on a
+  // slice algorithm most REPORT gaps can be zero and the median of them zero: no gap was ever over three times
+  // it, and every pause went unmarked (audit-fix 2026-10-18 #15). The same gaps, a few ms rather than none,
+  // made every ordinary gap between turns a "pause". The usual gap is the one between turns.
+  const run = (alg, paced) => {
+    const h = harness({ alg, fixedHold: ['U', 'F'] });
+    startAt(h, SOLVED);
+    for (const { q, t } of paced) h.turn(q, { stamp: t });
+    return h.events.find((e) => e.type === 'done').result;
+  };
+  // Slices stamped on one millisecond; one gap between turns of 2 s among gaps of 300 ms.
+  const alg = "M E M' E'";
+  const paced = pacedReports(alg, { between: 300, slice: 0, quarter: 0 });
+  paced.slice(-2).forEach((r) => { r.t += 1700; });
+  const gaps = paced.slice(1).map((r, i) => r.t - paced[i].t);
+  assert.deepEqual(gaps, [0, 300, 0, 300, 0, 2000, 0], 'the feed is not the one described');
+  const marked = run(alg, paced);
+  assert.equal(marked.ms, 2600);
+  assert.deepEqual(marked.pauses.map((p) => ({ ...p })), [{ afterReport: 5, ms: 2000 }]);
+  // An evenly paced H perm, slice faces 0 or 8 ms apart and half-turn quarters 80 ms: NO pause.
+  const hPerm = "M2 U M2 U2 M2 U M2";
+  for (const slice of [0, 8]) {
+    const even = run(hPerm, pacedReports(hPerm, { between: 300, slice, quarter: 80 }));
+    assert.notEqual(even.ms, null);
+    assert.deepEqual([...even.pauses], [], `an even H perm (slice faces ${slice} ms apart) was marked with pauses`);
+  }
+  // Two turns of their own made at one instant — `R L'` as two tokens, stamped on one millisecond — leave a
+  // zero gap BETWEEN turns. No time passed, so it says nothing about the hand's pace and is not the usual gap.
+  const pairs = "R L' U D' R L' U D'";
+  const together = reportsFor(pairs, ['U', 'F'], () => 0).map((q, i) => ({ q, t: 1000 + 300 * (i >> 1) }));
+  assert.deepEqual([...run(pairs, together).pauses], [], 'turns made together made the usual gap zero');
+  // The audit's own feed, `M E` stamped 0 0 1000 1000: its one gap between turns IS the usual gap, and a gap
+  // is never a pause against itself.
+  const single = run('M E', [0, 0, 1000, 1000].map((t, i) => ({ q: reportsFor('M E', ['U', 'F'], () => 0)[i], t })));
+  assert.equal(single.ms, 1000);
+  assert.deepEqual([...single.pauses], []);
 });
 
 test('a turn taken back before the rep began is not in its span', () => {

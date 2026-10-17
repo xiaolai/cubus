@@ -136,7 +136,9 @@ export function createDrillEngine({
   let model = null;              // the cube's arrangement as the reports have moved it, in its own frame
   let modelTrusted = false;      // false from a lost turn until the app hands the arrangement back
   let lastSerial = null;
-  let live = [];                 // [{ c: candidate, idx, reach: Map(position -> log index), firstFrom }]
+  // [{ c: candidate, idx, reach: Map(position -> log index), landed: Set(log index), firstFrom }] — `landed`
+  // holds every report that left the cube ON a position of this track, which is a report that ended a turn
+  let live = [];
   let rep = null;
   let pending = null;            // { handle, token } — the cue window of one excursion
   let excursionToken = 0;
@@ -195,7 +197,7 @@ export function createDrillEngine({
     if (given !== undefined) model = stateFrom(given);
     modelTrusted = true;
     live = candidatesFrom(plans, model, prefix).map((c) => ({
-      c, idx: passRegrips(c.track, 0), reach: new Map(), firstFrom: null,
+      c, idx: passRegrips(c.track, 0), reach: new Map(), landed: new Set(), firstFrom: null,
     }));
     // `since`: the first report after the cube last stood where the rep was armed — where the rep's turns
     // begin once one of them is matched (`judge`).
@@ -239,6 +241,8 @@ export function createDrillEngine({
       streamBroken: rep.streamBroken,
       clean: rep.excursions === 0 && extraTurns === 0,
       splits,
+      // The reports in the span that ended a turn: a pause is measured against the gaps between turns.
+      moveEnds: [...entry.landed].map(logIdx).filter((i) => i !== null).sort((a, b) => a - b),
     });
     status = STATUS.DONE;
     sound('done');
@@ -320,7 +324,7 @@ export function createDrillEngine({
     live = accepted.map(({ e, r }) => {
       const next = { ...e, idx: r.kind === 'step' ? r.idx : e.idx };
       if (progress && rep.firstMatched === null) next.firstFrom = e.idx;
-      if (r.kind === 'step') recordReach(next, r.idx, logIdx);
+      if (r.kind === 'step') { recordReach(next, r.idx, logIdx); next.landed.add(logIdx); }
       return next;
     });
     if (progress && rep.firstMatched === null) {
