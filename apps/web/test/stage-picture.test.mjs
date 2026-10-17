@@ -19,7 +19,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { SOLVED, applyAlg } from '../lib/cube-pieces.js';
+import { SOLVED, applyAlg, invert } from '../lib/cube-pieces.js';
 import { toFacelets } from '../lib/two-phase.js';
 import { TARGETS, targetById } from '../lib/stage-targets.js';
 import { UNKNOWN, pinnedCount, targetPicture } from '../lib/stage-picture.js';
@@ -38,12 +38,10 @@ function statesIn(target) {
   const out = [];
   if (target.id === 'six-cross') {
     const C = "R' D' R U R' D R U'";
-    const inv = (alg) => alg.trim().split(/\s+/).reverse()
-      .map((m) => (m.endsWith('2') ? m : m.endsWith("'") ? m[0] : `${m}'`)).join(' ');
-    for (const x of seededScrambles(16, 0x6c17, 7)) out.push(applyAlg(SOLVED, `${x} ${C} ${inv(x)}`));
+    for (const x of seededScrambles(16, 0x6c17, 7)) out.push(applyAlg(SOLVED, `${x} ${C} ${invert(x)}`));
     // …and combinations of two, so the corner permutation is not always a single 3-cycle.
     for (const x of seededScrambles(8, 0x6c18, 5)) {
-      out.push(applyAlg(SOLVED, `${x} ${C} ${inv(x)} ${C}`));
+      out.push(applyAlg(SOLVED, `${x} ${C} ${invert(x)} ${C}`));
     }
     return out;
   }

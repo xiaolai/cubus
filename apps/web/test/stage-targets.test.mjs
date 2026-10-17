@@ -30,7 +30,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { MOVE_NAMES, SOLVED, applyAlg } from '../lib/cube-pieces.js';
+import { MOVE_NAMES, SOLVED, applyAlg, invert } from '../lib/cube-pieces.js';
 import { parseFacelets } from '../lib/two-phase.js';
 import * as eng from '../lib/methods/engine.js';
 import { methodFor, solveByMethod } from '../lib/method-solver.js';
@@ -138,8 +138,6 @@ const statesSatisfying = (pred) => ROUTE.filter((s) => pred(s));
  */
 function sixCrossStates(scrambles) {
   const C = "R' D' R U R' D R U'";
-  const invert = (alg) => alg.trim().split(/\s+/).reverse()
-    .map((m) => (m.endsWith('2') ? m : m.endsWith("'") ? m[0] : `${m}'`)).join(' ');
   return scrambles.map((x) => applyAlg(SOLVED, `${x} ${C} ${invert(x)}`));
 }
 
@@ -158,8 +156,6 @@ function sixCrossStates(scrambles) {
  */
 function xEveryFaceStates(scrambles) {
   const C = "R U' R U R U R U' R' U' R2";
-  const invert = (alg) => alg.trim().split(/\s+/).reverse()
-    .map((m) => (m.endsWith('2') ? m : m.endsWith("'") ? m[0] : `${m}'`)).join(' ');
   return scrambles.map((x) => applyAlg(SOLVED, `${x} ${C} ${invert(x)}`));
 }
 
