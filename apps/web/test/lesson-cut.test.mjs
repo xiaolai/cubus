@@ -112,6 +112,14 @@ test('the app cuts the chosen method\'s lesson through the chip\'s own predicate
   }
   // Not a stop of the method (a set pattern), and the whole cube: no cut, the caller's other routes.
   assert.equal(await stageLessonFor({ facelets, lesson: null }, BEGINNER_ENTRY, TARGET_BY_ID['six-cross']), null);
+  // An OFFERED chip is still no cut for a method that does not stop there: a stop is the METHOD's, so
+  // Beginner has no top-oriented walk and CFOP no first-layer one, though both chips are offered.
+  const { methodById } = await import('../lib/methods/registry.js');
+  for (const [method, chip] of [['beginner', 'top-oriented'], ['cfop', 'first-layer'], ['cfop-4lll', 'corners-home']]) {
+    assert.ok(TARGET_BY_ID[chip].offered && !methodById(method).stops.includes(chip), `precondition: ${chip} is offered, and no stop of ${method}`);
+    assert.equal(await stageLessonFor({ facelets, lesson: null }, methodById(method), TARGET_BY_ID[chip]), null,
+      `${method} was cut at ${chip}, which it does not stop at`);
+  }
   assert.equal(await stageLessonFor({ facelets, lesson: null }, BEGINNER_ENTRY, TARGET_BY_ID.solved), null);
 });
 
