@@ -111,11 +111,15 @@ export function trackOf(states, transitions, pieces = null) {
  * method walks do it within two moves — and there the cube matches both. The turn that reached it IS
  * the walk's next move, so it is progress; checking behind first drew an undo nobody made.
  *
- * `near: true` searches only within two positions of `from` (and the midpoints beside it), and drops the
- * LAST-RESORT fallback below — "anywhere on the track, first index". A walk wants that fallback, because a
- * snapshot can carry the cube several positions at once; a drill must not have it, because an algorithm
- * that repeats a sequence passes through one arrangement at several positions, and the first index is then
- * a position the child is not at (`lib/drill/engine.js`).
+ * NEAR IS COUNTED IN TURNS, not positions: two turns ahead and two behind. A run of regrips is ONE place,
+ * because nothing a cube reports could move it along one — so undoing `R` in a track built `R x y U`, from
+ * the end of the run R was carried to, is one turn back, not three positions (audit-fix 2026-10-18 #30).
+ *
+ * `near: true` searches only that window (and the midpoints beside `from`), and drops the LAST-RESORT
+ * fallback below — "anywhere on the track, first index". A walk wants that fallback, because a snapshot can
+ * carry the cube several positions at once; a drill must not have it, because an algorithm that repeats a
+ * sequence passes through one arrangement at several positions, and the first index is then a position the
+ * child is not at (`lib/drill/engine.js`).
  */
 export function locate(track, facelets, from, { near = false } = {}) {
   const { states, midpoints, observable } = track;
@@ -134,9 +138,16 @@ export function locate(track, facelets, from, { near = false } = {}) {
     while (k > 0 && !observable[k] && states[k] === states[k - 1]) k--;
     return k;
   };
+  // One turn on from `k`: the first position past the end of k's run. One turn back: the last position
+  // before its start. Null off either end of the track.
+  const turnAhead = (k) => (k === null || passRegrips(k) + 1 >= states.length ? null : passRegrips(k) + 1);
+  const turnBehind = (k) => (k === null || passedFrom(k) === 0 ? null : passedFrom(k) - 1);
+  let ahead = from;
+  let behind = from;
   for (let d = 0; d <= 2; d++) {
-    for (const idx of d === 0 ? [from] : [from + d, from - d]) {
-      if (idx >= 0 && idx < states.length && states[idx] === facelets) {
+    if (d > 0) { ahead = turnAhead(ahead); behind = turnBehind(behind); }
+    for (const idx of d === 0 ? [from] : [ahead, behind]) {
+      if (idx !== null && idx >= 0 && idx < states.length && states[idx] === facelets) {
         // Reaching a position carries the cube through any regrip that follows it — but only when it
         // was REACHED: standing still on a position must not skip what comes next.
         return { kind: 'step', idx: idx === from ? idx : passRegrips(idx) };
@@ -166,7 +177,7 @@ const FACE_TURNS = Object.freeze(['U', 'R', 'F', 'D', 'L', 'B'].flatMap((f) => [
  * child made a turn the walk makes a little later — two commuting turns in the other order — finishing it is
  * progress, and undoing it would be a turn taken back for nothing.
  *
- * `near` is `locate`'s: with it, only a position within two of `from` counts as back on the walk.
+ * `near` is `locate`'s: with it, only a position within two turns of `from` counts as back on the walk.
  */
 export function wayBack(track, facelets, from, most = 2, { near = false } = {}) {
   const reached = (f) => {

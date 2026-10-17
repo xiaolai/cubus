@@ -17,7 +17,8 @@
 // some hold), and before the hold settles a wrong turn that some other hold would accept is read as that
 // hold — nothing in the reports could tell the two apart.
 //
-// TRACKING IS NEAR-ONLY (§3.3): within two positions of where the cube is (`locate(…, { near: true })`).
+// TRACKING IS NEAR-ONLY (§3.3): within two turns of where the cube is (`locate(…, { near: true })`), a run of
+// regrips counting as one place because no report could move the cube along it.
 // The walk's last-resort "anywhere on the track, first index" would place a cube in a repeated sequence
 // (`R U R' U' R U R' U'`) at the FIRST occurrence of an arrangement it reaches at the second.
 //
@@ -117,10 +118,11 @@ export function createDrillEngine({
   const htm = htmOf(moves);
   if (htm === 0) throw new Error(`drill: "${alg}" turns no face, so no cube could report it`);
   const plans = plansFor(moves, { fixedHold });
-  // How far an armed candidate's track must reach before its first turn: past the rotations the algorithm
-  // opens with (passed without a report), then the two positions `locate` looks ahead, and one spare.
-  const lead = plans[0].faces.findIndex((names) => names.length);
-  const prefix = lead + 3;
+  // How far an armed candidate's track must reach before its first turn: the two TURNS `locate` looks ahead
+  // — past any rotations before or between them, which no report moves the cube along — and one spare. Which
+  // transitions turn a face is the same in every hold, so one plan answers for all of them.
+  const turning = plans[0].faces.flatMap((names, k) => (names.length ? [k] : []));
+  const prefix = (turning[1] ?? turning[0]) + 2;
   // How many reports a clean rep makes: a half turn is two quarters, whichever way they go.
   const quarters = plans[0].faces.flat().reduce((n, name) => n + (name.endsWith('2') ? 2 : 1), 0);
   for (const c of chunks) {
@@ -432,7 +434,7 @@ export function createDrillEngine({
       const f = facelets();
       wholeTracks(null);
       // Turns went by unseen, so the cube may be anywhere AHEAD: the one place this engine looks further
-      // than two positions. Nearest first, ahead before behind, so a repeated sequence is placed where the
+      // than two turns. Nearest first, ahead before behind, so a repeated sequence is placed where the
       // cube most plausibly is — and a rep resumed this way is `uncertain` and untimed whatever happens.
       // A cube that is nowhere on the track stays where it was, uncertain, until it starts over.
       live = live.map((e) => {

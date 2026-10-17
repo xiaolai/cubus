@@ -154,6 +154,51 @@ test('an undo reads as a half-made turn even when the walk had passed a regrip',
   assert.deepEqual(locate(track, cube.asString(), 2), { kind: 'off' });
 });
 
+// audit-fix 2026-10-18 #30. `near` looks two TURNS either way, and a run of regrips is one place, because no
+// report could move a cube along it. Counted in positions, undoing `R` in `R x y U` from position 3 was three
+// away and called off the walk — and the drill sounded `off` and offered `R` as the way back.
+test('near: distance is counted in turns, so a run of regrips is one place, behind and ahead', () => {
+  // Built token by token, as the drill builds its tracks (lib/drill/candidates.js): there a rotation is a
+  // position of its own, where a script's walk folds a leading regrip into the turn it leads. The tokens are
+  // the cube's own frame, so `y` leaves U where it is.
+  const perToken = (alg) => {
+    const cube = new Cube();
+    const states = [cube.asString()];
+    const transitions = alg.split(' ').map((token) => {
+      if (!/^[xyz]/.test(token)) cube.move(token);
+      states.push(cube.asString());
+      return parse(token);
+    });
+    return trackOf(states, transitions);
+  };
+  const track = perToken('R y y U');
+  assert.deepEqual(track.observable, [true, true, false, false, true]);
+  const cube = new Cube();
+  cube.move('R');
+  assert.deepEqual(locate(track, cube.asString(), 0, { near: true }), { kind: 'step', idx: 3 });
+  cube.move("R'");
+  assert.deepEqual(locate(track, cube.asString(), 3, { near: true }), { kind: 'step', idx: 0 },
+    'undoing R across y y was called off the walk');
+  // Two turns back across the run: U then R undone from the end.
+  const end = new Cube();
+  end.move('R U');
+  assert.deepEqual(locate(track, end.asString(), 4, { near: true }), { kind: 'step', idx: 4 });
+  end.move("U' R'");
+  assert.deepEqual(locate(track, end.asString(), 4, { near: true }), { kind: 'step', idx: 0 });
+  // Ahead: R and L' lie on one axis across x x, so a hand may make L' first, and R then lands two turns on,
+  // four positions on.
+  const ahead = perToken("R x x L'");
+  const commuted = new Cube();
+  commuted.move("L' R");
+  assert.deepEqual(locate(ahead, commuted.asString(), 0, { near: true }), { kind: 'step', idx: 4 },
+    'two commuting turns across a regrip were called off the walk');
+  // And three turns are still too far: near stays near, however few positions the regrips leave.
+  const far = perToken('R y y U F');
+  assert.deepEqual(locate(far, far.states[4], 0, { near: true }), { kind: 'step', idx: 4 }, 'two turns ahead');
+  assert.deepEqual(locate(far, far.states[5], 0, { near: true }), { kind: 'off' }, 'three turns ahead was taken for near');
+  assert.deepEqual(locate(far, far.states[0], 5, { near: true }), { kind: 'off' }, 'three turns behind was taken for near');
+});
+
 // Found by a Codex audit, 2026-09-16. Reaching a position carries the cube through the regrips that
 // follow it — and "reached by no moves at all" read as a regrip, so a line of narration after a turn was
 // walked straight past. Nothing about the cube says a child has heard a line; that is why they move on

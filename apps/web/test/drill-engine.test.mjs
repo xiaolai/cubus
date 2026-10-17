@@ -275,6 +275,37 @@ function nearOnlyCheck(create) {
   assert.equal(h.engine.state.position, 0);
 }
 
+test('an undo across a run of regrips is one turn back, and two turns across one are two turns ahead', () => {
+  // `R x y U`: R lands at position 1 and is carried through x and y to 3. Undoing R is one turn back to the
+  // start, three POSITIONS away but one TURN; counting the regrips as distance called it off the plan and
+  // offered R as the way back (audit-fix 2026-10-18 #30).
+  for (const fixedHold of [['U', 'F'], null]) {
+    const h = harness({ alg: "R x y U", fixedHold });
+    startAt(h, SOLVED);
+    h.turn('R');
+    assert.equal(h.engine.state.position, 3);
+    h.turn("R'");
+    assert.equal(h.engine.state.pending, false, `${fixedHold}: undoing R across x y was taken for a mistake`);
+    h.advance(CUE_WINDOW_MS * 10);
+    assert.equal(h.count('off'), 0, `${fixedHold}: undoing R across x y sounded off`);
+    assert.equal(h.engine.state.position, 0);
+  }
+  // `R x x L' U`: R and L' lie on one axis across two regrips, so a hand may make L' first. The second turn
+  // lands two TURNS ahead, four positions on — and the track a rep arms with must already reach that far.
+  const alg = "R x x L' U";
+  const [a, b, ...rest] = reportsFor(alg, ['U', 'F'], () => 0);
+  assert.equal(`${a} ${b}`, "R L'");
+  const h = harness({ alg, fixedHold: ['U', 'F'] });
+  startAt(h, SOLVED);
+  h.turn(b);
+  h.turn(a, { gap: CUE_WINDOW_MS - 1 });
+  h.advance(CUE_WINDOW_MS * 10);
+  assert.equal(h.count('off'), 0, 'L\' then R across x x sounded off');
+  assert.equal(h.engine.state.position, 4);
+  for (const q of rest) h.turn(q);
+  assert.equal(h.count('done'), 1);
+});
+
 // ---- WI-6: off the plan, back on, lost turns -----------------------------------------------------------
 
 test('every wrong turn at every settled position sounds off once, after the window and not before', () => {
