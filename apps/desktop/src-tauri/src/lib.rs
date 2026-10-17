@@ -1254,6 +1254,12 @@ fn mcp_socket_path_from(
     dir.join(SOCKET)
 }
 
+/// Whether this build updates itself: every built release, and a `tauri dev` run only on request.
+#[cfg_attr(not(desktop), allow(dead_code))]
+fn self_update_enabled(dev_run: bool, asked: bool) -> bool {
+    !dev_run || asked
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -1361,11 +1367,28 @@ pub fn run() {
     // before it is ever unpacked, which is the whole reason this is safe to ship: the endpoint is
     // plain HTTPS on a public URL, and a signature nobody but the maintainer can produce is what
     // stops that URL from being an install-anything hole.
+    //
+    // NOT IN A `tauri dev` RUN unless CUBUS_UPDATER=1 asks for it (owner, 2026-10-17). A dev run is
+    // built from source, so every published release looks newer or equal to it, and "Install and
+    // restart" would overwrite a build somebody is working on with a download. The plugin is left
+    // unregistered, so nothing can reach it, and the page is told so (`NO_SELF_UPDATE_FLAG` in
+    // `apps/web/lib/update-ui.js`) — the plugin's global API is injected at BUILD time from its
+    // crate, so its presence on `window.__TAURI__` says nothing about whether it was registered.
     #[cfg(desktop)]
     let builder = builder
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init());
+    #[cfg(desktop)]
+    let builder =
+        if self_update_enabled(tauri::is_dev(), std::env::var_os("CUBUS_UPDATER").is_some()) {
+            builder.plugin(tauri_plugin_updater::Builder::new().build())
+        } else {
+            builder.plugin(
+                tauri::plugin::Builder::<tauri::Wry>::new("cubus-no-self-update")
+                    .js_init_script("window.__CUBUS_NO_SELF_UPDATE__ = true;")
+                    .build(),
+            )
+        };
 
     // Android's BLE is Kotlin (src/android_ble.rs); every other platform's is btleplug in-process
     // and needs no plugin at all. The nine command NAMES are identical either way, which is what
@@ -1417,6 +1440,28 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod self_update_tests {
+    use super::self_update_enabled;
+
+    #[test]
+    fn a_dev_run_does_not_update_itself_unless_asked() {
+        assert!(
+            !self_update_enabled(true, false),
+            "a dev run must not offer a release over the source build"
+        );
+        assert!(
+            self_update_enabled(true, true),
+            "CUBUS_UPDATER=1 turns it on in a dev run"
+        );
+        assert!(
+            self_update_enabled(false, false),
+            "a built release updates itself"
+        );
+        assert!(self_update_enabled(false, true));
+    }
 }
 
 #[cfg(test)]

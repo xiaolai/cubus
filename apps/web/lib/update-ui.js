@@ -30,11 +30,19 @@ import { isTauri } from './window-chrome.js';
  * Memoised on first use, which is after boot by construction: the Settings row and the launch
  * check are both reached from a rendered screen.
  */
+/**
+ * The global a `tauri dev` run sets to say it does not update itself (`self_update_enabled` in the
+ * desktop shell's lib.rs, owner 2026-10-17): a source build is not something a release should be
+ * installed over. Where it is set there is no updater, so no launch check, no Settings row, and the
+ * privacy line says nothing leaves the device — which, on that run, is true.
+ */
+export const NO_SELF_UPDATE_FLAG = '__CUBUS_NO_SELF_UPDATE__';
+
 let updaterInstance;
 export function appUpdater() {
   if (updaterInstance !== undefined) return updaterInstance;
   updaterInstance =
-    isTauri && isDesktopHost() && selfUpdateSupported(hostPlatform())
+    isTauri && isDesktopHost() && selfUpdateSupported(hostPlatform()) && window[NO_SELF_UPDATE_FLAG] !== true
       ? makeUpdater({
           api: window.__TAURI__,
           storage: (() => {
