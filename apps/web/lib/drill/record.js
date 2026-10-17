@@ -11,7 +11,9 @@
 //
 // and each rep in short keys, because a rep is written thousands of times and parsed on every write:
 //
-//   t   when it finished: the injected clock's epoch ms, a positive safe integer
+//   t   when it finished: the injected clock's epoch ms, a positive safe integer — never earlier than any rep
+//       on record, and never the same as another algorithm's, so across the record the stamps are the order
+//       the reps were written in (`add`)
 //   c   clean: the engine's own verdict — no `off` excursion, no turn beyond the algorithm's (a wrong turn
 //       taken back inside the cue window counts: the rep was not the algorithm alone), no lost turn
 //   l   a turn was LOST during the rep (the engine went `uncertain`): the reports were not the turns made,
@@ -176,14 +178,15 @@ const serialize = (algs) => JSON.stringify({
 
 /**
  * Apply both caps: the newest PER_ALG_CAP reps of each algorithm, then the newest TOTAL_CAP overall, the
- * oldest dropped first across every algorithm (ties by the order they were written). An algorithm left with
- * no reps leaves the record.
+ * oldest dropped first across every algorithm. `add` stamps every rep later than every rep of another
+ * algorithm before it, so the stamps are the write order and a tie is only ever inside one algorithm's list,
+ * where the later in the list was written later. An algorithm left with no reps leaves the record.
  */
 function capped(algs) {
   const perAlg = new Map([...algs].map(([id, reps]) => [id, reps.slice(-PER_ALG_CAP)]));
   const all = [...perAlg].flatMap(([id, reps]) => reps.map((rep, i) => ({ id, i, at: rep.at })));
   if (all.length <= TOTAL_CAP) return perAlg;
-  // Newest first by time; among equal times, later in its list is newer.
+  // Newest first by time; among equal times (one algorithm's), later in its list is newer.
   all.sort((a, b) => b.at - a.at || b.i - a.i);
   const keep = new Set(all.slice(0, TOTAL_CAP).map(({ id, i }) => `${i}\u0000${id}`));
   const out = new Map();
@@ -284,8 +287,9 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY }) {
      * Add one finished rep (`repFromDone`'s output) to an algorithm, stamped with the clock now.
      *
      * Returns `{ saved: true }`, or `{ saved: false, error }` when the record was refused (and so left
-     * untouched), the write threw, or the text read back is not the text written. A rep that breaks the
-     * format THROWS: that is the caller's defect, not the device's.
+     * untouched), the clock is behind the record (`clock-behind`, also untouched), the write threw, or the
+     * text read back is not the text written. A rep that breaks the format THROWS: that is the caller's
+     * defect, not the device's.
      */
     add(id, rep) {
       if (!isId(id)) throw new Error(`practice record: ${JSON.stringify(id)} is not a ledger id`);
@@ -299,12 +303,29 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY }) {
         throw e;
       }
       const prior = algs.get(id) ?? [];
-      // A clock that went backwards (the device's time was changed) would store reps out of order, which the
-      // reader refuses. Refused here instead, before anything is written, rather than reordered or restamped.
-      if (prior.length && at < prior.at(-1).at) {
+      // THE STAMPS ARE THE WRITE ORDER, across the whole record — the cap drops the oldest rep of all, so a stamp
+      // is only an age if each is later than every one before it. A clock that went backwards (the device's
+      // time was changed) would break that: the reader refuses one algorithm's reps out of order, and the cap
+      // would drop a rep just made as the oldest of all while `add` said it was saved. Refused instead, before
+      // anything is written, rather than reordered or restamped. Each list is oldest first, so its last rep is
+      // its newest.
+      const newest = [...algs].map(([other, reps]) => ({ other, at: reps.at(-1).at }));
+      const latest = newest.reduce((m, n) => Math.max(m, n.at), -Infinity);
+      if (at < latest) {
+        const whose = newest.find((n) => n.at === latest).other;
         return Object.freeze({
           saved: false,
-          error: new PracticeRecordError('clock-behind', `the clock reads earlier than ${id}'s last rep, so the rep was not saved`),
+          error: new PracticeRecordError('clock-behind', `the clock reads earlier than the newest rep on record (${whose}'s), so the rep was not saved`),
+        });
+      }
+      // Two reps in one millisecond are ordered by their place in the list — but only within ONE algorithm;
+      // across two, which came first could not be kept. So a rep at the time of another algorithm's newest is
+      // refused too, and every tie on record is inside one list, where the cap's tie-break is the write order.
+      const tied = newest.find((n) => n.at === at && n.other !== id);
+      if (tied) {
+        return Object.freeze({
+          saved: false,
+          error: new PracticeRecordError('clock-behind', `the clock reads the same time as ${tied.other}'s newest rep, so which came first could not be kept and the rep was not saved`),
         });
       }
       const next = capped(new Map([...algs, [id, [...prior, full]]]));

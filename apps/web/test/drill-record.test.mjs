@@ -312,6 +312,62 @@ test('a clock behind the last rep refuses the rep rather than reordering the rec
   assert.equal(storage.raw(), text);
 });
 
+test('a clock behind ANY rep on record refuses the rep — a rep said to be saved is always on record', () => {
+  // Fifty algorithms full to the per-algorithm cap, stamped 1_000_001 to 1_005_000, and a rep for an algorithm
+  // with none yet: checking the clock against that algorithm alone found nothing to be behind, and the cap
+  // then dropped the new rep as the oldest of all — while `add` said it was saved.
+  const ids = Array.from({ length: TOTAL_CAP / PER_ALG_CAP }, (_, i) => `alg-${i}`);
+  const text = storedText(ids.map((id) => [id, PER_ALG_CAP]));
+  for (const [when, at] of [['behind every rep', 999_999], ['behind the newest rep only', 1_004_000]]) {
+    const storage = fakeStorage(text);
+    const out = openPracticeRecord({ storage, now: () => at }).add('new', rep());
+    assert.deepEqual([out.saved, out.error?.code], [false, 'clock-behind'], `${when}: not refused`);
+    assert.match(out.error.message, /alg-49/, `${when}: the message does not name the newest rep's algorithm`);
+    assert.deepEqual([storage.writes, storage.raw()], [0, text], `${when}: the record was written`);
+  }
+  // Ahead of every rep: saved, and the rep it says it saved is read back.
+  const storage = fakeStorage(text);
+  const record = openPracticeRecord({ storage, now: () => 1_005_001 });
+  assert.equal(record.add('new', rep()).saved, true);
+  assert.equal(record.reps('new').length, 1, 'said saved, and not kept');
+});
+
+test('two algorithms never share a time on record, so the oldest-first cap drops reps in the order they were made', () => {
+  const storage = fakeStorage();
+  let t = 10_000;
+  const record = openPracticeRecord({ storage, now: () => t });
+  assert.equal(record.add('y', rep()).saved, true);
+  // A clock that has not moved: a second rep of the SAME algorithm is told from the first by its place in the
+  // list, which is the order they were written...
+  assert.equal(record.add('y', rep()).saved, true);
+  // ...but another algorithm's rep at that time could not be told from y's: refused, loudly, and nothing written.
+  const text = storage.raw();
+  const tie = record.add('x', rep());
+  assert.deepEqual([tie.saved, tie.error?.code], [false, 'clock-behind']);
+  assert.match(tie.error.message, /same time as y's newest rep/);
+  assert.equal(storage.raw(), text);
+  t += 1;
+  assert.equal(record.add('x', rep()).saved, true);
+  const times = [...record.read()].flatMap(([id, reps]) => reps.map((r) => `${r.at}`)).filter((at, i, all) => all.indexOf(at) !== i);
+  assert.deepEqual(times, ['10000'], 'only y\'s own two reps share a time');
+  // And within one algorithm the list order IS the write order, which the cap keeps: of y's two reps at
+  // 10_000, the first written is dropped first. Full to the cap with newer reps, then one more added.
+  const full = JSON.parse(storage.raw());
+  let u = 20_000;
+  for (let i = 0, room = TOTAL_CAP - 3; room > 0; i++) {
+    const n = Math.min(PER_ALG_CAP, room);
+    full.algs[`fill-${i}`] = Array.from({ length: n }, () => ({ t: (u += 1), c: true, l: false, ms: 900, r: null, n: 6, p: 0, h: 7 }));
+    room -= n;
+  }
+  full.algs.y[0].ms = 111;
+  full.algs.y[1].ms = 222;
+  const near = fakeStorage(JSON.stringify(full));
+  const later = openPracticeRecord({ storage: near, now: () => u + 1 });
+  assert.equal(later.add('z', rep()).saved, true);
+  assert.deepEqual(later.reps('y').map((r) => r.ms), [222], 'the cap dropped the later of two reps made in one millisecond');
+  assert.equal(later.reps('x').length, 1);
+});
+
 test('a malformed rep from the caller throws, and a hostile id is a key like any other', () => {
   const storage = fakeStorage();
   const record = open(storage);
