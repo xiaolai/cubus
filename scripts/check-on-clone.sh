@@ -115,6 +115,16 @@ run() {
   printf '\n=== %s ===\n' "$name"
   # shellcheck disable=SC2086  # a space-separated list of tool names, split on purpose
   for tool in $tools; do
+    # `python3:PIL` is a MODULE the interpreter must import, which no PATH lookup can see: without this, a
+    # machine with python3 and no Pillow crashed the icon check and reported it FAILED rather than skipped.
+    if [ "${tool#*:}" != "$tool" ]; then
+      if ! command -v "${tool%%:*}" >/dev/null 2>&1 || ! "${tool%%:*}" -c "import ${tool#*:}" >/dev/null 2>&1; then
+        echo "  SKIPPED — needs ${tool#*:} for ${tool%%:*}, which is not installed"
+        skipped+=("$name (needs ${tool#*:} for ${tool%%:*})")
+        return 0
+      fi
+      continue
+    fi
     if ! command -v "$tool" >/dev/null 2>&1; then
       echo "  SKIPPED — needs $tool, which is not installed"
       skipped+=("$name (needs $tool)")
@@ -243,7 +253,7 @@ run "cube-scanner — check"  pnpm                   pnpm --filter cube-scanner 
 run "gan-driver — check"    pnpm                   pnpm --filter gan-driver check
 run "vendored bundles"      pnpm                   bundles
 run "cubus-web — test"      pnpm                   pnpm --filter cubus-web test
-run "icons"                 "python3 rsvg-convert" python3 scripts/verify-icons.py
+run "icons"                 "python3 python3:PIL rsvg-convert" python3 scripts/verify-icons.py
 
 printf '\n'
 if [ "$fail" -gt 0 ]; then

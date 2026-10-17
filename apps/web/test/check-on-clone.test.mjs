@@ -182,6 +182,25 @@ test('a check whose tool is missing is reported SKIPPED, and the run is not a pa
   }
 });
 
+// A python MODULE is a tool too, and no PATH lookup can see one: with python3 present and Pillow absent, the
+// icon check used to run, crash on its import and report FAILED — a missing tool read as a broken repo.
+test('a check whose python module is missing is reported SKIPPED, not FAILED', () => {
+  const root = fixture();
+  try {
+    contents(root, 'original');
+    // A python3 that runs scripts but cannot import PIL, as a machine without Pillow does.
+    writeFileSync(join(root, 'bin/python3'), '#!/bin/sh\n[ "$1" = "-c" ] && exit 1\nexit 0\n', { mode: 0o755 });
+    const r = run(root);
+    assert.equal(r.status, 2, r.stdout + r.stderr);
+    assert.match(r.stdout, /=== icons ===\n {2}SKIPPED — needs PIL for python3/);
+    assert.match(r.stdout, /^ {2}icons \(needs PIL for python3\)$/m);
+    assert.doesNotMatch(r.stdout, /FAILED/, 'a missing module was reported as a failed check');
+    assert.equal(readFileSync(join(root, 'dev-docs/note.md'), 'utf8'), 'original');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // scripts/icons/ is the tracked source every icon is built from; dev-docs/design/icons/ is the
 // design kit's byte-identical copy, and nothing else keeps the two equal. This script is the one
 // place both are in view (CI never sees dev-docs), so it compares them before hiding dev-docs.
