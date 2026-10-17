@@ -248,7 +248,7 @@ test('a skipped serial refuses the time with its reason, and a cube with no cloc
     await page.evaluate((qs) => {
       for (const q of qs) window.cubusFeed.move({ notation: q, timestamp: performance.now() });
     }, per.flat());
-    assert.match(await page.evaluate(() => window.__p.time()), /^— \(this cube does not send a clock of its own\)$/);
+    assert.match(await page.evaluate(() => window.__p.time()), /^— \(a turn in this rep came without the cube’s own time\)$/);
     assert.deepEqual(errors, []);
   } finally {
     await context.close();

@@ -431,6 +431,35 @@ test('a card opened on the screen is described by its own sentence, under an id 
   }
 });
 
+// ---- a rep with one turn the cube did not time (round 2, row 22) ---------------------------------------------
+
+test('a rep where one turn came without the cube\'s own time is refused about that turn, never about the cube', async () => {
+  const { page, context, errors } = await openPractice(fixture);
+  try {
+    const rnd = lcg(222);
+    await show(page, 'sune');
+    const flat = reportsPerToken(SUNE, ORIENTATIONS[0], rnd).flat();
+    // Every report carries the cube's clock but one — what a clock-capable GAN cube sends for a move it recovered.
+    const dones = await page.evaluate(({ f, qs }) => {
+      const before = window.__p.count('done');
+      window.__p.facelets(f);
+      return qs.map((q, i) => {
+        if (i === 2) window.cubusFeed.move({ notation: q, timestamp: performance.now() });
+        else window.__p.move(q);
+        return window.__p.count('done') - before;
+      });
+    }, { f: toFacelets(randomStart(rnd)), qs: flat });
+    assert.deepEqual(dones, atLast(flat.length), 'precondition: the rep completed at its last report');
+    const time = await page.evaluate(() => window.__p.time());
+    // What must NOT happen: a cube that sent its clock for every other turn said to have no clock of its own.
+    assert.doesNotMatch(time, /does not send a clock/, `the time blames the cube: ${time}`);
+    assert.equal(time, '— (a turn in this rep came without the cube’s own time)');
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
 // ---- the Settings row (row 29) -----------------------------------------------------------------------------
 
 test('the Settings stepper keeps keyboard focus on a control when a press reaches either bound', async () => {

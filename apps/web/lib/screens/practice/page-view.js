@@ -37,11 +37,13 @@ export function chipsHtml(row, triggers, esc) {
   </span>`).join('');
 }
 
-/** Why a rep has no time, in words — every refusal `lib/drill/timing.js` can give. */
+/** Why a rep has no time, in words — every refusal `lib/drill/timing.js` can give. Each says what the rep lacked,
+ *  never what the cube is: `no-cube-clock` is one report in the span without the cube's time, which a cube that times
+ *  every other turn also sends for a move it recovered. */
 const REFUSAL_WORDS = Object.freeze({
   [TIME_REFUSAL.ONE_TURN]: 'one turn has no time between turns',
   [TIME_REFUSAL.STREAM_GAP]: 'a turn went missing on the way from the cube',
-  [TIME_REFUSAL.NO_CUBE_CLOCK]: 'this cube does not send a clock of its own',
+  [TIME_REFUSAL.NO_CUBE_CLOCK]: 'a turn in this rep came without the cube’s own time',
   [TIME_REFUSAL.CLOCK_RESET]: 'the cube’s clock went backwards',
   [TIME_REFUSAL.NO_SPAN]: 'the first and last turn carried one time',
 });
