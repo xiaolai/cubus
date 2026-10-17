@@ -248,34 +248,41 @@ export function methodById(id) {
   return BY_ID[id];
 }
 
+const refuse = (entry, why) => { throw new Error(`methods: entry "${entry.id}" ${why}`); };
+
+/** What each engine requires of an entry beyond the fields every entry has, by engine name. */
+const ENGINE_CHECKS = Object.freeze(Object.assign(Object.create(null), {
+  'two-phase': (entry) => {
+    if (entry.method !== null || entry.stages.length !== 0) refuse(entry, 'runs the two-phase solver but declares a method or stages');
+  },
+  // A method is a spec the engine can build: rungs for every declared stage, a known route, and a proof.
+  // That the BUILT stages are the declared ones is `methodOf`'s check, where they are built.
+  method: (entry) => {
+    if (!entry.method || entry.stages.length === 0) refuse(entry, 'runs the method engine with no stages');
+    const { rungs, lastLayer } = entry.method;
+    if (!['app', 'course'].includes(lastLayer)) refuse(entry, `has unknown last-layer route "${lastLayer}"`);
+    for (const stage of entry.stages) {
+      if (!Number.isInteger(rungs?.[stage])) refuse(entry, `names no rung for its "${stage}" stage`);
+    }
+    if (entry.proof.length === 0) refuse(entry, 'declares no proof');
+  },
+}));
+
 /** An entry with every field, a known level, and an engine that matches its stages. Throws on the first
  *  defect. Run over `METHODS` when this module loads; exported for the test that feeds it bad entries. */
 export function checkEntry(entry) {
   for (const field of ENTRY_FIELDS) {
-    if (!Object.hasOwn(entry, field)) throw new Error(`methods: entry "${entry.id}" declares no "${field}"`);
+    if (!Object.hasOwn(entry, field)) refuse(entry, `declares no "${field}"`);
   }
-  if (!LEVELS.includes(entry.level)) throw new Error(`methods: entry "${entry.id}" has unknown level "${entry.level}"`);
-  if (!['two-phase', 'method'].includes(entry.engine)) throw new Error(`methods: entry "${entry.id}" has unknown engine "${entry.engine}"`);
-  if (entry.engine === 'method' && (!entry.method || entry.stages.length === 0)) {
-    throw new Error(`methods: entry "${entry.id}" runs the method engine with no stages`);
-  }
-  // A method is a spec the engine can build: rungs for every declared stage, and a known route. That the
-  // BUILT stages are the declared ones is `methodOf`'s check, where they are built.
-  if (entry.engine === 'method') {
-    const { rungs, lastLayer } = entry.method;
-    if (!['app', 'course'].includes(lastLayer)) throw new Error(`methods: entry "${entry.id}" has unknown last-layer route "${lastLayer}"`);
-    for (const stage of entry.stages) {
-      if (!Number.isInteger(rungs?.[stage])) throw new Error(`methods: entry "${entry.id}" names no rung for its "${stage}" stage`);
-    }
-  }
-  if (entry.engine === 'two-phase' && (entry.method !== null || entry.stages.length !== 0)) {
-    throw new Error(`methods: entry "${entry.id}" runs the two-phase solver but declares a method or stages`);
-  }
-  if (entry.engine === 'method' && entry.proof.length === 0) {
-    throw new Error(`methods: entry "${entry.id}" declares no proof`);
-  }
+  if (!LEVELS.includes(entry.level)) refuse(entry, `has unknown level "${entry.level}"`);
+  // A key is converted to a string, so `['method']` would find the method engine's check: only a string
+  // that names an engine is one.
+  const named = typeof entry.engine === 'string' && Object.hasOwn(ENGINE_CHECKS, entry.engine);
+  if (!named) refuse(entry, `has unknown engine "${String(entry.engine)}"`);
+  const checkEngine = ENGINE_CHECKS[entry.engine];
+  checkEngine(entry);
   for (const key of ['frame', 'executable', 'displayed']) {
-    if (!Object.hasOwn(entry.holds, key)) throw new Error(`methods: entry "${entry.id}" holds declare no "${key}"`);
+    if (!Object.hasOwn(entry.holds, key)) refuse(entry, `holds declare no "${key}"`);
   }
   return entry;
 }
