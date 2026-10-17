@@ -45,11 +45,12 @@
 // rather than absent — `routeSentence()` reads an absent field as false today, and a route record
 // that says what it is cannot be misread if that ever changes.
 
-import { SOLVED, applyAlg, compose, inverseOf, toFacelets } from './cube-pieces.js';
+import { SOLVED, compose, inverseOf, toFacelets } from './cube-pieces.js';
+import { routeState } from './patterns.js';
 import { movesIn } from './solver-engine.js';
 
-/** The cubie state a state pattern names. Derived from its algorithm, like the picture it draws. */
-export const pictureState = (pattern) => applyAlg(SOLVED, pattern.alg);
+/** The cubie state a state pattern names. Derived from its route, exactly as the picture it draws is. */
+export const pictureState = (pattern) => routeState(pattern.alg);
 
 /**
  * The cube whose SOLUTION is the way from `facelets` to `pattern` — the identity above, once.

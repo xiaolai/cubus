@@ -17,7 +17,7 @@
 //   string naming no destination, which `stageTargetNow()` resets to `solved` with a console
 //   warning — so the press would silently un-choose whatever picture was on.
 //
-//   And a press that does not RECORD. The fifteen pictures the menu does not hold are chosen here
+//   And a press that does not RECORD. The thirty-four pictures the menu does not hold are chosen here
 //   and nowhere else; without the write, a shape found on this screen could never make its way into
 //   the menu, and the recency would only ever shuffle the five it started with.
 //
@@ -160,8 +160,8 @@ test('the cube screen\'s menu holds five pictures and one way through to the res
     const menu = win.document.querySelector('.pattern-menu');
     assert.ok(menu, 'the menu did not open');
     const pictures = [...menu.querySelectorAll('[role="menuitemradio"]')];
-    // FIVE, and that bound is what let the catalogue grow to twenty. A menu is a popover dropped
-    // under a corner button and capped to the stage's height; twenty pictures scrolling inside that
+    // FIVE, and that bound is what let the catalogue grow to thirty-nine. A menu is a popover dropped
+    // under a corner button and capped to the stage's height; thirty-nine pictures scrolling inside that
     // cap is a grid wearing a menu's clothes.
     assert.equal(pictures.length, RECENT_SHOWN, `the menu offered ${pictures.length} pictures`);
     assert.ok(pictures.every((b) => b.querySelector('svg')), 'a picture was offered as text');

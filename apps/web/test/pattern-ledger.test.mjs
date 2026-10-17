@@ -17,9 +17,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { MOVE_NAMES, SOLVED, applyAlg, applyMove, movesOf } from '../lib/cube-pieces.js';
+import { run } from '../lib/cube-moves.js';
 import { toFacelets } from '../lib/two-phase.js';
-import { FACE_ORDER, canonicalDesign, canonicalLook, symmetryOrder, verify } from '../bench/cube-look.mjs';
-import { LEDGER_DEPTH, SET_PATTERNS, STATE_PATTERNS } from './fixtures/pattern-ledger.mjs';
+import { FACE_ORDER, canonicalDesign, canonicalLook, symmetryOrder, untwisted, verify } from '../bench/cube-look.mjs';
+import { cubejsPicture } from './fixtures/cubejs-picture.mjs';
+import { LEDGER_DEPTH, SET_PATTERNS, SLICE_DEPTH, STATE_PATTERNS } from './fixtures/pattern-ledger.mjs';
 import { SOLVER_PHASES } from '../bench/solver-phases.mjs';
 import { PREDICATE, fullCubeDistance, goalBall, meetInTheMiddle } from '../bench/solve-to-state-oracle.mjs';
 import { TARGETS } from '../lib/stage-targets.js';
@@ -32,7 +34,55 @@ test('the geometry the ledger rests on checks out against the cube model', () =>
   // cube symmetric under all of them, and every one of the 18 moves PREDICTED from the geometry and
   // matching what cube-pieces.js and two-phase.js produce. If this fails, nothing below means anything.
   const got = verify();
-  assert.deepEqual(got, { stickers: 54, rotations: 24, symmetries: 48, movesChecked: 18 });
+  assert.deepEqual(got, { stickers: 54, rotations: 24, symmetries: 48, movesChecked: 18, shellTurns: 24 });
+});
+
+// ---- routes, in the two metrics and the book's ----------------------------------------------------
+
+/** The cube a route in the child's notation reaches from white up, green in front, relative to its
+ *  centres — face turns and slices alike, through the app's one interpreter. */
+const reached = (alg) => run(alg, ['U', 'F'], SOLVED).state;
+/** Every route a row records, each with what it claims. */
+const routesOf = (row) => [
+  ...(row.alg === null ? [] : [{ kind: 'face', alg: row.alg }]),
+  ...(row.sliceAlg === null ? [] : [{ kind: 'slice', alg: row.sliceAlg }]),
+  ...(row.book === undefined ? [] : [{ kind: 'book', alg: row.book }]),
+];
+/** The route a row's measurements were taken on: face turns when there are any, then slices, then the book. */
+const firstRoute = (row) => row.alg ?? row.sliceAlg ?? row.book;
+const rowOf = (name) => STATE_PATTERNS.find((r) => r.name === name);
+
+test('the twist measure cuts a twisted piece and nothing else — the three cases it was widened around', () => {
+  // `untwisted` (bench/cube-look.mjs) is the twist cut's measure. It read "every piece oriented against
+  // the CENTRES" until 2026-10-17, and so cut Six Spots, a solved shell turned against its centres.
+  // Each claim of its comment, held here.
+  const sixSpots = reached("M E M' E'");
+  // What the widening is FOR, asserted on the picture rather than through the measure: every face shows
+  // one colour round a different centre, so no sticker anywhere stands out from its block.
+  const f = toFacelets(sixSpots);
+  for (let k = 0; k < 6; k++) {
+    const face = f.slice(k * 9, k * 9 + 9);
+    assert.equal(new Set([...face].filter((_, i) => i !== 4)).size, 1, `Six Spots: face ${k} is not one colour round its centre`);
+    assert.notEqual(face[4], face[0], `Six Spots: face ${k}'s centre matches its ring`);
+  }
+  assert.equal(untwisted(sixSpots), true, 'Six Spots is a turned shell, not a twisted piece');
+  assert.equal(untwisted(applyAlg(SOLVED, "U D' R L' F B' U D'")), true, 'and by its face-turn route too');
+  assert.ok(sixSpots.co.some((v) => v !== 0), 'precondition: against the centres it DOES read as turned — the old measure');
+  // What it must still cut. A cube with two corners turned in place and every other piece home.
+  const twoCorners = { cp: [...SOLVED.cp], co: [1, 2, 0, 0, 0, 0, 0, 0], ep: [...SOLVED.ep], eo: [...SOLVED.eo] };
+  assert.equal(untwisted(twoCorners), false, 'two corners turned in place are twisted, whatever the shell does');
+  const twoEdges = { cp: [...SOLVED.cp], co: [...SOLVED.co], ep: [...SOLVED.ep], eo: [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] };
+  assert.equal(untwisted(twoEdges), false, 'two edges flipped in place are twisted');
+  assert.equal(untwisted(applyAlg(SOLVED, "U R2 F B R B2 R U2 L B2 R U' D' R2 F R' L B2 U2 F2")), false,
+    'the superflip flips all twelve edges, and no turn of the shell unflips them');
+  // And everything the old measure kept, this keeps: the identity is one of the shell turns.
+  const rnd = lcg(0x51);
+  for (let i = 0; i < 300; i++) {
+    let st = SOLVED;
+    for (let k = 0; k < 12; k++) st = applyMove(st, ['U2', 'D2', 'R2', 'L2', 'F2', 'B2', 'U', "D'"][Math.floor(rnd() * 8)]);
+    assert.ok(st.co.every((v) => v === 0) && st.eo.every((v) => v === 0), 'precondition: an oriented cube');
+    assert.equal(untwisted(st), true, 'a cube oriented against its centres must stay untwisted');
+  }
 });
 
 /** The cube that undoes this one — needed to check the ledger's family key. */
@@ -43,7 +93,7 @@ function inverseState(st) {
   return { cp, co, ep, eo };
 }
 const familyKey = (alg) => {
-  const cube = applyAlg(SOLVED, alg);
+  const cube = reached(alg);
   return [canonicalDesign(toFacelets(cube)), canonicalDesign(toFacelets(inverseState(cube)))].sort()[0];
 };
 
@@ -55,10 +105,11 @@ test('each row is a FAMILY: its variants are the same pattern, and no two rows a
   const keys = new Set();
   let rotationClasses = 0;
   for (const row of STATE_PATTERNS) {
-    const key = familyKey(row.alg);
-    assert.ok(!keys.has(key), `${row.alg}: two rows are the same pattern up to mirror and inverse`);
+    const key = familyKey(firstRoute(row));
+    assert.ok(!keys.has(key), `${firstRoute(row)}: two rows are the same pattern up to mirror and inverse`);
     keys.add(key);
     rotationClasses += 1 + row.variants.length;
+    if (row.variants.length) assert.notEqual(row.moves, null, `${firstRoute(row)}: face-turn variants on a row with no face-turn route`);
     for (const v of row.variants) {
       assert.equal(familyKey(v), key, `${row.alg}: variant ${v} is a different pattern`);
       assert.ok(movesOf(v).length >= row.moves,
@@ -73,25 +124,82 @@ test('each row is a FAMILY: its variants are the same pattern, and no two rows a
     'no row has any variant — either the dedup did nothing or the field was dropped');
 });
 
-test('every ledger row reaches the picture it claims, in the number of moves it claims', () => {
+test('every ledger row reaches the picture it claims, by every route it records, in the moves it claims', () => {
   assert.ok(STATE_PATTERNS.length > 0, 'an empty ledger passes every other assertion here');
   for (const row of STATE_PATTERNS) {
-    const facelets = toFacelets(applyAlg(SOLVED, row.alg));
-    assert.equal(canonicalLook(facelets), row.look,
-      `${row.alg}: the maneuver does not reach the picture this row records`);
-    assert.equal(movesOf(row.alg).length, row.moves,
-      `${row.alg}: recorded as ${row.moves} moves`);
-    assert.ok(row.moves <= LEDGER_DEPTH,
-      `${row.alg}: ${row.moves} moves is beyond the search's own radius of ${LEDGER_DEPTH}`);
+    const routes = routesOf(row);
+    assert.ok(routes.length > 0, `${row.look}: a row with no route to its picture`);
+    for (const { kind, alg } of routes) {
+      assert.equal(canonicalLook(toFacelets(reached(alg))), row.look,
+        `${alg} (${kind}): the maneuver does not reach the picture this row records`);
+      // And through cubejs, which shares no code with the interpreter: a slice convention that disagreed
+      // between the two would be a picture the app draws and no cube in a hand can make.
+      assert.equal(canonicalLook(cubejsPicture(alg)), row.look, `${alg} (${kind}): cubejs reaches a different picture`);
+    }
+    // A metric and its route come together or not at all.
+    assert.equal(row.moves === null, row.alg === null, `${firstRoute(row)}: face moves and face route disagree about existing`);
+    assert.equal(row.sliceMoves === null, row.sliceAlg === null, `${firstRoute(row)}: slice moves and slice route disagree about existing`);
+    if (row.alg !== null) {
+      assert.equal(movesOf(row.alg).length, row.moves, `${row.alg}: recorded as ${row.moves} moves`);
+      assert.ok(row.moves <= LEDGER_DEPTH,
+        `${row.alg}: ${row.moves} moves is beyond the search's own radius of ${LEDGER_DEPTH}`);
+    }
+    if (row.sliceAlg !== null) {
+      assert.equal(row.sliceAlg.trim().split(/\s+/).length, row.sliceMoves, `${row.sliceAlg}: recorded as ${row.sliceMoves} moves`);
+      assert.ok(row.sliceMoves <= SLICE_DEPTH, `${row.sliceAlg}: beyond the slice walk's radius of ${SLICE_DEPTH}`);
+      // A slice route can only be SHORTER: every face turn is a move in that metric too.
+      if (row.moves !== null) assert.ok(row.sliceMoves <= row.moves, `${row.sliceAlg}: longer than the face route ${row.alg}`);
+      assert.match(row.sliceAlg, /^([URFDLBMES](2|')?)( [URFDLBMES](2|')?)*$/, `${row.sliceAlg}: not spelled as a child reads it`);
+    }
+    // Every face route within the slice radius is a slice route of the same length, so a row with a
+    // short face route and no slice route means the slice walk lost a cube.
+    if (row.moves !== null && row.moves <= SLICE_DEPTH) {
+      assert.ok(row.sliceMoves !== null && row.sliceMoves <= row.moves, `${row.alg}: the slice walk did not see a ${row.moves}-move picture`);
+    }
+    // A row neither walk reached is a famous one, admitted by name on the book's route.
+    if (row.alg === null && row.sliceAlg === null) {
+      assert.ok(row.name && row.book, `${row.look}: a row no walk reached must be a named book picture`);
+    }
   }
+});
+
+test('the slice minima are minima: no shorter sequence of face and slice turns reaches the picture', () => {
+  // An INDEPENDENT walk: cubejs, with real centres and its own slices, every sequence of up to three of
+  // the 27 turns. It shares nothing with the generator's walk but `canonicalLook`, whose geometry the
+  // first case in this file verifies. So a row recorded at k <= 4 moves must be absent below k here, and
+  // a row at k <= 3 present at exactly k — unless every shorter route twists a piece, which the
+  // generator's own cut allows and this then says.
+  const TURNS = ['U', 'R', 'F', 'D', 'L', 'B', 'M', 'E', 'S'].flatMap((f) => [f, `${f}'`, `${f}2`]);
+  const shortest = new Map();
+  const walk = (seq) => {
+    if (seq.length) {
+      const look = canonicalLook(cubejsPicture(seq.join(' ')));
+      if (!shortest.has(look) || shortest.get(look) > seq.length) shortest.set(look, seq.length);
+    }
+    if (seq.length === 3) return;
+    for (const t of TURNS) if (!seq.length || seq.at(-1)[0] !== t[0]) walk([...seq, t]);
+  };
+  walk([]);
+  let checked = 0;
+  for (const row of STATE_PATTERNS) {
+    if (row.sliceMoves === null || row.sliceMoves > 4) continue;
+    const seen = shortest.get(row.look);
+    if (row.sliceMoves === 4) assert.equal(seen, undefined, `${row.sliceAlg}: cubejs reaches it in ${seen}`);
+    else assert.equal(seen, row.sliceMoves, `${row.sliceAlg}: recorded at ${row.sliceMoves}, cubejs's shortest is ${seen}`);
+    checked++;
+  }
+  assert.ok(checked >= 20, `only ${checked} rows were in reach of this check`);
+  assert.equal(rowOf('Six Spots')?.sliceMoves, 4, 'Six Spots is four slice moves — the case this metric exists for');
 });
 
 test('every recorded measurement is reproducible from the picture', () => {
   for (const row of STATE_PATTERNS) {
-    const facelets = toFacelets(applyAlg(SOLVED, row.alg));
-    assert.equal(symmetryOrder(facelets), row.order, `${row.alg}: symmetry order`);
-    assert.equal(24 % row.order, 0, `${row.alg}: an order of ${row.order} does not divide 24`);
-    assert.ok(row.order >= 2, `${row.alg}: order 1 is not a pattern and must not be in the ledger`);
+    const facelets = toFacelets(reached(firstRoute(row)));
+    assert.equal(symmetryOrder(facelets), row.order, `${firstRoute(row)}: symmetry order`);
+    assert.equal(24 % row.order, 0, `${firstRoute(row)}: an order of ${row.order} does not divide 24`);
+    assert.ok(row.order >= 2, `${firstRoute(row)}: order 1 is not a pattern and must not be in the ledger`);
+    // The order cut, held: below four views only a book picture, kept by name.
+    if (row.order < 4) assert.ok(row.name, `${firstRoute(row)}: order ${row.order} is below the cut and is not a book picture`);
 
     let wrong = 0, blank = 0;
     for (let k = 0; k < 6; k++) {
@@ -99,9 +207,9 @@ test('every recorded measurement is reproducible from the picture', () => {
       for (const ch of face) if (ch !== FACE_ORDER[k]) wrong++;
       if (new Set(face).size === 1) blank++;
     }
-    assert.equal(wrong, row.wrong, `${row.alg}: stickers reading wrong`);
-    assert.equal(blank, row.blank, `${row.alg}: faces showing one colour`);
-    assert.ok(wrong > 0, `${row.alg}: a solved cube is not a pattern`);
+    assert.equal(wrong, row.wrong, `${firstRoute(row)}: stickers reading wrong`);
+    assert.equal(blank, row.blank, `${firstRoute(row)}: faces showing one colour`);
+    assert.ok(wrong > 0, `${firstRoute(row)}: a solved cube is not a pattern`);
   }
 });
 
@@ -123,7 +231,7 @@ test('the three independently proved minima appear at exactly those lengths', ()
   }
 });
 
-test('every maneuver in the ledger leaves every piece turned the right way up', () => {
+test('every maneuver in the ledger leaves no piece twisted against the others', () => {
   // THE TWIST CUT, asserted rather than trusted (owner's call, 2026-09-12). A permuted piece reads as
   // design, because the whole piece moved. A twisted corner or a flipped edge shows ONE sticker of the
   // wrong colour inside an otherwise clean block, which a child cannot tell from a misscramble.
@@ -133,15 +241,14 @@ test('every maneuver in the ledger leaves every piece turned the right way up', 
   // only when NO route to it inside the radius is straight, so the rows that survive have straight
   // variants too, and this is what says so.
   //
-  // Measured against the cube's own centres, which is the only frame a child has. The fixture's header
-  // says why that matters: `canonicalLook` renames colours as it rotates, so twist is not a property of
-  // the picture, and the first version of the cut assumed it was.
+  // Measured by `untwisted`, whose own case above pins what it keeps and what it cuts. The fixture's
+  // header says why the cut is on routes: `canonicalLook` renames colours as it rotates, so twist is not
+  // a property of the picture, and the first version of the cut assumed it was. EVERY route a row
+  // records is held to it — face, slice and book — since each is something a reader may perform.
   let checked = 0;
   for (const row of STATE_PATTERNS) {
-    for (const alg of [row.alg, ...row.variants]) {
-      const s = applyAlg(SOLVED, alg);
-      assert.deepEqual([...s.co], new Array(8).fill(0), `${alg}: a corner is twisted`);
-      assert.deepEqual([...s.eo], new Array(12).fill(0), `${alg}: an edge is flipped`);
+    for (const alg of [...routesOf(row).map((r) => r.alg), ...row.variants]) {
+      assert.equal(untwisted(reached(alg)), true, `${alg}: a piece is twisted against the others`);
       checked++;
     }
   }
@@ -166,11 +273,13 @@ test("the ledger grades the oracle past the reach of the oracle's own check", ()
   const ball = goalBall(solved, 5);
   const byDepth = new Map();
   for (const row of STATE_PATTERNS) {
-    const state = applyAlg(SOLVED, row.alg);
+    const state = reached(firstRoute(row));
     const got = meetInTheMiddle(state, solved, ball, 2);
+    // A row with no face-turn route within the radius claims exactly that, and the oracle — exact to
+    // seven, so null past it — must find nothing within seven either.
     assert.equal(got, row.moves,
-      `${row.alg}: the ledger proves ${row.moves} moves and the oracle says ${got}`);
-    byDepth.set(row.moves, (byDepth.get(row.moves) ?? 0) + 1);
+      `${firstRoute(row)}: the ledger proves ${row.moves ?? `nothing within ${LEDGER_DEPTH}`} and the oracle says ${got}`);
+    if (row.moves !== null) byDepth.set(row.moves, (byDepth.get(row.moves) ?? 0) + 1);
   }
   // The corpus has to reach past five or this case is only re-checking what was already checked.
   const past = [...byDepth.entries()].filter(([d]) => d > 5).reduce((a, [, n]) => a + n, 0);
@@ -184,7 +293,7 @@ test("the ledger grades the oracle past the reach of the oracle's own check", ()
   // from the cap is a failure here, which is what makes the cap safe.
   let shallow = 0;
   for (const row of STATE_PATTERNS) {
-    if (row.moves > 5) continue;
+    if (row.moves === null || row.moves > 5) continue;
     const got = fullCubeDistance(applyAlg(SOLVED, row.alg), PREDICATE.solved, row.moves);
     assert.equal(got, row.moves,
       `${row.alg}: the ledger proves ${row.moves} moves and the full-cube oracle says ${got}`);
@@ -195,26 +304,36 @@ test("the ledger grades the oracle past the reach of the oracle's own check", ()
 
 test('the ledger spans more than one symmetry order, or the search found nothing', () => {
   // A ledger of rows all at the same order would pass every assertion above while being the output of
-  // a broken criterion. The measured distribution at depth 7 is 1 family at order 24, 13 at 8 and 59
-  // at 4; this asserts the shape rather than the exact counts, which move with the radius.
+  // a broken criterion. This asserts the shape rather than the exact counts, which move with the radius.
   const orders = new Set(STATE_PATTERNS.map((r) => r.order));
   assert.ok(orders.size >= 3, `only ${orders.size} distinct symmetry orders in the ledger`);
   assert.ok(orders.has(24), 'no picture that looks the same from every angle — the Checkerboard is one');
   // Sizes pinned, because every assertion in this file is about rows that SURVIVED. An audit showed a
   // truncated ledger passing everything: delete a family and nothing noticed. These two numbers move
   // only when the search radius or the dedup rule moves, and both are deliberate acts.
-  // 73 since the twist cut of 2026-09-12, which took 72 of the 213 pictures above the order cut; the
-  // generated fixture's header records what went and why.
-  assert.equal(STATE_PATTERNS.length, 73,
-    'the family count changed — regenerate at the same depth, or say why the number moved');
+  // 73 from the twist cut of 2026-09-12 until 2026-10-17, when three changes moved it to 209: twist
+  // measured against the other pieces (the face walk keeps 76 families, not 73), the slice walk (129
+  // families only it reaches) and the book's exceptions (4 neither walk reaches). The generated
+  // fixture's header records what went and why.
+  assert.equal(STATE_PATTERNS.length, 209,
+    'the family count changed — regenerate at the same depths, or say why the number moved');
+  assert.deepEqual(
+    [STATE_PATTERNS.filter((r) => r.moves !== null).length,
+      STATE_PATTERNS.filter((r) => r.moves === null && r.sliceMoves !== null).length,
+      STATE_PATTERNS.filter((r) => r.moves === null && r.sliceMoves === null).length],
+    [76, 129, 4], 'families by how they were reached: face walk, slice walk only, book only');
   // DISTINCT pictures, not array entries. Counting entries let a distinct rotation class disappear
   // behind a duplicated variant: set one row's `variants[0]` to its own `alg` and the array still
   // holds its full count of strings while accounting for one picture fewer. Found by audit.
-  const everyAlg = STATE_PATTERNS.flatMap((r) => [r.alg, ...r.variants]);
-  assert.equal(everyAlg.length, 141, 'the ledger no longer lists 141 maneuvers');
+  const everyAlg = STATE_PATTERNS.flatMap((r) => [...(r.alg === null ? [] : [r.alg]), ...r.variants]);
+  assert.equal(everyAlg.length, 149, 'the ledger no longer lists 149 face-turn maneuvers');
   const distinctLooks = new Set(everyAlg.map((alg) => canonicalLook(toFacelets(applyAlg(SOLVED, alg)))));
-  assert.equal(distinctLooks.size, 141,
-    `the ledger's 141 maneuvers reach only ${distinctLooks.size} distinct pictures — a class has been lost behind a duplicate`);
+  assert.equal(distinctLooks.size, 149,
+    `the ledger's 149 maneuvers reach only ${distinctLooks.size} distinct pictures — a class has been lost behind a duplicate`);
+  // The book, by name: what got in and what the twist cut still keeps out.
+  assert.deepEqual(STATE_PATTERNS.filter((r) => r.name).map((r) => r.name).sort(),
+    ['40 (4T)', 'Hello!', 'Lines', 'Opposite Corners', 'Plus/Minus', 'Six Spots', 'The Checkerboard', 'Vertical Stripes'],
+    'the famous pictures in the ledger changed');
   const maxWrong = Math.max(...STATE_PATTERNS.map((r) => r.wrong));
   assert.ok(maxWrong >= 24, `the busiest picture only has ${maxWrong} stickers wrong`);
 });

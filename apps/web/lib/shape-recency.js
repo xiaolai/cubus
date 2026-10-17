@@ -4,7 +4,7 @@
 // a five-slot favourites picker on the Shapes screen. Three reasons, and the third is the one that
 // decided it:
 //
-//   The menu draws PICTURES because "70 of the ledger's 73 patterns have none and the audience
+//   The menu draws PICTURES because "201 of the ledger's 209 patterns have none and the audience
 //   cannot read" (lib/screens/cube/pattern-menu.js). A child who cannot read a picture's name
 //   cannot manage a list of five of them either, so in practice a parent would set it once and it
 //   would be furniture from then on.

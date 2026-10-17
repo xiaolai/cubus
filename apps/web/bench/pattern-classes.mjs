@@ -18,7 +18,8 @@
 //
 // Whichever is right is a judgement about the game, not about the cube, so all three are reported.
 
-import { SOLVED, applyAlg } from '../lib/cube-pieces.js';
+import { SOLVED } from '../lib/cube-pieces.js';
+import { run } from '../lib/cube-moves.js';
 import { toFacelets } from '../lib/two-phase.js';
 import { canonicalDesign, symmetryOrder, verify } from './cube-look.mjs';
 import { STATE_PATTERNS } from '../test/fixtures/pattern-ledger.mjs';
@@ -38,11 +39,15 @@ function inverseState(s) {
 // three times. The
 // census this file exists to produce is over the rotation classes, which are the row plus its
 // variants. Found by audit, after the ledger's dedup changed underneath it.
-const ALGS = STATE_PATTERNS.flatMap((r) => [r.alg, ...r.variants]);
+// A row's FIRST route (face turns, then slices, then the book's) stands for it, because a row may have
+// no face-turn route at all since the slice walk and the book's exceptions (2026-10-17). Routes are read
+// through the app's interpreter, which takes slices; the piece model's `applyAlg` does not.
+const ALGS = STATE_PATTERNS.flatMap((r) => [r.alg ?? r.sliceAlg ?? r.book, ...r.variants]);
+const reached = (alg) => run(alg, ['U', 'F'], SOLVED).state;
 
 const rows = ALGS.map((alg) => {
   const r = { alg };
-  const state = applyAlg(SOLVED, r.alg);
+  const state = reached(r.alg);
   const f = toFacelets(state);
   const inv = toFacelets(inverseState(state));
   const design = canonicalDesign(f);
@@ -53,13 +58,13 @@ const rows = ALGS.map((alg) => {
   // clears", so it has to be the promise that is tested. Found by audit.
   // From SOLVED, not from `state` — `state` is already the alg applied once, so applying it twice
   // more ran it three times. Caught by the count coming out zero when `U2` is plainly an involution.
-  const twice = applyAlg(SOLVED, `${r.alg} ${r.alg}`);
+  const twice = reached(`${r.alg} ${r.alg}`);
   const clears = ['cp', 'co', 'ep', 'eo'].every((k) => twice[k].every((v, i) => v === SOLVED[k][i]));
   // COMPUTED, not looked up. Only the family representatives carry an `order` field in the fixture, so
   // looking it up left every expanded variant without one and the per-order table read the family counts —
   // three identical columns, which is what a census can never be. A symmetry order is a property of
   // the picture and costs 24 comparisons, so there is no reason to be fetching it.
-  const head = STATE_PATTERNS.find((x) => x.alg === r.alg);
+  const head = STATE_PATTERNS.find((x) => (x.alg ?? x.sliceAlg ?? x.book) === r.alg);
   return {
     alg: r.alg, f, design, family, selfInverse: clears,
     order: symmetryOrder(f),
@@ -93,7 +98,9 @@ console.log(`${pad('by family (mirrors and inverses)', 34)} ${num(byFamily.size,
 console.log('\nper symmetry order:\n');
 console.log(`${pad('order', 8)} ${num('rows', 6)} ${num('designs', 9)} ${num('families', 10)}`);
 const column = { rows: 0, designs: 0, families: 0 };
-for (const order of [24, 8, 4]) {
+// Every order the rows HAVE, derived: a hand list of [24, 8, 4] silently dropped Six Spots (3) and
+// Hello! (12) when the book's exceptions arrived, and only the sum check below noticed.
+for (const order of [...new Set(rows.map((r) => r.order))].sort((x, y) => y - x)) {
   const of = rows.filter((r) => r.order === order);
   const d = new Set(of.map((r) => r.design)).size;
   const fam = new Set(of.map((r) => r.family)).size;

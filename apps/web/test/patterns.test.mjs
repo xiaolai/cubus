@@ -11,16 +11,18 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { OFFERED_PATTERNS, PATTERNS, patternById, patternBySelection, selectionOf } from '../lib/patterns.js';
+import { OFFERED_PATTERNS, PATTERNS, patternById, patternBySelection, routeState, selectionOf } from '../lib/patterns.js';
+import { pictureState } from '../lib/pattern-route.js';
+import { SOLVED, applyAlg, toFacelets } from '../lib/cube-pieces.js';
 import { OFFERED_TARGETS, TARGETS } from '../lib/stage-targets.js';
 import { targetPicture } from '../lib/stage-picture.js';
 import { routeSentence } from '../lib/stage-report.js';
-import Cube from 'cubejs';
 import { STATE_PATTERNS } from './fixtures/pattern-ledger.mjs';
+import { cubejsPicture } from './fixtures/cubejs-picture.mjs';
 
 // ---- the two cuts, re-derived here from the ledger ----------------------------------------------
 //
-// `lib/patterns.js` records WHY eighteen of the ledger's seventy-three are offered. Prose is not a
+// `lib/patterns.js` records WHY thirty-seven of the ledger's two hundred and nine are offered. Prose is not a
 // check, so both cuts are computed below and the offering is held to them in three directions:
 // every row offered passes them, no two offered rows share a signature, and every signature the
 // cuts admit IS offered. Widening the offering is then editing `CENTRED` or `MOVES_FLOOR` and
@@ -56,17 +58,25 @@ const CENTRED = (mask) => {
   for (let i = 0; i < 9; i += 1) if (mask >> i & 1) turned |= 1 << (8 - i);
   return turned === mask;
 };
-/** CUT TWO: three moves or more. One face turn is not a picture. */
+/** CUT TWO: three moves or more. One face turn is not a picture. In FACE turns, and a row with no face
+ *  route (`moves` null) is further than the ledger's face radius, so well past it: a slice counts as
+ *  one move in the other metric, and `M2 E2` is a real picture at two. */
 const MOVES_FLOOR = 3;
+const faceMoves = (row) => row.moves ?? Infinity;
+/** Shortest first: face turns, then slice moves — the order the ledger sorts its own families by. */
+const shorter = (a, b) => faceMoves(a) < faceMoves(b)
+  || (faceMoves(a) === faceMoves(b) && (a.sliceMoves ?? Infinity) < (b.sliceMoves ?? Infinity));
+/** The route a row's picture and figures were measured on, and so the one the app must copy. */
+const firstRoute = (row) => row.alg ?? row.sliceAlg ?? row.book;
 /** What makes two pictures the same picture in a grid: the multiset of their face figures, which is
  *  what a whole-cube rotation permutes. */
 const signatureOf = (look) => figuresOf(look).slice().sort((a, b) => a - b).join('-');
 
-/** The ledger row an offered state pattern was copied from, by its ALGORITHM — the copied fact, and
- *  the only field every row has. Matching by NAME was what this file did until the catalogue grew:
- *  70 of the 73 rows have no name, so a name match could only ever cover the three the ledger
- *  happens to name and would have passed over the other fifteen in silence. */
-const ledgerRowFor = (pattern) => STATE_PATTERNS.find((r) => r.alg === pattern.alg);
+/** The ledger row an offered state pattern was copied from, by its ROUTE — the copied fact. Matching by
+ *  NAME was what this file did until the catalogue grew: most rows have no name, so a name match could
+ *  only ever cover the few the ledger names and would have passed over the rest in silence. Any of a
+ *  row's routes finds it; the first case below then requires the one copied to be the row's FIRST. */
+const ledgerRowFor = (pattern) => STATE_PATTERNS.find((r) => [r.alg, r.sliceAlg, r.book].includes(pattern.alg));
 
 test('every state pattern the app offers is the ledger entry it claims to be', () => {
   const state = PATTERNS.filter((p) => p.kind === 'state');
@@ -74,13 +84,15 @@ test('every state pattern the app offers is the ledger entry it claims to be', (
   for (const pattern of state) {
     const row = ledgerRowFor(pattern);
     assert.ok(row, `${pattern.id} ships the algorithm "${pattern.alg}", which the ledger does not hold`);
+    assert.equal(pattern.alg, firstRoute(row),
+      `${pattern.id} copies a route other than the one the ledger measured the picture on`);
     // The figures are computed from the shipped picture and compared with the ones the GENERATOR
     // recorded. This is the check that makes the cuts below meaningful: without it they would be
     // applied to figures this file worked out for itself, and an error in `figuresOf` would make
     // every one of them agree with itself and say nothing about the cube.
     assert.deepEqual(figuresOf(pattern.look), row.figures,
       `${pattern.id}: the figures of the picture drawn are not the ones the ledger proved`);
-    // A NAMED row keeps the ledger's name. The other fifteen are described rather than named, and
+    // A NAMED row keeps the ledger's name. The other thirty-one are described rather than named, and
     // the case below derives those descriptions from the picture.
     if (row.name) assert.equal(pattern.name, row.name, `${pattern.id} renames a pattern the ledger names`);
   }
@@ -96,7 +108,7 @@ test('every offered state pattern passes both cuts, and no two are the same pict
       assert.ok(CENTRED(mask),
         `${pattern.id} shows an off-centre figure (${mask}) — it reads as an unfinished face`);
     }
-    assert.ok(row.moves >= MOVES_FLOOR,
+    assert.ok(faceMoves(row) >= MOVES_FLOOR,
       `${pattern.id} is ${row.moves} moves from solved — a face turn or two is not a picture`);
     const sig = signatureOf(pattern.look);
     const twin = bySignature.get(sig);
@@ -108,12 +120,12 @@ test('every offered state pattern passes both cuts, and no two are the same pict
 
 // THE OTHER DIRECTION, and the one that fails when a row goes MISSING. The case above would pass
 // just as happily on a catalogue of one: it only ever says that what is offered belongs. This says
-// that what belongs is offered, so the eighteen cannot quietly become seventeen — and when the cuts
+// that what belongs is offered, so the thirty-seven cannot quietly become thirty-six — and when the cuts
 // are widened on purpose, the failure here names every row that has to be appended.
 test('every picture the cuts admit is offered — the catalogue is the cut, not a sample of it', () => {
   const admitted = new Map();
   for (const row of STATE_PATTERNS) {
-    if (row.moves < MOVES_FLOOR || !row.figures.every(CENTRED)) continue;
+    if (faceMoves(row) < MOVES_FLOOR || !row.figures.every(CENTRED)) continue;
     const sig = row.figures.slice().sort((a, b) => a - b).join('-');
     const held = admitted.get(sig);
     // The representative is the SHORTEST row of its signature, and a row the ledger names wins a
@@ -121,26 +133,28 @@ test('every picture the cuts admit is offered — the catalogue is the cut, not 
     // R2 D2` sitting beside it in the ledger.
     const better = !held
       || (Boolean(row.name) && !held.name)
-      || (Boolean(row.name) === Boolean(held.name) && row.moves < held.moves);
+      || (Boolean(row.name) === Boolean(held.name) && shorter(row, held));
     if (better) admitted.set(sig, row);
   }
   const offered = new Set(OFFERED_PATTERNS.filter((p) => p.kind === 'state').map((p) => signatureOf(p.look)));
   const missing = [...admitted.entries()].filter(([sig]) => !offered.has(sig))
     .map(([sig, row]) => `${sig} (${row.alg})`);
   assert.deepEqual(missing, [], 'the cuts admit a picture nothing offers — append it, or narrow the cut');
-  assert.equal(admitted.size, 18, 'the ledger now admits a different number of pictures than the eighteen shipped');
+  assert.equal(admitted.size, 37, 'the ledger now admits a different number of pictures than the thirty-seven shipped');
   // And the representative chosen is the one the rule picks, not merely A row of that signature.
   for (const pattern of OFFERED_PATTERNS.filter((p) => p.kind === 'state')) {
-    assert.equal(pattern.alg, admitted.get(signatureOf(pattern.look)).alg,
+    assert.equal(pattern.alg, firstRoute(admitted.get(signatureOf(pattern.look))),
       `${pattern.id} is not the shortest (ledger-named first) row of its signature`);
   }
 });
 
 // A NAME HERE IS A DESCRIPTION OF THE PICTURE, derived rather than invented — `lib/patterns.js`
 // records why, and this is what makes it true of every row rather than of the row somebody checked.
-// Fifteen of the eighteen have no ledger name, and a hand-written sentence about a cube is exactly
+// Thirty-one of the thirty-seven have no ledger name, and a hand-written sentence about a cube is exactly
 // the kind of claim that goes on being read long after it stopped describing anything.
-const PHRASE = { 511: 'plain', 381: 'an H', 341: 'an X', 186: 'a plus', 56: 'a bar', 16: 'a dot' };
+// A diagonal (`#../.#./..#`) and an S (`.##/.#./##.`) joined the six on 2026-10-17, with the slice walk's
+// pictures; both are centred, which is the only figure the cut admits.
+const PHRASE = { 511: 'plain', 381: 'an H', 341: 'an X', 186: 'a plus', 56: 'a bar', 16: 'a dot', 84: 'a diagonal', 214: 'an S' };
 const COUNT_WORD = { 2: 'two', 4: 'four', 6: 'every' };
 function describe(look) {
   const tally = new Map();
@@ -188,9 +202,9 @@ test('a selection id resolves to the pattern it presses, and nothing else does',
 //
 // The first version of this file copied the ledger's `look` beside its `alg` and asserted they
 // agreed. They do not: the ledger deduplicates over all 48 symmetries plus inversion, so `look` is
-// the canonical representative of a rotation class and `alg` reaches a different member of it. **68
-// of the 73 rows disagree.** Shipping both would have drawn a target the route does not arrive at —
-// the right picture, the cube turned — and The Checkerboard is one of the five that coincide, so
+// the canonical representative of a rotation class and `alg` reaches a different member of it. **190
+// of the 209 rows disagree.** Shipping both would have drawn a target the route does not arrive at —
+// the right picture, the cube turned — and The Checkerboard is one of the nineteen that coincide, so
 // checking the first entry by hand would have shown nothing wrong.
 //
 // `lib/patterns.js` computes the picture now, so the two cannot drift. This case guards the property
@@ -210,15 +224,36 @@ test('a state pattern\'s picture and its look are the same string, and that is w
   }
 });
 
+test('a route is read through the one interpreter: face turns as the piece model plays them, slices too', () => {
+  // `routeState` is how a pattern's route becomes a cube, for the picture AND for the route to it
+  // (`pictureState` in lib/pattern-route.js). For face turns it must be the piece model exactly — every
+  // pattern before 2026-10-17 was face turns and was derived with `applyAlg`.
+  for (const pattern of PATTERNS.filter((p) => p.kind === 'state')) {
+    assert.equal(toFacelets(pictureState(pattern)), pattern.look, `${pattern.id}: routed to a cube other than the one drawn`);
+    if (/^[URFDLB2' ]*$/.test(pattern.alg)) {
+      assert.deepEqual(routeState(pattern.alg), applyAlg(SOLVED, pattern.alg), `${pattern.id}: face turns read differently`);
+    }
+  }
+  // A SLICE moves the centres, so the letters after it are read in the hold it left. Six Spots by its
+  // four slices is the picture its eight face turns draw — and `applyAlg` cannot read the slices at all.
+  const slices = toFacelets(routeState("M E M' E'"));
+  for (let k = 0; k < 6; k += 1) {
+    const face = slices.slice(k * 9, k * 9 + 9);
+    assert.equal(new Set([...face].filter((_, i) => i !== 4)).size, 1, `face ${k} is not one colour round its centre`);
+    assert.notEqual(face[4], face[0], `face ${k}'s centre matches its ring — not six spots`);
+  }
+  assert.throws(() => applyAlg(SOLVED, "M E M' E'"), 'the piece model was never the reader for a slice');
+});
+
 test('a state pattern\'s picture is what its algorithm produces, not the ledger\'s canonical look', () => {
   let differed = 0;
   for (const pattern of PATTERNS.filter((p) => p.kind === 'state')) {
     // Played by CUBEJS, which shares no code with the app's pieces or its facelet writer: the app's own
     // pipeline on both sides would agree with itself through any bug in either (a U/D swap in
     // `toFacelets` passed every case here — audit, 2026-10-17).
-    const played = new Cube();
-    played.move(pattern.alg);
-    assert.equal(pattern.look, played.asString(), `${pattern.id}: the picture is not what "${pattern.alg}" produces`);
+    // Turned back to white up and green in front, because a slice route moves the centres and the app
+    // reads every cube by them (`test/fixtures/cubejs-picture.mjs`).
+    assert.equal(pattern.look, cubejsPicture(pattern.alg), `${pattern.id}: the picture is not what "${pattern.alg}" produces`);
     const row = STATE_PATTERNS.find((r) => r.name === pattern.name);
     if (row && row.look !== pattern.look) differed += 1;
   }
@@ -256,10 +291,10 @@ test('every set pattern names a target the engine can actually answer', () => {
   }
 });
 
-// EVERY PICTURE MUST DRAW, because the menu is pictures and nothing else — 70 of the ledger's 73 have
+// EVERY PICTURE MUST DRAW, because the menu is pictures and nothing else — 201 of the ledger's 209 have
 // no name at all, so a thumbnail that fails to render is an entry a child cannot identify or press.
 test('every offered pattern yields a drawable 54-sticker picture', () => {
-  // TWENTY, and the number is the decision rather than a tally — §9.6 asks for exactly that. It was
+  // THIRTY-NINE, and the number is the decision rather than a tally — §9.6 asks for exactly that. It was
   // five until 2026-10-04, and what the five were waiting for is what this list now records as
   // having arrived: the grid "that needs sorting, filtering or scrolling has become the primary
   // region, and 'only a new COMPOSITION is a new screen' makes that a screen rather than a longer
@@ -275,6 +310,11 @@ test('every offered pattern yields a drawable 54-sticker picture', () => {
     'bar4-dot2', 'bar4-h2', 'bar4-x2', 'plain2-bar2-dot2', 'bar6',
     'dot4-bar2', 'dot4-h2', 'dot4-plain2', 'dot4-x2', 'h2-bar2-dot2',
     'h2-plus2-bar2', 'h4-x2', 'plain4-h2', 'x2-bar2-dot2', 'x4-h2',
+    // The nineteen of 2026-10-17, chosen by the owner from every one drawn.
+    'six-spots', 'hello', 'opposite-corners', 'plus4-x2', 'h4-plain2',
+    'h2-plus2-dot2', 'plus2-bar2-dot2', 'bar4-plus2', 'plain2-plus2-dot2', 'x2-plus2-bar2',
+    'plus4-plain2', 'x4-plain2', 'plain4-x2', 'plus2-diag2-bar2', 'bar4-s2',
+    'plus4-dot2', 'plain2-h2-x2', 'plus4-h2', 'x2-plus2-dot2',
   ], 'the offered set changed — decide it, do not drift it');
   // EVERY OFFERED PATTERN MUST BE ROUTABLE, by one of the two ways there are. A set pattern names a
   // target the exact engine answers; a state pattern carries a picture `pattern-route.js` routes to

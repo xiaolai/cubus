@@ -4,8 +4,9 @@
 // are the game. From any state, solve to a picture.** §9.6 then held the door shut — "which patterns
 // beyond the five stages" was left STILL OPEN so that patterns would be decided as their own feature
 // rather than drifting in because the mechanism allowed them. `six-cross` sat at `offered: false` for
-// a fortnight on exactly that rule. This file is that decision, taken: TWENTY, chosen below — five
-// of them from 2026-09-26, the rest when the Shapes screen §9.6 asked for arrived (2026-10-04).
+// a fortnight on exactly that rule. This file is that decision, taken: THIRTY-NINE, chosen below — five
+// of them from 2026-09-26, fifteen when the Shapes screen §9.6 asked for arrived (2026-10-04), and
+// nineteen when the ledger learned the middle layers (2026-10-17).
 //
 // TWO KINDS, because they are two different things arithmetically and two different games.
 //
@@ -17,11 +18,11 @@
 //   'state' — ONE exact cube. Free of tables (§3a's first finding: a target that is one state needs
 //             none of this), but NOT cheap from a scramble: reaching S from c is the distance from
 //             S⁻¹·c to solved, and S⁻¹·c is uniform when c is, so it costs about what solving costs.
-//             These earn their place by being SHORT FROM SOLVED rather than by being near — four
-//             moves or six, by the cuts below. Three of the eighteen are famous enough for the
-//             ledger to name (The Checkerboard, Lines, Plus/Minus); the rest are not named anywhere
-//             and are described by what they draw, which is a decision rather than a shortage —
-//             see THE NAMES ARE DESCRIPTIONS below.
+//             These earn their place by being SHORT FROM SOLVED rather than by being near — a few
+//             moves, by the cuts below — or by being famous. Six of the thirty-seven are named by
+//             the ledger's book (The Checkerboard, Lines, Plus/Minus, Six Spots, Hello!, Opposite
+//             Corners); the rest are not named anywhere and are described by what they draw, which is
+//             a decision rather than a shortage — see THE NAMES ARE DESCRIPTIONS below.
 //             (Written c·S⁻¹ here until 2026-09-27, which is the wrong order and does not name the
 //             cube `lib/pattern-route.js` actually solves. An audit proved it rather than asserting
 //             it: with c = S·R the correct order is one move from solved, and the order written here
@@ -36,29 +37,30 @@
 // five and a way through to it (`lib/shape-recency.js`). So the menu is still five pictures long and
 // the catalogue is no longer five, which is the only reason this number could move at all.
 //
-// WHY EIGHTEEN STATE PATTERNS AND NOT SEVENTY-THREE. Two cuts, both measured, neither a tally.
+// WHY THIRTY-SEVEN STATE PATTERNS AND NOT TWO HUNDRED AND NINE. Two cuts, both measured, neither a
+// tally. (Eighteen of seventy-three until 2026-10-17, when the ledger grew: twist measured against the
+// other pieces, a walk that counts a middle-layer turn as one move, and the book's famous pictures.)
 //
-//   EVERY FACE FIGURE IS CENTRED — its mask is unchanged by a half-turn of its own face. 51 of the
-//   ledger's 73 rows pass, and they use exactly SIX masks between them: plain (511), an H (381), an
-//   X (341), a plus (186), a bar (56), a dot (16). The 22 rows cut are the ones carrying an
-//   edge-anchored figure (`### / ### / ...`, `#.# / ### / ...`, `.#. / .#. / ...` and five more),
-//   and an off-centre figure does not read as a design at thumbnail size — it reads as a face
-//   somebody stopped halfway through. That is also what makes every name below sayable: the six
-//   masks that survive are the six a child can point at.
+//   EVERY FACE FIGURE IS CENTRED — its mask is unchanged by a half-turn of its own face. 157 of the
+//   ledger's 209 rows pass, and they use NINE masks between them: plain (511), an H (381), an X (341),
+//   a plus (186), a bar (56), a dot (16), a diagonal (84), an S (214), and Opposite Corners' ring with
+//   two corners out (254). The rows cut carry an edge-anchored figure (`### / ### / ...`,
+//   `.#. / .#. / ...` and more), and an off-centre figure does not read as a design at thumbnail size
+//   — it reads as a face somebody stopped halfway through. That is also what makes every name below
+//   sayable: a centred figure is one a child can point at.
 //
 //   ONE PER FACE-SHAPE SIGNATURE — the multiset of the six masks, which is what a whole-cube
-//   rotation permutes and so is the honest notion of "the same picture" in a grid. The 51 collapse
-//   to 18. The earlier note here measured 34 over all 73 and that figure still stands; it is not
-//   the offering, because 16 of those 34 hold an off-centre figure. The representative is the
-//   SHORTEST row of its signature at three moves or more, and a row the ledger NAMES wins a tie —
-//   which is the whole reason `lines` is still `U2 R2 D2 U2 R2 U2` and not the equally short
-//   `U2 R2 D2 U2 R2 D2` beside it.
+//   rotation permutes and so is the honest notion of "the same picture" in a grid. The 157 collapse
+//   to 37, of 67 signatures over the whole ledger. The representative is the SHORTEST row of its
+//   signature at three moves or more — face turns first, then moves counting a middle-layer turn as
+//   one — and a row the ledger NAMES wins, which is the whole reason `lines` is still
+//   `U2 R2 D2 U2 R2 U2` and not the equally short `U2 R2 D2 U2 R2 D2` beside it.
 //
-//   The "symmetry order >= 8" cut is still rejected, and for the reason it always was: those 14
-//   rows carry only SIX signatures between them. Six of the 73 are two moves or fewer from solved
-//   (`U`, `U2`, `D U`, `D U'`, `D U2`, `D2 U2`) — one face turn is not a picture — and the three
-//   moves or more floor above is what keeps them out while keeping their signatures, which deeper
-//   rows also reach.
+//   The floor is in FACE turns. Six rows are two face turns or fewer from solved (`U`, `U2`, `D U`,
+//   `D U'`, `D U2`, `D2 U2`) — one face turn is not a picture — and the floor keeps them out while
+//   keeping their signatures, which deeper rows also reach. A row with no face route at all is past
+//   the ledger's face radius of seven, so far past the floor; `M2 E2` is a real picture at two
+//   slice moves, which is why the floor is not counted in those.
 //
 // AND THE OPTION FOR THE REST IS STILL THE SHAPE OF THIS FILE, not a plugin point. Every record
 // below is exactly what a ledger row already is, so offering more is appending rows and flipping a
@@ -67,15 +69,27 @@
 // generated ledger and RE-DERIVES both cuts from it, so widening the offering is editing one
 // predicate and not arguing with prose.
 //
-// THE NAMES ARE DESCRIPTIONS, and that is a decision rather than a shortage. 70 of the ledger's 73
-// rows have no name at all, and inventing folklore for fifteen of them would be inventing data; the
+// THE NAMES ARE DESCRIPTIONS, and that is a decision rather than a shortage. 201 of the ledger's 209
+// rows have no name at all, and inventing folklore for thirty-one of them would be inventing data; the
 // two set patterns above already show the house style, which is to say what the picture IS ("a plus
 // on every face"). So an unnamed row is named for its signature, in that style, and
 // `patterns.test.mjs` derives every one of those names from the picture the row actually draws —
-// a name here cannot come to describe a different cube. The three the ledger names keep its names.
+// a name here cannot come to describe a different cube. The six the ledger names keep its names.
 
-import { SOLVED, applyAlg, toFacelets } from './cube-pieces.js';
+import { run } from './cube-moves.js';
+import { SOLVED, toFacelets } from './cube-pieces.js';
 import { TARGET_BY_ID, targetById } from './stage-targets.js';
+
+/**
+ * The cube a state pattern's route reaches from a solved cube held white up, green in front — relative
+ * to its CENTRES, the frame every picture and every walk in the app is in.
+ *
+ * Through the one interpreter, not the piece model's face turns, because a route may hold SLICES: Six
+ * Spots is `M E M' E'`, and a slice moves the centres, so its letters after the first are read in the
+ * hold the first one left. For a route of face turns alone this is exactly `applyAlg(SOLVED, alg)`.
+ * The hold is `SCAN_HOLD`, spelled out because `solving-hold.js` imports this file.
+ */
+export const routeState = (alg) => run(alg, ['U', 'F'], SOLVED).state;
 
 /**
  * The pictures, in the order they are offered.
@@ -84,7 +98,7 @@ import { TARGET_BY_ID, targetById } from './stage-targets.js';
  * the scan frame, which goes into `netSvg()` and `<cubus-cube facelets=…>` with no conversion, so a
  * state pattern needs no picture derivation the way a target does. Copying the ledger's own `look`
  * instead is the trap recorded beside the state patterns: it is a canonical rotation representative
- * and differs from what the algorithm produces on 68 of the ledger's 73 rows.
+ * and differs from what the algorithm produces on 190 of the ledger's 209 rows.
  *
  * `target` names a `stage-targets.js` id, and is how a set pattern is answered: the exact engine
  * already routes to it. The picture comes from `targetPicture()`, which draws the free pieces grey.
@@ -121,7 +135,7 @@ const PATTERN_SPECS = [
     id: 'plus-minus', kind: 'state',
     alg: 'U2 L2 R2 U2 L2 R2', name: 'Plus/Minus', offered: true,
   },
-  // ---- the rest of the eighteen, 2026-10-04 ------------------------------------------------------
+  // ---- the fifteen of 2026-10-04 -------------------------------------------------------------------
   //
   // THE FIRST THREE STAY FIRST so the recent-five seed is the menu that shipped before this screen
   // existed: somebody who has chosen nothing yet opens the same menu they had. These are in order of
@@ -134,17 +148,47 @@ const PATTERN_SPECS = [
   { id: 'bar4-h2', kind: 'state', alg: 'U2 L2 R2 U2', name: 'a bar on four faces and an H on two', offered: true },
   { id: 'bar4-x2', kind: 'state', alg: 'D2 U2 L2 R2', name: 'a bar on four faces and an X on two', offered: true },
   { id: 'plain2-bar2-dot2', kind: 'state', alg: 'U2 L2 R2 D2', name: 'plain on two faces, a bar on two and a dot on two', offered: true },
-  { id: 'bar6', kind: 'state', alg: "U R2 D2 U2 R2 U'", name: 'a bar on every face', offered: true },
+  { id: 'bar6', kind: 'state', alg: 'D U R2 D2 U2 R2', name: 'a bar on every face', offered: true },
   { id: 'dot4-bar2', kind: 'state', alg: 'D U R2 B2 F2 L2', name: 'a dot on four faces and a bar on two', offered: true },
   { id: 'dot4-h2', kind: 'state', alg: 'D U R2 B2 F2 R2', name: 'a dot on four faces and an H on two', offered: true },
   { id: 'dot4-plain2', kind: 'state', alg: "L2 R2 D U' B2 F2", name: 'a dot on four faces and plain on two', offered: true },
-  { id: 'dot4-x2', kind: 'state', alg: 'U2 L2 R2 B2 F2 U2', name: 'a dot on four faces and an X on two', offered: true },
-  { id: 'h2-bar2-dot2', kind: 'state', alg: 'U2 R2 B2 F2 R2 U2', name: 'an H on two faces, a bar on two and a dot on two', offered: true },
+  { id: 'dot4-x2', kind: 'state', alg: "D U' L2 R2 B2 F2", name: 'a dot on four faces and an X on two', offered: true },
+  { id: 'h2-bar2-dot2', kind: 'state', alg: "D U' L2 R2 D U'", name: 'an H on two faces, a bar on two and a dot on two', offered: true },
   { id: 'h2-plus2-bar2', kind: 'state', alg: "D U' L2 R2 D' U", name: 'an H on two faces, a plus on two and a bar on two', offered: true },
   { id: 'h4-x2', kind: 'state', alg: 'U2 L2 R2 B2 F2 D2', name: 'an H on four faces and an X on two', offered: true },
   { id: 'plain4-h2', kind: 'state', alg: 'U2 R2 D2 U2 L2 D2', name: 'plain on four faces and an H on two', offered: true },
   { id: 'x2-bar2-dot2', kind: 'state', alg: 'U2 R2 B2 F2 L2 U2', name: 'an X on two faces, a bar on two and a dot on two', offered: true },
   { id: 'x4-h2', kind: 'state', alg: 'U2 L2 R2 U2 B2 F2', name: 'an X on four faces and an H on two', offered: true },
+  // ---- the nineteen of 2026-10-17 ----------------------------------------------------------------
+  //
+  // OFFERED BY THE OWNER after seeing every one drawn (dev-docs/artifacts/shapes-candidates-2026-10-17.html).
+  // They are what the SAME two cuts admit once the ledger changed under them three ways: twist is measured
+  // against the other pieces rather than the centres (`untwisted`, bench/cube-look.mjs), a second walk
+  // counts a middle-layer turn as one move, and the book's famous pictures are kept by name. The three
+  // famous ones first; then by length with the middle layers. A route here may hold slices — `M S' M' S`
+  // is Six Spots in four — which is why the picture is read through `routeState` and never `applyAlg`.
+  // Three shipped rows above changed their ROUTE the same day (bar6, dot4-x2, h2-bar2-dot2): an equally
+  // short face route the corrected twist cut admitted is shorter still with slices, and the owner chose
+  // the rule's answer over keeping the old pictures.
+  { id: 'six-spots', kind: 'state', alg: "M S' M' S", name: "Six Spots", offered: true },
+  { id: 'hello', kind: 'state', alg: "U2 R2 F2 U2 D2 F2 L2 U2", name: "Hello!", offered: true },
+  { id: 'opposite-corners', kind: 'state', alg: "R L U2 F2 D2 F2 R L F2 D2 B2 D2", name: "Opposite Corners", offered: true },
+  { id: 'plus4-x2', kind: 'state', alg: "M S2 M E2", name: "a plus on four faces and an X on two", offered: true },
+  { id: 'h4-plain2', kind: 'state', alg: "M S2 M S2", name: "an H on four faces and plain on two", offered: true },
+  { id: 'h2-plus2-dot2', kind: 'state', alg: "M F2 E2 F2 M", name: "an H on two faces, a plus on two and a dot on two", offered: true },
+  { id: 'plus2-bar2-dot2', kind: 'state', alg: "M S2 M U D", name: "a plus on two faces, a bar on two and a dot on two", offered: true },
+  { id: 'bar4-plus2', kind: 'state', alg: "U M S2 M D", name: "a bar on four faces and a plus on two", offered: true },
+  { id: 'plain2-plus2-dot2', kind: 'state', alg: "U2 M S2 M U2", name: "plain on two faces, a plus on two and a dot on two", offered: true },
+  { id: 'x2-plus2-bar2', kind: 'state', alg: "U2 M2 D2 M2 S2", name: "an X on two faces, a plus on two and a bar on two", offered: true },
+  { id: 'plus4-plain2', kind: 'state', alg: "U M2 S2 D M2 S2", name: "a plus on four faces and plain on two", offered: true },
+  { id: 'x4-plain2', kind: 'state', alg: "U2 R2 E2 L2 D2 S2", name: "an X on four faces and plain on two", offered: true },
+  { id: 'plain4-x2', kind: 'state', alg: "U2 R2 E2 L2 U2 M2", name: "plain on four faces and an X on two", offered: true },
+  { id: 'plus2-diag2-bar2', kind: 'state', alg: "R2 U M2 S2 D L2", name: "a plus on two faces, a diagonal on two and a bar on two", offered: true },
+  { id: 'bar4-s2', kind: 'state', alg: "R2 U M2 S2 D R2", name: "a bar on four faces and an S on two", offered: true },
+  { id: 'plus4-dot2', kind: 'state', alg: "U M S2 M U2 D'", name: "a plus on four faces and a dot on two", offered: true },
+  { id: 'plain2-h2-x2', kind: 'state', alg: "U2 M2 U D M2 E", name: "plain on two faces, an H on two and an X on two", offered: true },
+  { id: 'plus4-h2', kind: 'state', alg: "U2 R2 S2 L2 S2 U2", name: "a plus on four faces and an H on two", offered: true },
+  { id: 'x2-plus2-dot2', kind: 'state', alg: "U2 R2 S2 L2 U2 M2", name: "an X on two faces, a plus on two and a dot on two", offered: true },
 ];
 
 /** A facelet string is 54 stickers of the six face letters, and nothing else may reach a renderer. */
@@ -158,7 +202,7 @@ function makePattern(spec) {
     return Object.freeze({ ...spec, target });
   }
   if (spec.kind !== 'state') throw new Error(`patterns: ${spec.id} has no kind "set" or "state"`);
-  const look = toFacelets(applyAlg(SOLVED, spec.alg));
+  const look = toFacelets(routeState(spec.alg));
   if (!FACELETS.test(look)) throw new Error(`patterns: ${spec.id}'s algorithm does not give 54 facelets`);
   // `picture` IS the marker every reader keys on — `stage-picture.js` returns it instead of
   // deriving one, `walk-session.js` paints it without re-framing, `walk-resolver.js` takes the

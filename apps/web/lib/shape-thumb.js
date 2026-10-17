@@ -36,7 +36,7 @@ export const shapeLook = (pattern) =>
  * target beside it (audit, 2026-09-27, reproduced on Japanese + classic).
  *
  * THE NAME IS THE SVG'S TITLE AND NOTHING ELSE, which is about the rows this file is built to have
- * appended rather than about the twenty here. `netSvg` escapes its own title — the one place a flat
+ * appended rather than about the thirty-nine here. `netSvg` escapes its own title — the one place a flat
  * view escapes anything — and the look is `[UDLRFB?]` by construction, so the markup returned is
  * markup these two modules produced. A caller putting the name on screen writes it with
  * `textContent`, so a name is never parsed as markup at all, which is stronger than remembering to

@@ -1,7 +1,13 @@
 // The pattern ledger: every interesting picture within reach, found by search and written down.
 //
-//   node bench/pattern-ledger.mjs [depth]           report
-//   node bench/pattern-ledger.mjs [depth] --emit    rewrite test/fixtures/pattern-ledger.mjs
+//   node bench/pattern-ledger.mjs [depth] [sliceDepth]           report
+//   node bench/pattern-ledger.mjs [depth] [sliceDepth] --emit    rewrite test/fixtures/pattern-ledger.mjs
+//
+// TWO WALKS, TWO METRICS (2026-10-17). `depth` bounds the FACE walk, where a move is one of the 18
+// face turns — the half-turn metric every solver in this app speaks. `sliceDepth` bounds the SLICE
+// walk, where a middle-layer turn (M, E, S) is one move too, because it is one movement of a hand:
+// Six Spots is `M E M' E'`, four moves, and eight face turns. A picture that slices make short and
+// face turns do not was invisible to the face walk alone.
 //
 // The game is "from any state, solve to a pattern", so the app needs a LIST of patterns, and a list
 // copied from a book is a list of whatever was famous. This searches instead.
@@ -26,213 +32,143 @@
 
 import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { MOVE_NAMES, SOLVED, applyMove, applyAlg } from '../lib/cube-pieces.js';
+import { SOLVED, applyAlg } from '../lib/cube-pieces.js';
+import { applyIdentity, heldMove, run, tokenOf } from '../lib/cube-moves.js';
+import { readToken } from '../lib/cube-notation.js';
 import { toFacelets } from '../lib/two-phase.js';
-import { FACE_ORDER, ROTATIONS, canonicalDesign, canonicalLook, verify } from './cube-look.mjs';
+import { canonicalDesign, canonicalLook, verify } from './cube-look.mjs';
+import { BOOK, STORE_MIN_ORDER, blankFaces, draw, figures, orderOf, oriented, stickersWrong, walkAll } from './pattern-walk.mjs';
 
-const DEPTH = Number(process.argv.find((a) => /^\d+$/.test(a)) ?? 6);
+const DEPTHS = process.argv.filter((a) => /^\d+$/.test(a)).map(Number);
+const DEPTH = DEPTHS[0] ?? 6;
+const SLICE_DEPTH = DEPTHS[1] ?? 5;
 const EMIT = process.argv.includes('--emit');
-const AXIS = { U: 0, D: 0, R: 1, L: 1, F: 2, B: 2 };
-
-/**
- * Only pictures fixed by at least this many of the 24 views are written down.
- *
- * Chosen from the depth-6 run rather than picked: order 2 alone produced 1,341 pictures, and a ledger
- * of 1,341 is a database, not a list a child chooses from. The distribution is steep — 1 at order 24,
- * 11 at 8, 102 at 4, 1,341 at 2 — so 4 is where the count stops being a catalogue. Everything found is
- * COUNTED at every order; the cut is about what is kept, and it is recorded beside the kept rows so
- * nobody mistakes the ledger for the census.
- */
-const STORE_MIN_ORDER = 4;
 
 verify();
 
-// `from[j]` is where sticker j's content comes from, so a symmetry test can exit on the first
-// mismatch instead of building a whole 54-character string. At 8.3 million states that is the
-// difference between seconds and a quarter of an hour.
-const FROM = ROTATIONS.map(({ to }) => {
-  const from = new Array(54);
-  for (let i = 0; i < 54; i++) from[to[i]] = i;
-  return from;
-});
+// ---- the two walks, in worker threads (bench/pattern-walk.mjs) -------------------------------------
 
-/** Is this picture unchanged by rotation `r`? Early-exits on the first disagreeing sticker. */
-function fixedBy(f, r) {
-  const { colour } = ROTATIONS[r];
-  const from = FROM[r];
-  for (let j = 0; j < 54; j++) if (f[j] !== colour[f[from[j]]]) return false;
-  return true;
-}
-const orderOf = (f) => { let n = 0; for (let r = 0; r < 24; r++) if (fixedBy(f, r)) n++; return n; };
-
-/** A face's 3x3 as a mask of cells matching its centre, canonical over the face's four rotations. */
-const ROT9 = [6, 3, 0, 7, 4, 1, 8, 5, 2];
-function figures(f) {
-  const out = new Array(6);
-  for (let k = 0; k < 6; k++) {
-    const base = k * 9;
-    const centre = f[base + 4];
-    let mask = 0;
-    for (let i = 0; i < 9; i++) if (f[base + i] === centre) mask |= 1 << i;
-    let best = mask, cur = mask;
-    for (let q = 0; q < 3; q++) {
-      let next = 0;
-      for (let i = 0; i < 9; i++) if (cur & (1 << ROT9[i])) next |= 1 << i;
-      cur = next;
-      if (cur < best) best = cur;
-    }
-    out[k] = best;
-  }
-  return out;
-}
-const draw = (mask) => [0, 1, 2].map((r) => [0, 1, 2].map((c) => ((mask >> (r * 3 + c)) & 1 ? '#' : '.')).join('')).join('/');
-const SOLID = 0b111111111;
-
-// ---- the exhaustive walk ------------------------------------------------------------------------
-
-/** How many faces show a single colour. RECORDED, never used to exclude — see below. */
-function blankFaces(f) {
-  let n = 0;
-  for (let k = 0; k < 6; k++) {
-    const base = k * 9;
-    const c = f[base];
-    let plain = true;
-    for (let i = 1; i < 9; i++) if (f[base + i] !== c) { plain = false; break; }
-    if (plain) n++;
-  }
-  return n;
-}
+const face = await walkAll('face', DEPTH);
+const found = face.found;
+const census = face.census;
+const visited = face.visited;
+const walkMs = face.ms;
+const sliced = await walkAll('slice', SLICE_DEPTH);
+const sliceMs = sliced.ms;
 
 /**
- * Is every piece turned the right way up — no twisted corner, no flipped edge?
- *
- * THE OWNER'S CUT, 2026-09-12: a twisted pattern is not a pattern. A permuted piece reads as design,
- * because the whole piece moved. A twisted corner or a flipped edge shows ONE sticker of the wrong
- * colour inside an otherwise clean block, and a child cannot tell that from a misscramble. A flipped
- * edge is the same defect on a different piece type, so it goes with the twists.
- *
- * MEASURED AGAINST THE CUBE'S OWN CENTRES, and that is the whole subtlety. The first version of this
- * cut assumed "twisted" was a property of the PICTURE, so it asserted that every maneuver reaching one
- * canonical look agrees about it — and the assertion fired immediately: `U R2 F2 L2 R2 F2 L2` leaves
- * every piece straight and `U2 R2 D2 U2 R2 D2 F` does not, yet the two reach the same look.
- *
- * The reason is that `canonicalLook` rotates the cube AND RENAMES THE COLOURS, which is the right
- * notion for "is this the same design" and the wrong one for "is a piece twisted": renaming is not
- * something a cube does. Measured, because it was worth knowing rather than assuming: of 720
- * picture-and-view pairs, 192 read differently about orientation depending on the view. A child cannot
- * use any of those views. The centres never move, so the face a white centre is on IS which face it
- * is, and the standard frame is the child's frame.
- *
- * So the cut is on ROUTES, not on pictures: a look is kept when SOME maneuver within the radius
- * reaches it with every piece straight, and the row stores the shortest such maneuver. `moves` is
- * therefore the proved minimum among untwisted routes, which can be longer than the proved minimum
- * overall; the report prints how often and by how much.
+ * An identity-frame route as the child's moves, read in the hold each is made in, from white up and
+ * green in front. The inverse of what `run` does, and checked against it: a route that does not replay
+ * through `run` to the cube the walk reached is a generator bug, and it stops here rather than in a test.
  */
-function oriented(s) {
-  return s.co.every((v) => v === 0) && s.eo.every((v) => v === 0);
-}
-
-/** How many of the 54 stickers read differently from a solved cube. */
-function stickersWrong(f) {
-  let n = 0;
-  for (let k = 0; k < 6; k++) {
-    const face = FACE_ORDER[k];
-    for (let i = 0; i < 9; i++) if (f[k * 9 + i] !== face) n++;
+function heldRoute(tokens, state) {
+  let now = { state: SOLVED, hold: ['U', 'F'] };
+  const out = [];
+  for (const token of tokens) {
+    const { move } = readToken(token);
+    // A half turn is the same move either way round; `M2'` is how the interpreter spells a negative one,
+    // and a child reads `M2`.
+    out.push(tokenOf(heldMove(move, now.hold)).replace(/2'$/, '2'));
+    now = applyIdentity(move, now.hold, now.state);
   }
-  return n;
-}
-
-// A FILTER THAT WAS WRONG, AND WHY IT IS NOW A MEASUREMENT.
-//
-// The first version of this search required every face to show at least two colours, on the reasoning
-// that a single `U` turn scores symmetry order 4 — a turned layer is invariant about its own axis —
-// while leaving U and D blank, and is obviously not a pattern. The comment then claimed the rule
-// "keeps every one of the book's fourteen". It does not, and that was asserted without checking:
-// Plus/Minus and Lines each have TWO solid faces and are both perfectly good patterns. The rule threw
-// away two of the fourteen it was supposed to preserve.
-//
-// Nor does the blank-face count separate the cases it was aimed at: `U` has two blank faces and so
-// does Plus/Minus. What distinguishes them is how much of the cube has actually moved — `U` leaves 12
-// stickers reading wrong, Plus/Minus 20, the Checkerboard 24 — so the honest thing is to RECORD that
-// number and let a caller threshold on it, rather than to bake a guess into the search and lose rows
-// to it silently.
-
-const found = new Map();   // canonical look -> { order, depth, alg, figures }
-let visited = 0;
-const census = new Map();   // symmetry order -> maneuvers seen (not deduplicated by look)
-const path = [];
-
-function walk(state, left, lastFace, lastAxis) {
-  visited++;
-  const f = toFacelets(state);
-  // Cheap gate first: a picture fixed by NO rotation but the identity is not a pattern, and the test
-  // above costs a few character comparisons for almost every state it rejects.
-  let order = 1;
-  for (let r = 1; r < 24; r++) if (fixedBy(f, r)) { order++; }
-  if (order >= 2) {
-    census.set(order, (census.get(order) ?? 0) + 1);
-    if (order >= STORE_MIN_ORDER) {
-      const look = canonicalLook(f);
-      const prior = found.get(look);
-      const ori = oriented(state);
-      // TWO candidates per picture, because the twist cut is a cut on routes. `best` is the shortest
-      // maneuver of any kind and exists only so the report can price the cut; `clean` is the shortest
-      // one that leaves every piece straight, and it is what the ledger stores.
-      //
-      // The measurements are built only when one of the two is actually being replaced. Building them
-      // eagerly is correct and wasteful: 4,332 of the 4,720 maneuvers at or above the order cut reach a
-      // picture already seen at the same depth or shallower, and `figures` is ~200 operations.
-      const measure = () => ({ order, depth: path.length, alg: path.join(' '), figures: figures(f),
-        wrong: stickersWrong(f), blank: blankFaces(f) });
-      if (!prior) {
-        const entry = measure();
-        found.set(look, { best: entry, clean: ori ? entry : null });
-      } else {
-        if (path.length < prior.best.depth) prior.best = measure();
-        if (ori && (!prior.clean || path.length < prior.clean.depth)) prior.clean = measure();
-      }
-    }
+  const alg = out.join(' ');
+  if (toFacelets(run(alg, ['U', 'F'], SOLVED).state) !== toFacelets(state)) {
+    throw new Error(`heldRoute: "${alg}" does not replay to the cube the slice walk reached`);
   }
-  if (left === 0) return;
-  for (let m = 0; m < MOVE_NAMES.length; m++) {
-    const face = MOVE_NAMES[m][0];
-    if (face === lastFace) continue;
-    if (AXIS[face] === lastAxis && face < lastFace) continue;
-    path.push(MOVE_NAMES[m]);
-    walk(applyMove(state, MOVE_NAMES[m]), left - 1, face, AXIS[face]);
-    path.pop();
-  }
+  return alg;
 }
-
-const t0 = Date.now();
-walk(SOLVED, DEPTH, '', -1);
-const walkMs = Date.now() - t0;
 
 // The solved cube is in there at order 24 and depth 0. It is not a pattern; it is the thing patterns
 // are measured from, and leaving it in would make the ledger's first row a lie about the game.
 const SOLVED_LOOK = canonicalLook(toFacelets(SOLVED));
 found.delete(SOLVED_LOOK);
+sliced.found.delete(SOLVED_LOOK);
 
 // THE TWIST CUT — see `oriented` above for what it is measured against and why. Counted by symmetry
 // order before it is applied, so the ledger says what it threw away instead of merely being smaller
 // than it was. A picture here can be perfectly symmetric and still show one corner sticker rotated out
-// of an otherwise solid block, which is the thing being removed.
-const twistedLooks = new Set();
-const twistedByOrder = new Map();
-const looksBeforeTwistCut = found.size;
-/** Pictures whose shortest untwisted route is LONGER than their shortest route of any kind. */
-const twistPrice = [];
-for (const [look, v] of found) {
-  if (v.clean === null) {
-    twistedLooks.add(look);
-    twistedByOrder.set(v.best.order, (twistedByOrder.get(v.best.order) ?? 0) + 1);
-    continue;
+// of an otherwise solid block, which is the thing being removed. Counted over the pictures at or above
+// the order cut only: a book picture below it is in `found` so it can be NAMED, not as a find.
+function cutTwisted(walked) {
+  const twisted = new Set();
+  const byOrder = new Map();
+  /** Pictures whose shortest untwisted route is LONGER than their shortest route of any kind. */
+  const price = [];
+  let before = 0;
+  const kept = new Map();
+  for (const [look, v] of walked) {
+    const counted = v.best.order >= STORE_MIN_ORDER;
+    if (counted) before++;
+    if (v.clean === null) {
+      twisted.add(look);
+      if (counted) byOrder.set(v.best.order, (byOrder.get(v.best.order) ?? 0) + 1);
+      continue;
+    }
+    if (v.clean.depth > v.best.depth) price.push({ look, cost: v.clean.depth - v.best.depth });
+    kept.set(look, v.clean);
   }
-  if (v.clean.depth > v.best.depth) twistPrice.push({ look, cost: v.clean.depth - v.best.depth });
+  return { kept, twisted, byOrder, before, price };
 }
-for (const look of twistedLooks) found.delete(look);
-// From here the ledger sees one entry per picture again, and it is the untwisted one.
-for (const [look, v] of found) found.set(look, v.clean);
+const faceCut = cutTwisted(found);
+const sliceCut = cutTwisted(sliced.found);
+const twistedLooks = faceCut.twisted;
+const twistedByOrder = faceCut.byOrder;
+const looksBeforeTwistCut = faceCut.before;
+const twistPrice = faceCut.price;
+
+// THE SLICE WALK MUST SEE EVERYTHING THE FACE WALK SEES within its radius, at no greater length: its
+// moves include all eighteen face turns, and every route it prunes has a shorter one it keeps. A
+// picture the face walk keeps at n <= SLICE_DEPTH that the slice walk lacks, or holds at more than n,
+// is a pruning rule that threw away a cube — and every slice minimum would then be a lie.
+for (const [look, v] of faceCut.kept) {
+  if (v.depth > SLICE_DEPTH) continue;
+  const s = sliceCut.kept.get(look);
+  if (!s || s.depth > v.depth) {
+    throw new Error(`the slice walk lost ${v.route.join(' ')} (${v.depth} face turns): its pruning is wrong`);
+  }
+}
+
+// ---- the book, as names and as exceptions --------------------------------------------------------
+
+const bookRows = BOOK.map(([name, alg]) => {
+  const state = applyAlg(SOLVED, alg);
+  const f = toFacelets(state);
+  return { name, alg, state, look: canonicalLook(f), order: orderOf(f), clean: oriented(state),
+    bookMoves: alg.trim().split(/\s+/).length };
+});
+const BOOK_BY_LOOK = new Map(bookRows.map((b) => [b.look, b]));
+
+// Every picture either walk kept, and every book picture with no twisted piece — the exceptions.
+// A book picture the walks found only twisted is admitted on its BOOK route when that route is clean,
+// for the same reason the walks admit a picture on its cleanest route: the cut is on routes.
+const admitted = new Set([...faceCut.kept.keys(), ...sliceCut.kept.keys()]);
+for (const b of bookRows) if (b.clean) admitted.add(b.look);
+admitted.delete(SOLVED_LOOK);
+
+/** Order, figures, wrong and blank, measured on the cube a row's FIRST route reaches. */
+function measured(state) {
+  const f = toFacelets(state);
+  return { order: orderOf(f), figures: figures(f), wrong: stickersWrong(f), blank: blankFaces(f) };
+}
+
+const rotationClasses = [...admitted].map((look) => {
+  const byFace = faceCut.kept.get(look) ?? null;
+  const bySlice = sliceCut.kept.get(look) ?? null;
+  const book = BOOK_BY_LOOK.get(look) ?? null;
+  // The FIRST route — face turns when there are any, then the slice walk's, then the book's — is the
+  // one every measurement below and every reader downstream takes the picture from.
+  const state = byFace?.state ?? bySlice?.state ?? book.state;
+  return {
+    look,
+    ...measured(state),
+    state,
+    moves: byFace?.depth ?? null,
+    alg: byFace ? byFace.route.join(' ') : null,
+    sliceMoves: bySlice?.depth ?? null,
+    sliceAlg: bySlice ? heldRoute(bySlice.route, bySlice.state) : null,
+    ...(book ? { name: book.name, book: book.alg } : {}),
+  };
+});
 
 // ---- deduplication, corrected -------------------------------------------------------------------
 //
@@ -261,66 +197,51 @@ function inverseState(st) {
   return { cp, co, ep, eo };
 }
 
-const rotationClasses = [...found.entries()].map(([look, v]) => ({ look, ...v }));
+const cmp = (x, y) => (x < y ? -1 : x > y ? 1 : 0);
+/**
+ * Shortest first, and the ORDER OF TIES IS A DECISION. Face turns first; among equals a book picture,
+ * whose name and route then head the row; then the face route's spelling, which is how the face walk
+ * alone broke ties before 2026-10-17 — so no family that already had a head gets a different one, and
+ * no offered picture turns into its mirror. Then slice moves, for families no face route reaches.
+ */
+const byLength = (a, b) => (a.moves ?? Infinity) - (b.moves ?? Infinity)
+  || Number(Boolean(b.name)) - Number(Boolean(a.name))
+  || (a.alg !== null && b.alg !== null ? cmp(a.alg, b.alg) : 0)
+  || (a.sliceMoves ?? Infinity) - (b.sliceMoves ?? Infinity)
+  || cmp(a.sliceAlg ?? a.look, b.sliceAlg ?? b.look);
+
 const familyOf = new Map();
 for (const r of rotationClasses) {
-  const cube = applyAlg(SOLVED, r.alg);
-  const f = toFacelets(cube);
-  const design = canonicalDesign(f);
-  const key = [design, canonicalDesign(toFacelets(inverseState(cube)))].sort()[0];
+  const design = canonicalDesign(toFacelets(r.state));
+  const key = [design, canonicalDesign(toFacelets(inverseState(r.state)))].sort()[0];
   r.design = design;
   if (!familyOf.has(key)) familyOf.set(key, []);
   familyOf.get(key).push(r);
 }
 
 const states = [...familyOf.entries()].map(([family, members]) => {
-  members.sort((a, b) => a.depth - b.depth || (a.alg < b.alg ? -1 : 1));
+  members.sort(byLength);
   const head = members[0];
-  // A name belongs to the FAMILY, not to whichever member happened to be shortest. All three named
-  // six-move patterns survived the first family regeneration only because the named member was also
-  // the shortest, which is luck and not a property.
+  // A name belongs to the FAMILY, not to whichever member happened to be shortest — but the book's
+  // ROUTE belongs to one picture, and a row carries the head's picture. So a named member that is not
+  // its family's head is refused here rather than written as a row whose name and route disagree.
   const named = members.find((m) => m.name);
+  if (named && named !== head) {
+    throw new Error(`${named.name} is not the shortest picture of its family (${head.alg ?? head.sliceAlg}) — decide which the row is`);
+  }
+  const { state, ...row } = head;
   return {
-    ...head,
-    ...(named ? { name: named.name } : {}),
+    ...row,
     family,
     designs: new Set(members.map((m) => m.design)).size,
-    variants: members.slice(1).map((m) => m.alg),
+    // Face-turn variants only: they are what the oracle can grade and what `applyAlg` can replay.
+    variants: members.slice(1).filter((m) => m.alg !== null).map((m) => m.alg),
   };
-}).sort((a, b) => b.order - a.order || a.depth - b.depth || (a.look < b.look ? -1 : 1));
+}).sort((a, b) => b.order - a.order || byLength(a, b));
 
 const rotationCount = rotationClasses.length;
 const designCount = new Set(rotationClasses.map((r) => r.design)).size;
-
-// ---- the named ones, for provenance -------------------------------------------------------------
-
-const BOOK = [
-  ['The Checkerboard', 'U2 D2 F2 B2 L2 R2'],
-  ['Plus/Minus', 'U2 R2 L2 U2 R2 L2'],
-  ['Lines', 'R2 U2 R2 U2 R2 U2 L2 D2 L2 D2 L2 D2 L2 R2'],
-  ['Cube in a Cube', "F L F U' R U F2 L2 U' L' B D' B' L2 U"],
-  ['Side Lines', "R D R F R' F' B D R' U' B' U D2"],
-  ['Cube in a Cube in a Cube', "U' L' U' F' R2 B' R F U B2 U B' L U' F U R F'"],
-  ['Superflip', "U R2 F B R B2 R U2 L B2 R U' D' R2 F R' L B2 U2 F2"],
-  ['Chessboard in a Cube', "B D F' B' D L2 U L U' B D' R B R D' R L' F U2 D"],
-  ['Centres', "U D' R L' F B' U D'"],
-  ['Opposite Corners', 'R L U2 F2 D2 F2 R L F2 D2 B2 D2'],
-  ['Vertical Stripes', "F U F R L2 B D' R D2 L D' B R2 L F U F"],
-  ['Shifted Blocks', "L2 B2 D' B2 D L2 U R2 D R2 B U R' F2 R U' B' U'"],
-  ['Hello!', 'U2 R2 F2 U2 D2 F2 L2 U2'],
-  ['40 (4T)', "F2 D2 F' L2 D2 U2 R2 B' U2 F2"],
-];
-const NAMED = new Map();
-const bookRows = BOOK.map(([name, alg]) => {
-  const state = applyAlg(SOLVED, alg);
-  const f = toFacelets(state);
-  const look = canonicalLook(f);
-  const order = orderOf(f);
-  const hit = found.get(look);
-  if (hit) NAMED.set(look, name);
-  return { name, bookMoves: alg.trim().split(/\s+/).length, order, look, inLedger: Boolean(hit),
-    twisted: twistedLooks.has(look), oriented: oriented(state), depth: hit?.depth ?? null };
-});
+const NAMED = new Map(states.filter((s) => s.name).map((s) => [s.look, s.name]));
 
 // ---- the set patterns ---------------------------------------------------------------------------
 //
@@ -359,14 +280,21 @@ const SETS = [
 const pad = (s, n) => String(s).padEnd(n);
 const num = (s, n) => String(s).padStart(n);
 
-console.log(`=== exhaustive symmetry search to ${DEPTH} moves ===================================`);
+console.log(`=== exhaustive symmetry search to ${DEPTH} face turns ===================================`);
 console.log(`${visited.toLocaleString()} canonical maneuvers in ${(walkMs / 1000).toFixed(1)} s`);
+console.log(`and to ${SLICE_DEPTH} moves counting a middle-layer turn as one:`
+  + ` ${sliced.visited.toLocaleString()} maneuvers in ${(sliceMs / 1000).toFixed(1)} s`);
 console.log(`kept: fixed by at least ${STORE_MIN_ORDER} of the 24 views, untwisted, then deduplicated`);
 console.log(`  ${num(looksBeforeTwistCut, 5)} pictures at or above the order cut`);
 console.log(`  ${num(twistedLooks.size, 5)} reachable no other way than with a twisted corner or a flipped edge — CUT`
   + `   (by order: ${[...twistedByOrder.entries()].sort((a, b) => b[0] - a[0]).map(([o, n]) => `${o}:${n}`).join(' ')})`);
 console.log(`  ${num(twistPrice.length, 5)} kept, but their shortest UNTWISTED route is longer`
   + `${twistPrice.length ? ` (by ${[...new Set(twistPrice.map((x) => x.cost))].sort((a, b) => a - b).join(' and ')} moves)` : ''}`);
+const sliceOnly = [...sliceCut.kept.keys()].filter((look) => !faceCut.kept.has(look)).length;
+const bookOnly = [...admitted].filter((look) => !faceCut.kept.has(look) && !sliceCut.kept.has(look)).length;
+console.log(`  ${num(sliceOnly, 5)} more that only the slice walk reaches untwisted`
+  + `   (its own twist cut: ${sliceCut.twisted.size} of ${sliceCut.before})`);
+console.log(`  ${num(bookOnly, 5)} more from the book, beyond both walks and untwisted`);
 console.log(`  ${num(rotationCount, 5)} up to the 24 rotations   (a picture held differently)`);
 console.log(`  ${num(designCount, 5)} up to the 48 symmetries   (mirrors merged)`);
 console.log(`  ${num(states.length, 5)} up to symmetry and inverse — what the ledger stores\n`);
@@ -380,20 +308,20 @@ for (const [order, n] of [...census.entries()].sort((a, b) => b[0] - a[0])) {
 }
 
 console.log(`\nthe most symmetric, shortest first:\n`);
-console.log(`  ${pad('order', 6)} ${pad('moves', 6)} ${pad('wrong', 6)} ${pad('blank', 6)} ${pad('faces', 14)} ${pad('name', 24)} maneuver`);
-for (const s of states.filter((x) => x.order >= 8 || x.wrong >= 20).slice(0, 30)) {
+console.log(`  ${pad('order', 6)} ${pad('moves', 6)} ${pad('slice', 6)} ${pad('wrong', 6)} ${pad('blank', 6)} ${pad('faces', 14)} ${pad('name', 24)} maneuver`);
+for (const s of states.filter((x) => x.order >= 8 || x.wrong >= 20 || x.moves === null).slice(0, 40)) {
   const uniform = new Set(s.figures).size === 1 ? draw(s.figures[0]) : `${new Set(s.figures).size} figures`;
-  console.log(`  ${pad(s.order, 6)} ${pad(s.depth, 6)} ${pad(s.wrong, 6)} ${pad(s.blank, 6)} ${pad(uniform, 14)} ${pad(NAMED.get(s.look) ?? '', 24)} ${s.alg}`);
+  console.log(`  ${pad(s.order, 6)} ${pad(s.moves ?? '-', 6)} ${pad(s.sliceMoves ?? '-', 6)} ${pad(s.wrong, 6)} ${pad(s.blank, 6)} ${pad(uniform, 14)} ${pad(NAMED.get(s.look) ?? '', 24)} ${s.alg ?? s.sliceAlg ?? s.book}`);
 }
 
 console.log('\n=== the book\'s fourteen, against the search =================================');
-console.log(`  ${pad('pattern', 26)} ${pad('book', 5)} ${pad('order', 6)} ${pad('found', 6)} note`);
+console.log(`  ${pad('pattern', 26)} ${pad('book', 5)} ${pad('order', 6)} ${pad('moves', 6)} ${pad('slice', 6)} note`);
 for (const r of bookRows) {
-  const note = r.inLedger ? 'in the ledger'
-    : r.twisted ? `order ${r.order} at ${r.depth}, but CUT: a piece is turned the wrong way`
-      : r.order < STORE_MIN_ORDER ? `order ${r.order} is below the cut of ${STORE_MIN_ORDER}`
-        : `order ${r.order}, but further than ${DEPTH} moves`;
-  console.log(`  ${pad(r.name, 26)} ${pad(r.bookMoves, 5)} ${pad(r.order, 6)} ${pad(r.depth ?? '-', 6)} ${note}`);
+  const row = states.find((s) => s.look === r.look);
+  const note = row ? (row.moves !== null ? 'in the ledger, found by the face walk'
+    : row.sliceMoves !== null ? 'in the ledger, found by the slice walk' : 'in the ledger, on the book\'s own route')
+    : 'NOT in the ledger: no route to it leaves every piece untwisted';
+  console.log(`  ${pad(r.name, 26)} ${pad(r.bookMoves, 5)} ${pad(r.order, 6)} ${pad(row?.moves ?? '-', 6)} ${pad(row?.sliceMoves ?? '-', 6)} ${note}`);
 }
 
 console.log('\n=== set patterns: defined by what they leave free ===========================');
@@ -411,41 +339,54 @@ if (EMIT) {
   const FIXTURE = fileURLToPath(new URL('../test/fixtures/pattern-ledger.mjs', import.meta.url));
   const header = `// The pattern ledger. GENERATED — do not hand-edit.
 //
-//   regenerate: node apps/web/bench/pattern-ledger.mjs ${DEPTH} --emit
+//   regenerate: node apps/web/bench/pattern-ledger.mjs ${DEPTH} ${SLICE_DEPTH} --emit
 //   re-verify:  node --test apps/web/test/pattern-ledger.test.mjs
 //
-// Every picture within ${DEPTH} moves of solved that is fixed by at least ${STORE_MIN_ORDER} of the 24
-// whole-cube rotations AND leaves every piece turned the right way up — which is what "pretty" means
-// once it is made mechanical, and is the property a checkerboard, a ring of dots and a cube-in-a-cube
-// all share. The search was exhaustive for that radius, so an entry's \`moves\` is a proved minimum
-// over the whole radius and not a best effort.
+// Every picture fixed by at least ${STORE_MIN_ORDER} of the 24 whole-cube rotations, with no piece twisted,
+// that is within ${DEPTH} FACE TURNS of solved or within ${SLICE_DEPTH} moves when a middle-layer turn (M, E, S)
+// counts as one — which is what "pretty" means once it is made mechanical, and is the property a
+// checkerboard, a ring of dots and a cube-in-a-cube all share. Both walks were exhaustive for their
+// radius, so a row's \`moves\` and \`sliceMoves\` are proved minima and not best efforts.
 //
-// TWO CUTS, AND BOTH ARE PART OF THE CLAIM.
+// TWO METRICS, because a slice is one movement of a hand and two face turns to the pieces. \`moves\` and
+// \`alg\` are in face turns — the half-turn metric every solver here speaks — and null when no
+// untwisted face-turn route lies within ${DEPTH}. \`sliceMoves\` and \`sliceAlg\` count a slice as one, and
+// \`sliceAlg\` is spelled as a child performs it, each letter read in the hold the moves before it left;
+// null when no untwisted route lies within ${SLICE_DEPTH}. Six Spots is the reason: \`M E M' E'\`, four moves,
+// and eight face turns, so the face walk alone never saw it.
 //
-// ORDER. Pictures fixed by exactly two of the 24 are found and COUNTED and not kept — at depth
-// ${DEPTH} there are over a hundred thousand such maneuvers, and a ledger of them is a database rather
-// than a list. So this file is complete for order ${STORE_MIN_ORDER} and above, and says nothing about
-// order 2. The first version of this header said "more than one", which claimed a completeness it does
-// not have.
+// THREE CUTS, AND ALL ARE PART OF THE CLAIM.
 //
-// TWIST. ${twistedLooks.size} of the ${looksBeforeTwistCut} pictures above the order cut cannot be
-// reached inside the radius without leaving a corner twisted or an edge flipped, and are cut too
-// (owner's call, 2026-09-12). A permuted piece reads as design, because the whole piece moved; a
-// twisted corner shows ONE sticker of the wrong colour inside an otherwise clean block, and a child
-// cannot tell that from a misscramble.
+// ORDER. Pictures fixed by fewer than ${STORE_MIN_ORDER} of the 24 are found and COUNTED and not kept — at depth
+// ${DEPTH} there are over a hundred thousand such maneuvers at order 2 alone, and a ledger of them is a
+// database rather than a list. So this file is complete for order ${STORE_MIN_ORDER} and above within both radii,
+// and says nothing about lower orders except for the book's rows below.
 //
-// \`moves\` is the proved minimum among UNTWISTED routes, which could in principle be longer than the
-// proved minimum over all routes. ${twistPrice.length === 0 ? 'Measured: for every picture kept here it is not — the shortest route to a\n// picture that can be reached straight at all is already a straight one.' : `For ${twistPrice.length} of the pictures kept here it is longer.`}
+// TWIST. ${twistedLooks.size} of the ${looksBeforeTwistCut} pictures the face walk finds above the order cut, and
+// ${sliceCut.twisted.size} of the ${sliceCut.before} the slice walk finds, cannot be reached inside the radius
+// without a piece twisted against the others, and are cut (owner's call, 2026-09-12). A permuted piece
+// reads as design, because the whole piece moved; a twisted corner shows ONE sticker of the wrong colour
+// inside an otherwise clean block, and a child cannot tell that from a misscramble. "Twisted" is
+// \`untwisted\` in bench/cube-look.mjs: no turn of the whole SHELL leaves every piece oriented. It read
+// "oriented against the centres" until 2026-10-17, which cut Six Spots — a solved shell turned against
+// its centres — though nothing on it looks twisted.
 //
-// The cut is on ROUTES and not on pictures, which is the opposite of how it was first written. Twist is
-// measured against the cube's own CENTRES, the only frame a child has, while \`canonicalLook\` renames
-// colours as it rotates — so two maneuvers can reach one look and disagree about whether a piece is
-// twisted. Of 720 picture-and-view pairs, 192 read differently about orientation under that renaming.
-// An assertion in the generator caught the wrong version on its first run; the notes there say why.
+// The cut is on ROUTES and not on pictures: \`canonicalLook\` renames colours as it rotates, so two
+// maneuvers can reach one look and disagree about whether a piece is twisted, and a look is kept when
+// SOME route to it is clean. \`moves\` is therefore the proved minimum among untwisted routes, which could
+// in principle be longer than the proved minimum over all routes. ${twistPrice.length === 0 ? 'Measured: for every picture kept here it is\n// not — the shortest route to a picture that can be reached straight at all is already a straight one.' : `For ${twistPrice.length} of the pictures kept here it is longer.`}
+//
+// RADIUS. Within the two above. EXCEPT THE BOOK: a famous picture (\`name\`, with the route a book prints
+// as \`book\`) is kept whatever its order and distance, provided its book route twists nothing — the radius
+// and the order cut keep a SEARCH's output a catalogue, and a hand-named list of fourteen does not
+// threaten that (owner's call, 2026-10-17). A row reached by neither walk has \`moves\` and \`sliceMoves\`
+// null: its distance is not proved, and a book's route is not a minimum.
 //
 // \`look\` is the canonical facelet string: the smallest of the picture's 24 views, so two cubes that
 // are the same picture held differently are one entry. \`order\` is how many views leave it unchanged.
-// \`alg\` is one shortest maneuver to it, and there are usually others.
+// \`order\`, \`figures\`, \`wrong\` and \`blank\` are measured on the cube the row's FIRST route reaches —
+// \`alg\` when there is one, then \`sliceAlg\`, then \`book\`. \`variants\` are the family's other face-turn
+// routes.
 //
 // The solved cube is deliberately absent. It is order 24 at zero moves and it is what patterns are
 // measured FROM, not one of them.
@@ -453,15 +394,17 @@ if (EMIT) {
 // SET patterns are not in here and cannot be: they are defined by what they leave free rather than by
 // a cube, so no walk reaches them. They live in \`SET_PATTERNS\` below, with their sizes derived.
 `;
-  const stateRows = states.map((s) => `  { look: ${JSON.stringify(s.look)}, order: ${s.order}, moves: ${s.depth},`
-    + ` alg: ${JSON.stringify(s.alg)}, wrong: ${s.wrong}, blank: ${s.blank},`
+  const stateRows = states.map((s) => `  { look: ${JSON.stringify(s.look)}, order: ${s.order},`
+    + ` moves: ${s.moves}, alg: ${JSON.stringify(s.alg)},`
+    + ` sliceMoves: ${s.sliceMoves}, sliceAlg: ${JSON.stringify(s.sliceAlg)},`
+    + ` wrong: ${s.wrong}, blank: ${s.blank},`
     + ` designs: ${s.designs}, variants: ${JSON.stringify(s.variants)}, figures: [${s.figures.join(',')}]`
-    + `${NAMED.has(s.look) ? `, name: ${JSON.stringify(NAMED.get(s.look))}` : ''} },`).join('\n');
+    + `${s.name ? `, name: ${JSON.stringify(s.name)}, book: ${JSON.stringify(s.book)}` : ''} },`).join('\n');
   const setRows = SETS.map((s) => `  { id: ${JSON.stringify(s.id)}, name: ${JSON.stringify(s.name)},`
     + ` free: ${JSON.stringify(s.free)}, size: ${s.size}, n: ${s.n}, of: ${s.of},`
     + ` meanMoves: ${s.meanMoves}, meanSolve: ${s.meanSolve}, parts: ${JSON.stringify(s.parts)} },`).join('\n');
   writeFileSync(FIXTURE,
-    `${header}\nexport const LEDGER_DEPTH = ${DEPTH};\n\n`
+    `${header}\nexport const LEDGER_DEPTH = ${DEPTH};\nexport const SLICE_DEPTH = ${SLICE_DEPTH};\n\n`
     + `export const STATE_PATTERNS = Object.freeze([\n${stateRows}\n].map(Object.freeze));\n\n`
     + `export const SET_PATTERNS = Object.freeze([\n${setRows}\n].map(Object.freeze));\n`);
   console.log(`\nwrote ${FIXTURE}: ${states.length} state patterns, ${SETS.length} set patterns`);

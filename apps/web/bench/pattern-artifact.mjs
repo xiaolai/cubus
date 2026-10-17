@@ -9,14 +9,16 @@
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { SOLVED, applyAlg } from '../lib/cube-pieces.js';
+import { SOLVED } from '../lib/cube-pieces.js';
+import { run } from '../lib/cube-moves.js';
 import { STICKER_PALETTES } from '../lib/sticker-palettes.js';
 import { toFacelets } from '../lib/two-phase.js';
 import { ROTATIONS, symmetryOrder } from './cube-look.mjs';
 import { SET_PATTERNS, STATE_PATTERNS, LEDGER_DEPTH } from '../test/fixtures/pattern-ledger.mjs';
 import { SOLVER_PHASES } from './solver-phases.mjs';
 
-const facelets = (alg) => toFacelets(applyAlg(SOLVED, alg));
+// Through the app's interpreter, because a route may hold middle-layer turns (2026-10-17).
+const facelets = (alg) => toFacelets(run(alg, ['U', 'F'], SOLVED).state);
 
 /** The book's fourteen, with what this repository measured about each. */
 const NAMED = [
@@ -28,7 +30,7 @@ const NAMED = [
   ['Cube in a Cube in a Cube', "U' L' U' F' R2 B' R F U B2 U B' L U' F U R F'", 18, false, ''],
   ['Superflip', "U R2 F B R B2 R U2 L B2 R U' D' R2 F R' L B2 U2 F2", 20, true, 'exactly 20, proved by Reid in 1995'],
   ['Chessboard in a Cube', "B D F' B' D L2 U L U' B D' R B R D' R L' F U2 D", 18, false, 'two shorter than the book'],
-  ['Centres', "U D' R L' F B' U D'", 8, true, ''],
+  ['Six Spots', "U D' R L' F B' U D'", 8, true, "four with the middle layers: M E M' E'"],
   ['Opposite Corners', 'R L U2 F2 D2 F2 R L F2 D2 B2 D2', 12, false, ''],
   ['Vertical Stripes', "F U F R L2 B D' R D2 L D' B R2 L F U F", 17, false, 'the book wins: the engine found only 19'],
   ['Shifted Blocks', "L2 B2 D' B2 D L2 U R2 D R2 B U R' F2 R U' B' U'", 15, false, 'three shorter than the book'],
@@ -62,7 +64,8 @@ function setPicture(id) {
   return out.join('');
 }
 
-const state = STATE_PATTERNS.map((r) => ({ ...r, f: facelets(r.alg) }));
+// A row's picture is its FIRST route's — face turns, then slices, then the book's — as the ledger measured it.
+const state = STATE_PATTERNS.map((r) => ({ ...r, f: facelets(r.alg ?? r.sliceAlg ?? r.book) }));
 
 // COUNTED, not typed. The page used to state "213 cards where there are 95 patterns" as prose, and
 // when the twist cut of 2026-09-12 moved both numbers the sentence became a confident falsehood on a
@@ -473,13 +476,18 @@ const esc = (v) => String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&
 // reported "1 showing" above a table still listing all of them (found by audit, 2026-09-28).
 function filterData(o) {
   return ' data-order="' + (o.order ?? '') + '" data-q="'
-    + esc(((o.name || '') + ' ' + (o.alg || '')).toLowerCase()) + '"';
+    + esc(((o.name || '') + ' ' + (o.alg || o.sliceAlg || o.book || '')).toLowerCase()) + '"';
 }
 
 function card(o) {
   const badges = [];
   if (o.order !== undefined) badges.push('<span class="badge' + (o.order >= 8 ? ' hi' : '') + '">order ' + o.order + '</span>');
-  if (o.moves !== undefined) badges.push('<span class="badge">' + o.moves + ' moves</span>');
+  // A ledger row's two metrics (2026-10-17): face turns, null past the face walk's radius, and moves
+  // counting a middle-layer turn as one. The second is shown only where it says something new.
+  if (o.moves !== undefined && o.moves !== null) badges.push('<span class="badge">' + o.moves + ' moves</span>');
+  if (o.sliceMoves !== undefined && o.sliceMoves !== null && o.sliceMoves !== o.moves) {
+    badges.push('<span class="badge hi">' + o.sliceMoves + ' with slices</span>');
+  }
   // A named pattern carries TWO lengths and they are not the same claim: what the book prints, and the
   // shortest that exists. Showing one number above the other's algorithm is how the first build of this
   // page said "6 moves" over a 14-move maneuver.
@@ -513,8 +521,8 @@ function card(o) {
     + '<div class="art">' + isoCube(o.f, 108, o.sets) + netCube(o.f, 6, o.sets) + '</div>'
     + (o.name ? '<div class="name">' + esc(o.name) + '</div>' : '')
     + '<div class="badges">' + badges.join('') + '</div>'
-    + (o.alg ? '<div class="alg">' + (o.algLabel ? '<span class="alglabel">' + esc(o.algLabel) + '</span>' : '')
-      + esc(o.alg) + '</div>' : '')
+    + ((o.alg || o.sliceAlg || o.book) ? '<div class="alg">' + (o.algLabel ? '<span class="alglabel">' + esc(o.algLabel) + '</span>' : '')
+      + esc(o.alg || o.sliceAlg || o.book) + '</div>' : '')
     + (meta.length ? '<div class="meta">' + meta.map(esc).join(' &middot; ') + '</div>' : '')
     + (o.note ? '<div class="cardnote">' + esc(o.note) + '</div>' : '')
     + '</article>';

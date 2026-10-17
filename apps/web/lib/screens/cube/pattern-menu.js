@@ -13,7 +13,7 @@
 //
 // AND THE ITEMS ARE PICTURES, drawn with `netSvg` — not names, and not `<cubus-cube>`.
 //
-//   Not names, because 70 of the ledger's 73 patterns have none and the audience cannot read. The
+//   Not names, because 201 of the ledger's 209 patterns have none and the audience cannot read. The
 //   name is still on the button for a screen reader and for an adult, under the picture.
 //
 //   Not `<cubus-cube>`, because the page runs on ONE WebGL context on purpose (lib/cube-drawing.js

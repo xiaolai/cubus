@@ -16,7 +16,9 @@
 // and `two-phase.js` produce between them. That last one is the real check — it ties this geometry to
 // the model the rest of the app solves with, rather than to an idea about how a cube is laid out.
 
-import { MOVE_NAMES, SOLVED, applyMove } from '../lib/cube-pieces.js';
+import Cube from 'cubejs';
+
+import { MOVE_NAMES, SOLVED, applyMove, compose, fromCube } from '../lib/cube-pieces.js';
 import { toFacelets } from '../lib/two-phase.js';
 
 /** The facelet order the app uses everywhere: U R F D L B, nine each, row-major on that face. */
@@ -173,6 +175,56 @@ export function symmetryOrder(facelets) {
   return n;
 }
 
+// ---- twist, measured against the other pieces ----------------------------------------------------
+
+/** The six centre stickers, in `FACE_ORDER`. */
+const CENTRE_STICKERS = FACE_ORDER.map((_, k) => k * 9 + 4);
+
+/** `facelets` with every sticker but the centres carried round by rotation `r`, colours unchanged —
+ *  the SHELL turned in the hands while the six centres stay where they are. */
+function turnShell(facelets, r) {
+  const { to } = ROTATIONS[r];
+  const out = new Array(54);
+  for (let i = 0; i < 54; i++) out[to[i]] = facelets[i];
+  for (const i of CENTRE_STICKERS) out[i] = facelets[i];
+  return out.join('');
+}
+
+/**
+ * The 24 shell turns as piece arrangements in the model's frame, so `compose(state, SHELL_TURNS[r])` is
+ * "this cube, then its whole shell turned by rotation r". A quarter turn of the shell alone is not a
+ * cube anyone can reach — it swaps the parity of the edges against the corners — but it is a perfectly
+ * good arrangement to MEASURE with, which is all this is for. cubejs is the facelet parser; `verify()`
+ * checks every arrangement against `turnShell` on a scrambled cube rather than trusting the parse.
+ */
+const SHELL_TURNS = ROTATIONS.map((_, r) => fromCube(Cube.fromString(turnShell(toFacelets(SOLVED), r))));
+
+/**
+ * Is no piece turned against the others? THE TWIST CUT's measure (owner's call, 2026-09-12, widened
+ * 2026-10-17).
+ *
+ * A twisted corner shows ONE sticker of the wrong colour inside an otherwise clean block, and a child
+ * cannot tell that from a misscramble — so a pattern that needs one is not a pattern. Until 2026-10-17
+ * this read "every piece oriented against the CENTRES" (`co` and `eo` all zero). That misfires on a
+ * cube whose whole shell has turned relative to its centres: Six Spots is exactly that — a solved
+ * shell, centres moved — so every piece read as turned and the picture was cut, though nothing on it
+ * looks twisted. A shell that has turned as one piece is not twisted; it is held differently from its
+ * centres.
+ *
+ * So the measure is now: SOME whole-shell turn leaves every piece oriented. The identity is one of the
+ * 24, so everything the old measure kept, this keeps. Two corners turned in place, or the superflip's
+ * twelve flipped edges, cannot be undone by turning the whole shell, so those are still cut —
+ * `pattern-ledger.test.mjs` pins all three.
+ */
+export function untwisted(state) {
+  outer: for (const turn of SHELL_TURNS) {
+    for (let i = 0; i < 8; i++) if ((state.co[turn.cp[i]] + turn.co[i]) % 3 !== 0) continue outer;
+    for (let i = 0; i < 12; i++) if ((state.eo[turn.ep[i]] + turn.eo[i]) % 2 !== 0) continue outer;
+    return true;
+  }
+  return false;
+}
+
 // ---- the checks --------------------------------------------------------------------------------
 
 /** Every claim this file makes about the cube's geometry, checked. Throws on the first failure. */
@@ -321,7 +373,18 @@ export function verify() {
     throw new Error('two views of one cube canonicalise differently');
   }
 
-  return { stickers: 54, rotations: 24, symmetries: 48, movesChecked: MOVE_NAMES.length };
+  // 6. Each shell turn, composed in the PIECE model, draws exactly the picture `turnShell` draws by
+  //    moving stickers — on a scrambled cube, so no symmetry of the solved one can hide a wrong table.
+  //    And the identity rotation's turn is no turn at all.
+  if (SHELL_TURNS.length !== 24) throw new Error(`${SHELL_TURNS.length} shell turns, expected 24`);
+  for (let r = 0; r < 24; r++) {
+    if (toFacelets(compose(t, SHELL_TURNS[r])) !== turnShell(f, r)) {
+      throw new Error(`shell turn ${r} disagrees with the sticker geometry`);
+    }
+  }
+  if (!SHELL_TURNS.some((g) => toFacelets(g) === toFacelets(SOLVED))) throw new Error('no shell turn is the identity');
+
+  return { stickers: 54, rotations: 24, symmetries: 48, movesChecked: MOVE_NAMES.length, shellTurns: 24 };
 }
 
 if (process.argv[1]?.endsWith('cube-look.mjs')) {

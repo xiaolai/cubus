@@ -4,7 +4,7 @@
 // menu held all five pictures there were, and `lib/patterns.js` recorded what offering more would
 // cost: "a grid you sort, filter or scroll has become the primary region, and 'only a new
 // COMPOSITION is a new screen' makes that a screen of its own, sibling to Lessons". The catalogue is
-// twenty now, so this is that screen, and the menu is the five last chosen plus a way through to
+// thirty-nine now, so this is that screen, and the menu is the five last chosen plus a way through to
 // here (`lib/shape-recency.js`).
 //
 // IT IS NOT A TAB, and that is deliberate. `NAV` is the beginner's path to a solved cube and the
@@ -21,7 +21,7 @@
 // app's LIST composition, and in landscape it cuts the column to `--ref-w * 0.58` and leaves the
 // `sheet` area for an aside. This screen has no aside, so half a landscape stage was simply blank:
 // measured at 1180×820, the grid fitted THREE cards across and scrolled, against six with the
-// column removed. A list is a column by nature and a catalogue is not — twenty pictures want the
+// column removed. A list is a column by nature and a catalogue is not — thirty-nine pictures want the
 // width.
 //
 // AND NO MOVE COUNT IS DRAWN. The ledger proves a minimum for each picture FROM SOLVED, and the
@@ -107,7 +107,7 @@ SCREENS.shapes = () => {
           // navigation would be writing on behalf of a screen that has already been torn down.
           state.stageTarget = id;
           // Recorded on THIS screen's press as well as the menu's, because this is where the
-          // fifteen pictures the menu does not hold are chosen — without it, a shape found here
+          // thirty-four pictures the menu does not hold are chosen — without it, a shape found here
           // could never make its way into the menu and the recency would only ever shuffle the five
           // it started with.
           rememberShape(id);
