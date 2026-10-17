@@ -216,3 +216,18 @@ test('a flip projection pins the top stickers only when its goal is the solved o
   const loose = { ...real, projections: real.projections.map((p) => (p === flip ? { ...p, goals: [p.codeOf(SOLVED), other] } : p)) };
   assert.equal(topUp(targetPicture(loose)), false, 'two goals were read as the one that promises the flips');
 });
+
+test('a twist projection pins the top corner stickers only when its goal is the solved one', () => {
+  // The flip case's twin: the twist pin asked for the solved goal too, and nothing exercised it.
+  const real = targetById('top-oriented');
+  const twist = real.projections.find((p) => p.kind === 'twist');
+  assert.ok(twist, 'precondition: this target reads twists');
+  const cornersUp = (picture) => [8, 6, 0, 2].every((at) => picture[at] === 'U');
+  assert.equal(cornersUp(targetPicture(real)), true, 'precondition: the real target pins the top corner stickers');
+  const other = twist.codeOf(applyAlg(SOLVED, "R' D' R D R' D' R D U R' D' R D R' D' R D R' D' R D R' D' R D U'"));
+  assert.notEqual(other, twist.codeOf(SOLVED), 'precondition: this is a different goal');
+  const bent = { ...real, projections: real.projections.map((p) => (p === twist ? { ...p, goals: [other] } : p)) };
+  assert.equal(cornersUp(targetPicture(bent)), false, 'a target that does not promise the twists still pinned them');
+  const loose = { ...real, projections: real.projections.map((p) => (p === twist ? { ...p, goals: [p.codeOf(SOLVED), other] } : p)) };
+  assert.equal(cornersUp(targetPicture(loose)), false, 'two goals were read as the one that promises the twists');
+});
