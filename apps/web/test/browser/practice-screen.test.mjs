@@ -618,6 +618,48 @@ test('in mixed practice, starting over as a rep ends keeps the algorithm — by 
   }
 });
 
+// ---- a rep another window wrote over (round 2, the record's journal) -----------------------------------------
+
+test('a rep another window wrote over and the record could not put back is said on the page — at the next rep, and as the other window writes', async () => {
+  const { page, context, errors } = await openPractice(fixture);
+  try {
+    const rnd = lcg(81);
+    await show(page, 'sune');
+    const notice = () => page.evaluate(() => { const n = document.querySelector('#practiceRecordSay'); return n.hidden ? '' : n.textContent; });
+    const rep = async () => {
+      const flat = reportsPerToken(SUNE, ORIENTATIONS[0], rnd).flat();
+      assert.equal((await feedRep(page, randomStart(rnd), flat)).at(-1), 1, 'precondition: a rep completed');
+    };
+    /** Another window's write: this page's newest rep gone, and a rep of its own in the same millisecond, which the
+     *  record cannot order against the one it dropped, so it cannot put that one back (lib/drill/record.js). */
+    const overwrite = () => page.evaluate(() => {
+      const r = JSON.parse(localStorage.getItem('cubusDrillRecord'));
+      const mine = r.algs.sune.at(-1);
+      r.algs.sune = [...r.algs.sune.slice(0, -1), { ...mine, ms: mine.ms + 1 }];
+      const text = JSON.stringify(r);
+      localStorage.setItem('cubusDrillRecord', text);
+      return { at: mine.t, text };   // stored in short keys: `t` is the rep's time (lib/drill/record.js, SHORT)
+    });
+    await rep();
+    assert.equal(await notice(), '', 'precondition: nothing to say yet');
+    // At the next rep: the record finds the loss as it writes, and says so in what it returns.
+    const first = await overwrite();
+    await rep();
+    const atAdd = await notice();
+    assert.match(atAdd, /could not be put back/, `a rep lost to another window was not said on the page: "${atAdd}"`);
+    assert.match(atAdd, new RegExp(String(first.at)), 'the notice does not name the rep that was lost');
+    // As the other window writes: its storage event reaches the record, which says what it could not put back.
+    await rep();
+    const second = await overwrite();
+    await page.evaluate((text) => window.dispatchEvent(new StorageEvent('storage', { key: 'cubusDrillRecord', newValue: text, storageArea: localStorage })), second.text);
+    const atEvent = await notice();
+    assert.match(atEvent, new RegExp(String(second.at)), `a rep lost as another window wrote was not said on the page: "${atEvent}"`);
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
 // ---- the library (row 26) ----------------------------------------------------------------------------------
 
 test('the library draws no card or picture until a set is opened, and then that set\'s, once', async () => {

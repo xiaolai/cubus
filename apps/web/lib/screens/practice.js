@@ -233,7 +233,12 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   const clockBtn = $('#practiceClock', root);
   const demoRow = $('#practiceDemo', root);
   const recordSay = $('#practiceRecordSay', root);
-  const record = openPracticeRecord({ storage: localStorage, now: () => Date.now() });
+  // Watching the window's `storage` events, so a rep another window wrote over is put back as soon as that write
+  // arrives — and one that cannot be put back is said, here, with the other notices (`trouble.lost` below).
+  const record = openPracticeRecord({
+    storage: localStorage, now: () => Date.now(), changes: window, signal,
+    onLost: (err) => { if (!stale()) sayLost(err); },
+  });
 
   let row = null;
   let caseNow = null;
@@ -284,13 +289,20 @@ function mountPage({ root, page, catalogue, signal, stale }) {
    * What the page says about the record: a READ that failed and a WRITE that did not land, each standing until what it
    * said stops being true — a read that works, a rep that is saved. They are about the record, never about the row on
    * screen, so taking another row in place clears neither: mixed practice moved on right after the rep that was not
-   * saved, and the only sign of the loss went with it.
+   * saved, and the only sign of the loss went with it. And the reps another window wrote over that the record could
+   * not put back (`lost`): a rep gone stays gone, so they stand for as long as the page does — the record says each
+   * once and forgets it, so nothing else will.
    */
-  const trouble = { read: null, write: null };
+  const trouble = { read: null, write: null, lost: [] };
   const sayRecord = () => {
-    const text = [trouble.write, trouble.read].filter(Boolean).join(' ');
+    const text = [trouble.write, ...trouble.lost, trouble.read].filter(Boolean).join(' ');
     recordSay.hidden = !text;
     recordSay.textContent = text;
+  };
+  const sayLost = (err) => {
+    console.error('practice: a rep was written over by another window', err);
+    trouble.lost = [...trouble.lost, t('A rep is missing from your record: %1.', err.message)];
+    sayRecord();
   };
   const paintRecord = () => {
     let reps = null;    // null until the record is read: a read that fails leaves the history unknown, never empty
@@ -310,6 +322,8 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   const saveRep = (id, rep) => {
     const done = record.add(id, rep);
     trouble.write = done.saved ? null : t('That rep was not saved: %1', done.error.message);
+    // Saved or not, the write may have found an earlier rep another window wrote over and could not put back.
+    if (done.lost) sayLost(done.lost);
     sayRecord();
     if (row?.id === id) paintRecord();
   };
