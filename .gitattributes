@@ -1,0 +1,3 @@
+# Generated tables are bytes, never text: a checkout that converts line endings (core.autocrlf on Windows)
+# would rewrite them, and the loader would refuse every one on its checksum. apps/web/test/roux-tables.test.mjs.
+apps/web/lib/data/roux/*.bin binary
