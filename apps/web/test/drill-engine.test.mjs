@@ -524,7 +524,8 @@ test('on a cube that does not number its turns, the app\'s gap() inside the wind
 test('an off on a cube that does not number its turns is worded about the cube; on one that does, the turn', () => {
   for (const [numbersMoves, about] of [[false, 'cube'], [true, 'turn']]) {
     const h = harness({ alg: "R U R' U'", numbersMoves });
-    startAt(h, SOLVED);
+    // With the serial the arrangement was reported at, so the first report is counted too (the harness numbers from 1).
+    h.engine.start({ facelets: toFacelets(SOLVED), serial: numbersMoves ? 0 : undefined });
     h.turn('R');
     h.turn('U');
     h.turn('D');
@@ -536,6 +537,39 @@ test('an off on a cube that does not number its turns is worded about the cube; 
     assert.equal(h.engine.state.status, STATUS.UNCERTAIN);
     assert.equal(h.count('off'), 1);
   }
+});
+
+test('an off is about the turn only when every report of the rep was counted — never after a start with no serial', () => {
+  // A cube that numbers its turns, armed from an arrangement with no serial: its first report has nothing to be
+  // counted against, so a turn lost before it does not show. `R U R' U'` with R lost: U arrives, a turn of the
+  // algorithm in the holds where the cube's U is the child's R, and the child's R' then leaves every track. That off
+  // was worded about the TURN — "That turn left the algorithm" — for turns the child made right (audit-fix
+  // 2026-10-18 r3 #3, found reproducing it).
+  const h = harness({ alg: "R U R' U'" });
+  startAt(h, SOLVED);
+  h.turn('U', { skip: 1 });
+  h.turn("R'");
+  h.advance(CUE_WINDOW_MS);
+  assert.equal(h.count('off'), 1, 'precondition: the lost turn went unseen, and the next report was off');
+  assert.equal(h.events.find((e) => e.type === 'off').about, 'cube', 'an off no count could prove was worded about the turn');
+  assert.equal(h.engine.state.about, 'cube');
+  // With the serial the arrangement was reported at, the same loss shows at once: uncertain, never off.
+  const counted = harness({ alg: "R U R' U'" });
+  counted.engine.start({ facelets: toFacelets(SOLVED), serial: 0 });
+  counted.turn('U', { skip: 1 });
+  assert.equal(counted.engine.state.status, STATUS.UNCERTAIN);
+  counted.turn("R'");
+  counted.advance(CUE_WINDOW_MS);
+  assert.equal(counted.count('off'), 0);
+  // The doubt belongs to that rep: the next one, armed by itself, counts its first report against the report that
+  // finished the last, and a wrong turn in it is a turn.
+  const next = harness({ alg: "R U R' U'" });
+  startAt(next, SOLVED);
+  for (const q of ['R', 'U', "R'", "U'"]) next.turn(q);
+  assert.equal(next.count('done'), 1, 'precondition: the rep with an uncounted first report was done');
+  next.turn("D'"); // anticlockwise, so the first turn of `R U R' U'` in no hold
+  next.advance(CUE_WINDOW_MS);
+  assert.equal(next.events.find((e) => e.type === 'off').about, 'turn');
 });
 
 test('after a lost turn, the reconciled arrangement resumes tracking silently, and the rep\'s time is refused', () => {

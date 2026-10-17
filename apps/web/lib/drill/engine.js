@@ -42,9 +42,10 @@
 //   one procedure printed, another judged — the track is built from the same token list the caller prints,
 //                                           read by the one interpreter; the tests feed the reports a cube
 //                                           would make for every hold and assert the rep completes
-//   a dropped turn as a false accusation  — a serial jump is `uncertain`, never `off`; and on a cube that
-//                                           does not number its turns an `off` says so (`about: 'cube'`),
-//                                           so a screen words it about the cube, never the child
+//   a dropped turn as a false accusation  — a serial jump is `uncertain`, never `off`; and where a lost turn
+//                                           could not show — a cube that does not number its turns, or a report
+//                                           with no serial before it to count from — an `off` says so
+//                                           (`about: 'cube'`), so a screen words it about the cube, never the child
 //   one attempt's reports in the next      — every timer carries its attempt and its excursion and does
 //                                           nothing when either has moved on; every event names its attempt
 //   the biased timer                       — `lib/drill/timing.js`: first turn to last turn, nothing estimated
@@ -252,7 +253,7 @@ export function createDrillEngine({
     const run = cause === 'next' && carriesGesture ? rep.run : null;
     rep = {
       start: facelets(), log: [], since: 0, firstMatched: null, excursions: 0,
-      streamBroken: false, allNumbered: true, wayBack: null, about: null, cause: null, run,
+      streamBroken: false, allCounted: true, wayBack: null, about: null, cause: null, run,
     };
     status = STATUS.ARMED;
     emit(cause, from, { facelets: rep.start });
@@ -420,9 +421,11 @@ export function createDrillEngine({
     status = STATUS.OFF;
     rep.excursions += 1;
     // On a cube that numbers its turns, an unbroken run of serials proves the cube reported every turn, so
-    // leaving the algorithm was a TURN. Without numbers a lost turn looks exactly like a wrong one until the
+    // leaving the algorithm was a TURN — when every report of the rep was counted against the one before it,
+    // the first against the serial the rep was armed at. Without numbers, or with a report nothing counted (the
+    // first after an arrangement handed in with no serial), a lost turn looks exactly like a wrong one until the
     // next snapshot, so it is worded about the CUBE — the first Drill accused these cubes' owners.
-    rep.about = numbersMoves && rep.allNumbered ? 'turn' : 'cube';
+    rep.about = numbersMoves && rep.allCounted ? 'turn' : 'cube';
     rep.wayBack = snapshotWayBack();
     sound('off');
     emit('off', from, { about: rep.about, wayBack: rep.wayBack });
@@ -469,7 +472,8 @@ export function createDrillEngine({
      * serial that report carried, when the cube numbers its turns.
      *
      * The serial count starts again here (`countFrom`): the next report is compared with `serial`, or with
-     * nothing. A cube nobody was drilling — disconnected, or simply away from this engine — went on numbering
+     * nothing — and then a turn lost before it cannot show, so an off in that rep is worded about the cube
+     * (`cueOff`). A cube nobody was drilling — disconnected, or simply away from this engine — went on numbering
      * its turns, and those turns are in the arrangement given, not lost from the rep. The next rep that arms
      * itself after a `done` keeps the count: that is one unbroken stream.
      */
@@ -492,7 +496,9 @@ export function createDrillEngine({
         throw new Error(`drill: a cube reports one quarter turn of an outer face, not "${notation}"`);
       }
       const serial = Number.isInteger(move.serial) ? move.serial : null;
-      const jumped = serial !== null && lastSerial !== null && ((serial - lastSerial) & 0xff) !== 1;
+      // Counted: this serial follows one already seen, so a turn lost between them shows as a jump.
+      const counted = serial !== null && lastSerial !== null;
+      const jumped = counted && ((serial - lastSerial) & 0xff) !== 1;
       lastSerial = serial;
       if (status === STATUS.IDLE) return;
       model = applyMove(model, notation);
@@ -502,7 +508,7 @@ export function createDrillEngine({
         cubeTimestamp: move.cubeTimestamp ?? null,
         serial,
       }));
-      if (serial === null) rep.allNumbered = false;
+      if (!counted) rep.allCounted = false;
       if (jumped) enterUncertain('lost-turn');
       if (isGesture(move)) {
         restartFrom(status, 'gesture');
