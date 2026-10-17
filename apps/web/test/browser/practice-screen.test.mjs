@@ -460,6 +460,32 @@ test('a rep where one turn came without the cube\'s own time is refused about th
   }
 });
 
+// ---- a record that cannot be read (round 2, rows 18 and 23) -------------------------------------------------
+
+test('a record that cannot be read leaves the history unknown on the page — never "No reps yet"', async () => {
+  const { page, context, errors } = await openPractice(fixture, {
+    connect: false,
+    // Something that is not the record stands under its key: the read refuses it rather than guess.
+    prepare: (ctx) => ctx.addInitScript(() => localStorage.setItem('cubusDrillRecord', '{not json')),
+  });
+  try {
+    await show(page, 'sune');
+    const got = await page.evaluate(() => ({
+      reps: document.querySelector('#practiceReps').textContent.trim(),
+      notice: document.querySelector('#practiceRecordSay').hidden ? '' : document.querySelector('#practiceRecordSay').textContent,
+      figures: [...document.querySelectorAll('.practice-figures dd')].map((d) => d.textContent),
+    }));
+    assert.match(got.notice, /could not be read/, 'precondition: the read failed and the page said so');
+    assert.doesNotMatch(got.reps, /No reps yet/, 'an unreadable history was said to be empty');
+    assert.match(got.reps, /could not be read/);
+    assert.deepEqual(got.figures, ['—', '—', '—', '—'], 'a figure was given for a record nobody could read');
+    assert.equal(await page.evaluate(() => localStorage.getItem('cubusDrillRecord')), '{not json', 'the unreadable record was written over');
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
 // ---- the Settings row (row 29) -----------------------------------------------------------------------------
 
 test('the Settings stepper keeps keyboard focus on a control when a press reaches either bound', async () => {

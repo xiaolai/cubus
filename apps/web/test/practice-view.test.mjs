@@ -19,7 +19,7 @@ import { cardsHtml, libraryHtml, purposeOf, rowName } from '../lib/screens/pract
 import { paletteFor } from '../lib/scheme.js';
 import { STICKER_PALETTES } from '../lib/sticker-palettes.js';
 import {
-  REFUSAL_CODES, chipsHtml, fingersWords, partsWords, refusalWords, segmentsOf, writtenTokens,
+  REFUSAL_CODES, chipsHtml, fingersWords, lastRepsHtml, partsWords, refusalWords, segmentsOf, writtenTokens,
 } from '../lib/screens/practice/page-view.js';
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -155,6 +155,15 @@ test('a set\'s name and purpose are said in the active language; a row\'s own se
   } finally {
     setLocale('en');
   }
+});
+
+test('a history that could not be read is never said to be empty', () => {
+  // `null` is the record that could not be read (audit round 2, rows 18 and 23): what is in it is unknown.
+  const unknown = lastRepsHtml(null, esc);
+  assert.doesNotMatch(unknown, /No reps yet/, 'an unreadable history said to be empty');
+  assert.match(unknown, /could not be read/);
+  // And an empty one that WAS read still says so.
+  assert.match(lastRepsHtml([], esc), /No reps yet/);
 });
 
 test('every card draws its own row\'s case: one picture, its stickers in the colours they are, net or top face by what the row keeps', () => {

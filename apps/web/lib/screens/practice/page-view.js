@@ -83,8 +83,10 @@ export function figuresHtml(stats, n, esc) {
     <dl class="practice-figures">${rows.map(([k, v]) => `<div><dt class="sub">${esc(k)}</dt><dd class="num">${esc(v)}</dd></div>`).join('')}</dl>`;
 }
 
-/** The newest reps, newest first, each with its time or why it has none. */
+/** The newest reps, newest first, each with its time or why it has none. `reps` null means the record could not be
+ *  read: what is in it is unknown, and an unknown history is never said to be an empty one. */
 export function lastRepsHtml(reps, esc, most = 5) {
+  if (reps === null) return `<div class="sub" style="color:var(--ink-4)">${esc(t('Your last reps cannot be shown: the record could not be read.'))}</div>`;
   if (!reps.length) return `<div class="sub" style="color:var(--ink-4)">${esc(t('No reps yet.'))}</div>`;
   return `<ol class="practice-reps">${reps.slice(-most).reverse().map((r) => {
     const time = r.ms === null ? `— (${refusalWords(r.refused)})` : seconds(r.ms);

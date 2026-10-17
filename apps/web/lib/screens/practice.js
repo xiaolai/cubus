@@ -289,7 +289,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     recordSay.textContent = text;
   };
   const paintRecord = () => {
-    let reps = [];
+    let reps = null;    // null until the record is read: a read that fails leaves the history unknown, never empty
     let stats = null;
     try {
       reps = record.reps(row.id);
