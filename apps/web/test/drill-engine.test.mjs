@@ -572,6 +572,51 @@ test('a stop, or a start, forgets the last serial; the next rep, armed by itself
   assert.equal(h.engine.state.status, STATUS.UNCERTAIN, 'a turn lost between two reps went unnoticed');
 });
 
+test('an arrangement handed in sets the serial count: to the serial it was reported at, or to none', () => {
+  // R serial 1; U, serial 2, never arrives; a snapshot taken at serial 2 shows R U, so the resync completes the
+  // rep and the next one arms. R serial 3 is that rep's first turn — the loss is in the snapshot already — yet
+  // it was compared with serial 1 and read as another loss (audit-fix 2026-10-18 r2 #3).
+  for (const serial of [2, undefined]) {
+    const h = harness({ alg: 'R U' });
+    startAt(h, SOLVED);
+    h.turn('R');
+    h.engine.resync(toFacelets(applyAlg(SOLVED, 'R U')), { serial });
+    assert.equal(h.count('done'), 1);
+    assert.equal(h.events.at(-1).type, 'next');
+    h.turn('R', { skip: 1 });
+    assert.equal(h.engine.state.status, STATUS.RUNNING, `snapshot serial ${serial}: the turn after a mended loss read as a loss`);
+  }
+  // Given the snapshot's serial, a turn lost AFTER the snapshot is still caught at the next report.
+  const after = harness({ alg: 'R U' });
+  startAt(after, SOLVED);
+  after.turn('R');
+  after.engine.resync(toFacelets(applyAlg(SOLVED, 'R U')), { serial: 2 });
+  after.turn('R', { skip: 2 });
+  assert.equal(after.engine.state.status, STATUS.UNCERTAIN, 'a turn lost after the snapshot went unnoticed');
+  // A restart from a snapshot, and a start, take the same count: serial 7 makes 8 the next turn and 9 a loss.
+  for (const [arm, next, status] of [
+    ['restart', 6, STATUS.RUNNING], ['restart', 7, STATUS.UNCERTAIN], ['start', 6, STATUS.RUNNING], ['start', 7, STATUS.UNCERTAIN],
+  ]) {
+    const h = harness({ alg: "R U R' U'" });
+    startAt(h, SOLVED);
+    h.turn('R');                                       // serial 1
+    h.engine[arm]({ facelets: toFacelets(SOLVED), serial: 7 });
+    h.turn('R', { skip: next });                       // serial 2 + skip
+    assert.equal(h.engine.state.status, status, `${arm} at serial 7, then serial ${2 + next}`);
+  }
+  // A restart from the engine's own model keeps the count: that model is the reports'.
+  const own = harness({ alg: "R U R' U'" });
+  startAt(own, SOLVED);
+  own.turn('R');
+  own.engine.restart();
+  own.turn('R', { skip: 1 });
+  assert.equal(own.engine.state.status, STATUS.UNCERTAIN, 'a restart from the model forgot the count');
+  // A serial that is not one is refused, not taken.
+  for (const serial of [256, -1, 1.5, '3']) {
+    assert.throws(() => own.engine.resync(toFacelets(SOLVED), { serial }), /serial/, String(serial));
+  }
+});
+
 test('a gesture after a lost turn is refused until the arrangement is known again', () => {
   const h = harness({ alg: "R U R' U'" });
   startAt(h, SOLVED);

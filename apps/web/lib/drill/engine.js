@@ -389,6 +389,20 @@ export function createDrillEngine({
     return times.length === GESTURE_TURNS && t - times[0] <= GESTURE_MS;
   };
 
+  /**
+   * The serial count an arrangement HANDED IN sets: the serial it was reported at, so the next report is compared
+   * with that — or none, when the caller has none. Never the last serial this engine saw: an arrangement from
+   * outside may already hold turns that never reached it, and the next report compared with the last one it did
+   * see would call those turns lost again. Checked before anything changes.
+   */
+  const countFrom = (serial) => {
+    if (serial === undefined || serial === null) return null;
+    if (!Number.isInteger(serial) || serial < 0 || serial > 0xff) {
+      throw new Error(`drill: a serial is a whole number 0..255, not ${JSON.stringify(serial)}`);
+    }
+    return serial;
+  };
+
   const restartFrom = (from, cause, given) => {
     if (given === undefined && !modelTrusted) {
       emit('refused', from, { why: 'the stream lost a turn, so the arrangement now is not known' });
@@ -400,16 +414,17 @@ export function createDrillEngine({
 
   return Object.freeze({
     /**
-     * Arm the first rep from the arrangement the cube reports now (54 facelets, its own frame).
+     * Arm the first rep from the arrangement the cube reports now (54 facelets, its own frame), and `serial`, the
+     * serial that report carried, when the cube numbers its turns.
      *
-     * The serial count starts again here: the first report after a start is compared with nothing. A cube
-     * nobody was drilling — disconnected, or simply away from this engine — went on numbering its turns, and
-     * those turns are in the arrangement given, not lost from the rep. The next rep that arms itself after a
-     * `done` keeps the count: that is one unbroken stream.
+     * The serial count starts again here (`countFrom`): the next report is compared with `serial`, or with
+     * nothing. A cube nobody was drilling — disconnected, or simply away from this engine — went on numbering
+     * its turns, and those turns are in the arrangement given, not lost from the rep. The next rep that arms
+     * itself after a `done` keeps the count: that is one unbroken stream.
      */
-    start({ facelets: given }) {
+    start({ facelets: given, serial }) {
       if (typeof given !== 'string') throw new Error('drill: start needs the cube\'s arrangement');
-      lastSerial = null;
+      lastSerial = countFrom(serial);
       arm(status, 'start', given);
     },
 
@@ -453,17 +468,21 @@ export function createDrillEngine({
     },
 
     /**
-     * The arrangement the app has reconciled (the self-check's, after a gap). Mends the stream: tracking
-     * resumes, silently, from the position nearest where the cube had got to. The rep stays `uncertain`
-     * — its time is refused — and can still complete.
+     * The arrangement the app has reconciled (the self-check's, after a gap), and `serial`, the serial of the
+     * snapshot it came from when the cube numbers its turns. Mends the stream: tracking resumes, silently, from
+     * the position nearest where the cube had got to, and the serial count is taken from the snapshot
+     * (`countFrom`). The rep stays `uncertain` — its time is refused — and can still complete. An arrangement
+     * the engine already holds changes nothing, the count included.
      */
-    resync(given) {
+    resync(given, { serial } = {}) {
       const state = stateFrom(given);
-      if (status === STATUS.IDLE) { model = state; modelTrusted = true; return; }
+      const count = countFrom(serial);
+      if (status === STATUS.IDLE) { model = state; modelTrusted = true; lastSerial = count; return; }
       if (modelTrusted && facelets() === given) return;
       if (modelTrusted) enterUncertain('snapshot-disagrees');
       model = state;
       modelTrusted = true;
+      lastSerial = count;
       const f = facelets();
       wholeTracks(null);
       // Turns went by unseen, so the cube may be anywhere AHEAD: the one place this engine looks further
@@ -483,12 +502,15 @@ export function createDrillEngine({
     },
 
     /**
-     * Start over, from the screen: re-arm from the cube as it is NOW — `facelets` when the caller has them,
-     * otherwise the engine's own model. Refused (false, and a `refused` event) when a lost turn left the
+     * Start over, from the screen: re-arm from the cube as it is NOW — `facelets` when the caller has them, with
+     * the `serial` they were reported at, which sets the count as `start` does; otherwise the engine's own model,
+     * which is the reports' and keeps the count. Refused (false, and a `refused` event) when a lost turn left the
      * model unknown and no arrangement was given.
      */
-    restart({ facelets: given } = {}) {
+    restart({ facelets: given, serial } = {}) {
       if (status === STATUS.IDLE && given === undefined) throw new Error('drill: nothing to restart; start first');
+      if (given === undefined && serial !== undefined) throw new Error('drill: a serial belongs to an arrangement, and none was given');
+      if (given !== undefined) lastSerial = countFrom(serial);
       return restartFrom(status, 'restart', given);
     },
 
