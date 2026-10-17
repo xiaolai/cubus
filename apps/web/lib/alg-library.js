@@ -140,9 +140,11 @@ const NOT_GIVEN = Object.freeze({
 });
 
 /** The purposes a sourced set and its proved oracle share: the oracle answers the same cases, so it is FOR the
- *  same thing. Said once here so the two cannot drift apart. */
+ *  same thing. Said once here so the two cannot drift apart. An F2L row moves the top layer and its own slot's
+ *  two pieces and nothing else, so it cannot reach a piece in another slot: its purpose says so
+ *  (`alg-ledger.test.mjs`, "a slot set's purpose promises only the cases its rows can solve"). */
 const PURPOSE = Object.freeze({
-  f2l: 'Puts a corner and its edge into one slot of the first two layers, wherever the two pieces start.',
+  f2l: 'Puts a corner and its edge into one slot of the first two layers when each starts in the top layer or in that slot; a piece in another slot is taken out first.',
   oll: 'Turns every top piece so the top colour faces up, in one algorithm.',
   pll: 'Once the top face is one colour, moves every top piece to where it belongs in one algorithm, which finishes the cube.',
 });

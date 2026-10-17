@@ -785,6 +785,32 @@ test('every row carries its set\'s purpose, and every purpose is true of every r
   assert.ok(corners.includes(true) && corners.includes(false), 'the course\'s corner rows no longer split into "move" and "turn"');
 });
 
+test('a slot set\'s purpose promises only the cases its rows can solve: a piece in another slot is taken out first', () => {
+  // cubejs: each row moves the top layer and one slot's corner and edge, and nothing else — no centre, no piece of
+  // another slot. A piece that starts in another slot is where it was after the row, and after any turn of the top
+  // before it, so no row of the set solves that case: the purpose may not say "wherever the pieces start".
+  const sets = ALG_SETS.filter((s) => s.goal?.pieces === 'slot');
+  assert.deepEqual(sets.map((s) => s.id).sort(), ['f2l-full', 'f2l-human'], 'the slot sets are not the two F2L sets');
+  for (const set of sets) {
+    const slots = new Set();
+    for (const r of ROWS.filter((x) => x.set === set.id)) {
+      const e = cubejsEffect(r.alg);
+      assert.deepEqual(e.centres, [0, 1, 2, 3, 4, 5], `${r.id}: turns a centre`);
+      const below = changedBy(e).filter((p) => !isUp(p));
+      const edges = below.filter((p) => p.length === 2);
+      const corners = below.filter((p) => p.length === 3);
+      assert.ok(edges.length <= 1 && corners.length <= 1, `${r.id}: moves ${below.join(', ')} below the top layer`);
+      const slot = edges[0] ?? corners[0].replace('D', '');
+      if (corners.length) assert.equal(corners[0], sortedLetters(`D${slot}`), `${r.id}: moves a corner and an edge of two slots`);
+      slots.add(slot);
+    }
+    assert.equal(slots.size, 1, `${set.id}: its rows fill ${[...slots].join(' and ')}`);
+    assert.doesNotMatch(set.purpose, /\b(wherever|any)\b/, `${set.id}: "${set.purpose}" promises cases with a piece in another slot`);
+    assert.match(set.purpose, /\btop layer\b.*\bthat slot\b/, `${set.id}: "${set.purpose}" does not say where the two pieces must start`);
+    assert.match(set.purpose, /\banother slot\b.*\btaken out first\b/, `${set.id}: "${set.purpose}" does not say a piece in another slot is taken out first`);
+  }
+});
+
 test('a purpose out of step with its goal is caught — the words and the rows both', () => {
   const set = (id) => ALG_SETS.find((s) => s.id === id);
   const reworded = (id, purpose) => ({ ...set(id), purpose });
