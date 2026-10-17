@@ -132,6 +132,17 @@ test('a cut lesson is told from a whole one, and no proof of a whole cube is off
   const cut = cutLesson(full, holdsFor('cross'));
   assert.ok(cut, 'precondition: the cross chip cuts this lesson');
   assert.equal(isCutLesson(cut), true, 'a cut lesson read as whole');
+  // Including a cut at the FIRST step, whose `cutAt` is 0: a reading of the field's truth rather than its
+  // presence would call that walk whole and offer it a whole-cube proof (audit, 2026-10-17).
+  let atZero = null;
+  for (const alg of ['D R2', 'R', 'F', 'R2', "D' F", 'B L']) {
+    const scrambled = new Cube();
+    scrambled.move(alg);
+    const first = cutLesson(await booted.lessonFor({ facelets: scrambled.asString(), lesson: null }), holdsFor('cross'));
+    if (first?.cutAt === 0) { atZero = first; break; }
+  }
+  assert.ok(atZero, 'precondition: no cube in the list is cut at its first step');
+  assert.equal(isCutLesson(atZero), true, 'a lesson cut at its first step read as whole');
   const gate = readFileSync(new URL('../lib/prove-affordance.js', import.meta.url), 'utf8');
   assert.match(gate, /if \(proveBtn && optimalCapability\(\)[^{\n]*&& !isCutLesson\(lesson\)[^{\n]*\) \{/,
     'the prove offer must refuse a cut lesson');
