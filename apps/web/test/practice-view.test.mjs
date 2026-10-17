@@ -14,7 +14,7 @@ import { parse } from '../lib/cube-notation.js';
 import { PAUSE_FACTOR, TIME_REFUSAL } from '../lib/drill/timing.js';
 import { statsOf } from '../lib/drill/record.js';
 import { catalogueOf, pendingName } from '../lib/drill/library-client.js';
-import { libraryHtml, rowName } from '../lib/screens/practice/library-view.js';
+import { cardsHtml, libraryHtml, rowName } from '../lib/screens/practice/library-view.js';
 import { paletteFor } from '../lib/scheme.js';
 import { STICKER_PALETTES } from '../lib/sticker-palettes.js';
 import {
@@ -26,12 +26,44 @@ const catalogue = await catalogueOf(lib);
 // ONE window for the file: a happy-dom window per row cost a minute.
 const win = new Window();
 after(() => win.happyDOM.close());
-/** The library, rendered ONCE and parsed once — four hundred cards with their pictures cost seconds to parse. */
-const libraryDoc = (() => {
+/** The library as it first draws — every set closed, no card built — parsed once. */
+const closedDoc = (() => {
   const box = win.document.createElement('div');
-  box.innerHTML = libraryHtml(catalogue, { palette: 'classic', scheme: 'western' }, esc);
+  box.innerHTML = libraryHtml(catalogue, esc);
   return box;
 })();
+/** The library with every set opened, its grid filled as the screen fills an opened set (`cardsHtml`) — rendered
+ *  ONCE and parsed once: four hundred cards with their pictures cost seconds to parse. */
+const libraryDoc = (() => {
+  const box = win.document.createElement('div');
+  box.innerHTML = libraryHtml(catalogue, esc);
+  for (const block of box.querySelectorAll('details.alg-set')) {
+    block.querySelector('.alg-grid').innerHTML = cardsHtml(catalogue.sets[block.dataset.set], catalogue, { palette: 'classic', scheme: 'western' }, esc);
+  }
+  return box;
+})();
+
+test('the library draws no card and no picture until a set is opened, and a set\'s cards are exactly its rows', () => {
+  // What must NOT happen: every closed set's cards and pictures built at every visit (audit row 26, 208 ms in WebKit).
+  assert.equal(closedDoc.querySelectorAll('[data-alg]').length, 0, 'a closed set built its cards');
+  assert.equal(closedDoc.querySelectorAll('svg').length, 0, 'a closed set drew its pictures');
+  const blocks = [...closedDoc.querySelectorAll('details.alg-set')];
+  assert.equal(blocks.length, catalogue.groups.flatMap((g) => g.phases.flatMap((p) => p.sets)).length, 'a set is not listed');
+  for (const block of blocks) {
+    assert.equal(block.open, false, `${block.dataset.set} opens by itself`);
+    assert.ok(block.querySelector('.alg-grid'), `${block.dataset.set} has no grid to fill`);
+  }
+  // The headings still say what is in them, so a set can be chosen with its cards undrawn.
+  for (const block of blocks) {
+    const set = catalogue.sets[block.dataset.set];
+    assert.match(block.querySelector('summary').textContent, new RegExp(`\\b${set.ids.length} algorithms?\\b`), `${set.id}: the heading does not count its rows`);
+  }
+  for (const set of Object.values(catalogue.sets)) {
+    const box = win.document.createElement('div');
+    box.innerHTML = cardsHtml(set, catalogue, { palette: 'classic', scheme: 'western' }, esc);
+    assert.deepEqual([...box.querySelectorAll('[data-alg]')].map((c) => c.dataset.alg), set.ids, `${set.id}: its cards are not its rows, in order`);
+  }
+});
 
 test('the library lists every ledger row, and nothing the ledger does not hold', async () => {
   const ids = await lib.algIds();

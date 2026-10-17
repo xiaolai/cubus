@@ -1339,12 +1339,17 @@ for (const fixture of FIXTURES) {
     const { page, context, errors } = await openAt(fixture, urlFor(fixture, 'practice'));
     try {
       await page.waitForSelector('.practice-screen[data-ready="1"]');
-      const opened = await page.evaluate(() => {
-        const sets = [...document.querySelectorAll('details.alg-set')];
-        const largest = sets.reduce((a, b) => (b.querySelectorAll('[data-alg]').length > a.querySelectorAll('[data-alg]').length ? b : a));
-        largest.open = true;
-        return { set: largest.dataset.set, cards: largest.querySelectorAll('[data-alg]').length };
+      // Chosen by what the catalogue holds: a closed set has drawn no cards yet, so the page has none to count.
+      const largest = await page.evaluate(async () => {
+        const { library } = await import('/lib/drill/library-client.js');
+        const set = Object.values((await library.catalogue()).sets).reduce((a, b) => (b.ids.length > a.ids.length ? b : a));
+        const block = document.querySelector(`details.alg-set[data-set="${set.id}"]`);
+        block.dataset.measured = '1';
+        block.open = true;
+        return { set: set.id, want: set.ids.length };
       });
+      await page.waitForFunction((n) => document.querySelectorAll('details[data-measured] [data-alg]').length === n, largest.want);
+      const opened = { set: largest.set, cards: await page.evaluate(() => document.querySelectorAll('details[data-measured] [data-alg]').length) };
       assert.ok(opened.cards >= 50, `the largest set holds ${opened.cards} cards — the library did not load`);
       practiceFloor(await measureScreen(page), fixture, `library (${opened.set}, ${opened.cards} cards)`);
       assert.deepEqual(errors.map(String), [], 'the page threw');
@@ -1357,13 +1362,17 @@ for (const fixture of FIXTURES) {
     const { page, context, errors } = await openAt(fixture, urlFor(fixture, 'practice'));
     try {
       await page.waitForSelector('.practice-screen[data-ready="1"]');
+      // A set's cards are drawn when it is opened, so the set holding the longest row is opened first.
       const id = await page.evaluate(async () => {
         const { library } = await import('/lib/drill/library-client.js');
-        const rows = Object.values((await library.catalogue()).rows);
-        const longest = rows.reduce((a, b) => (b.alg.split(/\s+/).length > a.alg.split(/\s+/).length ? b : a));
-        document.querySelector(`[data-alg="${longest.id}"]`).click();
+        const catalogue = await library.catalogue();
+        const longest = Object.values(catalogue.rows).reduce((a, b) => (b.alg.split(/\s+/).length > a.alg.split(/\s+/).length ? b : a));
+        const set = Object.values(catalogue.sets).find((s) => s.ids.includes(longest.id));
+        document.querySelector(`details.alg-set[data-set="${set.id}"]`).open = true;
         return longest.id;
       });
+      await page.waitForSelector(`[data-alg="${id}"]`, { state: 'attached' });
+      await page.evaluate((x) => document.querySelector(`[data-alg="${x}"]`).click(), id);
       await page.waitForFunction((x) => document.querySelector('.practice-page')?.dataset.ready === '1'
         && document.querySelector('.practice-page')?.dataset.alg === x, id);
       practiceFloor(await measureScreen(page), fixture, `page (${id})`);

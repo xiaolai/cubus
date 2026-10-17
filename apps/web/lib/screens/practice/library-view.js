@@ -46,30 +46,44 @@ function card(row, look, esc) {
   </button>`;
 }
 
-/** One set: a disclosure, closed until asked for, so a list of three hundred pictures is a list of headings —
- *  each with its purpose, so what a set is for can be read before it is opened. */
-function setBlock(set, catalogue, look, esc) {
-  const rows = set.ids.map((id) => catalogue.rows[id]);
-  return `<details class="alg-set" data-set="${esc(set.id)}">
-    <summary><b>${esc(t(set.name))}</b> <span class="sub">${esc(plural(rows.length, { one: '%1 algorithm', other: '%1 algorithms' }))}</span>
-      ${set.purpose ? `<span class="sub alg-set-purpose">${esc(set.purpose)}</span>` : ''}</summary>
-    <div class="alg-grid">${rows.map((row) => card(row, look, esc)).join('')}</div>
-  </details>`;
-}
-
 /**
- * The whole library, as markup.
+ * A set's cards, as markup — what goes in its grid the first time it is opened (`cardsHtml` is the screen's to call).
  *
+ * @param {{ ids: string[] }} set
  * @param {Awaited<ReturnType<typeof import('../../drill/library-client.js').catalogueOf>>} catalogue
  * @param {{ palette: string, scheme: string }} look  the colours the pictures are painted in
  * @param {(v: unknown) => string} esc
  */
-export function libraryHtml(catalogue, look, esc) {
+export function cardsHtml(set, catalogue, look, esc) {
+  return set.ids.map((id) => card(catalogue.rows[id], look, esc)).join('');
+}
+
+/** One set: a disclosure, closed until asked for, so a list of three hundred pictures is a list of headings —
+ *  each with its purpose, so what a set is for can be read before it is opened.
+ *
+ *  ITS GRID IS EMPTY until then. Every card of every closed set — 319 pictures, 10,593 stickers, 1.8 MB of markup —
+ *  was built and inserted on the UI thread at every visit to the library, for headings nobody had opened (measured
+ *  2026-10-18 in WebKit: 208 ms a visit). The screen fills a grid when its set is first opened. */
+function setBlock(set, catalogue, esc) {
+  return `<details class="alg-set" data-set="${esc(set.id)}">
+    <summary><b>${esc(t(set.name))}</b> <span class="sub">${esc(plural(set.ids.length, { one: '%1 algorithm', other: '%1 algorithms' }))}</span>
+      ${set.purpose ? `<span class="sub alg-set-purpose">${esc(set.purpose)}</span>` : ''}</summary>
+    <div class="alg-grid"></div>
+  </details>`;
+}
+
+/**
+ * The whole library, as markup: every method, stage and set, each set closed and its cards not yet drawn.
+ *
+ * @param {Awaited<ReturnType<typeof import('../../drill/library-client.js').catalogueOf>>} catalogue
+ * @param {(v: unknown) => string} esc
+ */
+export function libraryHtml(catalogue, esc) {
   const groups = catalogue.groups.map((g) => `<section class="alg-method" data-method="${esc(g.method ?? '')}">
     <div class="eyebrow">${esc(g.label === null ? t('Not taught by any method') : t(g.label))}</div>
     ${g.phases.map((p) => `<div class="alg-phase">
       ${p.phase === null ? '' : `<div class="alg-phase-h">${esc(t(p.phase))}</div>`}
-      ${p.sets.map((id) => setBlock(catalogue.sets[id], catalogue, look, esc)).join('')}
+      ${p.sets.map((id) => setBlock(catalogue.sets[id], catalogue, esc)).join('')}
     </div>`).join('')}
   </section>`).join('');
   const pending = catalogue.pending.length

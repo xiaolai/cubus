@@ -38,7 +38,7 @@ import { library } from '../drill/library-client.js';
 import { STATUS, createDrillEngine } from '../drill/engine.js';
 import { PracticeRecordError, openPracticeRecord, statsOf, watchReps } from '../drill/record.js';
 import { mixOrder } from '../drill/mix.js';
-import { casePicture, libraryHtml, purposeOf, rowName } from './practice/library-view.js';
+import { cardsHtml, casePicture, libraryHtml, purposeOf, rowName } from './practice/library-view.js';
 import {
   chipsHtml, figuresHtml, lastRepsHtml, orderWords, partsWords, refusalWords, seconds, segmentsOf, writtenTokens,
 } from './practice/page-view.js';
@@ -83,7 +83,16 @@ function libraryScreen() {
         return;
       }
       if (gen !== screenGen) return;
-      list.innerHTML = libraryHtml(catalogue, { palette: settings.palette, scheme: settings.scheme }, escHtml);
+      list.innerHTML = libraryHtml(catalogue, escHtml);
+      // A set's cards are drawn the first time it is opened, and kept (library-view.js says why). `toggle` does not
+      // bubble, so the list hears it on the way down.
+      const look = { palette: settings.palette, scheme: settings.scheme };
+      list.addEventListener('toggle', (e) => {
+        const block = e.target;
+        if (!block.open || !block.matches?.('details.alg-set')) return;
+        const grid = block.querySelector('.alg-grid');
+        if (grid.childElementCount === 0) grid.innerHTML = cardsHtml(catalogue.sets[block.dataset.set], catalogue, look, escHtml);
+      }, { capture: true });
       list.addEventListener('click', (e) => {
         const card = e.target.closest?.('[data-alg]');
         if (!card) return;

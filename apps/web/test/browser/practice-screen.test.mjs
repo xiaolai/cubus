@@ -355,3 +355,42 @@ test('a rep that was not saved stays said as mixed practice moves on — until a
     await context.close();
   }
 });
+
+// ---- the library (row 26) ----------------------------------------------------------------------------------
+
+test('the library draws no card or picture until a set is opened, and then that set\'s, once', async () => {
+  const { page, context, errors } = await openPractice(fixture, { connect: false });
+  try {
+    const count = (sel) => page.evaluate((s) => document.querySelectorAll(s).length, sel);
+    assert.equal(await count('#practiceList details.alg-set'), await page.evaluate(async () => {
+      const c = await window.__p.rows();
+      return c.groups.flatMap((g) => g.phases.flatMap((p) => p.sets)).length;
+    }), 'precondition: every set is listed');
+    // What must NOT happen: every closed set's cards and pictures built on the UI thread at every visit.
+    assert.deepEqual([await count('#practiceList svg'), await count('#practiceList [data-alg]')], [0, 0], 'closed sets drew their cards');
+    const catalogue = await page.evaluate(() => window.__p.rows());
+    const set = Object.values(catalogue.sets).reduce((a, b) => (b.ids.length > a.ids.length ? b : a));
+    const block = `#practiceList details.alg-set[data-set="${set.id}"]`;
+    await page.click(`${block} > summary`);
+    await page.waitForFunction((sel) => document.querySelector(sel).querySelectorAll('[data-alg]').length > 0, block, { timeout: LIVENESS_MS });
+    const opened = await page.evaluate((sel) => {
+      const el = document.querySelector(sel);
+      el.querySelector('[data-alg]').dataset.mark = 'first';
+      return { cards: el.querySelectorAll('[data-alg]').length, pictures: el.querySelectorAll('[data-alg] svg').length, all: document.querySelectorAll('#practiceList [data-alg]').length };
+    }, block);
+    assert.deepEqual(opened, { cards: set.ids.length, pictures: set.ids.length, all: set.ids.length }, 'opening one set did not draw exactly its cards');
+    // Closed and opened again: the same cards, not drawn twice.
+    await page.click(`${block} > summary`);
+    await page.click(`${block} > summary`);
+    await page.evaluate((ms) => window.__p.wait(ms), 100);
+    assert.equal(await page.evaluate((sel) => document.querySelector(sel).querySelectorAll('[data-alg]').length, block), set.ids.length);
+    assert.equal(await page.evaluate((sel) => document.querySelector(sel).querySelector('[data-alg]').dataset.mark, block), 'first', 'reopening drew the cards again');
+    // And a card still opens its algorithm.
+    const id = await page.evaluate((sel) => document.querySelector(sel).querySelector('[data-alg]').dataset.alg, block);
+    await page.click(`${block} [data-alg="${id}"]`);
+    await page.waitForFunction((x) => window.__p.ready(x), id, { timeout: LIVENESS_MS });
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
