@@ -145,9 +145,20 @@ describe('platformsFor', () => {
     assert.deepEqual(platformsFor('cubus-0.2.6-1.x86_64.rpm'), ['linux-x86_64-rpm']);
   });
 
-  test('the zipped Windows forms other Tauri configs emit map to the same installers', () => {
-    assert.deepEqual(platformsFor('cubus_0.2.6_x64-setup.nsis.zip'), ['windows-x86_64-nsis', 'windows-x86_64']);
-    assert.deepEqual(platformsFor('cubus_0.2.6_x64_en-US.msi.zip'), ['windows-x86_64-msi']);
+  // The app is built without the updater's `zip` feature, so an archived update is one no install can
+  // unpack: refused by name rather than published (2026-10-17). Each form is listed, so dropping one from
+  // the refusal fails here.
+  test('the archived Windows and Linux forms are refused — no install could unpack them', () => {
+    for (const file of ['cubus_0.2.6_x64-setup.nsis.zip', 'cubus_0.2.6_x64_en-US.msi.zip', 'cubus_0.2.6_amd64.AppImage.tar.gz']) {
+      assert.throws(() => platformsFor(file), /cannot be applied — the app is built without the updater's `zip` feature/, `${file} was mapped`);
+    }
+  });
+
+  test('the app is built without the updater feature that would unpack them', () => {
+    const cargo = readFileSync(new URL('../../desktop/src-tauri/Cargo.toml', import.meta.url), 'utf8');
+    const line = cargo.split('\n').find((l) => l.startsWith('tauri-plugin-updater'));
+    assert.match(line, /default-features = false/, 'the updater takes its default features, which include `zip`');
+    assert.doesNotMatch(line, /"zip"/, 'the updater asks for its `zip` feature by name');
   });
 
   // The .dmg is how macOS INSTALLS. The updater's macOS payload is the .app.tar.gz, and Tauri
@@ -178,7 +189,7 @@ describe('platformsFor', () => {
 describe('buildManifest', () => {
   const full = () => {
     const mac = 'cubus.app.tar.gz';
-    const win = 'cubus_0.2.6_x64-setup.nsis.zip';
+    const win = 'cubus_0.2.6_x64-setup.exe';
     const lin = 'cubus_0.2.6_amd64.AppImage';
     return {
       files: [mac, win, lin, sigOf(mac), sigOf(win), sigOf(lin), 'cubus_0.2.6_universal.dmg'],
@@ -199,7 +210,7 @@ describe('buildManifest', () => {
     assert.equal(m.platforms['darwin-aarch64'].signature, 'MAC-SIG');
     assert.equal(m.platforms['darwin-aarch64'].url, `${BASE}/cubus.app.tar.gz`);
     assert.equal(m.platforms['darwin-x86_64'].url, `${BASE}/cubus.app.tar.gz`);
-    assert.equal(m.platforms['windows-x86_64-nsis'].url, `${BASE}/cubus_0.2.6_x64-setup.nsis.zip`);
+    assert.equal(m.platforms['windows-x86_64-nsis'].url, `${BASE}/cubus_0.2.6_x64-setup.exe`);
     assert.equal(m.platforms['linux-x86_64-appimage'].signature, 'LIN-SIG');
     // No stray bookkeeping reaches the published file.
     assert.deepEqual(Object.keys(m.platforms['linux-x86_64']).sort(), ['signature', 'url']);
@@ -253,11 +264,11 @@ describe('buildManifest', () => {
   // to be offered the NSIS installer. Refusing names both files; guessing publishes one of them.
   test('two artifacts claiming one key is a collision, not a preference', () => {
     const exe = 'cubus_0.2.6_x64-setup.exe';
-    const zip = 'cubus_0.2.6_x64-setup.nsis.zip';
+    const other = 'cubus-beta_0.2.6_x64-setup.exe';
     assert.throws(
       () => buildManifest({
-        files: [exe, zip, sigOf(exe), sigOf(zip)],
-        readSignature: reader({ [sigOf(exe)]: 'EXE-SIG', [sigOf(zip)]: 'ZIP-SIG' }),
+        files: [exe, other, sigOf(exe), sigOf(other)],
+        readSignature: reader({ [sigOf(exe)]: 'EXE-SIG', [sigOf(other)]: 'OTHER-SIG' }),
         version: '0.2.6',
         baseUrl: BASE,
       }),

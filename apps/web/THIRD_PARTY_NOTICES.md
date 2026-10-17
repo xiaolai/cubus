@@ -96,7 +96,7 @@ include photographs from Wikimedia Commons:
 
 ## 3. Desktop and mobile binaries — Rust crates
 
-503 third-party crates link into the cubus binary on at least one platform (macOS,
+500 third-party crates link into the cubus binary on at least one platform (macOS,
 Windows, Linux, iOS, Android), resolved from `Cargo.lock` with `cargo tree --target all`; build
 scripts and test-only dependencies are not in the binary and are not listed. Each is listed under
 the licence it is used under, with its full expression, the authors its Cargo metadata names (who
@@ -109,14 +109,13 @@ The native shells are [Tauri](https://tauri.app) 2.12.2 (MIT OR Apache-2.0),
 which renders the web app in the platform's own webview (WebKit on Apple platforms, WebView2 on
 Windows, WebKitGTK on Linux, Android System WebView) — a system component, not redistributed.
 
-### MIT (457 crates)
+### MIT (454 crates)
 
 - **adler2** 2.0.1 (0BSD OR MIT OR Apache-2.0) — Jonas Schievink, oyvindln — <https://github.com/oyvindln/adler2> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
 - **aho-corasick** 1.1.5 (Unlicense OR MIT) — Andrew Gallant — <https://github.com/BurntSushi/aho-corasick> — [`COPYING`](#text-65314a6c9668), [`LICENSE-MIT`](#text-154c1af2b38e)
 - **android_log-sys** 0.3.2 (MIT OR Apache-2.0) — The android_log_sys Developers — <https://github.com/rust-mobile/android_log-sys-rs> — [`LICENSE-MIT`](#text-0f70b9a3be1b)
 - **android_logger** 0.15.1 (MIT OR Apache-2.0) — The android_logger Developers — <https://github.com/rust-mobile/android_logger-rs> — [`LICENSE-MIT`](#text-a6fbdfb3129d)
 - **anyhow** 1.0.104 (MIT OR Apache-2.0) — David Tolnay — <https://github.com/dtolnay/anyhow> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
-- **arbitrary** 1.4.2 (MIT OR Apache-2.0) — The Rust-Fuzz Project Developers, Nick Fitzgerald, Manish Goregaokar, Simonas Kazlauskas, Brian L. Troutwine, Corey Farwell — <https://github.com/rust-fuzz/arbitrary/> — [`LICENSE-MIT`](#text-66a2ea9ed607)
 - **arrayvec** 0.7.8 (MIT OR Apache-2.0) — bluss — <https://github.com/bluss/arrayvec> — [`LICENSE-MIT`](#text-92c666480f81)
 - **async-broadcast** 0.7.2 (MIT OR Apache-2.0) — Stjepan Glavina, Yoshua Wuyts, Zeeshan Ali Khan — <https://github.com/smol-rs/async-broadcast> — [`LICENSE-MIT`](#text-48d36a6709db)
 - **async-channel** 2.5.0 (Apache-2.0 OR MIT) — Stjepan Glavina — <https://github.com/smol-rs/async-channel> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
@@ -180,7 +179,6 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **dbus** 0.9.12 (Apache-2.0/MIT) — David Henningsson — <https://github.com/diwic/dbus-rs> — [`LICENSE-MIT`](#text-de3911c2d98c)
 - **dbus-tokio** 0.7.6 (Apache-2.0/MIT) — David Henningsson — <https://github.com/diwic/dbus-rs> — [`LICENSE-MIT`](#text-de3911c2d98c)
 - **deranged** 0.5.8 (MIT OR Apache-2.0) — Jacob Pratt — <https://github.com/jhpratt/deranged> — [`LICENSE-MIT`](#text-1b66e3be6894)
-- **derive_arbitrary** 1.4.2 (MIT OR Apache-2.0) — The Rust-Fuzz Project Developers, Nick Fitzgerald, Manish Goregaokar, Andre Bogus, Corey Farwell — <https://github.com/rust-fuzz/arbitrary> — [`LICENSE-MIT`](#text-66a2ea9ed607)
 - **derive_more** 2.1.1 (MIT) — Jelte Fennema — <https://github.com/JelteF/derive_more> — [`LICENSE`](#text-4a4d43f3f90d)
 - **derive_more-impl** 2.1.1 (MIT) — Jelte Fennema — <https://github.com/JelteF/derive_more> — [`LICENSE`](#text-4a4d43f3f90d)
 - **digest** 0.10.7 (MIT OR Apache-2.0) — RustCrypto Developers — <https://github.com/RustCrypto/traits> — [`LICENSE-MIT`](#text-9c5127ab88e8)
@@ -563,7 +561,6 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **zbus_names** 4.3.4 (MIT) — Zeeshan Ali Khan — <https://github.com/z-galaxy/zbus/> — [`LICENSE`](#text-a0e7d0739e03)
 - **zcheapstr** 1.1.0 (MIT) — Zeeshan Ali Khan — <https://github.com/z-galaxy/zcheapstr/> — [`LICENSE`](#text-36c68b249eb6)
 - **zeroize** 1.9.0 (Apache-2.0 OR MIT) — The RustCrypto Project Developers — <https://github.com/RustCrypto/utils> — [`LICENSE-MIT`](#text-836ed921bbad)
-- **zip** 4.6.1 (MIT) — Mathijs van de Nes, Marli Frost, Ryan Levick, Chris Hennick — <https://github.com/zip-rs/zip2.git> — [`LICENSE`](#text-04dc52136d82)
 - **zmij** 1.0.23 (MIT) — David Tolnay — <https://github.com/dtolnay/zmij> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
 - **zvariant** 5.15.0 (MIT) — Zeeshan Ali Khan — <https://github.com/z-galaxy/zbus/> — [`LICENSE`](#text-a0e7d0739e03)
 - **zvariant_derive** 5.15.0 (MIT) — Zeeshan Ali Khan — <https://github.com/z-galaxy/zbus/> — [`LICENSE`](#text-a0e7d0739e03)
@@ -809,37 +806,6 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
-```
-
-### text-04dc52136d82
-
-Carried by zip 4.6.1 (`LICENSE`).
-
-```text
-The MIT License (MIT)
-
-Copyright (c) 2014 Mathijs van de Nes
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-Some files in the "tests/data" subdirectory of this repository are under other
-licences; see files named LICENSE.*.txt for details.
 ```
 
 ### text-055a17110636
@@ -4457,40 +4423,6 @@ Carried by aho-corasick 1.1.5 (`COPYING`), byteorder 1.5.0 (`COPYING`), memchr 2
 This project is dual-licensed under the Unlicense and MIT licenses.
 
 You may use this code under the terms of either license.
-```
-
-### text-66a2ea9ed607
-
-Carried by arbitrary 1.4.2 (`LICENSE-MIT`), derive_arbitrary 1.4.2 (`LICENSE-MIT`).
-
-```text
-MIT License
-
-Copyright (c) 2019 Manish Goregaokar
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
 ```
 
 ### text-692b1604961d

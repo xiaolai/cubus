@@ -510,11 +510,10 @@ jobs:
             target/**/bundle/**/*.deb
             target/**/bundle/**/*.AppImage
             target/**/bundle/**/*.rpm
-            # The updater's payloads and their signatures. `.app.tar.gz` is already above; these
-            # are the Windows and Linux equivalents plus every detached signature, which is what
-            # make-updater-manifest.mjs reads to build latest.json.
-            target/**/bundle/**/*.nsis.zip
-            target/**/bundle/**/*.msi.zip
+            # Every detached signature, which is what make-updater-manifest.mjs reads to build
+            # latest.json. The payloads they sign are the installers above: no `.zip` form is
+            # collected, because the app is built without the updater feature that unpacks one, and
+            # the manifest script refuses one by name.
             target/**/bundle/**/*.sig
 
   android:

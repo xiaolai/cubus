@@ -68,8 +68,16 @@ hex = "0.4"
 # lockstep and `brew upgrade` reinstalls what the app already has rather than replacing something
 # newer. `process` relaunches once the new version is staged; without it the user has to quit and
 # reopen, which is the step people do not take.
+#
+# WITHOUT ITS `zip` FEATURE (2026-10-17). That feature is how the updater unpacks a Windows `.zip` and a
+# Linux `.AppImage.tar.gz`, and this app publishes neither: `createUpdaterArtifacts: true` makes the
+# signed `-setup.exe`, `.msi` and `.AppImage` themselves the update files (`updater-manifest.test.mjs`
+# holds that), and macOS's `.app.tar.gz` is unpacked by `tar` and `flate2`, which the plugin depends on
+# for macOS unconditionally. With the feature on, `zip` 4 was in the Windows tree for code that never
+# ran, and RUSTSEC-2026-0367/-0368/-0369 failed the supply-chain gate; off, it is not in the tree at all.
+# The other two default features are kept as they were.
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
-tauri-plugin-updater = "2"
+tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls", "system-proxy"] }
 tauri-plugin-process = "2"
 # The question the updater asks. A NATIVE dialog rather than a component of our own: this app has
 # no general modal, and inventing one would cut across `dev-docs/design/` for a two-button question

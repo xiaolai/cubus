@@ -39,14 +39,20 @@ import { basename, join } from 'node:path';
  *
  * `bare` marks the plugin's DEFAULT installer per OS — the AppImage and the NSIS setup — which also
  * carries the fallback key, so a client whose installer is unknown to this list still finds a
- * payload it can apply. The `.zip` forms are still accepted because other Tauri configurations
- * emit them and it costs nothing; the bare installers are what this project actually ships,
- * measured from a real tagged build (the v0.2.3 run produced `cubus_0.2.3_x64-setup.exe.sig` and
- * `cubus_0.2.3_x64_en-US.msi.sig`, not the `.nsis.zip` / `.msi.zip` this originally looked for).
+ * payload it can apply. The bare installers are what this project ships, measured from a real tagged
+ * build (the v0.2.3 run produced `cubus_0.2.3_x64-setup.exe.sig` and `cubus_0.2.3_x64_en-US.msi.sig`,
+ * not the `.nsis.zip` / `.msi.zip` this originally looked for).
+ *
+ * The ARCHIVED forms are REFUSED, not mapped (2026-10-17). The app is built without the updater's
+ * `zip` feature (apps/desktop/src-tauri/Cargo.toml) — the feature that unpacks a Windows `.zip` and a
+ * Linux `.AppImage.tar.gz` — so a client handed one could not apply it. Accepting them "because other
+ * configurations emit them" would publish an update every install fails on.
  */
+const ARCHIVED = ['.nsis.zip', '.msi.zip', '.AppImage.tar.gz'];
+
 const INSTALLERS = [
-  { os: 'windows', installer: 'nsis', bare: true, matches: (f) => f.endsWith('-setup.exe') || f.endsWith('.nsis.zip') },
-  { os: 'windows', installer: 'msi', bare: false, matches: (f) => f.endsWith('.msi') || f.endsWith('.msi.zip') },
+  { os: 'windows', installer: 'nsis', bare: true, matches: (f) => f.endsWith('-setup.exe') },
+  { os: 'windows', installer: 'msi', bare: false, matches: (f) => f.endsWith('.msi') },
   { os: 'linux', installer: 'appimage', bare: true, matches: (f) => f.endsWith('.AppImage') },
   { os: 'linux', installer: 'deb', bare: false, matches: (f) => f.endsWith('.deb') },
   { os: 'linux', installer: 'rpm', bare: false, matches: (f) => f.endsWith('.rpm') },
@@ -85,6 +91,10 @@ function archOf(file) {
 export function platformsFor(name) {
   const file = basename(name);
   if (file.endsWith('.app.tar.gz')) return ['darwin-aarch64', 'darwin-x86_64'];
+  const archived = ARCHIVED.find((ext) => file.endsWith(ext));
+  if (archived) {
+    throw new Error(`${file}: a ${archived} update cannot be applied — the app is built without the updater's \`zip\` feature, which unpacks it. Ship the installer itself (createUpdaterArtifacts: true).`);
+  }
   const kind = INSTALLERS.find((k) => k.matches(file));
   if (!kind) return [];
   const arch = archOf(file);
