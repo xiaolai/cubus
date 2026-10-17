@@ -1,7 +1,8 @@
 // The lesson worker's protocol, on this thread: the handler the worker runs, and the client the app asks
 // through (lib/lesson-client.js). The worker itself is held to the UI thread's absence of searches by
 // test/browser/lesson-off-main-thread.test.mjs, and to the frozen beginner baseline there and in
-// beginner-lesson.test.mjs.
+// beginner-lesson.test.mjs. That `lessonFor` asks about the METHOD frame (the white cross) is held by
+// stage-wiring.test.mjs, "the engine is asked about the WHITE cross", which fails without `toMethodFrame`.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -108,13 +109,6 @@ test('a worker that dies fails every question in flight, and the next question g
   await assert.rejects(b, /lesson worker failed/);
   void client.solve(SCRAMBLED, 'beginner');
   assert.equal(spawned, 2, 'the dead worker was asked again');
-});
-
-test('the piece state the app sends is the method frame\'s, read by cubejs', () => {
-  // `lessonFor` turns the subject's facelets into a piece state with cubejs before it asks — the worker
-  // never sees a facelet string, so it never needs cubejs at all.
-  const state = fromCube(Cube.fromString(new Cube().asString()));
-  assert.deepEqual(state, { ...SOLVED, cp: [...SOLVED.cp], co: [...SOLVED.co], ep: [...SOLVED.ep], eo: [...SOLVED.eo] });
 });
 
 test('an inline engine that fails to load fails every question loudly — none is left hanging', async () => {
