@@ -72,8 +72,11 @@ function between(from, moves) {
  * `states[k]` is position k's arrangement as 54 facelets, or null for a position nothing can match (a
  * painted picture claims no arrangement). `transitions[k]` is the identity-frame moves from position k
  * to k+1 — an empty array for a cut. `observable[k]` is false for a position reached by regrips alone.
+ *
+ * `pieces`, when given, is each position's piece state — the same cube `states[k]` spells — so a caller
+ * that already holds them (the drill builds 24 tracks a rep) is spared reading every facelet string back.
  */
-export function trackOf(states, transitions) {
+export function trackOf(states, transitions, pieces = null) {
   // An empty track is a walk that does not exist yet — one being searched for — and matching anything on
   // it is simply `off`; the cube screen asks while it waits.
   const needed = Math.max(0, states.length - 1);
@@ -91,7 +94,7 @@ export function trackOf(states, transitions) {
     || transitions[k - 1].some((m) => faceQuarters(m).length));
   transitions.forEach((moves, k) => {
     if (states[k] === null) return;
-    for (const f of between(stateFrom(states[k]), moves)) {
+    for (const f of between(pieces?.[k] ?? stateFrom(states[k]), moves)) {
       if (!midpoints.has(f)) midpoints.set(f, []);
       midpoints.get(f).push(k);
     }
@@ -107,8 +110,14 @@ export function trackOf(states, transitions) {
  * twice — a step ending on `R` and the next beginning with `R'` are not merged, and 1,661 of 3,600
  * method walks do it within two moves — and there the cube matches both. The turn that reached it IS
  * the walk's next move, so it is progress; checking behind first drew an undo nobody made.
+ *
+ * `near: true` searches only within two positions of `from` (and the midpoints beside it), and drops the
+ * LAST-RESORT fallback below — "anywhere on the track, first index". A walk wants that fallback, because a
+ * snapshot can carry the cube several positions at once; a drill must not have it, because an algorithm
+ * that repeats a sequence passes through one arrangement at several positions, and the first index is then
+ * a position the child is not at (`lib/drill/engine.js`).
  */
-export function locate(track, facelets, from) {
+export function locate(track, facelets, from, { near = false } = {}) {
   const { states, midpoints, observable } = track;
   const passRegrips = (idx) => {
     let k = idx;
@@ -136,6 +145,7 @@ export function locate(track, facelets, from) {
   }
   const oldest = passedFrom(from) - 1;                 // the transition INTO the run `from` sits at the end of
   if (midpoints.get(facelets)?.some((k) => k <= from && k >= oldest)) return { kind: 'mid', idx: from };
+  if (near) return { kind: 'off' };
   const idx = states.indexOf(facelets);
   return idx >= 0 ? { kind: 'step', idx: passRegrips(idx) } : { kind: 'off' };
 }
@@ -155,10 +165,12 @@ const FACE_TURNS = Object.freeze(['U', 'R', 'F', 'D', 'L', 'B'].flatMap((f) => [
  * position, because both are what `locate` accepts. At the same length the furthest position wins: when the
  * child made a turn the walk makes a little later — two commuting turns in the other order — finishing it is
  * progress, and undoing it would be a turn taken back for nothing.
+ *
+ * `near` is `locate`'s: with it, only a position within two of `from` counts as back on the walk.
  */
-export function wayBack(track, facelets, from, most = 2) {
+export function wayBack(track, facelets, from, most = 2, { near = false } = {}) {
   const reached = (f) => {
-    const at = locate(track, f, from);
+    const at = locate(track, f, from, { near });
     if (at.kind === 'mid') return from;
     return at.kind === 'step' ? at.idx : null;
   };
