@@ -87,6 +87,45 @@ export const STATUS = Object.freeze({
 /** What a cube reports: one outer-face quarter turn, never a half turn and never a slice. */
 const QUARTER = /^[URFDLB]'?$/;
 
+/** Every order a cube may report one transition's face turns in: a slice's faces either way, a half turn either way. */
+function reportOrders(names) {
+  const orders = names.length === 2 ? [names, [names[1], names[0]]] : [names];
+  return orders.flatMap((order) => order.reduce((acc, name) => {
+    const ways = name.endsWith('2') ? [[name[0], name[0]], [`${name[0]}'`, `${name[0]}'`]] : [[name]];
+    return acc.flatMap((a) => ways.map((w) => [...a, ...w]));
+  }, [[]]));
+}
+
+/**
+ * The longest run of quarter turn `q` a plan's reports can end with (`atEnd`) or start with — Infinity when the
+ * whole algorithm can be reported as `q` alone, so that reps back to back run on without end (`R`, `F2`).
+ */
+function runOf(plan, q, atEnd) {
+  const turns = plan.faces.filter((names) => names.length);
+  let n = 0;
+  for (const names of atEnd ? [...turns].reverse() : turns) {
+    const orders = reportOrders(names).map((o) => (atEnd ? [...o].reverse() : o));
+    const whole = orders.find((o) => o.every((x) => x === q));
+    if (whole) { n += whole.length; continue; }
+    return n + Math.max(...orders.map((o) => { let k = 0; while (k < o.length && o[k] === q) k += 1; return k; }));
+  }
+  return Infinity;
+}
+
+/**
+ * Whether the gesture may run on across the end of a rep into the next one: only when two CORRECT reps back to
+ * back can never report four identical quarter turns between them — in any holds, whichever order a slice's faces
+ * and whichever way a half turn's quarters come. Otherwise drilling R2, or an algorithm that ends and starts on half
+ * turns of one face, would start itself over.
+ */
+function gestureCarries(plans) {
+  return !['U', 'R', 'F', 'D', 'L', 'B'].flatMap((f) => [f, `${f}'`]).some((q) => {
+    const ends = Math.max(...plans.map((p) => runOf(p, q, true)));
+    const starts = Math.max(...plans.map((p) => runOf(p, q, false)));
+    return ends + starts >= GESTURE_TURNS;
+  });
+}
+
 /** From position `k`, through the regrips that follow it — a rotation is never reported, so it is passed. */
 function passRegrips(track, k) {
   let at = k;
@@ -127,6 +166,8 @@ export function createDrillEngine({
   const prefix = (turning[1] ?? turning[0]) + 2;
   // How many reports a clean rep makes: a half turn is two quarters, whichever way they go.
   const quarters = plans[0].faces.flat().reduce((n, name) => n + (name.endsWith('2') ? 2 : 1), 0);
+  // Whether the start-over gesture's turns carry across the end of a rep (`arm`, `gestureCarries`).
+  const carriesGesture = gestureCarries(plans);
   for (const c of chunks) {
     if (!Number.isInteger(c.from) || !Number.isInteger(c.to) || c.from < 0 || c.to <= c.from || c.to > moves.length) {
       throw new Error(`drill: a chunk is a token range [from, to) inside 0..${moves.length}, not ${JSON.stringify(c)}`);
@@ -202,10 +243,13 @@ export function createDrillEngine({
       c, idx: passRegrips(c.track, 0), reach: new Map(), landed: new Set(), firstFrom: null,
     }));
     // `since`: the first report after the cube last stood where the rep was armed — where the rep's turns
-    // begin once one of them is matched (`judge`).
+    // begin once one of them is matched (`judge`). `run`: the gesture's latest identical turns. The next rep that
+    // arms itself keeps them where the algorithm allows: four quick R' made one turn before Sune's end finish the
+    // rep with the first and start over with the fourth.
+    const run = cause === 'next' && carriesGesture ? rep.run : null;
     rep = {
       start: facelets(), log: [], since: 0, firstMatched: null, excursions: 0,
-      streamBroken: false, allNumbered: true, wayBack: null, about: null, cause: null, run: null,
+      streamBroken: false, allNumbered: true, wayBack: null, about: null, cause: null, run,
     };
     status = STATUS.ARMED;
     emit(cause, from, { facelets: rep.start });

@@ -24,7 +24,7 @@ import { ORIENTATIONS, orientationPerm } from '../lib/cube-orientation.js';
 import { SOLVED, applyAlg, applyMove, toFacelets } from '../lib/cube-pieces.js';
 import { algIds, algRow } from '../lib/alg-library.js';
 import { candidatesFor, htmOf } from '../lib/drill/candidates.js';
-import { CUE_WINDOW_MS, GESTURE_MS, STATUS, createDrillEngine } from '../lib/drill/engine.js';
+import { CUE_WINDOW_MS, GESTURE_MS, GESTURE_TURNS, STATUS, createDrillEngine } from '../lib/drill/engine.js';
 import { PAUSE_FACTOR, TIME_REFUSAL } from '../lib/drill/timing.js';
 import { locate } from '../lib/script-track.js';
 import { lcg, randomAlg } from './fixtures/seeded-scrambles.mjs';
@@ -889,6 +889,77 @@ test('the gesture is the LATEST four identical turns: a slow one before them doe
   assert.equal(h.types().filter((t) => t === 'gesture').length, 1, 'four quick Fs after a slow one did not restart');
   assert.equal(h.engine.state.status, STATUS.ARMED);
   assert.equal(h.events.at(-1).type, 'gesture');
+});
+
+test('a gesture made across the end of a rep still starts over', () => {
+  // Sune one turn from its end, and four quick R'. The first finishes the rep, and the next rep armed with it
+  // used to forget it, so the other three left that rep running at position 1 (audit-fix 2026-10-18 r2 #4).
+  const alg = "R U R' U R U2 R'";
+  const h = harness({ alg });
+  startAt(h, SOLVED);
+  for (const q of ['R', 'U', "R'", 'U', 'R', 'U', 'U']) h.turn(q);
+  const before = h.engine.facelets;
+  for (let i = 0; i < 4; i++) h.turn("R'", { gap: 100 });
+  assert.equal(h.count('done'), 1, 'the first R\' did not finish the rep');
+  assert.equal(h.events.at(-1).type, 'gesture', 'four quick R\' across the end of a rep did not start over');
+  assert.equal(h.engine.state.status, STATUS.ARMED);
+  assert.equal(h.engine.facelets, before, 'four turns of one face change nothing');
+});
+
+/** Every way a cube may report one identity-frame move: a slice's faces in either order, a half turn either way. */
+function reportWays(identity) {
+  const names = faceTurnsOf(identity).turns.map((t) => t.name).filter(Boolean);
+  const orders = names.length === 2 ? [names, [names[1], names[0]]] : [names];
+  return orders.flatMap((order) => order.reduce((acc, name) => {
+    const ways = name.endsWith('2') ? [[name[0], name[0]], [`${name[0]}'`, `${name[0]}'`]] : [[name]];
+    return acc.flatMap((a) => ways.map((w) => [...a, ...w]));
+  }, [[]]));
+}
+
+test('correct reps back to back never start over, however their turns run on across the end of a rep', () => {
+  // What must NOT happen, for every ledger row: correct reps, held one way, whose reports put four identical
+  // quarter turns across the end of a rep — an R2 drill, or one ending and starting on half turns of one face.
+  // The engine must not read them as the gesture. The reports are chosen here from the algorithm, by the
+  // test's own reading of it, never from the engine.
+  const run = (seq, q) => { let k = 0; while (k < seq.length && seq[k] === q) k++; return k; };
+  let risky = 0;
+  for (const row of [...ALL, { name: 'R2', alg: 'R2' }, { name: 'R', alg: 'R' }, { name: 'U2', alg: 'U2' }]) {
+    let hold = ['U', 'F'];
+    const ways = parse(row.alg).map((move) => {
+      const identity = toIdentity(move, hold);
+      hold = applyIdentity(identity, hold, SOLVED).hold;
+      return reportWays(identity);
+    }).filter((w) => w[0].length);
+    // One rep's reports, each token reported so the rep ends (`fromEnd`) or starts on as long a run of `q` as it
+    // can: the tokens nearest that end take the way with the longest run until one cannot be all `q`.
+    const pick = (q, fromEnd) => {
+      const near = fromEnd ? [...ways].reverse() : ways;
+      let open = true;
+      const chosen = near.map((w) => {
+        const len = (o) => run(fromEnd ? [...o].reverse() : o, q);
+        const best = open ? w.reduce((a, b) => (len(b) > len(a) ? b : a)) : w[0];
+        if (len(best) < best.length) open = false;
+        return best;
+      });
+      return (fromEnd ? chosen.reverse() : chosen).flat();
+    };
+    for (const q of QUARTERS) {
+      const last = pick(q, true);
+      const next = pick(q, false);
+      const whole = last.every((x) => x === q);
+      if (run([...last].reverse(), q) + run(next, q) < GESTURE_TURNS) continue;
+      risky += 1;
+      // A rep that is all `q` runs on through every rep after it: enough reps to make four and one more.
+      const reps = whole ? [...Array(Math.ceil(GESTURE_TURNS / last.length) + 1)].map(() => last) : [last, next];
+      const h = harness({ alg: row.alg });
+      startAt(h, SOLVED);
+      for (const r of reps.flat()) h.turn(r, { gap: 50 });
+      assert.ok(!h.types().includes('gesture'), `${row.name}: correct reps (${reps.map((r) => r.join(' ')).join(' | ')}) started over`);
+      assert.equal(h.count('done'), reps.length, `${row.name}: correct reps did not all finish`);
+      break;
+    }
+  }
+  assert.ok(risky >= 4, `only ${risky} algorithms can run four identical turns across a rep's end: the check checks little`);
 });
 
 test('four identical turns slower than the gesture limit are not a restart', () => {
