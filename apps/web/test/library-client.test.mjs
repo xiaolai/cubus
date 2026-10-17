@@ -12,11 +12,17 @@ import {
   LIBRARY_ASK, LIBRARY_TIMEOUT_MS, catalogueOf, catalogueProblem, createLibraryClient, inlineLibraryWorker,
 } from '../lib/drill/library-client.js';
 
+/** A row as the library screens draw it: the fields its card and its page read. */
+const drawable = (id, alg) => ({
+  id, set: 'ocll', alg, hold: ['D', 'B'], chunks: [],
+  solves: { facelets: 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB', picture: 'top-orientation' },
+  says: 'Turns three top corners up.', label: id, nickname: null, purpose: null,
+});
 /** The smallest catalogue the library screens can draw: one method, one stage, one set, one row. */
 const CATALOGUE = Object.freeze({
   groups: [{ method: 'cfop-4lll', label: 'CFOP (easy)', phases: [{ stage: 'oll', phase: 'Top face', sets: ['ocll'] }] }],
   sets: { ocll: { id: 'ocll', name: 'Two-look OLL, second look', kind: 'hand-written', purpose: 'Turns the top corners up.', ids: ['sune'] } },
-  rows: { sune: { id: 'sune', set: 'ocll', alg: "R U R' U R U2 R'", chunks: [] } },
+  rows: { sune: drawable('sune', "R U R' U R U2 R'") },
   triggers: { 'sexy-move': { name: 'Sexy move' } },
   pending: [],
 });
@@ -163,6 +169,17 @@ const FAILURES = [
   ['a catalogue that is a list', (w) => w.say('message', { data: { kind: LIBRARY_ASK, id: w.asked[0].id, ok: true, result: [] } }), /malformed reply/],
   ['an empty catalogue', (w) => w.say('message', { data: { kind: LIBRARY_ASK, id: w.asked[0].id, ok: true, result: {} } }), /malformed reply: the catalogue has no groups/],
   ['a refusal with no message', (w) => w.say('message', { data: { kind: LIBRARY_ASK, id: w.asked[0].id, ok: false } }), /malformed reply/],
+  // Round 3, row 6: each was kept, and threw only when a screen drew it — past the retry, for the page's lifetime.
+  ['a row with no case to draw', (w) => {
+    const c = copy(CATALOGUE);
+    delete c.rows.sune.solves;
+    w.say('message', { data: { kind: LIBRARY_ASK, id: w.asked[0].id, ok: true, result: c } });
+  }, /malformed reply: row "sune" has no case to draw/],
+  ['a chunk that is null', (w) => {
+    const c = copy(CATALOGUE);
+    c.rows.sune.chunks = [null];
+    w.say('message', { data: { kind: LIBRARY_ASK, id: w.asked[0].id, ok: true, result: c } });
+  }, /malformed reply: row "sune" has a chunk 0 that is not a run of turns/],
 ];
 
 for (const [what, fail, said] of FAILURES) {
@@ -242,8 +259,22 @@ test('the real catalogue passes the check, and every way of breaking it is named
     [(c) => { c.rows.sune.id = 'antisune'; }, /row "sune" says it is "antisune"/],
     [(c) => { c.rows.sune.alg = ''; }, /row "sune" has no moves/],
     [(c) => { c.rows.sune.chunks = null; }, /row "sune" has no list of chunks/],
+    // What the screens read to DRAW a row (round 3, row 6): a missing one threw only once a card or the page drew it.
+    [(c) => { delete c.rows.sune.solves; }, /row "sune" has no case to draw/],
+    [(c) => { c.rows.sune.solves.picture = 'photo'; }, /row "sune" has no case to draw/],
+    [(c) => { c.rows.sune.solves.facelets = 'U'.repeat(53); }, /row "sune" has no case to draw/],
+    [(c) => { c.rows.sune.hold = ['U', 'D']; }, /row "sune" names no hold to draw it in/],
+    [(c) => { delete c.rows.sune.hold; }, /row "sune" names no hold to draw it in/],
+    [(c) => { delete c.rows.sune.says; }, /row "sune" is not a sentence, a label, a nickname and a purpose/],
+    [(c) => { c.rows.sune.label = 7; }, /row "sune" is not a sentence, a label, a nickname and a purpose/],
+    [(c) => { c.rows.sune.chunks = [null]; }, /row "sune" has a chunk 0 that is not a run of turns/],
+    [(c) => { c.rows.sune.chunks = [{ from: 0, to: '2', trigger: 'sexy-move' }]; }, /row "sune" has a chunk 0 that is not a run of turns/],
+    [(c) => { c.rows.sune.chunks = [{ from: 3, to: 8, trigger: 'sexy-move' }]; }, /row "sune" has a chunk 0 outside its 7 turns/],
+    [(c) => { c.rows.sune.chunks = [{ from: 0, to: 3, trigger: 'sexy-move' }, { from: 2, to: 4, trigger: 'sexy-move' }]; }, /chunk 1 outside its 7 turns, or overlapping another/],
+    [(c) => { c.rows.sune.chunks = [{ from: 2, to: 2, trigger: 'sexy-move' }]; }, /chunk 0 outside its 7 turns/],
+    [(c) => { c.rows.sune.chunks = [{ from: 0, to: 2, trigger: 'sledgehammer' }]; }, /chunk 0 naming a trigger the catalogue does not hold/],
     [(c) => { c.rows.sune.set = 'eoll'; }, /row "sune" is filed in "eoll", which does not list it/],
-    [(c) => { c.rows.antisune = { id: 'antisune', set: 'ocll', alg: "R U2 R' U' R U' R'", chunks: [] }; }, /row "antisune" is in no set/],
+    [(c) => { c.rows.antisune = drawable('antisune', "R U2 R' U' R U' R'"); }, /row "antisune" is in no set/],
     [(c) => { c.sets.cpll = { id: 'cpll', name: 'Two-look PLL', kind: 'hand-written', purpose: null, ids: [] }; }, /set "cpll" is in no group/],
   ];
   for (const [edit, said, whole] of CASES) {

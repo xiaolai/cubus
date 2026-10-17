@@ -31,13 +31,39 @@ const isRecord = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v)
 const isText = (v) => typeof v === 'string' && v.length > 0;
 const isTextOrNull = (v) => v === null || typeof v === 'string';
 
+/** A hold the demo cube can be put in: `[up, front]`, two faces on different axes (ADR 0004). */
+const OPPOSITE = Object.freeze({ U: 'D', D: 'U', R: 'L', L: 'R', F: 'B', B: 'F' });
+const isHold = (h) => Array.isArray(h) && h.length === 2 && h.every((f) => Object.hasOwn(OPPOSITE, f))
+  && h[1] !== h[0] && h[1] !== OPPOSITE[h[0]];
+/** The pictures a library card draws a case as (`casePicture` in lib/screens/practice/library-view.js). */
+const PICTURES = new Set(['net', 'top-orientation', 'top-colours']);
+
+/**
+ * What is wrong with a row's chunks as the page cuts the algorithm with them, or null: each a sourced trigger
+ * the catalogue names, over a run of the written turns — counted as the page counts them (`writtenTokens` in
+ * lib/screens/practice/page-view.js, a split on spaces) — in order and apart.
+ */
+function chunksProblem(row, triggers) {
+  if (!Array.isArray(row.chunks)) return 'has no list of chunks';
+  const count = row.alg.trim().split(/\s+/).length;
+  let after = 0;
+  for (const [k, chunk] of row.chunks.entries()) {
+    if (!isRecord(chunk) || !Number.isInteger(chunk.from) || !Number.isInteger(chunk.to)) return `has a chunk ${k} that is not a run of turns`;
+    if (!(after <= chunk.from && chunk.from < chunk.to && chunk.to <= count)) return `has a chunk ${k} outside its ${count} turns, or overlapping another`;
+    if (!Object.hasOwn(triggers, chunk.trigger)) return `has a chunk ${k} naming a trigger the catalogue does not hold`;
+    after = chunk.to;
+  }
+  return null;
+}
+
 /**
  * What is wrong with a catalogue the screens would draw, or null: every field they read is there, and every
- * name in it points at something it holds — a group's set, a set's row, a row's set — with nothing left out of
- * the groups. `catalogueOf` builds exactly this shape; a reply that is not it (a truncated answer, another
- * build's protocol, `{}`) is refused here, before it is kept for the page's lifetime and before a screen
- * throws halfway through drawing it. The rows' own columns are the ledger's, held by `alg-ledger.test.mjs`;
- * this checks only what the screens rely on to find them.
+ * name in it points at something it holds — a group's set, a set's row, a row's set, a chunk's trigger — with
+ * nothing left out of the groups. `catalogueOf` builds exactly this shape; a reply that is not it (a truncated
+ * answer, another build's protocol, `{}`) is refused here, before it is kept for the page's lifetime and before a
+ * screen throws halfway through drawing it. The rows' own columns are the ledger's, held by `alg-ledger.test.mjs`;
+ * this checks what the screens rely on to find them and to draw them: a card's case picture, name and sentence,
+ * and the page's hold and chunks.
  */
 export function catalogueProblem(c) {
   if (!isRecord(c)) return 'the catalogue is not a record';
@@ -73,7 +99,14 @@ export function catalogueProblem(c) {
   for (const [id, row] of Object.entries(c.rows)) {
     if (!isRecord(row) || row.id !== id) return `row "${id}" says it is "${row?.id}"`;
     if (!isText(row.alg)) return `row "${id}" has no moves`;
-    if (!Array.isArray(row.chunks)) return `row "${id}" has no list of chunks`;
+    const chunks = chunksProblem(row, c.triggers);
+    if (chunks !== null) return `row "${id}" ${chunks}`;
+    if (!isHold(row.hold)) return `row "${id}" names no hold to draw it in`;
+    if (!isRecord(row.solves) || !(typeof row.solves.facelets === 'string' && /^[URFDLB]{54}$/.test(row.solves.facelets))
+      || !PICTURES.has(row.solves.picture)) return `row "${id}" has no case to draw`;
+    if (!isText(row.says) || !isTextOrNull(row.label) || !isTextOrNull(row.nickname) || !isTextOrNull(row.purpose)) {
+      return `row "${id}" is not a sentence, a label, a nickname and a purpose`;
+    }
     if (!listed.has(id)) return `row "${id}" is in no set`;
     if (!Object.hasOwn(c.sets, row.set) || !c.sets[row.set].ids.includes(id)) return `row "${id}" is filed in "${row.set}", which does not list it`;
   }
