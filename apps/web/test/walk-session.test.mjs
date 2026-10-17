@@ -585,20 +585,32 @@ test('a turn reported while a walk is being searched for survives into the next 
 test('a stage walk the cube follows shows its live distance at once, asked about the cube in hand', async () => {
   const R = turned('R');
   const asked = [];
+  // The live replies are HELD until the route's own count has been read, so the count can be compared
+  // before and after them — whatever text a live answer would carry, the count must not move.
+  let release;
+  const held = new Promise((r) => { release = r; });
   const w = world({ subject: { facelets: R, trusted: true, isPhysical: true, source: 'cube' } }, () => ({
     deriveCube: () => new Promise(() => {}),
     lastRoute: async () => ({ kind: 'exact', alg: "R'", moves: 1, minimal: true, overshoot: false }),
-    stageAsk: async (q) => { asked.push(q); return q.want === 'bounds' ? { bounds: { cross: 1 } } : { moves: 1 }; },
+    // A live distance of 3 against the route's 1, so a live number written over the count shows as one.
+    stageAsk: async (q) => { asked.push(q); await held; return q.want === 'bounds' ? { bounds: { cross: 3 } } : { moves: 3 }; },
   }));
   w.state.stageTarget = 'cross';
   w.state.live = R;
   assert.equal(await within(w.session.load()), true);
   assert.equal(w.session.following(), true, 'precondition: the walk starts where the cube is');
+  const count = w.$('#moveCount').textContent;
+  release();
   for (let i = 0; i < 5; i += 1) await settle();
+  assert.equal(w.$('#moveCount').textContent, count, 'a live answer changed the route\'s count');
   assert.ok(asked.length > 0, 'a fresh mount asked nothing — the number was requested before the model existed');
   assert.deepEqual([...new Set(asked.map((q) => q.facelets))], [R],
     'the live distance was asked about a cube other than the one in hand');
   assert.match(w.$('#stageLive').textContent, /your cube now/);
+  // ITS OWN LINE: `#moveCount` is this route's count, and a live distance written there would make one
+  // label mean two things (the browser case in stage-target.test.mjs sees only an untrusted cube, which
+  // never produces a number, so it cannot catch this).
+  assert.doesNotMatch(w.$('#moveCount').textContent, /your cube now/, 'the live distance was written over the route\'s count');
 });
 
 test('following is judged again for every walk: refused on one, allowed on the next, refused again', async () => {
