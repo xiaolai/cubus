@@ -434,9 +434,13 @@ let entriesPromise = null;
 /**
  * Every set's source entries, `Map(setId -> frozen entries)`, the method modules imported on first call. A
  * name a set picks that its source no longer holds is refused here, loudly — never a set that quietly shrank.
+ *
+ * A LOAD THAT FAILED IS NOT KEPT. A module fetch that did not arrive once is said to every caller already
+ * waiting, and the next call loads again — never the same failure handed out for the life of the thread.
  */
 export function loadEntries() {
-  entriesPromise ??= (async () => {
+  if (entriesPromise) return entriesPromise;
+  const loading = (async () => {
     const modules = Object.fromEntries(await Promise.all(Object.entries(ALG_SOURCES)
       .map(async ([id, src]) => [id, await src.load()])));
     const out = new Map();
@@ -455,7 +459,9 @@ export function loadEntries() {
     }
     return out;
   })();
-  return entriesPromise;
+  entriesPromise = loading;
+  loading.catch(() => { if (entriesPromise === loading) entriesPromise = null; });
+  return loading;
 }
 
 /** Sets with rows: every one but the named steps that are not algorithms. */
@@ -464,9 +470,11 @@ const ROW_SETS = ALG_SETS.filter((s) => s.kind !== 'not an algorithm');
 let indexPromise = null;
 
 /** `id -> { set, entry }`, and a map from each move string (normalised) to the ids that hold it. Built from
- *  strings only — no cube is turned — so it costs microseconds once the entries are in. */
+ *  strings only — no cube is turned — so it costs microseconds once the entries are in. Like the entries, an
+ *  index that failed is not kept. */
 function loadIndex() {
-  indexPromise ??= loadEntries().then((entries) => {
+  if (indexPromise) return indexPromise;
+  const building = loadEntries().then((entries) => {
     const byId = new Map();
     const byMoves = new Map();
     for (const set of ROW_SETS) {
@@ -481,7 +489,9 @@ function loadIndex() {
     }
     return { byId, byMoves };
   });
-  return indexPromise;
+  indexPromise = building;
+  building.catch(() => { if (indexPromise === building) indexPromise = null; });
+  return building;
 }
 
 // ---- metrics --------------------------------------------------------------------------------------------

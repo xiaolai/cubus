@@ -842,6 +842,36 @@ test('importing the library builds no repertoire and reads no pending source; a 
   for (const p of PENDING_SOURCES) assert.ok(!afterRows.has(p.module.slice('lib/'.length)), `${p.module} is pending and was read`);
 });
 
+test('a source that failed to load is not remembered: the next ask loads it again and answers', () => {
+  // A transient failure — one module fetch that did not arrive — must not poison the library for the life of
+  // the thread that holds it: the promise of the entries, and of the index built on them, is dropped when it
+  // rejects. Run in a child under a load hook that fails the FIRST load of one method module and counts every
+  // attempt, so "the failure was replayed" and "it loaded again" are told apart by the count.
+  const library = JSON.stringify(new URL('../lib/alg-library.js', import.meta.url).href);
+  const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
+    import { registerHooks } from 'node:module';
+    let loads = 0;
+    registerHooks({ load(url, context, next) {
+      if (url.endsWith('/lib/methods/cross.js')) {
+        loads += 1;
+        if (loads === 1) throw new Error('transient: cross.js could not be fetched');
+      }
+      return next(url, context);
+    } });
+    const lib = await import(${library});
+    const said = [];
+    for (const ask of [() => lib.algIds(), () => lib.algIds(), () => lib.loadEntries()]) {
+      try { const v = await ask(); said.push({ ok: true, n: v.length ?? v.size, loads }); }
+      catch (e) { said.push({ ok: false, message: e.message, loads }); }
+    }
+    process.stdout.write(JSON.stringify(said));
+  `], { encoding: 'utf8' });
+  const [first, second, third] = JSON.parse(out);
+  assert.deepEqual(first, { ok: false, message: 'transient: cross.js could not be fetched', loads: 1 });
+  assert.deepEqual(second, { ok: true, n: ROWS.length, loads: 2 }, 'the failure was replayed instead of loading again');
+  assert.deepEqual(third, { ok: true, n: ALG_SETS.length, loads: 2 }, 'a load that worked was not kept');
+});
+
 test('a pending source stays pending only while it is uncommitted', (t) => {
   // The day another session commits Mehta or corners-first, this fails: the ledger must then read it, and a
   // source left in PENDING_SOURCES after it is committed would be a table the ledger silently does not show.
