@@ -3152,3 +3152,33 @@ test('a press on one control does not spend a gesture begun on another', async (
   box.querySelector('button.sw[data-colour="1"]').click(); // a different control, no gesture
   assert.deepEqual(answers, [[1, 41]], 'a keyboard press inherited another control’s stale gesture');
 });
+
+test('a finished scan\'s guidance reaches the screen TRANSLATED — on its own, and said with the colour sentence', async () => {
+  // The source guard above accepts `t(CONSTANT)` and a bare `CONSTANT` alike, so a constant sentence that
+  // lost its t() would ship in English to every reader (audit, 2026-10-17). Asked behaviourally: the
+  // English the card shows IS the catalogue key, and a catalogue translating it must change the card.
+  const { createScanVoice } = await import('../lib/screens/scan/voice.js');
+  const { registerLocale, setLocale } = await import('../lib/i18n.js');
+  const win = new Window();
+  const root = win.document.createElement('div');
+  root.innerHTML = '<b id="scanHowTitle"></b><p id="scanHow"></p><p id="scanHint"></p><button id="scanAction" hidden></button>';
+  win.document.body.appendChild(root);
+  const voice = createScanVoice({ root, restart: () => {}, closePops: () => {} });
+  const finished = { complete: true, phase: 'done' };
+  const body = () => root.querySelector('#scanHow').textContent;
+  try {
+    voice.paintSay(finished);
+    const english = body();
+    assert.match(english, /Solve this cube/, 'precondition: the finished scan\'s guidance is on the card');
+    registerLocale('qa-done', { [english]: '«done body»' });
+    setLocale('qa-done');
+    voice.paintSay(finished);
+    assert.equal(body(), '«done body»', 'the finished scan\'s guidance was not translated');
+    voice.noteScheme('western');
+    voice.paintSay(finished);
+    assert.match(body(), /«done body»$/, 'said with the colour sentence, the guidance was not translated');
+  } finally {
+    setLocale('en');
+    await win.happyDOM.close();
+  }
+});
