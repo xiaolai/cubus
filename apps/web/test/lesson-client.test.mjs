@@ -188,3 +188,58 @@ test('a reply that cannot be read fails every question in flight as a worker fai
   assert.ok(settled, 'an unreadable reply left questions pending');
   for (const err of settled) assert.ok(err.workerFailure === true && /could not be read/.test(err.message), String(err));
 });
+
+/** A stand-in for the platform's Worker: built, then made to fail or speak by hand. */
+function fakePlatformWorker(built) {
+  return class {
+    constructor() {
+      this.listeners = { message: [], error: [], messageerror: [] };
+      built.push(this);
+    }
+    addEventListener(type, fn, opts) {
+      const listener = opts?.once ? (e) => { this.listeners[type] = this.listeners[type].filter((f) => f !== listener); fn(e); } : fn;
+      this.listeners[type].push(listener);
+    }
+    postMessage() {}
+    terminate() {}
+    emit(type, event) { for (const fn of [...this.listeners[type]]) fn(event); }
+  };
+}
+
+test('a worker that builds but fails to LOAD is remembered: the next lesson gets a dead worker, not another build', NEVER_HANGS, async () => {
+  const fresh = await import(`../lib/lesson-client.js?load=${Date.now()}`);
+  const prior = globalThis.Worker;
+  const built = [];
+  globalThis.Worker = fakePlatformWorker(built);
+  try {
+    const client = fresh.createLessonClient({ spawn: fresh.spawnLessonWorker });
+    const asking = client.solve(SCRAMBLED, 'cfop');
+    built[0].emit('error', { message: 'module script failed to load (test)', preventDefault() {} });
+    await assert.rejects(asking, (err) => err.workerFailure === true);
+    const again = client.solve(SCRAMBLED, 'cfop');
+    assert.equal(built.length, 1, 'a second worker was built after the first never loaded');
+    await assert.rejects(again, /could not be loaded/, 'a page whose worker never loaded built another');
+  } finally {
+    globalThis.Worker = prior;
+  }
+});
+
+test('a worker that spoke and then died is not "broken": the next lesson builds a new one', NEVER_HANGS, async () => {
+  const fresh = await import(`../lib/lesson-client.js?died=${Date.now()}`);
+  const prior = globalThis.Worker;
+  const built = [];
+  globalThis.Worker = fakePlatformWorker(built);
+  try {
+    const client = fresh.createLessonClient({ spawn: fresh.spawnLessonWorker });
+    const first = client.solve(SCRAMBLED, 'beginner');
+    built[0].emit('message', { data: { kind: METHOD_SOLVE, id: 1, ok: true, calledOff: true } });
+    assert.equal(await first, null);
+    const second = client.solve(SCRAMBLED, 'beginner');
+    built[0].emit('error', { message: 'out of memory (test)', preventDefault() {} });
+    await assert.rejects(second, /lesson worker failed/);
+    void client.solve(SCRAMBLED, 'beginner');
+    assert.equal(built.length, 2, 'a worker that had worked was taken for one that never loads');
+  } finally {
+    globalThis.Worker = prior;
+  }
+});
