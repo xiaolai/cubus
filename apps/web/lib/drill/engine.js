@@ -340,11 +340,15 @@ export function createDrillEngine({
   };
 
   /**
-   * The candidate the cube has finished: at its last position AND in its last arrangement. The position
-   * alone is not enough — a midpoint keeps the position it was beside, so a cube at the end that turns a
-   * quarter of the last half turn back is still "at" the last position while it has left the end.
+   * Whether a candidate has the cube, in arrangement `f`, finished: at its last position AND in its last
+   * arrangement. The position alone is not enough — a midpoint keeps the position it was beside, so a cube at
+   * the end that turns a quarter of the last half turn back is still "at" the last position while it has left
+   * the end.
    */
-  const finishedOn = (f) => live.find((e) => e.idx === e.c.track.states.length - 1 && e.c.track.states[e.idx] === f);
+  const isFinished = (e, f) => e.idx === e.c.track.states.length - 1 && e.c.track.states[e.idx] === f;
+
+  /** The candidate the cube has finished, if one has. */
+  const finishedOn = (f) => live.find((e) => isFinished(e, f));
 
   /** Judge the arrangement against every candidate. `quiet` judges without cue or sound (`uncertain`). */
   const judge = (quiet) => {
@@ -519,10 +523,11 @@ export function createDrillEngine({
 
     /**
      * The arrangement the app has reconciled (the self-check's, after a gap), and `serial`, the serial of the
-     * snapshot it came from when the cube numbers its turns. Mends the stream: tracking resumes, silently, from
-     * the position nearest where the cube had got to, and the serial count is taken from the snapshot
-     * (`countFrom`). The rep stays `uncertain` — its time is refused — and can still complete. An arrangement
-     * the engine already holds changes nothing, the count included.
+     * snapshot it came from when the cube numbers its turns. Mends the stream: tracking resumes, silently, in
+     * every hold whose track places the arrangement, from the position nearest where the cube had got to, and the
+     * serial count is taken from the snapshot (`countFrom`). The rep stays `uncertain` — its time is refused — and
+     * can still complete; the snapshot completes it only when every hold that places it has it at its end. An
+     * arrangement the engine already holds changes nothing, the count included.
      */
     resync(given, { serial } = {}) {
       const state = stateFrom(given);
@@ -538,32 +543,39 @@ export function createDrillEngine({
       // Turns went by unseen, so the cube may be anywhere AHEAD: the one place this engine looks further
       // than two turns. Nearest first, ahead before behind, so a repeated sequence is placed where the
       // cube most plausibly is — and a rep resumed this way is `uncertain` and untimed whatever happens.
-      // A cube that is nowhere on the track stays where it was, uncertain, until it starts over.
+      // `rank` orders the places found on different tracks by the same rule.
       const nearest = (track, from) => {
         const { states } = track;
         for (let d = 0; d < states.length; d++) {
-          const k = (d ? [from + d, from - d] : [from]).find((i) => i >= 0 && i < states.length && states[i] === f);
-          if (k !== undefined) return passRegrips(track, k);
+          const tries = d ? [[from + d, 2 * d - 1], [from - d, 2 * d]] : [[from, 0]];
+          const hit = tries.find(([i]) => i >= 0 && i < states.length && states[i] === f);
+          if (hit) return { idx: passRegrips(track, hit[0]), rank: hit[1] };
         }
         return null;
       };
-      const placed = live.map((e) => ({ e, k: nearest(e.c.track, e.idx) }));
-      live = placed.map(({ e, k }) => (k === null ? e : { ...e, idx: k }));
-      // When NO hold still standing can place the cube, the reports that ruled holds out are suspect: a lost turn
-      // the stream did not show makes the next report look like a different turn, so the hold the child holds
-      // can be ruled out by a turn it never made. Every hold is asked again, from the rep's start, and those that
-      // place the cube come back; if none does, the cube stays where it was, as before.
-      if (placed.every(({ k }) => k === null)) {
-        const from = live[0]?.idx ?? 0;
-        const again = candidatesFrom(plans, stateFrom(rep.start)).flatMap((c) => {
-          const k = nearest(c.track, from);
-          return k === null ? [] : [{ c, idx: k, reach: new Map(), landed: new Set(), firstFrom: passRegrips(c.track, 0) }];
-        });
-        if (again.length) live = again;
-      }
+      // The snapshot is the cube, so the holds are EXACTLY those whose track places it. A hold the reports ruled
+      // out comes back when it does — a lost turn the stream did not show makes the next report look like another
+      // turn, and rules out the hold the child holds by a turn it never made — and a hold still standing goes
+      // when it does not. Each is placed nearest where it stood, one not standing nearest where the cube was
+      // believed to be, and the nearest reading comes first: the position the rep resumes from. A cube that is
+      // nowhere on any track stays where it was, uncertain, until it starts over.
+      // A candidate is known by its plan's `holds`: every candidate built from one plan shares that array.
+      const standing = new Map(live.map((e) => [e.c.holds, e]));
+      const believed = live[0]?.idx ?? 0;
+      const readings = candidatesFrom(plans, stateFrom(rep.start)).flatMap((fresh) => {
+        const was = standing.get(fresh.holds);
+        const c = was?.c ?? fresh;
+        const at = nearest(c.track, was?.idx ?? believed);
+        if (!at) return [];
+        const entry = was ?? { c, reach: new Map(), landed: new Set(), firstFrom: passRegrips(c.track, 0) };
+        return [{ entry: { ...entry, idx: at.idx }, rank: at.rank }];
+      });
+      if (readings.length) live = readings.sort((a, b) => a.rank - b.rank).map((r) => r.entry);
       emit('resync', status, { position: live[0].idx });
-      const finished = rep.firstMatched === null ? null : finishedOn(f);
-      if (finished) complete(finished);
+      // Done only when EVERY reading has the cube at its end. A hold that places it at its end and another that
+      // places it part way are two readings of one cube that nothing yet tells apart — the next turns will — and a
+      // done on the first would sound half way through the second.
+      if (rep.firstMatched !== null && live.every((e) => isFinished(e, f))) complete(live[0]);
     },
 
     /**

@@ -575,18 +575,142 @@ test('a resync after an unnoticed lost turn looks again at the holds the false r
   assert.ok(done, 'the rep could not finish after the snapshot');
   assert.equal(done.result.refused, TIME_REFUSAL.STREAM_GAP);
   assert.ok(done.result.holds.some((x) => holdKey(x) === 'UF'));
-  // And where the holds still standing can place the snapshot, they are kept as they are: nothing ruled out by
-  // reports that WERE the turns comes back.
-  const kept = harness({ alg: "R U R' U'" });
-  startAt(kept, SOLVED);
-  kept.turn('R');
-  kept.turn('U');
-  assert.deepEqual(kept.engine.state.holds.map(holdKey), ['UF']);
-  kept.engine.gap();
-  // Back where the rep began — an arrangement EVERY hold's track holds, so only keeping what stands keeps [U, F].
-  kept.engine.resync(toFacelets(SOLVED));
-  assert.deepEqual(kept.engine.state.holds.map(holdKey), ['UF'], 'a snapshot the hold could place brought ruled-out holds back');
-  assert.equal(kept.engine.state.position, 0);
+  // A hold the reports settled is not kept for that: the holds after a resync are exactly the holds whose track
+  // places the snapshot. Back where the rep began, that is every hold, at the start.
+  const again = harness({ alg: "R U R' U'" });
+  startAt(again, SOLVED);
+  again.turn('R');
+  again.turn('U');
+  assert.deepEqual(again.engine.state.holds.map(holdKey), ['UF']);
+  again.engine.gap();
+  again.engine.resync(toFacelets(SOLVED));
+  const placers = placersOf(trackArrangements("R U R' U'", SOLVED, lcg(0x5e7)), toFacelets(SOLVED));
+  assert.equal(placers.length, 24, 'precondition: every hold places the arrangement the rep began in');
+  assert.deepEqual(again.engine.state.holds.map(holdKey).sort(), placers, 'the holds are not the holds that place the snapshot');
+  assert.equal(again.engine.state.position, 0);
+});
+
+/**
+ * Each hold's arrangement at every position of `alg` from `start`, by cubejs — a hand holding the cube that way,
+ * making the reports a cube makes, token by token — never the engine's own tracks. Keyed by `holdKey`.
+ */
+function trackArrangements(alg, start, rnd) {
+  return new Map(ORIENTATIONS.map((hold) => {
+    const cube = Cube.fromString(toFacelets(start));
+    const at = [cube.asString()];
+    for (const group of reportGroups(alg, hold, rnd)) {
+      if (group.length) cube.move(group.join(' '));
+      at.push(cube.asString());
+    }
+    return [holdKey(hold), at];
+  }));
+}
+
+/** The holds whose track places the arrangement `f`, as sorted keys. */
+const placersOf = (tracks, f) => [...tracks].flatMap(([key, at]) => (at.includes(f) ? [key] : [])).sort();
+
+test('after a resync the holds are exactly those that place the snapshot, and it ends the rep only if all are at their end', () => {
+  // The snapshot is the cube (audit-fix 2026-10-18 r3 #3, Codex's verify): a hold whose track holds it is not ruled
+  // out by it, whatever the reports said, and a hold standing whose track does not hold it is. Two ways in: the
+  // first report lost on a cube that does not number its turns, so every later report was judged against an
+  // arrangement the cube was not in; and a hold settled by reports that were the turns, then a gap the app proved.
+  const rnd = lcg(0x2e5c);
+  const reached = { ended: 0, several: 0, back: 0 };
+  for (const alg of [byName('course-corner-twist-back'), "R U R' U'", byName('pll-H'), byName('f2l-13')]) {
+    const start = randomStart(rnd);
+    const tracks = trackArrangements(alg, start, rnd);
+    // Where a track's arrangement repeats only inside a run of regrips, "at its end" is the last run, exactly.
+    const endRun = (at) => { let j = at.length - 1; while (j > 0 && at[j - 1] === at.at(-1)) j -= 1; return j; };
+    for (const [key, at] of tracks) {
+      at.forEach((f, i) => assert.ok(at.indexOf(f) === i || at[i - 1] === f, `precondition: ${alg} held ${key} passes ${i} twice`));
+    }
+    for (const hold of [['U', 'F'], ORIENTATIONS[Math.floor(rnd() * ORIENTATIONS.length)]]) {
+      const groups = reportGroups(alg, hold, rnd);
+      const own = tracks.get(holdKey(hold));
+      for (let k = 1; k < own.length; k++) {
+        const snapshot = own[k];
+        const placers = placersOf(tracks, snapshot);
+        const allAtEnd = placers.every((p) => tracks.get(p).indexOf(snapshot) >= endRun(tracks.get(p)));
+        for (const way of ['the first report lost', 'settled, then a gap']) {
+          const label = `${alg} held ${hold}, ${way}, the snapshot at ${k}`;
+          const h = harness({ alg, numbersMoves: way !== 'the first report lost' });
+          startAt(h, start);
+          if (way === 'the first report lost') {
+            for (const q of groups.slice(0, k).flat().slice(1)) h.turn(q);
+          } else {
+            for (const q of groups.slice(0, Math.min(2, k)).flat()) h.turn(q);
+            h.engine.gap();
+          }
+          assert.equal(h.count('done'), 0, `precondition, ${label}: the rep was done before the snapshot`);
+          const before = h.engine.state.holds.map(holdKey);
+          h.engine.resync(snapshot);
+          if (h.count('done')) {
+            assert.ok(allAtEnd, `${label}: done while a hold places the cube part way`);
+            reached.ended += 1;
+            continue;
+          }
+          assert.deepEqual(h.engine.state.holds.map(holdKey).sort(), placers, `${label}: the holds are not the holds that place it`);
+          if (placers.length > 1) reached.several += 1;
+          if (placers.some((p) => !before.includes(p))) reached.back += 1;
+          // Settled, a turn of the algorithm was matched; every hold at its end is then a rep that is done.
+          assert.ok(!allAtEnd || way === 'the first report lost', `${label}: every hold has the cube at its end, and the rep is not done`);
+        }
+      }
+    }
+  }
+  // A sweep that reached none of these would pass having checked nothing.
+  assert.ok(reached.ended > 0, 'no snapshot ended a rep');
+  assert.ok(reached.several > 0, 'no snapshot was placed by more than one hold');
+  assert.ok(reached.back > 0, 'no hold the reports had ruled out came back');
+  // A snapshot no hold places: the cube is off the algorithm, and the holds stand where they were.
+  const h = harness({ alg: "R U R' U'" });
+  startAt(h, SOLVED);
+  h.turn('R');
+  h.turn('U');
+  h.engine.gap();
+  const off = toFacelets(applyAlg(SOLVED, 'R U F'));
+  assert.deepEqual(placersOf(trackArrangements("R U R' U'", SOLVED, lcg(1)), off), [], 'precondition: no hold places it');
+  h.engine.resync(off);
+  assert.deepEqual(h.engine.state.holds.map(holdKey), ['UF']);
+  assert.equal(h.engine.state.position, 2);
+  assert.equal(h.engine.state.status, STATUS.UNCERTAIN);
+});
+
+test('a hold that places the snapshot by chance decides nothing: course-corner-twist-back with its first report lost', () => {
+  // `R' D' R D` four times. Its inverse, `D' R' D R`, is the same algorithm held [L, B] — the child's R is the cube's
+  // D, the child's D the cube's R — and the commutator has order six, so a cube held [U, F] is at the END of [L, B]'s
+  // track after turn 8 and at its turn 15 after turn 9; held [L, B], the same of [U, F]. With the first report lost,
+  // the hold the child holds is ruled out by turns it never made. The snapshot after turn 9 was placed on the mirror
+  // alone, which reads the child's last seven turns as turns taken back, so the rep never finished; after turn 8 it
+  // put the mirror at its end, and done sounded half way (audit-fix 2026-10-18 r3 #3, found by Codex's verify).
+  const alg = byName('course-corner-twist-back');
+  assert.equal(alg, Array(4).fill("R' D' R D").join(' '));
+  const rnd = lcg(0x7b1c);
+  for (const [hold, mirror] of [[['U', 'F'], ['L', 'B']], [['L', 'B'], ['U', 'F']]]) {
+    for (const turn of [8, 9]) {
+      const label = `held ${hold}, the snapshot after turn ${turn}`;
+      const h = harness({ alg, numbersMoves: false });
+      const start = randomStart(rnd);
+      startAt(h, start);
+      const reports = reportsFor(alg, hold, rnd);
+      for (const q of reports.slice(1, turn)) h.turn(q);
+      assert.ok(!h.engine.state.holds.some((x) => holdKey(x) === holdKey(hold)), `precondition, ${label}: the hold the child holds is out`);
+      const snapshot = toFacelets(applyAlg(start, reports.slice(0, turn).join(' ')));
+      const theirs = trackArrangements(alg, start, rnd).get(holdKey(mirror));
+      assert.equal(theirs.indexOf(snapshot), turn === 8 ? 16 : 15, `precondition, ${label}: the mirror places the cube`);
+      h.engine.resync(snapshot);
+      assert.equal(h.count('done'), 0, `${label}: done sounded half way, on the mirror's reading`);
+      assert.ok(h.engine.state.holds.some((x) => holdKey(x) === holdKey(hold)), `${label}: the hold the child holds was not looked at again`);
+      assert.equal(h.engine.state.position, turn, `${label}: the rep resumed on a reading other than the nearest`);
+      reports.slice(turn).forEach((q, i) => {
+        h.turn(q);
+        assert.equal(h.count('done'), i === reports.length - turn - 1 ? 1 : 0, `${label}: done after turn ${turn + i + 1}`);
+      });
+      const done = h.events.find((e) => e.type === 'done');
+      assert.equal(done.result.refused, TIME_REFUSAL.STREAM_GAP);
+      assert.deepEqual(done.result.holds.map(holdKey), [holdKey(hold)]);
+    }
+  }
 });
 
 test('a rep is done only where the cube IS at the end — a turn away from it after a resync is not done', () => {
