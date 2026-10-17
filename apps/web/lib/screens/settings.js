@@ -21,6 +21,7 @@ import { mountSmartCube, smartCubeCard } from './settings/smart-cube.js';
 import { wireOrientation } from './settings/window-orientation.js';
 import { bindChoice, bindSwitch, commitPref, switchRow, unsavedNote } from './settings/preferences.js';
 import { stopAll } from '../sound.js';
+import { mountPracticeTarget, practiceTargetRow } from './settings/practice-target.js';
 
 // How the four rungs read on the Settings screen. A rung with no label here would render as
 // "undefined", so solve-tier-wiring.test.mjs checks every TIERS entry has one.
@@ -92,6 +93,9 @@ SCREENS.settings = () => {
         ${desktopWindow ? `<div class="wrap-row" style="justify-content:space-between;padding:12px 0"><div><div style="font-weight:600">Window</div><div class="sub" style="color:var(--ink-4)">Landscape or portrait — the window takes the shape and keeps it</div></div>
           <div class="wrap-row" style="gap:6px" id="orientationPills">${['landscape', 'portrait'].map((o) => `<button class="pill" id="setOrientation-${o}" data-set-orientation="${o}" aria-pressed="false">${escHtml(t(o))}</button>`).join('')}</div></div>` : ''}
         ${unsavedNote('appearance')}</div>
+      ${navHidden('practice') ? '' : `<div class="card"><div class="eyebrow">PRACTICE</div>
+        ${practiceTargetRow({ style: 'padding:12px 0 0' })}
+        ${unsavedNote('practice')}</div>`}
       ${smartCubeCard()}
       <div class="card"><div class="eyebrow">CAMERA</div>
         ${toggles.map(([k, lbl, sub]) => switchRow({
@@ -133,6 +137,7 @@ SCREENS.settings = () => {
           id: 'setToggle-devScanView', on: settings.devScanView === SCAN_VIEWS.stickers, attrs: 'data-scan-view', label: 'Sticker view while scanning',
         }) : ''}
         <div class="sub" style="color:var(--ink-5);margin-top:12px">${escHtml(t('%1 hides this section again.', advancedChordWords()))}</div>
+        ${navHidden('practice') ? practiceTargetRow({ style: 'padding:13px 0;border-bottom:1px solid var(--line-faint)' }) : ''}
         ${unsavedNote('advanced')}</div>` : ''}
       <div class="card"><div class="eyebrow">ABOUT</div>
         <div class="about-brand"><img src="./icons/icon.svg" alt="" width="22" height="22" /><b>Cubus</b></div>
@@ -154,6 +159,7 @@ SCREENS.settings = () => {
       mountCamera(root);
       mountAdvanced(root);
       mountSmartCube(root);
+      mountPracticeTarget(root, renderScreen);
     },
   };
 };

@@ -64,7 +64,7 @@ export const APP_SOURCES = Object.freeze([
   'lib/screens/timer/scramble-request.js',
   // algorithm practice and its parts, and the lesson's way to it, 2026-10-17 (dev-docs/algorithm-drill-v2-plan.md §4)
   'lib/screens/practice.js', 'lib/screens/practice/library-view.js', 'lib/screens/practice/page-view.js',
-  'lib/practice-link.js',
+  'lib/practice-link.js', 'lib/screens/settings/practice-target.js',
 ]);
 
 /** Every other module under lib/: the engines, drivers, pure helpers, workers and bundle entries

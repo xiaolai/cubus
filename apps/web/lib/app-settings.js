@@ -80,8 +80,33 @@ export const DEFAULT_SETTINGS = Object.freeze({
   // about every cube, so it is stored and applied to the next one. A new install walks Quick (owner's
   // call Q1, 2026-10-16).
   solveMethod: DEFAULT_METHOD,
+  // How many CLEAN reps in a row put an algorithm "in the fingers" on the Practice screen (owner, 2026-10-17;
+  // dev-docs/algorithm-drill-v2-plan.md WI-12). Bounded by `FINGERS` below; `fingersTarget` is the one reader.
+  fingersN: 7,
 });
 
+/**
+ * The bounds of `fingersN` (owner, 2026-10-17: default 7, at least 3).
+ *
+ * THE FLOOR IS 3 because the owner set it: two clean reps in a row happen by luck on a short algorithm.
+ * THE CEILING IS 30, and it is ours: the practice record keeps the newest 100 reps of each algorithm
+ * (`PER_ALG_CAP` in lib/drill/record.js), so the streak it derives can never exceed 100 and a target above
+ * that could never be met; every trainer the plan surveyed asks for far fewer (§1.4); and 30 clean reps
+ * without a slip is already several minutes of uninterrupted practice of ONE algorithm for the beginners
+ * this app is for — a target past it reads as unreachable rather than as a goal.
+ */
+export const FINGERS = Object.freeze({ min: 3, max: 30, fallback: DEFAULT_SETTINGS.fingersN });
+
+/**
+ * The target a stored or typed `fingersN` means. A whole number outside the bounds is CLAMPED — 2 asked for
+ * the smallest target there is, and 99 the largest — while anything that is not a whole number at all (a
+ * string, NaN, 7.5, null) carries no intent and is the default. Pure, so the load-time repair and the
+ * Settings control cannot come to disagree about what a value means.
+ */
+export function fingersTarget(v) {
+  if (!Number.isInteger(v)) return FINGERS.fallback;
+  return Math.min(FINGERS.max, Math.max(FINGERS.min, v));
+}
 /** Every setting whose default is a boolean — DERIVED, so a new flag is repaired the moment it has a
  *  default, and no list kept by hand can leave one out (audit, 2026-09-19: the tests' own copies had
  *  already drifted). */
@@ -276,6 +301,9 @@ const repairs = [
   [() => typeof settings.language === 'string', () => { settings.language = DEFAULT_SETTINGS.language; }],
   [() => typeof settings.cameraId === 'string', () => { settings.cameraId = DEFAULT_SETTINGS.cameraId; }],
   [() => Number.isFinite(settings.navDefaults), () => { settings.navDefaults = DEFAULT_SETTINGS.navDefaults; }],
+  // Below 3 or above 30 is clamped, anything that is not a whole number is the default — `fingersTarget`
+  // says which — and the repaired value is written back by the one write at the end of this file.
+  [() => fingersTarget(settings.fingersN) === settings.fingersN, () => { settings.fingersN = fingersTarget(settings.fingersN); }],
 ];
 // Written back by the one write at the end of this file, with every other repair and migration.
 for (const [ok, fix] of repairs) if (!ok()) fix();

@@ -1,5 +1,5 @@
 // The Practice screen: every algorithm the ledger holds, and one of them practised over and over until the
-// fingers do it on their own (dev-docs/algorithm-drill-v2-plan.md §3.7, §4; work item WI-10).
+// fingers do it on their own (dev-docs/algorithm-drill-v2-plan.md §3.7, §4; work items WI-10 and WI-12).
 //
 // EARNED, NOT GIVEN. The first Drill was removed whole (ADR 0010): "a screen rebuilt later starts as a module
 // with no screen, and earns its tab again". So this is a new id — never `drill` or `trainer`, which name removed
@@ -22,7 +22,7 @@
 // their attempt (lib/drill/engine.js), so nothing it scheduled acts on a later rep either.
 
 import { $, escHtml, state } from '../app-state.js';
-import { settings } from '../app-settings.js';
+import { fingersTarget, settings } from '../app-settings.js';
 import { t } from '../i18n.js';
 import { SCREENS, renderScreen, screenAbort, screenGen } from '../screen-shell.js';
 import { hooks } from '../screen-slots.js';
@@ -241,7 +241,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
       if (!(err instanceof PracticeRecordError)) throw err;
       sayRecord(t('Your practice record could not be read (%1), so it is left as it is and nothing new is saved.', err.code));
     }
-    $('#practiceFigures', root).innerHTML = figuresHtml(stats, escHtml);
+    $('#practiceFigures', root).innerHTML = figuresHtml(stats, fingersTarget(settings.fingersN), escHtml);
     $('#practiceReps', root).innerHTML = lastRepsHtml(reps, escHtml);
   };
   const saveRep = (id, rep) => {

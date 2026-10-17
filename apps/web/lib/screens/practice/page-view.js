@@ -58,15 +58,27 @@ export const seconds = (ms) => t('%1 s', (ms / 1000).toFixed(2));
 /** A figure, or a dash when nothing measured it. */
 const figure = (v, fmt = String) => (v === null || v === undefined ? '—' : fmt(v));
 
+/**
+ * "In the fingers" (WI-12): `streak` clean reps in a row against the target `n`. A dash before anything is on
+ * record, the streak toward `n` until it is reached, and the badge from the Nth clean rep on.
+ */
+export function fingersWords(stats, n) {
+  if (!stats || stats.judged === 0) return { reached: false, text: t('In a row: — of %1', n) };
+  if (stats.streak >= n) return { reached: true, text: t('In the fingers — %1 clean in a row', stats.streak) };
+  return { reached: false, text: t('In a row: %1 of %2', stats.streak, n) };
+}
+
 /** The record's figures for one algorithm. `stats` null means the record could not be read. */
-export function figuresHtml(stats, esc) {
+export function figuresHtml(stats, n, esc) {
+  const fingers = fingersWords(stats, n);
   const rows = [
     [t('Reps'), figure(stats?.reps)],
     [t('Clean'), figure(stats?.cleanReps)],
     [t('Best'), figure(stats?.best, seconds)],
     [t('Median'), figure(stats?.median, seconds)],
   ];
-  return `<dl class="practice-figures">${rows.map(([k, v]) => `<div><dt class="sub">${esc(k)}</dt><dd class="num">${esc(v)}</dd></div>`).join('')}</dl>`;
+  return `<div class="practice-fingers${fingers.reached ? ' on' : ''}" id="practiceFingers" data-reached="${fingers.reached}">${esc(fingers.text)}</div>
+    <dl class="practice-figures">${rows.map(([k, v]) => `<div><dt class="sub">${esc(k)}</dt><dd class="num">${esc(v)}</dd></div>`).join('')}</dl>`;
 }
 
 /** The newest reps, newest first, each with its time or why it has none. */

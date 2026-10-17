@@ -247,3 +247,48 @@ test('a stored lesson resting place is dropped on load and not written back', as
   assert.equal(Object.hasOwn(mod.settings, 'courseRested'), false, 'kept in memory');
   assert.equal(Object.hasOwn(store.stored() ?? {}, 'courseRested'), false, 'written back');
 });
+
+// ---- "in the fingers": how many clean reps in a row (WI-12, owner 2026-10-17) -------------------------------
+//
+// Default 7, at least 3, at most 30 (lib/app-settings.js says why 30). A whole number outside the bounds was
+// a request for the nearest bound and is CLAMPED; anything that is not a whole number carries no intent and is
+// the default. Either repair is written back, once, like every other repair in that file.
+
+test('a fresh install puts an algorithm in the fingers after 7 clean reps', async () => {
+  const { mod } = await loadOver(undefined);
+  assert.equal(mod.settings.fingersN, 7);
+  assert.equal(mod.DEFAULT_SETTINGS.fingersN, 7);
+  assert.deepEqual({ min: mod.FINGERS.min, max: mod.FINGERS.max }, { min: 3, max: 30 });
+});
+
+test('a stored target below 3 is refused as such and clamped to 3, and the repair is saved', async () => {
+  for (const below of [2, 1, 0, -5]) {
+    const { mod, store } = await loadOver({ fingersN: below });
+    assert.equal(mod.settings.fingersN, 3, `${below} was believed`);
+    assert.equal(store.stored().fingersN, 3, `${below} was not written back as 3`);
+  }
+});
+
+test('a stored target above 30 is clamped to 30; one in bounds is kept untouched', async () => {
+  assert.equal((await loadOver({ fingersN: 99 })).mod.settings.fingersN, 30);
+  for (const kept of [3, 7, 12, 30]) {
+    const { mod } = await loadOver({ fingersN: kept });
+    assert.equal(mod.settings.fingersN, kept, `${kept} was changed`);
+  }
+});
+
+test('a stored target that is not a whole number is the default, never a guess at what it meant', async () => {
+  for (const bad of ['5', 7.5, null, true, { n: 5 }, Number.NaN]) {
+    const { mod, store } = await loadOver({ fingersN: bad });
+    assert.equal(mod.settings.fingersN, 7, `${JSON.stringify(bad)} was not repaired to the default`);
+    assert.equal(store.stored().fingersN, 7);
+  }
+});
+
+test('fingersTarget is the one reader: the stepper and the repair cannot disagree', async () => {
+  const { mod } = await loadOver(undefined);
+  assert.equal(mod.fingersTarget(2), 3);
+  assert.equal(mod.fingersTarget(31), 30);
+  assert.equal(mod.fingersTarget(8), 8);
+  assert.equal(mod.fingersTarget('8'), 7);
+});
