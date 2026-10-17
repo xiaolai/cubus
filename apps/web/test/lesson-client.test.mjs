@@ -175,3 +175,16 @@ test('each reply settles its own question: out of order, and a called-off one\'s
   assert.equal((await a).alg, solveByMethod(SCRAMBLED, methodOf(methodById('beginner'))).alg, 'a got another question\'s answer');
   assert.equal((await b).alg, solveByMethod(other, methodOf(methodById('beginner'))).alg, 'b got another question\'s answer');
 });
+
+test('a reply that cannot be read fails every question in flight as a worker failure', NEVER_HANGS, async () => {
+  const worker = fakeWorker({ answer: () => null });
+  const client = createLessonClient({ spawn: () => worker });
+  const a = client.solve(SCRAMBLED, 'beginner');
+  const b = client.solve(SCRAMBLED, 'cfop');
+  const outcomes = [a, b].map((asking) => asking.then(() => 'resolved', (err) => err));
+  worker.emit('messageerror', {});
+  // Settled within a tick, not merely "eventually": a question nobody fails would hang the walk forever.
+  const settled = await Promise.race([Promise.all(outcomes), new Promise((r) => setTimeout(() => r(null), 0))]);
+  assert.ok(settled, 'an unreadable reply left questions pending');
+  for (const err of settled) assert.ok(err.workerFailure === true && /could not be read/.test(err.message), String(err));
+});
