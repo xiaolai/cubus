@@ -10,6 +10,7 @@ import { cutLesson, isCutLesson } from '../lib/lesson-cut.js';
 import { readFileSync } from 'node:fs';
 import { fromCube, moveCount } from '../lib/cube-pieces.js';
 import { lessonSections } from '../lib/method-lesson.js';
+import { faceTurnsAlg } from '../lib/cube-moves.js';
 import { BEGINNER_ENTRY } from '../lib/methods/registry.js';
 import { TUMBLED, holdAfter, sameHold, toMethodFrame } from '../lib/solving-hold.js';
 import { TARGET_BY_ID } from '../lib/stage-targets.js';
@@ -53,7 +54,12 @@ test('every record of the walk agrees at the cut, and each is the full lesson\'s
       const n = cut.moves.length;
       assert.ok(n > 0, `${where}: an empty cut was returned rather than null`);
       // The lengths, all at the one position.
-      assert.equal(cut.alg.split(' ').length, n, `${where}: alg`);
+      assert.equal(cut.alg, full.moves.slice(0, n).join(' '), `${where}: alg is not the full lesson's own moves, in order`);
+      // And the moves DO what the records say: replayed by cubejs from the start, the cut's own alg lands on
+      // the state it records at the cut — so moves and states cannot drift apart together unnoticed.
+      const replayed = Cube.fromString(cut.stepFacelets[0]);
+      replayed.move(faceTurnsAlg(cut.alg));
+      assert.equal(replayed.asString(), cut.stepFacelets[n], `${where}: the cut's moves do not reach the state it records`);
       assert.equal(cut.moveStep.length, n, `${where}: moveStep`);
       assert.equal(cut.moveHolds.length, n + 1, `${where}: moveHolds`);
       assert.equal(cut.stepFacelets.length, n + 1, `${where}: stepFacelets`);
