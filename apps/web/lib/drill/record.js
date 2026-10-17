@@ -8,12 +8,11 @@
 //
 // WHAT IS STORED, AND WHAT IS NOT. One key, `cubusDrillRecord`, holding one JSON record:
 //
-//   { v: 2, gen, replaced, algs: { <ledger row id>: [rep, rep, …] } }      reps oldest first, newest last
+//   { v: 2, gen, algs: { <ledger row id>: [rep, rep, …] } }      reps oldest first, newest last
 //
 // `gen` names this record: 16 hex digits drawn when a record is started where none was stored, and kept by
-// every write after. `replaced` is the generation the starter had last seen stored before it found none — the
-// record that was removed — or null when it had seen none. Each rep is in short keys, because a rep is written
-// thousands of times and parsed on every write:
+// every write after, so a record removed and started again is another generation. Each rep is in short keys,
+// because a rep is written thousands of times and parsed on every write:
 //
 //   i   the rep's id: 24 hex digits, unique on the record — 16 drawn once per open record (one page's), then
 //       that page's count of reps. Two reps are told apart by it however alike they are, and it orders reps
@@ -61,20 +60,19 @@
 // generation they are in; and every repair is a look at the record AS STORED NOW — at each `add`, and on each
 // `storage` event when `changes` is given — never at what an event says happened, which can arrive late:
 //
-//   * the same generation: every one of them missing is put back — the union by id, then the caps, as every
-//     write is, so a rep the caps drop goes as it would have had the writes not crossed, and is not missing;
-//   * no record stored, or one whose `replaced` names their generation: their record was removed, which is
-//     deliberate, so they are not put back, and `status().removed` counts them;
-//   * another generation that does not name theirs: a window that never saw their record started its own in
-//     the gap, and they are put back into it.
+//   * the generation they were written under: every one of them missing is put back — the union by id, then
+//     the caps, as every write is, so a rep the caps drop goes as it would have had the writes not crossed;
+//   * no record stored, or any other generation: the record they were written under was removed, whatever
+//     happened after, and a removal is deliberate — so they are dropped, never put back into a record they
+//     were not written under, and nothing is said. `status().removed` counts them.
 //
 // What a look could not finish is a STATE, never an event to remember: `status()` says how many reps are
 // missing and not yet put back, how many went with a removed record, and why the last look failed, and a look
 // that succeeds clears what an earlier one said. `onChange` tells the screen another window's write was looked
-// at, so its figures can be read again. NOT REPAIRED, because nothing stored can tell it: a window that writes
-// before another window's removal reaches it writes the removed record back, with its rep; and a record
-// started by a window that never saw the removed one does not name it, so a window that did not look while
-// none was stored puts its reps from the removed record back into the new one.
+// at, so its figures can be read again. NOT REPAIRED, because nothing stored can tell it apart from a removal:
+// two windows that each START a record in the same gap — the first rep on a device, or the first after a
+// removal — leave the later write's generation, and the earlier window's reps are counted removed. And a
+// window that writes before another window's removal reaches it writes the removed record back, with its rep.
 import { cryptoUint32 } from '../random-state.js';
 import { TIME_REFUSAL } from './timing.js';
 
@@ -192,7 +190,7 @@ const fromStored = (s) => (isRecordObject(s)
 const newer = (a, b) => a.at > b.at || (a.at === b.at && a.repId > b.repId);
 
 /**
- * The stored text as `{ gen, replaced, algs }`, or null when nothing is stored: `algs` a Map from ledger id to
+ * The stored text as `{ gen, algs }`, or null when nothing is stored: `algs` a Map from ledger id to
  * its reps, oldest first. The Map is a fresh snapshot, parsed anew on every call; each rep list and each rep in
  * it is frozen. Throws `PracticeRecordError` for anything that is not exactly this format — the whole record is
  * refused.
@@ -209,9 +207,6 @@ function parseStored(text) {
   }
   if (!(typeof raw.gen === 'string' && GENERATION.test(raw.gen))) {
     throw new PracticeRecordError('corrupt', `${RECORD_KEY} names no generation`);
-  }
-  if (raw.replaced !== null && !(typeof raw.replaced === 'string' && GENERATION.test(raw.replaced) && raw.replaced !== raw.gen)) {
-    throw new PracticeRecordError('corrupt', `${RECORD_KEY} says neither which record it replaced nor none`);
   }
   const algs = new Map();
   const ids = new Set();
@@ -234,7 +229,7 @@ function parseStored(text) {
     algs.set(id, Object.freeze(reps));
   }
   if (total > TOTAL_CAP) throw new PracticeRecordError('corrupt', `${RECORD_KEY} holds ${total} reps, past the ${TOTAL_CAP} it is ever written with`);
-  return { gen: raw.gen, replaced: raw.replaced, algs };
+  return { gen: raw.gen, algs };
 }
 
 /**
@@ -251,10 +246,9 @@ export function parseRecord(text) {
 
 /** The record as stored text. `Object.fromEntries` defines own properties, so an id such as `__proto__`
  *  is a key like any other and never a prototype. */
-const serialize = ({ gen, replaced, algs }) => JSON.stringify({
+const serialize = ({ gen, algs }) => JSON.stringify({
   v: RECORD_VERSION,
   gen,
-  replaced,
   algs: Object.fromEntries([...algs].map(([id, reps]) => [id, reps.map(toStored)])),
 });
 
@@ -376,18 +370,9 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = n
     return id;
   };
 
-  /** A record's name. One equal to the record it replaced would be refused on read: a source that repeats. */
-  const newGeneration = () => {
-    const g = hex8() + hex8();
-    if (g === seen) throw new Error('practice record: the random source repeated a generation');
-    return g;
-  };
-
   /** The reps this instance wrote that were on record at its last look (`{ id, rep }`), and their generation. */
   let mine = [];
   let gen = null;
-  /** The generation this instance last saw stored: the one a record it starts says it replaced. */
-  let seen = null;
   /** `status()`: what the last look could not do, and what removals took. */
   let missing = 0;
   let removed = 0;
@@ -400,9 +385,7 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = n
       // A read that threw is not an empty record: treating it as one is how a good record is overwritten.
       throw new PracticeRecordError('unreadable', `${key} could not be read, so nothing will be written over it`, e);
     }
-    const found = parseStored(text);
-    if (found !== null) seen = found.gen;
-    return found;
+    return parseStored(text);
   };
 
   /** Write a record and read it back. Null when it landed, otherwise the error. */
@@ -420,7 +403,7 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = n
 
   /**
    * Look at the record as stored now and put back this instance's reps another window's write dropped (header,
-   * TWO WINDOWS). Returns the record as it then stands, `{ gen, replaced, algs }` with `gen` null when none is
+   * TWO WINDOWS). Returns the record as it then stands, `{ gen, algs }` with `gen` null when none is
    * stored — holding the reps put back even when writing them did not land, which `status()` then says. Throws
    * `PracticeRecordError` when the record cannot be read or is refused, having noted it in `status()`.
    */
@@ -430,11 +413,12 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = n
       if (e instanceof PracticeRecordError) error = e;
       throw e;
     }
-    const stored = found ?? { gen: null, replaced: null, algs: new Map() };
+    const stored = found ?? { gen: null, algs: new Map() };
     const on = idsIn(stored.algs);
     const away = mine.filter(({ rep }) => !on.has(rep.repId));
-    // Removed: no record, or one started by a window that saw theirs and then found none.
-    const cleared = found === null || (found.gen !== gen && found.replaced === gen);
+    // Put back only into the generation they were written under: any other record, or none, means that one was
+    // removed, whatever happened after.
+    const cleared = found === null || found.gen !== gen;
     if (cleared) removed += away.length;
     const back = cleared ? [] : away;
     let algs = stored.algs;
@@ -490,7 +474,9 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = n
      * that succeeds clears, never an event to remember:
      *
      *   missing   reps another window's write dropped that could not be put back yet (`error` says why)
-     *   removed   reps that went with a record removed — in another window, or in this one — since it opened
+     *   removed   reps that went with the record they were written under, since it opened: removed in another
+     *             window or in this one, or written over by a record another window started in the same moment
+     *             (header, NOT REPAIRED). Never put back, and not a failure to show: a removal is deliberate
      *   error     why the last look could not finish (the record cannot be read, is refused, or the reps put
      *             back did not land), or null
      */
@@ -532,14 +518,13 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = n
       const lists = new Map(stored.algs);
       lists.set(id, [...(lists.get(id) ?? []), full]);
       const next = stored.gen === null
-        ? { gen: newGeneration(), replaced: seen, algs: capped(lists) }
+        ? { gen: hex8() + hex8(), algs: capped(lists) }
         : { ...stored, algs: capped(lists) };
       const failed = write(next);
       if (failed) return Object.freeze({ saved: false, error: failed });
       const kept = idsIn(next.algs);
       mine = [...mine, { id, rep: full }].filter(({ rep: r }) => kept.has(r.repId));
       gen = next.gen;
-      seen = next.gen;
       missing = 0;
       error = null;
       return Object.freeze({ saved: true });

@@ -38,6 +38,7 @@ function fakeStorage(initial = null, { readThrows = false, writeThrows = false, 
       }
       if (!writeDrops) map.set(k, String(v));
     },
+    removeItem(k) { map.delete(k); },
     raw: () => (map.has(RECORD_KEY) ? map.get(RECORD_KEY) : null),
   };
   return s;
@@ -247,7 +248,7 @@ const rid = (n, page = 'a') => page.repeat(16) + n.toString(16).padStart(8, '0')
 const GEN = '1'.repeat(16);
 
 /** Stored text: `algs` under a generation. */
-const recordText = (algs, { gen = GEN, replaced = null } = {}) => JSON.stringify({ v: RECORD_VERSION, gen, replaced, algs });
+const recordText = (algs, { gen = GEN } = {}) => JSON.stringify({ v: RECORD_VERSION, gen, algs });
 
 /** Stored text holding `n` reps spread over algorithms, the oldest first, from `from` a millisecond apart. */
 function storedText(perAlg, { gen = GEN, from = 1_000_000, page = 'a', shape = {} } = {}) {
@@ -282,7 +283,7 @@ test(`the record keeps ${TOTAL_CAP} reps overall, dropping the oldest across eve
 
 const GOOD = { i: rid(0), t: 5, c: true, l: false, ms: 900, r: null, n: 6, p: 0, h: 7 };
 /** One algorithm's reps as stored text, with the record's own fields overridden by `top`. */
-const one = (reps, top = {}) => JSON.stringify({ v: RECORD_VERSION, gen: GEN, replaced: null, algs: { a: reps }, ...top });
+const one = (reps, top = {}) => JSON.stringify({ v: RECORD_VERSION, gen: GEN, algs: { a: reps }, ...top });
 const CORRUPT = [
   ['not JSON', '{"v":2,', 'not-json'],
   ['an array', '[]', 'foreign'],
@@ -291,8 +292,6 @@ const CORRUPT = [
   ['algs not a record', one([GOOD], { algs: [] }), 'foreign'],
   ['no generation', one([GOOD], { gen: undefined }), 'corrupt'],
   ['a generation that is not 16 lowercase hex digits', one([GOOD], { gen: 'ABCDEF0123456789' }), 'corrupt'],
-  ['no word on what it replaced', one([GOOD], { replaced: undefined }), 'corrupt'],
-  ['a record that replaced itself', one([GOOD], { replaced: GEN }), 'corrupt'],
   ['an empty rep list', one([]), 'corrupt'],
   ['a rep that is a string', one(['fast']), 'corrupt'],
   ['a rep with no id', one([{ ...GOOD, i: undefined }]), 'corrupt'],
@@ -670,11 +669,13 @@ test('row 8: two windows saving the same rep of one algorithm in one millisecond
   // Before: the two reps were one string, so the record held one and neither window said a thing.
   const w = windows(2);
   const { records: [a, b] } = openAll(w, () => 5_000);
+  assert.equal(a.add('x', rep({ ms: 100 })).saved, true);
+  w.deliver();
   assert.deepEqual([a.add('x', rep()).saved, b.add('x', rep()).saved], [true, true]);
   w.deliver();
-  const kept = w.stored().get('x') ?? [];
+  const kept = (w.stored().get('x') ?? []).slice(1);
   assert.equal(kept.length, 2, 'two reps each said saved are one on record');
-  assert.deepEqual(kept.map((r) => r.at), [5_000, 5_000]);
+  assert.deepEqual(kept.map((r) => [r.at, r.ms]), [[5_000, 1000], [5_000, 1000]]);
   assert.notEqual(kept[0].repId, kept[1].repId);
   assert.deepEqual([statusOf(a), statusOf(b)], [QUIET, QUIET]);
   assert.deepEqual(msOf(a.read()), msOf(b.read()));
@@ -691,31 +692,39 @@ test('row 9: a removal whose event arrives late takes only what it removed — a
   assert.deepEqual(statusOf(a), { missing: 0, removed: 1, error: null }, 'the rep that went with the record was not counted');
   w.fire();                                             // the removal's event, late
   assert.deepEqual(msOf(w.stored()), { x: [222] }, 'a late removal event took a rep saved after it');
-  // The other window has not heard of this one's new record, and writes one of its own over it.
-  assert.equal(b.add('y', rep({ ms: 333 })).saved, true);
-  assert.deepEqual(msOf(w.stored()), { y: [333] }, 'precondition: a competing write');
+  // The other window has this one's new record, then this window writes from a copy without its next rep.
   w.deliver();
-  assert.deepEqual(msOf(w.stored()), { x: [222], y: [333] }, 'a rep saved after the removal was lost to a competing write');
+  assert.equal(a.add('x', rep({ ms: 333 })).saved, true);
+  assert.equal(b.add('y', rep({ ms: 444 })).saved, true);
+  assert.deepEqual(msOf(w.stored()), { x: [222], y: [444] }, 'precondition: a competing write');
+  w.deliver();
+  assert.deepEqual(msOf(w.stored()), { x: [222, 333], y: [444] }, 'a rep saved after the removal was lost to a competing write');
   assert.deepEqual([statusOf(a), statusOf(b)], [{ missing: 0, removed: 1, error: null }, QUIET]);
 });
 
-test('row 9: a record started by a window that saw this one gone is a removal, even when this window never saw it gone', () => {
-  const w = windows(2);
-  const { records: [a, b] } = openAll(w, clockFrom());
-  assert.equal(a.add('x', rep({ ms: 111 })).saved, true);
-  w.deliver();
-  const removedGen = JSON.parse(w.raw()).gen;
-  w.tabs[1].storage.removeItem(RECORD_KEY);
-  assert.equal(b.add('y', rep({ ms: 222 })).saved, true);
-  assert.equal(JSON.parse(w.raw()).replaced, removedGen, 'the new record does not name the one it replaced');
-  // Both changes reach this window's copy before its first handler runs: it never sees the record gone.
-  w.deliver({ events: false });
-  w.fire();
-  assert.deepEqual(msOf(w.stored()), { y: [222] }, 'a removed rep was put back');
-  assert.deepEqual(statusOf(a), { missing: 0, removed: 1, error: null });
+test('row 10 (verify item 2): reps are put back only into the generation they were written under — a record removed and started again, once or twice, never takes them', () => {
+  // Codex's round-3 verify: this window holds G1; the other removes G1 and starts G2, then removes G2 and starts
+  // G3. G3 named only G2 as the record it replaced, so this window put its removed G1 reps back into G3, unsaid.
+  for (const starts of [1, 2]) {
+    const w = windows(2);
+    const { records: [a, b] } = openAll(w, clockFrom());
+    assert.equal(a.add('x', rep({ ms: 111 })).saved, true);
+    w.deliver();
+    for (let k = 0; k < starts; k += 1) {
+      w.tabs[1].storage.removeItem(RECORD_KEY);
+      assert.equal(b.add('y', rep({ ms: 200 + k })).saved, true);
+    }
+    // Every change reaches this window's copy before its first handler runs: it never sees the record gone.
+    w.deliver({ events: false });
+    w.fire();
+    assert.equal(a.add('x', rep({ ms: 333 })).saved, true);
+    w.deliver();
+    assert.deepEqual(msOf(w.stored()), { y: [199 + starts], x: [333] }, `started ${starts} time(s): a removed rep was put back`);
+    assert.deepEqual(statusOf(a), { missing: 0, removed: 1, error: null });
+  }
 });
 
-test('row 10: a record removed where no event says so stays removed — the next add finds none and starts again', () => {
+test('row 10: a record removed where no event says so stays removed — after an add here, or a record another instance started', () => {
   // In this window: a removal here fires no event here.
   const w = windows(1);
   const { records: [a] } = openAll(w, clockFrom());
@@ -726,18 +735,42 @@ test('row 10: a record removed where no event says so stays removed — the next
   assert.equal(a.add('x', rep({ ms: 222 })).saved, true);
   assert.deepEqual(msOf(w.stored()), { x: [222] }, 'the removed history came back');
   assert.deepEqual(statusOf(a), { missing: 0, removed: 1, error: null });
-  assert.equal(JSON.parse(w.raw()).replaced, removedGen);
+  assert.notEqual(JSON.parse(w.raw()).gen, removedGen, 'a record started again kept the removed one\'s generation');
+  // Codex's round-3 verify, item 1: the record read empty here, a fresh instance started another, and this one's
+  // next add put the removed history back into it.
+  const storage = fakeStorage();
+  const clock = clockFrom();
+  const c = openPracticeRecord({ storage, now: clock });
+  assert.equal(c.add('x', rep({ ms: 111 })).saved, true);
+  storage.removeItem(RECORD_KEY);
+  assert.equal(c.read().size, 0);
+  assert.equal(openPracticeRecord({ storage, now: clock }).add('y', rep({ ms: 222 })).saved, true);
+  assert.equal(c.add('x', rep({ ms: 333 })).saved, true);
+  assert.deepEqual(msOf(parseRecord(storage.raw())), { y: [222], x: [333] }, 'the removed history came back');
+  assert.deepEqual(statusOf(c), { missing: 0, removed: 1, error: null });
   // In another window, with no `changes` at all.
   const v = windows(2);
-  const clock = clockFrom();
-  const c = openPracticeRecord({ storage: v.tabs[0].storage, now: clock });
-  assert.equal(c.add('x', rep({ ms: 111 })).saved, true);
+  const d = openPracticeRecord({ storage: v.tabs[0].storage, now: clock });
+  assert.equal(d.add('x', rep({ ms: 111 })).saved, true);
   v.deliver();
   v.tabs[1].storage.removeItem(RECORD_KEY);
   v.deliver();
-  assert.equal(c.add('x', rep({ ms: 222 })).saved, true);
+  assert.equal(d.add('x', rep({ ms: 222 })).saved, true);
   assert.deepEqual(msOf(v.stored()), { x: [222] }, 'another window\'s removal was undone');
-  assert.deepEqual(statusOf(c), { missing: 0, removed: 1, error: null });
+  assert.deepEqual(statusOf(d), { missing: 0, removed: 1, error: null });
+});
+
+test('what is NOT repaired: two windows that each start a record in the same gap keep the later write, and the other\'s rep is counted removed', () => {
+  // The cost of putting reps back only into their own generation (header, NOT REPAIRED): with no record stored,
+  // each window starts one, and a record started at the same moment cannot be told from one started after a
+  // removal. Pinned so the cost is a decision, not a surprise: the rep is never put back into the other record.
+  const w = windows(2);
+  const { records: [a, b] } = openAll(w, clockFrom());
+  assert.equal(a.add('x', rep({ ms: 111 })).saved, true);
+  assert.equal(b.add('y', rep({ ms: 222 })).saved, true);
+  w.deliver();
+  assert.deepEqual(msOf(w.stored()), { y: [222] });
+  assert.deepEqual([statusOf(a), statusOf(b)], [{ missing: 0, removed: 1, error: null }, QUIET]);
 });
 
 test('row 11: a record another window made unreadable is said at once, and said no more once it reads again', () => {
