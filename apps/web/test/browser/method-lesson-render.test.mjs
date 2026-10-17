@@ -1,14 +1,12 @@
 // The lesson's cues where they actually land — real WebGL, real materials.
 //
 // This is plan A5's verification (dev-docs/method-solver-return-plan.md §9): the step under the
-// transport head must focus EXACTLY the pieces its `why` payload names, and a U-layer step must
-// leave U-face stickers on BOTH SIDES of the focus divide — the assertion `f38c72b` established,
-// which is the one that can tell per-sticker focus from a shared material.
+// transport head must pulse EXACTLY the pieces its `why` payload names — and, since 2026-10-17
+// (owner), grey NOTHING: a learner checks their cube against the picture at every turn. The
+// renderer's `focus` channel itself is held by cube-highlight-render.test.mjs.
 //
 // method-lesson.test.mjs proves which selectors a step produces. Nothing there can prove what the
-// renderer then does with them, and that half has the trap the focus channel was built around:
-// `bodyMat` is ONE material shared by all 26 cubies, so a channel that wrote colour without going
-// per-sticker would grey the whole cube at once and still pass every pure test.
+// renderer then does with them.
 //
 // Material assertions run under `prefers-reduced-motion: reduce`, where the highlight is frozen
 // at full strength — at the trough of the breath a correctly highlighted piece reads as dark.
@@ -20,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { webkit } from 'playwright';
 
 import { convertSelectors } from '../../lib/cube-moves.js';
-import { EDGES, SOLVED as SOLVED_STATE, applyAlg } from '../../lib/cube-pieces.js';
+import { SOLVED as SOLVED_STATE, applyAlg } from '../../lib/cube-pieces.js';
 import { lessonCues, namedPieces } from '../../lib/method-lesson.js';
 import { methodFor, solveByMethod } from '../../lib/method-solver.js';
 import { freePort } from '../free-port.mjs';
@@ -42,10 +40,8 @@ const EVERY_STAGE = ['cross', 'first-layer', 'middle-layer', 'top-cross', 'top-f
 /**
  * A lesson worth testing against, FOUND rather than typed.
  *
- * Three properties are needed and only some cubes have all three: every stage present, a
- * last-layer orientation step naming SOME but not all of the top pieces (a step that names all
- * four would grey nothing and the divide assertion would prove nothing), and a lift step whose
- * piece visibly moves. A hand-picked scramble satisfying those today stops satisfying them the
+ * Two properties are needed and only some cubes have both: every stage present, and a lift step
+ * whose piece visibly moves. A hand-picked scramble satisfying those today stops satisfying them the
  * moment a rung changes, and the test would then pass while checking less — so it is searched
  * for, and the search failing is itself a finding.
  */
@@ -56,9 +52,6 @@ function findSample() {
     const lesson = solveByMethod(applyAlg(SOLVED_STATE, scramble), methodFor());
     const stages = new Set(lesson.steps.map((s) => s.stage));
     if (!EVERY_STAGE.every((w) => stages.has(w))) continue;
-    const divide = lesson.steps.find((s) => (s.stage === 'top-cross' || s.stage === 'top-face') &&
-      namedPieces(s).length > 0 && namedPieces(s).length < 4);
-    if (!divide) continue;
     const lift = lesson.steps.find((s) => s.why.key === 'cross.lift' || s.why.key === 'firstLayer.lift');
     if (!lift) continue;
     // The facelets the cube shows as each step BEGINS. A cue points at pieces where they are when
@@ -68,7 +61,7 @@ function findSample() {
     oracle.move(scramble);
     const startOf = [];
     for (const step of lesson.steps) { startOf.push(oracle.asString()); oracle.move(turnsOf(step)); }
-    return { scramble, lesson, divide, lift, startOf };
+    return { scramble, lesson, lift, startOf };
   }
   return null;
 }
@@ -149,27 +142,25 @@ async function showStep(step, facelets) {
   const cues = lessonCues(step);
   // Read in the hold the step is made in, as `lessonFor` reads them (plan item 6.1): after a regrip a step
   // names its pieces the way the child sees the cube then, and this cube is drawn in the method's own frame.
-  const focus = cues.focus ? convertSelectors(cues.focus, step.hold) : '';
-  const highlight = cues.highlight ? convertSelectors(cues.highlight, step.hold) : '';
-  await page.evaluate(({ f, h, fl }) => {
+  // EVERY cue the step carries is applied, by name — so a `focus` coming back would be painted here.
+  const applied = Object.fromEntries(Object.entries(cues).map(([k, v]) => [k, v ? convertSelectors(v, step.hold) : '']));
+  await page.evaluate(({ a, fl }) => {
     window.__cube.removeAttribute('scramble');
     window.__cube.removeAttribute('alg');
     window.__cube.setAttribute('facelets', fl);
-    if (f) window.__cube.setAttribute('focus', f); else window.__cube.removeAttribute('focus');
-    if (h) window.__cube.setAttribute('highlight', h); else window.__cube.removeAttribute('highlight');
-  }, { f: focus, h: highlight, fl: facelets });
-  return { focus, highlight };
+    window.__cube.removeAttribute('focus');
+    window.__cube.removeAttribute('highlight');
+    for (const [k, v] of Object.entries(a)) if (v) window.__cube.setAttribute(k, v);
+  }, { a: applied, fl: facelets });
+  return applied;
 }
 
 /** `piece:UF` -> `FU`, the sorted key the renderer stamps on a cubie. */
 const keyOf = (token) => [...token.slice('piece:'.length)].sort().join('');
 
-/**
- * The cube's own keys for the pieces a step names — and, with `look`, the top edges it asks the child to
- * look for (plan item 6.2) — read in the hold the step is made in.
- */
-const piecesNamed = (step, { look = false } = {}) => {
-  const tokens = [...namedPieces(step), ...(look ? (step.why.look ?? []).map((i) => `piece:${EDGES[i]}`) : [])];
+/** The cube's own keys for the pieces a step names, read in the hold the step is made in. */
+const piecesNamed = (step) => {
+  const tokens = namedPieces(step);
   return tokens.length ? [...new Set(convertSelectors(tokens.join(','), step.hold).split(',').map(keyOf))] : [];
 };
 
@@ -183,22 +174,17 @@ test('a lesson exercising every stage was found — the sample is not a lucky on
   assert.equal(SAMPLE.startOf.length, SAMPLE.lesson.steps.length);
 });
 
-test('a step focuses exactly the pieces its why payload names, and nothing else', async () => {
-  // The A5 assertion. Walked over EVERY step of a real lesson rather than one hand-picked case:
-  // a cue that is right for the cross and wrong for the last layer is the failure mode, and one
-  // example cannot see it.
+test('no step greys a single sticker: the cube is always the cube in your hand', async () => {
+  // Owner, 2026-10-17: a learner compares their cube with the picture at every turn, and the lesson
+  // used to drain the hue from every piece a step did not name — the finished cross included. Walked
+  // over EVERY step of a real lesson, every stage, since a cue that came back for one stage only is
+  // the failure one example cannot see.
   for (const [i, step] of SAMPLE.lesson.steps.entries()) {
-    const { focus } = await showStep(step, SAMPLE.startOf[i]);
-    const wanted = new Set(piecesNamed(step, { look: true }));
+    const applied = await showStep(step, SAMPLE.startOf[i]);
     const all = await stickers();
     assert.equal(all.length, 54, 'a cube has 54 stickers');
-    // A sticker is IN focus when it kept its hue. Centres are context and are always kept, so
-    // they are excluded from the identity comparison — `lessonCues` adds them deliberately.
-    const kept = new Set(all.filter((s) => !s.grey && s.piece !== null && s.piece.length > 1).map((s) => s.piece));
-    const centres = all.filter((s) => !s.grey && s.piece !== null && s.piece.length === 1);
-    assert.equal(centres.length, 6, `step ${i} (${step.why.key}): the centres must stay coloured — ${focus}`);
-    assert.deepEqual([...kept].sort(), [...wanted].sort(),
-      `step ${i} (${step.why.key}) focused the wrong pieces — spec was "${focus}"`);
+    const greyed = all.filter((s) => s.grey);
+    assert.deepEqual(greyed, [], `step ${i} (${step.why.key}) greyed ${greyed.length} stickers — cues ${JSON.stringify(applied)}`);
   }
 });
 
@@ -213,28 +199,10 @@ test('the highlight pulses exactly the named pieces, and never a centre but the 
     const centres = lit.filter((p) => p.length === 1);
     assert.deepEqual(lit.filter((p) => p.length > 1), piecesNamed(step).sort(), `step ${i} (${step.why.key}) lit the wrong pieces`);
     assert.equal(centres.length, step.why.turn ? 1 : 0,
-      `step ${i} (${step.why.key}) pulsed ${centres.length} centres; focus keeps them, the pulse does not`);
+      `step ${i} (${step.why.key}) pulsed ${centres.length} centres; the pulse stays off them`);
     if (step.why.turn) turning += 1;
   }
   assert.ok(turning > 0, 'precondition: the sample lesson turns the whole cube at least once');
-});
-
-test('a U-layer step leaves U-face stickers on BOTH sides of the focus divide', async () => {
-  // The assertion f38c72b established, applied to a real lesson step rather than to a hand-typed
-  // selector. Focus writes sticker COLOUR, so if any two stickers shared a material, greying one
-  // would grey the other — the bodyMat trap, which is real on this element. A last-layer step
-  // names some of the top pieces and not others, so the U face must come out split.
-  const step = SAMPLE.divide;
-  const at = SAMPLE.lesson.steps.indexOf(step);
-  await showStep(step, SAMPLE.startOf[at]);
-  const u = (await stickers()).filter((s) => s.face === 'U');
-  const kept = u.filter((s) => !s.grey);
-  const greyed = u.filter((s) => s.grey);
-  assert.equal(kept.length + greyed.length, 9, 'all nine U-face stickers accounted for');
-  assert.ok(kept.length > 0, 'the named pieces keep their U stickers');
-  assert.ok(greyed.length > 0, 'the pieces the step does not name lose theirs');
-  assert.ok(!greyed.some((s) => kept.some((k) => k.hex === s.hex)),
-    'no greyed sticker shares a colour with a kept one — so no material is shared');
 });
 
 test('the highlight travels with the piece through the step it describes', async () => {

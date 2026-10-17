@@ -146,7 +146,7 @@ test('every algorithm the solver can name has a name in the reader\'s language',
 });
 
 test('every step names at least one piece, and every name is a piece that exists', () => {
-  // §5.2 is the whole bet: focus and highlight carry the explanation. A step naming nothing is
+  // §5.2 is the whole bet: the highlight carries the explanation. A step naming nothing is
   // that bet quietly not being placed.
   for (const step of STEPS) {
     const pieces = namedPieces(step);
@@ -162,32 +162,27 @@ test('every step names at least one piece, and every name is a piece that exists
   }
 });
 
-test('focus keeps the centres, highlight does not', () => {
-  // Greying the centres turns a cube into a grey box with four coloured stickers on it: the
-  // centres are what say which way up it is. They are context, not the subject, so focus keeps
-  // them and the pulse stays off them.
+test('a step pulses its pieces and greys nothing', () => {
+  // NOTHING IS GREYED (owner, 2026-10-17): a learner checks their cube against the picture at every
+  // turn, so a step's only cue is the pulse — no `focus`, which drained every other piece's hue.
   for (const step of STEPS) {
-    const { focus, highlight } = lessonCues(step);
-    assert.ok(focus.startsWith('centers,'), `${step.why.key}: focus drops the centres`);
+    const cues = lessonCues(step);
+    assert.deepEqual(Object.keys(cues), ['highlight'], `${step.why.key}: a cue other than the pulse`);
+    const { highlight } = cues;
     assert.ok(!highlight.includes('centers'), `${step.why.key}: the pulse should not be on the centres`);
     // ONE EXCEPTION, and only one: a step that turns the whole cube pulses the centre the turn brings to the
     // front (dev-docs/lesson-holds-plan.md item 2.2) — there the centre IS the subject, not the context.
     const lit = highlight.split(',');
     const centres = lit.filter((p) => /^piece:[URFDLB]$/.test(p));
     assert.equal(centres.length, step.why.turn ? 1 : 0, `${step.why.key}: ${centres.length} centres pulse`);
-    const subject = lit.filter((p) => !centres.includes(p));
-    // Plus what the child looks for before the move, where a step names it (plan item 6.2) — the top
-    // edges with none of the top colour — and nothing else.
-    const looked = (step.why.look ?? []).map((i) => `piece:${EDGES[i]}`).filter((p) => !subject.includes(p));
-    assert.equal(focus, ['centers', ...subject, ...looked].join(','), 'focus is the highlight set plus context, nothing else');
-    assert.equal(parseHighlight(focus).invalid, null);
+    assert.deepEqual(lit.filter((p) => !centres.includes(p)), namedPieces(step), `${step.why.key}: the pulse is the named pieces`);
     assert.equal(parseHighlight(highlight).invalid, null);
   }
 });
 
 test('a step with no reason produces no cue rather than a cue for nothing', () => {
-  assert.deepEqual(lessonCues(undefined), { highlight: '', focus: '' });
-  assert.deepEqual(lessonCues({ alg: 'R' }), { highlight: '', focus: '' });
+  assert.deepEqual(lessonCues(undefined), { highlight: '' });
+  assert.deepEqual(lessonCues({ alg: 'R' }), { highlight: '' });
   assert.equal(whyText(undefined), '');
   // '' and 'none' both mean "no selectors", so an empty cue is safe to hand the renderer.
   assert.deepEqual(parseHighlight('').selectors, []);

@@ -256,7 +256,7 @@ test('the engine is asked about the WHITE cross, and every answer comes back in 
     'the lesson is built white-first too');
   assert.match(code, /const walk = scanFrameWalk\(result\.steps\);/, 'and walked in the scan frame, each step played in its hold');
   assert.match(code, /renameSelectors\(convertSelectors\(spec, step\.hold\), METHOD_TO_SCAN\)/, 'its cues name pieces the renderer can find');
-  assert.match(code, /focus: cue\(cues\.focus\)/);
+  assert.doesNotMatch(code, /focus: cue\(/, 'a lesson step carries no focus — nothing is greyed');
   assert.match(code, /highlight: cue\(cues\.highlight\)/);
   // And what a child reads is named for how they are holding it — after a regrip, too.
   assert.match(code, /renameAlg\(m, moveHoldAt\(from \+ k\)\)/, 'every chip is named for the hold its move is made in');

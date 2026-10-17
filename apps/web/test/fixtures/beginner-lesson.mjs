@@ -50,7 +50,6 @@ export function lessonRecord(lesson, whyText) {
       ...(s.caseName === undefined ? {} : { caseName: s.caseName }),
       why: s.why,
       caption: whyText(s),
-      focus: s.focus,
       highlight: s.highlight,
     })),
   };

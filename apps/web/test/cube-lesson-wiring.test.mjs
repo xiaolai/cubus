@@ -174,11 +174,12 @@ test('every step points at something, and the cue is cleared when there is nothi
   // applied from the step under the head.
   const build = blockAt(code, 'function lessonFrom(facelets, entry, result)');
   assert.match(build, /lessonCues\(step\)/, 'every step\'s cues are worked out when the lesson is built');
-  assert.match(point, /step\?\.focus/);
   assert.match(point, /step\?\.highlight/);
-  assert.match(point, /setAttribute\('focus'/);
   assert.match(point, /setAttribute\('highlight'/);
-  assert.match(point, /removeAttribute\('focus'\)/, 'no lesson means no focus, not a focus on nothing');
+  // NOTHING IS GREYED (owner, 2026-10-17): the walk never sets `focus`, and clears it on every paint.
+  assert.doesNotMatch(point, /setAttribute\('focus'/, 'the walk greys pieces — a learner cannot compare their cube');
+  assert.match(point, /^\s*cube\.removeAttribute\('focus'\);\s*\n\s*if \(!lesson \|\| scrambling\)/m,
+    'focus is cleared on EVERY paint, before the lesson branch');
   assert.match(point, /removeAttribute\('highlight'\)/);
   // Driven by the transport, so walking the solution moves the cue with it.
   assert.match(code, /chips\.forEach[\s\S]{0,200}pointAtStep\(i\)/,
@@ -286,6 +287,6 @@ test('the reason line assists the cube rather than carrying it alone', () => {
   assert.match(code, /id="whyLine"/);
   assert.match(code, /whyLine\.hidden = !text/);
   const point = blockAt(code, 'function pointAtStep(i)');
-  assert.ok(point.includes('whyText(step)') && point.includes('step?.focus'),
+  assert.ok(point.includes('whyText(step)') && point.includes('step?.highlight'),
     'the sentence and the cue must be applied together, from the same step');
 });

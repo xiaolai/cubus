@@ -103,8 +103,10 @@ export function createWalkPresenter({
   /**
    * Point the cube at what the step under the transport head is about — plan §5.2.
    *
-   * `focus` drains the hue from every piece the step does not name; `highlight` pulses the
-   * ones it does. The sentence stays, translated and short, but it is no longer the
+   * `highlight` pulses the pieces the step names. NOTHING IS GREYED: the walk never sets `focus`,
+   * because a learner checks their cube against the picture at every turn (owner, 2026-10-17;
+   * `lib/method-lesson.js`). It REMOVES it on every paint, so a re-used cube that arrived with one
+   * cannot keep it. The sentence stays, translated and short, but it is no longer the
    * load-bearing channel: the first attempt had ONLY the sentence, and "join the corner to
    * its edge" cannot say WHICH corner.
    *
@@ -124,8 +126,8 @@ export function createWalkPresenter({
   function pointAtStep(i) {
     const { lesson, walkHold, walkGen } = walkNow();
     const whyLine = $('#whyLine', root);
+    cube.removeAttribute('focus');
     if (!lesson || scrambling) {
-      cube.removeAttribute('focus');
       cube.removeAttribute('highlight');
       if (whyLine) { whyLine.hidden = true; whyLine.textContent = ''; }
       // No lesson line, so nothing was said: the next lesson speaks for the drawing as it stands.
@@ -136,7 +138,6 @@ export function createWalkPresenter({
     // The step's cues were worked out and renamed into the scan frame when the lesson was built
     // (`lessonFor`). Whole-or-nothing at the renderer: an empty spec removes the channel rather
     // than setting it to a selector that names nothing.
-    if (step?.focus) cube.setAttribute('focus', step.focus); else cube.removeAttribute('focus');
     if (step?.highlight) cube.setAttribute('highlight', step.highlight); else cube.removeAttribute('highlight');
     // The cube turns over as the head crosses a hold, in either direction — a scrub goes back.
     const { held, say } = holdChangeAt(lesson, walkHold, i, toldHold);

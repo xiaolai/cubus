@@ -107,9 +107,9 @@ export function lessonFrom(facelets, entry, result) {
   // …and the walk lives in the scan frame, like every other walk: the renderer, `follow` and the
   // smart cube all compare against scan-frame states. SO DOES EVERY STEP, converted once, here: its
   // moves played in its hold and renamed, the hold each move is made in worked out beside them, and
-  // the pieces it points at renamed into `focus` and `highlight`, so nothing downstream has a frame to
-  // remember. What stays the solver's is `why`, whose key and wording are frame-free and whose piece
-  // indices have already become those two cues.
+  // the pieces it points at renamed into `highlight`, so nothing downstream has a frame to remember.
+  // What stays the solver's is `why`, whose key and wording are frame-free and whose piece indices
+  // have already become that cue.
   const walk = scanFrameWalk(result.steps);
   const moves = walk.moves;
   const steps = Object.freeze(result.steps.map((step, i) => {
@@ -123,7 +123,6 @@ export function lessonFrom(facelets, entry, result) {
       ...step,
       alg: walk.algs[i],
       hold: walk.stepHolds[i],
-      focus: cue(cues.focus),
       highlight: cue(cues.highlight),
     });
   }));

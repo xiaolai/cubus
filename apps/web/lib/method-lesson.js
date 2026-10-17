@@ -9,14 +9,18 @@
 // reading that cannot tell WHICH corner or WHICH edge. Text about a cube does not teach a cube.
 //
 // The renderer has since grown the channel that was missing — `highlight` (ebcc544) points at
-// named pieces and the pulse follows them through a turn, and `focus` (f38c72b) is the inverse,
-// draining the hue from every piece the step does not name. The solver's steps already carry
-// piece identities in `why`. So the explanation moves off the caption line and onto the cube; the
+// named pieces and the pulse follows them through a turn. The solver's steps already carry piece
+// identities in `why`. So the explanation moves off the caption line and onto the cube; the
 // sentence stays, translated and short, but it is no longer the load-bearing channel.
 //
+// A lesson greys NOTHING (owner, 2026-10-17). It used to set `focus` too, draining the hue from
+// every piece the step did not name — the finished cross included — and a learner checks their own
+// cube against the picture at every turn, which a grey sticker makes impossible. The pulse points;
+// every sticker keeps its colour. The renderer's `focus` channel stays for scripts that ask for it.
+//
 // Split out of app.js on purpose: WHICH pieces a step names is a question about a step, and the
-// browser test that proves the focus divide lands where it should needs to ask it without
-// mounting a screen.
+// browser test that proves the pulse lands where it should needs to ask it without mounting a
+// screen.
 
 import { CORNERS, EDGES, SOLVED, moveCount } from './cube-pieces.js';
 import { faceTurnsAlg, heldFace, identityFace, run } from './cube-moves.js';
@@ -386,23 +390,16 @@ export function namedPieces(step) {
 /**
  * What the cube should show while this step is the one under the transport head.
  *
- * `highlight` pulses the pieces the step names. `focus` is the same set PLUS the six centres —
- * the centres are what tell you which way up the cube is, and greying them turns a cube into a
- * grey box with four coloured stickers on it. Everything else loses its hue, so the stage stops
- * competing for attention.
- *
- * Both empty when the step names nothing, which reads as "no cue" rather than "focus on nothing":
- * an empty focus spec is `none`, and `parseHighlight` treats that as no selectors at all.
+ * `highlight` pulses the pieces the step names, and nothing else is said: no piece loses its colour
+ * (see the head of this file). Empty when the step names nothing, which reads as "no cue" rather
+ * than "a cue on nothing": `parseHighlight` treats '' as no selectors at all.
  */
 export function lessonCues(step) {
   const pieces = namedPieces(step);
-  if (pieces.length === 0) return { highlight: '', focus: '' };
-  // What the child looks for before the move — the top edges with none of the top colour (plan item
-  // 6.2) — stays in colour beside the piece the step is about, and only that piece pulses.
-  const looked = asList(step.why?.look).map((i) => `piece:${edgeName(i)}`).filter((p) => !pieces.includes(p));
+  if (pieces.length === 0) return { highlight: '' };
   const toward = turnedToward(step);
   const pulse = toward ? [...pieces, toward] : pieces;
-  return { highlight: pulse.join(','), focus: ['centers', ...pieces, ...looked].join(',') };
+  return { highlight: pulse.join(',') };
 }
 
 /**

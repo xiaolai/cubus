@@ -91,7 +91,7 @@ export const LAST_LAYER_EXTRAS = detach(ALIGN);
  * search must land on, and it always carries the guard — reaching the sub-goal by breaking the
  * first two layers is not reaching it.
  *
- * `names` is the focus/highlight payload: WHICH pieces this application is about, read from the
+ * `names` is the highlight payload: WHICH pieces this application is about, read from the
  * cube as it stands before the algorithm runs. Without it a last-layer step could only say
  * "make a cross on the top face" and point at nothing — and dev-docs/method-solver-return-plan.md
  * §5.2 is the claim that pointing is the load-bearing channel and the sentence is the assistant.
