@@ -13,7 +13,7 @@ import { after, before, test } from 'node:test';
 import { NAV_DEFAULTS_VERSION } from '../../lib/app-settings.js';
 import { ORIENTATIONS } from '../../lib/cube-orientation.js';
 import { SOLVED as PIECES, applyAlg, toFacelets } from '../../lib/cube-pieces.js';
-import { applyIdentity, toIdentity } from '../../lib/cube-moves.js';
+import { applyIdentity, run, toIdentity } from '../../lib/cube-moves.js';
 import { parse } from '../../lib/cube-notation.js';
 import { pace } from '../browser-wait.mjs';
 import { lcg } from '../fixtures/seeded-scrambles.mjs';
@@ -400,6 +400,41 @@ test('an algorithm whose hold no report settles still gets its walk and its arro
         assert.ok(alike.includes(s.data.hold), `${id} after report ${i + from}: the walk is drawn held ${s.data.hold}, which is not a hold the cube can be in`);
         assert.doesNotMatch(s.say, /how you are holding it/, `${id}: the page says the turns will tell it the hold`);
       }
+    }
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
+// ---- off the walk after a rotation (round 2, row 13) ---------------------------------------------------------
+
+test('off the walk after a whole-cube turn or a slice, the cube is drawn in the hold the rep has reached — the one its way back is written in', async () => {
+  const { page, context, errors } = await openPractice(fixture);
+  try {
+    const rnd = lcg(131);
+    const rows = Object.values((await page.evaluate(() => window.__p.rows())).rows);
+    // The Aa perm turns the whole cube first (x); OLL 57 makes a slice (M') once two axes have settled the hold.
+    for (const [opens, made] of [['x L2 D2 ', 3], ["R U R' U' M' ", 5]]) {
+      const row = rows.find((r) => r.alg.startsWith(opens));
+      assert.ok(row, `precondition: the ledger holds an algorithm that opens ${opens}`);
+      await show(page, row.id);
+      const hold = ORIENTATIONS[Math.floor(rnd() * 24)];
+      const per = reportsPerToken(row.alg, hold, rnd);
+      await page.evaluate((f) => window.__p.facelets(f), toFacelets(randomStart(rnd)));
+      await page.evaluate((qs) => { for (const q of qs) window.__p.move(q); }, per.slice(0, made).flat());
+      const before = await page.evaluate(() => window.__p.data());
+      assert.deepEqual([before.settled, before.position], ['true', String(made)], `${row.id}: precondition: past ${opens}, the hold settled`);
+      const wrong = 'URFDLB'.split('').find((f) => !axesNear(per, made).has(AXIS[f]));
+      await page.evaluate((q) => window.__p.move(q), wrong);
+      await page.evaluate((ms) => window.__p.wait(ms), PAST_WINDOW_MS);
+      const got = await page.evaluate(() => ({ data: window.__p.data(), held: window.__p.cube().getAttribute('orientation'), say: window.__p.say() }));
+      assert.equal(got.data.status, 'off', `${row.id}: precondition: off the walk`);
+      const reached = run(parse(row.alg).slice(0, made), hold, PIECES).hold.join(' ');
+      assert.notEqual(reached, hold.join(' '), `${row.id}: precondition: ${opens}turned the hold`);
+      // What must NOT happen: the cube swung back to the hold the rep began in, against the letters of its way back.
+      assert.equal(got.held, reached, `${row.id}: off the walk the cube is drawn held ${got.held}, not ${reached} (${got.say})`);
+      await page.keyboard.press('Escape');
     }
     assert.deepEqual(errors, []);
   } finally {

@@ -494,9 +494,12 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     const drawn = drawHold(st);
     if (st.status === STATUS.OFF || !drawn || !startFacelets) {
       // Off the algorithm, or before the hold is known: the cube as it is NOW, and an arrow only for the way back —
-      // in the cube's OWN letters, which is what the element reads, so it needs no hold to point the way.
+      // in the cube's OWN letters, which is what the element reads, so it needs no hold to point the way. Held as the
+      // rep has got it by its position, whole-cube turns and slices included: the hold the way back's letters are
+      // written in. The hold it BEGAN in swung the cube back across an `x` the child had already made.
+      const reached = drawn ? run(parse(row.alg).slice(0, st.position ?? 0), drawn, SOLVED).hold : ['U', 'F'];
       return {
-        facelets: engine.facelets, hold: drawn ?? ['U', 'F'], alg: '', at: 0,
+        facelets: engine.facelets, hold: reached, alg: '', at: 0,
         arrow: st.status === STATUS.OFF && st.wayBack ? st.wayBack.turns[0] : 'none',
         chips: st.status === STATUS.OFF ? -1 : st.position ?? 0,
       };
