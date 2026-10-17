@@ -13,7 +13,7 @@ import { STOP_NOW, stopDescriptor, stopWord } from '../lib/solve-client.js';
 import { solveByMethod } from '../lib/method-solver.js';
 import { methodById } from '../lib/methods/registry.js';
 import { methodOf } from '../lib/methods/method-of.js';
-import { SOLVED, applyAlg, fromCube, toFacelets } from '../lib/cube-pieces.js';
+import { SOLVED, applyAlg, toFacelets } from '../lib/cube-pieces.js';
 
 const engine = { solveByMethod, methodById, methodOf };
 // A question nobody settles never resolves; a cap turns that defect into a failure rather than a hang.
