@@ -172,18 +172,33 @@ test('the adapter refuses a done event that contradicts the caller about a lost 
 
 // ---- derived figures: from timed clean reps only --------------------------------------------------------
 
+/** Every refusal a rep of an `htm`-turn algorithm can carry, in the shape the engine gives it: a one-turn
+ *  algorithm is refused as one turn and nothing else; a longer one lost a turn exactly when it is refused for a
+ *  stream gap, and is then not clean. */
+const refusedReps = (htm) => Object.values(TIME_REFUSAL)
+  .filter((refused) => (htm === 1) === (refused === TIME_REFUSAL.ONE_TURN))
+  .map((refused) => rep({ ms: null, refused, htm, ...(refused === TIME_REFUSAL.STREAM_GAP ? { clean: false, lostTurn: true } : {}) }));
+
 test('an untimed rep never moves the best or the median; nor does a timed rep that was not clean', () => {
   const record = open(fakeStorage());
-  for (const ms of [1200, 1000, 1400]) record.add('oll-27', rep({ ms }));
+  for (const ms of [1200, 1000, 1400]) assert.equal(record.add('oll-27', rep({ ms })).saved, true);
   const before = record.stats('oll-27');
   assert.deepEqual([before.best, before.median, before.timed], [1000, 1200, 3]);
-  // Untimed — every refusal — and one far faster but not clean, and one with a lost turn.
-  for (const refused of Object.values(TIME_REFUSAL)) record.add('oll-27', rep({ ms: null, refused }));
-  record.add('oll-27', rep({ ms: 10, clean: false }));
-  record.add('oll-27', rep({ ms: null, refused: TIME_REFUSAL.STREAM_GAP, clean: false, lostTurn: true }));
+  // Untimed — every refusal a seven-turn algorithm can carry, a lost turn among them — and one far faster but
+  // not clean.
+  const untimed = refusedReps(7);
+  assert.deepEqual(untimed.map((r) => r.refused).sort(), Object.values(TIME_REFUSAL).filter((r) => r !== TIME_REFUSAL.ONE_TURN).sort());
+  for (const r of untimed) assert.equal(record.add('oll-27', r).saved, true, r.refused);
+  assert.equal(record.add('oll-27', rep({ ms: 10, clean: false })).saved, true);
   const after = record.stats('oll-27');
   assert.deepEqual([after.best, after.median, after.timed], [1000, 1200, 3], 'an untimed or unclean rep moved a time');
-  assert.equal(after.reps, 3 + Object.keys(TIME_REFUSAL).length + 2);
+  assert.equal(after.reps, 3 + untimed.length + 1);
+  // A one-turn algorithm is never timed, and its every rep is refused as one turn — with or without a lost turn.
+  const one = refusedReps(1);
+  assert.deepEqual(one.map((r) => r.refused), [TIME_REFUSAL.ONE_TURN]);
+  assert.equal(record.add('r2', one[0]).saved, true);
+  assert.equal(record.add('r2', { ...one[0], clean: false, lostTurn: true }).saved, true);
+  assert.deepEqual([record.stats('r2').timed, record.stats('r2').judged], [0, 1]);
 });
 
 test('with no timed rep there is no best, median or pace — null, never zero', () => {
@@ -265,7 +280,35 @@ const CORRUPT = [
   ['a clean timed rep with no turn count', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, n: null }] } }), 'corrupt'],
   ['reps out of order', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, t: 9 }, { ...GOOD, t: 8 }] } }), 'corrupt'],
   ['an empty id', JSON.stringify({ v: 1, algs: { '': [GOOD] } }), 'corrupt'],
+  // States the engine never makes (timing.js decides one-turn first, then a lost turn), each of which would
+  // move a derived figure: a stream gap with no lost turn counts in a streak or as an error, a lost turn that
+  // is not refused for it is judged, a timed one-turn rep or a short span makes a pace.
+  ['a stream gap that lost no turn, clean', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, ms: null, n: null, r: 'stream-gap' }] } }), 'corrupt'],
+  ['a stream gap that lost no turn, not clean', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, c: false, ms: null, n: null, r: 'stream-gap' }] } }), 'corrupt'],
+  ['a lost turn refused for something else', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, c: false, l: true, ms: null, n: null, r: 'no-cube-clock' }] } }), 'corrupt'],
+  ['a lost turn with a time', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, c: false, l: true, n: null }] } }), 'corrupt'],
+  ['a one-turn algorithm timed', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, h: 1, n: 1 }] } }), 'corrupt'],
+  ['a one-turn algorithm refused for a stream gap', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, c: false, l: true, h: 1, ms: null, n: null, r: 'stream-gap' }] } }), 'corrupt'],
+  ['a long algorithm refused as one turn', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, ms: null, n: null, r: 'one-turn' }] } }), 'corrupt'],
+  ['pauses marked with no time', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, ms: null, n: null, r: 'no-cube-clock', p: 2 }] } }), 'corrupt'],
+  ['a clean time spanning too few turns', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, n: 2 }] } }), 'corrupt'],
 ];
+
+test('every shape the engine gives a rep is read back', () => {
+  // The other side of the refusals above: the rules refuse what the engine never makes, and nothing it does.
+  const shapes = [
+    GOOD, { ...GOOD, n: 7 },                                                       // clean, the span is all turns or all but the first
+    { ...GOOD, c: false, n: null, p: 2 },                                          // timed, not clean, pauses marked
+    { ...GOOD, c: false, l: true, ms: null, n: null, r: 'stream-gap' },           // a lost turn
+    { ...GOOD, h: 1, ms: null, n: null, r: 'one-turn' },                           // one turn, clean
+    { ...GOOD, h: 1, c: false, l: true, ms: null, n: null, r: 'one-turn' },        // one turn, a lost turn
+    ...['no-cube-clock', 'clock-reset', 'no-span'].flatMap((r) => [
+      { ...GOOD, ms: null, n: null, r }, { ...GOOD, c: false, ms: null, n: null, r },
+    ]),
+  ];
+  const text = JSON.stringify({ v: 1, algs: { a: shapes.map((x, i) => ({ ...x, t: i + 1 })) } });
+  assert.equal(parseRecord(text).get('a').length, shapes.length);
+});
 
 test('corrupt or foreign storage is refused loudly, and the next rep does NOT overwrite it', () => {
   for (const [what, text, code] of CORRUPT) {

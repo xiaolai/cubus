@@ -20,10 +20,12 @@
 //       so nothing about the rep is judged — it is never an error and never a clean rep (plan §3.4: a lost
 //       turn is never called wrong)
 //   ms  the time, first turn to last turn on the cube's clock, or null
-//   r   null when timed, otherwise the refusal (`TIME_REFUSAL` in timing.js) — exactly one of `ms`, `r`
-//   n   the turns the time spans (the engine's `tps.turns`), present exactly when the rep is clean AND timed;
-//       it is what turns a time into a pace without guessing whether the first turn was a whole one
-//   p   pauses marked inside the span (timing.js PAUSE_FACTOR)
+//   r   null when timed, otherwise the refusal (`TIME_REFUSAL` in timing.js) — exactly one of `ms`, `r`. In
+//       timing.js's order: `one-turn` exactly when `h` is 1; otherwise `stream-gap` exactly when `l`
+//   n   the turns the time spans (the engine's `tps.turns`: `h`, or `h` − 1), present exactly when the rep is
+//       clean AND timed; it is what turns a time into a pace without guessing whether the first turn was a
+//       whole one
+//   p   pauses marked inside the span (timing.js PAUSE_FACTOR); 0 when there is no time
 //   h   the algorithm's length in the half-turn metric
 //
 // DERIVED, NEVER STORED (`statsOf`): reps, clean reps, the clean streak, best and median time, pace, the
@@ -111,12 +113,25 @@ function repProblem(rep) {
   if (ms === null) {
     if (!REFUSALS.has(refused)) return `has no time and no known refusal (${JSON.stringify(refused)})`;
     if (turns !== null) return 'spans turns with no time';
+    if (pauses !== 0) return 'marks pauses in a time it does not have';
   } else {
     if (!(typeof ms === 'number' && Number.isFinite(ms) && ms > 0)) return `has an impossible time (${JSON.stringify(ms)})`;
     if (refused !== null) return 'is both timed and refused';
-    if (clean ? !positiveInt(turns) || turns > htm : turns !== null) {
+    // The span holds every turn but the first, or every turn when the first report was one quarter of a half
+    // turn (the engine's `turnsTimed`) — never fewer, which would make a pace out of turns nobody timed.
+    if (clean ? !positiveInt(turns) || (turns !== htm && turns !== htm - 1) : turns !== null) {
       return clean ? `is clean and timed but spans ${JSON.stringify(turns)} of ${htm} turns` : 'spans turns but was not clean';
     }
+  }
+  // The refusal, the length and the lost turn are one fact seen three ways, decided in timing.js's order: a
+  // one-turn algorithm is refused as one turn whatever else happened, and a longer one is refused for a stream
+  // gap exactly when a turn was lost. A rep where they disagree is no rep the engine made — and each such rep
+  // would move a figure: a stream gap with no lost turn would sit in a streak or count as an error.
+  if ((htm === 1) !== (refused === TIME_REFUSAL.ONE_TURN)) {
+    return htm === 1 ? 'is one turn long and not refused as one turn' : `is refused as one turn but is ${htm} turns long`;
+  }
+  if (htm > 1 && lostTurn !== (refused === TIME_REFUSAL.STREAM_GAP)) {
+    return lostTurn ? `lost a turn and is not refused for it (${JSON.stringify(refused)})` : 'is refused for a lost turn it does not record';
   }
   return null;
 }
