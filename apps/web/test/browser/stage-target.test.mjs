@@ -700,7 +700,10 @@ test('with CFOP chosen from the menu, the row is CFOP\'s stops and "top oriented
     const end = applyMoves(walk.start, faceTurnsAlg(walk.alg));
     const verify = (id, f) => TARGET_BY_ID[id].verify(fromCube(Cube.fromString(toMethodFrame(f))));
     assert.ok(verify('top-oriented', end), 'the walk does not end with the top oriented');
-    assert.ok(!verify('solved', end), 'the cut walked past its chip to a solved cube');
+    // Not past its chip: no step of the walk is a last-layer PERMUTATION step. Not "the end is unsolved" —
+    // about one cube in 72 needs no PLL after its OLL, and its cut correctly ends solved.
+    const heads = await page.evaluate(() => [...document.querySelectorAll('#solList .move-chips')].map((s) => s.previousElementSibling?.textContent ?? ''));
+    assert.ok(heads.every((h) => /^(Cross|First two layers|Top face)/.test(h)), `the cut walked past its chip: ${heads.join(' | ')}`);
     // Back on Beginner, the CFOP-only chip leaves the row and the walk goes back to the whole cube.
     await chooseMethod(page, 'beginner');
     await page.waitForFunction(() => document.querySelector('[data-stage="top-oriented"]')?.hidden === true, null);
