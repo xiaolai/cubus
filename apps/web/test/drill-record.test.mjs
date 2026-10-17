@@ -303,6 +303,10 @@ const CORRUPT = [
   ['a long algorithm refused as one turn', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, ms: null, n: null, r: 'one-turn' }] } }), 'corrupt'],
   ['pauses marked with no time', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, ms: null, n: null, r: 'no-cube-clock', p: 2 }] } }), 'corrupt'],
   ['a clean time spanning too few turns', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, n: 2 }] } }), 'corrupt'],
+  // Two algorithms holding a rep at one time: which was made first is not recorded anywhere, so the cap's
+  // oldest-first order cannot be kept (`add` never writes one; an older build or a hand could).
+  ['two algorithms at one time', JSON.stringify({ v: 1, algs: { a: [GOOD], b: [GOOD] } }), 'corrupt'],
+  ['a tie among later reps', JSON.stringify({ v: 1, algs: { a: [GOOD, { ...GOOD, t: 9 }], b: [{ ...GOOD, t: 6 }, { ...GOOD, t: 9 }] } }), 'corrupt'],
 ];
 
 test('every shape the engine gives a rep is read back', () => {
@@ -420,6 +424,28 @@ test('two algorithms never share a time on record, so the oldest-first cap drops
   assert.equal(later.add('z', rep()).saved, true);
   assert.deepEqual(later.reps('y').map((r) => r.ms), [222], 'the cap dropped the later of two reps made in one millisecond');
   assert.equal(later.reps('x').length, 1);
+});
+
+test('a stored tie across two algorithms is refused whole and left as found — the cap never guesses which is newer', () => {
+  // The record full to the cap, its two OLDEST reps on two algorithms at one time (from before `add` refused
+  // such a tie). One more rep must drop one of them, and nothing says which was made first: before, the cap
+  // guessed by each rep's place in its own list and dropped the newer.
+  const full = { v: 1, algs: { x: [{ ...GOOD, t: 10 }], y: [{ ...GOOD, t: 1 }, { ...GOOD, t: 10 }] } };
+  let u = 100;
+  for (let i = 0, room = TOTAL_CAP - 3; room > 0; i++) {
+    const n = Math.min(PER_ALG_CAP, room);
+    full.algs[`fill-${i}`] = Array.from({ length: n }, () => ({ ...GOOD, t: (u += 1) }));
+    room -= n;
+  }
+  const text = JSON.stringify(full);
+  const storage = fakeStorage(text);
+  const record = openPracticeRecord({ storage, now: () => u + 1 });
+  assert.throws(() => record.read(), (e) => e.code === 'corrupt' && /x and y both hold a rep at 10/.test(e.message));
+  const out = record.add('z', rep());
+  assert.deepEqual([out.saved, out.error?.code], [false, 'corrupt']);
+  assert.deepEqual([storage.writes, storage.raw()], [0, text], 'a refused record was written over');
+  // Inside ONE algorithm a tie is ordered by its list, so it is read.
+  assert.equal(parseRecord(JSON.stringify({ v: 1, algs: { a: [GOOD, GOOD], b: [{ ...GOOD, t: 6 }] } })).get('a').length, 2);
 });
 
 test('a read is a fresh snapshot: its lists and reps are frozen, and editing its Map changes nothing stored', () => {

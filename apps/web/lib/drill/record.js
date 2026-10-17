@@ -13,7 +13,8 @@
 //
 //   t   when it finished: the injected clock's epoch ms, a positive safe integer — never earlier than any rep
 //       on record, and never the same as another algorithm's, so across the record the stamps are the order
-//       the reps were written in (`add`)
+//       the reps were written in (`add`). A record where two algorithms share a time is refused on read: the
+//       order of that tie was never recorded, and the cap would have to guess it
 //   c   clean: the engine's own verdict — no `off` excursion, no turn beyond the algorithm's (a wrong turn
 //       taken back inside the cue window counts: the rep was not the algorithm alone), no lost turn
 //   l   a turn was LOST during the rep (the engine went `uncertain`): the reports were not the turns made,
@@ -168,6 +169,9 @@ export function parseRecord(text) {
   }
   const algs = new Map();
   let total = 0;
+  /** Which algorithm holds a rep at each time. One time held by two algorithms is a tie whose order was never
+   *  recorded — the cap could only guess which rep to drop — so the record is refused rather than guessed at. */
+  const owner = new Map();
   for (const [id, stored] of Object.entries(raw.algs)) {
     if (!isId(id)) throw new PracticeRecordError('corrupt', `${RECORD_KEY} names an algorithm ${JSON.stringify(id.slice(0, 40))} that no ledger id could be`);
     if (!Array.isArray(stored) || stored.length === 0 || stored.length > PER_ALG_CAP) {
@@ -178,6 +182,11 @@ export function parseRecord(text) {
       const problem = repProblem(rep);
       if (problem) throw new PracticeRecordError('corrupt', `${RECORD_KEY}: ${id} rep ${i + 1} ${problem}`);
       if (i > 0 && rep.at < reps[i - 1].at) throw new PracticeRecordError('corrupt', `${RECORD_KEY}: ${id} rep ${i + 1} is older than the rep before it`);
+      const other = owner.get(rep.at);
+      if (other !== undefined && other !== id) {
+        throw new PracticeRecordError('corrupt', `${RECORD_KEY}: ${other} and ${id} both hold a rep at ${rep.at}, so which was made first is not known`);
+      }
+      owner.set(rep.at, id);
     });
     total += reps.length;
     algs.set(id, Object.freeze(reps));
@@ -196,8 +205,9 @@ const serialize = (algs) => JSON.stringify({
 /**
  * Apply both caps: the newest PER_ALG_CAP reps of each algorithm, then the newest TOTAL_CAP overall, the
  * oldest dropped first across every algorithm. `add` stamps every rep later than every rep of another
- * algorithm before it, so the stamps are the write order and a tie is only ever inside one algorithm's list,
- * where the later in the list was written later. An algorithm left with no reps leaves the record.
+ * algorithm before it, and the reader refuses a record where two algorithms share a time, so the stamps are
+ * the write order and a tie is only ever inside one algorithm's list, where the later in the list was written
+ * later. An algorithm left with no reps leaves the record.
  */
 function capped(algs) {
   const perAlg = new Map([...algs].map(([id, reps]) => [id, reps.slice(-PER_ALG_CAP)]));
