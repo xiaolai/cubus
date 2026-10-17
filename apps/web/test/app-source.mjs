@@ -80,8 +80,8 @@ export const LIBRARY_SOURCES = Object.freeze([
   'lib/data/case-tables.js', 'lib/data/human-algs.js',
   // the drill engine, a module with no screen, 2026-10-17 (dev-docs/algorithm-drill-v2-plan.md §3)
   'lib/drill/candidates.js', 'lib/drill/engine.js', 'lib/drill/timing.js',
-  // the practice record (an injected storage, so no app module), 2026-10-17 (§5)
-  'lib/drill/record.js',
+  // the practice record (an injected storage, so no app module) and mixed practice, 2026-10-17 (§5)
+  'lib/drill/mix.js', 'lib/drill/record.js',
   'lib/element-writes.js', 'lib/host.js', 'lib/i18n.js', 'lib/lesson-cut.js', 'lib/lesson-format.js',
   'lib/lesson-schedule.js', 'lib/method-lesson.js', 'lib/method-stops.js',
   'lib/method-solver.js', 'lib/methods/cross.js', 'lib/lesson-client.js', 'lib/lesson-worker.js',
