@@ -34,7 +34,8 @@
 //   chunks               the SOURCED triggers found in it (`TRIGGERS`), by token index
 //   sameAs, inverseOf,   ids of other rows whose moves are this row's exactly / its inverse / its left-right
 //   mirrorOf             mirror (`mirrorAlg`), compared token by token with a half turn's direction ignored
-//   observable           the tokens a smart cube does not report as themselves (see `observableOf`)
+//   observable           the moves that are not one face turn, and the faces a smart cube reports for each,
+//                        named by the cube's own faces (see `observableOf`)
 //   purpose              the set's one plain sentence: what the algorithm is FOR (`ALG_SETS`, `purpose`)
 //   says                 ONE sentence generated from `effect`, `keeps` and `solves`: what it does toward that
 //                        purpose, its point first and what it disturbs on the way after (see `saysOf`)
@@ -44,7 +45,7 @@
 // which is the white side, and "the first two layers" are the white ones.
 
 import { faceTurnsOf, run } from './cube-moves.js';
-import { parse } from './cube-notation.js';
+import { parse, readToken } from './cube-notation.js';
 import { orientationPerm } from './cube-orientation.js';
 import { CORNERS, EDGES, SOLVED, invert, toFacelets } from './cube-pieces.js';
 import { effectOf } from './alg-effect.js';
@@ -616,17 +617,27 @@ export function chunksOf(alg) {
 
 // ---- what a smart cube sees ---------------------------------------------------------------------------------
 
+/** The hold whose letters are the cube's own at the start: the frame a smart cube's reports are named in. */
+const LETTERS_HOLD = Object.freeze(['U', 'F']);
+
 /**
- * The tokens a smart cube does not report as themselves. A smart cube reports turns of its six faces against
- * its own core, so: a whole-cube turn reports NOTHING; a slice reports the TWO faces either side of it (and the
- * cube is then held differently); a wide turn reports ONE face, the one opposite the side it names. Read off
- * `faceTurnsOf`, the interpreter's own account of which faces a move turns relative to the centres.
+ * The moves that are not one turn of one face, and what a smart cube reports for each. A smart cube reports
+ * turns of its six faces against its own core, so: a whole-cube turn reports NOTHING; a slice reports the TWO
+ * faces either side of it (and the cube is then held differently); a wide turn reports ONE face, the one
+ * opposite the side it names.
+ *
+ * NAMED BY THE CUBE'S OWN FACES — the letters' faces at the start — because that is what the cube sends. A
+ * rotation, slice or wide turn earlier in the algorithm has turned the hold, so the child's `M` after a `y` is
+ * a slice of the cube's front and back, and reports `F'` and `B`. `run`, the one interpreter, tracks the hold
+ * and gives each move in the starting frame (`drawn`); `faceTurnsOf` decomposes that move.
  * `[{ at, token, kind, reports }]`, `reports` the face turns the cube would send.
  */
 export function observableOf(alg) {
-  return Object.freeze(movesIn(alg).flatMap((m, at) => {
+  const moves = movesIn(alg);
+  const { drawn } = run(moves, LETTERS_HOLD, SOLVED);
+  return Object.freeze(moves.flatMap((m, at) => {
     if (m.kind === 'face') return [];
-    const reports = faceTurnsOf(m).turns.map((x) => x.name).filter(Boolean);
+    const reports = faceTurnsOf(readToken(drawn[at]).move).turns.map((x) => x.name).filter(Boolean);
     return [Object.freeze({ at, token: m.token, kind: m.kind, reports: Object.freeze(reports) })];
   }));
 }

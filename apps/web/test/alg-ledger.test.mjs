@@ -18,7 +18,7 @@ import Cube from 'cubejs';
 
 import {
   ALG_SETS, ALG_SOURCES, METHOD_SETS, PENDING_SOURCES, TRIGGERS, TRIGGER_SOURCES, algIds, algRow, loadEntries,
-  mirrorAlg, rowsForMethod, setRows,
+  mirrorAlg, observableOf, rowsForMethod, setRows,
 } from '../lib/alg-library.js';
 import { CORNERS, EDGES } from '../lib/cube-pieces.js';
 import { METHOD_FRAME } from '../lib/solving-hold.js';
@@ -570,7 +570,58 @@ test('L2: the lengths and the kinds, recounted by a token walk of this file\'s o
     for (const o of row.observable) {
       assert.equal(o.reports.length, { rotation: 0, wide: 1, slice: 2 }[o.kind], `${row.id}: ${o.token} reports ${o.reports.join(' ')}`);
     }
+    assert.deepEqual(reportsOf(row.observable), reportsByCubejs(row.alg), `${row.id}: the faces a smart cube reports`);
   }
+});
+
+// ---- what a smart cube reports, read off cubejs's centres ---------------------------------------------------
+
+/** The outer faces a token turns relative to the centres, named by where they are in the CHILD's hold, by this
+ *  file's own table: a slice turns the whole cube and its two outer faces back (M = R L' x'), a wide turn the
+ *  whole cube and its far face back (r = L x), a rotation nothing. */
+const WORLD_REPORTS = {
+  M: ['R', "L'"], E: ['U', "D'"], S: ["F'", 'B'],
+  r: ['L'], l: ['R'], u: ['D'], d: ['U'], f: ['B'], b: ['F'],
+};
+const withAmount = (turn, amount) => {
+  if (amount.startsWith('2')) return `${turn[0]}2`;
+  if (amount !== "'") return turn;
+  return turn.endsWith("'") ? turn[0] : `${turn}'`;
+};
+/** Positions of the six centres in cubejs's facelet string, by the side of the CHILD's hold they are on. */
+const CENTRE_AT = { U: 4, R: 13, F: 22, D: 31, L: 40, B: 49 };
+
+/**
+ * Every token that is not a face turn, with the faces a smart cube reports for it — named by the CUBE's own
+ * faces, which are the letters' faces at the start. cubejs carries the centres round with every rotation,
+ * slice and wide turn before the token, so the centre now on the child's right IS the cube face a right-side
+ * turn reports.
+ */
+function reportsByCubejs(alg) {
+  const toks = tokens(alg);
+  return toks.flatMap((tok, at) => {
+    if (kindOf(tok) === 'face') return [];
+    const read = /^([MESrludfbxyz])w?(2'|2|'|)$/.exec(tok.replace(/^([RLUDFB])w/, (_, f) => f.toLowerCase()));
+    assert.ok(read, `the oracle cannot read "${tok}"`);
+    const [, letter, amount] = read;
+    const centres = played(toks.slice(0, at).join(' ')).asString();
+    const cubeFace = (world) => centres[CENTRE_AT[world]];
+    const reports = (WORLD_REPORTS[letter] ?? []).map((t) => withAmount(`${cubeFace(t[0])}${t.slice(1)}`, amount));
+    return [`${at}:${reports.sort().join(' ')}`];
+  });
+}
+const reportsOf = (observable) => observable.map((o) => `${o.at}:${[...o.reports].sort().join(' ')}`);
+
+test('a smart cube\'s reports are named by the cube\'s own faces, after every turn of the hold before them', () => {
+  // No ledger row puts a slice, wide turn or rotation after a hold change it has not undone, so the rows alone
+  // would pass a reading that ignores the hold. These do: after `y` the child's M is a slice of the cube's
+  // front and back.
+  assert.deepEqual(observableOf("y M y'")[1].reports, ["F'", 'B']);
+  for (const alg of ["y M y'", "x E x'", 'z S', "y2 M2 y2", 'r M', "u S'", "x' r'", "M' U M y E'", "z' u2 b"]) {
+    assert.deepEqual(reportsOf(observableOf(alg)), reportsByCubejs(alg), alg);
+  }
+  // The oracle is not vacuous: in the starting hold it agrees with the token's own faces.
+  assert.deepEqual(reportsByCubejs("M r' y"), ["0:L' R", "1:L'", '2:']);
 });
 
 test('L2: the case is the state the algorithm solves — played by cubejs from a cube held white underneath', () => {
