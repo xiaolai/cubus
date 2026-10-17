@@ -187,16 +187,27 @@ test('each of the three ways a cube can be impossible is rejected', () => {
   // Rejected by arithmetic, not by search. Kociemba assumes solvable input and can run
   // unboundedly on anything else, so "refused" and "refused immediately" are different claims and
   // only the second one is safe to put on the repair path.
-  const before = Date.now();
-  for (const [name, bad] of [['twisted corner', twisted], ['flipped edge', flipped], ['swapped pair', swapped]]) {
-    assert.match(bad, /^[URFDLB]{54}$/, `${name}: well-formed, so only cube maths can reject it`);
-    assert.notEqual(bad, good);
-    assert.equal(deriveOffset(bad, good, Cube), null, `${name} rejected as scanned`);
-    assert.equal(deriveOffset(good, bad, Cube), null, `${name} rejected as reported`);
-    assert.equal(applyOffset(bad, good, Cube), null, `${name} as an offset yields nothing`);
-    assert.equal(applyOffset(at('R'), bad, Cube), null, `${name} as a report yields nothing`);
+  // Counted, not timed: a wall-clock bound said the same thing and could fail on a machine that merely
+  // stalled for a second (fast-tier flake hunt, 2026-10-17).
+  let searches = 0;
+  const { solve } = Cube.prototype;
+  const { initSolver } = Cube;
+  Cube.prototype.solve = function counted(...args) { searches += 1; return solve.apply(this, args); };
+  Cube.initSolver = (...args) => { searches += 1; return initSolver.apply(Cube, args); };
+  try {
+    for (const [name, bad] of [['twisted corner', twisted], ['flipped edge', flipped], ['swapped pair', swapped]]) {
+      assert.match(bad, /^[URFDLB]{54}$/, `${name}: well-formed, so only cube maths can reject it`);
+      assert.notEqual(bad, good);
+      assert.equal(deriveOffset(bad, good, Cube), null, `${name} rejected as scanned`);
+      assert.equal(deriveOffset(good, bad, Cube), null, `${name} rejected as reported`);
+      assert.equal(applyOffset(bad, good, Cube), null, `${name} as an offset yields nothing`);
+      assert.equal(applyOffset(at('R'), bad, Cube), null, `${name} as a report yields nothing`);
+    }
+  } finally {
+    Cube.prototype.solve = solve;
+    Cube.initSolver = initSolver;
   }
-  assert.ok(Date.now() - before < 1000, 'and all three refused immediately — no search was attempted');
+  assert.equal(searches, 0, 'and all three refused by arithmetic — a search was attempted');
 });
 
 test('a cubejs that returns something unrecognisable is refused, not trusted', () => {

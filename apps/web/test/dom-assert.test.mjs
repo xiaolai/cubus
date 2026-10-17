@@ -25,14 +25,15 @@ test('each helper passes on what it asserts, and fails fast naming what it found
   isSame(input, input, 'same');
   isNotSame(input, para, 'not the same');
 
-  const t0 = Date.now();
+  // What makes a failure slow is a NODE reaching node:assert, which inspects it to the whole page. So the
+  // error must carry descriptions, never the node — asserted directly, where a wall-clock bound said it
+  // indirectly and could fail on a machine that merely stalled (fast-tier flake hunt, 2026-10-17).
+  const described = (e) => e instanceof assert.AssertionError && typeof e.actual === 'string' && typeof e.expected === 'string';
   assert.throws(() => isAbsent(input, 'the field is gone'),
-    (e) => e instanceof assert.AssertionError && /the field is gone/.test(e.message) && /<input data-stamp="typing">/.test(e.message));
+    (e) => described(e) && /the field is gone/.test(e.message) && /<input data-stamp="typing">/.test(e.message));
   assert.throws(() => isSame(input, para, 'focus is on the field'),
-    (e) => /focus is on the field/.test(e.message) && /<input/.test(e.message) && /<p id="p">/.test(e.message));
-  assert.throws(() => isNotSame(input, input, 'focus moved'), (e) => /focus moved/.test(e.message));
-  const took = Date.now() - t0;
-  assert.ok(took < 1000, `the helpers took ${took} ms to fail — the inspection they exist to avoid is back`);
+    (e) => described(e) && /focus is on the field/.test(e.message) && /<input/.test(e.message) && /<p id="p">/.test(e.message));
+  assert.throws(() => isNotSame(input, input, 'focus moved'), (e) => described(e) && /focus moved/.test(e.message));
   assert.equal(describeNode(doc.createTextNode('x')), '[#text]');
 });
 
