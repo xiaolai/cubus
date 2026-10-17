@@ -54,8 +54,12 @@ import { timeRep } from './timing.js';
  * How long a turn no candidate accepts may stand before `off` plays — long enough for a slice's second face,
  * a half turn's second quarter, or the second of two commuting turns made in the other order, to arrive.
  *
- * PROVISIONAL AND UNMEASURED. 300 ms is Cubedex's value (its training-state hook, github.com/poliva/cubedex), not a measurement on any
- * cube here; dev-docs/algorithm-drill-v2-plan.md WI-14 (the hardware session) is where it gets measured.
+ * MEASURED 2026-10-17 on one cube that numbers its turns (a GAN 16 ui, the owner's hands; WI-14 of
+ * dev-docs/algorithm-drill-v2-plan.md): over 75 slices the two faces arrived a median 8 ms and at worst 41 ms
+ * apart on the cube's clock, so 300 ms — Cubedex's value, kept — clears the worst seven times over and still
+ * answers within a beginner's turn (the same session's Sunes left 319 ms or more between distinct turns).
+ * test/drill-hardware-replay.test.mjs holds the relation to the recording: the window must be at least twice
+ * the worst recorded slice. A cube that does not number its turns is not measured yet.
  */
 export const CUE_WINDOW_MS = 300;
 
@@ -63,7 +67,9 @@ export const CUE_WINDOW_MS = 300;
  * The longest four identical quarter turns of one face may take, first report to fourth, to count as the
  * "start over" gesture (csTimer's and briefcubing's convention).
  *
- * PROVISIONAL AND UNMEASURED: chosen so four deliberate turns at a beginner's pace fit; WI-14 measures it.
+ * MEASURED 2026-10-17 in the same session: every run of four identical turns made "quickly" took a median
+ * 741 ms and at worst 1453 ms, first report to fourth, so 2000 ms holds them all;
+ * test/drill-hardware-replay.test.mjs fails if the limit stops covering the recording.
  */
 export const GESTURE_MS = 2000;
 

@@ -780,14 +780,16 @@ test('a report that is not one quarter turn of an outer face is refused loudly',
   assert.throws(() => createDrillEngine({ alg: 'R U', chunks: [{ from: 1, to: 3 }], setTimer() {}, clearTimer() {}, now: () => 0 }), /chunk/);
 });
 
-test('the window and the gesture limit are provisional constants, and the source says they are unmeasured', () => {
+test('the window and the gesture limit say what measured them, and where the measurement is held', () => {
+  // They shipped as PROVISIONAL AND UNMEASURED until the hardware session (WI-14) recorded a real cube; now
+  // each must name its measurement and the replay test that holds it to the recording.
   const src = readFileSync(new URL('../lib/drill/engine.js', import.meta.url), 'utf8');
   assert.equal(CUE_WINDOW_MS, 300);
   for (const name of ['CUE_WINDOW_MS', 'GESTURE_MS']) {
     const at = src.indexOf(`export const ${name}`);
     const doc = src.slice(src.lastIndexOf('/**', at), at);
-    assert.match(doc, /PROVISIONAL AND UNMEASURED/, `${name} must say it is provisional`);
-    assert.match(doc, /WI-14/, `${name} must name where it gets measured`);
+    assert.match(doc, /MEASURED 2026-10-17/, `${name} must say what measured it`);
+    assert.match(doc, /drill-hardware-replay\.test\.mjs/, `${name} must name the test that holds it to the recording`);
   }
 });
 
