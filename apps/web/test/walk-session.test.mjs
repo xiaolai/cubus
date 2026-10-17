@@ -2393,15 +2393,21 @@ const cutAt = (cube) => ({
 
 test('Beginner and a chip it stops at: the walk is the beginner lesson CUT at the chip, with no repair race', async () => {
   const asked = [];
+  const told = [];
   let races = 0;
   let searches = 0;
   const w = world({ settings: { solveMethod: 'beginner' } }, ({ state }) => ({
     deriveCube: async () => { searches += 1; solvedBy(state, "R'"); },
     lastRoute: async () => { races += 1; return { kind: 'exact', alg: "U'", moves: 1, minimal: true, overshoot: false }; },
     stageLessonFor: (cube, entry, target) => { asked.push(`${entry.id} ${target.id}`); return cutAt(cube); },
+    // The prove offer refuses a cut lesson by reading it (`isCutLesson`, lesson-cut.test.mjs), so what it
+    // is handed must BE the cut lesson — never null, which would read as a whole-cube walk.
+    sayWalkLength: ({ setStatus, total, lesson }) => { told.push(lesson); setStatus(String(total)); },
   }));
   w.state.stageTarget = 'cross';
   assert.equal(await within(w.session.load()), true);
+  assert.equal(told.length, 1, 'precondition: the walk said its length once');
+  assert.ok(told[0] && Object.hasOwn(told[0], 'cutAt'), 'the prove offer was not handed the cut lesson');
   assert.deepEqual(asked, ['beginner cross'], 'the cut was not asked for, for this method and this chip');
   assert.equal(races, 0, 'a repair race ran for a chip the method teaches');
   assert.equal(searches, 0, 'a whole-cube search ran for a chip the method teaches');
