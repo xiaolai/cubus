@@ -241,14 +241,23 @@ test(`each algorithm keeps its newest ${PER_ALG_CAP} reps`, () => {
   assert.deepEqual(reps.map((r) => r.ms), Array.from({ length: PER_ALG_CAP }, (_, i) => i + 6), 'not the newest');
 });
 
-/** Stored text holding `n` reps spread over algorithms, the oldest `at` first. */
-function storedText(perAlg) {
-  let t = 1_000_000;
+
+/** A rep id as the record makes them: a page's 16 hex digits — here one repeated digit — then its count. */
+const rid = (n, page = 'a') => page.repeat(16) + n.toString(16).padStart(8, '0');
+const GEN = '1'.repeat(16);
+
+/** Stored text: `algs` under a generation. */
+const recordText = (algs, { gen = GEN, replaced = null } = {}) => JSON.stringify({ v: RECORD_VERSION, gen, replaced, algs });
+
+/** Stored text holding `n` reps spread over algorithms, the oldest first, from `from` a millisecond apart. */
+function storedText(perAlg, { gen = GEN, from = 1_000_000, page = 'a', shape = {} } = {}) {
+  let t = from;
+  let k = 0;
   const algs = {};
   for (const [id, n] of perAlg) {
-    algs[id] = Array.from({ length: n }, () => ({ t: (t += 1), c: true, l: false, ms: 900, r: null, n: 6, p: 0, h: 7 }));
+    algs[id] = Array.from({ length: n }, () => ({ i: rid(k++, page), t: (t += 1), c: true, l: false, ms: 900, r: null, n: 6, p: 0, h: 7, ...shape }));
   }
-  return JSON.stringify({ v: RECORD_VERSION, algs });
+  return recordText(algs, { gen });
 }
 
 test(`the record keeps ${TOTAL_CAP} reps overall, dropping the oldest across every algorithm`, () => {
@@ -271,42 +280,48 @@ test(`the record keeps ${TOTAL_CAP} reps overall, dropping the oldest across eve
 
 // ---- refused, and never overwritten -------------------------------------------------------------------
 
-const GOOD = { t: 5, c: true, l: false, ms: 900, r: null, n: 6, p: 0, h: 7 };
+const GOOD = { i: rid(0), t: 5, c: true, l: false, ms: 900, r: null, n: 6, p: 0, h: 7 };
+/** One algorithm's reps as stored text, with the record's own fields overridden by `top`. */
+const one = (reps, top = {}) => JSON.stringify({ v: RECORD_VERSION, gen: GEN, replaced: null, algs: { a: reps }, ...top });
 const CORRUPT = [
-  ['not JSON', '{"v":1,', 'not-json'],
+  ['not JSON', '{"v":2,', 'not-json'],
   ['an array', '[]', 'foreign'],
   ['JSON null', 'null', 'foreign'],
-  ['another version', JSON.stringify({ v: 2, algs: {} }), 'foreign'],
-  ['algs not a record', JSON.stringify({ v: 1, algs: [] }), 'foreign'],
-  ['an empty rep list', JSON.stringify({ v: 1, algs: { a: [] } }), 'corrupt'],
-  ['a rep that is a string', JSON.stringify({ v: 1, algs: { a: ['fast'] } }), 'corrupt'],
-  ['timed and refused', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, r: 'one-turn' }] } }), 'corrupt'],
-  ['neither timed nor refused', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, ms: null, n: null }] } }), 'corrupt'],
-  ['an unknown refusal', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, ms: null, n: null, r: 'slow' }] } }), 'corrupt'],
-  ['clean with a lost turn', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, l: true }] } }), 'corrupt'],
-  ['a missing field', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, p: undefined }] } }), 'corrupt'],
-  ['a string time', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, ms: '900' }] } }), 'corrupt'],
-  ['a negative time', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, ms: -1 }] } }), 'corrupt'],
-  ['more turns than the algorithm', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, n: 8 }] } }), 'corrupt'],
-  ['a clean timed rep with no turn count', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, n: null }] } }), 'corrupt'],
-  ['reps out of order', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, t: 9 }, { ...GOOD, t: 8 }] } }), 'corrupt'],
-  ['an empty id', JSON.stringify({ v: 1, algs: { '': [GOOD] } }), 'corrupt'],
+  ['another version', one([GOOD], { v: 1 }), 'foreign'],
+  ['algs not a record', one([GOOD], { algs: [] }), 'foreign'],
+  ['no generation', one([GOOD], { gen: undefined }), 'corrupt'],
+  ['a generation that is not 16 lowercase hex digits', one([GOOD], { gen: 'ABCDEF0123456789' }), 'corrupt'],
+  ['no word on what it replaced', one([GOOD], { replaced: undefined }), 'corrupt'],
+  ['a record that replaced itself', one([GOOD], { replaced: GEN }), 'corrupt'],
+  ['an empty rep list', one([]), 'corrupt'],
+  ['a rep that is a string', one(['fast']), 'corrupt'],
+  ['a rep with no id', one([{ ...GOOD, i: undefined }]), 'corrupt'],
+  ['a rep id that is not 24 hex digits', one([{ ...GOOD, i: 'a'.repeat(23) }]), 'corrupt'],
+  ['one id on two reps', recordText({ a: [GOOD], b: [{ ...GOOD, t: 6 }] }), 'corrupt'],
+  ['timed and refused', one([{ ...GOOD, r: 'one-turn' }]), 'corrupt'],
+  ['neither timed nor refused', one([{ ...GOOD, ms: null, n: null }]), 'corrupt'],
+  ['an unknown refusal', one([{ ...GOOD, ms: null, n: null, r: 'slow' }]), 'corrupt'],
+  ['clean with a lost turn', one([{ ...GOOD, l: true }]), 'corrupt'],
+  ['a missing field', one([{ ...GOOD, p: undefined }]), 'corrupt'],
+  ['a string time', one([{ ...GOOD, ms: '900' }]), 'corrupt'],
+  ['a negative time', one([{ ...GOOD, ms: -1 }]), 'corrupt'],
+  ['more turns than the algorithm', one([{ ...GOOD, n: 8 }]), 'corrupt'],
+  ['a clean timed rep with no turn count', one([{ ...GOOD, n: null }]), 'corrupt'],
+  ['reps out of order', one([{ ...GOOD, t: 9 }, { ...GOOD, i: rid(1), t: 8 }]), 'corrupt'],
+  ['two reps in one millisecond out of id order', one([{ ...GOOD, i: rid(2) }, { ...GOOD, i: rid(1) }]), 'corrupt'],
+  ['an empty id', recordText({ '': [GOOD] }), 'corrupt'],
   // States the engine never makes (timing.js decides one-turn first, then a lost turn), each of which would
   // move a derived figure: a stream gap with no lost turn counts in a streak or as an error, a lost turn that
   // is not refused for it is judged, a timed one-turn rep or a short span makes a pace.
-  ['a stream gap that lost no turn, clean', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, ms: null, n: null, r: 'stream-gap' }] } }), 'corrupt'],
-  ['a stream gap that lost no turn, not clean', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, c: false, ms: null, n: null, r: 'stream-gap' }] } }), 'corrupt'],
-  ['a lost turn refused for something else', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, c: false, l: true, ms: null, n: null, r: 'no-cube-clock' }] } }), 'corrupt'],
-  ['a lost turn with a time', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, c: false, l: true, n: null }] } }), 'corrupt'],
-  ['a one-turn algorithm timed', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, h: 1, n: 1 }] } }), 'corrupt'],
-  ['a one-turn algorithm refused for a stream gap', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, c: false, l: true, h: 1, ms: null, n: null, r: 'stream-gap' }] } }), 'corrupt'],
-  ['a long algorithm refused as one turn', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, ms: null, n: null, r: 'one-turn' }] } }), 'corrupt'],
-  ['pauses marked with no time', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, ms: null, n: null, r: 'no-cube-clock', p: 2 }] } }), 'corrupt'],
-  ['a clean time spanning too few turns', JSON.stringify({ v: 1, algs: { a: [{ ...GOOD, n: 2 }] } }), 'corrupt'],
-  // Two algorithms holding a rep at one time: which was made first is not recorded anywhere, so the cap's
-  // oldest-first order cannot be kept (`add` never writes one; an older build or a hand could).
-  ['two algorithms at one time', JSON.stringify({ v: 1, algs: { a: [GOOD], b: [GOOD] } }), 'corrupt'],
-  ['a tie among later reps', JSON.stringify({ v: 1, algs: { a: [GOOD, { ...GOOD, t: 9 }], b: [{ ...GOOD, t: 6 }, { ...GOOD, t: 9 }] } }), 'corrupt'],
+  ['a stream gap that lost no turn, clean', one([{ ...GOOD, ms: null, n: null, r: 'stream-gap' }]), 'corrupt'],
+  ['a stream gap that lost no turn, not clean', one([{ ...GOOD, c: false, ms: null, n: null, r: 'stream-gap' }]), 'corrupt'],
+  ['a lost turn refused for something else', one([{ ...GOOD, c: false, l: true, ms: null, n: null, r: 'no-cube-clock' }]), 'corrupt'],
+  ['a lost turn with a time', one([{ ...GOOD, c: false, l: true, n: null }]), 'corrupt'],
+  ['a one-turn algorithm timed', one([{ ...GOOD, h: 1, n: 1 }]), 'corrupt'],
+  ['a one-turn algorithm refused for a stream gap', one([{ ...GOOD, c: false, l: true, h: 1, ms: null, n: null, r: 'stream-gap' }]), 'corrupt'],
+  ['a long algorithm refused as one turn', one([{ ...GOOD, ms: null, n: null, r: 'one-turn' }]), 'corrupt'],
+  ['pauses marked with no time', one([{ ...GOOD, ms: null, n: null, r: 'no-cube-clock', p: 2 }]), 'corrupt'],
+  ['a clean time spanning too few turns', one([{ ...GOOD, n: 2 }]), 'corrupt'],
 ];
 
 test('every shape the engine gives a rep is read back', () => {
@@ -321,8 +336,7 @@ test('every shape the engine gives a rep is read back', () => {
       { ...GOOD, ms: null, n: null, r }, { ...GOOD, c: false, ms: null, n: null, r },
     ]),
   ];
-  const text = JSON.stringify({ v: 1, algs: { a: shapes.map((x, i) => ({ ...x, t: i + 1 })) } });
-  assert.equal(parseRecord(text).get('a').length, shapes.length);
+  assert.equal(parseRecord(one(shapes.map((x, i) => ({ ...x, i: rid(i), t: i + 1 })))).get('a').length, shapes.length);
 });
 
 test('corrupt or foreign storage is refused loudly, and the next rep does NOT overwrite it', () => {
@@ -390,62 +404,65 @@ test('a clock behind ANY rep on record refuses the rep — a rep said to be save
   assert.equal(record.reps('new').length, 1, 'said saved, and not kept');
 });
 
-test('two algorithms never share a time on record, so the oldest-first cap drops reps in the order they were made', () => {
-  const storage = fakeStorage();
-  let t = 10_000;
-  const record = openPracticeRecord({ storage, now: () => t });
-  assert.equal(record.add('y', rep()).saved, true);
-  // A clock that has not moved: a second rep of the SAME algorithm is told from the first by its place in the
-  // list, which is the order they were written...
-  assert.equal(record.add('y', rep()).saved, true);
-  // ...but another algorithm's rep at that time could not be told from y's: refused, loudly, and nothing written.
-  const text = storage.raw();
-  const tie = record.add('x', rep());
-  assert.deepEqual([tie.saved, tie.error?.code], [false, 'clock-behind']);
-  assert.match(tie.error.message, /same time as y's newest rep/);
-  assert.equal(storage.raw(), text);
-  t += 1;
-  assert.equal(record.add('x', rep()).saved, true);
-  const times = [...record.read()].flatMap(([id, reps]) => reps.map((r) => `${r.at}`)).filter((at, i, all) => all.indexOf(at) !== i);
-  assert.deepEqual(times, ['10000'], 'only y\'s own two reps share a time');
-  // And within one algorithm the list order IS the write order, which the cap keeps: of y's two reps at
-  // 10_000, the first written is dropped first. Full to the cap with newer reps, then one more added.
-  const full = JSON.parse(storage.raw());
-  let u = 20_000;
-  for (let i = 0, room = TOTAL_CAP - 3; room > 0; i++) {
+/** `full` (a parsed record) filled with newer reps, under ids no other rep here has, until it holds `total`. */
+function fillTo(full, total, from) {
+  let u = from;
+  let k = 0;
+  let room = total - Object.values(full.algs).reduce((n, reps) => n + reps.length, 0);
+  for (let i = 0; room > 0; i++) {
     const n = Math.min(PER_ALG_CAP, room);
-    full.algs[`fill-${i}`] = Array.from({ length: n }, () => ({ t: (u += 1), c: true, l: false, ms: 900, r: null, n: 6, p: 0, h: 7 }));
+    full.algs[`fill-${i}`] = Array.from({ length: n }, () => ({ ...GOOD, i: rid(k++, 'f'), t: (u += 1) }));
     room -= n;
   }
-  full.algs.y[0].ms = 111;
-  full.algs.y[1].ms = 222;
+  return u;
+}
+
+test('reps one page makes in one millisecond keep the order it made them in, and the cap drops the first made first', () => {
+  const storage = fakeStorage();
+  const record = openPracticeRecord({ storage, now: () => 10_000 });
+  // A clock that has not moved, and two algorithms: each rep is still the newest, by the page's own count.
+  for (const [id, ms] of [['y', 111], ['y', 222], ['x', 333]]) assert.equal(record.add(id, rep({ ms })).saved, true, `${id} ${ms}`);
+  const made = [...record.read()].flatMap(([, reps]) => reps).sort((a, b) => (a.repId < b.repId ? -1 : 1));
+  assert.deepEqual(made.map((r) => [r.at, r.ms]), [[10_000, 111], [10_000, 222], [10_000, 333]], 'the ids are not in the order the reps were made');
+  // Full to the cap with newer reps, then one more: of the three made in one millisecond, the first goes.
+  const full = JSON.parse(storage.raw());
+  const u = fillTo(full, TOTAL_CAP, 20_000);
   const near = fakeStorage(JSON.stringify(full));
   const later = openPracticeRecord({ storage: near, now: () => u + 1 });
   assert.equal(later.add('z', rep()).saved, true);
-  assert.deepEqual(later.reps('y').map((r) => r.ms), [222], 'the cap dropped the later of two reps made in one millisecond');
-  assert.equal(later.reps('x').length, 1);
+  assert.deepEqual([later.reps('y').map((r) => r.ms), later.reps('x').map((r) => r.ms)], [[222], [333]], 'the cap dropped another rep than the first made');
 });
 
-test('a stored tie across two algorithms is refused whole and left as found — the cap never guesses which is newer', () => {
-  // The record full to the cap, its two OLDEST reps on two algorithms at one time (from before `add` refused
-  // such a tie). One more rep must drop one of them, and nothing says which was made first: before, the cap
-  // guessed by each rep's place in its own list and dropped the newer.
-  const full = { v: 1, algs: { x: [{ ...GOOD, t: 10 }], y: [{ ...GOOD, t: 1 }, { ...GOOD, t: 10 }] } };
-  let u = 100;
-  for (let i = 0, room = TOTAL_CAP - 3; room > 0; i++) {
-    const n = Math.min(PER_ALG_CAP, room);
-    full.algs[`fill-${i}`] = Array.from({ length: n }, () => ({ ...GOOD, t: (u += 1) }));
-    room -= n;
+test('a rep in the millisecond of another page\'s newest rep is saved only if its id orders after it — the record never contradicts the order a page saw', () => {
+  const storage = fakeStorage();
+  const high = openPracticeRecord({ storage, now: () => 10_000, random: () => 0xffffffff });
+  const low = openPracticeRecord({ storage, now: () => 10_000, random: () => 0 });
+  assert.equal(high.add('y', rep()).saved, true);
+  const text = storage.raw();
+  const out = low.add('x', rep());
+  assert.deepEqual([out.saved, out.error?.code], [false, 'clock-behind']);
+  assert.match(out.error.message, /same millisecond as the newest rep on record \(y's\)/);
+  assert.deepEqual([storage.raw(), low.status().error], [text, null], 'a refused rep changed the record, or was taken for trouble with it');
+  // The other way round, the new rep's id orders after: saved, and newest.
+  const other = fakeStorage();
+  const low2 = openPracticeRecord({ storage: other, now: () => 10_000, random: () => 0 });
+  const high2 = openPracticeRecord({ storage: other, now: () => 10_000, random: () => 0xffffffff });
+  assert.equal(low2.add('y', rep()).saved, true);
+  assert.equal(high2.add('x', rep()).saved, true);
+});
+
+test('reps of two algorithms in one millisecond are read, and ordered by id for every reader — the cap drops the lower id first', () => {
+  // Two pages' reps in one millisecond, neither having seen the other's: ordered by id, which every reader
+  // reads alike, whichever list the reps are in and whichever order the lists are stored in.
+  const tie = { x: [{ ...GOOD, i: rid(0, 'b'), t: 10 }], y: [{ ...GOOD, i: rid(0, 'c'), t: 10 }] };
+  for (const order of [['x', 'y'], ['y', 'x']]) {
+    const full = JSON.parse(recordText(Object.fromEntries(order.map((id) => [id, tie[id]]))));
+    const u = fillTo(full, TOTAL_CAP, 100);
+    const storage = fakeStorage(JSON.stringify(full));
+    const record = openPracticeRecord({ storage, now: () => u + 1 });
+    assert.equal(record.add('z', rep()).saved, true);
+    assert.deepEqual([record.reps('x').length, record.reps('y').length], [0, 1], `stored ${order}: the cap dropped the higher id`);
   }
-  const text = JSON.stringify(full);
-  const storage = fakeStorage(text);
-  const record = openPracticeRecord({ storage, now: () => u + 1 });
-  assert.throws(() => record.read(), (e) => e.code === 'corrupt' && /x and y both hold a rep at 10/.test(e.message));
-  const out = record.add('z', rep());
-  assert.deepEqual([out.saved, out.error?.code], [false, 'corrupt']);
-  assert.deepEqual([storage.writes, storage.raw()], [0, text], 'a refused record was written over');
-  // Inside ONE algorithm a tie is ordered by its list, so it is read.
-  assert.equal(parseRecord(JSON.stringify({ v: 1, algs: { a: [GOOD, GOOD], b: [{ ...GOOD, t: 6 }] } })).get('a').length, 2);
 });
 
 test('a read is a fresh snapshot: its lists and reps are frozen, and editing its Map changes nothing stored', () => {
@@ -483,9 +500,36 @@ test('a malformed rep from the caller throws, and a hostile id is a key like any
 test('the storage key and the caps are what the format says', () => {
   assert.equal(RECORD_KEY, 'cubusDrillRecord');
   assert.ok(PER_ALG_CAP > 0 && TOTAL_CAP % PER_ALG_CAP === 0 && TOTAL_CAP >= PER_ALG_CAP);
-  // A full record stays well inside an origin's ~5 MB: measured, not assumed.
-  const text = storedText(Array.from({ length: TOTAL_CAP / PER_ALG_CAP }, (_, i) => [`cmll-case-${i}`, PER_ALG_CAP]));
-  assert.ok(text.length < 500_000, `a full record is ${text.length} characters`);
+  // A full record stays under 600 KB, an eighth of an origin's ~5 MB (TOTAL_CAP): measured, not assumed — with
+  // this year's clock, a time with a fraction, and the widest counts a rep of a long algorithm carries.
+  const text = storedText(Array.from({ length: TOTAL_CAP / PER_ALG_CAP }, (_, i) => [`cmll-case-${i}`, PER_ALG_CAP]),
+    { from: 1_760_000_000_000, shape: { c: false, n: null, ms: 12_345.678, p: 12, h: 17 } });
+  assert.ok(text.length < 600_000, `a full record is ${text.length} characters`);
+});
+
+test('rep ids are drawn from the cryptographic source, never Math.random, and a source that gives no 32-bit value throws', () => {
+  // What must NOT happen: an id from Math.random, which nothing would notice until two ids met.
+  const was = Math.random;
+  Math.random = () => { throw new Error('Math.random was called'); };
+  try {
+    const record = open(fakeStorage());
+    assert.equal(record.add('x', rep()).saved, true);
+    assert.equal(record.add('x', rep()).saved, true);
+    assert.equal(new Set(record.reps('x').map((r) => r.repId)).size, 2);
+  } finally {
+    Math.random = was;
+  }
+  // An injected source: the page's half of each id, then the record's generation, drawn in that order.
+  const draws = [0x01234567, 0x89abcdef, 0xdeadbeef, 0x00c0ffee];
+  const storage = fakeStorage();
+  const record = openPracticeRecord({ storage, now: clockFrom(), random: () => draws.shift() });
+  record.add('x', rep());
+  record.add('x', rep());
+  assert.deepEqual(record.reps('x').map((r) => r.repId), ['0123456789abcdef00000000', '0123456789abcdef00000001']);
+  assert.equal(JSON.parse(storage.raw()).gen, 'deadbeef00c0ffee');
+  for (const bad of [-1, 2 ** 32, 1.5, Number.NaN, '7']) {
+    assert.throws(() => openPracticeRecord({ storage: fakeStorage(), now: Date.now, random: () => bad }), /32-bit unsigned/, String(bad));
+  }
 });
 
 // ---- two instances, one storage ------------------------------------------------------------------------
@@ -496,14 +540,23 @@ test('the storage key and the caps are what the format says', () => {
 // written over the other's: WebKit lost one of two reps in 20 of 20 trials 0 ms apart, 14 at 1 ms, 5 at 2 ms,
 // none at 5 ms; and in 20 of 20 at every gap up to 50 ms while one page was busy. Two instances in ONE page
 // share one thread and one copy, and `add` is synchronous, so their adds cannot interleave at all.
+//
+// Measured again with rep ids and generations (round 3, 2026-10-18), the same trials in both engines, idle and
+// busy, two algorithms and one, 0 to 50 ms apart: all 960 kept both reps, none refused, none said lost. Of 240
+// that also read back what each page wrote, 159 had crossed — neither write held the other's rep — and every
+// one of the 159 was put back.
 
 /** Windows over one origin's storage, as measured: each reads its own copy, which another window's write
  *  reaches only when `deliver()` runs — and then as a `storage` event, never to the writer itself. A write
  *  that arrives after the window has written the key itself does not overwrite its copy (the stored value is
- *  the later write), as the browsers' copies ignore a remote change under a newer local one. */
+ *  the later write), as the browsers' copies ignore a remote change under a newer local one. `deliver({ events:
+ *  false })` updates the copies and holds their events until `fire()`: a page whose copy has a change before
+ *  its handler for it has run. A storage's `refuse` makes its writes throw, as a full quota does; `writes`
+ *  counts every write it was asked for. */
 function windows(n) {
   const backend = new Map();
   const queue = [];
+  const held = [];
   let seq = 0;
   const tabs = Array.from({ length: n }, (_, i) => {
     const cache = new Map();
@@ -516,27 +569,59 @@ function windows(n) {
       queue.push({ from: i, k, v, seq });
     };
     const storage = {
+      refuse: false,
+      writes: 0,
       getItem: (k) => (cache.has(k) ? cache.get(k) : null),
-      setItem: (k, v) => own(k, String(v)),
+      setItem: (k, v) => {
+        storage.writes += 1;
+        if (storage.refuse) throw Object.assign(new Error('QuotaExceededError'), { name: 'QuotaExceededError' });
+        own(k, String(v));
+      },
       removeItem: (k) => own(k, null),
     };
     return { storage, events, cache, ownAt };
   });
-  const deliver = () => {
+  const fire = () => {
+    while (held.length) {
+      const [t, event] = held.shift();
+      t.events.dispatchEvent(event);
+    }
+  };
+  const deliver = ({ events = true } = {}) => {
     while (queue.length) {
       const { from, k, v, seq: at } = queue.shift();
       tabs.forEach((t, i) => {
         if (i === from) return;
         const oldValue = t.cache.has(k) ? t.cache.get(k) : null;
         if (!(t.ownAt.get(k) > at)) { if (v === null) t.cache.delete(k); else t.cache.set(k, v); }
-        t.events.dispatchEvent(Object.assign(new Event('storage'), { key: k, oldValue, newValue: v, storageArea: t.storage }));
+        held.push([t, Object.assign(new Event('storage'), { key: k, oldValue, newValue: v, storageArea: t.storage })]);
       });
+      // A window's handler may write, which queues more: delivered in turn, as a browser would.
+      if (events) fire();
     }
   };
-  const stored = () => (backend.has(RECORD_KEY) ? parseRecord(backend.get(RECORD_KEY)) : new Map());
-  return { tabs, deliver, stored };
+  const raw = () => (backend.has(RECORD_KEY) ? backend.get(RECORD_KEY) : null);
+  const stored = () => parseRecord(raw());
+  return { tabs, deliver, fire, raw, stored };
 }
 const msOf = (algs) => Object.fromEntries([...algs].map(([id, reps]) => [id, reps.map((r) => r.ms)]));
+const statusOf = (record) => {
+  const s = record.status();
+  return { missing: s.missing, removed: s.removed, error: s.error?.code ?? null };
+};
+const QUIET = Object.freeze({ missing: 0, removed: 0, error: null });
+
+/** Each tab's record, watching its window, with what each heard: the status at every `onChange`. */
+function openAll(w, now, extra = () => ({})) {
+  const heard = w.tabs.map(() => []);
+  const records = w.tabs.map((t, i) => {
+    const record = openPracticeRecord({
+      storage: t.storage, now, changes: t.events, onChange: () => heard[i].push(statusOf(record)), ...extra(i),
+    });
+    return record;
+  });
+  return { records, heard };
+}
 
 test('two instances in one page cannot interleave: every rep either adds is kept', () => {
   const storage = fakeStorage();
@@ -550,19 +635,19 @@ test('two instances in one page cannot interleave: every rep either adds is kept
   assert.deepEqual(msOf(a.read()), { x: [101, 102, 103, 104, 105], y: [201, 202, 203, 204, 205] });
 });
 
-test('a rep another window wrote over is put back as soon as that write arrives', () => {
+test('a rep another window wrote over is put back as soon as that write arrives, and each window hears of the other\'s write', () => {
   const w = windows(2);
-  const clock = clockFrom();
-  const lost = [];
-  const open2 = (t) => openPracticeRecord({ storage: t.storage, now: clock, changes: t.events, onLost: (e) => lost.push(e) });
-  const [a, b] = w.tabs.map(open2);
+  const { records: [a, b], heard } = openAll(w, clockFrom());
+  assert.equal(a.add('x', rep({ ms: 100 })).saved, true);
+  w.deliver();
   assert.equal(a.add('x', rep({ ms: 111 })).saved, true);
   // The other window has not heard of it yet, and writes from its own copy: the rep is written over.
   assert.equal(b.add('y', rep({ ms: 222 })).saved, true);
-  assert.deepEqual(msOf(w.stored()), { y: [222] });
+  assert.deepEqual(msOf(w.stored()), { x: [100], y: [222] });
   w.deliver();
-  assert.deepEqual(msOf(w.stored()), { x: [111], y: [222] }, 'the rep written over was not put back');
-  assert.deepEqual(lost, []);
+  assert.deepEqual(msOf(w.stored()), { x: [100, 111], y: [222] }, 'the rep written over was not put back');
+  assert.deepEqual([statusOf(a), statusOf(b)], [QUIET, QUIET]);
+  assert.ok(heard[0].length > 0 && heard[1].length > 0, 'a window was not told of the other\'s write');
   // Both windows read the same record afterwards.
   assert.deepEqual(msOf(a.read()), msOf(b.read()));
 });
@@ -571,65 +656,197 @@ test('without storage events, a window puts its rep back at its next add', () =>
   const w = windows(2);
   const clock = clockFrom();
   const [a, b] = w.tabs.map((t) => openPracticeRecord({ storage: t.storage, now: clock }));
+  assert.equal(a.add('x', rep({ ms: 100 })).saved, true);
+  w.deliver();
   assert.equal(a.add('x', rep({ ms: 111 })).saved, true);
   assert.equal(b.add('y', rep({ ms: 222 })).saved, true);
   w.deliver();
-  const out = a.add('x', rep({ ms: 333 }));
-  assert.deepEqual([out.saved, out.lost], [true, undefined]);
-  assert.deepEqual(msOf(w.stored()), { x: [111, 333], y: [222] });
+  assert.deepEqual(a.add('x', rep({ ms: 333 })), { saved: true });
+  assert.deepEqual(msOf(w.stored()), { x: [100, 111, 333], y: [222] });
+  assert.deepEqual(statusOf(a), QUIET);
 });
 
-test('a rep that cannot be put back without guessing an order is said, never dropped quietly', () => {
-  // Two windows' reps in the same millisecond, on two algorithms: putting the first back would make a tie the
-  // reader refuses. Said through onLost; the record stays one the reader takes.
+test('row 8: two windows saving the same rep of one algorithm in one millisecond both keep it', () => {
+  // Before: the two reps were one string, so the record held one and neither window said a thing.
   const w = windows(2);
-  const lost = [];
-  const [a, b] = w.tabs.map((t) => openPracticeRecord({ storage: t.storage, now: () => 5_000, changes: t.events, onLost: (e) => lost.push(e) }));
-  assert.equal(a.add('x', rep({ ms: 111 })).saved, true);
-  assert.equal(b.add('y', rep({ ms: 222 })).saved, true);
+  const { records: [a, b] } = openAll(w, () => 5_000);
+  assert.deepEqual([a.add('x', rep()).saved, b.add('x', rep()).saved], [true, true]);
   w.deliver();
-  assert.equal(lost.length, 1);
-  assert.ok(lost[0] instanceof PracticeRecordError && lost[0].code === 'overwritten');
-  assert.match(lost[0].message, /x's rep at 5000/);
-  assert.deepEqual(msOf(w.stored()), { y: [222] });
-  // The same is said by an add when there is no event to hear it on.
-  const v = windows(2);
-  const [c, d] = v.tabs.map((t) => openPracticeRecord({ storage: t.storage, now: () => 5_000 }));
-  c.add('x', rep({ ms: 111 }));
-  d.add('y', rep({ ms: 222 }));
-  v.deliver();
-  let t = 5_000;
-  const later = openPracticeRecord({ storage: v.tabs[0].storage, now: () => (t += 1) });
-  assert.equal(later.add('z', rep()).lost, undefined, 'another instance claimed a rep it never wrote');
-  const out = c.add('x', rep({ ms: 333 }));
-  assert.equal(out.saved, false, 'the clock stands still in this window, so its own rep is refused');
-  assert.equal(out.lost?.code, 'overwritten', 'the rep that could not be put back was not said');
+  const kept = w.stored().get('x') ?? [];
+  assert.equal(kept.length, 2, 'two reps each said saved are one on record');
+  assert.deepEqual(kept.map((r) => r.at), [5_000, 5_000]);
+  assert.notEqual(kept[0].repId, kept[1].repId);
+  assert.deepEqual([statusOf(a), statusOf(b)], [QUIET, QUIET]);
+  assert.deepEqual(msOf(a.read()), msOf(b.read()));
 });
 
-test('a record removed in another window is not put back, and a rep the cap dropped is not called lost', () => {
+test('row 9: a removal whose event arrives late takes only what it removed — a rep saved after it stays, and is put back over a competing write', () => {
   const w = windows(2);
-  const clock = clockFrom();
-  const lost = [];
-  const [a, b] = w.tabs.map((t) => openPracticeRecord({ storage: t.storage, now: clock, changes: t.events, onLost: (e) => lost.push(e) }));
+  const { records: [a, b] } = openAll(w, clockFrom());
   assert.equal(a.add('x', rep({ ms: 111 })).saved, true);
   w.deliver();
   w.tabs[1].storage.removeItem(RECORD_KEY);
+  w.deliver({ events: false });                         // this window's copy has the removal; its event has not run
+  assert.equal(a.add('x', rep({ ms: 222 })).saved, true, 'precondition: a rep saved after the removal');
+  assert.deepEqual(statusOf(a), { missing: 0, removed: 1, error: null }, 'the rep that went with the record was not counted');
+  w.fire();                                             // the removal's event, late
+  assert.deepEqual(msOf(w.stored()), { x: [222] }, 'a late removal event took a rep saved after it');
+  // The other window has not heard of this one's new record, and writes one of its own over it.
+  assert.equal(b.add('y', rep({ ms: 333 })).saved, true);
+  assert.deepEqual(msOf(w.stored()), { y: [333] }, 'precondition: a competing write');
   w.deliver();
-  assert.equal(w.tabs[0].storage.getItem(RECORD_KEY), null, 'a deliberate removal was undone');
+  assert.deepEqual(msOf(w.stored()), { x: [222], y: [333] }, 'a rep saved after the removal was lost to a competing write');
+  assert.deepEqual([statusOf(a), statusOf(b)], [{ missing: 0, removed: 1, error: null }, QUIET]);
+});
+
+test('row 9: a record started by a window that saw this one gone is a removal, even when this window never saw it gone', () => {
+  const w = windows(2);
+  const { records: [a, b] } = openAll(w, clockFrom());
+  assert.equal(a.add('x', rep({ ms: 111 })).saved, true);
+  w.deliver();
+  const removedGen = JSON.parse(w.raw()).gen;
+  w.tabs[1].storage.removeItem(RECORD_KEY);
+  assert.equal(b.add('y', rep({ ms: 222 })).saved, true);
+  assert.equal(JSON.parse(w.raw()).replaced, removedGen, 'the new record does not name the one it replaced');
+  // Both changes reach this window's copy before its first handler runs: it never sees the record gone.
+  w.deliver({ events: false });
+  w.fire();
+  assert.deepEqual(msOf(w.stored()), { y: [222] }, 'a removed rep was put back');
+  assert.deepEqual(statusOf(a), { missing: 0, removed: 1, error: null });
+});
+
+test('row 10: a record removed where no event says so stays removed — the next add finds none and starts again', () => {
+  // In this window: a removal here fires no event here.
+  const w = windows(1);
+  const { records: [a] } = openAll(w, clockFrom());
+  assert.equal(a.add('x', rep({ ms: 111 })).saved, true);
+  const removedGen = JSON.parse(w.raw()).gen;
+  w.tabs[0].storage.removeItem(RECORD_KEY);
+  assert.equal(a.read().size, 0);
   assert.equal(a.add('x', rep({ ms: 222 })).saved, true);
-  assert.deepEqual(msOf(w.stored()), { x: [222] }, 'a removed rep came back at the next add');
-  // The other window fills the record with newer reps; the cap drops this window's old one, as it must.
+  assert.deepEqual(msOf(w.stored()), { x: [222] }, 'the removed history came back');
+  assert.deepEqual(statusOf(a), { missing: 0, removed: 1, error: null });
+  assert.equal(JSON.parse(w.raw()).replaced, removedGen);
+  // In another window, with no `changes` at all.
+  const v = windows(2);
+  const clock = clockFrom();
+  const c = openPracticeRecord({ storage: v.tabs[0].storage, now: clock });
+  assert.equal(c.add('x', rep({ ms: 111 })).saved, true);
+  v.deliver();
+  v.tabs[1].storage.removeItem(RECORD_KEY);
+  v.deliver();
+  assert.equal(c.add('x', rep({ ms: 222 })).saved, true);
+  assert.deepEqual(msOf(v.stored()), { x: [222] }, 'another window\'s removal was undone');
+  assert.deepEqual(statusOf(c), { missing: 0, removed: 1, error: null });
+});
+
+test('row 11: a record another window made unreadable is said at once, and said no more once it reads again', () => {
+  const w = windows(2);
+  const { records: [a], heard } = openAll(w, clockFrom());
+  assert.equal(a.add('x', rep({ ms: 111 })).saved, true);
   w.deliver();
-  const full = { v: 1, algs: {} };
-  let u = clock() + 1;
-  for (let i = 0, room = TOTAL_CAP; room > 0; i++) {
-    const n = Math.min(PER_ALG_CAP, room);
-    full.algs[`fill-${i}`] = Array.from({ length: n }, () => ({ ...GOOD, t: (u += 1) }));
-    room -= n;
-  }
-  w.tabs[1].storage.setItem(RECORD_KEY, JSON.stringify(full));
+  const good = w.raw();
+  w.tabs[1].storage.setItem(RECORD_KEY, '{not json');
   w.deliver();
-  assert.deepEqual(lost, [], 'a rep the cap dropped was called lost');
-  assert.equal(w.stored().has('x'), false, 'a rep older than every one the cap keeps was put back');
-  assert.throws(() => openPracticeRecord({ storage: fakeStorage(), now: Date.now, changes: new EventTarget() }), /onLost/);
+  assert.deepEqual(heard[0], [{ missing: 0, removed: 0, error: 'not-json' }], 'a write that made the record unreadable was not passed on');
+  assert.throws(() => a.read(), (e) => e.code === 'not-json');
+  // Nothing is written over it, by the look or by the next add.
+  const out = a.add('x', rep());
+  assert.deepEqual([out.saved, out.error?.code, w.raw()], [false, 'not-json', '{not json']);
+  // Readable again: the next look says so.
+  w.tabs[1].storage.setItem(RECORD_KEY, good);
+  w.deliver();
+  assert.deepEqual(heard[0].at(-1), QUIET, 'trouble that ended is still said');
+  assert.deepEqual(msOf(a.read()), { x: [111] });
+});
+
+test('row 12: a rep that could not be put back is a state, and the look that puts it back clears it — at an event, or at the next add', () => {
+  const w = windows(2);
+  const { records: [a, b], heard } = openAll(w, clockFrom());
+  assert.equal(a.add('x', rep({ ms: 111 })).saved, true);
+  w.deliver();
+  const crossed = (mine, theirs) => {
+    assert.equal(a.add('x', rep({ ms: mine })).saved, true);
+    assert.equal(b.add('y', rep({ ms: theirs })).saved, true);   // from a copy without `mine`
+  };
+  // Crossed while this window cannot write: said missing, with why.
+  crossed(222, 333);
+  w.tabs[0].storage.refuse = true;
+  w.deliver();
+  assert.deepEqual(heard[0].at(-1), { missing: 1, removed: 0, error: 'write-failed' });
+  assert.deepEqual(msOf(w.stored()), { x: [111], y: [333] });
+  // It can write again, and the other window's next write brings a look: put back, and no longer said.
+  w.tabs[0].storage.refuse = false;
+  assert.equal(b.add('y', rep({ ms: 444 })).saved, true);
+  w.deliver();
+  assert.deepEqual(heard[0].at(-1), QUIET, 'a rep put back is still said to be missing');
+  assert.deepEqual(msOf(w.stored()), { x: [111, 222], y: [333, 444] });
+  // Again, and this time the next add is the look that puts it back.
+  crossed(555, 666);
+  w.tabs[0].storage.refuse = true;
+  w.deliver();
+  assert.deepEqual(statusOf(a), { missing: 1, removed: 0, error: 'write-failed' });
+  w.tabs[0].storage.refuse = false;
+  assert.equal(a.add('x', rep({ ms: 777 })).saved, true);
+  assert.deepEqual(statusOf(a), QUIET);
+  assert.deepEqual(msOf(w.stored()), { x: [111, 222, 555, 777], y: [333, 444, 666] });
+});
+
+test('row 13: a rep the caps would drop anyway is neither put back nor called missing', () => {
+  const w = windows(2);
+  const { records: [a], heard } = openAll(w, () => 5_000);
+  assert.equal(a.add('x', rep({ ms: 111 })).saved, true);
+  w.deliver();
+  const gen = JSON.parse(w.raw()).gen;
+  // The per-algorithm cap: another window's write in this generation holds a hundred newer reps of x — and a
+  // rep of y in this rep's millisecond, which no longer matters.
+  const newer = Array.from({ length: PER_ALG_CAP }, (_, k) => ({ ...GOOD, i: rid(k, 'b'), t: 6_000 + k }));
+  const text = recordText({ x: newer, y: [{ ...GOOD, i: rid(PER_ALG_CAP, 'b'), t: 5_000 }] }, { gen });
+  const writes = w.tabs[0].storage.writes;
+  w.tabs[1].storage.setItem(RECORD_KEY, text);
+  w.deliver();
+  assert.deepEqual(heard[0].at(-1), QUIET, 'a rep the per-algorithm cap drops was called missing');
+  assert.deepEqual([w.raw(), w.tabs[0].storage.writes], [text, writes], 'a rep the per-algorithm cap drops was written back');
+  // The overall cap: a record full of newer reps of other algorithms.
+  const full = storedText(Array.from({ length: TOTAL_CAP / PER_ALG_CAP }, (_, i) => [`alg-${i}`, PER_ALG_CAP]), { gen, from: 7_000, page: 'c' });
+  w.tabs[1].storage.setItem(RECORD_KEY, full);
+  w.deliver();
+  assert.deepEqual(heard[0].at(-1), QUIET, 'a rep the overall cap drops was called missing');
+  assert.deepEqual([w.raw(), w.tabs[0].storage.writes], [full, writes], 'a rep the overall cap drops was written back');
+});
+
+test('crossed writes, put back and capped, keep what the same two writes one after the other keep', () => {
+  // A record one short of the overall cap, seen by both windows; each adds a rep before hearing of the other's.
+  // One after the other, the second write drops the oldest rep of all; crossed and put back, the same.
+  const base = JSON.parse(recordText({ old: [{ ...GOOD, i: rid(0, 'd'), t: 10, ms: 1 }] }));
+  const u = fillTo(base, TOTAL_CAP - 1, 100);
+  const w = windows(2);
+  w.tabs[0].storage.setItem(RECORD_KEY, JSON.stringify(base));
+  w.deliver();
+  const clock = clockFrom(u);
+  const { records: [a, b] } = openAll(w, clock);
+  assert.equal(a.add('x', rep({ ms: 111 })).saved, true);
+  assert.equal(b.add('y', rep({ ms: 222 })).saved, true);
+  w.deliver();
+  const crossed = w.stored();
+  const serial = fakeStorage(JSON.stringify(base));
+  const one = openPracticeRecord({ storage: serial, now: clockFrom(u) });
+  one.add('x', rep({ ms: 111 }));
+  one.add('y', rep({ ms: 222 }));
+  assert.deepEqual(msOf(crossed), msOf(parseRecord(serial.raw())));
+  assert.equal(crossed.has('old'), false, 'the oldest rep of all was kept');
+  assert.deepEqual([statusOf(a), statusOf(b)], [QUIET, QUIET]);
+});
+
+test('watching another window needs somewhere to say so', () => {
+  assert.throws(() => openPracticeRecord({ storage: fakeStorage(), now: Date.now, changes: new EventTarget() }), /onChange/);
+  // And stops at the signal: after it, another window's write is not looked at.
+  const w = windows(2);
+  const stop = new AbortController();
+  let heard = 0;
+  openPracticeRecord({ storage: w.tabs[0].storage, now: clockFrom(), changes: w.tabs[0].events, signal: stop.signal, onChange: () => { heard += 1; } });
+  stop.abort();
+  w.tabs[1].storage.setItem(RECORD_KEY, '{not json');
+  w.deliver();
+  assert.equal(heard, 0);
 });

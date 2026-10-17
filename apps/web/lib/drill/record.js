@@ -3,18 +3,24 @@
 // dev-docs/algorithm-drill-v2-plan.md §5, work item WI-11, owner decision 3 ("yes, on this device" — which
 // reverses the first Drill's D1, a drill that kept nothing). A service with no screen: the storage object and
 // the clock are INJECTED, so a test hands it a fake of each and the screen (WI-10) hands it `localStorage` and
-// `Date.now`. Nothing here touches a global.
+// `Date.now`. So is the random source the rep ids are drawn from, which defaults to the app's cryptographic one
+// (`cryptoUint32`, lib/random-state.js) and is never `Math.random()`. Nothing else here touches a global.
 //
 // WHAT IS STORED, AND WHAT IS NOT. One key, `cubusDrillRecord`, holding one JSON record:
 //
-//   { v: 1, algs: { <ledger row id>: [rep, rep, …] } }      reps oldest first, newest last
+//   { v: 2, gen, replaced, algs: { <ledger row id>: [rep, rep, …] } }      reps oldest first, newest last
 //
-// and each rep in short keys, because a rep is written thousands of times and parsed on every write:
+// `gen` names this record: 16 hex digits drawn when a record is started where none was stored, and kept by
+// every write after. `replaced` is the generation the starter had last seen stored before it found none — the
+// record that was removed — or null when it had seen none. Each rep is in short keys, because a rep is written
+// thousands of times and parsed on every write:
 //
-//   t   when it finished: the injected clock's epoch ms, a positive safe integer — never earlier than any rep
-//       on record, and never the same as another algorithm's, so across the record the stamps are the order
-//       the reps were written in (`add`). A record where two algorithms share a time is refused on read: the
-//       order of that tie was never recorded, and the cap would have to guess it
+//   i   the rep's id: 24 hex digits, unique on the record — 16 drawn once per open record (one page's), then
+//       that page's count of reps. Two reps are told apart by it however alike they are, and it orders reps
+//       made in one millisecond: one page's in the order it wrote them, two pages' by id, for every reader alike
+//   t   when it finished: the injected clock's epoch ms, a positive safe integer. The record's ONE order is
+//       (t, i), and `add` saves a rep only as the newest in it, so the order is the order the reps were written
+//       in — except between two windows' reps in one millisecond, neither of which had seen the other
 //   c   clean: the engine's own verdict — no `off` excursion, no turn beyond the algorithm's (a wrong turn
 //       taken back inside the cue window counts: the rep was not the algorithm alone), no lost turn
 //   l   a turn was LOST during the rep (the engine went `uncertain`): the reports were not the turns made,
@@ -51,19 +57,32 @@
 // Chromium): each reads its own copy of the storage, which the other's write reaches a few milliseconds later
 // — or, while its thread is busy, only when it is free — so a rep added in that gap is written over by the
 // other window's add, and both said saved. No read can see a write that has not arrived, so the loss is not
-// prevented; it is REPAIRED. Each instance keeps a journal of the reps it wrote that are on record, and puts
-// back any that another window's write dropped — at its own next `add`, and at once on the window's `storage`
-// event when `changes` is given. Putting back is the union of the two writes, capped as every write is, so a
-// rep the cap drops is not called lost. A rep that cannot be put back without guessing an order — the other
-// window wrote a rep in the same millisecond — is said, through `onLost` or the `add` result's `lost`, never
-// dropped quietly. A record removed in another window is not put back: a removal is deliberate.
+// prevented; it is REPAIRED. Each instance keeps its reps that were on record at its last look, by id, and the
+// generation they are in; and every repair is a look at the record AS STORED NOW — at each `add`, and on each
+// `storage` event when `changes` is given — never at what an event says happened, which can arrive late:
+//
+//   * the same generation: every one of them missing is put back — the union by id, then the caps, as every
+//     write is, so a rep the caps drop goes as it would have had the writes not crossed, and is not missing;
+//   * no record stored, or one whose `replaced` names their generation: their record was removed, which is
+//     deliberate, so they are not put back, and `status().removed` counts them;
+//   * another generation that does not name theirs: a window that never saw their record started its own in
+//     the gap, and they are put back into it.
+//
+// What a look could not finish is a STATE, never an event to remember: `status()` says how many reps are
+// missing and not yet put back, how many went with a removed record, and why the last look failed, and a look
+// that succeeds clears what an earlier one said. `onChange` tells the screen another window's write was looked
+// at, so its figures can be read again. NOT REPAIRED, because nothing stored can tell it: a window that writes
+// before another window's removal reaches it writes the removed record back, with its rep; and a record
+// started by a window that never saw the removed one does not name it, so a window that did not look while
+// none was stored puts its reps from the removed record back into the new one.
+import { cryptoUint32 } from '../random-state.js';
 import { TIME_REFUSAL } from './timing.js';
 
 /** The storage key, in the app's `cubus…` style beside `cubusSettings` and `cubusSolves`. */
 export const RECORD_KEY = 'cubusDrillRecord';
 
 /** The format's version. A record with any other `v` is foreign and refused, never reinterpreted. */
-export const RECORD_VERSION = 1;
+export const RECORD_VERSION = 2;
 
 /**
  * The most reps kept per algorithm: the newest 100. Every derived figure is about RECENT practice — the
@@ -76,11 +95,12 @@ export const RECORD_VERSION = 1;
 export const PER_ALG_CAP = 100;
 
 /**
- * The most reps kept overall: 5000, oldest dropped first across every algorithm. A rep is about 60 bytes
- * serialized, so a full record is about 300 KB — under a tenth of the ~5 MB a browser gives an origin's
- * localStorage, which `cubusSettings`, `cubusSolves` and `cubusCubes` share. It also bounds the cost of a
- * write, which parses and re-serializes the whole record. 5000 is fifty algorithms at the per-algorithm cap
- * — more than a beginner will practise — while the ledger's ~200 rows at a few reps each still all fit.
+ * The most reps kept overall: 5000, oldest dropped first across every algorithm. A rep is 105 to 120 bytes
+ * serialized, 31 of them its id, so a full record is about 550 KB and under 600 KB — under an eighth of the
+ * ~5 MB a browser gives an origin's localStorage, which `cubusSettings`, `cubusSolves` and `cubusCubes` share.
+ * It also bounds the cost of a write, which parses and re-serializes the whole record. 5000 is fifty algorithms at the
+ * per-algorithm cap — more than a beginner will practise — while the ledger's ~200 rows at a few reps each
+ * still all fit.
  */
 export const TOTAL_CAP = 5000;
 
@@ -88,12 +108,16 @@ export const TOTAL_CAP = 5000;
  *  kilobytes is not a ledger id and is refused rather than carried. */
 const MAX_ID_LENGTH = 80;
 
+/** A generation, and a rep id: lowercase hex of a fixed length, so that comparing two as strings orders them. */
+const GENERATION = /^[0-9a-f]{16}$/;
+const REP_ID = /^[0-9a-f]{24}$/;
+
 const REFUSALS = new Set(Object.values(TIME_REFUSAL));
 
 /** Why a record was refused or a write did not land — `code` is the whole vocabulary a screen words. */
 export class PracticeRecordError extends Error {
   /**
-   * @param {'unreadable'|'not-json'|'foreign'|'corrupt'|'clock-behind'|'write-failed'|'did-not-land'|'overwritten'} code
+   * @param {'unreadable'|'not-json'|'foreign'|'corrupt'|'clock-behind'|'write-failed'|'did-not-land'} code
    * @param {string} message
    * @param {unknown} [cause]
    */
@@ -116,7 +140,8 @@ const positiveInt = (v) => Number.isSafeInteger(v) && v > 0;
  */
 function repProblem(rep) {
   if (!isRecordObject(rep)) return 'is not an object';
-  const { at, clean, lostTurn, ms, refused, turns, pauses, htm } = rep;
+  const { repId, at, clean, lostTurn, ms, refused, turns, pauses, htm } = rep;
+  if (!(typeof repId === 'string' && REP_ID.test(repId))) return `has no usable id (${JSON.stringify(repId)})`;
   if (!positiveInt(at)) return `has no usable time of day (${JSON.stringify(at)})`;
   if (typeof clean !== 'boolean') return 'says neither clean nor not';
   if (typeof lostTurn !== 'boolean') return 'says neither whether a turn was lost nor not';
@@ -149,7 +174,9 @@ function repProblem(rep) {
   return null;
 }
 
-const SHORT = Object.freeze({ at: 't', clean: 'c', lostTurn: 'l', ms: 'ms', refused: 'r', turns: 'n', pauses: 'p', htm: 'h' });
+const SHORT = Object.freeze({
+  repId: 'i', at: 't', clean: 'c', lostTurn: 'l', ms: 'ms', refused: 'r', turns: 'n', pauses: 'p', htm: 'h',
+});
 const LONG_KEYS = Object.keys(SHORT);
 
 const toStored = (rep) => Object.fromEntries(LONG_KEYS.map((k) => [SHORT[k], rep[k]]));
@@ -160,17 +187,18 @@ const fromStored = (s) => (isRecordObject(s)
   ? Object.freeze(Object.fromEntries(LONG_KEYS.map((k) => [k, s[SHORT[k]]])))
   : s);
 
+/** Whether rep `a` comes after rep `b` in the record's one order: by time, then by id. Ids are unique on a
+ *  record, so of two different reps exactly one is newer. */
+const newer = (a, b) => a.at > b.at || (a.at === b.at && a.repId > b.repId);
+
 /**
- * The stored text as a record: a Map from ledger id to its reps, oldest first. The Map is a fresh snapshot,
- * parsed anew on every call, so a caller that edits it changes nothing stored and nothing another read sees;
- * each rep list and each rep in it is frozen. Throws `PracticeRecordError` for anything that is not exactly
- * this format — the whole record is refused.
- *
- * @param {string|null} text  what `getItem` returned; null is "never written", an empty record
- * @returns {Map<string, ReadonlyArray<object>>}
+ * The stored text as `{ gen, replaced, algs }`, or null when nothing is stored: `algs` a Map from ledger id to
+ * its reps, oldest first. The Map is a fresh snapshot, parsed anew on every call; each rep list and each rep in
+ * it is frozen. Throws `PracticeRecordError` for anything that is not exactly this format — the whole record is
+ * refused.
  */
-export function parseRecord(text) {
-  if (text === null) return new Map();
+function parseStored(text) {
+  if (text === null) return null;
   let raw;
   try { raw = JSON.parse(text); } catch (e) {
     throw new PracticeRecordError('not-json', `${RECORD_KEY} is not JSON, so it was left as it is`, e);
@@ -179,11 +207,15 @@ export function parseRecord(text) {
     throw new PracticeRecordError('foreign',
       `${RECORD_KEY} is not a version-${RECORD_VERSION} practice record, so it was left as it is`);
   }
+  if (!(typeof raw.gen === 'string' && GENERATION.test(raw.gen))) {
+    throw new PracticeRecordError('corrupt', `${RECORD_KEY} names no generation`);
+  }
+  if (raw.replaced !== null && !(typeof raw.replaced === 'string' && GENERATION.test(raw.replaced) && raw.replaced !== raw.gen)) {
+    throw new PracticeRecordError('corrupt', `${RECORD_KEY} says neither which record it replaced nor none`);
+  }
   const algs = new Map();
+  const ids = new Set();
   let total = 0;
-  /** Which algorithm holds a rep at each time. One time held by two algorithms is a tie whose order was never
-   *  recorded — the cap could only guess which rep to drop — so the record is refused rather than guessed at. */
-  const owner = new Map();
   for (const [id, stored] of Object.entries(raw.algs)) {
     if (!isId(id)) throw new PracticeRecordError('corrupt', `${RECORD_KEY} names an algorithm ${JSON.stringify(id.slice(0, 40))} that no ledger id could be`);
     if (!Array.isArray(stored) || stored.length === 0 || stored.length > PER_ALG_CAP) {
@@ -193,48 +225,62 @@ export function parseRecord(text) {
     reps.forEach((rep, i) => {
       const problem = repProblem(rep);
       if (problem) throw new PracticeRecordError('corrupt', `${RECORD_KEY}: ${id} rep ${i + 1} ${problem}`);
-      if (i > 0 && rep.at < reps[i - 1].at) throw new PracticeRecordError('corrupt', `${RECORD_KEY}: ${id} rep ${i + 1} is older than the rep before it`);
-      const other = owner.get(rep.at);
-      if (other !== undefined && other !== id) {
-        throw new PracticeRecordError('corrupt', `${RECORD_KEY}: ${other} and ${id} both hold a rep at ${rep.at}, so which was made first is not known`);
-      }
-      owner.set(rep.at, id);
+      if (i > 0 && !newer(rep, reps[i - 1])) throw new PracticeRecordError('corrupt', `${RECORD_KEY}: ${id} rep ${i + 1} is not newer than the rep before it`);
+      // One id held twice is one rep counted twice — or two reps nobody can tell apart.
+      if (ids.has(rep.repId)) throw new PracticeRecordError('corrupt', `${RECORD_KEY}: ${id} rep ${i + 1} has the id of another rep (${rep.repId})`);
+      ids.add(rep.repId);
     });
     total += reps.length;
     algs.set(id, Object.freeze(reps));
   }
   if (total > TOTAL_CAP) throw new PracticeRecordError('corrupt', `${RECORD_KEY} holds ${total} reps, past the ${TOTAL_CAP} it is ever written with`);
-  return algs;
+  return { gen: raw.gen, replaced: raw.replaced, algs };
+}
+
+/**
+ * The stored text as a record: a Map from ledger id to its reps, oldest first — empty when nothing is stored.
+ * A fresh snapshot each call: a caller that edits the Map changes nothing stored and nothing another read sees.
+ * Throws `PracticeRecordError` for anything that is not exactly this format.
+ *
+ * @param {string|null} text  what `getItem` returned; null is "never written", an empty record
+ * @returns {Map<string, ReadonlyArray<object>>}
+ */
+export function parseRecord(text) {
+  return parseStored(text)?.algs ?? new Map();
 }
 
 /** The record as stored text. `Object.fromEntries` defines own properties, so an id such as `__proto__`
  *  is a key like any other and never a prototype. */
-const serialize = (algs) => JSON.stringify({
+const serialize = ({ gen, replaced, algs }) => JSON.stringify({
   v: RECORD_VERSION,
+  gen,
+  replaced,
   algs: Object.fromEntries([...algs].map(([id, reps]) => [id, reps.map(toStored)])),
 });
 
 /**
  * Apply both caps: the newest PER_ALG_CAP reps of each algorithm, then the newest TOTAL_CAP overall, the
- * oldest dropped first across every algorithm. `add` stamps every rep later than every rep of another
- * algorithm before it, and the reader refuses a record where two algorithms share a time, so the stamps are
- * the write order and a tie is only ever inside one algorithm's list, where the later in the list was written
- * later. An algorithm left with no reps leaves the record.
+ * oldest dropped first across every algorithm — in the record's one order (`newer`), which no two reps tie in.
+ * That is keeping reps newest first while their algorithm has room and the record has room, so a rep dropped
+ * from a record is dropped from any record holding it and more: capping after a rep is put back keeps what
+ * one write after the other would have kept. An algorithm left with no reps leaves the record.
  */
 function capped(algs) {
   const perAlg = new Map([...algs].map(([id, reps]) => [id, reps.slice(-PER_ALG_CAP)]));
-  const all = [...perAlg].flatMap(([id, reps]) => reps.map((rep, i) => ({ id, i, at: rep.at })));
+  const all = [...perAlg.values()].flat();
   if (all.length <= TOTAL_CAP) return perAlg;
-  // Newest first by time; among equal times (one algorithm's), later in its list is newer.
-  all.sort((a, b) => b.at - a.at || b.i - a.i);
-  const keep = new Set(all.slice(0, TOTAL_CAP).map(({ id, i }) => `${i}\u0000${id}`));
+  all.sort((a, b) => (newer(a, b) ? -1 : newer(b, a) ? 1 : 0));
+  const keep = new Set(all.slice(0, TOTAL_CAP).map((r) => r.repId));
   const out = new Map();
   for (const [id, reps] of perAlg) {
-    const kept = reps.filter((_, i) => keep.has(`${i}\u0000${id}`));
+    const kept = reps.filter((r) => keep.has(r.repId));
     if (kept.length) out.set(id, kept);
   }
   return out;
 }
+
+/** The ids of every rep in `algs`. */
+const idsIn = (algs) => new Set([...algs.values()].flatMap((reps) => reps.map((r) => r.repId)));
 
 /** The median. Of an even count, the midpoint of the two middle values taken as `lower + (upper − lower) / 2`:
  *  sorted ascending, the difference of two finite numbers of one sign is finite, where their sum can overflow. */
@@ -289,21 +335,6 @@ export function statsOf(reps) {
   });
 }
 
-/** One rep of one algorithm as a comparable string: the same rep, written by any window, is the same text. */
-const repKey = (id, rep) => `${id}\u0000${JSON.stringify(toStored(rep))}`;
-
-/** `entries` (`[{ id, rep }]`) that `algs` holds, each counted once against what it holds. */
-function heldIn(algs, entries) {
-  const count = new Map();
-  for (const [id, reps] of algs) for (const r of reps) count.set(repKey(id, r), (count.get(repKey(id, r)) ?? 0) + 1);
-  return entries.filter(({ id, rep }) => {
-    const k = repKey(id, rep);
-    if (!count.get(k)) return false;
-    count.set(k, count.get(k) - 1);
-    return true;
-  });
-}
-
 /**
  * The practice record over an injected storage and clock.
  *
@@ -312,58 +343,71 @@ function heldIn(algs, entries) {
  * @param {() => number} o.now  epoch milliseconds, stamped on each rep as it is added
  * @param {string} [o.key]
  * @param {{ addEventListener: Function }|null} [o.changes]  where the window's `storage` events arrive (the
- *   page's `window`): another window's write is then checked for this instance's reps as soon as it arrives
+ *   page's `window`): the record is then looked at, and this instance's reps put back, as soon as another
+ *   window's write arrives
  * @param {AbortSignal} [o.signal]  stops listening to `changes`
- * @param {(error: PracticeRecordError) => void} [o.onLost]  told of reps another window wrote over that could
- *   not be put back; required with `changes`, because an event has no caller to return it to
+ * @param {() => void} [o.onChange]  called after each of those looks, whatever it found — required with
+ *   `changes`, because the record on screen may now be another: read it again, and `status()`
+ * @param {() => number} [o.random]  a uniform 32-bit unsigned integer per call, from a cryptographic source
  */
-export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = null, signal, onLost }) {
-  if (!storage || typeof storage.getItem !== 'function' || typeof storage.setItem !== 'function' || typeof now !== 'function') {
-    throw new Error('practice record: storage and now are injected, never assumed');
+export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = null, signal, onChange, random = cryptoUint32 }) {
+  if (!storage || typeof storage.getItem !== 'function' || typeof storage.setItem !== 'function'
+    || typeof now !== 'function' || typeof random !== 'function') {
+    throw new Error('practice record: storage, now and random are injected, never assumed');
   }
-  if (changes !== null && (typeof changes?.addEventListener !== 'function' || typeof onLost !== 'function')) {
-    throw new Error('practice record: watching another window\'s writes needs `changes` with addEventListener, and `onLost` to say what could not be put back');
+  if (changes !== null && (typeof changes?.addEventListener !== 'function' || typeof onChange !== 'function')) {
+    throw new Error('practice record: watching another window\'s writes needs `changes` with addEventListener, and `onChange` to hear of them');
   }
 
-  /** The reps this instance wrote that were on record after its last write, in the order it wrote them. */
-  let journal = [];
-
-  /**
-   * The stored record with every journaled rep another window's write dropped put back, where that can be
-   * done without guessing an order: `{ algs, restored, lost }`. A dropped rep whose millisecond the record
-   * already holds a rep of someone else's at is LOST — putting it back would make a tie nobody can order.
-   */
-  const withJournal = (algs) => {
-    const present = new Set(heldIn(algs, journal));
-    const mine = new Set(journal.map(({ id, rep }) => repKey(id, rep)));
-    const othersAt = new Set();
-    for (const [id, reps] of algs) for (const r of reps) if (!mine.has(repKey(id, r))) othersAt.add(r.at);
-    const lists = new Map([...algs].map(([id, reps]) => [id, [...reps]]));
-    const restored = [];
-    const lost = [];
-    for (const entry of journal) {
-      if (present.has(entry)) continue;
-      if (othersAt.has(entry.rep.at)) { lost.push(entry); continue; }
-      const list = lists.get(entry.id) ?? [];
-      let i = list.length;
-      while (i > 0 && list[i - 1].at > entry.rep.at) i -= 1;
-      list.splice(i, 0, entry.rep);
-      lists.set(entry.id, list);
-      restored.push(entry);
+  const hex8 = () => {
+    const n = random();
+    if (!(Number.isInteger(n) && n >= 0 && n <= 0xffffffff)) {
+      throw new Error(`practice record: the random source gave ${String(n)}, not a 32-bit unsigned integer`);
     }
-    return { algs: lists, restored, lost };
+    return n.toString(16).padStart(8, '0');
+  };
+  /** This instance's half of every rep id it makes; the other half counts its reps, in the order it makes them. */
+  const nonce = hex8() + hex8();
+  let made = 0;
+  const nextRepId = () => {
+    if (made > 0xffffffff) throw new Error('practice record: this page has made more reps than its rep ids can count');
+    const id = nonce + made.toString(16).padStart(8, '0');
+    made += 1;
+    return id;
   };
 
-  /** The reps that could not be put back, said once and then forgotten. */
-  const lostError = (lost) => {
-    journal = journal.filter((e) => !lost.includes(e));
-    const what = lost.map(({ id, rep }) => `${id}'s rep at ${rep.at}`).join(', ');
-    return new PracticeRecordError('overwritten', `another window wrote over ${what} in the same millisecond, so it could not be put back`);
+  /** A record's name. One equal to the record it replaced would be refused on read: a source that repeats. */
+  const newGeneration = () => {
+    const g = hex8() + hex8();
+    if (g === seen) throw new Error('practice record: the random source repeated a generation');
+    return g;
   };
 
-  /** Write `algs` and read it back. Null when it landed, otherwise the error. */
-  const write = (algs) => {
-    const text = serialize(algs);
+  /** The reps this instance wrote that were on record at its last look (`{ id, rep }`), and their generation. */
+  let mine = [];
+  let gen = null;
+  /** The generation this instance last saw stored: the one a record it starts says it replaced. */
+  let seen = null;
+  /** `status()`: what the last look could not do, and what removals took. */
+  let missing = 0;
+  let removed = 0;
+  let error = null;
+
+  /** The record as stored now, or null when none is. Throws `PracticeRecordError` when it cannot be read. */
+  const look = () => {
+    let text;
+    try { text = storage.getItem(key); } catch (e) {
+      // A read that threw is not an empty record: treating it as one is how a good record is overwritten.
+      throw new PracticeRecordError('unreadable', `${key} could not be read, so nothing will be written over it`, e);
+    }
+    const found = parseStored(text);
+    if (found !== null) seen = found.gen;
+    return found;
+  };
+
+  /** Write a record and read it back. Null when it landed, otherwise the error. */
+  const write = (record) => {
+    const text = serialize(record);
     try { storage.setItem(key, text); } catch (e) {
       return new PracticeRecordError('write-failed', `${key} could not be written`, e);
     }
@@ -374,45 +418,59 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = n
     return back === text ? null : new PracticeRecordError('did-not-land', `${key} read back differently from what was written`);
   };
 
-  /** Another window wrote the record: put back what it dropped. A record that is refused is left as found —
-   *  the next read says so. */
-  const reconcile = () => {
-    let algs;
-    try { algs = read(); } catch (e) {
-      if (e instanceof PracticeRecordError) return;
+  /**
+   * Look at the record as stored now and put back this instance's reps another window's write dropped (header,
+   * TWO WINDOWS). Returns the record as it then stands, `{ gen, replaced, algs }` with `gen` null when none is
+   * stored — holding the reps put back even when writing them did not land, which `status()` then says. Throws
+   * `PracticeRecordError` when the record cannot be read or is refused, having noted it in `status()`.
+   */
+  const settle = () => {
+    let found;
+    try { found = look(); } catch (e) {
+      if (e instanceof PracticeRecordError) error = e;
       throw e;
     }
-    const merged = withJournal(algs);
-    if (merged.lost.length) onLost(lostError(merged.lost));
-    if (!merged.restored.length) return;
-    const next = capped(merged.algs);
-    // Put back only what the cap keeps: a rep the other window's newer reps pushed out is not lost.
-    if (!heldIn(next, merged.restored).length) { journal = heldIn(next, journal); return; }
-    const failed = write(next);
-    if (failed) {
-      onLost(new PracticeRecordError(failed.code, `reps another window wrote over could not be written back: ${failed.message}`, failed));
-      return;
+    const stored = found ?? { gen: null, replaced: null, algs: new Map() };
+    const on = idsIn(stored.algs);
+    const away = mine.filter(({ rep }) => !on.has(rep.repId));
+    // Removed: no record, or one started by a window that saw theirs and then found none.
+    const cleared = found === null || (found.gen !== gen && found.replaced === gen);
+    if (cleared) removed += away.length;
+    const back = cleared ? [] : away;
+    let algs = stored.algs;
+    if (back.length) {
+      const lists = new Map([...algs].map(([id, reps]) => [id, [...reps]]));
+      for (const { id, rep } of back) {
+        const list = lists.get(id) ?? [];
+        let k = list.length;
+        while (k > 0 && newer(list[k - 1], rep)) k -= 1;
+        list.splice(k, 0, rep);
+        lists.set(id, list);
+      }
+      algs = capped(lists);
     }
-    journal = heldIn(next, journal);
+    const kept = idsIn(algs);
+    // Written only when the caps keep a rep put back: one they drop is gone as it would have gone anyway.
+    const failed = back.some(({ rep }) => kept.has(rep.repId)) ? write({ ...stored, algs }) : null;
+    mine = mine.filter(({ rep }) => kept.has(rep.repId));
+    gen = stored.gen;
+    missing = failed ? mine.filter(({ rep }) => !on.has(rep.repId)).length : 0;
+    error = failed;
+    return { ...stored, algs };
   };
 
   changes?.addEventListener('storage', (event) => {
     if (event.storageArea != null && event.storageArea !== storage) return;
     if (event.key !== null && event.key !== key) return;
-    // Removed or cleared: deliberate, so nothing is put back, now or at the next add.
-    if (event.key === null || event.newValue === null) { journal = []; return; }
-    reconcile();
+    // What the event says (its `newValue`) may already be stale; the look reads what is stored now.
+    try { settle(); } catch (e) {
+      if (!(e instanceof PracticeRecordError)) throw e;
+    }
+    onChange();
   }, signal ? { signal } : undefined);
 
-  /** The record as stored now. Throws `PracticeRecordError` when it cannot be read or is refused. */
-  const read = () => {
-    let text;
-    try { text = storage.getItem(key); } catch (e) {
-      // A read that threw is not an empty record: treating it as one is how a good record is overwritten.
-      throw new PracticeRecordError('unreadable', `${key} could not be read, so nothing will be written over it`, e);
-    }
-    return parseRecord(text);
-  };
+  /** Every algorithm's reps as stored now: a fresh snapshot each call. Throws when the record is refused. */
+  const read = () => look()?.algs ?? new Map();
 
   /** One algorithm's reps, oldest first — empty when it has none. Throws when the record is refused. */
   const reps = (id) => {
@@ -422,69 +480,69 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = n
 
   return Object.freeze({
     key,
-    /** Every algorithm's reps: a fresh snapshot each call (`parseRecord`). Throws when the stored record is refused. */
     read,
     reps,
     /** One algorithm's derived figures. Throws when the record is refused. */
     stats: (id) => statsOf(reps(id)),
 
     /**
-     * Add one finished rep (`repFromDone`'s output) to an algorithm, stamped with the clock now.
+     * What this instance's saved reps came to, as of its last look at the record — a state, which a later look
+     * that succeeds clears, never an event to remember:
+     *
+     *   missing   reps another window's write dropped that could not be put back yet (`error` says why)
+     *   removed   reps that went with a record removed — in another window, or in this one — since it opened
+     *   error     why the last look could not finish (the record cannot be read, is refused, or the reps put
+     *             back did not land), or null
+     */
+    status: () => Object.freeze({ missing, removed, error }),
+
+    /**
+     * Add one finished rep (`repFromDone`'s output) to an algorithm, stamped with the clock now and a new id.
      *
      * Returns `{ saved: true }`, or `{ saved: false, error }` when the record was refused (and so left
-     * untouched), the clock is behind the record (`clock-behind`, also untouched), the write threw, or the
-     * text read back is not the text written. A rep that breaks the format THROWS: that is the caller's
-     * defect, not the device's. Either result also carries `lost` — an `overwritten` error — when an earlier
-     * rep of this instance's was written over by another window and could not be put back (header).
+     * untouched), the rep would not be the newest on record (`clock-behind`), the write threw, or the text read
+     * back is not the text written. A rep that breaks the format THROWS: that is the caller's defect, not the
+     * device's. The look before the write puts back this instance's reps first (`status()`).
      */
     add(id, rep) {
       if (!isId(id)) throw new Error(`practice record: ${JSON.stringify(id)} is not a ledger id`);
-      const at = now();
-      const full = Object.freeze({ ...rep, at });
+      const full = Object.freeze({ ...rep, at: now(), repId: nextRepId() });
       const problem = repProblem(full);
       if (problem) throw new Error(`practice record: the rep for ${id} ${problem}`);
       let stored;
-      try { stored = read(); } catch (e) {
+      try { stored = settle(); } catch (e) {
         if (e instanceof PracticeRecordError) return Object.freeze({ saved: false, error: e });
         throw e;
       }
-      // Another window's write may have dropped a rep this instance wrote: put back with this one.
-      const merged = withJournal(stored);
-      const algs = merged.algs;
-      const lost = merged.lost.length ? { lost: lostError(merged.lost) } : {};
-      const prior = algs.get(id) ?? [];
-      // THE STAMPS ARE THE WRITE ORDER, across the whole record — the cap drops the oldest rep of all, so a stamp
-      // is only an age if each is later than every one before it. A clock that went backwards (the device's
-      // time was changed) would break that: the reader refuses one algorithm's reps out of order, and the cap
-      // would drop a rep just made as the oldest of all while `add` said it was saved. Refused instead, before
-      // anything is written, rather than reordered or restamped. Each list is oldest first, so its last rep is
-      // its newest.
-      const newest = [...algs].map(([other, reps]) => ({ other, at: reps.at(-1).at }));
-      const latest = newest.reduce((m, n) => Math.max(m, n.at), -Infinity);
-      if (at < latest) {
-        const whose = newest.find((n) => n.at === latest).other;
+      // THE NEW REP IS THE NEWEST ON RECORD, or it is not saved. The caps drop the oldest of all, so the order
+      // must be the write order: a clock that went backwards (the device's time was changed) would have the cap
+      // drop a rep just made as the oldest of all while `add` said it was saved. And in the millisecond of a rep
+      // another page wrote, this rep's id may order before it — which would contradict the order this page saw.
+      // Refused, before anything is written, rather than reordered or restamped. Each list is oldest first.
+      let newest = null;
+      for (const [other, list] of stored.algs) if (newest === null || newer(list.at(-1), newest.rep)) newest = { other, rep: list.at(-1) };
+      if (newest !== null && !newer(full, newest.rep)) {
         return Object.freeze({
           saved: false,
-          error: new PracticeRecordError('clock-behind', `the clock reads earlier than the newest rep on record (${whose}'s), so the rep was not saved`),
-          ...lost,
+          error: new PracticeRecordError('clock-behind', full.at < newest.rep.at
+            ? `the clock reads earlier than the newest rep on record (${newest.other}'s), so the rep was not saved`
+            : `the clock reads the same millisecond as the newest rep on record (${newest.other}'s), made in another page, so which came first could not be kept and the rep was not saved`),
         });
       }
-      // Two reps in one millisecond are ordered by their place in the list — but only within ONE algorithm;
-      // across two, which came first could not be kept. So a rep at the time of another algorithm's newest is
-      // refused too, and every tie on record is inside one list, where the cap's tie-break is the write order.
-      const tied = newest.find((n) => n.at === at && n.other !== id);
-      if (tied) {
-        return Object.freeze({
-          saved: false,
-          error: new PracticeRecordError('clock-behind', `the clock reads the same time as ${tied.other}'s newest rep, so which came first could not be kept and the rep was not saved`),
-          ...lost,
-        });
-      }
-      const next = capped(new Map([...algs, [id, [...prior, full]]]));
+      const lists = new Map(stored.algs);
+      lists.set(id, [...(lists.get(id) ?? []), full]);
+      const next = stored.gen === null
+        ? { gen: newGeneration(), replaced: seen, algs: capped(lists) }
+        : { ...stored, algs: capped(lists) };
       const failed = write(next);
-      if (failed) return Object.freeze({ saved: false, error: failed, ...lost });
-      journal = heldIn(next, [...journal, { id, rep: full }]);
-      return Object.freeze({ saved: true, ...lost });
+      if (failed) return Object.freeze({ saved: false, error: failed });
+      const kept = idsIn(next.algs);
+      mine = [...mine, { id, rep: full }].filter(({ rep: r }) => kept.has(r.repId));
+      gen = next.gen;
+      seen = next.gen;
+      missing = 0;
+      error = null;
+      return Object.freeze({ saved: true });
     },
   });
 }
