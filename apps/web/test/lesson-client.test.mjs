@@ -16,6 +16,8 @@ import { methodOf } from '../lib/methods/method-of.js';
 import { SOLVED, applyAlg, fromCube, toFacelets } from '../lib/cube-pieces.js';
 
 const engine = { solveByMethod, methodById, methodOf };
+// A question nobody settles never resolves; a cap turns that defect into a failure rather than a hang.
+const NEVER_HANGS = { timeout: 10_000 };
 const SCRAMBLED = applyAlg(SOLVED, "R U F' D2 L B U' R2 F D' L2 B2 U");
 
 test('the handler answers what solving on this thread answers, and it survives the structured clone', () => {
@@ -63,6 +65,7 @@ function fakeWorker({ answer = (m) => structuredClone(handleMethodSolve(engine, 
     postMessage: (m) => { sent.push(m); setTimeout(() => { const data = answer(m); if (data) for (const fn of listeners.message) fn({ data }); }, 0); },
     terminate() {},
     die: (message) => { for (const fn of listeners.error) fn({ message, preventDefault() {} }); },
+    emit: (type, event) => { for (const fn of listeners[type]) fn(event); },
   };
 }
 
@@ -153,4 +156,22 @@ test('methodOf builds by entry, so a second entry under an id already built is c
   assert.throws(() => methodOf({ ...beginner, stages: ['cross', 'pairs', 'pll', 'oll'] }), /declares the stages/,
     'an entry sharing an id skipped the stage check');
   assert.equal(methodOf(beginner), methodOf(beginner), 'the same entry is built once');
+});
+
+test('each reply settles its own question: out of order, and a called-off one\'s late reply settles nothing', NEVER_HANGS, async () => {
+  const worker = fakeWorker({ answer: () => null }); // replies are delivered by hand below
+  const client = createLessonClient({ spawn: () => worker });
+  const reply = (m) => worker.emit('message', { data: structuredClone(handleMethodSolve(engine, structuredClone(m))) });
+  const other = applyAlg(SOLVED, "F R U' L2 D B'");
+  const walk = new AbortController();
+  const gone = client.solve(SCRAMBLED, 'cfop', { signal: walk.signal });
+  const a = client.solve(SCRAMBLED, 'beginner');
+  const b = client.solve(other, 'beginner');
+  walk.abort();
+  assert.equal(await gone, null);
+  reply(worker.sent[0]); // the called-off question's late answer: must not settle a or b
+  reply(worker.sent[2]);
+  reply(worker.sent[1]);
+  assert.equal((await a).alg, solveByMethod(SCRAMBLED, methodOf(methodById('beginner'))).alg, 'a got another question\'s answer');
+  assert.equal((await b).alg, solveByMethod(other, methodOf(methodById('beginner'))).alg, 'b got another question\'s answer');
 });
