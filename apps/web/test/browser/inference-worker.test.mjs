@@ -41,12 +41,14 @@ after(async () => {
 
 /** Poll `probe` until it is true, or fail naming what was being waited for. */
 async function until(probe, what, ms = 30_000) {
+  // The probe is asked LAST, after every wait: a wait that overran the deadline must still look before it
+  // gives up, or a busy machine reports a condition that came true as one that never did.
   const end = Date.now() + ms;
-  while (Date.now() < end) {
+  for (;;) {
     if (await probe()) return;
+    if (Date.now() > end) assert.fail(`timed out after ${ms} ms waiting for ${what}`);
     await new Promise((r) => setTimeout(r, 100));
   }
-  assert.fail(`timed out after ${ms} ms waiting for ${what}`);
 }
 
 test('the shipped inference worker reads every golden frame exactly as the page runner does', async () => {

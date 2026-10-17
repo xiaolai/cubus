@@ -18,7 +18,7 @@ import { readFileSync } from 'node:fs';
 import { APP_SOURCES, blockAt, walk } from './app-source.mjs';
 
 import { Window } from 'happy-dom';
-import { solverLoaded } from './fixtures/app-waits.mjs';
+import { solverLoaded, waitFor } from './fixtures/app-waits.mjs';
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -491,15 +491,6 @@ test('the state card is the net plus a dice, and says which state it is', async 
 // markup tests — the first version of this file asserted only labels and buttons, and mutating
 // `setup` and the stage names did not turn it red.
 
-/** Poll until `fn()` is true. The scramble is generated asynchronously behind loadSolver(). */
-const waitFor = async (fn, ms = 20000) => {
-  const t0 = Date.now();
-  while (Date.now() - t0 < ms) {
-    if (fn()) return true;
-    await new Promise((r) => setTimeout(r, 50));
-  }
-  return false;
-};
 
 const SOLVED_FACELETS = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
 
@@ -2845,7 +2836,7 @@ test('the Timer says a scramble could not be rolled, and keeps the one in play',
     // more can be rolled now — so it is the SECOND press that has to roll on the spot, and its
     // failure is the one this is about.
     win.document.querySelector('#newScr').click();
-    await waitFor(said, 1000);
+    await waitFor(said, { ms: 1000 });
     const inPlay = scr().textContent;
     win.document.querySelector('#newScr').click();
     // The short wait above is patience BETWEEN presses — how long to give one before pressing
@@ -2880,7 +2871,7 @@ test('a scramble that works after one that failed takes the failure off the line
     // A press may be handed the cube rolled ahead of it, so press until one has to roll and fails.
     for (let i = 0; i < 3 && !said(); i++) {
       win.document.querySelector('#newScr').click();
-      await waitFor(said, 2000);
+      await waitFor(said, { ms: 2000 });
     }
     // Patience between presses above; the failure itself waited for at this file's deadline, for
     // the reason the test before this one gives.
@@ -2920,7 +2911,7 @@ test('the die on the cube screen says a roll failed, where it says everything el
         const die = win.document.querySelector('#randCube');
         assert.ok(die, 'precondition: the die is drawn');
         if (!die.disabled) die.click();
-        await waitFor(said, 1500);
+        await waitFor(said, { ms: 1500 });
       }
       // Patience between presses above; what the press said waited for at this file's deadline,
       // for the reason the Timer's own "could not be rolled" test gives.

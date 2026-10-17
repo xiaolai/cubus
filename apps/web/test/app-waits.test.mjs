@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import test from 'node:test';
 
-import { eventually } from './fixtures/app-waits.mjs';
+import { eventually, waitFor } from './fixtures/app-waits.mjs';
 
 const here = new URL('./', import.meta.url);
 const suites = readdirSync(here)
@@ -52,4 +52,26 @@ test('eventually waits for its condition, and names what it gave up on', async (
   assert.equal(n, 3);
   await assert.rejects(eventually(() => false, 'a thing that never happens', { ms: 30, step: 5 }),
     /timed out after 30 ms waiting for a thing that never happens/);
+});
+
+test('waitFor asks its condition after the wait that overran, never only the clock', async () => {
+  // The suites' own copies read the clock first, so a wait stalled past the bound returned false for a
+  // condition that had come true meanwhile — measured as the likeliest fast-tier flake under heavy load
+  // (2026-10-17). Here the one wait (50 ms) overruns the bound (10 ms), and the condition holds by then.
+  let ready = false;
+  setTimeout(() => { ready = true; }, 1);
+  assert.equal(await waitFor(() => ready, { ms: 10, step: 50 }), true, 'a condition that came true during the last wait was reported false');
+  assert.equal(await waitFor(() => false, { ms: 10, step: 5 }), false);
+});
+
+test('no suite carries its own polling helper — the shared ones ask the condition last', () => {
+  // Three suites each had a copy of one helper, and all three had the same flaw (clock first). A copy is
+  // how the fix stops reaching a suite.
+  const own = [];
+  for (const { name, text } of suites) {
+    text.split('\n').forEach((line, i) => {
+      if (/^(?:const|let|async function|function)\s+(?:waitFor|eventually)\b/.test(line.trim())) own.push(`${name}:${i + 1}`);
+    });
+  }
+  assert.deepEqual(own, [], 'import waitFor or eventually from test/fixtures/app-waits.mjs');
 });

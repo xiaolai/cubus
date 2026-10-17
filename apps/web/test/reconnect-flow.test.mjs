@@ -25,6 +25,7 @@ import { test, before } from 'node:test';
 import { readFileSync } from 'node:fs';
 
 import { Window } from 'happy-dom';
+import { eventually } from './fixtures/app-waits.mjs';
 import Cube from '../vendor/cubejs.js';
 import { createSelfCheck } from '../lib/cube-selfcheck.js';
 
@@ -120,12 +121,11 @@ before(async () => {
   await tick();
   // The readings validate through cubejs, so the classification needs the solver bundle loaded.
   // The timer's scramble line is the visible signal that it is.
-  const t0 = Date.now();
-  while (Date.now() - t0 < 60000) {
+  // A wait that ran out used to fall through silently, and the cases after it failed about something else.
+  await eventually(() => {
     const scr = $('#scr')?.textContent ?? '';
-    if (scr && scr !== 'press New scramble' && scr !== 'working out a scramble…') break;
-    await new Promise((r) => setTimeout(r, 50));
-  }
+    return scr !== '' && scr !== 'press New scramble' && scr !== 'working out a scramble…';
+  }, "the timer's scramble line, which says the solver bundle loaded", { step: 50 });
 });
 
 test('a reconnect with a memory shows it at once — and the silence is a said thing, not a swallowed one', async () => {

@@ -16,7 +16,7 @@ import { test, before, after } from 'node:test';
 import { readFileSync } from 'node:fs';
 
 import { Window } from 'happy-dom';
-import { solverLoaded } from './fixtures/app-waits.mjs';
+import { solverLoaded, waitFor } from './fixtures/app-waits.mjs';
 import { lcg, randomAlg } from './fixtures/seeded-scrambles.mjs';
 
 const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url))).default;
@@ -37,15 +37,6 @@ const deferred = () => {
 let win;
 const $ = (sel) => win.document.querySelector(sel);
 
-/** Poll until `fn()` is true. */
-const waitFor = async (fn, ms = 30000) => {
-  const t0 = Date.now();
-  while (Date.now() - t0 < ms) {
-    if (fn()) return true;
-    await settle(20);
-  }
-  return false;
-};
 
 /** The fake native side. `statusGate`, when set, is what `optimal_status` waits on — that is the
  *  late reply. `optimal_prove` never settles unless a cancel arrives, which is what a long proof
@@ -118,7 +109,7 @@ const adoptSeeded = async () => {
  *  for the button AND a settled screen, or the next proof's request races that cancel. */
 const newWalkWithProof = async () => {
   const { alg } = await adoptSeeded();
-  const ready = await waitFor(() => proveBtn() && !proveBtn().hidden && !proveBtn().disabled);
+  const ready = await waitFor(() => proveBtn() && !proveBtn().hidden && !proveBtn().disabled, { ms: 30000 });
   assert.ok(ready, `no walk offered a proof for the seeded scramble ${alg} — the capability gate is not wired here`);
   await settle(300);
 };
@@ -268,7 +259,7 @@ test('tables built on the first press: the proof starts once they are ready', as
   await settle(50);
   native.listeners.get('optimal-progress')?.({ payload: { stage: 'corners', done: 1, total: 4 } });
   assert.equal(proveBtn().textContent, 'corners 25%', 'generation is the wait with a denominator');
-  assert.ok(await waitFor(() => native.proving !== null, 3000), 'the proof never started once the tables were ready');
+  assert.ok(await waitFor(() => native.proving !== null, { ms: 3000 }), 'the proof never started once the tables were ready');
   cancelBtn().click();
   await settle(150);
   assert.equal(native.listeners.has('optimal-progress'), false, 'the generation heartbeat was never let go');
@@ -279,7 +270,7 @@ test('a generation that died in another call ends the press as a failure, not a 
   native.statuses = ['cold', 'cold'];
   const before = native.calls.length;
   proveBtn().click();
-  assert.ok(await waitFor(() => proveBtn().textContent === 'could not prove', 3000), 'a dead generation was polled on');
+  assert.ok(await waitFor(() => proveBtn().textContent === 'could not prove', { ms: 3000 }), 'a dead generation was polled on');
   assert.equal(native.calls.slice(before).includes('optimal_prove'), false, 'a proof started without tables');
   assert.equal(proveBtn().disabled, false);
   assert.equal(native.listeners.has('optimal-progress'), false, 'the heartbeat was kept after the failure');
@@ -310,7 +301,7 @@ test('a proved cube shown again keeps its sentence and is not offered the proof 
   win.cubusGo('settings');
   await settle(50);
   win.cubusGo('home');
-  assert.ok(await waitFor(() => /\d/.test($('#moveCount')?.textContent ?? '')), 'Home drew no count');
+  assert.ok(await waitFor(() => /\d/.test($('#moveCount')?.textContent ?? ''), { ms: 30000 }), 'Home drew no count');
   await settle(300);
   assert.match($('#moveCount').textContent, /— proved the minimum$/, 'the same cube, shown again, lost its proof');
   assert.equal(proveBtn().hidden, true, 'and hours of search were offered for an answer already held');
@@ -391,7 +382,7 @@ test('every proved cube keeps its sentence when it is shown again, not only the 
   adoptCube(first.facelets, { physical: false, source: 'generated', setupAlg: first.setupAlg });
   await deriveCube();
   refreshScreen();
-  assert.ok(await waitFor(() => state.cube.facelets === first.facelets), 'precondition: the first cube is the subject again');
+  assert.ok(await waitFor(() => state.cube.facelets === first.facelets, { ms: 30000 }), 'precondition: the first cube is the subject again');
   await settle(300);
   assert.match($('#moveCount').textContent, /— proved the minimum$/, 'the first cube, shown again, lost its proof to the second');
   assert.equal(proveBtn().hidden, true, 'and the search was offered again for an answer already held');
@@ -415,7 +406,7 @@ test('a proof already held is still said when the offer to prove is turned off',
     win.cubusGo('settings');
     await settle(50);
     win.cubusGo('home');
-    assert.ok(await waitFor(() => /\d/.test($('#moveCount')?.textContent ?? '')), 'Home drew no count');
+    assert.ok(await waitFor(() => /\d/.test($('#moveCount')?.textContent ?? ''), { ms: 30000 }), 'Home drew no count');
     await settle(300);
     assert.match($('#moveCount').textContent, /— proved the minimum$/, 'turning the offer off unsaid a proof already held');
     assert.equal(proveBtn().hidden, true, 'and the offer came back while it was turned off');
@@ -467,10 +458,10 @@ test('a method\'s lesson CUT at a chip is offered no proof; the whole lesson sti
   try {
     await newWalkWithProof();
     await choose('beginner');
-    assert.ok(await waitFor(() => $('#solLabel')?.textContent === 'Beginner' && heads().length > 1), 'precondition: the Beginner lesson is on screen');
-    assert.ok(await waitFor(() => proveBtn() && !proveBtn().hidden), 'the whole lesson, a solution of the whole cube, was offered no proof');
+    assert.ok(await waitFor(() => $('#solLabel')?.textContent === 'Beginner' && heads().length > 1, { ms: 30000 }), 'precondition: the Beginner lesson is on screen');
+    assert.ok(await waitFor(() => proveBtn() && !proveBtn().hidden, { ms: 30000 }), 'the whole lesson, a solution of the whole cube, was offered no proof');
     $('[data-stage="cross"]').click();
-    assert.ok(await waitFor(() => heads().length > 0 && heads().every((h) => /^Cross/.test(h))), 'precondition: the walk is the lesson cut at the cross');
+    assert.ok(await waitFor(() => heads().length > 0 && heads().every((h) => /^Cross/.test(h)), { ms: 30000 }), 'precondition: the walk is the lesson cut at the cross');
     await settle(100);
     assert.equal(proveBtn()?.hidden ?? true, true, 'a walk that stops at the cross was offered a whole-cube proof');
   } finally {

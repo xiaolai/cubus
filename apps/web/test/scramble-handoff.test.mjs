@@ -18,7 +18,7 @@ import { readFileSync } from 'node:fs';
 import { Window } from 'happy-dom';
 import Cube from '../vendor/cubejs.js';
 import { blockAt, readAppSource } from './app-source.mjs';
-import { solverLoaded } from './fixtures/app-waits.mjs';
+import { solverLoaded, waitFor } from './fixtures/app-waits.mjs';
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -30,15 +30,6 @@ const $ = (sel) => win.document.querySelector(sel);
 const all = (sel) => [...win.document.querySelectorAll(sel)];
 const go = async (id) => { win.cubusGo(id); await tick(); };
 
-/** Poll until `fn()` is true. Rolling a scramble is a real search behind the solver pool. */
-const waitFor = async (fn, ms = 20000) => {
-  const t0 = Date.now();
-  while (Date.now() - t0 < ms) {
-    if (fn()) return true;
-    await settle(20);
-  }
-  return false;
-};
 
 before(async () => {
   win = new Window({

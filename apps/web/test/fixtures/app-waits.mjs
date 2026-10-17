@@ -19,6 +19,24 @@ export async function eventually(ok, what, { ms = 60_000, step = 20 } = {}) {
 }
 
 /**
+ * Poll `ok()` until it holds: true when it does, false when `ms` ran out first — for a caller that asserts on
+ * the answer. A liveness bound, not a speed claim.
+ *
+ * THE CONDITION IS ASKED LAST, after every wait and before the clock is read. The suites' own copies read
+ * the clock first, and a wait that overran the deadline returned false without looking — so a machine busy
+ * enough to stall one wait past the bound reported a condition that HAD come true as one that never did
+ * (fast-tier flake hunt, 2026-10-17; a background scramble search can take 30 s under load).
+ */
+export async function waitFor(ok, { ms = 20_000, step = 20 } = {}) {
+  const t0 = Date.now();
+  for (;;) {
+    if (ok()) return true;
+    if (Date.now() - t0 > ms) return false;
+    await new Promise((resolve) => { setTimeout(resolve, step); });
+  }
+}
+
+/**
  * The app's solver has loaded — the condition a die press depends on.
  *
  * Imported when CALLED, not at the top of a suite: the service is the app's own module instance only
