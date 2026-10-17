@@ -267,24 +267,37 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   };
 
   // ---- the record ---------------------------------------------------------------------------------------
-  const sayRecord = (text) => { recordSay.hidden = !text; recordSay.textContent = text ?? ''; };
+  /**
+   * What the page says about the record: a READ that failed and a WRITE that did not land, each standing until what it
+   * said stops being true — a read that works, a rep that is saved. They are about the record, never about the row on
+   * screen, so taking another row in place clears neither: mixed practice moved on right after the rep that was not
+   * saved, and the only sign of the loss went with it.
+   */
+  const trouble = { read: null, write: null };
+  const sayRecord = () => {
+    const text = [trouble.write, trouble.read].filter(Boolean).join(' ');
+    recordSay.hidden = !text;
+    recordSay.textContent = text;
+  };
   const paintRecord = () => {
     let reps = [];
     let stats = null;
     try {
       reps = record.reps(row.id);
       stats = statsOf(reps);
+      trouble.read = null;
     } catch (err) {
       if (!(err instanceof PracticeRecordError)) throw err;
-      sayRecord(t('Your practice record could not be read (%1), so it is left as it is and nothing new is saved.', err.code));
+      trouble.read = t('Your practice record could not be read (%1), so it is left as it is and nothing new is saved.', err.code);
     }
+    sayRecord();
     $('#practiceFigures', root).innerHTML = figuresHtml(stats, fingersTarget(settings.fingersN), escHtml);
     $('#practiceReps', root).innerHTML = lastRepsHtml(reps, escHtml);
   };
   const saveRep = (id, rep) => {
     const done = record.add(id, rep);
-    if (!done.saved) sayRecord(t('That rep was not saved: %1', done.error.message));
-    else sayRecord(null);
+    trouble.write = done.saved ? null : t('That rep was not saved: %1', done.error.message);
+    sayRecord();
     if (row?.id === id) paintRecord();
   };
 
@@ -553,7 +566,8 @@ function mountPage({ root, page, catalogue, signal, stale }) {
       return mixOrder(ids, record.read(), { seed: seed() });
     } catch (err) {
       if (!(err instanceof PracticeRecordError)) throw err;
-      sayRecord(t('Your practice record could not be read (%1), so mixed practice cannot put the weakest first.', err.code));
+      trouble.read = t('Your practice record could not be read (%1), so mixed practice cannot put the weakest first.', err.code);
+      sayRecord();
       return null;
     }
   };
@@ -690,7 +704,6 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     stopWatch();
     watch = { t0: null, timer: null, laps: [] };
     makeEngine(judged);
-    sayRecord(null);
     paintRecord();
     if (!live()) drawCase();
     paintMode();

@@ -312,3 +312,46 @@ test('part way through a half turn or a slice the cube on screen is the cube as 
     await context.close();
   }
 });
+
+// ---- the record's notices (row 22) -------------------------------------------------------------------------
+
+test('a rep that was not saved stays said as mixed practice moves on — until a rep is saved', async () => {
+  const { page, context, errors } = await openPractice(fixture);
+  try {
+    const catalogue = await page.evaluate(() => window.__p.rows());
+    const set = Object.values(catalogue.sets).find((s) => s.ids.length >= 3 && s.ids.length <= 6);
+    assert.ok(set, 'no set of three to six algorithms');
+    const rnd = lcg(221);
+    await show(page, set.ids[0]);
+    await page.click('#practiceMixed');
+    const notice = () => page.evaluate(() => { const n = document.querySelector('#practiceRecordSay'); return { hidden: n.hidden, text: n.textContent }; });
+    /** One clean rep of whatever the page shows, then the page once it has moved on to another algorithm. */
+    const repAndMoveOn = async () => {
+      const was = await page.evaluate(() => window.__p.data().alg);
+      const chips = await page.evaluate(() => window.__p.chips());
+      const dones = await feedRep(page, randomStart(rnd), reportsPerToken(chips.join(' '), ORIENTATIONS[0], rnd).flat());
+      assert.equal(dones.at(-1), 1, `${was}: the rep did not complete`);
+      await page.waitForFunction((w) => window.__p.data().alg !== w, was, { timeout: LIVENESS_MS });
+    };
+    // Storage refuses the record from here on — the quota-full, private-window case.
+    await page.evaluate(() => {
+      const write = Storage.prototype.setItem;
+      window.__refuse = true;
+      Storage.prototype.setItem = function setItem(k, v) {
+        if (window.__refuse && k === 'cubusDrillRecord') throw new Error('quota exceeded (test)');
+        return write.call(this, k, v);
+      };
+    });
+    await repAndMoveOn();
+    const unsaved = await notice();
+    assert.equal(unsaved.hidden, false, 'moving on took away the only sign that a rep was not saved');
+    assert.match(unsaved.text, /not saved/);
+    // Saved again: the notice goes, because what it said is no longer true.
+    await page.evaluate(() => { window.__refuse = false; });
+    await repAndMoveOn();
+    assert.equal((await notice()).hidden, true, 'a notice outlived the failure it was about');
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
