@@ -31,6 +31,7 @@ import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { webkit } from 'playwright';
 
+import { algIds } from '../../lib/alg-library.js';
 import { turnFacelets } from '../../lib/cube-orientation.js';
 import { fromCube } from '../../lib/cube-pieces.js';
 import { faceTurnsAlg } from '../../lib/cube-moves.js';
@@ -800,6 +801,47 @@ test('a lesson builds its white cross and first layer white up, then turns the c
     // And back across the line turns it back, because a scrub goes both ways.
     await page.click('#prevBtn');
     await settledHold(page, 'U F');
+  } finally {
+    assert.deepEqual(errors.map(String), [], 'the page must raise nothing');
+    await context.close();
+  }
+});
+
+test('a lesson step that names an algorithm the ledger holds offers "practise this", and the press opens Practice on it', async () => {
+  // The lesson's way into practice (dev-docs/algorithm-drill-v2-plan.md §4). `practice-view.test.mjs` holds
+  // the offer's logic; only the real screen can show the button is placed, follows the head, and opens the row.
+  const ledger = new Set(await algIds());
+  const { page, context, errors } = await openHome();
+  try {
+    await frozen(page, SCANNED);
+    await chooseMethod(page, 'cfop');
+    await page.waitForFunction(() => document.querySelectorAll('#solList .move-chips').length > 1, null, { timeout: 30_000 });
+    const chips = await page.locator('.chip-m').count();
+    const offer = () => page.evaluate(() => {
+      const b = document.querySelector('#practiseStep');
+      return { id: b.dataset.practice, hidden: b.hidden, text: b.textContent };
+    });
+    // At the start the head is on the cross, which is a search and names no algorithm: no offer.
+    const first = await offer();
+    assert.equal(first.id, '', 'the cross named an algorithm to practise');
+    assert.equal(first.hidden, true, 'the cross offered practice');
+    let found = null;
+    for (let k = 0; k < chips && !found; k++) {
+      await page.click(`.chip-m[data-i="${k}"]`);
+      const now = await offer();
+      if (!now.id) {
+        assert.equal(now.hidden, true, `chip ${k}: a step that names no algorithm shows the offer`);
+        continue;
+      }
+      assert.ok(ledger.has(now.id), `chip ${k}: the offer names "${now.id}", which the ledger does not hold`);
+      await page.waitForFunction(() => document.querySelector('#practiseStep').hidden === false, null, { timeout: 30_000 });
+      found = { k, id: now.id };
+    }
+    assert.ok(found, 'no step of a CFOP lesson offered practice');
+    await page.click('#practiseStep');
+    await page.waitForFunction((id) => location.hash === '#/practice'
+      && document.querySelector('.practice-page')?.dataset.ready === '1'
+      && document.querySelector('.practice-page')?.dataset.alg === id, found.id, { timeout: 30_000 });
   } finally {
     assert.deepEqual(errors.map(String), [], 'the page must raise nothing');
     await context.close();
