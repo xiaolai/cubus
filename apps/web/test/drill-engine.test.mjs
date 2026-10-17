@@ -22,8 +22,7 @@ import { applyIdentity, faceTurnsOf, toIdentity } from '../lib/cube-moves.js';
 import { parse } from '../lib/cube-notation.js';
 import { ORIENTATIONS, orientationPerm } from '../lib/cube-orientation.js';
 import { SOLVED, applyAlg, applyMove, toFacelets } from '../lib/cube-pieces.js';
-import { CMLL_ALGS } from '../lib/data/cmll-algs.js';
-import { HUMAN_ALGS } from '../lib/data/human-algs.js';
+import { algIds, algRow } from '../lib/alg-library.js';
 import { candidatesFor, htmOf } from '../lib/drill/candidates.js';
 import { CUE_WINDOW_MS, GESTURE_MS, STATUS, createDrillEngine } from '../lib/drill/engine.js';
 import { PAUSE_FACTOR, TIME_REFUSAL } from '../lib/drill/timing.js';
@@ -33,7 +32,9 @@ import { lcg, randomAlg } from './fixtures/seeded-scrambles.mjs';
 const require = createRequire(import.meta.url);
 const Cube = require('cubejs');
 
-const ALL = [...HUMAN_ALGS, ...CMLL_ALGS];
+// EVERY ROW THE LEDGER HOLDS — the drill's whole library (`lib/alg-library.js`), not the sourced tables alone:
+// the hand-written teaching sets and the proved fewest-turn tables are drillable too (plan §8, decision 4).
+const ALL = await Promise.all((await algIds()).map(async (id) => ({ name: id, alg: (await algRow(id)).alg })));
 const byName = (name) => {
   const row = ALL.find((r) => r.name === name);
   assert.ok(row, `no algorithm row ${name}`);
@@ -179,23 +180,24 @@ function repCompletesExactlyAtLast(h, reports, label) {
   assert.equal(h.count('off') - offBefore, 0, `${label}: sounded off on a correct execution`);
 }
 
-test('every human and CMLL algorithm completes at exactly its last turn, from a random state, in a hold it inferred', () => {
+test('every ledger row completes at exactly its last turn, from a random state, in all 24 holds it may be held in', () => {
+  // The founding relation (plan §6): EVERY row, EVERY hold, a fresh random start and fresh slice orders and
+  // half-turn directions per rep — and the hold the engine inferred includes the one the reports were made in.
   const rnd = lcg(0xd411);
   let reps = 0;
-  ALL.forEach((row, i) => {
-    // Two holds per row, stepping through all 24 across the rows; all 24 per row are the next case's.
-    for (const hold of [ORIENTATIONS[(i * 7) % 24], ORIENTATIONS[(i * 7 + 13) % 24]]) {
+  for (const row of ALL) {
+    for (const hold of ORIENTATIONS) {
       const h = harness({ alg: row.alg });
-      const start = randomStart(rnd);
-      startAt(h, start);
+      startAt(h, randomStart(rnd));
       repCompletesExactlyAtLast(h, reportsFor(row.alg, hold, rnd), `${row.name} held ${hold}`);
       const done = h.events.find((e) => e.type === 'done');
       assert.ok(done.result.holds.some((x) => holdKey(x) === holdKey(hold)), `${row.name}: the inferred holds left out ${hold}`);
       assert.equal(done.result.clean, true, row.name);
       reps += 1;
     }
-  });
-  assert.equal(reps, ALL.length * 2);
+  }
+  assert.ok(ALL.length > 300, `the ledger read ${ALL.length} rows`);
+  assert.equal(reps, ALL.length * 24);
 });
 
 const FEATURED = [
