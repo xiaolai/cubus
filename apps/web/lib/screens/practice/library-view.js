@@ -64,7 +64,7 @@ export function cardsHtml(set, catalogue, look, esc) {
  *  ITS GRID IS EMPTY until then. Every card of every closed set — 319 pictures, 10,593 stickers, 1.8 MB of markup —
  *  was built and inserted on the UI thread at every visit to the library, for headings nobody had opened (measured
  *  2026-10-18 in WebKit: 208 ms a visit). The screen fills a grid when its set is first opened. */
-function setBlock(set, catalogue, esc) {
+function setBlock(set, esc) {
   return `<details class="alg-set" data-set="${esc(set.id)}">
     <summary><b>${esc(t(set.name))}</b> <span class="sub">${esc(plural(set.ids.length, { one: '%1 algorithm', other: '%1 algorithms' }))}</span>
       ${set.purpose ? `<span class="sub alg-set-purpose">${esc(set.purpose)}</span>` : ''}</summary>
@@ -83,7 +83,7 @@ export function libraryHtml(catalogue, esc) {
     <div class="eyebrow">${esc(g.label === null ? t('Not taught by any method') : t(g.label))}</div>
     ${g.phases.map((p) => `<div class="alg-phase">
       ${p.phase === null ? '' : `<div class="alg-phase-h">${esc(t(p.phase))}</div>`}
-      ${p.sets.map((id) => setBlock(catalogue.sets[id], catalogue, esc)).join('')}
+      ${p.sets.map((id) => setBlock(catalogue.sets[id], esc)).join('')}
     </div>`).join('')}
   </section>`).join('');
   const pending = catalogue.pending.length
