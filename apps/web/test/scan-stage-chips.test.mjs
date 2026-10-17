@@ -281,3 +281,22 @@ test('a search in flight is called off when its row stops being believed: a newe
   r.abort.abort();
   assert.equal(leaving.aborted, true, 'leaving the screen left its search running');
 });
+
+test('a CFOP row is refined like any other: its own stop is searched and its chip says the answer', async () => {
+  const r = rig();
+  r.env.stops = stopTargets('cfop');
+  void r.chips.paintStageChips('A');
+  const bounds = { cross: 2, 'two-layers': 5, 'top-oriented': 4, solved: 7 };
+  r.replies[0].resolve({ bounds });
+  await settle();
+  for (let i = 1; i <= 3; i += 1) {
+    assert.equal(r.asked.length, i + 1, `search ${i} was never asked`);
+    r.replies[i].resolve({ moves: bounds[r.asked[i].target], alg: 'x' });
+    await settle();
+  }
+  assert.deepEqual(r.asked.slice(1).map((q) => q.target), ['cross', 'top-oriented', 'two-layers'],
+    'CFOP\'s stops were not searched cheapest first, or top-oriented was left out');
+  const cfopSays = (id, fact) => chipFor({ target: TARGET_BY_ID[id], ...fact }).text;
+  assert.equal(r.texts()['top-oriented'], cfopSays('top-oriented', { answer: { moves: 4, minimal: true } }),
+    'the top-oriented chip was never refined');
+});
