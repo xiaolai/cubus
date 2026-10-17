@@ -234,10 +234,11 @@ export function createDrillEngine({
     return Object.freeze({ turns, held: heldLetters(turns, holdsNow) });
   };
 
-  const arm = (from, cause, given) => {
+  /** Arm a rep from `state` — an arrangement already read and checked (`stateFrom`), or undefined for the model. */
+  const arm = (from, cause, state) => {
     cancelPending();
     attempt += 1;
-    if (given !== undefined) model = stateFrom(given);
+    if (state !== undefined) model = state;
     modelTrusted = true;
     live = candidatesFrom(plans, model, prefix).map((c) => ({
       c, idx: passRegrips(c.track, 0), reach: new Map(), landed: new Set(), firstFrom: null,
@@ -447,12 +448,12 @@ export function createDrillEngine({
     return serial;
   };
 
-  const restartFrom = (from, cause, given) => {
-    if (given === undefined && !modelTrusted) {
+  const restartFrom = (from, cause, state) => {
+    if (state === undefined && !modelTrusted) {
       emit('refused', from, { why: 'the stream lost a turn, so the arrangement now is not known' });
       return false;
     }
-    arm(from, cause, given);
+    arm(from, cause, state);
     return true;
   };
 
@@ -468,8 +469,11 @@ export function createDrillEngine({
      */
     start({ facelets: given, serial }) {
       if (typeof given !== 'string') throw new Error('drill: start needs the cube\'s arrangement');
-      lastSerial = countFrom(serial);
-      arm(status, 'start', given);
+      // Both read and checked before anything changes: a refused start leaves the engine as it was.
+      const state = stateFrom(given);
+      const count = countFrom(serial);
+      lastSerial = count;
+      arm(status, 'start', state);
     },
 
     /**
@@ -554,8 +558,11 @@ export function createDrillEngine({
     restart({ facelets: given, serial } = {}) {
       if (status === STATUS.IDLE && given === undefined) throw new Error('drill: nothing to restart; start first');
       if (given === undefined && serial !== undefined) throw new Error('drill: a serial belongs to an arrangement, and none was given');
-      if (given !== undefined) lastSerial = countFrom(serial);
-      return restartFrom(status, 'restart', given);
+      // Both read and checked before anything changes: a refused restart leaves the engine as it was.
+      const state = given === undefined ? undefined : stateFrom(given);
+      const count = countFrom(serial);
+      if (state !== undefined) lastSerial = count;
+      return restartFrom(status, 'restart', state);
     },
 
     /** Stop drilling: nothing armed, every timer dead, and the serial count forgotten (see `start`). */

@@ -617,6 +617,33 @@ test('an arrangement handed in sets the serial count: to the serial it was repor
   }
 });
 
+test('a start or restart that is refused changes nothing — the cue window, the attempt and the serial count stand', () => {
+  // A malformed arrangement threw only after the cue window had been closed, the attempt counted and the serial
+  // count set: a refused restart at serial 50 left the next turn, serial 3, reading as a lost one (audit-fix
+  // 2026-10-18 r3 #4).
+  for (const [what, call] of [
+    ['restart, not a cube', (e) => e.restart({ facelets: 'not a cube', serial: 50 })],
+    ['start, not a cube', (e) => e.start({ facelets: 'not a cube', serial: 50 })],
+    ['restart, not a serial', (e) => e.restart({ facelets: toFacelets(SOLVED), serial: 300 })],
+    ['start, not a serial', (e) => e.start({ facelets: toFacelets(SOLVED), serial: 'x' })],
+  ]) {
+    const h = harness({ alg: "R U R' U'" });
+    startAt(h, SOLVED);
+    h.turn('R');
+    h.turn('L', { gap: 10 });                      // off every hold's plan: the cue window opens
+    const { attempt } = h.engine.state;
+    const facelets = h.engine.facelets;
+    assert.throws(() => call(h.engine), what);
+    assert.equal(h.engine.state.attempt, attempt, `${what}: a refused call counted an attempt`);
+    assert.equal(h.engine.state.pending, true, `${what}: a refused call closed the cue window`);
+    assert.equal(h.engine.facelets, facelets, what);
+    h.advance(CUE_WINDOW_MS);
+    assert.equal(h.count('off'), 1, `${what}: the cue the refused call took away never sounded`);
+    h.turn("L'");                                  // serial 3, the next one
+    assert.notEqual(h.engine.state.status, STATUS.UNCERTAIN, `${what}: a refused call moved the serial count`);
+  }
+});
+
 test('a gesture after a lost turn is refused until the arrangement is known again', () => {
   const h = harness({ alg: "R U R' U'" });
   startAt(h, SOLVED);
