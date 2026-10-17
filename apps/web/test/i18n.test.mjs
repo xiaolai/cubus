@@ -81,6 +81,16 @@ test('plurals are the language\'s business, not an n === 1 at the call site', ()
   setLocale('en');
 });
 
+test('a spelled-out count is substituted, and the form is still chosen by the number', () => {
+  setLocale('en');
+  const forms = { one: '%1 top corner', other: '%1 top corners' };
+  assert.equal(plural(3, forms, 'three'), 'three top corners');
+  assert.equal(plural(1, forms, 'one'), 'one top corner');
+  // The category is n's, never the shown value's: a word cannot be mistaken for a count of one.
+  assert.equal(plural(2, forms, 'one'), 'one top corners', 'the form follows n, not what is shown');
+  assert.equal(plural(4, forms), '4 top corners', 'without `shown`, %1 is n as before');
+});
+
 test('a stored language that is not a string cannot take boot down', () => {
   // `settings.language` is untrusted input. A truthy non-string sailed past the `||` and reached
   // `.toLowerCase()`, and because that happened inside boot() before the first route was applied,

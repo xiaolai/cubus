@@ -67,9 +67,12 @@ export function setLocale(tag) {
  *
  * @param {number} n
  * @param {Record<string, string>} forms  keyed by Intl category: one, other, and any of
- *   zero/two/few/many the language uses. `%1` in a form is substituted with `n`.
+ *   zero/two/few/many the language uses. `%1` in a form is substituted with `shown`.
+ * @param {string|number} [shown]  what `%1` reads as — `n` itself unless a caller spells the
+ *   count out (the algorithm ledger writes "three top corners"). The CATEGORY is always `n`'s,
+ *   so a spelled-out count cannot pick the wrong form.
  */
-export function plural(n, forms) {
+export function plural(n, forms, shown = n) {
   let category = 'other';
   try {
     category = new Intl.PluralRules(activeTag).select(n);
@@ -79,7 +82,7 @@ export function plural(n, forms) {
     category = n === 1 ? 'one' : 'other';
   }
   const form = forms[category] ?? forms.other;
-  return t(form, n);
+  return t(form, shown);
 }
 
 /** The active tag, for Intl. English is the source language, so an inactive catalog is 'en'. */

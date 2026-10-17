@@ -176,6 +176,7 @@ function setHtml(set, rows, rendered, where) {
   }
   rendered.set(set.id, where);
   return `<section class="set" id="set-${esc(set.id)}"><h3>${esc(set.name)} <span class="dim">· ${rows.length} · ${esc(set.kind)}</span></h3>
+<p class="purpose">${esc(rows[0]?.purpose ?? set.purpose)}</p>
 <p class="prov">${esc(set.provenance.replace(/\.$/, ''))}. <span class="dim">Verified: ${esc(set.verified)}</span></p>
 ${rows.map(rowHtml).join('\n')}</section>`;
 }
@@ -190,7 +191,7 @@ h3{margin:1.6em 0 .4em}.dim{color:var(--dim);font-weight:normal}a{color:var(--ac
 #q{width:100%;padding:10px 12px;font-size:1rem;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--fg);position:sticky;top:8px;z-index:2}
 .row{display:grid;grid-template-columns:180px 1fr;gap:16px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin:10px 0}
 .row h4{margin:0;font-size:1.05rem}.row .id{color:var(--dim);font:12px ui-monospace,Menlo,monospace;margin-left:6px}.nick{font-weight:normal;font-style:italic}
-.says{font-size:1.08rem;font-weight:600;margin:.3em 0}.alg code{font-size:15px}mark{background:var(--mark);color:inherit;border-radius:4px;padding:0 3px}
+.says{font-size:1.08rem;font-weight:600;margin:.3em 0}.purpose{font-size:1.1rem;margin:.2em 0 .4em;max-width:80ch}.alg code{font-size:15px}mark{background:var(--mark);color:inherit;border-radius:4px;padding:0 3px}
 dl{display:grid;grid-template-columns:max-content 1fr;gap:2px 12px;margin:.5em 0 0;font-size:.88rem}dt{color:var(--dim)}dd{margin:0}
 .pic{display:flex;align-items:flex-start;justify-content:center}.pic svg{max-width:100%;height:auto}.prov{max-width:80ch}
 .dash{color:var(--dim);cursor:help}table{border-collapse:collapse;width:100%;font-size:.9rem}td,th{border-bottom:1px solid var(--line);padding:4px 8px;text-align:left;vertical-align:top}
@@ -246,6 +247,8 @@ ${oracle.map((s) => setHtml(s, rowsOf(s.id), rendered, 'the oracle')).join('\n')
 <input id="q" type="search" placeholder="Search by name, id, moves or sentence" aria-label="Search the rows"><p id="shown" class="dim"></p>
 <details><summary>Rows per set</summary><table><tr><th>set</th><th>kind</th><th>rows</th></tr>${perSet}</table></details>
 <details><summary>How to read a row</summary><ul>
+<li>Each set opens with its <b>purpose</b>: what its algorithms are for, in plain words. The test holds it to every row's case and effect.</li>
+<li>Each row's sentence says what the algorithm does toward that purpose: its point first, then what it keeps, then what it disturbs on the way. Before the last layer the point is the pieces the stage has built; the top layer, and pieces not built yet, may move. In the last layer the point is the top layer, and the sentence says what it keeps. The full account is the Effect line.</li>
 <li>The picture is the case: the algorithm's inverse played on a solved cube, seen in the hold the learner starts in (white underneath). A top-face picture when it keeps the first two layers, the whole net otherwise.</li>
 <li>HTM counts a half turn as 1, a slice as 2, a whole-cube turn as 0; STM counts a slice as 1; QTM counts a half turn as 2. All count the moves as written.</li>
 <li>Effect positions are named with the cube held as the letters are written: U is the top, D the bottom (white).</li>
