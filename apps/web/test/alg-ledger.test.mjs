@@ -68,15 +68,18 @@ function cyclesFrom(perm, ori, names, mod) {
   const seen = new Set();
   const cycles = [];
   const inPlace = [];
+  const inPlaceTurns = [];
   for (let s = 0; s < perm.length; s += 1) {
     if (seen.has(s)) continue;
     const slots = [];
     let at = s;
     while (!seen.has(at)) { seen.add(at); slots.push(at); at = perm.indexOf(at); }
     const turn = slots.reduce((n, x) => n + ori[x], 0) % mod;
-    if (slots.length === 1) { if (turn) inPlace.push(names[s]); } else cycles.push({ positions: slots.map((x) => names[x]), turn });
+    if (slots.length === 1) {
+      if (turn) { inPlace.push(names[s]); inPlaceTurns.push({ position: names[s], turn }); }
+    } else cycles.push({ positions: slots.map((x) => names[x]), turn });
   }
-  return { cycles, inPlace };
+  return { cycles, inPlace, inPlaceTurns };
 }
 
 function cubejsEffect(alg) {
@@ -590,31 +593,61 @@ test('L2: the case is the state the algorithm solves — played by cubejs from a
   }
 });
 
+/** A cycle list as comparable strings: the positions as a set, and the EXACT net turn — a corner's twist is
+ *  0, 1 or 2 and an edge's flip 0 or 1, so a twist one way is never read as a twist the other way. */
+const asSets = (cycles) => cycles.map((c) => `${[...c.positions].sort().join(' ')}/${c.turn}`).sort();
+const inPlaceOf = (list) => list.map((p) => `${p.position}/${p.turn}`).sort();
+
+/** One row's effect against cubejs's: the cycles, the twists and flips in place (each with its amount), the
+ *  hold it ends in, the regions kept and the order. Throws on the first disagreement. */
+function checkEffect(row) {
+  const e = cubejsEffect(row.alg);
+  assert.deepEqual(asSets(row.effect.cornerCycles), asSets(e.corners.cycles), `${row.id}: corner cycles`);
+  assert.deepEqual(asSets(row.effect.edgeCycles), asSets(e.edges.cycles), `${row.id}: edge cycles`);
+  assert.deepEqual(inPlaceOf(row.effect.twistedInPlace), inPlaceOf(e.corners.inPlaceTurns), `${row.id}: twisted`);
+  assert.deepEqual(inPlaceOf(row.effect.flippedInPlace), inPlaceOf(e.edges.inPlaceTurns), `${row.id}: flipped`);
+  assert.equal(row.effect.keepsHold, e.centres.every((v, i) => v === i), `${row.id}: the hold`);
+  // The hold it ends in, read from the hold it is declared in: cubejs tumbles a solved cube to the method frame
+  // (`x2`, asserted in the case test) and plays the algorithm; the centres then on top and in front name the
+  // end hold in the scan frame's letters. A row that keeps the hold ends exactly where it began.
+  const after = played('x2', row.alg).asString();
+  assert.deepEqual(row.effect.endHold, [after[4], after[22]], `${row.id}: the hold it ends in`);
+  if (row.effect.keepsHold) assert.deepEqual(row.effect.endHold, row.hold, `${row.id}: keeps the hold, yet ends in another`);
+  const kept = keptByCubejs(row.alg);
+  for (const r of Object.keys(cells)) assert.equal(row.keeps.includes(r), kept.has(r), `${row.id}: keeps ${r}`);
+  // The order: the fewest repeats cubejs needs to bring the cube back, counted here one at a time.
+  const c = new Cube();
+  let n = 0;
+  do { c.move(forCubejs(row.alg)); n += 1; } while (!c.isSolved() && n <= row.order);
+  assert.equal(n, row.order, `${row.id}: cubejs comes back after ${n} repeats, the row says ${row.order}`);
+}
+
 test('L2: the effect, the regions kept and the order — re-derived by cubejs', () => {
   assert.deepEqual(CORNERS, ['URF', 'UFL', 'ULB', 'UBR', 'DFR', 'DLF', 'DBL', 'DRB'], 'cubejs\'s corner order');
   assert.deepEqual(EDGES, ['UR', 'UF', 'UL', 'UB', 'DR', 'DF', 'DL', 'DB', 'FR', 'FL', 'BL', 'BR'], 'cubejs\'s edge order');
-  const asSets = (cycles) => cycles.map((c) => `${[...c.positions].sort().join(' ')}/${c.turn ? 1 : 0}`).sort();
-  for (const row of ROWS) {
-    const e = cubejsEffect(row.alg);
-    assert.deepEqual(asSets(row.effect.cornerCycles), asSets(e.corners.cycles), `${row.id}: corner cycles`);
-    assert.deepEqual(asSets(row.effect.edgeCycles), asSets(e.edges.cycles), `${row.id}: edge cycles`);
-    assert.deepEqual(row.effect.twistedInPlace.map((p) => p.position).sort(), [...e.corners.inPlace].sort(), `${row.id}: twisted`);
-    assert.deepEqual(row.effect.flippedInPlace.map((p) => p.position).sort(), [...e.edges.inPlace].sort(), `${row.id}: flipped`);
-    assert.equal(row.effect.keepsHold, e.centres.every((v, i) => v === i), `${row.id}: the hold`);
-    // The hold it ends in, read from the hold it is declared in: cubejs tumbles a solved cube to the method frame
-    // (`x2`, asserted in the case test) and plays the algorithm; the centres then on top and in front name the
-    // end hold in the scan frame's letters. A row that keeps the hold ends exactly where it began.
-    const after = played('x2', row.alg).asString();
-    assert.deepEqual(row.effect.endHold, [after[4], after[22]], `${row.id}: the hold it ends in`);
-    if (row.effect.keepsHold) assert.deepEqual(row.effect.endHold, row.hold, `${row.id}: keeps the hold, yet ends in another`);
-    const kept = keptByCubejs(row.alg);
-    for (const r of Object.keys(cells)) assert.equal(row.keeps.includes(r), kept.has(r), `${row.id}: keeps ${r}`);
-    // The order: the fewest repeats cubejs needs to bring the cube back, counted here one at a time.
-    const c = new Cube();
-    let n = 0;
-    do { c.move(forCubejs(row.alg)); n += 1; } while (!c.isSolved() && n <= row.order);
-    assert.equal(n, row.order, `${row.id}: cubejs comes back after ${n} repeats, the row says ${row.order}`);
-  }
+  for (const row of ROWS) checkEffect(row);
+  // Something to compare: a twist amount and a turned hold are both checked on data that has them.
+  assert.ok(ROWS.some((r) => r.effect.cornerCycles.some((c) => c.turn === 1)) && ROWS.some((r) => r.effect.cornerCycles.some((c) => c.turn === 2)),
+    'no row has a corner cycle twisted each way, so the amounts check nothing');
+  assert.ok(ROWS.some((r) => r.effect.twistedInPlace.length), 'no row twists a corner in place');
+});
+
+test('a corner twist read the wrong way round, or a hold the row does not end in, is caught', () => {
+  const swap = (turn) => (turn === 0 ? 0 : 3 - turn);
+  const withEffect = (row, effect) => ({ ...row, effect: { ...row.effect, ...effect } });
+  // flip-in moves two pairs of corners, one pair gathering a twist each way: swapped, every position is right
+  // and only the amounts are wrong.
+  const flipIn = BY_ID.get('flip-in');
+  assert.ok(new Set(flipIn.effect.cornerCycles.map((c) => c.turn)).size === 2, 'flip-in no longer twists its two cycles opposite ways');
+  const swapped = withEffect(flipIn, { cornerCycles: flipIn.effect.cornerCycles.map((c) => ({ ...c, turn: swap(c.turn) })) });
+  assert.throws(() => checkEffect(swapped), /flip-in: corner cycles/);
+  // A corner twisted in place, its amount swapped.
+  const twister = ROWS.find((r) => r.effect.twistedInPlace.length);
+  const turnedBack = withEffect(twister, { twistedInPlace: twister.effect.twistedInPlace.map((p) => ({ ...p, turn: swap(p.turn) })) });
+  assert.throws(() => checkEffect(turnedBack), new RegExp(`${twister.id}: twisted`));
+  // The hold: a row that keeps it must end in its declared hold, never the letters' own [U, F].
+  const sune = BY_ID.get('sune');
+  assert.throws(() => checkEffect(withEffect(sune, { endHold: ['U', 'F'] })), /sune: the hold it ends in/);
 });
 
 test('L2: same moves, inverses and mirrors — strings for the first, cubejs states for the other two', () => {
