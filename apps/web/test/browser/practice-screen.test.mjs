@@ -660,6 +660,66 @@ test('a rep another window wrote over and the record could not put back is said 
   }
 });
 
+// ---- the catalogue cannot be read (round 2, row 16) ----------------------------------------------------------
+
+test('when the algorithms cannot be read, the page offers Back and Try again, and no control that cannot work is pressable', async () => {
+  const context = await fixture.browser.newContext({ viewport: { width: 1280, height: 1012 } });
+  // The library worker cannot be started while `__failLibrary` is set — the failure every question then meets.
+  await context.addInitScript(() => {
+    window.__failLibrary = true;
+    const Real = window.Worker;
+    window.Worker = class extends Real {
+      constructor(url, opts) {
+        if (window.__failLibrary && String(url).includes('library-worker')) throw new Error('no library worker (test)');
+        super(url, opts);
+      }
+    };
+  });
+  try {
+    const page = pace(await context.newPage());
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    await page.goto(`${fixture.base}/index.html#/practice`);
+    // The library: it says why, and offers to ask again.
+    await page.waitForSelector('#practiceListRetry', { timeout: LIVENESS_MS });
+    // The page for one row: the same failure, met with its controls drawn.
+    await page.evaluate(async () => {
+      const { state } = await import('/lib/app-state.js');
+      const { renderScreen } = await import('/lib/screen-shell.js');
+      state.practiceAlg = 'sune';
+      renderScreen();
+    });
+    await page.waitForFunction(() => /could not be read/.test(document.querySelector('#practiceSay')?.textContent ?? ''), null, { timeout: LIVENESS_MS });
+    const failed = await page.evaluate(() => [...document.querySelectorAll('.practice-page button')]
+      .filter((b) => !b.hidden).map((b) => ({ id: b.id, disabled: b.disabled })));
+    // What must NOT happen: a control that looks pressable and does nothing.
+    const pressable = failed.filter((b) => !b.disabled).map((b) => b.id).sort();
+    assert.deepEqual(pressable, ['practiceBack', 'practiceRetry'], `pressable while nothing can work: ${pressable.join(', ')}`);
+    assert.ok(failed.length > 4, 'precondition: the page drew its controls');
+    // Back works: the library again.
+    await page.click('#practiceBack');
+    await page.waitForSelector('#practiceListRetry', { timeout: LIVENESS_MS });
+    // Try again, once the worker can start: the library, then the page, load.
+    await page.evaluate(() => { window.__failLibrary = false; });
+    await page.click('#practiceListRetry');
+    await page.waitForSelector('.practice-screen[data-ready="1"]', { timeout: LIVENESS_MS });
+    await page.evaluate(async () => {
+      window.__failLibrary = true;
+      const { state } = await import('/lib/app-state.js');
+      const { renderScreen } = await import('/lib/screen-shell.js');
+      state.practiceAlg = 'sune';
+      renderScreen();
+    });
+    // The catalogue is cached once read, so the page loads; its controls are live.
+    await page.waitForFunction(() => document.querySelector('.practice-page')?.dataset.ready === '1', null, { timeout: LIVENESS_MS });
+    const loaded = await page.evaluate(() => [...document.querySelectorAll('.practice-page button')].filter((b) => !b.hidden && b.disabled).map((b) => b.id));
+    assert.deepEqual(loaded, [], `still disabled once the page loaded: ${loaded.join(', ')}`);
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
 // ---- the library (row 26) ----------------------------------------------------------------------------------
 
 test('the library draws no card or picture until a set is opened, and then that set\'s, once', async () => {

@@ -83,7 +83,10 @@ function libraryScreen() {
       } catch (err) {
         if (gen !== screenGen) return;
         console.error('the algorithm library could not be read', err);
-        list.innerHTML = `<div class="sub" role="status" style="color:var(--err-ink)">${escHtml(t('The algorithms could not be read: %1', err.message))}</div>`;
+        // A failure is not kept by the library client (lib/drill/library-client.js), so asking again is a real retry.
+        list.innerHTML = `<div class="sub" role="status" style="color:var(--err-ink)">${escHtml(t('The algorithms could not be read: %1', err.message))}</div>
+          <button class="pill" id="practiceListRetry" type="button">${escHtml(t('Try again'))}</button>`;
+        $('#practiceListRetry', root).onclick = () => renderScreen();
         return;
       }
       if (gen !== screenGen) return;
@@ -152,6 +155,9 @@ function stillToTurn(identity, from, now) {
   return faces.length ? pick([]) : null;
 }
 
+/** The page's controls that need the catalogue: drawn disabled, live once `mountPage` has it. */
+const PAGE_CONTROLS = Object.freeze(['practiceBlocked', 'practiceMixed', 'practiceNext', 'demoNext', 'demoAll', 'practiceClock', 'practiceRestart']);
+
 const PAGE_HTML = `<div class="cols practice-page" data-composition="practice">
   <div class="card primary" style="display:flex;flex-direction:column;align-items:center;position:relative">
     <div style="flex:1;min-height:0;width:100%"><div class="cube-slot" id="practiceCube" style="height:100%"></div></div>
@@ -161,23 +167,24 @@ const PAGE_HTML = `<div class="cols practice-page" data-composition="practice">
     <div class="card sheet practice-sheet">
       <div class="wrap-row">
         <button class="pill" id="practiceBack" type="button">${escHtml(t('All algorithms'))}</button>
+        <button class="pill" id="practiceRetry" type="button" hidden>${escHtml(t('Try again'))}</button>
         <span class="wrap-row" role="group" aria-label="${escHtml(t('How to practise'))}" style="gap:6px">
-          <button class="pill on" id="practiceBlocked" type="button" aria-pressed="true">${escHtml(t('One at a time'))}</button>
-          <button class="pill" id="practiceMixed" type="button" aria-pressed="false">${escHtml(t('Mixed'))}</button>
+          <button class="pill on" id="practiceBlocked" type="button" aria-pressed="true" disabled>${escHtml(t('One at a time'))}</button>
+          <button class="pill" id="practiceMixed" type="button" aria-pressed="false" disabled>${escHtml(t('Mixed'))}</button>
         </span>
-        <button class="pill" id="practiceNext" type="button" hidden>${escHtml(t('Next algorithm'))}</button>
+        <button class="pill" id="practiceNext" type="button" hidden disabled>${escHtml(t('Next algorithm'))}</button>
       </div>
       <div class="practice-about" id="practiceAbout"></div>
       <div class="practice-say" id="practiceSay" role="status" aria-live="polite"></div>
       <div class="practice-alg" id="practiceAlg"></div>
       <div class="wrap-row" id="practiceDemo">
-        <button class="pill" id="demoNext" type="button">${escHtml(t('Play the next part'))}</button>
-        <button class="pill" id="demoAll" type="button">${escHtml(t('Play it all'))}</button>
+        <button class="pill" id="demoNext" type="button" disabled>${escHtml(t('Play the next part'))}</button>
+        <button class="pill" id="demoAll" type="button" disabled>${escHtml(t('Play it all'))}</button>
       </div>
       <div class="wrap-row">
-        <button class="btn accent-outline" id="practiceClock" type="button" aria-keyshortcuts="Space">${escHtml(t('Start the stopwatch'))}</button>
+        <button class="btn accent-outline" id="practiceClock" type="button" aria-keyshortcuts="Space" disabled>${escHtml(t('Start the stopwatch'))}</button>
         <span class="num practice-time" id="practiceTime" role="status" aria-live="polite">—</span>
-        <button class="btn outline" id="practiceRestart" type="button" aria-keyshortcuts="Escape" title="${escHtml(t('Start over (Esc)'))}">${escHtml(t('Start over'))}</button>
+        <button class="btn outline" id="practiceRestart" type="button" aria-keyshortcuts="Escape" title="${escHtml(t('Start over (Esc)'))}" disabled>${escHtml(t('Start over'))}</button>
       </div>
       <div class="sub" id="practiceParts" hidden></div>
       <div id="practiceFigures"></div>
@@ -201,6 +208,9 @@ function pageScreen() {
       const signal = screenAbort?.signal;
       const stale = () => gen !== screenGen || signal?.aborted;
       const page = root.querySelector('.practice-page');
+      // The way out is wired before anything is asked for, so it works whatever the answer. Every other control
+      // waits, disabled, for the catalogue it needs (`PAGE_HTML`); `mountPage` lets them go.
+      $('#practiceBack', root).onclick = () => { state.practiceAlg = null; renderScreen(); };
       let catalogue;
       try {
         catalogue = await library.catalogue();
@@ -208,6 +218,10 @@ function pageScreen() {
         if (stale()) return;
         console.error('the algorithm library could not be read', err);
         $('#practiceSay', root).textContent = t('The algorithms could not be read: %1', err.message);
+        // A failure is not kept by the library client, so asking again is a real retry.
+        const retry = $('#practiceRetry', root);
+        retry.hidden = false;
+        retry.onclick = () => renderScreen();
         return;
       }
       if (stale()) return;
@@ -691,7 +705,8 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     if (order[0] !== row.id) show(order[0]);
   };
   $('#practiceNext', root).onclick = advance;
-  $('#practiceBack', root).onclick = () => { state.practiceAlg = null; renderScreen(); };
+  // The catalogue is here: the controls that waited for it are live (`PAGE_HTML` drew them disabled).
+  for (const id of PAGE_CONTROLS) $(`#${id}`, root).disabled = false;
 
   // ---- the cube's streams -------------------------------------------------------------------------------
   /**
