@@ -37,7 +37,7 @@ test('every scramble is God\'s number or shorter, and actually reaches its cube'
     // really reaches its cube" — and freezing twelve cubes would turn that into a claim about
     // twelve cubes. Two things make the draw safe rather than a lottery (2026-09-04). The state
     // is NAMED in every failure, including the escalation raise, so a red run is reproducible
-    // instead of being a state nobody can recover; and the whole test is bounded in wall time,
+    // instead of being a state nobody can recover; and the test is bounded in wall time between draws,
     // because escalation converts a hard draw into a long wait rather than a failure — up to
     // 12.75e9 nodes, minutes — and a release gate that can hang is its own defect. Twelve states
     // cost about 3 s, so the ceiling is 40x the measured run and cannot fire on ordinary work.
@@ -61,6 +61,11 @@ test('every scramble is God\'s number or shorter, and actually reaches its cube'
       const built = new Cube();
       built.move(scramble);
       assert.equal(built.asString(), facelets, 'the scramble does not reach its own cube');
+      // THE BOUND ABOVE ONLY HOLDS IF A TIMER CAN RUN. Each search is synchronous, and awaiting it settles
+      // as a microtask, so with no yield the twelve draws ran as one block and the timeout could never fire
+      // — a probe with a 100 ms limit passed after 1000 ms of this work (flake hunt, 2026-10-17). Yielding
+      // once per draw lets it fire between draws; one draw's search still cannot be interrupted.
+      await new Promise((resolve) => { setImmediate(resolve); });
     }
   });
 
