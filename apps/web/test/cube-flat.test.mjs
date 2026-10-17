@@ -186,3 +186,60 @@ test('a corner is the same fraction of its sticker in every view, at every width
   assert.ok(bar && bar.ry < bar.rx, 'a ring bar drew a circular corner on a rectangle');
   assert.ok(bar.ry / Math.min(bar.w, bar.h) < 0.15, `a ring bar's corner is ${(bar.ry / Math.min(bar.w, bar.h)).toFixed(3)} of its short side`);
 });
+
+test('every sticker sits where a reader looks for it: each face in reading order, each ring strip on its own side', () => {
+  // A net drawn mirrored, or a ring strip swapped with its opposite, keeps every colour and every block, so
+  // the checks above pass it. Here the POSITION is checked: facelet k of a face is in row floor(k / 3) and
+  // column k % 3 of that face's block, as the oracle's layout reads a face from outside.
+  const drawn = rects(netSvg(SOLVED));
+  for (let face = 0; face < 6; face++) {
+    const block = drawn.filter((r) => r.facelet >= face * 9 && r.facelet < face * 9 + 9).sort((a, b) => a.facelet - b.facelet);
+    const cols = [...new Set(block.map((r) => r.x))].sort((a, b) => a - b);
+    const rows = [...new Set(block.map((r) => r.y))].sort((a, b) => a - b);
+    assert.equal(cols.length, 3, `face ${face}: not three columns`);
+    assert.equal(rows.length, 3, `face ${face}: not three rows`);
+    for (const [k, r] of block.entries()) {
+      assert.equal(r.x, cols[k % 3], `face ${face}, sticker ${k}: wrong column`);
+      assert.equal(r.y, rows[Math.floor(k / 3)], `face ${face}, sticker ${k}: wrong row`);
+    }
+  }
+  // The top face in reading order, with its ring and without: three distinct columns left to right and
+  // three rows top to bottom, sticker k at column k % 3 and row floor(k / 3).
+  const readingOrder = (drawn, what) => {
+    const top = [...Array(9).keys()].map((id) => drawn.find((r) => r.facelet === id));
+    const cols = [...new Set(top.map((r) => r.x))].sort((a, b) => a - b);
+    const rows = [...new Set(top.map((r) => r.y))].sort((a, b) => a - b);
+    assert.equal(cols.length, 3, `${what}: not three columns`);
+    assert.equal(rows.length, 3, `${what}: not three rows`);
+    for (const [k, r] of top.entries()) {
+      assert.equal(r.x, cols[k % 3], `${what}, sticker ${k}: wrong column`);
+      assert.equal(r.y, rows[Math.floor(k / 3)], `${what}, sticker ${k}: wrong row`);
+    }
+    return top;
+  };
+  readingOrder(rects(topFaceSvg(SOLVED)), 'the top face alone');
+  readingOrder(rects(topFaceSvg(SOLVED, { mode: 'orientation' })), 'the top face as an orientation case');
+  // The ring, in BOTH modes: an OLL diagram and a PLL one are drawn by one function, and a strip moved in
+  // one mode only would pass a check made in the other (audit, 2026-10-17).
+  for (const mode of ['colours', 'orientation']) {
+    const ringed = rects(topFaceSvg(SOLVED, { mode, ring: true }));
+    const at = (ids) => ids.map((id) => ringed.find((r) => r.facelet === id));
+    const top = readingOrder(ringed, `${mode}: the top face in its ring`);
+    const [left, right] = [Math.min(...top.map((r) => r.x)), Math.max(...top.map((r) => r.x + r.w))];
+    const [above, below] = [Math.min(...top.map((r) => r.y)), Math.max(...top.map((r) => r.y + r.h))];
+    const increasing = (xs) => xs.every((v, i) => i === 0 || v > xs[i - 1]);
+    const back = at(TOP_RING.back);
+    const front = at(TOP_RING.front);
+    const sideL = at(TOP_RING.left);
+    const sideR = at(TOP_RING.right);
+    assert.ok(back.every((r) => r.y + r.h <= above), `${mode}: the back strip is not above the top face`);
+    assert.ok(front.every((r) => r.y >= below), `${mode}: the front strip is not below the top face`);
+    assert.ok(sideL.every((r) => r.x + r.w <= left), `${mode}: the left strip is not left of the top face`);
+    assert.ok(sideR.every((r) => r.x >= right), `${mode}: the right strip is not right of the top face`);
+    assert.ok(increasing(back.map((r) => r.x)) && increasing(front.map((r) => r.x)), `${mode}: a back or front strip runs right to left`);
+    assert.ok(increasing(sideL.map((r) => r.y)) && increasing(sideR.map((r) => r.y)), `${mode}: a side strip runs bottom to top`);
+    // Each strip lined up with the top face's own rows or columns, so a strip reads as the edge it belongs to.
+    assert.deepEqual(back.map((r) => r.x), top.slice(0, 3).map((r) => r.x), `${mode}: the back strip is not over the top's columns`);
+    assert.deepEqual(sideL.map((r) => r.y), [0, 3, 6].map((k) => top[k].y), `${mode}: the left strip is not beside the top's rows`);
+  }
+});
