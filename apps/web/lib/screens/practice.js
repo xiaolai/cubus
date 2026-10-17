@@ -330,6 +330,13 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   };
   const paintClock = () => {
     const following = live();
+    if (following && watch.t0 !== null) {
+      // The cube's clock takes over. A stopwatch left running would go on writing its own count over every
+      // time the cube measured, every 50 ms; the lap it was timing ends with nothing claimed for it.
+      stopWatch();
+      watch.t0 = null;
+      clockBtn.textContent = t('Start the stopwatch');
+    }
     clockBtn.hidden = following;
     demoRow.hidden = following;
     paintParts(following ? lastResult : null);

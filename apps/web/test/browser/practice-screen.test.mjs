@@ -153,3 +153,26 @@ test('the hold line follows the cube: "any way you like" only while a cube is fo
     await context.close();
   }
 });
+
+// ---- the stopwatch and the cube's clock (row 19) -----------------------------------------------------------
+
+test('a stopwatch running when a cube starts being followed stops — it never writes over the cube\'s own time', async () => {
+  const { page, context, errors } = await openPractice(fixture, { connect: false });
+  try {
+    const rnd = lcg(191);
+    await show(page, 'sune');
+    await page.click('#practiceClock');
+    assert.match(await page.evaluate(() => document.querySelector('#practiceClock').textContent), /Stop the stopwatch/, 'precondition: the stopwatch runs');
+    await page.evaluate(() => window.__p.connect());
+    const flat = reportsPerToken(SUNE, ORIENTATIONS[0], rnd).flat();
+    assert.equal((await feedRep(page, randomStart(rnd), flat)).at(-1), 1, 'precondition: the rep completed');
+    const measured = await page.evaluate(() => window.__p.time());
+    assert.match(measured, /first turn to last/, `the cube's time is not what the page shows: ${measured}`);
+    // Long enough for the stopwatch's tick (every 50 ms) to have written over it many times.
+    await page.evaluate(() => window.__p.wait(400));
+    assert.equal(await page.evaluate(() => window.__p.time()), measured, 'the stopwatch wrote over the cube\'s measured time');
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
