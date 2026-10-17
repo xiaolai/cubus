@@ -644,9 +644,13 @@ test('L2: the case is the state the algorithm solves — played by cubejs from a
   }
 });
 
-/** A cycle list as comparable strings: the positions as a set, and the EXACT net turn — a corner's twist is
- *  0, 1 or 2 and an edge's flip 0 or 1, so a twist one way is never read as a twist the other way. */
-const asSets = (cycles) => cycles.map((c) => `${[...c.positions].sort().join(' ')}/${c.turn}`).sort();
+/** A cycle list as comparable strings: each cycle as where every piece GOES (`UR>UB` — the piece at UR moves
+ *  to UB), so a cycle read the other way round is a different cycle wherever it starts, and the EXACT net turn
+ *  — a corner's twist is 0, 1 or 2 and an edge's flip 0 or 1, so a twist one way is never read as the other. */
+const asSets = (cycles) => cycles.map((c) => {
+  const n = c.positions.length;
+  return `${c.positions.map((p, i) => `${p}>${c.positions[(i + 1) % n]}`).sort().join(' ')}/${c.turn}`;
+}).sort();
 const inPlaceOf = (list) => list.map((p) => `${p.position}/${p.turn}`).sort();
 
 /** One row's effect against cubejs's: the cycles, the twists and flips in place (each with its amount), the
@@ -683,7 +687,7 @@ test('L2: the effect, the regions kept and the order — re-derived by cubejs', 
   assert.ok(ROWS.some((r) => r.effect.twistedInPlace.length), 'no row twists a corner in place');
 });
 
-test('a corner twist read the wrong way round, or a hold the row does not end in, is caught', () => {
+test('a corner twist read the wrong way round, a cycle run backwards, or a hold the row does not end in, is caught', () => {
   const swap = (turn) => (turn === 0 ? 0 : 3 - turn);
   const withEffect = (row, effect) => ({ ...row, effect: { ...row.effect, ...effect } });
   // flip-in moves two pairs of corners, one pair gathering a twist each way: swapped, every position is right
@@ -696,8 +700,14 @@ test('a corner twist read the wrong way round, or a hold the row does not end in
   const twister = ROWS.find((r) => r.effect.twistedInPlace.length);
   const turnedBack = withEffect(twister, { twistedInPlace: twister.effect.twistedInPlace.map((p) => ({ ...p, turn: swap(p.turn) })) });
   assert.throws(() => checkEffect(turnedBack), new RegExp(`${twister.id}: twisted`));
-  // The hold: a row that keeps it must end in its declared hold, never the letters' own [U, F].
+  // A cycle read the other way round: every position right, every piece sent where it came from.
   const sune = BY_ID.get('sune');
+  const backwards = withEffect(sune, { edgeCycles: sune.effect.edgeCycles.map((c) => ({ ...c, positions: [...c.positions].reverse() })) });
+  assert.throws(() => checkEffect(backwards), /sune: edge cycles/);
+  // The same cycle started elsewhere is the same cycle.
+  const turnedRound = withEffect(sune, { edgeCycles: sune.effect.edgeCycles.map((c) => ({ ...c, positions: [...c.positions.slice(1), c.positions[0]] })) });
+  checkEffect(turnedRound);
+  // The hold: a row that keeps it must end in its declared hold, never the letters' own [U, F].
   assert.throws(() => checkEffect(withEffect(sune, { endHold: ['U', 'F'] })), /sune: the hold it ends in/);
 });
 
