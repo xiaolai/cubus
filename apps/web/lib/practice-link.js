@@ -35,12 +35,17 @@ export function openPractice(id) {
  * Shown only once the ledger has answered, and only if the button is still about the same step by then: a
  * walk moves on while the worker answers, and an offer that landed on the next step would open practice for
  * an algorithm the screen no longer names. `ids` is injected for tests; the app's is the library worker's.
+ *
+ * A LEDGER THAT CANNOT BE ASKED IS SAID, where the offer would have been: the button says practice could not be
+ * checked, carries the reason in its name, and a press asks again. Left hidden, the failure looked exactly like a
+ * step with nothing to practise, and only the console knew otherwise.
  */
 export function offerPractice(button, step, { ids = () => library.ids() } = {}) {
   if (!button) return;
   const id = practiceIdOf(step);
   button.dataset.practice = id ?? '';
   button.hidden = true;
+  button.removeAttribute('aria-label');
   if (!id) return;
   ids().then((held) => {
     if (button.dataset.practice !== id || !held.has(id)) return;
@@ -48,7 +53,12 @@ export function offerPractice(button, step, { ids = () => library.ids() } = {}) 
     button.onclick = () => openPractice(id);
     button.hidden = false;
   }, (err) => {
-    // Said, never swallowed: the offer simply does not appear, and the console says why.
-    console.warn('the algorithm ledger could not be asked which steps can be practised', err);
+    if (button.dataset.practice !== id) return;
+    console.error('the algorithm ledger could not be asked which steps can be practised', err);
+    const why = err?.message ?? String(err);
+    button.textContent = t('Practice could not be checked — try again');
+    button.setAttribute('aria-label', t('Practice could not be checked (%1). Press to try again.', why));
+    button.onclick = () => offerPractice(button, step, { ids });
+    button.hidden = false;
   });
 }

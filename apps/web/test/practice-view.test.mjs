@@ -219,6 +219,43 @@ test('a lesson step offers practice only for a named algorithm the ledger holds,
   assert.equal(button.hidden, true, 'a late answer offered practice for a step no longer shown');
 });
 
+test('a ledger that cannot be asked is said where the offer would be, and a press asks it again', async () => {
+  const { offerPractice } = await import('../lib/practice-link.js');
+  const ids = new Set(await lib.algIds());
+  const tick = () => new Promise((r) => { setTimeout(r, 0); });
+  const logged = [];
+  const quiet = console.error;
+  console.error = (...args) => { logged.push(args); };
+  try {
+    const button = win.document.createElement('button');
+    let asked = 0;
+    // The library worker fails once, then answers.
+    const flaky = () => { asked += 1; return asked === 1 ? Promise.reject(new Error('the library worker stopped')) : Promise.resolve(ids); };
+    offerPractice(button, { kind: 'case', caseName: 'oll-27' }, { ids: flaky });
+    await tick();
+    // What must NOT happen: the failure leaving the offer hidden, with only the console knowing why.
+    assert.equal(button.hidden, false, 'the ledger failed and nothing on screen says so');
+    assert.match(button.textContent, /could not/i, `the button says "${button.textContent}"`);
+    assert.match(button.getAttribute('aria-label') ?? '', /the library worker stopped/, 'the reason is not in what the control says');
+    assert.equal(logged.length, 1, 'the failure was not logged as an error');
+    button.onclick();
+    await tick();
+    assert.equal(asked, 2, 'a press did not ask the ledger again');
+    assert.equal(button.hidden, false);
+    assert.match(button.textContent, /OLL 27/, 'the second answer did not become the offer');
+    assert.equal(button.getAttribute('aria-label'), null, 'the failure is still said after the ledger answered');
+    // A failure that lands after the walk moved on says nothing about the step now shown.
+    let reject;
+    offerPractice(button, { kind: 'case', caseName: 'sune' }, { ids: () => new Promise((_, no) => { reject = no; }) });
+    offerPractice(button, { kind: 'search' }, { ids: () => Promise.resolve(ids) });
+    reject(new Error('late'));
+    await tick();
+    assert.equal(button.hidden, true, 'a late failure was said over a step that names no algorithm');
+  } finally {
+    console.error = quiet;
+  }
+});
+
 // ---- WI-12 in Settings: the stepper refuses a target below three -------------------------------------------
 
 test('the Settings stepper refuses to go below 3: "fewer" is disabled at 3, and a press there changes nothing', async () => {
