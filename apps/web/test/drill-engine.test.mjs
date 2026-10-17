@@ -877,37 +877,106 @@ test('the refusals: a one-turn algorithm, a missing cube clock, a clock that ran
   assert.equal(reset.events.find((e) => e.type === 'done').result.refused, TIME_REFUSAL.CLOCK_RESET);
 });
 
-test('the GAN Gen2 decoder still puts host time into a cube timestamp, unmarked — as timing.js says', () => {
-  // timing.js says a span can hold an interval the cube never measured and that nothing in a report shows it
-  // (audit-fix 2026-10-18 #14). That is a claim about the vendored protocol layer, so it is checked there: the
-  // day the bundle stops substituting, or marks what it substitutes, this fails and the paragraph goes.
+/** The bundle's text from the line starting `head` to the first line after it that is exactly `close`. */
+function lift(bundle, head, close) {
+  const lines = bundle.split('\n');
+  const i = lines.findIndex((l) => l.startsWith(head));
+  assert.ok(i >= 0, `the bundle no longer has ${head.trim()}`);
+  const j = lines.findIndex((l, k) => k > i && l === close);
+  return lines.slice(i, j + 1).join('\n');
+}
+
+test('two vendored drivers put host time into a cube timestamp, unmarked — and the drill refuses only what is marked', async () => {
+  // timing.js says a span can hold an interval the cube never measured, from GAN Gen2's and MoYu32's drivers,
+  // and that nothing in a report shows it (audit-fix 2026-10-18 #14, r2 #11, r3 #14). Each driver's own code is
+  // taken from the bundle and run on hand-made move packets: R U R' U', the cube measuring every interval but
+  // one. What the drill never reads — the cube's arrangement — is stubbed; the clocks are the bundle's.
   const bundle = readFileSync(new URL('../vendor/smartcube.js', import.meta.url), 'utf8');
-  const at = bundle.indexOf('var GanGen2ProtocolDriver = class');
-  const end = bundle.indexOf('var GanGen3ProtocolDriver = class', at);
-  assert.ok(at >= 0 && end > at, 'the bundle no longer holds a GAN Gen2 driver where it did');
-  const driver = bundle.slice(at, end);
-  assert.match(driver, /if \(elapsed === 0\) \{\s*elapsed = this\.lastMoveTimestamp > 0 \? timestamp - this\.lastMoveTimestamp : 0;/,
-    'the Gen2 driver no longer adds host time for a zero interval');
-  assert.match(driver, /this\.cubeTimestamp \+= elapsed;/);
-  assert.match(driver, /cubeTimestamp: this\.cubeTimestamp,/, 'the Gen2 driver now marks a move whose interval it filled in');
-  const timing = readFileSync(new URL('../lib/drill/timing.js', import.meta.url), 'utf8');
-  assert.match(timing, /WHAT THIS CANNOT SEE[\s\S]*GanGen2ProtocolDriver/, 'timing.js no longer names what it cannot see');
-  // And why the app cannot spot one from outside: a cube delta equal to the host's is no tell, because
-  // measured intervals in the Gen2 captures have it too — the count timing.js quotes.
-  const dir = new URL('./fixtures/smartcube/', import.meta.url);
-  const gen2 = readdirSync(dir).filter((f) => f.includes('_gan-gen2_'));
+  const dir = mkdtempSync(join(tmpdir(), 'drill-drivers-'));
+  const load = async (name, lines) => {
+    writeFileSync(join(dir, name), lines.join('\n'));
+    return import(pathToFileURL(join(dir, name)).href);
+  };
+  const { GanGen2ProtocolDriver, setNow } = await load('gen2.mjs', [
+    'let NOW = 0;', 'export const setNow = (t) => { NOW = t; };', 'const now = () => NOW;',
+    lift(bundle, 'var GanBitReader = class', '};'),
+    lift(bundle, 'function moveNotation(', '}'),
+    lift(bundle, 'var GanGen2ProtocolDriver = class', '};'),
+    'export { GanGen2ProtocolDriver };',
+  ]);
+  const { moyu } = await load('moyu32.mjs', [
+    'const CubieCube = { CubeMult() {}, moveCube: [] };',
+    'const moveDirectionFromNotation = (n) => (n.endsWith("\'") ? 1 : 0);',
+    'export const moyu = (emit) => ({',
+    "  prevMoveCnt: 0, deviceTime: 0, deviceTimeOffset: 0, prevCubie: { toFaceCube: () => '' }, curCubie: { toFaceCube: () => '' },",
+    '  bus: { emit }, sendSimpleRequest: async () => {},',
+    lift(bundle, '  handleMoves(bits, timestamp) {', '  }'),
+    '});',
+  ]);
+  /** A packet's bits, `fields` as `[offset, length, value]`, most significant bit first. */
+  const bitsOf = (length, fields) => {
+    const bits = Array(length).fill(0);
+    for (const [off, len, v] of fields) for (let k = 0; k < len; k++) bits[off + k] = (v >> (len - 1 - k)) & 1;
+    return bits;
+  };
+  const MOVES = ['R', 'U', "R'", "U'"];
+
+  // GAN Gen2: intervals 100, 150, 0, 200 ms, the zero arriving 5000 ms after the packet before it.
+  const gen2 = [];
+  const d = new GanGen2ProtocolDriver();
+  d.lastSerial = 0;                                        // as after the first facelets event
+  const GAN = { R: [1, 0], U: [0, 0], "R'": [1, 1], "U'": [0, 1] };
+  for (const [k, [host, elapsed]] of [[1000, 100], [1150, 150], [6150, 0], [6350, 200]].entries()) {
+    setNow(host);
+    const [face, dir] = GAN[MOVES[k]];
+    const bits = bitsOf(160, [[0, 4, 2], [4, 8, k + 1], [12, 4, face], [16, 1, dir], [47, 16, elapsed]]);
+    const bytes = Uint8Array.from({ length: 20 }, (_, b) => bits.slice(8 * b, 8 * b + 8).reduce((a, x) => (a << 1) | x, 0));
+    gen2.push(...(await d.handleStateEvent(null, bytes)).filter((e) => e.type === 'MOVE'));
+  }
+  // MoYu32: every interval 100 ms, the third packet arriving 5000 ms late, as after a radio stall.
+  const moyu32 = [];
+  const m = moyu((e) => { if (e.type === 'MOVE') moyu32.push(e); });
+  const MOYU = { R: 10, U: 4, "R'": 11, "U'": 5 };         // "FBUDLR".charAt(code >> 1) + " '".charAt(code & 1)
+  for (const [k, host] of [10000, 10100, 15200, 15300].entries()) {
+    m.handleMoves(bitsOf(160, [[8, 16, 100], [88, 8, k + 1], [96, 5, MOYU[MOVES[k]]]]).join(''), host);
+  }
+
+  for (const [name, events, measured, filled] of [['GAN Gen2', gen2, 0, 5000], ['MoYu32', moyu32, 100, 5100]]) {
+    assert.deepEqual(events.map((e) => e.move), MOVES, `${name}: the driver did not report the moves it was given`);
+    // THE LIMIT. The cube measured `measured` ms before the third move; its stamp says `filled`, and nothing
+    // marks it. The day this fails because the stamp is null, the fork's fix has landed: delete timing.js's
+    // paragraph, and let the relation below assert the refusal.
+    assert.equal(events[2].cubeTimestamp - events[1].cubeTimestamp, filled,
+      `${name}: the driver no longer puts host time unmarked into the cube's ${measured} ms`);
+    // THE RELATION, true before the fix and after it: a rep is refused exactly when a stamp is missing, and
+    // otherwise timed from its stamps — the drill can do no better than what it is given.
+    const h = harness({ alg: "R U R' U'" });
+    startAt(h, SOLVED);
+    for (const e of events) h.turn(e.move, e.cubeTimestamp === null ? { cubeClock: false } : { stamp: e.cubeTimestamp });
+    const { result } = h.events.find((e) => e.type === 'done');
+    const marked = events.some((e) => e.cubeTimestamp === null);
+    assert.equal(result.refused, marked ? TIME_REFUSAL.NO_CUBE_CLOCK : null, name);
+    if (!marked) assert.equal(result.ms, events.at(-1).cubeTimestamp - events[0].cubeTimestamp, name);
+  }
+
+  // timing.js names both, and the measurement it quotes for why no report can show it: a cube delta equal to the
+  // host's is no tell, because measured intervals in the Gen2 captures have it too.
+  const prose = readFileSync(new URL('../lib/drill/timing.js', import.meta.url), 'utf8').replace(/\n\/\/ */g, ' ');
+  assert.match(prose, /WHAT THIS CANNOT SEE.*GanGen2ProtocolDriver.*Moyu32Connection/, 'timing.js no longer names what it cannot see');
+  const captures = new URL('./fixtures/smartcube/', import.meta.url);
+  const files = readdirSync(captures).filter((f) => f.includes('_gan-gen2_'));
   let pairs = 0;
   let equal = 0;
-  for (const file of gen2) {
-    const moves = JSON.parse(readFileSync(new URL(file, dir), 'utf8')).events.map((e) => e.event).filter((e) => e.type === 'MOVE');
+  for (const file of files) {
+    const moves = JSON.parse(readFileSync(new URL(file, captures), 'utf8')).events.map((e) => e.event).filter((e) => e.type === 'MOVE');
     for (let k = 1; k < moves.length; k++) {
       pairs += 1;
       if (moves[k].cubeTimestamp - moves[k - 1].cubeTimestamp === moves[k].timestamp - moves[k - 1].timestamp) equal += 1;
     }
   }
-  assert.equal(gen2.length, 3);
+  assert.equal(files.length, 3);
   assert.equal(`${equal} of ${pairs}`, '4 of 87');
-  assert.match(timing, /4 of the 87 measured\s+\/\/ intervals in the vendored Gen2 captures/);
+  assert.match(prose, /4 of the 87 measured intervals in the vendored Gen2 captures/);
 });
 
 test('a turn taken back inside the window is in the time but not in a turn rate', () => {
