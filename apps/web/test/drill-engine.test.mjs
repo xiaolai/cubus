@@ -11,7 +11,7 @@
 // checks against MUTANTS of the engine and requires each mutant to fail one, so a check that cannot fail is
 // found here rather than in a child's hands.
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -718,6 +718,39 @@ test('the refusals: a one-turn algorithm, a missing cube clock, a clock that ran
   startAt(reset, SOLVED);
   [[`R`, 500], ['U', 600], ["R'", 10], ["U'", 120]].forEach(([q, stamp]) => reset.turn(q, { stamp }));
   assert.equal(reset.events.find((e) => e.type === 'done').result.refused, TIME_REFUSAL.CLOCK_RESET);
+});
+
+test('the GAN Gen2 decoder still puts host time into a cube timestamp, unmarked — as timing.js says', () => {
+  // timing.js says a span can hold an interval the cube never measured and that nothing in a report shows it
+  // (audit-fix 2026-10-18 #14). That is a claim about the vendored protocol layer, so it is checked there: the
+  // day the bundle stops substituting, or marks what it substitutes, this fails and the paragraph goes.
+  const bundle = readFileSync(new URL('../vendor/smartcube.js', import.meta.url), 'utf8');
+  const at = bundle.indexOf('var GanGen2ProtocolDriver = class');
+  const end = bundle.indexOf('var GanGen3ProtocolDriver = class', at);
+  assert.ok(at >= 0 && end > at, 'the bundle no longer holds a GAN Gen2 driver where it did');
+  const driver = bundle.slice(at, end);
+  assert.match(driver, /if \(elapsed === 0\) \{\s*elapsed = this\.lastMoveTimestamp > 0 \? timestamp - this\.lastMoveTimestamp : 0;/,
+    'the Gen2 driver no longer adds host time for a zero interval');
+  assert.match(driver, /this\.cubeTimestamp \+= elapsed;/);
+  assert.match(driver, /cubeTimestamp: this\.cubeTimestamp,/, 'the Gen2 driver now marks a move whose interval it filled in');
+  const timing = readFileSync(new URL('../lib/drill/timing.js', import.meta.url), 'utf8');
+  assert.match(timing, /WHAT THIS CANNOT SEE[\s\S]*GanGen2ProtocolDriver/, 'timing.js no longer names what it cannot see');
+  // And why the app cannot spot one from outside: a cube delta equal to the host's is no tell, because
+  // measured intervals in the Gen2 captures have it too — the count timing.js quotes.
+  const dir = new URL('./fixtures/smartcube/', import.meta.url);
+  const gen2 = readdirSync(dir).filter((f) => f.includes('_gan-gen2_'));
+  let pairs = 0;
+  let equal = 0;
+  for (const file of gen2) {
+    const moves = JSON.parse(readFileSync(new URL(file, dir), 'utf8')).events.map((e) => e.event).filter((e) => e.type === 'MOVE');
+    for (let k = 1; k < moves.length; k++) {
+      pairs += 1;
+      if (moves[k].cubeTimestamp - moves[k - 1].cubeTimestamp === moves[k].timestamp - moves[k - 1].timestamp) equal += 1;
+    }
+  }
+  assert.equal(gen2.length, 3);
+  assert.equal(`${equal} of ${pairs}`, '4 of 87');
+  assert.match(timing, /4 of the 87 measured\s+\/\/ intervals in the vendored Gen2 captures/);
 });
 
 test('a turn taken back inside the window is in the time but not in a turn rate', () => {

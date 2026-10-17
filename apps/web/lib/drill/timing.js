@@ -14,6 +14,21 @@
 //   clock-reset     the cube's clock went backwards inside the span
 //   no-span         the first and last reports carry one time
 //
+// WHAT THIS CANNOT SEE: a finite `cubeTimestamp` is taken as the cube's clock, and from one decoder it is not
+// always. The vendored GAN Gen2 driver (`GanGen2ProtocolDriver` in vendor/smartcube.js) turns the cube's
+// per-move interval into a running total, and where the cube sends an interval of ZERO it adds the host's
+// time since the previous move packet instead — upstream's comment puts that at the 16-bit interval
+// register overflowing, more than 65.5 s after the last turn; whether a Gen2 cube also sends zero for two
+// faces registered in one millisecond is not measured here. Nothing marks such a move. A report reaches
+// this module as notation, host time, cube time and serial, and in those a substituted interval looks like a
+// measured one: even an exact match of the two clocks' deltas is no tell, since 4 of the 87 measured
+// intervals in the vendored Gen2 captures (test/fixtures/smartcube/) have one. So a span holding such an
+// interval is timed, partly on the host's clock. The fix belongs in the protocol layer, which lives in a
+// fork outside this repository: give a move whose interval was substituted a null `cubeTimestamp`, as the
+// Gen3/Gen4 drivers do for a recovered move, and this module refuses the span as no-cube-clock.
+// test/drill-engine.test.mjs fails the day the bundle stops substituting, so this paragraph cannot
+// outlive the defect (audit-fix 2026-10-18 #14).
+//
 // TPS is in the half-turn metric, counting only the turns the span holds — every one that ENDS after the
 // first report — and names its metric, because "turns per second" in an unnamed metric is a different
 // number in each. It is withheld from a rep that was not the algorithm alone (it left the algorithm, or
