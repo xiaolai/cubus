@@ -452,6 +452,35 @@ test('a proof that answers at once never shows its wait or its stop', async () =
   assert.deepEqual(seen.filter((s) => /proving|at least|stop shown/.test(s)), [], 'an instant proof flashed its wait or its stop');
 });
 
+test('a method\'s lesson CUT at a chip is offered no proof; the whole lesson still is', async () => {
+  // Through the running app with the prover present, not by reading the gate's source: a cut walk stops
+  // short of solved, so its length is no bound on a whole-cube proof (lesson-cut.test.mjs, audit-fix
+  // round 3). What must NOT happen is the button showing for it.
+  const choose = async (id) => {
+    $('#moreMethodsBtn')?.click();
+    await settle(50);
+    const item = win.document.querySelector(`[data-method="${id}"]`);
+    assert.ok(item, `precondition: ${id} can be chosen on this screen`);
+    item.click();
+  };
+  const heads = () => [...win.document.querySelectorAll('#solList .move-chips')].map((s) => s.previousElementSibling?.textContent ?? '');
+  try {
+    await newWalkWithProof();
+    await choose('beginner');
+    assert.ok(await waitFor(() => $('#solLabel')?.textContent === 'Beginner' && heads().length > 1), 'precondition: the Beginner lesson is on screen');
+    assert.ok(await waitFor(() => proveBtn() && !proveBtn().hidden), 'the whole lesson, a solution of the whole cube, was offered no proof');
+    $('[data-stage="cross"]').click();
+    assert.ok(await waitFor(() => heads().length > 0 && heads().every((h) => /^Cross/.test(h))), 'precondition: the walk is the lesson cut at the cross');
+    await settle(100);
+    assert.equal(proveBtn()?.hidden ?? true, true, 'a walk that stops at the cross was offered a whole-cube proof');
+  } finally {
+    $('[data-stage="solved"]')?.click();
+    await settle(100);
+    await choose('quick');
+    await settle(300);
+  }
+});
+
 test('nothing but the proof seam was driven through the injected command surface', () => {
   assert.deepEqual(
     [...new Set(native.calls)].sort(),
