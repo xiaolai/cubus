@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import Cube from 'cubejs';
 
 import { METHOD_SOLVE, createLessonClient, handleMethodSolve } from '../lib/lesson-client.js';
-import { STOP_NOW, stopDescriptor } from '../lib/solve-client.js';
+import { STOP_NOW, stopDescriptor, stopWord } from '../lib/solve-client.js';
 import { solveByMethod } from '../lib/method-solver.js';
 import { methodById } from '../lib/methods/registry.js';
 import { methodOf } from '../lib/methods/method-of.js';
@@ -84,6 +84,14 @@ test('a walk that is called off is answered null at once, and its stop word says
   walk.abort();
   assert.equal(await asking, null);
   assert.equal(Atomics.load(words[0], 0), STOP_NOW, 'the worker was not told the question was called off');
+  // What the WORKER reads is the posted descriptor, not this thread's array: decoded, it says STOP_NOW,
+  // and the handler given the posted message solves nothing.
+  const posted = stopWord(structuredClone(worker.sent[0]).stop);
+  assert.equal(Atomics.load(posted, 0), STOP_NOW, 'the posted stop word is not the one the abort wrote');
+  let solved = 0;
+  const counting = { ...engine, solveByMethod: (...a) => { solved += 1; return solveByMethod(...a); } };
+  assert.equal(handleMethodSolve(counting, structuredClone(worker.sent[0])).calledOff, true);
+  assert.equal(solved, 0, 'the worker solved a question the walk had called off');
   assert.equal(await client.solve(SCRAMBLED, 'cfop', { signal: AbortSignal.abort() }), null, 'an already-gone walk was asked');
   assert.equal(worker.sent.length, 1, 'a question was posted for a walk that had already gone');
 });
