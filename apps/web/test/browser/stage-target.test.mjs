@@ -127,12 +127,16 @@ async function chooseMethod(page, id) {
   await page.click(`.method-menu [data-method="${id}"]`);
 }
 
-/** Press a target pill and wait for the count to become a repair sentence. */
+/** Press a target pill and wait for the count to become a repair sentence — THIS press's sentence. The
+ *  count is emptied first: after an earlier press the old sentence already matches, and a wait that is
+ *  already true is no wait (AGENTS.md §5) — the cases below would read the previous target's walk. */
 async function aimAt(page, id) {
+  await page.evaluate(() => { document.querySelector('#moveCount').textContent = ''; });
   await page.click(`[data-stage="${id}"]`);
   await page.waitForFunction(
-    () => /way back|couldn’t/.test(document.querySelector('#moveCount')?.textContent ?? ''),
-    null,
+    (want) => document.querySelector(`[data-stage="${want}"]`)?.getAttribute('aria-pressed') === 'true'
+      && /way back|couldn’t/.test(document.querySelector('#moveCount')?.textContent ?? ''),
+    id,
     { timeout: 30_000 },
   );
 }
