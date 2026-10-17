@@ -2,6 +2,7 @@
 // nowhere else.
 
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 import { test } from 'node:test';
 
@@ -115,9 +116,26 @@ test('the UI thread never loads the method library: the registry is data, and bu
   // lib/methods/index.js builds every rung's repertoire when it loads. The registry, read on the UI thread,
   // must reach nothing that does — so it imports neither the library nor anything beneath it but the
   // constants module (lib/lesson-client.js says why the build belongs to the lesson worker).
-  const code = readFileSync(new URL('../lib/methods/registry.js', import.meta.url), 'utf8');
-  const imports = [...code.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1]);
-  assert.deepEqual(imports.sort(), ['../i18n.js', './stage-ids.js']);
+  // WHAT NODE ACTUALLY LOADS, not what a regex reads: a child process imports the registry under a resolve
+  // hook and names every module it is asked for — every static spelling, comments and all, and every
+  // import() that runs at load. Regexes over the source were defeated twice (a side-effect import, then a
+  // comment between `import` and its parenthesis; audit, 2026-10-17).
+  const registry = new URL('../lib/methods/registry.js', import.meta.url).href;
+  const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
+    import { registerHooks } from 'node:module';
+    registerHooks({ resolve(specifier, context, next) { const r = next(specifier, context); process.stdout.write(r.url + '\\n'); return r; } });
+    await import(${JSON.stringify(registry)});
+  `], { encoding: 'utf8' });
+  const lib = new URL('../lib/', import.meta.url).href;
+  const loaded = [...new Set(out.split('\n').filter((u) => u.startsWith(lib)))].map((u) => u.slice(lib.length)).sort();
+  assert.deepEqual(loaded, ['i18n.js', 'methods/registry.js', 'methods/stage-ids.js']);
+  // And an import() that would run LATER, from a function nothing called at load: none at all, in any of
+  // them, with or without comments between the keyword and its parenthesis. The registry is data and has
+  // nothing to load later.
+  for (const rel of loaded) {
+    const code = readFileSync(new URL(rel, lib), 'utf8');
+    assert.doesNotMatch(code, /\bimport\b(?:\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*\(/, `${rel} imports something later, which this check cannot follow`);
+  }
 });
 
 test('a method is spelled in the registry only — no other module builds the beginner method itself', () => {
