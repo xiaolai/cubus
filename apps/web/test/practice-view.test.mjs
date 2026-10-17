@@ -14,7 +14,9 @@ import { parse } from '../lib/cube-notation.js';
 import { PAUSE_FACTOR, TIME_REFUSAL } from '../lib/drill/timing.js';
 import { statsOf } from '../lib/drill/record.js';
 import { catalogueOf, pendingName } from '../lib/drill/library-client.js';
-import { libraryHtml } from '../lib/screens/practice/library-view.js';
+import { libraryHtml, rowName } from '../lib/screens/practice/library-view.js';
+import { paletteFor } from '../lib/scheme.js';
+import { STICKER_PALETTES } from '../lib/sticker-palettes.js';
 import {
   REFUSAL_CODES, chipsHtml, fingersWords, partsWords, refusalWords, segmentsOf, writtenTokens,
 } from '../lib/screens/practice/page-view.js';
@@ -75,6 +77,43 @@ test('a set says its purpose once, under its heading; each card says its own row
   }
   // The ledger now gives every set a purpose; a library that showed none would pass the loop above vacuously.
   assert.ok(doc.querySelectorAll('.alg-set-purpose').length > 10, 'no set purposes were drawn');
+});
+
+test('every card draws its own row\'s case: one picture, its stickers in the colours they are, net or top face by what the row keeps', () => {
+  // The expectations are built here from the facelet layout and the palette table, never from the view's own
+  // drawing code: a card that dropped its picture, drew another row's case, or drew a net as a top face fails.
+  const RING = [1, 2, 4, 5].flatMap((face) => [0, 1, 2].map((i) => face * 9 + i));    // R, F, L, B: each top row
+  const SHOWS = {
+    net: [...Array(54).keys()],
+    'top-orientation': [...Array(9).keys(), ...RING].sort((a, b) => a - b),
+    'top-colours': [...Array(9).keys(), ...RING].sort((a, b) => a - b),
+  };
+  const cards = [...libraryDoc.querySelectorAll('[data-alg]')];
+  assert.ok(cards.length > 300, `${cards.length} cards to check`);
+  const look = { palette: 'classic', scheme: 'western' };   // what libraryDoc was drawn in
+  const colours = paletteFor(STICKER_PALETTES[look.palette], look.scheme);
+  for (const card of cards) {
+    const row = catalogue.rows[card.dataset.alg];
+    const pictures = card.querySelectorAll('svg');
+    assert.equal(pictures.length, 1, `${row.id}: ${pictures.length} pictures on its card`);
+    assert.equal(pictures[0].getAttribute('aria-label'), `The case ${rowName(row)} solves`, `${row.id}: the picture is named for another case`);
+    const { facelets, picture } = row.solves;
+    assert.ok(Object.hasOwn(SHOWS, picture), `${row.id}: a case picture of a kind no card draws: ${picture}`);
+    // What the row KEEPS chooses the picture: a top face only for an algorithm that keeps the first two layers.
+    assert.equal(picture === 'net', !row.keeps.includes('first-two-layers'), `${row.id}: a ${picture} for a row that keeps ${row.keeps.join(', ')}`);
+    const stickers = [...pictures[0].querySelectorAll('rect')];
+    assert.deepEqual(stickers.map((r) => Number(r.getAttribute('data-facelet'))).sort((a, b) => a - b), SHOWS[picture], `${row.id}: the ${picture} draws other stickers`);
+    for (const r of stickers) {
+      const at = Number(r.getAttribute('data-facelet'));
+      const letter = facelets[at];
+      // An orientation case lights only what shows the top centre's colour; anything else is an empty well.
+      const lit = letter !== '?' && (picture !== 'top-orientation' || letter === facelets[4]);
+      if (lit) {
+        assert.equal(r.getAttribute('fill'), colours[letter], `${row.id}: sticker ${at} is not ${letter}'s colour`);
+        assert.equal(r.getAttribute('fill-opacity'), null, `${row.id}: sticker ${at} is drawn as an empty well`);
+      } else assert.equal(r.getAttribute('fill-opacity'), '0.35', `${row.id}: sticker ${at} should be an empty well`);
+    }
+  }
 });
 
 test('the page prints every row exactly as written: one chip per turn, in order, the engine\'s own count', () => {
