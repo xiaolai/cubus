@@ -164,6 +164,7 @@ for (const id of CFOP) {
 
   test(`${id}: every step has words, and is held the way the entry declares — white up only for its cross`, () => {
     const entry = methodById(id);
+    let regrips = 0;
     assert.deepEqual([...entry.holds.displayed.whiteUpStages], ['cross']);
     for (const state of seededStates(12, 0xcf0c, 25)) {
       for (const step of solveByMethod(state, methodOf(entry)).steps) {
@@ -172,12 +173,18 @@ for (const id of CFOP) {
         assert.equal(sameHold(holdForStage(step.stage), SCAN_HOLD), entry.holds.displayed.whiteUpStages.includes(step.stage),
           `${id}: the ${step.stage} stage is held differently from what the entry declares`);
         // AGENTS.md §4: a whole-cube turn is said by its anchor and its destination, never left/right.
-        if (/(^|\s)[xyz]/.test(step.alg) && /turn the whole cube/i.test(words)) {
+        // Which steps TURN the cube is read off the moves, never off the words: one that ends in another
+        // hold than it began in. A named algorithm that turns and turns back (`y' … y`, `x … x'`) ends
+        // where it began, and AGENTS.md §3 lets it.
+        if (!sameHold(run(step.alg, step.hold, SOLVED).hold, step.hold)) {
+          regrips += 1;
+          assert.match(words, /turn the whole cube/i, `${id}: a step that turns the cube does not say so — "${step.alg}"`);
           assert.match(words, /Keep white underneath/, `${id}: a whole-cube turn said without its anchor`);
           assert.doesNotMatch(words, /\b(left|right|quarter)\b.*whole cube|whole cube.*\b(to the left|to the right|a quarter)\b/i);
         }
       }
     }
+    assert.ok(regrips > 0, `${id}: precondition — no step in the sample turned the cube, so the wording was never checked`);
   });
 }
 
