@@ -48,9 +48,11 @@ import {
  *  the cube has gone is the one sentence it must not keep. A comparison of two flags, once a second. */
 const PRESENCE_MS = 1000;
 
-/** A cube that can be followed: connected, and not proved to contradict itself (lib/cube-reports.js gates a
- *  refused cube's turns before they reach any screen). */
-const cubeHere = () => state.connected && !cubeRefused();
+/** A cube that can be followed: a session held, connected, and not proved to contradict itself
+ *  (lib/cube-reports.js gates a refused cube's turns before they reach any screen). The session is asked as well
+ *  as the flag because a disconnect lets go of the session first and lowers the flag last, and a screen standing
+ *  down in between (`onTrustLost`) must already see the cube as gone. */
+const cubeHere = () => conn !== null && state.connected && !cubeRefused();
 
 /** A key press that belongs to the control it landed on, not to the page. */
 const onControl = (target) => Boolean(target?.closest?.('button, a, input, select, textarea, summary'));
@@ -191,6 +193,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   let row = null;
   let caseNow = null;
   let engine = null;
+  let engineConn = null;      // the session the engine judges — a new one is a new stream (`presenceChanged`)
   let token = null;
   let startFacelets = null;   // the arrangement the current rep was armed from (the engine's start event)
   let turnsSinceArm = 0;
@@ -256,26 +259,32 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   const live = () => Boolean(engine) && engine.state.status !== STATUS.IDLE && cubeHere();
 
   const makeEngine = (judged) => {
-    const carry = engine && engine.state.trusted ? engine.facelets : null;
+    // The model carries to a new row only on the SAME connection: another session's arrangement is another stream's.
+    const carry = engine && engineConn === conn && engine.state.trusted ? engine.facelets : null;
     engine?.stop();
     const mine = {};
+    const session = conn;
     token = mine;
+    engineConn = session;
     startFacelets = null;
     turnsSinceArm = 0;
     waitingForReport = false;
     lastResult = null;
     const rowId = row.id;
     const reps = watchReps((rep) => saveRep(rowId, rep));
+    // ONE CONNECTION'S ENGINE. Its own timers (the cue window) can fire after its cube has gone, or after another
+    // has taken its place inside one presence tick — and an `off` then would blame a turn nobody can see.
+    const ours = () => token === mine && !stale() && conn === session && cubeHere();
     engine = createDrillEngine({
       alg: judged,
       chunks: row.chunks.map(({ from, to }) => ({ from, to })),
-      numbersMoves: conn?.numbersMoves?.() === true,
+      numbersMoves: session?.numbersMoves?.() === true,
       setTimer: (fn, ms) => setTimeout(fn, ms),
       clearTimer: (h) => clearTimeout(h),
       now: () => performance.now(),
-      sound: (name) => { if (token === mine && !stale()) play(name); },
+      sound: (name) => { if (ours()) play(name); },
       onEvent: (e) => {
-        if (token !== mine || stale()) return;
+        if (!ours()) return;
         reps(e);
         heard(e, mine);
         // `off` is the one event the engine raises on its own clock (the cue window), not inside a call
@@ -478,8 +487,27 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   $('#practiceBack', root).onclick = () => { state.practiceAlg = null; renderScreen(); };
 
   // ---- the cube's streams -------------------------------------------------------------------------------
+  /**
+   * The cube came, went, or was replaced — ONE ENGINE PER CONNECTION. A new session is a new stream: its own turn
+   * numbers, its own arrangement, perhaps a cube that numbers nothing. Restarting the old engine kept its last
+   * serial and its rep in flight, so the new cube's first turn read as a turn gone missing and its first report as
+   * a snapshot that contradicted the old cube's. Asked at every report and every presence tick, because a cube
+   * that drops and is back inside one tick changes nothing else this page can see.
+   */
+  let wasHere = cubeHere();
+  const presenceChanged = () => {
+    const here = cubeHere();
+    if (here === wasHere && conn === engineConn) return;
+    wasHere = here;
+    if (conn !== engineConn) makeEngine(row.alg);
+    else if (!here) engine.stop();
+    else if (state.live && engine.state.status === STATUS.IDLE) engine.start({ facelets: state.live });
+    if (!here) drawCase();
+    paint();
+  };
   hooks.liveMove = (m) => {
     if (stale() || !engine) return;
+    presenceChanged();
     if (engine.state.status === STATUS.IDLE && cubeHere() && state.live) engine.start({ facelets: state.live });
     turnsSinceArm += 1;
     engine.report(m);
@@ -487,6 +515,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   };
   hooks.liveUpdate = (f) => {
     if (stale() || !engine) return;
+    presenceChanged();
     const st = engine.state.status;
     if (st === STATUS.IDLE) { if (cubeHere()) engine.start({ facelets: f }); }
     else if (waitingForReport) engine.restart({ facelets: f });
@@ -496,21 +525,16 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     else engine.resync(f);
     paint();
   };
-  hooks.liveGap = () => { if (!stale()) { engine?.gap(); paint(); } };
+  hooks.liveGap = () => {
+    if (stale() || !engine) return;
+    presenceChanged();
+    engine.gap();
+    paint();
+  };
   // Trust is about the cube's COLOURS; the engine claims nothing about them, so a lapse alone changes nothing
   // here. What ends following is the stream itself: a cube that left, or one proved to contradict itself.
-  hooks.onTrustLost = () => { if (!stale() && !cubeHere()) { engine?.stop(); paint(); } };
-  let wasHere = cubeHere();
-  const presence = setInterval(() => {
-    if (stale()) return;
-    const here = cubeHere();
-    if (here === wasHere) return;
-    wasHere = here;
-    if (!here) engine?.stop();
-    else if (state.live && engine?.state.status === STATUS.IDLE) engine.start({ facelets: state.live });
-    if (!here && row) drawCase();
-    paint();
-  }, PRESENCE_MS);
+  hooks.onTrustLost = () => { if (!stale() && engine) presenceChanged(); };
+  const presence = setInterval(() => { if (!stale() && engine) presenceChanged(); }, PRESENCE_MS);
   hooks.cleanup = () => {
     clearInterval(presence);
     stopWatch();
