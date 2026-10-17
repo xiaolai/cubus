@@ -55,6 +55,9 @@ const PRESENCE_MS = 1000;
  *  down in between (`onTrustLost`) must already see the cube as gone. */
 const cubeHere = () => conn !== null && state.connected && !cubeRefused();
 
+/** A report's serial as the drill engine counts it — the low byte, which is all its comparison reads — or none. */
+const countOf = (serial) => (Number.isInteger(serial) ? serial & 0xff : undefined);
+
 /** A key press that belongs to the control it landed on, not to the page. */
 const onControl = (target) => Boolean(target?.closest?.('button, a, input, select, textarea, summary'));
 
@@ -311,13 +314,21 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   };
 
   // ---- the engine ---------------------------------------------------------------------------------------
-  /** The cube's arrangement as its own reports last gave it — `live`, or the report the reconnect question holds back
-   *  — and only while it accounts for every turn the cube has counted (`reportedArrangement`). Either is the cube's
+  /** Arm from the cube's arrangement as its own reports last gave it — `live`, or the report the reconnect question
+   *  holds back — and only while it accounts for every turn the cube has counted (`reportedArrangement`); false, and
+   *  nothing armed, when there is no such report. Either kind of report is the cube's
    *  model in the frame its turns move it in, which is all a tracker RELATIVE to the cube's own reports needs (plan
    *  §3.1); neither is a claim about its colours. A report the cube has turned away from is none: an engine armed
    *  from one judged the next snapshot a contradiction of a clean rep, so the page waits for that snapshot instead.
-   *  Read from the reports layer, not kept here, so a report that came before this page did is not lost. */
-  const reportNow = () => reportedArrangement();
+   *  Read from the reports layer, not kept here, so a report that came before this page did is not lost. With it
+   *  comes the serial the report was taken at: the engine counts the next report from it, so a turn lost straight
+   *  after the report is caught (`countFrom` in lib/drill/engine.js). */
+  const startFromReport = () => {
+    const now = reportedArrangement();
+    if (!now) return false;
+    engine.start({ facelets: now.facelets, serial: countOf(now.serial) });
+    return true;
+  };
   const live = () => Boolean(engine) && engine.state.status !== STATUS.IDLE && cubeHere();
 
   const makeEngine = (judged) => {
@@ -356,8 +367,11 @@ function mountPage({ root, page, catalogue, signal, stale }) {
         if (e.type === 'off') paint();
       },
     });
-    const from = carry ?? reportNow();
-    if (cubeHere() && from) engine.start({ facelets: from });
+    // A carried model is the reports' own, and its count stays with the engine it came from: none is invented here.
+    if (cubeHere()) {
+      if (carry) engine.start({ facelets: carry });
+      else startFromReport();
+    }
   };
 
   const heard = (e, mine) => {
@@ -552,7 +566,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
       paint();
       return;
     }
-    if (cubeHere() && reportNow() && engine.state.status === STATUS.IDLE) { engine.start({ facelets: reportNow() }); paint(); return; }
+    if (cubeHere() && engine.state.status === STATUS.IDLE && startFromReport()) { paint(); return; }
     stopWatch();
     watch.t0 = null;
     drawCase();
@@ -622,7 +636,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     if (here === wasHere && conn === engineConn) return;
     wasHere = here;
     if (conn !== engineConn) makeEngine(row.alg); else if (!here) engine.stop();
-    else if (reportNow() && engine.state.status === STATUS.IDLE) engine.start({ facelets: reportNow() });
+    else if (engine.state.status === STATUS.IDLE) startFromReport();
     if (!here) drawCase();
     paint();
   };
@@ -635,25 +649,27 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     engine.report(m);
     paint();
   };
-  /** A snapshot from the cube: `live`, or one the reconnect question holds back from being `live`. */
-  const onSnapshot = (f) => {
+  /** A snapshot from the cube — `live`, or one the reconnect question holds back from being `live` — with the serial
+   *  it was taken at, which every arrangement handed to the engine carries (`startFromReport` says why). */
+  const onSnapshot = (f, reportSerial) => {
     if (stale() || !engine) return;
     presenceChanged();
     const st = engine.state.status;
-    if (st === STATUS.IDLE) { if (cubeHere()) engine.start({ facelets: f }); }
-    else if (waitingForReport) engine.restart({ facelets: f });
+    const serial = countOf(reportSerial);
+    if (st === STATUS.IDLE) { if (cubeHere()) engine.start({ facelets: f, serial }); }
+    else if (waitingForReport) engine.restart({ facelets: f, serial });
     // A cube whose arrangement changed before any turn of the rep (a first report, a cube picked up and set
     // down) is a new start, not a contradiction: there is nothing to judge yet.
-    else if (st === STATUS.ARMED && turnsSinceArm === 0) { if (engine.facelets !== f) engine.restart({ facelets: f }); }
-    else engine.resync(f);
+    else if (st === STATUS.ARMED && turnsSinceArm === 0) { if (engine.facelets !== f) engine.restart({ facelets: f, serial }); }
+    else engine.resync(f, { serial });
     paint();
   };
-  hooks.liveUpdate = (f) => onSnapshot(f);
+  hooks.liveUpdate = (f, serial) => onSnapshot(f, serial);
   // While the reconnect question is open its reports are held back from `live` — where the cube IS is exactly what
   // is being asked — and they still reach this screen, because the engine claims nothing about where the cube is:
   // it judges turns relative to the cube's own model. Nothing here answers the question, writes `live` or the
   // subject, or grants trust. Without this, a remembered cube left Practice waiting until somebody answered on Home.
-  hooks.heldUpdate = (f) => onSnapshot(f);
+  hooks.heldUpdate = (f, serial) => onSnapshot(f, serial);
   hooks.liveGap = () => {
     if (stale() || !engine) return;
     presenceChanged();

@@ -199,6 +199,35 @@ test('a report the reconnect question held before Practice opened is where its f
   }
 });
 
+test('a turn lost right after the snapshot a rep was armed from is caught — the snapshot\'s serial is where the count starts', async () => {
+  // The engine counts serials from the one an arrangement was reported at (lib/drill/engine.js, `countFrom`); a page
+  // that drops the snapshot's serial makes the next report compare with nothing, so a turn lost straight after it
+  // is read as a turn made, in some hold, and the rep goes on from an arrangement the cube is not in.
+  for (const where of ['a snapshot on the page', 'a report from before the page opened']) {
+    const { page, context, errors } = await openPractice(fixture);
+    try {
+      const rnd = lcg(where.length);
+      const f = toFacelets(randomStart(rnd));
+      if (where === 'a snapshot on the page') {
+        await show(page, 'sune');
+        await page.evaluate((x) => { window.__p.serialFrom(40); window.__p.facelets(x); }, f);
+      } else {
+        await page.evaluate((x) => { window.__p.serialFrom(40); window.__p.facelets(x); }, f);
+        await show(page, 'sune');
+      }
+      assert.equal((await page.evaluate(() => window.__p.data())).status, 'armed', `${where}: precondition: armed`);
+      // The Sune's first turn is lost between the cube and the app; its second arrives one serial past the snapshot's next.
+      const per = reportsPerToken(SUNE, ORIENTATIONS[0], rnd);
+      await page.evaluate((q) => window.__p.move(q, { skip: 1 }), per[1][0]);
+      const got = await page.evaluate(() => ({ status: window.__p.data().status, say: window.__p.say() }));
+      assert.equal(got.status, 'uncertain', `${where}: a turn lost after the snapshot went unseen (${got.status}: ${got.say})`);
+      assert.deepEqual(errors, []);
+    } finally {
+      await context.close();
+    }
+  }
+});
+
 // ---- the hold line (row 24) --------------------------------------------------------------------------------
 
 test('the hold line follows the cube: "any way you like" only while a cube is followed', async () => {

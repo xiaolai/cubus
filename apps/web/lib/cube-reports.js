@@ -83,8 +83,8 @@ export const reportIsCurrent = () => reportedAtTurns === turnsReported();
 
 /**
  * The cube's arrangement as its own reports last gave it — `live`, or the report the reconnect question holds back
- * from it — while it accounts for every turn the cube has counted (`reportIsCurrent`); null otherwise, and null when
- * no report stands.
+ * from it — while it accounts for every turn the cube has counted (`reportIsCurrent`), as `{ facelets, serial }`
+ * with the serial that report came with (null when it carried none); null otherwise, and null when no report stands.
  *
  * For a screen that tracks turns RELATIVE to the cube's own reports and claims nothing about where the cube is
  * (Practice's drill engine, dev-docs/algorithm-drill-v2-plan.md §3.1). It needs an arrangement that accounts for
@@ -93,7 +93,7 @@ export const reportIsCurrent = () => reportedAtTurns === turnsReported();
  */
 export function reportedArrangement() {
   const f = state.reconnect ? heldReport : state.live;
-  return f && reportIsCurrent() ? f : null;
+  return f && reportIsCurrent() ? Object.freeze({ facelets: f, serial: lastSerialSeen }) : null;
 }
 
 /** Remember the arrangement the app is sure of (lib/cube-memory.js) with this connection's serial,
