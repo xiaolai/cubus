@@ -130,6 +130,22 @@ for (const method of ['cfop', 'cfop-4lll', 'beginner']) {
       });
       const cut = await searches(page);
       assert.equal(cut.calls, 0, `the ${method} lesson cut at the cross searched ${cut.calls} time(s) on the UI thread`);
+      // AND A CUT WITH NOTHING CACHED. The cut above follows a whole lesson that is already on the subject,
+      // so a search confined to the uncached path of the cut would never run there. A new cube, with the
+      // chip still chosen, is asked for its cut first.
+      // Which cube the walk is about, as the cube element names it — the walk's text could repeat.
+      const cubeNow = () => { const c = document.querySelector('#viewCube cubus-cube'); return `${c?.getAttribute('facelets')}|${c?.getAttribute('scramble')}`; };
+      const before = await page.evaluate(cubeNow);
+      await page.click('#randCube');
+      await page.waitForFunction((was) => {
+        const c = document.querySelector('#viewCube cubus-cube');
+        const now = `${c?.getAttribute('facelets')}|${c?.getAttribute('scramble')}`;
+        const heads = [...document.querySelectorAll('#solList .move-chips')].map((s) => s.previousElementSibling?.textContent ?? '');
+        return now !== was && heads.length > 0 && heads.every((h) => /^Cross/.test(h));
+      }, before);
+      assert.equal(await page.getAttribute('[data-stage="cross"]', 'aria-pressed'), 'true', 'precondition: the chip stayed chosen across the roll');
+      const fresh = await searches(page);
+      assert.equal(fresh.calls, 0, `the ${method} lesson cut for an uncached cube searched ${fresh.calls} time(s) on the UI thread`);
       assert.deepEqual(errors.map(String), [], 'the page threw');
     } finally {
       await context.close();
