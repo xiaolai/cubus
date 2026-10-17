@@ -8,154 +8,28 @@
 // feeds them through `cubusFeed`, the door the driver uses. If the screen judged anything but what it prints,
 // the rep would not complete where these cases demand it does.
 //
-// What is heard is read off the page's ONE AudioContext, replaced by a stand-in through `useAudioContextFactory`
-// (the seam test/browser/sound.test.mjs uses): each sound is a fixed run of notes, so the notes say which sounds
-// were made. A sound that must NOT play is asserted as an absence, after waiting past the cue window.
+// The page, the stand-in cube and the sound stand-in are ./practice-page.mjs's, shared with
+// test/browser/practice-screen.test.mjs. A sound that must NOT play is asserted as an absence, after waiting past
+// the cue window.
 
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 
-import { parse } from '../../lib/cube-notation.js';
-import { applyIdentity, faceTurnsOf, toIdentity } from '../../lib/cube-moves.js';
 import { ORIENTATIONS } from '../../lib/cube-orientation.js';
-import { SOLVED as PIECES, applyAlg, toFacelets } from '../../lib/cube-pieces.js';
-import { CUE_WINDOW_MS, GESTURE_TURNS } from '../../lib/drill/engine.js';
-import { pace } from '../browser-wait.mjs';
-import { lcg, randomAlg } from '../fixtures/seeded-scrambles.mjs';
+import { toFacelets } from '../../lib/cube-pieces.js';
+import { GESTURE_TURNS } from '../../lib/drill/engine.js';
+import { lcg } from '../fixtures/seeded-scrambles.mjs';
 import { LIVENESS_MS, startBrowserFixture } from './harness.mjs';
+import {
+  AXIS, PAST_WINDOW_MS, STEP_MS, after_, axesNear, feedRep, inverse, openPractice as openOn, randomStart, reportsPerToken, show,
+} from './practice-page.mjs';
 
 let fixture;
 before(async () => { fixture = await startBrowserFixture(); });
 after(async () => { await fixture?.close(); });
 
-/** Past the cue window, with room for a loaded machine to run the timer: an `off` that was coming has come. */
-const PAST_WINDOW_MS = CUE_WINDOW_MS + 250;
-const STEP_MS = 250;
-
-const AXIS = { U: 'y', D: 'y', R: 'x', L: 'x', F: 'z', B: 'z' };
-const inverse = (q) => (q.endsWith("'") ? q[0] : `${q}'`);
-
-/**
- * The reports a cube makes for each written token, held `hold`: per token, the outer-face quarter turns in the
- * cube's own frame, worked out by the notation's one interpreter. A half turn's two quarters go one way or the
- * other, and a slice's two faces in either order, as `rnd` says.
- */
-function reportsPerToken(alg, hold, rnd) {
-  let now = [...hold];
-  return parse(alg).map((move) => {
-    const identity = toIdentity(move, now);
-    now = applyIdentity(identity, now, PIECES).hold;
-    const faces = faceTurnsOf(identity).turns.map((x) => x.name).filter(Boolean);
-    if (faces.length > 1 && rnd() < 0.5) faces.reverse();
-    return faces.flatMap((name) => {
-      if (!name.endsWith('2')) return [name];
-      const q = rnd() < 0.5 ? name[0] : `${name[0]}'`;
-      return [q, q];
-    });
-  });
-}
-
-/** A random arrangement, in the cube's own frame, as 54 facelets and as pieces. */
-const randomStart = (rnd) => applyAlg(PIECES, randomAlg(rnd, 20));
-const after_ = (state, quarters) => quarters.reduce((s, q) => applyAlg(s, q), state);
-
-/** A page on the Practice library, a stand-in cube connected, and the sound stand-in installed. */
-async function openPractice({ numbered = true, connect = true } = {}) {
-  const context = await fixture.browser.newContext({ viewport: { width: 1280, height: 1012 } });
-  const page = pace(await context.newPage());
-  const errors = [];
-  page.on('pageerror', (e) => errors.push(String(e)));
-  await page.goto(`${fixture.base}/index.html#/practice`);
-  await page.waitForSelector('.practice-screen[data-ready="1"]', { timeout: LIVENESS_MS });
-  await page.addScriptTag({
-    type: 'module',
-    content: `
-      import { useAudioContextFactory } from '/lib/sound.js';
-      import { state } from '/lib/app-state.js';
-      import { refreshScreen } from '/lib/screen-shell.js';
-      import { library } from '/lib/drill/library-client.js';
-      // Each sound is a fixed run of notes (lib/sound.js); read back, the notes say which sounds were made.
-      const SOUNDS = {
-        capture: [659.25, 880], done: [523.25, 659.25, 783.99, 1046.5], off: [440, 392],
-        again: [523.25, 523.25], ask: [587.33, 783.99, 587.33, 783.99], help: [349.23, 261.63],
-      };
-      const notes = [];
-      useAudioContextFactory(() => ({
-        state: 'running', currentTime: 0, destination: {},
-        resume: () => Promise.resolve(), suspend: () => Promise.resolve(),
-        createOscillator() {
-          const o = { frequency: { value: 0 }, connect: (g) => g, start() { notes.push(o.frequency.value); }, stop() {}, onended: null };
-          return o;
-        },
-        createGain() {
-          return { gain: { setValueAtTime() {}, linearRampToValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect: (d) => d };
-        },
-      }));
-      // The page's one gesture, which is what makes its AudioContext.
-      document.dispatchEvent(new Event('pointerdown'));
-      const heard = () => {
-        const out = [];
-        for (let i = 0; i < notes.length;) {
-          const hit = Object.entries(SOUNDS).find(([, run]) => run.every((f, k) => notes[i + k] === f));
-          if (!hit) throw new Error('a run of notes no sound makes: ' + notes.slice(i, i + 4).join(','));
-          out.push(hit[0]);
-          i += hit[1].length;
-        }
-        return out;
-      };
-      let serial = 0;
-      let clock = 1000;
-      const page = () => document.querySelector('.practice-page');
-      window.__p = {
-        heard,
-        count: (name) => heard().filter((n) => n === name).length,
-        rows: () => library.catalogue(),
-        show(id) { state.practiceAlg = id; refreshScreen(); },
-        ready: (id) => page()?.dataset.ready === '1' && page()?.dataset.alg === id,
-        facelets: (f) => window.cubusFeed.facelets(f, serial),
-        /** One report. \`numbered\` false sends no serial, as a cube that does not number its turns does; \`skip\` drops a serial. */
-        move(notation, { numbered = true, skip = 0, dt = ${STEP_MS} } = {}) {
-          serial = (serial + 1 + skip) & 0xff;
-          clock += dt;
-          window.cubusFeed.move({ notation, timestamp: clock, cubeTimestamp: clock, ...(numbered ? { serial } : {}) });
-        },
-        lost: () => window.cubusFeed.movesLost(),
-        data: () => ({ ...page().dataset }),
-        say: () => document.querySelector('#practiceSay').textContent,
-        time: () => document.querySelector('#practiceTime').textContent,
-        arrow: () => document.querySelector('#practiceCube cubus-cube').getAttribute('arrow'),
-        chips: () => [...document.querySelectorAll('#practiceAlg .chip-m')].map((c) => c.textContent),
-        record: () => JSON.parse(localStorage.getItem('cubusDrillRecord') ?? 'null'),
-        fingers: () => document.querySelector('#practiceFingers')?.dataset.reached,
-        wait: (ms) => new Promise((r) => { setTimeout(r, ms); }),
-      };
-    `,
-  });
-  await page.waitForFunction(() => Boolean(window.__p));
-  if (connect) {
-    await page.evaluate((isNumbered) => {
-      window.cubusFeed.useConnection({
-        mac: 'AA:BB:CC:DD:EE:01', name: 'Test cube', requestBattery: async () => 80, disconnect: async () => {},
-        mayFollow: () => true, numbersMoves: () => isNumbered,
-      });
-    }, numbered);
-  }
-  return { page, context, errors };
-}
-
-/** Open row `id` on the page and return what it prints — read off the DOM, never off the ledger. */
-async function show(page, id) {
-  await page.evaluate((x) => window.__p.show(x), id);
-  await page.waitForFunction((x) => window.__p.ready(x), id, { timeout: LIVENESS_MS });
-  return page.evaluate(() => ({ chips: window.__p.chips(), data: window.__p.data() }));
-}
-
-/** Feed a start arrangement and then `flat`, answering how many `done` sounds each report had made by then. */
-const feedRep = (page, start, flat, opts = {}) => page.evaluate(({ f, qs, o }) => {
-  const before = window.__p.count('done');
-  window.__p.facelets(f);
-  return qs.map((q) => { window.__p.move(q, o); return window.__p.count('done') - before; });
-}, { f: toFacelets(start), qs: flat, o: opts });
+/** A page on the Practice library, with the stand-in cube connected unless a case says otherwise. */
+const openPractice = (opts) => openOn(fixture, opts);
 
 // ---- D1, D2: every row completes exactly at its last report, and the page prints what is judged ------------
 
@@ -205,9 +79,6 @@ test('every ledger row completes exactly at its last report — never before —
 });
 
 // ---- D4: a wrong turn is heard once; a lost turn, a slice's first face, a half turn's first quarter never ----
-
-/** Tokens' identity faces as they are reported, for choosing a turn that is surely off the plan. */
-const axesNear = (per, k) => new Set([k - 1, k, k + 1].flatMap((i) => (per[i] ?? []).map((q) => AXIS[q[0]])));
 
 /**
  * Feed `row` from a random start to the first position after the hold is settled where a face turn on a free
