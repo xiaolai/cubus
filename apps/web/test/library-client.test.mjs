@@ -259,3 +259,61 @@ test('a malformed catalogue is not kept: the next visit asks a fresh worker and 
   assert.equal(h.workers.length, 2, 'the malformed answer was kept, or asked again of the same worker');
   assert.deepEqual(await next, CATALOGUE);
 });
+
+// ---- an answer that cannot be sent is a refusal, never a rejection nobody hears ----------------------------
+
+/** Collect the process's unhandled rejections while `body` runs. */
+async function unhandledDuring(body) {
+  const seen = [];
+  const note = (reason) => seen.push(reason);
+  process.on('unhandledRejection', note);
+  try {
+    await body();
+    await new Promise((r) => setTimeout(r, 20));
+  } finally {
+    process.off('unhandledRejection', note);
+  }
+  return seen;
+}
+
+test('an answer that cannot be cloned is refused through the protocol, at once, and the next question is answered', async () => {
+  let loads = 0;
+  // A library whose answer holds something structured clone refuses (a function), then the real one.
+  const load = async () => (++loads === 1 ? { algIds: async () => ['sune', () => 'not data'] } : import('../lib/alg-library.js'));
+  const spawned = [];
+  const client = createLibraryClient({ spawn: () => { const w = inlineLibraryWorker(load); spawned.push(w); return w; }, setTimer: () => 0, clearTimer: () => {} });
+  const unhandled = await unhandledDuring(async () => {
+    // The deadline never fires here, so only the protocol can answer this question.
+    await assert.rejects(client.ids(), /the library's answer could not be sent: .*could not be cloned/);
+  });
+  assert.deepEqual(unhandled, [], 'the clone failure rejected where nobody listens');
+  assert.ok((await client.ids()).has('sune'));
+  assert.equal(spawned.length, 2, 'the worker that could not send was asked again');
+});
+
+test('the worker sends a refusal when its answer cannot cross, under the same question', async () => {
+  // library-worker.js run here against a stand-in `self` — the page's side of a real worker. Its first post
+  // throws as a browser's does for an answer it cannot clone; the second must be the refusal.
+  const posted = [];
+  let listener = null;
+  globalThis.self = {
+    addEventListener: (type, fn) => { if (type === 'message') listener = fn; },
+    postMessage: (m) => {
+      if (!posted.length && m.ok === true) { posted.push('threw'); throw Object.assign(new Error('could not be cloned'), { name: 'DataCloneError' }); }
+      posted.push(m);
+    },
+  };
+  try {
+    await import('../lib/drill/library-worker.js');
+    assert.equal(typeof listener, 'function', 'the worker listens for no questions');
+    const unhandled = await unhandledDuring(() => listener({ data: { kind: LIBRARY_ASK, id: 7, ask: 'ids' } }));
+    assert.deepEqual(unhandled, []);
+    assert.equal(posted[0], 'threw');
+    assert.deepEqual(posted[1], {
+      kind: LIBRARY_ASK, id: 7, ok: false,
+      error: { name: 'DataCloneError', message: 'the library\'s answer could not be sent: could not be cloned' },
+    });
+  } finally {
+    delete globalThis.self;
+  }
+});

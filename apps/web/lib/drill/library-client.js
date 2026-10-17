@@ -158,6 +158,25 @@ export async function answerLibrary(load, request) {
 }
 
 /**
+ * Send one answer through `post`, or — when it cannot cross (structured clone refuses a value in it) — a
+ * refusal under the same question naming why. Either way the question that asked is answered through the
+ * protocol at once, and nothing rejects where nobody listens. The one door the worker and its node stand-in
+ * both send through.
+ */
+export function postAnswer(answer, post) {
+  try {
+    post(answer);
+  } catch (err) {
+    post({
+      kind: LIBRARY_ASK,
+      id: answer.id,
+      ok: false,
+      error: { name: String(err?.name ?? 'Error'), message: `the library's answer could not be sent: ${err?.message ?? err}` },
+    });
+  }
+}
+
+/**
  * How long one question may wait for the worker before the worker is given up. The worker's whole job — the
  * library's import, every row id and every row — measured 3.2 s in Node on 2026-10-17 (this file's header);
  * on 2026-10-18, 0.5 s in Node and 0.6 s in a real WebKit worker, both on a heavily loaded machine. The bound
@@ -279,7 +298,9 @@ export function inlineLibraryWorker(load = () => import('../alg-library.js')) {
     postMessage(message) {
       const request = structuredClone(message);
       setTimeout(async () => {
-        const data = structuredClone(await answerLibrary(load, request));
+        // Cloned as a worker's reply is, through the same door: an answer that cannot be cloned is a refusal.
+        let data;
+        postAnswer(await answerLibrary(load, request), (answer) => { data = structuredClone(answer); });
         for (const fn of listeners.message) fn({ data });
       }, 0);
     },
