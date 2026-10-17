@@ -739,20 +739,29 @@ test('without storage events, a window puts its rep back at its next add', () =>
   assert.deepEqual(statusOf(a), QUIET);
 });
 
-test('row 8: two windows saving the same rep of one algorithm in one millisecond both keep it', () => {
+test('row 8: two windows saving the same rep of one algorithm in one millisecond both keep it — whichever page\'s ids order first', () => {
   // Before: the two reps were one string, so the record held one and neither window said a thing.
-  const w = windows(2);
-  const { records: [a, b] } = openAll(w, () => 5_000);
-  assert.equal(a.add('x', rep({ ms: 100 })).saved, true);
-  w.deliver();
-  assert.deepEqual([a.add('x', rep()).saved, b.add('x', rep()).saved], [true, true]);
-  w.deliver();
-  const kept = (w.stored().get('x') ?? []).slice(1);
-  assert.equal(kept.length, 2, 'two reps each said saved are one on record');
-  assert.deepEqual(kept.map((r) => [r.at, r.ms]), [[5_000, 1000], [5_000, 1000]]);
-  assert.notEqual(kept[0].repId, kept[1].repId);
-  assert.deepEqual([statusOf(a), statusOf(b)], [QUIET, QUIET]);
-  assert.deepEqual(msOf(a.read()), msOf(b.read()));
+  // The record both windows have seen is a millisecond OLDER than the crossing reps. In the same millisecond, the
+  // second window's rep would have to order after the first's by id — a coin toss between two random page halves,
+  // refused when lost by design (`a rep in the millisecond of another page's newest rep …`) — which made this test
+  // fail on about half its runs. Each order is driven here, and the platform's own source after them.
+  const sources = [['this page\'s ids order last', (i) => (i === 0 ? 0xffffffff : 0)], ['this page\'s ids order first', (i) => (i === 0 ? 0 : 0xffffffff)], ['the platform\'s source', null]];
+  for (const [order, draw] of sources) {
+    let t = 4_999;
+    const w = windows(2);
+    const { records: [a, b] } = openAll(w, () => t, (i) => (draw ? { random: () => draw(i) } : {}));
+    assert.equal(a.add('x', rep({ ms: 100 })).saved, true);
+    w.deliver();
+    t = 5_000;
+    assert.deepEqual([a.add('x', rep()).saved, b.add('x', rep()).saved], [true, true], `${order}: a rep was refused`);
+    w.deliver();
+    const kept = (w.stored().get('x') ?? []).slice(1);
+    assert.equal(kept.length, 2, `${order}: two reps each said saved are one on record`);
+    assert.deepEqual(kept.map((r) => [r.at, r.ms]), [[5_000, 1000], [5_000, 1000]]);
+    assert.notEqual(kept[0].repId, kept[1].repId);
+    assert.deepEqual([statusOf(a), statusOf(b)], [QUIET, QUIET]);
+    assert.deepEqual(msOf(a.read()), msOf(b.read()));
+  }
 });
 
 test('row 9: a removal whose event arrives late takes only what it removed — a rep saved after it stays, and is put back over a competing write', () => {
