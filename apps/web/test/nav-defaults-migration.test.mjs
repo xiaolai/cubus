@@ -62,7 +62,8 @@ test('a later version cannot be applied before an earlier one', () => {
 
 test('the shipped migration hides Timer and Stats for someone from before version 2, and keeps a hide', () => {
   const out = migrateNavDefaults(1, ['stats']);
-  assert.deepEqual(out.navHidden, ['stats', 'timer']);
+  // …and Practice, which version 8 hides for everyone (dev-docs/algorithm-drill-v2-plan.md §4).
+  assert.deepEqual(out.navHidden, ['stats', 'timer', 'practice']);
   assert.equal(out.navDefaults, NAV_DEFAULTS_VERSION);
 });
 
@@ -174,4 +175,31 @@ test('no migration ships above the version anyone will ever migrate to', () => {
   // depends on membership and reordering `DEFAULT_HIDDEN` changes no behaviour (audit, 2026-10-06).
   assert.deepEqual(shipped, [...DEFAULT_HIDDEN].sort(),
     'walking every migration does not land on the shipped default hidden set');
+});
+
+// ---- Practice earns its tab (dev-docs/algorithm-drill-v2-plan.md §4, ADR 0010) ----------------------------
+//
+// BY NAME, for the reason the cases above give: a loop over DEFAULT_HIDDEN stops checking an id the moment it
+// leaves the list. Practice is a screen rebuilt after the first Drill was removed, so it starts hidden on EVERY
+// install — fresh, or at any earlier version — and a person who shows it keeps it shown.
+
+test('Practice is hidden on a fresh install and on every install from before version 8', () => {
+  for (const from of [undefined, 0, 1, 2, 5, 6, 7, -1e100, 'x']) {
+    const out = migrateNavDefaults(from, []);
+    assert.ok(out.navHidden.includes('practice'), `version ${JSON.stringify(from)}: Practice is in the toolbar`);
+  }
+  assert.ok(HIDEABLE.some(([id]) => id === 'practice'), 'Practice cannot be switched on in Advanced');
+});
+
+test('a Practice tab someone turned on stays on', () => {
+  for (const from of [8, 9]) {
+    assert.ok(!migrateNavDefaults(from, []).navHidden.includes('practice'), `version ${from} hid Practice again`);
+  }
+});
+
+test('the practice screen does not reuse the id of a screen that was removed', async () => {
+  const { NAV } = await import('../lib/app-state.js');
+  const ids = NAV.map(([id]) => id);
+  assert.ok(ids.includes('practice'));
+  for (const id of ['drill', 'trainer']) assert.ok(!ids.includes(id), `${id} names a removed screen (ADR 0010)`);
 });

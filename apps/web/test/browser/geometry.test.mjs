@@ -1154,6 +1154,7 @@ const MEASURED_ELSEWHERE = Object.freeze({
   home: 'the composition and cube-fit cases, which are what the layout contract is about',
   scan: 'its own fixtures — the live face, the board and the sheet each have a case',
   scramble: 'the walking composition, measured with the cube screen it shares',
+  practice: 'its two compositions, each at its worst content: the library with its largest set open, and the page for the longest algorithm',
 });
 
 test('every screen the app can route to is measured by some case in this file', () => {
@@ -1308,6 +1309,76 @@ for (const screen of SCREENS) {
       }
     });
   }
+}
+
+// ---- Practice: two compositions on one route, each measured at the content that stresses it ----------------
+//
+// The route alone shows the LIBRARY with every set closed — a list of headings, which tests nothing. So each
+// case chooses its content by what it holds, never the first one listed: the set with the most cards, opened,
+// and the page for the row with the most turns (the most chips, the widest chunk names). Both wait for the
+// library worker's answer (`data-ready`), because before it the screen is one line of text.
+
+/** The floor every screen shares, asked of the active screen's measurement. */
+function practiceFloor(m, fixture, what) {
+  assert.ok(m.overflow.doc <= 0, `${what}: the page overflows the viewport by ${m.overflow.doc}px`);
+  assert.ok(m.overflow.screen <= 1, `${what}: the screen overflows sideways by ${m.overflow.screen}px`);
+  assert.deepEqual(m.beyond, [], `${what}: drawn beyond the stage`);
+  assert.deepEqual(m.collapsed, [], `${what}: a control on the page has no box`);
+  assert.deepEqual(m.fits, { spills: [], cut: [] }, `${what}: text that cannot be read where it is drawn — see contentFits`);
+  assert.ok(m.rootOverflowsDown <= 1, `${what}: the root hangs ${m.rootOverflowsDown}px below the screen`);
+  if (m.rootContentOverflows) assert.ok(m.scrollableInside, `${what}: content taller than the root and nothing scrolls`);
+  if (m.col && m.aside) assert.ok(!overlaps(m.col, m.aside), `${what}: the sheet draws over the column`);
+  if (fixture.touch) {
+    assert.deepEqual(m.controls.filter((c) => c.width < 44 - 0.5 || c.height < 44 - 0.5), [], `${what}: touch controls under 44px`);
+    for (const t of m.toggles) assert.ok(t.above && t.below, `${what}: a toggle's hit area does not reach 44px`);
+  }
+}
+
+for (const fixture of FIXTURES) {
+  test(`practice library, largest set open: ${label(fixture)}`, async () => {
+    const { page, context, errors } = await openAt(fixture, urlFor(fixture, 'practice'));
+    try {
+      await page.waitForSelector('.practice-screen[data-ready="1"]');
+      const opened = await page.evaluate(() => {
+        const sets = [...document.querySelectorAll('details.alg-set')];
+        const largest = sets.reduce((a, b) => (b.querySelectorAll('[data-alg]').length > a.querySelectorAll('[data-alg]').length ? b : a));
+        largest.open = true;
+        return { set: largest.dataset.set, cards: largest.querySelectorAll('[data-alg]').length };
+      });
+      assert.ok(opened.cards >= 50, `the largest set holds ${opened.cards} cards — the library did not load`);
+      practiceFloor(await measureScreen(page), fixture, `library (${opened.set}, ${opened.cards} cards)`);
+      assert.deepEqual(errors.map(String), [], 'the page threw');
+    } finally {
+      await context.close();
+    }
+  });
+
+  test(`practice page, longest algorithm: ${label(fixture)}`, async () => {
+    const { page, context, errors } = await openAt(fixture, urlFor(fixture, 'practice'));
+    try {
+      await page.waitForSelector('.practice-screen[data-ready="1"]');
+      const id = await page.evaluate(async () => {
+        const { library } = await import('/lib/drill/library-client.js');
+        const rows = Object.values((await library.catalogue()).rows);
+        const longest = rows.reduce((a, b) => (b.alg.split(/\s+/).length > a.alg.split(/\s+/).length ? b : a));
+        document.querySelector(`[data-alg="${longest.id}"]`).click();
+        return longest.id;
+      });
+      await page.waitForFunction((x) => document.querySelector('.practice-page')?.dataset.ready === '1'
+        && document.querySelector('.practice-page')?.dataset.alg === x, id);
+      practiceFloor(await measureScreen(page), fixture, `page (${id})`);
+      // A card whose content is taller than it and does not scroll draws that content over its neighbour —
+      // the case card's sentences did, over the sheet, in the portrait window. contentFits cannot see it: every
+      // text box is the size of its text, and the card clips nothing.
+      const overrun = await page.evaluate(() => [...document.querySelectorAll('.screen.active .card')]
+        .filter((c) => c.scrollHeight > c.clientHeight + 1 && !/auto|scroll|hidden/.test(getComputedStyle(c).overflowY))
+        .map((c) => `${c.id || c.className}: ${c.scrollHeight}px in ${c.clientHeight}px`));
+      assert.deepEqual(overrun, [], `page (${id}): a card's content runs out of it`);
+      assert.deepEqual(errors.map(String), [], 'the page threw');
+    } finally {
+      await context.close();
+    }
+  });
 }
 
 test('a popover opened on the stage stays inside it', async () => {

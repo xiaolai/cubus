@@ -359,6 +359,7 @@ const cubeScreen = (screenMode) => {
         </div>`}
         <div class="list" id="solList" style="padding:6px 0"></div>
         ${scrambling ? '' : '<div class="sub" id="whyLine" style="padding:0 18px 10px;color:var(--ink-4)" hidden></div>'}
+        ${scrambling ? '' : '<button class="pill" id="practiseStep" type="button" style="margin:0 18px 10px;align-self:flex-start" hidden></button>'}
         <div class="follow-note" id="followNote" hidden>
           <span id="followMsg" role="status" aria-live="polite"></span>
           <div class="acts">

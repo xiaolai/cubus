@@ -62,6 +62,9 @@ export const APP_SOURCES = Object.freeze([
   'lib/screens/settings/preferences.js',
   // the Timer's own parts, 2026-09-14
   'lib/screens/timer/scramble-request.js',
+  // algorithm practice and its parts, and the lesson's way to it, 2026-10-17 (dev-docs/algorithm-drill-v2-plan.md §4)
+  'lib/screens/practice.js', 'lib/screens/practice/library-view.js', 'lib/screens/practice/page-view.js',
+  'lib/practice-link.js',
 ]);
 
 /** Every other module under lib/: the engines, drivers, pure helpers, workers and bundle entries
@@ -82,6 +85,8 @@ export const LIBRARY_SOURCES = Object.freeze([
   'lib/drill/candidates.js', 'lib/drill/engine.js', 'lib/drill/timing.js',
   // the practice record (an injected storage, so no app module) and mixed practice, 2026-10-17 (§5)
   'lib/drill/mix.js', 'lib/drill/record.js',
+  // the ledger read off the UI thread, 2026-10-17 (§4): the client and its worker
+  'lib/drill/library-client.js', 'lib/drill/library-worker.js',
   'lib/element-writes.js', 'lib/host.js', 'lib/i18n.js', 'lib/lesson-cut.js', 'lib/lesson-format.js',
   'lib/lesson-schedule.js', 'lib/method-lesson.js', 'lib/method-stops.js',
   'lib/method-solver.js', 'lib/methods/cross.js', 'lib/lesson-client.js', 'lib/lesson-worker.js',

@@ -30,6 +30,8 @@ import './screens/settings.js';
 import './screens/stats.js';
 // The whole picture catalogue, reached from the cube screen's Shapes menu rather than from a tab.
 import './screens/shapes.js';
+// Algorithm practice: hidden by default, earning its tab (dev-docs/algorithm-drill-v2-plan.md §4).
+import './screens/practice.js';
 
 // The names the test suites read off the app, from the modules that own them.
 export { DEFAULT_PALETTE } from './app-settings.js';

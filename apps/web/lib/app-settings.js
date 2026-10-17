@@ -81,6 +81,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   // call Q1, 2026-10-16).
   solveMethod: DEFAULT_METHOD,
 });
+
 /** Every setting whose default is a boolean — DERIVED, so a new flag is repaired the moment it has a
  *  default, and no list kept by hand can leave one out (audit, 2026-09-19: the tests' own copies had
  *  already drifted). */
@@ -293,6 +294,7 @@ delete settings.advanced;
 export const HIDEABLE = [
   ['timer', 'Timer'],
   ['stats', 'Stats'],
+  ['practice', 'Practice'],
 ];
 
 /** Hidden unless asked for. The default row is Home, Restore and Scramble — solve, scan,
@@ -304,7 +306,7 @@ export const HIDEABLE = [
  * alone, and one wiped localStorage brought five placeholder screens back into the toolbar.
  * Changing this list is HALF a change: see `NAV_ADDED` below for the half that reaches a record
  * that has already run. */
-export const DEFAULT_HIDDEN = ['timer', 'stats'];
+export const DEFAULT_HIDDEN = ['timer', 'stats', 'practice'];
 
 /**
  * What each version ADDED, so a bump applies a delta rather than the whole set.
@@ -329,6 +331,11 @@ const NAV_ADDED = Object.freeze({
   // screens. All six were removed on 2026-10-15 (ADR 0010), and so were their entries: an id that
   // names no screen is dropped from the stored record at load (the `HIDEABLE_IDS` filter below), so
   // hiding one again would only write an id that is then thrown away.
+  //
+  // Algorithm practice, rebuilt after the first Drill was removed (dev-docs/algorithm-drill-v2-plan.md §4):
+  // "a screen rebuilt later starts as a module with no screen, and earns its tab again" (ADR 0010). Hidden on
+  // every install, a fresh one included; reachable in Settings → Advanced and at #/practice.
+  8: ['practice'],
 });
 
 /**
@@ -345,7 +352,7 @@ const NAV_ADDED = Object.freeze({
  * did it once, for a screen since removed; nothing is brought back today.
  */
 const NAV_SHOWN = Object.freeze({});
-export const NAV_DEFAULTS_VERSION = 7;
+export const NAV_DEFAULTS_VERSION = 8;
 
 // localStorage is untrusted input: anything in here that is not a hideable id is dropped rather
 // than allowed to silently remove some other nav entry.

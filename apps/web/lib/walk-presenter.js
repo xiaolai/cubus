@@ -20,6 +20,7 @@
 import { t } from './i18n.js';
 import { createHoldCube, holdAtMove, holdChangeAt, moveHold } from './hold-presenter.js';
 import { stepAtMove, whyText } from './method-lesson.js';
+import { offerPractice } from './practice-link.js';
 import { SCAN_HOLD } from './solving-hold.js';
 
 /**
@@ -126,15 +127,19 @@ export function createWalkPresenter({
   function pointAtStep(i) {
     const { lesson, walkHold, walkGen } = walkNow();
     const whyLine = $('#whyLine', root);
+    // "Practise this", beside the step that names an algorithm the ledger holds (lib/practice-link.js).
+    const practise = $('#practiseStep', root);
     cube.removeAttribute('focus');
     if (!lesson || scrambling) {
       cube.removeAttribute('highlight');
       if (whyLine) { whyLine.hidden = true; whyLine.textContent = ''; }
+      offerPractice(practise, null);
       // No lesson line, so nothing was said: the next lesson speaks for the drawing as it stands.
       toldHold = drawnHold;
       return;
     }
     const step = lesson.steps[stepAtMove(lesson.moveStep, i)];
+    offerPractice(practise, step);
     // The step's cues were worked out and renamed into the scan frame when the lesson was built
     // (`lessonFor`). Whole-or-nothing at the renderer: an empty spec removes the channel rather
     // than setting it to a selector that names nothing.

@@ -82,6 +82,10 @@ export const NAV = [
   ['scramble', 'Scramble', 'dice'],
   ['timer', 'Timer', 'timer'],
   ['stats', 'Stats', 'chart'],
+  // Algorithm practice (dev-docs/algorithm-drill-v2-plan.md §4). A screen REBUILT after the first Drill was
+  // removed (ADR 0010), so it starts hidden and earns its tab: `NAV_ADDED[8]` in lib/app-settings.js. Its id is
+  // not `drill` or `trainer`, which name removed screens and are dropped from every stored record.
+  ['practice', 'Practice', 'repeat'],
 ];
 // Each screen's name. It is shown in the title bar rather than in a bar of its own, so there is no
 // second line of chrome restating what the nav already highlights. The subtitles that used to sit
@@ -110,6 +114,12 @@ export const state = {
    * already standing (plan §6).
    */
   stageTarget: 'solved',
+  /**
+   * The ledger row the Practice screen is open on, or null for its library. A fact about this visit, set by a
+   * library card or a lesson's "practise this" (`lib/practice-link.js`) — never stored, so a reload lands on
+   * the library rather than on a row the ledger may no longer hold.
+   */
+  practiceAlg: null,
   // ---- smart cube (recovered from v0) ---------------------------------------------------------
   connected: false,
   cubeName: '',

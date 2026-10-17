@@ -1,0 +1,79 @@
+// The Practice screen's LIBRARY composition: every ledger row, by method, then stage, then set — as markup.
+//
+// Pure over the catalogue the library worker sends (`catalogueOf` in lib/drill/library-client.js): no DOM, no
+// state, so what a card says is a function of the row and nothing else. Every word goes through `t()`, and
+// every string from the ledger is escaped — a row is data, never markup.
+//
+// WHAT IS SAID WHERE. The set's `purpose` — what every algorithm in it is FOR, one sentence shared by the set — is
+// said ONCE, under the set's heading. A card says what is particular to its row: the case picture (`solves`), the
+// row's name, and the row's own `says`. Saying the purpose on every card would repeat one sentence fifty times
+// and hide the one that tells the cards apart. The library never writes a sentence about an algorithm itself (the
+// ledger's rule: every fact is computed or sourced).
+
+import { netSvg, topFaceSvg } from '../../cube-flat.js';
+import { plural, t } from '../../i18n.js';
+
+/** The width a card's picture is drawn at: a net is twelve stickers across, a top face three plus its ring. */
+const NET_W = 132;
+const TOP_W = 96;
+
+/** What a row is called on a card: the source's label with its nickname, or the id where the source gives
+ *  neither (a hand-written table names an algorithm by its id only — the ledger's `notGiven` says so). */
+export const rowName = (row) => {
+  const name = row.label ?? row.id;
+  return row.nickname ? t('%1 · %2', name, row.nickname) : name;
+};
+
+/** What a set is FOR: the ledger's purpose, the set's where the row carries none of its own. */
+export const purposeOf = (row, set) => row.purpose ?? set?.purpose ?? null;
+
+/** The row's case, drawn: a top face where the algorithm keeps the first two layers, the net otherwise. */
+export function casePicture(row, { palette, scheme, scale = 1 } = {}) {
+  const { facelets, picture } = row.solves;
+  const title = t('The case %1 solves', rowName(row));
+  if (picture === 'net') return netSvg(facelets, { palette, scheme, width: NET_W * scale, title });
+  return topFaceSvg(facelets, {
+    palette, scheme, width: TOP_W * scale, ring: true, mode: picture === 'top-orientation' ? 'orientation' : 'colours', title,
+  });
+}
+
+/** One row as the button that opens it. `data-alg`, never an `id`: a set taught by two methods is listed twice. */
+function card(row, look, esc) {
+  return `<button class="card alg-entry" type="button" data-alg="${esc(row.id)}" aria-label="${esc(t('Practise %1', rowName(row)))}">
+    ${casePicture(row, look)}
+    <b class="alg-name">${esc(rowName(row))}</b>
+    <span class="sub alg-say">${esc(row.says)}</span>
+  </button>`;
+}
+
+/** One set: a disclosure, closed until asked for, so a list of three hundred pictures is a list of headings —
+ *  each with its purpose, so what a set is for can be read before it is opened. */
+function setBlock(set, catalogue, look, esc) {
+  const rows = set.ids.map((id) => catalogue.rows[id]);
+  return `<details class="alg-set" data-set="${esc(set.id)}">
+    <summary><b>${esc(t(set.name))}</b> <span class="sub">${esc(plural(rows.length, { one: '%1 algorithm', other: '%1 algorithms' }))}</span>
+      ${set.purpose ? `<span class="sub alg-set-purpose">${esc(set.purpose)}</span>` : ''}</summary>
+    <div class="alg-grid">${rows.map((row) => card(row, look, esc)).join('')}</div>
+  </details>`;
+}
+
+/**
+ * The whole library, as markup.
+ *
+ * @param {Awaited<ReturnType<typeof import('../../drill/library-client.js').catalogueOf>>} catalogue
+ * @param {{ palette: string, scheme: string }} look  the colours the pictures are painted in
+ * @param {(v: unknown) => string} esc
+ */
+export function libraryHtml(catalogue, look, esc) {
+  const groups = catalogue.groups.map((g) => `<section class="alg-method" data-method="${esc(g.method ?? '')}">
+    <div class="eyebrow">${esc(g.label === null ? t('Not taught by any method') : t(g.label))}</div>
+    ${g.phases.map((p) => `<div class="alg-phase">
+      ${p.phase === null ? '' : `<div class="alg-phase-h">${esc(t(p.phase))}</div>`}
+      ${p.sets.map((id) => setBlock(catalogue.sets[id], catalogue, look, esc)).join('')}
+    </div>`).join('')}
+  </section>`).join('');
+  const pending = catalogue.pending.length
+    ? `<div class="card alg-pending sub" data-pending="${esc(catalogue.pending.map((p) => p.id).join(' '))}">${esc(t('Not here yet: %1. Their tables are not part of the app yet, so they cannot be practised.', catalogue.pending.map((p) => t(p.name)).join(t(', '))))}</div>`
+    : '';
+  return `${groups}${pending}`;
+}

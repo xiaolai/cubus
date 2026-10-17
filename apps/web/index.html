@@ -574,6 +574,40 @@
         .case-grid { grid-template-columns: 1fr; }
         .shape-entry > svg { width: 100%; max-width: 360px; height: auto; }
       }
+      /* Algorithm practice (lib/screens/practice.js). The library is a column of methods, each a list of sets
+         that open into a grid of cards — as many 150px cards as the width holds, intrinsic and container-driven,
+         never a viewport query. A card's picture and its sentence stack; the sentence wraps inside the card. */
+      .practice-list > * + * { margin-top: 18px; }
+      .alg-method { display: flex; flex-direction: column; gap: 10px; }
+      .alg-phase { display: flex; flex-direction: column; gap: 6px; }
+      .alg-phase-h { font-weight: 600; color: var(--ink-3); }
+      .alg-set > summary { min-height: 44px; display: flex; flex-wrap: wrap; align-items: center; column-gap: 8px; cursor: pointer; }
+      .alg-set-purpose { flex: 1 0 100%; padding: 2px 0 8px 20px; color: var(--ink-4); line-height: 1.45; }
+      /* A flex summary loses the platform's disclosure triangle, so the set draws its own: the one sign that a
+         heading opens, for a reader who will not read that it does. */
+      .alg-set > summary { list-style: none; }
+      .alg-set > summary::-webkit-details-marker { display: none; }
+      .alg-set > summary::before { content: '\203A'; display: inline-block; width: 12px; color: var(--ink-4); font-weight: 600; transition: transform var(--fade); }
+      .alg-set[open] > summary::before { transform: rotate(90deg); }
+      .alg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; padding: 8px 0 14px; }
+      .alg-entry { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; min-width: 0; }
+      .alg-entry > svg { max-width: 100%; height: auto; }
+      .alg-say { color: var(--ink-4); line-height: 1.35; overflow-wrap: anywhere; }
+      .practice-sheet { display: flex; flex-direction: column; gap: 14px; }
+      .practice-case { display: flex; flex-direction: column; gap: 8px; }
+      .practice-about { display: flex; flex-direction: column; gap: 8px; line-height: 1.5; }
+      .practice-pic > svg { max-width: 100%; height: auto; }
+      .practice-alg { display: flex; flex-wrap: wrap; gap: 12px; }
+      .alg-chunk { display: flex; flex-direction: column; gap: 4px; }
+      .alg-chunk-name { color: var(--ink-4); }
+      .alg-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+      /* A turn is ONE chip, and a written turn can be four characters ("Rw2'"): the chip grows sideways from its
+         square rather than spill the token over the next one. */
+      .alg-chips > .chip-m { width: auto; min-width: var(--chip); padding: 0 6px; }
+      .practice-time { color: var(--ink-3); }
+      .practice-figures { display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 8px; margin: 0; }
+      .practice-figures dd { margin: 0; font-weight: 600; }
+      .practice-reps { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
       /* A row of controls that wraps rather than overflows — the theme pills beside their
          description, the timer's last five. */
       .wrap-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
