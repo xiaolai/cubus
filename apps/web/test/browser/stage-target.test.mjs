@@ -120,6 +120,22 @@ async function scrambled(page) {
   }, null);
 }
 
+/** A FROZEN cube on Home, read the way a scan is — for a case whose assertions are about this cube's
+ *  numbers, which a drawn cube only makes probable (AGENTS.md §3). `facelets` must not be solved. */
+async function frozen(page, facelets) {
+  await page.goto(`${BASE}/#/scan`);
+  await page.waitForSelector('#stageCard', { state: 'attached' });
+  await page.evaluate((f) => {
+    document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-complete', {
+      detail: { facelets: f, rotations: [0, 0, 0, 0, 0, 0] },
+    }));
+  }, facelets);
+  await page.waitForFunction(() => document.querySelector('#stageCard')?.hidden === false, null);
+  await page.evaluate(() => { location.hash = '#/home'; });
+  await page.waitForFunction(() => document.querySelectorAll('.chip-m').length > 0, null);
+  await page.waitForFunction(() => /^\d+$/.test(document.querySelector('#moveCount')?.textContent ?? ''), null, { timeout: 30_000 });
+}
+
 /** Choose a method the way a learner does: past three methods the row is the chosen one's pill and a
  *  "More methods" menu (lib/screens/cube/method-row.js), so every method but the chosen one is in the menu. */
 async function chooseMethod(page, id) {
@@ -144,9 +160,11 @@ async function aimAt(page, id) {
 test('a target change walks a shorter answer, and says which kind of answer it is', async () => {
   const { page, context, errors } = await openHome();
   try {
-    await scrambled(page);
+    // A FROZEN cube: "the cross is fewer moves than the whole cube" is a fact about a cube, and on a drawn
+    // one it is only probable (audit, 2026-10-17).
+    await frozen(page, SCANNED);
     const whole = Number(await page.textContent('#moveCount'));
-    assert.ok(whole >= 15 && whole <= 20, `a random cube should solve in 15..20 moves, not ${whole}`);
+    assert.ok(Number.isInteger(whole) && whole >= 1 && whole <= 20, `a cube solves in 20 moves or fewer, not "${whole}"`);
     const wholeChips = await page.locator('.chip-m').count();
     assert.equal(wholeChips, whole, 'the chip grid is the move list, so the two counts must agree');
 
