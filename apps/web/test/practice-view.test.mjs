@@ -11,12 +11,12 @@ import { Window } from 'happy-dom';
 
 import * as lib from '../lib/alg-library.js';
 import { parse } from '../lib/cube-notation.js';
-import { TIME_REFUSAL } from '../lib/drill/timing.js';
+import { PAUSE_FACTOR, TIME_REFUSAL } from '../lib/drill/timing.js';
 import { statsOf } from '../lib/drill/record.js';
 import { catalogueOf, pendingName } from '../lib/drill/library-client.js';
 import { libraryHtml } from '../lib/screens/practice/library-view.js';
 import {
-  REFUSAL_CODES, chipsHtml, fingersWords, refusalWords, segmentsOf, writtenTokens,
+  REFUSAL_CODES, chipsHtml, fingersWords, partsWords, refusalWords, segmentsOf, writtenTokens,
 } from '../lib/screens/practice/page-view.js';
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -98,6 +98,19 @@ test('every refusal timing.js can give has words, and no words are kept for one 
   assert.deepEqual([...REFUSAL_CODES].sort(), Object.values(TIME_REFUSAL).sort());
   for (const code of REFUSAL_CODES) assert.ok(refusalWords(code).length > 0);
   assert.throws(() => refusalWords('made-up'), /no words/);
+});
+
+test('a timed rep says each named part\'s time and its marked pauses; a part nobody timed and a refused rep say nothing', () => {
+  const name = (s) => `part ${s.from}-${s.to}`;
+  const timed = { ms: 1500, splits: [{ from: 0, to: 4, ms: 500 }, { from: 4, to: 7, ms: null }], pauses: [{ afterReport: 3, ms: 900 }] };
+  assert.equal(partsWords(timed, name), `part 0-4 0.50 s · 1 pause over ${PAUSE_FACTOR}× your usual gap between turns`);
+  assert.equal(partsWords({ ...timed, pauses: [{}, {}] }, name), `part 0-4 0.50 s · 2 pauses over ${PAUSE_FACTOR}× your usual gap between turns`);
+  // What must NOT be said: a time for a part the clock could not time, any pause at all with none marked,
+  // and anything for a rep whose time was refused.
+  assert.equal(partsWords({ ...timed, splits: [], pauses: [] }, name), '');
+  assert.doesNotMatch(partsWords(timed, name), /part 4-7/);
+  assert.equal(partsWords({ ms: null, refused: 'stream-gap', splits: timed.splits, pauses: [] }, name), '');
+  assert.equal(partsWords(null, name), '');
 });
 
 // ---- WI-12: in the fingers after N clean reps in a row -----------------------------------------------------

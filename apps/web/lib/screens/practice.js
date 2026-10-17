@@ -40,7 +40,7 @@ import { PracticeRecordError, openPracticeRecord, statsOf, watchReps } from '../
 import { mixOrder } from '../drill/mix.js';
 import { casePicture, libraryHtml, purposeOf, rowName } from './practice/library-view.js';
 import {
-  chipsHtml, figuresHtml, lastRepsHtml, orderWords, refusalWords, seconds, segmentsOf, writtenTokens,
+  chipsHtml, figuresHtml, lastRepsHtml, orderWords, partsWords, refusalWords, seconds, segmentsOf, writtenTokens,
 } from './practice/page-view.js';
 
 /** How often the page asks whether the cube is still there. A disconnect of a cube whose chain was never
@@ -132,6 +132,7 @@ const PAGE_HTML = `<div class="cols practice-page" data-composition="practice">
         <span class="num practice-time" id="practiceTime" role="status" aria-live="polite">—</span>
         <button class="btn outline" id="practiceRestart" type="button" aria-keyshortcuts="Escape" title="${escHtml(t('Start over (Esc)'))}">${escHtml(t('Start over'))}</button>
       </div>
+      <div class="sub" id="practiceParts" hidden></div>
       <div id="practiceFigures"></div>
       <div class="sub" id="practiceRecordSay" role="status" style="color:var(--err-ink)" hidden></div>
       <div id="practiceReps"></div>
@@ -302,10 +303,22 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   };
 
   // ---- painting -----------------------------------------------------------------------------------------
+  /** A timed part is named by its trigger, the only parts the engine is asked to time (`makeEngine`). */
+  const partName = (split) => {
+    const chunk = row.chunks.find((c) => c.from === split.from && c.to === split.to);
+    return t(catalogue.triggers[chunk?.trigger]?.name ?? chunk?.trigger ?? '—');
+  };
+  const paintParts = (result) => {
+    const box = $('#practiceParts', root);
+    const text = result ? partsWords(result, partName) : '';
+    box.hidden = !text;
+    box.textContent = text;
+  };
   const paintClock = () => {
     const following = live();
     clockBtn.hidden = following;
     demoRow.hidden = following;
+    paintParts(following ? lastResult : null);
     if (following) {
       if (lastResult) {
         const r = lastResult;

@@ -7,7 +7,7 @@
 // the text as written, never re-spelled — and the screen hands the engine that same string.
 
 import { plural, t } from '../../i18n.js';
-import { TIME_REFUSAL } from '../../drill/timing.js';
+import { PAUSE_FACTOR, TIME_REFUSAL } from '../../drill/timing.js';
 
 /** The algorithm as written, one token per element: the text the engine parses, split where it is spaced. */
 export const writtenTokens = (alg) => String(alg).trim().split(/\s+/).filter(Boolean);
@@ -89,6 +89,23 @@ export function lastRepsHtml(reps, esc, most = 5) {
     const verdict = r.lostTurn ? t('not judged: a turn went missing') : r.clean ? t('clean') : t('left the algorithm');
     return `<li class="sub"><span class="num">${esc(time)}</span> · ${esc(verdict)}</li>`;
   }).join('')}</ol>`;
+}
+
+/**
+ * What a timed rep measured beyond its total (plan §3.5): each named part's own time, and how many gaps were
+ * long enough to be marked as pauses. `partName(split)` names a part; a part the cube's clock could not time
+ * is left out rather than given a time nobody measured, and a refused rep says nothing here — its refusal is
+ * already the time's.
+ */
+export function partsWords(result, partName) {
+  if (!result || result.ms === null) return '';
+  const parts = result.splits.filter((s) => s.ms !== null).map((s) => t('%1 %2', partName(s), seconds(s.ms)));
+  const n = result.pauses.length;
+  const pauses = n ? plural(n, {
+    one: '%1 pause over %2× your usual gap between turns',
+    other: '%1 pauses over %2× your usual gap between turns',
+  }, n).replace('%2', String(PAUSE_FACTOR)) : '';
+  return [...parts, pauses].filter(Boolean).join(' · ');
 }
 
 /** How many times repeating the algorithm brings the cube back, said only where the ledger computed it. */

@@ -473,6 +473,39 @@ test('"in the fingers" appears at the 7th clean rep in a row — not the 6th —
   }
 });
 
+// ---- D3 on the page: a timed rep shows each part's own time on the cube's clock ------------------------------
+
+test('a timed rep shows each named part\'s own time, first report of the part to last, and no pause it did not make', async () => {
+  const { page, context, errors } = await openPractice();
+  try {
+    const catalogue = await page.evaluate(() => window.__p.rows());
+    const row = Object.values(catalogue.rows).find((r) => r.chunks.length >= 2 && !r.kinds.includes('rotation'));
+    assert.ok(row, 'no ledger row with two named parts and no whole-cube turn');
+    const rnd = lcg(14);
+    const printed = await show(page, row.id);
+    const per = reportsPerToken(printed.chips.join(' '), ORIENTATIONS[0], rnd);
+    // The report that reaches a token boundary: the last of the tokens before it. Every report is STEP_MS apart.
+    const reached = (k) => per.slice(0, k).flat().length - 1;
+    const dones = await feedRep(page, randomStart(rnd), per.flat());
+    assert.equal(dones.at(-1), 1, `${row.id}: the rep did not complete`);
+    const parts = await page.evaluate(() => {
+      const box = document.querySelector('#practiceParts');
+      return { hidden: box.hidden, text: box.textContent };
+    });
+    assert.equal(parts.hidden, false, `${row.id}: a timed rep with named parts showed none`);
+    for (const c of row.chunks) {
+      const ms = (reached(c.to) - (c.from === 0 ? 0 : reached(c.from))) * STEP_MS;
+      const want = `${catalogue.triggers[c.trigger].name} ${(ms / 1000).toFixed(2)} s`;
+      assert.ok(parts.text.includes(want), `${row.id}: "${parts.text}" does not say ${want}`);
+    }
+    // Evenly spaced reports make no pause, so none may be marked.
+    assert.doesNotMatch(parts.text, /pause/);
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
 // ---- WI-13 on the screen: mixed practice, weakest first, each algorithm once a round, none twice running ----
 
 test('mixed practice goes through the whole set weakest first, each once a round, and never one twice in a row', async () => {
