@@ -16,6 +16,7 @@ import { CORNERS, EDGES, SOLVED, applyAlg } from '../lib/cube-pieces.js';
 import { registerLocale, setLocale } from '../lib/i18n.js';
 import { parseHighlight } from '../lib/cube-highlight.js';
 import { HUMAN_ALGS } from '../lib/data/human-algs.js';
+import { CMLL_ALGS } from '../lib/data/cmll-algs.js';
 import {
   CASE_TEXT_KEYS, WHY_KEYS, caseNameOf, caseText, lessonCues, lessonSections, moveStepIndex, namedPieces, turnsIn,
   stepAtMove,
@@ -26,12 +27,16 @@ import {
   CASE_NAMES, allMethods, allRungCombinations, methodFor, rungKey, solveByMethod,
 } from '../lib/method-solver.js';
 import { seededStates } from './fixtures/seeded-scrambles.mjs';
+import { EVERY_METHOD } from './fixtures/every-method.mjs';
 
-/** Every step every method can produce, on both last-layer routes, over a fixed sample. */
+/** Every step every method can produce — the ladder on both last-layer routes, and every other family — over
+ *  a fixed sample. */
 function everyStep(n = 12, seed = 4242) {
   const steps = [];
-  for (const state of seededStates(n, seed)) {
-    for (const method of allMethods()) {
+  // Plus one cube a turn of the top from solved: Roux's top corners then need that turn alone (`cmll.align`),
+  // three of the 648 corner arrangements, which a dozen scrambles do not reliably reach.
+  for (const state of [...seededStates(n, seed), applyAlg(SOLVED, 'U')]) {
+    for (const method of EVERY_METHOD) {
       for (const step of solveByMethod(state, method).steps) steps.push(step);
     }
   }
@@ -95,9 +100,11 @@ test('every algorithm the solver can name has a name in the reader\'s language',
   // the human-speed rows, named by the speedcubing community ("OLL 27", "T perm"): the table carries the
   // name, `humanCaseName` frames it, and `CASE_TEXT` must hold none of them — a second spelling of "T"
   // there would be a name for the same case that could drift from the sheets it is copied from.
-  const human = new Set(HUMAN_ALGS.map((row) => row.name));
+  // CMLL (lib/data/cmll-algs.js, Roux) is the same kind: 42 rows named by the sheet they were copied from.
+  const SOURCED = [...HUMAN_ALGS, ...CMLL_ALGS];
+  const human = new Set(SOURCED.map((row) => row.name));
   const named = CASE_NAMES.filter((n) => !human.has(n));
-  assert.equal(CASE_NAMES.length - named.length, 119, 'the one-look tables are not all in the repertoire');
+  assert.equal(CASE_NAMES.length - named.length, 119 + 42, 'the sourced tables are not all in the repertoire');
   assert.ok(named.length > 20, 'the split is not what it was');
   assert.deepEqual([...CASE_TEXT_KEYS].sort(), [...named].sort(),
     'the case-name table and the solver\'s named repertoire have drifted apart');
@@ -106,7 +113,7 @@ test('every algorithm the solver can name has a name in the reader\'s language',
   }
   for (const name of human) {
     assert.throws(() => caseText(name), /no name for case/, `${name} is named by its table, not by CASE_TEXT`);
-    const row = HUMAN_ALGS.find((r) => r.name === name);
+    const row = SOURCED.find((r) => r.name === name);
     // The community's label is IN the name a learner sees, verbatim — it is what they will search for.
     assert.ok(caseNameOf(name).includes(row.label), `${name} is shown without its label "${row.label}"`);
   }
@@ -238,9 +245,14 @@ const SECTION_OF = {
   'top-edges': 'pll',
   'edges-home': 'oll',
   'corners-turned': 'pll',
+  // Roux (ADR 0012): each stage its own heading.
+  'first-block': 'first-block',
+  'second-block': 'second-block',
+  cmll: 'cmll',
+  lse: 'lse',
 };
 const dialsSeen = new Set();
-  for (const method of allMethods()) {
+  for (const method of EVERY_METHOD) {
     for (const state of seededStates(5, 31337)) {
       const { steps, moveCount } = solveByMethod(state, method);
       const sections = lessonSections(steps);
@@ -267,7 +279,8 @@ const dialsSeen = new Set();
       // The dials appear IN ORDER, however many times the solve returns to one — and a dial that
       // is absent must be absent because the solve had no steps for it, never because a section
       // went missing.
-      const DIALS = ['cross', 'pairs', 'oll', 'pll'];
+      // The method's own stages are its dials, in walking order: the ladder's four, or Roux's.
+      const DIALS = method.stages.map((st) => st.id);
       const order = [...new Set(sections.map((s) => s.id))];
       const inOrder = DIALS.filter((d) => order.includes(d));
       assert.deepEqual(order, inOrder, `the stages came out in the wrong order: ${order.join(' ')}`);
@@ -280,7 +293,7 @@ const dialsSeen = new Set();
     }
   }
   // Absent SOMEWHERE is correct; absent everywhere would mean a dial that never renders.
-  assert.deepEqual([...dialsSeen].sort(), ['cross', 'oll', 'pairs', 'pll'],
+  assert.deepEqual([...dialsSeen].sort(), ['cmll', 'cross', 'first-block', 'lse', 'oll', 'pairs', 'pll', 'second-block'],
     'a dial produced no section in any method on either route');
 });
 

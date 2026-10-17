@@ -126,6 +126,8 @@ test('the pictures pin what each target is actually about', () => {
     'top-oriented': 42,  // two layers and the whole U face — the twist precondition earning its keep (CFOP)
     'six-cross': 30,     // six centres and all 24 edge stickers — a plus on every face
     'x-every-face': 30,  // six centres and all 24 CORNER stickers — the mirror of the line above
+    'first-block': 18,   // six centres, three edges' two stickers and two corners' three — Roux's left block
+    'both-blocks': 30,   // and the same again on the right
     solved: 54,
   };
   for (const target of TARGETS) {

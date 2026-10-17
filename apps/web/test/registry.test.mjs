@@ -17,11 +17,12 @@ import * as hold from '../lib/solving-hold.js';
 import * as lessonWords from '../lib/method-lesson.js';
 import * as targets from '../lib/stage-targets.js';
 
-test('the methods are Quick, Beginner and CFOP twice, under the owner\'s words and levels, and a new install walks Quick', () => {
-  assert.deepEqual(METHODS.map((m) => m.id), ['quick', 'beginner', 'cfop-4lll', 'cfop']);
-  // Owner's calls Q2 and Q6–Q7 (2026-10-16): the words, and the level each is grouped under.
-  assert.deepEqual(METHODS.map((m) => m.label), ['Quick', 'Beginner', 'CFOP (easy)', 'CFOP (full)']);
-  assert.deepEqual(METHODS.map((m) => m.level), ['first-steps', 'first-steps', 'getting-faster', 'competition']);
+test('the methods are Quick, Beginner, CFOP twice and Roux, under the owner\'s words and levels, and a new install walks Quick', () => {
+  assert.deepEqual(METHODS.map((m) => m.id), ['quick', 'beginner', 'cfop-4lll', 'cfop', 'roux']);
+  // Owner's calls Q2 and Q6–Q7 (2026-10-16): the words, and the level each is grouped under. Roux (Phase 8,
+  // 2026-10-17) is filed beside full CFOP: 42 CMLL algorithms is a competitor's table.
+  assert.deepEqual(METHODS.map((m) => m.label), ['Quick', 'Beginner', 'CFOP (easy)', 'CFOP (full)', 'Roux']);
+  assert.deepEqual(METHODS.map((m) => m.level), ['first-steps', 'first-steps', 'getting-faster', 'competition', 'competition']);
   assert.equal(DEFAULT_METHOD, 'quick', 'owner\'s call Q1: Quick is the default');
   assert.ok(isMethodId(DEFAULT_METHOD));
 });
@@ -180,8 +181,25 @@ test('every method\'s DECLARED holds are ones the driver can execute, in the fra
     // And the rule is CARRIED: what the driver reads off the built method is what the entry declared.
     assert.equal(methodOf(entry).turns, entry.holds.executable[0].turns, `${entry.id}: the built method carries another hold rule`);
   }
-  // The cross-first methods keep their cross underneath.
+  // The cross-first methods keep their cross underneath; only Roux's slice moves the hold.
   for (const entry of METHODS.filter((m) => m.engine === 'method')) {
-    assert.equal(entry.holds.executable[0].turns, 'vertical', entry.id);
+    assert.equal(entry.holds.executable[0].turns, entry.id === 'roux' ? 'slice' : 'vertical', entry.id);
   }
+});
+
+test('Roux is its own family: four stages built whole, held white underneath throughout, stopping at both blocks', () => {
+  const roux = methodById('roux');
+  assert.equal(roux.method.family, 'roux');
+  assert.deepEqual(methodOf(roux).stages.map((st) => st.id), ['first-block', 'second-block', 'cmll', 'lse']);
+  assert.deepEqual([...roux.stages], ['first-block', 'second-block', 'cmll', 'lse']);
+  assert.deepEqual([...roux.holds.displayed.whiteUpStages], [], 'Roux is never held white up, so it is never turned over');
+  assert.deepEqual([...roux.stops], ['first-block', 'both-blocks', 'solved']);
+  for (const stop of roux.stops) assert.ok(TARGET_BY_ID[stop]?.offered, `"${stop}" is no offered target`);
+  for (const stage of roux.stages) assert.equal(typeof roux.words.sections[stage], 'function', `${stage} has no heading`);
+  // Every stage is proved over its whole domain, and the proof says so.
+  for (const scope of ['first block', 'second block', 'CMLL', 'last six edges']) {
+    assert.ok(roux.proof.some((p) => p.kind === 'exhaustive' && p.scope === scope), `no exhaustive proof for ${scope}`);
+  }
+  // A family name nobody builds is refused where the registry is checked, not where a lesson is asked for.
+  assert.throws(() => checkEntry({ ...roux, method: { family: 'petrus' } }), /unknown method family "petrus"/);
 });

@@ -159,6 +159,10 @@ test('the tables are the sizes and diameters they were measured at', () => {
     dCorners: [136080, 7], uCorners: [136080, 7], uCornerSlots: [1680, 4], flip: [2048, 7],
     // All eight corner twists (CFOP's top-oriented, ADR 0011 Phase 7): 3^7 reachable, God's number 6.
     twist: [2187, 6],
+    // Roux's blocks (ADR 0012): the first block's three edges (12·11·10 slots x 2^3 flips) and two corners
+    // (8·7 x 3^2); both blocks' six edges as two overlapping fours, each the size of the cross's — every code
+    // reachable, measured 2026-10-17.
+    fbEdges: [10560, 7], fbCorners: [504, 4], blockEdgesL: [190080, 8], blockEdgesR: [190080, 8],
   };
   assert.deepEqual(Object.keys(PROJECTIONS).sort(), Object.keys(EXPECTED).sort(), 'a projection was added or removed');
   for (const [id, [reachable, diameter]] of Object.entries(EXPECTED)) {

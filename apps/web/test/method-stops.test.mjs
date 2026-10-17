@@ -20,6 +20,14 @@ test('every method\'s row is real target descriptors, in the entry\'s order, eac
   }
 });
 
+test('and the other way: every offered target is some method\'s stop, so the worker bounds nothing no row shows', () => {
+  // `offered` MEANS "some method stops here" (AGENTS.md §3). Without this half, a target could be offered —
+  // bounded on every scan — with no method's row ever drawing its chip.
+  const stopped = new Set(METHODS.flatMap((m) => stopTargets(m.id).map((tg) => tg.id)));
+  assert.deepEqual(OFFERED_TARGETS.map((tg) => tg.id).filter((id) => !stopped.has(id)), [],
+    'an offered target no method stops at');
+});
+
 test('Beginner\'s row is the nesting, and Quick — which stops nowhere of its own — shows the same row', () => {
   assert.deepEqual(stopTargets('beginner').map((tg) => tg.id), NESTING);
   assert.deepEqual(stopTargets('quick').map((tg) => tg.id), NESTING);

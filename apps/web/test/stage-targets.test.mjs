@@ -187,9 +187,14 @@ test('the offered chips are the six stages and solved, in nesting order', () => 
   // Plus CFOP's `top-oriented` (ADR 0011 Phase 7), which nests with neither `top-edges` nor
   // `corners-home` and so sits OUTSIDE `NESTING`: it is offered because a method stops there, and which
   // chips a row shows is the chosen method's (`lib/method-stops.js`), never this list read whole.
-  assert.deepEqual(OFFERED_TARGETS.map((t) => t.id).filter((id) => id !== 'top-oriented'), NESTING);
-  assert.ok(OFFERED_TARGETS.some((t) => t.id === 'top-oriented'));
-  assert.equal(NESTING.includes('top-oriented'), false);
+  // And Roux's two blocks (ADR 0012), offered for the same reason: a method that builds no cross nests with
+  // none of the stages, so they sit outside `NESTING` too.
+  const outside = ['top-oriented', 'first-block', 'both-blocks'];
+  assert.deepEqual(OFFERED_TARGETS.map((t) => t.id).filter((id) => !outside.includes(id)), NESTING);
+  for (const id of outside) {
+    assert.ok(OFFERED_TARGETS.some((t) => t.id === id), `${id} is not offered`);
+    assert.equal(NESTING.includes(id), false, `${id} is in the stages' nesting`);
+  }
   assert.equal(TARGET_BY_ID['six-cross'].offered, false);
   assert.throws(() => targetById('no-such-target'), /no target named/);
 });
@@ -243,7 +248,7 @@ test('every table a target uses has a goal set containing that target’s projec
   // deduplicates correctly can never meet it. Every other target is a set of millions.
   const MIN_IN_TARGET = {
     cross: 8, 'first-layer': 8, 'two-layers': 8, 'top-cross': 8, 'top-edges': 8, 'corners-home': 8,
-    'top-oriented': 8, 'six-cross': 8, 'x-every-face': 8, solved: 1,
+    'top-oriented': 8, 'six-cross': 8, 'x-every-face': 8, 'first-block': 8, 'both-blocks': 8, solved: 1,
   };
   let totalChecked = 0;
   for (const target of TARGETS) {

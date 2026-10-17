@@ -23,7 +23,7 @@
 // that build ran on the UI thread at boot (ADR 0011 Phase 7 audit, 2026-10-16).
 
 import { t } from '../i18n.js';
-import { DEFAULT_RUNGS, STAGE_IDS } from './stage-ids.js';
+import { DEFAULT_RUNGS, ROUX_STAGE_IDS, STAGE_IDS } from './stage-ids.js';
 
 /** The levels the "More methods" menu groups by, in the order a learner meets them. */
 export const LEVELS = Object.freeze(['first-steps', 'getting-faster', 'competition']);
@@ -227,8 +227,50 @@ const CFOP_FULL = cfopEntry({
   sweep: [1, 1],
 });
 
+// ---- Roux (plan Phase 8; ADR 0012) -------------------------------------------------------------------------
+//
+// No cross and no layers: a block on the left, its twin on the right, the top corners in one look, the last six
+// edges with the middle slice. Held white underneath from the start — the blocks are built on the bottom — with
+// the first block on the left, and never turned over. Its tables ship (lib/data/roux/), the owner's call.
+
+const ROUX_SECTIONS = Object.freeze({
+  'first-block': () => t('Left block'),
+  'second-block': () => t('Right block'),
+  cmll: () => t('Top corners'),
+  lse: () => t('Last six edges'),
+});
+
+const ROUX = Object.freeze({
+  id: 'roux',
+  label: 'Roux',
+  level: 'competition',
+  engine: 'method',
+  method: Object.freeze({ family: 'roux' }),
+  stages: ROUX_STAGE_IDS,
+  holds: Object.freeze({
+    frame: Object.freeze(['D', 'B']),
+    // The middle slice moves the centres, and so the hold, while the hands stay where they are.
+    executable: Object.freeze([Object.freeze({ up: 'U', turns: 'slice' })]),
+    displayed: Object.freeze({ whiteUpStages: Object.freeze([]) }),
+  }),
+  stops: Object.freeze(['first-block', 'both-blocks', 'solved']),
+  words: Object.freeze({ dials: ROUX_STAGE_IDS, sections: ROUX_SECTIONS }),
+  algorithms: Object.freeze([
+    record({ set: 'first and second block', source: 'exact distance tables, shipped — found by search, no table of algorithms', rederived: 'test/roux-tables.test.mjs (cubejs)' }),
+    record({ set: 'CMLL (42)', source: 'lib/data/cmll-algs.js — SpeedCubeDB', rederived: 'test/cmll-algs.test.mjs (cubejs)' }),
+    record({ set: 'last six edges', source: 'exact distance tables — found by search, no table of algorithms', rederived: 'test/roux-tables.test.mjs (cubejs)' }),
+  ]),
+  proof: Object.freeze([
+    record({ scope: 'first block', kind: 'exhaustive', domain: 'all 5,322,240 positions of its five pieces', check: 'the shipped table is a breadth-first search over every position, rebuilt and compared by test/roux-tables.test.mjs', oracle: 'cubejs' }),
+    record({ scope: 'second block', kind: 'exhaustive', domain: 'all 1,088,640 positions of its five pieces with the first block built', check: 'test/roux-tables.test.mjs', oracle: 'cubejs' }),
+    record({ scope: 'CMLL', kind: 'exhaustive', domain: 'all 648 top-corner positions with both blocks built', check: 'test/cmll-algs.test.mjs', oracle: 'cubejs' }),
+    record({ scope: 'last six edges', kind: 'exhaustive', domain: 'all 184,320 reachable positions with the corners solved', check: 'test/roux-tables.test.mjs', oracle: 'cubejs' }),
+    record({ scope: 'whole method', kind: 'regression sampling', domain: 'seeded and frozen cubes', check: 'test/roux-method.test.mjs', oracle: 'cubejs' }),
+  ]),
+});
+
 /** Every method the app offers, in the order the pills show them. */
-export const METHODS = Object.freeze([QUICK, BEGINNER, CFOP_EASY, CFOP_FULL]);
+export const METHODS = Object.freeze([QUICK, BEGINNER, CFOP_EASY, CFOP_FULL, ROUX]);
 
 /** The method a new install walks (owner's call Q1, 2026-10-16). */
 export const DEFAULT_METHOD = 'quick';
@@ -248,6 +290,9 @@ export function methodById(id) {
   return BY_ID[id];
 }
 
+/** The method families a spec may name (lib/methods/method-of.js builds each). */
+export const METHOD_FAMILIES = Object.freeze(['ladder', 'roux']);
+
 const refuse = (entry, why) => { throw new Error(`methods: entry "${entry.id}" ${why}`); };
 
 /** What each engine requires of an entry beyond the fields every entry has, by engine name. */
@@ -259,12 +304,17 @@ const ENGINE_CHECKS = Object.freeze(Object.assign(Object.create(null), {
   // That the BUILT stages are the declared ones is `methodOf`'s check, where they are built.
   method: (entry) => {
     if (!entry.method || entry.stages.length === 0) refuse(entry, 'runs the method engine with no stages');
+    if (entry.proof.length === 0) refuse(entry, 'declares no proof');
+    // A family other than the ladder is built whole by `methodOf`, which compares the stages it builds with
+    // the ones declared; the ladder's spec is checked here, stage by stage.
+    const family = entry.method.family ?? 'ladder';
+    if (!METHOD_FAMILIES.includes(family)) refuse(entry, `names unknown method family "${String(family)}"`);
+    if (family !== 'ladder') return;
     const { rungs, lastLayer } = entry.method;
     if (!['app', 'course'].includes(lastLayer)) refuse(entry, `has unknown last-layer route "${lastLayer}"`);
     for (const stage of entry.stages) {
       if (!Number.isInteger(rungs?.[stage])) refuse(entry, `names no rung for its "${stage}" stage`);
     }
-    if (entry.proof.length === 0) refuse(entry, 'declares no proof');
   },
 }));
 

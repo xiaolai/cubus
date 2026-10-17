@@ -21,8 +21,9 @@
 import { CORNERS, EDGES, SOLVED, moveCount } from './cube-pieces.js';
 import { faceTurnsAlg, heldFace, identityFace, run } from './cube-moves.js';
 import { plural, t } from './i18n.js';
-import { BEGINNER_ENTRY } from './methods/registry.js';
+import { BEGINNER_ENTRY, METHODS } from './methods/registry.js';
 import { HUMAN_ALGS } from './data/human-algs.js';
+import { CMLL_ALGS } from './data/cmll-algs.js';
 
 /** The four dials a fine-grained stage name belongs to: the heading a step is filed under. */
 const DIAL_OF = Object.freeze({
@@ -37,6 +38,11 @@ const DIAL_OF = Object.freeze({
   // The course's route (ADR 0009): its edges go home in the top-face half, its corners turn in the last.
   'edges-home': 'oll',
   'corners-turned': 'pll',
+  // Roux (ADR 0012): each stage is its own heading.
+  'first-block': 'first-block',
+  'second-block': 'second-block',
+  cmll: 'cmll',
+  lse: 'lse',
 });
 
 /**
@@ -47,7 +53,19 @@ const DIAL_OF = Object.freeze({
 //
 // The names themselves are the beginner method's WORDS, declared in its registry entry (ADR 0011
 // decision 5), and so is where the cube is turned over.
-const SECTION_NAME = BEGINNER_ENTRY.words.sections;
+// Every entry's headings, merged: the CFOP entries share the beginner's, and Roux has its own. A dial two
+// entries both name must be headed by the same words, or a section would read differently by method — refused
+// when this module loads.
+const SECTION_NAME = (() => {
+  const out = Object.create(null);
+  for (const entry of METHODS) {
+    for (const [dial, name] of Object.entries(entry.words?.sections ?? {})) {
+      if (Object.hasOwn(out, dial) && out[dial] !== name) throw new Error(`method-lesson: two methods head the "${dial}" section differently`);
+      out[dial] = name;
+    }
+  }
+  return Object.freeze(out);
+})();
 const WHITE_UP_STAGES = BEGINNER_ENTRY.holds.displayed.whiteUpStages;
 
 /**
@@ -155,6 +173,23 @@ const WHY_TEXT = Object.freeze({
   'topCorners.twist': ({ topTurn } = {}) => (topTurn
     ? t('Turn the top to bring the last wrong-way corner to the front right, then turn it up. The layers underneath come back as it finishes.')
     : t('Turn the last wrong-way corner up at the front right. The layers underneath come back as it finishes.')),
+  // ---- Roux (ADR 0012). Held white underneath throughout, so each says one thing. The blocks stay where
+  // they are while the middle turns, so the anchor every sentence leans on is a block, never the top colour.
+  // DRAFTS, like D4 was: the owner approves their wording before they ship.
+  'firstBlock.build': ({ moves }) => plural(moves, {
+    one: 'Build a block on the left: three edges and two corners, in one move.',
+    other: 'Build a block on the left: three edges and two corners, in %1 moves.',
+  }),
+  'secondBlock.build': ({ moves }) => plural(moves, {
+    one: 'Build the same block on the right, turning only the right side, the top and the middle — one move.',
+    other: 'Build the same block on the right, turning only the right side, the top and the middle — %1 moves.',
+  }),
+  'secondBlock.align': () => t('Turn the middle until its centres match the two blocks.'),
+  'cmll.align': () => t('Turn the top until its four corners line up with the blocks.'),
+  'cmll.solve': () => t('Put the four top corners in place, keeping both blocks.'),
+  'lse.orient': () => t('Turn the middle and the top until every edge left is the right way round.'),
+  'lse.sides': () => t('Bring the left and right top edges home.'),
+  'lse.finish': () => t('Finish the middle — this solves the cube.'),
   'topCorners.twist.step': ({ topTurn } = {}) => (topTurn
     ? t('Turn the top until a wrong-way corner is at the front right, then turn it up. The layers underneath come apart for now, and come back when every corner is up.')
     : t('Turn the corner at the front right until it faces up. The layers underneath come apart for now, and come back when every corner is up.')),
@@ -219,8 +254,8 @@ const CASE_TEXT = Object.freeze({
  *  and still fails loudly. */
 const GENERATED_CASE_ID = /^(?:oll|pll|f2l):[0-9a-f]+$/;
 
-/** The human-speed table's rows, by their ids — `oll-27`, `pll-T`, `f2l-1`. */
-const HUMAN_ROW = new Map(HUMAN_ALGS.map((row) => [row.name, row]));
+/** The sourced tables' rows, by their ids — `oll-27`, `pll-T`, `f2l-1`, and CMLL's `cmll-sune-x`. */
+const HUMAN_ROW = new Map([...HUMAN_ALGS, ...CMLL_ALGS].map((row) => [row.name, row]));
 
 /**
  * The name the speedcubing community gives a row of the human-speed table — the name a learner will find
@@ -230,6 +265,7 @@ const HUMAN_ROW = new Map(HUMAN_ALGS.map((row) => [row.name, row]));
  * what the sheets are ordered by.
  */
 export function humanCaseName(row) {
+  if (row.name.startsWith('cmll-')) return t('CMLL %1', row.label);
   if (row.name.startsWith('pll-')) return t('%1 perm', row.label);
   return row.nickname ? t('%1 · %2', row.label, row.nickname) : row.label;
 }

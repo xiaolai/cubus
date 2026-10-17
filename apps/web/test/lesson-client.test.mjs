@@ -11,8 +11,8 @@ import Cube from 'cubejs';
 import { METHOD_SOLVE, createLessonClient, handleMethodSolve } from '../lib/lesson-client.js';
 import { STOP_NOW, stopDescriptor, stopWord } from '../lib/solve-client.js';
 import { solveByMethod } from '../lib/method-solver.js';
-import { methodById } from '../lib/methods/registry.js';
-import { methodOf } from '../lib/methods/method-of.js';
+import { METHODS, methodById } from '../lib/methods/registry.js';
+import { methodOf, prepareMethod } from '../lib/methods/method-of.js';
 import { SOLVED, applyAlg, toFacelets } from '../lib/cube-pieces.js';
 
 const engine = { solveByMethod, methodById, methodOf };
@@ -20,8 +20,11 @@ const engine = { solveByMethod, methodById, methodOf };
 const NEVER_HANGS = { timeout: 10_000 };
 const SCRAMBLED = applyAlg(SOLVED, "R U F' D2 L B U' R2 F D' L2 B2 U");
 
-test('the handler answers what solving on this thread answers, and it survives the structured clone', () => {
-  for (const method of ['beginner', 'cfop-4lll', 'cfop']) {
+test('the handler answers what solving on this thread answers, and it survives the structured clone', async () => {
+  // Every method with stages, from the registry; one whose tables ship is prepared first, as the worker does.
+  const methods = METHODS.filter((m) => m.engine === 'method');
+  for (const entry of methods) await prepareMethod(entry);
+  for (const method of methods.map((m) => m.id)) {
     const reply = structuredClone(handleMethodSolve(engine, structuredClone({ kind: METHOD_SOLVE, id: 7, state: SCRAMBLED, method })));
     const here = solveByMethod(SCRAMBLED, methodOf(methodById(method)));
     assert.equal(reply.kind, METHOD_SOLVE);

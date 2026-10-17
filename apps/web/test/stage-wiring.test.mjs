@@ -84,7 +84,7 @@ test('the chip row exists, is hidden until there is a cube, and offers every tar
   // Seven on the default row: the six stages and the whole cube (§6; `top-edges` since ADR 0009). Read
   // from the module rather than counted in the markup, so adding a stop adds a chip.
   assert.equal(stopTargets('quick').length, 7);
-  assert.equal(OFFERED_TARGETS.length, 8, 'and CFOP\'s top oriented, offered because a method stops there');
+  assert.equal(OFFERED_TARGETS.length, 10, 'and CFOP\'s top oriented and Roux\'s two blocks, offered because a method stops there');
 });
 
 test('chips are painted only for a scan the app BELIEVED', () => {

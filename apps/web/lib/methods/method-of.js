@@ -5,6 +5,14 @@
 // lesson worker (lib/lesson-worker.js) and the tests load it.
 
 import { methodFor } from './index.js';
+import { ROUX_METHOD } from './roux.js';
+import { prepareRoux } from './roux-load.js';
+
+/** The method families an entry's spec may name, each built its own way. The ladder's is the default. */
+const BUILD = Object.freeze({
+  ladder: (spec) => methodFor(spec.rungs, { lastLayer: spec.lastLayer }),
+  roux: () => ROUX_METHOD,
+});
 
 /** By the ENTRY OBJECT, never its id: two entries sharing an id are two definitions, and the second must
  *  be checked and built on its own rather than handed the first one's method. */
@@ -19,7 +27,9 @@ export function methodOf(entry) {
   if (entry?.engine !== 'method') throw new Error(`methodOf: "${entry?.id}" is not a method with stages`);
   const held = built.get(entry);
   if (held) return held;
-  const made = methodFor(entry.method.rungs, { lastLayer: entry.method.lastLayer });
+  const family = entry.method.family ?? 'ladder';
+  if (!Object.hasOwn(BUILD, family)) throw new Error(`methodOf: "${entry.id}" names no method family "${family}"`);
+  const made = BUILD[family](entry.method);
   const ids = made.stages.map((stage) => stage.id);
   if (ids.length !== entry.stages.length || ids.some((id, i) => id !== entry.stages[i])) {
     throw new Error(`methodOf: "${entry.id}" declares the stages ${entry.stages.join(', ')} and builds ${ids.join(', ')}`);
@@ -31,4 +41,13 @@ export function methodOf(entry) {
   const method = Object.freeze({ ...made, turns: executable[0].turns });
   built.set(entry, method);
   return method;
+}
+
+/**
+ * Whatever `entry`'s method must have loaded before it can solve: Roux's shipped tables, and nothing for the
+ * ladder, whose tables are built as it goes. Resolves when the method is ready; rejects when a table could not
+ * be read or failed its check, and the next call tries again.
+ */
+export async function prepareMethod(entry) {
+  if (entry?.engine === 'method' && entry.method?.family === 'roux') await prepareRoux();
 }

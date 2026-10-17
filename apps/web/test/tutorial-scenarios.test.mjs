@@ -15,7 +15,7 @@ import * as kit from '../lib/cube-kit.js';
 import { SOLVED, applyAlg } from '../lib/cube-pieces.js';
 import { WHY_KEYS as EMITTABLE_WHY_KEYS } from '../lib/method-lesson.js';
 import { solveByMethod } from '../lib/method-solver.js';
-import { allMethods } from '../lib/methods/index.js';
+import { EVERY_METHOD } from './fixtures/every-method.mjs';
 import { TARGETS } from '../lib/stage-targets.js';
 import {
   CAPABILITIES, CUE_VERBS, SCENARIOS, SOURCES, STEP_KINDS, TARGET_IDS, WHY_KEYS,
@@ -99,7 +99,7 @@ test('every step kind and reason key real solves emit, over every method on both
     applyAlg(SOLVED, "R U R' U R U2 R' U2"),
     applyAlg(SOLVED, "F R U R' U' F'"),
   ];
-  for (const method of allMethods()) {
+  for (const method of EVERY_METHOD) {
     for (const cube of cubes) {
       for (const step of solveByMethod(cube, method).steps) {
         kinds.push(step.kind);

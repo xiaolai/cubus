@@ -55,6 +55,24 @@ export function handleMethodSolve(engine, request) {
 }
 
 /**
+ * The worker's answer to one request, PREPARED first: a method whose tables ship (Roux) loads them before it
+ * solves (`engine.prepare`, which resolves at once for a method that needs nothing). Never rejects — a table
+ * that could not be loaded is an answer, `ok: false`, like a cube the method cannot finish — so no request is
+ * left without a reply, and a later request tries the load again.
+ */
+export async function answerMethodSolve(engine, request) {
+  try {
+    await engine.prepare?.(request?.method);
+  } catch (err) {
+    return {
+      kind: METHOD_SOLVE, id: request?.id, ok: false,
+      error: { name: 'MethodPrepareError', message: `the ${String(request?.method)} method could not be prepared: ${String(err?.message ?? err)}`, stage: null },
+    };
+  }
+  return handleMethodSolve(engine, request);
+}
+
+/**
  * A client of one lesson worker.
  *
  * @param {object} deps `spawn()`, which makes the worker (injected so tests can supply a fake), and
@@ -152,9 +170,9 @@ export function inlineLessonWorker(load = loadEngine) {
     addEventListener: (type, fn) => listeners[type]?.push(fn),
     postMessage(message) {
       const request = structuredClone(message);
-      engine.then((e) => setTimeout(() => {
+      engine.then((e) => setTimeout(async () => {
         let data;
-        try { data = structuredClone(handleMethodSolve(e, request)); } catch (err) { fail(err); return; }
+        try { data = structuredClone(await answerMethodSolve(e, request)); } catch (err) { fail(err); return; }
         for (const fn of listeners.message) fn({ data });
       }, 0), fail);
     },
@@ -164,10 +182,10 @@ export function inlineLessonWorker(load = loadEngine) {
 
 /** The engine the inline stand-in solves with, loaded only when it is first asked for. */
 async function loadEngine() {
-  const [{ solveByMethod }, { methodById }, { methodOf }] = await Promise.all([
+  const [{ solveByMethod }, { isMethodId, methodById }, { methodOf, prepareMethod }] = await Promise.all([
     import('./method-solver.js'), import('./methods/registry.js'), import('./methods/method-of.js'),
   ]);
-  return { solveByMethod, methodById, methodOf };
+  return { solveByMethod, methodById, methodOf, prepare: (id) => (isMethodId(id) ? prepareMethod(methodById(id)) : undefined) };
 }
 
 /**

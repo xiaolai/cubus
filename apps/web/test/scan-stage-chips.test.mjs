@@ -300,3 +300,25 @@ test('a CFOP row is refined like any other: its own stop is searched and its chi
   assert.equal(r.texts()['top-oriented'], cfopSays('top-oriented', { answer: { moves: 4, minimal: true } }),
     'the top-oriented chip was never refined');
 });
+
+test('a Roux row is refined like any other: both of its block stops are searched and their chips say the answers', async () => {
+  const r = rig();
+  r.env.stops = stopTargets('roux');
+  void r.chips.paintStageChips('A');
+  const bounds = { 'first-block': 6, 'both-blocks': 3, solved: 7 };
+  r.replies[0].resolve({ bounds });
+  await settle();
+  for (let i = 1; i <= 2; i += 1) {
+    assert.equal(r.asked.length, i + 1, `search ${i} was never asked`);
+    r.replies[i].resolve({ moves: bounds[r.asked[i].target], alg: 'x' });
+    await settle();
+  }
+  assert.deepEqual(r.asked.slice(1).map((q) => q.target), ['both-blocks', 'first-block'],
+    'Roux\'s stops were not searched cheapest first, or a block stop was left out');
+  const rouxSays = (id, fact) => chipFor({ target: TARGET_BY_ID[id], ...fact }).text;
+  for (const id of ['first-block', 'both-blocks']) {
+    assert.equal(r.texts()[id], rouxSays(id, { answer: { moves: bounds[id], minimal: true } }),
+      `the ${id} chip was never refined`);
+  }
+  assert.ok(!('cross' in r.texts()), 'a Roux row drew a cross chip, a stop the method never makes');
+});

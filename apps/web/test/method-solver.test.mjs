@@ -238,7 +238,9 @@ test('every algorithm in the repertoire is one some cube actually needs', () => 
   // exhaustive` is that enumeration — all 62,208 reachable last-layer states, at every last-layer
   // rung, with the per-algorithm counts printed — and it runs nightly in CI.
   const GENERATED = /^(?:oll|pll|f2l)-/;
-  const handWritten = CASE_NAMES.filter((n) => !GENERATED.test(n));
+  // CMLL (Roux) is a sourced one-look table too, and `cmll-algs.test.mjs` is its enumeration: every one of
+  // the 648 top-corner states, each row needed by some.
+  const handWritten = CASE_NAMES.filter((n) => !GENERATED.test(n) && !n.startsWith('cmll-'));
   const unused = handWritten.filter((name) => !seen.has(name));
   assert.deepEqual(unused, [], `repertoire entries no state needed: ${unused.join(', ')}`);
   const unknown = [...seen].filter((name) => !CASE_NAMES.includes(name));

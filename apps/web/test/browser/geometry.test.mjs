@@ -31,6 +31,7 @@ import { webkit } from 'playwright';
 import { pace } from '../browser-wait.mjs';
 
 import { NAV } from '../../lib/app-state.js';
+import { LEVELS, METHODS } from '../../lib/methods/registry.js';
 import { fitStage } from '../../lib/stage.js';
 import { freePort } from '../free-port.mjs';
 
@@ -883,7 +884,9 @@ for (const fixture of FIXTURES) {
       })()`);
       assert.ok(menu.shown, 'the "More methods" menu is not on screen after its button was pressed');
       assert.deepEqual(menu.blocked, [], 'an item of the open menu cannot be pressed where it is drawn');
-      assert.deepEqual(menu.items, ['quick', 'beginner', 'cfop-4lll', 'cfop']);
+      // Every method the registry declares, grouped by level — the registry's list, never a copy that a new
+      // method leaves behind (Roux, 2026-10-17, was the first to find one).
+      assert.deepEqual(menu.items, LEVELS.flatMap((level) => METHODS.filter((x) => x.level === level).map((x) => x.id)));
       assert.deepEqual(menu.heads, ['First steps', 'Getting faster', 'Competition']);
       assert.ok(menu.inView, 'the open "More methods" menu runs off the window');
       assert.deepEqual(menu.fits, { spills: [], cut: [] }, 'the open menu: text that cannot be read where it is drawn');

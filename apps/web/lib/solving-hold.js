@@ -191,7 +191,9 @@ export function holdTable(names, alsoAsScanned = []) {
 const PICTURE_IDS = OFFERED_PATTERNS.map((pattern) => selectionOf(pattern));
 
 const TARGET_HOLD = holdTable(
-  ['cross', 'first-layer', 'two-layers', 'top-cross', 'top-edges', 'corners-home', 'top-oriented', ...PICTURE_IDS, 'solved'],
+  // Roux's blocks are built held white underneath from the start, so a child sent back to one holds it so.
+  ['cross', 'first-layer', 'two-layers', 'top-cross', 'top-edges', 'corners-home', 'top-oriented',
+    'first-block', 'both-blocks', ...PICTURE_IDS, 'solved'],
   // Patterns rather than stages, and not offered as stages — each symmetric under the rotations that
   // matter, so the scan's hold says no less than any other would — and the whole cube, which keeps
   // the scan's hold. A pattern is not somewhere the child is sent BACK to, so the rule above it (hold
@@ -220,7 +222,9 @@ export const HELD_TARGETS = Object.freeze(Object.keys(TARGET_HOLD));
  */
 const STAGE_HOLD = holdTable(
   ['cross', 'first-layer', 'middle-layer', 'f2l', 'top-cross', 'top-face', 'top-corners', 'top-edges',
-    'edges-home', 'corners-turned'],
+    'edges-home', 'corners-turned',
+    // Roux (ADR 0012): held white underneath throughout — its entry turns nothing over.
+    'first-block', 'second-block', 'cmll', 'lse'],
 );
 
 export function holdForStage(stage) {

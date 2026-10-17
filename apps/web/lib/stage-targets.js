@@ -35,6 +35,7 @@
 
 import { CORNER, EDGE, MOVES, MOVE_NAMES } from './cube-pieces.js';
 import * as eng from './methods/engine.js';
+import { FIRST_BLOCK, SECOND_BLOCK, bothBlocksBuilt, firstBlockBuilt } from './methods/roux-blocks.js';
 
 // ---- the cell tables: how one tracked piece moves ----------------------------------------------
 //
@@ -82,18 +83,20 @@ const STEP_BY_KIND = { edge: EDGE_STEP, corner: CORNER_STEP, cornerSlot: CORNER_
 /** How much room a cell's orientation takes. 1 means "not tracked", and must not be ADDED. */
 const SPAN_BY_KIND = { edge: 2, corner: 3, cornerSlot: 1 };
 
-// ---- packing four cells into one integer -------------------------------------------------------
+// ---- packing cells into one integer --------------------------------------------------------------
 
 /** Cells per tracked piece. 24 covers an edge (12 slots x 2 flips) and a corner (8 x 3 twists). */
 export const CELLS = 24;
-/** How many codes a four-piece projection has. One width for all of them, deliberately. */
+/** How many codes a four-piece projection has — the stages' width. Roux's blocks track three edges and two
+ *  corners (24^3 and 24^2): a block is not four of anything, and padding one with a fourth piece would make
+ *  the target ask for a piece the block does not contain. */
 export const PACKED_CODES = CELLS ** 4; // 331,776
 
-const pack = (a, b, c, d) => ((a * CELLS + b) * CELLS + c) * CELLS + d;
+const pack = (cells) => cells.reduce((code, cell) => code * CELLS + cell, 0);
 
 function unpack(code, out) {
   let r = code;
-  for (let i = 3; i >= 0; i--) {
+  for (let i = out.length - 1; i >= 0; i--) {
     out[i] = r % CELLS;
     r = (r - out[i]) / CELLS;
   }
@@ -103,7 +106,7 @@ function unpack(code, out) {
 // ---- a projection ------------------------------------------------------------------------------
 
 /**
- * Four tracked cubies, a per-move cell table, and a goal SET.
+ * One to four tracked cubies of one kind, a per-move cell table, and a goal SET.
  *
  * The goal being a set rather than a point is what lets one projection shape serve both "these
  * corners solved" and "these corners in their own slots, any twist".
@@ -117,9 +120,10 @@ function packedProjection({ id, kind, cubies, goals }) {
   const step = STEP_BY_KIND[kind];
   const span = SPAN_BY_KIND[kind];
   if (!step) throw new Error(`stage-targets: unknown projection kind "${kind}"`);
-  if (cubies.length !== 4) throw new Error(`${id}: a packed projection tracks exactly four cubies`);
-
-  const scratch = new Array(4);
+  if (cubies.length < 1 || cubies.length > 4) throw new Error(`${id}: a packed projection tracks one to four cubies`);
+  const n = cubies.length;
+  const scratch = new Array(n);
+  const moved = new Array(n);
 
   const codeOf = (state) => {
     const where = kind === 'edge' ? state.ep : state.cp;
@@ -132,13 +136,14 @@ function packedProjection({ id, kind, cubies, goals }) {
       const slot = where.indexOf(cubie);
       return span === 1 ? slot : slot * span + turn[slot];
     };
-    return pack(cell(cubies[0]), cell(cubies[1]), cell(cubies[2]), cell(cubies[3]));
+    return pack(cubies.map(cell));
   };
 
   const stepCode = (code, m) => {
     const a = unpack(code, scratch);
     const s = step[m];
-    return pack(s[a[0]], s[a[1]], s[a[2]], s[a[3]]);
+    for (let i = 0; i < n; i++) moved[i] = s[a[i]];
+    return pack(moved);
   };
 
   /**
@@ -154,10 +159,11 @@ function packedProjection({ id, kind, cubies, goals }) {
    */
   const expand = (code, out) => {
     const a = unpack(code, scratch);
-    const a0 = a[0], a1 = a[1], a2 = a[2], a3 = a[3];
     for (let m = 0; m < MOVE_NAMES.length; m++) {
       const s = step[m];
-      out[m] = pack(s[a0], s[a1], s[a2], s[a3]);
+      let c = 0;
+      for (let i = 0; i < n; i++) c = c * CELLS + s[a[i]];
+      out[m] = c;
     }
     return out;
   };
@@ -168,12 +174,15 @@ function packedProjection({ id, kind, cubies, goals }) {
   // answer a different question, instantly, silently and self-consistently. A frozen Set is not
   // that guard — `Object.freeze` does not stop `.add` — so the Set is private and only a reader
   // escapes.
-  const goalSet = new Set(goals.map(([a, b, c, d]) => pack(a, b, c, d)));
+  const goalSet = new Set(goals.map((cells) => {
+    if (cells.length !== n) throw new Error(`${id}: a goal names ${cells.length} cells for ${n} cubies`);
+    return pack(cells);
+  }));
   return Object.freeze({
     id,
     kind,
     cubies: Object.freeze([...cubies]),
-    codeSpace: PACKED_CODES,
+    codeSpace: CELLS ** n,
     codeOf,
     stepCode,
     expand,
@@ -285,6 +294,11 @@ const MIDDLE_EDGES = [EDGE.FR, EDGE.FL, EDGE.BL, EDGE.BR];
 const TOP_EDGES = [EDGE.UR, EDGE.UF, EDGE.UL, EDGE.UB];
 /** The four first-layer corners. */
 const D_CORNERS = [CORNER.DFR, CORNER.DLF, CORNER.DBL, CORNER.DRB];
+// Both of Roux's blocks are six edges and the four D corners. Three edges a side and two corners a side was the
+// first try, and too weak to search: a ten-move case cost about twenty million nodes. Four edges each — a block's
+// three and the other block's bottom edge — with the D corners whole (the same table the first layer uses).
+const BLOCK_EDGES_L = [...FIRST_BLOCK.edges, EDGE.DR];
+const BLOCK_EDGES_R = [...SECOND_BLOCK.edges, EDGE.DL];
 /** The four last-layer corners. */
 const U_CORNERS = [CORNER.URF, CORNER.UFL, CORNER.ULB, CORNER.UBR];
 
@@ -313,6 +327,11 @@ export const PROJECTIONS = Object.freeze({
   uCornerSlots: packedProjection({ id: 'uCornerSlots', kind: 'cornerSlot', cubies: U_CORNERS, goals: ownSlotGoal(U_CORNERS) }),
   flip: flipProjection(),
   twist: twistProjection(),
+  // Roux's blocks (lib/methods/roux-blocks.js): three edges and two corners each, so two projections a block.
+  fbEdges: packedProjection({ id: 'fbEdges', kind: 'edge', cubies: FIRST_BLOCK.edges, goals: homeGoal('edge', FIRST_BLOCK.edges) }),
+  fbCorners: packedProjection({ id: 'fbCorners', kind: 'corner', cubies: FIRST_BLOCK.corners, goals: homeGoal('corner', FIRST_BLOCK.corners) }),
+  blockEdgesL: packedProjection({ id: 'blockEdgesL', kind: 'edge', cubies: BLOCK_EDGES_L, goals: homeGoal('edge', BLOCK_EDGES_L) }),
+  blockEdgesR: packedProjection({ id: 'blockEdgesR', kind: 'edge', cubies: BLOCK_EDGES_R, goals: homeGoal('edge', BLOCK_EDGES_R) }),
 });
 
 // ---- the targets ---------------------------------------------------------------------------------
@@ -372,6 +391,10 @@ const VERIFY = {
   // they say nothing about the corners' twist — so it is a stop of the CFOP entries only, never of the
   // beginner's row.
   'top-oriented': (s) => eng.firstTwoLayers(s) && eng.topEdgesOriented(s) && eng.topCornersOriented(s),
+  // Roux's stops (ADR 0012). Written for the Roux stages as their contracts, from the piece model, and read
+  // here as the second opinion — never a projection.
+  'first-block': firstBlockBuilt,
+  'both-blocks': bothBlocksBuilt,
   solved: eng.wholeCubeSolved,
 };
 
@@ -397,6 +420,10 @@ const TARGET_SPECS = [
   // and the target is the only thing the sentence ever sees.
   { id: 'six-cross', name: 'a plus on every face', offered: false, sideways: true, parts: ['crossEdges', 'midEdges', 'topEdges'] },
   { id: 'x-every-face', name: 'an X on every face', offered: false, sideways: true, parts: ['dCorners', 'uCorners'] },
+  // Roux's stops (ADR 0012): a stop of the Roux entry only, nested with each other and with `solved` but with
+  // none of the stages above, which build a cross Roux never makes.
+  { id: 'first-block', name: 'first block', offered: true, parts: ['fbEdges', 'fbCorners'] },
+  { id: 'both-blocks', name: 'both blocks', offered: true, parts: ['blockEdgesL', 'blockEdgesR', 'dCorners'] },
   { id: 'solved', name: 'solved', offered: true, parts: ['crossEdges', 'midEdges', 'topEdges', 'dCorners', 'uCorners'] },
 ];
 

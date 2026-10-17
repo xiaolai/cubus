@@ -96,6 +96,16 @@ export const WHY_KEYS = Object.freeze({
   'topCorners.place.step': ['face-turns', 'highlight-position', 'trail'],
   'topCorners.twist': ['face-turns', 'highlight-position', 'highlight-sticker'],
   'topCorners.twist.step': ['face-turns', 'highlight-position', 'highlight-sticker'],
+  // Roux (ADR 0012). The blocks are built with pieces named; from the second block on the middle slice moves
+  // the hold inside a sequence, and a step begun tilted names its pieces in that hold.
+  'firstBlock.build': ['face-turns', 'highlight-piece', 'held-letters'],
+  'secondBlock.build': ['face-turns', 'highlight-piece', 'held-letters', 'hold-change-in-sequence'],
+  'secondBlock.align': ['face-turns', 'highlight-piece', 'held-letters', 'hold-change-in-sequence'],
+  'cmll.align': ['face-turns', 'highlight-piece'],
+  'cmll.solve': ['face-turns', 'highlight-piece', 'held-letters'],
+  'lse.orient': ['face-turns', 'highlight-piece', 'held-letters', 'hold-change-in-sequence'],
+  'lse.sides': ['face-turns', 'highlight-piece', 'held-letters', 'hold-change-in-sequence'],
+  'lse.finish': ['face-turns', 'highlight-piece', 'held-letters', 'hold-change-in-sequence'],
 });
 
 /** The named states a walk can aim at (`TARGETS` in `lib/stage-targets.js`): each is drawn as a
@@ -112,6 +122,9 @@ export const TARGET_IDS = Object.freeze({
   // A pattern like six-cross above: a picture the app can draw, and nothing it plays or holds,
   // because neither is offered as a stage. Both are offered as PATTERNS instead (lib/patterns.js).
   'x-every-face': ['painted-picture'],
+  // Roux's stops (ADR 0012), held white underneath like the stages they send a child back to.
+  'first-block': ['painted-picture', 'stop-playback', 'hold-set'],
+  'both-blocks': ['painted-picture', 'stop-playback', 'hold-set'],
   solved: ['painted-picture', 'stop-playback'],
 });
 

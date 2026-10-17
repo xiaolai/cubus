@@ -85,9 +85,11 @@ test('nine methods are ONE pill naming the learner\'s method, and a menu holding
     assert.equal(list.find((m) => m.id === entry).level, level, `${entry} is filed under the wrong level`);
   }
   // Choosing one from the menu: the one pill now NAMES it, and the menu ticks it.
-  built.paint('m4');
-  assert.deepEqual(pills().map((p) => [p.dataset.method, p.textContent, p.getAttribute('aria-pressed')]), [['m4', 'Method 4', 'true']]);
-  assert.deepEqual(items.filter((i) => i.getAttribute('aria-checked') === 'true').map((i) => i.dataset.method), ['m4']);
+  // The last of the nine, whatever the registry holds by then: one of the made-up ones past the real methods.
+  const pick = list.at(-1);
+  built.paint(pick.id);
+  assert.deepEqual(pills().map((p) => [p.dataset.method, p.textContent, p.getAttribute('aria-pressed')]), [[pick.id, pick.label, 'true']]);
+  assert.deepEqual(items.filter((i) => i.getAttribute('aria-checked') === 'true').map((i) => i.dataset.method), [pick.id]);
 });
 
 test('the row\'s words are escaped, and no pill claims a minimum (AGENTS.md §1)', () => {
@@ -107,7 +109,8 @@ test('the menu, used: it opens on the method on screen, a choice reaches the scr
   // Audit-fix: the menu was only ever painted, never pressed. A choice must travel as a press on a
   // \`[data-method]\` inside the screen root — the walk session's one delegated handler, which stores and
   // reloads (walk-session.test.mjs) — and the menu must close and give the focus back.
-  const { root, built } = mount(methods(9), 'm4');
+  const shown = methods(9).at(-1).id;
+  const { root, built } = mount(methods(9), shown);
   const pressed = [];
   root.addEventListener('click', (ev) => {
     const hit = ev.target.closest?.('[data-method]');
@@ -118,7 +121,7 @@ test('the menu, used: it opens on the method on screen, a choice reaches the scr
   assert.equal(built.menu.isOpen(), true, 'the button did not open the menu');
   assert.equal(button.getAttribute('aria-expanded'), 'true');
   // Ticked before any paint: the focus lands on the method on screen, never on a level heading.
-  assert.equal(document.activeElement?.dataset.method, 'm4', 'the menu opened on something other than the method on screen');
+  assert.equal(document.activeElement?.dataset.method, shown, 'the menu opened on something other than the method on screen');
   const item = built.menu.el.querySelector('[data-method="m1"]');
   item.click();
   assert.deepEqual(pressed, ['m1'], 'a menu choice never reached the screen\'s press handler');

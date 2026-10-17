@@ -10,3 +10,6 @@ export const STAGE_IDS = Object.freeze(['cross', 'pairs', 'oll', 'pll']);
 
 /** The bottom rung everywhere — what a new learner is shown, having chosen nothing (§3 rule 1). */
 export const DEFAULT_RUNGS = Object.freeze({ cross: 0, pairs: 0, oll: 0, pll: 0 });
+
+/** Roux's stages, in walking order (lib/methods/roux.js builds them; the registry declares them). */
+export const ROUX_STAGE_IDS = Object.freeze(['first-block', 'second-block', 'cmll', 'lse']);

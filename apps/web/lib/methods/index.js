@@ -21,6 +21,7 @@
 // @property {string} why                           the stage's reason key, for the move list heading
 // @property {(state, steps) => object} run         the stage itself
 
+import { CMLL_ALGS } from '../data/cmll-algs.js';
 import { HUMAN_F2L, HUMAN_OLL, HUMAN_PLL } from '../data/human-algs.js';
 import { CROSS_ALGS, CROSS_RUNGS } from './cross.js';
 import { COURSE_ALGS, COURSE_LAST_LAYER, LAST_LAYER_EXTRAS, OLL_ALGS, OLL_RUNGS, PLL_ALGS, PLL_RUNGS } from './last-layer.js';
@@ -137,6 +138,6 @@ export const CASE_NAMES = Object.freeze(
   // 2026-10-13), so a name from them on a step would be the defect this list exists to catch.
   [
     ...CROSS_ALGS, ...PAIRS_ALGS, ...PAIRS_EXTRAS, ...OLL_ALGS, ...PLL_ALGS, ...LAST_LAYER_EXTRAS,
-    ...HUMAN_OLL, ...HUMAN_PLL, ...HUMAN_F2L, ...COURSE_ALGS,
+    ...HUMAN_OLL, ...HUMAN_PLL, ...HUMAN_F2L, ...COURSE_ALGS, ...CMLL_ALGS,
   ].map((entry) => entry.name),
 );
