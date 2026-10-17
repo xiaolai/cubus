@@ -9,8 +9,18 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  LIBRARY_ASK, LIBRARY_TIMEOUT_MS, createLibraryClient, inlineLibraryWorker,
+  LIBRARY_ASK, LIBRARY_TIMEOUT_MS, catalogueOf, catalogueProblem, createLibraryClient, inlineLibraryWorker,
 } from '../lib/drill/library-client.js';
+
+/** The smallest catalogue the library screens can draw: one method, one stage, one set, one row. */
+const CATALOGUE = Object.freeze({
+  groups: [{ method: 'cfop-4lll', label: 'CFOP (easy)', phases: [{ stage: 'oll', phase: 'Top face', sets: ['ocll'] }] }],
+  sets: { ocll: { id: 'ocll', name: 'Two-look OLL, second look', kind: 'hand-written', purpose: 'Turns the top corners up.', ids: ['sune'] } },
+  rows: { sune: { id: 'sune', set: 'ocll', alg: "R U R' U R U2 R'", chunks: [] } },
+  triggers: { 'sexy-move': { name: 'Sexy move' } },
+  pending: [],
+});
+const copy = (v) => structuredClone(v);
 
 // ---- fakes: workers and timers ------------------------------------------------------------------------------
 
@@ -37,7 +47,7 @@ function fakeWorker(behave) {
 }
 
 /** A worker that answers every question at once, with a result named after the question. */
-const answering = (m, w) => w.answer(m, m.ask === 'ids' ? ['sune', 'pll-T'] : { rows: {}, asked: m.ask });
+const answering = (m, w) => w.answer(m, m.ask === 'ids' ? ['sune', 'pll-T'] : copy(CATALOGUE));
 /** A worker whose library could not load: `answerLibrary`'s refusal, for every question. */
 const refusing = (m, w) => w.say('message', { data: { kind: LIBRARY_ASK, id: m.id, ok: false, error: { name: 'Error', message: 'cross.js could not be fetched' } } });
 /** A worker that has stopped: it takes the question and never says anything. */
@@ -88,7 +98,7 @@ test('a library that could not load is not asked again: the next question goes t
   const again = h.client.catalogue();
   assert.equal(h.workers.length, 2, 'the retry was asked of the worker that had failed');
   assert.equal(h.workers[0].asked.length, 1, 'the failed worker was asked a second question');
-  assert.deepEqual(await again, { rows: {}, asked: 'catalogue' });
+  assert.deepEqual(await again, CATALOGUE);
 });
 
 test('the real library through the inline worker, after a load that failed once, answers', async () => {
@@ -123,12 +133,12 @@ test('a worker that never answers is given up at the deadline: the question fail
   assert.equal(h.workers[0].terminated, true, 'the stuck worker was kept');
   // A late answer from the retired worker resolves nothing and throws nothing.
   h.workers[0].terminated = false;
-  h.workers[0].answer(h.workers[0].asked[0], { rows: {}, late: true });
+  h.workers[0].answer(h.workers[0].asked[0], copy(CATALOGUE));
   // The next visit asks again, of a new worker, and is answered.
   const again = h.client.catalogue();
   assert.notEqual(again, first, 'the failed question was handed out again');
   assert.equal(h.workers.length, 2, 'the next question was asked of the stuck worker');
-  assert.deepEqual(await again, { rows: {}, asked: 'catalogue' });
+  assert.deepEqual(await again, CATALOGUE);
   assert.equal(h.timers.size, 0, 'an answered question left its deadline running');
 });
 
@@ -151,6 +161,7 @@ const FAILURES = [
   ['a success with no result', (w) => w.say('message', { data: { kind: LIBRARY_ASK, id: w.asked[0].id, ok: true } }), /malformed reply/],
   ['ids that are not a list', (w) => w.say('message', { data: { kind: LIBRARY_ASK, id: w.asked[1].id, ok: true, result: { sune: true } } }), /malformed reply/],
   ['a catalogue that is a list', (w) => w.say('message', { data: { kind: LIBRARY_ASK, id: w.asked[0].id, ok: true, result: [] } }), /malformed reply/],
+  ['an empty catalogue', (w) => w.say('message', { data: { kind: LIBRARY_ASK, id: w.asked[0].id, ok: true, result: {} } }), /malformed reply: the catalogue has no groups/],
   ['a refusal with no message', (w) => w.say('message', { data: { kind: LIBRARY_ASK, id: w.asked[0].id, ok: false } }), /malformed reply/],
 ];
 
@@ -176,7 +187,7 @@ test('a worker that cannot be reached rejects the question at once, and is not a
   assert.equal(h.timers.size, 0);
   const next = h.client.catalogue();
   assert.equal(h.workers.length, 2, 'the next question was asked of the worker that could not be reached');
-  assert.deepEqual(await next, { rows: {}, asked: 'catalogue' });
+  assert.deepEqual(await next, CATALOGUE);
 });
 
 // ---- what is cached, and what is not ------------------------------------------------------------------------
@@ -194,9 +205,9 @@ test('questions asked together share one worker; an answer is kept, and an unkno
   w.say('message', { data: { kind: LIBRARY_ASK, id: 999, ok: true, result: 'stray' } });
   // Answered out of order: each answer goes to its own question.
   w.answer(held[1], ['sune']);
-  w.answer(held[0], { rows: { sune: {} } });
+  w.answer(held[0], copy(CATALOGUE));
   assert.deepEqual([...await ids], ['sune']);
-  assert.deepEqual(await a, { rows: { sune: {} } });
+  assert.deepEqual(await a, CATALOGUE);
   // Kept for the page's lifetime: asking again sends nothing.
   assert.equal(await h.client.catalogue(), await a);
   assert.deepEqual([...await h.client.ids()], ['sune']);
@@ -208,4 +219,43 @@ test('questions asked together share one worker; an answer is kept, and an unkno
 test('the client needs a spawn function', () => {
   assert.throws(() => createLibraryClient(), /spawn function/);
   assert.throws(() => createLibraryClient({ spawn: 'worker.js' }), /spawn function/);
+});
+
+// ---- a catalogue is checked whole before it is kept --------------------------------------------------------
+
+test('the real catalogue passes the check, and every way of breaking it is named', async () => {
+  const real = await catalogueOf(await import('../lib/alg-library.js'));
+  assert.equal(catalogueProblem(real), null);
+  assert.equal(catalogueProblem(copy(CATALOGUE)), null);
+  const broken = (edit) => { const c = copy(CATALOGUE); edit(c); return catalogueProblem(c); };
+  const CASES = [
+    [() => null, /not a record/, null],
+    [(c) => { delete c.groups; }, /has no groups/],
+    [(c) => { c.sets = []; }, /sets is not a record/],
+    [(c) => { delete c.rows; }, /rows is not a record/],
+    [(c) => { c.triggers = { 'sexy-move': {} }; }, /trigger "sexy-move" has no name/],
+    [(c) => { c.pending = [{ id: 'mehta-algs' }]; }, /pending source 0/],
+    [(c) => { c.groups[0].phases = 'oll'; }, /group 0 has no list of phases/],
+    [(c) => { c.groups[0].phases[0].sets.push('pll'); }, /names a set "pll" the catalogue does not hold/],
+    [(c) => { c.sets.ocll.id = 'oll'; }, /set "ocll" says it is "oll"/],
+    [(c) => { c.sets.ocll.ids.push('antisune'); }, /set "ocll" names a row "antisune" the catalogue does not hold/],
+    [(c) => { c.rows.sune.id = 'antisune'; }, /row "sune" says it is "antisune"/],
+    [(c) => { c.rows.sune.alg = ''; }, /row "sune" has no moves/],
+    [(c) => { c.rows.sune.chunks = null; }, /row "sune" has no list of chunks/],
+    [(c) => { c.rows.sune.set = 'eoll'; }, /row "sune" is filed in "eoll", which does not list it/],
+    [(c) => { c.rows.antisune = { id: 'antisune', set: 'ocll', alg: "R U2 R' U' R U' R'", chunks: [] }; }, /row "antisune" is in no set/],
+    [(c) => { c.sets.cpll = { id: 'cpll', name: 'Two-look PLL', kind: 'hand-written', purpose: null, ids: [] }; }, /set "cpll" is in no group/],
+  ];
+  for (const [edit, said, whole] of CASES) {
+    const problem = whole === null ? catalogueProblem(null) : broken(edit);
+    assert.match(String(problem), said);
+  }
+});
+
+test('a malformed catalogue is not kept: the next visit asks a fresh worker and is answered', async () => {
+  const h = harness((m, w) => w.answer(m, {}), answering);
+  await assert.rejects(h.client.catalogue(), /malformed reply: the catalogue has no groups/);
+  const next = h.client.catalogue();
+  assert.equal(h.workers.length, 2, 'the malformed answer was kept, or asked again of the same worker');
+  assert.deepEqual(await next, CATALOGUE);
 });

@@ -27,12 +27,64 @@ export const LIBRARY_ASK = 'alg-library';
 /** The questions the worker answers. */
 export const ASKS = Object.freeze(['catalogue', 'ids']);
 
-/** Whether a result has the shape its question's answer has: the ids are a list of strings, the catalogue a
- *  record. A reply that is not is malformed — refused rather than cached, where it would stay for the page's
- *  lifetime. */
-const ANSWER_SHAPE = Object.freeze({
-  ids: (result) => Array.isArray(result) && result.every((id) => typeof id === 'string'),
-  catalogue: (result) => Boolean(result) && typeof result === 'object' && !Array.isArray(result),
+const isRecord = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
+const isText = (v) => typeof v === 'string' && v.length > 0;
+const isTextOrNull = (v) => v === null || typeof v === 'string';
+
+/**
+ * What is wrong with a catalogue the screens would draw, or null: every field they read is there, and every
+ * name in it points at something it holds — a group's set, a set's row, a row's set — with nothing left out of
+ * the groups. `catalogueOf` builds exactly this shape; a reply that is not it (a truncated answer, another
+ * build's protocol, `{}`) is refused here, before it is kept for the page's lifetime and before a screen
+ * throws halfway through drawing it. The rows' own columns are the ledger's, held by `alg-ledger.test.mjs`;
+ * this checks only what the screens rely on to find them.
+ */
+export function catalogueProblem(c) {
+  if (!isRecord(c)) return 'the catalogue is not a record';
+  if (!Array.isArray(c.groups)) return 'the catalogue has no groups';
+  for (const k of ['sets', 'rows', 'triggers']) if (!isRecord(c[k])) return `the catalogue's ${k} is not a record`;
+  if (!Array.isArray(c.pending)) return 'the catalogue has no list of pending sources';
+  for (const [id, tr] of Object.entries(c.triggers)) if (!isRecord(tr) || !isText(tr.name)) return `trigger "${id}" has no name`;
+  for (const [i, p] of c.pending.entries()) {
+    if (!isRecord(p) || !['id', 'module', 'why', 'name'].every((k) => isText(p[k]))) return `pending source ${i} is not an id, a module, a reason and a name`;
+  }
+  const grouped = new Set();
+  for (const [i, g] of c.groups.entries()) {
+    if (!isRecord(g) || !isTextOrNull(g.method) || !isTextOrNull(g.label)) return `group ${i} names no method`;
+    if (!Array.isArray(g.phases)) return `group ${i} has no list of phases`;
+    for (const p of g.phases) {
+      if (!isRecord(p) || !isTextOrNull(p.stage) || !isTextOrNull(p.phase) || !Array.isArray(p.sets)) return `group ${i} has a phase that is not a stage, a name and its sets`;
+      for (const id of p.sets) {
+        if (!Object.hasOwn(c.sets, id)) return `group ${i} names a set "${id}" the catalogue does not hold`;
+        grouped.add(id);
+      }
+    }
+  }
+  const listed = new Set();
+  for (const [id, set] of Object.entries(c.sets)) {
+    if (!isRecord(set) || set.id !== id) return `set "${id}" says it is "${set?.id}"`;
+    if (!isText(set.name) || !isText(set.kind) || !isTextOrNull(set.purpose) || !Array.isArray(set.ids)) return `set "${id}" is not a name, a kind, a purpose and its rows`;
+    for (const rowId of set.ids) {
+      if (!Object.hasOwn(c.rows, rowId)) return `set "${id}" names a row "${rowId}" the catalogue does not hold`;
+      listed.add(rowId);
+    }
+    if (!grouped.has(id)) return `set "${id}" is in no group, so no screen would show it`;
+  }
+  for (const [id, row] of Object.entries(c.rows)) {
+    if (!isRecord(row) || row.id !== id) return `row "${id}" says it is "${row?.id}"`;
+    if (!isText(row.alg)) return `row "${id}" has no moves`;
+    if (!Array.isArray(row.chunks)) return `row "${id}" has no list of chunks`;
+    if (!listed.has(id)) return `row "${id}" is in no set`;
+    if (!Object.hasOwn(c.sets, row.set) || !c.sets[row.set].ids.includes(id)) return `row "${id}" is filed in "${row.set}", which does not list it`;
+  }
+  return null;
+}
+
+/** What is wrong with a result as the answer to its question, or null. A reply that is not its answer is
+ *  malformed — refused rather than cached, where it would stay for the page's lifetime. */
+const ANSWER_PROBLEM = Object.freeze({
+  ids: (result) => (Array.isArray(result) && result.every((id) => typeof id === 'string') ? null : 'the ids are not a list of names'),
+  catalogue: catalogueProblem,
 });
 
 /** "mehta-algs" → "Mehta", "corners-first-algs" → "Corners first": a pending source's name, derived from its
@@ -163,7 +215,12 @@ export function createLibraryClient({
       const waiting = pending.get(data.id);
       if (!waiting) return;
       if (data.kind !== LIBRARY_ASK) { retire(new Error(`library worker answered with a "${String(data.kind)}" reply`)); return; }
-      if (data.ok === true && ANSWER_SHAPE[waiting.what](data.result)) { settle(data.id, 'resolve', data.result); return; }
+      if (data.ok === true) {
+        const problem = data.result === undefined ? 'it holds no result' : ANSWER_PROBLEM[waiting.what](data.result);
+        if (problem === null) settle(data.id, 'resolve', data.result);
+        else retire(new Error(`library worker sent a malformed reply: ${problem}`));
+        return;
+      }
       if (data.ok === false && typeof data.error?.message === 'string') {
         retire(Object.assign(new Error(data.error.message), { name: data.error.name }));
         return;
