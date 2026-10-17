@@ -130,6 +130,75 @@ test('a remembered cube is followed while the reconnect question is open — and
   }
 });
 
+// ---- arming from a report that is current (round 2, rows 12 and 25) ------------------------------------------
+
+test('Practice arms only from a report that accounts for every turn — entered between a turn and its snapshot, it waits, and the rep after is clean', async () => {
+  const { page, context, errors } = await openPractice(fixture);
+  try {
+    const rnd = lcg(121);
+    const s0 = randomStart(rnd);
+    // On the library: the cube reports where it is, and then is turned — the snapshot of that turn has not come yet.
+    await page.evaluate((f) => window.__p.facelets(f), toFacelets(s0));
+    await page.evaluate(() => window.__p.move('F'));
+    const s1 = applyAlg(s0, 'F');
+    await show(page, 'sune');
+    // What must NOT happen: a rep armed from the report the cube has since turned away from.
+    const entered = await page.evaluate(() => ({ status: window.__p.data().status, say: window.__p.say() }));
+    assert.equal(entered.status, 'idle', `armed from a report one turn old (${entered.say})`);
+    assert.match(entered.say, /Waiting for your cube to say where it is/);
+    // The snapshot of that turn arms the rep; a snapshot that arrives part way through the rep agrees with it.
+    const per = reportsPerToken(SUNE, ORIENTATIONS[0], rnd);
+    const flat = per.flat();
+    const dones = await page.evaluate(({ f, mid, qs }) => {
+      window.__p.facelets(f);
+      const seen = [];
+      const out = qs.map((q, i) => {
+        window.__p.move(q);
+        if (i === 0) window.__p.facelets(mid);
+        seen.push(window.__p.data().status);
+        return window.__p.count('done');
+      });
+      return { out, seen };
+    }, { f: toFacelets(s1), mid: toFacelets(applyAlg(s1, flat[0])), qs: flat });
+    assert.ok(!dones.seen.includes('uncertain'), `a clean rep went uncertain: ${dones.seen.join(' ')}`);
+    assert.deepEqual(dones.out, atLast(flat.length));
+    const kept = (await page.evaluate(() => window.__p.record())).algs.sune;
+    assert.deepEqual(kept.map((r) => ({ c: r.c, l: r.l })), [{ c: true, l: false }], 'the rep was not filed clean');
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
+test('a report the reconnect question held before Practice opened is where its first rep starts', async () => {
+  const V = toFacelets(applyAlg(PIECES, "R U R' F"));
+  const R0 = toFacelets(applyAlg(PIECES, 'F2 D'));
+  const seenAt = Date.UTC(2026, 9, 17, 9, 0);
+  const memory = { [MAC]: { name: 'Test cube', nickname: '', lastSeen: seenAt, last: { facelets: V, reported: R0, serial: 3, at: seenAt, how: 'cube' } } };
+  const { page, context, errors } = await openPractice(fixture, {
+    connect: false,
+    prepare: (ctx) => ctx.addInitScript((m) => localStorage.setItem('cubusCubes', JSON.stringify(m)), memory),
+  });
+  try {
+    const rnd = lcg(251);
+    const start = randomStart(rnd);
+    // On the library, before any row is open: the cube connects and its first report opens the question.
+    await page.evaluate((f) => { window.__p.connect(); window.__p.facelets(f); }, toFacelets(start));
+    assert.equal((await page.evaluate(() => window.__p.app())).reconnect?.reading, 'turned', 'precondition: the question holds the report');
+    await show(page, 'sune');
+    // No further snapshot: the held report is the one Practice must start from.
+    const flat = reportsPerToken(SUNE, ORIENTATIONS[3], rnd).flat();
+    const dones = await page.evaluate((qs) => qs.map((q) => { window.__p.move(q); return window.__p.count('done'); }), flat);
+    const got = await page.evaluate(() => ({ status: window.__p.data().status, say: window.__p.say(), app: window.__p.app() }));
+    assert.deepEqual(dones, atLast(flat.length), `the rep did not complete from the held report (${got.status}: ${got.say})`);
+    assert.equal(got.app.reconnect?.reading, 'turned', 'Practice closed the reconnect question');
+    assert.equal(got.app.live, null, 'a held report became live');
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
 // ---- the hold line (row 24) --------------------------------------------------------------------------------
 
 test('the hold line follows the cube: "any way you like" only while a cube is followed', async () => {

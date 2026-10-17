@@ -107,6 +107,12 @@ export async function openPractice(fixture, { numbered = true, connect = true, p
       };
       let serial = 0;
       let clock = 1000;
+      // The stand-in session's own count of the turns it reported, as a real session's self-check keeps it
+      // (\`evidence.moveReports\`, counted before any screen hears the turn): what says whether the cube's last report
+      // still describes it. Counted at the seam, so a case that calls \`cubusFeed.move\` directly is counted too.
+      let evidence = null;
+      const feedMove = window.cubusFeed.move;
+      window.cubusFeed.move = (m) => { if (evidence) evidence.moveReports += 1; feedMove(m); };
       const page = () => document.querySelector('.practice-page');
       window.__p = {
         heard,
@@ -123,12 +129,13 @@ export async function openPractice(fixture, { numbered = true, connect = true, p
         },
         /** A stand-in session, through the same call a paired driver makes. */
         connect({ numbered = true, mac = '${MAC}', name = 'Test cube' } = {}) {
+          evidence = { moveReports: 0 };
           window.cubusFeed.useConnection({
             mac, name, requestBattery: async () => 80, disconnect: async () => {},
-            mayFollow: () => true, numbersMoves: () => numbered,
+            mayFollow: () => true, numbersMoves: () => numbered, evidence,
           });
         },
-        disconnect: () => window.cubusFeed.useConnection(null),
+        disconnect() { evidence = null; window.cubusFeed.useConnection(null); },
         /** The next report carries serial \`n + 1\`: a fresh connection's counter starts wherever its cube's does. */
         serialFrom(n) { serial = n & 0xff; },
         lost: () => window.cubusFeed.movesLost(),

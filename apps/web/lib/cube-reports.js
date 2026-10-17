@@ -55,6 +55,9 @@ let lastSerialSeen = null;
  *  only while that count stands: after a turn it describes a cube that has since moved, which for a
  *  repair is the same as no report at all (repairTracking holds the scan for the next one). */
 let reportedAtTurns = 0;
+/** The report the reconnect question holds back from `live`, corrected — or null, for none yet or one that failed
+ *  validation. What `reportedArrangement` answers while the question is open. Cleared with the connection. */
+let heldReport = null;
 /** The camera reading this connection's checker holds as its STANDING evidence — the report it was
  *  derived against — or null when the last reading handed to `repairTracking` was not taken (a
  *  contradiction, a refusal, nothing established). It is what a corrected reading of the same look
@@ -77,6 +80,21 @@ let standingScan = null;
  * arrangement describes — so a check that has only the memory to go on is current until a turn.
  */
 export const reportIsCurrent = () => reportedAtTurns === turnsReported();
+
+/**
+ * The cube's arrangement as its own reports last gave it — `live`, or the report the reconnect question holds back
+ * from it — while it accounts for every turn the cube has counted (`reportIsCurrent`); null otherwise, and null when
+ * no report stands.
+ *
+ * For a screen that tracks turns RELATIVE to the cube's own reports and claims nothing about where the cube is
+ * (Practice's drill engine, dev-docs/algorithm-drill-v2-plan.md §3.1). It needs an arrangement that accounts for
+ * every turn it is about to be handed: armed from a report the cube had turned away from, the next snapshot
+ * contradicted a clean rep.
+ */
+export function reportedArrangement() {
+  const f = state.reconnect ? heldReport : state.live;
+  return f && reportIsCurrent() ? f : null;
+}
 
 /** Remember the arrangement the app is sure of (lib/cube-memory.js) with this connection's serial,
  *  and repaint Settings when the write's health flipped — which the memory, beneath the screens,
@@ -236,6 +254,7 @@ export function onDisconnect() {
   state.reconnect = null;
   pendingLast = null;
   awaitingReport = false;
+  heldReport = null;
   // A scan waiting for a report it will never get. It stays the SUBJECT — the camera did see that
   // cube — but the chain it was to be reconciled with has ended, and markStale below says so.
   scanAwaitingReport = null;
@@ -324,6 +343,7 @@ export function adoptConnection(mac, name) {
   // on the strength of a camera scan of some *other* cube.
   state.live = null;
   state.reported = null;
+  heldReport = null;
   // With the report, the count it was recorded at: the new session counts its own turns from zero,
   // so the last one's count left behind would say the report is a turn behind, or abreast of one
   // it never saw.
@@ -459,6 +479,7 @@ function publishReport(reported, serial) {
   // like any report, though no correction can be in force here — one is installed only by an
   // answer, which closes the question in the same step — and never one that failed validation.
   if (state.reconnect) {
+    heldReport = f;
     if (f !== null && hooks.heldUpdate) hooks.heldUpdate(f, serial);
     return;
   }

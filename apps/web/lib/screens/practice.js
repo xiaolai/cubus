@@ -28,6 +28,7 @@ import { SCREENS, renderScreen, screenAbort, screenGen } from '../screen-shell.j
 import { hooks } from '../screen-slots.js';
 import { newCube } from '../cube-drawing.js';
 import { conn, cubeRefused } from '../live-session.js';
+import { reportedArrangement } from '../cube-reports.js';
 import { play } from '../sound.js';
 import { faceTurnsOf, run, toIdentity } from '../cube-moves.js';
 import { parse } from '../cube-notation.js';
@@ -235,7 +236,6 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   let caseNow = null;
   let engine = null;
   let engineConn = null;      // the session the engine judges — a new one is a new stream (`presenceChanged`)
-  let heldNow = null;         // the latest report the reconnect question holds back from `live` (`hooks.heldUpdate`)
   let token = null;
   let startFacelets = null;   // the arrangement the current rep was armed from (the engine's start event)
   let turnsSinceArm = 0;
@@ -311,15 +311,20 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   };
 
   // ---- the engine ---------------------------------------------------------------------------------------
-  /** The cube's arrangement as its own reports last gave it: `live`, or — while the reconnect question holds the
-   *  reports back from `live` — the held one. Either is the cube's model in the frame its turns move it in, which is
-   *  all a tracker RELATIVE to the cube's own reports needs (plan §3.1); neither is a claim about its colours. */
-  const reportNow = () => state.live ?? heldNow;
+  /** The cube's arrangement as its own reports last gave it — `live`, or the report the reconnect question holds back
+   *  — and only while it accounts for every turn the cube has counted (`reportedArrangement`). Either is the cube's
+   *  model in the frame its turns move it in, which is all a tracker RELATIVE to the cube's own reports needs (plan
+   *  §3.1); neither is a claim about its colours. A report the cube has turned away from is none: an engine armed
+   *  from one judged the next snapshot a contradiction of a clean rep, so the page waits for that snapshot instead.
+   *  Read from the reports layer, not kept here, so a report that came before this page did is not lost. */
+  const reportNow = () => reportedArrangement();
   const live = () => Boolean(engine) && engine.state.status !== STATUS.IDLE && cubeHere();
 
   const makeEngine = (judged) => {
-    // The model carries to a new row only on the SAME connection: another session's arrangement is another stream's.
-    const carry = engine && engineConn === conn && engine.state.trusted ? engine.facelets : null;
+    // The model carries to a new row only on the SAME connection — another session's arrangement is another stream's
+    // — and only from an engine that was following: an idle one hears no turns, so its model is where the cube WAS.
+    const st0 = engine?.state;
+    const carry = st0 && engineConn === conn && st0.status !== STATUS.IDLE && st0.trusted ? engine.facelets : null;
     engine?.stop();
     const mine = {};
     const session = conn;
@@ -616,10 +621,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     const here = cubeHere();
     if (here === wasHere && conn === engineConn) return;
     wasHere = here;
-    if (conn !== engineConn) {
-      heldNow = null;
-      makeEngine(row.alg);
-    } else if (!here) engine.stop();
+    if (conn !== engineConn) makeEngine(row.alg); else if (!here) engine.stop();
     else if (reportNow() && engine.state.status === STATUS.IDLE) engine.start({ facelets: reportNow() });
     if (!here) drawCase();
     paint();
@@ -627,16 +629,16 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   hooks.liveMove = (m) => {
     if (stale() || !engine) return;
     presenceChanged();
-    if (engine.state.status === STATUS.IDLE && cubeHere() && reportNow()) engine.start({ facelets: reportNow() });
+    // An idle engine does not arm here: every report that could arm it already did as it arrived (`onSnapshot`) or
+    // as the engine was made (`makeEngine`), and a turn on top of no report is a turn on an arrangement nobody knows.
     turnsSinceArm += 1;
     engine.report(m);
     paint();
   };
-  /** A snapshot from the cube: `live`, or one the reconnect question holds back from being `live` (`held`). */
-  const onSnapshot = (f, held) => {
+  /** A snapshot from the cube: `live`, or one the reconnect question holds back from being `live`. */
+  const onSnapshot = (f) => {
     if (stale() || !engine) return;
     presenceChanged();
-    heldNow = held ? f : null;
     const st = engine.state.status;
     if (st === STATUS.IDLE) { if (cubeHere()) engine.start({ facelets: f }); }
     else if (waitingForReport) engine.restart({ facelets: f });
@@ -646,12 +648,12 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     else engine.resync(f);
     paint();
   };
-  hooks.liveUpdate = (f) => onSnapshot(f, false);
+  hooks.liveUpdate = (f) => onSnapshot(f);
   // While the reconnect question is open its reports are held back from `live` — where the cube IS is exactly what
   // is being asked — and they still reach this screen, because the engine claims nothing about where the cube is:
   // it judges turns relative to the cube's own model. Nothing here answers the question, writes `live` or the
   // subject, or grants trust. Without this, a remembered cube left Practice waiting until somebody answered on Home.
-  hooks.heldUpdate = (f) => onSnapshot(f, true);
+  hooks.heldUpdate = (f) => onSnapshot(f);
   hooks.liveGap = () => {
     if (stale() || !engine) return;
     presenceChanged();
