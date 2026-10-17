@@ -817,6 +817,9 @@ for (const fixture of FIXTURES) {
       assert.ok(m.canvas, 'no canvas in the cube slot — the renderer did not mount');
       near(m.canvas.width, m.slot.width, 'canvas width is the slot width', 2);
       near(m.canvas.height, m.slot.height, 'canvas height is the slot height', 2);
+      // The slot is the primary's, inside it. `.cube-slot`'s 220px floor once held the slot taller than a locked
+      // primary row, and the cube drew 16px past its card into the gap on the Split View column (2026-10-17).
+      assert.ok(inside(m.slot, m.primary), `the cube slot ${JSON.stringify(m.slot)} leaves the primary ${JSON.stringify(m.primary)}`);
       // And what it drew stays inside it: the framing (lib/cube-frame.js) fits the cube and its
       // ghost faces to the slot, so nothing painted reaches the canvas edge — at this slot shape,
       // as at every other. A blank canvas cannot pass: something must be painted in the middle.
