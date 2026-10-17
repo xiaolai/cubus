@@ -2424,3 +2424,49 @@ test('Quick keeps the repair race for every chip, and never asks for a cut', asy
   assert.equal(cuts, 0, 'Quick asked for a lesson cut');
   assert.deepEqual(w.chips(), ["U'"]);
 });
+
+test('lessons answered LATER, as the lesson worker answers: each walk waits for its own, and an overtaken one lands nowhere', async () => {
+  // Every stub above answers synchronously, which an `await` dropped from the resolver would not notice —
+  // the real `lessonFor` and `stageLessonFor` return promises (lib/lesson-client.js). Here they are deferred.
+  const lessons = [];
+  const cuts = [];
+  let searches = 0;
+  const w = world({ settings: { solveMethod: 'beginner' } }, ({ state }) => ({
+    deriveCube: async () => { searches += 1; solvedBy(state, "R'"); },
+    lessonFor: (cube) => { const d = deferred(); lessons.push({ d, cube }); return d.promise; },
+    stageLessonFor: (cube) => { const d = deferred(); cuts.push({ d, cube }); return d.promise; },
+  }));
+
+  // A whole walk: nothing lands until the lesson does, and then it is that lesson.
+  const whole = w.session.load();
+  await settle();
+  assert.equal(lessons.length, 1, 'precondition: the lesson was asked for');
+  lessons[0].d.resolve(oneMoveLesson(lessons[0].cube));
+  assert.equal(await within(whole), true);
+  assert.deepEqual(w.chips(), ["R'"], 'the walk is not the lesson that was answered');
+  assert.equal(w.$('#solLabel').textContent, 'Beginner');
+
+  // A cut walk, the same way.
+  w.state.stageTarget = 'cross';
+  const cut = w.session.load();
+  await settle();
+  assert.equal(cuts.length, 1, 'precondition: the cut was asked for');
+  cuts[0].d.resolve(cutAt(cuts[0].cube));
+  assert.equal(await within(cut), true);
+  assert.deepEqual(w.chips(), ["R'"], 'the walk is not the cut that was answered');
+  assert.equal(searches, 0, 'a method walk started a whole-cube search');
+
+  // Overtaken while its lesson is out: the newer load's walk stands, whatever the older answer says later.
+  w.state.stageTarget = null;
+  const older = w.session.load();
+  await settle();
+  const newer = w.session.load();
+  await settle();
+  assert.equal(lessons.length, 3, 'precondition: both loads asked for a lesson');
+  lessons[2].d.resolve(oneMoveLesson(lessons[2].cube));
+  assert.equal(await within(newer), true);
+  const lesson = { ...oneMoveLesson(lessons[1].cube), alg: "R' U'", moves: ["R'", "U'"] };
+  lessons[1].d.resolve(lesson);
+  assert.equal(await within(older), false, 'an overtaken load said it landed');
+  assert.deepEqual(w.chips(), ["R'"], 'an overtaken load\'s late lesson replaced the newer walk');
+});
