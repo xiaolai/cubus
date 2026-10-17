@@ -185,6 +185,44 @@ export function createWalkResolver({
   }
 
   /**
+   * The walk to a picture: its own route, and no other — before the whole-cube search is started, which
+   * is the whole point of taking this path ahead of the race in `raceWalk`.
+   *
+   * Two findings of a Codex refute pass (2026-09-26), and the first is the reason this is a path of its
+   * own rather than a source in the race:
+   *
+   *   A REFUSED PICTURE ROUTE MUST NOT BECOME A ROUTE SOMEWHERE ELSE. The race starts the whole-cube
+   *   search first and falls back to its answer when `lastRoute` yields nothing. That is right for a
+   *   stage — solved is inside every stage target, so the fallback still arrives somewhere the chip
+   *   named — and WRONG for a picture: reproduced through this resolver, a refused Checkerboard route
+   *   committed a whole-cube walk of `R'` ending at solved, under a heading that still said
+   *   Checkerboard. The route's own verifier catching a bad answer would have been the thing that sent
+   *   the child to the wrong cube.
+   *
+   *   AND THE SEARCH IT DOES NOT NEED IS NEVER STARTED. `startWholeSearch` writes its improvements
+   *   straight into the count, so a child waiting for a picture would watch numbers and escalation
+   *   notices about solving the cube instead. Not starting it is stronger than ignoring it, and it
+   *   leaves the pool free for the search that IS wanted.
+   *
+   * A refusal throws rather than returning null: null here means "overtaken", and a refusal read as
+   * "no repair, use the solve" is exactly the fallback this path exists to refuse. `WALK_FAILURES` names
+   * the key.
+   */
+  async function pictureWalk(stageTarget, startedFrom, { fresh, signal }) {
+    const route = await pictureRoute(stageTarget, startedFrom, signal);
+    if (!fresh()) return null;
+    if (!route) throw new Error('no picture route');
+    return repairWalk(route, startedFrom);
+  }
+
+  /**
+   * Whether the chosen method teaches this load: a method with stages, walking to the whole cube or to a
+   * chip it stops at (plan Phase 4). A chip it does not stop at is a repair's, in the race.
+   */
+  const teaches = (method, stageTarget) => method.engine === 'method'
+    && (!stageTarget || method.stops.includes(stageTarget.id));
+
+  /**
    * The whole cube solved — raced against a repair when the target is a stage.
    *
    * Three sources race (§4). The pool's whole-cube answer is one of them, already paid for: the
@@ -194,68 +232,10 @@ export function createWalkResolver({
    *
    * EVERY EXIT CALLS THE WHOLE-CUBE SEARCH OFF: a repair that answered, an overtaken load, a throw.
    * A repair that threw once left it running with its reports still reaching the count, so a late
-   * improvement replaced the failure with "7" (reproduced by an audit, 2026-09-13).
+   * improvement replaced the failure with "7" (reproduced by an audit, 2026-09-13). The search is
+   * started here and nowhere else, so this function owns calling it off.
    */
-  async function solveWalk({ stageTarget, method, fresh, signal }) {
-    // The cube this load is about, captured once: the session commits the walk well after the
-    // search, and a live snapshot can change the subject between them without a new load — which is
-    // deliberate, since a snapshot is not a new question — so the renderer is handed the walk's own
-    // start, never whatever the subject has become. An audit reproduced the alternative: the walk
-    // described `R` while the 3D cube was handed `R F`.
-    const startedFrom = state.cube.facelets;
-
-    // A PICTURE DESTINATION TAKES ITS OWN ROUTE, AND NO OTHER — before the whole-cube search is
-    // started, which is the whole point of putting this here rather than beside the race below.
-    //
-    // Two findings of a Codex refute pass (2026-09-26), and the first is the reason this branch is
-    // shaped like a return rather than a source:
-    //
-    //   A REFUSED PICTURE ROUTE MUST NOT BECOME A ROUTE SOMEWHERE ELSE. The code below starts the
-    //   whole-cube search first and falls back to its answer when `lastRoute` yields nothing. That
-    //   is right for a stage — solved is inside every stage target, so the fallback still arrives
-    //   somewhere the chip named — and WRONG for a picture: reproduced through this resolver, a
-    //   refused Checkerboard route committed a whole-cube walk of `R'` ending at solved, under a
-    //   heading that still said Checkerboard. The route's own verifier catching a bad answer would
-    //   have been the thing that sent the child to the wrong cube.
-    //
-    //   AND THE SEARCH IT DOES NOT NEED IS NEVER STARTED. `startWholeSearch` writes its
-    //   improvements straight into the count, so a child waiting for a picture would watch numbers
-    //   and escalation notices about solving the cube instead. Not starting it is stronger than
-    //   ignoring it, and it leaves the pool free for the search that IS wanted.
-    //
-    // A refusal throws rather than returning null: null here means "no repair, use the solve", and
-    // that is exactly the fallback this branch exists to refuse. `WALK_FAILURES` names the key.
-    if (stageTarget?.picture) {
-      const route = await pictureRoute(stageTarget, startedFrom, signal);
-      if (!fresh()) return null;
-      if (!route) throw new Error('no picture route');
-      return repairWalk(route, startedFrom);
-    }
-
-    // THE CHOSEN METHOD, FIRST AND ALONE, when it has stages and the walk is to the whole cube. A cube it
-    // cannot finish DEGRADES to the Quick walk rather than failing the screen — losing both because one
-    // could not be built would be the worst outcome — and the screen says so beside the walk without
-    // changing the stored choice (ADR 0011). The fallback is CARRIED in the record, never set on the
-    // session from here: a load overtaken by a newer one must not write its fallback over the newer walk.
-    let fellBack = false;
-    if (!stageTarget && method.engine === 'method') {
-      const taught = await methodWalk(method, null, signal);
-      if (!fresh()) return null;
-      if (taught) return taught;
-      fellBack = true;
-    }
-
-    // A CHIP THE CHOSEN METHOD STOPS AT gets that method's walk TO it: the whole lesson for this cube, cut
-    // at the stage end where the chip first holds (plan Phase 4). Its own path, ahead of the repair race,
-    // because a repair that answered returns before any lesson is reached — deleting the old "a stage route
-    // has no lesson" guard alone would have done nothing. A cube already at the chip, or one the method
-    // cannot finish, has no cut, and takes the repair route below, which says so in its own words.
-    if (stageTarget && method.engine === 'method' && method.stops.includes(stageTarget.id)) {
-      const taught = await methodWalk(method, stageTarget, signal);
-      if (!fresh()) return null;
-      if (taught) return taught;
-    }
-
+  async function raceWalk({ stageTarget, startedFrom, fellBack, fresh, signal }) {
     const whole = startWholeSearch({ fresh, signal });
     try {
       // The repair first, because it is the one that can answer while the whole-cube search runs.
@@ -270,13 +250,48 @@ export function createWalkResolver({
       // No repair: the whole-cube answer IS the walk, and its failure is the screen's.
       await whole.done;
       if (!fresh()) return null;
-      // A REPAIR IS NO METHOD'S WALK: every chip the chosen method stops at was offered its cut above, so a
+      // A REPAIR IS NO METHOD'S WALK: every chip the chosen method stops at was offered its cut first, so a
       // stage answer here is Quick's, or a cube with nothing left to teach on the way to the chip, or a chip
       // no method stops at. The session hides the method row to match.
       return walkRecord({ ...whole.result(), route, method: route ? null : 'quick', fellBack });
     } finally {
       whole.stop();
     }
+  }
+
+  /**
+   * The walk a solve load asked for: a picture's own route, else the chosen method's lesson, else the race.
+   */
+  async function solveWalk({ stageTarget, method, fresh, signal }) {
+    // The cube this load is about, captured once: the session commits the walk well after the
+    // search, and a live snapshot can change the subject between them without a new load — which is
+    // deliberate, since a snapshot is not a new question — so the renderer is handed the walk's own
+    // start, never whatever the subject has become. An audit reproduced the alternative: the walk
+    // described `R` while the 3D cube was handed `R F`.
+    const startedFrom = state.cube.facelets;
+    if (stageTarget?.picture) return pictureWalk(stageTarget, startedFrom, { fresh, signal });
+
+    // THE CHOSEN METHOD, FIRST AND ALONE, when it has stages: to the whole cube, or to a chip it stops at.
+    //
+    // To the whole cube, a cube it cannot finish DEGRADES to the Quick walk rather than failing the
+    // screen — losing both because one could not be built would be the worst outcome — and the screen
+    // says so beside the walk without changing the stored choice (ADR 0011). The fallback is CARRIED in
+    // the record, never set on the session from here: a load overtaken by a newer one must not write its
+    // fallback over the newer walk.
+    //
+    // To a chip, the walk is the whole lesson for this cube, cut at the stage end where the chip first
+    // holds (plan Phase 4) — ahead of the race, because a repair that answered returns before any lesson
+    // is reached: deleting the old "a stage route has no lesson" guard alone would have done nothing. A
+    // cube already at the chip, or one the method cannot finish, has no cut, and takes the repair route,
+    // which says so in its own words — so only the whole-cube walk falls back.
+    let fellBack = false;
+    if (teaches(method, stageTarget)) {
+      const taught = await methodWalk(method, stageTarget, signal);
+      if (!fresh()) return null;
+      if (taught) return taught;
+      fellBack = !stageTarget;
+    }
+    return raceWalk({ stageTarget, startedFrom, fellBack, fresh, signal });
   }
 
   /**

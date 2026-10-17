@@ -329,7 +329,9 @@ test('a repair survives a whole-cube search that failed', () => {
   assert.match(search, /onImprovement: \(step\) => \{ if \(heard\(\)\) setStatus/, 'and its improvements ask');
   assert.match(search, /done\.catch\(\(\) => \{\}\);/,
     'and the promise nobody may be left to await must never be an unhandled rejection');
-  const solve = blockAt(code, 'async function solveWalk(');
+  // The race starts the search and is the only place that does, so it is the one that must call it off.
+  const solve = blockAt(code, 'async function raceWalk(');
+  assert.equal(code.split('startWholeSearch(').length - 1, 2, 'the search is started from one place — its definition and one call');
   assert.match(solve, /const whole = startWholeSearch\(\{ fresh, signal \}\);/,
     'the whole-cube search is started, not awaited');
   assert.match(solve, /\} finally \{\s*\n\s*whole\.stop\(\);\s*\n\s*\}/,

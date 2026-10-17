@@ -113,13 +113,18 @@ test('a method with stages is taught WITHOUT the whole-cube search, and a cube i
   const taught = blockAt(code, 'async function methodWalk(entry, stageTarget, signal)');
   assert.match(taught, /await lessonFor\(state\.cube, entry, \{ signal \}\)/, 'the lesson must be built for the chosen entry, with the walk\'s signal');
   const solve = blockAt(code, 'async function solveWalk(');
-  const methodFirst = solve.indexOf('const taught = await methodWalk(method, null, signal);');
-  const searched = solve.indexOf('startWholeSearch(');
+  const methodFirst = solve.indexOf('const taught = await methodWalk(method, stageTarget, signal);');
+  // The race is where the search starts, and nowhere else does (stage-wiring.test.mjs counts its callers).
+  const searched = solve.indexOf('raceWalk(');
   assert.ok(methodFirst > 0 && methodFirst < searched, 'the chosen method must be tried before any search starts');
+  assert.match(blockAt(code, 'async function raceWalk('), /startWholeSearch\(/, 'the race must be what starts the search');
   // The fallback is CARRIED in the walk record, and the session commits it only after its freshness check:
   // a resolver that set it on the session directly let an overtaken load stamp the newer walk (audit-fix).
-  assert.match(solve, /fellBack = true;/, 'a cube with no lesson must fall back rather than fail the screen');
-  assert.match(solve, /walkRecord\(\{ \.\.\.whole\.result\(\), route, method: route \? null : 'quick', fellBack \}\)/);
+  // Only the whole-cube walk falls back: a chip with no cut takes the repair route, which says so itself.
+  assert.match(solve, /fellBack = !stageTarget;/, 'a cube with no lesson must fall back rather than fail the screen');
+  assert.match(solve, /return raceWalk\(\{ stageTarget, startedFrom, fellBack, fresh, signal \}\);/, 'the fallback must reach the race');
+  assert.match(blockAt(code, 'async function raceWalk('),
+    /walkRecord\(\{ \.\.\.whole\.result\(\), route, method: route \? null : 'quick', fellBack \}\)/);
   assert.doesNotMatch(code, /fallBackToQuick/, 'the resolver must not reach into the session to set a fallback');
   const commit = blockAt(code, 'function commitWalk(got, stageTarget)');
   assert.match(commit, /fellBack = got\.fellBack === true;/, 'the session must take the fallback from the committed record');
@@ -132,8 +137,10 @@ test('a chip the chosen method stops at gets that method\'s lesson CUT there, on
   // `stops`, held to the walk by course-route.test.mjs). Deleting the old guard alone would have done
   // nothing — a repair that answered returns before it — so the cut is its own branch, BEFORE the race.
   const solve = blockAt(code, 'async function solveWalk(');
-  const cut = solve.indexOf('method.stops.includes(stageTarget.id)');
-  const race = solve.indexOf('startWholeSearch(');
+  assert.match(code, /const teaches = \(method, stageTarget\) => method\.engine === 'method'\s*&& \(!stageTarget \|\| method\.stops\.includes\(stageTarget\.id\)\);/,
+    'a chip the method stops at must be taught by it');
+  const cut = solve.indexOf('if (teaches(method, stageTarget))');
+  const race = solve.indexOf('raceWalk(');
   assert.ok(cut > 0 && cut < race, 'the cut must be tried before the repair race starts');
   assert.match(blockAt(code, 'async function methodWalk(entry, stageTarget, signal)'), /await stageLessonFor\(state\.cube, entry, stageTarget, \{ signal \}\)/);
   // The cut itself is ONE function over every record (lib/lesson-cut.js), never truncated at the caller.
