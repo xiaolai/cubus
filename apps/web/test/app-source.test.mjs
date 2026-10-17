@@ -6,11 +6,15 @@
 // was written to end — so its refusals are pinned here, not assumed.
 
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
+import { pathToFileURL } from 'node:url';
 
-import { APP_SOURCES, HOLE, LIBRARY_SOURCES, blockAt, readAppSource, walk } from './app-source.mjs';
+import { parse } from 'acorn';
+
+import { APP_SOURCES, HOLE, LIBRARY_SOURCES, blockAt, cssBlockAt, readAppSource, readScanned, scanSources, translatedSentences, walk, walkTokens } from './app-source.mjs';
 
 const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8');
 /** Every relative module a file names — static, side-effect, re-export and dynamic — resolved against it. */
@@ -69,6 +73,140 @@ test('a block is read to its own closing brace, however it is indented', () => {
       `${indent.length}-space indent: a } in a string, template, regex or comment ended the block early`);
     assert.doesNotMatch(block, /after/, `${indent.length}-space indent: the block ran on into the next function`);
   }
+});
+
+test('a regex is told from a division wherever one can stand, so its braces never end a block', () => {
+  // A lexer that judged a `/` by the character before it read a regex after an `if (…)`, a `while (…)`
+  // or a block's own `}` as division, and the `}` inside the regex closed the block: every line after it
+  // fell out of the block, and a negative assertion over those lines passed (audit, 2026-10-17).
+  const subject = (line) => `function subject(a) {\n  ${line}\n  forbidden();\n}\nfunction after() { return 2; }`;
+  for (const line of ['if (a) /}/.test(a);', 'while (a) /}/.test(a);', 'for (;;) /}/.test(a);', '{ } /}/.test(a);']) {
+    const block = blockAt(subject(line), 'function subject(a)');
+    assert.ok(block.endsWith('forbidden();\n}'), `${line} ended the block early`);
+  }
+  // And a division stays a division: read as a regex, it would swallow the object's `{` and the block
+  // would close on that object's `}`.
+  const block = blockAt(subject('const q = (a) / 2, o = { k: a / 2 };'), 'function subject(a)');
+  assert.ok(block.endsWith('forbidden();\n}'), 'a division was read as a regex');
+  // A TOKENIZER ALONE HAS TWO MORE WAYS TO GET IT WRONG, both found by the verify pass of the change that
+  // brought acorn in: it does not know it is inside an async function, so `await /}/` read as division; and
+  // it read `obj.if` as the keyword, so the `(…)` after it closed a statement and the division after that
+  // became a regex that hid the literal inside it.
+  assert.match(blockAt('async function f() { await /}/.test(x); forbidden(); }', 'async function f()'), /forbidden\(\);/,
+    'a regex after await ended the block early');
+  assert.match(blockAt('function* g() { yield /}/; forbidden(); }', 'function* g()'), /forbidden\(\);/,
+    'a regex after yield ended the block early');
+  for (const src of ['obj.if(x) / t("flatter") / 2;', 'obj?.if(x) / t("flatter") / 2;', 'obj.return / t("flatter") / 2;',
+    'obj?.of / t("flatter") / 2;']) {
+    assert.deepEqual(walk(src).literals, ['flatter'], `${src}: a division after a keyword-named property was read as a regex`);
+  }
+});
+
+test('the walk tokenizes every file the scans read exactly as acorn\'s parser does', () => {
+  // THE RELATION, NOT A LIST. The walk tokenizes without parsing, so it must GUESS where a regex can start,
+  // and the verify passes of 2026-10-17 kept finding contexts it guessed wrong — `await /}/`, `obj.if(x) /`,
+  // `obj?.of /`, `for (let of of /}/)`. Patching each guess is a list; this is the relation: wherever the
+  // code the scans read could be guessed wrong, the parser — which knows — disagrees about a token's span,
+  // and this case names the file and the line. A guess it cannot catch is one no scanned file contains. Which files: the app's own source, every library module, and
+  // everything the scan's wording guard reads (`scanSources`) — derived, never listed here, because a list
+  // of its own left three of those out (verify pass, 2026-10-17). Each is read as the scans read it,
+  // through `readScanned`: a TypeScript source compiled, which is the only form the walk is held to.
+  const own = [...APP_SOURCES, ...LIBRARY_SOURCES].map((f) => new URL(`../${f}`, import.meta.url).href);
+  const files = [...new Set([...own, ...scanSources()])];
+  const kind = (label) => (['regexp', 'string', 'template', 'invalidTemplate'].includes(label) ? label : '');
+  const differs = [];
+  for (const file of files) {
+    const name = file.replace(new URL('../../../', import.meta.url).href, '');
+    const src = readScanned(file);
+    const parsed = [];
+    const onToken = (tk) => { if (tk.type.label !== 'eof') parsed.push({ kind: kind(tk.type.label), start: tk.start, end: tk.end }); };
+    try {
+      parse(src, { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true, onToken });
+    } catch (e) {
+      differs.push(`${name}: acorn's parser refuses it (${e.message})`);
+      continue;
+    }
+    const walked = walkTokens(src).map(({ type, start, end }) => ({ kind: kind(type), start, end }));
+    const at = walked.findIndex((tk, i) => tk.kind !== parsed[i]?.kind || tk.start !== parsed[i].start || tk.end !== parsed[i].end);
+    if (at >= 0 || walked.length !== parsed.length) {
+      const i = at >= 0 ? at : Math.min(walked.length, parsed.length);
+      const pos = walked[i]?.start ?? parsed[i]?.start ?? src.length;
+      differs.push(`${name}:${src.slice(0, pos).split('\n').length}: the walk read ${JSON.stringify(src.slice(pos, pos + 30))} unlike the parser`);
+    }
+  }
+  assert.ok(files.length > 100, `only ${files.length} files were compared`);
+  assert.ok(files.some((f) => f.endsWith('.ts')) && files.some((f) => f.includes('/vendor/')), 'the scanned TypeScript and bundles were not compared');
+  assert.deepEqual(differs, []);
+});
+
+test('the comparison above fails on a guess the walk gets wrong', () => {
+  // The case above is worth something only if it CAN fail: here are contexts the walk is known to guess
+  // wrong — one where it then throws, one where it reads on silently — and the parser disagrees with both.
+  for (const src of ['function f() { for (let of of /}/) {} forbidden(); }', 'async () => { for await (const of of /}/) {} }']) {
+    const parsed = [];
+    parse(src, { ecmaVersion: 'latest', sourceType: 'module', onToken: (tk) => { if (tk.type.label !== 'eof') parsed.push([tk.start, tk.end]); } });
+    let walked = null;
+    try { walked = walkTokens(src).map(({ start, end }) => [start, end]); } catch { /* a throw is a disagreement too */ }
+    assert.notDeepEqual(walked, parsed, `the walk now reads ${src} right — move this case to a context it still guesses`);
+  }
+});
+
+test('a TypeScript source is read compiled, so a type cannot hide a sentence or stand in for one', () => {
+  // Raw, a non-null `y!` before a division read as `!` and a regex that swallowed the sentence after it,
+  // and a string TYPE elsewhere could stand in for it (verify pass, 2026-10-17). Compiled, the division is
+  // plain and the types are gone.
+  const dir = mkdtempSync(path.join(tmpdir(), 'scanned-'));
+  const file = path.join(dir, 'x.ts');
+  writeFileSync(file, "const x = y! / t('more ' + how + 'light') / 2;\ntype A = 'more ';\ntype B = 'light';\n");
+  try {
+    assert.deepEqual(walk(readScanned(pathToFileURL(file).href)).sentences, ['more  light']);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('a literal is read as the text it puts on screen, not the escapes it is written with', () => {
+  // `t('More\nlight')` shows a line break; read as its source it held a backslash and an `n`, and a
+  // wording guard looking for "more light" never saw it (audit, 2026-10-17).
+  assert.deepEqual(walk("t('More\\nlight on the cube.');").literals, ['More\nlight on the cube.']);
+  assert.deepEqual(walk("x('it\\'s', \"a\\u0062\\x63\");").literals, ["it's", 'abc']);
+  assert.deepEqual(walk('x(`a\\u{62} \\`c\\` ${d} e\\n`);').literals, ['ab `c` ', ' e\n']);
+  // …and `String.raw` is the one tag whose text IS its source: cooking it would read `\u0066latter` as
+  // "flatter", and miss a backslash the screen does show (verify pass, 2026-10-17).
+  assert.deepEqual(walk('t(String.raw`more light\\u0061 ${x} \\n`);').literals, ['more light\\u0061 ', ' \\n']);
+  assert.deepEqual(walk('t(String.raw`\\u0066latter`);').literals, ['\\u0066latter']);
+  // `String.raw` written so the walk cannot see it is still `String.raw`, so any other tag's text is the
+  // tag's to decide: a part whose source and cooked text differ is refused, never guessed.
+  for (const src of ['(String.raw)`more light\\u0061`;', 'String["raw"]`more light\\u0061`;', 'tag`a\\nb`;']) {
+    assert.throws(() => walk(src), /tagged by something other than String\.raw/, `${src} was read as one of its two texts`);
+  }
+  assert.deepEqual(walk('tag`plain ${x} text`;').literals, ['plain ', ' text'], 'a tagged template with no escape has one text');
+  // An escape no template can hold is a syntax error in the app, refused rather than read as its source.
+  assert.throws(() => walk('t(`More \\unicode`);'), /invalid escape/);
+});
+
+test('a stylesheet block is read past braces in strings, comments and escapes', () => {
+  // One construct per case: an extra brace counted in one place and one missed in another cancel out,
+  // and a case holding both passed over a reader that got each wrong.
+  const read = (rule) => cssBlockAt(`.before { a: 1; }\n${rule}\n.after { b: 2; }`, '.a ');
+  for (const rule of ['.a { content: "}"; color: red; }', ".a { content: '\\'}'; color: red; }",
+    '.a { /* } */ color: red; }', '.a { --x: \\}; color: red; }', '.a /* { */ { color: red; }',
+    '.a { background: url(foo}bar); color: red; }', '.a { background: url("}"); color: red; }']) {
+    assert.equal(read(rule), rule, `${rule} was not read whole`);
+  }
+  // An anchor that carries its own brace opens the block with it, as `blockAt`'s does.
+  const media = '@media (orientation: landscape) { .a { color: red; } .b { color: blue; } }';
+  assert.equal(cssBlockAt(media, '@media (orientation: landscape) {'), media);
+  assert.throws(() => cssBlockAt('.a { color: red;', '.a'), /never closed/);
+  assert.throws(() => cssBlockAt('.a "{" { }', '.a'), /a literal opens between/);
+});
+
+test("the text after a template's hole joins that template's sentence, never a literal inside the hole", () => {
+  // The part after `${…}` was joined to whatever literal came last — the one INSIDE the hole — so
+  // `it will ${t('')} settle now` was read as "it will" and "settle now" (audit, 2026-10-17).
+  assert.deepEqual(walk("t(`it will ${t('')} settle now`);").sentences, ['it will   settle now', '']);
+  assert.deepEqual(walk('`a ${c ? `inner` : "x"} b` + `!`').sentences, ['a   b !', 'inner', 'x']);
+  assert.deepEqual(translatedSentences("t(`it will ${t('x')} settle now`);"), ['it will   settle now', 'x']);
 });
 
 test('a function whose parameters destructure an object is read to its body, never its parameter pattern', () => {

@@ -12,22 +12,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { reachable, walk } from './app-source.mjs';
+import { readScanned, scanSources, walk } from './app-source.mjs';
 
 const read = (url) => readFileSync(url, 'utf8');
 
-/**
- * Every file whose words can reach the scan screen: the scanner's panel, the scan screen, and every
- * module either of them imports, followed onwards — through the shared walk in `app-source.mjs`, so
- * the two copy guards cannot drift apart about what "reaches a screen" means.
- */
-const SOURCES = [
-  // The bundle the app actually loads, as well as the sources it was built from: a bundle that has
-  // drifted from them ships words nobody scanned (audit, 2026-09-19). `vendor-bundles.test.mjs`
-  // holds the two to each other; this holds what is SERVED.
-  new URL('../vendor/ai-scan-panel.js', import.meta.url).href,
-  ...reachable(['../../../packages/cube-scanner/view/ai-scan-panel.ts', '../lib/screens/scan.js']),
-];
+/** Every file whose words can reach the scan screen — `scanSources` in `app-source.mjs`, shared with the
+ *  test that holds the walk's tokens to acorn's parser over every file a scan reads. */
+const SOURCES = scanSources();
 
 /** Each refused wording, a sentence that carries it, and the claim nothing measured. Spaces match any
  *  run of whitespace, because a hole closed up (`will ${qualifier} settle`) leaves more than one. */
@@ -53,7 +44,7 @@ const UNMEASURED = [
 ];
 
 /** What a file can put on screen: every sentence, holes and concatenations closed up (`walk`). */
-const sentencesOf = (href) => walk(read(new URL(href))).sentences;
+const sentencesOf = (href) => walk(readScanned(href)).sentences;
 
 test('no sentence the scan can show names a cause the scanner never measured', () => {
   assert.ok(SOURCES.some((f) => f.endsWith('/cues.js')), "the import walk found none of the screen's modules");
@@ -89,6 +80,11 @@ test('the guard sees every sentence it exists to refuse — written whole, split
   assert.equal(hits("const line = 'more ' + a + 'light on it';").length, 1, 'a claim split BY the join was missed');
   assert.equal(hits("const line = 'more ' + a + b + 'light on it';").length, 1, 'two names between the pieces split the claim');
   assert.equal(hits("const line = t('hold it') + ' flatter';").length, 1, 'a claim added to a translated piece was read as two');
+  // A HOLE THAT HOLDS A LITERAL OF ITS OWN, and a line break WRITTEN AS AN ESCAPE. The first handed the
+  // text after the hole to the literal inside it; the second was read as the backslash and `n` it is
+  // spelled with, never the break it puts on screen (audit, 2026-10-17).
+  assert.equal(hits("const line = t(`it will ${t('')} settle now`);").length, 1, "a claim split by a hole holding a literal was read as two");
+  assert.equal(hits("const line = t('More\\nlight on the cube.');").length, 1, 'a claim with an escaped line break was read as its escape');
   // …and neither a comment nor two unrelated neighbours is a sentence.
   assert.equal(hits('// held flat and centred\nconst ok = "Show any side of your cube to the camera.";').length, 0);
   assert.equal(hits("const words = ['it will', 'settle'];").length, 0, 'two unrelated strings were read as one sentence');

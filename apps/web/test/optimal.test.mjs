@@ -208,9 +208,9 @@ const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s
 // instead of returning a shorter list, because a quietly incomplete scan is precisely how this
 // invariant stopped holding without failing.
 
-// The scanner itself — `walk`, and the string, regex and template readers under it — lives in
-// `app-source.mjs`, where the wiring tests' `blockAt` reads blocks with it too. One scanner, and
-// the negative fixtures below are what keep it from being walked past.
+// The scanner itself — `walk`, over acorn's tokens since a hand lexer was beaten three ways in one audit
+// (2026-10-17) — lives in `app-source.mjs`, where the wiring tests' `blockAt` reads blocks with it too.
+// One scanner, and the negative fixtures below are what keep it from being walked past.
 
 /** Every string and template literal in the source, so wording checks look at what can
  *  actually reach a screen rather than at identifiers or module paths. */
@@ -402,7 +402,7 @@ test('the wording scanner cannot be walked past — the two ways it could be, pi
 
   // 3. A scan that cannot be completed must THROW rather than return a short list: a quietly
   //    incomplete scan is how the invariant stopped holding without ever failing.
-  assert.throws(() => stringLiterals('const a = "unterminated;'), /unterminated/);
+  assert.throws(() => stringLiterals('const a = "unterminated;'), /Unterminated string/);
   assert.throws(() => stringLiterals('const a = `open ${1}'), /ended inside a template/);
 
   // 4. And the block extraction stops at the block's own close, wherever it is indented. The old

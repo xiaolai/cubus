@@ -30,6 +30,7 @@
     "build:smartcube": "esbuild lib/smartcube-entry.js --bundle --format=esm --target=es2022 --legal-comments=eof --outfile=vendor/smartcube.js"
   },
   "devDependencies": {
+    "acorn": "8.19.0",
     "esbuild": "^0.28.2",
     "happy-dom": "^20.14.6",
     "playwright": "1.64.0",

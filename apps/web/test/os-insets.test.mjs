@@ -14,7 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
-import { blockAt } from './app-source.mjs';
+import { blockAt, cssBlockAt } from './app-source.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const html = readFileSync(path.join(root, 'index.html'), 'utf8');
@@ -145,7 +145,7 @@ test('landscape gives the bottom inset to the window, portrait to the tab bar', 
     'the portrait tab bar should grow by the bottom inset and pad by it',
   );
   assert.match(
-    blockAt(html, '@container app (orientation: portrait)'),
+    cssBlockAt(html, '@container app (orientation: portrait)'),
     /\.win \{ padding-bottom: 0; \}/,
     'portrait should hand the bottom inset from .win to .tabs, not apply it twice',
   );

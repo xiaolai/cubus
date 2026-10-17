@@ -10,7 +10,7 @@
 
 import assert from 'node:assert/strict';
 import { isAbsent, isNotSame, isSame } from './dom-assert.mjs';
-import { blockAt, readAppSource, APP_SOURCES } from './app-source.mjs';
+import { blockAt, cssBlockAt, readAppSource, APP_SOURCES } from './app-source.mjs';
 import { test, before } from 'node:test';
 import { readFileSync } from 'node:fs';
 
@@ -279,7 +279,7 @@ test("Settings' switch is drawn in one place, so every switch row names and stat
 });
 
 test('the stylesheet answers prefers-reduced-motion, and the renderer reads it too', () => {
-  const reduced = blockAt(html, '@media (prefers-reduced-motion: reduce)');
+  const reduced = cssBlockAt(html, '@media (prefers-reduced-motion: reduce)');
   assert.ok(reduced, 'no reduced-motion rule at all — every pulse and settle runs regardless');
   assert.match(reduced, /animation-duration:\s*\.001ms\s*!important/, 'the pulses must actually stop');
   assert.match(reduced, /transition-duration:\s*\.001ms\s*!important/, 'and the settles with them');

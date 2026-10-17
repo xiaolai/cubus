@@ -19,6 +19,9 @@
 
 import { readFileSync } from 'node:fs';
 
+import { Parser, tokTypes as tt } from 'acorn';
+import { transformSync } from 'esbuild';
+
 /** Every module whose text is the app's UI thread, app.js first. Paths are relative to apps/web. */
 export const APP_SOURCES = Object.freeze([
   'lib/app.js',
@@ -98,50 +101,89 @@ export function readAppSource() {
 //
 // Why a walk and not a regex is recorded where the scanner was first needed, in `optimal.test.mjs`,
 // together with the negative fixtures that prove it cannot be walked past.
+//
+// THE TOKENS ARE ACORN'S, NOT OURS (audit, 2026-10-17). This walk once lexed by hand, and one audit
+// beat it three ways: it judged a `/` by the character before it, so a regex after `if (…)` read as
+// division and the `}` inside it closed the block early; it kept a literal's escapes, so
+// `'More\nlight'` held a backslash rather than a line break; and it read source text where a screen
+// shows the cooked value. Telling a regex from a division needs to know which `)` closes a statement's
+// condition, which is a parser's knowledge, so a parser's tokenizer supplies it: strings arrive
+// decoded, a template's parts cooked, and a lexical error throws rather than desynchronising the walk.
 
-const REGEX_MAY_FOLLOW = new Set([...'(,=:[!&|?{};+-*%~^<>']);
-const REGEX_KEYWORDS = new Set(['return', 'typeof', 'case', 'in', 'of', 'new', 'delete', 'void',
-  'instanceof', 'do', 'else', 'yield', 'await']);
+const TOKENS = Object.freeze({ ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true });
 
-/** Is the `/` at `at` a regex literal rather than a division? The standard heuristic: look back
- *  at the last significant token. A regex can only follow an operator, a punctuator or one of a
- *  few keywords; after an identifier, a `)` or a `]` it is division. */
-function startsRegex(src, at) {
-  let k = at - 1;
-  while (k >= 0 && /\s/.test(src[k])) k -= 1;
-  if (k < 0) return true;
-  if (REGEX_MAY_FOLLOW.has(src[k])) return true;
-  if (!/[\w$]/.test(src[k])) return false;
-  let s = k;
-  while (s >= 0 && /[\w$]/.test(src[s])) s -= 1;
-  return REGEX_KEYWORDS.has(src.slice(s + 1, k + 1));
+/**
+ * Acorn's tokenizer, given the two facts its parser would have supplied (verify pass, 2026-10-17).
+ *
+ * Without a parse, the tokenizer cannot know that `await` and `yield` sit inside an async function or a
+ * generator, so `await /}/` read as division; and it reads a property NAMED like a keyword — `obj.if`,
+ * `obj?.return` — as the keyword, so the `(…)` after `obj.if` closed a "statement's condition" and the
+ * division after it became a regex. A word after `.` or `?.` is a name, whatever it spells; `await` and
+ * `yield` are always followed by an expression here, since both are reserved in a module.
+ */
+const Lexer = Parser.extend((Base) => class extends Base {
+  finishToken(type, value) {
+    const property = (this.type === tt.dot || this.type === tt.questionDot) && type.keyword !== undefined;
+    super.finishToken(property ? tt.name : type, value);
+  }
+
+  updateContext(prevType) {
+    super.updateContext(prevType);
+    if (this.type !== tt.name) return;
+    // A property ends an operand whatever it spells; acorn already says so after `.`, not after `?.`.
+    if (prevType === tt.dot || prevType === tt.questionDot) this.exprAllowed = false;
+    else if (this.value === 'await' || this.value === 'yield') this.exprAllowed = true;
+  }
+});
+
+/**
+ * Every token the walk reads `src` as, type and span — for the test that holds `Lexer` to acorn's PARSER
+ * over every file the scans read, so a context this tokenizer guesses wrong fails there, by file and
+ * position, rather than shortening a block or hiding a literal somewhere a scan relies on.
+ */
+export function walkTokens(src) {
+  return [...tokensOf(src)].map(({ type, start, end }) => ({ type: type.label, start, end }));
 }
 
-function endOfQuoted(src, at) {
-  const quote = src[at];
-  for (let i = at + 1; i < src.length; i += 1) {
-    if (src[i] === '\\') { i += 1; continue; }
-    if (src[i] === '\n') throw new Error(`scan: a ${quote} string ran past the end of its line at ${at}`);
-    if (src[i] === quote) return i + 1;
+/** Acorn's tokens over `src`, a lexical error rethrown as the walk's own refusal. */
+function* tokensOf(src) {
+  const tokens = Lexer.tokenizer(src, TOKENS);
+  for (;;) {
+    let token;
+    try { token = tokens.getToken(); } catch (e) { throw new Error(`scan: ${e.message}`, { cause: e }); }
+    if (token.type === tt.eof) return;
+    yield token;
   }
-  throw new Error(`scan: unterminated ${quote} string at ${at}`);
 }
 
-function endOfRegex(src, at) {
-  let inClass = false;
-  for (let i = at + 1; i < src.length; i += 1) {
-    const ch = src[i];
-    if (ch === '\\') { i += 1; continue; }
-    if (ch === '\n') throw new Error(`scan: a regex literal ran past the end of its line at ${at}`);
-    if (inClass) { if (ch === ']') inClass = false; continue; }
-    if (ch === '[') { inClass = true; continue; }
-    if (ch === '/') {
-      let end = i + 1;
-      while (end < src.length && /[a-z]/.test(src[end])) end += 1;
-      return end;
-    }
+/**
+ * What tags a template whose backtick follows `previous`: `'raw'` for `String.raw`, `'other'` for any other
+ * tag, null for none. A tag is an expression ending in a name, a `)` or a `]`; after a keyword, an operator
+ * or a punctuator the backtick starts an untagged template.
+ */
+function tagOf(previous, [twoBack, oneBack]) {
+  if (!previous || ![tt.name, tt.parenR, tt.bracketR, tt.backQuote, tt.privateId].includes(previous.type)) return null;
+  const raw = previous.type === tt.name && previous.value === 'raw' && oneBack?.type === tt.dot
+    && twoBack?.type === tt.name && twoBack.value === 'String';
+  return raw ? 'raw' : 'other';
+}
+
+/**
+ * The text a template part puts on screen. Cooked — escapes decoded — except under `String.raw`, whose text
+ * IS its source (line endings normalised, as the language does). Under any other tag the text is the tag's
+ * to decide, so a part whose source and cooked text differ is REFUSED: `(String.raw)` and `String['raw']`
+ * are `String.raw` written so this cannot see it, and guessing either way lets a wording past a guard
+ * (verify pass, 2026-10-17). An escape no template may hold is an error in an untagged template, refused too.
+ */
+function templateText(src, token, template) {
+  const raw = () => src.slice(token.start, token.end).replace(/\r\n?/g, '\n');
+  if (template.tag === 'raw') return raw();
+  if (template.tag === null) {
+    if (token.type === tt.template) return token.value;
+    throw new Error(`scan: an invalid escape in an untagged template at ${token.start}`);
   }
-  throw new Error(`scan: unterminated regex literal at ${at}`);
+  if (token.type === tt.template && token.value === raw()) return token.value;
+  throw new Error(`scan: a template tagged by something other than String.raw holds an escape at ${token.start} — its text is the tag's to decide`);
 }
 
 /**
@@ -154,7 +196,8 @@ function endOfRegex(src, at) {
  *
  * With `balanced`, the scan starts at a `{` and stops after the `}` that closes it, ignoring
  * braces inside strings, templates, comments and regexes — which is how a block is extracted
- * without depending on how it happens to be indented.
+ * without depending on how it happens to be indented. `from` must be where a `{` TOKEN begins: a
+ * brace inside a comment or a regex is refused, never read as the block's.
  *
  * `sentences` is the other reading of the same literals: the pieces of ONE expression joined back
  * together — a template's parts across its holes, and literals joined by `+` — because a claim split
@@ -166,71 +209,50 @@ export function walk(src, { from = 0, balanced = false } = {}) {
   const literals = [];
   /** Each literal with where it sat, so the pieces of one expression can be told from separate ones. */
   const pieces = [];
-  const modes = [];
-  let i = from;
-  let part = '';
-  /** Where the piece being gathered began: a quote, or the `}` that closed the hole before it. */
-  let partAt = from;
-  const piece = (text, start, end, { hole = false } = {}) => {
+  /** What each open `{`, `${` and backtick is: a block, a template's hole, or a template and its number. */
+  const open = [];
+  let templates = 0;
+  let previous = null;
+  /** The two tokens before `previous`, so a template can tell whether `String.raw` tags it. */
+  const earlier = [null, null];
+  const piece = (text, start, end, extra = {}) => {
     literals.push(text);
-    pieces.push({ text, start, end, hole });
+    pieces.push({ text, start, end, hole: false, ...extra });
   };
-  if (balanced) {
-    if (src[i] !== '{') throw new Error('scan: a balanced walk must start at a {');
-    modes.push('block');
-    i += 1;
+  for (const token of tokensOf(src)) {
+    if (token.end <= from) continue;
+    // A block's `{`, or the `{` of a template's `${` — whose token begins one character earlier, at the `$`.
+    if (balanced && previous === null && !(token.type === tt.braceL ? token.start === from
+      : token.type === tt.dollarBraceL && token.start === from - 1)) {
+      throw new Error('scan: a balanced walk must start at a {');
+    }
+    const top = open[open.length - 1];
+    if (token.type === tt.string) piece(token.value, token.start, token.end);
+    else if (token.type === tt.template || token.type === tt.invalidTemplate) {
+      // A part spans from its backtick, or from just after the `}` that closed the hole before it, to
+      // its `${` or past its closing backtick — so what lies between two templates is the `+` alone.
+      const afterHole = previous?.type === tt.braceR;
+      piece(templateText(src, token, top),
+        afterHole ? token.start : previous.start,
+        src[token.end] === '`' ? token.end + 1 : token.end,
+        { hole: afterHole, template: top.template });
+    } else if (token.type === tt.backQuote) {
+      if (top?.kind === 'template') open.pop();
+      else open.push({ kind: 'template', template: (templates += 1), tag: tagOf(previous, earlier) });
+    } else if (token.type === tt.braceL) open.push({ kind: 'block' });
+    else if (token.type === tt.dollarBraceL) open.push({ kind: 'expr' });
+    else if (token.type === tt.braceR) {
+      if (open.length === 0) throw new Error(`scan: a } closing nothing at ${token.start}`);
+      open.pop();
+      if (balanced && open.length === 0) return { literals, ...reading(src, pieces), end: token.end };
+    }
+    earlier.shift();
+    earlier.push(previous);
+    previous = token;
   }
-  while (i < src.length) {
-    const ch = src[i];
-    if (modes[modes.length - 1] === 'template') {
-      if (ch === '\\') { part += src.slice(i, i + 2); i += 2; continue; }
-      // Past the closing backtick, so what lies between two templates is the `+` alone.
-      if (ch === '`') { piece(part, partAt, i + 1, { hole: partAt > from && src[partAt - 1] === '}' }); part = ''; modes.pop(); i += 1; continue; }
-      if (ch === '$' && src[i + 1] === '{') {
-        piece(part, partAt, i, { hole: partAt > from && src[partAt - 1] === '}' });
-        part = '';
-        modes.push('expr');
-        i += 2;
-        continue;
-      }
-      part += ch;
-      i += 1;
-      continue;
-    }
-    if (ch === '/' && src[i + 1] === '/') {
-      const nl = src.indexOf('\n', i);
-      i = nl < 0 ? src.length : nl;
-      continue;
-    }
-    if (ch === '/' && src[i + 1] === '*') {
-      const end = src.indexOf('*/', i + 2);
-      if (end < 0) throw new Error(`scan: unterminated block comment at ${i}`);
-      i = end + 2;
-      continue;
-    }
-    if (ch === '/' && startsRegex(src, i)) { i = endOfRegex(src, i); continue; }
-    if (ch === "'" || ch === '"') {
-      const end = endOfQuoted(src, i);
-      piece(src.slice(i + 1, end - 1), i, end);
-      i = end;
-      continue;
-    }
-    // From the backtick itself, as a quoted literal's span starts at its quote.
-    if (ch === '`') { modes.push('template'); partAt = i; i += 1; continue; }
-    if (ch === '{') { modes.push('block'); i += 1; continue; }
-    if (ch === '}') {
-      if (modes.length === 0) throw new Error(`scan: a } closing nothing at ${i}`);
-      const closed = modes.pop();
-      i += 1;
-      if (closed === 'expr') partAt = i;
-      if (balanced && modes.length === 0) return { literals, ...reading(src, pieces), end: i };
-      continue;
-    }
-    i += 1;
-  }
-  if (modes.length > 0) throw new Error(`scan: ended inside a ${modes[modes.length - 1]}`);
-  if (balanced) throw new Error('scan: the block never closed');
-  return { literals, ...reading(src, pieces), end: i };
+  if (open.length > 0) throw new Error(`scan: ended inside a ${open[open.length - 1].kind}`);
+  if (balanced) throw new Error(previous ? 'scan: the block never closed' : 'scan: a balanced walk must start at a {');
+  return { literals, ...reading(src, pieces), end: src.length };
 }
 
 /**
@@ -253,22 +275,28 @@ const JOINS = /^\s*\)*\s*(?:\+\s*(?:[A-Za-z_$][\w$.]*\s*(?:\([^()]*\))?\s*)?)+$/
  * how `translatedSentences` tells the app's copy from the strings its code happens to hold. The
  * positions are a second reading of the same runs, never a second walk: two walks of one file can
  * disagree about where a sentence starts, and then a caller filters on the wrong offsets.
+ *
+ * The text after a hole rejoins ITS OWN TEMPLATE's run, never the last run made: a hole can hold a
+ * literal of its own (`will ${t('')} settle`), and that literal is a sentence of its own, not the one
+ * the template's next part continues (audit, 2026-10-17).
  */
 function sentencesOf(src, pieces) {
-  const out = [];
+  const runs = [];
+  /** The run each template's text went into, by the template's number. */
+  const runOf = new Map();
   let run = null;
-  const close = () => { if (run) out.push({ text: run.parts.join(' '), start: run.start }); };
   for (const p of pieces) {
-    const joins = run && (p.hole || JOINS.test(src.slice(run.end, p.start)));
-    if (joins) run.parts.push(p.text);
-    else {
-      close();
-      run = { parts: [p.text], start: p.start };
+    const own = p.hole ? runOf.get(p.template) : undefined;
+    if (own) run = own;
+    else if (!run || !JOINS.test(src.slice(run.end, p.start))) {
+      run = { parts: [], start: p.start };
+      runs.push(run);
     }
+    run.parts.push(p.text);
     run.end = p.end;
+    if (p.template !== undefined) runOf.set(p.template, run);
   }
-  close();
-  return out;
+  return runs.map(({ parts, start }) => ({ text: parts.join(' '), start }));
 }
 
 /**
@@ -302,6 +330,37 @@ export function reachable(entries, { within = '' } = {}) {
     }
   }
   return [...seen];
+}
+
+/**
+ * Every file whose words can reach the scan screen: the scanner's panel, the scan screen, and every
+ * module either of them imports, followed onwards — through `reachable`, so the copy guards cannot drift
+ * apart about what "reaches a screen" means. The bundle the app actually loads is read as well as the
+ * sources it was built from: a bundle that has drifted from them ships words nobody scanned (audit,
+ * 2026-09-19); `vendor-bundles.test.mjs` holds the two to each other, and this holds what is SERVED.
+ *
+ * Here rather than in `scan-sentences.test.mjs` because a second test reads it: the walk's tokens are held
+ * to acorn's parser over every file a scan reads, and a list of its own would be how one is left out — as
+ * three of these were (verify pass, 2026-10-17).
+ */
+/**
+ * A scanned file's source as the walk must read it: JavaScript as written, and TypeScript COMPILED — with
+ * esbuild, types erased — because the walk's tokenizer is JavaScript's. Reading raw TypeScript, a non-null
+ * `y!` before a division looked like `!` and a regex that swallowed the literals after it, and a check that
+ * compared the source's literals with the compiled ones was fooled by string TYPES standing in for the
+ * swallowed literals (verify passes, 2026-10-17). What runs is the compiled code, so that is what is read,
+ * and the parity test holds it to acorn's parser like any other file.
+ */
+export function readScanned(href) {
+  const src = readFileSync(new URL(href), 'utf8');
+  return href.endsWith('.ts') ? transformSync(src, { loader: 'ts', target: 'esnext', format: 'esm' }).code : src;
+}
+
+export function scanSources() {
+  return [
+    new URL('../vendor/ai-scan-panel.js', import.meta.url).href,
+    ...reachable(['../../../packages/cube-scanner/view/ai-scan-panel.ts', '../lib/screens/scan.js']),
+  ];
 }
 
 /**
@@ -352,9 +411,7 @@ function reading(src, pieces) {
  * anchor and its brace may open a literal, or the brace could be one inside a string.
  */
 export function blockAt(src, anchor) {
-  const at = src.indexOf(anchor);
-  if (at < 0) throw new Error(`blockAt: ${JSON.stringify(anchor)} is not in the source`);
-  if (src.indexOf(anchor, at + 1) >= 0) throw new Error(`blockAt: ${JSON.stringify(anchor)} appears more than once`);
+  const at = anchorAt(src, anchor, 'blockAt');
   // A FUNCTION's parameters can open a brace of their own: `function f({ a, b }) { … }`. Anchored
   // inside that list — `'function f('` — the first brace is the destructuring pattern, and the "block"
   // was the parameters: a case needing two lines of the body failed only because neither was there,
@@ -381,10 +438,79 @@ export function blockAt(src, anchor) {
     }
     if (depth > 0) throw new Error(`blockAt: the parameters after ${JSON.stringify(anchor)} never close`);
   }
-  const brace = src.indexOf('{', from);
-  if (brace < 0) throw new Error(`blockAt: nothing opens a block after ${JSON.stringify(anchor)}`);
-  if (/['"`]/.test(src.slice(at + anchor.length, brace))) {
-    throw new Error(`blockAt: a literal opens between ${JSON.stringify(anchor)} and its brace — anchor closer to the block`);
-  }
+  const brace = braceAfter(src, anchor, at, from, 'blockAt');
   return src.slice(at, walk(src, { from: brace, balanced: true }).end);
+}
+
+/** Where `anchor` is in `src` — exactly once, or a throw: two candidates is the case a first match resolved
+ *  silently, by position. */
+function anchorAt(src, anchor, who) {
+  const at = src.indexOf(anchor);
+  if (at < 0) throw new Error(`${who}: ${JSON.stringify(anchor)} is not in the source`);
+  if (src.indexOf(anchor, at + 1) >= 0) throw new Error(`${who}: ${JSON.stringify(anchor)} appears more than once`);
+  return at;
+}
+
+/** The first `{` at or after `from`, refused when a literal opens between the anchor and it. */
+function braceAfter(src, anchor, at, from, who) {
+  const brace = src.indexOf('{', from);
+  if (brace < 0) throw new Error(`${who}: nothing opens a block after ${JSON.stringify(anchor)}`);
+  if (/['"`]/.test(src.slice(at + anchor.length, brace))) {
+    throw new Error(`${who}: a literal opens between ${JSON.stringify(anchor)} and its brace — anchor closer to the block`);
+  }
+  return brace;
+}
+
+/**
+ * `blockAt` for a STYLESHEET: the rule or at-rule `anchor` opens, to the `}` that closes it, past braces in
+ * strings and comments.
+ *
+ * Its own reader because CSS is not JavaScript, and `blockAt` reads with a JavaScript tokenizer that refuses
+ * a stylesheet outright. The hand lexer that once read both did so by accident: a `/` in a CSS value was
+ * judged a regex or a division by JavaScript's rules. A brace in CSS can hide in only four places — a
+ * string, a comment, an escape (`\}`) and an unquoted `url(…)` — so those are all this skips, before the
+ * block's brace as well as inside it.
+ */
+export function cssBlockAt(src, anchor) {
+  const at = anchorAt(src, anchor, 'cssBlockAt');
+  let depth = 0;
+  // From the anchor itself, so a brace the anchor carries is the block's.
+  for (let i = at; i < src.length; i += 1) {
+    const ch = src[i];
+    if (ch === '\\') i += 1;
+    else if (/^url\(\s*[^\s'")]/i.test(src.slice(i, i + 6)) && !/[\w-]/.test(src[i - 1] ?? '')) {
+      // An unquoted url() is one token to its `)`, braces and all.
+      const close = src.indexOf(')', i);
+      if (close < 0) throw new Error(`cssBlockAt: an unclosed url( at ${i}`);
+      i = close;
+    }
+    else if (ch === '/' && src[i + 1] === '*') {
+      const end = src.indexOf('*/', i + 2);
+      if (end < 0) throw new Error(`cssBlockAt: unterminated comment at ${i}`);
+      i = end + 1;
+    } else if (ch === '"' || ch === "'") {
+      if (depth === 0) {
+        throw new Error(`cssBlockAt: a literal opens between ${JSON.stringify(anchor)} and its brace — anchor closer to the block`);
+      }
+      i = endOfCssString(src, i);
+    } else if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      if (depth === 0) throw new Error(`cssBlockAt: nothing opens a block after ${JSON.stringify(anchor)}`);
+      depth -= 1;
+      if (depth === 0) return src.slice(at, i + 1);
+    }
+  }
+  throw new Error(depth === 0
+    ? `cssBlockAt: nothing opens a block after ${JSON.stringify(anchor)}`
+    : `cssBlockAt: the block after ${JSON.stringify(anchor)} never closed`);
+}
+
+/** Where the CSS string opening at `at` ends: its closing quote. An unescaped line break is an error. */
+function endOfCssString(src, at) {
+  for (let j = at + 1; j < src.length; j += 1) {
+    if (src[j] === '\\') j += 1;
+    else if (src[j] === '\n') throw new Error(`cssBlockAt: a ${src[at]} string ran past the end of its line at ${at}`);
+    else if (src[j] === src[at]) return j;
+  }
+  throw new Error(`cssBlockAt: unterminated ${src[at]} string at ${at}`);
 }
