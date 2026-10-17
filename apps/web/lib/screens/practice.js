@@ -222,7 +222,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
       cube.setAttribute('alg', alg);
       cube.setAttribute('facelets', facelets);
     }
-    cube.setAttribute('arrow', settings.turnArrows ? arrow : 'none');
+    cube.setAttribute('arrow', arrow);
   };
 
   // ---- the chips ----------------------------------------------------------------------------------------
@@ -356,7 +356,9 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     }
   };
 
-  const sentence = () => {
+  /** What the page says. `arrowShown`: whether the cube is drawing an arrow — no sentence may send the child to one
+   *  that is not there (before the hold is known it once did, and with Turn arrows off every sentence did). */
+  const sentence = (arrowShown) => {
     if (!cubeHere()) return t('No smart cube connected: the cube on screen shows the moves, part by part. Time yourself with the stopwatch.');
     const st = engine.state;
     if (waitingForReport) return t('A turn went missing, so cubus does not know where your cube is. Waiting for the cube to say.');
@@ -365,10 +367,32 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     if (st.status === STATUS.OFF) {
       const lead = st.about === 'turn' ? t('That turn left the algorithm.') : t('Your cube left the algorithm.');
       if (!st.wayBack) return t('%1 It is too far to turn back: press Start over, or turn one face four times.', lead);
-      return st.wayBack.held ? t('%1 Turn it back: %2', lead, st.wayBack.held.join(' ')) : t('%1 Follow the arrow back.', lead);
+      if (st.wayBack.held) return t('%1 Turn it back: %2', lead, st.wayBack.held.join(' '));
+      // The holds still standing name the way back differently, so no letters say it: only the arrow can show it,
+      // and with no arrow on the cube, starting over is the way that needs no letters.
+      return arrowShown ? t('%1 Follow the arrow back.', lead) : t('%1 Press Start over, or turn one face four times.', lead);
     }
     if (!st.settled) return t('Hold the cube any way you like and start: its first turns tell cubus how you are holding it.');
+    if (!arrowShown) return st.status === STATUS.ARMED ? t('Go: start the algorithm.') : t('Keep going.');
     return st.status === STATUS.ARMED ? t('Go: the arrow shows the first turn.') : t('Keep going: the arrow shows the next turn.');
+  };
+
+  /**
+   * What the cube shows while a cube is followed: `alg` played from `facelets` held `hold`, standing at `at`, pointing
+   * `arrow`, with the chips marked to `chips`.
+   */
+  const pictureOf = (st) => {
+    if (st.status === STATUS.OFF || !st.settled || !startFacelets) {
+      // Off the algorithm, or before the hold is known: the cube as it is NOW, and an arrow only for the way back —
+      // in the cube's OWN letters, which is what the element reads, so it needs no hold to point the way.
+      return {
+        facelets: engine.facelets, hold: st.settled ? st.holds[0] : ['U', 'F'], alg: '', at: 0,
+        arrow: st.status === STATUS.OFF && st.wayBack ? st.wayBack.turns[0] : 'none',
+        chips: st.status === STATUS.OFF ? -1 : st.position ?? 0,
+      };
+    }
+    const hold = st.holds[0];
+    return { facelets: startFacelets, hold, alg: drawnFrom(row, hold, startFacelets), at: st.position, arrow: 'next', chips: st.position };
   };
 
   const paint = () => {
@@ -379,21 +403,16 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     page.dataset.status = st.status;
     page.dataset.settled = String(st.settled);
     page.dataset.position = String(st.position ?? 0);
-    say.textContent = sentence();
+    const picture = following ? pictureOf(st) : null;
+    // The arrow the cube really draws — the picture's, unless Turn arrows is off — and the sentence written from it.
+    const arrow = picture && settings.turnArrows ? picture.arrow : 'none';
+    say.textContent = sentence(arrow !== 'none');
     paintHold();
     paintClock();
-    if (!following) return;
-    if (st.status === STATUS.OFF || !st.settled || !startFacelets) {
-      // Off the algorithm, or before the hold is known: the cube as it is NOW, and an arrow only for the way back.
-      const hold = st.settled ? st.holds[0] : ['U', 'F'];
-      draw({ facelets: engine.facelets, hold, alg: '', arrow: st.status === STATUS.OFF && st.settled && st.wayBack ? st.wayBack.turns[0] : 'none' });
-      markChips(st.status === STATUS.OFF ? -1 : st.position ?? 0);
-      return;
-    }
-    const hold = st.holds[0];
-    draw({ facelets: startFacelets, hold, alg: drawnFrom(row, hold, startFacelets), arrow: 'next' });
-    cube.seek(st.position);
-    markChips(st.position);
+    if (!picture) return;
+    draw({ facelets: picture.facelets, hold: picture.hold, alg: picture.alg, arrow });
+    if (picture.alg) cube.seek(picture.at);
+    markChips(picture.chips);
   };
 
   // ---- the demo, with no cube ---------------------------------------------------------------------------

@@ -176,3 +176,50 @@ test('a stopwatch running when a cube starts being followed stops — it never w
     await context.close();
   }
 });
+
+// ---- the arrow the page speaks of (row 20) -----------------------------------------------------------------
+
+test('the page speaks of an arrow only where one is drawn — before the hold is known, and with turn arrows off', async () => {
+  const { page, context, errors } = await openPractice(fixture);
+  try {
+    const rnd = lcg(201);
+    await show(page, 'sune');
+    const seen = () => page.evaluate(() => ({ say: window.__p.say(), arrow: window.__p.arrow(), data: window.__p.data() }));
+    /** The relation, in every state sampled: a sentence that sends the child to an arrow has one to follow. */
+    const truthful = (got, what) => {
+      if (/arrow/.test(got.say)) assert.notEqual(got.arrow, 'none', `${what}: "${got.say}" — and no arrow is drawn`);
+    };
+    // Sune opens with a clockwise turn in every hold, so a counter-clockwise first turn is off in all of them. Each
+    // round starts over first, so the cube set down elsewhere is a new start rather than a snapshot mid-rep.
+    const offFirst = async () => {
+      await page.keyboard.press('Escape');
+      await page.evaluate((f) => window.__p.facelets(f), toFacelets(randomStart(rnd)));
+      await page.evaluate(() => window.__p.move("R'"));
+      await page.evaluate((ms) => window.__p.wait(ms), PAST_WINDOW_MS);
+      return seen();
+    };
+    const on = await offFirst();
+    assert.deepEqual([on.data.status, on.data.settled], ['off', 'false'], 'precondition: off, before the hold is known');
+    truthful(on, 'off before the hold is known');
+    // The way back is drawn in the cube's own letters, which need no hold: undo the turn.
+    assert.equal(on.arrow, 'R', `"${on.say}": the arrow does not show the way back`);
+
+    // Turn arrows off: no sentence may send the child to an arrow, in any state.
+    await page.evaluate(() => { window.__p.settings.turnArrows = false; });
+    const off = await offFirst();
+    assert.equal(off.data.status, 'off');
+    assert.equal(off.arrow, 'none', 'an arrow drawn with turn arrows off');
+    truthful(off, 'off, with turn arrows off');
+    // Back where it began, and on into the algorithm from there until the hold is known.
+    await page.evaluate(() => window.__p.move('R'));
+    truthful(await seen(), 'back on, with turn arrows off');
+    const per = reportsPerToken(SUNE, ORIENTATIONS[2], rnd);
+    await page.evaluate((qs) => { for (const q of qs) window.__p.move(q); }, [...per[0], ...per[1]]);
+    const running = await seen();
+    assert.deepEqual([running.data.status, running.data.settled], ['running', 'true'], 'precondition: running, the hold known');
+    truthful(running, 'running, with turn arrows off');
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
