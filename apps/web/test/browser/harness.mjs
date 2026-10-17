@@ -13,6 +13,15 @@ import { freePort } from '../free-port.mjs';
 const SERVE = fileURLToPath(new URL('../../serve.mjs', import.meta.url));
 
 /**
+ * How long a page may take to navigate, or a suite to wait for something a page must do, before it is a
+ * HANG. A liveness bound, not a speed claim: the browser tier runs three browsers at once, and the scan
+ * screen — about 150 unbundled modules from the dev server, `load` in about 1 s alone — missed
+ * Playwright's 30 s navigation default at the end of a full run (2026-10-17), failing a suite whose
+ * subject is where the model runs. `scanner-gpu.test.mjs` had already needed 180 s for the same reason.
+ */
+export const LIVENESS_MS = 180_000;
+
+/**
  * Start the dev server and a browser: WebKit, the engine the desktop app runs in, unless a suite
  * asks for Chromium — the appearance goldens do, because Chromium draws with the same software
  * rasteriser on every machine they are compared on. `launch` is passed to Playwright's launch().
@@ -64,6 +73,15 @@ export async function startBrowserFixture({ engine = 'webkit', launch = {} } = {
     proc.kill('SIGTERM');
     throw new Error(`${engine} for Playwright did not launch — if it is not installed: pnpm --filter cubus-web exec playwright install ${engine}`, { cause });
   }
+
+  // EVERY context the fixture's browser makes gets the bound, `newPage`'s own included — it makes its
+  // context through `newContext` — so no suite inherits the 30 s default by not thinking of it.
+  const newContext = browser.newContext.bind(browser);
+  browser.newContext = async (...options) => {
+    const context = await newContext(...options);
+    context.setDefaultNavigationTimeout(LIVENESS_MS);
+    return context;
+  };
 
   let closed = null;
   return {

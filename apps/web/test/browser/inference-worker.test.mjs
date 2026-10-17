@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { after, before, test } from 'node:test';
 
-import { startBrowserFixture } from './harness.mjs';
+import { LIVENESS_MS, startBrowserFixture } from './harness.mjs';
 
 const FRAMES = new URL('../../../../ml/golden/frames/', import.meta.url);
 /** The workers the model lives in: the inference worker and onnxruntime's threads inside it. */
@@ -40,7 +40,7 @@ after(async () => {
 });
 
 /** Poll `probe` until it is true, or fail naming what was being waited for. */
-async function until(probe, what, ms = 30_000) {
+async function until(probe, what, ms = LIVENESS_MS) {
   // The probe is asked LAST, after every wait: a wait that overran the deadline must still look before it
   // gives up, or a busy machine reports a condition that came true as one that never did.
   const end = Date.now() + ms;
