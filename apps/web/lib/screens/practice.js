@@ -194,6 +194,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   let caseNow = null;
   let engine = null;
   let engineConn = null;      // the session the engine judges — a new one is a new stream (`presenceChanged`)
+  let heldNow = null;         // the latest report the reconnect question holds back from `live` (`hooks.heldUpdate`)
   let token = null;
   let startFacelets = null;   // the arrangement the current rep was armed from (the engine's start event)
   let turnsSinceArm = 0;
@@ -256,6 +257,10 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   };
 
   // ---- the engine ---------------------------------------------------------------------------------------
+  /** The cube's arrangement as its own reports last gave it: `live`, or — while the reconnect question holds the
+   *  reports back from `live` — the held one. Either is the cube's model in the frame its turns move it in, which is
+   *  all a tracker RELATIVE to the cube's own reports needs (plan §3.1); neither is a claim about its colours. */
+  const reportNow = () => state.live ?? heldNow;
   const live = () => Boolean(engine) && engine.state.status !== STATUS.IDLE && cubeHere();
 
   const makeEngine = (judged) => {
@@ -292,7 +297,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
         if (e.type === 'off') paint();
       },
     });
-    const from = carry ?? state.live;
+    const from = carry ?? reportNow();
     if (cubeHere() && from) engine.start({ facelets: from });
   };
 
@@ -431,7 +436,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
       paint();
       return;
     }
-    if (cubeHere() && state.live && engine.state.status === STATUS.IDLE) { engine.start({ facelets: state.live }); paint(); return; }
+    if (cubeHere() && reportNow() && engine.state.status === STATUS.IDLE) { engine.start({ facelets: reportNow() }); paint(); return; }
     stopWatch();
     watch.t0 = null;
     drawCase();
@@ -499,23 +504,27 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     const here = cubeHere();
     if (here === wasHere && conn === engineConn) return;
     wasHere = here;
-    if (conn !== engineConn) makeEngine(row.alg);
-    else if (!here) engine.stop();
-    else if (state.live && engine.state.status === STATUS.IDLE) engine.start({ facelets: state.live });
+    if (conn !== engineConn) {
+      heldNow = null;
+      makeEngine(row.alg);
+    } else if (!here) engine.stop();
+    else if (reportNow() && engine.state.status === STATUS.IDLE) engine.start({ facelets: reportNow() });
     if (!here) drawCase();
     paint();
   };
   hooks.liveMove = (m) => {
     if (stale() || !engine) return;
     presenceChanged();
-    if (engine.state.status === STATUS.IDLE && cubeHere() && state.live) engine.start({ facelets: state.live });
+    if (engine.state.status === STATUS.IDLE && cubeHere() && reportNow()) engine.start({ facelets: reportNow() });
     turnsSinceArm += 1;
     engine.report(m);
     paint();
   };
-  hooks.liveUpdate = (f) => {
+  /** A snapshot from the cube: `live`, or one the reconnect question holds back from being `live` (`held`). */
+  const onSnapshot = (f, held) => {
     if (stale() || !engine) return;
     presenceChanged();
+    heldNow = held ? f : null;
     const st = engine.state.status;
     if (st === STATUS.IDLE) { if (cubeHere()) engine.start({ facelets: f }); }
     else if (waitingForReport) engine.restart({ facelets: f });
@@ -525,6 +534,12 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     else engine.resync(f);
     paint();
   };
+  hooks.liveUpdate = (f) => onSnapshot(f, false);
+  // While the reconnect question is open its reports are held back from `live` — where the cube IS is exactly what
+  // is being asked — and they still reach this screen, because the engine claims nothing about where the cube is:
+  // it judges turns relative to the cube's own model. Nothing here answers the question, writes `live` or the
+  // subject, or grants trust. Without this, a remembered cube left Practice waiting until somebody answered on Home.
+  hooks.heldUpdate = (f) => onSnapshot(f, true);
   hooks.liveGap = () => {
     if (stale() || !engine) return;
     presenceChanged();

@@ -268,6 +268,7 @@ function tearDownScreen() {
   screenAbort?.abort();
   screenAbort = new AbortController();
   hooks.liveUpdate = null;
+  hooks.heldUpdate = null;
   hooks.liveMove = null;
   hooks.liveGap = null;
   hooks.onTrustLost = null;

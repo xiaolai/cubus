@@ -89,6 +89,19 @@ test('a mount that throws leaves no half-mounted screen: its cleanup runs, its l
   assert.ok(win.document.querySelector('[data-go="home"]'), 'the card offers no way out');
 });
 
+test('a navigation clears every hook a screen can install, so none outlives the screen that installed it', () => {
+  // The RELATION, not a list: every name lib/screen-slots.js declares, including one added after this was
+  // written. The shell clears them by name, so a new hook it was not told about would keep calling into a
+  // screen that is gone — and only this case would notice.
+  const names = Object.keys(hooks);
+  assert.ok(names.length >= 6, `screen-slots.js declares ${names.length} hooks`);
+  sh.SCREENS.hooker = () => ({ html: '<p id="hookerBody">hooks</p>', mount() { for (const k of names) hooks[k] = () => {}; } });
+  render('hooker', { navigated: true });
+  assert.ok(names.every((k) => typeof hooks[k] === 'function'), 'precondition: the screen installed every hook');
+  render('home', { navigated: true });
+  assert.deepEqual(names.filter((k) => hooks[k] !== null), [], 'a hook outlived the screen that installed it');
+});
+
 test('a mount that rejects after an await is the same failure', async (t) => {
   t.mock.method(console, 'error', () => {});
   let cleaned = 0;

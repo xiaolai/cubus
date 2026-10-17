@@ -11,11 +11,11 @@ import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 
 import { ORIENTATIONS } from '../../lib/cube-orientation.js';
-import { toFacelets } from '../../lib/cube-pieces.js';
+import { SOLVED as PIECES, applyAlg, toFacelets } from '../../lib/cube-pieces.js';
 import { lcg } from '../fixtures/seeded-scrambles.mjs';
 import { startBrowserFixture } from './harness.mjs';
 import {
-  AXIS, PAST_WINDOW_MS, axesNear, feedRep, openPractice, randomStart, reportsPerToken, show,
+  AXIS, MAC, PAST_WINDOW_MS, axesNear, feedRep, openPractice, randomStart, reportsPerToken, show,
 } from './practice-page.mjs';
 
 let fixture;
@@ -80,5 +80,49 @@ test('an `off` whose cue window outlives its cube is never heard — the cube le
     } finally {
       await context.close();
     }
+  }
+});
+
+// ---- the reconnect question (row 17) -----------------------------------------------------------------------
+
+test('a remembered cube is followed while the reconnect question is open — and Practice neither answers it nor takes the report as where the cube is', async () => {
+  const V = toFacelets(applyAlg(PIECES, "R U R' F"));
+  const R0 = toFacelets(applyAlg(PIECES, 'F2 D'));
+  const seenAt = Date.UTC(2026, 9, 17, 9, 0);
+  const memory = { [MAC]: { name: 'Test cube', nickname: '', lastSeen: seenAt, last: { facelets: V, reported: R0, serial: 3, at: seenAt, how: 'cube' } } };
+  const { page, context, errors } = await openPractice(fixture, {
+    connect: false,
+    // A returning cube's memory is on disk before the app boots.
+    prepare: (ctx) => ctx.addInitScript((m) => localStorage.setItem('cubusCubes', JSON.stringify(m)), memory),
+  });
+  try {
+    const rnd = lcg(171);
+    await show(page, 'sune');
+    await page.evaluate(() => window.__p.connect());
+    const start = randomStart(rnd);
+    // The connection's first report, from a cube turned since it was last seen: the question opens over it.
+    await page.evaluate((f) => window.__p.facelets(f), toFacelets(start));
+    const asked = await page.evaluate(() => window.__p.app());
+    assert.equal(asked.reconnect?.reading, 'turned', 'precondition: the reconnect question is open');
+    assert.equal(asked.live, null, 'precondition: the question holds the report back from live');
+    // A rep from the report the question holds, then one from a held snapshot of the cube set down elsewhere.
+    for (const from of [start, randomStart(rnd)]) {
+      const flat = reportsPerToken(SUNE, ORIENTATIONS[Math.floor(rnd() * 24)], rnd).flat();
+      const dones = await feedRep(page, from, flat);
+      const got = await page.evaluate(() => ({ status: window.__p.data().status, say: window.__p.say() }));
+      assert.deepEqual(dones, atLast(flat.length), `a rep on a remembered cube did not complete at its last report (${got.status}: ${got.say})`);
+    }
+    // What must NOT happen: Practice answering the question, or taking the cube's report as where the cube is.
+    const later = await page.evaluate(() => window.__p.app());
+    assert.equal(later.reconnect?.reading, 'turned', 'Practice closed the reconnect question');
+    assert.equal(later.reconnect?.candidate, asked.reconnect.candidate, 'the picture being asked about changed');
+    assert.equal(later.live, null, 'a held report became live');
+    assert.equal(later.trusted, false, 'following the cube granted trust');
+    assert.equal(later.subject, asked.subject, 'the subject moved while the question was open');
+    const stored = await page.evaluate((mac) => JSON.parse(localStorage.getItem('cubusCubes'))[mac]?.last, MAC);
+    assert.deepEqual(stored, memory[MAC].last, 'the remembered arrangement was rewritten from a cube nobody confirmed');
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
   }
 });

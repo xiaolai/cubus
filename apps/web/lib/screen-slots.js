@@ -22,6 +22,12 @@ export const hooks = {
   // Set by a screen that can take a new cube state in place, so a fresh scan repaints rather than
   // re-mounting — which on the cube screen would restart an animation the user is halfway through.
   liveUpdate: null,
+  /** A snapshot the reconnect question HOLDS back from `live` (lib/cube-reports.js): the cube's own
+   *  arrangement while the app asks whether the remembered picture is the cube in the hand. Not where
+   *  the cube is — that is what is being asked — so only a screen that tracks turns RELATIVE to the
+   *  cube's own reports, and claims nothing about where the cube is, installs it: Practice's drill
+   *  engine (dev-docs/algorithm-drill-v2-plan.md §3.1). */
+  heldUpdate: null,
 };
 
 /** The shell's own calls, for the code BENEATH the screens — the smart cube's session and the

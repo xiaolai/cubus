@@ -413,8 +413,8 @@ function reconcileHeldScan() {
 }
 
 /** The reconnect question, as a report meets it: the connection's first report reads the
- *  evidence, and every report finds out whether a question is open.
- *  @returns {boolean} true when a question holds the subject, so the report goes no further. */
+ *  evidence, and opens the question when there is a remembered arrangement to ask about. Whether a
+ *  question is open is then `state.reconnect`, which publishReport reads. */
 function readFirstReport(reported) {
   // The connection's FIRST report is the reconnect evidence: raw against the remembered raw,
   // and the reading chooses the picture and the words — never the trust.
@@ -429,7 +429,7 @@ function readFirstReport(reported) {
       // about a second after pairing, exactly when a nickname is likely mid-typing.
       if (state.cube.isPhysical) ingestFacelets(r.candidate);
       questionChanged();
-      return true;
+      return;
     }
     // Nothing remembered (or nothing derivable): no question to ask — today's flow, in
     // publishReport. A question opened over the memory alone ('no report') closes here: the
@@ -438,19 +438,30 @@ function readFirstReport(reported) {
     state.reconnect = null;
     if (hadQuestion) questionChanged();
   }
-  // The candidate is FROZEN while the reconnect question is open: an untrusted report updating
-  // the picture being confirmed would make it a picture nobody can confirm. The raw report is
-  // still recorded, by onFacelets before this — the Yes derives against it and the repair scan
-  // reads it — but `live` stays unclaimed (the cube's true arrangement is precisely what is being
-  // asked) and the subject and the screens hold still until the answer.
-  return Boolean(state.reconnect);
 }
 
-/** A report no question holds, on its way to the stream: corrected, made the subject when the
- *  subject is this cube, remembered on a trusted chain, and handed to the screen. */
+/** A report on its way to the stream: corrected, and then — unless the reconnect question holds
+ *  it — made the subject when the subject is this cube, remembered on a trusted chain, and handed
+ *  to the screen. */
 function publishReport(reported, serial) {
   // The ONE place a correction is applied to the stream.
   const f = applyOffset(state.cube.offset, reported, Cube);
+  // HELD while the reconnect question is open. The candidate is FROZEN: an untrusted report
+  // updating the picture being confirmed would make it a picture nobody can confirm. The raw report
+  // is still recorded, by onFacelets before this — the Yes derives against it and the repair scan
+  // reads it — but `live` stays unclaimed (the cube's true arrangement is precisely what is being
+  // asked), and the subject, the memory and `liveUpdate` all hold still until the answer.
+  //
+  // What a held report still reaches is `heldUpdate`: a screen that tracks turns RELATIVE to the
+  // cube's own reports and claims nothing about where the cube is — Practice's drill engine — needs
+  // the cube's model and no answer (dev-docs/algorithm-drill-v2-plan.md §3.1). Without it a
+  // remembered cube left Practice waiting for a report until somebody answered on Home. Corrected
+  // like any report, though no correction can be in force here — one is installed only by an
+  // answer, which closes the question in the same step — and never one that failed validation.
+  if (state.reconnect) {
+    if (f !== null && hooks.heldUpdate) hooks.heldUpdate(f, serial);
+    return;
+  }
   if (f === null) {
     // A report that could not be established as truth is not a fact about the cube; and `live`
     // is cleared rather than left behind, or a current position and a stale one become
@@ -500,6 +511,6 @@ export function onFacelets(reported, serial) {
   reportedAtTurns = turnsReported();
   lastSerialSeen = Number.isInteger(serial) ? serial & 0xffff : null;
   if (!reconcileHeldScan()) return;
-  if (readFirstReport(reported)) return;
+  readFirstReport(reported);
   publishReport(reported, serial);
 }
