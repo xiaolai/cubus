@@ -155,8 +155,10 @@ for (const id of CFOP) {
     for (const state of seededStates(12, 0xcf0b, 25)) {
       const { result, end } = replay(id, state);
       assert.ok(end.isSolved(), `${id}: a seeded cube was not solved`);
+      // A seeded scramble never starts with its cross home, so the plan is exactly one cross step, first.
       const cross = result.steps.filter((s) => s.stage === 'cross');
-      assert.ok(cross.length <= 1, `${id}: the cross is planned whole, so it is at most one step`);
+      assert.equal(cross.length, 1, `${id}: the cross is planned whole, so it is one step`);
+      assert.equal(result.steps[0].stage, 'cross', `${id}: the cross is not the first step`);
     }
   });
 
@@ -179,9 +181,9 @@ for (const id of CFOP) {
   });
 }
 
-test('the planned cross is a real cross: replayed by cubejs, the white cross is home after the first step', () => {
+for (const id of CFOP) test(`${id}: the planned cross is a real cross — replayed by cubejs, the white cross is home after the first step`, () => {
   for (const state of seededStates(20, 0xc055, 25)) {
-    const { steps } = solveByMethod(state, methodOf(methodById('cfop')));
+    const { steps } = solveByMethod(state, methodOf(methodById(id)));
     const cube = Cube.fromString(toFacelets(state));
     cube.move(turns(steps[0]));
     const f = faces(cube);
