@@ -36,12 +36,14 @@
 // OLL and PLL (J Perm draws each case from it, so it solves the picture with no turn of the top first),
 // and SpeedCubeDB's top-voted Front Right algorithm for F2L, because J Perm publishes no numbered F2L.
 
-/** Where the rows came from. A row names one of these by key. */
+/** Where the rows came from. A row names one of these by key. `fetched` is the date above, held here as
+ *  data so a ledger can cite it without retyping it. */
+const FETCHED = '2026-10-13';
 export const SOURCES = Object.freeze({
-  'jperm-pll': Object.freeze({ url: 'https://jperm.net/algs/pll', what: 'J Perm, PLL — the first algorithm listed for each case' }),
-  'jperm-oll': Object.freeze({ url: 'https://jperm.net/algs/oll', what: 'J Perm, OLL — the first algorithm listed for each case' }),
-  'speedcubedb-f2l': Object.freeze({ url: 'https://speedcubedb.com/a/3x3/F2L', what: 'SpeedCubeDB, F2L, Front Right — the top-voted algorithm for each case' }),
-  'speedsolving-oll-names': Object.freeze({ url: 'https://www.speedsolving.com/wiki/index.php?title=OLL', what: 'Speedsolving wiki, OLL — the first name given for each case' }),
+  'jperm-pll': Object.freeze({ url: 'https://jperm.net/algs/pll', what: 'J Perm, PLL — the first algorithm listed for each case', fetched: FETCHED }),
+  'jperm-oll': Object.freeze({ url: 'https://jperm.net/algs/oll', what: 'J Perm, OLL — the first algorithm listed for each case', fetched: FETCHED }),
+  'speedcubedb-f2l': Object.freeze({ url: 'https://speedcubedb.com/a/3x3/F2L', what: 'SpeedCubeDB, F2L, Front Right — the top-voted algorithm for each case', fetched: FETCHED }),
+  'speedsolving-oll-names': Object.freeze({ url: 'https://www.speedsolving.com/wiki/index.php?title=OLL', what: 'Speedsolving wiki, OLL — the first name given for each case', fetched: FETCHED }),
 });
 
 const entry = (row) => Object.freeze(row);

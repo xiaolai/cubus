@@ -28,144 +28,14 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SOLVED, movesOf } from '../lib/cube-pieces.js';
 import { faceTurnsAlg, run } from '../lib/cube-moves.js';
-import { CROSS_ALGS } from '../lib/methods/cross.js';
-import { PAIRS_ALGS, PAIRS_EXTRAS } from '../lib/methods/pairs.js';
-import { COURSE_ALGS, LAST_LAYER_EXTRAS, OLL_ALGS, PLL_ALGS } from '../lib/methods/last-layer.js';
-import { METHODS as OFFERED } from '../lib/methods/registry.js';
-import { HUMAN_F2L, HUMAN_OLL, HUMAN_PLL } from '../lib/data/human-algs.js';
-import { CMLL_ALGS, SOURCES as CMLL_SOURCES } from '../lib/data/cmll-algs.js';
-import { F2L_CASES, FULL_OLL, FULL_PLL } from '../lib/data/case-tables.js';
+import { ALG_SETS, METHOD_SETS, loadEntries } from '../lib/alg-library.js';
 
-// WHICH ALGORITHM IS IN WHICH SET is said here once. The app's algorithm catalogue said it too, and the
-// ledger read it from there; the catalogue went with the Drill (ADR 0010), so the sets are picked here
-// again — BY NAME, never by index, so a reordering inside a repertoire cannot silently move an algorithm
-// into another set.
-const pick = (list, names) => names.map((n) => {
-  const hit = list.find((a) => a.name === n);
-  if (!hit) throw new Error(`the ledger names an algorithm "${n}" that no repertoire holds any more`);
-  return hit;
-});
-
-const SETS = [
-  {
-    id: 'cross-inserts', name: 'Cross inserts', kind: 'hand-written',
-    entries: CROSS_ALGS,
-    provenance: 'written for teaching, not searched. Two ways to drop a cross edge in from the top.',
-    verified: 'every entry must be reachable and used — `method-solver` refuses a step naming anything outside CASE_NAMES',
-  },
-  {
-    id: 'f1l-inserts', name: 'First-layer corner inserts', kind: 'hand-written',
-    entries: pick(PAIRS_ALGS, ['right-hand', 'left-hand', 'facing-up']),
-    provenance: 'the beginner trigger and its repeat, in the three orientations a corner can be in',
-    verified: 'same as above',
-  },
-  {
-    id: 'middle-inserts', name: 'Middle-layer edge inserts', kind: 'hand-written',
-    entries: pick(PAIRS_ALGS, ['insert-right', 'insert-left']),
-    provenance: 'one pair that both inserts a correct edge and ejects a wrong one, which is how it is taught',
-    verified: 'same as above',
-  },
-  {
-    id: 'f2l-triggers', name: 'F2L triggers', kind: 'hand-written',
-    entries: pick(PAIRS_ALGS, ['right', 'right-back', 'right-half', 'left', 'left-back', 'left-half']),
-    provenance: 'CFOP (easy)\'s first two layers: six triggers a pair is built out of, rather than 41 cases',
-    verified: 'same as above',
-  },
-  {
-    id: 'eoll', name: 'Two-look OLL, first look', kind: 'hand-written',
-    entries: pick(OLL_ALGS, ['edge-orient']),
-    provenance: 'one algorithm, applied up to three times, to orient the last-layer edges',
-    verified: 'same as above',
-  },
-  {
-    id: 'ocll', name: 'Two-look OLL, second look', kind: 'hand-written',
-    entries: pick(OLL_ALGS, ['sune', 'antisune', 'headlights', 'double-sune', 'pi']),
-    provenance: 'the corner-orientation cases in face turns only, by choice: the first algorithms a learner meets need no notation beyond the six faces. The renderer and the interpreter read wide turns and slices too; the sourced sets use them',
-    verified: 'same as above',
-  },
-  {
-    id: 'cpll', name: 'Two-look PLL, corners', kind: 'hand-written',
-    entries: pick(PLL_ALGS, ['corner-cycle', 'corner-cycle-back', 'diagonal']),
-    provenance: 'adjacent swap both ways round, plus the diagonal',
-    verified: 'same as above',
-  },
-  {
-    id: 'epll', name: 'Two-look PLL, edges', kind: 'hand-written',
-    entries: pick(PLL_ALGS, ['u-perm-a', 'u-perm-b']),
-    provenance: 'two U-perms; Z and H fall out of applying two of them',
-    verified: 'same as above',
-  },
-  {
-    // The beginner course's last layer (ADR 0009), which Beginner walks: lessons 13 and 14 put the top edges
-    // up and home, 15 and 16 the corners. Two sets, because they are two stages' tables, as the app's
-    // two-look tables are. HAND-WRITTEN, not sourced: the course is this project's own, and every sequence is
-    // the lesson's — none was copied from a sheet.
-    id: 'course-edges', name: 'The course\'s top edges', kind: 'hand-written',
-    entries: pick(COURSE_ALGS, ['course-cross', 'course-edge-swap']),
-    provenance: 'the beginner course\'s lessons 13 and 14 (cubus-courses): the cross on top, then a swap of two top edges',
-    verified: 'same as above; and `bench/method-solver-profile.mjs exhaustive course course` walks all 62,208 last-layer states through the course\'s route (a nightly CI shard)',
-  },
-  {
-    id: 'course-corners', name: 'The course\'s top corners', kind: 'hand-written',
-    entries: pick(COURSE_ALGS, ['course-corner-cycle', 'course-corner-twist', 'course-corner-twist-back']),
-    provenance: 'the beginner course\'s lessons 15 and 16: three corners moved round, then lesson 9\'s four moves done twice or four times to turn one corner up',
-    verified: 'same as above',
-  },
-  {
-    id: 'align', name: 'Alignment', kind: 'not an algorithm',
-    entries: LAST_LAYER_EXTRAS,
-    provenance: 'an EMPTY body, so the AUF the repertoire already adds IS the alignment. Deliberately outside PLL_ALGS: "turn the top until it matches" is not something anyone memorises',
-    verified: 'its absence once made a one-turn cube get a nineteen-move lesson (audit, 2026-09-09)',
-  },
-  {
-    id: 'turn', name: 'Turning a slot to the front', kind: 'not an algorithm',
-    entries: PAIRS_EXTRAS,
-    provenance: 'an EMPTY body, named so a pairs step\'s parts add up to its algorithm: the turn of the whole cube that brings a slot to the front right. A regrip, not something anyone memorises',
-    verified: 'a part a pairs step names, so it is in CASE_NAMES; held here so that every name a step can carry is filed somewhere',
-  },
-  {
-    id: 'f2l-human', name: 'F2L, human-speed', kind: 'sourced',
-    entries: HUMAN_F2L,
-    provenance: 'SpeedCubeDB\'s top-voted Front Right algorithm per case; what CFOP (full) teaches for its first two layers',
-    verified: '`human-algs.test.mjs`: cubejs finds each answers exactly its proved case, and the 41 cover the 41 once each',
-  },
-  {
-    id: 'oll-human', name: 'Full OLL, human-speed', kind: 'sourced',
-    entries: HUMAN_OLL,
-    provenance: 'J Perm\'s first-listed algorithm per case; what CFOP (full) teaches for the top face',
-    verified: 'same cubejs check, 57 to 57',
-  },
-  {
-    id: 'pll-human', name: 'Full PLL, human-speed', kind: 'sourced',
-    entries: HUMAN_PLL,
-    provenance: 'J Perm\'s first-listed algorithm per case; what CFOP (full) teaches for the last layer',
-    verified: 'same cubejs check, 21 to 21',
-  },
-  {
-    id: 'cmll', name: 'CMLL', kind: 'sourced',
-    entries: CMLL_ALGS,
-    provenance: `${CMLL_SOURCES.speedcubedb.name}'s top-voted algorithm per case, fetched ${CMLL_SOURCES.speedcubedb.fetched} from the page's markup and taught exactly as written; what Roux teaches for the top corners`,
-    verified: '`cmll-algs.test.mjs`: cubejs finds every row keeps both blocks and the centres, the 42 rows answer the 42 cases once each, and no row solves the arrangement none is for',
-  },
-  {
-    id: 'f2l-full', name: 'F2L, all cases', kind: 'proved',
-    entries: F2L_CASES,
-    provenance: 'searched in `crates/optimal-solver`, proven minimal in the half-turn metric, certified',
-    verified: '`f2l-cross-check` refutes every case by brute force with no heuristic; `case-tables.test.mjs` re-runs the generator and diffs the shipped module',
-  },
-  {
-    id: 'oll-full', name: 'Full OLL', kind: 'proved',
-    entries: FULL_OLL,
-    provenance: 'same search; one algorithm per case so the top face is one look',
-    verified: 'certified over all 1,152 (alignment, goal) pairs; same generator diff',
-  },
-  {
-    id: 'pll-full', name: 'Full PLL', kind: 'proved',
-    entries: FULL_PLL,
-    provenance: 'same search; the 288-state goal set checked against the published Cube Explorer distribution',
-    verified: 'the distribution matched Cube Explorer entry for entry, mean 11.642361; same generator diff',
-  },
-];
+// WHICH ALGORITHM IS IN WHICH SET is said ONCE, in `lib/alg-library.js` (`ALG_SETS`), and read here: the set
+// ledger is a summary computed from the library's rows (dev-docs/algorithm-drill-v2-plan.md §2.1), so the
+// review page, this ledger and the drill cannot file one algorithm two ways. The library picks each set's
+// entries by name and refuses a name its source no longer holds.
+const ENTRIES = await loadEntries();
+const SETS = ALG_SETS.map((s) => ({ ...s, entries: ENTRIES.get(s.id) }));
 
 /**
  * What each method costs a learner, and what this repository has for it.
@@ -181,49 +51,12 @@ const SETS = [
  * offered method's name is the registry's label, read from the entry rather than spelled again, and its
  * phases are its registry stages, each naming the `stage` it is. The rung ladder this table used to model
  * is gone as a learner's choice (ADR 0011): a method is fixed, so it has ONE cost, not a range.
+ *
+ * The OFFERED methods' mapping is the library's (`METHOD_SETS`), for the reason the sets are; what is added
+ * here is only the methods the app does not offer, kept to be compared with.
  */
-const offered = (id, phases) => {
-  const entry = OFFERED.find((m) => m.id === id);
-  if (!entry) throw new Error(`the ledger names an offered method "${id}" that the registry does not hold`);
-  return { id, method: entry.label, phases };
-};
-
 const METHODS = [
-  offered('quick', [
-    { phase: 'Whole cube', intuitive: 'NONE. The two-phase search (`lib/two-phase.js`) answers; there is nothing to memorise' },
-  ]),
-  offered('beginner', [
-    { stage: 'cross', phase: 'Cross', held: ['cross-inserts'] },
-    { stage: 'pairs', phase: 'First two layers', held: ['f1l-inserts', 'middle-inserts'] },
-    // The course's last layer (ADR 0009), not the app's: Beginner is rung 0 everywhere on the course's route.
-    { stage: 'oll', phase: 'Top face', held: ['course-edges'] },
-    { stage: 'pll', phase: 'Last layer', held: ['course-corners'] },
-  ]),
-  // **Both CFOP entries still need the beginner inserts, and the first version of this ledger said the top
-  // did not.** `pairsFrom` falls back to `placeSeparately` when a pair is BURIED — a piece of it sitting in
-  // another slot — and that fallback is the beginner corner and edge inserts. The test that solves frozen
-  // cubes with each entry finds them named, and fails if a mapped set stops appearing or an unmapped one
-  // starts. A learner memorises a sequence once, so the cost counts DISTINCT algorithms: the triggers
-  // `right` and `left` ARE the corner inserts `right-hand` and `left-hand`, and three F2L cases are inserts too.
-  offered('cfop-4lll', [
-    { stage: 'cross', phase: 'Cross', intuitive: 'planned whole: an exact distance table is descended — no algorithm at all' },
-    { stage: 'pairs', phase: 'First two layers', held: ['f2l-triggers', 'f1l-inserts', 'middle-inserts'] },
-    { stage: 'oll', phase: 'Top face', held: ['eoll', 'ocll'] },
-    { stage: 'pll', phase: 'Last layer', held: ['cpll', 'epll'] },
-  ]),
-  offered('cfop', [
-    { stage: 'cross', phase: 'Cross', intuitive: 'planned whole: an exact distance table is descended — no algorithm at all' },
-    // The human-speed table, not the proved one: what a method costs is what it TEACHES.
-    { stage: 'pairs', phase: 'First two layers', held: ['f2l-human', 'f1l-inserts', 'middle-inserts'] },
-    { stage: 'oll', phase: 'Top face', held: ['oll-human'] },
-    { stage: 'pll', phase: 'Last layer', held: ['pll-human'] },
-  ]),
-  offered('roux', [
-    { stage: 'first-block', phase: 'Left block', intuitive: 'block building, found by search: a shipped exact distance table is descended — no table of algorithms' },
-    { stage: 'second-block', phase: 'Right block', intuitive: 'block building, found by search: a shipped exact distance table' },
-    { stage: 'cmll', phase: 'Top corners', held: ['cmll'] },
-    { stage: 'lse', phase: 'Last six edges', intuitive: 'found by search with the middle slice: exact distance tables, no table of algorithms' },
-  ]),
+  ...METHOD_SETS,
   { id: null, method: 'Petrus', phases: [
     { phase: '2x2x2 and 2x2x3', intuitive: 'block building' },
     { phase: 'Edge orientation', intuitive: 'a recognition rule rather than a sequence' },
