@@ -53,12 +53,14 @@ function replay(id, state) {
   let afterOrient = null;
   let oriented = false;
   for (const step of result.steps) {
-    const alg = turns(step);
-    if (alg) cube.move(alg);
+    // Read at the BOUNDARY, before the first step after the looks is played: read after it, a look that
+    // left the top unoriented could be covered by the next step finishing the job under another name.
     if (ORIENT_STAGES.has(step.stage)) oriented = true;
     else if (oriented && afterOrient === null) afterOrient = faces(cube);
+    const alg = turns(step);
+    if (alg) cube.move(alg);
   }
-  return { result, afterOrient: afterOrient ?? faces(cube), end: cube };
+  return { result, oriented, afterOrient: afterOrient ?? faces(cube), end: cube };
 }
 
 const permutations = (a) => (a.length <= 1 ? [a] :
@@ -122,7 +124,11 @@ for (const id of CFOP) {
   test(`${id}: every one of the 216 top orientations is oriented by its OLL looks, then solved — checked by cubejs`, () => {
     let n = 0;
     for (const state of orientations()) {
-      const { afterOrient, end } = replay(id, state);
+      const { oriented, afterOrient, end } = replay(id, state);
+      // An unoriented top must be oriented BY an OLL look: without one, the reading above falls back to
+      // the end of the solve, where some other step may have done the looks' work.
+      const twisted = state.co.some((t) => t !== 0) || state.eo.some((f) => f !== 0);
+      assert.equal(oriented, twisted, `${id}: ${twisted ? 'no OLL look ran on' : 'an OLL look ran on an oriented'} ${JSON.stringify(state)}`);
       assert.ok(topOriented(afterOrient), `${id}: the OLL looks left the top unoriented from ${JSON.stringify(state)}`);
       assert.ok(end.isSolved(), `${id}: not solved from ${JSON.stringify(state)}`);
       n++;
