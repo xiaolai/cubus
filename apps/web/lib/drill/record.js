@@ -34,6 +34,11 @@
 //   p   pauses marked inside the span (timing.js PAUSE_FACTOR); 0 when there is no time
 //   h   the algorithm's length in the half-turn metric
 //
+// VERSION 1 IS MIGRATED AS IT IS READ. Version 1 was this branch's format before rep ids — the same reps with
+// no `i`, under no `gen` — and was never released, but the owner's own installs keep one. A valid version-1
+// record is given ids and a generation from the random source and written back as version 2, every rep kept
+// in its order (`migrate`); only a record invalid as EITHER version is refused.
+//
 // DERIVED, NEVER STORED (`statsOf`): reps, clean reps, the clean streak, best and median time, pace, the
 // error rate. A stored statistic is a second copy of a fact that can disagree with the first; these are
 // recomputed from the reps every time, so they cannot.
@@ -79,7 +84,8 @@ import { TIME_REFUSAL } from './timing.js';
 /** The storage key, in the app's `cubus…` style beside `cubusSettings` and `cubusSolves`. */
 export const RECORD_KEY = 'cubusDrillRecord';
 
-/** The format's version. A record with any other `v` is foreign and refused, never reinterpreted. */
+/** The format's version. Version 1 is migrated as it is read (header); any other `v` is foreign and refused,
+ *  never reinterpreted. */
 export const RECORD_VERSION = 2;
 
 /**
@@ -136,10 +142,10 @@ const positiveInt = (v) => Number.isSafeInteger(v) && v > 0;
  * is a fact the derived figures rely on: a timed rep that also carries a refusal would be counted by one
  * reader and not by another; a clean rep with a lost turn would sit in a streak it cannot belong to.
  */
-function repProblem(rep) {
+function repProblem(rep, { version = RECORD_VERSION } = {}) {
   if (!isRecordObject(rep)) return 'is not an object';
   const { repId, at, clean, lostTurn, ms, refused, turns, pauses, htm } = rep;
-  if (!(typeof repId === 'string' && REP_ID.test(repId))) return `has no usable id (${JSON.stringify(repId)})`;
+  if (version !== 1 && !(typeof repId === 'string' && REP_ID.test(repId))) return `has no usable id (${JSON.stringify(repId)})`;
   if (!positiveInt(at)) return `has no usable time of day (${JSON.stringify(at)})`;
   if (typeof clean !== 'boolean') return 'says neither clean nor not';
   if (typeof lostTurn !== 'boolean') return 'says neither whether a turn was lost nor not';
@@ -190,9 +196,11 @@ const fromStored = (s) => (isRecordObject(s)
 const newer = (a, b) => a.at > b.at || (a.at === b.at && a.repId > b.repId);
 
 /**
- * The stored text as `{ gen, algs }`, or null when nothing is stored: `algs` a Map from ledger id to
+ * The stored text as `{ version, gen, algs }`, or null when nothing is stored: `algs` a Map from ledger id to
  * its reps, oldest first. The Map is a fresh snapshot, parsed anew on every call; each rep list and each rep in
- * it is frozen. Throws `PracticeRecordError` for anything that is not exactly this format — the whole record is
+ * it is frozen. A version-1 record is read by version 1's rules — no ids, no generation (`gen` null), one
+ * algorithm's reps never older than the one before, and no two algorithms at one time — and is otherwise held
+ * to every rule version 2 is. Throws `PracticeRecordError` for anything that is neither — the whole record is
  * refused.
  */
 function parseStored(text) {
@@ -201,15 +209,19 @@ function parseStored(text) {
   try { raw = JSON.parse(text); } catch (e) {
     throw new PracticeRecordError('not-json', `${RECORD_KEY} is not JSON, so it was left as it is`, e);
   }
-  if (!isRecordObject(raw) || raw.v !== RECORD_VERSION || !isRecordObject(raw.algs)) {
+  if (!isRecordObject(raw) || (raw.v !== 1 && raw.v !== RECORD_VERSION) || !isRecordObject(raw.algs)) {
     throw new PracticeRecordError('foreign',
-      `${RECORD_KEY} is not a version-${RECORD_VERSION} practice record, so it was left as it is`);
+      `${RECORD_KEY} is not a version-1 or version-${RECORD_VERSION} practice record, so it was left as it is`);
   }
-  if (!(typeof raw.gen === 'string' && GENERATION.test(raw.gen))) {
+  const version = raw.v;
+  if (version !== 1 && !(typeof raw.gen === 'string' && GENERATION.test(raw.gen))) {
     throw new PracticeRecordError('corrupt', `${RECORD_KEY} names no generation`);
   }
   const algs = new Map();
   const ids = new Set();
+  /** Version 1 only: which algorithm holds a rep at each time. Two algorithms at one time was a tie whose order
+   *  version 1 never recorded, so it refused one, and so does its migration rather than guess at it. */
+  const owner = new Map();
   let total = 0;
   for (const [id, stored] of Object.entries(raw.algs)) {
     if (!isId(id)) throw new PracticeRecordError('corrupt', `${RECORD_KEY} names an algorithm ${JSON.stringify(id.slice(0, 40))} that no ledger id could be`);
@@ -218,8 +230,17 @@ function parseStored(text) {
     }
     const reps = stored.map(fromStored);
     reps.forEach((rep, i) => {
-      const problem = repProblem(rep);
+      const problem = repProblem(rep, { version });
       if (problem) throw new PracticeRecordError('corrupt', `${RECORD_KEY}: ${id} rep ${i + 1} ${problem}`);
+      if (version === 1) {
+        if (i > 0 && rep.at < reps[i - 1].at) throw new PracticeRecordError('corrupt', `${RECORD_KEY}: ${id} rep ${i + 1} is older than the rep before it`);
+        const other = owner.get(rep.at);
+        if (other !== undefined && other !== id) {
+          throw new PracticeRecordError('corrupt', `${RECORD_KEY}: ${other} and ${id} both hold a rep at ${rep.at}, so which was made first is not known`);
+        }
+        owner.set(rep.at, id);
+        return;
+      }
       if (i > 0 && !newer(rep, reps[i - 1])) throw new PracticeRecordError('corrupt', `${RECORD_KEY}: ${id} rep ${i + 1} is not newer than the rep before it`);
       // One id held twice is one rep counted twice — or two reps nobody can tell apart.
       if (ids.has(rep.repId)) throw new PracticeRecordError('corrupt', `${RECORD_KEY}: ${id} rep ${i + 1} has the id of another rep (${rep.repId})`);
@@ -229,13 +250,14 @@ function parseStored(text) {
     algs.set(id, Object.freeze(reps));
   }
   if (total > TOTAL_CAP) throw new PracticeRecordError('corrupt', `${RECORD_KEY} holds ${total} reps, past the ${TOTAL_CAP} it is ever written with`);
-  return { gen: raw.gen, algs };
+  return { version, gen: version === 1 ? null : raw.gen, algs };
 }
 
 /**
  * The stored text as a record: a Map from ledger id to its reps, oldest first — empty when nothing is stored.
  * A fresh snapshot each call: a caller that edits the Map changes nothing stored and nothing another read sees.
- * Throws `PracticeRecordError` for anything that is not exactly this format.
+ * A version-1 record's reps read with no id (`repId` undefined); an open record gives them one as it reads.
+ * Throws `PracticeRecordError` for anything that is neither version.
  *
  * @param {string|null} text  what `getItem` returned; null is "never written", an empty record
  * @returns {Map<string, ReadonlyArray<object>>}
@@ -378,14 +400,39 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = n
   let removed = 0;
   let error = null;
 
-  /** The record as stored now, or null when none is. Throws `PracticeRecordError` when it cannot be read. */
+  /**
+   * A version-1 record as version 2 (header): every rep given an id under one page half drawn for the purpose,
+   * counted in the record's order — time, then each list's own order, which version 1 kept as the order the reps
+   * were written in and never tied across two algorithms — so (time, id) orders them exactly as they were, and
+   * the record a new generation. Every rep is kept; nothing else about it changes.
+   */
+  const migrate = (algs) => {
+    const order = [...algs.values()].flatMap((reps) => reps.map((rep, k) => ({ rep, k })))
+      .sort((a, b) => a.rep.at - b.rep.at || a.k - b.k);
+    const page = hex8() + hex8();
+    const ids = new Map(order.map(({ rep }, n) => [rep, page + n.toString(16).padStart(8, '0')]));
+    return {
+      gen: hex8() + hex8(),
+      algs: new Map([...algs].map(([id, reps]) => [id, Object.freeze(reps.map((rep) => Object.freeze({ ...rep, repId: ids.get(rep) })))])),
+    };
+  };
+
+  /**
+   * The record as stored now, `{ found, failed }`: `found` null when none is stored, and a version-1 record
+   * migrated and written back — `failed` the write-back's error, or null. A write-back that failed still reads:
+   * the reps are the stored ones, and the next look migrates them again. Throws `PracticeRecordError` when the
+   * record cannot be read or is refused.
+   */
   const look = () => {
     let text;
     try { text = storage.getItem(key); } catch (e) {
       // A read that threw is not an empty record: treating it as one is how a good record is overwritten.
       throw new PracticeRecordError('unreadable', `${key} could not be read, so nothing will be written over it`, e);
     }
-    return parseStored(text);
+    const found = parseStored(text);
+    if (found === null || found.version === RECORD_VERSION) return { found, failed: null };
+    const migrated = migrate(found.algs);
+    return { found: migrated, failed: write(migrated) };
   };
 
   /** Write a record and read it back. Null when it landed, otherwise the error. */
@@ -409,7 +456,8 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = n
    */
   const settle = () => {
     let found;
-    try { found = look(); } catch (e) {
+    let migrateFailed;
+    try { ({ found, failed: migrateFailed } = look()); } catch (e) {
       if (e instanceof PracticeRecordError) error = e;
       throw e;
     }
@@ -439,8 +487,8 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = n
     mine = mine.filter(({ rep }) => kept.has(rep.repId));
     gen = stored.gen;
     missing = failed ? mine.filter(({ rep }) => !on.has(rep.repId)).length : 0;
-    error = failed;
-    return { ...stored, algs };
+    error = failed ?? migrateFailed;
+    return { gen: stored.gen, algs };
   };
 
   changes?.addEventListener('storage', (event) => {
@@ -453,8 +501,13 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = n
     onChange();
   }, signal ? { signal } : undefined);
 
-  /** Every algorithm's reps as stored now: a fresh snapshot each call. Throws when the record is refused. */
-  const read = () => look()?.algs ?? new Map();
+  /** Every algorithm's reps as stored now: a fresh snapshot each call. Throws when the record is refused; a
+   *  version-1 record whose write-back failed reads, and `status()` says why it is not yet version 2. */
+  const read = () => {
+    const { found, failed } = look();
+    if (failed) error = failed;
+    return found?.algs ?? new Map();
+  };
 
   /** One algorithm's reps, oldest first — empty when it has none. Throws when the record is refused. */
   const reps = (id) => {
@@ -477,8 +530,8 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = n
      *   removed   reps that went with the record they were written under, since it opened: removed in another
      *             window or in this one, or written over by a record another window started in the same moment
      *             (header, NOT REPAIRED). Never put back, and not a failure to show: a removal is deliberate
-     *   error     why the last look could not finish (the record cannot be read, is refused, or the reps put
-     *             back did not land), or null
+     *   error     why the last look could not finish (the record cannot be read, is refused, the reps put back
+     *             did not land, or a version-1 record could not be written back as version 2), or null
      */
     status: () => Object.freeze({ missing, removed, error }),
 

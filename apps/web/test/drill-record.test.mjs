@@ -282,13 +282,17 @@ test(`the record keeps ${TOTAL_CAP} reps overall, dropping the oldest across eve
 // ---- refused, and never overwritten -------------------------------------------------------------------
 
 const GOOD = { i: rid(0), t: 5, c: true, l: false, ms: 900, r: null, n: 6, p: 0, h: 7 };
+/** A rep as version 1 stored it — no id — and a version-1 record (no generation). */
+const V1_REP = Object.freeze({ t: 5, c: true, l: false, ms: 900, r: null, n: 6, p: 0, h: 7 });
+const v1Text = (algs) => JSON.stringify({ v: 1, algs });
 /** One algorithm's reps as stored text, with the record's own fields overridden by `top`. */
 const one = (reps, top = {}) => JSON.stringify({ v: RECORD_VERSION, gen: GEN, algs: { a: reps }, ...top });
 const CORRUPT = [
   ['not JSON', '{"v":2,', 'not-json'],
   ['an array', '[]', 'foreign'],
   ['JSON null', 'null', 'foreign'],
-  ['another version', one([GOOD], { v: 1 }), 'foreign'],
+  ['another version', one([GOOD], { v: 3 }), 'foreign'],
+  ['a version given as text', one([GOOD], { v: '2' }), 'foreign'],
   ['algs not a record', one([GOOD], { algs: [] }), 'foreign'],
   ['no generation', one([GOOD], { gen: undefined }), 'corrupt'],
   ['a generation that is not 16 lowercase hex digits', one([GOOD], { gen: 'ABCDEF0123456789' }), 'corrupt'],
@@ -321,6 +325,15 @@ const CORRUPT = [
   ['a long algorithm refused as one turn', one([{ ...GOOD, ms: null, n: null, r: 'one-turn' }]), 'corrupt'],
   ['pauses marked with no time', one([{ ...GOOD, ms: null, n: null, r: 'no-cube-clock', p: 2 }]), 'corrupt'],
   ['a clean time spanning too few turns', one([{ ...GOOD, n: 2 }]), 'corrupt'],
+  // Invalid as version 1 too (Codex's round-3 verify, item 3): only a record neither version reads is refused.
+  ['a version-2 record whose reps have no ids', one([V1_REP]), 'corrupt'],
+  ['a version-1 rep clean with a lost turn', v1Text({ a: [{ ...V1_REP, l: true }] }), 'corrupt'],
+  ['a version-1 rep with no length', v1Text({ a: [{ ...V1_REP, h: undefined }] }), 'corrupt'],
+  ['version-1 reps out of order', v1Text({ a: [{ ...V1_REP, t: 9 }, { ...V1_REP, t: 8 }] }), 'corrupt'],
+  ['two algorithms at one time in version 1', v1Text({ a: [V1_REP], b: [V1_REP] }), 'corrupt'],
+  ['an empty version-1 list', v1Text({ a: [] }), 'corrupt'],
+  ['a version-1 list past the cap', v1Text({ a: Array.from({ length: PER_ALG_CAP + 1 }, (_, k) => ({ ...V1_REP, t: k + 1 })) }), 'corrupt'],
+  ['a version-1 algs that is a list', JSON.stringify({ v: 1, algs: [] }), 'foreign'],
 ];
 
 test('every shape the engine gives a rep is read back', () => {
@@ -462,6 +475,67 @@ test('reps of two algorithms in one millisecond are read, and ordered by id for 
     assert.equal(record.add('z', rep()).saved, true);
     assert.deepEqual([record.reps('x').length, record.reps('y').length], [0, 1], `stored ${order}: the cap dropped the higher id`);
   }
+});
+
+// ---- version 1 is migrated as it is read (Codex's round-3 verify, item 3) ---------------------------------
+//
+// Before: version 2 refused a valid version-1 record as foreign, so the history in the owner's own installs became
+// unreadable and every later add returned `saved: false`, for good.
+
+/** A version-1 record as this branch's earlier commits wrote one: three algorithms, every shape of rep, and a tie
+ *  in one millisecond INSIDE one algorithm, which version 1 kept in its list's order. */
+const V1 = v1Text({
+  'oll-27': [{ ...V1_REP, t: 1_000 }, { ...V1_REP, t: 3_000, ms: 800 }, { ...V1_REP, t: 3_000, ms: 700, c: false, n: null, p: 2 }],
+  'pll-t': [{ ...V1_REP, t: 2_000, c: false, l: true, ms: null, n: null, r: 'stream-gap' }, { ...V1_REP, t: 4_000, ms: null, n: null, r: 'no-cube-clock' }],
+  r2: [{ ...V1_REP, t: 5_000, h: 1, ms: null, n: null, r: 'one-turn' }],
+});
+const withoutId = ({ repId, ...rest }) => rest;
+/** A random source that counts, so every draw differs and none is `Math.random`'s. */
+const counting = () => { let n = 0; return () => { n = (n + 0x01234567) >>> 0; return n; }; };
+
+test('verify item 3: a version-1 record is migrated as it is read — every rep kept in its order, ids from the random source — and written back', () => {
+  const was = parseRecord(V1);
+  assert.deepEqual([...was.keys()], ['oll-27', 'pll-t', 'r2'], 'precondition: the version-1 record reads as itself');
+  const storage = fakeStorage(V1);
+  const record = openPracticeRecord({ storage, now: clockFrom(10_000), random: counting() });
+  const now = record.read();
+  // Every rep kept, in its order, and every figure the same.
+  for (const [id, reps] of was) {
+    assert.deepEqual(now.get(id).map(withoutId), reps.map(withoutId), `${id}: a rep was lost, changed or moved`);
+    assert.deepEqual(statsOf(now.get(id)), statsOf(reps), `${id}: the migration moved a figure`);
+  }
+  // Written back as version 2, once: a generation, an id on every rep, one page half, all different.
+  const stored = JSON.parse(storage.raw());
+  assert.equal(stored.v, RECORD_VERSION);
+  assert.match(stored.gen, /^[0-9a-f]{16}$/);
+  const ids = [...now.values()].flat().map((r) => r.repId);
+  assert.ok(ids.every((i) => /^[0-9a-f]{24}$/.test(i)) && new Set(ids).size === ids.length, `ids: ${ids}`);
+  assert.equal(new Set(ids.map((i) => i.slice(0, 16))).size, 1, 'the migrated ids were drawn under more than one page half');
+  // (time, id) is the order version 1 kept: the tie inside oll-27 in its list's order.
+  const oll = now.get('oll-27');
+  assert.ok(oll[1].at === oll[2].at && oll[1].repId < oll[2].repId, 'the tie inside one algorithm lost its order');
+  assert.deepEqual([storage.writes, statusOf(record)], [1, QUIET]);
+  // Read again: already version 2, nothing more is written; and the next rep is saved beside the old ones.
+  assert.deepEqual(msOf(record.read()), msOf(now));
+  assert.equal(storage.writes, 1, 'a migrated record was written again');
+  assert.equal(record.add('pll-t', rep({ ms: 600 })).saved, true);
+  assert.deepEqual(msOf(record.read()), { ...msOf(now), 'pll-t': [null, null, 600] });
+  // An add as the first thing an instance does migrates too, and keeps every rep.
+  const first = fakeStorage(V1);
+  const adds = openPracticeRecord({ storage: first, now: clockFrom(10_000) });
+  assert.deepEqual(adds.add('r2', rep({ ms: null, refused: TIME_REFUSAL.ONE_TURN, htm: 1 })), { saved: true });
+  assert.deepEqual(msOf(adds.read()), { ...msOf(was), r2: [null, null] });
+  assert.equal(JSON.parse(first.raw()).v, RECORD_VERSION);
+});
+
+test('verify item 3: a version-1 record whose write-back fails still reads, and says why it is not yet version 2', () => {
+  const storage = fakeStorage(V1, { writeThrows: true });
+  const record = openPracticeRecord({ storage, now: clockFrom(10_000) });
+  assert.deepEqual(msOf(record.read()), msOf(parseRecord(V1)), 'a record that could not be written back could not be read');
+  assert.deepEqual(statusOf(record), { missing: 0, removed: 0, error: 'write-failed' });
+  assert.equal(storage.raw(), V1, 'the version-1 text changed');
+  const out = record.add('r2', rep({ ms: null, refused: TIME_REFUSAL.ONE_TURN, htm: 1 }));
+  assert.deepEqual([out.saved, out.error?.code], [false, 'write-failed']);
 });
 
 test('a read is a fresh snapshot: its lists and reps are frozen, and editing its Map changes nothing stored', () => {
