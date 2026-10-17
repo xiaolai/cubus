@@ -587,6 +587,49 @@ test('a known feed is timed to the millisecond on the cube\'s clock, first turn 
   assert.equal(PAUSE_FACTOR, 3);
 });
 
+test('two commuting opening turns made in the other order: the span starts at the first of them', () => {
+  // oll-19 opens `r' R`: one axis, so a hand may make R first. R alone is on no track and waits in the cue
+  // window; the span still starts at it, because it is one of the algorithm's turns, and the turn rate counts
+  // the turns the span holds (audit-fix 2026-10-18 #3: the span began at the second report — 1100 ms for
+  // 1200 — and the rate was inflated, on a rep marked clean).
+  const alg = byName('oll-19');
+  const [a, b, ...rest] = reportsFor(alg, ['U', 'F'], () => 0);
+  assert.equal(`${a} ${b}`, "L' R", 'oll-19 no longer opens with two turns on one axis');
+  const swapped = [b, a, ...rest];
+  const h = harness({ alg });
+  startAt(h, SOLVED);
+  swapped.forEach((q, i) => h.turn(q, { stamp: 1000 + 100 * i }));
+  const { result } = h.events.find((e) => e.type === 'done');
+  const htm = htmOf(alg);
+  assert.equal(result.clean, true);
+  assert.equal(result.ms, 100 * (swapped.length - 1), 'the span left out the first turn the hand made');
+  assert.deepEqual({ ...result.tps }, { value: (htm - 1) / (result.ms / 1000), metric: 'HTM', turns: htm - 1 });
+});
+
+test('a first report that is a quarter of a LATER half turn ends no turn, so every turn is in the span', () => {
+  // `R L2 U`, the hand starting on L: that quarter is half of L2, not a turn of its own — the turn counted out
+  // of the span must be the one the first report belongs to, wherever it lies.
+  const h = harness({ alg: "R L2 U", fixedHold: ['U', 'F'] });
+  startAt(h, SOLVED);
+  ['L', 'R', 'L', 'U'].forEach((q, i) => h.turn(q, { stamp: 100 * i }));
+  const { result } = h.events.find((e) => e.type === 'done');
+  assert.equal(result.clean, true);
+  assert.equal(result.ms, 300);
+  assert.deepEqual({ ...result.tps }, { value: 3 / 0.3, metric: 'HTM', turns: 3 });
+});
+
+test('a turn taken back before the rep began is not in its span', () => {
+  // The other side of the line: a wrong first turn undone puts the cube back where the rep was armed, so the
+  // rep's turns begin after the undo. (Anticlockwise, because a clockwise first turn of any face is R in some
+  // hold.)
+  const h = harness({ alg: "R U R' U'" });
+  startAt(h, SOLVED);
+  ["F'", 'F', 'R', 'U', "R'", "U'"].forEach((q, i) => h.turn(q, { stamp: 1000 * i }));
+  const { result } = h.events.find((e) => e.type === 'done');
+  assert.equal(result.ms, 3000, 'the span reached back past the cube standing where the rep was armed');
+  assert.equal(result.clean, false, 'two turns beyond the algorithm\'s own were made');
+});
+
 test('a first turn that is half of a half turn leaves every turn in the span', () => {
   const h = harness({ alg: "R2 U" });
   startAt(h, SOLVED);

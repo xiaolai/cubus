@@ -197,8 +197,10 @@ export function createDrillEngine({
     live = candidatesFrom(plans, model, prefix).map((c) => ({
       c, idx: passRegrips(c.track, 0), reach: new Map(), firstFrom: null,
     }));
+    // `since`: the first report after the cube last stood where the rep was armed — where the rep's turns
+    // begin once one of them is matched (`judge`).
     rep = {
-      start: facelets(), log: [], firstMatched: null, firstKind: null, excursions: 0,
+      start: facelets(), log: [], since: 0, firstMatched: null, excursions: 0,
       streamBroken: false, allNumbered: true, wayBack: null, about: null, cause: null, run: null,
     };
     status = STATUS.ARMED;
@@ -216,15 +218,16 @@ export function createDrillEngine({
       start: a <= startIdx ? 0 : logIdx(entry.reach.get(a)),
       end: logIdx(entry.reach.get(b)),
     }));
-    // The first report ends a whole turn unless it is one quarter of a half turn.
+    // The first report ends a whole turn unless it is one quarter of a half turn. Its turn is the first one
+    // from where the rep began that turns its face — not necessarily the algorithm's first turn, because two
+    // commuting turns may come in either order. A first report on no turn of the algorithm is a rep that was
+    // not the algorithm alone, which is given no turn rate.
     const firstFace = rep.log[rep.firstMatched].notation[0];
     let firstEntry = null;
-    for (let k = entry.firstFrom; k < entry.c.transitions.length; k++) {
-      const faces = faceQuartersAt(entry.c, k);
-      firstEntry = faces.find((q) => q.face === firstFace) ?? null;
-      if (faces.length) break;                       // the first transition that turns a face is the one
+    for (let k = entry.firstFrom; k < entry.c.transitions.length && !firstEntry; k++) {
+      firstEntry = faceQuartersAt(entry.c, k).find((q) => q.face === firstFace) ?? null;
     }
-    const completesOne = firstEntry ? firstEntry.quarters === 1 : rep.firstKind === 'step';
+    const completesOne = firstEntry?.quarters === 1;
     const reports = rep.log.slice(rep.firstMatched);
     // Turns beyond the algorithm's own — an undo, a wrong turn taken back inside the window — are in the
     // span, so the rep was not the algorithm alone.
@@ -321,8 +324,12 @@ export function createDrillEngine({
       return next;
     });
     if (progress && rep.firstMatched === null) {
-      rep.firstMatched = logIdx;
-      rep.firstKind = accepted[0].r.kind;
+      // The rep's turns began with the first report since the cube last stood where it was armed, which need
+      // not be this one: two commuting turns made in the other order leave the first on no track until the
+      // second lands, and it is still the first turn the hand made.
+      rep.firstMatched = rep.since;
+    } else if (rep.firstMatched === null) {
+      rep.since = logIdx + 1;   // back where it was armed: nothing up to here belongs to the rep
     }
     if (progress) wholeTracks(logIdx);
     cancelPending();
