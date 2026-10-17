@@ -13,14 +13,27 @@
 // answer is plain data. Nothing here imports `alg-library.js`: the worker does, and node's tests (which have
 // no `Worker`) load it through `inlineLibraryWorker`.
 //
-// ONE WORKER, SPAWNED ON THE FIRST QUESTION AND KEPT. Both answers are cached for the page's lifetime, so a
-// second visit to the library costs nothing; the worker stays because a lesson may still ask for the ids.
+// ONE WORKER, SPAWNED ON THE FIRST QUESTION AND KEPT WHILE IT ANSWERS. Both answers are cached for the page's
+// lifetime, so a second visit to the library costs nothing; the worker stays because a lesson may still ask
+// for the ids. A worker that FAILS ONCE is never asked again: an error event, a reply it could not send or the
+// client cannot read, a refusal (`ok: false` — its library did not load, and a worker keeps that failure in
+// its module map and the library's own state), or no answer within `LIBRARY_TIMEOUT_MS`. Each terminates it,
+// rejects every question waiting on it, and forgets it, so the next question spawns a fresh one. A failure is
+// never cached, so "Reading the algorithms…" becomes an error the screen shows, and a later visit asks again.
 
 /** The message kind, so a reply can never be read as another worker protocol's. */
 export const LIBRARY_ASK = 'alg-library';
 
 /** The questions the worker answers. */
 export const ASKS = Object.freeze(['catalogue', 'ids']);
+
+/** Whether a result has the shape its question's answer has: the ids are a list of strings, the catalogue a
+ *  record. A reply that is not is malformed — refused rather than cached, where it would stay for the page's
+ *  lifetime. */
+const ANSWER_SHAPE = Object.freeze({
+  ids: (result) => Array.isArray(result) && result.every((id) => typeof id === 'string'),
+  catalogue: (result) => Boolean(result) && typeof result === 'object' && !Array.isArray(result),
+});
 
 /** "mehta-algs" → "Mehta", "corners-first-algs" → "Corners first": a pending source's name, derived from its
  *  id rather than typed beside it. */
@@ -93,21 +106,51 @@ export async function answerLibrary(load, request) {
 }
 
 /**
- * A client of one library worker. `catalogue()` and `ids()` each resolve once and are cached; a failure is
- * NOT cached, so the next question asks again.
- *
- * @param {{ spawn: () => { addEventListener: Function, postMessage: Function, terminate?: Function } }} deps
+ * How long one question may wait for the worker before the worker is given up. The worker's whole job — the
+ * library's import, every row id and every row — measured 3.2 s in Node on 2026-10-17 (this file's header);
+ * on 2026-10-18, 0.5 s in Node and 0.6 s in a real WebKit worker, both on a heavily loaded machine. The bound
+ * is for a worker that has STOPPED, so it sits far above that: a slow device that reached it would time out
+ * on every retry and never see the library, which is worse than a long wait.
  */
-export function createLibraryClient({ spawn } = {}) {
+export const LIBRARY_TIMEOUT_MS = 60_000;
+
+/**
+ * A client of one library worker at a time. `catalogue()` and `ids()` each resolve once and are cached; a
+ * failure is NOT cached, and the worker that failed is retired, so the next question asks a fresh one.
+ *
+ * @param {object} deps
+ * @param {() => { addEventListener: Function, postMessage: Function, terminate?: Function }} deps.spawn
+ * @param {number} [deps.timeoutMs]  how long a question may wait (`LIBRARY_TIMEOUT_MS`)
+ * @param {(fn: Function, ms: number) => unknown} [deps.setTimer]
+ * @param {(handle: unknown) => void} [deps.clearTimer]
+ */
+export function createLibraryClient({
+  spawn, timeoutMs = LIBRARY_TIMEOUT_MS,
+  setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = (handle) => clearTimeout(handle),
+} = {}) {
   if (typeof spawn !== 'function') throw new TypeError('createLibraryClient needs a spawn function');
+  if (!(Number.isFinite(timeoutMs) && timeoutMs > 0)) throw new TypeError(`createLibraryClient: timeoutMs must be a positive number of ms, not ${timeoutMs}`);
   let worker = null;
   let nextId = 1;
+  /** Every question waiting on the current worker: id -> { what, resolve, reject, timer }. */
   const pending = new Map();
   const cached = new Map();
 
-  const failAll = (reason) => {
-    for (const [, waiting] of pending) waiting.reject(reason);
-    pending.clear();
+  /** Settle one waiting question, its deadline cleared. */
+  const settle = (id, how, value) => {
+    const waiting = pending.get(id);
+    if (!waiting) return;
+    pending.delete(id);
+    clearTimer(waiting.timer);
+    waiting[how](value);
+  };
+
+  /** Give the current worker up: terminate it, forget it, and reject every question waiting on it. */
+  const retire = (reason) => {
+    const gone = worker;
+    worker = null;
+    try { gone?.terminate?.(); } catch { /* a worker that cannot even be terminated is gone either way */ }
+    for (const id of [...pending.keys()]) settle(id, 'reject', reason);
   };
 
   const attach = () => {
@@ -119,25 +162,22 @@ export function createLibraryClient({ spawn } = {}) {
       const data = event.data ?? {};
       const waiting = pending.get(data.id);
       if (!waiting) return;
-      pending.delete(data.id);
-      if (data.kind !== LIBRARY_ASK) { waiting.reject(new Error(`library worker answered with a "${String(data.kind)}" reply`)); return; }
-      if (data.ok === true && data.result !== undefined) { waiting.resolve(data.result); return; }
+      if (data.kind !== LIBRARY_ASK) { retire(new Error(`library worker answered with a "${String(data.kind)}" reply`)); return; }
+      if (data.ok === true && ANSWER_SHAPE[waiting.what](data.result)) { settle(data.id, 'resolve', data.result); return; }
       if (data.ok === false && typeof data.error?.message === 'string') {
-        waiting.reject(Object.assign(new Error(data.error.message), { name: data.error.name }));
+        retire(Object.assign(new Error(data.error.message), { name: data.error.name }));
         return;
       }
-      waiting.reject(new Error('library worker sent a malformed reply'));
+      retire(new Error('library worker sent a malformed reply'));
     });
     spawned.addEventListener('messageerror', () => {
       if (worker !== spawned) return;
-      failAll(new Error('library worker sent a reply that could not be read'));
+      retire(new Error('library worker sent a reply that could not be read'));
     });
     spawned.addEventListener('error', (event) => {
       if (worker !== spawned) return;
-      event.preventDefault?.();
-      spawned.terminate?.();
-      worker = null;
-      failAll(new Error(`library worker failed: ${event?.message ?? 'unknown'}`));
+      event?.preventDefault?.();
+      retire(new Error(`library worker failed: ${event?.message ?? 'unknown'}`));
     });
     return spawned;
   };
@@ -146,12 +186,14 @@ export function createLibraryClient({ spawn } = {}) {
     if (cached.has(what)) return cached.get(what);
     const id = nextId++;
     const answer = new Promise((resolve, reject) => {
-      pending.set(id, { resolve, reject });
+      const timer = setTimer(() => {
+        if (pending.has(id)) retire(new Error(`the algorithm library did not answer within ${timeoutMs / 1000} s`));
+      }, timeoutMs);
+      pending.set(id, { what, resolve, reject, timer });
       try {
         attach().postMessage({ kind: LIBRARY_ASK, id, ask: what });
       } catch (cause) {
-        pending.delete(id);
-        reject(new Error(`library worker could not be reached: ${cause?.message ?? cause}`, { cause }));
+        retire(new Error(`library worker could not be reached: ${cause?.message ?? cause}`, { cause }));
       }
     });
     cached.set(what, answer);
