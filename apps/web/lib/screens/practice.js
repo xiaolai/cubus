@@ -270,9 +270,13 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   let shownAt = 0;            // the demo's position, from the element's own report
 
   // ---- the cube -----------------------------------------------------------------------------------------
+  // Put into the page by the first `show`, once its attributes hold that row's picture: `connectedCallback` draws at
+  // once (AGENTS.md §2), so a cube connected here drew a solved cube with no hold and no moves, which the row then
+  // replaced. Until it goes in, a seek is remembered rather than made (`seek`).
   const cube = newCube({ subject: { facelets: SOLVED_FACELETS(), moves: [], isPhysical: false } });
   cube.setAttribute('aria-label', t('The algorithm, on a cube'));
-  $('#practiceCube', root).appendChild(cube);
+  let seekWhenIn = null;
+  const seek = (k) => { if (cube.isConnected) cube.seek(k); else seekWhenIn = k; };
   cube.addEventListener('cubus-step', (e) => {
     shownAt = e.detail?.index ?? 0;
     if (!live()) markChips(shownAt);
@@ -597,14 +601,14 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     paintClock();
     if (!picture) return;
     draw({ facelets: picture.facelets, hold: picture.hold, alg: picture.alg, arrow });
-    if (picture.alg) cube.seek(picture.at);
+    if (picture.alg) seek(picture.at);
     markChips(picture.chips);
   };
 
   // ---- the demo, with no cube ---------------------------------------------------------------------------
   const drawCase = () => {
     draw({ facelets: caseNow.facelets, hold: caseNow.hold, alg: drawnFrom(row, caseNow.hold, caseNow.facelets), arrow: 'none' });
-    cube.seek(0);
+    seek(0);
     shownAt = 0;
     markChips(0);
   };
@@ -822,12 +826,17 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     if (!live()) drawCase();
     paintMode();
     paint();
+    if (!cube.isConnected) {
+      $('#practiceCube', root).appendChild(cube);
+      if (seekWhenIn) cube.seek(seekWhenIn);
+      seekWhenIn = null;
+    }
     return true;
   }
   return show;
 }
 
-/** The solved arrangement, for the cube's first subject before a row is drawn. */
+/** The solved arrangement, for the cube's subject as it is made — every attribute is the row's before it connects. */
 const SOLVED_FACELETS = () => toFacelets(SOLVED);
 
 SCREENS.practice = () => (state.practiceAlg ? pageScreen() : libraryScreen());

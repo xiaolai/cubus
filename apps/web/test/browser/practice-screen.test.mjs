@@ -720,6 +720,42 @@ test('when the algorithms cannot be read, the page offers Back and Try again, an
   }
 });
 
+// ---- the cube's first drawing (round 2, row 17) --------------------------------------------------------------
+
+test('the page\'s cube is connected already holding the row it draws — its case, its algorithm, its hold', async () => {
+  // `connectedCallback` draws at once (AGENTS.md §2), so whatever the attributes say AT CONNECTION is a picture.
+  for (const connect of [false, true]) {
+    const { page, context, errors } = await openPractice(fixture, { connect });
+    try {
+      // A custom element's callbacks are fixed when it is defined, so the moment of connection is read at the door
+      // instead: every way a node is put into the page, recording the cube's attributes as it goes in.
+      await page.evaluate(() => {
+        window.__atConnect = [];
+        const seen = (parent, nodes) => {
+          for (const n of nodes) {
+            if (n?.localName === 'cubus-cube' && parent.closest?.('#practiceCube')) window.__atConnect.push(['facelets', 'alg', 'orientation'].map((a) => n.getAttribute(a)));
+          }
+        };
+        for (const [proto, name] of [[Node.prototype, 'appendChild'], [Node.prototype, 'insertBefore'], [Element.prototype, 'append'], [Element.prototype, 'replaceChildren'], [Element.prototype, 'prepend']]) {
+          const real = proto[name];
+          proto[name] = function patched(...args) { seen(this, name === 'insertBefore' || name === 'appendChild' ? [args[0]] : args); return real.apply(this, args); };
+        }
+      });
+      if (connect) await page.evaluate((f) => window.__p.facelets(f), toFacelets(randomStart(lcg(171))));
+      await show(page, 'sune');
+      const got = await page.evaluate(() => ({ at: window.__atConnect, now: ['facelets', 'alg', 'orientation'].map((a) => window.__p.cube().getAttribute(a)) }));
+      assert.equal(got.at.length, 1, `${connect}: the cube was connected ${got.at.length} times`);
+      // What must NOT happen: a first drawing of something the page then replaces — a solved cube, no hold, no moves.
+      assert.deepEqual(got.at[0], got.now, `${connect ? 'followed' : 'demo'}: connected as ${JSON.stringify(got.at[0])}, then redrawn as ${JSON.stringify(got.now)}`);
+      assert.ok(got.now[2], 'the cube has no hold');
+      if (!connect) assert.ok(got.now[1], 'the demo cube has no algorithm');
+      assert.deepEqual(errors, []);
+    } finally {
+      await context.close();
+    }
+  }
+});
+
 // ---- the library (row 26) ----------------------------------------------------------------------------------
 
 test('the library draws no card or picture until a set is opened, and then that set\'s, once', async () => {
