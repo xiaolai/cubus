@@ -16,6 +16,7 @@ import { statsOf } from '../lib/drill/record.js';
 import { catalogueOf, pendingName } from '../lib/drill/library-client.js';
 import { registerLocale, setLocale } from '../lib/i18n.js';
 import { cardsHtml, libraryHtml, purposeOf, rowName } from '../lib/screens/practice/library-view.js';
+import { isPhotographed } from '../lib/case-photo.js';
 import { paletteFor } from '../lib/scheme.js';
 import { STICKER_PALETTES } from '../lib/sticker-palettes.js';
 import {
@@ -191,8 +192,23 @@ test('every card draws its own row\'s case: one picture, its stickers in the col
   assert.ok(cards.length > 300, `${cards.length} cards to check`);
   const look = { palette: 'classic', scheme: 'western' };   // what libraryDoc was drawn in
   const colours = paletteFor(STICKER_PALETTES[look.palette], look.scheme);
+  let photos = 0;
   for (const card of cards) {
     const row = catalogue.rows[card.dataset.alg];
+    // A photographed row (lib/case-photo.js) draws an EMPTY well, named for its case, which the screen fills with
+    // the photograph — and never its net first (test/browser/practice-screen.test.mjs holds the screen to it).
+    if (isPhotographed(row)) {
+      const wells = card.querySelectorAll('.case-photo');
+      assert.equal(wells.length, 1, `${row.id}: ${wells.length} photograph wells on its card`);
+      assert.equal(wells[0].getAttribute('aria-label'), `The case ${rowName(row)} solves`, `${row.id}: the well is named for another case`);
+      assert.equal(wells[0].getAttribute('data-photo'), 'pending');
+      assert.equal(wells[0].childElementCount, 0, `${row.id}: the well is not empty`);
+      assert.equal(card.querySelectorAll('svg').length, 0, `${row.id}: a photographed row drew a flat picture too`);
+      assert.equal(row.solves.picture, 'net', `${row.id}: photographed but not a net row`);
+      photos += 1;
+      continue;
+    }
+    assert.equal(card.querySelectorAll('.case-photo').length, 0, `${row.id}: a flat row has a photograph well`);
     const pictures = card.querySelectorAll('svg');
     assert.equal(pictures.length, 1, `${row.id}: ${pictures.length} pictures on its card`);
     assert.equal(pictures[0].getAttribute('aria-label'), `The case ${rowName(row)} solves`, `${row.id}: the picture is named for another case`);
@@ -213,6 +229,7 @@ test('every card draws its own row\'s case: one picture, its stickers in the col
       } else assert.equal(r.getAttribute('fill-opacity'), '0.35', `${row.id}: sticker ${at} should be an empty well`);
     }
   }
+  assert.ok(photos > 250, `${photos} photographed cards`);
 });
 
 test('the page prints every row exactly as written: one chip per turn, in order, the engine\'s own count', () => {

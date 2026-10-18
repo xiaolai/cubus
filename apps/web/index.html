@@ -592,6 +592,13 @@
       .alg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; padding: 8px 0 14px; }
       .alg-entry { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; min-width: 0; }
       .alg-entry > svg { max-width: 100%; height: auto; }
+      /* A net row's picture is a photograph of the app's own cube (lib/case-photo.js): an empty well its size until
+         the photograph lands, and the live renderer over it while the card is pointed at or focused. */
+      .case-photo { position: relative; display: block; flex: none; max-width: 100%; border-radius: var(--r-3); background: var(--panel-sunk); }
+      .case-photo[data-photo="shown"] { background: none; }
+      .case-photo > img { display: block; width: 100%; height: 100%; }
+      .case-photo > cubus-cube { position: absolute; inset: 0; pointer-events: none; }
+      .case-photo:has(> cubus-cube) > img { visibility: hidden; }
       .alg-say { color: var(--ink-4); line-height: 1.35; overflow-wrap: anywhere; }
       .practice-sheet { display: flex; flex-direction: column; gap: 14px; }
       .practice-case { display: flex; flex-direction: column; gap: 8px; }

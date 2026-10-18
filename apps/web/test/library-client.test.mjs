@@ -21,7 +21,7 @@ const drawable = (id, alg) => ({
 /** The smallest catalogue the library screens can draw: one method, one stage, one set, one row. */
 const CATALOGUE = Object.freeze({
   groups: [{ method: 'cfop-4lll', label: 'CFOP (easy)', phases: [{ stage: 'oll', phase: 'Top face', sets: ['ocll'] }] }],
-  sets: { ocll: { id: 'ocll', name: 'Two-look OLL, second look', kind: 'hand-written', purpose: 'Turns the top corners up.', ids: ['sune'] } },
+  sets: { ocll: { id: 'ocll', name: 'Two-look OLL, second look', kind: 'hand-written', purpose: 'Turns the top corners up.', region: null, ids: ['sune'] } },
   rows: { sune: drawable('sune', "R U R' U R U2 R'") },
   triggers: { 'sexy-move': { name: 'Sexy move' } },
   pending: [],
@@ -294,7 +294,9 @@ test('the real catalogue passes the check, and every way of breaking it is named
     [(c) => { c.rows.sune.set = { toString: null }; }, /row "sune" is filed in an object, which does not list it/],
     [(c) => { c.rows.sune.chunks = [{ from: 0, to: 2, trigger: { toString: null } }]; }, /chunk 0 naming a trigger the catalogue does not hold \(an object\)/],
     [(c) => { c.rows.antisune = drawable('antisune', "R U2 R' U' R U' R'"); }, /row "antisune" is in no set/],
-    [(c) => { c.sets.cpll = { id: 'cpll', name: 'Two-look PLL', kind: 'hand-written', purpose: null, ids: [] }; }, /set "cpll" is in no group/],
+    [(c) => { c.sets.cpll = { id: 'cpll', name: 'Two-look PLL', kind: 'hand-written', purpose: null, region: null, ids: [] }; }, /set "cpll" is in no group/],
+    [(c) => { delete c.sets.ocll.region; }, /set "ocll" is not a name, a kind, a purpose, a goal region and its rows/],
+    [(c) => { c.sets.ocll.region = 3; }, /set "ocll" is not a name, a kind, a purpose, a goal region and its rows/],
   ];
   for (const [edit, said, whole] of CASES) {
     const problem = whole === null ? catalogueProblem(null) : broken(edit);

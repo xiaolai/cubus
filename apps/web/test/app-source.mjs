@@ -65,6 +65,8 @@ export const APP_SOURCES = Object.freeze([
   // algorithm practice and its parts, and the lesson's way to it, 2026-10-17 (dev-docs/algorithm-drill-v2-plan.md §4)
   'lib/screens/practice.js', 'lib/screens/practice/library-view.js', 'lib/screens/practice/page-view.js',
   'lib/practice-link.js', 'lib/screens/settings/practice-target.js',
+  // the library's case photographs, taken by the one parked renderer, 2026-10-18 (dev-docs/practice-redesign-plan.md §3)
+  'lib/case-photo.js',
 ]);
 
 /** Every other module under lib/: the engines, drivers, pure helpers, workers and bundle entries
@@ -88,6 +90,8 @@ export const LIBRARY_SOURCES = Object.freeze([
   'lib/drill/mix.js', 'lib/drill/record.js', 'lib/drill/record-store.js',
   // the ledger read off the UI thread, 2026-10-17 (§4): the client and its worker
   'lib/drill/library-client.js', 'lib/drill/library-worker.js',
+  // the case a row solves and the pieces it moves, out of the practice screen so a service can draw it, 2026-10-18
+  'lib/drill/case-of.js',
   'lib/element-writes.js', 'lib/host.js', 'lib/i18n.js', 'lib/lesson-cut.js', 'lib/lesson-format.js',
   'lib/lesson-schedule.js', 'lib/method-lesson.js', 'lib/method-stops.js',
   'lib/method-solver.js', 'lib/methods/cross.js', 'lib/lesson-client.js', 'lib/lesson-worker.js',

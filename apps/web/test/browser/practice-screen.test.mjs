@@ -821,7 +821,8 @@ test('the library draws no card or picture until a set is opened, and then that 
     const opened = await page.evaluate((sel) => {
       const el = document.querySelector(sel);
       el.querySelector('[data-alg]').dataset.mark = 'first';
-      return { cards: el.querySelectorAll('[data-alg]').length, pictures: el.querySelectorAll('[data-alg] svg').length, all: document.querySelectorAll('#practiceList [data-alg]').length };
+      // A picture is a flat drawing or a photograph's well (lib/case-photo.js), one per card.
+      return { cards: el.querySelectorAll('[data-alg]').length, pictures: el.querySelectorAll('[data-alg] svg, [data-alg] .case-photo').length, all: document.querySelectorAll('#practiceList [data-alg]').length };
     }, block);
     assert.deepEqual(opened, { cards: set.ids.length, pictures: set.ids.length, all: set.ids.length }, 'opening one set did not draw exactly its cards');
     // Closed and opened again: the same cards, not drawn twice.
@@ -834,6 +835,216 @@ test('the library draws no card or picture until a set is opened, and then that 
     const id = await page.evaluate((sel) => document.querySelector(sel).querySelector('[data-alg]').dataset.alg, block);
     await page.click(`${block} [data-alg="${id}"]`);
     await page.waitForFunction((x) => window.__p.ready(x), id, { timeout: LIVENESS_MS });
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
+// ---- the case photographs (dev-docs/practice-redesign-plan.md §3.5, WI-1) -------------------------------------
+//
+// A net row's card is a photograph of the app's own cube, taken by the one parked renderer while the library draws
+// none. What must NOT happen: a card that shows its net and then swaps to a cube; a grid that moves at rest; a
+// renderer left in a card the pointer has left; a pinned clock carried to the next screen's cube.
+
+/** The F2L set: 41 photographed net rows. */
+const PHOTO_SET = 'f2l-human';
+
+/** Open `set` in the library and wait until every photograph well in it has its photograph (or its flat picture). */
+async function openPhotos(page, set = PHOTO_SET) {
+  await page.evaluate((id) => { document.querySelector(`details.alg-set[data-set="${id}"]`).open = true; }, set);
+  await page.waitForFunction((id) => {
+    const block = document.querySelector(`details.alg-set[data-set="${id}"]`);
+    return block.querySelector('[data-alg]') && !block.querySelector('.case-photo[data-photo="pending"]');
+  }, set, { timeout: LIVENESS_MS });
+}
+
+/** What the library holds now: renderers in cards, animations in cards, wells by state, flat pictures on photographed rows. */
+const libraryNow = (page, set = PHOTO_SET) => page.evaluate(async (id) => {
+  const { isPhotographed } = await import('/lib/case-photo.js');
+  const rows = (await window.__p.rows()).rows;
+  const block = document.querySelector(`details.alg-set[data-set="${id}"]`);
+  const cards = [...block.querySelectorAll('[data-alg]')];
+  return {
+    cards: cards.length,
+    photographed: cards.filter((c) => isPhotographed(rows[c.dataset.alg])).length,
+    shown: block.querySelectorAll('.case-photo[data-photo="shown"] > img[src^="blob:"]').length,
+    netOnPhotoRow: cards.filter((c) => isPhotographed(rows[c.dataset.alg]) && c.querySelector('svg')).length,
+    renderersInCards: document.querySelectorAll('#practiceList cubus-cube').length,
+    renderers: document.querySelectorAll('cubus-cube').length,
+    animationsInCards: document.getAnimations().filter((a) => a.effect?.target?.closest?.('#practiceList [data-alg]')).length,
+  };
+}, set);
+
+test('a net row\'s card waits in an empty well and then shows its photograph — never its net first — and at rest nothing in the grid moves', async () => {
+  const { page, context, errors } = await openPractice(fixture, { connect: false });
+  try {
+    // Every flat picture ever put into a photographed row's card, from before the set is opened.
+    await page.evaluate(async () => {
+      const { isPhotographed } = await import('/lib/case-photo.js');
+      const rows = (await window.__p.rows()).rows;
+      window.__netsOnPhotoRows = [];
+      new MutationObserver((records) => {
+        for (const r of records) {
+          for (const n of r.addedNodes) {
+            if (n.nodeType !== 1) continue;
+            for (const c of [n.closest('[data-alg]'), ...n.querySelectorAll('[data-alg]')].filter(Boolean)) {
+              if (isPhotographed(rows[c.dataset.alg]) && c.querySelector('svg')) window.__netsOnPhotoRows.push(c.dataset.alg);
+            }
+          }
+        }
+      }).observe(document.querySelector('#practiceList'), { childList: true, subtree: true });
+    });
+    await openPhotos(page);
+    const now = await libraryNow(page);
+    assert.ok(now.photographed > 30, `precondition: ${now.photographed} photographed rows in ${PHOTO_SET}`);
+    assert.equal(now.shown, now.photographed, 'a photographed row has no photograph');
+    assert.equal(now.netOnPhotoRow, 0, 'a photographed row drew its net');
+    assert.deepEqual(await page.evaluate(() => window.__netsOnPhotoRows), [], 'a photographed row showed its net before its photograph');
+    // At rest: no renderer in any card, and nothing animating in one. The one renderer waits in its slot.
+    assert.equal(now.renderersInCards, 0, 'a renderer sits in a card at rest');
+    assert.equal(now.animationsInCards, 0, 'something in the grid animates at rest');
+    assert.equal(now.renderers, 1, 'the library holds more than the one renderer');
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
+test('pointing at or focusing a photographed card puts the one renderer in it, live, with its case\'s marking — and leaving takes it out', async () => {
+  const { page, context, errors } = await openPractice(fixture, { connect: false });
+  try {
+    await openPhotos(page);
+    const id = await page.evaluate((set) => document.querySelector(`details.alg-set[data-set="${set}"] .case-photo[data-photo="shown"]`).closest('[data-alg]').dataset.alg, PHOTO_SET);
+    const want = await page.evaluate(async (x) => {
+      const { photoAttrs } = await import('/lib/case-photo.js');
+      const c = await window.__p.rows();
+      return photoAttrs(c.rows[x], c.sets[c.rows[x].set].region);
+    }, id);
+    const live = () => page.evaluate((x) => {
+      const cubes = [...document.querySelectorAll('#practiceList cubus-cube')];
+      return cubes.map((el) => ({
+        inCard: el.closest('[data-alg]')?.dataset.alg ?? null,
+        attrs: { orientation: el.getAttribute('orientation'), facelets: el.getAttribute('facelets'), highlight: el.getAttribute('highlight'), ghosts: el.getAttribute('ghosts') },
+        focus: el.getAttribute('focus'),
+        pinned: el.clock !== null,
+        stillHidden: getComputedStyle(el.closest('.case-photo').querySelector('img')).visibility === 'hidden',
+      }));
+    }, id);
+    const card = `#practiceList [data-alg="${id}"]`;
+    for (const how of ['pointer', 'focus']) {
+      if (how === 'pointer') await page.hover(`${card} .case-photo`);
+      else await page.focus(card);
+      await page.waitForFunction((x) => document.querySelector(`#practiceList [data-alg="${x}"] cubus-cube`), id, { timeout: LIVENESS_MS });
+      assert.deepEqual(await live(), [{ inCard: id, attrs: { ...want }, focus: null, pinned: false, stillHidden: true }], `${how}: the live renderer is not the case's, or not live`);
+      if (how === 'pointer') await page.mouse.move(2, 2);
+      else await page.evaluate(() => document.activeElement.blur());
+      await page.waitForFunction(() => !document.querySelector('#practiceList cubus-cube'), null, { timeout: LIVENESS_MS });
+      assert.equal((await libraryNow(page)).renderers, 1, `${how}: leaving lost the renderer, or made another`);
+    }
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
+test('the live marking breathes, and holds still under reduced motion — the renderer\'s own freeze, not ours', async () => {
+  for (const reducedMotion of ['reduce', 'no-preference']) {
+    const shared = await fixture.browser.newContext({ viewport: { width: 1280, height: 1012 }, reducedMotion });
+    const { page, context, errors } = await openPractice(fixture, { connect: false, context: shared });
+    try {
+      await openPhotos(page);
+      const well = `details.alg-set[data-set="${PHOTO_SET}"] .case-photo[data-photo="shown"]`;
+      await page.hover(well);
+      await page.waitForFunction((sel) => document.querySelector(sel)?.querySelector('cubus-cube'), well, { timeout: LIVENESS_MS });
+      const first = await page.locator(well).first().screenshot();
+      await page.evaluate((ms) => window.__p.wait(ms), 600);
+      const second = await page.locator(well).first().screenshot();
+      if (reducedMotion === 'reduce') assert.ok(first.equals(second), 'under reduced motion the hovered card changed');
+      else assert.ok(!first.equals(second), 'with motion the hovered card did not breathe — is the renderer live at all?');
+      assert.deepEqual(errors, []);
+    } finally {
+      await context.close();
+    }
+  }
+});
+
+test('a palette change re-photographs: the same card\'s photograph is another picture', async () => {
+  const { page, context, errors } = await openPractice(fixture, { connect: false });
+  try {
+    await openPhotos(page);
+    const first = `details.alg-set[data-set="${PHOTO_SET}"] [data-alg] .case-photo > img`;
+    const id = await page.evaluate((sel) => document.querySelector(sel).closest('[data-alg]').dataset.alg, first);
+    const src = () => page.evaluate((x) => document.querySelector(`#practiceList [data-alg="${x}"] .case-photo > img`)?.src ?? null, id);
+    const before = await src();
+    const palette = await page.evaluate(async () => {
+      const { refreshScreen } = await import('/lib/screen-shell.js');
+      window.__p.settings.palette = window.__p.settings.palette === 'muted' ? 'classic' : 'muted';
+      refreshScreen();
+      return window.__p.settings.palette;
+    });
+    await page.waitForSelector('.practice-screen[data-ready="1"]', { timeout: LIVENESS_MS });
+    await openPhotos(page);
+    const after_ = await src();
+    assert.ok(before && after_, 'precondition: both photographs landed');
+    assert.notEqual(after_, before, `the ${palette} card kept the photograph taken in the other palette`);
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
+test('with no WebGL the library says so once and every card draws its flat picture — never an empty well', async () => {
+  const { page, context, errors } = await openPractice(fixture, {
+    connect: false,
+    prepare: async (ctx) => {
+      await ctx.addInitScript(() => {
+        const real = HTMLCanvasElement.prototype.getContext;
+        HTMLCanvasElement.prototype.getContext = function getContext(kind, ...rest) {
+          return /webgl/i.test(String(kind)) ? null : real.call(this, kind, ...rest);
+        };
+      });
+    },
+  });
+  try {
+    const warned = [];
+    page.on('console', (m) => { if (m.type() === 'warning' && m.text().startsWith('case-photo:')) warned.push(m.text()); });
+    await page.evaluate((set) => { document.querySelector(`details.alg-set[data-set="${set}"]`).open = true; }, PHOTO_SET);
+    await page.waitForFunction((set) => {
+      const block = document.querySelector(`details.alg-set[data-set="${set}"]`);
+      return block.querySelector('[data-alg]') && !block.querySelector('.case-photo');
+    }, PHOTO_SET, { timeout: LIVENESS_MS });
+    const now = await page.evaluate(async (set) => {
+      const { casePhotoCounts } = await import('/lib/case-photo.js');
+      const block = document.querySelector(`details.alg-set[data-set="${set}"]`);
+      return {
+        cards: block.querySelectorAll('[data-alg]').length,
+        flat: block.querySelectorAll('[data-alg] > svg').length,
+        state: document.querySelector('.practice-screen').dataset.photos ?? null,
+        unavailable: casePhotoCounts.unavailable,
+      };
+    }, PHOTO_SET);
+    assert.equal(now.flat, now.cards, 'a card has no picture');
+    assert.equal(now.state, 'unavailable');
+    assert.equal(now.unavailable, 1, 'the missing renderer was not counted once');
+    assert.equal(warned.length, 1, `said ${warned.length} times`);
+    // The renderer's own refusal to build without a context is the only error.
+    assert.ok(errors.every((e) => /WebGL/i.test(e)), `other errors: ${errors.join(' | ')}`);
+  } finally {
+    await context.close();
+  }
+});
+
+test('leaving the library hands the renderer on with its clock let go — the page\'s cube is the same element, and it runs', async () => {
+  const { page, context, errors } = await openPractice(fixture, { connect: false });
+  try {
+    await openPhotos(page);
+    await page.evaluate(() => { window.__photoCube = document.querySelector('.case-photo-slot cubus-cube'); });
+    const id = await page.evaluate((set) => document.querySelector(`details.alg-set[data-set="${set}"] [data-alg]`).dataset.alg, PHOTO_SET);
+    await page.click(`#practiceList [data-alg="${id}"]`);
+    await page.waitForFunction((x) => window.__p.ready(x), id, { timeout: LIVENESS_MS });
+    assert.deepEqual(await page.evaluate(() => ({ same: window.__p.cube() === window.__photoCube, pinned: window.__p.cube().clock !== null })),
+      { same: true, pinned: false }, 'the page did not get the library\'s renderer, or got it with its clock still pinned');
     assert.deepEqual(errors, []);
   } finally {
     await context.close();

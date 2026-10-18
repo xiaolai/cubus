@@ -14,7 +14,9 @@
 // and hide the one that tells the cards apart. The library never writes a sentence about an algorithm itself (the
 // ledger's rule: every fact is computed or sourced).
 
+import { PHOTO_BOX, isMarked, isPhotographed } from '../../case-photo.js';
 import { netSvg, topFaceSvg } from '../../cube-flat.js';
+import { movedPieces } from '../../drill/case-of.js';
 import { plural, t } from '../../i18n.js';
 
 /** The width a card's picture is drawn at: a net is twelve stickers across, a top face three plus its ring. */
@@ -45,13 +47,44 @@ export function casePicture(row, { palette, scheme, scale = 1 } = {}) {
   });
 }
 
+/** How many outline widths make a sticker's width: the edge the plan measured (§3.6), as a divisor. */
+const OUTLINE_PER_STICKER = 6.25;
+
+/**
+ * A flat picture with the pieces its case moves MARKED: every sticker of a moved piece keeps its fill — never greyed,
+ * never recoloured (AGENTS.md §2) — and gets a heavier edge in the ink colour, so it follows the theme
+ * (dev-docs/practice-redesign-plan.md §3.6). `moved` are viewed facelet indices (`movedPieces(...).viewed`, flattened);
+ * a moved sticker the picture does not draw is simply not there to mark.
+ */
+export function outlineMoved(svg, moved) {
+  const on = new Set(moved);
+  return svg.replace(/<rect data-facelet="(\d+)"([^>]*?) stroke="[^"]*" stroke-width="1"\/>/g, (m, f, rest) => {
+    if (!on.has(Number(f))) return m;
+    const w = Number(/ width="([\d.]+)"/.exec(rest)?.[1] ?? 10);
+    return `<rect class="moved" data-facelet="${f}"${rest} stroke="currentColor" stroke-width="${Math.max(1.6, w / OUTLINE_PER_STICKER).toFixed(2)}"/>`;
+  });
+}
+
+/**
+ * A card's picture: for a photographed row (lib/case-photo.js) an empty well the size of its photograph, which the
+ * screen fills when the photograph lands — never today's net first, so no card swaps from a net to a cube; for every
+ * other row the flat picture, its moved pieces outlined unless its set is on the unmarked list.
+ */
+export function tilePicture(row, region, look, esc) {
+  if (isPhotographed(row)) {
+    return `<span class="case-photo" data-photo="pending" role="img" aria-label="${esc(t('The case %1 solves', rowName(row)))}" style="width:${PHOTO_BOX.w}px;height:${PHOTO_BOX.h}px"></span>`;
+  }
+  const flat = casePicture(row, look);
+  return isMarked(row) ? outlineMoved(flat, movedPieces(row, region).viewed.flat()) : flat;
+}
+
 /** One row as the button that opens it. `data-alg`, never an `id`: a set taught by two methods is listed twice.
  *  NAMED by what pressing it does and DESCRIBED by the row's sentence: the label replaces the name the content would
  *  give, so the sentence is tied back by `aria-describedby`, under `sayId` — unique on the page, which `data-alg`
  *  cannot be. */
-function card(row, look, esc, sayId) {
+function card(row, region, look, esc, sayId) {
   return `<button class="card alg-entry" type="button" data-alg="${esc(row.id)}" aria-label="${esc(t('Practise %1', rowName(row)))}" aria-describedby="${esc(sayId)}">
-    ${casePicture(row, look)}
+    ${tilePicture(row, region, look, esc)}
     <b class="alg-name">${esc(rowName(row))}</b>
     <span class="sub alg-say" id="${esc(sayId)}">${esc(row.says)}</span>
   </button>`;
@@ -67,7 +100,7 @@ function card(row, look, esc, sayId) {
  * @param {string|number} block  the set block's own number (`data-block`), which makes each card's ids unique
  */
 export function cardsHtml(set, catalogue, look, esc, block) {
-  return set.ids.map((id, k) => card(catalogue.rows[id], look, esc, `alg-say-${block}-${k}`)).join('');
+  return set.ids.map((id, k) => card(catalogue.rows[id], catalogue.sets[catalogue.rows[id].set].region, look, esc, `alg-say-${block}-${k}`)).join('');
 }
 
 /** One set: a disclosure, closed until asked for, so a list of three hundred pictures is a list of headings —

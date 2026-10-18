@@ -103,7 +103,9 @@ export function catalogueProblem(c) {
   const listed = new Set();
   for (const [id, set] of Object.entries(c.sets)) {
     if (!isRecord(set) || set.id !== id) return `set "${id}" says it is ${shown(isRecord(set) ? set.id : set)}`;
-    if (!isText(set.name) || !isText(set.kind) || !isTextOrNull(set.purpose) || !Array.isArray(set.ids)) return `set "${id}" is not a name, a kind, a purpose and its rows`;
+    if (!isText(set.name) || !isText(set.kind) || !isTextOrNull(set.purpose) || !isTextOrNull(set.region) || !Array.isArray(set.ids)) {
+      return `set "${id}" is not a name, a kind, a purpose, a goal region and its rows`;
+    }
     for (const rowId of set.ids) {
       if (!isText(rowId)) return `set "${id}" names a row by something that is not a name (${shown(rowId)})`;
       if (!Object.hasOwn(c.rows, rowId)) return `set "${id}" names a row "${rowId}" the catalogue does not hold`;
@@ -164,6 +166,8 @@ export async function catalogueOf(lib) {
       id: s.id, name: s.name, kind: s.kind,
       // A set's purpose, where the library states one; a row's own, where it has one, wins on the row.
       purpose: typeof s.purpose === 'string' ? s.purpose : null,
+      // The goal's region, which decides the pieces a case picture marks (lib/drill/case-of.js `movedPieces`).
+      region: typeof s.goal?.region === 'string' ? s.goal.region : null,
       ids: list.map((r) => r.id),
     };
   }

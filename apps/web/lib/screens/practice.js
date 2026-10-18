@@ -32,10 +32,12 @@ import { reportedArrangement } from '../cube-reports.js';
 import { play } from '../sound.js';
 import { applyIdentity, faceTurnsOf, run, toIdentity } from '../cube-moves.js';
 import { parse } from '../cube-notation.js';
-import { SOLVED, applyMove, invert, toFacelets } from '../cube-pieces.js';
+import { SOLVED, applyMove, toFacelets } from '../cube-pieces.js';
 import { stateFrom } from '../script-view.js';
 import { holdSentence, holdSpec, sameHold } from '../solving-hold.js';
 import { library } from '../drill/library-client.js';
+import { caseOf } from '../drill/case-of.js';
+import { casePhotographer, photoAttrs } from '../case-photo.js';
 import { STATUS, createDrillEngine } from '../drill/engine.js';
 import { PracticeRecordError, openPracticeRecord, statsOf, watchReps } from '../drill/record.js';
 import { indexedDbStore } from '../drill/record-store.js';
@@ -98,7 +100,7 @@ const unsavedWords = (catalogue, { page = null, rowId = null } = {}) => {
 
 function libraryScreen() {
   return {
-    html: `<div class="practice-screen" data-composition="library" style="width:100%;height:100%;min-height:0;display:flex;flex-direction:column;gap:14px">
+    html: `<div class="practice-screen" data-composition="library" style="position:relative;width:100%;height:100%;min-height:0;display:flex;flex-direction:column;gap:14px">
       <div class="card" style="padding:12px 16px;flex:none">
         <div class="sub" style="color:var(--ink-3);line-height:1.5">${escHtml(t('Every algorithm the app teaches, by method. Pick one to practise it until your fingers know it — with a smart cube every turn is checked and timed, and without one the cube on screen shows the moves.'))}</div>
         <div class="sub" id="practiceLibrarySay" role="status" style="color:var(--err-ink);margin-top:6px" hidden></div>
@@ -135,12 +137,60 @@ function libraryScreen() {
       // A set's cards are drawn the first time it is opened, and kept (library-view.js says why). `toggle` does not
       // bubble, so the list hears it on the way down.
       const look = { palette: settings.palette, scheme: settings.scheme };
+      // A net row's card is a PHOTOGRAPH of the app's own cube (lib/case-photo.js), taken by the one renderer while this
+      // screen draws none, in the order the cards are built. Its well stays empty until the photograph lands; with no
+      // renderer to borrow the card draws the flat picture it always had.
+      const signal = screenAbort?.signal;
+      const photographer = casePhotographer({ host: box, signal });
+      const attrsOf = (card) => {
+        const row = catalogue.rows[card.dataset.alg];
+        return photoAttrs(row, catalogue.sets[row.set].region);
+      };
+      const photograph = (grid) => {
+        for (const well of grid.querySelectorAll('.case-photo[data-photo="pending"]')) {
+          const card = well.closest('[data-alg]');
+          photographer.photo(attrsOf(card)).then((url) => {
+            if (!well.isConnected) return;
+            if (url) {
+              const img = document.createElement('img');
+              img.alt = '';
+              img.src = url;
+              well.replaceChildren(img);
+              well.dataset.photo = 'shown';
+            } else if (photographer.unavailable) {
+              const flat = document.createElement('template');
+              flat.innerHTML = casePicture(catalogue.rows[card.dataset.alg], look);
+              well.replaceWith(flat.content);
+            }
+          }, (err) => {
+            console.error(`the photograph of ${card.dataset.alg} could not be taken`, err);
+            well.dataset.photo = 'failed';
+          });
+        }
+      };
       list.addEventListener('toggle', (e) => {
         const block = e.target;
         if (!block.open || !block.matches?.('details.alg-set')) return;
         const grid = block.querySelector('.alg-grid');
-        if (grid.childElementCount === 0) grid.innerHTML = cardsHtml(catalogue.sets[block.dataset.set], catalogue, look, escHtml, block.dataset.block);
+        if (grid.childElementCount === 0) {
+          grid.innerHTML = cardsHtml(catalogue.sets[block.dataset.set], catalogue, look, escHtml, block.dataset.block);
+          photograph(grid);
+        }
       }, { capture: true });
+      // The pulse: pointing at or focusing a photographed card puts the live renderer in it; leaving puts it back.
+      const wellIn = (el) => el?.closest?.('[data-alg]')?.querySelector('.case-photo[data-photo="shown"]') ?? null;
+      const enter = (e) => {
+        const well = wellIn(e.target);
+        if (well) photographer.pulse(well, attrsOf(well.closest('[data-alg]')));
+      };
+      const leave = (e) => {
+        const card = e.target.closest?.('[data-alg]');
+        if (card && !card.contains(e.relatedTarget)) photographer.rest(wellIn(card));
+      };
+      list.addEventListener('pointerover', enter, { signal });
+      list.addEventListener('focusin', enter, { signal });
+      list.addEventListener('pointerout', leave, { signal });
+      list.addEventListener('focusout', leave, { signal });
       list.addEventListener('click', (e) => {
         const card = e.target.closest?.('[data-alg]');
         if (!card) return;
@@ -153,13 +203,6 @@ function libraryScreen() {
 }
 
 // ---- the page -------------------------------------------------------------------------------------------
-
-/** The case of a row as the demo cube draws it: its inverse played on a solved cube in the row's hold, the
- *  pieces in the cube's own frame, and the hold the algorithm starts in (the library's `caseOf`, as pieces). */
-function caseOf(row) {
-  const played = run(invert(row.alg), row.hold, SOLVED);
-  return { facelets: toFacelets(played.state), hold: [...played.hold] };
-}
 
 /** The algorithm as the element draws it from `facelets` held `hold`: identity-frame tokens (`run().drawn`). */
 const drawnFrom = (row, hold, facelets) => run(parse(row.alg), hold, stateFrom(facelets)).drawn.join(' ');

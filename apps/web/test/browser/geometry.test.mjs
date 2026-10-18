@@ -1350,9 +1350,16 @@ for (const fixture of FIXTURES) {
         return { set: set.id, want: set.ids.length };
       });
       await page.waitForFunction((n) => document.querySelectorAll('details[data-measured] [data-alg]').length === n, largest.want);
-      const opened = { set: largest.set, cards: await page.evaluate(() => document.querySelectorAll('details[data-measured] [data-alg]').length) };
+      // A net row's card is measured with its PHOTOGRAPH in place (lib/case-photo.js), not the empty well before it.
+      await page.waitForFunction(() => !document.querySelector('details[data-measured] .case-photo[data-photo="pending"]'));
+      const opened = {
+        set: largest.set,
+        cards: await page.evaluate(() => document.querySelectorAll('details[data-measured] [data-alg]').length),
+        photos: await page.evaluate(() => document.querySelectorAll('details[data-measured] .case-photo[data-photo="shown"] > img').length),
+      };
+      assert.ok(opened.photos > 0, `the largest set (${opened.set}) shows no photograph, so this measures none`);
       assert.ok(opened.cards >= 50, `the largest set holds ${opened.cards} cards — the library did not load`);
-      practiceFloor(await measureScreen(page), fixture, `library (${opened.set}, ${opened.cards} cards)`);
+      practiceFloor(await measureScreen(page), fixture, `library (${opened.set}, ${opened.cards} cards, ${opened.photos} photographs)`);
       assert.deepEqual(errors.map(String), [], 'the page threw');
     } finally {
       await context.close();
