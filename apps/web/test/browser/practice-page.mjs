@@ -207,12 +207,18 @@ export async function openPractice(fixture, { numbered = true, connect = true, p
         },
         /** The record deleted, as another window — or the browser's own "clear site data" — deletes it. A \`blocked\` on
          *  the way is not a failure: a connection closing as the deletion arrives can raise one, and the deletion
-         *  then goes through (measured in WebKit under load), so only its end is waited for — within a bound. */
+         *  then goes through (measured in WebKit under load), so only its end is waited for — within a bound. A
+         *  deletion that never ends says what it met: how often it was blocked, and the databases this page sees. */
         drop: () => new Promise((ok, no) => {
+          let blocked = 0;
           const del = indexedDB.deleteDatabase(RECORD_DB);
+          del.onblocked = () => { blocked += 1; };
           del.onsuccess = () => ok();
           del.onerror = () => no(del.error);
-          setTimeout(() => no(new Error('the practice record database was never deleted')), ${LIVENESS_MS});
+          setTimeout(async () => {
+            const seen = await indexedDB.databases().then((list) => JSON.stringify(list), (e) => 'unknown: ' + e);
+            no(new Error('the practice record database was never deleted (blocked ' + blocked + ' times; databases this page sees: ' + seen + ')'));
+          }, ${LIVENESS_MS});
         }),
         fingers: () => document.querySelector('#practiceFingers')?.dataset.reached,
         /** What the app believes about the connected cube — read, never written, by the cases. */
