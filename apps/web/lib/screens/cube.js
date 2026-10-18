@@ -5,7 +5,7 @@
 import { CUBE_VIEW } from '../cube-view.js';
 import { methodSolve } from '../lesson-client.js';
 import { METHODS, methodById } from '../methods/registry.js';
-import { createMethodRow, methodRowHtml } from './cube/method-row.js';
+import { createMethodRow, methodRowHtml } from '../method-row.js';
 import { t } from '../i18n.js';
 import { OFFERED_TARGETS } from '../stage-targets.js';
 import { stopTargets } from '../method-stops.js';
@@ -42,7 +42,7 @@ import { wireReconnectAnswers } from '../reconnect-answer.js';
 import { chainTrusted, markStale } from '../cube-trust-state.js';
 import { parkRoll, putInPlay, randomScramble, schedulePreroll } from '../scramble-roll.js';
 import { PROVE_COPY, sayWalkLength } from '../prove-affordance.js';
-import { SCREENS, go, refreshScreen, screenAbort, screenGen } from '../screen-shell.js';
+import { SCREENS, go, placeMenuUnder, refreshScreen, screenAbort, screenGen } from '../screen-shell.js';
 
 // The cube screen: where a sequence of moves gets FOLLOWED, and where a cube gets looked at.
 //
@@ -505,9 +505,9 @@ const cubeScreen = (screenMode) => {
       // them: a turn reported during that load's search has to reach this walk's model, because the
       // load keeps turns the model is ahead by rather than rewinding past them.
       // The method row's menu, when the registry is long enough to need one, and the one way the row is
-      // painted for the method on screen (lib/screens/cube/method-row.js). The session decides WHICH
+      // painted for the method on screen (lib/method-row.js). The session decides WHICH
       // method is on screen; this screen owns how the row says so.
-      const methodRow = createMethodRow({ root, signal, methods: METHODS, shown: settings.solveMethod });
+      const methodRow = createMethodRow({ root, signal, methods: METHODS, shown: settings.solveMethod, place: placeMenuUnder });
       // The Restore row for a newly chosen method: its stops shown, the rest hidden. Returns the ids shown;
       // what to do with a chosen chip that is now hidden is the walk session's, which owns the target.
       const paintStops = (methodId) => {

@@ -138,7 +138,7 @@ async function frozen(page, facelets) {
 }
 
 /** Choose a method the way a learner does: past three methods the row is the chosen one's pill and a
- *  "More methods" menu (lib/screens/cube/method-row.js), so every method but the chosen one is in the menu. */
+ *  "More methods" menu (lib/method-row.js), so every method but the chosen one is in the menu. */
 async function chooseMethod(page, id) {
   await page.click('#moreMethodsBtn');
   await page.click(`.method-menu [data-method="${id}"]`);

@@ -12,6 +12,7 @@ import { isAbsent, isSame } from './dom-assert.mjs';
 let win;
 let row;
 let registry;
+let placeMenuUnder;
 const esc = (s) => String(s).replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
 
 before(async () => {
@@ -23,7 +24,8 @@ before(async () => {
   const stage = document.createElement('div');
   stage.id = 'stage';
   document.body.appendChild(stage);
-  row = await import('../lib/screens/cube/method-row.js');
+  row = await import('../lib/method-row.js');
+  ({ placeMenuUnder } = await import('../lib/screen-shell.js'));
   registry = await import('../lib/methods/registry.js');
 });
 after(async () => { await win?.happyDOM.close(); });
@@ -43,7 +45,7 @@ function mount(list, chosen) {
   root.innerHTML = `<div id="methodRow">${row.methodRowHtml({ methods: list, chosen, escHtml: esc })}</div>`;
   document.body.appendChild(root);
   const abort = new AbortController();
-  const built = row.createMethodRow({ root, signal: abort.signal, methods: list, shown: chosen });
+  const built = row.createMethodRow({ root, signal: abort.signal, methods: list, shown: chosen, place: placeMenuUnder });
   const pills = () => [...root.querySelectorAll('#methodRow [data-method]')];
   return { root, built, pills, abort };
 }
@@ -90,6 +92,22 @@ test('nine methods are ONE pill naming the learner\'s method, and a menu holding
   built.paint(pick.id);
   assert.deepEqual(pills().map((p) => [p.dataset.method, p.textContent, p.getAttribute('aria-pressed')]), [[pick.id, pick.label, 'true']]);
   assert.deepEqual(items.filter((i) => i.getAttribute('aria-checked') === 'true').map((i) => i.dataset.method), [pick.id]);
+});
+
+test('a screen may name the menu\'s groups — and a method in none of them is refused, never left out of the menu', () => {
+  // The Practice library offers methods the registry does not hold (dev-docs/practice-redesign-plan.md §4.1): its
+  // groups are the screen's. A method whose level no group names could never be chosen, so the row refuses it.
+  const own = [{ id: 'a', label: 'A', level: 'one' }, { id: 'b', label: 'B', level: 'two' }, { id: 'c', label: 'C', level: 'two' }, { id: 'd', label: 'D', level: 'one' }];
+  const levels = [{ id: 'two', name: () => 'Two' }, { id: 'one', name: () => 'One' }];
+  const root = document.createElement('div');
+  root.innerHTML = `<div id="methodRow">${row.methodRowHtml({ methods: own, chosen: 'b', escHtml: esc })}</div>`;
+  document.body.appendChild(root);
+  const built = row.createMethodRow({ root, signal: new AbortController().signal, methods: own, shown: 'b', place: placeMenuUnder, levels });
+  const order = [...built.menu.el.children].map((el) => (el.classList.contains('menu-h') ? `# ${el.textContent}` : el.dataset.method));
+  assert.deepEqual(order, ['# Two', 'b', 'c', '# One', 'a', 'd'], 'the groups are not the screen\'s, in its order');
+  // What must NOT happen: a method silently missing from the menu because its level is in no group.
+  assert.throws(() => row.createMethodRow({ root, signal: new AbortController().signal, methods: [...own, { id: 'e', label: 'E', level: 'three' }], shown: 'b', place: placeMenuUnder, levels }),
+    /e in no group/);
 });
 
 test('the row\'s words are escaped, and no pill claims a minimum (AGENTS.md §1)', () => {

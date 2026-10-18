@@ -156,7 +156,7 @@ function world({ subject = {}, omit = [], screen: screenOver = {}, settings: set
     root, cube, scrambling: false, walking: true, unsolvable: false, label: 'Solution',
     stateHeading: () => 'Initial State', stale: () => false, signal: screenAbort.signal,
     paintNet: () => {}, paintAim: () => {}, syncReconnectAsk: () => {}, applyTempo: () => {},
-    // The method row's painter, as lib/screens/cube/method-row.js paints an all-pills row.
+    // The method row's painter, as lib/method-row.js paints an all-pills row.
     paintMethods: (shown) => {
       for (const pill of root.querySelectorAll('[data-method]')) {
         pill.classList.toggle('on', pill.dataset.method === shown);
@@ -846,11 +846,12 @@ test('a choice from the "More methods" menu is stored and walked by the session\
   Object.assign(globalThis, { document: doc, window: doc.defaultView });
   try {
     // Imported with the globals in place: the shell beneath the row reads the window as it loads.
-    const { createMethodRow } = await import('../lib/screens/cube/method-row.js');
+    const { createMethodRow } = await import('../lib/method-row.js');
+    const { placeMenuUnder } = await import('../lib/screen-shell.js');
     // Four methods, so the row is one pill and a menu: the real two and two copies of Beginner's shape.
     const many = [...METHODS, { ...BEGINNER_ENTRY, id: 'x1', label: 'X1', level: LEVELS[1] }, { ...BEGINNER_ENTRY, id: 'x2', label: 'X2', level: LEVELS[2] }];
     const root = w.$('#methodRow').parentElement;
-    const built = createMethodRow({ root, signal: new AbortController().signal, methods: many, shown: 'quick' });
+    const built = createMethodRow({ root, signal: new AbortController().signal, methods: many, shown: 'quick', place: placeMenuUnder });
     button.click();
     built.menu.el.querySelector('[data-method="beginner"]').click();
     for (let i = 0; i < 3; i += 1) await settle();

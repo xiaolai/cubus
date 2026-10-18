@@ -46,7 +46,7 @@ export const APP_SOURCES = Object.freeze([
   'lib/screens/cube/route-race.js', 'lib/screens/cube/speed-menu.js', 'lib/screens/cube/die.js',
   'lib/screens/cube/pattern-menu.js',
   // the method row, generated from the method registry, 2026-10-16 (ADR 0011)
-  'lib/screens/cube/method-row.js',
+  'lib/method-row.js',
   'lib/screens/cube/reconnect-ask.js',
   // the scan screen's own parts, 2026-09-13
   'lib/screens/scan/stage-chips.js', 'lib/screens/scan/voice.js',

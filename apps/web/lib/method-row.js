@@ -1,4 +1,7 @@
-// The solve tab's method row (ADR 0011 decision 1): one pill per METHOD, generated from the registry.
+// The method row (ADR 0011 decision 1): one pill per METHOD. The solve tab draws it from the registry; the
+// Practice library draws it from the algorithm library's methods, which add two groups the registry does not
+// hold (dev-docs/practice-redesign-plan.md §4.1). A part two screens share, so it is a service here rather than one
+// screen's part under lib/screens/ — a screen never imports another screen's part (AGENTS.md §2).
 //
 // Two shapes, and which one is drawn is the registry's LENGTH, never a screen's choice — so the fourth
 // method a later release adds changes no screen code:
@@ -10,13 +13,13 @@
 //                           its items carry `data-method` too, so the walk session's one press handler
 //                           takes a choice from either place.
 //
-// Nothing here knows what a press DOES: the walk session (lib/walk-session.js) wires every
-// `[data-method]` in the screen, saves the choice and reloads the walk.
+// Nothing here knows what a press DOES: the screen wires every `[data-method]` in it — on the solve tab the
+// walk session (lib/walk-session.js), which saves the choice and reloads the walk. Nor where a menu goes: the
+// shell's placement is handed in (`place`), as lib/menu-popover.js asks, so nothing here reaches for the shell.
 
-import { t } from '../../i18n.js';
-import { createMenu } from '../../menu-popover.js';
-import { LEVELS } from '../../methods/registry.js';
-import { placeMenuUnder } from '../../screen-shell.js';
+import { t } from './i18n.js';
+import { createMenu } from './menu-popover.js';
+import { LEVELS } from './methods/registry.js';
 
 /** Past this many methods the row stops being pills. */
 export const MAX_PILLS = 3;
@@ -27,6 +30,9 @@ const LEVEL_NAME = Object.freeze({
   'getting-faster': () => t('Getting faster'),
   competition: () => t('Competition'),
 });
+
+/** The menu's groups when a screen names none: the registry's levels, in order, each with its heading. */
+export const REGISTRY_LEVELS = Object.freeze(LEVELS.map((id) => Object.freeze({ id, name: LEVEL_NAME[id] })));
 
 /** The pills the row draws for `chosen`: every method, or the chosen one alone when there are too many. */
 export function rowMethods(methods, chosen) {
@@ -51,27 +57,33 @@ export function methodRowHtml({ methods, chosen, escHtml }) {
  * The row of one mounted cube screen: its "More methods" menu when the row has one, and the one way the
  * row is painted for the method ON SCREEN.
  *
- * @param {object} deps `root`, the screen; `signal`, its abort; `methods`, the registry's list; and
- *   `shown`, the method on screen when the row is built — ticked in the menu at once, so a menu opened
- *   before the first walk lands focuses the method that is on rather than its first heading.
+ * @param {object} deps `root`, the screen; `signal`, its abort; `methods`, the list the row offers, each
+ *   `{ id, label, level }`; `shown`, the method on screen when the row is built — ticked in the menu at once,
+ *   so a menu opened before the first walk lands focuses the method that is on rather than its first heading;
+ *   `place(button, menu)`, the shell's placement; and `levels`, the menu's groups in order, each
+ *   `{ id, name() }` — the registry's unless the screen offers methods the registry does not hold. A method
+ *   whose level is in no group THROWS: a method left out of the menu could never be chosen.
  * @returns {object} `paint(shown)`: every `[data-method]` said on or off in both channels (the class for
  *   the eye, `aria-pressed` for the reader that cannot see it), and — when the row is one pill and a menu
  *   — that one pill rewritten to name the method on screen, and the menu's tick moved to it.
  */
-export function createMethodRow({ root, signal, methods, shown: initial }) {
+export function createMethodRow({ root, signal, methods, shown: initial, place, levels = REGISTRY_LEVELS }) {
   const row = root.querySelector('#methodRow');
   const button = root.querySelector('#moreMethodsBtn');
+  const grouped = new Set(levels.map((l) => l.id));
+  const lost = methods.filter((m) => !grouped.has(m.level));
+  if (lost.length) throw new Error(`method-row: ${lost.map((m) => m.id).join(', ')} in no group of the menu`);
   let menu = null;
   if (button && methods.length > MAX_PILLS) {
-    menu = createMenu({ root, button, label: t('More methods'), signal, place: placeMenuUnder, dismiss: true });
+    menu = createMenu({ root, button, label: t('More methods'), signal, place, dismiss: true });
     menu.el.classList.add('method-menu');
-    for (const level of LEVELS) {
-      const here = methods.filter((m) => m.level === level);
+    for (const level of levels) {
+      const here = methods.filter((m) => m.level === level.id);
       if (!here.length) continue;
       const heading = document.createElement('div');
       heading.className = 'menu-h';
       heading.setAttribute('role', 'presentation');
-      heading.textContent = LEVEL_NAME[level]();
+      heading.textContent = level.name();
       menu.el.appendChild(heading);
       for (const m of here) {
         // A press is the walk session's to act on — it listens for `[data-method]` on the whole screen —
