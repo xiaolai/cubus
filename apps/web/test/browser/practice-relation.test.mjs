@@ -21,7 +21,8 @@ import { GESTURE_TURNS } from '../../lib/drill/engine.js';
 import { lcg } from '../fixtures/seeded-scrambles.mjs';
 import { LIVENESS_MS, startBrowserFixture } from './harness.mjs';
 import {
-  AXIS, PAST_WINDOW_MS, STEP_MS, after_, axesNear, feedRep, inverse, openPractice as openOn, randomStart, reportsPerToken, show,
+  AXIS, PAST_WINDOW_MS, STEP_MS, after_, axesNear, feedRep, inverse, mixedOn, openPractice as openOn, randomStart, recordOf,
+  reportsPerToken, settle, show,
 } from './practice-page.mjs';
 
 let fixture;
@@ -52,13 +53,10 @@ test('every ledger row completes exactly at its last report — never before —
       assert.equal(printed.chips.join(' '), row.alg.trim().replace(/\s+/g, ' '), `${row.id}: the page prints something else`);
       assert.equal(printed.data.judging, row.alg, `${row.id}: the engine was given something other than the row`);
       // The record is emptied for each row, so the reps of all of them never reach its total cap and every one made
-      // can be counted on it below — emptied as another window would empty it, with the storage event that says so.
-      // The record takes the reps that went with it as removed, never as missing, and puts none back
-      // (lib/drill/record.js, TWO WINDOWS); the page says nothing about a removal, so `errors` stays empty.
-      await page.evaluate(() => {
-        localStorage.removeItem('cubusDrillRecord');
-        window.dispatchEvent(new StorageEvent('storage', { key: 'cubusDrillRecord', oldValue: null, newValue: null, storageArea: localStorage }));
-      });
+      // can be counted on it below — emptied as another window would empty it, by deleting the database. The page's
+      // connection closes under it and its next read opens a fresh one; the previous row's saves have all settled
+      // (`recordOf` below), so none of them can land in the new database.
+      await page.evaluate(() => window.__p.drop());
       // Every hold, with reports built from the PRINTED chips.
       for (const hold of ORIENTATIONS) {
         const flat = reportsPerToken(printed.chips.join(' '), hold, rnd).flat();
@@ -72,10 +70,10 @@ test('every ledger row completes exactly at its last report — never before —
         reps += 1;
       }
       // The record holds exactly the reps made: one per hold, under this row, every one clean, none with a lost turn.
-      const algs = (await page.evaluate(() => window.__p.record()))?.algs ?? {};
+      const { algs } = await recordOf(page);
       assert.deepEqual(Object.keys(algs), [row.id], `${row.id}: reps were filed under ${Object.keys(algs).join(', ') || 'nothing'}`);
       assert.equal(algs[row.id].length, ORIENTATIONS.length, `${row.id}: ${algs[row.id].length} reps on record for ${ORIENTATIONS.length} made`);
-      assert.ok(algs[row.id].every((r) => r.c === true && r.l === false), `${row.id}: a clean rep was filed as something else`);
+      assert.ok(algs[row.id].every((r) => r.clean === true && r.lostTurn === false), `${row.id}: a clean rep was filed as something else`);
     }
     assert.equal(reps, rows.length * ORIENTATIONS.length);
     assert.deepEqual(errors, [], 'the page raised an error');
@@ -221,8 +219,8 @@ test('a slice\'s first face, a half turn\'s first quarter and a lost turn never 
     assert.deepEqual(dones, [...Array(rest.length - 1).fill(0), 1]);
     assert.deepEqual((await page.evaluate(() => window.__p.heard())).slice(before), ['done'], 'a sound other than the finish');
     assert.match(await page.evaluate(() => window.__p.time()), /^— \(a turn went missing on the way from the cube\)$/);
-    const kept = (await page.evaluate(() => window.__p.record())).algs.sune.at(-1);
-    assert.deepEqual({ c: kept.c, l: kept.l, ms: kept.ms, r: kept.r }, { c: false, l: true, ms: null, r: 'stream-gap' });
+    const kept = (await recordOf(page)).algs.sune.at(-1);
+    assert.deepEqual({ clean: kept.clean, lostTurn: kept.lostTurn, ms: kept.ms, refused: kept.refused }, { clean: false, lostTurn: true, ms: null, refused: 'stream-gap' });
     assert.deepEqual(errors, []);
   } finally {
     await context.close();
@@ -336,6 +334,8 @@ test('"in the fingers" appears at the 7th clean rep in a row — not the 6th —
     const seen = [];
     for (let i = 1; i <= 7; i++) {
       await feedRep(page, randomStart(rnd), reportsPerToken('R U R\' U R U2 R\'', ORIENTATIONS[0], rnd).flat());
+      // The streak is a read of the record, which answers once the rep's save has landed.
+      await settle(page);
       seen.push(await page.evaluate(() => window.__p.fingers()));
     }
     assert.deepEqual(seen, ['false', 'false', 'false', 'false', 'false', 'false', 'true']);
@@ -343,6 +343,7 @@ test('"in the fingers" appears at the 7th clean rep in a row — not the 6th —
     const per = reportsPerToken('R U R\' U R U2 R\'', ORIENTATIONS[0], rnd);
     await page.evaluate((f) => window.__p.facelets(f), toFacelets(randomStart(rnd)));
     await page.evaluate((qs) => { for (const q of qs) window.__p.move(q); }, [...per[0], 'F', "F'", ...per.slice(1).flat()]);
+    await settle(page);
     assert.equal(await page.evaluate(() => window.__p.fingers()), 'false', 'the badge stayed after an unclean rep');
     assert.match(await page.evaluate(() => document.querySelector('#practiceFingers').textContent), /0 of 7/);
     assert.deepEqual(errors, []);
@@ -412,8 +413,7 @@ test('mixed practice goes through the whole set weakest first, each once a round
     const practised = set.ids[0];
     await show(page, practised);
     await rep(practised);
-    await page.click('#practiceMixed');
-    assert.equal(await page.evaluate(() => document.querySelector('#practiceMixed').getAttribute('aria-pressed')), 'true');
+    await mixedOn(page);
     assert.equal(await page.evaluate(() => document.querySelector('#practiceNext').hidden), false, 'mixed shows no way to the next algorithm');
     // Each rep is filed, then the page moves on by itself; waiting for a DIFFERENT algorithm is the check that
     // none comes twice in a row, across the end of the round as well.
@@ -426,7 +426,7 @@ test('mixed practice goes through the whole set weakest first, each once a round
     assert.deepEqual([...round].sort(), [...set.ids].sort(), `a round of ${set.id} was ${round.join(', ')}`);
     assert.equal(round.at(-1), practised, `the practised algorithm came at ${round.indexOf(practised) + 1} of ${n}, not last`);
     // Every rep is on record under the algorithm it was made on: the first, then one each in the round.
-    const record = await page.evaluate(() => window.__p.record());
+    const record = await recordOf(page);
     for (const id of set.ids) {
       const want = id === practised ? 2 : 1;
       assert.equal((record.algs[id] ?? []).length, want, `${id}: ${(record.algs[id] ?? []).length} reps on record, not ${want}`);
@@ -460,7 +460,6 @@ test('with no cube the demo plays part by part and the stopwatch runs — and no
       time: window.__p.time(),
       sheet: document.querySelector('.practice-sheet').textContent,
       heard: window.__p.heard(),
-      record: window.__p.record(),
       fingers: document.querySelector('#practiceFingers').textContent,
       say: window.__p.say(),
     }));
@@ -469,7 +468,7 @@ test('with no cube the demo plays part by part and the stopwatch runs — and no
     // What must NOT be there: a verdict, a time the app measured, a sound, a rep on record.
     assert.doesNotMatch(got.sheet, /correct|first turn to last|turns a second/i);
     assert.deepEqual(got.heard, []);
-    assert.equal(got.record, null, 'a rep was recorded with no cube');
+    assert.deepEqual((await recordOf(page)).algs, {}, 'a rep was recorded with no cube');
     assert.match(got.fingers, /— of 7/);
     // Space is the stopwatch too, and Escape starts over.
     await page.evaluate(() => document.activeElement?.blur());

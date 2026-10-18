@@ -57,11 +57,11 @@ export const axesNear = (per, k) => new Set([k - 1, k, k + 1].flatMap((i) => (pe
 
 /**
  * A page on the Practice library, a stand-in cube connected unless `connect` is false, and the sound stand-in
- * installed. `prepare(context)` runs before the page does — anything a case stores in localStorage goes in there,
- * because the app reads its storage at module scope. Given a `context`, the page is another window in it.
+ * installed. `prepare(context)` runs before the page does — anything a case stores in localStorage or IndexedDB goes
+ * in there, because the app reads its storage as it starts. Given a `context`, the page is another window in it.
  */
 export async function openPractice(fixture, { numbered = true, connect = true, prepare = async () => {}, context: shared = null } = {}) {
-  // `context`: a second window of the same origin — the same storage, and each other's `storage` events.
+  // `context`: a second window of the same origin — the same IndexedDB, and each other's broadcasts.
   const context = shared ?? await fixture.browser.newContext({ viewport: { width: 1280, height: 1012 } });
   if (!shared) await prepare(context);
   const page = pace(await context.newPage());
@@ -77,6 +77,8 @@ export async function openPractice(fixture, { numbered = true, connect = true, p
       import { settings } from '/lib/app-settings.js';
       import { refreshScreen } from '/lib/screen-shell.js';
       import { library } from '/lib/drill/library-client.js';
+      import { openPracticeRecord } from '/lib/drill/record.js';
+      import { RECORD_DB, RECORD_ENTRY, RECORD_STORE, indexedDbStore } from '/lib/drill/record-store.js';
       // Each sound is a fixed run of notes (lib/sound.js); read back, the notes say which sounds were made.
       const SOUNDS = {
         capture: [659.25, 880], done: [523.25, 659.25, 783.99, 1046.5], off: [440, 392],
@@ -115,6 +117,16 @@ export async function openPractice(fixture, { numbered = true, connect = true, p
       const feedMove = window.cubusFeed.move;
       window.cubusFeed.move = (m) => { if (evidence) evidence.moveReports += 1; feedMove(m); };
       const page = () => document.querySelector('.practice-page');
+      // The record's database opened as it stands, never made: a case that reaches for it before the app has made it
+      // has a defect, and an empty database made here would be one the app never upgrades.
+      const openStored = () => new Promise((ok, no) => {
+        const open = indexedDB.open(RECORD_DB);
+        open.onupgradeneeded = () => open.transaction.abort();
+        open.onerror = () => no(new Error('the practice record database is not there to open: ' + open.error));
+        open.onsuccess = () => { open.result.onversionchange = () => open.result.close(); ok(open.result); };
+      });
+      const realPut = IDBObjectStore.prototype.put;
+      let held = null;
       window.__p = {
         heard,
         count: (name) => heard().filter((n) => n === name).length,
@@ -146,7 +158,62 @@ export async function openPractice(fixture, { numbered = true, connect = true, p
         cube: () => document.querySelector('#practiceCube cubus-cube'),
         arrow: () => document.querySelector('#practiceCube cubus-cube').getAttribute('arrow'),
         chips: () => [...document.querySelectorAll('#practiceAlg .chip-m')].map((c) => c.textContent),
-        record: () => JSON.parse(localStorage.getItem('cubusDrillRecord') ?? 'null'),
+        /** The record as stored, through a record of its own: \`{ algs: { id: reps } }\`, each rep in the record's words. */
+        async record() {
+          const done = new AbortController();
+          try {
+            const algs = await openPracticeRecord({ store: indexedDbStore(indexedDB), now: Date.now, onChange() {}, signal: done.signal }).read();
+            return { algs: Object.fromEntries(algs) };
+          } finally {
+            done.abort();
+          }
+        },
+        /** What is stored under the record's one key, as stored. */
+        async stored() {
+          const db = await openStored();
+          try {
+            return await new Promise((ok, no) => {
+              const get = db.transaction(RECORD_STORE).objectStore(RECORD_STORE).get(RECORD_ENTRY);
+              get.onsuccess = () => ok(get.result ?? null);
+              get.onerror = () => no(get.error);
+            });
+          } finally {
+            db.close();
+          }
+        },
+        /** No save in flight, and the record on screen read since the last one settled (\`data-saving\`, \`data-record\`). */
+        settled: () => page()?.dataset.saving === '0' && page()?.dataset.record !== 'reading',
+        /** Hold the record: a readwrite transaction on its store, kept open until \`release\`, so every add and every read
+         *  the page asks for waits behind it — IndexedDB runs transactions on one store one after another. */
+        hold: async () => {
+          const db = await openStored();
+          held = { release: false };
+          const store = db.transaction(RECORD_STORE, 'readwrite').objectStore(RECORD_STORE);
+          await new Promise((ok) => {
+            const spin = (first) => {
+              store.get(RECORD_ENTRY).onsuccess = () => {
+                if (first) ok();
+                if (held.release) db.close();
+                else spin(false);
+              };
+            };
+            spin(true);
+          });
+        },
+        release() { held.release = true; },
+        /** Every write to the record refused from here on, as a full disk refuses it — or allowed again. */
+        failWrites(on) {
+          IDBObjectStore.prototype.put = on ? function put() { throw new DOMException('quota exceeded (test)', 'QuotaExceededError'); } : realPut;
+        },
+        /** The record deleted, as another window — or the browser's own "clear site data" — deletes it. A \`blocked\` on
+         *  the way is not a failure: a connection closing as the deletion arrives can raise one, and the deletion
+         *  then goes through (measured in WebKit under load), so only its end is waited for — within a bound. */
+        drop: () => new Promise((ok, no) => {
+          const del = indexedDB.deleteDatabase(RECORD_DB);
+          del.onsuccess = () => ok();
+          del.onerror = () => no(del.error);
+          setTimeout(() => no(new Error('the practice record database was never deleted')), ${LIVENESS_MS});
+        }),
         fingers: () => document.querySelector('#practiceFingers')?.dataset.reached,
         /** What the app believes about the connected cube — read, never written, by the cases. */
         app: () => ({
@@ -161,6 +228,22 @@ export async function openPractice(fixture, { numbered = true, connect = true, p
   await page.waitForFunction(() => Boolean(window.__p));
   if (connect) await page.evaluate((isNumbered) => window.__p.connect({ numbered: isNumbered }), numbered);
   return { page, context, errors };
+}
+
+/** Once every save the page made has settled and the record on screen has been read since: anything a case asserts
+ *  about the record, its figures or its notice waits for this — a save and the read after it answer later. */
+export const settle = (page) => page.waitForFunction(() => window.__p.settled(), null, { timeout: LIVENESS_MS });
+
+/** The record as stored, once every save the page made has settled. */
+export async function recordOf(page) {
+  await settle(page);
+  return page.evaluate(() => window.__p.record());
+}
+
+/** Mixed practice turned on, once the record has ordered its first round. */
+export async function mixedOn(page) {
+  await page.click('#practiceMixed');
+  await page.waitForFunction(() => document.querySelector('#practiceMixed').getAttribute('aria-pressed') === 'true', null, { timeout: LIVENESS_MS });
 }
 
 /** Open row `id` on the page and return what it prints — read off the DOM, never off the ledger. */

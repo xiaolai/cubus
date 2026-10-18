@@ -57,6 +57,10 @@ export const REFUSAL_CODES = Object.freeze(Object.keys(REFUSAL_WORDS));
 /** A duration in seconds, two places — the precision the cube's clock carries. */
 export const seconds = (ms) => t('%1 s', (ms / 1000).toFixed(2));
 
+/** The last reps while the record is being read: what is in it is not known yet, so nothing is said about it —
+ *  neither the reps an earlier read found nor "No reps yet". */
+export const RECORD_READING = Symbol('the record is being read');
+
 /** A figure, or a dash when nothing measured it. */
 const figure = (v, fmt = String) => (v === null || v === undefined ? '—' : fmt(v));
 
@@ -70,7 +74,8 @@ export function fingersWords(stats, n) {
   return { reached: false, text: t('In a row: %1 of %2', stats.streak, n) };
 }
 
-/** The record's figures for one algorithm. `stats` null means the record could not be read. */
+/** The record's figures for one algorithm. `stats` null means they are unknown: the record is still being read,
+ *  or could not be read — a dash either way, never a figure from an earlier read or an empty record. */
 export function figuresHtml(stats, n, esc) {
   const fingers = fingersWords(stats, n);
   const rows = [
@@ -84,8 +89,10 @@ export function figuresHtml(stats, n, esc) {
 }
 
 /** The newest reps, newest first, each with its time or why it has none. `reps` null means the record could not be
- *  read: what is in it is unknown, and an unknown history is never said to be an empty one. */
+ *  read, and `RECORD_READING` that it is still being read: either way what is in it is unknown, and an unknown history
+ *  is never said to be an empty one. */
 export function lastRepsHtml(reps, esc, most = 5) {
+  if (reps === RECORD_READING) return `<div class="sub" style="color:var(--ink-4)" aria-busy="true">…</div>`;
   if (reps === null) return `<div class="sub" style="color:var(--ink-4)">${esc(t('Your last reps cannot be shown: the record could not be read.'))}</div>`;
   if (!reps.length) return `<div class="sub" style="color:var(--ink-4)">${esc(t('No reps yet.'))}</div>`;
   return `<ol class="practice-reps">${reps.slice(-most).reverse().map((r) => {

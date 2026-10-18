@@ -1374,8 +1374,10 @@ for (const fixture of FIXTURES) {
       });
       await page.waitForSelector(`[data-alg="${id}"]`, { state: 'attached' });
       await page.evaluate((x) => document.querySelector(`[data-alg="${x}"]`).click(), id);
+      // Measured once the record has been read: what the page holds then, not the dashes of a read still pending.
       await page.waitForFunction((x) => document.querySelector('.practice-page')?.dataset.ready === '1'
-        && document.querySelector('.practice-page')?.dataset.alg === x, id);
+        && document.querySelector('.practice-page')?.dataset.alg === x
+        && document.querySelector('.practice-page')?.dataset.record === 'read', id);
       practiceFloor(await measureScreen(page), fixture, `page (${id})`);
       // A card whose content is taller than it and does not scroll draws that content over its neighbour —
       // the case card's sentences did, over the sheet, in the portrait window. contentFits cannot see it: every

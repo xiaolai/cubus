@@ -15,12 +15,14 @@ import { ORIENTATIONS } from '../../lib/cube-orientation.js';
 import { SOLVED as PIECES, applyAlg, toFacelets } from '../../lib/cube-pieces.js';
 import { applyIdentity, run, toIdentity } from '../../lib/cube-moves.js';
 import { parse } from '../../lib/cube-notation.js';
+import { RECORD_DB, RECORD_ENTRY, RECORD_STORE } from '../../lib/drill/record-store.js';
 import { pace } from '../browser-wait.mjs';
 import { lcg } from '../fixtures/seeded-scrambles.mjs';
 import { toWorld } from './drawn-cube.mjs';
 import { LIVENESS_MS, startBrowserFixture } from './harness.mjs';
 import {
-  AXIS, MAC, PAST_WINDOW_MS, after_, axesNear, feedRep, openPractice, randomStart, reportsPerToken, show,
+  AXIS, MAC, PAST_WINDOW_MS, after_, axesNear, feedRep, mixedOn, openPractice, randomStart, recordOf, reportsPerToken, settle,
+  show,
 } from './practice-page.mjs';
 
 let fixture;
@@ -50,9 +52,9 @@ test('a cube that drops and is back inside one presence tick starts a fresh rep 
     const got = await page.evaluate(() => ({ data: window.__p.data(), say: window.__p.say(), time: window.__p.time() }));
     assert.deepEqual(dones, atLast(flat.length), `the new connection's rep did not complete at its last report (${got.data.status}: ${got.say})`);
     assert.match(got.time, /first turn to last/, `the new connection's rep was not timed: ${got.time}`);
-    const kept = (await page.evaluate(() => window.__p.record())).algs.sune;
+    const kept = (await recordOf(page)).algs.sune;
     assert.equal(kept.length, 2, 'the rep cut off by the disconnect was filed, or the new one was not');
-    assert.deepEqual({ c: kept[1].c, l: kept[1].l }, { c: true, l: false }, 'the new connection\'s first rep was filed with a lost turn');
+    assert.deepEqual({ clean: kept[1].clean, lostTurn: kept[1].lostTurn }, { clean: true, lostTurn: false }, 'the new connection\'s first rep was filed with a lost turn');
     assert.deepEqual(errors, []);
   } finally {
     await context.close();
@@ -191,8 +193,8 @@ test('Practice arms only from a report that accounts for every turn — entered 
     }, { f: toFacelets(s1), mid: toFacelets(applyAlg(s1, flat[0])), qs: flat });
     assert.ok(!dones.seen.includes('uncertain'), `a clean rep went uncertain: ${dones.seen.join(' ')}`);
     assert.deepEqual(dones.out, atLast(flat.length));
-    const kept = (await page.evaluate(() => window.__p.record())).algs.sune;
-    assert.deepEqual(kept.map((r) => ({ c: r.c, l: r.l })), [{ c: true, l: false }], 'the rep was not filed clean');
+    const kept = (await recordOf(page)).algs.sune;
+    assert.deepEqual(kept.map((r) => ({ clean: r.clean, lostTurn: r.lostTurn })), [{ clean: true, lostTurn: false }], 'the rep was not filed clean');
     assert.deepEqual(errors, []);
   } finally {
     await context.close();
@@ -593,31 +595,25 @@ test('a rep that was not saved stays said as mixed practice moves on — until a
     assert.ok(set, 'no set of three to six algorithms');
     const rnd = lcg(221);
     await show(page, set.ids[0]);
-    await page.click('#practiceMixed');
+    await mixedOn(page);
     const notice = () => page.evaluate(() => { const n = document.querySelector('#practiceRecordSay'); return { hidden: n.hidden, text: n.textContent }; });
-    /** One clean rep of whatever the page shows, then the page once it has moved on to another algorithm. */
+    /** One clean rep of whatever the page shows, then the page once it has moved on and the rep's save has settled. */
     const repAndMoveOn = async () => {
       const was = await page.evaluate(() => window.__p.data().alg);
       const chips = await page.evaluate(() => window.__p.chips());
       const dones = await feedRep(page, randomStart(rnd), reportsPerToken(chips.join(' '), ORIENTATIONS[0], rnd).flat());
       assert.equal(dones.at(-1), 1, `${was}: the rep did not complete`);
       await page.waitForFunction((w) => window.__p.data().alg !== w, was, { timeout: LIVENESS_MS });
+      await settle(page);
     };
-    // Storage refuses the record from here on — the quota-full, private-window case.
-    await page.evaluate(() => {
-      const write = Storage.prototype.setItem;
-      window.__refuse = true;
-      Storage.prototype.setItem = function setItem(k, v) {
-        if (window.__refuse && k === 'cubusDrillRecord') throw new Error('quota exceeded (test)');
-        return write.call(this, k, v);
-      };
-    });
+    // The record's every write refused from here on — the quota-full case.
+    await page.evaluate(() => window.__p.failWrites(true));
     await repAndMoveOn();
     const unsaved = await notice();
     assert.equal(unsaved.hidden, false, 'moving on took away the only sign that a rep was not saved');
-    assert.match(unsaved.text, /not saved/);
+    assert.match(unsaved.text, /That rep was not saved/);
     // Saved again: the notice goes, because what it said is no longer true.
-    await page.evaluate(() => { window.__refuse = false; });
+    await page.evaluate(() => window.__p.failWrites(false));
     await repAndMoveOn();
     assert.equal((await notice()).hidden, true, 'a notice outlived the failure it was about');
     assert.deepEqual(errors, []);
@@ -636,7 +632,7 @@ test('in mixed practice, starting over as a rep ends keeps the algorithm — by 
     assert.ok(set, 'precondition: a set of three to six algorithms');
     const rnd = lcg(151);
     await show(page, set.ids[0]);
-    await page.click('#practiceMixed');
+    await mixedOn(page);
     // The rep's last report and then, in the SAME task — before the advance its `done` queued can run — a start over.
     for (const how of ['escape', 'gesture', 'next']) {
       const was = await page.evaluate(() => window.__p.data().alg);
@@ -665,54 +661,6 @@ test('in mixed practice, starting over as a rep ends keeps the algorithm — by 
         assert.equal(after, was, `${how}: started over on ${was}, and the page moved on to ${after}`);
       }
     }
-    assert.deepEqual(errors, []);
-  } finally {
-    await context.close();
-  }
-});
-
-// ---- a rep another window wrote over (round 2, the record's journal; round 3, its status) ------------------
-
-test('a rep another window wrote over is said on the page while it is not back on record — and the notice goes once it is', async () => {
-  // The record puts back a rep of this page's that another window's write dropped (lib/drill/record.js, TWO
-  // WINDOWS); only a put-back that cannot be written leaves it missing, and `status()` says so as a state.
-  const { page, context, errors } = await openPractice(fixture);
-  try {
-    const rnd = lcg(81);
-    await show(page, 'sune');
-    const shown = () => page.evaluate(() => {
-      const n = document.querySelector('#practiceRecordSay');
-      return { notice: n.hidden ? '' : n.textContent, reps: document.querySelectorAll('#practiceReps li').length };
-    });
-    const rep = async () => {
-      const flat = reportsPerToken(SUNE, ORIENTATIONS[0], rnd).flat();
-      assert.equal((await feedRep(page, randomStart(rnd), flat)).at(-1), 1, 'precondition: a rep completed');
-    };
-    await rep();
-    await rep();
-    assert.deepEqual(await shown(), { notice: '', reps: 2 }, 'precondition: two reps, nothing to say');
-    // Another window's write, in the same generation, without this page's newest rep — and this page's storage
-    // refusing the write that would put it back.
-    await page.evaluate(() => {
-      const r = JSON.parse(localStorage.getItem('cubusDrillRecord'));
-      r.algs.sune = r.algs.sune.slice(0, -1);
-      const text = JSON.stringify(r);
-      localStorage.setItem('cubusDrillRecord', text);
-      const write = Storage.prototype.setItem;
-      window.__refuse = true;
-      Storage.prototype.setItem = function setItem(k, v) {
-        if (window.__refuse && k === 'cubusDrillRecord') throw new Error('quota exceeded (test)');
-        return write.call(this, k, v);
-      };
-      window.dispatchEvent(new StorageEvent('storage', { key: 'cubusDrillRecord', newValue: text, storageArea: localStorage }));
-    });
-    const missing = await shown();
-    // What must NOT happen: a rep gone from the record, and nothing on the page to say so.
-    assert.match(missing.notice, /1 rep saved here was written over by another window/, `the missing rep is not said: "${missing.notice}"`);
-    // The next rep's write puts it back: the notice goes, because what it said is no longer true.
-    await page.evaluate(() => { window.__refuse = false; });
-    await rep();
-    assert.deepEqual(await shown(), { notice: '', reps: 3 }, 'the rep was not put back, or the notice outlived it');
     assert.deepEqual(errors, []);
   } finally {
     await context.close();
@@ -822,7 +770,7 @@ test('what another window does to the record is shown here as it happens — a r
   const { page, context, errors } = first;
   try {
     const rnd = lcg(317);
-    // A second window of the same origin: the same storage, and a real `storage` event in each for the other's writes.
+    // A second window of the same origin: the same IndexedDB, and the record's broadcast in each of the other's writes.
     const second = await openPractice(fixture, { context });
     const shown = () => page.evaluate(() => ({
       reps: document.querySelectorAll('#practiceReps li').length,
@@ -831,6 +779,7 @@ test('what another window does to the record is shown here as it happens — a r
     }));
     await show(page, 'sune');
     assert.equal((await feedRep(page, randomStart(rnd), reportsPerToken(SUNE, ORIENTATIONS[0], rnd).flat())).at(-1), 1, 'precondition: a rep here');
+    await settle(page);
     assert.deepEqual(await shown(), { reps: 1, empty: false, count: '1' }, 'precondition: this window shows its rep');
     // The other window makes a rep of the same algorithm.
     await show(second.page, 'sune');
@@ -839,8 +788,8 @@ test('what another window does to the record is shown here as it happens — a r
       .catch(() => {});
     // What must NOT happen: this window's figures and history standing as they were before the other's write.
     assert.deepEqual(await shown(), { reps: 2, empty: false, count: '2' }, 'another window\'s rep is not shown here');
-    // The other window deletes the record.
-    await second.page.evaluate(() => localStorage.removeItem('cubusDrillRecord'));
+    // The other window deletes the record — the database itself, as "clear site data" would.
+    await second.page.evaluate(() => window.__p.drop());
     await page.waitForFunction(() => /No reps yet/.test(document.querySelector('#practiceReps').textContent), null, { timeout: LIVENESS_MS })
       .catch(() => {});
     // No reps on record is a count of zero, measured — a dash would say the record could not be read.
@@ -953,26 +902,175 @@ test('a rep where one turn came without the cube\'s own time is refused about th
   }
 });
 
-// ---- a record that cannot be read (round 2, rows 18 and 23) -------------------------------------------------
+// ---- a record that cannot be read (round 2, rows 18 and 23; IndexedDB) ----------------------------------------
 
-test('a record that cannot be read leaves the history unknown on the page — never "No reps yet"', async () => {
+/** What the page shows of the record: the history's words, the notice, and the four figures. */
+const recordShown = (page) => page.evaluate(() => ({
+  reps: document.querySelector('#practiceReps').textContent.trim(),
+  notice: document.querySelector('#practiceRecordSay').hidden ? '' : document.querySelector('#practiceRecordSay').textContent,
+  figures: [...document.querySelectorAll('.practice-figures dd')].map((d) => d.textContent),
+}));
+
+test('a record that cannot be read leaves the history unknown on the page — never "No reps yet" — and no rep is saved over it', async () => {
+  const foreign = { v: 99, algs: {} };
   const { page, context, errors } = await openPractice(fixture, {
-    connect: false,
-    // Something that is not the record stands under its key: the read refuses it rather than guess.
-    prepare: (ctx) => ctx.addInitScript(() => localStorage.setItem('cubusDrillRecord', '{not json')),
+    // Something that is not the record stands under its key, put there before the app opens the database.
+    prepare: (ctx) => ctx.addInitScript(({ db, store, entry, value }) => {
+      const open = indexedDB.open(db, 1);
+      open.onupgradeneeded = () => { open.result.createObjectStore(store).put(value, entry); };
+      open.onsuccess = () => open.result.close();
+    }, { db: RECORD_DB, store: RECORD_STORE, entry: RECORD_ENTRY, value: foreign }),
   });
   try {
+    const rnd = lcg(958);
     await show(page, 'sune');
-    const got = await page.evaluate(() => ({
-      reps: document.querySelector('#practiceReps').textContent.trim(),
-      notice: document.querySelector('#practiceRecordSay').hidden ? '' : document.querySelector('#practiceRecordSay').textContent,
-      figures: [...document.querySelectorAll('.practice-figures dd')].map((d) => d.textContent),
-    }));
-    assert.match(got.notice, /could not be read/, 'precondition: the read failed and the page said so');
+    await settle(page);
+    const got = await recordShown(page);
+    assert.match(got.notice, /could not be read \(foreign\)/, 'precondition: the read failed and the page said so');
     assert.doesNotMatch(got.reps, /No reps yet/, 'an unreadable history was said to be empty');
     assert.match(got.reps, /could not be read/);
     assert.deepEqual(got.figures, ['—', '—', '—', '—'], 'a figure was given for a record nobody could read');
-    assert.equal(await page.evaluate(() => localStorage.getItem('cubusDrillRecord')), '{not json', 'the unreadable record was written over');
+    // A rep made on it is not saved, and the page says so; what was stored is left as it was.
+    assert.equal((await feedRep(page, randomStart(rnd), reportsPerToken(SUNE, ORIENTATIONS[0], rnd).flat())).at(-1), 1, 'precondition: a rep');
+    await settle(page);
+    assert.match((await recordShown(page)).notice, /That rep was not saved/);
+    assert.deepEqual(await page.evaluate(() => window.__p.stored()), foreign, 'the unreadable record was written over');
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
+test('an earlier record that cannot be read is said and kept as it was — and the reps made now are saved', async () => {
+  const { page, context, errors } = await openPractice(fixture, {
+    // The record as localStorage held it before IndexedDB, unreadable: the record takes nothing from it.
+    prepare: (ctx) => ctx.addInitScript(() => localStorage.setItem('cubusDrillRecord', '{not json')),
+  });
+  try {
+    const rnd = lcg(959);
+    await show(page, 'sune');
+    await settle(page);
+    assert.match((await recordShown(page)).notice, /earlier practice record is not in this one/, 'the earlier record went unsaid');
+    assert.equal((await feedRep(page, randomStart(rnd), reportsPerToken(SUNE, ORIENTATIONS[0], rnd).flat())).at(-1), 1, 'precondition: a rep');
+    await settle(page);
+    const got = await recordShown(page);
+    // What must NOT happen: practice stopped by a record nobody can read, or that record removed.
+    assert.equal(got.figures[0], '1', 'the rep made now was not saved');
+    assert.match(got.notice, /earlier practice record is not in this one/, 'a saved rep took away the only sign of the earlier record');
+    assert.equal(await page.evaluate(() => localStorage.getItem('cubusDrillRecord')), '{not json', 'the earlier record was not kept as it was');
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
+// ---- the record answers later (IndexedDB) -------------------------------------------------------------------
+
+/** Every paint of the figures from here on, with the algorithm on the page as it was made. */
+const watchFigures = (page) => page.evaluate(() => {
+  window.__paints = [];
+  new MutationObserver(() => {
+    const d = document.querySelector('.practice-page').dataset;
+    window.__paints.push({ alg: d.alg, record: d.record, reps: document.querySelector('.practice-figures dd')?.textContent });
+  }).observe(document.querySelector('#practiceFigures'), { childList: true });
+});
+
+test('a rep reaches the figures only once its save has landed — and nothing a read or a save answers late paints another algorithm', async () => {
+  const { page, context, errors } = await openPractice(fixture);
+  try {
+    const rnd = lcg(402);
+    const other = 'pll-T';
+    const sune = () => feedRep(page, randomStart(rnd), reportsPerToken(SUNE, ORIENTATIONS[0], rnd).flat());
+    await show(page, 'sune');
+    assert.equal((await sune()).at(-1), 1, 'precondition: a rep');
+    await settle(page);
+    assert.equal((await recordShown(page)).figures[0], '1', 'precondition: one rep on record');
+    // The record held: every save and read the page asks for from here waits behind another transaction.
+    await page.evaluate(() => window.__p.hold());
+    assert.equal((await sune()).at(-1), 1, 'precondition: a second rep');
+    const pending = await page.evaluate(() => ({ ...window.__p.data(), items: document.querySelectorAll('#practiceReps li').length }));
+    assert.equal(pending.saving, '1', 'precondition: the second rep\'s save is in flight');
+    // What must NOT happen: the rep on the screen before the record has it.
+    assert.equal((await recordShown(page)).figures[0], '1', 'a rep was counted before its save landed');
+    assert.equal(pending.items, 1, 'a rep was listed before its save landed');
+    // Away to another algorithm, back, and away again — each a read that waits, and only the last may paint.
+    await watchFigures(page);
+    await show(page, other);
+    await show(page, 'sune');
+    await show(page, other);
+    // While its read is pending the figures are unknown: never sune's, and never an empty record's zero.
+    assert.deepEqual(await recordShown(page).then((g) => g.figures), ['—', '—', '—', '—'], 'a figure was shown before its read completed');
+    await page.evaluate(() => window.__p.release());
+    await settle(page);
+    const paints = await page.evaluate(() => window.__paints);
+    const wrong = paints.filter((x) => x.alg === other && x.reps !== '—' && x.reps !== '0');
+    assert.deepEqual(wrong, [], `another algorithm's figures were painted on ${other}`);
+    assert.equal((await recordShown(page)).figures[0], '0', `${other} does not show its own record`);
+    // The rep was saved, under sune, and shows there once read.
+    const rec = await recordOf(page);
+    assert.deepEqual([rec.algs.sune?.length, rec.algs[other]], [2, undefined]);
+    await show(page, 'sune');
+    await settle(page);
+    assert.equal((await recordShown(page)).figures[0], '2');
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
+test('mixed practice steps on inside a round without the record — and starts the next round only once the reps it orders by are saved', async () => {
+  const { page, context, errors } = await openPractice(fixture);
+  try {
+    const catalogue = await page.evaluate(() => window.__p.rows());
+    const set = Object.values(catalogue.sets).find((x) => x.ids.length >= 3 && x.ids.length <= 6);
+    assert.ok(set, 'precondition: a set of three to six algorithms');
+    const n = set.ids.length;
+    const rnd = lcg(403);
+    await show(page, set.ids[0]);
+    await mixedOn(page);
+    await settle(page);
+    const rep = async () => {
+      const chips = await page.evaluate(() => window.__p.chips());
+      const dones = await feedRep(page, randomStart(rnd), reportsPerToken(chips.join(' '), ORIENTATIONS[0], rnd).flat());
+      assert.equal(dones.at(-1), 1, 'precondition: the rep completed');
+    };
+    const movedOn = (was) => page.waitForFunction((w) => window.__p.data().alg !== w, was, { timeout: LIVENESS_MS });
+    // Each step on, as it is made: whether the rep before it was saved yet, and what the figures then said.
+    await page.evaluate(() => {
+      window.__steps = [];
+      const p = document.querySelector('.practice-page');
+      new MutationObserver(() => {
+        window.__steps.push({ alg: p.dataset.alg, saving: p.dataset.saving, record: p.dataset.record, reps: document.querySelector('.practice-figures dd')?.textContent });
+      }).observe(p, { attributes: true, attributeFilter: ['data-alg'] });
+    });
+    await page.evaluate(() => window.__p.hold());
+    // Inside the round: every step on is taken while the record cannot answer at all.
+    for (let k = 1; k < n; k += 1) {
+      const was = await page.evaluate(() => window.__p.data().alg);
+      await rep();
+      await movedOn(was);
+    }
+    // The round's last rep: the next round is ordered by the record, so the step on waits for it.
+    const last = await page.evaluate(() => window.__p.data().alg);
+    await rep();
+    // One turn of the page's timers after the rep: the step its `done` queued has run, and is waiting on the record.
+    await page.evaluate(() => new Promise((r) => { setTimeout(r, 0); }));
+    const waiting = await page.evaluate(() => window.__p.data());
+    assert.equal(waiting.alg, last, 'the next round began while the reps it is ordered by were not saved');
+    assert.equal(waiting.saving, String(n), 'precondition: every rep of the round is still being saved');
+    await page.evaluate(() => window.__p.release());
+    await movedOn(last);
+    const steps = await page.evaluate(() => window.__steps);
+    assert.equal(steps.length, n, `steps on: ${JSON.stringify(steps)}`);
+    steps.slice(0, -1).forEach((x, i) => {
+      // What must NOT happen inside a round: a step on that waited for the record, or figures from before its read.
+      assert.equal(x.saving, String(i + 1), `step ${i + 1} waited for a save`);
+      assert.deepEqual([x.record, x.reps], ['reading', '—'], `step ${i + 1} showed figures no read had given`);
+    });
+    // What must NOT happen at a round's end: the next round ordered from a record without the round's reps.
+    assert.equal(steps.at(-1).saving, '0', 'the next round began with a save of the round before it in flight');
+    const rec = await recordOf(page);
+    assert.deepEqual(set.ids.map((id) => rec.algs[id]?.length ?? 0), set.ids.map(() => 1), 'a rep of the round is not on record');
     assert.deepEqual(errors, []);
   } finally {
     await context.close();

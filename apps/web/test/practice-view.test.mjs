@@ -19,7 +19,8 @@ import { cardsHtml, libraryHtml, purposeOf, rowName } from '../lib/screens/pract
 import { paletteFor } from '../lib/scheme.js';
 import { STICKER_PALETTES } from '../lib/sticker-palettes.js';
 import {
-  REFUSAL_CODES, chipsHtml, fingersWords, lastRepsHtml, partsWords, refusalWords, segmentsOf, writtenTokens,
+  RECORD_READING, REFUSAL_CODES, chipsHtml, figuresHtml, fingersWords, lastRepsHtml, partsWords, refusalWords, segmentsOf,
+  writtenTokens,
 } from '../lib/screens/practice/page-view.js';
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -164,6 +165,17 @@ test('a history that could not be read is never said to be empty', () => {
   assert.match(unknown, /could not be read/);
   // And an empty one that WAS read still says so.
   assert.match(lastRepsHtml([], esc), /No reps yet/);
+});
+
+test('a record still being read shows nothing it has not read — no reps, no "No reps yet", no figure', () => {
+  // The record answers later (IndexedDB): until a read completes, what is in it is unknown, so neither the reps an
+  // earlier read found nor an empty record's words or zeros may stand in for it.
+  const pending = lastRepsHtml(RECORD_READING, esc);
+  assert.doesNotMatch(pending, /No reps yet|could not be read|<li/, 'a history no read has given');
+  assert.match(pending, /aria-busy="true"/);
+  const figures = [...figuresHtml(null, 7, esc).matchAll(/<dd class="num">([^<]*)<\/dd>/g)].map((m) => m[1]);
+  assert.deepEqual(figures, ['—', '—', '—', '—'], 'a figure no read has given');
+  assert.match(figuresHtml(null, 7, esc), /In a row: — of 7/);
 });
 
 test('every card draws its own row\'s case: one picture, its stickers in the colours they are, net or top face by what the row keeps', () => {

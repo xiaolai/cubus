@@ -23,7 +23,7 @@
 
 import { $, escHtml, state } from '../app-state.js';
 import { fingersTarget, settings } from '../app-settings.js';
-import { plural, t } from '../i18n.js';
+import { t } from '../i18n.js';
 import { SCREENS, renderScreen, screenAbort, screenGen } from '../screen-shell.js';
 import { hooks } from '../screen-slots.js';
 import { newCube } from '../cube-drawing.js';
@@ -38,10 +38,11 @@ import { holdSentence, holdSpec, sameHold } from '../solving-hold.js';
 import { library } from '../drill/library-client.js';
 import { STATUS, createDrillEngine } from '../drill/engine.js';
 import { PracticeRecordError, openPracticeRecord, statsOf, watchReps } from '../drill/record.js';
+import { indexedDbStore } from '../drill/record-store.js';
 import { mixOrder } from '../drill/mix.js';
 import { cardsHtml, casePicture, libraryHtml, purposeOf, rowName } from './practice/library-view.js';
 import {
-  chipsHtml, figuresHtml, lastRepsHtml, orderWords, partsWords, refusalWords, seconds, segmentsOf, writtenTokens,
+  RECORD_READING, chipsHtml, figuresHtml, lastRepsHtml, orderWords, partsWords, refusalWords, seconds, segmentsOf, writtenTokens,
 } from './practice/page-view.js';
 
 /** How often the page asks whether the cube is still there. A disconnect of a cube whose chain was never
@@ -247,13 +248,18 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   const clockBtn = $('#practiceClock', root);
   const demoRow = $('#practiceDemo', root);
   const recordSay = $('#practiceRecordSay', root);
-  // Watching the window's `storage` events: another window's write is looked at as it arrives (reps of this page's it
-  // dropped are put back), and then the record on screen may be another — reps added there, the record deleted there,
-  // or one this page cannot read — so the figures, the history and the notice are read again. Under the screen's
-  // signal, so a page that has gone is never painted.
+  // The record is in IndexedDB, and every call to it answers later. It owns its connection and its channel, and the
+  // screen's signal closes both. `onChange` is another window's committed write, or a change in what the record can
+  // reach (`status()`): the notice is said again and the record on screen read again. It is raised when a status
+  // CHANGES, never again for a read that fails the way the last one did, so a read it asks for cannot ask for the next.
   const record = openPracticeRecord({
-    storage: localStorage, now: () => Date.now(), changes: window, signal,
-    onChange: () => { if (!stale() && row) paintRecord(); },
+    store: indexedDbStore(indexedDB), legacy: localStorage, broadcast: BroadcastChannel,
+    now: () => Date.now(), signal,
+    onChange: () => {
+      if (stale()) return;
+      sayRecord();
+      if (row) paintRecord();
+    },
   });
 
   let row = null;
@@ -270,6 +276,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   let drewFollowed = false;   // whether the cube shows a followed cube's picture rather than the case (`paint`)
   let mixed = null;           // { order, at } while practising mixed
   let advanceTicket = null;   // the mixed-practice step on a `done` queued, until it runs or a start over calls it off
+  let modeTicket = null;      // mixed practice asked for, until the record has ordered it or Blocked calls it off
   let watch = { t0: null, timer: null, laps: [] };
   let shownAt = 0;            // the demo's position, from the element's own report
 
@@ -313,45 +320,75 @@ function mountPage({ root, page, catalogue, signal, stale }) {
    * screen, so taking another row in place clears neither: mixed practice moved on right after the rep that was not
    * saved, and the only sign of the loss went with it.
    *
-   * And what another window's writes did, read from the record's own STATE at every paint (`record.status()`), never
-   * kept here: reps of this page's that another window's write dropped and that are not back yet, and why. A later
-   * write that puts them back clears it, so the notice goes when it stops being true. Reps that went with a record
-   * removed elsewhere are not said: a removal is somebody's decision, and the history on screen already shows it.
+   * And the record's own STATE, read from `record.status()` at every saying and never kept here: a database this page
+   * cannot reach now (`error`, said only while no failed read is saying it), and the earlier record — the one
+   * localStorage held — when it is not in this one (`legacy`).
    */
   const trouble = { read: null, write: null };
   const sayRecord = () => {
-    const { missing, error } = record.status();
-    const elsewhere = missing
-      ? `${plural(missing, {
-        one: '%1 rep saved here was written over by another window and is not back on record yet',
-        other: '%1 reps saved here were written over by another window and are not back on record yet',
-      })}${error ? t(' (%1).', error.message) : '.'}`
-      // A look that failed with nothing missing: the record could not be read, which the read below says itself.
-      : error && !trouble.read ? t('A change another window made to your practice record could not be taken in: %1', error.message) : null;
-    const text = [trouble.write, elsewhere, trouble.read].filter(Boolean).join(' ');
+    const { error, legacy } = record.status();
+    const text = [
+      trouble.write,
+      error && !trouble.read ? t('Your practice record cannot be reached right now: %1', error.message) : null,
+      legacy ? t('Your earlier practice record is not in this one: %1', legacy.message) : null,
+      trouble.read,
+    ].filter(Boolean).join(' ');
     recordSay.hidden = !text;
     recordSay.textContent = text;
   };
-  const paintRecord = () => {
-    let reps = null;    // null until the record is read: a read that fails leaves the history unknown, never empty
-    let stats = null;
-    try {
-      reps = record.reps(row.id);
-      stats = statsOf(reps);
-      trouble.read = null;
-    } catch (err) {
-      if (!(err instanceof PracticeRecordError)) throw err;
-      trouble.read = t('Your practice record could not be read (%1), so it is left as it is and nothing new is saved.', err.code);
-    }
-    sayRecord();
-    $('#practiceFigures', root).innerHTML = figuresHtml(stats, fingersTarget(settings.fingersN), escHtml);
+
+  /**
+   * THE FIGURES, THE STREAK AND THE HISTORY ARE A READ THAT HAS COMPLETED. While one is pending they are unknown — a
+   * dash, never the figures an earlier read found nor those of an empty record — and only the newest read paints: a
+   * later read, another row or leaving the screen takes the ticket (`reading`). `data-record` says which it is.
+   */
+  let reading = null;
+  const paintFigures = (reps) => {
+    const known = reps === RECORD_READING ? null : reps;
+    $('#practiceFigures', root).innerHTML = figuresHtml(known && statsOf(known), fingersTarget(settings.fingersN), escHtml);
     $('#practiceReps', root).innerHTML = lastRepsHtml(reps, escHtml);
+    page.dataset.record = reps === RECORD_READING ? 'reading' : reps === null ? 'unreadable' : 'read';
   };
+  const paintRecord = () => {
+    const ticket = {};
+    reading = ticket;
+    paintFigures(RECORD_READING);
+    const current = () => reading === ticket && !stale();
+    record.reps(row.id).then((reps) => {
+      if (!current()) return;
+      trouble.read = null;
+      paintFigures(reps);
+      sayRecord();
+    }, (err) => {
+      if (!(err instanceof PracticeRecordError)) throw err;
+      if (!current()) return;
+      trouble.read = t('Your practice record could not be read (%1), so it is left as it is and nothing new is saved.', err.code);
+      paintFigures(null);
+      sayRecord();
+    });
+  };
+
+  /**
+   * A REP IS SAID SAVED ONLY ONCE THE RECORD HAS SAID SO. Nothing is painted when the rep ends; when its save settles,
+   * a save that did not land is said, and the row the rep was made on — if it is still the row on screen — is read
+   * again, which is how the rep reaches the figures. The record runs its calls one after another in the order they
+   * were made, so saves settle in the order the reps ended and the notice's last word is the newest rep's. A rejected
+   * save is a defect (`add` answers `saved: false` for every trouble of the record's own): said like a lost rep, and
+   * thrown on. `data-saving` counts the saves in flight.
+   */
+  let saving = 0;
+  page.dataset.saving = '0';
   const saveRep = (id, rep) => {
-    const done = record.add(id, rep);
-    trouble.write = done.saved ? null : t('That rep was not saved: %1', done.error.message);
-    sayRecord();
-    if (row?.id === id) paintRecord();
+    const pending = record.add(id, rep);
+    page.dataset.saving = String(saving += 1);
+    const settled = (error) => {
+      page.dataset.saving = String(saving -= 1);
+      if (stale()) return;
+      trouble.write = error ? t('That rep was not saved: %1', error.message) : null;
+      sayRecord();
+      if (row?.id === id) paintRecord();
+    };
+    pending.then((done) => settled(done.saved ? null : done.error), (err) => { settled(err); throw err; });
   };
 
   // ---- the engine ---------------------------------------------------------------------------------------
@@ -697,36 +734,58 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     $('#practiceNext', root).hidden = !mixed;
   };
   const seed = () => crypto.getRandomValues(new Uint32Array(1))[0];
-  const orderFor = (ids) => {
-    try {
-      return mixOrder(ids, record.read(), { seed: seed() });
-    } catch (err) {
-      if (!(err instanceof PracticeRecordError)) throw err;
+  /** A round's order, weakest first, from a read of the whole record — null, and said, when it cannot be read. */
+  const orderFor = (ids) => record.read().then((rec) => mixOrder(ids, rec, { seed: seed() }), (err) => {
+    if (!(err instanceof PracticeRecordError)) throw err;
+    if (!stale()) {
       trouble.read = t('Your practice record could not be read (%1), so mixed practice cannot put the weakest first.', err.code);
       sayRecord();
-      return null;
     }
-  };
+    return null;
+  });
+  /**
+   * One step on in mixed practice. INSIDE A ROUND IT READS NOTHING: the round's order was fixed when the round began, so
+   * the step is taken at once, whether or not the rep before it is saved yet. A NEW ROUND IS ORDERED BY THE RECORD, and
+   * so waits for the reps just made to be on it: the record answers a read only after every add called before it, so
+   * the read is the wait. Until its answer the step stays queued under its ticket, and a start over, Blocked, another
+   * row, a turn of a rep begun meanwhile or leaving the screen calls it off — the order would land on a page that has
+   * moved on.
+   */
   const advance = () => {
     advanceTicket = null;   // one step on, however it was asked for
     if (!mixed) return;
-    mixed.at += 1;
-    if (mixed.at >= mixed.order.length) {
-      const next = orderFor(catalogue.sets[row.set].ids);
+    if (mixed.at + 1 < mixed.order.length) {
+      mixed.at += 1;
+      show(mixed.order[mixed.at]);
+      return;
+    }
+    const ticket = {};
+    advanceTicket = ticket;
+    const round = mixed;
+    const from = row.id;
+    orderFor(catalogue.sets[row.set].ids).then((next) => {
+      if (advanceTicket !== ticket || stale() || mixed !== round || row?.id !== from || turnsSinceArm > 0) return;
+      advanceTicket = null;
       if (!next) return;
       // No algorithm twice in a row across two rounds either.
-      if (next.length > 1 && next[0] === row.id) [next[0], next[1]] = [next[1], next[0]];
+      if (next.length > 1 && next[0] === from) [next[0], next[1]] = [next[1], next[0]];
       mixed = { order: next, at: 0 };
-    }
-    show(mixed.order[mixed.at]);
+      show(next[0]);
+    });
   };
-  $('#practiceBlocked', root).onclick = () => { mixed = null; paintMode(); };
+  $('#practiceBlocked', root).onclick = () => { modeTicket = null; mixed = null; paintMode(); };
   $('#practiceMixed', root).onclick = () => {
-    const order = orderFor(catalogue.sets[row.set].ids);
-    if (!order) return;
-    mixed = { order, at: 0 };
-    paintMode();
-    if (order[0] !== row.id) show(order[0]);
+    const ticket = {};
+    modeTicket = ticket;
+    const from = row.id;
+    orderFor(catalogue.sets[row.set].ids).then((order) => {
+      if (modeTicket !== ticket || stale() || row?.id !== from) return;
+      modeTicket = null;
+      if (!order) return;
+      mixed = { order, at: 0 };
+      paintMode();
+      if (order[0] !== row.id) show(order[0]);
+    });
   };
   $('#practiceNext', root).onclick = advance;
   // The catalogue is here: the controls that waited for it are live (`PAGE_HTML` drew them disabled).
