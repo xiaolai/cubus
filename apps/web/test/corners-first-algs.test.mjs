@@ -178,7 +178,10 @@ test('every sequence does what its caption says', () => {
   }
   // The corner sequence swaps the two top-right corners and keeps the bottom; the twist sequence twists the
   // two top-left corners, opposite ways, and moves no corner at all.
-  const swap = mapOf("R U R' U' F' U' F");
+  // Each row is looked up by its fixed name and THAT row's sequence is run, so two rows swapped under unchanged
+  // names fail here; the expected effect stays written in the test, independent of the table.
+  const row = (name) => { const r = CF_ALGS.find((x) => x.name === name); assert.ok(r, `no row ${name}`); return r.alg; };
+  const swap = mapOf(row('cf-top-corners-place-1'));
   assert.ok(fixes(swap, cornerStickers(['DFR', 'DLF', 'DBL', 'DRB'].map(C))));
   assert.equal(Math.floor(placeMap('corner', swap)[homeOf('corner', C('URF'))] / 3), C('UBR'));
   assert.equal(Math.floor(placeMap('corner', swap)[homeOf('corner', C('UBR'))] / 3), C('URF'));
@@ -187,7 +190,7 @@ test('every sequence does what its caption says', () => {
     assert.equal(twist[homeOf('corner', C(p))], homeOf('corner', C(p)) + t, `the twist sequence turns ${p} by ${t}`);
   }
   // The twist sequence is the corner sequence, the cube turned, and the mirror of the corner sequence.
-  assert.ok(cfStep('top-corners-twist')[0].alg.startsWith("R U R' U' F' U' F y2 L' U' L U F U F'"));
+  assert.ok(row('cf-top-corners-twist-1').startsWith(`${row('cf-top-corners-place-1')} y2 L' U' L U F U F'`));
 
   // Edges, white on the left: a white edge (ledge) belongs on the L face, a yellow one (redge) on R. Put the
   // piece at the row's `at` with its own-face sticker (white or yellow) facing the row's `facing`, and follow it.
@@ -203,14 +206,14 @@ test('every sequence does what its caption says', () => {
   // Only the rows a piece is placed by carry `at`: the others act on the whole top or the whole slice.
   assert.deepEqual(CF_ALGS.filter((r) => r.at).map((r) => r.step), [...Array(5).fill('bottom-corners'), ...Array(5).fill('ledges'), ...Array(5).fill('redges'), 'last-ledge', 'last-ledge']);
   // The middle slice: the flip turns over exactly the two top midges; the four placements are what they say.
-  const flip = placeMap('edge', mapOf("M' U M' U M' U2 M U M U M U2"));
+  const flip = placeMap('edge', mapOf(row('cf-midges-flip-1')));
   for (let s = 0; s < 12; s++) assert.equal(flip[s * 2], s * 2 + (['UF', 'UB'].includes(EDGES[s]) ? 1 : 0), `the flip moves ${EDGES[s]}`);
   const cycle = (alg) => ['UF', 'UB', 'DF', 'DB'].map((n) => EDGES[Math.floor(placeMap('edge', mapOf(alg))[E(n) * 2] / 2)]).join(' ');
-  assert.equal(cycle('U2 M U2 M\''), 'DB UF DF UB', 'forward cycle: UF to DB, UB to UF, DB to UB');
+  assert.equal(cycle(row('cf-midges-place-1')), 'DB UF DF UB', 'forward cycle: UF to DB, UB to UF, DB to UB');
   // Not the forward cycle's inverse: the mirror, cycling the top two with the bottom FRONT edge instead.
-  assert.equal(cycle("U2 M' U2 M"), 'UB DF UF DB', 'backward cycle: UF to UB, UB to DF, DF to UF');
-  assert.equal(cycle('U2 M2 U2 M2'), 'UB UF DB DF', 'the top two swapped, and the bottom two');
-  assert.equal(cycle('E2 M E2 M'), 'DB DF UB UF', 'swapped two and two across the diagonals');
+  assert.equal(cycle(row('cf-midges-place-2')), 'UB DF UF DB', 'backward cycle: UF to UB, UB to DF, DF to UF');
+  assert.equal(cycle(row('cf-midges-place-3')), 'UB UF DB DF', 'the top two swapped, and the bottom two');
+  assert.equal(cycle(row('cf-midges-place-4')), 'DB DF UB UF', 'swapped two and two across the diagonals');
 });
 
 // ---------- each step finishes everything it can meet ----------
