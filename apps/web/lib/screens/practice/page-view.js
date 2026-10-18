@@ -65,8 +65,8 @@ export const RECORD_READING = Symbol('the record is being read');
 const figure = (v, fmt = String) => (v === null || v === undefined ? '—' : fmt(v));
 
 /**
- * "In the fingers" (WI-12): `streak` clean reps in a row against the target `n`. A dash before anything is on
- * record, the streak toward `n` until it is reached, and the badge from the Nth clean rep on.
+ * "In the fingers" (WI-12): `streak` clean reps in a row, none with a marked pause, against the target `n`. A dash
+ * before anything is on record, the streak toward `n` until it is reached, and the badge from the Nth clean rep on.
  */
 export function fingersWords(stats, n) {
   if (!stats || stats.judged === 0) return { reached: false, text: t('In a row: — of %1', n) };

@@ -393,8 +393,11 @@ function median(values) {
  *   reps        reps on record (the newest PER_ALG_CAP, so this is "on record", not "ever")
  *   judged      reps with no lost turn — the only ones that say anything about the turns made
  *   cleanReps   judged reps that were the algorithm alone
- *   streak      clean reps in a row, newest backwards, up to the newest judged rep that was not clean.
- *               A rep with a lost turn neither extends nor breaks it: it is not evidence either way
+ *   streak      clean reps with no marked pause in a row, newest backwards, up to the newest judged rep that
+ *               was not clean or marked a pause (owner, 2026-10-18: a pause breaks it as an error does).
+ *               A rep with a lost turn neither extends nor breaks it: it is not evidence either way. An
+ *               untimed rep has no clock to mark a pause by (`p` is 0, the format says so), so it counts by
+ *               cleanliness alone — no pause is invented for it
  *   errorRate   (judged − clean) / judged, or null with no judged rep
  *   best        the fastest time among CLEAN timed reps, or null
  *   median      the median of those times, or null
@@ -412,7 +415,7 @@ export function statsOf(reps) {
   let streak = 0;
   for (let i = reps.length - 1; i >= 0; i--) {
     if (reps[i].lostTurn) continue;
-    if (!reps[i].clean) break;
+    if (!reps[i].clean || reps[i].pauses > 0) break;
     streak += 1;
   }
   const timed = clean.filter((r) => r.ms !== null);

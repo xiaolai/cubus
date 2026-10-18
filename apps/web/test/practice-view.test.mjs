@@ -279,6 +279,11 @@ test('an unclean rep resets the progress; a rep with a lost turn neither counts 
   assert.equal(fingersWords(statsOf([...reached.slice(1), rep(false, { lostTurn: true }), rep(true)]), 7).reached, true);
 });
 
+test('the Settings row says that a pause breaks the row of clean reps', async () => {
+  const { practiceTargetRow } = await import('../lib/screens/settings/practice-target.js');
+  assert.match(practiceTargetRow(), /A pause breaks the row\./);
+});
+
 test('with nothing on record the streak is a dash, never a zero nobody measured', () => {
   assert.match(fingersWords(statsOf([]), 7).text, /— of 7/);
   assert.match(fingersWords(null, 7).text, /— of 7/);

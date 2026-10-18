@@ -252,6 +252,31 @@ test('the streak counts clean reps from the newest back, stops at an unclean one
   assert.equal(statsOf([r({ ms: 600, htm: 7, turns: 6 }), r({ ms: 300, htm: 4, turns: 3 })]).pace, 100);
 });
 
+// A marked pause breaks the streak as an error does (owner, 2026-10-18; plan §5, WI-12).
+
+test('a clean rep with a marked pause resets the streak; a clean rep with none extends it', () => {
+  const r = (o) => ({ ...rep(o), at: 1 });
+  assert.equal(statsOf([r(), r(), r({ pauses: 1 })]).streak, 0, 'a paused rep left the streak standing');
+  assert.equal(statsOf([r(), r({ pauses: 2 }), r(), r()]).streak, 2, 'the streak ran back through a paused rep');
+  assert.equal(statsOf([r(), r(), r()]).streak, 3);
+  // A pause is not a wrong turn: the rep stays clean, its time stays a clean time, and no error is counted.
+  const s = statsOf([r({ pauses: 1 })]);
+  assert.deepEqual([s.cleanReps, s.errorRate, s.timed], [1, 0, 1]);
+});
+
+test('a rep with marked pauses never counts toward the target, however many there are', () => {
+  const r = (o) => ({ ...rep(o), at: 1 });
+  assert.equal(statsOf(Array.from({ length: 30 }, () => r({ pauses: 1 }))).streak, 0);
+});
+
+test('an untimed clean rep counts by cleanliness alone — with no clock there is no pause to mark, and none is invented', () => {
+  const r = (o) => ({ ...rep(o), at: 1 });
+  const untimed = r({ ms: null, refused: TIME_REFUSAL.NO_CUBE_CLOCK });
+  assert.equal(untimed.pauses, 0, 'precondition: the record refuses pauses on a rep with no time');
+  assert.equal(statsOf([r({ pauses: 1 }), untimed, untimed, untimed]).streak, 3);
+  assert.equal(statsOf([r(), untimed, r(), untimed]).streak, 4);
+});
+
 
 // ---- caps ----------------------------------------------------------------------------------------------
 

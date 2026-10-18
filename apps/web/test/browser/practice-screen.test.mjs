@@ -903,6 +903,40 @@ test('a rep where one turn came without the cube\'s own time is refused about th
   }
 });
 
+test('a clean rep with a long gap between two turns is marked as paused, and puts the row of clean reps back to zero', async () => {
+  const { page, context, errors } = await openPractice(fixture);
+  try {
+    const rnd = lcg(223);
+    await show(page, 'sune');
+    for (let i = 0; i < 2; i++) {
+      const dones = await feedRep(page, randomStart(rnd), reportsPerToken(SUNE, ORIENTATIONS[0], rnd).flat());
+      assert.equal(dones.at(-1), 1, 'precondition: an even rep completed');
+      await settle(page);
+    }
+    const fingers = () => page.evaluate(() => document.querySelector('#practiceFingers').textContent);
+    assert.match(await fingers(), /2 of 7/, 'precondition: two clean reps make a row of two');
+    // The same algorithm, every turn on time but one: twenty times the usual gap before the fourth turn.
+    const per = reportsPerToken(SUNE, ORIENTATIONS[0], rnd);
+    const late = per.slice(0, 3).flat().length;
+    const flat = per.flat();
+    const dones = await page.evaluate(({ f, qs, at }) => {
+      const before = window.__p.count('done');
+      window.__p.facelets(f);
+      return qs.map((q, i) => { window.__p.move(q, i === at ? { dt: 5000 } : {}); return window.__p.count('done') - before; });
+    }, { f: toFacelets(randomStart(rnd)), qs: flat, at: late });
+    assert.deepEqual(dones, atLast(flat.length), 'precondition: the paused rep completed at its last report');
+    const stored = (await recordOf(page)).algs.sune.at(-1);
+    assert.equal(stored.clean, true, 'precondition: the paused rep was clean');
+    assert.ok(stored.pauses >= 1, `precondition: the pause was marked (pauses = ${stored.pauses})`);
+    // What must NOT happen: a paused rep counted toward the target, as "3 of 7".
+    assert.match(await fingers(), /0 of 7/);
+    assert.equal(await page.evaluate(() => window.__p.fingers()), 'false');
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
 // ---- a record that cannot be read (round 2, rows 18 and 23; IndexedDB) ----------------------------------------
 
 /** What the page shows of the record: the history's words, the notice, and the four figures. */

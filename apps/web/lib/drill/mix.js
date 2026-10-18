@@ -17,7 +17,8 @@
 //                      to say it is strong, so it comes before every algorithm with history — or after all
 //                      of them when the caller asks (`unknownFirst: false`)
 //   2. error rate      higher first: the share of judged reps that were not the algorithm alone
-//   3. clean streak    shorter first: how many clean reps in a row the newest practice ends with
+//   3. clean streak    shorter first: how many clean reps in a row, none with a marked pause, the newest
+//                      practice ends with
 //   4. pace            slower first: the median ms per turn spanned over clean timed reps — the time made
 //                      comparable across algorithms of different lengths by the algorithm's OWN turns, not
 //                      by a guess. An algorithm with judged reps but no timed one (a cube with no clock, a
