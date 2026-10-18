@@ -134,6 +134,9 @@ test('on Scramble the die is held until the walk it rolled is on screen', async 
   }
   const die = $('#randCube');
   assert.ok(die && !die.disabled && $('#solList .chip-m'), 'precondition: a scramble is walked and the die is available');
+  // No move chip carries a hover hint: it popped up over the strip and shook the window (owner, 2026-10-18).
+  assert.deepEqual([...win.document.querySelectorAll('#solList .chip-m')].filter((chip) => chip.hasAttribute('title')).length, 0,
+    'a move chip has a hover hint');
   const chips = () => [...win.document.querySelectorAll('#solList .chip-m')].map((chip) => chip.textContent).join(' ');
   const walked = chips();
   // Read in the setter that lets the press go, at that instant: a MutationObserver's record is
