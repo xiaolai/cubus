@@ -1,40 +1,44 @@
-// The cube screen's speed menu: the gauge in the cube card's corner, the three walking speeds it
-// offers, the one that is saved, and the tempo the renderer is given.
+// The speed menu of a screen that walks a cube: the gauge in the cube card's corner, the three walking
+// speeds it offers, the one that is saved, and the tempo the renderer is given.
 //
 // Lifted out of lib/screens/cube.js on 2026-09-14 and built on lib/menu-popover.js, the menu the
 // scan screen's camera menu is built on. Pinned by the speed-menu cases in
 // test/router-wiring.test.mjs.
+//
+// A SHARED MODULE, beside lib/method-row.js (2026-10-19): the cube screen and Practice's page both
+// walk a cube (dev-docs/practice-redesign-plan.md §5.1), and a screen must not import another
+// screen's part. As a service it does not reach for the shell: the screen hands in `place`, the
+// shell's placement, as lib/menu-popover.js asks.
 
-import { $ } from '../../app-state.js';
-import { load, save } from '../../app-settings.js';
-import { t } from '../../i18n.js';
-import { createMenu } from '../../menu-popover.js';
-import { placeMenuUnder } from '../../screen-shell.js';
+import { $ } from './app-state.js';
+import { load, save } from './app-settings.js';
+import { t } from './i18n.js';
+import { createMenu } from './menu-popover.js';
 // THE TABLE IS NOT THIS MENU'S. It was defined here, and written to this screen's cube only, so
 // every other cube the app draws animated at the renderer's raw 190ms — the Drill page measured
 // 200ms per turn against 1620ms at Normal (2026-09-30). It now lives beside the rest of the cube's
 // look in `lib/cube-view.js` and `applyCubeView` puts it on every cube; this menu CHOOSES and
 // overrides, which is all a screen should do with a look every screen shares.
-import { WALK_SPEEDS, DEFAULT_WALK_SPEED, WALK_SPEED_KEY, tempoFor } from '../../cube-view.js';
+import { WALK_SPEEDS, DEFAULT_WALK_SPEED, WALK_SPEED_KEY, tempoFor } from './cube-view.js';
 
 /**
- * The speed menu of one mounted cube screen: wired, with the saved speed applied.
+ * The speed menu of one mounted screen: wired, with the saved speed applied.
  *
  * @param {object} deps `root`; the renderer `cube`, whose tempo this writes; the screen's abort
- *   `signal`, which the page's click and Escape listeners carry; and `following()`, whether the
- *   smart cube is driving the walk.
+ *   `signal`, which the page's click and Escape listeners carry; `following()`, whether the
+ *   smart cube is driving the walk; and `place(button, menu)`, the shell's placement.
  * @returns {Function} `applyTempo()`, which writes the tempo again: the walk session calls it
  *   whenever the driver changes. A screen with no walk draws no speed button, and gets one that
  *   does nothing.
  */
-export function createSpeedMenu({ root, cube, signal, following }) {
+export function createSpeedMenu({ root, cube, signal, following, place }) {
   const speedBtn = $('#speedBtn', root);
   if (!speedBtn) return () => {};
   let speedId = DEFAULT_WALK_SPEED;
   // localStorage is untrusted input: an id no longer in WALK_SPEEDS must not reach setAttribute.
   const saved = load(WALK_SPEED_KEY, { id: DEFAULT_WALK_SPEED }).id;
   if (WALK_SPEEDS.some((o) => o.id === saved)) speedId = saved;
-  const menu = createMenu({ root, button: speedBtn, label: t('Animation speed'), signal, place: placeMenuUnder });
+  const menu = createMenu({ root, button: speedBtn, label: t('Animation speed'), signal, place });
 
   const applySpeed = () => {
     const chosen = WALK_SPEEDS.find((o) => o.id === speedId);

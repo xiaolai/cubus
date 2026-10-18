@@ -1,6 +1,6 @@
 // HOW FAST A TURN IS DRAWN, and the rule that it is drawn that way on every cube.
 //
-// `tempo-scale` was defined in `lib/screens/cube/speed-menu.js` and written to that screen's cube
+// `tempo-scale` was defined in the cube screen's speed menu (now `lib/speed-menu.js`) and written to that screen's cube
 // alone, so every other cube the app draws animated at the renderer's own 190ms base: measured
 // 2026-09-30 on the Drill page at 200ms per quarter turn against 1620ms for the same turn at
 // Normal. A fifth of a second reads as a snap, which is what "the drills have no animation" meant.

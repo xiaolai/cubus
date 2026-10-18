@@ -17,7 +17,7 @@ import { createWalkSession } from '../walk-session.js';
 import { createRouteRace } from './cube/route-race.js';
 // The rest of its own parts: the speed menu, the die and the reconnect question.
 import { createPatternMenu } from './cube/pattern-menu.js';
-import { createSpeedMenu } from './cube/speed-menu.js';
+import { createSpeedMenu } from '../speed-menu.js';
 import { createDie } from './cube/die.js';
 import { createReconnectAsk } from './cube/reconnect-ask.js';
 // The BUDGET only. `stage-distance.js` builds nothing at import — its tables are lazy — but this
@@ -456,10 +456,10 @@ const cubeScreen = (screenMode) => {
       // and forget, whereas the row is the solution you are walking. Same idiom as the scan
       // screen's camera menu. Wired before the solve so a screen that fails to solve still honours
       // the setting. The renderer reads tempo-scale per move, so a change lands on the next turn.
-      // Its own unit (lib/screens/cube/speed-menu.js), and what it hands back is called by the walk
+      // Its own unit (lib/speed-menu.js, shared with Practice), and what it hands back is called by the walk
       // session whenever the driver changes: tempo DEPENDS on who drives (`following()` in
       // lib/walk-session.js says why).
-      const applyTempo = createSpeedMenu({ root, cube, signal, following: () => session?.following() });
+      const applyTempo = createSpeedMenu({ root, cube, signal, following: () => session?.following(), place: placeMenuUnder });
       // The pictures that are not stages. Built here beside the speed menu and for the same reason:
       // once per MOUNT, because a retarget replaces the walk under these controls rather than the
       // controls. It needs nothing from the walk session — its items are `[data-stage]`, wired and

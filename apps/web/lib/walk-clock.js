@@ -2,7 +2,7 @@
 //
 // Plan item 6.5. The stop driver's `play({ every })` takes a gap in MILLISECONDS, which is right for a
 // drill and wrong for this screen: the cube screen already has a speed control, and it works by setting
-// the renderer's `tempo-scale` — 3.8s, 1.9s or 0.95s per quarter turn (`lib/screens/cube/speed-menu.js`).
+// the renderer's `tempo-scale` — 3.8s, 1.9s or 0.95s per quarter turn (`lib/speed-menu.js`).
 // A walk played on a metronome would keep its own pace beside that one, so choosing Slow would make each
 // turn slower AND make the next stop arrive over the top of it.
 //

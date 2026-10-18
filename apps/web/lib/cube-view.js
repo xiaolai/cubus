@@ -53,8 +53,8 @@ export const VIEW_ATTRS = Object.freeze([
  * slower than the 760ms that used to be the only speed and was the complaint that prompted the
  * menu.
  *
- * THIS IS HERE, NOT IN THE MENU, BECAUSE IT IS NOT THE MENU'S. It lived in
- * `lib/screens/cube/speed-menu.js` and was written to exactly one cube — the cube screen's — so
+ * THIS IS HERE, NOT IN THE MENU, BECAUSE IT IS NOT THE MENU'S. It lived in the cube
+ * screen's speed menu (now `lib/speed-menu.js`) and was written to exactly one cube — the cube screen's — so
  * every other cube the app draws animated at the renderer's raw 190ms: measured 2026-09-30 on the
  * Drill page at 200ms against 1620ms for the same turn once `tempo-scale` was set to Normal.
  *
