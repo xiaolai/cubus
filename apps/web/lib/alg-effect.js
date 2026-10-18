@@ -26,7 +26,7 @@
 // repeat the algorithm, each time reading its letters in the hold in force, until pieces AND hold are back —
 // and `orderOf` computes it. The first version's four counts (`corners`, `edges`, `twisted`, `flipped`) keep
 // their names and meaning, so a face-turn algorithm measures exactly as it did.
-import { CORNERS, EDGES, SOLVED } from './cube-pieces.js';
+import { CORNERS, EDGES, SOLVED, allSolved } from './cube-pieces.js';
 import { run } from './cube-moves.js';
 import { CROSS, F1L, crossSolved, firstTwoLayers, keeping } from './methods/engine.js';
 import { bothBlocksBuilt, firstBlockBuilt } from './methods/roux-blocks.js';
@@ -143,6 +143,7 @@ export const REGIONS = Object.freeze([
   Object.freeze({ id: 'first-two-layers', kept: (state) => firstTwoLayers(state) }),
   Object.freeze({ id: 'first-block', kept: (state) => firstBlockBuilt(state) }),
   Object.freeze({ id: 'both-blocks', kept: (state) => bothBlocksBuilt(state) }),
+  Object.freeze({ id: 'bottom-corners', kept: (state) => allSolved(state, { corners: [4, 5, 6, 7] }) }),
 ]);
 
 /** The ids of every region an algorithm leaves as it found it on a solved cube, in `REGIONS` order. Judged

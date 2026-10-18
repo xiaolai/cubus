@@ -21,6 +21,8 @@ import { CENTERS, CORNER_FACELETS, EDGE_FACELETS } from '../lib/cube-layout.js';
 import { ORIENTATIONS } from '../lib/cube-orientation.js';
 import { CORNERS, EDGES } from '../lib/cube-pieces.js';
 import { CMLL_ALGS } from '../lib/data/cmll-algs.js';
+import { CF_ALGS } from '../lib/data/corners-first-algs.js';
+import { MEHTA_ALGS, MEHTA_BEGINNER } from '../lib/data/mehta-algs.js';
 import { HUMAN_ALGS } from '../lib/data/human-algs.js';
 import { CROSS_ALGS } from '../lib/methods/cross.js';
 import { COURSE_ALGS, OLL_ALGS, PLL_ALGS } from '../lib/methods/last-layer.js';
@@ -32,7 +34,7 @@ const SOLVED_STRING = new Cube().asString();
 
 /** Every algorithm the app holds, by pool. Each pool is asserted non-empty: a sweep that silently read an
  *  empty list would pass having checked nothing. */
-const POOLS = Object.freeze({ HUMAN_ALGS, CMLL_ALGS, OLL_ALGS, PLL_ALGS, COURSE_ALGS, PAIRS_ALGS, CROSS_ALGS });
+const POOLS = Object.freeze({ HUMAN_ALGS, CMLL_ALGS, OLL_ALGS, PLL_ALGS, COURSE_ALGS, PAIRS_ALGS, CROSS_ALGS, MEHTA_ALGS, MEHTA_BEGINNER, CF_ALGS });
 const EVERY = Object.entries(POOLS).flatMap(([pool, rows]) => rows.filter((r) => r.alg).map((r) => ({ pool, name: r.name, alg: r.alg })));
 
 /** cubejs's spelling of an alg: it reads `r` but not `Rw`/`2Rw`, and not `R2'`. Applied only to algorithms
@@ -54,6 +56,7 @@ const REGION_SLOTS = Object.freeze({
   },
   'first-block': { edges: ['DL', 'FL', 'BL'], corners: ['DLF', 'DBL'] },
   'both-blocks': { edges: ['DL', 'FL', 'BL', 'DR', 'FR', 'BR'], corners: ['DLF', 'DBL', 'DFR', 'DRB'] },
+  'bottom-corners': { edges: [], corners: ['DFR', 'DLF', 'DBL', 'DRB'] },
 });
 
 /** How many repetitions bring cubejs's 54 stickers — centres included — back to solved. */
@@ -186,7 +189,7 @@ test('named cases, checked by hand and then by cubejs', () => {
   assert.deepEqual(t.edgeCycles.map((c) => [...c.positions]), [['UR', 'UL']]);
   assert.equal(t.parity, 'odd');
   assert.equal(t.order, 2);
-  assert.deepEqual([...t.keeps], ['centres', 'cross', 'first-layer', 'first-two-layers', 'first-block', 'both-blocks']);
+  assert.deepEqual([...t.keeps], ['centres', 'cross', 'first-layer', 'first-two-layers', 'first-block', 'both-blocks', 'bottom-corners']);
   // Ua, slices: three top edges cycled, no corner touched, the centres back where they were.
   const ua = effectOf("M2 U M U2 M' U M2");
   assert.deepEqual(ua.cornerCycles, []);
@@ -227,7 +230,7 @@ test('an algorithm that leaves the cube turned has an order, counted with the ho
   const x = effectOf('x');
   assert.equal(x.pieces, 0);
   assert.equal(x.order, 4);
-  assert.deepEqual([...x.keeps], ['cross', 'first-layer', 'first-two-layers', 'first-block', 'both-blocks']);
+  assert.deepEqual([...x.keeps], ['cross', 'first-layer', 'first-two-layers', 'first-block', 'both-blocks', 'bottom-corners']);
 });
 
 test('the first version\'s two equalities still hold', () => {
@@ -284,8 +287,13 @@ test('every order in the sweep is a whole number within the cube group\'s 1260',
 test('every pool algorithm ends held as it began', () => {
   // The data files close every rotation they open (human-algs.js, change 2), which `piecesOf` in the method
   // engine relies on. Measured here, not assumed, because an open one would change what `keeps` means.
+  // The one exception is Jelinek's corners-first edge steps, which leave the middle slice loose by the method's
+  // design: exactly these ten end with the centres turned, and the ledger finishes each with a turn of M.
   const open = EVERY.filter((e) => !effectOf(e.alg).keepsHold).map((e) => e.name);
-  assert.deepEqual(open, []);
+  assert.deepEqual(open, [
+    'cf-ledges-1', 'cf-ledges-2', 'cf-ledges-3', 'cf-ledges-5', 'cf-redges-1', 'cf-redges-2', 'cf-redges-3', 'cf-redges-5',
+    'cf-last-ledge-1', 'cf-last-ledge-2',
+  ]);
 });
 
 test('the result is frozen, and keepsOf answers what effectOf carries', () => {

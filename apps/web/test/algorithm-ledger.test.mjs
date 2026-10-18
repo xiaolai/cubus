@@ -167,9 +167,11 @@ test('every name a method step can carry is filed in exactly one set, and every 
   // The other direction from the solver relation below, and independent of any sample: `CASE_NAMES` is the
   // whole list of names a step may carry, so a name in it that no set files is an algorithm the ledger does
   // not count, whether or not a frozen cube happens to meet it. The proved tables are left out: they are the
-  // oracle, not taught, and their names are not on any step.
+  // oracle, not taught, and their names are not on any step; nor are the sets only a method the app does not
+  // offer holds (Mehta, corners first), which no step of any offered method can name.
+  const offeredSets = new Set(METHOD_ALGORITHMS.filter((m) => m.id !== null).flatMap((m) => m.sets));
   const filed = new Map();
-  for (const s of MEASURED_SETS.filter((x) => x.kind !== 'proved')) {
+  for (const s of MEASURED_SETS.filter((x) => offeredSets.has(x.id) || x.kind === 'not an algorithm')) {
     for (const { name } of s.algs) filed.set(name, [...(filed.get(name) ?? []), s.id]);
   }
   for (const name of CASE_NAMES) {
@@ -262,8 +264,8 @@ test('the headline counts are what the sets add up to', () => {
   assert.equal(proved + hand + sourced + notAlgorithms, total, 'the kinds do not partition the ledger');
   assert.equal(notAlgorithms, 2, 'the alignment and the turn to a slot are the only named steps that are not algorithms');
   assert.equal(proved, 119, 'the proved tables are F2L 41 + OLL 57 + PLL 21');
-  assert.equal(sourced, 161,
-    'the sourced tables are the human-speed F2L 41 + OLL 57 + PLL 21 (one row per proved case), plus CMLL 42');
+  assert.equal(sourced, 435,
+    'the sourced tables are the human-speed F2L 41 + OLL 57 + PLL 21 (one row per proved case), plus CMLL 42, Mehta 218 + its beginner path 32, and corners first 24');
   assert.equal(hand, 29,
     'the hand-written tables are cross 2 + first layer 3 + middle 2 + triggers 6 + two-look OLL 1 + 5 + two-look PLL 3 + 2, plus the course\'s 2 + 3');
 
@@ -272,6 +274,9 @@ test('the headline counts are what the sets add up to', () => {
   const byName = Object.fromEntries(METHOD_ALGORITHMS.map((m) => [m.method, m]));
   assert.equal(byName.Thistlethwaite.held, 0, 'a search method memorises nothing');
   assert.equal(byName["The app's solver"].held, 0, 'a search method memorises nothing');
+  assert.equal(byName.Mehta.held, 218, 'Mehta costs EOLE, 6CO, 6CP and L5EP as distinct algorithms');
+  assert.equal(byName['Mehta, beginner path'].held, 32, 'Mehta\'s beginner path costs its sheet\'s 32 algorithms');
+  assert.equal(byName['Corners first'].held, 24, 'corners first costs Jelinek\'s 24 sequences');
   const byId = Object.fromEntries(METHOD_ALGORITHMS.filter((m) => m.id).map((m) => [m.id, m]));
   assert.ok(byId.cfop.held > byId.beginner.held * 6,
     'CFOP (full) should cost many times what Beginner does, or one of them has been mis-mapped');

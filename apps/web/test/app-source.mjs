@@ -80,7 +80,7 @@ export const LIBRARY_SOURCES = Object.freeze([
   'lib/cube-orientation.js', 'lib/cube-pieces.js', 'lib/cube-questions.js',
   'lib/cube-reconnect.js', 'lib/cube-registry.js', 'lib/cube-report.js', 'lib/cube-selfcheck.js',
   'lib/cube-session.js', 'lib/cube-trust.js', 'lib/cube-view.js', 'lib/cubejs-entry.js',
-  'lib/data/case-tables.js', 'lib/data/human-algs.js',
+  'lib/data/case-tables.js', 'lib/data/corners-first-algs.js', 'lib/data/human-algs.js', 'lib/data/mehta-algs.js',
   // the drill engine, a module with no screen, 2026-10-17 (dev-docs/algorithm-drill-v2-plan.md §3)
   'lib/drill/candidates.js', 'lib/drill/engine.js', 'lib/drill/timing.js',
   // the practice record (an injected store, so no app module), its IndexedDB store (an injected factory, 2026-10-18)

@@ -20,8 +20,10 @@
 //      method on. The methods the solve tab offers are the registry's (`lib/methods/registry.js`), one
 //      entry each and keyed by its id; `algorithm-ledger.test.mjs` solves frozen cubes with each and
 //      holds the mapping to what the solver actually names.
-//   3. **What is missing.** Corners first and Mehta need sets this repository does not hold. Saying so
-//      with a number is worth more than a list of the sets we happen to have.
+//   3. **What is missing, and what is held for a method the app does not offer.** Corners first and Mehta
+//      are held, from lib/data/corners-first-algs.js and lib/data/mehta-algs.js, and counted here though
+//      the solve tab offers neither. Saying what a method costs with a number is worth more than a list of
+//      the sets we happen to have.
 
 import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -52,8 +54,9 @@ const SETS = ALG_SETS.map((s) => ({ ...s, entries: ENTRIES.get(s.id) }));
  * phases are its registry stages, each naming the `stage` it is. The rung ladder this table used to model
  * is gone as a learner's choice (ADR 0011): a method is fixed, so it has ONE cost, not a range.
  *
- * The OFFERED methods' mapping is the library's (`METHOD_SETS`), for the reason the sets are; what is added
- * here is only the methods the app does not offer, kept to be compared with.
+ * The library's mapping (`METHOD_SETS`) holds the OFFERED methods and the not-offered ones whose sets it
+ * files (Mehta, its beginner path, corners first), for the reason the sets are; what is added here is only
+ * the methods the app does not offer and the library holds nothing for, kept to be compared with.
  */
 const METHODS = [
   ...METHOD_SETS,
@@ -69,17 +72,6 @@ const METHODS = [
     { phase: 'EO F2L', intuitive: 'block building with no F or B turns' },
     { phase: 'Last layer', held: 'ocll', also: ['cpll', 'epll'],
       note: 'ZZ-a finishes with OCLL and PLL, which are held. ZZ-b with full ZBLL is 493 algorithms and is not' },
-  ] },
-  { id: null, method: 'Corners first', phases: [
-    { phase: 'Corners', missing: 'a corner-only set', size: null, unmeasured: true },
-    { phase: 'Edges', missing: 'an edge-only set', size: null, unmeasured: true },
-  ] },
-  { id: null, method: 'Mehta', phases: [
-    { phase: 'First block', intuitive: 'block building' },
-    { phase: 'Belt and edge orientation', missing: 'EOLE', size: null, unmeasured: true },
-    { phase: '6CO', missing: '6CO', size: null, unmeasured: true },
-    { phase: '6CP', missing: '6CP', size: null, unmeasured: true },
-    { phase: 'L5EP', missing: 'L5EP', size: null, unmeasured: true },
   ] },
   { id: null, method: 'Thistlethwaite', phases: [
     { phase: 'G1 to G4', intuitive: 'NONE. A computer method searches each coset; there is nothing to memorise and nothing a human could' },
@@ -225,8 +217,9 @@ if (process.argv.includes('--emit')) {
 //   re-verify:  node --test apps/web/test/algorithm-ledger.test.mjs
 //
 // What this repository holds, per set and per method, and what it does not. The sets themselves are
-// NOT copied here — they live in lib/methods/ (the hand-written tables), lib/data/human-algs.js and
-// lib/data/cmll-algs.js (the sourced ones) and lib/data/case-tables.js (the proved ones), and copying
+// NOT copied here — they live in lib/methods/ (the hand-written tables), lib/data/human-algs.js,
+// lib/data/cmll-algs.js, lib/data/mehta-algs.js and lib/data/corners-first-algs.js (the sourced ones) and
+// lib/data/case-tables.js (the proved ones), and copying
 // them would make a second place for an algorithm to be wrong. This records the shape: sizes,
 // lengths, provenance, which method needs which, and what is missing. A method the solve tab offers
 // carries its registry id (lib/methods/registry.js); one it does not carries \`id: null\`.

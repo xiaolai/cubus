@@ -4,8 +4,9 @@
 //   re-verify:  node --test apps/web/test/algorithm-ledger.test.mjs
 //
 // What this repository holds, per set and per method, and what it does not. The sets themselves are
-// NOT copied here — they live in lib/methods/ (the hand-written tables), lib/data/human-algs.js and
-// lib/data/cmll-algs.js (the sourced ones) and lib/data/case-tables.js (the proved ones), and copying
+// NOT copied here — they live in lib/methods/ (the hand-written tables), lib/data/human-algs.js,
+// lib/data/cmll-algs.js, lib/data/mehta-algs.js and lib/data/corners-first-algs.js (the sourced ones) and
+// lib/data/case-tables.js (the proved ones), and copying
 // them would make a second place for an algorithm to be wrong. This records the shape: sizes,
 // lengths, provenance, which method needs which, and what is missing. A method the solve tab offers
 // carries its registry id (lib/methods/registry.js); one it does not carries `id: null`.
@@ -221,6 +222,188 @@ export const ALGORITHM_SETS = Object.freeze([
     "longest": 17,
     "mean": 10.79,
     "moves": 453
+  },
+  {
+    "id": "mehta-eole",
+    "name": "Mehta: EOLE",
+    "kind": "sourced",
+    "provenance": "the Mehta-OS sheet's EOLE page, every cell in the sheet's order (`mehta-algs.js`)",
+    "verified": "`mehta-algs.test.mjs`: cubejs draws every row's case and the rows answer the 55 cases once each",
+    "count": 55,
+    "distinct": 55,
+    "shortest": 3,
+    "longest": 12,
+    "mean": 6.95,
+    "moves": 382
+  },
+  {
+    "id": "mehta-6co",
+    "name": "Mehta: 6CO",
+    "kind": "sourced",
+    "provenance": "the Mehta-OS sheet's 6CO page, every cell in the sheet's order (`mehta-algs.js`)",
+    "verified": "`mehta-algs.test.mjs`: the rows answer the 71 cases once each",
+    "count": 71,
+    "distinct": 71,
+    "shortest": 6,
+    "longest": 12,
+    "mean": 9.06,
+    "moves": 643
+  },
+  {
+    "id": "mehta-6cp",
+    "name": "Mehta: 6CP",
+    "kind": "sourced",
+    "provenance": "the Mehta-OS sheet's 6CP page, every cell in the sheet's order (`mehta-algs.js`)",
+    "verified": "`mehta-algs.test.mjs`: the 47 rows answer the 41 cases, two columns pinned as the same six cases with the bottom turned first",
+    "count": 47,
+    "distinct": 47,
+    "shortest": 3,
+    "longest": 15,
+    "mean": 10.38,
+    "moves": 488
+  },
+  {
+    "id": "mehta-l5ep",
+    "name": "Mehta: L5EP",
+    "kind": "sourced",
+    "provenance": "the Mehta-OS sheet's L5EP page, each case drawn up to three ways (`mehta-algs.js`)",
+    "verified": "`mehta-algs.test.mjs`: the 45 rows answer the 16 cases",
+    "count": 45,
+    "distinct": 45,
+    "shortest": 5,
+    "longest": 15,
+    "mean": 11.16,
+    "moves": 502
+  },
+  {
+    "id": "mehta-beginner-eo",
+    "name": "Mehta, beginner path: edges the right way round",
+    "kind": "sourced",
+    "provenance": "the Mehta-OS sheet's \"Beginner Mehta Algs\" page, its EO step (`mehta-algs.js`)",
+    "verified": "`mehta-algs.test.mjs`: the step finishes every state it can meet",
+    "count": 5,
+    "distinct": 5,
+    "shortest": 5,
+    "longest": 8,
+    "mean": 5.8,
+    "moves": 29
+  },
+  {
+    "id": "mehta-beginner-dcal",
+    "name": "Mehta, beginner path: two bottom corners",
+    "kind": "sourced",
+    "provenance": "the Mehta-OS sheet's \"Beginner Mehta Algs\" page, its two DCAL looks (`mehta-algs.js`)",
+    "verified": "`mehta-algs.test.mjs`: each look finishes every state it can meet",
+    "count": 13,
+    "distinct": 13,
+    "shortest": 3,
+    "longest": 11,
+    "mean": 7.46,
+    "moves": 97
+  },
+  {
+    "id": "mehta-beginner-cdrll",
+    "name": "Mehta, beginner path: top corners",
+    "kind": "sourced",
+    "provenance": "the Mehta-OS sheet's \"Beginner Mehta Algs\" page, its two CDRLL looks (`mehta-algs.js`)",
+    "verified": "`mehta-algs.test.mjs`: each look finishes every state it can meet",
+    "count": 9,
+    "distinct": 9,
+    "shortest": 7,
+    "longest": 17,
+    "mean": 10.11,
+    "moves": 91
+  },
+  {
+    "id": "mehta-beginner-last-edges",
+    "name": "Mehta, beginner path: last edges",
+    "kind": "sourced",
+    "provenance": "the Mehta-OS sheet's \"Beginner Mehta Algs\" page, its last bottom edge and EPLL (`mehta-algs.js`)",
+    "verified": "`mehta-algs.test.mjs`: each step finishes every state it can meet",
+    "count": 5,
+    "distinct": 5,
+    "shortest": 6,
+    "longest": 14,
+    "mean": 10.6,
+    "moves": 53
+  },
+  {
+    "id": "cf-bottom-corners",
+    "name": "Corners first: bottom corners",
+    "kind": "sourced",
+    "provenance": "Josef Jelinek's corners-first beginner page, its bottom-corner sequences (`corners-first-algs.js`)",
+    "verified": "`corners-first-algs.test.mjs`: the step finishes every position it can meet, proved by search",
+    "count": 5,
+    "distinct": 5,
+    "shortest": 3,
+    "longest": 4,
+    "mean": 3.2,
+    "moves": 16
+  },
+  {
+    "id": "cf-top-corners",
+    "name": "Corners first: top corners",
+    "kind": "sourced",
+    "provenance": "Josef Jelinek's corners-first beginner page, its corner and twist sequences (`corners-first-algs.js`)",
+    "verified": "`corners-first-algs.test.mjs`: each step finishes every position it can meet, proved by search",
+    "count": 2,
+    "distinct": 2,
+    "shortest": 7,
+    "longest": 14,
+    "mean": 10.5,
+    "moves": 21
+  },
+  {
+    "id": "cf-ledges",
+    "name": "Corners first: left edges",
+    "kind": "sourced",
+    "provenance": "Josef Jelinek's corners-first beginner page, its left-edge sequences (`corners-first-algs.js`)",
+    "verified": "`corners-first-algs.test.mjs`: the step finishes every position it can meet, proved by search",
+    "count": 5,
+    "distinct": 5,
+    "shortest": 4,
+    "longest": 7,
+    "mean": 5.2,
+    "moves": 26
+  },
+  {
+    "id": "cf-redges",
+    "name": "Corners first: right edges",
+    "kind": "sourced",
+    "provenance": "Josef Jelinek's corners-first beginner page, its right-edge sequences (`corners-first-algs.js`)",
+    "verified": "`corners-first-algs.test.mjs`: the step finishes every position it can meet, proved by search",
+    "count": 5,
+    "distinct": 5,
+    "shortest": 4,
+    "longest": 7,
+    "mean": 5.2,
+    "moves": 26
+  },
+  {
+    "id": "cf-last-ledge",
+    "name": "Corners first: last left edge",
+    "kind": "sourced",
+    "provenance": "Josef Jelinek's corners-first beginner page, its last-left-edge sequences (`corners-first-algs.js`)",
+    "verified": "`corners-first-algs.test.mjs`: the step finishes every position it can meet, proved by search",
+    "count": 2,
+    "distinct": 2,
+    "shortest": 7,
+    "longest": 7,
+    "mean": 7,
+    "moves": 14
+  },
+  {
+    "id": "cf-middle-edges",
+    "name": "Corners first: middle edges",
+    "kind": "sourced",
+    "provenance": "Josef Jelinek's corners-first beginner page, its middle-slice sequences (`corners-first-algs.js`)",
+    "verified": "`corners-first-algs.test.mjs`: each step finishes every position it can meet, proved by search",
+    "count": 5,
+    "distinct": 5,
+    "shortest": 6,
+    "longest": 18,
+    "mean": 8.8,
+    "moves": 44
   },
   {
     "id": "f2l-full",
@@ -451,6 +634,147 @@ export const METHOD_ALGORITHMS = Object.freeze([
   },
   {
     "id": null,
+    "method": "Mehta",
+    "phases": [
+      {
+        "phase": "First block",
+        "intuitive": "block building: a 1x2x3 block flat on the bottom, at the left"
+      },
+      {
+        "phase": "Three middle edges",
+        "intuitive": "placed by understanding, with nothing to memorise"
+      },
+      {
+        "phase": "Last middle edge, every edge the right way round",
+        "held": [
+          "mehta-eole"
+        ]
+      },
+      {
+        "phase": "Corners turned",
+        "held": [
+          "mehta-6co"
+        ]
+      },
+      {
+        "phase": "Corners placed",
+        "held": [
+          "mehta-6cp"
+        ]
+      },
+      {
+        "phase": "Last five edges",
+        "held": [
+          "mehta-l5ep"
+        ]
+      }
+    ],
+    "sets": [
+      "mehta-eole",
+      "mehta-6co",
+      "mehta-6cp",
+      "mehta-l5ep"
+    ],
+    "held": 218,
+    "heldMoves": 2015,
+    "missing": []
+  },
+  {
+    "id": null,
+    "method": "Mehta, beginner path",
+    "phases": [
+      {
+        "phase": "First block",
+        "intuitive": "block building"
+      },
+      {
+        "phase": "Middle layer",
+        "intuitive": "placed by understanding"
+      },
+      {
+        "phase": "Edges the right way round",
+        "held": [
+          "mehta-beginner-eo"
+        ]
+      },
+      {
+        "phase": "Two bottom corners",
+        "held": [
+          "mehta-beginner-dcal"
+        ]
+      },
+      {
+        "phase": "Top corners",
+        "held": [
+          "mehta-beginner-cdrll"
+        ]
+      },
+      {
+        "phase": "Last edges",
+        "held": [
+          "mehta-beginner-last-edges"
+        ]
+      }
+    ],
+    "sets": [
+      "mehta-beginner-eo",
+      "mehta-beginner-dcal",
+      "mehta-beginner-cdrll",
+      "mehta-beginner-last-edges"
+    ],
+    "held": 32,
+    "heldMoves": 270,
+    "missing": []
+  },
+  {
+    "id": null,
+    "method": "Corners first",
+    "phases": [
+      {
+        "phase": "Bottom corners",
+        "held": [
+          "cf-bottom-corners"
+        ]
+      },
+      {
+        "phase": "Top corners",
+        "held": [
+          "cf-top-corners"
+        ]
+      },
+      {
+        "phase": "Centres",
+        "intuitive": "no sequence: turn the middle slices until the white centre is underneath again"
+      },
+      {
+        "phase": "Left and right edges",
+        "held": [
+          "cf-ledges",
+          "cf-redges",
+          "cf-last-ledge"
+        ]
+      },
+      {
+        "phase": "Middle edges",
+        "held": [
+          "cf-middle-edges"
+        ]
+      }
+    ],
+    "sets": [
+      "cf-bottom-corners",
+      "cf-top-corners",
+      "cf-ledges",
+      "cf-redges",
+      "cf-last-ledge",
+      "cf-middle-edges"
+    ],
+    "held": 24,
+    "heldMoves": 147,
+    "missing": []
+  },
+  {
+    "id": null,
     "method": "Petrus",
     "phases": [
       {
@@ -514,74 +838,6 @@ export const METHOD_ALGORITHMS = Object.freeze([
     "held": 10,
     "heldMoves": 100,
     "missing": []
-  },
-  {
-    "id": null,
-    "method": "Corners first",
-    "phases": [
-      {
-        "phase": "Corners",
-        "missing": "a corner-only set",
-        "size": null,
-        "unmeasured": true
-      },
-      {
-        "phase": "Edges",
-        "missing": "an edge-only set",
-        "size": null,
-        "unmeasured": true
-      }
-    ],
-    "sets": [],
-    "held": 0,
-    "heldMoves": 0,
-    "missing": [
-      "a corner-only set",
-      "an edge-only set"
-    ]
-  },
-  {
-    "id": null,
-    "method": "Mehta",
-    "phases": [
-      {
-        "phase": "First block",
-        "intuitive": "block building"
-      },
-      {
-        "phase": "Belt and edge orientation",
-        "missing": "EOLE",
-        "size": null,
-        "unmeasured": true
-      },
-      {
-        "phase": "6CO",
-        "missing": "6CO",
-        "size": null,
-        "unmeasured": true
-      },
-      {
-        "phase": "6CP",
-        "missing": "6CP",
-        "size": null,
-        "unmeasured": true
-      },
-      {
-        "phase": "L5EP",
-        "missing": "L5EP",
-        "size": null,
-        "unmeasured": true
-      }
-    ],
-    "sets": [],
-    "held": 0,
-    "heldMoves": 0,
-    "missing": [
-      "EOLE",
-      "6CO",
-      "6CP",
-      "L5EP"
-    ]
   },
   {
     "id": null,

@@ -146,7 +146,11 @@ const notGivenHtml = (row, field) => {
 function rowHtml(row) {
   const name = row.label ?? notGivenHtml(row, 'label');
   const nick = row.nickname ? ` <span class="nick">“${esc(row.nickname)}”</span>` : '';
-  const methods = row.methods.length ? row.methods.map((m) => `${esc(m.method)}/${esc(m.stage)}`).join(', ') : 'taught by no method — the oracle';
+  const methods = row.methods.length
+    ? row.methods.map((m) => `${esc(m.method)}/${esc(m.stage)}`).join(', ')
+    : algSet(row.set).kind === 'proved'
+      ? 'taught by no method — the oracle'
+      : `${METHOD_SETS.filter((m) => m.id === null && m.phases.some((p) => (p.held ?? []).includes(row.set))).map((m) => esc(m.method)).join(', ')} (not offered in the app)`;
   const search = [row.id, row.label, row.nickname, row.alg, row.says, row.set].filter(Boolean).join(' ').toLowerCase();
   return `<article class="row" id="row-${esc(row.id)}" data-search="${esc(search)}">
   <div class="pic">${pictureOf(row)}</div>
@@ -160,7 +164,7 @@ function rowHtml(row) {
       <dt>Length</dt><dd>${row.htm} HTM · ${row.stm} STM · ${row.qtm} QTM · ${row.tokens} moves written${row.kinds.length ? ` · uses ${row.kinds.join(', ')}` : ''}</dd>
       <dt>Effect</dt><dd>${effectHtml(row)}</dd>
       <dt>Keeps</dt><dd>${row.keeps.length ? row.keeps.join(', ') : 'nothing'} · order ${row.order}</dd>
-      <dt>Case</dt><dd>${row.solves.case ? `<code>${esc(row.solves.case)}</code> · ` : ''}held [${row.solves.viewHold.join(', ')}] · ${esc(PICTURE_TITLE[row.solves.picture])}</dd>
+      <dt>Case</dt><dd>${row.solves.case ? `<code>${esc(row.solves.case)}</code> · ` : ''}held [${row.solves.viewHold.join(', ')}] · ${esc(PICTURE_TITLE[row.solves.picture])}${row.solves.finish ? ` · then <code>${esc(row.solves.finish)}</code>` : ''}</dd>
       <dt>Same moves</dt><dd>${links(row.sameAs)}</dd>
       <dt>Inverse</dt><dd>${links(row.inverseOf)}</dd>
       <dt>Mirror</dt><dd>${links(row.mirrorOf)}</dd>
@@ -214,9 +218,9 @@ export function pageHtml(ledger) {
   for (const m of METHOD_SETS) {
     const stages = m.phases.map((p) => {
       if (!p.held) return `<h3>${esc(p.phase)}${p.stage ? ` <span class="dim">· stage ${esc(p.stage)}</span>` : ''}</h3><p class="dim">Nothing to memorise: ${esc(p.intuitive)}.</p>`;
-      return `<h3 class="stage">${esc(p.phase)} <span class="dim">· stage ${esc(p.stage)}</span></h3>${p.held.map((id) => setHtml(algSet(id), rowsOf(id), rendered, `${m.method} → ${p.phase}`)).join('\n')}`;
+      return `<h3 class="stage">${esc(p.phase)}${p.stage ? ` <span class="dim">· stage ${esc(p.stage)}</span>` : ''}</h3>${p.held.map((id) => setHtml(algSet(id), rowsOf(id), rendered, `${m.method} → ${p.phase}`)).join('\n')}`;
     }).join('\n');
-    sections.push(`<section class="method"><h2>${esc(m.method)} <span class="dim">· ${esc(m.id)}</span></h2>${stages}</section>`);
+    sections.push(`<section class="method"><h2>${esc(m.method)} <span class="dim">· ${m.id === null ? 'not offered in the app' : esc(m.id)}</span></h2>${stages}</section>`);
   }
   const oracle = ALG_SETS.filter((s) => s.kind === 'proved');
   sections.push(`<section class="method"><h2>Not taught — the proved tables <span class="dim">· the oracle</span></h2>

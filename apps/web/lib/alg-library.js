@@ -47,7 +47,7 @@
 import { faceTurnsOf, run } from './cube-moves.js';
 import { parse, readToken } from './cube-notation.js';
 import { orientationPerm } from './cube-orientation.js';
-import { CORNERS, EDGES, SOLVED, invert, toFacelets } from './cube-pieces.js';
+import { CORNERS, EDGES, SOLVED, allSolved, applyAlg, compose, invert, toFacelets } from './cube-pieces.js';
 import { effectOf } from './alg-effect.js';
 import { plural, t } from './i18n.js';
 import { METHOD_FRAME } from './solving-hold.js';
@@ -55,8 +55,18 @@ import { METHODS as REGISTRY } from './methods/registry.js';
 import { HUMAN_F2L, HUMAN_OLL, HUMAN_PLL, SOURCES as HUMAN_SOURCES } from './data/human-algs.js';
 import { CMLL_ALGS, SOURCES as CMLL_SOURCES } from './data/cmll-algs.js';
 import { F2L_CASES, FULL_OLL, FULL_PLL } from './data/case-tables.js';
+import {
+  MEHTA_6CO, MEHTA_6CP, MEHTA_BEGINNER, MEHTA_EOLE, MEHTA_L5EP, SOURCES as MEHTA_SOURCES,
+} from './data/mehta-algs.js';
+import { CF_ALGS, CF_STEPS, SOURCES as CF_SOURCES } from './data/corners-first-algs.js';
 
 // ---- the source modules ------------------------------------------------------------------------------
+
+/** Corners first's steps either side of `centres`, which has no sequence: the corner steps are held white
+ *  underneath, the edge steps white on the left — the corner hold turned a quarter about the front-back axis. */
+const CF_CORNER_STEPS = Object.freeze(CF_STEPS.slice(0, CF_STEPS.indexOf('centres')));
+const CF_EDGE_STEPS = Object.freeze(CF_STEPS.slice(CF_STEPS.indexOf('centres') + 1));
+const CF_EDGE_HOLD = Object.freeze([...run('z', METHOD_FRAME, SOLVED).hold]);
 
 /**
  * Every module a row is read from, with the hold its letters are written in — declared here once per module,
@@ -88,12 +98,16 @@ export const ALG_SOURCES = Object.freeze({
     module: 'lib/data/human-algs.js',
     hold: METHOD_FRAME,
     holdWhy: 'the sheets\' own hold, cross on D and the last layer on U — the method frame, which `human-algs.test.mjs` checks every row in',
+    citations: HUMAN_SOURCES,
+    citeAs: (e) => e.source,
     load: async () => ({ HUMAN_F2L, HUMAN_OLL, HUMAN_PLL }),
   }),
   'cmll-algs': Object.freeze({
     module: 'lib/data/cmll-algs.js',
     hold: METHOD_FRAME,
     holdWhy: 'blocks on D, the top corners on U — the method frame Roux is held in',
+    citations: CMLL_SOURCES,
+    citeAs: (e) => e.source,
     load: async () => ({ CMLL_ALGS }),
   }),
   'case-tables': Object.freeze({
@@ -102,24 +116,41 @@ export const ALG_SOURCES = Object.freeze({
     holdWhy: 'searched in the method frame: the first two layers on D, the last layer on U',
     load: async () => ({ F2L_CASES, FULL_OLL, FULL_PLL }),
   }),
+  'mehta-algs': Object.freeze({
+    module: 'lib/data/mehta-algs.js',
+    hold: METHOD_FRAME,
+    finish: 'bottom',
+    holdWhy: 'the sheet\'s hold: the block underneath at the left, white on D, the middle layer round it (mehta-algs.js header) — the method frame',
+    citations: MEHTA_SOURCES,
+    citeAs: () => 'mehta-os',
+    load: async () => ({ MEHTA_EOLE, MEHTA_6CO, MEHTA_6CP, MEHTA_L5EP, MEHTA_BEGINNER }),
+  }),
+  'corners-first-corners': Object.freeze({
+    module: 'lib/data/corners-first-algs.js',
+    hold: METHOD_FRAME,
+    ignoresCase: true,
+    holdWhy: 'the corner steps are written white underneath (corners-first-algs.js, THE HOLDS)',
+    citations: CF_SOURCES,
+    citeAs: () => 'jelinek-beginner',
+    load: async () => ({ CF_ALGS: CF_ALGS.filter((r) => CF_CORNER_STEPS.includes(r.step)) }),
+  }),
+  'corners-first-edges': Object.freeze({
+    module: 'lib/data/corners-first-algs.js',
+    hold: CF_EDGE_HOLD,
+    finish: 'middle-slice',
+    ignoresCase: true,
+    holdWhy: 'the edge steps are written white on the left, yellow on the right: the corner hold turned a quarter about the front-back axis (header); corners-first-algs.test.mjs puts the white edges on L',
+    citations: CF_SOURCES,
+    citeAs: () => 'jelinek-beginner',
+    load: async () => ({ CF_ALGS: CF_ALGS.filter((r) => CF_EDGE_STEPS.includes(r.step)) }),
+  }),
 });
 
 /**
  * Sources that exist as another session's UNCOMMITTED work and are therefore NOT read: nothing here imports
  * them. `alg-ledger.test.mjs` fails the day one is committed, so it is added rather than left pending.
  */
-export const PENDING_SOURCES = Object.freeze([
-  Object.freeze({
-    id: 'mehta-algs',
-    module: 'lib/data/mehta-algs.js',
-    why: 'Mehta\'s tables are another session\'s uncommitted work; the ledger includes what is committed and does not commit them for it (plan §2.2)',
-  }),
-  Object.freeze({
-    id: 'corners-first-algs',
-    module: 'lib/data/corners-first-algs.js',
-    why: 'the corners-first tables are another session\'s uncommitted work, likewise (plan §2.2)',
-  }),
-]);
+export const PENDING_SOURCES = Object.freeze([]);
 
 /** A data file's citation, as `{ name, url, fetched }` — read from its `SOURCES`, never retyped. */
 const cite = (entry) => Object.freeze({ name: entry.name ?? entry.what, url: entry.url, fetched: entry.fetched });
@@ -132,6 +163,16 @@ const NOT_GIVEN = Object.freeze({
     label: 'the method module names the algorithm by its id only',
     nickname: 'the method module gives no nickname',
     case: 'the method module keys no case: the case is the picture',
+  }),
+  mehta: Object.freeze({
+    label: 'the sheet labels no algorithm: its column and place in it are the row\'s id',
+    nickname: 'the sheet gives no nicknames',
+    case: 'the sheet keys a case by its column, which the id carries; the picture is the case',
+  }),
+  cornersFirst: Object.freeze({
+    label: 'Jelinek names no sequence',
+    nickname: 'Jelinek gives no nicknames',
+    case: 'Jelinek\'s caption says where he applies a sequence, which for a set-up sequence is not the case it solves; the picture is the case',
   }),
   proved: Object.freeze({
     label: 'the proved tables name a case by an identifier, not by a name a learner would find elsewhere (case-tables.js header)',
@@ -154,10 +195,41 @@ const GOAL = Object.freeze({
   pll: { does: 'permute', kinds: ['corner', 'edge'], after: 'top-up' },
 });
 
+/**
+ * The milestones a Mehta step reaches or keeps, each a predicate on a piece state in the letters' frame (white
+ * on D). "Home" is in its slot, not twisted or flipped. `positional` milestones name pieces by slot, and those
+ * pieces are not free for the "also changes" clause; the rest are about every piece at once.
+ */
+const home = (edges, corners) => (state) => allSolved(state, { edges, corners });
+const ALL_CORNER_SLOTS = Object.freeze([0, 1, 2, 3, 4, 5, 6, 7]);
+const ALL_EDGE_SLOTS = Object.freeze([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+const milestone = (m) => Object.freeze({ ...m, edges: Object.freeze(m.edges ?? []), corners: Object.freeze(m.corners ?? []) });
+const MILESTONES = Object.freeze({
+  // EDGES: UR UF UL UB DR DF DL DB FR FL BL BR; CORNERS: URF UFL ULB UBR DFR DLF DBL DRB.
+  block: milestone({ positional: true, edges: [5, 6, 7], corners: [5, 6], keep: 'the block' }),
+  belt: milestone({ positional: true, edges: [9, 10, 11, 8], keep: 'the middle layer' }),
+  belt3: milestone({ positional: true, edges: [9, 10, 11], keep: 'the other middle edges' }),
+  fr: milestone({ positional: true, edges: [8], point: 'puts the front-right edge in place' }),
+  drb: milestone({ positional: true, corners: [7], point: 'puts the bottom back-right corner in place' }),
+  dfr: milestone({ positional: true, corners: [4], point: 'puts the bottom front-right corner in place' }),
+  dr: milestone({ positional: true, edges: [4], point: 'puts the bottom-right edge in place' }),
+  'bottom-corners': milestone({ positional: true, corners: [4, 5, 6, 7], keep: 'the bottom corners' }),
+  corners: milestone({ positional: true, corners: ALL_CORNER_SLOTS, keep: 'every corner' }),
+  eo: milestone({ positional: false, holds: (s) => s.eo.every((v) => v === 0), point: 'turns every edge the right way round', keep: 'every edge the right way round' }),
+  co: milestone({ positional: false, holds: (s) => s.co.every((v) => v === 0), point: 'turns every corner so the top or bottom colour faces up or down', keep: 'which way every corner faces' }),
+  cp: milestone({ positional: false, holds: (s) => s.cp.every((v, i) => v === i), point: 'puts every corner where it belongs' }),
+  solved: milestone({ positional: false, holds: home(ALL_EDGE_SLOTS, ALL_CORNER_SLOTS), point: 'finishes the cube by putting every edge where it belongs' }),
+});
+/** Whether a milestone holds on a state: its own predicate, or its pieces all home. */
+const reached = (id, state) => {
+  const m = MILESTONES[id];
+  return m.holds ? m.holds(state) : allSolved(state, { edges: m.edges, corners: m.corners });
+};
+
 const GOAL_SHAPE = Object.freeze({
-  does: ['insert', 'orient', 'permute', 'solve'],
-  region: ['cross', 'first-layer', 'first-two-layers'],
-  pieces: ['edge', 'corner', 'pair', 'slot'],
+  does: ['insert', 'orient', 'permute', 'solve', 'milestones'],
+  region: ['cross', 'first-layer', 'first-two-layers', 'bottom-corners', 'cf-ledges', 'cf-redges', 'cf-last-ledge', 'every-piece'],
+  pieces: ['edge', 'corner', 'pair', 'slot', 'any'],
   from: ['top'],
   kinds: ['corner', 'edge'],
   after: ['edges-up', 'top-up', 'corners-done'],
@@ -174,6 +246,12 @@ function frozenGoal(set) {
     if (!GOAL_SHAPE.region.includes(g.region) || !GOAL_SHAPE.pieces.includes(g.pieces)) bad('names a region or pieces no sentence knows');
     if (g.from !== undefined && !GOAL_SHAPE.from.includes(g.from)) bad(`says the pieces come from "${g.from}"`);
     if ((g.pieces === 'pair' || g.pieces === 'slot') && g.region !== 'first-two-layers') bad('puts a slot together outside the first two layers');
+  } else if (g.does === 'milestones') {
+    if (!Array.isArray(g.point) || !g.point.length || !Array.isArray(g.keeps) || !g.keeps.length) bad('names no milestone it reaches or keeps');
+    for (const id of g.point) if (!MILESTONES[id]?.point) bad(`reaches "${id}", which no sentence says`);
+    for (const id of g.keeps) if (!MILESTONES[id]?.keep) bad(`keeps "${id}", which no sentence says`);
+    if (g.turnsTopAndBottom !== undefined && g.turnsTopAndBottom !== true) bad('says turnsTopAndBottom as something other than true');
+    return Object.freeze({ ...g, point: Object.freeze([...g.point]), keeps: Object.freeze([...g.keeps]) });
   } else {
     if (!Array.isArray(g.kinds) || !g.kinds.length || !g.kinds.every((k) => GOAL_SHAPE.kinds.includes(k))) bad('names no kind of top piece');
     if (g.after !== undefined && !GOAL_SHAPE.after.includes(g.after)) bad(`starts after "${g.after}"`);
@@ -331,6 +409,118 @@ export const ALG_SETS = Object.freeze([
     notGiven: { nickname: 'SpeedCubeDB gives each CMLL case one name, its label', case: 'the CMLL table keys no case: its label names it, and the picture is the case' },
   },
   {
+    id: 'mehta-eole', name: 'Mehta: EOLE', kind: 'sourced', from: ['mehta-algs', 'MEHTA_EOLE'],
+    purpose: 'Puts the last middle edge in place and turns every edge the right way round, keeping the block and the other middle edges.',
+    goal: { does: 'milestones', point: ['fr', 'eo'], keeps: ['block', 'belt3'] },
+    provenance: 'the Mehta-OS sheet\'s EOLE page, every cell in the sheet\'s order (`mehta-algs.js`)',
+    verified: '`mehta-algs.test.mjs`: cubejs draws every row\'s case and the rows answer the 55 cases once each',
+    notGiven: NOT_GIVEN.mehta,
+  },
+  {
+    id: 'mehta-6co', name: 'Mehta: 6CO', kind: 'sourced', from: ['mehta-algs', 'MEHTA_6CO'],
+    purpose: 'Turns every corner so the top or bottom colour faces up or down, keeping the block, the middle layer and every edge the right way round.',
+    goal: { does: 'milestones', point: ['co'], keeps: ['block', 'belt', 'eo'] },
+    provenance: 'the Mehta-OS sheet\'s 6CO page, every cell in the sheet\'s order (`mehta-algs.js`)',
+    verified: '`mehta-algs.test.mjs`: the rows answer the 71 cases once each',
+    notGiven: NOT_GIVEN.mehta,
+  },
+  {
+    id: 'mehta-6cp', name: 'Mehta: 6CP', kind: 'sourced', from: ['mehta-algs', 'MEHTA_6CP'],
+    purpose: 'Puts every corner where it belongs, keeping the block, the middle layer, every edge the right way round and which way every corner faces.',
+    goal: { does: 'milestones', point: ['cp'], keeps: ['block', 'belt', 'eo', 'co'] },
+    provenance: 'the Mehta-OS sheet\'s 6CP page, every cell in the sheet\'s order (`mehta-algs.js`)',
+    verified: '`mehta-algs.test.mjs`: the 47 rows answer the 41 cases, two columns pinned as the same six cases with the bottom turned first',
+    notGiven: NOT_GIVEN.mehta,
+  },
+  {
+    id: 'mehta-l5ep', name: 'Mehta: L5EP', kind: 'sourced', from: ['mehta-algs', 'MEHTA_L5EP'],
+    purpose: 'Finishes the cube by putting the last five edges where they belong, keeping the block, the middle layer and every corner, with the top and bottom turned to match.',
+    goal: { does: 'milestones', point: ['solved'], keeps: ['block', 'belt', 'corners'], turnsTopAndBottom: true },
+    provenance: 'the Mehta-OS sheet\'s L5EP page, each case drawn up to three ways (`mehta-algs.js`)',
+    verified: '`mehta-algs.test.mjs`: the 45 rows answer the 16 cases',
+    notGiven: NOT_GIVEN.mehta,
+  },
+  {
+    id: 'mehta-beginner-eo', name: 'Mehta, beginner path: edges the right way round', kind: 'sourced', from: ['mehta-algs', 'MEHTA_BEGINNER'], steps: ['eo'],
+    purpose: 'Turns every edge the right way round, keeping the block and the middle layer.',
+    goal: { does: 'milestones', point: ['eo'], keeps: ['block', 'belt'] },
+    provenance: 'the Mehta-OS sheet\'s "Beginner Mehta Algs" page, its EO step (`mehta-algs.js`)',
+    verified: '`mehta-algs.test.mjs`: the step finishes every state it can meet',
+    notGiven: NOT_GIVEN.mehta,
+  },
+  {
+    id: 'mehta-beginner-dcal', name: 'Mehta, beginner path: two bottom corners', kind: 'sourced', from: ['mehta-algs', 'MEHTA_BEGINNER'], steps: ['dcal-1', 'dcal-2'],
+    purpose: 'Puts the bottom back-right corner in place, then the bottom front-right corner, keeping the block, the middle layer and every edge the right way round.',
+    goal: { does: 'milestones', point: ['drb', 'dfr'], keeps: ['block', 'belt', 'eo'] },
+    provenance: 'the Mehta-OS sheet\'s "Beginner Mehta Algs" page, its two DCAL looks (`mehta-algs.js`)',
+    verified: '`mehta-algs.test.mjs`: each look finishes every state it can meet',
+    notGiven: NOT_GIVEN.mehta,
+  },
+  {
+    id: 'mehta-beginner-cdrll', name: 'Mehta, beginner path: top corners', kind: 'sourced', from: ['mehta-algs', 'MEHTA_BEGINNER'], steps: ['cdrll-1', 'cdrll-2'],
+    purpose: 'Turns every corner so the top or bottom colour faces up or down, then puts every corner where it belongs, keeping the block, the middle layer, every edge the right way round and the bottom corners.',
+    goal: { does: 'milestones', point: ['co', 'cp'], keeps: ['block', 'belt', 'eo', 'bottom-corners'] },
+    provenance: 'the Mehta-OS sheet\'s "Beginner Mehta Algs" page, its two CDRLL looks (`mehta-algs.js`)',
+    verified: '`mehta-algs.test.mjs`: each look finishes every state it can meet',
+    notGiven: NOT_GIVEN.mehta,
+  },
+  {
+    id: 'mehta-beginner-last-edges', name: 'Mehta, beginner path: last edges', kind: 'sourced', from: ['mehta-algs', 'MEHTA_BEGINNER'], steps: ['d-edge', 'epll'],
+    purpose: 'Puts the bottom-right edge in place, then finishes the cube by putting the top edges where they belong, keeping the block, the middle layer and every corner, with the top and bottom turned to match.',
+    goal: { does: 'milestones', point: ['dr', 'solved'], keeps: ['block', 'belt', 'corners'], turnsTopAndBottom: true },
+    provenance: 'the Mehta-OS sheet\'s "Beginner Mehta Algs" page, its last bottom edge and EPLL (`mehta-algs.js`)',
+    verified: '`mehta-algs.test.mjs`: each step finishes every state it can meet',
+    notGiven: NOT_GIVEN.mehta,
+  },
+  {
+    id: 'cf-bottom-corners', name: 'Corners first: bottom corners', kind: 'sourced', from: ['corners-first-corners', 'CF_ALGS'], steps: ['bottom-corners'],
+    purpose: 'Brings one bottom corner down from the top layer, keeping the other bottom corners.',
+    goal: { does: 'insert', region: 'bottom-corners', pieces: 'corner', from: 'top' },
+    provenance: 'Josef Jelinek\'s corners-first beginner page, its bottom-corner sequences (`corners-first-algs.js`)',
+    verified: '`corners-first-algs.test.mjs`: the step finishes every position it can meet, proved by search',
+    notGiven: NOT_GIVEN.cornersFirst,
+  },
+  {
+    id: 'cf-top-corners', name: 'Corners first: top corners', kind: 'sourced', from: ['corners-first-corners', 'CF_ALGS'], steps: ['top-corners-place', 'top-corners-twist'], regions: 'corners',
+    purpose: 'Moves the top corners to where they belong, then turns them so the top colour faces up, keeping the bottom corners.',
+    goal: { does: 'solve', kinds: ['corner'] },
+    provenance: 'Josef Jelinek\'s corners-first beginner page, its corner and twist sequences (`corners-first-algs.js`)',
+    verified: '`corners-first-algs.test.mjs`: each step finishes every position it can meet, proved by search',
+    notGiven: NOT_GIVEN.cornersFirst,
+  },
+  {
+    id: 'cf-ledges', name: 'Corners first: left edges', kind: 'sourced', from: ['corners-first-edges', 'CF_ALGS'], steps: ['ledges'],
+    purpose: 'Puts one edge of the left side in place, keeping every corner and the edges already placed.',
+    goal: { does: 'insert', region: 'cf-ledges', pieces: 'edge' },
+    provenance: 'Josef Jelinek\'s corners-first beginner page, its left-edge sequences (`corners-first-algs.js`)',
+    verified: '`corners-first-algs.test.mjs`: the step finishes every position it can meet, proved by search',
+    notGiven: NOT_GIVEN.cornersFirst,
+  },
+  {
+    id: 'cf-redges', name: 'Corners first: right edges', kind: 'sourced', from: ['corners-first-edges', 'CF_ALGS'], steps: ['redges'],
+    purpose: 'Puts one edge of the right side in place, keeping every corner and the edges already placed.',
+    goal: { does: 'insert', region: 'cf-redges', pieces: 'edge' },
+    provenance: 'Josef Jelinek\'s corners-first beginner page, its right-edge sequences (`corners-first-algs.js`)',
+    verified: '`corners-first-algs.test.mjs`: the step finishes every position it can meet, proved by search',
+    notGiven: NOT_GIVEN.cornersFirst,
+  },
+  {
+    id: 'cf-last-ledge', name: 'Corners first: last left edge', kind: 'sourced', from: ['corners-first-edges', 'CF_ALGS'], steps: ['last-ledge'],
+    purpose: 'Puts the last edge of the left side in place, keeping every corner and the edges already placed.',
+    goal: { does: 'insert', region: 'cf-last-ledge', pieces: 'edge' },
+    provenance: 'Josef Jelinek\'s corners-first beginner page, its last-left-edge sequences (`corners-first-algs.js`)',
+    verified: '`corners-first-algs.test.mjs`: the step finishes every position it can meet, proved by search',
+    notGiven: NOT_GIVEN.cornersFirst,
+  },
+  {
+    id: 'cf-middle-edges', name: 'Corners first: middle edges', kind: 'sourced', from: ['corners-first-edges', 'CF_ALGS'], steps: ['midges-flip', 'midges-place'],
+    purpose: 'Turns the edges of the middle slice the right way round and puts them where they belong, keeping the rest of the cube.',
+    goal: { does: 'insert', region: 'every-piece', pieces: 'any' },
+    provenance: 'Josef Jelinek\'s corners-first beginner page, its middle-slice sequences (`corners-first-algs.js`)',
+    verified: '`corners-first-algs.test.mjs`: each step finishes every position it can meet, proved by search',
+    notGiven: NOT_GIVEN.cornersFirst,
+  },
+  {
     id: 'f2l-full', name: 'F2L, all cases', kind: 'proved', from: ['case-tables', 'F2L_CASES'],
     purpose: PURPOSE.f2l, goal: GOAL.f2l,
     provenance: 'searched in `crates/optimal-solver`, proven minimal in the half-turn metric, certified',
@@ -348,11 +538,17 @@ export const ALG_SETS = Object.freeze([
     provenance: 'same search; the 288-state goal set checked against the published Cube Explorer distribution',
     verified: 'the distribution matched Cube Explorer entry for entry, mean 11.642361; same generator diff',
   },
-].map((s) => Object.freeze({
+].map((s) => {
+  const regions = s.regions ?? 'layers';
+  if (!['layers', 'blocks', 'corners'].includes(regions)) throw new Error(`alg-library: ${s.id} names regions "${regions}", which no sentence knows`);
+  if (s.names && s.steps) throw new Error(`alg-library: ${s.id} picks its rows both by name and by step`);
+  return s;
+}).map((s) => Object.freeze({
   ...s,
   ...(s.goal ? { goal: frozenGoal(s) } : {}),
   regions: s.regions ?? 'layers',
   names: s.names ? Object.freeze([...s.names]) : undefined,
+  steps: s.steps ? Object.freeze([...s.steps]) : undefined,
   from: Object.freeze([...s.from]),
   notGiven: Object.freeze({
     ...(s.kind === 'hand-written' ? NOT_GIVEN.handWritten : s.kind === 'proved' ? NOT_GIVEN.proved : {}),
@@ -380,6 +576,13 @@ const offered = (id, phases) => {
   const entry = REGISTRY.find((m) => m.id === id);
   if (!entry) throw new Error(`alg-library: names an offered method "${id}" that the registry does not hold`);
   return Object.freeze({ id, method: entry.label, phases: Object.freeze(phases.map((p) => Object.freeze(p))) });
+};
+
+/** A method the app does not offer, whose sets the library still files: `id` null, so no row names it as a
+ *  registry method, and a name that is not a registry label so it cannot be mistaken for one. */
+const notOffered = (name, phases) => {
+  if (REGISTRY.some((m) => m.label === name)) throw new Error(`alg-library: "${name}" is an offered method's label, not a method the app does not offer`);
+  return Object.freeze({ id: null, method: name, phases: Object.freeze(phases.map((p) => Object.freeze(p))) });
 };
 
 export const METHOD_SETS = Object.freeze([
@@ -415,6 +618,29 @@ export const METHOD_SETS = Object.freeze([
     { stage: 'cmll', phase: 'Top corners', held: ['cmll'] },
     { stage: 'lse', phase: 'Last six edges', intuitive: 'found by search with the middle slice: exact distance tables, no table of algorithms' },
   ]),
+  notOffered('Mehta', [
+    { phase: 'First block', intuitive: 'block building: a 1x2x3 block flat on the bottom, at the left' },
+    { phase: 'Three middle edges', intuitive: 'placed by understanding, with nothing to memorise' },
+    { phase: 'Last middle edge, every edge the right way round', held: ['mehta-eole'] },
+    { phase: 'Corners turned', held: ['mehta-6co'] },
+    { phase: 'Corners placed', held: ['mehta-6cp'] },
+    { phase: 'Last five edges', held: ['mehta-l5ep'] },
+  ]),
+  notOffered('Mehta, beginner path', [
+    { phase: 'First block', intuitive: 'block building' },
+    { phase: 'Middle layer', intuitive: 'placed by understanding' },
+    { phase: 'Edges the right way round', held: ['mehta-beginner-eo'] },
+    { phase: 'Two bottom corners', held: ['mehta-beginner-dcal'] },
+    { phase: 'Top corners', held: ['mehta-beginner-cdrll'] },
+    { phase: 'Last edges', held: ['mehta-beginner-last-edges'] },
+  ]),
+  notOffered('Corners first', [
+    { phase: 'Bottom corners', held: ['cf-bottom-corners'] },
+    { phase: 'Top corners', held: ['cf-top-corners'] },
+    { phase: 'Centres', intuitive: 'no sequence: turn the middle slices until the white centre is underneath again' },
+    { phase: 'Left and right edges', held: ['cf-ledges', 'cf-redges', 'cf-last-ledge'] },
+    { phase: 'Middle edges', held: ['cf-middle-edges'] },
+  ]),
 ]);
 
 for (const m of METHOD_SETS) {
@@ -426,7 +652,7 @@ for (const m of METHOD_SETS) {
 }
 
 /** `[{ method, stage }]` for one set: every offered method stage that teaches it. */
-const methodsOfSet = (setId) => Object.freeze(METHOD_SETS.flatMap((m) => m.phases
+const methodsOfSet = (setId) => Object.freeze(METHOD_SETS.filter((m) => m.id !== null).flatMap((m) => m.phases
   .filter((p) => (p.held ?? []).includes(setId))
   .map((p) => Object.freeze({ method: m.id, stage: p.stage }))));
 
@@ -451,13 +677,21 @@ export function loadEntries() {
       const [sourceId, exported] = set.from;
       const list = modules[sourceId]?.[exported];
       if (!Array.isArray(list)) throw new Error(`alg-library: ${set.id} reads ${exported} from ${sourceId}, which does not export it`);
-      const entries = set.names
-        ? set.names.map((n) => {
+      let entries;
+      if (set.names) {
+        entries = set.names.map((n) => {
           const hit = list.find((a) => a.name === n);
           if (!hit) throw new Error(`alg-library: ${set.id} names an algorithm "${n}" that ${sourceId} no longer holds`);
           return hit;
-        })
-        : [...list];
+        });
+      } else if (set.steps) {
+        for (const step of set.steps) {
+          if (!list.some((a) => a.step === step)) throw new Error(`alg-library: ${set.id} names a step "${step}" that ${sourceId}'s ${exported} holds no row of`);
+        }
+        entries = list.filter((a) => set.steps.includes(a.step));
+      } else {
+        entries = [...list];
+      }
       out.set(set.id, Object.freeze(entries));
     }
     return out;
@@ -694,8 +928,17 @@ const REGION_PIECES = (() => {
     cross: Object.freeze(cross),
     'first-layer': Object.freeze(firstLayer),
     'first-two-layers': Object.freeze([...firstLayer, 'FR', 'FL', 'BL', 'BR']),
+    // Corners first: the bottom corners (white down), then — every corner done — the edges, white on L.
+    'bottom-corners': Object.freeze(['DFR', 'DLF', 'DBL', 'DRB']),
+    'cf-ledges': Object.freeze([...CORNERS, 'UL', 'FL', 'BL', 'DL']),
+    'cf-redges': Object.freeze([...CORNERS, 'FL', 'BL', 'DL', 'UR', 'FR', 'BR', 'DR']),
+    'cf-last-ledge': Object.freeze([...CORNERS, 'UL', 'FL', 'BL', 'DL', 'UR', 'FR', 'BR', 'DR']),
+    'every-piece': Object.freeze([...CORNERS, ...EDGES]),
   });
 })();
+
+/** The built regions that hold every corner: whatever else such a step moves is an edge. */
+const CORNERS_BUILT = new Set(['cf-ledges', 'cf-redges', 'cf-last-ledge', 'every-piece']);
 
 /** The six edges Roux solves last — the four on top and the two in the bottom of the middle slice. CMLL may
  *  move them, because nothing is built there yet. */
@@ -802,6 +1045,19 @@ const PUT_IN_PLACE = Object.freeze({
   cross: 'Puts %1 in place; keeps the other cross edges',
   'first-layer': 'Puts %1 in place; keeps the rest of the first layer',
   'first-two-layers': 'Puts %1 in place; keeps the rest of the first two layers',
+  'bottom-corners': 'Puts %1 in place; keeps the other bottom corners',
+  'cf-ledges': 'Puts %1 in place; keeps every corner and the edges already placed',
+  'cf-redges': 'Puts %1 in place; keeps every corner and the edges already placed',
+  'cf-last-ledge': 'Puts %1 in place; keeps every corner and the edges already placed',
+  'every-piece': 'Puts %1 in place; keeps the rest of the cube',
+});
+/** The same, for a point whose every piece is only turned in its own slot. A region with no entry here never
+ *  says it. */
+const TURN_IN_PLACE = Object.freeze({
+  'cf-ledges': 'Turns %1 the right way round; keeps every corner and the edges already placed',
+  'cf-redges': 'Turns %1 the right way round; keeps every corner and the edges already placed',
+  'cf-last-ledge': 'Turns %1 the right way round; keeps every corner and the edges already placed',
+  'every-piece': 'Turns %1 the right way round; keeps the rest of the cube',
 });
 const PUT_IN_SLOT = 'Puts the %1 corner and edge into their slot; keeps the rest of the first two layers';
 
@@ -819,22 +1075,30 @@ function insertSentence(effect, goal) {
   if (!point.length) throw new Error(`alg-library: changes nothing in ${goal.region}, so a sentence has no point to name`);
   const [corner, edge] = [point.find((p) => p.kind === 'corner'), point.find((p) => p.kind === 'edge')];
   const slot = point.length === 2 && corner && edge && letters(corner.position.replace('D', '')) === letters(edge.position);
+  const turned = Boolean(TURN_IN_PLACE[goal.region]) && point.every((p) => p.from === p.position);
   let sentence = slot
     ? t(PUT_IN_SLOT, slotWords(edge.position))
-    : t(PUT_IN_PLACE[goal.region], listed(point.map((p) => positionWords(p.position))));
+    : t((turned ? TURN_IN_PLACE : PUT_IN_PLACE)[goal.region], listed(point.map((p) => positionWords(p.position))));
   const rest = all.filter((p) => !scope.includes(p.position));
-  const parts = rest.some((p) => isTop(p.position)) ? [t('the top layer')] : [];
-  for (const group of NOT_BUILT) {
-    const these = rest.filter((p) => !isTop(p.position) && group.is(p));
-    if (these.length === 1) parts.push(positionWords(these[0].position));
-    else if (these.length > 1) parts.push(counted(these.length, group.one, group.other));
+  const parts = [];
+  if (CORNERS_BUILT.has(goal.region)) {
+    // Every corner is built, so everything outside the region is an edge.
+    if (rest.length === 1) parts.push(positionWords(rest[0].position));
+    else if (rest.length > 1) parts.push(counted(rest.length, '%1 other edge', '%1 other edges'));
+  } else {
+    if (rest.some((p) => isTop(p.position))) parts.push(t('the top layer'));
+    for (const group of NOT_BUILT) {
+      const these = rest.filter((p) => !isTop(p.position) && group.is(p));
+      if (these.length === 1) parts.push(positionWords(these[0].position));
+      else if (these.length > 1) parts.push(counted(these.length, group.one, group.other));
+    }
   }
   if (parts.length) sentence = t('%1; also moves %2', sentence, listed(parts));
   return sentence;
 }
 
-const KEEPS = Object.freeze({ layers: '%1; keeps the first two layers', blocks: '%1; keeps both blocks' });
-const KEPT_REGION = Object.freeze({ layers: 'first-two-layers', blocks: 'both-blocks' });
+const KEEPS = Object.freeze({ layers: '%1; keeps the first two layers', blocks: '%1; keeps both blocks', corners: '%1; keeps the bottom corners' });
+const KEPT_REGION = Object.freeze({ layers: 'first-two-layers', blocks: 'both-blocks', corners: 'bottom-corners' });
 const COME_BACK = '%1; mixes the first two layers, which come back once the other top corners are turned up too';
 
 /**
@@ -868,6 +1132,11 @@ function lastLayerSentence(effect, facelets, goal, regions, keeps, order) {
       if (all.some((p) => p.kind === 'edge')) besides.push(t('some of the six edges left for last'));
       continue;
     }
+    if (!focused && regions === 'corners' && kind === 'edge') {
+      // Corners first places no edge until every corner is done: any edge it moves is left for later.
+      if (all.some((p) => p.kind === 'edge')) besides.push(t('some of the edges left for later'));
+      continue;
+    }
     if (focused && orients) {
       if (down.length) orientItems.push(down.length === 1 ? positionWords(down[0]) : counted(down.length, `%1 top ${kind}`, `%1 top ${kind}s`));
     } else if (down.length) {
@@ -890,7 +1159,8 @@ function lastLayerSentence(effect, facelets, goal, regions, keeps, order) {
   const point = capitalised(turns && placeItems.length ? t('%1, and %2', turns, listed(placeItems)) : turns || listed(placeItems));
   let sentence;
   if (keeps.includes(KEPT_REGION[regions])) {
-    const strays = below.filter((p) => !(regions === 'blocks' && LAST_SIX_EDGES.includes(p.position)));
+    const strays = below.filter((p) => !(regions === 'blocks' && LAST_SIX_EDGES.includes(p.position))
+      && !(regions === 'corners' && p.kind === 'edge'));
     if (strays.length) throw new Error(`alg-library: keeps ${KEPT_REGION[regions]} and moves ${strays.map((p) => p.position).join(' ')}`);
     sentence = t(KEEPS[regions], point);
   } else if (regions === 'layers' && twistsOnTheWay(top, order)) {
@@ -902,15 +1172,55 @@ function lastLayerSentence(effect, facelets, goal, regions, keeps, order) {
   return sentence;
 }
 
+/** The finishing turn, said after the body: a whole clause per kind, so a translator sees each. */
+const FINISH = Object.freeze({
+  bottom: '%1; with %2 after it to line up the bottom',
+  middle: '%1; with %2 after it to line up the middle centres',
+});
+
+/** The 16 turns of the top and bottom, `U^a D^d`, as piece states: what the Mehta sheet aligns a case by. */
+const ALIGNMENTS = Object.freeze(['', 'U', 'U2', "U'"].flatMap((u) => ['', 'D', 'D2', "D'"]
+  .map((d) => Object.freeze(applyAlg(SOLVED, `${u} ${d}`.trim())))));
+
+/**
+ * A Mehta step's sentence, from the case before the algorithm: which of its goal's milestones the case does
+ * not have under ANY turn of the top and bottom that shows what it keeps (its point), what it keeps, and
+ * which other pieces it changes. No position word: 53 rows draw their case with the bottom turned.
+ */
+function milestoneSentence(caseState, goal) {
+  const aligned = ALIGNMENTS.map((a) => compose(caseState, a));
+  const A = aligned.filter((s) => goal.keeps.every((id) => reached(id, s)));
+  if (!A.length) throw new Error(`alg-library: no turn of the top and bottom gives the case ${goal.keeps.join(', ')}`);
+  const point = goal.point.filter((id) => A.every((s) => !reached(id, s)));
+  if (!point.length) throw new Error('alg-library: changes nothing its goal is about');
+  const clauses = [capitalised(listed(point.map((id) => t(MILESTONES[id].point))))];
+  const keepWords = listed(goal.keeps.map((id) => t(MILESTONES[id].keep)));
+  clauses.push(goal.turnsTopAndBottom ? t('keeps %1 once the top and bottom are lined up', keepWords) : t('keeps %1', keepWords));
+  const named = new Set([...goal.keeps, ...goal.point]);
+  const covered = [...named].filter((id) => MILESTONES[id].positional);
+  const freeCorners = ALL_CORNER_SLOTS.filter((i) => !covered.some((id) => MILESTONES[id].corners.includes(i)));
+  const freeEdges = ALL_EDGE_SLOTS.filter((i) => !covered.some((id) => MILESTONES[id].edges.includes(i)));
+  const any = (...ids) => ids.some((id) => named.has(id));
+  const items = [];
+  if (!any('co', 'corners', 'solved') && freeCorners.some((i) => caseState.co[i] !== 0)) items.push(t('which way some corners face'));
+  if (!any('cp', 'corners', 'solved') && A.every((s) => freeCorners.some((i) => s.cp[i] !== i))) items.push(t('where some corners sit'));
+  if (!any('eo', 'solved') && freeEdges.some((i) => caseState.eo[i] !== 0)) items.push(t('which way some edges face'));
+  if (!any('solved') && A.every((s) => freeEdges.some((i) => s.ep[i] !== i))) items.push(t('where some edges sit'));
+  if (items.length) clauses.push(t('also changes %1', listed(items)));
+  return clauses.join('; ');
+}
+
 /**
  * ONE sentence: what the algorithm does toward its set's goal, generated from the computed `effect`, `keeps`,
  * `order` and case — never typed. Each fragment goes through `t()`; whole clauses are templates, so a
  * translator sees "keeps the rest of the first layer" rather than "keeps" and a region glued on.
  */
-export function saysOf({ effect, keeps, order, facelets, goal, regions = 'layers' }) {
-  const body = goal.does === 'insert'
-    ? insertSentence(effect, goal)
-    : lastLayerSentence(effect, facelets, goal, regions, keeps, order);
+export function saysOf({ effect, keeps, order, facelets, goal, regions = 'layers', finish = '', caseState }) {
+  let body;
+  if (goal.does === 'insert') body = insertSentence(effect, goal);
+  else if (goal.does === 'milestones') body = milestoneSentence(caseState, goal);
+  else body = lastLayerSentence(effect, facelets, goal, regions, keeps, order);
+  if (finish) body = t(finish.startsWith('D') ? FINISH.bottom : FINISH.middle, body, finish);
   return `${effect.keepsHold ? body : t('%1; ends with the cube held differently', body)}.`;
 }
 
@@ -928,21 +1238,44 @@ const frozen = (v) => {
 function sourceOf(set, entry) {
   if (set.kind === 'hand-written') return 'written for teaching';
   if (set.kind === 'proved') return 'proved minimal by search';
-  const table = set.from[0] === 'human-algs' ? HUMAN_SOURCES : CMLL_SOURCES;
-  const src = table[entry.source];
-  if (!src) throw new Error(`alg-library: ${entry.name} names a source "${entry.source}" its data file does not list`);
-  return cite(src);
+  const src = ALG_SOURCES[set.from[0]];
+  const key = src.citeAs(entry);
+  const citation = src.citations[key];
+  if (!citation) throw new Error(`alg-library: ${entry.name} names a source "${key}" its data file does not list`);
+  return cite(citation);
+}
+
+const sameHold = (a, b) => a[0] === b[0] && a[1] === b[1];
+
+/**
+ * The turn that finishes a row after its algorithm, or ''. Mehta's sheet writes it as "(D)" at the end of a
+ * cell (`bottom` is its inverse); a corners-first edge step leaves the middle slice loose, and the one turn of
+ * it that puts the centres back is derived here. Every measured column describes the algorithm and this turn.
+ */
+function finishOf(src, entry) {
+  if (src.finish === 'bottom') return entry.bottom ? invert(entry.bottom) : '';
+  if (src.finish === 'middle-slice') {
+    const f = ['', 'M', 'M2', "M'"].find((x) => sameHold(run(`${entry.alg} ${x}`.trim(), LETTERS_HOLD, SOLVED).hold, LETTERS_HOLD));
+    if (f === undefined) throw new Error(`alg-library: ${entry.name} leaves the centres where no turn of the middle slice puts them back`);
+    return f;
+  }
+  return '';
 }
 
 /** Everything about one row; the expensive columns are computed here, once per id. */
 function buildRow(id, { byId, byMoves }) {
   const { set, entry } = byId.get(id);
   const { alg } = entry;
-  const { hold } = ALG_SOURCES[set.from[0]];
+  const src = ALG_SOURCES[set.from[0]];
+  const { hold } = src;
+  // The measured columns describe the algorithm FOLLOWED BY its finishing turn, when the source has one.
+  const finish = finishOf(src, entry);
+  const whole = finish ? `${alg} ${finish}` : alg;
   // Read from the hold the letters are written in, so `endHold` names the hold the learner ends in — the
   // declared one whenever the algorithm keeps it. The piece fields are the same from any hold.
-  const effect = effectOf(alg, { hold });
-  const { facelets, viewHold } = caseOf(alg, hold);
+  const effect = effectOf(whole, { hold });
+  const { facelets, viewHold } = caseOf(whole, hold);
+  const caseState = run(invert(whole), LETTERS_HOLD, SOLVED).state;
   const keepsF2L = effect.keeps.includes('first-two-layers');
   const picture = !keepsF2L ? 'net' : set.goal.does === 'orient' ? 'top-orientation' : 'top-colours';
   const others = (key) => (byMoves.get(key) ?? []).filter((x) => x !== id);
@@ -965,10 +1298,11 @@ function buildRow(id, { byId, byMoves }) {
     qtm: qtmOf(alg),
     kinds: kindsOf(alg),
     solves: {
-      case: entry.case ?? (set.kind === 'proved' ? entry.name : null),
+      case: src.ignoresCase ? null : entry.case ?? (set.kind === 'proved' ? entry.name : null),
       facelets,
       viewHold,
       picture,
+      finish,
     },
     effect: {
       cornerCycles: effect.cornerCycles,
@@ -989,7 +1323,7 @@ function buildRow(id, { byId, byMoves }) {
     mirrorOf: others(normalise(mirrorAlg(alg))),
     observable: observableOf(alg),
     purpose: t(set.purpose),
-    says: saysOf({ effect, keeps: effect.keeps, order: effect.order, facelets, goal: set.goal, regions: set.regions }),
+    says: saysOf({ effect, keeps: effect.keeps, order: effect.order, facelets, goal: set.goal, regions: set.regions, finish, caseState }),
   });
 }
 
@@ -1020,7 +1354,7 @@ export async function setRows(setId) {
 
 /** Every row an offered method teaches, stage by stage, a row once even where two stages share its set. */
 export async function rowsForMethod(methodId) {
-  const m = METHOD_SETS.find((x) => x.id === methodId);
+  const m = methodId === null ? undefined : METHOD_SETS.find((x) => x.id === methodId);
   if (!m) throw new Error(`alg-library: no offered method "${methodId}"`);
   const sets = [...new Set(m.phases.flatMap((p) => p.held ?? []))];
   return Object.freeze((await Promise.all(sets.map(setRows))).flat());

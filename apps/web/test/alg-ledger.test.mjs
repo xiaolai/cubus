@@ -28,6 +28,8 @@ import { COURSE_ALGS, LAST_LAYER_EXTRAS, OLL_ALGS, PLL_ALGS } from '../lib/metho
 import { HUMAN_ALGS, SOURCES as HUMAN_SOURCES } from '../lib/data/human-algs.js';
 import { CMLL_ALGS, SOURCES as CMLL_SOURCES } from '../lib/data/cmll-algs.js';
 import { F2L_CASES, FULL_OLL, FULL_PLL } from '../lib/data/case-tables.js';
+import { MEHTA_ALGS, MEHTA_BEGINNER, SOURCES as MEHTA_SOURCES } from '../lib/data/mehta-algs.js';
+import { CF_ALGS, SOURCES as CF_SOURCES } from '../lib/data/corners-first-algs.js';
 import { buildLedger } from '../bench/alg-ledger.mjs';
 import {
   ALG_LEDGER_COUNTS, ALG_LEDGER_GAPS, ALG_LEDGER_PENDING, ALG_LEDGER_ROWS,
@@ -36,6 +38,20 @@ import {
 const ROWS = ALG_LEDGER_ROWS;
 const BY_ID = new Map(ROWS.map((r) => [r.id, r]));
 const round = (v) => JSON.parse(JSON.stringify(v));
+
+/** Every source module's rows, enumerated from the modules themselves: a row's entry is looked up here. */
+const ALL_ENTRIES = [
+  ...CROSS_ALGS, ...PAIRS_ALGS, ...OLL_ALGS, ...PLL_ALGS, ...COURSE_ALGS,
+  ...HUMAN_ALGS, ...CMLL_ALGS, ...F2L_CASES, ...FULL_OLL, ...FULL_PLL,
+  ...MEHTA_ALGS, ...MEHTA_BEGINNER, ...CF_ALGS,
+];
+const entryOf = (id) => ALL_ENTRIES.find((e) => e.name === id);
+const setOf = (row) => ALG_SETS.find((s) => s.id === row.set);
+/** What a row's measured columns describe: its algorithm followed by its finishing turn, if it has one. */
+const whole = (row) => (row.solves.finish ? `${row.alg} ${row.solves.finish}` : row.alg);
+/** The cubejs turn that holds a solved cube as a source's letters are written: white underneath for every source
+ *  but the corners-first edge steps, which are written white on the left. */
+const tumbleOf = (row) => (setOf(row).from[0] === 'corners-first-edges' ? 'x2 z' : 'x2');
 
 // ---- this file's own readings of an algorithm ---------------------------------------------------------------
 
@@ -101,6 +117,8 @@ const cells = {
   'first-block': [...[1, 2].flatMap((r) => [0, 1, 2].map((c) => ['L', r, c])), ['D', 0, 0], ['D', 1, 0], ['D', 2, 0], ['F', 1, 0], ['F', 2, 0], ['B', 1, 2], ['B', 2, 2]],
 };
 cells['both-blocks'] = [...cells['first-block'], ...[1, 2].flatMap((r) => [0, 1, 2].map((c) => ['R', r, c])), ['D', 0, 2], ['D', 1, 2], ['D', 2, 2], ['F', 1, 2], ['F', 2, 2], ['B', 1, 0], ['B', 2, 0]];
+// The four bottom corners: D's corners and the two lower corners of each side.
+cells['bottom-corners'] = [['D', 0, 0], ['D', 0, 2], ['D', 2, 0], ['D', 2, 2], ...SIDES.flatMap((x) => [[x, 2, 0], [x, 2, 2]])];
 
 /** The regions cubejs's stickers say a solved cube keeps under `alg`, by this file's own cell lists. */
 const keptByCubejs = (alg) => {
@@ -153,13 +171,34 @@ const pieceKind = (p) => (p.length === 3 ? 'corner' : 'edge');
 const BUILT = (() => {
   const cross = ['DF', 'DR', 'DB', 'DL'];
   const layer = [...cross, 'DFR', 'DLF', 'DBL', 'DRB'];
-  return { cross, 'first-layer': layer, 'first-two-layers': [...layer, 'FR', 'FL', 'BL', 'BR'] };
+  const corners = ['URF', 'UFL', 'ULB', 'UBR', 'DFR', 'DLF', 'DBL', 'DRB'];
+  const ledges = ['UL', 'FL', 'BL', 'DL'];
+  const redges = ['UR', 'FR', 'BR', 'DR'];
+  return {
+    cross,
+    'first-layer': layer,
+    'first-two-layers': [...layer, 'FR', 'FL', 'BL', 'BR'],
+    'bottom-corners': ['DFR', 'DLF', 'DBL', 'DRB'],
+    'cf-ledges': [...corners, ...ledges],
+    'cf-redges': [...corners, 'FL', 'BL', 'DL', ...redges],
+    'cf-last-ledge': [...corners, ...ledges, ...redges],
+    'every-piece': [...corners, ...ledges, ...redges, 'UF', 'UB', 'DF', 'DB'],
+  };
 })();
+/** The regions whose every corner is built: whatever else their steps move is an edge. */
+const CORNERS_BUILT = new Set(['cf-ledges', 'cf-redges', 'cf-last-ledge', 'every-piece']);
+/** The regions whose sentence may say a piece is only turned in its own slot. */
+const TURN_REGIONS = new Set(['cf-ledges', 'cf-redges', 'cf-last-ledge', 'every-piece']);
 const KEEP_WORDS = {
-  'keeps the other cross edges': 'cross',
-  'keeps the rest of the first layer': 'first-layer',
-  'keeps the rest of the first two layers': 'first-two-layers',
+  'keeps the other cross edges': ['cross'],
+  'keeps the rest of the first layer': ['first-layer'],
+  'keeps the rest of the first two layers': ['first-two-layers'],
+  'keeps the other bottom corners': ['bottom-corners'],
+  'keeps every corner and the edges already placed': ['cf-ledges', 'cf-redges', 'cf-last-ledge'],
+  'keeps the rest of the cube': ['every-piece'],
 };
+/** The region a last-layer set keeps, by its `regions`. */
+const LL_REGION = { layers: 'first-two-layers', blocks: 'both-blocks', corners: 'bottom-corners' };
 const SIX_EDGES = ['UF', 'UR', 'UB', 'UL', 'DF', 'DB'];
 const COME_BACK = 'mixes the first two layers, which come back once the other top corners are turned up too';
 
@@ -212,19 +251,50 @@ function checkInsert(segs, goal, e) {
     said = [sortedLetters(['D', ...slot].join('')), sortedLetters(slot.join(''))];
   } else if ((m = /^Puts (.+) in place$/.exec(point))) {
     said = splitList(m[1]).map(positionOf);
+  } else if ((m = /^Turns (.+) the right way round$/.exec(point))) {
+    said = splitList(m[1]).map(positionOf);
+    assert.ok(TURN_REGIONS.has(goal.region), `"${point}": ${goal.region} has no sentence for a piece turned in its own slot`);
+    const inPlace = [...e.corners.inPlace, ...e.edges.inPlace].map(sortedLetters);
+    for (const p of said) assert.ok(inPlace.includes(p), `says ${p} is turned in its own slot, and cubejs finds it moved or untouched`);
   } else {
     assert.fail(`"${point}" is not how an insert says its point`);
   }
-  assert.deepEqual(said.sort(), changed.filter((p) => built.includes(p)).sort(),
+  const builtChanged = changed.filter((p) => built.includes(p));
+  assert.deepEqual(said.sort(), [...builtChanged].sort(),
     'the pieces it says it puts in place are not the built pieces cubejs finds changed');
+  if (point.startsWith('Puts ') && TURN_REGIONS.has(goal.region)) {
+    const inPlace = [...e.corners.inPlace, ...e.edges.inPlace].map(sortedLetters);
+    assert.ok(!builtChanged.every((p) => inPlace.includes(p)), `"${point}": cubejs finds every piece it names only turned in its own slot — say it turns them`);
+  }
   // keeps: true of cubejs, and the region the stage has built — a smaller one would be true and say less
-  const region = KEEP_WORDS[keep];
-  assert.ok(region, `"${keep}" is not a kept region this test reads`);
+  const regions = KEEP_WORDS[keep];
+  assert.ok(regions, `"${keep}" is not a kept region this test reads`);
+  const region = regions.includes(goal.region) ? goal.region : regions[0];
   const rest = BUILT[region].map(sortedLetters).filter((p) => !said.includes(p));
   for (const p of rest) assert.ok(!changed.includes(p), `says it keeps the rest of ${region}, and cubejs finds ${p} changed`);
-  assert.equal(region, goal.region, `says it keeps the rest of ${region}; its stage has built ${goal.region}`);
+  assert.ok(regions.includes(goal.region), `says it keeps the rest of ${regions.join(' or ')}; its stage has built ${goal.region}`);
   // also moves: exactly what it changes outside what is built
   const outside = changed.filter((p) => !built.includes(p));
+  if (CORNERS_BUILT.has(goal.region)) {
+    // Every corner is built: everything else it moves is an edge, named or counted, and never "the top layer".
+    const saidOut = [];
+    if (more.length) {
+      const a = /^also moves (.+)$/.exec(more[0]);
+      assert.ok(a, `"${more[0]}" is not an "also moves" clause`);
+      for (const item of splitList(a[1])) {
+        assert.notEqual(item, 'the top layer', 'says the top layer moves, in a step whose every corner is built');
+        const n = /^(\w+) other edges$/.exec(item);
+        if (n) {
+          assert.equal(WORD[n[1]], outside.length, `"${item}": cubejs finds ${outside.length}`);
+          saidOut.push(...outside);
+          continue;
+        }
+        saidOut.push(positionOf(item));
+      }
+    }
+    assert.deepEqual(saidOut.sort(), [...outside].sort(), 'the edges it says it also moves are not the unbuilt ones cubejs finds changed');
+    return;
+  }
   const wantTop = outside.some(isUp);
   const wantBelow = outside.filter((p) => !isUp(p)).sort();
   let saidTop = false;
@@ -258,7 +328,7 @@ function checkLastLayer(segs, set, row, e, kept) {
   assert.ok(keep !== undefined, 'says nothing about what it keeps');
   assert.ok(more.length <= 1, `"${more.join('; ')}": more clauses than a last-layer sentence has`);
   const point = pointRaw.charAt(0).toLowerCase() + pointRaw.slice(1);
-  const notUp = caseNotUp(row.alg);
+  const notUp = caseNotUp(whole(row));
   const cycles = { corner: e.corners.cycles, edge: e.edges.cycles };
   const topCycles = (kind) => cycles[kind].filter((c) => c.positions.some(isUp));
   const orients = goal.does === 'orient' || goal.does === 'solve';
@@ -310,19 +380,20 @@ function checkLastLayer(segs, set, row, e, kept) {
   }
 
   // keeps
-  const region = set.regions === 'blocks' ? 'both-blocks' : 'first-two-layers';
-  if (keep === 'keeps the first two layers' || keep === 'keeps both blocks') {
-    const r = keep === 'keeps both blocks' ? 'both-blocks' : 'first-two-layers';
+  const region = LL_REGION[set.regions];
+  const KEPT = { 'keeps the first two layers': 'first-two-layers', 'keeps both blocks': 'both-blocks', 'keeps the bottom corners': 'bottom-corners' };
+  if (KEPT[keep]) {
+    const r = KEPT[keep];
     assert.ok(kept.has(r), `says it keeps ${r}, and cubejs finds it broken`);
     assert.equal(r, region, `names ${r}; its learners build ${region}`);
   } else if (keep === COME_BACK) {
     assert.ok(!kept.has('first-two-layers'), 'says it mixes the first two layers, and cubejs finds them kept');
     // The claim, played: three of it with only the top turned between, or it and its partner the other way.
-    const others = ROWS.filter((r) => r.set === row.set && r.id !== row.id && !keptByCubejs(r.alg).has('first-two-layers'));
+    const others = ROWS.filter((r) => r.set === row.set && r.id !== row.id && !keptByCubejs(whole(r)).has('first-two-layers'));
     assert.ok(others.length, 'no other row in the set turns a corner the other way');
     for (const u of ['U', 'U2', "U'"]) {
-      assert.ok(keptByCubejs([row.alg, u, row.alg, u, row.alg].join(' ')).has('first-two-layers'), `three of it, ${u} between, do not bring the first two layers back`);
-      assert.ok(others.some((b) => keptByCubejs([row.alg, u, b.alg].join(' ')).has('first-two-layers')), `no partner brings them back after ${u}`);
+      assert.ok(keptByCubejs([whole(row), u, whole(row), u, whole(row)].join(' ')).has('first-two-layers'), `three of it, ${u} between, do not bring the first two layers back`);
+      assert.ok(others.some((b) => keptByCubejs([whole(row), u, whole(b)].join(' ')).has('first-two-layers')), `no partner brings them back after ${u}`);
     }
   } else {
     assert.fail(`"${keep}" is not a keep clause this test reads`);
@@ -335,6 +406,13 @@ function checkLastLayer(segs, set, row, e, kept) {
     assert.ok(a, `"${more[0]}" is not an "also changes" clause`);
     for (const item of splitList(a[1])) {
       const kinds = { 'the top corners': ['corner'], 'the top edges': ['edge'], 'where the top corners sit': ['corner'], 'where the top edges sit': ['edge'], 'where the top pieces sit': ['corner', 'edge'] }[item];
+      if (item === 'some of the edges left for later') {
+        assert.equal(set.regions, 'corners', 'names the edges corners first leaves for later outside corners first');
+        const edges = [...e.edges.cycles.flatMap((c) => c.positions), ...e.edges.inPlace];
+        assert.ok(edges.length, 'says it changes edges left for later, and cubejs changes no edge');
+        covered.edge = { turn: true, place: true };
+        continue;
+      }
       if (item === 'some of the six edges left for last') {
         assert.equal(set.regions, 'blocks', 'names the edges Roux leaves for last outside Roux');
         const edges = [...e.edges.cycles.flatMap((c) => c.positions), ...e.edges.inPlace];
@@ -363,6 +441,76 @@ function checkLastLayer(segs, set, row, e, kept) {
   }
 }
 
+// ---- Mehta's milestones, this file's own copy -----------------------------------------------------------------
+//
+// Each read off cubejs's cp/co/ep/eo by slot NAME (cubejs's order is `cube-pieces.js`'s, asserted in the effect
+// test). "Home" is in its slot and not twisted or flipped. `point` and `keep` are the words a sentence uses,
+// and `pointRe`/`keepRe` what a purpose must (or must not) say.
+const homeIn = (j, edges = [], corners = []) => edges.every((n) => { const i = EDGES.indexOf(n); return j.ep[i] === i && j.eo[i] === 0; })
+  && corners.every((n) => { const i = CORNERS.indexOf(n); return j.cp[i] === i && j.co[i] === 0; });
+const ms = (m) => ({ edges: [], corners: [], ...m, holds: m.holds ?? ((j) => homeIn(j, m.edges, m.corners)) });
+const MS = {
+  block: ms({ positional: true, edges: ['DF', 'DL', 'DB'], corners: ['DLF', 'DBL'], keep: 'the block', keepRe: /\bthe block\b/ }),
+  belt: ms({ positional: true, edges: ['FL', 'BL', 'BR', 'FR'], keep: 'the middle layer', keepRe: /\bthe middle layer\b/ }),
+  belt3: ms({ positional: true, edges: ['FL', 'BL', 'BR'], keep: 'the other middle edges', keepRe: /\bthe other middle edges\b/ }),
+  fr: ms({ positional: true, edges: ['FR'], point: 'puts the front-right edge in place', pointRe: /\blast middle edge\b/ }),
+  drb: ms({ positional: true, corners: ['DRB'], point: 'puts the bottom back-right corner in place', pointRe: /\bbottom back-right corner\b/ }),
+  dfr: ms({ positional: true, corners: ['DFR'], point: 'puts the bottom front-right corner in place', pointRe: /\bbottom front-right corner\b/ }),
+  dr: ms({ positional: true, edges: ['DR'], point: 'puts the bottom-right edge in place', pointRe: /\bbottom-right edge\b/ }),
+  'bottom-corners': ms({ positional: true, corners: ['DFR', 'DLF', 'DBL', 'DRB'], keep: 'the bottom corners', keepRe: /\bthe bottom corners\b/ }),
+  corners: ms({ positional: true, corners: [...CORNERS], keep: 'every corner', keepRe: /\bevery corner\b/ }),
+  eo: ms({ positional: false, holds: (j) => j.eo.every((v) => v === 0), point: 'turns every edge the right way round', keep: 'every edge the right way round', pointRe: /\bevery edge the right way round\b/, keepRe: /\bevery edge the right way round\b/ }),
+  co: ms({ positional: false, holds: (j) => j.co.every((v) => v === 0), point: 'turns every corner so the top or bottom colour faces up or down', keep: 'which way every corner faces', pointRe: /\bevery corner so the top or bottom colour faces up or down\b/, keepRe: /\bwhich way every corner faces\b/ }),
+  cp: ms({ positional: false, holds: (j) => j.cp.every((v, i) => v === i), point: 'puts every corner where it belongs', pointRe: /\bevery corner where it belongs\b/ }),
+  solved: ms({ positional: false, holds: (j) => homeIn(j, [...EDGES], [...CORNERS]), point: 'finishes the cube by putting every edge where it belongs', pointRe: /\bfinishes the cube\b/i }),
+};
+/** The 16 turns of the top and bottom, the identity first. */
+const TOP_AND_BOTTOM = ['', 'U', 'U2', "U'"].flatMap((u) => ['', 'D', 'D2', "D'"].map((d) => `${u} ${d}`.trim()));
+
+/** A Mehta row's case read by cubejs: P (the algorithm and its finish undone, letters' frame, no tumble), the
+ *  alignments under which every kept milestone holds, and the point milestones false under all of them. */
+function milestonesOf(row, goal) {
+  const P = played(inverted(whole(row)));
+  const all = TOP_AND_BOTTOM.map((turn) => ({ turn, j: played(inverted(whole(row)), turn).toJSON() }));
+  const A = all.filter(({ j }) => goal.keeps.every((id) => MS[id].holds(j)));
+  const point = goal.point.filter((id) => A.every(({ j }) => !MS[id].holds(j)));
+  const named = new Set([...goal.keeps, ...goal.point]);
+  const covered = [...named].filter((id) => MS[id].positional);
+  const freeCorners = CORNERS.filter((n) => !covered.some((id) => MS[id].corners.includes(n))).map((n) => CORNERS.indexOf(n));
+  const freeEdges = EDGES.filter((n) => !covered.some((id) => MS[id].edges.includes(n))).map((n) => EDGES.indexOf(n));
+  const j = P.toJSON();
+  const any = (...ids) => ids.some((id) => named.has(id));
+  const also = [];
+  if (!any('co', 'corners', 'solved') && freeCorners.some((i) => j.co[i] !== 0)) also.push('which way some corners face');
+  if (!any('cp', 'corners', 'solved') && A.length && A.every((a) => freeCorners.some((i) => a.j.cp[i] !== i))) also.push('where some corners sit');
+  if (!any('eo', 'solved') && freeEdges.some((i) => j.eo[i] !== 0)) also.push('which way some edges face');
+  if (!any('solved') && A.length && A.every((a) => freeEdges.some((i) => a.j.ep[i] !== i))) also.push('where some edges sit');
+  return { P, A, point, also };
+}
+
+/** A Mehta sentence, read back: its point clauses, what it keeps, and what else it changes. */
+function checkMilestones(segs, set, row) {
+  const { goal } = set;
+  const [pointRaw, keep, ...more] = segs;
+  assert.ok(keep !== undefined, 'says nothing about what it keeps');
+  assert.ok(more.length <= 1, `"${more.join('; ')}": more clauses than a milestone sentence has`);
+  const { A, point, also } = milestonesOf(row, goal);
+  assert.ok(A.length, 'no turn of the top and bottom shows what it keeps');
+  const said = (pointRaw.charAt(0).toLowerCase() + pointRaw.slice(1)).split(/ and (?=(?:puts|turns|finishes) )/);
+  assert.deepEqual(said, point.map((id) => MS[id].point), 'the point clauses are not the milestones cubejs finds missing from the case');
+  const k = /^keeps (.+?)( once the top and bottom are lined up)?$/.exec(keep);
+  assert.ok(k, `"${keep}" is not a keep clause this test reads`);
+  assert.equal(Boolean(k[2]), Boolean(goal.turnsTopAndBottom), 'says the top and bottom are lined up exactly when its goal turns them');
+  assert.deepEqual(splitList(k[1]), goal.keeps.map((id) => MS[id].keep), 'the kept milestones are not its goal\'s');
+  let saidAlso = [];
+  if (more.length) {
+    const a = /^also changes (.+)$/.exec(more[0]);
+    assert.ok(a, `"${more[0]}" is not an "also changes" clause`);
+    saidAlso = splitList(a[1]);
+  }
+  assert.deepEqual(saidAlso, also, 'the "also changes" items are not what cubejs finds of the free pieces');
+}
+
 /**
  * Every claim in a row's sentence, checked against cubejs. Throws naming the first that is false, or the first
  * fact the sentence leaves out that it must say.
@@ -372,14 +520,24 @@ function checkSays(row) {
   const says = row.says;
   assert.ok(says.endsWith('.'), 'a sentence ends with a full stop');
   const segments = says.slice(0, -1).split('; ');
-  const e = cubejsEffect(row.alg);
+  const e = cubejsEffect(whole(row));
   const HELD = 'ends with the cube held differently';
   const centresHome = e.centres.every((v, i) => v === i);
   assert.equal(segments.includes(HELD), !centresHome, 'the sentence and cubejs disagree on whether the hold changes');
   if (segments.includes(HELD)) assert.equal(segments.at(-1), HELD, 'the hold is said last');
-  const segs = segments.filter((x) => x !== HELD);
+  let segs = segments.filter((x) => x !== HELD);
+  // The finishing turn, said last before the hold: present exactly when the row has one, naming it, and naming
+  // the bottom for a turn of D and the middle centres for a turn of M.
+  const fin = /^with (\S+) after it to line up (the bottom|the middle centres)$/.exec(segs.at(-1));
+  assert.equal(Boolean(fin), row.solves.finish !== '', 'the sentence and the row disagree on whether a turn finishes it');
+  if (fin) {
+    assert.equal(fin[1], row.solves.finish, `names ${fin[1]} as the finishing turn; the row's is ${row.solves.finish}`);
+    assert.equal(fin[2], { D: 'the bottom', M: 'the middle centres' }[fin[1][0]], `"${fin[0]}" names the wrong layer for ${fin[1]}`);
+    segs = segs.slice(0, -1);
+  }
   if (set.goal.does === 'insert') checkInsert(segs, set.goal, e);
-  else checkLastLayer(segs, set, row, e, keptByCubejs(row.alg));
+  else if (set.goal.does === 'milestones') checkMilestones(segs, set, row);
+  else checkLastLayer(segs, set, row, e, keptByCubejs(whole(row)));
 }
 
 /**
@@ -388,17 +546,34 @@ function checkSays(row) {
  */
 function checkGoal(set, rows) {
   const g = set.goal;
+  if (g.does === 'milestones') {
+    let someTurned = false;
+    for (const row of rows) {
+      const at = `${set.id}/${row.id}`;
+      const { P, A, point } = milestonesOf(row, g);
+      assert.ok(A.length, `${at}: no turn of the top and bottom gives the case ${g.keeps.map((id) => MS[id].keep).join(', ')}`);
+      const exact = A.some((a) => a.turn === '');
+      if (!g.turnsTopAndBottom) assert.ok(exact, `${at}: the case needs a turn of the top or bottom to show what it keeps`);
+      if (!exact) someTurned = true;
+      assert.ok(point.length, `${at}: the case already has everything its goal is about`);
+      P.move(forCubejs(whole(row)));
+      assert.ok(P.isSolved(), `${at}: the algorithm does not finish its own case`);
+    }
+    if (g.turnsTopAndBottom) assert.ok(someTurned, `${set.id}: no case needs a turn of the top or bottom`);
+    return;
+  }
   for (const row of rows) {
-    const e = cubejsEffect(row.alg);
+    const e = cubejsEffect(whole(row));
     const changed = changedBy(e);
-    const kept = keptByCubejs(row.alg);
-    const notUp = caseNotUp(row.alg);
+    const kept = keptByCubejs(whole(row));
+    const notUp = caseNotUp(whole(row));
     const at = `${set.id}/${row.id}`;
     if (g.does === 'insert') {
       const wrong = changed.filter((p) => BUILT[g.region].map(sortedLetters).includes(p));
       const corners = wrong.filter((p) => p.length === 3);
       const edges = wrong.filter((p) => p.length === 2);
       const sameSlot = (c, x) => sortedLetters(c.replace('D', '')) === x;
+      if (g.pieces === 'any') assert.ok(wrong.length >= 1, `${at}: the case has nothing it builds wrong`);
       if (g.pieces === 'edge') assert.ok(edges.length === 1 && !corners.length, `${at}: the case has ${wrong.join(' ')} wrong, not one edge`);
       if (g.pieces === 'corner') assert.ok(corners.length === 1 && !edges.length, `${at}: the case has ${wrong.join(' ')} wrong, not one corner`);
       if (g.pieces === 'pair') assert.ok(corners.length === 1 && edges.length === 1 && sameSlot(corners[0], edges[0]), `${at}: the case has ${wrong.join(' ')} wrong, not one slot's corner and edge`);
@@ -406,10 +581,10 @@ function checkGoal(set, rows) {
         assert.ok(wrong.length && corners.length <= 1 && edges.length <= 1, `${at}: the case has ${wrong.join(' ')} wrong`);
         if (corners.length && edges.length) assert.ok(sameSlot(corners[0], edges[0]), `${at}: ${wrong.join(' ')} are two slots' pieces`);
       }
-      if (g.from === 'top') for (const p of wrong) assert.ok(isUp(caseSlotOf(row.alg, p)), `${at}: the piece for ${p} is not in the top layer in the case`);
+      if (g.from === 'top') for (const p of wrong) assert.ok(isUp(caseSlotOf(whole(row), p)), `${at}: the piece for ${p} is not in the top layer in the case`);
       continue;
     }
-    const region = set.regions === 'blocks' ? 'both-blocks' : 'first-two-layers';
+    const region = LL_REGION[set.regions];
     const twisting = g.keepsTopEdges && !kept.has(region);
     assert.ok(kept.has(region) || twisting, `${at}: breaks ${region}`);
     const topChanged = changed.filter(isUp);
@@ -437,12 +612,37 @@ function checkPurposeWords(set) {
   const hasNot = (re, why) => assert.doesNotMatch(p, re, `${set.id}: "${p}" ${why}`);
   assert.match(p, /^[A-Z][^.]*\.$/, `${set.id}: a purpose is one sentence`);
   hasNot(/\b(OLL|PLL|CMLL|F2L|AUF|permut\w*|orient\w*)\b/i, 'uses a word a learner has not been taught');
+  hasNot(/\b(EOLE|6CO|6CP|L5EP|DCAL|CDRLL|EPLL)\b/i, 'uses a word a learner has not been taught');
+  if (g.does === 'milestones') {
+    for (const id of g.point) has(MS[id].pointRe, `does not say it reaches ${id}`);
+    for (const id of g.keeps) has(MS[id].keepRe, `does not say it keeps ${id}`);
+    has(/\bkeeping\b/, 'does not say what it keeps');
+    for (const id of Object.keys(MS).filter((x) => !g.point.includes(x) && !g.keeps.includes(x) && MS[x].pointRe)) {
+      hasNot(MS[id].pointRe, `promises ${id}, which its goal is not about`);
+    }
+    if (g.turnsTopAndBottom) has(/\bwith the top and bottom turned to match\b/, 'does not say the top and bottom are turned to match');
+    else hasNot(/\btop and bottom turned\b/, 'says the top and bottom are turned, which its goal does not allow');
+    return;
+  }
   if (g.does === 'insert') {
-    const region = { cross: /\bbottom cross\b/, 'first-layer': /\bfirst layer\b/ }[g.region]
+    const region = {
+      cross: /\bbottom cross\b/,
+      'first-layer': /\bfirst layer\b/,
+      'bottom-corners': /\bbottom corner/,
+      'cf-ledges': /\bone edge of the left side\b/,
+      'cf-redges': /\bone edge of the right side\b/,
+      'cf-last-ledge': /\blast edge of the left side\b/,
+      'every-piece': /\brest of the cube\b/,
+    }[g.region]
       ?? (g.pieces === 'edge' ? /\bmiddle layer\b/ : /\bfirst two layers\b/);
     has(region, `does not name the ${g.region}`);
-    if (g.pieces === 'edge') { has(/\bone edge\b/, 'does not say one edge'); hasNot(/corner/, 'names a corner the goal does not move'); }
-    if (g.pieces === 'corner') { has(/\bone corner\b/, 'does not say one corner'); hasNot(/\bedge/, 'names an edge the goal does not place'); }
+    if (['cf-ledges', 'cf-redges', 'cf-last-ledge'].includes(g.region)) has(/\bevery corner and the edges already placed\b/, 'does not say it keeps every corner and the edges already placed');
+    if (g.pieces === 'edge') {
+      if (g.region === 'cf-last-ledge') has(/\blast edge\b/, 'does not say the last edge');
+      else has(/\bone edge\b/, 'does not say one edge');
+      if (!CORNERS_BUILT.has(g.region)) hasNot(/corner/, 'names a corner the goal does not move');
+    }
+    if (g.pieces === 'corner') { has(g.region === 'bottom-corners' ? /\bone bottom corner\b/ : /\bone corner\b/, 'does not say one corner'); hasNot(/\bedge/, 'names an edge the goal does not place'); }
     if (g.pieces === 'pair' || g.pieces === 'slot') has(/\ba corner and its edge\b.*\bone slot\b/, 'does not say a corner and its edge into one slot');
     if (g.pieces === 'pair') has(/\btogether\b/, 'does not say the two go in together');
     if (g.from === 'top') has(/\bfrom the top layer\b/, 'does not say where the piece comes from');
@@ -469,6 +669,7 @@ function checkPurposeWords(set) {
   if (!g.after) hasNot(/^Once\b/, 'says it waits for something its goal does not');
   if (g.keepsTopEdges) has(/\btop edges where they are\b/, 'does not say the top edges stay');
   if (set.regions === 'blocks') has(/\bblocks\b/, 'does not say it keeps the blocks');
+  if (set.regions === 'corners') has(/\bbottom corners\b/, 'does not say it keeps the bottom corners');
 }
 
 // ---- the cases -------------------------------------------------------------------------------------------------
@@ -480,6 +681,7 @@ test('L1: every row of every source module has exactly one ledger row, and no le
   const source = [
     ...CROSS_ALGS, ...PAIRS_ALGS, ...OLL_ALGS, ...PLL_ALGS, ...COURSE_ALGS,
     ...HUMAN_ALGS, ...CMLL_ALGS, ...F2L_CASES, ...FULL_OLL, ...FULL_PLL,
+    ...MEHTA_ALGS, ...MEHTA_BEGINNER, ...CF_ALGS,
   ];
   const ids = source.map((r) => r.name);
   assert.equal(new Set(ids).size, ids.length, 'two source rows share a name, so an id would name two algorithms');
@@ -492,7 +694,7 @@ test('L1: every row of every source module has exactly one ledger row, and no le
     assert.equal(extra.alg, '', `${extra.name} is filed as a non-algorithm and has moves`);
     assert.ok(!BY_ID.has(extra.name), `${extra.name} is not an algorithm and has a row`);
   }
-  assert.equal(ROWS.length, 309);
+  assert.equal(ROWS.length, 583);
 });
 
 test('relation: the fixture is what the library produces now', async () => {
@@ -523,7 +725,7 @@ test('nothing in a row is undefined, and every null is a field the source does n
     for (const path of walk(row, '', [])) {
       const field = path === 'solves.case' ? 'case' : path;
       const allowed = Object.hasOwn(set.notGiven, field)
-        || (path === 'sourceAlg' && !HUMAN_ALGS.find((h) => h.name === row.id)?.sourceAlg)
+        || (path === 'sourceAlg' && !entryOf(row.id).sourceAlg)
         || (path === 'nicknameSource' && row.nickname === null);
       assert.ok(allowed, `${row.id}: ${path} is null and is neither a gap the page lists nor a field its source leaves out`);
     }
@@ -538,8 +740,14 @@ test('L2: every source citation is the data file\'s own, never retyped', () => {
     const set = ALG_SETS.find((s) => s.id === row.set);
     if (set.kind === 'hand-written') { assert.equal(row.source, 'written for teaching'); continue; }
     if (set.kind === 'proved') { assert.equal(row.source, 'proved minimal by search'); continue; }
-    const entry = set.from[0] === 'human-algs' ? HUMAN_ALGS.find((h) => h.name === row.id) : CMLL_ALGS.find((h) => h.name === row.id);
-    const src = (set.from[0] === 'human-algs' ? HUMAN_SOURCES : CMLL_SOURCES)[entry.source];
+    const entry = entryOf(row.id);
+    const src = {
+      'human-algs': () => HUMAN_SOURCES[entry.source],
+      'cmll-algs': () => CMLL_SOURCES[entry.source],
+      'mehta-algs': () => MEHTA_SOURCES['mehta-os'],
+      'corners-first-corners': () => CF_SOURCES['jelinek-beginner'],
+      'corners-first-edges': () => CF_SOURCES['jelinek-beginner'],
+    }[set.from[0]]();
     assert.deepEqual(row.source, { name: src.name ?? src.what, url: src.url, fetched: src.fetched }, row.id);
     assert.match(row.source.url, /^https:\/\//);
     assert.match(row.source.fetched, /^\d{4}-\d{2}-\d{2}$/, `${row.id}: no fetched date`);
@@ -624,24 +832,48 @@ test('a smart cube\'s reports are named by the cube\'s own faces, after every tu
   assert.deepEqual(reportsByCubejs("M r' y"), ["0:L' R", "1:L'", '2:']);
 });
 
+/** One row's case against cubejs: the picture, that the algorithm and its finish solve it, the picture's kind
+ *  and the finishing turn. Throws on the first disagreement. */
+function checkCase(row) {
+  const tumbled = played(tumbleOf(row)).asString();
+  const c = new Cube();
+  c.move(tumbleOf(row));
+  c.move(inverted(whole(row)));
+  assert.equal(row.solves.facelets, c.asString(), `${row.id}: the case picture is not cubejs's`);
+  c.move(forCubejs(whole(row)));
+  assert.equal(c.asString(), tumbled, `${row.id}: the algorithm does not solve its own case`);
+  assert.equal(row.solves.picture.startsWith('top'), keptByCubejs(whole(row)).has('first-two-layers'),
+    `${row.id}: a top-face picture is drawn exactly when the algorithm keeps the first two layers`);
+  // The finishing turn, re-derived: the sheet's "(D)" for Mehta, the one turn of the middle slice that brings
+  // cubejs's centres home for a corners-first edge step, and nothing for every other row.
+  const entry = entryOf(row.id);
+  const source = setOf(row).from[0];
+  let finish = '';
+  if (source === 'mehta-algs') finish = entry.bottom ? inverted(entry.bottom) : '';
+  if (source === 'corners-first-edges') {
+    const home = ['', 'M', 'M2', "M'"].filter((f) => played(row.alg, f).toJSON().center.every((v, i) => v === i));
+    assert.equal(home.length, 1, `${row.id}: ${home.length} turns of the middle slice bring the centres home`);
+    [finish] = home;
+  }
+  assert.equal(row.solves.finish, finish, `${row.id}: its finishing turn`);
+  const human = HUMAN_ALGS.find((h) => h.name === row.id);
+  if (human) assert.equal(row.solves.case, human.case);
+}
+
 test('L2: the case is the state the algorithm solves — played by cubejs from a cube held white underneath', () => {
   // The hold every source declares is the method frame. cubejs's `x2` tumbles a solved cube to exactly that
   // hold — its top and front centres are the scan frame's D and B — which this asserts rather than assumes.
-  const tumbled = played('x2').asString();
-  assert.deepEqual([tumbled[4], tumbled[22]], [...METHOD_FRAME], 'x2 is not the method frame');
-  for (const s of Object.values(ALG_SOURCES)) assert.deepEqual([...s.hold], [...METHOD_FRAME]);
-  for (const row of ROWS) {
-    const c = new Cube();
-    c.move('x2');
-    c.move(inverted(row.alg));
-    assert.equal(row.solves.facelets, c.asString(), `${row.id}: the case picture is not cubejs's`);
-    c.move(forCubejs(row.alg));
-    assert.equal(c.asString(), tumbled, `${row.id}: the algorithm does not solve its own case`);
-    assert.equal(row.solves.picture.startsWith('top'), keptByCubejs(row.alg).has('first-two-layers'),
-      `${row.id}: a top-face picture is drawn exactly when the algorithm keeps the first two layers`);
-    const human = HUMAN_ALGS.find((h) => h.name === row.id);
-    if (human) assert.equal(row.solves.case, human.case);
+  assert.deepEqual([played('x2').asString()[4], played('x2').asString()[22]], [...METHOD_FRAME], 'x2 is not the method frame');
+  // The corners-first edge steps are written white on the left: cubejs's `x2 z` puts the white (scan U) centre
+  // on L and the yellow (scan D) centre on R, which is the hold that source declares.
+  const edgeHold = played('x2 z').asString();
+  assert.equal(edgeHold[40], 'U', 'x2 z does not put white on the left');
+  assert.equal(edgeHold[13], 'D', 'x2 z does not put yellow on the right');
+  for (const [id, s] of Object.entries(ALG_SOURCES)) {
+    const t = played(id === 'corners-first-edges' ? 'x2 z' : 'x2').asString();
+    assert.deepEqual([t[4], t[22]], [...s.hold], `${id}: its hold is not the one its tumble gives`);
   }
+  for (const row of ROWS) checkCase(row);
 });
 
 /** A cycle list as comparable strings: each cycle as where every piece GOES (`UR>UB` — the piece at UR moves
@@ -656,7 +888,7 @@ const inPlaceOf = (list) => list.map((p) => `${p.position}/${p.turn}`).sort();
 /** One row's effect against cubejs's: the cycles, the twists and flips in place (each with its amount), the
  *  hold it ends in, the regions kept and the order. Throws on the first disagreement. */
 function checkEffect(row) {
-  const e = cubejsEffect(row.alg);
+  const e = cubejsEffect(whole(row));
   assert.deepEqual(asSets(row.effect.cornerCycles), asSets(e.corners.cycles), `${row.id}: corner cycles`);
   assert.deepEqual(asSets(row.effect.edgeCycles), asSets(e.edges.cycles), `${row.id}: edge cycles`);
   assert.deepEqual(inPlaceOf(row.effect.twistedInPlace), inPlaceOf(e.corners.inPlaceTurns), `${row.id}: twisted`);
@@ -665,15 +897,15 @@ function checkEffect(row) {
   // The hold it ends in, read from the hold it is declared in: cubejs tumbles a solved cube to the method frame
   // (`x2`, asserted in the case test) and plays the algorithm; the centres then on top and in front name the
   // end hold in the scan frame's letters. A row that keeps the hold ends exactly where it began.
-  const after = played('x2', row.alg).asString();
+  const after = played(tumbleOf(row), whole(row)).asString();
   assert.deepEqual(row.effect.endHold, [after[4], after[22]], `${row.id}: the hold it ends in`);
   if (row.effect.keepsHold) assert.deepEqual(row.effect.endHold, row.hold, `${row.id}: keeps the hold, yet ends in another`);
-  const kept = keptByCubejs(row.alg);
+  const kept = keptByCubejs(whole(row));
   for (const r of Object.keys(cells)) assert.equal(row.keeps.includes(r), kept.has(r), `${row.id}: keeps ${r}`);
   // The order: the fewest repeats cubejs needs to bring the cube back, counted here one at a time.
   const c = new Cube();
   let n = 0;
-  do { c.move(forCubejs(row.alg)); n += 1; } while (!c.isSolved() && n <= row.order);
+  do { c.move(forCubejs(whole(row))); n += 1; } while (!c.isSolved() && n <= row.order);
   assert.equal(n, row.order, `${row.id}: cubejs comes back after ${n} repeats, the row says ${row.order}`);
 }
 
@@ -842,7 +1074,10 @@ test('every row\'s sentence is true of what cubejs finds, and says everything it
   // Each shape is in use, so the check above is not reading only one of them.
   for (const shape of [/^Puts .+ in place;/, /^Puts the \S+ corner and edge into their slot;/, /^Turns .+ so the top colour faces up;/,
     /^Turns .+ so the top colour faces up, and /, /^Swaps two side-by-side/, /diagonally opposite/, /swaps two pairs of/i, /round;/,
-    /; also moves /, /; also changes /, /; keeps both blocks/, /which come back/]) {
+    /; also moves /, /; also changes /, /; keeps both blocks/, /which come back/,
+    /; keeps the block/, /once the top and bottom are lined up/, /; with D after it/, /; with M after it/,
+    /the right way round; keeps the rest of the cube/, /; keeps every corner and the edges already placed/, /other edges/,
+    /; keeps the bottom corners/]) {
     assert.ok(ROWS.some((r) => shape.test(r.says)), `no row's sentence has the shape ${shape}`);
   }
   // The bare count — "moves four corners" — that said nothing about where they go is gone.
@@ -882,6 +1117,65 @@ test('a deliberately wrong sentence is caught — each kind of claim', () => {
   assert.throws(() => checkSays(wrong('drop-in', 'two bottom corners', 'one bottom corners')), /cubejs finds 2/);
 });
 
+test('Mehta and corners first: a goal, a sentence or a finishing turn made wrong is caught', () => {
+  const set = (id) => ALG_SETS.find((x) => x.id === id);
+  const rows = (id) => ROWS.filter((r) => r.set === id);
+  const row = (id) => BY_ID.get(id);
+  const regoaled = (id, goal) => ({ ...set(id), goal });
+  const wrong = (id, from, to) => {
+    const r = row(id);
+    assert.ok(r.says.includes(from), `${id} no longer says "${from}" — pick another example`);
+    return { ...r, says: r.says.replace(from, to) };
+  };
+  for (const id of ['eole-gg-1', '6co-dd-3', 'l5ep-i-front', 'cf-ledges-1', 'cf-midges-flip-1', 'cf-top-corners-twist-1']) {
+    if (BY_ID.has(id)) assert.doesNotThrow(() => checkSays(row(id)), id);
+  }
+
+  // Mehta: an algorithm that also turns an edge the wrong way round; a goal the case already has; a kept
+  // milestone the case does not have; a turn of the top and bottom refused, or claimed where none is needed.
+  assert.throws(() => checkGoal(set('mehta-6co'), [{ ...row('6co-dd-3'), alg: "R U R' U R U2 R' F R U R' U' F'" }]), /every edge the right way round/);
+  assert.throws(() => checkGoal(regoaled('mehta-6co', set('mehta-eole').goal), rows('mehta-6co')), /already has everything its goal is about/);
+  assert.throws(() => checkGoal(regoaled('mehta-6co', set('mehta-6cp').goal), rows('mehta-6co')), /which way every corner faces/);
+  const { turnsTopAndBottom: _, ...l5epExact } = set('mehta-l5ep').goal;
+  assert.throws(() => checkGoal(regoaled('mehta-l5ep', l5epExact), rows('mehta-l5ep')), /needs a turn of the top or bottom/);
+  assert.throws(() => checkGoal(regoaled('mehta-eole', { ...set('mehta-eole').goal, turnsTopAndBottom: true }), rows('mehta-eole')), /no case needs a turn/);
+  // The finishing turn taken away: the picture is no longer the case, and the block is not home without it.
+  const unfinished = { ...row('6cp-5-6-3'), solves: { ...row('6cp-5-6-3').solves, finish: '' } };
+  assert.notEqual(row('6cp-5-6-3').solves.finish, '', '6cp-5-6-3 has no finishing turn — pick another example');
+  assert.throws(() => checkCase(unfinished), /the case picture is not cubejs's/);
+  assert.throws(() => checkGoal(set('mehta-6cp'), [unfinished]), /no turn of the top and bottom gives the case/);
+  // Mehta sentences: a point clause, an "also changes" item, the lining-up and the finish, each left out.
+  const both = rows('mehta-eole').find((r) => r.says.includes(' and turns every edge the right way round'));
+  assert.ok(both, 'no EOLE row says both of its point clauses');
+  assert.throws(() => checkSays(wrong(both.id, ' and turns every edge the right way round', '')), /point clauses/);
+  const sixCo = rows('mehta-6co').find((r) => r.says.includes('where some corners sit and '));
+  assert.ok(sixCo, 'no 6CO row says where some corners sit');
+  assert.throws(() => checkSays(wrong(sixCo.id, 'where some corners sit and ', '')), /also changes/);
+  assert.throws(() => checkSays(wrong('l5ep-i-front', ' once the top and bottom are lined up', '')), /lined up exactly when/);
+  assert.throws(() => checkSays(wrong('l5ep-i-front', '; with D after it to line up the bottom', '')), /whether a turn finishes it/);
+
+  // Corners first: two built edges wrong, a corner insert that disturbs the bottom, a corner step that breaks
+  // the bottom corners, a turn said as a placing, and the finishing turn left out.
+  assert.throws(() => checkGoal(regoaled('cf-redges', set('cf-last-ledge').goal), rows('cf-redges')), /not one edge/);
+  assert.throws(() => checkGoal(set('cf-bottom-corners'), [{ ...row('cf-bottom-corners-1'), alg: "F' U' F D" }]), /not one corner/);
+  assert.throws(() => checkGoal(set('cf-top-corners'), [{ ...row('cf-top-corners-place-1'), alg: "R U R' U'" }]), /breaks bottom-corners/);
+  assert.throws(() => checkSays(wrong('cf-midges-flip-1', 'Turns the top-front edge and the top-back edge the right way round', 'Puts the top-front edge and the top-back edge in place')), /say it turns them/);
+  assert.throws(() => checkSays(wrong('cf-ledges-1', '; with M after it to line up the middle centres', '')), /whether a turn finishes it/);
+
+  // Not vacuous: EOLE's sentences take each form; the turn form and the finish are in use where expected.
+  const eole = rows('mehta-eole').map((r) => {
+    const fr = r.says.includes('puts the front-right edge in place') || r.says.startsWith('Puts the front-right edge in place');
+    const eo = /urns every edge the right way round/.test(r.says.split('; ')[0]);
+    return fr && eo ? 'both' : fr ? 'fr' : eo ? 'eo' : 'neither';
+  });
+  assert.deepEqual({ fr: eole.filter((x) => x === 'fr').length, eo: eole.filter((x) => x === 'eo').length, both: eole.filter((x) => x === 'both').length, neither: eole.filter((x) => x === 'neither').length },
+    { fr: 2, eo: 5, both: 48, neither: 0 });
+  for (const id of ['cf-ledges-5', 'cf-redges-5']) assert.match(row(id).says, /^Turns /, `${id} no longer uses the turn form`);
+  for (const id of ['mehta-6cp', 'mehta-l5ep', 'cf-ledges', 'cf-redges', 'cf-last-ledge']) {
+    assert.ok(rows(id).some((r) => r.solves.finish !== ''), `${id} has no row with a finishing turn`);
+  }
+});
+
 test('rows for a set and for a method are the library\'s rows, and every method stage names its rows', async () => {
   const entries = await loadEntries();
   for (const set of ALG_SETS.filter((s) => s.kind !== 'not an algorithm')) {
@@ -891,7 +1185,7 @@ test('rows for a set and for a method are the library\'s rows, and every method 
   }
   await assert.rejects(setRows('align'), /not an algorithm set/);
   await assert.rejects(algRow('no-such-row'), /no algorithm/);
-  for (const m of METHOD_SETS) {
+  for (const m of METHOD_SETS.filter((x) => x.id !== null)) {
     const rows = await rowsForMethod(m.id);
     const sets = new Set(m.phases.flatMap((p) => p.held ?? []));
     assert.deepEqual([...new Set(rows.map((r) => r.set))].sort(), [...sets].sort(), m.id);
@@ -899,11 +1193,12 @@ test('rows for a set and for a method are the library\'s rows, and every method 
   }
   // A row's `methods` is exactly the stages whose sets hold it: the oracle is taught by none.
   for (const row of ROWS) {
-    const want = METHOD_SETS.flatMap((m) => m.phases.filter((p) => (p.held ?? []).includes(row.set)).map((p) => ({ method: m.id, stage: p.stage })));
+    const want = METHOD_SETS.filter((m) => m.id !== null).flatMap((m) => m.phases.filter((p) => (p.held ?? []).includes(row.set)).map((p) => ({ method: m.id, stage: p.stage })));
     assert.deepEqual(row.methods, want, row.id);
   }
   assert.ok(ROWS.filter((r) => ALG_SETS.find((s) => s.id === r.set).kind === 'proved').every((r) => r.methods.length === 0));
   assert.deepEqual(await algIds(), ROWS.map((r) => r.id));
+  await assert.rejects(rowsForMethod(null), /no offered method/);
 });
 
 test('importing the library builds no repertoire and reads no pending source; a row read later reads none either', () => {
@@ -959,14 +1254,8 @@ test('a source that failed to load is not remembered: the next ask loads it agai
   assert.deepEqual(third, { ok: true, n: ALG_SETS.length, loads: 2 }, 'a load that worked was not kept');
 });
 
-test('a pending source stays pending only while it is uncommitted', (t) => {
-  // The day another session commits Mehta or corners-first, this fails: the ledger must then read it, and a
-  // source left in PENDING_SOURCES after it is committed would be a table the ledger silently does not show.
-  const repo = new URL('../../../', import.meta.url);
-  const tracked = spawnSync('git', ['ls-files', '--', ...PENDING_SOURCES.map((p) => `apps/web/${p.module}`)], { cwd: repo, encoding: 'utf8' });
-  if (tracked.status !== 0) { t.skip(`git is not available here (${tracked.error?.message ?? tracked.stderr}), so whether they are committed is unchecked`); return; }
-  assert.equal(tracked.stdout.trim(), '', `committed, and still listed as pending: ${tracked.stdout.trim()}`);
-  assert.deepEqual(PENDING_SOURCES.map((p) => p.id), ['mehta-algs', 'corners-first-algs']);
+test('no source is pending: Mehta and corners first are committed, and the ledger reads them', () => {
+  assert.deepEqual(PENDING_SOURCES, []);
 });
 
 test('importing the generator prints nothing and writes nothing; run directly, it reports', () => {
@@ -981,7 +1270,7 @@ test('importing the generator prints nothing and writes nothing; run directly, i
     assert.equal(ran.stdout, '', 'an import printed the report');
     const direct = spawnSync(process.execPath, [new URL('../bench/alg-ledger.mjs', import.meta.url).pathname], { encoding: 'utf8' });
     assert.equal(direct.status, 0, direct.stderr);
-    assert.match(direct.stdout, /309 rows/);
+    assert.match(direct.stdout, /583 rows/);
     assert.doesNotMatch(direct.stdout, /wrote /, 'without --emit it wrote a file');
   } finally {
     rmSync(dir, { recursive: true, force: true });
