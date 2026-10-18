@@ -2,7 +2,8 @@
 // its edges by design and says so by its edge fade, so a CHIP half under the fade is right: it reads as "more this
 // way". A text LABEL is not: half of "Sexy move" under the fade was drawn as "ve" (the WI-5 audit's iPhone 16
 // screenshot, 2026-10-19), and no text is drawn where it cannot be read (AGENTS.md §2). So every label in a strip is
-// either WHOLLY inside the strip's unfaded box or WHOLLY outside the strip's box, and never over a chip or another label.
+// either WHOLLY inside the strip's unfaded box or WHOLLY outside the strip's box, never over a chip or another label,
+// and never past its own section's turns (E12.0: a label past them names the next section's turns).
 //
 // Shared by geometry.test.mjs (every screen, every fixture, and the Practice page at every turn) and
 // scroll-strip.test.mjs (the mechanism at every scroll position). Inlined into `page.evaluate` by `toString()`, so it
@@ -49,6 +50,17 @@ export const stripLabelsUnread = (root) => {
     const chips = [...strip.querySelectorAll('.chip-m')].filter(drawn);
     for (const [i, el] of outer.entries()) {
       const r = inked(el);
+      // OVER ITS OWN PART ONLY (coordinator, E12.0): a label past its section's last turn stands over the next
+      // section's turns and names them. Its section is the strip's child that holds it; a section with no turns has
+      // nothing to be over.
+      let sec = el;
+      while (sec.parentElement && sec.parentElement !== strip) sec = sec.parentElement;
+      const own = [...sec.querySelectorAll('.chip-m')].map((c) => c.getBoundingClientRect());
+      if (own.length) {
+        const lo = Math.min(...own.map((c) => c.left));
+        const hi = Math.max(...own.map((c) => c.right));
+        if (r.left < lo - 0.5 || r.right > hi + 0.5) out.push(`${name(el)} drawn at ${r.left.toFixed(1)}–${r.right.toFixed(1)}, beyond its own turns ${lo.toFixed(1)}–${hi.toFixed(1)}`);
+      }
       for (const c of chips) if (meets(r, c.getBoundingClientRect())) out.push(`${name(el)} drawn over the chip "${c.textContent.trim()}"${c.classList.contains('cur') ? ' (the current turn)' : ''}`);
       for (const o of outer.slice(i + 1)) if (meets(r, inked(o))) out.push(`${name(el)} drawn over the label ${name(o)}`);
     }

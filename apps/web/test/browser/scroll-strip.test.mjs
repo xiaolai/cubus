@@ -251,8 +251,9 @@ test('centre never scrolls down a row that clips down', async () => {
 // part by its trigger's name ("Sexy move") or a lesson's stage; scrolled under the edge fade, the label was drawn cut
 // mid-word ("ve", WI-5's iPhone 16 screenshot). So at EVERY scroll position: each label is wholly inside the strip's
 // unfaded box or wholly outside the strip (strip-labels.mjs); a label sticks to the visible left edge while a chip of
-// its section is in view; it never overlaps the next label, and is drawn only while its section is in view.
-const LABEL_GAP = 8; // the least room between two drawn labels, as lib/scroll-strip.js keeps it
+// its section is in view; it never runs past its own section's last turn (E12.0), so it never stands over the next
+// section's turns or its label; and it is drawn only while its section is in view. A label wider than its own turns
+// is never drawn at all.
 test('a section label is never drawn half under the fade, and sticks to the visible left edge while its part is in view', async () => {
   const at = await page.evaluate(async ({ gate }) => {
     const unread = (0, eval)(`(${gate})`);
@@ -265,7 +266,7 @@ test('a section label is never drawn half under the fade, and sticks to the visi
     row.className = 'list walk-strip';
     row.style.cssText = 'position:fixed;left:20px;top:200px;width:320px;display:flex;flex-wrap:nowrap;align-items:flex-end;overflow-x:auto;overflow-y:hidden;background:#fff;z-index:99999';
     // A plain run, a trigger, a trigger whose name is wider than its two turns, a plain run, a trigger.
-    const parts = [[null, 6], ['Sexy move', 4], ['Sledgehammer, long name', 2], [null, 5], ['Left sledgehammer', 4]];
+    const parts = [[null, 6], ['Sexy move', 4], ['Sledgehammer', 3], ['Far too long a name for two', 2], [null, 5], ['Left sledgehammer', 4]];
     const spacer = () => { const i = document.createElement('i'); i.style.cssText = 'flex:none;width:50%'; return i; };
     row.append(spacer());
     let k = 0;
@@ -282,7 +283,7 @@ test('a section label is never drawn half under the fade, and sticks to the visi
       }
       const chips = document.createElement('div');
       chips.className = 'move-chips';
-      chips.style.cssText = 'display:flex;flex-wrap:nowrap;gap:6px';
+      chips.style.cssText = 'display:flex;flex-wrap:nowrap;justify-content:flex-start;gap:6px';
       for (let i = 0; i < n; i++) {
         const c = document.createElement('span');
         c.className = 'chip-m';
@@ -309,11 +310,12 @@ test('a section label is never drawn half under the fade, and sticks to the visi
         const sec = l.parentElement;
         const sb = sec.getBoundingClientRect();
         const run = sec.querySelector('.move-chips').getBoundingClientRect();
+        const own = sec.querySelector('.move-chips > :last-child').getBoundingClientRect().right;
         const range = document.createRange();
         range.selectNodeContents(l);
         const r = range.getBoundingClientRect();
         const style = getComputedStyle(l);
-        return { name: l.textContent, natural: sb.left + Number.parseFloat(getComputedStyle(sec).paddingLeft), w: r.width, left: r.left,
+        return { name: l.textContent, natural: sb.left + Number.parseFloat(getComputedStyle(sec).paddingLeft), w: r.width, left: r.left, own,
           drawn: style.visibility !== 'hidden' && style.display !== 'none', inView: run.right > shows.left && run.left < shows.right };
       });
       out.push({ x, shows, faded: shows.left > b.left || shows.right < b.right, unread: unread(host), labels });
@@ -326,7 +328,10 @@ test('a section label is never drawn half under the fade, and sticks to the visi
   assert.ok(at.some((p) => p.faded), 'precondition: the strip fades an edge somewhere');
   // THE GATE, at every position.
   for (const p of at) assert.deepEqual(p.unread, [], `at scrollLeft ${p.x}: a label drawn where it cannot be read whole`);
-  for (const name of ['Sexy move', 'Sledgehammer, long name', 'Left sledgehammer']) {
+  // MUST NOT: a name wider than its own turns, drawn anywhere.
+  const wide = at.find((p) => p.labels.find((l) => l.name === 'Far too long a name for two').drawn);
+  assert.equal(wide, undefined, `a label wider than its own turns was drawn: ${JSON.stringify(wide?.labels.find((l) => l.name === 'Far too long a name for two'))}`);
+  for (const name of ['Sexy move', 'Sledgehammer', 'Left sledgehammer']) {
     const seen = at.map((p) => ({ x: p.x, shows: p.shows, l: p.labels.find((l) => l.name === name), all: p.labels }));
     // MUST NOT: a label drawn while no chip of its section is in view.
     for (const s of seen) assert.ok(!s.l.drawn || s.l.inView, `${name}: drawn at scrollLeft ${s.x} with none of its turns in view`);
@@ -338,11 +343,10 @@ test('a section label is never drawn half under the fade, and sticks to the visi
       assert.ok(Math.abs(s.l.left - Math.max(s.l.natural, s.shows.left)) <= 1, `${name}: drawn at ${s.l.left} at scrollLeft ${s.x}, not at ${Math.max(s.l.natural, s.shows.left)}`);
     }
     // It is NOT drawn while a turn of its part is in view only where drawing it there would break the gate: it would
-    // run past the visible right edge, or into the next label drawn (which it never overlaps).
+    // run past the visible right edge, or past its own part's last turn.
     for (const s of seen.filter((v) => v.l.inView && !v.l.drawn)) {
       const pin = Math.max(s.l.natural, s.shows.left);
-      const next = s.all.filter((o) => o.drawn && o.natural > s.l.natural).map((o) => o.left);
-      const room = Math.min(s.shows.right, ...next.map((n) => n - LABEL_GAP));
+      const room = Math.min(s.shows.right, s.l.own);
       assert.ok(pin + s.l.w > room - 1, `${name}: hidden at scrollLeft ${s.x} while a turn of its part is in view and it fits (${pin}+${s.l.w} <= ${room})`);
     }
   }

@@ -21,9 +21,6 @@
 // lesson (112–161 moves) is taller than any landscape sheet, so it scrolls DOWN: there `centre` keeps the turn
 // you are on at the list's vertical centre, the one mechanism on both axes (stage-contract.md, 2026-10-18).
 
-/** The least room between two section labels drawn side by side (`labels` below). */
-const LABEL_GAP = 8;
-
 /**
  * Make `row` a one-line strip.
  *
@@ -44,11 +41,12 @@ export function oneLineStrip(row, { signal }) {
    * text is drawn where it cannot be read (AGENTS.md §2). A chip half under the edge fade says "more this way"; half a
    * name says nothing — "Sexy move" stood as "ve" (WI-5 audit, 2026-10-19). So, after every scroll:
    *   - a label STICKS to the strip's visible left edge, past the fade, while any turn of its part is in view;
-   *   - it is drawn only where it is WHOLE: inside the unfaded box, and short of the next label drawn by `LABEL_GAP`;
-   *     anywhere else it is not drawn (`visibility`, which keeps its row's height and with it the cube's).
+   *   - it is drawn only where it is WHOLE, inside the unfaded box, and over ITS OWN turns: never past its section's
+   *     last turn, where it would name the next section's (E12.0) — so never over another label either. Anywhere
+   *     else, and always for a name wider than its own turns, it is not drawn (`visibility`, which keeps its row's
+   *     height and with it the cube's).
    * It never sits over a chip: it is in its section's own row above the chips. The fade's widths are the stylesheet's
    * (`--fade-left` / `--fade-right`, the ones its mask reads), and a label is measured by its TEXT, not its block.
-   * Right to left, so each label knows where the next one drawn begins.
    */
   const labels = () => {
     const els = [...row.querySelectorAll(':scope > * > .walk-sec-l')];
@@ -63,18 +61,17 @@ export function oneLineStrip(row, { signal }) {
     const at = els.map((el) => {
       range.selectNodeContents(el);
       const r = range.getBoundingClientRect();
-      const run = el.parentElement.querySelector('.move-chips')?.getBoundingClientRect();
-      return { el, natural: r.left - (Number(el.dataset.pin) || 0), width: r.width, inView: Boolean(run) && run.right > shows.left && run.left < shows.right };
+      const last = el.parentElement.querySelector('.move-chips > :last-child')?.getBoundingClientRect();
+      return { el, natural: r.left - (Number(el.dataset.pin) || 0), width: r.width, last };
     });
-    let room = shows.right;
-    for (const a of at.reverse()) {
+    for (const a of at) {
       const left = Math.max(a.natural, shows.left);
-      const drawn = a.inView && left + a.width <= room;
+      const inView = Boolean(a.last) && a.last.right > shows.left && a.natural < shows.right;
+      const drawn = inView && left + a.width <= Math.min(shows.right, a.last.right);
       const pin = drawn ? left - a.natural : 0;
       a.el.dataset.pin = String(pin);
       a.el.style.transform = pin ? `translateX(${pin}px)` : '';
       a.el.style.visibility = drawn ? '' : 'hidden';
-      if (drawn) room = left - LABEL_GAP;
     }
   };
 
