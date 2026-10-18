@@ -19,19 +19,21 @@ import { TIME_REFUSAL } from '../lib/drill/timing.js';
 // ---- fakes: a storage and a clock -----------------------------------------------------------------------
 
 /** A storage over a Map, with the failures a real one has: a read that throws, a write that throws (a full
- *  quota), and a write that "succeeds" and keeps nothing. `writes` counts every setItem that was ATTEMPTED. */
+ *  quota — `writeThrows` may be changed later, as a quota frees up), and a write that "succeeds" and keeps
+ *  nothing. `writes` counts every setItem that was ATTEMPTED. */
 function fakeStorage(initial = null, { readThrows = false, writeThrows = false, writeDrops = false } = {}) {
   const map = new Map();
   if (initial !== null) map.set(RECORD_KEY, initial);
   const s = {
     writes: 0,
+    writeThrows,
     getItem(k) {
       if (readThrows) throw new Error('SecurityError: the read was refused');
       return map.has(k) ? map.get(k) : null;
     },
     setItem(k, v) {
       s.writes += 1;
-      if (writeThrows) {
+      if (s.writeThrows) {
         const e = new Error('QuotaExceededError');
         e.name = 'QuotaExceededError';
         throw e;
@@ -538,6 +540,29 @@ test('verify item 3: a version-1 record whose write-back fails still reads, and 
   assert.deepEqual([out.saved, out.error?.code], [false, 'write-failed']);
 });
 
+test('verify: a version-1 write-back that failed is said only until a read finds the record written as version 2', () => {
+  // Codex's final verify: `read` set the error when the write-back failed and never cleared it, so every later read
+  // still said `write-failed` after the record had been written.
+  const storage = fakeStorage(V1, { writeThrows: true });
+  const record = openPracticeRecord({ storage, now: clockFrom(10_000) });
+  record.read();
+  assert.deepEqual(statusOf(record), { missing: 0, removed: 0, error: 'write-failed' }, 'precondition');
+  record.read();
+  assert.deepEqual(statusOf(record), { missing: 0, removed: 0, error: 'write-failed' }, 'a write-back that failed again was not said');
+  storage.writeThrows = false;
+  record.read();
+  assert.equal(JSON.parse(storage.raw()).v, RECORD_VERSION, 'precondition: this read wrote it back');
+  assert.deepEqual(statusOf(record), QUIET, 'a write-back that landed is still said to have failed');
+  // Written back by another instance: the next read finds version 2 and has nothing to say either.
+  const other = fakeStorage(V1, { writeThrows: true });
+  const c = openPracticeRecord({ storage: other, now: clockFrom(10_000) });
+  c.read();
+  other.writeThrows = false;
+  openPracticeRecord({ storage: other, now: clockFrom(10_000) }).read();
+  c.read();
+  assert.deepEqual(statusOf(c), QUIET, 'a record another instance wrote back is still said to have failed');
+});
+
 test('a read is a fresh snapshot: its lists and reps are frozen, and editing its Map changes nothing stored', () => {
   const storage = fakeStorage();
   const record = open(storage);
@@ -945,6 +970,25 @@ test('row 12: a rep that could not be put back is a state, and the look that put
   assert.equal(a.add('x', rep({ ms: 777 })).saved, true);
   assert.deepEqual(statusOf(a), QUIET);
   assert.deepEqual(msOf(w.stored()), { x: [111, 222, 555, 777], y: [333, 444, 666] });
+});
+
+test('a read does not clear why a rep is still missing: only the look that puts it back does, or one that finds no record', () => {
+  const w = windows(2);
+  const { records: [a, b] } = openAll(w, clockFrom());
+  assert.equal(a.add('x', rep({ ms: 111 })).saved, true);
+  w.deliver();
+  assert.equal(a.add('x', rep({ ms: 222 })).saved, true);
+  assert.equal(b.add('y', rep({ ms: 333 })).saved, true);
+  w.tabs[0].storage.refuse = true;
+  w.deliver();
+  assert.deepEqual(statusOf(a), { missing: 1, removed: 0, error: 'write-failed' }, 'precondition');
+  a.read();
+  assert.deepEqual(statusOf(a), { missing: 1, removed: 0, error: 'write-failed' }, 'a read cleared why a rep is still missing');
+  // The record removed, its event not yet run: the read that finds it gone has nothing left to put back.
+  w.tabs[1].storage.removeItem(RECORD_KEY);
+  w.deliver({ events: false });
+  a.read();
+  assert.deepEqual(statusOf(a), { missing: 0, removed: 2, error: null }, 'a record gone still had a rep missing from it');
 });
 
 test('row 13: a rep the caps would drop anyway is neither put back nor called missing', () => {

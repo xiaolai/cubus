@@ -423,10 +423,12 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = n
   /** The reps this instance wrote that were on record at its last look (`{ id, rep }`), and their generation. */
   let mine = [];
   let gen = null;
-  /** `status()`: what the last look could not do, and what removals took. */
+  /** `status()`: what the last look could not do, and what removals took. A version-1 record's write-back is its own
+   *  state, because `read` looks without putting back — it may answer that one and nothing else. */
   let missing = 0;
   let removed = 0;
-  let error = null;
+  let lookError = null;
+  let migrateError = null;
 
   /**
    * A version-1 record as version 2 (header): every rep given an id under one page half drawn for the purpose,
@@ -446,12 +448,13 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = n
   };
 
   /** This window saw the record its reps were written under disappear (header, TWO WINDOWS): they are dropped,
-   *  never put back, and counted. */
+   *  never put back, and counted — so nothing is left to put back, nor any reason to say why it could not be. */
   const forget = () => {
     removed += mine.length;
     mine = [];
     gen = null;
     missing = 0;
+    lookError = null;
   };
 
   /**
@@ -497,7 +500,7 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = n
     let found;
     let migrateFailed;
     try { ({ found, failed: migrateFailed } = look()); } catch (e) {
-      if (e instanceof PracticeRecordError) error = e;
+      if (e instanceof PracticeRecordError) lookError = e;
       throw e;
     }
     const stored = found ?? { gen: null, algs: new Map() };
@@ -523,7 +526,8 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = n
     mine = mine.filter(({ rep }) => kept.has(rep.repId));
     gen = stored.gen;
     missing = failed ? mine.filter(({ rep }) => !on.has(rep.repId)).length : 0;
-    error = failed ?? migrateFailed;
+    lookError = failed;
+    migrateError = migrateFailed;
     return { gen: stored.gen, algs };
   };
 
@@ -541,10 +545,12 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = n
   }, signal ? { signal } : undefined);
 
   /** Every algorithm's reps as stored now: a fresh snapshot each call. Throws when the record is refused; a
-   *  version-1 record whose write-back failed reads, and `status()` says why it is not yet version 2. */
+   *  version-1 record whose write-back failed reads, and `status()` says why it is not yet version 2 — until a read
+   *  finds it written. A read puts nothing back, so why a rep is still missing stands until a look that does, or
+   *  one that finds no record at all (`forget`). */
   const read = () => {
     const { found, failed } = look();
-    if (failed) error = failed;
+    migrateError = failed;
     return found?.algs ?? new Map();
   };
 
@@ -570,10 +576,10 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = n
      *             SAW disappear: a look found no record, or a removal event named it (header, TWO WINDOWS).
      *             Never put back, and not a failure to show: the app never removes the record, so a removal is
      *             an outside wipe, and deliberate
-     *   error     why the last look could not finish (the record cannot be read, is refused, the reps put back
-     *             did not land, or a version-1 record could not be written back as version 2), or null
+     *   error     why the last look could not finish (the record cannot be read, is refused, or the reps put back
+     *             did not land), or else why a version-1 record is not yet written back as version 2; or null
      */
-    status: () => Object.freeze({ missing, removed, error }),
+    status: () => Object.freeze({ missing, removed, error: lookError ?? migrateError }),
 
     /**
      * Add one finished rep (`repFromDone`'s output) to an algorithm, stamped with the clock now and a new id.
@@ -619,7 +625,8 @@ export function openPracticeRecord({ storage, now, key = RECORD_KEY, changes = n
       mine = [...mine, { id, rep: full }].filter(({ rep: r }) => kept.has(r.repId));
       gen = next.gen;
       missing = 0;
-      error = null;
+      lookError = null;
+      migrateError = null;
       return Object.freeze({ saved: true });
     },
   });
