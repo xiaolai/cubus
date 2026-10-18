@@ -6,6 +6,7 @@ import { after, before, test } from 'node:test';
 
 import { decodePng } from '../png.mjs';
 import { startBrowserFixture } from './harness.mjs';
+import { stripLabelsUnread } from './strip-labels.mjs';
 
 let fixture; let page;
 
@@ -244,4 +245,105 @@ test('centre never scrolls down a row that clips down', async () => {
   const at = await wrapped('hidden');
   assert.ok(at[0].max > 300, `precondition: the row overflows down (${at[0].max}px)`);
   assert.deepEqual(at.map((a) => a.top), at.map(() => 0), 'a row with overflow-y: hidden was scrolled down');
+});
+
+// A SECTION'S LABEL IS TEXT, and text is never drawn where it cannot be read (AGENTS.md §2). The walk's strip labels a
+// part by its trigger's name ("Sexy move") or a lesson's stage; scrolled under the edge fade, the label was drawn cut
+// mid-word ("ve", WI-5's iPhone 16 screenshot). So at EVERY scroll position: each label is wholly inside the strip's
+// unfaded box or wholly outside the strip (strip-labels.mjs); a label sticks to the visible left edge while a chip of
+// its section is in view; it never overlaps the next label, and is drawn only while its section is in view.
+const LABEL_GAP = 8; // the least room between two drawn labels, as lib/scroll-strip.js keeps it
+test('a section label is never drawn half under the fade, and sticks to the visible left edge while its part is in view', async () => {
+  const at = await page.evaluate(async ({ gate }) => {
+    const unread = (0, eval)(`(${gate})`);
+    document.querySelector('#labels-under-test')?.remove();
+    const { oneLineStrip } = await import('/lib/scroll-strip.js');
+    const host = document.createElement('div');
+    host.id = 'labels-under-test';
+    host.innerHTML = '<style>:where(#labels-under-test .walk-strip) { --fade-left: 0px; --fade-right: 0px; }</style>';
+    const row = document.createElement('div');
+    row.className = 'list walk-strip';
+    row.style.cssText = 'position:fixed;left:20px;top:200px;width:320px;display:flex;flex-wrap:nowrap;align-items:flex-end;overflow-x:auto;overflow-y:hidden;background:#fff;z-index:99999';
+    // A plain run, a trigger, a trigger whose name is wider than its two turns, a plain run, a trigger.
+    const parts = [[null, 6], ['Sexy move', 4], ['Sledgehammer, long name', 2], [null, 5], ['Left sledgehammer', 4]];
+    const spacer = () => { const i = document.createElement('i'); i.style.cssText = 'flex:none;width:50%'; return i; };
+    row.append(spacer());
+    let k = 0;
+    for (const [name, n] of parts) {
+      const sec = document.createElement('div');
+      sec.className = 'walk-sec';
+      sec.style.cssText = 'flex:none;padding:3px 4px 5px';
+      if (name) {
+        const l = document.createElement('div');
+        l.className = 'sub walk-sec-l';
+        l.style.cssText = 'font-size:12px;white-space:nowrap';
+        l.textContent = name;
+        sec.append(l);
+      }
+      const chips = document.createElement('div');
+      chips.className = 'move-chips';
+      chips.style.cssText = 'display:flex;flex-wrap:nowrap;gap:6px';
+      for (let i = 0; i < n; i++) {
+        const c = document.createElement('span');
+        c.className = 'chip-m';
+        c.style.cssText = 'flex:none;width:40px;height:40px';
+        c.textContent = String(k++);
+        chips.append(c);
+      }
+      sec.append(chips);
+      row.append(sec);
+    }
+    row.append(spacer());
+    host.append(row);
+    document.body.append(host);
+    oneLineStrip(row, { signal: new AbortController().signal });
+    const max = row.scrollWidth - row.clientWidth;
+    const out = [];
+    for (let x = 0; x <= max; x += 3) {
+      row.scrollLeft = x;
+      row.dispatchEvent(new Event('scroll'));
+      const cs = getComputedStyle(row);
+      const b = row.getBoundingClientRect();
+      const shows = { left: b.left + (Number.parseFloat(cs.getPropertyValue('--fade-left')) || 0), right: b.right - (Number.parseFloat(cs.getPropertyValue('--fade-right')) || 0) };
+      const labels = [...row.querySelectorAll('.walk-sec-l')].map((l) => {
+        const sec = l.parentElement;
+        const sb = sec.getBoundingClientRect();
+        const run = sec.querySelector('.move-chips').getBoundingClientRect();
+        const range = document.createRange();
+        range.selectNodeContents(l);
+        const r = range.getBoundingClientRect();
+        const style = getComputedStyle(l);
+        return { name: l.textContent, natural: sb.left + Number.parseFloat(getComputedStyle(sec).paddingLeft), w: r.width, left: r.left,
+          drawn: style.visibility !== 'hidden' && style.display !== 'none', inView: run.right > shows.left && run.left < shows.right };
+      });
+      out.push({ x, shows, faded: shows.left > b.left || shows.right < b.right, unread: unread(host), labels });
+    }
+    host.remove();
+    return out;
+  }, { gate: stripLabelsUnread.toString() });
+
+  assert.ok(at.length > 100, `precondition: the strip scrolls through ${at.length} positions`);
+  assert.ok(at.some((p) => p.faded), 'precondition: the strip fades an edge somewhere');
+  // THE GATE, at every position.
+  for (const p of at) assert.deepEqual(p.unread, [], `at scrollLeft ${p.x}: a label drawn where it cannot be read whole`);
+  for (const name of ['Sexy move', 'Sledgehammer, long name', 'Left sledgehammer']) {
+    const seen = at.map((p) => ({ x: p.x, shows: p.shows, l: p.labels.find((l) => l.name === name), all: p.labels }));
+    // MUST NOT: a label drawn while no chip of its section is in view.
+    for (const s of seen) assert.ok(!s.l.drawn || s.l.inView, `${name}: drawn at scrollLeft ${s.x} with none of its turns in view`);
+    // It STICKS: past the fade, at the visible left edge, at a position where its own place has gone under it.
+    assert.ok(seen.some((s) => s.l.drawn && s.l.natural < s.shows.left - 1 && Math.abs(s.l.left - s.shows.left) <= 1),
+      `${name}: never drawn stuck to the visible left edge after its place scrolled under the fade`);
+    // Wherever it is drawn, it is at its place or, once that has scrolled under the fade, at the visible left edge.
+    for (const s of seen.filter((v) => v.l.drawn)) {
+      assert.ok(Math.abs(s.l.left - Math.max(s.l.natural, s.shows.left)) <= 1, `${name}: drawn at ${s.l.left} at scrollLeft ${s.x}, not at ${Math.max(s.l.natural, s.shows.left)}`);
+    }
+    // It is NOT drawn while a turn of its part is in view only where drawing it there would break the gate: it would
+    // run past the visible right edge, or into the next label drawn (which it never overlaps).
+    for (const s of seen.filter((v) => v.l.inView && !v.l.drawn)) {
+      const pin = Math.max(s.l.natural, s.shows.left);
+      const next = s.all.filter((o) => o.drawn && o.natural > s.l.natural).map((o) => o.left);
+      const room = Math.min(s.shows.right, ...next.map((n) => n - LABEL_GAP));
+      assert.ok(pin + s.l.w > room - 1, `${name}: hidden at scrollLeft ${s.x} while a turn of its part is in view and it fits (${pin}+${s.l.w} <= ${room})`);
+    }
+  }
 });

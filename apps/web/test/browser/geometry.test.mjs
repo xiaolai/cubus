@@ -36,6 +36,7 @@ import { LEVELS, METHODS } from '../../lib/methods/registry.js';
 import { fitStage } from '../../lib/stage.js';
 import { freePort } from '../free-port.mjs';
 import { CONTRACT_CUBES } from '../fixtures/solver-cubes.mjs';
+import { stripLabelsUnread } from './strip-labels.mjs';
 
 // Asked of the OS in before(), not chosen: a fixed port collides with an orphaned server
 // from an interrupted run, which fails at startup and reads like a regression. See free-port.mjs.
@@ -286,8 +287,11 @@ const rect = (el) => {
  * EACH AXIS ON ITS OWN, and the text's own box first (audit, 2026-10-17): a box that clips its OWN text
  * (`overflow: hidden` and a fixed height) loses it as surely as an ancestor does, and a scroller that
  * scrolls across but clips down reaches nothing that is cut off below.
+ *
+ * `textFits` is the box half; `contentFits` below is its source with the strip half added, and is what every
+ * case inlines.
  */
-const contentFits = (root) => {
+const textFits = (root) => {
   const spills = [];
   const cut = [];
   const named = (el) => `${el.id ? `#${el.id}` : `${el.tagName.toLowerCase()}.${String(el.className).trim().replace(/\s+/g, '.')}`} "${el.textContent.trim().slice(0, 40)}"`;
@@ -334,6 +338,19 @@ const contentFits = (root) => {
   }
   return { spills, cut };
 };
+
+/**
+ * What every case inlines as "text that cannot be read where it is drawn": `textFits` above, and a THIRD way to lose
+ * text, which a box-and-scroller measurement passes by construction — a label inside a one-line strip, scrolled under
+ * the strip's edge fade (strip-labels.mjs). The strip scrolls, so the label is "reachable", and the fade draws it
+ * half-way to nothing: "Sexy move" stood as "ve" on the Practice page in the WI-5 audit, with this file green. Its
+ * findings are `cut`, beside the rest, so no case can measure text without measuring this.
+ */
+const contentFits = `((root) => {
+  const fits = (${textFits.toString()})(root);
+  for (const s of (${stripLabelsUnread.toString()})(root)) fits.cut.push(s + ', inside a one-line strip');
+  return fits;
+})`;
 
 /** Everything the foundation assertions need, read in one round trip. The probe is a throwaway
  *  element sized by the reference-box properties: custom properties only resolve when used. */
@@ -575,7 +592,7 @@ const measureCube = (page) =>
         } catch (e) { return { error: String(e) }; }
       })(),
       chips, overflow: { cols: cols.scrollWidth - cols.clientWidth, colsV: cols.scrollHeight - cols.clientHeight, doc: document.documentElement.scrollWidth - innerWidth },
-      fits: (${contentFits.toString()})(screen),
+      fits: ${contentFits}(screen),
       paintedSize: (${paintedSize.toString()})(),
       stageContent: (() => { const b = stage.getBoundingClientRect(); return { top: b.top + px(scs.paddingTop), bottom: b.bottom - px(scs.paddingBottom) }; })(),
       // The cube card's tools a person can SEE in this composition (a hidden one has no box).
@@ -925,7 +942,7 @@ for (const fixture of FIXTURES) {
           return { shown: getComputedStyle(card).display !== 'none', card: rect(card), net: rect(document.querySelector('#viewNet')),
             stage: rect(document.getElementById('stage')), scroll: card.scrollHeight, client: card.clientHeight,
             expanded: document.querySelector('#twinBtn').getAttribute('aria-expanded'),
-            fits: (${contentFits.toString()})(document.querySelector('.screen.active')) };
+            fits: ${contentFits}(document.querySelector('.screen.active')) };
         })()`);
         assert.ok(open.shown, 'portrait: the twin\'s tool did not show the twin');
         assert.equal(open.expanded, 'true', 'portrait: the twin\'s tool does not say the twin is open');
@@ -1069,7 +1086,7 @@ const measureWalk = (page) =>
       primary: rect($('.cols > .primary')), aux: rect($('.cols > .aux')), cols: rect(cols),
       rowsGap: px(getComputedStyle($('.screen.active')).getPropertyValue('--rows-gap')),
       colsV: cols.scrollHeight - cols.clientHeight,
-      fits: (${contentFits.toString()})($('.screen.active')),
+      fits: ${contentFits}($('.screen.active')),
     };
   })()`);
 
@@ -1213,7 +1230,7 @@ const measureScan = (page) =>
       cols: rect($('.cols')), stage: { w: $('#stage').clientWidth, h: $('#stage').clientHeight },
       solve: rect($('#scanSolveBtn')),
       overflow: { board: board.scrollHeight - board.clientHeight, doc: document.documentElement.scrollWidth - innerWidth },
-      fits: (${contentFits.toString()})(document.querySelector('.screen.active')),
+      fits: ${contentFits}(document.querySelector('.screen.active')),
     };
   })()`);
 
@@ -1265,7 +1282,7 @@ for (const fixture of FIXTURES) {
           pills: pills.filter((p) => p.width > 0),
           pin: pinned ? { text: pin.textContent, width: pinBox.width, height: pinBox.height, covered: Boolean(pinHit && pinHit !== pin && !pin.contains(pinHit)) } : null,
           noteShown: note.getBoundingClientRect().height > 0 && getComputedStyle(note).display !== 'none',
-          fits: (${contentFits.toString()})(screen) };
+          fits: ${contentFits}(screen) };
       })()`);
       // THE NOTE IS SAID IN BOTH COMPOSITIONS (AGENTS.md §3: a method that could not be worked out shows the Quick
       // walk AND SAYS SO). Folding the row in portrait must not fold its sentence away.
@@ -1301,7 +1318,7 @@ for (const fixture of FIXTURES) {
         const cs = getComputedStyle(el);
         const shown = cs.display !== 'none' && cs.visibility !== 'hidden' && Number(cs.opacity) > 0 && r.width > 0 && r.height > 0;
         const name = (n) => (n ? n.id ? '#' + n.id : n.tagName.toLowerCase() + '.' + String(n.className).trim().replace(/\\s+/g, '.') : 'nothing');
-        const fits = (${contentFits.toString()})(el);
+        const fits = ${contentFits}(el);
         // Reachable means pressable once the MENU is scrolled to it (the menu scrolls when the space under
         // its button is short — index.html's popover rule), measured after everything above was read.
         const blocked = [...el.querySelectorAll('[data-method]')].flatMap((i) => {
@@ -1357,7 +1374,7 @@ for (const fixture of FIXTURES) {
         const row = document.querySelector('#stageChips');
         const rb = row.getBoundingClientRect();
         return {
-          chips, vw: innerWidth, fits: (${contentFits.toString()})(screen),
+          chips, vw: innerWidth, fits: ${contentFits}(screen),
           row: { left: rb.left, right: rb.right, scrolls: row.scrollWidth > row.clientWidth + 1, overflowX: getComputedStyle(row).overflowX },
         };
       })()`);
@@ -1581,7 +1598,7 @@ const measureScreen = (page) =>
       flow: Boolean(document.querySelector('.cols.flow')),
       colSlack: col && col.lastElementChild ? rect(col).bottom - rect(col.lastElementChild).bottom : 0,
       overflow: { screen: screen.scrollWidth - screen.clientWidth, doc: document.documentElement.scrollWidth - innerWidth },
-      fits: (${contentFits.toString()})(screen),
+      fits: ${contentFits}(screen),
       // THE VERTICAL HALF, which nothing here measured until 2026-10-04. The screen's root must fit
       // the screen's own box: beyond it the stage CLIPS (\`overflow: hidden\`), and whatever is past
       // the fold cannot be scrolled to because no ancestor scrolls either. Found on the new Shapes
@@ -1603,7 +1620,9 @@ const measureScreen = (page) =>
       // would be clipped rather than seen. The one exception is the app's one-line strip WHILE it says it
       // scrolls (lib/scroll-strip.js: \`more-left\` / \`more-right\`, its edge fade): portrait's move strip holds
       // the turns past its edges by design (dev-docs/practice-redesign-plan.md §5.7), and the fade is what
-      // says they are there. A strip with no fade, or anything outside one, still counts.
+      // says they are there. A strip with no fade, or anything outside one, still counts. The exemption is for what a
+      // strip SCROLLS, and a chip half under the fade reads as "more this way"; a text LABEL there does not, and is held
+      // by contentFits instead — wholly inside the unfaded box or wholly outside the strip (strip-labels.mjs).
       beyond: [...screen.querySelectorAll('*')].filter(visible).filter((el) => !el.parentElement?.closest('.more-left, .more-right')).map((el) => ({ what: el.id || el.className || el.tagName, ...rect(el) })).filter((r) => r.left < s.left - 1 || r.right > s.right + 1).slice(0, 4),
       controls: [...screen.querySelectorAll('button:not(.toggle), .chip-m, .pill, input')].filter(visible).map((el) => ({ what: el.id || el.className, ...rect(el) })),
       // A control that is on the page and not hidden, yet has no box: a flex column squashed it.
@@ -1746,7 +1765,7 @@ const measurePractice = (page) =>
       // A case picture anywhere on the screen but the book: an svg that is not an icon, or an image.
       picturesOutside: [...document.querySelectorAll('.screen.active svg:not(.ic), .screen.active img')].filter((el) => !el.closest('#practiceInfo') && !el.closest('.ic')).length,
       painted: (${paintedSize.toString()})('#practiceCube canvas'),
-      fits: (${contentFits.toString()})(document.querySelector('.screen.active')),
+      fits: ${contentFits}(document.querySelector('.screen.active')),
       strip: {
         lines: new Set(all.map(mid)).size, scrollW: l.scrollWidth, clientW: l.clientWidth, moreRight: l.classList.contains('more-right'),
         gutter: l.offsetHeight - l.clientHeight - px(ls.borderTopWidth) - px(ls.borderBottomWidth), bar: ls.scrollbarWidth,
@@ -1997,6 +2016,40 @@ for (const fixture of FIXTURES) {
         assert.ok(m.state.left >= m.primary.right - 1, `${what}: the twin is not beside the cube`);
       }
 
+      // EVERY TURN OF THE WALK, so the strip stands at every scroll position the walk puts it at: a trigger's name is
+      // never drawn half under the fade (contentFits, strip-labels.mjs), and it is drawn while the turn you are on is in
+      // its part — at the part's first turn, its middle and its last. Found as "ve" for "Sexy move" (WI-5 audit).
+      const walked = await page.evaluate(`(async () => {
+        const cube = document.querySelector('#practiceCube cubus-cube');
+        const n = document.querySelectorAll('#practiceAlg .chip-m').length;
+        const out = [];
+        for (let k = 1; k <= n; k++) {
+          cube.seek(k);
+          const cur = document.querySelector('#practiceAlg .chip-m.cur');
+          const sec = cur?.closest('.walk-sec');
+          const label = sec?.querySelector(':scope > .walk-sec-l');
+          out.push({ k, cur: cur ? Number(cur.dataset.k) : null, from: sec ? Number(sec.dataset.from) : null, to: sec ? Number(sec.dataset.to) : null,
+            label: label ? label.textContent : null, labelDrawn: label ? getComputedStyle(label).visibility !== 'hidden' : null,
+            fits: (${contentFits})(document.querySelector('.screen.active')) });
+        }
+        cube.seek(1);
+        return out;
+      })()`);
+      assert.ok(walked.length >= 21, `precondition: ${id} walked ${walked.length} turns`);
+      for (const w of walked) {
+        assert.equal(w.cur, w.k - 1, `precondition: at turn ${w.k} the current chip is ${w.cur}`);
+        assert.deepEqual(w.fits, { spills: [], cut: [] }, `${what}, turn ${w.k}: text that cannot be read where it is drawn — see contentFits`);
+      }
+      const inPart = walked.filter((w) => w.label);
+      assert.ok(inPart.length > 0, `precondition: ${id} has a trigger part, so a label is measured`);
+      const { from, to } = inPart[0];
+      const named = new Map(inPart.map((w) => [w.cur, w]));
+      for (const [where, at] of [['first', from], ['middle', Math.floor((from + to - 1) / 2)], ['last', to - 1]]) {
+        assert.ok(named.has(at), `precondition: the walk stood on the part's ${where} turn (${at})`);
+        assert.equal(named.get(at).labelDrawn, true, `${what}: "${named.get(at).label}" is not drawn while its part's ${where} turn is the one you are on`);
+      }
+      await practiceFrameAfter(page);
+
       // THE BOOK: the case picture and every sentence, there and nowhere else, readable where it is drawn.
       await page.click('#practiceBook');
       const book = await page.evaluate(`(() => {
@@ -2004,7 +2057,7 @@ for (const fixture of FIXTURES) {
         const menu = document.querySelector('#practiceInfo');
         return { shown: !menu.hidden && menu.getBoundingClientRect().height > 0, menu: rect(menu), stage: rect(document.getElementById('stage')),
           pic: menu.querySelectorAll('#practicePic svg, #practicePic img').length, modes: Boolean(menu.querySelector('.practice-modes')),
-          fits: (${contentFits.toString()})(document.querySelector('.screen.active')) };
+          fits: ${contentFits}(document.querySelector('.screen.active')) };
       })()`);
       assert.ok(book.shown, `${what}: the book did not open`);
       assert.ok(inside(book.menu, book.stage), `${what}: the book ${JSON.stringify(book.menu)} leaves the stage`);
