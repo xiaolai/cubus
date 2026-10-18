@@ -611,7 +611,8 @@ test('a rep that was not saved stays said as mixed practice moves on — until a
     await repAndMoveOn();
     const unsaved = await notice();
     assert.equal(unsaved.hidden, false, 'moving on took away the only sign that a rep was not saved');
-    assert.match(unsaved.text, /That rep was not saved/);
+    // Named, now the page shows another algorithm: "that rep" would point at nothing on screen.
+    assert.match(unsaved.text, /A rep of .+ was not saved/);
     // Saved again: the notice goes, because what it said is no longer true.
     await page.evaluate(() => window.__p.failWrites(false));
     await repAndMoveOn();
@@ -1150,6 +1151,43 @@ test('the next round\'s order is dropped when a rep has begun while it was read 
     // What must NOT happen: the next round's first algorithm put in place of the one the child is turning.
     assert.equal(got.alg, last, `the next round replaced ${last} with ${got.alg} under a rep`);
     assert.equal(got.status, 'running', 'the rep did not go on');
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
+test('a rep whose save fails after its page has gone is said where the child is — the library, then the next page — until a rep is saved', async () => {
+  const { page, context, errors } = await openPractice(fixture);
+  try {
+    const rnd = lcg(406);
+    await show(page, 'sune');
+    await settle(page);
+    // The record held and its writes refused: the rep's save waits, and fails once it runs.
+    await page.evaluate(() => window.__p.hold());
+    await page.evaluate(() => window.__p.failWrites(true));
+    assert.equal((await feedRep(page, randomStart(rnd), reportsPerToken(SUNE, ORIENTATIONS[0], rnd).flat())).at(-1), 1, 'precondition: a rep');
+    assert.equal((await page.evaluate(() => window.__p.data())).saving, '1', 'precondition: its save is in flight');
+    // Back to the library while the save is in flight; then the record lets it run.
+    await page.click('#practiceBack');
+    await page.waitForSelector('.practice-screen[data-composition="library"][data-ready="1"]', { timeout: LIVENESS_MS });
+    await page.evaluate(() => window.__p.release());
+    // Held and let go once more: the save asked for before it has settled, and what it answered has been used.
+    await page.evaluate(() => window.__p.hold());
+    await page.evaluate(() => window.__p.release());
+    const library = await page.evaluate(() => { const n = document.querySelector('#practiceLibrarySay'); return n && !n.hidden ? n.textContent : ''; });
+    // What must NOT happen: a rep lost after its page went, and nothing said anywhere.
+    assert.match(library, /A rep of .+ was not saved/, 'a save that failed after its page had gone went unsaid in the library');
+    assert.equal((await page.evaluate(() => window.__p.record())).algs.sune, undefined, 'precondition: the rep is not on record');
+    // The next page says it too — and a rep saved there takes it away, because what it said is no longer the newest.
+    await page.evaluate(() => window.__p.failWrites(false));
+    await show(page, 'sune');
+    await settle(page);
+    const notice = () => page.evaluate(() => { const n = document.querySelector('#practiceRecordSay'); return n.hidden ? '' : n.textContent; });
+    assert.match(await notice(), /A rep of .+ was not saved/, 'the next page did not say the rep that was not saved');
+    assert.equal((await feedRep(page, randomStart(rnd), reportsPerToken(SUNE, ORIENTATIONS[0], rnd).flat())).at(-1), 1, 'precondition: a rep');
+    await settle(page);
+    assert.equal(await notice(), '', 'the notice outlived a rep that was saved');
     assert.deepEqual(errors, []);
   } finally {
     await context.close();

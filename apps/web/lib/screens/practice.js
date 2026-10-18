@@ -62,6 +62,38 @@ const countOf = (serial) => (Number.isInteger(serial) ? serial & 0xff : undefine
 /** A key press that belongs to the control it landed on, not to the page. */
 const onControl = (target) => Boolean(target?.closest?.('button, a, input, select, textarea, summary'));
 
+// ---- a save that answers after its page has gone ------------------------------------------------------------
+
+/**
+ * A SAVE'S OUTCOME OUTLIVES ITS PAGE. A rep's save is asked for as the rep ends, and the record keeps every save asked
+ * for when the page goes before it settles (lib/drill/record.js, `signal`), so its answer can come once the page that
+ * asked is gone. Only that page's painting is skipped; the outcome is kept here, for the session, and said by the
+ * Practice composition on screen as it comes and by every one that mounts after: the library, where Back leads, and a
+ * page, with its other notices. It stands until a rep is saved — the rule a page keeps for its own failed save.
+ *
+ * Kept here and not in storage: a save fails when the database refuses it (full, closed under the page, refused), and
+ * a refusal that lasts is met again by the next rep's save, on the page, as it happens.
+ */
+let unsaved = null;             // { id, message, page } for the newest save that did not land, or null once one has
+const unsavedSayers = new Set(); // the mounted compositions' sayings, each removed when its screen goes
+const keepUnsaved = (next) => {
+  unsaved = next;
+  for (const say of unsavedSayers) say();
+};
+const sayUnsavedWhileMounted = (say, signal) => {
+  unsavedSayers.add(say);
+  signal?.addEventListener('abort', () => unsavedSayers.delete(say), { once: true });
+  say();
+};
+/** The words for a save that did not land: "That rep" on the page that made it, while it shows that algorithm; the
+ *  algorithm's name anywhere else. Null when the newest save landed. */
+const unsavedWords = (catalogue, { page = null, rowId = null } = {}) => {
+  if (!unsaved) return null;
+  if (unsaved.page === page && unsaved.id === rowId) return t('That rep was not saved: %1', unsaved.message);
+  const row = catalogue.rows[unsaved.id];
+  return t('A rep of %1 was not saved: %2', row ? rowName(row) : unsaved.id, unsaved.message);
+};
+
 // ---- the library ----------------------------------------------------------------------------------------
 
 function libraryScreen() {
@@ -69,6 +101,7 @@ function libraryScreen() {
     html: `<div class="practice-screen" data-composition="library" style="width:100%;height:100%;min-height:0;display:flex;flex-direction:column;gap:14px">
       <div class="card" style="padding:12px 16px;flex:none">
         <div class="sub" style="color:var(--ink-3);line-height:1.5">${escHtml(t('Every algorithm the app teaches, by method. Pick one to practise it until your fingers know it — with a smart cube every turn is checked and timed, and without one the cube on screen shows the moves.'))}</div>
+        <div class="sub" id="practiceLibrarySay" role="status" style="color:var(--err-ink);margin-top:6px" hidden></div>
       </div>
       <div class="practice-list" id="practiceList" style="flex:1;min-height:0;overflow-y:auto">
         <div class="sub" id="practiceWait" role="status" style="color:var(--ink-4)">${escHtml(t('Reading the algorithms…'))}</div>
@@ -92,6 +125,13 @@ function libraryScreen() {
       }
       if (gen !== screenGen) return;
       list.innerHTML = libraryHtml(catalogue, escHtml);
+      // A rep whose save failed once its page had gone (`unsaved`): Back leads here, so this is where it is said.
+      const said = $('#practiceLibrarySay', root);
+      sayUnsavedWhileMounted(() => {
+        const text = unsavedWords(catalogue);
+        said.hidden = !text;
+        said.textContent = text ?? '';
+      }, screenAbort?.signal);
       // A set's cards are drawn the first time it is opened, and kept (library-view.js says why). `toggle` does not
       // bubble, so the list hears it on the way down.
       const look = { palette: settings.palette, scheme: settings.scheme };
@@ -323,17 +363,19 @@ function mountPage({ root, page, catalogue, signal, stale }) {
    * What the page says about the record: a READ that failed and a WRITE that did not land, each standing until what it
    * said stops being true — a read that works, a rep that is saved. They are about the record, never about the row on
    * screen, so taking another row in place clears neither: mixed practice moved on right after the rep that was not
-   * saved, and the only sign of the loss went with it.
+   * saved, and the only sign of the loss went with it. The write is the module's (`unsaved`), because a save can answer
+   * after its page has gone, and the next page says it too.
    *
    * And the record's own STATE, read from `record.status()` at every saying and never kept here: a database this page
    * cannot reach now (`error`, said only while no failed read is saying it), and the earlier record — the one
    * localStorage held — when it is not in this one (`legacy`).
    */
-  const trouble = { read: null, write: null };
+  const trouble = { read: null };
+  const mount = {};   // this page, for the words of a save it made (`unsavedWords`)
   const sayRecord = () => {
     const { error, legacy } = record.status();
     const text = [
-      trouble.write,
+      unsavedWords(catalogue, { page: mount, rowId: row?.id ?? null }),
       error && !trouble.read ? t('Your practice record cannot be reached right now: %1', error.message) : null,
       legacy ? t('Your earlier practice record is not in this one: %1', legacy.message) : null,
       trouble.read,
@@ -341,6 +383,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     recordSay.hidden = !text;
     recordSay.textContent = text;
   };
+  sayUnsavedWhileMounted(sayRecord, signal);
 
   /**
    * THE FIGURES, THE STREAK AND THE HISTORY ARE A READ THAT HAS COMPLETED. While one is pending they are unknown — a
@@ -388,9 +431,9 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     page.dataset.saving = String(saving += 1);
     const settled = (error) => {
       page.dataset.saving = String(saving -= 1);
+      // What the save answered is kept whether or not this page is still here (`unsaved`); only painting needs it.
+      keepUnsaved(error ? { id, message: error.message, page: mount } : null);
       if (stale()) return;
-      trouble.write = error ? t('That rep was not saved: %1', error.message) : null;
-      sayRecord();
       if (row?.id === id) paintRecord();
     };
     pending.then((done) => settled(done.saved ? null : done.error), (err) => { settled(err); throw err; });
