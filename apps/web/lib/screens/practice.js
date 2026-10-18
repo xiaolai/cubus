@@ -289,6 +289,7 @@ function mountLibrary({ root, box, list, catalogue, signal }) {
     for (const m of root.querySelectorAll('.about-menu')) m.remove();
     group = catalogue.groups.find((g) => libraryKey(g) === key);
     box.dataset.method = key;
+    inLine = Promise.resolve();
     rail.innerHTML = railHtml(group, catalogue, look, escHtml);
     list.innerHTML = bodyHtml(group, catalogue, look, escHtml, icon);
     list.scrollTop = 0;
@@ -336,10 +337,17 @@ function mountLibrary({ root, box, list, catalogue, signal }) {
     const r = catalogue.rows[tile.dataset.alg];
     return photoAttrs(r, catalogue.sets[r.set].region);
   };
+  /**
+   * READING ORDER, EACH AS IT LANDS (plan §13 item 3). The photographer takes them in the order asked, which is the
+   * order of the page; but a photograph the session already holds — the same case asked for by an earlier tile, or a
+   * stage come back to — answers at once, and was shown ahead of tiles still waiting above it. So each tile is shown
+   * once it AND every tile asked for before it have landed. `draw` starts the line again for a new method.
+   */
   function photograph(grid) {
     for (const well of grid.querySelectorAll('.case-photo[data-photo="pending"]')) {
       const tile = well.closest('[data-alg]');
-      photographer.photo(attrsOf(tile)).then((url) => {
+      const landed = photographer.photo(attrsOf(tile));
+      inLine = inLine.then(() => landed).then((url) => {
         if (!well.isConnected) return;
         if (url) {
           const img = document.createElement('img');
@@ -358,6 +366,7 @@ function mountLibrary({ root, box, list, catalogue, signal }) {
       });
     }
   }
+  let inLine = Promise.resolve();
   // The pulse: pointing at or focusing a photographed tile puts the live renderer in it; leaving puts it back.
   const wellIn = (el) => el?.closest?.('[data-alg]')?.querySelector('.case-photo[data-photo="shown"]') ?? null;
   const enter = (e) => {

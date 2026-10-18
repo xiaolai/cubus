@@ -1198,6 +1198,67 @@ test('with no WebGL the library says so once and every tile draws its flat pictu
   }
 });
 
+test('photographs land in reading order, each shown as it lands — and coming back to a stage takes none again', async () => {
+  // Plan §13 item 3, as amended: the tiles fill in reading order, one at a time; and a return to a stage in the same
+  // session is answered from the session's photographs — asserted as a COUNT of photographs taken, never a time.
+  const { page, context, errors } = await openPractice(fixture, {
+    connect: false,
+    prepare: async (ctx) => {
+      await stored({ practiceMethod: 'cfop' })(ctx);
+      // From before the app starts: every well as it is shown, with how many wells were still waiting at that moment.
+      await ctx.addInitScript(() => {
+        window.__shown = [];
+        new MutationObserver((records) => {
+          for (const r of records) {
+            if (r.attributeName !== 'data-photo' || r.target.dataset.photo !== 'shown') continue;
+            window.__shown.push({ alg: r.target.closest('[data-alg]').dataset.alg, pending: document.querySelectorAll('.case-photo[data-photo="pending"]').length });
+          }
+        }).observe(document, { subtree: true, attributes: true, attributeFilter: ['data-photo'] });
+      });
+    },
+  });
+  try {
+    const landed = () => page.waitForFunction(() => document.querySelectorAll('#practiceList .case-photo').length > 0
+      && !document.querySelector('#practiceList .case-photo[data-photo="pending"]'), null, { timeout: LIVENESS_MS });
+    await landed();
+    const first = await page.evaluate(async () => {
+      const { casePhotoCounts } = await import('/lib/case-photo.js');
+      return {
+        reading: [...document.querySelectorAll('#practiceList .case-photo')].map((w) => w.closest('[data-alg]').dataset.alg),
+        shown: window.__shown, taken: casePhotoCounts.taken,
+      };
+    });
+    assert.ok(first.reading.length >= 14, `precondition: ${first.reading.length} photographed tiles on opening`);
+    // (c) The ORDER: shown exactly in reading order — the order the wells sit in the page.
+    assert.deepEqual(first.shown.map((x) => x.alg), first.reading, 'the photographs were shown out of reading order');
+    // Each AS IT LANDS: when the k-th tile is shown, every tile after it is still waiting — none held back for a batch.
+    // (The observer hears each attribute write as its own record, so a batch would show the first with none waiting.)
+    const n = first.reading.length;
+    first.shown.forEach((x, k) => assert.equal(x.pending, n - k - 1, `tile ${k} was shown with ${x.pending} waiting, not ${n - k - 1}`));
+
+    // (d) Back to the same stage, two ways, and not one photograph taken again.
+    const taken = () => page.evaluate(async () => (await import('/lib/case-photo.js')).casePhotoCounts.taken);
+    // Through a page and Back: a new mount of the library, the same session.
+    await page.click(`#practiceList [data-alg="${first.reading[0]}"]`);
+    await page.waitForFunction((x) => window.__p.ready(x), first.reading[0], { timeout: LIVENESS_MS });
+    const beforeBack = await taken();
+    await page.click('#practiceBack');
+    await page.waitForSelector('.practice-screen[data-composition="library"][data-ready="1"][data-method="cfop"]', { timeout: LIVENESS_MS });
+    await landed();
+    assert.equal(await taken(), beforeBack, 'coming back through a page took photographs again');
+    // Another method and back, in place.
+    await libraryOn(page, 'beginner');
+    await landed();
+    const beforeReturn = await taken();
+    await libraryOn(page, 'cfop');
+    await landed();
+    assert.equal(await taken(), beforeReturn, 'choosing the method again took photographs again');
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
 test('leaving the library hands the renderer on with its clock let go — the page\'s cube is the same element, and it runs', async () => {
   const { page, context, errors } = await openPractice(fixture, { connect: false });
   try {

@@ -1,8 +1,10 @@
 // How long the library's case photographs take to land — measured in WebKit, in the real app
 // (dev-docs/practice-redesign-plan.md §3.4, WI-1's gate).
 //
-// The gate: CFOP (full)'s first stage — its 46 tiles — photographed within 1.5 s, and the first screen of tiles within
-// 0.5 s. Each run is a fresh browser context, so nothing is cached and no renderer is parked: the first photograph
+// The gates, as amended after WI-3 (dev-docs/practice-redesign-plan.md §13 item 3): (a) the first 14 tiles in
+// READING ORDER photographed within 0.5 s, and (b) the first screen of tiles within 1.5 s — each a median over the
+// runs, and a missed gate exits non-zero. Reading order is the order the wells sit in the page, which is the order a
+// grid lays its tiles out, row by row. The order itself and "no photograph taken twice" are browser cases, not here. Each run is a fresh browser context, so nothing is cached and no renderer is parked: the first photograph
 // pays for the renderer's build. The clock starts when CFOP (full) is chosen as the library's method (its first
 // stage's tiles are built as they come near the view) and stops when the last well in question holds its photograph.
 // The stage's tiles below the view are built only when scrolled near, so "stage" here is the tiles drawn on approach.
@@ -45,7 +47,7 @@ try {
       const view = list.getBoundingClientRect();
       const onScreen = (w) => { const r = w.getBoundingClientRect(); return r.bottom > view.top && r.top < view.bottom; };
       let firstScreen = null;
-      let first14 = null;   // WI-1's first screen held 14 tiles; tiles are smaller now, so this keeps the comparison
+      let first14 = null;   // gate (a): the first 14 wells in reading order, all shown
       let firstCount = 0;
       await new Promise((resolve, reject) => {
         const tick = () => {
@@ -74,4 +76,10 @@ try {
   await fixture.close();
 }
 const median = (xs) => [...xs].sort((a, b) => a - b)[xs.length >> 1];
-console.log(`median over ${runs.length} runs: first screen ${median(runs.map((r) => r.firstScreenMs))} ms of ${median(runs.map((r) => r.firstScreenTiles))} tiles (gate 500), first 14 photographs ${median(runs.map((r) => r.first14Ms))} ms, stage ${median(runs.map((r) => r.stageMs))} ms (gate 1500); load average ${loadavg().map((x) => x.toFixed(1)).join(' ')}`);
+const gates = [
+  { name: '(a) first 14 tiles in reading order', ms: median(runs.map((r) => r.first14Ms)), bar: 500 },
+  { name: `(b) first screen (${median(runs.map((r) => r.firstScreenTiles))} tiles)`, ms: median(runs.map((r) => r.firstScreenMs)), bar: 1500 },
+];
+for (const g of gates) console.log(`${g.name}: median ${g.ms} ms, gate ${g.bar} ms — ${g.ms <= g.bar ? 'met' : 'MISSED'}`);
+console.log(`stage (${median(runs.map((r) => r.tiles))} tiles drawn on approach): median ${median(runs.map((r) => r.stageMs))} ms; load average ${loadavg().map((x) => x.toFixed(1)).join(' ')}`);
+if (gates.some((g) => g.ms > g.bar)) process.exitCode = 1;
