@@ -30,7 +30,8 @@ export function segmentsOf(count, chunks = []) {
 
 /**
  * The chips: ONE `.chip-m` per turn, in the cube screen's move list (lib/walk-session.js `chipsFor`): a section per
- * part, a sourced trigger's name the small label over its part, and a row with no trigger one whole run. Wrapped in
+ * part, a sourced trigger's name the small label over its part — with the part's own time beside it after a clean rep
+ * (`.walk-sec-t`, written by the screen, §5.4) — and a row with no trigger one whole run. Wrapped in
  * landscape, side by side in portrait's one-line strip (index.html, `.walk-sec`).
  */
 export function chipsHtml(row, triggers, esc) {
@@ -38,7 +39,7 @@ export function chipsHtml(row, triggers, esc) {
   const segs = segmentsOf(tokens.length, row.chunks);
   const whole = segs.length === 1 && !segs[0].trigger;
   return segs.map((seg) => `<div class="walk-sec${whole ? ' whole' : ''}" data-from="${seg.from}" data-to="${seg.to}">${seg.trigger
-    ? `<div class="sub walk-sec-l">${esc(t(triggers[seg.trigger]?.name ?? seg.trigger))}</div>` : ''}<div class="move-chips">${tokens.slice(seg.from, seg.to)
+    ? `<div class="sub walk-sec-l">${esc(t(triggers[seg.trigger]?.name ?? seg.trigger))}<span class="walk-sec-t num"></span></div>` : ''}<div class="move-chips">${tokens.slice(seg.from, seg.to)
     .map((tok, i) => `<span class="chip-m" data-k="${seg.from + i}">${esc(tok)}</span>`).join('')}</div></div>`).join('');
 }
 
@@ -82,13 +83,16 @@ export function fingersWords(stats, n) {
 /**
  * "In the fingers" as a picture (plan §5.3, E4): `n` beads, the clean streak lit up to `n`, all of them done once it is
  * reached. `stats` null is a record not read yet, or unreadable: no bead lit, never one an earlier read gave. The
- * words are for a screen reader; the beads are what is seen.
+ * words are for a screen reader; the beads are what is seen. `paused`: the newest rep on record was clean but marked
+ * a pause, which broke the row — the bead it would have lit is drawn paused.
  */
-export function beadsHtml(stats, n, esc) {
+export function beadsHtml(stats, n, esc, { paused = false } = {}) {
   const fingers = fingersWords(stats, n);
   const lit = stats ? Math.min(stats.streak, n) : 0;
+  // The bead the paused rep would have lit shows the pause (E12.4): the row starts again from it.
+  const mark = paused && !fingers.reached ? lit : -1;
   return `<div class="beads${fingers.reached ? ' done' : ''}" id="practiceFingers" data-reached="${fingers.reached}">${
-    Array.from({ length: n }, (_, i) => `<span class="bead${i < lit ? ' on' : ''}" aria-hidden="true"></span>`).join('')
+    Array.from({ length: n }, (_, i) => `<span class="bead${i < lit ? ' on' : ''}${i === mark ? ' paused' : ''}" aria-hidden="true"></span>`).join('')
   }<span class="sr-only">${esc(fingers.text)}</span></div>`;
 }
 
@@ -149,8 +153,9 @@ export const orderWords = (order) => (Number.isInteger(order) && order > 1
  *   everything a parent reads (the case picture, the sentences, the figures, the last reps: `#practiceInfo`, built by
  *   the screen as a menu), and the animation speed, as on the cube screen.
  * - twin: the beads and the clock's face, then ONE slot holding the quiet line or, while something must be done, the
- *   follow-note in its place (E11.3, E11.4), then the modes (E11.2) — which in portrait the screen moves into the book
- *   (E11.6).
+ *   follow-note in its place (E11.3), then the record's notice on a row of its own (E11.4) — which in portrait the
+ *   screen moves into the foot band over the cube card (E12.3), so the two never stack — then the modes (E11.2), which
+ *   in portrait the screen moves into the book (E11.6).
  * - sheet: the move strip, nothing else.
  * - aux: the transport — four step buttons drawn only with no cube, the progress (its position in `aria-valuetext`,
  *   and no step label, E11.7), Start over always, and last the stopwatch, drawn only with no cube (E11.8).
@@ -194,8 +199,9 @@ export function pageHtml(esc, icon) {
       </div>
       <div class="practice-said">
         <div class="practice-line" id="practiceLine"></div>
-        <div class="follow-note" id="followNote" hidden><span id="followMsg"></span><span id="practiceRecordSay" hidden></span></div>
+        <div class="follow-note" id="followNote" hidden><span id="followMsg"></span></div>
       </div>
+      <div class="practice-record-say" id="practiceRecordSay" role="status" hidden></div>
       <div class="wrap-row practice-modes" role="group" aria-label="${esc(t('How to practise'))}">
         <button class="pill on" id="practiceBlocked" type="button" aria-pressed="true" disabled>${esc(t('One at a time'))}</button>
         <button class="pill" id="practiceMixed" type="button" aria-pressed="false" disabled>${esc(t('Mixed'))}</button>

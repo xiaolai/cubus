@@ -589,6 +589,8 @@ const PAGE_CLASSES = new Set([
   'practice-page', 'beads', 'practice-clock', 'practice-line',
   // E11: the modes' pill row, the twin's two stacked lines, and the score row the beads and clock share
   'practice-twin', 'practice-said', 'practice-score', 'practice-modes',
+  // E12.3: the record's notice on a row of its own (in the foot band in portrait), never in the follow-note's slot
+  'practice-record-say',
   // shared primitives
   'pill', 'on', 'btn', 'sm', 'outline', 'num', 'sr-only', 'wrap-row', 'ic',
 ]);
@@ -621,13 +623,16 @@ test('the page is the cube player: the walking composition\'s classes, the named
   assert.ok(bar.hasAttribute('aria-valuetext'), 'the bar does not say the position');
   // The beads row holds no control: the same height with a cube and without (E11.8).
   isAbsent(root.querySelector('.practice-score button'), 'a control in the beads row');
-  // The twin: beads and clock, then the line and the note in ONE slot, then the modes (E11.2).
+  // The twin: beads and clock, then the line and the note in ONE slot, then the record's notice on a row of its own
+  // (E12.3 — the screen moves it into the foot band in portrait), then the modes (E11.2).
   const twin = root.querySelector('.twin');
   assert.deepEqual([...twin.children].filter((c) => !c.classList.contains('sr-only')).map((c) => c.className),
-    ['practice-score', 'practice-said', 'wrap-row practice-modes']);
+    ['practice-score', 'practice-said', 'practice-record-say', 'wrap-row practice-modes']);
   const said = twin.querySelector('.practice-said');
   assert.ok(said.querySelector(':scope > .practice-line') && said.querySelector(':scope > .follow-note#followNote'), 'the note does not share the quiet line\'s slot');
-  assert.ok(said.querySelector('#followNote #practiceRecordSay'), 'the record\'s trouble is not in the note (E11.4)');
+  // MUST NOT: the record's notice in the follow-note's slot, where the two stacked and took the cube's height (E12.3).
+  isAbsent(said.querySelector('#practiceRecordSay'), 'the record\'s notice in the follow-note\'s slot');
+  assert.equal(twin.querySelector(':scope > #practiceRecordSay')?.getAttribute('role'), 'status', 'the record\'s notice is not said as it changes');
   for (const id of ['practiceBlocked', 'practiceMixed', 'practiceNext']) assert.ok(twin.querySelector(`.practice-modes #${id}`), `no ${id} in the modes row`);
   // E11.3: every other sentence goes to a live region nobody sees.
   const say = root.querySelector('#practiceSay');

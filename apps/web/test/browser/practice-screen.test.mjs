@@ -407,6 +407,37 @@ test('the page speaks of an arrow only where one is drawn — before the hold is
   }
 });
 
+// ---- the clock during a rep (§5.5, WI-6) ------------------------------------------------------------------------
+
+test('with a cube the clock shows no number while a rep is under way — the timer glyph — and the rep\'s time once it ends', async () => {
+  const { page, context, errors } = await openPractice(fixture);
+  try {
+    const rnd = lcg(565);
+    await show(page, 'sune');
+    const first = reportsPerToken(SUNE, ORIENTATIONS[0], rnd).flat();
+    assert.equal((await feedRep(page, randomStart(rnd), first)).at(-1), 1, 'precondition: a rep completed');
+    const ended = await page.evaluate(() => ({ face: window.__p.face(), time: window.__p.time() }));
+    assert.match(ended.face.text, /\d/, `the rep's time is not on the clock's face: ${JSON.stringify(ended.face)}`);
+    // Part way through the next rep: the only number the page could tick is host time, so none is drawn.
+    const next = reportsPerToken(SUNE, ORIENTATIONS[0], rnd).flat();
+    await page.evaluate(({ f, qs }) => { window.__p.facelets(f); for (const q of qs) window.__p.move(q); }, { f: toFacelets(randomStart(rnd)), qs: next.slice(0, 3) });
+    for (let i = 0; i < 2; i++) {
+      const mid = await page.evaluate(() => ({ face: window.__p.face(), time: window.__p.time(), status: window.__p.data().status }));
+      assert.equal(mid.status, 'running', 'precondition: a rep is under way');
+      // MUST NOT: a digit on the clock's face, or in what it says to a screen reader, mid-rep.
+      assert.doesNotMatch(mid.face.text, /\d/, `a number on the clock mid-rep: ${mid.face.text}`);
+      assert.doesNotMatch(mid.time, /\d/, `a number said for the clock mid-rep: ${mid.time}`);
+      assert.equal(mid.face.glyph, true, 'mid-rep the clock does not draw the timer glyph');
+      await page.evaluate(() => window.__p.wait(300));
+    }
+    await page.evaluate((qs) => { for (const q of qs) window.__p.move(q); }, next.slice(3));
+    assert.match((await page.evaluate(() => window.__p.face())).text, /\d/, 'the time did not come back when the rep ended');
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
 // ---- an engine that lost a turn (round 2, row 14) ------------------------------------------------------------
 
 test('after a lost turn no next turn is pointed at until the cube says where it is — and then the arrow comes back', async () => {
@@ -1369,6 +1400,21 @@ test('a clean rep with a long gap between two turns is marked as paused, and put
     // What must NOT happen: a paused rep counted toward the target, as "3 of 7".
     assert.match(await fingers(), /0 of 7/);
     assert.equal(await page.evaluate(() => window.__p.fingers()), 'false');
+    // WHERE THE PAUSE IS EXPLAINED (E11.3, E12.4): to a screen reader and in the book, and shown by a bead — never in
+    // the follow-note, which is for what must be done.
+    const said = await page.evaluate(() => ({
+      note: window.__p.note(), say: window.__p.say(), book: document.querySelector('#practiceInfo').textContent,
+      paused: [...document.querySelectorAll('#practiceFingers .bead')].map((b) => b.classList.contains('paused')),
+    }));
+    assert.equal(said.note, null, `the pause is said in the follow-note: ${said.note}`);
+    assert.match(said.say, /pause/i, `a screen reader is not told of the pause: ${said.say}`);
+    assert.match(said.book, /pause/i, 'the book does not say the rep paused');
+    assert.deepEqual(said.paused, [true, ...Array(said.paused.length - 1).fill(false)], 'the first bead does not show the pause');
+    // The next clean rep takes the pause's mark away: it lights the bead instead.
+    assert.equal((await feedRep(page, randomStart(rnd), reportsPerToken(SUNE, ORIENTATIONS[0], rnd).flat())).at(-1), 1);
+    await settle(page);
+    assert.deepEqual(await page.evaluate(() => document.querySelectorAll('#practiceFingers .bead.paused').length), 0, 'a clean rep kept the pause\'s mark');
+    assert.equal(await page.evaluate(() => window.__p.note()), null);
     assert.deepEqual(errors, []);
   } finally {
     await context.close();

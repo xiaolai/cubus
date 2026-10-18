@@ -479,6 +479,32 @@
           grid-template-areas: "primary" "sheet" "twin" "aux"; row-gap: 10px; }
         .cols.walking .solution-card { min-height: 0; flex: none; }
         .cols.walking .solution-card > .list { min-height: 0; flex: none; }
+        /* THE ROWS THAT COME AND GO, over the foot of the cube card (E12.1, lib/foot-band.js): the follow-note, the why
+           line and the practise-step button here, the record's notice on Practice. In the flow they took their height
+           from the cube, 22–166 px on Home; here they lie over the ghost face below it, never over the cube — the module
+           caps the band at the room under the cube's sphere, and what does not fit scrolls inside it. */
+        .cols.walking { --foot-band: band; }
+        .cols.walking .foot-band { display: flex; flex-flow: row wrap; align-items: center; gap: 4px 10px; position: absolute; left: 0;
+          right: 0; bottom: 0; z-index: 3; box-sizing: border-box; padding: 6px 12px 8px; overflow-y: auto; overscroll-behavior: contain;
+          font-size: var(--fs-caption); line-height: 1.35;
+          background: var(--panel); border-top: 1px solid var(--line); border-radius: 0 0 var(--r-card) var(--r-card); }
+        .cols.walking .foot-band > * { margin: 0; padding: 0; flex: 1 1 100%; font-size: inherit; }
+        /* The why line and its practise-step button share a line where the band is wide enough; the follow-note, while
+           it is said, takes the band alone — what must be done before what the step is for, as on Practice (E11.3). */
+        .cols.walking .foot-band > .why-line { flex: 1 1 150px; }
+        .cols.walking .foot-band > .practise-step { flex: none; padding: 0 14px; }
+        .cols.walking .foot-band:has(> .follow-note:not([hidden])) > :is(.why-line, .practise-step) { display: none; }
+        .cols.walking .foot-band > .follow-note { border-top: 0; gap: 4px; }
+        /* A LESSON'S STRIP HAS NO LABEL ROW HERE (E12.5): the section of the turn you are on names the heading instead
+           (#secLabel, lib/walk-presenter.js), which is what keeps the lesson's cube at its floor on the SE. Practice's
+           trigger labels stay: its floors pass with them. */
+        .cols.walking #solList .walk-sec-l { display: none; }
+        .cols.walking .card-h:has(> #secLabel:not([hidden])) > #solLabel { display: none; }
+        .cols.walking .card-h > #secLabel { display: inline; }
+        /* The lesson's whole count is said to a screen reader only while the section's name is the heading: both on the
+           one row wrapped it to two on the SE (70 px against 44), which took the label row's saving back from the cube. */
+        .cols.walking .card-h:has(> #secLabel:not([hidden])) > #moveCount { position: absolute; width: 1px; height: 1px; overflow: hidden;
+          clip-path: inset(50%); white-space: nowrap; }
         .cols.walking .twin { display: none; }
         .cols.walking.twin-open .twin { display: flex; grid-area: auto; position: absolute; z-index: 5; top: 56px; left: 8px; right: 8px; max-height: calc(100% - 64px);
           overflow-y: auto; overscroll-behavior: contain; padding-bottom: 18px !important; background: var(--panel); border: 1px solid var(--line-strong);
@@ -506,7 +532,7 @@
         .cols.walking .walk-sec-l { font-size: var(--fs-caption); white-space: nowrap; }
         .cols.walking .walk-strip .move-chips { display: flex; flex-wrap: nowrap; align-items: center; min-height: calc(var(--chip) * 1.3); }
         .cols.walking .walk-strip .chip-m { flex: none; }
-        .cols.walking .walk-strip .chip-m.cur { width: calc(var(--chip) * 1.3); height: calc(var(--chip) * 1.3); }
+        .cols.walking .walk-strip .chip-m:is(.cur, .off) { width: calc(var(--chip) * 1.3); height: calc(var(--chip) * 1.3); }
         /* Beside the cube the twin centres its picture in the room it has; its heading stays at
            the top, level with the cube card's tools. */
         .twin { display: flex; flex-direction: column; }
@@ -738,6 +764,8 @@
       .beads { display: flex; flex-wrap: wrap; gap: 6px; }
       .bead { width: 28px; height: 28px; border-radius: var(--r-pill); border: 3px solid var(--track); }
       .bead.on { background: var(--accent); border-color: var(--accent); }
+      /* The bead a paused rep would have lit (E12.4): the row starts again from it. A dashed ring, nothing filled. */
+      .bead.paused { border-style: dashed; border-color: var(--warn); }
       .beads.done .bead { background: var(--ok); border-color: var(--ok); }
       .practice-clock { display: inline-flex; align-items: center; gap: 2px; color: var(--ink-3); }
       .practice-clock > .num { font-weight: 600; font-size: var(--fs-body-l); line-height: 1.2; }
@@ -747,7 +775,7 @@
       .practice-line { font-size: var(--fs-caption); line-height: 1.35; color: var(--ink-4); overflow-wrap: anywhere; }
       .practice-said:has(> .follow-note:not([hidden])) > .practice-line { display: none; }
       .practice-said > .follow-note { padding: 0; border-top: 0; gap: 2px; font-size: var(--fs-caption); line-height: 1.35; }
-      .practice-said #practiceRecordSay { color: var(--err-ink); }
+      .practice-record-say { font-size: var(--fs-caption); line-height: 1.35; color: var(--err-ink); overflow-wrap: anywhere; }
       /* A turn is ONE chip, and a written turn can be four characters ("Rw2'"): the chip grows sideways from its square
          rather than spill the token over the next one. In landscape the parts wrap; portrait's strip keeps them on one line. */
       .practice-page .move-chips { display: flex; flex-wrap: wrap; justify-content: flex-start; gap: 6px; }
@@ -760,7 +788,12 @@
       /* Six controls and the bar on one line down to the SE's 312px (E11.7): the bar gives first. */
       .practice-page .transport .progress { flex-basis: 16px; }
       /* The wrong turn (§5.3): outlined, never filled. */
-      .chip-m.off { border: 2px solid var(--err); color: var(--err-ink); }
+      /* The turn that was expected when the cube left the algorithm (§5.3, §5.4): an outline and a letter, nothing filled
+         red, and one short shake as it is marked — which reduced motion stops with every other decoration. */
+      .chip-m.off { border: 2px solid var(--err); color: var(--err-ink); animation: chip-off-shake calc(2 * var(--fade)) ease-out 1; }
+      @keyframes chip-off-shake { 0%, 100% { translate: 0; } 25% { translate: -3px; } 50% { translate: 3px; } 75% { translate: -2px; } }
+      /* A clean rep's own time for its part, beside the trigger's name (§5.4). */
+      .walk-sec-t { font-weight: 400; }
       /* The book (§5.1): everything a parent reads, behind the cube card's tool. */
       .menu.practice-info { max-width: 340px; padding: 8px 12px; font-size: var(--fs-body-s); line-height: 1.5; color: var(--ink-2); white-space: normal; }
       .practice-info p { margin: 0 0 6px; }
@@ -1131,6 +1164,11 @@
          flashing the whole page. Here it takes its space from #solList, which flexes and scrolls. */
       .follow-note { display: flex; flex-direction: column; align-items: stretch; gap: 8px; flex: none; padding: 10px 16px 12px; border-top: 1px solid var(--line); font-size: var(--fs-body-s); color: var(--warn-ink); }
       .follow-note .acts { display: flex; gap: 8px; }
+      /* The why line and the practise-step button in the solution card (landscape); in portrait the foot band takes
+         them (E12.1). The section's name in the heading is portrait's alone (E12.5). */
+      .why-line { padding: 0 18px 10px; color: var(--ink-4); }
+      .practise-step { margin: 0 18px 10px; align-self: flex-start; }
+      .card-h > #secLabel { display: none; }
       /* The pause line: information, not a warning — and no rescue buttons, because pausing is a
          choice, not a fault. */
       .follow-note.info { color: var(--ink-4); }

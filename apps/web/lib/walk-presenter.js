@@ -167,6 +167,21 @@ export function createWalkPresenter({
       : '';
   }
 
+  /**
+   * The section of the turn you are on, named in the solution card's heading (E12.5): in portrait a lesson's strip has
+   * no label row, so the heading says which part of the lesson the strip is showing, and it changes as the turn you are
+   * on crosses into the next one. The same words as the section's own label — copied from it, never written twice.
+   * Shown by the stylesheet in portrait only; a walk with no sections hides it.
+   */
+  function nameSection(chip) {
+    const slot = $('#secLabel', root);
+    if (!slot) return;
+    const label = chip?.closest('.walk-sec')?.querySelector(':scope > .walk-sec-l') ?? null;
+    slot.hidden = !label;
+    if (!label) { slot.textContent = ''; return; }
+    if (slot.innerHTML !== label.innerHTML) slot.innerHTML = label.innerHTML;
+  }
+
   function sync(i) {
     const { total, target, walkLoaded } = walkNow();
     at = i;
@@ -176,6 +191,7 @@ export function createWalkPresenter({
     chips.forEach((ch, k) => { ch.classList.toggle('played', k < i); ch.classList.toggle('cur', k === i - 1); });
     strip.centre(chips[i - 1] ?? chips[0] ?? null);
     pointAtStep(i);
+    nameSection(chips[i - 1] ?? chips[0] ?? null);
     $('#stepLbl', root).textContent = `${i} / ${total}`;
     $('#progBar', root).style.width = total ? `${(i / total) * 100}%` : '0%';
     // A button that cannot do anything says so, rather than swallowing the press.

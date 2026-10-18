@@ -141,17 +141,34 @@ test('a wrong turn sounds `off` once after the cue window, shows the way back, a
         // Inside the window nothing has sounded yet — the second half of a slice could still arrive.
         assert.deepEqual((await page.evaluate(() => window.__p.heard())).slice(before), [], `${row.id}: a sound inside the cue window`);
         await page.evaluate((ms) => window.__p.wait(ms), PAST_WINDOW_MS);
-        const got = await page.evaluate(() => ({ heard: window.__p.heard(), say: window.__p.say(), arrow: window.__p.arrow(), data: window.__p.data() }));
+        const got = await page.evaluate(() => ({
+          heard: window.__p.heard(), say: window.__p.say(), note: window.__p.note(), arrow: window.__p.arrow(), data: window.__p.data(),
+          off: window.__p.offChips(), cur: window.__p.curChips(),
+        }));
         assert.deepEqual(got.heard.slice(before), ['off'], `${row.id}: heard ${got.heard.slice(before)} for one wrong turn`);
         assert.equal(got.data.status, 'off');
-        // Worded about the TURN only where the cube numbers its turns; otherwise about the cube (plan §3.4).
+        // Worded about the TURN only where the cube numbers its turns; otherwise about the cube (plan §3.4) — and said in
+        // the follow-note, where it is seen, as well as to a screen reader (E11.3).
         assert.match(got.say, numbered ? /^That turn left the algorithm\./ : /^Your cube left the algorithm\./, got.say);
+        assert.equal(got.note, got.say, `${row.id}: the follow-note does not say what to do`);
+        // §5.4: the turn that was expected is the chip marked off — the one at the position the cube left from — and only it.
+        // The position counts the whole-cube turns the cube was carried past without a report, so it may be past `k`.
+        const at = Number(got.data.position);
+        assert.ok(at >= k, `precondition: ${row.id} left the algorithm at ${at}, before the ${k} turns made`);
+        assert.deepEqual(got.off, [at], `${row.id}: the chips marked off are ${JSON.stringify(got.off)}, not the expected turn ${at}`);
+        assert.deepEqual(got.cur, [], `${row.id}: a chip is marked current while the cube is off the algorithm`);
         assert.equal(got.arrow, inverse(wrong), `${row.id}: the arrow does not show the way back`);
         // Waiting longer says nothing more: once per excursion.
         await page.evaluate((ms) => window.__p.wait(ms), PAST_WINDOW_MS);
         assert.deepEqual((await page.evaluate(() => window.__p.heard())).slice(before), ['off'], `${row.id}: \`off\` repeated`);
-        // Back on, heard as `capture`, and the rest completes exactly at the last report.
-        const rest = [inverse(wrong), ...per.slice(k).flat()];
+        // Back on, heard as `capture`: the mark goes, and the chip the cube is at is current again (§5.4).
+        await page.evaluate(({ q, o }) => window.__p.move(q, o), { q: inverse(wrong), o: { numbered } });
+        const back = await page.evaluate(() => ({ off: window.__p.offChips(), cur: window.__p.curChips(), note: window.__p.note() }));
+        assert.deepEqual(back.off, [], `${row.id}: a chip stays marked off once the cube is back on`);
+        assert.deepEqual(back.cur, at > 0 ? [at - 1] : [], `${row.id}: back on, the current chip is ${JSON.stringify(back.cur)}`);
+        assert.equal(back.note, null, `${row.id}: the follow-note stays once the cube is back on`);
+        // And the rest completes exactly at the last report.
+        const rest = per.slice(k).flat();
         const dones = await page.evaluate(({ qs, o }) => {
           const b = window.__p.count('done');
           return qs.map((q) => { window.__p.move(q, o); return window.__p.count('done') - b; });
@@ -183,6 +200,8 @@ test('a slice\'s first face, a half turn\'s first quarter and a lost turn never 
       await page.evaluate((qs) => { for (const q of qs) window.__p.move(q); }, head);
       await page.evaluate((ms) => window.__p.wait(ms), PAST_WINDOW_MS);
       assert.deepEqual((await page.evaluate(() => window.__p.heard())).slice(before), [], `${row.id}: a half of one move sounded`);
+      // MUST NOT: half of one move marked as a turn off the algorithm.
+      assert.deepEqual(await page.evaluate(() => window.__p.offChips()), [], `${row.id}: half of one move marked a chip off`);
       const tail = [...per[split].slice(1), ...per.slice(split + 1).flat()];
       const dones = await page.evaluate((qs) => {
         const b = window.__p.count('done');
@@ -205,10 +224,16 @@ test('a slice\'s first face, a half turn\'s first quarter and a lost turn never 
     await page.evaluate((q) => window.__p.move(q), wrong);
     state = after_(state, [wrong]);
     await page.evaluate((ms) => window.__p.wait(ms), PAST_WINDOW_MS);
-    const mid = await page.evaluate(() => ({ heard: window.__p.heard(), say: window.__p.say(), data: window.__p.data() }));
+    const mid = await page.evaluate(() => ({ heard: window.__p.heard(), say: window.__p.say(), note: window.__p.note(), data: window.__p.data(),
+      off: window.__p.offChips(), arrow: window.__p.arrow(), played: document.querySelectorAll('#practiceAlg .chip-m.played').length }));
     assert.deepEqual(mid.heard.slice(before), [], 'a lost turn, or a turn after one, sounded');
     assert.equal(mid.data.status, 'uncertain');
     assert.match(mid.say, /not judged/);
+    // §5.4: the follow-note says so; the chips stop where the cube was last known; no arrow; no chip called wrong.
+    assert.equal(mid.note, mid.say, 'a lost turn: the follow-note does not say so');
+    assert.deepEqual(mid.off, [], 'a lost turn marked a chip off — a lost turn is never called wrong');
+    assert.equal(mid.arrow, 'none', 'a lost turn: an arrow is drawn');
+    assert.equal(mid.played, Number(mid.data.position), 'a lost turn: the chips do not stop at the last position known');
     // The cube says where it is; the rep goes on, untimed, and is filed as a rep with a lost turn.
     await page.evaluate((f) => window.__p.facelets(f), toFacelets(state));
     const rest = [inverse(wrong), ...per.slice(2).flat()];
@@ -379,6 +404,29 @@ test('a timed rep shows each named part\'s own time, first report of the part to
     }
     // Evenly spaced reports make no pause, so none may be marked.
     assert.doesNotMatch(parts.text, /pause/);
+    // §5.4: a clean rep's split times stand BESIDE the trigger labels in the strip, each part's own.
+    const labels = await page.evaluate(() => window.__p.labels());
+    for (const c of row.chunks) {
+      const ms = (reached(c.to) - (c.from === 0 ? 0 : reached(c.from))) * STEP_MS;
+      const want = `${catalogue.triggers[c.trigger].name} ${(ms / 1000).toFixed(2)} s`;
+      assert.ok(labels.includes(want), `${row.id}: the strip's labels ${JSON.stringify(labels)} do not say ${want}`);
+    }
+    // MUST NOT: last rep's times standing over the next rep while it is made.
+    const perNext = reportsPerToken(printed.chips.join(' '), ORIENTATIONS[0], rnd);
+    const lead = [...perNext[0], ...perNext[1]];
+    await page.evaluate(({ f, qs }) => { window.__p.facelets(f); for (const q of qs) window.__p.move(q); }, { f: toFacelets(randomStart(rnd)), qs: lead });
+    assert.equal((await page.evaluate(() => window.__p.data())).status, 'running', 'precondition: the next rep is under way');
+    const during = await page.evaluate(() => window.__p.labels());
+    assert.ok(during.every((l) => !/\d s$/.test(l)), `a split time stands over the rep being made: ${JSON.stringify(during)}`);
+    // Nor after a rep that left the algorithm: its times are not the algorithm's alone.
+    const wrong = 'URFDLB'.split('').find((f) => !axesNear(perNext, 2).has(AXIS[f]));
+    await page.evaluate((q) => window.__p.move(q), wrong);
+    await page.evaluate((ms) => window.__p.wait(ms), PAST_WINDOW_MS);
+    assert.equal((await page.evaluate(() => window.__p.data())).status, 'off', 'precondition: the rep left the algorithm');
+    const unclean = await page.evaluate(({ qs, b }) => qs.map((q) => { window.__p.move(q); return window.__p.count('done') - b; }),
+      { qs: [inverse(wrong), ...perNext.slice(2).flat()], b: await page.evaluate(() => window.__p.count('done')) });
+    assert.equal(unclean.at(-1), 1, 'precondition: the unclean rep completed');
+    assert.ok((await page.evaluate(() => window.__p.labels())).every((l) => !/\d s$/.test(l)), 'an unclean rep\'s split times are shown in the strip');
     assert.deepEqual(errors, []);
   } finally {
     await context.close();

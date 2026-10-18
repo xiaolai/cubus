@@ -154,6 +154,18 @@ export async function openPractice(fixture, { numbered = true, connect = true, p
         lost: () => window.cubusFeed.movesLost(),
         data: () => ({ ...page().dataset }),
         say: () => document.querySelector('#practiceSay').textContent,
+        /** The follow-note's words while it is DRAWN, or null: what the page asks of the person, where it is seen. */
+        note: () => {
+          const n = document.querySelector('#followNote');
+          return !n.hidden && n.getBoundingClientRect().height > 0 ? document.querySelector('#followMsg').textContent : null;
+        },
+        /** The chips marked off the algorithm, by their index in the algorithm. */
+        offChips: () => [...document.querySelectorAll('#practiceAlg .chip-m.off')].map((c) => Number(c.dataset.k)),
+        curChips: () => [...document.querySelectorAll('#practiceAlg .chip-m.cur')].map((c) => Number(c.dataset.k)),
+        /** The clock's face as drawn: its text, and whether it draws the timer glyph. */
+        face: () => ({ text: document.querySelector('#practiceClockFace').textContent, glyph: Boolean(document.querySelector('#practiceClockFace svg')) }),
+        /** Each trigger label in the strip, as drawn there: its words, the time beside it included. */
+        labels: () => [...document.querySelectorAll('#practiceAlg .walk-sec-l')].map((l) => l.textContent.replace(/\\s+/g, ' ').trim()),
         time: () => document.querySelector('#practiceTime').textContent,
         cube: () => document.querySelector('#practiceCube cubus-cube'),
         arrow: () => document.querySelector('#practiceCube cubus-cube').getAttribute('arrow'),

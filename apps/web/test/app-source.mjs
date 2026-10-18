@@ -38,6 +38,8 @@ export const APP_SOURCES = Object.freeze([
   'lib/screen-shell.js',
   // the menu both screens' corner menus are built on, 2026-09-14
   'lib/menu-popover.js', 'lib/scroll-strip.js',
+  // the band over the cube card's foot for the rows a walk shows only sometimes, 2026-10-19 (E12.1)
+  'lib/foot-band.js',
   'lib/screens/scan.js', 'lib/screens/cube.js', 'lib/screens/timer.js', 'lib/screens/settings.js',
   'lib/screens/stats.js',
   // the whole picture catalogue as a grid, and the two services behind it, 2026-10-04

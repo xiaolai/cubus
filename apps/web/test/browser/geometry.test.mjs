@@ -153,25 +153,56 @@ const FIXTURES = [
 ];
 
 /**
- * THE PORTRAIT CUBE'S FLOOR, per portrait fixture: the painted cube on the cube screen before the portrait walking
- * composition put it at the stage's full width (dev-docs/practice-redesign-plan.md §5.7, E1) — no portrait cube may
- * be drawn smaller than it was. In CSS px, the larger side of what the renderer painted. One table, so a fixture
- * added to FIXTURES in portrait without a floor fails the lookup rather than passing unmeasured.
+ * THE PORTRAIT CUBE'S FLOOR, ONE TABLE, keyed by WALK KIND and fixture (dev-docs/practice-redesign-plan.md E12.2): no
+ * walk's cube is smaller than it was before the redesign. Each kind's figure is its painted cube at 2ae4a375 (headless
+ * WebKit, one move into the walk; pll-Na for Practice), or the floor WI-4 or WI-5 already set for it where that is
+ * lower. In CSS px, the larger side of what the renderer painted. A fixture or a kind with no floor fails the lookup
+ * rather than passing unmeasured.
+ *
+ * Measured at 2ae4a375 (desktop portrait, iPhone 16, iPhone SE, iPad 11" portrait, Split View): Quick 256 / 197 / 186
+ * / 431 / 154; Scramble 256 / 201 / 186 / 495 / 154; a Beginner lesson 202 / 175 / 166 / 391 / 151; a Practice rep
+ * with no cube 211 / 184 / 174 / 400 / 144, with a smart cube 256 / 197 / 186 / 431 / 154.
  */
-const PORTRAIT_CUBE_FLOOR = Object.freeze({
-  'desktop portrait window': 256,
-  'iPhone 16': 197,
-  // E10 (owner's call, 2026-10-18): 170, not the 186 it was. The SE is the one fixture where the fixed height of the
-  // 44px touch rows that never leave the walk — the solution heading, the Restore row and the one-line strip — is
-  // more than the room today's cube had beside them: with the method row folded into the Restore row the cube
-  // measured 174. The trade is the whole walk on screen under the cube against about 12px of cube.
-  'iPhone SE': 170,
-  'iPad 11" portrait': 431,
-  'iPad Split View column': 154,
+const CUBE_FLOOR = Object.freeze({
+  quick: {
+    'desktop portrait window': 256,
+    'iPhone 16': 197,
+    // E10 (owner's call, 2026-10-18): 170, not the 186 it was. The SE is the one fixture where the fixed height of the
+    // 44px touch rows that never leave the walk — the solution heading, the Restore row and the one-line strip — is
+    // more than the room today's cube had beside them: with the method row folded into the Restore row the cube
+    // measured 174. The trade is the whole walk on screen under the cube against about 12px of cube.
+    'iPhone SE': 170,
+    'iPad 11" portrait': 431,
+    'iPad Split View column': 154,
+  },
+  // WI-4's floor, the lower of the two everywhere (Scramble was 201 and 495 on the iPhone 16 and the iPad).
+  scramble: { 'desktop portrait window': 256, 'iPhone 16': 197, 'iPhone SE': 170 /* E10, as Quick */, 'iPad 11" portrait': 431, 'iPad Split View column': 154 },
+  lesson: {
+    'desktop portrait window': 202,
+    'iPhone 16': 175,
+    // E12.5 (coordinator, 2026-10-19): 150, not 166. The portrait composition puts the whole walk under the cube, and
+    // on the SE that has a fixed cost the pre-redesign layout did not pay — measured 137 with the lesson's label row,
+    // which E12.5 then moved into the heading.
+    'iPhone SE': 150,
+    'iPad 11" portrait': 391,
+    'iPad Split View column': 151,
+  },
+  // WI-5's floors (E11.5), each lower than the page's figure at 2ae4a375.
+  'practice-cube': { 'desktop portrait window': 202, 'iPhone 16': 175, 'iPhone SE': 166, 'iPad 11" portrait': 383, 'iPad Split View column': 138 },
+  'practice-none': {
+    'desktop portrait window': 202,
+    'iPhone 16': 175,
+    // E11.9 (2026-10-19): with no cube, 150, not 166. The SE with no cube has to fit the strip, the beads, the quiet line
+    // and a transport carrying step buttons, and that fixed cost is about 16 px more than today's cube had beside it.
+    'iPhone SE': 150,
+    'iPad 11" portrait': 383,
+    'iPad Split View column': 138,
+  },
 });
-const portraitFloor = (fixture) => {
-  if (!Object.hasOwn(PORTRAIT_CUBE_FLOOR, fixture.name)) throw new Error(`no portrait cube floor for "${fixture.name}"`);
-  return PORTRAIT_CUBE_FLOOR[fixture.name];
+const cubeFloor = (kind, fixture) => {
+  const f = CUBE_FLOOR[kind]?.[fixture.name];
+  if (typeof f !== 'number') throw new Error(`no portrait cube floor for a ${kind} walk on "${fixture.name}"`);
+  return f;
 };
 
 /** The larger side of what the cube's canvas painted, in CSS px — opaque pixels' bounding box. Self-contained:
@@ -674,7 +705,7 @@ for (const fixture of FIXTURES) {
         assert.deepEqual(whole.tools, ['speedBtn', 'twinBtn'], 'portrait, Home: the cube card\'s tools are speed and the twin');
         // MUST NOT: a portrait cube smaller than its floor, with every row the walk always shows — the heading,
         // the Restore row with the pin and the one-line strip (E10; the rows that come and go are WI-6's).
-        assert.ok(whole.paintedSize >= portraitFloor(fixture), `portrait: the painted cube on Home is ${whole.paintedSize.toFixed(1)}px — under its floor of ${portraitFloor(fixture)}px`);
+        assert.ok(whole.paintedSize >= cubeFloor('quick', fixture), `portrait: the painted cube on Home is ${whole.paintedSize.toFixed(1)}px — under its floor of ${cubeFloor('quick', fixture)}px`);
       } else {
         assert.equal(whole.pin, null, 'landscape: the method pill is drawn — landscape keeps the method row');
         assert.ok(whole.methodRowShown, 'landscape: the method row is not shown on a whole-cube walk');
@@ -932,7 +963,7 @@ for (const fixture of FIXTURES) {
         assert.ok(m.strip.curW > m.strip.otherW + 1, `portrait: the current turn (${m.strip.curW}px) is not larger than the others (${m.strip.otherW}px)`);
         for (const c of m.chips) assert.ok(c.top >= m.strip.box.top - 1 && c.bottom <= m.strip.box.bottom + 1, `a chip leaves the strip: ${JSON.stringify(c)}`);
         // MUST NOT: a portrait cube smaller than the one this composition replaced.
-        assert.ok(m.paintedSize >= portraitFloor(fixture), `portrait: the painted cube is ${m.paintedSize.toFixed(1)}px — under its floor of ${portraitFloor(fixture)}px`);
+        assert.ok(m.paintedSize >= cubeFloor('scramble', fixture), `portrait: the painted cube is ${m.paintedSize.toFixed(1)}px — under its floor of ${cubeFloor('scramble', fixture)}px`);
 
         // The twin, reached by ONE control, drawn whole on the stage, and put away by the same control.
         await page.click('#twinBtn');
@@ -1192,6 +1223,172 @@ for (const fixture of landscapeFixtures) {
       }
       await curShown('jumping to the last move', jump(160));
       await curShown('jumping back to the first move', jump(0));
+    } finally {
+      await context.close();
+    }
+  });
+}
+
+// ---- the rows that come and go, and a lesson's heading, in portrait (dev-docs/practice-redesign-plan.md E12) ----------
+//
+// On Home in portrait every row that comes and goes — the follow-note, the why line, the practise-step button — took
+// its height from the cube: 22–166 px, and on the iPhone SE any one of them took the cube from 172 to 144 px (E12).
+// In portrait they are drawn in ONE BAND over the foot of the cube card (lib/foot-band.js), clear of the cube itself and
+// over the ghost region below it, so the cube is the same size with the band shown and hidden. And a lesson's strip has
+// no label row there (E12.5): the section of the turn you are on names the solution card's heading instead.
+
+/**
+ * The cube's own box on the page — the body, not its ghosts: the box of the renderer's cube projected through its own
+ * camera, and the box of the sphere around it, which no turn of the cube can leave. Self-contained: evaluated in the page.
+ */
+const cubeBodyBox = (sel) => {
+  const el = document.querySelector(sel);
+  const c = el.querySelector('canvas');
+  const cr = c.getBoundingClientRect();
+  const cam = el.camera;
+  el.root.updateMatrixWorld(true);
+  cam.updateMatrixWorld(true);
+  const V = cam.position.constructor;
+  const at = (v) => { const p = v.project(cam); return { x: cr.left + (p.x + 1) / 2 * cr.width, y: cr.top + (1 - p.y) / 2 * cr.height }; };
+  let box = { left: Infinity, right: -Infinity, top: Infinity, bottom: -Infinity };
+  for (const x of [-1.5, 1.5]) for (const y of [-1.5, 1.5]) for (const z of [-1.5, 1.5]) {
+    const p = at(new V(x, y, z).applyMatrix4(el.root.matrixWorld));
+    box = { left: Math.min(box.left, p.x), right: Math.max(box.right, p.x), top: Math.min(box.top, p.y), bottom: Math.max(box.bottom, p.y) };
+  }
+  return box;
+};
+
+/** Until the cube is neither turning a layer nor turning over, and two frames have been drawn since. */
+const cubeSettled = async (page, sel) => {
+  await page.waitForFunction((x) => { const c = document.querySelector(x); return c && !c.animating && !c.turning; }, sel);
+  await page.evaluate(() => new Promise((r) => { requestAnimationFrame(() => requestAnimationFrame(r)); }));
+  await cubePainted(page, `${sel} canvas`);
+};
+
+/** The band and the rows it may hold, as the cases below read them. */
+const measureBand = (page, cubeSel) => page.evaluate(`(() => {
+  const rect = ${rect.toString()};
+  const band = document.querySelector('.foot-band');
+  const drawn = (el) => Boolean(el) && !el.closest('[hidden]') && getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().height > 0;
+  const card = document.querySelector('.cols > .primary');
+  return {
+    band: drawn(band) ? rect(band) : null, inCard: Boolean(band) && card.contains(band),
+    card: rect(card), cube: (${cubeBodyBox.toString()})(${JSON.stringify(cubeSel)}),
+    painted: (${paintedSize.toString()})(${JSON.stringify(`${cubeSel} canvas`)}),
+    held: [...(band?.children ?? [])].filter(drawn).map((el) => el.id),
+    fits: ${contentFits}(document.querySelector('.screen.active')),
+  };
+})()`);
+
+/** The band's must-nots, wherever it is shown: inside the cube card's foot, clear of the cube, nothing cut. */
+function bandHolds(b, what) {
+  assert.ok(b.band, `${what}: the band is not drawn`);
+  assert.ok(b.inCard, `${what}: the band is not in the cube card`);
+  assert.ok(inside(b.band, b.card), `${what}: the band ${JSON.stringify(b.band)} leaves the cube card ${JSON.stringify(b.card)}`);
+  near(b.band.bottom, b.card.bottom, `${what}: the band is not at the cube card's foot`, 2);
+  assert.ok(b.band.top >= b.cube.bottom - 0.5, `${what}: the band (top ${b.band.top.toFixed(1)}) is drawn over the cube (bottom ${b.cube.bottom.toFixed(1)})`);
+  assert.deepEqual(b.fits, { spills: [], cut: [] }, `${what}: text that cannot be read where it is drawn — see contentFits`);
+}
+
+/** Show or hide the cube screen's rows that come and go, as their writers do — the hidden attribute and a text. */
+const cubeRows = (page, rows) => page.evaluate((r) => {
+  const set = (id, on, text) => { const el = document.getElementById(id); el.hidden = !on; if (on && text) (el.querySelector('#followMsg') ?? el).textContent = text; };
+  set('whyLine', r.includes('why'), 'Step 3 of 12 — Put the white edge between its two centres, so the cross grows by one arm.');
+  set('practiseStep', r.includes('practise'), 'Practise this');
+  set('followNote', r.includes('follow'), 'That was R — turn R\' to get back on the plan.');
+}, rows);
+
+for (const fixture of FIXTURES) {
+  test(`a lesson in portrait: the heading names the section you are in, and the band leaves the cube its size: ${label(fixture)}`, async () => {
+    const { page, context, errors } = await open(fixture, 'home', { solveMethod: 'beginner' });
+    try {
+      await frozenOnHome(page, LONGEST_LESSON_CUBE);
+      await page.waitForFunction(() => document.querySelectorAll('#solList .walk-sec').length > 1, null, { timeout: 90_000 });
+      await cubePainted(page);
+      const portrait = await page.evaluate(() => document.querySelector('.cols .sheet').getBoundingClientRect().top >= document.querySelector('.cols > .primary').getBoundingClientRect().bottom - 1);
+      const sections = await page.evaluate(() => [...document.querySelectorAll('#solList .walk-sec')].map((sec) => {
+        const ks = [...sec.querySelectorAll('.chip-m')].map((c) => Number(c.dataset.i));
+        return { from: Math.min(...ks), to: Math.max(...ks), name: sec.querySelector('.walk-sec-l').textContent.replace(/\s+/g, ' ').trim() };
+      }));
+      assert.ok(sections.length >= 4, `precondition: the longest lesson has ${sections.length} sections`);
+      const heading = () => page.evaluate(() => {
+        const shown = (el) => Boolean(el) && !el.hidden && getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().width > 0;
+        return {
+          sec: shown(document.querySelector('#secLabel')) ? document.querySelector('#secLabel').textContent.replace(/\s+/g, ' ').trim() : null,
+          sol: shown(document.querySelector('#solLabel')),
+          stripLabels: [...document.querySelectorAll('#solList .walk-sec-l')].filter(shown).length,
+        };
+      });
+      for (const s of sections) {
+        for (const [where, k] of [['first', s.from], ['middle', Math.floor((s.from + s.to) / 2)], ['last', s.to]]) {
+          await page.evaluate((i) => document.querySelector(`#solList .chip-m[data-i="${i}"]`).click(), k);
+          await page.waitForSelector(`#solList .chip-m.cur[data-i="${k}"]`);
+          const h = await heading();
+          if (portrait) {
+            assert.equal(h.sec, s.name, `portrait, ${where} turn of "${s.name}" (move ${k}): the heading says ${JSON.stringify(h.sec)}`);
+            assert.equal(h.sol, false, 'portrait: the walk\'s own heading is drawn beside the section\'s');
+            assert.equal(h.stripLabels, 0, 'portrait: the lesson\'s strip still draws a label row');
+          } else {
+            assert.equal(h.sec, null, 'landscape: the heading names a section — landscape keeps its labels');
+            assert.ok(h.stripLabels > 0, 'landscape: the lesson\'s labels are gone');
+          }
+        }
+      }
+      if (portrait) {
+        // Measured one move into the lesson, as the floor was (E12.2), once the cube has stopped moving: a picture read
+        // part way through a turn or a tumble is no size at all.
+        await page.evaluate(() => document.querySelector('#solList .chip-m[data-i="0"]').click());
+        await page.waitForSelector('#solList .chip-m.cur[data-i="0"]');
+        await cubeSettled(page, '#viewCube cubus-cube');
+        practiceFloor(await measureScreen(page), fixture, 'a lesson in portrait');
+        // The rows that come and go, in the band: none, then each, then all, and the cube the same size throughout.
+        await cubeRows(page, []);
+        await cubeSettled(page, '#viewCube cubus-cube');
+        const bare = await measureBand(page, '#viewCube cubus-cube');
+        assert.equal(bare.band, null, 'portrait: the band is drawn with nothing in it');
+        assert.ok(bare.painted >= cubeFloor('lesson', fixture), `portrait: the lesson's painted cube is ${bare.painted.toFixed(1)}px — under its floor of ${cubeFloor('lesson', fixture)}px`);
+        for (const rows of [['why'], ['practise'], ['follow'], ['why', 'practise'], ['why', 'practise', 'follow']]) {
+          await cubeRows(page, rows);
+          await cubeSettled(page, '#viewCube cubus-cube');
+          const b = await measureBand(page, '#viewCube cubus-cube');
+          const what = `portrait, the band holding ${rows.join(' + ')}`;
+          bandHolds(b, what);
+          for (const k of ['top', 'left', 'width', 'height']) near(b.card[k], bare.card[k], `${what}: the cube card's ${k} moved`);
+          near(b.painted, bare.painted, `${what}: the painted cube changed size`);
+        }
+        await cubeRows(page, []);
+      }
+      assert.deepEqual(errors.map(String), [], 'the page threw');
+    } finally {
+      await context.close();
+    }
+  });
+
+  test(`a Quick walk in portrait: the band leaves the cube its size: ${label(fixture)}`, async () => {
+    const { page, context, errors } = await open(fixture, 'home', { devRandCube: true });
+    try {
+      await page.waitForSelector('#randCube', { state: 'attached' });
+      await page.evaluate(() => document.querySelector('#randCube').click());
+      await page.waitForSelector('#solList .chip-m');
+      await page.waitForFunction(() => /^\d/.test(document.querySelector('#moveCount')?.textContent ?? ''), null, { timeout: 90_000 });
+      await cubePainted(page);
+      const portrait = await page.evaluate(() => document.querySelector('.cols .sheet').getBoundingClientRect().top >= document.querySelector('.cols > .primary').getBoundingClientRect().bottom - 1);
+      await cubeRows(page, []);
+      await cubeSettled(page, '#viewCube cubus-cube');
+      const bare = await measureBand(page, '#viewCube cubus-cube');
+      await cubeRows(page, ['follow']);
+      await cubeSettled(page, '#viewCube cubus-cube');
+      const b = await measureBand(page, '#viewCube cubus-cube');
+      if (portrait) {
+        bandHolds(b, 'portrait, Quick, the follow-note');
+        near(b.painted, bare.painted, 'portrait, Quick: the painted cube changed size with the follow-note');
+        for (const k of ['top', 'height']) near(b.card[k], bare.card[k], `portrait, Quick: the cube card's ${k} moved with the follow-note`);
+      } else {
+        // Landscape keeps today's rows: the note at the foot of the solution card, never over the cube.
+        assert.equal(b.band, null, 'landscape: the band is drawn');
+        assert.ok(await page.evaluate(() => Boolean(document.querySelector('#followNote').closest('.solution-card'))), 'landscape: the follow-note left the solution card');
+      }
+      assert.deepEqual(errors.map(String), [], 'the page threw');
     } finally {
       await context.close();
     }
@@ -1712,26 +1909,6 @@ for (const screen of SCREENS) {
 // and the page for the row with the most turns (the most chips, the widest chunk names). Both wait for the
 // library worker's answer (`data-ready`), because before it the screen is one line of text.
 
-/**
- * PRACTICE'S OWN FLOOR (dev-docs/practice-redesign-plan.md E11.5, E11.9): the painted cube of the page as it stood
- * before WI-5 rebuilt it on the walking composition, measured at each portrait fixture (pll-Na, WebKit, 2026-10-19).
- * The page may not draw a smaller cube than it did.
- */
-const PRACTICE_CUBE_FLOOR = Object.freeze({
-  'desktop portrait window': 202,
-  'iPhone 16': 175,
-  // E11.9 (2026-10-19): with no cube, 150, not 166. The SE with no cube has to fit the strip, the beads, the quiet line
-  // and a transport carrying step buttons, and that fixed cost is about 16 px more than today's cube had beside it.
-  'iPhone SE': { cube: 166, none: 150 },
-  'iPad 11" portrait': 383,
-  'iPad Split View column': 138,
-});
-const practiceCubeFloor = (fixture, withCube) => {
-  if (!Object.hasOwn(PRACTICE_CUBE_FLOOR, fixture.name)) throw new Error(`no practice cube floor for "${fixture.name}"`);
-  const f = PRACTICE_CUBE_FLOOR[fixture.name];
-  return typeof f === 'number' ? f : f[withCube ? 'cube' : 'none'];
-};
-
 /** The Practice page as the cases below read it: its regions, the strip, the beads, the line and the note. */
 const measurePractice = (page) =>
   page.evaluate(`(() => {
@@ -2005,7 +2182,7 @@ for (const fixture of FIXTURES) {
         // E11.6: the modes' row is behind the book in portrait, never in the twin.
         assert.equal(m.modesIn, 'book', `${what}: the modes' row is in the ${m.modesIn}, not behind the book`);
         // MUST NOT: a cube smaller than the page this one replaced (E11.5, E11.9).
-        const floor = practiceCubeFloor(fixture, false);
+        const floor = cubeFloor('practice-none', fixture);
         assert.ok(m.painted >= floor, `${what}: the painted cube is ${m.painted.toFixed(1)}px — under its floor of ${floor}px`);
       } else {
         // Landscape is the cube screen's: the moves WRAP in the sheet beside the cube, and the modes sit under the line.
@@ -2082,7 +2259,7 @@ for (const fixture of FIXTURES) {
       // E11.8: the beads row is the same height with a cube and without.
       near(armed.score.height, m.score.height, 'the beads row changes height with a cube');
       if (portrait) {
-        const floor = practiceCubeFloor(fixture, true);
+        const floor = cubeFloor('practice-cube', fixture);
         assert.ok(armed.painted >= floor, `armed: the painted cube is ${armed.painted.toFixed(1)}px — under its floor of ${floor}px`);
       }
       await page.evaluate(() => window.cubusFeed.move({ notation: "R'", timestamp: 2000, cubeTimestamp: 2000, serial: 2 }));
@@ -2098,6 +2275,24 @@ for (const fixture of FIXTURES) {
       for (const k of ['top', 'left', 'width', 'height']) near(off.primary[k], armed.primary[k], `off the algorithm: the cube card's ${k} moved`);
       near(off.painted, armed.painted, 'off the algorithm: the painted cube changed size');
       near(off.score.height, m.score.height, 'off: the beads row changes height');
+      // TWO MESSAGES AT ONCE (E12.3): the record's notice is in the foot band in portrait — its own row in landscape —
+      // and the quiet line's slot holds only the follow-note, so they never stack and the cube keeps its size.
+      await page.evaluate(() => { const r = document.querySelector('#practiceRecordSay'); r.textContent = 'That rep was not saved: quota exceeded (test)'; r.hidden = false; });
+      await page.evaluate(() => new Promise((r) => { requestAnimationFrame(() => requestAnimationFrame(r)); }));
+      const both = await measurePractice(page);
+      practicePageCommon(both, `page (${id}), off with the record's notice`);
+      const notice = await page.evaluate(`(() => {
+        const rect = ${rect.toString()};
+        const r = document.querySelector('#practiceRecordSay');
+        return { box: rect(r), inNote: Boolean(r.closest('#followNote')), inBand: Boolean(r.closest('.foot-band')), inTwin: Boolean(r.closest('.practice-twin')), stage: rect(document.getElementById('stage')) };
+      })()`);
+      assert.ok(both.noteShown, 'off with the record\'s notice: the follow-note is not on screen');
+      assert.ok(notice.box.height > 0 && inside(notice.box, notice.stage), 'off with the record\'s notice: the notice is not on screen');
+      assert.equal(notice.inNote, false, 'the record\'s notice is in the follow-note\'s slot — the two stack');
+      near(both.painted, armed.painted, 'off with the record\'s notice: the painted cube changed size');
+      for (const k of ['top', 'height']) near(both.primary[k], armed.primary[k], `off with the record's notice: the cube card's ${k} moved`);
+      if (portrait) bandHolds(await measureBand(page, '#practiceCube cubus-cube'), `page (${id}), the record's notice in the band`);
+      else assert.ok(notice.inTwin && !notice.inBand, 'landscape: the record\'s notice is not its own row in the twin');
       assert.deepEqual(errors.map(String), [], 'the page threw');
     } finally {
       await context.close();

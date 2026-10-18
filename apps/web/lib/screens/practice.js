@@ -29,6 +29,7 @@ import { createMenu } from '../menu-popover.js';
 import { createMethodRow, methodRowHtml } from '../method-row.js';
 import { createSpeedMenu } from '../speed-menu.js';
 import { oneLineStrip } from '../scroll-strip.js';
+import { footBand } from '../foot-band.js';
 import { hooks } from '../screen-slots.js';
 import { openLibrary } from '../practice-link.js';
 import { newCube } from '../cube-drawing.js';
@@ -65,6 +66,11 @@ const PRESENCE_MS = 1000;
  *  as the flag because a disconnect lets go of the session first and lowers the flag last, and a screen standing
  *  down in between (`onTrustLost`) must already see the cube as gone. */
 const cubeHere = () => conn !== null && state.connected && !cubeRefused();
+
+/** The statuses of a rep under way with a cube: the clock draws its glyph, never a number (§5.5). */
+const UNDER_WAY = new Set([STATUS.RUNNING, STATUS.OFF, STATUS.UNCERTAIN]);
+/** The clock's face drawing the timer glyph rather than a figure. */
+const GLYPH = Symbol('the timer glyph');
 
 /** A report's serial as the drill engine counts it — the low byte, which is all its comparison reads — or none. */
 const countOf = (serial) => (Number.isInteger(serial) ? serial & 0xff : undefined);
@@ -437,14 +443,14 @@ const PAGE_CONTROLS = Object.freeze([
 ]);
 
 /**
- * What must be done, said where it is seen (dev-docs/practice-redesign-plan.md E11.3, E11.4): the follow-note, in the
- * quiet line's place while it shows, so the cube keeps its size. `text` null puts it away; the record's own notice
- * (`#practiceRecordSay`) shares the note and keeps it out while it is said.
+ * What must be done, said where it is seen (dev-docs/practice-redesign-plan.md E11.3): the follow-note, in the quiet
+ * line's place while it shows, so the cube keeps its size. `text` null puts it away. The slot holds the note ALONE: the
+ * record's notice has a row of its own, in the foot band in portrait (E12.3), so the two never stack.
  */
 function sayInNote(root, text) {
   const msg = $('#followMsg', root);
   if (msg.textContent !== (text ?? '')) msg.textContent = text ?? '';
-  $('#followNote', root).hidden = !text && $('#practiceRecordSay', root).hidden;
+  $('#followNote', root).hidden = !text;
 }
 
 function pageScreen() {
@@ -549,6 +555,9 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   // replaced. Until it goes in, a seek is remembered rather than made (`seek`).
   const cube = newCube({ subject: { facelets: SOLVED_FACELETS(), moves: [], isPhysical: false } });
   cube.setAttribute('aria-label', t('The algorithm, on a cube'));
+  // The record's notice: its own row in landscape, over the foot of the cube card in portrait (lib/foot-band.js, E12.3).
+  // The band is clear of the cube once the page has put the cube in; until then there is nothing to be clear of.
+  footBand({ host: page, card: $('.practice-page > .primary', root), cube: () => (cube.isConnected ? cube : null), rows: [recordSay], signal });
   let seekWhenIn = null;
   const seek = (k) => { if (cube.isConnected) cube.seek(k); else seekWhenIn = k; };
   cube.addEventListener('cubus-step', (e) => {
@@ -568,15 +577,20 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   };
 
   // ---- the chips ----------------------------------------------------------------------------------------
-  /** The chips to position `k` (-1: off the algorithm, none), and the transport's progress with them. */
-  const markChips = (k) => {
+  /**
+   * The chips to position `k`, and the transport's progress with them. `off`: the index of the turn that was expected
+   * when the cube left the algorithm — that chip is marked off (§5.4, `.chip-m.off`), centred, and no chip is current.
+   * Only `off` marks one: half of one move and a lost turn never do.
+   */
+  const markChips = (k, off = null) => {
     const chips = [...chipsBox.querySelectorAll('.chip-m')];
     for (const chip of chips) {
       const i = Number(chip.dataset.k);
       chip.classList.toggle('played', i < k);
-      chip.classList.toggle('cur', i === k - 1);
+      chip.classList.toggle('cur', off === null && i === k - 1);
+      chip.classList.toggle('off', i === off);
     }
-    strip.centre(chips[k - 1] ?? chips[0] ?? null);
+    strip.centre((off === null ? null : chips[off]) ?? chips[k - 1] ?? chips[0] ?? null);
     const n = chips.length;
     const at = Math.max(0, k);
     const bar = $('#practiceProgress', root);
@@ -611,7 +625,6 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     ].filter(Boolean).join(' ');
     recordSay.hidden = !text;
     recordSay.textContent = text;
-    sayInNote(root, $('#followMsg', root).textContent || null);
   };
   sayUnsavedWhileMounted(sayRecord, signal);
 
@@ -624,7 +637,10 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   const paintFigures = (reps) => {
     const known = reps === RECORD_READING ? null : reps;
     const stats = known && statsOf(known);
-    $('#practiceFingers', root).outerHTML = beadsHtml(stats, fingersTarget(settings.fingersN), escHtml);
+    // The newest rep on record clean but paused: the row it broke starts again from the bead it would have lit (E12.4).
+    const newest = known?.at(-1);
+    const paused = Boolean(newest?.clean && newest.pauses > 0);
+    $('#practiceFingers', root).outerHTML = beadsHtml(stats, fingersTarget(settings.fingersN), escHtml, { paused });
     $('#practiceFigures', info.el).innerHTML = figuresHtml(stats, escHtml);
     $('#practiceReps', info.el).innerHTML = lastRepsHtml(reps, escHtml);
     page.dataset.record = reps === RECORD_READING ? 'reading' : reps === null ? 'unreadable' : 'read';
@@ -777,12 +793,31 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     box.hidden = !text;
     box.textContent = text;
   };
+  /**
+   * A clean rep's split times beside the trigger labels in the strip (§5.4), each part's own on the cube's clock, while
+   * that rep's time is the clock's — from the rep's end to the next one's first turn. Never a rep that left the
+   * algorithm or paused (its parts are not the algorithm's own pace), and never a part the clock could not time.
+   * `st` null: not following, so nothing measured stands there.
+   */
+  const paintSplits = (st) => {
+    const r = st && st.status === STATUS.ARMED ? lastResult : null;
+    const shown = r && r.clean && r.ms !== null && !r.pauses?.length ? r.splits : [];
+    for (const sec of chipsBox.querySelectorAll('.walk-sec')) {
+      const slot = sec.querySelector(':scope > .walk-sec-l > .walk-sec-t');
+      if (!slot) continue;
+      const split = shown.find((x) => x.from === Number(sec.dataset.from) && x.to === Number(sec.dataset.to) && x.ms !== null);
+      const words = split ? ` ${seconds(split.ms)}` : '';
+      if (slot.textContent !== words) slot.textContent = words;
+    }
+  };
   /** The stopwatch's button says what a press does, for a screen reader; the glyph is what is seen. */
   const clockSays = (words) => { clockLabel.textContent = words; clockBtn.setAttribute('aria-label', words); };
-  /** The clock: `words` for a screen reader (`#practiceTime`), the bare figure on its face. */
+  /** The clock: `words` for a screen reader (`#practiceTime`), the bare figure on its face — or, while a rep is under
+   *  way with a cube, the timer glyph (§5.5): the only number the page could tick is host time, which the cube's own
+   *  time would then replace with a different value. */
   const showTime = (words, figure) => {
-    time.textContent = words;
-    face.textContent = figure;
+    if (time.textContent !== words) time.textContent = words;
+    if (figure === GLYPH) { if (!face.querySelector('svg')) face.innerHTML = icon('timer', 18); } else if (face.textContent !== figure || face.querySelector('svg')) face.textContent = figure;
   };
   const paintClock = () => {
     const following = live();
@@ -798,7 +833,8 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     for (const b of demoButtons) b.hidden = following;
     paintParts(following ? lastResult : null);
     if (following) {
-      if (lastResult) {
+      if (UNDER_WAY.has(engine.state.status)) showTime(t('A rep is under way: your cube times it'), GLYPH);
+      else if (lastResult) {
         const r = lastResult;
         if (r.ms === null) showTime(t('— (%1)', refusalWords(r.refused)), '—');
         else {
@@ -831,6 +867,14 @@ function mountPage({ root, page, catalogue, signal, stale }) {
       // and with no arrow on the cube, starting over is the way that needs no letters.
       return arrowShown ? t('%1 Follow the arrow back.', lead) : t('%1 Press Start over, or turn one face four times.', lead);
     }
+    // A clean rep with a marked pause broke the row: said here, to a screen reader, and in the book — never in the
+    // follow-note, which is for what must be done (E11.3, E12.4). The bead shows it.
+    const pause = st.status === STATUS.ARMED && lastResult?.clean && lastResult.pauses?.length
+      ? t('That rep had a pause, so the row of clean reps starts again.') : '';
+    const go = narrate(st, arrowShown);
+    return pause ? t('%1 %2', pause, go) : go;
+  };
+  const narrate = (st, arrowShown) => {
     // Not "its first turns tell cubus how you are holding it": for drop-in and the H perm no turn ever does.
     if (!drawHold(st)) return t('Hold the cube any way you like and start: cubus follows from your first turns.');
     if (!arrowShown) return st.status === STATUS.ARMED ? t('Go: start the algorithm.') : t('Keep going.');
@@ -891,7 +935,8 @@ function mountPage({ root, page, catalogue, signal, stale }) {
       return {
         facelets: engine.facelets, hold: reached, alg: '', at: 0,
         arrow: st.status === STATUS.OFF && st.wayBack ? st.wayBack.turns[0] : 'none',
-        chips: st.status === STATUS.OFF ? -1 : st.position ?? 0,
+        // Off: the turns made stay played, and the turn that was expected is the one marked off (§5.4).
+        chips: st.position ?? 0, off: st.status === STATUS.OFF ? st.position ?? null : null,
       };
     }
     const hold = drawn;
@@ -952,6 +997,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     sayInNote(root, mustAct(st) ? words : null);
     paintHold();
     paintClock();
+    paintSplits(picture ? st : null);
     if (!picture) {
       // Not following — the cube gone, or a new one that has said nothing yet. A picture of the cube that was followed
       // would stand under "waiting" with its walk, its place and its arrow, so the page goes back to the case. Only on
@@ -962,7 +1008,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     drewFollowed = true;
     draw({ facelets: picture.facelets, hold: picture.hold, alg: picture.alg, arrow });
     if (picture.alg) seek(picture.at);
-    markChips(picture.chips);
+    markChips(picture.chips, picture.off ?? null);
   };
 
   // ---- the demo, with no cube ---------------------------------------------------------------------------

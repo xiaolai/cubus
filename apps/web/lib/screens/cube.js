@@ -18,6 +18,7 @@ import { createRouteRace } from './cube/route-race.js';
 // The rest of its own parts: the speed menu, the die and the reconnect question.
 import { createPatternMenu } from './cube/pattern-menu.js';
 import { createSpeedMenu } from '../speed-menu.js';
+import { footBand } from '../foot-band.js';
 import { createDie } from './cube/die.js';
 import { createReconnectAsk } from './cube/reconnect-ask.js';
 // The BUDGET only. `stage-distance.js` builds nothing at import — its tables are lazy — but this
@@ -348,7 +349,7 @@ const cubeScreen = (screenMode) => {
              heading and the pill. The count and the buttons sit together at the right edge, spaced
              by the header's column gap; and a count too long for the row wraps onto its own and
              starts under the heading, which an auto margin on the count's LEFT would push right. -->
-        <div class="card-h bare"><b id="solLabel">${label}</b><span class="sub" id="moveCount" role="status" aria-live="polite">—</span><button class="pill" id="proveBtn" hidden>${PROVE_COPY.button}</button><button class="pill" id="proveCancel" hidden>stop</button></div>
+        <div class="card-h bare"><b id="solLabel">${label}</b><b id="secLabel" hidden></b><span class="sub" id="moveCount" role="status" aria-live="polite">—</span><button class="pill" id="proveBtn" hidden>${PROVE_COPY.button}</button><button class="pill" id="proveCancel" hidden>stop</button></div>
         ${scrambling ? '' : `<!-- WHERE THIS WALK IS GOING. Not a setting and not in Settings: the target is a fact
              about this cube right now, which is the same argument the ladder makes about rungs
              (dev-docs/solve-to-state-plan.md §6). The default stays "solved", so nothing changes
@@ -392,8 +393,8 @@ const cubeScreen = (screenMode) => {
           <span class="sub" id="methodNote" role="status" aria-live="polite" style="color:var(--ink-4);margin-left:auto;text-align:right" hidden></span>
         </div>`}
         <div class="list walk-strip" id="solList" style="padding:6px 0"></div>
-        ${scrambling ? '' : '<div class="sub" id="whyLine" style="padding:0 18px 10px;color:var(--ink-4)" hidden></div>'}
-        ${scrambling ? '' : '<button class="pill" id="practiseStep" type="button" style="margin:0 18px 10px;align-self:flex-start" hidden></button>'}
+        ${scrambling ? '' : '<div class="sub why-line" id="whyLine" hidden></div>'}
+        ${scrambling ? '' : '<button class="pill practise-step" id="practiseStep" type="button" hidden></button>'}
         <div class="follow-note" id="followNote" hidden>
           <span id="followMsg" role="status" aria-live="polite"></span>
           <div class="acts">
@@ -531,6 +532,12 @@ const cubeScreen = (screenMode) => {
       const targetRow = root.querySelector('#stageTargetRow');
       if (targetRow) oneLineStrip(targetRow, { signal });
       wireTwinTool(root, signal);
+      // The rows a walk shows only sometimes: over the foot of the cube card in portrait, so they take nothing from the
+      // cube, and where they always were in landscape (lib/foot-band.js, E12.1). Scramble has the follow-note alone.
+      footBand({
+        host: root.querySelector('.cols.walking'), card: root.querySelector('.cols > .primary'), cube: () => cube, signal,
+        rows: (scrambling ? ['#followNote'] : ['#followNote', '#whyLine', '#practiseStep']).map((id) => root.querySelector(id)),
+      });
 
       // ---- the walk -----------------------------------------------------------------------------
       //
