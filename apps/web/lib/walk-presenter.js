@@ -40,7 +40,8 @@ export function createWalkPresenter({
   const $ = (sel, from) => from.querySelector(sel);
   // THE MOVES AS ONE LINE, in portrait (dev-docs/practice-redesign-plan.md §5.7): the turn you are on is kept at
   // the strip's centre, and before the first turn the first one is. In landscape the moves wrap and nothing
-  // scrolls sideways, so the same call moves nothing there; the stylesheet decides which the list is.
+  // scrolls sideways; a lesson's list scrolls DOWN there, and the same call keeps the turn you are on at its
+  // vertical centre. The stylesheet decides which the list is.
   const strip = oneLineStrip(solList, { signal });
   let chips = [];
   let at = 0;

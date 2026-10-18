@@ -411,6 +411,35 @@
          the purpose and the notation lines, with nothing to scroll (found 2026-10-14). A sheet that
          scrolls inside itself (`.card.tight` clips) is unchanged: that rule is the more specific. */
       .sheet { grid-area: sheet; min-width: 0; min-height: 0; overflow-y: auto; }
+      /* EVERY MOVE ON SCREEN, IN LANDSCAPE, FOR A WALK WITH NO SECTIONS (stage-contract.md, 2026-10-18). The twin's
+         row took its full height first and the sheet had what was left: on the 840 window a 20-move Quick walk on
+         Home needed a 192px list and got 154, its fourth row under the sheet's foot. So here the SHEET's row is
+         sized to its content first and the twin's row gives way, down to nothing if it must, and never past its
+         content (it is not an auto MAXIMUM, so the stretch goes to the sheet). The cube does not move: the primary
+         spans every row but the transport's, which keeps its own height, whatever the twin takes.
+         Measured in WebKit, and each part is load-bearing:
+           - `contain: size` on the primary: it spans the sheet's row, and without it the cube's canvas (which
+             follows its slot) became that row's content and the box grew without end.
+           - the sheet's row reads `min-content`, never an `fr`: across a flexible row WebKit read the sheet as
+             the whole column, and the twin was given nothing.
+         A SECTIONED lesson (112–161 moves) is taller than the whole column, so it keeps the rows it had and its list
+         scrolls, with the turn you are on held at the list's centre (lib/scroll-strip.js). Landscape only: portrait's
+         walking composition has no twin in the grid. */
+      @container stage (orientation: landscape) {
+        .cols.walking:not(:has(.walk-sec:not(.whole))) { grid-template-rows: minmax(auto, max-content) minmax(min-content, auto) max-content; }
+        .cols.walking:not(:has(.walk-sec:not(.whole))) > .primary { contain: size; }
+        /* THE NET GIVES WAY BY SCALING, never by being cut, and keeps its 12:9 shape. Its natural height — the twin's
+           content width (the stage's, less the primary, the gap and the card's 36px of padding), at most 320, times
+           9/12 — is the MAXIMUM of the row it sits in, and it fills that row with its width following from the
+           height. No percentage of the card is involved: WebKit resolves one against 0 while it sizes the grid, and
+           the twin then asked for no height at all. The 30px above the net is its own margin, as it always was. */
+        .cols.walking .twin { --net-h: calc(min(100cqw - var(--primary-w) - var(--cols-gap) - 36px, 320px) * 9 / 12);
+          display: grid; grid-template-rows: auto minmax(0, calc(var(--net-h) + 30px)); align-content: start; }
+        .cols.walking .twin:has(> #stageAim:not([hidden])) { grid-template-rows: auto minmax(0, max-content); }
+        /* A hidden target still hides: the global rule for the hidden attribute is !important. */
+        .cols.walking .twin #stageAim { display: grid; grid-template-rows: auto minmax(0, calc(var(--net-h) + 30px)) auto; min-height: 0; }
+        .cols.walking .twin .net { width: auto; height: auto; min-height: 0; max-width: 100%; aspect-ratio: 12 / 9; justify-self: center; align-self: stretch; }
+      }
       @container stage (orientation: portrait) {
         .cols {
           /* Portrait: the cube and its twin share the top row, 3:2; the sheet is the bottom row

@@ -17,7 +17,9 @@
 // sideways gesture, Shift+wheel and the keyboard still scroll it — all the browser's own.
 //
 // The walk's moves are the same kind of strip in portrait (dev-docs/practice-redesign-plan.md §5.7), with a third
-// duty: the turn you are on is kept at the CENTRE (`centre`).
+// duty: the turn you are on is kept at the CENTRE (`centre`). In landscape the same list wraps, and a sectioned
+// lesson (112–161 moves) is taller than any landscape sheet, so it scrolls DOWN: there `centre` keeps the turn
+// you are on at the list's vertical centre, the one mechanism on both axes (stage-contract.md, 2026-10-18).
 
 /**
  * Make `row` a one-line strip.
@@ -50,12 +52,18 @@ export function oneLineStrip(row, { signal }) {
    * Scroll so that `el`'s centre is the row's centre: the walk's strip keeps the turn you are on there
    * (dev-docs/practice-redesign-plan.md §5.7). The row clamps the scroll, so the first and last of a row
    * with no spacers at its ends stop short of the centre; the walk's strip has them.
+   * Down as well as across, on a row that SCROLLS down (`overflow-y` auto or scroll) — the landscape list
+   * of a lesson. A row that clips down (portrait's strip, `overflow-y: hidden`) is never moved down: a
+   * script can scroll a box the person cannot, and nothing there is below the fold.
    */
   const centre = (el) => {
     if (!el || !row.contains(el)) return;
     const box = row.getBoundingClientRect();
     const r = el.getBoundingClientRect();
     row.scrollLeft += (r.left + r.width / 2) - (box.left + row.clientLeft + row.clientWidth / 2);
+    if (/^(auto|scroll)$/.test(row.ownerDocument.defaultView.getComputedStyle(row).overflowY)) {
+      row.scrollTop += (r.top + r.height / 2) - (box.top + row.clientTop + row.clientHeight / 2);
+    }
     edges();
   };
 

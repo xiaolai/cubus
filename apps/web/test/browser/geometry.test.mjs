@@ -35,6 +35,7 @@ import { NAV_DEFAULTS_VERSION } from '../../lib/app-settings.js';
 import { LEVELS, METHODS } from '../../lib/methods/registry.js';
 import { fitStage } from '../../lib/stage.js';
 import { freePort } from '../free-port.mjs';
+import { CONTRACT_CUBES } from '../fixtures/solver-cubes.mjs';
 
 // Asked of the OS in before(), not chosen: a fixed port collides with an orphaned server
 // from an interrupted run, which fails at startup and reads like a regression. See free-port.mjs.
@@ -998,6 +999,182 @@ for (const fixture of FIXTURES) {
       assert.ok(m.painted && !m.painted.error, `the canvas could not be read back: ${m.painted?.error}`);
       assert.ok(m.painted.middle > 0, 'the canvas is blank — the renderer painted nothing');
       assert.equal(m.painted.edge, 0, `${m.painted.edge} painted pixels on the canvas edge (${m.painted.w}×${m.painted.h}) — the picture is clipped`);
+    } finally {
+      await context.close();
+    }
+  });
+}
+
+// ---- every walk in landscape, by KIND of walk ---------------------------------------------------
+//
+// "With a mouse every move is on screen" was asserted on Scramble alone, and Home broke it unseen: the
+// 20-move Quick walk on the desktop landscape window put its fourth row under the sheet's foot (192px of
+// moves in a 154px list, 2026-10-18), because Home's sheet carries the Restore row and the method row
+// that Scramble's does not. So the rule is asserted per KIND of walk, on every landscape fixture,
+// with the longest walk of that kind (stage-contract.md, "every walking screen"):
+//
+//   - a walk with NO SECTIONS — Quick's whole-cube solve, a walk to a Restore stop, a scramble — shows
+//     every move with a mouse, and its list has room for 20, the longest a Quick walk can be (God's
+//     number, AGENTS.md §3). The cube is a frozen 20-move one (CONTRACT_CUBES[0], 2.0M nodes); the
+//     superflip, 20 at best, kept the search going past a minute.
+//   - a SECTIONED lesson (112–161 moves across the frozen Beginner lessons) cannot: the whole right-hand
+//     column of the 840 window holds 14 rows of 6 chips, 84 moves, before any heading. It may scroll its
+//     list, and while it does the turn you are on is wholly inside the list's visible box, with at least
+//     one full row shown.
+//
+// The cube keeps its size because the twin card is what gives: the primary spans every row but the
+// transport's, whatever height the twin card takes, which is asserted here as that relation.
+
+const LONGEST_QUICK_CUBE = CONTRACT_CUBES[0];
+const GODS_NUMBER = 20;
+/** The longest frozen Beginner lesson, 161 moves in four sections (test/fixtures/beginner-lesson.json). */
+const LONGEST_LESSON_CUBE = 'BFRUUBFRLBLFLRRLDLUFUBFUULDFFFDDFBRBDBRDLDURLDURBBLDUR';
+const landscapeFixtures = FIXTURES.filter((f) => f.height - f.insets[0] - f.insets[2] <= f.width);
+
+/** A frozen cube on Home, read the way a scan is. */
+async function frozenOnHome(page, facelets) {
+  await page.evaluate(() => { location.hash = '#/scan'; });
+  await page.waitForSelector('#stageCard', { state: 'attached' });
+  await page.evaluate((f) => {
+    document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-complete', {
+      detail: { facelets: f, rotations: [0, 0, 0, 0, 0, 0] },
+    }));
+  }, facelets);
+  await page.waitForFunction(() => document.querySelector('#stageCard')?.hidden === false, null);
+  await page.evaluate(() => { location.hash = '#/home'; });
+  await page.waitForSelector('#solList .chip-m');
+}
+
+const measureWalk = (page) =>
+  page.evaluate(`(() => {
+    const rect = ${rect.toString()};
+    const $ = (s) => document.querySelector(s);
+    const px = (v) => Number.parseFloat(v);
+    const list = $('#solList');
+    const lb = list.getBoundingClientRect();
+    const ls = getComputedStyle(list);
+    const card = $('.state-card');
+    const net = [$('#viewNet'), $('#stageAimNet')].find((n) => n && !n.closest('[hidden]') && n.getBoundingClientRect().height > 0);
+    const chips = [...list.querySelectorAll('.chip-m')];
+    const cur = list.querySelector('.chip-m.cur');
+    const cols = $('.cols');
+    return {
+      // What the list SHOWS: its padding box, the part a scroll does not move.
+      seen: { top: lb.top + list.clientTop, bottom: lb.top + list.clientTop + list.clientHeight, left: lb.left + list.clientLeft, right: lb.left + list.clientLeft + list.clientWidth },
+      scroll: list.scrollHeight, client: list.clientHeight, pad: px(ls.paddingTop) + px(ls.paddingBottom),
+      chips: chips.map((c) => ({ i: c.dataset.i, ...rect(c) })), cur: cur ? { i: cur.dataset.i, ...rect(cur) } : null,
+      sections: list.querySelectorAll('.walk-sec:not(.whole)').length,
+      rowGap: chips.length ? px(getComputedStyle(chips[0].parentElement).rowGap) : 0,
+      state: rect(card), stateScroll: card.scrollHeight, stateClient: card.clientHeight, net: net ? rect(net) : null,
+      primary: rect($('.cols > .primary')), aux: rect($('.cols > .aux')), cols: rect(cols),
+      rowsGap: px(getComputedStyle($('.screen.active')).getPropertyValue('--rows-gap')),
+      colsV: cols.scrollHeight - cols.clientHeight,
+      fits: (${contentFits.toString()})($('.screen.active')),
+    };
+  })()`);
+
+/** The relations every landscape walk keeps, whatever its kind. */
+function landscapeWalkHolds(fixture, m, what) {
+  // The cube's height is the grid's: every row but the transport's, the twin card's share included.
+  near(m.primary.top, m.cols.top, `${what}: the cube card tops the box`);
+  near(m.aux.bottom, m.cols.bottom, `${what}: the transport ends the box`);
+  near(m.primary.bottom + m.rowsGap, m.aux.top, `${what}: the cube card reaches the transport`);
+  // The twin card gives way to the moves, and what it gives is the net's size, never the net itself.
+  assert.ok(m.stateScroll <= m.stateClient + 1, `${what}: the twin card holds ${m.stateScroll}px in ${m.stateClient}px`);
+  assert.ok(m.net, `${what}: no net is drawn in the twin card`);
+  assert.ok(inside(m.net, m.state), `${what}: the net ${JSON.stringify(m.net)} leaves its card ${JSON.stringify(m.state)}`);
+  near(m.net.width / m.net.height, 12 / 9, `${what}: the net keeps its 12:9 shape`, 0.03);
+  if (!fixture.touch) assert.ok(m.colsV <= 1, `${what}: the composition overflows its box vertically by ${m.colsV}px`);
+  assert.deepEqual(m.fits, { spills: [], cut: [] }, `${what}: text that cannot be read where it is drawn — see contentFits`);
+}
+
+/** A walk with no sections: with a mouse, every move inside the list's visible box and nothing to scroll. */
+function everyMoveShown(fixture, m, what) {
+  assert.equal(m.sections, 0, `precondition: ${what} is a walk with no sections`);
+  assert.ok(m.chips.length > 0, `precondition: ${what} has moves`);
+  landscapeWalkHolds(fixture, m, what);
+  if (fixture.touch) return;
+  assert.ok(m.scroll <= m.client + 1, `${what}: the move list scrolls by ${m.scroll - m.client}px — every move must be on screen`);
+  const hidden = m.chips.filter((c) => !inside(c, m.seen));
+  assert.deepEqual(hidden.map((c) => c.i), [], `${what}: moves outside the list's visible box`);
+}
+
+/** The rows of chips the list's visible box holds, times the chips a row holds: room for this many moves. */
+function room(m) {
+  const tops = m.chips.map((c) => Math.round(c.top) + 0);
+  const perRow = Math.max(...[...new Set(tops)].map((t) => tops.filter((x) => x === t).length));
+  const chip = m.chips[0].height;
+  return perRow * Math.floor((m.client - m.pad + m.rowGap) / (chip + m.rowGap));
+}
+
+for (const fixture of landscapeFixtures) {
+  test(`landscape, every walk with no sections shows every move: ${label(fixture)}`, async () => {
+    const { page, context } = await open(fixture, 'home', { solveMethod: 'quick' });
+    try {
+      // Quick's whole-cube walk at its longest.
+      await frozenOnHome(page, LONGEST_QUICK_CUBE);
+      await page.waitForFunction(() => /^\d+$/.test(document.querySelector('#moveCount')?.textContent ?? ''), null, { timeout: 90_000 });
+      let m = await measureWalk(page);
+      assert.ok(m.chips.length >= GODS_NUMBER - 1, `precondition: CONTRACT_CUBES[0] is a ${m.chips.length}-move Quick walk, not ~20`);
+      everyMoveShown(fixture, m, `Home, Quick, ${m.chips.length} moves`);
+      if (!fixture.touch) assert.ok(room(m) >= GODS_NUMBER, `Home, Quick: the list has room for ${room(m)} moves — a Quick walk can be ${GODS_NUMBER}`);
+
+      // A walk to a Restore stop: the first stop the row offers, which the superflip has not reached.
+      const stop = await page.evaluate(() => [...document.querySelectorAll('#stageTargetRow [data-stage]')].find((el) => !el.hidden && el.dataset.stage !== 'solved')?.dataset.stage);
+      assert.ok(stop, 'precondition: the Restore row offers a stop');
+      await page.evaluate((id) => document.querySelector(`#stageTargetRow [data-stage="${id}"]`).click(), stop);
+      await page.waitForFunction((id) => document.querySelector(`#stageTargetRow [data-stage="${id}"]`)?.classList.contains('on')
+        && !/working/.test(document.querySelector('#moveCount')?.textContent ?? '') && document.querySelector('#solList .chip-m'), stop, { timeout: 90_000 });
+      m = await measureWalk(page);
+      everyMoveShown(fixture, m, `Home, a walk to "${stop}"`);
+
+      // A scramble, on its own screen.
+      await page.evaluate(() => { location.hash = '#/scramble'; });
+      await page.waitForSelector('.screen.active #randCube:visible');
+      await page.click('.screen.active #randCube:visible');
+      await page.waitForSelector('#solList .chip-m');
+      m = await measureWalk(page);
+      everyMoveShown(fixture, m, 'Scramble');
+    } finally {
+      await context.close();
+    }
+  });
+
+  test(`landscape, a sectioned lesson keeps the turn you are on in view: ${label(fixture)}`, async () => {
+    const { page, context } = await open(fixture, 'home', { solveMethod: 'beginner' });
+    try {
+      await frozenOnHome(page, LONGEST_LESSON_CUBE);
+      await page.waitForFunction(() => document.querySelectorAll('#solList .walk-sec').length > 1, null, { timeout: 90_000 });
+      let m = await measureWalk(page);
+      assert.equal(m.chips.length, 161, 'precondition: the longest frozen Beginner lesson is on screen');
+      assert.ok(m.sections > 1, 'precondition: the lesson is sectioned');
+      landscapeWalkHolds(fixture, m, 'a lesson');
+      const row = m.chips[0].height + m.pad;
+      assert.ok(m.client >= row - 1, `a lesson's list shows ${m.client}px — less than one full row of moves (${row}px)`);
+
+      /** Go somewhere in the lesson the way a person does, then ask where the turn you are on is drawn. */
+      const curShown = async (how, go) => {
+        await go();
+        m = await measureWalk(page);
+        assert.ok(m.cur, `${how}: no turn is current`);
+        assert.ok(inside(m.cur, m.seen), `${how}: the turn you are on (move ${m.cur.i}) is drawn at ${JSON.stringify(m.cur)}, outside the list's visible box ${JSON.stringify(m.seen)}`);
+        landscapeWalkHolds(fixture, m, how);
+      };
+      // A press on a chip, made the way a hand makes it — no scroll first, which is what Playwright's click would do.
+      const jump = (i) => async () => {
+        await page.evaluate((k) => document.querySelector(`#solList .chip-m[data-i="${k}"]`).click(), i);
+        await page.waitForSelector(`#solList .chip-m.cur[data-i="${i}"]`);
+      };
+      const lastSection = await page.evaluate(() => Number([...document.querySelectorAll('#solList .walk-sec')].at(-1).querySelector('.chip-m').dataset.i));
+      await curShown('jumping to the last section', jump(lastSection));
+      for (let k = 1; k <= 3; k += 1) {
+        await curShown(`Next, ${k} into the last section`, async () => {
+          await page.click('#nextBtn');
+          await page.waitForSelector(`#solList .chip-m.cur[data-i="${lastSection + k}"]`);
+        });
+      }
+      await curShown('jumping to the last move', jump(160));
+      await curShown('jumping back to the first move', jump(0));
     } finally {
       await context.close();
     }

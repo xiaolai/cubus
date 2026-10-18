@@ -202,3 +202,46 @@ test('centre puts a button\'s centre at the strip\'s centre, the first and the l
   assert.equal(off.length, 9);
   for (const [i, d] of off.entries()) assert.ok(Math.abs(d) <= 2, `button ${i} is ${d}px from the strip's centre`);
 });
+
+// THE SAME CALL, DOWN (stage-contract.md, 2026-10-18). In landscape a sectioned lesson's list wraps and is taller than
+// any sheet, so it scrolls down, and `centre` keeps the turn you are on at its vertical centre — the one mechanism
+// on both axes. And what must NOT happen: a row that CLIPS down (portrait's strip, `overflow-y: hidden`) is never
+// scrolled down, because a script can move a box a person cannot.
+const wrapped = (overflowY) => page.evaluate(async (oy) => {
+  document.querySelector('#wrapped-under-test')?.remove();
+  const { oneLineStrip } = await import('/lib/scroll-strip.js');
+  const row = document.createElement('div');
+  row.id = 'wrapped-under-test';
+  row.style.cssText = `width:200px;height:90px;overflow-x:hidden;overflow-y:${oy};display:flex;flex-wrap:wrap;gap:6px;padding:6px 0`;
+  for (let i = 0; i < 60; i++) {
+    const b = document.createElement('button');
+    b.style.cssText = 'flex:none;width:36px;height:36px;padding:0';
+    b.textContent = String(i);
+    row.appendChild(b);
+  }
+  document.body.appendChild(row);
+  const { centre } = oneLineStrip(row, { signal: new AbortController().signal });
+  const box = row.getBoundingClientRect();
+  const seen = { top: box.top + row.clientTop, bottom: box.top + row.clientTop + row.clientHeight };
+  const middle = (seen.top + seen.bottom) / 2;
+  return [...row.querySelectorAll('button')].filter((_, i) => i % 7 === 0 || i === 59).map((b) => {
+    centre(b);
+    const r = b.getBoundingClientRect();
+    return { i: b.textContent, top: row.scrollTop, inside: r.top >= seen.top - 1 && r.bottom <= seen.bottom + 1,
+      off: Math.round((r.top + r.height / 2 - middle) * 10) / 10, max: row.scrollHeight - row.clientHeight };
+  });
+}, overflowY);
+
+test('centre scrolls a list that scrolls down, keeping the button wholly inside what it shows', async () => {
+  const at = await wrapped('auto');
+  assert.ok(at[0].max > 300, `precondition: the list overflows down (${at[0].max}px)`);
+  for (const a of at) assert.ok(a.inside, `button ${a.i} is outside the list's visible box after centre`);
+  // Clamped at the two ends; everywhere else at the centre line.
+  for (const a of at.filter((x) => x.top > 0 && x.top < x.max)) assert.ok(Math.abs(a.off) <= 2, `button ${a.i} is ${a.off}px from the list's centre`);
+});
+
+test('centre never scrolls down a row that clips down', async () => {
+  const at = await wrapped('hidden');
+  assert.ok(at[0].max > 300, `precondition: the row overflows down (${at[0].max}px)`);
+  assert.deepEqual(at.map((a) => a.top), at.map(() => 0), 'a row with overflow-y: hidden was scrolled down');
+});
