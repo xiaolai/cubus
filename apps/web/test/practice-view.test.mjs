@@ -7,6 +7,7 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 
+import Cube from 'cubejs';
 import { Window } from 'happy-dom';
 
 import * as lib from '../lib/alg-library.js';
@@ -15,7 +16,7 @@ import { PAUSE_FACTOR, TIME_REFUSAL } from '../lib/drill/timing.js';
 import { statsOf } from '../lib/drill/record.js';
 import { catalogueOf, pendingName } from '../lib/drill/library-client.js';
 import { registerLocale, setLocale } from '../lib/i18n.js';
-import { cardsHtml, libraryHtml, purposeOf, rowName } from '../lib/screens/practice/library-view.js';
+import { captionOf, cardsHtml, libraryHtml, purposeOf, rowName } from '../lib/screens/practice/library-view.js';
 import { isPhotographed } from '../lib/case-photo.js';
 import { paletteFor } from '../lib/scheme.js';
 import { STICKER_PALETTES } from '../lib/sticker-palettes.js';
@@ -81,6 +82,56 @@ test('the library lists every ledger row, and nothing the ledger does not hold',
   const doc = libraryDoc;
   const carded = new Set([...doc.querySelectorAll('[data-alg]')].map((b) => b.dataset.alg));
   assert.deepEqual([...carded].sort(), [...ids].sort());
+});
+
+test('a tile\'s caption is the name its source gives the case, or nothing — never the row\'s id', () => {
+  // Plan WI-2 (dev-docs/practice-redesign-plan.md §4.2, owner decision D5): a hand-written row is picture-only, and an
+  // id is a key, not a name a learner can say. Over EVERY row, with the totals counted so a sweep over nothing fails.
+  const rows = Object.values(catalogue.rows);
+  assert.equal(rows.length, 583, 'the catalogue is not the 583 rows the plan counted');
+  let unnamed = 0;
+  for (const row of rows) {
+    const caption = captionOf(row);
+    assert.notEqual(caption, row.id, `${row.id}: captioned by its id`);
+    if (row.nickname === null && row.label === null) {
+      assert.equal(caption, null, `${row.id}: the source names no case, and the tile is captioned "${caption}"`);
+      unnamed += 1;
+      continue;
+    }
+    // The source's own words, the nickname first ("Sune", not "OLL 27"), and never empty.
+    assert.equal(caption, row.nickname ?? row.label, `${row.id}: the caption is not the source's name`);
+    assert.ok(typeof caption === 'string' && caption.trim().length > 0, `${row.id}: an empty caption`);
+  }
+  assert.equal(unnamed, 422, 'the rows with no sourced name are not the 422 the plan counted');
+  // D5, read off the set's kind rather than a list: no hand-written or proved row has a name to show.
+  for (const row of rows.filter((r) => ['hand-written', 'proved'].includes(catalogue.sets[r.set].kind))) {
+    assert.equal(captionOf(row), null, `${row.id} is ${catalogue.sets[row.set].kind} and is captioned`);
+  }
+  // What must not happen: a row the source does not name, captioned by what the old card fell back to.
+  assert.equal(captionOf({ id: 'sune', label: null, nickname: null }), null);
+  assert.notEqual(rowName({ id: 'sune', label: null, nickname: null }), null, 'rowName still names a row for assistive tech');
+});
+
+test('OLL is grouped by how many top edges are up: counted from each case, 8 / 42 / 7 in both OLL sets', () => {
+  // Re-derived OUTSIDE the catalogue (AGENTS.md §5): cubejs plays the row's algorithm backwards from solved — its own
+  // parser, not this repository's interpreter, which drew `solves.facelets` — and the top face's edge stickers that
+  // match the top centre are counted. Every algorithm ends held as it began, so the top centre is still on top.
+  const counted = Object.entries(catalogue.sets).filter(([, s]) => s.edgesUp !== null).map(([id]) => id);
+  assert.deepEqual(counted.sort(), ['oll-full', 'oll-human'], 'the sets grouped by top edges up are not the two full OLL sets');
+  for (const id of counted) {
+    const set = catalogue.sets[id];
+    assert.deepEqual(Object.keys(set.edgesUp).sort(), [...set.ids].sort(), `${id}: a row is not counted, or a stranger is`);
+    const totals = { 0: 0, 2: 0, 4: 0 };
+    for (const rowId of set.ids) {
+      const cube = new Cube();
+      cube.move(Cube.inverse(catalogue.rows[rowId].alg));
+      const top = cube.asString();
+      const up = [1, 3, 5, 7].filter((i) => top[i] === top[4]).length;
+      assert.equal(set.edgesUp[rowId], up, `${id}/${rowId}: ${set.edgesUp[rowId]} top edges up, and cubejs counts ${up}`);
+      totals[up] += 1;
+    }
+    assert.deepEqual(totals, { 0: 8, 2: 42, 4: 7 }, `${id}: the edges-up groups are not 8 / 42 / 7`);
+  }
 });
 
 test('the sources not yet in the ledger are named, from their ids, as pending', () => {

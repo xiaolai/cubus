@@ -569,12 +569,21 @@ for (const s of ALG_SETS) {
  * Which offered method teaches which set, at which of its registry stages. Keyed by registry id; a phase is
  * `held` (one set or several), or `intuitive` — built by understanding or by search, with nothing to memorise.
  *
- * `algorithm-ledger.test.mjs` holds this to what each method's solver actually NAMES on frozen cubes, and to
- * the registry's entries and stages; that relation is why it can be trusted here.
+ * An offered phase also says `endsAt`: the Restore stop its stage's end reaches — one of the entry's `stops`,
+ * which the library pictures the stage by (dev-docs/practice-redesign-plan.md §4.3) — or null where it reaches
+ * none of its own: Quick stops nowhere, and Roux's CMLL keeps both blocks and finishes nothing.
+ *
+ * `algorithm-ledger.test.mjs` holds this to what each method's solver actually NAMES on frozen cubes, its
+ * `endsAt` to the stops that solver REACHES at each stage end, and both to the registry's entries and stages;
+ * that relation is why it can be trusted here.
  */
 const offered = (id, phases) => {
   const entry = REGISTRY.find((m) => m.id === id);
   if (!entry) throw new Error(`alg-library: names an offered method "${id}" that the registry does not hold`);
+  for (const p of phases) {
+    if (!Object.hasOwn(p, 'endsAt')) throw new Error(`alg-library: ${id}/${p.phase} declares no endsAt — a stop of ${id}'s, or null for none`);
+    if (p.endsAt !== null && !entry.stops.includes(p.endsAt)) throw new Error(`alg-library: ${id}/${p.phase} ends at "${p.endsAt}", which is not one of ${id}'s stops`);
+  }
   return Object.freeze({ id, method: entry.label, phases: Object.freeze(phases.map((p) => Object.freeze(p))) });
 };
 
@@ -582,41 +591,43 @@ const offered = (id, phases) => {
  *  registry method, and a name that is not a registry label so it cannot be mistaken for one. */
 const notOffered = (name, phases) => {
   if (REGISTRY.some((m) => m.label === name)) throw new Error(`alg-library: "${name}" is an offered method's label, not a method the app does not offer`);
+  for (const p of phases) if (Object.hasOwn(p, 'endsAt')) throw new Error(`alg-library: ${name}/${p.phase} is not offered, so it has no stop to end at`);
   return Object.freeze({ id: null, method: name, phases: Object.freeze(phases.map((p) => Object.freeze(p))) });
 };
 
 export const METHOD_SETS = Object.freeze([
   offered('quick', [
-    { phase: 'Whole cube', intuitive: 'NONE. The two-phase search (`lib/two-phase.js`) answers; there is nothing to memorise' },
+    { phase: 'Whole cube', endsAt: null, intuitive: 'NONE. The two-phase search (`lib/two-phase.js`) answers; there is nothing to memorise' },
   ]),
   offered('beginner', [
-    { stage: 'cross', phase: 'Cross', held: ['cross-inserts'] },
-    { stage: 'pairs', phase: 'First two layers', held: ['f1l-inserts', 'middle-inserts'] },
-    // The course's last layer (ADR 0009), not the app's: Beginner is rung 0 everywhere on the course's route.
-    { stage: 'oll', phase: 'Top face', held: ['course-edges'] },
-    { stage: 'pll', phase: 'Last layer', held: ['course-corners'] },
+    { stage: 'cross', phase: 'Cross', endsAt: 'cross', held: ['cross-inserts'] },
+    { stage: 'pairs', phase: 'First two layers', endsAt: 'two-layers', held: ['f1l-inserts', 'middle-inserts'] },
+    // The course's last layer (ADR 0009), not the app's: Beginner is rung 0 everywhere on the course's route. Its
+    // first stage puts the top edges home, oriented and placed, so it ends past the top cross.
+    { stage: 'oll', phase: 'Top face', endsAt: 'top-edges', held: ['course-edges'] },
+    { stage: 'pll', phase: 'Last layer', endsAt: 'solved', held: ['course-corners'] },
   ]),
   // **Both CFOP entries still need the beginner inserts.** `pairsFrom` falls back to `placeSeparately` when a
   // pair is BURIED — a piece of it sitting in another slot — and that fallback is the beginner corner and edge
   // inserts. The relation test finds them named on frozen cubes, and fails if a mapped set stops appearing.
   offered('cfop-4lll', [
-    { stage: 'cross', phase: 'Cross', intuitive: 'planned whole: an exact distance table is descended — no algorithm at all' },
-    { stage: 'pairs', phase: 'First two layers', held: ['f2l-triggers', 'f1l-inserts', 'middle-inserts'] },
-    { stage: 'oll', phase: 'Top face', held: ['eoll', 'ocll'] },
-    { stage: 'pll', phase: 'Last layer', held: ['cpll', 'epll'] },
+    { stage: 'cross', phase: 'Cross', endsAt: 'cross', intuitive: 'planned whole: an exact distance table is descended — no algorithm at all' },
+    { stage: 'pairs', phase: 'First two layers', endsAt: 'two-layers', held: ['f2l-triggers', 'f1l-inserts', 'middle-inserts'] },
+    { stage: 'oll', phase: 'Top face', endsAt: 'top-oriented', held: ['eoll', 'ocll'] },
+    { stage: 'pll', phase: 'Last layer', endsAt: 'solved', held: ['cpll', 'epll'] },
   ]),
   offered('cfop', [
-    { stage: 'cross', phase: 'Cross', intuitive: 'planned whole: an exact distance table is descended — no algorithm at all' },
+    { stage: 'cross', phase: 'Cross', endsAt: 'cross', intuitive: 'planned whole: an exact distance table is descended — no algorithm at all' },
     // The human-speed table, not the proved one: what a method costs is what it TEACHES.
-    { stage: 'pairs', phase: 'First two layers', held: ['f2l-human', 'f1l-inserts', 'middle-inserts'] },
-    { stage: 'oll', phase: 'Top face', held: ['oll-human'] },
-    { stage: 'pll', phase: 'Last layer', held: ['pll-human'] },
+    { stage: 'pairs', phase: 'First two layers', endsAt: 'two-layers', held: ['f2l-human', 'f1l-inserts', 'middle-inserts'] },
+    { stage: 'oll', phase: 'Top face', endsAt: 'top-oriented', held: ['oll-human'] },
+    { stage: 'pll', phase: 'Last layer', endsAt: 'solved', held: ['pll-human'] },
   ]),
   offered('roux', [
-    { stage: 'first-block', phase: 'Left block', intuitive: 'block building, found by search: a shipped exact distance table is descended — no table of algorithms' },
-    { stage: 'second-block', phase: 'Right block', intuitive: 'block building, found by search: a shipped exact distance table' },
-    { stage: 'cmll', phase: 'Top corners', held: ['cmll'] },
-    { stage: 'lse', phase: 'Last six edges', intuitive: 'found by search with the middle slice: exact distance tables, no table of algorithms' },
+    { stage: 'first-block', phase: 'Left block', endsAt: 'first-block', intuitive: 'block building, found by search: a shipped exact distance table is descended — no table of algorithms' },
+    { stage: 'second-block', phase: 'Right block', endsAt: 'both-blocks', intuitive: 'block building, found by search: a shipped exact distance table' },
+    { stage: 'cmll', phase: 'Top corners', endsAt: null, held: ['cmll'] },
+    { stage: 'lse', phase: 'Last six edges', endsAt: 'solved', intuitive: 'found by search with the middle slice: exact distance tables, no table of algorithms' },
   ]),
   notOffered('Mehta', [
     { phase: 'First block', intuitive: 'block building: a 1x2x3 block flat on the bottom, at the left' },

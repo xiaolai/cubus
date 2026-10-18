@@ -453,6 +453,7 @@ export const METHOD_ALGORITHMS = Object.freeze([
     "phases": [
       {
         "phase": "Whole cube",
+        "endsAt": null,
         "intuitive": "NONE. The two-phase search (`lib/two-phase.js`) answers; there is nothing to memorise"
       }
     ],
@@ -468,6 +469,7 @@ export const METHOD_ALGORITHMS = Object.freeze([
       {
         "stage": "cross",
         "phase": "Cross",
+        "endsAt": "cross",
         "held": [
           "cross-inserts"
         ]
@@ -475,6 +477,7 @@ export const METHOD_ALGORITHMS = Object.freeze([
       {
         "stage": "pairs",
         "phase": "First two layers",
+        "endsAt": "two-layers",
         "held": [
           "f1l-inserts",
           "middle-inserts"
@@ -483,6 +486,7 @@ export const METHOD_ALGORITHMS = Object.freeze([
       {
         "stage": "oll",
         "phase": "Top face",
+        "endsAt": "top-edges",
         "held": [
           "course-edges"
         ]
@@ -490,6 +494,7 @@ export const METHOD_ALGORITHMS = Object.freeze([
       {
         "stage": "pll",
         "phase": "Last layer",
+        "endsAt": "solved",
         "held": [
           "course-corners"
         ]
@@ -513,11 +518,13 @@ export const METHOD_ALGORITHMS = Object.freeze([
       {
         "stage": "cross",
         "phase": "Cross",
+        "endsAt": "cross",
         "intuitive": "planned whole: an exact distance table is descended — no algorithm at all"
       },
       {
         "stage": "pairs",
         "phase": "First two layers",
+        "endsAt": "two-layers",
         "held": [
           "f2l-triggers",
           "f1l-inserts",
@@ -527,6 +534,7 @@ export const METHOD_ALGORITHMS = Object.freeze([
       {
         "stage": "oll",
         "phase": "Top face",
+        "endsAt": "top-oriented",
         "held": [
           "eoll",
           "ocll"
@@ -535,6 +543,7 @@ export const METHOD_ALGORITHMS = Object.freeze([
       {
         "stage": "pll",
         "phase": "Last layer",
+        "endsAt": "solved",
         "held": [
           "cpll",
           "epll"
@@ -561,11 +570,13 @@ export const METHOD_ALGORITHMS = Object.freeze([
       {
         "stage": "cross",
         "phase": "Cross",
+        "endsAt": "cross",
         "intuitive": "planned whole: an exact distance table is descended — no algorithm at all"
       },
       {
         "stage": "pairs",
         "phase": "First two layers",
+        "endsAt": "two-layers",
         "held": [
           "f2l-human",
           "f1l-inserts",
@@ -575,6 +586,7 @@ export const METHOD_ALGORITHMS = Object.freeze([
       {
         "stage": "oll",
         "phase": "Top face",
+        "endsAt": "top-oriented",
         "held": [
           "oll-human"
         ]
@@ -582,6 +594,7 @@ export const METHOD_ALGORITHMS = Object.freeze([
       {
         "stage": "pll",
         "phase": "Last layer",
+        "endsAt": "solved",
         "held": [
           "pll-human"
         ]
@@ -605,16 +618,19 @@ export const METHOD_ALGORITHMS = Object.freeze([
       {
         "stage": "first-block",
         "phase": "Left block",
+        "endsAt": "first-block",
         "intuitive": "block building, found by search: a shipped exact distance table is descended — no table of algorithms"
       },
       {
         "stage": "second-block",
         "phase": "Right block",
+        "endsAt": "both-blocks",
         "intuitive": "block building, found by search: a shipped exact distance table"
       },
       {
         "stage": "cmll",
         "phase": "Top corners",
+        "endsAt": null,
         "held": [
           "cmll"
         ]
@@ -622,6 +638,7 @@ export const METHOD_ALGORITHMS = Object.freeze([
       {
         "stage": "lse",
         "phase": "Last six edges",
+        "endsAt": "solved",
         "intuitive": "found by search with the middle slice: exact distance tables, no table of algorithms"
       }
     ],

@@ -26,6 +26,7 @@ import { methodOf, prepareMethod } from '../lib/methods/method-of.js';
 import { PAIRS_EXTRAS } from '../lib/methods/pairs.js';
 import { METHODS } from '../lib/methods/registry.js';
 import { toMethodFrame } from '../lib/solving-hold.js';
+import { targetById } from '../lib/stage-targets.js';
 import { ALGORITHM_SETS, METHOD_ALGORITHMS } from './fixtures/algorithm-ledger.mjs';
 import { CONTRACT_CUBES } from './fixtures/solver-cubes.mjs';
 import { LEDGER, MEASURED_SETS } from '../bench/algorithm-ledger.mjs';
@@ -233,6 +234,55 @@ test('each offered method names exactly the sets the ledger maps to it, solving 
     const unexercised = [...mapped].filter((id) => !emitted.has(id));
     assert.deepEqual(unexercised, [],
       `${entry.id}: the ledger maps ${unexercised.join(', ')} to it, and no step on the ${states.length} frozen cubes names any of them`);
+  }
+});
+
+test('every offered phase names a stop of its method or declares none, and a method the app does not offer names none', () => {
+  // `endsAt` is the Restore stop a stage's end reaches — the library pictures a stage by it
+  // (dev-docs/practice-redesign-plan.md §4.3). A stop the method does not stop at would picture a stage by a
+  // chip its own walk never shows; a phase with no `endsAt` at all would be one nobody decided about.
+  for (const m of METHOD_ALGORITHMS.filter((x) => x.id !== null)) {
+    const { stops } = METHODS.find((e) => e.id === m.id);
+    for (const p of m.phases) {
+      assert.ok(Object.hasOwn(p, 'endsAt'), `${m.id}/${p.phase} declares no endsAt — name a stop, or null for none`);
+      assert.ok(p.endsAt === null || stops.includes(p.endsAt),
+        `${m.id}/${p.phase} ends at "${p.endsAt}", which is not one of ${m.id}'s stops (${stops.join(', ') || 'none'})`);
+    }
+  }
+  for (const m of METHOD_ALGORITHMS.filter((x) => x.id === null)) {
+    for (const p of m.phases) assert.ok(!Object.hasOwn(p, 'endsAt'), `${m.method}/${p.phase} is not offered, so it has no stop to end at`);
+  }
+});
+
+test('each offered stage ends at the stop its method\'s solver first reaches there, solving frozen cubes', async () => {
+  // THE RELATION, both ways: the declared `endsAt` is re-derived from the solver, never read off a list. The
+  // stage-end states are the ones the driver checks each stage's contract on — the REPLAY of the stage's steps,
+  // which is the boundary the learner is shown — caught by wrapping `contract`, so the driver is unchanged.
+  // A stage ends at the LAST stop (in the entry's order, which nests) that holds at its end on every cube and did
+  // not already hold at the previous end on every cube; a stage that reaches no new stop ends at none (Roux's
+  // CMLL keeps both blocks and finishes nothing). A sample: the stage contracts are what guarantee it, and these
+  // are the four frozen cubes the relation above runs on.
+  const states = CONTRACT_CUBES.map((facelets) => fromCube(Cube.fromString(toMethodFrame(facelets))));
+  const engines = METHODS.filter((e) => e.engine === 'method');
+  for (const entry of engines) {
+    await prepareMethod(entry);
+    const method = methodOf(entry);
+    // ends[c][i]: cube c after stage i - 1, ends[c][0] the cube as given.
+    const ends = states.map((start) => {
+      const seen = [start];
+      const spy = { ...method, stages: method.stages.map((st) => ({ ...st, contract: (cube) => { seen.push(cube); return st.contract(cube); } })) };
+      solveByMethod(start, spy);
+      assert.equal(seen.length, method.stages.length + 1, `${entry.id}: a stage's end was not seen`);
+      return seen;
+    });
+    const reached = (i) => entry.stops.filter((id) => ends.every((seen) => targetById(id).verify(seen[i])));
+    const derived = method.stages.map((st, i) => {
+      const before = new Set(reached(i));
+      const fresh = reached(i + 1).filter((id) => !before.has(id));
+      return [st.id, fresh.at(-1) ?? null];
+    });
+    const declared = METHOD_ALGORITHMS.find((m) => m.id === entry.id).phases.map((p) => [p.stage, p.endsAt]);
+    assert.deepEqual(declared, derived, `${entry.id}: the stops its stages declare are not the ones its solver reaches`);
   }
 });
 

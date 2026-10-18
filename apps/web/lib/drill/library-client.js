@@ -51,6 +51,25 @@ const isHold = (h) => Array.isArray(h) && h.length === 2 && h.every((f) => Objec
 /** The pictures a library card draws a case as (`casePicture` in lib/screens/practice/library-view.js). */
 const PICTURES = new Set(['net', 'top-orientation', 'top-colours']);
 
+/** The counts a top face's edges can show up: a cube's edges flip in pairs, so never one or three. */
+const EDGES_UP = new Set([0, 2, 4]);
+
+/**
+ * How many of a case's four top edges already show the top colour on top: the top face's edge stickers (facelets
+ * 1, 3, 5, 7 as viewed) against its centre (4). OLL is grouped by it (dev-docs/practice-redesign-plan.md §4.1, owner
+ * decision D5) — derived from the case, never typed. Throws on a count no cube can have.
+ */
+export function topEdgesUp(facelets) {
+  const up = [1, 3, 5, 7].filter((i) => facelets[i] === facelets[4]).length;
+  if (!EDGES_UP.has(up)) throw new Error(`library-client: a case with ${up} top edges up, which no cube can have`);
+  return up;
+}
+
+/** Whether a set's goal turns the WHOLE top face up in one algorithm — full OLL — so its cases differ in how many
+ *  top edges are already up. A set that orients only edges, or only corners once the edges are up, does not. */
+const orientsWholeTop = (goal) => goal?.does === 'orient' && goal.after === undefined
+  && ['corner', 'edge'].every((k) => (goal.kinds ?? []).includes(k));
+
 /**
  * What is wrong with a row's chunks as the page cuts the algorithm with them, or null: each a sourced trigger
  * the catalogue names, over a run of the written turns — counted as the page counts them (`writtenTokens` in
@@ -65,6 +84,21 @@ function chunksProblem(row, triggers) {
     if (!(after <= chunk.from && chunk.from < chunk.to && chunk.to <= count)) return `has a chunk ${k} outside its ${count} turns, or overlapping another`;
     if (!isText(chunk.trigger) || !Object.hasOwn(triggers, chunk.trigger)) return `has a chunk ${k} naming a trigger the catalogue does not hold (${shown(chunk.trigger)})`;
     after = chunk.to;
+  }
+  return null;
+}
+
+/** What is wrong with a set's top-edges-up counts, or null: none (`null`), or a count a cube can have (0, 2 or 4)
+ *  for each of its rows and for nothing else. */
+function edgesUpProblem(id, set) {
+  if (set.edgesUp === null) return null;
+  if (!isRecord(set.edgesUp)) return `set "${id}" counts no top edges up, nor says it has none to count`;
+  const counted = Object.keys(set.edgesUp);
+  if (counted.length !== set.ids.length) return `set "${id}" counts the top edges up on ${counted.length} rows of its ${set.ids.length}`;
+  for (const rowId of counted) {
+    if (!set.ids.includes(rowId)) return `set "${id}" counts the top edges up on ${shown(rowId)}, a row it does not list`;
+    const count = set.edgesUp[rowId];
+    if (!EDGES_UP.has(count)) return `set "${id}" counts ${typeof count === 'number' ? count : shown(count)} top edges up on ${shown(rowId)}`;
   }
   return null;
 }
@@ -92,7 +126,9 @@ export function catalogueProblem(c) {
     if (!isRecord(g) || !isTextOrNull(g.method) || !isTextOrNull(g.label)) return `group ${i} names no method`;
     if (!Array.isArray(g.phases)) return `group ${i} has no list of phases`;
     for (const p of g.phases) {
-      if (!isRecord(p) || !isTextOrNull(p.stage) || !isTextOrNull(p.phase) || !Array.isArray(p.sets)) return `group ${i} has a phase that is not a stage, a name and its sets`;
+      if (!isRecord(p) || !isTextOrNull(p.stage) || !isTextOrNull(p.phase) || !isTextOrNull(p.endsAt) || !Array.isArray(p.sets)) {
+        return `group ${i} has a phase that is not a stage, a name, the stop it ends at and its sets`;
+      }
       for (const id of p.sets) {
         if (!isText(id)) return `group ${i} names a set by something that is not a name (${shown(id)})`;
         if (!Object.hasOwn(c.sets, id)) return `group ${i} names a set "${id}" the catalogue does not hold`;
@@ -111,6 +147,8 @@ export function catalogueProblem(c) {
       if (!Object.hasOwn(c.rows, rowId)) return `set "${id}" names a row "${rowId}" the catalogue does not hold`;
       listed.add(rowId);
     }
+    const counts = edgesUpProblem(id, set);
+    if (counts !== null) return counts;
     if (!grouped.has(id)) return `set "${id}" is in no group, so no screen would show it`;
   }
   for (const [id, row] of Object.entries(c.rows)) {
@@ -168,6 +206,8 @@ export async function catalogueOf(lib) {
       purpose: typeof s.purpose === 'string' ? s.purpose : null,
       // The goal's region, which decides the pieces a case picture marks (lib/drill/case-of.js `movedPieces`).
       region: typeof s.goal?.region === 'string' ? s.goal.region : null,
+      // Each row's top edges up, by row id, where the set orients the whole top; null where that is not a grouping.
+      edgesUp: orientsWholeTop(s.goal) ? Object.fromEntries(list.map((r) => [r.id, topEdgesUp(r.solves.facelets)])) : null,
       ids: list.map((r) => r.id),
     };
   }
@@ -177,11 +217,12 @@ export async function catalogueOf(lib) {
     label: m.method,
     phases: m.phases.filter((p) => (p.held ?? []).length).map((p) => {
       for (const id of p.held) taught.add(id);
-      return { stage: p.stage ?? null, phase: p.phase, sets: [...p.held] };
+      // The Restore stop the stage ends at (`METHOD_SETS`); null where it reaches none, or no method is offered.
+      return { stage: p.stage ?? null, phase: p.phase, endsAt: p.endsAt ?? null, sets: [...p.held] };
     }),
   })).filter((g) => g.phases.length);
   const untaught = rowSets.map((s) => s.id).filter((id) => !taught.has(id));
-  if (untaught.length) groups.push({ method: null, label: null, phases: [{ stage: null, phase: null, sets: untaught }] });
+  if (untaught.length) groups.push({ method: null, label: null, phases: [{ stage: null, phase: null, endsAt: null, sets: untaught }] });
   return {
     groups,
     sets,

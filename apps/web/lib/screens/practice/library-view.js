@@ -30,6 +30,12 @@ export const rowName = (row) => {
   return row.nickname ? t('%1 · %2', name, row.nickname) : name;
 };
 
+/** What a tile is captioned with: the name the SOURCE gives the case — its nickname where it has one ("Sune"), else
+ *  its label — or null where the source names none (422 rows: every hand-written and proved row, most of Mehta's).
+ *  Never the id, which `rowName` falls back to for assistive tech: an id is a key, not a name a learner can say
+ *  (dev-docs/practice-redesign-plan.md §4.2, owner decision D5). */
+export const captionOf = (row) => row.nickname ?? row.label ?? null;
+
 /** What a set is FOR: the ledger's purpose, the set's where the row carries none of its own — a fixed sentence,
  *  so it is said in the active language. */
 export const purposeOf = (row, set) => {

@@ -20,8 +20,8 @@ const drawable = (id, alg) => ({
 });
 /** The smallest catalogue the library screens can draw: one method, one stage, one set, one row. */
 const CATALOGUE = Object.freeze({
-  groups: [{ method: 'cfop-4lll', label: 'CFOP (easy)', phases: [{ stage: 'oll', phase: 'Top face', sets: ['ocll'] }] }],
-  sets: { ocll: { id: 'ocll', name: 'Two-look OLL, second look', kind: 'hand-written', purpose: 'Turns the top corners up.', region: null, ids: ['sune'] } },
+  groups: [{ method: 'cfop-4lll', label: 'CFOP (easy)', phases: [{ stage: 'oll', phase: 'Top face', endsAt: 'top-oriented', sets: ['ocll'] }] }],
+  sets: { ocll: { id: 'ocll', name: 'Two-look OLL, second look', kind: 'hand-written', purpose: 'Turns the top corners up.', region: null, edgesUp: null, ids: ['sune'] } },
   rows: { sune: drawable('sune', "R U R' U R U2 R'") },
   triggers: { 'sexy-move': { name: 'Sexy move' } },
   pending: [],
@@ -294,14 +294,41 @@ test('the real catalogue passes the check, and every way of breaking it is named
     [(c) => { c.rows.sune.set = { toString: null }; }, /row "sune" is filed in an object, which does not list it/],
     [(c) => { c.rows.sune.chunks = [{ from: 0, to: 2, trigger: { toString: null } }]; }, /chunk 0 naming a trigger the catalogue does not hold \(an object\)/],
     [(c) => { c.rows.antisune = drawable('antisune', "R U2 R' U' R U' R'"); }, /row "antisune" is in no set/],
-    [(c) => { c.sets.cpll = { id: 'cpll', name: 'Two-look PLL', kind: 'hand-written', purpose: null, region: null, ids: [] }; }, /set "cpll" is in no group/],
+    [(c) => { c.sets.cpll = { id: 'cpll', name: 'Two-look PLL', kind: 'hand-written', purpose: null, region: null, edgesUp: null, ids: [] }; }, /set "cpll" is in no group/],
     [(c) => { delete c.sets.ocll.region; }, /set "ocll" is not a name, a kind, a purpose, a goal region and its rows/],
     [(c) => { c.sets.ocll.region = 3; }, /set "ocll" is not a name, a kind, a purpose, a goal region and its rows/],
+    // The stop a stage ends at, and OLL's edges-up counts (plan WI-2): what the library pictures and groups by.
+    [(c) => { delete c.groups[0].phases[0].endsAt; }, /group 0 has a phase that is not a stage, a name, the stop it ends at and its sets/],
+    [(c) => { c.groups[0].phases[0].endsAt = 3; }, /group 0 has a phase that is not a stage, a name, the stop it ends at and its sets/],
+    [(c) => { delete c.sets.ocll.edgesUp; }, /set "ocll" counts no top edges up, nor says it has none to count/],
+    [(c) => { c.sets.ocll.edgesUp = [2]; }, /set "ocll" counts no top edges up, nor says it has none to count/],
+    [(c) => { c.sets.ocll.edgesUp = { sune: 3 }; }, /set "ocll" counts 3 top edges up on "sune"/],
+    [(c) => { c.sets.ocll.edgesUp = { sune: '2' }; }, /set "ocll" counts "2" top edges up on "sune"/],
+    [(c) => { c.sets.ocll.edgesUp = {}; }, /set "ocll" counts the top edges up on 0 rows of its 1/],
+    [(c) => { c.sets.ocll.edgesUp = { sune: 2, antisune: 4 }; }, /set "ocll" counts the top edges up on 2 rows of its 1/],
+    [(c) => { c.sets.ocll.edgesUp = { antisune: 4 }; }, /set "ocll" counts the top edges up on "antisune", a row it does not list/],
   ];
   for (const [edit, said, whole] of CASES) {
     const problem = whole === null ? catalogueProblem(null) : broken(edit);
     assert.match(String(problem), said);
   }
+});
+
+test('the catalogue carries each stage\'s stop as the library declares it, and none where no method is offered', async () => {
+  const lib = await import('../lib/alg-library.js');
+  const real = await catalogueOf(lib);
+  for (const g of real.groups) {
+    const m = lib.METHOD_SETS.find((x) => x.id === g.method && x.method === g.label);
+    for (const p of g.phases) {
+      // A group the library does not list as a method (the untaught tables), or a method the app does not offer,
+      // ends nowhere: it has no stops.
+      const want = m?.id ? m.phases.find((x) => x.phase === p.phase).endsAt : null;
+      assert.equal(p.endsAt, want, `${g.label ?? 'untaught'}/${p.phase ?? 'tables'}`);
+    }
+  }
+  // Not a vacuous sweep: the offered methods' stages that hold sets do end somewhere, and CMLL does not.
+  const ends = real.groups.filter((g) => g.method).flatMap((g) => g.phases.map((p) => `${g.method}/${p.stage}:${p.endsAt}`));
+  assert.ok(ends.includes('beginner/pairs:two-layers') && ends.includes('cfop/oll:top-oriented') && ends.includes('roux/cmll:null'), ends.join(' '));
 });
 
 test('a malformed catalogue is not kept: the next visit asks a fresh worker and is answered', async () => {
