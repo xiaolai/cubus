@@ -1077,6 +1077,85 @@ test('mixed practice steps on inside a round without the record — and starts t
   }
 });
 
+test('a mixed-practice order still being read is dropped by a start over or a new attempt — it never changes the algorithm under a rep', async () => {
+  const { page, context, errors } = await openPractice(fixture);
+  try {
+    const catalogue = await page.evaluate(() => window.__p.rows());
+    const set = Object.values(catalogue.sets).find((x) => x.ids.length >= 3 && x.ids.length <= 6);
+    assert.ok(set, 'precondition: a set of three to six algorithms');
+    const rnd = lcg(404);
+    const practised = set.ids[0];
+    await show(page, practised);
+    const chips = await page.evaluate(() => window.__p.chips());
+    const reps = () => reportsPerToken(chips.join(' '), ORIENTATIONS[0], rnd).flat();
+    // One rep, so this algorithm comes LAST in any order the record gives: an order that lands always changes it.
+    assert.equal((await feedRep(page, randomStart(rnd), reps())).at(-1), 1, 'precondition: a rep');
+    await settle(page);
+    for (const how of ['start over', 'a new attempt']) {
+      // The record held, so the order Mixed asks for waits — and meanwhile the child starts over, or starts a rep.
+      await page.evaluate(() => window.__p.hold());
+      await page.click('#practiceMixed');
+      if (how === 'start over') await page.click('#practiceRestart');
+      // Turned from where the cube is — no new arrangement, which would be a start over of its own.
+      else await page.evaluate((qs) => { for (const q of qs) window.__p.move(q); }, reps().slice(0, 2));
+      await page.evaluate(() => window.__p.release());
+      // Held and let go once more: every read asked for before it has answered, and what it answered has been used.
+      await page.evaluate(() => window.__p.hold());
+      await page.evaluate(() => window.__p.release());
+      const got = await page.evaluate(() => ({
+        alg: window.__p.data().alg, status: window.__p.data().status,
+        pressed: document.querySelector('#practiceMixed').getAttribute('aria-pressed'),
+      }));
+      // What must NOT happen: the order lands and replaces the algorithm the child has started over on, or is turning.
+      assert.equal(got.alg, practised, `${how}: the mixed order replaced the algorithm with ${got.alg}`);
+      assert.equal(got.pressed, 'false', `${how}: a mixed choice made before it was taken up after it`);
+      if (how === 'a new attempt') assert.equal(got.status, 'running', 'the attempt did not go on');
+    }
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
+test('the next round\'s order is dropped when a rep has begun while it was read — the step on never lands under a rep', async () => {
+  const { page, context, errors } = await openPractice(fixture);
+  try {
+    const catalogue = await page.evaluate(() => window.__p.rows());
+    const set = Object.values(catalogue.sets).find((x) => x.ids.length >= 3 && x.ids.length <= 6);
+    assert.ok(set, 'precondition: a set of three to six algorithms');
+    const rnd = lcg(405);
+    await show(page, set.ids[0]);
+    await mixedOn(page);
+    const repOf = (chips) => reportsPerToken(chips.join(' '), ORIENTATIONS[0], rnd).flat();
+    // Every algorithm of the round but the last, each moving on as it is done.
+    for (let k = 1; k < set.ids.length; k += 1) {
+      const was = await page.evaluate(() => window.__p.data().alg);
+      const flat = repOf(await page.evaluate(() => window.__p.chips()));
+      assert.equal((await feedRep(page, randomStart(rnd), flat)).at(-1), 1, 'precondition: a rep');
+      await page.waitForFunction((w) => window.__p.data().alg !== w, was, { timeout: LIVENESS_MS });
+    }
+    // The round's last rep with the record held, so the next round's order waits — and a rep of it begins meanwhile.
+    const last = await page.evaluate(() => window.__p.data().alg);
+    const chips = await page.evaluate(() => window.__p.chips());
+    await page.evaluate(() => window.__p.hold());
+    assert.equal((await feedRep(page, randomStart(rnd), repOf(chips))).at(-1), 1, 'precondition: the round\'s last rep');
+    await page.evaluate(() => new Promise((r) => { setTimeout(r, 0); }));   // the step its `done` queued has run
+    // Turned from where the rep left it — no new arrangement, which would be a start over of its own.
+    await page.evaluate((qs) => { for (const q of qs) window.__p.move(q); }, repOf(chips).slice(0, 2));
+    await page.evaluate(() => window.__p.release());
+    // Held and let go once more: every read asked for before it has answered, and what it answered has been used.
+    await page.evaluate(() => window.__p.hold());
+    await page.evaluate(() => window.__p.release());
+    const got = await page.evaluate(() => window.__p.data());
+    // What must NOT happen: the next round's first algorithm put in place of the one the child is turning.
+    assert.equal(got.alg, last, `the next round replaced ${last} with ${got.alg} under a rep`);
+    assert.equal(got.status, 'running', 'the rep did not go on');
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
 // ---- the Settings row (row 29) -----------------------------------------------------------------------------
 
 test('the Settings stepper keeps keyboard focus on a control when a press reaches either bound', async () => {

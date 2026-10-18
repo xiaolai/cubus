@@ -277,6 +277,11 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   let mixed = null;           // { order, at } while practising mixed
   let advanceTicket = null;   // the mixed-practice step on a `done` queued, until it runs or a start over calls it off
   let modeTicket = null;      // mixed practice asked for, until the record has ordered it or Blocked calls it off
+  // What a mixed-practice order still being read was asked in. A start over, another row and the first turn of an
+  // attempt each begin another (`newAttempt`): an order that lands after one of them would change the algorithm under
+  // the child's hands, so it is dropped — the click on Mixed, and the step into the next round, alike.
+  let attempt = 0;
+  const newAttempt = () => { attempt += 1; };
   let watch = { t0: null, timer: null, laps: [] };
   let shownAt = 0;            // the demo's position, from the element's own report
 
@@ -465,7 +470,10 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     if (e.type === 'refused') waitingForReport = true;
     // A start over — the button, Escape, the cube's own gesture — is a request for THIS algorithm again: a step on
     // queued by the rep that just ended is called off, or the page would switch under the rep it had just re-armed.
-    if (e.type === 'restart' || e.type === 'gesture') advanceTicket = null;
+    if (e.type === 'restart' || e.type === 'gesture') {
+      advanceTicket = null;
+      newAttempt();
+    }
     if (e.type === 'done') {
       lastResult = e.result;
       // Mixed practice moves on once this rep is filed — after the engine has finished arming the next one,
@@ -705,6 +713,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
 
   // ---- start over ---------------------------------------------------------------------------------------
   const startOver = () => {
+    newAttempt();
     advanceTicket = null;
     if (live()) {
       if (!engine.restart()) waitingForReport = true;
@@ -747,9 +756,9 @@ function mountPage({ root, page, catalogue, signal, stale }) {
    * One step on in mixed practice. INSIDE A ROUND IT READS NOTHING: the round's order was fixed when the round began, so
    * the step is taken at once, whether or not the rep before it is saved yet. A NEW ROUND IS ORDERED BY THE RECORD, and
    * so waits for the reps just made to be on it: the record answers a read only after every add called before it, so
-   * the read is the wait. Until its answer the step stays queued under its ticket, and a start over, Blocked, another
-   * row, a turn of a rep begun meanwhile or leaving the screen calls it off — the order would land on a page that has
-   * moved on.
+   * the read is the wait. Until its answer the step stays queued under its ticket, and Blocked, a new attempt (a start
+   * over, another row, a rep begun meanwhile — `attempt`) or leaving the screen calls it off — the order would land on
+   * a page that has moved on.
    */
   const advance = () => {
     advanceTicket = null;   // one step on, however it was asked for
@@ -763,8 +772,9 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     advanceTicket = ticket;
     const round = mixed;
     const from = row.id;
+    const asked = attempt;
     orderFor(catalogue.sets[row.set].ids).then((next) => {
-      if (advanceTicket !== ticket || stale() || mixed !== round || row?.id !== from || turnsSinceArm > 0) return;
+      if (advanceTicket !== ticket || stale() || mixed !== round || attempt !== asked) return;
       advanceTicket = null;
       if (!next) return;
       // No algorithm twice in a row across two rounds either.
@@ -777,9 +787,9 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   $('#practiceMixed', root).onclick = () => {
     const ticket = {};
     modeTicket = ticket;
-    const from = row.id;
+    const asked = attempt;
     orderFor(catalogue.sets[row.set].ids).then((order) => {
-      if (modeTicket !== ticket || stale() || row?.id !== from) return;
+      if (modeTicket !== ticket || stale() || attempt !== asked) return;
       modeTicket = null;
       if (!order) return;
       mixed = { order, at: 0 };
@@ -814,6 +824,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     presenceChanged();
     // An idle engine does not arm here: every report that could arm it already did as it arrived (`onSnapshot`) or
     // as the engine was made (`makeEngine`), and a turn on top of no report is a turn on an arrangement nobody knows.
+    if (turnsSinceArm === 0) newAttempt();   // the first turn since the cube was armed: an attempt has begun
     turnsSinceArm += 1;
     engine.report(m);
     modelCount = countOf(m.serial);
@@ -898,6 +909,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
 
   function show(id) {
     if (stale() || !Object.hasOwn(catalogue.rows, id)) return false;
+    newAttempt();
     row = catalogue.rows[id];
     state.practiceAlg = id;
     caseNow = caseOf(row);
