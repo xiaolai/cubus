@@ -525,7 +525,10 @@ function mountPage({ root, page, catalogue, signal, stale }) {
       if (mixed) {
         const ticket = {};
         advanceTicket = ticket;
-        setTimeout(() => { if (advanceTicket === ticket && token === mine && !stale()) advance(); }, 0);
+        const asked = attempt;   // the attempt this rep finished, not whatever one is current when the timer runs
+        setTimeout(() => {
+          if (advanceTicket === ticket && token === mine && !stale() && turnsSinceArm === 0) advance(asked);
+        }, 0);
       }
     }
   };
@@ -803,7 +806,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
    * over, another row, a rep begun meanwhile — `attempt`) or leaving the screen calls it off — the order would land on
    * a page that has moved on.
    */
-  const advance = () => {
+  const advance = (asked = attempt) => {
     advanceTicket = null;   // one step on, however it was asked for
     if (!mixed) return;
     if (mixed.at + 1 < mixed.order.length) {
@@ -815,9 +818,8 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     advanceTicket = ticket;
     const round = mixed;
     const from = row.id;
-    const asked = attempt;
     orderFor(catalogue.sets[row.set].ids).then((next) => {
-      if (advanceTicket !== ticket || stale() || mixed !== round || attempt !== asked) return;
+      if (advanceTicket !== ticket || stale() || mixed !== round || attempt !== asked || turnsSinceArm > 0) return;
       advanceTicket = null;
       if (!next) return;
       // No algorithm twice in a row across two rounds either.
@@ -840,7 +842,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
       if (order[0] !== row.id) show(order[0]);
     });
   };
-  $('#practiceNext', root).onclick = advance;
+  $('#practiceNext', root).onclick = () => advance();
   // The catalogue is here: the controls that waited for it are live (`PAGE_HTML` drew them disabled).
   for (const id of PAGE_CONTROLS) $(`#${id}`, root).disabled = false;
 

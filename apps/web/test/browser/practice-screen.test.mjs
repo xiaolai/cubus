@@ -1194,6 +1194,50 @@ test('a rep whose save fails after its page has gone is said where the child is 
   }
 });
 
+test('a rep begun before the round\'s step on has run drops that step — the next round never lands under it', async () => {
+  const { page, context, errors } = await openPractice(fixture);
+  try {
+    const catalogue = await page.evaluate(() => window.__p.rows());
+    const set = Object.values(catalogue.sets).find((x) => x.ids.length >= 3 && x.ids.length <= 6);
+    assert.ok(set, 'precondition: a set of three to six algorithms');
+    const rnd = lcg(406);
+    await show(page, set.ids[0]);
+    await mixedOn(page);
+    const repOf = (chips) => reportsPerToken(chips.join(' '), ORIENTATIONS[0], rnd).flat();
+    for (let k = 1; k < set.ids.length; k += 1) {
+      const was = await page.evaluate(() => window.__p.data().alg);
+      const flat = repOf(await page.evaluate(() => window.__p.chips()));
+      assert.equal((await feedRep(page, randomStart(rnd), flat)).at(-1), 1, 'precondition: a rep');
+      await page.waitForFunction((w) => window.__p.data().alg !== w, was, { timeout: LIVENESS_MS });
+    }
+    // The round's last rep, and the first turns of a new one in the SAME task: the step its `done` queued has not run.
+    const last = await page.evaluate(() => window.__p.data().alg);
+    const chips = await page.evaluate(() => window.__p.chips());
+    await page.evaluate(() => window.__p.hold());
+    const done = await page.evaluate(({ f, qs, more }) => {
+      const before = window.__p.count('done');
+      window.__p.facelets(f);
+      for (const q of qs) window.__p.move(q);
+      const n = window.__p.count('done') - before;
+      for (const q of more) window.__p.move(q);
+      return n;
+    }, { f: toFacelets(randomStart(rnd)), qs: repOf(chips), more: repOf(chips).slice(0, 2) });
+    assert.equal(done, 1, 'precondition: the round\'s last rep');
+    await page.evaluate(() => new Promise((r) => { setTimeout(r, 0); }));   // the step its `done` queued has run
+    await page.evaluate(() => window.__p.release());
+    // Held and let go once more: every read asked for before it has answered, and what it answered has been used.
+    await page.evaluate(() => window.__p.hold());
+    await page.evaluate(() => window.__p.release());
+    const got = await page.evaluate(() => window.__p.data());
+    // What must NOT happen: the next round's first algorithm put in place of the one the child is turning.
+    assert.equal(got.alg, last, `the next round replaced ${last} with ${got.alg} under a rep`);
+    assert.equal(got.status, 'running', 'the rep did not go on');
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
 // ---- the Settings row (row 29) -----------------------------------------------------------------------------
 
 test('the Settings stepper keeps keyboard focus on a control when a press reaches either bound', async () => {
