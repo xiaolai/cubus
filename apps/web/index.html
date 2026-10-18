@@ -727,21 +727,47 @@
       .case-photo > img { display: block; width: 100%; height: 100%; object-fit: contain; }
       .case-photo > cubus-cube { position: absolute; inset: 0; pointer-events: none; }
       .case-photo:has(> cubus-cube) > img { visibility: hidden; }
-      .practice-sheet { display: flex; flex-direction: column; gap: 14px; }
-      .practice-case { display: flex; flex-direction: column; gap: 8px; }
-      .practice-about { display: flex; flex-direction: column; gap: 8px; line-height: 1.5; }
-      .practice-pic > svg { max-width: 100%; height: auto; }
-      .practice-alg { display: flex; flex-wrap: wrap; gap: 12px; }
-      .alg-chunk { display: flex; flex-direction: column; gap: 4px; }
-      .alg-chunk-name { color: var(--ink-4); }
-      .alg-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-      /* A turn is ONE chip, and a written turn can be four characters ("Rw2'"): the chip grows sideways from its
-         square rather than spill the token over the next one. */
-      .alg-chips > .chip-m { width: auto; min-width: var(--chip); padding: 0 6px; }
-      .practice-time { color: var(--ink-3); }
-      .practice-fingers { font-weight: 600; color: var(--ink-3); }
-      .practice-fingers.on { color: var(--ok-ink); }
-      .practice-figures { display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 8px; margin: 0; }
+      /* The PAGE (dev-docs/practice-redesign-plan.md §5, WI-5) is the cube screen's walking composition, `.cols.walking`, in
+         both orientations: no grid of its own. Its twin is shown in portrait too (the cube screen's net card is behind a
+         tool there, E5): the beads and a small clock, ONE slot for the quiet line or the follow-note in its place, and the
+         modes (E11). The twin keeps its content height — the cube's row is the one that gives (§5.7). */
+      .cols.walking.practice-page .practice-twin { display: flex; flex-direction: column; gap: 8px; min-height: auto; padding: 12px 18px; }
+      .practice-score { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+      .practice-score > .beads { margin-right: auto; }
+      /* "In the fingers" as a picture (§5.3): fills carry the meaning, so fill tokens; the words are for a screen reader. */
+      .beads { display: flex; flex-wrap: wrap; gap: 6px; }
+      .bead { width: 28px; height: 28px; border-radius: var(--r-pill); border: 3px solid var(--track); }
+      .bead.on { background: var(--accent); border-color: var(--accent); }
+      .beads.done .bead { background: var(--ok); border-color: var(--ok); }
+      .practice-clock { display: inline-flex; align-items: center; gap: 2px; color: var(--ink-3); }
+      .practice-clock > .num { font-weight: 600; font-size: var(--fs-body-l); line-height: 1.2; }
+      /* ONE slot two caption lines tall: the quiet line, or the follow-note in its place while something must be done —
+         so the note coming and going moves nothing, the cube included (E11.3). Both wrap rather than cut. */
+      .practice-said { min-height: calc(2 * 1.35 * var(--fs-caption)); }
+      .practice-line { font-size: var(--fs-caption); line-height: 1.35; color: var(--ink-4); overflow-wrap: anywhere; }
+      .practice-said:has(> .follow-note:not([hidden])) > .practice-line { display: none; }
+      .practice-said > .follow-note { padding: 0; border-top: 0; gap: 2px; font-size: var(--fs-caption); line-height: 1.35; }
+      .practice-said #practiceRecordSay { color: var(--err-ink); }
+      /* A turn is ONE chip, and a written turn can be four characters ("Rw2'"): the chip grows sideways from its square
+         rather than spill the token over the next one. In landscape the parts wrap; portrait's strip keeps them on one line. */
+      .practice-page .move-chips { display: flex; flex-wrap: wrap; justify-content: flex-start; gap: 6px; }
+      .practice-page .walk-strip .chip-m { width: auto; min-width: var(--chip); padding: 0 6px; }
+      /* The modes' row (E11.6): under the quiet line in landscape, behind the book in portrait, where the twin's height is
+         the cube's. The screen reads this name and moves the one row; nothing measures a width. */
+      .practice-page { --practice-modes: twin; }
+      @container stage (orientation: portrait) { .practice-page { --practice-modes: book; } }
+      .menu.practice-info .practice-modes { margin: 2px 0 8px; }
+      /* Six controls and the bar on one line down to the SE's 312px (E11.7): the bar gives first. */
+      .practice-page .transport .progress { flex-basis: 16px; }
+      /* The wrong turn (§5.3): outlined, never filled. */
+      .chip-m.off { border: 2px solid var(--err); color: var(--err-ink); }
+      /* The book (§5.1): everything a parent reads, behind the cube card's tool. */
+      .menu.practice-info { max-width: 340px; padding: 8px 12px; font-size: var(--fs-body-s); line-height: 1.5; color: var(--ink-2); white-space: normal; }
+      .practice-info p { margin: 0 0 6px; }
+      .practice-info .practice-pic { display: flex; justify-content: center; padding: 2px 0 6px; }
+      .practice-info .practice-pic > svg { width: 112px; height: auto; }
+      .practice-purpose { color: var(--ink); }
+      .practice-figures { display: grid; grid-template-columns: repeat(auto-fill, minmax(70px, 1fr)); gap: 6px; margin: 6px 0; }
       .practice-figures dd { margin: 0; font-weight: 600; }
       .practice-reps { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
       /* A row of controls that wraps rather than overflows — the theme pills beside their

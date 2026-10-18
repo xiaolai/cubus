@@ -312,6 +312,31 @@ test('the hold line follows the cube: "any way you like" only while a cube is fo
   }
 });
 
+// ---- the transport (dev-docs/practice-redesign-plan.md §5.5, E11.7, E11.8) ------------------------------------
+
+test('the transport: step buttons and the stopwatch only with no cube, Start over always, the position in the bar', async () => {
+  const { page, context, errors } = await openPractice(fixture, { connect: false });
+  try {
+    const rnd = lcg(511);
+    await show(page, 'sune');
+    const drawn = () => page.evaluate(() => Object.fromEntries(['demoPrev', 'demoRepeat', 'demoNext', 'demoAll', 'practiceRestart', 'practiceClock']
+      .map((id) => { const b = document.getElementById(id); const r = b.getBoundingClientRect(); return [id, r.width > 0 && r.height > 0 && b.closest('.transport') !== null]; })));
+    const all = { demoPrev: true, demoRepeat: true, demoNext: true, demoAll: true, practiceRestart: true, practiceClock: true };
+    assert.deepEqual(await drawn(), all, 'with no cube');
+    await page.click('#demoNext');
+    await page.waitForFunction(() => document.querySelector('#practiceProgress').getAttribute('aria-valuetext') === '1 of 7', null, { timeout: LIVENESS_MS });
+    await page.evaluate(() => window.__p.connect());
+    await page.evaluate((f) => window.__p.facelets(f), toFacelets(randomStart(rnd)));
+    await page.waitForFunction(() => window.__p.data().mode === 'cube', null, { timeout: LIVENESS_MS });
+    // MUST NOT: a step button or the person's own stopwatch beside a cube that leads, or Start over gone with them.
+    assert.deepEqual(await drawn(), { ...all, demoPrev: false, demoRepeat: false, demoNext: false, demoAll: false, practiceClock: false }, 'with a cube');
+    assert.equal(await page.evaluate(() => document.querySelector('#practiceRestart').getAttribute('aria-label')), 'Start over');
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
 // ---- the stopwatch and the cube's clock (row 19) -----------------------------------------------------------
 
 test('a stopwatch running when a cube starts being followed stops — it never writes over the cube\'s own time', async () => {
@@ -596,7 +621,14 @@ test('a rep that was not saved stays said as mixed practice moves on — until a
     const rnd = lcg(221);
     await show(page, set.ids[0]);
     await mixedOn(page);
-    const notice = () => page.evaluate(() => { const n = document.querySelector('#practiceRecordSay'); return { hidden: n.hidden, text: n.textContent }; });
+    // E11.4: the notice is ON SCREEN — drawn, inside the stage, and never only behind the book.
+    const notice = () => page.evaluate(() => {
+      const n = document.querySelector('#practiceRecordSay');
+      const r = n.getBoundingClientRect();
+      const st = document.getElementById('stage').getBoundingClientRect();
+      const seen = r.width > 0 && r.height > 0 && !n.closest('#practiceInfo') && r.top >= st.top && r.bottom <= st.bottom;
+      return { hidden: n.hidden, text: n.textContent, seen };
+    });
     /** One clean rep of whatever the page shows, then the page once it has moved on and the rep's save has settled. */
     const repAndMoveOn = async () => {
       const was = await page.evaluate(() => window.__p.data().alg);
@@ -611,6 +643,7 @@ test('a rep that was not saved stays said as mixed practice moves on — until a
     await repAndMoveOn();
     const unsaved = await notice();
     assert.equal(unsaved.hidden, false, 'moving on took away the only sign that a rep was not saved');
+    assert.equal(unsaved.seen, true, 'a rep that was not saved is said only where nobody looks');
     // Named, now the page shows another algorithm: "that rep" would point at nothing on screen.
     assert.match(unsaved.text, /A rep of .+ was not saved/);
     // Saved again: the notice goes, because what it said is no longer true.

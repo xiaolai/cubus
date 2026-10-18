@@ -23,12 +23,14 @@
 
 import { $, escHtml, icon, state } from '../app-state.js';
 import { fingersTarget, save, settings } from '../app-settings.js';
-import { t } from '../i18n.js';
+import { plural, t } from '../i18n.js';
 import { SCREENS, placeMenuUnder, renderScreen, screenAbort, screenGen } from '../screen-shell.js';
 import { createMenu } from '../menu-popover.js';
 import { createMethodRow, methodRowHtml } from '../method-row.js';
+import { createSpeedMenu } from '../speed-menu.js';
 import { oneLineStrip } from '../scroll-strip.js';
 import { hooks } from '../screen-slots.js';
+import { openLibrary } from '../practice-link.js';
 import { newCube } from '../cube-drawing.js';
 import { conn, cubeRefused } from '../live-session.js';
 import { reportedArrangement } from '../cube-reports.js';
@@ -50,7 +52,7 @@ import {
   railHtml, ringSvg, rowName, stageIds, tileLabel, tilesHtml,
 } from './practice/library-view.js';
 import {
-  RECORD_READING, chipsHtml, figuresHtml, lastRepsHtml, orderWords, partsWords, refusalWords, seconds, segmentsOf, writtenTokens,
+  RECORD_READING, beadsHtml, chipsHtml, figuresHtml, lastRepsHtml, orderWords, pageHtml, partsWords, refusalWords, seconds, writtenTokens,
 } from './practice/page-view.js';
 
 /** How often the page asks whether the cube is still there. A disconnect of a cube whose chain was never
@@ -429,50 +431,27 @@ function stillToTurn(identity, from, now) {
   return faces.length ? pick([]) : null;
 }
 
-/** The page's controls that need the catalogue: drawn disabled, live once `mountPage` has it. */
-const PAGE_CONTROLS = Object.freeze(['practiceBlocked', 'practiceMixed', 'practiceNext', 'demoNext', 'demoAll', 'practiceClock', 'practiceRestart']);
+/** The page's controls that need the catalogue: drawn disabled (`pageHtml`), live once `mountPage` has it. */
+const PAGE_CONTROLS = Object.freeze([
+  'practiceBook', 'speedBtn', 'practiceBlocked', 'practiceMixed', 'practiceNext', 'demoPrev', 'demoRepeat', 'demoNext', 'demoAll', 'practiceClock', 'practiceRestart',
+]);
 
-const PAGE_HTML = `<div class="cols practice-page" data-composition="practice">
-  <div class="card primary" style="display:flex;flex-direction:column;align-items:center;position:relative">
-    <div style="flex:1;min-height:0;width:100%"><div class="cube-slot" id="practiceCube" style="height:100%"></div></div>
-  </div>
-  <div class="aside">
-    <div class="card twin practice-case" id="practiceCase"></div>
-    <div class="card sheet practice-sheet">
-      <div class="wrap-row">
-        <button class="pill" id="practiceBack" type="button">${escHtml(t('All algorithms'))}</button>
-        <button class="pill" id="practiceRetry" type="button" hidden>${escHtml(t('Try again'))}</button>
-        <span class="wrap-row" role="group" aria-label="${escHtml(t('How to practise'))}" style="gap:6px">
-          <button class="pill on" id="practiceBlocked" type="button" aria-pressed="true" disabled>${escHtml(t('One at a time'))}</button>
-          <button class="pill" id="practiceMixed" type="button" aria-pressed="false" disabled>${escHtml(t('Mixed'))}</button>
-        </span>
-        <button class="pill" id="practiceNext" type="button" hidden disabled>${escHtml(t('Next algorithm'))}</button>
-      </div>
-      <div class="practice-about" id="practiceAbout"></div>
-      <div class="practice-say" id="practiceSay" role="status" aria-live="polite"></div>
-      <div class="practice-alg" id="practiceAlg"></div>
-      <div class="wrap-row" id="practiceDemo">
-        <button class="pill" id="demoNext" type="button" disabled>${escHtml(t('Play the next part'))}</button>
-        <button class="pill" id="demoAll" type="button" disabled>${escHtml(t('Play it all'))}</button>
-      </div>
-      <div class="wrap-row">
-        <button class="btn accent-outline" id="practiceClock" type="button" aria-keyshortcuts="Space" disabled>${escHtml(t('Start the stopwatch'))}</button>
-        <span class="num practice-time" id="practiceTime" role="status" aria-live="polite">—</span>
-        <button class="btn outline" id="practiceRestart" type="button" aria-keyshortcuts="Escape" title="${escHtml(t('Start over (Esc)'))}" disabled>${escHtml(t('Start over'))}</button>
-      </div>
-      <div class="sub" id="practiceParts" hidden></div>
-      <div id="practiceFigures"></div>
-      <div class="sub" id="practiceRecordSay" role="status" style="color:var(--err-ink)" hidden></div>
-      <div id="practiceReps"></div>
-    </div>
-  </div>
-</div>`;
+/**
+ * What must be done, said where it is seen (dev-docs/practice-redesign-plan.md E11.3, E11.4): the follow-note, in the
+ * quiet line's place while it shows, so the cube keeps its size. `text` null puts it away; the record's own notice
+ * (`#practiceRecordSay`) shares the note and keeps it out while it is said.
+ */
+function sayInNote(root, text) {
+  const msg = $('#followMsg', root);
+  if (msg.textContent !== (text ?? '')) msg.textContent = text ?? '';
+  $('#followNote', root).hidden = !text && $('#practiceRecordSay', root).hidden;
+}
 
 function pageScreen() {
   /** Set by mount: takes a new row in place. Null until the mount has the catalogue. */
   let showRow = null;
   return {
-    html: PAGE_HTML,
+    html: pageHtml(escHtml, icon),
     update() {
       if (!showRow || !state.practiceAlg) return false;
       return showRow(state.practiceAlg);
@@ -483,15 +462,17 @@ function pageScreen() {
       const stale = () => gen !== screenGen || signal?.aborted;
       const page = root.querySelector('.practice-page');
       // The way out is wired before anything is asked for, so it works whatever the answer. Every other control
-      // waits, disabled, for the catalogue it needs (`PAGE_HTML`); `mountPage` lets them go.
-      $('#practiceBack', root).onclick = () => { state.practiceAlg = null; renderScreen(); };
+      // waits, disabled, for the catalogue it needs (`pageHtml`); `mountPage` lets them go.
+      $('#practiceBack', root).onclick = openLibrary;
       let catalogue;
       try {
         catalogue = await library.catalogue();
       } catch (err) {
         if (stale()) return;
         console.error('the algorithm library could not be read', err);
-        $('#practiceSay', root).textContent = t('The algorithms could not be read: %1', err.message);
+        const words = t('The algorithms could not be read: %1', err.message);
+        $('#practiceSay', root).textContent = words;
+        sayInNote(root, words);
         // A failure is not kept by the library client, so asking again is a real retry.
         const retry = $('#practiceRetry', root);
         retry.hidden = false;
@@ -518,9 +499,13 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   const say = $('#practiceSay', root);
   const chipsBox = $('#practiceAlg', root);
   const time = $('#practiceTime', root);
+  const face = $('#practiceClockFace', root);
   const clockBtn = $('#practiceClock', root);
-  const demoRow = $('#practiceDemo', root);
+  const clockLabel = clockBtn.querySelector('.sr-only');
+  const demoButtons = ['#demoPrev', '#demoRepeat', '#demoNext', '#demoAll'].map((id) => $(id, root));
   const recordSay = $('#practiceRecordSay', root);
+  // The move strip is the cube screen's (lib/scroll-strip.js): one line in portrait, the turn you are on at its centre.
+  const strip = oneLineStrip(chipsBox, { signal });
   // The record is in IndexedDB, and every call to it answers later. It owns its connection and its channel, and the
   // screen's signal closes both. `onChange` is another window's committed write, or a change in what the record can
   // reach (`status()`): the notice is said again and the record on screen read again. It is raised when a status
@@ -583,12 +568,23 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   };
 
   // ---- the chips ----------------------------------------------------------------------------------------
+  /** The chips to position `k` (-1: off the algorithm, none), and the transport's progress with them. */
   const markChips = (k) => {
-    for (const chip of chipsBox.querySelectorAll('.chip-m')) {
+    const chips = [...chipsBox.querySelectorAll('.chip-m')];
+    for (const chip of chips) {
       const i = Number(chip.dataset.k);
       chip.classList.toggle('played', i < k);
       chip.classList.toggle('cur', i === k - 1);
     }
+    strip.centre(chips[k - 1] ?? chips[0] ?? null);
+    const n = chips.length;
+    const at = Math.max(0, k);
+    const bar = $('#practiceProgress', root);
+    bar.setAttribute('aria-valuemax', String(n));
+    bar.setAttribute('aria-valuenow', String(at));
+    bar.setAttribute('aria-valuetext', t('%1 of %2', at, n));
+    $('#practiceProg', root).style.width = n ? `${(at / n) * 100}%` : '0%';
+    $('#practiceDone', root).hidden = !n || at < n;
   };
 
   // ---- the record ---------------------------------------------------------------------------------------
@@ -615,6 +611,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     ].filter(Boolean).join(' ');
     recordSay.hidden = !text;
     recordSay.textContent = text;
+    sayInNote(root, $('#followMsg', root).textContent || null);
   };
   sayUnsavedWhileMounted(sayRecord, signal);
 
@@ -626,8 +623,10 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   let reading = null;
   const paintFigures = (reps) => {
     const known = reps === RECORD_READING ? null : reps;
-    $('#practiceFigures', root).innerHTML = figuresHtml(known && statsOf(known), fingersTarget(settings.fingersN), escHtml);
-    $('#practiceReps', root).innerHTML = lastRepsHtml(reps, escHtml);
+    const stats = known && statsOf(known);
+    $('#practiceFingers', root).outerHTML = beadsHtml(stats, fingersTarget(settings.fingersN), escHtml);
+    $('#practiceFigures', info.el).innerHTML = figuresHtml(stats, escHtml);
+    $('#practiceReps', info.el).innerHTML = lastRepsHtml(reps, escHtml);
     page.dataset.record = reps === RECORD_READING ? 'reading' : reps === null ? 'unreadable' : 'read';
   };
   const paintRecord = () => {
@@ -773,10 +772,17 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     return t(catalogue.triggers[chunk?.trigger]?.name ?? chunk?.trigger ?? '—');
   };
   const paintParts = (result) => {
-    const box = $('#practiceParts', root);
+    const box = $('#practiceParts', info.el);
     const text = result ? partsWords(result, partName) : '';
     box.hidden = !text;
     box.textContent = text;
+  };
+  /** The stopwatch's button says what a press does, for a screen reader; the glyph is what is seen. */
+  const clockSays = (words) => { clockLabel.textContent = words; clockBtn.setAttribute('aria-label', words); };
+  /** The clock: `words` for a screen reader (`#practiceTime`), the bare figure on its face. */
+  const showTime = (words, figure) => {
+    time.textContent = words;
+    face.textContent = figure;
   };
   const paintClock = () => {
     const following = live();
@@ -785,24 +791,27 @@ function mountPage({ root, page, catalogue, signal, stale }) {
       // time the cube measured, every 50 ms; the lap it was timing ends with nothing claimed for it.
       stopWatch();
       watch.t0 = null;
-      clockBtn.textContent = t('Start the stopwatch');
+      clockSays(t('Start the stopwatch'));
     }
     clockBtn.hidden = following;
-    demoRow.hidden = following;
+    // The step buttons walk the moves on the screen's cube; with a smart cube the cube in the hand leads (§5.5).
+    for (const b of demoButtons) b.hidden = following;
     paintParts(following ? lastResult : null);
     if (following) {
       if (lastResult) {
         const r = lastResult;
-        time.textContent = r.ms === null
-          ? t('— (%1)', refusalWords(r.refused))
-          : r.tps ? t('%1, first turn to last · %2 turns a second (%3)', seconds(r.ms), r.tps.value.toFixed(1), r.tps.metric)
-            : t('%1, first turn to last', seconds(r.ms));
-      } else time.textContent = '—';
+        if (r.ms === null) showTime(t('— (%1)', refusalWords(r.refused)), '—');
+        else {
+          showTime(r.tps ? t('%1, first turn to last · %2 turns a second (%3)', seconds(r.ms), r.tps.value.toFixed(1), r.tps.metric)
+            : t('%1, first turn to last', seconds(r.ms)), seconds(r.ms));
+        }
+      } else showTime('—', '—');
       return;
     }
     if (watch.t0 === null) {
-      clockBtn.textContent = t('Start the stopwatch');
-      time.textContent = watch.laps.length ? t('%1 on your stopwatch', seconds(watch.laps.at(-1))) : '—';
+      clockSays(t('Start the stopwatch'));
+      const lap = watch.laps.at(-1);
+      showTime(watch.laps.length ? t('%1 on your stopwatch', seconds(lap)) : '—', watch.laps.length ? seconds(lap) : '—');
     }
   };
 
@@ -827,6 +836,10 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     if (!arrowShown) return st.status === STATUS.ARMED ? t('Go: start the algorithm.') : t('Keep going.');
     return st.status === STATUS.ARMED ? t('Go: the arrow shows the first turn.') : t('Keep going: the arrow shows the next turn.');
   };
+
+  /** Whether the page's sentence asks something of the person — said in the follow-note, where it is seen — or only
+   *  narrates (E11.3): no cube, the hold not known yet, and "keep going" are said to a screen reader alone. */
+  const mustAct = (st) => cubeHere() && (waitingForReport || [STATUS.IDLE, STATUS.UNCERTAIN, STATUS.OFF].includes(st.status));
 
   /** Each hold's track — the arrangement at every position of the whole algorithm, from solved — which two holds must
    *  share for one picture to stand for both. Worked out once per hold for the row on the page (`show` empties it). */
@@ -923,7 +936,9 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     if (stale() || !row) return;
     const following = live();
     const st = engine.state;
-    page.dataset.mode = following ? 'cube' : 'demo';
+    const mode = following ? 'cube' : 'demo';
+    // Who drives decides the tempo (lib/speed-menu.js): the cube in the hand, or the chosen speed.
+    if (page.dataset.mode !== mode) { page.dataset.mode = mode; applyTempo(); }
     page.dataset.status = st.status;
     page.dataset.settled = String(st.settled);
     page.dataset.position = String(st.position ?? 0);
@@ -932,7 +947,9 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     const picture = following ? pictureOf(st) : null;
     // The arrow the cube really draws — the picture's, unless Turn arrows is off — and the sentence written from it.
     const arrow = picture && settings.turnArrows ? picture.arrow : 'none';
-    say.textContent = sentence(arrow !== 'none');
+    const words = sentence(arrow !== 'none');
+    if (say.textContent !== words) say.textContent = words;
+    sayInNote(root, mustAct(st) ? words : null);
     paintHold();
     paintClock();
     if (!picture) {
@@ -956,18 +973,32 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     shownAt = 0;
     markChips(0);
   };
-  const ends = () => segmentsOf(writtenTokens(row.alg).length, row.chunks).map((s) => s.to);
-  $('#demoNext', root).onclick = () => {
-    if (live()) return;
-    const n = writtenTokens(row.alg).length;
-    if (shownAt >= n) { drawCase(); return; }
-    cube.playTo(ends().find((k) => k > shownAt) ?? n);
-  };
-  $('#demoAll', root).onclick = () => {
-    if (live()) return;
-    if (shownAt >= writtenTokens(row.alg).length) drawCase();
-    cube.playTo(writtenTokens(row.alg).length);
-  };
+  // The cube screen's transport (§5.2): back a move, that move again, the next move, and on to the end — each
+  // animated by the element, which reports where it stands (`cubus-step`). From the end, a press begins again.
+  const total = () => writtenTokens(row.alg).length;
+  let repeatTo = null;   // where "that move again" goes once its undo has landed
+  cube.addEventListener('cubus-step', (e) => {
+    if (repeatTo === null || (e.detail?.index ?? -1) !== repeatTo - 1) return;
+    const to = repeatTo;
+    repeatTo = null;
+    cube.playTo(to);
+  }, { signal });
+  const demo = (fn) => () => { if (!live()) { repeatTo = null; fn(); } };
+  $('#demoPrev', root).onclick = demo(() => cube.playTo(shownAt - 1));
+  $('#demoRepeat', root).onclick = demo(() => {
+    if (shownAt === 0) return;
+    const back = shownAt;
+    cube.playTo(back - 1);
+    repeatTo = back;
+  });
+  $('#demoNext', root).onclick = demo(() => {
+    if (shownAt >= total()) { drawCase(); return; }
+    cube.playTo(shownAt + 1);
+  });
+  $('#demoAll', root).onclick = demo(() => {
+    if (shownAt >= total()) drawCase();
+    cube.playTo(total());
+  });
 
   // ---- the stopwatch, with no cube: the person's own clock, never a turn's ---------------------------------
   const stopWatch = () => {
@@ -978,8 +1009,8 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     if (live()) return;
     if (watch.t0 === null) {
       watch.t0 = performance.now();
-      clockBtn.textContent = t('Stop the stopwatch');
-      watch.timer = setInterval(() => { time.textContent = seconds(performance.now() - watch.t0); }, 50);
+      clockSays(t('Stop the stopwatch'));
+      watch.timer = setInterval(() => { const now = seconds(performance.now() - watch.t0); showTime(now, now); }, 50);
       return;
     }
     const ms = performance.now() - watch.t0;
@@ -1008,9 +1039,44 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   $('#practiceRestart', root).onclick = startOver;
   document.addEventListener('keydown', (e) => {
     if (e.repeat || e.altKey || e.ctrlKey || e.metaKey) return;
-    if (e.key === 'Escape') { e.preventDefault(); startOver(); return; }
+    // Escape with the book open closes the book (its own listener, made after this one) and starts nothing over.
+    if (e.key === 'Escape') { if (info.isOpen()) return; e.preventDefault(); startOver(); return; }
     if (e.code === 'Space' && !live() && !onControl(e.target)) { e.preventDefault(); toggleWatch(); }
   }, { signal });
+
+  // ---- the book: everything a parent reads, behind one button on the cube card (plan §5.1) ------------------------
+  // Made AFTER the page's keydown listener above: on Escape that listener sees the book still open and leaves it to
+  // the book's own, which closes it and gives the focus back.
+  const info = createMenu({
+    root, button: $('#practiceBook', root), label: t('About this algorithm'), signal, place: placeMenuUnder, dismiss: true,
+  });
+  info.el.id = 'practiceInfo';
+  info.el.classList.add('practice-info');
+  info.el.setAttribute('role', 'dialog');
+  info.el.innerHTML = `<div class="practice-pic" id="practicePic"></div>
+    <p id="practiceName"></p>
+    <div id="practiceAbout"></div>
+    <p class="sub" id="practiceParts" hidden></p>
+    <div id="practiceFigures"></div>
+    <div id="practiceReps"></div>`;
+
+  /**
+   * THE MODES' ROW, ONE ROW IN TWO PLACES (E11.6): under the quiet line in landscape, behind the book in portrait,
+   * where the twin's height is the cube's. Which composition it is, the stylesheet's container query says
+   * (`--practice-modes` on the page) — asked of it, never a width measured here.
+   */
+  const modes = $('.practice-modes', root);
+  const placeModes = () => {
+    const inBook = getComputedStyle(page).getPropertyValue('--practice-modes').trim() === 'book';
+    if (inBook && modes.parentElement !== info.el) $('#practiceName', info.el).after(modes);
+    else if (!inBook && modes.parentElement === info.el) $('.practice-said', root).after(modes);
+    page.dataset.modes = inBook ? 'book' : 'twin';
+  };
+  placeModes();
+  window.addEventListener('resize', placeModes, { signal });
+
+  // ---- the speed: the cube screen's own menu (lib/speed-menu.js); a cube in the hand sets the tempo aside --------
+  const applyTempo = createSpeedMenu({ root, cube, signal, following: () => live(), place: placeMenuUnder });
 
   // ---- one at a time, or mixed --------------------------------------------------------------------------
   const paintMode = () => {
@@ -1076,7 +1142,7 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     });
   };
   $('#practiceNext', root).onclick = () => advance();
-  // The catalogue is here: the controls that waited for it are live (`PAGE_HTML` drew them disabled).
+  // The catalogue is here: the controls that waited for it are live (`pageHtml` drew them disabled).
   for (const id of PAGE_CONTROLS) $(`#${id}`, root).disabled = false;
 
   // ---- the cube's streams -------------------------------------------------------------------------------
@@ -1163,26 +1229,33 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     ? t('The letters are written for a cube held one way; with a smart cube, hold it any way you like.')
     : t('The letters are written for this hold. %1', holdSentence(caseNow.hold)));
   const paintHold = () => {
-    const line = $('#practiceHold', root);
+    const line = $('#practiceHold', info.el);
     const words = holdWords();
     if (line && line.textContent !== words) line.textContent = words;
   };
+  /** The phase a set is taught in, by name — the stage of the quiet line — or null where no method names one. */
+  const stageOf = (setId) => catalogue.groups.flatMap((g) => g.phases).find((p) => p.sets.includes(setId))?.phase ?? null;
   const paintCase = () => {
     const set = catalogue.sets[row.set];
-    // What the algorithm is FOR, then what this one does: the page is about one row, so it says both.
+    const setName = t(set?.name ?? row.set);
+    // ONE quiet line (E4): the set, the stage — left out when the set's name already says it — and the length.
+    const phase = stageOf(row.set);
+    const stage = phase && t(phase);
+    const n = writtenTokens(row.alg).length;
+    $('#practiceLine', root).textContent = [
+      setName, stage && !setName.toLowerCase().includes(stage.toLowerCase()) ? stage : null,
+      plural(n, { one: '%1 move', other: '%1 moves' }),
+    ].filter(Boolean).join(' · ');
+    // Behind the book: its picture, then what the algorithm is FOR, what this one does, and how to hold it.
     const purpose = purposeOf(row, set);
-    const lines = [
-      purpose ? `<div class="practice-purpose">${escHtml(purpose)}</div>` : '',
-      `<div class="sub practice-says">${escHtml(row.says)}</div>`,
-      `<div class="sub" id="practiceHold" style="color:var(--ink-4)">${escHtml(holdWords())}</div>`,
-      orderWords(row.order) ? `<div class="sub" style="color:var(--ink-4)">${escHtml(orderWords(row.order))}</div>` : '',
-    ];
-    // The twin holds the picture and the name only: in portrait it shares the cube's locked row, so words of
-    // any length go to the sheet, the region that scrolls.
-    $('#practiceCase', root).innerHTML = `<div class="eyebrow">${escHtml(t(set?.name ?? row.set))}</div>
-      <div class="practice-pic">${casePicture(row, { palette: settings.palette, scheme: settings.scheme })}</div>
-      <b class="practice-name">${escHtml(rowName(row))}</b>`;
-    $('#practiceAbout', root).innerHTML = lines.join('');
+    $('#practicePic', info.el).innerHTML = casePicture(row, { palette: settings.palette, scheme: settings.scheme });
+    $('#practiceName', info.el).innerHTML = `<b>${escHtml(rowName(row))}</b> · ${escHtml(setName)}${stage ? ` · ${escHtml(stage)}` : ''}`;
+    $('#practiceAbout', info.el).innerHTML = [
+      purpose ? `<p class="practice-purpose">${escHtml(purpose)}</p>` : '',
+      `<p class="sub practice-says">${escHtml(row.says)}</p>`,
+      `<p class="sub" id="practiceHold">${escHtml(holdWords())}</p>`,
+      orderWords(row.order) ? `<p class="sub">${escHtml(orderWords(row.order))}</p>` : '',
+    ].join('');
   };
 
   function show(id) {

@@ -29,6 +29,13 @@ export function openPractice(id) {
   shell.go('practice');
 }
 
+/** Back from a Practice page to its library (dev-docs/practice-redesign-plan.md E11.1): the way in and the way out
+ *  are written here, in one place. */
+export function openLibrary() {
+  state.practiceAlg = null;
+  shell.renderScreen();
+}
+
 /**
  * Show `button` for `step` when the step names an algorithm the ledger holds, and hide it otherwise.
  *

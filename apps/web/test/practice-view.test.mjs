@@ -6,6 +6,7 @@
 // first half here, over EVERY ledger row: the chips are the row's own text, one turn per chip, in order.
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { after, test } from 'node:test';
 
 import Cube from 'cubejs';
@@ -26,11 +27,12 @@ import {
   rowName, stageIds, tileLabel, tilesHtml,
 } from '../lib/screens/practice/library-view.js';
 import { isPhotographed } from '../lib/case-photo.js';
+import { isAbsent } from './dom-assert.mjs';
 import { paletteFor } from '../lib/scheme.js';
 import { STICKER_PALETTES } from '../lib/sticker-palettes.js';
 import {
-  RECORD_READING, REFUSAL_CODES, chipsHtml, figuresHtml, fingersWords, lastRepsHtml, partsWords, refusalWords, segmentsOf,
-  writtenTokens,
+  RECORD_READING, REFUSAL_CODES, beadsHtml, chipsHtml, figuresHtml, fingersWords, lastRepsHtml, pageHtml, partsWords, refusalWords,
+  segmentsOf, writtenTokens,
 } from '../lib/screens/practice/page-view.js';
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -333,9 +335,10 @@ test('a record still being read shows nothing it has not read — no reps, no "N
   const pending = lastRepsHtml(RECORD_READING, esc);
   assert.doesNotMatch(pending, /No reps yet|could not be read|<li/, 'a history no read has given');
   assert.match(pending, /aria-busy="true"/);
-  const figures = [...figuresHtml(null, 7, esc).matchAll(/<dd class="num">([^<]*)<\/dd>/g)].map((m) => m[1]);
+  const figures = [...figuresHtml(null, esc).matchAll(/<dd class="num">([^<]*)<\/dd>/g)].map((m) => m[1]);
   assert.deepEqual(figures, ['—', '—', '—', '—'], 'a figure no read has given');
-  assert.match(figuresHtml(null, 7, esc), /In a row: — of 7/);
+  assert.match(beadsHtml(null, 7, esc), /In a row: — of 7/);
+  assert.equal(parsed(beadsHtml(null, 7, esc)).querySelectorAll('.bead.on').length, 0, 'a bead lit by no read');
 });
 
 test('every tile draws its own row\'s case: one picture, its stickers in the colours they are, net or top face by what the row keeps', () => {
@@ -571,5 +574,118 @@ test('the Settings stepper refuses to go below 3: "fewer" is disabled at 3, and 
     settings.fingersN = before;
     globalThis.document = lent.document;
     globalThis.localStorage = lent.localStorage;
+  }
+});
+
+// ---- the page IS the cube player (dev-docs/practice-redesign-plan.md R3, §5.1–§5.3, E11; WI-5) -------------------
+
+/** The classes the page may use: the cube screen's walking composition (§5.2), the page's own additions (§5.3), the
+ *  pill row E11 keeps for the modes, and the app's shared primitives. Anything else is a practice-only invention. */
+const PAGE_CLASSES = new Set([
+  // §5.2, the cube screen's own
+  'cols', 'walking', 'card', 'primary', 'card-tools', 'cube-slot', 'aux', 'transport', 'tbtn', 'progress', 'done-mark',
+  'aside', 'state-card', 'twin', 'tight', 'solution-card', 'sheet', 'list', 'walk-strip', 'follow-note',
+  // §5.3, new and named
+  'practice-page', 'beads', 'practice-clock', 'practice-line',
+  // E11: the modes' pill row, the twin's two stacked lines, and the score row the beads and clock share
+  'practice-twin', 'practice-said', 'practice-score', 'practice-modes',
+  // shared primitives
+  'pill', 'on', 'btn', 'sm', 'outline', 'num', 'sr-only', 'wrap-row', 'ic',
+]);
+
+test('the page is the cube player: the walking composition\'s classes, the named additions, and nothing else', () => {
+  const box = parsed(pageHtml(esc, ico));
+  const root = box.firstElementChild;
+  assert.ok(root.matches('.cols.walking.practice-page'), 'the page is not the walking composition');
+  const used = new Set([...box.querySelectorAll('[class]')].flatMap((el) => [...el.classList]));
+  assert.deepEqual([...used].filter((c) => !PAGE_CLASSES.has(c)).sort(), [], 'a class the cube player does not have');
+  // The regions, by the cube screen's names.
+  for (const sel of ['.card.primary > .card-tools', '.card.primary .cube-slot#practiceCube', '.card.aux > .transport',
+    '.aside > .state-card.twin', '.aside > .card.tight.solution-card.sheet > .list.walk-strip#practiceAlg']) {
+    assert.ok(root.querySelector(sel), `no ${sel}`);
+  }
+  // E11.1: the way back is the FIRST of the cube card's tools, and named.
+  const tools = [...root.querySelectorAll('.card-tools > button')].map((b) => b.id);
+  assert.deepEqual(tools, ['practiceBack', 'practiceBook', 'speedBtn'], 'the cube card\'s tools');
+  assert.equal(root.querySelector('#practiceBack').getAttribute('aria-label'), 'All algorithms');
+  // The transport (E11.7, E11.8): the four step buttons, Start over as an icon that keeps its name, and the stopwatch
+  // last. No step label — the bar carries the position, in words a screen reader hears.
+  const transport = root.querySelector('.transport');
+  assert.deepEqual([...transport.querySelectorAll('button')].map((b) => b.id),
+    ['demoPrev', 'demoRepeat', 'demoNext', 'demoAll', 'practiceRestart', 'practiceClock']);
+  assert.equal(transport.querySelector('#practiceRestart').getAttribute('aria-label'), 'Start over');
+  assert.equal(transport.querySelector('#practiceRestart').textContent.trim(), '', 'Start over is drawn as words, not its icon');
+  isAbsent(transport.querySelector('.num'), 'a step label in the transport');
+  const bar = transport.querySelector('.progress');
+  assert.equal(bar.getAttribute('role'), 'progressbar');
+  assert.ok(bar.hasAttribute('aria-valuetext'), 'the bar does not say the position');
+  // The beads row holds no control: the same height with a cube and without (E11.8).
+  isAbsent(root.querySelector('.practice-score button'), 'a control in the beads row');
+  // The twin: beads and clock, then the line and the note in ONE slot, then the modes (E11.2).
+  const twin = root.querySelector('.twin');
+  assert.deepEqual([...twin.children].filter((c) => !c.classList.contains('sr-only')).map((c) => c.className),
+    ['practice-score', 'practice-said', 'wrap-row practice-modes']);
+  const said = twin.querySelector('.practice-said');
+  assert.ok(said.querySelector(':scope > .practice-line') && said.querySelector(':scope > .follow-note#followNote'), 'the note does not share the quiet line\'s slot');
+  assert.ok(said.querySelector('#followNote #practiceRecordSay'), 'the record\'s trouble is not in the note (E11.4)');
+  for (const id of ['practiceBlocked', 'practiceMixed', 'practiceNext']) assert.ok(twin.querySelector(`.practice-modes #${id}`), `no ${id} in the modes row`);
+  // E11.3: every other sentence goes to a live region nobody sees.
+  const say = root.querySelector('#practiceSay');
+  assert.ok(say?.classList.contains('sr-only') && say.getAttribute('aria-live') === 'polite', '#practiceSay is not a hidden live region');
+  // MUST NOT: a case picture, or a sentence-holder of the old sheet, outside the book menu.
+  isAbsent(root.querySelector('svg:not(.ic), img, .practice-pic, #practiceAbout, #practiceFigures, #practiceReps'),
+    'the page draws something the book menu holds');
+});
+
+test('no practice-only layout grid: the page\'s composition is the walking one, in both orientations', () => {
+  const sheet = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const gridRules = [...sheet.matchAll(/([^{}]+)\{[^{}]*grid-template[^{}]*\}/g)].map((m) => m[1].trim());
+  assert.deepEqual(gridRules.filter((sel) => /practice-page|practice-twin|practice-said/.test(sel)), [], 'a grid of the page\'s own');
+});
+
+test('the beads: N of them, the clean streak lit up to N, all of them done at N, and the words for a screen reader', () => {
+  for (const [streak, n] of [[0, 3], [2, 7], [7, 7], [12, 7], [5, 30]]) {
+    const stats = statsOf(Array.from({ length: streak }, () => rep(true)));
+    const box = parsed(beadsHtml(stats, n, esc));
+    const beads = box.querySelector('#practiceFingers.beads');
+    assert.ok(beads, 'no beads');
+    assert.equal(beads.querySelectorAll('.bead').length, n, `${streak}/${n}: bead count`);
+    assert.equal(beads.querySelectorAll('.bead.on').length, Math.min(streak, n), `${streak}/${n}: lit`);
+    assert.equal(beads.classList.contains('done'), streak >= n, `${streak}/${n}: done`);
+    assert.equal(beads.dataset.reached, String(streak >= n));
+    assert.equal(beads.querySelector('.sr-only').textContent, fingersWords(stats, n).text);
+  }
+});
+
+test('the strip: one section per part, a trigger\'s name the label over its part, and a row with no trigger one whole run', () => {
+  for (const row of Object.values(catalogue.rows)) {
+    const box = parsed(chipsHtml(row, catalogue.triggers, esc));
+    const secs = [...box.querySelectorAll(':scope > .walk-sec')];
+    const segs = segmentsOf(writtenTokens(row.alg).length, row.chunks);
+    assert.equal(secs.length, segs.length, `${row.id}: sections`);
+    segs.forEach((seg, i) => {
+      const label = secs[i].querySelector(':scope > .walk-sec-l');
+      if (seg.trigger) assert.equal(label?.textContent, catalogue.triggers[seg.trigger].name, `${row.id}: part ${i}'s label`);
+      else isAbsent(label, `${row.id}: a label over a part with no trigger`);
+      assert.equal(secs[i].querySelectorAll(':scope > .move-chips > .chip-m').length, seg.to - seg.from);
+    });
+    assert.equal(secs.length === 1 && !segs[0].trigger, secs[0].classList.contains('whole'), `${row.id}: whole`);
+  }
+});
+
+test('Back to the library goes through practice-link, the one writer of the way in and out', async () => {
+  const { openLibrary } = await import('../lib/practice-link.js');
+  const { state } = await import('../lib/app-state.js');
+  const { shell } = await import('../lib/screen-slots.js');
+  const was = shell.renderScreen;
+  let rendered = 0;
+  shell.renderScreen = () => { rendered += 1; };
+  try {
+    state.practiceAlg = 'sune';
+    openLibrary();
+    assert.equal(state.practiceAlg, null);
+    assert.equal(rendered, 1);
+  } finally {
+    shell.renderScreen = was;
   }
 });

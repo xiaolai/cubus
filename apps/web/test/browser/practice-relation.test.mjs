@@ -443,9 +443,9 @@ test('mixed practice goes through the whole set weakest first, each once a round
   }
 });
 
-// ---- D6: no cube — the demo plays, the stopwatch works, and nothing is judged or timed by the app ----------
+// ---- D6: no cube — the transport walks the moves, the stopwatch works, and nothing is judged or timed by the app ----------
 
-test('with no cube the demo plays part by part and the stopwatch runs — and no verdict or measured time appears', async () => {
+test('with no cube the transport walks the moves and the stopwatch runs — and no verdict or measured time appears', async () => {
   const { page, context, errors } = await openPractice({ connect: false });
   try {
     await show(page, 'sune');
@@ -458,7 +458,8 @@ test('with no cube the demo plays part by part and the stopwatch runs — and no
     await page.click('#practiceClock');
     const got = await page.evaluate(() => ({
       time: window.__p.time(),
-      sheet: document.querySelector('.practice-sheet').textContent,
+      // Everything the page says, the book included: no verdict anywhere, not only in one region.
+      sheet: document.querySelector('.practice-page').textContent + document.querySelector('#practiceInfo').textContent,
       heard: window.__p.heard(),
       fingers: document.querySelector('#practiceFingers').textContent,
       say: window.__p.say(),

@@ -28,13 +28,18 @@ export function segmentsOf(count, chunks = []) {
   return out;
 }
 
-/** The chips: ONE `.chip-m` per turn, grouped by part, a trigger's part under the name its source gives it. */
+/**
+ * The chips: ONE `.chip-m` per turn, in the cube screen's move list (lib/walk-session.js `chipsFor`): a section per
+ * part, a sourced trigger's name the small label over its part, and a row with no trigger one whole run. Wrapped in
+ * landscape, side by side in portrait's one-line strip (index.html, `.walk-sec`).
+ */
 export function chipsHtml(row, triggers, esc) {
   const tokens = writtenTokens(row.alg);
-  return segmentsOf(tokens.length, row.chunks).map((seg) => `<span class="alg-chunk" data-from="${seg.from}" data-to="${seg.to}">
-    ${seg.trigger ? `<span class="alg-chunk-name sub">${esc(t(triggers[seg.trigger]?.name ?? seg.trigger))}</span>` : ''}
-    <span class="alg-chips">${tokens.slice(seg.from, seg.to).map((tok, i) => `<span class="chip-m" data-k="${seg.from + i}">${esc(tok)}</span>`).join('')}</span>
-  </span>`).join('');
+  const segs = segmentsOf(tokens.length, row.chunks);
+  const whole = segs.length === 1 && !segs[0].trigger;
+  return segs.map((seg) => `<div class="walk-sec${whole ? ' whole' : ''}" data-from="${seg.from}" data-to="${seg.to}">${seg.trigger
+    ? `<div class="sub walk-sec-l">${esc(t(triggers[seg.trigger]?.name ?? seg.trigger))}</div>` : ''}<div class="move-chips">${tokens.slice(seg.from, seg.to)
+    .map((tok, i) => `<span class="chip-m" data-k="${seg.from + i}">${esc(tok)}</span>`).join('')}</div></div>`).join('');
 }
 
 /** Why a rep has no time, in words — every refusal `lib/drill/timing.js` can give. Each says what the rep lacked,
@@ -74,18 +79,29 @@ export function fingersWords(stats, n) {
   return { reached: false, text: t('In a row: %1 of %2', stats.streak, n) };
 }
 
-/** The record's figures for one algorithm. `stats` null means they are unknown: the record is still being read,
- *  or could not be read — a dash either way, never a figure from an earlier read or an empty record. */
-export function figuresHtml(stats, n, esc) {
+/**
+ * "In the fingers" as a picture (plan §5.3, E4): `n` beads, the clean streak lit up to `n`, all of them done once it is
+ * reached. `stats` null is a record not read yet, or unreadable: no bead lit, never one an earlier read gave. The
+ * words are for a screen reader; the beads are what is seen.
+ */
+export function beadsHtml(stats, n, esc) {
   const fingers = fingersWords(stats, n);
+  const lit = stats ? Math.min(stats.streak, n) : 0;
+  return `<div class="beads${fingers.reached ? ' done' : ''}" id="practiceFingers" data-reached="${fingers.reached}">${
+    Array.from({ length: n }, (_, i) => `<span class="bead${i < lit ? ' on' : ''}" aria-hidden="true"></span>`).join('')
+  }<span class="sr-only">${esc(fingers.text)}</span></div>`;
+}
+
+/** The record's figures for one algorithm, for the book menu. `stats` null means they are unknown: the record is still being read,
+ *  or could not be read — a dash either way, never a figure from an earlier read or an empty record. */
+export function figuresHtml(stats, esc) {
   const rows = [
     [t('Reps'), figure(stats?.reps)],
     [t('Clean'), figure(stats?.cleanReps)],
     [t('Best'), figure(stats?.best, seconds)],
     [t('Median'), figure(stats?.median, seconds)],
   ];
-  return `<div class="practice-fingers${fingers.reached ? ' on' : ''}" id="practiceFingers" data-reached="${fingers.reached}">${esc(fingers.text)}</div>
-    <dl class="practice-figures">${rows.map(([k, v]) => `<div><dt class="sub">${esc(k)}</dt><dd class="num">${esc(v)}</dd></div>`).join('')}</dl>`;
+  return `<dl class="practice-figures">${rows.map(([k, v]) => `<div><dt class="sub">${esc(k)}</dt><dd class="num">${esc(v)}</dd></div>`).join('')}</dl>`;
 }
 
 /** The newest reps, newest first, each with its time or why it has none. `reps` null means the record could not be
@@ -123,3 +139,74 @@ export function partsWords(result, partName) {
 export const orderWords = (order) => (Number.isInteger(order) && order > 1
   ? plural(order, { one: 'Do it %1 time and the cube comes back to where it started.', other: 'Do it %1 times and the cube comes back to where it started.' })
   : '');
+
+/**
+ * THE PAGE IS THE CUBE PLAYER (dev-docs/practice-redesign-plan.md §5, R3; WI-5): the cube screen's walking composition
+ * (lib/screens/cube.js), its regions and its classes, with only what §5.3 and E11 add. `esc` escapes and `icon(name,
+ * size)` draws the app's icons; both are handed in, so this stays a function of nothing but its arguments.
+ *
+ * - primary: the cube, and the card's tools — the way back to the library FIRST (E11.1), the book, behind which is
+ *   everything a parent reads (the case picture, the sentences, the figures, the last reps: `#practiceInfo`, built by
+ *   the screen as a menu), and the animation speed, as on the cube screen.
+ * - twin: the beads and the clock's face, then ONE slot holding the quiet line or, while something must be done, the
+ *   follow-note in its place (E11.3, E11.4), then the modes (E11.2) — which in portrait the screen moves into the book
+ *   (E11.6).
+ * - sheet: the move strip, nothing else.
+ * - aux: the transport — four step buttons drawn only with no cube, the progress (its position in `aria-valuetext`,
+ *   and no step label, E11.7), Start over always, and last the stopwatch, drawn only with no cube (E11.8).
+ * - `#practiceSay`: every sentence the page says, for a screen reader only (E11.3).
+ *
+ * The book and every control that needs the catalogue are drawn disabled; the screen lets them go once it has it.
+ */
+export function pageHtml(esc, icon) {
+  const tool = (id, label, ico, extra = '') => `<button id="${id}" type="button" title="${esc(t(label))}" aria-label="${esc(t(label))}"${extra}>${ico}</button>`;
+  const step = (id, label, ico, primary = false) => `<button class="tbtn${primary ? ' primary' : ''}" id="${id}" type="button" title="${esc(t(label))}" aria-label="${esc(t(label))}" disabled>${ico}</button>`;
+  return `<div class="cols walking practice-page" data-composition="practice">
+  <div class="card primary" style="display:flex;flex-direction:column;align-items:center;position:relative">
+    <div class="card-tools">
+      ${tool('practiceBack', 'All algorithms', icon('chevron-left', 20))}
+      ${tool('practiceBook', 'About this algorithm', icon('book', 20), ' disabled')}
+      ${tool('speedBtn', 'Animation speed', icon('gauge', 20), ' disabled')}
+    </div>
+    <div style="flex:1;min-height:0;width:100%"><div class="cube-slot" id="practiceCube" style="height:100%"></div></div>
+  </div>
+  <div class="card aux">
+    <div class="transport">
+      ${step('demoPrev', 'Back a move', icon('chevron-left', 20))}
+      ${step('demoRepeat', 'Show that move again', icon('refresh', 18))}
+      ${step('demoNext', 'Next move', icon('chevron-right', 20))}
+      ${step('demoAll', 'Play from here to the end', icon('play', 18), true)}
+      <div class="progress" id="practiceProgress" role="progressbar" aria-label="${esc(t('How far through the algorithm you are'))}" title="${esc(t('How far through the algorithm you are'))}"
+        aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" aria-valuetext="${esc(t('%1 of %2', 0, 0))}"><span id="practiceProg"></span></div>
+      <span class="done-mark" id="practiceDone" hidden title="${esc(t('Done'))}">${icon('check', 14)}</span>
+      <button class="tbtn" id="practiceRestart" type="button" aria-keyshortcuts="Escape" aria-label="${esc(t('Start over'))}" title="${esc(t('Start over (Esc)'))}" disabled>${icon('repeat', 18)}</button>
+      <button class="tbtn" id="practiceClock" type="button" aria-keyshortcuts="Space" disabled>${icon('timer', 18)}<span class="sr-only">${esc(t('Start the stopwatch'))}</span></button>
+    </div>
+  </div>
+  <div class="aside">
+    <div class="card state-card twin practice-twin" id="practiceCase">
+      <div class="practice-score">
+        <div class="beads" id="practiceFingers" data-reached="false"></div>
+        <div class="practice-clock">
+          <span class="num" id="practiceClockFace" aria-hidden="true">—</span>
+          <span class="sr-only" id="practiceTime" role="status" aria-live="polite">—</span>
+        </div>
+      </div>
+      <div class="practice-said">
+        <div class="practice-line" id="practiceLine"></div>
+        <div class="follow-note" id="followNote" hidden><span id="followMsg"></span><span id="practiceRecordSay" hidden></span></div>
+      </div>
+      <div class="wrap-row practice-modes" role="group" aria-label="${esc(t('How to practise'))}">
+        <button class="pill on" id="practiceBlocked" type="button" aria-pressed="true" disabled>${esc(t('One at a time'))}</button>
+        <button class="pill" id="practiceMixed" type="button" aria-pressed="false" disabled>${esc(t('Mixed'))}</button>
+        <button class="pill" id="practiceNext" type="button" hidden disabled>${esc(t('Next algorithm'))}</button>
+        <button class="pill" id="practiceRetry" type="button" hidden>${esc(t('Try again'))}</button>
+      </div>
+      <div class="sr-only" id="practiceSay" role="status" aria-live="polite"></div>
+    </div>
+    <div class="card tight solution-card sheet">
+      <div class="list walk-strip" id="practiceAlg" aria-label="${esc(t('The algorithm'))}"></div>
+    </div>
+  </div>
+</div>`;
+}

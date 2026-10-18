@@ -175,8 +175,8 @@ const portraitFloor = (fixture) => {
 
 /** The larger side of what the cube's canvas painted, in CSS px — opaque pixels' bounding box. Self-contained:
  *  it is evaluated in the page. */
-const paintedSize = () => {
-  const c = document.querySelector('#viewCube canvas');
+const paintedSize = (sel = '#viewCube canvas') => {
+  const c = document.querySelector(sel);
   if (!c?.width) return 0;
   const w = c.width, h = c.height;
   const copy = document.createElement('canvas'); copy.width = w; copy.height = h;
@@ -190,8 +190,8 @@ const paintedSize = () => {
 };
 
 /** Wait until the cube's canvas has painted something in its middle: the renderer draws on its own frame. */
-const cubePainted = (page) => page.waitForFunction(() => {
-  const c = document.querySelector('#viewCube canvas');
+const cubePainted = (page, sel = '#viewCube canvas') => page.waitForFunction((s) => {
+  const c = document.querySelector(s);
   if (!c?.width || !c?.height) return false;
   const copy = document.createElement('canvas');
   copy.width = c.width; copy.height = c.height;
@@ -201,7 +201,7 @@ const cubePainted = (page) => page.waitForFunction(() => {
     .getImageData(x, y, Math.max(1, Math.ceil(c.width * 0.2)), Math.max(1, Math.ceil(c.height * 0.2))).data;
   for (let i = 3; i < px.length; i += 4) if (px[i] > 8) return true;
   return false;
-}, null);
+}, sel);
 
 const near = (a, b, what, tol = 1) => assert.ok(Math.abs(a - b) <= tol, `${what}: ${a} vs ${b} (±${tol})`);
 const label = (f) => `${f.name} (${f.width}×${f.height}, insets ${f.insets.join('/')}${f.touch ? ', touch' : ''})`;
@@ -1600,8 +1600,11 @@ const measureScreen = (page) =>
         .some((el) => el.scrollHeight > el.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(el).overflowY)),
       rootContentOverflows: root.scrollHeight > root.clientHeight + 1,
       // Anything drawn beyond the stage sideways — including inside a scrolling column, where it
-      // would be clipped rather than seen.
-      beyond: [...screen.querySelectorAll('*')].filter(visible).map((el) => ({ what: el.id || el.className || el.tagName, ...rect(el) })).filter((r) => r.left < s.left - 1 || r.right > s.right + 1).slice(0, 4),
+      // would be clipped rather than seen. The one exception is the app's one-line strip WHILE it says it
+      // scrolls (lib/scroll-strip.js: \`more-left\` / \`more-right\`, its edge fade): portrait's move strip holds
+      // the turns past its edges by design (dev-docs/practice-redesign-plan.md §5.7), and the fade is what
+      // says they are there. A strip with no fade, or anything outside one, still counts.
+      beyond: [...screen.querySelectorAll('*')].filter(visible).filter((el) => !el.parentElement?.closest('.more-left, .more-right')).map((el) => ({ what: el.id || el.className || el.tagName, ...rect(el) })).filter((r) => r.left < s.left - 1 || r.right > s.right + 1).slice(0, 4),
       controls: [...screen.querySelectorAll('button:not(.toggle), .chip-m, .pill, input')].filter(visible).map((el) => ({ what: el.id || el.className, ...rect(el) })),
       // A control that is on the page and not hidden, yet has no box: a flex column squashed it.
       // \`visible\` above filters these OUT, which is how a 0px button passed every fixture as
@@ -1689,6 +1692,115 @@ for (const screen of SCREENS) {
 // case chooses its content by what it holds, never the first one listed: the set with the most cards, opened,
 // and the page for the row with the most turns (the most chips, the widest chunk names). Both wait for the
 // library worker's answer (`data-ready`), because before it the screen is one line of text.
+
+/**
+ * PRACTICE'S OWN FLOOR (dev-docs/practice-redesign-plan.md E11.5, E11.9): the painted cube of the page as it stood
+ * before WI-5 rebuilt it on the walking composition, measured at each portrait fixture (pll-Na, WebKit, 2026-10-19).
+ * The page may not draw a smaller cube than it did.
+ */
+const PRACTICE_CUBE_FLOOR = Object.freeze({
+  'desktop portrait window': 202,
+  'iPhone 16': 175,
+  // E11.9 (2026-10-19): with no cube, 150, not 166. The SE with no cube has to fit the strip, the beads, the quiet line
+  // and a transport carrying step buttons, and that fixed cost is about 16 px more than today's cube had beside it.
+  'iPhone SE': { cube: 166, none: 150 },
+  'iPad 11" portrait': 383,
+  'iPad Split View column': 138,
+});
+const practiceCubeFloor = (fixture, withCube) => {
+  if (!Object.hasOwn(PRACTICE_CUBE_FLOOR, fixture.name)) throw new Error(`no practice cube floor for "${fixture.name}"`);
+  const f = PRACTICE_CUBE_FLOOR[fixture.name];
+  return typeof f === 'number' ? f : f[withCube ? 'cube' : 'none'];
+};
+
+/** The Practice page as the cases below read it: its regions, the strip, the beads, the line and the note. */
+const measurePractice = (page) =>
+  page.evaluate(`(() => {
+    const rect = ${rect.toString()};
+    const px = (v) => Number.parseFloat(v);
+    const $ = (s) => document.querySelector(s);
+    const stage = $('#stage');
+    const scs = getComputedStyle(stage);
+    const shown = (el) => Boolean(el) && getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().height > 0;
+    const l = $('#practiceAlg');
+    const ls = getComputedStyle(l);
+    const lb = l.getBoundingClientRect();
+    const all = [...l.querySelectorAll('.chip-m')];
+    const cur = l.querySelector('.chip-m.cur');
+    const mid = (b) => { const r = b.getBoundingClientRect(); return Math.round(r.top + r.height / 2); };
+    const line = $('#practiceLine');
+    const lineH = px(getComputedStyle(line).lineHeight);
+    const say = $('#practiceSay');
+    const sayBox = say.getBoundingClientRect();
+    const modes = $('.practice-modes');
+    return {
+      content: { w: stage.clientWidth - px(scs.paddingLeft) - px(scs.paddingRight), h: stage.clientHeight - px(scs.paddingTop) - px(scs.paddingBottom) },
+      stage: rect(stage), cols: rect($('.practice-page')), primary: rect($('.practice-page > .primary')), aux: rect($('.practice-page > .aux')),
+      state: rect($('.practice-twin')), sheet: rect($('.practice-page .solution-card')), score: rect($('.practice-score')),
+      said: rect($('.practice-said')), line: rect(line), note: rect($('#followNote')),
+      lineShown: shown(line), noteShown: shown($('#followNote')),
+      lineLines: shown(line) ? Math.round(line.getBoundingClientRect().height / lineH) : 0,
+      beads: [...document.querySelectorAll('#practiceFingers .bead')].map((b) => rect(b)),
+      modes: rect(modes), modesIn: modes.closest('#practiceInfo') ? 'book' : modes.closest('.practice-twin') ? 'twin' : 'nowhere',
+      sayDrawn: sayBox.width > 1 || sayBox.height > 1 || getComputedStyle(say).clipPath === 'none',
+      // A case picture anywhere on the screen but the book: an svg that is not an icon, or an image.
+      picturesOutside: [...document.querySelectorAll('.screen.active svg:not(.ic), .screen.active img')].filter((el) => !el.closest('#practiceInfo') && !el.closest('.ic')).length,
+      painted: (${paintedSize.toString()})('#practiceCube canvas'),
+      fits: (${contentFits.toString()})(document.querySelector('.screen.active')),
+      strip: {
+        lines: new Set(all.map(mid)).size, scrollW: l.scrollWidth, clientW: l.clientWidth, moreRight: l.classList.contains('more-right'),
+        gutter: l.offsetHeight - l.clientHeight - px(ls.borderTopWidth) - px(ls.borderBottomWidth), bar: ls.scrollbarWidth,
+        curOff: cur ? (cur.getBoundingClientRect().left + cur.getBoundingClientRect().width / 2) - (lb.left + l.clientLeft + l.clientWidth / 2) : null,
+        curW: cur ? cur.getBoundingClientRect().width : null,
+        otherW: Math.max(...all.filter((c) => c !== cur).map((c) => c.getBoundingClientRect().width)),
+      },
+    };
+  })()`);
+
+/**
+ * THE PICTURE MEASURED IS ONE THE RENDERER DREW AFTER THE CUBE'S LAST CHANGE. "The canvas painted" is no wait once the
+ * cube has a picture: the armed cube was read while the canvas still held the demo's frame, which drew no arrow, and
+ * the "same size" comparison compared two different pictures. And "a frame after now" is no wait either: a frame never
+ * comes once the cube has nothing left to draw — off the algorithm, the picture can be drawn inside the cue window,
+ * before the state the case waits for. So the page records the renderer's frame counter (`renderer.info.render.frame`,
+ * as camera-up.test.mjs counts it) at every change the cube is given — an attribute whose VALUE changed, or a turn
+ * landing (`cubus-step`) — and a measurement waits for a frame drawn after the last of them. Only the attributes that
+ * change the picture: a tempo is drawn by no frame of its own.
+ */
+async function watchPracticeCube(page) {
+  await page.evaluate(() => {
+    const cube = document.querySelector('#practiceCube cubus-cube');
+    const frame = () => cube.renderer.info.render.frame;
+    window.__cubeChangedAt = frame();
+    new MutationObserver((list) => {
+      if (list.some((m) => m.oldValue !== cube.getAttribute(m.attributeName))) window.__cubeChangedAt = frame();
+    }).observe(cube, { attributeFilter: ['facelets', 'alg', 'orientation', 'arrow'], attributeOldValue: true });
+    cube.addEventListener('cubus-step', () => { window.__cubeChangedAt = frame(); });
+  });
+}
+const practiceFrameAfter = (page) => page.waitForFunction(
+  () => document.querySelector('#practiceCube cubus-cube').renderer.info.render.frame > window.__cubeChangedAt);
+
+/** What holds on the page in every state: the plan's WI-5 gates that are not about the composition's shape. */
+function practicePageCommon(m, what) {
+  assert.deepEqual(m.fits, { spills: [], cut: [] }, `${what}: text that cannot be read where it is drawn — see contentFits`);
+  // Big beads, the primary progress (E4).
+  assert.ok(m.beads.length > 0, `${what}: no beads`);
+  for (const b of m.beads) assert.ok(b.width >= 28 - 0.5 && b.height >= 28 - 0.5, `${what}: a bead is ${b.width}×${b.height}`);
+  // The quiet line: at most two lines (E6), never cut (contentFits, above).
+  if (m.lineShown) assert.ok(m.lineLines >= 1 && m.lineLines <= 2, `${what}: the quiet line is ${m.lineLines} lines`);
+  // No two regions overlap: a twin pushed under the transport passed contentFits in the mockup until this was added.
+  const regions = { primary: m.primary, sheet: m.sheet, twin: m.state, aux: m.aux };
+  const names = Object.keys(regions);
+  for (let i = 0; i < names.length; i++) for (let j = i + 1; j < names.length; j++) {
+    assert.ok(!overlaps(regions[names[i]], regions[names[j]]), `${what}: the ${names[i]} and the ${names[j]} overlap`);
+  }
+  // The transport is on screen.
+  assert.ok(m.aux.bottom <= m.stage.bottom + 1, `${what}: the transport is off the stage by ${m.aux.bottom - m.stage.bottom}px`);
+  // MUST NOT: a case picture outside the book, or the screen reader's sentences drawn (E11.3).
+  assert.equal(m.picturesOutside, 0, `${what}: a case picture outside the book`);
+  assert.equal(m.sayDrawn, false, `${what}: the screen reader's live region is drawn`);
+}
 
 /** The floor every screen shares, asked of the active screen's measurement. */
 function practiceFloor(m, fixture, what) {
@@ -1838,6 +1950,12 @@ for (const fixture of FIXTURES) {
       await page.waitForFunction((x) => document.querySelector('.practice-page')?.dataset.ready === '1'
         && document.querySelector('.practice-page')?.dataset.alg === x
         && document.querySelector('.practice-page')?.dataset.record === 'read', id);
+      await cubePainted(page, '#practiceCube canvas');
+      // MID-REP, with no cube: one move along, so a turn is current and the strip has something to centre.
+      await watchPracticeCube(page);
+      await page.click('#demoNext');
+      await page.waitForSelector('#practiceAlg .chip-m.cur');
+      await practiceFrameAfter(page);
       practiceFloor(await measureScreen(page), fixture, `page (${id})`);
       // A card whose content is taller than it and does not scroll draws that content over its neighbour —
       // the case card's sentences did, over the sheet, in the portrait window. contentFits cannot see it: every
@@ -1846,6 +1964,87 @@ for (const fixture of FIXTURES) {
         .filter((c) => c.scrollHeight > c.clientHeight + 1 && !/auto|scroll|hidden/.test(getComputedStyle(c).overflowY))
         .map((c) => `${c.id || c.className}: ${c.scrollHeight}px in ${c.clientHeight}px`));
       assert.deepEqual(overrun, [], `page (${id}): a card's content runs out of it`);
+
+      const m = await measurePractice(page);
+      const portrait = m.content.h > m.content.w;
+      const what = `page (${id}), no cube`;
+      practicePageCommon(m, what);
+      if (portrait) {
+        // THE PORTRAIT WALKING COMPOSITION (§5.7), shared with the cube screen: the cube card the stage's full width at
+        // the top, square where the stage has the height; the moves ONE line directly under it, the turn you are on at
+        // its centre and larger; the transport at the foot, on screen.
+        near(m.primary.width, m.content.w, `${what}: the cube card is the stage's full width`);
+        near(m.primary.top, m.cols.top, `${what}: the cube card is at the top`);
+        if (m.primary.height >= m.primary.width - 1) near(m.primary.height, m.primary.width, `${what}: the cube card is square where the stage has the height`);
+        assert.ok(m.sheet.top >= m.primary.bottom - 1 && m.sheet.top <= m.primary.bottom + 11, `${what}: the moves are not directly under the cube (${m.sheet.top - m.primary.bottom}px)`);
+        assert.equal(m.strip.lines, 1, `${what}: the moves wrap to ${m.strip.lines} lines`);
+        assert.ok(m.strip.moreRight, `${what}: the strip has more on the right and does not fade it`);
+        assert.equal(m.strip.gutter, 0, `${what}: a scrollbar takes ${m.strip.gutter}px under the strip`);
+        assert.equal(m.strip.bar, 'none', `${what}: the strip draws a scrollbar`);
+        assert.ok(m.strip.curOff !== null && Math.abs(m.strip.curOff) <= 2, `${what}: the current turn is ${m.strip.curOff}px from the strip's centre`);
+        assert.ok(m.strip.curW > m.strip.otherW + 1, `${what}: the current turn (${m.strip.curW}px) is not larger than the others (${m.strip.otherW}px)`);
+        // E11.6: the modes' row is behind the book in portrait, never in the twin.
+        assert.equal(m.modesIn, 'book', `${what}: the modes' row is in the ${m.modesIn}, not behind the book`);
+        // MUST NOT: a cube smaller than the page this one replaced (E11.5, E11.9).
+        const floor = practiceCubeFloor(fixture, false);
+        assert.ok(m.painted >= floor, `${what}: the painted cube is ${m.painted.toFixed(1)}px — under its floor of ${floor}px`);
+      } else {
+        // Landscape is the cube screen's: the moves WRAP in the sheet beside the cube, and the modes sit under the line.
+        assert.ok(m.strip.lines > 1, `${what}: the moves are one line — landscape wraps them`);
+        assert.ok(m.strip.scrollW <= m.strip.clientW + 1, `${what}: the moves scroll sideways`);
+        assert.equal(m.modesIn, 'twin', `${what}: the modes' row is not under the quiet line`);
+        assert.ok(m.modes.top >= m.said.bottom - 1, `${what}: the modes' row is not under the quiet line`);
+        assert.ok(m.state.left >= m.primary.right - 1, `${what}: the twin is not beside the cube`);
+      }
+
+      // THE BOOK: the case picture and every sentence, there and nowhere else, readable where it is drawn.
+      await page.click('#practiceBook');
+      const book = await page.evaluate(`(() => {
+        const rect = ${rect.toString()};
+        const menu = document.querySelector('#practiceInfo');
+        return { shown: !menu.hidden && menu.getBoundingClientRect().height > 0, menu: rect(menu), stage: rect(document.getElementById('stage')),
+          pic: menu.querySelectorAll('#practicePic svg, #practicePic img').length, modes: Boolean(menu.querySelector('.practice-modes')),
+          fits: (${contentFits.toString()})(document.querySelector('.screen.active')) };
+      })()`);
+      assert.ok(book.shown, `${what}: the book did not open`);
+      assert.ok(inside(book.menu, book.stage), `${what}: the book ${JSON.stringify(book.menu)} leaves the stage`);
+      assert.equal(book.pic, 1, `${what}: the book does not hold the case picture`);
+      assert.equal(book.modes, portrait, `${what}: the modes' row is ${book.modes ? '' : 'not '}in the book`);
+      assert.deepEqual(book.fits, { spills: [], cut: [] }, `${what}, book open: text that cannot be read where it is drawn`);
+      await page.click('#practiceBook');
+
+      // WITH A SMART CUBE, armed and then off the algorithm: the follow-note takes the quiet line's place, and the cube
+      // keeps its size (WI-5). pll-Na opens with a clockwise turn in every hold, so a counter-clockwise one is off.
+      await page.evaluate(() => {
+        window.cubusFeed.useConnection({ mac: 'AA:BB:CC:DD:EE:01', name: 'Test cube', requestBattery: async () => 80, disconnect: async () => {},
+          mayFollow: () => true, numbersMoves: () => true, evidence: { moveReports: 0 } });
+        window.cubusFeed.facelets('UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB', 1);
+      });
+      await page.waitForFunction(() => document.querySelector('.practice-page').dataset.mode === 'cube'
+        && document.querySelector('.practice-page').dataset.status === 'armed');
+      await practiceFrameAfter(page);
+      const armed = await measurePractice(page);
+      practicePageCommon(armed, `page (${id}), armed`);
+      assert.equal(armed.noteShown, false, 'armed: the follow-note shows with nothing to be done');
+      // E11.8: the beads row is the same height with a cube and without.
+      near(armed.score.height, m.score.height, 'the beads row changes height with a cube');
+      if (portrait) {
+        const floor = practiceCubeFloor(fixture, true);
+        assert.ok(armed.painted >= floor, `armed: the painted cube is ${armed.painted.toFixed(1)}px — under its floor of ${floor}px`);
+      }
+      await page.evaluate(() => window.cubusFeed.move({ notation: "R'", timestamp: 2000, cubeTimestamp: 2000, serial: 2 }));
+      await page.waitForFunction(() => document.querySelector('.practice-page').dataset.status === 'off');
+      await page.waitForFunction(() => !document.querySelector('#followNote').hidden);
+      await practiceFrameAfter(page);
+      const off = await measurePractice(page);
+      practicePageCommon(off, `page (${id}), off the algorithm`);
+      // E11.3: the note is IN the line's place — the line is not drawn, the note stands where it stood.
+      assert.ok(off.noteShown && !off.lineShown, 'off: the follow-note does not replace the quiet line');
+      near(off.note.top, armed.line.top, 'off: the follow-note is not where the quiet line was');
+      // MUST NOT: the cube changing size between armed and off the algorithm.
+      for (const k of ['top', 'left', 'width', 'height']) near(off.primary[k], armed.primary[k], `off the algorithm: the cube card's ${k} moved`);
+      near(off.painted, armed.painted, 'off the algorithm: the painted cube changed size');
+      near(off.score.height, m.score.height, 'off: the beads row changes height');
       assert.deepEqual(errors.map(String), [], 'the page threw');
     } finally {
       await context.close();
