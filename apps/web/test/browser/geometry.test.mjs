@@ -150,6 +150,58 @@ const FIXTURES = [
   { name: 'iPad Split View column', width: 320, height: 1100, insets: [24, 0, 26, 0], touch: true },
 ];
 
+/**
+ * THE PORTRAIT CUBE'S FLOOR, per portrait fixture: the painted cube on the cube screen before the portrait walking
+ * composition put it at the stage's full width (dev-docs/practice-redesign-plan.md §5.7, E1) — no portrait cube may
+ * be drawn smaller than it was. In CSS px, the larger side of what the renderer painted. One table, so a fixture
+ * added to FIXTURES in portrait without a floor fails the lookup rather than passing unmeasured.
+ */
+const PORTRAIT_CUBE_FLOOR = Object.freeze({
+  'desktop portrait window': 256,
+  'iPhone 16': 197,
+  // E10 (owner's call, 2026-10-18): 170, not the 186 it was. The SE is the one fixture where the fixed height of the
+  // 44px touch rows that never leave the walk — the solution heading, the Restore row and the one-line strip — is
+  // more than the room today's cube had beside them: with the method row folded into the Restore row the cube
+  // measured 174. The trade is the whole walk on screen under the cube against about 12px of cube.
+  'iPhone SE': 170,
+  'iPad 11" portrait': 431,
+  'iPad Split View column': 154,
+});
+const portraitFloor = (fixture) => {
+  if (!Object.hasOwn(PORTRAIT_CUBE_FLOOR, fixture.name)) throw new Error(`no portrait cube floor for "${fixture.name}"`);
+  return PORTRAIT_CUBE_FLOOR[fixture.name];
+};
+
+/** The larger side of what the cube's canvas painted, in CSS px — opaque pixels' bounding box. Self-contained:
+ *  it is evaluated in the page. */
+const paintedSize = () => {
+  const c = document.querySelector('#viewCube canvas');
+  if (!c?.width) return 0;
+  const w = c.width, h = c.height;
+  const copy = document.createElement('canvas'); copy.width = w; copy.height = h;
+  const ctx = copy.getContext('2d'); ctx.drawImage(c, 0, 0);
+  const d = ctx.getImageData(0, 0, w, h).data;
+  let x0 = w, x1 = -1, y0 = h, y1 = -1;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    if (d[(y * w + x) * 4 + 3] > 8) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+  }
+  return x1 < 0 ? 0 : Math.max(x1 - x0 + 1, y1 - y0 + 1) / (w / c.getBoundingClientRect().width);
+};
+
+/** Wait until the cube's canvas has painted something in its middle: the renderer draws on its own frame. */
+const cubePainted = (page) => page.waitForFunction(() => {
+  const c = document.querySelector('#viewCube canvas');
+  if (!c?.width || !c?.height) return false;
+  const copy = document.createElement('canvas');
+  copy.width = c.width; copy.height = c.height;
+  copy.getContext('2d').drawImage(c, 0, 0);
+  const x = Math.floor(c.width * 0.4), y = Math.floor(c.height * 0.4);
+  const px = copy.getContext('2d')
+    .getImageData(x, y, Math.max(1, Math.ceil(c.width * 0.2)), Math.max(1, Math.ceil(c.height * 0.2))).data;
+  for (let i = 3; i < px.length; i += 4) if (px[i] > 8) return true;
+  return false;
+}, null);
+
 const near = (a, b, what, tol = 1) => assert.ok(Math.abs(a - b) <= tol, `${what}: ${a} vs ${b} (±${tol})`);
 const label = (f) => `${f.name} (${f.width}×${f.height}, insets ${f.insets.join('/')}${f.touch ? ', touch' : ''})`;
 
@@ -523,6 +575,29 @@ const measureCube = (page) =>
       })(),
       chips, overflow: { cols: cols.scrollWidth - cols.clientWidth, colsV: cols.scrollHeight - cols.clientHeight, doc: document.documentElement.scrollWidth - innerWidth },
       fits: (${contentFits.toString()})(screen),
+      paintedSize: (${paintedSize.toString()})(),
+      stageContent: (() => { const b = stage.getBoundingClientRect(); return { top: b.top + px(scs.paddingTop), bottom: b.bottom - px(scs.paddingBottom) }; })(),
+      // The cube card's tools a person can SEE in this composition (a hidden one has no box).
+      tools: [...document.querySelectorAll('.cols > .primary .card-tools > button')].filter((b) => b.getBoundingClientRect().width > 0).map((b) => b.id),
+      twinShown: getComputedStyle($('.state-card')).display !== 'none',
+      // The move list as a strip: its lines (by chip CENTRES — the current turn is larger), whether it scrolls
+      // sideways and says so, any gutter a scrollbar takes, and the current turn against the strip's centre.
+      strip: (() => {
+        const l = $('#solList');
+        const ls = getComputedStyle(l);
+        const lb = l.getBoundingClientRect();
+        const all = [...l.querySelectorAll('.chip-m')];
+        const cur = l.querySelector('.chip-m.cur');
+        const mid = (b) => { const r = b.getBoundingClientRect(); return Math.round(r.top + r.height / 2); };
+        return {
+          lines: new Set(all.map(mid)).size, box: rect(l),
+          scrollW: l.scrollWidth, clientW: l.clientWidth, moreRight: l.classList.contains('more-right'),
+          gutter: l.offsetHeight - l.clientHeight - px(ls.borderTopWidth) - px(ls.borderBottomWidth), bar: ls.scrollbarWidth,
+          curOff: cur ? (cur.getBoundingClientRect().left + cur.getBoundingClientRect().width / 2) - (lb.left + l.clientLeft + l.clientWidth / 2) : null,
+          curW: cur ? cur.getBoundingClientRect().width : null,
+          otherW: Math.max(...all.filter((c) => c !== cur).map((c) => c.getBoundingClientRect().width)),
+        };
+      })(),
     };
   })()`);
 
@@ -536,8 +611,57 @@ for (const fixture of FIXTURES) {
   test(`cube screen with a stage target: ${label(fixture)}`, async () => {
     const { page, context } = await open(fixture, 'home', { devRandCube: true });
     try {
-      await page.click('#randCube');
+      // Home's developer die lives in the twin, which portrait puts behind a tool (E5); it is a shortcut for a test,
+      // so it is pressed where it is rather than by opening the twin around it.
+      await page.waitForSelector('#randCube', { state: 'attached' });
+      await page.evaluate(() => document.querySelector('#randCube').click());
       await page.waitForSelector('.chip-m');
+      await page.waitForFunction(() => /^\d/.test(document.querySelector('#moveCount')?.textContent ?? ''), null, { timeout: 90_000 });
+      await cubePainted(page);
+      // THE WHOLE-CUBE WALK, the one the method row belongs to. E10: in portrait that row folds into ONE pill at the
+      // head of the Restore row — the method naming its own stops — pinned while the stops scroll after it, naming
+      // the method ON SCREEN, and never a choice of its own. Landscape keeps the row.
+      const whole = await page.evaluate(`(() => {
+        const rect = ${rect.toString()};
+        const $ = (s) => document.querySelector(s);
+        const pin = $('#methodPin');
+        const strip = $('#stageTargetRow');
+        const firstStop = [...strip.querySelectorAll('[data-stage]')].find((el) => !el.hidden);
+        const on = $('#methodRow [data-method][aria-pressed="true"]');
+        const pinned = pin && getComputedStyle(pin).display !== 'none';
+        const before = pinned ? pin.getBoundingClientRect().left : 0;
+        strip.scrollLeft = strip.scrollWidth;
+        const after = pinned ? pin.getBoundingClientRect().left : 0;
+        strip.scrollLeft = 0;
+        strip.dispatchEvent(new Event('scroll'));
+        return {
+          portrait: $('.cols .sheet').getBoundingClientRect().top >= $('.cols > .primary').getBoundingClientRect().bottom - 1,
+          methodRowShown: getComputedStyle($('#methodRow')).display !== 'none',
+          shown: on ? on.textContent : null,
+          pin: pinned ? { box: rect(pin), text: pin.textContent, hasMethod: pin.hasAttribute('data-method'), sticks: Math.abs(after - before) <= 1,
+            firstStop: rect(firstStop), row: rect(strip) } : null,
+          tools: [...document.querySelectorAll('.cols > .primary .card-tools > button')].filter((b) => b.getBoundingClientRect().width > 0).map((b) => b.id),
+          paintedSize: (${paintedSize.toString()})(),
+        };
+      })()`);
+      if (whole.portrait) {
+        assert.equal(whole.methodRowShown, false, 'portrait: the method row is still its own row');
+        assert.ok(whole.pin, 'portrait: no method pill at the head of the Restore row');
+        assert.ok(whole.shown, 'precondition: the method row names the method on screen');
+        assert.equal(whole.pin.text, whole.shown, 'portrait: the pin names a method other than the one on screen');
+        assert.equal(whole.pin.hasMethod, false, 'portrait: the pin is a [data-method] — a press would be taken as a choice');
+        assert.ok(whole.pin.box.right <= whole.pin.firstStop.left + 1, 'portrait: a stop is drawn before the method pill');
+        near(whole.pin.box.top + whole.pin.box.height / 2, whole.pin.row.top + whole.pin.row.height / 2, 'portrait: the pin is not on the Restore row\'s line', 2);
+        assert.ok(whole.pin.sticks, 'portrait: the pin scrolled away with the stops');
+        assert.deepEqual(whole.tools, ['speedBtn', 'twinBtn'], 'portrait, Home: the cube card\'s tools are speed and the twin');
+        // MUST NOT: a portrait cube smaller than its floor, with every row the walk always shows — the heading,
+        // the Restore row with the pin and the one-line strip (E10; the rows that come and go are WI-6's).
+        assert.ok(whole.paintedSize >= portraitFloor(fixture), `portrait: the painted cube on Home is ${whole.paintedSize.toFixed(1)}px — under its floor of ${portraitFloor(fixture)}px`);
+      } else {
+        assert.equal(whole.pin, null, 'landscape: the method pill is drawn — landscape keeps the method row');
+        assert.ok(whole.methodRowShown, 'landscape: the method row is not shown on a whole-cube walk');
+        assert.deepEqual(whole.tools, ['speedBtn'], 'landscape: the cube card shows a tool besides the speed menu');
+      }
       // The longest stage name, so the heading and the line under the picture are at their longest.
       await page.click('[data-stage="corners-home"]');
       await page.waitForFunction(
@@ -545,10 +669,12 @@ for (const fixture of FIXTURES) {
         null,
         { timeout: 90_000 },
       );
+      await cubePainted(page);
       const m = await page.evaluate(`(() => {
         const rect = ${rect.toString()};
         const $ = (s) => document.querySelector(s);
         const card = $('.state-card');
+        const pin = $('#methodPin');
         const cols = $('.cols');
         // Hit-tested at each control's centre WITHOUT scrolling the page or the stage. Scrolling a
         // clipped stage to reach one control moves every other box, and the measurement stops
@@ -596,20 +722,32 @@ for (const fixture of FIXTURES) {
           colsV: cols.scrollHeight - cols.clientHeight, covered,
           solLabel: rect($('#solLabel')), moveCount: rect($('#moveCount')),
           countLine: parseFloat(getComputedStyle($('#moveCount')).lineHeight) || 0,
+          pinShown: Boolean(pin) && getComputedStyle(pin).display !== 'none',
         };
       })()`);
+      const portrait = m.sheet.top >= m.primary.bottom - 1;
+      // A route is no method's walk (lib/walk-session.js, labelWalk): the row is taken away, and its pin with it.
+      assert.equal(m.pinShown, false, 'a walk to a stage shows the method pill — no method walks it');
+      if (portrait) {
+        // The side card's own assertions below are about the card AS SHOWN: open it with its one control.
+        await page.click('#twinBtn');
+        Object.assign(m, await page.evaluate(`(() => {
+          const rect = ${rect.toString()};
+          const card = document.querySelector('.state-card');
+          return { state: rect(card), stateScroll: card.scrollHeight, stateClient: card.clientHeight, aimNet: rect(document.querySelector('#stageAimNet')),
+            stage: rect(document.getElementById('stage')) };
+        })()`));
+        assert.ok(inside(m.state, m.stage), `portrait: the opened twin ${JSON.stringify(m.state)} leaves the stage`);
+      }
       assert.ok(m.aimShown, 'the target picture is shown');
       assert.ok(m.netHidden, 'and it takes the Initial State net\'s place — the card cannot hold both');
       assert.equal(m.heading, 'Aiming at the top corners home', 'the heading says what the picture is');
       assert.ok(m.stateScroll <= m.stateClient + 1,
         `the side card holds ${m.stateScroll}px of content in ${m.stateClient}px — the rest is drawn over its neighbours`);
       assert.ok(inside(m.aimNet, m.state), `the target picture ${JSON.stringify(m.aimNet)} leaves its card ${JSON.stringify(m.state)}`);
-      if (!m.asideBox) {
-        // The grid compositions, where the card has a row of its own and nothing clips it.
-        const portrait = m.sheet.top >= m.primary.bottom - 1;
-        if (portrait) assert.ok(m.state.bottom <= m.primary.bottom + 1, 'portrait: the card is no taller than the cube');
-        else assert.ok(m.state.bottom <= m.sheet.top + 1, 'landscape: the card ends above the sheet');
-      }
+      // The grid composition, where the card has a row of its own and nothing clips it. In portrait it is opened
+      // over the stage, held inside it above.
+      if (!portrait) assert.ok(m.state.bottom <= m.sheet.top + 1, 'landscape: the card ends above the sheet');
       if (!fixture.touch) assert.ok(m.colsV <= 1, `the composition overflows its box vertically by ${m.colsV}px`);
       // Covered controls, where an overlap can only be a layout defect: the grid compositions, in
       // which nothing scrolls and every region has a box of its own. In a finger's portrait the aside
@@ -695,7 +833,9 @@ for (const fixture of FIXTURES) {
   test(`cube screen composition: ${label(fixture)}`, async () => {
     const { page, context } = await open(fixture, 'scramble');
     try {
-      await page.click('#randCube');
+      // The die a person can see: the twin's in landscape, the cube card's in portrait, where the twin is behind its
+      // tool (dev-docs/practice-redesign-plan.md E10).
+      await page.click('#randCube:visible, #randCubeTool:visible');
       await page.waitForSelector('.chip-m');
       // The renderer paints on its OWN animation frame, which nothing synchronises with the
       // chips appearing. Reading the canvas straight after them is a race, and it was being won
@@ -705,18 +845,12 @@ for (const fixture of FIXTURES) {
       // began landing after the measurement. A blank read then failed for a reason that says
       // nothing about the composition. So wait for the paint instead of racing it — a canvas
       // that genuinely never paints still fails, one timeout later.
-      await page.waitForFunction(() => {
-        const c = document.querySelector('#viewCube canvas');
-        if (!c?.width || !c?.height) return false;
-        const copy = document.createElement('canvas');
-        copy.width = c.width; copy.height = c.height;
-        copy.getContext('2d').drawImage(c, 0, 0);
-        const x = Math.floor(c.width * 0.4), y = Math.floor(c.height * 0.4);
-        const px = copy.getContext('2d')
-          .getImageData(x, y, Math.max(1, Math.ceil(c.width * 0.2)), Math.max(1, Math.ceil(c.height * 0.2))).data;
-        for (let i = 3; i < px.length; i += 4) if (px[i] > 8) return true;
-        return false;
-      }, null);
+      await cubePainted(page);
+      // In portrait the strip centres the turn you are on, so there must BE one: one step along.
+      if (fixture.height - fixture.insets[0] - fixture.insets[2] > fixture.width) {
+        await page.click('#nextBtn');
+        await page.waitForSelector('#solList .chip-m.cur');
+      }
       const m = await measureCube(page);
       const portrait = m.content.h > m.content.w;
       assert.ok(m.walking, 'the scramble screen walks a scramble');
@@ -744,35 +878,66 @@ for (const fixture of FIXTURES) {
       // The room the reference gave up is stated for the record; it is 0 on six of the eight.
       const shortAxisRoom = portrait ? m.content.w - m.ref.w : m.content.h - m.ref.h;
       assert.ok(shortAxisRoom >= -1, `the reference box exceeds the stage on its short axis by ${-shortAxisRoom}px`);
-      // primary: --primary-share of the reference box's long side, less half a gap.
-      if (portrait) near(m.primary.height, m.ref.h * m.share - m.rowsGap / 2, 'portrait: primary height');
-      else near(m.primary.width, m.ref.w * m.share - m.colsGap / 2, 'landscape: primary width');
+      // primary: --primary-share of the reference box's long side, less half a gap — in landscape. In portrait the
+      // cube is the hero (dev-docs/practice-redesign-plan.md E1, §5.7): its card is the stage's full width.
+      if (!portrait) near(m.primary.width, m.ref.w * m.share - m.colsGap / 2, 'landscape: primary width');
 
-      // aux directly under primary; twin and sheet where each composition puts them.
-      assert.ok(m.aux.top >= m.primary.bottom - 1, 'aux is under the primary');
-      near(m.aux.left, m.primary.left, 'aux shares the primary\'s left edge');
-      if (portrait && fixture.touch) {
-        // A finger's portrait: the aside is a scrolling column under the aux, the moves first
-        // and the net after them at its natural height.
-        assert.ok(m.asideBox, 'touch portrait: the aside is a box');
-        assert.ok(m.aside.top >= m.aux.bottom - 1, 'portrait: sheet is under the aux');
-        near(m.aside.width, m.cols.width, 'portrait: sheet spans the box');
-        assert.ok(m.solution.top < m.state.top, 'portrait: the solution comes before the net');
-        assert.ok(m.solution.height > 140 + 1 || m.chips.length <= 6, 'portrait: the solution card grew to its chips instead of scrolling inside');
-      } else if (portrait) {
-        // A mouse's portrait: the twin beside the cube, level with it and no taller; the sheet
-        // under both, the full width of the box.
+      if (portrait) {
+        // THE PORTRAIT WALKING COMPOSITION (§5.7), for a mouse and a finger alike: the cube card at the top, the
+        // stage's full width, square wherever the stage has the height; the moves ONE line directly under it; the
+        // twin behind the cube card's tool (E5); the transport at the foot, on screen.
         assert.ok(!m.asideBox, 'portrait: the aside hands its children to the grid');
-        assert.ok(m.state.left >= m.primary.right + m.colsGap - 1, 'portrait: the twin is beside the cube');
-        near(m.state.top, m.primary.top, 'portrait: the twin is level with the cube');
-        // Where the stretch lands in this composition: the top row is the primary and the twin,
-        // and the twin is the one that reaches the box's right edge. A box that widened while its
-        // columns did not would leave paper inside itself, which is the same defect one level in.
-        near(m.state.right, m.cols.right, 'portrait: the twin reaches the box\'s right edge');
-        assert.ok(m.state.bottom <= m.primary.bottom + 1, 'portrait: the twin is no taller than the cube');
-        assert.ok(m.sheet.top >= m.aux.bottom - 1, 'portrait: the sheet is under the aux');
+        near(m.primary.width, m.content.w, 'portrait: the cube card is the stage\'s full width');
+        near(m.primary.top, m.cols.top, 'portrait: the cube card is at the top');
+        // A stage too short for a square card gives the cube's row, never the strip's or the transport's — both
+        // are asserted on screen below whatever the card's shape.
+        if (m.primary.height < m.primary.width - 1) {
+          assert.ok(m.overflow.colsV <= 1, `portrait, short stage: the composition overflows its box by ${m.overflow.colsV}px`);
+        } else {
+          near(m.primary.height, m.primary.width, 'portrait: the cube card is square where the stage has the height');
+        }
+        assert.ok(m.sheet.top >= m.primary.bottom - 1 && m.sheet.top <= m.primary.bottom + 11, `portrait: the moves are not directly under the cube (${m.sheet.top - m.primary.bottom}px below it)`);
         near(m.sheet.width, m.cols.width, 'portrait: the sheet spans the box');
+        assert.equal(m.twinShown, false, 'portrait: the twin is drawn in the composition — it is behind the cube card\'s tool');
+        assert.deepEqual(m.tools, ['speedBtn', 'twinBtn', 'randCubeTool'], 'portrait, Scramble: the cube card\'s tools are speed, the twin and the re-roll');
+        assert.ok(m.aux.top >= m.sheet.bottom - 1, 'portrait: the transport is under the moves');
+        assert.ok(m.aux.bottom <= m.stageContent.bottom + 1, `portrait: the transport is off the stage by ${m.aux.bottom - m.stageContent.bottom}px`);
+        // The strip: one line, scrolling sideways and saying so by its fade, no bar and no gutter for one, the turn
+        // you are on at its centre and larger than the rest.
+        assert.equal(m.strip.lines, 1, `portrait: the moves wrap to ${m.strip.lines} lines`);
+        assert.ok(m.strip.scrollW > m.strip.clientW, 'precondition: the scramble is longer than the strip');
+        assert.ok(m.strip.moreRight, 'portrait: the strip has more on the right and does not fade it');
+        assert.equal(m.strip.gutter, 0, `portrait: a scrollbar takes ${m.strip.gutter}px under the strip`);
+        assert.equal(m.strip.bar, 'none', 'portrait: the strip draws a scrollbar');
+        assert.ok(m.strip.curOff !== null, 'precondition: a turn is current');
+        assert.ok(Math.abs(m.strip.curOff) <= 2, `portrait: the current turn is ${m.strip.curOff}px from the strip's centre`);
+        assert.ok(m.strip.curW > m.strip.otherW + 1, `portrait: the current turn (${m.strip.curW}px) is not larger than the others (${m.strip.otherW}px)`);
+        for (const c of m.chips) assert.ok(c.top >= m.strip.box.top - 1 && c.bottom <= m.strip.box.bottom + 1, `a chip leaves the strip: ${JSON.stringify(c)}`);
+        // MUST NOT: a portrait cube smaller than the one this composition replaced.
+        assert.ok(m.paintedSize >= portraitFloor(fixture), `portrait: the painted cube is ${m.paintedSize.toFixed(1)}px — under its floor of ${portraitFloor(fixture)}px`);
+
+        // The twin, reached by ONE control, drawn whole on the stage, and put away by the same control.
+        await page.click('#twinBtn');
+        const open = await page.evaluate(`(() => {
+          const rect = ${rect.toString()};
+          const card = document.querySelector('.state-card');
+          return { shown: getComputedStyle(card).display !== 'none', card: rect(card), net: rect(document.querySelector('#viewNet')),
+            stage: rect(document.getElementById('stage')), scroll: card.scrollHeight, client: card.clientHeight,
+            expanded: document.querySelector('#twinBtn').getAttribute('aria-expanded'),
+            fits: (${contentFits.toString()})(document.querySelector('.screen.active')) };
+        })()`);
+        assert.ok(open.shown, 'portrait: the twin\'s tool did not show the twin');
+        assert.equal(open.expanded, 'true', 'portrait: the twin\'s tool does not say the twin is open');
+        assert.ok(inside(open.card, open.stage), `portrait: the opened twin ${JSON.stringify(open.card)} leaves the stage ${JSON.stringify(open.stage)}`);
+        assert.ok(inside(open.net, open.card), 'portrait: the net leaves the opened twin');
+        near(open.net.width, Math.min(320, open.card.width - 36), 'portrait: the net fills the opened twin', 2);
+        assert.deepEqual(open.fits, { spills: [], cut: [] }, 'portrait, twin open: text that cannot be read where it is drawn');
+        await page.click('#twinBtn');
+        assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('.state-card')).display), 'none', 'portrait: the twin\'s tool did not put the twin away');
       } else {
+        // aux directly under primary.
+        assert.ok(m.aux.top >= m.primary.bottom - 1, 'aux is under the primary');
+        near(m.aux.left, m.primary.left, 'aux shares the primary\'s left edge');
         // Landscape: the twin tops the column beside the primary, the sheet fills the rest of it.
         assert.ok(!m.asideBox, 'landscape: the aside hands its children to the grid');
         assert.ok(m.state.left >= m.primary.right + m.colsGap - 1, 'landscape: the twin is beside the primary');
@@ -780,11 +945,16 @@ for (const fixture of FIXTURES) {
         assert.ok(m.sheet.top >= m.state.bottom - 1, 'landscape: the sheet is under the twin');
         near(m.sheet.right, m.cols.right, 'landscape: sheet reaches the box\'s right edge');
         near(m.sheet.bottom, m.cols.bottom, 'landscape: sheet reaches the box\'s bottom edge');
+        // The net is whole, inside its card, and as wide as the card lets it be (320px, or the
+        // card's content width) — a flex item with auto margins once shrank it to 49px.
+        assert.ok(inside(m.net, m.state), `the net ${JSON.stringify(m.net)} leaves its card ${JSON.stringify(m.state)}`);
+        near(m.net.width, Math.min(320, m.state.width - 36), 'the net fills its card', 2);
+        // Landscape keeps what it had (E10): the speed menu is the cube card's one tool, and the moves still WRAP —
+        // the one-line strip is portrait's, and here it would hide most of the walk to save height nobody needs.
+        assert.deepEqual(m.tools, ['speedBtn'], 'landscape: the cube card shows a tool besides the speed menu');
+        assert.ok(m.strip.lines > 1, `landscape: the moves are ${m.strip.lines} line — they no longer wrap`);
+        assert.ok(m.strip.scrollW <= m.strip.clientW + 1, 'landscape: the moves scroll sideways');
       }
-      // The net is whole, inside its card, and as wide as the card lets it be (320px, or the
-      // card's content width) — a flex item with auto margins once shrank it to 49px.
-      assert.ok(inside(m.net, m.state), `the net ${JSON.stringify(m.net)} leaves its card ${JSON.stringify(m.state)}`);
-      near(m.net.width, Math.min(320, m.state.width - 36), 'the net fills its card', 2);
       // With a mouse the whole screen is on screen: every move, the net, the transport — no
       // scroll anywhere, at the reference minimums and above. (A phone's sheet may scroll: its
       // twin sits under the moves, and its extra height is the sheet's.)
@@ -808,8 +978,9 @@ for (const fixture of FIXTURES) {
       const mid = (r) => r.top + r.height / 2;
       if (fixture.width >= 375) near(mid(m.transport.first), mid(m.transport.last), 'transport wrapped', 2);
 
-      // Every chip on the sheet, horizontally; nothing wider than the stage.
-      for (const c of m.chips) assert.ok(c.left >= m.sheet.left - 1 && c.right <= m.sheet.right + 1, `a chip leaves the sheet: ${JSON.stringify(c)}`);
+      // Every chip on the sheet, horizontally — in landscape, where the moves wrap; portrait's strip scrolls them
+      // past its edges by design and holds them to its own box above. Nothing wider than the stage.
+      if (!portrait) for (const c of m.chips) assert.ok(c.left >= m.sheet.left - 1 && c.right <= m.sheet.right + 1, `a chip leaves the sheet: ${JSON.stringify(c)}`);
       assert.ok(m.overflow.cols <= 1, `the composition overflows its box by ${m.overflow.cols}px`);
       assert.deepEqual(m.fits, { spills: [], cut: [] }, 'text that cannot be read where it is drawn — see contentFits');
       assert.ok(m.overflow.doc <= 0, `the page overflows the viewport by ${m.overflow.doc}px`);
@@ -881,7 +1052,9 @@ for (const fixture of FIXTURES) {
   test(`cube screen with the method row and its note: ${label(fixture)}`, async () => {
     const { page, context } = await open(fixture, 'home', { devRandCube: true, solveMethod: 'beginner' });
     try {
-      await page.click('#randCube');
+      // Home's developer die is in the twin, behind a tool in portrait (E5): pressed where it is.
+      await page.waitForSelector('#randCube', { state: 'attached' });
+      await page.evaluate(() => document.querySelector('#randCube').click());
       await page.waitForFunction(() => document.querySelectorAll('#solList .move-chips').length > 1, null, { timeout: 90_000 });
       // The fallback's sentence, as the walk session words it, shown where the session shows it.
       await page.evaluate(() => {
@@ -904,11 +1077,32 @@ for (const fixture of FIXTURES) {
           const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
           pills.push({ id: 'more', width: b.width, height: b.height, pressed: null, covered: Boolean(hit && hit !== more && !more.contains(hit)) });
         }
-        return { visible: !row.hidden && row.getBoundingClientRect().height > 0, pills, fits: (${contentFits.toString()})(screen) };
+        // In portrait the row folds into the pin at the head of the Restore row (E10): its pills are not drawn, and
+        // the pin is the one way to the menu.
+        const pin = document.querySelector('#methodPin');
+        const pinned = Boolean(pin) && getComputedStyle(pin).display !== 'none';
+        const pinBox = pinned ? pin.getBoundingClientRect() : null;
+        const pinHit = pinned ? document.elementFromPoint(pinBox.left + pinBox.width / 2, pinBox.top + pinBox.height / 2) : null;
+        const note = document.querySelector('#methodNote');
+        return { visible: !row.hidden && row.getBoundingClientRect().height > 0,
+          pills: pills.filter((p) => p.width > 0),
+          pin: pinned ? { text: pin.textContent, width: pinBox.width, height: pinBox.height, covered: Boolean(pinHit && pinHit !== pin && !pin.contains(pinHit)) } : null,
+          noteShown: note.getBoundingClientRect().height > 0 && getComputedStyle(note).display !== 'none',
+          fits: (${contentFits.toString()})(screen) };
       })()`);
-      assert.ok(m.visible, 'the method row is not on screen over a whole-cube walk');
-      // FOUR methods since CFOP (ADR 0011 Phase 7), so the row is the chosen method's pill and a menu.
-      assert.deepEqual(m.pills.map((p) => [p.id, p.pressed]), [['beginner', 'true'], ['more', null]]);
+      // THE NOTE IS SAID IN BOTH COMPOSITIONS (AGENTS.md §3: a method that could not be worked out shows the Quick
+      // walk AND SAYS SO). Folding the row in portrait must not fold its sentence away.
+      assert.ok(m.noteShown, 'the method note is not on screen — a fallback would be shown without being said');
+      if (m.pin) {
+        // Portrait: the pin names the method, the row's own pills are gone, and the note keeps a line of its own.
+        assert.deepEqual(m.pills, [], 'portrait: the method row\'s pills are drawn beside the pin');
+        assert.equal(m.pin.text, 'Beginner', 'portrait: the pin does not name the method on screen');
+        m.pills.push({ id: 'pin', width: m.pin.width, height: m.pin.height, pressed: null, covered: m.pin.covered });
+      } else {
+        assert.ok(m.visible, 'the method row is not on screen over a whole-cube walk');
+        // FOUR methods since CFOP (ADR 0011 Phase 7), so the row is the chosen method's pill and a menu.
+        assert.deepEqual(m.pills.map((p) => [p.id, p.pressed]), [['beginner', 'true'], ['more', null]]);
+      }
       assert.deepEqual(m.fits, { spills: [], cut: [] }, 'with the method row and its note: text that cannot be read where it is drawn — see contentFits');
       for (const p of m.pills) {
         // A finger's floor is 44px (the stylesheet's coarse-pointer rule for every .pill); with a mouse a
@@ -917,8 +1111,8 @@ for (const fixture of FIXTURES) {
         else assert.equal(p.covered, false, `the ${p.id} pill is drawn under something else`);
       }
       // THE MENU, OPEN: every method by level, nothing cut — the measurement the ADR's refute pass left
-      // unchecked ("the menu's geometry").
-      await page.click('#moreMethodsBtn');
+      // unchecked ("the menu's geometry"). Opened from what this composition draws: the row's button, or the pin.
+      await page.click(m.pin ? '#methodPin' : '#moreMethodsBtn');
       const menu = await page.evaluate(`(() => {
         const el = document.querySelector('.method-menu');
         const r = el.getBoundingClientRect();

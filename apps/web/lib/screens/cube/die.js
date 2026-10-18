@@ -67,15 +67,19 @@ export function createDie(screen, app) {
    *  its cube afterwards replaces the newer one on a screen already showing it (found by
    *  audit, 2026-09-05). */
   let rollGen = 0;
-  const die = $('#randCube', root);
-  if (die) die.onclick = async () => {
-    if (!solverReady() || die.disabled) return;
+  // ONE PRESS, ONE OR TWO BUTTONS. The twin's heading holds the die; on Scramble the cube card's tools hold a
+  // second one, which is the die a portrait screen shows while the twin is behind its tool
+  // (dev-docs/practice-redesign-plan.md E10). Both are held while a roll is out, or the other starts a second.
+  const dice = [$('#randCube', root), $('#randCubeTool', root)].filter(Boolean);
+  const hold = (on) => { for (const d of dice) d.disabled = on; };
+  const press = async () => {
+    if (!solverReady() || dice.some((d) => d.disabled)) return;
     const mine = ++rollGen;
     // Held from BEFORE the first await, not from after the roll: the press used to stay live
     // for the length of the search it started, so a second press could roll a second cube
     // over the first. Released in the `finally` at the end, because a roll that fails must
     // leave behind the button that retries it.
-    die.disabled = true;
+    hold(true);
     try {
       // Scramble rolls its own inside loadWalk — the walk IS the scramble there, so there is
       // no subject to adopt first.
@@ -113,6 +117,7 @@ export function createDie(screen, app) {
       // Held until the walk is on screen: taking the new subject only starts the load, and on
       // Scramble that load is the roll (found by audit, 2026-09-13).
       await takeNewSubject();
-    } finally { die.disabled = false; }
+    } finally { hold(false); }
   };
+  for (const d of dice) d.onclick = press;
 }

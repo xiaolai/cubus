@@ -180,3 +180,29 @@ test('a solve that fails still takes the cube, and only a search called off goes
   assert.equal(warned.mock.callCount(), 1, 'a solve that failed went unlogged');
   assert.equal(broken.log.at(-1), 'take');
 });
+
+// RE-ROLL STAYS ONE TAP (dev-docs/practice-redesign-plan.md E10). In portrait the twin, and the die in its heading,
+// go behind a card tool — so Scramble draws a second die among the cube card's tools. Two buttons, ONE press: either
+// rolls, and while a roll is out NEITHER can start another, or the second roll lands over the first.
+test('the cube card\'s die is the same press as the twin\'s: either rolls, and a roll holds both', async () => {
+  const root = document.createElement('div');
+  root.innerHTML = '<span id="moveCount"></span><button id="randCubeTool"></button><span id="rollSay"></span><button id="randCube"></button>';
+  const log = [];
+  let answer;
+  createDie({ root, scrambling: true, signal: null, stale: () => false, takeNewSubject: () => { log.push('take'); return new Promise((r) => { answer = r; }); } }, {
+    WALK_FAILURES: { 'no scramble': NO_SCRAMBLE }, solverReady: () => true, randomScramble: async () => null,
+    deriveCube: async () => {}, adoptCube: () => {}, putInPlay: () => {}, parkRoll: () => {},
+  });
+  const tool = root.querySelector('#randCubeTool');
+  const twin = root.querySelector('#randCube');
+  assert.equal(typeof tool.onclick, 'function', 'the cube card\'s die is not wired');
+  const pressed = tool.onclick();
+  await settle();
+  assert.deepEqual(log, ['take'], 'the tool die did not take a new subject');
+  assert.deepEqual([tool.disabled, twin.disabled], [true, true], 'a roll from one die left the other free to start a second');
+  await twin.onclick();
+  assert.deepEqual(log, ['take'], 'the twin\'s die rolled again while the tool\'s roll was out');
+  answer();
+  await pressed;
+  assert.deepEqual([tool.disabled, twin.disabled], [false, false], 'the roll ended and a die stayed held');
+});

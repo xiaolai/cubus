@@ -15,13 +15,16 @@
 // A vertical mouse WHEEL does not move it (owner, 2026-10-17). It used to be turned sideways here,
 // which took the wheel from whatever the pointer was passing over on its way down the card. A
 // sideways gesture, Shift+wheel and the keyboard still scroll it — all the browser's own.
+//
+// The walk's moves are the same kind of strip in portrait (dev-docs/practice-redesign-plan.md §5.7), with a third
+// duty: the turn you are on is kept at the CENTRE (`centre`).
 
 /**
  * Make `row` a one-line strip.
  *
  * @param {HTMLElement} row  the `.stage-row.one-line` element
  * @param {{ signal: AbortSignal }} options  every listener goes when the screen does
- * @returns {{ reveal: (el: Element | null) => void }}
+ * @returns {{ reveal: (el: Element | null) => void, centre: (el: Element | null) => void }}
  */
 export function oneLineStrip(row, { signal }) {
   const edges = () => {
@@ -43,6 +46,19 @@ export function oneLineStrip(row, { signal }) {
     edges();
   };
 
+  /**
+   * Scroll so that `el`'s centre is the row's centre: the walk's strip keeps the turn you are on there
+   * (dev-docs/practice-redesign-plan.md §5.7). The row clamps the scroll, so the first and last of a row
+   * with no spacers at its ends stop short of the centre; the walk's strip has them.
+   */
+  const centre = (el) => {
+    if (!el || !row.contains(el)) return;
+    const box = row.getBoundingClientRect();
+    const r = el.getBoundingClientRect();
+    row.scrollLeft += (r.left + r.width / 2) - (box.left + row.clientLeft + row.clientWidth / 2);
+    edges();
+  };
+
   row.addEventListener('scroll', edges, { passive: true, signal });
   row.addEventListener('click', (e) => reveal(e.target.closest('button')), { signal });
   // A phone turned over, or a browser tab resized, changes the strip's width after it mounted.
@@ -50,5 +66,5 @@ export function oneLineStrip(row, { signal }) {
 
   reveal(row.querySelector('.on'));
   edges();
-  return { reveal };
+  return { reveal, centre };
 }

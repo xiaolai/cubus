@@ -54,6 +54,20 @@ export function methodRowHtml({ methods, chosen, escHtml }) {
 }
 
 /**
+ * The PINNED pill (dev-docs/practice-redesign-plan.md E10): in portrait the cube screen folds the row into this one
+ * pill at the head of the Restore row — which is the chosen method's stops, so the method names its own stops there.
+ * It names the method on screen and opens the row's own "More methods" menu. It carries no `data-method`: it is
+ * not a choice, and a press on one would be taken as choosing it. Empty when the row is every method (no menu).
+ *
+ * NO BACKTICK MAY BE ADDED TO A COMMENT INSIDE THE TEMPLATE BELOW — it is a template literal.
+ */
+export function methodPinHtml({ methods, chosen, escHtml }) {
+  if (methods.length <= MAX_PILLS) return '';
+  const m = methods.find((x) => x.id === chosen) ?? methods[0];
+  return `<button class="pill method-pin" id="methodPin" type="button">${escHtml(t(m.label))}</button>`;
+}
+
+/**
  * The row of one mounted cube screen: its "More methods" menu when the row has one, and the one way the
  * row is painted for the method ON SCREEN.
  *
@@ -65,17 +79,19 @@ export function methodRowHtml({ methods, chosen, escHtml }) {
  *   whose level is in no group THROWS: a method left out of the menu could never be chosen.
  * @returns {object} `paint(shown)`: every `[data-method]` said on or off in both channels (the class for
  *   the eye, `aria-pressed` for the reader that cannot see it), and — when the row is one pill and a menu
- *   — that one pill rewritten to name the method on screen, and the menu's tick moved to it.
+ *   — that one pill rewritten to name the method on screen, and the menu's tick moved to it. A `#methodPin` in
+ *   the root (`methodPinHtml`) opens the same menu and is renamed with that pill.
  */
 export function createMethodRow({ root, signal, methods, shown: initial, place, levels = REGISTRY_LEVELS }) {
   const row = root.querySelector('#methodRow');
   const button = root.querySelector('#moreMethodsBtn');
+  const pin = root.querySelector('#methodPin');
   const grouped = new Set(levels.map((l) => l.id));
   const lost = methods.filter((m) => !grouped.has(m.level));
   if (lost.length) throw new Error(`method-row: ${lost.map((m) => m.id).join(', ')} in no group of the menu`);
   let menu = null;
   if (button && methods.length > MAX_PILLS) {
-    menu = createMenu({ root, button, label: t('More methods'), signal, place, dismiss: true });
+    menu = createMenu({ root, button, label: t('More methods'), signal, place, dismiss: true, also: pin ? [pin] : [] });
     menu.el.classList.add('method-menu');
     for (const level of levels) {
       const here = methods.filter((m) => m.level === level.id);
@@ -88,7 +104,7 @@ export function createMethodRow({ root, signal, methods, shown: initial, place, 
       for (const m of here) {
         // A press is the walk session's to act on — it listens for `[data-method]` on the whole screen —
         // and the menu's own job is only to close and give the focus back.
-        const item = menu.radio(t(m.label), () => { menu.close(); button.focus(); });
+        const item = menu.radio(t(m.label), () => { menu.close(); menu.opener().focus(); });
         item.dataset.method = m.id;
         menu.el.appendChild(item);
       }
@@ -105,6 +121,7 @@ export function createMethodRow({ root, signal, methods, shown: initial, place, 
         pill.dataset.method = m.id;
         pill.textContent = t(m.label);
       }
+      if (pin && m) pin.textContent = t(m.label);
       menu.mark((b) => b.dataset.method === shown);
     }
     for (const pill of root.querySelectorAll('[data-method]')) {

@@ -175,3 +175,30 @@ test('its listeners go with the screen', async () => {
   });
   assert.equal((await read()).left, false, 'an aborted strip still marked its edges on scroll');
 });
+
+// THE WALK'S STRIP CENTRES ITS TURN (dev-docs/practice-redesign-plan.md §5.7). In portrait the moves are one line
+// under the cube, and the turn you are on sits at its centre. Half-width spacers at both ends are what let the
+// FIRST and LAST turns reach the centre; `centre` is the scroll that puts them there. Every button is asked,
+// the two ends included, because those are the ones a strip without its spacers cannot centre.
+test('centre puts a button\'s centre at the strip\'s centre, the first and the last included', async () => {
+  await strip(300, 9, -1);
+  const off = await page.evaluate(async () => {
+    const { oneLineStrip } = await import('/lib/scroll-strip.js');
+    const row = document.querySelector('#strip-under-test');
+    for (const end of ['prepend', 'append']) {
+      const spacer = document.createElement('i');
+      spacer.style.cssText = 'flex:none;width:50%';
+      row[end](spacer);
+    }
+    const { centre } = oneLineStrip(row, { signal: window.__stripAbort.signal });
+    const box = row.getBoundingClientRect();
+    const middle = box.left + row.clientLeft + row.clientWidth / 2;
+    return [...row.querySelectorAll('button')].map((b) => {
+      centre(b);
+      const r = b.getBoundingClientRect();
+      return Math.round((r.left + r.width / 2 - middle) * 10) / 10;
+    });
+  });
+  assert.equal(off.length, 9);
+  for (const [i, d] of off.entries()) assert.ok(Math.abs(d) <= 2, `button ${i} is ${d}px from the strip's centre`);
+});

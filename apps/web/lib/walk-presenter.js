@@ -22,6 +22,7 @@ import { createHoldCube, holdAtMove, holdChangeAt, moveHold } from './hold-prese
 import { stepAtMove, whyText } from './method-lesson.js';
 import { offerPractice } from './practice-link.js';
 import { SCAN_HOLD } from './solving-hold.js';
+import { oneLineStrip } from './scroll-strip.js';
 
 /**
  * The presenter of one mounted cube screen, its buttons wired.
@@ -37,6 +38,10 @@ export function createWalkPresenter({
   go, walkNow, takeOver,
 }) {
   const $ = (sel, from) => from.querySelector(sel);
+  // THE MOVES AS ONE LINE, in portrait (dev-docs/practice-redesign-plan.md §5.7): the turn you are on is kept at
+  // the strip's centre, and before the first turn the first one is. In landscape the moves wrap and nothing
+  // scrolls sideways, so the same call moves nothing there; the stylesheet decides which the list is.
+  const strip = oneLineStrip(solList, { signal });
   let chips = [];
   let at = 0;
   let playing = false;
@@ -168,6 +173,7 @@ export function createWalkPresenter({
     // shown, so nothing is filled. It used to mark the NEXT move, and a black first chip before
     // anything had happened read as a step already taken.
     chips.forEach((ch, k) => { ch.classList.toggle('played', k < i); ch.classList.toggle('cur', k === i - 1); });
+    strip.centre(chips[i - 1] ?? chips[0] ?? null);
     pointAtStep(i);
     $('#stepLbl', root).textContent = `${i} / ${total}`;
     $('#progBar', root).style.width = total ? `${(i / total) * 100}%` : '0%';

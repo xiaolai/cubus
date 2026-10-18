@@ -273,18 +273,31 @@ const scrambledHome = async () => {
   await tick();
 };
 
-// The cube card carries the cube and one corner tool, and the transport is one row: four buttons,
+// The cube card carries the cube and its corner tools, and the transport is one row: four buttons,
 // the progress bar, the pacing toggle if a cube is connected, and the step count. Everything else
 // that used to sit there said something the chips, the animation or the nav were already saying.
+//
+// THE TOOLS, BY SCREEN (dev-docs/practice-redesign-plan.md E5, E10, 2026-10-18). In portrait the twin — the net and
+// the die in its heading — goes behind a card tool, so the card carries that tool; and on Scramble, where the die is
+// the screen's re-roll, the die stays one tap away among the tools. The speed menu is the only tool LANDSCAPE shows:
+// the other two are portrait's, and which composition shows which is measured in WebKit
+// (geometry.test.mjs, "the cube card's tools, by composition") — happy-dom resolves no container query.
 test('the cube screen is the cube, one transport row, and nothing else', async () => {
+  win.location.hash = '#/scramble';
+  await tick();
+  assert.ok(await waitFor(() => win.document.querySelectorAll('#solList .chip-m').length > 0), 'Scramble walked nothing');
+  assert.deepEqual(
+    [...win.document.querySelectorAll('#stage .cols > .card.primary button')].map((b) => b.id),
+    ['speedBtn', 'twinBtn', 'randCubeTool'],
+    'on Scramble the cube card carries the speed menu, the twin\'s tool and the re-roll — nothing else',
+  );
   await scrambledHome();
   // The cube card is the composition's `primary` region, a direct child of the grid.
   const cubeCard = win.document.querySelector('#stage .cols > .card.primary');
-  // One tool over the cube, in the corner: the speed menu. Nothing else draws on top of it.
   assert.deepEqual(
     [...cubeCard.querySelectorAll('button')].map((b) => b.id),
-    ['speedBtn'],
-    'the cube card carries exactly one control',
+    ['speedBtn', 'twinBtn'],
+    'on Home the cube card carries the speed menu and the twin\'s tool — nothing else',
   );
   for (const gone of ['#coach', '#scrub', '#validity', '#copyState', '#viewCard']) {
     isAbsent(win.document.querySelector(gone), `${gone} should be gone`);

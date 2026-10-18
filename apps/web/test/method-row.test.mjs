@@ -164,3 +164,53 @@ test('a menu with no method on screen focuses its first ITEM, never a level head
   assert.equal(document.activeElement?.getAttribute('role'), 'menuitemradio', 'the focus landed on a heading');
   built.menu.close();
 });
+
+// THE PINNED PILL (dev-docs/practice-redesign-plan.md E10). In portrait the cube screen folds its method row into ONE
+// pill at the head of the Restore row, which is that method's stops: it names the DISPLAYED method and opens the
+// row's own "More methods" menu — the same menu, never a second one.
+test('the pinned pill names the method on screen and opens the row\'s one menu, never a second', () => {
+  const list = methods(9);
+  const root = document.createElement('div');
+  root.innerHTML = `${row.methodPinHtml({ methods: list, chosen: 'beginner', escHtml: esc })}
+    <div id="methodRow">${row.methodRowHtml({ methods: list, chosen: 'beginner', escHtml: esc })}</div>`;
+  document.body.appendChild(root);
+  const abort = new AbortController();
+  const built = row.createMethodRow({ root, signal: abort.signal, methods: list, shown: 'beginner', place: placeMenuUnder });
+  const pin = root.querySelector('#methodPin');
+  assert.ok(pin, 'past three methods the pin is drawn');
+  assert.equal(pin.textContent, 'Beginner', 'the pin names the method on screen');
+  // NOT a choice: a pin carrying data-method would be read by the walk session's press handler as choosing it.
+  assert.equal(pin.hasAttribute('data-method'), false, 'the pin is a [data-method] — a press on it would be taken as a choice');
+  const pressed = [];
+  root.addEventListener('click', (ev) => { const hit = ev.target.closest?.('[data-method]'); if (hit) pressed.push(hit.dataset.method); });
+
+  pin.click();
+  assert.equal(built.menu.isOpen(), true, 'the pin did not open the menu');
+  assert.equal(root.querySelectorAll('.menu').length, 1, 'a second menu was built for the pin');
+  assert.equal(pin.getAttribute('aria-expanded'), 'true', 'the pin does not say its menu is open');
+  assert.equal(root.querySelector('#moreMethodsBtn').getAttribute('aria-expanded'), 'false', 'the row\'s button claims the menu the pin opened');
+  assert.equal(document.activeElement?.dataset.method, 'beginner', 'the menu opened on something other than the method on screen');
+  built.menu.el.querySelector('[data-method="m1"]').click();
+  assert.deepEqual(pressed, ['m1'], 'a choice from the pin\'s menu never reached the screen\'s press handler');
+  assert.equal(built.menu.isOpen(), false, 'choosing did not close the menu');
+  isSame(document.activeElement, pin, 'the focus went back somewhere other than the pin that opened the menu');
+
+  // The session paints the method ON SCREEN — which may differ from the one stored (AGENTS.md §3).
+  built.paint('m1');
+  assert.equal(pin.textContent, 'Method 1', 'the pin did not follow the method on screen');
+
+  // Escape closes it and hands the focus to the pin; a press outside closes it too.
+  pin.click();
+  built.menu.el.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(built.menu.isOpen(), false, 'Escape did not close the menu');
+  isSame(document.activeElement, pin, 'Escape gave the focus to the wrong opener');
+  pin.click();
+  document.body.dispatchEvent(new window.MouseEvent('pointerdown', { bubbles: true }));
+  assert.equal(built.menu.isOpen(), false, 'a press outside did not close the menu');
+  assert.deepEqual(pressed, ['m1'], 'a dismissal was taken as a choice');
+  abort.abort();
+});
+
+test('three methods or fewer draw no pin: the row is every method, with nothing to fold', () => {
+  assert.equal(row.methodPinHtml({ methods: methods(3), chosen: 'beginner', escHtml: esc }), '');
+});

@@ -19,11 +19,15 @@
  *   before it opens anything (this menu, unless the screen has other popovers to close with it);
  *   `beforeOpen()`, run as the menu is about to open; and `dismiss`, which when true closes the menu on a
  *   press anywhere outside it and on Escape (focus back to the button) — the dismissal the cube screen's
- *   pattern and method menus share, written once here rather than once per menu.
+ *   pattern and method menus share, written once here rather than once per menu. `also` is any further
+ *   button that opens the SAME menu under itself — the cube screen's pinned method pill, which in portrait
+ *   stands for the method row's button (dev-docs/practice-redesign-plan.md E10). One menu, many openers:
+ *   each says whether the menu is open UNDER IT, and the focus goes back to the one that opened it.
  * @returns {object} `el`, the menu; `radio(text, choose)`, an item it ticks; `mark(isChosen)`;
- *   `isOpen()`; `close()`; `closeUnless(target)`; and `focusIn()`.
+ *   `isOpen()`; `close()`; `closeUnless(target)`; `focusIn()`; and `opener()`, the button it was last
+ *   opened from.
  */
-export function createMenu({ root, button, label, signal, place, closeFirst = null, beforeOpen = null, dismiss = false }) {
+export function createMenu({ root, button, label, signal, place, closeFirst = null, beforeOpen = null, dismiss = false, also = [] }) {
   const el = document.createElement('div');
   el.className = 'menu';
   // A menu, said as one: without a role it is a div of buttons, and a screen reader gives no
@@ -34,11 +38,16 @@ export function createMenu({ root, button, label, signal, place, closeFirst = nu
   // The button says what it opens and whether it is open, and every open and close goes through
   // one door, so that word cannot drift from the fact (found by audit, 2026-09-13). The pressed
   // look is the same door's (`.card-tools > button.open` in index.html).
-  button.setAttribute('aria-haspopup', 'menu');
+  const openers = [button, ...also];
+  /** The button the menu is open under, or was last. */
+  let anchor = button;
+  for (const b of openers) b.setAttribute('aria-haspopup', 'menu');
   const setOpen = (on) => {
     el.hidden = !on;
-    button.setAttribute('aria-expanded', String(on));
-    button.classList.toggle('open', on);
+    for (const b of openers) {
+      b.setAttribute('aria-expanded', String(on && b === anchor));
+      b.classList.toggle('open', on && b === anchor);
+    }
   };
   setOpen(false);
   // A role of `menu` promises the arrow keys move between its items. Without them the promise was
@@ -61,21 +70,24 @@ export function createMenu({ root, button, label, signal, place, closeFirst = nu
   // read, a tick that moves. Each of those had to place the menu again itself, and two did not
   // (found by verification, 2026-09-14), so the menu watches its own contents instead. Of its
   // attributes only the class is watched, because a placement writes `style`.
-  const watch = new window.MutationObserver(() => { if (isOpen()) place(button, el); });
+  const watch = new window.MutationObserver(() => { if (isOpen()) place(anchor, el); });
   watch.observe(el, { childList: true, subtree: true, attributeFilter: ['class'] });
 
-  button.onclick = (ev) => {
-    const open = el.hidden;
+  const press = (b) => (ev) => {
+    // A press on the opener it is open under closes it; a press on another opener moves it there.
+    const open = el.hidden || anchor !== b;
     (closeFirst ?? close)();
     if (!open) return;
+    anchor = b;
     beforeOpen?.();
     setOpen(true);
-    place(button, el);
+    place(b, el);
     // Focus goes IN. A popover that opens behind the focus ring is one a keyboard cannot
     // reach without tabbing through everything after the button that opened it.
     focusIn();
     ev.stopPropagation();
   };
+  for (const b of openers) b.onclick = press(b);
 
   /**
    * One menu item. The ROLE is the only thing that differs between the two kinds, so it is the only
@@ -123,15 +135,15 @@ export function createMenu({ root, button, label, signal, place, closeFirst = nu
   };
   /** A press anywhere but the menu, or the button that toggles it, closes it. */
   const closeUnless = (target) => {
-    if (isOpen() && !el.contains(target) && !button.contains(target)) close();
+    if (isOpen() && !el.contains(target) && !openers.some((b) => b.contains(target))) close();
   };
 
   if (dismiss) {
     document.addEventListener('pointerdown', (ev) => { closeUnless(ev.target); }, { signal });
     document.addEventListener('keydown', (ev) => {
-      if (ev.key === 'Escape' && isOpen()) { close(); button.focus(); }
+      if (ev.key === 'Escape' && isOpen()) { close(); anchor.focus(); }
     }, { signal });
   }
 
-  return Object.freeze({ el, radio, item, divider, mark, isOpen, close, closeUnless, focusIn });
+  return Object.freeze({ el, radio, item, divider, mark, isOpen, close, closeUnless, focusIn, opener: () => anchor });
 }

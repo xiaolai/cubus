@@ -685,6 +685,9 @@ export function createWalkSession(screen, app) {
     // taken away rather than left pointing at a method the walk under it is not.
     const methodRow = $('#methodRow', root);
     if (methodRow) methodRow.hidden = Boolean(route);
+    // Its portrait pin (E10) is the same row folded, so it goes with it.
+    const methodPin = $('#methodPin', root);
+    if (methodPin) methodPin.hidden = Boolean(route);
     if (!scrambling) paintMethods(shownMethod);
     sayMethodNote();
     // The heading and the count belong to the OBJECT on screen. A lesson under the heading
@@ -735,10 +738,12 @@ export function createWalkSession(screen, app) {
       // to load rather than as a cube that is already where it was asked to be.
       ? `<div style="padding:6px 18px 12px" class="sub">${escHtml(t('Nothing to do here — turn to another stage, or solve the whole cube.'))}</div>`
       : lesson
-      ? lesson.sections.map((s) => `<div style="padding:6px 18px 10px">
-              <div class="sub" style="color:var(--ink-4);font-weight:600;padding-bottom:4px">${escHtml(s.name)} <span style="font-weight:400">${escHtml(t('%1 steps · %2 moves', s.steps, s.moves))}</span></div>
+      // A section is a GROUP with its small label above it: wrapped in landscape, side by side in portrait's one-line
+      // strip (index.html, .walk-sec). Classes, not inline styles, so the portrait composition can lay them out.
+      ? lesson.sections.map((s) => `<div class="walk-sec">
+              <div class="sub walk-sec-l">${escHtml(s.name)} <span style="font-weight:400">${escHtml(t('%1 steps · %2 moves', s.steps, s.moves))}</span></div>
               <div class="move-chips">${chipsFor(s.from, s.to)}</div></div>`).join('')
-      : `<div style="padding:6px 18px 12px"><div class="move-chips">${chipsFor(0, moves.length)}</div></div>`;
+      : `<div class="walk-sec whole"><div class="move-chips">${chipsFor(0, moves.length)}</div></div>`;
     takeChips();
   }
 

@@ -5,7 +5,7 @@
 import { CUBE_VIEW } from '../cube-view.js';
 import { methodSolve } from '../lesson-client.js';
 import { METHODS, methodById } from '../methods/registry.js';
-import { createMethodRow, methodRowHtml } from '../method-row.js';
+import { createMethodRow, methodPinHtml, methodRowHtml } from '../method-row.js';
 import { t } from '../i18n.js';
 import { OFFERED_TARGETS } from '../stage-targets.js';
 import { stopTargets } from '../method-stops.js';
@@ -150,6 +150,27 @@ const WALK_APP = Object.freeze({
   escHtml, icon, lastRoute, pictureRoute, sayWalkLength, describeCube, play,
 });
 
+/**
+ * The twin's card tool (dev-docs/practice-redesign-plan.md E5): in portrait the twin is not in the composition, and
+ * this button shows it over the stage and puts it away again. Escape puts it away and gives the focus back. The
+ * stylesheet decides where the tool is drawn; this only says whether the twin is open, in the class the stylesheet
+ * reads and in `aria-expanded`, through one door.
+ */
+function wireTwinTool(root, signal) {
+  const button = root.querySelector('#twinBtn');
+  const cols = root.querySelector('.cols');
+  if (!button || !cols) return;
+  const setOpen = (on) => {
+    cols.classList.toggle('twin-open', on);
+    button.setAttribute('aria-expanded', String(on));
+    button.classList.toggle('open', on);
+  };
+  button.addEventListener('click', () => setOpen(!cols.classList.contains('twin-open')), { signal });
+  root.ownerDocument.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape' && cols.classList.contains('twin-open')) { setOpen(false); button.focus(); }
+  }, { signal });
+}
+
 /** Solve and Scramble are the same screen walked from opposite ends.
  *
  * Solve starts at YOUR cube and ends solved; Scramble starts SOLVED and ends at a random state.
@@ -223,6 +244,13 @@ const cubeScreen = (screenMode) => {
       <div class="card primary" style="display:flex;flex-direction:column;align-items:center;position:relative">
         ${walking ? `<div class="card-tools">
           <button id="speedBtn" title="Animation speed" aria-label="Animation speed">${icon('gauge', 20)}</button>
+          <!-- PORTRAIT'S TOOLS (dev-docs/practice-redesign-plan.md E1, E5, E10). In portrait the cube takes the stage's
+               width and the twin - the net, and the die in its heading - is behind this tool, the pattern Practice uses
+               for its case picture. On Scramble the die is the screen's re-roll, so it stays one tap away here. The
+               stylesheet draws both in portrait only; landscape keeps the twin, with its die, beside the cube.
+               NO BACKTICK IN THIS COMMENT - it is inside the screen's html template literal. -->
+          <button id="twinBtn" type="button" title="${escHtml(t('Show the cube flat'))}" aria-label="${escHtml(t('Show the cube flat'))}" aria-controls="twinCard" aria-expanded="false">${icon('book', 20)}</button>
+          ${scrambling ? `<button id="randCubeTool" type="button" title="Roll a different scramble" aria-label="Roll a different scramble">${icon('dice', 18)}</button>` : ''}
         </div>` : ''}
         <div style="flex:1;min-height:0;width:100%">
           <div class="cube-slot" id="viewCube" style="height:100%"></div>
@@ -242,7 +270,7 @@ const cubeScreen = (screenMode) => {
         </div>
       </div>` : ''}
     <div class="aside">
-      <div class="card state-card twin" style="padding-bottom:0">
+      <div class="card state-card twin" id="twinCard" style="padding-bottom:0">
         <div class="eyebrow-row"><b class="state-h">${escHtml(stateHeading())}</b>
           ${scrambling || settings.devRandCube
             // On Scramble the die IS the screen's re-roll and always shows. On the solve side it
@@ -326,6 +354,11 @@ const cubeScreen = (screenMode) => {
              (dev-docs/solve-to-state-plan.md §6). The default stays "solved", so nothing changes
              for somebody who only wants their cube solved. Changing it is a WALK REPLACEMENT and
              goes through retarget(), which is exactly what that path is for. -->
+        <!-- In portrait the method row folds into ONE pill at the head of this row, which is that method's stops: the
+             method names its own stops, pinned while they scroll after it (E10). Landscape keeps the method row.
+             NO BACKTICK IN THIS COMMENT - it is inside the screen's html template literal. -->
+        <div class="target-line">
+        ${methodPinHtml({ methods: METHODS, chosen: settings.solveMethod, escHtml })}
         <div class="stage-row one-line" id="stageTargetRow" role="group" aria-label="${escHtml(t('Where to take this cube'))}">
           ${OFFERED_TARGETS.map((tg) => `<button class="pill${state.stageTarget === tg.id ? ' on' : ''}" data-stage="${escHtml(tg.id)}" aria-pressed="${state.stageTarget === tg.id}"${rowStops.includes(tg.id) ? '' : ' hidden'}>${escHtml(tg.id === 'solved' ? t('Solved') : tg.name)}</button>`).join('')}
           <!-- THE PICTURES THAT ARE NOT STAGES, at the end of the row already labelled "Where to
@@ -347,6 +380,7 @@ const cubeScreen = (screenMode) => {
                the sentence warning about the first. -->
           <button class="pill" id="patternBtn" type="button" aria-haspopup="menu" aria-expanded="false">${escHtml(t('Shapes'))}</button>
         </div>
+        </div>
         <!-- HOW TO SOLVE IT: one pill per METHOD, generated from the registry (ADR 0011 decision 1), the
              learner's choice stored as a setting and applied to the next cube too. aria-pressed as
              well as the class, so a screen reader can tell which method is on screen. The note beside
@@ -357,7 +391,7 @@ const cubeScreen = (screenMode) => {
           ${methodRowHtml({ methods: METHODS, chosen: settings.solveMethod, escHtml })}
           <span class="sub" id="methodNote" role="status" aria-live="polite" style="color:var(--ink-4);margin-left:auto;text-align:right" hidden></span>
         </div>`}
-        <div class="list" id="solList" style="padding:6px 0"></div>
+        <div class="list walk-strip" id="solList" style="padding:6px 0"></div>
         ${scrambling ? '' : '<div class="sub" id="whyLine" style="padding:0 18px 10px;color:var(--ink-4)" hidden></div>'}
         ${scrambling ? '' : '<button class="pill" id="practiseStep" type="button" style="margin:0 18px 10px;align-self:flex-start" hidden></button>'}
         <div class="follow-note" id="followNote" hidden>
@@ -496,6 +530,7 @@ const cubeScreen = (screenMode) => {
       // walk, and not on the Scramble screen.
       const targetRow = root.querySelector('#stageTargetRow');
       if (targetRow) oneLineStrip(targetRow, { signal });
+      wireTwinTool(root, signal);
 
       // ---- the walk -----------------------------------------------------------------------------
       //
