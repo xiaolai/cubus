@@ -29,6 +29,8 @@ import { CROSS_ALGS } from '../lib/methods/cross.js';
 import { PAIRS_ALGS } from '../lib/methods/pairs.js';
 import { LAST_LAYER_EXTRAS, OLL_ALGS, PLL_ALGS } from '../lib/methods/last-layer.js';
 import { HUMAN_F2L, HUMAN_OLL, HUMAN_PLL } from '../lib/data/human-algs.js';
+import { MEHTA_6CO, MEHTA_6CP, MEHTA_BEGINNER, MEHTA_EOLE, MEHTA_L5EP } from '../lib/data/mehta-algs.js';
+import { CF_ALGS } from '../lib/data/corners-first-algs.js';
 import { F2L_CASES, FULL_OLL, FULL_PLL } from '../lib/data/case-tables.js';
 
 // WHICH ALGORITHM IS IN WHICH SET is said here once. The app's algorithm catalogue said it too, and the
@@ -113,6 +115,48 @@ const SETS = [
     entries: HUMAN_PLL,
     provenance: 'J Perm\'s first-listed algorithm per case; what full PLL teaches since 2026-10-13',
     verified: 'same cubejs check, 21 to 21',
+  },
+  {
+    id: 'mehta-eole', name: 'Mehta EOLE', kind: 'sourced',
+    entries: MEHTA_EOLE,
+    provenance: 'the Mehta-OS algorithm sheet, the first line of each cell that starts from the middle layer in place; not taught by any screen yet',
+    verified: '`mehta-algs.test.mjs`: every row draws a case of its step, and the 55 rows cover the 55 cases the pieces give, once each',
+  },
+  {
+    id: 'mehta-6co', name: 'Mehta 6CO', kind: 'sourced',
+    entries: MEHTA_6CO,
+    provenance: 'the Mehta-OS algorithm sheet; not taught by any screen yet',
+    verified: 'same check, 71 rows to 71 cases',
+  },
+  {
+    id: 'mehta-6cp', name: 'Mehta 6CP', kind: 'sourced',
+    entries: MEHTA_6CP,
+    provenance: 'the Mehta-OS algorithm sheet; its 2-6 and 5-2 columns draw the same six cases with the bottom turned first',
+    verified: 'same check, 47 rows to 41 cases, the six shared pairs pinned by name',
+  },
+  {
+    id: 'mehta-l5ep', name: 'Mehta L5EP', kind: 'sourced',
+    entries: MEHTA_L5EP,
+    provenance: 'the Mehta-OS algorithm sheet: 16 cases, most drawn three ways (the bottom edge right, front or back)',
+    verified: 'same check, 45 rows to 16 cases, every row of a case carrying its letter',
+  },
+  {
+    id: 'mehta-beginner', name: 'Mehta, beginner path', kind: 'sourced',
+    entries: MEHTA_BEGINNER,
+    provenance: 'the Mehta-OS sheet\'s "Beginner Mehta Algs" page: EO, DCAL in two looks, CDRLL in two looks, the last bottom edge, EPLL',
+    verified: '`mehta-algs.test.mjs`: each step finishes every state it can meet, enumerated from the pieces',
+  },
+  {
+    id: 'cf-corners', name: 'Corners first, the corners', kind: 'sourced',
+    entries: CF_ALGS.filter((r) => r.step.includes('corners')),
+    provenance: 'Josef Jelinek\'s beginner corners-first method: five bottom-corner sequences, one corner swap, one twist',
+    verified: '`corners-first-algs.test.mjs`: every white corner reaches home from every place without disturbing one placed; the top corners from every arrangement',
+  },
+  {
+    id: 'cf-edges', name: 'Corners first, the edges', kind: 'sourced',
+    entries: CF_ALGS.filter((r) => !r.step.includes('corners')),
+    provenance: 'Jelinek\'s beginner edges, the left and right layers turning freely; one sequence corrected, because the page\'s turns the top corners a half turn',
+    verified: 'same test: every edge from every place, the middle slice from all 384 positions the cube\'s laws allow',
   },
   {
     id: 'f2l-full', name: 'F2L, all cases', kind: 'proved',
@@ -203,15 +247,22 @@ const METHODS = [
       note: 'ZZ-a finishes with OCLL and PLL, which are held. ZZ-b with full ZBLL is 493 algorithms and is not' },
   ] },
   { method: 'Corners first', phases: [
-    { phase: 'Corners', missing: 'a corner-only set', size: null, unmeasured: true },
-    { phase: 'Edges', missing: 'an edge-only set', size: null, unmeasured: true },
+    { phase: 'Corners', held: 'cf-corners' },
+    { phase: 'Centres', intuitive: 'one turn of a middle slice' },
+    { phase: 'Edges', held: 'cf-edges' },
   ] },
   { method: 'Mehta', phases: [
     { phase: 'First block', intuitive: 'block building' },
-    { phase: 'Belt and edge orientation', missing: 'EOLE', size: null, unmeasured: true },
-    { phase: '6CO', missing: '6CO', size: null, unmeasured: true },
-    { phase: '6CP', missing: '6CP', size: null, unmeasured: true },
-    { phase: 'L5EP', missing: 'L5EP', size: null, unmeasured: true },
+    { phase: 'Belt and edge orientation', held: 'mehta-eole', note: 'three of the four middle-layer edges by block building first' },
+    { phase: '6CO', held: 'mehta-6co' },
+    { phase: '6CP', held: 'mehta-6cp' },
+    { phase: 'L5EP', held: 'mehta-l5ep' },
+  ] },
+  { method: 'Mehta, beginner path', phases: [
+    { phase: 'First block', intuitive: 'block building' },
+    { phase: 'Belt', intuitive: 'block building, all four middle-layer edges' },
+    { phase: 'EO, DCAL, CDRLL, EPLL', held: 'mehta-beginner',
+      note: 'its last steps meet the cases CFOP\'s two-look last layer does, with the Mehta-OS sheet\'s own algorithms' },
   ] },
   { method: 'Thistlethwaite', phases: [
     { phase: 'G1 to G4', intuitive: 'NONE. A computer method searches each coset; there is nothing to memorise and nothing a human could' },

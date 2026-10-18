@@ -172,7 +172,8 @@ test('the headline counts are what the sets add up to', () => {
   const sourced = ALGORITHM_SETS.filter((s) => s.kind === 'sourced').reduce((a, s) => a + s.count, 0);
   assert.equal(proved + hand + sourced + 1, total, 'the kinds do not partition the ledger (the +1 is the alignment)');
   assert.equal(proved, 119, 'the proved tables are 41 + 57 + 21');
-  assert.equal(sourced, 119, 'the human-speed tables are 41 + 57 + 21, one row per proved case');
+  assert.equal(sourced, 119 + 218 + 32 + 24,
+    'the human-speed tables (41 + 57 + 21), Mehta\'s four sets (55 + 71 + 47 + 45) and its beginner path (32), corners first (24)');
   assert.equal(hand, 24, 'the hand-written repertoires are 2 + 3 + 2 + 6 + 1 + 5 + 3 + 2');
 
   // The contrast the ledger exists to make: a beginner method costs a fraction of CFOP, and the two

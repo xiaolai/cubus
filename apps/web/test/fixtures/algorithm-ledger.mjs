@@ -169,6 +169,97 @@ export const ALGORITHM_SETS = Object.freeze([
     "moves": 293
   },
   {
+    "id": "mehta-eole",
+    "name": "Mehta EOLE",
+    "kind": "sourced",
+    "provenance": "the Mehta-OS algorithm sheet, the first line of each cell that starts from the middle layer in place; not taught by any screen yet",
+    "verified": "`mehta-algs.test.mjs`: every row draws a case of its step, and the 55 rows cover the 55 cases the pieces give, once each",
+    "count": 55,
+    "distinct": 55,
+    "shortest": 3,
+    "longest": 12,
+    "mean": 6.95,
+    "moves": 382
+  },
+  {
+    "id": "mehta-6co",
+    "name": "Mehta 6CO",
+    "kind": "sourced",
+    "provenance": "the Mehta-OS algorithm sheet; not taught by any screen yet",
+    "verified": "same check, 71 rows to 71 cases",
+    "count": 71,
+    "distinct": 71,
+    "shortest": 6,
+    "longest": 12,
+    "mean": 9.06,
+    "moves": 643
+  },
+  {
+    "id": "mehta-6cp",
+    "name": "Mehta 6CP",
+    "kind": "sourced",
+    "provenance": "the Mehta-OS algorithm sheet; its 2-6 and 5-2 columns draw the same six cases with the bottom turned first",
+    "verified": "same check, 47 rows to 41 cases, the six shared pairs pinned by name",
+    "count": 47,
+    "distinct": 47,
+    "shortest": 3,
+    "longest": 15,
+    "mean": 10.38,
+    "moves": 488
+  },
+  {
+    "id": "mehta-l5ep",
+    "name": "Mehta L5EP",
+    "kind": "sourced",
+    "provenance": "the Mehta-OS algorithm sheet: 16 cases, most drawn three ways (the bottom edge right, front or back)",
+    "verified": "same check, 45 rows to 16 cases, every row of a case carrying its letter",
+    "count": 45,
+    "distinct": 45,
+    "shortest": 5,
+    "longest": 15,
+    "mean": 11.16,
+    "moves": 502
+  },
+  {
+    "id": "mehta-beginner",
+    "name": "Mehta, beginner path",
+    "kind": "sourced",
+    "provenance": "the Mehta-OS sheet's \"Beginner Mehta Algs\" page: EO, DCAL in two looks, CDRLL in two looks, the last bottom edge, EPLL",
+    "verified": "`mehta-algs.test.mjs`: each step finishes every state it can meet, enumerated from the pieces",
+    "count": 32,
+    "distinct": 32,
+    "shortest": 3,
+    "longest": 17,
+    "mean": 8.44,
+    "moves": 270
+  },
+  {
+    "id": "cf-corners",
+    "name": "Corners first, the corners",
+    "kind": "sourced",
+    "provenance": "Josef Jelinek's beginner corners-first method: five bottom-corner sequences, one corner swap, one twist",
+    "verified": "`corners-first-algs.test.mjs`: every white corner reaches home from every place without disturbing one placed; the top corners from every arrangement",
+    "count": 7,
+    "distinct": 7,
+    "shortest": 3,
+    "longest": 14,
+    "mean": 5.29,
+    "moves": 37
+  },
+  {
+    "id": "cf-edges",
+    "name": "Corners first, the edges",
+    "kind": "sourced",
+    "provenance": "Jelinek's beginner edges, the left and right layers turning freely; one sequence corrected, because the page's turns the top corners a half turn",
+    "verified": "same test: every edge from every place, the middle slice from all 384 positions the cube's laws allow",
+    "count": 17,
+    "distinct": 17,
+    "shortest": 4,
+    "longest": 18,
+    "mean": 6.47,
+    "moves": 110
+  },
+  {
     "id": "f2l-full",
     "name": "F2L, all cases",
     "kind": "proved",
@@ -465,26 +556,26 @@ export const METHOD_ALGORITHMS = Object.freeze([
     "phases": [
       {
         "phase": "Corners",
-        "missing": "a corner-only set",
-        "size": null,
-        "unmeasured": true
+        "held": "cf-corners"
+      },
+      {
+        "phase": "Centres",
+        "intuitive": "one turn of a middle slice"
       },
       {
         "phase": "Edges",
-        "missing": "an edge-only set",
-        "size": null,
-        "unmeasured": true
+        "held": "cf-edges"
       }
     ],
-    "sets": [],
-    "held": 0,
-    "heldMoves": 0,
-    "heldTop": 0,
-    "heldTopMoves": 0,
-    "missing": [
-      "a corner-only set",
-      "an edge-only set"
-    ]
+    "sets": [
+      "cf-corners",
+      "cf-edges"
+    ],
+    "held": 24,
+    "heldMoves": 147,
+    "heldTop": 24,
+    "heldTopMoves": 147,
+    "missing": []
   },
   {
     "method": "Mehta",
@@ -496,40 +587,60 @@ export const METHOD_ALGORITHMS = Object.freeze([
       },
       {
         "phase": "Belt and edge orientation",
-        "missing": "EOLE",
-        "size": null,
-        "unmeasured": true
+        "held": "mehta-eole",
+        "note": "three of the four middle-layer edges by block building first"
       },
       {
         "phase": "6CO",
-        "missing": "6CO",
-        "size": null,
-        "unmeasured": true
+        "held": "mehta-6co"
       },
       {
         "phase": "6CP",
-        "missing": "6CP",
-        "size": null,
-        "unmeasured": true
+        "held": "mehta-6cp"
       },
       {
         "phase": "L5EP",
-        "missing": "L5EP",
-        "size": null,
-        "unmeasured": true
+        "held": "mehta-l5ep"
       }
     ],
-    "sets": [],
-    "held": 0,
-    "heldMoves": 0,
-    "heldTop": 0,
-    "heldTopMoves": 0,
-    "missing": [
-      "EOLE",
-      "6CO",
-      "6CP",
-      "L5EP"
-    ]
+    "sets": [
+      "mehta-eole",
+      "mehta-6co",
+      "mehta-6cp",
+      "mehta-l5ep"
+    ],
+    "held": 218,
+    "heldMoves": 2015,
+    "heldTop": 218,
+    "heldTopMoves": 2015,
+    "missing": []
+  },
+  {
+    "method": "Mehta, beginner path",
+    "ladder": false,
+    "phases": [
+      {
+        "phase": "First block",
+        "intuitive": "block building"
+      },
+      {
+        "phase": "Belt",
+        "intuitive": "block building, all four middle-layer edges"
+      },
+      {
+        "phase": "EO, DCAL, CDRLL, EPLL",
+        "held": "mehta-beginner",
+        "note": "its last steps meet the cases CFOP's two-look last layer does, with the Mehta-OS sheet's own algorithms"
+      }
+    ],
+    "sets": [
+      "mehta-beginner"
+    ],
+    "held": 32,
+    "heldMoves": 270,
+    "heldTop": 32,
+    "heldTopMoves": 270,
+    "missing": []
   },
   {
     "method": "Thistlethwaite",
