@@ -297,11 +297,21 @@ function* beginnerStates(step) {
   } else if (step === 'dcal-1' || step === 'dcal-2') {
     const piece = step === 'dcal-1' ? DRB : DFR;
     const slots = step === 'dcal-1' ? SIX_C : [...U_C, DFR];
+    // A corner the step does not read, to take the balancing twist when the piece is twisted in its own slot:
+    // DFR is free in DCAL-1, and every top corner is free in DCAL-2.
+    const spare = step === 'dcal-1' ? DFR : C('URF');
     for (const slot of slots) for (let t = 0; t < 3; t++) {
-      // The piece goes to `slot` and whatever was there takes its place, twisted back so the sum is whole.
       const s = copy(SOLVED);
-      [s.cp[slot], s.cp[piece]] = [s.cp[piece], s.cp[slot]];
-      s.co[slot] = t; s.co[piece] = (3 - t) % 3;
+      if (slot === piece) {
+        // Twisted at home: the twist is balanced on the spare corner.
+        s.co[piece] = t; s.co[spare] = (3 - t) % 3;
+      } else {
+        // The piece goes to `slot` and whatever was there takes its place, twisted back so the sum is whole;
+        // the corner swap is odd, so two top edges (free in both steps) are swapped to keep the cube legal.
+        [s.cp[slot], s.cp[piece]] = [s.cp[piece], s.cp[slot]];
+        s.co[slot] = t; s.co[piece] = (3 - t) % 3;
+        swapTwoEdges(s);
+      }
       yield s;
     }
   } else if (step === 'cdrll-1') {
@@ -320,6 +330,26 @@ function* beginnerStates(step) {
 }
 /** Does some turn of the top, then one of `rows` (with its own `pre`), finish `step` from `s`? */
 const finishes = (step, s, rows) => rows.some((r) => AUF.some((a) => upToTurns(play(s, `${a} ${r.pre ?? ''} ${r.alg}`), steps[step].to)));
+
+/** A piece state is a real cube: corner and edge parities agree, twists and flips sum whole, and cubejs reads it back unchanged. */
+const assertLegal = (s, label) => {
+  assert.equal(parity(s.cp), parity(s.ep), `${label}: corner and edge permutation parities differ`);
+  assert.equal(s.co.reduce((x, y) => x + y) % 3, 0, `${label}: the corner twists do not sum whole`);
+  assert.equal(s.eo.reduce((x, y) => x + y) % 2, 0, `${label}: the edge flips do not sum whole`);
+  assert.deepEqual(fromCube(Cube.fromString(toFacelets(s))), s, `${label}: cubejs does not read the state back`);
+};
+
+test('the DCAL enumerations are legal cubes, as many as the step can meet', () => {
+  // DCAL-1 places DRB: it can sit in any of six slots (four top, DFR, DRB) with any of three twists — 6 * 3 = 18
+  // states, one of them solved, so 17 to finish. DCAL-2 places DFR with DRB kept: five slots (four top, DFR),
+  // three twists — 15 states, 14 to finish. Every one must be a cube a hand could hold.
+  for (const [step, total, open] of [['dcal-1', 18, 17], ['dcal-2', 15, 14]]) {
+    const states = [...beginnerStates(step)];
+    for (const s of states) assertLegal(s, `${step} ${toFacelets(s)}`);
+    assert.equal(new Set(states.map(toFacelets)).size, total, `${step}: distinct states`);
+    assert.equal(states.filter((s) => !upToTurns(s, steps[step].to)).length, open, `${step}: states to finish`);
+  }
+});
 
 test('every beginner step finishes every state it can meet, with a turn of the top and one of its algorithms', () => {
   for (const step of MEHTA_BEGINNER_STEPS) {
