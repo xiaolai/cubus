@@ -645,12 +645,16 @@ test('rep ids are drawn from the cryptographic source, never Math.random, and a 
 // one of the 159 was put back.
 
 /** Windows over one origin's storage, as measured: each reads its own copy, which another window's write
- *  reaches only when `deliver()` runs — and then as a `storage` event, never to the writer itself. A write
+ *  reaches only when `deliver()` runs — and then as a `storage` event, never to the writer itself. A change
  *  that arrives after the window has written the key itself does not overwrite its copy (the stored value is
- *  the later write), as the browsers' copies ignore a remote change under a newer local one. `deliver({ events:
- *  false })` updates the copies and holds their events until `fire()`: a page whose copy has a change before
- *  its handler for it has run. A storage's `refuse` makes its writes throw, as a full quota does; `writes`
- *  counts every write it was asked for. */
+ *  the later write), as the browsers' copies ignore a remote change under a newer local one — a `clear()` of
+ *  every key included, key by key. An event's
+ *  `oldValue` is what the STORAGE held before the change — measured for a removal in both engines (2026-10-18),
+ *  with the remover's own copy stale: the event carried the value it had not seen. `deliver({ events: false })`
+ *  updates the copies and holds their events until `fire()`: a page whose copy has a change before its handler
+ *  for it has run. One step at a time: `arrive()` takes the next change into the other copies and holds its
+ *  events, `fireNext(i)` runs window i's next held event, and `drain()` delivers until nothing moves. A
+ *  storage's `refuse` makes its writes throw, as a full quota does; `writes` counts every write it was asked for. */
 function windows(n) {
   const backend = new Map();
   const queue = [];
@@ -661,10 +665,11 @@ function windows(n) {
     const ownAt = new Map();
     const events = new EventTarget();
     const own = (k, v) => {
+      const old = k !== null && backend.has(k) ? backend.get(k) : null;
       if (k === null) { cache.clear(); backend.clear(); } else if (v === null) { cache.delete(k); backend.delete(k); } else { cache.set(k, v); backend.set(k, v); }
       seq += 1;
       ownAt.set(k, seq);
-      queue.push({ from: i, k, v, seq });
+      queue.push({ from: i, k, v, old, seq });
     };
     const storage = {
       refuse: false,
@@ -686,23 +691,45 @@ function windows(n) {
       t.events.dispatchEvent(event);
     }
   };
+  const fireNext = (i) => {
+    const at = held.findIndex(([t]) => t === tabs[i]);
+    if (at < 0) throw new Error(`window ${i} has no event held`);
+    const [[t, event]] = held.splice(at, 1);
+    t.events.dispatchEvent(event);
+  };
+  const arrive = () => {
+    if (!queue.length) throw new Error('no change is on its way');
+    const { from, k, v, old, seq: at } = queue.shift();
+    tabs.forEach((t, i) => {
+      if (i === from) return;
+      if (k === null) { for (const key of [...t.cache.keys()]) if (!(t.ownAt.get(key) > at)) t.cache.delete(key); }
+      else if (!(t.ownAt.get(k) > at)) { if (v === null) t.cache.delete(k); else t.cache.set(k, v); }
+      held.push([t, Object.assign(new Event('storage'), { key: k, oldValue: old, newValue: v, storageArea: t.storage })]);
+    });
+  };
   const deliver = ({ events = true } = {}) => {
     while (queue.length) {
-      const { from, k, v, seq: at } = queue.shift();
-      tabs.forEach((t, i) => {
-        if (i === from) return;
-        const oldValue = k !== null && t.cache.has(k) ? t.cache.get(k) : null;
-        if (k === null) t.cache.clear();
-        else if (!(t.ownAt.get(k) > at)) { if (v === null) t.cache.delete(k); else t.cache.set(k, v); }
-        held.push([t, Object.assign(new Event('storage'), { key: k, oldValue, newValue: v, storageArea: t.storage })]);
-      });
+      arrive();
       // A window's handler may write, which queues more: delivered in turn, as a browser would.
       if (events) fire();
     }
   };
+  /** Everything on its way, delivered with its events, until no window writes again — bounded, so a pair of
+   *  windows that write each other's record back forever fails here rather than hanging. */
+  const drain = () => {
+    for (let round = 0; queue.length || held.length; round += 1) {
+      if (round > 1_000) throw new Error('the windows never stopped writing');
+      fire();
+      if (queue.length) { arrive(); fire(); }
+    }
+  };
   const raw = () => (backend.has(RECORD_KEY) ? backend.get(RECORD_KEY) : null);
   const stored = () => parseRecord(raw());
-  return { tabs, deliver, fire, raw, stored };
+  /** How many changes the storage has taken; whether one is on its way; whether window i has an event held. */
+  const changes = () => seq;
+  const waiting = () => queue.length > 0;
+  const pending = (i) => held.some(([t]) => t === tabs[i]);
+  return { tabs, deliver, fire, fireNext, arrive, drain, raw, stored, changes, waiting, pending };
 }
 const msOf = (algs) => Object.fromEntries([...algs].map(([id, reps]) => [id, reps.map((r) => r.ms)]));
 const statusOf = (record) => {
@@ -812,11 +839,11 @@ test('row 9: a removal whose event arrives late takes only what it removed — a
   assert.deepEqual([statusOf(a), statusOf(b)], [{ missing: 0, removed: 1, error: null }, QUIET]);
 });
 
-test('row 10 (verify item 2): a record removed and started again, once or twice, never takes back the removed reps — the removal\'s event names their generation', () => {
+test('row 10 (verify item 2): a record removed and started again, once or twice, never takes back the removed reps — the removal\'s event names them', () => {
   // Codex's round-3 verify: this window holds G1; the other removes G1 and starts G2, then removes G2 and starts
   // G3. G3 named only G2 as the record it replaced, so this window put its removed G1 reps back into G3, unsaid.
-  // Now the first removal's event carries the removed record (`oldValue`, measured in both engines), which names
-  // G1, so this window has SEEN its record disappear even though its first look already finds G3.
+  // Now the first removal's event carries the removed record (`oldValue`, the storage's value, measured in both
+  // engines), which holds this window's rep, so the rep leaves its journal even though its first look finds G3.
   for (const starts of [1, 2]) {
     const w = windows(2);
     const { records: [a, b] } = openAll(w, clockFrom());
@@ -834,6 +861,215 @@ test('row 10 (verify item 2): a record removed and started again, once or twice,
     assert.deepEqual(msOf(w.stored()), { y: [199 + starts], x: [333] }, `started ${starts} time(s): a removed rep was put back`);
     assert.deepEqual(statusOf(a), { missing: 0, removed: 1, error: null });
   }
+});
+
+/** Every order in which a window can take in `n` changes another window made: its copy takes each change before
+ *  that change's event runs, the changes arrive in order and their events run in order, and nothing else is fixed —
+ *  the interleavings of n arrivals with n events, the k-th arrival before the k-th event. A Catalan number of them:
+ *  2 for two changes, 42 for five. */
+function interleavings(n) {
+  const out = [];
+  const walk = (arrived, fired, path) => {
+    if (fired === n) { out.push(path); return; }
+    if (arrived < n) walk(arrived + 1, fired, [...path, 'arrive']);
+    if (fired < arrived) walk(arrived, fired + 1, [...path, 'fire']);
+  };
+  walk(0, 0, []);
+  return out;
+}
+/** A record's reps as times, keyed in a fixed order, so two records compare as text whatever order they were
+ *  written in. */
+const canonical = (algs) => Object.fromEntries([...algs].sort(([p], [q]) => (p < q ? -1 : p > q ? 1 : 0))
+  .map(([id, reps]) => [id, reps.map((r) => r.ms)]));
+/** Runs `scene` once per order, and returns every end state that is not `want`, with the first order that reached it. */
+function endsOtherThan(orders, scene, want) {
+  const ends = new Map();
+  for (const order of orders) {
+    const end = JSON.stringify(scene(order));
+    if (!ends.has(end)) ends.set(end, order.join(' '));
+  }
+  return [...ends].filter(([end]) => end !== JSON.stringify(want));
+}
+
+test('verify: the reps a removal took never come back — in every order a window can take in two removals, the records started after them, and its own repair', () => {
+  // Codex's final verify of 0841dc5e: A holds a rep of G1; B writes G1, removes it, starts G2, removes it, starts G3.
+  // A's look at the queued G1 write found G3 and put the rep back there; the two removal events after it named G1
+  // and G2, neither of them A's generation by then, so the removed rep stayed in G3 and `removed` said 0. A window's
+  // copy takes each change before that change's event runs, and nothing else about the order is fixed: all 42.
+  const orders = interleavings(5);
+  assert.equal(orders.length, 42);
+  const others = endsOtherThan(orders, (order) => {
+    const w = windows(2);
+    const { records: [a, b] } = openAll(w, clockFrom());
+    assert.equal(a.add('x', rep({ ms: 101 })).saved, true);
+    w.deliver();
+    assert.equal(b.add('y', rep({ ms: 201 })).saved, true);   // writes G1
+    w.tabs[1].storage.removeItem(RECORD_KEY);                  // removes G1
+    assert.equal(b.add('y', rep({ ms: 202 })).saved, true);   // starts G2
+    w.tabs[1].storage.removeItem(RECORD_KEY);                  // removes G2
+    assert.equal(b.add('y', rep({ ms: 203 })).saved, true);   // starts G3
+    for (const step of order) (step === 'arrive' ? w.arrive() : w.fireNext(0));
+    w.drain();
+    return { record: canonical(w.stored()), a: statusOf(a), b: statusOf(b), aReads: canonical(a.read()), bReads: canonical(b.read()) };
+  }, {
+    record: { y: [203] },
+    a: { missing: 0, removed: 1, error: null },
+    b: { missing: 0, removed: 2, error: null },
+    aReads: { y: [203] },
+    bReads: { y: [203] },
+  });
+  assert.deepEqual(others, [], 'an order of taking the changes in ended with another record or another account of it');
+});
+
+/** A rep of an earlier session on record: made by a page long closed, which no open window will ever put back or
+ *  withdraw as its own. */
+function seedEarlier(w) {
+  const earlier = openPracticeRecord({ storage: w.tabs[0].storage, now: () => 1_700_000_000_000 });
+  assert.equal(earlier.add('p', rep({ ms: 1 })).saved, true);
+  w.deliver();
+}
+
+test('a rep saved from a copy a removal had not reached stays, and the removed reps that write carried back go — in every order, an earlier session\'s too', () => {
+  // A window that writes before a removal reaches it writes the removed record back, with its new rep — the case
+  // the header used to leave NOT REPAIRED. The removal's event names its generation and every rep it took
+  // (`oldValue`, the storage's value, measured), so a window that heard it withdraws them from that record written
+  // back, and from a copy of it another window wrote before the withdrawal reached it, and names what is left anew.
+  // Withdrawing only a window's OWN removed reps left an earlier session's rep, which no open window owns, back on
+  // record in 2 of these 10 orders. The rep saved after the removal stays: no removal held it. The add is placed at
+  // every point of every order: 2 orders of two changes, 5 places each.
+  const orders = interleavings(2).flatMap((base) => Array.from({ length: base.length + 1 }, (_, at) => [...base.slice(0, at), 'add', ...base.slice(at)]));
+  assert.equal(orders.length, 10);
+  for (const earlier of [false, true]) {
+    const others = endsOtherThan(orders, (order) => {
+      const w = windows(2);
+      if (earlier) seedEarlier(w);
+      const { records: [a, b] } = openAll(w, clockFrom());
+      assert.equal(a.add('x', rep({ ms: 101 })).saved, true);
+      w.deliver();
+      w.tabs[1].storage.removeItem(RECORD_KEY);                  // removes G1
+      assert.equal(b.add('y', rep({ ms: 201 })).saved, true);   // starts G2
+      for (const step of order) {
+        if (step === 'arrive') w.arrive();
+        else if (step === 'fire') w.fireNext(0);
+        else assert.equal(a.add('x', rep({ ms: 102 })).saved, true, `${order.join(' ')}: the rep after the removal was refused`);
+      }
+      w.drain();
+      return { record: canonical(w.stored()), a: statusOf(a), b: statusOf(b), aReads: canonical(a.read()), bReads: canonical(b.read()) };
+    }, {
+      record: { x: [102], y: [201] },
+      a: { missing: 0, removed: 1, error: null },
+      b: QUIET,
+      aReads: { x: [102], y: [201] },
+      bReads: { x: [102], y: [201] },
+    });
+    assert.deepEqual(others, [], `${earlier ? 'with' : 'without'} an earlier session's rep: an order ended with another record or another account of it`);
+  }
+});
+
+test('a removal made in a window\'s own page is unnamed to that window: it puts its own rep back, and no window fights it', () => {
+  // A page hears no event of its own change (header, THE COST). B removes the record in its own page while holding a
+  // rep of it, and A — which hears the removal — has already written the record back from a copy the removal had not
+  // reached. A withdraws what the removal named and names the rest anew; B, which never learns of its removal, puts
+  // its rep back into the renamed record, and A leaves it there. Had A kept the removed name, every repair of B's
+  // would meet another withdrawal of A's for as long as both windows were open: measured, they never stopped writing.
+  const w = windows(2);
+  const { records: [a, b] } = openAll(w, clockFrom());
+  assert.equal(b.add('y', rep({ ms: 201 })).saved, true);
+  w.deliver();
+  w.tabs[1].storage.removeItem(RECORD_KEY);
+  assert.equal(a.add('x', rep({ ms: 102 })).saved, true);  // from a copy that still holds the removed record
+  w.drain();                                                // throws when the windows never stop writing
+  assert.deepEqual(canonical(w.stored()), { x: [102], y: [201] }, 'the cost is no longer what the header says');
+  assert.deepEqual([statusOf(a), statusOf(b)], [QUIET, QUIET]);
+});
+
+test('the price of naming: a removed record written back by hand is emptied again by every window that heard the removal, while it is open', () => {
+  // The removed record written back under its own name is just what a window whose copy still held it writes, so a
+  // window that heard the removal cannot tell the two apart (header, THE COST). Every rep the removal named goes —
+  // this window's, another window's, an earlier session's — and what is written after it stays.
+  const w = windows(3);
+  seedEarlier(w);
+  const { records: [a, b, c] } = openAll(w, clockFrom());
+  assert.equal(a.add('x', rep({ ms: 111 })).saved, true);
+  w.deliver();
+  assert.equal(b.add('y', rep({ ms: 222 })).saved, true);
+  w.deliver();
+  const removed = w.raw();
+  w.tabs[2].storage.removeItem(RECORD_KEY);
+  w.deliver();
+  const heard = { missing: 0, removed: 1, error: null };
+  assert.deepEqual([statusOf(a), statusOf(b)], [heard, heard], 'precondition: the removal was heard');
+  w.tabs[2].storage.setItem(RECORD_KEY, removed);
+  w.deliver();
+  assert.deepEqual(canonical(w.stored()), {}, 'a removed rep written back stayed on record');
+  assert.notEqual(JSON.parse(w.raw()).gen, JSON.parse(removed).gen, 'what is left of a removed record written back kept its name');
+  assert.equal(c.add('z', rep({ ms: 333 })).saved, true);
+  w.deliver();
+  assert.deepEqual(canonical(w.stored()), { z: [333] });
+  assert.deepEqual([statusOf(a), statusOf(b), statusOf(c)], [heard, heard, QUIET]);
+});
+
+test('random runs of three windows: every rep saved after the last removal stays, no rep a removal named comes back unless the page that removed it made it, and no window writes forever', () => {
+  // The header's claims over 1,500 seeded runs — adds, removals, `clear()`s, and changes taken in and heard in any
+  // order — beside every order of the cases above. Measured over 80,000 runs of three and four windows on
+  // 2026-10-18. The seeds are fixed, so a failure names its run.
+  let state = 0;
+  const rnd = () => { state = (state * 1103515245 + 12345) >>> 0; return state / 2 ** 32; };
+  const pick = (n) => Math.floor(rnd() * n);
+  const msIn = (text) => new Set(text === null ? [] : [...parseRecord(text).values()].flat().map((r) => r.ms));
+  const failures = [];
+  for (let run = 1; run <= 1_500; run += 1) {
+    state = run;
+    const w = windows(3);
+    if (run % 2) seedEarlier(w);
+    let t = 1_760_000_000_000;
+    const { records } = openAll(w, () => { t += 1 + pick(3); return t; });
+    const owner = new Map();     // ms -> the window that made the rep
+    const saved = [];            // { ms, at }: the storage change that saved it
+    const removals = [];         // { at, by, held, named }
+    let ms = 100;
+    const steps = [];
+    try {
+      for (let s = 8 + pick(20); s > 0; s -= 1) {
+        const r = rnd();
+        const i = pick(3);
+        if (r < 0.40) {
+          ms += 1;
+          steps.push(`add${i}`);
+          if (records[i].add(rnd() < 0.5 ? 'x' : 'y', rep({ ms })).saved) { owner.set(ms, i); saved.push({ ms, at: w.changes() }); }
+        } else if (r < 0.48) {
+          steps.push(`remove${i}`);
+          const held = w.raw();
+          w.tabs[i].storage.removeItem(RECORD_KEY);
+          removals.push({ at: w.changes(), by: i, held: msIn(held), named: held !== null });
+        } else if (r < 0.52) {
+          steps.push(`clear${i}`);
+          w.tabs[i].storage.clear();
+          removals.push({ at: w.changes(), by: i, held: new Set(), named: false });
+        } else if (r < 0.76) {
+          if (w.waiting()) { steps.push('arrive'); w.arrive(); }
+        } else if (w.pending(i)) {
+          steps.push(`hear${i}`);
+          w.fireNext(i);
+        }
+      }
+      w.drain();
+    } catch (e) {
+      failures.push(`run ${run} [${steps.join(' ')}]: ${e.message}`);
+      continue;
+    }
+    const final = msIn(w.raw());
+    for (const { by, held, named } of removals) {
+      for (const m of held) if (named && final.has(m) && owner.get(m) !== by) failures.push(`run ${run} [${steps.join(' ')}]: rep ${m} came back after window ${by} removed it`);
+    }
+    const last = Math.max(0, ...removals.map((x) => x.at));
+    for (const { ms: m, at } of saved) if (at > last && !final.has(m)) failures.push(`run ${run} [${steps.join(' ')}]: rep ${m}, saved after the last removal, was lost`);
+    records.forEach((rec, i) => {
+      const st = statusOf(rec);
+      if (st.missing || st.error) failures.push(`run ${run} [${steps.join(' ')}]: window ${i} ends with ${JSON.stringify(st)}`);
+    });
+  }
+  assert.deepEqual(failures.slice(0, 5), []);
 });
 
 test('row 10: a record removed where no event says so stays removed — after an add here, or a record another instance started', () => {
@@ -876,8 +1112,8 @@ test('the first-rep race: two windows that each start a record in the same gap b
   // Before: a record started where none was stored is another generation, and any other generation was taken
   // for a removal, so the window whose write landed first lost its rep — counted in `removed`, which no screen
   // shows: silent. Measured in both engines, every crossed pair from an empty record lost one (165 of 165). A
-  // window now drops its reps only when it SEES its own record disappear; another record standing in its place
-  // is the race, and the reps go into it by id. Both orders of landing, and a same-algorithm pair.
+  // window now drops a rep only when a removal names it or its own look finds no record; another record standing in
+  // its place is the race, and the reps go into it by id. Both orders of landing, and a same-algorithm pair.
   for (const [what, ids, last] of [['b lands last', ['x', 'y'], 1], ['a lands last', ['x', 'y'], 0], ['one algorithm', ['x', 'x'], 1]]) {
     const w = windows(2);
     const { records, heard } = openAll(w, clockFrom());
@@ -893,7 +1129,7 @@ test('the first-rep race: two windows that each start a record in the same gap b
   }
 });
 
-test('a wipe of every key, whose event names nothing, is seen at the look its event brings — and when another window has started a record first, the wiped reps come back rather than any being lost', () => {
+test('a wipe of every key, whose event names nothing, is seen at the look its event brings — and when another window has started a record first, or wrote before the wipe reached it, the wiped reps come back rather than any being lost', () => {
   // `clear()` from another window, Chromium's DevTools clear-all and its "Clear site data": an event with no key
   // and no `oldValue` (measured in both engines, 2026-10-18), and the window reads no record when it runs.
   const w = windows(2);
@@ -906,8 +1142,8 @@ test('a wipe of every key, whose event names nothing, is seen at the look its ev
   assert.equal(b.add('y', rep({ ms: 222 })).saved, true);
   w.deliver();
   assert.deepEqual(msOf(w.stored()), { y: [222] }, 'a wiped rep came back');
-  // THE GAP (header, WHAT A WIPE TELLS ANOTHER WINDOW): this window's handler runs only after another window has
-  // started a record — a busy thread — so its first look finds a record, and nothing named the one wiped.
+  // THE COST (header): this window's handler runs only after another window has started a record — a busy thread —
+  // so its first look finds a record, and nothing named the one wiped.
   const v = windows(2);
   const { records: [c, d] } = openAll(v, clockFrom());
   assert.equal(c.add('x', rep({ ms: 111 })).saved, true);
@@ -916,8 +1152,19 @@ test('a wipe of every key, whose event names nothing, is seen at the look its ev
   assert.equal(d.add('y', rep({ ms: 222 })).saved, true);
   v.deliver({ events: false });
   v.fire();
-  assert.deepEqual(msOf(v.stored()), { y: [222], x: [111] }, 'the gap is no longer what the header says');
+  assert.deepEqual(msOf(v.stored()), { y: [222], x: [111] }, 'the cost is no longer what the header says');
   assert.deepEqual(statusOf(c), QUIET);
+  // And a window that wrote before the wipe reached it wrote the wiped record back: nothing names what was wiped,
+  // so another window's wiped rep stays, beside the rep saved after the wipe.
+  const u = windows(2);
+  const { records: [e, f] } = openAll(u, clockFrom());
+  assert.equal(f.add('y', rep({ ms: 111 })).saved, true);
+  u.deliver();
+  u.tabs[1].storage.clear();
+  assert.equal(e.add('x', rep({ ms: 222 })).saved, true);   // from a copy that still holds the wiped record
+  u.drain();
+  assert.deepEqual(msOf(u.stored()), { y: [111], x: [222] }, 'the cost is no longer what the header says');
+  assert.deepEqual([statusOf(e), statusOf(f)], [QUIET, QUIET]);
 });
 
 test('row 11: a record another window made unreadable is said at once, and said no more once it reads again', () => {
