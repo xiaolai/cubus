@@ -17,7 +17,7 @@
 // comes near the view. Every card of every set built at every visit was 208 ms on the UI thread (measured
 // 2026-10-18 in WebKit) — for pictures nobody had scrolled to.
 
-import { PHOTO_BOX, isMarked, isPhotographed } from '../../case-photo.js';
+import { PHOTO_FRAME, isMarked, isPhotographed } from '../../case-photo.js';
 import { netSvg, topFaceSvg } from '../../cube-flat.js';
 import { movedPieces } from '../../drill/case-of.js';
 import { plural, t } from '../../i18n.js';
@@ -84,9 +84,9 @@ export function outlineMoved(svg, moved) {
  */
 export function tilePicture(row, region, look, esc) {
   if (isPhotographed(row)) {
-    // Sized by the stylesheet, which knows where the well is drawn (a tile's is smaller than the photograph, which is
-    // taken at PHOTO_BOX and drawn contained); its shape is the photograph's, so a contained picture fills it.
-    return `<span class="case-photo" data-photo="pending" role="img" aria-label="${esc(t('The case %1 solves', rowName(row)))}" style="aspect-ratio:${PHOTO_BOX.w}/${PHOTO_BOX.h}"></span>`;
+    // Sized by the stylesheet, which knows where the well is drawn; its shape is the still's — cut to the cube in
+    // PHOTO_FRAME's shape — so the photograph fills it.
+    return `<span class="case-photo" data-photo="pending" role="img" aria-label="${esc(t('The case %1 solves', rowName(row)))}" style="aspect-ratio:${PHOTO_FRAME.w}/${PHOTO_FRAME.h}"></span>`;
   }
   const flat = casePicture(row, look);
   return isMarked(row) ? outlineMoved(flat, movedPieces(row, region).viewed.flat()) : flat;

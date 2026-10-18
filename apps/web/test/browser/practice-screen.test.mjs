@@ -1241,6 +1241,10 @@ test('photographs land in reading order, each shown as it lands — and coming b
     // Through a page and Back: a new mount of the library, the same session.
     await page.click(`#practiceList [data-alg="${first.reading[0]}"]`);
     await page.waitForFunction((x) => window.__p.ready(x), first.reading[0], { timeout: LIVENESS_MS });
+    // The click pointed at the tile, so the pulse sized the renderer for its well; the page's cube is that renderer,
+    // and must not keep the well's size or place (E9 — a library left mid-pulse once keyed every photograph anew).
+    assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('cubus-cube')].map((c) => c.getAttribute('style') ?? '')
+      .filter((st) => /inset|left|top|\dpx/.test(st))), [], 'the page\'s cube kept the pulse\'s size and place');
     const beforeBack = await taken();
     await page.click('#practiceBack');
     await page.waitForSelector('.practice-screen[data-composition="library"][data-ready="1"][data-method="cfop"]', { timeout: LIVENESS_MS });

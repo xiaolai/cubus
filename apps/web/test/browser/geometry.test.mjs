@@ -1363,6 +1363,43 @@ async function libraryShowing(page, { key, stage = null, set = null }) {
   return scope;
 }
 
+/** The share of a tile's width the painted cube in its photograph must reach (dev-docs/practice-redesign-plan.md E9). */
+const CUBE_FILLS = 0.75;
+
+/**
+ * Every photographed tile in `scope`: the PAINTED cube's box on the page — the photograph's own non-transparent pixels,
+ * placed where `object-fit: contain` draws them — its share of the tile's width, and the ring's box. Read off the
+ * pixels, never off the well: a well the width of the tile says nothing about how much of it the cube paints.
+ */
+const photographedCubes = (page, scope) => page.evaluate(async (sel) => {
+  const box = (b) => ({ left: b.left, top: b.top, right: b.right, bottom: b.bottom });
+  const out = [];
+  for (const tile of document.querySelectorAll(`${sel} [data-alg]`)) {
+    const img = tile.querySelector('.case-photo[data-photo="shown"] > img');
+    if (!img) continue;
+    await img.decode();
+    const w = img.naturalWidth; const h = img.naturalHeight;
+    const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+    const g = cv.getContext('2d');
+    g.drawImage(img, 0, 0);
+    const px = g.getImageData(0, 0, w, h).data;
+    let x0 = w; let y0 = h; let x1 = -1; let y1 = -1;
+    for (let i = 3; i < px.length; i += 4) {
+      if (px[i] <= 8) continue;
+      const p = (i - 3) / 4; const x = p % w; const y = (p - x) / w;
+      x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+    }
+    const r = img.getBoundingClientRect();
+    const k = Math.min(r.width / w, r.height / h);
+    const ox = r.left + (r.width - w * k) / 2; const oy = r.top + (r.height - h * k) / 2;
+    const cube = { left: ox + x0 * k, top: oy + y0 * k, right: ox + (x1 + 1) * k, bottom: oy + (y1 + 1) * k };
+    const t = tile.getBoundingClientRect();
+    const ring = tile.querySelector('.badge svg');
+    out.push({ id: tile.dataset.alg, cube, share: (cube.right - cube.left) / t.width, ring: ring ? box(ring.getBoundingClientRect()) : null });
+  }
+  return out;
+}, scope);
+
 for (const fixture of FIXTURES) {
   test(`practice library, largest stage drawn: ${label(fixture)}`, async () => {
     const { page, context, errors } = await openAt(fixture, urlFor(fixture, 'practice'));
@@ -1390,6 +1427,14 @@ for (const fixture of FIXTURES) {
       assert.equal(drawn.tiles, largest.n, `the largest stage (${largest.key}/${largest.name}) drew ${drawn.tiles} of its ${largest.n} tiles`);
       assert.ok(drawn.photos > 0, `the largest stage (${largest.key}/${largest.name}) shows no photograph, so this measures none`);
       practiceFloor(await measureScreen(page), fixture, `library (${largest.key}/${largest.name}, ${drawn.tiles} tiles, ${drawn.photos} photographs)`);
+      // E9: the cube fills its tile, and the ring stays off it.
+      const fill = await photographedCubes(page, scope);
+      assert.equal(fill.length, drawn.photos, 'precondition: every photograph measured');
+      assert.deepEqual(fill.filter((c) => !c.ring), [], 'precondition: every tile carries its ring once the record is read');
+      const small = fill.filter((c) => c.share < CUBE_FILLS);
+      assert.deepEqual(small.map((c) => `${c.id} ${(100 * c.share).toFixed(1)}%`), [],
+        `the painted cube is under ${100 * CUBE_FILLS}% of its tile's width`);
+      assert.deepEqual(fill.filter((c) => overlaps(c.ring, c.cube)).map((c) => c.id), [], 'the progress ring draws over the cube');
       // The rail is one line in portrait — a strip, never a second row — and its stages are all reachable.
       const rail = await page.evaluate(() => {
         const items = [...document.querySelectorAll('.rail [data-jump]')];

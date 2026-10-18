@@ -611,13 +611,14 @@
       .sec-head .tbtn { flex: none; }
       .set-cap { margin: 6px 0; font-size: var(--fs-caption); color: var(--ink-4); }
       .tiles { --tile-h: 104px; display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 10px; }
-      /* ONE tap target: the tile opens its algorithm. The picture is contained in a fixed box so a net (wide) and a
-         top face (square) sit alike; the ring is in the corner, drawn only once the record has been read. */
+      /* ONE tap target: the tile opens its algorithm. The picture box is the tile's width less its padding, in the
+         photograph's shape (PHOTO_FRAME in lib/case-photo.js, 15 : 16), so a photographed cube fills it and a net (wide)
+         and a top face (square) are contained in the same box. The ring is in the corner, drawn only once the record
+         has been read, above the picture: the top padding is the ring's row, so it never draws over the cube. */
       .case-tile { position: relative; min-width: 0; min-height: var(--tile-h); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
-        padding: 10px 6px 8px; border-radius: var(--r-card); background: var(--panel); border: 1px solid var(--line); }
+        padding: 32px 6px 8px; border-radius: var(--r-card); background: var(--panel); border: 1px solid var(--line); }
       .case-tile:hover { border-color: var(--ink-6); }
-      .case-tile > svg { width: 74px; height: 64px; flex: none; }
-      .case-tile > .case-photo { width: 74px; }
+      .case-tile > :is(svg, .case-photo) { width: 100%; height: auto; aspect-ratio: 15 / 16; flex: none; }
       .case-tile .cap { max-width: 100%; font-size: var(--fs-caption); font-weight: 600; color: var(--ink-3); line-height: 1.2; overflow-wrap: anywhere; text-align: center; }
       .case-tile .badge { position: absolute; top: 5px; right: 5px; }
       .case-tile.done { border-color: var(--ok); box-shadow: inset 0 0 0 1px var(--ok); }
@@ -638,13 +639,11 @@
         .rail-item { flex: none; width: 84px; grid-template-columns: 1fr; grid-template-rows: 40px auto auto; justify-items: center; row-gap: 2px; text-align: center; }
         .rail-item .pic { grid-row: auto; }
         .tiles { --tile-h: 92px; grid-template-columns: repeat(auto-fill, minmax(78px, 1fr)); gap: 8px; }
-        .case-tile { padding: 8px 4px 6px; }
-        .case-tile > svg { width: 62px; height: 54px; }
-        .case-tile > .case-photo { width: 62px; }
+        .case-tile { padding: 32px 4px 6px; }
       }
       /* A net row's picture is a photograph of the app's own cube (lib/case-photo.js): an empty well its size until
          the photograph lands, and the live renderer over it while the tile is pointed at or focused. */
-      .case-photo { position: relative; display: block; flex: none; max-width: 100%; border-radius: var(--r-3); background: var(--panel-sunk); }
+      .case-photo { position: relative; display: block; flex: none; max-width: 100%; overflow: hidden; border-radius: var(--r-3); background: var(--panel-sunk); }
       .case-photo[data-photo="shown"] { background: none; }
       .case-photo > img { display: block; width: 100%; height: 100%; object-fit: contain; }
       .case-photo > cubus-cube { position: absolute; inset: 0; pointer-events: none; }

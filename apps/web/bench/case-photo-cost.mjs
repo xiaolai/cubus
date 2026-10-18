@@ -4,8 +4,9 @@
 // The gates, as amended after WI-3 (dev-docs/practice-redesign-plan.md §13 item 3): (a) the first 14 tiles in
 // READING ORDER photographed within 0.5 s, and (b) the first screen of tiles within 1.5 s — each a median over the
 // runs, and a missed gate exits non-zero. Reading order is the order the wells sit in the page, which is the order a
-// grid lays its tiles out, row by row. The order itself and "no photograph taken twice" are browser cases, not here. Each run is a fresh browser context, so nothing is cached and no renderer is parked: the first photograph
-// pays for the renderer's build. The clock starts when CFOP (full) is chosen as the library's method (its first
+// grid lays its tiles out, row by row. The order itself and "no photograph taken twice" are browser cases, not here. Each run is a fresh browser context, so no photograph is cached from an earlier run. But a fresh
+// install opens the library on Beginner, and drawing it asks for Beginner's net-row photographs, which builds and
+// borrows the renderer before the clock starts — so no photograph timed here pays for the renderer's build. The clock starts when CFOP (full) is chosen as the library's method (its first
 // stage's tiles are built as they come near the view) and stops when the last well in question holds its photograph.
 // The stage's tiles below the view are built only when scrolled near, so "stage" here is the tiles drawn on approach.
 //
