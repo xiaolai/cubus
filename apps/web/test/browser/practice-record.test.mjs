@@ -5,7 +5,7 @@
 //
 //   * two pages saving at the same instant: every rep kept, none refused, and each page told of the other's saves
 //   * the old localStorage record, version 1 and version 2, imported by two pages opened at once: each rep once,
-//     and the key removed; one neither version reads, left as it is and said
+//     and the key left as it is, as the next open finds it; one neither version reads, left as it is and said
 //   * the database out of reach: a newer version's database (`unavailable`), an upgrade waiting on a connection
 //     that will not let go (`blocked`), this connection asked to let go by an upgrade or a deletion (`closed`) —
 //     each said, each failing the operations it stops, and each cleared by the next operation that reaches it
@@ -109,7 +109,7 @@ for (const engine of ENGINES) {
   });
 
   for (const version of [1, 2]) {
-    test(`${engine}: a version-${version} record in localStorage, imported by two pages opened at once, is in the database once and its key is gone`, async () => {
+    test(`${engine}: a version-${version} record in localStorage, imported by two pages opened at once, is in the database once, and its key is left as it is`, async () => {
       const { context, pages: [a, b] } = await pages(engine, 2);
       try {
         const V1_REP = { t: 5, c: true, l: false, ms: 900, r: null, n: 6, p: 0, h: 7 };
@@ -129,7 +129,7 @@ for (const engine of ENGINES) {
           }));
           assert.deepEqual(seen.ms, { x: [900, 800, 700], y: [600] }, 'a rep was put in twice, lost or moved');
           assert.equal(new Set(seen.ids).size, 4);
-          assert.deepEqual([seen.legacy, seen.key], [null, null]);
+          assert.deepEqual([seen.legacy, seen.key], [null, text], 'the old record was touched');
         }
       } finally {
         await context.close();

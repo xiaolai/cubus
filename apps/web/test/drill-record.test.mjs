@@ -36,23 +36,17 @@ function open({ db = memoryDatabase(), now = clockFrom(), onChange, ...rest } = 
   return { record, store, db, heard };
 }
 
-/** localStorage as far as the record uses it: the old record under its key, and the failures a real one has. */
-function fakeLocal(text, { readThrows = false, removeThrows = false } = {}) {
+/** localStorage as far as the record uses it: the old record under its key, and a read that throws as a real one
+ *  can. It has no `removeItem`, so a record that tried to delete the old record would throw: it never may (header). */
+function fakeLocal(text, { readThrows = false } = {}) {
   const map = new Map(text === null ? [] : [[RECORD_KEY, text]]);
   return {
     readThrows,
-    removeThrows,
-    removed: 0,
     getItem(k) {
       if (this.readThrows) throw Object.assign(new Error('the read was refused'), { name: 'SecurityError' });
       return map.has(k) ? map.get(k) : null;
     },
     setItem(k, v) { map.set(k, String(v)); },
-    removeItem(k) {
-      if (this.removeThrows) throw Object.assign(new Error('the removal was refused'), { name: 'SecurityError' });
-      this.removed += 1;
-      map.delete(k);
-    },
     raw: () => (map.has(RECORD_KEY) ? map.get(RECORD_KEY) : null),
   };
 }
@@ -614,11 +608,10 @@ test('a database out of reach is a state: said once through onChange, every oper
   assert.deepEqual([record.status().error, heard.changes], [null, 2]);
 });
 
-// ---- the old localStorage record is imported once ------------------------------------------------------
+// ---- the old localStorage record is imported at every open, and never deleted ----------------------------
 //
 // Versions 1 and 2 lived in localStorage. A valid one is put into the database in one transaction, as a union by
-// rep id, and its key removed only after that transaction committed; one invalid as both versions is left exactly
-// as it is and said.
+// rep id, and its key is left as it is; one invalid as both versions is left as it is too, and said.
 
 /** A rep as version 1 stored it — no id — and a version-1 record. */
 const V1_REP = Object.freeze({ t: 5, c: true, l: false, ms: 900, r: null, n: 6, p: 0, h: 7 });
@@ -641,7 +634,7 @@ const V2 = JSON.stringify({
   },
 });
 
-test('a version-1 record is imported whole, in its order, with ids from each rep itself — and its key removed after the commit', async () => {
+test('a version-1 record is imported whole, in its order, with ids from each rep itself — and its key left as it is', async () => {
   const local = fakeLocal(V1);
   const db = memoryDatabase();
   const { record, heard } = open({ db, legacy: local });
@@ -654,7 +647,7 @@ test('a version-1 record is imported whole, in its order, with ids from each rep
   assert.equal(statsOf(now.get('oll-27')).median, 850, 'the import moved a figure');
   const order = Object.entries(db.value.algs).flatMap(([id, reps]) => reps.map((r) => [r.s, id, r.t])).sort((a, b) => a[0] - b[0]);
   assert.deepEqual(order.map(([, id, t]) => `${id}@${t}`), ['oll-27@1000', 'pll-t@2000', 'oll-27@3000', 'oll-27@3000', 'pll-t@4000', 'r2@5000']);
-  assert.deepEqual([local.raw(), db.writes, record.status().legacy, heard.changes], [null, 1, null, 0]);
+  assert.deepEqual([local.raw(), db.writes, record.status().legacy, heard.changes], [V1, 1, null, 0]);
   // And the practice after it is saved beside the old reps.
   assert.equal((await record.add('pll-t', rep({ ms: 600 }))).saved, true);
   assert.deepEqual(msOf(await record.read()), { ...V1_MS, 'pll-t': [null, null, 600] });
@@ -670,7 +663,7 @@ test('a version-2 record is imported with its own ids, in its order', async () =
   // (time, id) was version 2's one order: x's 3000 rep (b…) before y's (c…).
   const order = Object.values(db.value.algs).flat().sort((a, b) => a.s - b.s).map((r) => r.ms);
   assert.deepEqual(order, [900, 700, 600, 500]);
-  assert.equal(local.raw(), null);
+  assert.equal(local.raw(), V2);
 });
 
 test('the import is a union by rep id: two windows importing at once, or one import made twice, put each rep in once', async () => {
@@ -684,12 +677,11 @@ test('the import is a union by rep id: two windows importing at once, or one imp
     const ids = Object.values(db.value.algs).flat().map((r) => r.i);
     assert.equal(new Set(ids).size, ids.length);
     assert.equal(ids.length, text === V1 ? 6 : 4, 'a rep was put in twice, or not at all');
-    assert.deepEqual([db.writes, local.raw(), a.status().legacy, b.status().legacy], [1, null, null, null]);
-    // The same record again — its key put back by hand, or a removal that never happened: nothing is written.
-    const again = fakeLocal(text);
+    assert.deepEqual([db.writes, local.raw(), a.status().legacy, b.status().legacy], [1, text, null, null]);
+    // Every later open imports it again, and writes nothing.
     const before = structuredClone(db.value);
-    await open({ db, legacy: again }).record.ready;
-    assert.deepEqual([db.value, db.writes, again.raw()], [before, 1, null], 'a second import changed the record');
+    await open({ db, legacy: local }).record.ready;
+    assert.deepEqual([db.value, db.writes, local.raw()], [before, 1, text], 'a second import changed the record');
   }
 });
 
@@ -767,7 +759,7 @@ test('an old record neither version reads is left exactly as it is and said — 
     await record.ready;
     assert.equal(record.status().legacy?.code, code, what);
     assert.equal(heard.changes, 1, `${what}: not said through onChange`);
-    assert.deepEqual([local.raw(), local.removed, db.writes], [text, 0, 0], `${what}: the old record was touched`);
+    assert.deepEqual([local.raw(), db.writes], [text, 0], `${what}: the old record was touched`);
     assert.equal((await record.add('a', rep())).saved, true, `${what}: practice was not saved`);
     assert.deepEqual([local.raw(), record.status().legacy.code], [text, code], `${what}: the old record was touched, or it stopped being said`);
   }
@@ -783,7 +775,7 @@ test('an import the store could not make is said, the old record stays, and the 
   assert.equal(record.status().legacy.cause.cause.name, 'QuotaExceededError', 'the cause was lost');
   store.faults.write = false;
   assert.deepEqual(msOf(await record.read()), V1_MS);
-  assert.deepEqual([record.status().legacy, heard.changes, local.raw()], [null, 2, null]);
+  assert.deepEqual([record.status().legacy, heard.changes, local.raw()], [null, 2, V1]);
 });
 
 test('an old record that cannot be read is said, and read again before the next operation', async () => {
@@ -794,35 +786,36 @@ test('an old record that cannot be read is said, and read again before the next 
   assert.deepEqual(await record.read(), new Map());
   local.readThrows = false;
   assert.deepEqual(msOf(await record.read()), V1_MS);
-  assert.deepEqual([record.status().legacy, local.raw()], [null, null]);
+  assert.deepEqual([record.status().legacy, local.raw()], [null, V1]);
 });
 
-test('an old record changed after it was imported is not removed: the next operation imports it again, adding only what is new', async () => {
-  const local = fakeLocal(V2);
-  const db = memoryDatabase();
-  const store = memoryStore(db);
-  const update = store.update;
-  // Between the import's commit and the removal, an old page writes one more rep into the old record.
+test('Codex\'s audit of 6e61bf60: a rep another window appends after the import is never deleted — the next open imports it', async () => {
+  // Before: the import removed the key when this window's copy of localStorage still held the text it imported. A
+  // window's copy can be behind the storage itself, so another window's appended rep was deleted unread.
   const more = JSON.parse(V2);
   more.algs.y.push({ ...V1_REP, i: rid(3, 'b'), t: 4_000, ms: 400 });
-  store.update = async (fn) => { const out = await update(fn); local.setItem(RECORD_KEY, JSON.stringify(more)); return out; };
-  const record = openPracticeRecord({ store, now: clockFrom(), onChange() {}, legacy: local });
-  await record.ready;
-  assert.notEqual(local.raw(), null, 'the old record was removed though it held a rep not imported');
-  store.update = update;
+  let storage = JSON.stringify(more);
+  // This window's copy still holds the text before the append; a removal would reach the storage itself.
+  const behind = { getItem: () => V2, removeItem: () => { storage = null; } };
+  const db = memoryDatabase();
+  await open({ db, legacy: behind }).record.ready;
+  assert.notEqual(storage, null, 'the old record was deleted, and the rep appended to it with it');
+  const { record } = open({ db, legacy: { getItem: () => storage } });
   assert.deepEqual(msOf(await record.read()), { x: [900, 600], y: [700, 500, 400] });
-  assert.equal(local.raw(), null);
 });
 
-test('an old record that could not be removed is said, and importing it again counts no rep twice', async () => {
-  const local = fakeLocal(V1, { removeThrows: true });
+test('an old record that grows is imported again at the next open, adding only what is new', async () => {
+  const local = fakeLocal(V2);
   const db = memoryDatabase();
+  await open({ db, legacy: local }).record.ready;
+  const more = JSON.parse(V2);
+  more.algs.y.push({ ...V1_REP, i: rid(3, 'b'), t: 4_000, ms: 400 });
+  local.setItem(RECORD_KEY, JSON.stringify(more));
   const { record } = open({ db, legacy: local });
-  await record.ready;
-  assert.equal(record.status().legacy?.code, 'write-failed');
-  local.removeThrows = false;
-  assert.deepEqual(msOf(await record.read()), V1_MS);
-  assert.deepEqual([db.writes, local.raw(), record.status().legacy], [1, null, null]);
+  assert.deepEqual(msOf(await record.read()), { x: [900, 600], y: [700, 500, 400] });
+  assert.equal(db.writes, 2);
+  await open({ db, legacy: local }).record.ready;
+  assert.equal(db.writes, 2, 'an import with nothing new wrote');
 });
 
 // ---- the API's edges ------------------------------------------------------------------------------------

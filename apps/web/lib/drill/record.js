@@ -54,13 +54,18 @@
 // contract as `pushSolve` in lib/scramble-roll.js, whose caller says so on screen. Why the database is out of reach
 // (`unavailable`, `blocked`, `closed`) is also a standing state, `status().error`, told through `onChange`.
 //
-// THE OLD RECORD IS IMPORTED ONCE. Versions 1 and 2 lived in localStorage under `cubusDrillRecord` (version 1 with
-// no rep ids — never released, but the owner's installs keep one). At open, a valid one is put into the database in
-// ONE transaction, as a union by rep id: a version-2 rep keeps its id, and a version-1 rep is given one from its own
-// time and its place among its algorithm's reps at that time (`legacyId`) — so two windows importing one record at
-// once, or one import run twice, put each rep in once. The key is removed only after that transaction has
-// committed, and only while it still holds the text imported. A record invalid as BOTH versions is left exactly as
-// it is and said (`status().legacy`); the practice saved from then on goes into the database.
+// THE OLD RECORD IS IMPORTED AT EVERY OPEN, AND NEVER DELETED. Versions 1 and 2 lived in localStorage under
+// `cubusDrillRecord` (version 1 with no rep ids — never released, but the owner's installs keep one). At open, a valid
+// one is put into the database in ONE transaction, as a union by rep id: a version-2 rep keeps its id, and a
+// version-1 rep is given one from its own time and its place among its algorithm's reps at that time (`legacyId`) —
+// so two windows importing one record at once, or one record imported at every open, put each rep in once, and a
+// rep already there costs no write. The key is never removed: localStorage has no compare-and-delete across windows,
+// and a removal checked against the text imported deleted a rep another window had appended between the check and the
+// removal (Codex's audit of 6e61bf60). The price, measured: a full old record (5000 reps, 530 KB) is parsed and
+// checked again at each open, about 16 ms in Node; its text stays in localStorage until the site's data is cleared;
+// and a deletion of the database ALONE puts its reps back at the next open — nothing is lost, and clearing site data
+// clears both. A record invalid as BOTH versions is left exactly as it is and said (`status().legacy`); the practice
+// saved from then on goes into the database.
 //
 // ANOTHER WINDOW'S WRITE is announced on a BroadcastChannel once it has committed, and every other record open on
 // the origin calls `onChange`, so the screen reads its figures again.
@@ -432,8 +437,8 @@ const SAVED = Object.freeze({ saved: true });
  * @param {() => number} o.now  epoch milliseconds, stamped on each rep as it is saved
  * @param {() => void} o.onChange  called when `status()` changes and when another window's write has committed —
  *   the record on screen may now be another: read it again. Never for this record's own add, which its caller awaits
- * @param {{ getItem(k: string): string|null, removeItem(k: string): void }|null} [o.legacy]  where versions 1 and
- *   2 were kept (the page's `localStorage`), imported at open
+ * @param {{ getItem(k: string): string|null }|null} [o.legacy]  where versions 1 and 2 were kept (the page's
+ *   `localStorage`), imported at open and only ever read
  * @param {(new (name: string) => BroadcastChannel)|null} [o.broadcast]  the `BroadcastChannel` constructor: this
  *   record announces its committed writes on it, and hears the others'
  * @param {() => number} [o.random]  a uniform 32-bit unsigned integer per call, from a cryptographic source
@@ -445,9 +450,7 @@ export function openPracticeRecord({ store, now, onChange, legacy = null, broadc
     || typeof now !== 'function' || typeof random !== 'function' || typeof onChange !== 'function') {
     throw new Error('practice record: the store, now, random and onChange are injected, never assumed');
   }
-  if (legacy !== null && (typeof legacy.getItem !== 'function' || typeof legacy.removeItem !== 'function')) {
-    throw new Error('practice record: the old record is read through getItem and removed through removeItem');
-  }
+  if (legacy !== null && typeof legacy.getItem !== 'function') throw new Error('practice record: the old record is read through getItem');
   if (broadcast !== null && typeof broadcast !== 'function') throw new Error('practice record: broadcast is the BroadcastChannel constructor');
 
   const gone = () => signal?.aborted === true;
@@ -498,8 +501,7 @@ export function openPracticeRecord({ store, now, onChange, legacy = null, broadc
   /**
    * Put the localStorage record into the database (header), until that has happened or the record is refused. A
    * failure of the store is said and tried again before the next read or add; a refused record is said and left as
-   * it is. The key is removed only after the import has committed, and only while it holds the text imported —
-   * otherwise it is imported again, which puts in only what is new.
+   * it is. The key is never removed: the next open imports it again, which puts in only what is new.
    */
   const importLegacy = async () => {
     if (legacyDone) return;
@@ -521,13 +523,6 @@ export function openPracticeRecord({ store, now, onChange, legacy = null, broadc
     } catch (e) {
       if (!(e instanceof PracticeRecordError)) throw e;
       sayLegacy(new PracticeRecordError(e.code, `${RECORD_KEY} could not be put into the practice record (${e.message}), so it was left as it is`, e));
-      return;
-    }
-    try {
-      if (legacy.getItem(RECORD_KEY) !== text) return;
-      legacy.removeItem(RECORD_KEY);
-    } catch (e) {
-      sayLegacy(new PracticeRecordError('write-failed', `${RECORD_KEY} is in the practice record but could not be removed; importing it again adds no rep twice`, e));
       return;
     }
     legacyDone = true;
