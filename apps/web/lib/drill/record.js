@@ -437,7 +437,8 @@ const SAVED = Object.freeze({ saved: true });
  * @param {(new (name: string) => BroadcastChannel)|null} [o.broadcast]  the `BroadcastChannel` constructor: this
  *   record announces its committed writes on it, and hears the others'
  * @param {() => number} [o.random]  a uniform 32-bit unsigned integer per call, from a cryptographic source
- * @param {AbortSignal} [o.signal]  closes the store and the channel; `onChange` is never called after it
+ * @param {AbortSignal} [o.signal]  the page has gone: `onChange` is never called after it, and the store and the
+ *   channel close once every operation already asked for has settled
  */
 export function openPracticeRecord({ store, now, onChange, legacy = null, broadcast = null, random = cryptoUint32, signal }) {
   if (!store || ['get', 'update', 'problem', 'listen', 'close'].some((k) => typeof store[k] !== 'function')
@@ -469,11 +470,10 @@ export function openPracticeRecord({ store, now, onChange, legacy = null, broadc
   };
   store.listen(tell);
 
-  const channel = broadcast === null ? null : new broadcast(CHANNEL);
+  let channel = broadcast === null ? null : new broadcast(CHANNEL);
   if (channel) channel.onmessage = tell;
-  const announce = () => { if (!gone()) channel?.postMessage('written'); };
-  const shut = () => { channel?.close(); store.close(); };
-  if (gone()) shut(); else signal?.addEventListener('abort', shut, { once: true });
+  // Other windows hear of a write that commits after this page has gone, too: it is on record.
+  const announce = () => channel?.postMessage('written');
 
   let queue = Promise.resolve();
   const run = (op) => {
@@ -481,6 +481,19 @@ export function openPracticeRecord({ store, now, onChange, legacy = null, broadc
     queue = done.then(() => {}, () => {});
     return done;
   };
+
+  /**
+   * The page has gone (`signal`): close once every operation already asked for has settled — and any asked for while
+   * they run — so a rep the child finished as they tapped Back is still saved, and every promise handed out settles.
+   * Asked for after that, an operation is refused by the closed store (`closed`), never left waiting.
+   */
+  const closeWhenDone = async () => {
+    for (let tail = null; tail !== queue;) { tail = queue; await tail; }
+    channel?.close();
+    channel = null;
+    store.close();
+  };
+  if (gone()) void closeWhenDone(); else signal?.addEventListener('abort', () => { void closeWhenDone(); }, { once: true });
 
   /**
    * Put the localStorage record into the database (header), until that has happened or the record is refused. A

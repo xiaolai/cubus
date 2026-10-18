@@ -21,18 +21,21 @@ export function memoryDatabase(value) {
  *   read    the read inside the next transactions fails (`unreadable`)
  *   write   the write inside the next transactions fails, as a full quota does (`write-failed`, QuotaExceededError)
  *
- * `closed` counts calls to `close()`.
+ * `closed` counts calls to `close()`; after the first, every transaction asked for is refused (`closed`), as the real
+ * store's are, and one already asked for runs to its end.
  */
 export function memoryStore(db) {
   let problem = null;
   let listener = null;
-  const s = { faults: { open: null, read: false, write: false }, closed: 0 };
+  const s = { faults: { open: null, read: false, write: false }, closed: 0, shut: false };
   const say = (error) => {
     const changed = (problem?.code ?? null) !== (error?.code ?? null);
     problem = error;
     if (changed) listener?.();
   };
   const transact = (body) => {
+    // As IndexedDB refuses a transaction on a connection its owner has closed — one already made runs to its end.
+    if (s.shut) return Promise.reject(new PracticeRecordError('closed', 'the practice record was closed by this page'));
     const step = db.tail.then(() => new Promise((resolve) => setImmediate(resolve))).then(() => {
       if (s.faults.open) {
         const error = new PracticeRecordError(s.faults.open, `the database is ${s.faults.open} (test)`);
@@ -61,7 +64,7 @@ export function memoryStore(db) {
     }),
     problem: () => problem,
     listen(fn) { listener = fn; },
-    close() { s.closed += 1; listener = null; },
+    close() { s.closed += 1; s.shut = true; listener = null; },
     /** The connection goes, as a versionchange or the browser closing it takes it: said now, and cleared by the
      *  next operation that reaches the database. */
     lose(code = 'closed') { say(new PracticeRecordError(code, `the connection was ${code} (test)`)); },

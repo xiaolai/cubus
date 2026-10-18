@@ -555,19 +555,39 @@ test('another window\'s committed write is heard through the channel; this windo
   assert.deepEqual(posts, [['cubusPracticeRecord', 'written']]);
 });
 
-test('the signal closes the store and the channel, and nothing is said after it', async () => {
+test('Codex\'s audit of 6e61bf60: a page that goes keeps every save already asked for — the store closes only once they have settled', async () => {
+  // Before: the signal closed the store at once, so a finished rep's save queued behind a read came back
+  // `saved: false` (`closed`) and was never written — a rep the child made, dropped because they tapped Back.
+  const db = memoryDatabase();
   const ctl = new AbortController();
+  const posts = [];
   const channels = [];
-  class Spy { constructor() { channels.push(this); } postMessage() {} close() { this.closed = true; } }
-  const { store, heard } = open({ broadcast: Spy, signal: ctl.signal });
+  class Spy { constructor() { channels.push(this); } postMessage(m) { posts.push(m); } close() { this.closed = true; } }
+  const { record, store, heard } = open({ db, broadcast: Spy, signal: ctl.signal });
+  const reading = record.read();
+  const saving = record.add('x', rep({ ms: 1 }));
+  const savingMore = record.add('x', rep({ ms: 2 }));
   ctl.abort();
-  assert.deepEqual([store.closed, channels[0].closed], [1, true]);
-  channels[0].onmessage();
+  // Asked for while the page is going: run too, before the store closes.
+  const late = record.add('x', rep({ ms: 3 }));
+  assert.deepEqual(await reading, new Map());
+  for (const out of [await saving, await savingMore, await late]) assert.equal(out.saved, true);
+  assert.deepEqual(db.value.algs.x.map((r) => r.ms), [1, 2, 3], 'a save asked for before the page went was not kept');
+  // Other windows are told of those writes; this page, gone, is told of nothing.
+  assert.deepEqual(posts, ['written', 'written', 'written']);
+  await new Promise((resolve) => { setImmediate(resolve); });
+  assert.deepEqual([store.closed, channels[0].closed], [1, true], 'the store or the channel was left open');
+  channels[0].onmessage?.();
   store.lose('closed');
   assert.equal(heard.changes, 0, 'a record whose page has gone said something');
-  // Opened under a signal already aborted: closed at once.
-  const late = open({ broadcast: Spy, signal: ctl.signal });
-  assert.deepEqual([late.store.closed, channels[1].closed], [1, true]);
+  // Asked for after the store has closed: settled at once and said, never left waiting.
+  assert.deepEqual([(await record.add('x', rep())).error?.code], ['closed']);
+  await assert.rejects(record.read(), (e) => e.code === 'closed');
+  // Opened under a signal already aborted: the import is tried, and then it closes.
+  const gone = open({ broadcast: Spy, signal: ctl.signal, legacy: fakeLocal(V1) });
+  await gone.record.ready;
+  await new Promise((resolve) => { setImmediate(resolve); });
+  assert.deepEqual([gone.store.closed, channels[1].closed, Object.keys(gone.db.value.algs).length], [1, true, 3]);
 });
 
 // ---- the database out of reach: a state, said and cleared ---------------------------------------------

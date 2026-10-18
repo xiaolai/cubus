@@ -16,6 +16,7 @@
 //     override is active (`getUsageAndQuota`: quota 1) while the page's own estimate stays ~10 GB and a 5 MB write
 //     commits — in a fresh context and in a persistent profile alike (2026-10-18) — and WebKit has no override
 //   * the browser closing the connection itself, as clearing site data does (Chromium, through the protocol)
+//   * a page that goes: the saves it already asked for are kept, and nothing handed out is left waiting
 //
 // Each test has its own browser context, so its own origin storage. Fails loudly without the browsers:
 // `pnpm exec playwright install webkit chromium` (CI does this).
@@ -232,6 +233,36 @@ for (const engine of ENGINES) {
       assert.equal(upgraded, 'upgraded');
       assert.deepEqual(await a.page.evaluate(() => [rec.status().error?.code, window.heard]), ['closed', 3]);
       assert.deepEqual(await a.page.evaluate(async () => [await rec.read().then(() => 'read', (e) => e.code), rec.status().error?.code]), ['unavailable', 'unavailable']);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test(`${engine}: a page that goes keeps every save already asked for, and a store closed mid-open settles what waits on it`, async () => {
+    // Codex's audit of 6e61bf60: the signal closed the store at once, so a finished rep's save queued behind a read
+    // came back `saved: false`, and a store closed while its open was in flight left that open's callers waiting.
+    const { context, pages: [a] } = await pages(engine);
+    try {
+      const out = await a.page.evaluate(async ({ rep, ms }) => {
+        const ctl = new AbortController();
+        const rec = M.openPracticeRecord({ store: M.indexedDbStore(indexedDB), now: () => Date.now(), onChange() {}, signal: ctl.signal });
+        const reading = rec.read();
+        const saving = rec.add('x', rep);
+        ctl.abort();
+        const add = await saving;
+        const read = await reading.then((m) => m.size, (e) => e.code);
+        const fresh = M.openPracticeRecord({ store: M.indexedDbStore(indexedDB), now: () => Date.now(), onChange() {} });
+        const onRecord = (await fresh.reps('x')).length;
+        const store = M.indexedDbStore(indexedDB, { name: 'closed-mid-open' });
+        const waiting = store.get();
+        store.close();
+        const settled = await Promise.race([
+          waiting.then(() => 'resolved', (e) => e.code),
+          new Promise((resolve) => { setTimeout(() => resolve('still waiting'), ms); }),
+        ]);
+        return { read, saved: add.saved, onRecord, settled };
+      }, { rep: REP, ms: GOES_THROUGH_MS });
+      assert.deepEqual(out, { read: 0, saved: true, onRecord: 1, settled: 'closed' });
     } finally {
       await context.close();
     }

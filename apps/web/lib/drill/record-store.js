@@ -95,7 +95,12 @@ export function indexedDbStore(indexedDB, { name = RECORD_DB, version = 1 } = {}
       request.onsuccess = () => {
         const connection = request.result;
         opening = null;
-        if (shut) { connection.close(); return; }
+        // Closed while the open was in flight: let go of what it brought, and settle what waits on it.
+        if (shut) {
+          connection.close();
+          reject(new PracticeRecordError('closed', 'the practice record was closed by this page'));
+          return;
+        }
         connection.onversionchange = (event) => {
           connection.close();
           lose(connection, new PracticeRecordError('closed', event.newVersion === null
@@ -177,7 +182,8 @@ export function indexedDbStore(indexedDB, { name = RECORD_DB, version = 1 } = {}
     /** `fn` is called whenever `problem()` changes to another code. One listener: the record that owns this store. */
     listen(fn) { listener = fn; },
 
-    /** Let go of the database for good. */
+    /** Let go of the database for good. A transaction already made runs to its end; an open still in flight lets go
+     *  of its connection when it arrives and refuses its callers (`closed`), as every later operation is refused. */
     close() {
       shut = true;
       listener = null;
