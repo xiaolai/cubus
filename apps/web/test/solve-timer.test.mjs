@@ -58,6 +58,45 @@ test('a solve is not timed at all when the cube did not stamp its moves', () => 
   assert.match(t.refusal, /did not timestamp/);
 });
 
+// A GAN Gen2 move after an idle of more than 65 s, and MoYu32's re-anchored move, arrive with
+// `cubeTimestamp: null` (smartcube fork 3d3e0587). No move was lost, so the refusal must name the
+// missing stamp and never a drop — the serials are continuous.
+test('a missing stamp on a middle move refuses for the stamp, never for a drop', () => {
+  const t = make();
+  t.facelets(TARGET, 0);
+  t.move(mv(1_000, { serial: 1 }));
+  t.move(mv(null, { serial: 2 }));
+  t.move(mv(5_000, { serial: 3 }));
+  t.facelets(SOLVED, 3);
+  assert.equal(t.result(), null, 'no invented time');
+  assert.match(t.refusal, /did not timestamp/);
+  assert.doesNotMatch(t.refusal, /dropped/);
+});
+
+test('a missing stamp on the solving move refuses for the stamp, never for a drop', () => {
+  const t = make();
+  t.facelets(TARGET, 0);
+  t.move(mv(1_000, { serial: 1 }));
+  t.move(mv(3_000, { serial: 2 }));
+  t.move(mv(null, { serial: 3 }));
+  t.facelets(SOLVED, 3);
+  assert.equal(t.result(), null, 'no invented time');
+  assert.match(t.refusal, /did not timestamp/);
+  assert.doesNotMatch(t.refusal, /dropped/);
+});
+
+test('a serial gap with every stamp present is still a drop', () => {
+  const t = make();
+  t.facelets(TARGET, 0);
+  t.move(mv(1_000, { serial: 1 }));
+  t.move(mv(3_000, { serial: 2 }));
+  t.move(mv(5_000, { serial: 4 }));
+  t.facelets(SOLVED, 4);
+  assert.equal(t.result(), null);
+  assert.match(t.refusal, /dropped/);
+  assert.doesNotMatch(t.refusal, /timestamp/);
+});
+
 test('dropped moves are detected by serial and refuse to report a short time', () => {
   // The snapshot is ahead of the last move we hold, so the move that finished the solve never
   // arrived — timing to the last move we DID see would undercount.

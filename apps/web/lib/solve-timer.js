@@ -88,6 +88,10 @@ const READY_LAPSE_MS = 10 * 60 * 1000;
 const HOST_DISAGREEMENT_MS = 5000;
 
 /** A usable hardware timestamp, or null. */
+// One sentence for any move that came without the cube's stamp, first or later. "Did not
+// timestamp its moves" claimed every move; a cube that stamps all but one did not do that.
+const UNSTAMPED = 'the cube did not timestamp every move, so this solve could not be timed';
+
 function stampOf(move) {
   const t = move?.cubeTimestamp;
   return typeof t === 'number' && Number.isFinite(t) ? t : null;
@@ -221,7 +225,7 @@ export function createSolveTimer({ target, trusted, now = () => performance.now(
         return state;
       }
       if (stamp === null) {
-        refusal = 'this cube did not timestamp its moves';
+        refusal = UNSTAMPED;
         state = 'running'; // still a solve in progress; it just cannot be timed
         first = last = null;
         moves = 1;
@@ -249,7 +253,15 @@ export function createSolveTimer({ target, trusted, now = () => performance.now(
         // move COUNT a lie, and a count that undercounts feeds a turn rate that flatters.
         refusal = 'moves were dropped, so this solve could not be timed';
       }
-      if (stamp !== null && first) last = { stamp, host: m.timestamp, serial: m.serial };
+      if (stamp === null) {
+        // A later move with no stamp (a GAN Gen2 move after a long idle, MoYu32's re-anchored
+        // move) leaves the span without its true end. Said as what it is: skipping the move
+        // instead let the serial check read the gap it left as a drop, which no move was.
+        refusal = UNSTAMPED;
+      }
+      // The serial is tracked whether or not the move was stamped, so continuity is judged on
+      // what actually arrived.
+      if (first) last = { stamp, host: m.timestamp, serial: m.serial };
     }
     return state;
   };
