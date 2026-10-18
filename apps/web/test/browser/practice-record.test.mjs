@@ -5,7 +5,8 @@
 //
 //   * two pages saving at the same instant: every rep kept, none refused, and each page told of the other's saves
 //   * the old localStorage record, version 1 and version 2, imported by two pages opened at once: each rep once,
-//     and the key left as it is, as the next open finds it; one neither version reads, left as it is and said
+//     and the key left as it is, as the next open finds it; two versions of it imported by two pages, its order kept
+//     in a tie; one neither version reads, left as it is and said
 //   * the database out of reach: a newer version's database (`unavailable`), an upgrade waiting on a connection
 //     that will not let go (`blocked`), this connection asked to let go by an upgrade or a deletion (`closed`) —
 //     each said, each failing the operations it stops, and each cleared by the next operation that reaches it
@@ -136,6 +137,26 @@ for (const engine of ENGINES) {
       }
     });
   }
+
+  test(`${engine}: an old record read as [a] by one page and as [a, b] by another, b in a's millisecond, keeps [a, b]`, async () => {
+    // Codex's audit of 6e61bf60: the second import put b before every rep of its millisecond, a among them.
+    const { context, pages: [a, b] } = await pages(engine, 2);
+    try {
+      const R0 = { t: 1000, c: false, l: false, ms: 900, r: null, n: null, p: 0, h: 7 };
+      const first = { ...R0, i: 'a'.repeat(24) };
+      const second = { ...R0, i: 'b'.repeat(24), c: true, n: 6 };
+      const text = (reps) => JSON.stringify({ v: 2, gen: '1'.repeat(16), algs: { x: reps } });
+      await a.page.evaluate(async (t) => { localStorage.setItem('cubusDrillRecord', t); await R().ready; }, text([first]));
+      const seen = await b.page.evaluate(async (t) => {
+        localStorage.setItem('cubusDrillRecord', t);
+        const reps = await R().reps('x');
+        return { clean: reps.map((r) => r.clean), streak: M.statsOf(reps).streak };
+      }, text([first, second]));
+      assert.deepEqual(seen, { clean: [false, true], streak: 1 });
+    } finally {
+      await context.close();
+    }
+  });
 
   test(`${engine}: an old record neither version reads is left as it is and said, and practice is saved`, async () => {
     const { context, pages: [a] } = await pages(engine);

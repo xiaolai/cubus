@@ -339,24 +339,31 @@ function capped(algs) {
 /**
  * The record in the database, `value`, with a parsed localStorage record's reps in it: `{ value, result }` for
  * `store.update`, `value` undefined when every rep is there already. A union by rep id — a rep already on record
- * stays as it is, wherever it is — and each rep not there goes in by its time, before any rep on record with that
- * time or later, the old record's own order kept among them; then every rep is numbered again in that order and the
- * caps applied. A rep the caps dropped before is dropped again: it goes in where it went the first time, behind the
- * same reps — and when the caps drop every rep put in, the record that stood is left unwritten.
+ * stays as it is, where it is — and each rep not there, in the old record's order, goes in after every rep on record
+ * from an earlier millisecond and before the first rep of its own millisecond whose id is greater than its own.
+ *
+ * The old record's order is (time, id) in every version of it — version 2's own order, and version 1's ids follow its
+ * lists (`legacyId`) — so its reps keep that order among themselves however many versions of it are imported, by
+ * however many windows, in whatever order, without the record knowing which reps on it came from there (Codex's audit
+ * of 6e61bf60: a rep put in before every rep of its millisecond made [a] and then [a, b] into [b, a]). A rep saved
+ * here in the same millisecond as one of the old record's is a tie between two windows that no record ordered; it is
+ * placed by its id, and never moved. Then every rep is numbered again in that order and the caps applied. A rep the
+ * caps dropped before is dropped again, behind the same reps; and when the caps drop every rep put in, the record that
+ * stood is left unwritten.
  */
 function withLegacy(value, found) {
   const algs = parseValue(value);
-  const on = new Set([...algs.values()].flatMap((list) => list.map((e) => e.rep.repId)));
+  const existing = [...algs].flatMap(([id, list]) => list.map(({ rep, seq }) => ({ id, rep, seq }))).sort((a, b) => a.seq - b.seq);
+  const on = new Set(existing.map((e) => e.rep.repId));
   const incoming = legacyReps(found).filter(({ rep }) => !on.has(rep.repId));
   if (!incoming.length) return { value: undefined, result: false };
-  const existing = [...algs].flatMap(([id, list]) => list.map(({ rep, seq }) => ({ id, rep, seq }))).sort((a, b) => a.seq - b.seq);
   const merged = [];
-  let k = 0;
-  for (const e of existing) {
-    while (k < incoming.length && incoming[k].rep.at <= e.rep.at) merged.push(incoming[k++]);
-    merged.push(e);
+  let p = 0;
+  for (const x of incoming) {
+    while (p < existing.length && !newer(existing[p].rep, x.rep)) merged.push(existing[p++]);
+    merged.push(x);
   }
-  merged.push(...incoming.slice(k));
+  merged.push(...existing.slice(p));
   const lists = new Map();
   merged.forEach(({ id, rep }, n) => {
     if (!lists.has(id)) lists.set(id, []);

@@ -721,6 +721,69 @@ test('an import the caps cut is cut the same way again: a second import writes n
   assert.deepEqual([tie.value, tie.writes], [once, 1], 'importing again swapped which of the two the cap kept');
 });
 
+test('Codex\'s audit of 6e61bf60: an old record imported as [a] and then as [a, b], b in a\'s millisecond, keeps [a, b] — across windows, in either order', async () => {
+  // Before: b went in before every rep of its millisecond, a among them, so the record read [b, a] and the streak —
+  // a not clean, b clean — read 0 where the child's was 1.
+  const a = { ...V1_REP, i: rid(0, 'a'), t: 1_000, c: false, n: null };
+  const b = { ...V1_REP, i: rid(0, 'b'), t: 1_000 };
+  const v2 = (reps) => JSON.stringify({ v: 2, gen: '1'.repeat(16), algs: { x: reps } });
+  // Version 1 orders a tie by its list, and gives a rep its id from that place.
+  const v1 = (reps) => v1Text({ x: reps.map(({ i, ...rest }) => rest) });
+  for (const [what, text] of [['version 2', v2], ['version 1', v1]]) {
+    const once = memoryDatabase();
+    await open({ db: once, legacy: fakeLocal(text([a, b])) }).record.ready;
+    for (const order of [[[a], [a, b]], [[a, b], [a]]]) {
+      const db = memoryDatabase();
+      // Two windows, each opening on the version of the old record it reads.
+      for (const snapshot of order) await open({ db, legacy: fakeLocal(text(snapshot)) }).record.ready;
+      const reps = await open({ db }).record.reps('x');
+      assert.deepEqual(reps.map((r) => r.clean), [false, true], `${what}, imported as ${order.map((o) => o.length)}: the tie was reversed`);
+      assert.equal(statsOf(reps).streak, 1, `${what}: the streak`);
+      assert.deepEqual(db.value, once.value, `${what}: importing in two versions made another record than importing once`);
+    }
+  }
+});
+
+test('random runs: versions of an old record imported by several windows at once, among saves made here in the same milliseconds, keep the old record\'s order, and the saves made here theirs', async () => {
+  let seed = 0x6e61bf60;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) >>> 0; return seed / 2 ** 32; };
+  const pick = (n) => Math.floor(rnd() * n);
+  for (let run = 0; run < 300; run++) {
+    // A version-2 log in its one order, (time, id): four milliseconds, so most reps share one with another.
+    const hex = () => Array.from({ length: 24 }, () => '0123456789abcdef'[pick(16)]).join('');
+    const log = Array.from({ length: 12 }, () => ({ alg: ['x', 'y'][pick(2)], rep: { ...V1_REP, i: hex(), t: 1_000 + pick(4), c: rnd() < 0.5, ms: 1 + pick(999) } }))
+      .sort((p, q) => p.rep.t - q.rep.t || (p.rep.i < q.rep.i ? -1 : 1));
+    log.forEach(({ rep }) => { if (!rep.c) rep.n = null; });
+    const text = (part) => {
+      const algs = {};
+      for (const { alg, rep } of part) (algs[alg] ??= []).push(rep);
+      return JSON.stringify({ v: 2, gen: '1'.repeat(16), algs });
+    };
+    // Versions of it as a growing log keeps them: a stretch of it, its front cut by the caps or not — two versions may
+    // share no rep at all, so the record cannot tell which reps on it came from the old record.
+    const versions = Array.from({ length: 4 }, () => { const hi = 1 + pick(log.length); return log.slice(pick(hi), hi); });
+    const db = memoryDatabase();
+    // Saves made here in the last of those milliseconds, ordered among themselves by when they were saved.
+    let made = 0;
+    const work = [];
+    for (const version of versions) {
+      work.push(open({ db, legacy: fakeLocal(text(version)) }).record.ready);
+      if (rnd() < 0.5) work.push(open({ db, now: () => 1_003 }).record.add(['x', 'y'][pick(2)], rep({ ms: 10_000 + made++ })));
+      if (rnd() < 0.4) await new Promise((resolve) => { setImmediate(resolve); });
+    }
+    const outs = await Promise.all(work);
+    for (const out of outs) if (out) assert.equal(out.saved, true, `run ${run}: a save here was refused`);
+    const onRecord = Object.values(db.value?.algs ?? {}).flat().sort((p, q) => p.s - q.s);
+    const place = new Map(log.map(({ rep }, k) => [rep.i, k]));
+    const old = onRecord.filter((r) => place.has(r.i));
+    const imported = new Set(versions.flat().map(({ rep }) => rep.i));
+    assert.deepEqual(old.map((r) => r.i), log.map(({ rep }) => rep.i).filter((i) => imported.has(i)), `run ${run}: the old record's order was not kept, or a rep is missing or twice`);
+    const here = onRecord.filter((r) => !place.has(r.i)).map((r) => r.ms);
+    assert.deepEqual(here, [...here].sort((p, q) => p - q), `run ${run}: the saves made here are out of the order they were saved in`);
+    assert.equal(here.length, made);
+  }
+});
+
 test('a window saving while another imports keeps its rep, and every old rep is in once', async () => {
   const local = fakeLocal(V1);
   const db = memoryDatabase();
