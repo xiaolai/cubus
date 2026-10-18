@@ -76,6 +76,24 @@ test('the order is deterministic per seed, and the seed only orders ties', () =>
   }
 });
 
+test('a newest rep with a marked pause makes an algorithm weaker in mixed practice', () => {
+  // Identical clean, timed reps; only A's newest carries a marked pause.
+  const older = times(3);
+  const newest = rep();
+  const a = [...older, Object.freeze({ ...newest, pauses: 1 })];
+  const b = [...older, newest];
+  assert.equal(newest.pauses, 0, 'precondition: B\'s newest rep has no pause');
+  assert.ok(a.every((r) => r.clean && r.ms !== null), 'precondition: every rep is clean and timed');
+  const sa = statsOf(a);
+  const sb = statsOf(b);
+  assert.equal(sa.errorRate, sb.errorRate, 'precondition: the pause is the only difference that can rank them');
+  assert.ok(compareWeakness(sa, sb) < 0, 'the paused newest rep did not rank A as weaker');
+  const record = new Map([['A', a], ['B', b]]);
+  for (let seed = 0; seed < 10; seed++) {
+    assert.equal(mixOrder(['B', 'A'], record, { seed })[0], 'A', `seed ${seed}: A was not first`);
+  }
+});
+
 const checkNoRepeats = (mix) => {
   for (let seed = 0; seed < 200; seed++) {
     for (const ids of [['a', 'b'], ['a', 'b', 'c'], IDS]) {
