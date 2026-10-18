@@ -117,6 +117,28 @@ test('a row differs from the page only by the three documented changes', () => {
   }
 });
 
+// ---------- every row is in reduced form ----------
+// The source-fidelity check reads a row only when it carries a `sourceAlg`, so an undocumented cancelling pair
+// appended to a row ("R U' R' U U'") would pass every other test. No two adjacent turns may share a layer —
+// the same face, the same slice, the same wide turn or the same whole-cube axis — because they would merge
+// into one turn or cancel to none; and the turn count must equal the count after that merge.
+const layerOf = (m) => m.replace(/['2]/g, '');
+const mergedCount = (alg) => alg.split(' ').reduce((out, m) => {
+  if (out.length && layerOf(out[out.length - 1]) === layerOf(m)) out[out.length - 1] = m; else out.push(m);
+  return out;
+}, []).length;
+function assertReduced(r) {
+  const ms = r.alg.trim().split(/\s+/);
+  for (let i = 1; i < ms.length; i++) {
+    assert.notEqual(layerOf(ms[i]), layerOf(ms[i - 1]), `${r.name} ("${r.alg}"): "${ms[i - 1]} ${ms[i]}" turns one layer twice in a row`);
+  }
+  assert.equal(ms.length, mergedCount(r.alg), `${r.name} ("${r.alg}") is not reduced`);
+}
+
+test('every row is in reduced form: no two adjacent turns of one layer', () => {
+  for (const r of CF_ALGS) assertReduced(r);
+});
+
 test('the one correction: the page\'s flip of a white edge breaks the corners, and the row\'s does not', () => {
   const printed = cfStep('ledges').find((r) => r.name === 'cf-ledges-5').sourceAlg.replace('U U', 'U2').replace('M M', 'M2');
   assert.equal(fixes(mapOf(printed), ALL_CORNERS), false, 'the printed sequence keeps the corners after all');
