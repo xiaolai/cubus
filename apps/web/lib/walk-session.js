@@ -725,7 +725,9 @@ export function createWalkSession(screen, app) {
       // and a child holding the cube tumbled turns the face at the bottom when the cube's own
       // white face is meant — which, held that way, is called D. After a regrip, the face on the
       // child's right is another of the cube's faces again, so that hold is per move (plan item 6.1).
-      .map((m, k) => `<button class="chip-m" data-i="${from + k}" title="${escHtml(t('Jump to this move'))}">${escHtml(renameAlg(m, moveHoldAt(from + k)))}</button>`)
+      // NO HOVER HINT (owner, 2026-10-18): a chip's `title` popped up over the strip mid-walk and
+      // shook the window, and a chip that is pressed to go there says so by being a button.
+      .map((m, k) => `<button class="chip-m" data-i="${from + k}">${escHtml(renameAlg(m, moveHoldAt(from + k)))}</button>`)
       .join('');
     solList.innerHTML = route && route.moves === 0
       // AN EMPTY ROUTE MUST NEVER RENDER AS A WALK (§9a). With no moves the grid below draws
