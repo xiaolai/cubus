@@ -208,17 +208,29 @@ export async function openPractice(fixture, { numbered = true, connect = true, p
         /** The record deleted, as another window — or the browser's own "clear site data" — deletes it. A \`blocked\` on
          *  the way is not a failure: a connection closing as the deletion arrives can raise one, and the deletion
          *  then goes through (measured in WebKit under load), so only its end is waited for — within a bound. A
-         *  deletion that never ends says what it met: how often it was blocked, and the databases this page sees. */
+         *  deletion that never ends says what it met: how often it was blocked, and the databases this page sees.
+         *  Enumerating them has no bound of its own, so the deadline never waits for it: they are asked for
+         *  \`ASK_MS\` before it, and the failure carries what answered in time, or says nothing did. */
         drop: () => new Promise((ok, no) => {
+          const ASK_MS = 2000;
           let blocked = 0;
-          const del = indexedDB.deleteDatabase(RECORD_DB);
-          del.onblocked = () => { blocked += 1; };
-          del.onsuccess = () => ok();
-          del.onerror = () => no(del.error);
-          setTimeout(async () => {
-            const seen = await indexedDB.databases().then((list) => JSON.stringify(list), (e) => 'unknown: ' + e);
+          let seen = 'not asked yet';
+          const ask = setTimeout(() => {
+            seen = 'no answer within ' + ASK_MS + ' ms';
+            try {
+              indexedDB.databases().then((list) => { seen = JSON.stringify(list); }, (e) => { seen = 'unknown: ' + e; });
+            } catch (e) {
+              seen = 'unknown: ' + e;
+            }
+          }, ${LIVENESS_MS} - ASK_MS);
+          const deadline = setTimeout(() => {
             no(new Error('the practice record database was never deleted (blocked ' + blocked + ' times; databases this page sees: ' + seen + ')'));
           }, ${LIVENESS_MS});
+          const end = () => { clearTimeout(ask); clearTimeout(deadline); };
+          const del = indexedDB.deleteDatabase(RECORD_DB);
+          del.onblocked = () => { blocked += 1; };
+          del.onsuccess = () => { end(); ok(); };
+          del.onerror = () => { end(); no(del.error); };
         }),
         fingers: () => document.querySelector('#practiceFingers')?.dataset.reached,
         /** What the app believes about the connected cube — read, never written, by the cases. */
