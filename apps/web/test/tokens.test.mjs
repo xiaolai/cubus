@@ -120,7 +120,7 @@ const KIT_ONLY = new Set([
   // to be complete, so the token stays declared and is named here rather than deleted.
   '--fs-title-l', '--fs-wordmark', '--fs-display-l', '--fs-display-s', '--lh-tight', '--lh-prose',
   '--s-1', '--s-2', '--s-3', '--s-4', '--s-5', '--s-6', '--s-7', '--s-8',
-  '--s-10', '--s-11', '--s-12', '--s-13', '--r-1', '--r-card',
+  '--s-10', '--s-11', '--s-12', '--s-13', '--r-1',
   // Elevation the app applies through composed rules rather than by name.
   '--shadow-card', '--shadow-win', '--shadow-sheet',
   // Window chrome the STYLESHEET hard-codes per platform (see the .win rules) and the Rust side

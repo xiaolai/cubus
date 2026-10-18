@@ -113,7 +113,7 @@
          progress bar's width). design-discipline.test.mjs holds this list against the sheet's
          :hover selectors: a new hoverable control joins it or the test names it. */
       :is(.btn, .pill, .nav-item, .tb-ctl, .tbtn, .tb-cap, .menu > button, .card-tools > button,
-          .eyebrow-row > button, .chip-m, .stage-chip, .swatches > button, .id-ask > button.sw, .field, .link, .toggle,
+          .eyebrow-row > button, .chip-m, .stage-chip, .rail-item, .case-tile, .swatches > button, .id-ask > button.sw, .field, .link, .toggle,
           .scan-face .tgrid > .cell) {
         transition: background var(--fade), color var(--fade), border-color var(--fade),
           box-shadow var(--fade), opacity var(--fade), transform var(--fade);
@@ -574,32 +574,81 @@
         .case-grid { grid-template-columns: 1fr; }
         .shape-entry > svg { width: 100%; max-width: 360px; height: auto; }
       }
-      /* Algorithm practice (lib/screens/practice.js). The library is a column of methods, each a list of sets
-         that open into a grid of cards — as many 150px cards as the width holds, intrinsic and container-driven,
-         never a viewport query. A card's picture and its sentence stack; the sentence wraps inside the card. */
-      .practice-list > * + * { margin-top: 18px; }
-      .alg-method { display: flex; flex-direction: column; gap: 10px; }
-      .alg-phase { display: flex; flex-direction: column; gap: 6px; }
-      .alg-phase-h { font-weight: 600; color: var(--ink-3); }
-      .alg-set > summary { min-height: 44px; display: flex; flex-wrap: wrap; align-items: center; column-gap: 8px; cursor: pointer; }
-      .alg-set-purpose { flex: 1 0 100%; padding: 2px 0 8px 20px; color: var(--ink-4); line-height: 1.45; }
-      /* A flex summary loses the platform's disclosure triangle, so the set draws its own: the one sign that a
-         heading opens, for a reader who will not read that it does. */
-      .alg-set > summary { list-style: none; }
-      .alg-set > summary::-webkit-details-marker { display: none; }
-      .alg-set > summary::before { content: '\203A'; display: inline-block; width: 12px; color: var(--ink-4); font-weight: 600; transition: transform var(--fade); }
-      .alg-set[open] > summary::before { transform: rotate(90deg); }
-      .alg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; padding: 8px 0 14px; }
-      .alg-entry { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; min-width: 0; }
-      .alg-entry > svg { max-width: 100%; height: auto; }
+      /* Algorithm practice (lib/screens/practice.js). The LIBRARY (dev-docs/practice-redesign-plan.md §4.4) is a head —
+         the method row, the method's count, what the library has to say — a RAIL of the method's stages, and the stages
+         themselves, each a grid of case tiles, which scroll. Not `.cols`: a catalogue wants the width, as Shapes does.
+         Landscape puts the rail in a column at the left; portrait makes it a strip under the head that scrolls sideways
+         and says so by its edge fade (lib/scroll-strip.js, the strip rule below). Tiles are as many as the width holds,
+         intrinsic, never a viewport query. The body fades its last 18px: it scrolls, and draws no bar to say so. */
+      .practice-screen[data-composition="library"] { width: 100%; height: 100%; min-height: 0; display: grid;
+        grid-template-columns: 148px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr);
+        grid-template-areas: "head head" "rail body"; gap: 14px 20px; }
+      .lib-head { grid-area: head; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; min-width: 0; }
+      .lib-head > #methodRow { min-width: 0; }
+      .lib-sum { margin-left: auto; font-weight: 600; }
+      .lib-head > :is(.lib-say, .lib-note) { flex: 1 0 100%; font-size: var(--fs-body-s); line-height: 1.45; }
+      .lib-say { color: var(--err-ink); }
+      .lib-note { color: var(--ink-4); }
+      .rail { grid-area: rail; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding: 6px 0; }
+      .rail-item { display: grid; grid-template-columns: 52px minmax(0, 1fr); grid-template-rows: auto auto; column-gap: 8px; align-items: center;
+        min-height: 44px; padding: 6px; text-align: left; border-radius: var(--r-5); border: 1px solid transparent; }
+      .rail-item:hover { background: var(--panel-sunk); }
+      .rail-item.on { border-color: var(--line-strong); background: var(--panel); }
+      .rail-item .pic { grid-row: 1 / span 2; width: 52px; height: 40px; display: flex; align-items: center; justify-content: center; }
+      :is(.rail-item, .sec-head) .pic svg { max-width: 100%; max-height: 100%; height: auto; }
+      .rail-item .nm { min-width: 0; font-size: var(--fs-caption); font-weight: 600; color: var(--ink-2); line-height: 1.25; overflow-wrap: anywhere; }
+      .practice-screen .ct { display: flex; align-items: center; gap: 4px; font-size: var(--fs-caption); color: var(--ink-4); }
+      .lib-body { grid-area: body; min-height: 0; overflow-y: auto; padding-bottom: 24px;
+        mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), transparent 100%); }
+      .stage-sec + .stage-sec { margin-top: 22px; }
+      /* The last stage is at least the body's height, so a jump from the rail can put ANY stage at the top — and the
+         rail, which names the stage at the top, names the one jumped to. */
+      .stage-sec:last-child { min-height: 100%; }
+      .sec-head { display: flex; align-items: center; gap: 10px; min-height: 44px; position: sticky; top: 0; z-index: 2; background: var(--bg); padding: 2px 0 6px; }
+      .sec-head .pic { flex: none; width: 44px; height: 34px; display: flex; align-items: center; }
+      .sec-head .ttl { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+      .sec-head .ttl b { font-size: var(--fs-body-l); line-height: 1.2; overflow-wrap: anywhere; }
+      .sec-head .tbtn { flex: none; }
+      .set-cap { margin: 6px 0; font-size: var(--fs-caption); color: var(--ink-4); }
+      .tiles { --tile-h: 104px; display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 10px; }
+      /* ONE tap target: the tile opens its algorithm. The picture is contained in a fixed box so a net (wide) and a
+         top face (square) sit alike; the ring is in the corner, drawn only once the record has been read. */
+      .case-tile { position: relative; min-width: 0; min-height: var(--tile-h); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+        padding: 10px 6px 8px; border-radius: var(--r-card); background: var(--panel); border: 1px solid var(--line); }
+      .case-tile:hover { border-color: var(--ink-6); }
+      .case-tile > svg { width: 74px; height: 64px; flex: none; }
+      .case-tile > .case-photo { width: 74px; }
+      .case-tile .cap { max-width: 100%; font-size: var(--fs-caption); font-weight: 600; color: var(--ink-3); line-height: 1.2; overflow-wrap: anywhere; text-align: center; }
+      .case-tile .badge { position: absolute; top: 5px; right: 5px; }
+      .case-tile.done { border-color: var(--ok); box-shadow: inset 0 0 0 1px var(--ok); }
+      /* "In the fingers" as a picture (plan §4.2): segments in the groove, the streak lit in the accent, all of it
+         green with a tick at N. Fills carry the meaning, so fill tokens; no text in it. */
+      .ring { display: block; flex: none; }
+      .ring .seg { fill: none; stroke: var(--track); stroke-width: 3.2; }
+      .ring .seg.on { stroke: var(--accent); }
+      .ring.done .seg { stroke: var(--ok); }
+      .ring .disc { fill: var(--ok); }
+      .ring .tick { fill: none; stroke: var(--on-ok); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+      .about-menu { max-width: 320px; }
+      .about-menu > p { margin: 0; padding: 6px 10px; font-size: var(--fs-body-s); line-height: 1.5; color: var(--ink-2); white-space: normal; }
+      @container stage (orientation: portrait) {
+        .practice-screen[data-composition="library"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr);
+          grid-template-areas: "head" "rail" "body"; gap: 10px; }
+        .rail { flex-direction: row; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; padding: 0 0 2px; }
+        .rail-item { flex: none; width: 84px; grid-template-columns: 1fr; grid-template-rows: 40px auto auto; justify-items: center; row-gap: 2px; text-align: center; }
+        .rail-item .pic { grid-row: auto; }
+        .tiles { --tile-h: 92px; grid-template-columns: repeat(auto-fill, minmax(78px, 1fr)); gap: 8px; }
+        .case-tile { padding: 8px 4px 6px; }
+        .case-tile > svg { width: 62px; height: 54px; }
+        .case-tile > .case-photo { width: 62px; }
+      }
       /* A net row's picture is a photograph of the app's own cube (lib/case-photo.js): an empty well its size until
-         the photograph lands, and the live renderer over it while the card is pointed at or focused. */
+         the photograph lands, and the live renderer over it while the tile is pointed at or focused. */
       .case-photo { position: relative; display: block; flex: none; max-width: 100%; border-radius: var(--r-3); background: var(--panel-sunk); }
       .case-photo[data-photo="shown"] { background: none; }
-      .case-photo > img { display: block; width: 100%; height: 100%; }
+      .case-photo > img { display: block; width: 100%; height: 100%; object-fit: contain; }
       .case-photo > cubus-cube { position: absolute; inset: 0; pointer-events: none; }
       .case-photo:has(> cubus-cube) > img { visibility: hidden; }
-      .alg-say { color: var(--ink-4); line-height: 1.35; overflow-wrap: anywhere; }
       .practice-sheet { display: flex; flex-direction: column; gap: 14px; }
       .practice-case { display: flex; flex-direction: column; gap: 8px; }
       .practice-about { display: flex; flex-direction: column; gap: 8px; line-height: 1.5; }
@@ -1062,9 +1111,10 @@
          draws it 3px beyond the button, and 2px on top cut a flat line through it. */
       .stage-row.one-line { flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-x: contain; padding: 3px 18px 5px; --fade-left: 0px; --fade-right: 0px; }
       .stage-row.one-line > :is(.pill, .stage-chip) { flex: none; white-space: nowrap; }
-      .stage-row.one-line.more-left { --fade-left: 32px; }
-      .stage-row.one-line.more-right { --fade-right: 32px; }
-      .stage-row.one-line:is(.more-left, .more-right) { mask-image: linear-gradient(to right, transparent, #000 var(--fade-left) calc(100% - var(--fade-right)), transparent); }
+      .rail { --fade-left: 0px; --fade-right: 0px; }
+      :is(.stage-row.one-line, .rail).more-left { --fade-left: 32px; }
+      :is(.stage-row.one-line, .rail).more-right { --fade-right: 32px; }
+      :is(.stage-row.one-line, .rail):is(.more-left, .more-right) { mask-image: linear-gradient(to right, transparent, #000 var(--fade-left) calc(100% - var(--fade-right)), transparent); }
       .move-chips { display: grid; grid-template-columns: repeat(auto-fill, var(--chip)); justify-content: space-between; gap: 6px; }
       /* One shape for every move: a SQUARE, text centred both ways at body size. 36px with a
          mouse — the size that lets a whole solution sit on the sheet at the reference minimums

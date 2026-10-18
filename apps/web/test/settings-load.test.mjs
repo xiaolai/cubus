@@ -222,6 +222,27 @@ test('a stored method that is not a method is repaired to the default and writte
   }
 });
 
+// The Practice library's own method (dev-docs/practice-redesign-plan.md §4.1): null follows the solve tab's, and
+// choosing one in the library is stored HERE, never in `solveMethod`.
+test('the library\'s method is null on a fresh install, and a stored library key is kept', async () => {
+  const fresh = await loadOver(undefined);
+  assert.equal(fresh.mod.settings.practiceMethod, null, 'a fresh install does not follow the solve method');
+  assert.equal(fresh.store.stored().practiceMethod, null);
+  for (const key of ['beginner', 'cfop', 'mehta-beginner-path', 'tables']) {
+    const chosen = await loadOver({ practiceMethod: key, solveMethod: 'roux' });
+    assert.equal(chosen.mod.settings.practiceMethod, key, `a chosen ${key} was not kept`);
+    assert.equal(chosen.mod.settings.solveMethod, 'roux', 'the library\'s choice moved the solve method');
+  }
+});
+
+test('a stored library method that is not a library key is repaired to null and written back, never believed', async () => {
+  for (const hostile of ['', 'Mehta', 'toString', '__proto__', '../x', 'a b', 'x'.repeat(41), 7, true, { id: 'cfop' }, ['cfop']]) {
+    const { mod, store } = await loadOver({ practiceMethod: hostile });
+    assert.equal(mod.settings.practiceMethod, null, `a stored ${JSON.stringify(hostile)} was believed`);
+    assert.equal(store.stored().practiceMethod, null, `a stored ${JSON.stringify(hostile)} was not repaired in storage`);
+  }
+});
+
 // ADR 0011 decision 3: the rung ladder is gone, and so are the three records it kept. The `courseRested`
 // case is the template — assert the ABSENCE, in memory and in storage.
 test('a stored record carrying the rung ladder\'s settings comes back WITHOUT them, in memory and in storage', async () => {

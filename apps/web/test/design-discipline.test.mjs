@@ -51,7 +51,7 @@ const COLOR_ALLOWLIST = new Map([
   ['rgba(0,0,0,.10)', { count: 1, why: 'the sticker bevel’s dark edge — same' }],
   ['rgba(0,0,0,.95)', { count: 1, why: 'the rescan glyph’s tight halo — contrast against arbitrary sticker colours' }],
   ['rgba(0,0,0,.55)', { count: 1, why: 'the rescan glyph’s soft halo — same' }],
-  ['#000', { count: 1, why: 'the opaque stop of the target strip’s edge fade — a mask reads alpha only, so nobody sees this colour' }],
+  ['#000', { count: 2, why: 'the opaque stops of the target strip’s edge fade and of the Practice library body’s bottom fade — a mask reads alpha only, so nobody sees this colour' }],
 ]);
 
 const colourLiterals = (css) => css.match(/#[0-9A-Fa-f]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)/g) ?? [];
@@ -113,6 +113,8 @@ const EASED = [
   // the card rather than in a popover
   '.id-ask > button.sw',
   '.field', '.link', '.toggle', '.tgrid > .cell',
+  // the Practice library's stage rail and case tiles (lib/screens/practice.js, practice-redesign-plan.md §4.4)
+  '.rail-item', '.case-tile',
 ];
 
 test('every control the sheet eases is really in a transition rule', () => {

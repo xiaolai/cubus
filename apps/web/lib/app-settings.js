@@ -80,10 +80,22 @@ export const DEFAULT_SETTINGS = Object.freeze({
   // about every cube, so it is stored and applied to the next one. A new install walks Quick (owner's
   // call Q1, 2026-10-16).
   solveMethod: DEFAULT_METHOD,
+  // Which method the Practice library shows (dev-docs/practice-redesign-plan.md §4.1): a library key
+  // (`libraryKey` in lib/screens/practice/library-view.js), or null to follow `solveMethod`. The library's
+  // own, so choosing there never changes what the solve tab walks.
+  practiceMethod: null,
   // How many CLEAN reps in a row put an algorithm "in the fingers" on the Practice screen (owner, 2026-10-17;
   // dev-docs/algorithm-drill-v2-plan.md WI-12). Bounded by `FINGERS` below; `fingersTarget` is the one reader.
   fingersN: 7,
 });
+
+/**
+ * Whether `v` has the shape of a Practice library key: lower-case words joined by hyphens, as the library makes them
+ * from a method's id or name (`libraryKey` in lib/screens/practice/library-view.js). Only the SHAPE is known here —
+ * the keys themselves come from the algorithm library, which no settings load may pay for — so the library itself
+ * follows the solve method when a well-shaped key names no method it holds.
+ */
+export const isLibraryKey = (v) => typeof v === 'string' && /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(v) && v.length <= 40;
 
 /**
  * The bounds of `fingersN` (owner, 2026-10-17: default 7, at least 3).
@@ -298,6 +310,7 @@ const repairs = [
   // A method name or the default — never believed: an unknown id (or an inherited one like `toString`)
   // would otherwise reach `methodById`, which throws by contract.
   [() => isMethodId(settings.solveMethod), () => { settings.solveMethod = DEFAULT_SETTINGS.solveMethod; }],
+  [() => settings.practiceMethod === null || isLibraryKey(settings.practiceMethod), () => { settings.practiceMethod = DEFAULT_SETTINGS.practiceMethod; }],
   [() => typeof settings.language === 'string', () => { settings.language = DEFAULT_SETTINGS.language; }],
   [() => typeof settings.cameraId === 'string', () => { settings.cameraId = DEFAULT_SETTINGS.cameraId; }],
   [() => Number.isFinite(settings.navDefaults), () => { settings.navDefaults = DEFAULT_SETTINGS.navDefaults; }],

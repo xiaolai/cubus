@@ -1,5 +1,6 @@
-// The Practice screen's pure parts, in node: what the library lists, what the page prints, what the record's
-// figures say — and the lesson's way in (dev-docs/algorithm-drill-v2-plan.md §4, WI-10 and WI-12).
+// The Practice screen's pure parts, in node: what the library draws, what the page prints, what the record's
+// figures say — and the lesson's way in (dev-docs/algorithm-drill-v2-plan.md §4, WI-10 and WI-12;
+// dev-docs/practice-redesign-plan.md §4, WI-3: the library as tiles).
 //
 // The relation the browser suite proves end to end — the page prints the moves the engine judges — has its
 // first half here, over EVERY ledger row: the chips are the row's own text, one turn per chip, in order.
@@ -11,12 +12,19 @@ import Cube from 'cubejs';
 import { Window } from 'happy-dom';
 
 import * as lib from '../lib/alg-library.js';
+import { isLibraryKey } from '../lib/app-settings.js';
 import { parse } from '../lib/cube-notation.js';
+import { netSvg } from '../lib/cube-flat.js';
 import { PAUSE_FACTOR, TIME_REFUSAL } from '../lib/drill/timing.js';
 import { statsOf } from '../lib/drill/record.js';
 import { catalogueOf, pendingName } from '../lib/drill/library-client.js';
 import { registerLocale, setLocale } from '../lib/i18n.js';
-import { captionOf, cardsHtml, libraryHtml, purposeOf, rowName } from '../lib/screens/practice/library-view.js';
+import { methodById } from '../lib/methods/registry.js';
+import { targetPicture } from '../lib/stage-picture.js';
+import {
+  aboutHtml, bodyHtml, captionOf, gridIds, libraryKey, libraryMethods, openingKey, pendingHtml, purposeOf, railHtml, ringSvg,
+  rowName, stageIds, tileLabel, tilesHtml,
+} from '../lib/screens/practice/library-view.js';
 import { isPhotographed } from '../lib/case-photo.js';
 import { paletteFor } from '../lib/scheme.js';
 import { STICKER_PALETTES } from '../lib/sticker-palettes.js';
@@ -27,61 +35,95 @@ import {
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const catalogue = await catalogueOf(lib);
+const look = { palette: 'classic', scheme: 'western' };
+const ico = (name) => `<svg class="ic" data-icon="${name}"></svg>`;
 // ONE window for the file: a happy-dom window per row cost a minute.
 const win = new Window();
 after(() => win.happyDOM.close());
-/** The library as it first draws — every set closed, no card built — parsed once. */
-const closedDoc = (() => {
+const parsed = (html) => {
   const box = win.document.createElement('div');
-  box.innerHTML = libraryHtml(catalogue, esc);
+  box.innerHTML = html;
   return box;
-})();
-/** The library with every set opened, its grid filled as the screen fills an opened set (`cardsHtml`) — rendered
- *  ONCE and parsed once: four hundred cards with their pictures cost seconds to parse. */
-const libraryDoc = (() => {
-  const box = win.document.createElement('div');
-  box.innerHTML = libraryHtml(catalogue, esc);
-  for (const block of box.querySelectorAll('details.alg-set')) {
-    block.querySelector('.alg-grid').innerHTML = cardsHtml(catalogue.sets[block.dataset.set], catalogue, { palette: 'classic', scheme: 'western' }, esc, block.dataset.block);
-  }
-  return box;
-})();
+};
+/** Every method's library as it first draws — its rail and its stages, every grid empty — parsed once. */
+const drawn = catalogue.groups.map((g) => ({ group: g, rail: parsed(railHtml(g, catalogue, look, esc)), body: parsed(bodyHtml(g, catalogue, look, esc, ico)) }));
+/** Every grid of every method filled as the screen fills a grid that comes near the view (`tilesHtml`) — rendered
+ *  ONCE and parsed once: five hundred tiles with their pictures cost seconds to parse. */
+const filled = drawn.map(({ group }) => {
+  const body = parsed(bodyHtml(group, catalogue, look, esc, ico));
+  for (const grid of body.querySelectorAll('.tiles')) grid.innerHTML = tilesHtml(gridIds(catalogue, grid.dataset.set, grid.dataset.part), catalogue, look, esc);
+  return { group, body };
+});
+const allTiles = filled.flatMap(({ body }) => [...body.querySelectorAll('[data-alg]')]);
 
-test('the library draws no card and no picture until a set is opened, and a set\'s cards are exactly its rows', () => {
-  // What must NOT happen: every closed set's cards and pictures built at every visit (audit row 26, 208 ms in WebKit).
-  assert.equal(closedDoc.querySelectorAll('[data-alg]').length, 0, 'a closed set built its cards');
-  assert.equal(closedDoc.querySelectorAll('svg').length, 0, 'a closed set drew its pictures');
-  const blocks = [...closedDoc.querySelectorAll('details.alg-set')];
-  assert.equal(blocks.length, catalogue.groups.flatMap((g) => g.phases.flatMap((p) => p.sets)).length, 'a set is not listed');
-  for (const block of blocks) {
-    assert.equal(block.open, false, `${block.dataset.set} opens by itself`);
-    assert.ok(block.querySelector('.alg-grid'), `${block.dataset.set} has no grid to fill`);
-  }
-  // The headings still say what is in them, so a set can be chosen with its cards undrawn.
-  for (const block of blocks) {
-    const set = catalogue.sets[block.dataset.set];
-    assert.match(block.querySelector('summary').textContent, new RegExp(`\\b${set.ids.length} algorithms?\\b`), `${set.id}: the heading does not count its rows`);
+test('the library draws every stage of its method with its grids EMPTY, and a grid\'s tiles are exactly its rows, in the source\'s order', () => {
+  // What must NOT happen: every tile and picture of a method built at every visit (audit row 26, 208 ms in WebKit).
+  for (const { group, body } of drawn) {
+    assert.equal(body.querySelectorAll('[data-alg]').length, 0, `${libraryKey(group)}: a tile was built before its grid came near the view`);
+    assert.equal(body.querySelectorAll('.tiles svg, .tiles .case-photo').length, 0, `${libraryKey(group)}: a case picture was drawn`);
+    const sections = [...body.querySelectorAll('.stage-sec')];
+    assert.equal(sections.length, group.phases.length, `${libraryKey(group)}: a stage is not drawn`);
+    for (const [i, sec] of sections.entries()) {
+      // A stage's grids hold its rows, each once, and every grid keeps the source's order inside it — OLL's edges-up
+      // groups are the one regrouping (the OLL case below), so the stage as a whole is compared as a set.
+      const grids = [...sec.querySelectorAll('.tiles')];
+      const ids = grids.flatMap((g) => gridIds(catalogue, g.dataset.set, g.dataset.part));
+      assert.deepEqual([...ids].sort(), [...stageIds(catalogue, group.phases[i])].sort(), `${libraryKey(group)}/${group.phases[i].phase}: the grids do not hold the stage's rows`);
+      assert.equal(new Set(ids).size, ids.length, 'a row in two grids of one stage');
+      for (const g of grids) {
+        const here = gridIds(catalogue, g.dataset.set, g.dataset.part);
+        assert.deepEqual(here, catalogue.sets[g.dataset.set].ids.filter((id) => here.includes(id)), `${g.dataset.set}: a grid out of the source's order`);
+      }
+    }
   }
   for (const set of Object.values(catalogue.sets)) {
-    const box = win.document.createElement('div');
-    box.innerHTML = cardsHtml(set, catalogue, { palette: 'classic', scheme: 'western' }, esc);
-    assert.deepEqual([...box.querySelectorAll('[data-alg]')].map((c) => c.dataset.alg), set.ids, `${set.id}: its cards are not its rows, in order`);
+    const box = parsed(tilesHtml(set.ids, catalogue, look, esc));
+    assert.deepEqual([...box.querySelectorAll('[data-alg]')].map((c) => c.dataset.alg), set.ids, `${set.id}: its tiles are not its rows, in order`);
   }
 });
 
 test('the library lists every ledger row, and nothing the ledger does not hold', async () => {
   const ids = await lib.algIds();
   assert.ok(ids.length > 300, `the ledger read as ${ids.length} rows`);
-  const listed = new Set(catalogue.groups.flatMap((g) => g.phases.flatMap((p) => p.sets.flatMap((s) => catalogue.sets[s].ids))));
+  const listed = new Set(catalogue.groups.flatMap((g) => g.phases.flatMap((p) => stageIds(catalogue, p))));
   assert.deepEqual([...listed].sort(), [...ids].sort(), 'a row is missing from the library, or one is listed that the ledger lacks');
-  // The proved tables are taught by no method, and still listed — last, under no method.
+  // The proved tables are taught by no method, and still listed — last, as their own entry.
   const last = catalogue.groups.at(-1);
   assert.equal(last.method, null);
+  assert.equal(libraryKey(last), 'tables');
   for (const id of ['f2l-full', 'oll-full', 'pll-full']) assert.ok(last.phases[0].sets.includes(id), `${id} is not listed`);
-  // Rendered, every row is a card (a set taught by several methods is listed under each).
-  const doc = libraryDoc;
-  const carded = new Set([...doc.querySelectorAll('[data-alg]')].map((b) => b.dataset.alg));
-  assert.deepEqual([...carded].sort(), [...ids].sort());
+  // Rendered, every row is a tile (a set taught by several methods is listed under each).
+  assert.deepEqual([...new Set(allTiles.map((b) => b.dataset.alg))].sort(), [...ids].sort());
+});
+
+test('the methods the library offers: one key each, a level each, and the solve tab\'s levels for the methods it walks', () => {
+  const methods = libraryMethods(catalogue);
+  assert.deepEqual(methods.map((m) => m.id), catalogue.groups.map(libraryKey));
+  assert.equal(new Set(methods.map((m) => m.id)).size, methods.length, 'two methods share a key');
+  for (const m of methods) assert.ok(isLibraryKey(m.id), `${m.id} is not a key settings would keep`);
+  assert.deepEqual(methods.map((m) => m.id), ['beginner', 'cfop-4lll', 'cfop', 'roux', 'mehta', 'mehta-beginner-path', 'corners-first', 'tables']);
+  for (const [i, g] of catalogue.groups.entries()) {
+    // A method the app's solver walks sits under its registry level; the rest under the library's two groups.
+    const want = g.method ? methodById(g.method).level : g.label ? 'not-in-solver' : 'tables';
+    assert.equal(methods[i].level, want, `${methods[i].id} is filed under ${methods[i].level}`);
+  }
+  // Quick teaches no algorithm (D1): it is not a library method, and Petrus and ZZ are not listed (D5).
+  for (const absent of ['quick', 'petrus', 'zz']) assert.ok(!methods.some((m) => m.id === absent), `${absent} is offered`);
+});
+
+test('the library opens on its own choice, else the solve tab\'s method, and Quick opens on Beginner\'s 12', () => {
+  const rows = (key) => catalogue.groups.find((g) => libraryKey(g) === key).phases.flatMap((p) => stageIds(catalogue, p));
+  assert.equal(openingKey(catalogue, { practiceMethod: null, solveMethod: 'quick' }), 'beginner', 'Quick does not open on Beginner');
+  assert.equal(rows('beginner').length, 12, 'Beginner does not hold the 12 the plan counted');
+  assert.equal(openingKey(catalogue, { practiceMethod: null, solveMethod: 'cfop' }), 'cfop');
+  assert.equal(openingKey(catalogue, { practiceMethod: null, solveMethod: 'roux' }), 'roux');
+  // CFOP (full): 124 across three stages.
+  const cfop = catalogue.groups.find((g) => libraryKey(g) === 'cfop');
+  assert.deepEqual([cfop.phases.length, rows('cfop').length], [3, 124], 'CFOP (full) is not 124 tiles across three stages');
+  // The library's own choice wins — a method the solve tab cannot walk included.
+  assert.equal(openingKey(catalogue, { practiceMethod: 'mehta', solveMethod: 'cfop' }), 'mehta');
+  // A well-shaped key the library does not hold (a method renamed since it was stored) follows the solve tab.
+  assert.equal(openingKey(catalogue, { practiceMethod: 'petrus', solveMethod: 'cfop' }), 'cfop');
 });
 
 test('a tile\'s caption is the name its source gives the case, or nothing — never the row\'s id', () => {
@@ -110,6 +152,13 @@ test('a tile\'s caption is the name its source gives the case, or nothing — ne
   // What must not happen: a row the source does not name, captioned by what the old card fell back to.
   assert.equal(captionOf({ id: 'sune', label: null, nickname: null }), null);
   assert.notEqual(rowName({ id: 'sune', label: null, nickname: null }), null, 'rowName still names a row for assistive tech');
+  // Drawn: a tile carries its caption, or no caption element at all — never an id.
+  for (const tile of allTiles) {
+    const row = catalogue.rows[tile.dataset.alg];
+    const cap = tile.querySelector('.cap');
+    if (captionOf(row) === null) assert.equal(cap, null, `${row.id}: a caption element with no name`);
+    else assert.equal(cap?.textContent, captionOf(row), `${row.id}: the tile is not captioned with its name`);
+  }
 });
 
 test('OLL is grouped by how many top edges are up: counted from each case, 8 / 42 / 7 in both OLL sets', () => {
@@ -131,6 +180,17 @@ test('OLL is grouped by how many top edges are up: counted from each case, 8 / 4
       totals[up] += 1;
     }
     assert.deepEqual(totals, { 0: 8, 2: 42, 4: 7 }, `${id}: the edges-up groups are not 8 / 42 / 7`);
+    // DRAWN as three captioned grids, none to all four, the source's order inside each.
+    for (const { body } of drawn) {
+      const grids = [...body.querySelectorAll(`.tiles[data-set="${id}"]`)];
+      if (!grids.length) continue;
+      assert.deepEqual(grids.map((g) => g.dataset.part), ['0', '2', '4'], `${id}: not three edges-up grids`);
+      assert.deepEqual(grids.map((g) => g.previousElementSibling?.textContent), ['No top edge up', 'Two top edges up', 'All four top edges up']);
+      for (const g of grids) {
+        const ids = gridIds(catalogue, id, g.dataset.part);
+        assert.deepEqual(ids, set.ids.filter((r) => String(set.edgesUp[r]) === g.dataset.part), `${id}/${g.dataset.part}: not the source's order`);
+      }
+    }
   }
 });
 
@@ -138,51 +198,96 @@ test('the sources not yet in the ledger are named, from their ids, as pending', 
   assert.deepEqual(catalogue.pending.map((p) => p.id), lib.PENDING_SOURCES.map((p) => p.id));
   assert.equal(pendingName('mehta-algs'), 'Mehta');
   assert.equal(pendingName('corners-first-algs'), 'Corners first');
-  const doc = libraryDoc;
-  const note = doc.querySelector('[data-pending]');
+  const note = parsed(pendingHtml(catalogue, esc)).querySelector('[data-pending]');
   if (lib.PENDING_SOURCES.length) {
     assert.ok(note, 'nothing says the pending sources are missing');
     for (const p of catalogue.pending) assert.match(note.textContent, new RegExp(p.name));
   } else assert.equal(note, null, 'a pending note with nothing pending');
+  // And one made up, so the words are checked even while nothing is pending.
+  const made = parsed(pendingHtml({ pending: [{ id: 'x-algs', name: 'Xmethod' }] }, esc)).querySelector('[data-pending]');
+  assert.match(made.textContent, /Xmethod/);
 });
 
-test('a set says its purpose once, under its heading; each card says its own row\'s sentence', () => {
-  const doc = libraryDoc;
-  for (const card of doc.querySelectorAll('[data-alg]')) {
-    const row = catalogue.rows[card.dataset.alg];
-    assert.equal(card.querySelector('.alg-say').textContent, row.says, `${row.id}: the card does not say its own sentence`);
-    // What must NOT happen: a card standing in the set's shared purpose for its own sentence.
-    const set = catalogue.sets[row.set];
-    if (set.purpose && set.purpose !== row.says) assert.ok(!card.textContent.includes(set.purpose), `${row.id}: the set's purpose is on the card`);
+test('no prose in the library: no set\'s purpose and no row\'s sentence anywhere it draws — they wait in the book menu', () => {
+  // R1 (dev-docs/practice-redesign-plan.md §0): the library is pictures until a reader asks. Asserted as an absence
+  // over every method's rail, stages and filled grids, so a sentence that crept onto a tile or a header fails here.
+  const sentences = [...new Set([
+    ...Object.values(catalogue.sets).map((s) => s.purpose),
+    ...Object.values(catalogue.rows).flatMap((r) => [r.says, r.purpose]),
+  ].filter((s) => typeof s === 'string' && s.length > 24))];
+  assert.ok(sentences.length > 100, `precondition: ${sentences.length} sentences to look for`);
+  const text = [...drawn.map(({ rail }) => rail.textContent), ...filled.map(({ body }) => body.textContent)].join('\n');
+  const said = sentences.filter((s) => text.includes(s));
+  assert.deepEqual(said, [], 'a purpose or a sentence is drawn in the library');
+  assert.equal(filled.reduce((n, { body }) => n + body.querySelectorAll('[aria-describedby]').length, 0), 0, 'a tile is described by a sentence');
+  // The book menu says each of the stage's sets' purpose, once, under the set's name.
+  for (const { group } of drawn) {
+    for (const phase of group.phases) {
+      const about = parsed(aboutHtml(phase, catalogue, esc));
+      for (const id of phase.sets) {
+        const set = catalogue.sets[id];
+        if (!set.purpose) continue;
+        assert.equal(about.textContent.split(set.purpose).length - 1, 1, `${id}: its purpose is not said once in the book menu`);
+      }
+    }
   }
-  for (const block of doc.querySelectorAll('details.alg-set')) {
-    const set = catalogue.sets[block.dataset.set];
-    const said = [...block.querySelectorAll('.alg-set-purpose')].map((e) => e.textContent);
-    assert.deepEqual(said, set.purpose ? [set.purpose] : [], `${set.id}: the purpose is not said exactly once`);
-    assert.ok(block.querySelector('summary .alg-set-purpose') || !set.purpose, `${set.id}: the purpose is not readable with the set closed`);
-  }
-  // The ledger now gives every set a purpose; a library that showed none would pass the loop above vacuously.
-  assert.ok(doc.querySelectorAll('.alg-set-purpose').length > 10, 'no set purposes were drawn');
 });
 
-test('a card is named by what pressing it does, and DESCRIBED by its own sentence — one description per card, a set listed twice included', () => {
-  // An `aria-label` replaces the name a button would take from its content, so the row's sentence was not read at
-  // all (audit round 2, row 19). It is the card's description: `aria-describedby` naming the sentence on the card.
-  const cards = [...libraryDoc.querySelectorAll('[data-alg]')];
-  const ids = cards.map((card) => card.getAttribute('aria-describedby'));
-  assert.ok(ids.every(Boolean), 'a card has no description');
-  // What must NOT happen: two cards pointing at one id — a set taught by two methods is drawn twice.
-  assert.equal(new Set(ids).size, ids.length, 'two cards share a description id');
-  const twice = Object.values(catalogue.sets).filter((set) => libraryDoc.querySelectorAll(`details.alg-set[data-set="${set.id}"]`).length > 1);
-  assert.ok(twice.length > 0, 'precondition: some set is listed under two methods');
-  for (const [i, card] of cards.entries()) {
-    const row = catalogue.rows[card.dataset.alg];
-    assert.equal(card.getAttribute('aria-label'), `Practise ${rowName(row)}`, `${row.id}: the name is not what pressing it does`);
-    const described = libraryDoc.querySelectorAll(`[id="${ids[i]}"]`);
-    assert.equal(described.length, 1, `${row.id}: its description id names ${described.length} elements`);
-    assert.ok(card.contains(described[0]), `${row.id}: its description is not on the card`);
-    assert.equal(described[0].textContent, row.says, `${row.id}: described by something other than its own sentence`);
+test('a tile is ONE button named for its row — and for its progress only once the record has been read', () => {
+  for (const tile of allTiles) {
+    const row = catalogue.rows[tile.dataset.alg];
+    assert.equal(tile.tagName, 'BUTTON');
+    assert.equal(tile.getAttribute('aria-label'), rowName(row), `${row.id}: named for something else before the record is read`);
+    assert.equal(tile.querySelectorAll('button, a').length, 0, `${row.id}: a control inside a tile`);
+    // No ring before the record is read: the badge is there to be filled, and empty.
+    assert.equal(tile.querySelector('.badge')?.childElementCount, 0, `${row.id}: a ring drawn before any read`);
   }
+  const row = catalogue.rows.sune ?? Object.values(catalogue.rows)[0];
+  assert.equal(tileLabel(row, 0, 7), rowName(row), 'zero clean reps is said as something');
+  assert.equal(tileLabel(row, 3, 7), `${rowName(row)}, 3 of 7 in a row`);
+  assert.equal(tileLabel(row, 7, 7), `${rowName(row)}, in the fingers`);
+  assert.equal(tileLabel(row, 40, 7), `${rowName(row)}, in the fingers`);
+});
+
+test('the ring: N segments with the streak lit, a tick at N, and one arc past twelve', () => {
+  const box = (k, n) => parsed(ringSvg(k, n, 24)).querySelector('svg');
+  for (const n of [3, 7, 12]) {
+    for (const k of [0, 1, n - 1]) {
+      const r = box(k, n);
+      assert.equal(r.querySelectorAll('.seg').length, n, `${k}/${n}: not ${n} segments`);
+      assert.equal(r.querySelectorAll('.seg.on').length, k, `${k}/${n}: not ${k} lit`);
+      assert.ok(!r.classList.contains('done') && !r.querySelector('.tick'), `${k}/${n}: done before N`);
+    }
+    const done = box(n, n);
+    assert.ok(done.classList.contains('done') && done.querySelector('.tick'), `${n}/${n}: no tick at N`);
+  }
+  // Past twelve segments one continuous arc: the groove, and the lit part of it.
+  assert.equal(box(0, 30).querySelectorAll('.seg').length, 1, 'an empty ring past twelve is not the groove alone');
+  assert.equal(box(15, 30).querySelectorAll('.seg.on').length, 1);
+  assert.ok(box(30, 30).classList.contains('done'));
+  assert.throws(() => ringSvg(-1, 7, 24), /ring/);
+  assert.throws(() => ringSvg(1, 0, 24), /ring/);
+});
+
+test('a stage shows what it BUILDS — the stop it ends at, drawn as the Shapes screen draws a target — or no picture', () => {
+  let pictured = 0;
+  for (const { group, rail, body } of drawn) {
+    const items = [...rail.querySelectorAll('[data-jump]')];
+    const heads = [...body.querySelectorAll('.stage-sec .sec-head')];
+    for (const [i, phase] of group.phases.entries()) {
+      for (const [where, el] of [['rail', items[i]], ['header', heads[i]]]) {
+        const pic = el.querySelector('.pic svg');
+        if (phase.endsAt === null) {
+          assert.equal(pic, null, `${libraryKey(group)}/${phase.phase}: a ${where} picture where no stop fits`);
+          continue;
+        }
+        const want = parsed(netSvg(targetPicture(phase.endsAt), { ...look, width: 66, title: 'What this stage builds' })).querySelector('svg');
+        assert.equal(pic?.outerHTML, want.outerHTML, `${libraryKey(group)}/${phase.phase}: the ${where} picture is not ${phase.endsAt}`);
+        pictured += 1;
+      }
+    }
+  }
+  assert.ok(pictured >= 20, `precondition: ${pictured} stage pictures checked`);
 });
 
 test('a set\'s name and purpose are said in the active language; a row\'s own sentence is the ledger\'s English', () => {
@@ -194,13 +299,15 @@ test('a set\'s name and purpose are said in the active language; a row\'s own se
   registerLocale('qa-library', Object.fromEntries(sets.flatMap((set) => [set.name, set.purpose]).map((en) => [en, `«${en}»`])));
   try {
     setLocale('qa-library');
-    const box = win.document.createElement('div');
-    box.innerHTML = libraryHtml(catalogue, esc);
-    for (const block of box.querySelectorAll('details.alg-set')) {
-      const set = catalogue.sets[block.dataset.set];
-      if (!set.purpose) continue;
-      assert.equal(block.querySelector('summary b').textContent, `«${set.name}»`, `${set.id}: its name is not translated`);
-      assert.equal(block.querySelector('.alg-set-purpose').textContent, `«${set.purpose}»`, `${set.id}: its purpose is not translated`);
+    // A stage of several sets captions each with its name; its book menu says each purpose.
+    const group = catalogue.groups.find((g) => g.phases.some((p) => p.sets.length > 1));
+    const phase = group.phases.find((p) => p.sets.length > 1);
+    const body = parsed(bodyHtml(group, catalogue, look, esc, ico));
+    const caps = [...body.querySelectorAll('.set-cap')].map((c) => c.textContent);
+    for (const id of phase.sets) assert.ok(caps.includes(`«${catalogue.sets[id].name}»`), `${id}: its name is not translated`);
+    const about = parsed(aboutHtml(phase, catalogue, esc)).textContent;
+    for (const id of phase.sets) {
+      if (catalogue.sets[id].purpose) assert.ok(about.includes(`«${catalogue.sets[id].purpose}»`), `${id}: its purpose is not translated`);
     }
     // The page says the purpose through the same door.
     const row = catalogue.rows[sets[0].ids[0]];
@@ -209,6 +316,7 @@ test('a set\'s name and purpose are said in the active language; a row\'s own se
     setLocale('en');
   }
 });
+
 
 test('a history that could not be read is never said to be empty', () => {
   // `null` is the record that could not be read (audit round 2, rows 18 and 23): what is in it is unknown.
@@ -230,27 +338,26 @@ test('a record still being read shows nothing it has not read — no reps, no "N
   assert.match(figuresHtml(null, 7, esc), /In a row: — of 7/);
 });
 
-test('every card draws its own row\'s case: one picture, its stickers in the colours they are, net or top face by what the row keeps', () => {
+test('every tile draws its own row\'s case: one picture, its stickers in the colours they are, net or top face by what the row keeps', () => {
   // The expectations are built here from the facelet layout and the palette table, never from the view's own
-  // drawing code: a card that dropped its picture, drew another row's case, or drew a net as a top face fails.
+  // drawing code: a tile that dropped its picture, drew another row's case, or drew a net as a top face fails.
   const RING = [1, 2, 4, 5].flatMap((face) => [0, 1, 2].map((i) => face * 9 + i));    // R, F, L, B: each top row
   const SHOWS = {
     net: [...Array(54).keys()],
     'top-orientation': [...Array(9).keys(), ...RING].sort((a, b) => a - b),
     'top-colours': [...Array(9).keys(), ...RING].sort((a, b) => a - b),
   };
-  const cards = [...libraryDoc.querySelectorAll('[data-alg]')];
-  assert.ok(cards.length > 300, `${cards.length} cards to check`);
-  const look = { palette: 'classic', scheme: 'western' };   // what libraryDoc was drawn in
+  const tiles = allTiles;
+  assert.ok(tiles.length > 300, `${tiles.length} tiles to check`);
   const colours = paletteFor(STICKER_PALETTES[look.palette], look.scheme);
   let photos = 0;
-  for (const card of cards) {
+  for (const card of tiles) {
     const row = catalogue.rows[card.dataset.alg];
     // A photographed row (lib/case-photo.js) draws an EMPTY well, named for its case, which the screen fills with
     // the photograph — and never its net first (test/browser/practice-screen.test.mjs holds the screen to it).
     if (isPhotographed(row)) {
       const wells = card.querySelectorAll('.case-photo');
-      assert.equal(wells.length, 1, `${row.id}: ${wells.length} photograph wells on its card`);
+      assert.equal(wells.length, 1, `${row.id}: ${wells.length} photograph wells on its tile`);
       assert.equal(wells[0].getAttribute('aria-label'), `The case ${rowName(row)} solves`, `${row.id}: the well is named for another case`);
       assert.equal(wells[0].getAttribute('data-photo'), 'pending');
       assert.equal(wells[0].childElementCount, 0, `${row.id}: the well is not empty`);
@@ -261,10 +368,10 @@ test('every card draws its own row\'s case: one picture, its stickers in the col
     }
     assert.equal(card.querySelectorAll('.case-photo').length, 0, `${row.id}: a flat row has a photograph well`);
     const pictures = card.querySelectorAll('svg');
-    assert.equal(pictures.length, 1, `${row.id}: ${pictures.length} pictures on its card`);
+    assert.equal(pictures.length, 1, `${row.id}: ${pictures.length} pictures on its tile`);
     assert.equal(pictures[0].getAttribute('aria-label'), `The case ${rowName(row)} solves`, `${row.id}: the picture is named for another case`);
     const { facelets, picture } = row.solves;
-    assert.ok(Object.hasOwn(SHOWS, picture), `${row.id}: a case picture of a kind no card draws: ${picture}`);
+    assert.ok(Object.hasOwn(SHOWS, picture), `${row.id}: a case picture of a kind no tile draws: ${picture}`);
     // What the row KEEPS chooses the picture: a top face only for an algorithm that keeps the first two layers.
     assert.equal(picture === 'net', !row.keeps.includes('first-two-layers'), `${row.id}: a ${picture} for a row that keeps ${row.keeps.join(', ')}`);
     const stickers = [...pictures[0].querySelectorAll('rect')];
@@ -280,8 +387,9 @@ test('every card draws its own row\'s case: one picture, its stickers in the col
       } else assert.equal(r.getAttribute('fill-opacity'), '0.35', `${row.id}: sticker ${at} should be an empty well`);
     }
   }
-  assert.ok(photos > 250, `${photos} photographed cards`);
+  assert.ok(photos > 250, `${photos} photographed tiles`);
 });
+
 
 test('the page prints every row exactly as written: one chip per turn, in order, the engine\'s own count', () => {
   for (const row of Object.values(catalogue.rows)) {

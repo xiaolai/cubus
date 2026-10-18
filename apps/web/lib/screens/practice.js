@@ -5,9 +5,9 @@
 // with no screen, and earns its tab again". So this is a new id — never `drill` or `trainer`, which name removed
 // screens — hidden by default (`NAV_ADDED[8]`), reachable in Settings → Advanced and at #/practice.
 //
-// TWO COMPOSITIONS ON ONE ROUTE. With no row chosen (`state.practiceAlg` null) it is the LIBRARY: every row by
-// method, stage and set, read from the library worker (lib/drill/library-client.js — the rows cost seconds to
-// compute, which no UI thread may pay). With a row it is the PAGE: the case, the algorithm in its chunks, the
+// TWO COMPOSITIONS ON ONE ROUTE. With no row chosen (`state.practiceAlg` null) it is the LIBRARY: one method's
+// stages as grids of case tiles (dev-docs/practice-redesign-plan.md §4), read from the library worker
+// (lib/drill/library-client.js — the rows cost seconds to compute, which no UI thread may pay). With a row it is the PAGE: the case, the algorithm in its chunks, the
 // demo cube, the clock, the record. Going between the two is a new composition and rebuilds; changing the row
 // on the page is NOT — `show()` takes the new subject in place, the same cube and the same DOM (AGENTS.md §2).
 //
@@ -21,10 +21,13 @@
 // closures sent one attempt's reports into the next (algorithm-drills-plan.md). The engine's own timers name
 // their attempt (lib/drill/engine.js), so nothing it scheduled acts on a later rep either.
 
-import { $, escHtml, state } from '../app-state.js';
-import { fingersTarget, settings } from '../app-settings.js';
+import { $, escHtml, icon, state } from '../app-state.js';
+import { fingersTarget, save, settings } from '../app-settings.js';
 import { t } from '../i18n.js';
-import { SCREENS, renderScreen, screenAbort, screenGen } from '../screen-shell.js';
+import { SCREENS, placeMenuUnder, renderScreen, screenAbort, screenGen } from '../screen-shell.js';
+import { createMenu } from '../menu-popover.js';
+import { createMethodRow, methodRowHtml } from '../method-row.js';
+import { oneLineStrip } from '../scroll-strip.js';
 import { hooks } from '../screen-slots.js';
 import { newCube } from '../cube-drawing.js';
 import { conn, cubeRefused } from '../live-session.js';
@@ -42,7 +45,10 @@ import { STATUS, createDrillEngine } from '../drill/engine.js';
 import { PracticeRecordError, openPracticeRecord, statsOf, watchReps } from '../drill/record.js';
 import { indexedDbStore } from '../drill/record-store.js';
 import { mixOrder } from '../drill/mix.js';
-import { cardsHtml, casePicture, libraryHtml, purposeOf, rowName } from './practice/library-view.js';
+import {
+  LIBRARY_LEVELS, aboutHtml, bodyHtml, casePicture, countHtml, gridIds, libraryKey, libraryMethods, openingKey, pendingHtml, purposeOf,
+  railHtml, ringSvg, rowName, stageIds, tileLabel, tilesHtml,
+} from './practice/library-view.js';
 import {
   RECORD_READING, chipsHtml, figuresHtml, lastRepsHtml, orderWords, partsWords, refusalWords, seconds, segmentsOf, writtenTokens,
 } from './practice/page-view.js';
@@ -98,14 +104,22 @@ const unsavedWords = (catalogue, { page = null, rowId = null } = {}) => {
 
 // ---- the library ----------------------------------------------------------------------------------------
 
+/** How far below the body's view a grid is drawn before it is reached (dev-docs/practice-redesign-plan.md §4.4). */
+const DRAW_AHEAD_PX = 200;
+
+/** How near the body's top a stage's section is the one the rail says the reader is in. */
+const SPY_PX = 40;
+
 function libraryScreen() {
   return {
-    html: `<div class="practice-screen" data-composition="library" style="position:relative;width:100%;height:100%;min-height:0;display:flex;flex-direction:column;gap:14px">
-      <div class="card" style="padding:12px 16px;flex:none">
-        <div class="sub" style="color:var(--ink-3);line-height:1.5">${escHtml(t('Every algorithm the app teaches, by method. Pick one to practise it until your fingers know it — with a smart cube every turn is checked and timed, and without one the cube on screen shows the moves.'))}</div>
-        <div class="sub" id="practiceLibrarySay" role="status" style="color:var(--err-ink);margin-top:6px" hidden></div>
+    html: `<div class="practice-screen" data-composition="library">
+      <div class="lib-head">
+        <div class="wrap-row" id="methodRow"></div>
+        <span class="ct lib-sum"></span>
+        <div class="lib-say" id="practiceLibrarySay" role="status" hidden></div>
       </div>
-      <div class="practice-list" id="practiceList" style="flex:1;min-height:0;overflow-y:auto">
+      <nav class="rail" id="practiceRail" aria-label="${escHtml(t('Stages'))}"></nav>
+      <div class="lib-body" id="practiceList">
         <div class="sub" id="practiceWait" role="status" style="color:var(--ink-4)">${escHtml(t('Reading the algorithms…'))}</div>
       </div>
     </div>`,
@@ -126,80 +140,247 @@ function libraryScreen() {
         return;
       }
       if (gen !== screenGen) return;
-      list.innerHTML = libraryHtml(catalogue, escHtml);
-      // A rep whose save failed once its page had gone (`unsaved`): Back leads here, so this is where it is said.
-      const said = $('#practiceLibrarySay', root);
-      sayUnsavedWhileMounted(() => {
-        const text = unsavedWords(catalogue);
-        said.hidden = !text;
-        said.textContent = text ?? '';
-      }, screenAbort?.signal);
-      // A set's cards are drawn the first time it is opened, and kept (library-view.js says why). `toggle` does not
-      // bubble, so the list hears it on the way down.
-      const look = { palette: settings.palette, scheme: settings.scheme };
-      // A net row's card is a PHOTOGRAPH of the app's own cube (lib/case-photo.js), taken by the one renderer while this
-      // screen draws none, in the order the cards are built. Its well stays empty until the photograph lands; with no
-      // renderer to borrow the card draws the flat picture it always had.
-      const signal = screenAbort?.signal;
-      const photographer = casePhotographer({ host: box, signal });
-      const attrsOf = (card) => {
-        const row = catalogue.rows[card.dataset.alg];
-        return photoAttrs(row, catalogue.sets[row.set].region);
-      };
-      const photograph = (grid) => {
-        for (const well of grid.querySelectorAll('.case-photo[data-photo="pending"]')) {
-          const card = well.closest('[data-alg]');
-          photographer.photo(attrsOf(card)).then((url) => {
-            if (!well.isConnected) return;
-            if (url) {
-              const img = document.createElement('img');
-              img.alt = '';
-              img.src = url;
-              well.replaceChildren(img);
-              well.dataset.photo = 'shown';
-            } else if (photographer.unavailable) {
-              const flat = document.createElement('template');
-              flat.innerHTML = casePicture(catalogue.rows[card.dataset.alg], look);
-              well.replaceWith(flat.content);
-            }
-          }, (err) => {
-            console.error(`the photograph of ${card.dataset.alg} could not be taken`, err);
-            well.dataset.photo = 'failed';
-          });
-        }
-      };
-      list.addEventListener('toggle', (e) => {
-        const block = e.target;
-        if (!block.open || !block.matches?.('details.alg-set')) return;
-        const grid = block.querySelector('.alg-grid');
-        if (grid.childElementCount === 0) {
-          grid.innerHTML = cardsHtml(catalogue.sets[block.dataset.set], catalogue, look, escHtml, block.dataset.block);
-          photograph(grid);
-        }
-      }, { capture: true });
-      // The pulse: pointing at or focusing a photographed card puts the live renderer in it; leaving puts it back.
-      const wellIn = (el) => el?.closest?.('[data-alg]')?.querySelector('.case-photo[data-photo="shown"]') ?? null;
-      const enter = (e) => {
-        const well = wellIn(e.target);
-        if (well) photographer.pulse(well, attrsOf(well.closest('[data-alg]')));
-      };
-      const leave = (e) => {
-        const card = e.target.closest?.('[data-alg]');
-        if (card && !card.contains(e.relatedTarget)) photographer.rest(wellIn(card));
-      };
-      list.addEventListener('pointerover', enter, { signal });
-      list.addEventListener('focusin', enter, { signal });
-      list.addEventListener('pointerout', leave, { signal });
-      list.addEventListener('focusout', leave, { signal });
-      list.addEventListener('click', (e) => {
-        const card = e.target.closest?.('[data-alg]');
-        if (!card) return;
-        state.practiceAlg = card.dataset.alg;
-        renderScreen();
-      });
+      mountLibrary({ root, box, list, catalogue, signal: screenAbort?.signal });
       box.dataset.ready = '1';
     },
   };
+}
+
+/** The library's whole life once the catalogue is here: the method row, the rail, the stages, the record's rings. */
+function mountLibrary({ root, box, list, catalogue, signal }) {
+  const rail = $('#practiceRail', root);
+  const said = $('#practiceLibrarySay', root);
+  const look = { palette: settings.palette, scheme: settings.scheme };
+  const n = fingersTarget(settings.fingersN);
+  const stale = () => signal?.aborted;
+
+  // ---- what the library says: a save that did not land, a record that could not be read, a choice not kept ------
+  const trouble = { read: null, kept: null };
+  const say = () => {
+    const text = [unsavedWords(catalogue), trouble.read, trouble.kept].filter(Boolean).join(' ');
+    said.hidden = !text;
+    said.textContent = text;
+  };
+  sayUnsavedWhileMounted(say, signal);
+  const pending = pendingHtml(catalogue, escHtml);
+  if (pending) said.insertAdjacentHTML('beforebegin', pending);
+
+  // ---- the method: the solve tab's own row, with the library's two groups (plan §4.1) --------------------------
+  const methods = libraryMethods(catalogue);
+  let key = openingKey(catalogue, settings);
+  $('#methodRow', root).innerHTML = methodRowHtml({ methods, chosen: key, escHtml });
+  const row = createMethodRow({ root, signal, methods, shown: key, place: placeMenuUnder, levels: LIBRARY_LEVELS });
+  /** A method chosen HERE is the library's (`practiceMethod`), never the solve tab's: what to practise is not how to
+   *  solve. A choice that cannot be stored is said, because one that silently does not stick reads as forgetting. */
+  const choose = (id) => {
+    if (id === key || !methods.some((m) => m.id === id)) return;
+    settings.practiceMethod = id;
+    trouble.kept = save('cubusSettings', settings) ? null : t('This choice of method could not be remembered for next time.');
+    key = id;
+    row.paint(key);
+    say();
+    draw();
+  };
+  root.addEventListener('click', (e) => {
+    const pick = e.target.closest?.('[data-method]');
+    if (pick && root.contains(pick)) choose(pick.dataset.method);
+  }, { signal });
+
+  // ---- the record: ONE read for every ring, and a ring only for a read that has completed (plan §4.2) -----------
+  let streaks = null;   // Map of row id → clean streak once read; null while reading or when the read failed
+  let reading = null;
+  const record = openPracticeRecord({
+    store: indexedDbStore(indexedDB), legacy: localStorage, broadcast: BroadcastChannel,
+    now: () => Date.now(), signal,
+    // Another window's committed write, or a change in what the record can reach: read again.
+    onChange: () => { if (!stale()) readRecord(); },
+  });
+  const streakOf = (id) => streaks?.get(id) ?? 0;
+  const readRecord = () => {
+    const ticket = {};
+    reading = ticket;
+    streaks = null;
+    list.dataset.record = 'reading';
+    paintProgress();
+    record.read().then((algs) => {
+      if (reading !== ticket || stale()) return;
+      streaks = new Map([...algs].map(([id, reps]) => [id, statsOf(reps).streak]));
+      trouble.read = null;
+      list.dataset.record = 'read';
+      paintProgress();
+      say();
+    }, (err) => {
+      if (!(err instanceof PracticeRecordError)) throw err;
+      if (reading !== ticket || stale()) return;
+      trouble.read = t('Your practice record could not be read (%1), so no progress is shown.', err.code);
+      list.dataset.record = 'unreadable';
+      paintProgress();
+      say();
+    });
+  };
+
+  // ---- drawing --------------------------------------------------------------------------------------------------
+  let group = null;
+  let near = null;      // the IntersectionObserver that draws a grid as it comes near the view
+  let drawn = null;     // aborts what one method's drawing wired: its book menus and their listeners
+  const strip = oneLineStrip(rail, { signal });
+
+  /** Rings and counts for whatever is drawn, from the read — or none while there is no read to draw them from. */
+  function paintProgress(scope = list) {
+    if (!group) return;
+    for (const tile of scope.querySelectorAll('[data-alg]')) {
+      const rowNow = catalogue.rows[tile.dataset.alg];
+      const k = streaks ? streakOf(rowNow.id) : null;
+      tile.querySelector('.badge').innerHTML = streaks ? ringSvg(Math.min(k, n), n, 24) : '';
+      tile.classList.toggle('done', Boolean(streaks) && k >= n);
+      tile.setAttribute('aria-label', tileLabel(rowNow, k, n));
+    }
+    if (scope !== list) return;
+    const plain = (ids) => `<span class="num">${ids.length}</span>`;
+    const count = (ids, size) => (streaks ? countHtml(ids, streakOf, n, size) : plain(ids));
+    group.phases.forEach((p, i) => {
+      const ids = stageIds(catalogue, p);
+      for (const ct of [rail.querySelector(`[data-jump="${i}"] .ct`), list.querySelector(`[data-sec="${i}"] .ct`)]) if (ct) ct.innerHTML = count(ids, 14);
+    });
+    const all = [...new Set(group.phases.flatMap((p) => stageIds(catalogue, p)))];
+    $('.lib-sum', root).innerHTML = streaks ? countHtml(all, streakOf, n, 22) : '';
+  }
+
+  /**
+   * An empty grid holds the room its tiles will take: rows of the tile height (`--tile-h`) over the columns its own
+   * auto-fill resolves to. Empty and 0px tall, every stage sat inside the first screen and every grid "came near the
+   * view" at once, which drew the whole method at every visit — the cost the drawing on approach exists to avoid.
+   */
+  function reserve(grid) {
+    const style = getComputedStyle(grid);
+    const columns = style.gridTemplateColumns.split(' ').filter(Boolean).length || 1;
+    const rows = Math.ceil(gridIds(catalogue, grid.dataset.set, grid.dataset.part).length / columns);
+    const gap = parseFloat(style.rowGap) || 0;
+    grid.style.minHeight = `${rows * (parseFloat(style.getPropertyValue('--tile-h')) || 0) + Math.max(0, rows - 1) * gap}px`;
+  }
+
+  /** A grid's tiles, built the first time it comes near the view, and kept. */
+  function fill(grid) {
+    grid.style.minHeight = '';
+    grid.innerHTML = tilesHtml(gridIds(catalogue, grid.dataset.set, grid.dataset.part), catalogue, look, escHtml);
+    paintProgress(grid);
+    photograph(grid);
+  }
+
+  /** The rail's item for the section nearest the body's top: where the reader is. */
+  function spy() {
+    const top = list.getBoundingClientRect().top;
+    let at = 0;
+    for (const sec of list.querySelectorAll('.stage-sec')) if (sec.getBoundingClientRect().top - top <= SPY_PX) at = Number(sec.dataset.sec);
+    for (const item of rail.querySelectorAll('[data-jump]')) {
+      const on = Number(item.dataset.jump) === at;
+      item.classList.toggle('on', on);
+      if (on) item.setAttribute('aria-current', 'true'); else item.removeAttribute('aria-current');
+    }
+    strip.reveal(rail.querySelector('.rail-item.on'));
+  }
+
+  /** One method, drawn: its rail, its stages with their grids empty, and a book menu per stage. */
+  function draw() {
+    drawn?.abort();
+    drawn = new AbortController();
+    signal?.addEventListener('abort', () => drawn.abort(), { once: true });
+    near?.disconnect();
+    for (const m of root.querySelectorAll('.about-menu')) m.remove();
+    group = catalogue.groups.find((g) => libraryKey(g) === key);
+    box.dataset.method = key;
+    rail.innerHTML = railHtml(group, catalogue, look, escHtml);
+    list.innerHTML = bodyHtml(group, catalogue, look, escHtml, icon);
+    list.scrollTop = 0;
+    paintProgress();
+    // The book: what each of the stage's sets is for, written into the menu as it opens — the only prose the library
+    // has, and none of it in the page until a reader asks (R1).
+    group.phases.forEach((p, i) => {
+      const button = list.querySelector(`[data-about="${i}"]`);
+      const menu = createMenu({
+        root, button, label: t('What these are for'), signal: drawn.signal, place: placeMenuUnder, dismiss: true,
+        beforeOpen: () => { menu.el.innerHTML = aboutHtml(p, catalogue, escHtml); },
+      });
+      menu.el.classList.add('about-menu');
+      menu.el.setAttribute('role', 'dialog');
+    });
+    near = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        near.unobserve(e.target);
+        fill(e.target);
+      }
+    }, { root: list, rootMargin: `${DRAW_AHEAD_PX}px 0px` });
+    for (const grid of list.querySelectorAll('.tiles')) {
+      reserve(grid);
+      near.observe(grid);
+    }
+    spy();
+  }
+  signal?.addEventListener('abort', () => near?.disconnect(), { once: true });
+
+  rail.addEventListener('click', (e) => {
+    const item = e.target.closest?.('[data-jump]');
+    const sec = item && list.querySelector(`[data-sec="${item.dataset.jump}"]`);
+    if (!sec) return;
+    list.scrollTop += sec.getBoundingClientRect().top - list.getBoundingClientRect().top;
+    spy();
+  }, { signal });
+  list.addEventListener('scroll', spy, { passive: true, signal });
+
+  // ---- the photographs: a net row's tile is a PHOTOGRAPH of the app's own cube (lib/case-photo.js) ---------------
+  // Taken by the one renderer while this screen draws none, in the order the tiles are built. Its well stays empty
+  // until the photograph lands; with no renderer to borrow the tile draws the flat picture it always had.
+  const photographer = casePhotographer({ host: box, signal });
+  const attrsOf = (tile) => {
+    const r = catalogue.rows[tile.dataset.alg];
+    return photoAttrs(r, catalogue.sets[r.set].region);
+  };
+  function photograph(grid) {
+    for (const well of grid.querySelectorAll('.case-photo[data-photo="pending"]')) {
+      const tile = well.closest('[data-alg]');
+      photographer.photo(attrsOf(tile)).then((url) => {
+        if (!well.isConnected) return;
+        if (url) {
+          const img = document.createElement('img');
+          img.alt = '';
+          img.src = url;
+          well.replaceChildren(img);
+          well.dataset.photo = 'shown';
+        } else if (photographer.unavailable) {
+          const flat = document.createElement('template');
+          flat.innerHTML = casePicture(catalogue.rows[tile.dataset.alg], look);
+          well.replaceWith(flat.content);
+        }
+      }, (err) => {
+        console.error(`the photograph of ${tile.dataset.alg} could not be taken`, err);
+        well.dataset.photo = 'failed';
+      });
+    }
+  }
+  // The pulse: pointing at or focusing a photographed tile puts the live renderer in it; leaving puts it back.
+  const wellIn = (el) => el?.closest?.('[data-alg]')?.querySelector('.case-photo[data-photo="shown"]') ?? null;
+  const enter = (e) => {
+    const well = wellIn(e.target);
+    if (well) photographer.pulse(well, attrsOf(well.closest('[data-alg]')));
+  };
+  const leave = (e) => {
+    const tile = e.target.closest?.('[data-alg]');
+    if (tile && !tile.contains(e.relatedTarget)) photographer.rest(wellIn(tile));
+  };
+  list.addEventListener('pointerover', enter, { signal });
+  list.addEventListener('focusin', enter, { signal });
+  list.addEventListener('pointerout', leave, { signal });
+  list.addEventListener('focusout', leave, { signal });
+  list.addEventListener('click', (e) => {
+    const tile = e.target.closest?.('[data-alg]');
+    if (!tile) return;
+    state.practiceAlg = tile.dataset.alg;
+    renderScreen();
+  }, { signal });
+
+  draw();
+  readRecord();
 }
 
 // ---- the page -------------------------------------------------------------------------------------------

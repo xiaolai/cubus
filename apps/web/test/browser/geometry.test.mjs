@@ -1335,31 +1335,67 @@ function practiceFloor(m, fixture, what) {
   }
 }
 
+/**
+ * Put the library on `key`'s method — the library's own choice, drawn again as a choice is — and bring the grid
+ * holding `set` (or the stage numbered `stage`) into the body's view, waiting until its tiles are built and its
+ * photographs have landed: a tile is measured with its picture in place, not the empty well before it.
+ */
+async function libraryShowing(page, { key, stage = null, set = null }) {
+  await page.evaluate(async (k) => {
+    const { settings } = await import('/lib/app-settings.js');
+    const { refreshScreen } = await import('/lib/screen-shell.js');
+    if (document.querySelector('.practice-screen')?.dataset.method === k) return;
+    settings.practiceMethod = k;
+    refreshScreen();
+  }, key);
+  await page.waitForSelector(`.practice-screen[data-ready="1"][data-method="${key}"]`);
+  const scope = set ? `#practiceList .tiles[data-set="${set}"]` : `#practiceList .stage-sec[data-sec="${stage}"] .tiles`;
+  // Every grid of the stage scrolled through, so each comes near the view and is drawn; then the stage's top.
+  await page.evaluate(async (sel) => {
+    for (const grid of document.querySelectorAll(sel)) {
+      grid.scrollIntoView({ block: 'start' });
+      await new Promise((r) => { requestAnimationFrame(() => requestAnimationFrame(r)); });
+    }
+    document.querySelector(sel).closest('.stage-sec').scrollIntoView({ block: 'start' });
+  }, scope);
+  await page.waitForFunction((sel) => [...document.querySelectorAll(sel)].every((g) => g.childElementCount > 0)
+    && !document.querySelector(`${sel} .case-photo[data-photo="pending"]`), scope);
+  return scope;
+}
+
 for (const fixture of FIXTURES) {
-  test(`practice library, largest set open: ${label(fixture)}`, async () => {
+  test(`practice library, largest stage drawn: ${label(fixture)}`, async () => {
     const { page, context, errors } = await openAt(fixture, urlFor(fixture, 'practice'));
     try {
       await page.waitForSelector('.practice-screen[data-ready="1"]');
-      // Chosen by what the catalogue holds: a closed set has drawn no cards yet, so the page has none to count.
+      // Chosen by what the catalogue holds: the stage with the most rows, over every method the library offers.
       const largest = await page.evaluate(async () => {
         const { library } = await import('/lib/drill/library-client.js');
-        const set = Object.values((await library.catalogue()).sets).reduce((a, b) => (b.ids.length > a.ids.length ? b : a));
-        const block = document.querySelector(`details.alg-set[data-set="${set.id}"]`);
-        block.dataset.measured = '1';
-        block.open = true;
-        return { set: set.id, want: set.ids.length };
+        const { libraryKey, stageIds } = await import('/lib/screens/practice/library-view.js');
+        const c = await library.catalogue();
+        let best = null;
+        for (const g of c.groups) {
+          g.phases.forEach((p, i) => {
+            const n = stageIds(c, p).length;
+            if (!best || n > best.n) best = { key: libraryKey(g), stage: i, n, name: p.phase ?? '(tables)' };
+          });
+        }
+        return best;
       });
-      await page.waitForFunction((n) => document.querySelectorAll('details[data-measured] [data-alg]').length === n, largest.want);
-      // A net row's card is measured with its PHOTOGRAPH in place (lib/case-photo.js), not the empty well before it.
-      await page.waitForFunction(() => !document.querySelector('details[data-measured] .case-photo[data-photo="pending"]'));
-      const opened = {
-        set: largest.set,
-        cards: await page.evaluate(() => document.querySelectorAll('details[data-measured] [data-alg]').length),
-        photos: await page.evaluate(() => document.querySelectorAll('details[data-measured] .case-photo[data-photo="shown"] > img').length),
+      const scope = await libraryShowing(page, largest);
+      const drawn = {
+        tiles: await page.evaluate((sel) => document.querySelectorAll(`${sel} [data-alg]`).length, scope),
+        photos: await page.evaluate((sel) => document.querySelectorAll(`${sel} .case-photo[data-photo="shown"] > img`).length, scope),
       };
-      assert.ok(opened.photos > 0, `the largest set (${opened.set}) shows no photograph, so this measures none`);
-      assert.ok(opened.cards >= 50, `the largest set holds ${opened.cards} cards — the library did not load`);
-      practiceFloor(await measureScreen(page), fixture, `library (${opened.set}, ${opened.cards} cards, ${opened.photos} photographs)`);
+      assert.equal(drawn.tiles, largest.n, `the largest stage (${largest.key}/${largest.name}) drew ${drawn.tiles} of its ${largest.n} tiles`);
+      assert.ok(drawn.photos > 0, `the largest stage (${largest.key}/${largest.name}) shows no photograph, so this measures none`);
+      practiceFloor(await measureScreen(page), fixture, `library (${largest.key}/${largest.name}, ${drawn.tiles} tiles, ${drawn.photos} photographs)`);
+      // The rail is one line in portrait — a strip, never a second row — and its stages are all reachable.
+      const rail = await page.evaluate(() => {
+        const items = [...document.querySelectorAll('.rail [data-jump]')];
+        return { rows: new Set(items.map((i) => Math.round(i.getBoundingClientRect().top) + 0)).size, n: items.length };
+      });
+      if (fixture.width < fixture.height) assert.equal(rail.rows, 1, `portrait: the rail wraps to ${rail.rows} rows`);
       assert.deepEqual(errors.map(String), [], 'the page threw');
     } finally {
       await context.close();
@@ -1370,15 +1406,16 @@ for (const fixture of FIXTURES) {
     const { page, context, errors } = await openAt(fixture, urlFor(fixture, 'practice'));
     try {
       await page.waitForSelector('.practice-screen[data-ready="1"]');
-      // A set's cards are drawn when it is opened, so the set holding the longest row is opened first.
-      const id = await page.evaluate(async () => {
+      // A grid's tiles are drawn when it comes near the view, so the grid holding the longest row is brought there.
+      const { id, key, set } = await page.evaluate(async () => {
         const { library } = await import('/lib/drill/library-client.js');
+        const { libraryKey } = await import('/lib/screens/practice/library-view.js');
         const catalogue = await library.catalogue();
         const longest = Object.values(catalogue.rows).reduce((a, b) => (b.alg.split(/\s+/).length > a.alg.split(/\s+/).length ? b : a));
-        const set = Object.values(catalogue.sets).find((s) => s.ids.includes(longest.id));
-        document.querySelector(`details.alg-set[data-set="${set.id}"]`).open = true;
-        return longest.id;
+        const g = catalogue.groups.find((x) => x.phases.some((p) => p.sets.includes(longest.set)));
+        return { id: longest.id, key: libraryKey(g), set: longest.set };
       });
+      await libraryShowing(page, { key, set });
       await page.waitForSelector(`[data-alg="${id}"]`, { state: 'attached' });
       await page.evaluate((x) => document.querySelector(`[data-alg="${x}"]`).click(), id);
       // Measured once the record has been read: what the page holds then, not the dashes of a read still pending.

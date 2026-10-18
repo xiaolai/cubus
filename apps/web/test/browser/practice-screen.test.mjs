@@ -801,40 +801,208 @@ test('what another window does to the record is shown here as it happens — a r
   }
 });
 
-// ---- the library (row 26) ----------------------------------------------------------------------------------
+// ---- the library as tiles (dev-docs/practice-redesign-plan.md §4, WI-3; audit row 26) ---------------------------
 
-test('the library draws no card or picture until a set is opened, and then that set\'s, once', async () => {
+/** Settings stored before the app starts, as a person's earlier choices would be. */
+const stored = (values) => (ctx) => ctx.addInitScript((v) => {
+  if (!sessionStorage.getItem('__seeded')) {
+    localStorage.setItem('cubusSettings', JSON.stringify({ ...JSON.parse(localStorage.getItem('cubusSettings') || '{}'), ...v }));
+    sessionStorage.setItem('__seeded', '1');
+  }
+}, values);
+
+/** The library on `key`'s method, ready: chosen IN PLACE through the method row's menu, as a person chooses it. */
+async function libraryOn(page, key) {
+  await page.evaluate((k) => {
+    if (document.querySelector('.practice-screen')?.dataset.method === k) return;
+    document.querySelector(`.method-menu [data-method="${k}"]`).click();
+  }, key);
+  await page.waitForSelector(`.practice-screen[data-ready="1"][data-method="${key}"]`, { timeout: LIVENESS_MS });
+}
+
+/** The library on the method that teaches `set`, with that set's grid scrolled into view and drawn. */
+async function gridOf(page, set) {
+  const key = await page.evaluate(async (id) => {
+    const { libraryKey } = await import('/lib/screens/practice/library-view.js');
+    return libraryKey((await window.__p.rows()).groups.find((g) => g.phases.some((p) => p.sets.includes(id))));
+  }, set);
+  await libraryOn(page, key);
+  await page.evaluate((id) => document.querySelector(`#practiceList .tiles[data-set="${id}"]`).scrollIntoView({ block: 'start' }), set);
+  await page.waitForFunction((id) => document.querySelector(`#practiceList .tiles[data-set="${id}"]`).childElementCount > 0, set, { timeout: LIVENESS_MS });
+  return `#practiceList .tiles[data-set="${set}"]`;
+}
+
+/** What the library draws now: its method, its record state, and its tiles and rings by grid. */
+const libraryState = (page) => page.evaluate(() => {
+  const screen = document.querySelector('.practice-screen');
+  const body = document.querySelector('#practiceList');
+  return {
+    method: screen.dataset.method,
+    record: body.dataset.record,
+    stages: body.querySelectorAll('.stage-sec').length,
+    rail: document.querySelectorAll('.rail [data-jump]').length,
+    tiles: body.querySelectorAll('[data-alg]').length,
+    rings: body.querySelectorAll('[data-alg] .badge svg.ring').length,
+    counts: document.querySelectorAll('.practice-screen .ct svg.ring').length,
+    grids: Object.fromEntries([...body.querySelectorAll('.tiles')].map((g) => [`${g.dataset.set}${g.dataset.part ? `/${g.dataset.part}` : ''}`, g.childElementCount])),
+    notice: (() => { const n = document.querySelector('#practiceLibrarySay'); return n && !n.hidden ? n.textContent : ''; })(),
+  };
+});
+
+test('the library opens on the solve tab\'s method — Quick on Beginner\'s 12 — and CFOP (full) is 124 tiles in three stages', async () => {
+  const fresh = await openPractice(fixture, { connect: false });
+  try {
+    // A fresh install walks Quick, which teaches no algorithm: the library opens on Beginner, all of it in view.
+    await fresh.page.waitForFunction(() => document.querySelectorAll('#practiceList [data-alg]').length === 12, null, { timeout: LIVENESS_MS });
+    const now = await libraryState(fresh.page);
+    assert.deepEqual([now.method, now.tiles, now.stages, now.rail], ['beginner', 12, 4, 4], 'a fresh install did not open on Beginner\'s 12');
+    assert.deepEqual(fresh.errors, []);
+  } finally {
+    await fresh.context.close();
+  }
+  const cfop = await openPractice(fixture, { connect: false, prepare: stored({ solveMethod: 'cfop' }) });
+  try {
+    const now = await libraryState(cfop.page);
+    assert.deepEqual([now.method, now.stages, now.rail], ['cfop', 3, 3], 'the library did not open on the solve tab\'s CFOP (full)');
+    const total = await cfop.page.evaluate(async () => {
+      const { stageIds } = await import('/lib/screens/practice/library-view.js');
+      const c = await window.__p.rows();
+      return c.groups.find((g) => g.method === 'cfop').phases.reduce((n, p) => n + stageIds(c, p).length, 0);
+    });
+    assert.equal(total, 124);
+    assert.deepEqual(cfop.errors, []);
+  } finally {
+    await cfop.context.close();
+  }
+});
+
+test('a method chosen in the library is the library\'s own: kept for its next visit, and the solve tab\'s method never moves', async () => {
+  const { page, context, errors } = await openPractice(fixture, { connect: false, prepare: stored({ solveMethod: 'cfop' }) });
+  try {
+    await page.waitForSelector('.practice-screen[data-method="cfop"]', { timeout: LIVENESS_MS });
+    // Through the row the solve tab uses: one pill and a "More methods" menu, grouped.
+    await page.click('#moreMethodsBtn');
+    const headings = await page.evaluate(() => [...document.querySelectorAll('.method-menu .menu-h')].map((h) => h.textContent));
+    assert.deepEqual(headings, ['First steps', 'Getting faster', 'Competition', 'Not in the app’s solver yet', 'Tables']);
+    await page.click('.method-menu [data-method="mehta"]');
+    await page.waitForSelector('.practice-screen[data-ready="1"][data-method="mehta"]', { timeout: LIVENESS_MS });
+    const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('cubusSettings')));
+    assert.equal(saved.practiceMethod, 'mehta', 'the library\'s choice was not stored');
+    // What must NOT happen: choosing what to PRACTISE changing what the solve tab walks.
+    assert.equal(saved.solveMethod, 'cfop', 'choosing in the library wrote the solve method');
+    assert.equal(await page.evaluate(() => window.__p.settings.solveMethod), 'cfop');
+    assert.equal(await page.evaluate(() => document.querySelector('#methodRow [data-method]').textContent), 'Mehta', 'the pill does not name the method on screen');
+    // The next visit opens where the library was left.
+    await page.reload();
+    await page.waitForSelector('.practice-screen[data-ready="1"]', { timeout: LIVENESS_MS });
+    assert.equal(await page.evaluate(() => document.querySelector('.practice-screen').dataset.method), 'mehta', 'the next visit forgot the library\'s method');
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
+test('a stage\'s tiles are drawn only when its section comes near the view, and once', async () => {
+  const { page, context, errors } = await openPractice(fixture, { connect: false, prepare: stored({ practiceMethod: 'cfop' }) });
+  try {
+    await page.waitForFunction(() => document.querySelectorAll('#practiceList [data-alg]').length > 0, null, { timeout: LIVENESS_MS });
+    await page.evaluate((ms) => window.__p.wait(ms), 300);
+    const first = await libraryState(page);
+    // What must NOT happen: the last stage's tiles built on the UI thread for a section nobody has scrolled near.
+    assert.equal(first.grids['pll-human'], 0, 'the last stage drew its tiles before it came near the view');
+    assert.ok(first.tiles > 0 && first.tiles < 124, `${first.tiles} tiles drawn on opening`);
+    // The rail takes the reader there; that stage's grid is drawn, exactly its rows.
+    await page.click('.rail [data-jump="2"]');
+    await page.waitForFunction(() => document.querySelector('#practiceList .tiles[data-set="pll-human"]').childElementCount > 0, null, { timeout: LIVENESS_MS });
+    const pll = await page.evaluate(async () => {
+      const grid = document.querySelector('#practiceList .tiles[data-set="pll-human"]');
+      grid.querySelector('[data-alg]').dataset.mark = 'first';
+      return { ids: [...grid.querySelectorAll('[data-alg]')].map((t) => t.dataset.alg), want: (await window.__p.rows()).sets['pll-human'].ids };
+    });
+    assert.deepEqual(pll.ids, pll.want, 'the stage drew other rows, or out of order');
+    assert.equal(await page.evaluate(() => document.querySelector('.rail [data-jump="2"]').classList.contains('on')), true, 'the rail does not say where the reader is');
+    // Away and back: the same tiles, not drawn twice.
+    await page.click('.rail [data-jump="0"]');
+    await page.click('.rail [data-jump="2"]');
+    await page.evaluate((ms) => window.__p.wait(ms), 200);
+    assert.equal(await page.evaluate(() => document.querySelector('#practiceList .tiles[data-set="pll-human"] [data-alg]').dataset.mark), 'first', 'coming back drew the tiles again');
+    // And a tile opens its algorithm.
+    await page.click(`#practiceList [data-alg="${pll.ids[0]}"]`);
+    await page.waitForFunction((x) => window.__p.ready(x), pll.ids[0], { timeout: LIVENESS_MS });
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
+test('the rings are a read that has completed: none while the record is read, none when it cannot be — and then said why', async () => {
   const { page, context, errors } = await openPractice(fixture, { connect: false });
   try {
-    const count = (sel) => page.evaluate((s) => document.querySelectorAll(s).length, sel);
-    assert.equal(await count('#practiceList details.alg-set'), await page.evaluate(async () => {
+    await page.waitForFunction(() => document.querySelector('#practiceList')?.dataset.record === 'read', null, { timeout: LIVENESS_MS });
+    // Read, and zero: an empty ring on every tile, and a count on the method and every stage.
+    let now = await libraryState(page);
+    assert.equal(now.rings, now.tiles, 'a tile has no ring once the record is read');
+    assert.equal(now.counts, 1 + 4 + 4, 'the method, its stages and its rail items are not all counted');
+    // While a read is held: no ring anywhere, and no count — only how many rows a stage holds.
+    await page.evaluate(() => window.__p.hold());
+    await page.evaluate(async () => { const { refreshScreen } = await import('/lib/screen-shell.js'); refreshScreen(); });
+    await page.waitForSelector('.practice-screen[data-ready="1"]', { timeout: LIVENESS_MS });
+    await page.waitForFunction(() => document.querySelectorAll('#practiceList [data-alg]').length === 12, null, { timeout: LIVENESS_MS });
+    now = await libraryState(page);
+    assert.deepEqual([now.record, now.rings, now.counts], ['reading', 0, 0], 'a ring or a count drawn for a record still being read');
+    await page.evaluate(() => window.__p.release());
+    await page.waitForFunction(() => document.querySelectorAll('#practiceList [data-alg] .badge svg.ring').length === 12, null, { timeout: LIVENESS_MS });
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+  const foreign = { v: 99, algs: {} };
+  const bad = await openPractice(fixture, {
+    connect: false,
+    prepare: (ctx) => ctx.addInitScript(({ db, store, entry, value }) => {
+      const open = indexedDB.open(db, 1);
+      open.onupgradeneeded = () => { open.result.createObjectStore(store).put(value, entry); };
+      open.onsuccess = () => open.result.close();
+    }, { db: RECORD_DB, store: RECORD_STORE, entry: RECORD_ENTRY, value: foreign }),
+  });
+  try {
+    await bad.page.waitForFunction(() => document.querySelector('#practiceList')?.dataset.record === 'unreadable', null, { timeout: LIVENESS_MS });
+    await bad.page.waitForFunction(() => document.querySelectorAll('#practiceList [data-alg]').length === 12, null, { timeout: LIVENESS_MS });
+    const now = await libraryState(bad.page);
+    // What must NOT happen: an unknown record drawn as empty rings, or as nothing with nothing said.
+    assert.deepEqual([now.rings, now.counts], [0, 0], 'a ring drawn over a record nobody could read');
+    assert.match(now.notice, /could not be read \(foreign\)/, 'the library did not say why it shows no progress');
+    assert.deepEqual(bad.errors, []);
+  } finally {
+    await bad.context.close();
+  }
+});
+
+test('no sentence in the library until a book is opened: a tile is named for its row, and the book says what each set is for', async () => {
+  const { page, context, errors } = await openPractice(fixture, { connect: false, prepare: stored({ practiceMethod: 'cfop' }) });
+  try {
+    await page.waitForFunction(() => document.querySelector('#practiceList')?.dataset.record === 'read', null, { timeout: LIVENESS_MS });
+    const look = () => page.evaluate(async () => {
       const c = await window.__p.rows();
-      return c.groups.flatMap((g) => g.phases.flatMap((p) => p.sets)).length;
-    }), 'precondition: every set is listed');
-    // What must NOT happen: every closed set's cards and pictures built on the UI thread at every visit.
-    assert.deepEqual([await count('#practiceList svg'), await count('#practiceList [data-alg]')], [0, 0], 'closed sets drew their cards');
-    const catalogue = await page.evaluate(() => window.__p.rows());
-    const set = Object.values(catalogue.sets).reduce((a, b) => (b.ids.length > a.ids.length ? b : a));
-    const block = `#practiceList details.alg-set[data-set="${set.id}"]`;
-    await page.click(`${block} > summary`);
-    await page.waitForFunction((sel) => document.querySelector(sel).querySelectorAll('[data-alg]').length > 0, block, { timeout: LIVENESS_MS });
-    const opened = await page.evaluate((sel) => {
-      const el = document.querySelector(sel);
-      el.querySelector('[data-alg]').dataset.mark = 'first';
-      // A picture is a flat drawing or a photograph's well (lib/case-photo.js), one per card.
-      return { cards: el.querySelectorAll('[data-alg]').length, pictures: el.querySelectorAll('[data-alg] svg, [data-alg] .case-photo').length, all: document.querySelectorAll('#practiceList [data-alg]').length };
-    }, block);
-    assert.deepEqual(opened, { cards: set.ids.length, pictures: set.ids.length, all: set.ids.length }, 'opening one set did not draw exactly its cards');
-    // Closed and opened again: the same cards, not drawn twice.
-    await page.click(`${block} > summary`);
-    await page.click(`${block} > summary`);
-    await page.evaluate((ms) => window.__p.wait(ms), 100);
-    assert.equal(await page.evaluate((sel) => document.querySelector(sel).querySelectorAll('[data-alg]').length, block), set.ids.length);
-    assert.equal(await page.evaluate((sel) => document.querySelector(sel).querySelector('[data-alg]').dataset.mark, block), 'first', 'reopening drew the cards again');
-    // And a card still opens its algorithm.
-    const id = await page.evaluate((sel) => document.querySelector(sel).querySelector('[data-alg]').dataset.alg, block);
-    await page.click(`${block} [data-alg="${id}"]`);
-    await page.waitForFunction((x) => window.__p.ready(x), id, { timeout: LIVENESS_MS });
+      const { rowName } = await import('/lib/screens/practice/library-view.js');
+      const text = document.querySelector('.practice-screen').innerText;
+      const sentences = [...new Set([...Object.values(c.sets).map((s) => s.purpose), ...Object.values(c.rows).map((r) => r.says)].filter(Boolean))];
+      return {
+        said: sentences.filter((x) => text.includes(x)),
+        names: [...document.querySelectorAll('#practiceList [data-alg]')].filter((t) => t.getAttribute('aria-label') !== rowName(c.rows[t.dataset.alg])).map((t) => t.dataset.alg),
+        described: document.querySelectorAll('#practiceList [aria-describedby]').length,
+        purposes: c.groups.find((g) => g.method === 'cfop').phases[0].sets.map((id) => c.sets[id].purpose).filter(Boolean),
+      };
+    });
+    const before = await look();
+    assert.deepEqual(before.said, [], 'a purpose or a row\'s sentence is drawn in the library');
+    assert.deepEqual(before.names, [], 'a tile with no progress is named for something besides its row');
+    assert.equal(before.described, 0, 'a tile is described by a sentence');
+    // The first stage's book: every set's purpose, said on request.
+    await page.click('#practiceList [data-about="0"]');
+    const shown = await page.evaluate(() => [...document.querySelectorAll('.about-menu')].filter((m) => !m.hidden).map((m) => m.innerText).join('\n'));
+    for (const p of before.purposes) assert.ok(shown.includes(p), `the book does not say "${p.slice(0, 40)}…"`);
+    await page.keyboard.press('Escape');
     assert.deepEqual(errors, []);
   } finally {
     await context.close();
@@ -843,43 +1011,40 @@ test('the library draws no card or picture until a set is opened, and then that 
 
 // ---- the case photographs (dev-docs/practice-redesign-plan.md §3.5, WI-1) -------------------------------------
 //
-// A net row's card is a photograph of the app's own cube, taken by the one parked renderer while the library draws
-// none. What must NOT happen: a card that shows its net and then swaps to a cube; a grid that moves at rest; a
-// renderer left in a card the pointer has left; a pinned clock carried to the next screen's cube.
+// A net row's tile is a photograph of the app's own cube, taken by the one parked renderer while the library draws
+// none. What must NOT happen: a tile that shows its net and then swaps to a cube; a grid that moves at rest; a
+// renderer left in a tile the pointer has left; a pinned clock carried to the next screen's cube.
 
 /** The F2L set: 41 photographed net rows. */
 const PHOTO_SET = 'f2l-human';
 
-/** Open `set` in the library and wait until every photograph well in it has its photograph (or its flat picture). */
+/** Bring `set`'s grid into view and wait until every photograph well in it has its photograph (or its flat picture). */
 async function openPhotos(page, set = PHOTO_SET) {
-  await page.evaluate((id) => { document.querySelector(`details.alg-set[data-set="${id}"]`).open = true; }, set);
-  await page.waitForFunction((id) => {
-    const block = document.querySelector(`details.alg-set[data-set="${id}"]`);
-    return block.querySelector('[data-alg]') && !block.querySelector('.case-photo[data-photo="pending"]');
-  }, set, { timeout: LIVENESS_MS });
+  const grid = await gridOf(page, set);
+  await page.waitForFunction((sel) => !document.querySelector(sel).querySelector('.case-photo[data-photo="pending"]'), grid, { timeout: LIVENESS_MS });
 }
 
-/** What the library holds now: renderers in cards, animations in cards, wells by state, flat pictures on photographed rows. */
+/** What the library holds now: renderers in tiles, animations in tiles, wells by state, flat pictures on photographed rows. */
 const libraryNow = (page, set = PHOTO_SET) => page.evaluate(async (id) => {
   const { isPhotographed } = await import('/lib/case-photo.js');
   const rows = (await window.__p.rows()).rows;
-  const block = document.querySelector(`details.alg-set[data-set="${id}"]`);
+  const block = document.querySelector(`#practiceList .tiles[data-set="${id}"]`);
   const cards = [...block.querySelectorAll('[data-alg]')];
   return {
     cards: cards.length,
     photographed: cards.filter((c) => isPhotographed(rows[c.dataset.alg])).length,
     shown: block.querySelectorAll('.case-photo[data-photo="shown"] > img[src^="blob:"]').length,
-    netOnPhotoRow: cards.filter((c) => isPhotographed(rows[c.dataset.alg]) && c.querySelector('svg')).length,
+    netOnPhotoRow: cards.filter((c) => isPhotographed(rows[c.dataset.alg]) && c.querySelector('svg:not(.ring)')).length,
     renderersInCards: document.querySelectorAll('#practiceList cubus-cube').length,
     renderers: document.querySelectorAll('cubus-cube').length,
     animationsInCards: document.getAnimations().filter((a) => a.effect?.target?.closest?.('#practiceList [data-alg]')).length,
   };
 }, set);
 
-test('a net row\'s card waits in an empty well and then shows its photograph — never its net first — and at rest nothing in the grid moves', async () => {
-  const { page, context, errors } = await openPractice(fixture, { connect: false });
+test('a net row\'s tile waits in an empty well and then shows its photograph — never its net first — and at rest nothing in the grid moves', async () => {
+  const { page, context, errors } = await openPractice(fixture, { connect: false, prepare: stored({ practiceMethod: 'cfop' }) });
   try {
-    // Every flat picture ever put into a photographed row's card, from before the set is opened.
+    // Every flat picture ever put into a photographed row's tile, from before its grid is drawn.
     await page.evaluate(async () => {
       const { isPhotographed } = await import('/lib/case-photo.js');
       const rows = (await window.__p.rows()).rows;
@@ -889,11 +1054,11 @@ test('a net row\'s card waits in an empty well and then shows its photograph —
           for (const n of r.addedNodes) {
             if (n.nodeType !== 1) continue;
             for (const c of [n.closest('[data-alg]'), ...n.querySelectorAll('[data-alg]')].filter(Boolean)) {
-              if (isPhotographed(rows[c.dataset.alg]) && c.querySelector('svg')) window.__netsOnPhotoRows.push(c.dataset.alg);
+              if (isPhotographed(rows[c.dataset.alg]) && c.querySelector('svg:not(.ring)')) window.__netsOnPhotoRows.push(c.dataset.alg);
             }
           }
         }
-      }).observe(document.querySelector('#practiceList'), { childList: true, subtree: true });
+      }).observe(document.querySelector('.practice-screen'), { childList: true, subtree: true });
     });
     await openPhotos(page);
     const now = await libraryNow(page);
@@ -901,8 +1066,8 @@ test('a net row\'s card waits in an empty well and then shows its photograph —
     assert.equal(now.shown, now.photographed, 'a photographed row has no photograph');
     assert.equal(now.netOnPhotoRow, 0, 'a photographed row drew its net');
     assert.deepEqual(await page.evaluate(() => window.__netsOnPhotoRows), [], 'a photographed row showed its net before its photograph');
-    // At rest: no renderer in any card, and nothing animating in one. The one renderer waits in its slot.
-    assert.equal(now.renderersInCards, 0, 'a renderer sits in a card at rest');
+    // At rest: no renderer in any tile, and nothing animating in one. The one renderer waits in its slot.
+    assert.equal(now.renderersInCards, 0, 'a renderer sits in a tile at rest');
     assert.equal(now.animationsInCards, 0, 'something in the grid animates at rest');
     assert.equal(now.renderers, 1, 'the library holds more than the one renderer');
     assert.deepEqual(errors, []);
@@ -911,11 +1076,11 @@ test('a net row\'s card waits in an empty well and then shows its photograph —
   }
 });
 
-test('pointing at or focusing a photographed card puts the one renderer in it, live, with its case\'s marking — and leaving takes it out', async () => {
+test('pointing at or focusing a photographed tile puts the one renderer in it, live, with its case\'s marking — and leaving takes it out', async () => {
   const { page, context, errors } = await openPractice(fixture, { connect: false });
   try {
     await openPhotos(page);
-    const id = await page.evaluate((set) => document.querySelector(`details.alg-set[data-set="${set}"] .case-photo[data-photo="shown"]`).closest('[data-alg]').dataset.alg, PHOTO_SET);
+    const id = await page.evaluate((set) => document.querySelector(`#practiceList .tiles[data-set="${set}"] .case-photo[data-photo="shown"]`).closest('[data-alg]').dataset.alg, PHOTO_SET);
     const want = await page.evaluate(async (x) => {
       const { photoAttrs } = await import('/lib/case-photo.js');
       const c = await window.__p.rows();
@@ -954,14 +1119,14 @@ test('the live marking breathes, and holds still under reduced motion — the re
     const { page, context, errors } = await openPractice(fixture, { connect: false, context: shared });
     try {
       await openPhotos(page);
-      const well = `details.alg-set[data-set="${PHOTO_SET}"] .case-photo[data-photo="shown"]`;
+      const well = `#practiceList .tiles[data-set="${PHOTO_SET}"] .case-photo[data-photo="shown"]`;
       await page.hover(well);
       await page.waitForFunction((sel) => document.querySelector(sel)?.querySelector('cubus-cube'), well, { timeout: LIVENESS_MS });
       const first = await page.locator(well).first().screenshot();
       await page.evaluate((ms) => window.__p.wait(ms), 600);
       const second = await page.locator(well).first().screenshot();
-      if (reducedMotion === 'reduce') assert.ok(first.equals(second), 'under reduced motion the hovered card changed');
-      else assert.ok(!first.equals(second), 'with motion the hovered card did not breathe — is the renderer live at all?');
+      if (reducedMotion === 'reduce') assert.ok(first.equals(second), 'under reduced motion the hovered tile changed');
+      else assert.ok(!first.equals(second), 'with motion the hovered tile did not breathe — is the renderer live at all?');
       assert.deepEqual(errors, []);
     } finally {
       await context.close();
@@ -969,11 +1134,11 @@ test('the live marking breathes, and holds still under reduced motion — the re
   }
 });
 
-test('a palette change re-photographs: the same card\'s photograph is another picture', async () => {
+test('a palette change re-photographs: the same tile\'s photograph is another picture', async () => {
   const { page, context, errors } = await openPractice(fixture, { connect: false });
   try {
     await openPhotos(page);
-    const first = `details.alg-set[data-set="${PHOTO_SET}"] [data-alg] .case-photo > img`;
+    const first = `#practiceList .tiles[data-set="${PHOTO_SET}"] [data-alg] .case-photo > img`;
     const id = await page.evaluate((sel) => document.querySelector(sel).closest('[data-alg]').dataset.alg, first);
     const src = () => page.evaluate((x) => document.querySelector(`#practiceList [data-alg="${x}"] .case-photo > img`)?.src ?? null, id);
     const before = await src();
@@ -987,17 +1152,20 @@ test('a palette change re-photographs: the same card\'s photograph is another pi
     await openPhotos(page);
     const after_ = await src();
     assert.ok(before && after_, 'precondition: both photographs landed');
-    assert.notEqual(after_, before, `the ${palette} card kept the photograph taken in the other palette`);
+    assert.notEqual(after_, before, `the ${palette} tile kept the photograph taken in the other palette`);
     assert.deepEqual(errors, []);
   } finally {
     await context.close();
   }
 });
 
-test('with no WebGL the library says so once and every card draws its flat picture — never an empty well', async () => {
+test('with no WebGL the library says so once and every tile draws its flat picture — never an empty well', async () => {
+  // Heard from the context, before the page loads: the library photographs its first method's tiles as it opens.
+  const warned = [];
   const { page, context, errors } = await openPractice(fixture, {
     connect: false,
     prepare: async (ctx) => {
+      ctx.on('console', (m) => { if (m.type() === 'warning' && m.text().startsWith('case-photo:')) warned.push(m.text()); });
       await ctx.addInitScript(() => {
         const real = HTMLCanvasElement.prototype.getContext;
         HTMLCanvasElement.prototype.getContext = function getContext(kind, ...rest) {
@@ -1007,24 +1175,19 @@ test('with no WebGL the library says so once and every card draws its flat pictu
     },
   });
   try {
-    const warned = [];
-    page.on('console', (m) => { if (m.type() === 'warning' && m.text().startsWith('case-photo:')) warned.push(m.text()); });
-    await page.evaluate((set) => { document.querySelector(`details.alg-set[data-set="${set}"]`).open = true; }, PHOTO_SET);
-    await page.waitForFunction((set) => {
-      const block = document.querySelector(`details.alg-set[data-set="${set}"]`);
-      return block.querySelector('[data-alg]') && !block.querySelector('.case-photo');
-    }, PHOTO_SET, { timeout: LIVENESS_MS });
-    const now = await page.evaluate(async (set) => {
+    const grid = await gridOf(page, PHOTO_SET);
+    await page.waitForFunction((sel) => !document.querySelector(sel).querySelector('.case-photo'), grid, { timeout: LIVENESS_MS });
+    const now = await page.evaluate(async (sel) => {
       const { casePhotoCounts } = await import('/lib/case-photo.js');
-      const block = document.querySelector(`details.alg-set[data-set="${set}"]`);
+      const block = document.querySelector(sel);
       return {
         cards: block.querySelectorAll('[data-alg]').length,
         flat: block.querySelectorAll('[data-alg] > svg').length,
         state: document.querySelector('.practice-screen').dataset.photos ?? null,
         unavailable: casePhotoCounts.unavailable,
       };
-    }, PHOTO_SET);
-    assert.equal(now.flat, now.cards, 'a card has no picture');
+    }, grid);
+    assert.equal(now.flat, now.cards, 'a tile has no picture');
     assert.equal(now.state, 'unavailable');
     assert.equal(now.unavailable, 1, 'the missing renderer was not counted once');
     assert.equal(warned.length, 1, `said ${warned.length} times`);
@@ -1040,45 +1203,11 @@ test('leaving the library hands the renderer on with its clock let go — the pa
   try {
     await openPhotos(page);
     await page.evaluate(() => { window.__photoCube = document.querySelector('.case-photo-slot cubus-cube'); });
-    const id = await page.evaluate((set) => document.querySelector(`details.alg-set[data-set="${set}"] [data-alg]`).dataset.alg, PHOTO_SET);
+    const id = await page.evaluate((set) => document.querySelector(`#practiceList .tiles[data-set="${set}"] [data-alg]`).dataset.alg, PHOTO_SET);
     await page.click(`#practiceList [data-alg="${id}"]`);
     await page.waitForFunction((x) => window.__p.ready(x), id, { timeout: LIVENESS_MS });
     assert.deepEqual(await page.evaluate(() => ({ same: window.__p.cube() === window.__photoCube, pinned: window.__p.cube().clock !== null })),
       { same: true, pinned: false }, 'the page did not get the library\'s renderer, or got it with its clock still pinned');
-    assert.deepEqual(errors, []);
-  } finally {
-    await context.close();
-  }
-});
-
-// ---- a card's description (round 2, row 19) ------------------------------------------------------------------
-
-test('a card opened on the screen is described by its own sentence, under an id no other card on the page uses', async () => {
-  const { page, context, errors } = await openPractice(fixture, { connect: false });
-  try {
-    // A set taught by two methods is drawn twice: open BOTH listings, so their cards are on the page together.
-    const blocks = await page.evaluate(() => {
-      const by = new Map();
-      for (const el of document.querySelectorAll('#practiceList details.alg-set')) by.set(el.dataset.set, [...(by.get(el.dataset.set) ?? []), el]);
-      const twice = [...by.values()].find((els) => els.length > 1);
-      for (const el of twice) el.open = true;
-      return { set: twice[0].dataset.set, n: twice.length };
-    });
-    assert.ok(blocks.n > 1, 'precondition: a set listed twice');
-    await page.waitForFunction((id) => [...document.querySelectorAll(`details.alg-set[data-set="${id}"]`)].every((el) => el.querySelector('[data-alg]')), blocks.set, { timeout: LIVENESS_MS });
-    const cards = await page.evaluate(() => [...document.querySelectorAll('#practiceList [data-alg]')].map((card) => {
-      const id = card.getAttribute('aria-describedby');
-      const found = id ? document.querySelectorAll(`[id="${id}"]`) : [];
-      return { alg: card.dataset.alg, id, found: found.length, onCard: found.length === 1 && card.contains(found[0]), text: found[0]?.textContent ?? null };
-    }));
-    const catalogue = await page.evaluate(() => window.__p.rows());
-    assert.ok(cards.length >= 2 * catalogue.sets[blocks.set].ids.length, 'precondition: both listings drew their cards');
-    for (const c of cards) {
-      assert.ok(c.id, `${c.alg}: no description`);
-      assert.equal(c.found, 1, `${c.alg}: its description id "${c.id}" names ${c.found} elements`);
-      assert.ok(c.onCard, `${c.alg}: its description is not on the card`);
-      assert.equal(c.text, catalogue.rows[c.alg].says, `${c.alg}: described by another sentence`);
-    }
     assert.deepEqual(errors, []);
   } finally {
     await context.close();
