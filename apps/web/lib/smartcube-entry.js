@@ -34,7 +34,7 @@
  *  against, so this constant IS the guard. smartcube-pin.test.mjs asserts three things agree — the
  *  rev here, the rev pinned in package.json, and the rev baked into the built bundle. Bump the dep
  *  without rebuilding, or rebuild without bumping, and one of them goes red. */
-export const SMARTCUBE_REV = '77df8e9507ac87031c12ad1717d71de98d56784b';
+export const SMARTCUBE_REV = '3d3e05872fb9a560be003d4a68ce34adfc7ae930';
 
 /** The fork branch that revision is expected to live on.
  *

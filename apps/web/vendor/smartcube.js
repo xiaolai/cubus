@@ -1528,7 +1528,7 @@ function take(count) {
   });
 }
 
-// ../../node_modules/.pnpm/smartcube-web-bluetooth@https+++codeload.github.com+xiaolai+smartcube-web-bluetooth+tar_f81bca087a6a52c8d7466f2bc0b76de3/node_modules/smartcube-web-bluetooth/dist/esm/index.mjs
+// ../../node_modules/.pnpm/smartcube-web-bluetooth@https+++codeload.github.com+xiaolai+smartcube-web-bluetooth+tar_5e46e8f049b1f083c71768184adecd1b/node_modules/smartcube-web-bluetooth/dist/esm/index.mjs
 var import_aes_js = __toESM(require_aes_js(), 1);
 function resolveBluetooth(injected) {
   if (injected) {
@@ -2765,7 +2765,8 @@ var GanGen2ProtocolDriver = class {
             const face = msg.getBitWord(12 + 5 * i, 4);
             const direction = msg.getBitWord(16 + 5 * i, 1);
             let elapsed = msg.getBitWord(47 + 16 * i, 16);
-            if (elapsed === 0) {
+            const measured = elapsed !== 0;
+            if (!measured) {
               elapsed = this.lastMoveTimestamp > 0 ? timestamp - this.lastMoveTimestamp : 0;
             }
             this.cubeTimestamp += elapsed;
@@ -2775,7 +2776,8 @@ var GanGen2ProtocolDriver = class {
               timestamp,
               localTimestamp: i === 0 ? timestamp : null,
               // Missed and recovered events has no meaningfull local timestamps
-              cubeTimestamp: this.cubeTimestamp,
+              // A host-substituted interval is not the cube's clock: null, as for recovered moves
+              cubeTimestamp: measured ? this.cubeTimestamp : null,
               face,
               direction,
               move: moveNotation(face, direction)
@@ -5814,7 +5816,9 @@ var Moyu32Connection = class extends GattSmartCubeConnection {
     for (let i = moveDiff - 1; i >= 0; i--) {
       calcTs += timeOffs[i];
     }
-    if (!this.deviceTime || Math.abs(timestamp - calcTs) > 2e3) {
+    const first = !this.deviceTime;
+    const adjusted = !first && Math.abs(timestamp - calcTs) > 2e3;
+    if (first || adjusted) {
       this.deviceTime += timestamp - calcTs;
     }
     for (let i = moveDiff - 1; i >= 0; i--) {
@@ -5831,7 +5835,8 @@ var Moyu32Connection = class extends GattSmartCubeConnection {
         direction,
         move: moveNotation2,
         localTimestamp: i === 0 ? timestamp : null,
-        cubeTimestamp: this.deviceTime
+        // A host-derived time is not the cube's clock: null, as for recovered moves
+        cubeTimestamp: adjusted && i === moveDiff - 1 ? null : this.deviceTime
       });
       this.bus.emit({
         timestamp,
@@ -6787,7 +6792,7 @@ async function connectSmartCube(arg) {
 }
 
 // lib/smartcube-entry.js
-var SMARTCUBE_REV = "77df8e9507ac87031c12ad1717d71de98d56784b";
+var SMARTCUBE_REV = "3d3e05872fb9a560be003d4a68ce34adfc7ae930";
 var SMARTCUBE_BRANCH = "main";
 export {
   SMARTCUBE_BRANCH,

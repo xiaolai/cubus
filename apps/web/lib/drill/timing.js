@@ -14,25 +14,7 @@
 //   clock-reset     the cube's clock went backwards inside the span
 //   no-span         the first and last reports carry one time
 //
-// WHAT THIS CANNOT SEE: a finite `cubeTimestamp` is taken as the cube's clock, and from two decoders it is not
-// always. Both are in vendor/smartcube.js, and neither marks the move it changes:
-//   GAN Gen2  `GanGen2ProtocolDriver` sums the cube's per-move intervals, and where the cube sends an interval
-//             of ZERO it adds the host's time since the previous move packet instead. Upstream's comment puts
-//             that at the 16-bit interval register overflowing, more than 65.5 s after the last turn; whether
-//             a Gen2 cube also sends zero for two faces registered in one millisecond is not measured here.
-//   MoYu32    `Moyu32Connection`'s handleMoves re-anchors its device clock to the host's whenever the host's
-//             arrival and the cube's own intervals disagree by more than 2 s, and a radio stall that long is
-//             enough. The interval before that packet's first move is then the host's.
-// A report reaches this module as notation, host time, cube time and serial, and in those such an interval
-// looks like a measured one. Even an exact match of the two clocks' deltas is no tell, since 4 of the 87
-// measured intervals in the vendored Gen2 captures (test/fixtures/smartcube/) have one, and both clocks are
-// whole milliseconds (the bundle's host clock is `Math.floor(performance.now())`). So a span holding such an
-// interval is timed, partly on the host's clock. The fix belongs in the protocol layer, in the owner's fork
-// this repository pins and rebuilds (xiaolai/smartcube-web-bluetooth, in its gan-protocol-drivers and moyu32
-// sources): give each such move a null `cubeTimestamp`, as the Gen3/Gen4 drivers do for a recovered move, and
-// this module refuses the span as no-cube-clock with no change here. test/drill-engine.test.mjs runs both
-// drivers' own code from the bundle and fails the day either marks the move, so this paragraph cannot
-// outlive the defect (audit-fix 2026-10-18 #14, r2 #11, r3 #14).
+// The owner's fork marks a host-derived cube time (GAN Gen2, MoYu32) as a null cubeTimestamp since 3d3e0587.
 //
 // TPS is in the half-turn metric, counting only the turns the span holds — every one that ENDS after the
 // first report — and names its metric, because "turns per second" in an unnamed metric is a different

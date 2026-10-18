@@ -11,7 +11,7 @@
 // checks against MUTANTS of the engine and requires each mutant to fail one, so a check that cannot fail is
 // found here rather than in a child's hands.
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1044,11 +1044,13 @@ function lift(bundle, head, close) {
   return lines.slice(i, j + 1).join('\n');
 }
 
-test('two vendored drivers put host time into a cube timestamp, unmarked — and the drill refuses only what is marked', async () => {
-  // timing.js says a span can hold an interval the cube never measured, from GAN Gen2's and MoYu32's drivers,
-  // and that nothing in a report shows it (audit-fix 2026-10-18 #14, r2 #11, r3 #14). Each driver's own code is
-  // taken from the bundle and run on hand-made move packets: R U R' U', the cube measuring every interval but
-  // one. What the drill never reads — the cube's arrangement — is stubbed; the clocks are the bundle's.
+test('the vendored drivers mark a cube interval they did not measure, and the drill refuses that rep — never times it', async () => {
+  // Two drivers once put host time into a cube timestamp, unmarked: GAN Gen2 where the cube sends an interval of
+  // zero (its 16-bit register overflowed), and MoYu32 where a packet arrives so late that the driver re-anchors
+  // its clock to the host's (audit-fix 2026-10-18 #14, r2 #11, r3 #14). The owner's fork marks both as a null
+  // `cubeTimestamp` since 3d3e0587. Each driver's own code is taken from the bundle and run on hand-made move
+  // packets: R U R' U', the cube measuring every interval but the third. What the drill never reads — the cube's
+  // arrangement — is stubbed; the clocks are the bundle's.
   const bundle = readFileSync(new URL('../vendor/smartcube.js', import.meta.url), 'utf8');
   const dir = mkdtempSync(join(tmpdir(), 'drill-drivers-'));
   const load = async (name, lines) => {
@@ -1099,42 +1101,39 @@ test('two vendored drivers put host time into a cube timestamp, unmarked — and
     m.handleMoves(bitsOf(160, [[8, 16, 100], [88, 8, k + 1], [96, 5, MOYU[MOVES[k]]]]).join(''), host);
   }
 
-  for (const [name, events, measured, filled] of [['GAN Gen2', gen2, 0, 5000], ['MoYu32', moyu32, 100, 5100]]) {
+  for (const [name, events] of [['GAN Gen2', gen2], ['MoYu32', moyu32]]) {
     assert.deepEqual(events.map((e) => e.move), MOVES, `${name}: the driver did not report the moves it was given`);
-    // THE LIMIT. The cube measured `measured` ms before the third move; its stamp says `filled`, and nothing
-    // marks it. The day this fails because the stamp is null, the fork's fix has landed: delete timing.js's
-    // paragraph, and let the relation below assert the refusal.
-    assert.equal(events[2].cubeTimestamp - events[1].cubeTimestamp, filled,
-      `${name}: the driver no longer puts host time unmarked into the cube's ${measured} ms`);
-    // THE RELATION, true before the fix and after it: a rep is refused exactly when a stamp is missing, and
-    // otherwise timed from its stamps — the drill can do no better than what it is given.
+    // The move whose interval the cube did not measure carries no cube time; every other move keeps its own.
+    assert.deepEqual(events.map((e) => e.cubeTimestamp === null), [false, false, true, false],
+      `${name}: the driver does not mark exactly the move whose interval is the host's`);
+    // THE REFUSAL. Fed to the drill as the app feeds it, the rep is refused for want of the cube's clock, and
+    // no time, turn rate or clean timed result is reported for it.
     const h = harness({ alg: "R U R' U'" });
     startAt(h, SOLVED);
     for (const e of events) h.turn(e.move, e.cubeTimestamp === null ? { cubeClock: false } : { stamp: e.cubeTimestamp });
-    const { result } = h.events.find((e) => e.type === 'done');
-    const marked = events.some((e) => e.cubeTimestamp === null);
-    assert.equal(result.refused, marked ? TIME_REFUSAL.NO_CUBE_CLOCK : null, name);
-    if (!marked) assert.equal(result.ms, events.at(-1).cubeTimestamp - events[0].cubeTimestamp, name);
+    const done = h.events.filter((e) => e.type === 'done');
+    assert.equal(done.length, 1, `${name}: the rep did not end exactly once`);
+    const { result } = done[0];
+    assert.equal(result.refused, TIME_REFUSAL.NO_CUBE_CLOCK, `${name}: the rep was not refused as no-cube-clock`);
+    assert.equal(result.ms, null, `${name}: a rep holding a host-time interval was timed`);
+    assert.equal(result.tps, null, `${name}: a rep holding a host-time interval has a turn rate`);
   }
 
-  // timing.js names both, and the measurement it quotes for why no report can show it: a cube delta equal to the
-  // host's is no tell, because measured intervals in the Gen2 captures have it too.
-  const prose = readFileSync(new URL('../lib/drill/timing.js', import.meta.url), 'utf8').replace(/\n\/\/ */g, ' ');
-  assert.match(prose, /WHAT THIS CANNOT SEE.*GanGen2ProtocolDriver.*Moyu32Connection/, 'timing.js no longer names what it cannot see');
-  const captures = new URL('./fixtures/smartcube/', import.meta.url);
-  const files = readdirSync(captures).filter((f) => f.includes('_gan-gen2_'));
-  let pairs = 0;
-  let equal = 0;
-  for (const file of files) {
-    const moves = JSON.parse(readFileSync(new URL(file, captures), 'utf8')).events.map((e) => e.event).filter((e) => e.type === 'MOVE');
-    for (let k = 1; k < moves.length; k++) {
-      pairs += 1;
-      if (moves[k].cubeTimestamp - moves[k - 1].cubeTimestamp === moves[k].timestamp - moves[k - 1].timestamp) equal += 1;
+  // THE RELATION, whatever a driver does: a rep is refused exactly when a stamp is missing, and otherwise timed
+  // from its stamps — the drill can do no better than what it is given. Run on each driver's measured moves with
+  // the marked one given its stamp back, and on the marked feed itself.
+  for (const [name, events] of [['GAN Gen2', gen2], ['MoYu32', moyu32]]) {
+    const stamped = events.map((e, k) => (k === 2 ? { ...e, cubeTimestamp: events[1].cubeTimestamp + 100 } : e));
+    for (const feed of [events, stamped]) {
+      const h = harness({ alg: "R U R' U'" });
+      startAt(h, SOLVED);
+      for (const e of feed) h.turn(e.move, e.cubeTimestamp === null ? { cubeClock: false } : { stamp: e.cubeTimestamp });
+      const { result } = h.events.find((e) => e.type === 'done');
+      const marked = feed.some((e) => e.cubeTimestamp === null);
+      assert.equal(result.refused, marked ? TIME_REFUSAL.NO_CUBE_CLOCK : null, name);
+      if (!marked) assert.equal(result.ms, feed.at(-1).cubeTimestamp - feed[0].cubeTimestamp, name);
     }
   }
-  assert.equal(files.length, 3);
-  assert.equal(`${equal} of ${pairs}`, '4 of 87');
-  assert.match(prose, /4 of the 87 measured intervals in the vendored Gen2 captures/);
 });
 
 test('a turn taken back inside the window is in the time but not in a turn rate', () => {

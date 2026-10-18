@@ -39,8 +39,8 @@ importers:
         specifier: 1.64.0
         version: 1.64.0
       smartcube-web-bluetooth:
-        specifier: github:xiaolai/smartcube-web-bluetooth#77df8e9507ac87031c12ad1717d71de98d56784b
-        version: https://codeload.github.com/xiaolai/smartcube-web-bluetooth/tar.gz/77df8e9507ac87031c12ad1717d71de98d56784b
+        specifier: github:xiaolai/smartcube-web-bluetooth#3d3e05872fb9a560be003d4a68ce34adfc7ae930
+        version: https://codeload.github.com/xiaolai/smartcube-web-bluetooth/tar.gz/3d3e05872fb9a560be003d4a68ce34adfc7ae930
       tauri-plugin-mcp:
         specifier: 0.3.1
         version: 0.3.1
@@ -126,8 +126,8 @@ importers:
         specifier: ^10.12.0
         version: 10.12.0
       smartcube-web-bluetooth:
-        specifier: github:xiaolai/smartcube-web-bluetooth#77df8e9507ac87031c12ad1717d71de98d56784b
-        version: https://codeload.github.com/xiaolai/smartcube-web-bluetooth/tar.gz/77df8e9507ac87031c12ad1717d71de98d56784b
+        specifier: github:xiaolai/smartcube-web-bluetooth#3d3e05872fb9a560be003d4a68ce34adfc7ae930
+        version: https://codeload.github.com/xiaolai/smartcube-web-bluetooth/tar.gz/3d3e05872fb9a560be003d4a68ce34adfc7ae930
       tsx:
         specifier: ^4.23.15
         version: 4.23.15
@@ -1457,8 +1457,8 @@ packages:
     resolution: {integrity: sha512-7++dFhtcx3353uBaq8DDR4NuxBetBzC7ZQOhmTQInHEd6bSrXdiEyzCvG07Z44UYdLShWUyXt5M/yhz8ekcb1A==}
     engines: {node: '>=8'}
 
-  smartcube-web-bluetooth@https://codeload.github.com/xiaolai/smartcube-web-bluetooth/tar.gz/77df8e9507ac87031c12ad1717d71de98d56784b:
-    resolution: {tarball: https://codeload.github.com/xiaolai/smartcube-web-bluetooth/tar.gz/77df8e9507ac87031c12ad1717d71de98d56784b}
+  smartcube-web-bluetooth@https://codeload.github.com/xiaolai/smartcube-web-bluetooth/tar.gz/3d3e05872fb9a560be003d4a68ce34adfc7ae930:
+    resolution: {tarball: https://codeload.github.com/xiaolai/smartcube-web-bluetooth/tar.gz/3d3e05872fb9a560be003d4a68ce34adfc7ae930}
     version: 4.0.0
     engines: {node: '>=18'}
 
@@ -2618,7 +2618,7 @@ snapshots:
 
   shebang-regex@3.0.0: {}
 
-  smartcube-web-bluetooth@https://codeload.github.com/xiaolai/smartcube-web-bluetooth/tar.gz/77df8e9507ac87031c12ad1717d71de98d56784b:
+  smartcube-web-bluetooth@https://codeload.github.com/xiaolai/smartcube-web-bluetooth/tar.gz/3d3e05872fb9a560be003d4a68ce34adfc7ae930:
     dependencies:
       '@types/web-bluetooth': 0.0.20
       aes-js: 3.1.2
