@@ -52,10 +52,12 @@ const longestOf = (items, len) => {
 };
 
 /**
- * Every sentence the follow-note can say, each at its LONGEST instance: a move at the longest a move is written — every
- * letter the notation reader accepts, with every suffix it accepts, wide or not, the longest kept — a way back of
- * `WAY_BACK_MOST` of them, and the hold sentence of whichever of the 24 holds says it at most length. "Longest" is
- * `widthOf`'s: the band measures a part as drawn in its own font (lib/foot-band.js, `drawnWidth`), because two strings
+ * Every sentence the follow-note can say, each at its TALLEST instance, for the band to lay out and size by (lib/foot-band.js):
+ * a move at the longest a move is written — every letter the notation reader accepts, with every suffix it accepts, wide
+ * or not, the longest kept — a way back of `WAY_BACK_MOST` of them, and EVERY one of the 24 hold sentences. A move is one
+ * word that never breaks, and widening one word of a sentence never makes it wrap to fewer lines, so the widest move
+ * gives the tallest sentence; a hold sentence is many words, and a wider one is not always a taller one, so each is laid
+ * out. "Longest" is `widthOf`'s: the band measures a part as drawn in its own font (`drawnWidth`), because two strings
  * of one length are not one width; by default, characters. Ties are all kept.
  *
  * @param {{ widthOf?: (text: string) => number }} [o]
@@ -70,7 +72,7 @@ export function followNoteSentences({ widthOf = (text) => text.length } = {}) {
     }
   }
   const moves = longestOf([...new Set(tokens)], widthOf);
-  const holds = longestOf([...new Set(ORIENTATIONS.map((h) => holdSentence(h)))], widthOf);
+  const holds = [...new Set(ORIENTATIONS.map((h) => holdSentence(h)))];
   const ways = moves.map((m) => Array(WAY_BACK_MOST).fill(m).join(' '));
   const fill = { mismatch: holds.map((h) => [h]), thatWas: moves.flatMap((m) => ways.map((w) => [m, w])), turnBack: ways.map((w) => [w]),
     nextIs: moves.flatMap((m) => moves.map((n) => [m, n])) };

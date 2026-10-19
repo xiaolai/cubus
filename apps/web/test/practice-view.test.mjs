@@ -575,11 +575,10 @@ test('every label the practise-step button can carry is known at once — never 
   assert.ok(ledger.length > 0, 'precondition: the ledger names no algorithm');
   const nameable = new Set(NAMEABLE_IDS);
   assert.deepEqual(ledger.filter((id) => !nameable.has(id)), [], 'a ledger algorithm a step can offer is missing from the band\'s list');
-  // …and the widest offer by the measure given is among the labels: the band holds the longest the button can say.
-  const widthOf = (text) => text.length;
-  const offers = ledger.map((id) => t(PRACTISE_SAYS.offer, caseNameOf(id)));
-  const most = Math.max(...offers.map(widthOf));
-  assert.ok(practiseLabels({ widthOf }).some((l) => widthOf(l) >= most), 'the band is sized under the widest offer');
+  // …and EVERY offer is among the labels, never only the widest: the band is sized by the tallest as laid out, and a
+  // wider label is not always a taller one (geometry's "every candidate").
+  const have = new Set(labels);
+  assert.deepEqual(ledger.map((id) => t(PRACTISE_SAYS.offer, caseNameOf(id))).filter((o) => !have.has(o)), [], 'an offer the band is not sized for');
 });
 
 // ---- WI-12 in Settings: the stepper refuses a target below three -------------------------------------------

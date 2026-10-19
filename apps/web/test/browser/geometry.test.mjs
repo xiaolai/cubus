@@ -1474,7 +1474,7 @@ const bandEnumeration = (page) => page.evaluate(async () => {
     import('/lib/foot-band.js')]);
   // "Longest" as the band draws it, in its own font — the measure the app sizes its room by.
   const widthOf = drawnWidth(document.querySelector('.screen.active .foot-band'));
-  return { follow: followNoteSentences({ widthOf }), practise: practiseLabels({ widthOf }), why: WHY_TURN_LABEL,
+  return { follow: followNoteSentences({ widthOf }), practise: practiseLabels(), why: WHY_TURN_LABEL,
     record: [RECORD_SAYS.save, RECORD_SAYS.read] };
 });
 
@@ -1494,6 +1494,49 @@ async function bandHoldsEvery(page, cubeSel, bare, states, apply, what) {
     for (const k of ['top', 'height']) near(b.card[k], bare.card[k], `${label}: the cube card's ${k} moved`);
     near(b.painted, bare.painted, `${label}: the painted cube changed size`);
   }
+}
+
+/**
+ * THE ROOM HOLDS THE TALLEST, NOT ONLY THE WIDEST (2026-10-20). The app picks the band's longest states by drawn WIDTH,
+ * and a wider sentence is not always a taller one: words wrap where they break. In the Split View column with the band
+ * 188 px narrower, "Practise OLL 5 · Right back wide antisune (RBWAS)" took 175 px against the widest label's (OLL 46's)
+ * 160, in a 165.9 px room (measured 2026-10-20). So every candidate is enumerated here from the words it is made
+ * of — every name a step can offer to practise (`NAMEABLE_IDS`, `caseNameOf`, `PRACTISE_SAYS`), the follow-note's
+ * mismatch with every one of the 24 hold sentences, and the follow-note's other sentences — never through the app's
+ * choice of the longest, and each is laid in the real band at its real width and font. MUST NOT: one taller than the room
+ * the band is given (its `max-height`, the room under the cube's sphere that the reserve keeps).
+ */
+async function everyCandidateFits(page, what) {
+  const tall = await page.evaluate(async () => {
+    const [{ NAMEABLE_IDS, caseNameOf }, { PRACTISE_SAYS }, { FOLLOW_SAYS, followNoteSentences }, { ORIENTATIONS }, { holdSentence }, { WHY_TURN_LABEL }, { t }] = await Promise.all([
+      import('/lib/method-lesson.js'), import('/lib/practice-link.js'), import('/lib/walk-follow.js'), import('/lib/cube-orientation.js'),
+      import('/lib/solving-hold.js'), import('/lib/walk-presenter.js'), import('/lib/i18n.js')]);
+    const states = [
+      ...NAMEABLE_IDS.map((id) => ({ why: WHY_TURN_LABEL, practise: t(PRACTISE_SAYS.offer, caseNameOf(id)) })),
+      { why: WHY_TURN_LABEL, practise: t(PRACTISE_SAYS.unchecked) },
+      ...ORIENTATIONS.map((h) => ({ follow: t(FOLLOW_SAYS.mismatch.text, holdSentence(h)), info: FOLLOW_SAYS.mismatch.info })),
+      ...followNoteSentences().filter((s) => s.key !== 'mismatch').map((s) => ({ follow: s.text, info: s.info })),
+    ];
+    const band = document.querySelector('.screen.active .foot-band');
+    const out = [];
+    for (const st of states) {
+      const note = document.getElementById('followNote');
+      note.hidden = !st.follow;
+      note.classList.toggle('info', Boolean(st.info));
+      if (st.follow) document.getElementById('followMsg').textContent = st.follow;
+      document.getElementById('whyBtn').hidden = !st.why;
+      const practise = document.getElementById('practiseStep');
+      practise.hidden = !st.practise;
+      if (st.practise) practise.textContent = st.practise;
+      band.hidden = false;
+      const room = parseFloat(band.style.maxHeight);
+      out.push({ text: st.follow ?? st.practise, height: band.scrollHeight, room });
+    }
+    return { count: states.length, tall: out.filter((o) => !(o.height <= o.room + 0.5)).sort((a, b) => b.height - a.height) };
+  });
+  assert.ok(tall.count > 200, `precondition, ${what}: only ${tall.count} candidates enumerated`);
+  assert.deepEqual(tall.tall.slice(0, 5).map((o) => `"${o.text}" ${o.height}px in ${o.room}px`), [],
+    `${what}: ${tall.tall.length} things the band can say are taller than the room it is given`);
 }
 
 /** The cube screen's band states: each follow-note sentence alone, and the why button beside each practise label. */
@@ -1578,6 +1621,7 @@ for (const fixture of FIXTURES) {
         const e = await bandEnumeration(page);
         assert.ok(e.follow.length > 0 && e.practise.length > 0, `precondition: the enumeration is empty (${e.follow.length} sentences, ${e.practise.length} labels)`);
         await bandHoldsEvery(page, '#viewCube cubus-cube', bare, cubeBandStates(e), applyCubeBand, 'portrait, a lesson\'s band');
+        await everyCandidateFits(page, 'portrait, a lesson\'s band');
         await page.evaluate(applyCubeBand, {});
       }
       // THE WHY OF A STEP (E12.8): in portrait the band shows one button, and the full line — the step, the hold, the

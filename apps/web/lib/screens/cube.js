@@ -539,8 +539,8 @@ const cubeScreen = (screenMode) => {
       wireTwinTool(root, signal);
       // The rows a walk shows only sometimes: over the foot of the cube card in portrait, so they take nothing from the
       // cube, and where they always were in landscape (lib/foot-band.js, E12.1). Scramble has the follow-note alone.
-      // The room under the cube is kept for the LONGEST thing the band can say (E12.8): every sentence the follow-note can
-      // say at its longest, and the why button beside the practise-step button at its longest label.
+      // The room under the cube is kept for the TALLEST thing the band can say (E12.8): every sentence the follow-note can
+      // say at its tallest, and the why button beside the practise-step button with each label it can carry.
       const [followNote, whyBtn, practiseStep] = ['#followNote', '#whyBtn', '#practiseStep'].map((id) => root.querySelector(id));
       const sayable = { follow: [], practise: [] };
       const band = footBand({
@@ -555,7 +555,7 @@ const cubeScreen = (screenMode) => {
       // Both known at once, so the room is measured ONCE, before the walk is seen: a list that arrived later would grow
       // the reserve then, and the cube would shrink in front of the child (practiseLabels, lib/practice-link.js).
       sayable.follow = followNoteSentences({ widthOf });
-      if (!scrambling) sayable.practise = practiseLabels({ widthOf });
+      if (!scrambling) sayable.practise = practiseLabels();
       band.remeasure();
       if (!scrambling) {
         // THE WHY OF A STEP, behind its button in portrait (E12.8): the full line — the step, the hold, the reason —

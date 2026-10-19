@@ -24,20 +24,20 @@ export const PRACTISE_SAYS = Object.freeze({
 });
 
 /**
- * Every label the button can carry at its LONGEST: the offer with whichever name a step can show is widest by `widthOf`
- * (ties kept), and the label for a ledger that could not be asked. Known AT ONCE, never asked of the ledger: a step offers
- * only an id the ledger holds AND `caseNameOf` names, so the names `caseNameOf` can give (`NAMEABLE_IDS`) bound every offer.
+ * EVERY label the button can carry: the offer with every name a step can show, and the label for a ledger that could not
+ * be asked. All of them, never the widest: the band is sized by the TALLEST as it is laid out at its own width and font
+ * (lib/foot-band.js), and a wider label is not always a taller one — words wrap where they break, so in the Split View
+ * column with the band narrowed "Practise OLL 5 · Right back wide antisune (RBWAS)" took 175 px against the widest
+ * label's 160 (geometry's "every candidate", 2026-10-20). Known AT ONCE, never asked of the ledger: a step offers only an
+ * id the ledger holds AND `caseNameOf` names, so the names `caseNameOf` can give (`NAMEABLE_IDS`) bound every offer.
  * Asked of the ledger, the list came when the library worker answered, and the band sized by it grew its reserve after
  * the walk was drawn — the cube shrank under the child's eyes (test/browser/geometry.test.mjs, "the band's room is sized
  * before the ledger answers").
  *
- * @param {{ widthOf?: (text: string) => number }} [o]
  * @returns {string[]}
  */
-export function practiseLabels({ widthOf = (text) => text.length } = {}) {
-  const offers = NAMEABLE_IDS.map((id) => t(PRACTISE_SAYS.offer, caseNameOf(id)));
-  const most = Math.max(...offers.map(widthOf));
-  return [...new Set(offers.filter((o) => widthOf(o) === most)), t(PRACTISE_SAYS.unchecked)];
+export function practiseLabels() {
+  return [...new Set(NAMEABLE_IDS.map((id) => t(PRACTISE_SAYS.offer, caseNameOf(id)))), t(PRACTISE_SAYS.unchecked)];
 }
 
 /** The id of the algorithm a lesson step makes, or null for a step that names none (a search, a step made of
