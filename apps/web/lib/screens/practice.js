@@ -30,6 +30,7 @@ import { createMethodRow, methodRowHtml } from '../method-row.js';
 import { createSpeedMenu } from '../speed-menu.js';
 import { oneLineStrip } from '../scroll-strip.js';
 import { footBand } from '../foot-band.js';
+import { RECORD_SAYS } from '../drill/record-says.js';
 import { hooks } from '../screen-slots.js';
 import { openLibrary } from '../practice-link.js';
 import { newCube } from '../cube-drawing.js';
@@ -90,7 +91,7 @@ const onControl = (target) => Boolean(target?.closest?.('button, a, input, selec
  * Kept here and not in storage: a save fails when the database refuses it (full, closed under the page, refused), and
  * a refusal that lasts is met again by the next rep's save, on the page, as it happens.
  */
-let unsaved = null;             // { id, message, page } for the newest save that did not land, or null once one has
+let unsaved = null;             // { id, message } for the newest save that did not land, or null once one has
 const unsavedSayers = new Set(); // the mounted compositions' sayings, each removed when its screen goes
 const keepUnsaved = (next) => {
   unsaved = next;
@@ -101,11 +102,10 @@ const sayUnsavedWhileMounted = (say, signal) => {
   signal?.addEventListener('abort', () => unsavedSayers.delete(say), { once: true });
   say();
 };
-/** The words for a save that did not land: "That rep" on the page that made it, while it shows that algorithm; the
- *  algorithm's name anywhere else. Null when the newest save landed. */
-const unsavedWords = (catalogue, { page = null, rowId = null } = {}) => {
+/** The library's words for a save that did not land: the algorithm's name, and why. Null when the newest save landed.
+ *  The page says it in fixed words instead (`RECORD_SAYS`, E12.8). */
+const unsavedWords = (catalogue) => {
   if (!unsaved) return null;
-  if (unsaved.page === page && unsaved.id === rowId) return t('That rep was not saved: %1', unsaved.message);
   const row = catalogue.rows[unsaved.id];
   return t('A rep of %1 was not saved: %2', row ? rowName(row) : unsaved.id, unsaved.message);
 };
@@ -557,7 +557,9 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   cube.setAttribute('aria-label', t('The algorithm, on a cube'));
   // The record's notice: its own row in landscape, over the foot of the cube card in portrait (lib/foot-band.js, E12.3).
   // The band is clear of the cube once the page has put the cube in; until then there is nothing to be clear of.
-  footBand({ host: page, card: $('.practice-page > .primary', root), cube: () => (cube.isConnected ? cube : null), rows: [recordSay], signal });
+  // Its room is kept for the longest it can say: both fixed sentences at once (E12.8).
+  footBand({ host: page, card: $('.practice-page > .primary', root), cube: () => (cube.isConnected ? cube : null), rows: [recordSay], signal,
+    longest: () => [[{ row: recordSay, text: `${t(RECORD_SAYS.save)} ${t(RECORD_SAYS.read)}` }]] });
   let seekWhenIn = null;
   const seek = (k) => { if (cube.isConnected) cube.seek(k); else seekWhenIn = k; };
   cube.addEventListener('cubus-step', (e) => {
@@ -614,14 +616,22 @@ function mountPage({ root, page, catalogue, signal, stale }) {
    * localStorage held — when it is not in this one (`legacy`).
    */
   const trouble = { read: null };
-  const mount = {};   // this page, for the words of a save it made (`unsavedWords`)
+  // IN FIXED WORDS (E12.8): the notice stands in the band over the cube card in portrait, whose room is kept for the
+  // longest thing it can say — so it says one of two sentences known in advance, never a failure's own message. Each
+  // failure is logged where it is first seen here, once.
+  const logged = new WeakSet();
+  const logOnce = (what, err) => {
+    if (!err || logged.has(err)) return;
+    logged.add(err);
+    console.error(`practice: ${what}: ${err.message}`, err);
+  };
   const sayRecord = () => {
     const { error, legacy } = record.status();
+    logOnce('the practice record cannot be reached', error);
+    logOnce('the earlier practice record could not be read', legacy);
     const text = [
-      unsavedWords(catalogue, { page: mount, rowId: row?.id ?? null }),
-      error && !trouble.read ? t('Your practice record cannot be reached right now: %1', error.message) : null,
-      legacy ? t('Your earlier practice record is not in this one: %1', legacy.message) : null,
-      trouble.read,
+      unsaved ? t(RECORD_SAYS.save) : null,
+      error || legacy || trouble.read ? t(RECORD_SAYS.read) : null,
     ].filter(Boolean).join(' ');
     recordSay.hidden = !text;
     recordSay.textContent = text;
@@ -658,7 +668,8 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     }, (err) => {
       if (!(err instanceof PracticeRecordError)) throw err;
       if (!current()) return;
-      trouble.read = t('Your practice record could not be read (%1), so it is left as it is and nothing new is saved.', err.code);
+      logOnce(`its record could not be read (${err.code})`, err);
+      trouble.read = t(RECORD_SAYS.read);
       paintFigures(null);
       sayRecord();
     });
@@ -680,7 +691,9 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     const settled = (error) => {
       page.dataset.saving = String(saving -= 1);
       // What the save answered is kept whether or not this page is still here (`unsaved`); only painting needs it.
-      keepUnsaved(error ? { id, message: error.message, page: mount } : null);
+      // Said in fixed words on the page (E12.8); the failure's own words are logged here, where it arrived.
+      if (error) console.error(`practice: a rep of ${id} was not saved: ${error.message}`, error);
+      keepUnsaved(error ? { id, message: error.message } : null);
       if (stale()) return;
       if (row?.id === id) paintRecord();
     };
@@ -1138,7 +1151,8 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   const orderFor = (ids) => record.read().then((rec) => mixOrder(ids, rec, { seed: seed() }), (err) => {
     if (!(err instanceof PracticeRecordError)) throw err;
     if (!stale()) {
-      trouble.read = t('Your practice record could not be read (%1), so mixed practice cannot put the weakest first.', err.code);
+      logOnce(`its record could not be read for mixed practice (${err.code})`, err);
+      trouble.read = t(RECORD_SAYS.read);
       sayRecord();
     }
     return null;

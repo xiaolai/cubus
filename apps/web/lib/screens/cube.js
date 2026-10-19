@@ -18,7 +18,11 @@ import { createRouteRace } from './cube/route-race.js';
 // The rest of its own parts: the speed menu, the die and the reconnect question.
 import { createPatternMenu } from './cube/pattern-menu.js';
 import { createSpeedMenu } from '../speed-menu.js';
-import { footBand } from '../foot-band.js';
+import { drawnWidth, footBand } from '../foot-band.js';
+import { createMenu } from '../menu-popover.js';
+import { followNoteSentences } from '../walk-follow.js';
+import { practiseLabels } from '../practice-link.js';
+import { WHY_TURN_LABEL } from '../walk-presenter.js';
 import { createDie } from './cube/die.js';
 import { createReconnectAsk } from './cube/reconnect-ask.js';
 // The BUDGET only. `stage-distance.js` builds nothing at import — its tables are lazy — but this
@@ -392,8 +396,9 @@ const cubeScreen = (screenMode) => {
           ${methodRowHtml({ methods: METHODS, chosen: settings.solveMethod, escHtml })}
           <span class="sub" id="methodNote" role="status" aria-live="polite" style="color:var(--ink-4);margin-left:auto;text-align:right" hidden></span>
         </div>`}
-        <div class="list walk-strip" id="solList" style="padding:6px 0"></div>
+        <div class="list walk-strip" id="solList"></div>
         ${scrambling ? '' : '<div class="sub why-line" id="whyLine" hidden></div>'}
+        ${scrambling ? '' : `<button class="pill why-btn" id="whyBtn" type="button" hidden>${escHtml(t(WHY_TURN_LABEL))}</button>`}
         ${scrambling ? '' : '<button class="pill practise-step" id="practiseStep" type="button" hidden></button>'}
         <div class="follow-note" id="followNote" hidden>
           <span id="followMsg" role="status" aria-live="polite"></span>
@@ -534,10 +539,38 @@ const cubeScreen = (screenMode) => {
       wireTwinTool(root, signal);
       // The rows a walk shows only sometimes: over the foot of the cube card in portrait, so they take nothing from the
       // cube, and where they always were in landscape (lib/foot-band.js, E12.1). Scramble has the follow-note alone.
-      footBand({
+      // The room under the cube is kept for the LONGEST thing the band can say (E12.8): every sentence the follow-note can
+      // say at its longest, and the why button beside the practise-step button at its longest label.
+      const [followNote, whyBtn, practiseStep] = ['#followNote', '#whyBtn', '#practiseStep'].map((id) => root.querySelector(id));
+      const sayable = { follow: [], practise: [] };
+      const band = footBand({
         host: root.querySelector('.cols.walking'), card: root.querySelector('.cols > .primary'), cube: () => cube, signal,
-        rows: (scrambling ? ['#followNote'] : ['#followNote', '#whyLine', '#practiseStep']).map((id) => root.querySelector(id)),
+        rows: (scrambling ? ['#followNote'] : ['#followNote', '#whyLine', '#whyBtn', '#practiseStep']).map((id) => root.querySelector(id)),
+        longest: () => [
+          ...sayable.follow.map(({ text, info }) => [{ row: followNote, text, info }]),
+          ...(scrambling ? [] : sayable.practise.map((label) => [{ row: whyBtn }, { row: practiseStep, text: label }])),
+        ],
       });
+      const widthOf = drawnWidth(band.band);
+      sayable.follow = followNoteSentences({ widthOf });
+      band.remeasure();
+      if (!scrambling) {
+        void practiseLabels({ widthOf }).then((labels) => {
+          if (signal.aborted) return;
+          sayable.practise = labels;
+          band.remeasure();
+        });
+        // THE WHY OF A STEP, behind its button in portrait (E12.8): the full line — the step, the hold, the reason —
+        // opens in a menu. The line itself stays on the page, where a screen reader reads it as before.
+        const whyMenu = createMenu({
+          root, button: whyBtn, label: t('Why this turn'), signal, place: placeMenuUnder, dismiss: true,
+          beforeOpen: () => { whyText.textContent = root.querySelector('#whyLine').textContent; },
+        });
+        whyMenu.el.classList.add('why-menu');
+        whyMenu.el.setAttribute('role', 'dialog');
+        const whyText = document.createElement('p');
+        whyMenu.el.append(whyText);
+      }
 
       // ---- the walk -----------------------------------------------------------------------------
       //

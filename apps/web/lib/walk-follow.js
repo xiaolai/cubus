@@ -9,9 +9,11 @@
 // Lifted out of lib/walk-session.js on 2026-09-13; the orderings it keeps are pinned through the
 // session, in test/walk-session.test.mjs.
 
+import { readToken } from './cube-notation.js';
+import { ORIENTATIONS } from './cube-orientation.js';
 import { t } from './i18n.js';
 import { locate as locateOnTrack, trackOf } from './script-track.js';
-import { holdSentence, sameHold, showMove } from './solving-hold.js';
+import { SCAN_HOLD, holdSentence, sameHold, showMove } from './solving-hold.js';
 
 /** A turn of one outer face and nothing else — the one kind of move that cannot change a hold. */
 const PLAIN_FACE_TURN = /^[URFDLB](2|')?$/;
@@ -24,6 +26,57 @@ const PLAIN_FACE_TURN = /^[URFDLB](2|')?$/;
  * to press Re-solve, and three turns undone in reverse is more than a five-year-old holds in their head.
  */
 export const WAY_BACK_MOST = 2;
+
+/**
+ * EVERY SENTENCE THE FOLLOW-NOTE SAYS, as its English source (looked up through `t()` where it is said). One table, read
+ * by the code below that says them and by `followNoteSentences`, which the band over the cube card in portrait is sized
+ * by (dev-docs/practice-redesign-plan.md E12.8) — so a sentence added here is a sentence the band makes room for.
+ * `info` says it without the two rescue buttons: pausing is a choice, not a fault.
+ */
+export const FOLLOW_SAYS = Object.freeze({
+  paused: Object.freeze({ text: 'Paused — you are driving. Switch Cube leads back on and your cube sets the pace.', info: true }),
+  mismatch: Object.freeze({ text: 'Your cube does not match this one. %1', info: false }),
+  thatWas: Object.freeze({ text: 'That was %1 — turn %2 to get back on the plan.', info: false }),
+  turnBack: Object.freeze({ text: 'Turn %1 to get back on the plan.', info: false }),
+  outOfOrder: Object.freeze({ text: 'The cube’s reports arrived out of order — read it again before following.', info: false }),
+  offPlan: Object.freeze({ text: 'This cube is not on the plan any more.', info: false }),
+  nextIs: Object.freeze({ text: 'That was %1 — the next move is %2.', info: false }),
+  unrecorded: Object.freeze({ text: 'A turn went unrecorded — checking the cube…', info: false }),
+  watching: Object.freeze({ text: 'Watching for it — turn it back and the guide picks up.', info: false }),
+});
+
+/** The longest of `items` by `len`, every one tied for it. */
+const longestOf = (items, len) => {
+  const most = Math.max(...items.map(len));
+  return items.filter((x) => len(x) === most);
+};
+
+/**
+ * Every sentence the follow-note can say, each at its LONGEST instance: a move at the longest a move is written — every
+ * letter the notation reader accepts, with every suffix it accepts, wide or not, the longest kept — a way back of
+ * `WAY_BACK_MOST` of them, and the hold sentence of whichever of the 24 holds says it at most length. "Longest" is
+ * `widthOf`'s: the band measures a part as drawn in its own font (lib/foot-band.js, `drawnWidth`), because two strings
+ * of one length are not one width; by default, characters. Ties are all kept.
+ *
+ * @param {{ widthOf?: (text: string) => number }} [o]
+ * @returns {{ key: string, text: string, info: boolean }[]}
+ */
+export function followNoteSentences({ widthOf = (text) => text.length } = {}) {
+  const tokens = [];
+  for (const letter of 'RLUDFBMESrludfbxyz') {
+    for (const w of ['', 'w']) for (const amount of ['', "'", '2', "2'"]) {
+      const read = readToken(`${letter}${w}${amount}`).move;
+      if (read) tokens.push(showMove(read.token, SCAN_HOLD));
+    }
+  }
+  const moves = longestOf([...new Set(tokens)], widthOf);
+  const holds = longestOf([...new Set(ORIENTATIONS.map((h) => holdSentence(h)))], widthOf);
+  const ways = moves.map((m) => Array(WAY_BACK_MOST).fill(m).join(' '));
+  const fill = { mismatch: holds.map((h) => [h]), thatWas: moves.flatMap((m) => ways.map((w) => [m, w])), turnBack: ways.map((w) => [w]),
+    nextIs: moves.flatMap((m) => moves.map((n) => [m, n])) };
+  return Object.entries(FOLLOW_SAYS).flatMap(([key, say]) => (fill[key] ?? [[]])
+    .map((args) => ({ key, text: t(say.text, ...args), info: say.info })));
+}
 
 /**
  * The follow tracker of one mounted cube screen, its buttons wired.
@@ -174,7 +227,7 @@ export function createFollowTracker({
   };
   // Neutral, not a warning, and without the rescue buttons: pausing is a choice, not a fault.
   const pauseNote = () => {
-    if (note) { note.hidden = false; note.classList.add('info'); noteMsg.textContent = t('Paused — you are driving. Switch Cube leads back on and your cube sets the pace.'); }
+    if (note) { note.hidden = false; note.classList.add('info'); noteMsg.textContent = t(FOLLOW_SAYS.paused.text); }
   };
   const clearNote = () => {
     if (note) { note.hidden = true; note.classList.remove('info'); }
@@ -306,7 +359,7 @@ export function createFollowTracker({
    */
   const offAfterTurn = (held) => {
     replayTurn(cubePosNow(), held);
-    showNote(t('Your cube does not match this one. %1', holdSentence(held)));
+    showNote(t(FOLLOW_SAYS.mismatch.text, holdSentence(held)));
   };
 
   /**
@@ -338,8 +391,8 @@ export function createFollowTracker({
       // Named in the child's hold, like every chip; DRAWN in the cube's own letters, above.
       const back = way.map((m) => showMove(m, heldNow)).join(' ');
       showNote(did
-        ? t('That was %1 — turn %2 to get back on the plan.', showMove(did, heldNow), back)
-        : t('Turn %1 to get back on the plan.', back));
+        ? t(FOLLOW_SAYS.thatWas.text, showMove(did, heldNow), back)
+        : t(FOLLOW_SAYS.turnBack.text, back));
     }
     // A scramble has no walk to work out again from here: it is a walk FROM solved, and the screen that
     // solves the cube in your hands is Home, which Re-solve goes to.
@@ -384,7 +437,7 @@ export function createFollowTracker({
     // so trust lapses (which stands follow down through the hook) and the screen says why.
     if (lastSerial !== null && (serial - lastSerial + 256) % 256 > 127) {
       console.warn('cube events arrived out of order', { lastSerial, serial });
-      showNote(t('The cube’s reports arrived out of order — read it again before following.'));
+      showNote(t(FOLLOW_SAYS.outOfOrder.text));
       markStale('its reports arrived out of order');
     }
     lastSerial = serial;
@@ -407,7 +460,7 @@ export function createFollowTracker({
         setPlaying(false);
         // Say at once whether the cube is still on the plan, rather than waiting up to a
         // second for its next report to say it.
-        if (liveModel) act(liveModel.asString(), t('This cube is not on the plan any more.'));
+        if (liveModel) act(liveModel.asString(), t(FOLLOW_SAYS.offPlan.text));
         else clearNote();
       } else {
         // Nobody is following, so nobody is off the walk: the arrow goes back to the walk's next turn,
@@ -455,7 +508,7 @@ export function createFollowTracker({
     // which is the scan frame, and the child is holding it the way the chips say.
     const heldNow = moveHoldAt(cubePosNow());
     const { moves } = walkNow();
-    act(liveModel.asString(), t('That was %1 — the next move is %2.',
+    act(liveModel.asString(), t(FOLLOW_SAYS.nextIs.text,
       showMove(m.notation, heldNow), cubePosNow() < moves.length ? showMove(moves[cubePosNow()], heldNow) : '—'), m.notation);
     tripwire(m.serial);
     rejudge();
@@ -472,7 +525,7 @@ export function createFollowTracker({
     // knowledge of the cube, and a model made of one was carried into the next connection.
     liveModel = chainTrusted() ? cubejs().fromString(f) : null;
     liveMoved = false; // a snapshot IS the truth, so the model is no longer ahead of anything
-    act(f, t('This cube is not on the plan any more.'));
+    act(f, t(FOLLOW_SAYS.offPlan.text));
     tripwire(serial);
     rejudge();
     void refreshLiveDistance();
@@ -496,7 +549,7 @@ export function createFollowTracker({
     // No count. Reconciliation proves a turn was lost; it cannot say how many, and the old
     // "Missed 2 turns" came from a serial the app no longer has. Silence here would look
     // exactly like a wrong turn, and it is neither.
-    showNote(t('A turn went unrecorded — checking the cube…'));
+    showNote(t(FOLLOW_SAYS.unrecorded.text));
   };
 
   /** Why the cube's position cannot be vouched for, in the catalog's words: the reason trust
@@ -552,7 +605,7 @@ export function createFollowTracker({
     // Acknowledging is not the same as the cube being back: hiding the warning here would
     // silently accept an off-plan cube if no further report arrived. The note stays, saying
     // what is being waited for — only act() clears it, on an actually on-plan reading.
-    if (note && !note.hidden) noteMsg.textContent = t('Watching for it — turn it back and the guide picks up.');
+    if (note && !note.hidden) noteMsg.textContent = t(FOLLOW_SAYS.watching.text);
   };
 
   /**

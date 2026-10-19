@@ -477,6 +477,21 @@
            painted cube this replaced, in geometry.test.mjs's PORTRAIT_CUBE_FLOOR. */
         .cols.walking { position: relative; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 100cqw) auto minmax(auto, 1fr) auto;
           grid-template-areas: "primary" "sheet" "twin" "aux"; row-gap: 10px; }
+        /* NO SLACK THE CUBE DOES NOT TAKE (E12.6). The cube's row takes all the height the others leave, so every px of
+           empty page between two regions is a px the cube went without — and the cards here draw nothing of their own, so
+           their paddings were exactly that: 54 px between the strip's turns and the transport, 48 between the cube and
+           the heading, on every fixture (geometry.test.mjs, regionGaps). So: no row for a twin that is not in the grid —
+           an empty row still costs its gap — and no padding between the cube card, the moves and the transport beyond
+           what a region needs to read as one. A walk whose twin opens from the cube card's tool (E5: `#twinBtn`) has no twin
+           in the grid, so no row for it: the transport's row takes what is left once the cube's row is the stage's width,
+           and the transport sits at the bottom of it. */
+        .cols.walking:has(#twinBtn) { grid-template-rows: minmax(0, 100cqw) auto minmax(auto, 1fr); grid-template-areas: "primary" "sheet" "aux"; }
+        .cols.walking > .aux { align-self: end; padding-top: 0; }
+        /* The cube card's foot is the band's reserve (lib/foot-band.js, E12.7): nothing, or as much as the longest thing the
+           band can say needs beyond the room under the cube. */
+        .cols.walking > .primary { padding-bottom: var(--band-reserve, 0px); }
+        .cols.walking .solution-card > .card-h { padding-top: 6px; }
+        .cols.walking #solList { padding-bottom: 0; }
         .cols.walking .solution-card { min-height: 0; flex: none; }
         .cols.walking .solution-card > .list { min-height: 0; flex: none; }
         /* THE ROWS THAT COME AND GO, over the foot of the cube card (E12.1, lib/foot-band.js): the follow-note, the why
@@ -484,17 +499,37 @@
            from the cube, 22–166 px on Home; here they lie over the ghost face below it, never over the cube — the module
            caps the band at the room under the cube's sphere, and what does not fit scrolls inside it. */
         .cols.walking { --foot-band: band; }
+        /* The reserve itself, as a box: the gap gate measures to it as a slot held on purpose (RESERVED_SLOTS, E12.8). */
+        .cols.walking .band-reserve { display: block; position: absolute; left: 0; right: 0; bottom: 0; height: var(--band-reserve, 0px); pointer-events: none; }
         .cols.walking .foot-band { display: flex; flex-flow: row wrap; align-items: center; gap: 4px 10px; position: absolute; left: 0;
-          right: 0; bottom: 0; z-index: 3; box-sizing: border-box; padding: 6px 12px 8px; overflow-y: auto; overscroll-behavior: contain;
+          right: 0; bottom: 0; z-index: 3; box-sizing: border-box; padding: 4px 12px; overflow-y: auto; overscroll-behavior: contain;
           font-size: var(--fs-caption); line-height: 1.35;
-          background: var(--panel); border-top: 1px solid var(--line); border-radius: 0 0 var(--r-card) var(--r-card); }
+          background: color-mix(in srgb, var(--panel) 55%, var(--row-sel)); border-top: 1px solid var(--line); border-radius: 0 0 var(--r-card) var(--r-card); }
+        /* A SHEET OVER THE GHOST, not a line through it (E12.6): a surface off the page in every theme, so the ghost face
+           it lies on reads as covered. A white page needs it darker and a cream one lighter: --panel half-mixed with
+           --row-sel is both — 1.053:1 from the page in cream, 1.051 in white, 1.12 in night — where no mix of --panel and
+           --panel-sunk reaches 1.05 in cream and white at once, and --panel-sunk alone is too dark for the band's words
+           (warn, err and accent ink 4.15–4.18:1 on it). geometry.test.mjs measures the band off the page and every word on
+           it at AA, in all three themes. */
         .cols.walking .foot-band > * { margin: 0; padding: 0; flex: 1 1 100%; font-size: inherit; }
-        /* The why line and its practise-step button share a line where the band is wide enough; the follow-note, while
-           it is said, takes the band alone — what must be done before what the step is for, as on Practice (E11.3). */
-        .cols.walking .foot-band > .why-line { flex: 1 1 150px; }
-        .cols.walking .foot-band > .practise-step { flex: none; padding: 0 14px; }
-        .cols.walking .foot-band:has(> .follow-note:not([hidden])) > :is(.why-line, .practise-step) { display: none; }
-        .cols.walking .foot-band > .follow-note { border-top: 0; gap: 4px; }
+        /* The why of a step is a BUTTON here (E12.8), beside the practise-step button where the band is wide enough; the
+           full line opens from it in a menu, and stays on the page for a screen reader — drawn nowhere, read where it is.
+           The follow-note, while it is said, takes the band alone — what must be done before what the step is for, as on
+           Practice (E11.3). */
+        .cols.walking .foot-band > .why-line { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+        .cols.walking .foot-band > .pill.why-btn { display: inline-flex; align-items: center; justify-content: center; flex: none; padding: 0 14px; }
+        /* A practise label can be a long algorithm's name ("Practise OLL 46 · Seein' Headlights (C and headlights)", wider
+           than the SE's band): it wraps inside its own button rather than run out of the band, and the band's reserve is
+           sized to it wrapped (E12.8). */
+        .cols.walking .foot-band > .practise-step { flex: 0 1 auto; max-width: 100%; height: auto; min-height: 44px; padding: 4px 14px;
+          white-space: normal; text-align: start; line-height: 1.3; }
+        .cols.walking .foot-band:has(> .follow-note:not([hidden])) > :is(.why-line, .why-btn, .practise-step) { display: none; }
+        /* NOTHING IN THE BAND IS BEHIND A SCROLLER (E12.6): the follow-note's sentence beside its two buttons on one
+           wrapping row, so a short sentence costs no line of its own — the SE's room under the cube is 74 px, and the note
+           as a sentence over its buttons needed 78. */
+        .cols.walking .foot-band > .follow-note { border-top: 0; flex-flow: row wrap; align-items: center; gap: 2px 10px; }
+        .cols.walking .foot-band > .follow-note > [role="status"] { flex: 1 1 6em; }
+        .cols.walking .foot-band > .follow-note > .acts { flex: none; }
         /* A LESSON'S STRIP HAS NO LABEL ROW HERE (E12.5): the section of the turn you are on names the heading instead
            (#secLabel, lib/walk-presenter.js), which is what keeps the lesson's cube at its floor on the SE. Practice's
            trigger labels stay: its floors pass with them. */
@@ -528,7 +563,7 @@
         .cols.walking .walk-strip { display: flex; flex-wrap: nowrap; align-items: flex-end; overflow-x: auto; overflow-y: hidden;
           overscroll-behavior-x: contain; --fade-left: 0px; --fade-right: 0px; }
         .cols.walking .walk-strip:has(.chip-m)::before, .cols.walking .walk-strip:has(.chip-m)::after { content: ''; flex: none; width: 50%; }
-        .cols.walking .walk-strip > .walk-sec { flex: none; padding: 3px 4px 5px; }
+        .cols.walking .walk-strip > .walk-sec { flex: none; padding: 3px 4px 2px; }
         .cols.walking .walk-sec-l { font-size: var(--fs-caption); white-space: nowrap; }
         .cols.walking .walk-strip .move-chips { display: flex; flex-wrap: nowrap; align-items: center; min-height: calc(var(--chip) * 1.3); }
         .cols.walking .walk-strip .chip-m { flex: none; }
@@ -736,6 +771,11 @@
       .ring .disc { fill: var(--ok); }
       .ring .tick { fill: none; stroke: var(--on-ok); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
       .about-menu { max-width: 320px; }
+      /* The why of a step, opened from its button in portrait (E12.8); landscape draws the line and no button. */
+      .pill.why-btn { display: none; }
+      .band-reserve { display: none; }
+      .why-menu { max-width: 320px; }
+      .why-menu > p { margin: 0; padding: 6px 10px; font-size: var(--fs-body-s); line-height: 1.5; color: var(--ink-2); white-space: normal; }
       .about-menu > p { margin: 0; padding: 6px 10px; font-size: var(--fs-body-s); line-height: 1.5; color: var(--ink-2); white-space: normal; }
       @container stage (orientation: portrait) {
         .practice-screen[data-composition="library"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr);
@@ -758,6 +798,8 @@
          tool there, E5): the beads and a small clock, ONE slot for the quiet line or the follow-note in its place, and the
          modes (E11). The twin keeps its content height — the cube's row is the one that gives (§5.7). */
       .cols.walking.practice-page .practice-twin { display: flex; flex-direction: column; gap: 8px; min-height: auto; padding: 12px 18px; }
+      /* In portrait the twin sits between the moves and the transport, which keep their own room (E12.6). */
+      @container stage (orientation: portrait) { .cols.walking.practice-page .practice-twin { padding-top: 4px; padding-bottom: 0; } }
       .practice-score { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
       .practice-score > .beads { margin-right: auto; }
       /* "In the fingers" as a picture (§5.3): fills carry the meaning, so fill tokens; the words are for a screen reader. */
@@ -794,6 +836,8 @@
       @keyframes chip-off-shake { 0%, 100% { translate: 0; } 25% { translate: -3px; } 50% { translate: 3px; } 75% { translate: -2px; } }
       /* A clean rep's own time for its part, beside the trigger's name (§5.4). */
       .walk-sec-t { font-weight: 400; }
+      /* The cube screen's moves: a little room above and below them (the portrait walk keeps only the top, E12.6). */
+      #solList { padding: 6px 0; }
       /* The book (§5.1): everything a parent reads, behind the cube card's tool. */
       .menu.practice-info { max-width: 340px; padding: 8px 12px; font-size: var(--fs-body-s); line-height: 1.5; color: var(--ink-2); white-space: normal; }
       .practice-info p { margin: 0 0 6px; }

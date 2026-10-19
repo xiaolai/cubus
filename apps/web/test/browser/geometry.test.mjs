@@ -36,6 +36,7 @@ import { LEVELS, METHODS } from '../../lib/methods/registry.js';
 import { fitStage } from '../../lib/stage.js';
 import { freePort } from '../free-port.mjs';
 import { CONTRACT_CUBES } from '../fixtures/solver-cubes.mjs';
+import { RESERVED_SLOTS } from './reserved-slots.mjs';
 import { stripLabelsUnread } from './strip-labels.mjs';
 
 // Asked of the OS in before(), not chosen: a fixed port collides with an orphaned server
@@ -879,7 +880,7 @@ for (const fixture of FIXTURES) {
 }
 
 for (const fixture of FIXTURES) {
-  test(`cube screen composition: ${label(fixture)}`, async () => {
+  test(`cube screen composition: ${label(fixture)}`, async (t) => {
     const { page, context } = await open(fixture, 'scramble');
     try {
       // The die a person can see: the twin's in landscape, the cube card's in portrait, where the twin is behind its
@@ -964,6 +965,12 @@ for (const fixture of FIXTURES) {
         for (const c of m.chips) assert.ok(c.top >= m.strip.box.top - 1 && c.bottom <= m.strip.box.bottom + 1, `a chip leaves the strip: ${JSON.stringify(c)}`);
         // MUST NOT: a portrait cube smaller than the one this composition replaced.
         assert.ok(m.paintedSize >= cubeFloor('scramble', fixture), `portrait: the painted cube is ${m.paintedSize.toFixed(1)}px — under its floor of ${cubeFloor('scramble', fixture)}px`);
+        await gapsHold(page, t, 'portrait, Scramble');
+        // Scramble's band holds the follow-note alone: every sentence it can say, without a scroll (E12.8).
+        await cubeSettled(page, '#viewCube cubus-cube');
+        const bareScramble = await measureBand(page, '#viewCube cubus-cube');
+        await bandHoldsEvery(page, '#viewCube cubus-cube', bareScramble, cubeBandStates(await bandEnumeration(page), { why: false }), applyCubeBand, 'portrait, Scramble\'s band');
+        await page.evaluate(applyCubeBand, {});
 
         // The twin, reached by ONE control, drawn whole on the stage, and put away by the same control.
         await page.click('#twinBtn');
@@ -1277,8 +1284,67 @@ const measureBand = (page, cubeSel) => page.evaluate(`(() => {
     painted: (${paintedSize.toString()})(${JSON.stringify(`${cubeSel} canvas`)}),
     held: [...(band?.children ?? [])].filter(drawn).map((el) => el.id),
     fits: ${contentFits}(document.querySelector('.screen.active')),
+    scroll: band ? { height: band.scrollHeight, client: band.clientHeight } : null,
+    controls: [...(band?.querySelectorAll('button, a[href], input, select') ?? [])].filter(drawn)
+      .map((el) => ({ name: el.id || el.textContent.trim(), box: rect(el) })),
+    surfaces: drawn(band) ? (${bandSurfaces.toString()})(band) : null,
   };
 })()`);
+
+/**
+ * The band's surface and the text on it, in each of the three themes: the band is a sheet laid over the ghost face, so
+ * it must read as one — opaque, and not the colour of what it lies on, or the ghost reads as cut rather than covered
+ * (E12.6) — and every word on it, its buttons' included, must clear AA on whatever is behind that word. Self-contained:
+ * evaluated in the page. Puts the page's theme back as it found it.
+ */
+const bandSurfaces = (band) => {
+  const rgba = (s) => {
+    const n = (s.match(/[\d.]+/g) ?? []).map(Number);
+    // `color(srgb r g b / a)` carries 0–1 channels; `rgb()`/`rgba()` 0–255.
+    if (/^color\(srgb/.test(s)) return { r: n[0] * 255, g: n[1] * 255, b: n[2] * 255, a: n.length > 3 ? n[3] : 1 };
+    return { r: n[0], g: n[1], b: n[2], a: n.length > 3 ? n[3] : 1 };
+  };
+  const ch = (v) => { const c = v / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+  const lum = (c) => 0.2126 * ch(c.r) + 0.7152 * ch(c.g) + 0.0722 * ch(c.b);
+  const contrast = (x, y) => { const [hi, lo] = [lum(x), lum(y)].sort((p, q) => q - p); return (hi + 0.05) / (lo + 0.05); };
+  const root = document.documentElement;
+  const was = root.getAttribute('data-theme');
+  const out = [];
+  // A theme's colours are read as they STAND, not part way through a transition from the last theme's: a button's
+  // colour eases, and read at once it is still the previous theme's (night's "Re-solve" read 3.13:1 that way).
+  const still = document.createElement('style');
+  still.textContent = '*, *::before, *::after { transition: none !important; animation: none !important; }';
+  document.head.append(still);
+  try {
+    for (const theme of ['cream', 'white', 'night']) {
+      root.setAttribute('data-theme', theme);
+      const surface = rgba(getComputedStyle(band).backgroundColor);
+      const under = rgba(getComputedStyle(band.parentElement.closest('.win') ?? document.body).backgroundColor);
+      const words = [];
+      const walker = document.createTreeWalker(band, NodeFilter.SHOW_TEXT);
+      for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+        const el = t.parentElement;
+        // Words that are not drawn are not read: a quiet note's rescue buttons are laid out nowhere (`display: none` on
+        // the row that holds them), and their colours say nothing about what is on screen.
+        if (!t.data.trim() || el.closest('[hidden]') || el.getClientRects().length === 0) continue;
+        let behind = surface;
+        for (let x = el; x && x !== band; x = x.parentElement) {
+          const bg = rgba(getComputedStyle(x).backgroundColor);
+          if (bg.a >= 1) { behind = bg; break; }
+        }
+        words.push({ text: t.data.trim().slice(0, 30), ratio: contrast(rgba(getComputedStyle(el).color), behind) });
+      }
+      // "Not the colour of the page" as a contrast, not a luminance step: the night page is so dark that a band plainly
+      // off it differs by under 0.01 in luminance, and the white page so light that 0.01 is a shade nobody sees.
+      out.push({ theme, opaque: surface.a >= 1, distinct: contrast(surface, under) >= 1.05, words });
+    }
+  } finally {
+    if (was === null) root.removeAttribute('data-theme'); else root.setAttribute('data-theme', was);
+    getComputedStyle(root).color; // the page's own theme in place before transitions come back
+    still.remove();
+  }
+  return out;
+};
 
 /** The band's must-nots, wherever it is shown: inside the cube card's foot, clear of the cube, nothing cut. */
 function bandHolds(b, what) {
@@ -1288,18 +1354,168 @@ function bandHolds(b, what) {
   near(b.band.bottom, b.card.bottom, `${what}: the band is not at the cube card's foot`, 2);
   assert.ok(b.band.top >= b.cube.bottom - 0.5, `${what}: the band (top ${b.band.top.toFixed(1)}) is drawn over the cube (bottom ${b.cube.bottom.toFixed(1)})`);
   assert.deepEqual(b.fits, { spills: [], cut: [] }, `${what}: text that cannot be read where it is drawn — see contentFits`);
+  // NOTHING IN THE BAND IS REACHED BY SCROLLING IT, and no control in it is drawn in part (E12.6): the band draws no
+  // scrollbar, so a row past its foot is a row nobody knows is there — the SE's follow-note had its two buttons cut
+  // by 6px of an invisible scroller.
+  assert.ok(b.scroll.height <= b.scroll.client + 0.5, `${what}: the band scrolls — ${b.scroll.height}px in ${b.scroll.client}px`);
+  for (const c of b.controls) assert.ok(inside(c.box, b.band, 0.5), `${what}: "${c.name}" ${JSON.stringify(c.box)} is not wholly in the band ${JSON.stringify(b.band)}`);
+  // A SHEET OVER THE GHOST, and words that can be read on it, in every theme.
+  for (const s of b.surfaces) {
+    assert.ok(s.opaque, `${what}, ${s.theme}: the band's surface is not opaque`);
+    assert.ok(s.distinct, `${what}, ${s.theme}: the band is the colour of the card it lies on — the ghost reads as cut, not covered`);
+    assert.ok(s.words.length > 0, `precondition, ${what}, ${s.theme}: the band holds no words to measure`);
+    for (const w of s.words) assert.ok(w.ratio >= 4.5, `${what}, ${s.theme}: "${w.text}" is ${w.ratio.toFixed(2)}:1 on the band — AA needs 4.5`);
+  }
+}
+
+/**
+ * THE GAPS THE EYE SEES between the portrait walking composition's regions (E12.6): from the last thing one region
+ * DRAWS to the first thing the next one draws — text, a control, a chip, a bead, a picture, or a box with a surface or a
+ * rule of its own. The regions' boxes are no measure: a card draws nothing of its own here, so 54px of empty page
+ * between the strip and the transport was four boxes' paddings and an empty row's gap, each box tight on the next. A
+ * cube's region is its canvas, whatever the renderer frames inside it. A slot held empty on purpose (`reserved`, the
+ * selectors of RESERVED_SLOTS, E12.7) counts by its box while it is laid out, drawn in or not. Also the cube's row and the stage's width, so the
+ * case can tell a cube held by the width (its row at 100cqw: what is left over has nowhere else to go) from one the
+ * gaps are taking room from. Self-contained: evaluated in the page.
+ */
+const regionGaps = (reserved) => {
+  const grid = document.querySelector('.screen.active .cols.walking');
+  const stage = document.getElementById('stage');
+  const unseen = (el) => {
+    for (let x = el; x && x !== document.body; x = x.parentElement) {
+      const s = getComputedStyle(x);
+      if (x.hidden || s.display === 'none' || s.clipPath !== 'none' || (s.clip && s.clip !== 'auto')) return true;
+    }
+    return getComputedStyle(el).visibility === 'hidden';
+  };
+  const clear = (c) => !c || c === 'transparent' || /^rgba\(.*,\s*0\)$/.test(c) || /\/\s*0\)$/.test(c);
+  const backdrop = getComputedStyle(stage).backgroundColor;
+  const extent = (region) => {
+    let top = Infinity, bottom = -Infinity, first = null, last = null;
+    const add = (r, what) => {
+      if (r.width <= 0 || r.height <= 0) return;
+      if (r.top < top) { top = r.top; first = what; }
+      if (r.bottom > bottom) { bottom = r.bottom; last = what; }
+    };
+    const walker = document.createTreeWalker(region, NodeFilter.SHOW_TEXT);
+    for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+      if (!t.data.trim() || unseen(t.parentElement)) continue;
+      const range = document.createRange();
+      range.selectNodeContents(t);
+      add(range.getBoundingClientRect(), JSON.stringify(t.data.trim().slice(0, 24)));
+    }
+    for (const el of region.querySelectorAll(reserved.join(', ') || ':not(*)')) {
+      if (!el.closest('[hidden]') && el.getClientRects().length > 0) add(el.getBoundingClientRect(), `${el.className} (reserved)`);
+    }
+    for (const el of region.querySelectorAll('*')) {
+      if (unseen(el)) continue;
+      const s = getComputedStyle(el);
+      const surface = !clear(s.backgroundColor) && s.backgroundColor !== backdrop;
+      const rule = ['Top', 'Bottom'].some((k) => parseFloat(s[`border${k}Width`]) > 0 && !clear(s[`border${k}Color`]));
+      if (el.matches('button, input, select, .chip-m, .bead, svg, img, canvas') || surface || rule) {
+        add(el.getBoundingClientRect(), el.id ? `#${el.id}` : `${el.tagName.toLowerCase()}.${el.classList[0] ?? ''}`);
+      }
+    }
+    return { top, bottom, first, last };
+  };
+  const regions = [...grid.children].flatMap((el) => (getComputedStyle(el).display === 'contents' ? [...el.children] : [el]))
+    .filter((el) => !unseen(el) && !/absolute|fixed/.test(getComputedStyle(el).position))
+    .map((el) => ({ name: el.id ? `#${el.id}` : `.${[...el.classList].slice(0, 2).join('.')}`, box: el.getBoundingClientRect().top, ...extent(el) }))
+    .filter((r) => r.bottom > r.top)
+    .sort((a, b) => a.box - b.box);
+  const s = getComputedStyle(stage);
+  return {
+    regions: regions.map((r) => r.name),
+    gaps: regions.slice(1).map((r, i) => ({ from: `${regions[i].name} (${regions[i].last})`, to: `${r.name} (${r.first})`, gap: r.top - regions[i].bottom })),
+    rowGap: parseFloat(getComputedStyle(grid).rowGap),
+    cubeRow: parseFloat(getComputedStyle(grid).gridTemplateRows),
+    stageWidth: stage.clientWidth - parseFloat(s.paddingLeft) - parseFloat(s.paddingRight),
+  };
+};
+
+/**
+ * MUST NOT: room left between two regions that the cube could have had. No gap the eye sees in the portrait walking
+ * composition is wider than the composition's own row gap plus 16px — unless the cube's row is already the stage's
+ * width, where a gap is what is left over and the case reports it rather than fails it (E12.6).
+ */
+async function gapsHold(page, t, what) {
+  const m = await page.evaluate(regionGaps, RESERVED_SLOTS.map((s) => s.selector));
+  assert.ok(m.regions.length >= 3, `precondition, ${what}: ${m.regions.length} regions measured (${m.regions.join(', ')}) — the cube, the moves and the transport at least`);
+  const allowed = m.rowGap + 16;
+  const wide = m.gaps.filter((g) => g.gap > allowed + 0.5);
+  const byWidth = m.cubeRow >= m.stageWidth - 0.5;
+  if (byWidth) {
+    for (const g of wide) t.diagnostic(`${what}: the cube is held by the stage's width (row ${m.cubeRow.toFixed(1)}px); ${g.gap.toFixed(1)}px between ${g.from} and ${g.to}`);
+    return m;
+  }
+  assert.deepEqual(wide.map((g) => `${g.gap.toFixed(1)}px between ${g.from} and ${g.to}`), [],
+    `${what}: a gap wider than ${allowed}px (the row gap and 16) while the cube's row (${m.cubeRow.toFixed(1)}px) is under the stage's width (${m.stageWidth.toFixed(1)}px)`);
+  return m;
 }
 
 /** Show or hide the cube screen's rows that come and go, as their writers do — the hidden attribute and a text. */
 const cubeRows = (page, rows) => page.evaluate((r) => {
   const set = (id, on, text) => { const el = document.getElementById(id); el.hidden = !on; if (on && text) (el.querySelector('#followMsg') ?? el).textContent = text; };
   set('whyLine', r.includes('why'), 'Step 3 of 12 — Put the white edge between its two centres, so the cross grows by one arm.');
+  set('whyBtn', r.includes('why'));
   set('practiseStep', r.includes('practise'), 'Practise this');
   set('followNote', r.includes('follow'), 'That was R — turn R\' to get back on the plan.');
 }, rows);
 
+/**
+ * EVERYTHING THE BAND CAN HOLD, from the modules that say it (E12.8): every sentence the follow-note can say, each built
+ * at its longest instance (lib/walk-follow.js, `followNoteSentences`); every label the practise-step button can carry
+ * (lib/practice-link.js, `practiseLabels`); the why button's label (lib/walk-presenter.js, `WHY_TURN_LABEL`); and the
+ * record's two fixed sentences, both at once (lib/drill/record-says.js). Read in the page, so it is the app's own copy.
+ */
+const bandEnumeration = (page) => page.evaluate(async () => {
+  const [{ followNoteSentences }, { practiseLabels }, { WHY_TURN_LABEL }, { RECORD_SAYS }, { drawnWidth }] = await Promise.all([
+    import('/lib/walk-follow.js'), import('/lib/practice-link.js'), import('/lib/walk-presenter.js'), import('/lib/drill/record-says.js'),
+    import('/lib/foot-band.js')]);
+  // "Longest" as the band draws it, in its own font — the measure the app sizes its room by.
+  const widthOf = drawnWidth(document.querySelector('.screen.active .foot-band'));
+  return { follow: followNoteSentences({ widthOf }), practise: await practiseLabels({ widthOf }), why: WHY_TURN_LABEL,
+    record: [RECORD_SAYS.save, RECORD_SAYS.read] };
+});
+
+/**
+ * MUST NOT, for every one of `states`: the band scrolling, a control in it cut, the cube under it, or the cube a different
+ * size than with the band put away (E12.7, E12.8). `apply(state)` shows the state in the page as its writer would.
+ */
+async function bandHoldsEvery(page, cubeSel, bare, states, apply, what) {
+  assert.ok(states.length > 0, `precondition, ${what}: nothing enumerated for the band to hold`);
+  for (const state of states) {
+    await page.evaluate(apply, state);
+    await page.evaluate(() => new Promise((r) => { requestAnimationFrame(() => requestAnimationFrame(r)); }));
+    await cubeSettled(page, cubeSel);
+    const b = await measureBand(page, cubeSel);
+    const label = `${what}: ${JSON.stringify(state).slice(0, 120)}`;
+    bandHolds(b, label);
+    for (const k of ['top', 'height']) near(b.card[k], bare.card[k], `${label}: the cube card's ${k} moved`);
+    near(b.painted, bare.painted, `${label}: the painted cube changed size`);
+  }
+}
+
+/** The cube screen's band states: each follow-note sentence alone, and the why button beside each practise label. */
+const cubeBandStates = (e, { why = true } = {}) => [
+  ...e.follow.map((f) => ({ follow: f.text, info: f.info })),
+  ...(why ? e.practise.map((label) => ({ why: e.why, practise: label })) : []),
+];
+const applyCubeBand = (st) => {
+  const note = document.getElementById('followNote');
+  note.hidden = !st.follow;
+  note.classList.toggle('info', Boolean(st.info));
+  if (st.follow) document.getElementById('followMsg').textContent = st.follow;
+  const whyLine = document.getElementById('whyLine');
+  const whyBtn = document.getElementById('whyBtn');
+  const practise = document.getElementById('practiseStep');
+  if (whyLine) { whyLine.hidden = !st.why; whyLine.textContent = st.why ? 'Step 3 of 12 — the full sentence, said to a screen reader and in the menu' : ''; }
+  if (whyBtn) whyBtn.hidden = !st.why;
+  if (practise) { practise.hidden = !st.practise; if (st.practise) practise.textContent = st.practise; }
+};
+
 for (const fixture of FIXTURES) {
-  test(`a lesson in portrait: the heading names the section you are in, and the band leaves the cube its size: ${label(fixture)}`, async () => {
+  test(`a lesson in portrait: the heading names the section you are in, and the band leaves the cube its size: ${label(fixture)}`, async (t) => {
     const { page, context, errors } = await open(fixture, 'home', { solveMethod: 'beginner' });
     try {
       await frozenOnHome(page, LONGEST_LESSON_CUBE);
@@ -1347,6 +1563,7 @@ for (const fixture of FIXTURES) {
         const bare = await measureBand(page, '#viewCube cubus-cube');
         assert.equal(bare.band, null, 'portrait: the band is drawn with nothing in it');
         assert.ok(bare.painted >= cubeFloor('lesson', fixture), `portrait: the lesson's painted cube is ${bare.painted.toFixed(1)}px — under its floor of ${cubeFloor('lesson', fixture)}px`);
+        await gapsHold(page, t, 'portrait, a lesson');
         for (const rows of [['why'], ['practise'], ['follow'], ['why', 'practise'], ['why', 'practise', 'follow']]) {
           await cubeRows(page, rows);
           await cubeSettled(page, '#viewCube cubus-cube');
@@ -1357,6 +1574,46 @@ for (const fixture of FIXTURES) {
           near(b.painted, bare.painted, `${what}: the painted cube changed size`);
         }
         await cubeRows(page, []);
+        // THE LONGEST THING THE BAND CAN HOLD, enumerated from source, each without a scroll and the cube its size (E12.8).
+        const e = await bandEnumeration(page);
+        assert.ok(e.follow.length > 0 && e.practise.length > 0, `precondition: the enumeration is empty (${e.follow.length} sentences, ${e.practise.length} labels)`);
+        await bandHoldsEvery(page, '#viewCube cubus-cube', bare, cubeBandStates(e), applyCubeBand, 'portrait, a lesson\'s band');
+        await page.evaluate(applyCubeBand, {});
+      }
+      // THE WHY OF A STEP (E12.8): in portrait the band shows one button, and the full line — the step, the hold, the
+      // reason — opens from it in a menu; a screen reader still has the full line where it was. Landscape keeps the line.
+      await page.evaluate(() => document.querySelector('#solList .chip-m[data-i="1"]').click());
+      await page.waitForSelector('#solList .chip-m.cur[data-i="1"]');
+      await page.waitForFunction(() => !document.getElementById('whyLine').hidden && document.getElementById('whyLine').textContent.length > 0);
+      const why = await page.evaluate(`(() => {
+        const rect = ${rect.toString()};
+        const line = document.getElementById('whyLine'), btn = document.getElementById('whyBtn');
+        const drawn = (el) => !el.closest('[hidden]') && getComputedStyle(el).display !== 'none' && getComputedStyle(el).clipPath === 'none' && el.getBoundingClientRect().height > 2;
+        return { text: line.textContent, lineDrawn: drawn(line), lineInTree: !line.hidden && getComputedStyle(line).display !== 'none',
+          btnDrawn: Boolean(btn) && drawn(btn), btnText: btn?.textContent.trim() ?? null, inBand: Boolean(btn?.closest('.foot-band')) };
+      })()`);
+      assert.ok(why.text.length > 20, `precondition: the step has a why line (${JSON.stringify(why.text)})`);
+      if (portrait) {
+        assert.ok(why.btnDrawn && why.inBand, 'portrait: the why button is not drawn in the band');
+        assert.equal(why.btnText, 'Why this turn?', 'portrait: the why button does not say what it opens');
+        assert.equal(why.lineDrawn, false, 'portrait: the full why line is drawn in the band — it opens from the button');
+        assert.ok(why.lineInTree, 'portrait: the why line left the page — a screen reader no longer has it');
+        await page.click('#whyBtn');
+        const menu = await page.evaluate(`(() => {
+          const rect = ${rect.toString()};
+          const m = [...document.querySelectorAll('.menu.why-menu')].find((x) => !x.hidden);
+          return m ? { text: m.textContent.replace(/\\s+/g, ' ').trim(), box: rect(m), stage: rect(document.getElementById('stage')),
+            expanded: document.getElementById('whyBtn').getAttribute('aria-expanded'), fits: ${contentFits}(document.querySelector('.screen.active')) } : null;
+        })()`);
+        assert.ok(menu, 'portrait: pressing the why button opened no menu');
+        assert.equal(menu.text, why.text.replace(/\s+/g, ' ').trim(), 'portrait: the menu does not hold the full why line');
+        assert.ok(inside(menu.box, menu.stage), `portrait: the why menu ${JSON.stringify(menu.box)} leaves the stage`);
+        assert.equal(menu.expanded, 'true', 'portrait: the why button does not say its menu is open');
+        assert.deepEqual(menu.fits, { spills: [], cut: [] }, 'portrait, the why menu open: text that cannot be read where it is drawn');
+        await page.click('#whyBtn');
+      } else {
+        assert.ok(why.lineDrawn, 'landscape: the why line is not drawn');
+        assert.equal(why.btnDrawn, false, 'landscape: the why button is drawn — landscape keeps the full line');
       }
       assert.deepEqual(errors.map(String), [], 'the page threw');
     } finally {
@@ -1364,7 +1621,7 @@ for (const fixture of FIXTURES) {
     }
   });
 
-  test(`a Quick walk in portrait: the band leaves the cube its size: ${label(fixture)}`, async () => {
+  test(`a Quick walk in portrait: the band leaves the cube its size: ${label(fixture)}`, async (t) => {
     const { page, context, errors } = await open(fixture, 'home', { devRandCube: true });
     try {
       await page.waitForSelector('#randCube', { state: 'attached' });
@@ -1376,6 +1633,7 @@ for (const fixture of FIXTURES) {
       await cubeRows(page, []);
       await cubeSettled(page, '#viewCube cubus-cube');
       const bare = await measureBand(page, '#viewCube cubus-cube');
+      if (portrait) await gapsHold(page, t, 'portrait, Quick');
       await cubeRows(page, ['follow']);
       await cubeSettled(page, '#viewCube cubus-cube');
       const b = await measureBand(page, '#viewCube cubus-cube');
@@ -1383,6 +1641,8 @@ for (const fixture of FIXTURES) {
         bandHolds(b, 'portrait, Quick, the follow-note');
         near(b.painted, bare.painted, 'portrait, Quick: the painted cube changed size with the follow-note');
         for (const k of ['top', 'height']) near(b.card[k], bare.card[k], `portrait, Quick: the cube card's ${k} moved with the follow-note`);
+        const e = await bandEnumeration(page);
+        await bandHoldsEvery(page, '#viewCube cubus-cube', bare, cubeBandStates(e), applyCubeBand, 'portrait, Quick\'s band');
       } else {
         // Landscape keeps today's rows: the note at the foot of the solution card, never over the cube.
         assert.equal(b.band, null, 'landscape: the band is drawn');
@@ -2126,7 +2386,7 @@ for (const fixture of FIXTURES) {
     }
   });
 
-  test(`practice page, longest algorithm: ${label(fixture)}`, async () => {
+  test(`practice page, longest algorithm: ${label(fixture)}`, async (t) => {
     const { page, context, errors } = await openAt(fixture, urlFor(fixture, 'practice'));
     try {
       await page.waitForSelector('.practice-screen[data-ready="1"]');
@@ -2184,6 +2444,11 @@ for (const fixture of FIXTURES) {
         // MUST NOT: a cube smaller than the page this one replaced (E11.5, E11.9).
         const floor = cubeFloor('practice-none', fixture);
         assert.ok(m.painted >= floor, `${what}: the painted cube is ${m.painted.toFixed(1)}px — under its floor of ${floor}px`);
+        await gapsHold(page, t, what);
+        // The reserved slots the gate measures by their box are on this page, every one: the list can never cover nothing.
+        const slots = await page.evaluate((list) => list.map((s) => ({ ...s, laid: [...document.querySelectorAll(s.selector)].filter((el) => !el.closest('[hidden]') && el.getClientRects().length > 0).length })), RESERVED_SLOTS);
+        assert.ok(slots.length > 0, 'RESERVED_SLOTS is empty');
+        for (const s of slots) assert.ok(s.laid > 0, `${what}: RESERVED_SLOTS names ${s.name} (${s.selector}), and nothing on the page is it`);
       } else {
         // Landscape is the cube screen's: the moves WRAP in the sheet beside the cube, and the modes sit under the line.
         assert.ok(m.strip.lines > 1, `${what}: the moves are one line — landscape wraps them`);
@@ -2261,6 +2526,7 @@ for (const fixture of FIXTURES) {
       if (portrait) {
         const floor = cubeFloor('practice-cube', fixture);
         assert.ok(armed.painted >= floor, `armed: the painted cube is ${armed.painted.toFixed(1)}px — under its floor of ${floor}px`);
+        await gapsHold(page, t, `page (${id}), armed`);
       }
       await page.evaluate(() => window.cubusFeed.move({ notation: "R'", timestamp: 2000, cubeTimestamp: 2000, serial: 2 }));
       await page.waitForFunction(() => document.querySelector('.practice-page').dataset.status === 'off');
@@ -2291,7 +2557,15 @@ for (const fixture of FIXTURES) {
       assert.equal(notice.inNote, false, 'the record\'s notice is in the follow-note\'s slot — the two stack');
       near(both.painted, armed.painted, 'off with the record\'s notice: the painted cube changed size');
       for (const k of ['top', 'height']) near(both.primary[k], armed.primary[k], `off with the record's notice: the cube card's ${k} moved`);
-      if (portrait) bandHolds(await measureBand(page, '#practiceCube cubus-cube'), `page (${id}), the record's notice in the band`);
+      if (portrait) {
+        bandHolds(await measureBand(page, '#practiceCube cubus-cube'), `page (${id}), the record's notice in the band`);
+        // The record's two fixed sentences, each alone and both at once: the longest the band holds here (E12.8).
+        const e = await bandEnumeration(page);
+        assert.equal(e.record.length, 2, 'precondition: the record has two fixed sentences');
+        const bareRecord = { card: both.primary, painted: armed.painted };
+        await bandHoldsEvery(page, '#practiceCube cubus-cube', bareRecord, [...e.record, e.record.join(' ')],
+          (text) => { const r = document.querySelector('#practiceRecordSay'); r.textContent = text; r.hidden = false; }, `page (${id}), the record's band`);
+      }
       else assert.ok(notice.inTwin && !notice.inBand, 'landscape: the record\'s notice is not its own row in the twin');
       assert.deepEqual(errors.map(String), [], 'the page threw');
     } finally {

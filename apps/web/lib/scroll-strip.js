@@ -96,8 +96,10 @@ export function oneLineStrip(row, { signal }) {
    * of a lesson. A row that clips down (portrait's strip, `overflow-y: hidden`) is never moved down: a
    * script can scroll a box the person cannot, and nothing there is below the fold.
    */
+  let centred = null;
   const centre = (el) => {
     if (!el || !row.contains(el)) return;
+    centred = el;
     const box = row.getBoundingClientRect();
     const r = el.getBoundingClientRect();
     row.scrollLeft += (r.left + r.width / 2) - (box.left + row.clientLeft + row.clientWidth / 2);
@@ -111,6 +113,15 @@ export function oneLineStrip(row, { signal }) {
   row.addEventListener('click', (e) => reveal(e.target.closest('button')), { signal });
   // A phone turned over, or a browser tab resized, changes the strip's width after it mounted.
   row.ownerDocument.defaultView.addEventListener('resize', edges, { passive: true, signal });
+  // AND THE STRIP ITSELF CHANGING SIZE keeps the turn you are on where it was put. A row beside the list comes and goes
+  // after the turn was centred — the practise-step button lands when the ledger answers — and the list's box changes
+  // under it: in landscape a lesson's list lost 44px that way and the turn you were on stood 4px below its foot.
+  const View = row.ownerDocument.defaultView;
+  if (typeof View.ResizeObserver === 'function') {
+    const kept = new View.ResizeObserver(() => { if (centred?.isConnected) centre(centred); });
+    kept.observe(row);
+    signal?.addEventListener('abort', () => kept.disconnect(), { once: true });
+  }
 
   reveal(row.querySelector('.on'));
   edges();

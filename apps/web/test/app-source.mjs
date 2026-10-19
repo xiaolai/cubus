@@ -89,7 +89,7 @@ export const LIBRARY_SOURCES = Object.freeze([
   'lib/drill/candidates.js', 'lib/drill/engine.js', 'lib/drill/timing.js',
   // the practice record (an injected store, so no app module), its IndexedDB store (an injected factory, 2026-10-18)
   // and mixed practice, 2026-10-17 (§5)
-  'lib/drill/mix.js', 'lib/drill/record.js', 'lib/drill/record-store.js',
+  'lib/drill/mix.js', 'lib/drill/record.js', 'lib/drill/record-says.js', 'lib/drill/record-store.js',
   // the ledger read off the UI thread, 2026-10-17 (§4): the client and its worker
   'lib/drill/library-client.js', 'lib/drill/library-worker.js',
   // the case a row solves and the pieces it moves, out of the practice screen so a service can draw it, 2026-10-18

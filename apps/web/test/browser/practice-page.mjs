@@ -67,6 +67,9 @@ export async function openPractice(fixture, { numbered = true, connect = true, p
   const page = pace(await context.newPage());
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
+  // What the page logged as an error: a failure the screen says in fixed words is still logged where it happened (E12.8).
+  const logged = [];
+  page.on('console', (m) => { if (m.type() === 'error') logged.push(m.text()); });
   await page.goto(`${fixture.base}/index.html#/practice`);
   await page.waitForSelector('.practice-screen[data-ready="1"]', { timeout: LIVENESS_MS });
   await page.addScriptTag({
@@ -257,7 +260,7 @@ export async function openPractice(fixture, { numbered = true, connect = true, p
   });
   await page.waitForFunction(() => Boolean(window.__p));
   if (connect) await page.evaluate((isNumbered) => window.__p.connect({ numbered: isNumbered }), numbered);
-  return { page, context, errors };
+  return { page, context, errors, logged };
 }
 
 /** Once every save the page made has settled and the record on screen has been read since: anything a case asserts

@@ -12,9 +12,35 @@
 
 import { state } from './app-state.js';
 import { t } from './i18n.js';
-import { caseNameOf } from './method-lesson.js';
+import { caseNameOf, hasCaseName } from './method-lesson.js';
 import { shell } from './screen-slots.js';
 import { library } from './drill/library-client.js';
+
+/** The button's words, as English source (looked up through `t()` where they are shown): one table, read by the offer
+ *  below and by `practiseLabels`, which the band over the cube card in portrait is sized by (E12.8). */
+export const PRACTISE_SAYS = Object.freeze({
+  offer: 'Practise %1',
+  unchecked: 'Practice could not be checked — try again',
+});
+
+/**
+ * Every label the button can carry at its LONGEST: the offer with the name of whichever named algorithm in the ledger is
+ * widest by `widthOf` (ties kept), and the label for a ledger that could not be asked. Resolves once the ledger has
+ * answered; a ledger that cannot be asked leaves the offer out and keeps the other, which is then the one shown.
+ *
+ * @param {{ widthOf?: (text: string) => number, ids?: () => Promise<Set<string>> }} [o]
+ * @returns {Promise<string[]>}
+ */
+export async function practiseLabels({ widthOf = (text) => text.length, ids = () => library.ids() } = {}) {
+  const unchecked = t(PRACTISE_SAYS.unchecked);
+  let held;
+  try { held = await ids(); } catch { return [unchecked]; }
+  // Only ids a step can name: a ledger row with no name of ours is never offered (`practiceIdOf`).
+  const offers = [...held].filter(hasCaseName).map((id) => t(PRACTISE_SAYS.offer, caseNameOf(id)));
+  if (!offers.length) return [unchecked];
+  const most = Math.max(...offers.map(widthOf));
+  return [...new Set(offers.filter((o) => widthOf(o) === most)), unchecked];
+}
 
 /** The id of the algorithm a lesson step makes, or null for a step that names none (a search, a step made of
  *  parts, an unnamed generated case). */
@@ -56,14 +82,14 @@ export function offerPractice(button, step, { ids = () => library.ids() } = {}) 
   if (!id) return;
   ids().then((held) => {
     if (button.dataset.practice !== id || !held.has(id)) return;
-    button.textContent = t('Practise %1', caseNameOf(id));
+    button.textContent = t(PRACTISE_SAYS.offer, caseNameOf(id));
     button.onclick = () => openPractice(id);
     button.hidden = false;
   }, (err) => {
     if (button.dataset.practice !== id) return;
     console.error('the algorithm ledger could not be asked which steps can be practised', err);
     const why = err?.message ?? String(err);
-    button.textContent = t('Practice could not be checked — try again');
+    button.textContent = t(PRACTISE_SAYS.unchecked);
     button.setAttribute('aria-label', t('Practice could not be checked (%1). Press to try again.', why));
     button.onclick = () => offerPractice(button, step, { ids });
     button.hidden = false;

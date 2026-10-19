@@ -104,9 +104,9 @@ test('every var() without a fallback names a property something declares', () =>
  */
 const KIT_ONLY = new Set([
   // Surfaces and inks the mockups paint that the app never does: the "desk" outside the window,
-  // the selected-row wash, and the inverted-surface text pair (the app's inverted surfaces take
-  // their colours from --invert-fg).
-  '--desk', '--row-sel', '--on-ink', '--on-ink-dim', '--on-ink-2',
+  // and the inverted-surface text pair (the app's inverted surfaces take their colours from
+  // --invert-fg). The selected-row wash left this list when the foot band was mixed from it (E12.6).
+  '--desk', '--on-ink', '--on-ink-dim', '--on-ink-2',
   // Hover and wash variants the kit uses and the app has not needed yet.
   '--accent-hover', '--accent-wash', '--accent-ink', '--accent-ink-2',
   // The camera surfaces. The app draws no viewfinder at all (the scan screen deliberately shows

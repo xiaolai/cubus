@@ -24,6 +24,9 @@ import { offerPractice } from './practice-link.js';
 import { SCAN_HOLD } from './solving-hold.js';
 import { oneLineStrip } from './scroll-strip.js';
 
+/** The why button's words (E12.8): in portrait the band shows this, and the full line opens from it in a menu. */
+export const WHY_TURN_LABEL = 'Why this turn?';
+
 /**
  * The presenter of one mounted cube screen, its buttons wired.
  *
@@ -133,12 +136,15 @@ export function createWalkPresenter({
   function pointAtStep(i) {
     const { lesson, walkHold, walkGen } = walkNow();
     const whyLine = $('#whyLine', root);
+    // In portrait the band shows a button that opens the line, never the line itself (E12.8): the two come and go as one.
+    const whyBtn = $('#whyBtn', root);
     // "Practise this", beside the step that names an algorithm the ledger holds (lib/practice-link.js).
     const practise = $('#practiseStep', root);
     cube.removeAttribute('focus');
     if (!lesson || scrambling) {
       cube.removeAttribute('highlight');
       if (whyLine) { whyLine.hidden = true; whyLine.textContent = ''; }
+      if (whyBtn) whyBtn.hidden = true;
       offerPractice(practise, null);
       // No lesson line, so nothing was said: the next lesson speaks for the drawing as it stands.
       toldHold = drawnHold;
@@ -162,6 +168,7 @@ export function createWalkPresenter({
     const text = said.gen === walkGen && said.at === i ? said.line : fresh;
     said = { gen: walkGen, at: i, line: text };
     whyLine.hidden = !text;
+    if (whyBtn) whyBtn.hidden = !text;
     whyLine.textContent = text
       ? t('Step %1 of %2 — %3', lesson.steps.indexOf(step) + 1, lesson.steps.length, text)
       : '';

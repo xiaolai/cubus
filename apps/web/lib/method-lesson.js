@@ -322,6 +322,10 @@ function sentenceFor(step) {
  * world's would be worse than showing none. A row of the human-speed table has the world's name, and
  * gets it.
  */
+/** Does `caseNameOf` name `id` — a human-speed row or a case this module has words for — rather than answer null for a
+ *  generated id, or refuse an id it does not know? Asked without the refusal, for a list that is not a step's. */
+export const hasCaseName = (id) => !GENERATED_CASE_ID.test(id) && (HUMAN_ROW.has(id) || Object.hasOwn(CASE_TEXT, id));
+
 export const caseNameOf = (id) => {
   if (GENERATED_CASE_ID.test(id)) return null;
   const row = HUMAN_ROW.get(id);

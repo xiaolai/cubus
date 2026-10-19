@@ -16,6 +16,7 @@ import { SOLVED as PIECES, applyAlg, toFacelets } from '../../lib/cube-pieces.js
 import { applyIdentity, run, toIdentity } from '../../lib/cube-moves.js';
 import { parse } from '../../lib/cube-notation.js';
 import { RECORD_DB, RECORD_ENTRY, RECORD_STORE } from '../../lib/drill/record-store.js';
+import { RECORD_SAYS } from '../../lib/drill/record-says.js';
 import { pace } from '../browser-wait.mjs';
 import { lcg } from '../fixtures/seeded-scrambles.mjs';
 import { toWorld } from './drawn-cube.mjs';
@@ -644,7 +645,7 @@ test('part way through a half turn or a slice the cube on screen is the cube as 
 // ---- the record's notices (row 22) -------------------------------------------------------------------------
 
 test('a rep that was not saved stays said as mixed practice moves on — until a rep is saved', async () => {
-  const { page, context, errors } = await openPractice(fixture);
+  const { page, context, errors, logged } = await openPractice(fixture);
   try {
     const catalogue = await page.evaluate(() => window.__p.rows());
     const set = Object.values(catalogue.sets).find((s) => s.ids.length >= 3 && s.ids.length <= 6);
@@ -675,8 +676,10 @@ test('a rep that was not saved stays said as mixed practice moves on — until a
     const unsaved = await notice();
     assert.equal(unsaved.hidden, false, 'moving on took away the only sign that a rep was not saved');
     assert.equal(unsaved.seen, true, 'a rep that was not saved is said only where nobody looks');
-    // Named, now the page shows another algorithm: "that rep" would point at nothing on screen.
-    assert.match(unsaved.text, /A rep of .+ was not saved/);
+    // E12.8: the notice is the FIXED sentence for a failed save — "a rep", which points at nothing wrong whichever
+    // algorithm the page now shows — and the failure's own message is logged where it happened, never only dropped.
+    assert.equal(unsaved.text, RECORD_SAYS.save, 'the notice for a failed save is not its fixed sentence');
+    assert.ok(logged.some((l) => /not saved/.test(l) && /could not be written/.test(l)), `the failed save's own message was not logged: ${JSON.stringify(logged)}`);
     // Saved again: the notice goes, because what it said is no longer true.
     await page.evaluate(() => window.__p.failWrites(false));
     await repAndMoveOn();
@@ -1432,7 +1435,7 @@ const recordShown = (page) => page.evaluate(() => ({
 
 test('a record that cannot be read leaves the history unknown on the page — never "No reps yet" — and no rep is saved over it', async () => {
   const foreign = { v: 99, algs: {} };
-  const { page, context, errors } = await openPractice(fixture, {
+  const { page, context, errors, logged } = await openPractice(fixture, {
     // Something that is not the record stands under its key, put there before the app opens the database.
     prepare: (ctx) => ctx.addInitScript(({ db, store, entry, value }) => {
       const open = indexedDB.open(db, 1);
@@ -1445,14 +1448,17 @@ test('a record that cannot be read leaves the history unknown on the page — ne
     await show(page, 'sune');
     await settle(page);
     const got = await recordShown(page);
-    assert.match(got.notice, /could not be read \(foreign\)/, 'precondition: the read failed and the page said so');
+    // E12.8: said in the fixed words for a failed read; the record's own reason logged where the read failed.
+    assert.equal(got.notice, RECORD_SAYS.read, 'the notice for a failed read is not its fixed sentence');
+    assert.ok(logged.some((l) => /could not be read/.test(l) && /version-3 practice record/.test(l)), `the failed read's own message was not logged: ${JSON.stringify(logged)}`);
     assert.doesNotMatch(got.reps, /No reps yet/, 'an unreadable history was said to be empty');
     assert.match(got.reps, /could not be read/);
     assert.deepEqual(got.figures, ['—', '—', '—', '—'], 'a figure was given for a record nobody could read');
     // A rep made on it is not saved, and the page says so; what was stored is left as it was.
     assert.equal((await feedRep(page, randomStart(rnd), reportsPerToken(SUNE, ORIENTATIONS[0], rnd).flat())).at(-1), 1, 'precondition: a rep');
     await settle(page);
-    assert.match((await recordShown(page)).notice, /That rep was not saved/);
+    // Both at once, each in its fixed words, both on screen.
+    assert.equal((await recordShown(page)).notice, `${RECORD_SAYS.save} ${RECORD_SAYS.read}`, 'a failed read and a failed save are not both said in their fixed words');
     assert.deepEqual(await page.evaluate(() => window.__p.stored()), foreign, 'the unreadable record was written over');
     assert.deepEqual(errors, []);
   } finally {
@@ -1461,7 +1467,7 @@ test('a record that cannot be read leaves the history unknown on the page — ne
 });
 
 test('an earlier record that cannot be read is said and kept as it was — and the reps made now are saved', async () => {
-  const { page, context, errors } = await openPractice(fixture, {
+  const { page, context, errors, logged } = await openPractice(fixture, {
     // The record as localStorage held it before IndexedDB, unreadable: the record takes nothing from it.
     prepare: (ctx) => ctx.addInitScript(() => localStorage.setItem('cubusDrillRecord', '{not json')),
   });
@@ -1469,13 +1475,14 @@ test('an earlier record that cannot be read is said and kept as it was — and t
     const rnd = lcg(959);
     await show(page, 'sune');
     await settle(page);
-    assert.match((await recordShown(page)).notice, /earlier practice record is not in this one/, 'the earlier record went unsaid');
+    assert.equal((await recordShown(page)).notice, RECORD_SAYS.read, 'the earlier record went unsaid, or not in the fixed words for a failed read');
+    assert.ok(logged.some((l) => /cubusDrillRecord/.test(l)), `the earlier record's own reason was not logged: ${JSON.stringify(logged)}`);
     assert.equal((await feedRep(page, randomStart(rnd), reportsPerToken(SUNE, ORIENTATIONS[0], rnd).flat())).at(-1), 1, 'precondition: a rep');
     await settle(page);
     const got = await recordShown(page);
     // What must NOT happen: practice stopped by a record nobody can read, or that record removed.
     assert.equal(got.figures[0], '1', 'the rep made now was not saved');
-    assert.match(got.notice, /earlier practice record is not in this one/, 'a saved rep took away the only sign of the earlier record');
+    assert.equal(got.notice, RECORD_SAYS.read, 'a saved rep took away the only sign of the earlier record');
     assert.equal(await page.evaluate(() => localStorage.getItem('cubusDrillRecord')), '{not json', 'the earlier record was not kept as it was');
     assert.deepEqual(errors, []);
   } finally {
@@ -1702,7 +1709,7 @@ test('a rep whose save fails after its page has gone is said where the child is 
     await show(page, 'sune');
     await settle(page);
     const notice = () => page.evaluate(() => { const n = document.querySelector('#practiceRecordSay'); return n.hidden ? '' : n.textContent; });
-    assert.match(await notice(), /A rep of .+ was not saved/, 'the next page did not say the rep that was not saved');
+    assert.equal(await notice(), RECORD_SAYS.save, 'the next page did not say the rep that was not saved, in its fixed words');
     assert.equal((await feedRep(page, randomStart(rnd), reportsPerToken(SUNE, ORIENTATIONS[0], rnd).flat())).at(-1), 1, 'precondition: a rep');
     await settle(page);
     assert.equal(await notice(), '', 'the notice outlived a rep that was saved');
