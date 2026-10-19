@@ -20,6 +20,7 @@
 import { PHOTO_FRAME, isMarked, isPhotographed } from '../../case-photo.js';
 import { netSvg, topFaceSvg } from '../../cube-flat.js';
 import { movedPieces } from '../../drill/case-of.js';
+import { fingersOf } from '../../drill/record.js';
 import { plural, t } from '../../i18n.js';
 import { REGISTRY_LEVELS } from '../../method-row.js';
 import { methodById } from '../../methods/registry.js';
@@ -88,6 +89,15 @@ export function tilePicture(row, region, look, esc) {
     // PHOTO_FRAME's shape — so the photograph fills it.
     return `<span class="case-photo" data-photo="pending" role="img" aria-label="${esc(t('The case %1 solves', rowName(row)))}" style="aspect-ratio:${PHOTO_FRAME.w}/${PHOTO_FRAME.h}"></span>`;
   }
+  return markedPicture(row, region, look);
+}
+
+/**
+ * A row's flat picture with the pieces its case moves outlined, unless its set is on the unmarked list (§3.6): a flat
+ * tile's picture, and the Practice book's for every row (E13) — there the live cube beside it is the 3D view, so the book
+ * keeps the flat one rather than a copy of the photograph.
+ */
+export function markedPicture(row, region, look) {
   const flat = casePicture(row, look);
   return isMarked(row) ? outlineMoved(flat, movedPieces(row, region).viewed.flat()) : flat;
 }
@@ -279,8 +289,17 @@ export function ringSvg(k, n, size) {
   return `${open}${segs.join('')}${tick}</svg>`;
 }
 
+/**
+ * A tile's ring for a row's figures (`statsOf`): the same reading the Practice page's beads draw (`fingersOf`), so a
+ * tile and its page never disagree (dev-docs/practice-redesign-plan.md WI-7). Nothing for a record not read (`null`).
+ */
+export function tileRing(stats, n, size) {
+  const fingers = fingersOf(stats, n);
+  return fingers === null ? '' : ringSvg(fingers.lit, n, size);
+}
+
 /** A stage's or method's count once the record is read: how many of its rows are in the fingers, as a ring and k/n. */
-export function countHtml(ids, streakOf, n, size = 14) {
-  const k = ids.filter((id) => streakOf(id) >= n).length;
+export function countHtml(ids, statsOfRow, n, size = 14) {
+  const k = ids.filter((id) => fingersOf(statsOfRow(id), n).reached).length;
   return `${ringSvg(k, ids.length, size)}<span class="num">${k}/${ids.length}</span>`;
 }

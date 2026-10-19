@@ -46,12 +46,12 @@ import { library } from '../drill/library-client.js';
 import { caseOf } from '../drill/case-of.js';
 import { casePhotographer, photoAttrs } from '../case-photo.js';
 import { STATUS, createDrillEngine } from '../drill/engine.js';
-import { PracticeRecordError, openPracticeRecord, statsOf, watchReps } from '../drill/record.js';
+import { PracticeRecordError, fingersOf, openPracticeRecord, statsOf, watchReps } from '../drill/record.js';
 import { indexedDbStore } from '../drill/record-store.js';
 import { mixOrder } from '../drill/mix.js';
 import {
   LIBRARY_LEVELS, aboutHtml, bodyHtml, casePicture, countHtml, gridIds, libraryKey, libraryMethods, openingKey, pendingHtml, purposeOf,
-  railHtml, ringSvg, rowName, stageIds, tileLabel, tilesHtml,
+  markedPicture, railHtml, rowName, stageIds, tileLabel, tileRing, tilesHtml,
 } from './practice/library-view.js';
 import {
   RECORD_READING, beadsHtml, chipsHtml, figuresHtml, lastRepsHtml, orderWords, pageHtml, partsWords, refusalWords, seconds, writtenTokens,
@@ -195,7 +195,7 @@ function mountLibrary({ root, box, list, catalogue, signal }) {
   }, { signal });
 
   // ---- the record: ONE read for every ring, and a ring only for a read that has completed (plan §4.2) -----------
-  let streaks = null;   // Map of row id → clean streak once read; null while reading or when the read failed
+  let figures = null;   // Map of row id → its figures (`statsOf`) once read; null while reading or when the read failed
   let reading = null;
   const record = openPracticeRecord({
     store: indexedDbStore(indexedDB), legacy: localStorage, broadcast: BroadcastChannel,
@@ -203,16 +203,18 @@ function mountLibrary({ root, box, list, catalogue, signal }) {
     // Another window's committed write, or a change in what the record can reach: read again.
     onChange: () => { if (!stale()) readRecord(); },
   });
-  const streakOf = (id) => streaks?.get(id) ?? 0;
+  const NONE = statsOf([]);
+  /** A row's figures once the record is read: a row with no reps on record is read, and zero. */
+  const figuresOf = (id) => figures?.get(id) ?? NONE;
   const readRecord = () => {
     const ticket = {};
     reading = ticket;
-    streaks = null;
+    figures = null;
     list.dataset.record = 'reading';
     paintProgress();
     record.read().then((algs) => {
       if (reading !== ticket || stale()) return;
-      streaks = new Map([...algs].map(([id, reps]) => [id, statsOf(reps).streak]));
+      figures = new Map([...algs].map(([id, reps]) => [id, statsOf(reps)]));
       trouble.read = null;
       list.dataset.record = 'read';
       paintProgress();
@@ -238,20 +240,21 @@ function mountLibrary({ root, box, list, catalogue, signal }) {
     if (!group) return;
     for (const tile of scope.querySelectorAll('[data-alg]')) {
       const rowNow = catalogue.rows[tile.dataset.alg];
-      const k = streaks ? streakOf(rowNow.id) : null;
-      tile.querySelector('.badge').innerHTML = streaks ? ringSvg(Math.min(k, n), n, 24) : '';
-      tile.classList.toggle('done', Boolean(streaks) && k >= n);
-      tile.setAttribute('aria-label', tileLabel(rowNow, k, n));
+      // The page's beads draw the same reading (`fingersOf` in lib/drill/record.js), so a tile and its page agree (WI-7).
+      const stats = figures ? figuresOf(rowNow.id) : null;
+      tile.querySelector('.badge').innerHTML = tileRing(stats, n, 24);
+      tile.classList.toggle('done', Boolean(fingersOf(stats, n)?.reached));
+      tile.setAttribute('aria-label', tileLabel(rowNow, stats?.streak ?? null, n));
     }
     if (scope !== list) return;
     const plain = (ids) => `<span class="num">${ids.length}</span>`;
-    const count = (ids, size) => (streaks ? countHtml(ids, streakOf, n, size) : plain(ids));
+    const count = (ids, size) => (figures ? countHtml(ids, figuresOf, n, size) : plain(ids));
     group.phases.forEach((p, i) => {
       const ids = stageIds(catalogue, p);
       for (const ct of [rail.querySelector(`[data-jump="${i}"] .ct`), list.querySelector(`[data-sec="${i}"] .ct`)]) if (ct) ct.innerHTML = count(ids, 14);
     });
     const all = [...new Set(group.phases.flatMap((p) => stageIds(catalogue, p)))];
-    $('.lib-sum', root).innerHTML = streaks ? countHtml(all, streakOf, n, 22) : '';
+    $('.lib-sum', root).innerHTML = figures ? countHtml(all, figuresOf, n, 22) : '';
   }
 
   /**
@@ -1308,7 +1311,8 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     ].filter(Boolean).join(' · ');
     // Behind the book: its picture, then what the algorithm is FOR, what this one does, and how to hold it.
     const purpose = purposeOf(row, set);
-    $('#practicePic', info.el).innerHTML = casePicture(row, { palette: settings.palette, scheme: settings.scheme });
+    // The flat picture with its moved pieces marked, as a flat tile draws it (E13): the live cube beside it is the 3D view.
+    $('#practicePic', info.el).innerHTML = markedPicture(row, set.region, { palette: settings.palette, scheme: settings.scheme });
     $('#practiceName', info.el).innerHTML = `<b>${escHtml(rowName(row))}</b> · ${escHtml(setName)}${stage ? ` · ${escHtml(stage)}` : ''}`;
     $('#practiceAbout', info.el).innerHTML = [
       purpose ? `<p class="practice-purpose">${escHtml(purpose)}</p>` : '',

@@ -432,6 +432,18 @@ export function statsOf(reps) {
   });
 }
 
+/**
+ * "In the fingers" against the target `n`, read off `statsOf`'s figures: how many of the `n` marks are lit, and whether
+ * the target is reached. The ONE reading the Practice page's beads and the library's ring both draw, so they cannot
+ * disagree (dev-docs/practice-redesign-plan.md WI-7). `stats` null is a record not read, or unreadable: null, and
+ * nothing is lit from it.
+ */
+export function fingersOf(stats, n) {
+  if (!Number.isInteger(n) || n < 1) throw new Error(`record: in the fingers needs a target of at least 1, not ${n}`);
+  if (stats === null) return null;
+  return Object.freeze({ lit: Math.min(stats.streak, n), reached: stats.streak >= n });
+}
+
 const SAVED = Object.freeze({ saved: true });
 
 /**

@@ -17,16 +17,17 @@ import { isLibraryKey } from '../lib/app-settings.js';
 import { parse } from '../lib/cube-notation.js';
 import { netSvg } from '../lib/cube-flat.js';
 import { PAUSE_FACTOR, TIME_REFUSAL } from '../lib/drill/timing.js';
-import { statsOf } from '../lib/drill/record.js';
+import { fingersOf, statsOf } from '../lib/drill/record.js';
 import { catalogueOf, pendingName } from '../lib/drill/library-client.js';
 import { registerLocale, setLocale, t } from '../lib/i18n.js';
 import { methodById } from '../lib/methods/registry.js';
 import { targetPicture } from '../lib/stage-picture.js';
 import {
-  aboutHtml, bodyHtml, captionOf, gridIds, libraryKey, libraryMethods, openingKey, pendingHtml, purposeOf, railHtml, ringSvg,
-  rowName, stageIds, tileLabel, tilesHtml,
+  aboutHtml, bodyHtml, captionOf, casePicture, gridIds, libraryKey, libraryMethods, openingKey, pendingHtml, purposeOf, railHtml, ringSvg,
+  markedPicture, rowName, stageIds, tileLabel, tilePicture, tileRing, tilesHtml,
 } from '../lib/screens/practice/library-view.js';
-import { isPhotographed } from '../lib/case-photo.js';
+import { isMarked, isPhotographed } from '../lib/case-photo.js';
+import { movedPieces } from '../lib/drill/case-of.js';
 import { isAbsent } from './dom-assert.mjs';
 import { paletteFor } from '../lib/scheme.js';
 import { STICKER_PALETTES } from '../lib/sticker-palettes.js';
@@ -682,6 +683,72 @@ test('the beads: N of them, the clean streak lit up to N, all of them done at N,
     assert.equal(beads.dataset.reached, String(streak >= n));
     assert.equal(beads.querySelector('.sr-only').textContent, fingersWords(stats, n).text);
   }
+});
+
+// ---- beads and rings from one source (dev-docs/practice-redesign-plan.md WI-7) --------------------------------
+
+test('the page\'s beads and the library\'s ring are ONE reading of the record: the same number lit, done together', () => {
+  const clean = (k) => Array.from({ length: k }, () => rep(true));
+  const histories = {
+    'nothing on record': [],
+    'one clean': clean(1),
+    'six clean': clean(6),
+    'seven clean': clean(7),
+    'forty clean': clean(40),
+    'clean, then unclean': [...clean(5), rep(false)],
+    'clean, then a paused clean rep': [...clean(5), rep(true, { pauses: 1 })],
+    'a paused rep, then two clean': [...clean(5), rep(true, { pauses: 2 }), ...clean(2)],
+    'a lost turn inside the row': [...clean(3), rep(false, { lostTurn: true }), ...clean(3)],
+    'only lost turns': [rep(false, { lostTurn: true }), rep(true, { lostTurn: true })],
+    'timed and untimed': [...clean(2), rep(true, { ms: 1800, refused: null, turns: 7 }), ...clean(1)],
+  };
+  for (const n of [3, 7, 12]) {
+    for (const [what, reps] of Object.entries(histories)) {
+      const stats = statsOf(reps);
+      const want = Math.min(stats.streak, n);
+      assert.deepEqual(fingersOf(stats, n), { lit: want, reached: stats.streak >= n }, `${what}, n=${n}: the reading`);
+      const beads = parsed(beadsHtml(stats, n, esc)).querySelector('#practiceFingers');
+      const ring = parsed(tileRing(stats, n, 24)).querySelector('svg.ring');
+      assert.ok(ring, `${what}, n=${n}: no ring for a record that was read`);
+      assert.equal(beads.querySelectorAll('.bead.on').length, want, `${what}, n=${n}: beads lit`);
+      assert.equal(ring.querySelectorAll('.seg.on').length, want, `${what}, n=${n}: ring segments lit`);
+      assert.equal(beads.classList.contains('done'), ring.classList.contains('done'), `${what}, n=${n}: one done and not the other`);
+    }
+  }
+  // Past twelve segments the ring is one arc: lit exactly when a bead is, done exactly when the beads are.
+  for (const [what, reps] of Object.entries(histories)) {
+    const stats = statsOf(reps);
+    const beads = parsed(beadsHtml(stats, 30, esc)).querySelector('#practiceFingers');
+    const ring = parsed(tileRing(stats, 30, 24)).querySelector('svg.ring');
+    assert.equal(Boolean(ring.querySelector('.seg.on')), beads.querySelectorAll('.bead.on').length > 0, `${what}, n=30: lit`);
+    assert.equal(ring.classList.contains('done'), beads.classList.contains('done'), `${what}, n=30: done`);
+  }
+  // What must NOT happen: a ring, or a lit bead, for a record nobody has read.
+  assert.equal(fingersOf(null, 7), null);
+  assert.equal(tileRing(null, 7, 24), '', 'a ring drawn for a record not read');
+  assert.equal(parsed(beadsHtml(null, 7, esc)).querySelectorAll('.bead.on').length, 0, 'a bead lit for a record not read');
+  assert.throws(() => fingersOf(statsOf([]), 0), /fingers/);
+});
+
+// The book's picture is the FLAT one, its moved pieces marked as a flat tile's are (E13): beside the live cube it is a
+// second view, not a copy of the photograph.
+test('the marked flat picture: every row\'s moved stickers outlined unless its set is unmarked, and a flat tile is exactly it', () => {
+  let marked = 0;
+  for (const row of Object.values(catalogue.rows)) {
+    const region = catalogue.sets[row.set].region;
+    const box = parsed(markedPicture(row, region, look));
+    const moved = box.querySelectorAll('rect.moved').length;
+    // What must NOT happen: a sticker greyed or recoloured by the mark — the fills are the plain picture's.
+    const fills = (el) => [...el.querySelectorAll('rect[data-facelet]')].map((r) => `${r.dataset.facelet}:${r.getAttribute('fill')}`).join();
+    assert.equal(fills(box), fills(parsed(casePicture(row, look))), `${row.id}: the marking changed a sticker's colour`);
+    if (!isMarked(row)) { assert.equal(moved, 0, `${row.id}: a set on the unmarked list is marked`); continue; }
+    const drawn = new Set([...box.querySelectorAll('rect[data-facelet]')].map((r) => Number(r.dataset.facelet)));
+    const want = movedPieces(row, region).viewed.flat().filter((f) => drawn.has(f)).length;
+    assert.equal(moved, want, `${row.id}: ${moved} stickers marked, ${want} moved ones drawn`);
+    if (moved) marked += 1;
+    if (!isPhotographed(row)) assert.equal(tilePicture(row, region, look, esc), markedPicture(row, region, look), `${row.id}: the tile and the marked picture differ`);
+  }
+  assert.ok(marked > 500, `precondition: only ${marked} rows marked`);
 });
 
 test('the strip: one section per part, a trigger\'s name the label over its part, and a row with no trigger one whole run', () => {

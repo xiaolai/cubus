@@ -7,6 +7,7 @@
 // the text as written, never re-spelled — and the screen hands the engine that same string.
 
 import { plural, t } from '../../i18n.js';
+import { fingersOf } from '../../drill/record.js';
 import { PAUSE_FACTOR, TIME_REFUSAL } from '../../drill/timing.js';
 
 /** The algorithm as written, one token per element: the text the engine parses, split where it is spaced. */
@@ -76,7 +77,7 @@ const figure = (v, fmt = String) => (v === null || v === undefined ? '—' : fmt
  */
 export function fingersWords(stats, n) {
   if (!stats || stats.judged === 0) return { reached: false, text: t('In a row: — of %1', n) };
-  if (stats.streak >= n) return { reached: true, text: t('In the fingers — %1 clean in a row', stats.streak) };
+  if (fingersOf(stats, n).reached) return { reached: true, text: t('In the fingers — %1 clean in a row', stats.streak) };
   return { reached: false, text: t('In a row: %1 of %2', stats.streak, n) };
 }
 
@@ -88,7 +89,8 @@ export function fingersWords(stats, n) {
  */
 export function beadsHtml(stats, n, esc, { paused = false } = {}) {
   const fingers = fingersWords(stats, n);
-  const lit = stats ? Math.min(stats.streak, n) : 0;
+  // The library's ring draws the same reading (`tileRing`): one source, so the two can never disagree (WI-7).
+  const lit = fingersOf(stats, n)?.lit ?? 0;
   // The bead the paused rep would have lit shows the pause (E12.4): the row starts again from it.
   const mark = paused && !fingers.reached ? lit : -1;
   return `<div class="beads${fingers.reached ? ' done' : ''}" id="practiceFingers" data-reached="${fingers.reached}">${

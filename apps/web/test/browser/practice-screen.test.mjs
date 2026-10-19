@@ -1375,15 +1375,64 @@ test('a rep where one turn came without the cube\'s own time is refused about th
   }
 });
 
-test('a clean rep with a long gap between two turns is marked as paused, and puts the row of clean reps back to zero', async () => {
+// ---- beads and rings from one source (dev-docs/practice-redesign-plan.md WI-7) --------------------------------
+
+/** What the page's beads show: how many are lit, and whether they are done. */
+const beadsOf = (page) => page.evaluate(() => {
+  const b = document.querySelector('#practiceFingers');
+  return { lit: b.querySelectorAll('.bead.on').length, done: b.classList.contains('done') };
+});
+
+/** What a library tile's ring shows, or null where no ring is drawn. */
+const ringOf = (page, id) => page.evaluate((x) => {
+  const tile = document.querySelector(`#practiceList [data-alg="${x}"]`);
+  const ring = tile?.querySelector('.badge svg.ring');
+  return ring ? { lit: ring.querySelectorAll('.seg.on').length, done: tile.classList.contains('done') } : null;
+}, id);
+
+/** A second window of `page`'s origin on the library, with `id`'s tile drawn: it reads the record again on each of
+ *  the other window's writes, so its ring is the library's answer to every rep made there. */
+async function libraryBeside(fixture, context, id) {
+  const lib = await openPractice(fixture, { context, connect: false });
+  const set = await lib.page.evaluate(async (x) => (await window.__p.rows()).rows[x].set, id);
+  await gridOf(lib.page, set);
+  await lib.page.waitForFunction(() => document.querySelector('#practiceList')?.dataset.record === 'read', null, { timeout: LIVENESS_MS });
+  return lib;
+}
+
+/**
+ * The beads and the ring after a rep: both equal min(streak, N), the streak counted HERE from the record as stored —
+ * never by the function the screens draw with — and the ring waited for, because the other window reads on the write.
+ */
+async function sameProgress(page, lib, id, what) {
+  const reps = (await recordOf(page)).algs[id] ?? [];
+  let streak = 0;
+  for (let i = reps.length - 1; i >= 0; i--) {
+    if (reps[i].lostTurn) continue;
+    if (!reps[i].clean || reps[i].pauses > 0) break;
+    streak += 1;
+  }
+  const want = { lit: Math.min(streak, 7), done: streak >= 7 };
+  await lib.page.waitForFunction(({ x, lit }) => document.querySelectorAll(`#practiceList [data-alg="${x}"] .badge svg.ring .seg.on`).length === lit,
+    { x: id, lit: want.lit }, { timeout: LIVENESS_MS }).catch(() => {});
+  assert.deepEqual(await beadsOf(page), want, `${what}: the page's beads`);
+  assert.deepEqual(await ringOf(lib.page, id), want, `${what}: the library's ring`);
+  return want.lit;
+}
+
+/** The long-gap case in one engine: the beads and the ring after every rep, and the pause that empties both. */
+async function pausedRepEmptiesBoth(fixture) {
   const { page, context, errors } = await openPractice(fixture);
+  let lib = null;
   try {
     const rnd = lcg(223);
     await show(page, 'sune');
+    lib = await libraryBeside(fixture, context, 'sune');
     for (let i = 0; i < 2; i++) {
       const dones = await feedRep(page, randomStart(rnd), reportsPerToken(SUNE, ORIENTATIONS[0], rnd).flat());
       assert.equal(dones.at(-1), 1, 'precondition: an even rep completed');
       await settle(page);
+      assert.equal(await sameProgress(page, lib, 'sune', `clean rep ${i + 1}`), i + 1);
     }
     const fingers = () => page.evaluate(() => document.querySelector('#practiceFingers').textContent);
     assert.match(await fingers(), /2 of 7/, 'precondition: two clean reps make a row of two');
@@ -1400,8 +1449,9 @@ test('a clean rep with a long gap between two turns is marked as paused, and put
     const stored = (await recordOf(page)).algs.sune.at(-1);
     assert.equal(stored.clean, true, 'precondition: the paused rep was clean');
     assert.ok(stored.pauses >= 1, `precondition: the pause was marked (pauses = ${stored.pauses})`);
-    // What must NOT happen: a paused rep counted toward the target, as "3 of 7".
+    // What must NOT happen: a paused rep counted toward the target, as "3 of 7" — on the page or on its tile.
     assert.match(await fingers(), /0 of 7/);
+    assert.equal(await sameProgress(page, lib, 'sune', 'the paused rep'), 0, 'the paused rep left beads or a ring lit');
     assert.equal(await page.evaluate(() => window.__p.fingers()), 'false');
     // WHERE THE PAUSE IS EXPLAINED (E11.3, E12.4): to a screen reader and in the book, and shown by a bead — never in
     // the follow-note, which is for what must be done.
@@ -1413,11 +1463,88 @@ test('a clean rep with a long gap between two turns is marked as paused, and put
     assert.match(said.say, /pause/i, `a screen reader is not told of the pause: ${said.say}`);
     assert.match(said.book, /pause/i, 'the book does not say the rep paused');
     assert.deepEqual(said.paused, [true, ...Array(said.paused.length - 1).fill(false)], 'the first bead does not show the pause');
-    // The next clean rep takes the pause's mark away: it lights the bead instead.
+    // The next clean rep takes the pause's mark away: it lights the bead instead, and the ring's first segment.
     assert.equal((await feedRep(page, randomStart(rnd), reportsPerToken(SUNE, ORIENTATIONS[0], rnd).flat())).at(-1), 1);
     await settle(page);
+    assert.equal(await sameProgress(page, lib, 'sune', 'the clean rep after the pause'), 1);
     assert.deepEqual(await page.evaluate(() => document.querySelectorAll('#practiceFingers .bead.paused').length), 0, 'a clean rep kept the pause\'s mark');
     assert.equal(await page.evaluate(() => window.__p.note()), null);
+    assert.deepEqual([...errors, ...lib.errors], []);
+  } finally {
+    await context.close();
+  }
+}
+
+test('a clean rep with a long gap between two turns is marked as paused, and puts the row of clean reps back to zero — beads and ring alike', async () => {
+  await pausedRepEmptiesBoth(fixture);
+});
+
+test('in Chromium too, the beads and the ring are the same number after every rep, and a paused rep empties both', async () => {
+  const chromium = await startBrowserFixture({ engine: 'chromium' });
+  try {
+    await pausedRepEmptiesBoth(chromium);
+  } finally {
+    await chromium.close();
+  }
+});
+
+test('with no cube neither the beads nor the ring move — walking the moves and the stopwatch are no rep (D3)', async () => {
+  const { page, context, errors } = await openPractice(fixture);
+  try {
+    const rnd = lcg(229);
+    await show(page, 'sune');
+    const lib = await libraryBeside(fixture, context, 'sune');
+    for (let i = 0; i < 2; i++) {
+      assert.equal((await feedRep(page, randomStart(rnd), reportsPerToken(SUNE, ORIENTATIONS[0], rnd).flat())).at(-1), 1);
+      await settle(page);
+    }
+    assert.equal(await sameProgress(page, lib, 'sune', 'precondition: two clean reps with a cube'), 2);
+    const before = (await recordOf(page)).algs.sune.length;
+    await page.evaluate(() => window.__p.disconnect());
+    await page.waitForFunction(() => window.__p.data().mode === 'demo', null, { timeout: LIVENESS_MS });
+    // The whole algorithm walked with the transport, on to the end, and timed on the person's own stopwatch.
+    await page.click('#practiceClock');
+    const turns = await page.evaluate(() => document.querySelectorAll('#practiceAlg .chip-m').length);
+    await page.click('#demoAll');
+    await page.waitForFunction((n) => document.querySelectorAll('#practiceAlg .chip-m.played').length === n, turns, { timeout: LIVENESS_MS });
+    await page.click('#practiceClock');
+    await settle(page);
+    // What must NOT happen: a rep on record, a bead or a ring segment lit or put out, by anything no cube checked.
+    assert.equal((await recordOf(page)).algs.sune.length, before, 'a rep was recorded with no cube');
+    assert.equal(await sameProgress(page, lib, 'sune', 'after a walk with no cube'), 2, 'the beads or the ring moved with no cube');
+    assert.deepEqual([...errors, ...lib.errors], []);
+  } finally {
+    await context.close();
+  }
+});
+
+// ---- the book's picture (E13) --------------------------------------------------------------------------------
+
+test('the book shows the flat case picture with its moved pieces outlined — on a top-face row and on a row the library photographs', async () => {
+  const { page, context, errors } = await openPractice(fixture, { connect: false });
+  try {
+    // A row the library draws as a photograph, from a marked set: the book keeps its NET, marked, never the photograph.
+    const photographed = await page.evaluate(async () => {
+      const { isMarked, isPhotographed } = await import('/lib/case-photo.js');
+      const cat = await window.__p.rows();
+      return Object.values(cat.rows).find((r) => isPhotographed(r) && isMarked(r)).id;
+    });
+    for (const id of ['sune', photographed]) {
+      await show(page, id);
+      await page.click('#practiceBook');
+      await page.waitForFunction(() => !document.querySelector('#practiceInfo').hidden, null, { timeout: LIVENESS_MS });
+      const pic = await page.evaluate(() => {
+        const box = document.querySelector('#practicePic');
+        const stroke = box.querySelector('rect.moved')?.getAttribute('stroke');
+        return { svg: box.querySelectorAll('svg').length, img: box.querySelectorAll('img').length, moved: box.querySelectorAll('rect.moved').length, stroke };
+      });
+      assert.equal(pic.svg, 1, `${id}: the book draws no flat picture`);
+      assert.equal(pic.img, 0, `${id}: the book shows a photograph`);
+      assert.ok(pic.moved > 0, `${id}: the book's picture marks no moved piece`);
+      assert.equal(pic.stroke, 'currentColor', `${id}: the mark is not in the ink colour`);
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(() => document.querySelector('#practiceInfo').hidden, null, { timeout: LIVENESS_MS });
+    }
     assert.deepEqual(errors, []);
   } finally {
     await context.close();
