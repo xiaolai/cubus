@@ -1474,7 +1474,7 @@ const bandEnumeration = (page) => page.evaluate(async () => {
     import('/lib/foot-band.js')]);
   // "Longest" as the band draws it, in its own font — the measure the app sizes its room by.
   const widthOf = drawnWidth(document.querySelector('.screen.active .foot-band'));
-  return { follow: followNoteSentences({ widthOf }), practise: await practiseLabels({ widthOf }), why: WHY_TURN_LABEL,
+  return { follow: followNoteSentences({ widthOf }), practise: practiseLabels({ widthOf }), why: WHY_TURN_LABEL,
     record: [RECORD_SAYS.save, RECORD_SAYS.read] };
 });
 
@@ -1654,6 +1654,53 @@ for (const fixture of FIXTURES) {
     }
   });
 }
+
+// ---- the band's room never waits on the ledger -------------------------------------------------------------------
+//
+// THE ORDERING THAT FAILED (31b51c59): the band's room was sized by every label the practise-step button can carry,
+// asked of the library worker, so a worker that answered after the walk was drawn grew the reserve then — and the cube
+// shrank under the child's eyes. "The band leaves the cube its size" failed on whichever fixture the worker was slow
+// (iPhone 16 268.8 vs 280.8 px; Split View 194 vs 208), and a probe with the worker held 6 s took the painted cube from
+// 345 to 330 px on the iPhone 16 once it answered. Pinned here with the worker held back ON PURPOSE: the cube and the
+// reserve the walk is drawn with are the ones it keeps once the ledger answers.
+test('the band\'s room is sized before the ledger answers: a late library worker changes neither the reserve nor the cube', async () => {
+  const fixture = FIXTURES.find((f) => f.name === 'iPhone 16');
+  const HELD_MS = 6000;
+  let released = false;
+  const opened = await openAt(fixture, urlFor(fixture, 'home'), async (context) => {
+    await context.addInitScript(() => localStorage.setItem('cubusSettings', JSON.stringify({ devRandCube: true })));
+    await context.route(/library-worker\.js/, async (route) => {
+      await new Promise((r) => { setTimeout(r, HELD_MS); });
+      released = true;
+      await route.continue();
+    });
+  });
+  const { page, context, errors } = opened;
+  try {
+    await page.waitForSelector('.screen.active');
+    await page.waitForSelector('#randCube', { state: 'attached' });
+    await page.evaluate(() => document.querySelector('#randCube').click());
+    await page.waitForSelector('#solList .chip-m');
+    await page.waitForFunction(() => /^\d/.test(document.querySelector('#moveCount')?.textContent ?? ''), null, { timeout: 90_000 });
+    await cubePainted(page);
+    await cubeSettled(page, '#viewCube cubus-cube');
+    const reserveNow = () => page.evaluate(() => document.querySelector('.cols > .primary').style.getPropertyValue('--band-reserve'));
+    const before = { reserve: await reserveNow(), painted: await page.evaluate(paintedSize) };
+    assert.equal(released, false, 'precondition: the ledger answered before the walk was measured — nothing was held back');
+    assert.ok(before.painted > 0, 'precondition: no cube painted');
+    // The ledger answers now: the practise-step button's offer can appear, and nothing else may move.
+    await page.evaluate(async () => { const { library } = await import('/lib/drill/library-client.js'); await library.ids(); });
+    assert.equal(released, true, 'precondition: the ledger never answered');
+    await page.evaluate(() => new Promise((r) => { requestAnimationFrame(() => requestAnimationFrame(r)); }));
+    await cubeSettled(page, '#viewCube cubus-cube');
+    const after = { reserve: await reserveNow(), painted: await page.evaluate(paintedSize) };
+    assert.equal(after.reserve, before.reserve, 'the reserve under the cube grew when the ledger answered');
+    near(after.painted, before.painted, 'the painted cube changed size when the ledger answered');
+    assert.deepEqual(errors.map(String), [], 'the page threw');
+  } finally {
+    await context.close();
+  }
+});
 
 // ---- the scan screen's composition --------------------------------------------------------------
 //

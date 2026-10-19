@@ -326,6 +326,10 @@ function sentenceFor(step) {
  *  generated id, or refuse an id it does not know? Asked without the refusal, for a list that is not a step's. */
 export const hasCaseName = (id) => !GENERATED_CASE_ID.test(id) && (HUMAN_ROW.has(id) || Object.hasOwn(CASE_TEXT, id));
 
+/** Every id `caseNameOf` names: the sourced tables' rows and the cases this module has words for. Known on the UI
+ *  thread at once — no ledger asked — so what a step can name is bounded before anything is drawn. */
+export const NAMEABLE_IDS = Object.freeze([...new Set([...HUMAN_ROW.keys(), ...CASE_TEXT_KEYS])].filter((id) => hasCaseName(id)));
+
 export const caseNameOf = (id) => {
   if (GENERATED_CASE_ID.test(id)) return null;
   const row = HUMAN_ROW.get(id);

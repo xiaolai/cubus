@@ -12,7 +12,7 @@
 
 import { state } from './app-state.js';
 import { t } from './i18n.js';
-import { caseNameOf, hasCaseName } from './method-lesson.js';
+import { NAMEABLE_IDS, caseNameOf } from './method-lesson.js';
 import { shell } from './screen-slots.js';
 import { library } from './drill/library-client.js';
 
@@ -24,22 +24,20 @@ export const PRACTISE_SAYS = Object.freeze({
 });
 
 /**
- * Every label the button can carry at its LONGEST: the offer with the name of whichever named algorithm in the ledger is
- * widest by `widthOf` (ties kept), and the label for a ledger that could not be asked. Resolves once the ledger has
- * answered; a ledger that cannot be asked leaves the offer out and keeps the other, which is then the one shown.
+ * Every label the button can carry at its LONGEST: the offer with whichever name a step can show is widest by `widthOf`
+ * (ties kept), and the label for a ledger that could not be asked. Known AT ONCE, never asked of the ledger: a step offers
+ * only an id the ledger holds AND `caseNameOf` names, so the names `caseNameOf` can give (`NAMEABLE_IDS`) bound every offer.
+ * Asked of the ledger, the list came when the library worker answered, and the band sized by it grew its reserve after
+ * the walk was drawn — the cube shrank under the child's eyes (test/browser/geometry.test.mjs, "the band's room is sized
+ * before the ledger answers").
  *
- * @param {{ widthOf?: (text: string) => number, ids?: () => Promise<Set<string>> }} [o]
- * @returns {Promise<string[]>}
+ * @param {{ widthOf?: (text: string) => number }} [o]
+ * @returns {string[]}
  */
-export async function practiseLabels({ widthOf = (text) => text.length, ids = () => library.ids() } = {}) {
-  const unchecked = t(PRACTISE_SAYS.unchecked);
-  let held;
-  try { held = await ids(); } catch { return [unchecked]; }
-  // Only ids a step can name: a ledger row with no name of ours is never offered (`practiceIdOf`).
-  const offers = [...held].filter(hasCaseName).map((id) => t(PRACTISE_SAYS.offer, caseNameOf(id)));
-  if (!offers.length) return [unchecked];
+export function practiseLabels({ widthOf = (text) => text.length } = {}) {
+  const offers = NAMEABLE_IDS.map((id) => t(PRACTISE_SAYS.offer, caseNameOf(id)));
   const most = Math.max(...offers.map(widthOf));
-  return [...new Set(offers.filter((o) => widthOf(o) === most)), unchecked];
+  return [...new Set(offers.filter((o) => widthOf(o) === most)), t(PRACTISE_SAYS.unchecked)];
 }
 
 /** The id of the algorithm a lesson step makes, or null for a step that names none (a search, a step made of

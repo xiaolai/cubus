@@ -552,14 +552,12 @@ const cubeScreen = (screenMode) => {
         ],
       });
       const widthOf = drawnWidth(band.band);
+      // Both known at once, so the room is measured ONCE, before the walk is seen: a list that arrived later would grow
+      // the reserve then, and the cube would shrink in front of the child (practiseLabels, lib/practice-link.js).
       sayable.follow = followNoteSentences({ widthOf });
+      if (!scrambling) sayable.practise = practiseLabels({ widthOf });
       band.remeasure();
       if (!scrambling) {
-        void practiseLabels({ widthOf }).then((labels) => {
-          if (signal.aborted) return;
-          sayable.practise = labels;
-          band.remeasure();
-        });
         // THE WHY OF A STEP, behind its button in portrait (E12.8): the full line — the step, the hold, the reason —
         // opens in a menu. The line itself stays on the page, where a screen reader reads it as before.
         const whyMenu = createMenu({

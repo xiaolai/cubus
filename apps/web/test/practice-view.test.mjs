@@ -19,7 +19,7 @@ import { netSvg } from '../lib/cube-flat.js';
 import { PAUSE_FACTOR, TIME_REFUSAL } from '../lib/drill/timing.js';
 import { statsOf } from '../lib/drill/record.js';
 import { catalogueOf, pendingName } from '../lib/drill/library-client.js';
-import { registerLocale, setLocale } from '../lib/i18n.js';
+import { registerLocale, setLocale, t } from '../lib/i18n.js';
 import { methodById } from '../lib/methods/registry.js';
 import { targetPicture } from '../lib/stage-picture.js';
 import {
@@ -537,6 +537,28 @@ test('a ledger that cannot be asked is said where the offer would be, and a pres
   } finally {
     console.error = quiet;
   }
+});
+
+// The band over the cube card is sized by every label the button can carry (E12.8). Asked of the ledger, that list came
+// late — when the library worker answered — and the reserve grew after the walk was drawn, shrinking the cube under the
+// child's eyes (geometry's "the band leaves the cube its size", which failed on whichever fixture the worker was slow).
+test('every label the practise-step button can carry is known at once — never a late answer — and covers every offer', async () => {
+  const { practiseLabels, PRACTISE_SAYS } = await import('../lib/practice-link.js');
+  const { NAMEABLE_IDS, caseNameOf, hasCaseName } = await import('../lib/method-lesson.js');
+  const labels = practiseLabels();
+  assert.ok(Array.isArray(labels), `the labels are not known at once: ${Object.prototype.toString.call(labels)}`);
+  assert.ok(labels.includes(t(PRACTISE_SAYS.unchecked)), 'the could-not-check label is not among them');
+  // An UPPER BOUND on what a step can offer: every ledger id a step can name is in the list the labels are drawn from…
+  // An offer is an id `caseNameOf` names (`practiceIdOf`); `hasCaseName` asks that without refusing an id it does not know.
+  const ledger = (await lib.algIds()).filter(hasCaseName);
+  assert.ok(ledger.length > 0, 'precondition: the ledger names no algorithm');
+  const nameable = new Set(NAMEABLE_IDS);
+  assert.deepEqual(ledger.filter((id) => !nameable.has(id)), [], 'a ledger algorithm a step can offer is missing from the band\'s list');
+  // …and the widest offer by the measure given is among the labels: the band holds the longest the button can say.
+  const widthOf = (text) => text.length;
+  const offers = ledger.map((id) => t(PRACTISE_SAYS.offer, caseNameOf(id)));
+  const most = Math.max(...offers.map(widthOf));
+  assert.ok(practiseLabels({ widthOf }).some((l) => widthOf(l) >= most), 'the band is sized under the widest offer');
 });
 
 // ---- WI-12 in Settings: the stepper refuses a target below three -------------------------------------------
