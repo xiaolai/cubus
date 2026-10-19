@@ -26,7 +26,9 @@ import {
   aboutHtml, bodyHtml, captionOf, casePicture, gridIds, libraryKey, libraryMethods, openingKey, pendingHtml, purposeOf, railHtml, ringSvg,
   BOOK_OUTLINE, TILE_OUTLINE, bookPicture, markedPicture, rowName, stageIds, tileLabel, tilePicture, tileRing, tilesHtml,
 } from '../lib/screens/practice/library-view.js';
-import { isMarked, isPhotographed } from '../lib/case-photo.js';
+import { isMarked, isPhotographed, markInk } from '../lib/case-photo.js';
+import { contrastOf } from '../lib/contrast.js';
+import { THEME_INKS } from './fixtures/theme-inks.mjs';
 import { movedPieces } from '../lib/drill/case-of.js';
 import { isAbsent } from './dom-assert.mjs';
 import { paletteFor } from '../lib/scheme.js';
@@ -38,7 +40,7 @@ import {
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const catalogue = await catalogueOf(lib);
-const look = { palette: 'classic', scheme: 'western' };
+const look = { palette: 'classic', scheme: 'western', inks: THEME_INKS.white };
 const ico = (name) => `<svg class="ic" data-icon="${name}"></svg>`;
 // ONE window for the file: a happy-dom window per row cost a minute.
 const win = new Window();
@@ -325,10 +327,12 @@ test('every stage of every method carries its mixed practice button, and the but
   for (const { group, body } of drawn) {
     group.phases.forEach((p, i) => {
       const head = body.querySelector(`.stage-sec[data-sec="${i}"] > .sec-head`);
-      const mix = head.querySelector(`:scope > button.tbtn[data-mix="${i}"]`);
+      const mix = head.querySelector(`:scope > button.pill[data-mix="${i}"]`);
       assert.ok(mix, `${libraryKey(group)} stage ${i}: no mixed practice button in its header`);
-      // The app's existing icon (plan §4.3), and a name that says what a press does: every row of the stage, weakest first.
-      assert.ok(mix.querySelector('[data-icon="repeat"]'), `${libraryKey(group)} stage ${i}: the button is not the repeat icon`);
+      // A WORD, not an icon (E14): `repeat` is Start over's, and one symbol must not do two jobs. The name says what a
+      // press does — every row of the stage, weakest first — and holds the word it shows (WCAG 2.5.3).
+      assert.equal(mix.textContent.trim(), 'Mixed', `${libraryKey(group)} stage ${i}: the button does not say Mixed`);
+      isAbsent(mix.querySelector('svg'), 'an icon on the mixed button');
       assert.equal(mix.getAttribute('aria-label'), 'Practise this stage mixed, weakest first');
       // One button per stage, and the stage's own: a stage of several sets has ONE, never one per set.
       assert.equal(body.querySelectorAll(`[data-mix="${i}"]`).length, 1, `${libraryKey(group)} stage ${i}: more than one mixed button`);
@@ -630,6 +634,8 @@ const PAGE_CLASSES = new Set([
   'practice-twin', 'practice-said', 'practice-score',
   // E12.3: the record's notice on a row of its own (in the foot band in portrait), never in the follow-note's slot
   'practice-record-say',
+  // E14: a card tool that says its job in a word
+  'text-tool',
   // shared primitives
   'pill', 'on', 'btn', 'sm', 'outline', 'num', 'sr-only', 'wrap-row', 'ic',
 ]);
@@ -653,6 +659,13 @@ test('the page is the cube player: the walking composition\'s classes, the named
   assert.equal(next.getAttribute('aria-label'), 'Next algorithm');
   assert.equal(next.hidden, true, 'the way on is drawn before anything is mixed');
   assert.equal(root.querySelector('#practiceBack').getAttribute('aria-label'), 'All algorithms');
+  // E14: the way back and the way on are WORDS. Chevrons are the transport's move back and move on, on the same page.
+  for (const [id, word] of [['practiceBack', 'All'], ['practiceNext', 'Next']]) {
+    const b = root.querySelector(`#${id}`);
+    assert.equal(b.textContent.trim(), word, `#${id} does not say ${word}`);
+    isAbsent(b.querySelector('svg'), `an icon on #${id}`);
+    assert.ok(b.getAttribute('aria-label').startsWith(word), `#${id}: its name does not hold the word it shows`);
+  }
   // The transport (E11.7, E11.8): the four step buttons, Start over as an icon that keeps its name, and the stopwatch
   // last. No step label — the bar carries the position, in words a screen reader hears.
   const transport = root.querySelector('.transport');
@@ -775,9 +788,10 @@ test('the marked flat picture: every row\'s moved stickers outlined unless its s
   assert.ok(marked > 500, `precondition: only ${marked} rows marked`);
 });
 
-test('the book\'s picture: the same stickers marked as a tile\'s, the band wholly inside each sticker\'s edge, every fill and every sticker\'s box unchanged', () => {
+test('the book\'s picture and a flat tile\'s: the same stickers marked, the band wholly inside each sticker\'s edge, every fill and every sticker\'s box unchanged', () => {
+  // Both inside the edge (E14): astride it, half a tile's band fell on the gap and 1,096 of 3,433 stickers went unseen.
   assert.equal(BOOK_OUTLINE.inside, true);
-  assert.equal(TILE_OUTLINE.inside, false, 'the tiles\' outline, which their lists were derived with, moved');
+  assert.equal(TILE_OUTLINE.inside, true);
   // Read as markup, not parsed: three pictures a row through one happy-dom window ran the file out of memory.
   const rects = (svg) => [...svg.matchAll(/<rect( class="moved")? data-facelet="(\d+)"([^>]*)\/>/g)].map(([, moved, f, rest]) => ({
     moved: Boolean(moved), f, fill: `${/ fill="([^"]*)"/.exec(rest)?.[1]}|${/ style="([^"]*)"/.exec(rest)?.[1] ?? ''}`,
@@ -793,7 +807,9 @@ test('the book\'s picture: the same stickers marked as a tile\'s, the band wholl
     assert.equal(ids(book), ids(rects(markedPicture(row, region, look))), `${row.id}: the book marks other stickers than a tile does`);
     // What must NOT happen: a sticker recoloured, or a sticker's size changed by its mark.
     assert.deepEqual(book.map((r) => `${r.f}:${r.fill}`), [...bare.values()].map((r) => `${r.f}:${r.fill}`), `${row.id}: the book's marking changed a sticker's colour`);
-    for (const r of book.filter((x) => x.moved)) {
+    const tile = rects(markedPicture(row, region, look));
+    assert.deepEqual(tile.map((r) => `${r.f}:${r.fill}`), [...bare.values()].map((r) => `${r.f}:${r.fill}`), `${row.id}: the tile's marking changed a sticker's colour`);
+    for (const r of [...book, ...tile].filter((x) => x.moved)) {
       const was = bare.get(r.f).box;
       const half = r.band / 2;
       const [x, y, w, h] = r.box;
@@ -804,6 +820,40 @@ test('the book\'s picture: the same stickers marked as a tile\'s, the band wholl
     }
   }
   assert.ok(marked > 3000, `precondition: only ${marked} stickers marked`);
+});
+
+// D-a (E14): ONE ink for every sticker was not seen in Night — its light ink on a white sticker. Each moved sticker's mark is
+// whichever of the theme's ink and its ground contrasts more with THAT sticker, so it is chosen against the sticker's own
+// colour as the picture draws it: its fill, or the theme's off-grey at its opacity over the ground.
+test('a moved sticker\'s mark is the ink or the ground, whichever contrasts more with that sticker, in every theme', () => {
+  const hex = (h) => [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+  const counts = {};
+  for (const [theme, inks] of Object.entries(THEME_INKS)) {
+    const seen = { ink: 0, ground: 0 };
+    for (const row of Object.values(catalogue.rows)) {
+      const region = catalogue.sets[row.set].region;
+      for (const svg of [markedPicture(row, region, { ...look, inks }), bookPicture(row, region, { ...look, inks })]) {
+        for (const [, mark, rest] of svg.matchAll(/<rect class="moved" data-facelet="\d+" data-mark="(\w+)"([^>]*)\/>/g)) {
+          const a = / fill-opacity="([\d.]+)"/.exec(rest);
+          const own = a ? inks.off.map((v, i) => v * Number(a[1]) + inks.ground[i] * (1 - Number(a[1]))) : hex(/ fill="#(\w{6})"/.exec(rest)[1]);
+          const other = mark === 'ink' ? 'ground' : 'ink';
+          // What must NOT happen: a mark in the token that contrasts LESS with its sticker.
+          assert.ok(contrastOf(inks[mark], own) >= contrastOf(inks[other], own), `${theme} ${row.id}: a sticker marked in its weaker token`);
+          seen[mark] += 1;
+        }
+      }
+    }
+    counts[theme] = seen;
+    // Both tokens are in use: a choice that always lands on one is no choice.
+    assert.ok(seen.ink > 100 && seen.ground > 100, `${theme}: ${JSON.stringify(seen)}`);
+  }
+  // The case that opened it: a white sticker in Night is marked in the ground, never in Night's light ink.
+  const white = hex(STICKER_PALETTES.classic.U.slice(1));
+  assert.equal(markInk(white, THEME_INKS.night), 'ground');
+  assert.equal(markInk(white, THEME_INKS.white), 'ink');
+  // A picture with no inks to choose between is refused, never drawn in a guessed colour.
+  const row = Object.values(catalogue.rows).find(isMarked);
+  assert.throws(() => markedPicture(row, catalogue.sets[row.set].region, { palette: 'classic', scheme: 'western' }), /ink and ground/);
 });
 
 test('the strip: one section per part, a trigger\'s name the label over its part, and a row with no trigger one whole run', () => {

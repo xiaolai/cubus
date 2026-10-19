@@ -17,7 +17,7 @@
 // comes near the view. Every card of every set built at every visit was 208 ms on the UI thread (measured
 // 2026-10-18 in WebKit) — for pictures nobody had scrolled to.
 
-import { PHOTO_FRAME, isMarked, isPhotographed } from '../../case-photo.js';
+import { PHOTO_FRAME, isMarked, isPhotographed, markInk } from '../../case-photo.js';
 import { netSvg, topFaceSvg } from '../../cube-flat.js';
 import { movedPieces } from '../../drill/case-of.js';
 import { fingersOf } from '../../drill/record.js';
@@ -68,10 +68,13 @@ const OUTLINE_LEAST = 1.6;
  * make a sticker, never under `OUTLINE_LEAST`), and whether the band lies wholly INSIDE the sticker's edge rather than
  * astride it.
  *
- * A TILE's is the edge the plan measured (§3.6): astride the edge, a sixth of the sticker, and the tiles' lists and their
- * 0 alike pairs per set were derived with it (test/browser/case-photos.test.mjs).
+ * A TILE's lies INSIDE the edge (E14, 2026-10-20). Astride it, a sixth of the sticker, half the band fell on the gap and
+ * the neighbours: at the tile's 68 px, 1,096 of 3,433 marked stickers at DPR 1 (1,456 at DPR 2) had under 25% of their
+ * own pixels changed at 48/255 in white — E8's gate, which flat tiles had never been held to. Inside, the LEAST band
+ * meets it in every theme at DPR 1 and 2 (smallest 27.6%, measured 2026-10-20 in Chromium), so it is the least band, as
+ * the book's is. The keep list and the unmarked list are re-derived with it (test/browser/case-photos.test.mjs).
  */
-export const TILE_OUTLINE = Object.freeze({ perSticker: 6.25, inside: false });
+export const TILE_OUTLINE = Object.freeze({ perSticker: Infinity, inside: true });
 
 /**
  * The BOOK's (E13). Its picture is 112 px wide, a net's sticker under 9 px, and the tile's band astride that edge put
@@ -84,23 +87,42 @@ export const TILE_OUTLINE = Object.freeze({ perSticker: 6.25, inside: false });
  */
 export const BOOK_OUTLINE = Object.freeze({ perSticker: Infinity, inside: true });
 
+/** A flat sticker's own colour as drawn: its fill, or the theme's off-grey at its opacity over the ground. */
+function stickerColour(rest, inks) {
+  const opacity = / fill-opacity="([\d.]+)"/.exec(rest);
+  if (opacity) {
+    if (!inks.off) throw new Error('library-view: an off-grey sticker to mark, and no off-grey (--facelet-off) to see it by');
+    const a = Number(opacity[1]);
+    return inks.off.map((v, i) => v * a + inks.ground[i] * (1 - a));
+  }
+  const hex = / fill="#([0-9A-Fa-f]{6})"/.exec(rest);
+  if (!hex) throw new Error(`library-view: a sticker with no colour to mark it against: ${rest.slice(0, 80)}`);
+  return [0, 2, 4].map((i) => parseInt(hex[1].slice(i, i + 2), 16));
+}
+
 /**
  * A flat picture with the pieces its case moves MARKED: every sticker of a moved piece keeps its fill — never greyed,
- * never recoloured (AGENTS.md §2) — and gets a heavier edge in the ink colour, so it follows the theme
- * (dev-docs/practice-redesign-plan.md §3.6). `moved` are viewed facelet indices (`movedPieces(...).viewed`, flattened);
- * a moved sticker the picture does not draw is simply not there to mark. `outline` says how heavy, and where.
+ * never recoloured (AGENTS.md §2) — and gets a heavier edge (dev-docs/practice-redesign-plan.md §3.6). `moved` are viewed
+ * facelet indices (`movedPieces(...).viewed`, flattened); a moved sticker the picture does not draw is simply not there to
+ * mark. `outline` says how heavy, and where.
+ *
+ * The edge's colour is chosen PER STICKER (E14): the ink or the ground, whichever contrasts more with that sticker
+ * (`markInk`), against `inks` — the tokens resolved in the theme drawn in (`inksAt`). It is written as the token, not
+ * its value: `currentColor` (the ink) or `data-mark="ground"`, which index.html strokes in `--panel`.
  */
-export function outlineMoved(svg, moved, outline = TILE_OUTLINE) {
+export function outlineMoved(svg, moved, { outline = TILE_OUTLINE, inks } = {}) {
+  if (!inks) throw new Error('library-view: a marked picture needs the theme\'s ink and ground (inksAt) to choose its edge');
   const on = new Set(moved);
   return svg.replace(/<rect data-facelet="(\d+)"([^>]*?) stroke="[^"]*" stroke-width="1"\/>/g, (m, f, rest) => {
     if (!on.has(Number(f))) return m;
+    const mark = markInk(stickerColour(rest, inks), inks);
     const w = Number(/ width="([\d.]+)"/.exec(rest)?.[1] ?? 10);
     const band = Math.max(OUTLINE_LEAST, w / outline.perSticker);
     // Inside the edge: the rect drawn half a band in on every side, so the stroke's OUTER edge is the sticker's.
     const at = outline.inside
       ? rest.replace(/ (x|y|width|height|rx|ry)="([\d.]+)"/g, (_, k, v) => ` ${k}="${Math.max(0, Number(v) + ({ x: 1, y: 1, width: -2, height: -2, rx: -1, ry: -1 })[k] * band / 2).toFixed(2)}"`)
       : rest;
-    return `<rect class="moved" data-facelet="${f}"${at} stroke="currentColor" stroke-width="${band.toFixed(2)}"/>`;
+    return `<rect class="moved" data-facelet="${f}" data-mark="${mark}"${at} stroke="currentColor" stroke-width="${band.toFixed(2)}"/>`;
   });
 }
 
@@ -125,7 +147,7 @@ export function tilePicture(row, region, look, esc) {
  */
 export function markedPicture(row, region, look, outline = TILE_OUTLINE) {
   const flat = casePicture(row, look);
-  return isMarked(row) ? outlineMoved(flat, movedPieces(row, region).viewed.flat(), outline) : flat;
+  return isMarked(row) ? outlineMoved(flat, movedPieces(row, region).viewed.flat(), { outline, inks: look.inks }) : flat;
 }
 
 /** The Practice book's picture of a row: the marked flat picture, outlined for the book's size (`BOOK_OUTLINE`). */
@@ -245,7 +267,7 @@ export function bodyHtml(group, catalogue, look, esc, icon) {
     <div class="sec-head">
       <span class="pic">${stagePicture(p, look)}</span>
       <span class="ttl"><b>${esc(stageName(p))}</b>${countSlot(stageIds(catalogue, p))}</span>
-      <button class="tbtn" type="button" data-mix="${i}" aria-label="${esc(t('Practise this stage mixed, weakest first'))}" title="${esc(t('Practise this stage mixed, weakest first'))}">${icon('repeat', 18)}</button>
+      <button class="pill" type="button" data-mix="${i}" aria-label="${esc(t('Practise this stage mixed, weakest first'))}" title="${esc(t('Practise this stage mixed, weakest first'))}">${esc(t('Mixed'))}</button>
       <button class="tbtn" type="button" data-about="${i}" aria-label="${esc(t('What these are for'))}" title="${esc(t('What these are for'))}">${icon('book', 18)}</button>
     </div>
     ${gridsOf(catalogue, p).map((g) => `${g.caption ? `<div class="set-cap">${esc(g.caption)}</div>` : ''}${g.sub ? `<div class="set-cap sub-cap">${esc(g.sub)}</div>` : ''}<div class="tiles" data-set="${esc(g.set)}" data-part="${esc(g.part)}"></div>`).join('')}

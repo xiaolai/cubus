@@ -18,9 +18,10 @@
 //
 // THE MARK IS SEEN, NOT ONLY PRESENT (E8). The highlight brightens a sticker in its own colour with nothing unmarked
 // beside it, so at tile size it reads as lighting: on four F2L tiles it changed 0% of the picture by 48/255. So every
-// sticker the highlight lit, on a face the camera sees, is also OUTLINED in the ink colour — projected through the
-// renderer's own camera and stroked over the still, INSIDE the sticker's edge so none of it is lost on the dark
-// body. The same mark the flat pictures carry (`outlineMoved`); no sticker changes colour and nothing greys.
+// sticker the highlight lit, on a face the camera sees, is also OUTLINED — projected through the renderer's own camera
+// and stroked over the still, INSIDE the sticker's edge so none of it is lost on the dark body, in the theme's ink or
+// its ground, whichever contrasts more with that sticker (`markInk`, E14). The same mark the flat pictures carry
+// (`outlineMoved`); no sticker changes colour and nothing greys.
 //
 // FRAMED TO THE CUBE (E9). The renderer frames a turned cube for every angle at once, which leaves it about two
 // thirds of its canvas's width. The still is cut to the cube's painted box, widened to `PHOTO_FRAME`'s shape, so a
@@ -33,6 +34,7 @@
 import { SOLVED as SOLVED_FACELETS } from './app-state.js';
 import { newCube } from './cube-drawing.js';
 import { caseOf, movedPieces } from './drill/case-of.js';
+import { contrastOf } from './contrast.js';
 import { holdSpec } from './solving-hold.js';
 
 /** The box a photograph is taken in, CSS px, before the still is cut to the cube (`PHOTO_FRAME`). */
@@ -43,10 +45,13 @@ export const PHOTO_BOX = Object.freeze({ w: 110, h: 96 });
 export const PHOTO_FRAME = Object.freeze({ w: 15, h: 16 });
 
 /** How many outline widths make a sticker's width on a photograph: the THINNEST band that meets E8's gate — every
- *  visible moved sticker has at least 25% of its own painted pixels changed by 48/255 against the photograph unmarked.
- *  Measured 2026-10-18 in Chromium over all 312 marked photographs (3,574 stickers): the smallest share is 25.2% at 9,
- *  21.3% at 10, 15.5% at 12. */
-const OUTLINE_PER_STICKER = 9;
+ *  visible moved sticker has at least 25% of its own painted pixels changed by 48/255 against the photograph unmarked —
+ *  at DPR 1 AND 2, in every theme (E14). Measured 2026-10-18 at DPR 2 in one theme: 25.2% at 9. Measured 2026-10-20 in
+ *  Chromium over all 3,574 stickers with the mark's colour chosen per sticker (`markInk`, against the sticker as the
+ *  still draws it, lit): Night at DPR 1 leaves 43 under 25% at 8 (smallest 12.9%) and 14 at 7 (22.6%), and none at 6
+ *  (33.9%) — a dark green side face lit by the highlight contrasts a little more with Night's dark ground than its light
+ *  ink, and a dark band on green changes few pixels by 48/255 at that size. So it is 6. */
+export const OUTLINE_PER_STICKER = 6;
 
 /**
  * The sets whose cases a photograph cannot tell apart as well as today's net does, so they keep the net — COMPUTED,
@@ -56,9 +61,12 @@ const OUTLINE_PER_STICKER = 9;
  */
 export const NET_KEPT = Object.freeze(['mehta-l5ep', 'cf-last-ledge', 'cf-middle-edges']);
 
-/** The sets whose tiles are NOT marked, computed by the same rule: marking makes more of their pairs alike than the
- *  same pictures bare (§3.6). Re-derived both ways by the same browser suite. `cf-middle-edges` left it on 2026-10-18,
- *  when alike came to be measured on what a tile shows: its outlined nets make no pair alike there. */
+/** The sets whose tiles are NOT marked, computed by TWO rules, either sufficient: marking makes more of their pairs
+ *  alike than the same pictures bare (§3.6), or a flat row of the set draws another case than the one its marking is
+ *  worked out from — a source's finishing turn after the algorithm (Mehta's "(D)"), so the mark would outline the wrong
+ *  stickers. Re-derived both ways by test/browser/case-photos.test.mjs. `cf-middle-edges` left it on 2026-10-18, when
+ *  alike came to be measured on what a tile shows. Both sets left on it hold by the second rule (mehta-l5ep 24 of 45
+ *  rows, cf-last-ledge 2 of 2); with the tiles' band inside the edge (E14) only mehta-l5ep holds by the first. */
 export const UNMARKED = Object.freeze(['mehta-l5ep', 'cf-last-ledge']);
 
 /** The attributes the photographer sets on the renderer — and the only ones. Never `focus`, which greys stickers. */
@@ -69,6 +77,47 @@ export const isPhotographed = (row) => row.solves.picture === 'net' && !NET_KEPT
 
 /** A row whose tile marks its moved pieces. */
 export const isMarked = (row) => !UNMARKED.includes(row.set);
+
+/**
+ * WHICH OF TWO EXISTING TOKENS A MOVED STICKER'S MARK IS DRAWN IN (plan E14, D-a): the theme's ink or the ground the
+ * picture lies on, whichever contrasts more with THAT sticker's own colour. One ink for every sticker failed in Night:
+ * its light ink is within 34/41/52 of a white sticker, so a band on white was not seen (738 of 9,151 book stickers under
+ * E8's 25%, measured 2026-10-20). No sticker changes colour — only the band's colour is chosen.
+ *
+ * @param {number[]} sticker  the sticker's own colour as drawn, sRGB 0–255
+ * @param {{ ink: number[], ground: number[] }} inks  the two tokens, resolved in the theme the picture is drawn in
+ * @returns {'ink'|'ground'}
+ */
+export function markInk(sticker, inks) {
+  if (!inks?.ink || !inks?.ground) throw new Error('case-photo: no ink and ground to choose a mark\'s colour from');
+  return contrastOf(inks.ink, sticker) >= contrastOf(inks.ground, sticker) ? 'ink' : 'ground';
+}
+
+/** An sRGB triple from a colour as the browser computes it: its three channels, 0–255, or 0–1 in its `color(srgb …)`
+ *  form. */
+const channelsOf = (css) => {
+  const n = (String(css).match(/[\d.]+/g) ?? []).map(Number);
+  if (n.length < 3) throw new Error(`case-photo: "${css}" is not a colour`);
+  return /^color\(srgb/.test(css) ? n.slice(0, 3).map((v) => v * 255) : n.slice(0, 3);
+};
+
+/**
+ * The tokens a mark's colour is chosen between, resolved where `el` is drawn: `--ink`, the ground `--panel` (a tile's
+ * surface and the book's menu alike), and `--facelet-off`, the off-grey a flat picture draws an unlit sticker in — each
+ * as channels, and the ink and ground also as the browser wrote them (`css`), for a canvas to draw in.
+ */
+export function inksAt(el) {
+  const probe = document.createElement('i');
+  probe.style.display = 'none';
+  el.appendChild(probe);
+  try {
+    const at = (token) => { probe.style.color = `var(${token})`; return getComputedStyle(probe).color; };
+    const css = Object.freeze({ ink: at('--ink'), ground: at('--panel') });
+    return Object.freeze({ ink: channelsOf(css.ink), ground: channelsOf(css.ground), off: channelsOf(at('--facelet-off')), css });
+  } finally {
+    probe.remove();
+  }
+}
 
 /**
  * What the renderer is set to for a row's photograph: its case and hold (`caseOf`, the page's own), the pieces it is
@@ -168,9 +217,35 @@ function litOutlines(el, canvas) {
   return out;
 }
 
-/** Stroke each polygon INSIDE its own edge, `OUTLINE_PER_STICKER` to a sticker's width, in `ink`. */
-function strokeInside(g, polygons, ink) {
-  for (const poly of polygons) {
+/** A polygon's own pixels on `g`, averaged: the sticker's colour as the still draws it, lit as it is. */
+function meanInside(g, poly, w, h) {
+  const xs = poly.map(([x]) => x); const ys = poly.map(([, y]) => y);
+  const x0 = Math.max(0, Math.floor(Math.min(...xs))); const y0 = Math.max(0, Math.floor(Math.min(...ys)));
+  const x1 = Math.min(w, Math.ceil(Math.max(...xs))); const y1 = Math.min(h, Math.ceil(Math.max(...ys)));
+  if (x1 <= x0 || y1 <= y0) throw new Error('case-photo: a marked sticker with no pixels on the still');
+  const px = g.getImageData(x0, y0, x1 - x0, y1 - y0).data;
+  const path = new Path2D();
+  poly.forEach(([x, y], i) => (i ? path.lineTo(x, y) : path.moveTo(x, y)));
+  path.closePath();
+  const sum = [0, 0, 0]; let n = 0;
+  for (let y = y0; y < y1; y += 1) {
+    for (let x = x0; x < x1; x += 1) {
+      const i = ((y - y0) * (x1 - x0) + (x - x0)) * 4;
+      if (px[i + 3] === 0 || !g.isPointInPath(path, x + 0.5, y + 0.5)) continue;
+      sum[0] += px[i]; sum[1] += px[i + 1]; sum[2] += px[i + 2]; n += 1;
+    }
+  }
+  if (!n) throw new Error('case-photo: a marked sticker with no pixels on the still');
+  return sum.map((v) => v / n);
+}
+
+/** Stroke each polygon INSIDE its own edge, `OUTLINE_PER_STICKER` to a sticker's width, in the ink or the ground —
+ *  whichever contrasts more with that sticker as the still draws it (`markInk`, E14). */
+function strokeInside(g, polygons, inks) {
+  const w = g.canvas.width; const h = g.canvas.height;
+  // Every sticker's colour read BEFORE any band is drawn: a band never decides its neighbour's.
+  const chosen = polygons.map((poly) => inks.css[markInk(meanInside(g, poly, w, h), inks)]);
+  for (const [k, poly] of polygons.entries()) {
     const area = Math.abs(poly.reduce((a, [x, y], i) => {
       const [nx, ny] = poly[(i + 1) % poly.length];
       return a + x * ny - nx * y;
@@ -182,7 +257,7 @@ function strokeInside(g, polygons, ink) {
     g.clip(path);
     g.lineWidth = (2 * Math.sqrt(area)) / OUTLINE_PER_STICKER;
     g.lineJoin = 'round';
-    g.strokeStyle = ink;
+    g.strokeStyle = chosen[k];
     g.stroke(path);
     g.restore();
   }
@@ -314,14 +389,13 @@ export function casePhotographer({ host, signal, box = PHOTO_BOX }) {
 
   const lookKey = () => `${look}|${box.w}x${box.h}|${Math.min(devicePixelRatio, 2)}`;
 
-  /** The ink colour the marking is drawn in: the theme's own, read where the library is drawn. */
+  /** The two colours a mark is chosen between: the theme's own, read where the library is drawn. */
   function inkNow() {
-    const ink = host ? getComputedStyle(host).getPropertyValue('--ink').trim() : '';
-    if (!ink) throw new Error('case-photo: no ink colour (--ink) to mark the moved pieces with');
-    return ink;
+    if (!host) throw new Error('case-photo: no ink colour (--ink) to mark the moved pieces with');
+    return inksAt(host);
   }
 
-  async function shoot(attrs, ink) {
+  async function shoot(attrs, inks) {
     cube.clock = PIN;
     set(attrs);
     unframePulse();
@@ -338,7 +412,7 @@ export function casePhotographer({ host, signal, box = PHOTO_BOX }) {
     const f = frameOf(g, work.width, work.height);
     if (!f) throw new Error('case-photo: the renderer painted nothing');
     const lit = litOutlines(cube, work);
-    strokeInside(g, lit, ink);
+    strokeInside(g, lit, inks);
     frames.set(lookKey(), { x: f.x / work.width, y: f.y / work.height, w: f.w / work.width, h: f.h / work.height });
     const still = document.createElement('canvas');
     still.width = f.w;
@@ -380,7 +454,7 @@ export function casePhotographer({ host, signal, box = PHOTO_BOX }) {
       if (signal?.aborted || !borrow()) return Promise.resolve(null);
       let ink;
       try { ink = inkNow(); } catch (err) { return Promise.reject(err); }
-      const key = `${lookKey()}|${ink}|${attrs.orientation}|${attrs.facelets}|${attrs.highlight}`;
+      const key = `${lookKey()}|${ink.ink}|${ink.ground}|${attrs.orientation}|${attrs.facelets}|${attrs.highlight}`;
       const kept = cache.get(key);
       if (kept) { casePhotoCounts.cached += 1; return kept; }
       const taken = new Promise((resolve, reject) => { queue.push({ attrs, ink, resolve, reject }); });

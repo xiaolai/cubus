@@ -150,6 +150,10 @@
           animation-iteration-count: 1 !important;
           transition-duration: .001ms !important;
         }
+        /* Practice's off turn is not shortened but GONE (E14): the rule above would leave a 0.001 ms shake that still
+           starts and ends. Its outline and its sound say the same. Important, as the block's other rules are: the shake is
+           declared further down the sheet. */
+        .chip-m.off { animation: none !important; }
       }
 
       /* ---- window + title bar --------------------------------------------- */
@@ -733,7 +737,8 @@
       .rail-item { display: grid; grid-template-columns: 52px minmax(0, 1fr); grid-template-rows: auto auto; column-gap: 8px; align-items: center;
         min-height: 44px; padding: 6px; text-align: left; border-radius: var(--r-5); border: 1px solid transparent; }
       .rail-item:hover { background: var(--panel-sunk); }
-      .rail-item.on { border-color: var(--line-strong); background: var(--panel); }
+      /* The stage you are at is a STATE, so its mark clears 3:1 (E14): the ink, as every "current" mark in the app is. */
+      .rail-item.on { border-color: var(--ink); background: var(--panel); }
       .rail-item .pic { grid-row: 1 / span 2; width: 52px; height: 40px; display: flex; align-items: center; justify-content: center; }
       :is(.rail-item, .sec-head) .pic svg { max-width: 100%; max-height: 100%; height: auto; }
       .rail-item .nm { min-width: 0; font-size: var(--fs-caption); font-weight: 600; color: var(--ink-2); line-height: 1.25; overflow-wrap: anywhere; }
@@ -765,8 +770,10 @@
       /* "In the fingers" as a picture (plan §4.2): segments in the groove, the streak lit in the accent, all of it
          green with a tick at N. Fills carry the meaning, so fill tokens; no text in it. */
       .ring { display: block; flex: none; }
-      .ring .seg { fill: none; stroke: var(--track); stroke-width: 3.2; }
-      .ring .seg.on { stroke: var(--accent); }
+      /* Both strokes clear 3:1 on the tile and the page (E14), so lit and unlit cannot be told apart by luminance — the
+         unlit is a thin --ink-4 line and the lit a thick accent one, and the WIDTH says which. --track read 1.32–1.52. */
+      .ring .seg { fill: none; stroke: var(--ink-4); stroke-width: 1.2; }
+      .ring .seg.on { stroke: var(--accent); stroke-width: 3.2; }
       .ring.done .seg { stroke: var(--ok); }
       .ring .disc { fill: var(--ok); }
       .ring .tick { fill: none; stroke: var(--on-ok); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
@@ -804,10 +811,12 @@
       .practice-score > .beads { margin-right: auto; }
       /* "In the fingers" as a picture (§5.3): fills carry the meaning, so fill tokens; the words are for a screen reader. */
       .beads { display: flex; flex-wrap: wrap; gap: 6px; }
-      .bead { width: 28px; height: 28px; border-radius: var(--r-pill); border: 3px solid var(--track); }
+      /* An empty bead is how many are still to light: --ink-4, 3:1 and more on the page (E14); --track read 1.32–1.52. */
+      .bead { width: 28px; height: 28px; border-radius: var(--r-pill); border: 3px solid var(--ink-4); }
       .bead.on { background: var(--accent); border-color: var(--accent); }
-      /* The bead a paused rep would have lit (E12.4): the row starts again from it. A dashed ring, nothing filled. */
-      .bead.paused { border-style: dashed; border-color: var(--warn); }
+      /* The bead a paused rep would have lit (E12.4): the row starts again from it. A dashed ring, nothing filled — a
+         warning that is a SHAPE, so --warn-ink (E14): --warn read 2.98:1 on the cream page. */
+      .bead.paused { border-style: dashed; border-color: var(--warn-ink); }
       .beads.done .bead { background: var(--ok); border-color: var(--ok); }
       .practice-clock { display: inline-flex; align-items: center; gap: 2px; color: var(--ink-3); }
       .practice-clock > .num { font-weight: 600; font-size: var(--fs-body-l); line-height: 1.2; }
@@ -832,6 +841,12 @@
          red, and one short shake as it is marked — which reduced motion stops with every other decoration. */
       .chip-m.off { border: 2px solid var(--err); color: var(--err-ink); animation: chip-off-shake calc(2 * var(--fade)) ease-out 1; }
       @keyframes chip-off-shake { 0%, 100% { translate: 0; } 25% { translate: -3px; } 50% { translate: 3px; } 75% { translate: -2px; } }
+      /* A moved sticker's mark is drawn in the ink or the ground, chosen per sticker (E14, outlineMoved): the token
+         itself, so a picture follows the theme it is shown in. */
+      svg rect.moved[data-mark="ink"] { stroke: var(--ink); }
+      svg rect.moved[data-mark="ground"] { stroke: var(--panel); }
+      /* A card tool that says its job in a word (E14): no icon in the app's set says it without meaning something else. */
+      .card-tools > button.text-tool { width: auto; padding: 0 8px; font-size: var(--fs-body-s); font-weight: 600; }
       /* A clean rep's own time for its part, beside the trigger's name (§5.4). */
       .walk-sec-t { font-weight: 400; }
       /* The cube screen's moves: a little room above and below them (the portrait walk keeps only the top, E12.6). */
@@ -1130,7 +1145,8 @@
       .id-ask > button.sw:hover { transform: scale(1.08); }
       /* The colour BOTH sides are reading as — the one thing measured about this capture, marked
          so the person can see whether it agrees with the cube in their hand. */
-      .id-ask > button.sw.claimed > i { box-shadow: inset 0 0 0 1px var(--sticker-edge), 0 0 0 2px var(--warn); }
+      /* A warning that is a SHAPE takes --warn-ink (E14): --warn reads 2.98:1 on the cream page this ask sits on. */
+      .id-ask > button.sw.claimed > i { box-shadow: inset 0 0 0 1px var(--sticker-edge), 0 0 0 2px var(--warn-ink); }
       .scan-face.done .tgrid > .cell { opacity: 1; }
       .scan-face.done .lbl { color: var(--ok-ink); }
       /* The side the scanner is waiting to be shown again, to settle a reading it cannot settle

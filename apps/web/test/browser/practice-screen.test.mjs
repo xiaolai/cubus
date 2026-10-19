@@ -1537,18 +1537,22 @@ test('the book shows the flat case picture with its moved pieces outlined — on
       // The picture the book's gate measures (test/browser/case-photos.test.mjs) is the one it draws, outline and all.
       const want = await page.evaluate(async (x) => {
         const { bookPicture } = await import('/lib/screens/practice/library-view.js');
+        const { inksAt } = await import('/lib/case-photo.js');
         const { settings } = await import('/lib/app-settings.js');
         const cat = await window.__p.rows();
         const row = cat.rows[x];
         const box = document.createElement('div');
-        box.innerHTML = bookPicture(row, cat.sets[row.set].region, { palette: settings.palette, scheme: settings.scheme });
+        // Its marks chosen in the theme the page is in (E14), read where the page is drawn.
+        const inks = inksAt(document.querySelector('.practice-page'));
+        box.innerHTML = bookPicture(row, cat.sets[row.set].region, { palette: settings.palette, scheme: settings.scheme, inks });
         return box.innerHTML;
       }, id);
       assert.equal(pic.html, want, `${id}: the book draws another picture than bookPicture`);
       assert.equal(pic.svg, 1, `${id}: the book draws no flat picture`);
       assert.equal(pic.img, 0, `${id}: the book shows a photograph`);
       assert.ok(pic.moved > 0, `${id}: the book's picture marks no moved piece`);
-      assert.equal(pic.stroke, 'currentColor', `${id}: the mark is not in the ink colour`);
+      // The mark names one of the two tokens it was chosen between (E14), and the stylesheet strokes it in that token.
+      assert.equal(pic.stroke, 'currentColor', `${id}: the mark's stroke is not the token-following default`);
       await page.keyboard.press('Escape');
       await page.waitForFunction(() => document.querySelector('#practiceInfo').hidden, null, { timeout: LIVENESS_MS });
     }

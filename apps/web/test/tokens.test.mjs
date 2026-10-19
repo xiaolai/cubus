@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { existsSync, readFileSync } from 'node:fs';
 
-import { readAppSource } from './app-source.mjs';
+import { APP_SOURCES, LIBRARY_SOURCES, readAppSource } from './app-source.mjs';
 
 const read = (p) => readFileSync(new URL(p, import.meta.url), 'utf8');
 const css = read('../tokens.css');
@@ -308,8 +308,17 @@ test('ink on a saturated fill clears the floor for what it carries', () => {
 // --warn is deliberately absent: since the ink/fill split it is used at exactly one place, the
 // battery meter's bar below 40%, which sits inside a bordered box with the percentage printed
 // beside it — a graphic whose information is available in text, which 1.4.11 exempts. Every
-// warning that is a SHAPE (the unverified badge's border, the anchor-anyway button's) uses
-// --warn-ink, which clears the text floor above.
+// warning that is a SHAPE (the unverified badge's border, the anchor-anyway button's, Practice's
+// paused bead, the scan's claimed swatch's ring) uses --warn-ink, which clears the text floor
+// above. The last two used --warn until 2026-10-20 (plan E14): 2.98:1 on the cream page.
+// The comment above, held: --warn's ONE use is the battery bar. A warning drawn as a shape anywhere else takes --warn-ink.
+test('the --warn fill is used in exactly one place, the battery bar, and every other warning shape is --warn-ink', () => {
+  const files = ['index.html', ...APP_SOURCES, ...LIBRARY_SOURCES];
+  assert.ok(files.length > 50, `precondition: only ${files.length} sources read`);
+  const uses = files.flatMap((f) => [...read(`../${f}`).matchAll(/var\(--warn\)/g)].map(() => f));
+  assert.deepEqual(uses, ['lib/screens/settings/smart-cube.js'], 'the --warn fill where a warning shape needs --warn-ink');
+});
+
 test('every status fill clears the 3:1 a meaningful graphic needs', () => {
   const failures = [];
   for (const [theme, block] of THEMES) {

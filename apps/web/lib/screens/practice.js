@@ -44,7 +44,7 @@ import { stateFrom } from '../script-view.js';
 import { holdSentence, holdSpec, sameHold } from '../solving-hold.js';
 import { library } from '../drill/library-client.js';
 import { caseOf } from '../drill/case-of.js';
-import { casePhotographer, photoAttrs } from '../case-photo.js';
+import { casePhotographer, inksAt, photoAttrs } from '../case-photo.js';
 import { STATUS, createDrillEngine } from '../drill/engine.js';
 import { PracticeRecordError, fingersOf, openPracticeRecord, statsOf, watchReps } from '../drill/record.js';
 import { indexedDbStore } from '../drill/record-store.js';
@@ -126,6 +126,17 @@ const roundOf = (record, ids) => record.read()
 
 // ---- the library ----------------------------------------------------------------------------------------
 
+/**
+ * A marked picture's marks are chosen in the theme it is DRAWN in (E14), so a new theme draws them again. Settings
+ * re-renders the screen it changes the theme on; Auto follows the system's light and dark with no render at all
+ * (`applyTheme` leaves `data-theme` off), so a switch there is heard here — or Night would show White's choices.
+ */
+function onSystemTheme(redraw, signal) {
+  globalThis.matchMedia?.('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    if (!document.documentElement.hasAttribute('data-theme')) redraw();
+  }, { signal });
+}
+
 /** How far below the body's view a grid is drawn before it is reached (dev-docs/practice-redesign-plan.md §4.4). */
 const DRAW_AHEAD_PX = 200;
 
@@ -172,9 +183,11 @@ function libraryScreen() {
 function mountLibrary({ root, box, list, catalogue, signal }) {
   const rail = $('#practiceRail', root);
   const said = $('#practiceLibrarySay', root);
-  const look = { palette: settings.palette, scheme: settings.scheme };
+  // The mark's two inks are read where the tiles are drawn, in the theme they are drawn in (E14).
+  const look = { palette: settings.palette, scheme: settings.scheme, inks: inksAt(root) };
   const n = fingersTarget(settings.fingersN);
   const stale = () => signal?.aborted;
+  onSystemTheme(() => { if (!stale()) renderScreen(); }, signal);
 
   // ---- what the library says: a save that did not land, a record that could not be read, a choice not kept ------
   const trouble = { read: null, kept: null };
@@ -1310,6 +1323,12 @@ function mountPage({ root, page, catalogue, signal, stale, mix }) {
   };
   /** The phase a set is taught in, by name — the stage of the quiet line — or null where no method names one. */
   const stageOf = (setId) => catalogue.groups.flatMap((g) => g.phases).find((p) => p.sets.includes(setId))?.phase ?? null;
+  // The flat picture with its moved pieces marked, outlined for the book's size (E13): the live cube beside it is the 3D
+  // view. Its marks are chosen in the theme shown now, and again when Auto's theme changes (E14).
+  const paintPicture = () => {
+    $('#practicePic', info.el).innerHTML = bookPicture(row, catalogue.sets[row.set].region, { palette: settings.palette, scheme: settings.scheme, inks: inksAt(root) });
+  };
+  onSystemTheme(() => { if (row && !stale()) paintPicture(); }, signal);
   const paintCase = () => {
     const set = catalogue.sets[row.set];
     const setName = t(set?.name ?? row.set);
@@ -1323,8 +1342,7 @@ function mountPage({ root, page, catalogue, signal, stale, mix }) {
     ].filter(Boolean).join(' · ');
     // Behind the book: its picture, then what the algorithm is FOR, what this one does, and how to hold it.
     const purpose = purposeOf(row, set);
-    // The flat picture with its moved pieces marked, outlined for the book's size (E13): the live cube beside it is the 3D view.
-    $('#practicePic', info.el).innerHTML = bookPicture(row, set.region, { palette: settings.palette, scheme: settings.scheme });
+    paintPicture();
     $('#practiceName', info.el).innerHTML = `<b>${escHtml(rowName(row))}</b> · ${escHtml(setName)}${stage ? ` · ${escHtml(stage)}` : ''}`;
     $('#practiceAbout', info.el).innerHTML = [
       purpose ? `<p class="practice-purpose">${escHtml(purpose)}</p>` : '',

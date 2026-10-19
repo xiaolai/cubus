@@ -2245,6 +2245,9 @@ const measurePractice = (page) =>
       lineLines: shown(line) ? Math.round(line.getBoundingClientRect().height / lineH) : 0,
       beads: [...document.querySelectorAll('#practiceFingers .bead')].map((b) => rect(b)),
       next: rect(next), nextShown: shown(next), nextIn: Boolean(next.closest('.practice-page > .primary > .card-tools')),
+      // The cube card's tools as drawn (E14: two of them are words now): each box, and whether its words fit inside it.
+      tools: [...document.querySelectorAll('.practice-page > .primary > .card-tools > button')].filter(shown)
+        .map((b) => ({ id: b.id, box: rect(b), clipped: b.scrollWidth > b.clientWidth + 0.5 || b.scrollHeight > b.clientHeight + 0.5 })),
       // The modes' pills WI-8 took out (E11.2), anywhere on the screen or behind the book.
       modesAnywhere: Boolean(document.querySelector('.practice-modes, #practiceBlocked, #practiceMixed')),
       sayDrawn: sayBox.width > 1 || sayBox.height > 1 || getComputedStyle(say).clipPath === 'none',
@@ -2461,6 +2464,15 @@ for (const fixture of FIXTURES) {
       const mixedRun = await mixedMid();
       practicePageCommon(mixedRun, `mixed (${mixedId}), mid-way`);
       assert.ok(mixedRun.nextShown && inside(mixedRun.next, mixedRun.primary), `mixed (${mixedId}): the way on is not on the cube card`);
+      // E14: the way back ("All") and the way on ("Next") are words. With every tool drawn — mixing — the row holds them
+      // all: one line, none over another, each inside the cube card, no word cut inside its button.
+      assert.deepEqual(mixedRun.tools.map((x) => x.id), ['practiceBack', 'practiceBook', 'speedBtn', 'practiceNext'], `mixed (${mixedId}): the cube card's tools`);
+      assert.equal(new Set(mixedRun.tools.map((x) => Math.round(x.box.top) + 0)).size, 1, `mixed (${mixedId}): the cube card's tools wrap`);
+      for (const [i, x] of mixedRun.tools.entries()) {
+        assert.ok(inside(x.box, mixedRun.primary), `mixed (${mixedId}): ${x.id} ${JSON.stringify(x.box)} is not inside the cube card`);
+        assert.equal(x.clipped, false, `mixed (${mixedId}): ${x.id}'s words are cut inside it`);
+        for (const y of mixedRun.tools.slice(i + 1)) assert.ok(!overlaps(x.box, y.box), `mixed (${mixedId}): ${x.id} and ${y.id} overlap`);
+      }
       await page.click('#practiceBack');
       await libraryShowing(page, largest);
       await page.evaluate((x) => document.querySelector(`[data-alg="${x}"]`).click(), mixedId);

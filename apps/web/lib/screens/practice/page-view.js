@@ -169,14 +169,17 @@ export const orderWords = (order) => (Number.isInteger(order) && order > 1
  */
 export function pageHtml(esc, icon) {
   const tool = (id, label, ico, extra = '') => `<button id="${id}" type="button" title="${esc(t(label))}" aria-label="${esc(t(label))}"${extra}>${ico}</button>`;
+  // A tool that says its job in a word (E14): the transport's chevrons are a move back and a move on, so the way to the
+  // library and the way on to the next algorithm cannot be chevrons too. The word is in the name, as WCAG 2.5.3 asks.
+  const word = (id, label, text, extra = '') => `<button id="${id}" class="text-tool" type="button" title="${esc(t(label))}" aria-label="${esc(t(label))}"${extra}>${esc(t(text))}</button>`;
   const step = (id, label, ico, primary = false) => `<button class="tbtn${primary ? ' primary' : ''}" id="${id}" type="button" title="${esc(t(label))}" aria-label="${esc(t(label))}" disabled>${ico}</button>`;
   return `<div class="cols walking practice-page" data-composition="practice">
   <div class="card primary" style="display:flex;flex-direction:column;align-items:center;position:relative">
     <div class="card-tools">
-      ${tool('practiceBack', 'All algorithms', icon('chevron-left', 20))}
+      ${word('practiceBack', 'All algorithms', 'All')}
       ${tool('practiceBook', 'About this algorithm', icon('book', 20), ' disabled')}
       ${tool('speedBtn', 'Animation speed', icon('gauge', 20), ' disabled')}
-      ${tool('practiceNext', 'Next algorithm', icon('chevron-right', 20), ' hidden disabled')}
+      ${word('practiceNext', 'Next algorithm', 'Next', ' hidden disabled')}
     </div>
     <div style="flex:1;min-height:0;width:100%"><div class="cube-slot" id="practiceCube" style="height:100%"></div></div>
   </div>

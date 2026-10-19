@@ -19,6 +19,7 @@ import { CORNERS, EDGES } from '../lib/cube-pieces.js';
 import { TOP_FREE, caseOf, movedPieces } from '../lib/drill/case-of.js';
 import { catalogueOf } from '../lib/drill/library-client.js';
 import { casePicture, outlineMoved } from '../lib/screens/practice/library-view.js';
+import { THEME_INKS } from './fixtures/theme-inks.mjs';
 import { holdSpec } from '../lib/solving-hold.js';
 
 const catalogue = await catalogueOf(lib);
@@ -118,7 +119,7 @@ test('the outline marks exactly the moved pieces\' drawn stickers, and recolours
       const plain = casePicture(row, LOOK);
       const { viewed } = movedPieces(row, regionOf(row));
       const before = rects(plain);
-      const after = rects(outlineMoved(plain, viewed.flat()));
+      const after = rects(outlineMoved(plain, viewed.flat(), { inks: THEME_INKS.white }));
       assert.equal(after.length, before.length, `${row.id}: the outline added or lost stickers`);
       const drawn = new Set(before.map((r) => Number(r.getAttribute('data-facelet'))));
       const want = movedFromFacelets(row).flatMap((p) => p.viewed).filter((f) => drawn.has(f)).sort((a, b) => a - b);
@@ -128,8 +129,14 @@ test('the outline marks exactly the moved pieces\' drawn stickers, and recolours
         const a = after[i];
         assert.equal(a.getAttribute('data-facelet'), r.getAttribute('data-facelet'));
         // Never greyed, never recoloured (AGENTS.md §2): every fill and its opacity as the bare picture has them.
-        for (const k of ['fill', 'fill-opacity', 'style', 'x', 'y', 'width', 'height']) {
+        for (const k of ['fill', 'fill-opacity', 'style']) {
           assert.equal(a.getAttribute(k), r.getAttribute(k), `${row.id}: sticker ${r.getAttribute('data-facelet')} changed its ${k}`);
+        }
+        // Never resized: a moved sticker's band lies INSIDE its edge (E14), so the stroke's outer edge is the sticker's.
+        const half = a.classList.contains('moved') ? Number(a.getAttribute('stroke-width')) / 2 : 0;
+        for (const [k, sign] of [['x', -1], ['y', -1], ['width', 2], ['height', 2]]) {
+          const outer = Number(a.getAttribute(k)) + sign * half;
+          assert.ok(Math.abs(outer - Number(r.getAttribute(k))) <= 0.011, `${row.id}: sticker ${r.getAttribute('data-facelet')} changed its ${k}`);
         }
         if (!a.classList.contains('moved')) assert.equal(a.outerHTML, r.outerHTML, `${row.id}: an unmoved sticker changed`);
       });

@@ -99,7 +99,10 @@ test('the tempo numbers live in ONE module, and no screen keeps a copy', () => {
   // files that no longer exist, and would have said nothing about a fourth that started drawing one.
   // A number is matched whole, so `0.12` is not `0.1`. `sound.js` is the one exemption — `0.1` is a note's
   // start in seconds there — and it holds only while the module touches no cube at all.
-  const EXEMPT = { 'lib/sound.js': 'a note starts 0.1 s in; nothing in it reaches a cube' };
+  const EXEMPT = {
+    'lib/sound.js': 'a note starts 0.1 s in; nothing in it reaches a cube',
+    'lib/contrast.js': 'its 0.05 is WCAG\'s flare term in a contrast ratio; nothing in it reaches a cube',
+  };
   const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   const spelled = (src, tempo) => new RegExp(`(?<![\\d.])${String(tempo).replace('.', '\\.')}(?!\\d)`).test(src);
   const suspects = [...APP_SOURCES, ...LIBRARY_SOURCES].filter((rel) => rel !== owner);
