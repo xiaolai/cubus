@@ -22,7 +22,7 @@ import { lcg } from '../fixtures/seeded-scrambles.mjs';
 import { toWorld } from './drawn-cube.mjs';
 import { LIVENESS_MS, startBrowserFixture } from './harness.mjs';
 import {
-  AXIS, MAC, PAST_WINDOW_MS, after_, axesNear, feedRep, mixedOn, openPractice, randomStart, recordOf, reportsPerToken, settle,
+  AXIS, MAC, PAST_WINDOW_MS, after_, axesNear, feedRep, mixStage, openPractice, randomStart, recordOf, reportsPerToken, settle, stageToMix,
   show,
 } from './practice-page.mjs';
 
@@ -647,12 +647,10 @@ test('part way through a half turn or a slice the cube on screen is the cube as 
 test('a rep that was not saved stays said as mixed practice moves on — until a rep is saved', async () => {
   const { page, context, errors, logged } = await openPractice(fixture);
   try {
-    const catalogue = await page.evaluate(() => window.__p.rows());
-    const set = Object.values(catalogue.sets).find((s) => s.ids.length >= 3 && s.ids.length <= 6);
-    assert.ok(set, 'no set of three to six algorithms');
+    // A STAGE, as mixed practice is started from the library (D2, WI-8).
+    const set = await stageToMix(page);
     const rnd = lcg(221);
-    await show(page, set.ids[0]);
-    await mixedOn(page);
+    await mixStage(page, set.i);
     // E11.4: the notice is ON SCREEN — drawn, inside the stage, and never only behind the book.
     const notice = () => page.evaluate(() => {
       const n = document.querySelector('#practiceRecordSay');
@@ -695,12 +693,10 @@ test('a rep that was not saved stays said as mixed practice moves on — until a
 test('in mixed practice, starting over as a rep ends keeps the algorithm — by Escape, by Next, and by the cube\'s own gesture', async () => {
   const { page, context, errors } = await openPractice(fixture);
   try {
-    const catalogue = await page.evaluate(() => window.__p.rows());
-    const set = Object.values(catalogue.sets).find((x) => x.ids.length >= 3 && x.ids.length <= 6);
-    assert.ok(set, 'precondition: a set of three to six algorithms');
+    // A STAGE, as mixed practice is started from the library (D2, WI-8).
+    const set = await stageToMix(page);
     const rnd = lcg(151);
-    await show(page, set.ids[0]);
-    await mixedOn(page);
+    await mixStage(page, set.i);
     // The rep's last report and then, in the SAME task — before the advance its `done` queued can run — a start over.
     for (const how of ['escape', 'gesture', 'next']) {
       const was = await page.evaluate(() => window.__p.data().alg);
@@ -1685,13 +1681,11 @@ test('a rep reaches the figures only once its save has landed — and nothing a 
 test('mixed practice steps on inside a round without the record — and starts the next round only once the reps it orders by are saved', async () => {
   const { page, context, errors } = await openPractice(fixture);
   try {
-    const catalogue = await page.evaluate(() => window.__p.rows());
-    const set = Object.values(catalogue.sets).find((x) => x.ids.length >= 3 && x.ids.length <= 6);
-    assert.ok(set, 'precondition: a set of three to six algorithms');
+    // A STAGE, as mixed practice is started from the library (D2, WI-8).
+    const set = await stageToMix(page);
     const n = set.ids.length;
     const rnd = lcg(403);
-    await show(page, set.ids[0]);
-    await mixedOn(page);
+    await mixStage(page, set.i);
     await settle(page);
     const rep = async () => {
       const chips = await page.evaluate(() => window.__p.chips());
@@ -1741,40 +1735,46 @@ test('mixed practice steps on inside a round without the record — and starts t
   }
 });
 
-test('a mixed-practice order still being read is dropped by a start over or a new attempt — it never changes the algorithm under a rep', async () => {
+test('a stage\'s mixed order still being read is dropped when another choice is made first — a tile, or another stage\'s button', async () => {
   const { page, context, errors } = await openPractice(fixture);
   try {
-    const catalogue = await page.evaluate(() => window.__p.rows());
-    const set = Object.values(catalogue.sets).find((x) => x.ids.length >= 3 && x.ids.length <= 6);
-    assert.ok(set, 'precondition: a set of three to six algorithms');
-    const rnd = lcg(404);
-    const practised = set.ids[0];
-    await show(page, practised);
-    const chips = await page.evaluate(() => window.__p.chips());
-    const reps = () => reportsPerToken(chips.join(' '), ORIENTATIONS[0], rnd).flat();
-    // One rep, so this algorithm comes LAST in any order the record gives: an order that lands always changes it.
-    assert.equal((await feedRep(page, randomStart(rnd), reps())).at(-1), 1, 'precondition: a rep');
-    await settle(page);
-    for (const how of ['start over', 'a new attempt']) {
-      // The record held, so the order Mixed asks for waits — and meanwhile the child starts over, or starts a rep.
-      await page.evaluate(() => window.__p.hold());
-      await page.click('#practiceMixed');
-      if (how === 'start over') await page.click('#practiceRestart');
-      // Turned from where the cube is — no new arrangement, which would be a start over of its own.
-      else await page.evaluate((qs) => { for (const q of qs) window.__p.move(q); }, reps().slice(0, 2));
-      await page.evaluate(() => window.__p.release());
-      // Held and let go once more: every read asked for before it has answered, and what it answered has been used.
-      await page.evaluate(() => window.__p.hold());
-      await page.evaluate(() => window.__p.release());
-      const got = await page.evaluate(() => ({
-        alg: window.__p.data().alg, status: window.__p.data().status,
-        pressed: document.querySelector('#practiceMixed').getAttribute('aria-pressed'),
-      }));
-      // What must NOT happen: the order lands and replaces the algorithm the child has started over on, or is turning.
-      assert.equal(got.alg, practised, `${how}: the mixed order replaced the algorithm with ${got.alg}`);
-      assert.equal(got.pressed, 'false', `${how}: a mixed choice made before it was taken up after it`);
-      if (how === 'a new attempt') assert.equal(got.status, 'running', 'the attempt did not go on');
-    }
+    const stage = await stageToMix(page);
+    const other = await page.evaluate(async (at) => {
+      const { libraryKey, stageIds } = await import('/lib/screens/practice/library-view.js');
+      const c = await window.__p.rows();
+      const g = c.groups.find((x) => libraryKey(x) === document.querySelector('.practice-screen').dataset.method);
+      const i = g.phases.findIndex((p, k) => k !== at && stageIds(c, p).length >= 2);
+      return { i, ids: stageIds(c, g.phases[i]) };
+    }, stage.i);
+    assert.ok(other.i >= 0, 'precondition: a second stage to mix');
+    const tile = stage.ids[0];
+    // The record held, so the order the stage's button asks for waits — and meanwhile the child presses a tile.
+    await page.evaluate(() => window.__p.hold());
+    await page.click(`[data-mix="${stage.i}"]`);
+    await page.evaluate((x) => document.querySelector(`[data-alg="${x}"]`).click(), tile);
+    await page.waitForFunction((x) => window.__p.ready(x), tile, { timeout: LIVENESS_MS });
+    await page.evaluate(() => window.__p.release());
+    // Held and let go once more: every read asked for before it has answered, and what it answered has been used.
+    await page.evaluate(() => window.__p.hold());
+    await page.evaluate(() => window.__p.release());
+    let got = await page.evaluate(() => ({ ...window.__p.data(), next: document.querySelector('#practiceNext').hidden }));
+    // What must NOT happen: the order lands and the page the tile opened turns into mixed practice, or moves.
+    assert.equal(got.alg, tile, `a tile: the mixed order replaced ${tile} with ${got.alg}`);
+    assert.equal(got.mixed, '0', 'a tile: the page the tile opened is mixing');
+    assert.equal(got.next, true, 'a tile: the way on is drawn on one algorithm');
+    // Two stages' buttons: the second press is the choice, and the first's order never lands after it.
+    await page.click('#practiceBack');
+    await page.waitForSelector('.practice-screen[data-ready="1"]', { timeout: LIVENESS_MS });
+    await page.evaluate(() => window.__p.hold());
+    await page.click(`[data-mix="${stage.i}"]`);
+    await page.click(`[data-mix="${other.i}"]`);
+    await page.evaluate(() => window.__p.release());
+    await page.waitForFunction(() => document.querySelector('.practice-page')?.dataset.ready === '1', null, { timeout: LIVENESS_MS });
+    await page.evaluate(() => window.__p.hold());
+    await page.evaluate(() => window.__p.release());
+    got = await page.evaluate(() => window.__p.data());
+    assert.equal(got.mixed, '1', 'another stage: the page is not mixing');
+    assert.ok(other.ids.includes(got.alg), `another stage: the page opened on ${got.alg}, not on the stage pressed last`);
     assert.deepEqual(errors, []);
   } finally {
     await context.close();
@@ -1784,12 +1784,10 @@ test('a mixed-practice order still being read is dropped by a start over or a ne
 test('the next round\'s order is dropped when a rep has begun while it was read — the step on never lands under a rep', async () => {
   const { page, context, errors } = await openPractice(fixture);
   try {
-    const catalogue = await page.evaluate(() => window.__p.rows());
-    const set = Object.values(catalogue.sets).find((x) => x.ids.length >= 3 && x.ids.length <= 6);
-    assert.ok(set, 'precondition: a set of three to six algorithms');
+    // A STAGE, as mixed practice is started from the library (D2, WI-8).
+    const set = await stageToMix(page);
     const rnd = lcg(405);
-    await show(page, set.ids[0]);
-    await mixedOn(page);
+    await mixStage(page, set.i);
     const repOf = (chips) => reportsPerToken(chips.join(' '), ORIENTATIONS[0], rnd).flat();
     // Every algorithm of the round but the last, each moving on as it is done.
     for (let k = 1; k < set.ids.length; k += 1) {
@@ -1860,12 +1858,10 @@ test('a rep whose save fails after its page has gone is said where the child is 
 test('a rep begun before the round\'s step on has run drops that step — the next round never lands under it', async () => {
   const { page, context, errors } = await openPractice(fixture);
   try {
-    const catalogue = await page.evaluate(() => window.__p.rows());
-    const set = Object.values(catalogue.sets).find((x) => x.ids.length >= 3 && x.ids.length <= 6);
-    assert.ok(set, 'precondition: a set of three to six algorithms');
+    // A STAGE, as mixed practice is started from the library (D2, WI-8).
+    const set = await stageToMix(page);
     const rnd = lcg(406);
-    await show(page, set.ids[0]);
-    await mixedOn(page);
+    await mixStage(page, set.i);
     const repOf = (chips) => reportsPerToken(chips.join(' '), ORIENTATIONS[0], rnd).flat();
     for (let k = 1; k < set.ids.length; k += 1) {
       const was = await page.evaluate(() => window.__p.data().alg);

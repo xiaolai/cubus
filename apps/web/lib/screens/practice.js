@@ -32,7 +32,7 @@ import { oneLineStrip } from '../scroll-strip.js';
 import { footBand } from '../foot-band.js';
 import { RECORD_SAYS } from '../drill/record-says.js';
 import { hooks } from '../screen-slots.js';
-import { openLibrary } from '../practice-link.js';
+import { openLibrary, openMixed } from '../practice-link.js';
 import { newCube } from '../cube-drawing.js';
 import { conn, cubeRefused } from '../live-session.js';
 import { reportedArrangement } from '../cube-reports.js';
@@ -109,6 +109,20 @@ const unsavedWords = (catalogue) => {
   const row = catalogue.rows[unsaved.id];
   return t('A rep of %1 was not saved: %2', row ? rowName(row) : unsaved.id, unsaved.message);
 };
+
+// ---- mixed practice: ONE way to order a round ------------------------------------------------------------
+
+/**
+ * A round of mixed practice over `ids` — every one once, weakest first (lib/drill/mix.js) — from a read of the WHOLE
+ * record, with a seed drawn for its ties. The one place a round is ordered: a library stage's button orders the first
+ * (D2, WI-8), the page every one after it. A record that cannot be read rejects, as `read()` does.
+ *
+ * @param {{ read: () => Promise<Map<string, ReadonlyArray<object>>> }} record
+ * @param {ReadonlyArray<string>} ids
+ * @returns {Promise<string[]>}
+ */
+const roundOf = (record, ids) => record.read()
+  .then((rec) => mixOrder(ids, rec, { seed: crypto.getRandomValues(new Uint32Array(1))[0] }));
 
 // ---- the library ----------------------------------------------------------------------------------------
 
@@ -231,6 +245,7 @@ function mountLibrary({ root, box, list, catalogue, signal }) {
 
   // ---- drawing --------------------------------------------------------------------------------------------------
   let group = null;
+  let mixing = null;    // the ticket of a stage's mixed press whose order is still being read, or null
   let near = null;      // the IntersectionObserver that draws a grid as it comes near the view
   let drawn = null;     // aborts what one method's drawing wired: its book menus and their listeners
   const strip = oneLineStrip(rail, { signal });
@@ -293,6 +308,7 @@ function mountLibrary({ root, box, list, catalogue, signal }) {
 
   /** One method, drawn: its rail, its stages with their grids empty, and a book menu per stage. */
   function draw() {
+    mixing = null;
     drawn?.abort();
     drawn = new AbortController();
     signal?.addEventListener('abort', () => drawn.abort(), { once: true });
@@ -399,6 +415,31 @@ function mountLibrary({ root, box, list, catalogue, signal }) {
     renderScreen();
   }, { signal });
 
+  // ---- mixed practice over a STAGE (D2, WI-8): the stage's button opens the page on its weakest row --------------
+  // The round is ordered from the record as it stands, so the press waits for a read. Until it answers, the press stays
+  // under its ticket: a later press of another stage takes it over, a new method drawn (`draw`) calls it off, and a tile
+  // pressed meanwhile renders a new screen, which this one's signal stands down — the order never lands on a choice the
+  // child has moved on from.
+  list.addEventListener('click', (e) => {
+    const button = e.target.closest?.('[data-mix]');
+    if (!button || !group) return;
+    const ids = stageIds(catalogue, group.phases[Number(button.dataset.mix)]);
+    const ticket = {};
+    mixing = ticket;
+    roundOf(record, ids).then((order) => {
+      if (mixing !== ticket || stale()) return;
+      mixing = null;
+      openMixed(ids, order);
+    }, (err) => {
+      if (!(err instanceof PracticeRecordError)) throw err;
+      if (mixing !== ticket || stale()) return;
+      mixing = null;
+      console.error('the practice record could not be read to order mixed practice', err);
+      trouble.read = t('Your practice record could not be read (%1), so mixed practice cannot put the weakest first.', err.code);
+      say();
+    });
+  }, { signal });
+
   draw();
   readRecord();
 }
@@ -442,7 +483,7 @@ function stillToTurn(identity, from, now) {
 
 /** The page's controls that need the catalogue: drawn disabled (`pageHtml`), live once `mountPage` has it. */
 const PAGE_CONTROLS = Object.freeze([
-  'practiceBook', 'speedBtn', 'practiceBlocked', 'practiceMixed', 'practiceNext', 'demoPrev', 'demoRepeat', 'demoNext', 'demoAll', 'practiceClock', 'practiceRestart',
+  'practiceBook', 'speedBtn', 'practiceNext', 'demoPrev', 'demoRepeat', 'demoNext', 'demoAll', 'practiceClock', 'practiceRestart',
 ]);
 
 /**
@@ -496,7 +537,11 @@ function pageScreen() {
         renderScreen();
         return;
       }
-      showRow = mountPage({ root, page, catalogue, signal, stale });
+      // A stage's mixed practice, taken ONCE (`openMixed` in lib/practice-link.js): a page rendered again later is one at a
+      // time, as every page before mixing was. Only a request for the row this page opens on is mixing's.
+      const mix = state.practiceMix?.order[0] === state.practiceAlg ? state.practiceMix : null;
+      state.practiceMix = null;
+      showRow = mountPage({ root, page, catalogue, signal, stale, mix });
       showRow(state.practiceAlg);
       page.dataset.ready = '1';
     },
@@ -504,7 +549,7 @@ function pageScreen() {
 }
 
 /** The page's whole life: the cube, the engine, the record, the demo and the stopwatch. Returns `show(id)`. */
-function mountPage({ root, page, catalogue, signal, stale }) {
+function mountPage({ root, page, catalogue, signal, stale, mix }) {
   const say = $('#practiceSay', root);
   const chipsBox = $('#practiceAlg', root);
   const time = $('#practiceTime', root);
@@ -541,12 +586,12 @@ function mountPage({ root, page, catalogue, signal, stale }) {
   let lastResult = null;
   let drawnKey = null;        // what the cube was last given, so a repaint does not reset it for nothing
   let drewFollowed = false;   // whether the cube shows a followed cube's picture rather than the case (`paint`)
-  let mixed = null;           // { order, at } while practising mixed
+  // { ids, order, at } while mixing over a stage (WI-8): its rows, this round's order, and where in it the page is.
+  let mixed = mix ? { ids: mix.ids, order: [...mix.order], at: 0 } : null;
   let advanceTicket = null;   // the mixed-practice step on a `done` queued, until it runs or a start over calls it off
-  let modeTicket = null;      // mixed practice asked for, until the record has ordered it or Blocked calls it off
   // What a mixed-practice order still being read was asked in. A start over, another row and the first turn of an
   // attempt each begin another (`newAttempt`): an order that lands after one of them would change the algorithm under
-  // the child's hands, so it is dropped — the click on Mixed, and the step into the next round, alike.
+  // the child's hands, so it is dropped.
   let attempt = 0;
   const newAttempt = () => { attempt += 1; };
   let watch = { t0: null, timer: null, laps: [] };
@@ -1122,36 +1167,17 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     <div id="practiceFigures"></div>
     <div id="practiceReps"></div>`;
 
-  /**
-   * THE MODES' ROW, ONE ROW IN TWO PLACES (E11.6): under the quiet line in landscape, behind the book in portrait,
-   * where the twin's height is the cube's. Which composition it is, the stylesheet's container query says
-   * (`--practice-modes` on the page) — asked of it, never a width measured here.
-   */
-  const modes = $('.practice-modes', root);
-  const placeModes = () => {
-    const inBook = getComputedStyle(page).getPropertyValue('--practice-modes').trim() === 'book';
-    if (inBook && modes.parentElement !== info.el) $('#practiceName', info.el).after(modes);
-    else if (!inBook && modes.parentElement === info.el) $('.practice-said', root).after(modes);
-    page.dataset.modes = inBook ? 'book' : 'twin';
-  };
-  placeModes();
-  window.addEventListener('resize', placeModes, { signal });
-
   // ---- the speed: the cube screen's own menu (lib/speed-menu.js); a cube in the hand sets the tempo aside --------
   const applyTempo = createSpeedMenu({ root, cube, signal, following: () => live(), place: placeMenuUnder });
 
-  // ---- one at a time, or mixed --------------------------------------------------------------------------
+  // ---- one at a time, or mixed over a stage (WI-8) ---------------------------------------------------------------
+  // Which it is was decided by the way in — a tile, or a stage's button — and the page says it by drawing the way on.
   const paintMode = () => {
-    for (const [id, on] of [['#practiceBlocked', !mixed], ['#practiceMixed', Boolean(mixed)]]) {
-      const b = $(id, root);
-      b.classList.toggle('on', on);
-      b.setAttribute('aria-pressed', String(on));
-    }
     $('#practiceNext', root).hidden = !mixed;
+    page.dataset.mixed = mixed ? '1' : '0';
   };
-  const seed = () => crypto.getRandomValues(new Uint32Array(1))[0];
-  /** A round's order, weakest first, from a read of the whole record — null, and said, when it cannot be read. */
-  const orderFor = (ids) => record.read().then((rec) => mixOrder(ids, rec, { seed: seed() }), (err) => {
+  /** The next round's order, weakest first (`roundOf`) — null, and said, when the record cannot be read. */
+  const orderFor = (ids) => roundOf(record, ids).catch((err) => {
     if (!(err instanceof PracticeRecordError)) throw err;
     if (!stale()) {
       logOnce(`its record could not be read for mixed practice (${err.code})`, err);
@@ -1180,28 +1206,14 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     advanceTicket = ticket;
     const round = mixed;
     const from = row.id;
-    orderFor(catalogue.sets[row.set].ids).then((next) => {
+    orderFor(round.ids).then((next) => {
       if (advanceTicket !== ticket || stale() || mixed !== round || attempt !== asked || turnsSinceArm > 0) return;
       advanceTicket = null;
       if (!next) return;
       // No algorithm twice in a row across two rounds either.
       if (next.length > 1 && next[0] === from) [next[0], next[1]] = [next[1], next[0]];
-      mixed = { order: next, at: 0 };
+      mixed = { ids: round.ids, order: next, at: 0 };
       show(next[0]);
-    });
-  };
-  $('#practiceBlocked', root).onclick = () => { modeTicket = null; mixed = null; paintMode(); };
-  $('#practiceMixed', root).onclick = () => {
-    const ticket = {};
-    modeTicket = ticket;
-    const asked = attempt;
-    orderFor(catalogue.sets[row.set].ids).then((order) => {
-      if (modeTicket !== ticket || stale() || attempt !== asked) return;
-      modeTicket = null;
-      if (!order) return;
-      mixed = { order, at: 0 };
-      paintMode();
-      if (order[0] !== row.id) show(order[0]);
     });
   };
   $('#practiceNext', root).onclick = () => advance();

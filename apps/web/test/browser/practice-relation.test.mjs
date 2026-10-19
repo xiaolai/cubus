@@ -21,8 +21,8 @@ import { GESTURE_TURNS } from '../../lib/drill/engine.js';
 import { lcg } from '../fixtures/seeded-scrambles.mjs';
 import { LIVENESS_MS, startBrowserFixture } from './harness.mjs';
 import {
-  AXIS, PAST_WINDOW_MS, STEP_MS, after_, axesNear, feedRep, inverse, mixedOn, openPractice as openOn, randomStart, recordOf,
-  reportsPerToken, settle, show,
+  AXIS, PAST_WINDOW_MS, STEP_MS, after_, axesNear, feedRep, inverse, mixStage, openPractice as openOn, randomStart, recordOf,
+  reportsPerToken, settle, show, stageToMix,
 } from './practice-page.mjs';
 
 let fixture;
@@ -433,15 +433,14 @@ test('a timed rep shows each named part\'s own time, first report of the part to
   }
 });
 
-// ---- WI-13 on the screen: mixed practice, weakest first, each algorithm once a round, none twice running ----
+// ---- WI-13 on the screen, over a STAGE (D2, WI-8): weakest first, each algorithm once a round, none twice running ----
 
-test('mixed practice goes through the whole set weakest first, each once a round, and never one twice in a row', async () => {
+test('mixed practice over a stage opens on its weakest, goes through every algorithm of the stage across its sets once a round, and never one twice in a row', async () => {
   const { page, context, errors } = await openPractice();
   try {
+    const stage = await stageToMix(page);
+    const n = stage.ids.length;
     const catalogue = await page.evaluate(() => window.__p.rows());
-    const set = Object.values(catalogue.sets).find((s) => s.ids.length >= 3 && s.ids.length <= 6);
-    assert.ok(set, 'no set of three to six algorithms');
-    const n = set.ids.length;
     const rnd = lcg(13);
     const rep = async (id) => {
       const chips = await page.evaluate(() => window.__p.chips());
@@ -456,32 +455,46 @@ test('mixed practice goes through the whole set weakest first, each once a round
       }, was, { timeout: LIVENESS_MS });
       return page.evaluate(() => window.__p.data().alg);
     };
-    // One clean rep of the set's first algorithm: it now has a record and no other has, so it is the one
-    // mixing must put LAST — an algorithm with nothing on record comes first (lib/drill/mix.js, step 1).
-    const practised = set.ids[0];
+    // One clean rep of the stage's first algorithm, opened from its tile: it now has a record and no other has, so it is
+    // the one mixing must put LAST — an algorithm with nothing on record comes first (lib/drill/mix.js, step 1).
+    const practised = stage.ids[0];
     await show(page, practised);
     await rep(practised);
-    await mixedOn(page);
+    await settle(page);
+    // The stage's button opens the page on the stage's WEAKEST, never on the algorithm the page was last on.
+    const first = await mixStage(page, stage.i);
+    assert.notEqual(first, practised, 'mixed practice opened on the one algorithm with a clean rep — not the weakest');
+    assert.ok(stage.ids.includes(first), `mixed practice opened on ${first}, outside the stage`);
     assert.equal(await page.evaluate(() => document.querySelector('#practiceNext').hidden), false, 'mixed shows no way to the next algorithm');
     // Each rep is filed, then the page moves on by itself; waiting for a DIFFERENT algorithm is the check that
     // none comes twice in a row, across the end of the round as well.
-    const seen = [await movedOn(practised)];
-    for (let i = 0; i < n; i++) {
+    // Two whole rounds and the first of a third: the first round the library ordered, the second the PAGE did.
+    const seen = [first];
+    for (let i = 0; i < 2 * n; i++) {
       await rep(seen.at(-1));
       seen.push(await movedOn(seen.at(-1)));
     }
     const round = seen.slice(0, n);
-    assert.deepEqual([...round].sort(), [...set.ids].sort(), `a round of ${set.id} was ${round.join(', ')}`);
+    assert.deepEqual([...round].sort(), [...stage.ids].sort(), `a round of the stage was ${round.join(', ')}`);
+    // The page's next round is over the STAGE too, never the set of the algorithm it is on.
+    const second = seen.slice(n, 2 * n);
+    assert.deepEqual([...second].sort(), [...stage.ids].sort(), `the page's next round was ${second.join(', ')}`);
+    // D2: the round is the STAGE's — every one of its sets is in it, not only the set the page was opened on.
+    assert.deepEqual([...new Set(round.map((id) => catalogue.rows[id].set))].sort(), [...stage.sets].sort(), 'a round left out a set of its stage');
     assert.equal(round.at(-1), practised, `the practised algorithm came at ${round.indexOf(practised) + 1} of ${n}, not last`);
-    // Every rep is on record under the algorithm it was made on: the first, then one each in the round.
+    // Every rep is on record under the algorithm it was made on: the first, then one each in each round.
     const record = await recordOf(page);
-    for (const id of set.ids) {
-      const want = id === practised ? 2 : 1;
+    for (const id of stage.ids) {
+      const want = id === practised ? 3 : 2;
       assert.equal((record.algs[id] ?? []).length, want, `${id}: ${(record.algs[id] ?? []).length} reps on record, not ${want}`);
     }
-    // One at a time again: the next rep stays on the algorithm it was made on.
-    await page.click('#practiceBlocked');
+    // One at a time again, as a person gets there: Back, and the algorithm's own tile. The next rep stays on it.
     const here = seen.at(-1);
+    await page.click('#practiceBack');
+    await page.waitForSelector('.practice-screen[data-ready="1"]', { timeout: LIVENESS_MS });
+    await page.evaluate((x) => document.querySelector(`[data-alg="${x}"]`).click(), here);
+    await page.waitForFunction((x) => window.__p.ready(x), here, { timeout: LIVENESS_MS });
+    assert.deepEqual(await page.evaluate(() => [window.__p.data().mixed, document.querySelector('#practiceNext').hidden]), ['0', true], 'a tile opened mixed practice');
     await rep(here);
     await page.evaluate((ms) => window.__p.wait(ms), PAST_WINDOW_MS);
     assert.equal(await page.evaluate(() => window.__p.data().alg), here, 'one at a time moved on after a rep');

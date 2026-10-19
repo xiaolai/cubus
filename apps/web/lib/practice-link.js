@@ -49,13 +49,32 @@ export function practiceIdOf(step) {
 
 /** Open the Practice screen on ledger row `id`. */
 export function openPractice(id) {
+  state.practiceMix = null;
   state.practiceAlg = id;
   shell.go('practice');
+}
+
+/**
+ * Open the Practice page MIXING over a library stage's rows (dev-docs/practice-redesign-plan.md D2, WI-8): on the first
+ * of `order` — the round the record ordered, weakest first (`mixOrder` in lib/drill/mix.js) — with every later round
+ * ordered over `ids` again. The page takes the request once, as it opens.
+ *
+ * @param {ReadonlyArray<string>} ids  the stage's rows
+ * @param {ReadonlyArray<string>} order  the first round: every one of `ids`, once
+ */
+export function openMixed(ids, order) {
+  if (!order.length || order.length !== ids.length || order.some((id) => !ids.includes(id))) {
+    throw new Error('practice-link: a mixed round is every row of its stage, once');
+  }
+  state.practiceMix = Object.freeze({ ids: Object.freeze([...ids]), order: Object.freeze([...order]) });
+  state.practiceAlg = order[0];
+  shell.renderScreen();
 }
 
 /** Back from a Practice page to its library (dev-docs/practice-redesign-plan.md E11.1): the way in and the way out
  *  are written here, in one place. */
 export function openLibrary() {
+  state.practiceMix = null;
   state.practiceAlg = null;
   shell.renderScreen();
 }

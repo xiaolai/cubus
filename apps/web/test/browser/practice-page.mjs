@@ -273,10 +273,40 @@ export async function recordOf(page) {
   return page.evaluate(() => window.__p.record());
 }
 
-/** Mixed practice turned on, once the record has ordered its first round. */
-export async function mixedOn(page) {
-  await page.click('#practiceMixed');
-  await page.waitForFunction(() => document.querySelector('#practiceMixed').getAttribute('aria-pressed') === 'true', null, { timeout: LIVENESS_MS });
+/** The library, ready: from a page by its Back (E11.1), as a person goes. */
+export async function toLibrary(page) {
+  if (await page.evaluate(() => Boolean(document.querySelector('.practice-page')))) await page.click('#practiceBack');
+  await page.waitForSelector('.practice-screen[data-ready="1"]', { timeout: LIVENESS_MS });
+}
+
+/**
+ * A stage of three to six algorithms over MORE THAN ONE SET, in the method the library opens on — mixed practice runs
+ * over a whole stage, never a set (D2) — as `{ i, ids, sets }`, `ids` in the library's order. Leaves the library open.
+ */
+export async function stageToMix(page) {
+  await toLibrary(page);
+  const stage = await page.evaluate(async () => {
+    const { libraryKey, stageIds } = await import('/lib/screens/practice/library-view.js');
+    const c = await window.__p.rows();
+    const key = document.querySelector('.practice-screen').dataset.method;
+    const g = c.groups.find((x) => libraryKey(x) === key);
+    const i = g.phases.findIndex((p) => p.sets.length > 1 && stageIds(c, p).length >= 3 && stageIds(c, p).length <= 6);
+    return i < 0 ? null : { i, ids: stageIds(c, g.phases[i]), sets: g.phases[i].sets };
+  });
+  if (!stage) throw new Error('precondition: no stage of three to six algorithms over more than one set');
+  return stage;
+}
+
+/** Mixed practice over stage `i`, started where it is started — the stage's button in the library (WI-8) — once the page
+ *  is open on the round's first algorithm. Answers that algorithm. */
+export async function mixStage(page, i) {
+  await toLibrary(page);
+  await page.click(`[data-mix="${i}"]`);
+  await page.waitForFunction(() => {
+    const d = document.querySelector('.practice-page')?.dataset;
+    return d?.ready === '1' && d.mixed === '1';
+  }, null, { timeout: LIVENESS_MS });
+  return page.evaluate(() => window.__p.data().alg);
 }
 
 /** Open row `id` on the page and return what it prints — read off the DOM, never off the ledger. */

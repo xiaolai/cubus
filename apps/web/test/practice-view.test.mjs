@@ -321,6 +321,22 @@ test('a set\'s name and purpose are said in the active language; a row\'s own se
 });
 
 
+test('every stage of every method carries its mixed practice button, and the button names its stage, not a set (D2, WI-8)', () => {
+  for (const { group, body } of drawn) {
+    group.phases.forEach((p, i) => {
+      const head = body.querySelector(`.stage-sec[data-sec="${i}"] > .sec-head`);
+      const mix = head.querySelector(`:scope > button.tbtn[data-mix="${i}"]`);
+      assert.ok(mix, `${libraryKey(group)} stage ${i}: no mixed practice button in its header`);
+      // The app's existing icon (plan §4.3), and a name that says what a press does: every row of the stage, weakest first.
+      assert.ok(mix.querySelector('[data-icon="repeat"]'), `${libraryKey(group)} stage ${i}: the button is not the repeat icon`);
+      assert.equal(mix.getAttribute('aria-label'), 'Practise this stage mixed, weakest first');
+      // One button per stage, and the stage's own: a stage of several sets has ONE, never one per set.
+      assert.equal(body.querySelectorAll(`[data-mix="${i}"]`).length, 1, `${libraryKey(group)} stage ${i}: more than one mixed button`);
+      isAbsent(body.querySelector(`.tiles [data-mix], .set-cap [data-mix]`), 'a mixed button for a set');
+    });
+  }
+});
+
 test('a history that could not be read is never said to be empty', () => {
   // `null` is the record that could not be read (audit round 2, rows 18 and 23): what is in it is unknown.
   const unknown = lastRepsHtml(null, esc);
@@ -602,16 +618,16 @@ test('the Settings stepper refuses to go below 3: "fewer" is disabled at 3, and 
 
 // ---- the page IS the cube player (dev-docs/practice-redesign-plan.md R3, §5.1–§5.3, E11; WI-5) -------------------
 
-/** The classes the page may use: the cube screen's walking composition (§5.2), the page's own additions (§5.3), the
- *  pill row E11 keeps for the modes, and the app's shared primitives. Anything else is a practice-only invention. */
+/** The classes the page may use: the cube screen's walking composition (§5.2), the page's own additions (§5.3), and
+ *  the app's shared primitives. Anything else is a practice-only invention. */
 const PAGE_CLASSES = new Set([
   // §5.2, the cube screen's own
   'cols', 'walking', 'card', 'primary', 'card-tools', 'cube-slot', 'aux', 'transport', 'tbtn', 'progress', 'done-mark',
   'aside', 'state-card', 'twin', 'tight', 'solution-card', 'sheet', 'list', 'walk-strip', 'follow-note',
   // §5.3, new and named
   'practice-page', 'beads', 'practice-clock', 'practice-line',
-  // E11: the modes' pill row, the twin's two stacked lines, and the score row the beads and clock share
-  'practice-twin', 'practice-said', 'practice-score', 'practice-modes',
+  // E11: the twin's two stacked lines, and the score row the beads and clock share (the modes' pill row left with WI-8)
+  'practice-twin', 'practice-said', 'practice-score',
   // E12.3: the record's notice on a row of its own (in the foot band in portrait), never in the follow-note's slot
   'practice-record-say',
   // shared primitives
@@ -631,7 +647,11 @@ test('the page is the cube player: the walking composition\'s classes, the named
   }
   // E11.1: the way back is the FIRST of the cube card's tools, and named.
   const tools = [...root.querySelectorAll('.card-tools > button')].map((b) => b.id);
-  assert.deepEqual(tools, ['practiceBack', 'practiceBook', 'speedBtn'], 'the cube card\'s tools');
+  assert.deepEqual(tools, ['practiceBack', 'practiceBook', 'speedBtn', 'practiceNext'], 'the cube card\'s tools');
+  // WI-8: the way on in mixed practice is a tool of the cube card, drawn only while mixing (the screen shows it).
+  const next = root.querySelector('#practiceNext');
+  assert.equal(next.getAttribute('aria-label'), 'Next algorithm');
+  assert.equal(next.hidden, true, 'the way on is drawn before anything is mixed');
   assert.equal(root.querySelector('#practiceBack').getAttribute('aria-label'), 'All algorithms');
   // The transport (E11.7, E11.8): the four step buttons, Start over as an icon that keeps its name, and the stopwatch
   // last. No step label — the bar carries the position, in words a screen reader hears.
@@ -647,16 +667,20 @@ test('the page is the cube player: the walking composition\'s classes, the named
   // The beads row holds no control: the same height with a cube and without (E11.8).
   isAbsent(root.querySelector('.practice-score button'), 'a control in the beads row');
   // The twin: beads and clock, then the line and the note in ONE slot, then the record's notice on a row of its own
-  // (E12.3 — the screen moves it into the foot band in portrait), then the modes (E11.2).
+  // (E12.3 — the screen moves it into the foot band in portrait). No modes' row: WI-8 took it out (E11.2, E11.6).
   const twin = root.querySelector('.twin');
   assert.deepEqual([...twin.children].filter((c) => !c.classList.contains('sr-only')).map((c) => c.className),
-    ['practice-score', 'practice-said', 'practice-record-say', 'wrap-row practice-modes']);
+    ['practice-score', 'practice-said', 'practice-record-say']);
   const said = twin.querySelector('.practice-said');
   assert.ok(said.querySelector(':scope > .practice-line') && said.querySelector(':scope > .follow-note#followNote'), 'the note does not share the quiet line\'s slot');
   // MUST NOT: the record's notice in the follow-note's slot, where the two stacked and took the cube's height (E12.3).
   isAbsent(said.querySelector('#practiceRecordSay'), 'the record\'s notice in the follow-note\'s slot');
   assert.equal(twin.querySelector(':scope > #practiceRecordSay')?.getAttribute('role'), 'status', 'the record\'s notice is not said as it changes');
-  for (const id of ['practiceBlocked', 'practiceMixed', 'practiceNext']) assert.ok(twin.querySelector(`.practice-modes #${id}`), `no ${id} in the modes row`);
+  // MUST NOT: the temporary pills, anywhere (WI-8: a tile opens one algorithm, the stage's button opens it mixed).
+  isAbsent(root.querySelector('.practice-modes, #practiceBlocked, #practiceMixed'), 'the modes\' pills');
+  // The page's Try again — for a catalogue that could not be read — is the follow-note's action, said where it is seen.
+  const retry = root.querySelector('#followNote > #practiceRetry');
+  assert.ok(retry && retry.hidden, 'Try again is not the follow-note\'s, or is drawn with nothing to try');
   // E11.3: every other sentence goes to a live region nobody sees.
   const say = root.querySelector('#practiceSay');
   assert.ok(say?.classList.contains('sr-only') && say.getAttribute('aria-live') === 'polite', '#practiceSay is not a hidden live region');

@@ -795,8 +795,8 @@
       .case-photo:has(> cubus-cube) > img { visibility: hidden; }
       /* The PAGE (dev-docs/practice-redesign-plan.md §5, WI-5) is the cube screen's walking composition, `.cols.walking`, in
          both orientations: no grid of its own. Its twin is shown in portrait too (the cube screen's net card is behind a
-         tool there, E5): the beads and a small clock, ONE slot for the quiet line or the follow-note in its place, and the
-         modes (E11). The twin keeps its content height — the cube's row is the one that gives (§5.7). */
+         tool there, E5): the beads and a small clock, and ONE slot for the quiet line or the follow-note in its place
+         (E11). The twin keeps its content height — the cube's row is the one that gives (§5.7). */
       .cols.walking.practice-page .practice-twin { display: flex; flex-direction: column; gap: 8px; min-height: auto; padding: 12px 18px; }
       /* In portrait the twin sits between the moves and the transport, which keep their own room (E12.6). */
       @container stage (orientation: portrait) { .cols.walking.practice-page .practice-twin { padding-top: 4px; padding-bottom: 0; } }
@@ -822,11 +822,9 @@
          rather than spill the token over the next one. In landscape the parts wrap; portrait's strip keeps them on one line. */
       .practice-page .move-chips { display: flex; flex-wrap: wrap; justify-content: flex-start; gap: 6px; }
       .practice-page .walk-strip .chip-m { width: auto; min-width: var(--chip); padding: 0 6px; }
-      /* The modes' row (E11.6): under the quiet line in landscape, behind the book in portrait, where the twin's height is
-         the cube's. The screen reads this name and moves the one row; nothing measures a width. */
-      .practice-page { --practice-modes: twin; }
-      @container stage (orientation: portrait) { .practice-page { --practice-modes: book; } }
-      .menu.practice-info .practice-modes { margin: 2px 0 8px; }
+      /* The way on in mixed practice (WI-8) is a cube card tool, drawn only while mixing: a card tool's own display
+         would otherwise draw it hidden. */
+      .card-tools > #practiceNext[hidden] { display: none; }
       /* Six controls and the bar on one line down to the SE's 312px (E11.7): the bar gives first. */
       .practice-page .transport .progress { flex-basis: 16px; }
       /* The wrong turn (§5.3): outlined, never filled. */

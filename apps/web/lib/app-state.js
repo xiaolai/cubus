@@ -120,6 +120,12 @@ export const state = {
    * the library rather than on a row the ledger may no longer hold.
    */
   practiceAlg: null,
+  /**
+   * Mixed practice asked for by a library stage's button (dev-docs/practice-redesign-plan.md D2, WI-8):
+   * `{ ids, order }` — the stage's rows, and the first round's order, whose first is `practiceAlg` — until the Practice
+   * page that opens takes it, which it does once. Null otherwise. Written only by `openMixed` in `lib/practice-link.js`.
+   */
+  practiceMix: null,
   // ---- smart cube (recovered from v0) ---------------------------------------------------------
   connected: false,
   cubeName: '',

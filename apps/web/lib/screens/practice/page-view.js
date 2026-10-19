@@ -153,11 +153,13 @@ export const orderWords = (order) => (Number.isInteger(order) && order > 1
  *
  * - primary: the cube, and the card's tools — the way back to the library FIRST (E11.1), the book, behind which is
  *   everything a parent reads (the case picture, the sentences, the figures, the last reps: `#practiceInfo`, built by
- *   the screen as a menu), and the animation speed, as on the cube screen.
+ *   the screen as a menu), the animation speed, as on the cube screen, and last the way on to the next algorithm, drawn
+ *   only while mixing over a stage (WI-8): with no cube no rep is checked, so nothing else would ever move on.
  * - twin: the beads and the clock's face, then ONE slot holding the quiet line or, while something must be done, the
  *   follow-note in its place (E11.3), then the record's notice on a row of its own (E11.4) — which in portrait the
- *   screen moves into the foot band over the cube card (E12.3), so the two never stack — then the modes (E11.2), which
- *   in portrait the screen moves into the book (E11.6).
+ *   screen moves into the foot band over the cube card (E12.3), so the two never stack. The follow-note carries Try
+ *   again, for a catalogue that could not be read. No modes' row: a tile opens one algorithm and a stage's button opens
+ *   it mixed (WI-8 took out E11.2's pills).
  * - sheet: the move strip, nothing else.
  * - aux: the transport — four step buttons drawn only with no cube, the progress (its position in `aria-valuetext`,
  *   and no step label, E11.7), Start over always, and last the stopwatch, drawn only with no cube (E11.8).
@@ -174,6 +176,7 @@ export function pageHtml(esc, icon) {
       ${tool('practiceBack', 'All algorithms', icon('chevron-left', 20))}
       ${tool('practiceBook', 'About this algorithm', icon('book', 20), ' disabled')}
       ${tool('speedBtn', 'Animation speed', icon('gauge', 20), ' disabled')}
+      ${tool('practiceNext', 'Next algorithm', icon('chevron-right', 20), ' hidden disabled')}
     </div>
     <div style="flex:1;min-height:0;width:100%"><div class="cube-slot" id="practiceCube" style="height:100%"></div></div>
   </div>
@@ -201,15 +204,9 @@ export function pageHtml(esc, icon) {
       </div>
       <div class="practice-said">
         <div class="practice-line" id="practiceLine"></div>
-        <div class="follow-note" id="followNote" hidden><span id="followMsg"></span></div>
+        <div class="follow-note" id="followNote" hidden><span id="followMsg"></span><button class="pill" id="practiceRetry" type="button" hidden>${esc(t('Try again'))}</button></div>
       </div>
       <div class="practice-record-say" id="practiceRecordSay" role="status" hidden></div>
-      <div class="wrap-row practice-modes" role="group" aria-label="${esc(t('How to practise'))}">
-        <button class="pill on" id="practiceBlocked" type="button" aria-pressed="true" disabled>${esc(t('One at a time'))}</button>
-        <button class="pill" id="practiceMixed" type="button" aria-pressed="false" disabled>${esc(t('Mixed'))}</button>
-        <button class="pill" id="practiceNext" type="button" hidden disabled>${esc(t('Next algorithm'))}</button>
-        <button class="pill" id="practiceRetry" type="button" hidden>${esc(t('Try again'))}</button>
-      </div>
       <div class="sr-only" id="practiceSay" role="status" aria-live="polite"></div>
     </div>
     <div class="card tight solution-card sheet">

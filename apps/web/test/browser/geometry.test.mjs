@@ -2235,7 +2235,7 @@ const measurePractice = (page) =>
     const lineH = px(getComputedStyle(line).lineHeight);
     const say = $('#practiceSay');
     const sayBox = say.getBoundingClientRect();
-    const modes = $('.practice-modes');
+    const next = $('#practiceNext');
     return {
       content: { w: stage.clientWidth - px(scs.paddingLeft) - px(scs.paddingRight), h: stage.clientHeight - px(scs.paddingTop) - px(scs.paddingBottom) },
       stage: rect(stage), cols: rect($('.practice-page')), primary: rect($('.practice-page > .primary')), aux: rect($('.practice-page > .aux')),
@@ -2244,7 +2244,9 @@ const measurePractice = (page) =>
       lineShown: shown(line), noteShown: shown($('#followNote')),
       lineLines: shown(line) ? Math.round(line.getBoundingClientRect().height / lineH) : 0,
       beads: [...document.querySelectorAll('#practiceFingers .bead')].map((b) => rect(b)),
-      modes: rect(modes), modesIn: modes.closest('#practiceInfo') ? 'book' : modes.closest('.practice-twin') ? 'twin' : 'nowhere',
+      next: rect(next), nextShown: shown(next), nextIn: Boolean(next.closest('.practice-page > .primary > .card-tools')),
+      // The modes' pills WI-8 took out (E11.2), anywhere on the screen or behind the book.
+      modesAnywhere: Boolean(document.querySelector('.practice-modes, #practiceBlocked, #practiceMixed')),
       sayDrawn: sayBox.width > 1 || sayBox.height > 1 || getComputedStyle(say).clipPath === 'none',
       // A case picture anywhere on the screen but the book: an svg that is not an icon, or an image.
       picturesOutside: [...document.querySelectorAll('.screen.active svg:not(.ic), .screen.active img')].filter((el) => !el.closest('#practiceInfo') && !el.closest('.ic')).length,
@@ -2303,6 +2305,9 @@ function practicePageCommon(m, what) {
   // MUST NOT: a case picture outside the book, or the screen reader's sentences drawn (E11.3).
   assert.equal(m.picturesOutside, 0, `${what}: a case picture outside the book`);
   assert.equal(m.sayDrawn, false, `${what}: the screen reader's live region is drawn`);
+  // MUST NOT: the temporary pills WI-8 took out (E11.2), in the twin or behind the book; the way on is a cube card's tool.
+  assert.equal(m.modesAnywhere, false, `${what}: the modes' pills are on the page`);
+  assert.ok(m.nextIn, `${what}: the way on is not a tool of the cube card`);
 }
 
 /** The floor every screen shares, asked of the active screen's measurement. */
@@ -2427,6 +2432,47 @@ for (const fixture of FIXTURES) {
         return { rows: new Set(items.map((i) => Math.round(i.getBoundingClientRect().top) + 0)).size, n: items.length };
       });
       if (fixture.width < fixture.height) assert.equal(rail.rows, 1, `portrait: the rail wraps to ${rail.rows} rows`);
+
+      // WI-8: the stage's MIXED button is in its header, on screen, and opens the page mixing over the stage. Mid-way the
+      // page is the walking composition with its way on drawn as a cube card's tool, and the cube is the size the same
+      // algorithm has opened from its own tile — the way on takes nothing from it.
+      const mixBtn = await page.evaluate(`(() => {
+        const rect = ${rect.toString()};
+        const b = document.querySelector('#practiceList .stage-sec[data-sec="${largest.stage}"] > .sec-head > [data-mix="${largest.stage}"]');
+        return b && { box: rect(b), body: rect(document.querySelector('#practiceList')) };
+      })()`);
+      assert.ok(mixBtn, `the largest stage (${largest.key}/${largest.name}) has no mixed button in its header`);
+      assert.ok(inside(mixBtn.box, mixBtn.body), `the stage's mixed button ${JSON.stringify(mixBtn.box)} is not on screen`);
+      await page.click(`[data-mix="${largest.stage}"]`);
+      await page.waitForFunction(() => {
+        const d = document.querySelector('.practice-page')?.dataset;
+        return d?.ready === '1' && d.mixed === '1' && d.record === 'read';
+      });
+      const mixedId = await page.evaluate(() => document.querySelector('.practice-page').dataset.alg);
+      const mixedMid = async () => {
+        await cubePainted(page, '#practiceCube canvas');
+        await watchPracticeCube(page);
+        await page.click('#demoNext');
+        await page.waitForSelector('#practiceAlg .chip-m.cur');
+        await practiceFrameAfter(page);
+        practiceFloor(await measureScreen(page), fixture, `page (${mixedId})`);
+        return measurePractice(page);
+      };
+      const mixedRun = await mixedMid();
+      practicePageCommon(mixedRun, `mixed (${mixedId}), mid-way`);
+      assert.ok(mixedRun.nextShown && inside(mixedRun.next, mixedRun.primary), `mixed (${mixedId}): the way on is not on the cube card`);
+      await page.click('#practiceBack');
+      await libraryShowing(page, largest);
+      await page.evaluate((x) => document.querySelector(`[data-alg="${x}"]`).click(), mixedId);
+      await page.waitForFunction((x) => {
+        const d = document.querySelector('.practice-page')?.dataset;
+        return d?.ready === '1' && d.alg === x && d.mixed === '0' && d.record === 'read';
+      }, mixedId);
+      const single = await mixedMid();
+      assert.equal(single.nextShown, false, `${mixedId}, from its tile: the way on is drawn`);
+      // MUST NOT: the way on costing the cube its size.
+      for (const k of ['top', 'left', 'width', 'height']) near(mixedRun.primary[k], single.primary[k], `mixed (${mixedId}): the cube card's ${k} differs from one at a time`);
+      near(mixedRun.painted, single.painted, `mixed (${mixedId}): the painted cube differs from one at a time`);
       assert.deepEqual(errors.map(String), [], 'the page threw');
     } finally {
       await context.close();
@@ -2486,8 +2532,8 @@ for (const fixture of FIXTURES) {
         assert.equal(m.strip.bar, 'none', `${what}: the strip draws a scrollbar`);
         assert.ok(m.strip.curOff !== null && Math.abs(m.strip.curOff) <= 2, `${what}: the current turn is ${m.strip.curOff}px from the strip's centre`);
         assert.ok(m.strip.curW > m.strip.otherW + 1, `${what}: the current turn (${m.strip.curW}px) is not larger than the others (${m.strip.otherW}px)`);
-        // E11.6: the modes' row is behind the book in portrait, never in the twin.
-        assert.equal(m.modesIn, 'book', `${what}: the modes' row is in the ${m.modesIn}, not behind the book`);
+        // One algorithm, not mixed: the way on is not drawn.
+        assert.equal(m.nextShown, false, `${what}: the way on is drawn on one algorithm`);
         // MUST NOT: a cube smaller than the page this one replaced (E11.5, E11.9).
         const floor = cubeFloor('practice-none', fixture);
         assert.ok(m.painted >= floor, `${what}: the painted cube is ${m.painted.toFixed(1)}px — under its floor of ${floor}px`);
@@ -2497,11 +2543,10 @@ for (const fixture of FIXTURES) {
         assert.ok(slots.length > 0, 'RESERVED_SLOTS is empty');
         for (const s of slots) assert.ok(s.laid > 0, `${what}: RESERVED_SLOTS names ${s.name} (${s.selector}), and nothing on the page is it`);
       } else {
-        // Landscape is the cube screen's: the moves WRAP in the sheet beside the cube, and the modes sit under the line.
+        // Landscape is the cube screen's: the moves WRAP in the sheet beside the cube.
         assert.ok(m.strip.lines > 1, `${what}: the moves are one line — landscape wraps them`);
         assert.ok(m.strip.scrollW <= m.strip.clientW + 1, `${what}: the moves scroll sideways`);
-        assert.equal(m.modesIn, 'twin', `${what}: the modes' row is not under the quiet line`);
-        assert.ok(m.modes.top >= m.said.bottom - 1, `${what}: the modes' row is not under the quiet line`);
+        assert.equal(m.nextShown, false, `${what}: the way on is drawn on one algorithm`);
         assert.ok(m.state.left >= m.primary.right - 1, `${what}: the twin is not beside the cube`);
       }
 
@@ -2545,13 +2590,13 @@ for (const fixture of FIXTURES) {
         const rect = ${rect.toString()};
         const menu = document.querySelector('#practiceInfo');
         return { shown: !menu.hidden && menu.getBoundingClientRect().height > 0, menu: rect(menu), stage: rect(document.getElementById('stage')),
-          pic: menu.querySelectorAll('#practicePic svg, #practicePic img').length, modes: Boolean(menu.querySelector('.practice-modes')),
+          pic: menu.querySelectorAll('#practicePic svg, #practicePic img').length, modes: Boolean(menu.querySelector('.practice-modes, #practiceBlocked, #practiceMixed')),
           fits: ${contentFits}(document.querySelector('.screen.active')) };
       })()`);
       assert.ok(book.shown, `${what}: the book did not open`);
       assert.ok(inside(book.menu, book.stage), `${what}: the book ${JSON.stringify(book.menu)} leaves the stage`);
       assert.equal(book.pic, 1, `${what}: the book does not hold the case picture`);
-      assert.equal(book.modes, portrait, `${what}: the modes' row is ${book.modes ? '' : 'not '}in the book`);
+      assert.equal(book.modes, false, `${what}: the modes' pills are behind the book`);
       assert.deepEqual(book.fits, { spills: [], cut: [] }, `${what}, book open: text that cannot be read where it is drawn`);
       await page.click('#practiceBook');
 

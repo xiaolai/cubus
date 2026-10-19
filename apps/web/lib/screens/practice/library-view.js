@@ -231,7 +231,8 @@ export function railHtml(group, catalogue, look, esc) {
 }
 
 /**
- * The stages, each a section: its header — picture, name, count, the book button — and its grids, EMPTY.
+ * The stages, each a section: its header — picture, name, count, the mixed practice button (D2: every row of the
+ * STAGE, weakest first — never a set's; WI-8), the book button — and its grids, EMPTY.
  *
  * @param {object} group
  * @param {object} catalogue
@@ -244,6 +245,7 @@ export function bodyHtml(group, catalogue, look, esc, icon) {
     <div class="sec-head">
       <span class="pic">${stagePicture(p, look)}</span>
       <span class="ttl"><b>${esc(stageName(p))}</b>${countSlot(stageIds(catalogue, p))}</span>
+      <button class="tbtn" type="button" data-mix="${i}" aria-label="${esc(t('Practise this stage mixed, weakest first'))}" title="${esc(t('Practise this stage mixed, weakest first'))}">${icon('repeat', 18)}</button>
       <button class="tbtn" type="button" data-about="${i}" aria-label="${esc(t('What these are for'))}" title="${esc(t('What these are for'))}">${icon('book', 18)}</button>
     </div>
     ${gridsOf(catalogue, p).map((g) => `${g.caption ? `<div class="set-cap">${esc(g.caption)}</div>` : ''}${g.sub ? `<div class="set-cap sub-cap">${esc(g.sub)}</div>` : ''}<div class="tiles" data-set="${esc(g.set)}" data-part="${esc(g.part)}"></div>`).join('')}
