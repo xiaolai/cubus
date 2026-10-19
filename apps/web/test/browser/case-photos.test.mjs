@@ -19,7 +19,7 @@ import * as lib from '../../lib/alg-library.js';
 import { NET_KEPT, UNMARKED, isMarked, isPhotographed, photoAttrs } from '../../lib/case-photo.js';
 import { movedPieces } from '../../lib/drill/case-of.js';
 import { catalogueOf } from '../../lib/drill/library-client.js';
-import { casePicture, outlineMoved } from '../../lib/screens/practice/library-view.js';
+import { bookPicture, casePicture, outlineMoved } from '../../lib/screens/practice/library-view.js';
 import { LIVENESS_MS, startBrowserFixture } from './harness.mjs';
 
 const catalogue = await catalogueOf(lib);
@@ -254,6 +254,127 @@ test('a photograph is the same picture whenever it is taken: one set, forwards a
     // A photograph read before its frame was drawn, or at a moving point of the breath, is a wrong picture that
     // looks right: it would differ with what was drawn before it.
     assert.deepEqual(differences, [], 'photographs that depend on what was photographed before them');
+    assert.deepEqual(problems, []);
+  } finally {
+    await context.close();
+  }
+});
+
+// ---- Chromium: the book's marking is SEEN at the book's size (E8's gate, applied to E13's picture) --------------------
+
+/** Every row whose book picture marks its moved pieces: what the book draws for it, unmarked and marked, and where each
+ *  marked sticker is — its rect in the UNMARKED picture, in the picture's own units, so the sticker measured is the
+ *  sticker as it is, whatever the marking does to its outline. */
+const BOOK_ROWS = Object.values(catalogue.rows).filter(isMarked).map((row) => {
+  const bare = casePicture(row, LOOK);
+  const marked = bookPicture(row, regionOf(row), LOOK);
+  const rects = new Map([...bare.matchAll(/<rect data-facelet="(\d+)" x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)" rx="([\d.]+)"/g)]
+    .map(([, f, x, y, w, h, rx]) => [Number(f), { f: Number(f), x: Number(x), y: Number(y), w: Number(w), h: Number(h), rx: Number(rx) }]));
+  const moved = [...marked.matchAll(/<rect class="moved" data-facelet="(\d+)"/g)].map(([, f]) => rects.get(Number(f)));
+  return { id: row.id, bare, marked, moved, vbW: Number(/viewBox="0 0 ([\d.]+)/.exec(bare)[1]) };
+}).filter((r) => r.moved.length);
+
+/**
+ * The themes the gate holds in. NIGHT IS MEASURED AND NOT HELD (2026-10-19): its ink, rgb(210, 201, 184), is within
+ * 34 / 41 / 52 of a white sticker, so a light outline on white is not seen at any width that leaves the sticker's own
+ * colour readable — a band of a third of the sticker passes, a quarter does not (157 stickers under 25% at DPR 1). That
+ * is a choice of the mark's COLOUR in Night, not of its width, and it is the owner's; until it is made, the case reports
+ * Night's figures rather than passing them.
+ */
+const BOOK_HELD = Object.freeze(['white', 'cream']);
+
+test('the book\'s picture: every marked sticker has at least 25% of its own painted pixels changed at 48/255, at the size the book draws it, in white and cream', async (t) => {
+  const context = await chromium.browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await context.newPage();
+  const problems = [];
+  page.on('pageerror', (e) => problems.push(String(e)));
+  try {
+    assert.ok(BOOK_ROWS.length > 500, `precondition: only ${BOOK_ROWS.length} rows mark a moved piece`);
+    // What the book SHOWS, read off the real book open on a page: the width its picture is drawn at, the ink its outline
+    // takes (`currentColor`) and the ground under it — per theme. Nothing here is a number typed from the stylesheet.
+    await page.goto(`${chromium.base}/index.html#/practice`);
+    await page.waitForSelector('.practice-screen[data-ready="1"]', { timeout: LIVENESS_MS });
+    await page.evaluate(async () => {
+      const { state } = await import('/lib/app-state.js');
+      const { refreshScreen } = await import('/lib/screen-shell.js');
+      state.practiceAlg = 'sune';
+      refreshScreen();
+    });
+    await page.waitForSelector('.practice-page[data-ready="1"]', { timeout: LIVENESS_MS });
+    await page.click('#practiceBook');
+    await page.waitForFunction(() => !document.querySelector('#practiceInfo').hidden, null, { timeout: LIVENESS_MS });
+    const shown = await page.evaluate(() => {
+      const out = {};
+      for (const theme of ['white', 'cream', 'night']) {
+        document.documentElement.setAttribute('data-theme', theme);
+        const svg = document.querySelector('#practicePic svg');
+        let ground = svg.parentElement;
+        while (ground && /rgba\(0, 0, 0, 0\)|transparent/.test(getComputedStyle(ground).backgroundColor)) ground = ground.parentElement;
+        out[theme] = { width: svg.getBoundingClientRect().width, ink: getComputedStyle(svg).color, ground: getComputedStyle(ground).backgroundColor };
+      }
+      return out;
+    });
+    t.diagnostic(`the book draws its picture ${JSON.stringify(shown)}`);
+    const measured = await page.evaluate(async ({ rows, looks, dprs }) => {
+      const load = (src) => new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => no(new Error('a picture did not decode')); i.src = src; });
+      const out = [];
+      for (const [theme, look] of Object.entries(looks)) {
+        for (const dpr of dprs) {
+          const W = Math.round(look.width * dpr);
+          /** The picture as the book draws it: `currentColor` the book's ink, over the book's ground, `W` device px wide. */
+          const raster = async (svg, h) => {
+            const img = await load(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg.replaceAll('currentColor', look.ink))}`);
+            const cv = document.createElement('canvas'); cv.width = W; cv.height = h;
+            const g = cv.getContext('2d');
+            g.fillStyle = look.ground; g.fillRect(0, 0, W, h);
+            g.drawImage(img, 0, 0, W, h);
+            return g.getImageData(0, 0, W, h).data;
+          };
+          /** Where the picture paints anything at all, over nothing. */
+          const painted = async (svg, h) => {
+            const img = await load(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`);
+            const cv = document.createElement('canvas'); cv.width = W; cv.height = h;
+            const g = cv.getContext('2d'); g.drawImage(img, 0, 0, W, h);
+            return g.getImageData(0, 0, W, h).data;
+          };
+          for (const r of rows) {
+            const k = W / r.vbW;
+            const h = Math.round(Number(/viewBox="0 0 [\d.]+ ([\d.]+)/.exec(r.bare)[1]) * k);
+            const a = await raster(r.bare, h); const b = await raster(r.marked, h); const p = await painted(r.bare, h);
+            for (const s of r.moved) {
+              // The sticker's own pixels: inside its rounded rect, and painted in the unmarked picture.
+              const cv = document.createElement('canvas'); cv.width = W; cv.height = h;
+              const g = cv.getContext('2d');
+              g.beginPath(); g.roundRect(s.x * k, s.y * k, s.w * k, s.h * k, s.rx * k); g.fill();
+              const mask = g.getImageData(0, 0, W, h).data;
+              let inside = 0; let changed = 0;
+              for (let i = 0; i < mask.length; i += 4) {
+                if (mask[i + 3] < 255 || p[i + 3] === 0) continue;
+                inside += 1;
+                if (Math.abs(a[i] - b[i]) > 48 || Math.abs(a[i + 1] - b[i + 1]) > 48 || Math.abs(a[i + 2] - b[i + 2]) > 48) changed += 1;
+              }
+              out.push({ id: r.id, f: s.f, theme, dpr, share: inside ? changed / inside : 0 });
+            }
+          }
+        }
+      }
+      return out;
+    }, { rows: BOOK_ROWS, looks: shown, dprs: [1, 2] });
+    for (const theme of Object.keys(shown)) {
+      for (const dpr of [1, 2]) {
+        const s = measured.filter((m) => m.theme === theme && m.dpr === dpr).sort((x, y) => x.share - y.share);
+        t.diagnostic(`${theme} at DPR ${dpr}: ${s.length} marked stickers, smallest ${s.slice(0, 3).map((m) => `${m.id}#${m.f} ${(100 * m.share).toFixed(1)}%`).join(', ')}, `
+          + `median ${(100 * s[s.length >> 1].share).toFixed(1)}%, under 25%: ${s.filter((m) => m.share < MARK_SEEN).length}`);
+      }
+    }
+    assert.ok(measured.length > 3000, `precondition: only ${measured.length} marked stickers measured`);
+    // Night's figures, said: see BOOK_HELD.
+    const night = measured.filter((m) => m.theme === 'night' && m.share < MARK_SEEN);
+    t.diagnostic(`night, NOT held: ${night.length} marked stickers under ${100 * MARK_SEEN}% (DPR 1 ${night.filter((m) => m.dpr === 1).length}, DPR 2 ${night.filter((m) => m.dpr === 2).length})`);
+    assert.deepEqual(Object.keys(shown).filter((th) => BOOK_HELD.includes(th)), [...BOOK_HELD], 'precondition: a held theme was not measured');
+    const unseen = measured.filter((m) => BOOK_HELD.includes(m.theme) && m.share < MARK_SEEN);
+    assert.deepEqual(unseen.slice(0, 12).map((m) => `${m.theme} DPR ${m.dpr} ${m.id}#${m.f} ${(100 * m.share).toFixed(1)}%`), [],
+      `${unseen.length} marked stickers in the book whose marking changes under ${100 * MARK_SEEN}% of the sticker at 48/255`);
     assert.deepEqual(problems, []);
   } finally {
     await context.close();

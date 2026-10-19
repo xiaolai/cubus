@@ -60,21 +60,47 @@ export function casePicture(row, { palette, scheme, scale = 1 } = {}) {
   });
 }
 
-/** How many outline widths make a sticker's width: the edge the plan measured (§3.6), as a divisor. */
-const OUTLINE_PER_STICKER = 6.25;
+/** The least band an outline is drawn with, in the picture's own units. */
+const OUTLINE_LEAST = 1.6;
+
+/**
+ * How a flat picture's moved stickers are outlined: the band's width as a share of the sticker's (`perSticker` bands
+ * make a sticker, never under `OUTLINE_LEAST`), and whether the band lies wholly INSIDE the sticker's edge rather than
+ * astride it.
+ *
+ * A TILE's is the edge the plan measured (§3.6): astride the edge, a sixth of the sticker, and the tiles' lists and their
+ * 0 alike pairs per set were derived with it (test/browser/case-photos.test.mjs).
+ */
+export const TILE_OUTLINE = Object.freeze({ perSticker: 6.25, inside: false });
+
+/**
+ * The BOOK's (E13). Its picture is 112 px wide, a net's sticker under 9 px, and the tile's band astride that edge put
+ * half of it on the gap and the neighbours: 6,680 of 9,151 marked stickers in white at DPR 1 had under 25% of their own
+ * pixels changed at 48/255 (median 22.2%) — a mark present but not SEEN, the defect E8 settled for photographs. Drawn
+ * INSIDE the edge, all of the band falls on the sticker, which keeps its size and its fill. The least band meets E8's
+ * gate there at DPR 1 and 2 (smallest 28.0% and 30.2% of a sticker, measured 2026-10-19), so it is the least band:
+ * "the book's picture: every marked sticker …" in test/browser/case-photos.test.mjs, which reads the size, the ink and
+ * the ground off the open book.
+ */
+export const BOOK_OUTLINE = Object.freeze({ perSticker: Infinity, inside: true });
 
 /**
  * A flat picture with the pieces its case moves MARKED: every sticker of a moved piece keeps its fill — never greyed,
  * never recoloured (AGENTS.md §2) — and gets a heavier edge in the ink colour, so it follows the theme
  * (dev-docs/practice-redesign-plan.md §3.6). `moved` are viewed facelet indices (`movedPieces(...).viewed`, flattened);
- * a moved sticker the picture does not draw is simply not there to mark.
+ * a moved sticker the picture does not draw is simply not there to mark. `outline` says how heavy, and where.
  */
-export function outlineMoved(svg, moved) {
+export function outlineMoved(svg, moved, outline = TILE_OUTLINE) {
   const on = new Set(moved);
   return svg.replace(/<rect data-facelet="(\d+)"([^>]*?) stroke="[^"]*" stroke-width="1"\/>/g, (m, f, rest) => {
     if (!on.has(Number(f))) return m;
     const w = Number(/ width="([\d.]+)"/.exec(rest)?.[1] ?? 10);
-    return `<rect class="moved" data-facelet="${f}"${rest} stroke="currentColor" stroke-width="${Math.max(1.6, w / OUTLINE_PER_STICKER).toFixed(2)}"/>`;
+    const band = Math.max(OUTLINE_LEAST, w / outline.perSticker);
+    // Inside the edge: the rect drawn half a band in on every side, so the stroke's OUTER edge is the sticker's.
+    const at = outline.inside
+      ? rest.replace(/ (x|y|width|height|rx|ry)="([\d.]+)"/g, (_, k, v) => ` ${k}="${Math.max(0, Number(v) + ({ x: 1, y: 1, width: -2, height: -2, rx: -1, ry: -1 })[k] * band / 2).toFixed(2)}"`)
+      : rest;
+    return `<rect class="moved" data-facelet="${f}"${at} stroke="currentColor" stroke-width="${band.toFixed(2)}"/>`;
   });
 }
 
@@ -94,13 +120,16 @@ export function tilePicture(row, region, look, esc) {
 
 /**
  * A row's flat picture with the pieces its case moves outlined, unless its set is on the unmarked list (§3.6): a flat
- * tile's picture, and the Practice book's for every row (E13) — there the live cube beside it is the 3D view, so the book
- * keeps the flat one rather than a copy of the photograph.
+ * tile's picture, and — with the book's heavier outline (`bookPicture`) — the Practice book's for every row (E13): there
+ * the live cube beside it is the 3D view, so the book keeps the flat one rather than a copy of the photograph.
  */
-export function markedPicture(row, region, look) {
+export function markedPicture(row, region, look, outline = TILE_OUTLINE) {
   const flat = casePicture(row, look);
-  return isMarked(row) ? outlineMoved(flat, movedPieces(row, region).viewed.flat()) : flat;
+  return isMarked(row) ? outlineMoved(flat, movedPieces(row, region).viewed.flat(), outline) : flat;
 }
+
+/** The Practice book's picture of a row: the marked flat picture, outlined for the book's size (`BOOK_OUTLINE`). */
+export const bookPicture = (row, region, look) => markedPicture(row, region, look, BOOK_OUTLINE);
 
 // ---- the methods ---------------------------------------------------------------------------------------------
 

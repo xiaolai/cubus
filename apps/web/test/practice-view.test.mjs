@@ -24,7 +24,7 @@ import { methodById } from '../lib/methods/registry.js';
 import { targetPicture } from '../lib/stage-picture.js';
 import {
   aboutHtml, bodyHtml, captionOf, casePicture, gridIds, libraryKey, libraryMethods, openingKey, pendingHtml, purposeOf, railHtml, ringSvg,
-  markedPicture, rowName, stageIds, tileLabel, tilePicture, tileRing, tilesHtml,
+  BOOK_OUTLINE, TILE_OUTLINE, bookPicture, markedPicture, rowName, stageIds, tileLabel, tilePicture, tileRing, tilesHtml,
 } from '../lib/screens/practice/library-view.js';
 import { isMarked, isPhotographed } from '../lib/case-photo.js';
 import { movedPieces } from '../lib/drill/case-of.js';
@@ -749,6 +749,37 @@ test('the marked flat picture: every row\'s moved stickers outlined unless its s
     if (!isPhotographed(row)) assert.equal(tilePicture(row, region, look, esc), markedPicture(row, region, look), `${row.id}: the tile and the marked picture differ`);
   }
   assert.ok(marked > 500, `precondition: only ${marked} rows marked`);
+});
+
+test('the book\'s picture: the same stickers marked as a tile\'s, the band wholly inside each sticker\'s edge, every fill and every sticker\'s box unchanged', () => {
+  assert.equal(BOOK_OUTLINE.inside, true);
+  assert.equal(TILE_OUTLINE.inside, false, 'the tiles\' outline, which their lists were derived with, moved');
+  // Read as markup, not parsed: three pictures a row through one happy-dom window ran the file out of memory.
+  const rects = (svg) => [...svg.matchAll(/<rect( class="moved")? data-facelet="(\d+)"([^>]*)\/>/g)].map(([, moved, f, rest]) => ({
+    moved: Boolean(moved), f, fill: `${/ fill="([^"]*)"/.exec(rest)?.[1]}|${/ style="([^"]*)"/.exec(rest)?.[1] ?? ''}`,
+    box: ['x', 'y', 'width', 'height'].map((k) => Number(new RegExp(` ${k}="([\\d.]+)"`).exec(rest)[1])),
+    band: Number(/ stroke-width="([\d.]+)"/.exec(rest)[1]),
+  }));
+  let marked = 0;
+  for (const row of Object.values(catalogue.rows)) {
+    const region = catalogue.sets[row.set].region;
+    const book = rects(bookPicture(row, region, look));
+    const bare = new Map(rects(casePicture(row, look)).map((r) => [r.f, r]));
+    const ids = (list) => list.filter((r) => r.moved).map((r) => r.f).join();
+    assert.equal(ids(book), ids(rects(markedPicture(row, region, look))), `${row.id}: the book marks other stickers than a tile does`);
+    // What must NOT happen: a sticker recoloured, or a sticker's size changed by its mark.
+    assert.deepEqual(book.map((r) => `${r.f}:${r.fill}`), [...bare.values()].map((r) => `${r.f}:${r.fill}`), `${row.id}: the book's marking changed a sticker's colour`);
+    for (const r of book.filter((x) => x.moved)) {
+      const was = bare.get(r.f).box;
+      const half = r.band / 2;
+      const [x, y, w, h] = r.box;
+      // The stroke's OUTER edge is the sticker's edge: half a band in on every side, to the rounding of two decimals.
+      const outer = [x - half, y - half, w + 2 * half, h + 2 * half];
+      outer.forEach((v, i) => assert.ok(Math.abs(v - was[i]) <= 0.011, `${row.id}#${r.f}: the band is not inside the sticker (${outer} against ${was})`));
+      marked += 1;
+    }
+  }
+  assert.ok(marked > 3000, `precondition: only ${marked} stickers marked`);
 });
 
 test('the strip: one section per part, a trigger\'s name the label over its part, and a row with no trigger one whole run', () => {

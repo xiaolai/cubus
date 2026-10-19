@@ -1536,8 +1536,19 @@ test('the book shows the flat case picture with its moved pieces outlined — on
       const pic = await page.evaluate(() => {
         const box = document.querySelector('#practicePic');
         const stroke = box.querySelector('rect.moved')?.getAttribute('stroke');
-        return { svg: box.querySelectorAll('svg').length, img: box.querySelectorAll('img').length, moved: box.querySelectorAll('rect.moved').length, stroke };
+        return { svg: box.querySelectorAll('svg').length, img: box.querySelectorAll('img').length, moved: box.querySelectorAll('rect.moved').length, stroke, html: box.innerHTML };
       });
+      // The picture the book's gate measures (test/browser/case-photos.test.mjs) is the one it draws, outline and all.
+      const want = await page.evaluate(async (x) => {
+        const { bookPicture } = await import('/lib/screens/practice/library-view.js');
+        const { settings } = await import('/lib/app-settings.js');
+        const cat = await window.__p.rows();
+        const row = cat.rows[x];
+        const box = document.createElement('div');
+        box.innerHTML = bookPicture(row, cat.sets[row.set].region, { palette: settings.palette, scheme: settings.scheme });
+        return box.innerHTML;
+      }, id);
+      assert.equal(pic.html, want, `${id}: the book draws another picture than bookPicture`);
       assert.equal(pic.svg, 1, `${id}: the book draws no flat picture`);
       assert.equal(pic.img, 0, `${id}: the book shows a photograph`);
       assert.ok(pic.moved > 0, `${id}: the book's picture marks no moved piece`);

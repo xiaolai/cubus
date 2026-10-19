@@ -51,7 +51,7 @@ import { indexedDbStore } from '../drill/record-store.js';
 import { mixOrder } from '../drill/mix.js';
 import {
   LIBRARY_LEVELS, aboutHtml, bodyHtml, casePicture, countHtml, gridIds, libraryKey, libraryMethods, openingKey, pendingHtml, purposeOf,
-  markedPicture, railHtml, rowName, stageIds, tileLabel, tileRing, tilesHtml,
+  bookPicture, railHtml, rowName, stageIds, tileLabel, tileRing, tilesHtml,
 } from './practice/library-view.js';
 import {
   RECORD_READING, beadsHtml, chipsHtml, figuresHtml, lastRepsHtml, orderWords, pageHtml, partsWords, refusalWords, seconds, writtenTokens,
@@ -1311,8 +1311,8 @@ function mountPage({ root, page, catalogue, signal, stale }) {
     ].filter(Boolean).join(' · ');
     // Behind the book: its picture, then what the algorithm is FOR, what this one does, and how to hold it.
     const purpose = purposeOf(row, set);
-    // The flat picture with its moved pieces marked, as a flat tile draws it (E13): the live cube beside it is the 3D view.
-    $('#practicePic', info.el).innerHTML = markedPicture(row, set.region, { palette: settings.palette, scheme: settings.scheme });
+    // The flat picture with its moved pieces marked, outlined for the book's size (E13): the live cube beside it is the 3D view.
+    $('#practicePic', info.el).innerHTML = bookPicture(row, set.region, { palette: settings.palette, scheme: settings.scheme });
     $('#practiceName', info.el).innerHTML = `<b>${escHtml(rowName(row))}</b> · ${escHtml(setName)}${stage ? ` · ${escHtml(stage)}` : ''}`;
     $('#practiceAbout', info.el).innerHTML = [
       purpose ? `<p class="practice-purpose">${escHtml(purpose)}</p>` : '',
