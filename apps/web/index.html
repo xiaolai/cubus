@@ -478,7 +478,7 @@
            short stage. Under it the moves, one line at their content height; then the twin's row, which takes the
            surplus; the transport at the foot. The twin is NOT in it: kept under the cube it shrank the cube to 37px on
            an iPhone 16, so it is behind the cube card's tool (E5) and opens over the stage. Measured against the
-           painted cube this replaced, in geometry.test.mjs's PORTRAIT_CUBE_FLOOR. */
+           painted cube this replaced, in geometry.test.mjs's CUBE_FLOOR. */
         .cols.walking { position: relative; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 100cqw) auto minmax(auto, 1fr) auto;
           grid-template-areas: "primary" "sheet" "twin" "aux"; row-gap: 10px; }
         /* NO SLACK THE CUBE DOES NOT TAKE (E12.6). The cube's row takes all the height the others leave, so every px of
@@ -501,7 +501,8 @@
         /* THE ROWS THAT COME AND GO, over the foot of the cube card (E12.1, lib/foot-band.js): the follow-note, the why
            line and the practise-step button here, the record's notice on Practice. In the flow they took their height
            from the cube, 22–166 px on Home; here they lie over the ghost face below it, never over the cube — the module
-           caps the band at the room under the cube's sphere, and what does not fit scrolls inside it. */
+           caps the band at the room under the cube's sphere. The band NEVER scrolls (E12.6): that room is kept for the
+           tallest thing the band can say (E12.7, E12.8), and what does not fit on a line wraps onto the next. */
         .cols.walking { --foot-band: band; }
         /* The reserve itself, as a box: the gap gate measures to it as a slot held on purpose (RESERVED_SLOTS, E12.8). */
         .cols.walking .band-reserve { display: block; position: absolute; left: 0; right: 0; bottom: 0; height: var(--band-reserve, 0px); pointer-events: none; }
