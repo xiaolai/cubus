@@ -243,6 +243,10 @@ jobs:
   # when releasing, so it left the browser tier and `pnpm check` (apps/web/run-tests.mjs) and runs
   # HERE, on the schedule and on a manual dispatch. A tier is where a suite runs, never a way to
   # leave one out: ci-plan.test.mjs fails if no job fired by the schedule runs the nightly tier.
+  # Since 2026-10-20 it also names `practice-relation-sweep.test.mjs`, every Practice row in all 24
+  # holds through a real page, in one case: about 27 minutes on this runner, which alone set the
+  # push run's length. The same reps run on every push through the engine with no page.
+  # The two files run side by side (the tier's concurrency is 3), so the suite time stays ~40.
   #
   # Not gated on the plan: the plan says "full" for a push too, and this job must not run there.
   #
@@ -252,7 +256,7 @@ jobs:
   #
   # Both engines and xvfb, set up as `ts` sets them up and for the same reasons (see there).
   web-nightly:
-    name: web — nightly browser suites (the mark gate)
+    name: web — nightly browser suites (the mark gate, the Practice sweep)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 90

@@ -240,6 +240,6 @@ test('the tier patterns are the documented three, so the docs and the runner agr
   assert.deepEqual(TIERS, {
     fast: ['serve.test.mjs', 'test/*.test.mjs'],
     browser: ['test/browser/*.test.mjs'],
-    nightly: ['test/browser/case-photos.test.mjs'],
+    nightly: ['test/browser/case-photos.test.mjs', 'test/browser/practice-relation-sweep.test.mjs'],
   });
 });

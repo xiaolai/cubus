@@ -37,7 +37,7 @@ const WEB = fileURLToPath(new URL('./', import.meta.url));
 export const TIERS = Object.freeze({
   fast: Object.freeze(['serve.test.mjs', 'test/*.test.mjs']),
   browser: Object.freeze(['test/browser/*.test.mjs']),
-  nightly: Object.freeze(['test/browser/case-photos.test.mjs']),
+  nightly: Object.freeze(['test/browser/case-photos.test.mjs', 'test/browser/practice-relation-sweep.test.mjs']),
 });
 
 /** Directories under apps/web that hold no tests of ours and are never walked. */
