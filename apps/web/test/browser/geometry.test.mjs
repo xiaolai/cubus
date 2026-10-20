@@ -438,8 +438,10 @@ const measure = (page) =>
           label: lbl ? { ...rect(lbl), text: lbl.textContent.trim() } : null,
         };
       }),
-      // The toggle is excluded: its 44px hit area is a ::before, which no rect reports.
-      controls: [...document.querySelectorAll('button, .chip-m, .pill')].filter(visible).map((el) => ({ what: el.id || el.className, ...rect(el) })),
+      // The toggle is excluded: its 44px hit area is a ::before, which no rect reports. A LINK is a control too
+      // (sweep 2026-10-20, D1): the About card's three links were 18.8px tall on every touch fixture, and this
+      // selector, which named buttons, chips and pills only, never saw them.
+      controls: [...document.querySelectorAll('button, a[href], .chip-m, .pill')].filter(visible).map((el) => ({ what: el.id || el.className, ...rect(el) })),
     };
   })()`);
 
@@ -2172,7 +2174,8 @@ const measureScreen = (page) =>
       // strip SCROLLS, and a chip half under the fade reads as "more this way"; a text LABEL there does not, and is held
       // by contentFits instead — wholly inside the unfaded box or wholly outside the strip (strip-labels.mjs).
       beyond: [...screen.querySelectorAll('*')].filter(visible).filter((el) => !el.parentElement?.closest('.more-left, .more-right')).map((el) => ({ what: el.id || el.className || el.tagName, ...rect(el) })).filter((r) => r.left < s.left - 1 || r.right > s.right + 1).slice(0, 4),
-      controls: [...screen.querySelectorAll('button:not(.toggle), .chip-m, .pill, input')].filter(visible).map((el) => ({ what: el.id || el.className, ...rect(el) })),
+      // Links included (D1): the gate that named only buttons passed the About card's 18.8px links on every finger.
+      controls: [...screen.querySelectorAll('button:not(.toggle), a[href], .chip-m, .pill, input')].filter(visible).map((el) => ({ what: el.id || el.className, ...rect(el) })),
       // A control that is on the page and not hidden, yet has no box: a flex column squashed it.
       // \`visible\` above filters these OUT, which is how a 0px button passed every fixture as
       // "not there" — the exact shape of failure that must count, not vanish.
