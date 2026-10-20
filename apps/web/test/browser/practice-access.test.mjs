@@ -245,6 +245,17 @@ test('within a screen\'s body no icon is drawn by two controls with different na
       await page.waitForSelector('.screen.active', { timeout: LIVENESS_MS });
       await page.waitForLoadState('load');
       await take(page, route);
+      // THE SCAN SCREEN AFTER A SIDE HAS BEEN READ, not only fresh (sweep 2026-10-20, G1): a read side's centre becomes
+      // "Scan the … side again", which drew the same symbol as "Throw the whole scan away" — and a fresh screen has no
+      // read side, so measuring it alone could never see the clash. Fed through the event the scanner emits.
+      if (route === 'scan') {
+        await page.evaluate(() => document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-progress', { detail: {
+          phase: 'scanning', message: '', sides: 1, live: null, settling: null, seen: null, shownAgain: false, device: null, confirm: null,
+          identity: null, complete: false, suspects: [], notice: null, captured: [{ face: 'U', colors: Array(9).fill(0), by: 'centre' }] } })));
+        await page.waitForFunction(() => document.querySelector('.scan-face[data-face="U"] .tgrid > .cell:nth-child(5)')?.dataset.action === 'rescan',
+          null, { timeout: LIVENESS_MS });
+        await take(page, 'scan, a side read');
+      }
     }
   } finally {
     await context.close();
@@ -267,7 +278,8 @@ test('within a screen\'s body no icon is drawn by two controls with different na
   }
   // Preconditions: the controls this relation was written for are in what was measured.
   const keys = new Set(seen.flatMap((s) => s.controls.map((c) => `${s.where}|${c.key}`)));
-  for (const k of ['practice, mixing with no cube|demoPrev', 'practice, mixing with no cube|demoNext', 'practice, mixing with no cube|practiceRestart']) {
+  for (const k of ['practice, mixing with no cube|demoPrev', 'practice, mixing with no cube|demoNext', 'practice, mixing with no cube|practiceRestart',
+    'scan, a side read|scanResetBtn']) {
     assert.ok(keys.has(k), `precondition: ${k} was not measured`);
   }
   const clashes = [];
@@ -283,6 +295,11 @@ test('within a screen\'s body no icon is drawn by two controls with different na
     }
   }
   assert.deepEqual(clashes, [], 'one symbol doing two jobs on one screen');
+  // MUST NOT, by name, on the scan screen with a side read: the re-read and the throw-away share a symbol (G1).
+  const read = seen.find((s) => s.where === 'scan, a side read').controls;
+  const rescan = read.find((c) => /^Scan the .* side again$/.test(c.name));
+  assert.ok(rescan, 'precondition: no read side offered to scan it again');
+  assert.notEqual(read.find((c) => c.key === 'scanResetBtn').icon, rescan.icon, 'throwing the scan away draws the symbol of scanning one side again');
   // MUST NOT, by name: the three controls that shared a symbol before E14 draw none now.
   const practiceControls = seen.filter((s) => s.where.startsWith('practice')).flatMap((s) => s.controls);
   for (const name of ['All algorithms', 'Next algorithm', 'Practise this stage mixed, weakest first']) {

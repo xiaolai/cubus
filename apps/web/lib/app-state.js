@@ -40,6 +40,9 @@ const P = {
   check: '<path d="M20 6 9 17l-5-5"/>',
   gauge: '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
   refresh: '<path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/>',
+  // Throwing the whole scan away. Its own symbol: it drew `refresh`, which a read side's centre draws for "scan this
+  // side again" — one symbol, two jobs, a few centimetres apart (sweep 2026-10-20, G1). Lucide's trash-2.
+  trash: '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>',
   // Pips are FILLED, not stroked. At r=1.2 with the sheet's 1.75 stroke and fill:none they were
   // drawn as rings with a 0.65-unit hole — invisible at 18px, plainly wrong at any size a
   // reader might zoom to. Same technique grid-filled used for its solid cells.
