@@ -1290,16 +1290,16 @@ test('showing an entry adds it to the toolbar, hiding removes it, and the rest i
   assert.ok(!navIds().includes('stats'), 'precondition: Stats starts hidden');
 
   // Show both that start hidden, in reverse, to show the toolbar keeps its own order. The default row is
-  // solve, scan and scramble and nothing else (owner's decision, 2026-10-14).
+  // solve, scan and scramble (owner's decision, 2026-10-14) and Practice (2026-10-20), and nothing else.
   for (const id of ['stats', 'timer']) win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
   await tick();
-  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'timer', 'stats'], 'shown in toolbar order');
+  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'timer', 'stats', 'practice'], 'shown in toolbar order');
 
   // Hide the middle one: its neighbours are untouched.
   win.document.querySelector('[data-nav-toggle="timer"]').click();
   await tick();
   assert.ok(!navIds().includes('timer'), 'gone from the toolbar');
-  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'stats'], 'and its neighbours are untouched');
+  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'stats', 'practice'], 'and its neighbours are untouched');
 
   // Hiding is cosmetic: the address still works, which is the escape hatch.
   win.location.hash = '#/timer';
@@ -1315,7 +1315,7 @@ test('showing an entry adds it to the toolbar, hiding removes it, and the rest i
     win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
     await tick();
   }
-  assert.deepEqual(navIds(), ['home', 'scan', 'scramble'], 'the default toolbar is back before the next test runs');
+  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'practice'], 'the default toolbar is back before the next test runs');
   win.document.dispatchEvent(chord());
   await tick();
   win.localStorage.removeItem('cubusSettings');
@@ -1347,7 +1347,7 @@ test('the toolbar no longer offers 3D viewer or Smart cube, and Stats is renamed
   for (const id of ['timer', 'stats']) {
     assert.ok(!ids.includes(id), `${id} is hidden by default, whatever storage says`);
   }
-  assert.deepEqual(ids, ['home', 'scan', 'scramble'], 'a fresh install shows exactly solve, scan and scramble');
+  assert.deepEqual(ids, ['home', 'scan', 'scramble', 'practice'], 'a fresh install shows exactly solve, scan, scramble and practice');
   const labels = [...win.document.querySelectorAll('#nav [data-nav]')].map((b) => b.textContent);
   assert.ok(!labels.some((l) => l.includes('Session stats')), 'and it is not called Session stats');
   // Nothing groups the list any more, so there is no heading left over to point at a screen that
@@ -1452,10 +1452,11 @@ test('drag-to-rotate is off by default, and the toggle reaches the cube as an at
 test('the toolbar is one flat row of tabs, with Settings as its own button', async () => {
   win.location.hash = '#/home';
   await tick();
-  // The default row is the beginner's path — solve, scan and scramble (owner's decision, 2026-10-14).
+  // The default row is the beginner's path — solve, scan and scramble (owner's decision, 2026-10-14) — and
+  // Practice (2026-10-20).
   // Timer and Stats are speedcubing instruments and Course plays lessons the app does not ship, so
   // all three start hidden, in code, one chord away.
-  assert.deepEqual(navLabels(), ['Home', 'Restore', 'Scramble']);
+  assert.deepEqual(navLabels(), ['Home', 'Restore', 'Scramble', 'Practice']);
   // Every tab draws a real glyph. icon() falls back to a bare dot for a name it does not know, so
   // a deleted or renamed glyph does not throw — it renders something almost plausible, and in an
   // icons-only row there is no label left to give the game away. Two icons were retired on
