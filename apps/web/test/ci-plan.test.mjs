@@ -304,6 +304,21 @@ test('the release gate reads the push-event run, which is always the full tier',
   assert.match(RELEASE, /gh run list --workflow CI --event push --commit "\$GITHUB_SHA"/);
 });
 
+// The gate is CI's verdict, not a second run of CI (owner, 2026-10-20): re-running the suites on a commit CI has just
+// passed took over an hour once the mark gate landed, longer than the gate's own bound. The whole gate job is read, so
+// a test run added to any of its steps fails this.
+test('the release gate runs no test suite: CI already ran them on the tagged commit', () => {
+  const start = RELEASE.indexOf('\n  gate:\n');
+  assert.ok(start >= 0, 'no gate job in release.yml');
+  const rest = RELEASE.slice(start + 1);
+  const next = rest.slice(1).search(/\n  [a-z][\w-]*:\n/);
+  const gate = next < 0 ? rest : rest.slice(0, next + 1);
+  assert.match(gate, /gh run list --workflow CI/, 'the gate no longer reads CI');
+  for (const run of [/pnpm (run )?check/, /playwright install/, /node --test/, /pnpm (--filter \S+ )?test\b/, /vitest/, /cargo test/]) {
+    assert.doesNotMatch(gate, run, `the release gate runs ${run}`);
+  }
+});
+
 test('shellcheck reads every tracked shell script, found by git rather than by a hand list', () => {
   const step = CI.split('\n').find((line) => /^\s*run: .*\bshellcheck\b/.test(line));
   assert.ok(step, 'no shellcheck step');
