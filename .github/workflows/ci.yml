@@ -10,6 +10,9 @@ name: CI
 #          platform, the golden gate and the supply-chain checks. A push to `main`, the nightly
 #          schedule, a manual dispatch, and a pull request labelled `e2e`.
 #
+# And one job beside the tiers: `web-nightly` runs the browser suites too slow for every push
+# (apps/web's nightly test tier, owner's call 2026-10-20) on the schedule and a dispatch only.
+#
 # `main` is never thinned: release.yml reads the push-event run for the tagged commit, so that
 # run has to be the full tier every time. `labeled` is in the pull-request types so that ADDING
 # the label starts the full run rather than waiting for the next push.
@@ -90,12 +93,7 @@ jobs:
     name: TS packages + web app (fast tier on a pull request · full tier on main)
     needs: [plan]
     runs-on: ubuntu-latest
-    # 75, not 45 (2026-10-20): the full tier on main ran 13–17 minutes until the Practice
-    # redesign's mark gate (case-photos.test.mjs, E15) added two cases of about 20 minutes each on
-    # this runner — measured on run 39376315009, cut off at 45 with the WebKit case unfinished.
-    # Still a bound that catches a hang. Lower it again once that gate stops screenshotting what
-    # its geometry already computes.
-    timeout-minutes: 75
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -235,6 +233,43 @@ jobs:
           # nothing would say which of the two had actually changed.
           pip install --quiet pillow==12.3.0
           python scripts/verify-icons.py
+
+  # THE NIGHTLY WEB TIER: browser suites too slow for every push (owner, 2026-10-20).
+  #
+  # Today that is the Practice redesign's mark gate, `apps/web/test/browser/case-photos.test.mjs`
+  # (E15). It ran inside `ts` until it took the push run on main from 13–17 minutes to over an hour:
+  # two cases, one per engine, of about 20 minutes each on this runner — measured on run
+  # 39376315009, cut off at 45 minutes with the WebKit case unfinished. The owner does not need it
+  # when releasing, so it left the browser tier and `pnpm check` (apps/web/run-tests.mjs) and runs
+  # HERE, on the schedule and on a manual dispatch. A tier is where a suite runs, never a way to
+  # leave one out: ci-plan.test.mjs fails if no job fired by the schedule runs the nightly tier.
+  #
+  # Not gated on the plan: the plan says "full" for a push too, and this job must not run there.
+  #
+  # 90 minutes: the measured ~40 of suite time plus ~5 of install and browser downloads, then about
+  # double, because this repository has measured the same work at 23 and 44 minutes on two runners
+  # (the last-layer sweep, 2026-09-17). A liveness bound, not a performance assertion.
+  #
+  # Both engines and xvfb, set up as `ts` sets them up and for the same reasons (see there).
+  web-nightly:
+    name: web — nightly browser suites (the mark gate)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/apt-ubuntu-only
+      - name: cubus-web — browser engines for the nightly suites
+        run: pnpm --filter cubus-web exec playwright install --with-deps webkit chromium
+      - name: cubus-web — test:nightly (the browser suites too slow for every push)
+        run: xvfb-run -a pnpm --filter cubus-web test:nightly
 
   # THE COMPLETENESS PROOF THE METHOD SOLVER RESTS ON — its OWN job, sharded by rung combination.
   #

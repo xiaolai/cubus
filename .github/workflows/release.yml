@@ -54,10 +54,12 @@ jobs:
   # time. With the Practice redesign's mark gate that rerun took over an hour against this job's
   # 60-minute bound, so a release CI had cleared could not build. `ci-plan.test.mjs` asserts the
   # gate runs no test suite.
+  #
+  # 45 minutes: the 30-minute wait for CI below, plus the checkout and the tag checks.
   gate:
     name: Quality gate
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 45
     permissions:
       contents: read
       actions: read   # `gh run list`, to read CI's conclusion for this commit
@@ -165,9 +167,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
-          # 80 minutes: CI's full tier takes about an hour on main since 2026-10-20 (its web job is
-          # bounded at 75), and a tag pushed straight after main waits for that run here.
-          deadline=$((SECONDS + 4800))
+          # 30 minutes: a tag pushed straight after main waits here for that push's CI run, whose
+          # web job takes 13–17 minutes plus the platform jobs beside it. The mark gate, which made
+          # it an hour, runs nightly since 2026-10-20 and is not part of a push run.
+          deadline=$((SECONDS + 1800))
           while :; do
             runs=$(gh run list --workflow CI --event push --commit "$GITHUB_SHA" --json status,conclusion,url)
             if [ "$(printf '%s' "$runs" | jq length)" -eq 0 ]; then
@@ -182,7 +185,7 @@ jobs:
               state="CI for $GITHUB_SHA is still running"
             fi
             if [ "$SECONDS" -ge "$deadline" ]; then
-              echo "::error::gave up after 80 minutes: $state"
+              echo "::error::gave up after 30 minutes: $state"
               exit 1
             fi
             echo "$state — waiting 30s"

@@ -5,8 +5,11 @@
 //     request without a Playwright install;
 //   - the browser tier is exactly the suites that do, so nothing that needs an engine can sit in
 //     the fast tier and fail there for a missing executable;
-//   - the two together are every test file under apps/web — a suite in neither would never run,
-//     which is the "gate nothing runs" AGENTS.md records twice;
+//   - the nightly tier is an explicit list of browser suites too slow for every push (owner,
+//     2026-10-20), taken out of the browser tier and so out of `pnpm check`, and run by CI's
+//     scheduled job instead (ci-plan.test.mjs holds that half);
+//   - the three together are every test file under apps/web, with none in two — a suite in no
+//     tier would never run, which is the "gate nothing runs" AGENTS.md records twice;
 //   - a pattern that matches nothing is refused, because `node --test` itself reports "tests 0"
 //     and exits 0 for one (measured, Node 24).
 //
@@ -71,15 +74,31 @@ test('the fast tier launches no browser, and the browser tier is exactly the sui
   );
 });
 
-test('fast + browser is every test file under apps/web, with nothing counted twice', () => {
-  const all = resolveTier('all');
-  assert.deepEqual([...all].sort(), allTestFiles());
-  assert.equal(new Set(all).size, all.length, 'a file is in both tiers');
+// THE RELATION, not a list: whatever the nightly tier names, the three tiers still cover every test file and
+// share none, and `all` — what `pnpm check` runs — is exactly the two that run on every push to main.
+test('fast, browser and nightly are every test file under apps/web, with nothing in two of them', () => {
+  const fast = resolveTier('fast');
+  const browser = resolveTier('browser');
+  const nightly = resolveTier('nightly');
+  assert.ok(nightly.length > 0, 'the nightly tier resolves to nothing — this relation would check nothing');
+  assert.deepEqual([...fast, ...browser, ...nightly].sort(), allTestFiles(), 'the three tiers are not every test file');
+  for (const [a, b, an, bn] of [[fast, browser, 'fast', 'browser'], [fast, nightly, 'fast', 'nightly'], [browser, nightly, 'browser', 'nightly']]) {
+    assert.deepEqual(a.filter((f) => b.includes(f)), [], `a file is in both ${an} and ${bn}`);
+  }
   assert.deepEqual(
-    [...resolveTier('fast'), ...resolveTier('browser')].sort(),
-    all.sort(),
-    '`all` is not the union of the two tiers',
+    nightly.filter((f) => !f.startsWith('test/browser/')),
+    [],
+    'a nightly suite sits outside test/browser/ — every Playwright suite lives there',
   );
+  assert.deepEqual(
+    nightly.filter((f) => !launchesBrowser(f)),
+    [],
+    'a nightly suite launches no browser — a node-only suite is fast enough for every push',
+  );
+  const all = resolveTier('all');
+  assert.equal(new Set(all).size, all.length, 'a file is counted twice in `all`');
+  assert.deepEqual([...all].sort(), [...fast, ...browser].sort(), '`all` is not fast + browser');
+  assert.deepEqual(all.filter((f) => nightly.includes(f)), [], '`pnpm check` runs a nightly suite');
 });
 
 // A SLOT IS NOT A UNIT OF COST, which is the assumption `--test-concurrency` makes and this repository's
@@ -146,11 +165,30 @@ test('a test file that belongs to no tier fails the run rather than never runnin
     writeFileSync(join(dir, 'serve.test.mjs'), '');
     writeFileSync(join(dir, 'test', 'one.test.mjs'), '');
     writeFileSync(join(dir, 'test', 'browser', 'two.test.mjs'), '');
+    for (const f of TIERS.nightly) writeFileSync(join(dir, f), '');
     writeFileSync(join(dir, 'test', 'stray', 'three.test.mjs'), '');
     assert.throws(() => resolveTier('fast', `${dir}/`), /belong to no tier.*test\/stray\/three\.test\.mjs/);
     rmSync(join(dir, 'test', 'stray'), { recursive: true });
     assert.deepEqual(resolveTier('fast', `${dir}/`), ['serve.test.mjs', 'test/one.test.mjs']);
-    assert.deepEqual(resolveTier('browser', `${dir}/`), ['test/browser/two.test.mjs']);
+    assert.deepEqual(resolveTier('browser', `${dir}/`), ['test/browser/two.test.mjs'], 'a nightly suite is in the browser tier');
+    assert.deepEqual(resolveTier('nightly', `${dir}/`), [...TIERS.nightly]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A nightly entry is a NAME, not a pattern, so a renamed or deleted suite would otherwise vanish from the
+// scheduled job while every tier stayed green. It fails every tier, because each one claims the whole tree.
+test('a nightly entry that names a missing file fails every tier, loudly', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tiers-'));
+  try {
+    mkdirSync(join(dir, 'test', 'browser'), { recursive: true });
+    writeFileSync(join(dir, 'serve.test.mjs'), '');
+    writeFileSync(join(dir, 'test', 'one.test.mjs'), '');
+    writeFileSync(join(dir, 'test', 'browser', 'two.test.mjs'), '');
+    for (const tier of ['fast', 'browser', 'nightly', 'all']) {
+      assert.throws(() => resolveTier(tier, `${dir}/`), /matches nothing: test\/browser\//, `the "${tier}" tier ran without the nightly suite`);
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -161,6 +199,7 @@ test('the scripts and the pre-push hook run the tiers through the runner', () =>
   assert.equal(web.test, 'node run-tests.mjs all');
   assert.equal(web['test:fast'], 'node run-tests.mjs fast');
   assert.equal(web['test:browser'], 'node run-tests.mjs browser');
+  assert.equal(web['test:nightly'], 'node run-tests.mjs nightly');
   assert.match(web.check, /node run-tests\.mjs all$/, '`pnpm check` must still be every tier');
   assert.match(web['check:fast'], /node run-tests\.mjs fast$/);
 
@@ -197,6 +236,10 @@ test('the scripts and the pre-push hook run the tiers through the runner', () =>
   assert.doesNotMatch(hook, /pnpm check(?!:fast)/, 'the pre-push hook runs the full tier — that is what the tiers exist to avoid');
 });
 
-test('the tier patterns are the documented two, so the docs and the runner agree', () => {
-  assert.deepEqual(TIERS, { fast: ['serve.test.mjs', 'test/*.test.mjs'], browser: ['test/browser/*.test.mjs'] });
+test('the tier patterns are the documented three, so the docs and the runner agree', () => {
+  assert.deepEqual(TIERS, {
+    fast: ['serve.test.mjs', 'test/*.test.mjs'],
+    browser: ['test/browser/*.test.mjs'],
+    nightly: ['test/browser/case-photos.test.mjs'],
+  });
 });

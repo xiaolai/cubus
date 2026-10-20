@@ -16,10 +16,25 @@ import { fileURLToPath } from 'node:url';
 
 import { FILTERS, FULL_TIER_LABEL, format, plan } from '../../../scripts/ci-plan.mjs';
 import { LADDER, LAST_LAYER_ROUTES } from '../lib/method-solver.js';
+import { resolveTier } from '../run-tests.mjs';
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const CI = readFileSync(`${ROOT}.github/workflows/ci.yml`, 'utf8');
 const RELEASE = readFileSync(`${ROOT}.github/workflows/release.yml`, 'utf8');
+
+// The jobs of a workflow by name: a two-space-indented key under `jobs:`, up to the next one.
+function jobBlocks(workflow) {
+  const blocks = new Map();
+  let current = null;
+  for (const line of workflow.slice(workflow.indexOf('\njobs:\n') + 7).split('\n')) {
+    const m = /^  ([a-z][\w-]*):\s*$/.exec(line);
+    if (m) {
+      current = m[1];
+      blocks.set(current, '');
+    } else if (current) blocks.set(current, `${blocks.get(current)}${line}\n`);
+  }
+  return blocks;
+}
 
 const everything = { full: true, rust: true, ml: true, android: true, icons: true, deps: true };
 const nothingExtra = { full: false, rust: false, ml: false, android: false, icons: false, deps: false };
@@ -132,17 +147,7 @@ test('the output form is what $GITHUB_OUTPUT takes', () => {
 });
 
 test('every skippable CI job is gated on an output the plan emits, and the always-on ones are not', () => {
-  // Job blocks: a two-space-indented key under `jobs:`, up to the next one.
-  const jobsText = CI.slice(CI.indexOf('\njobs:\n') + 7);
-  const blocks = new Map();
-  let current = null;
-  for (const line of jobsText.split('\n')) {
-    const m = /^  ([a-z][\w-]*):\s*$/.exec(line);
-    if (m) {
-      current = m[1];
-      blocks.set(current, '');
-    } else if (current) blocks.set(current, `${blocks.get(current)}${line}\n`);
-  }
+  const blocks = jobBlocks(CI);
   const outputs = new Set(Object.keys(plan({ event: 'push' })));
   const referenced = [...CI.matchAll(/needs\.plan\.outputs\.([\w-]+)/g)].map((m) => m[1]);
   assert.ok(referenced.length > 0, 'no job reads the plan');
@@ -240,13 +245,7 @@ test('the 62,208-state sweep has a job of its own, sized for what it costs', () 
   // measured at ~50 minutes across its four rung combinations, so a full-tier run was one slow
   // runner away from being cancelled mid-proof. A cancelled job says nothing about the thing it
   // was proving, and nothing had failed yet, which is the only reason it had not been noticed.
-  const jobsText = CI.slice(CI.indexOf('\njobs:\n') + 7);
-  const blocks = new Map();
-  let current = null;
-  for (const line of jobsText.split('\n')) {
-    const m = /^  ([a-z][\w-]*):\s*$/.exec(line);
-    if (m) { current = m[1]; blocks.set(current, ''); } else if (current) blocks.set(current, `${blocks.get(current)}${line}\n`);
-  }
+  const blocks = jobBlocks(CI);
   const sweep = blocks.get('last-layer-sweep');
   assert.ok(sweep, 'the sweep must have a job of its own');
   // Not a STEP of `ts` any more — the whole point. Read as steps with comments stripped, the same
@@ -317,6 +316,35 @@ test('the release gate runs no test suite: CI already ran them on the tagged com
   for (const run of [/pnpm (run )?check/, /playwright install/, /node --test/, /pnpm (--filter \S+ )?test\b/, /vitest/, /cargo test/]) {
     assert.doesNotMatch(gate, run, `the release gate runs ${run}`);
   }
+});
+
+// THE NIGHTLY TIER IS RUN BY THE SCHEDULE, NEVER BY NOBODY (owner, 2026-10-20). The mark gate (case-photos) is about
+// twenty minutes per engine on a runner, too slow for every push, so it left the browser tier and `pnpm check`. A tier is
+// where a suite runs, never a way to leave one out: this holds that SOME job fired by the nightly schedule runs it, with
+// both engines and a display, and that the job does not run on a push or a pull request, which it was taken out of.
+// The relation, not a name: the job is found by what it runs, and the script by what it invokes.
+test('every nightly-tier suite is run by a CI job that fires on the schedule, and not on a push', () => {
+  const nightly = resolveTier('nightly');
+  assert.ok(nightly.length > 0, 'the nightly tier is empty — this would check nothing');
+  const scripts = JSON.parse(readFileSync(`${ROOT}apps/web/package.json`, 'utf8')).scripts;
+  const runsNightly = Object.keys(scripts).filter((name) => /run-tests\.mjs nightly\b/.test(scripts[name]));
+  assert.ok(runsNightly.length > 0, 'no cubus-web script runs the nightly tier');
+
+  const jobs = [...jobBlocks(CI)].filter(([, block]) => {
+    const code = block.split('\n').filter((line) => !/^\s*#/.test(line)).join('\n');
+    return runsNightly.some((name) => new RegExp(`--filter cubus-web (?:run )?${name}(?![\\w:-])`).test(code));
+  });
+  assert.ok(jobs.length > 0, `no CI job runs the nightly tier (${nightly.join(', ')}), so nothing runs it at all`);
+  for (const [name, block] of jobs) {
+    const cond = /^    if: (.+)$/m.exec(block)?.[1];
+    assert.ok(cond, `${name} has no job-level if:, so it runs on every push — the suite it holds is too slow for that`);
+    assert.match(cond, /github\.event_name == 'schedule'/, `${name}'s if: does not admit the schedule`);
+    assert.doesNotMatch(cond, /\bpush\b|pull_request|needs\.plan/, `${name}'s if: admits a push or a pull request`);
+    assert.match(block, /playwright install --with-deps webkit chromium/, `${name} does not install both engines`);
+    assert.match(block, /xvfb-run -a pnpm --filter cubus-web/, `${name} runs the suites without a display`);
+  }
+  const on = CI.slice(CI.indexOf('\non:\n'), CI.indexOf('\npermissions:'));
+  assert.match(on, /^  schedule:\n    - cron: /m, 'ci.yml has no schedule, so the nightly job never fires');
 });
 
 test('shellcheck reads every tracked shell script, found by git rather than by a hand list', () => {

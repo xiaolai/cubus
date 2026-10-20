@@ -21,6 +21,8 @@
     "test:fast": "node run-tests.mjs fast",
     "pretest:browser": "pnpm vendor:libs",
     "test:browser": "node run-tests.mjs browser",
+    "pretest:nightly": "pnpm vendor:libs",
+    "test:nightly": "node run-tests.mjs nightly",
     "check": "pnpm vendor:libs && node run-tests.mjs all",
     "check:fast": "pnpm vendor:libs && node run-tests.mjs fast",
     "build:dist": "node build.mjs",

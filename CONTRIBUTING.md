@@ -22,7 +22,9 @@ before every push (`.githooks/pre-push`; `CUBUS_SKIP_CHECK=1 git push` to skip i
 every pull request. The browser suites, coverage, the platform matrix and the golden gate run on
 `main`, nightly, on a manual dispatch, and on a pull request you label **`e2e`**; a pull request
 also runs a platform job when it touches that platform's inputs (`scripts/ci-plan.mjs` lists them).
-`pnpm test:browser` runs the browser suites alone, when that is the thing you changed.
+`pnpm test:browser` runs the browser suites alone, when that is the thing you changed. A few
+browser suites too slow for every push form a nightly tier: CI runs them on its schedule and on a
+manual dispatch, `pnpm check` does not, and `pnpm --filter cubus-web test:nightly` runs them locally.
 
 `scripts/check-on-clone.sh` runs the web checks the way a fresh clone sees the tree, with the
 gitignored inputs hidden. It is how "works on my machine" gets caught before CI does, and it says

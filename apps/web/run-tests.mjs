@@ -1,32 +1,43 @@
 // The web app's test tiers, and the runner that keeps them honest.
 //
-// Two tiers, keyed on what a test needs from the machine:
+// Three tiers, keyed on what a test needs from the machine and how long it takes:
 //
 //   fast     `serve.test.mjs` and `test/*.test.mjs` — node only. Runs before every push
 //            (.githooks/pre-push) and on every pull request.
-//   browser  `test/browser/*.test.mjs` — every suite that launches Playwright's WebKit or
-//            Chromium. Minutes, two browser downloads, xvfb on a runner. Runs on `main`,
-//            nightly, on a pull request labelled `e2e`, and on a manual dispatch.
+//   browser  `test/browser/*.test.mjs` less the nightly ones — every suite that launches
+//            Playwright's WebKit or Chromium. Minutes, two browser downloads, xvfb on a runner.
+//            Runs on `main`, nightly, on a pull request labelled `e2e`, and on a manual dispatch.
+//   nightly  browser suites too slow for every push, NAMED one by one (owner, 2026-10-20). They
+//            stay in `test/browser/`, where every Playwright suite lives, and run in CI's
+//            scheduled job (`ci.yml`, held by ci-plan.test.mjs) and on a manual dispatch.
 //
-// `all` is the union, and `pnpm check` still means `all`: a tier is where a suite runs, never a
-// way to leave one out.
+// `all` is fast + browser, and `pnpm check` means `all`. A tier is where a suite runs, never a way
+// to leave one out: the nightly tier is not in `pnpm check`, so the scheduled job is what runs it.
 //
 // WHY A RUNNER rather than `node --test` with two patterns in package.json. A glob that matches
 // nothing is not an error to `node --test`: it prints "tests 0" and exits 0 (measured, Node 24),
 // so a renamed directory would turn a tier into a green gate that runs nothing — the same trap
 // AGENTS.md records for `node --test <missing-file>`. This resolves each pattern itself, refuses
 // an empty one, and refuses a test file that belongs to no tier, so "fast + browser = everything"
-// is checked on every run and not only by the test that also states it.
+// is checked on every run and not only by the test that also states it. A nightly entry is a file
+// name, and a name that matches nothing is refused the same way, by every tier.
 import { spawnSync } from 'node:child_process';
 import { globSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const WEB = fileURLToPath(new URL('./', import.meta.url));
 
-/** Patterns relative to apps/web. `all` is derived, so the two halves cannot drift apart. */
+/**
+ * Patterns relative to apps/web. `all` is derived, so the halves cannot drift apart.
+ *
+ * `nightly` is taken OUT of `browser`'s pattern rather than given a directory of its own, because every
+ * Playwright suite lives in `test/browser/` (AGENTS.md §7). The mark gate is about twenty minutes per engine
+ * on a CI runner (2026-10-20) — an hour-long push run for a check the owner does not need when releasing.
+ */
 export const TIERS = Object.freeze({
   fast: Object.freeze(['serve.test.mjs', 'test/*.test.mjs']),
   browser: Object.freeze(['test/browser/*.test.mjs']),
+  nightly: Object.freeze(['test/browser/case-photos.test.mjs']),
 });
 
 /** Directories under apps/web that hold no tests of ours and are never walked. */
@@ -67,8 +78,15 @@ export function resolveTier(tier, root = WEB) {
   if (!patterns) {
     throw new Error(`unknown test tier "${tier}" — one of: ${[...Object.keys(TIERS), 'all'].join(', ')}`);
   }
-  const files = expand(patterns, root);
-  const claimed = new Set(expand([...TIERS.fast, ...TIERS.browser], root));
+  // Expanded for EVERY tier, so a nightly entry naming a missing file fails `pnpm check` too, not only the
+  // scheduled job nobody watches the morning after.
+  const nightly = new Set(expand(TIERS.nightly, root));
+  const outside = [...nightly].filter((f) => !f.startsWith('test/browser/'));
+  if (outside.length > 0) {
+    throw new Error(`nightly suites outside test/browser/: ${outside.join(', ')} — every Playwright suite lives there`);
+  }
+  const files = tier === 'nightly' ? expand(patterns, root) : expand(patterns, root).filter((f) => !nightly.has(f));
+  const claimed = new Set([...expand([...TIERS.fast, ...TIERS.browser], root), ...nightly]);
   const unclaimed = allTestFiles(root).filter((f) => !claimed.has(f));
   if (unclaimed.length > 0) {
     throw new Error(
