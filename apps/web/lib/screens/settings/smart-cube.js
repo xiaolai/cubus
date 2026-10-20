@@ -74,7 +74,8 @@ export const smartCubeCard = () => {
       return `<button class="btn sm outline" id="battRefresh" title="Ask the cube again">battery ?</button>`;
     }
     const low = lv <= 20;
-    const tone = low ? 'var(--err)' : lv <= 40 ? 'var(--warn)' : 'var(--ok)';
+    // 21–40% in --warn-ink, the shape every other warning wears: the --warn fill was 2.98:1 on the cream page (E5).
+    const tone = low ? 'var(--err)' : lv <= 40 ? 'var(--warn-ink)' : 'var(--ok)';
     return `<div id="battMeter" title="${lv}% battery" style="display:flex;align-items:center;gap:8px;flex:none">
       <div style="position:relative;width:34px;height:16px;border:1.5px solid var(--ink-5);border-radius:3px">
         <i style="position:absolute;inset:2px;width:calc(${lv}% - 4px);min-width:1px;background:${tone};border-radius:1px"></i>

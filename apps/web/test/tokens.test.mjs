@@ -107,6 +107,10 @@ const KIT_ONLY = new Set([
   // and the inverted-surface text pair (the app's inverted surfaces take their colours from
   // --invert-fg). The selected-row wash left this list when the foot band was mixed from it (E12.6).
   '--desk', '--on-ink', '--on-ink-dim', '--on-ink-2',
+  // The warning FILL. Its last use, the battery bar at 21–40%, moved to --warn-ink (sweep 2026-10-20, E5): 2.98:1 on
+  // the cream page, the shape E14 fixed for the paused bead and the claimed swatch. Every warning the app draws is
+  // --warn-ink now; the fill stays the kit's vocabulary.
+  '--warn',
   // Hover and wash variants the kit uses and the app has not needed yet.
   '--accent-hover', '--accent-wash', '--accent-ink', '--accent-ink-2',
   // The camera surfaces. The app draws no viewfinder at all (the scan screen deliberately shows
@@ -303,20 +307,19 @@ test('ink on a saturated fill clears the floor for what it carries', () => {
   assert.deepEqual(failures, []);
 });
 
-// The status FILLS are icons and swatches — 1.4.11 asks 3:1 of a graphic that carries meaning,
-// and the amber indicator sits on the titlebar's own surface rather than on the window.
-// --warn is deliberately absent: since the ink/fill split it is used at exactly one place, the
-// battery meter's bar below 40%, which sits inside a bordered box with the percentage printed
-// beside it — a graphic whose information is available in text, which 1.4.11 exempts. Every
-// warning that is a SHAPE (the unverified badge's border, the anchor-anyway button's, Practice's
-// paused bead, the scan's claimed swatch's ring) uses --warn-ink, which clears the text floor
-// above. The last two used --warn until 2026-10-20 (plan E14): 2.98:1 on the cream page.
-// The comment above, held: --warn's ONE use is the battery bar. A warning drawn as a shape anywhere else takes --warn-ink.
-test('the --warn fill is used in exactly one place, the battery bar, and every other warning shape is --warn-ink', () => {
+// The status FILLS are icons and swatches — 1.4.11 asks 3:1 of a graphic that carries meaning, and the amber indicator
+// sits on the titlebar's own surface rather than on the window. --warn is deliberately absent, and now absent from the
+// app as well: every warning drawn as a shape (the unverified badge's border, the anchor-anyway button's, Practice's
+// paused bead, the scan's claimed swatch's ring, the battery bar at 21–40%) uses --warn-ink, which clears the text floor
+// above. The bead and the swatch moved on 2026-10-20 (plan E14), the battery the same day (sweep, E5): --warn was
+// 2.98:1 on the cream page.
+test('the --warn fill is used nowhere: every warning shape is --warn-ink', () => {
   const files = ['index.html', ...APP_SOURCES, ...LIBRARY_SOURCES];
   assert.ok(files.length > 50, `precondition: only ${files.length} sources read`);
   const uses = files.flatMap((f) => [...read(`../${f}`).matchAll(/var\(--warn\)/g)].map(() => f));
-  assert.deepEqual(uses, ['lib/screens/settings/smart-cube.js'], 'the --warn fill where a warning shape needs --warn-ink');
+  assert.deepEqual(uses, [], 'the --warn fill where a warning shape needs --warn-ink');
+  // And the battery's middle band is the shape it moved to, not a third colour.
+  assert.match(read('../lib/screens/settings/smart-cube.js'), /lv <= 40 \? 'var\(--warn-ink\)'/, 'the battery at 21–40% is not drawn in --warn-ink');
 });
 
 test('every status fill clears the 3:1 a meaningful graphic needs', () => {
@@ -330,6 +333,52 @@ test('every status fill clears the 3:1 a meaningful graphic needs', () => {
     }
   }
   assert.deepEqual(failures, [], 'a graphic that carries meaning needs 3:1');
+});
+
+/**
+ * THE SHAPES THAT SAY A STATE, at 3:1 against what they are drawn on, in every theme (sweep 2026-10-20, E1–E3, E5).
+ * Each was a fill alone at 1.03–1.98:1 — a toggle switched off, a card tool's "open", the target picture's "doesn't
+ * matter yet" well — or a fill one token short (the battery at 21–40%, 2.98:1 in cream). Each pair is the token the
+ * stylesheet draws the shape in and every surface it is drawn against; the rules below are held to drawing it in that
+ * token, so the table cannot pass while the page draws something else.
+ */
+const SHAPES = [
+  ['a toggle switched off: the ring round its track, on the page', '--ink-4', ['--bg', '--panel']],
+  ['a toggle switched off: its knob, on the track', '--ink-4', ['--track']],
+  ['a toggle switched on: its knob, on the track', '--panel', ['--accent']],
+  ['a card tool, open: its ring, on its own fill and on the card', '--ink-4', ['--panel-sunk', '--bg', '--panel']],
+  ['the target picture\'s "doesn\'t matter yet" well: its ring, on the page', '--ink-4', ['--bg', '--panel']],
+  ['the battery at 21–40%: its fill, on the card', '--warn-ink', ['--bg', '--panel']],
+];
+
+test('every shape that says a state clears 3:1 on what it is drawn on, in every theme', () => {
+  const failures = [];
+  for (const [theme, block] of THEMES) {
+    for (const [what, ink, grounds] of SHAPES) {
+      for (const ground of grounds) {
+        const ratio = contrast(valueIn(block, ink), valueIn(block, ground));
+        if (ratio < 3) failures.push(`${theme}: ${what} — ${ink} on ${ground} is ${ratio.toFixed(2)}:1`);
+      }
+    }
+  }
+  assert.deepEqual(failures, [], 'a shape that carries meaning needs 3:1 (WCAG 1.4.11)');
+});
+
+test('the stylesheet draws those shapes in the tokens the table checks', () => {
+  const rule = (selector) => {
+    const at = html.indexOf(`${selector} {`);
+    assert.notEqual(at, -1, `the stylesheet has no rule "${selector}"`);
+    return html.slice(at, html.indexOf('}', at));
+  };
+  assert.match(rule('.toggle:not(.on)'), /box-shadow:\s*inset 0 0 0 2px var\(--ink-4\)/, 'an off toggle\'s track has no --ink-4 ring');
+  assert.match(rule('.toggle:not(.on) > i'), /background:\s*var\(--ink-4\)/, 'an off toggle\'s knob is not --ink-4');
+  assert.match(rule('.toggle > i'), /background:\s*var\(--panel\)/, 'an on toggle\'s knob is not --panel');
+  assert.match(rule('.toggle.on'), /background:\s*var\(--accent\)/, 'an on toggle\'s track is not --accent');
+  assert.match(rule('.card-tools > button.open'), /box-shadow:\s*inset 0 0 0 2px var\(--ink-4\)/, 'an open card tool has no --ink-4 ring');
+  const free = rule('.net .sticker.free');
+  assert.match(free, /border-color:\s*var\(--ink-4\)/, 'the free well has no --ink-4 ring');
+  // MUST NOT: an opacity on the well, which would fade its ring with its fill — that is how it read 1.50–1.98:1.
+  assert.doesNotMatch(free, /opacity/, 'the free well is faded as a whole, ring and all');
 });
 
 // A scan tile's border is four colour bands — each the colour of the side that borders it — and they

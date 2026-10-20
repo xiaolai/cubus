@@ -900,6 +900,12 @@
          tokens are surface-scale (cards, popovers, windows). Named in the discipline test. */
       .toggle > i { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: var(--panel); box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: left var(--fade); }
       .toggle.on > i { left: 20px; }
+      /* OFF IS A SHAPE, not a shade (sweep 2026-10-20, E1): the grey track on the page was 1.32–1.52:1 and the white
+         knob on it 1.40–1.47, so a switched-off toggle carried its state by a fill nobody could see. Switched off, the
+         track wears an --ink-4 ring (5.0:1 and more on the page) and the knob is --ink-4 on the track (3.6:1 and more),
+         inset from the ring so the two never touch — the shape E14 gave the empty bead. tokens.test.mjs holds both. */
+      .toggle:not(.on) { box-shadow: inset 0 0 0 2px var(--ink-4); }
+      .toggle:not(.on) > i { background: var(--ink-4); box-shadow: none; top: 5px; left: 5px; width: 12px; height: 12px; }
       svg.ic { width: 1em; height: 1em; stroke: currentColor; stroke-width: 1.75; fill: none; stroke-linecap: round; stroke-linejoin: round; }
 
       /* cube slot */
@@ -1183,7 +1189,8 @@
       .card-tools { position: absolute; top: 12px; right: 14px; z-index: 2; display: flex; align-items: center; gap: 2px; }
       .card-tools > button { width: 34px; height: 34px; border-radius: var(--r-4); display: grid; place-items: center; color: var(--ink-5); }
       .card-tools > button:hover { background: var(--panel-sunk); color: var(--ink-2); }
-      .card-tools > button.open { background: var(--panel-sunk); color: var(--ink); }
+      /* Open is said by a RING, not the fill alone (sweep 2026-10-20, E2): --panel-sunk on the card is 1.03–1.21:1. */
+      .card-tools > button.open { background: var(--panel-sunk); color: var(--ink); box-shadow: inset 0 0 0 2px var(--ink-4); }
       .scan-cam.on #scanCamBtn { color: var(--ok); }
       /* Asking whether the cube's own report matches the cube in your hands. Sits directly under the
          2D net, because the net is what you compare against — it shows all six sides at once,
@@ -1277,7 +1284,9 @@
          (dev-docs/solve-to-state-plan.md §6). Drawn as an empty well rather than as a colour,
          because the one thing it must never do is look like a sixth colour: the whole point of
          drawing a target is that a child can tell what they are aiming at from what is free. */
-      .net .sticker.free { background: var(--facelet-off); opacity: .35; }
+      /* The well carries meaning ("any colour here"), so it has a boundary at 3:1 on the page (sweep 2026-10-20, E3): the
+         faded fill alone was 1.50–1.98:1. Its FILL is faded and its ring is not — an opacity on the element faded both. */
+      .net .sticker.free { background: color-mix(in srgb, var(--facelet-off) 35%, transparent); border-color: var(--ink-4); }
       /* A grid of fixed --chip tracks, as many as fit, justified edge-to-edge — so the first
          column sits flush with the heading and the last column flush with the count above, and a
          column can never be clipped: auto-fill computes what fits instead of letting wrap guess. */
