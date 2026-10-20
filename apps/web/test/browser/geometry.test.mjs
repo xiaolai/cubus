@@ -774,6 +774,7 @@ for (const fixture of FIXTURES) {
           colsV: cols.scrollHeight - cols.clientHeight, covered,
           solLabel: rect($('#solLabel')), moveCount: rect($('#moveCount')),
           countLine: parseFloat(getComputedStyle($('#moveCount')).lineHeight) || 0,
+          countInBand: Boolean($('#moveCount').closest('.foot-band')),
           pinShown: Boolean(pin) && getComputedStyle(pin).display !== 'none',
         };
       })()`);
@@ -824,11 +825,15 @@ for (const fixture of FIXTURES) {
       // longest thing #moveCount says, and it was drawn glued to the heading ("Solutioncouldn't") and
       // wrapped into a column hanging off its right edge. Either it shares the heading's row — with a
       // gap, on ONE line — or it starts a row of its own at the heading's left edge. Never between.
+      // In portrait the sentence is said in the foot band, never beside the heading (sweep 2026-10-20, A1): it wrapped the
+      // heading to two rows there and took 45px of cube on the iPhone SE. Landscape keeps it by the heading.
+      assert.equal(m.countInBand, portrait, portrait ? 'portrait: a walk to a stop says its sentence beside the heading, not in the band' : 'landscape: the sentence is in a band');
       const beside = m.moveCount.top < m.solLabel.bottom - 1;
-      if (beside) {
+      // A sentence in the band is held by the band's own cases (inside the cube card's foot, nothing cut, nothing under it).
+      if (!m.countInBand && beside) {
         assert.ok(m.moveCount.left - m.solLabel.right >= 8, `the count is ${m.moveCount.left - m.solLabel.right}px from the heading — glued to it`);
         assert.ok(m.countLine > 0 && m.moveCount.height <= m.countLine * 1.5, `the count wraps beside the heading (${m.moveCount.height}px tall, line ${m.countLine}px) — a hanging column`);
-      } else {
+      } else if (!m.countInBand) {
         near(m.moveCount.left, m.solLabel.left, 'a count on its own row starts under the heading', 1);
       }
     } finally {
@@ -1498,13 +1503,22 @@ const cubeRows = (page, rows) => page.evaluate((r) => {
  * record's two fixed sentences, both at once (lib/drill/record-says.js). Read in the page, so it is the app's own copy.
  */
 const bandEnumeration = (page) => page.evaluate(async () => {
-  const [{ followNoteSentences }, { practiseLabels }, { WHY_TURN_LABEL }, { RECORD_SAYS }, { drawnWidth }] = await Promise.all([
+  const [{ followNoteSentences }, { practiseLabels }, { WHY_TURN_LABEL }, { RECORD_SAYS }, { drawnWidth }, { methodNoteSentences }, { routeSentences },
+    { OFFERED_TARGETS, TARGETS }, { DESTINATION_BY_ID }, { GODS_NUMBER }] = await Promise.all([
     import('/lib/walk-follow.js'), import('/lib/practice-link.js'), import('/lib/walk-presenter.js'), import('/lib/drill/record-says.js'),
-    import('/lib/foot-band.js')]);
+    import('/lib/foot-band.js'), import('/lib/walk-session.js'), import('/lib/stage-report.js'), import('/lib/stage-targets.js'),
+    import('/lib/patterns.js'), import('/lib/solve-target.js')]);
   // "Longest" as the band draws it, in its own font — the measure the app sizes its room by.
   const widthOf = drawnWidth(document.querySelector('.screen.active .foot-band'));
+  // Since the sweep of 2026-10-20 (A1) the band holds the method note, a walk to a stop's sentence and, on Scramble,
+  // "Solve this scramble" too: every sentence the first two can say, from the modules that say them.
+  const routes = routeSentences({
+    stages: OFFERED_TARGETS.filter((tg) => !tg.sideways && tg.id !== 'solved').map((tg) => tg.name),
+    pictures: [...Object.values(DESTINATION_BY_ID).map((x) => x.name), ...TARGETS.filter((tg) => tg.sideways).map((tg) => tg.name)],
+    most: GODS_NUMBER, widthOf,
+  });
   return { follow: followNoteSentences({ widthOf }), practise: practiseLabels(), why: WHY_TURN_LABEL,
-    record: [RECORD_SAYS.save, RECORD_SAYS.read] };
+    record: [RECORD_SAYS.save, RECORD_SAYS.read], notes: methodNoteSentences(), routes };
 });
 
 /**
@@ -1546,9 +1560,38 @@ async function everyCandidateFits(page, what) {
       ...ORIENTATIONS.map((h) => ({ follow: t(FOLLOW_SAYS.mismatch.text, holdSentence(h)), info: FOLLOW_SAYS.mismatch.info })),
       ...followNoteSentences().filter((s) => s.key !== 'mismatch').map((s) => ({ follow: s.text, info: s.info })),
     ];
+    // The method note and a walk to a stop's sentence (sweep 2026-10-20, A1): every one, built from its words here —
+    // every method's name in the fallback's sentence, every stage's and picture's name in every route sentence at every
+    // count it can carry — never through the app's choice of the widest.
+    const [{ METHODS }, { STAGE_COPY }, { OFFERED_TARGETS, TARGETS }, { DESTINATION_BY_ID }, { GODS_NUMBER }] = await Promise.all([
+      import('/lib/methods/registry.js'), import('/lib/stage-report.js'), import('/lib/stage-targets.js'), import('/lib/patterns.js'), import('/lib/solve-target.js')]);
+    const quick = t(METHODS.find((m) => m.id === 'quick').label);
+    states.push(...METHODS.filter((m) => m.id !== 'quick').map((m) => ({ note: t('%1 could not be worked out for this cube — showing %2.', t(m.label), quick) })));
+    const counts = Array.from({ length: GODS_NUMBER }, (_, i) => i + 1);
+    const stageNames = OFFERED_TARGETS.filter((tg) => !tg.sideways && tg.id !== 'solved').map((tg) => tg.name);
+    const pictureNames = [...Object.values(DESTINATION_BY_ID).map((x) => x.name), ...TARGETS.filter((tg) => tg.sideways).map((tg) => tg.name)];
+    const routes = new Set([STAGE_COPY.unknown(), ...counts.flatMap((n) => [STAGE_COPY.shortest(n), STAGE_COPY.route(n)]),
+      ...stageNames.flatMap((name) => [STAGE_COPY.already(name), ...counts.map((n) => STAGE_COPY.overshoot(name, n))]),
+      ...pictureNames.flatMap((name) => [STAGE_COPY.showing(name), ...counts.flatMap((n) => [STAGE_COPY.wayTo(name, n), STAGE_COPY.overshootTo(name, n)])])]);
+    states.push(...[...routes].map((route) => ({ route })));
     const band = document.querySelector('.screen.active .foot-band');
+    const count = document.getElementById('moveCount');
+    // The count as the walk has it, home in its heading — put back by the band's own observer if a state before this
+    // left it in the band (applyCubeBand's last state can).
+    const was = count.dataset.was ?? count.textContent;
+    count.textContent = was;
+    count.dataset.band = 'off';
+    await new Promise((r) => { requestAnimationFrame(() => requestAnimationFrame(r)); });
+    if (count.closest('.foot-band')) throw new Error('precondition: the count did not go home to its heading');
     const out = [];
     for (const st of states) {
+      const method = document.getElementById('methodNote');
+      method.hidden = !st.note;
+      method.textContent = st.note ?? '';
+      count.textContent = st.route ?? was;
+      count.dataset.band = st.route ? 'on' : 'off';
+      // The count moves into the band and out of it by the band's own observer, a task later: placed here at once.
+      if (st.route && count.parentElement !== band) band.append(count);
       const note = document.getElementById('followNote');
       note.hidden = !st.follow;
       note.classList.toggle('info', Boolean(st.info));
@@ -1559,8 +1602,12 @@ async function everyCandidateFits(page, what) {
       if (st.practise) practise.textContent = st.practise;
       band.hidden = false;
       const room = parseFloat(band.style.maxHeight);
-      out.push({ text: st.follow ?? st.practise, height: band.scrollHeight, room });
+      out.push({ text: st.follow ?? st.practise ?? st.note ?? st.route, height: band.scrollHeight, room });
     }
+    // Put back as the walk had it: the count home in its heading, through the band's own observer.
+    count.textContent = was;
+    count.dataset.band = 'off';
+    document.getElementById('methodNote').hidden = true;
     return { count: states.length, tall: out.filter((o) => !(o.height <= o.room + 0.5)).sort((a, b) => b.height - a.height) };
   });
   assert.ok(tall.count > 200, `precondition, ${what}: only ${tall.count} candidates enumerated`);
@@ -1568,16 +1615,37 @@ async function everyCandidateFits(page, what) {
     `${what}: ${tall.tall.length} things the band can say are taller than the room it is given`);
 }
 
-/** The cube screen's band states: each follow-note sentence alone, and the why button beside each practise label. */
-const cubeBandStates = (e, { why = true } = {}) => [
+/**
+ * The cube screen's band states. On Home: each follow-note sentence alone, the why button beside each practise label,
+ * each method note alone, and each walk to a stop's sentence alone. On Scramble: each follow-note sentence alone, and
+ * "Solve this scramble" alone — the follow-note, while it is said, takes the band alone (index.html).
+ */
+const cubeBandStates = (e, { why = true } = {}) => (why ? [
   ...e.follow.map((f) => ({ follow: f.text, info: f.info })),
-  ...(why ? e.practise.map((label) => ({ why: e.why, practise: label })) : []),
-];
+  ...e.practise.map((label) => ({ why: e.why, practise: label })),
+  ...e.notes.map((note) => ({ note })),
+  ...e.routes.map((route) => ({ route })),
+] : [
+  ...e.follow.map((f) => ({ follow: f.text, info: f.info })),
+  { solveIt: true },
+]);
 const applyCubeBand = (st) => {
   const note = document.getElementById('followNote');
   note.hidden = !st.follow;
   note.classList.toggle('info', Boolean(st.info));
   if (st.follow) document.getElementById('followMsg').textContent = st.follow;
+  // The method note and the count, as the walk session writes them: the count is a sentence in the band only while it
+  // is a walk to a stop's (`data-band`), and is put back as it was after.
+  const method = document.getElementById('methodNote');
+  if (method) { method.hidden = !st.note; method.textContent = st.note ?? ''; }
+  const count = document.getElementById('moveCount');
+  if (count) {
+    count.dataset.was ??= count.textContent;
+    count.textContent = st.route ?? count.dataset.was;
+    count.dataset.band = st.route ? 'on' : 'off';
+  }
+  const solveIt = document.getElementById('solveItBtn');
+  if (solveIt) solveIt.hidden = !st.solveIt;
   const whyLine = document.getElementById('whyLine');
   const whyBtn = document.getElementById('whyBtn');
   const practise = document.getElementById('practiseStep');
@@ -1716,11 +1784,96 @@ for (const fixture of FIXTURES) {
         for (const k of ['top', 'height']) near(b.card[k], bare.card[k], `portrait, Quick: the cube card's ${k} moved with the follow-note`);
         const e = await bandEnumeration(page);
         await bandHoldsEvery(page, '#viewCube cubus-cube', bare, cubeBandStates(e), applyCubeBand, 'portrait, Quick\'s band');
+        // In the room a Quick walk leaves, which is the least any walk leaves: a walk to a stop says its sentence here.
+        await everyCandidateFits(page, 'portrait, Quick\'s band');
       } else {
         // Landscape keeps today's rows: the note at the foot of the solution card, never over the cube.
         assert.equal(b.band, null, 'landscape: the band is drawn');
         assert.ok(await page.evaluate(() => Boolean(document.querySelector('#followNote').closest('.solution-card'))), 'landscape: the follow-note left the solution card');
       }
+      assert.deepEqual(errors.map(String), [], 'the page threw');
+    } finally {
+      await context.close();
+    }
+  });
+}
+
+// THE RESERVE IS THE SCREEN'S, NOT THE WALK'S, AND WHAT SHOWS ONLY SOMETIMES NEVER RESIZES THE CUBE (sweep 2026-10-20, A1,
+// S1). The method note, a walk to a stop's sentence and "Solve this scramble" are in the foot band, and the band's room is
+// one for the screen: sized for everything it can say on any walk the screen shows, below the closest framing the
+// renderer gives the cube (lib/foot-band.js). Before: on the iPhone SE the reserve was 48px under a Quick walk, 39 under
+// a lesson and 57 under a walk to a stop, and the note, the sentence and the button took 68, 58 and 54px of cube.
+// MUST NOT: a reserve that changes between the walks of one screen or inside one Scramble walk, or a cube that changes
+// size as the sentence or the button comes and goes.
+const portraitFixtures = FIXTURES.filter((f) => f.height - f.insets[0] - f.insets[2] > f.width);
+const reserveOf = (page) => page.evaluate(() => document.querySelector('.cols > .primary').style.getPropertyValue('--band-reserve') || '0px');
+for (const fixture of portraitFixtures) {
+  test(`Home's band reserve is one for every walk, and a walk to a stop's sentence leaves the cube its size: ${label(fixture)}`, async () => {
+    const { page, context, errors } = await open(fixture, 'home', { solveMethod: 'quick' });
+    try {
+      await frozenOnHome(page, LONGEST_QUICK_CUBE);
+      await page.waitForFunction(() => /^\d+$/.test(document.querySelector('#moveCount')?.textContent ?? ''), null, { timeout: 90_000 });
+      await cubeSettled(page, '#viewCube cubus-cube');
+      const quick = await reserveOf(page);
+      // A walk to a stop: its sentence where the count stands, in the band.
+      await page.evaluate(() => document.querySelector('#stageTargetRow [data-stage="corners-home"]').click());
+      await page.waitForFunction(() => document.querySelector('#moveCount')?.dataset.band === 'on' && document.querySelector('#moveCount').closest('.foot-band'), null, { timeout: 90_000 });
+      await cubeSettled(page, '#viewCube cubus-cube');
+      assert.equal(await reserveOf(page), quick, 'the reserve changed between a Quick walk and a walk to a stop');
+      const said = await measureBand(page, '#viewCube cubus-cube');
+      bandHolds(said, 'a walk to a stop, its sentence in the band');
+      assert.ok(said.held.includes('moveCount'), `the stop's sentence is not in the band (it holds ${said.held.join(', ') || 'nothing'})`);
+      await page.evaluate(() => { document.querySelector('#moveCount').hidden = true; });
+      await cubeSettled(page, '#viewCube cubus-cube');
+      const unsaid = await measureBand(page, '#viewCube cubus-cube');
+      near(said.painted, unsaid.painted, 'a walk to a stop: the painted cube changed size with its sentence');
+      for (const k of ['top', 'height']) near(said.card[k], unsaid.card[k], `a walk to a stop: the cube card's ${k} moved with its sentence`);
+      await page.evaluate(() => { document.querySelector('#moveCount').hidden = false; });
+      // The follow-note, said over it, takes the band alone (index.html).
+      await page.evaluate(() => { document.querySelector('#followNote').hidden = false; document.querySelector('#followMsg').textContent = 'This cube is not on the plan any more.'; });
+      await cubeSettled(page, '#viewCube cubus-cube');
+      const over = await measureBand(page, '#viewCube cubus-cube');
+      bandHolds(over, 'a walk to a stop, the follow-note said over its sentence');
+      assert.deepEqual(over.held, ['followNote'], 'the follow-note does not take the band alone over a walk to a stop\'s sentence');
+      await page.evaluate(() => { document.querySelector('#followNote').hidden = true; });
+      // A lesson, chosen as a person chooses it — the pin at the head of the Restore row — back on the whole cube.
+      await page.evaluate(() => document.querySelector('#stageTargetRow [data-stage="solved"]').click());
+      await page.waitForFunction(() => document.querySelector('#moveCount')?.dataset.band === 'off', null, { timeout: 90_000 });
+      await page.click('#methodPin');
+      await page.click('.method-menu [data-method="beginner"]');
+      await page.waitForFunction(() => document.querySelectorAll('#solList .walk-sec').length > 1, null, { timeout: 90_000 });
+      await cubeSettled(page, '#viewCube cubus-cube');
+      assert.equal(await reserveOf(page), quick, 'the reserve changed between a Quick walk and a lesson');
+      assert.deepEqual(errors.map(String), [], 'the page threw');
+    } finally {
+      await context.close();
+    }
+  });
+
+  test(`Scramble's band reserve is one for the whole walk, and "Solve this scramble" leaves the cube its size: ${label(fixture)}`, async () => {
+    const { page, context, errors } = await open(fixture, 'scramble');
+    try {
+      await page.click('#randCube:visible, #randCubeTool:visible');
+      await page.waitForSelector('#solList .chip-m');
+      await cubeSettled(page, '#viewCube cubus-cube');
+      const rolled = await reserveOf(page);
+      const before = await measureBand(page, '#viewCube cubus-cube');
+      // The scramble's last turn: the walk's end, where the button is offered.
+      await page.evaluate(() => { const chips = document.querySelectorAll('#solList .chip-m'); chips[chips.length - 1].click(); });
+      await page.waitForFunction(() => { const b = document.querySelector('#solveItBtn'); return b && !b.hidden; }, null, { timeout: 90_000 });
+      await cubeSettled(page, '#viewCube cubus-cube');
+      assert.equal(await reserveOf(page), rolled, 'the reserve changed inside one Scramble walk');
+      const end = await measureBand(page, '#viewCube cubus-cube');
+      bandHolds(end, 'a scramble at its end, the button in the band');
+      assert.ok(end.held.includes('solveItBtn'), `"Solve this scramble" is not in the band (it holds ${end.held.join(', ') || 'nothing'})`);
+      near(end.painted, before.painted, 'a scramble at its end: the painted cube changed size with the button');
+      for (const k of ['top', 'height']) near(end.card[k], before.card[k], `a scramble at its end: the cube card's ${k} moved with the button`);
+      // The follow-note, said over it, takes the band alone: the room is not kept for both (index.html).
+      await page.evaluate(() => { document.querySelector('#followNote').hidden = false; document.querySelector('#followMsg').textContent = 'This cube is not on the plan any more.'; });
+      await cubeSettled(page, '#viewCube cubus-cube');
+      const over = await measureBand(page, '#viewCube cubus-cube');
+      bandHolds(over, 'a scramble at its end, the follow-note said over the button');
+      assert.deepEqual(over.held, ['followNote'], 'the follow-note does not take the band alone over "Solve this scramble"');
       assert.deepEqual(errors.map(String), [], 'the page threw');
     } finally {
       await context.close();

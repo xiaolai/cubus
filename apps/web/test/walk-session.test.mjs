@@ -81,7 +81,7 @@ const MARKUP = `
   <div class="solution-card">
     <b id="solLabel">Solution</b><span id="moveCount">—</span><button id="proveBtn" hidden></button><button id="proveCancel" hidden></button>
     <div id="stageRow"><button data-stage="solved" class="on" aria-pressed="true"></button><button data-stage="cross" aria-pressed="false"></button></div>
-    <div id="methodRow"><button data-method="quick"></button><button data-method="beginner"></button><span id="methodNote" hidden></span></div>
+    <div id="methodRow"><button data-method="quick"></button><button data-method="beginner"></button><span id="methodNote" hidden></span><span id="methodUnsaved" hidden></span></div>
     <div id="solList"></div><div id="whyLine" hidden></div>
     <div id="followNote" hidden><span id="followMsg"></span><button id="resolveBtn"></button><button id="turnBackBtn"></button></div>
   </div>`;
@@ -812,8 +812,11 @@ test('a choice of method that storage refused is said beside the row, and still 
   w.$('[data-method="beginner"]').click();
   for (let i = 0; i < 3; i += 1) await settle();
   assert.equal(w.settings.solveMethod, 'beginner', 'the choice did not apply to this visit');
-  assert.equal(w.$('#methodNote').hidden, false, 'a choice that was not saved was not said');
-  assert.match(w.$('#methodNote').textContent, /could not be saved/);
+  // Said in a sentence of its own, never the fallback's: the fallback is said in the foot band in portrait, and this one
+  // stays in the row (sweep 2026-10-20, A1).
+  assert.equal(w.$('#methodUnsaved').hidden, false, 'a choice that was not saved was not said');
+  assert.match(w.$('#methodUnsaved').textContent, /could not be saved/);
+  assert.equal(w.$('#methodNote').hidden, true, 'a choice that was not saved was said as a fallback');
 });
 
 test('a choice from the "More methods" menu is stored and walked by the session\'s one press handler', async () => {
@@ -961,9 +964,9 @@ test('a choice storage refused is said even when the walk for it then fails to l
   w.$('[data-method="beginner"]').click();
   for (let i = 0; i < 3; i += 1) await settle();
   assert.equal(w.settings.solveMethod, 'beginner');
-  assert.equal(w.$('#methodNote').hidden, false, 'a refused save was not said because the walk failed');
-  assert.match(w.$('#methodNote').textContent, /could not be saved/);
-  assert.doesNotMatch(w.$('#methodNote').textContent, /could not be worked out/, 'a fallback that never landed was said');
+  assert.equal(w.$('#methodUnsaved').hidden, false, 'a refused save was not said because the walk failed');
+  assert.match(w.$('#methodUnsaved').textContent, /could not be saved/);
+  assert.equal(w.$('#methodNote').hidden, true, 'a fallback that never landed was said');
 });
 
 test('a Beginner load overtaken by a newer one never stamps its fallback on the newer walk', async () => {

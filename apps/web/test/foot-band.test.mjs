@@ -56,7 +56,7 @@ function standInCube(doc, { moving = false } = {}) {
 function projectingCube(doc) {
   const cube = standInCube(doc);
   const Vec = class {
-    constructor() { this.y = -1; }
+    constructor() { this.y = cube.sphereY ?? -1; }
     applyMatrix4() { return this; }
     applyQuaternion() { return this; }
     addScaledVector() { return this; }
@@ -130,7 +130,7 @@ test('a reserve that keeps moving while the card keeps its size throws — it ne
     const cube = projectingCube(h.doc);
     h.card.querySelector('.slot').append(cube);
     const ctl = new AbortController();
-    const band = footBand({ host: h.host, card: h.card, cube: () => cube, rows: [h.row], signal: ctl.signal,
+    const band = footBand({ host: h.host, card: h.card, cube: () => cube, rows: [h.row], signal: ctl.signal, closest: () => 0,
       longest: () => [[{ row: h.row, text: 'The longest thing this band can say.' }]] });
     let thrown = null;
     for (let i = 0; i <= RESERVE_FITS_MOST + 2 && !thrown; i++) {
@@ -178,7 +178,8 @@ test('the band keeps the room for the tallest hold sentence when it is the SHORT
     h.card.querySelector('.slot').append(cube);
     const ctl = new AbortController();
     const states = followNoteSentences().map(({ text, info }) => [{ row: h.row, text, info }]);
-    const band = footBand({ host: h.host, card: h.card, cube: () => cube, rows: [h.row], signal: ctl.signal, longest: () => states });
+    const band = footBand({ host: h.host, card: h.card, cube: () => cube, rows: [h.row], signal: ctl.signal, longest: () => states,
+      closest: () => 100 });
     band.remeasure();
     assert.equal(h.card.style.getPropertyValue('--band-reserve'), '80px',
       'the room under the cube is not kept for the tallest thing the follow-note can say');
@@ -186,4 +187,43 @@ test('the band keeps the room for the tallest hold sentence when it is the SHORT
   } finally {
     h.win.close();
   }
+});
+
+// THE RESERVE IS THE SCREEN'S, NOT THE WALK'S (sweep 2026-10-20, A1). A turned-over walk is framed from further back, so
+// its cube's sphere ends higher and the room under it is larger: the reserve sized by THAT camera was 39 px under a
+// lesson on the iPhone SE against 48 under a Quick walk in the same card. MUST NOT: a reserve that follows the camera.
+test('the reserve is sized by the closest framing, never by the camera the walk has now', () => {
+  /** The reserve a band settles on for a cube whose camera ends its sphere at `sphereY` (NDC; -1 is the canvas foot). */
+  const settle = (sphereY) => {
+    const h = harness();
+    try {
+      // The card ends at 104 and its slot gives the reserve: the canvas is 0 to 100 less the reserve. The closest
+      // framing's sphere ends at the canvas's foot; the camera the walk has now ends it at `sphereY`.
+      const reserve = () => Number.parseFloat(h.card.style.getPropertyValue('--band-reserve')) || 0;
+      h.win.HTMLElement.prototype.getBoundingClientRect = function rect() {
+        const box = (top, height) => ({ top, left: 0, right: 0, width: 0, height, bottom: top + height });
+        if (this.tagName === 'CANVAS') return box(0, 100 - reserve());
+        if (this.classList.contains('card')) return { ...box(0, 1000), bottom: 104 };
+        if (this.classList.contains('foot-band')) return box(0, 50);
+        return box(0, 0);
+      };
+      const cube = projectingCube(h.doc);
+      cube.sphereY = sphereY;
+      h.card.querySelector('.slot').append(cube);
+      const ctl = new AbortController();
+      const band = footBand({ host: h.host, card: h.card, cube: () => cube, rows: [h.row], signal: ctl.signal,
+        closest: () => 100 - reserve(), longest: () => [[{ row: h.row, text: 'The longest thing this band can say.' }]] });
+      band.remeasure();
+      band.remeasure();
+      const settled = reserve();
+      ctl.abort();
+      return settled;
+    } finally {
+      h.win.close();
+    }
+  };
+  const upright = settle(-1);
+  assert.equal(upright, 50, 'precondition: the reserve is what the band needs below the closest framing');
+  // A walk that turns the cube over is framed from further back: its sphere ends at 60 of the canvas's 100.
+  assert.equal(settle(-0.2), upright, 'the reserve followed the walk\'s camera');
 });

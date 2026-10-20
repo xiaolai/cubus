@@ -7,12 +7,12 @@ import { methodSolve } from '../lesson-client.js';
 import { METHODS, methodById } from '../methods/registry.js';
 import { createMethodRow, methodPinHtml, methodRowHtml } from '../method-row.js';
 import { t } from '../i18n.js';
-import { OFFERED_TARGETS } from '../stage-targets.js';
+import { OFFERED_TARGETS, TARGETS } from '../stage-targets.js';
 import { stopTargets } from '../method-stops.js';
 import { oneLineStrip } from '../scroll-strip.js';
 // Everything one cube screen's walk owns, from the load to the smart cube following it — the screen
 // keeps its composition and hands the walk the parts of it the walk writes to.
-import { createWalkSession } from '../walk-session.js';
+import { createWalkSession, methodNoteSentences } from '../walk-session.js';
 // The route race into a stage target — one of this screen's own parts, built below.
 import { createRouteRace } from './cube/route-race.js';
 // The rest of its own parts: the speed menu, the die and the reconnect question.
@@ -21,6 +21,8 @@ import { createSpeedMenu } from '../speed-menu.js';
 import { drawnWidth, footBand } from '../foot-band.js';
 import { createMenu } from '../menu-popover.js';
 import { followNoteSentences } from '../walk-follow.js';
+import { routeSentences } from '../stage-report.js';
+import { DESTINATION_BY_ID } from '../patterns.js';
 import { practiseLabels } from '../practice-link.js';
 import { WHY_TURN_LABEL } from '../walk-presenter.js';
 import { createDie } from './cube/die.js';
@@ -31,7 +33,7 @@ import { createReconnectAsk } from './cube/reconnect-ask.js';
 // a worker, through `stageAsk`.
 import { NODE_BUDGET as STAGE_NODE_BUDGET } from '../stage-distance.js';
 import { routeToPicture } from '../pattern-route.js';
-import { solveWithinGodsNumber } from '../solve-target.js';
+import { GODS_NUMBER, solveWithinGodsNumber } from '../solve-target.js';
 import { parseFacelets } from '../two-phase.js';
 
 import { $, SOLVED, escHtml, icon, state } from '../app-state.js';
@@ -353,7 +355,7 @@ const cubeScreen = (screenMode) => {
              heading and the pill. The count and the buttons sit together at the right edge, spaced
              by the header's column gap; and a count too long for the row wraps onto its own and
              starts under the heading, which an auto margin on the count's LEFT would push right. -->
-        <div class="card-h bare"><b id="solLabel">${label}</b><b id="secLabel" hidden></b><span class="sub" id="moveCount" role="status" aria-live="polite">—</span><button class="pill" id="proveBtn" hidden>${PROVE_COPY.button}</button><button class="pill" id="proveCancel" hidden>stop</button></div>
+        <div class="card-h bare"><b id="solLabel">${label}</b><b id="secLabel" hidden></b><span class="sub" id="moveCount" role="status" aria-live="polite" data-band="off">—</span><button class="pill" id="proveBtn" hidden>${PROVE_COPY.button}</button><button class="pill" id="proveCancel" hidden>stop</button></div>
         ${scrambling ? '' : `<!-- WHERE THIS WALK IS GOING. Not a setting and not in Settings: the target is a fact
              about this cube right now, which is the same argument the ladder makes about rungs
              (dev-docs/solve-to-state-plan.md §6). The default stays "solved", so nothing changes
@@ -394,7 +396,8 @@ const cubeScreen = (screenMode) => {
              NO BACKTICK IN THIS COMMENT - it is inside the screen's html template literal. -->
         <div class="wrap-row" id="methodRow" role="group" aria-label="${escHtml(t('How to solve it'))}" style="gap:6px;padding:2px 18px 6px">
           ${methodRowHtml({ methods: METHODS, chosen: settings.solveMethod, escHtml })}
-          <span class="sub" id="methodNote" role="status" aria-live="polite" style="color:var(--ink-4);margin-left:auto;text-align:right" hidden></span>
+          <span class="sub method-note" id="methodNote" role="status" aria-live="polite" hidden></span>
+          <span class="sub method-note" id="methodUnsaved" role="status" aria-live="polite" hidden></span>
         </div>`}
         <div class="list walk-strip" id="solList"></div>
         ${scrambling ? '' : '<div class="sub why-line" id="whyLine" hidden></div>'}
@@ -538,24 +541,44 @@ const cubeScreen = (screenMode) => {
       if (targetRow) oneLineStrip(targetRow, { signal });
       wireTwinTool(root, signal);
       // The rows a walk shows only sometimes: over the foot of the cube card in portrait, so they take nothing from the
-      // cube, and where they always were in landscape (lib/foot-band.js, E12.1). Scramble has the follow-note alone.
-      // The room under the cube is kept for the TALLEST thing the band can say (E12.8): every sentence the follow-note can
-      // say at its tallest, and the why button beside the practise-step button with each label it can carry.
-      const [followNote, whyBtn, practiseStep] = ['#followNote', '#whyBtn', '#practiseStep'].map((id) => root.querySelector(id));
-      const sayable = { follow: [], practise: [] };
+      // cube, and where they always were in landscape (lib/foot-band.js, E12.1): the follow-note, the why line and the
+      // practise-step button, and since the sweep of 2026-10-20 (A1) the method note, a walk to a stop's sentence where
+      // the count stands (`data-band`, written by the walk session) and, on Scramble, "Solve this scramble".
+      // THE ROOM IS THE SCREEN'S, kept for the TALLEST thing the band can say on ANY walk this screen shows (E12.8, A1),
+      // so the reserve is one for the screen whatever walk is on it. The follow-note, while it is said, takes the band
+      // alone (index.html), so it is laid out alone.
+      const [followNote, whyBtn, practiseStep, methodNote, moveCount, solveIt] = ['#followNote', '#whyBtn', '#practiseStep', '#methodNote', '#moveCount', '#solveItBtn']
+        .map((id) => root.querySelector(id));
+      const sayable = { follow: [], practise: [], notes: [], routes: [] };
       const band = footBand({
         host: root.querySelector('.cols.walking'), card: root.querySelector('.cols > .primary'), cube: () => cube, signal,
-        rows: (scrambling ? ['#followNote'] : ['#followNote', '#whyLine', '#whyBtn', '#practiseStep']).map((id) => root.querySelector(id)),
-        longest: () => [
+        rows: (scrambling ? ['#followNote', '#solveItBtn'] : ['#followNote', '#methodNote', '#moveCount', '#whyLine', '#whyBtn', '#practiseStep'])
+          .map((id) => root.querySelector(id)),
+        longest: () => (scrambling ? [
           ...sayable.follow.map(({ text, info }) => [{ row: followNote, text, info }]),
-          ...(scrambling ? [] : sayable.practise.map((label) => [{ row: whyBtn }, { row: practiseStep, text: label }])),
-        ],
+          [{ row: solveIt }],
+        ] : [
+          ...sayable.follow.map(({ text, info }) => [{ row: followNote, text, info }]),
+          ...sayable.practise.map((label) => [{ row: whyBtn }, { row: practiseStep, text: label }]),
+          // A fallback's walk is Quick, with no why line and no practise step: its note is said alone.
+          ...sayable.notes.map((text) => [{ row: methodNote, text }]),
+          // A walk to a stop or a picture is a route, never a lesson (lib/walk-resolver.js): its sentence is said alone.
+          ...sayable.routes.map((text) => [{ row: moveCount, text }]),
+        ]),
       });
       const widthOf = drawnWidth(band.band);
-      // Both known at once, so the room is measured ONCE, before the walk is seen: a list that arrived later would grow
+      // All known at once, so the room is measured ONCE, before the walk is seen: a list that arrived later would grow
       // the reserve then, and the cube would shrink in front of the child (practiseLabels, lib/practice-link.js).
       sayable.follow = followNoteSentences({ widthOf });
-      if (!scrambling) sayable.practise = practiseLabels();
+      if (!scrambling) {
+        sayable.practise = practiseLabels();
+        sayable.notes = methodNoteSentences();
+        sayable.routes = routeSentences({
+          stages: OFFERED_TARGETS.filter((tg) => !tg.sideways && tg.id !== 'solved').map((tg) => tg.name),
+          pictures: [...Object.values(DESTINATION_BY_ID).map((p) => p.name), ...TARGETS.filter((tg) => tg.sideways).map((tg) => tg.name)],
+          most: GODS_NUMBER, widthOf,
+        });
+      }
       band.remeasure();
       if (!scrambling) {
         // THE WHY OF A STEP, behind its button in portrait (E12.8): the full line — the step, the hold, the reason —

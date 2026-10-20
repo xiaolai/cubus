@@ -11,6 +11,13 @@
 // the sphere around the cube, projected through the renderer's own camera: no turn of the cube can leave that sphere,
 // so no hold the walk turns the cube to puts the cube under the band.
 //
+// THE RESERVE IS THE SCREEN'S, NOT THE WALK'S (sweep 2026-10-20, A1). The renderer frames a cube it turns over — a lesson,
+// a walk to a stop — from further back than an upright one, so the room under the sphere was a fact about the walk on
+// screen, and the reserve followed it: on the iPhone SE 48 px under a Quick walk and 39 under a lesson in the same card.
+// So the reserve is sized against the CLOSEST framing the renderer ever gives this slot — the fit of the upright cube
+// and its ghosts, the same arithmetic as the renderer's (lib/cube-frame.js), with no trail and no turn — which no walk's
+// cube comes nearer than: one reserve per card size and per thing the band can say, whichever walk is on screen.
+//
 // AND THE ROOM IS KEPT FOR THE LONGEST THING THE BAND CAN SAY (E12.7, E12.8), so nothing in it is ever behind a scroller.
 // The screen hands over every state the band can be in at its longest (`longest`); each is laid out once in a probe band
 // nobody sees, and the tallest is the room needed. Where the room under the sphere is less, the card keeps a reserve at
@@ -24,8 +31,12 @@
 // band` on the walking composition in portrait) and this module moves the rows into the band or back to where the
 // screen wrote them — landscape keeps today's rows. Nothing here measures a width.
 
+import { eyeDirection, fitDistance, silhouette } from './cube-frame.js';
+
 /** The least room kept between the cube's sphere and the band. */
 const CLEAR_PX = 4;
+/** The radius of the sphere around the cube, in the renderer's cubie units: the stickers' corners at ±1.5 on each axis. */
+const SPHERE_R = 1.5 * Math.sqrt(3);
 
 /**
  * How many times the reserve may change while the card keeps one size. Each change asks the renderer to fit the cube to
@@ -53,15 +64,44 @@ export function drawnWidth(el) {
 }
 
 /**
- * Put `rows` in a band at the foot of `card` whenever `host`'s composition says so.
+ * The bottom of the sphere around `el`'s cube on the page at the CLOSEST the renderer frames it in its slot — upright, no
+ * trail, the culled silhouette `_applyCamera` fits when nothing asks for more — or null while it has no camera. Read from
+ * the cube's own view attributes and the renderer's defaults for them, never from the camera the walk has now.
+ *
+ * @param {HTMLElement & { camera?: { fov: number } }} el  a `<cubus-cube>`
+ * @returns {number | null}
+ */
+export function closestSphereBottom(el) {
+  const cam = el?.camera;
+  const canvas = el?.querySelector('canvas');
+  if (!cam || !canvas) return null;
+  const box = canvas.getBoundingClientRect();
+  if (!(box.width > 0 && box.height > 0)) return null;
+  const num = (name, fallback) => {
+    const v = Number.parseFloat(el.getAttribute(name) ?? '');
+    return Number.isFinite(v) ? v : fallback;
+  };
+  const ghosts = !['none', 'false'].includes(el.getAttribute('ghosts') ?? '');
+  const eye = eyeDirection(num('camera-latitude', 35), num('camera-longitude', 45));
+  const points = silhouette({ eye, elevation: ghosts ? num('ghost-elevation', 4) : null, scale: num('facelet-scale', 0.9), cull: true });
+  const d = fitDistance({ points, vfovDeg: cam.fov, aspect: box.width / box.height, eye });
+  const below = SPHERE_R / (d * Math.tan((cam.fov * Math.PI) / 360));
+  return box.top + ((1 + below) / 2) * box.height;
+}
+
+/**
+ * Put `rows` in a band at the foot of `card` whenever `host`'s composition says so. A row marked `data-band="off"` stays
+ * where the screen wrote it until the mark goes: the move count is a heading's word on a whole-cube walk and a sentence
+ * on a walk to a stop, and only the sentence is a row that comes and goes (sweep 2026-10-20, A1).
  *
  * @param {{ host: HTMLElement, card: HTMLElement, cube: () => (HTMLElement | null), rows: HTMLElement[],
  *   longest?: () => { row: HTMLElement, text?: string, info?: boolean }[][], signal: AbortSignal }} options  `cube`
  *   answers the card's `<cubus-cube>` when it is in the page; `longest` every state the band can be in at its longest,
- *   each the rows shown together — `text` what the row says (in its status line, if it has one), `info` its quiet form
+ *   each the rows shown together — `text` what the row says (in its status line, if it has one), `info` its quiet form;
+ *   `closest` where the cube's sphere ends at its closest framing (`closestSphereBottom`; a test hands its own)
  * @returns {{ band: HTMLElement, place: () => void, remeasure: () => void }}
  */
-export function footBand({ host, card, cube, rows, longest = () => [], signal }) {
+export function footBand({ host, card, cube, rows, longest = () => [], closest = closestSphereBottom, signal }) {
   const doc = card.ownerDocument;
   const view = doc.defaultView;
   const band = doc.createElement('div');
@@ -153,19 +193,22 @@ export function footBand({ host, card, cube, rows, longest = () => [], signal })
     const el = cube();
     if (el && el !== watched) { watched = el; shown.observe(el, { attributes: true }); resized.observe(el); }
     const bottom = cubeBottom();
+    const nearest = closest(el);
     // No camera yet: nothing is drawn to be clear of, and the next resize of the card fits it.
-    if (bottom === null) { band.style.maxHeight = ''; return; }
+    if (bottom === null || nearest === null) { band.style.maxHeight = ''; return; }
     const box = card.getBoundingClientRect();
     const room = box.bottom - bottom - CLEAR_PX;
-    if (adjust && inBand && (need > room + 0.5 || (fresh && reserve > 0))) {
+    // The reserve is sized by the room the closest framing would leave (above), the band capped by the room there is.
+    const least = box.bottom - nearest - CLEAR_PX;
+    if (adjust && inBand && (need > least + 0.5 || (fresh && reserve > 0))) {
       // The room grows by (1 - c) for each px of reserve, where c is the share of the canvas's height below the sphere:
-      // the slot gives the px, and the renderer's fit takes back c of it. The renderer fits on its own resize, and the
-      // next fit here checks the room it left (`resized`, below).
+      // the slot gives the px, and the fit takes back c of it. The next fit here, once the slot has its new size,
+      // checks the room it left (`resized`, below).
       const canvas = el.querySelector('canvas').getBoundingClientRect();
-      const c = Math.min(0.9, Math.max(0, (canvas.bottom - bottom) / Math.max(1, canvas.height)));
+      const c = Math.min(0.9, Math.max(0, (canvas.bottom - nearest) / Math.max(1, canvas.height)));
       // Never past half the card: a band that cannot fit even so is a band that scrolls, which geometry.test.mjs
       // refuses, rather than a cube taken down to nothing to make room for words.
-      const next = Math.min(Math.floor(box.height / 2), Math.max(0, Math.ceil(reserve + (need - room) / (1 - c))));
+      const next = Math.min(Math.floor(box.height / 2), Math.max(0, Math.ceil(reserve + (need - least) / (1 - c))));
       const mayGive = fresh;
       fresh = false;
       if (next > reserve || (mayGive && next < reserve)) setReserve(next);
@@ -175,9 +218,13 @@ export function footBand({ host, card, cube, rows, longest = () => [], signal })
 
   const place = () => {
     inBand = view.getComputedStyle(host).getPropertyValue('--foot-band').trim() === 'band';
-    for (const { el, mark } of homes) {
-      if (inBand) { if (el.parentElement !== band) band.append(el); } else if (mark.nextSibling !== el) mark.after(el);
-    }
+    // In the band in the order the screen named them: a row that goes home and comes back takes its own place, not the
+    // end of the band. A row already there is never moved — moving a focused button would drop its focus.
+    homes.forEach(({ el, mark }, i) => {
+      if (inBand && el.dataset.band !== 'off') {
+        if (el.parentElement !== band) band.insertBefore(el, homes.slice(i + 1).find((h) => h.el.parentElement === band)?.el ?? null);
+      } else if (mark.nextSibling !== el) mark.after(el);
+    });
     if (inBand) need = measureNeed(); else { need = 0; setReserve(0); }
     // A card that has just changed size is fitted on the next frame, once the renderer has fitted its camera to it.
     fitBand(!fresh);
@@ -226,8 +273,11 @@ export function footBand({ host, card, cube, rows, longest = () => [], signal })
   // turned over, since the last fit. And whatever the host changes on the cube — its hold, its camera, its ghosts —
   // refits it, watched from the first fit that finds the cube. Not a `cubus-step` listener: the parked cube's step
   // handlers are counted, one per screen (screen-swap.test.mjs), and this is not one.
-  const shown = new view.MutationObserver(() => { fitBand(); view.cancelAnimationFrame(pending); pending = view.requestAnimationFrame(() => fitBand()); watchAgain(); });
-  for (const { el } of homes) shown.observe(el, { attributes: true, attributeFilter: ['hidden'], childList: true, characterData: true, subtree: true });
+  const shown = new view.MutationObserver((records) => {
+    if (records.some((r) => r.attributeName === 'data-band')) place(); else fitBand();
+    view.cancelAnimationFrame(pending); pending = view.requestAnimationFrame(() => fitBand()); watchAgain();
+  });
+  for (const { el } of homes) shown.observe(el, { attributes: true, attributeFilter: ['hidden', 'data-band'], childList: true, characterData: true, subtree: true });
   signal?.addEventListener('abort', () => {
     observer.disconnect(); resized.disconnect(); shown.disconnect();
     view.cancelAnimationFrame(pending); view.cancelAnimationFrame(watchFrame);

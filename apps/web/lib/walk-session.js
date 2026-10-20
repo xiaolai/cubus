@@ -35,7 +35,7 @@ import { createWalkClock } from './walk-clock.js';
 import { createWalkResolver } from './walk-resolver.js';
 import { createWalkPresenter } from './walk-presenter.js';
 import { createFollowTracker } from './walk-follow.js';
-import { isMethodId, methodById } from './methods/registry.js';
+import { METHODS, isMethodId, methodById } from './methods/registry.js';
 
 /**
  * The attributes of `<cubus-cube>` this SCREEN owns, which the script writer must never write.
@@ -107,6 +107,24 @@ const provided = (from, what) => new Proxy(from, {
  *   reaches for — listed once, as `WALK_APP` in lib/screens/cube.js. `cubejs()` and
  *   `solverReady()` are functions because `loadSolver` assigns both long after that object exists.
  */
+/**
+ * The fallback's sentence: a method that could not be worked out for this cube, and the walk shown instead. About the
+ * SEARCH, never the cube: every legal cube can be solved by every method, and this one could not be worked out here.
+ */
+const fallbackSentence = (id) => t('%1 could not be worked out for this cube — showing %2.', t(methodById(id).label), t(methodById('quick').label));
+
+/**
+ * Everything the method note can say, for the foot band to be sized by (lib/foot-band.js, sweep 2026-10-20, A1): the
+ * fallback from each method that has one to fall back FROM. Every one is laid out — a method's name is words, and a wider
+ * name is not always a taller sentence. A fallback's walk is Quick, which has no why line and no practise step, so the
+ * note is said in the band alone.
+ *
+ * @returns {string[]}
+ */
+export function methodNoteSentences() {
+  return METHODS.filter((m) => m.id !== 'quick').map((m) => fallbackSentence(m.id));
+}
+
 export function createWalkSession(screen, app) {
   const {
     root, cube, scrambling, walking, unsolvable, label, stateHeading, stale, signal,
@@ -130,7 +148,9 @@ export function createWalkSession(screen, app) {
   let walkAbort = null;
 
   const solList = $('#solList', root);
-  const setStatus = (msg) => { $('#moveCount', root).textContent = msg; };
+  // The count is a heading's word — and stays in the heading — until `labelWalk` says it is a walk to a stop's SENTENCE,
+  // which in portrait is said in the band over the cube card's foot (`data-band`, lib/foot-band.js; sweep 2026-10-20, A1).
+  const setStatus = (msg) => { const el = $('#moveCount', root); el.textContent = msg; el.dataset.band = 'off'; };
 
   // ---- the walk, and everything a retarget replaces ---------------------------------------
   //
@@ -477,16 +497,17 @@ export function createWalkSession(screen, app) {
   function sayMethodNote() {
     const note = $('#methodNote', root);
     if (!note) return;
-    const words = [];
-    if (fellBack) {
-      // About the SEARCH, never the cube: every legal cube can be solved by every method, and this one
-      // could not be worked out here.
-      words.push(t('%1 could not be worked out for this cube — showing %2.',
-        t(methodById(settings.solveMethod).label), t(methodById('quick').label)));
+    note.textContent = fellBack ? fallbackSentence(settings.solveMethod) : '';
+    // A repair is no method's walk (labelWalk): its note goes with the row, in the band as well as in the row.
+    note.hidden = !fellBack || Boolean(route);
+    // A CHOICE THAT WAS NOT KEPT is said in the method row, a sentence of its own: it can stand beside a lesson's why
+    // button and practise step, and in the foot band the three needed 28 px more of the iPhone SE's cube than any walk
+    // leaves it (sweep 2026-10-20, A1) — so it stays in the flow, where it was.
+    const kept = $('#methodUnsaved', root);
+    if (kept) {
+      kept.textContent = unsaved ? t('This choice could not be saved, so it lasts until you leave.') : '';
+      kept.hidden = !unsaved;
     }
-    if (unsaved) words.push(t('This choice could not be saved, so it lasts until you leave.'));
-    note.textContent = words.join(' ');
-    note.hidden = words.length === 0;
   }
 
   const { resolveWalk } = createWalkResolver({
@@ -705,6 +726,7 @@ export function createWalkSession(screen, app) {
     // lib/prove-affordance.js. `signal` is this walk's: it aborts when the walk is replaced or the
     // screen goes, and a proof pressed for it lets go of what it listens to then.
     sayWalkLength({ root, setStatus, scrambling, route, stageTargetNow, lesson, total, steps, fresh, signal: walkAbort?.signal });
+    if (route) $('#moveCount', root).dataset.band = 'on';
   }
 
   /** The moves themselves: ONE GRID for a Solution, SECTIONS for a Lesson. */

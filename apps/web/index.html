@@ -547,7 +547,15 @@
            sized to it wrapped (E12.8). */
         .cols.walking .foot-band > .practise-step { flex: 0 1 auto; max-width: 100%; height: auto; min-height: 44px; padding: 4px 14px;
           white-space: normal; text-align: start; line-height: 1.3; }
-        .cols.walking .foot-band:has(> .follow-note:not([hidden])) > :is(.why-line, .why-btn, .practise-step) { display: none; }
+        .cols.walking .foot-band:has(> .follow-note:not([hidden])) > :is(.why-line, .why-btn, .practise-step, .method-note, #moveCount, #solveItBtn) { display: none; }
+        /* The method note and a walk to a stop's sentence here too (sweep 2026-10-20, A1): in the flow the note took
+           40–79 px from the cube on Home and the sentence wrapped the heading to two rows, 45 px; "Solve this scramble"
+           wrapped the transport at a scramble's end. The note reads from the start of its line, and the button keeps its
+           own padding, which the band's rule above takes from every row. While the follow-note is said it takes the band
+           alone over these too, as over the lesson's rows: laid out together, the note over the scramble's button cost
+           the phones' Scramble cube 53 px for a moment that asks the cube in hand to be put right first. */
+        .cols.walking .foot-band > .method-note { text-align: start; }
+        .cols.walking .foot-band > .btn { flex: none; padding: 0 14px; }
         /* NOTHING IN THE BAND IS BEHIND A SCROLLER (E12.6): the follow-note's sentence beside its two buttons on one
            wrapping row, so a short sentence costs no line of its own — the SE's room under the cube is 74 px, and the note
            as a sentence over its buttons needed 78. The sentence's basis is its OWN width (`auto`), so only a sentence
@@ -575,11 +583,11 @@
         .cols.walking:has(#randCubeTool) .twin #randCube { display: none; }
         .cols.walking .card-tools > :is(#twinBtn, #randCubeTool) { display: grid; }
         /* The method row folds into ONE pill at the head of the Restore row — that method's stops — pinned while the
-           stops scroll after it (E10). */
-        /* The row's pills go; its NOTE does not — a fallback is said, not only shown (AGENTS.md §3), on a line of its
-           own while it is said, like the follow-note (a row that comes and goes, E10). */
-        .cols.walking #methodRow > :not(#methodNote) { display: none; }
-        .cols.walking #methodRow:not(:has(> #methodNote:not([hidden]))) { display: none; }
+           stops scroll after it (E10). Its NOTES are not folded away — a fallback is said, not only shown (AGENTS.md §3):
+           the fallback's is in the foot band, a row that comes and goes (lib/foot-band.js; sweep 2026-10-20, A1), and a
+           choice that was not kept keeps a line of its own here while it is said. */
+        .cols.walking #methodRow > :not(#methodUnsaved) { display: none; }
+        .cols.walking #methodRow:not(:has(> #methodUnsaved:not([hidden]))) { display: none; }
         .cols.walking .target-line { display: flex; align-items: center; flex-shrink: 0; min-width: 0; }
         .cols.walking .method-pin { display: inline-flex; align-items: center; flex: none; margin-left: 18px; white-space: nowrap; }
         .cols.walking .target-line > .stage-row.one-line { flex: 1; min-width: 0; padding-left: 8px; }
@@ -1276,6 +1284,8 @@
       /* The why line and the practise-step button in the solution card (landscape); in portrait the foot band takes
          them (E12.1). The section's name in the heading is portrait's alone (E12.5). */
       .why-line { padding: 0 18px 10px; color: var(--ink-4); }
+      .method-note { color: var(--ink-4); margin-left: auto; text-align: right; }
+      .method-note:not([hidden]) ~ .method-note { margin-left: 0; }
       .practise-step { margin: 0 18px 10px; align-self: flex-start; }
       .card-h > #secLabel { display: none; }
       /* The pause line: information, not a warning — and no rescue buttons, because pausing is a
@@ -1383,8 +1393,11 @@
       /* On a coarse pointer every control is at least 44px — Apple's floor, and the contract's
          (dev-docs/stage-contract.md). A pointer feature, not a width: a desktop portrait window
          is a mouse, an iPad in landscape is a finger. The transport keeps one line at the 375px
-         floor by the same arithmetic as its own rule, with the buttons at 44:
-         4×44 + 22 + 56 + 6×4 + 32 = 310 ≤ 315. The toggle keeps its drawn size — its knob
+         floor with the buttons at 44 because its progress bar is the part that gives, to nothing
+         if it must: the arithmetic this said — 4×44 + 22 + 56 + 6×4 + 32 = 310 ≤ 315 — had the
+         label at its 56px floor, and at a walk's end it reads "20 / 20", 60.6px, in a 312px row,
+         so the done mark wrapped the transport onto a second line and took 24px from the
+         iPhone SE's cube at the end of every scramble (sweep 2026-10-20, A1). The toggle keeps its drawn size — its knob
          geometry is fixed numbers — and grows a 44px hit area around it instead. A pill takes the
          44px width floor only when it carries one glyph (`.glyph`, the stepper's − and +): a word
          reaches it on its own, and a fixed min-width replaces a flex item's `auto` minimum, which
@@ -1400,7 +1413,7 @@
         .scan-sheet > .card:has(> #scanAction:not([hidden])) { min-height: calc(var(--say-least) + 10px + 44px); }
         .toggle::before { content: ''; position: absolute; inset: -11px -2px; }
         .transport { gap: 4px; }
-        .transport .progress { flex-basis: 32px; }
+        .transport .progress { flex-basis: 0; min-width: 0; }
       }
       .chip-m:hover { border-color: var(--ink-5); color: var(--ink); }
       .chip-m.cur:hover { border-color: var(--invert-bg); color: var(--invert-fg); }

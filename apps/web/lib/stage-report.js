@@ -173,3 +173,28 @@ export function chipLabel(chip) {
     default: return t('%1: %2', chip.name, STAGE_COPY.unknown());
   }
 }
+
+/**
+ * Every sentence `routeSentence` can say, for the stages and the pictures named — what the foot band is sized by on the
+ * cube screen (lib/foot-band.js), where a walk to a stop says it (sweep 2026-10-20, A1).
+ *
+ * Each sentence once per form and name, its count at the WIDEST count it can carry up to `most` moves: a count is one
+ * word that never breaks, and widening one word never makes a sentence wrap to fewer lines, so the widest count gives
+ * the tallest sentence. The names are many words, and a wider name is not always a taller sentence, so each is kept.
+ * "Widest" is `widthOf`'s (the band's `drawnWidth`); by default, characters.
+ *
+ * @param {{ stages: string[], pictures: string[], most: number, widthOf?: (text: string) => number }} o
+ * @returns {string[]}
+ */
+export function routeSentences({ stages, pictures, most, widthOf = (text) => text.length }) {
+  const counts = Array.from({ length: most }, (_, i) => i + 1);
+  const widest = (say) => counts.map(say).reduce((a, b) => (widthOf(b) > widthOf(a) ? b : a));
+  const sentences = [
+    STAGE_COPY.unknown(),
+    widest((n) => STAGE_COPY.shortest(n)),
+    widest((n) => STAGE_COPY.route(n)),
+    ...stages.flatMap((name) => [STAGE_COPY.already(name), widest((n) => STAGE_COPY.overshoot(name, n))]),
+    ...pictures.flatMap((name) => [STAGE_COPY.showing(name), widest((n) => STAGE_COPY.wayTo(name, n)), widest((n) => STAGE_COPY.overshootTo(name, n))]),
+  ];
+  return [...new Set(sentences)];
+}
