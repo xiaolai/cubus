@@ -403,7 +403,7 @@ for (const engine of ['chromium', 'webkit']) {
           for (const m of all) {
             if (!(m.contrast >= MARK_CONTRAST)) fails.push(`${say(m)}: (a) the band is ${m.contrast.toFixed(2)}:1 on its sticker`);
             if (!m.named) fails.push(`${say(m)}: (a) the band is not stroked in the token it names (${m.token})`);
-            if (!m.drawnAsMeant) fails.push(`${say(m)}: (b) the band drawn is not the one outlineBand gives`);
+            if (!m.drawnAsMeant) fails.push(`${say(m)}: (b) the band drawn is not the one ${m.what === 'photo' ? 'photoBandDepth' : 'outlineBand'} gives`);
             if (!(m.stroke >= MARK_STROKE_LEAST_PX - 1e-9)) fails.push(`${say(m)}: (b) the band is ${m.stroke.toFixed(2)} CSS px wide as drawn`);
             if (!(m.kept >= MARK_COLOUR_KEPT)) fails.push(`${say(m)}: (c) ${(100 * m.kept).toFixed(1)}% of the sticker keeps its own colour`);
             if (!(m.rendered > 0)) fails.push(`${say(m)}: the mark draws nothing`);

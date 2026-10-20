@@ -16,7 +16,8 @@
 // WHERE A STICKER IS is never read off the marking under test (AGENTS.md §5). A flat picture's sticker is its rect in
 // the row's BARE picture (`casePicture`, which draws no mark), put in place of the page's marked picture after the
 // screenshot and held first to be the page's picture less its marks. A photograph's is the polygon its outline was
-// stroked on (`photoMarks`), whose count case-photos holds to the visible moved stickers.
+// stroked on (`photoMarks`), whose count case-photos holds to the visible moved stickers; the width it was stroked at is
+// the canvas context's own, read back (`photoStrokes`).
 
 import { inflateSync } from 'node:zlib';
 
@@ -110,6 +111,10 @@ export async function practiceAt(fixture, { browser, base, theme, dpr, timeout }
     const stickersOfPhoto = (img, id) => {
       const polys = photo.photoMarks(img.src);
       if (!polys) throw new Error(`${id}: a marked photograph with no marks recorded`);
+      // The width each sticker's band was stroked at, as the canvas context held it: the drawing read back, so the
+      // band (b) and (c) are judged on is the one drawn, not only the one `photoBandDepth` says.
+      const widths = photo.photoStrokes(img.src);
+      if (widths?.length !== polys.length) throw new Error(`${id}: ${widths?.length ?? 'no'} stroke widths recorded for ${polys.length} marks`);
       if (getComputedStyle(img).objectFit !== 'contain') throw new Error(`${id}: a photograph not contained in its box`);
       const cv = document.createElement('canvas'); cv.width = img.naturalWidth; cv.height = img.naturalHeight;
       const g = cv.getContext('2d', { willReadFrequently: true }); g.drawImage(img, 0, 0);
@@ -133,7 +138,7 @@ export async function practiceAt(fixture, { browser, base, theme, dpr, timeout }
         const rest = inside(poly, 1).filter((p) => off(p, own) > 48);
         const near = (K) => rest.filter((p) => off(p, K) <= 24).length;
         const token = near(inks.ink) >= near(inks.ground) ? 'ink' : 'ground';
-        return { f: String(i), token, own, drawn: near(inks[token]), poly, stillWidth: img.naturalWidth, scale, points: poly.map(([x, y]) => [ox + x * scale, oy + y * scale]) };
+        return { f: String(i), token, own, drawn: near(inks[token]), poly, lineWidth: widths[i], stillWidth: img.naturalWidth, scale, points: poly.map(([x, y]) => [ox + x * scale, oy + y * scale]) };
       });
     };
     window.__marks = { catalogue, settings, frames, stickersOfSvg, stickersOfPhoto, inks };
@@ -225,11 +230,12 @@ function judgeFlat(A, B, clip, s, inks, outline) {
   return { f: s.f, token: s.token, contrast: contrastOf(s.own, s.stroke), named, stroke: s.band * s.scale, kept, rendered, drawnAsMeant: Math.abs(s.band - meant) < 0.006, size: Math.min(w, h) * s.scale };
 }
 
-/** A photograph's sticker, judged: its colours read off its still; (b) and (c) from the depth the photographer strokes. */
+/** A photograph's sticker, judged: its colours read off its still; (b) and (c) from the depth the photographer strokes,
+ *  held to the width its canvas context was given — clipped to the sticker, a stroke shows half its width. */
 function judgePhoto(s, inks) {
   const area = areaOf(s.poly);
   const depth = photoBandDepth(area, s.stillWidth);
-  return { f: s.f, token: s.token, contrast: contrastOf(s.own, inks[s.token]), named: true, stroke: depth * s.scale, kept: shrunkArea(s.poly, depth) / area, rendered: s.drawn, drawnAsMeant: true, size: Math.sqrt(area) * s.scale };
+  return { f: s.f, token: s.token, contrast: contrastOf(s.own, inks[s.token]), named: true, stroke: depth * s.scale, kept: shrunkArea(s.poly, depth) / area, rendered: s.drawn, drawnAsMeant: Math.abs(s.lineWidth / 2 - depth) < 0.006, size: Math.sqrt(area) * s.scale };
 }
 
 /** Screenshot `clip`, ask the page where the marked stickers are (which unmarks the flat ones in place), screenshot

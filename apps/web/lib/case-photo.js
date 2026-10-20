@@ -179,11 +179,20 @@ const marks = new Map();
  */
 export const photoMarks = (url) => marks.get(url) ?? null;
 
+/** Each photograph's band widths, by its URL: per polygon of `photoMarks`, the `lineWidth` its canvas context held as
+ *  the band was stroked — read back from the context, so a reader can hold the drawing to `photoBandDepth`
+ *  (test/browser/marks-on-page.mjs) rather than assume it. */
+const strokes = new Map();
+
+/** The band widths a photograph was stroked at, or null for a URL this session did not take. */
+export const photoStrokes = (url) => strokes.get(url) ?? null;
+
 /** Forget every photograph — the object URLs released. The next asking takes each again. */
 export function clearCasePhotos() {
   for (const p of cache.values()) p.then((url) => URL.revokeObjectURL(url), () => {});
   cache.clear();
   marks.clear();
+  strokes.clear();
 }
 
 /** What the pulse changes on the renderer's style to put it in a well, and gives back after. */
@@ -260,11 +269,13 @@ function meanInside(g, poly, w, h) {
 
 /** Stroke each polygon INSIDE its own edge, `photoBandDepth` deep, in the ink or the ground — whichever contrasts more
  *  with that sticker as the still draws it (`markInk`, E14). `stillWidth` is the still's width once cut to the cube —
- *  the size it is drawn at — which `frameOf` decides before any band is drawn. */
+ *  the size it is drawn at — which `frameOf` decides before any band is drawn. Returns each band's `lineWidth` as the
+ *  context held it. */
 function strokeInside(g, polygons, inks, stillWidth) {
   const w = g.canvas.width; const h = g.canvas.height;
   // Every sticker's colour read BEFORE any band is drawn: a band never decides its neighbour's.
   const chosen = polygons.map((poly) => inks.css[markInk(meanInside(g, poly, w, h), inks)]);
+  const widths = [];
   for (const [k, poly] of polygons.entries()) {
     const area = Math.abs(poly.reduce((a, [x, y], i) => {
       const [nx, ny] = poly[(i + 1) % poly.length];
@@ -280,8 +291,10 @@ function strokeInside(g, polygons, inks, stillWidth) {
     g.lineJoin = 'round';
     g.strokeStyle = chosen[k];
     g.stroke(path);
+    widths.push(g.lineWidth);
     g.restore();
   }
+  return widths;
 }
 
 /** The painted box of a canvas — its pixels that are not transparent — widened to `PHOTO_FRAME`'s shape round the
@@ -433,7 +446,7 @@ export function casePhotographer({ host, signal, box = PHOTO_BOX }) {
     const f = frameOf(g, work.width, work.height);
     if (!f) throw new Error('case-photo: the renderer painted nothing');
     const lit = litOutlines(cube, work);
-    strokeInside(g, lit, inks, f.w);
+    const widths = strokeInside(g, lit, inks, f.w);
     frames.set(lookKey(), { x: f.x / work.width, y: f.y / work.height, w: f.w / work.width, h: f.h / work.height });
     const still = document.createElement('canvas');
     still.width = f.w;
@@ -444,6 +457,7 @@ export function casePhotographer({ host, signal, box = PHOTO_BOX }) {
     casePhotoCounts.taken += 1;
     const url = URL.createObjectURL(blob);
     marks.set(url, Object.freeze(lit.map((poly) => Object.freeze(poly.map(([x, y]) => Object.freeze([x - f.x, y - f.y]))))));
+    strokes.set(url, Object.freeze(widths));
     return url;
   }
 
