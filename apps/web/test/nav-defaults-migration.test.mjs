@@ -62,8 +62,8 @@ test('a later version cannot be applied before an earlier one', () => {
 
 test('the shipped migration hides Timer and Stats for someone from before version 2, and keeps a hide', () => {
   const out = migrateNavDefaults(1, ['stats']);
-  // …and Practice, which version 8 hides for everyone (dev-docs/algorithm-drill-v2-plan.md §4).
-  assert.deepEqual(out.navHidden, ['stats', 'timer', 'practice']);
+  // Practice is not among them: version 8 hid it and version 9 brings it back (owner, 2026-10-20).
+  assert.deepEqual(out.navHidden, ['stats', 'timer']);
   assert.equal(out.navDefaults, NAV_DEFAULTS_VERSION);
 });
 
@@ -90,13 +90,13 @@ test('every hideable tab the app ships is one the nav knows how to hide', () => 
 // `DEFAULT_HIDDEN`. Remove an id from that list and it drops out of the loop too, so the check goes green
 // whether or not the tab is actually visible. So the row a fresh install sees is asserted WHOLE.
 
-test('a fresh install shows exactly Home, Restore and Scramble', async () => {
-  // The owner's decision, 2026-10-14: the default row is solve, scan and scramble.
+test('a fresh install shows exactly Home, Restore, Scramble and Practice', async () => {
+  // The owner's decisions: the default row is solve, scan and scramble (2026-10-14), and Practice (2026-10-20).
   const { NAV } = await import('../lib/app-state.js');
   for (const stored of [undefined, DEFAULT_HIDDEN]) {
     const { navHidden } = migrateNavDefaults(undefined, stored ?? []);
     const row = NAV.map(([id]) => id).filter((id) => !navHidden.includes(id));
-    assert.deepEqual(row, ['home', 'scan', 'scramble'], `a fresh install shows ${row.join(', ')}`);
+    assert.deepEqual(row, ['home', 'scan', 'scramble', 'practice'], `a fresh install shows ${row.join(', ')}`);
   }
 });
 
@@ -177,24 +177,27 @@ test('no migration ships above the version anyone will ever migrate to', () => {
     'walking every migration does not land on the shipped default hidden set');
 });
 
-// ---- Practice earns its tab (dev-docs/algorithm-drill-v2-plan.md §4, ADR 0010) ----------------------------
+// ---- Practice earned its tab (owner, 2026-10-20) ---------------------------------------------------------------
 //
 // BY NAME, for the reason the cases above give: a loop over DEFAULT_HIDDEN stops checking an id the moment it
-// leaves the list. Practice is a screen rebuilt after the first Drill was removed, so it starts hidden on EVERY
-// install — fresh, or at any earlier version — and a person who shows it keeps it shown.
+// leaves the list. Version 8 hid Practice on every install while it was a screen still earning its tab; version 9,
+// with the Practice redesign, shows it on every install — fresh, at any earlier version, and at version 8 with it
+// hidden — and a person who hides it after that keeps it hidden.
 
-test('Practice is hidden on a fresh install and on every install from before version 8', () => {
-  for (const from of [undefined, 0, 1, 2, 5, 6, 7, -1e100, 'x']) {
-    const out = migrateNavDefaults(from, []);
-    assert.ok(out.navHidden.includes('practice'), `version ${JSON.stringify(from)}: Practice is in the toolbar`);
+test('Practice is shown on a fresh install and on every install from before version 9', () => {
+  for (const from of [undefined, 0, 1, 2, 5, 6, 7, 8, -1e100, 'x']) {
+    for (const stored of [[], ['practice'], ['practice', 'timer']]) {
+      const out = migrateNavDefaults(from, stored);
+      assert.ok(!out.navHidden.includes('practice'), `version ${JSON.stringify(from)}, stored ${JSON.stringify(stored)}: Practice is not in the toolbar`);
+      assert.equal(out.navDefaults, 9);
+    }
   }
-  assert.ok(HIDEABLE.some(([id]) => id === 'practice'), 'Practice cannot be switched on in Advanced');
+  assert.ok(HIDEABLE.some(([id]) => id === 'practice'), 'Practice cannot be switched off in Advanced');
 });
 
-test('a Practice tab someone turned on stays on', () => {
-  for (const from of [8, 9]) {
-    assert.ok(!migrateNavDefaults(from, []).navHidden.includes('practice'), `version ${from} hid Practice again`);
-  }
+test('a Practice tab someone hid after version 9 stays hidden', () => {
+  const out = migrateNavDefaults(9, ['practice']);
+  assert.ok(out.navHidden.includes('practice'), 'version 9 brought Practice back again over a later hide');
 });
 
 test('the practice screen does not reuse the id of a screen that was removed', async () => {

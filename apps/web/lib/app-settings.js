@@ -339,7 +339,8 @@ export const HIDEABLE = [
 ];
 
 /** Hidden unless asked for. The default row is Home, Restore and Scramble — solve, scan,
- * scramble — and nothing else (owner's decision, 2026-10-14); everything else is one chord away.
+ * scramble (owner's decision, 2026-10-14) — and Practice, shown by default since the redesign that
+ * made it a cube player (owner's decision, 2026-10-20); everything else is one chord away.
  * Timer and Stats are speedcubing instruments, not part of learning to solve a cube. (Stats used to
  * be hidden because it showed invented numbers; phase 5 replaced every one of them with a computed
  * figure or an em dash, so it is hidden now only because a beginner does not need an ao12 — not
@@ -347,7 +348,7 @@ export const HIDEABLE = [
  * alone, and one wiped localStorage brought five placeholder screens back into the toolbar.
  * Changing this list is HALF a change: see `NAV_ADDED` below for the half that reaches a record
  * that has already run. */
-export const DEFAULT_HIDDEN = ['timer', 'stats', 'practice'];
+export const DEFAULT_HIDDEN = ['timer', 'stats'];
 
 /**
  * What each version ADDED, so a bump applies a delta rather than the whole set.
@@ -375,7 +376,8 @@ const NAV_ADDED = Object.freeze({
   //
   // Algorithm practice, rebuilt after the first Drill was removed (dev-docs/algorithm-drill-v2-plan.md §4):
   // "a screen rebuilt later starts as a module with no screen, and earns its tab again" (ADR 0010). Hidden on
-  // every install, a fresh one included; reachable in Settings → Advanced and at #/practice.
+  // every install, a fresh one included; reachable in Settings → Advanced and at #/practice. Shown
+  // again by version 9 (NAV_SHOWN below).
   8: ['practice'],
 });
 
@@ -390,10 +392,14 @@ const NAV_ADDED = Object.freeze({
  * THE COST IS THE ONE DECISION D5 REFUSED TO PAY: this record cannot tell an inherited default from
  * a deliberate hide, so bringing an id back overrides anyone who chose to hide it. That is
  * acceptable only for an id hidden too briefly for a deliberate choice about it to exist. Version 5
- * did it once, for a screen since removed; nothing is brought back today.
+ * did it once, for a screen since removed. Version 9 brings Practice back (owner's decision,
+ * 2026-10-20, with the Practice redesign): it was hidden by version 8 as a screen still earning its
+ * tab, so a hide of it is far more likely inherited than chosen.
  */
-const NAV_SHOWN = Object.freeze({});
-export const NAV_DEFAULTS_VERSION = 8;
+const NAV_SHOWN = Object.freeze({
+  9: ['practice'],
+});
+export const NAV_DEFAULTS_VERSION = 9;
 
 // localStorage is untrusted input: anything in here that is not a hideable id is dropped rather
 // than allowed to silently remove some other nav entry.
