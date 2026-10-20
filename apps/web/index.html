@@ -148,7 +148,11 @@
         *, *::before, *::after {
           animation-duration: .001ms !important;
           animation-iteration-count: 1 !important;
-          transition-duration: .001ms !important;
+          /* NONE, not a short one (sweep 2026-10-20, J). `transition-property` is `all` by default, so a duration on
+             every element CREATED a transition on every property of every element the app never declared one for —
+             the walking grid's row template among them, which drew the old template for a frame when a lesson's
+             sections arrived and made WebKit report a ResizeObserver loop. geometry.test.mjs, "under reduced motion". */
+          transition: none !important;
         }
         /* Practice's off turn is not shortened but GONE (E14): the rule above would leave a 0.001 ms shake that still
            starts and ends. Its outline and its sound say the same. Important, as the block's other rules are: the shake is

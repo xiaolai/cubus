@@ -1237,6 +1237,33 @@ for (const fixture of landscapeFixtures) {
     }
   });
 }
+// REDUCED MOTION STARTS NO TRANSITION (sweep 2026-10-20, J, S11). The reduced-motion rule once gave EVERY element a
+// .001ms transition, and `transition-property` is `all` by default — so it CREATED transitions the app never declared.
+// When a lesson's sections arrived, the landscape walking composition's row template changed and was transitioned:
+// for one frame the grid drew the OLD template with the new list, its rows 16 / 740 / 76px in a 582px box, and the
+// cube grew to 742px. The ResizeObservers fired on that frame, the true layout landed inside their callbacks, and
+// WebKit reported "ResizeObserver loop completed with undelivered notifications" (CFOP 6 of 6 runs under load). MUST
+// NOT: any transition at all under reduced motion, and any page error, while a sectioned lesson takes the screen.
+test('under reduced motion a lesson arriving starts no transition and throws nothing: desktop landscape window', async () => {
+  const fixture = FIXTURES.find((f) => f.name === 'desktop landscape window');
+  const { page, context, errors } = await open(fixture, 'home', { solveMethod: 'cfop' });
+  try {
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.evaluate(() => {
+      window.transitionsRun = [];
+      document.addEventListener('transitionrun', (e) => window.transitionsRun.push(`${e.propertyName} on ${e.target.className || e.target.tagName}`), true);
+    });
+    await frozenOnHome(page, LONGEST_LESSON_CUBE);
+    await page.waitForFunction(() => document.querySelectorAll('#solList .walk-sec').length > 1, null, { timeout: 90_000 });
+    // Two frames after the sections, so a transition started by them has run and the observers have been called.
+    await page.evaluate(() => new Promise((r) => { requestAnimationFrame(() => requestAnimationFrame(r)); }));
+    assert.ok(await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches), 'precondition: the page is under reduced motion');
+    assert.deepEqual(await page.evaluate(() => window.transitionsRun), [], 'reduced motion started a transition');
+    assert.deepEqual(errors.map(String), [], 'the page threw');
+  } finally {
+    await context.close();
+  }
+});
 
 // ---- the rows that come and go, and a lesson's heading, in portrait (dev-docs/practice-redesign-plan.md E12) ----------
 //

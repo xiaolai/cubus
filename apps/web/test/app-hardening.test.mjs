@@ -282,7 +282,10 @@ test('the stylesheet answers prefers-reduced-motion, and the renderer reads it t
   const reduced = cssBlockAt(html, '@media (prefers-reduced-motion: reduce)');
   assert.ok(reduced, 'no reduced-motion rule at all — every pulse and settle runs regardless');
   assert.match(reduced, /animation-duration:\s*\.001ms\s*!important/, 'the pulses must actually stop');
-  assert.match(reduced, /transition-duration:\s*\.001ms\s*!important/, 'and the settles with them');
+  // The settles STOP, and no transition is created: a duration alone on `*` gives every property of every element a
+  // transition, because `transition-property` is `all` by default (sweep 2026-10-20, J).
+  assert.match(reduced, /transition:\s*none\s*!important/, 'and the settles with them');
+  assert.doesNotMatch(reduced, /transition-duration/, 'a transition duration on every element creates transitions nobody declared');
   // The cube's turns are SHORTENED rather than stopped: a solve guide with no turn is a slideshow
   // of positions, and the turn is the thing being taught. That decision lives in the renderer.
   const cube = readFileSync(new URL('../../../packages/cubus-cube/src/cubus-cube.js', import.meta.url), 'utf8');
