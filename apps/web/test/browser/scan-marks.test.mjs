@@ -1,6 +1,6 @@
-// The scan screen's marks, judged on the page against the ground they are drawn on (sweep 2026-10-20, S9).
+// The scan screen's marks, judged on the page against the ground they are drawn on (sweep 2026-10-20, S9 and S10).
 //
-// One claim, measured in a real WebKit, in all three themes:
+// Two claims, each measured in a real WebKit, in all three themes:
 //
 //   - A RING DRAWN OUTSIDE A STICKER is judged at 3:1 against its LOCAL GROUND — what is actually behind the ring: the
 //     picker's panel for the picker's rings, the card for the board's and the identity question's — and it must be
@@ -8,6 +8,13 @@
 //     mark drawn INSIDE a sticker; a ring outside one never lies on the sticker, and the sweep measured the five rings
 //     at 1.18–1.58:1 against the stickers they mark while each is 4.42:1 or more against its ground (H1, owner's call:
 //     no visual change, the rule is the distinction). dev-docs/measurement-method.md.
+//   - EVERY SCAN TILE EDGE IS SEEN BY ITS HAIRLINES. A tile's four edges are bands in the neighbouring sides' sticker
+//     colours, and a white band on a white page is white (E4, owner's call: no colour change). What makes the edge
+//     identifiable is the 1px hairline either side of the band (`--tile-hairlines`, held at 3:1 as TOKENS by
+//     tokens.test.mjs). This reads what was RENDERED: across the middle of each of the 24 edge segments, the hairline
+//     pixel outside the band against the surface beside it, and the one inside against the tile's own surface, at DPR 1
+//     and 2, in the pending, captured, asked and reduced-motion states. A failing segment is fixed in the hairline,
+//     never the band.
 
 import assert from 'node:assert/strict';
 import { inflateSync } from 'node:zlib';
@@ -148,6 +155,9 @@ const decodePng = (buf) => {
   }
   return { w, h, px: (x, y) => { const i = (Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x))) * 3; return [out[i], out[i + 1], out[i + 2]]; } };
 };
+const chan = (v) => { const c = v / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+const lumOf = ([r, g, b]) => 0.2126 * chan(r) + 0.7152 * chan(g) + 0.0722 * chan(b);
+const contrast = (a, b) => { const [hi, lo] = [lumOf(a), lumOf(b)].sort((p, q) => q - p); return (hi + 0.05) / (lo + 0.05); };
 
 /** Pixels that change when the ring on `sel`'s `k`th element is taken away: the ring is DRAWN, not only declared. */
 async function ringDrawn(page, sel, k) {
@@ -226,4 +236,112 @@ test('every ring drawn outside a sticker clears 3:1 against its local ground, is
   } finally {
     await context.close();
   }
+});
+
+// ---- S10: the tile edges, by their rendered hairlines --------------------------------------------------------------
+
+/**
+ * Across the middle of every edge of every tile — three lines across each of the 24 segments, at a quarter, a half and
+ * three quarters of its length — the pixels on either side of the 3px band. A hairline is the pixel in its window (the
+ * CSS px either side of the border box's edge, outside; the CSS px after the 3px band, inside) nearest to the colour the
+ * page computes for the hairline's token, and the SURFACE BESIDE IT is the first pixel past it, walking away from the
+ * band, that is not the hairline: the page outside a pending tile, the asked tile's halo, the tile's own padding inside.
+ * The hairline pixel must clear 3:1 against that surface.
+ */
+async function hairlines(page, dpr) {
+  // The two hairlines' colours as the page draws them: the first two 1px rings of the tile's own box-shadow.
+  const tiles = await page.evaluate(() => [...document.querySelectorAll('.scan-face .tile')].map((t) => {
+    const b = t.getBoundingClientRect();
+    const rings = getComputedStyle(t).boxShadow.split(/,(?![^(]*\))/).map((p) => p.trim());
+    const colourOf = (inset) => rings.find((p) => /inset/.test(p) === inset && /\b1px\b/.test(p))?.match(/(rgba?\([^)]*\)|color\([^)]*\))/)?.[0] ?? '';
+    return { face: t.closest('.scan-face').dataset.face, x: b.left, y: b.top, w: b.width, h: b.height, outerColour: colourOf(false), innerColour: colourOf(true) };
+  }));
+  const img = decodePng(await page.screenshot({ animations: 'disabled', caret: 'hide' }));
+  const at = (cx, cy) => img.px(Math.floor(cx * dpr), Math.floor(cy * dpr));
+  const out = [];
+  const rgbOf = (c) => {
+    const n = (c.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
+    return /^color\(srgb/.test(c) ? n.map((v) => v * 255) : n;
+  };
+  const dist = (p, q) => Math.abs(p[0] - q[0]) + Math.abs(p[1] - q[1]) + Math.abs(p[2] - q[2]);
+  for (const t of tiles) {
+    assert.ok(t.outerColour && t.innerColour, `precondition: the ${t.face} tile wears no hairlines (${t.outerColour} / ${t.innerColour})`);
+    const colours = { outer: rgbOf(t.outerColour), inner: rgbOf(t.innerColour) };
+    // Each side: a point ON the border box's edge at fraction f along it, and the inward unit normal.
+    const sides = {
+      top: (f) => ({ x: t.x + f * t.w, y: t.y, nx: 0, ny: 1 }),
+      bottom: (f) => ({ x: t.x + f * t.w, y: t.y + t.h, nx: 0, ny: -1 }),
+      left: (f) => ({ x: t.x, y: t.y + f * t.h, nx: 1, ny: 0 }),
+      right: (f) => ({ x: t.x + t.w, y: t.y + f * t.h, nx: -1, ny: 0 }),
+    };
+    for (const [side, along] of Object.entries(sides)) {
+      let worst = Infinity;
+      let worstAt = null;
+      for (const f of [0.25, 0.5, 0.75]) {
+        const p = along(f);
+        // The outer edge of a box on the right or bottom is its last pixel's far side: step back half a pixel onto it.
+        const o = side === 'right' || side === 'bottom' ? -0.5 / dpr : 0;
+        const px = (d) => at(p.x + p.nx * (d + o), p.y + p.ny * (d + o));
+        const step = 1 / dpr;
+        // The hairline: the pixel in its window nearest its colour. `away` is the direction off the band.
+        const find = (from, to, colour, away) => {
+          let best = null;
+          for (let d = from; d <= to + 1e-9; d += step) { const q = px(d); if (!best || dist(q, colour) < dist(best.q, colour)) best = { q, d }; }
+          let d = best.d + away * step;
+          while (Math.abs(d - best.d) < 4 && dist(px(d), best.q) <= 24) d += away * step;
+          return { line: best.q, surface: px(d), off: dist(best.q, colour) };
+        };
+        for (const [which, h] of [['outer', find(-1.5, 0.5, colours.outer, -1)], ['inner', find(2.5, 4.5, colours.inner, 1)]]) {
+          const ratio = h.off > 60 ? 0 : contrast(h.line, h.surface);
+          if (ratio < worst) {
+            worst = ratio;
+            worstAt = h.off > 60
+              ? `${which} hairline missing: nearest pixel ${h.line.join(',')} vs ${colours[which].map(Math.round).join(',')} at ${Math.round(f * 100)}%`
+              : `${which} hairline ${h.line.join(',')} on ${h.surface.join(',')} at ${Math.round(f * 100)}%`;
+          }
+        }
+      }
+      out.push({ segment: `${t.face} ${side}`, worst, worstAt });
+    }
+  }
+  return out;
+}
+
+test('every scan tile edge is bounded by hairlines at 3:1 against the surfaces beside it — pending, captured, asked and reduced motion, every theme, DPR 1 and 2', async (t) => {
+  const states = [
+    { name: 'pending', motion: 'no-preference', set: async () => {} },
+    { name: 'captured', motion: 'no-preference', set: async (page) => report(page, { captured: ['U', 'R', 'F', 'D'].map(captureOf), sides: 4 }) },
+    { name: 'asked', motion: 'no-preference',
+      set: async (page) => report(page, { phase: 'confirm', captured: [...FACES].map(captureOf), sides: 6, confirm: { face: 'F', up: 'U' } }) },
+    { name: 'asked, reduced motion', motion: 'reduce',
+      set: async (page) => report(page, { phase: 'confirm', captured: [...FACES].map(captureOf), sides: 6, confirm: { face: 'F', up: 'U' } }) },
+  ];
+  const failures = [];
+  const least = {};
+  let segments = 0;
+  for (const dpr of [1, 2]) {
+    for (const state of states) {
+      const { context, page, errors } = await openScan({ dpr, motion: state.motion });
+      try {
+        await state.set(page);
+        if (state.name.startsWith('asked')) await page.waitForSelector('.scan-face.asked .tile', { timeout: LIVENESS_MS });
+        if (state.name === 'captured') await page.waitForSelector('.scan-face.done', { timeout: LIVENESS_MS });
+        for (const theme of THEMES) {
+          await inTheme(page, theme);
+          const got = await hairlines(page, dpr);
+          assert.equal(got.length, 24, `precondition: ${got.length} edge segments measured, not 24`);
+          segments += got.length;
+          for (const g of got) if (!(g.worst >= 3)) failures.push(`DPR ${dpr}, ${state.name}, ${theme}: ${g.segment} — ${g.worst.toFixed(2)}:1, ${g.worstAt}`);
+          const low = got.reduce((a, b) => (b.worst < a.worst ? b : a));
+          if (!(least[state.name]?.worst <= low.worst)) least[state.name] = { ...low, where: `DPR ${dpr}, ${theme}` };
+        }
+        assert.deepEqual(errors, [], `${state.name}: the page threw`);
+      } finally {
+        await context.close();
+      }
+    }
+  }
+  assert.equal(segments, 24 * 3 * 4 * 2, 'precondition: every segment in every theme, state and density was measured');
+  for (const [state, low] of Object.entries(least)) t.diagnostic(`${state}: least ${low.worst.toFixed(2)}:1 (${low.where}, ${low.segment}: ${low.worstAt})`);
+  assert.deepEqual(failures, [], 'a tile edge whose hairline does not clear 3:1 against the surface beside it — fix the hairline, not the band');
 });

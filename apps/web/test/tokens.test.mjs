@@ -410,6 +410,32 @@ test('a colour band sits between hairlines that clear 3:1 on every surface, on b
   }
 });
 
+// The asked tile's OUTER hairline lies on its halo, the accent mixed into the page at 32% (resting) and 20% (the pulse's
+// widest frame), not on the page itself: --band-edge there was 2.36–2.80:1 (sweep 2026-10-20, S10, measured on the
+// rendered page by scan-marks.test.mjs). So the asked tile re-declares its outer hairline in --ink-3, which this holds at
+// 3:1 on the halo over every surface the board can sit on, at both strengths.
+test('the asked tile\'s outer hairline clears 3:1 on its halo, at rest and at the pulse\'s faintest', () => {
+  const hex = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  const toHex = (c) => `#${c.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('')}`;
+  const mixed = (a, b, share) => toHex(hex(a).map((v, i) => v * share + hex(b)[i] * (1 - share)));
+  const rule = html.slice(html.indexOf('.scan-face.asked .tile {'), html.indexOf('}', html.indexOf('.scan-face.asked .tile {')));
+  assert.match(rule, /--tile-hairlines:\s*0 0 0 1px var\(--ink-3\), inset 0 0 0 1px var\(--band-edge\)/, 'the asked tile does not re-declare its outer hairline in --ink-3');
+  assert.match(rule, /color-mix\(in srgb, var\(--accent\) 32%, transparent\)/, 'the resting halo is no longer the accent at 32% — this test computes the wrong one');
+  const keyframes = html.slice(html.indexOf('@keyframes cubusAsked'), html.indexOf('}', html.indexOf('@keyframes cubusAsked') + 30));
+  assert.match(keyframes, /color-mix\(in srgb, var\(--accent\) 20%, transparent\)/, 'the pulse\'s halo is no longer the accent at 20% — this test computes the wrong one');
+  const failures = [];
+  for (const [theme, block] of THEMES) {
+    for (const surface of ['--bg', '--panel']) {
+      for (const share of [0.32, 0.2]) {
+        const halo = mixed(valueIn(block, '--accent'), valueIn(block, surface), share);
+        const ratio = contrast(valueIn(block, '--ink-3'), halo);
+        if (ratio < 3) failures.push(`${theme}: --ink-3 on the ${share * 100}% halo over ${surface} is ${ratio.toFixed(2)}:1`);
+      }
+    }
+  }
+  assert.deepEqual(failures, []);
+});
+
 // The side a confirm asks for back is found without reading: its tile's ring breathes on the shared
 // `--pulse`, and under reduced motion the global rule runs the animation once so it rests as the static
 // ring (dev-docs/scan-guidance-plan.md 2.2).

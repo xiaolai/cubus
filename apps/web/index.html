@@ -1163,7 +1163,11 @@
          from the six captures alone. Outranks .done: it has been captured, that is the point. */
       /* Keeps its edge colours: the point of asking is that this side be held a particular way up,
          which is exactly what those colours say. The halo carries the attention instead. */
-      .scan-face.asked .tile { box-shadow: var(--tile-hairlines), 0 0 0 4px color-mix(in srgb, var(--accent) 32%, transparent); animation: cubusAsked var(--pulse) ease-in-out infinite; }
+      /* Its OUTER hairline lies on the halo, not on the page, and --band-edge on the halo is 2.36–2.80:1 — the edge it
+         bounds was not identifiable on the one tile the scan is asking for (sweep 2026-10-20, S10, measured on the
+         rendered page by scan-marks.test.mjs). The hairline is fixed, not the band: --ink-3 clears 3.50:1 and more on
+         the halo at its strongest and faintest, in every theme (tokens.test.mjs). */
+      .scan-face.asked .tile { --tile-hairlines: 0 0 0 1px var(--ink-3), inset 0 0 0 1px var(--band-edge); box-shadow: var(--tile-hairlines), 0 0 0 4px color-mix(in srgb, var(--accent) 32%, transparent); animation: cubusAsked var(--pulse) ease-in-out infinite; }
       /* The asked tile breathes, so the side the scan wants back is found without reading. Under reduced
          motion the global rule runs it once, and it rests as the static ring above. */
       @keyframes cubusAsked { 50% { box-shadow: var(--tile-hairlines), 0 0 0 7px color-mix(in srgb, var(--accent) 20%, transparent); } }
