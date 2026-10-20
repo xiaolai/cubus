@@ -1560,13 +1560,43 @@ const bandEnumeration = (page) => page.evaluate(async () => {
 });
 
 /**
+ * Everything about the band that its words can change: which rows show, the box, scroll size, class and colours of the
+ * band and of every element drawn in it — read a frame after the state is shown, once the band's own observer has placed
+ * its rows and fitted its room (lib/foot-band.js). Self-contained: evaluated in the page.
+ */
+const bandLayoutKey = async () => {
+  await new Promise((done) => { requestAnimationFrame(done); });
+  const band = document.querySelector('.foot-band');
+  if (!band) return 'no band';
+  const r = (n) => Math.round(n * 4) / 4;
+  const parts = [band, ...band.querySelectorAll('*')].filter((el) => !el.closest('[hidden]') && getComputedStyle(el).display !== 'none')
+    .map((el) => {
+      const b = el.getBoundingClientRect();
+      const s = getComputedStyle(el);
+      return [el.id, el.className, r(b.left), r(b.top), r(b.width), r(b.height), el.scrollWidth, el.scrollHeight, el.clientWidth,
+        el.clientHeight, s.color, s.backgroundColor, s.borderColor].join(',');
+    });
+  return parts.join('|');
+};
+
+/**
  * MUST NOT, for every one of `states`: the band scrolling, a control in it cut, the cube under it, or the cube a different
  * size than with the band put away (E12.7, E12.8). `apply(state)` shows the state in the page as its writer would.
  */
 async function bandHoldsEvery(page, cubeSel, bare, states, apply, what) {
   assert.ok(states.length > 0, `precondition, ${what}: nothing enumerated for the band to hold`);
+  // A state the band lays out EXACTLY as one already measured is that measurement again (sweep 2026-10-20): the same
+  // rows, every box in the band and every scroll size in it the same, every colour the same. The band is absolutely
+  // positioned (index.html), so nothing outside it lays out by its words: the page outside it, the cube's canvas and
+  // what the renderer paints there are the same, and so is every word's contrast. Only its words differ, and where they
+  // could change what is drawn they change a box or a scroll size, which is in the key. Measured: the 138 sentences of a
+  // walk to a stop cost 17.5 s a case read one by one, two frames and three themes each.
+  const measured = new Set();
   for (const state of states) {
     await page.evaluate(apply, state);
+    const layout = await page.evaluate(bandLayoutKey);
+    if (measured.has(layout)) continue;
+    measured.add(layout);
     await page.evaluate(() => new Promise((r) => { requestAnimationFrame(() => requestAnimationFrame(r)); }));
     await cubeSettled(page, cubeSel);
     const b = await measureBand(page, cubeSel);
