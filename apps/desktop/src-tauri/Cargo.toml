@@ -1,6 +1,6 @@
 [package]
 name = "cubus-desktop"
-version = "0.9.3"
+version = "0.10.0"
 license = "MIT"
 description = "Cubus desktop app"
 edition = "2021"
