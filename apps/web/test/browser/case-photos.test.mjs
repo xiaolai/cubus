@@ -10,9 +10,12 @@
 //
 // IN EVERY THEME, AT DPR 1 AND 2 (plan E14). A moved sticker's mark is the theme's ink or its ground, whichever
 // contrasts more with that sticker, so what a tile shows is a different picture in each theme: no two cases alike, and
-// every mark seen at its sticker, are asserted in all three — on the photographs, the flat tiles and the book alike.
+// every mark judged at its sticker, are asserted in all three — on the photographs, the flat tiles and the book alike.
 //
-// WEBKIT checks only that every photograph decodes and paints: its pixels are not reproducible across machines.
+// EVERY MARK IS JUDGED ON THE PAGE, IN BOTH ENGINES (plan E15): WCAG 1.4.11 per marked sticker on the real library and
+// book (marks-on-page.mjs) — contrast as the page resolves it, the band's width and the colour it leaves from the drawing
+// at the size the page draws it, and that it renders. Thresholds, not goldens, so WebKit decides them too. For
+// everything else WEBKIT checks only that every photograph decodes and paints: its pixels are not reproducible.
 //
 // Any warning the renderer prints fails a case: "highlight matched nothing" is a marking that silently drew nothing.
 
@@ -24,14 +27,13 @@ import { NET_KEPT, UNMARKED, isMarked, isPhotographed, photoAttrs } from '../../
 import { caseOf, movedPieces } from '../../lib/drill/case-of.js';
 import { orientationPerm } from '../../lib/cube-orientation.js';
 import { catalogueOf } from '../../lib/drill/library-client.js';
-import { bookPicture, casePicture, markedPicture, outlineMoved } from '../../lib/screens/practice/library-view.js';
+import { bookPicture, casePicture, libraryKey, outlineMoved } from '../../lib/screens/practice/library-view.js';
 import { THEME_INKS } from '../fixtures/theme-inks.mjs';
 import { LIVENESS_MS, startBrowserFixture } from './harness.mjs';
+import { MARK_COLOUR_KEPT, MARK_CONTRAST, MARK_FIXTURES, MARK_STROKE_LEAST_PX, measureBook, measureLibrary, practiceAt } from './marks-on-page.mjs';
 
 const catalogue = await catalogueOf(lib);
 const LOOK = { palette: 'classic', scheme: 'western' };
-/** The share of each visible moved sticker's own painted pixels its marking must change by more than 48/255 (plan E8). */
-const MARK_SEEN = 0.25;
 const regionOf = (row) => catalogue.sets[row.set].region;
 /**
  * The unmarked list's SECOND rule (case-photo.js `UNMARKED`): the sets with a flat row that draws another case than the
@@ -155,42 +157,11 @@ async function photoPage(fixture, { dpr = 2 } = {}) {
       }
       return { alike: n, min: Number(min.toFixed(4)) + 0 };
     };
-    /**
-     * E8, sticker by sticker: for each sticker the marked photograph outlines (`photoMarks`, the polygons its outline
-     * was stroked on), the share of the sticker's own painted pixels that differ from the unmarked photograph by more
-     * than 48/255 — both stills at their own size, where the polygons are.
-     */
-    const stickerShares = async (markedUrl, bareUrl) => {
-      const polys = photo.photoMarks(markedUrl);
-      if (!polys) throw new Error('a marked photograph with no marks recorded');
-      const pixels = async (url) => {
-        const img = await load(url);
-        const cv = document.createElement('canvas'); cv.width = img.width; cv.height = img.height;
-        const g = cv.getContext('2d'); g.drawImage(img, 0, 0);
-        return { px: g.getImageData(0, 0, img.width, img.height).data, w: img.width, h: img.height };
-      };
-      const m = await pixels(markedUrl); const b = await pixels(bareUrl);
-      if (m.w !== b.w || m.h !== b.h) throw new Error(`marked ${m.w}x${m.h} and unmarked ${b.w}x${b.h} stills are not one frame`);
-      return polys.map((poly) => {
-        const cv = document.createElement('canvas'); cv.width = m.w; cv.height = m.h;
-        const g = cv.getContext('2d');
-        g.beginPath(); poly.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y))); g.closePath();
-        g.fill();
-        const mask = g.getImageData(0, 0, m.w, m.h).data;
-        let inside = 0; let changed = 0;
-        for (let i = 0; i < mask.length; i += 4) {
-          if (mask[i + 3] < 255 || b.px[i + 3] === 0) continue;
-          inside += 1;
-          if (Math.abs(m.px[i] - b.px[i]) > 48 || Math.abs(m.px[i + 1] - b.px[i + 1]) > 48 || Math.abs(m.px[i + 2] - b.px[i + 2]) > 48) changed += 1;
-        }
-        return inside ? changed / inside : 0;
-      });
-    };
     const hash = async (url) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', await (await fetch(url)).arrayBuffer()))]
       .map((b) => b.toString(16).padStart(2, '0')).join('');
     /** The page in `theme`, as Settings puts it there: the photographer reads its two inks where the library is drawn. */
     const theme = (th) => { document.documentElement.setAttribute('data-theme', th); getComputedStyle(document.documentElement).color; };
-    window.__photos = { photo, photographer, draw, differ, alike, stickerShares, hash, done, theme };
+    window.__photos = { photo, photographer, draw, differ, alike, hash, done, theme };
   });
   return { page, context, problems };
 }
@@ -288,32 +259,9 @@ test('a photograph is the same picture whenever it is taken: one set, forwards a
 });
 
 
-// ---- Chromium: every mark is SEEN at its sticker (E8's gate), on all three surfaces, every theme, DPR 1 and 2 -----------
+// ---- the book's marks are this theme's, drawn in their tokens, and Auto follows the system -----------------------------
 
-/** Every row whose flat picture — the tile's, or the book's — marks a moved piece: unmarked and marked as the theme draws
- *  them, and where each marked sticker is (its rect in the UNMARKED picture, in the picture's own units, so the sticker
- *  measured is the sticker as it is, whatever the marking does to its outline). */
-const flatRows = (picture, which = () => true) => Object.values(catalogue.rows).filter((row) => isMarked(row) && which(row)).map((row) => {
-  const plain = casePicture(row, LOOK);
-  const rects = new Map([...plain.matchAll(/<rect data-facelet="(\d+)" x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)" rx="([\d.]+)"/g)]
-    .map(([, f, x, y, w, h, rx]) => [Number(f), { f: Number(f), x: Number(x), y: Number(y), w: Number(w), h: Number(h), rx: Number(rx) }]));
-  const marked = Object.fromEntries(THEMES.map((th) => [th, picture(row, { ...LOOK, inks: THEME_INKS[th] })]));
-  const moved = [...marked.white.matchAll(/<rect class="moved" data-facelet="(\d+)"/g)].map(([, f]) => rects.get(Number(f)));
-  return {
-    id: row.id, bare: Object.fromEntries(THEMES.map((th) => [th, asDrawn(plain, th)])),
-    marked: Object.fromEntries(THEMES.map((th) => [th, asDrawn(marked[th], th)])), moved, vb: /viewBox="0 0 ([\d.]+) ([\d.]+)/.exec(plain).slice(1).map(Number),
-  };
-}).filter((r) => r.moved.length);
-const BOOK_ROWS = flatRows((row, look) => bookPicture(row, regionOf(row), look));
-const TILE_ROWS = flatRows((row, look) => markedPicture(row, regionOf(row), look),
-  (row) => !isPhotographed(row));
-const PHOTO_ROWS = SETS.flatMap(([, rows]) => rows).filter((r) => r.photographed && r.tileMarked);
-
-test('every mark is seen at its sticker — book, flat tile and photograph — in every theme at DPR 1 and 2', async (t) => {
-  assert.ok(BOOK_ROWS.length > 500, `precondition: only ${BOOK_ROWS.length} rows mark a moved piece in the book`);
-  assert.ok(TILE_ROWS.length > 150, `precondition: only ${TILE_ROWS.length} flat tiles mark a moved piece`);
-  assert.ok(PHOTO_ROWS.length > 250, `precondition: only ${PHOTO_ROWS.length} marked photographs`);
-  // The book's width and ground, read off the real book open on a page — nothing typed from the stylesheet.
+test('the book draws each mark in the token this theme chooses, and Auto turning dark with the book open draws Night\'s', async (t) => {
   const probe = await chromium.browser.newContext({ viewport: { width: 1280, height: 900 } });
   const shown = {};
   try {
@@ -327,7 +275,7 @@ test('every mark is seen at its sticker — book, flat tile and photograph — i
       refreshScreen();
     });
     await page.waitForSelector('.practice-page[data-ready="1"]', { timeout: LIVENESS_MS });
-    /** The book open, read: its picture's width, its ground, and each mark's token and the colour it is drawn in. */
+    /** The book open, read: its ground, and each mark's token and the colour it is drawn in. */
     const readBook = async () => {
       await page.waitForSelector('.practice-page[data-ready="1"]', { timeout: LIVENESS_MS });
       if (await page.evaluate(() => document.querySelector('#practiceInfo').hidden)) await page.click('#practiceBook');
@@ -340,7 +288,6 @@ test('every mark is seen at its sticker — book, flat tile and photograph — i
         let ground = svg.parentElement;
         while (ground && /rgba\(0, 0, 0, 0\)|transparent/.test(getComputedStyle(ground).backgroundColor)) ground = ground.parentElement;
         const out = {
-          width: svg.getBoundingClientRect().width,
           ground: getComputedStyle(ground).backgroundColor,
           marks: [...svg.querySelectorAll('rect.moved')].map((r) => `${r.dataset.facelet}:${r.dataset.mark}=${getComputedStyle(r).stroke}`),
         };
@@ -385,86 +332,106 @@ test('every mark is seen at its sticker — book, flat tile and photograph — i
   // Precondition: Night and White choose differently for this row, so the Auto case below can tell them apart.
   assert.notDeepEqual(shown.night.marks.map((m) => m.split('=')[0]), shown.white.marks.map((m) => m.split('=')[0]), 'precondition: sune is marked alike in Night and White');
   assert.deepEqual(shown.autoDark.marks, shown.night.marks, 'Auto turned dark with the book open, and its marks are not Night\'s');
-
-  const unseen = [];
-  for (const dpr of [1, 2]) {
-    const { page, context, problems } = await photoPage(chromium, { dpr });
-    try {
-      for (const theme of THEMES) {
-        const inks = THEME_INKS[theme];
-        const flat = await page.evaluate(async ({ sets, dpr: d, ground }) => {
-          const load = (src) => new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => no(new Error('a picture did not decode')); i.src = src; });
-          const out = [];
-          for (const { what, rows, w, h } of sets) {
-            const Wd = Math.round(w * d); const Hd = Math.round(h * d);
-            for (const r of rows) {
-              // Contained in its box, as the stylesheet draws it.
-              const k = Math.min(Wd / r.vb[0], Hd / r.vb[1]); const ox = (Wd - r.vb[0] * k) / 2; const oy = (Hd - r.vb[1] * k) / 2;
-              const draw = async (svg, g0) => {
-                const img = await load(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`);
-                const cv = document.createElement('canvas'); cv.width = Wd; cv.height = Hd;
-                const g = cv.getContext('2d');
-                if (g0) { g.fillStyle = g0; g.fillRect(0, 0, Wd, Hd); }
-                g.drawImage(img, ox, oy, r.vb[0] * k, r.vb[1] * k);
-                return g.getImageData(0, 0, Wd, Hd).data;
-              };
-              const a = await draw(r.bare, ground); const b = await draw(r.marked, ground); const p = await draw(r.bare, null);
-              for (const s of r.moved) {
-                // The sticker's own pixels: inside its rounded rect, and painted in the unmarked picture.
-                const cv = document.createElement('canvas'); cv.width = Wd; cv.height = Hd;
-                const g = cv.getContext('2d');
-                g.beginPath(); g.roundRect(ox + s.x * k, oy + s.y * k, s.w * k, s.h * k, s.rx * k); g.fill();
-                const mask = g.getImageData(0, 0, Wd, Hd).data;
-                let inside = 0; let changed = 0;
-                for (let i = 0; i < mask.length; i += 4) {
-                  if (mask[i + 3] < 255 || p[i + 3] === 0) continue;
-                  inside += 1;
-                  if (Math.abs(a[i] - b[i]) > 48 || Math.abs(a[i + 1] - b[i + 1]) > 48 || Math.abs(a[i + 2] - b[i + 2]) > 48) changed += 1;
-                }
-                out.push({ what, id: r.id, f: s.f, share: inside ? changed / inside : 0 });
-              }
-            }
-          }
-          return out;
-        }, {
-          dpr,
-          ground: shown[theme].ground,
-          sets: [
-            // The book at its drawn width, its height free; a tile's picture box at its narrowest (68 px, plan E9), 15 : 16.
-            { what: 'book', w: shown[theme].width, h: shown[theme].width * 2, rows: BOOK_ROWS.map((r) => ({ ...r, bare: r.bare[theme], marked: r.marked[theme] })) },
-            { what: 'tile', w: 68, h: (68 * 16) / 15, rows: TILE_ROWS.map((r) => ({ ...r, bare: r.bare[theme], marked: r.marked[theme] })) },
-          ],
-        });
-        // The photographs, taken in this theme at this DPR: the outline is drawn on exactly the visible moved stickers.
-        const photos = await page.evaluate(async ({ rows, theme: th }) => {
-          const { photographer, stickerShares, theme: setTheme } = window.__photos;
-          setTheme(th);
-          const out = [];
-          for (const r of rows) {
-            const shares = await stickerShares(await photographer.photo(r.marked), await photographer.photo(r.bare));
-            out.push({ id: r.id, visible: r.visibleMoved, shares });
-          }
-          return out;
-        }, { rows: PHOTO_ROWS, theme });
-        assert.deepEqual(photos.filter((e) => e.shares.length !== e.visible).map((e) => `${e.id}: ${e.shares.length} outlined, ${e.visible} visible`), [],
-          `${theme} DPR ${dpr}: a photograph outlines other stickers than its visible moved ones`);
-        const all = [...flat, ...photos.flatMap((e) => e.shares.map((share) => ({ what: 'photo', id: e.id, f: '', share })))];
-        for (const what of ['book', 'tile', 'photo']) {
-          const s = all.filter((m) => m.what === what).sort((x, y) => x.share - y.share);
-          assert.ok(s.length > 1000, `precondition: ${theme} DPR ${dpr}: only ${s.length} ${what} stickers measured`);
-          t.diagnostic(`${theme} DPR ${dpr} ${what}: ${s.length} marked stickers, smallest ${s.slice(0, 3).map((m) => `${m.id}#${m.f} ${(100 * m.share).toFixed(1)}%`).join(', ')}, `
-            + `median ${(100 * s[s.length >> 1].share).toFixed(1)}%, under 25%: ${s.filter((m) => m.share < MARK_SEEN).length}`);
-        }
-        unseen.push(...all.filter((m) => m.share < MARK_SEEN).map((m) => `${theme} DPR ${dpr} ${m.what} ${m.id}#${m.f} ${(100 * m.share).toFixed(1)}%`));
-      }
-      assert.deepEqual(problems, []);
-    } finally {
-      await context.close();
-    }
-  }
-  // E8, everywhere a mark is drawn: no theme is measured and let off (Night was, until E14).
-  assert.deepEqual(unseen.slice(0, 12), [], `${unseen.length} marked stickers whose marking changes under ${100 * MARK_SEEN}% of the sticker at 48/255`);
 });
+
+// ---- E15: every mark judged ON THE PAGE by WCAG 1.4.11, in both engines -----------------------------------------------
+//
+// The real library's flat tiles and photographs and the real book (test/browser/marks-on-page.mjs), sticker by sticker:
+// (a) the band's colour against the sticker's own is at least 3:1; (b) the band is at least a CSS px at the size the
+// page draws the picture, from the one function the drawing uses; (c) at least 35% of the sticker keeps its own colour;
+// and the mark renders. Every theme, DPR 1 and 2, the iPhone SE and a landscape window. It supersedes E8's "25% of a
+// sticker's pixels changed at 48/255", a number chosen for a gate, which the page could meet only by repainting stickers.
+
+/** The library's methods, from the catalogue: every tile of every one is measured. */
+const METHODS = catalogue.groups.map(libraryKey);
+/** What the library must be found to mark: every marked flat tile, and every marked photograph with its visible moved
+ *  stickers' count — the polygons a photograph is measured on are held to it. */
+const TILE_IDS = Object.values(catalogue.rows).filter((row) => isMarked(row) && !isPhotographed(row)).map((row) => row.id).sort();
+const VISIBLE_MOVED = Object.fromEntries(SETS.flatMap(([, rows]) => rows).filter((r) => r.photographed && r.tileMarked).map((r) => [r.id, r.visibleMoved]));
+/**
+ * The book's pages, CHOSEN BY WHAT THEY HOLD: the fewest rows (greedy) whose book pictures, in the three themes, mark
+ * every (picture, sticker place, sticker colour, mark token) any row marks — a sticker's pixels on the page are decided
+ * by those and by where the picture lies, so every distinct marked sticker the book can draw is measured. Opening every
+ * row's page in 24 configurations would take an hour.
+ */
+const BOOK_IDS = (() => {
+  const keysOf = (row) => new Set(THEMES.flatMap((th) => {
+    const svg = bookPicture(row, regionOf(row), { ...LOOK, inks: THEME_INKS[th] });
+    const frame = /viewBox="([^"]+)"/.exec(svg)[1];
+    return [...svg.matchAll(/<rect class="moved" data-facelet="(\d+)" data-mark="(\w+)"([^>]*)>/g)]
+      .map(([, f, mark, rest]) => `${th}|${frame}|${f}|${/ fill="([^"]+)"/.exec(rest)?.[1]}${/ fill-opacity="([^"]+)"/.exec(rest)?.[1] ?? ''}|${mark}`);
+  }));
+  const rows = Object.values(catalogue.rows).filter(isMarked).map((row) => [row.id, keysOf(row)]);
+  const left = new Set(rows.flatMap(([, k]) => [...k]));
+  const chosen = [];
+  while (left.size) {
+    let best = null; let most = 0;
+    for (const [id, keys] of rows) { let n = 0; for (const k of keys) if (left.has(k)) n += 1; if (n > most) { most = n; best = [id, keys]; } }
+    chosen.push(best[0]);
+    for (const k of best[1]) left.delete(k);
+  }
+  return chosen;
+})();
+const DPRS = Object.freeze([1, 2]);
+
+for (const engine of ['chromium', 'webkit']) {
+  test(`in ${engine}, every mark meets WCAG 1.4.11 on the page — flat tile, photograph and book — in every theme at DPR 1 and 2`, async (t) => {
+    assert.ok(TILE_IDS.length > 150, `precondition: only ${TILE_IDS.length} flat tiles mark a moved piece`);
+    assert.ok(Object.keys(VISIBLE_MOVED).length > 250, `precondition: only ${Object.keys(VISIBLE_MOVED).length} marked photographs`);
+    assert.ok(BOOK_IDS.length > 20, `precondition: only ${BOOK_IDS.length} book pages cover what the book marks`);
+    const fixture = engine === 'chromium' ? chromium : await startBrowserFixture({ engine });
+    const fails = [];
+    const least = { tile: {}, photo: {}, book: {} };
+    try {
+      const configs = MARK_FIXTURES.flatMap((fx) => THEMES.flatMap((theme) => DPRS.map((dpr) => ({ fx, theme, dpr }))));
+      // Three configurations at a time: each is its own context, and nothing judged depends on the clock.
+      const run = async ({ fx, theme, dpr }) => {
+        const at = `${engine} ${fx.name} ${theme} DPR ${dpr}`;
+        const opts = { browser: fixture.browser, base: fixture.base, theme, dpr, timeout: LIVENESS_MS };
+        const { page, context, problems } = await practiceAt(fx, opts);
+        try {
+          const all = [...await measureLibrary(page, { ...opts, methods: METHODS }), ...await measureBook(page, { ...opts, ids: BOOK_IDS })];
+          // Every marked tile, photograph and book page judged — a gate that reads an empty list checks nothing.
+          const ids = (what) => [...new Set(all.filter((m) => m.what === what).map((m) => m.id))].sort();
+          assert.deepEqual(ids('tile'), TILE_IDS, `${at}: the flat tiles judged are not every marked flat tile`);
+          assert.deepEqual(ids('photo'), Object.keys(VISIBLE_MOVED).sort(), `${at}: the photographs judged are not every marked photograph`);
+          assert.deepEqual(ids('book'), [...BOOK_IDS].sort(), `${at}: the book pages judged are not the ones chosen`);
+          const outlined = Object.fromEntries(ids('photo').map((id) => [id, all.filter((m) => m.what === 'photo' && m.id === id).length]));
+          assert.deepEqual(Object.entries(outlined).filter(([id, n]) => n !== VISIBLE_MOVED[id]).map(([id, n]) => `${id}: ${n} outlined, ${VISIBLE_MOVED[id]} visible`), [],
+            `${at}: a photograph outlines other stickers than its visible moved ones`);
+          const say = (m) => `${at} ${m.what} ${m.id}#${m.f}`;
+          for (const m of all) {
+            if (!(m.contrast >= MARK_CONTRAST)) fails.push(`${say(m)}: (a) the band is ${m.contrast.toFixed(2)}:1 on its sticker`);
+            if (!m.named) fails.push(`${say(m)}: (a) the band is not stroked in the token it names (${m.token})`);
+            if (!m.drawnAsMeant) fails.push(`${say(m)}: (b) the band drawn is not the one outlineBand gives`);
+            if (!(m.stroke >= MARK_STROKE_LEAST_PX - 1e-9)) fails.push(`${say(m)}: (b) the band is ${m.stroke.toFixed(2)} CSS px wide as drawn`);
+            if (!(m.kept >= MARK_COLOUR_KEPT)) fails.push(`${say(m)}: (c) ${(100 * m.kept).toFixed(1)}% of the sticker keeps its own colour`);
+            if (!(m.rendered > 0)) fails.push(`${say(m)}: the mark draws nothing`);
+          }
+          for (const what of ['tile', 'photo', 'book']) {
+            const s = all.filter((m) => m.what === what);
+            const lo = (k) => s.reduce((x, m) => (m[k] < x[k] ? m : x));
+            for (const k of ['contrast', 'stroke', 'kept']) if (!least[what][k] || lo(k)[k] < least[what][k][k]) least[what][k] = { ...lo(k), at };
+            t.diagnostic(`${at} ${what}: ${s.length} marked stickers; (a) least ${lo('contrast').contrast.toFixed(2)}:1 ${lo('contrast').id}#${lo('contrast').f}, `
+              + `(b) least ${lo('stroke').stroke.toFixed(2)} px ${lo('stroke').id}, (c) least ${(100 * lo('kept').kept).toFixed(1)}% ${lo('kept').id}`);
+          }
+          assert.deepEqual(problems, [], `${at}: the page reported problems`);
+        } finally {
+          await context.close();
+        }
+      };
+      const queue = [...configs];
+      await Promise.all([0, 1, 2].map(async () => { while (queue.length) await run(queue.shift()); }));
+    } finally {
+      if (fixture !== chromium) await fixture.close();
+    }
+    for (const [what, l] of Object.entries(least)) {
+      t.diagnostic(`${engine} ${what}, least of all: (a) ${l.contrast.contrast.toFixed(2)}:1 (${l.contrast.at} ${l.contrast.id}#${l.contrast.f}), `
+        + `(b) ${l.stroke.stroke.toFixed(2)} CSS px (${l.stroke.at} ${l.stroke.id}), (c) ${(100 * l.kept.kept).toFixed(1)}% (${l.kept.at} ${l.kept.id})`);
+    }
+    assert.deepEqual(fails.slice(0, 12), [], `${fails.length} marks that do not meet WCAG 1.4.11 as E15 states it`);
+  });
+}
 
 // ---- WebKit: every photograph paints ------------------------------------------------------------------------------
 

@@ -44,14 +44,33 @@ export const PHOTO_BOX = Object.freeze({ w: 110, h: 96 });
  *  measured at 68.5% × 84% of `PHOTO_BOX`, which is 15 : 16. A tile's picture box has this shape. */
 export const PHOTO_FRAME = Object.freeze({ w: 15, h: 16 });
 
-/** How many outline widths make a sticker's width on a photograph: the THINNEST band that meets E8's gate — every
- *  visible moved sticker has at least 25% of its own painted pixels changed by 48/255 against the photograph unmarked —
- *  at DPR 1 AND 2, in every theme (E14). Measured 2026-10-18 at DPR 2 in one theme: 25.2% at 9. Measured 2026-10-20 in
- *  Chromium over all 3,574 stickers with the mark's colour chosen per sticker (`markInk`, against the sticker as the
- *  still draws it, lit): Night at DPR 1 leaves 43 under 25% at 8 (smallest 12.9%) and 14 at 7 (22.6%), and none at 6
- *  (33.9%) — a dark green side face lit by the highlight contrasts a little more with Night's dark ground than its light
- *  ink, and a dark band on green changes few pixels by 48/255 at that size. So it is 6. */
+/** How many outline widths make a sticker's width on a photograph, where that is wider than `MARK_STROKE_LEAST_PX`:
+ *  the band shipped by E14 (6), kept by E15 — a mark is judged by WCAG 1.4.11 on what is DRAWN (contrast, a stroke of at
+ *  least a CSS px, at least `MARK_COLOUR_KEPT` of the sticker left in its own colour), not by a share of pixels changed. */
 export const OUTLINE_PER_STICKER = 6;
+
+/** The least width of a mark's band on screen, CSS px, at the smallest size its picture is ever drawn (E15, WCAG 1.4.11:
+ *  a graphic that carries meaning is a stroke the eye can find, not a hairline). */
+export const MARK_STROKE_LEAST_PX = 1;
+
+/** The least share of a marked sticker's own area its band leaves in the sticker's own colour (E15): a mark points at a
+ *  sticker and never repaints it. */
+export const MARK_COLOUR_KEPT = 0.35;
+
+/** The narrowest a tile ever draws its picture, CSS px: the portrait grid's least column, `minmax(78px, 1fr)` in
+ *  index.html, less the tile's 4 px padding each side and its 1 px border. A photograph and a flat picture alike are
+ *  contained in it, in `PHOTO_FRAME`'s shape. test/browser/case-photos.test.mjs measures every tile drawn no smaller. */
+export const PICTURE_LEAST_PX = 68;
+
+/**
+ * How deep a photograph's band lies inside a sticker's polygon, in the still's own pixels: a sixth of the sticker
+ * (`OUTLINE_PER_STICKER`), or `MARK_STROKE_LEAST_PX` on screen when the still is drawn at its smallest — whichever is
+ * more. ONE function, which the photographer strokes with and the gate judges by (E15).
+ *
+ * @param {number} area  the sticker's polygon's area, in the still's pixels
+ * @param {number} stillWidth  the still's width, in its own pixels; it is drawn `PICTURE_LEAST_PX` wide at the least
+ */
+export const photoBandDepth = (area, stillWidth) => Math.max(Math.sqrt(area) / OUTLINE_PER_STICKER, (MARK_STROKE_LEAST_PX * stillWidth) / PICTURE_LEAST_PX);
 
 /**
  * The sets whose cases a photograph cannot tell apart as well as today's net does, so they keep the net — COMPUTED,
@@ -239,9 +258,10 @@ function meanInside(g, poly, w, h) {
   return sum.map((v) => v / n);
 }
 
-/** Stroke each polygon INSIDE its own edge, `OUTLINE_PER_STICKER` to a sticker's width, in the ink or the ground —
- *  whichever contrasts more with that sticker as the still draws it (`markInk`, E14). */
-function strokeInside(g, polygons, inks) {
+/** Stroke each polygon INSIDE its own edge, `photoBandDepth` deep, in the ink or the ground — whichever contrasts more
+ *  with that sticker as the still draws it (`markInk`, E14). `stillWidth` is the still's width once cut to the cube —
+ *  the size it is drawn at — which `frameOf` decides before any band is drawn. */
+function strokeInside(g, polygons, inks, stillWidth) {
   const w = g.canvas.width; const h = g.canvas.height;
   // Every sticker's colour read BEFORE any band is drawn: a band never decides its neighbour's.
   const chosen = polygons.map((poly) => inks.css[markInk(meanInside(g, poly, w, h), inks)]);
@@ -255,7 +275,8 @@ function strokeInside(g, polygons, inks) {
     path.closePath();
     g.save();
     g.clip(path);
-    g.lineWidth = (2 * Math.sqrt(area)) / OUTLINE_PER_STICKER;
+    // Clipped to the polygon, a stroke shows half its width: twice the depth.
+    g.lineWidth = 2 * photoBandDepth(area, stillWidth);
     g.lineJoin = 'round';
     g.strokeStyle = chosen[k];
     g.stroke(path);
@@ -412,7 +433,7 @@ export function casePhotographer({ host, signal, box = PHOTO_BOX }) {
     const f = frameOf(g, work.width, work.height);
     if (!f) throw new Error('case-photo: the renderer painted nothing');
     const lit = litOutlines(cube, work);
-    strokeInside(g, lit, inks);
+    strokeInside(g, lit, inks, f.w);
     frames.set(lookKey(), { x: f.x / work.width, y: f.y / work.height, w: f.w / work.width, h: f.h / work.height });
     const still = document.createElement('canvas');
     still.width = f.w;

@@ -17,7 +17,7 @@
 // comes near the view. Every card of every set built at every visit was 208 ms on the UI thread (measured
 // 2026-10-18 in WebKit) — for pictures nobody had scrolled to.
 
-import { PHOTO_FRAME, isMarked, isPhotographed, markInk } from '../../case-photo.js';
+import { MARK_STROKE_LEAST_PX, PHOTO_FRAME, PICTURE_LEAST_PX, isMarked, isPhotographed, markInk } from '../../case-photo.js';
 import { netSvg, topFaceSvg } from '../../cube-flat.js';
 import { movedPieces } from '../../drill/case-of.js';
 import { fingersOf } from '../../drill/record.js';
@@ -64,28 +64,35 @@ export function casePicture(row, { palette, scheme, scale = 1 } = {}) {
 const OUTLINE_LEAST = 1.6;
 
 /**
- * How a flat picture's moved stickers are outlined: the band's width as a share of the sticker's (`perSticker` bands
- * make a sticker, never under `OUTLINE_LEAST`), and whether the band lies wholly INSIDE the sticker's edge rather than
- * astride it.
+ * How a flat picture's moved stickers are outlined: whether the band lies wholly INSIDE the sticker's edge rather than
+ * astride it, and the smallest box the picture is ever drawn in (CSS px), which the band is never thinner than
+ * `MARK_STROKE_LEAST_PX` in (`outlineBand`).
  *
- * A TILE's lies INSIDE the edge (E14, 2026-10-20). Astride it, a sixth of the sticker, half the band fell on the gap and
- * the neighbours: at the tile's 68 px, 1,096 of 3,433 marked stickers at DPR 1 (1,456 at DPR 2) had under 25% of their
- * own pixels changed at 48/255 in white — E8's gate, which flat tiles had never been held to. Inside, the LEAST band
- * meets it in every theme at DPR 1 and 2 (smallest 27.6%, measured 2026-10-20 in Chromium), so it is the least band, as
- * the book's is. The keep list and the unmarked list are re-derived with it (test/browser/case-photos.test.mjs).
+ * A TILE's lies INSIDE the edge (E14, 2026-10-20): astride it, half the band fell on the gap and the neighbours. Its
+ * picture is never drawn narrower than `PICTURE_LEAST_PX`, contained in `PHOTO_FRAME`'s shape.
  */
-export const TILE_OUTLINE = Object.freeze({ perSticker: Infinity, inside: true });
+export const TILE_OUTLINE = Object.freeze({ inside: true, shownAtLeast: Object.freeze({ w: PICTURE_LEAST_PX, h: (PICTURE_LEAST_PX * PHOTO_FRAME.h) / PHOTO_FRAME.w }) });
 
 /**
- * The BOOK's (E13). Its picture is 112 px wide, a net's sticker under 9 px, and the tile's band astride that edge put
- * half of it on the gap and the neighbours: 6,680 of 9,151 marked stickers in white at DPR 1 had under 25% of their own
- * pixels changed at 48/255 (median 22.2%) — a mark present but not SEEN, the defect E8 settled for photographs. Drawn
- * INSIDE the edge, all of the band falls on the sticker, which keeps its size and its fill. The least band meets E8's
- * gate there at DPR 1 and 2 (smallest 28.0% and 30.2% of a sticker, measured 2026-10-19), so it is the least band:
- * "the book's picture: every marked sticker …" in test/browser/case-photos.test.mjs, which reads the size, the ink and
- * the ground off the open book.
+ * The BOOK's (E13): inside the edge as a tile's, so all of the band falls on the sticker, which keeps its size and its
+ * fill. Its picture is drawn 112 px wide (index.html, `.practice-info .practice-pic > svg`), its height free.
  */
-export const BOOK_OUTLINE = Object.freeze({ perSticker: Infinity, inside: true });
+export const BOOK_OUTLINE = Object.freeze({ inside: true, shownAtLeast: Object.freeze({ w: 112, h: Infinity }) });
+
+/**
+ * THE BAND OF A FLAT PICTURE, in the picture's own units (E15): the least band, or `MARK_STROKE_LEAST_PX` on screen
+ * where the picture is drawn at its smallest (`outline.shownAtLeast`, contained), whichever is more. ONE function, which
+ * `outlineMoved` draws with and test/browser/case-photos.test.mjs judges by, so the two cannot drift apart. With it a
+ * net's 10.14-unit sticker in a 68 px tile — 5.45 px on screen — gets a 1.94-unit band, a CSS px, and keeps 38% of its
+ * area in its own colour; every other sticker keeps the least band.
+ *
+ * @param {{ shownAtLeast: { w: number, h: number } }} outline
+ * @param {{ w: number, h: number }} frame  the picture's viewBox size
+ */
+export function outlineBand(outline, frame) {
+  const scale = Math.min(outline.shownAtLeast.w / frame.w, outline.shownAtLeast.h / frame.h);
+  return Math.max(OUTLINE_LEAST, MARK_STROKE_LEAST_PX / scale);
+}
 
 /** A flat sticker's own colour as drawn: its fill, or the theme's off-grey at its opacity over the ground. */
 function stickerColour(rest, inks) {
@@ -113,11 +120,12 @@ function stickerColour(rest, inks) {
 export function outlineMoved(svg, moved, { outline = TILE_OUTLINE, inks } = {}) {
   if (!inks) throw new Error('library-view: a marked picture needs the theme\'s ink and ground (inksAt) to choose its edge');
   const on = new Set(moved);
+  const box = /viewBox="0 0 ([\d.]+) ([\d.]+)"/.exec(svg);
+  if (!box) throw new Error('library-view: a picture with no viewBox to size its band by');
+  const band = outlineBand(outline, { w: Number(box[1]), h: Number(box[2]) });
   return svg.replace(/<rect data-facelet="(\d+)"([^>]*?) stroke="[^"]*" stroke-width="1"\/>/g, (m, f, rest) => {
     if (!on.has(Number(f))) return m;
     const mark = markInk(stickerColour(rest, inks), inks);
-    const w = Number(/ width="([\d.]+)"/.exec(rest)?.[1] ?? 10);
-    const band = Math.max(OUTLINE_LEAST, w / outline.perSticker);
     // Inside the edge: the rect drawn half a band in on every side, so the stroke's OUTER edge is the sticker's.
     const at = outline.inside
       ? rest.replace(/ (x|y|width|height|rx|ry)="([\d.]+)"/g, (_, k, v) => ` ${k}="${Math.max(0, Number(v) + ({ x: 1, y: 1, width: -2, height: -2, rx: -1, ry: -1 })[k] * band / 2).toFixed(2)}"`)
