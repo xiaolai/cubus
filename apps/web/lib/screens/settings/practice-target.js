@@ -22,9 +22,9 @@ export function practiceTargetRow({ style = '' } = {}) {
     <div><div style="font-weight:600">${escHtml(t('In the fingers'))}</div>
       <div class="sub" style="color:var(--ink-4)" id="fingersBlurb">${escHtml(t('An algorithm counts as learnt after %1 clean reps in a row (%2 to %3). A pause breaks the row.', n, FINGERS.min, FINGERS.max))}</div></div>
     <div class="wrap-row" style="gap:6px">
-      <button class="pill" id="setFingers-less" type="button" aria-label="${escHtml(t('Fewer clean reps'))}"${n <= FINGERS.min ? ' disabled' : ''}>−</button>
+      <button class="pill glyph" id="setFingers-less" type="button" aria-label="${escHtml(t('Fewer clean reps'))}"${n <= FINGERS.min ? ' disabled' : ''}>−</button>
       <span class="num" id="fingersN" role="status" aria-live="polite" style="min-width:2ch;text-align:center">${n}</span>
-      <button class="pill" id="setFingers-more" type="button" aria-label="${escHtml(t('More clean reps'))}"${n >= FINGERS.max ? ' disabled' : ''}>+</button>
+      <button class="pill glyph" id="setFingers-more" type="button" aria-label="${escHtml(t('More clean reps'))}"${n >= FINGERS.max ? ' disabled' : ''}>+</button>
     </div></div>`;
 }
 
