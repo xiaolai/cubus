@@ -1409,8 +1409,12 @@ async function sameProgress(page, lib, id, what) {
     streak += 1;
   }
   const want = { lit: Math.min(streak, 7), done: streak >= 7 };
-  await lib.page.waitForFunction(({ x, lit }) => document.querySelectorAll(`#practiceList [data-alg="${x}"] .badge svg.ring .seg.on`).length === lit,
-    { x: id, lit: want.lit }, { timeout: LIVENESS_MS }).catch(() => {});
+  // The RING must be there, on a list that has read the record: while the other window reads it again it draws no ring
+  // at all, so "no segment lit" alone is true mid-read and was no wait for a ring of zero (CI, 2026-10-20: null).
+  await lib.page.waitForFunction(({ x, lit }) => {
+    const ring = document.querySelector(`#practiceList[data-record="read"] [data-alg="${x}"] .badge svg.ring`);
+    return ring !== null && ring.querySelectorAll('.seg.on').length === lit;
+  }, { x: id, lit: want.lit }, { timeout: LIVENESS_MS }).catch(() => {});
   assert.deepEqual(await beadsOf(page), want, `${what}: the page's beads`);
   assert.deepEqual(await ringOf(lib.page, id), want, `${what}: the library's ring`);
   return want.lit;
