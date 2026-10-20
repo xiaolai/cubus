@@ -13,7 +13,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { Window } from 'happy-dom';
 
+import { ORIENTATIONS } from '../lib/cube-orientation.js';
 import { RESERVE_FITS_MOST, footBand } from '../lib/foot-band.js';
+import { t as say } from '../lib/i18n.js';
+import { holdSentence } from '../lib/solving-hold.js';
+import { FOLLOW_SAYS, followNoteSentences } from '../lib/walk-follow.js';
 
 /** A window whose frames run only when `flush` says, and whose ResizeObservers are inert. */
 function harness() {
@@ -46,6 +50,23 @@ function standInCube(doc, { moving = false } = {}) {
   el.camera = { position: { x: 0, y: 0, z: 10 }, projectionMatrix: { elements: [1, 0, 0, 0, 0, 1] }, aspect: 1 };
   el.animating = moving;
   return el;
+}
+
+/** A stand-in cube whose sphere's bottom the band can project: the bottom of its canvas, wherever that is drawn. */
+function projectingCube(doc) {
+  const cube = standInCube(doc);
+  const Vec = class {
+    constructor() { this.y = -1; }
+    applyMatrix4() { return this; }
+    applyQuaternion() { return this; }
+    addScaledVector() { return this; }
+    project() { return this; }
+  };
+  cube.camera = { ...cube.camera, constructor: Vec, quaternion: {}, updateMatrixWorld() {} };
+  cube.camera.position = new Vec();
+  cube.camera.position.x = 0; cube.camera.position.z = 10;
+  cube.root = { updateMatrixWorld() {}, matrixWorld: { getMaxScaleOnAxis: () => 1 } };
+  return cube;
 }
 
 test('the camera is watched for a few frames after something that can move it, and then not at all', () => {
@@ -106,18 +127,7 @@ test('a reserve that keeps moving while the card keeps its size throws — it ne
       const height = band ? 50 : card ? 1000 : 0;
       return { top: 0, left: 0, right: 0, width: 0, height, bottom: card ? 0 : height };
     };
-    const cube = standInCube(h.doc);
-    const Vec = class {
-      constructor() { this.y = -1; }
-      applyMatrix4() { return this; }
-      applyQuaternion() { return this; }
-      addScaledVector() { return this; }
-      project() { return this; }
-    };
-    cube.camera = { ...cube.camera, constructor: Vec, quaternion: {}, updateMatrixWorld() {} };
-    cube.camera.position = new Vec();
-    cube.camera.position.x = 0; cube.camera.position.z = 10;
-    cube.root = { updateMatrixWorld() {}, matrixWorld: { getMaxScaleOnAxis: () => 1 } };
+    const cube = projectingCube(h.doc);
     h.card.querySelector('.slot').append(cube);
     const ctl = new AbortController();
     const band = footBand({ host: h.host, card: h.card, cube: () => cube, rows: [h.row], signal: ctl.signal,
@@ -128,6 +138,50 @@ test('a reserve that keeps moving while the card keeps its size throws — it ne
     }
     assert.ok(thrown, `the reserve moved ${RESERVE_FITS_MOST + 2} times without the card changing size, and nothing was said`);
     assert.match(thrown.message, /feeding itself/);
+    ctl.abort();
+  } finally {
+    h.win.close();
+  }
+});
+
+// THE HOLD SENTENCES ARE LAID OUT EVERY ONE (lib/walk-follow.js, E12.8). A hold sentence is many words, and a wider one
+// is not always a taller one, because words wrap where they break; so the follow-note hands the band all 24, never the
+// longest. These two cases hold that without a browser's widths: at today's widths no hold sentence is taller than the
+// room, so the geometry gate alone passes with only the longest offered.
+
+const HOLDS = [...new Set(ORIENTATIONS.map((h) => holdSentence(h)))];
+
+test('the follow-note offers the band every hold sentence, whatever "longest" is measured by', () => {
+  assert.equal(HOLDS.length, 24, `precondition: ${HOLDS.length} distinct hold sentences, not 24`);
+  const want = HOLDS.map((h) => say(FOLLOW_SAYS.mismatch.text, h)).sort();
+  for (const [name, widthOf] of [['characters', undefined], ['shortest is widest', (s) => -s.length], ['all one width', () => 1]]) {
+    const got = followNoteSentences(widthOf ? { widthOf } : {}).filter((s) => s.key === 'mismatch').map((s) => s.text).sort();
+    assert.deepEqual(got, want, `measured by ${name}: the band is not offered every hold sentence`);
+  }
+});
+
+test('the band keeps the room for the tallest hold sentence when it is the SHORTEST by characters', () => {
+  const tallest = HOLDS.reduce((a, b) => (b.length < a.length ? b : a));
+  assert.ok(HOLDS.some((h) => h.length > tallest.length), 'precondition: the hold sentences are not all one length');
+  const h = harness();
+  try {
+    // The probe band is 80px tall laying out the shortest hold sentence and 20px for anything else. The cube's canvas
+    // ends 4px above the card's foot, so there is no room under it and the reserve the band asks for is what it needs.
+    h.win.HTMLElement.prototype.getBoundingClientRect = function rect() {
+      const box = (top, height) => ({ top, left: 0, right: 0, width: 0, height, bottom: top + height });
+      if (this.tagName === 'CANVAS') return box(0, 100);
+      if (this.classList.contains('card')) return { ...box(0, 1000), bottom: 104 };
+      if (this.classList.contains('foot-band')) return box(0, this.textContent.includes(tallest) ? 80 : 20);
+      return box(0, 0);
+    };
+    const cube = projectingCube(h.doc);
+    h.card.querySelector('.slot').append(cube);
+    const ctl = new AbortController();
+    const states = followNoteSentences().map(({ text, info }) => [{ row: h.row, text, info }]);
+    const band = footBand({ host: h.host, card: h.card, cube: () => cube, rows: [h.row], signal: ctl.signal, longest: () => states });
+    band.remeasure();
+    assert.equal(h.card.style.getPropertyValue('--band-reserve'), '80px',
+      'the room under the cube is not kept for the tallest thing the follow-note can say');
     ctl.abort();
   } finally {
     h.win.close();
