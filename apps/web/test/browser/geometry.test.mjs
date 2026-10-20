@@ -2724,13 +2724,13 @@ for (const fixture of FIXTURES) {
 
 // ---- Settings: the "in the fingers" stepper, in both places it can be drawn ---------------------------------
 //
-// With the Practice tab shown the stepper is a card of its own; with the tab hidden (the default, ADR 0010) it sits
-// in Advanced (lib/screens/settings/practice-target.js). The screen loop above measures Settings as a fresh install
-// draws it — Practice hidden, Advanced closed — where the stepper is in NEITHER place, so neither was measured.
+// With the Practice tab shown (the default since nav version 9, 2026-10-20) the stepper is a card of its own; with
+// the tab hidden it sits in Advanced (lib/screens/settings/practice-target.js). The hidden case says so in its
+// settings rather than inheriting a default: it inherited one, and went to the wrong card when the default changed.
 
 const STEPPER_PLACES = [
   { where: 'Practice shown, its own card', settings: { navHidden: [], navDefaults: NAV_DEFAULTS_VERSION }, card: 'PRACTICE' },
-  { where: 'Practice hidden, in Advanced', settings: null, card: 'ADVANCED' },
+  { where: 'Practice hidden, in Advanced', settings: { navHidden: ['practice'], navDefaults: NAV_DEFAULTS_VERSION }, card: 'ADVANCED' },
 ];
 
 for (const place of STEPPER_PLACES) {
