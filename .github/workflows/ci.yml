@@ -90,7 +90,12 @@ jobs:
     name: TS packages + web app (fast tier on a pull request · full tier on main)
     needs: [plan]
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 75, not 45 (2026-10-20): the full tier on main ran 13–17 minutes until the Practice
+    # redesign's mark gate (case-photos.test.mjs, E15) added two cases of about 20 minutes each on
+    # this runner — measured on run 39376315009, cut off at 45 with the WebKit case unfinished.
+    # Still a bound that catches a hang. Lower it again once that gate stops screenshotting what
+    # its geometry already computes.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
