@@ -17,9 +17,9 @@
 //     never the band.
 
 import assert from 'node:assert/strict';
-import { inflateSync } from 'node:zlib';
 import { after, before, test } from 'node:test';
 
+import { decodePng } from '../png.mjs';
 import { LIVENESS_MS, startBrowserFixture } from './harness.mjs';
 
 let fixture;
@@ -132,28 +132,10 @@ const RINGS = [
   { what: 'the identity question\'s claimed colour (--warn-ink)', sel: '.id-ask > button.sw.claimed > i' },
 ];
 
-const decodePng = (buf) => {
-  let p = 8; let w; let h; let type; const idat = [];
-  while (p < buf.length) {
-    const len = buf.readUInt32BE(p); const tag = buf.toString('ascii', p + 4, p + 8); const data = buf.subarray(p + 8, p + 8 + len);
-    if (tag === 'IHDR') { w = data.readUInt32BE(0); h = data.readUInt32BE(4); type = data[9]; if (data[8] !== 8 || data[12] !== 0) throw new Error('png: only 8-bit non-interlaced'); }
-    if (tag === 'IDAT') idat.push(data);
-    p += 12 + len;
-  }
-  const bpp = type === 6 ? 4 : type === 2 ? 3 : null;
-  if (!bpp) throw new Error(`png: colour type ${type}`);
-  const raw = inflateSync(Buffer.concat(idat)); const stride = w * bpp; const out = Buffer.alloc(w * h * 3); const prev = Buffer.alloc(stride); const cur = Buffer.alloc(stride);
-  for (let y = 0; y < h; y++) {
-    const f = raw[y * (stride + 1)]; raw.copy(cur, 0, y * (stride + 1) + 1, (y + 1) * (stride + 1));
-    for (let x = 0; x < stride; x++) {
-      const a = x >= bpp ? cur[x - bpp] : 0; const b = prev[x]; const c = x >= bpp ? prev[x - bpp] : 0;
-      const pa = Math.abs(b - c); const pb = Math.abs(a - c); const pc = Math.abs(a + b - 2 * c);
-      cur[x] = (cur[x] + [0, a, b, (a + b) >> 1, pa <= pb && pa <= pc ? a : pb <= pc ? b : c][f]) & 255;
-    }
-    cur.copy(prev);
-    for (let x = 0; x < w; x++) for (let k = 0; k < 3; k++) out[(y * w + x) * 3 + k] = cur[x * bpp + k];
-  }
-  return { w, h, px: (x, y) => { const i = (Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x))) * 3; return [out[i], out[i + 1], out[i + 2]]; } };
+/** A screenshot as `{ w, h, px(x, y) }`, read with the suite's own decoder (test/png.mjs); out-of-range reads clamp. */
+const pixelsOf = (buf) => {
+  const { width: w, height: h, rgba } = decodePng(buf);
+  return { w, h, px: (x, y) => { const i = (Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x))) * 4; return [rgba[i], rgba[i + 1], rgba[i + 2]]; } };
 };
 const chan = (v) => { const c = v / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
 const lumOf = ([r, g, b]) => 0.2126 * chan(r) + 0.7152 * chan(g) + 0.0722 * chan(b);
@@ -168,14 +150,14 @@ async function ringDrawn(page, sel, k) {
     return { x: b.left, y: b.top, w: b.width, h: b.height };
   }, { s: sel, i: k });
   const clip = { x: Math.max(0, box.x - 6), y: Math.max(0, box.y - 6), width: box.w + 12, height: box.h + 12 };
-  const on = decodePng(await page.screenshot({ clip, animations: 'disabled' }));
+  const on = pixelsOf(await page.screenshot({ clip, animations: 'disabled' }));
   await page.evaluate(() => {
     const s = document.createElement('style');
     s.id = 'ring-off';
     s.textContent = '[data-ring-probe] { box-shadow: none !important; }';
     document.head.append(s);
   });
-  const off = decodePng(await page.screenshot({ clip, animations: 'disabled' }));
+  const off = pixelsOf(await page.screenshot({ clip, animations: 'disabled' }));
   await page.evaluate(() => { document.getElementById('ring-off')?.remove(); document.querySelector('[data-ring-probe]')?.removeAttribute('data-ring-probe'); });
   let changed = 0;
   for (let y = 0; y < on.h; y++) {
@@ -256,7 +238,7 @@ async function hairlines(page, dpr) {
     const colourOf = (inset) => rings.find((p) => /inset/.test(p) === inset && /\b1px\b/.test(p))?.match(/(rgba?\([^)]*\)|color\([^)]*\))/)?.[0] ?? '';
     return { face: t.closest('.scan-face').dataset.face, x: b.left, y: b.top, w: b.width, h: b.height, outerColour: colourOf(false), innerColour: colourOf(true) };
   }));
-  const img = decodePng(await page.screenshot({ animations: 'disabled', caret: 'hide' }));
+  const img = pixelsOf(await page.screenshot({ animations: 'disabled', caret: 'hide' }));
   const at = (cx, cy) => img.px(Math.floor(cx * dpr), Math.floor(cy * dpr));
   const out = [];
   const rgbOf = (c) => {

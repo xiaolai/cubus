@@ -356,6 +356,21 @@
          control keeps its ring, and design-discipline.test.mjs refuses a wider selector. The
          engine's own answer is measured in test/browser/focus-ring.test.mjs. */
       .screen:focus { outline: none; }
+      /* ONE FOCUS RING, THE APP'S (sweep 2026-10-20, E7). With none of its own the app wore each engine's default:
+         WebKit's translucent blue reached 2.16–2.63:1 at best against what it lay on, and Chromium drew nothing at 3:1
+         round a pressed pill. 2px of --accent, OUTSIDE the control (1px clear of it, which the one-line strips' 3px
+         padding holds whole: scroll-strip.test.mjs), so it is judged against the ground it lies on —
+         every surface the app draws a control on clears 3:1 with it (tokens.test.mjs) — and never only against the
+         control's own fill. test/browser/focus-visible.test.mjs measures the drawn ring on every stop, in WebKit and
+         Chromium. */
+      :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+      /* A ring drawn outside a control is clipped by a scroller it sits flush against: the Shapes grid and Practice's
+         library cut the ring off a tile's first row and column. Each keeps the 4px the ring reaches (offset 1 + width
+         2, and a pixel to spare) as padding inside its own edge. Not given back by a negative margin: the scroller then reached 4px past the
+         screen, which scrolled sideways (geometry.test.mjs). */
+      .case-grid { padding: 4px; }
+      /* A scan sticker is faded while it waits to be read, and an opacity fades its ring with it. */
+      .scan-face .tgrid > .cell:focus-visible { opacity: 1; }
 
       /* ---- the composition: primary · twin · aux · sheet ------------------------------------ */
       /* The two compositions of the layout contract (dev-docs/stage-contract.md), one DOM. A
@@ -747,7 +762,7 @@
       :is(.rail-item, .sec-head) .pic svg { max-width: 100%; max-height: 100%; height: auto; }
       .rail-item .nm { min-width: 0; font-size: var(--fs-caption); font-weight: 600; color: var(--ink-2); line-height: 1.25; overflow-wrap: anywhere; }
       .practice-screen .ct { display: flex; align-items: center; gap: 4px; font-size: var(--fs-caption); color: var(--ink-4); }
-      .lib-body { grid-area: body; min-height: 0; overflow-y: auto; padding-bottom: 24px;
+      .lib-body { grid-area: body; min-height: 0; overflow-y: auto; padding: 4px 4px 24px; /* the focus ring's 4px (above) */
         mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), transparent 100%); }
       .stage-sec + .stage-sec { margin-top: 22px; }
       /* The last stage is at least the body's height, so a jump from the rail can put ANY stage at the top — and the
@@ -791,7 +806,8 @@
       @container stage (orientation: portrait) {
         .practice-screen[data-composition="library"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr);
           grid-template-areas: "head" "rail" "body"; gap: 10px; }
-        .rail { flex-direction: row; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; padding: 0 0 2px; }
+        /* The focus ring's 4px kept inside the strip's own edge (the rule beside :focus-visible). */
+        .rail { flex-direction: row; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; padding: 4px 4px 6px; }
         .rail-item { flex: none; width: 84px; grid-template-columns: 1fr; grid-template-rows: 40px auto auto; justify-items: center; row-gap: 2px; text-align: center; }
         .rail-item .pic { grid-row: auto; }
         .tiles { --tile-h: 92px; grid-template-columns: repeat(auto-fill, minmax(78px, 1fr)); gap: 8px; }
