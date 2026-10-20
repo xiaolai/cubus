@@ -671,11 +671,25 @@
          0px on both desktop windows). The card is what gives — it scrolls inside itself — and the
          button never does. geometry.test.mjs feeds a notice longer than any real one. */
       .scan-sheet > .card { flex: 0 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+      /* BUT NEVER BELOW ITS TITLE AND A LINE OF ITS BODY (sweep 2026-10-20, B1). After an unsolvable reading on the
+         desktop portrait window the Restore row and the button left the card 32px — its own padding — and the card cut
+         its title by 6px and its body by 10. So the card's least height is stated: its padding (16 + 16, `.card`), the
+         title's line, the body's 4px and ONE line of the body, and the notice's button where it shows. Stated, not
+         asked of the content, because WebKit counts a scroller's whole content in its minimum, which would never let
+         the body scroll. Where even that does not fit, the SHEET scrolls (it is a scroller) rather than anything being
+         cut. A hint or a question in the card asks for all of it. geometry.test.mjs, "the Restore row after a scan". */
+      .scan-sheet > .card {
+        --say-line: calc(var(--fs-body) * var(--lh-body));
+        --say-least: calc(32px + var(--fs-body-l) * var(--lh-body) + 4px + var(--say-line));
+        min-height: var(--say-least);
+      }
+      .scan-sheet > .card:has(> #scanAction:not([hidden])) { min-height: calc(var(--say-least) + 10px + 32px); }
+      .scan-sheet > .card:has(> :is(#scanHint, #scanIdentity):not([hidden])) { min-height: min-content; }
       /* And inside the card only the BODY gives. The first cut scrolled the whole card, which put
          the notice's own button — the one thing it asks the user to press — below the fold in
          both desktop windows (looked at, not inferred, 2026-09-06). The title and the action stay
          where the eye finds them; a long explanation scrolls under them. */
-      .scan-sheet > .card > .scan-say { flex: 0 1 auto; min-height: 0; overflow-y: auto; }
+      .scan-sheet > .card > .scan-say { flex: 0 1 auto; min-height: var(--say-line); overflow-y: auto; }
       .scan-sheet > .card > .scan-hint, .scan-sheet > .card > .btn { flex: none; }
       /* The Restore row's card is NOT one that gives. Shrunk like the notice card, its chips — which
          have no body to scroll — were cut by the card's own clip: on both desktop windows the third
@@ -1376,6 +1390,8 @@
         .eyebrow-row > button { width: 44px; height: 44px; margin: -14px -12px -14px 0; }
         /* A link is a control too: the About card's three were 18.8px tall under a finger (sweep 2026-10-20, D1). */
         a.link { display: inline-flex; align-items: center; min-height: 44px; min-width: 44px; }
+        /* The scan notice's least height counts its button at the finger's 44px (the rule above it counts 32). */
+        .scan-sheet > .card:has(> #scanAction:not([hidden])) { min-height: calc(var(--say-least) + 10px + 44px); }
         .toggle::before { content: ''; position: absolute; inset: -11px -2px; }
         .transport { gap: 4px; }
         .transport .progress { flex-basis: 32px; }

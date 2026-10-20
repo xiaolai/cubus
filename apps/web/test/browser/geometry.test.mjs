@@ -1896,6 +1896,8 @@ for (const fixture of FIXTURES) {
 }
 
 const SCANNED_CUBE = 'DDDUURFDURDRRRLBBULLFUFFFLLDUUFDDDLRBBUBLRBULFFLFBRBBR';
+/** A solved cube with one corner twisted in place: a legal colouring no turning can reach, so every Restore chip is a dash. */
+const UNSOLVABLE_SCAN = (() => { const s = [...'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB']; [s[8], s[9], s[20]] = [s[20], s[8], s[9]]; return s.join(''); })();
 
 // THE RESTORE ROW AFTER A SCAN, which no case above enters: its card is hidden until a cube is read. Seven
 // chips since ADR 0009, in a card that may shrink and clip (Codex refute, 2026-10-14) — so every fixture
@@ -1938,6 +1940,21 @@ for (const fixture of FIXTURES) {
       // so the STRIP is what must sit inside the window, and a strip with more than it shows must scroll.
       assert.ok(m.row.left >= -0.5 && m.row.right <= m.vw + 0.5, `the Restore row leaves the window: ${JSON.stringify(m.row)}`);
       if (m.row.scrolls) assert.match(m.row.overflowX, /auto|scroll/, 'a Restore row wider than its card does not scroll — its last chips are unreachable');
+      // AN UNSOLVABLE READING after it (sweep 2026-10-20, B1): every chip is a dash, the row keeps its height, and the notice
+      // card had what was left — on the desktop portrait window less than its own title, which the card cut by 6px and its
+      // body by 10. The body scrolls in its own box; nothing is cut. Waited on the dashes, which only that reading draws.
+      await page.evaluate((facelets) => {
+        document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-complete', { detail: { facelets, rotations: [0, 0, 0, 0, 0, 0] } }));
+      }, UNSOLVABLE_SCAN);
+      await page.waitForFunction(() => [...document.querySelectorAll('.stage-chip .howfar')].every((el) => el.textContent === '—'), null, { timeout: 90_000 });
+      const after = await page.evaluate(`(() => {
+        const how = document.querySelector('#scanHow');
+        return { fits: ${contentFits}(document.querySelector('.screen.active')),
+          body: { client: how.clientHeight, scroll: how.scrollHeight, line: parseFloat(getComputedStyle(how).lineHeight) || 0 } };
+      })()`);
+      assert.deepEqual(after.fits, { spills: [], cut: [] }, 'after an unsolvable reading: text that cannot be read where it is drawn — see contentFits');
+      // MUST NOT: a notice reduced to its title, or to nothing — the body keeps a line, and scrolls for the rest.
+      assert.ok(after.body.client >= Math.min(after.body.scroll, after.body.line) - 0.5, `after an unsolvable reading the notice's body shows ${after.body.client}px of ${after.body.scroll}px — not even a line`);
     } finally {
       await context.close();
     }
