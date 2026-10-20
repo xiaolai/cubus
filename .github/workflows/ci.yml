@@ -829,6 +829,12 @@ jobs:
       #   RUSTSEC-2024-0436, -0370  paste, proc-macro-error: proc-macro helpers reached only
       #                             through tauri's and its plugins' trees; nothing here calls them.
       #   RUSTSEC-2025-0075/0080/0081/0098/0100  unic-*: via tauri-utils' identifier validation.
+      #   RUSTSEC-2026-0370/0371/0372  zvariant, zbus_names, zvariant_derive, "unmaintained"
+      #                             (2026-10-16) because zbus 6.0.0 absorbed them — not a defect in
+      #                             them. Reached only through tauri-plugin-opener's zbus 5, its
+      #                             Linux D-Bus path for opening a link; opener 2.7.2, the newest,
+      #                             still requires zbus ^5.9. Delete these when opener moves to
+      #                             zbus 6. Added 2026-10-20.
       #
       # `yanked` is NOT denied: the one yanked crate in the tree (chacha20 0.10.1, via
       # tauri-plugin-mcp → xcap → rand) has no advisory ID to allow-list, and it sits behind the
@@ -841,7 +847,8 @@ jobs:
             --ignore RUSTSEC-2024-0417 --ignore RUSTSEC-2024-0418 --ignore RUSTSEC-2024-0419 \
             --ignore RUSTSEC-2024-0420 --ignore RUSTSEC-2024-0429 --ignore RUSTSEC-2024-0436 \
             --ignore RUSTSEC-2024-0370 --ignore RUSTSEC-2025-0075 --ignore RUSTSEC-2025-0080 \
-            --ignore RUSTSEC-2025-0081 --ignore RUSTSEC-2025-0098 --ignore RUSTSEC-2025-0100
+            --ignore RUSTSEC-2025-0081 --ignore RUSTSEC-2025-0098 --ignore RUSTSEC-2025-0100 \
+            --ignore RUSTSEC-2026-0370 --ignore RUSTSEC-2026-0371 --ignore RUSTSEC-2026-0372
 
       # Every shell script git tracks, found by git rather than listed by hand. The gate that would
       # have caught `security list-keychain -s` replacing a keychain search list and an unquoted
