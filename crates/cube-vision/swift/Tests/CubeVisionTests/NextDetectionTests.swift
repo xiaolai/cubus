@@ -42,9 +42,13 @@ final class NextDetectionTests: XCTestCase {
     private static let frameBytes: [UInt8] = (0..<(721 * 479 * 4)).map { UInt8(truncatingIfNeeded: $0 &* 31) }
 
     // Every test starts from, and leaves, nothing loaded and nothing open — the state is the process's.
+    // The frame clock stands still for the test, so a frame is exactly as old as it was injected and
+    // the CoreML inference each tick runs costs it no age: "served" and "stale" are the window's
+    // answers, never the runner's speed.
     override func setUp() {
         super.setUp()
         resetStateForTests()
+        Camera.holdClockForTests(at: 1_000)
     }
 
     override func tearDown() {

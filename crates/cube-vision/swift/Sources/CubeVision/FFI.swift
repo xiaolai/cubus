@@ -110,6 +110,7 @@ func resetStateForTests() {
         state.buildModel = State.defaultBuilder
         _ = LastError.take()
     }
+    Camera.holdClockForTests(at: nil)
 }
 
 /// Tests only: `model` as the loaded model, claiming the shape `rows`×`anchors`, under the entries'

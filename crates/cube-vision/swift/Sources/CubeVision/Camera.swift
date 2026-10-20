@@ -235,7 +235,23 @@ public final class Camera: NSObject {
     /// wall-clock change, which a frame's age must not depend on — and it does not run while the
     /// machine sleeps, so a frame from just before a sleep is judged by awake time only, and the
     /// camera has that second after waking to replace it.
-    static func now() -> TimeInterval { ProcessInfo.processInfo.systemUptime }
+    static func now() -> TimeInterval {
+        clockLock.lock()
+        defer { clockLock.unlock() }
+        return heldClock ?? ProcessInfo.processInfo.systemUptime
+    }
+
+    /// Tests only: the frame clock held at `time`, or running again when nil. A frame's age is then
+    /// exactly what `injectForTests` gave it, however long the ticks around it take — CI's runner
+    /// spent 2 s on three CoreML inferences, so a frame injected fresh was refused as stale on the
+    /// third tick of a test about IDENTITY (2026-10-20).
+    static func holdClockForTests(at time: TimeInterval?) {
+        clockLock.lock()
+        heldClock = time
+        clockLock.unlock()
+    }
+    private static let clockLock = NSLock()
+    private static var heldClock: TimeInterval?
 
     // Types the webview cannot enumerate are exactly why this exists — list them explicitly.
     //
