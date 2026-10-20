@@ -1764,6 +1764,7 @@ const measureScan = (page) =>
     const board = $('.scanboard');
     const sb = rect($('#stage'));
     const scs = getComputedStyle($('#stage'));
+    const inkBottom = Math.max(...[...document.querySelectorAll('.scan-face')].map((t) => t.getBoundingClientRect().bottom));
     return {
       // The stage's CONTENT box as four edges — what the composition box must span.
       content: {
@@ -1776,6 +1777,12 @@ const measureScan = (page) =>
         tile: rect(t.querySelector('.tile')), sticker: rect(t.querySelector('.tgrid > .cell')),
         cellPointer: getComputedStyle(t.querySelector('.tgrid > .cell')).pointerEvents,
       })),
+      // The cross and the width its box offers it (the board's content box), and the top of the first region under it.
+      faces: rect(faces), room: board.clientWidth - px(getComputedStyle(board).paddingLeft) - px(getComputedStyle(board).paddingRight),
+      inkBottom,
+      nextTop: Math.min(Infinity, ...[...document.querySelectorAll('.cols > *')].filter((e) => !e.contains(faces) && e.getBoundingClientRect().height > 0)
+        .map((e) => e.getBoundingClientRect().top).filter((t) => t >= inkBottom - 1)),
+      pointer: matchMedia('(pointer: coarse)').matches ? 'coarse' : 'fine',
       primary: rect($('.cols > .col')), sheet: rect($('.cols .sheet')), twin: rect($('.cols .twin')), tools: rect($('.scan-cam')),
       cols: rect($('.cols')), stage: { w: $('#stage').clientWidth, h: $('#stage').clientHeight },
       solve: rect($('#scanSolveBtn')),
@@ -2059,6 +2066,32 @@ for (const fixture of FIXTURES) {
       assert.equal(new Set(widths).size, 1, `the six faces are not the same size: ${widths.join(', ')}`);
       // The card's tools park top-right; no tile may run under them.
       for (const t of m.tiles) assert.ok(!overlaps(m.tools, t.tile), `the tools overlap the ${t.face} tile`);
+
+      // THE CROSS TAKES ITS ROOM UNDER A FINGER (sweep 2026-10-20, C1, S4). The 560px cap is for a wide MOUSE window; a
+      // finger's cross is sized by its region's axes alone. Before: 560px wide in a 725px board on the iPad 11" portrait,
+      // 36.2px stickers and 118px of empty card under the cross. MUST NOT: a capped cross under a finger, an uncapped one
+      // under a mouse.
+      if (m.pointer === 'coarse') {
+        assert.ok(Math.abs(m.faces.width - m.room) <= 1, `under a finger the cross is ${m.faces.width}px wide in a ${m.room}px board — something still caps it`);
+      } else {
+        assert.ok(m.faces.width <= 560 + 0.5, `under a mouse the cross is ${m.faces.width}px wide — past its 560px cap`);
+      }
+      if (fixture.name === 'iPad 11" portrait') {
+        for (const t of m.tiles) assert.ok(t.sticker.width >= 44 - 0.5, `${t.face} sticker ${t.sticker.width}px — under a finger's 44 on the iPad portrait`);
+        assert.ok(m.nextTop - m.inkBottom <= 70, `${m.nextTop - m.inkBottom}px of empty page under the cross on the iPad portrait`);
+      }
+      // READINGS DO NOT RESIZE IT: two sides read, the notice gone, and every tile where it was.
+      await page.evaluate(() => {
+        document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-progress', { detail: {
+          phase: 'scanning', message: 'Show the next side.', sides: 2, live: null, confirm: null, device: null, complete: false, notice: null,
+          captured: [{ face: 'U', colors: Array(9).fill(0), by: 'centre' }, { face: 'F', colors: Array(9).fill(2), by: 'centre' }] } }));
+      });
+      await page.waitForFunction(() => document.querySelector('.scan-face[data-face="F"] .tgrid > .cell:nth-child(5)')?.dataset.action === 'rescan', null);
+      const read = await measureScan(page);
+      for (const [i, t] of read.tiles.entries()) {
+        const was = m.tiles[i].tile;
+        assert.ok(['left', 'top', 'width', 'height'].every((k) => Math.abs(t.tile[k] - was[k]) <= 0.5), `${t.face} tile moved or resized as sides were read: ${JSON.stringify(was)} → ${JSON.stringify(t.tile)}`);
+      }
     } finally {
       await context.close();
     }

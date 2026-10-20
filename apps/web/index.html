@@ -1013,9 +1013,7 @@
          cross. */
       /* Full width of the primary region, capped: at the 840×630 reference the region is 501px
          wide and the tiles 109px, and the cap keeps a 1280-wide window from drawing 160px tiles
-         for the sake of it. A touch iPad in landscape lands between (34px stickers on an 11",
-         57 on a 13") — the one control this sheet leaves under the 44px floor, and the geometry
-         test names the number it holds instead. */
+         for the sake of it. The cap is a mouse's: under a finger it lifts (the rule after this one). */
       /* The tile is whichever axis runs out first. Width alone was enough while a finger's
          portrait had its own arrangement; with the net everywhere, an iPad split-view column
          (320x1100) makes three width-derived rows taller than the primary region and the net
@@ -1028,6 +1026,10 @@
         width: 100%; max-width: 560px; display: grid; justify-content: center;
         grid-template-columns: repeat(4, var(--net-tile)); column-gap: 10px; row-gap: 2px;
       }
+      /* The cap is for a MOUSE window (sweep 2026-10-20, C1). Under a finger the cross is sized by its region's axes
+         alone: on the iPad 11" portrait it was 560px wide in a 725px board, its stickers 36.2px — under the 44px a finger
+         needs — over 118px of empty card. geometry.test.mjs, "scan screen composition". */
+      @media (pointer: coarse) { .scan-faces { max-width: none; } }
       /* The cross is the cube's shape, and it is now the ONLY arrangement — every window, every
          platform, mouse or finger (decided 2026-08-30). A phone used to get something else: one
          face large over a strip of five, because six 3x3 tiles cannot give a finger 44px
