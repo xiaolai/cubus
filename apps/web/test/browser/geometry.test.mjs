@@ -202,17 +202,19 @@ const CUBE_FLOOR = {
   // EVERY WALK KIND, EVERY FIXTURE (sweep 2026-10-20, A2, S2). Each entry below is a PRE-CHANGE FIGURE, SWEEP 2026-10-20:
   // the painted cube at fe7d9305, before the fix pass, with nothing that shows only sometimes on screen (the move
   // count's sentence and the band's rows put away — never the figure A1 measured with them shrinking the cube), headless
-  // WebKit on macOS, rounded down to a whole px. The landscape entries of the four kinds above are the same measurement.
+  // WebKit, rounded down to a whole px — the LOWER of macOS (SF) and Linux (DejaVu), because CI draws in DejaVu and the
+  // floor is what the cube painted before, wherever it is drawn. They differ in four: the SE's shape 186 on macOS and
+  // 185 on Linux; the Split View column's stop 172 and 170, picture and shape 194 and 190. The landscape entries of the four kinds above are the same measurement.
   // A3 is recorded, not changed: a lesson or a walk to a stop paints about 20% smaller than Quick in landscape because the
   // renderer frames a cube it turns over from further back — PAINTED size, ghost faces included (measurement-method.md),
   // and their floors are their own figures.
   stop: { 'desktop landscape window': 297, 'desktop portrait window': 324, 'iPhone 16': 240, 'iPhone SE': 166, 'iPad 11" landscape': 347,
-    'iPad 11" portrait': 524, 'iPad 11" landscape, mouse': 347, 'iPad Split View column': 172 },
+    'iPad 11" portrait': 524, 'iPad 11" landscape, mouse': 347, 'iPad Split View column': 170 },
   picture: { 'desktop landscape window': 371, 'desktop portrait window': 364, 'iPhone 16': 268, 'iPhone SE': 180, 'iPad 11" landscape': 443,
-    'iPad 11" portrait': 590, 'iPad 11" landscape, mouse': 443, 'iPad Split View column': 194 },
+    'iPad 11" portrait': 590, 'iPad 11" landscape, mouse': 443, 'iPad Split View column': 190 },
   // A shape the cube already shows: the picture's "already showing" sentence, no walk under it.
-  shape: { 'desktop landscape window': 371, 'desktop portrait window': 374, 'iPhone 16': 268, 'iPhone SE': 186, 'iPad 11" landscape': 443,
-    'iPad 11" portrait': 606, 'iPad 11" landscape, mouse': 443, 'iPad Split View column': 194 },
+  shape: { 'desktop landscape window': 371, 'desktop portrait window': 374, 'iPhone 16': 268, 'iPhone SE': 185, 'iPad 11" landscape': 443,
+    'iPad 11" portrait': 606, 'iPad 11" landscape, mouse': 443, 'iPad Split View column': 190 },
   // No walk: a solved cube, or one no turning can reach (the same composition, measured the same).
   none: { 'desktop landscape window': 381, 'desktop portrait window': 256, 'iPhone 16': 196, 'iPhone SE': 186, 'iPad 11" landscape': 445,
     'iPad 11" portrait': 430, 'iPad 11" landscape, mouse': 445, 'iPad Split View column': 154 },
