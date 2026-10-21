@@ -144,3 +144,43 @@ test('the scramble branch tokenizes and replays through the shared helpers, not 
   assert.match(replay, /if \(steps\.length !== moves\.length \+ 1\) throw new Error\(why\);/,
     'a replay that came up short must be a failed roll, not a walk with a missing step');
 });
+
+// THE BAND'S ROOM IS KEPT FOR EVERY FORM OF THE BUTTON (sweep 2026-10-21). In portrait the button sits in the foot band,
+// whose room under the cube is sized from what the screen says the band can hold (lib/foot-band.js). The button says
+// more with a trusted cube in hand (SOLVE_IT_SAYS), and the band used to be offered only the label drawn when the
+// screen mounted — "Solve this scramble" — so a longer label that wraps would have been laid out in room nobody kept.
+// At today's widths every label fits one line, so the geometry gate alone passes with the short one offered; this case
+// holds the relation instead. MUST NOT: a label the button can carry that the band never lays out.
+test('the foot band is offered every label "Solve this scramble" can carry', async () => {
+  const { SOLVE_IT_SAYS } = await import('../lib/walk-presenter.js');
+  const { t: say } = await import('../lib/i18n.js');
+  const laidOut = new Set();
+  const rect = win.HTMLElement.prototype.getBoundingClientRect;
+  const style = win.getComputedStyle;
+  // happy-dom draws no stylesheet, so the portrait composition's `--foot-band: band` is said here; the probe band is the
+  // hidden `.foot-band` the band lays each state out in, and what it holds when it is measured is what was offered.
+  win.getComputedStyle = function computed(el, ...rest) {
+    const real = style.call(this, el, ...rest);
+    if (!el.classList?.contains('walking')) return real;
+    return new Proxy(real, { get: (o, k) => (k === 'getPropertyValue'
+      ? (p) => (p === '--foot-band' ? 'band' : o.getPropertyValue(p)) : Reflect.get(o, k)) });
+  };
+  win.HTMLElement.prototype.getBoundingClientRect = function measured() {
+    if (this.classList.contains('foot-band') && this.getAttribute('aria-hidden') === 'true') {
+      for (const b of this.querySelectorAll('button')) laidOut.add(b.textContent.trim());
+    }
+    return rect.call(this);
+  };
+  try {
+    await go('home');
+    await go('scramble');
+    assert.ok(await waitFor(() => all('#solList .chip-m').length > 0), 'precondition: a scramble was rolled');
+  } finally {
+    win.HTMLElement.prototype.getBoundingClientRect = rect;
+    win.getComputedStyle = style;
+  }
+  assert.ok(laidOut.size > 0, 'precondition: the band laid out nothing, so this case measured nothing');
+  for (const key of Object.values(SOLVE_IT_SAYS)) {
+    assert.ok(laidOut.has(say(key)), `the band never laid out "${say(key)}": its room is not kept for that label`);
+  }
+});

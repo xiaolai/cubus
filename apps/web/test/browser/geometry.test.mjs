@@ -1603,11 +1603,11 @@ const cubeRows = (page, rows) => page.evaluate((r) => {
  * record's two fixed sentences, both at once (lib/drill/record-says.js). Read in the page, so it is the app's own copy.
  */
 const bandEnumeration = (page) => page.evaluate(async () => {
-  const [{ followNoteSentences }, { practiseLabels }, { WHY_TURN_LABEL }, { RECORD_SAYS }, { drawnWidth }, { methodNoteSentences }, { routeSentences },
-    { OFFERED_TARGETS, TARGETS }, { DESTINATION_BY_ID }, { GODS_NUMBER }] = await Promise.all([
+  const [{ followNoteSentences }, { practiseLabels }, { WHY_TURN_LABEL, SOLVE_IT_SAYS }, { RECORD_SAYS }, { drawnWidth }, { methodNoteSentences }, { routeSentences },
+    { OFFERED_TARGETS, TARGETS }, { DESTINATION_BY_ID }, { GODS_NUMBER }, { t }] = await Promise.all([
     import('/lib/walk-follow.js'), import('/lib/practice-link.js'), import('/lib/walk-presenter.js'), import('/lib/drill/record-says.js'),
     import('/lib/foot-band.js'), import('/lib/walk-session.js'), import('/lib/stage-report.js'), import('/lib/stage-targets.js'),
-    import('/lib/patterns.js'), import('/lib/solve-target.js')]);
+    import('/lib/patterns.js'), import('/lib/solve-target.js'), import('/lib/i18n.js')]);
   // "Longest" as the band draws it, in its own font — the measure the app sizes its room by.
   const widthOf = drawnWidth(document.querySelector('.screen.active .foot-band'));
   // Since the sweep of 2026-10-20 (A1) the band holds the method note, a walk to a stop's sentence and, on Scramble,
@@ -1618,7 +1618,8 @@ const bandEnumeration = (page) => page.evaluate(async () => {
     most: GODS_NUMBER, widthOf,
   });
   return { follow: followNoteSentences({ widthOf }), practise: practiseLabels(), why: WHY_TURN_LABEL,
-    record: [RECORD_SAYS.save, RECORD_SAYS.read], notes: methodNoteSentences(), routes };
+    record: [RECORD_SAYS.save, RECORD_SAYS.read], notes: methodNoteSentences(), routes,
+    solveIt: Object.values(SOLVE_IT_SAYS).map((key) => t(key)) };
 });
 
 /**
@@ -1757,7 +1758,8 @@ const cubeBandStates = (e, { why = true } = {}) => (why ? [
   ...e.routes.map((route) => ({ route })),
 ] : [
   ...e.follow.map((f) => ({ follow: f.text, info: f.info })),
-  { solveIt: true },
+  // Every form the button can take at a scramble's end (SOLVE_IT_SAYS), the trusted cube's longer ones included.
+  ...e.solveIt.map((label) => ({ solveIt: label })),
 ]);
 const applyCubeBand = (st) => {
   const note = document.getElementById('followNote');
@@ -1775,7 +1777,11 @@ const applyCubeBand = (st) => {
     count.dataset.band = st.route ? 'on' : 'off';
   }
   const solveIt = document.getElementById('solveItBtn');
-  if (solveIt) solveIt.hidden = !st.solveIt;
+  if (solveIt) {
+    solveIt.dataset.was ??= solveIt.textContent;
+    solveIt.hidden = !st.solveIt;
+    solveIt.textContent = typeof st.solveIt === 'string' ? st.solveIt : solveIt.dataset.was;
+  }
   const whyLine = document.getElementById('whyLine');
   const whyBtn = document.getElementById('whyBtn');
   const practise = document.getElementById('practiseStep');

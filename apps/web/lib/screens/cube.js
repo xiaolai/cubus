@@ -24,7 +24,7 @@ import { followNoteSentences } from '../walk-follow.js';
 import { routeSentences } from '../stage-report.js';
 import { DESTINATION_BY_ID } from '../patterns.js';
 import { practiseLabels } from '../practice-link.js';
-import { WHY_TURN_LABEL } from '../walk-presenter.js';
+import { SOLVE_IT_SAYS, WHY_TURN_LABEL } from '../walk-presenter.js';
 import { createDie } from './cube/die.js';
 import { createReconnectAsk } from './cube/reconnect-ask.js';
 // The BUDGET only. `stage-distance.js` builds nothing at import — its tables are lazy — but this
@@ -273,7 +273,7 @@ const cubeScreen = (screenMode) => {
           <span class="done-mark" id="doneMark" hidden title="Done">${icon('check', 14)}</span>
           <span class="num" id="stepLbl" role="status" aria-live="polite" style="color:var(--ink-4);min-width:56px;text-align:right">0 / 0</span>
           ${state.connected ? `<button class="pill${state.cube.trusted ? ' on' : ''}" data-mode="cube" aria-pressed="${Boolean(state.cube.trusted)}" title="Turn your smart cube and the guide keeps up">${escHtml(t('Cube leads'))}</button>` : ''}
-          ${scrambling ? `<button class="btn sm primary" id="solveItBtn" hidden>Solve this scramble</button>` : ''}
+          ${scrambling ? `<button class="btn sm primary" id="solveItBtn" hidden>${escHtml(t(SOLVE_IT_SAYS.generated))}</button>` : ''}
         </div>
       </div>` : ''}
     <div class="aside">
@@ -556,7 +556,8 @@ const cubeScreen = (screenMode) => {
           .map((id) => root.querySelector(id)),
         longest: () => (scrambling ? [
           ...sayable.follow.map(({ text, info }) => [{ row: followNote, text, info }]),
-          [{ row: solveIt }],
+          // Every form the button can take (SOLVE_IT_SAYS): with a trusted cube in hand it says more.
+          ...Object.values(SOLVE_IT_SAYS).map((text) => [{ row: solveIt, text: t(text) }]),
         ] : [
           ...sayable.follow.map(({ text, info }) => [{ row: followNote, text, info }]),
           ...sayable.practise.map((label) => [{ row: whyBtn }, { row: practiseStep, text: label }]),

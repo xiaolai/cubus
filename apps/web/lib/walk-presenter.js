@@ -26,6 +26,15 @@ import { oneLineStrip } from './scroll-strip.js';
 
 /** The why button's words (E12.8): in portrait the band shows this, and the full line opens from it in a menu. */
 export const WHY_TURN_LABEL = 'Why this turn?';
+/**
+ * What "Solve this scramble" says at a scramble's end — every form, so the foot band can keep room for the longest
+ * (lib/screens/cube.js) rather than for whichever the screen was drawn with. Catalogue keys, said through `t`.
+ */
+export const SOLVE_IT_SAYS = Object.freeze({
+  generated: 'Solve this scramble',
+  scrambled: 'Your cube is scrambled — solve it',
+  yours: 'Solve your cube',
+});
 
 /**
  * The presenter of one mounted cube screen, its buttons wired.
@@ -61,9 +70,9 @@ export function createWalkPresenter({
   const solveIt = $('#solveItBtn', root);
   const cubeTruth = () => state.connected && state.cube.trusted && state.cube.isPhysical;
   const solveItLabel = () => {
-    if (!cubeTruth()) return t('Solve this scramble');
+    if (!cubeTruth()) return t(SOLVE_IT_SAYS.generated);
     const { target } = walkNow();
-    return state.cube.facelets === target ? t('Your cube is scrambled — solve it') : t('Solve your cube');
+    return state.cube.facelets === target ? t(SOLVE_IT_SAYS.scrambled) : t(SOLVE_IT_SAYS.yours);
   };
   if (solveIt) {
     solveIt.onclick = () => {
