@@ -1141,8 +1141,13 @@
          as a seventh colour the cube does not have.
          The glyph carries its own contrast instead — a dark halo under a white mark reads on all
          six colours, and tints none of them. */
-      .scan-face .tgrid > .cell:nth-child(5) { display: grid; place-items: center; }
+      /* The glyph is laid over the cell, never in it: a grid's 1fr rows in a box of no set height take their size from
+         what they hold, and a 15px glyph in an 11px cell (the Split View column; 15.5px on the iPhone SE) made every row
+         17px and the tile's grid taller than the tile (sweep 2026-10-21). Out of flow it sizes nothing, and it shrinks to
+         the cell rather than spill into the stickers beside it. */
+      .scan-face .tgrid > .cell:nth-child(5) { position: relative; }
       .scan-face .tgrid > .cell:nth-child(5) > .ic {
+        position: absolute; inset: 0; margin: auto; max-width: 100%; max-height: 100%;
         opacity: 0; color: #fff; transition: opacity var(--fade);
         filter: drop-shadow(0 0 1px rgba(0,0,0,.95)) drop-shadow(0 0 3px rgba(0,0,0,.55));
       }

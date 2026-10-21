@@ -2429,6 +2429,26 @@ for (const fixture of FIXTURES) {
         };
       })()`);
       assert.equal(m.chips.length, 7, 'six stages and the whole cube');
+      // THE CENTRE'S GLYPH NEVER SIZES ITS TILE (sweep 2026-10-21). Once a side is read its centre wears the 15 px re-read
+      // glyph; in the Split View column a cell is 11.2 px, and the glyph made the centre row 17 px and the grid 39.5 by 57
+      // in a 57.5 px square tile, the glyph spilling 3.8 px into its neighbours. MUST NOT: a read tile whose cells are not
+      // its thirds, or a glyph outside its cell.
+      const tiles = await page.evaluate(() => [...document.querySelectorAll('.scan-face .tgrid')].map((g) => {
+        const cells = [...g.children].map((c) => c.getBoundingClientRect());
+        const glyph = g.children[4]?.querySelector('.ic')?.getBoundingClientRect() ?? null;
+        const centre = cells[4];
+        return {
+          widths: cells.map((c) => c.width), heights: cells.map((c) => c.height),
+          glyphInside: glyph === null || (glyph.left >= centre.left - 0.5 && glyph.right <= centre.right + 0.5 && glyph.top >= centre.top - 0.5 && glyph.bottom <= centre.bottom + 0.5),
+          read: Boolean(g.children[4]?.dataset.action),
+        };
+      }));
+      assert.ok(tiles.length === 6 && tiles.every((tl) => tl.read), `precondition: six read tiles, each centre offering a re-read (${JSON.stringify(tiles.map((tl) => tl.read))})`);
+      for (const [i, tl] of tiles.entries()) {
+        const sizes = [...tl.widths, ...tl.heights];
+        assert.ok(Math.max(...sizes) - Math.min(...sizes) <= 0.5, `scan tile ${i}: its cells are not its thirds — ${JSON.stringify({ widths: tl.widths, heights: tl.heights })}`);
+        assert.ok(tl.glyphInside, `scan tile ${i}: the centre's glyph is drawn outside its cell`);
+      }
       assert.deepEqual(m.fits, { spills: [], cut: [] }, 'with the Restore row showing: text that cannot be read where it is drawn — see contentFits');
       const least = fixture.touch ? 44 : 40;
       for (const c of m.chips) {
