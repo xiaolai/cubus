@@ -379,6 +379,12 @@
          2, and a pixel to spare) as padding inside its own edge. Not given back by a negative margin: the scroller then reached 4px past the
          screen, which scrolled sideways (geometry.test.mjs). */
       .case-grid { padding: 4px; }
+      /* A control the KEYBOARD scrolls to is brought only as far as a scroller's edge, and its ring past that edge is cut:
+         in WebKitGTK with DejaVu, Settings' "Fewer clean reps" landed flush with the column's foot (box bottom 658.2, the
+         column's 658) and drew 69–80 ring pixels at 3:1 against its 156px perimeter (focus-visible.test.mjs, sweep
+         2026-10-21). Every scroller stops 4px short on the block axis — the ring's reach and a pixel. On EVERY element,
+         because scroll-padding is not inherited and the app has a dozen vertical scrollers. */
+      * { scroll-padding-block: 4px; }
       /* A scan sticker is faded while it waits to be read, and an opacity fades its ring with it. */
       .scan-face .tgrid > .cell:focus-visible { opacity: 1; }
 

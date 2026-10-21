@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 
 import { decodePng } from '../png.mjs';
-import { startBrowserFixture } from './harness.mjs';
+import { LIVENESS_MS, startBrowserFixture } from './harness.mjs';
 import { stripLabelsUnread } from './strip-labels.mjs';
 
 let fixture; let page;
@@ -164,6 +164,63 @@ test('no scroller draws a bar: the strip, and any other element that scrolls', a
     return out;
   });
   assert.deepEqual(widths, { strip: 'none', other: 'none' }, 'a scroller draws its own scrollbar');
+});
+
+test('a control the keyboard scrolls to keeps its focus ring inside any scroller', async () => {
+  // `scroll-padding` is NOT inherited either. Without it on every element, a Tab to a control below a scroller's fold
+  // brings its border box flush with the scroller's edge and the ring past it is cut — Settings' "Fewer clean reps" in
+  // WebKitGTK, 69–80 ring pixels at 3:1 against a 156px perimeter (sweep 2026-10-21). MUST NOT: less than the ring's
+  // reach (offset 1 + width 2) between the focused control and the edge it was scrolled to, going down or back up.
+  await page.evaluate(() => {
+    const box = document.createElement('div');
+    box.id = 'scroll-pad-under-test';
+    box.style.cssText = 'position:fixed;top:10px;left:10px;z-index:99;overflow:auto;width:120px;height:100px';
+    // Each stop PART-WAY into view when it is reached, the case an engine scrolls only as far as it must, to the edge:
+    // the far one 5px into view at the foot, and the near one 19px above the top once the far one has been revealed.
+    // (A stop wholly out of view is centred instead, and would prove nothing.)
+    for (const [id, gap] of [['near', 10], ['far', 55]]) {
+      const space = document.createElement('div');
+      space.style.height = `${gap}px`;
+      const stop = document.createElement('span');
+      stop.id = `pad-${id}`;
+      stop.tabIndex = 0;
+      stop.textContent = id;
+      stop.style.cssText = 'display:block;height:30px';
+      box.append(space, stop);
+    }
+    const tail = document.createElement('div');
+    tail.style.height = '300px';
+    box.append(tail);
+    document.body.appendChild(box);
+    document.getElementById('pad-near').focus();
+  });
+  const gap = (edge) => page.evaluate((e) => {
+    const box = document.getElementById('scroll-pad-under-test').getBoundingClientRect();
+    const el = document.activeElement.getBoundingClientRect();
+    return e === 'down' ? box.bottom - el.bottom : el.top - box.top;
+  }, edge);
+  // The engine reveals the focused control after the key returns (WebKitGTK, a task or more later): wait on the scroll the
+  // key causes — the scroller's offset moved from where it stood, then still for two frames — never on a fixed delay.
+  const scrolled = async (from) => {
+    await page.waitForFunction((f) => document.getElementById('scroll-pad-under-test').scrollTop !== f, from, { timeout: LIVENESS_MS });
+    await page.waitForFunction(() => new Promise((done) => {
+      const box = document.getElementById('scroll-pad-under-test');
+      const at = box.scrollTop;
+      requestAnimationFrame(() => requestAnimationFrame(() => done(box.scrollTop === at)));
+    }), null, { timeout: LIVENESS_MS });
+  };
+  const offset = () => page.evaluate(() => document.getElementById('scroll-pad-under-test').scrollTop);
+  let from = await offset();
+  await page.keyboard.press('Tab');
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'pad-far', 'precondition: Tab did not reach the control below the fold');
+  await scrolled(from);
+  const down = await gap('down');
+  from = await offset();
+  await page.keyboard.press('Shift+Tab');
+  await scrolled(from);
+  const up = await gap('up');
+  await page.evaluate(() => document.getElementById('scroll-pad-under-test').remove());
+  assert.ok(down >= 3 && up >= 3, `the keyboard scrolled a control to within ${Math.min(down, up).toFixed(1)}px of its scroller's edge — its ring is cut (down ${down.toFixed(1)}, up ${up.toFixed(1)})`);
 });
 
 test('its listeners go with the screen', async () => {
