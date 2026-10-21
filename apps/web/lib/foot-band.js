@@ -69,13 +69,15 @@ export function drawnWidth(el) {
  * the cube's own view attributes and the renderer's defaults for them, never from the camera the walk has now.
  *
  * @param {HTMLElement & { camera?: { fov: number } }} el  a `<cubus-cube>`
+ * @param {{ top: number, width: number, height: number }} [at]  the canvas's box to frame it in, if not the one it has:
+ *   the band asks where the sphere WOULD end in the slot a reserve would leave, before taking it (`fitBand`)
  * @returns {number | null}
  */
-export function closestSphereBottom(el) {
+export function closestSphereBottom(el, at) {
   const cam = el?.camera;
   const canvas = el?.querySelector('canvas');
   if (!cam || !canvas) return null;
-  const box = canvas.getBoundingClientRect();
+  const box = at ?? canvas.getBoundingClientRect();
   if (!(box.width > 0 && box.height > 0)) return null;
   const num = (name, fallback) => {
     const v = Number.parseFloat(el.getAttribute(name) ?? '');
@@ -98,7 +100,8 @@ export function closestSphereBottom(el) {
  *   longest?: () => { row: HTMLElement, text?: string, info?: boolean }[][], signal: AbortSignal }} options  `cube`
  *   answers the card's `<cubus-cube>` when it is in the page; `longest` every state the band can be in at its longest,
  *   each the rows shown together — `text` what the row says (in its status line, if it has one), `info` its quiet form;
- *   `closest` where the cube's sphere ends at its closest framing (`closestSphereBottom`; a test hands its own)
+ *   `closest(el, at?)` where the cube's sphere ends at its closest framing, in the canvas's box or in `at`
+ *   (`closestSphereBottom`; a test hands its own)
  * @returns {{ band: HTMLElement, place: () => void, remeasure: () => void }}
  */
 export function footBand({ host, card, cube, rows, longest = () => [], closest = closestSphereBottom, signal }) {
@@ -201,14 +204,32 @@ export function footBand({ host, card, cube, rows, longest = () => [], closest =
     // The reserve is sized by the room the closest framing would leave (above), the band capped by the room there is.
     const least = box.bottom - nearest - CLEAR_PX;
     if (adjust && inBand && (need > least + 0.5 || (fresh && reserve > 0))) {
-      // The room grows by (1 - c) for each px of reserve, where c is the share of the canvas's height below the sphere:
-      // the slot gives the px, and the fit takes back c of it. The next fit here, once the slot has its new size,
-      // checks the room it left (`resized`, below).
       const canvas = el.querySelector('canvas').getBoundingClientRect();
-      const c = Math.min(0.9, Math.max(0, (canvas.bottom - nearest) / Math.max(1, canvas.height)));
       // Never past half the card: a band that cannot fit even so is a band that scrolls, which geometry.test.mjs
       // refuses, rather than a cube taken down to nothing to make room for words.
-      const next = Math.min(Math.floor(box.height / 2), Math.max(0, Math.ceil(reserve + (need - least) / (1 - c))));
+      const most = Math.floor(box.height / 2);
+      // THE RESERVE IS SOLVED FOR, NOT STEPPED TO (CI 39607667813, 2026-10-21). The slot gives the reserve from the foot of
+      // the canvas, so the closest framing in the slot a reserve `r` would leave is asked of the canvas's box `r` px
+      // shorter — the same fit the renderer will make — and the reserve is the least `r` whose room holds the band. It
+      // used to be one linear step a frame: the canvas's aspect changes with its height, so the fit moves more than the
+      // step allowed for, and on the iPhone SE a Quick walk was drawn with 26px kept and its cube 304px tall, then 168ms
+      // later with 48 and 220: the cube shrank in front of the child.
+      const full = canvas.height + reserve;
+      const holds = (r) => {
+        const at = closest(el, { top: canvas.top, left: canvas.left, width: canvas.width, height: full - r });
+        return at !== null && need <= box.bottom - at - CLEAR_PX + 0.5;
+      };
+      let solved = null;
+      if (holds(most)) {
+        let lo = 0;
+        let hi = most;
+        while (lo < hi) { const mid = (lo + hi) >> 1; if (holds(mid)) hi = mid; else lo = mid + 1; }
+        solved = lo;
+      }
+      // No reserve the framing says would hold it: one step as before, where the room grows by (1 - c) a px, c the share
+      // of the canvas below the sphere — and a camera that never answers smaller makes that loud (RESERVE_FITS_MOST).
+      const c = Math.min(0.9, Math.max(0, (canvas.bottom - nearest) / Math.max(1, canvas.height)));
+      const next = solved ?? Math.min(most, Math.max(0, Math.ceil(reserve + (need - least) / (1 - c))));
       const mayGive = fresh;
       fresh = false;
       if (next > reserve || (mayGive && next < reserve)) setReserve(next);
@@ -226,8 +247,12 @@ export function footBand({ host, card, cube, rows, longest = () => [], closest =
       } else if (mark.nextSibling !== el) mark.after(el);
     });
     if (inBand) need = measureNeed(); else { need = 0; setReserve(0); }
-    // A card that has just changed size is fitted on the next frame, once the renderer has fitted its camera to it.
-    fitBand(!fresh);
+    // Fitted NOW, in the same turn as the change, so no frame is drawn with the room the old card left (CI 39607667813:
+    // a Quick walk on the iPhone SE was drawn with 25px kept for one frame after its card shrank 346 → 284, and the cube
+    // then shrank 243 → 221). The reserve is solved from the closest framing, which is the renderer's fit worked out
+    // here, so it needs no frame of the renderer's; the band's own height under the live camera is fitted again next
+    // frame (the observer below).
+    fitBand();
   };
 
   // The card changes size with the stage and the composition; the renderer fits its camera on its own frame after it.
@@ -240,7 +265,10 @@ export function footBand({ host, card, cube, rows, longest = () => [], closest =
     pending = view.requestAnimationFrame(() => fitBand());
     watchAgain();
   });
-  observer.observe(card);
+  // Its BORDER box: the reserve is the card's own padding, fitted inside this callback, and a content box would change
+  // with it and be reported again in the same frame — WebKit's "ResizeObserver loop completed with undelivered
+  // notifications". The border box changes only when the composition does.
+  observer.observe(card, { box: 'border-box' });
   // The cube's own slot changing size — the reserve taking from it — is fitted again once the renderer has fitted its
   // camera to it, which it does on its own resize.
   const resized = new view.ResizeObserver(() => { view.cancelAnimationFrame(pending); pending = view.requestAnimationFrame(() => fitBand()); watchAgain(); });

@@ -166,10 +166,12 @@ test('the band keeps the room for the tallest hold sentence when it is the SHORT
   const h = harness();
   try {
     // The probe band is 80px tall laying out the shortest hold sentence and 20px for anything else. The cube's canvas
-    // ends 4px above the card's foot, so there is no room under it and the reserve the band asks for is what it needs.
+    // ends 4px above the card's foot, so there is no room under it and the reserve the band asks for is what it needs;
+    // the slot gives the reserve from the canvas's foot, as the card's padding does.
+    const reserve = () => Number.parseFloat(h.card.style.getPropertyValue('--band-reserve')) || 0;
     h.win.HTMLElement.prototype.getBoundingClientRect = function rect() {
       const box = (top, height) => ({ top, left: 0, right: 0, width: 0, height, bottom: top + height });
-      if (this.tagName === 'CANVAS') return box(0, 100);
+      if (this.tagName === 'CANVAS') return box(0, 100 - reserve());
       if (this.classList.contains('card')) return { ...box(0, 1000), bottom: 104 };
       if (this.classList.contains('foot-band')) return box(0, this.textContent.includes(tallest) ? 80 : 20);
       return box(0, 0);
@@ -178,8 +180,10 @@ test('the band keeps the room for the tallest hold sentence when it is the SHORT
     h.card.querySelector('.slot').append(cube);
     const ctl = new AbortController();
     const states = followNoteSentences().map(({ text, info }) => [{ row: h.row, text, info }]);
+    // The closest framing ends the sphere at the foot of the canvas it is asked about — the slot a reserve would leave
+    // is that much shorter (lib/foot-band.js solves the reserve from it).
     const band = footBand({ host: h.host, card: h.card, cube: () => cube, rows: [h.row], signal: ctl.signal, longest: () => states,
-      closest: () => 100 });
+      closest: (el, at) => { const b = at ?? el.querySelector('canvas').getBoundingClientRect(); return b.top + b.height; } });
     band.remeasure();
     assert.equal(h.card.style.getPropertyValue('--band-reserve'), '80px',
       'the room under the cube is not kept for the tallest thing the follow-note can say');
@@ -226,4 +230,83 @@ test('the reserve is sized by the closest framing, never by the camera the walk 
   assert.equal(upright, 50, 'precondition: the reserve is what the band needs below the closest framing');
   // A walk that turns the cube over is framed from further back: its sphere ends at 60 of the canvas's 100.
   assert.equal(settle(-0.2), upright, 'the reserve followed the walk\'s camera');
+});
+
+// THE RESERVE IS SOLVED IN ONE FIT, NOT STEPPED TO OVER FRAMES (CI 39607667813, 2026-10-21). The canvas's aspect changes
+// with its height, so where the fit ends the sphere is not a straight line in the reserve: one linear step a frame
+// undershot, and on the iPhone SE a Quick walk was drawn with 26px kept and a 304px cube, then 168ms later with 48 and
+// 220. Modelled here: the sphere ends at a share of the canvas that grows as the canvas gets shorter. MUST NOT: a
+// reserve that a second fit changes, once the first has been taken.
+test('the first fit takes the whole reserve: a later fit, once the slot has its size, changes nothing', () => {
+  const h = harness();
+  try {
+    const reserve = () => Number.parseFloat(h.card.style.getPropertyValue('--band-reserve')) || 0;
+    h.win.HTMLElement.prototype.getBoundingClientRect = function rect() {
+      const box = (top, height) => ({ top, left: 0, right: 0, width: 0, height, bottom: top + height });
+      if (this.tagName === 'CANVAS') return box(0, 100 - reserve());
+      if (this.classList.contains('card')) return { ...box(0, 1000), bottom: 104 };
+      if (this.classList.contains('foot-band')) return box(0, 50);
+      return box(0, 0);
+    };
+    // The closest framing in a canvas `height` tall ends its sphere at 0.6 of it, and 0.003 further down for every px
+    // the canvas is shorter than 100. The band needs 50 and keeps 4 clear, within the half px every fit allows: a canvas
+    // of 74px ends the sphere at 50.17, so the least reserve is 26. One linear step from 0 asks for 17.
+    const sphereAt = (b) => b.top + b.height * (0.6 + 0.003 * (100 - b.height));
+    const cube = projectingCube(h.doc);
+    h.card.querySelector('.slot').append(cube);
+    const ctl = new AbortController();
+    const band = footBand({ host: h.host, card: h.card, cube: () => cube, rows: [h.row], signal: ctl.signal,
+      closest: (el, at) => sphereAt(at ?? el.querySelector('canvas').getBoundingClientRect()),
+      longest: () => [[{ row: h.row, text: 'The longest thing this band can say.' }]] });
+    band.remeasure();
+    const first = reserve();
+    band.remeasure();
+    band.remeasure();
+    assert.equal(reserve(), first, `the reserve moved after the first fit: ${first}px, then ${reserve()}px`);
+    assert.equal(first, 26, 'the first fit did not take the least reserve that holds the band');
+    ctl.abort();
+  } finally {
+    h.win.close();
+  }
+});
+
+// A CARD THAT CHANGES SIZE IS FITTED IN THE SAME TURN (CI 39607667813, 2026-10-21). A card's resize was fitted on the
+// next frame, to let the renderer fit its camera first; but the reserve is solved from the closest framing, worked out
+// here, and in that frame the page was drawn with the old card's reserve — on the iPhone SE a Quick walk arrived with
+// 25px kept where 47 were needed, and its cube shrank 243 → 221 a frame later. MUST NOT: a card resize that leaves the
+// reserve as it was until a frame has passed.
+test('a card that changes size has its reserve fitted before any frame is drawn', () => {
+  const h = harness();
+  try {
+    const observers = [];
+    h.win.ResizeObserver = class { constructor(cb) { this.cb = cb; this.els = []; observers.push(this); } observe(el) { this.els.push(el); } disconnect() {} };
+    const reserve = () => Number.parseFloat(h.card.style.getPropertyValue('--band-reserve')) || 0;
+    let cardBottom = 104;
+    h.win.HTMLElement.prototype.getBoundingClientRect = function rect() {
+      const box = (top, height) => ({ top, left: 0, right: 0, width: 0, height, bottom: top + height });
+      if (this.tagName === 'CANVAS') return box(0, cardBottom - 4 - reserve());
+      if (this.classList.contains('card')) return { ...box(0, cardBottom), bottom: cardBottom };
+      if (this.classList.contains('foot-band')) return box(0, 50);
+      return box(0, 0);
+    };
+    const cube = projectingCube(h.doc);
+    h.card.querySelector('.slot').append(cube);
+    const ctl = new AbortController();
+    // The sphere ends 0.8 of the way down its canvas: a band of 50 needs 37px of a 104px card and 42 of an 84px one.
+    footBand({ host: h.host, card: h.card, cube: () => cube, rows: [h.row], signal: ctl.signal,
+      closest: (el, at) => { const b = at ?? el.querySelector('canvas').getBoundingClientRect(); return b.top + 0.8 * b.height; },
+      longest: () => [[{ row: h.row, text: 'The longest thing this band can say.' }]] });
+    const cardWatch = observers.find((o) => o.els.includes(h.card));
+    assert.ok(cardWatch, 'precondition: the band watches its card');
+    // An observer reports once as it starts observing; then every frame queued runs.
+    cardWatch.cb([]);
+    while (h.flush()) { /* settle */ }
+    assert.equal(reserve(), 37, 'precondition: the band settled on the 104px card');
+    cardBottom = 84;
+    cardWatch.cb([]);
+    assert.equal(reserve(), 42, `the card shrank and the reserve is still ${reserve()}px until a frame has passed`);
+    ctl.abort();
+  } finally {
+    h.win.close();
+  }
 });
