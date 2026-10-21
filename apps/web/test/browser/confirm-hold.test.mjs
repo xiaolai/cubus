@@ -170,9 +170,12 @@ test('leaving the scan screen while the sticker view shows: the next screen\'s c
   assert.deepEqual([during.viewHidden, during.stickers], [false, 3], 'the sticker view drew nothing in the twin\'s place');
   assert.ok(during.viewArea > 0, 'the sticker view has no size');
   await page.evaluate(() => { location.hash = '#/home'; });
-  await page.waitForFunction(() => document.querySelector('#stage cubus-cube')?.drawnColours?.() != null);
+  // Home's own slot, which only Home draws. `#stage cubus-cube` was already true of the scan screen's hidden twin before
+  // the route changed, so under load the case read the scan screen and reported Home's cube undrawn (CI 39607667813;
+  // reproduced by landing the navigation 300ms late). A wait must name what the navigation makes true.
+  await page.waitForFunction(() => location.hash === '#/home' && document.querySelector('#stage #viewCube cubus-cube')?.drawnColours?.() != null);
   const home = await page.evaluate(() => {
-    const cube = document.querySelector('#stage cubus-cube');
+    const cube = document.querySelector('#stage #viewCube cubus-cube');
     const box = cube.getBoundingClientRect();
     return { reused: cube.dataset.scanTwin === 'yes', hidden: cube.hidden, display: getComputedStyle(cube).display, area: box.width * box.height };
   });

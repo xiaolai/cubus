@@ -161,7 +161,9 @@ test('the scan screen runs its model in the inference worker, keeps it parked, a
 
     // Leaving the scan screen PARKS the detector: the model is kept for a quick way back.
     await page.evaluate(() => { location.hash = '#/home'; });
-    await new Promise((r) => setTimeout(r, 1000));
+    // The navigation landing, not a second of wall clock: the scan screen is torn down, and its detector parked, before
+    // Home is installed (lib/screen-shell.js renderScreen).
+    await page.waitForFunction(() => document.querySelector('.screen.active')?.dataset.screen === 'home', null, { timeout: 60_000 });
     const parked = await page.evaluate(async () => {
       const { parkedDetector } = await import('/vendor/ai-scan-panel.js');
       return parkedDetector()?.runtime ?? null;

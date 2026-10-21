@@ -1138,7 +1138,7 @@ async function frozenOnHome(page, facelets) {
   }, facelets);
   await page.waitForFunction(() => document.querySelector('#stageCard')?.hidden === false, null);
   await page.evaluate(() => { location.hash = '#/home'; });
-  await page.waitForSelector('#solList .chip-m');
+  await page.waitForSelector('.screen.active[data-screen="home"] #solList .chip-m');
 }
 
 const measureWalk = (page) =>
@@ -1226,7 +1226,7 @@ for (const fixture of landscapeFixtures) {
 
       // A scramble, on its own screen.
       await page.evaluate(() => { location.hash = '#/scramble'; });
-      await page.waitForSelector('.screen.active #randCube:visible');
+      await page.waitForSelector('.screen.active[data-screen="scramble"] #randCube:visible');
       await page.click('.screen.active #randCube:visible');
       await page.waitForSelector('#solList .chip-m');
       m = await measureWalk(page);
@@ -1365,7 +1365,7 @@ test('a cube undoing the scramble\'s last turn takes the button away, and focus 
       window.cubusFeed.facelets(SOLVED, 1);
       location.hash = '#/stats';
     });
-    await page.waitForFunction(() => location.hash === '#/stats' && !document.querySelector('.screen.active .transport'));
+    await page.waitForFunction(() => document.querySelector('.screen.active')?.dataset.screen === 'stats');
     await page.evaluate(() => { location.hash = '#/scramble'; });
     await page.waitForSelector('#tbTrail .pill[data-mode="cube"][aria-pressed="true"]');
     await page.click('#randCube:visible, #randCubeTool:visible');
@@ -3368,7 +3368,8 @@ test('a popover opened on the stage stays inside it', async () => {
 const connectCube = (page) => page.evaluate(() => window.cubusFeed.useConnection({ mac: 'AA:BB:CC:DD:EE:01', name: 'Test cube', requestBattery: async () => 80, disconnect: async () => {} }));
 const visit = async (page, route) => {
   await page.evaluate((r) => { location.hash = `#/${r}`; }, route);
-  await page.waitForFunction((r) => location.hash === `#/${r}` && document.querySelector(`.screen.active`), route);
+  // The screen that was asked for: the hash is set at once, and the screen being left is still `.screen.active`.
+  await page.waitForFunction((r) => document.querySelector('.screen.active')?.dataset.screen === r, route);
 };
 /** The status area, read whole: its children on one line, inside the bar, clear of the wordmark and the tabs. */
 const statusArea = (page) => page.evaluate(`(() => {

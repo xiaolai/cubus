@@ -133,7 +133,9 @@ async function frozen(page, facelets) {
   }, facelets);
   await page.waitForFunction(() => document.querySelector('#stageCard')?.hidden === false, null);
   await page.evaluate(() => { location.hash = '#/home'; });
-  await page.waitForFunction(() => document.querySelectorAll('.chip-m').length > 0, null);
+  // Home's own chips: a wait on any chip can be met by the screen being left (CI 39607667813, the same race).
+  await page.waitForFunction(() => document.querySelector('.screen.active')?.dataset.screen === 'home'
+    && document.querySelectorAll('.chip-m').length > 0, null);
   await page.waitForFunction(() => /^\d+$/.test(document.querySelector('#moveCount')?.textContent ?? ''), null, { timeout: 30_000 });
 }
 
@@ -611,8 +613,9 @@ test('a stage target chosen on Home does not follow the child onto the Scramble 
     await settledHold(page, 'D B');
 
     await page.evaluate(() => { location.hash = '#/scramble'; });
-    await page.waitForFunction(() => location.hash === '#/scramble', null);
-    await page.waitForFunction(() => document.querySelectorAll('.chip-m').length > 0, null, { timeout: 60_000 });
+    // Scramble's own chips: the hash is set at once and Home's chips were already there, so neither waited on anything.
+    await page.waitForFunction(() => document.querySelector('.screen.active')?.dataset.screen === 'scramble'
+      && document.querySelectorAll('.chip-m').length > 0, null, { timeout: 60_000 });
     await settledHold(page, 'U F');
     assert.equal(await page.locator('#stageAim').isVisible(), false, 'no aim on a scramble walk');
     assert.equal(await page.locator('#viewNet').isVisible(), true, 'the scramble keeps its own net');
