@@ -208,7 +208,11 @@ const CUBE_FLOOR = {
   // A3 is recorded, not changed: a lesson or a walk to a stop paints about 20% smaller than Quick in landscape because the
   // renderer frames a cube it turns over from further back — PAINTED size, ghost faces included (measurement-method.md),
   // and their floors are their own figures.
-  stop: { 'desktop landscape window': 297, 'desktop portrait window': 324, 'iPhone 16': 240, 'iPhone SE': 166, 'iPad 11" landscape': 347,
+  // Two EXCEPTIONS (owner, 2026-10-21): one band reserve per screen (S1) keeps the room a Quick walk needs under a walk
+  // to a stop, which the renderer frames from further back. iPhone 16: one band reserve per screen (S1); base painted
+  // 240.8; owner 2026-10-21 — after it 238.8. iPhone SE: one band reserve per screen (S1); base painted 166.0; owner
+  // 2026-10-21 — after it 160.0.
+  stop: { 'desktop landscape window': 297, 'desktop portrait window': 324, 'iPhone 16': 238, 'iPhone SE': 160, 'iPad 11" landscape': 347,
     'iPad 11" portrait': 524, 'iPad 11" landscape, mouse': 347, 'iPad Split View column': 170 },
   picture: { 'desktop landscape window': 371, 'desktop portrait window': 364, 'iPhone 16': 268, 'iPhone SE': 180, 'iPad 11" landscape': 443,
     'iPad 11" portrait': 590, 'iPad 11" landscape, mouse': 443, 'iPad Split View column': 190 },
@@ -230,16 +234,6 @@ Object.assign(CUBE_FLOOR['practice-cube'], { 'desktop landscape window': 371, 'i
 Object.assign(CUBE_FLOOR['practice-none'], { 'desktop landscape window': 297, 'iPad 11" landscape': 347, 'iPad 11" landscape, mouse': 347 });
 for (const kind of Object.values(CUBE_FLOOR)) Object.freeze(kind);
 Object.freeze(CUBE_FLOOR);
-/**
- * Floors a decision of this pass cannot meet, measured and NOT lowered (sweep 2026-10-20): the gate SKIPS them, says why,
- * and never passes them. S1 sizes the band's reserve by the closest framing for every walk of a screen, so a walk to a stop
- * — framed from further back — keeps the reserve a Quick walk needs: 160px on the iPhone SE against its 166 before, and
- * 238.7 on the iPhone 16 against 240. Which gives is the owner's call.
- */
-const FLOOR_BLOCKED = Object.freeze({
-  stop: { 'iPhone SE': 'S1 (one reserve per screen) against S2 (the pre-change floor): 160px against 166',
-    'iPhone 16': 'S1 (one reserve per screen) against S2 (the pre-change floor): 238.7px against 240' },
-});
 const cubeFloor = (kind, fixture) => {
   const f = CUBE_FLOOR[kind]?.[fixture.name];
   if (typeof f !== 'number') throw new Error(`no cube floor for a ${kind} walk on "${fixture.name}"`);
@@ -1870,8 +1864,7 @@ for (const fixture of FIXTURES) {
 
 // EVERY WALK KIND KEEPS ITS FLOOR, ON EVERY FIXTURE (sweep 2026-10-20, A2, S2): a walk to a stop, a picture walk, a shape
 // the cube already shows, no walk, the scan's small cube, and the landscape fixtures of every kind — each measured with
-// nothing that shows only sometimes on screen, as its floor was (CUBE_FLOOR). MUST NOT: a cube under its floor. A floor
-// in FLOOR_BLOCKED is skipped and says why — never passed.
+// nothing that shows only sometimes on screen, as its floor was (CUBE_FLOOR). MUST NOT: a cube under its floor.
 const quietRows = (page) => page.evaluate(() => {
   for (const id of ['followNote', 'whyLine', 'whyBtn', 'practiseStep', 'methodNote', 'methodUnsaved', 'solveItBtn']) {
     const el = document.getElementById(id);
@@ -1892,12 +1885,9 @@ for (const fixture of FIXTURES) {
       return opened;
     };
     const under = [];
-    const blocked = [];
     const hold = (kind, painted) => {
       seen[kind] = painted;
       const floor = cubeFloor(kind, fixture);
-      const why = FLOOR_BLOCKED[kind]?.[fixture.name];
-      if (why) { blocked.push(`${kind} ${painted.toFixed(1)}px (floor ${floor}): ${why}`); return; }
       if (!(painted >= floor)) under.push(`${kind}: ${painted.toFixed(1)}px — under its floor of ${floor}px`);
     };
     let o = await fresh('home', { solveMethod: 'quick' });
@@ -1951,7 +1941,6 @@ for (const fixture of FIXTURES) {
     } finally { await o.context.close(); }
     t.diagnostic(`painted: ${Object.entries(seen).map(([k, v]) => `${k} ${v.toFixed(1)}`).join(', ')}`);
     assert.deepEqual(under, [], 'a cube under its floor');
-    if (blocked.length) t.skip(`floors not met, by decision, and not lowered: ${blocked.join('; ')}`);
   });
 }
 
