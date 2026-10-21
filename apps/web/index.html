@@ -1291,6 +1291,10 @@
          Play and Next stay. `display: none` takes them out of the tab order; walk-presenter.js moves focus that was on
          one of them to the button, and back. */
       .transport:has(> #solveItBtn:not([hidden])) > :is(#playBtn, #nextBtn) { display: none; }
+      /* And the progress bar gives way to nothing if it must, as it does under a finger: in DejaVu the row without Play
+         and Next still held 366.5px of fixed controls and the bar's 48px basis took it to 414.5 in 403.1, wrapping it
+         again (331.1 in the Linux gate); in SF it was 401.4, 1.7px from the same wrap. */
+      .transport:has(> #solveItBtn:not([hidden])) > .progress { flex-basis: 0; min-width: 0; }
       /* Takes the old spacer's job: it has to be the flexible gap anyway, so the gap may as well
          say how far through the solution you are. --track/--bar are the groove/fill token pair. */
       .transport .progress { flex: 1 1 48px; height: 6px; border-radius: var(--r-pill); background: var(--track); overflow: hidden; }
