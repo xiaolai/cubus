@@ -614,7 +614,7 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 
 ### ISC (2 crates)
 
-- **rustls-webpki** 0.103.15 (ISC) — <https://github.com/rustls/webpki> — [`LICENSE`](#text-3ac27594ed56)
+- **rustls-webpki** 0.103.16 (ISC) — <https://github.com/rustls/webpki> — [`LICENSE`](#text-3ac27594ed56)
 - **untrusted** 0.9.0 (ISC) — Brian Smith — <https://github.com/briansmith/untrusted> — [`LICENSE.txt`](#text-a1fff3442978)
 
 ### Zlib (2 crates)
@@ -640,7 +640,7 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 
 ### CDLA-Permissive-2.0 (1 crate)
 
-- **webpki-root-certs** 1.0.9 (CDLA-Permissive-2.0) — <https://github.com/rustls/webpki-roots> — [`LICENSE`](#text-d30183ec6610)
+- **webpki-root-certs** 1.0.10 (CDLA-Permissive-2.0) — <https://github.com/rustls/webpki-roots> — [`LICENSE`](#text-d30183ec6610)
 
 ### IJG (1 crate)
 
@@ -2459,7 +2459,7 @@ SOFTWARE.
 
 ### text-3ac27594ed56
 
-Carried by rustls-webpki 0.103.15 (`LICENSE`).
+Carried by rustls-webpki 0.103.16 (`LICENSE`).
 
 ```text
 Except as otherwise noted, this project is licensed under the following
@@ -9098,7 +9098,7 @@ limitations under the License.
 
 ### text-d30183ec6610
 
-Carried by webpki-root-certs 1.0.9 (`LICENSE`).
+Carried by webpki-root-certs 1.0.10 (`LICENSE`).
 
 ```text
 # Community Data License Agreement - Permissive - Version 2.0
