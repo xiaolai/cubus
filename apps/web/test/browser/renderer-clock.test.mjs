@@ -181,20 +181,37 @@ test('a turnTo() released from a pinned clock still arrives', async () => {
 
 // And autorotate, whose last reading is dropped on a change of timeline: carried, the first frame
 // after releasing a clock pinned at 3,000,000 spun the cube by the difference between the two.
+//
+// Held against the time that really passed, never a fixed angle (CI 39607667813, 2026-10-21): the bound
+// was 0.05 rad, which is 238 ms of turning, and two frames of a page sharing two cores with two other
+// browsers took 1,120 ms — 0.2352 rad, exactly what that much time turns it. The spin after release is
+// the time elapsed on the page's own clock, measured around the two frames here; the leap this guards
+// against is the pinned clock's distance from the page's, which is three orders of magnitude more.
 test('autorotate does not leap when its clock is released', async () => {
   await cube();
-  const leap = await page.evaluate(async () => {
+  const out = await page.evaluate(async () => {
     const el = window.__cube;
     const tick = () => new Promise((r) => requestAnimationFrame(() => r()));
     el.setAttribute('autorotate', '');
     el.clock = 3_000_000;
     await tick(); await tick();
     const before = el._spin;
+    const releasedAt = performance.now();
     el.clock = null;
     await tick(); await tick();
     const after = el._spin;
+    const elapsed = performance.now() - releasedAt;
+    // The rate, read back from the element rather than copied: one more frame on a clock pinned 1000 ms on.
+    el.clock = 4_000_000; await tick();
+    const at = el._spin;
+    el.clock = 4_001_000; await tick();
+    const perMs = (el._spin - at) / 1000;
     el.removeAttribute('autorotate');
-    return after - before;
+    return { leap: after - before, elapsed, perMs, pinnedFrom: 3_000_000 - releasedAt };
   });
-  assert.ok(Math.abs(leap) < 0.05, `releasing the clock turned the cube ${leap} rad in two frames`);
+  assert.ok(out.perMs > 0, `precondition: autorotate turned ${out.perMs} rad a ms on a pinned clock`);
+  const most = out.elapsed * out.perMs + 0.01;
+  assert.ok(Math.abs(out.leap) <= most,
+    `releasing the clock turned the cube ${out.leap} rad in ${out.elapsed.toFixed(0)} ms, where that time turns it at most ${most.toFixed(4)}`);
+  assert.ok(Math.abs(out.pinnedFrom) * out.perMs > 100 * most, 'precondition: the leap this guards against is not far beyond what the time allows');
 });
