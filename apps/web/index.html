@@ -368,6 +368,12 @@
          control's own fill. test/browser/focus-visible.test.mjs measures the drawn ring on every stop, in WebKit and
          Chromium. */
       :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+      /* A control that wears a STATE RING outside its box (2px each: the scan's suspect, edited and claimed stickers, the
+         picker's current and suggested colours) takes the focus ring past that ring. At offset 1 the focus ring covered
+         the state ring's outer pixel: the picker opens focused on its current colour, which then showed 1px of --ink —
+         108 pixels at 3:1 against its 110px outline in night (scan-marks.test.mjs, sweep 2026-10-21). */
+      :is(.scan-face .tgrid > .cell.suspect, .scan-face .cell.editing, .swatches > button.now, .swatches > button.suggest,
+        .id-ask > button.sw.claimed):focus-visible { outline-offset: 3px; }
       /* A ring drawn outside a control is clipped by a scroller it sits flush against: the Shapes grid and Practice's
          library cut the ring off a tile's first row and column. Each keeps the 4px the ring reaches (offset 1 + width
          2, and a pixel to spare) as padding inside its own edge. Not given back by a negative margin: the scroller then reached 4px past the

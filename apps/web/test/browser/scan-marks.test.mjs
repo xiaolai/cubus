@@ -3,8 +3,10 @@
 // Two claims, each measured in a real WebKit, in all three themes:
 //
 //   - A RING DRAWN OUTSIDE A STICKER is judged at 3:1 against its LOCAL GROUND — what is actually behind the ring: the
-//     picker's panel for the picker's rings, the card for the board's and the identity question's — and it must be
-//     drawn, visible and unclipped by any box it sits in. E15's comparison against the sticker's own colour is for a
+//     picker's panel for the picker's rings, the card for the board's and the identity question's — READ FROM THE
+//     PAGE'S PIXELS: the frame with the ring against the same frame without it, every pixel the ring changes against the
+//     pixel it replaces. Those at 3:1 must add up to the ring's element's perimeter, and it must be unclipped by any box
+//     it sits in. E15's comparison against the sticker's own colour is for a
 //     mark drawn INSIDE a sticker; a ring outside one never lies on the sticker, and the sweep measured the five rings
 //     at 1.18–1.58:1 against the stickers they mark while each is 4.42:1 or more against its ground (H1, owner's call:
 //     no visual change, the rule is the distinction). dev-docs/measurement-method.md.
@@ -66,37 +68,16 @@ async function openScan({ dpr = 1, motion = 'no-preference' } = {}) {
 
 /**
  * In the page: each ring named by `sel` — the first outer box-shadow with a spread, the ring a mark draws outside its
- * box — its colour composited over what is behind it, that ground, whether the element is drawn, and every box that
- * clips it and how far the ring reaches past that box. Self-contained.
+ * box — whether the element is drawn, and every box that clips it and how far the ring reaches past that box. Its
+ * contrast is not computed here: it is read from the pixels (`ringPixels`). Self-contained.
  */
 const ringsOf = (sel) => {
-  const parse = (s) => {
-    const n = (s.match(/-?[\d.]+/g) ?? []).map(Number);
-    if (/^color\(srgb/.test(s)) return { r: n[0] * 255, g: n[1] * 255, b: n[2] * 255, a: n.length > 3 ? n[3] : 1 };
-    if (/^rgba?\(/.test(s)) return { r: n[0], g: n[1], b: n[2], a: n.length > 3 ? n[3] : 1 };
-    return null;
-  };
-  const over = (t, u) => ({ r: t.r * t.a + u.r * (1 - t.a), g: t.g * t.a + u.g * (1 - t.a), b: t.b * t.a + u.b * (1 - t.a), a: 1 });
-  const lin = (v) => { const c = v / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
-  const lum = (c) => 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b);
-  const ratio = (x, y) => { const [hi, lo] = [lum(x), lum(y)].sort((p, q) => q - p); return (hi + 0.05) / (lo + 0.05); };
-  /** The ground behind `el`'s ring: its ancestors' backgrounds laid over each other, down to the first opaque one. */
-  const ground = (el) => {
-    const layers = [];
-    for (let x = el.parentElement; x; x = x.parentElement) {
-      const bg = parse(getComputedStyle(x).backgroundColor);
-      if (bg && bg.a > 0) { layers.push(bg); if (bg.a >= 1) break; }
-    }
-    let g = { r: 255, g: 255, b: 255, a: 1 };
-    for (const l of layers.reverse()) g = over(l, g);
-    return g;
-  };
   const ring = (el) => {
     const parts = getComputedStyle(el).boxShadow.split(/,(?![^(]*\))/).map((p) => p.trim()).filter((p) => p && p !== 'none' && !/inset/.test(p));
     for (const p of parts) {
       const col = p.match(/(rgba?\([^)]*\)|color\([^)]*\))/)?.[0];
       const nums = p.replace(col ?? '', '').trim().split(/\s+/).map(parseFloat);
-      if (col && nums.length >= 4 && nums[3] > 0) return { colour: parse(col), spread: nums[3] };
+      if (col && nums.length >= 4 && nums[3] > 0) return { spread: nums[3] };
     }
     return null;
   };
@@ -105,7 +86,6 @@ const ringsOf = (sel) => {
     const cs = getComputedStyle(el);
     const drawn = !el.closest('[hidden]') && cs.display !== 'none' && cs.visibility !== 'hidden' && Number(cs.opacity) > 0 && b.width > 0 && b.height > 0;
     const rg = ring(el);
-    const g = ground(el);
     const clipped = [];
     if (rg) {
       const out = { left: b.left - rg.spread, right: b.right + rg.spread, top: b.top - rg.spread, bottom: b.bottom + rg.spread };
@@ -118,7 +98,7 @@ const ringsOf = (sel) => {
         if (past > 0.5) clipped.push(`${x.id ? `#${x.id}` : x.className} by ${past.toFixed(1)}px`);
       }
     }
-    return { drawn, ring: Boolean(rg), spread: rg?.spread ?? 0, ratio: rg ? ratio(over(rg.colour, g), g) : 0, clipped,
+    return { drawn, ring: Boolean(rg), spread: rg?.spread ?? 0, clipped,
       box: { x: b.left, y: b.top, w: b.width, h: b.height } };
   });
 };
@@ -141,13 +121,22 @@ const chan = (v) => { const c = v / 255; return c <= 0.03928 ? c / 12.92 : ((c +
 const lumOf = ([r, g, b]) => 0.2126 * chan(r) + 0.7152 * chan(g) + 0.0722 * chan(b);
 const contrast = (a, b) => { const [hi, lo] = [lumOf(a), lumOf(b)].sort((p, q) => q - p); return (hi + 0.05) / (lo + 0.05); };
 
-/** Pixels that change when the ring on `sel`'s `k`th element is taken away: the ring is DRAWN, not only declared. */
-async function ringDrawn(page, sel, k) {
+/**
+ * The ring on `sel`'s `k`th element, read from the page: the frame with it against the same frame with its box-shadow
+ * taken away. A pixel that changes is the ring's (or its antialiased edge's); its contrast is against the pixel it
+ * replaces, which is the local ground at that spot, whatever is drawn there. Returns how many pixels changed, how many of
+ * those reach 3:1, the best ratio, and the element's perimeter in CSS px — round where its corners are round.
+ */
+async function ringPixels(page, sel, k) {
   const box = await page.evaluate(({ s, i }) => {
     const el = [...document.querySelectorAll(s)][i];
     el.setAttribute('data-ring-probe', '');
     const b = el.getBoundingClientRect();
-    return { x: b.left, y: b.top, w: b.width, h: b.height };
+    // The corner radius as drawn: a percentage of the box, or px; never more than half the shorter side.
+    const raw = getComputedStyle(el).borderTopLeftRadius;
+    const r = Math.min(b.width, b.height) / 2;
+    const radius = Math.min(r, raw.endsWith('%') ? (parseFloat(raw) / 100) * Math.min(b.width, b.height) : parseFloat(raw) || 0);
+    return { x: b.left, y: b.top, w: b.width, h: b.height, radius };
   }, { s: sel, i: k });
   const clip = { x: Math.max(0, box.x - 6), y: Math.max(0, box.y - 6), width: box.w + 12, height: box.h + 12 };
   const on = pixelsOf(await page.screenshot({ clip, animations: 'disabled' }));
@@ -160,13 +149,20 @@ async function ringDrawn(page, sel, k) {
   const off = pixelsOf(await page.screenshot({ clip, animations: 'disabled' }));
   await page.evaluate(() => { document.getElementById('ring-off')?.remove(); document.querySelector('[data-ring-probe]')?.removeAttribute('data-ring-probe'); });
   let changed = 0;
+  let at3 = 0;
+  let best = 1;
   for (let y = 0; y < on.h; y++) {
     for (let x = 0; x < on.w; x++) {
       const a = on.px(x, y); const b = off.px(x, y);
-      if (Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]), Math.abs(a[2] - b[2])) >= 24) changed += 1;
+      if (Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]), Math.abs(a[2] - b[2])) < 24) continue;
+      changed += 1;
+      const r = contrast(a, b);
+      best = Math.max(best, r);
+      if (r >= 3) at3 += 1;
     }
   }
-  return { changed, perimeter: Math.round(2 * (box.w + box.h)) };
+  // The element's own outline, its rounded corners included: a round swatch's ring follows a circle, not its box.
+  return { changed, at3, best, perimeter: Math.round(2 * (box.w + box.h) - (8 - 2 * Math.PI) * box.radius) };
 }
 
 test('every ring drawn outside a sticker clears 3:1 against its local ground, is drawn, and is not clipped — every theme', async (t) => {
@@ -180,17 +176,15 @@ test('every ring drawn outside a sticker clears 3:1 against its local ground, is
         const found = await page.evaluate(ringsOf, r.sel);
         const shown = found.filter((f) => f.drawn);
         assert.ok(shown.length > 0, `precondition, ${theme}: ${r.what} is not on the page`);
-        for (const [k, f] of shown.entries()) {
+        for (const f of shown) {
           seen.push(r.sel);
-          least[r.what] = Math.min(least[r.what] ?? Infinity, f.ratio);
           assert.ok(f.ring, `${theme}: ${r.what} draws no ring outside its box`);
-          assert.ok(f.ratio >= 3, `${theme}: ${r.what} is ${f.ratio.toFixed(2)}:1 against its local ground — a ring outside a sticker needs 3:1`);
           assert.deepEqual(f.clipped, [], `${theme}: ${r.what} is clipped by the box it sits in`);
-          if (k === 0) {
-            const d = await ringDrawn(page, r.sel, found.indexOf(f));
-            // At least one device pixel per CSS px of the ring's perimeter changes: a ring taken away leaves a trace.
-            assert.ok(d.changed >= d.perimeter, `${theme}: ${r.what} is declared and not drawn — ${d.changed} pixels change against a ${d.perimeter}px perimeter`);
-          }
+          const d = await ringPixels(page, r.sel, found.indexOf(f));
+          least[r.what] = Math.min(least[r.what] ?? Infinity, d.at3 / d.perimeter);
+          // A ring one pixel thick all the way round, at 3:1 against what it is drawn over: the ring is DRAWN, not only
+          // declared, and it is seen against its local ground, read from the page rather than computed from styles.
+          assert.ok(d.at3 >= d.perimeter, `${theme}: ${r.what} — ${d.at3} of its ${d.changed} pixels reach 3:1 against the pixels they replace (best ${d.best.toFixed(2)}:1), against a ${d.perimeter}px perimeter`);
         }
       }
     }
@@ -213,7 +207,7 @@ test('every ring drawn outside a sticker clears 3:1 against its local ground, is
     await measure([RINGS[4].sel]);
     // Every one of the five was measured, not skipped by a state that did not arrive.
     assert.deepEqual([...new Set(seen)].sort(), RINGS.map((r) => r.sel).sort(), 'a ring was never measured');
-    for (const [what, ratio] of Object.entries(least)) t.diagnostic(`${what}: least ${ratio.toFixed(2)}:1 on its local ground`);
+    for (const [what, share] of Object.entries(least)) t.diagnostic(`${what}: at least ${share.toFixed(2)}× its perimeter in pixels at 3:1 on its local ground`);
     assert.deepEqual(errors, [], 'the page threw');
   } finally {
     await context.close();
