@@ -173,6 +173,10 @@ test('every ring drawn outside a sticker clears 3:1 against its local ground, is
     for (const theme of THEMES) {
       await inTheme(page, theme);
       for (const r of RINGS.filter((x) => which.includes(x.sel))) {
+        // Judged where a person sees it: a ring in a scroller below its fold is scrolled to, not called clipped. The scan
+        // sheet scrolls by design, and in DejaVu (Linux) the identity question's swatches start 19px below its fold at
+        // 840×682. Centred, so a ring cut by the scroller's edge as it is shown still counts as cut.
+        await page.evaluate((s) => document.querySelectorAll(s).forEach((el) => el.scrollIntoView({ block: 'center', inline: 'nearest' })), r.sel);
         const found = await page.evaluate(ringsOf, r.sel);
         const shown = found.filter((f) => f.drawn);
         assert.ok(shown.length > 0, `precondition, ${theme}: ${r.what} is not on the page`);
