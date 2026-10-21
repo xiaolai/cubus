@@ -1347,6 +1347,54 @@ for (const fixture of landscapeFixtures) {
   });
 }
 
+// THE CUBE STEPS BACK, NOT A PRESS (sweep 2026-10-21). With a smart cube leading the walk, the cube's own turns move it:
+// the scramble's last turn reached by the cube offers the button, and the cube undoing that turn takes it away again
+// with focus on it. The press cases above cannot reach this, because the walk moves without a key or a click. A trusted
+// chain is set by hand (the test seam's connection, then `state` as the reconcile would leave it, then a report of the
+// solved cube the scramble starts from), and the screen is entered after it, as a connected cube finds it. MUST NOT:
+// focus left on a control that is no longer drawn, or play and next missing once the button has gone.
+test('a cube undoing the scramble\'s last turn takes the button away, and focus on it goes to Next: desktop landscape window', async () => {
+  const fixture = FIXTURES.find((f) => f.name === 'desktop landscape window');
+  const { page, context, errors } = await open(fixture, 'scramble');
+  try {
+    await page.evaluate(async () => {
+      const { state } = await import('/lib/app.js');
+      const { SOLVED } = await import('/lib/app-state.js');
+      window.cubusFeed.useConnection({ mac: 'AA:BB:CC:DD:EE:01', name: 'Test cube', requestBattery: async () => 80, disconnect: async () => {} });
+      Object.assign(state.cube, { trusted: true, source: 'cube', staleWhy: '' });
+      window.cubusFeed.facelets(SOLVED, 1);
+      location.hash = '#/stats';
+    });
+    await page.waitForFunction(() => location.hash === '#/stats' && !document.querySelector('.screen.active .transport'));
+    await page.evaluate(() => { location.hash = '#/scramble'; });
+    await page.waitForSelector('.screen.active .transport .pill[data-mode="cube"][aria-pressed="true"]');
+    await page.click('#randCube:visible, #randCubeTool:visible');
+    await page.waitForSelector('#solList .chip-m');
+    const moves = await page.evaluate(() => [...document.querySelectorAll('#solList .chip-m')].map((c) => c.textContent.trim()));
+    let serial = 2;
+    const turn = (m) => page.evaluate(({ m: notation, s }) => window.cubusFeed.move({ notation, serial: s, cubeTimestamp: s * 100, timestamp: Date.now() }), { m, s: serial++ });
+    for (const [i, m] of moves.entries()) {
+      await turn(m);
+      await page.waitForFunction((n) => document.querySelector('#stepLbl').textContent.startsWith(`${n} /`), i + 1, { timeout: 90_000 });
+    }
+    await page.waitForFunction(() => !document.querySelector('#solveItBtn').hidden, null, { timeout: 90_000 });
+    const atEnd = await transportNow(page);
+    assert.ok(atEnd.drawn.includes('solveItBtn') && !atEnd.drawn.includes('nextBtn') && !atEnd.drawn.includes('playBtn'),
+      `the cube reached the end: the button does not stand in place of play and next (${atEnd.drawn.join(', ')})`);
+    await page.evaluate(() => document.querySelector('#solveItBtn').focus());
+    const last = moves[moves.length - 1];
+    await turn(last.endsWith("'") ? last.slice(0, -1) : last.endsWith('2') ? last : `${last}'`);
+    await page.waitForFunction(() => document.querySelector('#solveItBtn').hidden, null, { timeout: 90_000 });
+    const back = await transportNow(page);
+    assert.equal(back.focused, 'nextBtn', 'the cube took the button away: focus on it did not move to Next');
+    assert.ok(back.drawn.includes('nextBtn') && back.drawn.includes('playBtn'), `the cube stepped back: play and next did not come back (${back.drawn.join(', ')})`);
+    assert.deepEqual(back.focusableUnseen, [], 'the cube stepped back: a control that is not drawn can still be focused');
+    assert.deepEqual(errors.map(String), [], 'the page threw');
+  } finally {
+    await context.close();
+  }
+});
+
 // REDUCED MOTION STARTS NO TRANSITION (sweep 2026-10-20, J, S11). The reduced-motion rule once gave EVERY element a
 // .001ms transition, and `transition-property` is `all` by default — so it CREATED transitions the app never declared.
 // When a lesson's sections arrived, the landscape walking composition's row template changed and was transitioned:
