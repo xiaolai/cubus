@@ -1296,11 +1296,14 @@ const transportNow = (page) => page.evaluate(`(() => {
   };
 })()`);
 for (const fixture of landscapeFixtures) {
-  test(`at a scramble's end the button takes the place of play and next, and the cube keeps its size: ${label(fixture)}`, async () => {
+  test(`at a scramble's end the button takes the place of play and next, and the cube keeps its size: ${label(fixture)}`, async (t) => {
     const { page, context, errors } = await open(fixture, 'scramble');
     try {
       await page.click('#randCube:visible, #randCubeTool:visible');
       await page.waitForSelector('#solList .chip-m');
+      // The floors of a scramble and of its end are held here in landscape and in the reserve case in portrait (CUBE_FLOOR).
+      await quietRows(page);
+      floorHolds(t, fixture, 'scramble', await paintedNow(page));
       // One turn before the end, every control in the row.
       await page.evaluate(() => { const c = document.querySelectorAll('#solList .chip-m'); c[c.length - 2].click(); });
       await page.waitForFunction(() => { const [i, n] = document.querySelector('#stepLbl').textContent.split(' / ').map(Number); return n > 1 && i === n - 1; }, null, { timeout: 90_000 });
@@ -1320,6 +1323,8 @@ for (const fixture of landscapeFixtures) {
       assert.deepEqual(atEnd.fits, { spills: [], cut: [] }, 'at the end: text that cannot be read where it is drawn — see contentFits');
       near(atEnd.rowHeight, midRow.rowHeight, 'at the end: the transport changed height');
       near(ended, before, 'at the end: the painted cube changed size', 1);
+      await page.evaluate(() => { for (const id of ['followNote', 'whyLine', 'whyBtn', 'practiseStep', 'methodNote', 'methodUnsaved']) { const el = document.getElementById(id); if (el) el.hidden = true; } });
+      floorHolds(t, fixture, 'scramble', await paintedNow(page), 'scramble end');
       // Back one turn while the button has focus: it leaves, and focus goes to Next, which comes back in its place.
       await page.evaluate(() => { const c = document.querySelectorAll('#solList .chip-m'); c[c.length - 2].click(); });
       await page.waitForFunction(() => document.querySelector('#solveItBtn').hidden, null, { timeout: 90_000 });
@@ -1826,6 +1831,8 @@ for (const fixture of FIXTURES) {
       await frozenOnHome(page, LONGEST_LESSON_CUBE);
       await page.waitForFunction(() => document.querySelectorAll('#solList .walk-sec').length > 1, null, { timeout: 90_000 });
       await cubePainted(page);
+      await quietRows(page);
+      floorHolds(t, fixture, 'lesson', await paintedNow(page));
       const portrait = await page.evaluate(() => document.querySelector('.cols .sheet').getBoundingClientRect().top >= document.querySelector('.cols > .primary').getBoundingClientRect().bottom - 1);
       const sections = await page.evaluate(() => [...document.querySelectorAll('#solList .walk-sec')].map((sec) => {
         const ks = [...sec.querySelectorAll('.chip-m')].map((c) => Number(c.dataset.i));
@@ -1927,15 +1934,53 @@ for (const fixture of FIXTURES) {
     }
   });
 
-  test(`a Quick walk in portrait: the band leaves the cube its size: ${label(fixture)}`, async (t) => {
-    const { page, context, errors } = await open(fixture, 'home', { devRandCube: true });
+  // ONE PAGE FOR EVERYTHING HOME MEASURES ON A QUICK WALK (sweep 2026-10-21): the band, the reserve under every walk
+  // the screen shows, the method-fallback note, and the floors of no walk, a shape already shown, a picture walk, a Quick
+  // walk and a walk to a stop — each was a page of its own, and loading Home and solving its cube was most of what each
+  // cost. The walk is LONGEST_QUICK_CUBE, the cube the floors were taken on, never a drawn one.
+  test(`a Quick walk on Home: the band and the reserve leave the cube its size, and every walk kind there keeps its floor: ${label(fixture)}`, async (t) => {
+    const { page, context, errors } = await open(fixture, 'home', { solveMethod: 'quick' });
+    let quick = null;
+    let picture = null;
     try {
-      await page.waitForSelector('#randCube', { state: 'attached' });
-      await page.evaluate(() => document.querySelector('#randCube').click());
-      await page.waitForSelector('#solList .chip-m');
-      await page.waitForFunction(() => /^\d/.test(document.querySelector('#moveCount')?.textContent ?? ''), null, { timeout: 90_000 });
+      // First the solved cube Home opens on: no walk, then a shape it already shows, then a picture walk. With no walk
+      // the screen is another composition, with no band and so no room kept for one (MUST NOT: a band, or a reserve, on
+      // a cube with nothing to walk); a picture walk keeps the Quick walk's reserve, asserted once that walk is drawn.
+      await cubePainted(page);
+      floorHolds(t, fixture, 'none', await paintedNow(page));
+      if (portraitFixtures.includes(fixture)) {
+        const none = await page.evaluate(() => ({ band: Boolean(document.querySelector('.screen.active .foot-band')),
+          reserve: document.querySelector('.cols > .primary')?.style.getPropertyValue('--band-reserve') ?? '' }));
+        assert.deepEqual(none, { band: false, reserve: '' }, 'no walk: a band, or room kept for one');
+      }
+      // The menu's first shape, which a solved cube already shows; then a picture walk to the Checkerboard.
+      await page.evaluate(() => document.querySelector('#patternBtn').click());
+      await page.evaluate(() => document.querySelector('.pattern-menu [data-stage]').click());
+      await page.waitForFunction(() => /already/.test(document.querySelector('#moveCount')?.textContent ?? ''), null, { timeout: 90_000 });
+      await quietRows(page);
+      floorHolds(t, fixture, 'shape', await paintedNow(page));
+      await page.evaluate(() => document.querySelector('#patternBtn').click());
+      await page.evaluate(() => document.querySelector('.pattern-menu [data-stage="checkerboard"]').click());
+      await page.waitForFunction(() => document.querySelector('#solList .chip-m') && /way to|couldn/.test(document.querySelector('#moveCount')?.textContent ?? ''), null, { timeout: 90_000 });
+      await cubeSettled(page, '#viewCube cubus-cube');
+      if (portraitFixtures.includes(fixture)) picture = await reserveOf(page);
+      await quietRows(page);
+      floorHolds(t, fixture, 'picture', await paintedNow(page));
+      assert.deepEqual(errors.map(String), [], 'no walk and a picture walk: the page threw');
+      // Then the Quick walk, aimed back at the whole cube: the picture is a destination the screen remembers.
+      await frozenOnHome(page, LONGEST_QUICK_CUBE);
+      await page.evaluate(() => { const solved = document.querySelector('#stageTargetRow [data-stage="solved"]'); if (solved && !solved.classList.contains('on')) solved.click(); });
+      await page.waitForFunction(() => /^\d+$/.test(document.querySelector('#moveCount')?.textContent ?? ''), null, { timeout: 90_000 });
       await cubePainted(page);
       const portrait = await page.evaluate(() => document.querySelector('.cols .sheet').getBoundingClientRect().top >= document.querySelector('.cols > .primary').getBoundingClientRect().bottom - 1);
+      // The reserve's and the note's checks were once cases over `portraitFixtures`; the composition must agree with it.
+      assert.equal(portrait, portraitFixtures.includes(fixture), 'precondition: the portrait composition is not the portrait fixtures');
+      await quietRows(page);
+      floorHolds(t, fixture, 'quick', await paintedNow(page));
+      if (portrait) {
+        quick = await reserveOf(page);
+        assert.equal(picture, quick, 'the reserve changed between a Quick walk and a picture walk');
+      }
       await cubeRows(page, []);
       await cubeSettled(page, '#viewCube cubus-cube');
       const bare = await measureBand(page, '#viewCube cubus-cube');
@@ -1956,7 +2001,68 @@ for (const fixture of FIXTURES) {
         assert.equal(b.band, null, 'landscape: the band is drawn');
         assert.ok(await page.evaluate(() => Boolean(document.querySelector('#followNote').closest('.solution-card'))), 'landscape: the follow-note left the solution card');
       }
-      assert.deepEqual(errors.map(String), [], 'the page threw');
+      await page.evaluate(applyCubeBand, {});
+      if (portrait) {
+        // THE METHOD-FALLBACK NOTE, SHOWN AND HIDDEN (sweep 2026-10-20, A1, S1): every sentence the walk session can write
+        // (`methodNoteSentences`), said over the Quick walk a fallback shows, in the band. MUST NOT: the cube a different
+        // size, or its card moved, with the note shown than hidden; the note anywhere but the band; the band cut or scrolled.
+        await cubeSettled(page, '#viewCube cubus-cube');
+        const hidden = await measureBand(page, '#viewCube cubus-cube');
+        const sentences = await page.evaluate(async () => (await import('/lib/walk-session.js')).methodNoteSentences());
+        assert.ok(sentences.length >= 3, `precondition: only ${sentences.length} fallback sentences`);
+        for (const sentence of sentences) {
+          await page.evaluate((text) => { const n = document.querySelector('#methodNote'); n.textContent = text; n.hidden = false; }, sentence);
+          await cubeSettled(page, '#viewCube cubus-cube');
+          const shown = await measureBand(page, '#viewCube cubus-cube');
+          bandHolds(shown, `the note "${sentence}"`);
+          assert.ok(shown.held.includes('methodNote'), `the note "${sentence}" is not in the band (it holds ${shown.held.join(', ') || 'nothing'})`);
+          near(shown.painted, hidden.painted, `the note "${sentence}": the painted cube changed size`);
+          for (const k of ['top', 'height']) near(shown.card[k], hidden.card[k], `the note "${sentence}": the cube card's ${k} moved`);
+        }
+        await page.evaluate(() => { document.querySelector('#methodNote').hidden = true; });
+        await cubeSettled(page, '#viewCube cubus-cube');
+        near((await measureBand(page, '#viewCube cubus-cube')).painted, hidden.painted, 'the note hidden again: the painted cube did not come back');
+      }
+      // A walk to a stop: its sentence where the count stands — in the band in portrait.
+      await page.evaluate(() => document.querySelector('#stageTargetRow [data-stage="corners-home"]').click());
+      await page.waitForFunction(() => document.querySelector('#stageTargetRow [data-stage="corners-home"]')?.classList.contains('on')
+        && /way|already|couldn/.test(document.querySelector('#moveCount')?.textContent ?? ''), null, { timeout: 90_000 });
+      if (portrait) {
+        await page.waitForFunction(() => document.querySelector('#moveCount')?.dataset.band === 'on' && document.querySelector('#moveCount').closest('.foot-band'), null, { timeout: 90_000 });
+        await cubeSettled(page, '#viewCube cubus-cube');
+        assert.equal(await reserveOf(page), quick, 'the reserve changed between a Quick walk and a walk to a stop');
+        const said = await measureBand(page, '#viewCube cubus-cube');
+        bandHolds(said, 'a walk to a stop, its sentence in the band');
+        assert.ok(said.held.includes('moveCount'), `the stop's sentence is not in the band (it holds ${said.held.join(', ') || 'nothing'})`);
+        await page.evaluate(() => { document.querySelector('#moveCount').hidden = true; });
+        await cubeSettled(page, '#viewCube cubus-cube');
+        const unsaid = await measureBand(page, '#viewCube cubus-cube');
+        near(said.painted, unsaid.painted, 'a walk to a stop: the painted cube changed size with its sentence');
+        for (const k of ['top', 'height']) near(said.card[k], unsaid.card[k], `a walk to a stop: the cube card's ${k} moved with its sentence`);
+        await page.evaluate(() => { document.querySelector('#moveCount').hidden = false; });
+        // The follow-note, said over it, takes the band alone (index.html).
+        await page.evaluate(() => { document.querySelector('#followNote').hidden = false; document.querySelector('#followMsg').textContent = 'This cube is not on the plan any more.'; });
+        await cubeSettled(page, '#viewCube cubus-cube');
+        const over = await measureBand(page, '#viewCube cubus-cube');
+        bandHolds(over, 'a walk to a stop, the follow-note said over its sentence');
+        assert.deepEqual(over.held, ['followNote'], 'the follow-note does not take the band alone over a walk to a stop\'s sentence');
+        await page.evaluate(() => { document.querySelector('#followNote').hidden = true; });
+      }
+      const sentence = await page.evaluate(() => document.querySelector('#moveCount').textContent);
+      await quietRows(page);
+      floorHolds(t, fixture, 'stop', await paintedNow(page));
+      await page.evaluate((text) => { document.querySelector('#moveCount').textContent = text; }, sentence);
+      if (portrait) {
+        // A lesson, chosen as a person chooses it — the pin at the head of the Restore row — back on the whole cube.
+        await page.evaluate(() => document.querySelector('#stageTargetRow [data-stage="solved"]').click());
+        await page.waitForFunction(() => document.querySelector('#moveCount')?.dataset.band === 'off', null, { timeout: 90_000 });
+        await page.click('#methodPin');
+        await page.click('.method-menu [data-method="beginner"]');
+        await page.waitForFunction(() => document.querySelectorAll('#solList .walk-sec').length > 1, null, { timeout: 90_000 });
+        await cubeSettled(page, '#viewCube cubus-cube');
+        assert.equal(await reserveOf(page), quick, 'the reserve changed between a Quick walk and a lesson');
+      }
+      assert.deepEqual(errors.map(String), [], 'Home, Quick and a stop: the page threw');
     } finally {
       await context.close();
     }
@@ -1966,7 +2072,8 @@ for (const fixture of FIXTURES) {
 // EVERY WALK KIND KEEPS ITS FLOOR, ON EVERY FIXTURE (sweep 2026-10-20, A2, S2): a walk to a stop, a picture walk, a shape
 // the cube already shows, no walk, the scan's small cube, and the landscape fixtures of every kind — each measured with
 // nothing that shows only sometimes on screen, as its floor was (CUBE_FLOOR). No walk is measured twice: a solved cube,
-// and an arrangement no turning can reach, which has a card of its own. MUST NOT: a cube under its floor.
+// and an arrangement no turning can reach, which has a card of its own. MUST NOT: a cube under its floor. Each is held
+// by `floorHolds` in the case that already has that page open (sweep 2026-10-21), never in a page of its own.
 /** A solved cube with one corner twisted in place: a legal colouring no turning can reach, so every Restore chip is a dash. */
 const UNSOLVABLE_SCAN = (() => { const s = [...'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB']; [s[8], s[9], s[20]] = [s[20], s[8], s[9]]; return s.join(''); })();
 const quietRows = (page) => page.evaluate(() => {
@@ -1981,92 +2088,18 @@ const paintedNow = async (page, sel = '#viewCube cubus-cube') => {
   await cubeSettled(page, sel);
   return page.evaluate(paintedSize, `${sel} canvas`);
 };
-for (const fixture of FIXTURES) {
-  test(`every walk kind keeps its floor: ${label(fixture)}`, async (t) => {
-    const seen = {};
-    const fresh = async (route, settings = null) => {
-      const opened = await open(fixture, route, settings);
-      return opened;
-    };
-    const under = [];
-    const hold = (kind, painted, as = kind) => {
-      seen[as] = painted;
-      const floor = cubeFloor(kind, fixture);
-      if (!(painted >= floor)) under.push(`${as}: ${painted.toFixed(1)}px — under its floor of ${floor}px`);
-    };
-    let o = await fresh('home', { solveMethod: 'quick' });
-    try {
-      await frozenOnHome(o.page, LONGEST_QUICK_CUBE);
-      await o.page.waitForFunction(() => /^\d+$/.test(document.querySelector('#moveCount')?.textContent ?? ''), null, { timeout: 90_000 });
-      await quietRows(o.page);
-      hold('quick', await paintedNow(o.page));
-      await o.page.evaluate(() => document.querySelector('#stageTargetRow [data-stage="corners-home"]').click());
-      await o.page.waitForFunction(() => document.querySelector('#stageTargetRow [data-stage="corners-home"]')?.classList.contains('on')
-        && /way|already|couldn/.test(document.querySelector('#moveCount')?.textContent ?? ''), null, { timeout: 90_000 });
-      await quietRows(o.page);
-      hold('stop', await paintedNow(o.page));
-      assert.deepEqual(o.errors.map(String), [], 'Home, Quick and a stop: the page threw');
-    } finally { await o.context.close(); }
-    o = await fresh('home', { solveMethod: 'beginner' });
-    try {
-      await frozenOnHome(o.page, LONGEST_LESSON_CUBE);
-      await o.page.waitForFunction(() => document.querySelectorAll('#solList .walk-sec').length > 1, null, { timeout: 90_000 });
-      await quietRows(o.page);
-      hold('lesson', await paintedNow(o.page));
-    } finally { await o.context.close(); }
-    o = await fresh('home', { solveMethod: 'quick' });
-    try {
-      await cubePainted(o.page);
-      hold('none', await paintedNow(o.page));
-      // The menu's first shape, which a solved cube already shows; then a picture walk to the Checkerboard.
-      await o.page.evaluate(() => document.querySelector('#patternBtn').click());
-      await o.page.evaluate(() => document.querySelector('.pattern-menu [data-stage]').click());
-      await o.page.waitForFunction(() => /already/.test(document.querySelector('#moveCount')?.textContent ?? ''), null, { timeout: 90_000 });
-      await quietRows(o.page);
-      hold('shape', await paintedNow(o.page));
-      await o.page.evaluate(() => document.querySelector('#patternBtn').click());
-      await o.page.evaluate(() => document.querySelector('.pattern-menu [data-stage="checkerboard"]').click());
-      await o.page.waitForFunction(() => document.querySelector('#solList .chip-m') && /way to|couldn/.test(document.querySelector('#moveCount')?.textContent ?? ''), null, { timeout: 90_000 });
-      await quietRows(o.page);
-      hold('picture', await paintedNow(o.page));
-    } finally { await o.context.close(); }
-    // No walk on a cube no turning can reach: its own card, the same floor.
-    o = await fresh('scan', { solveMethod: 'quick' });
-    try {
-      await o.page.waitForSelector('#stageCard', { state: 'attached' });
-      await o.page.evaluate((f) => document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-complete', {
-        detail: { facelets: f, rotations: [0, 0, 0, 0, 0, 0] },
-      })), UNSOLVABLE_SCAN);
-      await o.page.waitForFunction(() => [...document.querySelectorAll('.stage-chip .howfar')].every((el) => el.textContent === '—'), null, { timeout: 90_000 });
-      await o.page.evaluate(() => { location.hash = '#/home'; });
-      await o.page.waitForSelector('#unsolvableNote');
-      assert.equal(await o.page.locator('#solList .chip-m').count(), 0, 'precondition: an unsolvable cube has a walk');
-      hold('none', await paintedNow(o.page), 'unsolvable');
-    } finally { await o.context.close(); }
-    o = await fresh('scramble');
-    try {
-      await o.page.click('#randCube:visible, #randCubeTool:visible');
-      await o.page.waitForSelector('#solList .chip-m');
-      await quietRows(o.page);
-      hold('scramble', await paintedNow(o.page));
-      // The scramble's last turn, where "Solve this scramble" is offered: what shows only sometimes, in either composition,
-      // never resizes the cube (sweep 2026-10-20, S1; landscape since 2026-10-21).
-      await o.page.evaluate(() => { const chips = document.querySelectorAll('#solList .chip-m'); chips[chips.length - 1].click(); });
-      await o.page.waitForFunction(() => { const b = document.querySelector('#solveItBtn'); return b && !b.hidden; }, null, { timeout: 90_000 });
-      await o.page.evaluate(() => { for (const id of ['followNote', 'whyLine', 'whyBtn', 'practiseStep', 'methodNote', 'methodUnsaved']) { const el = document.getElementById(id); if (el) el.hidden = true; } });
-      hold('scramble', await paintedNow(o.page), 'scramble end');
-    } finally { await o.context.close(); }
-    o = await fresh('scan');
-    try {
-      await o.page.waitForSelector('#scanCube cubus-cube canvas');
-      await cubePainted(o.page, '#scanCube cubus-cube canvas');
-      hold('scan', await paintedNow(o.page, '#scanCube cubus-cube'));
-    } finally { await o.context.close(); }
-    t.diagnostic(`painted: ${Object.entries(seen).map(([k, v]) => `${k} ${v.toFixed(1)}`).join(', ')}`);
-    assert.deepEqual(under, [], 'a cube under its floor');
-  });
-}
-
+/**
+ * MUST NOT: a cube under its floor (CUBE_FLOOR), measured with nothing that shows only sometimes on screen. Each walk
+ * kind is held in the case that already has its page open (sweep 2026-10-21): a Quick walk and a walk to a stop in the
+ * Quick band case, no walk, a shape and a picture walk in that case's second page, a lesson in the lesson case, a cube
+ * no turning can reach after the Restore row's unsolvable reading, a scramble and its end in the Scramble cases, and
+ * the scan's cube in the scan composition. `as` names the state when it is not the walk kind.
+ */
+const floorHolds = (t, fixture, kind, painted, as = kind) => {
+  const floor = cubeFloor(kind, fixture);
+  t?.diagnostic(`painted: ${as} ${painted.toFixed(1)}`);
+  assert.deepEqual(painted >= floor ? [] : [`${as}: ${painted.toFixed(1)}px — under its floor of ${floor}px`], [], 'a cube under its floor');
+};
 // THE RESERVE IS THE SCREEN'S, NOT THE WALK'S, AND WHAT SHOWS ONLY SOMETIMES NEVER RESIZES THE CUBE (sweep 2026-10-20, A1,
 // S1). The method note, a walk to a stop's sentence and "Solve this scramble" are in the foot band, and the band's room is
 // one for the screen: sized for everything it can say on any walk the screen shows, below the closest framing the
@@ -2077,97 +2110,7 @@ for (const fixture of FIXTURES) {
 const portraitFixtures = FIXTURES.filter((f) => f.height - f.insets[0] - f.insets[2] > f.width);
 const reserveOf = (page) => page.evaluate(() => document.querySelector('.cols > .primary').style.getPropertyValue('--band-reserve') || '0px');
 for (const fixture of portraitFixtures) {
-  test(`Home's band reserve is one for every walk, and a walk to a stop's sentence leaves the cube its size: ${label(fixture)}`, async () => {
-    const { page, context, errors } = await open(fixture, 'home', { solveMethod: 'quick' });
-    let quick;
-    try {
-      await frozenOnHome(page, LONGEST_QUICK_CUBE);
-      await page.waitForFunction(() => /^\d+$/.test(document.querySelector('#moveCount')?.textContent ?? ''), null, { timeout: 90_000 });
-      await cubeSettled(page, '#viewCube cubus-cube');
-      quick = await reserveOf(page);
-      // A walk to a stop: its sentence where the count stands, in the band.
-      await page.evaluate(() => document.querySelector('#stageTargetRow [data-stage="corners-home"]').click());
-      await page.waitForFunction(() => document.querySelector('#moveCount')?.dataset.band === 'on' && document.querySelector('#moveCount').closest('.foot-band'), null, { timeout: 90_000 });
-      await cubeSettled(page, '#viewCube cubus-cube');
-      assert.equal(await reserveOf(page), quick, 'the reserve changed between a Quick walk and a walk to a stop');
-      const said = await measureBand(page, '#viewCube cubus-cube');
-      bandHolds(said, 'a walk to a stop, its sentence in the band');
-      assert.ok(said.held.includes('moveCount'), `the stop's sentence is not in the band (it holds ${said.held.join(', ') || 'nothing'})`);
-      await page.evaluate(() => { document.querySelector('#moveCount').hidden = true; });
-      await cubeSettled(page, '#viewCube cubus-cube');
-      const unsaid = await measureBand(page, '#viewCube cubus-cube');
-      near(said.painted, unsaid.painted, 'a walk to a stop: the painted cube changed size with its sentence');
-      for (const k of ['top', 'height']) near(said.card[k], unsaid.card[k], `a walk to a stop: the cube card's ${k} moved with its sentence`);
-      await page.evaluate(() => { document.querySelector('#moveCount').hidden = false; });
-      // The follow-note, said over it, takes the band alone (index.html).
-      await page.evaluate(() => { document.querySelector('#followNote').hidden = false; document.querySelector('#followMsg').textContent = 'This cube is not on the plan any more.'; });
-      await cubeSettled(page, '#viewCube cubus-cube');
-      const over = await measureBand(page, '#viewCube cubus-cube');
-      bandHolds(over, 'a walk to a stop, the follow-note said over its sentence');
-      assert.deepEqual(over.held, ['followNote'], 'the follow-note does not take the band alone over a walk to a stop\'s sentence');
-      await page.evaluate(() => { document.querySelector('#followNote').hidden = true; });
-      // A lesson, chosen as a person chooses it — the pin at the head of the Restore row — back on the whole cube.
-      await page.evaluate(() => document.querySelector('#stageTargetRow [data-stage="solved"]').click());
-      await page.waitForFunction(() => document.querySelector('#moveCount')?.dataset.band === 'off', null, { timeout: 90_000 });
-      await page.click('#methodPin');
-      await page.click('.method-menu [data-method="beginner"]');
-      await page.waitForFunction(() => document.querySelectorAll('#solList .walk-sec').length > 1, null, { timeout: 90_000 });
-      await cubeSettled(page, '#viewCube cubus-cube');
-      assert.equal(await reserveOf(page), quick, 'the reserve changed between a Quick walk and a lesson');
-      assert.deepEqual(errors.map(String), [], 'the page threw');
-    } finally {
-      await context.close();
-    }
-    // No walk, then a picture walk. With no walk the screen is another composition, with no band and so no room kept for
-    // one (MUST NOT: a band, or a reserve, on a cube with nothing to walk); a picture walk keeps the Quick walk's reserve.
-    const other = await open(fixture, 'home', { solveMethod: 'quick' });
-    try {
-      await cubeSettled(other.page, '#viewCube cubus-cube');
-      const none = await other.page.evaluate(() => ({ band: Boolean(document.querySelector('.screen.active .foot-band')),
-        reserve: document.querySelector('.cols > .primary')?.style.getPropertyValue('--band-reserve') ?? '' }));
-      assert.deepEqual(none, { band: false, reserve: '' }, 'no walk: a band, or room kept for one');
-      await other.page.evaluate(() => document.querySelector('#patternBtn').click());
-      await other.page.evaluate(() => document.querySelector('.pattern-menu [data-stage="checkerboard"]').click());
-      await other.page.waitForFunction(() => document.querySelector('#solList .chip-m') && /way to|couldn/.test(document.querySelector('#moveCount')?.textContent ?? ''), null, { timeout: 90_000 });
-      await cubeSettled(other.page, '#viewCube cubus-cube');
-      assert.equal(await reserveOf(other.page), quick, 'the reserve changed between a Quick walk and a picture walk');
-      assert.deepEqual(other.errors.map(String), [], 'no walk and a picture walk: the page threw');
-    } finally {
-      await other.context.close();
-    }
-  });
-
-  // THE METHOD-FALLBACK NOTE, SHOWN AND HIDDEN (sweep 2026-10-20, A1, S1): every sentence the walk session can write
-  // (`methodNoteSentences`), said over the Quick walk a fallback shows, in the band. MUST NOT: the cube a different size,
-  // or its card moved, with the note shown than hidden; the note anywhere but the band; the band cut or scrolled.
-  test(`the method-fallback note leaves the cube its size: ${label(fixture)}`, async () => {
-    const { page, context, errors } = await open(fixture, 'home', { solveMethod: 'quick' });
-    try {
-      await frozenOnHome(page, LONGEST_QUICK_CUBE);
-      await page.waitForFunction(() => /^\d+$/.test(document.querySelector('#moveCount')?.textContent ?? ''), null, { timeout: 90_000 });
-      await cubeSettled(page, '#viewCube cubus-cube');
-      const hidden = await measureBand(page, '#viewCube cubus-cube');
-      const sentences = await page.evaluate(async () => (await import('/lib/walk-session.js')).methodNoteSentences());
-      assert.ok(sentences.length >= 3, `precondition: only ${sentences.length} fallback sentences`);
-      for (const sentence of sentences) {
-        await page.evaluate((text) => { const n = document.querySelector('#methodNote'); n.textContent = text; n.hidden = false; }, sentence);
-        await cubeSettled(page, '#viewCube cubus-cube');
-        const shown = await measureBand(page, '#viewCube cubus-cube');
-        bandHolds(shown, `the note "${sentence}"`);
-        assert.ok(shown.held.includes('methodNote'), `the note "${sentence}" is not in the band (it holds ${shown.held.join(', ') || 'nothing'})`);
-        near(shown.painted, hidden.painted, `the note "${sentence}": the painted cube changed size`);
-        for (const k of ['top', 'height']) near(shown.card[k], hidden.card[k], `the note "${sentence}": the cube card's ${k} moved`);
-      }
-      await page.evaluate(() => { document.querySelector('#methodNote').hidden = true; });
-      await cubeSettled(page, '#viewCube cubus-cube');
-      near((await measureBand(page, '#viewCube cubus-cube')).painted, hidden.painted, 'the note hidden again: the painted cube did not come back');
-      assert.deepEqual(errors.map(String), [], 'the page threw');
-    } finally {
-      await context.close();
-    }
-  });
-
-  test(`Scramble's band reserve is one for the whole walk, and "Solve this scramble" leaves the cube its size: ${label(fixture)}`, async () => {
+  test(`Scramble's band reserve is one for the whole walk, and "Solve this scramble" leaves the cube its size: ${label(fixture)}`, async (t) => {
     const { page, context, errors } = await open(fixture, 'scramble');
     try {
       await page.click('#randCube:visible, #randCubeTool:visible');
@@ -2175,6 +2118,9 @@ for (const fixture of portraitFixtures) {
       await cubeSettled(page, '#viewCube cubus-cube');
       const rolled = await reserveOf(page);
       const before = await measureBand(page, '#viewCube cubus-cube');
+      // The floors of a scramble and of its end are held here in portrait and in the swap case in landscape (CUBE_FLOOR).
+      await quietRows(page);
+      floorHolds(t, fixture, 'scramble', await paintedNow(page));
       // The scramble's last turn: the walk's end, where the button is offered.
       await page.evaluate(() => { const chips = document.querySelectorAll('#solList .chip-m'); chips[chips.length - 1].click(); });
       await page.waitForFunction(() => { const b = document.querySelector('#solveItBtn'); return b && !b.hidden; }, null, { timeout: 90_000 });
@@ -2185,6 +2131,8 @@ for (const fixture of portraitFixtures) {
       assert.ok(end.held.includes('solveItBtn'), `"Solve this scramble" is not in the band (it holds ${end.held.join(', ') || 'nothing'})`);
       near(end.painted, before.painted, 'a scramble at its end: the painted cube changed size with the button');
       for (const k of ['top', 'height']) near(end.card[k], before.card[k], `a scramble at its end: the cube card's ${k} moved with the button`);
+      await page.evaluate(() => { for (const id of ['followNote', 'whyLine', 'whyBtn', 'practiseStep', 'methodNote', 'methodUnsaved']) { const el = document.getElementById(id); if (el) el.hidden = true; } });
+      floorHolds(t, fixture, 'scramble', await paintedNow(page), 'scramble end');
       // The follow-note, said over it, takes the band alone: the room is not kept for both (index.html).
       await page.evaluate(() => { document.querySelector('#followNote').hidden = false; document.querySelector('#followMsg').textContent = 'This cube is not on the plan any more.'; });
       await cubeSettled(page, '#viewCube cubus-cube');
@@ -2405,7 +2353,7 @@ const SCANNED_CUBE = 'DDDUURFDURDRRRLBBULLFUFFFLLDUUFDDDLRBBUBLRBULFFLFBRBBR';
 // chips since ADR 0009, in a card that may shrink and clip (Codex refute, 2026-10-14) — so every fixture
 // completes a scan, waits for every chip to settle, and measures what a child would then see.
 for (const fixture of FIXTURES) {
-  test(`scan screen with the Restore row after a scan: ${label(fixture)}`, async () => {
+  test(`scan screen with the Restore row after a scan: ${label(fixture)}`, async (t) => {
     const { page, context } = await open(fixture, 'scan');
     try {
       await page.waitForSelector('#stageCard', { state: 'attached' });
@@ -2457,6 +2405,11 @@ for (const fixture of FIXTURES) {
       assert.deepEqual(after.fits, { spills: [], cut: [] }, 'after an unsolvable reading: text that cannot be read where it is drawn — see contentFits');
       // MUST NOT: a notice reduced to its title, or to nothing — the body keeps a line, and scrolls for the rest.
       assert.ok(after.body.client >= Math.min(after.body.scroll, after.body.line) - 0.5, `after an unsolvable reading the notice's body shows ${after.body.client}px of ${after.body.scroll}px — not even a line`);
+      // Home on that cube: no walk, on a card of its own, at the floor of a cube with no walk (CUBE_FLOOR).
+      await page.evaluate(() => { location.hash = '#/home'; });
+      await page.waitForSelector('#unsolvableNote');
+      assert.equal(await page.locator('#solList .chip-m').count(), 0, 'precondition: an unsolvable cube has a walk');
+      floorHolds(t, fixture, 'none', await paintedNow(page), 'unsolvable');
     } finally {
       await context.close();
     }
@@ -2464,10 +2417,13 @@ for (const fixture of FIXTURES) {
 }
 
 for (const fixture of FIXTURES) {
-  test(`scan screen composition: ${label(fixture)}`, async () => {
+  test(`scan screen composition: ${label(fixture)}`, async (t) => {
     const { page, context } = await open(fixture, 'scan');
     try {
       await page.waitForSelector('.scan-face');
+      await page.waitForSelector('#scanCube cubus-cube canvas');
+      await cubePainted(page, '#scanCube cubus-cube canvas');
+      floorHolds(t, fixture, 'scan', await paintedNow(page, '#scanCube cubus-cube'));
       const m = await measureScan(page);
       const portrait = m.stage.h > m.stage.w;
       assert.equal(m.tiles.length, 6);
