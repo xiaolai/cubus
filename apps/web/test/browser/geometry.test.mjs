@@ -1276,6 +1276,72 @@ for (const fixture of landscapeFixtures) {
     }
   });
 }
+// AT A SCRAMBLE'S END, "SOLVE THIS SCRAMBLE" TAKES THE PLACE OF PLAY AND NEXT (owner, 2026-10-21, sweep S1, option D).
+// Beside them the button wrapped the transport and took 40px of cube (371.1 → 331.1 on the desktop landscape window,
+// 443.1 → 403.1 on the iPad with a mouse). MUST NOT, in either direction — reaching the end, and stepping back from it:
+// the cube a different size; a control under its touch floor or text cut; focus left on nothing when the control it
+// was on leaves; a control that is not drawn but can still be focused.
+const transportNow = (page) => page.evaluate(`(() => {
+  const tr = document.querySelector('.screen.active .transport');
+  const drawn = (el) => !el.closest('[hidden]') && getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().height > 0;
+  const buttons = [...tr.querySelectorAll('button')];
+  const focusableUnseen = buttons.filter((el) => !drawn(el)).filter((el) => { const was = document.activeElement; el.focus(); const took = document.activeElement === el; was?.focus?.(); return took; }).map((el) => el.id);
+  return {
+    drawn: buttons.filter(drawn).map((el) => el.id),
+    heights: Object.fromEntries(buttons.filter(drawn).map((el) => [el.id, el.getBoundingClientRect().height])),
+    rowHeight: tr.getBoundingClientRect().height,
+    focused: document.activeElement?.id || document.activeElement?.tagName,
+    focusableUnseen,
+    fits: ${contentFits}(document.querySelector('.screen.active')),
+  };
+})()`);
+for (const fixture of landscapeFixtures) {
+  test(`at a scramble's end the button takes the place of play and next, and the cube keeps its size: ${label(fixture)}`, async () => {
+    const { page, context, errors } = await open(fixture, 'scramble');
+    try {
+      await page.click('#randCube:visible, #randCubeTool:visible');
+      await page.waitForSelector('#solList .chip-m');
+      // One turn before the end, every control in the row.
+      await page.evaluate(() => { const c = document.querySelectorAll('#solList .chip-m'); c[c.length - 2].click(); });
+      await page.waitForFunction(() => { const [i, n] = document.querySelector('#stepLbl').textContent.split(' / ').map(Number); return n > 1 && i === n - 1; }, null, { timeout: 90_000 });
+      const before = await paintedNow(page);
+      const midRow = await transportNow(page);
+      assert.deepEqual(midRow.drawn, ['prevBtn', 'repeatBtn', 'nextBtn', 'playBtn'], 'before the end: the row is not the four transport buttons');
+      // The last turn, from the keyboard: Next is pressed while it has focus, and leaves.
+      await page.evaluate(() => document.querySelector('#nextBtn').focus());
+      await page.keyboard.press('Enter');
+      await page.waitForFunction(() => { const b = document.querySelector('#solveItBtn'); return b && !b.hidden; }, null, { timeout: 90_000 });
+      const atEnd = await transportNow(page);
+      const ended = await paintedNow(page);
+      assert.deepEqual(atEnd.drawn, ['prevBtn', 'repeatBtn', 'solveItBtn'], 'at the end: the button does not stand in place of play and next');
+      assert.equal(atEnd.focused, 'solveItBtn', 'focus on Next did not move to the button when Next left');
+      assert.deepEqual(atEnd.focusableUnseen, [], 'a control that is not drawn can still be focused');
+      for (const [id, h] of Object.entries(atEnd.heights)) assert.ok(h >= 43.5, `at the end: ${id} is ${h}px tall — under the 44px floor`);
+      assert.deepEqual(atEnd.fits, { spills: [], cut: [] }, 'at the end: text that cannot be read where it is drawn — see contentFits');
+      near(atEnd.rowHeight, midRow.rowHeight, 'at the end: the transport changed height');
+      near(ended, before, 'at the end: the painted cube changed size', 1);
+      // Back one turn while the button has focus: it leaves, and focus goes to Next, which comes back in its place.
+      await page.evaluate(() => { const c = document.querySelectorAll('#solList .chip-m'); c[c.length - 2].click(); });
+      await page.waitForFunction(() => document.querySelector('#solveItBtn').hidden, null, { timeout: 90_000 });
+      const back = await transportNow(page);
+      assert.deepEqual(back.drawn, ['prevBtn', 'repeatBtn', 'nextBtn', 'playBtn'], 'stepping back: play and next did not come back');
+      assert.equal(back.focused, 'nextBtn', 'focus on the button did not move to Next when the button left');
+      assert.deepEqual(back.focusableUnseen, [], 'stepping back: a control that is not drawn can still be focused');
+      near(await paintedNow(page), before, 'stepping back: the painted cube changed size', 1);
+      // To the end again, and back with Prev.
+      await page.keyboard.press('Enter');
+      await page.waitForFunction(() => !document.querySelector('#solveItBtn').hidden, null, { timeout: 90_000 });
+      await page.evaluate(() => document.querySelector('#prevBtn').click());
+      await page.waitForFunction(() => document.querySelector('#solveItBtn').hidden, null, { timeout: 90_000 });
+      assert.deepEqual((await transportNow(page)).drawn, ['prevBtn', 'repeatBtn', 'nextBtn', 'playBtn'], 'after Prev: play and next did not come back');
+      near(await paintedNow(page), before, 'after Prev: the painted cube changed size', 1);
+      assert.deepEqual(errors.map(String), [], 'the page threw');
+    } finally {
+      await context.close();
+    }
+  });
+}
+
 // REDUCED MOTION STARTS NO TRANSITION (sweep 2026-10-20, J, S11). The reduced-motion rule once gave EVERY element a
 // .001ms transition, and `transition-property` is `all` by default — so it CREATED transitions the app never declared.
 // When a lesson's sections arrived, the landscape walking composition's row template changed and was transitioned:
@@ -1948,6 +2014,12 @@ for (const fixture of FIXTURES) {
       await o.page.waitForSelector('#solList .chip-m');
       await quietRows(o.page);
       hold('scramble', await paintedNow(o.page));
+      // The scramble's last turn, where "Solve this scramble" is offered: what shows only sometimes, in either composition,
+      // never resizes the cube (sweep 2026-10-20, S1; landscape since 2026-10-21).
+      await o.page.evaluate(() => { const chips = document.querySelectorAll('#solList .chip-m'); chips[chips.length - 1].click(); });
+      await o.page.waitForFunction(() => { const b = document.querySelector('#solveItBtn'); return b && !b.hidden; }, null, { timeout: 90_000 });
+      await o.page.evaluate(() => { for (const id of ['followNote', 'whyLine', 'whyBtn', 'practiseStep', 'methodNote', 'methodUnsaved']) { const el = document.getElementById(id); if (el) el.hidden = true; } });
+      hold('scramble', await paintedNow(o.page), 'scramble end');
     } finally { await o.context.close(); }
     o = await fresh('scan');
     try {

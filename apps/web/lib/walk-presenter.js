@@ -221,8 +221,17 @@ export function createWalkPresenter({
     // stored a subject with no facelets (found by audit, 2026-09-05). There is nothing to
     // walk onward from until there is something to hand over.
     if (solveIt) {
+      const doc = (root.ownerDocument ?? root);
+      const had = doc.activeElement;
       solveIt.hidden = !target || i < total;
       if (target && i >= total) solveIt.textContent = solveItLabel();
+      // In landscape the button takes the place of Play and Next (index.html): focus that was on one of them, or on
+      // the button as it goes, moves to what stands in its place, never onto nothing.
+      const shown = (el) => Boolean(el) && el.isConnected && !el.closest('[hidden]') && doc.defaultView.getComputedStyle(el).display !== 'none';
+      const play = $('#playBtn', root);
+      const next = $('#nextBtn', root);
+      if ((had === play || had === next) && !shown(had) && shown(solveIt)) solveIt.focus();
+      else if (had === solveIt && !shown(solveIt)) (shown(next) ? next : $('#prevBtn', root))?.focus();
     }
   }
   /**

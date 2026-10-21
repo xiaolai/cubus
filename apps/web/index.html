@@ -1284,6 +1284,13 @@
          the floor (a 320px iPad Split View column has 260) the row wraps and the bar, the one
          flexible thing in it, drops to a second line rather than the row running off the card. */
       .transport { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+      /* AT A SCRAMBLE'S END, "SOLVE THIS SCRAMBLE" TAKES THE PLACE OF PLAY AND NEXT (owner, 2026-10-21, sweep S1): with
+         nothing left to play they have nothing to do, and the button beside them wrapped the row — 448px of controls in
+         the desktop landscape window's 403 — and took 40px from the cube (371.1 → 331.1; 443.1 → 403.1 on the iPad with
+         a mouse). Keyed on the button being IN the transport, which is landscape: in portrait the foot band holds it and
+         Play and Next stay. `display: none` takes them out of the tab order; walk-presenter.js moves focus that was on
+         one of them to the button, and back. */
+      .transport:has(> #solveItBtn:not([hidden])) > :is(#playBtn, #nextBtn) { display: none; }
       /* Takes the old spacer's job: it has to be the flexible gap anyway, so the gap may as well
          say how far through the solution you are. --track/--bar are the groove/fill token pair. */
       .transport .progress { flex: 1 1 48px; height: 6px; border-radius: var(--r-pill); background: var(--track); overflow: hidden; }
