@@ -1367,7 +1367,7 @@ test('a cube undoing the scramble\'s last turn takes the button away, and focus 
     });
     await page.waitForFunction(() => location.hash === '#/stats' && !document.querySelector('.screen.active .transport'));
     await page.evaluate(() => { location.hash = '#/scramble'; });
-    await page.waitForSelector('.screen.active .transport .pill[data-mode="cube"][aria-pressed="true"]');
+    await page.waitForSelector('#tbTrail .pill[data-mode="cube"][aria-pressed="true"]');
     await page.click('#randCube:visible, #randCubeTool:visible');
     await page.waitForSelector('#solList .chip-m');
     const moves = await page.evaluate(() => [...document.querySelectorAll('#solList .chip-m')].map((c) => c.textContent.trim()));
@@ -3353,6 +3353,147 @@ test('a popover opened on the stage stays inside it', async () => {
     assert.equal(boxes.position, 'absolute');
     assert.ok(boxes.menu.left >= boxes.stage.left && boxes.menu.right <= boxes.stage.right, `menu ${JSON.stringify(boxes.menu)} leaves the stage horizontally ${JSON.stringify(boxes.stage)}`);
     assert.ok(boxes.menu.top >= boxes.stage.top && boxes.menu.bottom <= boxes.stage.bottom, `menu ${JSON.stringify(boxes.menu)} leaves the stage vertically ${JSON.stringify(boxes.stage)}`);
+  } finally {
+    await context.close();
+  }
+});
+
+// A SMART CUBE CONNECTED (sweep 2026-10-21, D5; owner's call the same day). "Cube leads" joined the transport row and
+// wrapped it on five of eight fixtures in both fonts — the desktop landscape window's cube 371.1 → 331.1, the SE's Home
+// 180 → 128 — so it sits in the title bar beside the cube's status, on Home and Scramble only. Every walk the pill is
+// drawn on, at its middle and at its end; at a scramble's end with every label the button can carry; the count is the
+// walk's own, widest at its end. MUST NOT: the pill adding a line to the transport row, the pill anywhere but beside the status,
+// the status area wrapped, cut or over the wordmark or the tabs, a pill under 44px, or a cube a different size than
+// with no cube connected, or under its floor.
+const connectCube = (page) => page.evaluate(() => window.cubusFeed.useConnection({ mac: 'AA:BB:CC:DD:EE:01', name: 'Test cube', requestBattery: async () => 80, disconnect: async () => {} }));
+const visit = async (page, route) => {
+  await page.evaluate((r) => { location.hash = `#/${r}`; }, route);
+  await page.waitForFunction((r) => location.hash === `#/${r}` && document.querySelector(`.screen.active`), route);
+};
+/** The status area, read whole: its children on one line, inside the bar, clear of the wordmark and the tabs. */
+const statusArea = (page) => page.evaluate(`(() => {
+  const r = (el) => el.getBoundingClientRect();
+  const bar = document.getElementById('titlebar'), trail = document.getElementById('tbTrail'), lead = document.getElementById('tbLead');
+  const tabs = document.querySelector('.tabs .capsule');
+  const kids = [...trail.children].filter((el) => !el.hidden && getComputedStyle(el).display !== 'none' && r(el).width > 0);
+  let lines = 0, bottom = -Infinity;
+  for (const b of kids.map(r).sort((x, y) => x.top - y.top)) { if (b.top >= bottom - 1) { lines += 1; bottom = b.bottom; } else bottom = Math.max(bottom, b.bottom); }
+  const pill = document.querySelector('[data-mode="cube"]');
+  const pad = parseFloat(getComputedStyle(bar).paddingRight);
+  const landscape = getComputedStyle(document.querySelector('.tabs')).position !== 'static';
+  return {
+    lines, inBar: r(trail).left >= r(bar).left - 0.5 && r(trail).right <= r(bar).right - pad + 0.5,
+    clearOfLead: r(trail).left >= r(lead).right - 0.5,
+    clearOfTabs: !landscape || r(trail).left >= r(tabs).right - 0.5,
+    pillBesideStatus: Boolean(pill) && pill.parentElement === trail && pill.nextElementSibling === document.getElementById('cubeLive'),
+    pillInTransport: Boolean(document.querySelector('.transport [data-mode="cube"]')),
+    pillHeight: pill ? r(pill).height : null, pillCut: pill ? pill.scrollWidth > pill.clientWidth + 1 : null,
+    fits: ${contentFits}(bar),
+    // The wordmark is the bar's only name for the app (the mark is alt=""): on a narrow bar it leaves the layout, never
+    // the accessibility tree.
+    wordmark: (() => { const w = document.querySelector('#tbLead .brand b'); const cs = getComputedStyle(w);
+      return { text: w.textContent, named: cs.display !== 'none' && cs.visibility !== 'hidden', inLayout: cs.position !== 'absolute' }; })(),
+  };
+})()`);
+for (const fixture of FIXTURES) {
+  test(`with a smart cube connected, "Cube leads" sits beside the cube's status, nothing wraps, and the cube keeps its size: ${label(fixture)}`, async (t) => {
+    const toEnd = async (page) => {
+      await page.evaluate(() => { const c = document.querySelectorAll('#solList .chip-m'); c[c.length - 1].click(); });
+      await page.waitForFunction(() => { const [i, n] = (document.querySelector('#stepLbl')?.textContent ?? '').split(' / ').map(Number); return n > 0 && i === n; }, null, { timeout: 90_000 });
+    };
+    const transportLines = (page) => page.evaluate(() => {
+      const kids = [...document.querySelector('.screen.active .transport').children].filter((el) => !el.hidden && getComputedStyle(el).display !== 'none');
+      let lines = 0, bottom = -Infinity;
+      for (const b of kids.map((el) => el.getBoundingClientRect()).sort((x, y) => x.top - y.top)) { if (b.top >= bottom - 1) { lines += 1; bottom = b.bottom; } else bottom = Math.max(bottom, b.bottom); }
+      return lines;
+    });
+    const walk = async (page, route) => {
+      if (route === 'home') {
+        await frozenOnHome(page, LONGEST_QUICK_CUBE);
+        await page.waitForFunction(() => /^\d+$/.test(document.querySelector('#moveCount')?.textContent ?? ''), null, { timeout: 90_000 });
+      } else {
+        await page.click('#randCube:visible, #randCubeTool:visible');
+        await page.waitForSelector('#solList .chip-m');
+      }
+    };
+    /** Every state the row can be in, each painted size read with nothing that shows only sometimes on screen. */
+    const states = async (page, route, read) => {
+      const out = [];
+      for (const at of ['mid', 'end']) {
+        if (at === 'end') await toEnd(page);
+        const labels = route === 'scramble' && at === 'end' ? (await bandEnumeration(page)).solveIt : [null];
+        for (const text of labels) {
+          if (text) await page.evaluate((l) => { document.querySelector('#solveItBtn').textContent = l; }, text);
+          await quietRows(page);
+          out.push(await read(`${route}, ${at}${text ? ` "${text}"` : ''}`));
+        }
+      }
+      return out;
+    };
+    for (const route of ['home', 'scramble']) {
+      const { page, context, errors } = await open(fixture, route, route === 'home' ? { solveMethod: 'quick' } : null);
+      try {
+        await walk(page, route);
+        const without = await states(page, route, async () => ({ painted: await paintedNow(page), lines: await transportLines(page) }));
+        await connectCube(page);
+        await visit(page, 'stats');
+        await visit(page, route);
+        await walk(page, route);
+        const kind = route === 'home' ? 'quick' : 'scramble';
+        let i = 0;
+        await states(page, route, async (what) => {
+          const where = `${what}, a smart cube connected`;
+          // Against the same state with no cube: the row's own end-of-walk wrap on the narrowest column is not the pill's
+          // (dev-docs/sweep-fix-plan.md, Round 3) — what the pill must not do is add a line.
+          assert.equal(await transportLines(page), without[i].lines, `${where}: the transport row has a different number of lines than with no cube connected`);
+          const s = await statusArea(page);
+          assert.ok(s.pillBesideStatus && !s.pillInTransport, `${where}: "Cube leads" is not beside the cube's status (${JSON.stringify(s)})`);
+          assert.equal(s.lines, 1, `${where}: the status area wraps onto ${s.lines} lines`);
+          assert.ok(s.inBar && s.clearOfLead && s.clearOfTabs, `${where}: the status area leaves the bar or runs over the wordmark or the tabs (${JSON.stringify(s)})`);
+          assert.ok(s.pillHeight >= 43.5 && s.pillCut === false, `${where}: the pill is ${s.pillHeight}px tall or cut`);
+          assert.deepEqual(s.fits, { spills: [], cut: [] }, `${where}: text in the title bar that cannot be read — see contentFits`);
+          assert.ok(s.wordmark.text === 'cubus' && s.wordmark.named, `${where}: the wordmark left the accessibility tree (${JSON.stringify(s.wordmark)})`);
+          const painted = await paintedNow(page);
+          near(painted, without[i].painted, `${where}: the painted cube changed size with a cube connected`, 1);
+          floorHolds(t, fixture, kind, painted, where);
+          i += 1;
+        });
+        assert.deepEqual(errors.map(String), [], 'the page threw');
+      } finally {
+        await context.close();
+      }
+    }
+  });
+}
+
+// ONLY HOME AND SCRAMBLE DRAW IT (owner, 2026-10-21): every other screen, and Home with no walk, has nothing for the
+// cube to lead, and shows no pill — not a disabled one. MUST NOT: a "Cube leads" pill on any of them, or one left
+// behind in the bar after leaving a walk.
+test('with a smart cube connected, no screen but a walk on Home or Scramble draws "Cube leads": iPhone SE', async () => {
+  const fixture = FIXTURES.find((f) => f.name === 'iPhone SE');
+  const { page, context, errors } = await open(fixture, 'home', { solveMethod: 'quick' });
+  try {
+    await connectCube(page);
+    await visit(page, 'stats');
+    await visit(page, 'home');
+    await frozenOnHome(page, LONGEST_QUICK_CUBE);
+    await page.waitForSelector('#tbTrail [data-mode="cube"]');
+    const screens = registeredScreens().filter((id) => id !== 'home' && id !== 'scramble');
+    assert.ok(screens.length >= 5, `precondition: only ${screens.length} other screens to visit`);
+    for (const id of screens) {
+      await visit(page, id);
+      await page.waitForFunction(() => document.readyState === 'complete');
+      assert.equal(await page.locator('[data-mode="cube"]').count(), 0, `${id}: a "Cube leads" pill is drawn`);
+    }
+    // Home with no walk: a solved cube has nothing to lead either.
+    await visit(page, 'scan');
+    await page.waitForSelector('#stageCard', { state: 'attached' });
+    await page.evaluate((f) => document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-complete', { detail: { facelets: f, rotations: [0, 0, 0, 0, 0, 0] } })), 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB');
+    await page.waitForFunction(() => document.querySelector('#stageCard')?.hidden === false);
+    await visit(page, 'home');
+    await page.waitForFunction(() => document.querySelector('.screen.active') && !document.querySelector('#solList .chip-m'));
+    assert.equal(await page.locator('[data-mode="cube"]').count(), 0, 'Home with no walk: a "Cube leads" pill is drawn');
+    assert.deepEqual(errors.map(String), [], 'the page threw');
   } finally {
     await context.close();
   }

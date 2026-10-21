@@ -178,6 +178,38 @@ function wireTwinTool(root, signal) {
   }, { signal });
 }
 
+/**
+ * "Cube leads" sits in the title bar, beside the cube's status (owner, 2026-10-21): in the transport it wrapped the row
+ * on five of eight fixtures and took up to 52px from the cube. It is still THIS screen's control — drawn in its markup,
+ * so the walk's follow tracker finds and wires it there, and only on Home and Scramble with a walk and a cube connected,
+ * exactly as before — and is moved, wired, to the bar, and removed with the screen. No other screen draws one.
+ *
+ * Focus on it survives a rebuild of this screen: a repaint that redrew it (a trust change) put focus on the screen,
+ * because the pill had no id; outside the stage nothing restores it at all, so the hand-off is kept here. Taken by the
+ * mount that runs in the same task, or by the screen when no pill is drawn there.
+ */
+let pillHadFocus = false;
+function seatFollowPill(root, signal) {
+  const pill = root.querySelector('[data-mode="cube"]');
+  const status = root.ownerDocument.getElementById('cubeLive');
+  if (!pill || !status) return;
+  status.before(pill);
+  if (pillHadFocus && root.ownerDocument.activeElement === root.ownerDocument.body) pill.focus({ preventScroll: true });
+  pillHadFocus = false;
+  signal?.addEventListener('abort', () => {
+    if (root.ownerDocument.activeElement === pill) {
+      pillHadFocus = true;
+      queueMicrotask(() => {
+        if (!pillHadFocus) return;
+        pillHadFocus = false;
+        const doc = root.ownerDocument;
+        if (doc.activeElement === doc.body) doc.getElementById('stage')?.firstElementChild?.focus?.({ preventScroll: true });
+      });
+    }
+    pill.remove();
+  }, { once: true });
+}
+
 /** Solve and Scramble are the same screen walked from opposite ends.
  *
  * Solve starts at YOUR cube and ends solved; Scramble starts SOLVED and ends at a random state.
@@ -616,6 +648,7 @@ const cubeScreen = (screenMode) => {
         root, cube, scrambling, walking, unsolvable, label, stateHeading, stale, signal,
         paintNet, paintAim, syncReconnectAsk, applyTempo, paintMethods: methodRow.paint, paintStops,
       }, WALK_APP);
+      seatFollowPill(root, signal);
       hooks.liveMove = session.liveMove;
       hooks.liveUpdate = session.liveUpdate;
       hooks.liveGap = session.liveGap;

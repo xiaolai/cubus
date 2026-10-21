@@ -202,6 +202,8 @@
         position: absolute; top: 0; left: 0; right: 0; z-index: 5;
         height: var(--titlebar-h); display: flex; justify-content: space-between; align-items: center;
         padding: 0 12px;
+        /* Asked by its own width (below), never the window's: the bar is what has to hold its zones. */
+        container: titlebar / inline-size;
       }
       /* flex: none — the zones never shrink. With `0 1 auto` WebKit sized the lead zone under its
          content while the bar had 600px free, and the wordmark ran out of its box under the tabs.
@@ -228,6 +230,15 @@
       .brand { display: flex; align-items: center; gap: 7px; padding: 0 6px; }
       .brand .mark { flex: none; width: 20px; height: 20px; display: block; }
       .brand b { font-family: var(--font-num); font-weight: 700; font-size: var(--fs-title-s); letter-spacing: -.01em; }
+      /* A narrow bar keeps the mark and gives the wordmark's room to the trail (owner, 2026-10-21). With a cube connected
+         on Home or Scramble the trail holds "Cube leads", the cube's status and Settings: 214.7px in DejaVu, and the
+         Split View column's 320px bar has 296 inside its padding, so with the wordmark (92px of lead) the trail ran 11px
+         past it. The next narrowest bar, the iPhone SE's 375, keeps 44px spare with it. Taken out of the layout and NOT
+         out of the accessibility tree (the .sr-only recipe): the word is the bar's only name for the app, since the
+         mark is alt="" so as not to be read twice. */
+      @container titlebar (width < 360px) {
+        .brand b { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+      }
 
       /* The tabs: a segmented control in the macOS/iOS manner — one capsule, the current screen
          filled in ink. Four screens by default and never more than eight. The capsule's ground is
@@ -290,6 +301,9 @@
       .tb-ctl.tb-live .ic { animation: cubusPulse var(--pulse) infinite; }
       .tb-ctl.tb-live.stale { color: var(--warn-ink); }
       .tb-ctl.tb-live.stale .ic { animation: none; }
+      /* "Cube leads", beside the status it depends on (lib/screens/cube.js, seatFollowPill): the same 44px it had in the
+         transport row, mouse or finger, and one line. */
+      .tb-trail > .pill[data-mode="cube"] { flex: none; white-space: nowrap; min-height: 44px; }
       /* Windows/Linux caption buttons, drawn by the app because the window has no decorations. */
       .tb-caption { margin-left: 8px; }
       .tb-caption.windows { gap: 0; }
