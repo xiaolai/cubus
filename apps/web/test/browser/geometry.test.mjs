@@ -1972,11 +1972,12 @@ const reserveOf = (page) => page.evaluate(() => document.querySelector('.cols > 
 for (const fixture of portraitFixtures) {
   test(`Home's band reserve is one for every walk, and a walk to a stop's sentence leaves the cube its size: ${label(fixture)}`, async () => {
     const { page, context, errors } = await open(fixture, 'home', { solveMethod: 'quick' });
+    let quick;
     try {
       await frozenOnHome(page, LONGEST_QUICK_CUBE);
       await page.waitForFunction(() => /^\d+$/.test(document.querySelector('#moveCount')?.textContent ?? ''), null, { timeout: 90_000 });
       await cubeSettled(page, '#viewCube cubus-cube');
-      const quick = await reserveOf(page);
+      quick = await reserveOf(page);
       // A walk to a stop: its sentence where the count stands, in the band.
       await page.evaluate(() => document.querySelector('#stageTargetRow [data-stage="corners-home"]').click());
       await page.waitForFunction(() => document.querySelector('#moveCount')?.dataset.band === 'on' && document.querySelector('#moveCount').closest('.foot-band'), null, { timeout: 90_000 });
@@ -2006,6 +2007,53 @@ for (const fixture of portraitFixtures) {
       await page.waitForFunction(() => document.querySelectorAll('#solList .walk-sec').length > 1, null, { timeout: 90_000 });
       await cubeSettled(page, '#viewCube cubus-cube');
       assert.equal(await reserveOf(page), quick, 'the reserve changed between a Quick walk and a lesson');
+      assert.deepEqual(errors.map(String), [], 'the page threw');
+    } finally {
+      await context.close();
+    }
+    // No walk, then a picture walk. With no walk the screen is another composition, with no band and so no room kept for
+    // one (MUST NOT: a band, or a reserve, on a cube with nothing to walk); a picture walk keeps the Quick walk's reserve.
+    const other = await open(fixture, 'home', { solveMethod: 'quick' });
+    try {
+      await cubeSettled(other.page, '#viewCube cubus-cube');
+      const none = await other.page.evaluate(() => ({ band: Boolean(document.querySelector('.screen.active .foot-band')),
+        reserve: document.querySelector('.cols > .primary')?.style.getPropertyValue('--band-reserve') ?? '' }));
+      assert.deepEqual(none, { band: false, reserve: '' }, 'no walk: a band, or room kept for one');
+      await other.page.evaluate(() => document.querySelector('#patternBtn').click());
+      await other.page.evaluate(() => document.querySelector('.pattern-menu [data-stage="checkerboard"]').click());
+      await other.page.waitForFunction(() => document.querySelector('#solList .chip-m') && /way to|couldn/.test(document.querySelector('#moveCount')?.textContent ?? ''), null, { timeout: 90_000 });
+      await cubeSettled(other.page, '#viewCube cubus-cube');
+      assert.equal(await reserveOf(other.page), quick, 'the reserve changed between a Quick walk and a picture walk');
+      assert.deepEqual(other.errors.map(String), [], 'no walk and a picture walk: the page threw');
+    } finally {
+      await other.context.close();
+    }
+  });
+
+  // THE METHOD-FALLBACK NOTE, SHOWN AND HIDDEN (sweep 2026-10-20, A1, S1): every sentence the walk session can write
+  // (`methodNoteSentences`), said over the Quick walk a fallback shows, in the band. MUST NOT: the cube a different size,
+  // or its card moved, with the note shown than hidden; the note anywhere but the band; the band cut or scrolled.
+  test(`the method-fallback note leaves the cube its size: ${label(fixture)}`, async () => {
+    const { page, context, errors } = await open(fixture, 'home', { solveMethod: 'quick' });
+    try {
+      await frozenOnHome(page, LONGEST_QUICK_CUBE);
+      await page.waitForFunction(() => /^\d+$/.test(document.querySelector('#moveCount')?.textContent ?? ''), null, { timeout: 90_000 });
+      await cubeSettled(page, '#viewCube cubus-cube');
+      const hidden = await measureBand(page, '#viewCube cubus-cube');
+      const sentences = await page.evaluate(async () => (await import('/lib/walk-session.js')).methodNoteSentences());
+      assert.ok(sentences.length >= 3, `precondition: only ${sentences.length} fallback sentences`);
+      for (const sentence of sentences) {
+        await page.evaluate((text) => { const n = document.querySelector('#methodNote'); n.textContent = text; n.hidden = false; }, sentence);
+        await cubeSettled(page, '#viewCube cubus-cube');
+        const shown = await measureBand(page, '#viewCube cubus-cube');
+        bandHolds(shown, `the note "${sentence}"`);
+        assert.ok(shown.held.includes('methodNote'), `the note "${sentence}" is not in the band (it holds ${shown.held.join(', ') || 'nothing'})`);
+        near(shown.painted, hidden.painted, `the note "${sentence}": the painted cube changed size`);
+        for (const k of ['top', 'height']) near(shown.card[k], hidden.card[k], `the note "${sentence}": the cube card's ${k} moved`);
+      }
+      await page.evaluate(() => { document.querySelector('#methodNote').hidden = true; });
+      await cubeSettled(page, '#viewCube cubus-cube');
+      near((await measureBand(page, '#viewCube cubus-cube')).painted, hidden.painted, 'the note hidden again: the painted cube did not come back');
       assert.deepEqual(errors.map(String), [], 'the page threw');
     } finally {
       await context.close();
