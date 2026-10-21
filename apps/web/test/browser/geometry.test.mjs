@@ -1415,6 +1415,7 @@ const measureBand = (page, cubeSel) => page.evaluate(`(() => {
   return {
     band: drawn(band) ? rect(band) : null, inCard: Boolean(band) && card.contains(band),
     card: rect(card), cube: (${cubeBodyBox.toString()})(${JSON.stringify(cubeSel)}),
+    canvasBox: rect(document.querySelector(${JSON.stringify(`${cubeSel} canvas`)})),
     painted: (${paintedSize.toString()})(${JSON.stringify(`${cubeSel} canvas`)}),
     held: [...(band?.children ?? [])].filter(drawn).map((el) => el.id),
     fits: ${contentFits}(document.querySelector('.screen.active')),
@@ -1623,51 +1624,79 @@ const bandEnumeration = (page) => page.evaluate(async () => {
 });
 
 /**
- * Everything about the band that its words can change: which rows show, the box, scroll size, class and colours of the
- * band and of every element drawn in it — read a frame after the state is shown, once the band's own observer has placed
- * its rows and fitted its room (lib/foot-band.js). Self-contained: evaluated in the page.
+ * The band as a state's WORDS can change it, read synchronously a frame after the state is shown — once the band's own
+ * observer has placed its rows and fitted its room (lib/foot-band.js): its box and the card's and the canvas's, whether it
+ * is in the card, the rows it holds, text that cannot be read inside it, whether it scrolls, where its controls are, and
+ * `rows` — which rows, by id and class, and so by the rules that colour them. Self-contained: evaluated in the page.
  */
-const bandLayoutKey = async () => {
+const bandNow = (cubeSel) => `(async () => {
   await new Promise((done) => { requestAnimationFrame(done); });
+  const rect = ${rect.toString()};
   const band = document.querySelector('.foot-band');
-  if (!band) return 'no band';
-  const r = (n) => Math.round(n * 4) / 4;
-  const parts = [band, ...band.querySelectorAll('*')].filter((el) => !el.closest('[hidden]') && getComputedStyle(el).display !== 'none')
-    .map((el) => {
-      const b = el.getBoundingClientRect();
-      const s = getComputedStyle(el);
-      return [el.id, el.className, r(b.left), r(b.top), r(b.width), r(b.height), el.scrollWidth, el.scrollHeight, el.clientWidth,
-        el.clientHeight, s.color, s.backgroundColor, s.borderColor].join(',');
-    });
-  return parts.join('|');
-};
+  const drawn = (el) => Boolean(el) && !el.closest('[hidden]') && getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().height > 0;
+  const card = document.querySelector('.cols > .primary');
+  const held = [...(band?.children ?? [])].filter(drawn);
+  return {
+    band: drawn(band) ? rect(band) : null, inCard: Boolean(band) && card.contains(band), positioned: band ? getComputedStyle(band).position : null,
+    card: rect(card), canvas: rect(document.querySelector(${JSON.stringify(`${cubeSel} canvas`)})), cube: (${cubeBodyBox.toString()})(${JSON.stringify(cubeSel)}),
+    held: held.map((el) => el.id),
+    rows: held.map((el) => \`\${el.id}.\${el.className}\`).join('|') + '/' + (band?.className ?? ''),
+    fits: band ? ${contentFits}(band) : { spills: [], cut: [] },
+    scroll: band ? { height: band.scrollHeight, client: band.clientHeight } : null,
+    controls: [...(band?.querySelectorAll('button, a[href], input, select') ?? [])].filter(drawn)
+      .map((el) => ({ name: el.id || el.textContent.trim(), box: rect(el) })),
+    surfaces: [],
+  };
+})()`;
 
 /**
- * MUST NOT, for every one of `states`: the band scrolling, a control in it cut, the cube under it, or the cube a different
- * size than with the band put away (E12.7, E12.8). `apply(state)` shows the state in the page as its writer would.
+ * MUST NOT, for every one of `states`: the band scrolling, a control in it cut, text in it that cannot be read, the band
+ * out of the card's foot or over the cube, the cube card or the cube's canvas moved or resized, or the cube painted a
+ * different size than with the band put away (E12.7, E12.8). `apply(state)` shows the state in the page as its writer would.
+ *
+ * EVERY STATE is read for what its words can change, in one synchronous pass a frame after it is shown (`bandNow`). The
+ * two readings that need frames and themes are taken once per set of rows instead, and each is shown redundant for the
+ * rest by mechanism (sweep 2026-10-21, after this check took a Quick and a lesson case from about 13 s to 30 s a fixture):
+ *   - THE PAINTED CUBE. The band is absolutely positioned (asserted on every state), so no layout outside it reads its
+ *     words; the renderer paints from its canvas's size and its own camera, which no band row writes. Every state asserts
+ *     the card's and the canvas's boxes unchanged, and the painted size is read on every NEW set of rows.
+ *   - THE SURFACES AND THE WORDS' CONTRAST, in three themes. A colour is the rules that match an element, and two states
+ *     that show the same rows — the same ids and classes — match the same rules in every theme; the words differ, and a
+ *     word's contrast does not depend on what it says. So they are read once per set of rows.
  */
 async function bandHoldsEvery(page, cubeSel, bare, states, apply, what) {
   assert.ok(states.length > 0, `precondition, ${what}: nothing enumerated for the band to hold`);
-  // A state the band lays out EXACTLY as one already measured is that measurement again (sweep 2026-10-20): the same
-  // rows, every box in the band and every scroll size in it the same, every colour the same. The band is absolutely
-  // positioned (index.html), so nothing outside it lays out by its words: the page outside it, the cube's canvas and
-  // what the renderer paints there are the same, and so is every word's contrast. Only its words differ, and where they
-  // could change what is drawn they change a box or a scroll size, which is in the key. Measured: the 138 sentences of a
-  // walk to a stop cost 17.5 s a case read one by one, two frames and three themes each.
-  const measured = new Set();
-  for (const state of states) {
-    await page.evaluate(apply, state);
-    const layout = await page.evaluate(bandLayoutKey);
-    if (measured.has(layout)) continue;
-    measured.add(layout);
-    await page.evaluate(() => new Promise((r) => { requestAnimationFrame(() => requestAnimationFrame(r)); }));
-    await cubeSettled(page, cubeSel);
-    const b = await measureBand(page, cubeSel);
+  // Every state shown and read in ONE visit to the page, a frame apart: the reading is the same, and the round trips
+  // to the page — two a state, for a few hundred states a case — were most of what the check cost.
+  const read = await page.evaluate(`(async () => {
+    const apply = ${apply.toString()};
+    const out = [];
+    for (const state of ${JSON.stringify(states)}) {
+      apply(state);
+      out.push(await ${bandNow(cubeSel)});
+    }
+    return out;
+  })()`);
+  assert.equal(read.length, states.length, `precondition, ${what}: ${read.length} readings for ${states.length} states`);
+  const full = new Map();
+  states.forEach((state, i) => {
+    const b = read[i];
     const label = `${what}: ${JSON.stringify(state).slice(0, 120)}`;
+    assert.equal(b.positioned, 'absolute', `${label}: the band is not absolutely positioned — its words can move the page, and every state needs the full reading`);
     bandHolds(b, label);
     for (const k of ['top', 'height']) near(b.card[k], bare.card[k], `${label}: the cube card's ${k} moved`);
-    near(b.painted, bare.painted, `${label}: the painted cube changed size`);
+    for (const k of ['top', 'left', 'width', 'height']) near(b.canvas[k], bare.canvasBox[k], `${label}: the cube's canvas ${k} moved`);
+    if (!full.has(b.rows)) full.set(b.rows, { state, label });
+  });
+  for (const { state, label } of full.values()) {
+    await page.evaluate(apply, state);
+    await page.evaluate(() => new Promise((r) => { requestAnimationFrame(() => requestAnimationFrame(r)); }));
+    await cubeSettled(page, cubeSel);
+    const m = await measureBand(page, cubeSel);
+    bandHolds(m, `${label} (frames and themes)`);
+    near(m.painted, bare.painted, `${label}: the painted cube changed size`);
   }
+  return { states: states.length, full: full.size };
 }
 
 /**
@@ -3230,7 +3259,10 @@ for (const fixture of FIXTURES) {
         // The record's two fixed sentences, each alone and both at once: the longest the band holds here (E12.8).
         const e = await bandEnumeration(page);
         assert.equal(e.record.length, 2, 'precondition: the record has two fixed sentences');
-        const bareRecord = { card: both.primary, painted: armed.painted };
+        const bareRecord = { card: both.primary, painted: armed.painted, canvasBox: await page.evaluate(() => {
+          const r = document.querySelector('#practiceCube cubus-cube canvas').getBoundingClientRect();
+          return { top: r.top, left: r.left, width: r.width, height: r.height };
+        }) };
         await bandHoldsEvery(page, '#practiceCube cubus-cube', bareRecord, [...e.record, e.record.join(' ')],
           (text) => { const r = document.querySelector('#practiceRecordSay'); r.textContent = text; r.hidden = false; }, `page (${id}), the record's band`);
       }
