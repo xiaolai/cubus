@@ -2018,7 +2018,11 @@ for (const fixture of FIXTURES) {
       // Then the Quick walk, aimed back at the whole cube: the picture is a destination the screen remembers.
       await frozenOnHome(page, LONGEST_QUICK_CUBE);
       await page.evaluate(() => { const solved = document.querySelector('#stageTargetRow [data-stage="solved"]'); if (solved && !solved.classList.contains('on')) solved.click(); });
-      await page.waitForFunction(() => /^\d+$/.test(document.querySelector('#moveCount')?.textContent ?? ''), null, { timeout: 90_000 });
+      // The walk's chips, not its count alone: the count is written about 100ms before the list (CI 39607667813), and
+      // until the list is in, the sheet is short and the card — and the reserve that is solved for it — are the
+      // "working…" composition's. A read there compared that composition's reserve with the picture walk's.
+      await page.waitForFunction(() => /^\d+$/.test(document.querySelector('#moveCount')?.textContent ?? '')
+        && document.querySelectorAll('#solList .chip-m').length > 0, null, { timeout: 90_000 });
       await cubePainted(page);
       const portrait = await page.evaluate(() => document.querySelector('.cols .sheet').getBoundingClientRect().top >= document.querySelector('.cols > .primary').getBoundingClientRect().bottom - 1);
       // The reserve's and the note's checks were once cases over `portraitFixtures`; the composition must agree with it.
