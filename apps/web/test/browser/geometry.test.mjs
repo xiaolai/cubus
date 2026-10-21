@@ -1864,7 +1864,10 @@ for (const fixture of FIXTURES) {
 
 // EVERY WALK KIND KEEPS ITS FLOOR, ON EVERY FIXTURE (sweep 2026-10-20, A2, S2): a walk to a stop, a picture walk, a shape
 // the cube already shows, no walk, the scan's small cube, and the landscape fixtures of every kind — each measured with
-// nothing that shows only sometimes on screen, as its floor was (CUBE_FLOOR). MUST NOT: a cube under its floor.
+// nothing that shows only sometimes on screen, as its floor was (CUBE_FLOOR). No walk is measured twice: a solved cube,
+// and an arrangement no turning can reach, which has a card of its own. MUST NOT: a cube under its floor.
+/** A solved cube with one corner twisted in place: a legal colouring no turning can reach, so every Restore chip is a dash. */
+const UNSOLVABLE_SCAN = (() => { const s = [...'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB']; [s[8], s[9], s[20]] = [s[20], s[8], s[9]]; return s.join(''); })();
 const quietRows = (page) => page.evaluate(() => {
   for (const id of ['followNote', 'whyLine', 'whyBtn', 'practiseStep', 'methodNote', 'methodUnsaved', 'solveItBtn']) {
     const el = document.getElementById(id);
@@ -1885,10 +1888,10 @@ for (const fixture of FIXTURES) {
       return opened;
     };
     const under = [];
-    const hold = (kind, painted) => {
-      seen[kind] = painted;
+    const hold = (kind, painted, as = kind) => {
+      seen[as] = painted;
       const floor = cubeFloor(kind, fixture);
-      if (!(painted >= floor)) under.push(`${kind}: ${painted.toFixed(1)}px — under its floor of ${floor}px`);
+      if (!(painted >= floor)) under.push(`${as}: ${painted.toFixed(1)}px — under its floor of ${floor}px`);
     };
     let o = await fresh('home', { solveMethod: 'quick' });
     try {
@@ -1925,6 +1928,19 @@ for (const fixture of FIXTURES) {
       await o.page.waitForFunction(() => document.querySelector('#solList .chip-m') && /way to|couldn/.test(document.querySelector('#moveCount')?.textContent ?? ''), null, { timeout: 90_000 });
       await quietRows(o.page);
       hold('picture', await paintedNow(o.page));
+    } finally { await o.context.close(); }
+    // No walk on a cube no turning can reach: its own card, the same floor.
+    o = await fresh('scan', { solveMethod: 'quick' });
+    try {
+      await o.page.waitForSelector('#stageCard', { state: 'attached' });
+      await o.page.evaluate((f) => document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-complete', {
+        detail: { facelets: f, rotations: [0, 0, 0, 0, 0, 0] },
+      })), UNSOLVABLE_SCAN);
+      await o.page.waitForFunction(() => [...document.querySelectorAll('.stage-chip .howfar')].every((el) => el.textContent === '—'), null, { timeout: 90_000 });
+      await o.page.evaluate(() => { location.hash = '#/home'; });
+      await o.page.waitForSelector('#unsolvableNote');
+      assert.equal(await o.page.locator('#solList .chip-m').count(), 0, 'precondition: an unsolvable cube has a walk');
+      hold('none', await paintedNow(o.page), 'unsolvable');
     } finally { await o.context.close(); }
     o = await fresh('scramble');
     try {
@@ -2229,8 +2245,6 @@ for (const fixture of FIXTURES) {
 }
 
 const SCANNED_CUBE = 'DDDUURFDURDRRRLBBULLFUFFFLLDUUFDDDLRBBUBLRBULFFLFBRBBR';
-/** A solved cube with one corner twisted in place: a legal colouring no turning can reach, so every Restore chip is a dash. */
-const UNSOLVABLE_SCAN = (() => { const s = [...'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB']; [s[8], s[9], s[20]] = [s[20], s[8], s[9]]; return s.join(''); })();
 
 // THE RESTORE ROW AFTER A SCAN, which no case above enters: its card is hidden until a cube is read. Seven
 // chips since ADR 0009, in a card that may shrink and clip (Codex refute, 2026-10-14) — so every fixture
