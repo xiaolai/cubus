@@ -54,6 +54,10 @@ while IFS= read -r line || [ -n "$line" ]; do
 done < "$WORKTREE_CONTEXT"
 [ ${#HIDE[@]} -gt 0 ] || { echo "FATAL: $WORKTREE_CONTEXT names nothing" >&2; exit 1; }
 HIDE+=(.codex .cc-suite.md 'grill-report-*.md' '.claude/*.local.*' .agents/skills runs error.log)
+# A path named twice would be moved twice, and the second move fails half-way through hiding. Refuse
+# it here, by name, before anything moves — the manifest grows by hand.
+dup="$(printf '%s\n' "${HIDE[@]}" | sort | uniq -d | head -1)"
+[ -z "$dup" ] || { echo "FATAL: $dup is named twice in what this script hides ($WORKTREE_CONTEXT and the list below it)" >&2; exit 1; }
 # A FIXED path inside the repo, not mktemp.
 #
 # This script moves gitignored directories aside, which means for the length of a run the only

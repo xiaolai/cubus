@@ -371,3 +371,23 @@ for (const [signal, code] of [['INT', 130], ['TERM', 143]]) {
     }
   });
 }
+
+// The manifest grows by hand, and a path it shares with the script's own list would be moved twice:
+// the second `mv` fails half-way through hiding. The run must refuse that by name, before anything moves.
+test('a path named both in the worktree manifest and in the script\'s own list is refused before anything moves', () => {
+  const root = fixture();
+  try {
+    contents(root, 'original');
+    writeFileSync(join(root, 'scripts/worktree-context.txt'), 'dev-docs\nruns\n');
+    mkdirSync(join(root, 'runs'));
+    writeFileSync(join(root, 'runs/last.pt'), 'weights');
+    const r = run(root);
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /runs is named twice/);
+    assert.equal(readFileSync(join(root, 'dev-docs/note.md'), 'utf8'), 'original');
+    assert.equal(readFileSync(join(root, 'runs/last.pt'), 'utf8'), 'weights');
+    assert.equal(existsSync(join(root, STASH)), false, 'something was stashed although the run refused');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
